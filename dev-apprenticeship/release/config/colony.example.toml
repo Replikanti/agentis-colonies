@@ -1,0 +1,45 @@
+# Release Colony Configuration
+#
+# Part of the Dev Apprenticeship federation.
+# Copy to colony.toml and edit for your environment.
+
+[colony]
+name = "release"
+tick_interval_ms = 60000
+
+[gitlab]
+url = "https://gitlab.example.com"
+token = "glpat-your-token-here"
+project = "your-org/your-project"
+
+[llm]
+backend = "cli"
+command = "claude"
+
+# Agent definitions
+# Each agent runs as a separate agentis daemon process.
+# They discover each other via colony UDP and communicate over TCP emit/listen.
+
+[[agents]]
+name = "ship_decider"
+source = "agents/ship_decider.ag"
+cb_budget = 600
+tick_interval_ms = 60000
+
+[[agents]]
+name = "changelog_writer"
+source = "agents/changelog_writer.ag"
+cb_budget = 800
+tick_interval_ms = 60000
+
+[[agents]]
+name = "version_bumper"
+source = "agents/version_bumper.ag"
+cb_budget = 400
+tick_interval_ms = 60000
+
+[[agents]]
+name = "release_checker"
+source = "agents/release_checker.ag"
+cb_budget = 800
+tick_interval_ms = 60000
