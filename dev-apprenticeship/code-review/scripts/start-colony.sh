@@ -1,5 +1,5 @@
 #!/bin/bash
-# Start the Apprenticeship Colony
+# Start the Code Review Colony (part of Dev Apprenticeship federation)
 #
 # Each agent runs as a separate agentis daemon process.
 # They discover each other via colony UDP and communicate over TCP emit/listen.
@@ -19,20 +19,19 @@ if [ ! -f "$CONFIG" ]; then
 fi
 
 AGENTS=(
-    qa_reviewer
-    plan_reviewer
-    planner
-    ship_decider
-    issue_creator
-    implementer
+    style_reviewer
+    logic_reviewer
+    security_reviewer
+    test_reviewer
+    approval_decider
 )
 
-echo "Starting Apprenticeship Colony (${#AGENTS[@]} agents)..."
+echo "Starting Code Review colony (${#AGENTS[@]} agents)..."
 
 for agent in "${AGENTS[@]}"; do
     echo "  Starting $agent..."
     agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
-        --colony apprenticeship \
+        --colony code-review \
         --backend claude \
         --tick-interval 60000 &
     sleep 2  # stagger starts to reduce API contention
