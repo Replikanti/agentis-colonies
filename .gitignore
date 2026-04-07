@@ -1,0 +1,8 @@
+# Colony runtime state
+.agentis/
+
+# Local config (contains tokens)
+**/config/colony.toml
+
+# OS
+.DS_Store

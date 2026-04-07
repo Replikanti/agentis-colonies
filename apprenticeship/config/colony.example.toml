@@ -1,0 +1,56 @@
+# Apprenticeship Colony Configuration
+#
+# Copy to colony.toml and edit for your environment.
+
+[colony]
+name = "apprenticeship"
+tick_interval_ms = 60000
+
+[gitlab]
+url = "https://gitlab.example.com"
+token = "glpat-your-token-here"
+project = "your-org/your-project"
+
+[llm]
+backend = "cli"
+command = "claude"
+
+# Agent definitions
+# Each agent runs as a separate agentis daemon process.
+# They discover each other via colony UDP and communicate over TCP emit/listen.
+
+[[agents]]
+name = "qa_reviewer"
+source = "agents/qa_reviewer.ag"
+cb_budget = 800
+tick_interval_ms = 60000
+
+[[agents]]
+name = "plan_reviewer"
+source = "agents/plan_reviewer.ag"
+cb_budget = 800
+tick_interval_ms = 60000
+
+[[agents]]
+name = "planner"
+source = "agents/planner.ag"
+cb_budget = 1000
+tick_interval_ms = 60000
+
+[[agents]]
+name = "ship_decider"
+source = "agents/ship_decider.ag"
+cb_budget = 600
+tick_interval_ms = 60000
+
+[[agents]]
+name = "issue_creator"
+source = "agents/issue_creator.ag"
+cb_budget = 600
+tick_interval_ms = 60000
+
+[[agents]]
+name = "implementer"
+source = "agents/implementer.ag"
+cb_budget = 2000
+tick_interval_ms = 120000
