@@ -8,11 +8,11 @@ Each colony specializes in one part of the workflow. Together, they form a feder
 
 | Colony | Description | Status |
 |--------|-------------|--------|
-| [code-review](./code-review/) | Reviews pull requests — style, logic, security, test coverage, approval decisions | Active |
-| planning | Breaks down work — scope estimation, risk assessment, task decomposition, plan review | Planned |
-| implementation | Writes and refactors code — code generation, test writing, commit conventions | Planned |
-| triage | Manages issues — creation, prioritization, labeling, routing | Planned |
-| release | Automates releases — ship decisions, changelogs, versioning, deployment checks | Planned |
+| [code-review](./code-review/) | Reviews merge requests — style, logic, security, test coverage, approval decisions (5 agents) | Active |
+| [planning](./planning/) | Breaks down work — scope estimation, risk assessment, task decomposition, plan review (4 agents) | Active |
+| [implementation](./implementation/) | Writes and refactors code — code generation, test writing, commit conventions (4 agents) | Active |
+| [triage](./triage/) | Manages issues — creation, prioritization, labeling, routing (4 agents) | Active |
+| [release](./release/) | Automates releases — ship decisions, changelogs, versioning, pre-release checks (4 agents) | Active |
 
 ## Why Colonies, Not Individual Agents?
 
@@ -58,13 +58,7 @@ graph TD
     TR --> GL
     RE --> GL
 
-    style PL stroke-dasharray: 5 5
-    style IM stroke-dasharray: 5 5
-    style TR stroke-dasharray: 5 5
-    style RE stroke-dasharray: 5 5
 ```
-
-<sub>Dashed colonies are planned, not yet implemented.</sub>
 
 ## Autonomy Gradient
 

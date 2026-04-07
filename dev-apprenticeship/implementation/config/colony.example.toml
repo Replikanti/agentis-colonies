@@ -1,0 +1,45 @@
+# Implementation Colony Configuration
+#
+# Part of the Dev Apprenticeship federation.
+# Copy to colony.toml and edit for your environment.
+
+[colony]
+name = "implementation"
+tick_interval_ms = 60000
+
+[gitlab]
+url = "https://gitlab.example.com"
+token = "glpat-your-token-here"
+project = "your-org/your-project"
+
+[llm]
+backend = "cli"
+command = "claude"
+
+# Agent definitions
+# Each agent runs as a separate agentis daemon process.
+# They discover each other via colony UDP and communicate over TCP emit/listen.
+
+[[agents]]
+name = "code_writer"
+source = "agents/code_writer.ag"
+cb_budget = 2000
+tick_interval_ms = 120000
+
+[[agents]]
+name = "test_writer"
+source = "agents/test_writer.ag"
+cb_budget = 1500
+tick_interval_ms = 120000
+
+[[agents]]
+name = "refactorer"
+source = "agents/refactorer.ag"
+cb_budget = 1000
+tick_interval_ms = 60000
+
+[[agents]]
+name = "commit_composer"
+source = "agents/commit_composer.ag"
+cb_budget = 600
+tick_interval_ms = 60000

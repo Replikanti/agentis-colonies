@@ -1,0 +1,45 @@
+# Triage Colony Configuration
+#
+# Part of the Dev Apprenticeship federation.
+# Copy to colony.toml and edit for your environment.
+
+[colony]
+name = "triage"
+tick_interval_ms = 60000
+
+[gitlab]
+url = "https://gitlab.example.com"
+token = "glpat-your-token-here"
+project = "your-org/your-project"
+
+[llm]
+backend = "cli"
+command = "claude"
+
+# Agent definitions
+# Each agent runs as a separate agentis daemon process.
+# They discover each other via colony UDP and communicate over TCP emit/listen.
+
+[[agents]]
+name = "issue_creator"
+source = "agents/issue_creator.ag"
+cb_budget = 600
+tick_interval_ms = 60000
+
+[[agents]]
+name = "labeler"
+source = "agents/labeler.ag"
+cb_budget = 400
+tick_interval_ms = 60000
+
+[[agents]]
+name = "prioritizer"
+source = "agents/prioritizer.ag"
+cb_budget = 600
+tick_interval_ms = 60000
+
+[[agents]]
+name = "router"
+source = "agents/router.ag"
+cb_budget = 400
+tick_interval_ms = 60000
