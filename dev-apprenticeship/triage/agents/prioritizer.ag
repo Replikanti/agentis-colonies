@@ -1,0 +1,111 @@
+// prioritizer.ag -- Triage colony: learns how you prioritize issues.
+//
+// Observes priority assignments on GitLab issues, learns severity vs
+// impact patterns, and gradually assigns priority autonomously.
+//
+// Run as daemon: agentis daemon agents/prioritizer.ag --colony triage
+// Requires: exec_foreign capability, GITLAB_* env vars
+
+cb 600;
+
+type PriorityAnalysis {
+    prioritized_count: int,
+    unprioritized_count: int,
+    patterns: string,
+    unprioritized_issues: string
+}
+
+type PriorityAction {
+    issue_id: int,
+    priority: string,
+    reasoning: string,
+    confidence: float
+}
+
+fn issues_cmd() -> string {
+    let ts = recall_latest("prioritizer:last_check");
+    if len(ts) > 0 {
+        return "./scripts/gitlab-api.sh issues --since " + ts;
+    };
+    return "./scripts/gitlab-api.sh issues";
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("prioritizer:confidence");
+    if len(raw) > 0 {
+        return prompt("Return this number as a decimal. Nothing else.", raw) -> float;
+    };
+    return 0.0;
+}
+
+fn tick(reason: string) -> void {
+    let cmd = issues_cmd();
+    let raw = try {
+        exec shell cmd;
+    } catch e {
+        print("[prioritizer] GitLab poll failed:", e);
+        "";
+    };
+
+    if len(raw) < 3 {
+        return;
+    };
+
+    // Analyze: find prioritized and unprioritized issues
+    let analysis = prompt(
+        "Analyze this GitLab issues JSON. Count issues with priority labels like priority::critical/high/medium/low, P1-P4, urgent (prioritized_count) and those without (unprioritized_count). Summarize patterns (patterns). List unprioritized issue IDs, titles, labels (unprioritized_issues). Return JSON: prioritized_count (int), unprioritized_count (int), patterns (string), unprioritized_issues (string).",
+        raw
+    ) -> PriorityAnalysis;
+
+    if analysis.prioritized_count > 0 {
+        learn(
+            "prioritize",
+            "batch of " + to_string(analysis.prioritized_count) + " prioritized issues",
+            analysis.patterns,
+            "observed",
+            "triage"
+        );
+        print("[prioritizer] Observed", analysis.prioritized_count, "priority assignments");
+    };
+
+    // Suggest/apply priority for unprioritized issues
+    if analysis.unprioritized_count > 0 {
+        let confidence = get_confidence();
+        let rec = recommend("prioritize", ["accuracy"]);
+        let context = "Unprioritized issues: " + analysis.unprioritized_issues + "\nPast learning: " + to_string(rec);
+
+        let action = prompt(
+            "You are a prioritization agent. Suggest priority for the most important unprioritized issue. Return JSON: issue_id (int), priority (string, e.g. priority::high), reasoning (string), confidence (float 0-1).",
+            context
+        ) -> PriorityAction;
+
+        if confidence >= 0.85 {
+            let update_cmd = "./scripts/gitlab-api.sh update-issue " + to_string(action.issue_id) + " --add-labels \"" + action.priority + "\"";
+            let result = try { exec shell update_cmd; } catch e {
+                print("[prioritizer] Failed to set priority:", e);
+                "";
+            };
+            if len(result) > 0 {
+                print("[prioritizer] Set priority on issue", action.issue_id, ":", action.priority);
+                learn("prioritize", "issue " + to_string(action.issue_id), action.priority, "acted", "triage");
+            };
+        } else {
+            if confidence >= 0.6 {
+                print("[prioritizer] Suggesting priority for issue", action.issue_id, ":", action.priority);
+                emit("triage:priority_suggestion", action);
+            } else {
+                print("[prioritizer] Observing (confidence:", confidence, ")");
+            };
+        };
+    };
+
+    let new_issue = listen("triage:new_issue", 100);
+    if len(to_string(new_issue)) > 5 {
+        print("[prioritizer] Received new issue draft, will prioritize on next tick");
+    };
+
+    let now = try { exec shell "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("prioritizer:last_check", now);
+    };
+}

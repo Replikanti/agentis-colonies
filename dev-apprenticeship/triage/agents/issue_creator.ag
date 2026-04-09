@@ -1,0 +1,109 @@
+// issue_creator.ag -- Triage colony: learns how you create issues.
+//
+// Observes human-created issues on GitLab, learns title/description
+// conventions, and gradually drafts new issues from events.
+//
+// Run as daemon: agentis daemon agents/issue_creator.ag --colony triage
+// Requires: exec_foreign capability, GITLAB_* env vars
+
+cb 600;
+
+type DraftIssue {
+    title: string,
+    description: string,
+    suggested_labels: string,
+    source: string,
+    confidence: float
+}
+
+type ObservationSummary {
+    count: int,
+    patterns: string
+}
+
+fn issues_cmd() -> string {
+    let ts = recall_latest("issue_creator:last_check");
+    if len(ts) > 0 {
+        return "./scripts/gitlab-api.sh issues --since " + ts;
+    };
+    return "./scripts/gitlab-api.sh issues";
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("issue_creator:confidence");
+    if len(raw) > 0 {
+        return prompt("Return this number as a decimal. Nothing else.", raw) -> float;
+    };
+    return 0.0;
+}
+
+fn tick(reason: string) -> void {
+    let cmd = issues_cmd();
+    let raw = try {
+        exec shell cmd;
+    } catch e {
+        print("[issue_creator] GitLab poll failed:", e);
+        "";
+    };
+
+    if len(raw) < 3 {
+        return;
+    };
+
+    // Analyze batch: extract patterns from human-created issues
+    let summary = prompt(
+        "Analyze this GitLab issues JSON. Count how many issues were created by humans (not bots). Summarize the patterns you see in title style, description structure, and label choices. Return JSON: count (int), patterns (string). If no human issues, count=0.",
+        raw
+    ) -> ObservationSummary;
+
+    if summary.count > 0 {
+        learn(
+            "create_issue",
+            "batch of " + to_string(summary.count) + " issues",
+            summary.patterns,
+            "observed",
+            "triage"
+        );
+        print("[issue_creator] Observed", summary.count, "human-created issues");
+    };
+
+    // Check inbox for events that might warrant new issues
+    let inbox = try { poll_inbox(); } catch e { ""; };
+
+    if len(to_string(inbox)) > 5 {
+        let confidence = get_confidence();
+        let rec = recommend("create_issue", ["accuracy", "style"]);
+        let context = "Event: " + to_string(inbox) + "\nPast learning: " + to_string(rec);
+
+        let draft = prompt(
+            "You are an issue creator agent. Draft a GitLab issue from this event using learned conventions. Return JSON: title (string), description (string), suggested_labels (comma-separated string), source (string), confidence (float 0-1).",
+            context
+        ) -> DraftIssue;
+
+        if confidence >= 0.85 {
+            let create_cmd = "./scripts/gitlab-api.sh create-issue --title \"" + draft.title + "\" --description \"" + draft.description + "\" --labels \"" + draft.suggested_labels + "\"";
+            let result = try {
+                exec shell create_cmd;
+            } catch e {
+                print("[issue_creator] Failed to create issue:", e);
+                "";
+            };
+            if len(result) > 0 {
+                print("[issue_creator] Created issue:", draft.title);
+                emit("triage:new_issue", draft);
+            };
+        } else {
+            if confidence >= 0.6 {
+                print("[issue_creator] Suggesting issue:", draft.title);
+                emit("triage:new_issue", draft);
+            } else {
+                print("[issue_creator] Observing (confidence:", confidence, ")");
+            };
+        };
+    };
+
+    let now = try { exec shell "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("issue_creator:last_check", now);
+    };
+}
