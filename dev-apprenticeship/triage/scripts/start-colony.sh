@@ -34,7 +34,7 @@ if [ -z "$GITLAB_URL" ] || [ -z "$GITLAB_TOKEN" ] || [ -z "$GITLAB_PROJECT_RAW" 
 fi
 
 # URL-encode the project path (replace / with %2F)
-GITLAB_PROJECT=$(echo "$GITLAB_PROJECT_RAW" | sed 's|/|%2F|g')
+GITLAB_PROJECT="${GITLAB_PROJECT_RAW//\//%2F}"
 
 export GITLAB_URL
 export GITLAB_TOKEN
@@ -43,11 +43,6 @@ export COLONY_DIR
 
 # Parse LLM backend
 LLM_BACKEND=$(parse_toml "backend")
-
-BACKEND_FLAG=""
-if [ -n "$LLM_BACKEND" ]; then
-    BACKEND_FLAG="--backend $LLM_BACKEND"
-fi
 
 AGENTS=(
     issue_creator
@@ -62,11 +57,18 @@ echo "  LLM: ${LLM_BACKEND:-mock}"
 
 for agent in "${AGENTS[@]}"; do
     echo "  Starting $agent..."
-    agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
-        --colony triage \
-        $BACKEND_FLAG \
-        --tick-interval 60000 \
-        --enable-exec &
+    if [ -n "$LLM_BACKEND" ]; then
+        agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
+            --colony triage \
+            --backend "$LLM_BACKEND" \
+            --tick-interval 60000 \
+            --enable-exec &
+    else
+        agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
+            --colony triage \
+            --tick-interval 60000 \
+            --enable-exec &
+    fi
     sleep 2  # stagger starts to reduce API contention
 done
 
