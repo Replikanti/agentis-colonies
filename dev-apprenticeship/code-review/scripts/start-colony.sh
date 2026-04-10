@@ -8,7 +8,9 @@
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Resolve symlinks on $0 itself so the script works when invoked via a symlink.
+SCRIPT_PATH="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$0")"
+SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 COLONY_DIR="$(dirname "$SCRIPT_DIR")"
 CONFIG="${1:-$COLONY_DIR/config/colony.toml}"
 
@@ -18,30 +20,11 @@ if [ ! -f "$CONFIG" ]; then
     exit 1
 fi
 
-# Parse GitLab config from TOML and export for gitlab-api.sh
-# Accepts both flush ("key = ...") and indented ("  key = ...") TOML keys.
-# Preserves internal whitespace in values (only trims surrounding whitespace
-# and matching quotes). Stops at the first match and ignores inline comments.
-parse_toml() {
-    python3 - "$CONFIG" "$1" <<'PY'
-import sys
-path, key = sys.argv[1], sys.argv[2]
-with open(path, "r", encoding="utf-8") as f:
-    for raw in f:
-        line = raw.split("#", 1)[0].rstrip("\n")
-        stripped = line.lstrip()
-        if not stripped.startswith(key):
-            continue
-        rest = stripped[len(key):].lstrip()
-        if not rest.startswith("="):
-            continue
-        value = rest[1:].strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
-            value = value[1:-1]
-        print(value)
-        break
-PY
-}
+# Parse GitLab config from TOML via the shared helper.
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# shellcheck source=../../../tools/parse-toml.sh
+# shellcheck disable=SC1091  # colony-lint runs shellcheck without -x
+. "$REPO_ROOT/tools/parse-toml.sh"
 
 GITLAB_URL=$(parse_toml "url")
 GITLAB_TOKEN=$(parse_toml "token")
