@@ -99,7 +99,8 @@ case "$CMD" in
             echo '{"error": "--body is required"}' >&2
             exit 1
         fi
-        gl_post "$API/merge_requests/$IID/notes" "{\"body\":\"$BODY\"}"
+        JSON_BODY=$(printf '%s' "$BODY" | python3 -c 'import sys,json; print(json.dumps({"body": sys.stdin.read()}))')
+        gl_post "$API/merge_requests/$IID/notes" "$JSON_BODY"
         ;;
 
     approve)

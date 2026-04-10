@@ -4,7 +4,7 @@
 # Each agent runs as a separate agentis daemon process.
 # They discover each other via colony UDP and communicate over TCP emit/listen.
 #
-# Usage: ./scripts/start-colony.sh [--config path/to/colony.toml]
+# Usage: ./scripts/start-colony.sh [path/to/colony.toml]
 
 set -e
 
@@ -51,6 +51,8 @@ AGENTS=(
     test_reviewer
     approval_decider
 )
+
+cd "$COLONY_DIR"
 
 echo "Starting Code Review colony (${#AGENTS[@]} agents)..."
 echo "  GitLab: $GITLAB_URL ($GITLAB_PROJECT_RAW)"

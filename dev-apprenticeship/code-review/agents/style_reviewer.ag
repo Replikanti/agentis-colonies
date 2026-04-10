@@ -115,6 +115,7 @@ fn tick(reason: string) -> void {
         };
     } else {
         print("[style_reviewer] MR", mr_iid, ": clean");
+        emit("review:style_findings", review);
     };
 
     let now = try { exec shell "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
