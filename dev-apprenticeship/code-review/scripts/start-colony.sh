@@ -8,7 +8,9 @@
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Resolve symlinks on $0 itself so the script works when invoked via a symlink.
+SCRIPT_PATH="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$0")"
+SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 COLONY_DIR="$(dirname "$SCRIPT_DIR")"
 CONFIG="${1:-$COLONY_DIR/config/colony.toml}"
 
@@ -21,6 +23,7 @@ fi
 # Parse GitLab config from TOML via the shared helper.
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # shellcheck source=../../../tools/parse-toml.sh
+# shellcheck disable=SC1091  # colony-lint runs shellcheck without -x
 . "$REPO_ROOT/tools/parse-toml.sh"
 
 GITLAB_URL=$(parse_toml "url")
