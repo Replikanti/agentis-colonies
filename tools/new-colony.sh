@@ -98,8 +98,8 @@ token = "glpat-your-token-here"
 project = "your-org/your-project"
 
 [llm]
+# Only "backend" is read today. "cli" uses the agentis daemon default CLI adapter.
 backend = "cli"
-command = "claude"
 
 # Agent definitions
 # Each agent runs as a separate agentis daemon process.
