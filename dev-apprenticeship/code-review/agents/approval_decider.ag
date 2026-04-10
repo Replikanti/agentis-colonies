@@ -80,7 +80,7 @@ fn tick(reason: string) -> void {
         } else {
             if decision.action == "request_changes" {
                 let comment = "**Review Summary** (automated)\n\n" + decision.reasoning + "\n\nFindings: " + to_string(decision.total_findings) + " total, " + to_string(decision.critical_count) + " critical";
-                let post_cmd = "./scripts/gitlab-api.sh post-note " + to_string(decision.mr_iid) + " --body \"" + comment + "\"";
+                let post_cmd = "./scripts/gitlab-api.sh post-note " + to_string(decision.mr_iid) + " --body " + shell_escape(comment);
                 try { exec shell post_cmd; } catch e {
                     print("[approval_decider] Failed to post:", e);
                 };

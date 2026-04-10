@@ -102,7 +102,7 @@ fn tick(reason: string) -> void {
         if confidence >= 0.85 {
             // Post review comment directly
             let comment = "**Style Review** (automated)\n\n" + review.summary;
-            let post_cmd = "./scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body \"" + comment + "\"";
+            let post_cmd = "./scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment);
             let result = try { exec shell post_cmd; } catch e {
                 print("[style_reviewer] Failed to post comment:", e);
                 "";
