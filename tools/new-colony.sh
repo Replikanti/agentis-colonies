@@ -1,5 +1,5 @@
 #!/bin/bash
-# new-colony.sh — scaffold a new colony within a federation
+# new-colony.sh: scaffold a new colony within a federation
 #
 # Usage: ./tools/new-colony.sh <federation> <colony-name>
 # Example: ./tools/new-colony.sh dev-apprenticeship planning
@@ -172,8 +172,8 @@ echo ""
 echo "Colony scaffolded at $COL_PATH/"
 echo ""
 echo "Next steps:"
-echo "  1. Edit $COL_PATH/README.md — describe the colony and its agents"
-echo "  2. Edit $COL_PATH/config/colony.example.toml — add agent definitions"
-echo "  3. Edit $COL_PATH/scripts/start-colony.sh — add agent names to AGENTS array"
+echo "  1. Edit $COL_PATH/README.md to describe the colony and its agents"
+echo "  2. Edit $COL_PATH/config/colony.example.toml to add agent definitions"
+echo "  3. Edit $COL_PATH/scripts/start-colony.sh to add agent names to AGENTS array"
 echo "  4. Create .ag files in $COL_PATH/agents/"
-echo "  5. Update $FED_PATH/README.md — add the new colony to the table"
+echo "  5. Update $FED_PATH/README.md to add the new colony to the table"

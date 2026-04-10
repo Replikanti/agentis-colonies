@@ -2,11 +2,11 @@
 
 Open-source agent colonies built on the [Agentis](https://github.com/Replikanti/agentis) runtime.
 
-**Agentis** is a proprietary AI-native platform for agent emergence — it provides the runtime, language, evolution engine, and distributed infrastructure. **Colonies** (this repo) are open-source (Apache 2.0) configurations of agents that solve real-world problems using that runtime.
+**Agentis** is a proprietary AI-native platform for agent emergence. It provides the runtime, language, evolution engine, and distributed infrastructure. **Colonies** (this repo) are open-source (Apache 2.0) configurations of agents that solve real-world problems using that runtime.
 
 ## Colonies and Federations
 
-A **colony** is a group of specialized agents that collaborate on a single domain. Agents within a colony share context, budget, and evolutionary pressure — they are a team, not a collection of individuals.
+A **colony** is a group of specialized agents that collaborate on a single domain. Agents within a colony share context, budget, and evolutionary pressure. They are a team, not a collection of individuals.
 
 A **federation** is a system of colonies that work together to cover a complete workflow. Each colony handles its domain, and the federation coordinates across them.
 
@@ -38,7 +38,7 @@ graph TD
 
 | Federation | Description | Status |
 |------------|-------------|--------|
-| [dev-apprenticeship](./dev-apprenticeship/) | Learns a developer's complete workflow — code review, planning, implementation, triage, and release | Active |
+| [dev-apprenticeship](./dev-apprenticeship/) | Learns a developer's complete workflow: code review, planning, implementation, triage, and release | Active |
 
 ## Prerequisites
 
@@ -48,6 +48,6 @@ graph TD
 
 ## License
 
-Apache 2.0 — see [LICENSE](./LICENSE).
+Apache 2.0. See [LICENSE](./LICENSE).
 
 Agentis runtime is proprietary software by [Replikanti](https://github.com/Replikanti).
