@@ -144,6 +144,9 @@ if errors:
                     shellcheck "${sh_files[@]}" 2>&1 | head -30
                 fi
             else
+                # CI installs shellcheck unconditionally (see .github/workflows/ci.yml),
+                # so this skip only applies to local runs without shellcheck installed.
+                # Shellcheck errors in CI always fail the run via the FAIL counter below.
                 skip "$prefix: shellcheck not installed"
             fi
         fi

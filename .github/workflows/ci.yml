@@ -12,8 +12,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install shellcheck
-        run: sudo apt-get install -y shellcheck
+      - name: Install shellcheck (required by colony-lint)
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
 
       - name: Run colony-lint
         run: ./tools/colony-lint.sh
