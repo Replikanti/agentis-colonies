@@ -2,7 +2,7 @@
 
 > Part of the [Dev Apprenticeship](../) federation.
 
-A colony of four agents that learn how you ship software. They observe your release decisions, changelog writing, versioning, and pre-release checks on GitLab — and gradually automate the routine parts of the release process.
+A colony of four agents that learn how you ship software. They observe your release decisions, changelog writing, versioning, and pre-release checks on GitLab, and gradually automate the routine parts of the release process.
 
 ## Agents
 
@@ -36,7 +36,7 @@ graph LR
     VB -- version tag --> GL
 ```
 
-When a release candidate is ready, the Release Checker runs pre-release validation (CI status, dependency audit, migration safety). The Ship Decider weighs the results against learned thresholds and makes a ship/no-ship call. If shipping, the Changelog Writer compiles the release notes and the Version Bumper determines the correct version number — both following conventions learned from past releases.
+When a release candidate is ready, the Release Checker runs pre-release validation (CI status, dependency audit, migration safety). The Ship Decider weighs the results against learned thresholds and makes a ship/no-ship call. If shipping, the Changelog Writer compiles the release notes and the Version Bumper determines the correct version number, both following conventions learned from past releases.
 
 ## Setup
 

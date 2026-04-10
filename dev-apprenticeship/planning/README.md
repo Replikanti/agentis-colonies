@@ -2,7 +2,7 @@
 
 > Part of the [Dev Apprenticeship](../) federation.
 
-A colony of four agents that learn how you plan work. They observe how you break down issues, estimate scope, assess risks, and review plans on GitLab — and gradually take over the routine parts of planning.
+A colony of four agents that learn how you plan work. They observe how you break down issues, estimate scope, assess risks, and review plans on GitLab, and gradually take over the routine parts of planning.
 
 ## Agents
 
