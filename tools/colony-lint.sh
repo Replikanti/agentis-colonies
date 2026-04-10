@@ -220,7 +220,7 @@ if command -v agentis &>/dev/null; then
 
             if [ ${#ag_files[@]} -gt 0 ]; then
                 for ag in "${ag_files[@]}"; do
-                    if agentis go --dry-run "$ag" &>/dev/null; then
+                    if agentis commit "$ag" &>/dev/null; then
                         pass "$fed/$colony: $(basename "$ag") syntax OK"
                     else
                         fail "$fed/$colony: $(basename "$ag") syntax error"

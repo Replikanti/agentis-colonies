@@ -1,0 +1,114 @@
+// router.ag -- Triage colony: learns how you assign issues.
+//
+// Observes assignee patterns on GitLab issues, learns expertise
+// mapping, and gradually routes issues to the right people.
+//
+// Run as daemon: agentis daemon agents/router.ag --colony triage
+// Requires: exec_foreign capability, GITLAB_* env vars
+
+cb 400;
+
+type RoutingAnalysis {
+    assigned_count: int,
+    unassigned_count: int,
+    patterns: string,
+    unassigned_issues: string
+}
+
+type RouteAction {
+    issue_id: int,
+    assignee: string,
+    reasoning: string,
+    confidence: float
+}
+
+fn issues_cmd() -> string {
+    let ts = recall_latest("router:last_check");
+    if len(ts) > 0 {
+        return "./scripts/gitlab-api.sh issues --since " + ts;
+    };
+    return "./scripts/gitlab-api.sh issues";
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("router:confidence");
+    if len(raw) > 0 {
+        return prompt("Return this number as a decimal. Nothing else.", raw) -> float;
+    };
+    return 0.0;
+}
+
+fn tick(reason: string) -> void {
+    let cmd = issues_cmd();
+    let raw = try {
+        exec shell cmd;
+    } catch e {
+        print("[router] GitLab poll failed:", e);
+        "";
+    };
+
+    if len(raw) < 3 {
+        return;
+    };
+
+    // Get team members
+    let members_raw = try { exec shell "./scripts/gitlab-api.sh members"; } catch e { "[]"; };
+
+    // Analyze: find assigned and unassigned issues
+    let analysis = prompt(
+        "Analyze this GitLab issues JSON. Count issues with assignees (assigned_count) and without (unassigned_count). Summarize who gets assigned what types of issues (patterns). List unassigned issue IDs, titles, labels (unassigned_issues). Return JSON: assigned_count (int), unassigned_count (int), patterns (string), unassigned_issues (string).",
+        raw
+    ) -> RoutingAnalysis;
+
+    if analysis.assigned_count > 0 {
+        learn(
+            "route",
+            "batch of " + to_string(analysis.assigned_count) + " assigned issues",
+            analysis.patterns,
+            "observed",
+            "triage"
+        );
+        print("[router] Observed", analysis.assigned_count, "assignment patterns");
+    };
+
+    // Suggest/apply routing for unassigned issues
+    if analysis.unassigned_count > 0 {
+        let confidence = get_confidence();
+        let rec = recommend("route", ["accuracy"]);
+        let context = "Unassigned issues: " + analysis.unassigned_issues + "\nTeam members: " + members_raw + "\nPast learning: " + to_string(rec);
+
+        let action = prompt(
+            "You are a routing agent. Suggest who should be assigned to the most important unassigned issue based on team expertise. Return JSON: issue_id (int), assignee (string, username), reasoning (string), confidence (float 0-1).",
+            context
+        ) -> RouteAction;
+
+        if confidence >= 0.85 {
+            let update_cmd = "./scripts/gitlab-api.sh update-issue " + to_string(action.issue_id) + " --assignee \"" + action.assignee + "\"";
+            let result = try { exec shell update_cmd; } catch e {
+                print("[router] Failed to assign:", e);
+                "";
+            };
+            if len(result) > 0 {
+                print("[router] Assigned issue", action.issue_id, "to", action.assignee);
+                learn("route", "issue " + to_string(action.issue_id), action.assignee, "acted", "triage");
+            };
+        } else {
+            if confidence >= 0.6 {
+                print("[router] Suggesting assignee for issue", action.issue_id, ":", action.assignee);
+                emit("triage:route_suggestion", action);
+            } else {
+                print("[router] Observing (confidence:", confidence, ")");
+            };
+        };
+    };
+
+    let new_issue = listen("triage:new_issue", 100);
+    if len(to_string(new_issue)) > 5 {
+        print("[router] Received new issue draft, will route on next tick");
+    };
+
+    let now = try { exec shell "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("router:last_check", now);
+    };
+}

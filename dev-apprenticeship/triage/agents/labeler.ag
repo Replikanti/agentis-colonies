@@ -1,0 +1,112 @@
+// labeler.ag -- Triage colony: learns how you label issues.
+//
+// Observes label changes on GitLab issues, learns which content
+// maps to which labels, and gradually applies labels autonomously.
+//
+// Run as daemon: agentis daemon agents/labeler.ag --colony triage
+// Requires: exec_foreign capability, GITLAB_* env vars
+
+cb 400;
+
+type LabelAnalysis {
+    labeled_count: int,
+    unlabeled_count: int,
+    patterns: string,
+    unlabeled_issues: string
+}
+
+type LabelAction {
+    issue_id: int,
+    labels: string,
+    reasoning: string,
+    confidence: float
+}
+
+fn issues_cmd() -> string {
+    let ts = recall_latest("labeler:last_check");
+    if len(ts) > 0 {
+        return "./scripts/gitlab-api.sh issues --since " + ts;
+    };
+    return "./scripts/gitlab-api.sh issues";
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("labeler:confidence");
+    if len(raw) > 0 {
+        return prompt("Return this number as a decimal. Nothing else.", raw) -> float;
+    };
+    return 0.0;
+}
+
+fn tick(reason: string) -> void {
+    let cmd = issues_cmd();
+    let raw = try {
+        exec shell cmd;
+    } catch e {
+        print("[labeler] GitLab poll failed:", e);
+        "";
+    };
+
+    if len(raw) < 3 {
+        return;
+    };
+
+    // Analyze: find labeled and unlabeled issues
+    let analysis = prompt(
+        "Analyze this GitLab issues JSON. Count issues with labels (labeled_count) and without (unlabeled_count). Summarize labeling patterns (patterns). For unlabeled issues list their IDs and titles (unlabeled_issues). Return JSON: labeled_count (int), unlabeled_count (int), patterns (string), unlabeled_issues (string).",
+        raw
+    ) -> LabelAnalysis;
+
+    if analysis.labeled_count > 0 {
+        learn(
+            "label",
+            "batch of " + to_string(analysis.labeled_count) + " labeled issues",
+            analysis.patterns,
+            "observed",
+            "triage"
+        );
+        print("[labeler] Observed", analysis.labeled_count, "labeled issues");
+    };
+
+    // Suggest/apply labels for unlabeled issues
+    if analysis.unlabeled_count > 0 {
+        let confidence = get_confidence();
+        let rec = recommend("label", ["accuracy"]);
+        let labels_raw = try { exec shell "./scripts/gitlab-api.sh labels"; } catch e { "[]"; };
+        let context = "Unlabeled issues: " + analysis.unlabeled_issues + "\nAvailable labels: " + labels_raw + "\nPast learning: " + to_string(rec);
+
+        let action = prompt(
+            "You are a labeling agent. Suggest labels for the most important unlabeled issue. Return JSON: issue_id (int), labels (comma-separated string), reasoning (string), confidence (float 0-1).",
+            context
+        ) -> LabelAction;
+
+        if confidence >= 0.85 {
+            let update_cmd = "./scripts/gitlab-api.sh update-issue " + to_string(action.issue_id) + " --add-labels \"" + action.labels + "\"";
+            let result = try { exec shell update_cmd; } catch e {
+                print("[labeler] Failed to apply labels:", e);
+                "";
+            };
+            if len(result) > 0 {
+                print("[labeler] Applied labels to issue", action.issue_id, ":", action.labels);
+                learn("label", "issue " + to_string(action.issue_id), action.labels, "acted", "triage");
+            };
+        } else {
+            if confidence >= 0.6 {
+                print("[labeler] Suggesting labels for issue", action.issue_id, ":", action.labels);
+                emit("triage:label_suggestion", action);
+            } else {
+                print("[labeler] Observing (confidence:", confidence, ")");
+            };
+        };
+    };
+
+    let new_issue = listen("triage:new_issue", 100);
+    if len(to_string(new_issue)) > 5 {
+        print("[labeler] Received new issue draft, will label on next tick");
+    };
+
+    let now = try { exec shell "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("labeler:last_check", now);
+    };
+}
