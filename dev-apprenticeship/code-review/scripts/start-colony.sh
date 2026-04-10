@@ -26,9 +26,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # shellcheck disable=SC1091  # colony-lint runs shellcheck without -x
 . "$REPO_ROOT/tools/parse-toml.sh"
 
-GITLAB_URL=$(parse_toml "url")
-GITLAB_TOKEN=$(parse_toml "token")
-GITLAB_PROJECT_RAW=$(parse_toml "project")
+GITLAB_URL=$(parse_toml gitlab url)
+GITLAB_TOKEN=$(parse_toml gitlab token)
+GITLAB_PROJECT_RAW=$(parse_toml gitlab project)
 
 if [ -z "$GITLAB_URL" ] || [ -z "$GITLAB_TOKEN" ] || [ -z "$GITLAB_PROJECT_RAW" ]; then
     echo "Error: GitLab config incomplete in $CONFIG"
@@ -45,7 +45,7 @@ export GITLAB_PROJECT
 export COLONY_DIR
 
 # Parse LLM backend
-LLM_BACKEND=$(parse_toml "backend")
+LLM_BACKEND=$(parse_toml llm backend)
 
 AGENTS=(
     style_reviewer
