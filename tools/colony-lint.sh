@@ -1,5 +1,5 @@
 #!/bin/bash
-# colony-lint.sh — validates colony structure, config, and scripts
+# colony-lint.sh: validates colony structure, config, and scripts
 #
 # Autodiscovers federations and colonies in the repo.
 # Exit code 0 = all checks pass, 1 = one or more failures.
