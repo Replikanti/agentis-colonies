@@ -1,0 +1,114 @@
+// logic_reviewer.ag -- Code Review colony: finds logic bugs.
+//
+// Observes how you catch edge cases, off-by-one errors, null handling,
+// race conditions, and incorrect assumptions in MR reviews.
+//
+// Run as daemon: agentis daemon agents/logic_reviewer.ag --colony code-review
+// Requires: exec_foreign capability, GITLAB_* env vars
+
+cb 1000;
+
+type LogicFinding {
+    file: string,
+    issue: string,
+    severity: string,
+    explanation: string
+}
+
+type LogicReview {
+    mr_iid: int,
+    findings: list<LogicFinding>,
+    summary: string
+}
+
+fn mr_cmd() -> string {
+    let ts = recall_latest("logic_reviewer:last_check");
+    if len(ts) > 0 {
+        return "./scripts/gitlab-api.sh merge-requests --since " + ts;
+    };
+    return "./scripts/gitlab-api.sh merge-requests";
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("logic_reviewer:confidence");
+    if len(raw) > 0 {
+        return prompt("Return this number as a decimal. Nothing else.", raw) -> float;
+    };
+    return 0.0;
+}
+
+fn tick(reason: string) -> void {
+    let cmd = mr_cmd();
+    let raw = try {
+        exec shell cmd;
+    } catch e {
+        print("[logic_reviewer] GitLab poll failed:", e);
+        "";
+    };
+
+    if len(raw) < 3 {
+        return;
+    };
+
+    let mr_ids = prompt(
+        "Extract all merge request IIDs from this GitLab JSON array. Only opened MRs. Return JSON array of integers.",
+        raw
+    ) -> list<int>;
+
+    if len(mr_ids) < 1 {
+        return;
+    };
+
+    let mr_iid = get(mr_ids, 0);
+    let changes_cmd = "./scripts/gitlab-api.sh mr-changes " + to_string(mr_iid);
+    let changes_raw = try { exec shell changes_cmd; } catch e { ""; };
+
+    if len(changes_raw) < 10 {
+        return;
+    };
+
+    // Learn from human logic-related comments
+    let notes_cmd = "./scripts/gitlab-api.sh mr-notes " + to_string(mr_iid);
+    let notes_raw = try { exec shell notes_cmd; } catch e { "[]"; };
+
+    let human_patterns = prompt(
+        "Analyze these MR review comments. Find comments about logic bugs: edge cases, off-by-one, null/nil handling, race conditions, incorrect assumptions, missing error handling. Summarize the patterns. If no logic-related comments, return 'none'.",
+        notes_raw
+    ) -> string;
+
+    if len(human_patterns) > 5 {
+        learn("logic_review", "MR " + to_string(mr_iid), human_patterns, "observed", "code-review");
+    };
+
+    // Perform logic review
+    let rec = recommend("logic_review", ["accuracy"]);
+    let context = "MR diff:\n" + changes_raw + "\n\nLearned patterns: " + to_string(rec);
+
+    let review = prompt(
+        "You are a logic reviewer. Analyze this merge request diff for logic bugs: off-by-one errors, null/nil dereferences, unhandled edge cases, race conditions, incorrect boundary checks, resource leaks, wrong operator usage. Focus only on correctness, not style. Return JSON: mr_iid (int), findings (array with file, issue, severity, explanation), summary (string). If clean, return empty findings.",
+        context
+    ) -> LogicReview;
+
+    let confidence = get_confidence();
+
+    if len(review.findings) > 0 {
+        emit("review:logic_findings", review);
+        print("[logic_reviewer] MR", mr_iid, ":", len(review.findings), "logic findings");
+
+        if confidence >= 0.85 {
+            let comment = "**Logic Review** (automated)\n\n" + review.summary;
+            let post_cmd = "./scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment);
+            try { exec shell post_cmd; } catch e {
+                print("[logic_reviewer] Failed to post comment:", e);
+            };
+        };
+    } else {
+        print("[logic_reviewer] MR", mr_iid, ": clean");
+        emit("review:logic_findings", review);
+    };
+
+    let now = try { exec shell "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("logic_reviewer:last_check", now);
+    };
+}

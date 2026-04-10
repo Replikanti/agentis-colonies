@@ -205,10 +205,16 @@ if [ -f "$REPO_ROOT/README.md" ]; then
 fi
 
 # --- Agentis validation (optional) ---
+# `agentis commit` requires an .agentis/ directory in CWD, so we init a temp
+# repo once and run all commits from inside it.
 if command -v agentis &>/dev/null; then
     agentis_version=$(agentis version 2>/dev/null || echo "unknown")
     echo ""
     echo "Agentis found: $agentis_version"
+    lint_tmp=$(mktemp -d)
+    trap 'rm -rf "$lint_tmp"' EXIT
+    (cd "$lint_tmp" && agentis init &>/dev/null) || true
+
     for fed in "${federations[@]}"; do
         for dir in "$REPO_ROOT/$fed"/*/; do
             [ -d "$dir/config" ] || continue
@@ -220,7 +226,7 @@ if command -v agentis &>/dev/null; then
 
             if [ ${#ag_files[@]} -gt 0 ]; then
                 for ag in "${ag_files[@]}"; do
-                    if agentis commit "$ag" &>/dev/null; then
+                    if (cd "$lint_tmp" && agentis commit "$ag") &>/dev/null; then
                         pass "$fed/$colony: $(basename "$ag") syntax OK"
                     else
                         fail "$fed/$colony: $(basename "$ag") syntax error"

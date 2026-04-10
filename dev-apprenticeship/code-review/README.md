@@ -70,23 +70,9 @@ When a new merge request appears, all four reviewers analyze it in parallel, eac
 
 ## Providing Feedback
 
-The colony learns from your feedback. Two mechanisms:
+For now, the colony learns passively by watching your existing GitLab review comments — the agents call `learn()` with patterns extracted from human review notes on merge requests. Just keep reviewing code the way you normally do.
 
-### File drop
-```bash
-# Approve a finding
-echo '{"action": "approve", "finding": "missing-nil-check", "outcome": "real"}' \
-  > .agentis/inbox/logic_reviewer/$(date +%s).json
-
-# Dismiss a false positive
-echo '{"action": "dismiss", "finding": "sql-injection-ar-scope", "outcome": "false_positive"}' \
-  > .agentis/inbox/security_reviewer/$(date +%s).json
-```
-
-### CLI
-```bash
-agentis colony send logic_reviewer human_verdict '{"action": "approve", "finding": "missing-nil-check"}'
-```
+An explicit feedback channel (for approving or dismissing individual findings) is planned for a future version.
 
 ## Monitoring
 

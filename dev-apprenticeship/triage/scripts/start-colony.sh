@@ -19,8 +19,9 @@ if [ ! -f "$CONFIG" ]; then
 fi
 
 # Parse GitLab config from TOML and export for gitlab-api.sh
+# Accepts both flush ("key = ...") and indented ("  key = ...") TOML keys.
 parse_toml() {
-    grep "^$1 " "$CONFIG" 2>/dev/null | head -1 | sed 's/.*= *"\{0,1\}\([^"]*\)"\{0,1\}/\1/' | tr -d ' '
+    grep -E "^[[:space:]]*$1[[:space:]]*=" "$CONFIG" 2>/dev/null | head -1 | sed 's/.*= *"\{0,1\}\([^"]*\)"\{0,1\}/\1/' | tr -d ' '
 }
 
 GITLAB_URL=$(parse_toml "url")

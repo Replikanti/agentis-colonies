@@ -1,0 +1,115 @@
+// security_reviewer.ag -- Code Review colony: finds security issues.
+//
+// Observes how you flag injection risks, auth gaps, secret exposure,
+// and dependency vulnerabilities in MR reviews.
+//
+// Run as daemon: agentis daemon agents/security_reviewer.ag --colony code-review
+// Requires: exec_foreign capability, GITLAB_* env vars
+
+cb 800;
+
+type SecurityFinding {
+    file: string,
+    issue: string,
+    severity: string,
+    cwe: string,
+    remediation: string
+}
+
+type SecurityReview {
+    mr_iid: int,
+    findings: list<SecurityFinding>,
+    summary: string
+}
+
+fn mr_cmd() -> string {
+    let ts = recall_latest("security_reviewer:last_check");
+    if len(ts) > 0 {
+        return "./scripts/gitlab-api.sh merge-requests --since " + ts;
+    };
+    return "./scripts/gitlab-api.sh merge-requests";
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("security_reviewer:confidence");
+    if len(raw) > 0 {
+        return prompt("Return this number as a decimal. Nothing else.", raw) -> float;
+    };
+    return 0.0;
+}
+
+fn tick(reason: string) -> void {
+    let cmd = mr_cmd();
+    let raw = try {
+        exec shell cmd;
+    } catch e {
+        print("[security_reviewer] GitLab poll failed:", e);
+        "";
+    };
+
+    if len(raw) < 3 {
+        return;
+    };
+
+    let mr_ids = prompt(
+        "Extract all merge request IIDs from this GitLab JSON array. Only opened MRs. Return JSON array of integers.",
+        raw
+    ) -> list<int>;
+
+    if len(mr_ids) < 1 {
+        return;
+    };
+
+    let mr_iid = get(mr_ids, 0);
+    let changes_cmd = "./scripts/gitlab-api.sh mr-changes " + to_string(mr_iid);
+    let changes_raw = try { exec shell changes_cmd; } catch e { ""; };
+
+    if len(changes_raw) < 10 {
+        return;
+    };
+
+    // Learn from human security-related comments
+    let notes_cmd = "./scripts/gitlab-api.sh mr-notes " + to_string(mr_iid);
+    let notes_raw = try { exec shell notes_cmd; } catch e { "[]"; };
+
+    let human_patterns = prompt(
+        "Analyze these MR review comments. Find comments about security: injection, XSS, CSRF, auth, secrets, credentials, dependencies, permissions, input validation. Summarize. If none, return 'none'.",
+        notes_raw
+    ) -> string;
+
+    if len(human_patterns) > 5 {
+        learn("security_review", "MR " + to_string(mr_iid), human_patterns, "observed", "code-review");
+    };
+
+    // Perform security review
+    let rec = recommend("security_review", ["accuracy"]);
+    let context = "MR diff:\n" + changes_raw + "\n\nLearned patterns: " + to_string(rec);
+
+    let review = prompt(
+        "You are a security reviewer. Analyze this merge request diff for security vulnerabilities: SQL/command injection, XSS, CSRF, hardcoded secrets, insecure auth, path traversal, SSRF, insecure deserialization, dependency issues. Include CWE IDs where applicable. Return JSON: mr_iid (int), findings (array with file, issue, severity, cwe, remediation), summary (string). If clean, return empty findings.",
+        context
+    ) -> SecurityReview;
+
+    let confidence = get_confidence();
+
+    if len(review.findings) > 0 {
+        emit("review:security_findings", review);
+        print("[security_reviewer] MR", mr_iid, ":", len(review.findings), "security findings");
+
+        if confidence >= 0.85 {
+            let comment = "**Security Review** (automated)\n\n" + review.summary;
+            let post_cmd = "./scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment);
+            try { exec shell post_cmd; } catch e {
+                print("[security_reviewer] Failed to post comment:", e);
+            };
+        };
+    } else {
+        print("[security_reviewer] MR", mr_iid, ": clean");
+        emit("review:security_findings", review);
+    };
+
+    let now = try { exec shell "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("security_reviewer:last_check", now);
+    };
+}
