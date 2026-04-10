@@ -1,0 +1,113 @@
+// risk_assessor.ag -- Planning colony: identifies delivery risks.
+//
+// Observes what historically blocks delivery: dependency problems,
+// integration gaps, unclear requirements, scope creep signals.
+//
+// Run as daemon: agentis daemon agents/risk_assessor.ag --colony planning
+// Requires: exec_foreign capability, GITLAB_* env vars
+
+cb 600;
+
+type Risk {
+    category: string,
+    description: string,
+    severity: string,
+    mitigation: string
+}
+
+type RiskAssessment {
+    issue_iid: int,
+    risks: list<Risk>,
+    overall_level: string,
+    summary: string
+}
+
+fn issues_cmd() -> string {
+    let ts = recall_latest("risk_assessor:last_check");
+    if len(ts) > 0 {
+        return "./scripts/gitlab-api.sh issues --since " + ts;
+    };
+    return "./scripts/gitlab-api.sh issues";
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("risk_assessor:confidence");
+    if len(raw) > 0 {
+        return prompt("Return this number as a decimal. Nothing else.", raw) -> float;
+    };
+    return 0.0;
+}
+
+fn tick(reason: string) -> void {
+    let cmd = issues_cmd();
+    let raw = try {
+        exec shell cmd;
+    } catch e {
+        print("[risk_assessor] GitLab poll failed:", e);
+        "";
+    };
+
+    if len(raw) < 3 {
+        return;
+    };
+
+    let issue_ids = prompt(
+        "Extract all issue IIDs from this GitLab JSON array. Only opened issues that look like they need planning. Return JSON array of integers.",
+        raw
+    ) -> list<int>;
+
+    if len(issue_ids) < 1 {
+        return;
+    };
+
+    let issue_iid = get(issue_ids, 0);
+    let detail_cmd = "./scripts/gitlab-api.sh issue " + to_string(issue_iid);
+    let detail_raw = try { exec shell detail_cmd; } catch e { ""; };
+
+    if len(detail_raw) < 10 {
+        return;
+    };
+
+    // Learn from human risk-related discussion on issues
+    let notes_cmd = "./scripts/gitlab-api.sh issue-notes " + to_string(issue_iid);
+    let notes_raw = try { exec shell notes_cmd; } catch e { "[]"; };
+
+    let human_patterns = prompt(
+        "Analyze these issue comments. Find discussions about risks: blocked, waiting on, unclear, depends on, breaking change, migration, data loss, regression, rollback, compliance. Summarize patterns. If none, return 'none'.",
+        notes_raw
+    ) -> string;
+
+    if len(human_patterns) > 5 {
+        learn("risk_assessment", "issue " + to_string(issue_iid), human_patterns, "observed", "planning");
+    };
+
+    // Produce a risk assessment
+    let rec = recommend("risk_assessment", ["safety", "accuracy"]);
+    let context = "Issue JSON:\n" + detail_raw + "\n\nLearned risk patterns: " + to_string(rec);
+
+    let assessment = prompt(
+        "You are a risk assessor. Analyze this issue for delivery risks. Categories: dependency (blocked by another issue or external team), integration (touches sensitive/shared code), requirements (unclear or contradictory), scope (creep potential), operational (migration, data, rollback). severity is 'low', 'medium', or 'high'. overall_level aggregates the highest. Return JSON: issue_iid (int), risks (array of {category, description, severity, mitigation}), overall_level (string), summary (string). If truly low-risk, return an empty risks array and overall_level 'low'.",
+        context
+    ) -> RiskAssessment;
+
+    let confidence = get_confidence();
+
+    emit("plan:risk_assessment", assessment);
+    print("[risk_assessor] issue", issue_iid, ":", len(assessment.risks), "risks, level:", assessment.overall_level);
+
+    if confidence >= 0.85 {
+        if len(assessment.risks) > 0 {
+            let body = "**Risk Assessment** (automated)\n\nOverall: " + assessment.overall_level + "\n\n" + assessment.summary;
+            let post_cmd = "./scripts/gitlab-api.sh post-note " + to_string(issue_iid) + " --body " + shell_escape(body);
+            try { exec shell post_cmd; } catch e {
+                print("[risk_assessor] Failed to post:", e);
+            };
+            learn("risk_assessment", "posted on issue " + to_string(issue_iid), assessment.summary, "acted", "planning");
+        };
+    };
+
+    let now = try { exec shell "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("risk_assessor:last_check", now);
+    };
+}

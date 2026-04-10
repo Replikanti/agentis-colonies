@@ -1,0 +1,111 @@
+// task_decomposer.ag -- Planning colony: breaks issues into subtasks.
+//
+// Observes how you split issues into implementable pieces, learns
+// your granularity preferences, ordering, and boundary choices.
+//
+// Run as daemon: agentis daemon agents/task_decomposer.ag --colony planning
+// Requires: exec_foreign capability, GITLAB_* env vars
+
+cb 1000;
+
+type Subtask {
+    title: string,
+    description: string,
+    depends_on: list<string>,
+    effort: string
+}
+
+type Decomposition {
+    issue_iid: int,
+    subtasks: list<Subtask>,
+    order: string,
+    summary: string
+}
+
+fn issues_cmd() -> string {
+    let ts = recall_latest("task_decomposer:last_check");
+    if len(ts) > 0 {
+        return "./scripts/gitlab-api.sh issues --since " + ts;
+    };
+    return "./scripts/gitlab-api.sh issues";
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("task_decomposer:confidence");
+    if len(raw) > 0 {
+        return prompt("Return this number as a decimal. Nothing else.", raw) -> float;
+    };
+    return 0.0;
+}
+
+fn tick(reason: string) -> void {
+    let cmd = issues_cmd();
+    let raw = try {
+        exec shell cmd;
+    } catch e {
+        print("[task_decomposer] GitLab poll failed:", e);
+        "";
+    };
+
+    if len(raw) < 3 {
+        return;
+    };
+
+    let issue_ids = prompt(
+        "Extract all issue IIDs from this GitLab JSON array. Only opened issues that look like they need decomposition into subtasks. Return JSON array of integers.",
+        raw
+    ) -> list<int>;
+
+    if len(issue_ids) < 1 {
+        return;
+    };
+
+    let issue_iid = get(issue_ids, 0);
+    let detail_cmd = "./scripts/gitlab-api.sh issue " + to_string(issue_iid);
+    let detail_raw = try { exec shell detail_cmd; } catch e { ""; };
+
+    if len(detail_raw) < 10 {
+        return;
+    };
+
+    // Learn from past human decomposition work on issues
+    let notes_cmd = "./scripts/gitlab-api.sh issue-notes " + to_string(issue_iid);
+    let notes_raw = try { exec shell notes_cmd; } catch e { "[]"; };
+
+    let human_patterns = prompt(
+        "Analyze these issue comments. Find how humans broke the work into pieces: subtask lists, checkboxes, 'first X then Y', phase breakdowns, step enumerations, granularity preferences. Summarize. If none, return 'none'.",
+        notes_raw
+    ) -> string;
+
+    if len(human_patterns) > 5 {
+        learn("task_decomposition", "issue " + to_string(issue_iid), human_patterns, "observed", "planning");
+    };
+
+    // Produce a decomposition
+    let rec = recommend("task_decomposition", ["accuracy", "granularity"]);
+    let context = "Issue JSON:\n" + detail_raw + "\n\nLearned decomposition style: " + to_string(rec);
+
+    let decomposition = prompt(
+        "You are a task decomposer. Break this issue into implementable subtasks. Each subtask should be ~1 day of work or less. Use depends_on to express ordering (each entry is another subtask title). order is 'parallel' (subtasks independent) or 'sequential' (strict order required) or 'mixed'. effort is 'small', 'medium', or 'large'. Return JSON: issue_iid (int), subtasks (array of {title, description, depends_on, effort}), order (string), summary (string).",
+        context
+    ) -> Decomposition;
+
+    let confidence = get_confidence();
+
+    emit("plan:decomposition", decomposition);
+    print("[task_decomposer] issue", issue_iid, ":", len(decomposition.subtasks), "subtasks,", decomposition.order);
+
+    if confidence >= 0.85 {
+        let body = "**Task Decomposition** (automated)\n\n" + decomposition.summary + "\n\nOrder: " + decomposition.order + " (" + to_string(len(decomposition.subtasks)) + " subtasks)";
+        let post_cmd = "./scripts/gitlab-api.sh post-note " + to_string(issue_iid) + " --body " + shell_escape(body);
+        try { exec shell post_cmd; } catch e {
+            print("[task_decomposer] Failed to post:", e);
+        };
+        learn("task_decomposition", "posted on issue " + to_string(issue_iid), decomposition.summary, "acted", "planning");
+    };
+
+    let now = try { exec shell "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("task_decomposer:last_check", now);
+    };
+}

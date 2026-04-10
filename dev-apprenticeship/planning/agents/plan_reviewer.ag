@@ -1,0 +1,91 @@
+// plan_reviewer.ag -- Planning colony: aggregates and reviews plans.
+//
+// Listens for scope estimates, risk assessments, and decompositions
+// from the other three planners. Combines them into a unified plan,
+// checks it against learned standards, and decides whether to publish
+// it or escalate for human review.
+//
+// Run as daemon: agentis daemon agents/plan_reviewer.ag --colony planning
+// Requires: exec_foreign capability, GITLAB_* env vars
+
+cb 800;
+
+type PlanDecision {
+    issue_iid: int,
+    action: string,
+    plan_body: string,
+    rationale: string
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("plan_reviewer:confidence");
+    if len(raw) > 0 {
+        return prompt("Return this number as a decimal. Nothing else.", raw) -> float;
+    };
+    return 0.0;
+}
+
+fn tick(reason: string) -> void {
+    // Collect inputs from the three planners
+    let scope = listen("plan:scope_estimate", 500);
+    let risks = listen("plan:risk_assessment", 500);
+    let decomp = listen("plan:decomposition", 500);
+
+    let scope_str = to_string(scope);
+    let risks_str = to_string(risks);
+    let decomp_str = to_string(decomp);
+
+    // Only proceed if at least one planner reported
+    let total_len = len(scope_str) + len(risks_str) + len(decomp_str);
+    if total_len < 24 {
+        return;
+    };
+
+    // Learn from how humans historically structure final plans
+    let recent_cmd = "./scripts/gitlab-api.sh issues --state closed";
+    let recent_closed = try { exec shell recent_cmd; } catch e { "[]"; };
+
+    let plan_patterns = prompt(
+        "Analyze these recently closed issues. What does a good final plan look like in this project? What sections, what level of detail, what gets rejected? Summarize briefly.",
+        recent_closed
+    ) -> string;
+
+    if len(plan_patterns) > 10 {
+        learn("plan_review", "closed issues batch", plan_patterns, "observed", "planning");
+    };
+
+    // Assemble and review the combined plan
+    let rec = recommend("plan_review", ["quality", "completeness"]);
+    let all_inputs = "Scope estimate: " + scope_str + "\n\nRisk assessment: " + risks_str + "\n\nDecomposition: " + decomp_str + "\n\nLearned review standards: " + to_string(rec);
+
+    let decision = prompt(
+        "You are a plan reviewer. Combine the scope, risks, and decomposition into a single actionable plan. Judge its quality against the learned standards. Rules: large scope with high risk and no decomposition = escalate. Medium or small scope with decomposition present = publish. Anything missing or contradictory = escalate. Return JSON: issue_iid (int, from the inputs), action (string: 'publish', 'escalate', or 'revise'), plan_body (string, the full markdown plan), rationale (string). The plan_body should be ready to post as-is.",
+        all_inputs
+    ) -> PlanDecision;
+
+    let confidence = get_confidence();
+
+    print("[plan_reviewer] issue", decision.issue_iid, "-> action:", decision.action);
+
+    if confidence >= 0.85 {
+        if decision.action == "publish" {
+            let body = "**Plan** (automated)\n\n" + decision.plan_body;
+            let post_cmd = "./scripts/gitlab-api.sh post-note " + to_string(decision.issue_iid) + " --body " + shell_escape(body);
+            try { exec shell post_cmd; } catch e {
+                print("[plan_reviewer] Failed to post:", e);
+            };
+            print("[plan_reviewer] Published plan for issue", decision.issue_iid);
+            learn("plan_review", "issue " + to_string(decision.issue_iid), "published: " + decision.rationale, "acted", "planning");
+        } else {
+            print("[plan_reviewer] Escalating issue", decision.issue_iid, "to human:", decision.action);
+            emit("plan:escalation", decision);
+        };
+    } else {
+        if confidence >= 0.6 {
+            print("[plan_reviewer] Suggesting:", decision.action, "for issue", decision.issue_iid);
+            emit("plan:suggestion", decision);
+        } else {
+            print("[plan_reviewer] Observing (confidence:", confidence, ")");
+        };
+    };
+}

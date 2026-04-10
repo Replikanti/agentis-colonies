@@ -1,0 +1,106 @@
+// scope_estimator.ag -- Planning colony: estimates issue scope.
+//
+// Observes how you size issues -- story points, effort class (small/
+// medium/large), estimated phase count -- and learns to produce
+// calibrated estimates for new issues.
+//
+// Run as daemon: agentis daemon agents/scope_estimator.ag --colony planning
+// Requires: exec_foreign capability, GITLAB_* env vars
+
+cb 800;
+
+type ScopeEstimate {
+    issue_iid: int,
+    size_class: string,
+    story_points: int,
+    effort_hours: int,
+    rationale: string
+}
+
+fn issues_cmd() -> string {
+    let ts = recall_latest("scope_estimator:last_check");
+    if len(ts) > 0 {
+        return "./scripts/gitlab-api.sh issues --since " + ts;
+    };
+    return "./scripts/gitlab-api.sh issues";
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("scope_estimator:confidence");
+    if len(raw) > 0 {
+        return prompt("Return this number as a decimal. Nothing else.", raw) -> float;
+    };
+    return 0.0;
+}
+
+fn tick(reason: string) -> void {
+    let cmd = issues_cmd();
+    let raw = try {
+        exec shell cmd;
+    } catch e {
+        print("[scope_estimator] GitLab poll failed:", e);
+        "";
+    };
+
+    if len(raw) < 3 {
+        return;
+    };
+
+    let issue_ids = prompt(
+        "Extract all issue IIDs from this GitLab JSON array. Only opened issues that look like they need planning (no estimate label yet). Return JSON array of integers.",
+        raw
+    ) -> list<int>;
+
+    if len(issue_ids) < 1 {
+        return;
+    };
+
+    let issue_iid = get(issue_ids, 0);
+    let detail_cmd = "./scripts/gitlab-api.sh issue " + to_string(issue_iid);
+    let detail_raw = try { exec shell detail_cmd; } catch e { ""; };
+
+    if len(detail_raw) < 10 {
+        return;
+    };
+
+    // Learn from past human sizing decisions on existing issues
+    let notes_cmd = "./scripts/gitlab-api.sh issue-notes " + to_string(issue_iid);
+    let notes_raw = try { exec shell notes_cmd; } catch e { "[]"; };
+
+    let human_patterns = prompt(
+        "Analyze these issue comments. Find human-supplied scope estimates, story points, effort classes (small/medium/large), or statements like 'this is too big, split it'. Summarize the sizing patterns. If none, return 'none'.",
+        notes_raw
+    ) -> string;
+
+    if len(human_patterns) > 5 {
+        learn("scope_estimate", "issue " + to_string(issue_iid), human_patterns, "observed", "planning");
+    };
+
+    // Produce a scope estimate
+    let rec = recommend("scope_estimate", ["accuracy", "calibration"]);
+    let context = "Issue JSON:\n" + detail_raw + "\n\nLearned calibration: " + to_string(rec);
+
+    let estimate = prompt(
+        "You are a scope estimator. Size this issue. Rules: size_class is 'small' (1-2 days), 'medium' (3-5 days), or 'large' (1-2 weeks, likely needs decomposition). story_points uses Fibonacci (1,2,3,5,8,13). effort_hours is rough but concrete. rationale cites specific parts of the issue that drove the estimate. Return JSON: issue_iid (int), size_class (string), story_points (int), effort_hours (int), rationale (string).",
+        context
+    ) -> ScopeEstimate;
+
+    let confidence = get_confidence();
+
+    emit("plan:scope_estimate", estimate);
+    print("[scope_estimator] issue", issue_iid, ":", estimate.size_class, "(", estimate.story_points, "pts,", estimate.effort_hours, "h)");
+
+    if confidence >= 0.85 {
+        let body = "**Scope Estimate** (automated)\n\nSize: " + estimate.size_class + " (" + to_string(estimate.story_points) + " pts, ~" + to_string(estimate.effort_hours) + "h)\n\n" + estimate.rationale;
+        let post_cmd = "./scripts/gitlab-api.sh post-note " + to_string(issue_iid) + " --body " + shell_escape(body);
+        try { exec shell post_cmd; } catch e {
+            print("[scope_estimator] Failed to post:", e);
+        };
+        learn("scope_estimate", "posted on issue " + to_string(issue_iid), estimate.rationale, "acted", "planning");
+    };
+
+    let now = try { exec shell "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("scope_estimator:last_check", now);
+    };
+}
