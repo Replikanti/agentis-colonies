@@ -2,7 +2,7 @@
 
 > Part of the [Dev Apprenticeship](../) federation.
 
-A colony of four agents that learn how you manage issues. They observe how you create, label, prioritize, and route issues on GitLab — and gradually take over the mechanical parts of issue management.
+A colony of four agents that learn how you manage issues. They observe how you create, label, prioritize, and route issues on GitLab, and gradually take over the mechanical parts of issue management.
 
 ## Agents
 
@@ -36,7 +36,7 @@ graph LR
     IC -- title, description --> GL
 ```
 
-When a new event arrives (bug report, support ticket, alert), the Issue Creator drafts the issue with learned title and description conventions. The Labeler, Prioritizer, and Router each add their metadata — labels, priority level, and assignee — based on patterns learned from past decisions.
+When a new event arrives (bug report, support ticket, alert), the Issue Creator drafts the issue with learned title and description conventions. The Labeler, Prioritizer, and Router each add their metadata (labels, priority level, and assignee) based on patterns learned from past decisions.
 
 ## Setup
 

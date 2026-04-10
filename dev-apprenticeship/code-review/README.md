@@ -2,7 +2,7 @@
 
 > Part of the [Dev Apprenticeship](../) federation.
 
-A colony of five specialized agents that learn how you review code. They observe your merge request interactions on GitLab — what you approve, what you flag, what you dismiss — and gradually take over routine review work.
+A colony of five specialized agents that learn how you review code. They observe your merge request interactions on GitLab (what you approve, what you flag, what you dismiss) and gradually take over routine review work.
 
 ## Agents
 
@@ -12,7 +12,7 @@ A colony of five specialized agents that learn how you review code. They observe
 | Logic Reviewer | `agents/logic_reviewer.ag` | Edge cases, off-by-one errors, null handling, race conditions | ~20 observations |
 | Security Reviewer | `agents/security_reviewer.ag` | Injection risks, auth checks, secret exposure, dependency vulnerabilities | ~15 observations |
 | Test Reviewer | `agents/test_reviewer.ag` | Coverage expectations, test quality, missing edge case tests | ~15 observations |
-| Approval Decider | `agents/approval_decider.ag` | When to approve, request changes, or escalate — aggregates findings from other reviewers | ~25 observations |
+| Approval Decider | `agents/approval_decider.ag` | When to approve, request changes, or escalate (aggregates findings from other reviewers) | ~25 observations |
 
 ## How It Works
 
@@ -39,7 +39,7 @@ graph LR
     AD --> GL
 ```
 
-When a new merge request appears, all four reviewers analyze it in parallel, each from their own perspective. They publish findings to the colony bus. The Approval Decider aggregates those findings, weighs severity, and produces the final review action — approve, request changes, or escalate to the human.
+When a new merge request appears, all four reviewers analyze it in parallel, each from their own perspective. They publish findings to the colony bus. The Approval Decider aggregates those findings, weighs severity, and produces the final review action: approve, request changes, or escalate to the human.
 
 ## Setup
 
@@ -70,7 +70,7 @@ When a new merge request appears, all four reviewers analyze it in parallel, eac
 
 ## Providing Feedback
 
-For now, the colony learns passively by watching your existing GitLab review comments — the agents call `learn()` with patterns extracted from human review notes on merge requests. Just keep reviewing code the way you normally do.
+For now, the colony learns passively by watching your existing GitLab review comments: the agents call `learn()` with patterns extracted from human review notes on merge requests. Just keep reviewing code the way you normally do.
 
 An explicit feedback channel (for approving or dismissing individual findings) is planned for a future version.
 

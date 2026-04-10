@@ -2,7 +2,7 @@
 
 > Part of the [Dev Apprenticeship](../) federation.
 
-A colony of four agents that learn how you write code. They observe your commits, merge requests, and code patterns on GitLab — learning your conventions, test habits, and refactoring style.
+A colony of four agents that learn how you write code. They observe your commits, merge requests, and code patterns on GitLab, learning your conventions, test habits, and refactoring style.
 
 ## Agents
 
@@ -36,7 +36,7 @@ graph LR
     CC --> GL
 ```
 
-When an issue is assigned, the Code Writer produces an implementation draft. The Test Writer generates tests and the Refactorer suggests improvements — both informed by what the Code Writer produced. The Commit Composer packages everything into well-structured commits following learned conventions and opens a merge request.
+When an issue is assigned, the Code Writer produces an implementation draft. The Test Writer generates tests and the Refactorer suggests improvements, both informed by what the Code Writer produced. The Commit Composer packages everything into well-structured commits following learned conventions and opens a merge request.
 
 ## Setup
 
