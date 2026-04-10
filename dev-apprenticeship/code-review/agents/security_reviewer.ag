@@ -41,7 +41,7 @@ fn get_confidence() -> float {
 fn tick(reason: string) -> void {
     let cmd = mr_cmd();
     let raw = try {
-        exec shell cmd;
+        exec sh cmd;
     } catch e {
         print("[security_reviewer] GitLab poll failed:", e);
         "";
@@ -62,7 +62,7 @@ fn tick(reason: string) -> void {
 
     let mr_iid = get(mr_ids, 0);
     let changes_cmd = "./scripts/gitlab-api.sh mr-changes " + to_string(mr_iid);
-    let changes_raw = try { exec shell changes_cmd; } catch e { ""; };
+    let changes_raw = try { exec sh changes_cmd; } catch e { ""; };
 
     if len(changes_raw) < 10 {
         return;
@@ -70,7 +70,7 @@ fn tick(reason: string) -> void {
 
     // Learn from human security-related comments
     let notes_cmd = "./scripts/gitlab-api.sh mr-notes " + to_string(mr_iid);
-    let notes_raw = try { exec shell notes_cmd; } catch e { "[]"; };
+    let notes_raw = try { exec sh notes_cmd; } catch e { "[]"; };
 
     let human_patterns = prompt(
         "Analyze these MR review comments. Find comments about security: injection, XSS, CSRF, auth, secrets, credentials, dependencies, permissions, input validation. Summarize. If none, return 'none'.",
@@ -99,7 +99,7 @@ fn tick(reason: string) -> void {
         if confidence >= 0.85 {
             let comment = "**Security Review** (automated)\n\n" + review.summary;
             let post_cmd = "./scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment);
-            try { exec shell post_cmd; } catch e {
+            try { exec sh post_cmd; } catch e {
                 print("[security_reviewer] Failed to post comment:", e);
             };
         };
@@ -108,7 +108,7 @@ fn tick(reason: string) -> void {
         emit("review:security_findings", review);
     };
 
-    let now = try { exec shell "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
     if len(now) > 0 {
         memo_write("security_reviewer:last_check", now);
     };
