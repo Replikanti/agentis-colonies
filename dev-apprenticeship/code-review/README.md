@@ -59,8 +59,8 @@ When a new merge request appears, all four reviewers analyze it in parallel, eac
 3. Configure the LLM backend:
    ```toml
    [llm]
+   # Only "backend" is read today. "cli" uses the agentis daemon default CLI adapter.
    backend = "cli"
-   command = "claude"
    ```
 
 4. Start the colony:
