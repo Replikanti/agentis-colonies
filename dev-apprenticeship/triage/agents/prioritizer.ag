@@ -41,7 +41,7 @@ fn get_confidence() -> float {
 fn tick(reason: string) -> void {
     let cmd = issues_cmd();
     let raw = try {
-        exec shell cmd;
+        exec sh cmd;
     } catch e {
         print("[prioritizer] GitLab poll failed:", e);
         "";
@@ -81,7 +81,7 @@ fn tick(reason: string) -> void {
 
         if confidence >= 0.85 {
             let update_cmd = "./scripts/gitlab-api.sh update-issue " + to_string(action.issue_id) + " --add-labels \"" + action.priority + "\"";
-            let result = try { exec shell update_cmd; } catch e {
+            let result = try { exec sh update_cmd; } catch e {
                 print("[prioritizer] Failed to set priority:", e);
                 "";
             };
@@ -104,7 +104,7 @@ fn tick(reason: string) -> void {
         print("[prioritizer] Received new issue draft, will prioritize on next tick");
     };
 
-    let now = try { exec shell "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
     if len(now) > 0 {
         memo_write("prioritizer:last_check", now);
     };

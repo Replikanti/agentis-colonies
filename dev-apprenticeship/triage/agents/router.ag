@@ -41,7 +41,7 @@ fn get_confidence() -> float {
 fn tick(reason: string) -> void {
     let cmd = issues_cmd();
     let raw = try {
-        exec shell cmd;
+        exec sh cmd;
     } catch e {
         print("[router] GitLab poll failed:", e);
         "";
@@ -52,7 +52,7 @@ fn tick(reason: string) -> void {
     };
 
     // Get team members
-    let members_raw = try { exec shell "./scripts/gitlab-api.sh members"; } catch e { "[]"; };
+    let members_raw = try { exec sh "./scripts/gitlab-api.sh members"; } catch e { "[]"; };
 
     // Analyze: find assigned and unassigned issues
     let analysis = prompt(
@@ -84,7 +84,7 @@ fn tick(reason: string) -> void {
 
         if confidence >= 0.85 {
             let update_cmd = "./scripts/gitlab-api.sh update-issue " + to_string(action.issue_id) + " --assignee \"" + action.assignee + "\"";
-            let result = try { exec shell update_cmd; } catch e {
+            let result = try { exec sh update_cmd; } catch e {
                 print("[router] Failed to assign:", e);
                 "";
             };
@@ -107,7 +107,7 @@ fn tick(reason: string) -> void {
         print("[router] Received new issue draft, will route on next tick");
     };
 
-    let now = try { exec shell "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
     if len(now) > 0 {
         memo_write("router:last_check", now);
     };

@@ -40,7 +40,7 @@ fn get_confidence() -> float {
 fn tick(reason: string) -> void {
     let cmd = mr_cmd();
     let raw = try {
-        exec shell cmd;
+        exec sh cmd;
     } catch e {
         print("[style_reviewer] GitLab poll failed:", e);
         "";
@@ -63,7 +63,7 @@ fn tick(reason: string) -> void {
     // Review the first open MR
     let mr_iid = get(mr_ids, 0);
     let changes_cmd = "./scripts/gitlab-api.sh mr-changes " + to_string(mr_iid);
-    let changes_raw = try { exec shell changes_cmd; } catch e { ""; };
+    let changes_raw = try { exec sh changes_cmd; } catch e { ""; };
 
     if len(changes_raw) < 10 {
         return;
@@ -71,7 +71,7 @@ fn tick(reason: string) -> void {
 
     // Check for existing human review comments to learn from
     let notes_cmd = "./scripts/gitlab-api.sh mr-notes " + to_string(mr_iid);
-    let notes_raw = try { exec shell notes_cmd; } catch e { "[]"; };
+    let notes_raw = try { exec sh notes_cmd; } catch e { "[]"; };
 
     // Learn from human style comments
     let human_patterns = prompt(
@@ -103,7 +103,7 @@ fn tick(reason: string) -> void {
             // Post review comment directly
             let comment = "**Style Review** (automated)\n\n" + review.summary;
             let post_cmd = "./scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment);
-            let result = try { exec shell post_cmd; } catch e {
+            let result = try { exec sh post_cmd; } catch e {
                 print("[style_reviewer] Failed to post comment:", e);
                 "";
             };
@@ -118,7 +118,7 @@ fn tick(reason: string) -> void {
         emit("review:style_findings", review);
     };
 
-    let now = try { exec shell "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
     if len(now) > 0 {
         memo_write("style_reviewer:last_check", now);
     };

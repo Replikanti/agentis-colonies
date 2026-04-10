@@ -41,7 +41,7 @@ fn get_confidence() -> float {
 fn tick(reason: string) -> void {
     let cmd = issues_cmd();
     let raw = try {
-        exec shell cmd;
+        exec sh cmd;
     } catch e {
         print("[labeler] GitLab poll failed:", e);
         "";
@@ -72,7 +72,7 @@ fn tick(reason: string) -> void {
     if analysis.unlabeled_count > 0 {
         let confidence = get_confidence();
         let rec = recommend("label", ["accuracy"]);
-        let labels_raw = try { exec shell "./scripts/gitlab-api.sh labels"; } catch e { "[]"; };
+        let labels_raw = try { exec sh "./scripts/gitlab-api.sh labels"; } catch e { "[]"; };
         let context = "Unlabeled issues: " + analysis.unlabeled_issues + "\nAvailable labels: " + labels_raw + "\nPast learning: " + to_string(rec);
 
         let action = prompt(
@@ -82,7 +82,7 @@ fn tick(reason: string) -> void {
 
         if confidence >= 0.85 {
             let update_cmd = "./scripts/gitlab-api.sh update-issue " + to_string(action.issue_id) + " --add-labels \"" + action.labels + "\"";
-            let result = try { exec shell update_cmd; } catch e {
+            let result = try { exec sh update_cmd; } catch e {
                 print("[labeler] Failed to apply labels:", e);
                 "";
             };
@@ -105,7 +105,7 @@ fn tick(reason: string) -> void {
         print("[labeler] Received new issue draft, will label on next tick");
     };
 
-    let now = try { exec shell "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
     if len(now) > 0 {
         memo_write("labeler:last_check", now);
     };
