@@ -1,0 +1,124 @@
+// style_reviewer.ag -- Code Review colony: learns your style preferences.
+//
+// Observes naming conventions, formatting, import ordering, and
+// other style patterns from MR comments and approvals.
+//
+// Run as daemon: agentis daemon agents/style_reviewer.ag --colony code-review
+// Requires: exec_foreign capability, GITLAB_* env vars
+
+cb 600;
+
+type StyleFinding {
+    file: string,
+    issue: string,
+    severity: string,
+    suggestion: string
+}
+
+type StyleReview {
+    mr_iid: int,
+    findings: list<StyleFinding>,
+    summary: string
+}
+
+fn mr_cmd() -> string {
+    let ts = recall_latest("style_reviewer:last_check");
+    if len(ts) > 0 {
+        return "./scripts/gitlab-api.sh merge-requests --since " + ts;
+    };
+    return "./scripts/gitlab-api.sh merge-requests";
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("style_reviewer:confidence");
+    if len(raw) > 0 {
+        return prompt("Return this number as a decimal. Nothing else.", raw) -> float;
+    };
+    return 0.0;
+}
+
+fn tick(reason: string) -> void {
+    let cmd = mr_cmd();
+    let raw = try {
+        exec shell cmd;
+    } catch e {
+        print("[style_reviewer] GitLab poll failed:", e);
+        "";
+    };
+
+    if len(raw) < 3 {
+        return;
+    };
+
+    // Find MRs to review
+    let mr_ids = prompt(
+        "Extract all merge request IIDs from this GitLab JSON array. Return a JSON array of integers. Only include MRs in 'opened' state. If empty, return [].",
+        raw
+    ) -> list<int>;
+
+    if len(mr_ids) < 1 {
+        return;
+    };
+
+    // Review the first open MR
+    let mr_iid = get(mr_ids, 0);
+    let changes_cmd = "./scripts/gitlab-api.sh mr-changes " + to_string(mr_iid);
+    let changes_raw = try { exec shell changes_cmd; } catch e { ""; };
+
+    if len(changes_raw) < 10 {
+        return;
+    };
+
+    // Check for existing human review comments to learn from
+    let notes_cmd = "./scripts/gitlab-api.sh mr-notes " + to_string(mr_iid);
+    let notes_raw = try { exec shell notes_cmd; } catch e { "[]"; };
+
+    // Learn from human style comments
+    let human_patterns = prompt(
+        "Analyze these MR review comments. Find comments about style issues (naming, formatting, imports, whitespace, conventions). Summarize the patterns and preferences expressed. If no style-related comments, return 'none'.",
+        notes_raw
+    ) -> string;
+
+    if len(human_patterns) > 5 {
+        learn("style_review", "MR " + to_string(mr_iid), human_patterns, "observed", "code-review");
+    };
+
+    // Perform style review on the diff
+    let rec = recommend("style_review", ["accuracy"]);
+    let context = "MR diff:\n" + changes_raw + "\n\nLearned preferences: " + to_string(rec);
+
+    let review = prompt(
+        "You are a style reviewer. Analyze this merge request diff for style issues: naming conventions, formatting, import ordering, whitespace, code organization. Return JSON: mr_iid (int), findings (array of objects with file, issue, severity, suggestion), summary (string). Only flag real style issues, not logic or security. If clean, return empty findings array.",
+        context
+    ) -> StyleReview;
+
+    let confidence = get_confidence();
+
+    if len(review.findings) > 0 {
+        // Emit findings to colony bus for approval_decider
+        emit("review:style_findings", review);
+        print("[style_reviewer] MR", mr_iid, ":", len(review.findings), "style findings");
+
+        if confidence >= 0.85 {
+            // Post review comment directly
+            let comment = "**Style Review** (automated)\n\n" + review.summary;
+            let post_cmd = "./scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body \"" + comment + "\"";
+            let result = try { exec shell post_cmd; } catch e {
+                print("[style_reviewer] Failed to post comment:", e);
+                "";
+            };
+            if len(result) > 0 {
+                learn("style_review", "posted on MR " + to_string(mr_iid), review.summary, "acted", "code-review");
+            };
+        } else {
+            print("[style_reviewer] Confidence:", confidence, "- findings emitted to bus only");
+        };
+    } else {
+        print("[style_reviewer] MR", mr_iid, ": clean");
+    };
+
+    let now = try { exec shell "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("style_reviewer:last_check", now);
+    };
+}

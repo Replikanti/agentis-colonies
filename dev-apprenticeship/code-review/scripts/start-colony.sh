@@ -1,5 +1,5 @@
 #!/bin/bash
-# Start the Code Review Colony (part of Dev Apprenticeship federation)
+# Start the Code Review colony (part of Dev Apprenticeship federation)
 #
 # Each agent runs as a separate agentis daemon process.
 # They discover each other via colony UDP and communicate over TCP emit/listen.
@@ -18,6 +18,32 @@ if [ ! -f "$CONFIG" ]; then
     exit 1
 fi
 
+# Parse GitLab config from TOML and export for gitlab-api.sh
+parse_toml() {
+    grep "^$1 " "$CONFIG" 2>/dev/null | head -1 | sed 's/.*= *"\{0,1\}\([^"]*\)"\{0,1\}/\1/' | tr -d ' '
+}
+
+GITLAB_URL=$(parse_toml "url")
+GITLAB_TOKEN=$(parse_toml "token")
+GITLAB_PROJECT_RAW=$(parse_toml "project")
+
+if [ -z "$GITLAB_URL" ] || [ -z "$GITLAB_TOKEN" ] || [ -z "$GITLAB_PROJECT_RAW" ]; then
+    echo "Error: GitLab config incomplete in $CONFIG"
+    echo "Required: url, token, project under [gitlab]"
+    exit 1
+fi
+
+# URL-encode the project path (replace / with %2F)
+GITLAB_PROJECT="${GITLAB_PROJECT_RAW//\//%2F}"
+
+export GITLAB_URL
+export GITLAB_TOKEN
+export GITLAB_PROJECT
+export COLONY_DIR
+
+# Parse LLM backend
+LLM_BACKEND=$(parse_toml "backend")
+
 AGENTS=(
     style_reviewer
     logic_reviewer
@@ -27,13 +53,23 @@ AGENTS=(
 )
 
 echo "Starting Code Review colony (${#AGENTS[@]} agents)..."
+echo "  GitLab: $GITLAB_URL ($GITLAB_PROJECT_RAW)"
+echo "  LLM: ${LLM_BACKEND:-mock}"
 
 for agent in "${AGENTS[@]}"; do
     echo "  Starting $agent..."
-    agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
-        --colony code-review \
-        --backend claude \
-        --tick-interval 60000 &
+    if [ -n "$LLM_BACKEND" ]; then
+        agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
+            --colony code-review \
+            --backend "$LLM_BACKEND" \
+            --tick-interval 60000 \
+            --enable-exec &
+    else
+        agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
+            --colony code-review \
+            --tick-interval 60000 \
+            --enable-exec &
+    fi
     sleep 2  # stagger starts to reduce API contention
 done
 

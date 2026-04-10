@@ -1,0 +1,101 @@
+// approval_decider.ag -- Code Review colony: aggregates and decides.
+//
+// Listens for findings from style, logic, security, and test reviewers.
+// Aggregates severity, weighs findings, and decides: approve, request
+// changes, or escalate to the human.
+//
+// Run as daemon: agentis daemon agents/approval_decider.ag --colony code-review
+// Requires: exec_foreign capability, GITLAB_* env vars
+
+cb 600;
+
+type ReviewDecision {
+    mr_iid: int,
+    action: string,
+    reasoning: string,
+    critical_count: int,
+    total_findings: int
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("approval_decider:confidence");
+    if len(raw) > 0 {
+        return prompt("Return this number as a decimal. Nothing else.", raw) -> float;
+    };
+    return 0.0;
+}
+
+fn tick(reason: string) -> void {
+    // Collect findings from all reviewers
+    let style = listen("review:style_findings", 500);
+    let logic = listen("review:logic_findings", 500);
+    let security = listen("review:security_findings", 500);
+    let tests = listen("review:test_findings", 500);
+
+    let style_str = to_string(style);
+    let logic_str = to_string(logic);
+    let security_str = to_string(security);
+    let tests_str = to_string(tests);
+
+    // Only proceed if at least one reviewer reported
+    let total_len = len(style_str) + len(logic_str) + len(security_str) + len(tests_str);
+    if total_len < 24 {
+        return;
+    };
+
+    // Learn from past human approval/rejection patterns
+    let mr_cmd = "./scripts/gitlab-api.sh merge-requests --state merged";
+    let recent_merged = try { exec shell mr_cmd; } catch e { "[]"; };
+
+    let approval_patterns = prompt(
+        "Analyze these recently merged MRs. What patterns do you see in what gets approved quickly vs what takes multiple rounds? Summarize briefly.",
+        recent_merged
+    ) -> string;
+
+    if len(approval_patterns) > 10 {
+        learn("approval_decision", "merged MRs batch", approval_patterns, "observed", "code-review");
+    };
+
+    // Aggregate findings and decide
+    let rec = recommend("approval_decision", ["accuracy", "safety"]);
+    let all_findings = "Style findings: " + style_str + "\nLogic findings: " + logic_str + "\nSecurity findings: " + security_str + "\nTest findings: " + tests_str + "\nPast approval patterns: " + to_string(rec);
+
+    let decision = prompt(
+        "You are the approval decider. Based on findings from style, logic, security, and test reviewers, decide the review outcome. Rules: any critical security finding = request changes. Multiple high-severity logic findings = request changes. Style-only findings = approve with comments. No findings = approve. Return JSON: mr_iid (int, from the findings), action (string: 'approve', 'request_changes', or 'escalate'), reasoning (string), critical_count (int), total_findings (int).",
+        all_findings
+    ) -> ReviewDecision;
+
+    let confidence = get_confidence();
+
+    print("[approval_decider] MR", decision.mr_iid, "-> action:", decision.action, "(", decision.total_findings, "findings,", decision.critical_count, "critical)");
+
+    if confidence >= 0.85 {
+        if decision.action == "approve" {
+            let approve_cmd = "./scripts/gitlab-api.sh approve " + to_string(decision.mr_iid);
+            try { exec shell approve_cmd; } catch e {
+                print("[approval_decider] Failed to approve:", e);
+            };
+            print("[approval_decider] Approved MR", decision.mr_iid);
+            learn("approval_decision", "MR " + to_string(decision.mr_iid), "approved: " + decision.reasoning, "acted", "code-review");
+        } else {
+            if decision.action == "request_changes" {
+                let comment = "**Review Summary** (automated)\n\n" + decision.reasoning + "\n\nFindings: " + to_string(decision.total_findings) + " total, " + to_string(decision.critical_count) + " critical";
+                let post_cmd = "./scripts/gitlab-api.sh post-note " + to_string(decision.mr_iid) + " --body \"" + comment + "\"";
+                try { exec shell post_cmd; } catch e {
+                    print("[approval_decider] Failed to post:", e);
+                };
+                learn("approval_decision", "MR " + to_string(decision.mr_iid), "request_changes: " + decision.reasoning, "acted", "code-review");
+            } else {
+                print("[approval_decider] Escalating MR", decision.mr_iid, "to human");
+                emit("review:escalation", decision);
+            };
+        };
+    } else {
+        if confidence >= 0.6 {
+            print("[approval_decider] Suggesting:", decision.action, "for MR", decision.mr_iid);
+            emit("review:decision_suggestion", decision);
+        } else {
+            print("[approval_decider] Observing (confidence:", confidence, ")");
+        };
+    };
+}

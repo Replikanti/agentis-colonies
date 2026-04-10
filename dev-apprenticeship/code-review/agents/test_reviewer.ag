@@ -1,0 +1,114 @@
+// test_reviewer.ag -- Code Review colony: reviews test quality.
+//
+// Observes how you evaluate test coverage, test structure, missing
+// edge case tests, and assertion quality in MR reviews.
+//
+// Run as daemon: agentis daemon agents/test_reviewer.ag --colony code-review
+// Requires: exec_foreign capability, GITLAB_* env vars
+
+cb 800;
+
+type TestFinding {
+    file: string,
+    issue: string,
+    severity: string,
+    suggestion: string
+}
+
+type TestReview {
+    mr_iid: int,
+    findings: list<TestFinding>,
+    summary: string
+}
+
+fn mr_cmd() -> string {
+    let ts = recall_latest("test_reviewer:last_check");
+    if len(ts) > 0 {
+        return "./scripts/gitlab-api.sh merge-requests --since " + ts;
+    };
+    return "./scripts/gitlab-api.sh merge-requests";
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("test_reviewer:confidence");
+    if len(raw) > 0 {
+        return prompt("Return this number as a decimal. Nothing else.", raw) -> float;
+    };
+    return 0.0;
+}
+
+fn tick(reason: string) -> void {
+    let cmd = mr_cmd();
+    let raw = try {
+        exec shell cmd;
+    } catch e {
+        print("[test_reviewer] GitLab poll failed:", e);
+        "";
+    };
+
+    if len(raw) < 3 {
+        return;
+    };
+
+    let mr_ids = prompt(
+        "Extract all merge request IIDs from this GitLab JSON array. Only opened MRs. Return JSON array of integers.",
+        raw
+    ) -> list<int>;
+
+    if len(mr_ids) < 1 {
+        return;
+    };
+
+    let mr_iid = get(mr_ids, 0);
+    let changes_cmd = "./scripts/gitlab-api.sh mr-changes " + to_string(mr_iid);
+    let changes_raw = try { exec shell changes_cmd; } catch e { ""; };
+
+    if len(changes_raw) < 10 {
+        return;
+    };
+
+    // Learn from human test-related comments
+    let notes_cmd = "./scripts/gitlab-api.sh mr-notes " + to_string(mr_iid);
+    let notes_raw = try { exec shell notes_cmd; } catch e { "[]"; };
+
+    let human_patterns = prompt(
+        "Analyze these MR review comments. Find comments about testing: missing tests, coverage gaps, test quality, assertion issues, edge case tests, flaky tests, test structure. Summarize. If none, return 'none'.",
+        notes_raw
+    ) -> string;
+
+    if len(human_patterns) > 5 {
+        learn("test_review", "MR " + to_string(mr_iid), human_patterns, "observed", "code-review");
+    };
+
+    // Perform test review
+    let rec = recommend("test_review", ["accuracy"]);
+    let context = "MR diff:\n" + changes_raw + "\n\nLearned patterns: " + to_string(rec);
+
+    let review = prompt(
+        "You are a test reviewer. Analyze this merge request diff for test quality: missing tests for new code, untested edge cases, weak assertions (only checking happy path), missing error path tests, test duplication, flaky patterns (timing, ordering). Return JSON: mr_iid (int), findings (array with file, issue, severity, suggestion), summary (string). If tests are adequate, return empty findings.",
+        context
+    ) -> TestReview;
+
+    let confidence = get_confidence();
+
+    if len(review.findings) > 0 {
+        emit("review:test_findings", review);
+        print("[test_reviewer] MR", mr_iid, ":", len(review.findings), "test findings");
+
+        if confidence >= 0.85 {
+            let comment = "**Test Review** (automated)\n\n" + review.summary;
+            let post_cmd = "./scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body \"" + comment + "\"";
+            try { exec shell post_cmd; } catch e {
+                print("[test_reviewer] Failed to post comment:", e);
+            };
+        };
+    } else {
+        print("[test_reviewer] MR", mr_iid, ": adequate");
+        emit("review:test_findings", review);
+    };
+
+    let now = try { exec shell "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("test_reviewer:last_check", now);
+    };
+}
