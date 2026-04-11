@@ -1,0 +1,111 @@
+// scope_estimator.ag -- Planning colony: learns scope calibration.
+//
+// Observes shipped merge requests and the issues they closed, learns
+// how human estimates compare to actual shipped scope, and estimates
+// the scope of newly filed unplanned issues.
+//
+// Run as daemon: agentis daemon agents/scope_estimator.ag --colony planning
+// Requires: exec_foreign capability, GITLAB_* env vars
+
+cb 500;
+
+type ScopeEstimate {
+    issue_id: int,
+    phases: int,
+    points: int,
+    reasoning: string,
+    confidence: float
+}
+
+type CalibrationSummary {
+    observed_pairs: int,
+    ratio_hint: string,
+    tendencies: string
+}
+
+fn unplanned_cmd() -> string {
+    let ts = recall_latest("scope_estimator:last_check");
+    if len(ts) > 0 {
+        return "./scripts/gitlab-api.sh issues --needs-planning --since " + ts;
+    };
+    return "./scripts/gitlab-api.sh issues --needs-planning";
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("scope_estimator:confidence");
+    if len(raw) > 0 {
+        return prompt("Return this number as a decimal. Nothing else.", raw) -> float;
+    };
+    return 0.0;
+}
+
+fn tick(reason: string) -> void {
+    // 1. Observe: pull recent merged MRs and learn calibration
+    let merged_raw = try {
+        exec sh "./scripts/gitlab-api.sh merge-requests --state merged";
+    } catch e {
+        print("[scope_estimator] GitLab merged-MR poll failed:", e);
+        "";
+    };
+
+    if len(merged_raw) > 10 {
+        let summary = prompt(
+            "Analyze these recently merged GitLab MRs. For each MR that closes an issue, compare the issue body's implied scope (phases, story points, or rough size) to the actual diff size and number of files touched. Summarize patterns (tendencies), give a rough over/under ratio hint (ratio_hint), and count the pairs you could compare (observed_pairs). Return JSON: observed_pairs (int), ratio_hint (string), tendencies (string).",
+            merged_raw
+        ) -> CalibrationSummary;
+
+        if summary.observed_pairs > 0 {
+            learn(
+                "scope_estimate",
+                "batch of " + to_string(summary.observed_pairs) + " shipped MRs",
+                "ratio: " + summary.ratio_hint + " | " + summary.tendencies,
+                "observed",
+                "planning"
+            );
+            print("[scope_estimator] Observed", summary.observed_pairs, "shipped pairs");
+        };
+    };
+
+    // 2. Act: estimate scope for the next unplanned issue
+    let cmd = unplanned_cmd();
+    let issues_raw = try {
+        exec sh cmd;
+    } catch e {
+        print("[scope_estimator] GitLab unplanned-issue poll failed:", e);
+        "";
+    };
+
+    if len(issues_raw) < 3 {
+        return;
+    };
+
+    let rec = recommend("scope_estimate", ["accuracy"]);
+    let context = "Unplanned issues (newest first): " + issues_raw + "\nPast calibration: " + to_string(rec);
+
+    let estimate = prompt(
+        "You are a scope estimator. Pick the newest unplanned issue and estimate its scope. Return JSON: issue_id (int, from the issues JSON), phases (int, 1-5), points (int, Fibonacci 1/2/3/5/8/13), reasoning (string, one short paragraph), confidence (float 0-1).",
+        context
+    ) -> ScopeEstimate;
+
+    let confidence = get_confidence();
+
+    print("[scope_estimator] Issue", estimate.issue_id, "->", estimate.phases, "phases,", estimate.points, "points");
+
+    if confidence >= 0.6 {
+        emit("planning:scope_estimate", estimate);
+        learn(
+            "scope_estimate",
+            "issue " + to_string(estimate.issue_id),
+            to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points: " + estimate.reasoning,
+            "emitted",
+            "planning"
+        );
+    } else {
+        print("[scope_estimator] Observing (confidence:", confidence, ")");
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("scope_estimator:last_check", now);
+    };
+}

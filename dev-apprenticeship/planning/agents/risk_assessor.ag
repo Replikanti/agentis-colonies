@@ -1,0 +1,110 @@
+// risk_assessor.ag -- Planning colony: learns delivery risks.
+//
+// Observes closed incident/bug/blocker issues and their notes to learn
+// what historically blocks delivery (dependency surprises, integration
+// gotchas, flaky external services). Assesses risks for new unplanned
+// issues against that accumulated history.
+//
+// Run as daemon: agentis daemon agents/risk_assessor.ag --colony planning
+// Requires: exec_foreign capability, GITLAB_* env vars
+
+cb 500;
+
+type RiskAssessment {
+    issue_id: int,
+    risks: string,
+    severity: string,
+    confidence: float
+}
+
+type IncidentPatterns {
+    observed_count: int,
+    recurring_themes: string
+}
+
+fn unplanned_cmd() -> string {
+    let ts = recall_latest("risk_assessor:last_check");
+    if len(ts) > 0 {
+        return "./scripts/gitlab-api.sh issues --needs-planning --since " + ts;
+    };
+    return "./scripts/gitlab-api.sh issues --needs-planning";
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("risk_assessor:confidence");
+    if len(raw) > 0 {
+        return prompt("Return this number as a decimal. Nothing else.", raw) -> float;
+    };
+    return 0.0;
+}
+
+fn tick(reason: string) -> void {
+    // 1. Observe: pull recent opened issues and skim for incident-style patterns
+    let recent_raw = try {
+        exec sh "./scripts/gitlab-api.sh issues";
+    } catch e {
+        print("[risk_assessor] GitLab issues poll failed:", e);
+        "";
+    };
+
+    if len(recent_raw) > 10 {
+        let patterns = prompt(
+            "Analyze this recent GitLab issues JSON. Focus on issues labeled 'incident', 'bug', or 'blocker'. What recurring themes appear (dependency surprises, integration gotchas, flaky services)? Return JSON: observed_count (int, how many incident-style issues you saw), recurring_themes (string, one short paragraph).",
+            recent_raw
+        ) -> IncidentPatterns;
+
+        if patterns.observed_count > 0 {
+            learn(
+                "risk_assessment",
+                "batch of " + to_string(patterns.observed_count) + " incident-style issues",
+                patterns.recurring_themes,
+                "observed",
+                "planning"
+            );
+            print("[risk_assessor] Observed", patterns.observed_count, "incident-style issues");
+        };
+    };
+
+    // 2. Act: assess risk for the next unplanned issue
+    let cmd = unplanned_cmd();
+    let issues_raw = try {
+        exec sh cmd;
+    } catch e {
+        print("[risk_assessor] GitLab unplanned-issue poll failed:", e);
+        "";
+    };
+
+    if len(issues_raw) < 3 {
+        return;
+    };
+
+    let rec = recommend("risk_assessment", ["accuracy", "safety"]);
+    let context = "Unplanned issues (newest first): " + issues_raw + "\nPast incident patterns: " + to_string(rec);
+
+    let assessment = prompt(
+        "You are a risk assessor. Pick the newest unplanned issue and identify its delivery risks based on historical incident patterns. Return JSON: issue_id (int, from the issues JSON), risks (string, bulleted markdown list of 2-5 risks), severity (string: 'low', 'medium', or 'high'), confidence (float 0-1).",
+        context
+    ) -> RiskAssessment;
+
+    let confidence = get_confidence();
+
+    print("[risk_assessor] Issue", assessment.issue_id, "-> severity:", assessment.severity);
+
+    if confidence >= 0.6 {
+        emit("planning:risks", assessment);
+        learn(
+            "risk_assessment",
+            "issue " + to_string(assessment.issue_id),
+            assessment.severity + ": " + assessment.risks,
+            "emitted",
+            "planning"
+        );
+    } else {
+        print("[risk_assessor] Observing (confidence:", confidence, ")");
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("risk_assessor:last_check", now);
+    };
+}
