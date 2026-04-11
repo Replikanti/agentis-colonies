@@ -124,19 +124,23 @@ case "$CMD" in
             echo '{"error": "--title is required"}' >&2
             exit 1
         fi
-        # Build JSON body
-        BODY="{\"title\":\"$TITLE\""
-        if [ -n "$DESC" ]; then
-            BODY="$BODY,\"description\":\"$DESC\""
-        fi
-        if [ -n "$LABELS" ]; then
-            BODY="$BODY,\"labels\":\"$LABELS\""
-        fi
-        if [ -n "$PRIORITY" ]; then
-            BODY="$BODY,\"priority\":\"$PRIORITY\""
-        fi
-        BODY="$BODY}"
-        gl_post "$API/issues" "$BODY"
+        # Build JSON body via python3 json.dumps so titles and descriptions
+        # containing quotes, backslashes, newlines, or control chars are
+        # escaped correctly. Values are passed via env vars to keep argv
+        # clean and avoid re-quoting hell.
+        JSON_BODY=$(TITLE="$TITLE" DESC="$DESC" LABELS="$LABELS" PRIORITY="$PRIORITY" python3 - <<'PY'
+import os, json
+body = {"title": os.environ["TITLE"]}
+if os.environ.get("DESC"):
+    body["description"] = os.environ["DESC"]
+if os.environ.get("LABELS"):
+    body["labels"] = os.environ["LABELS"]
+if os.environ.get("PRIORITY"):
+    body["priority"] = os.environ["PRIORITY"]
+print(json.dumps(body))
+PY
+)
+        gl_post "$API/issues" "$JSON_BODY"
         ;;
 
     update-issue)
@@ -155,32 +159,31 @@ case "$CMD" in
                 *) shift ;;
             esac
         done
-        BODY="{"
-        SEP=""
-        if [ -n "$ADD_LABELS" ]; then
-            BODY="$BODY${SEP}\"add_labels\":\"$ADD_LABELS\""
-            SEP=","
-        fi
-        if [ -n "$REMOVE_LABELS" ]; then
-            BODY="$BODY${SEP}\"remove_labels\":\"$REMOVE_LABELS\""
-            SEP=","
-        fi
-        if [ -n "$PRIORITY" ]; then
-            BODY="$BODY${SEP}\"priority\":\"$PRIORITY\""
-            SEP=","
-        fi
+        USER_ID=""
         if [ -n "$ASSIGNEE" ]; then
             # Look up user ID by username. Use gl_get_q so usernames with
             # `+`, `&`, or non-ASCII characters survive encoding intact.
             USER_JSON=$(gl_get_q "$GITLAB_URL/api/v4/users" --data-urlencode "username=$ASSIGNEE")
             USER_ID=$(echo "$USER_JSON" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
-            if [ -n "$USER_ID" ]; then
-                BODY="$BODY${SEP}\"assignee_ids\":[$USER_ID]"
-                SEP=","
-            fi
         fi
-        BODY="$BODY}"
-        gl_put "$API/issues/$ID" "$BODY"
+        # Build JSON body via python3 json.dumps so label names and priority
+        # strings containing quotes, backslashes, commas, or control chars
+        # are escaped correctly. Only non-empty fields are included.
+        JSON_BODY=$(ADD_LABELS="$ADD_LABELS" REMOVE_LABELS="$REMOVE_LABELS" PRIORITY="$PRIORITY" ASSIGNEE_ID="$USER_ID" python3 - <<'PY'
+import os, json
+body = {}
+if os.environ.get("ADD_LABELS"):
+    body["add_labels"] = os.environ["ADD_LABELS"]
+if os.environ.get("REMOVE_LABELS"):
+    body["remove_labels"] = os.environ["REMOVE_LABELS"]
+if os.environ.get("PRIORITY"):
+    body["priority"] = os.environ["PRIORITY"]
+if os.environ.get("ASSIGNEE_ID"):
+    body["assignee_ids"] = [int(os.environ["ASSIGNEE_ID"])]
+print(json.dumps(body))
+PY
+)
+        gl_put "$API/issues/$ID" "$JSON_BODY"
         ;;
 
     members)
