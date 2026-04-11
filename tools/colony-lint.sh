@@ -262,6 +262,21 @@ if command -v shellcheck &>/dev/null; then
     fi
 fi
 
+# --- Tools unit tests ---
+test_scripts=()
+while IFS= read -r -d '' f; do
+    test_scripts+=("$f")
+done < <(find "$REPO_ROOT/tools" -name "test-*.sh" -print0 2>/dev/null)
+
+for t in "${test_scripts[@]}"; do
+    if bash "$t" &>/dev/null; then
+        pass "tools: $(basename "$t") unit tests"
+    else
+        fail "tools: $(basename "$t") unit tests"
+        bash "$t" 2>&1 | tail -20
+    fi
+done
+
 # --- Summary ---
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
