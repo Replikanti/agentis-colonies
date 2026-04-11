@@ -8,11 +8,11 @@ Each colony specializes in one part of the workflow. Together, they form a feder
 
 | Colony | Description | Status |
 |--------|-------------|--------|
+| [triage](./triage/) | Manages issues: creation, prioritization, labeling, routing (4 agents) | Active |
 | [code-review](./code-review/) | Reviews merge requests: style, logic, security, test coverage, approval decisions (5 agents) | Active |
 | [planning](./planning/) | Breaks down work: scope estimation, risk assessment, task decomposition, plan review (4 agents) | Active |
-| [implementation](./implementation/) | Writes and refactors code: code generation, test writing, commit conventions (4 agents) | Active |
-| [triage](./triage/) | Manages issues: creation, prioritization, labeling, routing (4 agents) | Active |
-| [release](./release/) | Automates releases: ship decisions, changelogs, versioning, pre-release checks (4 agents) | Active |
+| [implementation](./implementation/) | Writes and refactors code: code generation, test writing, commit conventions (4 agents) | Scaffolded (see [#5](https://github.com/Replikanti/agentis-colonies/issues/5)) |
+| [release](./release/) | Automates releases: ship decisions, changelogs, versioning, pre-release checks (4 agents) | Scaffolded (see [#5](https://github.com/Replikanti/agentis-colonies/issues/5)) |
 
 ## Why Colonies, Not Individual Agents?
 
