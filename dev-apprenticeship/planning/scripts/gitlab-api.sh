@@ -106,7 +106,7 @@ case "$CMD" in
             esac
         done
         if [ -z "$BODY" ]; then
-            echo '{"error": "--body is required"}' >&2
+            emit_error "--body is required"
             exit 1
         fi
         # Use python3 json.dumps so newlines, quotes, backslashes, and control
