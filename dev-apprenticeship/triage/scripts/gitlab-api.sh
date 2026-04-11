@@ -175,6 +175,22 @@ PY
             # `+`, `&`, or non-ASCII characters survive encoding intact.
             USER_JSON=$(gl_get_q "$GITLAB_URL/api/v4/users" --data-urlencode "username=$ASSIGNEE")
             USER_ID=$(echo "$USER_JSON" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+            # If the lookup didn't find a user, fail here rather than
+            # silently dropping the assignee. Without this the caller gets
+            # the generic "requires at least one of ..." error below, which
+            # is confusing when they did pass --assignee.
+            if [ -z "$USER_ID" ]; then
+                emit_error "update-issue: unknown user: $ASSIGNEE"
+                exit 1
+            fi
+        fi
+        # Fail fast if no modifying flags were passed. A PUT with body {}
+        # is a confusing no-op: GitLab happily returns the unchanged issue
+        # as if the update had happened, so the caller has no signal that
+        # they forgot to pass anything.
+        if [ -z "$ADD_LABELS" ] && [ -z "$REMOVE_LABELS" ] && [ -z "$PRIORITY" ] && [ -z "$USER_ID" ]; then
+            emit_error "update-issue requires at least one of --add-labels, --remove-labels, --priority, --assignee"
+            exit 1
         fi
         # Build JSON body via python3 json.dumps so label names and priority
         # strings containing quotes, backslashes, commas, or control chars
