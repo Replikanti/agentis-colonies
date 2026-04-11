@@ -4,6 +4,8 @@
 
 A colony of four agents that learn how you manage issues. They observe how you create, label, prioritize, and route issues on GitLab, and gradually take over the mechanical parts of issue management.
 
+> **Fresh colony is silent by default.** Every agent's confidence starts at `0.0` (observe-only) and stays there until you seed the memo store. See [Bootstrap: seeding agent confidence](../README.md#bootstrap-seeding-agent-confidence) in the federation README for the ramp procedure.
+
 ## Agents
 
 | Agent | File | Learns | Autonomy after |

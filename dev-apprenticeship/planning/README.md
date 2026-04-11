@@ -4,6 +4,8 @@
 
 A colony of four agents that learn how you plan work. They observe how you break down issues, estimate scope, assess risks, and review plans on GitLab, and gradually take over the routine parts of planning.
 
+> **Fresh colony is silent by default.** Every agent's confidence starts at `0.0` (observe-only) and stays there until you seed the memo store. See [Bootstrap: seeding agent confidence](../README.md#bootstrap-seeding-agent-confidence) in the federation README for the ramp procedure.
+
 ## Agents
 
 | Agent | File | Learns | Autonomy after |

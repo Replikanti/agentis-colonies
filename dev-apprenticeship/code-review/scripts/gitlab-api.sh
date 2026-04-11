@@ -1,6 +1,6 @@
 #!/bin/bash
 # GitLab API wrapper for code-review colony agents.
-# Called by .ag agents via exec shell.
+# Called by .ag agents via exec sh.
 #
 # Required env vars (set by start-colony.sh from colony.toml):
 #   GITLAB_URL     - GitLab instance URL
