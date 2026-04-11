@@ -15,28 +15,6 @@
 
 cb 600;
 
-type ScopeEstimate {
-    issue_id: int,
-    phases: int,
-    points: int,
-    reasoning: string,
-    confidence: float
-}
-
-type RiskAssessment {
-    issue_id: int,
-    risks: string,
-    severity: string,
-    confidence: float
-}
-
-type TaskBreakdown {
-    issue_id: int,
-    subtasks: string,
-    count: int,
-    confidence: float
-}
-
 type DraftPlan {
     issue_id: int,
     plan: string,
@@ -50,6 +28,15 @@ fn get_confidence() -> float {
         return prompt("Return this number as a decimal. Nothing else.", raw) -> float;
     };
     return 0.0;
+}
+
+// listen() returns Value::Void on timeout, which to_string() renders as the
+// literal string "void". Treat that (and the empty string) as "no message".
+fn received(s: string) -> bool {
+    if s == "void" {
+        return false;
+    };
+    return len(s) > 2;
 }
 
 fn stash(slot: string, issue_id: int, body: string) -> void {
@@ -69,18 +56,19 @@ fn tick(reason: string) -> void {
     let breakdown_str = to_string(breakdown);
 
     // 2. Stash each partial under the issue id it belongs to.
-    // We need the issue id to route peer outputs; ask the LLM once per
-    // non-empty bucket rather than trying to parse the record ourselves.
-    if len(scope_str) > 2 {
-        let scope_iid = prompt("Return just the issue_id integer from this JSON record. Nothing else.", scope_str) -> int;
+    // Peer outputs arrive as struct Display format (not JSON), but the
+    // issue_id field is rendered verbatim either way, so we let the LLM
+    // extract it once per non-void bucket.
+    if received(scope_str) {
+        let scope_iid = prompt("Return just the issue_id integer from this record. Nothing else.", scope_str) -> int;
         stash("scope", scope_iid, scope_str);
     };
-    if len(risks_str) > 2 {
-        let risks_iid = prompt("Return just the issue_id integer from this JSON record. Nothing else.", risks_str) -> int;
+    if received(risks_str) {
+        let risks_iid = prompt("Return just the issue_id integer from this record. Nothing else.", risks_str) -> int;
         stash("risks", risks_iid, risks_str);
     };
-    if len(breakdown_str) > 2 {
-        let bd_iid = prompt("Return just the issue_id integer from this JSON record. Nothing else.", breakdown_str) -> int;
+    if received(breakdown_str) {
+        let bd_iid = prompt("Return just the issue_id integer from this record. Nothing else.", breakdown_str) -> int;
         stash("breakdown", bd_iid, breakdown_str);
     };
 
@@ -122,9 +110,9 @@ fn tick(reason: string) -> void {
     // 4. Assemble the combined plan and score it against learned criteria.
     let rec = recommend("review_plan", ["completeness"]);
     let context = "Issue id: " + to_string(target_iid) +
-        "\nScope estimate JSON: " + s +
-        "\nRisk assessment JSON: " + r +
-        "\nTask breakdown JSON: " + b +
+        "\nScope estimate: " + s +
+        "\nRisk assessment: " + r +
+        "\nTask breakdown: " + b +
         "\nPast review criteria: " + to_string(rec);
 
     let draft = prompt(
@@ -132,12 +120,11 @@ fn tick(reason: string) -> void {
         context
     ) -> DraftPlan;
 
-    let override_conf = get_confidence();
-    let effective = if override_conf > 0.0 { override_conf; } else { draft.confidence; };
+    let confidence = get_confidence();
 
-    print("[plan_reviewer] Issue", draft.issue_id, "-> review_score:", draft.review_score, "effective:", effective);
+    print("[plan_reviewer] Issue", draft.issue_id, "-> review_score:", draft.review_score);
 
-    if effective >= 0.85 {
+    if confidence >= 0.85 {
         let post_cmd = "./scripts/gitlab-api.sh add-note " + to_string(draft.issue_id) + " --body " + shell_escape(draft.plan);
         try { exec sh post_cmd; } catch e {
             print("[plan_reviewer] Failed to post note:", e);
@@ -151,7 +138,7 @@ fn tick(reason: string) -> void {
         );
         print("[plan_reviewer] Posted plan to issue", draft.issue_id);
     } else {
-        if effective >= 0.6 {
+        if confidence >= 0.6 {
             emit("planning:draft_plan", draft);
             learn(
                 "review_plan",
@@ -162,14 +149,7 @@ fn tick(reason: string) -> void {
             );
             print("[plan_reviewer] Emitted draft plan for issue", draft.issue_id);
         } else {
-            learn(
-                "review_plan",
-                "issue " + to_string(draft.issue_id),
-                "low confidence: score=" + to_string(draft.review_score),
-                "observed",
-                "planning"
-            );
-            print("[plan_reviewer] Observing (confidence:", effective, ")");
+            print("[plan_reviewer] Observing (confidence:", confidence, ")");
         };
     };
 }

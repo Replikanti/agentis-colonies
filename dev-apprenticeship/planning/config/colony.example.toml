@@ -23,23 +23,23 @@ backend = "cli"
 [[agents]]
 name = "scope_estimator"
 source = "agents/scope_estimator.ag"
-cb_budget = 800
+cb_budget = 500
 tick_interval_ms = 60000
 
 [[agents]]
 name = "risk_assessor"
 source = "agents/risk_assessor.ag"
-cb_budget = 600
+cb_budget = 500
 tick_interval_ms = 60000
 
 [[agents]]
 name = "task_decomposer"
 source = "agents/task_decomposer.ag"
-cb_budget = 1000
+cb_budget = 500
 tick_interval_ms = 60000
 
 [[agents]]
 name = "plan_reviewer"
 source = "agents/plan_reviewer.ag"
-cb_budget = 800
+cb_budget = 600
 tick_interval_ms = 60000

@@ -94,9 +94,10 @@ case "$CMD" in
             echo '{"error": "--body is required"}' >&2
             exit 1
         fi
-        # Escape double quotes and backslashes for JSON
-        ESCAPED_BODY=$(printf '%s' "$BODY" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')
-        gl_post "$API/issues/$ID/notes" "{\"body\":\"$ESCAPED_BODY\"}"
+        # Use python3 json.dumps so newlines, quotes, backslashes, and control
+        # chars are all escaped correctly and markdown formatting is preserved.
+        JSON_BODY=$(printf '%s' "$BODY" | python3 -c 'import sys,json; print(json.dumps({"body": sys.stdin.read()}))')
+        gl_post "$API/issues/$ID/notes" "$JSON_BODY"
         ;;
 
     merge-requests)
