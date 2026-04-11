@@ -9,9 +9,6 @@
 #
 # Usage:
 #   gitlab-api.sh issues [--since ISO8601] [--state opened|closed|all]
-#   gitlab-api.sh issue <id>
-#   gitlab-api.sh issue-events <id>
-#   gitlab-api.sh issue-notes <id>
 #   gitlab-api.sh create-issue --title <t> --description <d> [--labels l1,l2] [--priority p]
 #   gitlab-api.sh update-issue <id> [--add-labels l1,l2] [--remove-labels l1,l2] [--priority p] [--assignee username]
 #   gitlab-api.sh members
@@ -99,21 +96,6 @@ case "$CMD" in
             ARGS+=(--data-urlencode "updated_after=$SINCE")
         fi
         gl_get_q "$API/issues" "${ARGS[@]}"
-        ;;
-
-    issue)
-        ID="${1:?Usage: gitlab-api.sh issue <id>}"
-        gl_get "$API/issues/$ID"
-        ;;
-
-    issue-events)
-        ID="${1:?Usage: gitlab-api.sh issue-events <id>}"
-        gl_get "$API/issues/$ID/resource_label_events?per_page=50"
-        ;;
-
-    issue-notes)
-        ID="${1:?Usage: gitlab-api.sh issue-notes <id>}"
-        gl_get "$API/issues/$ID/notes?per_page=50&order_by=created_at&sort=desc"
         ;;
 
     create-issue)

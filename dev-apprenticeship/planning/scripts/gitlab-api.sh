@@ -9,11 +9,8 @@
 #
 # Usage:
 #   gitlab-api.sh issues --needs-planning [--since ISO8601]
-#   gitlab-api.sh issue <iid>
-#   gitlab-api.sh issue-notes <iid>
 #   gitlab-api.sh add-note <iid> --body <text>
 #   gitlab-api.sh merge-requests [--state merged] [--since ISO8601]
-#   gitlab-api.sh mr <iid>
 #
 # Planning only reads from GitLab and posts comments. It never changes labels,
 # approves, assigns, or merges — that surface lives in triage / code-review /
@@ -98,16 +95,6 @@ case "$CMD" in
         gl_get_q "$API/issues" "${ARGS[@]}"
         ;;
 
-    issue)
-        ID="${1:?Usage: gitlab-api.sh issue <iid>}"
-        gl_get "$API/issues/$ID"
-        ;;
-
-    issue-notes)
-        ID="${1:?Usage: gitlab-api.sh issue-notes <iid>}"
-        gl_get "$API/issues/$ID/notes?per_page=50&order_by=created_at&sort=desc"
-        ;;
-
     add-note)
         ID="${1:?Usage: gitlab-api.sh add-note <iid> --body <text>}"
         shift
@@ -148,11 +135,6 @@ case "$CMD" in
             ARGS+=(--data-urlencode "updated_after=$SINCE")
         fi
         gl_get_q "$API/merge_requests" "${ARGS[@]}"
-        ;;
-
-    mr)
-        ID="${1:?Usage: gitlab-api.sh mr <iid>}"
-        gl_get "$API/merge_requests/$ID"
         ;;
 
     *)
