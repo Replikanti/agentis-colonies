@@ -76,7 +76,7 @@ case "$CMD" in
             case "$1" in
                 --since) SINCE="$2"; shift 2 ;;
                 --state) STATE="$2"; shift 2 ;;
-                *) shift ;;
+                *) echo "{\"error\": \"unknown flag: $1\"}" >&2; exit 2 ;;
             esac
         done
         ARGS=(
@@ -117,7 +117,7 @@ case "$CMD" in
                 --description) DESC="$2"; shift 2 ;;
                 --labels) LABELS="$2"; shift 2 ;;
                 --priority) PRIORITY="$2"; shift 2 ;;
-                *) shift ;;
+                *) echo "{\"error\": \"unknown flag: $1\"}" >&2; exit 2 ;;
             esac
         done
         if [ -z "$TITLE" ]; then
@@ -156,7 +156,7 @@ PY
                 --remove-labels) REMOVE_LABELS="$2"; shift 2 ;;
                 --priority) PRIORITY="$2"; shift 2 ;;
                 --assignee) ASSIGNEE="$2"; shift 2 ;;
-                *) shift ;;
+                *) echo "{\"error\": \"unknown flag: $1\"}" >&2; exit 2 ;;
             esac
         done
         USER_ID=""

@@ -70,7 +70,7 @@ case "$CMD" in
             case "$1" in
                 --since) SINCE="$2"; shift 2 ;;
                 --needs-planning) NEEDS_PLANNING=1; shift ;;
-                *) shift ;;
+                *) echo "{\"error\": \"unknown flag: $1\"}" >&2; exit 2 ;;
             esac
         done
         ARGS=(
@@ -105,7 +105,7 @@ case "$CMD" in
         while [ $# -gt 0 ]; do
             case "$1" in
                 --body) BODY="$2"; shift 2 ;;
-                *) shift ;;
+                *) echo "{\"error\": \"unknown flag: $1\"}" >&2; exit 2 ;;
             esac
         done
         if [ -z "$BODY" ]; then
@@ -125,7 +125,7 @@ case "$CMD" in
             case "$1" in
                 --state) STATE="$2"; shift 2 ;;
                 --since) SINCE="$2"; shift 2 ;;
-                *) shift ;;
+                *) echo "{\"error\": \"unknown flag: $1\"}" >&2; exit 2 ;;
             esac
         done
         ARGS=(
