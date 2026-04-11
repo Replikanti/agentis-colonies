@@ -81,7 +81,7 @@ fn tick(reason: string) -> void {
         ) -> DraftIssue;
 
         if confidence >= 0.85 {
-            let create_cmd = "./scripts/gitlab-api.sh create-issue --title \"" + draft.title + "\" --description \"" + draft.description + "\" --labels \"" + draft.suggested_labels + "\"";
+            let create_cmd = "./scripts/gitlab-api.sh create-issue --title " + shell_escape(draft.title) + " --description " + shell_escape(draft.description) + " --labels " + shell_escape(draft.suggested_labels);
             let result = try {
                 exec sh create_cmd;
             } catch e {

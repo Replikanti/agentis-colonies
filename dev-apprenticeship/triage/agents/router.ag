@@ -83,7 +83,7 @@ fn tick(reason: string) -> void {
         ) -> RouteAction;
 
         if confidence >= 0.85 {
-            let update_cmd = "./scripts/gitlab-api.sh update-issue " + to_string(action.issue_id) + " --assignee \"" + action.assignee + "\"";
+            let update_cmd = "./scripts/gitlab-api.sh update-issue " + to_string(action.issue_id) + " --assignee " + shell_escape(action.assignee);
             let result = try { exec sh update_cmd; } catch e {
                 print("[router] Failed to assign:", e);
                 "";
