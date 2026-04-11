@@ -37,6 +37,19 @@ gl_get() {
         "$1"
 }
 
+# gl_get_q <url> [--data-urlencode k=v ...]
+# Uses curl -G so each key=value pair is URL-encoded safely. Use this
+# for any endpoint whose query string takes values that could contain
+# spaces, '&', '#', or non-ASCII. Plain path-only GETs keep using gl_get.
+gl_get_q() {
+    local url="$1"
+    shift
+    curl -sfS -G --max-time 30 \
+        -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+        "$@" \
+        "$url"
+}
+
 gl_post() {
     curl -sfS --max-time 30 \
         -X POST \
@@ -60,14 +73,19 @@ case "$CMD" in
                 *) shift ;;
             esac
         done
-        URL="$API/issues?state=opened&per_page=20&order_by=updated_at&sort=desc"
+        ARGS=(
+            --data-urlencode "state=opened"
+            --data-urlencode "per_page=20"
+            --data-urlencode "order_by=updated_at"
+            --data-urlencode "sort=desc"
+        )
         if [ "$NEEDS_PLANNING" -eq 1 ]; then
-            URL="$URL&labels=needs-planning"
+            ARGS+=(--data-urlencode "labels=needs-planning")
         fi
         if [ -n "$SINCE" ]; then
-            URL="$URL&updated_after=$SINCE"
+            ARGS+=(--data-urlencode "updated_after=$SINCE")
         fi
-        gl_get "$URL"
+        gl_get_q "$API/issues" "${ARGS[@]}"
         ;;
 
     issue)
@@ -110,11 +128,16 @@ case "$CMD" in
                 *) shift ;;
             esac
         done
-        URL="$API/merge_requests?state=$STATE&per_page=20&order_by=updated_at&sort=desc"
+        ARGS=(
+            --data-urlencode "state=$STATE"
+            --data-urlencode "per_page=20"
+            --data-urlencode "order_by=updated_at"
+            --data-urlencode "sort=desc"
+        )
         if [ -n "$SINCE" ]; then
-            URL="$URL&updated_after=$SINCE"
+            ARGS+=(--data-urlencode "updated_after=$SINCE")
         fi
-        gl_get "$URL"
+        gl_get_q "$API/merge_requests" "${ARGS[@]}"
         ;;
 
     mr)
