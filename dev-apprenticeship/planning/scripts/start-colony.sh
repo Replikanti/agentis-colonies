@@ -8,7 +8,9 @@
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Resolve symlinks on $0 itself so the script works when invoked via a symlink.
+SCRIPT_PATH="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$0")"
+SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 COLONY_DIR="$(dirname "$SCRIPT_DIR")"
 CONFIG="${1:-$COLONY_DIR/config/colony.toml}"
 
@@ -18,6 +20,33 @@ if [ ! -f "$CONFIG" ]; then
     exit 1
 fi
 
+# Parse GitLab config from TOML via the shared helper.
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# shellcheck source=../../../tools/parse-toml.sh
+# shellcheck disable=SC1091  # colony-lint runs shellcheck without -x
+. "$REPO_ROOT/tools/parse-toml.sh"
+
+GITLAB_URL=$(parse_toml gitlab url)
+GITLAB_TOKEN=$(parse_toml gitlab token)
+GITLAB_PROJECT_RAW=$(parse_toml gitlab project)
+
+if [ -z "$GITLAB_URL" ] || [ -z "$GITLAB_TOKEN" ] || [ -z "$GITLAB_PROJECT_RAW" ]; then
+    echo "Error: GitLab config incomplete in $CONFIG"
+    echo "Required: url, token, project under [gitlab]"
+    exit 1
+fi
+
+# URL-encode the project path (replace / with %2F)
+GITLAB_PROJECT="${GITLAB_PROJECT_RAW//\//%2F}"
+
+export GITLAB_URL
+export GITLAB_TOKEN
+export GITLAB_PROJECT
+export COLONY_DIR
+
+# Parse LLM backend
+LLM_BACKEND=$(parse_toml llm backend)
+
 AGENTS=(
     scope_estimator
     risk_assessor
@@ -26,13 +55,23 @@ AGENTS=(
 )
 
 echo "Starting Planning colony (${#AGENTS[@]} agents)..."
+echo "  GitLab: $GITLAB_URL ($GITLAB_PROJECT_RAW)"
+echo "  LLM: ${LLM_BACKEND:-mock}"
 
 for agent in "${AGENTS[@]}"; do
     echo "  Starting $agent..."
-    agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
-        --colony planning \
-        --backend claude \
-        --tick-interval 60000 &
+    if [ -n "$LLM_BACKEND" ]; then
+        agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
+            --colony planning \
+            --backend "$LLM_BACKEND" \
+            --tick-interval 60000 \
+            --enable-exec &
+    else
+        agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
+            --colony planning \
+            --tick-interval 60000 \
+            --enable-exec &
+    fi
     sleep 2  # stagger starts to reduce API contention
 done
 

@@ -1,0 +1,175 @@
+// plan_reviewer.ag -- Planning colony: assembles the final plan.
+//
+// Listens for scope estimates, risk assessments, and task breakdowns
+// from the three peer agents. Once all three have reported on the
+// same issue, it assembles a combined plan (markdown), checks it
+// against learned review criteria, and either posts it as a comment
+// (high confidence) or emits it for human review (medium confidence).
+//
+// Partial peer outputs are stashed in memo under
+// plan_reviewer:<issue_id>:<slot> so inputs arriving across multiple
+// ticks can still be combined.
+//
+// Run as daemon: agentis daemon agents/plan_reviewer.ag --colony planning
+// Requires: exec_foreign capability, GITLAB_* env vars
+
+cb 600;
+
+type ScopeEstimate {
+    issue_id: int,
+    phases: int,
+    points: int,
+    reasoning: string,
+    confidence: float
+}
+
+type RiskAssessment {
+    issue_id: int,
+    risks: string,
+    severity: string,
+    confidence: float
+}
+
+type TaskBreakdown {
+    issue_id: int,
+    subtasks: string,
+    count: int,
+    confidence: float
+}
+
+type DraftPlan {
+    issue_id: int,
+    plan: string,
+    review_score: float,
+    confidence: float
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("plan_reviewer:confidence");
+    if len(raw) > 0 {
+        return prompt("Return this number as a decimal. Nothing else.", raw) -> float;
+    };
+    return 0.0;
+}
+
+fn stash(slot: string, issue_id: int, body: string) -> void {
+    if len(body) > 2 {
+        memo_write("plan_reviewer:" + to_string(issue_id) + ":" + slot, body);
+    };
+}
+
+fn tick(reason: string) -> void {
+    // 1. Collect peer outputs emitted this tick (partial over time).
+    let scope = listen("planning:scope_estimate", 500);
+    let risks = listen("planning:risks", 500);
+    let breakdown = listen("planning:breakdown", 500);
+
+    let scope_str = to_string(scope);
+    let risks_str = to_string(risks);
+    let breakdown_str = to_string(breakdown);
+
+    // 2. Stash each partial under the issue id it belongs to.
+    // We need the issue id to route peer outputs; ask the LLM once per
+    // non-empty bucket rather than trying to parse the record ourselves.
+    if len(scope_str) > 2 {
+        let scope_iid = prompt("Return just the issue_id integer from this JSON record. Nothing else.", scope_str) -> int;
+        stash("scope", scope_iid, scope_str);
+    };
+    if len(risks_str) > 2 {
+        let risks_iid = prompt("Return just the issue_id integer from this JSON record. Nothing else.", risks_str) -> int;
+        stash("risks", risks_iid, risks_str);
+    };
+    if len(breakdown_str) > 2 {
+        let bd_iid = prompt("Return just the issue_id integer from this JSON record. Nothing else.", breakdown_str) -> int;
+        stash("breakdown", bd_iid, breakdown_str);
+    };
+
+    // 3. Pick the newest unplanned issue and see if we have all three
+    //    slots filled for it. If not, keep waiting.
+    let issues_raw = try {
+        exec sh "./scripts/gitlab-api.sh issues --needs-planning";
+    } catch e {
+        print("[plan_reviewer] GitLab unplanned-issue poll failed:", e);
+        "";
+    };
+
+    if len(issues_raw) < 3 {
+        return;
+    };
+
+    let target_iid = prompt(
+        "Return just the issue_id integer of the newest issue in this JSON array. Nothing else.",
+        issues_raw
+    ) -> int;
+
+    let s = recall_latest("plan_reviewer:" + to_string(target_iid) + ":scope");
+    let r = recall_latest("plan_reviewer:" + to_string(target_iid) + ":risks");
+    let b = recall_latest("plan_reviewer:" + to_string(target_iid) + ":breakdown");
+
+    if len(s) < 2 {
+        print("[plan_reviewer] Waiting on scope for issue", target_iid);
+        return;
+    };
+    if len(r) < 2 {
+        print("[plan_reviewer] Waiting on risks for issue", target_iid);
+        return;
+    };
+    if len(b) < 2 {
+        print("[plan_reviewer] Waiting on breakdown for issue", target_iid);
+        return;
+    };
+
+    // 4. Assemble the combined plan and score it against learned criteria.
+    let rec = recommend("review_plan", ["completeness"]);
+    let context = "Issue id: " + to_string(target_iid) +
+        "\nScope estimate JSON: " + s +
+        "\nRisk assessment JSON: " + r +
+        "\nTask breakdown JSON: " + b +
+        "\nPast review criteria: " + to_string(rec);
+
+    let draft = prompt(
+        "You are the plan reviewer for the planning colony. You have three peer outputs for one issue: scope, risks, and task breakdown. Assemble a single markdown plan suitable for posting as an issue comment. Sections: **Scope**, **Risks**, **Subtasks**. Then self-review against past criteria and return a completeness score. Return JSON: issue_id (int, the target issue), plan (string, the full markdown plan), review_score (float 0-1, your self-review against past criteria), confidence (float 0-1, aggregate confidence combining all three peer confidences with the review score).",
+        context
+    ) -> DraftPlan;
+
+    let override_conf = get_confidence();
+    let effective = if override_conf > 0.0 { override_conf; } else { draft.confidence; };
+
+    print("[plan_reviewer] Issue", draft.issue_id, "-> review_score:", draft.review_score, "effective:", effective);
+
+    if effective >= 0.85 {
+        let post_cmd = "./scripts/gitlab-api.sh add-note " + to_string(draft.issue_id) + " --body " + shell_escape(draft.plan);
+        try { exec sh post_cmd; } catch e {
+            print("[plan_reviewer] Failed to post note:", e);
+        };
+        learn(
+            "review_plan",
+            "issue " + to_string(draft.issue_id),
+            "posted: score=" + to_string(draft.review_score),
+            "acted",
+            "planning"
+        );
+        print("[plan_reviewer] Posted plan to issue", draft.issue_id);
+    } else {
+        if effective >= 0.6 {
+            emit("planning:draft_plan", draft);
+            learn(
+                "review_plan",
+                "issue " + to_string(draft.issue_id),
+                "emitted: score=" + to_string(draft.review_score),
+                "emitted",
+                "planning"
+            );
+            print("[plan_reviewer] Emitted draft plan for issue", draft.issue_id);
+        } else {
+            learn(
+                "review_plan",
+                "issue " + to_string(draft.issue_id),
+                "low confidence: score=" + to_string(draft.review_score),
+                "observed",
+                "planning"
+            );
+            print("[plan_reviewer] Observing (confidence:", effective, ")");
+        };
+    };
+}

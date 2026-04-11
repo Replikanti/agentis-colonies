@@ -1,0 +1,111 @@
+// task_decomposer.ag -- Planning colony: learns subtask granularity.
+//
+// Observes closed epics and their child issues to learn how you split
+// work into subtasks (average breakdown size, size distribution,
+// common ordering patterns). Proposes a subtask breakdown for new
+// unplanned issues.
+//
+// Run as daemon: agentis daemon agents/task_decomposer.ag --colony planning
+// Requires: exec_foreign capability, GITLAB_* env vars
+
+cb 500;
+
+type TaskBreakdown {
+    issue_id: int,
+    subtasks: string,
+    count: int,
+    confidence: float
+}
+
+type DecompositionPatterns {
+    epics_seen: int,
+    avg_subtasks: int,
+    style: string
+}
+
+fn unplanned_cmd() -> string {
+    let ts = recall_latest("task_decomposer:last_check");
+    if len(ts) > 0 {
+        return "./scripts/gitlab-api.sh issues --needs-planning --since " + ts;
+    };
+    return "./scripts/gitlab-api.sh issues --needs-planning";
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("task_decomposer:confidence");
+    if len(raw) > 0 {
+        return prompt("Return this number as a decimal. Nothing else.", raw) -> float;
+    };
+    return 0.0;
+}
+
+fn tick(reason: string) -> void {
+    // 1. Observe: analyze recent issues to infer decomposition style
+    let recent_raw = try {
+        exec sh "./scripts/gitlab-api.sh issues";
+    } catch e {
+        print("[task_decomposer] GitLab issues poll failed:", e);
+        "";
+    };
+
+    if len(recent_raw) > 10 {
+        let patterns = prompt(
+            "Analyze this recent GitLab issues JSON. Identify epics (issues labeled 'epic' or with subtask-like child references in the description). For each epic you can see, estimate how many subtasks were created. Summarize the decomposition style (checklist vs linked issues, granularity). Return JSON: epics_seen (int), avg_subtasks (int), style (string, one short sentence).",
+            recent_raw
+        ) -> DecompositionPatterns;
+
+        if patterns.epics_seen > 0 {
+            learn(
+                "task_decomposition",
+                "batch of " + to_string(patterns.epics_seen) + " epics",
+                "avg " + to_string(patterns.avg_subtasks) + " subtasks | " + patterns.style,
+                "observed",
+                "planning"
+            );
+            print("[task_decomposer] Observed", patterns.epics_seen, "epics, avg", patterns.avg_subtasks, "subtasks");
+        };
+    };
+
+    // 2. Act: propose a subtask breakdown for the next unplanned issue
+    let cmd = unplanned_cmd();
+    let issues_raw = try {
+        exec sh cmd;
+    } catch e {
+        print("[task_decomposer] GitLab unplanned-issue poll failed:", e);
+        "";
+    };
+
+    if len(issues_raw) < 3 {
+        return;
+    };
+
+    let rec = recommend("task_decomposition", ["accuracy"]);
+    let context = "Unplanned issues (newest first): " + issues_raw + "\nPast decomposition patterns: " + to_string(rec);
+
+    let breakdown = prompt(
+        "You are a task decomposer. Pick the newest unplanned issue and propose a subtask breakdown that matches past granularity (learned average). Return JSON: issue_id (int, from the issues JSON), subtasks (string, numbered markdown list of 3-8 subtasks), count (int, how many subtasks), confidence (float 0-1).",
+        context
+    ) -> TaskBreakdown;
+
+    let confidence = get_confidence();
+
+    print("[task_decomposer] Issue", breakdown.issue_id, "->", breakdown.count, "subtasks");
+
+    if confidence >= 0.6 {
+        emit("planning:breakdown", breakdown);
+        learn(
+            "task_decomposition",
+            "issue " + to_string(breakdown.issue_id),
+            to_string(breakdown.count) + " subtasks: " + breakdown.subtasks,
+            "emitted",
+            "planning"
+        );
+    } else {
+        print("[task_decomposer] Observing (confidence:", confidence, ")");
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("task_decomposer:last_check", now);
+    };
+}
