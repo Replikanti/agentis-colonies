@@ -21,13 +21,6 @@
 
 set -e
 
-if [ -z "$GITLAB_URL" ] || [ -z "$GITLAB_TOKEN" ] || [ -z "$GITLAB_PROJECT" ]; then
-    echo '{"error": "GITLAB_URL, GITLAB_TOKEN, and GITLAB_PROJECT must be set"}' >&2
-    exit 1
-fi
-
-API="$GITLAB_URL/api/v4/projects/$GITLAB_PROJECT"
-
 # emit_error <message>
 # Print a JSON error object to stderr with <message> safely encoded via
 # python3 json.dumps. Use this anywhere the message contains user-supplied
@@ -37,6 +30,13 @@ API="$GITLAB_URL/api/v4/projects/$GITLAB_PROJECT"
 emit_error() {
     printf '%s' "$1" | python3 -c 'import sys,json; print(json.dumps({"error": sys.stdin.read()}), file=sys.stderr)'
 }
+
+if [ -z "$GITLAB_URL" ] || [ -z "$GITLAB_TOKEN" ] || [ -z "$GITLAB_PROJECT" ]; then
+    emit_error "GITLAB_URL, GITLAB_TOKEN, and GITLAB_PROJECT must be set"
+    exit 1
+fi
+
+API="$GITLAB_URL/api/v4/projects/$GITLAB_PROJECT"
 
 gl_get() {
     curl -sfS --max-time 30 \
