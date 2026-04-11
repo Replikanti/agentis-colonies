@@ -113,7 +113,7 @@ case "$CMD" in
             esac
         done
         if [ -z "$TITLE" ]; then
-            echo '{"error": "--title is required"}' >&2
+            emit_error "--title is required"
             exit 1
         fi
         # Build JSON body via python3 json.dumps so titles and descriptions
@@ -157,10 +157,16 @@ PY
             # `+`, `&`, or non-ASCII characters survive encoding intact.
             USER_JSON=$(gl_get_q "$GITLAB_URL/api/v4/users" --data-urlencode "username=$ASSIGNEE")
             USER_ID=$(echo "$USER_JSON" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
-            # If the lookup didn't find a user, fail here rather than
-            # silently dropping the assignee. Without this the caller gets
-            # the generic "requires at least one of ..." error below, which
-            # is confusing when they did pass --assignee.
+            # If the lookup didn't find a user, fail here. Without this
+            # guard the outcome depends on which other flags were passed:
+            #   - --assignee only: generic "requires at least one of"
+            #     error below, which is confusing because the caller did
+            #     pass --assignee.
+            #   - --assignee + other flags: silent partial success where
+            #     the assignee is dropped and the other fields are PUT
+            #     anyway. Even worse.
+            # Both paths are confusing, so we fail fast with a clear
+            # "unknown user" message instead.
             if [ -z "$USER_ID" ]; then
                 emit_error "update-issue: unknown user: $ASSIGNEE"
                 exit 1

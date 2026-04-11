@@ -110,7 +110,7 @@ case "$CMD" in
             esac
         done
         if [ -z "$BODY" ]; then
-            echo '{"error": "--body is required"}' >&2
+            emit_error "--body is required"
             exit 1
         fi
         JSON_BODY=$(printf '%s' "$BODY" | python3 -c 'import sys,json; print(json.dumps({"body": sys.stdin.read()}))')
