@@ -84,6 +84,69 @@ When onboarding a new project, colonies carry over `personal` knowledge and star
 
 ## Prerequisites
 
-- [Agentis](https://github.com/Replikanti/agentis) runtime
+- [Agentis](https://github.com/Replikanti/agentis) runtime (>= v1.1.3 for the `memo set`/`memo get` CLI used in Bootstrap below)
 - GitLab instance with API access
 - Claude CLI (LLM backend via Agentis `CliBackend`)
+
+## Bootstrap: seeding agent confidence
+
+Every agent starts in **observe-only** mode. On a fresh colony the confidence memo key does not exist, and `get_confidence()` returns `0.0`, which means the agent listens to the bus but emits nothing and takes no action. This is deliberate, but it means **a brand new federation will look silent until you seed it**. Nothing is broken, confidence just has not been set.
+
+### Memo key convention
+
+Each agent reads its confidence from `recall_latest("<agent_name>:confidence")`. The full set of keys across the three active colonies is:
+
+| Colony | Keys |
+|--------|------|
+| triage | `router:confidence`, `prioritizer:confidence`, `labeler:confidence`, `issue_creator:confidence` |
+| code-review | `logic_reviewer:confidence`, `style_reviewer:confidence`, `security_reviewer:confidence`, `test_reviewer:confidence`, `approval_decider:confidence` |
+| planning | `scope_estimator:confidence`, `risk_assessor:confidence`, `task_decomposer:confidence`, `plan_reviewer:confidence` |
+
+### Ramp stages
+
+| Confidence | Mode | Behavior |
+|------------|------|----------|
+| `0.0` - `0.5` | Observe only | Agent watches the bus, learns, emits nothing |
+| `0.6` - `0.84` | Suggest | Agent emits suggestions for the human to review |
+| `>= 0.85` | Autonomous | Agent acts on its own (posts comments, sets labels, assigns reviewers), human can veto |
+
+The recommended path for a new operator is to start every agent at `0.5` for a week or two of silent observation, raise to `0.6` once the ingested signal looks sane, then individually promote agents to `0.85` as you get comfortable with their output.
+
+### Seeding via the CLI
+
+Use the `agentis memo set` CLI (available in agentis-core v1.1.3 and later). One call per agent:
+
+```bash
+# triage colony
+agentis memo set router:confidence 0.5
+agentis memo set prioritizer:confidence 0.5
+agentis memo set labeler:confidence 0.5
+agentis memo set issue_creator:confidence 0.5
+
+# code-review colony
+agentis memo set logic_reviewer:confidence 0.5
+agentis memo set style_reviewer:confidence 0.5
+agentis memo set security_reviewer:confidence 0.5
+agentis memo set test_reviewer:confidence 0.5
+agentis memo set approval_decider:confidence 0.5
+
+# planning colony
+agentis memo set scope_estimator:confidence 0.5
+agentis memo set risk_assessor:confidence 0.5
+agentis memo set task_decomposer:confidence 0.5
+agentis memo set plan_reviewer:confidence 0.5
+```
+
+To inspect the current value of any agent:
+
+```bash
+agentis memo get labeler:confidence
+```
+
+To promote a single agent (without touching others) once you trust it:
+
+```bash
+agentis memo set labeler:confidence 0.85
+```
+
+Values are stored as strings and parsed as decimals at the agent side, so `0.5`, `0.6`, `0.85` all work the same way.
