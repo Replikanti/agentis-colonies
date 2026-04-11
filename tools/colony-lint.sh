@@ -242,6 +242,21 @@ else
     skip "agentis validation (binary not found)"
 fi
 
+# --- Check .ag files for unsafe exec sh concatenation (#57) ---
+# Grep-level guardrail against the shell-injection class of bug that
+# slipped through in #49. Scans every .ag file under the repo root and
+# fails the lint if any LLM-tainted value is concatenated into an
+# `exec sh` command without a `shell_escape(...)` or `to_string(...)` wrap.
+if [ -x "$REPO_ROOT/tools/check-exec-sh.sh" ]; then
+    check_out="$("$REPO_ROOT/tools/check-exec-sh.sh" "$REPO_ROOT" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "check-exec-sh: no unsafe concat into exec sh"
+    else
+        fail "check-exec-sh: unsafe concat into exec sh"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- Lint tools themselves ---
 if command -v shellcheck &>/dev/null; then
     tools_dir="$REPO_ROOT/tools"
