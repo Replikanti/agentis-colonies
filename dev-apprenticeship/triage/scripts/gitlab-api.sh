@@ -17,7 +17,7 @@
 #   gitlab-api.sh members
 #   gitlab-api.sh labels
 #
-# Returns JSON to stdout. Exit code 0 on success, 1 on error.
+# Returns JSON to stdout. Exit code 0 on success, 1 on error, 2 on unknown flag.
 
 set -e
 
@@ -27,6 +27,16 @@ if [ -z "$GITLAB_URL" ] || [ -z "$GITLAB_TOKEN" ] || [ -z "$GITLAB_PROJECT" ]; t
 fi
 
 API="$GITLAB_URL/api/v4/projects/$GITLAB_PROJECT"
+
+# emit_error <message>
+# Print a JSON error object to stderr with <message> safely encoded via
+# python3 json.dumps. Use this anywhere the message contains user-supplied
+# input (flag names, command names) that could contain quotes, backslashes,
+# or newlines which would otherwise break naive string interpolation.
+# Does NOT exit — the caller controls the exit code.
+emit_error() {
+    printf '%s' "$1" | python3 -c 'import sys,json; print(json.dumps({"error": sys.stdin.read()}), file=sys.stderr)'
+}
 
 gl_get() {
     curl -sfS --max-time 30 \
@@ -76,7 +86,7 @@ case "$CMD" in
             case "$1" in
                 --since) SINCE="$2"; shift 2 ;;
                 --state) STATE="$2"; shift 2 ;;
-                *) echo "{\"error\": \"unknown flag: $1\"}" >&2; exit 2 ;;
+                *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
         ARGS=(
@@ -117,7 +127,7 @@ case "$CMD" in
                 --description) DESC="$2"; shift 2 ;;
                 --labels) LABELS="$2"; shift 2 ;;
                 --priority) PRIORITY="$2"; shift 2 ;;
-                *) echo "{\"error\": \"unknown flag: $1\"}" >&2; exit 2 ;;
+                *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
         if [ -z "$TITLE" ]; then
@@ -156,7 +166,7 @@ PY
                 --remove-labels) REMOVE_LABELS="$2"; shift 2 ;;
                 --priority) PRIORITY="$2"; shift 2 ;;
                 --assignee) ASSIGNEE="$2"; shift 2 ;;
-                *) echo "{\"error\": \"unknown flag: $1\"}" >&2; exit 2 ;;
+                *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
         USER_ID=""
@@ -195,7 +205,7 @@ PY
         ;;
 
     *)
-        echo "{\"error\": \"Unknown command: $CMD\"}" >&2
+        emit_error "unknown command: $CMD"
         exit 1
         ;;
 esac
