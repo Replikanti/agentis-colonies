@@ -81,7 +81,7 @@ fn tick(reason: string) -> void {
         ) -> LabelAction;
 
         if confidence >= 0.85 {
-            let update_cmd = "./scripts/gitlab-api.sh update-issue " + to_string(action.issue_id) + " --add-labels \"" + action.labels + "\"";
+            let update_cmd = "./scripts/gitlab-api.sh update-issue " + to_string(action.issue_id) + " --add-labels " + shell_escape(action.labels);
             let result = try { exec sh update_cmd; } catch e {
                 print("[labeler] Failed to apply labels:", e);
                 "";

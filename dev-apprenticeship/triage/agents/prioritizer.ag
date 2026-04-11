@@ -80,7 +80,7 @@ fn tick(reason: string) -> void {
         ) -> PriorityAction;
 
         if confidence >= 0.85 {
-            let update_cmd = "./scripts/gitlab-api.sh update-issue " + to_string(action.issue_id) + " --add-labels \"" + action.priority + "\"";
+            let update_cmd = "./scripts/gitlab-api.sh update-issue " + to_string(action.issue_id) + " --add-labels " + shell_escape(action.priority);
             let result = try { exec sh update_cmd; } catch e {
                 print("[prioritizer] Failed to set priority:", e);
                 "";
