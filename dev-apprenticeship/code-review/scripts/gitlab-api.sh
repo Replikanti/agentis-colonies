@@ -9,16 +9,12 @@
 #
 # Usage:
 #   gitlab-api.sh merge-requests [--since ISO8601] [--state opened|merged|all]
-#   gitlab-api.sh mr <iid>
 #   gitlab-api.sh mr-changes <iid>
 #   gitlab-api.sh mr-notes <iid>
-#   gitlab-api.sh mr-approvals <iid>
 #   gitlab-api.sh post-note <iid> --body <text>
 #   gitlab-api.sh approve <iid>
-#   gitlab-api.sh issues [--since ISO8601] [--state opened|closed|all]
-#   gitlab-api.sh members
 #
-# Returns JSON to stdout. Exit code 0 on success, 1 on error.
+# Returns JSON to stdout. Exit code 0 on success, 1 on error, 2 on unknown flag.
 
 set -e
 
@@ -28,6 +24,16 @@ if [ -z "$GITLAB_URL" ] || [ -z "$GITLAB_TOKEN" ] || [ -z "$GITLAB_PROJECT" ]; t
 fi
 
 API="$GITLAB_URL/api/v4/projects/$GITLAB_PROJECT"
+
+# emit_error <message>
+# Print a JSON error object to stderr with <message> safely encoded via
+# python3 json.dumps. Use this anywhere the message contains user-supplied
+# input (flag names, command names) that could contain quotes, backslashes,
+# or newlines which would otherwise break naive string interpolation.
+# Does NOT exit — the caller controls the exit code.
+emit_error() {
+    printf '%s' "$1" | python3 -c 'import sys,json; print(json.dumps({"error": sys.stdin.read()}), file=sys.stderr)'
+}
 
 gl_get() {
     curl -sfS --max-time 30 \
@@ -68,7 +74,7 @@ case "$CMD" in
             case "$1" in
                 --since) SINCE="$2"; shift 2 ;;
                 --state) STATE="$2"; shift 2 ;;
-                *) shift ;;
+                *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
         ARGS=(
@@ -83,11 +89,6 @@ case "$CMD" in
         gl_get_q "$API/merge_requests" "${ARGS[@]}"
         ;;
 
-    mr)
-        IID="${1:?Usage: gitlab-api.sh mr <iid>}"
-        gl_get "$API/merge_requests/$IID"
-        ;;
-
     mr-changes)
         IID="${1:?Usage: gitlab-api.sh mr-changes <iid>}"
         gl_get "$API/merge_requests/$IID/changes"
@@ -98,11 +99,6 @@ case "$CMD" in
         gl_get "$API/merge_requests/$IID/notes?per_page=100&order_by=created_at&sort=desc"
         ;;
 
-    mr-approvals)
-        IID="${1:?Usage: gitlab-api.sh mr-approvals <iid>}"
-        gl_get "$API/merge_requests/$IID/approvals"
-        ;;
-
     post-note)
         IID="${1:?Usage: gitlab-api.sh post-note <iid> --body <text>}"
         shift
@@ -110,7 +106,7 @@ case "$CMD" in
         while [ $# -gt 0 ]; do
             case "$1" in
                 --body) BODY="$2"; shift 2 ;;
-                *) shift ;;
+                *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
         if [ -z "$BODY" ]; then
@@ -126,34 +122,8 @@ case "$CMD" in
         gl_post "$API/merge_requests/$IID/approve" "{}"
         ;;
 
-    members)
-        gl_get "$API/members/all?per_page=100"
-        ;;
-
-    issues)
-        SINCE=""
-        STATE="opened"
-        while [ $# -gt 0 ]; do
-            case "$1" in
-                --since) SINCE="$2"; shift 2 ;;
-                --state) STATE="$2"; shift 2 ;;
-                *) shift ;;
-            esac
-        done
-        ARGS=(
-            --data-urlencode "state=$STATE"
-            --data-urlencode "per_page=20"
-            --data-urlencode "order_by=updated_at"
-            --data-urlencode "sort=desc"
-        )
-        if [ -n "$SINCE" ]; then
-            ARGS+=(--data-urlencode "updated_after=$SINCE")
-        fi
-        gl_get_q "$API/issues" "${ARGS[@]}"
-        ;;
-
     *)
-        echo "{\"error\": \"Unknown command: $CMD\"}" >&2
+        emit_error "unknown command: $CMD"
         exit 1
         ;;
 esac
