@@ -11,6 +11,7 @@ set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=parse-toml.sh
+# shellcheck disable=SC1091  # colony-lint runs shellcheck without -x
 . "$SCRIPT_DIR/parse-toml.sh"
 
 PASS=0
@@ -90,6 +91,17 @@ else
     fail "#33: missing KEY" "rc=2 + stderr msg" "rc=$rc out=$out"
 fi
 
+# Zero-arg call must also fail loudly.
+set +e
+out="$(parse_toml 2>&1 >/dev/null)"
+rc=$?
+set -e
+if [ "$rc" -eq 2 ] && [ -n "$out" ]; then
+    pass "#33: zero args exits 2 with stderr message"
+else
+    fail "#33: zero args" "rc=2 + stderr msg" "rc=$rc out=$out"
+fi
+
 # Also verify the too-many-args path.
 set +e
 out="$(parse_toml gitlab url extra 2>&1 >/dev/null)"
@@ -122,6 +134,38 @@ url = "x"
 '
 assert_eq "regression: unknown section" "" "$(parse_toml nope url)"
 assert_eq "regression: unknown key" "" "$(parse_toml gitlab nope)"
+
+# --- Test 8: single-quoted values — `#` inside `'...'` is preserved ---
+fixture "single-quoted" "[gitlab]
+token = 'glpat-single#quoted'
+project = 'org/proj'
+"
+assert_eq "#26: single-quoted hash preserved" "glpat-single#quoted" "$(parse_toml gitlab token)"
+assert_eq "#26: single-quoted plain" "org/proj" "$(parse_toml gitlab project)"
+
+# --- Test 9: tab-separated section brackets ---
+printf '[\tgitlab\t]\nurl = "https://tabbed.example.com"\n' > "$TMPDIR_TEST/tabbed.toml"
+CONFIG="$TMPDIR_TEST/tabbed.toml"
+export CONFIG
+assert_eq "#32: tab-padded section header" "https://tabbed.example.com" "$(parse_toml gitlab url)"
+
+# --- Test 10: empty value ---
+fixture "empty-value" '[gitlab]
+url = ""
+token = "non-empty"
+'
+assert_eq "empty quoted value returns empty" "" "$(parse_toml gitlab url)"
+assert_eq "empty value does not break next key" "non-empty" "$(parse_toml gitlab token)"
+
+# --- Test 11: same-name key in sibling section is ignored ---
+fixture "sibling-same-name" '[gitlab]
+url = "gitlab-url"
+
+[llm]
+url = "llm-url"
+'
+assert_eq "gitlab.url resolves to gitlab section" "gitlab-url" "$(parse_toml gitlab url)"
+assert_eq "llm.url resolves to llm section" "llm-url" "$(parse_toml llm url)"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
