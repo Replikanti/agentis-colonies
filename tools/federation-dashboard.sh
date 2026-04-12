@@ -97,9 +97,6 @@ generate() {
     local DAEMONS
     DAEMONS="$(agentis daemon list --json 2>/dev/null || echo '[]')"
 
-    local KNOWLEDGE
-    KNOWLEDGE="$(agentis knowledge stats 2>/dev/null || echo 'No knowledge base found')"
-
     # Parse knowledge count per colony
     local COLONY_LIST_PY=""
     for col in "${COLONIES[@]}"; do
@@ -198,19 +195,16 @@ PY
     done
     COLONY_LIST_JS="[${COLONY_LIST_JS%,}]"
 
-    cat > "$HTML_FILE" <<'HTMLEOF'
+    {
+    cat <<HEADEOF
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta http-equiv="refresh" content="60">
-HTMLEOF
-
-    cat >> "$HTML_FILE" <<TITLEEOF
 <title>${FED_NAME} // Agentis Federation</title>
-TITLEEOF
-
-    cat >> "$HTML_FILE" <<'HTMLEOF'
+HEADEOF
+    cat <<'HTMLEOF'
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
   :root {
@@ -342,6 +336,7 @@ TITLEEOF
 </head>
 <body>
 HTMLEOF
+    } > "$HTML_FILE"
 
     cat >> "$HTML_FILE" <<HEADEREOF
 <div class="header">
