@@ -80,7 +80,7 @@ An explicit feedback channel (for approving or dismissing individual findings) i
 
 ```bash
 # Colony status
-agentis colony status
+agentis daemon list
 
 # Watch a specific agent
 tail -f .agentis/logs/logic_reviewer.log

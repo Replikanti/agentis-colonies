@@ -156,6 +156,36 @@ else
     ok "agentis init"
 fi
 
+# Enable lifecycle tracking (required for colony health/ps)
+AGENTIS_DIR="${SCRIPT_DIR}/../.agentis"
+if [ -d "$AGENTIS_DIR" ]; then
+    AGENTIS_DIR="$AGENTIS_DIR"
+elif [ -d ".agentis" ]; then
+    AGENTIS_DIR=".agentis"
+fi
+
+if [ -d "$AGENTIS_DIR" ]; then
+    mkdir -p "$AGENTIS_DIR/lifecycle"
+    ok "lifecycle tracking enabled"
+
+    # Enable federation monitoring and cross-colony knowledge sharing
+    AGENTIS_CONFIG="$AGENTIS_DIR/config"
+    if [ -f "$AGENTIS_CONFIG" ]; then
+        if ! grep -q 'federation.enabled' "$AGENTIS_CONFIG" 2>/dev/null; then
+            printf '\nfederation.enabled = true\n' >> "$AGENTIS_CONFIG"
+            ok "federation monitoring enabled"
+        else
+            info "federation monitoring already configured"
+        fi
+        if ! grep -q 'knowledge.federation_enabled' "$AGENTIS_CONFIG" 2>/dev/null; then
+            printf 'knowledge.federation_enabled = true\n' >> "$AGENTIS_CONFIG"
+            ok "cross-colony knowledge sharing enabled"
+        else
+            info "cross-colony knowledge sharing already configured"
+        fi
+    fi
+fi
+
 # --- 5. Seed confidence ---
 
 echo ""
@@ -233,5 +263,5 @@ for colony in "${COLONIES[@]}"; do
 done
 echo ""
 echo "Monitor:"
-echo "  agentis colony status"
+echo "  agentis daemon list"
 echo ""
