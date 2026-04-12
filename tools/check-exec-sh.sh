@@ -21,6 +21,10 @@
 # cannot prove safe by adding `// colony-lint: safe-exec-concat` to the
 # same line or the preceding line.
 #
+# Known limitations (false positives / false negatives) are documented
+# in tools/check-exec-sh.md. Read that file before adding a
+# `// colony-lint: safe-exec-concat` suppression comment to your .ag file.
+#
 # Usage: ./tools/check-exec-sh.sh [path]
 # Exit 0 if no unsafe patterns, 1 if one or more findings, 2 on usage error.
 
