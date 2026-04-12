@@ -233,5 +233,5 @@ for colony in "${COLONIES[@]}"; do
 done
 echo ""
 echo "Monitor:"
-echo "  agentis colony status"
+echo "  agentis daemon list"
 echo ""

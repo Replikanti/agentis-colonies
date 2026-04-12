@@ -70,7 +70,7 @@ for agent in "${AGENTS[@]}"; do
     sleep 2  # stagger starts to reduce API contention
 done
 
-echo "Colony started. Use 'agentis colony status' to monitor."
+echo "Colony started. Use 'agentis daemon list' to monitor."
 echo "Stop with: agentis daemon stop --all"
 
 wait

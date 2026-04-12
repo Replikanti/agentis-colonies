@@ -54,7 +54,7 @@ The install script checks prerequisites, creates configs for all 5 colonies, wri
 
 ```bash
 ./start-federation.sh          # Start all 5 colonies (21 agents)
-agentis colony status           # Monitor
+agentis daemon list              # Monitor
 agentis daemon stop --all       # Stop everything
 ```
 
@@ -128,7 +128,7 @@ You can always demote an agent back: `agentis memo set labeler:confidence 0.5`
 
 ## What to expect
 
-**Day 1**: Nothing visible. Agents are silent at 0.5. Check `agentis colony status` and logs to confirm they are polling.
+**Day 1**: Nothing visible. Agents are silent at 0.5. Check `agentis daemon list` and logs to confirm they are polling.
 
 **Week 1-2**: Knowledge entries accumulate from your GitLab activity. Run `agentis knowledge list` to inspect.
 
@@ -157,7 +157,7 @@ agentis knowledge import my-preferences.json --merge
 
 ## Troubleshooting
 
-**Agents are silent after starting**: Expected at confidence 0.5. Check `agentis colony status`. If running, check logs: `tail -f .agentis/logs/router.log`.
+**Agents are silent after starting**: Expected at confidence 0.5. Check `agentis daemon list`. If running, check logs: `tail -f .agentis/logs/router.log`.
 
 **"GitLab poll failed"**: Token lacks `api` scope, or the project path is wrong.
 
@@ -166,6 +166,8 @@ agentis knowledge import my-preferences.json --merge
 **LLM errors**: Check your backend configuration in `.agentis/config`. For CLI backends, verify the command works in your terminal. For HTTP backends, verify the endpoint is reachable and the API key is set.
 
 **Agents not learning**: Run `agentis knowledge list`. If empty after several ticks, verify the GitLab project has recent activity.
+
+**Log growth**: Logs go to `.agentis/logs/<agent>.log` with no built-in rotation. Volume is low (a few lines per tick per agent), but with 21 agents running continuously you should set up `logrotate` or equivalent.
 
 ## Extension points
 
