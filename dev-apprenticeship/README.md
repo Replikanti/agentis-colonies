@@ -93,7 +93,7 @@ The following colony bus events are emitted for external consumption. They have 
 | `review:decision_suggestion` | approval_decider.ag | Confidence 0.6-0.84: approve/reject suggestion for human |
 | `review:escalation` | approval_decider.ag | Confidence >= 0.85: MR requires human attention (edge case) |
 | `planning:draft_plan` | plan_reviewer.ag | Confidence 0.6-0.84: assembled plan for human review |
-| `release:version_bumped` | version_bumper.ag | After tag/release creation: completion notification |
+| `release:version_bumped` | version_bumper.ag | >= 0.85: after tag/release creation; 0.6-0.84: version bump suggestion |
 
 All other events in the federation have internal consumers. The full wiring diagram:
 

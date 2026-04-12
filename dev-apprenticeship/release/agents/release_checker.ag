@@ -120,6 +120,7 @@ fn tick(reason: string) -> void {
             } else {
                 if confidence >= 0.6 {
                     emit("release:check_result", result);
+                    learn("release_check", "periodic check", result.ci_status, "emitted", "release");
                 };
             };
         };
