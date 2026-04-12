@@ -338,7 +338,8 @@ HEADEOF
 HTMLEOF
     } > "$HTML_FILE"
 
-    cat >> "$HTML_FILE" <<HEADEREOF
+    {
+    cat <<HEADEREOF
 <div class="header">
   <div class="header-left">
     <h1>${FED_NAME}</h1>
@@ -354,7 +355,7 @@ HTMLEOF
 </div>
 HEADEREOF
 
-    cat >> "$HTML_FILE" <<'HTMLEOF'
+    cat <<'HTMLEOF'
 <div class="stats-row" id="stats-row"></div>
 
 <div class="grid">
@@ -395,7 +396,7 @@ HEADEREOF
 HTMLEOF
 
     # Inject data
-    cat >> "$HTML_FILE" <<DATAEOF
+    cat <<DATAEOF
 const daemons = ${DAEMONS};
 const confidences = ${AGENT_DATA};
 const colonyList = ${COLONY_LIST_JS};
@@ -408,7 +409,7 @@ const timestamp = "${TIMESTAMP}";
 const totalAgents = ${AGENT_COUNT};
 DATAEOF
 
-    cat >> "$HTML_FILE" <<'JSEOF'
+    cat <<'JSEOF'
 
 // Auto-assign colors to colonies
 const palette = ['#58a6ff','#00ff00','#ffff00','#ff8800','#ff00ff','#00ffcc','#ff6666','#aa88ff'];
@@ -597,6 +598,7 @@ function killSwitch() {
 </body>
 </html>
 JSEOF
+    } >> "$HTML_FILE"
 }
 
 # --- Main ---
