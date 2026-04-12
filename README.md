@@ -52,7 +52,7 @@ graph TD
 ## Prerequisites
 
 - [Agentis](https://github.com/Replikanti/agentis) runtime
-- Claude CLI (LLM backend)
+- An LLM backend (Claude CLI, Ollama, or any OpenAI-compatible API)
 - GitLab instance with API access
 
 ## License

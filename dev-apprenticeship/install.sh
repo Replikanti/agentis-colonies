@@ -53,7 +53,6 @@ echo "Checking prerequisites..."
 
 MISSING=0
 check_cmd agentis  || MISSING=1
-check_cmd claude   || MISSING=1
 check_cmd python3  || MISSING=1
 check_cmd git      || MISSING=1
 
@@ -62,7 +61,6 @@ if [ "$MISSING" -eq 1 ]; then
     fail "Missing prerequisites. Install them and re-run."
     echo ""
     info "agentis: https://github.com/Replikanti/agentis"
-    info "claude:  https://claude.ai/download"
     info "python3: your system package manager"
     exit 1
 fi
@@ -202,11 +200,22 @@ fi
 echo ""
 echo "LLM backend"
 echo ""
-info "The federation uses Claude via the agentis CLI backend."
-info "Make sure your .agentis/config has:"
+info "Agentis needs an LLM backend configured in .agentis/config."
+info "Examples:"
 echo ""
+echo "    # Claude via CLI"
 echo "    llm.backend = cli"
 echo "    llm.command = claude"
+echo ""
+echo "    # Ollama (local)"
+echo "    llm.backend = http"
+echo "    llm.endpoint = http://localhost:11434/v1/chat/completions"
+echo "    llm.model = llama3"
+echo ""
+echo "    # Any OpenAI-compatible API"
+echo "    llm.backend = http"
+echo "    llm.endpoint = https://api.example.com/v1/chat/completions"
+echo "    llm.api_key_env = MY_API_KEY"
 echo ""
 
 # --- Done ---

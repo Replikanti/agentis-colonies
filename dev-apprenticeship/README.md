@@ -34,7 +34,7 @@ graph LR
 ## What you need
 
 - [Agentis](https://github.com/Replikanti/agentis) runtime **>= v1.1.3**
-- [Claude CLI](https://claude.ai/download) (LLM backend, must be authenticated)
+- An LLM backend (Claude CLI, Ollama, or any OpenAI-compatible API)
 - GitLab instance with API access (personal access token with `api` scope)
 - Python 3 and git
 
@@ -48,7 +48,7 @@ cd agentis-colonies/dev-apprenticeship
 
 The install script walks you through setup interactively:
 
-1. Checks that `agentis` (>= v1.1.3), `claude`, `python3`, and `git` are installed
+1. Checks that `agentis` (>= v1.1.3), `python3`, and `git` are installed
 2. Creates `colony.toml` configs for all 5 colonies from the example templates
 3. Asks for your GitLab URL, project path, and API token and writes them to every config
 4. Seeds all 21 agents at your chosen confidence level (default: 0.5, observe-only)
@@ -67,9 +67,13 @@ done
 
 # 3. Make sure agentis is initialized and LLM is configured
 agentis init
-# Set in .agentis/config:
+# Set your LLM backend in .agentis/config, e.g.:
 #   llm.backend = cli
 #   llm.command = claude
+# or:
+#   llm.backend = http
+#   llm.endpoint = http://localhost:11434/v1/chat/completions
+#   llm.model = llama3
 
 # 4. Seed agents (start in observe-only mode)
 for agent in router prioritizer labeler issue_creator \
@@ -249,7 +253,7 @@ curl -H "PRIVATE-TOKEN: <token>" \
 
 **"Config not found" on start**: Run `./install.sh` first, or copy the example config manually: `cp config/colony.example.toml config/colony.toml`
 
-**LLM errors**: Make sure `.agentis/config` has `llm.backend = cli` and `llm.command = claude`. The Claude CLI must be authenticated (`claude` should work in your terminal).
+**LLM errors**: Check your LLM backend configuration in `.agentis/config`. For CLI backends, verify the command works in your terminal. For HTTP backends, verify the endpoint is reachable and the API key is set.
 
 **Agents not learning**: Check `agentis knowledge list`. If empty after several ticks, verify that the GitLab project has recent activity (issues, MRs, reviews) for agents to observe.
 
