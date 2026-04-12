@@ -1,0 +1,144 @@
+// commit_composer.ag -- Implementation colony: learns commit conventions.
+//
+// Observes commit messages and change grouping in merged MRs to learn
+// your commit conventions: message format, scope prefixes, what goes in
+// one commit vs many. Packages code + tests + refactoring into structured
+// commits and opens a merge request.
+//
+// Run as daemon: agentis daemon agents/commit_composer.ag --colony implementation
+// Requires: exec_foreign capability, GITLAB_* env vars
+
+cb 600;
+
+type CommitStyle {
+    commits_seen: int,
+    format: string,
+    grouping: string,
+    prefixes: string
+}
+
+type MRPlan {
+    issue_id: int,
+    branch_name: string,
+    commits: string,
+    mr_title: string,
+    mr_description: string,
+    confidence: float
+}
+
+fn merged_mr_cmd() -> string {
+    let ts = recall_latest("commit_composer:last_check");
+    if len(ts) > 0 {
+        return "./scripts/gitlab-api.sh merge-requests --state merged --since " + ts;
+    };
+    return "./scripts/gitlab-api.sh merge-requests --state merged";
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("commit_composer:confidence");
+    if len(raw) > 0 {
+        return prompt("Return this number as a decimal. Nothing else.", raw) -> float;
+    };
+    return 0.0;
+}
+
+fn tick(reason: string) -> void {
+    // 1. Learn commit conventions from recently merged MRs
+    let cmd = merged_mr_cmd();
+    let raw = try {
+        exec sh cmd;
+    } catch e {
+        print("[commit_composer] GitLab poll failed:", e);
+        "";
+    };
+
+    if len(raw) > 10 {
+        let mr_ids = prompt(
+            "Extract all merge request IIDs from this GitLab JSON array. Return JSON array of integers.",
+            raw
+        ) -> list<int>;
+
+        if len(mr_ids) > 0 {
+            let mr_iid = get(mr_ids, 0);
+            let commits_cmd = "./scripts/gitlab-api.sh mr-commits " + to_string(mr_iid);
+            let commits_raw = try { exec sh commits_cmd; } catch e { "[]"; };
+
+            if len(commits_raw) > 10 {
+                let style = prompt(
+                    "Analyze these commit messages from a merged MR. Identify: how many commits (commits_seen), message format (conventional commits, imperative mood, ticket references), change grouping strategy (one big commit, logical splits, separate refactoring commits), common prefixes (feat:, fix:, chore:, refactor:). Return JSON: commits_seen (int), format (string), grouping (string), prefixes (string).",
+                    commits_raw
+                ) -> CommitStyle;
+
+                if style.commits_seen > 0 {
+                    learn(
+                        "commit_compose",
+                        "MR " + to_string(mr_iid) + " (" + to_string(style.commits_seen) + " commits)",
+                        "format: " + style.format + " | grouping: " + style.grouping + " | prefixes: " + style.prefixes,
+                        "observed",
+                        "implementation"
+                    );
+                    print("[commit_composer] Learned from", style.commits_seen, "commits in MR", mr_iid);
+                };
+            };
+        };
+    };
+
+    // 2. Collect drafts from other agents and compose MR
+    let code_draft = listen("implementation:code_draft", 100);
+    let code_str = to_string(code_draft);
+
+    if len(code_str) < 5 {
+        // No code draft ready yet, nothing to compose
+        let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now) > 0 {
+            memo_write("commit_composer:last_check", now);
+        };
+        return;
+    };
+
+    // Collect test draft and refactoring suggestions (non-blocking, may be empty)
+    let test_draft = listen("implementation:test_draft", 100);
+    let refactor_suggestions = listen("implementation:refactor_suggestions", 100);
+
+    let all_input = "Code draft: " + code_str
+        + "\nTest draft: " + to_string(test_draft)
+        + "\nRefactoring suggestions: " + to_string(refactor_suggestions);
+
+    let rec = recommend("commit_compose", ["accuracy"]);
+    let context = all_input + "\nLearned commit conventions: " + to_string(rec);
+
+    let plan = prompt(
+        "You are a commit composer agent. You received a code draft, possibly tests, and possibly refactoring suggestions for an issue. Compose a structured commit plan following learned conventions. Decide how to split changes into commits (code, tests, refactoring as separate commits or combined, based on learned grouping style). Write commit messages in the learned format. Propose an MR title and description. Return JSON: issue_id (int), branch_name (string, from the code draft), commits (string, markdown numbered list of commit messages), mr_title (string), mr_description (string, brief summary), confidence (float 0-1).",
+        context
+    ) -> MRPlan;
+
+    let confidence = get_confidence();
+    print("[commit_composer] Composed MR plan for issue", plan.issue_id, "(confidence:", confidence, ")");
+
+    if confidence >= 0.85 {
+        // Create the MR
+        let mr_cmd = "./scripts/gitlab-api.sh create-mr --source " + shell_escape(plan.branch_name) + " --title " + shell_escape(plan.mr_title) + " --description " + shell_escape(plan.mr_description);
+        let mr_result = try { exec sh mr_cmd; } catch e {
+            print("[commit_composer] MR creation failed:", e);
+            "";
+        };
+
+        if len(mr_result) > 0 {
+            print("[commit_composer] Created MR for issue", plan.issue_id);
+            emit("implementation:mr_ready", plan);
+            learn("commit_compose", "issue " + to_string(plan.issue_id), plan.mr_title, "acted", "implementation");
+        };
+    } else {
+        if confidence >= 0.6 {
+            emit("implementation:mr_ready", plan);
+            learn("commit_compose", "issue " + to_string(plan.issue_id), plan.mr_title, "emitted", "implementation");
+        } else {
+            print("[commit_composer] Observing (confidence:", confidence, ")");
+        };
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("commit_composer:last_check", now);
+    };
+}

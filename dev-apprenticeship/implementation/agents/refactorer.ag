@@ -1,0 +1,113 @@
+// refactorer.ag -- Implementation colony: learns your refactoring style.
+//
+// Observes refactoring-focused MRs to learn what code smells you fix,
+// when you extract vs inline, and cleanup patterns you follow. When a
+// code draft arrives on the colony bus, suggests improvements.
+//
+// Run as daemon: agentis daemon agents/refactorer.ag --colony implementation
+// Requires: exec_foreign capability, GITLAB_* env vars
+
+cb 1000;
+
+type RefactorPatterns {
+    refactor_mrs: int,
+    smells_fixed: string,
+    techniques: string
+}
+
+type RefactorSuggestion {
+    issue_id: int,
+    suggestions: string,
+    priority: string,
+    confidence: float
+}
+
+fn merged_mr_cmd() -> string {
+    let ts = recall_latest("refactorer:last_check");
+    if len(ts) > 0 {
+        return "./scripts/gitlab-api.sh merge-requests --state merged --since " + ts;
+    };
+    return "./scripts/gitlab-api.sh merge-requests --state merged";
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("refactorer:confidence");
+    if len(raw) > 0 {
+        return prompt("Return this number as a decimal. Nothing else.", raw) -> float;
+    };
+    return 0.0;
+}
+
+fn tick(reason: string) -> void {
+    // 1. Learn from refactoring patterns in merged MRs
+    let cmd = merged_mr_cmd();
+    let raw = try {
+        exec sh cmd;
+    } catch e {
+        print("[refactorer] GitLab poll failed:", e);
+        "";
+    };
+
+    if len(raw) > 10 {
+        let mr_ids = prompt(
+            "Extract all merge request IIDs from this GitLab JSON array. Return JSON array of integers.",
+            raw
+        ) -> list<int>;
+
+        if len(mr_ids) > 0 {
+            let mr_iid = get(mr_ids, 0);
+            let changes_cmd = "./scripts/gitlab-api.sh mr-changes " + to_string(mr_iid);
+            let changes_raw = try { exec sh changes_cmd; } catch e { ""; };
+
+            if len(changes_raw) > 10 {
+                let commits_cmd = "./scripts/gitlab-api.sh mr-commits " + to_string(mr_iid);
+                let commits_raw = try { exec sh commits_cmd; } catch e { "[]"; };
+
+                let patterns = prompt(
+                    "Analyze this MR diff and commit messages. Identify refactoring activity: code smells that were fixed (duplication, long methods, dead code, naming), techniques used (extract method, inline variable, move to module, simplify conditional). If the MR is purely new features with no refactoring, set refactor_mrs to 0. Return JSON: refactor_mrs (int, 0 or 1), smells_fixed (string), techniques (string).",
+                    changes_raw + "\n\nCommit messages: " + commits_raw
+                ) -> RefactorPatterns;
+
+                if patterns.refactor_mrs > 0 {
+                    learn(
+                        "refactor",
+                        "MR " + to_string(mr_iid),
+                        "smells: " + patterns.smells_fixed + " | techniques: " + patterns.techniques,
+                        "observed",
+                        "implementation"
+                    );
+                    print("[refactorer] Learned refactoring patterns from MR", mr_iid);
+                };
+            };
+        };
+    };
+
+    // 2. Listen for code drafts and suggest improvements
+    let draft = listen("implementation:code_draft", 100);
+    let draft_str = to_string(draft);
+
+    if len(draft_str) > 5 {
+        let rec = recommend("refactor", ["accuracy"]);
+        let context = "Code draft to review: " + draft_str + "\nLearned refactoring patterns: " + to_string(rec);
+
+        let suggestion = prompt(
+            "You are a refactoring agent. A code draft has been produced for an issue. Review it against learned refactoring patterns and suggest improvements. Focus on: naming consistency, duplication, overly complex conditionals, missing error handling, extract/inline opportunities. Return JSON: issue_id (int, from the draft), suggestions (string, markdown list of specific improvements), priority (string, 'high' if structural issues or 'low' if cosmetic only), confidence (float 0-1).",
+            context
+        ) -> RefactorSuggestion;
+
+        let confidence = get_confidence();
+        print("[refactorer] Reviewed draft for issue", suggestion.issue_id, "(confidence:", confidence, ")");
+
+        if confidence >= 0.6 {
+            emit("implementation:refactor_suggestions", suggestion);
+            learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "emitted", "implementation");
+        } else {
+            print("[refactorer] Observing (confidence:", confidence, ")");
+        };
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("refactorer:last_check", now);
+    };
+}

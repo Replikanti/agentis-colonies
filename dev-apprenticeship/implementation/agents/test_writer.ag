@@ -1,0 +1,117 @@
+// test_writer.ag -- Implementation colony: learns how you write tests.
+//
+// Observes test files in merged MRs to learn test structure, assertion
+// style, fixture patterns, and coverage expectations. When a code draft
+// arrives on the colony bus, generates matching tests.
+//
+// Run as daemon: agentis daemon agents/test_writer.ag --colony implementation
+// Requires: exec_foreign capability, GITLAB_* env vars
+
+cb 1500;
+
+type TestPatterns {
+    test_files_seen: int,
+    structure: string,
+    assertion_style: string,
+    fixture_patterns: string
+}
+
+type TestDraft {
+    issue_id: int,
+    branch_name: string,
+    test_files: string,
+    summary: string,
+    confidence: float
+}
+
+fn merged_mr_cmd() -> string {
+    let ts = recall_latest("test_writer:last_check");
+    if len(ts) > 0 {
+        return "./scripts/gitlab-api.sh merge-requests --state merged --since " + ts;
+    };
+    return "./scripts/gitlab-api.sh merge-requests --state merged";
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("test_writer:confidence");
+    if len(raw) > 0 {
+        return prompt("Return this number as a decimal. Nothing else.", raw) -> float;
+    };
+    return 0.0;
+}
+
+fn tick(reason: string) -> void {
+    // 1. Learn from test files in recently merged MRs
+    let cmd = merged_mr_cmd();
+    let raw = try {
+        exec sh cmd;
+    } catch e {
+        print("[test_writer] GitLab poll failed:", e);
+        "";
+    };
+
+    if len(raw) > 10 {
+        let mr_ids = prompt(
+            "Extract all merge request IIDs from this GitLab JSON array. Return JSON array of integers.",
+            raw
+        ) -> list<int>;
+
+        if len(mr_ids) > 0 {
+            let mr_iid = get(mr_ids, 0);
+            let changes_cmd = "./scripts/gitlab-api.sh mr-changes " + to_string(mr_iid);
+            let changes_raw = try { exec sh changes_cmd; } catch e { ""; };
+
+            if len(changes_raw) > 10 {
+                let patterns = prompt(
+                    "Analyze this MR diff JSON. Focus only on test files (files matching *_test.*, test_*, tests/, spec/). Identify: how many test files were changed (test_files_seen), test structure (describe/it, test functions, test classes), assertion style (assert, expect, should), fixture patterns (setup/teardown, before/after, test helpers). If no test files in this diff, set test_files_seen to 0. Return JSON: test_files_seen (int), structure (string), assertion_style (string), fixture_patterns (string).",
+                    changes_raw
+                ) -> TestPatterns;
+
+                if patterns.test_files_seen > 0 {
+                    learn(
+                        "test_write",
+                        "MR " + to_string(mr_iid) + " (" + to_string(patterns.test_files_seen) + " test files)",
+                        "structure: " + patterns.structure + " | assertions: " + patterns.assertion_style + " | fixtures: " + patterns.fixture_patterns,
+                        "observed",
+                        "implementation"
+                    );
+                    print("[test_writer] Learned from", patterns.test_files_seen, "test files in MR", mr_iid);
+                };
+            };
+        };
+    };
+
+    // 2. Listen for code drafts from code_writer
+    let draft = listen("implementation:code_draft", 100);
+    let draft_str = to_string(draft);
+
+    if len(draft_str) > 5 {
+        let rec = recommend("test_write", ["accuracy"]);
+        let context = "Code draft: " + draft_str + "\nLearned test patterns: " + to_string(rec);
+
+        let tests = prompt(
+            "You are a test writer agent. A code draft has been produced for an issue. Generate matching tests that follow the learned test patterns (structure, assertion style, fixtures). Return JSON: issue_id (int, from the draft), branch_name (string, same branch as the draft), test_files (string, markdown list of test file paths with brief description of what each tests), summary (string), confidence (float 0-1).",
+            context
+        ) -> TestDraft;
+
+        let confidence = get_confidence();
+        print("[test_writer] Drafted tests for issue", tests.issue_id, "(confidence:", confidence, ")");
+
+        if confidence >= 0.85 {
+            emit("implementation:test_draft", tests);
+            learn("test_write", "issue " + to_string(tests.issue_id), tests.summary, "acted", "implementation");
+        } else {
+            if confidence >= 0.6 {
+                emit("implementation:test_draft", tests);
+                learn("test_write", "issue " + to_string(tests.issue_id), tests.summary, "emitted", "implementation");
+            } else {
+                print("[test_writer] Observing (confidence:", confidence, ")");
+            };
+        };
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("test_writer:last_check", now);
+    };
+}
