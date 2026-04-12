@@ -128,9 +128,9 @@ fn tick(reason: string) -> void {
 
                 if len(commit_result) > 0 {
                     print("[code_writer] Committed code to", draft.branch_name);
+                    emit("implementation:code_draft", draft);
+                    learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "acted", "implementation");
                 };
-                emit("implementation:code_draft", draft);
-                learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "acted", "implementation");
             };
         } else {
             if confidence >= 0.6 {
