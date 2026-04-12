@@ -168,7 +168,7 @@ if [ -d "$AGENTIS_DIR" ]; then
     mkdir -p "$AGENTIS_DIR/lifecycle"
     ok "lifecycle tracking enabled"
 
-    # Enable federation monitoring
+    # Enable federation monitoring and cross-colony knowledge sharing
     AGENTIS_CONFIG="$AGENTIS_DIR/config"
     if [ -f "$AGENTIS_CONFIG" ]; then
         if ! grep -q 'federation.enabled' "$AGENTIS_CONFIG" 2>/dev/null; then
@@ -176,6 +176,12 @@ if [ -d "$AGENTIS_DIR" ]; then
             ok "federation monitoring enabled"
         else
             info "federation monitoring already configured"
+        fi
+        if ! grep -q 'knowledge.federation_enabled' "$AGENTIS_CONFIG" 2>/dev/null; then
+            printf 'knowledge.federation_enabled = true\n' >> "$AGENTIS_CONFIG"
+            ok "cross-colony knowledge sharing enabled"
+        else
+            info "cross-colony knowledge sharing already configured"
         fi
     fi
 fi
