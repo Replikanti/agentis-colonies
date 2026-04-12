@@ -24,13 +24,13 @@ backend = "cli"
 name = "code_writer"
 source = "agents/code_writer.ag"
 cb_budget = 2000
-tick_interval_ms = 120000
+tick_interval_ms = 60000
 
 [[agents]]
 name = "test_writer"
 source = "agents/test_writer.ag"
 cb_budget = 1500
-tick_interval_ms = 120000
+tick_interval_ms = 60000
 
 [[agents]]
 name = "refactorer"

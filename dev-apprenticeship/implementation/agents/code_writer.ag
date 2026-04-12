@@ -101,7 +101,7 @@ fn tick(reason: string) -> void {
         print("[code_writer] Drafted code for issue", draft.issue_id, "(confidence:", confidence, ")");
 
         if confidence >= 0.85 {
-            // Create branch and commit initial code
+            // Create branch
             let branch_cmd = "./scripts/gitlab-api.sh create-branch --name " + shell_escape(draft.branch_name) + " --ref main";
             let branch_result = try { exec sh branch_cmd; } catch e {
                 print("[code_writer] Branch creation failed:", e);
@@ -109,6 +109,26 @@ fn tick(reason: string) -> void {
             };
 
             if len(branch_result) > 0 {
+                // Generate actual code and commit it to the branch
+                let issue_cmd = "./scripts/gitlab-api.sh issue " + to_string(draft.issue_id);
+                let issue_detail = try { exec sh issue_cmd; } catch e { ""; };
+                let code_context = "Issue: " + issue_detail + "\nPlan: " + draft.files + "\nPatterns: " + to_string(rec);
+
+                let actions_json = prompt(
+                    "You are a code writer. Generate the actual file contents for this implementation plan. Return a JSON array of objects, each with: action (string, 'create' or 'update'), file_path (string), content (string, the full file content). Follow the learned naming and structure patterns. Only return the JSON array, nothing else.",
+                    code_context
+                ) -> string;
+
+                // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+                let commit_cmd = "./scripts/gitlab-api.sh commit-files --branch " + shell_escape(draft.branch_name) + " --message " + shell_escape("feat: implement #" + to_string(draft.issue_id) + " - " + draft.summary) + " --actions " + shell_escape(actions_json);
+                let commit_result = try { exec sh commit_cmd; } catch e {
+                    print("[code_writer] Commit failed:", e);
+                    "";
+                };
+
+                if len(commit_result) > 0 {
+                    print("[code_writer] Committed code to", draft.branch_name);
+                };
                 emit("implementation:code_draft", draft);
                 learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "acted", "implementation");
             };
@@ -122,10 +142,10 @@ fn tick(reason: string) -> void {
         };
     };
 
-    // 3. Listen for issue assignments from triage colony
-    let assigned = listen("triage:issue_assigned", 100);
-    if len(to_string(assigned)) > 5 {
-        print("[code_writer] Received issue assignment, will process on next tick");
+    // 3. Listen for routing suggestions from triage colony
+    let routed = listen("triage:route_suggestion", 100);
+    if len(to_string(routed)) > 5 {
+        print("[code_writer] Received routing suggestion, will check assigned issues on next tick");
     };
 
     let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
