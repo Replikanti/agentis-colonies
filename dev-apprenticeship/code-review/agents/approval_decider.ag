@@ -98,4 +98,10 @@ fn tick(reason: string) -> void {
             print("[approval_decider] Observing (confidence:", confidence, ")");
         };
     };
+
+    // Listen for new MRs from implementation colony
+    let impl_mr = listen("implementation:mr_ready", 100);
+    if len(to_string(impl_mr)) > 5 {
+        print("[approval_decider] Implementation colony created a new MR, reviewers will pick it up on next tick");
+    };
 }
