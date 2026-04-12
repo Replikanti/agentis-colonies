@@ -54,11 +54,31 @@ The install script checks prerequisites, creates configs for all 5 colonies, wri
 
 ```bash
 ./start-federation.sh           # Start all 5 colonies (21 agents)
-agentis daemon list             # Running agents
-agentis federation status       # Federation overview
-agentis colony health           # Colony health and specialization
-agentis colony ps               # Agent lifecycle states
 agentis daemon stop --all       # Stop everything
+```
+
+## Monitoring
+
+Three levels of visibility:
+
+**Federation** -- are all colonies connected and routing events?
+```bash
+agentis federation status       # Federated colonies + routing summary
+```
+
+**Colony** -- how is each colony doing internally?
+```bash
+agentis colony health           # Health and specialization per colony
+agentis colony ps               # Agent lifecycle states (running, idle, errored)
+```
+
+**Agent** -- what is a specific agent doing right now?
+```bash
+agentis daemon list             # All running daemon processes
+agentis experience show router  # What the agent has been doing
+agentis knowledge list          # What agents have learned
+agentis memo get router:confidence  # Current confidence level
+tail -f .agentis/logs/router.log    # Live log
 ```
 
 ## How work enters the system
