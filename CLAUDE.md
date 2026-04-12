@@ -2,7 +2,7 @@
 
 ## Project overview
 
-Pre-built agent colonies for the [Agentis](https://github.com/Replikanti/agentis) runtime. The `dev-apprenticeship/` federation contains 5 colonies (21 agents) that learn a developer's workflow by observing how they work on GitLab.
+Pre-built agent colonies for the [Agentis](https://github.com/Replikanti/agentis) runtime. The `dev-apprenticeship/` federation contains 5 colonies (21 agents) that learn a developer's workflow by observing how they work on GitLab. All 21 agents implement the full confidence gradient (observe / suggest / act).
 
 ## Git workflow
 
@@ -47,6 +47,14 @@ colony-name/
 - `start-colony.sh`: symlink-safe `$0` resolution via python3, sources `tools/parse-toml.sh`, exports `GITLAB_URL`/`GITLAB_TOKEN`/`GITLAB_PROJECT`, launches daemons with `--colony <name> --tick-interval 60000`.
 - `gitlab-api.sh`: `emit_error()` for all error messages, `exit 2` for unknown flags, `python3 json.dumps` for all POST/PUT body construction. Read endpoints use `gl_get`/`gl_get_q`, write endpoints use `gl_post`/`gl_put`.
 
+## Federation event wiring
+
+22 colony bus events total: 16 internally wired, 6 extension points (terminal events for external consumption, documented in dev-apprenticeship/README.md).
+
+Cross-colony events:
+- `triage:route_suggestion` -> implementation/code_writer
+- `implementation:mr_ready` -> release/release_checker, code-review/approval_decider
+
 ## Tools
 
 | Tool | Purpose |
@@ -55,3 +63,10 @@ colony-name/
 | `new-colony.sh` | Scaffold a new colony (creates dirs, example config, starter scripts) |
 | `check-exec-sh.sh` | Grep-based check for unsafe string concat into `exec sh`. See `check-exec-sh.md` for known limitations. |
 | `parse-toml.sh` | Shared TOML parser sourced by all start-colony.sh scripts |
+
+## End-user scripts (in dev-apprenticeship/)
+
+| Script | Purpose |
+|--------|---------|
+| `install.sh` | Interactive setup: checks prerequisites, copies configs, writes GitLab credentials, seeds confidence |
+| `start-federation.sh` | Starts all 5 colonies (launches 21 daemon processes) |
