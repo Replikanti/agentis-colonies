@@ -25,9 +25,6 @@ type CheckResult {
     confidence: float
 }
 
-fn releases_cmd() -> string {
-    return "./scripts/gitlab-api.sh releases --per-page 10";
-}
 
 fn get_confidence() -> float {
     let raw = recall_latest("release_checker:confidence");
