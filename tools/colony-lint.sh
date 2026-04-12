@@ -153,9 +153,9 @@ if errors:
 
         # --- Daemon flag whitelist guardrail (#71) ---
         # Validates that every `agentis daemon` invocation in start-colony.sh
-        # uses only flags from DAEMON_FLAG_ALLOWLIST below. Catches the drift
-        # class that produced #68 (stale --backend / --enable-exec flags that
-        # silently ran for months then started failing after agentis-core
+        # uses only flags from the case-statement allowlist below. Catches the
+        # drift class that produced #68 (stale --backend / --enable-exec flags
+        # that silently ran for months then started failing after agentis-core
         # v1.1.4 added strict flag validation).
         #
         # The allowlist must match DAEMON_FLAGS in agentis-core/src/cli/daemon.rs.
@@ -164,6 +164,7 @@ if errors:
         if [ -f "$start_script" ]; then
             bad_flags=$(awk '
                 /^[[:space:]]*#/ { next }
+                /^[[:space:]]*echo/ { next }
                 /agentis[[:space:]]+daemon/ { in_cmd=1 }
                 in_cmd {
                     for (i=1; i<=NF; i++) {
