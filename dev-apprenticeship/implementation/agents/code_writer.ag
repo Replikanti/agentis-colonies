@@ -1,0 +1,155 @@
+// code_writer.ag -- Implementation colony: learns how you write code.
+//
+// Observes merged MRs to learn naming conventions, architecture patterns,
+// idioms, error handling style, and file organization. When an issue is
+// assigned for implementation, drafts code matching learned patterns.
+//
+// Run as daemon: agentis daemon agents/code_writer.ag --colony implementation
+// Requires: exec_foreign capability, GITLAB_* env vars
+
+cb 2000;
+
+type CodePatterns {
+    mr_count: int,
+    naming: string,
+    structure: string,
+    error_handling: string
+}
+
+type CodeDraft {
+    issue_id: int,
+    branch_name: string,
+    files: string,
+    summary: string,
+    confidence: float
+}
+
+fn merged_mr_cmd() -> string {
+    let ts = recall_latest("code_writer:last_check");
+    if len(ts) > 0 {
+        return "./scripts/gitlab-api.sh merge-requests --state merged --since " + ts;
+    };
+    return "./scripts/gitlab-api.sh merge-requests --state merged";
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("code_writer:confidence");
+    if len(raw) > 0 {
+        return prompt("Return this number as a decimal. Nothing else.", raw) -> float;
+    };
+    return 0.0;
+}
+
+fn tick(reason: string) -> void {
+    // 1. Learn from recently merged MRs
+    let cmd = merged_mr_cmd();
+    let raw = try {
+        exec sh cmd;
+    } catch e {
+        print("[code_writer] GitLab poll failed:", e);
+        "";
+    };
+
+    if len(raw) > 10 {
+        let mr_ids = prompt(
+            "Extract all merge request IIDs from this GitLab JSON array. Return JSON array of integers.",
+            raw
+        ) -> list<int>;
+
+        if len(mr_ids) > 0 {
+            let mr_iid = get(mr_ids, 0);
+            let changes_cmd = "./scripts/gitlab-api.sh mr-changes " + to_string(mr_iid);
+            let changes_raw = try { exec sh changes_cmd; } catch e { ""; };
+
+            if len(changes_raw) > 10 {
+                let patterns = prompt(
+                    "Analyze this MR diff JSON. Identify: naming conventions (variable/function names, casing), code structure (module organization, import style), error handling patterns (try/catch, Result types, guard clauses). Return JSON: mr_count (int, always 1), naming (string), structure (string), error_handling (string).",
+                    changes_raw
+                ) -> CodePatterns;
+
+                learn(
+                    "code_write",
+                    "MR " + to_string(mr_iid),
+                    "naming: " + patterns.naming + " | structure: " + patterns.structure + " | errors: " + patterns.error_handling,
+                    "observed",
+                    "implementation"
+                );
+                print("[code_writer] Learned from MR", mr_iid);
+            };
+        };
+    };
+
+    // 2. Check for assigned issues needing implementation
+    let issues_cmd = "./scripts/gitlab-api.sh assigned-issues";
+    let issues_raw = try {
+        exec sh issues_cmd;
+    } catch e {
+        print("[code_writer] assigned-issues poll failed:", e);
+        "";
+    };
+
+    if len(issues_raw) > 10 {
+        let rec = recommend("code_write", ["accuracy"]);
+        let context = "Assigned issues: " + issues_raw + "\nLearned code patterns: " + to_string(rec);
+
+        let draft = prompt(
+            "You are a code writer agent. Pick the highest-priority assigned issue and draft an implementation plan. Propose a branch name (kebab-case, prefixed with feat/ or fix/), list the files to create or modify with brief descriptions, and summarize the approach. Return JSON: issue_id (int), branch_name (string), files (string, markdown list of file paths and what each does), summary (string, 2-3 sentences), confidence (float 0-1).",
+            context
+        ) -> CodeDraft;
+
+        let confidence = get_confidence();
+        print("[code_writer] Drafted code for issue", draft.issue_id, "(confidence:", confidence, ")");
+
+        if confidence >= 0.85 {
+            // Create branch
+            let branch_cmd = "./scripts/gitlab-api.sh create-branch --name " + shell_escape(draft.branch_name) + " --ref main";
+            let branch_result = try { exec sh branch_cmd; } catch e {
+                print("[code_writer] Branch creation failed:", e);
+                "";
+            };
+
+            if len(branch_result) > 0 {
+                // Generate actual code and commit it to the branch
+                let issue_cmd = "./scripts/gitlab-api.sh issue " + to_string(draft.issue_id);
+                let issue_detail = try { exec sh issue_cmd; } catch e { ""; };
+                let code_context = "Issue: " + issue_detail + "\nPlan: " + draft.files + "\nPatterns: " + to_string(rec);
+
+                let actions_json = prompt(
+                    "You are a code writer. Generate the actual file contents for this implementation plan. Return a JSON array of objects, each with: action (string, 'create' or 'update'), file_path (string), content (string, the full file content). Follow the learned naming and structure patterns. Only return the JSON array, nothing else.",
+                    code_context
+                ) -> string;
+
+                // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+                let commit_cmd = "./scripts/gitlab-api.sh commit-files --branch " + shell_escape(draft.branch_name) + " --message " + shell_escape("feat: implement #" + to_string(draft.issue_id) + " - " + draft.summary) + " --actions " + shell_escape(actions_json);
+                let commit_result = try { exec sh commit_cmd; } catch e {
+                    print("[code_writer] Commit failed:", e);
+                    "";
+                };
+
+                if len(commit_result) > 0 {
+                    print("[code_writer] Committed code to", draft.branch_name);
+                    emit("implementation:code_draft", draft);
+                    learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "acted", "implementation");
+                };
+            };
+        } else {
+            if confidence >= 0.6 {
+                emit("implementation:code_draft", draft);
+                learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "emitted", "implementation");
+            } else {
+                print("[code_writer] Observing (confidence:", confidence, ")");
+            };
+        };
+    };
+
+    // 3. Listen for routing suggestions from triage colony
+    let routed = listen("triage:route_suggestion", 100);
+    if len(to_string(routed)) > 5 {
+        print("[code_writer] Received routing suggestion, will check assigned issues on next tick");
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("code_writer:last_check", now);
+    };
+}
