@@ -44,9 +44,6 @@ export GITLAB_TOKEN
 export GITLAB_PROJECT
 export COLONY_DIR
 
-# Parse LLM backend
-LLM_BACKEND=$(parse_toml llm backend)
-
 AGENTS=(
     scope_estimator
     risk_assessor
@@ -54,24 +51,19 @@ AGENTS=(
     plan_reviewer
 )
 
+# Note: LLM backend is read by agentis daemon from the llm.backend key in
+# .agentis/config, not from a CLI flag. The [llm] section in colony.toml is
+# informational only — operators should mirror it into .agentis/config.
+# exec sh is enabled by default on agentis daemon; there is no --enable-exec.
+
 echo "Starting Planning colony (${#AGENTS[@]} agents)..."
 echo "  GitLab: $GITLAB_URL ($GITLAB_PROJECT_RAW)"
-echo "  LLM: ${LLM_BACKEND:-mock}"
 
 for agent in "${AGENTS[@]}"; do
     echo "  Starting $agent..."
-    if [ -n "$LLM_BACKEND" ]; then
-        agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
-            --colony planning \
-            --backend "$LLM_BACKEND" \
-            --tick-interval 60000 \
-            --enable-exec &
-    else
-        agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
-            --colony planning \
-            --tick-interval 60000 \
-            --enable-exec &
-    fi
+    agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
+        --colony planning \
+        --tick-interval 60000 &
     sleep 2  # stagger starts to reduce API contention
 done
 
