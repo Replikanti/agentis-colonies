@@ -53,8 +53,11 @@ The install script checks prerequisites, creates configs for all 5 colonies, wri
 ## Starting and stopping
 
 ```bash
-./start-federation.sh          # Start all 5 colonies (21 agents)
-agentis daemon list             # Monitor
+./start-federation.sh           # Start all 5 colonies (21 agents)
+agentis daemon list             # Running agents
+agentis federation status       # Federation overview
+agentis colony health           # Colony health and specialization
+agentis colony ps               # Agent lifecycle states
 agentis daemon stop --all       # Stop everything
 ```
 
