@@ -25,7 +25,7 @@ type RefactorSuggestion {
 fn merged_mr_cmd() -> string {
     let ts = recall_latest("refactorer:last_check");
     if len(ts) > 0 {
-        return "./scripts/gitlab-api.sh merge-requests --state merged --since " + ts;
+        return "./scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(ts);
     };
     return "./scripts/gitlab-api.sh merge-requests --state merged";
 }

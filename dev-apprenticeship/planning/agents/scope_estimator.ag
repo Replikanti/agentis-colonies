@@ -26,7 +26,7 @@ type CalibrationSummary {
 fn unplanned_cmd() -> string {
     let ts = recall_latest("scope_estimator:last_check");
     if len(ts) > 0 {
-        return "./scripts/gitlab-api.sh issues --needs-planning --since " + ts;
+        return "./scripts/gitlab-api.sh issues --needs-planning --since " + shell_escape(ts);
     };
     return "./scripts/gitlab-api.sh issues --needs-planning";
 }

@@ -24,7 +24,7 @@ type TestReview {
 fn mr_cmd() -> string {
     let ts = recall_latest("test_reviewer:last_check");
     if len(ts) > 0 {
-        return "./scripts/gitlab-api.sh merge-requests --since " + ts;
+        return "./scripts/gitlab-api.sh merge-requests --since " + shell_escape(ts);
     };
     return "./scripts/gitlab-api.sh merge-requests";
 }
