@@ -23,7 +23,7 @@ set -e
 # python3 json.dumps. Use this anywhere the message contains user-supplied
 # input (flag names, command names) that could contain quotes, backslashes,
 # or newlines which would otherwise break naive string interpolation.
-# Does NOT exit — the caller controls the exit code.
+# Does NOT exit. The caller controls the exit code.
 emit_error() {
     printf '%s' "$1" | python3 -c 'import sys,json; print(json.dumps({"error": sys.stdin.read()}), file=sys.stderr)'
 }

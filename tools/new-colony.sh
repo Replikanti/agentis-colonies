@@ -145,11 +145,14 @@ fi
 
 echo "Starting NAME_PLACEHOLDER colony (${#AGENTS[@]} agents)..."
 
+# Note: LLM backend is read by agentis daemon from the llm.backend key in
+# .agentis/config, not from a CLI flag. The [llm] section in colony.toml is
+# informational only. Operators should mirror it into .agentis/config.
+
 for agent in "${AGENTS[@]}"; do
     echo "  Starting $agent..."
     agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
         --colony COLONY_ID_PLACEHOLDER \
-        --backend claude \
         --tick-interval 60000 &
     sleep 2  # stagger starts to reduce API contention
 done

@@ -13,7 +13,7 @@
 #   gitlab-api.sh merge-requests [--state merged] [--since ISO8601]
 #
 # Planning only reads from GitLab and posts comments. It never changes labels,
-# approves, assigns, or merges — that surface lives in triage / code-review /
+# approves, assigns, or merges. That surface lives in triage / code-review /
 # release colonies. If you are tempted to add a write endpoint here, it
 # probably belongs in a different colony.
 #
@@ -26,7 +26,7 @@ set -e
 # python3 json.dumps. Use this anywhere the message contains user-supplied
 # input (flag names, command names) that could contain quotes, backslashes,
 # or newlines which would otherwise break naive string interpolation.
-# Does NOT exit — the caller controls the exit code.
+# Does NOT exit. The caller controls the exit code.
 emit_error() {
     printf '%s' "$1" | python3 -c 'import sys,json; print(json.dumps({"error": sys.stdin.read()}), file=sys.stderr)'
 }
