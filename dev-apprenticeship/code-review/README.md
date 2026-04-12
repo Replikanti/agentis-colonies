@@ -4,7 +4,7 @@
 
 A colony of five specialized agents that learn how you review code. They observe your merge request interactions on GitLab (what you approve, what you flag, what you dismiss) and gradually take over routine review work.
 
-> **Fresh colony is silent by default.** Every agent's confidence starts at `0.0` (observe-only) and stays there until you seed the memo store. See [Bootstrap: seeding agent confidence](../README.md#bootstrap-seeding-agent-confidence) in the federation README for the ramp procedure.
+> **Fresh colony is silent by default.** Every agent's confidence starts at `0.0` (observe-only) and stays there until you seed the memo store. See [Confidence gradient](../README.md#confidence-gradient) in the federation README for the ramp procedure.
 
 ## Agents
 
