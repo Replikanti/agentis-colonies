@@ -151,6 +151,52 @@ if errors:
             fi
         fi
 
+        # --- Daemon flag whitelist guardrail (#71) ---
+        # Validates that every `agentis daemon` invocation in start-colony.sh
+        # uses only flags from DAEMON_FLAG_ALLOWLIST below. Catches the drift
+        # class that produced #68 (stale --backend / --enable-exec flags that
+        # silently ran for months then started failing after agentis-core
+        # v1.1.4 added strict flag validation).
+        #
+        # The allowlist must match DAEMON_FLAGS in agentis-core/src/cli/daemon.rs.
+        # If core adds a new daemon flag, add it here too.
+        start_script="$col_path/scripts/start-colony.sh"
+        if [ -f "$start_script" ]; then
+            bad_flags=$(awk '
+                /^[[:space:]]*#/ { next }
+                /agentis[[:space:]]+daemon/ { in_cmd=1 }
+                in_cmd {
+                    for (i=1; i<=NF; i++) {
+                        tok = $i
+                        sub(/\\$/, "", tok)
+                        if (tok == "&" || tok == "") continue
+                        if (tok ~ /^--[a-zA-Z][a-zA-Z-]*(=.*)?$/) {
+                            sub(/=.*/, "", tok)
+                            print tok
+                        } else if (tok ~ /^-[a-zA-Z]$/) {
+                            print tok
+                        }
+                    }
+                    if ($0 !~ /\\[[:space:]]*$/) { in_cmd = 0 }
+                }
+            ' "$start_script" | while read -r flag; do
+                case "$flag" in
+                    --tick-interval|--cb-per-tick|--colony|--deadline|--priority|\
+                    --enable-migration|--enable-replication|--allow-replica-replication|\
+                    --help|-h) ;;
+                    *) echo "$flag" ;;
+                esac
+            done)
+
+            if [ -z "$bad_flags" ]; then
+                pass "$prefix: start-colony.sh daemon flags OK"
+            else
+                while IFS= read -r flag; do
+                    fail "$prefix: start-colony.sh uses unknown daemon flag: $flag"
+                done <<< "$bad_flags"
+            fi
+        fi
+
         # --- Markdown link check ---
         md_files=()
         while IFS= read -r -d '' f; do
