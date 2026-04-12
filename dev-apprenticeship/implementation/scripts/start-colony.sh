@@ -31,7 +31,6 @@ for agent in "${AGENTS[@]}"; do
     echo "  Starting $agent..."
     agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
         --colony implementation \
-        --backend claude \
         --tick-interval 60000 &
     sleep 2  # stagger starts to reduce API contention
 done
