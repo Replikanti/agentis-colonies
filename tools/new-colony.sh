@@ -147,7 +147,7 @@ echo "Starting NAME_PLACEHOLDER colony (${#AGENTS[@]} agents)..."
 
 # Note: LLM backend is read by agentis daemon from the llm.backend key in
 # .agentis/config, not from a CLI flag. The [llm] section in colony.toml is
-# informational only — operators should mirror it into .agentis/config.
+# informational only. Operators should mirror it into .agentis/config.
 
 for agent in "${AGENTS[@]}"; do
     echo "  Starting $agent..."

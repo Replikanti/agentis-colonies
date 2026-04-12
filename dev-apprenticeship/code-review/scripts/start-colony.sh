@@ -56,7 +56,7 @@ cd "$COLONY_DIR"
 
 # Note: LLM backend is read by agentis daemon from the llm.backend key in
 # .agentis/config, not from a CLI flag. The [llm] section in colony.toml is
-# informational only — operators should mirror it into .agentis/config.
+# informational only. Operators should mirror it into .agentis/config.
 # exec sh is enabled by default on agentis daemon; there is no --enable-exec.
 
 echo "Starting Code Review colony (${#AGENTS[@]} agents)..."

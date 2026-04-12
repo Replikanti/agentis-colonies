@@ -13,7 +13,7 @@
 #   gitlab-api.sh merge-requests [--state merged] [--since ISO8601]
 #
 # Planning only reads from GitLab and posts comments. It never changes labels,
-# approves, assigns, or merges — that surface lives in triage / code-review /
+# approves, assigns, or merges. That surface lives in triage / code-review /
 # release colonies. If you are tempted to add a write endpoint here, it
 # probably belongs in a different colony.
 #
