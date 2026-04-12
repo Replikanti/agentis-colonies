@@ -49,11 +49,44 @@ colony-name/
 
 ## Federation event wiring
 
-22 colony bus events total: 16 internally wired, 6 extension points (terminal events for external consumption, documented in dev-apprenticeship/README.md).
+22 colony bus events total: 16 internally wired, 6 extension points (terminal events for external consumption).
 
 Cross-colony events:
 - `triage:route_suggestion` -> implementation/code_writer
 - `implementation:mr_ready` -> release/release_checker, code-review/approval_decider
+
+Full event-to-consumer mapping:
+
+```
+triage:new_issue             -> router, prioritizer, labeler
+triage:route_suggestion      -> code_writer (cross-colony)
+implementation:code_draft    -> test_writer, refactorer, commit_composer
+implementation:test_draft    -> commit_composer
+implementation:refactor_suggestions -> commit_composer
+implementation:mr_ready      -> release_checker, approval_decider (cross-colony)
+review:style_findings        -> approval_decider
+review:logic_findings        -> approval_decider
+review:security_findings     -> approval_decider
+review:test_findings         -> approval_decider
+planning:scope_estimate      -> plan_reviewer
+planning:risks               -> plan_reviewer
+planning:breakdown           -> plan_reviewer
+release:check_result         -> ship_decider
+release:ship_decision        -> changelog_writer, version_bumper
+release:changelog_draft      -> version_bumper
+```
+
+6 extension points (no internal listener): `triage:label_suggestion`, `triage:priority_suggestion`, `review:decision_suggestion`, `review:escalation`, `planning:draft_plan`, `release:version_bumped`.
+
+## Confidence keys
+
+| Colony | Keys |
+|--------|------|
+| triage | `router:confidence`, `prioritizer:confidence`, `labeler:confidence`, `issue_creator:confidence` |
+| code-review | `logic_reviewer:confidence`, `style_reviewer:confidence`, `security_reviewer:confidence`, `test_reviewer:confidence`, `approval_decider:confidence` |
+| planning | `scope_estimator:confidence`, `risk_assessor:confidence`, `task_decomposer:confidence`, `plan_reviewer:confidence` |
+| implementation | `code_writer:confidence`, `test_writer:confidence`, `refactorer:confidence`, `commit_composer:confidence` |
+| release | `ship_decider:confidence`, `changelog_writer:confidence`, `version_bumper:confidence`, `release_checker:confidence` |
 
 ## Tools
 
