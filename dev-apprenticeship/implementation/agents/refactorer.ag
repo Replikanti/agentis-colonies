@@ -98,11 +98,32 @@ fn tick(reason: string) -> void {
         let confidence = get_confidence();
         print("[refactorer] Reviewed draft for issue", suggestion.issue_id, "(confidence:", confidence, ")");
 
-        if confidence >= 0.6 {
-            emit("implementation:refactor_suggestions", suggestion);
-            learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "emitted", "implementation");
+        if confidence >= 0.85 {
+            // Generate refactored code and commit to branch
+            let branch = prompt("Extract the branch_name from this code draft record. Return just the string, nothing else.", draft_str) -> string;
+            let refactor_context = "Code draft: " + draft_str + "\nSuggestions: " + suggestion.suggestions + "\nPatterns: " + to_string(rec);
+            let actions_json = prompt(
+                "You are a refactorer. Apply these refactoring suggestions to the code draft. Return a JSON array of objects, each with: action (string, 'update'), file_path (string), content (string, the refactored file content). Only return the JSON array, nothing else.",
+                refactor_context
+            ) -> string;
+            // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+            let commit_cmd = "./scripts/gitlab-api.sh commit-files --branch " + shell_escape(branch) + " --message " + shell_escape("refactor: apply improvements for #" + to_string(suggestion.issue_id)) + " --actions " + shell_escape(actions_json);
+            let commit_result = try { exec sh commit_cmd; } catch e {
+                print("[refactorer] Commit failed:", e);
+                "";
+            };
+            if len(commit_result) > 0 {
+                print("[refactorer] Committed refactoring to", branch);
+                emit("implementation:refactor_suggestions", suggestion);
+                learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "acted", "implementation");
+            };
         } else {
-            print("[refactorer] Observing (confidence:", confidence, ")");
+            if confidence >= 0.6 {
+                emit("implementation:refactor_suggestions", suggestion);
+                learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "emitted", "implementation");
+            } else {
+                print("[refactorer] Observing (confidence:", confidence, ")");
+            };
         };
     };
 
