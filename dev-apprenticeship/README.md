@@ -59,6 +59,17 @@ agentis daemon stop --all       # Stop everything
 
 ## Monitoring
 
+### Dashboard
+
+A web dashboard that shows agent health, confidence levels, phase readiness with ETA, knowledge growth trends, remediation history, and a live suggestion feed. Auto-refreshes every 60 seconds. Includes a kill switch (two-click safety) to stop the entire federation from the browser.
+
+```bash
+./dashboard.sh                  # http://localhost:8420
+./dashboard.sh 9000             # custom port
+```
+
+The dashboard auto-discovers colonies and agents from the directory structure. It persists history in `.dashboard/history.json` so trends survive restarts.
+
 ### Right after start
 
 Verify everything is alive:
@@ -146,10 +157,11 @@ graph TD
 
 **Start at 0.5 (observe)**. Agents watch your GitLab activity and build knowledge. Check logs to see what they are learning: `tail -f .agentis/logs/labeler.log`
 
-**Promote to 0.6 (suggest)** when you trust what they have learned. Agents emit suggestions to the colony bus. They still do not touch GitLab.
+**Promote to 0.6 (suggest)** when you trust what they have learned. Agents emit suggestions to the colony bus and log what they would do. They still do not touch GitLab. Watch all suggestions in one stream:
 
 ```bash
 agentis memo set labeler:confidence 0.6
+./watch-suggestions.sh          # Live feed from all 21 agent logs
 ```
 
 **Promote to 0.85 (autonomous)** when ready. Start with low-risk agents (labeler, style_reviewer) before promoting high-impact ones (code_writer, approval_decider).

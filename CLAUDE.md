@@ -96,6 +96,7 @@ release:changelog_draft      -> version_bumper
 | `new-colony.sh` | Scaffold a new colony (creates dirs, example config, starter scripts) |
 | `check-exec-sh.sh` | Grep-based check for unsafe string concat into `exec sh`. See `check-exec-sh.md` for known limitations. |
 | `parse-toml.sh` | Shared TOML parser sourced by all start-colony.sh scripts |
+| `federation-dashboard.sh` | Generic web dashboard for any federation (auto-discovers colonies/agents, kill switch, phase ETA) |
 
 ## End-user scripts (in dev-apprenticeship/)
 
@@ -103,3 +104,5 @@ release:changelog_draft      -> version_bumper
 |--------|---------|
 | `install.sh` | Interactive setup: checks prerequisites, copies configs, writes GitLab credentials, seeds confidence |
 | `start-federation.sh` | Starts all 5 colonies (launches 21 daemon processes) |
+| `watch-suggestions.sh` | Live feed of agent suggestions from all 21 logs (for suggest mode, confidence 0.6-0.84) |
+| `dashboard.sh` | Web dashboard (wrapper around `tools/federation-dashboard.sh`, includes kill switch) |
