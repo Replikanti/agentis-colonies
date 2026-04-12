@@ -1,0 +1,114 @@
+// release_checker.ag -- Release colony: learns pre-release validation.
+//
+// Observes past releases and their CI pipeline outcomes to learn which
+// checks matter before shipping: CI gate status, dependency audit results,
+// migration safety, test coverage thresholds. Reports check results to the
+// colony bus for the ship_decider to evaluate.
+//
+// Run as daemon: agentis daemon agents/release_checker.ag --colony release
+// Requires: exec_foreign capability, GITLAB_* env vars
+
+cb 800;
+
+type CheckPatterns {
+    releases_seen: int,
+    ci_gates: string,
+    validation_steps: string,
+    failure_patterns: string
+}
+
+type CheckResult {
+    branch: string,
+    ci_status: string,
+    issues_found: string,
+    all_passed: int,
+    confidence: float
+}
+
+
+fn get_confidence() -> float {
+    let raw = recall_latest("release_checker:confidence");
+    if len(raw) > 0 {
+        return prompt("Return this number as a decimal. Nothing else.", raw) -> float;
+    };
+    return 0.0;
+}
+
+fn tick(reason: string) -> void {
+    // 1. Learn from past releases and their pipeline outcomes
+    let releases_raw = try {
+        exec sh "./scripts/gitlab-api.sh releases --per-page 10";
+    } catch e {
+        print("[release_checker] GitLab releases poll failed:", e);
+        "";
+    };
+
+    if len(releases_raw) > 10 {
+        let patterns = prompt(
+            "Analyze these GitLab releases. Identify: how many releases (releases_seen), CI gate patterns (did releases happen only after green pipelines, what stages were required), validation steps visible in release notes or tag messages (dependency audits, changelog presence, version consistency), any releases that were followed by hotfixes indicating missed checks (failure_patterns). Return JSON: releases_seen (int), ci_gates (string), validation_steps (string), failure_patterns (string).",
+            releases_raw
+        ) -> CheckPatterns;
+
+        if patterns.releases_seen > 0 {
+            learn(
+                "release_check",
+                "batch of " + to_string(patterns.releases_seen) + " releases",
+                "ci_gates: " + patterns.ci_gates + " | validation: " + patterns.validation_steps + " | failures: " + patterns.failure_patterns,
+                "observed",
+                "release"
+            );
+            print("[release_checker] Learned from", patterns.releases_seen, "past releases");
+        };
+    };
+
+    // 2. Check for pending release candidates (listen from implementation colony)
+    let mr_ready = listen("implementation:mr_ready", 100);
+    let mr_str = to_string(mr_ready);
+
+    // Also check the default branch pipeline status
+    let pipeline_raw = try {
+        exec sh "./scripts/gitlab-api.sh pipelines --ref main";
+    } catch e {
+        print("[release_checker] Pipeline poll failed:", e);
+        "";
+    };
+
+    if len(pipeline_raw) > 10 {
+        let rec = recommend("release_check", ["accuracy"]);
+        let context = "Latest pipelines on main: " + pipeline_raw + "\nLearned validation patterns: " + to_string(rec);
+
+        if len(mr_str) > 5 {
+            let context_full = context + "\nPending MR: " + mr_str;
+            let result = prompt(
+                "You are a release checker agent. Review the latest CI pipeline status and any pending implementation MR. Check: is CI green on main? Are there any failing stages? Any issues visible in pipeline logs? Return JSON: branch (string, the ref checked), ci_status (string, 'green'/'red'/'pending'), issues_found (string, list of problems or 'none'), all_passed (int, 1 if everything looks good, 0 if issues), confidence (float 0-1).",
+                context_full
+            ) -> CheckResult;
+
+            let confidence = get_confidence();
+            print("[release_checker] Checked main pipeline:", result.ci_status, "(confidence:", confidence, ")");
+
+            if confidence >= 0.6 {
+                emit("release:check_result", result);
+                learn("release_check", "pipeline check", result.ci_status + " | " + result.issues_found, "emitted", "release");
+            } else {
+                print("[release_checker] Observing (confidence:", confidence, ")");
+            };
+        } else {
+            // Periodic check even without pending MR
+            let result = prompt(
+                "You are a release checker agent. Review the latest CI pipeline status on main. Is CI green? Are there failing stages? Return JSON: branch (string, 'main'), ci_status (string, 'green'/'red'/'pending'), issues_found (string, list of problems or 'none'), all_passed (int, 1 if OK, 0 if issues), confidence (float 0-1).",
+                context
+            ) -> CheckResult;
+
+            let confidence = get_confidence();
+            if confidence >= 0.6 {
+                emit("release:check_result", result);
+            };
+        };
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("release_checker:last_check", now);
+    };
+}

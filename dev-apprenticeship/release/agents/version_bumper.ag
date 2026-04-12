@@ -1,0 +1,165 @@
+// version_bumper.ag -- Release colony: learns versioning conventions.
+//
+// Observes past version tags to learn semver strategy: when to bump major,
+// minor, or patch, pre-release tag conventions, and version string format.
+// When a ship decision arrives, determines the correct next version and
+// creates the tag.
+//
+// Run as daemon: agentis daemon agents/version_bumper.ag --colony release
+// Requires: exec_foreign capability, GITLAB_* env vars
+
+cb 400;
+
+type VersionPatterns {
+    tags_seen: int,
+    format: string,
+    bump_strategy: string,
+    prerelease: string
+}
+
+type VersionBump {
+    current: string,
+    next: string,
+    bump_type: string,
+    reasoning: string,
+    confidence: float
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("version_bumper:confidence");
+    if len(raw) > 0 {
+        return prompt("Return this number as a decimal. Nothing else.", raw) -> float;
+    };
+    return 0.0;
+}
+
+fn tick(reason: string) -> void {
+    // 1. Learn versioning patterns from tags
+    let tags_raw = try {
+        exec sh "./scripts/gitlab-api.sh tags --per-page 20";
+    } catch e {
+        print("[version_bumper] GitLab tags poll failed:", e);
+        "";
+    };
+
+    if len(tags_raw) > 10 {
+        let patterns = prompt(
+            "Analyze these GitLab tags. Identify: how many version tags (tags_seen, count only semver-like tags), version format (format: v1.2.3, 1.2.3, with or without v prefix), bump strategy (bump_strategy: what triggers major/minor/patch bumps based on tag progression), pre-release conventions (prerelease: alpha/beta/rc tags, or 'none'). Return JSON: tags_seen (int), format (string), bump_strategy (string), prerelease (string).",
+            tags_raw
+        ) -> VersionPatterns;
+
+        if patterns.tags_seen > 0 {
+            learn(
+                "version_bump",
+                "batch of " + to_string(patterns.tags_seen) + " version tags",
+                "format: " + patterns.format + " | strategy: " + patterns.bump_strategy + " | prerelease: " + patterns.prerelease,
+                "observed",
+                "release"
+            );
+            print("[version_bumper] Learned from", patterns.tags_seen, "version tags");
+        };
+    };
+
+    // 2. Listen for ship decision and determine next version
+    let ship_decision = listen("release:ship_decision", 100);
+    let decision_str = to_string(ship_decision);
+
+    if len(decision_str) < 5 {
+        let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now) > 0 {
+            memo_write("version_bumper:last_check", now);
+        };
+        return;
+    };
+
+    // Only proceed if the decision is "ship"
+    let is_ship = prompt(
+        "Does this ship decision say 'ship' (not 'no-ship')? Return 'yes' or 'no', nothing else.",
+        decision_str
+    ) -> string;
+
+    if is_ship != "yes" {
+        print("[version_bumper] Ship decision is no-ship, skipping version bump");
+        let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now) > 0 {
+            memo_write("version_bumper:last_check", now);
+        };
+        return;
+    };
+
+    // Also listen for the changelog draft to understand what changed
+    let changelog_draft = listen("release:changelog_draft", 100);
+    let changelog_str = to_string(changelog_draft);
+
+    // Get latest tags for current version context
+    let latest_tags = try {
+        exec sh "./scripts/gitlab-api.sh tags --per-page 5";
+    } catch e { "[]"; };
+
+    // Fetch merged MRs since last release for bump analysis
+    let latest_release = try {
+        exec sh "./scripts/gitlab-api.sh releases --per-page 1";
+    } catch e { "[]"; };
+
+    let since_date = prompt(
+        "Extract the created_at or released_at date from this GitLab release JSON array (take the first element). Return just the ISO 8601 date string, nothing else. If the array is empty, return '2000-01-01T00:00:00Z'.",
+        latest_release
+    ) -> string;
+
+    let mrs_cmd = "./scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(since_date);
+    let mrs_raw = try { exec sh mrs_cmd; } catch e { "[]"; };
+
+    let rec = recommend("version_bump", ["accuracy"]);
+    let context = "Latest tags: " + latest_tags + "\nMerged MRs since last release: " + mrs_raw + "\nChangelog: " + changelog_str + "\nLearned versioning patterns: " + to_string(rec);
+
+    let bump = prompt(
+        "You are a version bumper agent. Determine the correct next version based on: the current latest tag, what changed in the merged MRs (breaking changes = major, new features = minor, fixes only = patch), and learned versioning conventions. Return JSON: current (string, current version tag), next (string, the next version), bump_type (string, 'major'/'minor'/'patch'), reasoning (string, why this bump type), confidence (float 0-1).",
+        context
+    ) -> VersionBump;
+
+    let confidence = get_confidence();
+    print("[version_bumper] Version bump:", bump.current, "->", bump.next, "(", bump.bump_type, ", confidence:", confidence, ")");
+
+    if confidence >= 0.85 {
+        // Create the tag
+        // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+        let tag_cmd = "./scripts/gitlab-api.sh create-tag --name " + shell_escape(bump.next) + " --ref main --message " + shell_escape("Release " + bump.next);
+        let tag_result = try { exec sh tag_cmd; } catch e {
+            print("[version_bumper] Tag creation failed:", e);
+            "";
+        };
+
+        if len(tag_result) > 0 {
+            print("[version_bumper] Created tag", bump.next);
+
+            // Build release description from changelog or bump reasoning
+            let release_desc = changelog_str + bump.reasoning;
+
+            // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+            let release_cmd = "./scripts/gitlab-api.sh create-release --tag " + shell_escape(bump.next) + " --name " + shell_escape("Release " + bump.next) + " --description " + shell_escape(release_desc);
+            let release_result = try { exec sh release_cmd; } catch e {
+                print("[version_bumper] Release creation failed:", e);
+                "";
+            };
+
+            if len(release_result) > 0 {
+                print("[version_bumper] Created release", bump.next);
+            };
+
+            emit("release:version_bumped", bump);
+            learn("version_bump", bump.next, bump.bump_type + ": " + bump.reasoning, "acted", "release");
+        };
+    } else {
+        if confidence >= 0.6 {
+            emit("release:version_bumped", bump);
+            learn("version_bump", bump.next, bump.bump_type + ": " + bump.reasoning, "emitted", "release");
+        } else {
+            print("[version_bumper] Observing (confidence:", confidence, ")");
+        };
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("version_bumper:last_check", now);
+    };
+}
