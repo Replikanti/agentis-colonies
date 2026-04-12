@@ -25,7 +25,7 @@ type PriorityAction {
 fn issues_cmd() -> string {
     let ts = recall_latest("prioritizer:last_check");
     if len(ts) > 0 {
-        return "./scripts/gitlab-api.sh issues --since " + ts;
+        return "./scripts/gitlab-api.sh issues --since " + shell_escape(ts);
     };
     return "./scripts/gitlab-api.sh issues";
 }
