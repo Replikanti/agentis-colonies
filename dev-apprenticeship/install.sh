@@ -9,7 +9,8 @@
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_PATH="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$0")"
+SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 COLONIES=(triage code-review planning implementation release)
 ALL_AGENTS=(
     router prioritizer labeler issue_creator
@@ -18,6 +19,7 @@ ALL_AGENTS=(
     code_writer test_writer refactorer commit_composer
     ship_decider changelog_writer version_bumper release_checker
 )
+MIN_VERSION="1.1.3"
 
 # --- Helpers ---
 
@@ -34,6 +36,11 @@ check_cmd() {
         fail "$1 not found"
         return 1
     fi
+}
+
+# Compare two semver strings. Returns 0 if $1 >= $2.
+version_gte() {
+    printf '%s\n%s\n' "$2" "$1" | sort -t. -k1,1n -k2,2n -k3,3n -C
 }
 
 # --- 1. Prerequisites ---
@@ -61,23 +68,44 @@ if [ "$MISSING" -eq 1 ]; then
 fi
 
 # Check agentis version (need >= 1.1.3 for memo set/get)
-AGENTIS_VERSION=$(agentis --version 2>/dev/null | grep -oP 'v?\K[0-9]+\.[0-9]+\.[0-9]+' || echo "0.0.0")
-info "agentis version: $AGENTIS_VERSION"
+AGENTIS_VERSION=$(agentis --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "0.0.0")
+info "agentis version: $AGENTIS_VERSION (minimum: $MIN_VERSION)"
+
+if ! version_gte "$AGENTIS_VERSION" "$MIN_VERSION"; then
+    fail "agentis >= $MIN_VERSION required (memo set/get support). Please update."
+    exit 1
+fi
 
 # --- 2. Copy configs ---
 
 echo ""
 echo "Setting up colony configs..."
 
+CONFIGS_EXISTED=0
 for colony in "${COLONIES[@]}"; do
     CONFIG_DIR="$SCRIPT_DIR/$colony/config"
     if [ -f "$CONFIG_DIR/colony.toml" ]; then
-        info "$colony: colony.toml already exists, skipping"
+        info "$colony: colony.toml already exists"
+        CONFIGS_EXISTED=$((CONFIGS_EXISTED + 1))
     else
         cp "$CONFIG_DIR/colony.example.toml" "$CONFIG_DIR/colony.toml"
         ok "$colony: created colony.toml"
     fi
 done
+
+if [ "$CONFIGS_EXISTED" -eq 5 ]; then
+    echo ""
+    ask "All configs already exist. Overwrite with fresh templates? [y/N]:"
+    read -r OVERWRITE
+    if [ "$OVERWRITE" = "y" ] || [ "$OVERWRITE" = "Y" ]; then
+        for colony in "${COLONIES[@]}"; do
+            cp "$SCRIPT_DIR/$colony/config/colony.example.toml" "$SCRIPT_DIR/$colony/config/colony.toml"
+            ok "$colony: overwritten"
+        done
+    else
+        info "Keeping existing configs. GitLab credentials will be updated."
+    fi
+fi
 
 # --- 3. GitLab credentials ---
 
@@ -104,15 +132,15 @@ echo "Writing credentials to colony configs..."
 
 for colony in "${COLONIES[@]}"; do
     CONFIG="$SCRIPT_DIR/$colony/config/colony.toml"
-    # Use python3 for safe in-place replacement (no sed -i portability issues)
+    # Write credentials by matching TOML keys (works on both fresh and existing configs)
     python3 - "$CONFIG" "$GITLAB_URL" "$GITLAB_TOKEN" "$GITLAB_PROJECT" <<'PY'
-import sys
+import sys, re
 path, url, token, project = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 with open(path) as f:
     content = f.read()
-content = content.replace('https://gitlab.example.com', url)
-content = content.replace('glpat-your-token-here', token)
-content = content.replace('your-org/your-project', project)
+content = re.sub(r'(url\s*=\s*)"[^"]*"', lambda m: m.group(1) + '"' + url + '"', content)
+content = re.sub(r'(token\s*=\s*)"[^"]*"', lambda m: m.group(1) + '"' + token + '"', content)
+content = re.sub(r'(project\s*=\s*)"[^"]*"', lambda m: m.group(1) + '"' + project + '"', content)
 with open(path, 'w') as f:
     f.write(content)
 PY
@@ -148,12 +176,25 @@ read -r CONFIDENCE
 CONFIDENCE="${CONFIDENCE:-0.5}"
 
 if [ "$CONFIDENCE" != "skip" ]; then
+    # Validate: must be a number between 0.0 and 1.0
+    if ! python3 -c "v=float('$CONFIDENCE'); assert 0.0 <= v <= 1.0" 2>/dev/null; then
+        fail "Invalid confidence value: $CONFIDENCE (must be 0.0 to 1.0)"
+        exit 1
+    fi
     echo ""
     echo "Seeding all 21 agents at $CONFIDENCE..."
+    SEED_FAILED=0
     for agent in "${ALL_AGENTS[@]}"; do
-        agentis memo set "${agent}:confidence" "$CONFIDENCE" 2>/dev/null || true
+        if ! agentis memo set "${agent}:confidence" "$CONFIDENCE" 2>/dev/null; then
+            fail "Failed to seed ${agent}:confidence"
+            SEED_FAILED=1
+        fi
     done
-    ok "All agents seeded at $CONFIDENCE"
+    if [ "$SEED_FAILED" -eq 1 ]; then
+        fail "Some seeds failed. Is agentis initialized? Try: agentis init"
+    else
+        ok "All agents seeded at $CONFIDENCE"
+    fi
 fi
 
 # --- 6. LLM backend ---

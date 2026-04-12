@@ -35,7 +35,6 @@ TOTAL_AGENTS=0
 for colony in "${COLONIES[@]}"; do
     echo "Starting $colony colony..."
     "$FED_DIR/$colony/scripts/start-colony.sh" &
-    COLONY_PID=$!
     # Count agents in this colony's config
     AGENT_COUNT=$(grep -c '^\[\[agents\]\]' "$FED_DIR/$colony/config/colony.toml" 2>/dev/null || echo 0)
     TOTAL_AGENTS=$((TOTAL_AGENTS + AGENT_COUNT))
