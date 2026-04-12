@@ -1,0 +1,99 @@
+// ship_decider.ag -- Release colony: learns when to ship.
+//
+// Observes release cadence, blocker patterns, and risk tolerance to learn
+// ship/no-ship thresholds. Weighs pre-release check results against learned
+// patterns and makes the go/no-go decision.
+//
+// Run as daemon: agentis daemon agents/ship_decider.ag --colony release
+// Requires: exec_foreign capability, GITLAB_* env vars
+
+cb 600;
+
+type ShipPatterns {
+    releases_seen: int,
+    cadence: string,
+    blocker_types: string,
+    risk_tolerance: string
+}
+
+type ShipDecision {
+    decision: string,
+    reasoning: string,
+    blockers: string,
+    confidence: float
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("ship_decider:confidence");
+    if len(raw) > 0 {
+        return prompt("Return this number as a decimal. Nothing else.", raw) -> float;
+    };
+    return 0.0;
+}
+
+fn tick(reason: string) -> void {
+    // 1. Learn release patterns from history
+    let releases_raw = try {
+        exec sh "./scripts/gitlab-api.sh releases --per-page 20";
+    } catch e {
+        print("[ship_decider] GitLab releases poll failed:", e);
+        "";
+    };
+
+    if len(releases_raw) > 10 {
+        let tags_raw = try {
+            exec sh "./scripts/gitlab-api.sh tags --per-page 20";
+        } catch e { "[]"; };
+
+        let patterns = prompt(
+            "Analyze these GitLab releases and tags. Identify: how many releases (releases_seen), release cadence (daily, weekly, per-milestone, irregular), what types of issues block releases (blocker_types: failing CI, open critical bugs, incomplete features), risk tolerance (are hotfixes common, are pre-release tags used, do releases happen on specific days). Return JSON: releases_seen (int), cadence (string), blocker_types (string), risk_tolerance (string).",
+            releases_raw + "\n\nTags: " + tags_raw
+        ) -> ShipPatterns;
+
+        if patterns.releases_seen > 0 {
+            learn(
+                "ship_decide",
+                "batch of " + to_string(patterns.releases_seen) + " releases",
+                "cadence: " + patterns.cadence + " | blockers: " + patterns.blocker_types + " | risk: " + patterns.risk_tolerance,
+                "observed",
+                "release"
+            );
+            print("[ship_decider] Learned from", patterns.releases_seen, "past releases");
+        };
+    };
+
+    // 2. Listen for check results and make ship/no-ship decision
+    let check_result = listen("release:check_result", 100);
+    let check_str = to_string(check_result);
+
+    if len(check_str) < 5 {
+        let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now) > 0 {
+            memo_write("ship_decider:last_check", now);
+        };
+        return;
+    };
+
+    let rec = recommend("ship_decide", ["accuracy"]);
+    let context = "Pre-release check results: " + check_str + "\nLearned shipping patterns: " + to_string(rec);
+
+    let decision = prompt(
+        "You are a ship decider agent. Based on the pre-release check results and learned shipping patterns, make a ship/no-ship decision. Consider: is CI green, are there blockers, does this match the learned cadence and risk tolerance. Return JSON: decision (string, 'ship' or 'no-ship'), reasoning (string, 2-3 sentences explaining the decision), blockers (string, list of blockers or 'none'), confidence (float 0-1).",
+        context
+    ) -> ShipDecision;
+
+    let confidence = get_confidence();
+    print("[ship_decider] Decision:", decision.decision, "(confidence:", confidence, ")");
+
+    if confidence >= 0.6 {
+        emit("release:ship_decision", decision);
+        learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "emitted", "release");
+    } else {
+        print("[ship_decider] Observing (confidence:", confidence, ")");
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("ship_decider:last_check", now);
+    };
+}

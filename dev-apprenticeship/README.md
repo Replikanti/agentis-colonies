@@ -12,7 +12,7 @@ Each colony specializes in one part of the workflow. Together, they form a feder
 | [code-review](./code-review/) | Reviews merge requests: style, logic, security, test coverage, approval decisions (5 agents) | Active |
 | [planning](./planning/) | Breaks down work: scope estimation, risk assessment, task decomposition, plan review (4 agents) | Active |
 | [implementation](./implementation/) | Writes and refactors code: code generation, test writing, commit conventions (4 agents) | Active |
-| [release](./release/) | Automates releases: ship decisions, changelogs, versioning, pre-release checks (4 agents) | Scaffolded (see [#5](https://github.com/Replikanti/agentis-colonies/issues/5)) |
+| [release](./release/) | Automates releases: ship decisions, changelogs, versioning, pre-release checks (4 agents) | Active |
 
 ## Why Colonies, Not Individual Agents?
 
@@ -94,7 +94,7 @@ Every agent starts in **observe-only** mode. On a fresh colony the confidence me
 
 ### Memo key convention
 
-Each agent reads its confidence from `recall_latest("<agent_name>:confidence")`. The full set of keys across the four active colonies is:
+Each agent reads its confidence from `recall_latest("<agent_name>:confidence")`. The full set of keys across the five active colonies is:
 
 | Colony | Keys |
 |--------|------|
@@ -102,6 +102,7 @@ Each agent reads its confidence from `recall_latest("<agent_name>:confidence")`.
 | code-review | `logic_reviewer:confidence`, `style_reviewer:confidence`, `security_reviewer:confidence`, `test_reviewer:confidence`, `approval_decider:confidence` |
 | planning | `scope_estimator:confidence`, `risk_assessor:confidence`, `task_decomposer:confidence`, `plan_reviewer:confidence` |
 | implementation | `code_writer:confidence`, `test_writer:confidence`, `refactorer:confidence`, `commit_composer:confidence` |
+| release | `ship_decider:confidence`, `changelog_writer:confidence`, `version_bumper:confidence`, `release_checker:confidence` |
 
 ### Ramp stages
 
@@ -142,6 +143,12 @@ agentis memo set code_writer:confidence 0.5
 agentis memo set test_writer:confidence 0.5
 agentis memo set refactorer:confidence 0.5
 agentis memo set commit_composer:confidence 0.5
+
+# release colony
+agentis memo set ship_decider:confidence 0.5
+agentis memo set changelog_writer:confidence 0.5
+agentis memo set version_bumper:confidence 0.5
+agentis memo set release_checker:confidence 0.5
 ```
 
 To inspect the current value of any agent:

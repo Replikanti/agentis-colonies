@@ -1,0 +1,131 @@
+// changelog_writer.ag -- Release colony: learns changelog conventions.
+//
+// Observes past release notes and MR descriptions to learn how you write
+// changelogs: grouping style (by type, by scope), what to include/exclude,
+// tone and audience. When a ship decision arrives, compiles release notes
+// from merged MRs since the last release.
+//
+// Run as daemon: agentis daemon agents/changelog_writer.ag --colony release
+// Requires: exec_foreign capability, GITLAB_* env vars
+
+cb 800;
+
+type ChangelogStyle {
+    releases_seen: int,
+    grouping: string,
+    tone: string,
+    inclusions: string,
+    exclusions: string
+}
+
+type ChangelogDraft {
+    version: string,
+    changelog: string,
+    mr_count: int,
+    confidence: float
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("changelog_writer:confidence");
+    if len(raw) > 0 {
+        return prompt("Return this number as a decimal. Nothing else.", raw) -> float;
+    };
+    return 0.0;
+}
+
+fn tick(reason: string) -> void {
+    // 1. Learn changelog style from past releases
+    let releases_raw = try {
+        exec sh "./scripts/gitlab-api.sh releases --per-page 10";
+    } catch e {
+        print("[changelog_writer] GitLab releases poll failed:", e);
+        "";
+    };
+
+    if len(releases_raw) > 10 {
+        let style = prompt(
+            "Analyze these GitLab release descriptions/notes. Identify: how many have descriptions (releases_seen), how changes are grouped (grouping: by type like feat/fix/chore, by component, flat list), tone (technical, user-facing, mixed), what is included (inclusions: MR titles, commit messages, breaking changes, contributors), what is excluded (exclusions: internal refactors, dependency bumps, CI changes). Return JSON: releases_seen (int), grouping (string), tone (string), inclusions (string), exclusions (string).",
+            releases_raw
+        ) -> ChangelogStyle;
+
+        if style.releases_seen > 0 {
+            learn(
+                "changelog_write",
+                "batch of " + to_string(style.releases_seen) + " releases",
+                "grouping: " + style.grouping + " | tone: " + style.tone + " | include: " + style.inclusions + " | exclude: " + style.exclusions,
+                "observed",
+                "release"
+            );
+            print("[changelog_writer] Learned from", style.releases_seen, "past release notes");
+        };
+    };
+
+    // 2. Listen for ship decision and compile changelog
+    let ship_decision = listen("release:ship_decision", 100);
+    let decision_str = to_string(ship_decision);
+
+    if len(decision_str) < 5 {
+        let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now) > 0 {
+            memo_write("changelog_writer:last_check", now);
+        };
+        return;
+    };
+
+    // Only proceed if the decision is "ship"
+    let is_ship = prompt(
+        "Does this ship decision say 'ship' (not 'no-ship')? Return 'yes' or 'no', nothing else.",
+        decision_str
+    ) -> string;
+
+    if is_ship != "yes" {
+        print("[changelog_writer] Ship decision is no-ship, skipping changelog");
+        let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now) > 0 {
+            memo_write("changelog_writer:last_check", now);
+        };
+        return;
+    };
+
+    // Get the latest release tag to find MRs merged since then
+    let latest_release = try {
+        exec sh "./scripts/gitlab-api.sh releases --per-page 1";
+    } catch e { "[]"; };
+
+    let since_date = prompt(
+        "Extract the created_at or released_at date from this GitLab release JSON array (take the first element). Return just the ISO 8601 date string, nothing else. If the array is empty, return '2000-01-01T00:00:00Z'.",
+        latest_release
+    ) -> string;
+
+    // Fetch MRs merged since last release
+    let mrs_cmd = "./scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(since_date);
+    let mrs_raw = try { exec sh mrs_cmd; } catch e {
+        print("[changelog_writer] MR fetch failed:", e);
+        "";
+    };
+
+    if len(mrs_raw) > 10 {
+        let rec = recommend("changelog_write", ["accuracy"]);
+        let context = "Merged MRs since last release: " + mrs_raw + "\nShip decision: " + decision_str + "\nLearned changelog conventions: " + to_string(rec);
+
+        let draft = prompt(
+            "You are a changelog writer agent. Compile release notes from the merged MRs following learned conventions. Group changes by type, use the learned tone, include/exclude items as learned. Determine the version string from the MR content (or leave as 'TBD' if unclear). Return JSON: version (string), changelog (string, the formatted release notes in markdown), mr_count (int, number of MRs included), confidence (float 0-1).",
+            context
+        ) -> ChangelogDraft;
+
+        let confidence = get_confidence();
+        print("[changelog_writer] Drafted changelog for", draft.version, "(", draft.mr_count, "MRs, confidence:", confidence, ")");
+
+        if confidence >= 0.6 {
+            emit("release:changelog_draft", draft);
+            learn("changelog_write", "release " + draft.version, to_string(draft.mr_count) + " MRs", "emitted", "release");
+        } else {
+            print("[changelog_writer] Observing (confidence:", confidence, ")");
+        };
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("changelog_writer:last_check", now);
+    };
+}
