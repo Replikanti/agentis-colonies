@@ -36,9 +36,18 @@ graph TD
 
 ## Federations
 
-| Federation | Description | Status |
-|------------|-------------|--------|
-| [dev-apprenticeship](./dev-apprenticeship/) | Learns a developer's complete workflow: code review, planning, implementation, triage, and release | Active |
+| Federation | Description | Agents | Status |
+|------------|-------------|--------|--------|
+| [dev-apprenticeship](./dev-apprenticeship/) | Learns a developer's complete workflow by observing how you work on GitLab. Covers triage, code review, planning, implementation, and release. | 21 | Beta |
+
+### Status
+
+| Badge | Meaning |
+|-------|---------|
+| **Stable** | Battle-tested on real workloads. Safe for production use. |
+| **Beta** | All agents built, audited, and linted clean. Not yet validated on live GitLab projects. |
+| **Alpha** | Core agents work. Some features incomplete or untested. |
+| **Planned** | Design exists, implementation not started. |
 
 ## Prerequisites
 
