@@ -98,8 +98,26 @@ fn tick(reason: string) -> void {
         print("[test_writer] Drafted tests for issue", tests.issue_id, "(confidence:", confidence, ")");
 
         if confidence >= 0.85 {
-            emit("implementation:test_draft", tests);
-            learn("test_write", "issue " + to_string(tests.issue_id), tests.summary, "acted", "implementation");
+            // Generate actual test file contents and commit to the branch
+            let test_context = "Code draft: " + draft_str + "\nTest plan: " + tests.test_files + "\nPatterns: " + to_string(rec);
+
+            let actions_json = prompt(
+                "You are a test writer. Generate the actual test file contents for this test plan. Return a JSON array of objects, each with: action (string, 'create' or 'update'), file_path (string), content (string, the full test file content). Follow the learned test structure and assertion patterns. Only return the JSON array, nothing else.",
+                test_context
+            ) -> string;
+
+            // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+            let commit_cmd = "./scripts/gitlab-api.sh commit-files --branch " + shell_escape(tests.branch_name) + " --message " + shell_escape("test: add tests for #" + to_string(tests.issue_id)) + " --actions " + shell_escape(actions_json);
+            let commit_result = try { exec sh commit_cmd; } catch e {
+                print("[test_writer] Commit failed:", e);
+                "";
+            };
+
+            if len(commit_result) > 0 {
+                print("[test_writer] Committed tests to", tests.branch_name);
+                emit("implementation:test_draft", tests);
+                learn("test_write", "issue " + to_string(tests.issue_id), tests.summary, "acted", "implementation");
+            };
         } else {
             if confidence >= 0.6 {
                 emit("implementation:test_draft", tests);
