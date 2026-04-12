@@ -4,5 +4,8 @@
 # Local config (contains tokens)
 **/config/colony.toml
 
+# Dashboard (generated HTML)
+.dashboard/
+
 # OS
 .DS_Store
