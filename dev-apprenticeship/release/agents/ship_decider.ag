@@ -85,11 +85,25 @@ fn tick(reason: string) -> void {
     let confidence = get_confidence();
     print("[ship_decider] Decision:", decision.decision, "(confidence:", confidence, ")");
 
-    if confidence >= 0.6 {
+    if confidence >= 0.85 {
+        let mr_raw = try { exec sh "./scripts/gitlab-api.sh merge-requests --per-page 1"; } catch e { "[]"; };
+        let mr_iid = prompt("Extract the iid integer of the first MR from this JSON array. If empty, return 0.", mr_raw) -> int;
+        if mr_iid > 0 {
+            let note = "**Ship Decision** (automated): " + decision.decision + "\n\n" + decision.reasoning;
+            let post_cmd = "./scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note);
+            try { exec sh post_cmd; } catch e {
+                print("[ship_decider] Failed to post note:", e);
+            };
+        };
         emit("release:ship_decision", decision);
-        learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "emitted", "release");
+        learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "acted", "release");
     } else {
-        print("[ship_decider] Observing (confidence:", confidence, ")");
+        if confidence >= 0.6 {
+            emit("release:ship_decision", decision);
+            learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "emitted", "release");
+        } else {
+            print("[ship_decider] Observing (confidence:", confidence, ")");
+        };
     };
 
     let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };

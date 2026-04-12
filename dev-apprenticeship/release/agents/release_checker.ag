@@ -87,11 +87,24 @@ fn tick(reason: string) -> void {
             let confidence = get_confidence();
             print("[release_checker] Checked main pipeline:", result.ci_status, "(confidence:", confidence, ")");
 
-            if confidence >= 0.6 {
+            if confidence >= 0.85 {
+                let mr_iid = prompt("Extract the iid or issue_id integer from this MR data. Return just the integer. If not found, return 0.", mr_str) -> int;
+                if mr_iid > 0 {
+                    let note = "**Pre-release Check** (automated): " + result.ci_status + "\n\nIssues: " + result.issues_found;
+                    let post_cmd = "./scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note);
+                    try { exec sh post_cmd; } catch e {
+                        print("[release_checker] Failed to post note:", e);
+                    };
+                };
                 emit("release:check_result", result);
-                learn("release_check", "pipeline check", result.ci_status + " | " + result.issues_found, "emitted", "release");
+                learn("release_check", "pipeline check", result.ci_status + " | " + result.issues_found, "acted", "release");
             } else {
-                print("[release_checker] Observing (confidence:", confidence, ")");
+                if confidence >= 0.6 {
+                    emit("release:check_result", result);
+                    learn("release_check", "pipeline check", result.ci_status + " | " + result.issues_found, "emitted", "release");
+                } else {
+                    print("[release_checker] Observing (confidence:", confidence, ")");
+                };
             };
         } else {
             // Periodic check even without pending MR
@@ -101,8 +114,14 @@ fn tick(reason: string) -> void {
             ) -> CheckResult;
 
             let confidence = get_confidence();
-            if confidence >= 0.6 {
+            if confidence >= 0.85 {
                 emit("release:check_result", result);
+                learn("release_check", "periodic check", result.ci_status, "acted", "release");
+            } else {
+                if confidence >= 0.6 {
+                    emit("release:check_result", result);
+                    learn("release_check", "periodic check", result.ci_status, "emitted", "release");
+                };
             };
         };
     };

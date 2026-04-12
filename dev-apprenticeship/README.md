@@ -82,6 +82,40 @@ Knowledge entries are tagged by scope:
 
 When onboarding a new project, colonies carry over `personal` knowledge and start fresh on `project:*`. They already know how you work, they just need to learn the codebase.
 
+## Extension Points
+
+The following colony bus events are emitted for external consumption. They have no internal listener by design, as they represent the human-facing output of the confidence gradient. Build your own agents, webhooks, or dashboards to consume them.
+
+| Event | Emitter | When |
+|-------|---------|------|
+| `triage:label_suggestion` | labeler.ag | Confidence 0.6-0.84: label suggestion for human review |
+| `triage:priority_suggestion` | prioritizer.ag | Confidence 0.6-0.84: priority suggestion for human review |
+| `review:decision_suggestion` | approval_decider.ag | Confidence 0.6-0.84: approve/reject suggestion for human |
+| `review:escalation` | approval_decider.ag | Confidence >= 0.85: MR requires human attention (edge case) |
+| `planning:draft_plan` | plan_reviewer.ag | Confidence 0.6-0.84: assembled plan for human review |
+| `release:version_bumped` | version_bumper.ag | >= 0.85: after tag/release creation; 0.6-0.84: version bump suggestion |
+
+All other events in the federation have internal consumers. The full wiring diagram:
+
+```
+triage:new_issue       -> router, prioritizer, labeler
+triage:route_suggestion -> code_writer (cross-colony)
+implementation:code_draft -> test_writer, refactorer, commit_composer
+implementation:test_draft -> commit_composer
+implementation:refactor_suggestions -> commit_composer
+implementation:mr_ready -> release_checker, approval_decider (cross-colony)
+review:style_findings  -> approval_decider
+review:logic_findings  -> approval_decider
+review:security_findings -> approval_decider
+review:test_findings   -> approval_decider
+planning:scope_estimate -> plan_reviewer
+planning:risks         -> plan_reviewer
+planning:breakdown     -> plan_reviewer
+release:check_result   -> ship_decider
+release:ship_decision  -> changelog_writer, version_bumper
+release:changelog_draft -> version_bumper
+```
+
 ## Prerequisites
 
 - [Agentis](https://github.com/Replikanti/agentis) runtime (>= v1.1.3 for the `memo set`/`memo get` CLI used in Bootstrap below)
