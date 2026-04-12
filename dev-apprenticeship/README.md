@@ -59,27 +59,46 @@ agentis daemon stop --all       # Stop everything
 
 ## Monitoring
 
-Three levels of visibility:
+### Right after start
 
-**Federation** -- are all colonies connected and routing events?
+Verify everything is alive:
+
 ```bash
-agentis federation status       # Federated colonies + routing summary
+agentis daemon list             # 21 processes, all STATE=running?
+agentis federation status       # 5 colonies connected?
+tail .agentis/logs/router.log   # See "[router] GitLab poll..." lines?
 ```
 
-**Colony** -- how is each colony doing internally?
+### First day
+
+Verify agents are learning:
+
 ```bash
-agentis colony health           # Health and specialization per colony
-agentis colony ps               # Agent lifecycle states (running, idle, errored)
+agentis knowledge stats         # Knowledge entries growing?
+agentis memo get router:confidence  # Confidence at 0.5?
+agentis stats                   # CB consumption per agent
 ```
 
-**Agent** -- what is a specific agent doing right now?
+### Ongoing
+
+Check daily or when something feels off:
+
 ```bash
-agentis daemon list             # All running daemon processes
-agentis experience show router  # What the agent has been doing
-agentis knowledge list          # What agents have learned
-agentis memo get router:confidence  # Current confidence level
-tail -f .agentis/logs/router.log    # Live log
+agentis daemon list             # Check HEALTH and QUARANTINE columns
+agentis colony health           # Health per colony
+agentis colony ps               # Agent lifecycle states
+agentis remediation history     # Any auto-remediation actions?
 ```
+
+### Warning signs
+
+| Signal | Meaning | Action |
+|--------|---------|--------|
+| STATE=stopped in daemon list | Agent crashed, watchdog gave up | Check log, restart the colony |
+| QUARANTINE=yes | Agent failed repeatedly, runtime isolated it | `agentis quarantine status <agent>`, fix cause, `agentis quarantine promote <agent>` |
+| knowledge stats shows 0 after a day | Agents see no GitLab activity | Check token, project path, verify project has recent activity |
+| One log growing much faster than others | Agent hitting errors repeatedly | `tail .agentis/logs/<agent>.log` |
+| remediation history shows entries | System detected an anomaly and responded | `agentis remediation history --json` for details |
 
 ## How work enters the system
 
