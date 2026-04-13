@@ -151,23 +151,29 @@ PY
 done
 
 # --- 4. Initialize agentis (if not already done) ---
+#
+# Always run `agentis init` from the federation root (parent of SCRIPT_DIR),
+# not from the operator's cwd. If we used cwd, `bash /path/to/install.sh`
+# invoked from anywhere outside the federation would create a new empty
+# `.agentis/` next to the caller (e.g. in $HOME), and the lifecycle +
+# config-writing blocks below would then configure *that* directory
+# instead of the federation's.
+
+FED_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 echo ""
-if [ -d "$SCRIPT_DIR/../.agentis" ] || [ -d ".agentis" ]; then
+if [ -d "$FED_ROOT/.agentis" ]; then
     info "agentis already initialized"
 else
     echo "Initializing agentis..."
-    agentis init 2>/dev/null || true
+    (cd "$FED_ROOT" && agentis init 2>/dev/null) || true
     ok "agentis init"
 fi
 
-# Enable lifecycle tracking (required for colony health/ps)
-AGENTIS_DIR="${SCRIPT_DIR}/../.agentis"
-if [ -d "$AGENTIS_DIR" ]; then
-    AGENTIS_DIR="$AGENTIS_DIR"
-elif [ -d ".agentis" ]; then
-    AGENTIS_DIR=".agentis"
-fi
+# Enable lifecycle tracking (required for colony health/ps). Resolve
+# AGENTIS_DIR to an absolute path so downstream blocks (symlink target,
+# config path) never depend on the invoker's cwd.
+AGENTIS_DIR="$FED_ROOT/.agentis"
 
 if [ -d "$AGENTIS_DIR" ]; then
     mkdir -p "$AGENTIS_DIR/lifecycle"
@@ -216,8 +222,15 @@ if [ -d "$AGENTIS_DIR" ]; then
     write_key() {
         local key="$1"
         local value="$2"
-        # Escape dots in the key for grep. POSIX [[:space:]] keeps this
-        # portable to BSD grep (macOS) where \s is not supported.
+        # Idempotent upsert of `<key> = <value>` in `<AGENTIS_CONFIG>`.
+        # The grep pattern `^<escaped-key>[[:space:]]*=` requires a
+        # whitespace-or-equals boundary right after the key, so keys that
+        # are proper prefixes of other keys (e.g. `daemon.tick_interval`
+        # vs `daemon.tick_interval_ms`) do not collide: the `_` in
+        # `_ms = ...` is neither whitespace nor `=`. If a future key is
+        # added whose name ends in `[[:space:]=]`, revisit this guarantee.
+        # POSIX `[[:space:]]` keeps the pattern portable to BSD grep
+        # (macOS) where `\s` is treated as a literal `s`.
         local grep_key
         grep_key=$(printf '%s' "$key" | sed 's/\./\\./g')
         if ! grep -q "^${grep_key}[[:space:]]*=" "$AGENTIS_CONFIG" 2>/dev/null; then
@@ -240,13 +253,12 @@ fi
 # (e.g. `agentis doctor`) find the federation's .agentis instead of
 # spawning a divergent empty one in cwd (see issue #88 body, part 2).
 if [ -d "$AGENTIS_DIR" ]; then
-    FED_AGENTIS_ABS="$(cd "$AGENTIS_DIR" && pwd)"
     for colony in "${COLONIES[@]}"; do
         COLONY_AGENTIS="$SCRIPT_DIR/$colony/.agentis"
         if [ -L "$COLONY_AGENTIS" ] && [ ! -e "$COLONY_AGENTIS" ]; then
             # Dangling symlink (target moved or removed). Re-point it.
-            ln -sfn "$FED_AGENTIS_ABS" "$COLONY_AGENTIS"
-            ok "$colony/.agentis -> $FED_AGENTIS_ABS (repaired dangling symlink)"
+            ln -sfn "$AGENTIS_DIR" "$COLONY_AGENTIS"
+            ok "$colony/.agentis -> $AGENTIS_DIR (repaired dangling symlink)"
         elif [ -L "$COLONY_AGENTIS" ]; then
             info "$colony/.agentis symlink already present"
         elif [ -e "$COLONY_AGENTIS" ]; then
@@ -255,8 +267,8 @@ if [ -d "$AGENTIS_DIR" ]; then
             # should inspect and remove manually.
             fail "$colony/.agentis exists and is not a symlink — skipping (remove manually if empty)"
         else
-            ln -s "$FED_AGENTIS_ABS" "$COLONY_AGENTIS"
-            ok "$colony/.agentis -> $FED_AGENTIS_ABS"
+            ln -s "$AGENTIS_DIR" "$COLONY_AGENTIS"
+            ok "$colony/.agentis -> $AGENTIS_DIR"
         fi
     done
 fi
