@@ -1,6 +1,6 @@
 # Dev Apprenticeship
 
-![Agentis >= v1.1.3](https://img.shields.io/badge/agentis-%3E%3D%20v1.1.3-blue) ![Agents: 21](https://img.shields.io/badge/agents-21-green) ![Status: Beta](https://img.shields.io/badge/status-beta-yellow)
+![Agentis >= v1.1.6](https://img.shields.io/badge/agentis-%3E%3D%20v1.1.6-blue) ![Agents: 21](https://img.shields.io/badge/agents-21-green) ![Status: Beta](https://img.shields.io/badge/status-beta-yellow)
 
 A federation of 21 agents that learns how you work by watching your GitLab activity. It observes how you triage issues, review merge requests, plan features, write code, and ship releases. Over time it takes over the mechanical parts, while you keep control over the decisions that matter.
 
@@ -35,7 +35,7 @@ graph LR
 
 ## What you need
 
-- [Agentis](https://github.com/Replikanti/agentis) runtime **>= v1.1.3**
+- [Agentis](https://github.com/Replikanti/agentis) runtime **>= v1.1.6**
 - An LLM backend (Claude CLI, Ollama, or any OpenAI-compatible API)
 - GitLab instance with API access (personal access token with `api` scope)
 - Python 3 and git
