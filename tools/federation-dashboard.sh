@@ -360,7 +360,7 @@ HTMLEOF
   <div class="header-right" style="display:flex;align-items:center;gap:16px;">
     <div>
       <div class="time" id="clock"></div>
-      <div><span id="countdown">auto-refresh in 60s</span> <button class="refresh-btn" id="refresh-btn" onclick="manualRefresh()" title="Refresh now (press 'r')">&#x21bb;</button></div>
+      <div><span id="countdown">auto-refresh in 60s</span> <button class="refresh-btn" id="refresh-btn" onclick="manualRefresh()" title="Refresh now (press 'r')" aria-label="Refresh now">&#x21bb;</button></div>
     </div>
     <button class="kill-btn" id="kill-btn" onclick="killSwitch()">Kill Federation</button>
   </div>
@@ -456,7 +456,10 @@ function manualRefresh() {
 }
 
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'r' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+  // Ignore Ctrl/Meta/Alt/Shift combinations (browser reserves Ctrl-R,
+  // Shift-R is a legitimate uppercase R the operator may type elsewhere)
+  // and held-down repeats so a single press only fires one reload.
+  if (e.key === 'r' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && !e.repeat) {
     const tag = (e.target && e.target.tagName) || '';
     // Don't steal 'r' from text fields or contenteditable regions.
     if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
