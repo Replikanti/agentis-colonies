@@ -75,7 +75,7 @@ fn tick(reason: string) -> void {
     // 3. Pick the newest unplanned issue and see if we have all three
     //    slots filled for it. If not, keep waiting.
     let issues_raw = try {
-        exec sh "./scripts/gitlab-api.sh issues --needs-planning";
+        exec sh "$COLONY_DIR/scripts/gitlab-api.sh issues --needs-planning";
     } catch e {
         print("[plan_reviewer] GitLab unplanned-issue poll failed:", e);
         "";
@@ -125,7 +125,7 @@ fn tick(reason: string) -> void {
     print("[plan_reviewer] Issue", draft.issue_id, "-> review_score:", draft.review_score);
 
     if confidence >= 0.85 {
-        let post_cmd = "./scripts/gitlab-api.sh add-note " + to_string(draft.issue_id) + " --body " + shell_escape(draft.plan);
+        let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(draft.issue_id) + " --body " + shell_escape(draft.plan);
         try { exec sh post_cmd; } catch e {
             print("[plan_reviewer] Failed to post note:", e);
         };
@@ -133,8 +133,8 @@ fn tick(reason: string) -> void {
             "review_plan",
             "issue " + to_string(draft.issue_id),
             "posted: score=" + to_string(draft.review_score),
-            "acted",
-            "planning"
+            "success",
+            ["acted", "planning"]
         );
         print("[plan_reviewer] Posted plan to issue", draft.issue_id);
     } else {
@@ -144,8 +144,8 @@ fn tick(reason: string) -> void {
                 "review_plan",
                 "issue " + to_string(draft.issue_id),
                 "emitted: score=" + to_string(draft.review_score),
-                "emitted",
-                "planning"
+                "partial",
+                ["emitted", "planning"]
             );
             print("[plan_reviewer] Emitted draft plan for issue", draft.issue_id);
         } else {

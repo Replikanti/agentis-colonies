@@ -26,9 +26,9 @@ type CalibrationSummary {
 fn unplanned_cmd() -> string {
     let ts = recall_latest("scope_estimator:last_check");
     if len(ts) > 0 {
-        return "./scripts/gitlab-api.sh issues --needs-planning --since " + shell_escape(ts);
+        return "$COLONY_DIR/scripts/gitlab-api.sh issues --needs-planning --since " + shell_escape(ts);
     };
-    return "./scripts/gitlab-api.sh issues --needs-planning";
+    return "$COLONY_DIR/scripts/gitlab-api.sh issues --needs-planning";
 }
 
 fn get_confidence() -> float {
@@ -42,7 +42,7 @@ fn get_confidence() -> float {
 fn tick(reason: string) -> void {
     // 1. Observe: pull recent merged MRs and learn calibration
     let merged_raw = try {
-        exec sh "./scripts/gitlab-api.sh merge-requests --state merged";
+        exec sh "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged";
     } catch e {
         print("[scope_estimator] GitLab merged-MR poll failed:", e);
         "";
@@ -59,8 +59,8 @@ fn tick(reason: string) -> void {
                 "scope_estimate",
                 "batch of " + to_string(summary.observed_pairs) + " shipped MRs",
                 "ratio: " + summary.ratio_hint + " | " + summary.tendencies,
-                "observed",
-                "planning"
+                "success",
+                ["observed", "planning"]
             );
             print("[scope_estimator] Observed", summary.observed_pairs, "shipped pairs");
         };
@@ -97,8 +97,8 @@ fn tick(reason: string) -> void {
             "scope_estimate",
             "issue " + to_string(estimate.issue_id),
             to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points: " + estimate.reasoning,
-            "emitted",
-            "planning"
+            "partial",
+            ["emitted", "planning"]
         );
     } else {
         print("[scope_estimator] Observing (confidence:", confidence, ")");

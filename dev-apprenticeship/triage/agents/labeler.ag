@@ -25,9 +25,9 @@ type LabelAction {
 fn issues_cmd() -> string {
     let ts = recall_latest("labeler:last_check");
     if len(ts) > 0 {
-        return "./scripts/gitlab-api.sh issues --since " + shell_escape(ts);
+        return "$COLONY_DIR/scripts/gitlab-api.sh issues --since " + shell_escape(ts);
     };
-    return "./scripts/gitlab-api.sh issues";
+    return "$COLONY_DIR/scripts/gitlab-api.sh issues";
 }
 
 fn get_confidence() -> float {
@@ -62,8 +62,8 @@ fn tick(reason: string) -> void {
             "label",
             "batch of " + to_string(analysis.labeled_count) + " labeled issues",
             analysis.patterns,
-            "observed",
-            "triage"
+            "success",
+            ["observed", "triage"]
         );
         print("[labeler] Observed", analysis.labeled_count, "labeled issues");
     };
@@ -72,7 +72,7 @@ fn tick(reason: string) -> void {
     if analysis.unlabeled_count > 0 {
         let confidence = get_confidence();
         let rec = recommend("label", ["accuracy"]);
-        let labels_raw = try { exec sh "./scripts/gitlab-api.sh labels"; } catch e { "[]"; };
+        let labels_raw = try { exec sh "$COLONY_DIR/scripts/gitlab-api.sh labels"; } catch e { "[]"; };
         let context = "Unlabeled issues: " + analysis.unlabeled_issues + "\nAvailable labels: " + labels_raw + "\nPast learning: " + to_string(rec);
 
         let action = prompt(
@@ -81,14 +81,14 @@ fn tick(reason: string) -> void {
         ) -> LabelAction;
 
         if confidence >= 0.85 {
-            let update_cmd = "./scripts/gitlab-api.sh update-issue " + to_string(action.issue_id) + " --add-labels " + shell_escape(action.labels);
+            let update_cmd = "$COLONY_DIR/scripts/gitlab-api.sh update-issue " + to_string(action.issue_id) + " --add-labels " + shell_escape(action.labels);
             let result = try { exec sh update_cmd; } catch e {
                 print("[labeler] Failed to apply labels:", e);
                 "";
             };
             if len(result) > 0 {
                 print("[labeler] Applied labels to issue", action.issue_id, ":", action.labels);
-                learn("label", "issue " + to_string(action.issue_id), action.labels, "acted", "triage");
+                learn("label", "issue " + to_string(action.issue_id), action.labels, "success", ["acted", "triage"]);
             };
         } else {
             if confidence >= 0.6 {

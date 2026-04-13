@@ -34,7 +34,7 @@ fn get_confidence() -> float {
 fn tick(reason: string) -> void {
     // 1. Learn release patterns from history
     let releases_raw = try {
-        exec sh "./scripts/gitlab-api.sh releases --per-page 20";
+        exec sh "$COLONY_DIR/scripts/gitlab-api.sh releases --per-page 20";
     } catch e {
         print("[ship_decider] GitLab releases poll failed:", e);
         "";
@@ -42,7 +42,7 @@ fn tick(reason: string) -> void {
 
     if len(releases_raw) > 10 {
         let tags_raw = try {
-            exec sh "./scripts/gitlab-api.sh tags --per-page 20";
+            exec sh "$COLONY_DIR/scripts/gitlab-api.sh tags --per-page 20";
         } catch e { "[]"; };
 
         let patterns = prompt(
@@ -55,8 +55,8 @@ fn tick(reason: string) -> void {
                 "ship_decide",
                 "batch of " + to_string(patterns.releases_seen) + " releases",
                 "cadence: " + patterns.cadence + " | blockers: " + patterns.blocker_types + " | risk: " + patterns.risk_tolerance,
-                "observed",
-                "release"
+                "success",
+                ["observed", "release"]
             );
             print("[ship_decider] Learned from", patterns.releases_seen, "past releases");
         };
@@ -86,21 +86,21 @@ fn tick(reason: string) -> void {
     print("[ship_decider] Decision:", decision.decision, "(confidence:", confidence, ")");
 
     if confidence >= 0.85 {
-        let mr_raw = try { exec sh "./scripts/gitlab-api.sh merge-requests --per-page 1"; } catch e { "[]"; };
+        let mr_raw = try { exec sh "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --per-page 1"; } catch e { "[]"; };
         let mr_iid = prompt("Extract the iid integer of the first MR from this JSON array. If empty, return 0.", mr_raw) -> int;
         if mr_iid > 0 {
             let note = "**Ship Decision** (automated): " + decision.decision + "\n\n" + decision.reasoning;
-            let post_cmd = "./scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note);
+            let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note);
             try { exec sh post_cmd; } catch e {
                 print("[ship_decider] Failed to post note:", e);
             };
         };
         emit("release:ship_decision", decision);
-        learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "acted", "release");
+        learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "success", ["acted", "release"]);
     } else {
         if confidence >= 0.6 {
             emit("release:ship_decision", decision);
-            learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "emitted", "release");
+            learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "partial", ["emitted", "release"]);
         } else {
             print("[ship_decider] Observing (confidence:", confidence, ")");
         };

@@ -25,9 +25,9 @@ type SecurityReview {
 fn mr_cmd() -> string {
     let ts = recall_latest("security_reviewer:last_check");
     if len(ts) > 0 {
-        return "./scripts/gitlab-api.sh merge-requests --since " + shell_escape(ts);
+        return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --since " + shell_escape(ts);
     };
-    return "./scripts/gitlab-api.sh merge-requests";
+    return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests";
 }
 
 fn get_confidence() -> float {
@@ -61,7 +61,7 @@ fn tick(reason: string) -> void {
     };
 
     let mr_iid = get(mr_ids, 0);
-    let changes_cmd = "./scripts/gitlab-api.sh mr-changes " + to_string(mr_iid);
+    let changes_cmd = "$COLONY_DIR/scripts/gitlab-api.sh mr-changes " + to_string(mr_iid);
     let changes_raw = try { exec sh changes_cmd; } catch e { ""; };
 
     if len(changes_raw) < 10 {
@@ -69,7 +69,7 @@ fn tick(reason: string) -> void {
     };
 
     // Learn from human security-related comments
-    let notes_cmd = "./scripts/gitlab-api.sh mr-notes " + to_string(mr_iid);
+    let notes_cmd = "$COLONY_DIR/scripts/gitlab-api.sh mr-notes " + to_string(mr_iid);
     let notes_raw = try { exec sh notes_cmd; } catch e { "[]"; };
 
     let human_patterns = prompt(
@@ -78,7 +78,7 @@ fn tick(reason: string) -> void {
     ) -> string;
 
     if len(human_patterns) > 5 {
-        learn("security_review", "MR " + to_string(mr_iid), human_patterns, "observed", "code-review");
+        learn("security_review", "MR " + to_string(mr_iid), human_patterns, "success", ["observed", "code-review"]);
     };
 
     // Perform security review
@@ -98,7 +98,7 @@ fn tick(reason: string) -> void {
 
         if confidence >= 0.85 {
             let comment = "**Security Review** (automated)\n\n" + review.summary;
-            let post_cmd = "./scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment);
+            let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment);
             try { exec sh post_cmd; } catch e {
                 print("[security_reviewer] Failed to post comment:", e);
             };

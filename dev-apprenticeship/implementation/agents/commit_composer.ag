@@ -29,9 +29,9 @@ type MRPlan {
 fn merged_mr_cmd() -> string {
     let ts = recall_latest("commit_composer:last_check");
     if len(ts) > 0 {
-        return "./scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(ts);
+        return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(ts);
     };
-    return "./scripts/gitlab-api.sh merge-requests --state merged";
+    return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged";
 }
 
 fn get_confidence() -> float {
@@ -60,7 +60,7 @@ fn tick(reason: string) -> void {
 
         if len(mr_ids) > 0 {
             let mr_iid = get(mr_ids, 0);
-            let commits_cmd = "./scripts/gitlab-api.sh mr-commits " + to_string(mr_iid);
+            let commits_cmd = "$COLONY_DIR/scripts/gitlab-api.sh mr-commits " + to_string(mr_iid);
             let commits_raw = try { exec sh commits_cmd; } catch e { "[]"; };
 
             if len(commits_raw) > 10 {
@@ -74,8 +74,8 @@ fn tick(reason: string) -> void {
                         "commit_compose",
                         "MR " + to_string(mr_iid) + " (" + to_string(style.commits_seen) + " commits)",
                         "format: " + style.format + " | grouping: " + style.grouping + " | prefixes: " + style.prefixes,
-                        "observed",
-                        "implementation"
+                        "success",
+                        ["observed", "implementation"]
                     );
                     print("[commit_composer] Learned from", style.commits_seen, "commits in MR", mr_iid);
                 };
@@ -117,7 +117,7 @@ fn tick(reason: string) -> void {
 
     if confidence >= 0.85 {
         // Create the MR
-        let mr_cmd = "./scripts/gitlab-api.sh create-mr --source " + shell_escape(plan.branch_name) + " --title " + shell_escape(plan.mr_title) + " --description " + shell_escape(plan.mr_description);
+        let mr_cmd = "$COLONY_DIR/scripts/gitlab-api.sh create-mr --source " + shell_escape(plan.branch_name) + " --title " + shell_escape(plan.mr_title) + " --description " + shell_escape(plan.mr_description);
         let mr_result = try { exec sh mr_cmd; } catch e {
             print("[commit_composer] MR creation failed:", e);
             "";
@@ -126,12 +126,12 @@ fn tick(reason: string) -> void {
         if len(mr_result) > 0 {
             print("[commit_composer] Created MR for issue", plan.issue_id);
             emit("implementation:mr_ready", plan);
-            learn("commit_compose", "issue " + to_string(plan.issue_id), plan.mr_title, "acted", "implementation");
+            learn("commit_compose", "issue " + to_string(plan.issue_id), plan.mr_title, "success", ["acted", "implementation"]);
         };
     } else {
         if confidence >= 0.6 {
             emit("implementation:mr_ready", plan);
-            learn("commit_compose", "issue " + to_string(plan.issue_id), plan.mr_title, "emitted", "implementation");
+            learn("commit_compose", "issue " + to_string(plan.issue_id), plan.mr_title, "partial", ["emitted", "implementation"]);
         } else {
             print("[commit_composer] Observing (confidence:", confidence, ")");
         };

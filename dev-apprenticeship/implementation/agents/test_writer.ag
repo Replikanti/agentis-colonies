@@ -27,9 +27,9 @@ type TestDraft {
 fn merged_mr_cmd() -> string {
     let ts = recall_latest("test_writer:last_check");
     if len(ts) > 0 {
-        return "./scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(ts);
+        return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(ts);
     };
-    return "./scripts/gitlab-api.sh merge-requests --state merged";
+    return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged";
 }
 
 fn get_confidence() -> float {
@@ -58,7 +58,7 @@ fn tick(reason: string) -> void {
 
         if len(mr_ids) > 0 {
             let mr_iid = get(mr_ids, 0);
-            let changes_cmd = "./scripts/gitlab-api.sh mr-changes " + to_string(mr_iid);
+            let changes_cmd = "$COLONY_DIR/scripts/gitlab-api.sh mr-changes " + to_string(mr_iid);
             let changes_raw = try { exec sh changes_cmd; } catch e { ""; };
 
             if len(changes_raw) > 10 {
@@ -72,8 +72,8 @@ fn tick(reason: string) -> void {
                         "test_write",
                         "MR " + to_string(mr_iid) + " (" + to_string(patterns.test_files_seen) + " test files)",
                         "structure: " + patterns.structure + " | assertions: " + patterns.assertion_style + " | fixtures: " + patterns.fixture_patterns,
-                        "observed",
-                        "implementation"
+                        "success",
+                        ["observed", "implementation"]
                     );
                     print("[test_writer] Learned from", patterns.test_files_seen, "test files in MR", mr_iid);
                 };
@@ -107,7 +107,7 @@ fn tick(reason: string) -> void {
             ) -> string;
 
             // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
-            let commit_cmd = "./scripts/gitlab-api.sh commit-files --branch " + shell_escape(tests.branch_name) + " --message " + shell_escape("test: add tests for #" + to_string(tests.issue_id)) + " --actions " + shell_escape(actions_json);
+            let commit_cmd = "$COLONY_DIR/scripts/gitlab-api.sh commit-files --branch " + shell_escape(tests.branch_name) + " --message " + shell_escape("test: add tests for #" + to_string(tests.issue_id)) + " --actions " + shell_escape(actions_json);
             let commit_result = try { exec sh commit_cmd; } catch e {
                 print("[test_writer] Commit failed:", e);
                 "";
@@ -116,12 +116,12 @@ fn tick(reason: string) -> void {
             if len(commit_result) > 0 {
                 print("[test_writer] Committed tests to", tests.branch_name);
                 emit("implementation:test_draft", tests);
-                learn("test_write", "issue " + to_string(tests.issue_id), tests.summary, "acted", "implementation");
+                learn("test_write", "issue " + to_string(tests.issue_id), tests.summary, "success", ["acted", "implementation"]);
             };
         } else {
             if confidence >= 0.6 {
                 emit("implementation:test_draft", tests);
-                learn("test_write", "issue " + to_string(tests.issue_id), tests.summary, "emitted", "implementation");
+                learn("test_write", "issue " + to_string(tests.issue_id), tests.summary, "partial", ["emitted", "implementation"]);
             } else {
                 print("[test_writer] Observing (confidence:", confidence, ")");
             };

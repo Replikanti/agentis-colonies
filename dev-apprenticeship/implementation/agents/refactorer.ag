@@ -25,9 +25,9 @@ type RefactorSuggestion {
 fn merged_mr_cmd() -> string {
     let ts = recall_latest("refactorer:last_check");
     if len(ts) > 0 {
-        return "./scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(ts);
+        return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(ts);
     };
-    return "./scripts/gitlab-api.sh merge-requests --state merged";
+    return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged";
 }
 
 fn get_confidence() -> float {
@@ -56,11 +56,11 @@ fn tick(reason: string) -> void {
 
         if len(mr_ids) > 0 {
             let mr_iid = get(mr_ids, 0);
-            let changes_cmd = "./scripts/gitlab-api.sh mr-changes " + to_string(mr_iid);
+            let changes_cmd = "$COLONY_DIR/scripts/gitlab-api.sh mr-changes " + to_string(mr_iid);
             let changes_raw = try { exec sh changes_cmd; } catch e { ""; };
 
             if len(changes_raw) > 10 {
-                let commits_cmd = "./scripts/gitlab-api.sh mr-commits " + to_string(mr_iid);
+                let commits_cmd = "$COLONY_DIR/scripts/gitlab-api.sh mr-commits " + to_string(mr_iid);
                 let commits_raw = try { exec sh commits_cmd; } catch e { "[]"; };
 
                 let patterns = prompt(
@@ -73,8 +73,8 @@ fn tick(reason: string) -> void {
                         "refactor",
                         "MR " + to_string(mr_iid),
                         "smells: " + patterns.smells_fixed + " | techniques: " + patterns.techniques,
-                        "observed",
-                        "implementation"
+                        "success",
+                        ["observed", "implementation"]
                     );
                     print("[refactorer] Learned refactoring patterns from MR", mr_iid);
                 };
@@ -107,7 +107,7 @@ fn tick(reason: string) -> void {
                 refactor_context
             ) -> string;
             // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
-            let commit_cmd = "./scripts/gitlab-api.sh commit-files --branch " + shell_escape(branch) + " --message " + shell_escape("refactor: apply improvements for #" + to_string(suggestion.issue_id)) + " --actions " + shell_escape(actions_json);
+            let commit_cmd = "$COLONY_DIR/scripts/gitlab-api.sh commit-files --branch " + shell_escape(branch) + " --message " + shell_escape("refactor: apply improvements for #" + to_string(suggestion.issue_id)) + " --actions " + shell_escape(actions_json);
             let commit_result = try { exec sh commit_cmd; } catch e {
                 print("[refactorer] Commit failed:", e);
                 "";
@@ -115,12 +115,12 @@ fn tick(reason: string) -> void {
             if len(commit_result) > 0 {
                 print("[refactorer] Committed refactoring to", branch);
                 emit("implementation:refactor_suggestions", suggestion);
-                learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "acted", "implementation");
+                learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "success", ["acted", "implementation"]);
             };
         } else {
             if confidence >= 0.6 {
                 emit("implementation:refactor_suggestions", suggestion);
-                learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "emitted", "implementation");
+                learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "partial", ["emitted", "implementation"]);
             } else {
                 print("[refactorer] Observing (confidence:", confidence, ")");
             };

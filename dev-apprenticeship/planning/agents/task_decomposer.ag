@@ -26,9 +26,9 @@ type DecompositionPatterns {
 fn unplanned_cmd() -> string {
     let ts = recall_latest("task_decomposer:last_check");
     if len(ts) > 0 {
-        return "./scripts/gitlab-api.sh issues --needs-planning --since " + shell_escape(ts);
+        return "$COLONY_DIR/scripts/gitlab-api.sh issues --needs-planning --since " + shell_escape(ts);
     };
-    return "./scripts/gitlab-api.sh issues --needs-planning";
+    return "$COLONY_DIR/scripts/gitlab-api.sh issues --needs-planning";
 }
 
 fn get_confidence() -> float {
@@ -42,7 +42,7 @@ fn get_confidence() -> float {
 fn tick(reason: string) -> void {
     // 1. Observe: analyze recent issues to infer decomposition style
     let recent_raw = try {
-        exec sh "./scripts/gitlab-api.sh issues";
+        exec sh "$COLONY_DIR/scripts/gitlab-api.sh issues";
     } catch e {
         print("[task_decomposer] GitLab issues poll failed:", e);
         "";
@@ -59,8 +59,8 @@ fn tick(reason: string) -> void {
                 "task_decomposition",
                 "batch of " + to_string(patterns.epics_seen) + " epics",
                 "avg " + to_string(patterns.avg_subtasks) + " subtasks | " + patterns.style,
-                "observed",
-                "planning"
+                "success",
+                ["observed", "planning"]
             );
             print("[task_decomposer] Observed", patterns.epics_seen, "epics, avg", patterns.avg_subtasks, "subtasks");
         };
@@ -97,8 +97,8 @@ fn tick(reason: string) -> void {
             "task_decomposition",
             "issue " + to_string(breakdown.issue_id),
             to_string(breakdown.count) + " subtasks: " + breakdown.subtasks,
-            "emitted",
-            "planning"
+            "partial",
+            ["emitted", "planning"]
         );
     } else {
         print("[task_decomposer] Observing (confidence:", confidence, ")");

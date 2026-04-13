@@ -36,7 +36,7 @@ fn get_confidence() -> float {
 fn tick(reason: string) -> void {
     // 1. Learn changelog style from past releases
     let releases_raw = try {
-        exec sh "./scripts/gitlab-api.sh releases --per-page 10";
+        exec sh "$COLONY_DIR/scripts/gitlab-api.sh releases --per-page 10";
     } catch e {
         print("[changelog_writer] GitLab releases poll failed:", e);
         "";
@@ -53,8 +53,8 @@ fn tick(reason: string) -> void {
                 "changelog_write",
                 "batch of " + to_string(style.releases_seen) + " releases",
                 "grouping: " + style.grouping + " | tone: " + style.tone + " | include: " + style.inclusions + " | exclude: " + style.exclusions,
-                "observed",
-                "release"
+                "success",
+                ["observed", "release"]
             );
             print("[changelog_writer] Learned from", style.releases_seen, "past release notes");
         };
@@ -89,7 +89,7 @@ fn tick(reason: string) -> void {
 
     // Get the latest release tag to find MRs merged since then
     let latest_release = try {
-        exec sh "./scripts/gitlab-api.sh releases --per-page 1";
+        exec sh "$COLONY_DIR/scripts/gitlab-api.sh releases --per-page 1";
     } catch e { "[]"; };
 
     let since_date = prompt(
@@ -98,7 +98,7 @@ fn tick(reason: string) -> void {
     ) -> string;
 
     // Fetch MRs merged since last release
-    let mrs_cmd = "./scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(since_date);
+    let mrs_cmd = "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(since_date);
     let mrs_raw = try { exec sh mrs_cmd; } catch e {
         print("[changelog_writer] MR fetch failed:", e);
         "";
@@ -117,21 +117,21 @@ fn tick(reason: string) -> void {
         print("[changelog_writer] Drafted changelog for", draft.version, "(", draft.mr_count, "MRs, confidence:", confidence, ")");
 
         if confidence >= 0.85 {
-            let mr_raw = try { exec sh "./scripts/gitlab-api.sh merge-requests --per-page 1"; } catch e { "[]"; };
+            let mr_raw = try { exec sh "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --per-page 1"; } catch e { "[]"; };
             let mr_iid = prompt("Extract the iid integer of the first MR from this JSON array. If empty, return 0.", mr_raw) -> int;
             if mr_iid > 0 {
                 let note = "**Release Notes Draft** (automated)\n\n" + draft.changelog;
-                let post_cmd = "./scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note);
+                let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note);
                 try { exec sh post_cmd; } catch e {
                     print("[changelog_writer] Failed to post note:", e);
                 };
             };
             emit("release:changelog_draft", draft);
-            learn("changelog_write", "release " + draft.version, to_string(draft.mr_count) + " MRs", "acted", "release");
+            learn("changelog_write", "release " + draft.version, to_string(draft.mr_count) + " MRs", "success", ["acted", "release"]);
         } else {
             if confidence >= 0.6 {
                 emit("release:changelog_draft", draft);
-                learn("changelog_write", "release " + draft.version, to_string(draft.mr_count) + " MRs", "emitted", "release");
+                learn("changelog_write", "release " + draft.version, to_string(draft.mr_count) + " MRs", "partial", ["emitted", "release"]);
             } else {
                 print("[changelog_writer] Observing (confidence:", confidence, ")");
             };

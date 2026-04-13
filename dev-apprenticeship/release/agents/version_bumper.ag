@@ -36,7 +36,7 @@ fn get_confidence() -> float {
 fn tick(reason: string) -> void {
     // 1. Learn versioning patterns from tags
     let tags_raw = try {
-        exec sh "./scripts/gitlab-api.sh tags --per-page 20";
+        exec sh "$COLONY_DIR/scripts/gitlab-api.sh tags --per-page 20";
     } catch e {
         print("[version_bumper] GitLab tags poll failed:", e);
         "";
@@ -53,8 +53,8 @@ fn tick(reason: string) -> void {
                 "version_bump",
                 "batch of " + to_string(patterns.tags_seen) + " version tags",
                 "format: " + patterns.format + " | strategy: " + patterns.bump_strategy + " | prerelease: " + patterns.prerelease,
-                "observed",
-                "release"
+                "success",
+                ["observed", "release"]
             );
             print("[version_bumper] Learned from", patterns.tags_seen, "version tags");
         };
@@ -93,12 +93,12 @@ fn tick(reason: string) -> void {
 
     // Get latest tags for current version context
     let latest_tags = try {
-        exec sh "./scripts/gitlab-api.sh tags --per-page 5";
+        exec sh "$COLONY_DIR/scripts/gitlab-api.sh tags --per-page 5";
     } catch e { "[]"; };
 
     // Fetch merged MRs since last release for bump analysis
     let latest_release = try {
-        exec sh "./scripts/gitlab-api.sh releases --per-page 1";
+        exec sh "$COLONY_DIR/scripts/gitlab-api.sh releases --per-page 1";
     } catch e { "[]"; };
 
     let since_date = prompt(
@@ -106,7 +106,7 @@ fn tick(reason: string) -> void {
         latest_release
     ) -> string;
 
-    let mrs_cmd = "./scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(since_date);
+    let mrs_cmd = "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(since_date);
     let mrs_raw = try { exec sh mrs_cmd; } catch e { "[]"; };
 
     let rec = recommend("version_bump", ["accuracy"]);
@@ -123,7 +123,7 @@ fn tick(reason: string) -> void {
     if confidence >= 0.85 {
         // Create the tag
         // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
-        let tag_cmd = "./scripts/gitlab-api.sh create-tag --name " + shell_escape(bump.next) + " --ref main --message " + shell_escape("Release " + bump.next);
+        let tag_cmd = "$COLONY_DIR/scripts/gitlab-api.sh create-tag --name " + shell_escape(bump.next) + " --ref main --message " + shell_escape("Release " + bump.next);
         let tag_result = try { exec sh tag_cmd; } catch e {
             print("[version_bumper] Tag creation failed:", e);
             "";
@@ -136,7 +136,7 @@ fn tick(reason: string) -> void {
             let release_desc = changelog_str + bump.reasoning;
 
             // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
-            let release_cmd = "./scripts/gitlab-api.sh create-release --tag " + shell_escape(bump.next) + " --name " + shell_escape("Release " + bump.next) + " --description " + shell_escape(release_desc);
+            let release_cmd = "$COLONY_DIR/scripts/gitlab-api.sh create-release --tag " + shell_escape(bump.next) + " --name " + shell_escape("Release " + bump.next) + " --description " + shell_escape(release_desc);
             let release_result = try { exec sh release_cmd; } catch e {
                 print("[version_bumper] Release creation failed:", e);
                 "";
@@ -147,12 +147,12 @@ fn tick(reason: string) -> void {
             };
 
             emit("release:version_bumped", bump);
-            learn("version_bump", bump.next, bump.bump_type + ": " + bump.reasoning, "acted", "release");
+            learn("version_bump", bump.next, bump.bump_type + ": " + bump.reasoning, "success", ["acted", "release"]);
         };
     } else {
         if confidence >= 0.6 {
             emit("release:version_bumped", bump);
-            learn("version_bump", bump.next, bump.bump_type + ": " + bump.reasoning, "emitted", "release");
+            learn("version_bump", bump.next, bump.bump_type + ": " + bump.reasoning, "partial", ["emitted", "release"]);
         } else {
             print("[version_bumper] Observing (confidence:", confidence, ")");
         };
