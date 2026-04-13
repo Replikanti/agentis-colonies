@@ -27,9 +27,9 @@ type CodeDraft {
 fn merged_mr_cmd() -> string {
     let ts = recall_latest("code_writer:last_check");
     if len(ts) > 0 {
-        return "./scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(ts);
+        return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(ts);
     };
-    return "./scripts/gitlab-api.sh merge-requests --state merged";
+    return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged";
 }
 
 fn get_confidence() -> float {
@@ -58,7 +58,7 @@ fn tick(reason: string) -> void {
 
         if len(mr_ids) > 0 {
             let mr_iid = get(mr_ids, 0);
-            let changes_cmd = "./scripts/gitlab-api.sh mr-changes " + to_string(mr_iid);
+            let changes_cmd = "$COLONY_DIR/scripts/gitlab-api.sh mr-changes " + to_string(mr_iid);
             let changes_raw = try { exec sh changes_cmd; } catch e { ""; };
 
             if len(changes_raw) > 10 {
@@ -71,8 +71,8 @@ fn tick(reason: string) -> void {
                     "code_write",
                     "MR " + to_string(mr_iid),
                     "naming: " + patterns.naming + " | structure: " + patterns.structure + " | errors: " + patterns.error_handling,
-                    "observed",
-                    "implementation"
+                    "success",
+                    ["observed", "implementation"]
                 );
                 print("[code_writer] Learned from MR", mr_iid);
             };
@@ -80,7 +80,7 @@ fn tick(reason: string) -> void {
     };
 
     // 2. Check for assigned issues needing implementation
-    let issues_cmd = "./scripts/gitlab-api.sh assigned-issues";
+    let issues_cmd = "$COLONY_DIR/scripts/gitlab-api.sh assigned-issues";
     let issues_raw = try {
         exec sh issues_cmd;
     } catch e {
@@ -102,7 +102,7 @@ fn tick(reason: string) -> void {
 
         if confidence >= 0.85 {
             // Create branch
-            let branch_cmd = "./scripts/gitlab-api.sh create-branch --name " + shell_escape(draft.branch_name) + " --ref main";
+            let branch_cmd = "$COLONY_DIR/scripts/gitlab-api.sh create-branch --name " + shell_escape(draft.branch_name) + " --ref main";
             let branch_result = try { exec sh branch_cmd; } catch e {
                 print("[code_writer] Branch creation failed:", e);
                 "";
@@ -110,7 +110,7 @@ fn tick(reason: string) -> void {
 
             if len(branch_result) > 0 {
                 // Generate actual code and commit it to the branch
-                let issue_cmd = "./scripts/gitlab-api.sh issue " + to_string(draft.issue_id);
+                let issue_cmd = "$COLONY_DIR/scripts/gitlab-api.sh issue " + to_string(draft.issue_id);
                 let issue_detail = try { exec sh issue_cmd; } catch e { ""; };
                 let code_context = "Issue: " + issue_detail + "\nPlan: " + draft.files + "\nPatterns: " + to_string(rec);
 
@@ -120,7 +120,7 @@ fn tick(reason: string) -> void {
                 ) -> string;
 
                 // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
-                let commit_cmd = "./scripts/gitlab-api.sh commit-files --branch " + shell_escape(draft.branch_name) + " --message " + shell_escape("feat: implement #" + to_string(draft.issue_id) + " - " + draft.summary) + " --actions " + shell_escape(actions_json);
+                let commit_cmd = "$COLONY_DIR/scripts/gitlab-api.sh commit-files --branch " + shell_escape(draft.branch_name) + " --message " + shell_escape("feat: implement #" + to_string(draft.issue_id) + " - " + draft.summary) + " --actions " + shell_escape(actions_json);
                 let commit_result = try { exec sh commit_cmd; } catch e {
                     print("[code_writer] Commit failed:", e);
                     "";
@@ -129,13 +129,13 @@ fn tick(reason: string) -> void {
                 if len(commit_result) > 0 {
                     print("[code_writer] Committed code to", draft.branch_name);
                     emit("implementation:code_draft", draft);
-                    learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "acted", "implementation");
+                    learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "success", ["acted", "implementation"]);
                 };
             };
         } else {
             if confidence >= 0.6 {
                 emit("implementation:code_draft", draft);
-                learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "emitted", "implementation");
+                learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "success", ["emitted", "implementation"]);
             } else {
                 print("[code_writer] Observing (confidence:", confidence, ")");
             };

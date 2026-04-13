@@ -173,22 +173,78 @@ if [ -d "$AGENTIS_DIR" ]; then
     mkdir -p "$AGENTIS_DIR/lifecycle"
     ok "lifecycle tracking enabled"
 
-    # Enable federation monitoring and cross-colony knowledge sharing
+    # Write the defaults that every colony in this federation needs.
+    #
+    # These keys are not set by `agentis init`; without them a fresh checkout
+    # of dev-apprenticeship cannot complete a single tick on a real LLM
+    # backend (see Replikanti/agentis-colonies#88 for the full debug
+    # transcript). Each key is only written if missing so re-running
+    # install.sh is idempotent and never clobbers operator-tuned values.
+    #
+    #   daemon.tick_interval_ms     — matches --tick-interval 60000 in
+    #                                 start-colony.sh; without it the
+    #                                 watchdog uses the 1 s default.
+    #   daemon.heartbeat_interval_ms — 3× tick is long enough for a
+    #                                  Claude CLI cold start (typ. 5-30 s).
+    #                                  Default 2× tick is fine for mock,
+    #                                  but kills real-LLM agents mid-tick.
+    #   daemon.cb_per_tick          — 2000 covers ~40 prompt() calls per
+    #                                 tick. Default 100 overflows on the
+    #                                 first prompt (50 CB each) and makes
+    #                                 the agent look unhealthy from tick 1.
+    #   experience.enabled          — learn() is a no-op without this;
+    #                                 daemons throw "experience not
+    #                                 enabled" on every tick.
+    #   exec.env_passthrough        — agentis strips the env before running
+    #                                 `exec sh`. Agents need COLONY_DIR
+    #                                 (to resolve $COLONY_DIR/scripts/...
+    #                                 paths) and GITLAB_* (so gitlab-api.sh
+    #                                 authenticates against the instance
+    #                                 configured by start-colony.sh).
     AGENTIS_CONFIG="$AGENTIS_DIR/config"
     if [ -f "$AGENTIS_CONFIG" ]; then
-        if ! grep -q 'federation.enabled' "$AGENTIS_CONFIG" 2>/dev/null; then
-            printf '\nfederation.enabled = true\n' >> "$AGENTIS_CONFIG"
-            ok "federation monitoring enabled"
-        else
-            info "federation monitoring already configured"
-        fi
-        if ! grep -q 'knowledge.federation_enabled' "$AGENTIS_CONFIG" 2>/dev/null; then
-            printf 'knowledge.federation_enabled = true\n' >> "$AGENTIS_CONFIG"
-            ok "cross-colony knowledge sharing enabled"
-        else
-            info "cross-colony knowledge sharing already configured"
-        fi
+        write_key() {
+            local key="$1"
+            local value="$2"
+            # Escape dots in the key for grep
+            local grep_key
+            grep_key=$(printf '%s' "$key" | sed 's/\./\\./g')
+            if ! grep -q "^${grep_key}\s*=" "$AGENTIS_CONFIG" 2>/dev/null; then
+                printf '%s = %s\n' "$key" "$value" >> "$AGENTIS_CONFIG"
+                ok "$key = $value"
+            else
+                info "$key already configured"
+            fi
+        }
+        write_key 'federation.enabled'           'true'
+        write_key 'knowledge.federation_enabled' 'true'
+        write_key 'daemon.tick_interval_ms'      '60000'
+        write_key 'daemon.heartbeat_interval_ms' '180000'
+        write_key 'daemon.cb_per_tick'           '2000'
+        write_key 'experience.enabled'           'true'
+        write_key 'exec.env_passthrough'         'COLONY_DIR,GITLAB_*'
     fi
+fi
+
+# Create per-colony .agentis symlinks so commands run from a colony dir
+# (e.g. `agentis doctor`) find the federation's .agentis instead of
+# spawning a divergent empty one in cwd (see issue #88 body, part 2).
+if [ -d "$AGENTIS_DIR" ]; then
+    FED_AGENTIS_ABS="$(cd "$AGENTIS_DIR" && pwd)"
+    for colony in "${COLONIES[@]}"; do
+        COLONY_AGENTIS="$SCRIPT_DIR/$colony/.agentis"
+        if [ -L "$COLONY_AGENTIS" ]; then
+            info "$colony/.agentis symlink already present"
+        elif [ -e "$COLONY_AGENTIS" ]; then
+            # Real directory found — likely a divergent empty .agentis from
+            # a past `agentis doctor` run in cwd. Leave it alone; operator
+            # should inspect and remove manually.
+            fail "$colony/.agentis exists and is not a symlink — skipping (remove manually if empty)"
+        else
+            ln -s "$FED_AGENTIS_ABS" "$COLONY_AGENTIS"
+            ok "$colony/.agentis -> $FED_AGENTIS_ABS"
+        fi
+    done
 fi
 
 # --- 5. Seed confidence ---

@@ -24,9 +24,9 @@ type StyleReview {
 fn mr_cmd() -> string {
     let ts = recall_latest("style_reviewer:last_check");
     if len(ts) > 0 {
-        return "./scripts/gitlab-api.sh merge-requests --since " + shell_escape(ts);
+        return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --since " + shell_escape(ts);
     };
-    return "./scripts/gitlab-api.sh merge-requests";
+    return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests";
 }
 
 fn get_confidence() -> float {
@@ -62,7 +62,7 @@ fn tick(reason: string) -> void {
 
     // Review the first open MR
     let mr_iid = get(mr_ids, 0);
-    let changes_cmd = "./scripts/gitlab-api.sh mr-changes " + to_string(mr_iid);
+    let changes_cmd = "$COLONY_DIR/scripts/gitlab-api.sh mr-changes " + to_string(mr_iid);
     let changes_raw = try { exec sh changes_cmd; } catch e { ""; };
 
     if len(changes_raw) < 10 {
@@ -70,7 +70,7 @@ fn tick(reason: string) -> void {
     };
 
     // Check for existing human review comments to learn from
-    let notes_cmd = "./scripts/gitlab-api.sh mr-notes " + to_string(mr_iid);
+    let notes_cmd = "$COLONY_DIR/scripts/gitlab-api.sh mr-notes " + to_string(mr_iid);
     let notes_raw = try { exec sh notes_cmd; } catch e { "[]"; };
 
     // Learn from human style comments
@@ -80,7 +80,7 @@ fn tick(reason: string) -> void {
     ) -> string;
 
     if len(human_patterns) > 5 {
-        learn("style_review", "MR " + to_string(mr_iid), human_patterns, "observed", "code-review");
+        learn("style_review", "MR " + to_string(mr_iid), human_patterns, "success", ["observed", "code-review"]);
     };
 
     // Perform style review on the diff
@@ -102,13 +102,13 @@ fn tick(reason: string) -> void {
         if confidence >= 0.85 {
             // Post review comment directly
             let comment = "**Style Review** (automated)\n\n" + review.summary;
-            let post_cmd = "./scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment);
+            let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment);
             let result = try { exec sh post_cmd; } catch e {
                 print("[style_reviewer] Failed to post comment:", e);
                 "";
             };
             if len(result) > 0 {
-                learn("style_review", "posted on MR " + to_string(mr_iid), review.summary, "acted", "code-review");
+                learn("style_review", "posted on MR " + to_string(mr_iid), review.summary, "success", ["acted", "code-review"]);
             };
         } else {
             print("[style_reviewer] Confidence:", confidence, "- findings emitted to bus only");

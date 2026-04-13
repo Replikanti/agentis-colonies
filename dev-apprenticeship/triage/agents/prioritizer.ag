@@ -25,9 +25,9 @@ type PriorityAction {
 fn issues_cmd() -> string {
     let ts = recall_latest("prioritizer:last_check");
     if len(ts) > 0 {
-        return "./scripts/gitlab-api.sh issues --since " + shell_escape(ts);
+        return "$COLONY_DIR/scripts/gitlab-api.sh issues --since " + shell_escape(ts);
     };
-    return "./scripts/gitlab-api.sh issues";
+    return "$COLONY_DIR/scripts/gitlab-api.sh issues";
 }
 
 fn get_confidence() -> float {
@@ -62,8 +62,8 @@ fn tick(reason: string) -> void {
             "prioritize",
             "batch of " + to_string(analysis.prioritized_count) + " prioritized issues",
             analysis.patterns,
-            "observed",
-            "triage"
+            "success",
+            ["observed", "triage"]
         );
         print("[prioritizer] Observed", analysis.prioritized_count, "priority assignments");
     };
@@ -80,14 +80,14 @@ fn tick(reason: string) -> void {
         ) -> PriorityAction;
 
         if confidence >= 0.85 {
-            let update_cmd = "./scripts/gitlab-api.sh update-issue " + to_string(action.issue_id) + " --add-labels " + shell_escape(action.priority);
+            let update_cmd = "$COLONY_DIR/scripts/gitlab-api.sh update-issue " + to_string(action.issue_id) + " --add-labels " + shell_escape(action.priority);
             let result = try { exec sh update_cmd; } catch e {
                 print("[prioritizer] Failed to set priority:", e);
                 "";
             };
             if len(result) > 0 {
                 print("[prioritizer] Set priority on issue", action.issue_id, ":", action.priority);
-                learn("prioritize", "issue " + to_string(action.issue_id), action.priority, "acted", "triage");
+                learn("prioritize", "issue " + to_string(action.issue_id), action.priority, "success", ["acted", "triage"]);
             };
         } else {
             if confidence >= 0.6 {

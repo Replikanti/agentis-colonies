@@ -25,9 +25,9 @@ type RouteAction {
 fn issues_cmd() -> string {
     let ts = recall_latest("router:last_check");
     if len(ts) > 0 {
-        return "./scripts/gitlab-api.sh issues --since " + shell_escape(ts);
+        return "$COLONY_DIR/scripts/gitlab-api.sh issues --since " + shell_escape(ts);
     };
-    return "./scripts/gitlab-api.sh issues";
+    return "$COLONY_DIR/scripts/gitlab-api.sh issues";
 }
 
 fn get_confidence() -> float {
@@ -52,7 +52,7 @@ fn tick(reason: string) -> void {
     };
 
     // Get team members
-    let members_raw = try { exec sh "./scripts/gitlab-api.sh members"; } catch e { "[]"; };
+    let members_raw = try { exec sh "$COLONY_DIR/scripts/gitlab-api.sh members"; } catch e { "[]"; };
 
     // Analyze: find assigned and unassigned issues
     let analysis = prompt(
@@ -65,8 +65,8 @@ fn tick(reason: string) -> void {
             "route",
             "batch of " + to_string(analysis.assigned_count) + " assigned issues",
             analysis.patterns,
-            "observed",
-            "triage"
+            "success",
+            ["observed", "triage"]
         );
         print("[router] Observed", analysis.assigned_count, "assignment patterns");
     };
@@ -83,14 +83,14 @@ fn tick(reason: string) -> void {
         ) -> RouteAction;
 
         if confidence >= 0.85 {
-            let update_cmd = "./scripts/gitlab-api.sh update-issue " + to_string(action.issue_id) + " --assignee " + shell_escape(action.assignee);
+            let update_cmd = "$COLONY_DIR/scripts/gitlab-api.sh update-issue " + to_string(action.issue_id) + " --assignee " + shell_escape(action.assignee);
             let result = try { exec sh update_cmd; } catch e {
                 print("[router] Failed to assign:", e);
                 "";
             };
             if len(result) > 0 {
                 print("[router] Assigned issue", action.issue_id, "to", action.assignee);
-                learn("route", "issue " + to_string(action.issue_id), action.assignee, "acted", "triage");
+                learn("route", "issue " + to_string(action.issue_id), action.assignee, "success", ["acted", "triage"]);
             };
         } else {
             if confidence >= 0.6 {

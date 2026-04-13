@@ -44,7 +44,7 @@ fn tick(reason: string) -> void {
     };
 
     // Learn from past human approval/rejection patterns
-    let mr_cmd = "./scripts/gitlab-api.sh merge-requests --state merged";
+    let mr_cmd = "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged";
     let recent_merged = try { exec sh mr_cmd; } catch e { "[]"; };
 
     let approval_patterns = prompt(
@@ -53,7 +53,7 @@ fn tick(reason: string) -> void {
     ) -> string;
 
     if len(approval_patterns) > 10 {
-        learn("approval_decision", "merged MRs batch", approval_patterns, "observed", "code-review");
+        learn("approval_decision", "merged MRs batch", approval_patterns, "success", ["observed", "code-review"]);
     };
 
     // Aggregate findings and decide
@@ -71,20 +71,20 @@ fn tick(reason: string) -> void {
 
     if confidence >= 0.85 {
         if decision.action == "approve" {
-            let approve_cmd = "./scripts/gitlab-api.sh approve " + to_string(decision.mr_iid);
+            let approve_cmd = "$COLONY_DIR/scripts/gitlab-api.sh approve " + to_string(decision.mr_iid);
             try { exec sh approve_cmd; } catch e {
                 print("[approval_decider] Failed to approve:", e);
             };
             print("[approval_decider] Approved MR", decision.mr_iid);
-            learn("approval_decision", "MR " + to_string(decision.mr_iid), "approved: " + decision.reasoning, "acted", "code-review");
+            learn("approval_decision", "MR " + to_string(decision.mr_iid), "approved: " + decision.reasoning, "success", ["acted", "code-review"]);
         } else {
             if decision.action == "request_changes" {
                 let comment = "**Review Summary** (automated)\n\n" + decision.reasoning + "\n\nFindings: " + to_string(decision.total_findings) + " total, " + to_string(decision.critical_count) + " critical";
-                let post_cmd = "./scripts/gitlab-api.sh post-note " + to_string(decision.mr_iid) + " --body " + shell_escape(comment);
+                let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh post-note " + to_string(decision.mr_iid) + " --body " + shell_escape(comment);
                 try { exec sh post_cmd; } catch e {
                     print("[approval_decider] Failed to post:", e);
                 };
-                learn("approval_decision", "MR " + to_string(decision.mr_iid), "request_changes: " + decision.reasoning, "acted", "code-review");
+                learn("approval_decision", "MR " + to_string(decision.mr_iid), "request_changes: " + decision.reasoning, "success", ["acted", "code-review"]);
             } else {
                 print("[approval_decider] Escalating MR", decision.mr_iid, "to human");
                 emit("review:escalation", decision);
