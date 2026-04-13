@@ -19,7 +19,7 @@ ALL_AGENTS=(
     code_writer test_writer refactorer commit_composer
     ship_decider changelog_writer version_bumper release_checker
 )
-MIN_VERSION="1.1.3"
+MIN_VERSION="1.1.6"
 
 # --- Helpers ---
 
@@ -65,12 +65,17 @@ if [ "$MISSING" -eq 1 ]; then
     exit 1
 fi
 
-# Check agentis version (need >= 1.1.3 for memo set/get)
+# Check agentis version. v1.1.6 is the first release with `--enable-exec` and
+# `--enable-messaging` daemon flags (required by start-colony.sh) and the
+# quarantine oscillation fix (#492), which previously caused silent capability
+# revocations mid-federation. Older builds will appear to start but all agents
+# either fail with `capability denied: exec_foreign` or never receive
+# emit/listen messages.
 AGENTIS_VERSION=$(agentis --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "0.0.0")
 info "agentis version: $AGENTIS_VERSION (minimum: $MIN_VERSION)"
 
 if ! version_gte "$AGENTIS_VERSION" "$MIN_VERSION"; then
-    fail "agentis >= $MIN_VERSION required (memo set/get support). Please update."
+    fail "agentis >= $MIN_VERSION required (--enable-exec / --enable-messaging daemon flags, #492 quarantine fix). Please update."
     exit 1
 fi
 

@@ -184,6 +184,7 @@ if errors:
                 case "$flag" in
                     --tick-interval|--cb-per-tick|--colony|--deadline|--priority|\
                     --enable-migration|--enable-replication|--allow-replica-replication|\
+                    --enable-exec|--enable-messaging|--deny-exec|\
                     --help|-h) ;;
                     *) echo "$flag" ;;
                 esac

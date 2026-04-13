@@ -54,7 +54,8 @@ AGENTS=(
 # Note: LLM backend is read by agentis daemon from the llm.backend key in
 # .agentis/config, not from a CLI flag. The [llm] section in colony.toml is
 # informational only. Operators should mirror it into .agentis/config.
-# exec sh is enabled by default on agentis daemon; there is no --enable-exec.
+# `--enable-exec` is required since agentis v1.1.6 (exec sh is opt-in; see #484/#489).
+# `--enable-messaging` is required for cross-agent emit/listen (#484, v1.1.6+).
 
 echo "Starting Release colony (${#AGENTS[@]} agents)..."
 echo "  GitLab: $GITLAB_URL ($GITLAB_PROJECT_RAW)"
@@ -63,6 +64,8 @@ for agent in "${AGENTS[@]}"; do
     echo "  Starting $agent..."
     agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
         --colony release \
+        --enable-exec \
+        --enable-messaging \
         --tick-interval 60000 &
     sleep 2  # stagger starts to reduce API contention
 done
