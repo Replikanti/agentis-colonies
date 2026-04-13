@@ -122,13 +122,16 @@ print(json.dumps(counts))
     local REMEDIATION
     REMEDIATION="$(agentis remediation history --limit 5 --json 2>/dev/null || echo '[]')"
 
-    # Confidence values
+    # Confidence values. `agentis memo get` on a missing key exits 0 with
+    # empty stdout (not non-zero), so `|| echo '0.0'` never fires — the
+    # shell substitution default on the next line is what actually catches
+    # a fresh federation where no memos have been written yet (#96).
     local CONFIDENCES=""
     for i in "${!ALL_AGENTS[@]}"; do
         local agent="${ALL_AGENTS[$i]}"
         local conf
-        conf="$(agentis memo get "${agent}:confidence" 2>/dev/null || echo '0.0')"
-        CONFIDENCES="${CONFIDENCES}${conf},"
+        conf="$(agentis memo get "${agent}:confidence" 2>/dev/null)"
+        CONFIDENCES="${CONFIDENCES}${conf:-0.0},"
     done
     CONFIDENCES="[${CONFIDENCES%,}]"
 
@@ -149,10 +152,19 @@ print(json.dumps(lines))
     # Append to history
     python3 - "$HISTORY_FILE" "$EPOCH" "$KNOWLEDGE_COUNTS" "$CONFIDENCES" "$AGENT_COLONY_MAP" <<'PY'
 import sys, json
+def _safe_json(s, default):
+    try:
+        return json.loads(s)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return default
 path, epoch = sys.argv[1], int(sys.argv[2])
-kc = json.loads(sys.argv[3])
-conf_vals = json.loads(sys.argv[4])
-agent_map = json.loads(sys.argv[5])
+# Defensive parse: on a fresh federation any of these shell-assembled JSON
+# blobs may be malformed (see #96). Fall back to empty structures so the
+# dashboard still renders — the resulting history entry just has empty
+# `knowledge` / `confidence` fields for this tick.
+kc = _safe_json(sys.argv[3], {"total": 0})
+conf_vals = _safe_json(sys.argv[4], [])
+agent_map = _safe_json(sys.argv[5], [])
 try:
     with open(path) as f:
         history = json.load(f)
