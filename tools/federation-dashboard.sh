@@ -654,10 +654,12 @@ fed_dir = os.path.dirname(serve_dir)
 class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         if self.path == '/kill':
-            # Run from fed_dir, not .dashboard: even with the v1.1.7 walk-up
-            # in agentis_root(), keeping cwd explicit means this works on
-            # older agentis builds too and avoids surprise if .dashboard
-            # ever moves to a location outside the federation tree.
+            # Run from fed_dir, not .dashboard. The actual fix for #91 is
+            # the v1.1.7 walk-up in agentis_root() (Replikanti/agentis-core#499)
+            # which finds .agentis/ in any ancestor; passing cwd=fed_dir
+            # just makes the intent explicit and stops .dashboard/ from
+            # appearing as a plausible agentis root in future agentis
+            # versions that might use some other marker than .agentis/objects.
             try:
                 result = subprocess.run(
                     ['agentis', 'daemon', 'stop', '--all'],
