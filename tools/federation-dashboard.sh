@@ -590,8 +590,28 @@ function killSwitch() {
   btn.textContent = 'Killing...';
   btn.className = 'kill-btn killed';
   fetch('/kill', { method: 'POST' })
-    .then(r => r.text())
-    .then(() => { btn.textContent = 'Federation Stopped'; const m = document.querySelector('meta[http-equiv="refresh"]'); if (m) m.remove(); })
+    .then(r => r.text().then(t => ({ok: r.ok, text: t})))
+    .then(({ok, text}) => {
+      if (!ok) {
+        // Server returned non-2xx: surface the message and allow retry.
+        btn.textContent = 'Kill Failed: ' + text.split('\n')[0].slice(0,60);
+        btn.className = 'kill-btn';
+        killArmed = false;
+        return;
+      }
+      // First line of reply is the count, e.g. "5 daemon(s) stopped".
+      // "0 daemon(s) stopped" means we clicked but there was nothing to kill
+      // — leave the meta-refresh in place and let the operator retry.
+      const first = text.split('\n')[0] || 'Federation Stopped';
+      btn.textContent = first;
+      if (!/^0 /.test(first)) {
+        const m = document.querySelector('meta[http-equiv="refresh"]');
+        if (m) m.remove();
+      } else {
+        btn.className = 'kill-btn';
+        killArmed = false;
+      }
+    })
     .catch(() => { btn.textContent = 'Kill Failed'; btn.className = 'kill-btn'; killArmed = false; });
 }
 </script>
@@ -625,20 +645,52 @@ import sys, os, subprocess
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 serve_dir, port = sys.argv[1], int(sys.argv[2])
+# serve_dir is $FED_DIR/.dashboard; the federation root (parent of serve_dir)
+# is the cwd we want agentis to resolve .agentis/ from. We still os.chdir to
+# serve_dir so SimpleHTTPRequestHandler serves index.html from here.
 os.chdir(serve_dir)
+fed_dir = os.path.dirname(serve_dir)
 
 class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         if self.path == '/kill':
+            # Run from fed_dir, not .dashboard. The actual fix for #91 is
+            # the v1.1.7 walk-up in agentis_root() (Replikanti/agentis-core#499)
+            # which finds .agentis/ in any ancestor; passing cwd=fed_dir
+            # just makes the intent explicit and stops .dashboard/ from
+            # appearing as a plausible agentis root in future agentis
+            # versions that might use some other marker than .agentis/objects.
+            try:
+                result = subprocess.run(
+                    ['agentis', 'daemon', 'stop', '--all'],
+                    capture_output=True, text=True,
+                    cwd=fed_dir,
+                    timeout=15,
+                )
+            except (OSError, subprocess.SubprocessError) as e:
+                self.send_response(500)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(f'exec failed: {e}'.encode())
+                return
+            # `agentis daemon stop --all` emits to stderr:
+            #   "No running daemons to stop." or one "stop signal sent: <id>"
+            #   line per daemon. Count them so the button reports real state.
+            err = (result.stderr or '').strip()
+            lines = [l for l in err.splitlines() if l]
+            stopped = [l for l in lines if l.startswith('stop signal sent:')]
+            if result.returncode != 0:
+                self.send_response(500)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write((err or 'agentis daemon stop failed').encode())
+                return
             self.send_response(200)
             self.send_header('Content-Type', 'text/plain')
             self.end_headers()
-            result = subprocess.run(
-                ['agentis', 'daemon', 'stop', '--all'],
-                capture_output=True, text=True
-            )
-            msg = result.stdout.strip() or result.stderr.strip() or 'Federation stopped'
-            self.wfile.write(msg.encode())
+            summary = f'{len(stopped)} daemon(s) stopped'
+            body = summary + ('\n' + err if err else '')
+            self.wfile.write(body.encode())
         else:
             self.send_error(404)
     def log_message(self, format, *args):
