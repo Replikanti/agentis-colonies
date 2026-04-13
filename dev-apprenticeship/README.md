@@ -57,6 +57,12 @@ The install script checks prerequisites, creates configs for all 5 colonies, wri
 agentis daemon stop --all       # Stop everything
 ```
 
+> Agents must be launched via `start-federation.sh` or a colony's
+> `start-colony.sh`. Those scripts export `COLONY_DIR`, which the
+> agents expand inside `exec sh "$COLONY_DIR/scripts/..."` at runtime.
+> Launching `agentis daemon <agent>.ag` directly bypasses that export,
+> so `$COLONY_DIR` expands to empty and GitLab polling fails silently.
+
 ## Monitoring
 
 ### Dashboard
