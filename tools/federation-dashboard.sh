@@ -313,6 +313,18 @@ HEADEOF
   }
   .stat-value { font-size: 28px; color: var(--cyan); text-shadow: 0 0 15px rgba(0,255,255,0.4); }
   .stat-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 2px; margin-top: 4px; }
+  .refresh-btn {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--muted); font-family: inherit; font-size: 12px;
+    padding: 0 6px; cursor: pointer; border-radius: 2px;
+    line-height: 1.4; vertical-align: middle;
+    transition: color 0.15s, border-color 0.15s, transform 0.15s;
+  }
+  .refresh-btn:hover { color: var(--cyan); border-color: var(--cyan); }
+  .refresh-btn.spinning { animation: spin 0.6s linear infinite; }
+  @keyframes spin {
+    from { transform: rotate(0deg); } to { transform: rotate(360deg); }
+  }
   .kill-btn {
     background: transparent; border: 2px solid var(--red);
     color: var(--red); font-family: 'Share Tech Mono', monospace;
@@ -348,7 +360,7 @@ HTMLEOF
   <div class="header-right" style="display:flex;align-items:center;gap:16px;">
     <div>
       <div class="time" id="clock"></div>
-      <div>auto-refresh 60s</div>
+      <div><span id="countdown">auto-refresh in 60s</span> <button class="refresh-btn" id="refresh-btn" onclick="manualRefresh()" title="Refresh now (press 'r')" aria-label="Refresh now">&#x21bb;</button></div>
     </div>
     <button class="kill-btn" id="kill-btn" onclick="killSwitch()">Kill Federation</button>
   </div>
@@ -417,6 +429,44 @@ const colonyColors = {};
 colonyList.forEach((c, i) => colonyColors[c] = palette[i % palette.length]);
 
 document.getElementById('clock').textContent = timestamp;
+
+// --- Refresh countdown ---
+// The meta-refresh fires 60 s after the page loads. Mirror that here so
+// the operator always knows when the next reload happens and can trigger
+// one manually (button or 'r' key).
+(function() {
+  const REFRESH_MS = 60000;
+  const el = document.getElementById('countdown');
+  if (!el) return;
+  const loadedAt = Date.now();
+  function tick() {
+    const remaining = Math.max(0, REFRESH_MS - (Date.now() - loadedAt));
+    const s = Math.ceil(remaining / 1000);
+    el.textContent = 'auto-refresh in ' + String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
+  }
+  tick();
+  setInterval(tick, 1000);
+})();
+
+function manualRefresh() {
+  const btn = document.getElementById('refresh-btn');
+  if (btn) btn.classList.add('spinning');
+  // Short delay so the spin is visible even on near-instant reloads.
+  setTimeout(() => location.reload(), 150);
+}
+
+document.addEventListener('keydown', (e) => {
+  // Ignore Ctrl/Meta/Alt/Shift combinations (browser reserves Ctrl-R,
+  // Shift-R is a legitimate uppercase R the operator may type elsewhere)
+  // and held-down repeats so a single press only fires one reload.
+  if (e.key === 'r' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && !e.repeat) {
+    const tag = (e.target && e.target.tagName) || '';
+    // Don't steal 'r' from text fields or contenteditable regions.
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
+    e.preventDefault();
+    manualRefresh();
+  }
+});
 
 // --- Stats row ---
 (function() {
