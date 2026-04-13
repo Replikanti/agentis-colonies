@@ -19,7 +19,7 @@ ALL_AGENTS=(
     code_writer test_writer refactorer commit_composer
     ship_decider changelog_writer version_bumper release_checker
 )
-MIN_VERSION="1.1.6"
+MIN_VERSION="1.1.7"
 
 # --- Helpers ---
 
@@ -65,17 +65,18 @@ if [ "$MISSING" -eq 1 ]; then
     exit 1
 fi
 
-# Check agentis version. v1.1.6 is the first release with `--enable-exec` and
-# `--enable-messaging` daemon flags (required by start-colony.sh) and the
-# quarantine oscillation fix (#492), which previously caused silent capability
-# revocations mid-federation. Older builds will appear to start but all agents
-# either fail with `capability denied: exec_foreign` or never receive
-# emit/listen messages.
+# Check agentis version. v1.1.6 added `--enable-exec` / `--enable-messaging`
+# (required by start-colony.sh) and the #492 quarantine oscillation fix.
+# v1.1.7 then fixed #499 (agentis_root walk-up), without which the watchdog
+# silently falls back to a 2000 ms heartbeat timeout and kills any agent
+# whose prompts take longer — on a cold Claude CLI that is every agent.
+# Older builds either fail with `capability denied: exec_foreign`, never
+# receive emit/listen, or get killed by the watchdog every tick.
 AGENTIS_VERSION=$(agentis --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "0.0.0")
 info "agentis version: $AGENTIS_VERSION (minimum: $MIN_VERSION)"
 
 if ! version_gte "$AGENTIS_VERSION" "$MIN_VERSION"; then
-    fail "agentis >= $MIN_VERSION required (--enable-exec / --enable-messaging daemon flags, #492 quarantine fix). Please update."
+    fail "agentis >= $MIN_VERSION required (--enable-exec/--enable-messaging flags, #492 quarantine fix, #499 watchdog heartbeat fix). Please update."
     exit 1
 fi
 
