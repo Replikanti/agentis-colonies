@@ -97,7 +97,7 @@ fn tick(reason: string) -> void {
             "task_decomposition",
             "issue " + to_string(breakdown.issue_id),
             to_string(breakdown.count) + " subtasks: " + breakdown.subtasks,
-            "success",
+            "partial",
             ["emitted", "planning"]
         );
     } else {

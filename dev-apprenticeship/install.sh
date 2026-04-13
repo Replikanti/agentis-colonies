@@ -182,7 +182,12 @@ if [ -d "$AGENTIS_DIR" ]; then
     # install.sh is idempotent and never clobbers operator-tuned values.
     #
     #   daemon.tick_interval_ms     — matches --tick-interval 60000 in
-    #                                 start-colony.sh; without it the
+    #                                 start-colony.sh. start-colony.sh
+    #                                 already overrides via CLI; this
+    #                                 config entry is defense-in-depth
+    #                                 for operators who launch a daemon
+    #                                 directly (e.g. debug sessions),
+    #                                 where without the config key the
     #                                 watchdog uses the 1 s default.
     #   daemon.heartbeat_interval_ms — 3× tick is long enough for a
     #                                  Claude CLI cold start (typ. 5-30 s).
@@ -202,28 +207,33 @@ if [ -d "$AGENTIS_DIR" ]; then
     #                                 authenticates against the instance
     #                                 configured by start-colony.sh).
     AGENTIS_CONFIG="$AGENTIS_DIR/config"
-    if [ -f "$AGENTIS_CONFIG" ]; then
-        write_key() {
-            local key="$1"
-            local value="$2"
-            # Escape dots in the key for grep
-            local grep_key
-            grep_key=$(printf '%s' "$key" | sed 's/\./\\./g')
-            if ! grep -q "^${grep_key}\s*=" "$AGENTIS_CONFIG" 2>/dev/null; then
-                printf '%s = %s\n' "$key" "$value" >> "$AGENTIS_CONFIG"
-                ok "$key = $value"
-            else
-                info "$key already configured"
-            fi
-        }
-        write_key 'federation.enabled'           'true'
-        write_key 'knowledge.federation_enabled' 'true'
-        write_key 'daemon.tick_interval_ms'      '60000'
-        write_key 'daemon.heartbeat_interval_ms' '180000'
-        write_key 'daemon.cb_per_tick'           '2000'
-        write_key 'experience.enabled'           'true'
-        write_key 'exec.env_passthrough'         'COLONY_DIR,GITLAB_*'
+    # Agentis init should have created this; create it explicitly so the
+    # key-writing below is not silently skipped if init was interrupted.
+    if [ ! -f "$AGENTIS_CONFIG" ]; then
+        touch "$AGENTIS_CONFIG"
+        info "created $AGENTIS_CONFIG"
     fi
+    write_key() {
+        local key="$1"
+        local value="$2"
+        # Escape dots in the key for grep. POSIX [[:space:]] keeps this
+        # portable to BSD grep (macOS) where \s is not supported.
+        local grep_key
+        grep_key=$(printf '%s' "$key" | sed 's/\./\\./g')
+        if ! grep -q "^${grep_key}[[:space:]]*=" "$AGENTIS_CONFIG" 2>/dev/null; then
+            printf '%s = %s\n' "$key" "$value" >> "$AGENTIS_CONFIG"
+            ok "$key = $value"
+        else
+            info "$key already configured"
+        fi
+    }
+    write_key 'federation.enabled'           'true'
+    write_key 'knowledge.federation_enabled' 'true'
+    write_key 'daemon.tick_interval_ms'      '60000'
+    write_key 'daemon.heartbeat_interval_ms' '180000'
+    write_key 'daemon.cb_per_tick'           '2000'
+    write_key 'experience.enabled'           'true'
+    write_key 'exec.env_passthrough'         'COLONY_DIR,GITLAB_*'
 fi
 
 # Create per-colony .agentis symlinks so commands run from a colony dir
@@ -233,7 +243,11 @@ if [ -d "$AGENTIS_DIR" ]; then
     FED_AGENTIS_ABS="$(cd "$AGENTIS_DIR" && pwd)"
     for colony in "${COLONIES[@]}"; do
         COLONY_AGENTIS="$SCRIPT_DIR/$colony/.agentis"
-        if [ -L "$COLONY_AGENTIS" ]; then
+        if [ -L "$COLONY_AGENTIS" ] && [ ! -e "$COLONY_AGENTIS" ]; then
+            # Dangling symlink (target moved or removed). Re-point it.
+            ln -sfn "$FED_AGENTIS_ABS" "$COLONY_AGENTIS"
+            ok "$colony/.agentis -> $FED_AGENTIS_ABS (repaired dangling symlink)"
+        elif [ -L "$COLONY_AGENTIS" ]; then
             info "$colony/.agentis symlink already present"
         elif [ -e "$COLONY_AGENTIS" ]; then
             # Real directory found — likely a divergent empty .agentis from

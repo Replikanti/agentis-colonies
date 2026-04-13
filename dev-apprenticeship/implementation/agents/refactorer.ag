@@ -120,7 +120,7 @@ fn tick(reason: string) -> void {
         } else {
             if confidence >= 0.6 {
                 emit("implementation:refactor_suggestions", suggestion);
-                learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "success", ["emitted", "implementation"]);
+                learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "partial", ["emitted", "implementation"]);
             } else {
                 print("[refactorer] Observing (confidence:", confidence, ")");
             };

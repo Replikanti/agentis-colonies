@@ -96,7 +96,7 @@ fn tick(reason: string) -> void {
             "risk_assessment",
             "issue " + to_string(assessment.issue_id),
             assessment.severity + ": " + assessment.risks,
-            "success",
+            "partial",
             ["emitted", "planning"]
         );
     } else {

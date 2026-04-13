@@ -100,7 +100,7 @@ fn tick(reason: string) -> void {
     } else {
         if confidence >= 0.6 {
             emit("release:ship_decision", decision);
-            learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "success", ["emitted", "release"]);
+            learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "partial", ["emitted", "release"]);
         } else {
             print("[ship_decider] Observing (confidence:", confidence, ")");
         };

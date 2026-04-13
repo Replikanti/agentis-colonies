@@ -101,7 +101,7 @@ fn tick(reason: string) -> void {
             } else {
                 if confidence >= 0.6 {
                     emit("release:check_result", result);
-                    learn("release_check", "pipeline check", result.ci_status + " | " + result.issues_found, "success", ["emitted", "release"]);
+                    learn("release_check", "pipeline check", result.ci_status + " | " + result.issues_found, "partial", ["emitted", "release"]);
                 } else {
                     print("[release_checker] Observing (confidence:", confidence, ")");
                 };
@@ -120,7 +120,7 @@ fn tick(reason: string) -> void {
             } else {
                 if confidence >= 0.6 {
                     emit("release:check_result", result);
-                    learn("release_check", "periodic check", result.ci_status, "success", ["emitted", "release"]);
+                    learn("release_check", "periodic check", result.ci_status, "partial", ["emitted", "release"]);
                 };
             };
         };

@@ -97,7 +97,7 @@ fn tick(reason: string) -> void {
             "scope_estimate",
             "issue " + to_string(estimate.issue_id),
             to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points: " + estimate.reasoning,
-            "success",
+            "partial",
             ["emitted", "planning"]
         );
     } else {

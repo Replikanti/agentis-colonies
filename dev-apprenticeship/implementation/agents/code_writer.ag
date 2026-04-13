@@ -135,7 +135,7 @@ fn tick(reason: string) -> void {
         } else {
             if confidence >= 0.6 {
                 emit("implementation:code_draft", draft);
-                learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "success", ["emitted", "implementation"]);
+                learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "partial", ["emitted", "implementation"]);
             } else {
                 print("[code_writer] Observing (confidence:", confidence, ")");
             };

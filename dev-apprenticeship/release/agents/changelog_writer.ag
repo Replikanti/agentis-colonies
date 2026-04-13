@@ -131,7 +131,7 @@ fn tick(reason: string) -> void {
         } else {
             if confidence >= 0.6 {
                 emit("release:changelog_draft", draft);
-                learn("changelog_write", "release " + draft.version, to_string(draft.mr_count) + " MRs", "success", ["emitted", "release"]);
+                learn("changelog_write", "release " + draft.version, to_string(draft.mr_count) + " MRs", "partial", ["emitted", "release"]);
             } else {
                 print("[changelog_writer] Observing (confidence:", confidence, ")");
             };

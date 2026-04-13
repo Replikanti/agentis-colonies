@@ -144,7 +144,7 @@ fn tick(reason: string) -> void {
                 "review_plan",
                 "issue " + to_string(draft.issue_id),
                 "emitted: score=" + to_string(draft.review_score),
-                "success",
+                "partial",
                 ["emitted", "planning"]
             );
             print("[plan_reviewer] Emitted draft plan for issue", draft.issue_id);

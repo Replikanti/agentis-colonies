@@ -152,7 +152,7 @@ fn tick(reason: string) -> void {
     } else {
         if confidence >= 0.6 {
             emit("release:version_bumped", bump);
-            learn("version_bump", bump.next, bump.bump_type + ": " + bump.reasoning, "success", ["emitted", "release"]);
+            learn("version_bump", bump.next, bump.bump_type + ": " + bump.reasoning, "partial", ["emitted", "release"]);
         } else {
             print("[version_bumper] Observing (confidence:", confidence, ")");
         };

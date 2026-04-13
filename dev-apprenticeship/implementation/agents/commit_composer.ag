@@ -131,7 +131,7 @@ fn tick(reason: string) -> void {
     } else {
         if confidence >= 0.6 {
             emit("implementation:mr_ready", plan);
-            learn("commit_compose", "issue " + to_string(plan.issue_id), plan.mr_title, "success", ["emitted", "implementation"]);
+            learn("commit_compose", "issue " + to_string(plan.issue_id), plan.mr_title, "partial", ["emitted", "implementation"]);
         } else {
             print("[commit_composer] Observing (confidence:", confidence, ")");
         };
