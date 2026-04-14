@@ -6,6 +6,12 @@
 #
 # Usage: ./start-federation.sh [path/to/federation-dir]
 #        ./start-federation.sh              # uses script's own directory
+#
+# Env vars (forwarded to start-colony.sh):
+#   TRUNCATE_LOGS=1   zero out .agentis/logs/*.log at spawn time.
+#                     Zero-config fallback for boxes without logrotate;
+#                     loses history between restarts. For long-running
+#                     federations, use ops/logrotate.conf instead.
 
 set -e
 
@@ -25,7 +31,13 @@ echo ""
 # racing the first set for the same GitLab project (dup labels, dup
 # comments, dup MRs) and there is no safe way to untangle them after
 # the fact — stop-all hits both generations equally.
-if agentis daemon list 2>/dev/null | grep -Eq '(^|[[:space:]])running([[:space:]]|$)'; then
+#
+# NB: `agentis daemon list` writes the human-readable table to stderr
+# (eprintln! in agentis-core src/cli/daemon.rs), so the previous
+# version of this guard grepped empty stdout and never matched.
+# `--json` goes to stdout and is table-layout-stable, so we key on
+# the structured field instead of the table row.
+if agentis daemon list --json 2>/dev/null | grep -Fq '"state":"running"'; then
     echo "[!!] A federation is already running under this directory."
     echo "     Stop it first:  agentis daemon stop --all"
     echo "     Inspect it:     agentis daemon list"
@@ -50,7 +62,13 @@ done
 # disrupt.
 FED_AGENTIS_DIR="$FED_DIR/.agentis/daemon"
 if [ -d "$FED_AGENTIS_DIR" ]; then
-    rm -f "$FED_AGENTIS_DIR"/*.heartbeat 2>/dev/null || true
+    # *.pid / *.status / *.watchdog.pid go stale on the same axis as
+    # *.heartbeat — on wake they point at PIDs from the previous boot
+    # which may now belong to an unrelated process. Sweep them all.
+    rm -f "$FED_AGENTIS_DIR"/*.heartbeat \
+          "$FED_AGENTIS_DIR"/*.pid \
+          "$FED_AGENTIS_DIR"/*.status \
+          "$FED_AGENTIS_DIR"/*.watchdog.pid 2>/dev/null || true
 fi
 
 # Start each colony

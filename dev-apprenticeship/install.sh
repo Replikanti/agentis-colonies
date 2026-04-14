@@ -168,15 +168,23 @@ if [ "$CONFIGS_EXISTED" -eq 5 ]; then
 fi
 
 if [ "$WRITE_CREDS" -eq 1 ]; then
+    # URL char class includes `_` because corporate self-hosted DNS
+    # routinely uses underscores in hostnames (RFC-noncompliant but
+    # widespread) — rejecting them was a regression in PR #122 v1.
     prompt_validated GITLAB_URL \
         "GitLab URL (e.g. https://gitlab.com):" \
-        '^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/.*)?$' \
+        '^https?://[A-Za-z0-9._-]+(:[0-9]+)?(/.*)?$' \
         "Must start with http:// or https://"
 
+    # Project regex accepts group/project AND subgroup nesting
+    # (group/subgroup/.../project) because GitLab Premium lets you
+    # nest groups and start-colony.sh already URL-encodes the whole
+    # path to %2F before calling the API. The earlier "exactly two
+    # segments" form in PR #122 v1 rejected valid GitLab paths.
     prompt_validated GITLAB_PROJECT \
-        "GitLab project path (e.g. my-org/my-project):" \
-        '^[^/[:space:]]+/[^/[:space:]]+$' \
-        "Must be exactly two segments separated by /, no extra slashes or spaces."
+        "GitLab project path (e.g. my-org/my-project or group/subgroup/project):" \
+        '^[^/[:space:]]+(/[^/[:space:]]+)+$' \
+        "Must be at least group/project, segments separated by / with no whitespace or empty segments."
 
     prompt_validated GITLAB_TOKEN \
         "GitLab personal access token (glpat-...):" \
