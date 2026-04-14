@@ -301,6 +301,9 @@ case "$CMD" in
                 *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
+        case "$PER_PAGE" in
+            ''|*[!0-9]*) emit_error "invalid --per-page: $PER_PAGE (integer required)"; exit 2 ;;
+        esac
         ARGS=(
             --data-urlencode "state=$STATE"
             --data-urlencode "per_page=$PER_PAGE"
