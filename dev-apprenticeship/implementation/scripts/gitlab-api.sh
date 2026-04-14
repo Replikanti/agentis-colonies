@@ -74,8 +74,12 @@ gl_call() {
     body_file="$(mktemp)"
     # bash RETURN trap fires on function exit regardless of return path,
     # so the tmp body file is cleaned up even when we return non-zero
-    # from inside the while loop.
-    trap 'rm -f "$body_file"' RETURN
+    # from inside the while loop. The trap unregisters itself in its own
+    # body — a bare `trap 'rm -f ...' RETURN` in bash is shell-global,
+    # not function-local, so without `trap - RETURN` the cleanup would
+    # re-fire on every subsequent function return in the script with a
+    # stale `$body_file` (out of scope, so rm's target is '').
+    trap 'rm -f "$body_file"; trap - RETURN' RETURN
 
     while :; do
         attempt=$((attempt + 1))

@@ -218,13 +218,20 @@ if [ -d "$AGENTIS_DIR" ]; then
     #                                 paths) and GITLAB_* (so gitlab-api.sh
     #                                 authenticates against the instance
     #                                 configured by start-colony.sh).
-    #   exec.default_timeout_ms     — gitlab-api.sh calls curl with
-    #                                 `--max-time 30`. The agentis-default
-    #                                 10 s `exec sh` timeout preempts
-    #                                 curl mid-response on real projects
-    #                                 (issue #107). 45 s gives curl its
-    #                                 30 s budget plus 15 s of process
-    #                                 spawn/JSON-parse headroom.
+    #   exec.default_timeout_ms     — gitlab-api.sh calls curl with a
+    #                                 per-attempt `--max-time` of
+    #                                 `$GITLAB_CURL_MAX_TIME` (default
+    #                                 90 s, see #115/#117). The agentis
+    #                                 default 10 s exec-sh timeout — and
+    #                                 even the previous 45 s bump —
+    #                                 would SIGKILL curl mid-response.
+    #                                 120 s gives a single 90 s attempt
+    #                                 its full budget plus 30 s of
+    #                                 process spawn / JSON-parse / first
+    #                                 retry-backoff headroom. Operators
+    #                                 who lean on the retry loop for
+    #                                 slow endpoints can raise this via
+    #                                 the generated `.agentis/config`.
     #   pii_transmit                — GitLab API payloads always contain
     #                                 author/assignee emails and phone-
     #                                 shaped numbers in descriptions.
@@ -286,7 +293,7 @@ if [ -d "$AGENTIS_DIR" ]; then
     write_key 'daemon.cb_per_tick'           '2000'
     write_key 'experience.enabled'           'true'
     write_key 'exec.env_passthrough'         'COLONY_DIR,GITLAB_*'
-    write_key 'exec.default_timeout_ms'      '45000'
+    write_key 'exec.default_timeout_ms'      '120000'
     write_key 'pii_transmit'                 'allow'
     write_key 'knowledge.enabled'            'true'
     write_key 'learning.enabled'             'true'
