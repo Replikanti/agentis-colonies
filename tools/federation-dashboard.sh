@@ -102,27 +102,103 @@ generate() {
     local DAEMONS
     DAEMONS="$(agentis daemon list --json 2>/dev/null || echo '[]')"
 
-    # Parse knowledge count per colony
+    # Count experience entries per colony.
+    #
+    # #111: the dashboard used to call `agentis knowledge list`, but agents
+    # write with `learn(...)` which persists to `.agentis/experience/`, not
+    # the knowledge base. Two parallel stores, two parallel CLIs — the
+    # knowledge counter was always 0 on a real federation. We now count
+    # JSONL line entries in the experience dir and aggregate per colony via
+    # the daemon's own `colony` field. The output JSON shape is still
+    # `{total, <col>}` for compatibility with history.json and the HTML
+    # chart.
+    #
+    # Experience files are named by daemon-assigned `agent_id` (opaque hex,
+    # see src/cli/daemon.rs:907), not the `.ag` basename. We map back via
+    # `agentis daemon list --json`: for daemons started with `--colony`
+    # (which `start-colony.sh` always does) the `colony` field is
+    # authoritative. For daemons started without it we fall back to
+    # basename(source, .ag) → AGENT_COLONY_MAP, which is lossy when two
+    # colonies ship an agent with the same filename but is the best we can
+    # do for bare `agentis daemon <file>` invocations.
     local COLONY_LIST_PY=""
     for col in "${COLONIES[@]}"; do
         COLONY_LIST_PY="${COLONY_LIST_PY}\"${col}\","
     done
     COLONY_LIST_PY="[${COLONY_LIST_PY%,}]"
 
-    local KNOWLEDGE_COUNTS
-    KNOWLEDGE_COUNTS="$(agentis knowledge list 2>/dev/null | python3 -c "
-import sys, json
-colonies = ${COLONY_LIST_PY}
+    # Match the LOG_DIR convention (line 187): prefer $FED_DIR/../.agentis,
+    # fall back to cwd-relative for operators invoking from the federation
+    # root. Experience dir existence is re-checked inside python so a
+    # missing path degrades to zeros rather than crashing.
+    local EXPERIENCE_DIR="${FED_DIR}/../.agentis/experience"
+    if [ ! -d "$EXPERIENCE_DIR" ]; then
+        EXPERIENCE_DIR=".agentis/experience"
+    fi
+
+    local EXPERIENCE_COUNTS
+    EXPERIENCE_COUNTS="$(python3 - "$EXPERIENCE_DIR" "$DAEMONS" "$AGENT_COLONY_MAP" "$COLONY_LIST_PY" <<'PY' 2>/dev/null
+import sys, os, json
+exp_dir, daemons_json, map_json, colony_list_json = sys.argv[1:5]
+try:
+    daemons = json.loads(daemons_json)
+except (json.JSONDecodeError, ValueError):
+    daemons = []
+try:
+    agent_map = json.loads(map_json)
+except (json.JSONDecodeError, ValueError):
+    agent_map = []
+try:
+    colonies = json.loads(colony_list_json)
+except (json.JSONDecodeError, ValueError):
+    colonies = []
+# Basename-keyed fallback for daemons launched without --colony. Collisions
+# (same .ag filename across two colonies) silently last-writer-wins here,
+# which is a known limitation; the authoritative path uses d["colony"].
+name_to_colony = {e.get("agent", ""): e.get("colony", "") for e in agent_map}
 counts = {c: 0 for c in colonies}
-counts['total'] = 0
-for line in sys.stdin:
-    counts['total'] += 1
-    for colony in colonies:
-        if colony in line.lower():
-            counts[colony] += 1
-            break
+counts["total"] = 0
+if os.path.isdir(exp_dir):
+    for d in daemons:
+        agent_id = d.get("agent_id") or ""
+        if not agent_id:
+            continue
+        colony = d.get("colony") or ""
+        if not colony:
+            source = d.get("source") or ""
+            if source:
+                name = os.path.basename(source)
+                if name.endswith(".ag"):
+                    name = name[:-3]
+                colony = name_to_colony.get(name, "")
+        if not colony or colony not in counts:
+            continue
+        path = os.path.join(exp_dir, agent_id + ".jsonl")
+        if not os.path.isfile(path):
+            continue
+        n = 0
+        try:
+            with open(path) as f:
+                for line in f:
+                    if line.strip():
+                        n += 1
+        except OSError:
+            continue
+        counts[colony] += n
+        counts["total"] += n
 print(json.dumps(counts))
-" 2>/dev/null || echo '{"total":0}')"
+PY
+)"
+    # The python block is wrapped in try/except for every input, so a bad
+    # arg silently yields `{"total":0,...}` — but if the interpreter itself
+    # dies (SIGKILL, disk full, bad shebang) we get an empty string and the
+    # `const experienceCounts = ${EXPERIENCE_COUNTS};` injection below would
+    # produce a JS syntax error that breaks every other IIFE on the page.
+    # Validate the result parses as JSON; on failure, substitute the same
+    # shape the python block emits on empty input.
+    if ! echo "$EXPERIENCE_COUNTS" | python3 -c 'import sys, json; json.loads(sys.stdin.read())' 2>/dev/null; then
+        EXPERIENCE_COUNTS='{"total":0}'
+    fi
 
     local REMEDIATION
     REMEDIATION="$(agentis remediation history --limit 5 --json 2>/dev/null || echo '[]')"
@@ -157,7 +233,7 @@ print(json.dumps(lines))
     fi
 
     # Append to history
-    python3 - "$HISTORY_FILE" "$EPOCH" "$KNOWLEDGE_COUNTS" "$CONFIDENCES" "$AGENT_COLONY_MAP" <<'PY'
+    python3 - "$HISTORY_FILE" "$EPOCH" "$EXPERIENCE_COUNTS" "$CONFIDENCES" "$AGENT_COLONY_MAP" <<'PY'
 import sys, os, json
 def _safe_json(s, default, label):
     try:
@@ -174,8 +250,8 @@ path, epoch = sys.argv[1], int(sys.argv[2])
 # Defensive parse: on a fresh federation any of these shell-assembled JSON
 # blobs may be malformed (see #96). Fall back to empty structures so the
 # dashboard still renders — the resulting history entry just has empty
-# `knowledge` / `confidence` fields for this tick.
-kc = _safe_json(sys.argv[3], {"total": 0}, "knowledge_counts")
+# `experience` / `confidence` fields for this tick.
+ec = _safe_json(sys.argv[3], {"total": 0}, "experience_counts")
 conf_vals = _safe_json(sys.argv[4], [], "confidences")
 agent_map = _safe_json(sys.argv[5], [], "agent_colony_map")
 try:
@@ -191,7 +267,11 @@ for i, am in enumerate(agent_map):
     colony_conf[col] = colony_conf.get(col, 0) + v
     colony_count[col] = colony_count.get(col, 0) + 1
 avg_conf = {col: round(colony_conf[col] / colony_count[col], 3) for col in colony_conf if colony_count[col]}
-entry = {"t": epoch, "knowledge": kc, "confidence": avg_conf}
+# #111: the history key is `experience` now (previously `knowledge`, which
+# was always 0 because of the wrong CLI). Old history entries from v1.1.8
+# and earlier will be missing this field and silently skipped by the
+# Experience Growth chart — acceptable, since those entries recorded zeros.
+entry = {"t": epoch, "experience": ec, "confidence": avg_conf}
 history.append(entry)
 cutoff = epoch - 7 * 86400
 history = [h for h in history if h["t"] > cutoff]
@@ -417,8 +497,8 @@ HEADEREOF
 </div>
 
 <div class="card">
-<h2>Knowledge Growth</h2>
-<div id="knowledge-trend" class="chart-container"></div>
+<h2>Experience Growth</h2>
+<div id="experience-trend" class="chart-container"></div>
 </div>
 
 <div class="card">
@@ -443,7 +523,7 @@ const confidences = ${AGENT_DATA};
 const colonyList = ${COLONY_LIST_JS};
 const suggestions = ${SUGGESTIONS};
 const remediation = ${REMEDIATION};
-const knowledgeCounts = ${KNOWLEDGE_COUNTS};
+const experienceCounts = ${EXPERIENCE_COUNTS};
 const history = ${HISTORY};
 const nowEpoch = ${EPOCH};
 const timestamp = "${TIMESTAMP}";
@@ -507,7 +587,7 @@ document.addEventListener('keydown', (e) => {
 (function() {
   const el = document.getElementById('stats-row');
   const running = daemons.filter(d => (d.state || d.STATE || '') === 'running').length;
-  const totalKnowledge = knowledgeCounts.total || 0;
+  const totalExperience = experienceCounts.total || 0;
   let avgConf = 0;
   confidences.forEach(c => avgConf += c.confidence);
   avgConf = confidences.length ? (avgConf / confidences.length) : 0;
@@ -516,7 +596,7 @@ document.addEventListener('keydown', (e) => {
   el.innerHTML =
     '<div class="stat-box"><div class="stat-value">' + running + '/' + totalAgents + '</div><div class="stat-label">Agents Running</div></div>' +
     '<div class="stat-box"><div class="stat-value" style="color:' + (avgConf >= 0.85 ? 'var(--green)' : avgConf >= 0.6 ? 'var(--yellow)' : 'var(--cyan)') + '">' + avgConf.toFixed(2) + '</div><div class="stat-label">Avg Confidence // ' + phase + '</div></div>' +
-    '<div class="stat-box"><div class="stat-value">' + totalKnowledge + '</div><div class="stat-label">Knowledge Entries</div></div>' +
+    '<div class="stat-box"><div class="stat-value">' + totalExperience + '</div><div class="stat-label">Experience Entries</div></div>' +
     '<div class="stat-box"><div class="stat-value" style="color:' + (quarantined > 0 ? 'var(--magenta)' : 'var(--green)') + '">' + quarantined + '</div><div class="stat-label">Quarantined</div></div>';
 })();
 
@@ -610,23 +690,27 @@ document.addEventListener('keydown', (e) => {
   el.innerHTML = html;
 })();
 
-// --- Knowledge trend ---
+// --- Experience trend ---
+// #111: history key is `experience` as of this commit. Older history
+// entries (pre-#111) carried `knowledge` with value 0 on real runs, so
+// falling back to that key would just seed the chart with zeros — we
+// drop them entirely and let the trend grow fresh.
 (function() {
-  const el = document.getElementById('knowledge-trend');
+  const el = document.getElementById('experience-trend');
   if (history.length < 2) { el.innerHTML = '<span class="empty">Trend available after 2+ data points</span>'; return; }
   const W = 480, H = 140, PAD = 35;
   const tMin = history[0].t, tMax = history[history.length - 1].t;
   const tRange = Math.max(tMax - tMin, 1);
   let kMax = 1;
-  history.forEach(h => { if (h.knowledge) colonyList.forEach(c => { if ((h.knowledge[c]||0) > kMax) kMax = h.knowledge[c]; }); });
+  history.forEach(h => { if (h.experience) colonyList.forEach(c => { if ((h.experience[c]||0) > kMax) kMax = h.experience[c]; }); });
   let svg = '<svg width="100%" viewBox="0 0 '+W+' '+(H+20)+'">';
   for (let i = 0; i <= 4; i++) { const y = 10+(H-10)*i/4; svg += '<line x1="'+PAD+'" y1="'+y+'" x2="'+W+'" y2="'+y+'" stroke="rgba(0,255,255,0.06)" />'; }
   svg += '<line x1="'+PAD+'" y1="'+H+'" x2="'+W+'" y2="'+H+'" stroke="var(--border)" />';
   svg += '<text x="'+PAD+'" y="'+(H+14)+'" fill="var(--muted)" font-family="Share Tech Mono,monospace" font-size="9">'+new Date(tMin*1000).toLocaleDateString()+'</text>';
   svg += '<text x="'+W+'" y="'+(H+14)+'" fill="var(--muted)" font-family="Share Tech Mono,monospace" font-size="9" text-anchor="end">'+new Date(tMax*1000).toLocaleDateString()+'</text>';
   colonyList.forEach(col => {
-    const pts = history.filter(h => h.knowledge && h.knowledge[col] !== undefined).map(h => {
-      const x = PAD+((h.t-tMin)/tRange)*(W-PAD); const y = H-((h.knowledge[col]||0)/kMax)*(H-10);
+    const pts = history.filter(h => h.experience && h.experience[col] !== undefined).map(h => {
+      const x = PAD+((h.t-tMin)/tRange)*(W-PAD); const y = H-((h.experience[col]||0)/kMax)*(H-10);
       return x.toFixed(1)+','+y.toFixed(1);
     });
     if (pts.length > 1) {
@@ -636,7 +720,7 @@ document.addEventListener('keydown', (e) => {
   });
   svg += '</svg>';
   let legend = '<div class="chart-legend">';
-  colonyList.forEach(col => { legend += '<span><span class="legend-dot" style="background:'+colonyColors[col]+';box-shadow:0 0 4px '+colonyColors[col]+'"></span>'+col+' ('+(knowledgeCounts[col]||0)+')</span>'; });
+  colonyList.forEach(col => { legend += '<span><span class="legend-dot" style="background:'+colonyColors[col]+';box-shadow:0 0 4px '+colonyColors[col]+'"></span>'+col+' ('+(experienceCounts[col]||0)+')</span>'; });
   legend += '</div>';
   el.innerHTML = svg + legend;
 })();
