@@ -52,7 +52,7 @@ fn tick(reason: string) -> void {
 
     if len(raw) > 10 {
         let mr_ids = prompt(
-            "Extract all merge request IIDs from this GitLab JSON array. Return JSON array of integers.",
+            "Extract all merge request IIDs from this GitLab JSON array. Return ONLY a raw JSON array of integers — no markdown code fences, no ```json wrapper, no prose. Just the array.",
             raw
         ) -> list<int>;
 
@@ -63,7 +63,7 @@ fn tick(reason: string) -> void {
 
             if len(changes_raw) > 10 {
                 let patterns = prompt(
-                    "Analyze this MR diff JSON. Identify: naming conventions (variable/function names, casing), code structure (module organization, import style), error handling patterns (try/catch, Result types, guard clauses). Return JSON: mr_count (int, always 1), naming (string), structure (string), error_handling (string).",
+                    "Analyze this MR diff JSON. Identify: naming conventions (variable/function names, casing), code structure (module organization, import style), error handling patterns (try/catch, Result types, guard clauses). Return JSON: mr_count (int, always 1), naming (string), structure (string), error_handling (string). Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.",
                     changes_raw
                 ) -> CodePatterns;
 
@@ -93,7 +93,7 @@ fn tick(reason: string) -> void {
         let context = "Assigned issues: " + issues_raw + "\nLearned code patterns: " + to_string(rec);
 
         let draft = prompt(
-            "You are a code writer agent. Pick the highest-priority assigned issue and draft an implementation plan. Propose a branch name (kebab-case, prefixed with feat/ or fix/), list the files to create or modify with brief descriptions, and summarize the approach. Return JSON: issue_id (int), branch_name (string), files (string, markdown list of file paths and what each does), summary (string, 2-3 sentences), confidence (float 0-1).",
+            "You are a code writer agent. Pick the highest-priority assigned issue and draft an implementation plan. Propose a branch name (kebab-case, prefixed with feat/ or fix/), list the files to create or modify with brief descriptions, and summarize the approach. Return JSON: issue_id (int), branch_name (string), files (string, markdown list of file paths and what each does), summary (string, 2-3 sentences), confidence (float 0-1). Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.",
             context
         ) -> CodeDraft;
 

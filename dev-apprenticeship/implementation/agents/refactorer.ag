@@ -50,7 +50,7 @@ fn tick(reason: string) -> void {
 
     if len(raw) > 10 {
         let mr_ids = prompt(
-            "Extract all merge request IIDs from this GitLab JSON array. Return JSON array of integers.",
+            "Extract all merge request IIDs from this GitLab JSON array. Return ONLY a raw JSON array of integers — no markdown code fences, no ```json wrapper, no prose. Just the array.",
             raw
         ) -> list<int>;
 
@@ -64,7 +64,7 @@ fn tick(reason: string) -> void {
                 let commits_raw = try { exec sh commits_cmd; } catch e { "[]"; };
 
                 let patterns = prompt(
-                    "Analyze this MR diff and commit messages. Identify refactoring activity: code smells that were fixed (duplication, long methods, dead code, naming), techniques used (extract method, inline variable, move to module, simplify conditional). If the MR is purely new features with no refactoring, set refactor_mrs to 0. Return JSON: refactor_mrs (int, 0 or 1), smells_fixed (string), techniques (string).",
+                    "Analyze this MR diff and commit messages. Identify refactoring activity: code smells that were fixed (duplication, long methods, dead code, naming), techniques used (extract method, inline variable, move to module, simplify conditional). If the MR is purely new features with no refactoring, set refactor_mrs to 0. Return JSON: refactor_mrs (int, 0 or 1), smells_fixed (string), techniques (string). Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.",
                     changes_raw + "\n\nCommit messages: " + commits_raw
                 ) -> RefactorPatterns;
 
@@ -91,7 +91,7 @@ fn tick(reason: string) -> void {
         let context = "Code draft to review: " + draft_str + "\nLearned refactoring patterns: " + to_string(rec);
 
         let suggestion = prompt(
-            "You are a refactoring agent. A code draft has been produced for an issue. Review it against learned refactoring patterns and suggest improvements. Focus on: naming consistency, duplication, overly complex conditionals, missing error handling, extract/inline opportunities. Return JSON: issue_id (int, from the draft), suggestions (string, markdown list of specific improvements), priority (string, 'high' if structural issues or 'low' if cosmetic only), confidence (float 0-1).",
+            "You are a refactoring agent. A code draft has been produced for an issue. Review it against learned refactoring patterns and suggest improvements. Focus on: naming consistency, duplication, overly complex conditionals, missing error handling, extract/inline opportunities. Return JSON: issue_id (int, from the draft), suggestions (string, markdown list of specific improvements), priority (string, 'high' if structural issues or 'low' if cosmetic only), confidence (float 0-1). Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.",
             context
         ) -> RefactorSuggestion;
 

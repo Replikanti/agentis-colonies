@@ -52,7 +52,7 @@ fn tick(reason: string) -> void {
 
     if len(raw) > 10 {
         let mr_ids = prompt(
-            "Extract all merge request IIDs from this GitLab JSON array. Return JSON array of integers.",
+            "Extract all merge request IIDs from this GitLab JSON array. Return ONLY a raw JSON array of integers — no markdown code fences, no ```json wrapper, no prose. Just the array.",
             raw
         ) -> list<int>;
 
@@ -63,7 +63,7 @@ fn tick(reason: string) -> void {
 
             if len(changes_raw) > 10 {
                 let patterns = prompt(
-                    "Analyze this MR diff JSON. Focus only on test files (files matching *_test.*, test_*, tests/, spec/). Identify: how many test files were changed (test_files_seen), test structure (describe/it, test functions, test classes), assertion style (assert, expect, should), fixture patterns (setup/teardown, before/after, test helpers). If no test files in this diff, set test_files_seen to 0. Return JSON: test_files_seen (int), structure (string), assertion_style (string), fixture_patterns (string).",
+                    "Analyze this MR diff JSON. Focus only on test files (files matching *_test.*, test_*, tests/, spec/). Identify: how many test files were changed (test_files_seen), test structure (describe/it, test functions, test classes), assertion style (assert, expect, should), fixture patterns (setup/teardown, before/after, test helpers). If no test files in this diff, set test_files_seen to 0. Return JSON: test_files_seen (int), structure (string), assertion_style (string), fixture_patterns (string). Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.",
                     changes_raw
                 ) -> TestPatterns;
 
@@ -90,7 +90,7 @@ fn tick(reason: string) -> void {
         let context = "Code draft: " + draft_str + "\nLearned test patterns: " + to_string(rec);
 
         let tests = prompt(
-            "You are a test writer agent. A code draft has been produced for an issue. Generate matching tests that follow the learned test patterns (structure, assertion style, fixtures). Return JSON: issue_id (int, from the draft), branch_name (string, same branch as the draft), test_files (string, markdown list of test file paths with brief description of what each tests), summary (string), confidence (float 0-1).",
+            "You are a test writer agent. A code draft has been produced for an issue. Generate matching tests that follow the learned test patterns (structure, assertion style, fixtures). Return JSON: issue_id (int, from the draft), branch_name (string, same branch as the draft), test_files (string, markdown list of test file paths with brief description of what each tests), summary (string), confidence (float 0-1). Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.",
             context
         ) -> TestDraft;
 

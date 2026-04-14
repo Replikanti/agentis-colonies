@@ -54,7 +54,7 @@ fn tick(reason: string) -> void {
 
     if len(raw) > 10 {
         let mr_ids = prompt(
-            "Extract all merge request IIDs from this GitLab JSON array. Return JSON array of integers.",
+            "Extract all merge request IIDs from this GitLab JSON array. Return ONLY a raw JSON array of integers — no markdown code fences, no ```json wrapper, no prose. Just the array.",
             raw
         ) -> list<int>;
 
@@ -65,7 +65,7 @@ fn tick(reason: string) -> void {
 
             if len(commits_raw) > 10 {
                 let style = prompt(
-                    "Analyze these commit messages from a merged MR. Identify: how many commits (commits_seen), message format (conventional commits, imperative mood, ticket references), change grouping strategy (one big commit, logical splits, separate refactoring commits), common prefixes (feat:, fix:, chore:, refactor:). Return JSON: commits_seen (int), format (string), grouping (string), prefixes (string).",
+                    "Analyze these commit messages from a merged MR. Identify: how many commits (commits_seen), message format (conventional commits, imperative mood, ticket references), change grouping strategy (one big commit, logical splits, separate refactoring commits), common prefixes (feat:, fix:, chore:, refactor:). Return JSON: commits_seen (int), format (string), grouping (string), prefixes (string). Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.",
                     commits_raw
                 ) -> CommitStyle;
 
@@ -108,7 +108,7 @@ fn tick(reason: string) -> void {
     let context = all_input + "\nLearned commit conventions: " + to_string(rec);
 
     let plan = prompt(
-        "You are a commit composer agent. You received a code draft, possibly tests, and possibly refactoring suggestions for an issue. Compose a structured commit plan following learned conventions. Decide how to split changes into commits (code, tests, refactoring as separate commits or combined, based on learned grouping style). Write commit messages in the learned format. Propose an MR title and description. Return JSON: issue_id (int), branch_name (string, from the code draft), commits (string, markdown numbered list of commit messages), mr_title (string), mr_description (string, brief summary), confidence (float 0-1).",
+        "You are a commit composer agent. You received a code draft, possibly tests, and possibly refactoring suggestions for an issue. Compose a structured commit plan following learned conventions. Decide how to split changes into commits (code, tests, refactoring as separate commits or combined, based on learned grouping style). Write commit messages in the learned format. Propose an MR title and description. Return JSON: issue_id (int), branch_name (string, from the code draft), commits (string, markdown numbered list of commit messages), mr_title (string), mr_description (string, brief summary), confidence (float 0-1). Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.",
         context
     ) -> MRPlan;
 

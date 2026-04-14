@@ -52,7 +52,7 @@ fn tick(reason: string) -> void {
     };
 
     let mr_ids = prompt(
-        "Extract all merge request IIDs from this GitLab JSON array. Only opened MRs. Return JSON array of integers.",
+        "Extract all merge request IIDs from this GitLab JSON array. Only opened MRs. Return ONLY a raw JSON array of integers — no markdown code fences, no ```json wrapper, no prose. Just the array.",
         raw
     ) -> list<int>;
 
@@ -86,7 +86,7 @@ fn tick(reason: string) -> void {
     let context = "MR diff:\n" + changes_raw + "\n\nLearned patterns: " + to_string(rec);
 
     let review = prompt(
-        "You are a security reviewer. Analyze this merge request diff for security vulnerabilities: SQL/command injection, XSS, CSRF, hardcoded secrets, insecure auth, path traversal, SSRF, insecure deserialization, dependency issues. Include CWE IDs where applicable. Return JSON: mr_iid (int), findings (array with file, issue, severity, cwe, remediation), summary (string). If clean, return empty findings.",
+        "You are a security reviewer. Analyze this merge request diff for security vulnerabilities: SQL/command injection, XSS, CSRF, hardcoded secrets, insecure auth, path traversal, SSRF, insecure deserialization, dependency issues. Include CWE IDs where applicable. Return JSON: mr_iid (int), findings (array with file, issue, severity, cwe, remediation), summary (string). If clean, return empty findings. Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.",
         context
     ) -> SecurityReview;
 
