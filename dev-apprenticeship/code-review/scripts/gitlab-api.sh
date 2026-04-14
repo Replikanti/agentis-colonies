@@ -35,10 +35,119 @@ fi
 
 API="$GITLAB_URL/api/v4/projects/$GITLAB_PROJECT"
 
+# gl_call <method> <url> [curl-args...]
+#
+# Single wrapper used by every gl_get/gl_get_q/gl_post/gl_put below.
+# Captures HTTP status + response body, distinguishes auth / rate-limit /
+# client / server / transport errors, and retries transient ones with
+# exponential backoff so the .ag layer doesn't see them.
+#
+# Exit codes (so callers & agents can reason about failures):
+#   0  — 2xx OK (response body on stdout)
+#   2  — 401/403 auth failure (actionable error on stderr, no retry)
+#   3  — 429 rate limited (after retries exhausted)
+#   4  — other 4xx client error (permanent — wrong URL, bad body, etc.)
+#   5  — 5xx server error OR transport failure (timeout, DNS, connect)
+#
+# Env knobs:
+#   GITLAB_CURL_MAX_TIME  per-attempt --max-time seconds (default 90)
+#                         #115: was hardcoded 30, too short for real
+#                         projects where /issues?per_page=100 exceeds 30s
+#                         routinely on self-hosted GitLab under load.
+#   GITLAB_CURL_RETRIES   retry budget for 5xx/timeouts/429 (default 3).
+#                         Budget is attempts-after-first, so 3 means
+#                         4 total attempts before giving up.
+gl_call() {
+    local method="$1" url="$2"
+    shift 2
+    local max_time="${GITLAB_CURL_MAX_TIME:-90}"
+    local max_retries="${GITLAB_CURL_RETRIES:-3}"
+    local attempt=0 delay=3 rc code snippet body_file
+    body_file="$(mktemp)"
+    # bash RETURN trap fires on function exit regardless of return path,
+    # so the tmp body file is cleaned up even when we return non-zero
+    # from inside the while loop.
+    trap 'rm -f "$body_file"' RETURN
+
+    while :; do
+        attempt=$((attempt + 1))
+        code=""
+        rc=0
+        # -sS: silent progress, keep errors.  No -f: we *want* to inspect
+        # non-2xx responses ourselves instead of losing them to curl's
+        # "HTTP error" exit path. -w writes the status to stdout, which
+        # we capture; the body goes to $body_file via -o.
+        code="$(curl -sS -w '%{http_code}' -o "$body_file" \
+            --max-time "$max_time" \
+            -X "$method" \
+            -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+            "$@" \
+            "$url" 2>/dev/null)" || rc=$?
+
+        # Transport failure (exit 28 timeout, 6 DNS, 7 connect, 35 TLS, …).
+        # curl didn't get a status line back, so $code is empty.
+        if [ "$rc" -ne 0 ] || [ -z "$code" ]; then
+            if [ "$attempt" -le "$max_retries" ]; then
+                sleep "$delay"
+                delay=$((delay * 2))
+                continue
+            fi
+            emit_error "curl transport failure (exit $rc) after $attempt attempts: $method $url"
+            return 5
+        fi
+
+        case "$code" in
+            2*)
+                cat "$body_file"
+                return 0
+                ;;
+            401|403)
+                # No retry — a fresh attempt with the same token will
+                # hit the same wall. Surface an actionable hint so the
+                # operator knows to rotate / re-scope their PAT instead
+                # of blaming the federation.
+                snippet="$(head -c 200 "$body_file")"
+                emit_error "auth failure (HTTP $code) on $method $url: $snippet — check PAT scope/expiry"
+                return 2
+                ;;
+            429)
+                # GitLab sometimes sends Retry-After, but parsing headers
+                # portably across curl versions is fiddly; conservative
+                # exponential backoff matches what a Retry-After would
+                # typically request on a self-hosted instance.
+                if [ "$attempt" -le "$max_retries" ]; then
+                    sleep "$delay"
+                    delay=$((delay * 2))
+                    continue
+                fi
+                emit_error "rate limited (HTTP 429) after $attempt attempts on $method $url"
+                return 3
+                ;;
+            5*)
+                if [ "$attempt" -le "$max_retries" ]; then
+                    sleep "$delay"
+                    delay=$((delay * 2))
+                    continue
+                fi
+                snippet="$(head -c 200 "$body_file")"
+                emit_error "server error (HTTP $code) after $attempt attempts: $snippet"
+                return 5
+                ;;
+            4*)
+                snippet="$(head -c 200 "$body_file")"
+                emit_error "client error (HTTP $code) on $method $url: $snippet"
+                return 4
+                ;;
+            *)
+                emit_error "unexpected HTTP $code on $method $url"
+                return 4
+                ;;
+        esac
+    done
+}
+
 gl_get() {
-    curl -sfS --max-time 30 \
-        -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-        "$1"
+    gl_call GET "$1"
 }
 
 # gl_get_q <url> [--data-urlencode k=v ...]
@@ -48,19 +157,11 @@ gl_get() {
 gl_get_q() {
     local url="$1"
     shift
-    curl -sfS -G --max-time 30 \
-        -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-        "$@" \
-        "$url"
+    gl_call GET "$url" -G "$@"
 }
 
 gl_post() {
-    curl -sfS --max-time 30 \
-        -X POST \
-        -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d "$2" \
-        "$1"
+    gl_call POST "$1" -H "Content-Type: application/json" -d "$2"
 }
 
 CMD="${1:?Usage: gitlab-api.sh <command> [args...]}"
