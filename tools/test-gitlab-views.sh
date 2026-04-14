@@ -228,10 +228,10 @@ run_view_env() {
     local prelude
     prelude=$(mktemp)
     build_prelude "$script" "$prelude"
-    # shellcheck disable=SC1090,SC2016
-    # SC2016: the $1/$2/$3 below are deliberately inner-shell positional args
+    # $1/$2/$3 below are deliberately inner-shell positional args
     # (bash -c's own argv), not outer-scope variables — same pattern as
     # run_view above.
+    # shellcheck disable=SC1090,SC2016
     env "$env_kv" GITLAB_URL=http://x GITLAB_TOKEN=y GITLAB_PROJECT=z bash -c '
         source "$1"
         printf "%s" "$2" | project_json "$3"
