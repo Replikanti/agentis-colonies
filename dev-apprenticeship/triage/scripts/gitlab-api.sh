@@ -71,7 +71,10 @@ project_json() {
             DATA="$DATA" python3 <<'PY'
 import os, json
 data = json.loads(os.environ["DATA"])
-print(json.dumps([{"iid": x.get("iid"), "title": x.get("title"), "labels": x.get("labels", [])} for x in data]))
+# #104: include author.username so labeler can tag knowledge as
+# personal (operator's own issue) vs team.
+print(json.dumps([{"iid": x.get("iid"), "title": x.get("title"), "labels": x.get("labels", []),
+                   "author": {"username": (x.get("author") or {}).get("username")}} for x in data]))
 PY
             ;;
         router)
@@ -87,7 +90,9 @@ PY
             DATA="$DATA" python3 <<'PY'
 import os, json
 data = json.loads(os.environ["DATA"])
-print(json.dumps([{"iid": x.get("iid"), "title": x.get("title"), "labels": x.get("labels", [])} for x in data]))
+# #104: include author.username for personal/team tagging.
+print(json.dumps([{"iid": x.get("iid"), "title": x.get("title"), "labels": x.get("labels", []),
+                   "author": {"username": (x.get("author") or {}).get("username")}} for x in data]))
 PY
             ;;
         issue_creator)

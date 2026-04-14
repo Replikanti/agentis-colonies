@@ -59,9 +59,12 @@ project_json() {
             DATA="$DATA" python3 <<'PY'
 import os, json
 data = json.loads(os.environ["DATA"])
+# #104: include author.username so style_reviewer can tag knowledge
+# as personal (operator's own MR) vs team.
 out = [{"iid": x.get("iid"), "state": x.get("state"), "title": x.get("title"),
         "labels": x.get("labels", []), "source_branch": x.get("source_branch"),
-        "target_branch": x.get("target_branch"), "draft": x.get("draft")} for x in data]
+        "target_branch": x.get("target_branch"), "draft": x.get("draft"),
+        "author": {"username": (x.get("author") or {}).get("username")}} for x in data]
 print(json.dumps(out))
 PY
             ;;

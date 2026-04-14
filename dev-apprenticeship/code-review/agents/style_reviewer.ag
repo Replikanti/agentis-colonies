@@ -18,7 +18,31 @@ type StyleFinding {
 type StyleReview {
     mr_iid: int,
     findings: list<StyleFinding>,
-    summary: string
+    summary: string,
+    author: string
+}
+
+// #104: Returns "personal" if the given author matches the operator's
+// GitLab username (memo `gitlab:me`, seeded by install.sh); "team"
+// otherwise. Empty memo = pre-#104 behavior (everyone is team).
+fn scope_for_author(author: string) -> string {
+    let me = recall_latest("gitlab:me");
+    if len(me) > 0 {
+        if author == me {
+            return "personal";
+        };
+    };
+    return "team";
+}
+
+// #104: json_get on a miss returns Void, whose to_string renders as
+// "void". Collapse that to empty so downstream consumers (prompt
+// context, scope_for_author) don't get the sentinel word.
+fn sanitize_author(s: string) -> string {
+    if s == "void" {
+        return "";
+    };
+    return s;
 }
 
 fn mr_cmd() -> string {
@@ -87,9 +111,14 @@ fn tick(reason: string) -> void {
     let rec = recommend("style_review", ["accuracy"]);
     let context = "MR diff:\n" + changes_raw + "\n\nLearned preferences: " + to_string(rec);
 
+    // #104: Extract author from the MR listing so the review prompt
+    // has access to it. `raw` holds the first-page MR JSON; json_get
+    // on a missing key returns Void whose to_string is "void" — collapse
+    // that to "" so the prompt context stays clean.
+    let mr_author = sanitize_author(to_string(json_get(raw, "[0].author.username")));
     let review = prompt(
-        "You are a style reviewer. Analyze this merge request diff for style issues: naming conventions, formatting, import ordering, whitespace, code organization. Return JSON: mr_iid (int), findings (array of objects with file, issue, severity, suggestion), summary (string). Only flag real style issues, not logic or security. If clean, return empty findings array. Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.",
-        context
+        "You are a style reviewer. Analyze this merge request diff for style issues: naming conventions, formatting, import ordering, whitespace, code organization. Return JSON: mr_iid (int), findings (array of objects with file, issue, severity, suggestion), summary (string), author (string, echo back the MR author username if provided below). Only flag real style issues, not logic or security. If clean, return empty findings array. Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.",
+        "MR author: " + mr_author + "\n" + context
     ) -> StyleReview;
 
     let confidence = get_confidence();
@@ -108,7 +137,9 @@ fn tick(reason: string) -> void {
                 "";
             };
             if len(result) > 0 {
-                learn("style_review", "posted on MR " + to_string(mr_iid), review.summary, "success", ["acted", "code-review"]);
+                // #104: tag knowledge as personal (operator's own MR) vs team.
+                let scope = scope_for_author(review.author);
+                learn("style_review", "posted on MR " + to_string(mr_iid), review.summary, "success", [scope, "code-review", "acted"]);
             };
         } else {
             print("[style_reviewer] Confidence:", confidence, "- findings emitted to bus only");

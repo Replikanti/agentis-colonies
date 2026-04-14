@@ -11,6 +11,7 @@ tick_interval_ms = 60000
 url = "https://gitlab.example.com"
 token = "glpat-your-token-here"
 project = "your-org/your-project"
+me = ""  # your GitLab username, e.g. "martin.holy" (optional, enables personal/team tagging)
 
 [llm]
 # Only "backend" is read today. "cli" uses the agentis daemon default CLI adapter.
