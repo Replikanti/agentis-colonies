@@ -33,7 +33,7 @@ fn issues_cmd() -> string {
 fn get_confidence() -> float {
     let raw = recall_latest("labeler:confidence");
     if len(raw) > 0 {
-        return prompt("Return this number as a decimal. Nothing else.", raw) -> float;
+        return parse_float(raw);
     };
     return 0.0;
 }
