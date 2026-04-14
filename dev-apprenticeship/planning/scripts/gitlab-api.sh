@@ -10,7 +10,7 @@
 # Usage:
 #   gitlab-api.sh issues --needs-planning [--since ISO8601] [--view <name>]
 #   gitlab-api.sh add-note <iid> --body <text>
-#   gitlab-api.sh merge-requests [--state merged] [--since ISO8601] [--view <name>]
+#   gitlab-api.sh merge-requests [--state merged] [--since ISO8601] [--per-page N] [--view <name>]
 #
 # Views (opt-in projection; default is full JSON):
 #   issues         --view planning     [{iid, title, description, labels,
@@ -291,17 +291,19 @@ case "$CMD" in
         STATE="opened"
         SINCE=""
         VIEW=""
+        PER_PAGE=20
         while [ $# -gt 0 ]; do
             case "$1" in
                 --state) STATE="$2"; shift 2 ;;
                 --since) SINCE="$2"; shift 2 ;;
                 --view) VIEW="$2"; shift 2 ;;
+                --per-page) PER_PAGE="$2"; shift 2 ;;
                 *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
         ARGS=(
             --data-urlencode "state=$STATE"
-            --data-urlencode "per_page=20"
+            --data-urlencode "per_page=$PER_PAGE"
             --data-urlencode "order_by=updated_at"
             --data-urlencode "sort=desc"
         )

@@ -8,7 +8,7 @@
 #   GITLAB_PROJECT - URL-encoded project path (e.g. your-org%2Fyour-project)
 #
 # Usage:
-#   gitlab-api.sh merge-requests [--state merged] [--since ISO8601] [--view <name>]
+#   gitlab-api.sh merge-requests [--state merged] [--since ISO8601] [--per-page N] [--view <name>]
 #   gitlab-api.sh mr-changes <iid>
 #   gitlab-api.sh mr-commits <iid>
 #   gitlab-api.sh issue <iid>
@@ -236,17 +236,19 @@ case "$CMD" in
         STATE="opened"
         SINCE=""
         VIEW=""
+        PER_PAGE=20
         while [ $# -gt 0 ]; do
             case "$1" in
                 --state) STATE="$2"; shift 2 ;;
                 --since) SINCE="$2"; shift 2 ;;
                 --view) VIEW="$2"; shift 2 ;;
+                --per-page) PER_PAGE="$2"; shift 2 ;;
                 *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
         ARGS=(
             --data-urlencode "state=$STATE"
-            --data-urlencode "per_page=20"
+            --data-urlencode "per_page=$PER_PAGE"
             --data-urlencode "order_by=updated_at"
             --data-urlencode "sort=desc"
         )
