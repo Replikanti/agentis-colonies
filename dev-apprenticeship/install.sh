@@ -19,7 +19,7 @@ ALL_AGENTS=(
     code_writer test_writer refactorer commit_composer
     ship_decider changelog_writer version_bumper release_checker
 )
-MIN_VERSION="1.1.8"
+MIN_VERSION="1.2.0"
 
 # --- Helpers ---
 
@@ -106,7 +106,7 @@ AGENTIS_VERSION=$(agentis --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9
 info "agentis version: $AGENTIS_VERSION (minimum: $MIN_VERSION)"
 
 if ! version_gte "$AGENTIS_VERSION" "$MIN_VERSION"; then
-    fail "agentis >= $MIN_VERSION required (--enable-exec/--enable-messaging flags, #492 quarantine fix, #499 watchdog heartbeat fix, #107 daemon PII grant + exec.default_timeout_ms). Please update."
+    fail "agentis >= $MIN_VERSION required (--enable-exec/--enable-messaging flags, #492 quarantine fix, #499 watchdog heartbeat fix, #107 daemon PII grant + exec.default_timeout_ms, #123 tick-success health, #125 parse_float/parse_int/json_get). Please update."
     exit 1
 fi
 
