@@ -192,7 +192,7 @@ You can always demote an agent back: `agentis memo set labeler:confidence 0.5`
 
 **Week 1-2**: Knowledge entries accumulate from your GitLab activity. Run `agentis knowledge list` to inspect.
 
-**After promotion**: Suggestions appear in logs (0.6) or directly on GitLab (0.85). Knowledge keeps growing with every tick. Promotion is not automatic — no agent ever updates its own `<agent>:confidence` memo, so the observe → suggest → act transition happens exactly when you run `agentis memo set <agent>:confidence …`. The runtime does slowly decay the per-entry confidence score that `learn()` attaches to each knowledge row (`knowledge.confidence_decay_rate`, default 0.01/hr, floor `knowledge.confidence_decay_min` 0.05), which is a separate dial from the per-agent promotion level you control — it affects how much weight an old entry carries inside an agent, not which behavior gradient the agent is running at.
+**After promotion**: Suggestions appear in logs (0.6) or directly on GitLab (0.85). Knowledge keeps growing with every tick. Promotion is not automatic — no agent ever updates its own `<agent>:confidence` memo, so the observe → suggest → act transition happens exactly when you run `agentis memo set <agent>:confidence …`. The runtime does slowly decay the per-entry confidence score that `learn()` attaches to each unvalidated knowledge row (`knowledge.confidence_decay_rate`, default 0.01/hr, floor `knowledge.confidence_decay_min` 0.05; validated entries are left alone), which is a separate dial from the per-agent promotion level you control — it affects how much weight an old entry carries inside an agent, not which behavior gradient the agent is running at.
 
 ## Colonies
 
