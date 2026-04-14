@@ -28,6 +28,31 @@ ok()    { printf '  [ok] %s\n' "$*"; }
 fail()  { printf '  [!!] %s\n' "$*"; }
 ask()   { printf '\n  %s ' "$1"; }
 
+# Read a prompt line, validate against a regex, re-prompt on failure.
+# Usage: prompt_validated VAR_NAME "Prompt:" '^regex$' "hint shown on reject" [--secret]
+prompt_validated() {
+    local __var="$1" __prompt="$2" __re="$3" __hint="$4" __secret="$5"
+    local __val
+    while true; do
+        ask "$__prompt"
+        if [ "$__secret" = "--secret" ]; then
+            read -rs __val
+            echo ""
+        else
+            read -r __val
+        fi
+        if [ -z "$__val" ]; then
+            fail "Value is required. $__hint"
+            continue
+        fi
+        if [[ "$__val" =~ $__re ]]; then
+            printf -v "$__var" '%s' "$__val"
+            return 0
+        fi
+        fail "Invalid format. $__hint"
+    done
+}
+
 check_cmd() {
     if command -v "$1" >/dev/null 2>&1; then
         ok "$1 found ($(command -v "$1"))"
@@ -123,26 +148,57 @@ echo "GitLab configuration"
 echo "All 5 colonies connect to the same GitLab project."
 echo ""
 
-ask "GitLab URL (e.g. https://gitlab.com):"
-read -r GITLAB_URL
-ask "GitLab project path (e.g. my-org/my-project):"
-read -r GITLAB_PROJECT
-ask "GitLab personal access token (glpat-...):"
-read -rs GITLAB_TOKEN
-echo ""
-
-if [ -z "$GITLAB_URL" ] || [ -z "$GITLAB_PROJECT" ] || [ -z "$GITLAB_TOKEN" ]; then
-    fail "All three fields are required."
-    exit 1
+# Separate prompt for credentials. The existing "overwrite templates"
+# prompt only controls colony.example.toml -> colony.toml copies; it
+# does not gate credential writes. If the operator re-runs install.sh
+# purely to rotate the PAT (or to update url/project), we must still
+# prompt before silently overwriting — otherwise a typo at the URL
+# prompt corrupts 5 working configs with no recovery path other than
+# redoing the install. See #116 gap 5.
+WRITE_CREDS=1
+if [ "$CONFIGS_EXISTED" -eq 5 ]; then
+    ask "Update GitLab credentials in existing configs? [Y/n]:"
+    read -r UPDATE_CREDS
+    case "$UPDATE_CREDS" in
+        n|N)
+            WRITE_CREDS=0
+            info "Keeping existing GitLab credentials. Skipping prompts."
+            ;;
+    esac
 fi
 
-echo ""
-echo "Writing credentials to colony configs..."
+if [ "$WRITE_CREDS" -eq 1 ]; then
+    # URL char class includes `_` because corporate self-hosted DNS
+    # routinely uses underscores in hostnames (RFC-noncompliant but
+    # widespread) — rejecting them was a regression in PR #122 v1.
+    prompt_validated GITLAB_URL \
+        "GitLab URL (e.g. https://gitlab.com):" \
+        '^https?://[A-Za-z0-9._-]+(:[0-9]+)?(/.*)?$' \
+        "Must start with http:// or https://"
 
-for colony in "${COLONIES[@]}"; do
-    CONFIG="$SCRIPT_DIR/$colony/config/colony.toml"
-    # Write credentials by matching TOML keys (works on both fresh and existing configs)
-    python3 - "$CONFIG" "$GITLAB_URL" "$GITLAB_TOKEN" "$GITLAB_PROJECT" <<'PY'
+    # Project regex accepts group/project AND subgroup nesting
+    # (group/subgroup/.../project) because GitLab Premium lets you
+    # nest groups and start-colony.sh already URL-encodes the whole
+    # path to %2F before calling the API. The earlier "exactly two
+    # segments" form in PR #122 v1 rejected valid GitLab paths.
+    prompt_validated GITLAB_PROJECT \
+        "GitLab project path (e.g. my-org/my-project or group/subgroup/project):" \
+        '^[^/[:space:]]+(/[^/[:space:]]+)+$' \
+        "Must be at least group/project, segments separated by / with no whitespace or empty segments."
+
+    prompt_validated GITLAB_TOKEN \
+        "GitLab personal access token (glpat-...):" \
+        '^glpat-[A-Za-z0-9_-]+$' \
+        "Must start with 'glpat-' followed by the token body." \
+        --secret
+
+    echo ""
+    echo "Writing credentials to colony configs..."
+
+    for colony in "${COLONIES[@]}"; do
+        CONFIG="$SCRIPT_DIR/$colony/config/colony.toml"
+        # Write credentials by matching TOML keys (works on both fresh and existing configs)
+        python3 - "$CONFIG" "$GITLAB_URL" "$GITLAB_TOKEN" "$GITLAB_PROJECT" <<'PY'
 import sys, re
 path, url, token, project = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 with open(path) as f:
@@ -153,8 +209,11 @@ content = re.sub(r'(project\s*=\s*)"[^"]*"', lambda m: m.group(1) + '"' + projec
 with open(path, 'w') as f:
     f.write(content)
 PY
-    ok "$colony"
-done
+        ok "$colony"
+        chmod 600 "$CONFIG" 2>/dev/null || \
+            info "$colony: could not chmod 600 $CONFIG (filesystem may not support it)"
+    done
+fi
 
 # --- 4. Initialize agentis (if not already done) ---
 #
@@ -297,6 +356,11 @@ if [ -d "$AGENTIS_DIR" ]; then
     write_key 'pii_transmit'                 'allow'
     write_key 'knowledge.enabled'            'true'
     write_key 'learning.enabled'             'true'
+
+    # Lock down the federation config alongside colony.toml. No secrets
+    # are written here today, but llm.* keys operators add manually may
+    # include api-key env names or inline tokens.
+    chmod 600 "$AGENTIS_CONFIG" 2>/dev/null || true
 fi
 
 # Create per-colony .agentis symlinks so commands run from a colony dir

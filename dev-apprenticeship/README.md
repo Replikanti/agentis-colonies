@@ -186,6 +186,20 @@ agentis memo set labeler:confidence 0.85
 
 You can always demote an agent back: `agentis memo set labeler:confidence 0.5`
 
+## Security
+
+Your GitLab personal access token is stored in plaintext in 5 files:
+
+```
+<colony>/config/colony.toml     # token = "glpat-..."
+```
+
+`install.sh` sets these to mode 0600 (owner-only). If you move a federation directory to a multi-user system or copy configs manually, re-run `chmod 600 <colony>/config/colony.toml` on each.
+
+Rotate tokens periodically via GitLab (User Settings -> Access Tokens). Re-run `./install.sh` and answer `Y` to the "Update GitLab credentials" prompt — it accepts a new token without rewriting the colony templates.
+
+Out-of-scope (not implemented): integration with a system secret store (Secret Service, macOS Keychain, `pass`). If you need that today, replace `token = "..."` with a reference your shell evaluates before starting the federation.
+
 ## What to expect
 
 **Day 1**: Nothing visible. Agents are silent at 0.5. Check `agentis daemon list` and logs to confirm they are polling.
@@ -231,7 +245,9 @@ Filtering by `--tags observed`, `--tags emitted`, `--tags acted`, or `--tags <co
 
 **Agents not learning**: Run `agentis knowledge list`. If empty after several ticks, verify the GitLab project has recent activity.
 
-**Log growth**: Logs go to `.agentis/logs/<agent>.log` with no built-in rotation. Volume is low (a few lines per tick per agent), but with 21 agents running continuously you should set up `logrotate` or equivalent.
+**Log growth**: Logs go to `.agentis/logs/<agent>.log` with no built-in rotation. Volume is low (a few lines per tick per agent), but with 21 agents running continuously and occasional error loops (e.g. a bad GitLab token causing one log line per retry × 6 retries × per tick) individual logs can reach tens of megabytes per day. A sample logrotate config lives at `ops/logrotate.conf` — copy it into `/etc/logrotate.d/` (requires sudo) and adjust the path to your federation root, or adapt it for a user-level cron if you prefer not to touch system logrotate.
+
+As a zero-config fallback, `start-federation.sh` can be asked to truncate logs on start by setting `TRUNCATE_LOGS=1` in the environment. This keeps disk usage bounded between manual restarts but loses history — use logrotate for long-running federations.
 
 ## Extension points
 

@@ -6,6 +6,12 @@
 #
 # Usage: ./start-federation.sh [path/to/federation-dir]
 #        ./start-federation.sh              # uses script's own directory
+#
+# Env vars (forwarded to start-colony.sh):
+#   TRUNCATE_LOGS=1   zero out .agentis/logs/*.log at spawn time.
+#                     Zero-config fallback for boxes without logrotate;
+#                     loses history between restarts. For long-running
+#                     federations, use ops/logrotate.conf instead.
 
 set -e
 
@@ -20,6 +26,24 @@ echo "Dev Apprenticeship Federation"
 echo "============================="
 echo ""
 
+# Refuse to start if any agentis daemon is already running under this
+# federation root. A second invocation would spawn 21 more daemons
+# racing the first set for the same GitLab project (dup labels, dup
+# comments, dup MRs) and there is no safe way to untangle them after
+# the fact — stop-all hits both generations equally.
+#
+# NB: `agentis daemon list` writes the human-readable table to stderr
+# (eprintln! in agentis-core src/cli/daemon.rs), so the previous
+# version of this guard grepped empty stdout and never matched.
+# `--json` goes to stdout and is table-layout-stable, so we key on
+# the structured field instead of the table row.
+if agentis daemon list --json 2>/dev/null | grep -Fq '"state":"running"'; then
+    echo "[!!] A federation is already running under this directory."
+    echo "     Stop it first:  agentis daemon stop --all"
+    echo "     Inspect it:     agentis daemon list"
+    exit 1
+fi
+
 # Pre-flight: check all configs exist
 for colony in "${COLONIES[@]}"; do
     CONFIG="$FED_DIR/$colony/config/colony.toml"
@@ -29,6 +53,23 @@ for colony in "${COLONIES[@]}"; do
         exit 1
     fi
 done
+
+# After laptop sleep/reboot, heartbeat files under .agentis/daemon/
+# retain the pre-sleep mtime and the watchdog reads them as "last
+# heartbeat was N hours ago", killing every fresh child on its first
+# tick. Wipe them before any child writes a fresh one. Safe because
+# the double-start guard above proved there is no live federation to
+# disrupt.
+FED_AGENTIS_DIR="$FED_DIR/.agentis/daemon"
+if [ -d "$FED_AGENTIS_DIR" ]; then
+    # *.pid / *.status / *.watchdog.pid go stale on the same axis as
+    # *.heartbeat — on wake they point at PIDs from the previous boot
+    # which may now belong to an unrelated process. Sweep them all.
+    rm -f "$FED_AGENTIS_DIR"/*.heartbeat \
+          "$FED_AGENTIS_DIR"/*.pid \
+          "$FED_AGENTIS_DIR"/*.status \
+          "$FED_AGENTIS_DIR"/*.watchdog.pid 2>/dev/null || true
+fi
 
 # Start each colony
 TOTAL_AGENTS=0
