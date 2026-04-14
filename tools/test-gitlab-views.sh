@@ -195,7 +195,85 @@ test_view "implementation" "assigned" "iid,title,description,labels,assignees,pr
 test_view "release" "release-summary"  "tag_name,name,released_at,description" "$FIXTURE_RELEASES"
 test_view "release" "tag-summary"      "name,message,commit"                   "$FIXTURE_TAGS"
 test_view "release" "pipeline-summary" "id,status,ref,sha,created_at,web_url"  "$FIXTURE_PIPELINES"
-test_view "release" "release-mr"       "iid,title,merged_at,labels,target_branch" "$FIXTURE_MRS"
+test_view "release" "release-mr"       "iid,title,description,merged_at,labels,target_branch" "$FIXTURE_MRS"
+
+# --- Rollback / error paths (review #126) ---
+# The previous block exercises every declared view. These three extra cases
+# lock down the three "escape hatches" around projection so they can't
+# regress silently:
+#   1. GITLAB_VIEW_MODE=raw env override  -> project_json is a `cat`
+#   2. unknown view name                  -> exit 2, no stdout
+#   3. explicit `--view raw` argument     -> short-circuit to printf stdin
+#
+# Any one of these breaking would silently degrade the rollback story:
+# operators set GITLAB_VIEW_MODE=raw to undo a bad projection without editing
+# .ag sources, and the typo-loud behaviour for unknown views prevents cases
+# like `--view labler` silently matching a `*)` wildcard.
+
+# check_equals <expected> <actual> <label>
+check_equals() {
+    local expected="$1" actual="$2" label="$3"
+    if [ "$expected" = "$actual" ]; then
+        pass "$label: output matches input"
+    else
+        fail "$label: output does NOT match input"
+    fi
+}
+
+# run_view_env <env-assignment> <script> <view> <fixture>
+# Variant of run_view that injects an extra env var (e.g. GITLAB_VIEW_MODE=raw)
+# into the inner shell. Kept small and inline to match the existing style.
+run_view_env() {
+    local env_kv="$1" script="$2" view="$3" fixture="$4"
+    local prelude
+    prelude=$(mktemp)
+    build_prelude "$script" "$prelude"
+    # shellcheck disable=SC1090,SC2016
+    # SC2016: the $1/$2/$3 below are deliberately inner-shell positional args
+    # (bash -c's own argv), not outer-scope variables — same pattern as
+    # run_view above.
+    env "$env_kv" GITLAB_URL=http://x GITLAB_TOKEN=y GITLAB_PROJECT=z bash -c '
+        source "$1"
+        printf "%s" "$2" | project_json "$3"
+    ' _ "$prelude" "$fixture" "$view"
+    local rc=$?
+    rm -f "$prelude"
+    return $rc
+}
+
+# Case 1: GITLAB_VIEW_MODE=raw short-circuits even on a normally-valid view.
+# Triage's `labeler` exists; with the env override set, project_json must
+# return the input byte-for-byte (cat path).
+RAW_OUT=$(run_view_env "GITLAB_VIEW_MODE=raw" \
+    "$REPO_ROOT/dev-apprenticeship/triage/scripts/gitlab-api.sh" \
+    "labeler" "$FIXTURE_ISSUES")
+check_equals "$FIXTURE_ISSUES" "$RAW_OUT" "triage/labeler (GITLAB_VIEW_MODE=raw)"
+
+# Case 2: unknown view must exit 2 and not produce a bogus projection.
+# We call project_json directly via the prelude-bash wrapper and capture rc.
+PRELUDE=$(mktemp)
+build_prelude "$REPO_ROOT/dev-apprenticeship/triage/scripts/gitlab-api.sh" "$PRELUDE"
+# shellcheck disable=SC1090,SC2016
+# SC2016: $1/$2/$3 below are the inner bash -c's positional args.
+UNKNOWN_OUT=$(GITLAB_URL=http://x GITLAB_TOKEN=y GITLAB_PROJECT=z bash -c '
+    source "$1"
+    printf "%s" "$2" | project_json "$3"
+' _ "$PRELUDE" "$FIXTURE_ISSUES" "definitely-not-a-view" 2>/dev/null)
+UNKNOWN_RC=$?
+rm -f "$PRELUDE"
+if [ "$UNKNOWN_RC" -eq 2 ] && [ -z "$UNKNOWN_OUT" ]; then
+    pass "triage: unknown view exits 2 with empty stdout"
+else
+    fail "triage: unknown view: rc=$UNKNOWN_RC, stdout='$UNKNOWN_OUT' (want rc=2, empty stdout)"
+fi
+
+# Case 3: explicit `--view raw` arg is a pass-through (no env override set).
+# Same byte-for-byte equality as case 1, but driven by the `raw) printf...`
+# case arm instead of the GITLAB_VIEW_MODE short-circuit.
+RAW_ARG_OUT=$(run_view \
+    "$REPO_ROOT/dev-apprenticeship/triage/scripts/gitlab-api.sh" \
+    "raw" "$FIXTURE_ISSUES")
+check_equals "$FIXTURE_ISSUES" "$RAW_ARG_OUT" "triage: --view raw pass-through"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

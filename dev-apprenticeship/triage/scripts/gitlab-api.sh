@@ -291,7 +291,12 @@ case "$CMD" in
             ARGS+=(--data-urlencode "updated_after=$SINCE")
         fi
         if [ -n "$VIEW" ]; then
-            gl_get_q "$API/issues" "${ARGS[@]}" | project_json "$VIEW"
+            # Two-step so gl_call's non-zero exit (auth/429/5xx/transport)
+            # survives the projection pipe. A bare `gl_get_q ... | project_json`
+            # would let python3 (or `cat` when GITLAB_VIEW_MODE=raw) override
+            # the meaningful exit code with 0 or 1, masking the real failure.
+            body="$(gl_get_q "$API/issues" "${ARGS[@]}")" || exit $?
+            printf '%s' "$body" | project_json "$VIEW"
         else
             gl_get_q "$API/issues" "${ARGS[@]}"
         fi
@@ -411,13 +416,21 @@ PY
             # User-facing `--view summary` maps to the internal
             # `members-summary` projection to avoid name collision with
             # the `labels --view summary` projection, which keeps a
-            # different set of fields.
+            # different set of fields. Unknown names must fail loudly here
+            # — falling through would let e.g. `members --view labeler`
+            # silently produce a rc=0 bogus projection, inconsistent with
+            # the "unknown view exits 2" contract elsewhere.
             case "$VIEW" in
                 summary) INTERNAL_VIEW="members-summary" ;;
                 raw) INTERNAL_VIEW="raw" ;;
-                *) INTERNAL_VIEW="$VIEW" ;;
+                *) emit_error "unknown view: $VIEW"; exit 2 ;;
             esac
-            gl_get "$API/members/all?per_page=100" | project_json "$INTERNAL_VIEW"
+            # Two-step so gl_call's non-zero exit (auth/429/5xx/transport)
+            # survives the projection pipe. A bare `gl_get ... | project_json`
+            # would let python3 (or `cat` when GITLAB_VIEW_MODE=raw) override
+            # the meaningful exit code with 0 or 1, masking the real failure.
+            body="$(gl_get "$API/members/all?per_page=100")" || exit $?
+            printf '%s' "$body" | project_json "$INTERNAL_VIEW"
         else
             gl_get "$API/members/all?per_page=100"
         fi
@@ -432,12 +445,17 @@ PY
             esac
         done
         if [ -n "$VIEW" ]; then
+            # Unknown names fail here so `labels --view prioritizer` doesn't
+            # silently produce a bogus projection (see members branch above).
             case "$VIEW" in
                 summary) INTERNAL_VIEW="labels-summary" ;;
                 raw) INTERNAL_VIEW="raw" ;;
-                *) INTERNAL_VIEW="$VIEW" ;;
+                *) emit_error "unknown view: $VIEW"; exit 2 ;;
             esac
-            gl_get "$API/labels?per_page=100" | project_json "$INTERNAL_VIEW"
+            # Two-step pipe so gl_call's non-zero exit survives projection (see
+            # members branch above).
+            body="$(gl_get "$API/labels?per_page=100")" || exit $?
+            printf '%s' "$body" | project_json "$INTERNAL_VIEW"
         else
             gl_get "$API/labels?per_page=100"
         fi

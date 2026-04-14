@@ -21,7 +21,7 @@
 #   releases       --view release-summary  [{tag_name, name, released_at, description}]
 #   tags           --view tag-summary      [{name, message, commit:{short_id, created_at}}]
 #   pipelines      --view pipeline-summary [{id, status, ref, sha, created_at, web_url}]
-#   merge-requests --view release-mr       [{iid, title, merged_at, labels, target_branch}]
+#   merge-requests --view release-mr       [{iid, title, description, merged_at, labels, target_branch}]
 #   <cmd>          --view raw              explicit pass-through (same as no flag)
 #   GITLAB_VIEW_MODE=raw                   env-override that forces pass-through globally.
 #
@@ -91,10 +91,15 @@ print(json.dumps(out))
 PY
             ;;
         release-mr)
+            # Keep `description` so version_bumper / changelog_writer can see
+            # `BREAKING CHANGE:` footers and release-note prose. Title + labels
+            # cover the common cases, but the major-bump signal lives in the
+            # description body.
             DATA="$DATA" python3 <<'PY'
 import os, json
 data = json.loads(os.environ["DATA"])
-out = [{"iid": x.get("iid"), "title": x.get("title"), "merged_at": x.get("merged_at"),
+out = [{"iid": x.get("iid"), "title": x.get("title"), "description": x.get("description"),
+        "merged_at": x.get("merged_at"),
         "labels": x.get("labels", []), "target_branch": x.get("target_branch")} for x in data]
 print(json.dumps(out))
 PY
@@ -261,10 +266,15 @@ case "$CMD" in
             esac
         done
         if [ -n "$VIEW" ]; then
-            gl_get_q "$API/releases" \
+            # Two-step so gl_call's non-zero exit (auth/429/5xx/transport)
+            # survives the projection pipe. A bare `gl_get_q ... | project_json`
+            # would let python3 (or `cat` when GITLAB_VIEW_MODE=raw) override
+            # the meaningful exit code with 0 or 1, masking the real failure.
+            body="$(gl_get_q "$API/releases" \
                 --data-urlencode "per_page=$PER_PAGE" \
                 --data-urlencode "order_by=released_at" \
-                --data-urlencode "sort=desc" | project_json "$VIEW"
+                --data-urlencode "sort=desc")" || exit $?
+            printf '%s' "$body" | project_json "$VIEW"
         else
             gl_get_q "$API/releases" \
                 --data-urlencode "per_page=$PER_PAGE" \
@@ -284,10 +294,13 @@ case "$CMD" in
             esac
         done
         if [ -n "$VIEW" ]; then
-            gl_get_q "$API/repository/tags" \
+            # Two-step pipe so gl_call's non-zero exit survives projection (see
+            # releases branch above).
+            body="$(gl_get_q "$API/repository/tags" \
                 --data-urlencode "per_page=$PER_PAGE" \
                 --data-urlencode "order_by=updated" \
-                --data-urlencode "sort=desc" | project_json "$VIEW"
+                --data-urlencode "sort=desc")" || exit $?
+            printf '%s' "$body" | project_json "$VIEW"
         else
             gl_get_q "$API/repository/tags" \
                 --data-urlencode "per_page=$PER_PAGE" \
@@ -313,11 +326,14 @@ case "$CMD" in
             exit 1
         fi
         if [ -n "$VIEW" ]; then
-            gl_get_q "$API/pipelines" \
+            # Two-step pipe so gl_call's non-zero exit survives projection (see
+            # releases branch above).
+            body="$(gl_get_q "$API/pipelines" \
                 --data-urlencode "ref=$REF" \
                 --data-urlencode "per_page=$PER_PAGE" \
                 --data-urlencode "order_by=updated_at" \
-                --data-urlencode "sort=desc" | project_json "$VIEW"
+                --data-urlencode "sort=desc")" || exit $?
+            printf '%s' "$body" | project_json "$VIEW"
         else
             gl_get_q "$API/pipelines" \
                 --data-urlencode "ref=$REF" \
@@ -349,7 +365,10 @@ case "$CMD" in
             ARGS+=(--data-urlencode "updated_after=$SINCE")
         fi
         if [ -n "$VIEW" ]; then
-            gl_get_q "$API/merge_requests" "${ARGS[@]}" | project_json "$VIEW"
+            # Two-step pipe so gl_call's non-zero exit survives projection (see
+            # releases branch above).
+            body="$(gl_get_q "$API/merge_requests" "${ARGS[@]}")" || exit $?
+            printf '%s' "$body" | project_json "$VIEW"
         else
             gl_get_q "$API/merge_requests" "${ARGS[@]}"
         fi

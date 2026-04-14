@@ -238,7 +238,12 @@ case "$CMD" in
             ARGS+=(--data-urlencode "updated_after=$SINCE")
         fi
         if [ -n "$VIEW" ]; then
-            gl_get_q "$API/merge_requests" "${ARGS[@]}" | project_json "$VIEW"
+            # Two-step so gl_call's non-zero exit (auth/429/5xx/transport)
+            # survives the projection pipe. A bare `gl_get_q ... | project_json`
+            # would let python3 (or `cat` when GITLAB_VIEW_MODE=raw) override
+            # the meaningful exit code with 0 or 1, masking the real failure.
+            body="$(gl_get_q "$API/merge_requests" "${ARGS[@]}")" || exit $?
+            printf '%s' "$body" | project_json "$VIEW"
         else
             gl_get_q "$API/merge_requests" "${ARGS[@]}"
         fi
