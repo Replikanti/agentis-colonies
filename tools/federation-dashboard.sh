@@ -471,8 +471,14 @@ document.getElementById('clock').textContent = timestamp;
 function manualRefresh() {
   const btn = document.getElementById('refresh-btn');
   if (btn) btn.classList.add('spinning');
-  // Short delay so the spin is visible even on near-instant reloads.
-  setTimeout(() => location.reload(), 150);
+  // #98: ask the server to regenerate the static HTML snapshot before we
+  // reload. The background loop only runs every 60 s, so without this POST
+  // a manual refresh would just re-render the stale on-disk file. Errors
+  // are swallowed — reload anyway so the operator sees *something* rather
+  // than a wedged spinner.
+  fetch('/refresh', { method: 'POST' })
+    .catch(() => {})
+    .finally(() => location.reload());
 }
 
 document.addEventListener('keydown', (e) => {
@@ -691,6 +697,16 @@ JSEOF
     } >> "$HTML_FILE"
 }
 
+# --- Regen-only mode ---
+# When invoked by POST /refresh from the running dashboard server (see the
+# PYSERVER block below), re-execute generate and exit. The active server
+# process keeps serving; only the static HTML snapshot is refreshed.
+# Without this, manual refresh just reloads the stale on-disk HTML — see #98.
+if [ "${DASHBOARD_REGEN_ONLY:-0}" = "1" ]; then
+    generate
+    exit 0
+fi
+
 # --- Main ---
 
 echo "Starting web server on http://localhost:$PORT"
@@ -709,12 +725,14 @@ generate
 REGEN_PID=$!
 trap 'kill $REGEN_PID 2>/dev/null; exit 0' INT TERM
 
-# Serve with kill switch endpoint
-python3 - "$DASH_DIR" "$PORT" <<'PYSERVER'
+# Serve with kill switch + refresh endpoints. SCRIPT_PATH and FED_DIR are
+# passed through so POST /refresh can re-exec this script in regen-only mode.
+python3 - "$DASH_DIR" "$PORT" "$SCRIPT_PATH" "$FED_DIR" <<'PYSERVER'
 import sys, os, subprocess
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 serve_dir, port = sys.argv[1], int(sys.argv[2])
+script_path, fed_dir_arg = sys.argv[3], sys.argv[4]
 # serve_dir is $FED_DIR/.dashboard; the federation root (parent of serve_dir)
 # is the cwd we want agentis to resolve .agentis/ from. We still os.chdir to
 # serve_dir so SimpleHTTPRequestHandler serves index.html from here.
@@ -723,6 +741,37 @@ fed_dir = os.path.dirname(serve_dir)
 
 class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
+        if self.path == '/refresh':
+            # #98: regenerate the static HTML snapshot on operator request.
+            # The background loop only regenerates every 60 s; without this
+            # endpoint the ↻ button and `r` key just reload the stale file.
+            env = dict(os.environ)
+            env['DASHBOARD_REGEN_ONLY'] = '1'
+            try:
+                result = subprocess.run(
+                    ['bash', script_path, fed_dir_arg],
+                    capture_output=True, text=True,
+                    env=env,
+                    timeout=30,
+                )
+            except (OSError, subprocess.SubprocessError) as e:
+                self.send_response(500)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(f'regen failed: {e}'.encode())
+                return
+            if result.returncode != 0:
+                self.send_response(500)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                msg = (result.stderr or result.stdout or 'regen failed').strip()
+                self.wfile.write(msg.encode() or b'regen failed')
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'ok')
+            return
         if self.path == '/kill':
             # Run from fed_dir, not .dashboard. The actual fix for #91 is
             # the v1.1.7 walk-up in agentis_root() (Replikanti/agentis-core#499)
