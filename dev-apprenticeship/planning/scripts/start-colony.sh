@@ -51,6 +51,21 @@ AGENTS=(
     plan_reviewer
 )
 
+# Opt-in log truncation. Off by default so operators who rely on log
+# history across restarts are not surprised. Set TRUNCATE_LOGS=1 in
+# the environment (or via start-federation.sh) to bound disk use
+# between manual restarts. Real log rotation should use the
+# logrotate.conf sample in ops/ instead; this is the zero-config
+# fallback for laptops that do not have logrotate configured.
+if [ "${TRUNCATE_LOGS:-0}" = "1" ]; then
+    AGENTIS_LOGS="$REPO_ROOT/dev-apprenticeship/.agentis/logs"
+    if [ -d "$AGENTIS_LOGS" ]; then
+        for agent in "${AGENTS[@]}"; do
+            : > "$AGENTIS_LOGS/${agent}.log" 2>/dev/null || true
+        done
+    fi
+fi
+
 # Note: LLM backend is read by agentis daemon from the llm.backend key in
 # .agentis/config, not from a CLI flag. The [llm] section in colony.toml is
 # informational only. Operators should mirror it into .agentis/config.
