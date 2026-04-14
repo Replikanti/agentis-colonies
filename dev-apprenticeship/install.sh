@@ -19,7 +19,7 @@ ALL_AGENTS=(
     code_writer test_writer refactorer commit_composer
     ship_decider changelog_writer version_bumper release_checker
 )
-MIN_VERSION="1.1.7"
+MIN_VERSION="1.1.8"
 
 # --- Helpers ---
 
@@ -70,13 +70,18 @@ fi
 # v1.1.7 then fixed #499 (agentis_root walk-up), without which the watchdog
 # silently falls back to a 2000 ms heartbeat timeout and kills any agent
 # whose prompts take longer — on a cold Claude CLI that is every agent.
-# Older builds either fail with `capability denied: exec_foreign`, never
-# receive emit/listen, or get killed by the watchdog every tick.
+# v1.1.8 made the daemon honor `pii_transmit = allow` from config and
+# added `exec.default_timeout_ms`; before that, the federation could not
+# complete a single tick on any real GitLab project (issue #107) because
+# every prompt containing author emails was denied and every curl past
+# 10 s timed out. Older builds either fail with `capability denied:
+# exec_foreign`, never receive emit/listen, get killed by the watchdog
+# every tick, or fail every single tick on PII + ExecTimeout.
 AGENTIS_VERSION=$(agentis --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "0.0.0")
 info "agentis version: $AGENTIS_VERSION (minimum: $MIN_VERSION)"
 
 if ! version_gte "$AGENTIS_VERSION" "$MIN_VERSION"; then
-    fail "agentis >= $MIN_VERSION required (--enable-exec/--enable-messaging flags, #492 quarantine fix, #499 watchdog heartbeat fix). Please update."
+    fail "agentis >= $MIN_VERSION required (--enable-exec/--enable-messaging flags, #492 quarantine fix, #499 watchdog heartbeat fix, #107 daemon PII grant + exec.default_timeout_ms). Please update."
     exit 1
 fi
 
@@ -213,6 +218,21 @@ if [ -d "$AGENTIS_DIR" ]; then
     #                                 paths) and GITLAB_* (so gitlab-api.sh
     #                                 authenticates against the instance
     #                                 configured by start-colony.sh).
+    #   exec.default_timeout_ms     — gitlab-api.sh calls curl with
+    #                                 `--max-time 30`. The agentis-default
+    #                                 10 s `exec sh` timeout preempts
+    #                                 curl mid-response on real projects
+    #                                 (issue #107). 45 s gives curl its
+    #                                 30 s budget plus 15 s of process
+    #                                 spawn/JSON-parse headroom.
+    #   pii_transmit                — GitLab API payloads always contain
+    #                                 author/assignee emails and phone-
+    #                                 shaped numbers in descriptions.
+    #                                 Without this grant the PII guard
+    #                                 denies every prompt() on the first
+    #                                 tick and the federation never makes
+    #                                 progress. Only honored by the daemon
+    #                                 path from agentis v1.1.8 onward.
     AGENTIS_CONFIG="$AGENTIS_DIR/config"
     # Agentis init should have created this; create it explicitly so the
     # key-writing below is not silently skipped if init was interrupted.
@@ -248,6 +268,8 @@ if [ -d "$AGENTIS_DIR" ]; then
     write_key 'daemon.cb_per_tick'           '2000'
     write_key 'experience.enabled'           'true'
     write_key 'exec.env_passthrough'         'COLONY_DIR,GITLAB_*'
+    write_key 'exec.default_timeout_ms'      '45000'
+    write_key 'pii_transmit'                 'allow'
 fi
 
 # Create per-colony .agentis symlinks so commands run from a colony dir
