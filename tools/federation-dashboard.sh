@@ -109,26 +109,35 @@ generate() {
     # the knowledge base. Two parallel stores, two parallel CLIs — the
     # knowledge counter was always 0 on a real federation. We now count
     # JSONL line entries in the experience dir and aggregate per colony via
-    # the agent->colony map. The output JSON shape is still `{total, <col>}`
-    # for compatibility with history.json entries and the HTML chart.
+    # the daemon's own `colony` field. The output JSON shape is still
+    # `{total, <col>}` for compatibility with history.json and the HTML
+    # chart.
     #
     # Experience files are named by daemon-assigned `agent_id` (opaque hex,
-    # see src/cli/daemon.rs:907), not the `.ag` basename. To map back we
-    # use `agentis daemon list --json`: its `source` field is the `.ag`
-    # file path, and basename(source, .ag) is our `AGENT_COLONY_MAP` key.
+    # see src/cli/daemon.rs:907), not the `.ag` basename. We map back via
+    # `agentis daemon list --json`: for daemons started with `--colony`
+    # (which `start-colony.sh` always does) the `colony` field is
+    # authoritative. For daemons started without it we fall back to
+    # basename(source, .ag) → AGENT_COLONY_MAP, which is lossy when two
+    # colonies ship an agent with the same filename but is the best we can
+    # do for bare `agentis daemon <file>` invocations.
     local COLONY_LIST_PY=""
     for col in "${COLONIES[@]}"; do
         COLONY_LIST_PY="${COLONY_LIST_PY}\"${col}\","
     done
     COLONY_LIST_PY="[${COLONY_LIST_PY%,}]"
 
+    # Match the LOG_DIR convention (line 187): prefer $FED_DIR/../.agentis,
+    # fall back to cwd-relative for operators invoking from the federation
+    # root. Experience dir existence is re-checked inside python so a
+    # missing path degrades to zeros rather than crashing.
     local EXPERIENCE_DIR="${FED_DIR}/../.agentis/experience"
     if [ ! -d "$EXPERIENCE_DIR" ]; then
         EXPERIENCE_DIR=".agentis/experience"
     fi
 
     local EXPERIENCE_COUNTS
-    EXPERIENCE_COUNTS="$(python3 - "$EXPERIENCE_DIR" "$DAEMONS" "$AGENT_COLONY_MAP" "$COLONY_LIST_PY" <<'PY' 2>/dev/null || echo '{"total":0}'
+    EXPERIENCE_COUNTS="$(python3 - "$EXPERIENCE_DIR" "$DAEMONS" "$AGENT_COLONY_MAP" "$COLONY_LIST_PY" <<'PY' 2>/dev/null
 import sys, os, json
 exp_dir, daemons_json, map_json, colony_list_json = sys.argv[1:5]
 try:
@@ -143,19 +152,25 @@ try:
     colonies = json.loads(colony_list_json)
 except (json.JSONDecodeError, ValueError):
     colonies = []
+# Basename-keyed fallback for daemons launched without --colony. Collisions
+# (same .ag filename across two colonies) silently last-writer-wins here,
+# which is a known limitation; the authoritative path uses d["colony"].
 name_to_colony = {e.get("agent", ""): e.get("colony", "") for e in agent_map}
 counts = {c: 0 for c in colonies}
 counts["total"] = 0
 if os.path.isdir(exp_dir):
     for d in daemons:
         agent_id = d.get("agent_id") or ""
-        source = d.get("source") or ""
-        if not agent_id or not source:
+        if not agent_id:
             continue
-        name = os.path.basename(source)
-        if name.endswith(".ag"):
-            name = name[:-3]
-        colony = name_to_colony.get(name)
+        colony = d.get("colony") or ""
+        if not colony:
+            source = d.get("source") or ""
+            if source:
+                name = os.path.basename(source)
+                if name.endswith(".ag"):
+                    name = name[:-3]
+                colony = name_to_colony.get(name, "")
         if not colony or colony not in counts:
             continue
         path = os.path.join(exp_dir, agent_id + ".jsonl")
@@ -174,6 +189,16 @@ if os.path.isdir(exp_dir):
 print(json.dumps(counts))
 PY
 )"
+    # The python block is wrapped in try/except for every input, so a bad
+    # arg silently yields `{"total":0,...}` — but if the interpreter itself
+    # dies (SIGKILL, disk full, bad shebang) we get an empty string and the
+    # `const experienceCounts = ${EXPERIENCE_COUNTS};` injection below would
+    # produce a JS syntax error that breaks every other IIFE on the page.
+    # Validate the result parses as JSON; on failure, substitute the same
+    # shape the python block emits on empty input.
+    if ! echo "$EXPERIENCE_COUNTS" | python3 -c 'import sys, json; json.loads(sys.stdin.read())' 2>/dev/null; then
+        EXPERIENCE_COUNTS='{"total":0}'
+    fi
 
     local REMEDIATION
     REMEDIATION="$(agentis remediation history --limit 5 --json 2>/dev/null || echo '[]')"
