@@ -1,10 +1,14 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # colony-lint.sh: validates colony structure, config, and scripts
 #
 # Autodiscovers federations and colonies in the repo.
-# Exit code 0 = all checks pass, 1 = one or more failures.
+# Exit code 0 = all checks pass, 1 = one or more failures, 2 = unmet prerequisites.
 #
 # Usage: ./tools/colony-lint.sh [path-to-repo-root]
+#
+# Runs on bash 3.2+ (stock macOS /bin/bash) and bash 4+. Avoid bash-4-only
+# constructs below (associative arrays, ${var^^}, mapfile, backslash-newline
+# inside case-pattern labels — see #121 for that last one).
 
 set -euo pipefail
 
@@ -181,11 +185,11 @@ if errors:
                     if ($0 !~ /\\[[:space:]]*$/) { in_cmd = 0 }
                 }
             ' "$start_script" | while read -r flag; do
+                # Pattern is deliberately on one line: bash 3.2 (stock macOS)
+                # miscompiles backslash-newline inside case-pattern labels
+                # (#121). Keep all alternatives on a single line.
                 case "$flag" in
-                    --tick-interval|--cb-per-tick|--colony|--deadline|--priority|\
-                    --enable-migration|--enable-replication|--allow-replica-replication|\
-                    --enable-exec|--enable-messaging|--deny-exec|\
-                    --help|-h) ;;
+                    --tick-interval|--cb-per-tick|--colony|--deadline|--priority|--enable-migration|--enable-replication|--allow-replica-replication|--enable-exec|--enable-messaging|--deny-exec|--help|-h) ;;
                     *) echo "$flag" ;;
                 esac
             done)
