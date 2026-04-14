@@ -233,6 +233,16 @@ if [ -d "$AGENTIS_DIR" ]; then
     #                                 tick and the federation never makes
     #                                 progress. Only honored by the daemon
     #                                 path from agentis v1.1.8 onward.
+    #   learning.enabled            — triage/router and triage/prioritizer
+    #                                 (and several code-review agents) call
+    #                                 recommend() from the adaptive engine
+    #                                 on every tick. The engine is only
+    #                                 wired into the evaluator when this
+    #                                 key is set; otherwise recommend()
+    #                                 raises `adaptive engine not enabled`
+    #                                 (issue #110) and the tick aborts
+    #                                 before any routing/priority work
+    #                                 happens.
     AGENTIS_CONFIG="$AGENTIS_DIR/config"
     # Agentis init should have created this; create it explicitly so the
     # key-writing below is not silently skipped if init was interrupted.
@@ -270,6 +280,7 @@ if [ -d "$AGENTIS_DIR" ]; then
     write_key 'exec.env_passthrough'         'COLONY_DIR,GITLAB_*'
     write_key 'exec.default_timeout_ms'      '45000'
     write_key 'pii_transmit'                 'allow'
+    write_key 'learning.enabled'             'true'
 fi
 
 # Create per-colony .agentis symlinks so commands run from a colony dir
