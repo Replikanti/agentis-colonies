@@ -93,6 +93,11 @@ generate() {
     TIMESTAMP="$(date '+%Y-%m-%d %H:%M:%S')"
     local EPOCH
     EPOCH="$(date '+%s')"
+    # Per-PID temp file so concurrent generate() invocations (60 s background
+    # loop + POST /refresh subprocess, see #98) don't stomp on each other or
+    # let a SimpleHTTPRequestHandler read a half-written index.html. Final
+    # `mv` below is atomic on the same filesystem.
+    local HTML_TMP="$HTML_FILE.tmp.$$"
 
     local DAEMONS
     DAEMONS="$(agentis daemon list --json 2>/dev/null || echo '[]')"
@@ -153,7 +158,7 @@ print(json.dumps(lines))
 
     # Append to history
     python3 - "$HISTORY_FILE" "$EPOCH" "$KNOWLEDGE_COUNTS" "$CONFIDENCES" "$AGENT_COLONY_MAP" <<'PY'
-import sys, json
+import sys, os, json
 def _safe_json(s, default, label):
     try:
         return json.loads(s)
@@ -190,8 +195,12 @@ entry = {"t": epoch, "knowledge": kc, "confidence": avg_conf}
 history.append(entry)
 cutoff = epoch - 7 * 86400
 history = [h for h in history if h["t"] > cutoff]
-with open(path, "w") as f:
+# Per-PID temp + os.replace: atomic on the same filesystem so concurrent
+# generate() writers don't leave a partially-written history.json readable.
+tmp = f"{path}.tmp.{os.getpid()}"
+with open(tmp, "w") as f:
     json.dump(history, f)
+os.replace(tmp, path)
 PY
 
     local HISTORY
@@ -368,7 +377,7 @@ HEADEOF
 </head>
 <body>
 HTMLEOF
-    } > "$HTML_FILE"
+    } > "$HTML_TMP"
 
     {
     cat <<HEADEREOF
@@ -694,7 +703,11 @@ function killSwitch() {
 </body>
 </html>
 JSEOF
-    } >> "$HTML_FILE"
+    } >> "$HTML_TMP"
+    # Atomic publish: mv(2) on the same filesystem replaces the inode in a
+    # single syscall, so any HTTP reader sees either the old or the new file
+    # in full — never a truncated-in-progress state.
+    mv "$HTML_TMP" "$HTML_FILE"
 }
 
 # --- Regen-only mode ---
