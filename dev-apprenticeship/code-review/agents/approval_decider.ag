@@ -61,7 +61,7 @@ fn tick(reason: string) -> void {
     let all_findings = "Style findings: " + style_str + "\nLogic findings: " + logic_str + "\nSecurity findings: " + security_str + "\nTest findings: " + tests_str + "\nPast approval patterns: " + to_string(rec);
 
     let decision = prompt(
-        "You are the approval decider. Based on findings from style, logic, security, and test reviewers, decide the review outcome. Rules: any critical security finding = request changes. Multiple high-severity logic findings = request changes. Style-only findings = approve with comments. No findings = approve. Return JSON: mr_iid (int, from the findings), action (string: 'approve', 'request_changes', or 'escalate'), reasoning (string), critical_count (int), total_findings (int).",
+        "You are the approval decider. Based on findings from style, logic, security, and test reviewers, decide the review outcome. Rules: any critical security finding = request changes. Multiple high-severity logic findings = request changes. Style-only findings = approve with comments. No findings = approve. Return JSON: mr_iid (int, from the findings), action (string: 'approve', 'request_changes', or 'escalate'), reasoning (string), critical_count (int), total_findings (int). Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.",
         all_findings
     ) -> ReviewDecision;
 

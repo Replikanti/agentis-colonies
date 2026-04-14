@@ -51,7 +51,7 @@ fn tick(reason: string) -> void {
     };
 
     let mr_ids = prompt(
-        "Extract all merge request IIDs from this GitLab JSON array. Only opened MRs. Return JSON array of integers.",
+        "Extract all merge request IIDs from this GitLab JSON array. Only opened MRs. Return ONLY a raw JSON array of integers — no markdown code fences, no ```json wrapper, no prose. Just the array.",
         raw
     ) -> list<int>;
 
@@ -85,7 +85,7 @@ fn tick(reason: string) -> void {
     let context = "MR diff:\n" + changes_raw + "\n\nLearned patterns: " + to_string(rec);
 
     let review = prompt(
-        "You are a test reviewer. Analyze this merge request diff for test quality: missing tests for new code, untested edge cases, weak assertions (only checking happy path), missing error path tests, test duplication, flaky patterns (timing, ordering). Return JSON: mr_iid (int), findings (array with file, issue, severity, suggestion), summary (string). If tests are adequate, return empty findings.",
+        "You are a test reviewer. Analyze this merge request diff for test quality: missing tests for new code, untested edge cases, weak assertions (only checking happy path), missing error path tests, test duplication, flaky patterns (timing, ordering). Return JSON: mr_iid (int), findings (array with file, issue, severity, suggestion), summary (string). If tests are adequate, return empty findings. Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.",
         context
     ) -> TestReview;
 

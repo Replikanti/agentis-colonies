@@ -52,7 +52,7 @@ fn tick(reason: string) -> void {
 
     // Find MRs to review
     let mr_ids = prompt(
-        "Extract all merge request IIDs from this GitLab JSON array. Return a JSON array of integers. Only include MRs in 'opened' state. If empty, return [].",
+        "Extract all merge request IIDs from this GitLab JSON array. Only include MRs in 'opened' state. If empty, return []. Return ONLY a raw JSON array of integers — no markdown code fences, no ```json wrapper, no prose. Just the array.",
         raw
     ) -> list<int>;
 
@@ -88,7 +88,7 @@ fn tick(reason: string) -> void {
     let context = "MR diff:\n" + changes_raw + "\n\nLearned preferences: " + to_string(rec);
 
     let review = prompt(
-        "You are a style reviewer. Analyze this merge request diff for style issues: naming conventions, formatting, import ordering, whitespace, code organization. Return JSON: mr_iid (int), findings (array of objects with file, issue, severity, suggestion), summary (string). Only flag real style issues, not logic or security. If clean, return empty findings array.",
+        "You are a style reviewer. Analyze this merge request diff for style issues: naming conventions, formatting, import ordering, whitespace, code organization. Return JSON: mr_iid (int), findings (array of objects with file, issue, severity, suggestion), summary (string). Only flag real style issues, not logic or security. If clean, return empty findings array. Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.",
         context
     ) -> StyleReview;
 
