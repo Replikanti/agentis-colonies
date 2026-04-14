@@ -99,8 +99,10 @@ fn tick(reason: string) -> void {
         print("[refactorer] Reviewed draft for issue", suggestion.issue_id, "(confidence:", confidence, ")");
 
         if confidence >= 0.85 {
-            // Generate refactored code and commit to branch
-            let branch = prompt("Extract the branch_name from this code draft record. Return just the string, nothing else.", draft_str) -> string;
+            // Generate refactored code and commit to branch.
+            // #131: read branch_name via field access on the bus-delivered
+            // record instead of stringifying + re-prompting.
+            let branch = draft.branch_name;
             let refactor_context = "Code draft: " + draft_str + "\nSuggestions: " + suggestion.suggestions + "\nPatterns: " + to_string(rec);
             let actions_json = prompt(
                 "You are a refactorer. Apply these refactoring suggestions to the code draft. Return a JSON array of objects, each with: action (string, 'update'), file_path (string), content (string, the refactored file content). Only return the JSON array, nothing else.",

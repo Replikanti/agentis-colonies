@@ -56,20 +56,18 @@ fn tick(reason: string) -> void {
     let breakdown_str = to_string(breakdown);
 
     // 2. Stash each partial under the issue id it belongs to.
-    // Peer outputs arrive as struct Display format (not JSON), but the
-    // issue_id field is rendered verbatim either way, so we let the LLM
-    // extract it once per non-void bucket.
+    // #131: listen() returns the emitted record directly; we read
+    // `issue_id` via field access (0 LLM calls) instead of stringifying
+    // and re-prompting. The stash body keeps the Display repr because
+    // the downstream assembly prompt consumes that.
     if received(scope_str) {
-        let scope_iid = prompt("Return just the issue_id integer from this record. Nothing else.", scope_str) -> int;
-        stash("scope", scope_iid, scope_str);
+        stash("scope", scope.issue_id, scope_str);
     };
     if received(risks_str) {
-        let risks_iid = prompt("Return just the issue_id integer from this record. Nothing else.", risks_str) -> int;
-        stash("risks", risks_iid, risks_str);
+        stash("risks", risks.issue_id, risks_str);
     };
     if received(breakdown_str) {
-        let bd_iid = prompt("Return just the issue_id integer from this record. Nothing else.", breakdown_str) -> int;
-        stash("breakdown", bd_iid, breakdown_str);
+        stash("breakdown", breakdown.issue_id, breakdown_str);
     };
 
     // 3. Pick the newest unplanned issue and see if we have all three
