@@ -94,9 +94,13 @@ After running for a while, inspect what the colony has learned:
 # List all knowledge entries
 agentis knowledge list
 
-# Export personal knowledge (portable to other projects)
-agentis knowledge export --tags personal > my-preferences.json
+# Filter by real tags this colony emits
+agentis knowledge list --tags code-review
+agentis knowledge list --tags acted         # entries from autonomous actions
+agentis knowledge list --tags emitted       # entries from suggestions
 
-# Import on a new project
-agentis knowledge import my-preferences.json --merge
+# Bulk export/import (carries every entry as-is — there is no
+# "personal" tag today, so --tags personal would return [])
+agentis knowledge export > review-knowledge.json
+agentis knowledge import review-knowledge.json --merge
 ```

@@ -208,12 +208,16 @@ Cross-colony wiring: Triage routes issues to Implementation. Implementation sign
 
 ## Knowledge portability
 
-Knowledge is tagged by scope: `personal` (your preferences, portable across projects) and `project:<name>` (codebase-specific, stays with the project).
+Every `learn()` call in the federation's agents tags entries with one of `observed` (passive learning from GitLab activity), `emitted` (suggestion logged at confidence 0.6-0.84), or `acted` (autonomous action taken at ≥ 0.85) plus the colony name (`triage`, `code-review`, `planning`, `implementation`, `release`). There is no built-in distinction between "your preferences" and "codebase-specific" knowledge — agents see the full GitLab project activity without any concept of who `you` are, so everything learned is effectively project-scoped.
+
+Bulk export/import is available at the runtime level and will carry all entries as-is:
 
 ```bash
-agentis knowledge export --tags personal > my-preferences.json   # carry to new project
-agentis knowledge import my-preferences.json --merge
+agentis knowledge export > fed-knowledge.json
+agentis knowledge import fed-knowledge.json --merge
 ```
+
+Filtering by `--tags observed`, `--tags emitted`, `--tags acted`, or `--tags <colony>` works (those are real tags the agents emit), but there is no `personal` or `project:<name>` tag today — if you try `--tags personal` you will get an empty array.
 
 ## Troubleshooting
 
