@@ -27,9 +27,9 @@ type CodeDraft {
 fn merged_mr_cmd() -> string {
     let ts = recall_latest("code_writer:last_check");
     if len(ts) > 0 {
-        return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(ts);
+        return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(ts) + " --view impl";
     };
-    return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged";
+    return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --view impl";
 }
 
 fn get_confidence() -> float {
@@ -80,7 +80,7 @@ fn tick(reason: string) -> void {
     };
 
     // 2. Check for assigned issues needing implementation
-    let issues_cmd = "$COLONY_DIR/scripts/gitlab-api.sh assigned-issues";
+    let issues_cmd = "$COLONY_DIR/scripts/gitlab-api.sh assigned-issues --view assigned";
     let issues_raw = try {
         exec sh issues_cmd;
     } catch e {

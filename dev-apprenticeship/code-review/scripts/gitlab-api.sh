@@ -8,13 +8,19 @@
 #   GITLAB_PROJECT - URL-encoded project path
 #
 # Usage:
-#   gitlab-api.sh merge-requests [--since ISO8601] [--state opened|merged|all]
+#   gitlab-api.sh merge-requests [--since ISO8601] [--state opened|merged|all] [--view <name>]
 #   gitlab-api.sh mr-changes <iid>
 #   gitlab-api.sh mr-notes <iid>
 #   gitlab-api.sh post-note <iid> --body <text>
 #   gitlab-api.sh approve <iid>
 #
-# Returns JSON to stdout. Exit code 0 on success, 1 on error, 2 on unknown flag.
+# Views (opt-in projection; default is full JSON):
+#   merge-requests --view reviewer  [{iid, state, title, labels,
+#                                     source_branch, target_branch, draft}]
+#   merge-requests --view raw       explicit pass-through (same as no flag)
+#   GITLAB_VIEW_MODE=raw            env-override that forces pass-through globally.
+#
+# Returns JSON to stdout. Exit code 0 on success, 1 on error, 2 on unknown flag/view.
 
 set -e
 
@@ -26,6 +32,44 @@ set -e
 # Does NOT exit. The caller controls the exit code.
 emit_error() {
     printf '%s' "$1" | python3 -c 'import sys,json; print(json.dumps({"error": sys.stdin.read()}), file=sys.stderr)'
+}
+
+# project_json <view-name>
+# Reads full GitLab JSON from stdin, writes a downselected projection to
+# stdout. See the triage colony's gitlab-api.sh for the full design note;
+# the short version is that each view keeps only the fields a downstream
+# agent's prompt() actually needs, and GITLAB_VIEW_MODE=raw lets operators
+# roll back to full payloads without editing .ag sources.
+project_json() {
+    local view="$1"
+    if [ "${GITLAB_VIEW_MODE:-}" = "raw" ]; then
+        cat
+        return 0
+    fi
+    # Capture stdin once: python3 below reads the projection script from a
+    # `<<'PY'` heredoc (which occupies python's stdin), so the payload has
+    # to travel via env var rather than a pipe.
+    local DATA
+    DATA="$(cat)"
+    case "$view" in
+        raw)
+            printf '%s' "$DATA"
+            ;;
+        reviewer)
+            DATA="$DATA" python3 <<'PY'
+import os, json
+data = json.loads(os.environ["DATA"])
+out = [{"iid": x.get("iid"), "state": x.get("state"), "title": x.get("title"),
+        "labels": x.get("labels", []), "source_branch": x.get("source_branch"),
+        "target_branch": x.get("target_branch"), "draft": x.get("draft")} for x in data]
+print(json.dumps(out))
+PY
+            ;;
+        *)
+            emit_error "unknown view: $view"
+            exit 2
+            ;;
+    esac
 }
 
 if [ -z "$GITLAB_URL" ] || [ -z "$GITLAB_TOKEN" ] || [ -z "$GITLAB_PROJECT" ]; then
@@ -175,10 +219,12 @@ case "$CMD" in
     merge-requests)
         SINCE=""
         STATE="opened"
+        VIEW=""
         while [ $# -gt 0 ]; do
             case "$1" in
                 --since) SINCE="$2"; shift 2 ;;
                 --state) STATE="$2"; shift 2 ;;
+                --view) VIEW="$2"; shift 2 ;;
                 *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
@@ -191,7 +237,16 @@ case "$CMD" in
         if [ -n "$SINCE" ]; then
             ARGS+=(--data-urlencode "updated_after=$SINCE")
         fi
-        gl_get_q "$API/merge_requests" "${ARGS[@]}"
+        if [ -n "$VIEW" ]; then
+            # Two-step so gl_call's non-zero exit (auth/429/5xx/transport)
+            # survives the projection pipe. A bare `gl_get_q ... | project_json`
+            # would let python3 (or `cat` when GITLAB_VIEW_MODE=raw) override
+            # the meaningful exit code with 0 or 1, masking the real failure.
+            body="$(gl_get_q "$API/merge_requests" "${ARGS[@]}")" || exit $?
+            printf '%s' "$body" | project_json "$VIEW"
+        else
+            gl_get_q "$API/merge_requests" "${ARGS[@]}"
+        fi
         ;;
 
     mr-changes)

@@ -24,9 +24,9 @@ type LogicReview {
 fn mr_cmd() -> string {
     let ts = recall_latest("logic_reviewer:last_check");
     if len(ts) > 0 {
-        return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --since " + shell_escape(ts);
+        return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --since " + shell_escape(ts) + " --view reviewer";
     };
-    return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests";
+    return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --view reviewer";
 }
 
 fn get_confidence() -> float {

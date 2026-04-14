@@ -24,9 +24,9 @@ type ObservationSummary {
 fn issues_cmd() -> string {
     let ts = recall_latest("issue_creator:last_check");
     if len(ts) > 0 {
-        return "$COLONY_DIR/scripts/gitlab-api.sh issues --since " + shell_escape(ts);
+        return "$COLONY_DIR/scripts/gitlab-api.sh issues --since " + shell_escape(ts) + " --view issue_creator";
     };
-    return "$COLONY_DIR/scripts/gitlab-api.sh issues";
+    return "$COLONY_DIR/scripts/gitlab-api.sh issues --view issue_creator";
 }
 
 fn get_confidence() -> float {

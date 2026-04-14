@@ -44,7 +44,7 @@ fn tick(reason: string) -> void {
     };
 
     // Learn from past human approval/rejection patterns
-    let mr_cmd = "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged";
+    let mr_cmd = "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --view reviewer";
     let recent_merged = try { exec sh mr_cmd; } catch e { "[]"; };
 
     let approval_patterns = prompt(

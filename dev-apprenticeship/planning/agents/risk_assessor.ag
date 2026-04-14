@@ -25,9 +25,9 @@ type IncidentPatterns {
 fn unplanned_cmd() -> string {
     let ts = recall_latest("risk_assessor:last_check");
     if len(ts) > 0 {
-        return "$COLONY_DIR/scripts/gitlab-api.sh issues --needs-planning --since " + shell_escape(ts);
+        return "$COLONY_DIR/scripts/gitlab-api.sh issues --needs-planning --since " + shell_escape(ts) + " --view planning";
     };
-    return "$COLONY_DIR/scripts/gitlab-api.sh issues --needs-planning";
+    return "$COLONY_DIR/scripts/gitlab-api.sh issues --needs-planning --view planning";
 }
 
 fn get_confidence() -> float {
@@ -41,7 +41,7 @@ fn get_confidence() -> float {
 fn tick(reason: string) -> void {
     // 1. Observe: pull recent opened issues and skim for incident-style patterns
     let recent_raw = try {
-        exec sh "$COLONY_DIR/scripts/gitlab-api.sh issues";
+        exec sh "$COLONY_DIR/scripts/gitlab-api.sh issues --view planning";
     } catch e {
         print("[risk_assessor] GitLab issues poll failed:", e);
         "";

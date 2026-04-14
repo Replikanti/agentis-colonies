@@ -8,15 +8,22 @@
 #   GITLAB_PROJECT - URL-encoded project path (e.g. your-org%2Fyour-project)
 #
 # Usage:
-#   gitlab-api.sh merge-requests [--state merged] [--since ISO8601]
+#   gitlab-api.sh merge-requests [--state merged] [--since ISO8601] [--view <name>]
 #   gitlab-api.sh mr-changes <iid>
 #   gitlab-api.sh mr-commits <iid>
 #   gitlab-api.sh issue <iid>
-#   gitlab-api.sh assigned-issues [--since ISO8601]
+#   gitlab-api.sh assigned-issues [--since ISO8601] [--view <name>]
 #   gitlab-api.sh create-branch --name <name> --ref <ref>
 #   gitlab-api.sh commit-files --branch <b> --message <m> --actions <json>
 #   gitlab-api.sh create-mr --source <branch> --title <title> [--description <d>]
 #   gitlab-api.sh post-note <iid> --body <text>
+#
+# Views (opt-in projection; default is full JSON):
+#   merge-requests  --view impl       [{iid, title, merged_at, target_branch}]
+#   assigned-issues --view assigned   [{iid, title, description, labels,
+#                                       assignees:[{username}], priority}]
+#   <cmd>           --view raw        explicit pass-through (same as no flag)
+#   GITLAB_VIEW_MODE=raw              env-override that forces pass-through globally.
 #
 # Implementation colony both reads from and writes to GitLab: it creates
 # branches, commits code, and opens merge requests. All write endpoints
@@ -34,6 +41,51 @@ set -e
 # Does NOT exit. The caller controls the exit code.
 emit_error() {
     printf '%s' "$1" | python3 -c 'import sys,json; print(json.dumps({"error": sys.stdin.read()}), file=sys.stderr)'
+}
+
+# project_json <view-name>
+# Reads full GitLab JSON from stdin, writes a downselected projection to
+# stdout. See the triage colony's gitlab-api.sh for the full design note.
+project_json() {
+    local view="$1"
+    if [ "${GITLAB_VIEW_MODE:-}" = "raw" ]; then
+        cat
+        return 0
+    fi
+    # Capture stdin once: python3 below reads the projection script from a
+    # `<<'PY'` heredoc (which occupies python's stdin), so the payload has
+    # to travel via env var rather than a pipe.
+    local DATA
+    DATA="$(cat)"
+    case "$view" in
+        raw)
+            printf '%s' "$DATA"
+            ;;
+        impl)
+            DATA="$DATA" python3 <<'PY'
+import os, json
+data = json.loads(os.environ["DATA"])
+out = [{"iid": x.get("iid"), "title": x.get("title"),
+        "merged_at": x.get("merged_at"), "target_branch": x.get("target_branch")} for x in data]
+print(json.dumps(out))
+PY
+            ;;
+        assigned)
+            DATA="$DATA" python3 <<'PY'
+import os, json
+data = json.loads(os.environ["DATA"])
+out = [{"iid": x.get("iid"), "title": x.get("title"), "description": x.get("description"),
+        "labels": x.get("labels", []),
+        "assignees": [{"username": a.get("username")} for a in x.get("assignees", [])],
+        "priority": x.get("priority")} for x in data]
+print(json.dumps(out))
+PY
+            ;;
+        *)
+            emit_error "unknown view: $view"
+            exit 2
+            ;;
+    esac
 }
 
 if [ -z "$GITLAB_URL" ] || [ -z "$GITLAB_TOKEN" ] || [ -z "$GITLAB_PROJECT" ]; then
@@ -183,10 +235,12 @@ case "$CMD" in
     merge-requests)
         STATE="opened"
         SINCE=""
+        VIEW=""
         while [ $# -gt 0 ]; do
             case "$1" in
                 --state) STATE="$2"; shift 2 ;;
                 --since) SINCE="$2"; shift 2 ;;
+                --view) VIEW="$2"; shift 2 ;;
                 *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
@@ -199,7 +253,16 @@ case "$CMD" in
         if [ -n "$SINCE" ]; then
             ARGS+=(--data-urlencode "updated_after=$SINCE")
         fi
-        gl_get_q "$API/merge_requests" "${ARGS[@]}"
+        if [ -n "$VIEW" ]; then
+            # Two-step so gl_call's non-zero exit (auth/429/5xx/transport)
+            # survives the projection pipe. A bare `gl_get_q ... | project_json`
+            # would let python3 (or `cat` when GITLAB_VIEW_MODE=raw) override
+            # the meaningful exit code with 0 or 1, masking the real failure.
+            body="$(gl_get_q "$API/merge_requests" "${ARGS[@]}")" || exit $?
+            printf '%s' "$body" | project_json "$VIEW"
+        else
+            gl_get_q "$API/merge_requests" "${ARGS[@]}"
+        fi
         ;;
 
     mr-changes)
@@ -219,9 +282,11 @@ case "$CMD" in
 
     assigned-issues)
         SINCE=""
+        VIEW=""
         while [ $# -gt 0 ]; do
             case "$1" in
                 --since) SINCE="$2"; shift 2 ;;
+                --view) VIEW="$2"; shift 2 ;;
                 *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
@@ -236,7 +301,14 @@ case "$CMD" in
         if [ -n "$SINCE" ]; then
             ARGS+=(--data-urlencode "updated_after=$SINCE")
         fi
-        gl_get_q "$API/issues" "${ARGS[@]}"
+        if [ -n "$VIEW" ]; then
+            # Two-step pipe so gl_call's non-zero exit survives projection (see
+            # merge-requests branch above).
+            body="$(gl_get_q "$API/issues" "${ARGS[@]}")" || exit $?
+            printf '%s' "$body" | project_json "$VIEW"
+        else
+            gl_get_q "$API/issues" "${ARGS[@]}"
+        fi
         ;;
 
     create-branch)

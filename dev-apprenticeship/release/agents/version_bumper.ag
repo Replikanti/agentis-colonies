@@ -36,7 +36,7 @@ fn get_confidence() -> float {
 fn tick(reason: string) -> void {
     // 1. Learn versioning patterns from tags
     let tags_raw = try {
-        exec sh "$COLONY_DIR/scripts/gitlab-api.sh tags --per-page 20";
+        exec sh "$COLONY_DIR/scripts/gitlab-api.sh tags --per-page 20 --view tag-summary";
     } catch e {
         print("[version_bumper] GitLab tags poll failed:", e);
         "";
@@ -93,12 +93,12 @@ fn tick(reason: string) -> void {
 
     // Get latest tags for current version context
     let latest_tags = try {
-        exec sh "$COLONY_DIR/scripts/gitlab-api.sh tags --per-page 5";
+        exec sh "$COLONY_DIR/scripts/gitlab-api.sh tags --per-page 5 --view tag-summary";
     } catch e { "[]"; };
 
     // Fetch merged MRs since last release for bump analysis
     let latest_release = try {
-        exec sh "$COLONY_DIR/scripts/gitlab-api.sh releases --per-page 1";
+        exec sh "$COLONY_DIR/scripts/gitlab-api.sh releases --per-page 1 --view release-summary";
     } catch e { "[]"; };
 
     let since_date = prompt(
@@ -106,7 +106,7 @@ fn tick(reason: string) -> void {
         latest_release
     ) -> string;
 
-    let mrs_cmd = "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(since_date);
+    let mrs_cmd = "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(since_date) + " --view release-mr";
     let mrs_raw = try { exec sh mrs_cmd; } catch e { "[]"; };
 
     let rec = recommend("version_bump", ["accuracy"]);
