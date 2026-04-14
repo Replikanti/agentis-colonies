@@ -20,6 +20,18 @@ echo "Dev Apprenticeship Federation"
 echo "============================="
 echo ""
 
+# Refuse to start if any agentis daemon is already running under this
+# federation root. A second invocation would spawn 21 more daemons
+# racing the first set for the same GitLab project (dup labels, dup
+# comments, dup MRs) and there is no safe way to untangle them after
+# the fact — stop-all hits both generations equally.
+if agentis daemon list 2>/dev/null | grep -Eq '(^|[[:space:]])running([[:space:]]|$)'; then
+    echo "[!!] A federation is already running under this directory."
+    echo "     Stop it first:  agentis daemon stop --all"
+    echo "     Inspect it:     agentis daemon list"
+    exit 1
+fi
+
 # Pre-flight: check all configs exist
 for colony in "${COLONIES[@]}"; do
     CONFIG="$FED_DIR/$colony/config/colony.toml"
@@ -29,6 +41,17 @@ for colony in "${COLONIES[@]}"; do
         exit 1
     fi
 done
+
+# After laptop sleep/reboot, heartbeat files under .agentis/daemon/
+# retain the pre-sleep mtime and the watchdog reads them as "last
+# heartbeat was N hours ago", killing every fresh child on its first
+# tick. Wipe them before any child writes a fresh one. Safe because
+# the double-start guard above proved there is no live federation to
+# disrupt.
+FED_AGENTIS_DIR="$FED_DIR/.agentis/daemon"
+if [ -d "$FED_AGENTIS_DIR" ]; then
+    rm -f "$FED_AGENTIS_DIR"/*.heartbeat 2>/dev/null || true
+fi
 
 # Start each colony
 TOTAL_AGENTS=0
