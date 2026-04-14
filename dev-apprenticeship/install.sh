@@ -233,16 +233,24 @@ if [ -d "$AGENTIS_DIR" ]; then
     #                                 tick and the federation never makes
     #                                 progress. Only honored by the daemon
     #                                 path from agentis v1.1.8 onward.
-    #   learning.enabled            — triage/router and triage/prioritizer
-    #                                 (and several code-review agents) call
+    #   learning.enabled +           triage/router and triage/prioritizer
+    #   knowledge.enabled             (and several code-review agents) call
     #                                 recommend() from the adaptive engine
-    #                                 on every tick. The engine is only
-    #                                 wired into the evaluator when this
-    #                                 key is set; otherwise recommend()
-    #                                 raises `adaptive engine not enabled`
-    #                                 (issue #110) and the tick aborts
-    #                                 before any routing/priority work
-    #                                 happens.
+    #                                 on every tick. In agentis-core
+    #                                 (evaluator/mod.rs:8093), recommend()
+    #                                 requires all three of adaptive_engine
+    #                                 (gated by learning.enabled), the
+    #                                 experience_store (gated by
+    #                                 experience.enabled — already above),
+    #                                 AND the knowledge_base (gated by
+    #                                 knowledge.enabled). Missing any one
+    #                                 aborts the tick with a different
+    #                                 "<component> not enabled" message.
+    #                                 Setting only learning.enabled would
+    #                                 flip the error from "adaptive engine
+    #                                 not enabled" (issue #110) to
+    #                                 "knowledge base not enabled" on the
+    #                                 very next tick, so we write both.
     AGENTIS_CONFIG="$AGENTIS_DIR/config"
     # Agentis init should have created this; create it explicitly so the
     # key-writing below is not silently skipped if init was interrupted.
@@ -280,6 +288,7 @@ if [ -d "$AGENTIS_DIR" ]; then
     write_key 'exec.env_passthrough'         'COLONY_DIR,GITLAB_*'
     write_key 'exec.default_timeout_ms'      '45000'
     write_key 'pii_transmit'                 'allow'
+    write_key 'knowledge.enabled'            'true'
     write_key 'learning.enabled'             'true'
 fi
 
