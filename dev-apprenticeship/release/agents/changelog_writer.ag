@@ -36,7 +36,7 @@ fn get_confidence() -> float {
 fn tick(reason: string) -> void {
     // 1. Learn changelog style from past releases
     let releases_raw = try {
-        exec sh "$COLONY_DIR/scripts/gitlab-api.sh releases --per-page 10";
+        exec sh "$COLONY_DIR/scripts/gitlab-api.sh releases --per-page 10 --view release-summary";
     } catch e {
         print("[changelog_writer] GitLab releases poll failed:", e);
         "";
@@ -89,7 +89,7 @@ fn tick(reason: string) -> void {
 
     // Get the latest release tag to find MRs merged since then
     let latest_release = try {
-        exec sh "$COLONY_DIR/scripts/gitlab-api.sh releases --per-page 1";
+        exec sh "$COLONY_DIR/scripts/gitlab-api.sh releases --per-page 1 --view release-summary";
     } catch e { "[]"; };
 
     let since_date = prompt(
@@ -98,7 +98,7 @@ fn tick(reason: string) -> void {
     ) -> string;
 
     // Fetch MRs merged since last release
-    let mrs_cmd = "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(since_date);
+    let mrs_cmd = "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(since_date) + " --view release-mr";
     let mrs_raw = try { exec sh mrs_cmd; } catch e {
         print("[changelog_writer] MR fetch failed:", e);
         "";

@@ -25,9 +25,9 @@ type RefactorSuggestion {
 fn merged_mr_cmd() -> string {
     let ts = recall_latest("refactorer:last_check");
     if len(ts) > 0 {
-        return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(ts);
+        return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(ts) + " --view impl";
     };
-    return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged";
+    return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --view impl";
 }
 
 fn get_confidence() -> float {

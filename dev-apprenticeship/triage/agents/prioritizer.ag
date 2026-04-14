@@ -25,9 +25,9 @@ type PriorityAction {
 fn issues_cmd() -> string {
     let ts = recall_latest("prioritizer:last_check");
     if len(ts) > 0 {
-        return "$COLONY_DIR/scripts/gitlab-api.sh issues --since " + shell_escape(ts);
+        return "$COLONY_DIR/scripts/gitlab-api.sh issues --since " + shell_escape(ts) + " --view prioritizer";
     };
-    return "$COLONY_DIR/scripts/gitlab-api.sh issues";
+    return "$COLONY_DIR/scripts/gitlab-api.sh issues --view prioritizer";
 }
 
 fn get_confidence() -> float {

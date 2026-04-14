@@ -34,7 +34,7 @@ fn get_confidence() -> float {
 fn tick(reason: string) -> void {
     // 1. Learn release patterns from history
     let releases_raw = try {
-        exec sh "$COLONY_DIR/scripts/gitlab-api.sh releases --per-page 20";
+        exec sh "$COLONY_DIR/scripts/gitlab-api.sh releases --per-page 20 --view release-summary";
     } catch e {
         print("[ship_decider] GitLab releases poll failed:", e);
         "";
@@ -42,7 +42,7 @@ fn tick(reason: string) -> void {
 
     if len(releases_raw) > 10 {
         let tags_raw = try {
-            exec sh "$COLONY_DIR/scripts/gitlab-api.sh tags --per-page 20";
+            exec sh "$COLONY_DIR/scripts/gitlab-api.sh tags --per-page 20 --view tag-summary";
         } catch e { "[]"; };
 
         let patterns = prompt(

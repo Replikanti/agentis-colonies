@@ -75,7 +75,7 @@ fn tick(reason: string) -> void {
     // 3. Pick the newest unplanned issue and see if we have all three
     //    slots filled for it. If not, keep waiting.
     let issues_raw = try {
-        exec sh "$COLONY_DIR/scripts/gitlab-api.sh issues --needs-planning";
+        exec sh "$COLONY_DIR/scripts/gitlab-api.sh issues --needs-planning --view planning";
     } catch e {
         print("[plan_reviewer] GitLab unplanned-issue poll failed:", e);
         "";

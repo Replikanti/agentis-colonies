@@ -25,9 +25,9 @@ type LabelAction {
 fn issues_cmd() -> string {
     let ts = recall_latest("labeler:last_check");
     if len(ts) > 0 {
-        return "$COLONY_DIR/scripts/gitlab-api.sh issues --since " + shell_escape(ts);
+        return "$COLONY_DIR/scripts/gitlab-api.sh issues --since " + shell_escape(ts) + " --view labeler";
     };
-    return "$COLONY_DIR/scripts/gitlab-api.sh issues";
+    return "$COLONY_DIR/scripts/gitlab-api.sh issues --view labeler";
 }
 
 fn get_confidence() -> float {
@@ -72,7 +72,7 @@ fn tick(reason: string) -> void {
     if analysis.unlabeled_count > 0 {
         let confidence = get_confidence();
         let rec = recommend("label", ["accuracy"]);
-        let labels_raw = try { exec sh "$COLONY_DIR/scripts/gitlab-api.sh labels"; } catch e { "[]"; };
+        let labels_raw = try { exec sh "$COLONY_DIR/scripts/gitlab-api.sh labels --view summary"; } catch e { "[]"; };
         let context = "Unlabeled issues: " + analysis.unlabeled_issues + "\nAvailable labels: " + labels_raw + "\nPast learning: " + to_string(rec);
 
         let action = prompt(

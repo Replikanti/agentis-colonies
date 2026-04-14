@@ -8,13 +8,23 @@
 #   GITLAB_PROJECT - URL-encoded project path (e.g. your-org%2Fyour-project)
 #
 # Usage:
-#   gitlab-api.sh issues [--since ISO8601] [--state opened|closed|all]
+#   gitlab-api.sh issues [--since ISO8601] [--state opened|closed|all] [--view <name>]
 #   gitlab-api.sh create-issue --title <t> --description <d> [--labels l1,l2] [--priority p]
 #   gitlab-api.sh update-issue <id> [--add-labels l1,l2] [--remove-labels l1,l2] [--priority p] [--assignee username]
-#   gitlab-api.sh members
-#   gitlab-api.sh labels
+#   gitlab-api.sh members [--view <name>]
+#   gitlab-api.sh labels  [--view <name>]
 #
-# Returns JSON to stdout. Exit code 0 on success, 1 on error, 2 on unknown flag.
+# Views (opt-in projection; default is full JSON):
+#   issues  --view labeler        [{iid, title, labels}]
+#   issues  --view router         [{iid, title, labels, assignees:[{username}]}]
+#   issues  --view prioritizer    [{iid, title, labels}]
+#   issues  --view issue_creator  [{iid, title, description, labels, author:{username}}]
+#   members --view summary        [{id, username, name}]
+#   labels  --view summary        [{name, description, color}]
+#   <cmd>   --view raw            explicit pass-through (same as no flag)
+#   GITLAB_VIEW_MODE=raw          env-override that forces pass-through globally.
+#
+# Returns JSON to stdout. Exit code 0 on success, 1 on error, 2 on unknown flag/view.
 
 set -e
 
@@ -26,6 +36,89 @@ set -e
 # Does NOT exit. The caller controls the exit code.
 emit_error() {
     printf '%s' "$1" | python3 -c 'import sys,json; print(json.dumps({"error": sys.stdin.read()}), file=sys.stderr)'
+}
+
+# project_json <view-name>
+# Reads full GitLab JSON from stdin, writes a downselected projection to
+# stdout. Views keep only the fields that the downstream .ag agent's
+# prompt() actually needs, shrinking payloads ~10x and cutting LLM cost.
+#
+# Views are defined inline in a single python case-dispatch below. Each
+# projection stays under 10 lines. Unknown views exit 2 via emit_error
+# (matching the rest of the script's "unknown flag" contract).
+#
+# Env override: GITLAB_VIEW_MODE=raw short-circuits to cat, giving
+# operators a one-var rollback if a projection drops a field an agent
+# silently depended on.
+project_json() {
+    local view="$1"
+    if [ "${GITLAB_VIEW_MODE:-}" = "raw" ]; then
+        cat
+        return 0
+    fi
+    # Capture stdin once. python3 below reads the projection script from a
+    # `<<'PY'` heredoc (which ties up python's stdin), so the payload has to
+    # travel via env var instead of a pipe. json.loads is cheap enough here
+    # that the extra round-trip through memory is invisible next to the
+    # LLM cost we're trying to avoid.
+    local DATA
+    DATA="$(cat)"
+    case "$view" in
+        raw)
+            printf '%s' "$DATA"
+            ;;
+        labeler)
+            DATA="$DATA" python3 <<'PY'
+import os, json
+data = json.loads(os.environ["DATA"])
+print(json.dumps([{"iid": x.get("iid"), "title": x.get("title"), "labels": x.get("labels", [])} for x in data]))
+PY
+            ;;
+        router)
+            DATA="$DATA" python3 <<'PY'
+import os, json
+data = json.loads(os.environ["DATA"])
+out = [{"iid": x.get("iid"), "title": x.get("title"), "labels": x.get("labels", []),
+        "assignees": [{"username": a.get("username")} for a in x.get("assignees", [])]} for x in data]
+print(json.dumps(out))
+PY
+            ;;
+        prioritizer)
+            DATA="$DATA" python3 <<'PY'
+import os, json
+data = json.loads(os.environ["DATA"])
+print(json.dumps([{"iid": x.get("iid"), "title": x.get("title"), "labels": x.get("labels", [])} for x in data]))
+PY
+            ;;
+        issue_creator)
+            DATA="$DATA" python3 <<'PY'
+import os, json
+data = json.loads(os.environ["DATA"])
+out = [{"iid": x.get("iid"), "title": x.get("title"), "description": x.get("description"),
+        "labels": x.get("labels", []),
+        "author": {"username": (x.get("author") or {}).get("username")}} for x in data]
+print(json.dumps(out))
+PY
+            ;;
+        members-summary)
+            DATA="$DATA" python3 <<'PY'
+import os, json
+data = json.loads(os.environ["DATA"])
+print(json.dumps([{"id": x.get("id"), "username": x.get("username"), "name": x.get("name")} for x in data]))
+PY
+            ;;
+        labels-summary)
+            DATA="$DATA" python3 <<'PY'
+import os, json
+data = json.loads(os.environ["DATA"])
+print(json.dumps([{"name": x.get("name"), "description": x.get("description"), "color": x.get("color")} for x in data]))
+PY
+            ;;
+        *)
+            emit_error "unknown view: $view"
+            exit 2
+            ;;
+    esac
 }
 
 if [ -z "$GITLAB_URL" ] || [ -z "$GITLAB_TOKEN" ] || [ -z "$GITLAB_PROJECT" ]; then
@@ -179,10 +272,12 @@ case "$CMD" in
     issues)
         SINCE=""
         STATE="opened"
+        VIEW=""
         while [ $# -gt 0 ]; do
             case "$1" in
                 --since) SINCE="$2"; shift 2 ;;
                 --state) STATE="$2"; shift 2 ;;
+                --view) VIEW="$2"; shift 2 ;;
                 *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
@@ -195,7 +290,11 @@ case "$CMD" in
         if [ -n "$SINCE" ]; then
             ARGS+=(--data-urlencode "updated_after=$SINCE")
         fi
-        gl_get_q "$API/issues" "${ARGS[@]}"
+        if [ -n "$VIEW" ]; then
+            gl_get_q "$API/issues" "${ARGS[@]}" | project_json "$VIEW"
+        else
+            gl_get_q "$API/issues" "${ARGS[@]}"
+        fi
         ;;
 
     create-issue)
@@ -301,11 +400,47 @@ PY
         ;;
 
     members)
-        gl_get "$API/members/all?per_page=100"
+        VIEW=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --view) VIEW="$2"; shift 2 ;;
+                *) emit_error "unknown flag: $1"; exit 2 ;;
+            esac
+        done
+        if [ -n "$VIEW" ]; then
+            # User-facing `--view summary` maps to the internal
+            # `members-summary` projection to avoid name collision with
+            # the `labels --view summary` projection, which keeps a
+            # different set of fields.
+            case "$VIEW" in
+                summary) INTERNAL_VIEW="members-summary" ;;
+                raw) INTERNAL_VIEW="raw" ;;
+                *) INTERNAL_VIEW="$VIEW" ;;
+            esac
+            gl_get "$API/members/all?per_page=100" | project_json "$INTERNAL_VIEW"
+        else
+            gl_get "$API/members/all?per_page=100"
+        fi
         ;;
 
     labels)
-        gl_get "$API/labels?per_page=100"
+        VIEW=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --view) VIEW="$2"; shift 2 ;;
+                *) emit_error "unknown flag: $1"; exit 2 ;;
+            esac
+        done
+        if [ -n "$VIEW" ]; then
+            case "$VIEW" in
+                summary) INTERNAL_VIEW="labels-summary" ;;
+                raw) INTERNAL_VIEW="raw" ;;
+                *) INTERNAL_VIEW="$VIEW" ;;
+            esac
+            gl_get "$API/labels?per_page=100" | project_json "$INTERNAL_VIEW"
+        else
+            gl_get "$API/labels?per_page=100"
+        fi
         ;;
 
     *)

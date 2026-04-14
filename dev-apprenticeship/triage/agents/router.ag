@@ -25,9 +25,9 @@ type RouteAction {
 fn issues_cmd() -> string {
     let ts = recall_latest("router:last_check");
     if len(ts) > 0 {
-        return "$COLONY_DIR/scripts/gitlab-api.sh issues --since " + shell_escape(ts);
+        return "$COLONY_DIR/scripts/gitlab-api.sh issues --since " + shell_escape(ts) + " --view router";
     };
-    return "$COLONY_DIR/scripts/gitlab-api.sh issues";
+    return "$COLONY_DIR/scripts/gitlab-api.sh issues --view router";
 }
 
 fn get_confidence() -> float {
@@ -52,7 +52,7 @@ fn tick(reason: string) -> void {
     };
 
     // Get team members
-    let members_raw = try { exec sh "$COLONY_DIR/scripts/gitlab-api.sh members"; } catch e { "[]"; };
+    let members_raw = try { exec sh "$COLONY_DIR/scripts/gitlab-api.sh members --view summary"; } catch e { "[]"; };
 
     // Analyze: find assigned and unassigned issues
     let analysis = prompt(

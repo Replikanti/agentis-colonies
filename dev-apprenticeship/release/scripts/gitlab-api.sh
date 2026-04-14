@@ -8,14 +8,22 @@
 #   GITLAB_PROJECT - URL-encoded project path (e.g. your-org%2Fyour-project)
 #
 # Usage:
-#   gitlab-api.sh releases [--per-page N]
-#   gitlab-api.sh tags [--per-page N]
-#   gitlab-api.sh pipelines --ref <branch> [--per-page N]
-#   gitlab-api.sh merge-requests --state merged [--since ISO8601]
+#   gitlab-api.sh releases [--per-page N] [--view <name>]
+#   gitlab-api.sh tags [--per-page N] [--view <name>]
+#   gitlab-api.sh pipelines --ref <branch> [--per-page N] [--view <name>]
+#   gitlab-api.sh merge-requests --state merged [--since ISO8601] [--view <name>]
 #   gitlab-api.sh mr-commits <iid>
 #   gitlab-api.sh create-tag --name <name> --ref <ref> [--message <m>]
 #   gitlab-api.sh create-release --tag <tag> --name <name> --description <d>
 #   gitlab-api.sh post-note <iid> --body <text>
+#
+# Views (opt-in projection; default is full JSON):
+#   releases       --view release-summary  [{tag_name, name, released_at, description}]
+#   tags           --view tag-summary      [{name, message, commit:{short_id, created_at}}]
+#   pipelines      --view pipeline-summary [{id, status, ref, sha, created_at, web_url}]
+#   merge-requests --view release-mr       [{iid, title, merged_at, labels, target_branch}]
+#   <cmd>          --view raw              explicit pass-through (same as no flag)
+#   GITLAB_VIEW_MODE=raw                   env-override that forces pass-through globally.
 #
 # The release colony reads release history, CI status, and merged MRs to learn
 # shipping patterns. Write endpoints create tags and releases. All write
@@ -33,6 +41,69 @@ set -e
 # Does NOT exit. The caller controls the exit code.
 emit_error() {
     printf '%s' "$1" | python3 -c 'import sys,json; print(json.dumps({"error": sys.stdin.read()}), file=sys.stderr)'
+}
+
+# project_json <view-name>
+# Reads full GitLab JSON from stdin, writes a downselected projection to
+# stdout. See the triage colony's gitlab-api.sh for the full design note.
+project_json() {
+    local view="$1"
+    if [ "${GITLAB_VIEW_MODE:-}" = "raw" ]; then
+        cat
+        return 0
+    fi
+    # Capture stdin once: python3 below reads the projection script from a
+    # `<<'PY'` heredoc (which occupies python's stdin), so the payload has
+    # to travel via env var rather than a pipe.
+    local DATA
+    DATA="$(cat)"
+    case "$view" in
+        raw)
+            printf '%s' "$DATA"
+            ;;
+        release-summary)
+            DATA="$DATA" python3 <<'PY'
+import os, json
+data = json.loads(os.environ["DATA"])
+out = [{"tag_name": x.get("tag_name"), "name": x.get("name"),
+        "released_at": x.get("released_at"), "description": x.get("description")} for x in data]
+print(json.dumps(out))
+PY
+            ;;
+        tag-summary)
+            DATA="$DATA" python3 <<'PY'
+import os, json
+data = json.loads(os.environ["DATA"])
+out = [{"name": x.get("name"), "message": x.get("message"),
+        "commit": {"short_id": (x.get("commit") or {}).get("short_id"),
+                   "created_at": (x.get("commit") or {}).get("created_at")}} for x in data]
+print(json.dumps(out))
+PY
+            ;;
+        pipeline-summary)
+            DATA="$DATA" python3 <<'PY'
+import os, json
+data = json.loads(os.environ["DATA"])
+out = [{"id": x.get("id"), "status": x.get("status"), "ref": x.get("ref"),
+        "sha": x.get("sha"), "created_at": x.get("created_at"),
+        "web_url": x.get("web_url")} for x in data]
+print(json.dumps(out))
+PY
+            ;;
+        release-mr)
+            DATA="$DATA" python3 <<'PY'
+import os, json
+data = json.loads(os.environ["DATA"])
+out = [{"iid": x.get("iid"), "title": x.get("title"), "merged_at": x.get("merged_at"),
+        "labels": x.get("labels", []), "target_branch": x.get("target_branch")} for x in data]
+print(json.dumps(out))
+PY
+            ;;
+        *)
+            emit_error "unknown view: $view"
+            exit 2
+            ;;
+    esac
 }
 
 if [ -z "$GITLAB_URL" ] || [ -z "$GITLAB_TOKEN" ] || [ -z "$GITLAB_PROJECT" ]; then
@@ -181,39 +252,59 @@ shift
 case "$CMD" in
     releases)
         PER_PAGE="20"
+        VIEW=""
         while [ $# -gt 0 ]; do
             case "$1" in
                 --per-page) PER_PAGE="$2"; shift 2 ;;
+                --view) VIEW="$2"; shift 2 ;;
                 *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
-        gl_get_q "$API/releases" \
-            --data-urlencode "per_page=$PER_PAGE" \
-            --data-urlencode "order_by=released_at" \
-            --data-urlencode "sort=desc"
+        if [ -n "$VIEW" ]; then
+            gl_get_q "$API/releases" \
+                --data-urlencode "per_page=$PER_PAGE" \
+                --data-urlencode "order_by=released_at" \
+                --data-urlencode "sort=desc" | project_json "$VIEW"
+        else
+            gl_get_q "$API/releases" \
+                --data-urlencode "per_page=$PER_PAGE" \
+                --data-urlencode "order_by=released_at" \
+                --data-urlencode "sort=desc"
+        fi
         ;;
 
     tags)
         PER_PAGE="20"
+        VIEW=""
         while [ $# -gt 0 ]; do
             case "$1" in
                 --per-page) PER_PAGE="$2"; shift 2 ;;
+                --view) VIEW="$2"; shift 2 ;;
                 *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
-        gl_get_q "$API/repository/tags" \
-            --data-urlencode "per_page=$PER_PAGE" \
-            --data-urlencode "order_by=updated" \
-            --data-urlencode "sort=desc"
+        if [ -n "$VIEW" ]; then
+            gl_get_q "$API/repository/tags" \
+                --data-urlencode "per_page=$PER_PAGE" \
+                --data-urlencode "order_by=updated" \
+                --data-urlencode "sort=desc" | project_json "$VIEW"
+        else
+            gl_get_q "$API/repository/tags" \
+                --data-urlencode "per_page=$PER_PAGE" \
+                --data-urlencode "order_by=updated" \
+                --data-urlencode "sort=desc"
+        fi
         ;;
 
     pipelines)
         REF=""
         PER_PAGE="5"
+        VIEW=""
         while [ $# -gt 0 ]; do
             case "$1" in
                 --ref) REF="$2"; shift 2 ;;
                 --per-page) PER_PAGE="$2"; shift 2 ;;
+                --view) VIEW="$2"; shift 2 ;;
                 *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
@@ -221,20 +312,30 @@ case "$CMD" in
             emit_error "--ref is required"
             exit 1
         fi
-        gl_get_q "$API/pipelines" \
-            --data-urlencode "ref=$REF" \
-            --data-urlencode "per_page=$PER_PAGE" \
-            --data-urlencode "order_by=updated_at" \
-            --data-urlencode "sort=desc"
+        if [ -n "$VIEW" ]; then
+            gl_get_q "$API/pipelines" \
+                --data-urlencode "ref=$REF" \
+                --data-urlencode "per_page=$PER_PAGE" \
+                --data-urlencode "order_by=updated_at" \
+                --data-urlencode "sort=desc" | project_json "$VIEW"
+        else
+            gl_get_q "$API/pipelines" \
+                --data-urlencode "ref=$REF" \
+                --data-urlencode "per_page=$PER_PAGE" \
+                --data-urlencode "order_by=updated_at" \
+                --data-urlencode "sort=desc"
+        fi
         ;;
 
     merge-requests)
         STATE="opened"
         SINCE=""
+        VIEW=""
         while [ $# -gt 0 ]; do
             case "$1" in
                 --state) STATE="$2"; shift 2 ;;
                 --since) SINCE="$2"; shift 2 ;;
+                --view) VIEW="$2"; shift 2 ;;
                 *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
@@ -247,7 +348,11 @@ case "$CMD" in
         if [ -n "$SINCE" ]; then
             ARGS+=(--data-urlencode "updated_after=$SINCE")
         fi
-        gl_get_q "$API/merge_requests" "${ARGS[@]}"
+        if [ -n "$VIEW" ]; then
+            gl_get_q "$API/merge_requests" "${ARGS[@]}" | project_json "$VIEW"
+        else
+            gl_get_q "$API/merge_requests" "${ARGS[@]}"
+        fi
         ;;
 
     mr-commits)
