@@ -203,20 +203,38 @@ PY
     local REMEDIATION
     REMEDIATION="$(agentis remediation history --limit 5 --json 2>/dev/null || echo '[]')"
 
-    # Confidence values. `agentis memo get` on a missing key exits 0 with
-    # empty stdout (not non-zero), so `|| echo ''` is not what catches the
-    # missing-key case — the `${conf:-0.0}` default on the next line is
-    # (#96). But the `|| echo ''` is still needed to keep the script
-    # running under `set -e` (L17) if `agentis` itself exits non-zero
-    # (binary missing, store lock contention, etc.).
-    local CONFIDENCES=""
-    for i in "${!ALL_AGENTS[@]}"; do
-        local agent="${ALL_AGENTS[$i]}"
-        local conf
-        conf="$(agentis memo get "${agent}:confidence" 2>/dev/null || echo '')"
-        CONFIDENCES="${CONFIDENCES}${conf:-0.0},"
-    done
-    CONFIDENCES="[${CONFIDENCES%,}]"
+    # #140: single source of truth is `daemon list --json` (requires core
+    # v1.2.3, enforced by install.sh MIN_VERSION). Replaces the per-agent
+    # `agentis memo get` loop — one shellout instead of N. Preserves the
+    # null vs 0.0 distinction end-to-end: null = never seeded, 0.0 = a
+    # stop-the-line event (see #96, agentis-core#524). Agents missing from
+    # the daemon list (never spawned / crashed) also map to null.
+    #
+    # Keying: ALL_AGENTS entries are `.ag` basenames. The JSON `source`
+    # field is the full path; `os.path.basename(source)` stripped of the
+    # `.ag` suffix is the role name, which matches the memo-key prefix
+    # the previous `agentis memo get "${agent}:confidence"` used.
+    local CONFIDENCES
+    CONFIDENCES="$(
+      python3 - "$DAEMONS" <<'PY' "${ALL_AGENTS[@]}"
+import json, os, sys
+daemons = json.loads(sys.argv[1] or '[]')
+agents = sys.argv[2:]
+conf_by_role = {}
+for d in daemons:
+    source = d.get('source') or ''
+    if not source:
+        continue
+    role = os.path.basename(source)
+    if role.endswith('.ag'):
+        role = role[:-3]
+    # Last writer wins if two daemons share a role name (same agent in
+    # two colonies) — acceptable; the UI only has one cell per role.
+    conf_by_role[role] = d.get('confidence')
+out = [conf_by_role.get(a) for a in agents]
+print(json.dumps(out))
+PY
+    )"
 
     # Recent suggestions
     local LOG_DIR="${FED_DIR}/../.agentis/logs"
@@ -261,9 +279,14 @@ except (json.JSONDecodeError, FileNotFoundError):
     history = []
 colony_conf = {}
 colony_count = {}
+# #140: skip null (never-seeded agents) from the colony mean so a colony
+# with one agent at 0.80 and two not-yet-seeded reads 0.80, not 0.27.
+# 0.0 still counts — a genuinely zero-confidence agent is a real event.
 for i, am in enumerate(agent_map):
     col = am["colony"]
-    v = conf_vals[i] if i < len(conf_vals) else 0.0
+    v = conf_vals[i] if i < len(conf_vals) else None
+    if v is None:
+        continue
     colony_conf[col] = colony_conf.get(col, 0) + v
     colony_count[col] = colony_count.get(col, 0) + 1
 avg_conf = {col: round(colony_conf[col] / colony_count[col], 3) for col in colony_conf if colony_count[col]}
@@ -286,17 +309,27 @@ PY
     local HISTORY
     HISTORY="$(cat "$HISTORY_FILE" 2>/dev/null || echo '[]')"
 
-    # Build JS-friendly agent data by merging map + confidence values
-    local AGENT_DATA=""
-    for i in "${!ALL_AGENTS[@]}"; do
-        local agent="${ALL_AGENTS[$i]}"
-        local conf_val
-        conf_val="$(echo "$CONFIDENCES" | python3 -c "import sys,json; print(json.loads(sys.stdin.read())[$i])" 2>/dev/null || echo "0.0")"
-        local colony
-        colony="$(echo "$AGENT_COLONY_MAP" | python3 -c "import sys,json; print(json.loads(sys.stdin.read())[$i]['colony'])" 2>/dev/null || echo "")"
-        AGENT_DATA="${AGENT_DATA}{\"agent\":\"${agent}\",\"colony\":\"${colony}\",\"confidence\":${conf_val}},"
-    done
-    AGENT_DATA="[${AGENT_DATA%,}]"
+    # #140: single python3 invocation (was N, one per agent). Emits valid
+    # JSON `null` literal for never-seeded agents — prior string-interp
+    # path turned Python `None` into the token `None` which broke JS
+    # parsing, and `${conf_val:-0.0}` would have collapsed null → 0.
+    local AGENT_DATA
+    AGENT_DATA="$(
+      python3 - "$CONFIDENCES" "$AGENT_COLONY_MAP" <<'PY' "${ALL_AGENTS[@]}"
+import json, sys
+confs = json.loads(sys.argv[1] or '[]')
+colmap = json.loads(sys.argv[2] or '[]')
+agents = sys.argv[3:]
+out = []
+for i, a in enumerate(agents):
+    out.append({
+        "agent": a,
+        "colony": colmap[i]["colony"] if i < len(colmap) else "",
+        "confidence": confs[i] if i < len(confs) else None,
+    })
+print(json.dumps(out))
+PY
+    )"
 
     local COLONY_LIST_JS=""
     for col in "${COLONIES[@]}"; do
@@ -389,6 +422,9 @@ HEADEOF
   .badge-observe { border: 1px solid var(--muted); color: var(--muted); }
   .badge-suggest { border: 1px solid var(--yellow); color: var(--yellow); text-shadow: 0 0 6px rgba(255,255,0,0.3); }
   .badge-act { border: 1px solid var(--green); color: var(--green); text-shadow: 0 0 6px rgba(0,255,0,0.3); }
+  /* #140: distinguish null (never seeded) from real 0.00 (stop-the-line). */
+  .badge-na { border: 1px solid var(--muted); color: var(--muted); }
+  .badge-zero { border: 1px solid var(--red); color: var(--red); text-shadow: 0 0 6px rgba(255,68,68,0.4); }
   .conf-bar-bg { height: 6px; background: rgba(0,255,255,0.08); border-radius: 3px; overflow: hidden; margin-top: 2px; }
   .conf-bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s; }
   .phase-row { display: flex; align-items: center; gap: 12px; margin: 8px 0; }
@@ -625,14 +661,20 @@ document.addEventListener('keydown', (e) => {
   const el = document.getElementById('stats-row');
   const running = daemons.filter(d => (d.state || d.STATE || '') === 'running').length;
   const totalExperience = experienceCounts.total || 0;
-  let avgConf = 0;
-  confidences.forEach(c => avgConf += c.confidence);
-  avgConf = confidences.length ? (avgConf / confidences.length) : 0;
-  const phase = avgConf >= 0.85 ? 'AUTONOMOUS' : avgConf >= 0.6 ? 'SUGGEST' : 'OBSERVE';
+  // #140: null (never-seeded) is not counted in the average. A genuinely
+  // zero-confidence agent still lowers the mean — that's the point.
+  // n === 0 (all null / no agents) renders as "NO DATA" muted, not
+  // OBSERVE cyan, which would imply we have real evidence.
+  let sum = 0, n = 0;
+  confidences.forEach(c => { if (c.confidence != null) { sum += c.confidence; n += 1; } });
+  const avgConf = n ? sum / n : 0;
+  const phase = n === 0 ? 'NO DATA' : avgConf >= 0.85 ? 'AUTONOMOUS' : avgConf >= 0.6 ? 'SUGGEST' : 'OBSERVE';
+  const avgColor = n === 0 ? 'var(--muted)' : avgConf >= 0.85 ? 'var(--green)' : avgConf >= 0.6 ? 'var(--yellow)' : 'var(--cyan)';
+  const avgLabel = n === 0 ? '—' : avgConf.toFixed(2);
   const quarantined = daemons.filter(d => (d.quarantine || d.QUARANTINE || '') === 'yes').length;
   el.innerHTML =
     '<div class="stat-box"><div class="stat-value">' + running + '/' + totalAgents + '</div><div class="stat-label">Agents Running</div></div>' +
-    '<div class="stat-box"><div class="stat-value" style="color:' + (avgConf >= 0.85 ? 'var(--green)' : avgConf >= 0.6 ? 'var(--yellow)' : 'var(--cyan)') + '">' + avgConf.toFixed(2) + '</div><div class="stat-label">Avg Confidence // ' + phase + '</div></div>' +
+    '<div class="stat-box"><div class="stat-value" style="color:' + avgColor + '">' + avgLabel + '</div><div class="stat-label">Avg Confidence // ' + phase + '</div></div>' +
     '<div class="stat-box"><div class="stat-value">' + totalExperience + '</div><div class="stat-label">Experience Entries</div></div>' +
     '<div class="stat-box"><div class="stat-value" style="color:' + (quarantined > 0 ? 'var(--magenta)' : 'var(--green)') + '">' + quarantined + '</div><div class="stat-label">Quarantined</div></div>';
 })();
@@ -769,10 +811,18 @@ function showRestartToast(agent, value, data) {
   Object.keys(colonies).forEach(colony => {
     html += '<tr><td colspan="4" class="colony-header">' + colony + '</td></tr>';
     colonies[colony].forEach(c => {
-      const v = parseFloat(c.confidence) || 0;
+      // #140: null (never seeded) renders as "— n/a" muted; 0.00 is a
+      // stop-the-line event and gets a red badge-zero pill. The bump
+      // buttons snap-from-nearest-step, which still works from a null
+      // base (nextStep treats it as 0 for the snap), so operators can
+      // seed an agent straight from the UI.
+      const raw = c.confidence;
+      const isNull = raw == null;
+      const v = isNull ? 0 : raw;
       const pct = Math.round(v * 100);
-      const phase = v >= 0.85 ? 'act' : v >= 0.6 ? 'suggest' : 'observe';
-      const color = v >= 0.85 ? 'var(--green)' : v >= 0.6 ? 'var(--yellow)' : 'var(--muted)';
+      const phase = isNull ? 'na' : v >= 0.85 ? 'act' : v >= 0.6 ? 'suggest' : 'observe';
+      const color = isNull ? 'var(--muted)' : v >= 0.85 ? 'var(--green)' : v >= 0.6 ? 'var(--yellow)' : 'var(--muted)';
+      const label = isNull ? '—' : v.toFixed(2);
       const down = nextStep(v, -1);
       const up = nextStep(v, 1);
       const downAttr = down === null
@@ -783,7 +833,9 @@ function showRestartToast(agent, value, data) {
         : 'onclick="setConfidence(\'' + c.agent + '\',' + up + ')" title="Bump up to ' + up.toFixed(2) + '"';
       const upClass = (up !== null && up >= 0.85) ? 'conf-btn conf-btn-act' : 'conf-btn';
       html += '<tr><td class="agent-name" style="width:160px">' + c.agent + '</td>';
-      html += '<td style="width:80px"><span class="badge badge-' + phase + '">' + v.toFixed(2) + '</span></td>';
+      html += '<td style="width:110px"><span class="badge badge-' + phase + '">' + label + '</span>';
+      if (!isNull && v === 0) html += ' <span class="badge badge-zero">0</span>';
+      html += '</td>';
       html += '<td style="width:70px;white-space:nowrap">';
       html += '<button class="conf-btn" ' + downAttr + '>&#x25bc;</button>';
       html += '<button class="' + upClass + '" ' + upAttr + '>&#x25b2;</button>';
@@ -800,7 +852,10 @@ function showRestartToast(agent, value, data) {
   const el = document.getElementById('readiness');
   const avgConf = {};
   const confCount = {};
+  // #140: skip null so a colony with one 0.80 and two unseeded reads 0.80,
+  // not 0.27. Matches the stats-row and history aggregator logic.
   confidences.forEach(c => {
+    if (c.confidence == null) return;
     avgConf[c.colony] = (avgConf[c.colony] || 0) + c.confidence;
     confCount[c.colony] = (confCount[c.colony] || 0) + 1;
   });
@@ -812,7 +867,7 @@ function showRestartToast(agent, value, data) {
     const label = target === 0.6 ? 'SUGGEST' : 'AUTONOMOUS';
     if (history.length < 120) return { text: 'collecting data...', color: 'var(--muted)' };
     const dayAgo = nowEpoch - 86400;
-    const pts = history.filter(h => h.t > dayAgo && h.confidence && h.confidence[colony] !== undefined).map(h => ({t:h.t,v:h.confidence[colony]}));
+    const pts = history.filter(h => h.t > dayAgo && h.confidence && h.confidence[colony] != null).map(h => ({t:h.t,v:h.confidence[colony]}));
     if (pts.length < 60) return { text: 'collecting data...', color: 'var(--muted)' };
     const n = pts.length; let sX=0,sY=0,sXY=0,sX2=0;
     pts.forEach(p => { sX+=p.t; sY+=p.v; sXY+=p.t*p.v; sX2+=p.t*p.t; });

@@ -19,7 +19,7 @@ ALL_AGENTS=(
     code_writer test_writer refactorer commit_composer
     ship_decider changelog_writer version_bumper release_checker
 )
-MIN_VERSION="1.2.2"
+MIN_VERSION="1.2.3"
 
 # --- Helpers ---
 
