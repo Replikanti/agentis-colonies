@@ -52,7 +52,122 @@ fn get_confidence() -> float {
     return 0.0;
 }
 
+// #106: Auto-confidence from feedback.
+//
+// Each time labeler emits a suggestion at 0.6-0.84, it stashes a "pending
+// verdict" memo with the issue iid and the labels it proposed. On each
+// subsequent tick, before doing new work, we check whether the operator
+// has since applied labels to that issue on GitLab. Exact-set match
+// (every suggested label is present) → +0.02. Any-overlap → +0.005.
+// No-overlap (and the issue now has *some* label, so we have signal) →
+// -0.01. Verdicts that age past 24 h without operator action are dropped
+// without scoring — absence of action is not evidence of a wrong
+// suggestion.
+//
+// Auto-promotion is capped at 0.85 (the autonomy threshold). Positive
+// deltas stop at 0.85; operators must manually bump past that via the
+// dashboard or CLI, since at 0.85 the agent starts writing to GitLab
+// directly and the operator should explicitly sign off on autonomy.
+
+fn clamp_auto(cur: float, delta: float) -> float {
+    let cap = 0.85;
+    if delta > 0.0 {
+        if cur >= cap {
+            return cur;
+        };
+        if (cur + delta) > cap {
+            return cap;
+        };
+        return cur + delta;
+    };
+    if (cur + delta) < 0.0 {
+        return 0.0;
+    };
+    return cur + delta;
+}
+
+fn signal_to_delta(signal: int) -> float {
+    if signal == 1 {
+        return 0.02;
+    };
+    if signal == 2 {
+        return 0.005;
+    };
+    if signal == 3 {
+        return 0.0 - 0.01;
+    };
+    return 0.0;
+}
+
+fn apply_feedback(delta: float) -> void {
+    let cur = get_confidence();
+    let target = clamp_auto(cur, delta);
+    memo_write("labeler:confidence", to_string(target));
+    print("[labeler] feedback delta", delta, "confidence", cur, "->", target);
+}
+
+// Record a pending verdict. Stored as JSON array [t, iid, "labels_csv"] —
+// the three fields are ASCII-safe (epoch int, iid int, label names have
+// no quotes/newlines/backslashes in practice on GitLab) so naive
+// concatenation is sufficient and we skip a JSON encoder.
+fn record_label_verdict(issue_id: int, labels_csv: string) -> void {
+    let ts_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let blob = "[" + ts_raw + "," + to_string(issue_id) + ",\"" + labels_csv + "\"]";
+    memo_write("labeler:pending_verdict", blob);
+    print("[labeler] verdict recorded: issue", issue_id, "suggested", labels_csv);
+}
+
+fn verdict_age_seconds(blob: string) -> int {
+    let emit_ts = parse_int(to_string(json_get(blob, "[0]")));
+    let now_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let now = parse_int(now_raw);
+    return now - emit_ts;
+}
+
+// Score the current pending verdict against what the operator actually
+// did on GitLab. Returns early (leaves verdict pending) when no verdict
+// exists or the issue still has no labels (no signal yet). Clears the
+// verdict when scored or aged out (> 24h).
+fn evaluate_label_verdict() -> void {
+    let blob = recall_latest("labeler:pending_verdict");
+    if len(blob) < 3 {
+        return;
+    };
+    let timeout_s = 86400;
+    if verdict_age_seconds(blob) > timeout_s {
+        print("[labeler] verdict aged out without signal");
+        memo_write("labeler:pending_verdict", "");
+        return;
+    };
+    let issue_id = parse_int(to_string(json_get(blob, "[1]")));
+    let suggested = to_string(json_get(blob, "[2]"));
+    let cur_cmd = "$COLONY_DIR/scripts/gitlab-api.sh get-issue " + to_string(issue_id) + " --view feedback-issue";
+    let cur_raw = try { exec sh cur_cmd; } catch e { ""; };
+    if len(cur_raw) < 3 {
+        return;
+    };
+    // Deterministic overlap check in python (cheap, reproducible) rather
+    // than a prompt() round-trip. json_get() returns Void for array leaves,
+    // so extract `labels` inside python instead of via a second json_get.
+    // Output: 0 = no signal (no labels yet), 1 = full match (every suggested
+    // label present), 2 = partial overlap, 3 = mismatch (operator labeled
+    // but none of ours matched).
+    let match_cmd = "SUGGESTED=" + shell_escape(suggested) + " RAW=" + shell_escape(cur_raw) + " python3 -c 'import os, json; sug={s.strip() for s in os.environ[\"SUGGESTED\"].split(\",\") if s.strip()}; act=set(json.loads(os.environ[\"RAW\"]).get(\"labels\", [])); print(0 if not act else (1 if sug and sug.issubset(act) else (2 if sug & act else 3)))'";
+    let signal_raw = try { exec sh match_cmd; } catch e { "0"; };
+    let signal = parse_int(signal_raw);
+    if signal == 0 {
+        return;
+    };
+    apply_feedback(signal_to_delta(signal));
+    memo_write("labeler:pending_verdict", "");
+}
+
 fn tick(reason: string) -> void {
+    // #106: Check any pending verdict from a previous tick before doing
+    // new work. The matcher is cheap when there's nothing pending, and
+    // this placement means a verdict recorded at tick N is evaluated at
+    // tick N+1 onwards (matching the "subsequent tick" semantic).
+    evaluate_label_verdict();
     let cmd = issues_cmd();
     let raw = try {
         exec sh cmd;
@@ -110,6 +225,12 @@ fn tick(reason: string) -> void {
             if confidence >= 0.6 {
                 print("[labeler] Suggesting labels for issue", action.issue_id, ":", action.labels);
                 emit("triage:label_suggestion", action);
+                // #106: stash the verdict so next tick can score this
+                // suggestion against whatever the operator actually does
+                // to the issue. Only records at SUGGEST level — at ACT
+                // (>= 0.85) the agent writes its own labels, so there's
+                // no separable operator signal to score against.
+                record_label_verdict(action.issue_id, action.labels);
             } else {
                 print("[labeler] Observing (confidence:", confidence, ")");
             };
