@@ -41,7 +41,7 @@ colony-name/
 - All dynamic values in `exec sh` calls must be wrapped in `shell_escape()`.
 - If the grep-based linter cannot see through nested `shell_escape()`, add `// colony-lint: safe-exec-concat` on the line above.
 - Emit events use `"<colony_name>:<event_name>"` format.
-- For mechanical JSON field extraction from `exec sh` output, prefer `parse_int(to_string(json_get(raw, "[0].iid")))` over `prompt(...) -> list<T>` / `-> map<K,V>`. The idiom is total on every failure mode (`Void → "void" → 0`) and saves one LLM round-trip per tick. Precedent: `release/agents/ship_decider.ag:89-91`, `release/agents/changelog_writer.ag:120-122`, every `implementation/agents/*.ag` and `code-review/agents/{logic,test,security,style}_reviewer.ag` after #138.
+- For mechanical JSON field extraction from `exec sh` output, prefer `parse_int(to_string(json_get(raw, "[0].iid")))` over `prompt(...) -> list<T>` / `-> map<K,V>`. The idiom is total on every failure mode (`Void → "void" → 0`) and saves one LLM round-trip per tick. Precedent: the `post-note` branches in `release/agents/ship_decider.ag` and `release/agents/changelog_writer.ag`, every `implementation/agents/*.ag`, `code-review/agents/{logic,test,security,style}_reviewer.ag` after #138, and `planning/agents/plan_reviewer.ag` after #147.
 
 ## Script conventions
 

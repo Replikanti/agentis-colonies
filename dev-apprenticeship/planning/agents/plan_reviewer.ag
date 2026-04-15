@@ -97,6 +97,10 @@ fn tick(reason: string) -> void {
     // reviewers).
     let target_iid = parse_int(to_string(json_get(issues_raw, "[0].iid")));
     if target_iid <= 0 {
+        let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_e) > 0 {
+            memo_write("plan_reviewer:last_check", now_e);
+        };
         return;
     };
 
