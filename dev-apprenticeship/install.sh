@@ -19,7 +19,7 @@ ALL_AGENTS=(
     code_writer test_writer refactorer commit_composer
     ship_decider changelog_writer version_bumper release_checker
 )
-MIN_VERSION="1.2.0"
+MIN_VERSION="1.2.2"
 
 # --- Helpers ---
 
@@ -99,14 +99,24 @@ fi
 # added `exec.default_timeout_ms`; before that, the federation could not
 # complete a single tick on any real GitLab project (issue #107) because
 # every prompt containing author emails was denied and every curl past
-# 10 s timed out. Older builds either fail with `capability denied:
+# 10 s timed out. v1.2.2 adds `agentis daemon prune` + `effective_state`
+# zombie-registry reconciliation (#518), without which an in-place binary
+# upgrade SIGKILLs every watchdog and leaves the federation in a state
+# where `daemon list` keeps reporting "running" for processes that no
+# longer exist. v1.2.2 also fails loud at spawn when a program uses
+# `recommend`/`adapt`/`score_options`/`recommend_federated`/
+# `score_options_federated` without `learning.enabled = true` (#519) —
+# every agent in this federation calls `recommend(...)`, so older
+# builds would silently tick-error-loop forever when the three learning
+# keys were not all set. Older builds either fail with `capability denied:
 # exec_foreign`, never receive emit/listen, get killed by the watchdog
-# every tick, or fail every single tick on PII + ExecTimeout.
+# every tick, fail every single tick on PII + ExecTimeout, leak zombie
+# daemons after every upgrade, or silently tick-error on adaptive calls.
 AGENTIS_VERSION=$(agentis --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "0.0.0")
 info "agentis version: $AGENTIS_VERSION (minimum: $MIN_VERSION)"
 
 if ! version_gte "$AGENTIS_VERSION" "$MIN_VERSION"; then
-    fail "agentis >= $MIN_VERSION required (--enable-exec/--enable-messaging flags, #492 quarantine fix, #499 watchdog heartbeat fix, #107 daemon PII grant + exec.default_timeout_ms, #123 tick-success health, #125 parse_float/parse_int/json_get). Please update."
+    fail "agentis >= $MIN_VERSION required (--enable-exec/--enable-messaging flags, #492 quarantine fix, #499 watchdog heartbeat fix, #107 daemon PII grant + exec.default_timeout_ms, #123 tick-success health, #125 parse_float/parse_int/json_get, #518 zombie daemon registry prune, #519 adaptive-engine fail-loud gate). Please update."
     exit 1
 fi
 
