@@ -78,16 +78,31 @@ fi
 # `--enable-exec` is required since agentis v1.1.6 (exec sh is opt-in; see #484/#489).
 # `--enable-messaging` is required for cross-agent emit/listen (#484, v1.1.6+).
 
+# Per-agent tick-interval override (#146). Every agent in this colony is
+# reactive: release_checker polls GitLab for fresh tags, ship_decider/
+# version_bumper/changelog_writer wait on upstream MR-merge events. These
+# signals don't arrive more than a few times per hour, so minute-grained
+# polling spends LLM budget on no-op ticks. 5-min cadence is operationally
+# indistinguishable from 1-min here. Fallback is 60000ms for any agent not
+# listed (e.g. if a new active agent is added later).
+declare -A TICK_INTERVALS=(
+    ["release_checker"]=300000
+    ["ship_decider"]=300000
+    ["changelog_writer"]=300000
+    ["version_bumper"]=300000
+)
+
 echo "Starting Release colony (${#AGENTS[@]} agents)..."
 echo "  GitLab: $GITLAB_URL ($GITLAB_PROJECT_RAW)"
 
 for agent in "${AGENTS[@]}"; do
-    echo "  Starting $agent..."
+    interval="${TICK_INTERVALS[$agent]:-60000}"
+    echo "  Starting $agent (tick=${interval}ms)..."
     agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
         --colony release \
         --enable-exec \
         --enable-messaging \
-        --tick-interval 60000 &
+        --tick-interval "$interval" &
     sleep 2  # stagger starts to reduce API contention
 done
 

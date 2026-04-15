@@ -78,16 +78,30 @@ fi
 # `--enable-exec` is required since agentis v1.1.6 (exec sh is opt-in; see #484/#489).
 # `--enable-messaging` is required for cross-agent emit/listen (#484, v1.1.6+).
 
+# Per-agent tick-interval override (#146). Mixed colony: issue_creator and
+# labeler are active (they produce work on every tick driven by incoming
+# issues) and stay on the 60s default; router and prioritizer are reactive
+# (periodic routing sweeps, re-ranking) and run at 3-min cadence since
+# minute-grained latency on priority changes is not observable. Fallback is
+# 60000ms.
+declare -A TICK_INTERVALS=(
+    ["issue_creator"]=60000
+    ["labeler"]=60000
+    ["prioritizer"]=180000
+    ["router"]=180000
+)
+
 echo "Starting Triage colony (${#AGENTS[@]} agents)..."
 echo "  GitLab: $GITLAB_URL ($GITLAB_PROJECT_RAW)"
 
 for agent in "${AGENTS[@]}"; do
-    echo "  Starting $agent..."
+    interval="${TICK_INTERVALS[$agent]:-60000}"
+    echo "  Starting $agent (tick=${interval}ms)..."
     agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
         --colony triage \
         --enable-exec \
         --enable-messaging \
-        --tick-interval 60000 &
+        --tick-interval "$interval" &
     sleep 2  # stagger starts to reduce API contention
 done
 

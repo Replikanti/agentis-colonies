@@ -78,16 +78,30 @@ fi
 # `--enable-exec` is required since agentis v1.1.6 (exec sh is opt-in; see #484/#489).
 # `--enable-messaging` is required for cross-agent emit/listen (#484, v1.1.6+).
 
+# Per-agent tick-interval override (#146). All planning agents are active:
+# scope_estimator, risk_assessor, task_decomposer and plan_reviewer each
+# produce work whenever an issue reaches triage:route_suggestion, so 60s
+# cadence preserves throughput. The map is kept for consistency with the
+# reactive colonies and to make future overrides obvious. Fallback is
+# 60000ms.
+declare -A TICK_INTERVALS=(
+    ["scope_estimator"]=60000
+    ["risk_assessor"]=60000
+    ["task_decomposer"]=60000
+    ["plan_reviewer"]=60000
+)
+
 echo "Starting Planning colony (${#AGENTS[@]} agents)..."
 echo "  GitLab: $GITLAB_URL ($GITLAB_PROJECT_RAW)"
 
 for agent in "${AGENTS[@]}"; do
-    echo "  Starting $agent..."
+    interval="${TICK_INTERVALS[$agent]:-60000}"
+    echo "  Starting $agent (tick=${interval}ms)..."
     agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
         --colony planning \
         --enable-exec \
         --enable-messaging \
-        --tick-interval 60000 &
+        --tick-interval "$interval" &
     sleep 2  # stagger starts to reduce API contention
 done
 

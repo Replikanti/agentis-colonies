@@ -45,7 +45,7 @@ colony-name/
 
 ## Script conventions
 
-- `start-colony.sh`: symlink-safe `$0` resolution via python3, sources `tools/parse-toml.sh`, exports `GITLAB_URL`/`GITLAB_TOKEN`/`GITLAB_PROJECT`, launches daemons with `--colony <name> --tick-interval 60000`.
+- `start-colony.sh`: symlink-safe `$0` resolution via python3, sources `tools/parse-toml.sh`, exports `GITLAB_URL`/`GITLAB_TOKEN`/`GITLAB_PROJECT`, launches daemons with `--colony <name> --tick-interval "$interval"` where `interval` is looked up per-agent in a local `TICK_INTERVALS` map (fallback 60000ms). Reactive colonies (release, code-review) run at 300000ms, triage's router/prioritizer at 180000ms, everything else at 60000ms. See #146 for rationale.
 - `gitlab-api.sh`: `emit_error()` for all error messages, `exit 2` for unknown flags, `python3 json.dumps` for all POST/PUT body construction. Read endpoints use `gl_get`/`gl_get_q`, write endpoints use `gl_post`/`gl_put`.
 
 ## Federation event wiring

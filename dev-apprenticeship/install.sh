@@ -278,14 +278,16 @@ if [ -d "$AGENTIS_DIR" ]; then
     # transcript). Each key is only written if missing so re-running
     # install.sh is idempotent and never clobbers operator-tuned values.
     #
-    #   daemon.tick_interval_ms     — matches --tick-interval 60000 in
-    #                                 start-colony.sh. start-colony.sh
-    #                                 already overrides via CLI; this
-    #                                 config entry is defense-in-depth
+    #   daemon.tick_interval_ms     — 60000ms safe default. start-colony.sh
+    #                                 now sets per-agent intervals via CLI
+    #                                 (#146: reactive agents at 180000-
+    #                                 300000ms, active agents keep 60000),
+    #                                 so the CLI flag always wins at startup.
+    #                                 This config entry is defense-in-depth
     #                                 for operators who launch a daemon
-    #                                 directly (e.g. debug sessions),
-    #                                 where without the config key the
-    #                                 watchdog uses the 1 s default.
+    #                                 directly (e.g. debug sessions), where
+    #                                 without the config key the watchdog
+    #                                 uses the 1 s default.
     #   daemon.heartbeat_interval_ms — 3× tick is long enough for a
     #                                  Claude CLI cold start (typ. 5-30 s).
     #                                  Default 2× tick is fine for mock,
