@@ -693,13 +693,23 @@ function setConfidence(agent, value) {
     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
     body: body,
   })
-    .then(r => r.text().then(t => ({ok: r.ok, text: t})))
-    .then(({ok, text}) => {
-      if (!ok) {
-        alert('Set failed: ' + text);
+    .then(r => {
+      // 200 returns application/json; 4xx/5xx return text/plain. Parse per branch.
+      if (r.ok) return r.json().then(data => ({ok: true, data}));
+      return r.text().then(text => ({ok: false, text}));
+    })
+    .then(result => {
+      if (!result.ok) {
+        alert('Set failed: ' + result.text);
         return;
       }
-      showRestartToast(agent, value);
+      // The page has <meta http-equiv="refresh" content="60"> in <head>. Without
+      // removing it, a pending browser-level refresh can fire inside the 12 s
+      // toast window and destroy the toast before the operator finishes reading
+      // — same reason the kill-switch handler removes it on success.
+      const m = document.querySelector('meta[http-equiv="refresh"]');
+      if (m) m.remove();
+      showRestartToast(agent, value, result.data);
       // Defer the static-HTML regen + reload so the toast stays readable.
       // Without the delay location.reload() destroys the toast before the
       // operator can see the restart command.
@@ -710,12 +720,16 @@ function setConfidence(agent, value) {
     .catch(e => alert('Set failed: ' + e));
 }
 
-function showRestartToast(agent, value) {
+function showRestartToast(agent, value, data) {
   const el = document.createElement('div');
   el.className = 'toast';
   el.setAttribute('role', 'status');
   el.setAttribute('aria-live', 'polite');
-  const v = (typeof value === 'number') ? value.toFixed(2) : String(value);
+  // Prefer the server's authoritative value (it's what actually landed on
+  // disk via `agentis memo set`) and fall back to the click-site value.
+  const serverValue = data && typeof data.value === 'string' ? parseFloat(data.value) : NaN;
+  const shown = Number.isFinite(serverValue) ? serverValue : value;
+  const v = (typeof shown === 'number') ? shown.toFixed(2) : String(shown);
   const head = document.createElement('div');
   head.className = 'toast-head';
   head.textContent = 'Memo written — daemon restart required';
@@ -731,7 +745,12 @@ function showRestartToast(agent, value) {
   pre.textContent = 'agentis daemon stop --all && ./start-federation.sh';
   const foot = document.createElement('div');
   foot.className = 'toast-foot';
-  foot.textContent = 'Audit: appended to .dashboard/confidence-log.jsonl — click to dismiss';
+  // audit_logged comes from the backend; missing/undefined means legacy
+  // response — fall back to the optimistic wording rather than a false claim.
+  const auditOk = !data || data.audit_logged !== false;
+  foot.textContent = auditOk
+    ? 'Audit: appended to .dashboard/confidence-log.jsonl — click to dismiss'
+    : 'Audit write failed — restart still required. Click to dismiss.';
   el.appendChild(head);
   el.appendChild(line1);
   el.appendChild(line2);
