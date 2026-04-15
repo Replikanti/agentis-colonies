@@ -173,15 +173,19 @@ test_view() {
 }
 
 # --- Triage ---
-test_view "triage" "labeler"        "iid,title,labels"                                  "$FIXTURE_ISSUES"
+# #104: labeler/prioritizer/reviewer now include `author` so the agents
+# can tag knowledge as personal vs team. The expected key sets here track
+# that addition; if you remove the personal/team plumbing, drop `author`
+# back out of these three rows.
+test_view "triage" "labeler"        "iid,title,labels,author"                           "$FIXTURE_ISSUES"
 test_view "triage" "router"         "iid,title,labels,assignees"                        "$FIXTURE_ISSUES"
-test_view "triage" "prioritizer"    "iid,title,labels"                                  "$FIXTURE_ISSUES"
+test_view "triage" "prioritizer"    "iid,title,labels,author"                           "$FIXTURE_ISSUES"
 test_view "triage" "issue_creator"  "iid,title,description,labels,author"               "$FIXTURE_ISSUES"
 test_view "triage" "members-summary" "id,username,name"                                  "$FIXTURE_MEMBERS"
 test_view "triage" "labels-summary"  "name,description,color"                            "$FIXTURE_LABELS"
 
 # --- Code-review ---
-test_view "code-review" "reviewer" "iid,state,title,labels,source_branch,target_branch,draft" "$FIXTURE_MRS"
+test_view "code-review" "reviewer" "iid,state,title,labels,source_branch,target_branch,draft,author" "$FIXTURE_MRS"
 
 # --- Planning ---
 test_view "planning" "planning"    "iid,title,description,labels,author,created_at"                    "$FIXTURE_ISSUES"
