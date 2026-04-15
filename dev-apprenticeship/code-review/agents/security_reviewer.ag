@@ -51,16 +51,11 @@ fn tick(reason: string) -> void {
         return;
     };
 
-    let mr_ids = prompt(
-        "Extract all merge request IIDs from this GitLab JSON array. Only opened MRs. Return ONLY a raw JSON array of integers — no markdown code fences, no ```json wrapper, no prose. Just the array.",
-        raw
-    ) -> list<int>;
+    let mr_iid = parse_int(to_string(json_get(raw, "[0].iid")));
 
-    if len(mr_ids) < 1 {
+    if mr_iid <= 0 {
         return;
     };
-
-    let mr_iid = get(mr_ids, 0);
     let changes_cmd = "$COLONY_DIR/scripts/gitlab-api.sh mr-changes " + to_string(mr_iid);
     let changes_raw = try { exec sh changes_cmd; } catch e { ""; };
 
