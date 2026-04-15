@@ -19,7 +19,21 @@ type PriorityAction {
     issue_id: int,
     priority: string,
     reasoning: string,
+    author: string,
     confidence: float
+}
+
+// #104: Returns "personal" if the given author matches the operator's
+// GitLab username (memo `gitlab:me`, seeded by install.sh); "team"
+// otherwise. Empty memo = pre-#104 behavior (everyone is team).
+fn scope_for_author(author: string) -> string {
+    let me = recall_latest("gitlab:me");
+    if len(me) > 0 {
+        if author == me {
+            return "personal";
+        };
+    };
+    return "team";
 }
 
 fn issues_cmd() -> string {
@@ -75,7 +89,7 @@ fn tick(reason: string) -> void {
         let context = "Unprioritized issues: " + analysis.unprioritized_issues + "\nPast learning: " + to_string(rec);
 
         let action = prompt(
-            "You are a prioritization agent. Suggest priority for the most important unprioritized issue. Return JSON: issue_id (int), priority (string, e.g. priority::high), reasoning (string), confidence (float 0-1).",
+            "You are a prioritization agent. Suggest priority for the most important unprioritized issue. Return JSON: issue_id (int), priority (string, e.g. priority::high), reasoning (string), author (string, the GitLab username from the issue's author.username field in the context — empty string if absent), confidence (float 0-1).",
             context
         ) -> PriorityAction;
 
@@ -87,7 +101,9 @@ fn tick(reason: string) -> void {
             };
             if len(result) > 0 {
                 print("[prioritizer] Set priority on issue", action.issue_id, ":", action.priority);
-                learn("prioritize", "issue " + to_string(action.issue_id), action.priority, "success", ["acted", "triage"]);
+                // #104: tag knowledge as personal vs team.
+                let scope = scope_for_author(action.author);
+                learn("prioritize", "issue " + to_string(action.issue_id), action.priority, "success", [scope, "triage", "acted"]);
             };
         } else {
             if confidence >= 0.6 {

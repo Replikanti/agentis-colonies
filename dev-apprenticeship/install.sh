@@ -192,20 +192,36 @@ if [ "$WRITE_CREDS" -eq 1 ]; then
         "Must start with 'glpat-' followed by the token body." \
         --secret
 
+    # #104: operator GitLab username for personal/team knowledge
+    # tagging. Optional — if left blank, agents tag everything as
+    # "team" (pre-#104 behavior). The regex matches GitLab's username
+    # rules (alphanumeric, dots, dashes, underscores, minimum 2 chars).
+    ask "Your GitLab username for personal/team knowledge tagging (optional, press Enter to skip):"
+    read -r GITLAB_ME
+    if [ -n "$GITLAB_ME" ] && ! [[ "$GITLAB_ME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]+$ ]]; then
+        fail "Invalid GitLab username. Must be alphanumeric with . _ - (no leading special char)."
+        GITLAB_ME=""
+    fi
+
     echo ""
     echo "Writing credentials to colony configs..."
 
     for colony in "${COLONIES[@]}"; do
         CONFIG="$SCRIPT_DIR/$colony/config/colony.toml"
         # Write credentials by matching TOML keys (works on both fresh and existing configs)
-        python3 - "$CONFIG" "$GITLAB_URL" "$GITLAB_TOKEN" "$GITLAB_PROJECT" <<'PY'
+        python3 - "$CONFIG" "$GITLAB_URL" "$GITLAB_TOKEN" "$GITLAB_PROJECT" "$GITLAB_ME" <<'PY'
 import sys, re
-path, url, token, project = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+path, url, token, project, me = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 with open(path) as f:
     content = f.read()
 content = re.sub(r'(url\s*=\s*)"[^"]*"', lambda m: m.group(1) + '"' + url + '"', content)
 content = re.sub(r'(token\s*=\s*)"[^"]*"', lambda m: m.group(1) + '"' + token + '"', content)
 content = re.sub(r'(project\s*=\s*)"[^"]*"', lambda m: m.group(1) + '"' + project + '"', content)
+# #104: `me` key. Only update if the template declared one; do not
+# inject into existing configs that predate #104 (operator can add
+# it manually if they want personal/team tagging). Anchor with ^ +
+# line flag so `name = ` / `some = ` don't match.
+content = re.sub(r'(?m)^(me\s*=\s*)"[^"]*"', lambda m: m.group(1) + '"' + me + '"', content)
 with open(path, 'w') as f:
     f.write(content)
 PY
@@ -424,6 +440,19 @@ if [ "$CONFIDENCE" != "skip" ]; then
     else
         ok "All agents seeded at $CONFIDENCE"
     fi
+fi
+
+# --- 5b. Seed operator identity for personal/team tagging (#104) ---
+#
+# Agents read `gitlab:me` via recall_latest() to classify learned
+# activity as `personal` (operator's own) vs `team`. Seeding here
+# (rather than requiring a memo set step post-install) keeps all
+# identity wiring in one place.
+if [ -n "${GITLAB_ME:-}" ]; then
+    echo ""
+    (cd "$FED_ROOT" && agentis memo set gitlab:me "$GITLAB_ME" 2>/dev/null) \
+        && ok "Seeded gitlab:me = $GITLAB_ME" \
+        || fail "Failed to seed gitlab:me (agents will tag everything as 'team')"
 fi
 
 # --- 6. LLM backend ---

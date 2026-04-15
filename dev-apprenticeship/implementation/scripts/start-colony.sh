@@ -39,9 +39,15 @@ fi
 # URL-encode the project path (replace / with %2F)
 GITLAB_PROJECT="${GITLAB_PROJECT_RAW//\//%2F}"
 
+# #104: operator identity. Empty if not configured (pre-#104 setups or
+# operators who skipped the install.sh prompt); agents fall back to
+# memo gitlab:me and tag everything as team when both are empty.
+GITLAB_ME=$(parse_toml gitlab me)
+
 export GITLAB_URL
 export GITLAB_TOKEN
 export GITLAB_PROJECT
+export GITLAB_ME
 export COLONY_DIR
 
 AGENTS=(
