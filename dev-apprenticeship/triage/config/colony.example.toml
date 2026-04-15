@@ -17,6 +17,20 @@ me = ""  # your GitLab username, e.g. "martin.holy" (optional, enables personal/
 # Only "backend" is read today. "cli" uses the agentis daemon default CLI adapter.
 backend = "cli"
 
+# Auto-confidence knobs (#106). These are informational in the current
+# Phase 1 shipment: the agents hard-code the defaults (match +0.02,
+# partial +0.005, mismatch -0.01, timeout 86400s, autonomy_cap 0.85) and
+# read them directly rather than through the TOML layer. The section is
+# declared here so operators know where the future runtime-configurable
+# knobs will live and so editing this file now won't be disruptive later.
+[feedback]
+enabled = true
+match_rate = 0.02
+partial_rate = 0.005
+mismatch_rate = 0.01
+timeout_s = 86400
+autonomy_cap = 0.85
+
 # Agent definitions
 # Each agent runs as a separate agentis daemon process.
 # They discover each other via colony UDP and communicate over TCP emit/listen.

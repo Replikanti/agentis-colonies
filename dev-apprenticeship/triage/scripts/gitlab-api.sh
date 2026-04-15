@@ -119,6 +119,18 @@ data = json.loads(os.environ["DATA"])
 print(json.dumps([{"name": x.get("name"), "description": x.get("description"), "color": x.get("color")} for x in data]))
 PY
             ;;
+        feedback-issue)
+            # #106: minimal per-issue projection used by the labeler's
+            # verdict matcher to compare suggested labels against what the
+            # operator actually applied. Keeping the view tiny keeps the
+            # round-trip body size (and therefore the agent's input token
+            # budget if it ever feeds this back into a prompt) small.
+            DATA="$DATA" python3 <<'PY'
+import os, json
+x = json.loads(os.environ["DATA"])
+print(json.dumps({"iid": x.get("iid"), "state": x.get("state"), "labels": x.get("labels", [])}))
+PY
+            ;;
         *)
             emit_error "unknown view: $view"
             exit 2
@@ -438,6 +450,34 @@ PY
             printf '%s' "$body" | project_json "$INTERNAL_VIEW"
         else
             gl_get "$API/members/all?per_page=100"
+        fi
+        ;;
+
+    get-issue)
+        # #106: single-issue fetch for the feedback matcher. Arg is the
+        # issue iid (the project-local number, not GitLab's global id).
+        # Supports --view feedback-issue to downselect to {iid, state, labels}.
+        if [ $# -lt 1 ]; then
+            emit_error "Usage: gitlab-api.sh get-issue <iid> [--view <name>]"
+            exit 2
+        fi
+        IID="$1"
+        shift
+        VIEW=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --view) VIEW="$2"; shift 2 ;;
+                *) emit_error "unknown flag: $1"; exit 2 ;;
+            esac
+        done
+        case "$IID" in
+            ''|*[!0-9]*) emit_error "iid must be numeric: $IID"; exit 2 ;;
+        esac
+        if [ -n "$VIEW" ]; then
+            body="$(gl_get "$API/issues/$IID")" || exit $?
+            printf '%s' "$body" | project_json "$VIEW"
+        else
+            gl_get "$API/issues/$IID"
         fi
         ;;
 

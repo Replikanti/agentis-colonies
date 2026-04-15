@@ -208,7 +208,26 @@ Out-of-scope (not implemented): integration with a system secret store (Secret S
 
 **Week 1-2**: Knowledge entries accumulate from your GitLab activity. Run `agentis knowledge list` to inspect.
 
-**After promotion**: Suggestions appear in logs (0.6) or directly on GitLab (0.85). Knowledge keeps growing with every tick. Promotion is not automatic — no agent ever updates its own `<agent>:confidence` memo, so the observe → suggest → act transition happens exactly when you run `agentis memo set <agent>:confidence …`. The runtime does slowly decay the per-entry confidence score that `learn()` attaches to each unvalidated knowledge row (`knowledge.confidence_decay_rate`, default 0.01/hr, floor `knowledge.confidence_decay_min` 0.05; validated entries are left alone), which is a separate dial from the per-agent promotion level you control — it affects how much weight an old entry carries inside an agent, not which behavior gradient the agent is running at.
+**After promotion**: Suggestions appear in logs (0.6) or directly on GitLab (0.85). Knowledge keeps growing with every tick. The runtime slowly decays the per-entry confidence score that `learn()` attaches to each unvalidated knowledge row (`knowledge.confidence_decay_rate`, default 0.01/hr, floor `knowledge.confidence_decay_min` 0.05; validated entries are left alone), which is a separate dial from the per-agent promotion level — it affects how much weight an old entry carries inside an agent, not which behavior gradient the agent is running at.
+
+## Auto-confidence from feedback (#106)
+
+Suggestions don't just sit in logs — participating agents score themselves against what you actually did. The loop is:
+
+1. Agent emits a suggestion at confidence 0.6–0.84 (SUGGEST mode) and stashes a "pending verdict" — issue/MR id plus the payload it proposed.
+2. On a later tick, agent fetches the current GitLab state of the artifact and compares.
+3. Exact match → confidence `+0.02`. Partial match → `+0.005`. Mismatch → `-0.01`. Still no operator action → leave pending, re-check next tick.
+4. Verdicts that age past 24 h without operator action are dropped without scoring — absence is not evidence of wrong suggestion.
+
+**Autonomy cap**. Auto-promotion stops at **0.85**. Positive deltas above the cap are clipped; the agent has to earn *suggestion trust* automatically, but you still have to manually bump it from 0.85 (via the dashboard ▲ button or `agentis memo set <agent>:confidence 0.85`) before it starts writing to GitLab. This is deliberate — the auto-loop earns suggestion trust from matching your style; autonomy is your call. Negative deltas are not capped, so a confident agent that goes off the rails can still be pulled back down.
+
+**Phase 1 scope** (what ships today). The feedback loop is wired into the `labeler` agent as the reference implementation. Suggested labels are compared against the labels you actually apply to the issue (set overlap). The remaining four reference agents — `style_reviewer`, `plan_reviewer`, `code_writer`, `version_bumper` — will follow in separate PRs using the same pattern. Each needs its own matcher (did the MR get merged? was the plan followed? was the version tagged?) but the infrastructure (`clamp_auto`, `signal_to_delta`, `apply_feedback`, `record_*_verdict`, `evaluate_*_verdict`, `get-issue` gitlab-api subcommand) is in place.
+
+**Config knobs** live in each colony's `config/colony.toml` under `[feedback]`. The current shipment reads the defaults directly from the agent source (`match_rate = 0.02`, `partial_rate = 0.005`, `mismatch_rate = 0.01`, `timeout_s = 86400`, `autonomy_cap = 0.85`). The TOML section is declared so you can see where runtime-configurable knobs will land without a future config rewrite being disruptive.
+
+**Observability**. Every delta prints one line to the agent's log: `[labeler] feedback delta 0.02 confidence 0.62 -> 0.64`. Grep that prefix to audit every confidence change the agent made to itself. The dashboard's per-agent confidence bar reflects the current memo value regardless of how it moved.
+
+**Why not promote straight through to 0.85**. The cap makes the honest claim match the observed behavior: *agents learn to suggest well*. Promoting them past that line ought to be an explicit operator decision, not a drift that happened while you weren't looking.
 
 ## Colonies
 
