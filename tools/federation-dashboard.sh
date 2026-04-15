@@ -461,6 +461,32 @@ HEADEOF
     0%, 100% { box-shadow: 0 0 10px rgba(255,0,255,0.3); }
     50% { box-shadow: 0 0 25px rgba(255,0,255,0.6); }
   }
+  .toast {
+    position: fixed; right: 16px; bottom: 16px; z-index: 9999;
+    max-width: 420px; padding: 12px 14px 12px 16px;
+    background: var(--surface); border: 1px solid var(--yellow);
+    border-radius: 4px; color: var(--text);
+    font-family: 'Share Tech Mono', 'Courier New', monospace;
+    font-size: 12px; line-height: 1.6;
+    box-shadow: 0 0 20px rgba(255,255,0,0.35);
+    cursor: pointer;
+    animation: toast-in 0.25s ease-out;
+  }
+  .toast .toast-head {
+    color: var(--yellow); font-size: 11px; letter-spacing: 2px;
+    text-transform: uppercase; margin-bottom: 6px;
+    text-shadow: 0 0 6px rgba(255,255,0,0.4);
+  }
+  .toast pre {
+    margin: 6px 0; padding: 6px 8px; background: rgba(0,255,255,0.05);
+    border-left: 2px solid var(--cyan); color: var(--cyan);
+    font-size: 11px; white-space: pre-wrap; word-break: break-all;
+  }
+  .toast .toast-foot { color: var(--muted); font-size: 10px; margin-top: 6px; }
+  @keyframes toast-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
   ::-webkit-scrollbar { width: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
@@ -667,17 +693,72 @@ function setConfidence(agent, value) {
     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
     body: body,
   })
-    .then(r => r.text().then(t => ({ok: r.ok, text: t})))
-    .then(({ok, text}) => {
-      if (!ok) {
-        alert('Set failed: ' + text);
+    .then(r => {
+      // 200 returns application/json; 4xx/5xx return text/plain. Parse per branch.
+      if (r.ok) return r.json().then(data => ({ok: true, data}));
+      return r.text().then(text => ({ok: false, text}));
+    })
+    .then(result => {
+      if (!result.ok) {
+        alert('Set failed: ' + result.text);
         return;
       }
-      // Regenerate the static HTML so the reloaded page reflects the new
-      // memo value immediately instead of waiting for the 60 s background loop.
-      fetch('/refresh', { method: 'POST' }).catch(() => {}).finally(() => location.reload());
+      // The page has <meta http-equiv="refresh" content="60"> in <head>. Without
+      // removing it, a pending browser-level refresh can fire inside the 12 s
+      // toast window and destroy the toast before the operator finishes reading
+      // — same reason the kill-switch handler removes it on success.
+      const m = document.querySelector('meta[http-equiv="refresh"]');
+      if (m) m.remove();
+      showRestartToast(agent, value, result.data);
+      // Defer the static-HTML regen + reload so the toast stays readable.
+      // Without the delay location.reload() destroys the toast before the
+      // operator can see the restart command.
+      setTimeout(() => {
+        fetch('/refresh', { method: 'POST' }).catch(() => {}).finally(() => location.reload());
+      }, 12000);
     })
     .catch(e => alert('Set failed: ' + e));
+}
+
+function showRestartToast(agent, value, data) {
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.setAttribute('role', 'status');
+  el.setAttribute('aria-live', 'polite');
+  // Prefer the server's authoritative value (it's what actually landed on
+  // disk via `agentis memo set`) and fall back to the click-site value.
+  const serverValue = data && typeof data.value === 'string' ? parseFloat(data.value) : NaN;
+  const shown = Number.isFinite(serverValue) ? serverValue : value;
+  const v = (typeof shown === 'number') ? shown.toFixed(2) : String(shown);
+  const head = document.createElement('div');
+  head.className = 'toast-head';
+  head.textContent = 'Memo written — daemon restart required';
+  const line1 = document.createElement('div');
+  line1.textContent = agent + ':confidence set to ';
+  const b = document.createElement('b');
+  b.textContent = v;
+  line1.appendChild(b);
+  line1.appendChild(document.createTextNode(' on disk.'));
+  const line2 = document.createElement('div');
+  line2.textContent = 'The running daemon will keep using its in-flight value until its next tick (up to ~60 s) and spawn-time decisions will not reload. For immediate, guaranteed effect run:';
+  const pre = document.createElement('pre');
+  pre.textContent = 'agentis daemon stop --all && ./start-federation.sh';
+  const foot = document.createElement('div');
+  foot.className = 'toast-foot';
+  // audit_logged comes from the backend; missing/undefined means legacy
+  // response — fall back to the optimistic wording rather than a false claim.
+  const auditOk = !data || data.audit_logged !== false;
+  foot.textContent = auditOk
+    ? 'Audit: appended to .dashboard/confidence-log.jsonl — click to dismiss'
+    : 'Audit write failed — restart still required. Click to dismiss.';
+  el.appendChild(head);
+  el.appendChild(line1);
+  el.appendChild(line2);
+  el.appendChild(pre);
+  el.appendChild(foot);
+  el.addEventListener('click', () => el.remove());
+  document.body.appendChild(el);
+  setTimeout(() => { if (el.parentNode) el.remove(); }, 12000);
 }
 
 (function() {
@@ -1016,6 +1097,7 @@ class Handler(SimpleHTTPRequestHandler):
             # Audit log: append a JSONL row per change. .dashboard/ is
             # already operator-visible (index.html, history.json live here)
             # so this keeps all per-federation dashboard state colocated.
+            audit_ok = False
             try:
                 with open(confidence_log, 'a') as f:
                     f.write(json.dumps({
@@ -1024,13 +1106,20 @@ class Handler(SimpleHTTPRequestHandler):
                         'value': value,
                         'remote': self.client_address[0],
                     }) + '\n')
+                audit_ok = True
             except OSError:
                 # Audit write failure must not mask the successful memo set.
                 pass
             self.send_response(200)
-            self.send_header('Content-Type', 'text/plain')
+            self.send_header('Content-Type', 'application/json')
             self.end_headers()
-            self.wfile.write(f'{agent}:confidence set to {value:.3f}'.encode())
+            self.wfile.write(json.dumps({
+                'agent': agent,
+                'value': f'{value:.3f}',
+                'memo_written': True,
+                'audit_logged': audit_ok,
+                'restart_required': True,
+            }).encode())
             return
         if self.path == '/kill':
             # Run from fed_dir, not .dashboard. The actual fix for #91 is
