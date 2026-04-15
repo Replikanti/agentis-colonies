@@ -38,6 +38,15 @@ graph LR
 
 When a release candidate is ready, the Release Checker runs pre-release validation (CI status, dependency audit, migration safety). The Ship Decider weighs the results against learned thresholds and makes a ship/no-ship call. If shipping, the Changelog Writer compiles the release notes and the Version Bumper determines the correct version number, both following conventions learned from past releases.
 
+## Early-exit on quiet ticks (#147)
+
+All four release agents follow the federation's **delta-check + early-exit** convention so ticks on a quiet repo cost ~0 LLM calls/h:
+
+- **`ship_decider`** / **`release_checker`**: a cheap `gitlab-api.sh merge-requests --state merged --since <last_check> --per-page 1` query answers "has anything release-worthy landed?" in one HTTP call. Combined with a `listen()` on the relevant event (`release:check_result` for ship_decider, `implementation:mr_ready` for release_checker), if both signals are empty the tick refreshes `last_check` and `return`s **before** any `prompt()` — including the release-pattern learning prompt that used to run every tick.
+- **`version_bumper`** / **`changelog_writer`**: pure event-driven. Each listens for `release:ship_decision`; empty inbox → refresh `last_check` and `return` before the tag/release-style learning prompt. The learn-from-history prompts only run on ticks where a ship decision actually arrived.
+
+The learn-on-demand shape is intentional: past releases don't change between ticks, so re-analyzing them every minute wastes Claude calls. Gating pattern learning behind the delta-check keeps the cost proportional to real activity.
+
 ## Setup
 
 1. Copy and edit the config:

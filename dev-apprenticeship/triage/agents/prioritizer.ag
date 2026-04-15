@@ -53,6 +53,10 @@ fn get_confidence() -> float {
 }
 
 fn tick(reason: string) -> void {
+    // #147: cheap delta-check. `issues_cmd()` filters --since last_check
+    // server-side; an empty `[]` response means "no new issues" and we
+    // early-exit before any prompt(). last_check is refreshed so the
+    // window advances on quiet projects.
     let cmd = issues_cmd();
     let raw = try {
         exec sh cmd;
@@ -62,6 +66,10 @@ fn tick(reason: string) -> void {
     };
 
     if len(raw) < 3 {
+        let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_e) > 0 {
+            memo_write("prioritizer:last_check", now_e);
+        };
         return;
     };
 

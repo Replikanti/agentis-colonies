@@ -31,8 +31,41 @@ fn get_confidence() -> float {
     return 0.0;
 }
 
+// #147: build the merged-MR delta query with optional --since. Used by
+// the tick's pre-prompt delta-check to tell whether any release-relevant
+// work has landed since the last tick.
+fn mr_delta_cmd_for(ts: string) -> string {
+    if len(ts) > 0 {
+        return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(ts) + " --per-page 1";
+    };
+    return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --per-page 1";
+}
+
 fn tick(reason: string) -> void {
-    // 1. Learn release patterns from history
+    // #147: cheap delta-check BEFORE any prompt(). ship_decider's work
+    // is reactive: decide ship/no-ship when `release:check_result`
+    // arrives, and re-learn release cadence when new merged MRs show
+    // up. If neither signal is present since the last tick, early-exit
+    // — no Claude call at all.
+    let check_result = listen("release:check_result", 100);
+    let check_str = to_string(check_result);
+    let has_event = len(check_str) >= 5;
+
+    let mr_delta_cmd = mr_delta_cmd_for(recall_latest("ship_decider:last_check"));
+    let mr_delta = try { exec sh mr_delta_cmd; } catch e { "[]"; };
+    let has_new_mr = len(mr_delta) >= 3;
+
+    if !has_event {
+        if !has_new_mr {
+            let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+            if len(now_e) > 0 {
+                memo_write("ship_decider:last_check", now_e);
+            };
+            return;
+        };
+    };
+
+    // 1. Learn release patterns from history (only when there IS new work)
     let releases_raw = try {
         exec sh "$COLONY_DIR/scripts/gitlab-api.sh releases --per-page 20 --view release-summary";
     } catch e {
@@ -62,14 +95,13 @@ fn tick(reason: string) -> void {
         };
     };
 
-    // 2. Listen for check results and make ship/no-ship decision
-    let check_result = listen("release:check_result", 100);
-    let check_str = to_string(check_result);
-
-    if len(check_str) < 5 {
-        let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
-        if len(now) > 0 {
-            memo_write("ship_decider:last_check", now);
+    // 2. Make ship/no-ship decision — only if a check_result arrived
+    //    this tick (the MR-delta branch re-learns patterns but has no
+    //    pending check to decide on).
+    if !has_event {
+        let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_e) > 0 {
+            memo_write("ship_decider:last_check", now_e);
         };
         return;
     };

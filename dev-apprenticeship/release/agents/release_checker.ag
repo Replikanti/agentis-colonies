@@ -34,8 +34,41 @@ fn get_confidence() -> float {
     return 0.0;
 }
 
+// #147: build the merged-MR delta query with optional --since. Used by
+// the tick's pre-prompt delta-check.
+fn mr_delta_cmd_for(ts: string) -> string {
+    if len(ts) > 0 {
+        return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(ts) + " --per-page 1";
+    };
+    return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --per-page 1";
+}
+
 fn tick(reason: string) -> void {
-    // 1. Learn from past releases and their pipeline outcomes
+    // #147: cheap delta-check BEFORE any prompt(). release_checker's
+    // real work is driven by two signals: `implementation:mr_ready`
+    // (a new MR needs a pre-release check) and newly-merged MRs (re-
+    // learn pipeline-gate patterns). If neither is present since the
+    // last tick, we early-exit without a Claude call.
+    let mr_ready = listen("implementation:mr_ready", 100);
+    let mr_str = to_string(mr_ready);
+    let has_event = len(mr_str) >= 5;
+
+    let mr_delta_cmd = mr_delta_cmd_for(recall_latest("release_checker:last_check"));
+    let mr_delta = try { exec sh mr_delta_cmd; } catch e { "[]"; };
+    let has_new_mr = len(mr_delta) >= 3;
+
+    if !has_event {
+        if !has_new_mr {
+            let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+            if len(now_e) > 0 {
+                memo_write("release_checker:last_check", now_e);
+            };
+            return;
+        };
+    };
+
+    // 1. Learn from past releases and their pipeline outcomes (only when
+    //    there IS new work — gated by the delta-check above).
     let releases_raw = try {
         exec sh "$COLONY_DIR/scripts/gitlab-api.sh releases --per-page 10 --view release-summary";
     } catch e {
@@ -61,9 +94,7 @@ fn tick(reason: string) -> void {
         };
     };
 
-    // 2. Check for pending release candidates (listen from implementation colony)
-    let mr_ready = listen("implementation:mr_ready", 100);
-    let mr_str = to_string(mr_ready);
+    // 2. Check pipeline state for the pending MR (or periodic check).
 
     // Also check the default branch pipeline status
     let pipeline_raw = try {

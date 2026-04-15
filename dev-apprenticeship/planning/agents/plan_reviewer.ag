@@ -72,6 +72,10 @@ fn tick(reason: string) -> void {
 
     // 3. Pick the newest unplanned issue and see if we have all three
     //    slots filled for it. If not, keep waiting.
+    // #147: cheap delta-check. `issues --needs-planning` returns `[]`
+    // when every open issue already has a plan, so we early-exit
+    // before the assembly prompt(). last_check is refreshed so the
+    // agent's liveness signal advances on quiet projects.
     let issues_raw = try {
         exec sh "$COLONY_DIR/scripts/gitlab-api.sh issues --needs-planning --view planning";
     } catch e {
@@ -80,13 +84,21 @@ fn tick(reason: string) -> void {
     };
 
     if len(issues_raw) < 3 {
+        let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_e) > 0 {
+            memo_write("plan_reviewer:last_check", now_e);
+        };
         return;
     };
 
-    let target_iid = prompt(
-        "Return just the issue_id integer of the newest issue in this JSON array. Nothing else.",
-        issues_raw
-    ) -> int;
+    // #147: extract target_iid via json_get instead of prompt() — avoids
+    // an LLM round-trip on a purely mechanical JSON extraction (matches
+    // CLAUDE.md "prefer json_get" convention, same idiom as the MR
+    // reviewers).
+    let target_iid = parse_int(to_string(json_get(issues_raw, "[0].iid")));
+    if target_iid <= 0 {
+        return;
+    };
 
     let s = recall_latest("plan_reviewer:" + to_string(target_iid) + ":scope");
     let r = recall_latest("plan_reviewer:" + to_string(target_iid) + ":risks");
@@ -149,5 +161,10 @@ fn tick(reason: string) -> void {
         } else {
             print("[plan_reviewer] Observing (confidence:", confidence, ")");
         };
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("plan_reviewer:last_check", now);
     };
 }
