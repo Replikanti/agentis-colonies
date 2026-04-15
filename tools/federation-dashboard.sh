@@ -434,6 +434,17 @@ HEADEOF
   @keyframes spin {
     from { transform: rotate(0deg); } to { transform: rotate(360deg); }
   }
+  .conf-btn {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--muted); font-family: inherit; font-size: 10px;
+    padding: 1px 6px; margin-right: 2px; cursor: pointer;
+    border-radius: 2px; line-height: 1.4;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .conf-btn:hover:not(:disabled) { color: var(--cyan); border-color: var(--cyan); }
+  .conf-btn:disabled { opacity: 0.25; cursor: not-allowed; }
+  .conf-btn-act { border-color: var(--green); color: var(--green); }
+  .conf-btn-act:hover:not(:disabled) { background: var(--green); color: #000; box-shadow: 0 0 8px rgba(0,255,0,0.4); }
   .kill-btn {
     background: transparent; border: 2px solid var(--red);
     color: var(--red); font-family: 'Share Tech Mono', monospace;
@@ -623,20 +634,79 @@ document.addEventListener('keydown', (e) => {
 })();
 
 // --- Confidence per agent ---
+// #105: bump up/down buttons let the operator walk through the three
+// canonical steps (0.5 observe → 0.6 suggest → 0.85 autonomous) without
+// shelling out to `agentis memo set`. Promotions to ≥ 0.85 get a confirm()
+// dialog (two-click safety, mirrors the Kill Federation precedent from #91).
+const CONF_STEPS = [0.5, 0.6, 0.85];
+function nextStep(cur, dir) {
+  // Snap current value to the nearest step, then move by one. Returning
+  // null means "already at the boundary" and the caller disables the button.
+  let idx = 0;
+  let best = Math.abs(cur - CONF_STEPS[0]);
+  for (let i = 1; i < CONF_STEPS.length; i++) {
+    const d = Math.abs(cur - CONF_STEPS[i]);
+    if (d < best) { best = d; idx = i; }
+  }
+  const target = idx + dir;
+  if (target < 0 || target >= CONF_STEPS.length) return null;
+  return CONF_STEPS[target];
+}
+
+function setConfidence(agent, value) {
+  // ≥ 0.85 unlocks autonomous GitLab writes (MRs, comments, labels). Make
+  // the operator confirm before the button bumps the agent into act mode.
+  if (value >= 0.85) {
+    if (!confirm('Promote ' + agent + ' to ' + value.toFixed(2) + ' (AUTONOMOUS)?\n\nAt this level the agent will act directly on GitLab — posting comments, applying labels, opening MRs, approving reviews. Proceed?')) {
+      return;
+    }
+  }
+  const body = 'agent=' + encodeURIComponent(agent) + '&value=' + encodeURIComponent(value);
+  fetch('/confidence', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: body,
+  })
+    .then(r => r.text().then(t => ({ok: r.ok, text: t})))
+    .then(({ok, text}) => {
+      if (!ok) {
+        alert('Set failed: ' + text);
+        return;
+      }
+      // Regenerate the static HTML so the reloaded page reflects the new
+      // memo value immediately instead of waiting for the 60 s background loop.
+      fetch('/refresh', { method: 'POST' }).catch(() => {}).finally(() => location.reload());
+    })
+    .catch(e => alert('Set failed: ' + e));
+}
+
 (function() {
   const el = document.getElementById('confidence');
   const colonies = {};
   confidences.forEach(c => { if (!colonies[c.colony]) colonies[c.colony] = []; colonies[c.colony].push(c); });
   let html = '<table>';
   Object.keys(colonies).forEach(colony => {
-    html += '<tr><td colspan="3" class="colony-header">' + colony + '</td></tr>';
+    html += '<tr><td colspan="4" class="colony-header">' + colony + '</td></tr>';
     colonies[colony].forEach(c => {
       const v = parseFloat(c.confidence) || 0;
       const pct = Math.round(v * 100);
       const phase = v >= 0.85 ? 'act' : v >= 0.6 ? 'suggest' : 'observe';
       const color = v >= 0.85 ? 'var(--green)' : v >= 0.6 ? 'var(--yellow)' : 'var(--muted)';
+      const down = nextStep(v, -1);
+      const up = nextStep(v, 1);
+      const downAttr = down === null
+        ? 'disabled title="Already at minimum step"'
+        : 'onclick="setConfidence(\'' + c.agent + '\',' + down + ')" title="Bump down to ' + down.toFixed(2) + '"';
+      const upAttr = up === null
+        ? 'disabled title="Already at maximum step"'
+        : 'onclick="setConfidence(\'' + c.agent + '\',' + up + ')" title="Bump up to ' + up.toFixed(2) + '"';
+      const upClass = (up !== null && up >= 0.85) ? 'conf-btn conf-btn-act' : 'conf-btn';
       html += '<tr><td class="agent-name" style="width:160px">' + c.agent + '</td>';
       html += '<td style="width:80px"><span class="badge badge-' + phase + '">' + v.toFixed(2) + '</span></td>';
+      html += '<td style="width:70px;white-space:nowrap">';
+      html += '<button class="conf-btn" ' + downAttr + '>&#x25bc;</button>';
+      html += '<button class="' + upClass + '" ' + upAttr + '>&#x25b2;</button>';
+      html += '</td>';
       html += '<td><div class="conf-bar-bg"><div class="conf-bar-fill" style="width:' + pct + '%;background:' + color + ';box-shadow:0 0 6px ' + color + '"></div></div></td></tr>';
     });
   });
@@ -822,19 +892,25 @@ generate
 REGEN_PID=$!
 trap 'kill $REGEN_PID 2>/dev/null; exit 0' INT TERM
 
-# Serve with kill switch + refresh endpoints. SCRIPT_PATH and FED_DIR are
-# passed through so POST /refresh can re-exec this script in regen-only mode.
-python3 - "$DASH_DIR" "$PORT" "$SCRIPT_PATH" "$FED_DIR" <<'PYSERVER'
-import sys, os, subprocess
+# Serve with kill switch + refresh + confidence endpoints. SCRIPT_PATH and
+# FED_DIR are passed through so POST /refresh can re-exec this script in
+# regen-only mode. ALL_AGENTS_CSV is the allowlist for POST /confidence —
+# operator-supplied agent names must match exactly or the endpoint rejects
+# with 400 (never pass user strings to subprocess unchecked, #105).
+ALL_AGENTS_CSV="$(IFS=,; echo "${ALL_AGENTS[*]}")"
+python3 - "$DASH_DIR" "$PORT" "$SCRIPT_PATH" "$FED_DIR" "$ALL_AGENTS_CSV" <<'PYSERVER'
+import sys, os, subprocess, json, time, urllib.parse
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 serve_dir, port = sys.argv[1], int(sys.argv[2])
 script_path, fed_dir_arg = sys.argv[3], sys.argv[4]
+allowed_agents = set(a for a in sys.argv[5].split(',') if a)
 # serve_dir is $FED_DIR/.dashboard; the federation root (parent of serve_dir)
 # is the cwd we want agentis to resolve .agentis/ from. We still os.chdir to
 # serve_dir so SimpleHTTPRequestHandler serves index.html from here.
 os.chdir(serve_dir)
 fed_dir = os.path.dirname(serve_dir)
+confidence_log = os.path.join(serve_dir, 'confidence-log.jsonl')
 
 class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
@@ -868,6 +944,93 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header('Content-Type', 'text/plain')
             self.end_headers()
             self.wfile.write(b'ok')
+            return
+        if self.path == '/confidence':
+            # #105: operator-driven bump up/down from the dashboard. Body is
+            # form-encoded (agent=<name>&value=<float>). We enforce three
+            # layers of validation before touching subprocess:
+            #   1. agent name must be in the discovered ALL_AGENTS allowlist
+            #      (prevents operator-supplied strings from reaching the CLI)
+            #   2. value must parse as float and land in [0.0, 1.0]
+            #   3. any CLI failure is reported with 500, not silently swallowed
+            length = int(self.headers.get('Content-Length', '0') or '0')
+            if length <= 0 or length > 4096:
+                self.send_response(400)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b'empty or oversized body')
+                return
+            try:
+                raw = self.rfile.read(length).decode('utf-8', errors='replace')
+                params = urllib.parse.parse_qs(raw, keep_blank_values=False)
+            except (ValueError, UnicodeDecodeError):
+                self.send_response(400)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b'malformed form body')
+                return
+            agent = (params.get('agent') or [''])[0]
+            value_raw = (params.get('value') or [''])[0]
+            if agent not in allowed_agents:
+                self.send_response(400)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(f'unknown agent: {agent!r}'.encode())
+                return
+            try:
+                value = float(value_raw)
+            except ValueError:
+                self.send_response(400)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(f'value not a float: {value_raw!r}'.encode())
+                return
+            if not (0.0 <= value <= 1.0):
+                self.send_response(400)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(f'value out of [0,1]: {value}'.encode())
+                return
+            # `agentis memo set <agent>:confidence <value>` — cwd=fed_dir so
+            # agentis walks up from the federation root to find .agentis/.
+            try:
+                result = subprocess.run(
+                    ['agentis', 'memo', 'set', f'{agent}:confidence', f'{value:.3f}'],
+                    capture_output=True, text=True,
+                    cwd=fed_dir,
+                    timeout=10,
+                )
+            except (OSError, subprocess.SubprocessError) as e:
+                self.send_response(500)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(f'exec failed: {e}'.encode())
+                return
+            if result.returncode != 0:
+                msg = (result.stderr or result.stdout or 'memo set failed').strip()
+                self.send_response(500)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(msg.encode() or b'memo set failed')
+                return
+            # Audit log: append a JSONL row per change. .dashboard/ is
+            # already operator-visible (index.html, history.json live here)
+            # so this keeps all per-federation dashboard state colocated.
+            try:
+                with open(confidence_log, 'a') as f:
+                    f.write(json.dumps({
+                        't': int(time.time()),
+                        'agent': agent,
+                        'value': value,
+                        'remote': self.client_address[0],
+                    }) + '\n')
+            except OSError:
+                # Audit write failure must not mask the successful memo set.
+                pass
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(f'{agent}:confidence set to {value:.3f}'.encode())
             return
         if self.path == '/kill':
             # Run from fed_dir, not .dashboard. The actual fix for #91 is

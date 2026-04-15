@@ -69,6 +69,8 @@ agentis daemon stop --all       # Stop everything
 
 A web dashboard that shows agent health, confidence levels, phase readiness with ETA, knowledge growth trends, remediation history, and a live suggestion feed. Auto-refreshes every 60 seconds. Includes a kill switch (two-click safety) to stop the entire federation from the browser.
 
+Per-agent **confidence bump** controls (▲▼) in the Confidence Levels card walk each agent through the canonical steps 0.5 → 0.6 → 0.85. Promotions to 0.85 (AUTONOMOUS) trigger a confirmation dialog since at that level the agent begins writing to GitLab directly. Every change is appended to `.dashboard/confidence-log.jsonl` for audit. The CLI path (`agentis memo set <agent>:confidence <value>`) still works and is equivalent.
+
 ```bash
 ./dashboard.sh                  # http://localhost:8420
 ./dashboard.sh 9000             # custom port
