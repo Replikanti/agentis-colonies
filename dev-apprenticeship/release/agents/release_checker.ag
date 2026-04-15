@@ -88,7 +88,10 @@ fn tick(reason: string) -> void {
             print("[release_checker] Checked main pipeline:", result.ci_status, "(confidence:", confidence, ")");
 
             if confidence >= 0.85 {
-                let mr_iid = prompt("Extract the iid or issue_id integer from this MR data. Return just the integer. If not found, return 0.", mr_str) -> int;
+                // #131: mr_ready is emitted by commit_composer as an
+                // MRPlan record whose issue_id is the GitLab iid — read
+                // via field access instead of prompting.
+                let mr_iid = mr_ready.issue_id;
                 if mr_iid > 0 {
                     let note = "**Pre-release Check** (automated): " + result.ci_status + "\n\nIssues: " + result.issues_found;
                     let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note);
