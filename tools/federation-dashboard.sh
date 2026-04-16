@@ -508,17 +508,33 @@ HEADEOF
     cursor: pointer;
     animation: toast-in 0.25s ease-out;
   }
+  .toast.toast-ok { border-color: var(--green); box-shadow: 0 0 20px rgba(0,255,0,0.35); }
+  .toast.toast-err { border-color: var(--red); box-shadow: 0 0 20px rgba(255,68,68,0.4); }
   .toast .toast-head {
     color: var(--yellow); font-size: 11px; letter-spacing: 2px;
     text-transform: uppercase; margin-bottom: 6px;
     text-shadow: 0 0 6px rgba(255,255,0,0.4);
   }
+  .toast.toast-ok .toast-head { color: var(--green); text-shadow: 0 0 6px rgba(0,255,0,0.4); }
+  .toast.toast-err .toast-head { color: var(--red); text-shadow: 0 0 6px rgba(255,68,68,0.4); }
   .toast pre {
     margin: 6px 0; padding: 6px 8px; background: rgba(0,255,255,0.05);
     border-left: 2px solid var(--cyan); color: var(--cyan);
     font-size: 11px; white-space: pre-wrap; word-break: break-all;
   }
   .toast .toast-foot { color: var(--muted); font-size: 10px; margin-top: 6px; }
+  .toast .toast-step {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 11px; margin: 2px 0; color: var(--muted);
+  }
+  .toast .toast-step.active { color: var(--yellow); text-shadow: 0 0 4px rgba(255,255,0,0.3); }
+  .toast .toast-step.done { color: var(--green); }
+  .toast .toast-step.err { color: var(--red); }
+  .toast .toast-spin {
+    display: inline-block; width: 10px; height: 10px;
+    border: 1px solid rgba(255,255,0,0.2); border-top-color: var(--yellow);
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+  }
   @keyframes toast-in {
     from { opacity: 0; transform: translateY(8px); }
     to   { opacity: 1; transform: translateY(0); }
@@ -729,6 +745,27 @@ function setConfidence(agent, value) {
       return;
     }
   }
+  // The page has <meta http-equiv="refresh" content="60"> in <head>. Auto-
+  // restart takes up to ~30 s end-to-end and we want the result toast to
+  // stay readable — same rationale as the kill-switch handler.
+  const m = document.querySelector('meta[http-equiv="refresh"]');
+  if (m) m.remove();
+
+  const toast = createProgressToast(agent, value);
+  // Client-side timers narrate stages the server does not stream (the
+  // /confidence POST is a single synchronous request because HTTPServer is
+  // single-threaded and SSE adds more moving parts than this operator
+  // tool warrants). If the real response lands before a given timer, the
+  // real terminal state wins — see applyResult() below.
+  // Timers spread to match the server worst case: stop can take up to
+  // 12 s (5 s poll + 5 s SIGTERM + 2 s SIGKILL), spawn ~1 s, verify up
+  // to 15 s. We advance optimistically; the real terminal state wins on
+  // server response regardless.
+  const t1 = setTimeout(() => toast.setStep('stop', 'active'), 400);
+  const t2 = setTimeout(() => { toast.setStep('stop', 'done'); toast.setStep('spawn', 'active'); }, 12000);
+  const t3 = setTimeout(() => { toast.setStep('spawn', 'done'); toast.setStep('verify', 'active'); }, 15000);
+  const clearFakes = () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
+
   const body = 'agent=' + encodeURIComponent(agent) + '&value=' + encodeURIComponent(value);
   fetch('/confidence', {
     method: 'POST',
@@ -736,71 +773,217 @@ function setConfidence(agent, value) {
     body: body,
   })
     .then(r => {
-      // 200 returns application/json; 4xx/5xx return text/plain. Parse per branch.
+      // 200 returns application/json; 4xx/5xx return text/plain.
       if (r.ok) return r.json().then(data => ({ok: true, data}));
       return r.text().then(text => ({ok: false, text}));
     })
     .then(result => {
+      clearFakes();
       if (!result.ok) {
-        alert('Set failed: ' + result.text);
+        toast.renderHttpError(result.text);
+        scheduleReload(30000);
         return;
       }
-      // The page has <meta http-equiv="refresh" content="60"> in <head>. Without
-      // removing it, a pending browser-level refresh can fire inside the 12 s
-      // toast window and destroy the toast before the operator finishes reading
-      // — same reason the kill-switch handler removes it on success.
-      const m = document.querySelector('meta[http-equiv="refresh"]');
-      if (m) m.remove();
-      showRestartToast(agent, value, result.data);
-      // Defer the static-HTML regen + reload so the toast stays readable.
-      // Without the delay location.reload() destroys the toast before the
-      // operator can see the restart command.
-      setTimeout(() => {
-        fetch('/refresh', { method: 'POST' }).catch(() => {}).finally(() => location.reload());
-      }, 12000);
+      toast.applyResult(result.data);
+      const succeeded = result.data && result.data.restart && result.data.restart.succeeded;
+      scheduleReload(succeeded ? 12000 : 30000);
     })
-    .catch(e => alert('Set failed: ' + e));
+    .catch(e => {
+      clearFakes();
+      toast.renderHttpError(String(e));
+      scheduleReload(30000);
+    });
 }
 
-function showRestartToast(agent, value, data) {
+function scheduleReload(delayMs) {
+  // Defer the static-HTML regen + reload so the result toast stays
+  // readable. Success uses the Option 1 12 s window; failure gives the
+  // operator 30 s to copy the manual-respawn command before reload.
+  setTimeout(() => {
+    fetch('/refresh', { method: 'POST' }).catch(() => {}).finally(() => location.reload());
+  }, delayMs);
+}
+
+function createProgressToast(agent, requestedValue) {
   const el = document.createElement('div');
   el.className = 'toast';
   el.setAttribute('role', 'status');
   el.setAttribute('aria-live', 'polite');
-  // Prefer the server's authoritative value (it's what actually landed on
-  // disk via `agentis memo set`) and fall back to the click-site value.
-  const serverValue = data && typeof data.value === 'string' ? parseFloat(data.value) : NaN;
-  const shown = Number.isFinite(serverValue) ? serverValue : value;
-  const v = (typeof shown === 'number') ? shown.toFixed(2) : String(shown);
+
   const head = document.createElement('div');
   head.className = 'toast-head';
-  head.textContent = 'Memo written — daemon restart required';
-  const line1 = document.createElement('div');
-  line1.textContent = agent + ':confidence set to ';
-  const b = document.createElement('b');
-  b.textContent = v;
-  line1.appendChild(b);
-  line1.appendChild(document.createTextNode(' on disk.'));
-  const line2 = document.createElement('div');
-  line2.textContent = 'The running daemon will keep using its in-flight value until its next tick (up to ~60 s) and spawn-time decisions will not reload. For immediate, guaranteed effect run:';
-  const pre = document.createElement('pre');
-  pre.textContent = 'agentis daemon stop --all && ./start-federation.sh';
+  head.textContent = 'Auto-restart: ' + agent + ' = ' + requestedValue.toFixed(2);
+  el.appendChild(head);
+
+  const stepsBox = document.createElement('div');
+  const steps = {};
+  function addStep(key, label) {
+    const row = document.createElement('div');
+    row.className = 'toast-step';
+    const icon = document.createElement('span');
+    icon.className = 'toast-spin';
+    icon.style.visibility = 'hidden';
+    const text = document.createElement('span');
+    text.textContent = label;
+    row.appendChild(icon);
+    row.appendChild(text);
+    stepsBox.appendChild(row);
+    steps[key] = { row, icon, text, label };
+  }
+  addStep('memo', 'Memo written');
+  addStep('stop', 'Stopping daemon…');
+  addStep('spawn', 'Respawning…');
+  addStep('verify', 'Verifying new daemon…');
+  el.appendChild(stepsBox);
+
+  // Memo is confirmed the moment we got HTTP 200 (applyResult fills it in),
+  // but we mark it active immediately so the toast never looks empty.
+  steps.memo.row.classList.add('active');
+  steps.memo.icon.style.visibility = 'visible';
+
   const foot = document.createElement('div');
   foot.className = 'toast-foot';
-  // audit_logged comes from the backend; missing/undefined means legacy
-  // response — fall back to the optimistic wording rather than a false claim.
-  const auditOk = !data || data.audit_logged !== false;
-  foot.textContent = auditOk
-    ? 'Audit: appended to .dashboard/confidence-log.jsonl — click to dismiss'
-    : 'Audit write failed — restart still required. Click to dismiss.';
-  el.appendChild(head);
-  el.appendChild(line1);
-  el.appendChild(line2);
-  el.appendChild(pre);
+  foot.textContent = 'Click to dismiss';
   el.appendChild(foot);
+
   el.addEventListener('click', () => el.remove());
   document.body.appendChild(el);
-  setTimeout(() => { if (el.parentNode) el.remove(); }, 12000);
+  // Don't auto-dismiss while the restart is in flight — the response can
+  // take up to ~30 s in the worst case (stop timeout + SIGTERM + SIGKILL
+  // + verify poll). The dismiss timer is armed only once applyResult /
+  // renderHttpError produces a terminal state.
+  let dismissTimer = null;
+  function armDismiss(ms) {
+    if (dismissTimer) clearTimeout(dismissTimer);
+    dismissTimer = setTimeout(() => { if (el.parentNode) el.remove(); }, ms);
+  }
+
+  function setStep(key, state) {
+    const s = steps[key];
+    if (!s) return;
+    s.row.classList.remove('active', 'done', 'err');
+    if (state === 'active') {
+      s.row.classList.add('active');
+      s.icon.style.visibility = 'visible';
+    } else if (state === 'done') {
+      s.row.classList.add('done');
+      s.icon.style.visibility = 'hidden';
+      s.text.textContent = '\u2713 ' + s.label.replace('…', '').replace(/^[\u2713\u2717]\s*/, '');
+    } else if (state === 'err') {
+      s.row.classList.add('err');
+      s.icon.style.visibility = 'hidden';
+      s.text.textContent = '\u2717 ' + s.label.replace('…', '').replace(/^[\u2713\u2717]\s*/, '');
+    }
+  }
+
+  function renderHttpError(text) {
+    // No server response or HTTP 4xx/5xx — memo probably did not land.
+    // Fall back to Option 1 wording so the operator has a working recovery.
+    foot.textContent = 'Click to dismiss';
+    el.classList.add('toast-err');
+    head.textContent = 'Request failed — ' + agent + ' not updated';
+    // Clear step rows; replace with error body.
+    while (stepsBox.firstChild) stepsBox.removeChild(stepsBox.firstChild);
+    const line = document.createElement('div');
+    line.textContent = 'Server error: ' + (text || 'unknown');
+    stepsBox.appendChild(line);
+    const retry = document.createElement('div');
+    retry.style.marginTop = '6px';
+    retry.textContent = 'Retry via CLI:';
+    stepsBox.appendChild(retry);
+    const pre = document.createElement('pre');
+    pre.textContent =
+      'agentis memo set ' + agent + ':confidence ' + requestedValue.toFixed(3) + '\n' +
+      'agentis daemon stop --all && ./start-federation.sh';
+    stepsBox.appendChild(pre);
+    armDismiss(30000);
+  }
+
+  function applyResult(data) {
+    // Server-authoritative value (it's what landed on disk).
+    const serverValue = data && typeof data.value === 'string' ? parseFloat(data.value) : NaN;
+    const v = Number.isFinite(serverValue) ? serverValue : requestedValue;
+    const auditOk = !data || data.audit_logged !== false;
+
+    const restart = (data && data.restart) || {};
+    // Success path: auto-restart worked end-to-end.
+    if (restart.succeeded) {
+      el.classList.add('toast-ok');
+      head.textContent = 'Loaded ' + v.toFixed(2) + ' \u2713 ' + agent;
+      setStep('memo', 'done');
+      setStep('stop', 'done');
+      setStep('spawn', 'done');
+      setStep('verify', 'done');
+      const detail = document.createElement('div');
+      detail.className = 'toast-foot';
+      const oldPid = restart.old_pid || 0;
+      const newPid = restart.new_pid || 0;
+      const started = restart.new_started_at ? new Date(restart.new_started_at * 1000).toLocaleTimeString() : '?';
+      detail.textContent =
+        'old pid ' + (oldPid || 'n/a') + ' → new pid ' + newPid +
+        ' (started ' + started + ')' +
+        (auditOk ? '' : ' — audit log write failed');
+      stepsBox.appendChild(detail);
+      foot.textContent = 'Auto-dismiss in 12s — click to dismiss now';
+      armDismiss(12000);
+      return;
+    }
+
+    // Failure path: memo was written, but restart step failed. Give the
+    // operator the exact command they can paste for a manual respawn,
+    // plus the whole-federation fallback that the Option 1 toast used.
+    el.classList.add('toast-err');
+    head.textContent = 'Auto-restart failed — manual step required';
+    setStep('memo', 'done');
+    // Mark the last completed step per the events trail, if present.
+    const events = Array.isArray(restart.events) ? restart.events : [];
+    const stepMap = { stop: 'stop', sigterm: 'stop', sigkill: 'stop', wait_exit: 'stop',
+                      cleanup: 'stop', spawn: 'spawn', verify: 'verify' };
+    const seen = { stop: null, spawn: null, verify: null };
+    events.forEach(e => {
+      const bucket = stepMap[e.step];
+      if (!bucket) return;
+      if (e.status === 'error') seen[bucket] = 'err';
+      else if (e.status === 'ok' && seen[bucket] !== 'err') seen[bucket] = 'done';
+    });
+    Object.keys(seen).forEach(k => { if (seen[k]) setStep(k, seen[k]); });
+
+    const reason = document.createElement('div');
+    reason.textContent = 'Memo written to ' + agent + ':confidence = ' + v.toFixed(3) +
+                         ' on disk. Restart step failed: ' + (restart.error || 'unknown');
+    stepsBox.appendChild(reason);
+
+    if (restart.manual_command) {
+      const label = document.createElement('div');
+      label.style.marginTop = '6px';
+      label.textContent = 'Respawn this agent:';
+      stepsBox.appendChild(label);
+      const pre = document.createElement('pre');
+      pre.textContent = restart.manual_command;
+      stepsBox.appendChild(pre);
+    }
+
+    const fallbackLabel = document.createElement('div');
+    fallbackLabel.style.marginTop = '6px';
+    fallbackLabel.textContent = 'Or restart the whole federation:';
+    stepsBox.appendChild(fallbackLabel);
+    const fb = document.createElement('pre');
+    fb.textContent = 'agentis daemon stop --all && ./start-federation.sh';
+    stepsBox.appendChild(fb);
+
+    if (!auditOk) {
+      const auditWarn = document.createElement('div');
+      auditWarn.className = 'toast-foot';
+      auditWarn.textContent = 'Audit log write failed.';
+      stepsBox.appendChild(auditWarn);
+    }
+    foot.textContent = 'Click to dismiss';
+    // Error toasts get a longer window — the operator needs time to copy
+    // the manual command.
+    armDismiss(30000);
+  }
+
+  return { el, setStep, renderHttpError, applyResult };
 }
 
 (function() {
@@ -1034,19 +1217,397 @@ trap 'kill $REGEN_PID 2>/dev/null; exit 0' INT TERM
 # operator-supplied agent names must match exactly or the endpoint rejects
 # with 400 (never pass user strings to subprocess unchecked, #105).
 ALL_AGENTS_CSV="$(IFS=,; echo "${ALL_AGENTS[*]}")"
-python3 - "$DASH_DIR" "$PORT" "$SCRIPT_PATH" "$FED_DIR" "$ALL_AGENTS_CSV" <<'PYSERVER'
-import sys, os, subprocess, json, time, urllib.parse
+python3 - "$DASH_DIR" "$PORT" "$SCRIPT_PATH" "$FED_DIR" "$ALL_AGENTS_CSV" "$AGENT_COLONY_MAP" <<'PYSERVER'
+import sys, os, subprocess, json, time, signal, shutil, shlex, threading, urllib.parse
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 serve_dir, port = sys.argv[1], int(sys.argv[2])
 script_path, fed_dir_arg = sys.argv[3], sys.argv[4]
 allowed_agents = set(a for a in sys.argv[5].split(',') if a)
+try:
+    _map = json.loads(sys.argv[6])
+except (json.JSONDecodeError, ValueError, IndexError):
+    _map = []
+agent_to_colony = {e.get('agent',''): e.get('colony','') for e in _map if e.get('agent')}
 # serve_dir is $FED_DIR/.dashboard; the federation root (parent of serve_dir)
 # is the cwd we want agentis to resolve .agentis/ from. We still os.chdir to
 # serve_dir so SimpleHTTPRequestHandler serves index.html from here.
 os.chdir(serve_dir)
 fed_dir = os.path.dirname(serve_dir)
 confidence_log = os.path.join(serve_dir, 'confidence-log.jsonl')
+
+
+def parse_toml_section(toml_path, section):
+    """Extract key=value pairs under [section] from a colony TOML file.
+
+    Mirrors tools/parse-toml.sh semantics: strips matching surrounding
+    quotes and ignores inline `#` comments (respecting quoted strings).
+    Returns an empty dict if the file is missing or the section absent.
+    """
+    out = {}
+    try:
+        with open(toml_path, 'r', encoding='utf-8') as f:
+            in_section = False
+            for raw in f:
+                line = raw.rstrip('\n')
+                # Strip inline comment outside of quotes.
+                stripped_chars = []
+                quote = None
+                i = 0
+                while i < len(line):
+                    ch = line[i]
+                    if quote:
+                        stripped_chars.append(ch)
+                        if ch == '\\' and i + 1 < len(line):
+                            stripped_chars.append(line[i + 1])
+                            i += 2
+                            continue
+                        if ch == quote:
+                            quote = None
+                    else:
+                        if ch == '#':
+                            break
+                        if ch in ('"', "'"):
+                            quote = ch
+                        stripped_chars.append(ch)
+                    i += 1
+                s = ''.join(stripped_chars).strip()
+                if not s:
+                    continue
+                if s.startswith('[') and s.endswith(']'):
+                    in_section = (s[1:-1].strip() == section)
+                    continue
+                if not in_section or '=' not in s:
+                    continue
+                k, _, v = s.partition('=')
+                k = k.strip()
+                v = v.strip()
+                if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
+                    v = v[1:-1]
+                out[k] = v
+    except OSError:
+        pass
+    return out
+
+
+def list_daemons():
+    try:
+        result = subprocess.run(
+            ['agentis', 'daemon', 'list', '--json'],
+            capture_output=True, text=True, cwd=fed_dir, timeout=5,
+        )
+        if result.returncode != 0:
+            return []
+        return json.loads(result.stdout or '[]')
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError):
+        return []
+
+
+def find_agent_daemon(agent):
+    """Return the running daemon record whose `source` basename matches
+    <agent>.ag, or None. Prefers `state == running`; falls back to any
+    record so the stop/cleanup path can tidy zombies."""
+    ag_file = f'{agent}.ag'
+    running = None
+    any_match = None
+    for d in list_daemons():
+        src = d.get('source') or ''
+        if not src:
+            continue
+        if os.path.basename(src) != ag_file:
+            continue
+        any_match = any_match or d
+        if d.get('state') == 'running' and running is None:
+            running = d
+    return running or any_match
+
+
+def pid_alive(pid):
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def wait_for_exit(pid, timeout_s):
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if not pid_alive(pid):
+            return True
+        time.sleep(0.2)
+    return not pid_alive(pid)
+
+
+def cleanup_sidecars(agent_id):
+    """Remove stale per-daemon files under $FED_DIR/.agentis/daemon/.
+
+    `agentis daemon stop` normally tidies these, but #523 makes that
+    unreliable; leaving a stale `.heartbeat` behind causes the next
+    spawn's watchdog to read the old mtime and kill its fresh child on
+    the first tick (same root cause as the wipe in start-federation.sh
+    after laptop sleep). Safe to call unconditionally.
+    """
+    sidecar_dir = os.path.join(fed_dir, '.agentis', 'daemon')
+    removed = []
+    for ext in ('pid', 'watchdog.pid', 'colony', 'heartbeat', 'status', 'stop'):
+        p = os.path.join(sidecar_dir, f'{agent_id}.{ext}')
+        try:
+            os.remove(p)
+            removed.append(os.path.basename(p))
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+    inbox = os.path.join(sidecar_dir, f'{agent_id}.inbox')
+    try:
+        shutil.rmtree(inbox)
+        removed.append(os.path.basename(inbox))
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+    return removed
+
+
+def build_manual_command(colony, colony_dir, agent_file):
+    """Single-line respawn command the operator can paste if auto-restart
+    fails. Mirrors the flags in each colony's start-colony.sh.
+
+    Env vars are referenced as $VARIABLE (not expanded) — the operator's
+    shell already has them exported via start-colony.sh. Embedding the
+    real GITLAB_TOKEN would leak credentials into the DOM, browser cache,
+    and DevTools (QA review #1).
+    """
+    env_refs = (
+        'GITLAB_URL="$GITLAB_URL" GITLAB_TOKEN="$GITLAB_TOKEN" '
+        'GITLAB_PROJECT="$GITLAB_PROJECT" GITLAB_ME="$GITLAB_ME" '
+        f'COLONY_DIR={shlex.quote(colony_dir)}'
+    )
+    return (
+        f'cd {shlex.quote(colony_dir)} && '
+        f'{env_refs} '
+        f'agentis daemon {shlex.quote(agent_file)}'
+        f' --colony {shlex.quote(colony)}'
+        f' --enable-exec --enable-messaging --tick-interval 60000 &'
+    )
+
+
+def restart_daemon(agent):
+    """Stop+cleanup+respawn sequence for one agent. Returns a dict with
+    step-level outcomes + final success/failure + a manual fallback
+    command for operator copy-paste on failure (#137)."""
+    events = []
+
+    def rec(step, status, **kw):
+        entry = {'step': step, 'status': status}
+        entry.update(kw)
+        events.append(entry)
+
+    colony = agent_to_colony.get(agent, '')
+    if not colony:
+        rec('lookup', 'error', message=f'no colony mapping for {agent}')
+        return {
+            'attempted': False, 'succeeded': False,
+            'error': f'no colony mapping for {agent}',
+            'events': events,
+        }
+
+    colony_dir = os.path.join(fed_dir, colony)
+    agent_file = os.path.join(colony_dir, 'agents', f'{agent}.ag')
+    if not os.path.isfile(agent_file):
+        rec('lookup', 'error', message=f'missing {agent_file}')
+        return {
+            'attempted': False, 'succeeded': False,
+            'error': f'missing {agent_file}',
+            'events': events,
+        }
+
+    # Read gitlab config before touching the daemon — a missing or
+    # incomplete colony.toml must bail out before we stop anything,
+    # otherwise the operator ends up with a killed daemon and no
+    # respawn (parse_toml_section returns {} on missing file).
+    config_path = os.path.join(colony_dir, 'config', 'colony.toml')
+    gitlab = parse_toml_section(config_path, 'gitlab')
+    gl_url = gitlab.get('url', '')
+    gl_token = gitlab.get('token', '')
+    gl_project_raw = gitlab.get('project', '')
+    if not gl_url or not gl_token or not gl_project_raw:
+        rec('config', 'error',
+            message=f'incomplete [gitlab] in {config_path}: '
+                    f'url={bool(gl_url)} token={bool(gl_token)} project={bool(gl_project_raw)}')
+        return {
+            'attempted': False, 'succeeded': False,
+            'error': f'incomplete [gitlab] section in {config_path}',
+            'events': events,
+        }
+    gl_me = gitlab.get('me', '')
+    gl_project = gl_project_raw.replace('/', '%2F')
+    env_overrides = {
+        'GITLAB_URL': gl_url,
+        'GITLAB_TOKEN': gl_token,
+        'GITLAB_PROJECT': gl_project,
+        'GITLAB_ME': gl_me,
+        'COLONY_DIR': colony_dir,
+    }
+    manual_cmd = build_manual_command(colony, colony_dir, agent_file)
+
+    # Resolve current daemon (may already be stopped — we still spawn).
+    old = find_agent_daemon(agent)
+    old_agent_id = (old or {}).get('agent_id') or ''
+    old_pid = (old or {}).get('pid') or 0
+    old_started_at = (old or {}).get('started_at') or 0
+    rec('resolve', 'ok', agent_id=old_agent_id, pid=old_pid,
+        running=(old is not None and old.get('state') == 'running'))
+
+    # Stop the running daemon (if any). #523: `daemon stop <id>` can be a
+    # no-op; fall through to SIGTERM/SIGKILL if the pid doesn't exit.
+    if old and old.get('state') == 'running' and old_agent_id:
+        rec('stop', 'start')
+        try:
+            result = subprocess.run(
+                ['agentis', 'daemon', 'stop', old_agent_id],
+                capture_output=True, text=True, cwd=fed_dir, timeout=10,
+            )
+            rec('stop', 'ok' if result.returncode == 0 else 'warn',
+                stdout=(result.stdout or '').strip(),
+                stderr=(result.stderr or '').strip(),
+                returncode=result.returncode)
+        except (OSError, subprocess.SubprocessError) as e:
+            rec('stop', 'warn', message=str(e))
+
+        if old_pid:
+            rec('wait_exit', 'start', pid=old_pid, timeout_s=5)
+            if wait_for_exit(old_pid, 5.0):
+                rec('wait_exit', 'ok')
+            else:
+                rec('sigterm', 'start',
+                    message='daemon stop did not land within 5s, sending SIGTERM')
+                try:
+                    os.kill(old_pid, signal.SIGTERM)
+                except OSError as e:
+                    rec('sigterm', 'warn', message=str(e))
+                if wait_for_exit(old_pid, 5.0):
+                    rec('sigterm', 'ok')
+                else:
+                    rec('sigkill', 'start',
+                        message='SIGTERM did not land within 5s, sending SIGKILL')
+                    try:
+                        os.kill(old_pid, signal.SIGKILL)
+                    except OSError as e:
+                        rec('sigkill', 'warn', message=str(e))
+                    if not wait_for_exit(old_pid, 2.0):
+                        rec('verify_dead', 'error',
+                            message=f'pid {old_pid} survived SIGKILL')
+                        return {
+                            'attempted': True, 'succeeded': False,
+                            'error': f'pid {old_pid} survived SIGKILL',
+                            'manual_command': manual_cmd,
+                            'events': events,
+                        }
+                    rec('sigkill', 'ok')
+
+    # Cleanup sidecars (safe even if stop already tidied them).
+    if old_agent_id:
+        removed = cleanup_sidecars(old_agent_id)
+        rec('cleanup', 'ok', removed=removed)
+
+    # Respawn detached so the dashboard process can die without taking
+    # the fresh daemon with it.
+    rec('spawn', 'start')
+    env = dict(os.environ)
+    env.update(env_overrides)
+    spawn_ts = int(time.time())
+    try:
+        proc = subprocess.Popen(
+            [
+                'agentis', 'daemon', agent_file,
+                '--colony', colony,
+                '--enable-exec',
+                '--enable-messaging',
+                '--tick-interval', '60000',
+            ],
+            cwd=colony_dir,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        rec('spawn', 'error', message=str(e))
+        return {
+            'attempted': True, 'succeeded': False,
+            'error': f'spawn failed: {e}',
+            'manual_command': manual_cmd,
+            'events': events,
+        }
+    rec('spawn', 'ok', launcher_pid=proc.pid, spawn_ts=spawn_ts)
+
+    # Verify: new daemon appears in `daemon list --json` with a different
+    # pid than `old_pid` (if there was one) AND `started_at` >= spawn_ts.
+    # Poll for up to 15s — first tick takes a moment to register.
+    rec('verify', 'start', timeout_s=15)
+    deadline = time.monotonic() + 15.0
+    new_daemon = None
+    while time.monotonic() < deadline:
+        for d in list_daemons():
+            src = d.get('source') or ''
+            if not src or os.path.basename(src) != f'{agent}.ag':
+                continue
+            if d.get('state') != 'running':
+                continue
+            new_pid = d.get('pid') or 0
+            if old_pid and new_pid == old_pid:
+                continue
+            if (d.get('started_at') or 0) < spawn_ts - 1:
+                continue
+            new_daemon = d
+            break
+        if new_daemon:
+            break
+        time.sleep(0.5)
+
+    if not new_daemon:
+        code = proc.poll()
+        threading.Thread(target=proc.wait, daemon=True).start()
+        rec('verify', 'error',
+            message=f'new daemon not registered within 15s (launcher exit={code})')
+        return {
+            'attempted': True, 'succeeded': False,
+            'error': 'new daemon not registered within 15s',
+            'manual_command': manual_cmd,
+            'events': events,
+        }
+
+    # Reap the launcher wrapper so it does not linger as a zombie in the
+    # dashboard's process table. The actual daemon child is already
+    # detached (start_new_session=True) and outlives the launcher.
+    # Fire-and-forget thread: if the launcher is still running (rare —
+    # it normally exits once the watchdog forks), the thread blocks
+    # until it does, keeping the process table clean without stalling
+    # the HTTP response.
+    threading.Thread(target=proc.wait, daemon=True).start()
+
+    rec('verify', 'ok',
+        new_pid=new_daemon.get('pid'),
+        new_agent_id=new_daemon.get('agent_id'),
+        new_started_at=new_daemon.get('started_at'),
+        new_confidence=new_daemon.get('confidence'))
+
+    return {
+        'attempted': True, 'succeeded': True,
+        'old_pid': old_pid,
+        'old_started_at': old_started_at,
+        'new_pid': new_daemon.get('pid'),
+        'new_agent_id': new_daemon.get('agent_id'),
+        'new_started_at': new_daemon.get('started_at'),
+        'new_confidence': new_daemon.get('confidence'),
+        'manual_command': manual_cmd,
+        'events': events,
+    }
 
 class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
@@ -1165,6 +1726,13 @@ class Handler(SimpleHTTPRequestHandler):
             except OSError:
                 # Audit write failure must not mask the successful memo set.
                 pass
+            # #137 Option 2: auto-restart the agent's daemon so the memo
+            # takes effect immediately — without this the running daemon
+            # keeps using its in-flight value until the next tick and
+            # spawn-time decisions never reload at all. On failure the
+            # response still reports memo_written=true and the client
+            # falls back to the Option 1 restart-required toast.
+            restart = restart_daemon(agent)
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
@@ -1173,7 +1741,12 @@ class Handler(SimpleHTTPRequestHandler):
                 'value': f'{value:.3f}',
                 'memo_written': True,
                 'audit_logged': audit_ok,
-                'restart_required': True,
+                # restart_required flips to false only when the whole
+                # restart sequence succeeded end-to-end. UI uses this to
+                # decide between the "Loaded ✓" success state and the
+                # fallback "manual restart required" toast.
+                'restart_required': not restart.get('succeeded', False),
+                'restart': restart,
             }).encode())
             return
         if self.path == '/kill':
