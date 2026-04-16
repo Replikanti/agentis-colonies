@@ -17,7 +17,7 @@ Pre-built agent colonies for the [Agentis](https://github.com/Replikanti/agentis
 bash -n scripts/gitlab-api.sh   # Bash syntax check on any script
 ```
 
-Colony lint must pass with 0 failures before merge. Current baseline: 47 passed, 5 skipped (shellcheck not installed).
+Colony lint must pass with 0 failures before merge. Current baseline: 48 passed, 5 skipped (shellcheck not installed).
 
 ## Colony structure
 
@@ -101,6 +101,7 @@ release:changelog_draft      -> version_bumper
 | `auto-promote.sh` | Layer 1 auto-promote/auto-evolve cron script — evaluates per-agent fitness, promotes or evolves (#148) |
 | `auto-promote-config.yaml` | Decision rules for auto-promote (thresholds, promote steps, evolve triggers, dry_run flag) |
 | `resolve-tick-interval.py` | Shared helper: reads `tick_interval_for()` case statement (or legacy `TICK_INTERVALS`) from start-colony.sh for a given agent+colony (used by dashboard + auto-promote) |
+| `kill-federation.sh` | OS-level reliable shutdown of a federation (agents + dashboard + registry sidecar files + backup). Bypasses `agentis daemon stop` bugs by using SIGTERM/SIGKILL with verification. Supports `--dry-run` and `--json` for dashboard kill-button integration (#162) |
 
 ## End-user scripts (in dev-apprenticeship/)
 
@@ -110,3 +111,4 @@ release:changelog_draft      -> version_bumper
 | `start-federation.sh` | Starts all 5 colonies (launches 21 daemon processes) |
 | `watch-suggestions.sh` | Live feed of agent suggestions from all 21 logs (for suggest mode, confidence 0.6-0.84) |
 | `dashboard.sh` | Web dashboard (wrapper around `tools/federation-dashboard.sh`, includes kill switch) |
+| `kill-federation.sh` | Reliably stop the federation (wrapper around `tools/kill-federation.sh`, federation-scoped via `--fed-dir`) |
