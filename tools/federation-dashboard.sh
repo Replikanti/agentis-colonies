@@ -37,6 +37,9 @@ fi
 
 PORT="${2:-8420}"
 FED_NAME="$(basename "$FED_DIR")"
+# JSON-escaped form for safe embedding in JS string literal (handles
+# federation directories containing " or \).
+FED_NAME_JS="$(printf '%s' "$FED_NAME" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))')"
 DASH_DIR="$FED_DIR/.dashboard"
 HTML_FILE="$DASH_DIR/index.html"
 HISTORY_FILE="$DASH_DIR/history.json"
@@ -119,7 +122,7 @@ generate() {
     # confidence change history. Outputs a single JSON blob consumed by JS.
     local COLLECTOR_JSON
     COLLECTOR_JSON="$(python3 - "$DAEMONS" "$AGENT_COLONY_MAP" "$FED_DIR" "$EPOCH" "$EXPERIENCE_DIR" "$LOG_DIR" "$DASH_DIR" "$COLONY_LIST_PY" <<'PY' "${ALL_AGENTS[@]}"
-import sys, os, json, time, re
+import sys, os, json, time, re, datetime
 
 daemons_json   = sys.argv[1]
 agent_map_json = sys.argv[2]
@@ -335,13 +338,30 @@ if os.path.isdir(log_dir):
                     line = line.strip()
                     if not line:
                         continue
-                    # Try to extract timestamp from line start
-                    ts_match = re.match(r'^\[?(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})\]?\s*(.*)', line)
-                    ts_str = ''
+                    # Try to extract timestamp from line start. Two formats
+                    # supported: (1) raw 13-digit epoch-ms produced by the
+                    # agentis daemon (the actual production format), (2)
+                    # bracketed/ISO YYYY-MM-DD[T ]HH:MM:SS (kept as a
+                    # fallback for older logs and external producers; do
+                    # NOT remove without auditing every log emitter).
+                    ts_ms_match = re.match(r'^(\d{13})\s+(.*)', line)
+                    ts_iso_match = re.match(r'^\[?(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})\]?\s*(.*)', line)
+                    ts = 0
                     content = line
-                    if ts_match:
-                        ts_str = ts_match.group(1)
-                        content = ts_match.group(2)
+                    if ts_ms_match:
+                        try:
+                            ts = int(ts_ms_match.group(1))
+                            content = ts_ms_match.group(2)
+                        except ValueError:
+                            ts = 0
+                    elif ts_iso_match:
+                        iso = ts_iso_match.group(1).replace(' ', 'T')
+                        try:
+                            ts = int(datetime.datetime.fromisoformat(iso).timestamp() * 1000)
+                            content = ts_iso_match.group(2)
+                        except (ValueError, OSError):
+                            ts = 0
+                            content = ts_iso_match.group(2)
                     # Classify event type (word-boundary match to avoid
                     # false positives like "react"→action, "referred"→error)
                     etype = 'log'
@@ -361,7 +381,7 @@ if os.path.isdir(log_dir):
                     # Only include interesting events in timeline
                     if etype != 'log':
                         events.append({
-                            'ts': ts_str,
+                            'ts': ts,
                             'agent': role,
                             'type': etype,
                             'content': content[:200],
@@ -370,8 +390,9 @@ if os.path.isdir(log_dir):
                 pass
     except OSError:
         pass
-# Sort by timestamp descending, limit to 100
-events.sort(key=lambda e: e.get('ts', ''), reverse=True)
+# Sort by timestamp descending, limit to 100. ts is integer epoch-ms; entries
+# with ts == 0 (unparseable) sort to the end.
+events.sort(key=lambda e: e.get('ts', 0), reverse=True)
 events = events[:100]
 
 # --- Confidence change log ---
@@ -631,10 +652,30 @@ HEADEOF
   .promote-suggest { color: var(--yellow); font-size: 11px; }
 
   /* --- Event Timeline --- */
-  .timeline { max-height: 300px; overflow-y: auto; font-size: 11px; line-height: 1.8; }
-  .timeline-entry { padding: 3px 0; border-bottom: 1px solid var(--border2); display: flex; gap: 8px; }
+  .timeline-header { display: flex; justify-content: space-between; align-items: center; }
+  .timeline-clear-btn {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--muted); font-family: 'Share Tech Mono', monospace;
+    font-size: 10px; padding: 3px 8px; cursor: pointer;
+    text-transform: uppercase; letter-spacing: 1px;
+    border-radius: 2px; transition: all 0.15s;
+  }
+  .timeline-clear-btn:hover { color: var(--text); border-color: var(--text); }
+  .timeline-banner {
+    padding: 6px 10px; background: rgba(255,255,255,0.04);
+    border-left: 2px solid var(--muted); font-size: 11px;
+    color: var(--muted); margin-bottom: 6px;
+  }
+  .timeline-banner-show-all {
+    background: transparent; border: none; color: var(--muted);
+    font-family: 'Share Tech Mono', monospace; font-size: 11px;
+    cursor: pointer; padding: 0; text-decoration: none;
+  }
+  .timeline-banner-show-all:hover { text-decoration: underline; color: var(--text); }
+  .timeline { max-height: 300px; overflow-y: auto; overflow-x: visible; font-size: 11px; line-height: 1.8; }
+  .timeline-entry { padding: 3px 0; border-bottom: 1px solid var(--border2); display: flex; gap: 8px; overflow: visible; }
   .timeline-entry:hover { background: rgba(0,255,255,0.03); }
-  .timeline-ts { color: var(--muted); width: 65px; flex-shrink: 0; }
+  .timeline-ts { color: var(--muted); width: 145px; flex-shrink: 0; }
   .timeline-agent { color: var(--cyan); width: 130px; flex-shrink: 0; }
   .timeline-type { width: 60px; flex-shrink: 0; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
   .timeline-type.emit { color: var(--green); }
@@ -967,7 +1008,11 @@ HEADEREOF
 </div>
 
 <div class="card full">
-<h2>Event Timeline</h2>
+<div class="timeline-header">
+  <h2>Event Timeline</h2>
+  <button class="timeline-clear-btn" id="timeline-clear-btn">Clear</button>
+</div>
+<div class="timeline-banner" id="timeline-banner" hidden></div>
 <div id="event-timeline" class="timeline"></div>
 </div>
 
@@ -1009,6 +1054,7 @@ const colonyList = ${COLONY_LIST_JS};
 const nowEpoch = ${EPOCH};
 const timestamp = "${TIMESTAMP}";
 const totalAgents = ${AGENT_COUNT};
+const FED_NAME = ${FED_NAME_JS};
 DATAEOF
 
     cat <<'JSEOF'
@@ -1031,6 +1077,16 @@ function relTime(ts) {
   if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
   return Math.floor(diff/86400) + 'd ago';
 }
+
+function formatTimestamp(ms) {
+  if (!ms) return '';
+  const d = new Date(ms);
+  const pad = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+       + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+}
+
+const TIMELINE_CURSOR_KEY = 'dashboard.timeline.cursorMs.' + FED_NAME;
 
 // --- Refresh countdown ---
 (function() {
@@ -1377,21 +1433,68 @@ renderAgentTable();
 // --- Event Timeline ---
 (function() {
   const el = document.getElementById('event-timeline');
-  if (!events.length) {
-    el.innerHTML = '<span class="empty">No inter-agent events captured yet.</span>';
-    return;
+  const banner = document.getElementById('timeline-banner');
+  const cursor = parseInt(localStorage.getItem(TIMELINE_CURSOR_KEY) || '0', 10);
+  // Filter rule: entries with ts === 0 (no parseable timestamp) always pass
+  // through so the operator can still see them; entries with ts >= cursor
+  // pass; older entries are hidden until "Show all" is clicked.
+  const filtered = events.filter(e => !cursor || !e.ts || e.ts >= cursor);
+  const hidden = events.length - filtered.length;
+
+  if (banner) {
+    if (hidden > 0) {
+      banner.hidden = false;
+      banner.innerHTML = 'Hidden ' + hidden + ' entries before ' +
+        esc(formatTimestamp(cursor)) +
+        ' &mdash; <button type="button" class="timeline-banner-show-all" id="timeline-show-all">Show all</button>';
+      const showAll = document.getElementById('timeline-show-all');
+      if (showAll) {
+        showAll.addEventListener('click', () => {
+          localStorage.removeItem(TIMELINE_CURSOR_KEY);
+          location.reload();
+        });
+      }
+    } else {
+      banner.hidden = true;
+      banner.innerHTML = '';
+    }
   }
-  let html = '';
-  events.forEach(e => {
-    const tsDisplay = e.ts ? e.ts.split(/[T ]/)[1] || e.ts : '';
-    html += '<div class="timeline-entry">' +
-      '<span class="timeline-ts">' + esc(tsDisplay) + '</span>' +
-      '<span class="timeline-agent">' + esc(e.agent) + '</span>' +
-      '<span class="timeline-type ' + e.type + '">' + esc(e.type) + '</span>' +
-      '<span class="timeline-content">' + esc(e.content) + '</span>' +
-      '</div>';
-  });
-  el.innerHTML = html;
+
+  if (!filtered.length) {
+    el.innerHTML = '<span class="empty">No inter-agent events captured yet.</span>';
+  } else {
+    let html = '';
+    filtered.forEach(e => {
+      const tsDisplay = formatTimestamp(e.ts) || '?';
+      let tip;
+      if (e.ts) {
+        try { tip = new Date(e.ts).toISOString() + '\n' + relTime(e.ts / 1000); }
+        catch (err) { tip = String(e.ts); }
+      } else {
+        tip = 'no timestamp parsed from log line';
+      }
+      html += '<div class="timeline-entry">' +
+        '<span class="timeline-ts tooltip">' + esc(tsDisplay) +
+          '<span class="tip-text">' + esc(tip) + '</span>' +
+        '</span>' +
+        '<span class="timeline-agent">' + esc(e.agent) + '</span>' +
+        '<span class="timeline-type ' + e.type + '">' + esc(e.type) + '</span>' +
+        '<span class="timeline-content">' + esc(e.content) + '</span>' +
+        '</div>';
+    });
+    el.innerHTML = html;
+  }
+
+  // Wire Clear: stamp the cursor at "now" and reload (the dashboard's
+  // existing meta-refresh idiom — see <meta http-equiv="refresh"> at top).
+  const clearBtn = document.getElementById('timeline-clear-btn');
+  if (clearBtn) {
+    // TODO(#167): selective-clear in v2 — see issue
+    clearBtn.addEventListener('click', () => {
+      localStorage.setItem(TIMELINE_CURSOR_KEY, String(Date.now()));
+      location.reload();
+    });
+  }
 })();
 
 // --- Experience Growth Chart ---
@@ -1745,6 +1848,9 @@ function openDetail(agentName) {
   if (a.recent_experience && a.recent_experience.length > 0) {
     html += '<div class="exp-table"><table><tr><th>Time</th><th>Action</th><th>In</th><th>Outcome</th><th>Delta</th></tr>';
     a.recent_experience.slice().reverse().forEach(e => {
+      // recent_experience[].ts is epoch-SECONDS (written by agentis-core
+      // experience JSONL). Distinct from events[].ts which is epoch-ms
+      // after the #158 wire-shape change. Do not pre-divide here.
       const ts = e.ts ? relTime(e.ts) : '';
       const action = esc(String(e.action || '').slice(0, 30));
       const inp = esc(String(e.in || '').slice(0, 40));
@@ -1766,7 +1872,19 @@ function openDetail(agentName) {
   if (a.recent_logs && a.recent_logs.length > 0) {
     html += '<div class="log-feed">';
     a.recent_logs.forEach(l => {
-      html += '<div>' + esc(l) + '</div>';
+      // #158: replace leading raw 13-digit epoch-ms (agentis 1.3.0 log
+      // format) with human-readable timestamp so the modal does not show
+      // "1776250011452 tick manual" verbatim. Tooltip preserves the raw ms
+      // and ISO-UTC for audit copy-paste.
+      const m = String(l).match(/^(\d{13})\s+(.*)$/);
+      if (m) {
+        const ms = parseInt(m[1], 10);
+        const iso = new Date(ms).toISOString();
+        const human = formatTimestamp(ms);
+        html += '<div><span class="tooltip">' + esc(human) + '<span class="tip-text">' + esc(iso) + '\n' + esc(m[1]) + '</span></span> ' + esc(m[2]) + '</div>';
+      } else {
+        html += '<div>' + esc(l) + '</div>';
+      }
     });
     html += '</div>';
   } else {
