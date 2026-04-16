@@ -37,6 +37,9 @@ fi
 
 PORT="${2:-8420}"
 FED_NAME="$(basename "$FED_DIR")"
+# JSON-escaped form for safe embedding in JS string literal (handles
+# federation directories containing " or \).
+FED_NAME_JS="$(printf '%s' "$FED_NAME" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))')"
 DASH_DIR="$FED_DIR/.dashboard"
 HTML_FILE="$DASH_DIR/index.html"
 HISTORY_FILE="$DASH_DIR/history.json"
@@ -1051,7 +1054,7 @@ const colonyList = ${COLONY_LIST_JS};
 const nowEpoch = ${EPOCH};
 const timestamp = "${TIMESTAMP}";
 const totalAgents = ${AGENT_COUNT};
-const FED_NAME = "${FED_NAME}";
+const FED_NAME = ${FED_NAME_JS};
 DATAEOF
 
     cat <<'JSEOF'
@@ -1845,6 +1848,9 @@ function openDetail(agentName) {
   if (a.recent_experience && a.recent_experience.length > 0) {
     html += '<div class="exp-table"><table><tr><th>Time</th><th>Action</th><th>In</th><th>Outcome</th><th>Delta</th></tr>';
     a.recent_experience.slice().reverse().forEach(e => {
+      // recent_experience[].ts is epoch-SECONDS (written by agentis-core
+      // experience JSONL). Distinct from events[].ts which is epoch-ms
+      // after the #158 wire-shape change. Do not pre-divide here.
       const ts = e.ts ? relTime(e.ts) : '';
       const action = esc(String(e.action || '').slice(0, 30));
       const inp = esc(String(e.in || '').slice(0, 40));

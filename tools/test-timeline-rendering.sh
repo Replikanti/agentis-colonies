@@ -217,6 +217,38 @@ else
     fail "7: /kill regression — response missing 'ok' key" "body: $(head -c 400 "$RESP_FILE" 2>/dev/null)"
 fi
 
+# --- Test 8: unit-mismatch guard. relTime() expects epoch-SECONDS. The
+#     timeline IIFE works in epoch-ms (post-#158) and must divide by 1000
+#     before passing to relTime. Recent Experience modal works in epoch-
+#     seconds and must NOT divide. Lock both in to prevent the next
+#     refactor from mixing units. ---
+if python3 - "$HTML_FILE" <<'PY' 2>/dev/null
+import sys, re
+with open(sys.argv[1]) as f:
+    html = f.read()
+# Timeline IIFE must call relTime(e.ts / 1000) (or e.ts/1000) somewhere.
+m = re.search(r'// --- Event Timeline ---(.*?)// --- ', html, re.DOTALL)
+if not m:
+    sys.exit(1)
+timeline_body = m.group(1)
+if not re.search(r'relTime\(\s*e\.ts\s*/\s*1000\s*\)', timeline_body):
+    sys.exit(1)
+# Recent Experience modal must call relTime(e.ts) — no division. Locate
+# the modal block by its header marker.
+m2 = re.search(r'Recent Experience.*?(relTime\([^)]*\))', html, re.DOTALL)
+if not m2:
+    sys.exit(1)
+call = m2.group(1)
+if '/' in call or '* 1000' in call:
+    sys.exit(1)
+sys.exit(0)
+PY
+then
+    pass "8: unit contract — timeline divides ts/1000, recent_experience does not"
+else
+    fail "8: unit-mismatch guard tripped (relTime call shape changed)"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
