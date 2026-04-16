@@ -715,9 +715,13 @@ function setConfidence(agent, value) {
   // single-threaded and SSE adds more moving parts than this operator
   // tool warrants). If the real response lands before a given timer, the
   // real terminal state wins — see applyResult() below.
+  // Timers spread to match the server worst case: stop can take up to
+  // 12 s (5 s poll + 5 s SIGTERM + 2 s SIGKILL), spawn ~1 s, verify up
+  // to 15 s. We advance optimistically; the real terminal state wins on
+  // server response regardless.
   const t1 = setTimeout(() => toast.setStep('stop', 'active'), 400);
-  const t2 = setTimeout(() => { toast.setStep('stop', 'done'); toast.setStep('spawn', 'active'); }, 3500);
-  const t3 = setTimeout(() => { toast.setStep('spawn', 'done'); toast.setStep('verify', 'active'); }, 8000);
+  const t2 = setTimeout(() => { toast.setStep('stop', 'done'); toast.setStep('spawn', 'active'); }, 12000);
+  const t3 = setTimeout(() => { toast.setStep('spawn', 'done'); toast.setStep('verify', 'active'); }, 15000);
   const clearFakes = () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
 
   const body = 'agent=' + encodeURIComponent(agent) + '&value=' + encodeURIComponent(value);
@@ -1159,7 +1163,7 @@ trap 'kill $REGEN_PID 2>/dev/null; exit 0' INT TERM
 # with 400 (never pass user strings to subprocess unchecked, #105).
 ALL_AGENTS_CSV="$(IFS=,; echo "${ALL_AGENTS[*]}")"
 python3 - "$DASH_DIR" "$PORT" "$SCRIPT_PATH" "$FED_DIR" "$ALL_AGENTS_CSV" "$AGENT_COLONY_MAP" <<'PYSERVER'
-import sys, os, subprocess, json, time, signal, shutil, urllib.parse
+import sys, os, subprocess, json, time, signal, shutil, shlex, urllib.parse
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 serve_dir, port = sys.argv[1], int(sys.argv[2])
@@ -1313,31 +1317,27 @@ def cleanup_sidecars(agent_id):
     return removed
 
 
-def build_manual_command(colony, colony_dir, agent_file, env_overrides):
+def build_manual_command(colony, colony_dir, agent_file):
     """Single-line respawn command the operator can paste if auto-restart
-    fails. Mirrors the flags in each colony's start-colony.sh."""
-    parts = [f'cd {shlex_quote(colony_dir)}']
-    env_bits = []
-    for k, v in env_overrides.items():
-        env_bits.append(f'{k}={shlex_quote(v)}')
-    spawn = (
-        ' '.join(env_bits) + (' ' if env_bits else '') +
-        f'agentis daemon {shlex_quote(agent_file)}'
-        f' --colony {shlex_quote(colony)}'
+    fails. Mirrors the flags in each colony's start-colony.sh.
+
+    Env vars are referenced as $VARIABLE (not expanded) — the operator's
+    shell already has them exported via start-colony.sh. Embedding the
+    real GITLAB_TOKEN would leak credentials into the DOM, browser cache,
+    and DevTools (QA review #1).
+    """
+    env_refs = (
+        'GITLAB_URL="$GITLAB_URL" GITLAB_TOKEN="$GITLAB_TOKEN" '
+        'GITLAB_PROJECT="$GITLAB_PROJECT" GITLAB_ME="$GITLAB_ME" '
+        f'COLONY_DIR={shlex.quote(colony_dir)}'
+    )
+    return (
+        f'cd {shlex.quote(colony_dir)} && '
+        f'{env_refs} '
+        f'agentis daemon {shlex.quote(agent_file)}'
+        f' --colony {shlex.quote(colony)}'
         f' --enable-exec --enable-messaging --tick-interval 60000 &'
     )
-    parts.append(spawn)
-    return ' && '.join(parts)
-
-
-def shlex_quote(s):
-    # Local reimpl: avoid importing shlex in the PYSERVER heredoc scope;
-    # operator-facing shell snippet so single-quote wrapping is enough.
-    if s == '':
-        return "''"
-    if all(c.isalnum() or c in '@%+=:,./-_' for c in s):
-        return s
-    return "'" + s.replace("'", "'\\''") + "'"
 
 
 def restart_daemon(agent):
@@ -1386,7 +1386,7 @@ def restart_daemon(agent):
         'GITLAB_ME': gl_me,
         'COLONY_DIR': colony_dir,
     }
-    manual_cmd = build_manual_command(colony, colony_dir, agent_file, env_overrides)
+    manual_cmd = build_manual_command(colony, colony_dir, agent_file)
 
     # Resolve current daemon (may already be stopped — we still spawn).
     old = find_agent_daemon(agent)
@@ -1514,6 +1514,14 @@ def restart_daemon(agent):
             'manual_command': manual_cmd,
             'events': events,
         }
+
+    # Reap the launcher wrapper so it does not linger as a zombie in the
+    # dashboard's process table. The actual daemon child is already
+    # detached (start_new_session=True) and outlives the launcher.
+    try:
+        proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        pass
 
     rec('verify', 'ok',
         new_pid=new_daemon.get('pid'),
