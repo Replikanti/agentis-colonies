@@ -55,6 +55,10 @@ graph TD
 - An LLM backend (Claude CLI, Ollama, or any OpenAI-compatible API)
 - GitLab instance with API access
 
+## Operator scripts
+
+When you need to reliably stop a federation — agents, dashboard, registry sidecar files, with a backup tarball before cleanup — use [`tools/kill-federation.sh`](./tools/kill-federation.sh) (or its per-federation wrapper, e.g. `dev-apprenticeship/kill-federation.sh`). It bypasses the `agentis` CLI and uses OS signals with post-kill verification, so it works even when `agentis daemon stop --all` reports false success or false failure. Run with `--help` for options including `--dry-run` and `--json`.
+
 ## License
 
 Apache 2.0. See [LICENSE](./LICENSE).
