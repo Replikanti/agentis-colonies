@@ -51,24 +51,14 @@ CONFIG_FILE="$SCRIPT_DIR/auto-promote-config.yaml"
 JOURNAL_FILE="$SCRIPT_DIR/auto-promote-journal.jsonl"
 LOCK_FILE="$SCRIPT_DIR/.auto-promote.lock"
 
-# --- Safety guard 2: Lock file ---
+# --- Safety guard 2: Lock file (flock, atomic) ---
 
-cleanup_lock() {
-    rm -f "$LOCK_FILE"
-}
-
-if [ -f "$LOCK_FILE" ]; then
-    LOCK_PID=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
-    if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
-        echo "Another auto-promote instance is running (pid $LOCK_PID). Exiting."
-        exit 0
-    fi
-    # Stale lock — previous run crashed. Clean up and proceed.
-    rm -f "$LOCK_FILE"
+exec 200>"$LOCK_FILE"
+if ! flock -n 200; then
+    echo "Another auto-promote instance is running. Exiting."
+    exit 0
 fi
-
-echo $$ > "$LOCK_FILE"
-trap cleanup_lock EXIT
+# fd 200 is held until the process exits — no cleanup trap needed.
 
 # --- Logging + journal helpers ---
 
@@ -77,9 +67,11 @@ log() {
 }
 
 # Append a structured JSON line to the journal.
-# Args: agent, decision, detail_json
+# Args: agent, decision, evidence_json [, from, to]
+# Matches the spec format from #148: top-level from/to + evidence object.
 journal_append() {
-    local agent="$1" decision="$2" detail_json="$3"
+    local agent="$1" decision="$2" evidence_json="$3"
+    local step_from="${4:-}" step_to="${5:-}"
     python3 -c "
 import json, sys, time
 entry = {
@@ -88,10 +80,16 @@ entry = {
     'agent': sys.argv[1],
     'decision': sys.argv[2],
     'dry_run': sys.argv[3] == 'true',
-    'detail': json.loads(sys.argv[4]),
+    'evidence': json.loads(sys.argv[4]),
 }
+if sys.argv[5]:
+    try: entry['from'] = float(sys.argv[5])
+    except ValueError: pass
+if sys.argv[6]:
+    try: entry['to'] = float(sys.argv[6])
+    except ValueError: pass
 print(json.dumps(entry))
-" "$agent" "$decision" "$DRY_RUN" "$detail_json" >> "$JOURNAL_FILE"
+" "$agent" "$decision" "$DRY_RUN" "$evidence_json" "$step_from" "$step_to" >> "$JOURNAL_FILE"
 }
 
 # --- Parse config ---
@@ -546,7 +544,8 @@ while IFS='|' read -r decision agent colony step_from step_to reason evidence_js
                 log "  [dry-run] Would run: agentis memo set ${agent}:confidence $step_to"
                 log "  [dry-run] Would restart daemon for $agent"
                 journal_append "$agent" "promote" \
-                    "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['from']=$step_from; e['to']=$step_to; e['action']='dry-run'; print(json.dumps(e))" "$evidence_json")"
+                    "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['action']='dry-run'; print(json.dumps(e))" "$evidence_json")" \
+                    "$step_from" "$step_to"
             else
                 # Write new confidence to memo (cwd=FED_DIR for .agentis/ resolution)
                 log "  Writing confidence: agentis memo set ${agent}:confidence $step_to"
@@ -555,7 +554,8 @@ while IFS='|' read -r decision agent colony step_from step_to reason evidence_js
                 else
                     log "  WARNING: memo set failed for $agent"
                     journal_append "$agent" "promote-failed" \
-                        "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['from']=$step_from; e['to']=$step_to; e['error']='memo_set_failed'; print(json.dumps(e))" "$evidence_json")"
+                        "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['error']='memo_set_failed'; print(json.dumps(e))" "$evidence_json")" \
+                        "$step_from" "$step_to"
                     continue
                 fi
 
@@ -578,7 +578,8 @@ while IFS='|' read -r decision agent colony step_from step_to reason evidence_js
                 if [ -z "$AGENT_AG_FILE" ]; then
                     log "  WARNING: could not find .ag file for $agent, skipping restart"
                     journal_append "$agent" "promote-partial" \
-                        "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['from']=$step_from; e['to']=$step_to; e['action']='memo-only'; e['warning']='ag_file_not_found'; print(json.dumps(e))" "$evidence_json")"
+                        "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['action']='memo-only'; e['warning']='ag_file_not_found'; print(json.dumps(e))" "$evidence_json")" \
+                        "$step_from" "$step_to"
                     continue
                 fi
 
@@ -628,7 +629,8 @@ else:
                 if [ "$SPAWN_ENV" = "__INCOMPLETE__" ] || [ -z "$SPAWN_ENV" ]; then
                     log "  WARNING: incomplete [gitlab] in $COLONY_TOML, skipping restart"
                     journal_append "$agent" "promote-partial" \
-                        "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['from']=$step_from; e['to']=$step_to; e['action']='memo-only'; e['warning']='incomplete_colony_toml'; print(json.dumps(e))" "$evidence_json")"
+                        "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['action']='memo-only'; e['warning']='incomplete_colony_toml'; print(json.dumps(e))" "$evidence_json")" \
+                        "$step_from" "$step_to"
                     continue
                 fi
 
@@ -663,7 +665,8 @@ for d in daemons:
                 log "  Daemon respawned for $agent"
 
                 journal_append "$agent" "promote" \
-                    "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['from']=$step_from; e['to']=$step_to; e['action']='executed'; print(json.dumps(e))" "$evidence_json")"
+                    "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['action']='executed'; print(json.dumps(e))" "$evidence_json")" \
+                    "$step_from" "$step_to"
             fi
             PROMOTE_COUNT=$((PROMOTE_COUNT + 1))
             ;;
