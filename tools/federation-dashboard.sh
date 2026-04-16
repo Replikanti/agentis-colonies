@@ -1866,7 +1866,19 @@ function openDetail(agentName) {
   if (a.recent_logs && a.recent_logs.length > 0) {
     html += '<div class="log-feed">';
     a.recent_logs.forEach(l => {
-      html += '<div>' + esc(l) + '</div>';
+      // #158: replace leading raw 13-digit epoch-ms (agentis 1.3.0 log
+      // format) with human-readable timestamp so the modal does not show
+      // "1776250011452 tick manual" verbatim. Tooltip preserves the raw ms
+      // and ISO-UTC for audit copy-paste.
+      const m = String(l).match(/^(\d{13})\s+(.*)$/);
+      if (m) {
+        const ms = parseInt(m[1], 10);
+        const iso = new Date(ms).toISOString();
+        const human = formatTimestamp(ms);
+        html += '<div><span class="tooltip">' + esc(human) + '<span class="tip-text">' + esc(iso) + '\n' + esc(m[1]) + '</span></span> ' + esc(m[2]) + '</div>';
+      } else {
+        html += '<div>' + esc(l) + '</div>';
+      }
     });
     html += '</div>';
   } else {
