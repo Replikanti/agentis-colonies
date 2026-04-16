@@ -302,20 +302,21 @@ if os.path.isdir(log_dir):
                     if ts_match:
                         ts_str = ts_match.group(1)
                         content = ts_match.group(2)
-                    # Classify event type
+                    # Classify event type (word-boundary match to avoid
+                    # false positives like "react"→action, "referred"→error)
                     etype = 'log'
                     cl = content.lower()
-                    if 'emit' in cl:
+                    if re.search(r'\bemit\b', cl):
                         etype = 'emit'
-                    elif 'recv' in cl or 'listen' in cl:
+                    elif re.search(r'\brecv\b|\blisten\b', cl):
                         etype = 'recv'
-                    elif 'suggest' in cl:
+                    elif re.search(r'\bsuggest', cl):
                         etype = 'suggest'
-                    elif 'error' in cl or 'err' in cl:
+                    elif re.search(r'\berror\b|\bfailed\b', cl):
                         etype = 'error'
-                    elif 'action' in cl or 'act' in cl or 'draft' in cl:
+                    elif re.search(r'\baction\b|\bdraft\b', cl):
                         etype = 'action'
-                    elif 'finding' in cl:
+                    elif re.search(r'\bfinding', cl):
                         etype = 'finding'
                     # Only include interesting events in timeline
                     if etype != 'log':
@@ -864,7 +865,7 @@ colonyList.forEach((c, i) => colonyColors[c] = palette[i % palette.length]);
 
 document.getElementById('clock').textContent = timestamp;
 
-function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 
 function relTime(ts) {
   if (!ts) return '';
@@ -1018,9 +1019,6 @@ function renderAgentTable() {
       if (ch && ch.prev !== null && ch.prev !== undefined) {
         if (ch.value > ch.prev) confHtml += '<span class="conf-indicator up">\u25B2</span>';
         else if (ch.value < ch.prev) confHtml += '<span class="conf-indicator down">\u25BC</span>';
-      } else if (ch) {
-        // Single change in last 24h — check direction vs current
-        if (a.confidence >= 0.6 && a.confidence < 0.85) confHtml += '<span class="conf-indicator up">\u25B2</span>';
       }
     }
 
@@ -1321,7 +1319,7 @@ function openDetail(agentName) {
   html += '<div class="modal-meta-item"><span class="modal-meta-label">Confidence</span><span class="modal-meta-value">' + (a.confidence != null ? a.confidence.toFixed(2) : '\u2014') + '</span></div>';
   // #145: confidence_generation + confidence_written_at
   if (a.confidence_generation != null) {
-    html += '<div class="modal-meta-item"><span class="modal-meta-label">Generation</span><span class="modal-meta-value">' + a.confidence_generation + '</span></div>';
+    html += '<div class="modal-meta-item"><span class="modal-meta-label">Generation</span><span class="modal-meta-value">' + esc(a.confidence_generation) + '</span></div>';
   }
   if (a.confidence_written_at) {
     html += '<div class="modal-meta-item"><span class="modal-meta-label">Written</span><span class="modal-meta-value">' + relTime(a.confidence_written_at) + '</span></div>';
@@ -1420,19 +1418,8 @@ function openDetail(agentName) {
   }
   html += '</div>';
 
-  // Action buttons
+  // Action buttons (uses global CONF_STEPS / nextStep)
   html += '<div class="action-bar">';
-  const CONF_STEPS = [0.5, 0.6, 0.85];
-  function nextStep(cur, dir) {
-    let idx = 0, best = Math.abs(cur - CONF_STEPS[0]);
-    for (let i = 1; i < CONF_STEPS.length; i++) {
-      const d = Math.abs(cur - CONF_STEPS[i]);
-      if (d < best) { best = d; idx = i; }
-    }
-    const target = idx + dir;
-    if (target < 0 || target >= CONF_STEPS.length) return null;
-    return CONF_STEPS[target];
-  }
   const curConf = a.confidence != null ? a.confidence : 0;
   const up = nextStep(curConf, 1);
   const down = nextStep(curConf, -1);
@@ -1767,7 +1754,7 @@ trap 'kill $REGEN_PID 2>/dev/null; exit 0' INT TERM
 # match exactly or the endpoint rejects with 400.
 ALL_AGENTS_CSV="$(IFS=,; echo "${ALL_AGENTS[*]}")"
 python3 - "$DASH_DIR" "$PORT" "$SCRIPT_PATH" "$FED_DIR" "$ALL_AGENTS_CSV" "$AGENT_COLONY_MAP" <<'PYSERVER'
-import sys, os, subprocess, json, time, signal, shutil, shlex, threading, urllib.parse
+import sys, os, subprocess, json, time, signal, shutil, shlex, threading, re, urllib.parse
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 serve_dir, port = sys.argv[1], int(sys.argv[2])
@@ -1904,8 +1891,39 @@ def cleanup_sidecars(agent_id):
     return removed
 
 
-def build_manual_command(colony, colony_dir, agent_file):
+def resolve_tick_interval(colony, agent):
+    """Read the per-agent tick-interval from the colony's start-colony.sh.
+
+    Parses the `declare -A TICK_INTERVALS=( ... )` block to find the
+    interval for the given agent name. Falls back to 60000ms if the
+    script is missing, unreadable, or the agent is not in the map.
+    This honours #146 (reactive colonies at 300s, triage router/prioritizer
+    at 180s) so dashboard-triggered restarts resume at the correct rate.
+    """
+    script = os.path.join(fed_dir, colony, 'scripts', 'start-colony.sh')
+    try:
+        with open(script, 'r', encoding='utf-8') as f:
+            in_map = False
+            for line in f:
+                line = line.strip()
+                if line.startswith('declare -A TICK_INTERVALS'):
+                    in_map = True
+                    continue
+                if in_map:
+                    if line == ')':
+                        break
+                    # Parse ["agent_name"]=interval
+                    m = re.match(r'\["([^"]+)"\]=(\d+)', line)
+                    if m and m.group(1) == agent:
+                        return m.group(2)
+    except OSError:
+        pass
+    return '60000'
+
+
+def build_manual_command(colony, colony_dir, agent_file, agent):
     """Single-line respawn command the operator can paste if auto-restart fails."""
+    interval = resolve_tick_interval(colony, agent)
     env_refs = (
         'GITLAB_URL="$GITLAB_URL" GITLAB_TOKEN="$GITLAB_TOKEN" '
         'GITLAB_PROJECT="$GITLAB_PROJECT" GITLAB_ME="$GITLAB_ME" '
@@ -1916,7 +1934,7 @@ def build_manual_command(colony, colony_dir, agent_file):
         f'{env_refs} '
         f'agentis daemon {shlex.quote(agent_file)}'
         f' --colony {shlex.quote(colony)}'
-        f' --enable-exec --enable-messaging --tick-interval 60000 &'
+        f' --enable-exec --enable-messaging --tick-interval {interval} &'
     )
 
 
@@ -1971,7 +1989,8 @@ def restart_daemon(agent):
         'GITLAB_ME': gl_me,
         'COLONY_DIR': colony_dir,
     }
-    manual_cmd = build_manual_command(colony, colony_dir, agent_file)
+    interval = resolve_tick_interval(colony, agent)
+    manual_cmd = build_manual_command(colony, colony_dir, agent_file, agent)
 
     old = find_agent_daemon(agent)
     old_agent_id = (old or {}).get('agent_id') or ''
@@ -2040,7 +2059,7 @@ def restart_daemon(agent):
                 '--colony', colony,
                 '--enable-exec',
                 '--enable-messaging',
-                '--tick-interval', '60000',
+                '--tick-interval', interval,
             ],
             cwd=colony_dir,
             env=env,
@@ -2426,11 +2445,18 @@ class Handler(SimpleHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(f'exec failed: {e}'.encode())
                 return
+            out = (result.stdout or '').strip()
+            err = (result.stderr or '').strip()
+            if result.returncode != 0:
+                self.send_response(500)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                msg = (err or out or 'start-federation.sh failed').strip()
+                self.wfile.write(msg.encode() or b'start-federation.sh failed')
+                return
             self.send_response(200)
             self.send_header('Content-Type', 'text/plain')
             self.end_headers()
-            out = (result.stdout or '').strip()
-            err = (result.stderr or '').strip()
             self.wfile.write((out + ('\n' + err if err else '') or 'Federation started').encode())
             return
 
