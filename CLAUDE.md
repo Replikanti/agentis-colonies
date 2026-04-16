@@ -17,7 +17,7 @@ Pre-built agent colonies for the [Agentis](https://github.com/Replikanti/agentis
 bash -n scripts/gitlab-api.sh   # Bash syntax check on any script
 ```
 
-Colony lint must pass with 0 failures before merge. Current baseline: 48 passed, 5 skipped (shellcheck not installed).
+Colony lint must pass with 0 failures before merge. Current baseline: 49 passed, 5 skipped (shellcheck not installed).
 
 ## Colony structure
 
@@ -97,11 +97,11 @@ release:changelog_draft      -> version_bumper
 | `new-colony.sh` | Scaffold a new colony (creates dirs, example config, starter scripts) |
 | `check-exec-sh.sh` | Grep-based check for unsafe string concat into `exec sh`. See `check-exec-sh.md` for known limitations. |
 | `parse-toml.sh` | Shared TOML parser sourced by all start-colony.sh scripts |
-| `federation-dashboard.sh` | Generic web dashboard for any federation (auto-discovers colonies/agents, kill switch, phase ETA). Promote/demote/evolve buttons gate on per-agent `.ag` `confidence_gates` + fitness signal (#160) — disabled buttons open a "Why" sidebar with evidence + remediation. |
+| `federation-dashboard.sh` | Generic web dashboard for any federation (auto-discovers colonies/agents, kill switch, phase ETA). Promote/demote/evolve buttons gate on per-agent `.ag` `confidence_gates` + fitness signal (#160) — disabled buttons open a "Why" sidebar with evidence + remediation. Kill button invokes tools/kill-federation.sh --json and surfaces failures in a persistent notification region rather than overwriting the button label (#161). |
 | `auto-promote.sh` | Layer 1 auto-promote/auto-evolve cron script — evaluates per-agent fitness, promotes or evolves (#148) |
 | `auto-promote-config.yaml` | Decision rules for auto-promote (thresholds, promote steps, evolve triggers, dry_run flag) |
 | `resolve-tick-interval.py` | Shared helper: reads `tick_interval_for()` case statement (or legacy `TICK_INTERVALS`) from start-colony.sh for a given agent+colony (used by dashboard + auto-promote) |
-| `kill-federation.sh` | OS-level reliable shutdown of a federation (agents + dashboard + registry sidecar files + backup). Bypasses `agentis daemon stop` bugs by using SIGTERM/SIGKILL with verification. Supports `--dry-run` and `--json` for dashboard kill-button integration (#162) |
+| `kill-federation.sh` | OS-level reliable shutdown of a federation (agents + dashboard + registry sidecar files + backup). Bypasses `agentis daemon stop` bugs by using SIGTERM/SIGKILL with verification. Supports `--dry-run` and `--json` for dashboard kill-button integration (#162) — consumed by the dashboard /kill endpoint (#161). |
 
 ## End-user scripts (in dev-apprenticeship/)
 

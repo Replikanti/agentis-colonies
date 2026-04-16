@@ -859,6 +859,48 @@ HEADEOF
     from { opacity: 0; transform: translateY(8px); }
     to   { opacity: 1; transform: translateY(0); }
   }
+
+  /* --- Notification region (persistent, in-page; for kill-button outcomes) --- */
+  #notification-region { padding: 0 16px; }
+  .notice {
+    margin: 8px 0; padding: 10px 12px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 4px; color: var(--text);
+    font-family: 'Share Tech Mono', 'Courier New', monospace;
+    font-size: 12px; line-height: 1.6;
+  }
+  .notice-err { border-color: var(--red); box-shadow: 0 0 20px rgba(255,68,68,0.4); color: var(--red); }
+  .notice-ok  { border-color: var(--green); box-shadow: 0 0 20px rgba(0,255,0,0.35); color: var(--green); }
+  .notice-summary {
+    font-size: 11px; letter-spacing: 2px; text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .notice-err .notice-summary { color: var(--red); text-shadow: 0 0 6px rgba(255,68,68,0.4); }
+  .notice-ok  .notice-summary { color: var(--green); text-shadow: 0 0 6px rgba(0,255,0,0.4); }
+  .notice details { margin-top: 6px; color: var(--text); }
+  .notice details summary {
+    cursor: pointer; color: var(--muted); font-size: 11px;
+    user-select: none;
+  }
+  .notice details summary:hover { color: var(--text); }
+  .notice .notice-json {
+    margin: 6px 0 0; padding: 6px 8px;
+    background: rgba(0,255,255,0.05);
+    border-left: 2px solid var(--cyan); color: var(--cyan);
+    font-family: 'Share Tech Mono', 'Courier New', monospace;
+    font-size: 11px; white-space: pre-wrap; word-break: break-all;
+    max-height: 240px; overflow: auto;
+  }
+  .notice-actions { display: flex; gap: 8px; margin-top: 8px; }
+  .notice-dismiss, .notice-copy {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--muted); font-family: 'Share Tech Mono', monospace;
+    font-size: 10px; padding: 4px 10px; cursor: pointer;
+    text-transform: uppercase; letter-spacing: 1px;
+    border-radius: 2px; transition: all 0.15s;
+  }
+  .notice-dismiss:hover, .notice-copy:hover { color: var(--text); border-color: var(--text); }
+
   .tooltip {
     position: relative; cursor: help;
   }
@@ -890,9 +932,13 @@ HTMLEOF
       <div class="time" id="clock"></div>
       <div><span id="countdown">auto-refresh in 60s</span> <button class="refresh-btn" id="refresh-btn" onclick="manualRefresh()" title="Refresh now (press 'r')" aria-label="Refresh now">&#x21bb;</button></div>
     </div>
-    <button class="kill-btn" id="kill-btn" onclick="killSwitch()">Kill Federation</button>
+    <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
+      <button class="kill-btn" id="kill-btn" onclick="killSwitch()">Kill Federation</button>
+      <label style="font-size:10px;color:var(--muted);letter-spacing:1px;cursor:pointer;"><input type="checkbox" id="kill-no-backup" style="vertical-align:middle;margin-right:4px;"> skip backup</label>
+    </div>
   </div>
 </div>
+<div id="notification-region" aria-live="polite"></div>
 HEADEREOF
 
     cat <<'HTMLEOF'
@@ -2017,10 +2063,17 @@ function startFederation() {
     .catch(e => { showSimpleToast('Error: ' + e.message, 'var(--red)'); });
 }
 
-function showSimpleToast(msg, color) {
-  document.querySelectorAll('.toast').forEach(t => t.remove());
+function showSimpleToast(msg, color, kind) {
+  // Only dismiss prior *success* toasts so a transient "ok" message can
+  // make room for the next one. Errors live in #notification-region now
+  // (see showError) and progress toasts manage their own lifecycle, so
+  // we must not nuke them here.
+  document.querySelectorAll('.toast').forEach(t => {
+    if (t.dataset && t.dataset.kind === 'success') t.remove();
+  });
   const el = document.createElement('div');
   el.className = 'toast';
+  if (kind) { el.dataset.kind = kind; }
   el.style.borderColor = color;
   el.style.boxShadow = '0 0 20px ' + color + '50';
   el.innerHTML = '<div class="toast-head" style="color:' + color + '">' + esc(msg) + '</div><div class="toast-foot">Click to dismiss</div>';
@@ -2029,31 +2082,153 @@ function showSimpleToast(msg, color) {
   setTimeout(() => { if (el.parentNode) el.remove(); }, 15000);
 }
 
-// --- Kill switch ---
-let killArmed = false;
-function killSwitch() {
-  const btn = document.getElementById('kill-btn');
-  if (!killArmed) {
-    killArmed = true;
-    btn.textContent = 'Confirm Kill';
-    btn.className = 'kill-btn confirm';
-    setTimeout(() => { if (killArmed) { killArmed = false; btn.textContent = 'Kill Federation'; btn.className = 'kill-btn'; } }, 5000);
-    return;
+// Render a persistent error notice into #notification-region. The button
+// label is NEVER touched — issue #161 antipattern. `detail` is rendered
+// inside a collapsible <details> block as preformatted text (raw JSON or
+// stderr_tail) with a copy + dismiss affordance.
+function showError(summary, detail) {
+  const region = document.getElementById('notification-region');
+  if (!region) { return; }
+  const el = document.createElement('div');
+  el.className = 'notice notice-err';
+  const head = document.createElement('div');
+  head.className = 'notice-summary';
+  head.textContent = String(summary || 'Error');
+  el.appendChild(head);
+  const detailText = (detail == null) ? '' : (typeof detail === 'string' ? detail : JSON.stringify(detail, null, 2));
+  if (detailText) {
+    const det = document.createElement('details');
+    const sum = document.createElement('summary');
+    sum.textContent = 'Show details';
+    det.appendChild(sum);
+    const pre = document.createElement('pre');
+    pre.className = 'notice-json';
+    pre.textContent = detailText;
+    det.appendChild(pre);
+    el.appendChild(det);
   }
-  btn.textContent = 'Killing...';
-  btn.className = 'kill-btn killed';
-  fetch('/kill', { method: 'POST' })
-    .then(r => r.text().then(t => ({ok: r.ok, text: t})))
-    .then(({ok, text}) => {
-      if (!ok) { btn.textContent = 'Kill Failed: ' + text.split('\n')[0].slice(0,60); btn.className = 'kill-btn'; killArmed = false; return; }
-      const first = text.split('\n')[0] || 'Federation Stopped';
-      btn.textContent = first;
-      if (!/^0 /.test(first)) {
-        const m = document.querySelector('meta[http-equiv="refresh"]');
-        if (m) m.remove();
-      } else { btn.className = 'kill-btn'; killArmed = false; }
+  const actions = document.createElement('div');
+  actions.className = 'notice-actions';
+  if (detailText) {
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'notice-copy';
+    copyBtn.type = 'button';
+    copyBtn.textContent = 'Copy';
+    copyBtn.addEventListener('click', () => {
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(detailText);
+          copyBtn.textContent = 'Copied';
+          setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
+        }
+      } catch (_) { /* clipboard may be unavailable; silent */ }
+    });
+    actions.appendChild(copyBtn);
+  }
+  const dismiss = document.createElement('button');
+  dismiss.className = 'notice-dismiss';
+  dismiss.type = 'button';
+  dismiss.textContent = 'Dismiss';
+  dismiss.addEventListener('click', () => { el.remove(); });
+  actions.appendChild(dismiss);
+  el.appendChild(actions);
+  region.appendChild(el);
+  return el;
+}
+
+// --- Kill switch ---
+// State machine. The button label is a pure function of `state`; it is
+// NEVER derived from server response text (issue #161). Errors land in
+// the persistent #notification-region via showError().
+//   idle       -> "Kill Federation",     enabled
+//   armed      -> "Confirm Kill",        enabled (5s auto-revert)
+//   pending    -> "Killing\u2026",        disabled
+//   succeeded  -> "Federation Stopped",  disabled (terminal)
+//   failed     -> resets to idle so operator can retry
+let killArmed = false;
+let killArmTimer = null;
+function setKillState(state) {
+  const btn = document.getElementById('kill-btn');
+  if (!btn) { return; }
+  if (killArmTimer) { clearTimeout(killArmTimer); killArmTimer = null; }
+  switch (state) {
+    case 'idle':
+      killArmed = false;
+      btn.textContent = 'Kill Federation';
+      btn.className = 'kill-btn';
+      btn.disabled = false;
+      break;
+    case 'armed':
+      killArmed = true;
+      btn.textContent = 'Confirm Kill';
+      btn.className = 'kill-btn confirm';
+      btn.disabled = false;
+      killArmTimer = setTimeout(() => {
+        if (killArmed) { setKillState('idle'); }
+      }, 5000);
+      break;
+    case 'pending':
+      killArmed = false;
+      btn.textContent = 'Killing\u2026';
+      btn.className = 'kill-btn killed';
+      btn.disabled = true;
+      break;
+    case 'succeeded': {
+      killArmed = false;
+      btn.textContent = 'Federation Stopped';
+      btn.className = 'kill-btn killed';
+      btn.disabled = true;
+      // Stop the meta auto-refresh — federation is gone, polling is moot.
+      const m = document.querySelector('meta[http-equiv="refresh"]');
+      if (m) { m.remove(); }
+      break;
+    }
+    case 'failed':
+      // Operator can retry; error rendering is the caller's job (showError).
+      setKillState('idle');
+      break;
+    default:
+      setKillState('idle');
+  }
+}
+
+function killSwitch() {
+  if (!killArmed) { setKillState('armed'); return; }
+  setKillState('pending');
+  const noBackup = !!(document.getElementById('kill-no-backup') || {}).checked;
+  fetch('/kill', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ no_backup: noBackup }),
+  })
+    .then(r => r.text().then(text => {
+      let parsed = null;
+      try { parsed = JSON.parse(text); } catch (_) { parsed = null; }
+      return { httpOk: r.ok, status: r.status, text: text, parsed: parsed };
+    }))
+    .then(({ httpOk, status, text, parsed }) => {
+      if (!parsed) {
+        setKillState('failed');
+        showError('Kill failed (HTTP ' + status + ', non-JSON response)', text || '(empty body)');
+        return;
+      }
+      if (parsed.ok) {
+        setKillState('succeeded');
+        return;
+      }
+      setKillState('failed');
+      const summary = parsed.summary || ('Kill failed (exit ' + (parsed.exit != null ? parsed.exit : '?') + ')');
+      const detail = {
+        exit: parsed.exit,
+        json: parsed.json || null,
+        stderr_tail: parsed.stderr_tail || '',
+      };
+      showError(summary, detail);
     })
-    .catch(() => { btn.textContent = 'Kill Failed'; btn.className = 'kill-btn'; killArmed = false; });
+    .catch(e => {
+      setKillState('failed');
+      showError('Kill request failed (network error)', String((e && e.message) || e));
+    });
 }
 </script>
 </body>
@@ -2111,6 +2286,15 @@ confidence_log = os.path.join(serve_dir, 'confidence-log.jsonl')
 # path to this federation-dashboard.sh; the resolver lives next to it.
 _tools_dir = os.path.dirname(os.path.realpath(script_path))
 _resolver_script = os.path.join(_tools_dir, 'resolve-tick-interval.py')
+
+# Path to kill-federation.sh (#161). Resolved once at server start so the
+# /kill endpoint never has to re-discover it. Fail fast with a clear error
+# if the sibling script is missing — there is no graceful fallback.
+kill_script = os.path.join(_tools_dir, 'kill-federation.sh')
+assert os.path.isfile(kill_script), (
+    f'kill-federation.sh not found next to dashboard script: {kill_script}. '
+    'The dashboard /kill endpoint requires it. See #161 / #162.'
+)
 
 
 def resolve_tick_interval(agent, colony_dir):
@@ -2795,35 +2979,76 @@ class Handler(SimpleHTTPRequestHandler):
             return
 
         if self.path == '/kill':
+            # Issue #161: shell out to tools/kill-federation.sh (shipped in
+            # #162) instead of the spuriously-failing `agentis daemon stop
+            # --all`. Always reply with structured JSON so the dashboard
+            # button label never has to be derived from server text.
+            length = int(self.headers.get('Content-Length', '0') or '0')
+            no_backup = False
+            if 0 < length <= 4096:
+                try:
+                    raw = self.rfile.read(length).decode('utf-8', errors='replace')
+                    body = json.loads(raw) if raw.strip() else {}
+                    no_backup = bool(body.get('no_backup', False))
+                except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                    no_backup = False
+            cmd = [kill_script, '--json', '--fed-dir', fed_dir]
+            if no_backup:
+                cmd.append('--no-backup')
             try:
                 result = subprocess.run(
-                    ['agentis', 'daemon', 'stop', '--all'],
-                    capture_output=True, text=True,
-                    cwd=fed_dir, timeout=15,
+                    cmd, capture_output=True, text=True,
+                    cwd=fed_dir, timeout=60,
                 )
             except (OSError, subprocess.SubprocessError) as e:
                 self.send_response(500)
-                self.send_header('Content-Type', 'text/plain')
+                self.send_header('Content-Type', 'application/json')
                 self.end_headers()
-                self.wfile.write(f'exec failed: {e}'.encode())
+                self.wfile.write(json.dumps({
+                    'ok': False,
+                    'exit': -1,
+                    'summary': f'kill-federation.sh exec failed: {e}',
+                    'json': None,
+                    'stderr_tail': '',
+                }).encode())
                 return
-            err = (result.stderr or '').strip()
-            lines = [l for l in err.splitlines() if l]
-            stopped = [l for l in lines if l.startswith('stop signal sent:')]
-            if result.returncode != 0:
-                self.send_response(500)
-                self.send_header('Content-Type', 'text/plain')
-                self.end_headers()
-                self.wfile.write((err or 'agentis daemon stop failed').encode())
-                return
+            stdout = result.stdout or ''
+            stderr = result.stderr or ''
+            # kill-federation.sh emits a single trailing JSON line on stdout.
+            parsed_json = None
+            for line in reversed(stdout.splitlines()):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    parsed_json = json.loads(line)
+                    break
+                except (ValueError, json.JSONDecodeError):
+                    continue
+            exit_code = result.returncode
+            if exit_code == 0:
+                summary = 'Federation stopped cleanly'
+            elif exit_code == 1:
+                remaining = (parsed_json or {}).get('registry_remaining', '?') if parsed_json else '?'
+                summary = f'Federation not fully clean (exit 1, registry_remaining={remaining})'
+            elif exit_code == 2:
+                summary = 'kill-federation.sh: bad invocation (exit 2)'
+            else:
+                summary = f'kill-federation.sh failed (exit {exit_code})'
+            stderr_tail = stderr[-2048:] if len(stderr) > 2048 else stderr
             self.send_response(200)
-            self.send_header('Content-Type', 'text/plain')
+            self.send_header('Content-Type', 'application/json')
             self.end_headers()
-            summary = f'{len(stopped)} daemon(s) stopped'
-            body = summary + ('\n' + err if err else '')
-            self.wfile.write(body.encode())
-        else:
-            self.send_error(404)
+            self.wfile.write(json.dumps({
+                'ok': exit_code == 0,
+                'exit': exit_code,
+                'summary': summary,
+                'json': parsed_json,
+                'stderr_tail': stderr_tail,
+            }).encode())
+            return
+
+        self.send_error(404)
 
     def log_message(self, format, *args):
         pass
