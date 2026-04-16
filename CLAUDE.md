@@ -45,7 +45,7 @@ colony-name/
 
 ## Script conventions
 
-- `start-colony.sh`: symlink-safe `$0` resolution via python3, sources `tools/parse-toml.sh`, exports `GITLAB_URL`/`GITLAB_TOKEN`/`GITLAB_PROJECT`, launches daemons with `--colony <name> --tick-interval "$interval"` where `interval` is looked up per-agent in a local `TICK_INTERVALS` map (fallback 60000ms). Reactive colonies (release, code-review) run at 300000ms, triage's router/prioritizer at 180000ms, everything else at 60000ms. See #146 for rationale.
+- `start-colony.sh`: symlink-safe `$0` resolution via python3, sources `tools/parse-toml.sh`, exports `GITLAB_URL`/`GITLAB_TOKEN`/`GITLAB_PROJECT`, launches daemons with `--colony <name> --tick-interval "$interval"` where `interval` is looked up per-agent via a local `tick_interval_for()` case function (fallback 60000ms). Reactive colonies (release, code-review) run at 300000ms, triage's router/prioritizer at 180000ms, everything else at 60000ms. See #146 for rationale.
 - `gitlab-api.sh`: `emit_error()` for all error messages, `exit 2` for unknown flags, `python3 json.dumps` for all POST/PUT body construction. Read endpoints use `gl_get`/`gl_get_q`, write endpoints use `gl_post`/`gl_put`.
 
 ## Federation event wiring
@@ -100,7 +100,7 @@ release:changelog_draft      -> version_bumper
 | `federation-dashboard.sh` | Generic web dashboard for any federation (auto-discovers colonies/agents, kill switch, phase ETA) |
 | `auto-promote.sh` | Layer 1 auto-promote/auto-evolve cron script — evaluates per-agent fitness, promotes or evolves (#148) |
 | `auto-promote-config.yaml` | Decision rules for auto-promote (thresholds, promote steps, evolve triggers, dry_run flag) |
-| `resolve-tick-interval.py` | Shared helper: reads TICK_INTERVALS from start-colony.sh for a given agent+colony (used by dashboard + auto-promote) |
+| `resolve-tick-interval.py` | Shared helper: reads `tick_interval_for()` case statement (or legacy `TICK_INTERVALS`) from start-colony.sh for a given agent+colony (used by dashboard + auto-promote) |
 
 ## End-user scripts (in dev-apprenticeship/)
 
