@@ -149,16 +149,20 @@ echo "Starting NAME_PLACEHOLDER colony (${#AGENTS[@]} agents)..."
 # .agentis/config, not from a CLI flag. The [llm] section in colony.toml is
 # informational only. Operators should mirror it into .agentis/config.
 
-# Per-agent tick-interval override (#146). Add entries here only for agents
+# Per-agent tick-interval override (#146). Add cases here only for agents
 # whose natural cadence differs from 60s. Reactive agents (those that poll
 # for infrequent upstream events) typically go to 180000-300000ms; active
 # agents producing work every tick stay at the 60000ms fallback.
-declare -A TICK_INTERVALS=(
-    # ["example_reactive_agent"]=300000
-)
+# Uses a case statement instead of declare -A for bash 3.2 (macOS) compat.
+tick_interval_for() {
+    case "$1" in
+        # example_reactive_agent) echo 300000 ;;
+        *) echo 60000 ;;
+    esac
+}
 
 for agent in "${AGENTS[@]}"; do
-    interval="${TICK_INTERVALS[$agent]:-60000}"
+    interval=$(tick_interval_for "$agent")
     echo "  Starting $agent (tick=${interval}ms)..."
     agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
         --colony COLONY_ID_PLACEHOLDER \

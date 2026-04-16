@@ -85,18 +85,18 @@ fi
 # polling spends LLM budget on no-op ticks. 5-min cadence is operationally
 # indistinguishable from 1-min here. Fallback is 60000ms for any agent not
 # listed (e.g. if a new active agent is added later).
-declare -A TICK_INTERVALS=(
-    ["release_checker"]=300000
-    ["ship_decider"]=300000
-    ["changelog_writer"]=300000
-    ["version_bumper"]=300000
-)
+tick_interval_for() {
+    case "$1" in
+        release_checker|ship_decider|changelog_writer|version_bumper) echo 300000 ;;
+        *) echo 60000 ;;
+    esac
+}
 
 echo "Starting Release colony (${#AGENTS[@]} agents)..."
 echo "  GitLab: $GITLAB_URL ($GITLAB_PROJECT_RAW)"
 
 for agent in "${AGENTS[@]}"; do
-    interval="${TICK_INTERVALS[$agent]:-60000}"
+    interval=$(tick_interval_for "$agent")
     echo "  Starting $agent (tick=${interval}ms)..."
     agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
         --colony release \

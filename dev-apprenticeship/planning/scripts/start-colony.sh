@@ -84,18 +84,17 @@ fi
 # cadence preserves throughput. The map is kept for consistency with the
 # reactive colonies and to make future overrides obvious. Fallback is
 # 60000ms.
-declare -A TICK_INTERVALS=(
-    ["scope_estimator"]=60000
-    ["risk_assessor"]=60000
-    ["task_decomposer"]=60000
-    ["plan_reviewer"]=60000
-)
+tick_interval_for() {
+    case "$1" in
+        *) echo 60000 ;;
+    esac
+}
 
 echo "Starting Planning colony (${#AGENTS[@]} agents)..."
 echo "  GitLab: $GITLAB_URL ($GITLAB_PROJECT_RAW)"
 
 for agent in "${AGENTS[@]}"; do
-    interval="${TICK_INTERVALS[$agent]:-60000}"
+    interval=$(tick_interval_for "$agent")
     echo "  Starting $agent (tick=${interval}ms)..."
     agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
         --colony planning \
