@@ -81,16 +81,31 @@ cd "$COLONY_DIR"
 # `--enable-exec` is required since agentis v1.1.6 (exec sh is opt-in; see #484/#489).
 # `--enable-messaging` is required for cross-agent emit/listen (#484, v1.1.6+).
 
+# Per-agent tick-interval override (#146). Every agent in this colony is
+# reactive: the four reviewers wait on implementation:mr_ready events, and
+# approval_decider waits on their findings. When no MR is in flight the
+# ticks are no-ops. 5-min cadence matches the natural rhythm of merge
+# requests in a small team and cuts idle LLM spend ~5×. Fallback is 60000ms
+# for any agent not listed.
+declare -A TICK_INTERVALS=(
+    ["style_reviewer"]=300000
+    ["logic_reviewer"]=300000
+    ["security_reviewer"]=300000
+    ["test_reviewer"]=300000
+    ["approval_decider"]=300000
+)
+
 echo "Starting Code Review colony (${#AGENTS[@]} agents)..."
 echo "  GitLab: $GITLAB_URL ($GITLAB_PROJECT_RAW)"
 
 for agent in "${AGENTS[@]}"; do
-    echo "  Starting $agent..."
+    interval="${TICK_INTERVALS[$agent]:-60000}"
+    echo "  Starting $agent (tick=${interval}ms)..."
     agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
         --colony code-review \
         --enable-exec \
         --enable-messaging \
-        --tick-interval 60000 &
+        --tick-interval "$interval" &
     sleep 2  # stagger starts to reduce API contention
 done
 

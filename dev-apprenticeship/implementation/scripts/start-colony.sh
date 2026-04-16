@@ -78,16 +78,29 @@ fi
 # `--enable-exec` is required since agentis v1.1.6 (exec sh is opt-in; see #484/#489).
 # `--enable-messaging` is required for cross-agent emit/listen (#484, v1.1.6+).
 
+# Per-agent tick-interval override (#146). All implementation agents are
+# active: code_writer, test_writer, refactorer and commit_composer each
+# run against the current working tree and produce output every tick once
+# fed by upstream route_suggestion events. 60s keeps the write-test-commit
+# pipeline responsive. Fallback is 60000ms.
+declare -A TICK_INTERVALS=(
+    ["code_writer"]=60000
+    ["test_writer"]=60000
+    ["refactorer"]=60000
+    ["commit_composer"]=60000
+)
+
 echo "Starting Implementation colony (${#AGENTS[@]} agents)..."
 echo "  GitLab: $GITLAB_URL ($GITLAB_PROJECT_RAW)"
 
 for agent in "${AGENTS[@]}"; do
-    echo "  Starting $agent..."
+    interval="${TICK_INTERVALS[$agent]:-60000}"
+    echo "  Starting $agent (tick=${interval}ms)..."
     agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
         --colony implementation \
         --enable-exec \
         --enable-messaging \
-        --tick-interval 60000 &
+        --tick-interval "$interval" &
     sleep 2  # stagger starts to reduce API contention
 done
 
