@@ -39,6 +39,15 @@ graph LR
 
 When a new issue needs planning, the Scope Estimator, Risk Assessor, and Task Decomposer each analyze it from their perspective. Their outputs flow to the Plan Reviewer, which evaluates the combined plan against learned standards and either publishes it or flags it for human review.
 
+## Early-exit on quiet ticks (#147)
+
+`plan_reviewer` follows the federation's **delta-check + early-exit** convention so ticks on a quiet project cost ~0 LLM calls:
+
+1. Peer outputs (`planning:scope_estimate`, `planning:risks`, `planning:breakdown`) are listened for and stashed per-issue.
+2. A single cheap `exec sh` call to `gitlab-api.sh issues --needs-planning --view planning` tells us whether any open issue still lacks a plan. An empty response (`[]`) means everything is already planned.
+3. On empty: refresh `plan_reviewer:last_check` and `return` **before** any `prompt()` — no Claude invocation.
+4. The newest-issue iid is extracted with `json_get` (mechanical JSON read, zero LLM cost) instead of a `prompt()`; the assembly prompt only runs once all three peer slots are filled for the target issue.
+
 ## Setup
 
 1. Copy and edit the config:

@@ -43,6 +43,15 @@ graph LR
 
 When a new merge request appears, all four reviewers analyze it in parallel, each from their own perspective. They publish findings to the colony bus. The Approval Decider aggregates those findings, weighs severity, and produces the final review action: approve, request changes, or escalate to the human.
 
+## Early-exit on quiet ticks (#147)
+
+`logic_reviewer`, `style_reviewer`, `security_reviewer`, and `approval_decider` follow the federation's **delta-check + early-exit** convention so a quiet repo costs ~0 LLM calls/h:
+
+- **MR reviewers** (`logic`, `style`, `security`): a single `gitlab-api.sh merge-requests --since <last_check> --view reviewer` call filters server-side. An empty response (`[]`) → refresh `last_check` and `return` before any `prompt()`.
+- **Approval decider**: has no GitLab poll. It listens on four bus topics (`review:{style,logic,security,test}_findings`); when all four `listen()` calls return Void (the empty inbox case), `return` before any `prompt()`. `last_check` is still refreshed on the early-exit path so operators can distinguish "nothing to do" from "daemon stalled".
+
+See `agents/logic_reviewer.ag` for the canonical MR-reviewer shape and `agents/approval_decider.ag` for the event-driven variant.
+
 ## Setup
 
 1. Copy and edit the config:

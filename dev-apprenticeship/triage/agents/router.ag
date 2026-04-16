@@ -39,6 +39,12 @@ fn get_confidence() -> float {
 }
 
 fn tick(reason: string) -> void {
+    // #147: cheap delta-check. `issues_cmd()` already filters
+    // server-side via --since last_check, so an empty response
+    // (`[]`, 2 chars) means "no new issues since last tick" and we
+    // early-exit *before* any prompt(). The last_check memo is
+    // refreshed here too — otherwise the --since window would never
+    // advance on a quiet project.
     let cmd = issues_cmd();
     let raw = try {
         exec sh cmd;
@@ -48,6 +54,10 @@ fn tick(reason: string) -> void {
     };
 
     if len(raw) < 3 {
+        let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_e) > 0 {
+            memo_write("router:last_check", now_e);
+        };
         return;
     };
 

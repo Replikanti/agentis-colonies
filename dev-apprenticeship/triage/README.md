@@ -40,6 +40,17 @@ graph LR
 
 When a new event arrives (bug report, support ticket, alert), the Issue Creator drafts the issue with learned title and description conventions. The Labeler, Prioritizer, and Router each add their metadata (labels, priority level, and assignee) based on patterns learned from past decisions.
 
+## Early-exit on quiet ticks (#147)
+
+Reactive agents (`router`, `prioritizer`) follow a **delta-check + early-exit** pattern so a quiet GitLab project costs ~0 LLM calls/h on the 60-second tick interval:
+
+1. `recall_latest("<agent>:last_check")` → an ISO-8601 timestamp (empty on first ever tick).
+2. A single cheap `exec sh` call to `gitlab-api.sh issues --since <last_check> --view <agent>` filters server-side. An empty response (`[]`, 2 chars) means "nothing new".
+3. On empty: refresh `last_check` and `return` **before** any `prompt()` — no Claude invocation at all.
+4. On non-empty: proceed to the normal learning/analysis prompts.
+
+The last-check refresh inside the early-exit branch is load-bearing — otherwise the `--since` window never advances on quiet projects and each tick would keep re-querying the same gap. This is the conventional structure for all reactive agents in this federation; see `agents/router.ag` and `agents/prioritizer.ag` for the canonical shape.
+
 ## Setup
 
 1. Copy and edit the config:

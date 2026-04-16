@@ -34,7 +34,24 @@ fn get_confidence() -> float {
 }
 
 fn tick(reason: string) -> void {
-    // 1. Learn versioning patterns from tags
+    // #147: version_bumper is pure event-driven. It reacts to a
+    // `release:ship_decision` emit from ship_decider — no GitLab poll
+    // is needed to decide whether to do work. If the inbox is empty,
+    // early-exit before any prompt() (including the tag-pattern
+    // learning one, which used to run every tick).
+    let ship_decision = listen("release:ship_decision", 100);
+    let decision_str = to_string(ship_decision);
+
+    if len(decision_str) < 5 {
+        let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_e) > 0 {
+            memo_write("version_bumper:last_check", now_e);
+        };
+        return;
+    };
+
+    // 1. Learn versioning patterns from tags (only when we're actually
+    //    about to bump — gated by the delta-check above).
     let tags_raw = try {
         exec sh "$COLONY_DIR/scripts/gitlab-api.sh tags --per-page 20 --view tag-summary";
     } catch e {
@@ -58,18 +75,6 @@ fn tick(reason: string) -> void {
             );
             print("[version_bumper] Learned from", patterns.tags_seen, "version tags");
         };
-    };
-
-    // 2. Listen for ship decision and determine next version
-    let ship_decision = listen("release:ship_decision", 100);
-    let decision_str = to_string(ship_decision);
-
-    if len(decision_str) < 5 {
-        let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
-        if len(now) > 0 {
-            memo_write("version_bumper:last_check", now);
-        };
-        return;
     };
 
     // Only proceed if the decision is "ship"

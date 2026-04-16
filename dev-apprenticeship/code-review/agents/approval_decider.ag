@@ -26,7 +26,13 @@ fn get_confidence() -> float {
 }
 
 fn tick(reason: string) -> void {
-    // Collect findings from all reviewers
+    // #147: cheap delta-check. approval_decider has no GitLab poll —
+    // its input is the colony bus. If no reviewer emitted findings
+    // since the last tick (all four `listen()` calls returned Void —
+    // to_string "void" = 4 chars, so 4*4 = 16 < 24), early-exit
+    // before any prompt(). `last_check` is refreshed so operators can
+    // see the agent is alive (and so downstream tooling can tell an
+    // empty-inbox tick from a stalled daemon).
     let style = listen("review:style_findings", 500);
     let logic = listen("review:logic_findings", 500);
     let security = listen("review:security_findings", 500);
@@ -40,6 +46,10 @@ fn tick(reason: string) -> void {
     // Only proceed if at least one reviewer reported
     let total_len = len(style_str) + len(logic_str) + len(security_str) + len(tests_str);
     if total_len < 24 {
+        let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_e) > 0 {
+            memo_write("approval_decider:last_check", now_e);
+        };
         return;
     };
 
@@ -103,5 +113,10 @@ fn tick(reason: string) -> void {
     let impl_mr = listen("implementation:mr_ready", 100);
     if len(to_string(impl_mr)) > 5 {
         print("[approval_decider] Implementation colony created a new MR, reviewers will pick it up on next tick");
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("approval_decider:last_check", now);
     };
 }
