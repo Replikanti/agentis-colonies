@@ -2086,7 +2086,7 @@ function showSimpleToast(msg, color, kind) {
 // label is NEVER touched — issue #161 antipattern. `detail` is rendered
 // inside a collapsible <details> block as preformatted text (raw JSON or
 // stderr_tail) with a copy + dismiss affordance.
-function showError(summary, detail) {
+function showError(summary, detail, onDismiss) {
   const region = document.getElementById('notification-region');
   if (!region) { return; }
   const el = document.createElement('div');
@@ -2129,7 +2129,10 @@ function showError(summary, detail) {
   dismiss.className = 'notice-dismiss';
   dismiss.type = 'button';
   dismiss.textContent = 'Dismiss';
-  dismiss.addEventListener('click', () => { el.remove(); });
+  dismiss.addEventListener('click', () => {
+    el.remove();
+    if (typeof onDismiss === 'function') { try { onDismiss(); } catch (_) { /* swallow */ } }
+  });
   actions.appendChild(dismiss);
   el.appendChild(actions);
   region.appendChild(el);
@@ -2183,10 +2186,15 @@ function setKillState(state) {
       if (m) { m.remove(); }
       break;
     }
-    case 'failed':
+    case 'failed': {
       // Operator can retry; error rendering is the caller's job (showError).
+      // Pause meta auto-refresh until the operator dismisses the error so the
+      // failure notice in #notification-region is not wiped after 60s.
+      const m = document.querySelector('meta[http-equiv="refresh"]');
+      if (m) { m.remove(); }
       setKillState('idle');
       break;
+    }
     default:
       setKillState('idle');
   }
@@ -2204,12 +2212,12 @@ function killSwitch() {
     .then(r => r.text().then(text => {
       let parsed = null;
       try { parsed = JSON.parse(text); } catch (_) { parsed = null; }
-      return { httpOk: r.ok, status: r.status, text: text, parsed: parsed };
+      return { status: r.status, text: text, parsed: parsed };
     }))
-    .then(({ httpOk, status, text, parsed }) => {
+    .then(({ status, text, parsed }) => {
       if (!parsed) {
         setKillState('failed');
-        showError('Kill failed (HTTP ' + status + ', non-JSON response)', text || '(empty body)');
+        showError('Kill failed (HTTP ' + status + ', non-JSON response)', text || '(empty body)', () => location.reload());
         return;
       }
       if (parsed.ok) {
@@ -2223,11 +2231,11 @@ function killSwitch() {
         json: parsed.json || null,
         stderr_tail: parsed.stderr_tail || '',
       };
-      showError(summary, detail);
+      showError(summary, detail, () => location.reload());
     })
     .catch(e => {
       setKillState('failed');
-      showError('Kill request failed (network error)', String((e && e.message) || e));
+      showError('Kill request failed (network error)', String((e && e.message) || e), () => location.reload());
     });
 }
 </script>
