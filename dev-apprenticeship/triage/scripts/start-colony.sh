@@ -84,18 +84,18 @@ fi
 # (periodic routing sweeps, re-ranking) and run at 3-min cadence since
 # minute-grained latency on priority changes is not observable. Fallback is
 # 60000ms.
-declare -A TICK_INTERVALS=(
-    ["issue_creator"]=60000
-    ["labeler"]=60000
-    ["prioritizer"]=180000
-    ["router"]=180000
-)
+tick_interval_for() {
+    case "$1" in
+        router|prioritizer) echo 180000 ;;
+        *)                  echo 60000 ;;
+    esac
+}
 
 echo "Starting Triage colony (${#AGENTS[@]} agents)..."
 echo "  GitLab: $GITLAB_URL ($GITLAB_PROJECT_RAW)"
 
 for agent in "${AGENTS[@]}"; do
-    interval="${TICK_INTERVALS[$agent]:-60000}"
+    interval=$(tick_interval_for "$agent")
     echo "  Starting $agent (tick=${interval}ms)..."
     agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
         --colony triage \

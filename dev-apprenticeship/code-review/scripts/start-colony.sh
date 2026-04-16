@@ -87,19 +87,18 @@ cd "$COLONY_DIR"
 # ticks are no-ops. 5-min cadence matches the natural rhythm of merge
 # requests in a small team and cuts idle LLM spend ~5×. Fallback is 60000ms
 # for any agent not listed.
-declare -A TICK_INTERVALS=(
-    ["style_reviewer"]=300000
-    ["logic_reviewer"]=300000
-    ["security_reviewer"]=300000
-    ["test_reviewer"]=300000
-    ["approval_decider"]=300000
-)
+tick_interval_for() {
+    case "$1" in
+        style_reviewer|logic_reviewer|security_reviewer|test_reviewer|approval_decider) echo 300000 ;;
+        *) echo 60000 ;;
+    esac
+}
 
 echo "Starting Code Review colony (${#AGENTS[@]} agents)..."
 echo "  GitLab: $GITLAB_URL ($GITLAB_PROJECT_RAW)"
 
 for agent in "${AGENTS[@]}"; do
-    interval="${TICK_INTERVALS[$agent]:-60000}"
+    interval=$(tick_interval_for "$agent")
     echo "  Starting $agent (tick=${interval}ms)..."
     agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
         --colony code-review \

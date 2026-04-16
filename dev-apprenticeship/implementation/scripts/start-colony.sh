@@ -83,18 +83,17 @@ fi
 # run against the current working tree and produce output every tick once
 # fed by upstream route_suggestion events. 60s keeps the write-test-commit
 # pipeline responsive. Fallback is 60000ms.
-declare -A TICK_INTERVALS=(
-    ["code_writer"]=60000
-    ["test_writer"]=60000
-    ["refactorer"]=60000
-    ["commit_composer"]=60000
-)
+tick_interval_for() {
+    case "$1" in
+        *) echo 60000 ;;
+    esac
+}
 
 echo "Starting Implementation colony (${#AGENTS[@]} agents)..."
 echo "  GitLab: $GITLAB_URL ($GITLAB_PROJECT_RAW)"
 
 for agent in "${AGENTS[@]}"; do
-    interval="${TICK_INTERVALS[$agent]:-60000}"
+    interval=$(tick_interval_for "$agent")
     echo "  Starting $agent (tick=${interval}ms)..."
     agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
         --colony implementation \
