@@ -174,10 +174,13 @@ for agent in all_agents:
         'tick_ok': 0, 'tick_err': 0,
         'experience_count': 0, 'experience_rate': 0.0,
         'experience_outcomes': {'success': 0, 'failure': 0, 'no-op': 0},
+        'experience_variance': None, 'experience_slope_recent': None,
+        'fitness_window': 0,
         'last_action': '', 'last_action_ts': 0,
         'description': '',
         'recent_experience': [], 'recent_logs': [],
         'source': '',
+        'confidence_gates': [], 'confidence_cap': None,
     }
 
     if daemon:
@@ -201,24 +204,41 @@ for agent in all_agents:
             except OSError:
                 rec['pid_alive'] = False
 
-    # .ag description (first comment block)
+    # .ag description (first comment block) + confidence gate scan (#160)
     ag_path = os.path.join(fed_dir, colony, 'agents', agent + '.ag') if colony else ''
     if ag_path and os.path.isfile(ag_path):
         desc_lines = []
+        ag_lines = []
         try:
             with open(ag_path) as f:
-                for line in f:
-                    line = line.rstrip('\n')
-                    if line.startswith('//'):
-                        desc_lines.append(line[2:].strip())
-                    elif line.strip() == '':
-                        if desc_lines:
-                            break
-                    else:
-                        break
+                ag_lines = f.readlines()
         except OSError:
             pass
+        # Description from leading comment block
+        for line in ag_lines:
+            stripped = line.rstrip('\n')
+            if stripped.startswith('//'):
+                desc_lines.append(stripped[2:].strip())
+            elif stripped.strip() == '':
+                if desc_lines:
+                    break
+            else:
+                break
         rec['description'] = '\n'.join(desc_lines)
+
+        # #160: extract `if confidence >= X` gates with line numbers, plus
+        # clamp_auto cap idiom (currently only labeler.ag, gates promote at 0.85).
+        gates = []
+        for lineno, line in enumerate(ag_lines, 1):
+            m = re.search(r'\bif\s+confidence\s+>=\s+([0-9]+(?:\.[0-9]+)?)', line)
+            if m:
+                gates.append({'level': float(m.group(1)), 'line': lineno})
+        rec['confidence_gates'] = gates
+        ag_text = ''.join(ag_lines)
+        if re.search(r'\bfn\s+clamp_auto\s*\(', ag_text):
+            cm = re.search(r'\blet\s+cap\s*=\s*([0-9]+(?:\.[0-9]+)?)', ag_text)
+            if cm:
+                rec['confidence_cap'] = float(cm.group(1))
 
     # Experience data (from .agentis/experience/<agent_id>.jsonl)
     agent_id = rec['agent_id']
@@ -262,6 +282,26 @@ for agent in all_agents:
                 rec['last_action_ts'] = last.get('ts') or 0
 
             rec['recent_experience'] = entries[-10:]
+
+            # #160: variance + slope over last 100 entries (matches the window
+            # auto-promote.sh uses for delta_slope_window). Computing this
+            # server-side over the full file means actionGate('evolve') tooltips
+            # describe the actual sample size, not just the 10-entry UI slice.
+            FITNESS_WINDOW = 100
+            deltas_window = [e.get('delta') for e in entries[-FITNESS_WINDOW:] if isinstance(e.get('delta'), (int, float))]
+            rec['fitness_window'] = len(deltas_window)
+            if len(deltas_window) >= 2:
+                mean = sum(deltas_window) / len(deltas_window)
+                rec['experience_variance'] = sum((v - mean) ** 2 for v in deltas_window) / len(deltas_window)
+            if len(deltas_window) >= 3:
+                n = len(deltas_window)
+                sX = sum(range(n))
+                sY = sum(deltas_window)
+                sXY = sum(i * v for i, v in enumerate(deltas_window))
+                sX2 = sum(i * i for i in range(n))
+                denom = n * sX2 - sX * sX
+                if denom != 0:
+                    rec['experience_slope_recent'] = (n * sXY - sX * sY) / denom
 
     # Recent log lines
     if agent_id and os.path.isdir(log_dir):
@@ -686,6 +726,66 @@ HEADEOF
   .action-btn.evolve { border-color: var(--cyan); color: var(--cyan); }
   .action-btn.evolve:hover { background: var(--cyan); color: #000; }
   .action-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+  /* #160: clickable "disabled" state opens the Why panel instead of being inert */
+  .action-btn.is-disabled {
+    opacity: 0.35; cursor: help; background: transparent !important;
+    color: var(--muted) !important; border-color: var(--border) !important;
+    box-shadow: none !important;
+  }
+  .action-btn.is-disabled:hover {
+    opacity: 0.6; color: var(--muted) !important; border-color: var(--muted) !important;
+  }
+
+  /* #160: Why panel — slides in from the right when a disabled button or
+     skipped recommendation is clicked. Explains the gating rule + evidence. */
+  .why-panel {
+    position: fixed; top: 0; right: 0; bottom: 0; width: 360px;
+    background: var(--bg); border-left: 1px solid var(--cyan);
+    box-shadow: -4px 0 24px rgba(0,255,255,0.15);
+    z-index: 9500; padding: 20px; overflow-y: auto;
+    transform: translateX(100%); transition: transform 0.2s ease-out;
+    font-size: 12px;
+  }
+  .why-panel.visible { transform: translateX(0); }
+  .why-panel-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding-bottom: 10px; margin-bottom: 14px; border-bottom: 1px solid var(--border);
+  }
+  .why-panel-header h3 {
+    font-size: 11px; color: var(--yellow); text-transform: uppercase;
+    letter-spacing: 2px; font-weight: 400; margin: 0;
+  }
+  .why-panel-close {
+    background: transparent; border: 1px solid var(--border); color: var(--muted);
+    width: 28px; height: 28px; cursor: pointer; border-radius: 2px;
+    font-size: 16px; line-height: 1;
+  }
+  .why-panel-close:hover { color: var(--cyan); border-color: var(--cyan); }
+  .why-panel-section { margin-bottom: 16px; }
+  .why-panel-section h4 {
+    font-size: 10px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 1.5px; margin: 0 0 6px 0; font-weight: 400;
+  }
+  .why-panel-rule { color: var(--orange); line-height: 1.5; }
+  .why-panel-evidence { color: var(--cyan); font-family: 'Share Tech Mono', monospace; line-height: 1.6; }
+  .why-panel-action { color: var(--green); line-height: 1.5; }
+
+  /* #160: skipped-candidates collapsed sub-section under Promote panel */
+  .skipped-section { margin-top: 10px; }
+  .skipped-section summary {
+    cursor: pointer; color: var(--muted); font-size: 11px;
+    padding: 4px 0; outline: none; user-select: none;
+  }
+  .skipped-section summary:hover { color: var(--cyan); }
+  .skipped-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 4px 0; font-size: 11px; color: var(--muted);
+  }
+  .skipped-info {
+    cursor: help; color: var(--yellow); border: 1px solid var(--border);
+    padding: 0 5px; border-radius: 2px; font-size: 10px; line-height: 1.4;
+  }
+  .skipped-info:hover { color: var(--cyan); border-color: var(--cyan); }
 
   /* --- Buttons --- */
   .refresh-btn {
@@ -842,6 +942,15 @@ HEADEREOF
 <div class="modal-content" id="modal-body"></div>
 </div>
 
+<!-- #160: Why panel for disabled buttons + skipped recommendations -->
+<div class="why-panel" id="why-panel">
+  <div class="why-panel-header">
+    <h3 id="why-panel-title">Why this is unavailable</h3>
+    <button class="why-panel-close" onclick="closeWhyPanel()" title="Close (Esc)">&times;</button>
+  </div>
+  <div id="why-panel-body"></div>
+</div>
+
 <script>
 HTMLEOF
 
@@ -907,7 +1016,7 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     manualRefresh();
   }
-  if (e.key === 'Escape') closeModal();
+  if (e.key === 'Escape') { closeModal(); closeWhyPanel(); }
 });
 
 const agents = data.agents || [];
@@ -1149,56 +1258,73 @@ renderAgentTable();
   el.innerHTML = html;
 })();
 
-// --- Promote Candidates ---
-// Same rules as #148 cron: >=200 entries, success>=95%, delta slope>=0
+// --- Promote Candidates (#160 actionable-only filter) ---
+// Four filter rules in order:
+//   1. fitness criteria (>=200 entries, success>=95%, slope>=0) — same as #148 cron
+//   2. target level exists in agent's confidence_gates (no-op-at-source guard)
+//   3. action would cross a behavioural tier (observable change)
+//   4. target not above clamp_auto cap
+// Only rows passing all four appear in the main list. Everything else falls
+// into a collapsed "Skipped candidates" section with the reason + Why button.
 (function() {
   const el = document.getElementById('promote-candidates');
-  let html = '';
-  let hasCandidates = false;
+  const SUGGEST_TARGET = 0.85;
+  let actionableHtml = '';
+  let skippedHtml = '';
+  let actionableCount = 0;
+  let skippedCount = 0;
 
   agents.forEach(a => {
-    const total = a.experience_outcomes.success + a.experience_outcomes.failure + a.experience_outcomes['no-op'];
-    const successRate = total > 0 ? a.experience_outcomes.success / total : 0;
-    const count = a.experience_count;
+    const f = computeFitness(a);
+    const fitnessOK = f.count >= 200 && f.successRate >= 0.95 && f.slope >= 0;
 
-    // Compute delta slope from recent experience entries
-    let slope = 0;
-    if (a.recent_experience && a.recent_experience.length >= 3) {
-      const deltas = a.recent_experience.filter(e => e.delta != null).map((e, i) => ({x: i, y: e.delta || 0}));
-      if (deltas.length >= 3) {
-        const n = deltas.length;
-        let sX=0,sY=0,sXY=0,sX2=0;
-        deltas.forEach(p => { sX+=p.x; sY+=p.y; sXY+=p.x*p.y; sX2+=p.x*p.x; });
-        slope = (n*sXY - sX*sY) / (n*sX2 - sX*sX);
-      }
+    // Skip silently: no entries AND not running. Stats row already surfaces
+    // these as inactive — listing them as "skipped" is just noise.
+    if (f.count === 0 && a.state !== 'running') return;
+
+    if (!fitnessOK) {
+      let reason;
+      if (f.count === 0) reason = '0 entries \u2014 reactive (no fitness signal yet)';
+      else if (f.count < 200) reason = f.count + ' entries \u2014 below 200 threshold';
+      else if (f.successRate < 0.95) reason = Math.round(f.successRate * 100) + '% success \u2014 below 95% threshold';
+      else reason = (f.slope >= 0 ? '+' : '') + f.slope.toFixed(3) + ' slope \u2014 fitness regressing';
+      skippedHtml += '<div class="skipped-row"><span class="agent-name">' + esc(a.name) + '</span><span>\u2014 ' + esc(reason) + '</span></div>';
+      skippedCount++;
+      return;
     }
 
-    const eligible = count >= 200 && successRate >= 0.95 && slope >= 0;
-    const tooEarly = count < 200 && count > 0;
-    const reactive = count === 0 && a.state === 'running';
-
-    if (eligible) {
-      hasCandidates = true;
-      const suggestConf = a.confidence != null && a.confidence < 0.85 ? 0.85 : null;
-      html += '<div class="promote-item"><span class="promote-check">\u2713</span>';
-      html += '<span class="agent-name">' + esc(a.name) + '</span> ';
-      html += count + ' entries, ' + Math.round(successRate * 100) + '% success, ';
-      html += (slope >= 0 ? '+' : '') + slope.toFixed(3) + ' slope';
-      if (a.confidence != null) html += ', on ' + a.confidence.toFixed(2);
-      if (suggestConf) html += ' <span class="promote-suggest">\u2192 suggest ' + suggestConf.toFixed(2) + '</span>';
-      html += '</div>';
-    } else if (tooEarly) {
-      html += '<div class="promote-item"><span class="promote-cross">\u2717</span>';
-      html += '<span class="agent-name">' + esc(a.name) + '</span> ';
-      html += '<span class="promote-reason">' + count + ' entries \u2014 too early</span></div>';
-    } else if (reactive) {
-      html += '<div class="promote-item"><span class="promote-cross">\u2717</span>';
-      html += '<span class="agent-name">' + esc(a.name) + '</span> ';
-      html += '<span class="promote-reason">0 entries \u2014 reactive (skip)</span></div>';
+    // Fitness passed — does the agent's source actually support promote-to-suggest?
+    const promoteGate = actionGate(a, 'promote', SUGGEST_TARGET);
+    if (!promoteGate.enabled) {
+      registerWhy(a.name, 'rec-promote', promoteGate);
+      skippedHtml += '<div class="skipped-row"><span class="agent-name">' + esc(a.name) + '</span>';
+      skippedHtml += '<span>\u2014 promote to ' + SUGGEST_TARGET.toFixed(2) + ' would be a no-op</span>';
+      skippedHtml += '<span class="skipped-info" onclick="showWhy(\'' + esc(a.name) + '\',\'rec-promote\')">why?</span></div>';
+      skippedCount++;
+      return;
     }
+
+    actionableCount++;
+    actionableHtml += '<div class="promote-item"><span class="promote-check">\u2713</span>';
+    actionableHtml += '<span class="agent-name">' + esc(a.name) + '</span> ';
+    actionableHtml += f.count + ' entries, ' + Math.round(f.successRate * 100) + '% success, ';
+    actionableHtml += (f.slope >= 0 ? '+' : '') + f.slope.toFixed(3) + ' slope';
+    if (a.confidence != null) actionableHtml += ', on ' + a.confidence.toFixed(2);
+    actionableHtml += ' <span class="promote-suggest">\u2192 suggest ' + SUGGEST_TARGET.toFixed(2) + '</span>';
+    actionableHtml += '</div>';
   });
 
-  if (!html) html = '<span class="empty">No agents meet promote criteria yet.</span>';
+  let html = '';
+  if (actionableCount === 0) {
+    html += '<span class="empty">No agents meet all the criteria right now \u2014 ready + feasible + beneficial.</span>';
+  } else {
+    html += actionableHtml;
+  }
+  if (skippedCount > 0) {
+    html += '<details class="skipped-section"><summary>Skipped candidates (' + skippedCount + ')</summary>';
+    html += skippedHtml;
+    html += '</details>';
+  }
   el.innerHTML = html;
 })();
 
@@ -1295,6 +1421,190 @@ renderAgentTable();
   legend += '</div>';
   el.innerHTML = svg + legend;
 })();
+
+// --- #160: Capability + fitness gating + Why panel ---
+//
+// Action buttons (and the "Promote candidates" panel) ask actionGate() whether
+// a given action would actually change agent behaviour. The dashboard never
+// surfaces actions that are no-ops at the source level.
+//
+// Tier model: an agent's `confidence_gates` define behavioural thresholds in
+// its .ag tick body. Two confidence values fall in the same tier iff no gate
+// sits between them — moving across them is a silent no-op. Promoting above a
+// `clamp_auto` cap is also a no-op (the daemon clamps back on the next tick).
+
+function computeFitness(a) {
+  // Variance + slope are computed server-side over the last 100 entries
+  // (parser block in this script). The fields are null when the agent has
+  // <2 (variance) or <3 (slope) deltas in window. `window` reports the
+  // actual sample size used so reason texts can quote the right number.
+  const oc = a.experience_outcomes || { success: 0, failure: 0, 'no-op': 0 };
+  const total = (oc.success || 0) + (oc.failure || 0) + (oc['no-op'] || 0);
+  const successRate = total > 0 ? oc.success / total : 0;
+  return {
+    count: a.experience_count || 0,
+    window: a.fitness_window || 0,
+    successRate: successRate,
+    slope: a.experience_slope_recent != null ? a.experience_slope_recent : 0,
+    variance: a.experience_variance != null ? a.experience_variance : 0,
+    sloperaw: a.experience_slope_recent,
+    varianceraw: a.experience_variance,
+  };
+}
+
+function tierOf(value, gates) {
+  // largest gate <= value, or 0 if none (implicit observe-only floor)
+  let t = 0;
+  gates.forEach(g => { if (g <= value + 1e-9 && g > t) t = g; });
+  return t;
+}
+
+function actionGate(a, type, target) {
+  const gates = (a.confidence_gates || []).map(g => g.level).sort((x, y) => x - y);
+  if (type === 'promote' || type === 'demote') {
+    if (target == null) {
+      return { enabled: false, ruleType: 'no-step', reason: 'Already at the ' + (type === 'promote' ? 'highest' : 'lowest') + ' confidence step.' };
+    }
+    const cur = a.confidence != null ? a.confidence : 0;
+    const curTier = tierOf(cur, gates);
+    const tgtTier = tierOf(target, gates);
+    if (Math.abs(curTier - tgtTier) < 1e-9) {
+      const dirWord = type === 'promote' ? 'Promoting' : 'Demoting';
+      return {
+        enabled: false, ruleType: 'no-branch',
+        reason: dirWord + ' to ' + target.toFixed(2) + ' would not cross any `if confidence >= X` gate in ' + a.name + '.ag — agent stays in the same behavioural tier.',
+        evidence: { gates: gates, current: cur, target: target, tier: curTier }
+      };
+    }
+    if (a.confidence_cap != null && target > a.confidence_cap + 1e-9) {
+      return {
+        enabled: false, ruleType: 'capped',
+        reason: 'Source caps confidence at ' + a.confidence_cap.toFixed(2) + ' (`clamp_auto` in ' + a.name + '.ag) — promote above the cap is reverted on next tick.',
+        evidence: { cap: a.confidence_cap, target: target }
+      };
+    }
+    return {
+      enabled: true, ruleType: 'ok',
+      reason: (type === 'promote' ? 'Promote' : 'Demote') + ' to ' + target.toFixed(2) + ': crosses gate (tier ' + curTier.toFixed(2) + ' \u2192 ' + tgtTier.toFixed(2) + ').'
+    };
+  }
+  if (type === 'evolve') {
+    const f = computeFitness(a);
+    if (f.count < 100) {
+      return {
+        enabled: false, ruleType: 'few-entries',
+        reason: 'Only ' + f.count + ' experience entries \u2014 need at least 100 for evolution to have data to select on.',
+        evidence: f
+      };
+    }
+    if (f.window < 2 || f.varianceraw == null) {
+      return {
+        enabled: false, ruleType: 'no-variance',
+        reason: 'No fitness `delta` values in the last ' + f.window + ' entries \u2014 evolve has nothing to measure.',
+        evidence: f
+      };
+    }
+    if (f.variance < 1e-9) {
+      return {
+        enabled: false, ruleType: 'no-variance',
+        reason: 'All last ' + f.window + ' entries returned identical fitness delta \u2014 evolve has no signal to select against.',
+        evidence: f
+      };
+    }
+    if (Math.abs(f.slope) < 1e-6) {
+      return {
+        enabled: false, ruleType: 'flat-slope',
+        reason: 'Fitness slope flat over the last ' + f.window + ' entries (likely Opus plateau) \u2014 evolve unlikely to find improvement.',
+        evidence: f
+      };
+    }
+    return {
+      enabled: true, ruleType: 'ok',
+      reason: 'Evolve: ' + f.count + ' total entries, ' + f.window + '-entry window: variance ' + f.variance.toFixed(4) + ', slope ' + (f.slope >= 0 ? '+' : '') + f.slope.toFixed(3) + '.'
+    };
+  }
+  return { enabled: true, ruleType: 'ok', reason: '' };
+}
+
+const WHY_FIX_HINT = {
+  'no-branch': function(a, ev) {
+    const existing = (ev.gates && ev.gates.length) ? ev.gates.map(g => g.toFixed(2)).join(', ') : 'none';
+    return 'Add `if confidence >= ' + ev.target.toFixed(2) + ' { ... }` branch to ' +
+      a.name + '.ag (current gates: ' + existing + ') and respawn the daemon.';
+  },
+  'capped': function(a, ev) {
+    return 'Raise the cap inside `clamp_auto` in ' + a.name + '.ag (currently ' + ev.cap.toFixed(2) + '), or use a different agent that does not clamp.';
+  },
+  'few-entries': function(a, ev) {
+    return 'Let the agent run longer in suggest mode \u2014 evolve needs at least 100 experience entries (currently ' + ev.count + ').';
+  },
+  'no-variance': function(a) {
+    return 'Vary the agent\u2019s inputs or recover non-zero `delta` values from `experience` \u2014 evolve needs measurable fitness differences.';
+  },
+  'flat-slope': function(a) {
+    return 'Wait for fitness signal to move, or accept the plateau \u2014 evolve cannot improve a flat surface.';
+  },
+  'no-step': function() {
+    return 'No further confidence step in this direction. Confidence steps are 0.5 / 0.6 / 0.85.';
+  }
+};
+
+function renderWhyEvidence(ev) {
+  if (!ev) return '';
+  const lines = [];
+  if (ev.gates !== undefined) lines.push('gates in source: ' + (ev.gates.length ? ev.gates.map(g => g.toFixed(2)).join(', ') : '(none)'));
+  if (ev.current !== undefined) lines.push('current confidence: ' + ev.current.toFixed(2));
+  if (ev.target !== undefined) lines.push('target: ' + ev.target.toFixed(2));
+  if (ev.tier !== undefined) lines.push('current tier: ' + ev.tier.toFixed(2));
+  if (ev.cap !== undefined) lines.push('source cap: ' + ev.cap.toFixed(2));
+  if (ev.count !== undefined) lines.push('experience entries (total): ' + ev.count);
+  if (ev.window !== undefined && ev.window > 0) lines.push('fitness window: last ' + ev.window + ' entries');
+  if (ev.varianceraw !== undefined && ev.varianceraw != null) lines.push('window delta variance: ' + ev.varianceraw.toFixed(6));
+  if (ev.sloperaw !== undefined && ev.sloperaw != null) lines.push('window delta slope: ' + (ev.sloperaw >= 0 ? '+' : '') + ev.sloperaw.toFixed(4));
+  if (ev.successRate !== undefined) lines.push('success rate: ' + Math.round(ev.successRate * 100) + '%');
+  return lines.map(esc).join('\n');
+}
+
+function openWhyPanel(agentName, gate) {
+  const a = agents.find(x => x.name === agentName);
+  if (!a || !gate) return;
+  const panel = document.getElementById('why-panel');
+  const body = document.getElementById('why-panel-body');
+  const title = document.getElementById('why-panel-title');
+  title.textContent = a.name + ' \u2014 why unavailable';
+  const fix = (WHY_FIX_HINT[gate.ruleType] || function() { return 'No specific remediation suggested.'; })(a, gate.evidence || {});
+  let html = '';
+  html += '<div class="why-panel-section"><h4>Rule</h4><div class="why-panel-rule">' + esc(gate.reason || '') + '</div></div>';
+  const ev = renderWhyEvidence(gate.evidence);
+  if (ev) html += '<div class="why-panel-section"><h4>Evidence</h4><pre class="why-panel-evidence" style="margin:0;white-space:pre-wrap">' + ev + '</pre></div>';
+  html += '<div class="why-panel-section"><h4>How to enable</h4><div class="why-panel-action">' + esc(fix) + '</div></div>';
+  body.innerHTML = html;
+  panel.classList.add('visible');
+}
+
+function closeWhyPanel() {
+  const panel = document.getElementById('why-panel');
+  if (panel) panel.classList.remove('visible');
+}
+
+document.addEventListener('click', function(e) {
+  const panel = document.getElementById('why-panel');
+  if (!panel || !panel.classList.contains('visible')) return;
+  if (panel.contains(e.target)) return;
+  // Ignore clicks on elements that themselves open the panel (re-open scenario)
+  if (e.target.closest('[data-why]')) return;
+  closeWhyPanel();
+});
+
+// Stash gate objects keyed by agent+slot so onclick handlers can look them up
+// (avoids embedding JSON.stringify in HTML attributes).
+const WHY_REGISTRY = {};
+function registerWhy(agentName, slot, gate) {
+  WHY_REGISTRY[agentName + '|' + slot] = gate;
+}
+function showWhy(agentName, slot) {
+  openWhyPanel(agentName, WHY_REGISTRY[agentName + '|' + slot]);
+}
 
 // --- Detail Modal ---
 function openDetail(agentName) {
@@ -1419,17 +1729,46 @@ function openDetail(agentName) {
   html += '</div>';
 
   // Action buttons (uses global CONF_STEPS / nextStep)
+  // #160: every button gets a tooltip via title=. promote/demote/evolve also
+  // ask actionGate() whether the action would change behaviour. When it would
+  // not, the button renders in the .is-disabled state and clicks open the
+  // Why panel instead of triggering the no-op.
   html += '<div class="action-bar">';
   const curConf = a.confidence != null ? a.confidence : 0;
   const up = nextStep(curConf, 1);
   const down = nextStep(curConf, -1);
-  html += '<button class="action-btn promote"' + (up == null ? ' disabled' : ' onclick="setConfidence(\'' + esc(a.name) + '\',' + up + ')"') + '>\u25B2 Promote' + (up != null ? ' to ' + up.toFixed(2) : '') + '</button>';
-  html += '<button class="action-btn demote"' + (down == null ? ' disabled' : ' onclick="setConfidence(\'' + esc(a.name) + '\',' + down + ')"') + '>\u25BC Demote' + (down != null ? ' to ' + down.toFixed(2) : '') + '</button>';
-  html += '<button class="action-btn restart" onclick="restartAgent(\'' + esc(a.name) + '\')">\u21BB Restart</button>';
-  html += '<button class="action-btn quarantine-btn" onclick="quarantineAgent(\'' + esc(a.name) + '\')">\u2298 Quarantine</button>';
-  html += '<button class="action-btn evolve" onclick="evolveAgent(\'' + esc(a.name) + '\')">\u2197 Evolve</button>';
+  const upGate = actionGate(a, 'promote', up);
+  const downGate = actionGate(a, 'demote', down);
+  const evolveGate = actionGate(a, 'evolve', null);
+  registerWhy(a.name, 'promote', upGate);
+  registerWhy(a.name, 'demote', downGate);
+  registerWhy(a.name, 'evolve', evolveGate);
+
+  const promoteLabel = '\u25B2 Promote' + (up != null ? ' to ' + up.toFixed(2) : '');
+  if (upGate.enabled) {
+    html += '<button class="action-btn promote" title="' + esc(upGate.reason) + '" onclick="setConfidence(\'' + esc(a.name) + '\',' + up + ')">' + promoteLabel + '</button>';
+  } else {
+    html += '<button class="action-btn promote is-disabled" data-why="promote" title="' + esc(upGate.reason) + ' (click for details)" onclick="showWhy(\'' + esc(a.name) + '\',\'promote\')">' + promoteLabel + '</button>';
+  }
+
+  const demoteLabel = '\u25BC Demote' + (down != null ? ' to ' + down.toFixed(2) : '');
+  if (downGate.enabled) {
+    html += '<button class="action-btn demote" title="' + esc(downGate.reason) + '" onclick="setConfidence(\'' + esc(a.name) + '\',' + down + ')">' + demoteLabel + '</button>';
+  } else {
+    html += '<button class="action-btn demote is-disabled" data-why="demote" title="' + esc(downGate.reason) + ' (click for details)" onclick="showWhy(\'' + esc(a.name) + '\',\'demote\')">' + demoteLabel + '</button>';
+  }
+
+  html += '<button class="action-btn restart" title="Stop the daemon and respawn it (preserves confidence + experience)." onclick="restartAgent(\'' + esc(a.name) + '\')">\u21BB Restart</button>';
+  html += '<button class="action-btn quarantine-btn" title="Mark the agent as quarantined: it stops ticking until reset." onclick="quarantineAgent(\'' + esc(a.name) + '\')">\u2298 Quarantine</button>';
+
+  if (evolveGate.enabled) {
+    html += '<button class="action-btn evolve" title="' + esc(evolveGate.reason) + '" onclick="evolveAgent(\'' + esc(a.name) + '\')">\u2197 Evolve</button>';
+  } else {
+    html += '<button class="action-btn evolve is-disabled" data-why="evolve" title="' + esc(evolveGate.reason) + ' (click for details)" onclick="showWhy(\'' + esc(a.name) + '\',\'evolve\')">\u2197 Evolve</button>';
+  }
+
   if (a.pid > 0 && !a.pid_alive && a.agent_id) {
-    html += '<button class="action-btn" style="border-color:var(--red);color:var(--red)" onclick="cleanupDaemon(\'' + esc(a.agent_id) + '\')">Clean up stale PID</button>';
+    html += '<button class="action-btn" style="border-color:var(--red);color:var(--red)" title="Remove stale daemon record left by a crashed PID." onclick="cleanupDaemon(\'' + esc(a.agent_id) + '\')">Clean up stale PID</button>';
   }
   html += '</div>';
 
