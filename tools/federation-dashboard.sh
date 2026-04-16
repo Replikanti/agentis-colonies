@@ -1235,6 +1235,26 @@ agent_to_colony = {e.get('agent',''): e.get('colony','') for e in _map if e.get(
 os.chdir(serve_dir)
 fed_dir = os.path.dirname(serve_dir)
 confidence_log = os.path.join(serve_dir, 'confidence-log.jsonl')
+# Path to the tick-interval resolver (#155). script_path is the absolute
+# path to this federation-dashboard.sh; the resolver lives next to it.
+_tools_dir = os.path.dirname(os.path.realpath(script_path))
+_resolver_script = os.path.join(_tools_dir, 'resolve-tick-interval.py')
+
+
+def resolve_tick_interval(agent, colony_dir):
+    """Return tick interval (str, ms) for *agent* using resolve-tick-interval.py.
+
+    Falls back to '60000' if the resolver is missing or fails.
+    """
+    try:
+        r = subprocess.run(
+            [sys.executable, _resolver_script, agent, colony_dir],
+            capture_output=True, text=True, timeout=5,
+        )
+        val = r.stdout.strip()
+        return val if r.returncode == 0 and val.isdigit() else '60000'
+    except (OSError, subprocess.SubprocessError):
+        return '60000'
 
 
 def parse_toml_section(toml_path, section):
@@ -1381,6 +1401,10 @@ def build_manual_command(colony, colony_dir, agent_file):
     real GITLAB_TOKEN would leak credentials into the DOM, browser cache,
     and DevTools (QA review #1).
     """
+    agent_name = os.path.basename(agent_file)
+    if agent_name.endswith('.ag'):
+        agent_name = agent_name[:-3]
+    tick = resolve_tick_interval(agent_name, colony_dir)
     env_refs = (
         'GITLAB_URL="$GITLAB_URL" GITLAB_TOKEN="$GITLAB_TOKEN" '
         'GITLAB_PROJECT="$GITLAB_PROJECT" GITLAB_ME="$GITLAB_ME" '
@@ -1391,7 +1415,7 @@ def build_manual_command(colony, colony_dir, agent_file):
         f'{env_refs} '
         f'agentis daemon {shlex.quote(agent_file)}'
         f' --colony {shlex.quote(colony)}'
-        f' --enable-exec --enable-messaging --tick-interval 60000 &'
+        f' --enable-exec --enable-messaging --tick-interval {tick} &'
     )
 
 
@@ -1516,7 +1540,8 @@ def restart_daemon(agent):
 
     # Respawn detached so the dashboard process can die without taking
     # the fresh daemon with it.
-    rec('spawn', 'start')
+    tick = resolve_tick_interval(agent, colony_dir)
+    rec('spawn', 'start', tick_interval=tick)
     env = dict(os.environ)
     env.update(env_overrides)
     spawn_ts = int(time.time())
@@ -1527,7 +1552,7 @@ def restart_daemon(agent):
                 '--colony', colony,
                 '--enable-exec',
                 '--enable-messaging',
-                '--tick-interval', '60000',
+                '--tick-interval', tick,
             ],
             cwd=colony_dir,
             env=env,

@@ -652,6 +652,9 @@ for d in daemons:
                     sleep 3
                 fi
 
+                # Resolve per-agent tick interval from start-colony.sh (#155)
+                TICK_INTERVAL=$(python3 "$SCRIPT_DIR/resolve-tick-interval.py" "$agent" "$AGENT_COLONY_DIR")
+
                 # Respawn with GITLAB_* env vars from colony.toml
                 (
                     eval "$SPAWN_ENV"
@@ -660,7 +663,7 @@ for d in daemons:
                         --colony "$colony" \
                         --enable-exec \
                         --enable-messaging \
-                        --tick-interval 60000 &
+                        --tick-interval "$TICK_INTERVAL" &
                 )
                 log "  Daemon respawned for $agent"
 
