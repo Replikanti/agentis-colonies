@@ -1163,7 +1163,7 @@ trap 'kill $REGEN_PID 2>/dev/null; exit 0' INT TERM
 # with 400 (never pass user strings to subprocess unchecked, #105).
 ALL_AGENTS_CSV="$(IFS=,; echo "${ALL_AGENTS[*]}")"
 python3 - "$DASH_DIR" "$PORT" "$SCRIPT_PATH" "$FED_DIR" "$ALL_AGENTS_CSV" "$AGENT_COLONY_MAP" <<'PYSERVER'
-import sys, os, subprocess, json, time, signal, shutil, shlex, urllib.parse
+import sys, os, subprocess, json, time, signal, shutil, shlex, threading, urllib.parse
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 serve_dir, port = sys.argv[1], int(sys.argv[2])
@@ -1370,13 +1370,24 @@ def restart_daemon(agent):
             'events': events,
         }
 
-    # Read gitlab config up front so a malformed colony.toml fails fast
-    # before we stop the running daemon.
+    # Read gitlab config before touching the daemon — a missing or
+    # incomplete colony.toml must bail out before we stop anything,
+    # otherwise the operator ends up with a killed daemon and no
+    # respawn (parse_toml_section returns {} on missing file).
     config_path = os.path.join(colony_dir, 'config', 'colony.toml')
     gitlab = parse_toml_section(config_path, 'gitlab')
     gl_url = gitlab.get('url', '')
     gl_token = gitlab.get('token', '')
     gl_project_raw = gitlab.get('project', '')
+    if not gl_url or not gl_token or not gl_project_raw:
+        rec('config', 'error',
+            message=f'incomplete [gitlab] in {config_path}: '
+                    f'url={bool(gl_url)} token={bool(gl_token)} project={bool(gl_project_raw)}')
+        return {
+            'attempted': False, 'succeeded': False,
+            'error': f'incomplete [gitlab] section in {config_path}',
+            'events': events,
+        }
     gl_me = gitlab.get('me', '')
     gl_project = gl_project_raw.replace('/', '%2F')
     env_overrides = {
@@ -1506,6 +1517,7 @@ def restart_daemon(agent):
 
     if not new_daemon:
         code = proc.poll()
+        threading.Thread(target=proc.wait, daemon=True).start()
         rec('verify', 'error',
             message=f'new daemon not registered within 15s (launcher exit={code})')
         return {
@@ -1518,10 +1530,11 @@ def restart_daemon(agent):
     # Reap the launcher wrapper so it does not linger as a zombie in the
     # dashboard's process table. The actual daemon child is already
     # detached (start_new_session=True) and outlives the launcher.
-    try:
-        proc.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        pass
+    # Fire-and-forget thread: if the launcher is still running (rare —
+    # it normally exits once the watchdog forks), the thread blocks
+    # until it does, keeping the process table clean without stalling
+    # the HTTP response.
+    threading.Thread(target=proc.wait, daemon=True).start()
 
     rec('verify', 'ok',
         new_pid=new_daemon.get('pid'),
