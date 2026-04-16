@@ -105,6 +105,27 @@ for m in sorted(missing):
     print(f'[FAIL] {m}: in expected table but no .ag found')
     failed += 1
 
+# Cap-drift guard: today only `clamp_auto` is recognised as a confidence cap.
+# If a future .ag introduces a different capping idiom the dashboard parser
+# will miss it silently. Flag any mention of `cap` near a confidence literal
+# that is NOT inside a clamp_auto function so the parser gets extended.
+CAP_CONTEXT_RE = re.compile(r'\bcap\b.{0,40}\b(?:confidence|0\.[0-9]+)', re.IGNORECASE)
+for colony in sorted(os.listdir(fed_dir)):
+    ag_dir = os.path.join(fed_dir, colony, 'agents')
+    if not os.path.isdir(ag_dir):
+        continue
+    for fn in sorted(os.listdir(ag_dir)):
+        if not fn.endswith('.ag'):
+            continue
+        with open(os.path.join(ag_dir, fn)) as f:
+            text = f.read()
+        if CLAMP_RE.search(text):
+            continue  # known idiom, parser handles it
+        if CAP_CONTEXT_RE.search(text):
+            agent = fn[:-3]
+            print(f'[FAIL] {agent}: found `cap` near confidence without clamp_auto \u2014 extend the dashboard parser to recognise the new capping idiom')
+            failed += 1
+
 print(f'\nResults: {passed} passed, {failed} failed')
 sys.exit(0 if failed == 0 else 1)
 PY

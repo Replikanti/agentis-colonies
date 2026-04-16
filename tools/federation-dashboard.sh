@@ -174,6 +174,8 @@ for agent in all_agents:
         'tick_ok': 0, 'tick_err': 0,
         'experience_count': 0, 'experience_rate': 0.0,
         'experience_outcomes': {'success': 0, 'failure': 0, 'no-op': 0},
+        'experience_variance': None, 'experience_slope_recent': None,
+        'fitness_window': 0,
         'last_action': '', 'last_action_ts': 0,
         'description': '',
         'recent_experience': [], 'recent_logs': [],
@@ -280,6 +282,26 @@ for agent in all_agents:
                 rec['last_action_ts'] = last.get('ts') or 0
 
             rec['recent_experience'] = entries[-10:]
+
+            # #160: variance + slope over last 100 entries (matches the window
+            # auto-promote.sh uses for delta_slope_window). Computing this
+            # server-side over the full file means actionGate('evolve') tooltips
+            # describe the actual sample size, not just the 10-entry UI slice.
+            FITNESS_WINDOW = 100
+            deltas_window = [e.get('delta') for e in entries[-FITNESS_WINDOW:] if isinstance(e.get('delta'), (int, float))]
+            rec['fitness_window'] = len(deltas_window)
+            if len(deltas_window) >= 2:
+                mean = sum(deltas_window) / len(deltas_window)
+                rec['experience_variance'] = sum((v - mean) ** 2 for v in deltas_window) / len(deltas_window)
+            if len(deltas_window) >= 3:
+                n = len(deltas_window)
+                sX = sum(range(n))
+                sY = sum(deltas_window)
+                sXY = sum(i * v for i, v in enumerate(deltas_window))
+                sX2 = sum(i * i for i in range(n))
+                denom = n * sX2 - sX * sX
+                if denom != 0:
+                    rec['experience_slope_recent'] = (n * sXY - sX * sY) / denom
 
     # Recent log lines
     if agent_id and os.path.isdir(log_dir):
@@ -1412,25 +1434,22 @@ renderAgentTable();
 // `clamp_auto` cap is also a no-op (the daemon clamps back on the next tick).
 
 function computeFitness(a) {
+  // Variance + slope are computed server-side over the last 100 entries
+  // (parser block in this script). The fields are null when the agent has
+  // <2 (variance) or <3 (slope) deltas in window. `window` reports the
+  // actual sample size used so reason texts can quote the right number.
   const oc = a.experience_outcomes || { success: 0, failure: 0, 'no-op': 0 };
   const total = (oc.success || 0) + (oc.failure || 0) + (oc['no-op'] || 0);
   const successRate = total > 0 ? oc.success / total : 0;
-  const count = a.experience_count || 0;
-  const recent = (a.recent_experience || []).filter(e => e.delta != null).map(e => e.delta);
-  let slope = 0, variance = 0;
-  if (recent.length >= 2) {
-    const n = recent.length;
-    const mean = recent.reduce((s, v) => s + v, 0) / n;
-    variance = recent.reduce((s, v) => s + (v - mean) * (v - mean), 0) / n;
-  }
-  if (recent.length >= 3) {
-    const n = recent.length;
-    let sX = 0, sY = 0, sXY = 0, sX2 = 0;
-    recent.forEach((y, x) => { sX += x; sY += y; sXY += x * y; sX2 += x * x; });
-    const denom = n * sX2 - sX * sX;
-    slope = denom !== 0 ? (n * sXY - sX * sY) / denom : 0;
-  }
-  return { count, successRate, slope, variance };
+  return {
+    count: a.experience_count || 0,
+    window: a.fitness_window || 0,
+    successRate: successRate,
+    slope: a.experience_slope_recent != null ? a.experience_slope_recent : 0,
+    variance: a.experience_variance != null ? a.experience_variance : 0,
+    sloperaw: a.experience_slope_recent,
+    varianceraw: a.experience_variance,
+  };
 }
 
 function tierOf(value, gates) {
@@ -1478,23 +1497,30 @@ function actionGate(a, type, target) {
         evidence: f
       };
     }
+    if (f.window < 2 || f.varianceraw == null) {
+      return {
+        enabled: false, ruleType: 'no-variance',
+        reason: 'No fitness `delta` values in the last ' + f.window + ' entries \u2014 evolve has nothing to measure.',
+        evidence: f
+      };
+    }
     if (f.variance < 1e-9) {
       return {
         enabled: false, ruleType: 'no-variance',
-        reason: 'All recent ' + f.count + ' entries returned identical fitness delta \u2014 evolve has no signal to select against.',
+        reason: 'All last ' + f.window + ' entries returned identical fitness delta \u2014 evolve has no signal to select against.',
         evidence: f
       };
     }
     if (Math.abs(f.slope) < 1e-6) {
       return {
         enabled: false, ruleType: 'flat-slope',
-        reason: 'Fitness slope flat over recent entries (likely Opus plateau) \u2014 evolve unlikely to find improvement.',
+        reason: 'Fitness slope flat over the last ' + f.window + ' entries (likely Opus plateau) \u2014 evolve unlikely to find improvement.',
         evidence: f
       };
     }
     return {
       enabled: true, ruleType: 'ok',
-      reason: 'Evolve: ' + f.count + ' entries, variance ' + f.variance.toFixed(4) + ', slope ' + (f.slope >= 0 ? '+' : '') + f.slope.toFixed(3) + '.'
+      reason: 'Evolve: ' + f.count + ' total entries, ' + f.window + '-entry window: variance ' + f.variance.toFixed(4) + ', slope ' + (f.slope >= 0 ? '+' : '') + f.slope.toFixed(3) + '.'
     };
   }
   return { enabled: true, ruleType: 'ok', reason: '' };
@@ -1531,9 +1557,10 @@ function renderWhyEvidence(ev) {
   if (ev.target !== undefined) lines.push('target: ' + ev.target.toFixed(2));
   if (ev.tier !== undefined) lines.push('current tier: ' + ev.tier.toFixed(2));
   if (ev.cap !== undefined) lines.push('source cap: ' + ev.cap.toFixed(2));
-  if (ev.count !== undefined) lines.push('experience entries: ' + ev.count);
-  if (ev.variance !== undefined) lines.push('recent delta variance: ' + ev.variance.toFixed(6));
-  if (ev.slope !== undefined) lines.push('recent delta slope: ' + (ev.slope >= 0 ? '+' : '') + ev.slope.toFixed(4));
+  if (ev.count !== undefined) lines.push('experience entries (total): ' + ev.count);
+  if (ev.window !== undefined && ev.window > 0) lines.push('fitness window: last ' + ev.window + ' entries');
+  if (ev.varianceraw !== undefined && ev.varianceraw != null) lines.push('window delta variance: ' + ev.varianceraw.toFixed(6));
+  if (ev.sloperaw !== undefined && ev.sloperaw != null) lines.push('window delta slope: ' + (ev.sloperaw >= 0 ? '+' : '') + ev.sloperaw.toFixed(4));
   if (ev.successRate !== undefined) lines.push('success rate: ' + Math.round(ev.successRate * 100) + '%');
   return lines.map(esc).join('\n');
 }
