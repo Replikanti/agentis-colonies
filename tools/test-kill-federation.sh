@@ -125,11 +125,14 @@ sleep 1
 if ! kill -0 "$DUMMY_PID" 2>/dev/null; then
     fail "5: spawn dummy" "PID $DUMMY_PID not alive after spawn"
 else
+    # Run with --json so we exercise the real-execution JSON code path
+    # (the dry-run JSON path is already covered by Test 6). Capture
+    # stdout — the trailing line should be the JSON document.
     set +e
-    "$KILL_SH" --fed-dir "$FIX3" --no-backup \
+    json_stdout="$("$KILL_SH" --json --fed-dir "$FIX3" --no-backup \
         --match-pattern "$FIXTURE_TAG" \
         --dashboard-pattern "kill-fed-test-no-such-dash-$$" \
-        --dashboard-py-pattern "kill-fed-test-no-such-dashpy-$$" >/dev/null 2>&1
+        --dashboard-py-pattern "kill-fed-test-no-such-dashpy-$$" 2>/dev/null)"
     rc=$?
     set -e
     sleep 1
@@ -138,10 +141,26 @@ else
         kill -KILL "$DUMMY_PID" 2>/dev/null || true
     else
         registry_left=$(find "$FIX3/.agentis/daemon" -maxdepth 1 -type f | wc -l | tr -d ' ')
-        if [ "$rc" -eq 0 ] && [ "$registry_left" -eq 0 ]; then
-            pass "5: real kill terminates fixture process and clears registry"
+        # Validate the trailing JSON line shape: real-execution path
+        # must include port_8420 and registry_remaining keys, dry_run
+        # must be false, and exit must be 0.
+        json_ok=0
+        if printf '%s' "$json_stdout" | python3 -c "
+import sys, json
+lines = sys.stdin.read().splitlines()
+assert lines, 'no stdout from --json'
+data = json.loads(lines[-1])
+assert data['exit'] == 0, 'exit != 0'
+assert data['dry_run'] is False, 'dry_run not False on real-kill path'
+assert 'port_8420' in data, 'missing port_8420 key'
+assert 'registry_remaining' in data, 'missing registry_remaining key'
+" 2>/dev/null; then
+            json_ok=1
+        fi
+        if [ "$rc" -eq 0 ] && [ "$registry_left" -eq 0 ] && [ "$json_ok" -eq 1 ]; then
+            pass "5: real kill terminates fixture, clears registry, emits valid real-path --json"
         else
-            fail "5: real kill" "rc=$rc registry_left=$registry_left"
+            fail "5: real kill" "rc=$rc registry_left=$registry_left json_ok=$json_ok"
         fi
     fi
 fi

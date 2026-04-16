@@ -79,6 +79,11 @@ Exit codes:
   0   federation fully stopped (or dry-run completed)
   1   at least one process survived SIGKILL / not fully clean
   2   invalid flag, missing federation dir, or other bad invocation
+
+Notes:
+  Port 8420 is verified with `lsof` if available, falling back to `ss`
+  (iproute2). On minimal images without either, the port check is
+  skipped and reported as "unknown" (treated as clean).
 EOF
 }
 
@@ -228,10 +233,18 @@ _walk_safety=0
 while [ -n "$_walk_pid" ] && [ "$_walk_pid" != "0" ] && [ "$_walk_pid" != "1" ] && [ "$_walk_safety" -lt 32 ]; do
     EXCLUDE_PIDS="$EXCLUDE_PIDS $_walk_pid"
     # `ps -o ppid=` works on every POSIX ps; trim handles macOS leading spaces.
-    _walk_pid="$(ps -o ppid= -p "$_walk_pid" 2>/dev/null | tr -d ' ' || echo '')"
+    _next_pid="$(ps -o ppid= -p "$_walk_pid" 2>/dev/null | tr -d ' ' || echo '')"
+    if [ -z "$_next_pid" ] && [ "$_walk_pid" != "1" ]; then
+        # Rare race: an ancestor exited mid-walk so `ps` returned nothing
+        # before we reached PID 1. Higher ancestors are now un-excludable;
+        # log a hint so operators can correlate if the script ever flags
+        # one of them as a kill target.
+        warn "ancestor walk: ps returned empty ppid for PID $_walk_pid before reaching 1; higher ancestors not excluded"
+    fi
+    _walk_pid="$_next_pid"
     _walk_safety=$((_walk_safety + 1))
 done
-unset _walk_pid _walk_safety
+unset _walk_pid _walk_safety _next_pid
 SCRIPT_BASENAME="$(basename "$SCRIPT_PATH")"
 filter_self() {
     local input="$1"
@@ -258,6 +271,11 @@ filter_self() {
         local cmd
         cmd="$(ps -o command= -p "$p" 2>/dev/null || echo '')"
         case "$cmd" in
+            # Exclude pgrep itself: on slow runners or under strace, the
+            # verifying `pgrep -f PATTERN` process can outlive its own
+            # exec window long enough to appear in its own results
+            # (its argv contains PATTERN as a literal substring).
+            pgrep*) skip=1 ;;
             *"$SCRIPT_BASENAME"*) skip=1 ;;
         esac
         [ "$skip" -eq 1 ] && continue
@@ -396,16 +414,32 @@ step "Cleaning stale registry"
 BACKUP_PATH=""
 if [ -n "$AGENTIS_DIR" ] && [ -d "$AGENTIS_DIR/daemon" ]; then
     if [ "$NO_BACKUP" -eq 0 ]; then
-        TS=$(date +%Y%m%d-%H%M%S)
-        BACKUP_DIR="$AGENTIS_DIR/backups"
-        mkdir -p "$BACKUP_DIR" 2>/dev/null || true
-        BACKUP_PATH="$BACKUP_DIR/agentis-daemon-registry-backup-$TS.tar.gz"
-        if tar czf "$BACKUP_PATH" -C "$AGENTIS_DIR" daemon 2>/dev/null; then
-            ok "backup: $BACKUP_PATH"
-        else
-            warn "backup failed (continuing): $BACKUP_PATH"
-            BACKUP_PATH=""
+        # n1: skip the backup entirely if `daemon/` has no regular files
+        # (only inbox/ subdirs or it's empty). Avoids leaving a ~100-byte
+        # empty tarball behind on every nothing-to-clean run.
+        _has_files=0
+        if find "$AGENTIS_DIR/daemon" -maxdepth 1 -type f -print -quit 2>/dev/null | grep -q .; then
+            _has_files=1
         fi
+        if [ "$_has_files" -eq 0 ]; then
+            ok "no registry files to back up — skipping tarball"
+        else
+            TS=$(date +%Y%m%d-%H%M%S)
+            BACKUP_DIR="$AGENTIS_DIR/backups"
+            mkdir -p "$BACKUP_DIR" 2>/dev/null || true
+            # Append PID as a suffix so two operators running this script
+            # in the same wall-clock second don't clobber each other's
+            # backup tarball. PID is preferred over `mktemp` to avoid
+            # adding a dependency we don't already require.
+            BACKUP_PATH="$BACKUP_DIR/agentis-daemon-registry-backup-$TS-$$.tar.gz"
+            if tar czf "$BACKUP_PATH" -C "$AGENTIS_DIR" daemon 2>/dev/null; then
+                ok "backup: $BACKUP_PATH"
+            else
+                warn "backup failed (continuing): $BACKUP_PATH"
+                BACKUP_PATH=""
+            fi
+        fi
+        unset _has_files
     else
         ok "backup skipped (--no-backup)"
     fi
@@ -415,7 +449,13 @@ if [ -n "$AGENTIS_DIR" ] && [ -d "$AGENTIS_DIR/daemon" ]; then
     for ext in pid watchdog.pid colony heartbeat status stop; do
         find "$AGENTIS_DIR/daemon" -maxdepth 1 -name "*.$ext" -type f -delete 2>/dev/null || true
     done
-    REMAINING_FILES=$(find "$AGENTIS_DIR/daemon" -maxdepth 1 -type f 2>/dev/null | wc -l | tr -d ' ')
+    # Use `find -printf '.'` rather than `wc -l` so a filename containing
+    # a literal newline doesn't inflate the count. Fall back to `wc -l` if
+    # `find -printf` is unavailable (e.g. BSD/macOS find).
+    REMAINING_FILES=$(find "$AGENTIS_DIR/daemon" -maxdepth 1 -type f -printf '.' 2>/dev/null | wc -c | tr -d ' ')
+    if [ -z "$REMAINING_FILES" ]; then
+        REMAINING_FILES=$(find "$AGENTIS_DIR/daemon" -maxdepth 1 -type f 2>/dev/null | wc -l | tr -d ' ')
+    fi
     ok "registry sidecar files removed (${REMAINING_FILES} regular files remain — inbox/ subdirs kept)"
 else
     warn "no $AGENTIS_DIR/daemon — skipping registry cleanup"
@@ -427,19 +467,30 @@ step "Verification"
 FINAL_AGENTIS=$(count_pids "$(filter_self "$(pgrep -f "$DAEMON_MATCH" 2>/dev/null | sort -u || true)")")
 FINAL_DASH=$(count_pids "$(filter_self "$(pgrep -f "$DASHBOARD_MATCH" 2>/dev/null | sort -u || true)")")
 
-# lsof is not installed everywhere (minimal containers, busybox). Warn
-# and skip the port check rather than failing the whole sweep.
+# lsof is not installed everywhere (minimal containers, busybox). Try
+# `ss` (iproute2, universal on Linux including Alpine) before falling
+# back to "unknown" so the port check still works on minimal images.
 if command -v lsof >/dev/null 2>&1; then
     FINAL_PORT=$(lsof -iTCP:8420 -sTCP:LISTEN -P 2>/dev/null | tail -n +2 | wc -l | tr -d ' ')
     FINAL_PORT=${FINAL_PORT:-0}
+elif command -v ss >/dev/null 2>&1; then
+    # `ss -ltn 'sport = :8420'` lists only listeners on TCP port 8420 in
+    # numeric form. Header is one line; subtract it via `tail -n +2`.
+    FINAL_PORT=$(ss -ltn 'sport = :8420' 2>/dev/null | tail -n +2 | grep -c .)
+    FINAL_PORT=${FINAL_PORT:-0}
 else
-    warn "lsof not installed — skipping port 8420 check"
+    warn "neither lsof nor ss installed — skipping port 8420 check"
     FINAL_PORT="unknown"
 fi
 
 REGISTRY_REMAINING=0
 if [ -n "$AGENTIS_DIR" ] && [ -d "$AGENTIS_DIR/daemon" ]; then
-    REGISTRY_REMAINING=$(find "$AGENTIS_DIR/daemon" -maxdepth 1 -type f 2>/dev/null | wc -l | tr -d ' ')
+    # See the matching `find -printf '.'` block above for why we don't pipe
+    # to `wc -l` here — newlines in filenames would inflate the count.
+    REGISTRY_REMAINING=$(find "$AGENTIS_DIR/daemon" -maxdepth 1 -type f -printf '.' 2>/dev/null | wc -c | tr -d ' ')
+    if [ -z "$REGISTRY_REMAINING" ]; then
+        REGISTRY_REMAINING=$(find "$AGENTIS_DIR/daemon" -maxdepth 1 -type f 2>/dev/null | wc -l | tr -d ' ')
+    fi
 fi
 
 echo "  matching processes: $FINAL_AGENTIS" >&2
