@@ -108,21 +108,57 @@ import sys, json
 
 config_path = sys.argv[1]
 
+def _strip_inline_comment(s):
+    """Strip YAML inline comments (# ...) respecting quoted strings."""
+    quote = None
+    for i, ch in enumerate(s):
+        if quote:
+            if ch == '\\' and i + 1 < len(s):
+                continue  # skip escaped char
+            if ch == quote:
+                quote = None
+            continue
+        if ch in ('"', "'"):
+            quote = ch
+            continue
+        if ch == '#':
+            return s[:i].rstrip()
+    return s
+
+def _parse_value(v):
+    v = _strip_inline_comment(v)
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
+        return v[1:-1]
+    if v == 'true':
+        return True
+    if v == 'false':
+        return False
+    try:
+        return int(v)
+    except ValueError:
+        pass
+    try:
+        return float(v)
+    except ValueError:
+        pass
+    return v
+
 def parse_yaml_simple(path):
     """Minimal YAML parser for our flat config structure.
-    Handles only scalar values and simple lists (- from/to pairs)."""
+    Handles scalar values and simple lists (- from/to pairs)."""
     cfg = {}
     with open(path) as f:
         lines = f.readlines()
 
-    current_path = []
     indent_stack = [(-1, cfg)]
+    # Track the last dict appended to a list so continuation keys
+    # (e.g. "to: 0.6" indented under "- from: 0.5") can be added.
+    last_list_dict = None
 
-    for raw in lines:
+    for idx, raw in enumerate(lines):
         line = raw.rstrip('\n')
         stripped = line.lstrip()
 
-        # Skip blanks and comments
         if not stripped or stripped.startswith('#'):
             continue
 
@@ -138,18 +174,18 @@ def parse_yaml_simple(path):
         if stripped.startswith('- '):
             item_content = stripped[2:].strip()
             if ':' in item_content:
-                # e.g. "- from: 0.5"
                 k, _, v = item_content.partition(':')
                 k = k.strip()
                 v = v.strip()
                 if not isinstance(parent, list):
                     continue
-                if not parent or not isinstance(parent[-1], dict) or k in parent[-1]:
-                    parent.append({})
-                parent[-1][k] = _parse_value(v)
+                new_dict = {k: _parse_value(v)}
+                parent.append(new_dict)
+                last_list_dict = new_dict
             else:
                 if isinstance(parent, list):
                     parent.append(_parse_value(item_content))
+                    last_list_dict = None
             continue
 
         if ':' not in stripped:
@@ -160,10 +196,9 @@ def parse_yaml_simple(path):
         v = v.strip()
 
         if not v:
-            # Section header — create nested dict or list
-            # Peek ahead to see if children are list items
+            # Section header
             is_list = False
-            for upcoming in lines[lines.index(raw)+1:]:
+            for upcoming in lines[idx+1:]:
                 us = upcoming.lstrip()
                 if not us or us.startswith('#'):
                     continue
@@ -175,30 +210,16 @@ def parse_yaml_simple(path):
             if isinstance(parent, dict):
                 parent[k] = child
             indent_stack.append((indent, child))
+            last_list_dict = None
         else:
             if isinstance(parent, dict):
                 parent[k] = _parse_value(v)
+            elif isinstance(parent, list) and last_list_dict is not None:
+                # Continuation key for the last list-item dict
+                # e.g. "to: 0.6" after "- from: 0.5"
+                last_list_dict[k] = _parse_value(v)
 
     return cfg
-
-def _parse_value(v):
-    if v.startswith('"') and v.endswith('"'):
-        return v[1:-1]
-    if v.startswith("'") and v.endswith("'"):
-        return v[1:-1]
-    if v == 'true':
-        return True
-    if v == 'false':
-        return False
-    try:
-        return int(v)
-    except ValueError:
-        pass
-    try:
-        return float(v)
-    except ValueError:
-        pass
-    return v
 
 try:
     import yaml
@@ -266,7 +287,7 @@ DECISIONS_JSON=$(python3 - "$DAEMONS_JSON" "$FED_DIR" \
     "$CFG_MIN_ENTRIES" "$CFG_MIN_RUNTIME_HOURS" "$CFG_REJECT_RATE_THRESHOLD" \
     "$CFG_DELTA_SLOPE_WINDOW" "$CFG_DELTA_SLOPE_MIN" "$CFG_PROMOTE_STEPS" \
     "$CFG_EVOLVE_SLOPE_NEG_FOR" "$CFG_EVOLVE_REJECT_ABOVE" <<'PYEVAL'
-import json, sys, os, time, subprocess, glob
+import json, sys, os, time
 
 daemons = json.loads(sys.argv[1])
 fed_dir = sys.argv[2]
@@ -317,19 +338,29 @@ for d in daemons:
         continue
 
     # Safety guard 4: PID liveness check
-    if pid and pid > 0:
-        try:
-            os.kill(pid, 0)
-        except OSError:
-            decisions.append({
-                'agent': agent_name,
-                'colony': colony,
-                'decision': 'skip',
-                'reason': f'pid {pid} not alive',
-                'pid': pid,
-                'confidence': confidence,
-            })
-            continue
+    # If pid is missing (0) or dead, skip — we can't verify the daemon
+    # is actually running, so acting on it is unsafe.
+    if not pid or pid <= 0:
+        decisions.append({
+            'agent': agent_name,
+            'colony': colony,
+            'decision': 'skip',
+            'reason': 'no pid reported by daemon list',
+            'confidence': confidence,
+        })
+        continue
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        decisions.append({
+            'agent': agent_name,
+            'colony': colony,
+            'decision': 'skip',
+            'reason': f'pid {pid} not alive',
+            'pid': pid,
+            'confidence': confidence,
+        })
+        continue
 
     # Compute runtime hours
     runtime_hours = (now - started_at) / 3600 if started_at else 0
