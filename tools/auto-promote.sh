@@ -653,7 +653,8 @@ for d in daemons:
                 fi
 
                 # Resolve per-agent tick interval from start-colony.sh (#155)
-                TICK_INTERVAL=$(python3 "$SCRIPT_DIR/resolve-tick-interval.py" "$agent" "$AGENT_COLONY_DIR")
+                TICK_INTERVAL=$(python3 "$SCRIPT_DIR/resolve-tick-interval.py" "$agent" "$AGENT_COLONY_DIR" 2>/dev/null) || true
+                TICK_INTERVAL="${TICK_INTERVAL:-60000}"
 
                 # Respawn with GITLAB_* env vars from colony.toml
                 (
