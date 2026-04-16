@@ -1,0 +1,32 @@
+# auto-promote-config.yaml — Decision rules for auto-promote / auto-evolve
+#
+# Used by tools/auto-promote.sh. See issue #148 for rationale.
+#
+# All thresholds are per-agent: the script evaluates each running agent
+# independently against these rules.
+
+promote:
+  prerequisites:
+    min_entries: 200             # minimum experience entries before considering
+    min_runtime_hours: 48        # don't promote in the first 2 days
+    reject_rate_threshold: 0.05  # reject_rate must be < 5%
+    delta_slope_window: 100      # compute slope over last N entries
+    delta_slope_min: 0           # average delta must be non-negative
+  steps:
+    - from: 0.5
+      to: 0.6
+    - from: 0.6
+      to: 0.85
+
+evolve:
+  trigger:
+    delta_slope_negative_for: 1000  # negative slope sustained over N entries
+    reject_rate_above: 0.20         # OR reject_rate > 20%
+  config:
+    generations: 3
+    population: 4
+    weights: "cb,val,exp"
+
+# dry_run: true means all actions are logged but not executed.
+# Default is true — flip to false only after reviewing the journal.
+dry_run: true

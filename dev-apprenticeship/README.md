@@ -285,3 +285,56 @@ Terminal colony bus events with no internal listener, meant for external consump
 | `review:escalation` | approval_decider | Confidence >= 0.85: MR requires human attention |
 | `planning:draft_plan` | plan_reviewer | Confidence 0.6-0.84: assembled plan for human review |
 | `release:version_bumped` | version_bumper | After tag/release creation or version bump suggestion |
+
+## Auto-promote / auto-evolve (#148)
+
+An external cron script that evaluates per-agent fitness from experience data and decides when to promote (raise confidence) or evolve (mutate `.ag` source). Runs outside the federation, reads state via `agentis daemon list --json` and experience JSONL files.
+
+### Quick start
+
+```bash
+# Dry-run (default) — log what would happen, take no action:
+./tools/auto-promote.sh dev-apprenticeship
+
+# Live mode — actually promote/evolve:
+./tools/auto-promote.sh dev-apprenticeship --live
+
+# Cron entry (every 30 minutes):
+# */30 * * * * cd /path/to/agentis-colonies && ./tools/auto-promote.sh dev-apprenticeship >> /var/log/auto-promote.log 2>&1
+```
+
+Configuration lives in `tools/auto-promote-config.yaml`. Decisions are journaled to `tools/auto-promote-journal.jsonl` (append-only, one JSON line per decision).
+
+### Decision rules
+
+**Promote** (confidence step-up, e.g. 0.5 → 0.6 → 0.85):
+- Minimum 200 experience entries
+- At least 48 hours of runtime
+- Reject rate below 5%
+- Delta slope non-negative over last 100 entries
+
+**Evolve** (`.ag` source mutation via `agentis evolve`):
+- Negative delta slope sustained over 1000 entries, OR
+- Reject rate above 20%
+
+### Safety guards
+
+1. **Federation check**: exits cleanly when `agentis daemon list --json` returns empty
+2. **Lock file**: `tools/.auto-promote.lock` prevents overlapping cron runs
+3. **Confidence seeded**: skips agents where `recall_latest` returns null
+4. **PID liveness**: `kill -0` check before acting on a daemon
+5. **Dry-run default**: all actions are logged but not executed until you flip `dry_run: false` in the config
+
+### Roadmap: 3 layers of self-governance
+
+| Layer | Where | Status |
+|-------|-------|--------|
+| **1 — External cron** | `tools/auto-promote.sh` | Shipped (#148) |
+| **2 — Supervisor agent** | `meta/agents/conductor.ag` | Planned (separate ticket) |
+| **3 — Daemon self-decide** | agentis-core | Long-horizon (needs months of L1+L2 data) |
+
+**Layer 1** (this) runs as a dumb cron job. It cannot observe the federation in real time — it snapshots state once per invocation, evaluates rules, and exits. Good enough for 30-minute decision cadence.
+
+**Layer 2** lifts the same logic into a native `.ag` agent (`conductor.ag`) running inside a new `meta` colony. The supervisor ticks every 5 minutes, reads other agents' state via the agentis API, and emits structured `promote`/`evolve` events. The federation learns how to manage itself — and you can evolve the supervisor too. Requires agentis-core support for cross-agent state reads (currently sandboxed).
+
+**Layer 3** gives each daemon a self-governance loop: track own metrics, decide when to self-promote, write memo, signal restart. Most invasive design with open questions about uncontrolled escalation. Out of scope until layers 1+2 have run for months and we have data on whether self-promote is desirable.

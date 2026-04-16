@@ -98,6 +98,8 @@ release:changelog_draft      -> version_bumper
 | `check-exec-sh.sh` | Grep-based check for unsafe string concat into `exec sh`. See `check-exec-sh.md` for known limitations. |
 | `parse-toml.sh` | Shared TOML parser sourced by all start-colony.sh scripts |
 | `federation-dashboard.sh` | Generic web dashboard for any federation (auto-discovers colonies/agents, kill switch, phase ETA) |
+| `auto-promote.sh` | Layer 1 auto-promote/auto-evolve cron script — evaluates per-agent fitness, promotes or evolves (#148) |
+| `auto-promote-config.yaml` | Decision rules for auto-promote (thresholds, promote steps, evolve triggers, dry_run flag) |
 
 ## End-user scripts (in dev-apprenticeship/)
 
