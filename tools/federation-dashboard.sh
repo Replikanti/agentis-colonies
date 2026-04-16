@@ -93,243 +93,333 @@ generate() {
     TIMESTAMP="$(date '+%Y-%m-%d %H:%M:%S')"
     local EPOCH
     EPOCH="$(date '+%s')"
-    # Per-PID temp file so concurrent generate() invocations (60 s background
-    # loop + POST /refresh subprocess, see #98) don't stomp on each other or
-    # let a SimpleHTTPRequestHandler read a half-written index.html. Final
-    # `mv` below is atomic on the same filesystem.
     local HTML_TMP="$HTML_FILE.tmp.$$"
 
     local DAEMONS
     DAEMONS="$(agentis daemon list --json 2>/dev/null || echo '[]')"
 
-    # Count experience entries per colony.
-    #
-    # #111: the dashboard used to call `agentis knowledge list`, but agents
-    # write with `learn(...)` which persists to `.agentis/experience/`, not
-    # the knowledge base. Two parallel stores, two parallel CLIs — the
-    # knowledge counter was always 0 on a real federation. We now count
-    # JSONL line entries in the experience dir and aggregate per colony via
-    # the daemon's own `colony` field. The output JSON shape is still
-    # `{total, <col>}` for compatibility with history.json and the HTML
-    # chart.
-    #
-    # Experience files are named by daemon-assigned `agent_id` (opaque hex,
-    # see src/cli/daemon.rs:907), not the `.ag` basename. We map back via
-    # `agentis daemon list --json`: for daemons started with `--colony`
-    # (which `start-colony.sh` always does) the `colony` field is
-    # authoritative. For daemons started without it we fall back to
-    # basename(source, .ag) → AGENT_COLONY_MAP, which is lossy when two
-    # colonies ship an agent with the same filename but is the best we can
-    # do for bare `agentis daemon <file>` invocations.
     local COLONY_LIST_PY=""
     for col in "${COLONIES[@]}"; do
         COLONY_LIST_PY="${COLONY_LIST_PY}\"${col}\","
     done
     COLONY_LIST_PY="[${COLONY_LIST_PY%,}]"
 
-    # Match the LOG_DIR convention (line 187): prefer $FED_DIR/../.agentis,
-    # fall back to cwd-relative for operators invoking from the federation
-    # root. Experience dir existence is re-checked inside python so a
-    # missing path degrades to zeros rather than crashing.
     local EXPERIENCE_DIR="${FED_DIR}/../.agentis/experience"
     if [ ! -d "$EXPERIENCE_DIR" ]; then
         EXPERIENCE_DIR=".agentis/experience"
     fi
+    local LOG_DIR="${FED_DIR}/../.agentis/logs"
+    if [ ! -d "$LOG_DIR" ]; then
+        LOG_DIR=".agentis/logs"
+    fi
 
-    local EXPERIENCE_COUNTS
-    EXPERIENCE_COUNTS="$(python3 - "$EXPERIENCE_DIR" "$DAEMONS" "$AGENT_COLONY_MAP" "$COLONY_LIST_PY" <<'PY' 2>/dev/null
-import sys, os, json
-exp_dir, daemons_json, map_json, colony_list_json = sys.argv[1:5]
-try:
-    daemons = json.loads(daemons_json)
-except (json.JSONDecodeError, ValueError):
-    daemons = []
-try:
-    agent_map = json.loads(map_json)
-except (json.JSONDecodeError, ValueError):
-    agent_map = []
-try:
-    colonies = json.loads(colony_list_json)
-except (json.JSONDecodeError, ValueError):
-    colonies = []
-# Basename-keyed fallback for daemons launched without --colony. Collisions
-# (same .ag filename across two colonies) silently last-writer-wins here,
-# which is a known limitation; the authoritative path uses d["colony"].
-name_to_colony = {e.get("agent", ""): e.get("colony", "") for e in agent_map}
-counts = {c: 0 for c in colonies}
-counts["total"] = 0
-if os.path.isdir(exp_dir):
-    for d in daemons:
-        agent_id = d.get("agent_id") or ""
-        if not agent_id:
-            continue
-        colony = d.get("colony") or ""
-        if not colony:
-            source = d.get("source") or ""
-            if source:
-                name = os.path.basename(source)
-                if name.endswith(".ag"):
-                    name = name[:-3]
-                colony = name_to_colony.get(name, "")
-        if not colony or colony not in counts:
-            continue
-        path = os.path.join(exp_dir, agent_id + ".jsonl")
-        if not os.path.isfile(path):
-            continue
-        n = 0
+    # --- Comprehensive per-agent data collection ---
+    # Single python3 invocation collects all enriched data: experience stats,
+    # .ag descriptions, log lines, PID liveness, event timeline, and
+    # confidence change history. Outputs a single JSON blob consumed by JS.
+    local COLLECTOR_JSON
+    COLLECTOR_JSON="$(python3 - "$DAEMONS" "$AGENT_COLONY_MAP" "$FED_DIR" "$EPOCH" "$EXPERIENCE_DIR" "$LOG_DIR" "$DASH_DIR" "$COLONY_LIST_PY" <<'PY' "${ALL_AGENTS[@]}"
+import sys, os, json, time, re
+
+daemons_json   = sys.argv[1]
+agent_map_json = sys.argv[2]
+fed_dir        = sys.argv[3]
+epoch          = int(sys.argv[4])
+exp_dir        = sys.argv[5]
+log_dir        = sys.argv[6]
+dash_dir       = sys.argv[7]
+colony_list_json = sys.argv[8]
+all_agents     = sys.argv[9:]
+
+def safe_json(s, default):
+    try: return json.loads(s or '[]')
+    except (json.JSONDecodeError, TypeError, ValueError): return default
+
+daemons    = safe_json(daemons_json, [])
+agent_map  = safe_json(agent_map_json, [])
+colonies   = safe_json(colony_list_json, [])
+
+name_to_colony = {e.get('agent',''): e.get('colony','') for e in agent_map}
+
+# Build role → daemon mapping from daemon list source field
+role_to_daemon = {}
+id_to_role = {}
+for d in daemons:
+    src = d.get('source') or ''
+    if not src:
+        continue
+    role = os.path.basename(src)
+    if role.endswith('.ag'):
+        role = role[:-3]
+    role_to_daemon[role] = d
+    aid = d.get('agent_id') or ''
+    if aid:
+        id_to_role[aid] = role
+
+result = []
+total_exp = 0
+colony_exp = {c: 0 for c in colonies}
+
+for agent in all_agents:
+    colony = name_to_colony.get(agent, '')
+    daemon = role_to_daemon.get(agent)
+
+    rec = {
+        'name': agent, 'colony': colony,
+        'confidence': None, 'confidence_generation': None,
+        'confidence_written_at': None,
+        'health': 'unknown', 'state': 'stopped',
+        'pid': 0, 'pid_alive': False,
+        'agent_id': '', 'started_at': 0, 'quarantine': '',
+        'tick_ok': 0, 'tick_err': 0,
+        'experience_count': 0, 'experience_rate': 0.0,
+        'experience_outcomes': {'success': 0, 'failure': 0, 'no-op': 0},
+        'last_action': '', 'last_action_ts': 0,
+        'description': '',
+        'recent_experience': [], 'recent_logs': [],
+        'source': '',
+    }
+
+    if daemon:
+        rec['confidence'] = daemon.get('confidence')
+        rec['confidence_generation'] = daemon.get('confidence_generation')
+        rec['confidence_written_at'] = daemon.get('confidence_written_at')
+        rec['health'] = daemon.get('health') or 'unknown'
+        rec['state'] = daemon.get('state') or 'unknown'
+        rec['pid'] = daemon.get('pid') or 0
+        rec['agent_id'] = daemon.get('agent_id') or ''
+        rec['started_at'] = daemon.get('started_at') or 0
+        rec['quarantine'] = daemon.get('quarantine') or ''
+        rec['source'] = daemon.get('source') or ''
+        rec['tick_ok'] = daemon.get('tick_ok') or daemon.get('ticks_ok') or 0
+        rec['tick_err'] = daemon.get('tick_err') or daemon.get('ticks_err') or 0
+        pid = rec['pid']
+        if pid and pid > 0:
+            try:
+                os.kill(pid, 0)
+                rec['pid_alive'] = True
+            except OSError:
+                rec['pid_alive'] = False
+
+    # .ag description (first comment block)
+    ag_path = os.path.join(fed_dir, colony, 'agents', agent + '.ag') if colony else ''
+    if ag_path and os.path.isfile(ag_path):
+        desc_lines = []
         try:
-            with open(path) as f:
+            with open(ag_path) as f:
                 for line in f:
-                    if line.strip():
-                        n += 1
+                    line = line.rstrip('\n')
+                    if line.startswith('//'):
+                        desc_lines.append(line[2:].strip())
+                    elif line.strip() == '':
+                        if desc_lines:
+                            break
+                    else:
+                        break
         except OSError:
-            continue
-        counts[colony] += n
-        counts["total"] += n
-print(json.dumps(counts))
+            pass
+        rec['description'] = '\n'.join(desc_lines)
+
+    # Experience data (from .agentis/experience/<agent_id>.jsonl)
+    agent_id = rec['agent_id']
+    if agent_id and os.path.isdir(exp_dir):
+        exp_path = os.path.join(exp_dir, agent_id + '.jsonl')
+        if os.path.isfile(exp_path):
+            entries = []
+            try:
+                with open(exp_path) as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entries.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            continue
+            except OSError:
+                pass
+
+            rec['experience_count'] = len(entries)
+            total_exp += len(entries)
+            if colony in colony_exp:
+                colony_exp[colony] += len(entries)
+
+            for e in entries:
+                outcome = (e.get('outcome') or 'no-op').lower()
+                if outcome in rec['experience_outcomes']:
+                    rec['experience_outcomes'][outcome] += 1
+                else:
+                    rec['experience_outcomes']['no-op'] += 1
+
+            # Rate: entries written in the last hour
+            hour_ago = epoch - 3600
+            recent_hour = [e for e in entries if (e.get('ts') or 0) > hour_ago]
+            rec['experience_rate'] = round(len(recent_hour), 1)
+
+            if entries:
+                last = entries[-1]
+                rec['last_action'] = str(last.get('in') or '')[:80]
+                rec['last_action_ts'] = last.get('ts') or 0
+
+            rec['recent_experience'] = entries[-10:]
+
+    # Recent log lines
+    if agent_id and os.path.isdir(log_dir):
+        log_path = os.path.join(log_dir, agent_id + '.log')
+        if os.path.isfile(log_path):
+            try:
+                with open(log_path) as f:
+                    lines = f.readlines()
+                rec['recent_logs'] = [l.rstrip('\n') for l in lines[-50:]]
+            except OSError:
+                pass
+
+    result.append(rec)
+
+colony_exp['total'] = total_exp
+
+# --- Event timeline from log files ---
+events = []
+if os.path.isdir(log_dir):
+    try:
+        for fn in sorted(os.listdir(log_dir)):
+            if not fn.endswith('.log'):
+                continue
+            aid = fn[:-4]
+            role = id_to_role.get(aid, aid[:8])
+            fpath = os.path.join(log_dir, fn)
+            try:
+                with open(fpath) as f:
+                    lines = f.readlines()
+                for line in lines[-30:]:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    # Try to extract timestamp from line start
+                    ts_match = re.match(r'^\[?(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})\]?\s*(.*)', line)
+                    ts_str = ''
+                    content = line
+                    if ts_match:
+                        ts_str = ts_match.group(1)
+                        content = ts_match.group(2)
+                    # Classify event type (word-boundary match to avoid
+                    # false positives like "react"→action, "referred"→error)
+                    etype = 'log'
+                    cl = content.lower()
+                    if re.search(r'\bemit\b', cl):
+                        etype = 'emit'
+                    elif re.search(r'\brecv\b|\blisten\b', cl):
+                        etype = 'recv'
+                    elif re.search(r'\bsuggest', cl):
+                        etype = 'suggest'
+                    elif re.search(r'\berror\b|\bfailed\b', cl):
+                        etype = 'error'
+                    elif re.search(r'\baction\b|\bdraft\b', cl):
+                        etype = 'action'
+                    elif re.search(r'\bfinding', cl):
+                        etype = 'finding'
+                    # Only include interesting events in timeline
+                    if etype != 'log':
+                        events.append({
+                            'ts': ts_str,
+                            'agent': role,
+                            'type': etype,
+                            'content': content[:200],
+                        })
+            except OSError:
+                pass
+    except OSError:
+        pass
+# Sort by timestamp descending, limit to 100
+events.sort(key=lambda e: e.get('ts', ''), reverse=True)
+events = events[:100]
+
+# --- Confidence change log ---
+conf_changes = []
+conf_log_path = os.path.join(dash_dir, 'confidence-log.jsonl')
+if os.path.isfile(conf_log_path):
+    try:
+        with open(conf_log_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    conf_changes.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        pass
+conf_changes = conf_changes[-50:]
+
+output = {
+    'agents': result,
+    'experience_counts': colony_exp,
+    'events': events,
+    'confidence_changes': conf_changes,
+}
+print(json.dumps(output))
 PY
-)"
-    # The python block is wrapped in try/except for every input, so a bad
-    # arg silently yields `{"total":0,...}` — but if the interpreter itself
-    # dies (SIGKILL, disk full, bad shebang) we get an empty string and the
-    # `const experienceCounts = ${EXPERIENCE_COUNTS};` injection below would
-    # produce a JS syntax error that breaks every other IIFE on the page.
-    # Validate the result parses as JSON; on failure, substitute the same
-    # shape the python block emits on empty input.
-    if ! echo "$EXPERIENCE_COUNTS" | python3 -c 'import sys, json; json.loads(sys.stdin.read())' 2>/dev/null; then
-        EXPERIENCE_COUNTS='{"total":0}'
+    )"
+    if ! echo "$COLLECTOR_JSON" | python3 -c 'import sys,json;json.loads(sys.stdin.read())' 2>/dev/null; then
+        COLLECTOR_JSON='{"agents":[],"experience_counts":{"total":0},"events":[],"confidence_changes":[]}'
     fi
 
     local REMEDIATION
     REMEDIATION="$(agentis remediation history --limit 5 --json 2>/dev/null || echo '[]')"
 
-    # #140: single source of truth is `daemon list --json` (requires core
-    # v1.2.3, enforced by install.sh MIN_VERSION). Replaces the per-agent
-    # `agentis memo get` loop — one shellout instead of N. Preserves the
-    # null vs 0.0 distinction end-to-end: null = never seeded, 0.0 = a
-    # stop-the-line event (see #96, agentis-core#524). Agents missing from
-    # the daemon list (never spawned / crashed) also map to null.
-    #
-    # Keying: ALL_AGENTS entries are `.ag` basenames. The JSON `source`
-    # field is the full path; `os.path.basename(source)` stripped of the
-    # `.ag` suffix is the role name, which matches the memo-key prefix
-    # the previous `agentis memo get "${agent}:confidence"` used.
-    local CONFIDENCES
-    CONFIDENCES="$(
-      python3 - "$DAEMONS" <<'PY' "${ALL_AGENTS[@]}"
-import json, os, sys
-daemons = json.loads(sys.argv[1] or '[]')
-agents = sys.argv[2:]
-conf_by_role = {}
-for d in daemons:
-    source = d.get('source') or ''
-    if not source:
-        continue
-    role = os.path.basename(source)
-    if role.endswith('.ag'):
-        role = role[:-3]
-    # Last writer wins if two daemons share a role name (same agent in
-    # two colonies) — acceptable; the UI only has one cell per role.
-    conf_by_role[role] = d.get('confidence')
-out = [conf_by_role.get(a) for a in agents]
-print(json.dumps(out))
-PY
-    )"
-
-    # Recent suggestions
-    local LOG_DIR="${FED_DIR}/../.agentis/logs"
-    if [ ! -d "$LOG_DIR" ]; then
-        LOG_DIR=".agentis/logs"
-    fi
-    local SUGGESTIONS="[]"
-    if [ -d "$LOG_DIR" ]; then
-        SUGGESTIONS="$(grep -ihE 'suggest|draft|finding' "$LOG_DIR"/*.log 2>/dev/null | tail -50 | python3 -c '
-import sys, json
-lines = [line.strip() for line in sys.stdin if line.strip()]
-print(json.dumps(lines))
-' 2>/dev/null || echo '[]')"
-    fi
-
-    # Append to history
-    python3 - "$HISTORY_FILE" "$EPOCH" "$EXPERIENCE_COUNTS" "$CONFIDENCES" "$AGENT_COLONY_MAP" <<'PY'
+    # --- History append ---
+    # #143: aggregator never writes 0.0 for null confidence. Colonies where
+    # every agent has null confidence are excluded from the history entry
+    # entirely (they don't appear in the avg_conf dict). Regression code
+    # on the JS side filters stale zeros from old entries.
+    python3 - "$HISTORY_FILE" "$EPOCH" "$COLLECTOR_JSON" "$COLONY_LIST_PY" <<'PYHISTORY'
 import sys, os, json
-def _safe_json(s, default, label):
-    try:
-        return json.loads(s)
-    except (json.JSONDecodeError, TypeError, ValueError) as e:
-        # Surface real breakages (daemon crash, store corruption) rather
-        # than silently rendering "0 entries" forever. On a fresh
-        # federation the inputs are legitimately empty strings and
-        # `json.loads("")` fails — that is expected and noisy but
-        # short-lived (one tick per agent until memos are seeded).
-        sys.stderr.write(f"[dashboard] {label} parse failed: {e}; using default\n")
-        return default
 path, epoch = sys.argv[1], int(sys.argv[2])
-# Defensive parse: on a fresh federation any of these shell-assembled JSON
-# blobs may be malformed (see #96). Fall back to empty structures so the
-# dashboard still renders — the resulting history entry just has empty
-# `experience` / `confidence` fields for this tick.
-ec = _safe_json(sys.argv[3], {"total": 0}, "experience_counts")
-conf_vals = _safe_json(sys.argv[4], [], "confidences")
-agent_map = _safe_json(sys.argv[5], [], "agent_colony_map")
+try:
+    collector = json.loads(sys.argv[3])
+except (json.JSONDecodeError, TypeError, ValueError):
+    collector = {'agents': [], 'experience_counts': {'total': 0}}
+try:
+    colony_list = json.loads(sys.argv[4])
+except (json.JSONDecodeError, TypeError, ValueError):
+    colony_list = []
 try:
     with open(path) as f:
         history = json.load(f)
 except (json.JSONDecodeError, FileNotFoundError):
     history = []
+# Compute per-colony average confidence, skipping null agents (#140, #143)
 colony_conf = {}
 colony_count = {}
-# #140: skip null (never-seeded agents) from the colony mean so a colony
-# with one agent at 0.80 and two not-yet-seeded reads 0.80, not 0.27.
-# 0.0 still counts — a genuinely zero-confidence agent is a real event.
-for i, am in enumerate(agent_map):
-    col = am["colony"]
-    v = conf_vals[i] if i < len(conf_vals) else None
-    if v is None:
+for a in collector.get('agents', []):
+    col = a.get('colony', '')
+    v = a.get('confidence')
+    if v is None or not col:
         continue
-    colony_conf[col] = colony_conf.get(col, 0) + v
+    colony_conf[col] = colony_conf.get(col, 0.0) + v
     colony_count[col] = colony_count.get(col, 0) + 1
-avg_conf = {col: round(colony_conf[col] / colony_count[col], 3) for col in colony_conf if colony_count[col]}
-# #111: the history key is `experience` now (previously `knowledge`, which
-# was always 0 because of the wrong CLI). Old history entries from v1.1.8
-# and earlier will be missing this field and silently skipped by the
-# Experience Growth chart — acceptable, since those entries recorded zeros.
-entry = {"t": epoch, "experience": ec, "confidence": avg_conf}
+# #143: only include colonies with real data — never write 0.0 for all-null
+avg_conf = {}
+for col in colony_conf:
+    if colony_count.get(col, 0) > 0:
+        avg_conf[col] = round(colony_conf[col] / colony_count[col], 3)
+entry = {
+    't': epoch,
+    'experience': collector.get('experience_counts', {'total': 0}),
+    'confidence': avg_conf,
+}
 history.append(entry)
 cutoff = epoch - 7 * 86400
-history = [h for h in history if h["t"] > cutoff]
-# Per-PID temp + os.replace: atomic on the same filesystem so concurrent
-# generate() writers don't leave a partially-written history.json readable.
-tmp = f"{path}.tmp.{os.getpid()}"
-with open(tmp, "w") as f:
+history = [h for h in history if h['t'] > cutoff]
+tmp = path + '.tmp.' + str(os.getpid())
+with open(tmp, 'w') as f:
     json.dump(history, f)
 os.replace(tmp, path)
-PY
+PYHISTORY
 
     local HISTORY
     HISTORY="$(cat "$HISTORY_FILE" 2>/dev/null || echo '[]')"
-
-    # #140: single python3 invocation (was N, one per agent). Emits valid
-    # JSON `null` literal for never-seeded agents — prior string-interp
-    # path turned Python `None` into the token `None` which broke JS
-    # parsing, and `${conf_val:-0.0}` would have collapsed null → 0.
-    local AGENT_DATA
-    AGENT_DATA="$(
-      python3 - "$CONFIDENCES" "$AGENT_COLONY_MAP" <<'PY' "${ALL_AGENTS[@]}"
-import json, sys
-confs = json.loads(sys.argv[1] or '[]')
-colmap = json.loads(sys.argv[2] or '[]')
-agents = sys.argv[3:]
-out = []
-for i, a in enumerate(agents):
-    out.append({
-        "agent": a,
-        "colony": colmap[i]["colony"] if i < len(colmap) else "",
-        "confidence": confs[i] if i < len(confs) else None,
-    })
-print(json.dumps(out))
-PY
-    )"
 
     local COLONY_LIST_JS=""
     for col in "${COLONIES[@]}"; do
@@ -337,6 +427,7 @@ PY
     done
     COLONY_LIST_JS="[${COLONY_LIST_JS%,}]"
 
+    # --- HTML generation ---
     {
     cat <<HEADEOF
 <!DOCTYPE html>
@@ -350,7 +441,8 @@ HEADEOF
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
   :root {
-    --bg: #0a0a0a; --surface: rgba(0,0,0,0.85); --border: rgba(0,255,255,0.2);
+    --bg: #0a0a0a; --surface: rgba(0,0,0,0.85); --surface2: rgba(0,20,30,0.7);
+    --border: rgba(0,255,255,0.2); --border2: rgba(0,255,255,0.08);
     --text: #c0e8e8; --muted: rgba(0,255,255,0.4); --cyan: #00ffff;
     --green: #00ff00; --yellow: #ffff00; --red: #ff4444;
     --magenta: #ff00ff; --orange: #ff8800; --copper: #b87333;
@@ -383,6 +475,40 @@ HEADEOF
   }
   .header-right { text-align: right; font-size: 11px; color: var(--muted); }
   .header-right .time { color: var(--cyan); font-size: 13px; text-shadow: 0 0 8px rgba(0,255,255,0.3); }
+
+  /* --- Federation Down Banner --- */
+  .fed-down-banner {
+    display: none; padding: 14px 20px; margin-bottom: 16px;
+    background: rgba(255,255,0,0.08); border: 2px solid var(--yellow);
+    border-radius: 4px; color: var(--yellow); font-size: 14px;
+    text-align: center; letter-spacing: 1px;
+    text-shadow: 0 0 10px rgba(255,255,0,0.3);
+    animation: pulse-banner 2s infinite;
+  }
+  .fed-down-banner.visible { display: block; }
+  @keyframes pulse-banner {
+    0%,100% { box-shadow: 0 0 10px rgba(255,255,0,0.15); }
+    50% { box-shadow: 0 0 25px rgba(255,255,0,0.3); }
+  }
+  .fed-down-banner .start-btn {
+    background: transparent; border: 1px solid var(--yellow); color: var(--yellow);
+    font-family: inherit; font-size: 11px; padding: 4px 12px; cursor: pointer;
+    border-radius: 2px; margin-left: 16px; letter-spacing: 1px;
+    transition: all 0.2s;
+  }
+  .fed-down-banner .start-btn:hover { background: var(--yellow); color: #000; }
+
+  /* --- Stats Row --- */
+  .stats-row { display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+  .stat-box {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 4px; padding: 12px 16px; flex: 1; min-width: 140px; text-align: center;
+    box-shadow: 0 0 15px rgba(0,255,255,0.05);
+  }
+  .stat-value { font-size: 28px; color: var(--cyan); text-shadow: 0 0 15px rgba(0,255,255,0.4); }
+  .stat-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 2px; margin-top: 4px; }
+
+  /* --- Grid & Cards --- */
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
   .card {
     background: var(--surface); border: 1px solid var(--border);
@@ -398,17 +524,23 @@ HEADEOF
     border-bottom: 1px solid rgba(255,255,0,0.15);
     text-shadow: 0 0 8px rgba(255,255,0,0.3);
   }
+
+  /* --- Tables --- */
   table { width: 100%; border-collapse: collapse; font-size: 12px; }
   th {
-    text-align: left; padding: 4px 8px; color: var(--muted); font-weight: 400;
+    text-align: left; padding: 6px 8px; color: var(--muted); font-weight: 400;
     font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--border); cursor: pointer; user-select: none;
+    white-space: nowrap;
   }
-  td { padding: 5px 8px; border-bottom: 1px solid rgba(0,255,255,0.05); }
+  th:hover { color: var(--cyan); }
+  th .sort-arrow { font-size: 9px; margin-left: 2px; }
+  td { padding: 5px 8px; border-bottom: 1px solid var(--border2); }
   tr:last-child td { border-bottom: none; }
-  tr:hover td { background: rgba(0,255,255,0.03); }
-  .agent-name { color: var(--cyan); text-shadow: 0 0 6px rgba(0,255,255,0.2); }
-  .colony-name { color: var(--copper); }
+  tr.clickable { cursor: pointer; }
+  tr.clickable:hover td { background: rgba(0,255,255,0.05); }
+
+  /* --- Badges --- */
   .badge {
     display: inline-block; padding: 1px 8px; border-radius: 2px;
     font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
@@ -418,15 +550,23 @@ HEADEOF
   .badge-healthy { border: 1px solid var(--green); color: var(--green); }
   .badge-degraded { border: 1px solid var(--yellow); color: var(--yellow); }
   .badge-error { border: 1px solid var(--red); color: var(--red); }
+  .badge-critical { border: 1px solid var(--red); color: var(--red); text-shadow: 0 0 6px rgba(255,68,68,0.4); }
   .badge-quarantine { border: 1px solid var(--magenta); color: var(--magenta); text-shadow: 0 0 6px rgba(255,0,255,0.3); }
   .badge-observe { border: 1px solid var(--muted); color: var(--muted); }
   .badge-suggest { border: 1px solid var(--yellow); color: var(--yellow); text-shadow: 0 0 6px rgba(255,255,0,0.3); }
   .badge-act { border: 1px solid var(--green); color: var(--green); text-shadow: 0 0 6px rgba(0,255,0,0.3); }
-  /* #140: distinguish null (never seeded) from real 0.00 (stop-the-line). */
   .badge-na { border: 1px solid var(--muted); color: var(--muted); }
-  .badge-zero { border: 1px solid var(--red); color: var(--red); text-shadow: 0 0 6px rgba(255,68,68,0.4); }
-  .conf-bar-bg { height: 6px; background: rgba(0,255,255,0.08); border-radius: 3px; overflow: hidden; margin-top: 2px; }
-  .conf-bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s; }
+  .badge-dead { border: 1px solid var(--red); color: var(--red); background: rgba(255,68,68,0.1); }
+  .agent-name { color: var(--cyan); text-shadow: 0 0 6px rgba(0,255,255,0.2); }
+  .colony-name { color: var(--copper); }
+  .muted { color: var(--muted); font-style: italic; }
+  .conf-indicator { font-size: 11px; margin-left: 4px; }
+  .conf-indicator.up { color: var(--green); }
+  .conf-indicator.down { color: var(--red); }
+  .conf-indicator.evolve { color: var(--magenta); }
+  .empty { color: var(--muted); font-style: italic; font-size: 11px; }
+
+  /* --- Phase Readiness --- */
   .phase-row { display: flex; align-items: center; gap: 12px; margin: 8px 0; }
   .phase-colony { width: 120px; flex-shrink: 0; color: var(--cyan); font-size: 12px; text-shadow: 0 0 6px rgba(0,255,255,0.2); }
   .phase-bar-outer {
@@ -441,23 +581,113 @@ HEADEOF
   .phase-marker { position: absolute; top: -2px; bottom: -2px; width: 1px; border-left: 1px dashed rgba(255,255,255,0.2); }
   .phase-marker-label { position: absolute; top: -16px; font-size: 9px; color: var(--muted); transform: translateX(-50%); white-space: nowrap; }
   .phase-eta { width: 140px; flex-shrink: 0; text-align: right; font-size: 11px; color: var(--muted); }
+
+  /* --- Promote Candidates --- */
+  .promote-item { padding: 6px 0; border-bottom: 1px solid var(--border2); font-size: 12px; }
+  .promote-item:last-child { border-bottom: none; }
+  .promote-check { color: var(--green); margin-right: 6px; }
+  .promote-cross { color: var(--red); margin-right: 6px; }
+  .promote-reason { color: var(--muted); font-size: 11px; }
+  .promote-suggest { color: var(--yellow); font-size: 11px; }
+
+  /* --- Event Timeline --- */
+  .timeline { max-height: 300px; overflow-y: auto; font-size: 11px; line-height: 1.8; }
+  .timeline-entry { padding: 3px 0; border-bottom: 1px solid var(--border2); display: flex; gap: 8px; }
+  .timeline-entry:hover { background: rgba(0,255,255,0.03); }
+  .timeline-ts { color: var(--muted); width: 65px; flex-shrink: 0; }
+  .timeline-agent { color: var(--cyan); width: 130px; flex-shrink: 0; }
+  .timeline-type { width: 60px; flex-shrink: 0; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
+  .timeline-type.emit { color: var(--green); }
+  .timeline-type.recv { color: var(--yellow); }
+  .timeline-type.suggest { color: var(--orange); }
+  .timeline-type.error { color: var(--red); }
+  .timeline-type.action { color: var(--cyan); }
+  .timeline-type.finding { color: var(--magenta); }
+  .timeline-content { color: var(--text); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* --- Charts --- */
   .chart-container { margin: 8px 0; }
   .chart-legend { display: flex; gap: 16px; margin-top: 8px; font-size: 11px; flex-wrap: wrap; }
   .chart-legend span { display: flex; align-items: center; gap: 4px; }
   .legend-dot { width: 8px; height: 8px; border-radius: 1px; display: inline-block; }
-  .log-feed { max-height: 260px; overflow-y: auto; font-size: 11px; color: var(--muted); line-height: 1.8; }
-  .log-feed div { padding: 2px 0; border-bottom: 1px solid rgba(0,255,255,0.03); }
-  .log-feed div:hover { color: var(--cyan); }
-  .empty { color: var(--muted); font-style: italic; font-size: 11px; }
-  .colony-header { font-size: 10px; color: var(--copper); text-transform: uppercase; letter-spacing: 2px; padding: 8px 8px 4px; text-shadow: 0 0 6px rgba(184,115,51,0.3); }
-  .stats-row { display: flex; gap: 24px; margin-bottom: 16px; }
-  .stat-box {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 4px; padding: 12px 16px; flex: 1; text-align: center;
-    box-shadow: 0 0 15px rgba(0,255,255,0.05);
+
+  /* --- Detail Modal --- */
+  .modal-overlay {
+    display: none; position: fixed; inset: 0; z-index: 9000;
+    background: rgba(0,0,0,0.8); backdrop-filter: blur(4px);
+    justify-content: center; align-items: flex-start;
+    padding: 40px 20px; overflow-y: auto;
   }
-  .stat-value { font-size: 28px; color: var(--cyan); text-shadow: 0 0 15px rgba(0,255,255,0.4); }
-  .stat-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 2px; margin-top: 4px; }
+  .modal-overlay.visible { display: flex; }
+  .modal-content {
+    width: 100%; max-width: 900px;
+    background: var(--bg); border: 1px solid var(--cyan);
+    border-radius: 6px; box-shadow: 0 0 40px rgba(0,255,255,0.2);
+    padding: 24px;
+  }
+  .modal-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 16px; padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .modal-header h2 {
+    font-size: 16px; font-weight: 400; color: var(--cyan);
+    text-shadow: 0 0 12px rgba(0,255,255,0.4);
+    letter-spacing: 1px; border-bottom: none; margin-bottom: 0; padding-bottom: 0;
+  }
+  .modal-header .colony-tag { color: var(--copper); font-size: 12px; margin-left: 12px; }
+  .modal-close {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--muted); font-family: inherit; font-size: 16px;
+    width: 32px; height: 32px; cursor: pointer; border-radius: 2px;
+    transition: all 0.15s; line-height: 1;
+  }
+  .modal-close:hover { color: var(--cyan); border-color: var(--cyan); }
+  .modal-desc { color: var(--muted); font-size: 11px; margin-bottom: 16px; line-height: 1.6; white-space: pre-wrap; }
+  .modal-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+  .modal-section { margin-bottom: 16px; }
+  .modal-section h3 {
+    font-size: 11px; color: var(--yellow); text-transform: uppercase;
+    letter-spacing: 2px; margin-bottom: 8px; font-weight: 400;
+  }
+  .modal-meta { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 16px; font-size: 12px; }
+  .modal-meta-item { display: flex; flex-direction: column; gap: 2px; }
+  .modal-meta-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+  .modal-meta-value { color: var(--cyan); }
+  .outcomes-bar { display: flex; height: 20px; border-radius: 2px; overflow: hidden; margin-top: 6px; }
+  .outcomes-bar .seg { display: flex; align-items: center; justify-content: center; font-size: 9px; color: #000; }
+  .outcomes-bar .seg-success { background: var(--green); }
+  .outcomes-bar .seg-failure { background: var(--red); }
+  .outcomes-bar .seg-noop { background: var(--muted); }
+  .outcomes-legend { display: flex; gap: 16px; margin-top: 6px; font-size: 11px; }
+  .log-feed { max-height: 200px; overflow-y: auto; font-size: 11px; color: var(--muted); line-height: 1.8; }
+  .log-feed div { padding: 1px 0; border-bottom: 1px solid var(--border2); }
+  .log-feed div:hover { color: var(--cyan); }
+  .exp-table { max-height: 250px; overflow-y: auto; }
+  .exp-table table { font-size: 11px; }
+
+  /* --- Action Buttons --- */
+  .action-bar { display: flex; gap: 8px; flex-wrap: wrap; padding-top: 16px; border-top: 1px solid var(--border); }
+  .action-btn {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--muted); font-family: inherit; font-size: 11px;
+    padding: 6px 14px; cursor: pointer; border-radius: 2px;
+    letter-spacing: 1px; transition: all 0.15s;
+  }
+  .action-btn:hover { color: var(--cyan); border-color: var(--cyan); }
+  .action-btn.promote { border-color: var(--green); color: var(--green); }
+  .action-btn.promote:hover { background: var(--green); color: #000; box-shadow: 0 0 8px rgba(0,255,0,0.4); }
+  .action-btn.demote { border-color: var(--orange); color: var(--orange); }
+  .action-btn.demote:hover { background: var(--orange); color: #000; }
+  .action-btn.restart { border-color: var(--yellow); color: var(--yellow); }
+  .action-btn.restart:hover { background: var(--yellow); color: #000; }
+  .action-btn.quarantine-btn { border-color: var(--magenta); color: var(--magenta); }
+  .action-btn.quarantine-btn:hover { background: var(--magenta); color: #000; }
+  .action-btn.evolve { border-color: var(--cyan); color: var(--cyan); }
+  .action-btn.evolve:hover { background: var(--cyan); color: #000; }
+  .action-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  /* --- Buttons --- */
   .refresh-btn {
     background: transparent; border: 1px solid var(--border);
     color: var(--muted); font-family: inherit; font-size: 12px;
@@ -470,17 +700,6 @@ HEADEOF
   @keyframes spin {
     from { transform: rotate(0deg); } to { transform: rotate(360deg); }
   }
-  .conf-btn {
-    background: transparent; border: 1px solid var(--border);
-    color: var(--muted); font-family: inherit; font-size: 10px;
-    padding: 1px 6px; margin-right: 2px; cursor: pointer;
-    border-radius: 2px; line-height: 1.4;
-    transition: color 0.15s, border-color 0.15s;
-  }
-  .conf-btn:hover:not(:disabled) { color: var(--cyan); border-color: var(--cyan); }
-  .conf-btn:disabled { opacity: 0.25; cursor: not-allowed; }
-  .conf-btn-act { border-color: var(--green); color: var(--green); }
-  .conf-btn-act:hover:not(:disabled) { background: var(--green); color: #000; box-shadow: 0 0 8px rgba(0,255,0,0.4); }
   .kill-btn {
     background: transparent; border: 2px solid var(--red);
     color: var(--red); font-family: 'Share Tech Mono', monospace;
@@ -497,6 +716,8 @@ HEADEOF
     0%, 100% { box-shadow: 0 0 10px rgba(255,0,255,0.3); }
     50% { box-shadow: 0 0 25px rgba(255,0,255,0.6); }
   }
+
+  /* --- Toast --- */
   .toast {
     position: fixed; right: 16px; bottom: 16px; z-index: 9999;
     max-width: 420px; padding: 12px 14px 12px 16px;
@@ -505,8 +726,7 @@ HEADEOF
     font-family: 'Share Tech Mono', 'Courier New', monospace;
     font-size: 12px; line-height: 1.6;
     box-shadow: 0 0 20px rgba(255,255,0,0.35);
-    cursor: pointer;
-    animation: toast-in 0.25s ease-out;
+    cursor: pointer; animation: toast-in 0.25s ease-out;
   }
   .toast.toast-ok { border-color: var(--green); box-shadow: 0 0 20px rgba(0,255,0,0.35); }
   .toast.toast-err { border-color: var(--red); box-shadow: 0 0 20px rgba(255,68,68,0.4); }
@@ -539,6 +759,18 @@ HEADEOF
     from { opacity: 0; transform: translateY(8px); }
     to   { opacity: 1; transform: translateY(0); }
   }
+  .tooltip {
+    position: relative; cursor: help;
+  }
+  .tooltip .tip-text {
+    visibility: hidden; opacity: 0; position: absolute;
+    bottom: 100%; left: 50%; transform: translateX(-50%);
+    background: #111; border: 1px solid var(--border); color: var(--text);
+    padding: 6px 10px; border-radius: 3px; font-size: 11px;
+    white-space: pre-wrap; max-width: 320px; z-index: 100;
+    transition: opacity 0.15s; pointer-events: none;
+  }
+  .tooltip:hover .tip-text { visibility: visible; opacity: 1; }
   ::-webkit-scrollbar { width: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
@@ -546,9 +778,7 @@ HEADEOF
 </head>
 <body>
 HTMLEOF
-    } > "$HTML_TMP"
 
-    {
     cat <<HEADEREOF
 <div class="header">
   <div class="header-left">
@@ -566,23 +796,33 @@ HTMLEOF
 HEADEREOF
 
     cat <<'HTMLEOF'
+<div class="fed-down-banner" id="fed-down-banner">
+  &#x26A0; Federation is stopped — showing last-seen data
+  <button class="start-btn" onclick="startFederation()">Start Federation</button>
+</div>
+
 <div class="stats-row" id="stats-row"></div>
 
 <div class="grid">
 
 <div class="card full">
+<h2>Agents</h2>
+<div id="agent-table" style="overflow-x:auto;"></div>
+</div>
+
+<div class="card">
 <h2>Phase Readiness</h2>
 <div id="readiness"></div>
 </div>
 
 <div class="card">
-<h2>Agents</h2>
-<div id="agents" style="max-height:400px;overflow-y:auto;"></div>
+<h2>Promote Candidates</h2>
+<div id="promote-candidates"></div>
 </div>
 
-<div class="card">
-<h2>Confidence Levels</h2>
-<div id="confidence" style="max-height:400px;overflow-y:auto;"></div>
+<div class="card full">
+<h2>Event Timeline</h2>
+<div id="event-timeline" class="timeline"></div>
 </div>
 
 <div class="card">
@@ -591,15 +831,15 @@ HEADEREOF
 </div>
 
 <div class="card">
-<h2>Remediation</h2>
-<div id="remediation"></div>
+<h2>Confidence Trend</h2>
+<div id="confidence-trend" class="chart-container"></div>
 </div>
 
-<div class="card full">
-<h2>Suggestion Feed</h2>
-<div id="suggestions" class="log-feed"></div>
 </div>
 
+<!-- Detail Modal -->
+<div class="modal-overlay" id="detail-modal">
+<div class="modal-content" id="modal-body"></div>
 </div>
 
 <script>
@@ -607,13 +847,10 @@ HTMLEOF
 
     # Inject data
     cat <<DATAEOF
-const daemons = ${DAEMONS};
-const confidences = ${AGENT_DATA};
-const colonyList = ${COLONY_LIST_JS};
-const suggestions = ${SUGGESTIONS};
-const remediation = ${REMEDIATION};
-const experienceCounts = ${EXPERIENCE_COUNTS};
+const data = ${COLLECTOR_JSON};
 const history = ${HISTORY};
+const remediation = ${REMEDIATION};
+const colonyList = ${COLONY_LIST_JS};
 const nowEpoch = ${EPOCH};
 const timestamp = "${TIMESTAMP}";
 const totalAgents = ${AGENT_COUNT};
@@ -621,17 +858,26 @@ DATAEOF
 
     cat <<'JSEOF'
 
-// Auto-assign colors to colonies
+// --- Palette & Utilities ---
 const palette = ['#58a6ff','#00ff00','#ffff00','#ff8800','#ff00ff','#00ffcc','#ff6666','#aa88ff'];
 const colonyColors = {};
 colonyList.forEach((c, i) => colonyColors[c] = palette[i % palette.length]);
 
 document.getElementById('clock').textContent = timestamp;
 
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+
+function relTime(ts) {
+  if (!ts) return '';
+  const diff = nowEpoch - ts;
+  if (diff < 0) return 'just now';
+  if (diff < 60) return diff + 's ago';
+  if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
+  return Math.floor(diff/86400) + 'd ago';
+}
+
 // --- Refresh countdown ---
-// The meta-refresh fires 60 s after the page loads. Mirror that here so
-// the operator always knows when the next reload happens and can trigger
-// one manually (button or 'r' key).
 (function() {
   const REFRESH_MS = 60000;
   const el = document.getElementById('countdown');
@@ -649,408 +895,225 @@ document.getElementById('clock').textContent = timestamp;
 function manualRefresh() {
   const btn = document.getElementById('refresh-btn');
   if (btn) btn.classList.add('spinning');
-  // #98: ask the server to regenerate the static HTML snapshot before we
-  // reload. The background loop only runs every 60 s, so without this POST
-  // a manual refresh would just re-render the stale on-disk file. Errors
-  // are swallowed — reload anyway so the operator sees *something* rather
-  // than a wedged spinner.
   fetch('/refresh', { method: 'POST' })
     .catch(() => {})
     .finally(() => location.reload());
 }
 
 document.addEventListener('keydown', (e) => {
-  // Ignore Ctrl/Meta/Alt/Shift combinations (browser reserves Ctrl-R,
-  // Shift-R is a legitimate uppercase R the operator may type elsewhere)
-  // and held-down repeats so a single press only fires one reload.
   if (e.key === 'r' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && !e.repeat) {
     const tag = (e.target && e.target.tagName) || '';
-    // Don't steal 'r' from text fields or contenteditable regions.
     if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
     e.preventDefault();
     manualRefresh();
   }
+  if (e.key === 'Escape') closeModal();
 });
 
-// --- Stats row ---
+const agents = data.agents || [];
+const experienceCounts = data.experience_counts || {};
+const events = data.events || [];
+const confChanges = data.confidence_changes || [];
+
+// --- Federation Down Detection ---
+(function() {
+  const running = agents.filter(a => a.state === 'running');
+  if (running.length === 0 && agents.length > 0) {
+    document.getElementById('fed-down-banner').classList.add('visible');
+  }
+})();
+
+// --- Stats Row ---
 (function() {
   const el = document.getElementById('stats-row');
-  const running = daemons.filter(d => (d.state || d.STATE || '') === 'running').length;
+  const running = agents.filter(a => a.state === 'running').length;
   const totalExperience = experienceCounts.total || 0;
-  // #140: null (never-seeded) is not counted in the average. A genuinely
-  // zero-confidence agent still lowers the mean — that's the point.
-  // n === 0 (all null / no agents) renders as "NO DATA" muted, not
-  // OBSERVE cyan, which would imply we have real evidence.
   let sum = 0, n = 0;
-  confidences.forEach(c => { if (c.confidence != null) { sum += c.confidence; n += 1; } });
+  agents.forEach(a => { if (a.confidence != null) { sum += a.confidence; n += 1; } });
   const avgConf = n ? sum / n : 0;
+  // #144: consistent NO DATA label when all agents are null
   const phase = n === 0 ? 'NO DATA' : avgConf >= 0.85 ? 'AUTONOMOUS' : avgConf >= 0.6 ? 'SUGGEST' : 'OBSERVE';
   const avgColor = n === 0 ? 'var(--muted)' : avgConf >= 0.85 ? 'var(--green)' : avgConf >= 0.6 ? 'var(--yellow)' : 'var(--cyan)';
-  const avgLabel = n === 0 ? '—' : avgConf.toFixed(2);
-  const quarantined = daemons.filter(d => (d.quarantine || d.QUARANTINE || '') === 'yes').length;
+  const avgLabel = n === 0 ? '\u2014' : avgConf.toFixed(2);
+  const quarantined = agents.filter(a => a.quarantine === 'yes').length;
+  const deadPids = agents.filter(a => a.state === 'running' && a.pid > 0 && !a.pid_alive).length;
   el.innerHTML =
     '<div class="stat-box"><div class="stat-value">' + running + '/' + totalAgents + '</div><div class="stat-label">Agents Running</div></div>' +
     '<div class="stat-box"><div class="stat-value" style="color:' + avgColor + '">' + avgLabel + '</div><div class="stat-label">Avg Confidence // ' + phase + '</div></div>' +
     '<div class="stat-box"><div class="stat-value">' + totalExperience + '</div><div class="stat-label">Experience Entries</div></div>' +
-    '<div class="stat-box"><div class="stat-value" style="color:' + (quarantined > 0 ? 'var(--magenta)' : 'var(--green)') + '">' + quarantined + '</div><div class="stat-label">Quarantined</div></div>';
+    '<div class="stat-box"><div class="stat-value" style="color:' + (quarantined > 0 ? 'var(--magenta)' : 'var(--green)') + '">' + quarantined + '</div><div class="stat-label">Quarantined</div></div>' +
+    (deadPids > 0 ? '<div class="stat-box"><div class="stat-value" style="color:var(--red)">' + deadPids + ' \uD83D\uDC80</div><div class="stat-label">Dead PIDs</div></div>' : '');
 })();
 
-// --- Agents table ---
-(function() {
-  const el = document.getElementById('agents');
-  if (!daemons.length) { el.innerHTML = '<span class="empty">No running daemons. Start federation first.</span>'; return; }
-  let html = '<table><tr><th>Agent</th><th>State</th><th>Health</th><th>Colony</th></tr>';
-  daemons.forEach(d => {
-    const state = d.state || d.STATE || 'unknown';
-    const health = d.health || d.HEALTH || 'unknown';
-    const colony = d.colony || d.COLONY || '';
-    const quar = d.quarantine || d.QUARANTINE || '';
-    const name = d.name || d.agent_id || d.source || '';
-    const sc = state === 'running' ? 'running' : 'stopped';
-    const hc = quar === 'yes' ? 'quarantine' : (health === 'healthy' ? 'healthy' : health === 'degraded' ? 'degraded' : 'error');
-    html += '<tr><td class="agent-name">' + name + '</td>';
-    html += '<td><span class="badge badge-' + sc + '">' + state + '</span></td>';
-    html += '<td><span class="badge badge-' + hc + '">' + (quar === 'yes' ? 'quarantine' : health) + '</span></td>';
-    html += '<td class="colony-name">' + colony + '</td></tr>';
-  });
-  html += '</table>';
-  el.innerHTML = html;
-})();
+// --- Single Agent Table ---
+let sortCol = 'colony';
+let sortDir = 1;
 
-// --- Confidence per agent ---
-// #105: bump up/down buttons let the operator walk through the three
-// canonical steps (0.5 observe → 0.6 suggest → 0.85 autonomous) without
-// shelling out to `agentis memo set`. Promotions to ≥ 0.85 get a confirm()
-// dialog (two-click safety, mirrors the Kill Federation precedent from #91).
-const CONF_STEPS = [0.5, 0.6, 0.85];
-function nextStep(cur, dir) {
-  // Snap current value to the nearest step, then move by one. Returning
-  // null means "already at the boundary" and the caller disables the button.
-  let idx = 0;
-  let best = Math.abs(cur - CONF_STEPS[0]);
-  for (let i = 1; i < CONF_STEPS.length; i++) {
-    const d = Math.abs(cur - CONF_STEPS[i]);
-    if (d < best) { best = d; idx = i; }
+function renderAgentTable() {
+  const el = document.getElementById('agent-table');
+  if (!agents.length) {
+    el.innerHTML = '<span class="empty">No agents discovered.</span>';
+    return;
   }
-  const target = idx + dir;
-  if (target < 0 || target >= CONF_STEPS.length) return null;
-  return CONF_STEPS[target];
-}
-
-function setConfidence(agent, value) {
-  // ≥ 0.85 unlocks autonomous GitLab writes (MRs, comments, labels). Make
-  // the operator confirm before the button bumps the agent into act mode.
-  if (value >= 0.85) {
-    if (!confirm('Promote ' + agent + ' to ' + value.toFixed(2) + ' (AUTONOMOUS)?\n\nAt this level the agent will act directly on GitLab — posting comments, applying labels, opening MRs, approving reviews. Proceed?')) {
-      return;
+  const sorted = [...agents].sort((a, b) => {
+    let va = a[sortCol], vb = b[sortCol];
+    if (sortCol === 'confidence') { va = va == null ? -1 : va; vb = vb == null ? -1 : vb; }
+    if (sortCol === 'experience_count' || sortCol === 'experience_rate' || sortCol === 'tick_ok') {
+      va = va || 0; vb = vb || 0;
     }
+    if (sortCol === 'success_pct') {
+      va = (a.tick_ok + a.tick_err) > 0 ? a.tick_ok / (a.tick_ok + a.tick_err) : -1;
+      vb = (b.tick_ok + b.tick_err) > 0 ? b.tick_ok / (b.tick_ok + b.tick_err) : -1;
+    }
+    if (typeof va === 'string') va = va.toLowerCase();
+    if (typeof vb === 'string') vb = vb.toLowerCase();
+    if (va < vb) return -sortDir;
+    if (va > vb) return sortDir;
+    return 0;
+  });
+
+  function thSort(col, label) {
+    const arrow = sortCol === col ? (sortDir === 1 ? ' \u25B2' : ' \u25BC') : '';
+    return '<th onclick="doSort(\'' + col + '\')">' + label + '<span class="sort-arrow">' + arrow + '</span></th>';
   }
-  // The page has <meta http-equiv="refresh" content="60"> in <head>. Auto-
-  // restart takes up to ~30 s end-to-end and we want the result toast to
-  // stay readable — same rationale as the kill-switch handler.
-  const m = document.querySelector('meta[http-equiv="refresh"]');
-  if (m) m.remove();
 
-  const toast = createProgressToast(agent, value);
-  // Client-side timers narrate stages the server does not stream (the
-  // /confidence POST is a single synchronous request because HTTPServer is
-  // single-threaded and SSE adds more moving parts than this operator
-  // tool warrants). If the real response lands before a given timer, the
-  // real terminal state wins — see applyResult() below.
-  // Timers spread to match the server worst case: stop can take up to
-  // 12 s (5 s poll + 5 s SIGTERM + 2 s SIGKILL), spawn ~1 s, verify up
-  // to 15 s. We advance optimistically; the real terminal state wins on
-  // server response regardless.
-  const t1 = setTimeout(() => toast.setStep('stop', 'active'), 400);
-  const t2 = setTimeout(() => { toast.setStep('stop', 'done'); toast.setStep('spawn', 'active'); }, 12000);
-  const t3 = setTimeout(() => { toast.setStep('spawn', 'done'); toast.setStep('verify', 'active'); }, 15000);
-  const clearFakes = () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
+  // Confidence change indicators from recent confidence log
+  const recentChanges = {};
+  const dayAgo = nowEpoch - 86400;
+  confChanges.forEach(c => {
+    if ((c.t || 0) > dayAgo) {
+      const prev = recentChanges[c.agent];
+      recentChanges[c.agent] = { value: c.value, t: c.t, prev: prev ? prev.value : null };
+    }
+  });
 
-  const body = 'agent=' + encodeURIComponent(agent) + '&value=' + encodeURIComponent(value);
-  fetch('/confidence', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-    body: body,
-  })
-    .then(r => {
-      // 200 returns application/json; 4xx/5xx return text/plain.
-      if (r.ok) return r.json().then(data => ({ok: true, data}));
-      return r.text().then(text => ({ok: false, text}));
-    })
-    .then(result => {
-      clearFakes();
-      if (!result.ok) {
-        toast.renderHttpError(result.text);
-        scheduleReload(30000);
-        return;
+  let html = '<table>' +
+    '<tr>' + thSort('name', 'Name') + thSort('colony', 'Colony') +
+    thSort('confidence', 'Confidence') +
+    '<th>Health</th>' +
+    thSort('tick_ok', 'Ticks') +
+    thSort('success_pct', 'Success%') +
+    thSort('experience_count', 'Learning') +
+    '<th>Last Action</th></tr>';
+
+  sorted.forEach(a => {
+    const isDead = a.state === 'running' && a.pid > 0 && !a.pid_alive;
+    const isQuar = a.quarantine === 'yes';
+
+    // Confidence display
+    let confHtml;
+    if (a.confidence == null) {
+      confHtml = '<span class="badge badge-na">\u2014</span>';
+    } else {
+      const phase = a.confidence >= 0.85 ? 'act' : a.confidence >= 0.6 ? 'suggest' : 'observe';
+      confHtml = '<span class="badge badge-' + phase + '">' + a.confidence.toFixed(2) + '</span>';
+      // #145: tooltip with generation + written_at
+      if (a.confidence_generation != null || a.confidence_written_at) {
+        const gen = a.confidence_generation != null ? 'gen ' + a.confidence_generation : '';
+        const wrt = a.confidence_written_at ? relTime(a.confidence_written_at) : '';
+        const tipParts = [gen, wrt].filter(Boolean).join(', ');
+        confHtml = '<span class="tooltip">' + confHtml + '<span class="tip-text">' + esc(tipParts) + '</span></span>';
       }
-      toast.applyResult(result.data);
-      const succeeded = result.data && result.data.restart && result.data.restart.succeeded;
-      scheduleReload(succeeded ? 12000 : 30000);
-    })
-    .catch(e => {
-      clearFakes();
-      toast.renderHttpError(String(e));
-      scheduleReload(30000);
-    });
-}
-
-function scheduleReload(delayMs) {
-  // Defer the static-HTML regen + reload so the result toast stays
-  // readable. Success uses the Option 1 12 s window; failure gives the
-  // operator 30 s to copy the manual-respawn command before reload.
-  setTimeout(() => {
-    fetch('/refresh', { method: 'POST' }).catch(() => {}).finally(() => location.reload());
-  }, delayMs);
-}
-
-function createProgressToast(agent, requestedValue) {
-  const el = document.createElement('div');
-  el.className = 'toast';
-  el.setAttribute('role', 'status');
-  el.setAttribute('aria-live', 'polite');
-
-  const head = document.createElement('div');
-  head.className = 'toast-head';
-  head.textContent = 'Auto-restart: ' + agent + ' = ' + requestedValue.toFixed(2);
-  el.appendChild(head);
-
-  const stepsBox = document.createElement('div');
-  const steps = {};
-  function addStep(key, label) {
-    const row = document.createElement('div');
-    row.className = 'toast-step';
-    const icon = document.createElement('span');
-    icon.className = 'toast-spin';
-    icon.style.visibility = 'hidden';
-    const text = document.createElement('span');
-    text.textContent = label;
-    row.appendChild(icon);
-    row.appendChild(text);
-    stepsBox.appendChild(row);
-    steps[key] = { row, icon, text, label };
-  }
-  addStep('memo', 'Memo written');
-  addStep('stop', 'Stopping daemon…');
-  addStep('spawn', 'Respawning…');
-  addStep('verify', 'Verifying new daemon…');
-  el.appendChild(stepsBox);
-
-  // Memo is confirmed the moment we got HTTP 200 (applyResult fills it in),
-  // but we mark it active immediately so the toast never looks empty.
-  steps.memo.row.classList.add('active');
-  steps.memo.icon.style.visibility = 'visible';
-
-  const foot = document.createElement('div');
-  foot.className = 'toast-foot';
-  foot.textContent = 'Click to dismiss';
-  el.appendChild(foot);
-
-  el.addEventListener('click', () => el.remove());
-  document.body.appendChild(el);
-  // Don't auto-dismiss while the restart is in flight — the response can
-  // take up to ~30 s in the worst case (stop timeout + SIGTERM + SIGKILL
-  // + verify poll). The dismiss timer is armed only once applyResult /
-  // renderHttpError produces a terminal state.
-  let dismissTimer = null;
-  function armDismiss(ms) {
-    if (dismissTimer) clearTimeout(dismissTimer);
-    dismissTimer = setTimeout(() => { if (el.parentNode) el.remove(); }, ms);
-  }
-
-  function setStep(key, state) {
-    const s = steps[key];
-    if (!s) return;
-    s.row.classList.remove('active', 'done', 'err');
-    if (state === 'active') {
-      s.row.classList.add('active');
-      s.icon.style.visibility = 'visible';
-    } else if (state === 'done') {
-      s.row.classList.add('done');
-      s.icon.style.visibility = 'hidden';
-      s.text.textContent = '\u2713 ' + s.label.replace('…', '').replace(/^[\u2713\u2717]\s*/, '');
-    } else if (state === 'err') {
-      s.row.classList.add('err');
-      s.icon.style.visibility = 'hidden';
-      s.text.textContent = '\u2717 ' + s.label.replace('…', '').replace(/^[\u2713\u2717]\s*/, '');
-    }
-  }
-
-  function renderHttpError(text) {
-    // No server response or HTTP 4xx/5xx — memo probably did not land.
-    // Fall back to Option 1 wording so the operator has a working recovery.
-    foot.textContent = 'Click to dismiss';
-    el.classList.add('toast-err');
-    head.textContent = 'Request failed — ' + agent + ' not updated';
-    // Clear step rows; replace with error body.
-    while (stepsBox.firstChild) stepsBox.removeChild(stepsBox.firstChild);
-    const line = document.createElement('div');
-    line.textContent = 'Server error: ' + (text || 'unknown');
-    stepsBox.appendChild(line);
-    const retry = document.createElement('div');
-    retry.style.marginTop = '6px';
-    retry.textContent = 'Retry via CLI:';
-    stepsBox.appendChild(retry);
-    const pre = document.createElement('pre');
-    pre.textContent =
-      'agentis memo set ' + agent + ':confidence ' + requestedValue.toFixed(3) + '\n' +
-      'agentis daemon stop --all && ./start-federation.sh';
-    stepsBox.appendChild(pre);
-    armDismiss(30000);
-  }
-
-  function applyResult(data) {
-    // Server-authoritative value (it's what landed on disk).
-    const serverValue = data && typeof data.value === 'string' ? parseFloat(data.value) : NaN;
-    const v = Number.isFinite(serverValue) ? serverValue : requestedValue;
-    const auditOk = !data || data.audit_logged !== false;
-
-    const restart = (data && data.restart) || {};
-    // Success path: auto-restart worked end-to-end.
-    if (restart.succeeded) {
-      el.classList.add('toast-ok');
-      head.textContent = 'Loaded ' + v.toFixed(2) + ' \u2713 ' + agent;
-      setStep('memo', 'done');
-      setStep('stop', 'done');
-      setStep('spawn', 'done');
-      setStep('verify', 'done');
-      const detail = document.createElement('div');
-      detail.className = 'toast-foot';
-      const oldPid = restart.old_pid || 0;
-      const newPid = restart.new_pid || 0;
-      const started = restart.new_started_at ? new Date(restart.new_started_at * 1000).toLocaleTimeString() : '?';
-      detail.textContent =
-        'old pid ' + (oldPid || 'n/a') + ' → new pid ' + newPid +
-        ' (started ' + started + ')' +
-        (auditOk ? '' : ' — audit log write failed');
-      stepsBox.appendChild(detail);
-      foot.textContent = 'Auto-dismiss in 12s — click to dismiss now';
-      armDismiss(12000);
-      return;
+      // Confidence change indicator
+      const ch = recentChanges[a.name];
+      if (ch && ch.prev !== null && ch.prev !== undefined) {
+        if (ch.value > ch.prev) confHtml += '<span class="conf-indicator up">\u25B2</span>';
+        else if (ch.value < ch.prev) confHtml += '<span class="conf-indicator down">\u25BC</span>';
+      }
     }
 
-    // Failure path: memo was written, but restart step failed. Give the
-    // operator the exact command they can paste for a manual respawn,
-    // plus the whole-federation fallback that the Option 1 toast used.
-    el.classList.add('toast-err');
-    head.textContent = 'Auto-restart failed — manual step required';
-    setStep('memo', 'done');
-    // Mark the last completed step per the events trail, if present.
-    const events = Array.isArray(restart.events) ? restart.events : [];
-    const stepMap = { stop: 'stop', sigterm: 'stop', sigkill: 'stop', wait_exit: 'stop',
-                      cleanup: 'stop', spawn: 'spawn', verify: 'verify' };
-    const seen = { stop: null, spawn: null, verify: null };
-    events.forEach(e => {
-      const bucket = stepMap[e.step];
-      if (!bucket) return;
-      if (e.status === 'error') seen[bucket] = 'err';
-      else if (e.status === 'ok' && seen[bucket] !== 'err') seen[bucket] = 'done';
-    });
-    Object.keys(seen).forEach(k => { if (seen[k]) setStep(k, seen[k]); });
-
-    const reason = document.createElement('div');
-    reason.textContent = 'Memo written to ' + agent + ':confidence = ' + v.toFixed(3) +
-                         ' on disk. Restart step failed: ' + (restart.error || 'unknown');
-    stepsBox.appendChild(reason);
-
-    if (restart.manual_command) {
-      const label = document.createElement('div');
-      label.style.marginTop = '6px';
-      label.textContent = 'Respawn this agent:';
-      stepsBox.appendChild(label);
-      const pre = document.createElement('pre');
-      pre.textContent = restart.manual_command;
-      stepsBox.appendChild(pre);
+    // Health display
+    let healthHtml;
+    if (isDead) {
+      healthHtml = '<span class="badge badge-dead">\uD83D\uDC80 dead</span>';
+    } else if (isQuar) {
+      healthHtml = '<span class="badge badge-quarantine">quarantine</span>';
+    } else if (a.state !== 'running') {
+      healthHtml = '<span class="badge badge-stopped">stopped</span>';
+    } else {
+      const hc = a.health === 'healthy' ? 'healthy' : a.health === 'degraded' ? 'degraded' : a.health === 'critical' ? 'critical' : 'error';
+      healthHtml = '<span class="badge badge-' + hc + '">' + esc(a.health) + '</span>';
     }
 
-    const fallbackLabel = document.createElement('div');
-    fallbackLabel.style.marginTop = '6px';
-    fallbackLabel.textContent = 'Or restart the whole federation:';
-    stepsBox.appendChild(fallbackLabel);
-    const fb = document.createElement('pre');
-    fb.textContent = 'agentis daemon stop --all && ./start-federation.sh';
-    stepsBox.appendChild(fb);
+    // Ticks
+    const ticksHtml = (a.state === 'running') ? a.tick_ok + '/' + a.tick_err : '<span class="muted">\u2014</span>';
 
-    if (!auditOk) {
-      const auditWarn = document.createElement('div');
-      auditWarn.className = 'toast-foot';
-      auditWarn.textContent = 'Audit log write failed.';
-      stepsBox.appendChild(auditWarn);
+    // Success %
+    const total = a.tick_ok + a.tick_err;
+    const successHtml = total > 0 ? Math.round(a.tick_ok / total * 100) + '%' : '<span class="muted">\u2014</span>';
+
+    // Learning
+    let learnHtml;
+    if (a.experience_count > 0) {
+      learnHtml = a.experience_count + ' entries';
+      if (a.experience_rate > 0) learnHtml += ' <span style="color:var(--green)">(+' + a.experience_rate + '/h)</span>';
+    } else if (a.state === 'running' && a.experience_count === 0) {
+      learnHtml = '<span class="muted">(none \u2014 reactive)</span>';
+    } else {
+      learnHtml = '<span class="muted">\u2014</span>';
     }
-    foot.textContent = 'Click to dismiss';
-    // Error toasts get a longer window — the operator needs time to copy
-    // the manual command.
-    armDismiss(30000);
-  }
 
-  return { el, setStep, renderHttpError, applyResult };
-}
+    // Last action
+    let actionHtml;
+    if (a.last_action) {
+      const truncated = a.last_action.length > 40 ? a.last_action.slice(0, 40) + '\u2026' : a.last_action;
+      actionHtml = '\u201C' + esc(truncated) + '\u201D <span class="muted">' + relTime(a.last_action_ts) + '</span>';
+    } else if (a.state === 'running' && a.started_at) {
+      actionHtml = '<span class="muted">(idle since ' + new Date(a.started_at * 1000).toLocaleTimeString() + ')</span>';
+    } else {
+      actionHtml = '<span class="muted">\u2014</span>';
+    }
 
-(function() {
-  const el = document.getElementById('confidence');
-  const colonies = {};
-  confidences.forEach(c => { if (!colonies[c.colony]) colonies[c.colony] = []; colonies[c.colony].push(c); });
-  let html = '<table>';
-  Object.keys(colonies).forEach(colony => {
-    html += '<tr><td colspan="4" class="colony-header">' + colony + '</td></tr>';
-    colonies[colony].forEach(c => {
-      // #140: null (never seeded) renders as "— n/a" muted; 0.00 is a
-      // stop-the-line event and gets a red badge-zero pill. The bump
-      // buttons snap-from-nearest-step, which still works from a null
-      // base (nextStep treats it as 0 for the snap), so operators can
-      // seed an agent straight from the UI.
-      const raw = c.confidence;
-      const isNull = raw == null;
-      const v = isNull ? 0 : raw;
-      const pct = Math.round(v * 100);
-      const phase = isNull ? 'na' : v >= 0.85 ? 'act' : v >= 0.6 ? 'suggest' : 'observe';
-      const color = isNull ? 'var(--muted)' : v >= 0.85 ? 'var(--green)' : v >= 0.6 ? 'var(--yellow)' : 'var(--muted)';
-      const label = isNull ? '—' : v.toFixed(2);
-      const down = nextStep(v, -1);
-      const up = nextStep(v, 1);
-      const downAttr = down === null
-        ? 'disabled title="Already at minimum step"'
-        : 'onclick="setConfidence(\'' + c.agent + '\',' + down + ')" title="Bump down to ' + down.toFixed(2) + '"';
-      const upAttr = up === null
-        ? 'disabled title="Already at maximum step"'
-        : 'onclick="setConfidence(\'' + c.agent + '\',' + up + ')" title="Bump up to ' + up.toFixed(2) + '"';
-      const upClass = (up !== null && up >= 0.85) ? 'conf-btn conf-btn-act' : 'conf-btn';
-      html += '<tr><td class="agent-name" style="width:160px">' + c.agent + '</td>';
-      html += '<td style="width:110px"><span class="badge badge-' + phase + '">' + label + '</span>';
-      if (!isNull && v === 0) html += ' <span class="badge badge-zero">0</span>';
-      html += '</td>';
-      html += '<td style="width:70px;white-space:nowrap">';
-      html += '<button class="conf-btn" ' + downAttr + '>&#x25bc;</button>';
-      html += '<button class="' + upClass + '" ' + upAttr + '>&#x25b2;</button>';
-      html += '</td>';
-      html += '<td><div class="conf-bar-bg"><div class="conf-bar-fill" style="width:' + pct + '%;background:' + color + ';box-shadow:0 0 6px ' + color + '"></div></div></td></tr>';
-    });
+    html += '<tr class="clickable" onclick="openDetail(\'' + esc(a.name) + '\')">' +
+      '<td class="agent-name">' + esc(a.name) + '</td>' +
+      '<td class="colony-name">' + esc(a.colony) + '</td>' +
+      '<td>' + confHtml + '</td>' +
+      '<td>' + healthHtml + '</td>' +
+      '<td>' + ticksHtml + '</td>' +
+      '<td>' + successHtml + '</td>' +
+      '<td>' + learnHtml + '</td>' +
+      '<td>' + actionHtml + '</td>' +
+      '</tr>';
   });
   html += '</table>';
   el.innerHTML = html;
-})();
+}
 
-// --- Phase readiness ---
+function doSort(col) {
+  if (sortCol === col) sortDir *= -1;
+  else { sortCol = col; sortDir = 1; }
+  renderAgentTable();
+}
+
+renderAgentTable();
+
+// --- Phase Readiness ---
+// #144: colony with all-null agents renders muted "—" instead of 0.00
 (function() {
   const el = document.getElementById('readiness');
   const avgConf = {};
   const confCount = {};
-  // #140: skip null so a colony with one 0.80 and two unseeded reads 0.80,
-  // not 0.27. Matches the stats-row and history aggregator logic.
-  confidences.forEach(c => {
-    if (c.confidence == null) return;
-    avgConf[c.colony] = (avgConf[c.colony] || 0) + c.confidence;
-    confCount[c.colony] = (confCount[c.colony] || 0) + 1;
+  agents.forEach(a => {
+    if (a.confidence == null) return;
+    avgConf[a.colony] = (avgConf[a.colony] || 0) + a.confidence;
+    confCount[a.colony] = (confCount[a.colony] || 0) + 1;
   });
-  colonyList.forEach(col => { avgConf[col] = confCount[col] ? avgConf[col] / confCount[col] : 0; });
+  colonyList.forEach(col => {
+    if (confCount[col]) avgConf[col] = avgConf[col] / confCount[col];
+  });
 
-  function estimateEta(colony, cur) {
+  function estimateEta(colony, cur, hasData) {
+    if (!hasData) return { text: '\u2014', color: 'var(--muted)' };
     if (cur >= 0.85) return { text: 'AUTONOMOUS', color: 'var(--green)' };
     const target = cur < 0.6 ? 0.6 : 0.85;
     const label = target === 0.6 ? 'SUGGEST' : 'AUTONOMOUS';
     if (history.length < 120) return { text: 'collecting data...', color: 'var(--muted)' };
     const dayAgo = nowEpoch - 86400;
-    const pts = history.filter(h => h.t > dayAgo && h.confidence && h.confidence[colony] != null).map(h => ({t:h.t,v:h.confidence[colony]}));
+    // #143: filter stale zeros from regression — old history entries may
+    // have 0.0 for colonies that were actually all-null before the fix.
+    const pts = history
+      .filter(h => h.t > dayAgo && h.confidence && h.confidence[colony] != null && h.confidence[colony] > 0)
+      .map(h => ({t:h.t, v:h.confidence[colony]}));
     if (pts.length < 60) return { text: 'collecting data...', color: 'var(--muted)' };
     const n = pts.length; let sX=0,sY=0,sXY=0,sX2=0;
     pts.forEach(p => { sX+=p.t; sY+=p.v; sXY+=p.t*p.v; sX2+=p.t*p.t; });
@@ -1065,25 +1128,101 @@ function createProgressToast(agent, requestedValue) {
 
   let html = '';
   colonyList.forEach(col => {
-    const v = avgConf[col] || 0;
+    const hasData = !!confCount[col];
+    const v = hasData ? avgConf[col] : 0;
     const pct = Math.min(Math.round(v * 100), 100);
     const color = colonyColors[col];
-    const eta = estimateEta(col, v);
-    html += '<div class="phase-row"><span class="phase-colony">' + col + '</span>';
+    const eta = estimateEta(col, v, hasData);
+    html += '<div class="phase-row"><span class="phase-colony">' + esc(col) + '</span>';
     html += '<div class="phase-bar-outer">';
     html += '<div class="phase-marker" style="left:60%"><span class="phase-marker-label">0.6 suggest</span></div>';
     html += '<div class="phase-marker" style="left:85%"><span class="phase-marker-label">0.85 autonomous</span></div>';
-    html += '<div class="phase-bar-inner" style="width:' + pct + '%;background:' + color + ';box-shadow:0 0 10px ' + color + '50;color:#000">' + v.toFixed(2) + '</div>';
+    if (hasData) {
+      html += '<div class="phase-bar-inner" style="width:' + pct + '%;background:' + color + ';box-shadow:0 0 10px ' + color + '50;color:#000">' + v.toFixed(2) + '</div>';
+    } else {
+      // #144: muted "—" label for all-null colonies
+      html += '<div class="phase-bar-inner" style="width:0%;"></div>';
+      html += '<span style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);color:var(--muted);font-size:11px;font-style:italic">\u2014</span>';
+    }
     html += '</div><span class="phase-eta" style="color:' + eta.color + '">' + eta.text + '</span></div>';
   });
   el.innerHTML = html;
 })();
 
-// --- Experience trend ---
-// #111: history key is `experience` as of this commit. Older history
-// entries (pre-#111) carried `knowledge` with value 0 on real runs, so
-// falling back to that key would just seed the chart with zeros — we
-// drop them entirely and let the trend grow fresh.
+// --- Promote Candidates ---
+// Same rules as #148 cron: >=200 entries, success>=95%, delta slope>=0
+(function() {
+  const el = document.getElementById('promote-candidates');
+  let html = '';
+  let hasCandidates = false;
+
+  agents.forEach(a => {
+    const total = a.experience_outcomes.success + a.experience_outcomes.failure + a.experience_outcomes['no-op'];
+    const successRate = total > 0 ? a.experience_outcomes.success / total : 0;
+    const count = a.experience_count;
+
+    // Compute delta slope from recent experience entries
+    let slope = 0;
+    if (a.recent_experience && a.recent_experience.length >= 3) {
+      const deltas = a.recent_experience.filter(e => e.delta != null).map((e, i) => ({x: i, y: e.delta || 0}));
+      if (deltas.length >= 3) {
+        const n = deltas.length;
+        let sX=0,sY=0,sXY=0,sX2=0;
+        deltas.forEach(p => { sX+=p.x; sY+=p.y; sXY+=p.x*p.y; sX2+=p.x*p.x; });
+        slope = (n*sXY - sX*sY) / (n*sX2 - sX*sX);
+      }
+    }
+
+    const eligible = count >= 200 && successRate >= 0.95 && slope >= 0;
+    const tooEarly = count < 200 && count > 0;
+    const reactive = count === 0 && a.state === 'running';
+
+    if (eligible) {
+      hasCandidates = true;
+      const suggestConf = a.confidence != null && a.confidence < 0.85 ? 0.85 : null;
+      html += '<div class="promote-item"><span class="promote-check">\u2713</span>';
+      html += '<span class="agent-name">' + esc(a.name) + '</span> ';
+      html += count + ' entries, ' + Math.round(successRate * 100) + '% success, ';
+      html += (slope >= 0 ? '+' : '') + slope.toFixed(3) + ' slope';
+      if (a.confidence != null) html += ', on ' + a.confidence.toFixed(2);
+      if (suggestConf) html += ' <span class="promote-suggest">\u2192 suggest ' + suggestConf.toFixed(2) + '</span>';
+      html += '</div>';
+    } else if (tooEarly) {
+      html += '<div class="promote-item"><span class="promote-cross">\u2717</span>';
+      html += '<span class="agent-name">' + esc(a.name) + '</span> ';
+      html += '<span class="promote-reason">' + count + ' entries \u2014 too early</span></div>';
+    } else if (reactive) {
+      html += '<div class="promote-item"><span class="promote-cross">\u2717</span>';
+      html += '<span class="agent-name">' + esc(a.name) + '</span> ';
+      html += '<span class="promote-reason">0 entries \u2014 reactive (skip)</span></div>';
+    }
+  });
+
+  if (!html) html = '<span class="empty">No agents meet promote criteria yet.</span>';
+  el.innerHTML = html;
+})();
+
+// --- Event Timeline ---
+(function() {
+  const el = document.getElementById('event-timeline');
+  if (!events.length) {
+    el.innerHTML = '<span class="empty">No inter-agent events captured yet.</span>';
+    return;
+  }
+  let html = '';
+  events.forEach(e => {
+    const tsDisplay = e.ts ? e.ts.split(/[T ]/)[1] || e.ts : '';
+    html += '<div class="timeline-entry">' +
+      '<span class="timeline-ts">' + esc(tsDisplay) + '</span>' +
+      '<span class="timeline-agent">' + esc(e.agent) + '</span>' +
+      '<span class="timeline-type ' + e.type + '">' + esc(e.type) + '</span>' +
+      '<span class="timeline-content">' + esc(e.content) + '</span>' +
+      '</div>';
+  });
+  el.innerHTML = html;
+})();
+
+// --- Experience Growth Chart ---
 (function() {
   const el = document.getElementById('experience-trend');
   if (history.length < 2) { el.innerHTML = '<span class="empty">Trend available after 2+ data points</span>'; return; }
@@ -1114,25 +1253,442 @@ function createProgressToast(agent, requestedValue) {
   el.innerHTML = svg + legend;
 })();
 
-// --- Remediation ---
+// --- Confidence Trend Chart ---
 (function() {
-  const el = document.getElementById('remediation');
-  if (!Array.isArray(remediation) || !remediation.length) { el.innerHTML = '<span class="empty">No remediation actions recorded</span>'; return; }
-  let html = '<table><tr><th>Time</th><th>Action</th><th>Agent</th></tr>';
-  remediation.forEach(r => {
-    html += '<tr><td>'+(r.timestamp||r.time||'')+'</td><td><span class="badge badge-quarantine">'+(r.action||r.type||'')+'</span></td><td class="agent-name">'+(r.agent||r.agent_id||'')+'</td></tr>';
+  const el = document.getElementById('confidence-trend');
+  // #143: filter stale zeros from old history entries
+  const validHistory = history.filter(h => h.confidence && Object.keys(h.confidence).length > 0);
+  if (validHistory.length < 2) { el.innerHTML = '<span class="empty">Trend available after 2+ data points</span>'; return; }
+  const W = 480, H = 140, PAD = 35;
+  const tMin = validHistory[0].t, tMax = validHistory[validHistory.length - 1].t;
+  const tRange = Math.max(tMax - tMin, 1);
+  let svg = '<svg width="100%" viewBox="0 0 '+W+' '+(H+20)+'">';
+  // Y axis: 0 to 1
+  for (let i = 0; i <= 4; i++) {
+    const y = 10+(H-10)*i/4;
+    const label = (1 - i/4).toFixed(1);
+    svg += '<line x1="'+PAD+'" y1="'+y+'" x2="'+W+'" y2="'+y+'" stroke="rgba(0,255,255,0.06)" />';
+    svg += '<text x="'+(PAD-4)+'" y="'+(y+3)+'" fill="var(--muted)" font-family="Share Tech Mono,monospace" font-size="8" text-anchor="end">'+label+'</text>';
+  }
+  // Phase markers
+  const suggestY = 10+(H-10)*(1-0.6);
+  const actY = 10+(H-10)*(1-0.85);
+  svg += '<line x1="'+PAD+'" y1="'+suggestY+'" x2="'+W+'" y2="'+suggestY+'" stroke="rgba(255,255,0,0.15)" stroke-dasharray="4,4" />';
+  svg += '<line x1="'+PAD+'" y1="'+actY+'" x2="'+W+'" y2="'+actY+'" stroke="rgba(0,255,0,0.15)" stroke-dasharray="4,4" />';
+  svg += '<line x1="'+PAD+'" y1="'+H+'" x2="'+W+'" y2="'+H+'" stroke="var(--border)" />';
+  svg += '<text x="'+PAD+'" y="'+(H+14)+'" fill="var(--muted)" font-family="Share Tech Mono,monospace" font-size="9">'+new Date(tMin*1000).toLocaleDateString()+'</text>';
+  svg += '<text x="'+W+'" y="'+(H+14)+'" fill="var(--muted)" font-family="Share Tech Mono,monospace" font-size="9" text-anchor="end">'+new Date(tMax*1000).toLocaleDateString()+'</text>';
+  colonyList.forEach(col => {
+    // #143: skip 0.0 values (stale zeros from before null-handling fix)
+    const pts = validHistory.filter(h => h.confidence[col] != null && h.confidence[col] > 0).map(h => {
+      const x = PAD+((h.t-tMin)/tRange)*(W-PAD);
+      const y = 10+(H-10)*(1-h.confidence[col]);
+      return x.toFixed(1)+','+y.toFixed(1);
+    });
+    if (pts.length > 1) {
+      svg += '<polyline points="'+pts.join(' ')+'" fill="none" stroke="'+colonyColors[col]+'" stroke-width="1.5" opacity="0.8" />';
+    }
   });
-  html += '</table>';
-  el.innerHTML = html;
+  svg += '</svg>';
+  let legend = '<div class="chart-legend">';
+  colonyList.forEach(col => { legend += '<span><span class="legend-dot" style="background:'+colonyColors[col]+';box-shadow:0 0 4px '+colonyColors[col]+'"></span>'+col+'</span>'; });
+  legend += '</div>';
+  el.innerHTML = svg + legend;
 })();
 
-// --- Suggestions ---
-(function() {
-  const el = document.getElementById('suggestions');
-  if (!suggestions.length) { el.innerHTML = '<span class="empty">No suggestions yet. Agents in observe mode or no GitLab activity.</span>'; return; }
-  el.innerHTML = suggestions.map(s => '<div>'+s.replace(/</g,'&lt;').replace(/\[(.*?)\]/g,'<span style="color:var(--cyan)">[$1]</span>')+'</div>').join('');
-  el.scrollTop = el.scrollHeight;
-})();
+// --- Detail Modal ---
+function openDetail(agentName) {
+  const a = agents.find(x => x.name === agentName);
+  if (!a) return;
+  const modal = document.getElementById('detail-modal');
+  const body = document.getElementById('modal-body');
+
+  let html = '<div class="modal-header"><div>';
+  html += '<h2>' + esc(a.name) + '<span class="colony-tag">' + esc(a.colony) + '</span></h2>';
+  html += '</div><button class="modal-close" onclick="closeModal()">\u00D7</button></div>';
+
+  // Description from .ag source
+  if (a.description) {
+    html += '<div class="modal-desc">' + esc(a.description) + '</div>';
+  }
+
+  // Meta info row
+  html += '<div class="modal-meta">';
+  html += '<div class="modal-meta-item"><span class="modal-meta-label">State</span><span class="modal-meta-value">' + esc(a.state) + '</span></div>';
+  html += '<div class="modal-meta-item"><span class="modal-meta-label">Health</span><span class="modal-meta-value">' + esc(a.health) + '</span></div>';
+  html += '<div class="modal-meta-item"><span class="modal-meta-label">Confidence</span><span class="modal-meta-value">' + (a.confidence != null ? a.confidence.toFixed(2) : '\u2014') + '</span></div>';
+  // #145: confidence_generation + confidence_written_at
+  if (a.confidence_generation != null) {
+    html += '<div class="modal-meta-item"><span class="modal-meta-label">Generation</span><span class="modal-meta-value">' + esc(a.confidence_generation) + '</span></div>';
+  }
+  if (a.confidence_written_at) {
+    html += '<div class="modal-meta-item"><span class="modal-meta-label">Written</span><span class="modal-meta-value">' + relTime(a.confidence_written_at) + '</span></div>';
+  }
+  html += '<div class="modal-meta-item"><span class="modal-meta-label">PID</span><span class="modal-meta-value">' + (a.pid || '\u2014') + (a.pid && !a.pid_alive ? ' \uD83D\uDC80' : '') + '</span></div>';
+  if (a.agent_id) {
+    html += '<div class="modal-meta-item"><span class="modal-meta-label">Agent ID</span><span class="modal-meta-value" style="font-size:10px">' + esc(a.agent_id) + '</span></div>';
+  }
+  html += '</div>';
+
+  // Charts row (confidence history + learning rate)
+  html += '<div class="modal-grid">';
+
+  // Confidence history chart (from global history)
+  html += '<div class="modal-section"><h3>Confidence History</h3>';
+  // #143: filter stale zeros
+  const confPts = history.filter(h => h.confidence && h.confidence[a.colony] != null && h.confidence[a.colony] > 0);
+  if (confPts.length >= 2) {
+    const W=360, H=80, PAD=30;
+    const tMin=confPts[0].t, tMax=confPts[confPts.length-1].t, tR=Math.max(tMax-tMin,1);
+    let svg = '<svg width="100%" viewBox="0 0 '+W+' '+H+'">';
+    svg += '<line x1="'+PAD+'" y1="'+(H-5)+'" x2="'+W+'" y2="'+(H-5)+'" stroke="var(--border)" />';
+    const sY=10+(H-15)*(1-0.6), aY=10+(H-15)*(1-0.85);
+    svg += '<line x1="'+PAD+'" y1="'+sY+'" x2="'+W+'" y2="'+sY+'" stroke="rgba(255,255,0,0.2)" stroke-dasharray="3,3" />';
+    svg += '<line x1="'+PAD+'" y1="'+aY+'" x2="'+W+'" y2="'+aY+'" stroke="rgba(0,255,0,0.2)" stroke-dasharray="3,3" />';
+    const points = confPts.map(h => {
+      const x = PAD+((h.t-tMin)/tR)*(W-PAD);
+      const y = 10+(H-15)*(1-h.confidence[a.colony]);
+      return x.toFixed(1)+','+y.toFixed(1);
+    });
+    svg += '<polyline points="'+points.join(' ')+'" fill="none" stroke="'+colonyColors[a.colony]+'" stroke-width="2" />';
+    svg += '</svg>';
+    html += svg;
+  } else {
+    html += '<span class="empty">Not enough data</span>';
+  }
+  html += '</div>';
+
+  // Outcomes breakdown
+  html += '<div class="modal-section"><h3>Outcomes</h3>';
+  const succ = a.experience_outcomes.success;
+  const fail = a.experience_outcomes.failure;
+  const noop = a.experience_outcomes['no-op'];
+  const outTotal = succ + fail + noop;
+  if (outTotal > 0) {
+    const sp = Math.max(succ/outTotal*100, 0.5);
+    const fp = Math.max(fail/outTotal*100, 0.5);
+    const np = 100 - sp - fp;
+    html += '<div class="outcomes-bar">';
+    if (succ > 0) html += '<div class="seg seg-success" style="width:'+sp+'%">' + succ + '</div>';
+    if (fail > 0) html += '<div class="seg seg-failure" style="width:'+fp+'%">' + fail + '</div>';
+    if (noop > 0) html += '<div class="seg seg-noop" style="width:'+Math.max(np,0.5)+'%">' + noop + '</div>';
+    html += '</div>';
+    html += '<div class="outcomes-legend">';
+    html += '<span style="color:var(--green)">\u2713 ' + succ + ' success</span>';
+    html += '<span style="color:var(--red)">\u2717 ' + fail + ' failure</span>';
+    html += '<span style="color:var(--muted)">\u25CB ' + noop + ' no-op</span>';
+    html += '</div>';
+  } else {
+    html += '<span class="empty">No experience entries</span>';
+  }
+  html += '</div>';
+  html += '</div>'; // end modal-grid
+
+  // Recent experience entries
+  html += '<div class="modal-section"><h3>Recent Experience (last 10)</h3>';
+  if (a.recent_experience && a.recent_experience.length > 0) {
+    html += '<div class="exp-table"><table><tr><th>Time</th><th>Action</th><th>In</th><th>Outcome</th><th>Delta</th></tr>';
+    a.recent_experience.slice().reverse().forEach(e => {
+      const ts = e.ts ? relTime(e.ts) : '';
+      const action = esc(String(e.action || '').slice(0, 30));
+      const inp = esc(String(e.in || '').slice(0, 40));
+      const outcome = e.outcome || '';
+      const oc = outcome === 'success' ? 'var(--green)' : outcome === 'failure' ? 'var(--red)' : 'var(--muted)';
+      const delta = e.delta != null ? (e.delta >= 0 ? '+' : '') + e.delta.toFixed(3) : '';
+      html += '<tr><td class="muted">' + ts + '</td><td>' + action + '</td><td>' + inp + '</td>';
+      html += '<td style="color:' + oc + '">' + esc(outcome) + '</td>';
+      html += '<td>' + delta + '</td></tr>';
+    });
+    html += '</table></div>';
+  } else {
+    html += '<span class="empty">No experience entries</span>';
+  }
+  html += '</div>';
+
+  // Recent logs
+  html += '<div class="modal-section"><h3>Recent Logs (last 50)</h3>';
+  if (a.recent_logs && a.recent_logs.length > 0) {
+    html += '<div class="log-feed">';
+    a.recent_logs.forEach(l => {
+      html += '<div>' + esc(l) + '</div>';
+    });
+    html += '</div>';
+  } else {
+    html += '<span class="empty">No log lines available</span>';
+  }
+  html += '</div>';
+
+  // Action buttons (uses global CONF_STEPS / nextStep)
+  html += '<div class="action-bar">';
+  const curConf = a.confidence != null ? a.confidence : 0;
+  const up = nextStep(curConf, 1);
+  const down = nextStep(curConf, -1);
+  html += '<button class="action-btn promote"' + (up == null ? ' disabled' : ' onclick="setConfidence(\'' + esc(a.name) + '\',' + up + ')"') + '>\u25B2 Promote' + (up != null ? ' to ' + up.toFixed(2) : '') + '</button>';
+  html += '<button class="action-btn demote"' + (down == null ? ' disabled' : ' onclick="setConfidence(\'' + esc(a.name) + '\',' + down + ')"') + '>\u25BC Demote' + (down != null ? ' to ' + down.toFixed(2) : '') + '</button>';
+  html += '<button class="action-btn restart" onclick="restartAgent(\'' + esc(a.name) + '\')">\u21BB Restart</button>';
+  html += '<button class="action-btn quarantine-btn" onclick="quarantineAgent(\'' + esc(a.name) + '\')">\u2298 Quarantine</button>';
+  html += '<button class="action-btn evolve" onclick="evolveAgent(\'' + esc(a.name) + '\')">\u2197 Evolve</button>';
+  if (a.pid > 0 && !a.pid_alive && a.agent_id) {
+    html += '<button class="action-btn" style="border-color:var(--red);color:var(--red)" onclick="cleanupDaemon(\'' + esc(a.agent_id) + '\')">Clean up stale PID</button>';
+  }
+  html += '</div>';
+
+  body.innerHTML = html;
+  modal.classList.add('visible');
+}
+
+function closeModal() {
+  document.getElementById('detail-modal').classList.remove('visible');
+}
+document.getElementById('detail-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeModal();
+});
+
+// --- Confidence set with auto-restart (#137 Option 2) ---
+const CONF_STEPS = [0.5, 0.6, 0.85];
+function nextStep(cur, dir) {
+  let idx = 0, best = Math.abs(cur - CONF_STEPS[0]);
+  for (let i = 1; i < CONF_STEPS.length; i++) {
+    const d = Math.abs(cur - CONF_STEPS[i]);
+    if (d < best) { best = d; idx = i; }
+  }
+  const target = idx + dir;
+  if (target < 0 || target >= CONF_STEPS.length) return null;
+  return CONF_STEPS[target];
+}
+
+function setConfidence(agent, value) {
+  if (value >= 0.85) {
+    if (!confirm('Promote ' + agent + ' to ' + value.toFixed(2) + ' (AUTONOMOUS)?\n\nAt this level the agent will act directly on GitLab \u2014 posting comments, applying labels, opening MRs, approving reviews. Proceed?')) {
+      return;
+    }
+  }
+  const m = document.querySelector('meta[http-equiv="refresh"]');
+  if (m) m.remove();
+
+  const toast = createProgressToast(agent, value);
+  const t1 = setTimeout(() => toast.setStep('stop', 'active'), 400);
+  const t2 = setTimeout(() => { toast.setStep('stop', 'done'); toast.setStep('spawn', 'active'); }, 12000);
+  const t3 = setTimeout(() => { toast.setStep('spawn', 'done'); toast.setStep('verify', 'active'); }, 15000);
+  const clearFakes = () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
+
+  const body = 'agent=' + encodeURIComponent(agent) + '&value=' + encodeURIComponent(value);
+  fetch('/confidence', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: body,
+  })
+    .then(r => {
+      if (r.ok) return r.json().then(d => ({ok: true, data: d}));
+      return r.text().then(text => ({ok: false, text}));
+    })
+    .then(result => {
+      clearFakes();
+      if (!result.ok) { toast.renderHttpError(result.text); scheduleReload(30000); return; }
+      toast.applyResult(result.data);
+      const succeeded = result.data && result.data.restart && result.data.restart.succeeded;
+      scheduleReload(succeeded ? 12000 : 30000);
+    })
+    .catch(e => { clearFakes(); toast.renderHttpError(String(e)); scheduleReload(30000); });
+}
+
+function scheduleReload(delayMs) {
+  setTimeout(() => {
+    fetch('/refresh', { method: 'POST' }).catch(() => {}).finally(() => location.reload());
+  }, delayMs);
+}
+
+function createProgressToast(agent, requestedValue) {
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.setAttribute('role', 'status');
+  el.setAttribute('aria-live', 'polite');
+
+  const head = document.createElement('div');
+  head.className = 'toast-head';
+  head.textContent = 'Auto-restart: ' + agent + ' = ' + requestedValue.toFixed(2);
+  el.appendChild(head);
+
+  const stepsBox = document.createElement('div');
+  const steps = {};
+  function addStep(key, label) {
+    const row = document.createElement('div');
+    row.className = 'toast-step';
+    const icon = document.createElement('span');
+    icon.className = 'toast-spin';
+    icon.style.visibility = 'hidden';
+    const text = document.createElement('span');
+    text.textContent = label;
+    row.appendChild(icon); row.appendChild(text);
+    stepsBox.appendChild(row);
+    steps[key] = { row, icon, text, label };
+  }
+  addStep('memo', 'Memo written');
+  addStep('stop', 'Stopping daemon\u2026');
+  addStep('spawn', 'Respawning\u2026');
+  addStep('verify', 'Verifying new daemon\u2026');
+  el.appendChild(stepsBox);
+
+  steps.memo.row.classList.add('active');
+  steps.memo.icon.style.visibility = 'visible';
+
+  const foot = document.createElement('div');
+  foot.className = 'toast-foot';
+  foot.textContent = 'Click to dismiss';
+  el.appendChild(foot);
+
+  el.addEventListener('click', () => el.remove());
+  document.body.appendChild(el);
+  let dismissTimer = null;
+  function armDismiss(ms) {
+    if (dismissTimer) clearTimeout(dismissTimer);
+    dismissTimer = setTimeout(() => { if (el.parentNode) el.remove(); }, ms);
+  }
+
+  function setStep(key, state) {
+    const s = steps[key]; if (!s) return;
+    s.row.classList.remove('active', 'done', 'err');
+    if (state === 'active') { s.row.classList.add('active'); s.icon.style.visibility = 'visible'; }
+    else if (state === 'done') { s.row.classList.add('done'); s.icon.style.visibility = 'hidden'; s.text.textContent = '\u2713 ' + s.label.replace('\u2026', '').replace(/^[\u2713\u2717]\s*/, ''); }
+    else if (state === 'err') { s.row.classList.add('err'); s.icon.style.visibility = 'hidden'; s.text.textContent = '\u2717 ' + s.label.replace('\u2026', '').replace(/^[\u2713\u2717]\s*/, ''); }
+  }
+
+  function renderHttpError(text) {
+    foot.textContent = 'Click to dismiss';
+    el.classList.add('toast-err');
+    head.textContent = 'Request failed \u2014 ' + agent + ' not updated';
+    while (stepsBox.firstChild) stepsBox.removeChild(stepsBox.firstChild);
+    const line = document.createElement('div');
+    line.textContent = 'Server error: ' + (text || 'unknown');
+    stepsBox.appendChild(line);
+    const retry = document.createElement('div');
+    retry.style.marginTop = '6px'; retry.textContent = 'Retry via CLI:';
+    stepsBox.appendChild(retry);
+    const pre = document.createElement('pre');
+    pre.textContent = 'agentis memo set ' + agent + ':confidence ' + requestedValue.toFixed(3) + '\nagentis daemon stop --all && ./start-federation.sh';
+    stepsBox.appendChild(pre);
+    armDismiss(30000);
+  }
+
+  function applyResult(d) {
+    const serverValue = d && typeof d.value === 'string' ? parseFloat(d.value) : NaN;
+    const v = Number.isFinite(serverValue) ? serverValue : requestedValue;
+    const auditOk = !d || d.audit_logged !== false;
+    const restart = (d && d.restart) || {};
+    if (restart.succeeded) {
+      el.classList.add('toast-ok');
+      head.textContent = 'Loaded ' + v.toFixed(2) + ' \u2713 ' + agent;
+      setStep('memo', 'done'); setStep('stop', 'done'); setStep('spawn', 'done'); setStep('verify', 'done');
+      const detail = document.createElement('div'); detail.className = 'toast-foot';
+      const oldPid = restart.old_pid || 0, newPid = restart.new_pid || 0;
+      const started = restart.new_started_at ? new Date(restart.new_started_at * 1000).toLocaleTimeString() : '?';
+      detail.textContent = 'old pid ' + (oldPid || 'n/a') + ' \u2192 new pid ' + newPid + ' (started ' + started + ')' + (auditOk ? '' : ' \u2014 audit log write failed');
+      stepsBox.appendChild(detail);
+      foot.textContent = 'Auto-dismiss in 12s \u2014 click to dismiss now';
+      armDismiss(12000); return;
+    }
+    el.classList.add('toast-err');
+    head.textContent = 'Auto-restart failed \u2014 manual step required';
+    setStep('memo', 'done');
+    const evts = Array.isArray(restart.events) ? restart.events : [];
+    const stepMap = {stop:'stop',sigterm:'stop',sigkill:'stop',wait_exit:'stop',cleanup:'stop',spawn:'spawn',verify:'verify'};
+    const seen = {stop:null,spawn:null,verify:null};
+    evts.forEach(e => { const b = stepMap[e.step]; if (!b) return; if (e.status==='error') seen[b]='err'; else if (e.status==='ok'&&seen[b]!=='err') seen[b]='done'; });
+    Object.keys(seen).forEach(k => { if (seen[k]) setStep(k, seen[k]); });
+    const reason = document.createElement('div');
+    reason.textContent = 'Memo written to ' + agent + ':confidence = ' + v.toFixed(3) + ' on disk. Restart step failed: ' + (restart.error || 'unknown');
+    stepsBox.appendChild(reason);
+    if (restart.manual_command) {
+      const label = document.createElement('div'); label.style.marginTop = '6px'; label.textContent = 'Respawn this agent:';
+      stepsBox.appendChild(label);
+      const pre = document.createElement('pre'); pre.textContent = restart.manual_command; stepsBox.appendChild(pre);
+    }
+    const fbLabel = document.createElement('div'); fbLabel.style.marginTop = '6px'; fbLabel.textContent = 'Or restart the whole federation:';
+    stepsBox.appendChild(fbLabel);
+    const fb = document.createElement('pre'); fb.textContent = 'agentis daemon stop --all && ./start-federation.sh'; stepsBox.appendChild(fb);
+    if (!auditOk) { const aw = document.createElement('div'); aw.className='toast-foot'; aw.textContent='Audit log write failed.'; stepsBox.appendChild(aw); }
+    foot.textContent = 'Click to dismiss'; armDismiss(30000);
+  }
+
+  return { el, setStep, renderHttpError, applyResult };
+}
+
+// --- Action handlers ---
+function restartAgent(agent) {
+  if (!confirm('Restart daemon for ' + agent + '?')) return;
+  const m = document.querySelector('meta[http-equiv="refresh"]');
+  if (m) m.remove();
+  showSimpleToast('Restarting ' + agent + '\u2026', 'var(--yellow)');
+  fetch('/restart', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: 'agent=' + encodeURIComponent(agent),
+  })
+    .then(r => r.ok ? r.json() : r.text().then(t => { throw new Error(t); }))
+    .then(d => {
+      if (d.succeeded) showSimpleToast('Restarted ' + agent + ' \u2713 pid=' + (d.new_pid||'?'), 'var(--green)');
+      else showSimpleToast('Restart failed: ' + (d.error||'unknown'), 'var(--red)');
+      scheduleReload(5000);
+    })
+    .catch(e => { showSimpleToast('Error: ' + e.message, 'var(--red)'); scheduleReload(10000); });
+}
+
+function quarantineAgent(agent) {
+  if (!confirm('Quarantine ' + agent + '? This will stop the agent from acting.')) return;
+  fetch('/quarantine', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: 'agent=' + encodeURIComponent(agent),
+  })
+    .then(r => r.ok ? r.json() : r.text().then(t => { throw new Error(t); }))
+    .then(d => { showSimpleToast(d.message || 'Quarantine sent', 'var(--magenta)'); scheduleReload(5000); })
+    .catch(e => { showSimpleToast('Error: ' + e.message, 'var(--red)'); });
+}
+
+function evolveAgent(agent) {
+  if (!confirm('Trigger evolution for ' + agent + '?')) return;
+  fetch('/evolve', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: 'agent=' + encodeURIComponent(agent),
+  })
+    .then(r => r.ok ? r.json() : r.text().then(t => { throw new Error(t); }))
+    .then(d => { showSimpleToast(d.message || 'Evolve triggered', 'var(--cyan)'); scheduleReload(5000); })
+    .catch(e => { showSimpleToast('Error: ' + e.message, 'var(--red)'); });
+}
+
+function cleanupDaemon(agentId) {
+  if (!confirm('Clean up stale daemon entry for ' + agentId + '?')) return;
+  fetch('/cleanup', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: 'agent_id=' + encodeURIComponent(agentId),
+  })
+    .then(r => r.ok ? r.json() : r.text().then(t => { throw new Error(t); }))
+    .then(d => { showSimpleToast('Cleaned up: ' + (d.removed||[]).join(', '), 'var(--green)'); scheduleReload(3000); })
+    .catch(e => { showSimpleToast('Error: ' + e.message, 'var(--red)'); });
+}
+
+function startFederation() {
+  if (!confirm('Start the federation? This will launch all colony daemons.')) return;
+  showSimpleToast('Starting federation\u2026', 'var(--yellow)');
+  fetch('/start', { method: 'POST' })
+    .then(r => r.ok ? r.text() : r.text().then(t => { throw new Error(t); }))
+    .then(t => { showSimpleToast(t || 'Federation started', 'var(--green)'); scheduleReload(8000); })
+    .catch(e => { showSimpleToast('Error: ' + e.message, 'var(--red)'); });
+}
+
+function showSimpleToast(msg, color) {
+  document.querySelectorAll('.toast').forEach(t => t.remove());
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.style.borderColor = color;
+  el.style.boxShadow = '0 0 20px ' + color + '50';
+  el.innerHTML = '<div class="toast-head" style="color:' + color + '">' + esc(msg) + '</div><div class="toast-foot">Click to dismiss</div>';
+  el.addEventListener('click', () => el.remove());
+  document.body.appendChild(el);
+  setTimeout(() => { if (el.parentNode) el.remove(); }, 15000);
+}
 
 // --- Kill switch ---
 let killArmed = false;
@@ -1150,25 +1706,13 @@ function killSwitch() {
   fetch('/kill', { method: 'POST' })
     .then(r => r.text().then(t => ({ok: r.ok, text: t})))
     .then(({ok, text}) => {
-      if (!ok) {
-        // Server returned non-2xx: surface the message and allow retry.
-        btn.textContent = 'Kill Failed: ' + text.split('\n')[0].slice(0,60);
-        btn.className = 'kill-btn';
-        killArmed = false;
-        return;
-      }
-      // First line of reply is the count, e.g. "5 daemon(s) stopped".
-      // "0 daemon(s) stopped" means we clicked but there was nothing to kill
-      // — leave the meta-refresh in place and let the operator retry.
+      if (!ok) { btn.textContent = 'Kill Failed: ' + text.split('\n')[0].slice(0,60); btn.className = 'kill-btn'; killArmed = false; return; }
       const first = text.split('\n')[0] || 'Federation Stopped';
       btn.textContent = first;
       if (!/^0 /.test(first)) {
         const m = document.querySelector('meta[http-equiv="refresh"]');
         if (m) m.remove();
-      } else {
-        btn.className = 'kill-btn';
-        killArmed = false;
-      }
+      } else { btn.className = 'kill-btn'; killArmed = false; }
     })
     .catch(() => { btn.textContent = 'Kill Failed'; btn.className = 'kill-btn'; killArmed = false; });
 }
@@ -1176,18 +1720,11 @@ function killSwitch() {
 </body>
 </html>
 JSEOF
-    } >> "$HTML_TMP"
-    # Atomic publish: mv(2) on the same filesystem replaces the inode in a
-    # single syscall, so any HTTP reader sees either the old or the new file
-    # in full — never a truncated-in-progress state.
+    } > "$HTML_TMP"
     mv "$HTML_TMP" "$HTML_FILE"
 }
 
 # --- Regen-only mode ---
-# When invoked by POST /refresh from the running dashboard server (see the
-# PYSERVER block below), re-execute generate and exit. The active server
-# process keeps serving; only the static HTML snapshot is refreshed.
-# Without this, manual refresh just reloads the stale on-disk HTML — see #98.
 if [ "${DASHBOARD_REGEN_ONLY:-0}" = "1" ]; then
     generate
     exit 0
@@ -1211,14 +1748,13 @@ generate
 REGEN_PID=$!
 trap 'kill $REGEN_PID 2>/dev/null; exit 0' INT TERM
 
-# Serve with kill switch + refresh + confidence endpoints. SCRIPT_PATH and
-# FED_DIR are passed through so POST /refresh can re-exec this script in
-# regen-only mode. ALL_AGENTS_CSV is the allowlist for POST /confidence —
-# operator-supplied agent names must match exactly or the endpoint rejects
-# with 400 (never pass user strings to subprocess unchecked, #105).
+# Serve with all endpoints. SCRIPT_PATH and FED_DIR are passed through so
+# POST /refresh can re-exec this script in regen-only mode. ALL_AGENTS_CSV
+# is the allowlist for POST /confidence — operator-supplied agent names must
+# match exactly or the endpoint rejects with 400.
 ALL_AGENTS_CSV="$(IFS=,; echo "${ALL_AGENTS[*]}")"
 python3 - "$DASH_DIR" "$PORT" "$SCRIPT_PATH" "$FED_DIR" "$ALL_AGENTS_CSV" "$AGENT_COLONY_MAP" <<'PYSERVER'
-import sys, os, subprocess, json, time, signal, shutil, shlex, threading, urllib.parse
+import sys, os, subprocess, json, time, signal, shutil, shlex, threading, re, urllib.parse
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 serve_dir, port = sys.argv[1], int(sys.argv[2])
@@ -1229,9 +1765,6 @@ try:
 except (json.JSONDecodeError, ValueError, IndexError):
     _map = []
 agent_to_colony = {e.get('agent',''): e.get('colony','') for e in _map if e.get('agent')}
-# serve_dir is $FED_DIR/.dashboard; the federation root (parent of serve_dir)
-# is the cwd we want agentis to resolve .agentis/ from. We still os.chdir to
-# serve_dir so SimpleHTTPRequestHandler serves index.html from here.
 os.chdir(serve_dir)
 fed_dir = os.path.dirname(serve_dir)
 confidence_log = os.path.join(serve_dir, 'confidence-log.jsonl')
@@ -1258,19 +1791,13 @@ def resolve_tick_interval(agent, colony_dir):
 
 
 def parse_toml_section(toml_path, section):
-    """Extract key=value pairs under [section] from a colony TOML file.
-
-    Mirrors tools/parse-toml.sh semantics: strips matching surrounding
-    quotes and ignores inline `#` comments (respecting quoted strings).
-    Returns an empty dict if the file is missing or the section absent.
-    """
+    """Extract key=value pairs under [section] from a colony TOML file."""
     out = {}
     try:
         with open(toml_path, 'r', encoding='utf-8') as f:
             in_section = False
             for raw in f:
                 line = raw.rstrip('\n')
-                # Strip inline comment outside of quotes.
                 stripped_chars = []
                 quote = None
                 i = 0
@@ -1324,9 +1851,8 @@ def list_daemons():
 
 
 def find_agent_daemon(agent):
-    """Return the running daemon record whose `source` basename matches
-    <agent>.ag, or None. Prefers `state == running`; falls back to any
-    record so the stop/cleanup path can tidy zombies."""
+    """Return the running daemon record whose source basename matches
+    <agent>.ag, or None."""
     ag_file = f'{agent}.ag'
     running = None
     any_match = None
@@ -1362,14 +1888,7 @@ def wait_for_exit(pid, timeout_s):
 
 
 def cleanup_sidecars(agent_id):
-    """Remove stale per-daemon files under $FED_DIR/.agentis/daemon/.
-
-    `agentis daemon stop` normally tidies these, but #523 makes that
-    unreliable; leaving a stale `.heartbeat` behind causes the next
-    spawn's watchdog to read the old mtime and kill its fresh child on
-    the first tick (same root cause as the wipe in start-federation.sh
-    after laptop sleep). Safe to call unconditionally.
-    """
+    """Remove stale per-daemon files under $FED_DIR/.agentis/daemon/."""
     sidecar_dir = os.path.join(fed_dir, '.agentis', 'daemon')
     removed = []
     for ext in ('pid', 'watchdog.pid', 'colony', 'heartbeat', 'status', 'stop'):
@@ -1393,14 +1912,7 @@ def cleanup_sidecars(agent_id):
 
 
 def build_manual_command(colony, colony_dir, agent_file):
-    """Single-line respawn command the operator can paste if auto-restart
-    fails. Mirrors the flags in each colony's start-colony.sh.
-
-    Env vars are referenced as $VARIABLE (not expanded) — the operator's
-    shell already has them exported via start-colony.sh. Embedding the
-    real GITLAB_TOKEN would leak credentials into the DOM, browser cache,
-    and DevTools (QA review #1).
-    """
+    """Single-line respawn command the operator can paste if auto-restart fails."""
     agent_name = os.path.basename(agent_file)
     if agent_name.endswith('.ag'):
         agent_name = agent_name[:-3]
@@ -1420,9 +1932,7 @@ def build_manual_command(colony, colony_dir, agent_file):
 
 
 def restart_daemon(agent):
-    """Stop+cleanup+respawn sequence for one agent. Returns a dict with
-    step-level outcomes + final success/failure + a manual fallback
-    command for operator copy-paste on failure (#137)."""
+    """Stop+cleanup+respawn sequence for one agent (#137 Option 2)."""
     events = []
 
     def rec(step, status, **kw):
@@ -1449,10 +1959,6 @@ def restart_daemon(agent):
             'events': events,
         }
 
-    # Read gitlab config before touching the daemon — a missing or
-    # incomplete colony.toml must bail out before we stop anything,
-    # otherwise the operator ends up with a killed daemon and no
-    # respawn (parse_toml_section returns {} on missing file).
     config_path = os.path.join(colony_dir, 'config', 'colony.toml')
     gitlab = parse_toml_section(config_path, 'gitlab')
     gl_url = gitlab.get('url', '')
@@ -1478,7 +1984,6 @@ def restart_daemon(agent):
     }
     manual_cmd = build_manual_command(colony, colony_dir, agent_file)
 
-    # Resolve current daemon (may already be stopped — we still spawn).
     old = find_agent_daemon(agent)
     old_agent_id = (old or {}).get('agent_id') or ''
     old_pid = (old or {}).get('pid') or 0
@@ -1486,8 +1991,6 @@ def restart_daemon(agent):
     rec('resolve', 'ok', agent_id=old_agent_id, pid=old_pid,
         running=(old is not None and old.get('state') == 'running'))
 
-    # Stop the running daemon (if any). #523: `daemon stop <id>` can be a
-    # no-op; fall through to SIGTERM/SIGKILL if the pid doesn't exit.
     if old and old.get('state') == 'running' and old_agent_id:
         rec('stop', 'start')
         try:
@@ -1533,7 +2036,6 @@ def restart_daemon(agent):
                         }
                     rec('sigkill', 'ok')
 
-    # Cleanup sidecars (safe even if stop already tidied them).
     if old_agent_id:
         removed = cleanup_sidecars(old_agent_id)
         rec('cleanup', 'ok', removed=removed)
@@ -1571,9 +2073,6 @@ def restart_daemon(agent):
         }
     rec('spawn', 'ok', launcher_pid=proc.pid, spawn_ts=spawn_ts)
 
-    # Verify: new daemon appears in `daemon list --json` with a different
-    # pid than `old_pid` (if there was one) AND `started_at` >= spawn_ts.
-    # Poll for up to 15s — first tick takes a moment to register.
     rec('verify', 'start', timeout_s=15)
     deadline = time.monotonic() + 15.0
     new_daemon = None
@@ -1607,13 +2106,6 @@ def restart_daemon(agent):
             'events': events,
         }
 
-    # Reap the launcher wrapper so it does not linger as a zombie in the
-    # dashboard's process table. The actual daemon child is already
-    # detached (start_new_session=True) and outlives the launcher.
-    # Fire-and-forget thread: if the launcher is still running (rare —
-    # it normally exits once the watchdog forks), the thread blocks
-    # until it does, keeping the process table clean without stalling
-    # the HTTP response.
     threading.Thread(target=proc.wait, daemon=True).start()
 
     rec('verify', 'ok',
@@ -1637,17 +2129,13 @@ def restart_daemon(agent):
 class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         if self.path == '/refresh':
-            # #98: regenerate the static HTML snapshot on operator request.
-            # The background loop only regenerates every 60 s; without this
-            # endpoint the ↻ button and `r` key just reload the stale file.
             env = dict(os.environ)
             env['DASHBOARD_REGEN_ONLY'] = '1'
             try:
                 result = subprocess.run(
                     ['bash', script_path, fed_dir_arg],
                     capture_output=True, text=True,
-                    env=env,
-                    timeout=30,
+                    env=env, timeout=30,
                 )
             except (OSError, subprocess.SubprocessError) as e:
                 self.send_response(500)
@@ -1667,14 +2155,8 @@ class Handler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b'ok')
             return
+
         if self.path == '/confidence':
-            # #105: operator-driven bump up/down from the dashboard. Body is
-            # form-encoded (agent=<name>&value=<float>). We enforce three
-            # layers of validation before touching subprocess:
-            #   1. agent name must be in the discovered ALL_AGENTS allowlist
-            #      (prevents operator-supplied strings from reaching the CLI)
-            #   2. value must parse as float and land in [0.0, 1.0]
-            #   3. any CLI failure is reported with 500, not silently swallowed
             length = int(self.headers.get('Content-Length', '0') or '0')
             if length <= 0 or length > 4096:
                 self.send_response(400)
@@ -1713,14 +2195,11 @@ class Handler(SimpleHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(f'value out of [0,1]: {value}'.encode())
                 return
-            # `agentis memo set <agent>:confidence <value>` — cwd=fed_dir so
-            # agentis walks up from the federation root to find .agentis/.
             try:
                 result = subprocess.run(
                     ['agentis', 'memo', 'set', f'{agent}:confidence', f'{value:.3f}'],
                     capture_output=True, text=True,
-                    cwd=fed_dir,
-                    timeout=10,
+                    cwd=fed_dir, timeout=10,
                 )
             except (OSError, subprocess.SubprocessError) as e:
                 self.send_response(500)
@@ -1735,9 +2214,6 @@ class Handler(SimpleHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(msg.encode() or b'memo set failed')
                 return
-            # Audit log: append a JSONL row per change. .dashboard/ is
-            # already operator-visible (index.html, history.json live here)
-            # so this keeps all per-federation dashboard state colocated.
             audit_ok = False
             try:
                 with open(confidence_log, 'a') as f:
@@ -1749,14 +2225,7 @@ class Handler(SimpleHTTPRequestHandler):
                     }) + '\n')
                 audit_ok = True
             except OSError:
-                # Audit write failure must not mask the successful memo set.
                 pass
-            # #137 Option 2: auto-restart the agent's daemon so the memo
-            # takes effect immediately — without this the running daemon
-            # keeps using its in-flight value until the next tick and
-            # spawn-time decisions never reload at all. On failure the
-            # response still reports memo_written=true and the client
-            # falls back to the Option 1 restart-required toast.
             restart = restart_daemon(agent)
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
@@ -1766,27 +2235,79 @@ class Handler(SimpleHTTPRequestHandler):
                 'value': f'{value:.3f}',
                 'memo_written': True,
                 'audit_logged': audit_ok,
-                # restart_required flips to false only when the whole
-                # restart sequence succeeded end-to-end. UI uses this to
-                # decide between the "Loaded ✓" success state and the
-                # fallback "manual restart required" toast.
                 'restart_required': not restart.get('succeeded', False),
                 'restart': restart,
             }).encode())
             return
-        if self.path == '/kill':
-            # Run from fed_dir, not .dashboard. The actual fix for #91 is
-            # the v1.1.7 walk-up in agentis_root() (Replikanti/agentis-core#499)
-            # which finds .agentis/ in any ancestor; passing cwd=fed_dir
-            # just makes the intent explicit and stops .dashboard/ from
-            # appearing as a plausible agentis root in future agentis
-            # versions that might use some other marker than .agentis/objects.
+
+        if self.path == '/restart':
+            length = int(self.headers.get('Content-Length', '0') or '0')
+            if length <= 0 or length > 4096:
+                self.send_response(400)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b'empty or oversized body')
+                return
+            try:
+                raw = self.rfile.read(length).decode('utf-8', errors='replace')
+                params = urllib.parse.parse_qs(raw, keep_blank_values=False)
+            except (ValueError, UnicodeDecodeError):
+                self.send_response(400)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b'malformed form body')
+                return
+            agent = (params.get('agent') or [''])[0]
+            if agent not in allowed_agents:
+                self.send_response(400)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(f'unknown agent: {agent!r}'.encode())
+                return
+            result = restart_daemon(agent)
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(result).encode())
+            return
+
+        if self.path == '/quarantine':
+            length = int(self.headers.get('Content-Length', '0') or '0')
+            if length <= 0 or length > 4096:
+                self.send_response(400)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b'empty or oversized body')
+                return
+            try:
+                raw = self.rfile.read(length).decode('utf-8', errors='replace')
+                params = urllib.parse.parse_qs(raw, keep_blank_values=False)
+            except (ValueError, UnicodeDecodeError):
+                self.send_response(400)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b'malformed form body')
+                return
+            agent = (params.get('agent') or [''])[0]
+            if agent not in allowed_agents:
+                self.send_response(400)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(f'unknown agent: {agent!r}'.encode())
+                return
+            daemon = find_agent_daemon(agent)
+            if not daemon:
+                self.send_response(404)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(f'no daemon found for {agent}'.encode())
+                return
+            agent_id = daemon.get('agent_id', '')
             try:
                 result = subprocess.run(
-                    ['agentis', 'daemon', 'stop', '--all'],
+                    ['agentis', 'daemon', 'quarantine', agent_id],
                     capture_output=True, text=True,
-                    cwd=fed_dir,
-                    timeout=15,
+                    cwd=fed_dir, timeout=10,
                 )
             except (OSError, subprocess.SubprocessError) as e:
                 self.send_response(500)
@@ -1794,9 +2315,159 @@ class Handler(SimpleHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(f'exec failed: {e}'.encode())
                 return
-            # `agentis daemon stop --all` emits to stderr:
-            #   "No running daemons to stop." or one "stop signal sent: <id>"
-            #   line per daemon. Count them so the button reports real state.
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                'agent': agent,
+                'agent_id': agent_id,
+                'message': (result.stdout or result.stderr or 'quarantine signal sent').strip(),
+            }).encode())
+            return
+
+        if self.path == '/evolve':
+            length = int(self.headers.get('Content-Length', '0') or '0')
+            if length <= 0 or length > 4096:
+                self.send_response(400)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b'empty or oversized body')
+                return
+            try:
+                raw = self.rfile.read(length).decode('utf-8', errors='replace')
+                params = urllib.parse.parse_qs(raw, keep_blank_values=False)
+            except (ValueError, UnicodeDecodeError):
+                self.send_response(400)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b'malformed form body')
+                return
+            agent = (params.get('agent') or [''])[0]
+            if agent not in allowed_agents:
+                self.send_response(400)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(f'unknown agent: {agent!r}'.encode())
+                return
+            colony = agent_to_colony.get(agent, '')
+            agent_file = os.path.join(fed_dir, colony, 'agents', f'{agent}.ag') if colony else ''
+            if not agent_file or not os.path.isfile(agent_file):
+                self.send_response(404)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(f'agent file not found: {agent}'.encode())
+                return
+            try:
+                result = subprocess.run(
+                    ['agentis', 'evolve', agent_file],
+                    capture_output=True, text=True,
+                    cwd=fed_dir, timeout=30,
+                )
+            except (OSError, subprocess.SubprocessError) as e:
+                self.send_response(500)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(f'exec failed: {e}'.encode())
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                'agent': agent,
+                'message': (result.stdout or result.stderr or 'evolve triggered').strip(),
+            }).encode())
+            return
+
+        if self.path == '/cleanup':
+            length = int(self.headers.get('Content-Length', '0') or '0')
+            if length <= 0 or length > 4096:
+                self.send_response(400)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b'empty or oversized body')
+                return
+            try:
+                raw = self.rfile.read(length).decode('utf-8', errors='replace')
+                params = urllib.parse.parse_qs(raw, keep_blank_values=False)
+            except (ValueError, UnicodeDecodeError):
+                self.send_response(400)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b'malformed form body')
+                return
+            agent_id = (params.get('agent_id') or [''])[0]
+            if not agent_id or len(agent_id) > 128:
+                self.send_response(400)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b'invalid agent_id')
+                return
+            # Validate agent_id is hex-like (prevent path traversal)
+            if not all(c in '0123456789abcdefABCDEF-_' for c in agent_id):
+                self.send_response(400)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b'agent_id must be hex')
+                return
+            removed = cleanup_sidecars(agent_id)
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                'agent_id': agent_id,
+                'removed': removed,
+            }).encode())
+            return
+
+        if self.path == '/start':
+            # Start federation: look for start-federation.sh in fed_dir
+            start_script = os.path.join(fed_dir, 'start-federation.sh')
+            if not os.path.isfile(start_script):
+                self.send_response(404)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b'start-federation.sh not found')
+                return
+            try:
+                result = subprocess.run(
+                    ['bash', start_script],
+                    capture_output=True, text=True,
+                    cwd=fed_dir, timeout=60,
+                )
+            except (OSError, subprocess.SubprocessError) as e:
+                self.send_response(500)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(f'exec failed: {e}'.encode())
+                return
+            out = (result.stdout or '').strip()
+            err = (result.stderr or '').strip()
+            if result.returncode != 0:
+                self.send_response(500)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                msg = (err or out or 'start-federation.sh failed').strip()
+                self.wfile.write(msg.encode() or b'start-federation.sh failed')
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain')
+            self.end_headers()
+            self.wfile.write((out + ('\n' + err if err else '') or 'Federation started').encode())
+            return
+
+        if self.path == '/kill':
+            try:
+                result = subprocess.run(
+                    ['agentis', 'daemon', 'stop', '--all'],
+                    capture_output=True, text=True,
+                    cwd=fed_dir, timeout=15,
+                )
+            except (OSError, subprocess.SubprocessError) as e:
+                self.send_response(500)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(f'exec failed: {e}'.encode())
+                return
             err = (result.stderr or '').strip()
             lines = [l for l in err.splitlines() if l]
             stopped = [l for l in lines if l.startswith('stop signal sent:')]
@@ -1814,6 +2485,7 @@ class Handler(SimpleHTTPRequestHandler):
             self.wfile.write(body.encode())
         else:
             self.send_error(404)
+
     def log_message(self, format, *args):
         pass
 
