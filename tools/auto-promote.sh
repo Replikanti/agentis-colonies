@@ -72,11 +72,8 @@ trap cleanup_lock EXIT
 
 # --- Logging + journal helpers ---
 
-TS_EPOCH=$(date +%s)
-TS_ISO=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
 log() {
-    echo "[$TS_ISO] auto-promote: $*"
+    echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] auto-promote: $*"
 }
 
 # Append a structured JSON line to the journal.
@@ -84,17 +81,17 @@ log() {
 journal_append() {
     local agent="$1" decision="$2" detail_json="$3"
     python3 -c "
-import json, sys
+import json, sys, time
 entry = {
-    'ts': $TS_EPOCH,
-    'ts_iso': '$TS_ISO',
+    'ts': int(time.time()),
+    'ts_iso': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
     'agent': sys.argv[1],
     'decision': sys.argv[2],
-    'dry_run': $( [ "$DRY_RUN" = "true" ] && echo "True" || echo "False" ),
-    'detail': json.loads(sys.argv[3]),
+    'dry_run': sys.argv[3] == 'true',
+    'detail': json.loads(sys.argv[4]),
 }
 print(json.dumps(entry))
-" "$agent" "$decision" "$detail_json" >> "$JOURNAL_FILE"
+" "$agent" "$decision" "$DRY_RUN" "$detail_json" >> "$JOURNAL_FILE"
 }
 
 # --- Parse config ---
@@ -247,7 +244,10 @@ log "Starting (dry_run=$DRY_RUN, fed=$FED_DIR)"
 
 # --- Safety guard 1: Federation running check ---
 
-DAEMONS_JSON=$(agentis daemon list --json 2>/dev/null || echo "[]")
+# All agentis CLI commands must run from $FED_DIR so the CLI finds
+# .agentis/ (daemon registry, memo store, experience). Matches the
+# cwd=fed_dir pattern in federation-dashboard.sh.
+DAEMONS_JSON=$(cd "$FED_DIR" && agentis daemon list --json 2>/dev/null || echo "[]")
 DAEMON_COUNT=$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(len(d))" "$DAEMONS_JSON")
 
 if [ "$DAEMON_COUNT" -eq 0 ]; then
@@ -497,21 +497,10 @@ PROMOTE_COUNT=0
 EVOLVE_COUNT=0
 SKIP_COUNT=0
 
-# Parse decisions and act on each
-python3 -c "
-import json, sys
-decisions = json.loads(sys.argv[1])
-for d in decisions:
-    # Output one line per decision: decision|agent|colony|from|to|reason|evidence_json
-    decision = d.get('decision', 'skip')
-    agent = d.get('agent', '')
-    colony = d.get('colony', '')
-    step_from = d.get('from', '')
-    step_to = d.get('to', '')
-    reason = d.get('reason', '')
-    evidence = json.dumps(d.get('evidence', d))
-    print(f'{decision}|{agent}|{colony}|{step_from}|{step_to}|{reason}|{evidence}')
-" "$DECISIONS_JSON" | while IFS='|' read -r decision agent colony step_from step_to reason evidence_json; do
+# Parse decisions and act on each.
+# Process substitution (< <(...)) instead of pipe so the while loop runs
+# in the current shell — counter variables survive after the loop.
+while IFS='|' read -r decision agent colony step_from step_to reason evidence_json; do
 
     case "$decision" in
         skip)
@@ -528,9 +517,9 @@ for d in decisions:
                 journal_append "$agent" "promote" \
                     "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['from']=$step_from; e['to']=$step_to; e['action']='dry-run'; print(json.dumps(e))" "$evidence_json")"
             else
-                # Write new confidence to memo
+                # Write new confidence to memo (cwd=FED_DIR for .agentis/ resolution)
                 log "  Writing confidence: agentis memo set ${agent}:confidence $step_to"
-                if agentis memo set "${agent}:confidence" "$step_to" 2>&1; then
+                if (cd "$FED_DIR" && agentis memo set "${agent}:confidence" "$step_to") 2>&1; then
                     log "  Memo written successfully"
                 else
                     log "  WARNING: memo set failed for $agent"
@@ -541,13 +530,16 @@ for d in decisions:
 
                 # Restart the daemon so it picks up the new confidence.
                 # Use the same stop+respawn pattern as the dashboard (#137).
+                # The respawn must export GITLAB_* env vars from colony.toml
+                # (the cron environment won't have them).
                 log "  Restarting daemon for $agent..."
                 AGENT_AG_FILE=""
-                for colony_dir in "$FED_DIR"/*/; do
-                    candidate="${colony_dir}agents/${agent}.ag"
+                AGENT_COLONY_DIR=""
+                for cdir in "$FED_DIR"/*/; do
+                    candidate="${cdir}agents/${agent}.ag"
                     if [ -f "$candidate" ]; then
                         AGENT_AG_FILE="$candidate"
-                        AGENT_COLONY_DIR="$colony_dir"
+                        AGENT_COLONY_DIR="$cdir"
                         break
                     fi
                 done
@@ -556,6 +548,56 @@ for d in decisions:
                     log "  WARNING: could not find .ag file for $agent, skipping restart"
                     journal_append "$agent" "promote-partial" \
                         "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['from']=$step_from; e['to']=$step_to; e['action']='memo-only'; e['warning']='ag_file_not_found'; print(json.dumps(e))" "$evidence_json")"
+                    continue
+                fi
+
+                # Read gitlab config from colony.toml (mirrors dashboard restart_daemon)
+                COLONY_TOML="${AGENT_COLONY_DIR}config/colony.toml"
+                SPAWN_ENV=$(python3 -c "
+import sys, os
+toml_path = sys.argv[1]
+colony_dir = sys.argv[2]
+# Minimal TOML [gitlab] section reader (same approach as federation-dashboard.sh)
+vals = {}
+in_section = False
+try:
+    with open(toml_path) as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith('#'):
+                continue
+            if line.startswith('[') and line.endswith(']'):
+                in_section = (line[1:-1].strip() == 'gitlab')
+                continue
+            if not in_section or '=' not in line:
+                continue
+            k, _, v = line.partition('=')
+            k = k.strip()
+            v = v.strip().strip('\"').strip(\"'\")
+            vals[k] = v
+except OSError:
+    pass
+url = vals.get('url', '')
+token = vals.get('token', '')
+project_raw = vals.get('project', '')
+me = vals.get('me', '')
+if not url or not token or not project_raw:
+    print('__INCOMPLETE__')
+else:
+    project = project_raw.replace('/', '%2F')
+    # Shell-safe export statements
+    import shlex
+    print(f'export GITLAB_URL={shlex.quote(url)}')
+    print(f'export GITLAB_TOKEN={shlex.quote(token)}')
+    print(f'export GITLAB_PROJECT={shlex.quote(project)}')
+    print(f'export GITLAB_ME={shlex.quote(me)}')
+    print(f'export COLONY_DIR={shlex.quote(colony_dir)}')
+" "$COLONY_TOML" "$AGENT_COLONY_DIR" 2>/dev/null)
+
+                if [ "$SPAWN_ENV" = "__INCOMPLETE__" ] || [ -z "$SPAWN_ENV" ]; then
+                    log "  WARNING: incomplete [gitlab] in $COLONY_TOML, skipping restart"
+                    journal_append "$agent" "promote-partial" \
+                        "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['from']=$step_from; e['to']=$step_to; e['action']='memo-only'; e['warning']='incomplete_colony_toml'; print(json.dumps(e))" "$evidence_json")"
                     continue
                 fi
 
@@ -571,14 +613,15 @@ for d in daemons:
         break
 " "$DAEMONS_JSON" "$agent")
 
-                # Stop the daemon
+                # Stop the daemon (cwd=FED_DIR for .agentis/ resolution)
                 if [ -n "$AGENT_ID" ]; then
-                    agentis daemon stop "$AGENT_ID" 2>&1 || true
+                    (cd "$FED_DIR" && agentis daemon stop "$AGENT_ID") 2>&1 || true
                     sleep 3
                 fi
 
-                # Respawn
+                # Respawn with GITLAB_* env vars from colony.toml
                 (
+                    eval "$SPAWN_ENV"
                     cd "$AGENT_COLONY_DIR"
                     agentis daemon "$AGENT_AG_FILE" \
                         --colony "$colony" \
@@ -603,8 +646,8 @@ for d in daemons:
             else
                 # Find the .ag file for the agent
                 AGENT_AG_FILE=""
-                for colony_dir in "$FED_DIR"/*/; do
-                    candidate="${colony_dir}agents/${agent}.ag"
+                for cdir in "$FED_DIR"/*/; do
+                    candidate="${cdir}agents/${agent}.ag"
                     if [ -f "$candidate" ]; then
                         AGENT_AG_FILE="$candidate"
                         break
@@ -619,7 +662,7 @@ for d in daemons:
                 fi
 
                 log "  Running: agentis evolve $AGENT_AG_FILE"
-                EVOLVE_OUTPUT=$(agentis evolve "$AGENT_AG_FILE" \
+                EVOLVE_OUTPUT=$(cd "$FED_DIR" && agentis evolve "$AGENT_AG_FILE" \
                     --generations "$CFG_EVOLVE_GENERATIONS" \
                     --population "$CFG_EVOLVE_POPULATION" \
                     --weights "$CFG_EVOLVE_WEIGHTS" 2>&1) || true
@@ -631,6 +674,18 @@ for d in daemons:
             EVOLVE_COUNT=$((EVOLVE_COUNT + 1))
             ;;
     esac
-done
+done < <(python3 -c "
+import json, sys
+decisions = json.loads(sys.argv[1])
+for d in decisions:
+    decision = d.get('decision', 'skip')
+    agent = d.get('agent', '')
+    colony = d.get('colony', '')
+    step_from = d.get('from', '')
+    step_to = d.get('to', '')
+    reason = d.get('reason', '')
+    evidence = json.dumps(d.get('evidence', d))
+    print(f'{decision}|{agent}|{colony}|{step_from}|{step_to}|{reason}|{evidence}')
+" "$DECISIONS_JSON")
 
 log "Done. Promotes=$PROMOTE_COUNT, Evolves=$EVOLVE_COUNT, Skips=$SKIP_COUNT"
