@@ -9,3 +9,7 @@
 
 # OS
 .DS_Store
+
+# Python bytecode (from helper scripts in tools/)
+__pycache__/
+*.pyc

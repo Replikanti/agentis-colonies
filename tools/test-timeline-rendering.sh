@@ -321,6 +321,9 @@ fi
 DASH_FILE="$SCRIPT_DIR/federation-dashboard.sh"
 COLLECTOR_PY="$SCRIPT_DIR/federation-dashboard-collector.py"
 SERVER_PY="$SCRIPT_DIR/federation-dashboard-server.py"
+RENDERER_PY="$SCRIPT_DIR/federation-dashboard-renderer.py"
+HISTORY_PY="$SCRIPT_DIR/federation-dashboard-history.py"
+TEMPLATE_HTML="$SCRIPT_DIR/federation-dashboard.html.template"
 
 if [ -f "$COLLECTOR_PY" ] && python3 -c "import ast; ast.parse(open('$COLLECTOR_PY').read())" 2>/dev/null; then
     pass "13: federation-dashboard-collector.py exists and is valid Python (#170)"
@@ -363,6 +366,67 @@ then
     pass "15: no <<'P heredoc nested inside \$() in federation-dashboard.sh (#170)"
 else
     fail "15: heredoc-in-\$() pattern detected — see #170 for why this breaks macOS"
+fi
+
+# --- #172: renderer.py + history.py + template extracted from the shell
+#     script. The previous attempt at #170 only extracted Python heredocs
+#     nested in $(); the JS/CSS/HTML heredocs that remained still tripped
+#     the macOS bash 3.2 / 5.3 parser at line 962 (escaped single quote
+#     inside <<'JSEOF'). #172 eliminates ALL heredocs from the shell. ---
+if [ -f "$RENDERER_PY" ] && python3 -c "import ast; ast.parse(open('$RENDERER_PY').read())" 2>/dev/null; then
+    pass "16: federation-dashboard-renderer.py exists and is valid Python (#172)"
+else
+    fail "16: federation-dashboard-renderer.py missing or invalid"
+fi
+
+if [ -f "$HISTORY_PY" ] && python3 -c "import ast; ast.parse(open('$HISTORY_PY').read())" 2>/dev/null; then
+    pass "17: federation-dashboard-history.py exists and is valid Python (#172)"
+else
+    fail "17: federation-dashboard-history.py missing or invalid"
+fi
+
+# Template must exist and contain ALL 10 sentinels the renderer substitutes,
+# otherwise the rendered page would silently render the literal sentinel
+# text (e.g. "{{FED_NAME}}") instead of the federation name.
+if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
+import sys
+required = {
+    '{{FED_NAME}}', '{{FED_NAME_JS}}', '{{COLONY_COUNT}}', '{{AGENT_COUNT}}',
+    '{{COLLECTOR_JSON}}', '{{HISTORY}}', '{{REMEDIATION}}',
+    '{{COLONY_LIST_JS}}', '{{EPOCH}}', '{{TIMESTAMP}}',
+}
+with open(sys.argv[1]) as f:
+    src = f.read()
+missing = [s for s in required if s not in src]
+sys.exit(1 if missing else 0)
+PY
+then
+    pass "18: template contains all 10 named sentinels expected by renderer.py (#172)"
+else
+    fail "18: template missing one or more renderer sentinels"
+fi
+
+# Hard guard: ZERO heredocs of any kind in federation-dashboard.sh. After
+# #172 every multi-line content block lives in a standalone file. New
+# heredocs are forbidden because the macOS bash 3.2 / 5.3 parser is too
+# fragile to trust with any content longer than a few lines (the previous
+# bug at line 962 was triggered by a single \' inside a quoted heredoc).
+if python3 - "$DASH_FILE" <<'PY' 2>/dev/null
+import sys, re
+with open(sys.argv[1]) as f:
+    src = f.read()
+# Match shell-style heredoc openers: optional whitespace, then `<<` with
+# optional `-`, then optionally-quoted delimiter. We strip line-comments
+# first so a comment that mentions "<<'JSEOF'" doesn't trip the guard.
+no_comments = re.sub(r'(?m)^\s*#.*$', '', src)
+no_comments = re.sub(r'#.*$', '', no_comments, flags=re.MULTILINE)
+matches = re.findall(r'<<-?\s*(?:[A-Za-z_][A-Za-z0-9_]*|\'[^\']+\'|"[^"]+")', no_comments)
+sys.exit(1 if matches else 0)
+PY
+then
+    pass "19: federation-dashboard.sh contains zero heredocs of any kind (#172)"
+else
+    fail "19: heredoc detected — extract content to a standalone file (see #172)"
 fi
 
 echo ""
