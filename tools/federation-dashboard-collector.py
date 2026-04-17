@@ -130,10 +130,24 @@ for agent in all_agents:
                 break
         rec['description'] = '\n'.join(desc_lines)
 
-        # #160: extract `if confidence >= X` gates with line numbers, plus
-        # clamp_auto cap idiom (currently only labeler.ag, gates promote at 0.85).
+        # #160 + #176: extract confidence gates. After M4 (#176) agents branch on
+        # tier("<name>") == "<tier>" instead of raw confidence literals. Map
+        # each tier-branch back to its numeric lower bound so downstream tooling
+        # (dashboard promote/demote buttons, auto-promote.sh) keeps working.
+        # Fall back to the pre-M4 `if confidence >= X` form if the agent has
+        # not been migrated yet. clamp_auto cap idiom is unchanged.
+        TIER_LEVELS = {
+            'shadow': 0.4,
+            'propose': 0.6,
+            'review-gated': 0.8,
+            'autonomous': 0.95,
+        }
         gates = []
         for lineno, line in enumerate(ag_lines, 1):
+            m_tier = re.search(r'my_tier\s*==\s*"(shadow|propose|review-gated|autonomous)"', line)
+            if m_tier:
+                gates.append({'level': TIER_LEVELS[m_tier.group(1)], 'line': lineno, 'tier': m_tier.group(1)})
+                continue
             m = re.search(r'\bif\s+confidence\s+>=\s+([0-9]+(?:\.[0-9]+)?)', line)
             if m:
                 gates.append({'level': float(m.group(1)), 'line': lineno})
