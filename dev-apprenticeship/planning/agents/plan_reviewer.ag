@@ -134,11 +134,12 @@ fn tick(reason: string) -> void {
         context
     ) -> DraftPlan;
 
-    let confidence = get_confidence();
+    let my_tier = tier("plan_reviewer");
 
     print("[plan_reviewer] Issue", draft.issue_id, "-> review_score:", draft.review_score);
 
-    if confidence >= 0.85 {
+    if my_tier == "autonomous" {
+        // Direct external write: post the plan as an issue note.
         let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(draft.issue_id) + " --body " + shell_escape(draft.plan);
         try { exec sh post_cmd; } catch e {
             print("[plan_reviewer] Failed to post note:", e);
@@ -152,18 +153,43 @@ fn tick(reason: string) -> void {
         );
         print("[plan_reviewer] Posted plan to issue", draft.issue_id);
     } else {
-        if confidence >= 0.6 {
-            emit("planning:draft_plan", draft);
+        if my_tier == "review-gated" {
+            // Draft external write: post with [draft-plan] prefix so a human
+            // reviewer can promote or discard it.
+            let draft_body = "[draft-plan] **Plan Review** (automated, pending approval)\n\n" + draft.plan;
+            let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(draft.issue_id) + " --body " + shell_escape(draft_body);
+            try { exec sh post_cmd; } catch e {
+                print("[plan_reviewer] Failed to post draft note:", e);
+            };
             learn(
                 "review_plan",
                 "issue " + to_string(draft.issue_id),
-                "emitted: score=" + to_string(draft.review_score),
+                "drafted: score=" + to_string(draft.review_score),
                 "partial",
-                ["emitted", "planning"]
+                ["planning", "review-gated"]
             );
-            print("[plan_reviewer] Emitted draft plan for issue", draft.issue_id);
+            print("[plan_reviewer] Drafted plan for issue", draft.issue_id);
         } else {
-            print("[plan_reviewer] Observing (confidence:", confidence, ")");
+            if my_tier == "propose" {
+                emit("planning:draft_plan", draft);
+                learn(
+                    "review_plan",
+                    "issue " + to_string(draft.issue_id),
+                    "emitted: score=" + to_string(draft.review_score),
+                    "partial",
+                    ["emitted", "planning"]
+                );
+                print("[plan_reviewer] Emitted draft plan for issue", draft.issue_id);
+            } else {
+                print("[plan_reviewer] Observing (tier:", my_tier, ")");
+                learn(
+                    "review_plan",
+                    "issue " + to_string(draft.issue_id),
+                    "observed: score=" + to_string(draft.review_score),
+                    "partial",
+                    ["observed", "planning"]
+                );
+            };
         };
     };
 
