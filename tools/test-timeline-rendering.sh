@@ -311,6 +311,60 @@ else
     fail "12: agent_last_ok_ts missing or wrong"
 fi
 
+# --- #170: regression guard against re-introducing the macOS bash
+#     heredoc-in-$() bug. The collector and server MUST live in
+#     standalone Python files, not inline heredocs in the shell
+#     script. Backticks in Python comments inside a `<<'PY'` heredoc
+#     nested in $() get evaluated by macOS bash even with the single
+#     quotes, leading to runtime "syntax error" on every collector
+#     invocation. See #170 for the full diagnosis. ---
+DASH_FILE="$SCRIPT_DIR/federation-dashboard.sh"
+COLLECTOR_PY="$SCRIPT_DIR/federation-dashboard-collector.py"
+SERVER_PY="$SCRIPT_DIR/federation-dashboard-server.py"
+
+if [ -f "$COLLECTOR_PY" ] && python3 -c "import ast; ast.parse(open('$COLLECTOR_PY').read())" 2>/dev/null; then
+    pass "13: federation-dashboard-collector.py exists and is valid Python (#170)"
+else
+    fail "13: federation-dashboard-collector.py missing or invalid"
+fi
+
+if [ -f "$SERVER_PY" ] && python3 -c "import ast; ast.parse(open('$SERVER_PY').read())" 2>/dev/null; then
+    pass "14: federation-dashboard-server.py exists and is valid Python (#170)"
+else
+    fail "14: federation-dashboard-server.py missing or invalid"
+fi
+
+# No `<<'P` heredocs nested inside $(...) — that's the buggy pattern.
+# A bare top-level `<<'PYHISTORY'` is fine (not nested in $()), so we
+# scan only the few lines preceding each match for an unclosed `$(`.
+if python3 - "$DASH_FILE" <<'PY' 2>/dev/null
+import sys, re
+with open(sys.argv[1]) as f:
+    src = f.read()
+# Find every `<<'P...'` heredoc opener; for each, check whether the
+# enclosing line (or the few lines before the opener) contains an
+# unclosed `$(`. A simple heuristic: count `$(` minus `)` on the
+# OPENING line — if positive, the heredoc is inside a $().
+bad = []
+for m in re.finditer(r"<<'P[A-Z]+'", src):
+    line_start = src.rfind('\n', 0, m.start()) + 1
+    line_end = src.find('\n', m.end())
+    line = src[line_start:line_end if line_end >= 0 else len(src)]
+    opens = line.count('$(')
+    closes = line.count(')')
+    if opens > closes:
+        bad.append((line.strip()[:80], opens, closes))
+if bad:
+    for b in bad: print('  bad:', b, file=sys.stderr)
+    sys.exit(1)
+sys.exit(0)
+PY
+then
+    pass "15: no <<'P heredoc nested inside \$() in federation-dashboard.sh (#170)"
+else
+    fail "15: heredoc-in-\$() pattern detected — see #170 for why this breaks macOS"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
