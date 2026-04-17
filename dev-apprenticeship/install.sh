@@ -420,17 +420,18 @@ fi
 echo ""
 echo "Agent confidence seeding"
 echo ""
-echo "Agents start silent (confidence = 0.0). You choose the starting level:"
+echo "Agents start silent (confidence = 0.0). You choose the starting tier:"
 echo ""
-echo "  0.5  - Observe only (recommended for first run)"
-echo "  0.6  - Observe + emit suggestions for your review"
-echo "  0.85 - Full autonomy (agents act on their own)"
+echo "  0.4  - shadow (recommended, observe-only; see ADR-0001)"
+echo "  0.6  - propose (emit suggestions on the bus)"
+echo "  0.8  - review-gated (draft external writes under human review)"
+echo "  0.95 - autonomous (terminal writes without a second gate)"
 echo "  skip - Do not seed, configure manually later"
 echo ""
 
-ask "Starting confidence [0.5]:"
+ask "Starting confidence [0.4]:"
 read -r CONFIDENCE
-CONFIDENCE="${CONFIDENCE:-0.5}"
+CONFIDENCE="${CONFIDENCE:-0.4}"
 
 if [ "$CONFIDENCE" != "skip" ]; then
     # Validate: must be a number between 0.0 and 1.0
@@ -440,17 +441,36 @@ if [ "$CONFIDENCE" != "skip" ]; then
     fi
     echo ""
     echo "Seeding all 21 agents at $CONFIDENCE..."
+    # #173 / #176: idempotent seeding. Never downgrade an existing memo
+    # value — an operator may have deliberately promoted an agent before
+    # re-running install.sh. Only write when the memo is missing or its
+    # value is strictly below the new seed.
     SEED_FAILED=0
+    SEED_KEPT=0
+    SEED_WROTE=0
     for agent in "${ALL_AGENTS[@]}"; do
-        if ! agentis memo set "${agent}:confidence" "$CONFIDENCE" 2>/dev/null; then
-            fail "Failed to seed ${agent}:confidence"
-            SEED_FAILED=1
+        existing="$(agentis memo get "${agent}:confidence" 2>/dev/null || true)"
+        keep=0
+        if [ -n "$existing" ]; then
+            if python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) >= float(sys.argv[2]) else 1)" "$existing" "$CONFIDENCE" 2>/dev/null; then
+                keep=1
+            fi
+        fi
+        if [ "$keep" -eq 1 ]; then
+            SEED_KEPT=$((SEED_KEPT + 1))
+        else
+            if ! agentis memo set "${agent}:confidence" "$CONFIDENCE" 2>/dev/null; then
+                fail "Failed to seed ${agent}:confidence"
+                SEED_FAILED=1
+            else
+                SEED_WROTE=$((SEED_WROTE + 1))
+            fi
         fi
     done
     if [ "$SEED_FAILED" -eq 1 ]; then
         fail "Some seeds failed. Is agentis initialized? Try: agentis init"
     else
-        ok "All agents seeded at $CONFIDENCE"
+        ok "Seeded $SEED_WROTE agents at $CONFIDENCE (kept $SEED_KEPT already at or above)"
     fi
 fi
 
