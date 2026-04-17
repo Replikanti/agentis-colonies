@@ -87,21 +87,56 @@ fn tick(reason: string) -> void {
         context
     ) -> ScopeEstimate;
 
-    let confidence = get_confidence();
+    let my_tier = tier("scope_estimator");
 
     print("[scope_estimator] Issue", estimate.issue_id, "->", estimate.phases, "phases,", estimate.points, "points");
 
-    if confidence >= 0.6 {
+    if my_tier == "autonomous" {
         emit("planning:scope_estimate", estimate);
+        let note = "**Scope Estimate** (automated): " + to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points\n\n" + estimate.reasoning;
+        let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(estimate.issue_id) + " --body " + shell_escape(note);
+        try { exec sh post_cmd; } catch e {
+            print("[scope_estimator] Failed to post note:", e);
+        };
         learn(
             "scope_estimate",
             "issue " + to_string(estimate.issue_id),
             to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points: " + estimate.reasoning,
-            "partial",
-            ["emitted", "planning"]
+            "success",
+            ["acted", "planning"]
         );
     } else {
-        print("[scope_estimator] Observing (confidence:", confidence, ")");
+        if my_tier == "review-gated" {
+            emit("planning:scope_estimate", estimate);
+            memo_write("plan_reviewer:" + to_string(estimate.issue_id) + ":scope_drafted", "true");
+            learn(
+                "scope_estimate",
+                "issue " + to_string(estimate.issue_id),
+                to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points: " + estimate.reasoning,
+                "partial",
+                ["planning", "review-gated"]
+            );
+        } else {
+            if my_tier == "propose" {
+                emit("planning:scope_estimate", estimate);
+                learn(
+                    "scope_estimate",
+                    "issue " + to_string(estimate.issue_id),
+                    to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points: " + estimate.reasoning,
+                    "partial",
+                    ["emitted", "planning"]
+                );
+            } else {
+                print("[scope_estimator] Observing (tier:", my_tier, ")");
+                learn(
+                    "scope_estimate",
+                    "issue " + to_string(estimate.issue_id),
+                    to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points: " + estimate.reasoning,
+                    "partial",
+                    ["observed", "planning"]
+                );
+            };
+        };
     };
 
     let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };

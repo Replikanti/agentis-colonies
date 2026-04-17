@@ -86,21 +86,59 @@ fn tick(reason: string) -> void {
         context
     ) -> RiskAssessment;
 
-    let confidence = get_confidence();
+    let my_tier = tier("risk_assessor");
 
     print("[risk_assessor] Issue", assessment.issue_id, "-> severity:", assessment.severity);
 
-    if confidence >= 0.6 {
+    if my_tier == "autonomous" {
+        // Direct external write: post the risk assessment as an issue note.
         emit("planning:risks", assessment);
+        let note = "**Risk Assessment** (automated): " + assessment.severity + "\n\n" + assessment.risks;
+        let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(assessment.issue_id) + " --body " + shell_escape(note);
+        try { exec sh post_cmd; } catch e {
+            print("[risk_assessor] Failed to post note:", e);
+        };
         learn(
             "risk_assessment",
             "issue " + to_string(assessment.issue_id),
             assessment.severity + ": " + assessment.risks,
-            "partial",
-            ["emitted", "planning"]
+            "success",
+            ["acted", "planning"]
         );
     } else {
-        print("[risk_assessor] Observing (confidence:", confidence, ")");
+        if my_tier == "review-gated" {
+            // Draft external write: stash in plan_reviewer's memo slot so
+            // plan_reviewer can pick it up and optionally promote to a real post.
+            emit("planning:risks", assessment);
+            memo_write("plan_reviewer:" + to_string(assessment.issue_id) + ":risks_drafted", "true");
+            learn(
+                "risk_assessment",
+                "issue " + to_string(assessment.issue_id),
+                assessment.severity + ": " + assessment.risks,
+                "partial",
+                ["planning", "review-gated"]
+            );
+        } else {
+            if my_tier == "propose" {
+                emit("planning:risks", assessment);
+                learn(
+                    "risk_assessment",
+                    "issue " + to_string(assessment.issue_id),
+                    assessment.severity + ": " + assessment.risks,
+                    "partial",
+                    ["emitted", "planning"]
+                );
+            } else {
+                print("[risk_assessor] Observing (tier:", my_tier, ")");
+                learn(
+                    "risk_assessment",
+                    "issue " + to_string(assessment.issue_id),
+                    assessment.severity + ": " + assessment.risks,
+                    "partial",
+                    ["observed", "planning"]
+                );
+            };
+        };
     };
 
     let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
