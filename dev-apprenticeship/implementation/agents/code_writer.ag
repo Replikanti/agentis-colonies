@@ -93,10 +93,10 @@ fn tick(reason: string) -> void {
             context
         ) -> CodeDraft;
 
-        let confidence = get_confidence();
-        print("[code_writer] Drafted code for issue", draft.issue_id, "(confidence:", confidence, ")");
+        let my_tier = tier("code_writer");
+        print("[code_writer] Drafted code for issue", draft.issue_id, "(tier:", my_tier, ")");
 
-        if confidence >= 0.85 {
+        if my_tier == "autonomous" {
             // Create branch
             let branch_cmd = "$COLONY_DIR/scripts/gitlab-api.sh create-branch --name " + shell_escape(draft.branch_name) + " --ref main";
             let branch_result = try { exec sh branch_cmd; } catch e {
@@ -129,11 +129,25 @@ fn tick(reason: string) -> void {
                 };
             };
         } else {
-            if confidence >= 0.6 {
+            if my_tier == "review-gated" {
+                // Non-terminal draft: post the implementation plan as a comment
+                // on the issue so a human can approve before we create a branch
+                // and commit code. No branch or commit at this tier.
+                let note = "[draft-impl] **Implementation Plan** (automated, pending approval)\n\nBranch: `" + draft.branch_name + "`\n\n" + draft.summary + "\n\nFiles:\n" + draft.files;
+                let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(draft.issue_id) + " --body " + shell_escape(note);
+                try { exec sh post_cmd; } catch e {
+                    print("[code_writer] Failed to post draft plan:", e);
+                };
                 emit("implementation:code_draft", draft);
-                learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "partial", ["emitted", "implementation"]);
+                learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "partial", ["implementation", "review-gated"]);
             } else {
-                print("[code_writer] Observing (confidence:", confidence, ")");
+                if my_tier == "propose" {
+                    emit("implementation:code_draft", draft);
+                    learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "partial", ["emitted", "implementation"]);
+                } else {
+                    print("[code_writer] Observing (tier:", my_tier, ")");
+                    learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "partial", ["observed", "implementation"]);
+                };
             };
         };
     };

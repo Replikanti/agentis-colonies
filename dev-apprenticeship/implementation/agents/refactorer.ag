@@ -91,10 +91,10 @@ fn tick(reason: string) -> void {
             context
         ) -> RefactorSuggestion;
 
-        let confidence = get_confidence();
-        print("[refactorer] Reviewed draft for issue", suggestion.issue_id, "(confidence:", confidence, ")");
+        let my_tier = tier("refactorer");
+        print("[refactorer] Reviewed draft for issue", suggestion.issue_id, "(tier:", my_tier, ")");
 
-        if confidence >= 0.85 {
+        if my_tier == "autonomous" {
             // Generate refactored code and commit to branch.
             // #131: read branch_name via field access on the bus-delivered
             // record instead of stringifying + re-prompting.
@@ -116,11 +116,25 @@ fn tick(reason: string) -> void {
                 learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "success", ["acted", "implementation"]);
             };
         } else {
-            if confidence >= 0.6 {
+            if my_tier == "review-gated" {
+                // Non-terminal draft: post the refactoring suggestions as a
+                // comment on the issue so a human can approve before we
+                // commit refactored files. No commit at this tier.
+                let note = "[draft-refactor] **Refactoring Suggestions** (automated, pending approval) — priority: " + suggestion.priority + "\n\n" + suggestion.suggestions;
+                let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(suggestion.issue_id) + " --body " + shell_escape(note);
+                try { exec sh post_cmd; } catch e {
+                    print("[refactorer] Failed to post draft note:", e);
+                };
                 emit("implementation:refactor_suggestions", suggestion);
-                learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "partial", ["emitted", "implementation"]);
+                learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "partial", ["implementation", "review-gated"]);
             } else {
-                print("[refactorer] Observing (confidence:", confidence, ")");
+                if my_tier == "propose" {
+                    emit("implementation:refactor_suggestions", suggestion);
+                    learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "partial", ["emitted", "implementation"]);
+                } else {
+                    print("[refactorer] Observing (tier:", my_tier, ")");
+                    learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "partial", ["observed", "implementation"]);
+                };
             };
         };
     };
