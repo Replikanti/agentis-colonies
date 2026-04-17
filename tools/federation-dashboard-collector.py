@@ -137,6 +137,7 @@ for agent in all_agents:
         # Fall back to the pre-M4 `if confidence >= X` form if the agent has
         # not been migrated yet. clamp_auto cap idiom is unchanged.
         TIER_LEVELS = {
+            'dormant': 0.0,
             'shadow': 0.4,
             'propose': 0.6,
             'review-gated': 0.8,
@@ -144,7 +145,7 @@ for agent in all_agents:
         }
         gates = []
         for lineno, line in enumerate(ag_lines, 1):
-            m_tier = re.search(r'my_tier\s*==\s*"(shadow|propose|review-gated|autonomous)"', line)
+            m_tier = re.search(r'my_tier\s*==\s*"(dormant|shadow|propose|review-gated|autonomous)"', line)
             if m_tier:
                 gates.append({'level': TIER_LEVELS[m_tier.group(1)], 'line': lineno, 'tier': m_tier.group(1)})
                 continue

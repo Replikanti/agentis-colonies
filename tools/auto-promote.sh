@@ -11,6 +11,11 @@
 # All actions default to --dry-run (config: dry_run: true). Flip to
 # false in auto-promote-config.yaml only after reviewing the journal.
 #
+# Promote ladder (four-tier, ADR-0001 / #177): the steps list in
+# auto-promote-config.yaml drives progression shadow(0.4) -> propose(0.6)
+# -> review-gated(0.8) -> autonomous(0.95). This script is fully
+# YAML-driven — no numeric thresholds are hardcoded here.
+#
 # Usage: ./tools/auto-promote.sh <federation-dir>
 #        ./tools/auto-promote.sh dev-apprenticeship
 #        ./tools/auto-promote.sh dev-apprenticeship --live   # override dry_run
@@ -150,7 +155,7 @@ def parse_yaml_simple(path):
 
     indent_stack = [(-1, cfg)]
     # Track the last dict appended to a list so continuation keys
-    # (e.g. "to: 0.6" indented under "- from: 0.5") can be added.
+    # (e.g. "to: 0.6" indented under "- from: 0.4") can be added.
     last_list_dict = None
 
     for idx, raw in enumerate(lines):
@@ -214,7 +219,7 @@ def parse_yaml_simple(path):
                 parent[k] = _parse_value(v)
             elif isinstance(parent, list) and last_list_dict is not None:
                 # Continuation key for the last list-item dict
-                # e.g. "to: 0.6" after "- from: 0.5"
+                # e.g. "to: 0.6" after "- from: 0.4"
                 last_list_dict[k] = _parse_value(v)
 
     return cfg
@@ -270,8 +275,10 @@ DAEMONS_JSON=$(cd "$FED_DIR" && agentis daemon list --json 2>/dev/null || echo "
 DAEMON_COUNT=$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(len(d))" "$DAEMONS_JSON")
 
 if [ "$DAEMON_COUNT" -eq 0 ]; then
+    # #177: no journal row for federation-down — otherwise a weekend with
+    # the federation stopped accumulates ~96 identical _system no-op rows
+    # (cron runs every 30 min). The tick log still records the no-op.
     log "Federation not running, no-op"
-    journal_append "_system" "no-op" '{"reason": "federation not running"}'
     exit 0
 fi
 

@@ -270,6 +270,26 @@ if command -v agentis &>/dev/null; then
     trap 'rm -rf "$lint_tmp"' EXIT
     (cd "$lint_tmp" && agentis init &>/dev/null) || true
 
+    # --- Capability probe: tier() builtin (#177) ---
+    # The tier-branch lint below requires the `tier()` builtin shipped by
+    # Replikanti/agentis-core#537. Version-string parsing is brittle because
+    # the release carrying tier() has not been tagged at the time this code
+    # ships — so probe the capability directly by evaluating a minimal .ag
+    # that calls tier(). If the probe fails we skip the tier-branch check
+    # and surface a clear error instead of crashing every agent check.
+    tier_probe_ok=false
+    probe_tmp=$(mktemp -d)
+    (cd "$probe_tmp" && agentis init &>/dev/null) || true
+    printf 'fn tick(r:string)->void{print(tier("x"));}\n' > "$probe_tmp/_probe.ag"
+    if (cd "$probe_tmp" && agentis go "_probe.ag") &>/dev/null; then
+        tier_probe_ok=true
+    fi
+    rm -rf "$probe_tmp"
+
+    if ! $tier_probe_ok; then
+        fail "agentis binary does not support tier() builtin (#177 requires Replikanti/agentis-core#537); upgrade agentis before running tier-branch lint"
+    fi
+
     for fed in "${federations[@]}"; do
         for dir in "$REPO_ROOT/$fed"/*/; do
             [ -d "$dir/config" ] || continue
@@ -285,6 +305,68 @@ if command -v agentis &>/dev/null; then
                         pass "$fed/$colony: $(basename "$ag") syntax OK"
                     else
                         fail "$fed/$colony: $(basename "$ag") syntax error"
+                    fi
+
+                    # --- Tier-branch convention (#177) ---
+                    # For every agent that defines fn tick(...), enforce the
+                    # four-tier contract from ADR-0001:
+                    #   1. at least one tier("...") call
+                    #   2. all four tiers covered: shadow / propose /
+                    #      review-gated / autonomous. The canonical pattern
+                    #      from CLAUDE.md collapses shadow (and dormant)
+                    #      into the else-fallthrough, so the literal
+                    #      "shadow" may be absent — when the other three
+                    #      non-shadow tiers are present AND a tier() call
+                    #      exists, shadow is treated as implicitly covered.
+                    #   3. no raw `confidence >= <number>` literals
+                    # Escape hatch: a line `// tiers: partial` in the file
+                    # skips rule #2 but never rule #1 or #3.
+                    if $tier_probe_ok && grep -qE '^\s*fn\s+tick\s*\(' "$ag"; then
+                        ag_rel="$fed/$colony/$(basename "$ag")"
+                        tier_ok=true
+
+                        if grep -qE 'tier\s*\(\s*"[^"]+"\s*\)' "$ag"; then
+                            has_tier_call=true
+                        else
+                            has_tier_call=false
+                            fail "$ag_rel: missing tier(\"...\") call (required by ADR-0001)"
+                            tier_ok=false
+                        fi
+
+                        if grep -qE '^\s*//\s*tiers:\s*partial' "$ag"; then
+                            partial_ok=true
+                        else
+                            partial_ok=false
+                        fi
+
+                        if ! $partial_ok; then
+                            missing_explicit=""
+                            for tier_name in propose review-gated autonomous; do
+                                if ! grep -qE "\"$tier_name\"" "$ag"; then
+                                    missing_explicit="$missing_explicit $tier_name"
+                                fi
+                            done
+                            has_shadow_literal=false
+                            if grep -qE '"shadow"' "$ag"; then
+                                has_shadow_literal=true
+                            fi
+                            if [ -n "$missing_explicit" ]; then
+                                fail "$ag_rel: missing tier literal(s):$missing_explicit"
+                                tier_ok=false
+                            elif ! $has_shadow_literal && ! $has_tier_call; then
+                                fail "$ag_rel: missing tier literal(s): shadow (no tier() call to imply else-fallthrough)"
+                                tier_ok=false
+                            fi
+                        fi
+
+                        if grep -nE '\bconfidence\s*>=\s*[0-9]+(\.[0-9]+)?' "$ag" >/dev/null; then
+                            fail "$ag_rel: raw confidence >= <number> literal (use tier() per ADR-0001)"
+                            tier_ok=false
+                        fi
+
+                        if $tier_ok; then
+                            pass "$ag_rel: tier-branch convention OK"
+                        fi
                     fi
                 done
             fi
