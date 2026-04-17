@@ -75,11 +75,11 @@ fn tick(reason: string) -> void {
         all_findings
     ) -> ReviewDecision;
 
-    let confidence = get_confidence();
+    let my_tier = tier("approval_decider");
 
     print("[approval_decider] MR", decision.mr_iid, "-> action:", decision.action, "(", decision.total_findings, "findings,", decision.critical_count, "critical)");
 
-    if confidence >= 0.85 {
+    if my_tier == "autonomous" {
         if decision.action == "approve" {
             let approve_cmd = "$COLONY_DIR/scripts/gitlab-api.sh approve " + to_string(decision.mr_iid);
             try { exec sh approve_cmd; } catch e {
@@ -101,11 +101,26 @@ fn tick(reason: string) -> void {
             };
         };
     } else {
-        if confidence >= 0.6 {
-            print("[approval_decider] Suggesting:", decision.action, "for MR", decision.mr_iid);
+        if my_tier == "review-gated" {
+            // Non-terminal draft: post a draft-flagged summary on the MR so
+            // a human can promote the approve / request_changes action instead
+            // of acting directly.
+            let comment = "[draft-review-decision] **Review Summary** (automated, pending approval): suggested action `" + decision.action + "`\n\n" + decision.reasoning + "\n\nFindings: " + to_string(decision.total_findings) + " total, " + to_string(decision.critical_count) + " critical";
+            let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh post-note " + to_string(decision.mr_iid) + " --body " + shell_escape(comment);
+            try { exec sh post_cmd; } catch e {
+                print("[approval_decider] Failed to post draft summary:", e);
+            };
             emit("review:decision_suggestion", decision);
+            learn("approval_decision", "MR " + to_string(decision.mr_iid), "drafted: " + decision.action + " — " + decision.reasoning, "partial", ["code-review", "review-gated"]);
         } else {
-            print("[approval_decider] Observing (confidence:", confidence, ")");
+            if my_tier == "propose" {
+                print("[approval_decider] Suggesting:", decision.action, "for MR", decision.mr_iid);
+                emit("review:decision_suggestion", decision);
+                learn("approval_decision", "MR " + to_string(decision.mr_iid), "suggested: " + decision.action + " — " + decision.reasoning, "partial", ["emitted", "code-review"]);
+            } else {
+                print("[approval_decider] Observing (tier:", my_tier, ")");
+                learn("approval_decision", "MR " + to_string(decision.mr_iid), "observed: " + decision.action + " — " + decision.reasoning, "partial", ["observed", "code-review"]);
+            };
         };
     };
 

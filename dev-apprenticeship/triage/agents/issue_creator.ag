@@ -71,7 +71,7 @@ fn tick(reason: string) -> void {
     let inbox = try { poll_inbox(); } catch e { ""; };
 
     if len(to_string(inbox)) > 5 {
-        let confidence = get_confidence();
+        let my_tier = tier("issue_creator");
         let rec = recommend("create_issue", ["accuracy", "style"]);
         let context = "Event: " + to_string(inbox) + "\nPast learning: " + to_string(rec);
 
@@ -80,7 +80,7 @@ fn tick(reason: string) -> void {
             context
         ) -> DraftIssue;
 
-        if confidence >= 0.85 {
+        if my_tier == "autonomous" {
             let create_cmd = "$COLONY_DIR/scripts/gitlab-api.sh create-issue --title " + shell_escape(draft.title) + " --description " + shell_escape(draft.description) + " --labels " + shell_escape(draft.suggested_labels);
             let result = try {
                 exec sh create_cmd;
@@ -91,13 +91,25 @@ fn tick(reason: string) -> void {
             if len(result) > 0 {
                 print("[issue_creator] Created issue:", draft.title);
                 emit("triage:new_issue", draft);
+                learn("create_issue", "created", draft.title, "success", ["acted", "triage"]);
             };
         } else {
-            if confidence >= 0.6 {
-                print("[issue_creator] Suggesting issue:", draft.title);
+            if my_tier == "review-gated" {
+                // Non-terminal draft: emit the draft on the bus. A human
+                // reviewer can promote it; the actual `create-issue` call
+                // stays behind the autonomous branch.
+                print("[issue_creator] Drafted issue (pending approval):", draft.title);
                 emit("triage:new_issue", draft);
+                learn("create_issue", "drafted", draft.title, "partial", ["triage", "review-gated"]);
             } else {
-                print("[issue_creator] Observing (confidence:", confidence, ")");
+                if my_tier == "propose" {
+                    print("[issue_creator] Suggesting issue:", draft.title);
+                    emit("triage:new_issue", draft);
+                    learn("create_issue", "suggested", draft.title, "partial", ["emitted", "triage"]);
+                } else {
+                    print("[issue_creator] Observing (tier:", my_tier, ")");
+                    learn("create_issue", "observed", draft.title, "partial", ["observed", "triage"]);
+                };
             };
         };
     };

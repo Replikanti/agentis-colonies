@@ -92,7 +92,7 @@ fn tick(reason: string) -> void {
 
     // Suggest/apply priority for unprioritized issues
     if analysis.unprioritized_count > 0 {
-        let confidence = get_confidence();
+        let my_tier = tier("prioritizer");
         let rec = recommend("prioritize", ["accuracy"]);
         let context = "Unprioritized issues: " + analysis.unprioritized_issues + "\nPast learning: " + to_string(rec);
 
@@ -101,7 +101,7 @@ fn tick(reason: string) -> void {
             context
         ) -> PriorityAction;
 
-        if confidence >= 0.85 {
+        if my_tier == "autonomous" {
             let update_cmd = "$COLONY_DIR/scripts/gitlab-api.sh update-issue " + to_string(action.issue_id) + " --add-labels " + shell_escape(action.priority);
             let result = try { exec sh update_cmd; } catch e {
                 print("[prioritizer] Failed to set priority:", e);
@@ -111,14 +111,30 @@ fn tick(reason: string) -> void {
                 print("[prioritizer] Set priority on issue", action.issue_id, ":", action.priority);
                 // #104: tag knowledge as personal vs team.
                 let scope = scope_for_author(action.author);
+                emit("triage:priority_suggestion", action);
                 learn("prioritize", "issue " + to_string(action.issue_id), action.priority, "success", [scope, "triage", "acted"]);
             };
         } else {
-            if confidence >= 0.6 {
-                print("[prioritizer] Suggesting priority for issue", action.issue_id, ":", action.priority);
+            if my_tier == "review-gated" {
+                let note = "[draft-priority] **Priority Suggestion** (automated, pending approval): " + action.priority + "\n\n" + action.reasoning;
+                let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(action.issue_id) + " --body " + shell_escape(note);
+                try { exec sh post_cmd; } catch e {
+                    print("[prioritizer] Failed to post draft note:", e);
+                };
                 emit("triage:priority_suggestion", action);
+                let scope = scope_for_author(action.author);
+                learn("prioritize", "issue " + to_string(action.issue_id), action.priority, "partial", [scope, "triage", "review-gated"]);
             } else {
-                print("[prioritizer] Observing (confidence:", confidence, ")");
+                if my_tier == "propose" {
+                    print("[prioritizer] Suggesting priority for issue", action.issue_id, ":", action.priority);
+                    emit("triage:priority_suggestion", action);
+                    let scope = scope_for_author(action.author);
+                    learn("prioritize", "issue " + to_string(action.issue_id), action.priority, "partial", [scope, "triage", "emitted"]);
+                } else {
+                    print("[prioritizer] Observing (tier:", my_tier, ")");
+                    let scope = scope_for_author(action.author);
+                    learn("prioritize", "issue " + to_string(action.issue_id), action.priority, "partial", [scope, "triage", "observed"]);
+                };
             };
         };
     };

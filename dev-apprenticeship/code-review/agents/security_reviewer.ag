@@ -93,22 +93,55 @@ fn tick(reason: string) -> void {
         context
     ) -> SecurityReview;
 
-    let confidence = get_confidence();
+    let my_tier = tier("security_reviewer");
 
     if len(review.findings) > 0 {
-        emit("review:security_findings", review);
         print("[security_reviewer] MR", mr_iid, ":", len(review.findings), "security findings");
 
-        if confidence >= 0.85 {
+        if my_tier == "autonomous" {
+            emit("review:security_findings", review);
             let comment = "**Security Review** (automated)\n\n" + review.summary;
             let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment);
             try { exec sh post_cmd; } catch e {
                 print("[security_reviewer] Failed to post comment:", e);
             };
+            learn("security_review", "MR " + to_string(mr_iid), review.summary, "success", ["code-review", "acted"]);
+        } else {
+            if my_tier == "review-gated" {
+                emit("review:security_findings", review);
+                let comment = "[draft-review] **Security Review** (automated, pending approval)\n\n" + review.summary;
+                let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment);
+                let result = try { exec sh post_cmd; } catch e {
+                    print("[security_reviewer] Failed to post draft comment:", e);
+                    "";
+                };
+                if len(result) > 0 {
+                    memo_write("security_reviewer:approved:" + to_string(mr_iid), "drafted");
+                    learn("security_review", "drafted on MR " + to_string(mr_iid), review.summary, "partial", ["code-review", "review-gated"]);
+                };
+            } else {
+                if my_tier == "propose" {
+                    emit("review:security_findings", review);
+                    learn("security_review", "MR " + to_string(mr_iid), review.summary, "partial", ["code-review", "emitted"]);
+                } else {
+                    print("[security_reviewer] MR", mr_iid, ": observing (tier:", my_tier, ")");
+                    learn("security_review", "MR " + to_string(mr_iid), review.summary, "partial", ["code-review", "observed"]);
+                };
+            };
         };
     } else {
         print("[security_reviewer] MR", mr_iid, ": clean");
-        emit("review:security_findings", review);
+        if my_tier == "autonomous" {
+            emit("review:security_findings", review);
+        } else {
+            if my_tier == "review-gated" {
+                emit("review:security_findings", review);
+            } else {
+                if my_tier == "propose" {
+                    emit("review:security_findings", review);
+                };
+            };
+        };
     };
 
     let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };

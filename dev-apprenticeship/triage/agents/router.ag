@@ -83,7 +83,7 @@ fn tick(reason: string) -> void {
 
     // Suggest/apply routing for unassigned issues
     if analysis.unassigned_count > 0 {
-        let confidence = get_confidence();
+        let my_tier = tier("router");
         let rec = recommend("route", ["accuracy"]);
         let context = "Unassigned issues: " + analysis.unassigned_issues + "\nTeam members: " + members_raw + "\nPast learning: " + to_string(rec);
 
@@ -92,7 +92,7 @@ fn tick(reason: string) -> void {
             context
         ) -> RouteAction;
 
-        if confidence >= 0.85 {
+        if my_tier == "autonomous" {
             let update_cmd = "$COLONY_DIR/scripts/gitlab-api.sh update-issue " + to_string(action.issue_id) + " --assignee " + shell_escape(action.assignee);
             let result = try { exec sh update_cmd; } catch e {
                 print("[router] Failed to assign:", e);
@@ -100,14 +100,29 @@ fn tick(reason: string) -> void {
             };
             if len(result) > 0 {
                 print("[router] Assigned issue", action.issue_id, "to", action.assignee);
+                emit("triage:route_suggestion", action);
                 learn("route", "issue " + to_string(action.issue_id), action.assignee, "success", ["acted", "triage"]);
             };
         } else {
-            if confidence >= 0.6 {
-                print("[router] Suggesting assignee for issue", action.issue_id, ":", action.assignee);
+            if my_tier == "review-gated" {
+                // Non-terminal draft: emit the suggestion and post an issue note
+                // flagged for human approval instead of directly assigning.
+                let note = "[draft-route] **Routing Suggestion** (automated, pending approval): assign to @" + action.assignee + "\n\n" + action.reasoning;
+                let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(action.issue_id) + " --body " + shell_escape(note);
+                try { exec sh post_cmd; } catch e {
+                    print("[router] Failed to post draft note:", e);
+                };
                 emit("triage:route_suggestion", action);
+                learn("route", "issue " + to_string(action.issue_id), action.assignee, "partial", ["triage", "review-gated"]);
             } else {
-                print("[router] Observing (confidence:", confidence, ")");
+                if my_tier == "propose" {
+                    print("[router] Suggesting assignee for issue", action.issue_id, ":", action.assignee);
+                    emit("triage:route_suggestion", action);
+                    learn("route", "issue " + to_string(action.issue_id), action.assignee, "partial", ["emitted", "triage"]);
+                } else {
+                    print("[router] Observing (tier:", my_tier, ")");
+                    learn("route", "issue " + to_string(action.issue_id), action.assignee, "partial", ["observed", "triage"]);
+                };
             };
         };
     };

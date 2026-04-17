@@ -123,15 +123,14 @@ fn tick(reason: string) -> void {
         "MR author: " + mr_author + "\n" + context
     ) -> StyleReview;
 
-    let confidence = get_confidence();
+    let my_tier = tier("style_reviewer");
 
     if len(review.findings) > 0 {
-        // Emit findings to colony bus for approval_decider
-        emit("review:style_findings", review);
         print("[style_reviewer] MR", mr_iid, ":", len(review.findings), "style findings");
 
-        if confidence >= 0.85 {
-            // Post review comment directly
+        if my_tier == "autonomous" {
+            // Post review comment directly (terminal voice on the MR).
+            emit("review:style_findings", review);
             let comment = "**Style Review** (automated)\n\n" + review.summary;
             let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment);
             let result = try { exec sh post_cmd; } catch e {
@@ -144,11 +143,48 @@ fn tick(reason: string) -> void {
                 learn("style_review", "posted on MR " + to_string(mr_iid), review.summary, "success", [scope, "code-review", "acted"]);
             };
         } else {
-            print("[style_reviewer] Confidence:", confidence, "- findings emitted to bus only");
+            if my_tier == "review-gated" {
+                // Draft external write: post with a [draft-review] prefix and
+                // record an approval marker so downstream promotion can pick it up.
+                emit("review:style_findings", review);
+                let comment = "[draft-review] **Style Review** (automated, pending approval)\n\n" + review.summary;
+                let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment);
+                let result = try { exec sh post_cmd; } catch e {
+                    print("[style_reviewer] Failed to post draft comment:", e);
+                    "";
+                };
+                if len(result) > 0 {
+                    memo_write("style_reviewer:approved:" + to_string(mr_iid), "drafted");
+                    let scope = scope_for_author(review.author);
+                    learn("style_review", "drafted on MR " + to_string(mr_iid), review.summary, "partial", [scope, "code-review", "review-gated"]);
+                };
+            } else {
+                if my_tier == "propose" {
+                    // Emit on bus for approval_decider; no external write.
+                    emit("review:style_findings", review);
+                    learn("style_review", "MR " + to_string(mr_iid), review.summary, "partial", ["code-review", "emitted"]);
+                } else {
+                    // shadow / dormant: observe only, no emit, no external write.
+                    print("[style_reviewer] MR", mr_iid, ": observing (tier:", my_tier, ")");
+                    learn("style_review", "MR " + to_string(mr_iid), review.summary, "partial", ["code-review", "observed"]);
+                };
+            };
         };
     } else {
         print("[style_reviewer] MR", mr_iid, ": clean");
-        emit("review:style_findings", review);
+        // Emit the clean signal to the bus for all tiers that may contribute
+        // to downstream consumers (approval_decider). shadow/dormant stay silent.
+        if my_tier == "autonomous" {
+            emit("review:style_findings", review);
+        } else {
+            if my_tier == "review-gated" {
+                emit("review:style_findings", review);
+            } else {
+                if my_tier == "propose" {
+                    emit("review:style_findings", review);
+                };
+            };
+        };
     };
 
     let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };

@@ -87,21 +87,56 @@ fn tick(reason: string) -> void {
         context
     ) -> TaskBreakdown;
 
-    let confidence = get_confidence();
+    let my_tier = tier("task_decomposer");
 
     print("[task_decomposer] Issue", breakdown.issue_id, "->", breakdown.count, "subtasks");
 
-    if confidence >= 0.6 {
+    if my_tier == "autonomous" {
         emit("planning:breakdown", breakdown);
+        let note = "**Task Breakdown** (automated): " + to_string(breakdown.count) + " subtasks\n\n" + breakdown.subtasks;
+        let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(breakdown.issue_id) + " --body " + shell_escape(note);
+        try { exec sh post_cmd; } catch e {
+            print("[task_decomposer] Failed to post note:", e);
+        };
         learn(
             "task_decomposition",
             "issue " + to_string(breakdown.issue_id),
             to_string(breakdown.count) + " subtasks: " + breakdown.subtasks,
-            "partial",
-            ["emitted", "planning"]
+            "success",
+            ["acted", "planning"]
         );
     } else {
-        print("[task_decomposer] Observing (confidence:", confidence, ")");
+        if my_tier == "review-gated" {
+            emit("planning:breakdown", breakdown);
+            memo_write("plan_reviewer:" + to_string(breakdown.issue_id) + ":breakdown_drafted", "true");
+            learn(
+                "task_decomposition",
+                "issue " + to_string(breakdown.issue_id),
+                to_string(breakdown.count) + " subtasks: " + breakdown.subtasks,
+                "partial",
+                ["planning", "review-gated"]
+            );
+        } else {
+            if my_tier == "propose" {
+                emit("planning:breakdown", breakdown);
+                learn(
+                    "task_decomposition",
+                    "issue " + to_string(breakdown.issue_id),
+                    to_string(breakdown.count) + " subtasks: " + breakdown.subtasks,
+                    "partial",
+                    ["emitted", "planning"]
+                );
+            } else {
+                print("[task_decomposer] Observing (tier:", my_tier, ")");
+                learn(
+                    "task_decomposition",
+                    "issue " + to_string(breakdown.issue_id),
+                    to_string(breakdown.count) + " subtasks: " + breakdown.subtasks,
+                    "partial",
+                    ["observed", "planning"]
+                );
+            };
+        };
     };
 
     let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };

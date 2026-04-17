@@ -108,10 +108,10 @@ fn tick(reason: string) -> void {
         context
     ) -> MRPlan;
 
-    let confidence = get_confidence();
-    print("[commit_composer] Composed MR plan for issue", plan.issue_id, "(confidence:", confidence, ")");
+    let my_tier = tier("commit_composer");
+    print("[commit_composer] Composed MR plan for issue", plan.issue_id, "(tier:", my_tier, ")");
 
-    if confidence >= 0.85 {
+    if my_tier == "autonomous" {
         // Create the MR
         let mr_cmd = "$COLONY_DIR/scripts/gitlab-api.sh create-mr --source " + shell_escape(plan.branch_name) + " --title " + shell_escape(plan.mr_title) + " --description " + shell_escape(plan.mr_description);
         let mr_result = try { exec sh mr_cmd; } catch e {
@@ -125,11 +125,24 @@ fn tick(reason: string) -> void {
             learn("commit_compose", "issue " + to_string(plan.issue_id), plan.mr_title, "success", ["acted", "implementation"]);
         };
     } else {
-        if confidence >= 0.6 {
+        if my_tier == "review-gated" {
+            // Non-terminal draft: post the MR plan as a comment on the issue
+            // so a human can approve before we actually open a non-draft MR.
+            let note = "[draft-mr] **Merge Request Plan** (automated, pending approval)\n\nBranch: `" + plan.branch_name + "`\nTitle: " + plan.mr_title + "\n\n" + plan.mr_description + "\n\nCommits:\n" + plan.commits;
+            let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(plan.issue_id) + " --body " + shell_escape(note);
+            try { exec sh post_cmd; } catch e {
+                print("[commit_composer] Failed to post draft plan:", e);
+            };
             emit("implementation:mr_ready", plan);
-            learn("commit_compose", "issue " + to_string(plan.issue_id), plan.mr_title, "partial", ["emitted", "implementation"]);
+            learn("commit_compose", "issue " + to_string(plan.issue_id), plan.mr_title, "partial", ["implementation", "review-gated"]);
         } else {
-            print("[commit_composer] Observing (confidence:", confidence, ")");
+            if my_tier == "propose" {
+                emit("implementation:mr_ready", plan);
+                learn("commit_compose", "issue " + to_string(plan.issue_id), plan.mr_title, "partial", ["emitted", "implementation"]);
+            } else {
+                print("[commit_composer] Observing (tier:", my_tier, ")");
+                learn("commit_compose", "issue " + to_string(plan.issue_id), plan.mr_title, "partial", ["observed", "implementation"]);
+            };
         };
     };
 

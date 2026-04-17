@@ -114,10 +114,14 @@ fn tick(reason: string) -> void {
         context
     ) -> ShipDecision;
 
-    let confidence = get_confidence();
-    print("[ship_decider] Decision:", decision.decision, "(confidence:", confidence, ")");
+    let my_tier = tier("ship_decider");
+    print("[ship_decider] Decision:", decision.decision, "(tier:", my_tier, ")");
 
-    if confidence >= 0.85 {
+    // ship_decider produces a non-terminal signal — it never tags, merges,
+    // or publishes. autonomous = post directly to the MR + emit on bus.
+    // review-gated = post draft-flagged note + emit. propose = emit only.
+    // shadow/dormant = observe.
+    if my_tier == "autonomous" {
         let mr_raw = try { exec sh "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --per-page 1"; } catch e { "[]"; };
         let mr_iid = parse_int(to_string(json_get(mr_raw, "[0].iid")));
         if mr_iid > 0 {
@@ -130,11 +134,26 @@ fn tick(reason: string) -> void {
         emit("release:ship_decision", decision);
         learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "success", ["acted", "release"]);
     } else {
-        if confidence >= 0.6 {
+        if my_tier == "review-gated" {
+            let mr_raw = try { exec sh "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --per-page 1"; } catch e { "[]"; };
+            let mr_iid = parse_int(to_string(json_get(mr_raw, "[0].iid")));
+            if mr_iid > 0 {
+                let note = "[draft-ship] **Ship Decision** (automated, pending approval): " + decision.decision + "\n\n" + decision.reasoning;
+                let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note);
+                try { exec sh post_cmd; } catch e {
+                    print("[ship_decider] Failed to post draft note:", e);
+                };
+            };
             emit("release:ship_decision", decision);
-            learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "partial", ["emitted", "release"]);
+            learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "partial", ["release", "review-gated"]);
         } else {
-            print("[ship_decider] Observing (confidence:", confidence, ")");
+            if my_tier == "propose" {
+                emit("release:ship_decision", decision);
+                learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "partial", ["emitted", "release"]);
+            } else {
+                print("[ship_decider] Observing (tier:", my_tier, ")");
+                learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "partial", ["observed", "release"]);
+            };
         };
     };
 

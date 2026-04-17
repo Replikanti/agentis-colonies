@@ -122,10 +122,13 @@ fn tick(reason: string) -> void {
         context
     ) -> VersionBump;
 
-    let confidence = get_confidence();
-    print("[version_bumper] Version bump:", bump.current, "->", bump.next, "(", bump.bump_type, ", confidence:", confidence, ")");
+    let my_tier = tier("version_bumper");
+    print("[version_bumper] Version bump:", bump.current, "->", bump.next, "(", bump.bump_type, ", tier:", my_tier, ")");
 
-    if confidence >= 0.85 {
+    // create-tag + create-release are TERMINAL actions (cannot be withdrawn
+    // by a subsequent automated step). Per ADR-0001 terminal actions require
+    // the `autonomous` tier. review-gated may only produce a draft/proposal.
+    if my_tier == "autonomous" {
         // Create the tag
         // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
         let tag_cmd = "$COLONY_DIR/scripts/gitlab-api.sh create-tag --name " + shell_escape(bump.next) + " --ref main --message " + shell_escape("Release " + bump.next);
@@ -155,11 +158,29 @@ fn tick(reason: string) -> void {
             learn("version_bump", bump.next, bump.bump_type + ": " + bump.reasoning, "success", ["acted", "release"]);
         };
     } else {
-        if confidence >= 0.6 {
+        if my_tier == "review-gated" {
+            // Non-terminal proposal: post a draft note on the latest MR flagged as
+            // a pending bump so a human can approve before we tag. No tag/release
+            // is created at this tier.
+            let mr_raw = try { exec sh "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --per-page 1"; } catch e { "[]"; };
+            let mr_iid = parse_int(to_string(json_get(mr_raw, "[0].iid")));
+            if mr_iid > 0 {
+                let note = "[draft-bump] **Version Bump Proposal** (automated, pending approval): " + bump.current + " -> " + bump.next + " (" + bump.bump_type + ")\n\n" + bump.reasoning;
+                let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note);
+                try { exec sh post_cmd; } catch e {
+                    print("[version_bumper] Failed to post draft bump note:", e);
+                };
+            };
             emit("release:version_bumped", bump);
-            learn("version_bump", bump.next, bump.bump_type + ": " + bump.reasoning, "partial", ["emitted", "release"]);
+            learn("version_bump", bump.next, bump.bump_type + ": " + bump.reasoning, "partial", ["release", "review-gated"]);
         } else {
-            print("[version_bumper] Observing (confidence:", confidence, ")");
+            if my_tier == "propose" {
+                emit("release:version_bumped", bump);
+                learn("version_bump", bump.next, bump.bump_type + ": " + bump.reasoning, "partial", ["emitted", "release"]);
+            } else {
+                print("[version_bumper] Observing (tier:", my_tier, ")");
+                learn("version_bump", bump.next, bump.bump_type + ": " + bump.reasoning, "partial", ["observed", "release"]);
+            };
         };
     };
 

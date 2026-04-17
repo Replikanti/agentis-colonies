@@ -199,7 +199,7 @@ fn tick(reason: string) -> void {
 
     // Suggest/apply labels for unlabeled issues
     if analysis.unlabeled_count > 0 {
-        let confidence = get_confidence();
+        let my_tier = tier("labeler");
         let rec = recommend("label", ["accuracy"]);
         let labels_raw = try { exec sh "$COLONY_DIR/scripts/gitlab-api.sh labels --view summary"; } catch e { "[]"; };
         let context = "Unlabeled issues: " + analysis.unlabeled_issues + "\nAvailable labels: " + labels_raw + "\nPast learning: " + to_string(rec);
@@ -209,7 +209,7 @@ fn tick(reason: string) -> void {
             context
         ) -> LabelAction;
 
-        if confidence >= 0.85 {
+        if my_tier == "autonomous" {
             let update_cmd = "$COLONY_DIR/scripts/gitlab-api.sh update-issue " + to_string(action.issue_id) + " --add-labels " + shell_escape(action.labels);
             let result = try { exec sh update_cmd; } catch e {
                 print("[labeler] Failed to apply labels:", e);
@@ -219,20 +219,40 @@ fn tick(reason: string) -> void {
                 print("[labeler] Applied labels to issue", action.issue_id, ":", action.labels);
                 // #104: tag knowledge as personal (operator's issue) vs team.
                 let scope = scope_for_author(action.author);
+                emit("triage:label_suggestion", action);
                 learn("label", "issue " + to_string(action.issue_id), action.labels, "success", [scope, "triage", "acted"]);
             };
         } else {
-            if confidence >= 0.6 {
-                print("[labeler] Suggesting labels for issue", action.issue_id, ":", action.labels);
+            if my_tier == "review-gated" {
+                let note = "[draft-labels] **Label Suggestion** (automated, pending approval): " + action.labels + "\n\n" + action.reasoning;
+                let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(action.issue_id) + " --body " + shell_escape(note);
+                try { exec sh post_cmd; } catch e {
+                    print("[labeler] Failed to post draft note:", e);
+                };
                 emit("triage:label_suggestion", action);
-                // #106: stash the verdict so next tick can score this
-                // suggestion against whatever the operator actually does
-                // to the issue. Only records at SUGGEST level — at ACT
-                // (>= 0.85) the agent writes its own labels, so there's
-                // no separable operator signal to score against.
+                // #106: stash the verdict so the next tick can score this
+                // suggestion against whatever the operator eventually applies
+                // to the issue.
                 record_label_verdict(action.issue_id, action.labels);
+                let scope = scope_for_author(action.author);
+                learn("label", "issue " + to_string(action.issue_id), action.labels, "partial", [scope, "triage", "review-gated"]);
             } else {
-                print("[labeler] Observing (confidence:", confidence, ")");
+                if my_tier == "propose" {
+                    print("[labeler] Suggesting labels for issue", action.issue_id, ":", action.labels);
+                    emit("triage:label_suggestion", action);
+                    // #106: stash the verdict so next tick can score this
+                    // suggestion against whatever the operator actually does
+                    // to the issue. Only records at propose/review-gated level —
+                    // at autonomous the agent writes its own labels, so there's
+                    // no separable operator signal to score against.
+                    record_label_verdict(action.issue_id, action.labels);
+                    let scope = scope_for_author(action.author);
+                    learn("label", "issue " + to_string(action.issue_id), action.labels, "partial", [scope, "triage", "emitted"]);
+                } else {
+                    print("[labeler] Observing (tier:", my_tier, ")");
+                    let scope = scope_for_author(action.author);
+                    learn("label", "issue " + to_string(action.issue_id), action.labels, "partial", [scope, "triage", "observed"]);
+                };
             };
         };
     };
