@@ -4,7 +4,7 @@
 
 A federation of 21 agents that learns how you work by watching your GitLab activity. It observes how you triage issues, review merge requests, plan features, write code, and ship releases. Over time it takes over the mechanical parts, while you keep control over the decisions that matter.
 
-The federation starts silent. Agents only watch. As you see what they are learning in the logs and trust what they would do, you progressively unlock autonomy by raising each agent's confidence memo — first suggestions (≥ 0.6), then full automation (≥ 0.85). Agents do not promote themselves; the gradient is operator-controlled. You can always veto or demote.
+The federation starts silent. Agents only watch. As you see what they are learning in the logs and trust what they would do, you progressively unlock autonomy by raising each agent's confidence memo through four named tiers — `shadow` (observe), `propose` (suggest), `review-gated` (act under review), and `autonomous` (act alone). The tier contract is defined in [`doc/adr/ADR-0001-confidence-tiers.md`](../doc/adr/ADR-0001-confidence-tiers.md) and is normative for every agent in this federation. Agents do not promote themselves; the gradient is operator-controlled. You can always veto or demote.
 
 As knowledge accumulates, agents rely more on stored patterns and less on LLM inference. Early ticks are LLM-heavy (learning your style, generating summaries). Mature agents resolve most decisions from knowledge recall alone, falling back to the LLM only for novel situations.
 
@@ -69,7 +69,7 @@ agentis daemon stop --all       # Stop everything
 
 A web dashboard that shows agent health, confidence levels, phase readiness with ETA, knowledge growth trends, remediation history, and a live suggestion feed. Auto-refreshes every 60 seconds. Includes a kill switch (two-click safety) to stop the entire federation from the browser.
 
-Per-agent **confidence bump** controls (▲▼) in the Confidence Levels card walk each agent through the canonical steps 0.5 → 0.6 → 0.85. Promotions to 0.85 (AUTONOMOUS) trigger a confirmation dialog since at that level the agent begins writing to GitLab directly. Every change is appended to `.dashboard/confidence-log.jsonl` for audit. The CLI path (`agentis memo set <agent>:confidence <value>`) still works and is equivalent.
+Per-agent **confidence bump** controls (▲▼) in the Confidence Levels card walk each agent through the canonical tier ladder: `shadow` (0.4) → `propose` (0.6) → `review-gated` (0.8) → `autonomous` (0.95). Promotions to `autonomous` trigger a confirmation dialog since at that level the agent performs terminal external writes (merge, tag, publish) without a second gate. Every change is appended to `.dashboard/confidence-log.jsonl` for audit. The CLI path (`agentis memo set <agent>:confidence <value>`) still works and is equivalent.
 
 ```bash
 ./dashboard.sh                  # http://localhost:8420
@@ -94,7 +94,7 @@ Verify agents are learning:
 
 ```bash
 agentis knowledge stats         # Knowledge entries growing?
-agentis memo get router:confidence  # Confidence at 0.5?
+agentis memo get router:confidence  # Confidence at 0.4 (shadow seed)?
 agentis stats                   # CB consumption per agent
 ```
 
@@ -127,7 +127,7 @@ Agents pick up work from three sources:
 
 2. **Colony bus events**: Colonies pass work to each other over the federation bus. When triage routes an issue, the implementation colony picks it up. When implementation opens an MR, the code-review and release colonies react. You do not need to trigger these handoffs manually.
 
-3. **Operator commands**: You can intervene directly via the agentis CLI. Adjust confidence (`agentis memo set labeler:confidence 0.85`), inspect knowledge (`agentis knowledge list`), or stop individual agents. The CLI is your control plane.
+3. **Operator commands**: You can intervene directly via the agentis CLI. Adjust confidence (`agentis memo set labeler:confidence 0.95`), inspect knowledge (`agentis knowledge list`), or stop individual agents. The CLI is your control plane.
 
 ```mermaid
 graph LR
@@ -143,39 +143,50 @@ graph LR
     style FED fill:#2d333b,stroke:#539bf5,color:#adbac7
 ```
 
-## Confidence gradient
+## Confidence tiers
 
-What agents do depends on their confidence level:
+What agents do depends on their current tier. See [`doc/adr/ADR-0001-confidence-tiers.md`](../doc/adr/ADR-0001-confidence-tiers.md) for the normative contract.
 
 ```mermaid
 graph TD
-    CHECK["Check confidence"]
-    OBS["Observe: learn patterns, stay silent"]
-    SUG["Suggest: emit findings for your review"]
-    ACT["Act: post comments, assign issues, open MRs"]
+    CHECK["Check tier()"]
+    SHA["shadow: LLM + memo only, no emit, no external write"]
+    PRO["propose: + emit on bus + draft external writes"]
+    RG["review-gated: + direct external writes (non-terminal)"]
+    AUT["autonomous: + terminal writes (merge, tag, publish)"]
 
-    CHECK -- "< 0.6" --> OBS
-    CHECK -- "0.6 - 0.84" --> SUG
-    CHECK -- ">= 0.85" --> ACT
+    CHECK -- "[0.4, 0.6)" --> SHA
+    CHECK -- "[0.6, 0.8)" --> PRO
+    CHECK -- "[0.8, 0.95)" --> RG
+    CHECK -- "[0.95, 1.0]" --> AUT
 
-    style OBS fill:#1a1e24,stroke:#636e7b,color:#adbac7
-    style SUG fill:#1a1e24,stroke:#c69026,color:#adbac7
-    style ACT fill:#1a1e24,stroke:#57ab5a,color:#adbac7
+    style SHA fill:#1a1e24,stroke:#636e7b,color:#adbac7
+    style PRO fill:#1a1e24,stroke:#c69026,color:#adbac7
+    style RG fill:#1a1e24,stroke:#ff8800,color:#adbac7
+    style AUT fill:#1a1e24,stroke:#57ab5a,color:#adbac7
 ```
 
-**Start at 0.5 (observe)**. Agents watch your GitLab activity and build knowledge. Check logs to see what they are learning: `tail -f .agentis/logs/labeler.log`
+Agents below `0.4` are `dormant` — not yet admitted to the ladder. Fresh federations seed every agent at `0.4` (shadow).
 
-**Promote to 0.6 (suggest)** when you trust what they have learned. Agents emit suggestions to the colony bus and log what they would do. They still do not touch GitLab. Watch all suggestions in one stream:
+**Start at 0.4 (shadow)**. Agents watch your GitLab activity and build knowledge. Check logs to see what they are learning: `tail -f .agentis/logs/labeler.log`
+
+**Promote to 0.6 (propose)** when you trust what they have learned. Agents emit suggestions to the colony bus and draft external writes marked as non-authoritative. They do not post directly on your behalf. Watch all suggestions in one stream:
 
 ```bash
 agentis memo set labeler:confidence 0.6
 ./watch-suggestions.sh          # Live feed from all 21 agent logs
 ```
 
-**Promote to 0.85 (autonomous)** when ready. Start with low-risk agents (labeler, style_reviewer) before promoting high-impact ones (code_writer, approval_decider).
+**Promote to 0.8 (review-gated)** when proposals have been reliable. Agents now post directly on GitLab (non-terminal writes: comments, non-draft MRs). Terminal actions (merge, tag, publish, credential rotation) still require an explicit second gate.
 
 ```bash
-agentis memo set labeler:confidence 0.85
+agentis memo set labeler:confidence 0.8
+```
+
+**Promote to 0.95 (autonomous)** when the agent has demonstrated sustained success under the review gate. At this tier the agent may perform terminal writes without a second approver. Start with low-risk agents (labeler, style_reviewer) before promoting high-impact ones (code_writer, approval_decider).
+
+```bash
+agentis memo set labeler:confidence 0.95
 ```
 
 | Colony | Autonomous actions |
@@ -186,7 +197,7 @@ agentis memo set labeler:confidence 0.85
 | Implementation | Creates branches, commits code and tests, opens MRs |
 | Release | Runs pre-release checks, posts ship decisions, creates tags and releases |
 
-You can always demote an agent back: `agentis memo set labeler:confidence 0.5`
+You can always demote an agent back: `agentis memo set labeler:confidence 0.4`
 
 ## Security
 
@@ -204,22 +215,22 @@ Out-of-scope (not implemented): integration with a system secret store (Secret S
 
 ## What to expect
 
-**Day 1**: Nothing visible. Agents are silent at 0.5. Check `agentis daemon list` and logs to confirm they are polling.
+**Day 1**: Nothing visible. Agents are silent in `shadow` (seeded at 0.4). Check `agentis daemon list` and logs to confirm they are polling.
 
 **Week 1-2**: Knowledge entries accumulate from your GitLab activity. Run `agentis knowledge list` to inspect.
 
-**After promotion**: Suggestions appear in logs (0.6) or directly on GitLab (0.85). Knowledge keeps growing with every tick. The runtime slowly decays the per-entry confidence score that `learn()` attaches to each unvalidated knowledge row (`knowledge.confidence_decay_rate`, default 0.01/hr, floor `knowledge.confidence_decay_min` 0.05; validated entries are left alone), which is a separate dial from the per-agent promotion level — it affects how much weight an old entry carries inside an agent, not which behavior gradient the agent is running at.
+**After promotion**: Proposals appear in logs at `propose` (0.6), direct non-terminal writes on GitLab at `review-gated` (0.8), and terminal writes (merge/tag/publish) at `autonomous` (0.95). Knowledge keeps growing with every tick. The runtime slowly decays the per-entry confidence score that `learn()` attaches to each unvalidated knowledge row (`knowledge.confidence_decay_rate`, default 0.01/hr, floor `knowledge.confidence_decay_min` 0.05; validated entries are left alone), which is a separate dial from the per-agent promotion level — it affects how much weight an old entry carries inside an agent, not which tier the agent is running at.
 
 ## Auto-confidence from feedback (#106)
 
 Suggestions don't just sit in logs — participating agents score themselves against what you actually did. The loop is:
 
-1. Agent emits a suggestion at confidence 0.6–0.84 (SUGGEST mode) and stashes a "pending verdict" — issue/MR id plus the payload it proposed.
+1. Agent emits a proposal in `propose` tier (confidence 0.6–0.8) and stashes a "pending verdict" — issue/MR id plus the payload it proposed.
 2. On a later tick, agent fetches the current GitLab state of the artifact and compares.
 3. Exact match → confidence `+0.02`. Partial match → `+0.005`. Mismatch → `-0.01`. Still no operator action → leave pending, re-check next tick.
 4. Verdicts that age past 24 h without operator action are dropped without scoring — absence is not evidence of wrong suggestion.
 
-**Autonomy cap**. Auto-promotion stops at **0.85**. Positive deltas above the cap are clipped; the agent has to earn *suggestion trust* automatically, but you still have to manually bump it from 0.85 (via the dashboard ▲ button or `agentis memo set <agent>:confidence 0.85`) before it starts writing to GitLab. This is deliberate — the auto-loop earns suggestion trust from matching your style; autonomy is your call. Negative deltas are not capped, so a confident agent that goes off the rails can still be pulled back down.
+**Autonomy cap**. Auto-promotion stops at **0.85** (within `review-gated`). Positive deltas above the cap are clipped; the agent has to earn *review-gated trust* automatically, but you still have to manually bump it across the `autonomous` boundary at 0.95 (via the dashboard ▲ button or `agentis memo set <agent>:confidence 0.95`) before it is permitted to perform terminal writes (merge, tag, publish). This is deliberate — the auto-loop earns propose/review-gated trust from matching your style; terminal autonomy is your call. Negative deltas are not capped, so a confident agent that goes off the rails can still be pulled back down.
 
 **Phase 1 scope** (what ships today). The feedback loop is wired into the `labeler` agent as the reference implementation. Suggested labels are compared against the labels you actually apply to the issue (set overlap). The remaining four reference agents — `style_reviewer`, `plan_reviewer`, `code_writer`, `version_bumper` — will follow in separate PRs using the same pattern. Each needs its own matcher (did the MR get merged? was the plan followed? was the version tagged?) but the infrastructure (`clamp_auto`, `signal_to_delta`, `apply_feedback`, `record_*_verdict`, `evaluate_*_verdict`, `get-issue` gitlab-api subcommand) is in place.
 
@@ -227,7 +238,7 @@ Suggestions don't just sit in logs — participating agents score themselves aga
 
 **Observability**. Every delta prints one line to the agent's log: `[labeler] feedback delta 0.02 confidence 0.62 -> 0.64`. Grep that prefix to audit every confidence change the agent made to itself. The dashboard's per-agent confidence bar reflects the current memo value regardless of how it moved.
 
-**Why not promote straight through to 0.85**. The cap makes the honest claim match the observed behavior: *agents learn to suggest well*. Promoting them past that line ought to be an explicit operator decision, not a drift that happened while you weren't looking.
+**Why not auto-promote into `autonomous`**. The cap makes the honest claim match the observed behavior: *agents learn to propose and act-under-review well*. Promoting them into terminal-write territory ought to be an explicit operator decision, not a drift that happened while you weren't looking.
 
 ## Colonies
 
@@ -243,7 +254,7 @@ Cross-colony wiring: Triage routes issues to Implementation. Implementation sign
 
 ## Knowledge portability
 
-Every `learn()` call in the federation's agents tags entries with one of `observed` (passive learning from GitLab activity), `emitted` (suggestion logged at confidence 0.6-0.84), or `acted` (autonomous action taken at ≥ 0.85) plus the colony name (`triage`, `code-review`, `planning`, `implementation`, `release`).
+Every `learn()` call in the federation's agents tags entries with one of `observed` (shadow tier: passive learning from GitLab activity), `emitted` (propose tier: suggestion logged with draft external write), or `acted` (review-gated / autonomous tier: direct external write) plus the colony name (`triage`, `code-review`, `planning`, `implementation`, `release`).
 
 **Personal vs team (`#104`).** If you set your GitLab username during `./install.sh` (or in `colony.toml` under `[gitlab] me = "..."`), three agents (`labeler`, `prioritizer`, `style_reviewer`) additionally tag their `acted` learn calls as either `personal` (the issue/MR author matches your username) or `team` (anyone else). The remaining agents still tag only `observed|emitted|acted` + colony; widening coverage is tracked as future work. If you leave the username empty, every entry keeps the legacy `team` tag so exports stay stable.
 
@@ -259,7 +270,7 @@ Filtering by `--tags observed`, `--tags emitted`, `--tags acted`, `--tags <colon
 
 ## Troubleshooting
 
-**Agents are silent after starting**: Expected at confidence 0.5. Check `agentis daemon list`. If running, check logs: `tail -f .agentis/logs/router.log`.
+**Agents are silent after starting**: Expected in `shadow` tier (seed 0.4). Check `agentis daemon list`. If running, check logs: `tail -f .agentis/logs/router.log`.
 
 **"GitLab poll failed"**: Token lacks `api` scope, or the project path is wrong.
 
@@ -279,11 +290,11 @@ Terminal colony bus events with no internal listener, meant for external consump
 
 | Event | Emitter | When |
 |-------|---------|------|
-| `triage:label_suggestion` | labeler | Confidence 0.6-0.84: label suggestion for human review |
-| `triage:priority_suggestion` | prioritizer | Confidence 0.6-0.84: priority suggestion for human review |
-| `review:decision_suggestion` | approval_decider | Confidence 0.6-0.84: approve/reject suggestion |
-| `review:escalation` | approval_decider | Confidence >= 0.85: MR requires human attention |
-| `planning:draft_plan` | plan_reviewer | Confidence 0.6-0.84: assembled plan for human review |
+| `triage:label_suggestion` | labeler | `propose` tier: label suggestion for human review |
+| `triage:priority_suggestion` | prioritizer | `propose` tier: priority suggestion for human review |
+| `review:decision_suggestion` | approval_decider | `propose` tier: approve/reject suggestion |
+| `review:escalation` | approval_decider | `review-gated` / `autonomous`: MR requires human attention |
+| `planning:draft_plan` | plan_reviewer | `propose` tier: assembled plan for human review |
 | `release:version_bumped` | version_bumper | After tag/release creation or version bump suggestion |
 
 ## Auto-promote / auto-evolve (#148)
@@ -307,7 +318,7 @@ Configuration lives in `tools/auto-promote-config.yaml`. Decisions are journaled
 
 ### Decision rules
 
-**Promote** (confidence step-up, e.g. 0.5 → 0.6 → 0.85):
+**Promote** (confidence step-up along the three-step ladder `0.4 → 0.6 → 0.8 → 0.95`, i.e. `shadow → propose → review-gated → autonomous`):
 - Minimum 200 experience entries
 - At least 48 hours of runtime
 - Reject rate below 5%
