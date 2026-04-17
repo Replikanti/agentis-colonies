@@ -34,9 +34,36 @@ colony-name/
 ## Agent conventions (.ag files)
 
 - `cb <N>;` at the top must match the `cb_budget` in colony.example.toml.
-- `get_confidence()` reads from `recall_latest("<agent_name>:confidence")`.
-- Confidence gradient: < 0.6 observe only, >= 0.6 emit suggestions, >= 0.85 act autonomously.
-- The four-tier confidence contract (`shadow` / `propose` / `review-gated` / `autonomous`) defined in [`doc/adr/ADR-0001-confidence-tiers.md`](./doc/adr/ADR-0001-confidence-tiers.md) is **normative** for all `.ag` scenarios in this repo. Forthcoming milestones of issue #173 replace the raw-threshold gradient above with `tier("<agent_name>")` branches.
+- **Gate behaviour on tiers, not raw thresholds.** Call `tier("<agent_name>")` (agentis-core builtin) and compare against one of the five name strings; never inline `confidence >= 0.X` literals. `colony-lint` enforces this.
+- The four-tier confidence contract defined in [`doc/adr/ADR-0001-confidence-tiers.md`](./doc/adr/ADR-0001-confidence-tiers.md) is **normative** for every `.ag` scenario in this repo.
+
+  | Tier           | Range         | Behaviour |
+  |----------------|---------------|-----------|
+  | `shadow`       | `[0.4, 0.6)`  | LLM + memo, no emit, no external write |
+  | `propose`      | `[0.6, 0.8)`  | + emit on bus + draft external writes |
+  | `review-gated` | `[0.8, 0.95)` | + direct external writes (non-terminal) |
+  | `autonomous`   | `[0.95, 1.0]` | + terminal writes (merge, tag, publish) |
+
+  Below `0.4` = `dormant`. The runtime also returns `"dormant"` when the memo is missing, so authors must handle it (typically collapsed into the `shadow` branch).
+
+  Canonical pattern (one `tier()` call per tick, branch once, fall through to `shadow`/`dormant`):
+
+  ```
+  fn tick(rec: string) -> void {
+      let my_tier = tier("style_reviewer");
+      if my_tier == "autonomous" {
+          // direct external write + learn(..., tags=[..., "acted"])
+      } else if my_tier == "review-gated" {
+          // draft external write pending approval + learn(..., tags=[..., "review-gated"])
+      } else if my_tier == "propose" {
+          // emit on bus + learn(..., tags=[..., "emitted"])
+      } else {
+          // shadow / dormant: observe only + learn(..., tags=[..., "observed"])
+      }
+  }
+  ```
+
+- `get_confidence()` reads from `recall_latest("<agent_name>:confidence")`. Use it for diagnostics or logging — not for branching.
 - `learn()` topic must match the topic in `recommend()` within the same agent.
 - `memo_write("<agent_name>:last_check", now)` at the end of every tick.
 - All dynamic values in `exec sh` calls must be wrapped in `shell_escape()`.
