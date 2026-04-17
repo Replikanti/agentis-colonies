@@ -36,6 +36,7 @@ colony-name/
 - `cb <N>;` at the top must match the `cb_budget` in colony.example.toml.
 - `get_confidence()` reads from `recall_latest("<agent_name>:confidence")`.
 - Confidence gradient: < 0.6 observe only, >= 0.6 emit suggestions, >= 0.85 act autonomously.
+- The four-tier confidence contract (`shadow` / `propose` / `review-gated` / `autonomous`) defined in [`doc/adr/ADR-0001-confidence-tiers.md`](./doc/adr/ADR-0001-confidence-tiers.md) is **normative** for all `.ag` scenarios in this repo. Forthcoming milestones of issue #173 replace the raw-threshold gradient above with `tier("<agent_name>")` branches.
 - `learn()` topic must match the topic in `recommend()` within the same agent.
 - `memo_write("<agent_name>:last_check", now)` at the end of every tick.
 - All dynamic values in `exec sh` calls must be wrapped in `shell_escape()`.
