@@ -12,11 +12,18 @@ promote:
     reject_rate_threshold: 0.05  # reject_rate must be < 5%
     delta_slope_window: 100      # compute slope over last N entries
     delta_slope_min: 0           # average delta must be non-negative
+  # Three-step ladder aligned with the four-tier confidence contract
+  # (ADR-0001, issue #177). Each step promotes the agent across one
+  # behavioural tier boundary: shadow -> propose -> review-gated ->
+  # autonomous. Numeric anchors match the tier lower bounds defined in
+  # ADR-0001; do not adjust independently.
   steps:
-    - from: 0.5
-      to: 0.6
-    - from: 0.6
-      to: 0.85
+    - from: 0.4   # shadow seed
+      to: 0.6     # promote to propose (emit + draft external writes)
+    - from: 0.6   # propose
+      to: 0.8     # promote to review-gated (direct non-terminal writes)
+    - from: 0.8   # review-gated
+      to: 0.95    # promote to autonomous (terminal writes)
 
 evolve:
   trigger:
