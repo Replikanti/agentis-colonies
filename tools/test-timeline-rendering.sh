@@ -249,6 +249,68 @@ else
     fail "8: unit-mismatch guard tripped (relTime call shape changed)"
 fi
 
+# --- #167: per-(agent, class) cursor key namespaced via FED_NAME suffix.
+#     Mirrors test 3 for the new selective-clear cursor. ---
+if grep -q 'dashboard.timeline.cursorClass\.' "$HTML_FILE"; then
+    pass "9: TIMELINE_CURSOR_CLASS_KEY namespaced with FED_NAME suffix"
+else
+    fail "9: TIMELINE_CURSOR_CLASS_KEY namespacing missing"
+fi
+
+# --- #167: all four timeline controls structurally present. ---
+t10_ok=1
+for id in timeline-clear-stale-btn timeline-time-mode-btn timeline-auto-hide-stale timeline-chips; do
+    if ! grep -q "id=\"$id\"" "$HTML_FILE"; then echo "  missing #$id"; t10_ok=0; fi
+done
+if [ "$t10_ok" -eq 1 ]; then
+    pass "10: #167 controls (Clear stale, Time mode, Auto-hide, chips) present"
+else
+    fail "10: one or more #167 controls missing"
+fi
+
+# --- #167: TIMELINE_CLASSES constant lists every classified type so the
+#     chip row stays in sync with the Python classifier. ---
+if python3 - "$HTML_FILE" <<'PY' 2>/dev/null
+import sys, re
+with open(sys.argv[1]) as f:
+    html = f.read()
+m = re.search(r'TIMELINE_CLASSES\s*=\s*\[([^\]]+)\]', html)
+if not m: sys.exit(1)
+required = {'emit', 'recv', 'suggest', 'error', 'action', 'finding'}
+present = set(re.findall(r"'([a-z]+)'", m.group(1)))
+sys.exit(0 if required.issubset(present) else 1)
+PY
+then
+    pass "11: TIMELINE_CLASSES enumerates all six classifier outputs"
+else
+    fail "11: TIMELINE_CLASSES missing one or more classifier types"
+fi
+
+# --- #167: server-side per-agent agent_last_ok_ts field is emitted in the
+#     embedded agents JSON. The fixture's stub_agent.log has two non-error
+#     lines (raw-ms emit + corrupted action), so the field MUST be > 0 for
+#     the stub-colony agent. Locate the agents=[...] payload and parse. ---
+if python3 - "$HTML_FILE" <<'PY' 2>/dev/null
+import sys, re, json
+with open(sys.argv[1]) as f:
+    html = f.read()
+m = re.search(r'const data\s*=\s*(\{.*?\});\n', html, re.DOTALL)
+if not m: sys.exit(1)
+data = json.loads(m.group(1))
+stub = next((a for a in data.get('agents', []) if a.get('name') == 'stub_agent'), None)
+if not stub: sys.exit(1)
+# Field MUST be present (always-emitted contract).
+if 'agent_last_ok_ts' not in stub: sys.exit(1)
+# Fixture has a raw-ms emit line (1776250011452); last-ok must reflect it.
+if stub['agent_last_ok_ts'] != 1776250011452: sys.exit(1)
+sys.exit(0)
+PY
+then
+    pass "12: agent_last_ok_ts emitted per agent and reflects newest non-error ts"
+else
+    fail "12: agent_last_ok_ts missing or wrong"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

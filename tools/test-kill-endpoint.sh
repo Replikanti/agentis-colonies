@@ -109,7 +109,7 @@ PY
 then
     pass "2: POST /kill returns documented JSON keys, exit 0 on empty fixture"
 else
-    fail "2: /kill JSON shape" "body: $(cat "$RESP_FILE" 2>/dev/null | head -c 400)"
+    fail "2: /kill JSON shape" "body: $(head -c 400 "$RESP_FILE" 2>/dev/null)"
 fi
 
 # --- Test 3: GET /  HTML contains 'Kill Federation' label + new
@@ -166,7 +166,7 @@ then
         fail "4: no_backup honoured" "backup_count=$backup_count (expected 0)"
     fi
 else
-    fail "4: /kill no_backup response" "body: $(cat "$RESP2_FILE" 2>/dev/null | head -c 400)"
+    fail "4: /kill no_backup response" "body: $(head -c 400 "$RESP2_FILE" 2>/dev/null)"
 fi
 
 # --- Test 5: Server still healthy after both POSTs (200 on /). ---

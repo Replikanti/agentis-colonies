@@ -184,6 +184,7 @@ for agent in all_agents:
         'recent_experience': [], 'recent_logs': [],
         'source': '',
         'confidence_gates': [], 'confidence_cap': None,
+        'agent_last_ok_ts': 0,
     }
 
     if daemon:
@@ -323,6 +324,11 @@ colony_exp['total'] = total_exp
 
 # --- Event timeline from log files ---
 events = []
+# #167: per-role epoch-ms of the most recent log line that classified as
+# anything other than `error`. Drives the dashboard's "stale errors"
+# auto-hide (errors from agents whose last_ok_ts > 1h ago are filtered
+# out of the timeline so they don't drown out actively failing agents).
+last_ok_ts_by_role = {}
 if os.path.isdir(log_dir):
     try:
         for fn in sorted(os.listdir(log_dir)):
@@ -334,7 +340,11 @@ if os.path.isdir(log_dir):
             try:
                 with open(fpath) as f:
                     lines = f.readlines()
-                for line in lines[-30:]:
+                # #167: widen from 30 to 100 lines so `last_ok_ts_by_role`
+                # has enough history to detect "agent has ticked cleanly
+                # in the last hour" — at 60s tick interval that's ~100
+                # ticks of headroom, comfortably beyond the 1h window.
+                for line in lines[-100:]:
                     line = line.strip()
                     if not line:
                         continue
@@ -378,6 +388,13 @@ if os.path.isdir(log_dir):
                         etype = 'action'
                     elif re.search(r'\bfinding', cl):
                         etype = 'finding'
+                    # #167: track the most recent non-error timestamp per
+                    # role. Includes `log` (plain tick lines) — a clean
+                    # tick is exactly what "ticking cleanly" means.
+                    if etype != 'error' and ts > 0:
+                        prev = last_ok_ts_by_role.get(role, 0)
+                        if ts > prev:
+                            last_ok_ts_by_role[role] = ts
                     # Only include interesting events in timeline
                     if etype != 'log':
                         events.append({
@@ -394,6 +411,20 @@ if os.path.isdir(log_dir):
 # with ts == 0 (unparseable) sort to the end.
 events.sort(key=lambda e: e.get('ts', 0), reverse=True)
 events = events[:100]
+
+# #167: stamp `agent_last_ok_ts` on each agent record from the per-role
+# tracking above. Defaults to 0 when no parseable non-error line was
+# seen — the client-side "stale errors" filter treats 0 as "unknown,
+# do not auto-hide" so silent agents stay visible.
+for rec in result:
+    name = rec['name']
+    # Lookup mirrors the role-resolution fallback at line ~338: when no
+    # daemon is registered (orphan log) the role becomes `aid[:8]`, so we
+    # try the truncated form too.
+    rec['agent_last_ok_ts'] = (
+        last_ok_ts_by_role.get(name) or
+        last_ok_ts_by_role.get(name[:8], 0)
+    )
 
 # --- Confidence change log ---
 conf_changes = []
@@ -653,6 +684,7 @@ HEADEOF
 
   /* --- Event Timeline --- */
   .timeline-header { display: flex; justify-content: space-between; align-items: center; }
+  .timeline-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
   .timeline-clear-btn {
     background: transparent; border: 1px solid var(--border);
     color: var(--muted); font-family: 'Share Tech Mono', monospace;
@@ -661,6 +693,39 @@ HEADEOF
     border-radius: 2px; transition: all 0.15s;
   }
   .timeline-clear-btn:hover { color: var(--text); border-color: var(--text); }
+  .timeline-toggle {
+    display: inline-flex; align-items: center; gap: 4px;
+    color: var(--muted); font-family: 'Share Tech Mono', monospace;
+    font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
+    cursor: pointer; padding: 3px 8px; border: 1px solid transparent;
+    border-radius: 2px;
+  }
+  .timeline-toggle:hover { color: var(--text); }
+  .timeline-toggle input { accent-color: var(--cyan); cursor: pointer; }
+  .timeline-chips { display: flex; gap: 4px; flex-wrap: wrap; margin: 4px 0 6px; }
+  .timeline-chip {
+    background: transparent; border: 1px solid var(--border2);
+    color: var(--muted); font-family: 'Share Tech Mono', monospace;
+    font-size: 10px; padding: 2px 8px; cursor: pointer;
+    text-transform: uppercase; letter-spacing: 1px;
+    border-radius: 10px; transition: all 0.15s;
+  }
+  .timeline-chip:hover { color: var(--text); border-color: var(--text); }
+  .timeline-chip.active { color: var(--text); border-color: var(--text); }
+  .timeline-chip.active.emit { color: var(--green); border-color: var(--green); }
+  .timeline-chip.active.recv { color: var(--yellow); border-color: var(--yellow); }
+  .timeline-chip.active.suggest { color: var(--orange); border-color: var(--orange); }
+  .timeline-chip.active.error { color: var(--red); border-color: var(--red); }
+  .timeline-chip.active.action { color: var(--cyan); border-color: var(--cyan); }
+  .timeline-chip.active.finding { color: var(--magenta); border-color: var(--magenta); }
+  .timeline-dismiss {
+    background: transparent; border: none; color: var(--muted);
+    font-family: inherit; font-size: 12px; cursor: pointer;
+    padding: 0 4px; line-height: 1; opacity: 0;
+    transition: opacity 0.15s, color 0.15s;
+  }
+  .timeline-entry:hover .timeline-dismiss { opacity: 1; }
+  .timeline-dismiss:hover { color: var(--red); }
   .timeline-banner {
     padding: 6px 10px; background: rgba(255,255,255,0.04);
     border-left: 2px solid var(--muted); font-size: 11px;
@@ -1010,8 +1075,16 @@ HEADEREOF
 <div class="card full">
 <div class="timeline-header">
   <h2>Event Timeline</h2>
-  <button class="timeline-clear-btn" id="timeline-clear-btn">Clear</button>
+  <div class="timeline-actions">
+    <label class="timeline-toggle" title="Auto-hide errors from agents that have ticked cleanly in the last hour">
+      <input type="checkbox" id="timeline-auto-hide-stale"> Auto-hide stale
+    </label>
+    <button class="timeline-clear-btn" id="timeline-time-mode-btn" title="Toggle absolute / relative timestamps">Time: ABS</button>
+    <button class="timeline-clear-btn" id="timeline-clear-stale-btn" title="Snapshot-clear errors from cleanly-ticking agents (per-(agent, error) cursor)">Clear stale</button>
+    <button class="timeline-clear-btn" id="timeline-clear-btn" title="Hide every entry older than now (per-federation cursor)">Clear all</button>
+  </div>
 </div>
+<div class="timeline-chips" id="timeline-chips"></div>
 <div class="timeline-banner" id="timeline-banner" hidden></div>
 <div id="event-timeline" class="timeline"></div>
 </div>
@@ -1087,6 +1160,38 @@ function formatTimestamp(ms) {
 }
 
 const TIMELINE_CURSOR_KEY = 'dashboard.timeline.cursorMs.' + FED_NAME;
+// #167: per-(agent, class) cursor — JSON map "<agent>:<class>" -> ms.
+// Snapshot-style: written by Clear-stale, takes precedence over the
+// blanket cursor for a specific (agent, class) pair so that targeted
+// dismissals survive even when the operator later widens visibility.
+const TIMELINE_CURSOR_CLASS_KEY = 'dashboard.timeline.cursorClass.' + FED_NAME;
+// #167: per-row dismiss set — JSON array of "<agent>:<ts>" tuples.
+const TIMELINE_DISMISSED_KEY = 'dashboard.timeline.dismissed.' + FED_NAME;
+// #167: class-filter chips — JSON array of class names that are
+// currently HIDDEN. Empty / missing means show everything.
+const TIMELINE_CLASS_FILTER_KEY = 'dashboard.timeline.classFilter.' + FED_NAME;
+// #167: timestamp display mode. 'abs' (default, ISO local) or 'rel'
+// (relative "5m ago" / "2h ago").
+const TIMELINE_TIME_MODE_KEY = 'dashboard.timeline.timeMode.' + FED_NAME;
+// #167: live auto-hide of errors from cleanly-ticking agents.
+// Default off (least-surprise upgrade from v1).
+const TIMELINE_AUTO_HIDE_STALE_KEY = 'dashboard.timeline.autoHideStale.' + FED_NAME;
+// #167: stale-error window (1 hour, matches issue spec).
+const TIMELINE_STALE_WINDOW_MS = 3600 * 1000;
+// #167: every class the timeline emits, in render order.
+const TIMELINE_CLASSES = ['emit', 'recv', 'suggest', 'error', 'action', 'finding'];
+
+function tlReadJSON(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    return parsed != null ? parsed : fallback;
+  } catch (e) { return fallback; }
+}
+function tlWriteJSON(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
+}
 
 // --- Refresh countdown ---
 (function() {
@@ -1434,23 +1539,82 @@ renderAgentTable();
 (function() {
   const el = document.getElementById('event-timeline');
   const banner = document.getElementById('timeline-banner');
+  const chipsEl = document.getElementById('timeline-chips');
+
+  // Read all five filter layers from localStorage.
   const cursor = parseInt(localStorage.getItem(TIMELINE_CURSOR_KEY) || '0', 10);
-  // Filter rule: entries with ts === 0 (no parseable timestamp) always pass
-  // through so the operator can still see them; entries with ts >= cursor
-  // pass; older entries are hidden until "Show all" is clicked.
-  const filtered = events.filter(e => !cursor || !e.ts || e.ts >= cursor);
+  const cursorClass = tlReadJSON(TIMELINE_CURSOR_CLASS_KEY, {}) || {};
+  const dismissedArr = tlReadJSON(TIMELINE_DISMISSED_KEY, []) || [];
+  const dismissed = new Set(dismissedArr);
+  const hiddenClassesArr = tlReadJSON(TIMELINE_CLASS_FILTER_KEY, []) || [];
+  const hiddenClasses = new Set(hiddenClassesArr);
+  const timeMode = (localStorage.getItem(TIMELINE_TIME_MODE_KEY) === 'rel') ? 'rel' : 'abs';
+  const autoHideStale = (localStorage.getItem(TIMELINE_AUTO_HIDE_STALE_KEY) === 'on');
+
+  // Index agents by name for O(1) `agent_last_ok_ts` lookup in the
+  // stale-error filter.
+  const agentByName = {};
+  agents.forEach(a => { agentByName[a.name] = a; });
+  const nowMs = Date.now();
+
+  // Filter rules, in order. An entry must pass ALL of them. Entries
+  // with ts === 0 (no parseable timestamp) bypass the time-based
+  // filters so the operator can still see them.
+  function visible(e) {
+    if (hiddenClasses.has(e.type)) return false;
+    if (e.ts && cursor && e.ts < cursor) return false;
+    const ckey = e.agent + ':' + e.type;
+    if (e.ts && cursorClass[ckey] && e.ts < cursorClass[ckey]) return false;
+    if (e.ts && dismissed.has(e.agent + ':' + e.ts)) return false;
+    if (autoHideStale && e.type === 'error') {
+      const a = agentByName[e.agent];
+      if (a && a.agent_last_ok_ts && (nowMs - a.agent_last_ok_ts) >= TIMELINE_STALE_WINDOW_MS) {
+        return false;
+      }
+    }
+    return true;
+  }
+  const filtered = events.filter(visible);
   const hidden = events.length - filtered.length;
+
+  // Render class-filter chips. A chip is `active` (highlighted) when
+  // its class is currently SHOWN; clicking toggles its hidden state.
+  if (chipsEl) {
+    let chipsHtml = '';
+    TIMELINE_CLASSES.forEach(cls => {
+      const isShown = !hiddenClasses.has(cls);
+      const cnt = events.filter(e => e.type === cls).length;
+      chipsHtml += '<button type="button" class="timeline-chip ' + cls +
+        (isShown ? ' active' : '') + '" data-class="' + cls + '">' +
+        cls + (cnt ? ' (' + cnt + ')' : '') + '</button>';
+    });
+    chipsEl.innerHTML = chipsHtml;
+    chipsEl.querySelectorAll('.timeline-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        const cls = chip.dataset.class;
+        const next = new Set(hiddenClasses);
+        if (next.has(cls)) next.delete(cls); else next.add(cls);
+        tlWriteJSON(TIMELINE_CLASS_FILTER_KEY, Array.from(next));
+        location.reload();
+      });
+    });
+  }
 
   if (banner) {
     if (hidden > 0) {
       banner.hidden = false;
-      banner.innerHTML = 'Hidden ' + hidden + ' entries before ' +
-        esc(formatTimestamp(cursor)) +
+      banner.innerHTML = 'Hidden ' + hidden + ' entries' +
         ' &mdash; <button type="button" class="timeline-banner-show-all" id="timeline-show-all">Show all</button>';
       const showAll = document.getElementById('timeline-show-all');
       if (showAll) {
+        // "Show all" only resets dismissal-style filters (cursor,
+        // per-(agent,class) cursor, dismissed set). Class chips,
+        // time-mode, and auto-hide are operator-set preferences and
+        // survive — they get their own controls.
         showAll.addEventListener('click', () => {
           localStorage.removeItem(TIMELINE_CURSOR_KEY);
+          localStorage.removeItem(TIMELINE_CURSOR_CLASS_KEY);
+          localStorage.removeItem(TIMELINE_DISMISSED_KEY);
           location.reload();
         });
       }
@@ -1465,7 +1629,12 @@ renderAgentTable();
   } else {
     let html = '';
     filtered.forEach(e => {
-      const tsDisplay = formatTimestamp(e.ts) || '?';
+      let tsDisplay;
+      if (timeMode === 'rel' && e.ts) {
+        tsDisplay = relTime(e.ts / 1000);
+      } else {
+        tsDisplay = formatTimestamp(e.ts) || '?';
+      }
       let tip;
       if (e.ts) {
         try { tip = new Date(e.ts).toISOString() + '\n' + relTime(e.ts / 1000); }
@@ -1473,6 +1642,11 @@ renderAgentTable();
       } else {
         tip = 'no timestamp parsed from log line';
       }
+      const tsAttr = String(e.ts || 0);
+      const dismissData = e.ts ? (' data-agent="' + esc(e.agent) + '" data-ts="' + tsAttr + '"') : '';
+      const dismissBtn = e.ts
+        ? '<button type="button" class="timeline-dismiss" title="Dismiss this row"' + dismissData + '>&times;</button>'
+        : '';
       html += '<div class="timeline-entry">' +
         '<span class="timeline-ts tooltip">' + esc(tsDisplay) +
           '<span class="tip-text">' + esc(tip) + '</span>' +
@@ -1480,18 +1654,84 @@ renderAgentTable();
         '<span class="timeline-agent">' + esc(e.agent) + '</span>' +
         '<span class="timeline-type ' + e.type + '">' + esc(e.type) + '</span>' +
         '<span class="timeline-content">' + esc(e.content) + '</span>' +
+        dismissBtn +
         '</div>';
     });
     el.innerHTML = html;
+    // Wire per-row dismiss × buttons.
+    el.querySelectorAll('.timeline-dismiss').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const agent = btn.dataset.agent;
+        const ts = btn.dataset.ts;
+        if (!agent || !ts) return;
+        const cur = tlReadJSON(TIMELINE_DISMISSED_KEY, []) || [];
+        const set = new Set(cur);
+        set.add(agent + ':' + ts);
+        // Keep the list bounded to 500 to avoid unbounded localStorage
+        // growth; oldest (insertion order) drop first.
+        const arr = Array.from(set);
+        if (arr.length > 500) arr.splice(0, arr.length - 500);
+        tlWriteJSON(TIMELINE_DISMISSED_KEY, arr);
+        location.reload();
+      });
+    });
   }
 
-  // Wire Clear: stamp the cursor at "now" and reload (the dashboard's
-  // existing meta-refresh idiom — see <meta http-equiv="refresh"> at top).
+  // Wire "Clear all" — blanket cursor stamp at "now".
   const clearBtn = document.getElementById('timeline-clear-btn');
   if (clearBtn) {
-    // TODO(#167): selective-clear in v2 — see issue
     clearBtn.addEventListener('click', () => {
       localStorage.setItem(TIMELINE_CURSOR_KEY, String(Date.now()));
+      location.reload();
+    });
+  }
+
+  // Wire "Clear stale" — for each (agent, error) pair currently
+  // visible whose agent has ticked cleanly in the last hour, snapshot
+  // a per-(agent, error) cursor at "now". Snapshot semantics so that
+  // operators get reproducible behaviour even if they later disable
+  // auto-hide.
+  const clearStaleBtn = document.getElementById('timeline-clear-stale-btn');
+  if (clearStaleBtn) {
+    clearStaleBtn.addEventListener('click', () => {
+      const map = tlReadJSON(TIMELINE_CURSOR_CLASS_KEY, {}) || {};
+      const stamp = Date.now();
+      let changed = 0;
+      events.forEach(e => {
+        if (e.type !== 'error') return;
+        const a = agentByName[e.agent];
+        if (!a || !a.agent_last_ok_ts) return;
+        if ((stamp - a.agent_last_ok_ts) >= TIMELINE_STALE_WINDOW_MS) return;
+        const k = e.agent + ':error';
+        if (!map[k] || map[k] < stamp) {
+          map[k] = stamp;
+          changed += 1;
+        }
+      });
+      if (changed > 0) {
+        tlWriteJSON(TIMELINE_CURSOR_CLASS_KEY, map);
+      }
+      location.reload();
+    });
+  }
+
+  // Wire time-mode toggle — flips ABS / REL and persists.
+  const timeModeBtn = document.getElementById('timeline-time-mode-btn');
+  if (timeModeBtn) {
+    timeModeBtn.textContent = 'Time: ' + (timeMode === 'rel' ? 'REL' : 'ABS');
+    timeModeBtn.addEventListener('click', () => {
+      const next = (timeMode === 'rel') ? 'abs' : 'rel';
+      localStorage.setItem(TIMELINE_TIME_MODE_KEY, next);
+      location.reload();
+    });
+  }
+
+  // Wire auto-hide-stale toggle — live filter, no snapshot.
+  const autoHideBox = document.getElementById('timeline-auto-hide-stale');
+  if (autoHideBox) {
+    autoHideBox.checked = autoHideStale;
+    autoHideBox.addEventListener('change', () => {
+      localStorage.setItem(TIMELINE_AUTO_HIDE_STALE_KEY, autoHideBox.checked ? 'on' : 'off');
       location.reload();
     });
   }
