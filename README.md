@@ -59,6 +59,10 @@ graph TD
 
 When you need to reliably stop a federation — agents, dashboard, registry sidecar files, with a backup tarball before cleanup — use [`tools/kill-federation.sh`](./tools/kill-federation.sh) (or its per-federation wrapper, e.g. `dev-apprenticeship/kill-federation.sh`). It bypasses the `agentis` CLI and uses OS signals with post-kill verification, so it works even when `agentis daemon stop --all` reports false success or false failure. Run with `--help` for options including `--dry-run` and `--json`.
 
+## Design decisions
+
+Normative design decisions for this repository are recorded as Architecture Decision Records under [`doc/adr/`](./doc/adr/README.md). External authors of `.ag` federations should treat the ADRs as the source of truth for cross-repo contracts such as the confidence-tier ladder.
+
 ## License
 
 Apache 2.0. See [LICENSE](./LICENSE).
