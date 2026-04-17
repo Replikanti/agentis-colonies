@@ -59,6 +59,19 @@ graph TD
 
 When you need to reliably stop a federation — agents, dashboard, registry sidecar files, with a backup tarball before cleanup — use [`tools/kill-federation.sh`](./tools/kill-federation.sh) (or its per-federation wrapper, e.g. `dev-apprenticeship/kill-federation.sh`). It bypasses the `agentis` CLI and uses OS signals with post-kill verification, so it works even when `agentis daemon stop --all` reports false success or false failure. Run with `--help` for options including `--dry-run` and `--json`.
 
+## Tiers
+
+Every agent in this repo gates its behaviour on one of four named confidence tiers, not on raw numeric thresholds. Authors of `.ag` scenarios call the `tier("<agent_name>")` runtime builtin and compare against the tier name:
+
+| Tier           | Range         | What the agent may do |
+|----------------|---------------|-----------------------|
+| `shadow`       | `[0.4, 0.6)`  | LLM calls + memo writes; no emit, no external write |
+| `propose`      | `[0.6, 0.8)`  | ...plus emit on bus + draft external writes |
+| `review-gated` | `[0.8, 0.95)` | ...plus direct external writes (non-terminal) |
+| `autonomous`   | `[0.95, 1.0]` | ...plus terminal writes (merge, tag, publish) |
+
+Below `0.4` the agent is `dormant`. The full normative contract — per-tier action classes, migration rules, alternatives considered — lives in [`doc/adr/ADR-0001-confidence-tiers.md`](./doc/adr/ADR-0001-confidence-tiers.md).
+
 ## Design decisions
 
 Normative design decisions for this repository are recorded as Architecture Decision Records under [`doc/adr/`](./doc/adr/README.md). External authors of `.ag` federations should treat the ADRs as the source of truth for cross-repo contracts such as the confidence-tier ladder.
