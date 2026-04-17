@@ -118,9 +118,15 @@
   .badge-error { border: 1px solid var(--red); color: var(--red); }
   .badge-critical { border: 1px solid var(--red); color: var(--red); text-shadow: 0 0 6px rgba(255,68,68,0.4); }
   .badge-quarantine { border: 1px solid var(--magenta); color: var(--magenta); text-shadow: 0 0 6px rgba(255,0,255,0.3); }
-  .badge-observe { border: 1px solid var(--muted); color: var(--muted); }
-  .badge-suggest { border: 1px solid var(--yellow); color: var(--yellow); text-shadow: 0 0 6px rgba(255,255,0,0.3); }
-  .badge-act { border: 1px solid var(--green); color: var(--green); text-shadow: 0 0 6px rgba(0,255,0,0.3); }
+  /* #177: four-tier badge colours matching ADR-0001.
+     Each tier gets a distinct visual so operators can tell review-gated
+     (direct non-terminal writes, needs approval) and autonomous (terminal
+     writes OK) apart at a glance. dormant is below the 0.4 seed floor. */
+  .badge-dormant { border: 1px solid var(--red); color: var(--red); background: rgba(255,68,68,0.08); }
+  .badge-shadow { border: 1px solid var(--muted); color: var(--muted); }
+  .badge-propose { border: 1px solid var(--yellow); color: var(--yellow); text-shadow: 0 0 6px rgba(255,255,0,0.3); }
+  .badge-review-gated { border: 1px solid var(--orange); color: var(--orange); text-shadow: 0 0 6px rgba(255,136,0,0.3); }
+  .badge-autonomous { border: 1px solid var(--green); color: var(--green); text-shadow: 0 0 6px rgba(0,255,0,0.3); }
   .badge-na { border: 1px solid var(--muted); color: var(--muted); }
   .badge-dead { border: 1px solid var(--red); color: var(--red); background: rgba(255,68,68,0.1); }
   .agent-name { color: var(--cyan); text-shadow: 0 0 6px rgba(0,255,255,0.2); }
@@ -792,12 +798,12 @@ function renderAgentTable() {
     if (a.confidence == null) {
       confHtml = '<span class="badge badge-na">\u2014</span>';
     } else {
-      // #177: tier names from ADR-0001. CSS classes kept as act/suggest/observe
-      // for backwards compatibility with the existing stylesheet.
-      const phase = a.confidence >= 0.95 ? 'act'
-        : a.confidence >= 0.8 ? 'act'
-        : a.confidence >= 0.6 ? 'suggest'
-        : 'observe';
+      // #177: four-tier badges matching ADR-0001 — each tier distinct.
+      const phase = a.confidence >= 0.95 ? 'autonomous'
+        : a.confidence >= 0.8 ? 'review-gated'
+        : a.confidence >= 0.6 ? 'propose'
+        : a.confidence >= 0.4 ? 'shadow'
+        : 'dormant';
       confHtml = '<span class="badge badge-' + phase + '">' + a.confidence.toFixed(2) + '</span>';
       // #145: tooltip with generation + written_at
       if (a.confidence_generation != null || a.confidence_written_at) {
@@ -981,6 +987,17 @@ renderAgentTable();
     // Skip silently: no entries AND not running. Stats row already surfaces
     // these as inactive — listing them as "skipped" is just noise.
     if (f.count === 0 && a.state !== 'running') return;
+
+    // #177: unseeded confidence — skip with explicit reason rather than
+    // silently proposing "promote to propose 0.60" for an agent that
+    // doesn't even have a shadow-tier memo yet. Matches auto-promote.sh
+    // Python behaviour which skips when confidence is null.
+    if (a.confidence == null) {
+      skippedHtml += '<div class="skipped-row"><span class="agent-name">' + esc(a.name) + '</span>';
+      skippedHtml += '<span>\u2014 confidence not seeded (run install.sh or set memo)</span></div>';
+      skippedCount++;
+      return;
+    }
 
     if (!fitnessOK) {
       let reason;
@@ -1435,7 +1452,7 @@ const WHY_FIX_HINT = {
     return 'Raise the cap inside `clamp_auto` in ' + a.name + '.ag (currently ' + ev.cap.toFixed(2) + '), or use a different agent that does not clamp.';
   },
   'few-entries': function(a, ev) {
-    return 'Let the agent run longer in suggest mode \u2014 evolve needs at least 100 experience entries (currently ' + ev.count + ').';
+    return 'Let the agent run longer in its current tier \u2014 evolve needs at least 100 experience entries (currently ' + ev.count + ').';
   },
   'no-variance': function(a) {
     return 'Vary the agent\u2019s inputs or recover non-zero `delta` values from `experience` \u2014 evolve needs measurable fitness differences.';

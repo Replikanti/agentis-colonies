@@ -275,8 +275,10 @@ DAEMONS_JSON=$(cd "$FED_DIR" && agentis daemon list --json 2>/dev/null || echo "
 DAEMON_COUNT=$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(len(d))" "$DAEMONS_JSON")
 
 if [ "$DAEMON_COUNT" -eq 0 ]; then
+    # #177: no journal row for federation-down — otherwise a weekend with
+    # the federation stopped accumulates ~96 identical _system no-op rows
+    # (cron runs every 30 min). The tick log still records the no-op.
     log "Federation not running, no-op"
-    journal_append "_system" "no-op" '{"reason": "federation not running"}'
     exit 0
 fi
 
