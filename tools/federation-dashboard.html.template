@@ -709,8 +709,18 @@ const confChanges = data.confidence_changes || [];
   agents.forEach(a => { if (a.confidence != null) { sum += a.confidence; n += 1; } });
   const avgConf = n ? sum / n : 0;
   // #144: consistent NO DATA label when all agents are null
-  const phase = n === 0 ? 'NO DATA' : avgConf >= 0.85 ? 'AUTONOMOUS' : avgConf >= 0.6 ? 'SUGGEST' : 'OBSERVE';
-  const avgColor = n === 0 ? 'var(--muted)' : avgConf >= 0.85 ? 'var(--green)' : avgConf >= 0.6 ? 'var(--yellow)' : 'var(--cyan)';
+  // #177: tier names from ADR-0001 four-tier contract.
+  const phase = n === 0 ? 'NO DATA'
+    : avgConf >= 0.95 ? 'AUTONOMOUS'
+    : avgConf >= 0.8  ? 'REVIEW-GATED'
+    : avgConf >= 0.6  ? 'PROPOSE'
+    : avgConf >= 0.4  ? 'SHADOW'
+    : 'DORMANT';
+  const avgColor = n === 0 ? 'var(--muted)'
+    : avgConf >= 0.95 ? 'var(--green)'
+    : avgConf >= 0.8  ? 'var(--yellow)'
+    : avgConf >= 0.6  ? 'var(--cyan)'
+    : 'var(--muted)';
   const avgLabel = n === 0 ? '\u2014' : avgConf.toFixed(2);
   const quarantined = agents.filter(a => a.quarantine === 'yes').length;
   const deadPids = agents.filter(a => a.state === 'running' && a.pid > 0 && !a.pid_alive).length;
@@ -782,7 +792,12 @@ function renderAgentTable() {
     if (a.confidence == null) {
       confHtml = '<span class="badge badge-na">\u2014</span>';
     } else {
-      const phase = a.confidence >= 0.85 ? 'act' : a.confidence >= 0.6 ? 'suggest' : 'observe';
+      // #177: tier names from ADR-0001. CSS classes kept as act/suggest/observe
+      // for backwards compatibility with the existing stylesheet.
+      const phase = a.confidence >= 0.95 ? 'act'
+        : a.confidence >= 0.8 ? 'act'
+        : a.confidence >= 0.6 ? 'suggest'
+        : 'observe';
       confHtml = '<span class="badge badge-' + phase + '">' + a.confidence.toFixed(2) + '</span>';
       // #145: tooltip with generation + written_at
       if (a.confidence_generation != null || a.confidence_written_at) {
@@ -881,9 +896,15 @@ renderAgentTable();
 
   function estimateEta(colony, cur, hasData) {
     if (!hasData) return { text: '\u2014', color: 'var(--muted)' };
-    if (cur >= 0.85) return { text: 'AUTONOMOUS', color: 'var(--green)' };
-    const target = cur < 0.6 ? 0.6 : 0.85;
-    const label = target === 0.6 ? 'SUGGEST' : 'AUTONOMOUS';
+    // #177: four-tier ladder from ADR-0001. Target is the next-higher tier
+    // boundary; label matches the tier name reached once the boundary
+    // is crossed.
+    if (cur >= 0.95) return { text: 'AUTONOMOUS', color: 'var(--green)' };
+    let target;
+    let label;
+    if (cur < 0.6) { target = 0.6; label = 'PROPOSE'; }
+    else if (cur < 0.8) { target = 0.8; label = 'REVIEW-GATED'; }
+    else { target = 0.95; label = 'AUTONOMOUS'; }
     if (history.length < 120) return { text: 'collecting data...', color: 'var(--muted)' };
     const dayAgo = nowEpoch - 86400;
     // #143: filter stale zeros from regression — old history entries may
@@ -912,8 +933,10 @@ renderAgentTable();
     const eta = estimateEta(col, v, hasData);
     html += '<div class="phase-row"><span class="phase-colony">' + esc(col) + '</span>';
     html += '<div class="phase-bar-outer">';
-    html += '<div class="phase-marker" style="left:60%"><span class="phase-marker-label">0.6 suggest</span></div>';
-    html += '<div class="phase-marker" style="left:85%"><span class="phase-marker-label">0.85 autonomous</span></div>';
+    html += '<div class="phase-marker" style="left:40%"><span class="phase-marker-label">0.4 shadow</span></div>';
+    html += '<div class="phase-marker" style="left:60%"><span class="phase-marker-label">0.6 propose</span></div>';
+    html += '<div class="phase-marker" style="left:80%"><span class="phase-marker-label">0.8 review-gated</span></div>';
+    html += '<div class="phase-marker" style="left:95%"><span class="phase-marker-label">0.95 autonomous</span></div>';
     if (hasData) {
       html += '<div class="phase-bar-inner" style="width:' + pct + '%;background:' + color + ';box-shadow:0 0 10px ' + color + '50;color:#000">' + v.toFixed(2) + '</div>';
     } else {
@@ -936,11 +959,20 @@ renderAgentTable();
 // into a collapsed "Skipped candidates" section with the reason + Why button.
 (function() {
   const el = document.getElementById('promote-candidates');
-  const SUGGEST_TARGET = 0.85;
+  // #177: walk the four-tier ladder (shadow 0.4 -> propose 0.6 ->
+  // review-gated 0.8 -> autonomous 0.95). The candidate list proposes
+  // the next-higher tier for each agent based on its current confidence.
   let actionableHtml = '';
   let skippedHtml = '';
   let actionableCount = 0;
   let skippedCount = 0;
+
+  function nextTierTarget(cur) {
+    if (cur == null || cur < 0.6) return { value: 0.6, label: 'propose' };
+    if (cur < 0.8) return { value: 0.8, label: 'review-gated' };
+    if (cur < 0.95) return { value: 0.95, label: 'autonomous' };
+    return null;
+  }
 
   agents.forEach(a => {
     const f = computeFitness(a);
@@ -961,12 +993,21 @@ renderAgentTable();
       return;
     }
 
-    // Fitness passed — does the agent's source actually support promote-to-suggest?
-    const promoteGate = actionGate(a, 'promote', SUGGEST_TARGET);
+    const next = nextTierTarget(a.confidence);
+    if (!next) {
+      skippedHtml += '<div class="skipped-row"><span class="agent-name">' + esc(a.name) + '</span>';
+      skippedHtml += '<span>\u2014 already autonomous (no higher tier)</span></div>';
+      skippedCount++;
+      return;
+    }
+
+    // Fitness passed — does the agent's source actually support promoting
+    // across the next tier boundary?
+    const promoteGate = actionGate(a, 'promote', next.value);
     if (!promoteGate.enabled) {
       registerWhy(a.name, 'rec-promote', promoteGate);
       skippedHtml += '<div class="skipped-row"><span class="agent-name">' + esc(a.name) + '</span>';
-      skippedHtml += '<span>\u2014 promote to ' + SUGGEST_TARGET.toFixed(2) + ' would be a no-op</span>';
+      skippedHtml += '<span>\u2014 promote to ' + next.label + ' (' + next.value.toFixed(2) + ') would be a no-op</span>';
       skippedHtml += '<span class="skipped-info" onclick="showWhy(\'' + esc(a.name) + '\',\'rec-promote\')">why?</span></div>';
       skippedCount++;
       return;
@@ -978,7 +1019,7 @@ renderAgentTable();
     actionableHtml += f.count + ' entries, ' + Math.round(f.successRate * 100) + '% success, ';
     actionableHtml += (f.slope >= 0 ? '+' : '') + f.slope.toFixed(3) + ' slope';
     if (a.confidence != null) actionableHtml += ', on ' + a.confidence.toFixed(2);
-    actionableHtml += ' <span class="promote-suggest">\u2192 suggest ' + SUGGEST_TARGET.toFixed(2) + '</span>';
+    actionableHtml += ' <span class="promote-suggest">\u2192 ' + next.label + ' ' + next.value.toFixed(2) + '</span>';
     actionableHtml += '</div>';
   });
 
@@ -1246,11 +1287,15 @@ renderAgentTable();
     svg += '<line x1="'+PAD+'" y1="'+y+'" x2="'+W+'" y2="'+y+'" stroke="rgba(0,255,255,0.06)" />';
     svg += '<text x="'+(PAD-4)+'" y="'+(y+3)+'" fill="var(--muted)" font-family="Share Tech Mono,monospace" font-size="8" text-anchor="end">'+label+'</text>';
   }
-  // Phase markers
-  const suggestY = 10+(H-10)*(1-0.6);
-  const actY = 10+(H-10)*(1-0.85);
-  svg += '<line x1="'+PAD+'" y1="'+suggestY+'" x2="'+W+'" y2="'+suggestY+'" stroke="rgba(255,255,0,0.15)" stroke-dasharray="4,4" />';
-  svg += '<line x1="'+PAD+'" y1="'+actY+'" x2="'+W+'" y2="'+actY+'" stroke="rgba(0,255,0,0.15)" stroke-dasharray="4,4" />';
+  // Phase markers — #177: four tier boundaries from ADR-0001.
+  const shadowY = 10+(H-10)*(1-0.4);
+  const proposeY = 10+(H-10)*(1-0.6);
+  const reviewY = 10+(H-10)*(1-0.8);
+  const autoY = 10+(H-10)*(1-0.95);
+  svg += '<line x1="'+PAD+'" y1="'+shadowY+'" x2="'+W+'" y2="'+shadowY+'" stroke="rgba(0,255,255,0.10)" stroke-dasharray="2,4" />';
+  svg += '<line x1="'+PAD+'" y1="'+proposeY+'" x2="'+W+'" y2="'+proposeY+'" stroke="rgba(255,255,0,0.15)" stroke-dasharray="4,4" />';
+  svg += '<line x1="'+PAD+'" y1="'+reviewY+'" x2="'+W+'" y2="'+reviewY+'" stroke="rgba(255,170,0,0.15)" stroke-dasharray="4,4" />';
+  svg += '<line x1="'+PAD+'" y1="'+autoY+'" x2="'+W+'" y2="'+autoY+'" stroke="rgba(0,255,0,0.15)" stroke-dasharray="4,4" />';
   svg += '<line x1="'+PAD+'" y1="'+H+'" x2="'+W+'" y2="'+H+'" stroke="var(--border)" />';
   svg += '<text x="'+PAD+'" y="'+(H+14)+'" fill="var(--muted)" font-family="Share Tech Mono,monospace" font-size="9">'+new Date(tMin*1000).toLocaleDateString()+'</text>';
   svg += '<text x="'+W+'" y="'+(H+14)+'" fill="var(--muted)" font-family="Share Tech Mono,monospace" font-size="9" text-anchor="end">'+new Date(tMax*1000).toLocaleDateString()+'</text>';
@@ -1322,7 +1367,7 @@ function actionGate(a, type, target) {
       const dirWord = type === 'promote' ? 'Promoting' : 'Demoting';
       return {
         enabled: false, ruleType: 'no-branch',
-        reason: dirWord + ' to ' + target.toFixed(2) + ' would not cross any `if confidence >= X` gate in ' + a.name + '.ag — agent stays in the same behavioural tier.',
+        reason: dirWord + ' to ' + target.toFixed(2) + ' would not cross any tier() branch in ' + a.name + '.ag — agent stays in the same behavioural tier.',
         evidence: { gates: gates, current: cur, target: target, tier: curTier }
       };
     }
@@ -1379,8 +1424,12 @@ function actionGate(a, type, target) {
 const WHY_FIX_HINT = {
   'no-branch': function(a, ev) {
     const existing = (ev.gates && ev.gates.length) ? ev.gates.map(g => g.toFixed(2)).join(', ') : 'none';
-    return 'Add `if confidence >= ' + ev.target.toFixed(2) + ' { ... }` branch to ' +
-      a.name + '.ag (current gates: ' + existing + ') and respawn the daemon.';
+    // #177: migrated agents branch on tier("...") == "<tier>". Point the
+    // operator at the canonical pattern rather than the legacy raw literal.
+    const TIER_FOR = { 0.4: 'shadow', 0.6: 'propose', 0.8: 'review-gated', 0.95: 'autonomous' };
+    const tierName = TIER_FOR[ev.target] || 'tier for ' + ev.target.toFixed(2);
+    return 'Add `my_tier == "' + tierName + '"` branch to ' +
+      a.name + '.ag (current tier gates: ' + existing + ') and respawn the daemon.';
   },
   'capped': function(a, ev) {
     return 'Raise the cap inside `clamp_auto` in ' + a.name + '.ag (currently ' + ev.cap.toFixed(2) + '), or use a different agent that does not clamp.';
@@ -1395,7 +1444,7 @@ const WHY_FIX_HINT = {
     return 'Wait for fitness signal to move, or accept the plateau \u2014 evolve cannot improve a flat surface.';
   },
   'no-step': function() {
-    return 'No further confidence step in this direction. Confidence steps are 0.5 / 0.6 / 0.85.';
+    return 'No further confidence step in this direction. Tier steps are shadow 0.4 / propose 0.6 / review-gated 0.8 / autonomous 0.95.';
   }
 };
 
@@ -1502,8 +1551,14 @@ function openDetail(agentName) {
     const tMin=confPts[0].t, tMax=confPts[confPts.length-1].t, tR=Math.max(tMax-tMin,1);
     let svg = '<svg width="100%" viewBox="0 0 '+W+' '+H+'">';
     svg += '<line x1="'+PAD+'" y1="'+(H-5)+'" x2="'+W+'" y2="'+(H-5)+'" stroke="var(--border)" />';
-    const sY=10+(H-15)*(1-0.6), aY=10+(H-15)*(1-0.85);
-    svg += '<line x1="'+PAD+'" y1="'+sY+'" x2="'+W+'" y2="'+sY+'" stroke="rgba(255,255,0,0.2)" stroke-dasharray="3,3" />';
+    // #177: four-tier boundaries from ADR-0001 (shadow / propose / review-gated / autonomous).
+    const shY=10+(H-15)*(1-0.4);
+    const pY=10+(H-15)*(1-0.6);
+    const rY=10+(H-15)*(1-0.8);
+    const aY=10+(H-15)*(1-0.95);
+    svg += '<line x1="'+PAD+'" y1="'+shY+'" x2="'+W+'" y2="'+shY+'" stroke="rgba(0,255,255,0.15)" stroke-dasharray="2,3" />';
+    svg += '<line x1="'+PAD+'" y1="'+pY+'" x2="'+W+'" y2="'+pY+'" stroke="rgba(255,255,0,0.2)" stroke-dasharray="3,3" />';
+    svg += '<line x1="'+PAD+'" y1="'+rY+'" x2="'+W+'" y2="'+rY+'" stroke="rgba(255,170,0,0.2)" stroke-dasharray="3,3" />';
     svg += '<line x1="'+PAD+'" y1="'+aY+'" x2="'+W+'" y2="'+aY+'" stroke="rgba(0,255,0,0.2)" stroke-dasharray="3,3" />';
     const points = confPts.map(h => {
       const x = PAD+((h.t-tMin)/tR)*(W-PAD);
@@ -1649,7 +1704,9 @@ document.getElementById('detail-modal').addEventListener('click', function(e) {
 });
 
 // --- Confidence set with auto-restart (#137 Option 2) ---
-const CONF_STEPS = [0.5, 0.6, 0.85];
+// #177: four-tier ladder from ADR-0001. Steps walk shadow -> propose ->
+// review-gated -> autonomous boundaries.
+const CONF_STEPS = [0.4, 0.6, 0.8, 0.95];
 function nextStep(cur, dir) {
   let idx = 0, best = Math.abs(cur - CONF_STEPS[0]);
   for (let i = 1; i < CONF_STEPS.length; i++) {
@@ -1662,8 +1719,11 @@ function nextStep(cur, dir) {
 }
 
 function setConfidence(agent, value) {
-  if (value >= 0.85) {
-    if (!confirm('Promote ' + agent + ' to ' + value.toFixed(2) + ' (AUTONOMOUS)?\n\nAt this level the agent will act directly on GitLab \u2014 posting comments, applying labels, opening MRs, approving reviews. Proceed?')) {
+  // #177: confirm only at the autonomous boundary (terminal writes such
+  // as merge / tag / publish). Review-gated (0.8) still allows direct
+  // non-terminal writes, which are individually auditable.
+  if (value >= 0.95) {
+    if (!confirm('Promote ' + agent + ' to ' + value.toFixed(2) + ' (AUTONOMOUS)?\n\nAt this level the agent will perform terminal writes on GitLab \u2014 merging MRs, tagging releases, publishing. Proceed?')) {
       return;
     }
   }
