@@ -19,7 +19,7 @@ ALL_AGENTS=(
     code_writer test_writer refactorer commit_composer
     ship_decider changelog_writer version_bumper release_checker
 )
-MIN_VERSION="1.3.0"
+MIN_VERSION="1.4.0"
 
 # --- Helpers ---
 
@@ -116,7 +116,7 @@ AGENTIS_VERSION=$(agentis --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9
 info "agentis version: $AGENTIS_VERSION (minimum: $MIN_VERSION)"
 
 if ! version_gte "$AGENTIS_VERSION" "$MIN_VERSION"; then
-    fail "agentis >= $MIN_VERSION required (#530 idle-skip, #523 bounded daemon stop, #524 daemon list confidence). Please update."
+    fail "agentis >= $MIN_VERSION required (tier() builtin for four-tier confidence gating, #539). Please update."
     exit 1
 fi
 
