@@ -92,22 +92,55 @@ fn tick(reason: string) -> void {
         context
     ) -> LogicReview;
 
-    let confidence = get_confidence();
+    let my_tier = tier("logic_reviewer");
 
     if len(review.findings) > 0 {
-        emit("review:logic_findings", review);
         print("[logic_reviewer] MR", mr_iid, ":", len(review.findings), "logic findings");
 
-        if confidence >= 0.85 {
+        if my_tier == "autonomous" {
+            emit("review:logic_findings", review);
             let comment = "**Logic Review** (automated)\n\n" + review.summary;
             let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment);
             try { exec sh post_cmd; } catch e {
                 print("[logic_reviewer] Failed to post comment:", e);
             };
+            learn("logic_review", "MR " + to_string(mr_iid), review.summary, "success", ["code-review", "acted"]);
+        } else {
+            if my_tier == "review-gated" {
+                emit("review:logic_findings", review);
+                let comment = "[draft-review] **Logic Review** (automated, pending approval)\n\n" + review.summary;
+                let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment);
+                let result = try { exec sh post_cmd; } catch e {
+                    print("[logic_reviewer] Failed to post draft comment:", e);
+                    "";
+                };
+                if len(result) > 0 {
+                    memo_write("logic_reviewer:approved:" + to_string(mr_iid), "drafted");
+                    learn("logic_review", "drafted on MR " + to_string(mr_iid), review.summary, "partial", ["code-review", "review-gated"]);
+                };
+            } else {
+                if my_tier == "propose" {
+                    emit("review:logic_findings", review);
+                    learn("logic_review", "MR " + to_string(mr_iid), review.summary, "partial", ["code-review", "emitted"]);
+                } else {
+                    print("[logic_reviewer] MR", mr_iid, ": observing (tier:", my_tier, ")");
+                    learn("logic_review", "MR " + to_string(mr_iid), review.summary, "partial", ["code-review", "observed"]);
+                };
+            };
         };
     } else {
         print("[logic_reviewer] MR", mr_iid, ": clean");
-        emit("review:logic_findings", review);
+        if my_tier == "autonomous" {
+            emit("review:logic_findings", review);
+        } else {
+            if my_tier == "review-gated" {
+                emit("review:logic_findings", review);
+            } else {
+                if my_tier == "propose" {
+                    emit("review:logic_findings", review);
+                };
+            };
+        };
     };
 
     let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
