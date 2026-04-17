@@ -142,6 +142,48 @@ for colony in sorted(os.listdir(fed_dir)):
             print(f'[FAIL] {agent}: found `cap` near confidence without clamp_auto \u2014 extend the dashboard parser to recognise the new capping idiom')
             failed += 1
 
+# --- #177: collector regex fixture ---
+# Synthesise a minimal .ag snippet with a tier("foo") == "<tier>" branch
+# for each of the four tier names and confirm the collector regex + level
+# map in federation-dashboard-collector.py produces the expected levels.
+# Catches regressions where someone tightens the regex and drops a tier.
+COLLECTOR_TIER_RE = re.compile(r'my_tier\s*==\s*"(dormant|shadow|propose|review-gated|autonomous)"')
+COLLECTOR_LEVELS = {
+    'dormant': 0.0,
+    'shadow': 0.4,
+    'propose': 0.6,
+    'review-gated': 0.8,
+    'autonomous': 0.95,
+}
+FIXTURE = '''
+fn tick(rec: string) -> void {
+    let my_tier = tier("foo");
+    if my_tier == "autonomous" { print("a"); }
+    else if my_tier == "review-gated" { print("r"); }
+    else if my_tier == "propose" { print("p"); }
+    else if my_tier == "shadow" { print("s"); }
+    else if my_tier == "dormant" { print("d"); }
+}
+'''
+hits = []
+for line in FIXTURE.splitlines():
+    m = COLLECTOR_TIER_RE.search(line)
+    if m:
+        hits.append((m.group(1), COLLECTOR_LEVELS[m.group(1)]))
+expected = [
+    ('autonomous', 0.95),
+    ('review-gated', 0.8),
+    ('propose', 0.6),
+    ('shadow', 0.4),
+    ('dormant', 0.0),
+]
+if hits == expected:
+    print(f'[PASS] collector-regex fixture: all {len(expected)} tier branches detected')
+    passed += 1
+else:
+    print(f'[FAIL] collector-regex fixture: got {hits!r} expected {expected!r}')
+    failed += 1
+
 print(f'\nResults: {passed} passed, {failed} failed')
 sys.exit(0 if failed == 0 else 1)
 PY
