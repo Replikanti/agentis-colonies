@@ -17,7 +17,7 @@ Pre-built agent colonies for the [Agentis](https://github.com/Replikanti/agentis
 bash -n scripts/gitlab-api.sh   # Bash syntax check on any script
 ```
 
-Colony lint must pass with 0 failures before merge. Current baseline: 50 passed, 5 skipped (shellcheck not installed).
+Colony lint must pass with 0 failures before merge. Current CI baseline: 38 passed, 0 failed, 1 skipped (agentis binary not installed on runners). Local runs add ~42 per-agent `.ag` syntax + tier-branch passes when `agentis` is installed, and 5 skips when `shellcheck` is not.
 
 ## Colony structure
 
