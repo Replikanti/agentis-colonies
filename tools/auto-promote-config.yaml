@@ -1,34 +1,49 @@
 # auto-promote-config.yaml — Decision rules for auto-promote / auto-evolve
 #
-# Used by tools/auto-promote.sh. See issue #148 for rationale.
+# Used by tools/auto-promote.sh. See doc/auto-promote.md for full reference
+# (DMN decision table, per-step rationale, journal format).
 #
 # All thresholds are per-agent: the script evaluates each running agent
 # independently against these rules.
 
 promote:
   prerequisites:
-    min_entries: 200             # minimum experience entries before considering
-    min_runtime_hours: 48        # don't promote in the first 2 days
-    reject_rate_threshold: 0.05  # reject_rate must be < 5%
-    delta_slope_window: 100      # compute slope over last N entries
-    delta_slope_min: 0           # average delta must be non-negative
+    min_entries: 200               # total experience rows (any tag)
+    min_acting_entries: 60         # acting rows only — see doc/auto-promote.md#formula
+    min_runtime_hours: 48          # don't promote in the first 2 days
+    reject_rate_threshold: 0.05    # reject_rate on acting rows must be < 5%
+    delta_slope_window: 100        # compute slope over last N acting rows
+    delta_slope_min: 0             # average delta must be non-negative
   # Three-step ladder aligned with the four-tier confidence contract
   # (ADR-0001, issue #177). Each step promotes the agent across one
   # behavioural tier boundary: shadow -> propose -> review-gated ->
   # autonomous. Numeric anchors match the tier lower bounds defined in
   # ADR-0001; do not adjust independently.
+  #
+  # Per-step overrides (min_acting_entries_override) replace the global
+  # prerequisite for that step. See doc/auto-promote.md#per-step-rationale
+  # for derivation.
   steps:
     - from: 0.4   # shadow seed
       to: 0.6     # promote to propose (emit + draft external writes)
+      # Bootstrap: shadow tier has no acting branch (.ag gates acting on
+      # tier == "propose" or higher). An agent at 0.4 has acting_entries
+      # = 0 by construction, so require 0 to unblock the first promotion.
+      min_acting_entries_override: 0
     - from: 0.6   # propose
       to: 0.8     # promote to review-gated (direct non-terminal writes)
+      # Uses global min_acting_entries (60).
     - from: 0.8   # review-gated
       to: 0.95    # promote to autonomous (terminal writes)
+      # Autonomous is riskier (no review gate on direct writes). Halve
+      # the tolerable reject rate: apply rule-of-three to 0.025 instead
+      # of 0.05, giving ceil(3 / 0.025) = 120.
+      min_acting_entries_override: 120
 
 evolve:
   trigger:
-    delta_slope_negative_for: 1000  # negative slope sustained over N entries
-    reject_rate_above: 0.20         # OR reject_rate > 20%
+    delta_slope_negative_for: 1000  # negative slope on acting rows sustained over N entries
+    reject_rate_above: 0.20         # OR reject_rate on acting rows > 20%
   config:
     generations: 3
     population: 4

@@ -264,6 +264,7 @@ seed or the autonomy-or-silence reviewer pattern.
 
 - GitHub issue: Replikanti/agentis-colonies#173 (motivates this ADR)
 - `CLAUDE.md` — runtime and federation conventions for `.ag` scenarios
+- [`doc/auto-promote.md`](../auto-promote.md) — how agents move between these tiers (auto-promote / auto-evolve cron)
 
 ## Supersedes
 
