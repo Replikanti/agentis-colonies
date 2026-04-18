@@ -127,7 +127,7 @@ AGENTIS_VERSION=$(agentis --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9
 info "agentis version: $AGENTIS_VERSION (minimum: $MIN_VERSION)"
 
 if ! version_gte "$AGENTIS_VERSION" "$MIN_VERSION"; then
-    fail "agentis >= $MIN_VERSION required (tier() builtin for four-tier confidence gating #539; fitness_delta wiring from outcome #542). Please update."
+    fail "agentis >= $MIN_VERSION required (tier() builtin for four-tier confidence gating; fitness_delta wiring from the outcome argument to learn()). Please update."
     exit 1
 fi
 
