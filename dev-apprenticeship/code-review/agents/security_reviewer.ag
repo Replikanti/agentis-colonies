@@ -71,17 +71,38 @@ fn tick(reason: string) -> void {
         return;
     };
 
-    // Learn from human security-related comments
-    let notes_cmd = "$COLONY_DIR/scripts/gitlab-api.sh mr-notes " + to_string(mr_iid);
-    let notes_raw = try { exec sh notes_cmd; } catch e { "[]"; };
+    // #201: staleness gate for the human-pattern-learning prompt. The
+    // outer #147 delta-check only catches no-activity ticks; when our
+    // own review post bumps the MR updated_at, the next tick re-enters
+    // this block and re-summarizes identical notes. Gate the observe
+    // prompt on a 1800s window aligned with the #187 planning gate.
+    let now_epoch_s = try { exec sh "date -u +%s"; } catch e { ""; };
+    let last_learn = recall_latest("security_reviewer:last_pattern_learn_ts");
+    let should_learn = if len(last_learn) > 0 {
+        if len(now_epoch_s) > 0 {
+            let delta = parse_int(now_epoch_s) - parse_int(last_learn);
+            if delta >= 0 {
+                if delta < 1800 { 0; } else { 1; };
+            } else { 1; };
+        } else { 1; };
+    } else { 1; };
 
-    let human_patterns = prompt(
-        "Analyze these MR review comments. Find comments about security: injection, XSS, CSRF, auth, secrets, credentials, dependencies, permissions, input validation. Summarize. If none, return 'none'.",
-        notes_raw
-    ) -> string;
+    if should_learn == 1 {
+        // Learn from human security-related comments
+        let notes_cmd = "$COLONY_DIR/scripts/gitlab-api.sh mr-notes " + to_string(mr_iid);
+        let notes_raw = try { exec sh notes_cmd; } catch e { "[]"; };
 
-    if len(human_patterns) > 5 {
-        learn("security_review", "MR " + to_string(mr_iid), human_patterns, "success", ["observed", "code-review"]);
+        let human_patterns = prompt(
+            "Analyze these MR review comments. Find comments about security: injection, XSS, CSRF, auth, secrets, credentials, dependencies, permissions, input validation. Summarize. If none, return 'none'.",
+            notes_raw
+        ) -> string;
+
+        if len(human_patterns) > 5 {
+            learn("security_review", "MR " + to_string(mr_iid), human_patterns, "success", ["observed", "code-review"]);
+            if len(now_epoch_s) > 0 {
+                memo_write("security_reviewer:last_pattern_learn_ts", now_epoch_s);
+            };
+        };
     };
 
     // Perform security review
