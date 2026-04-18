@@ -175,7 +175,7 @@ Every cron run appends one JSON line per agent to
 
 ```json
 {
-  "ts": 1745000000,
+  "ts": 1776538800,
   "ts_iso": "2026-04-18T19:00:00Z",
   "agent": "risk_assessor",
   "decision": "skip",
