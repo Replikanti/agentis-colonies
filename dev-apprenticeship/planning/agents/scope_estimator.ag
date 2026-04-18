@@ -40,29 +40,47 @@ fn get_confidence() -> float {
 }
 
 fn tick(reason: string) -> void {
+    // Staleness gate for the observe step (#187). See risk_assessor.ag
+    // for rationale. 1 800 s = 30 min between observe prompts keeps
+    // calibration fresh without a heartbeat-LLM pathology on idle
+    // projects where the act branch rarely fires.
+    let now_epoch = try { exec sh "date -u +%s"; } catch e { ""; };
+    let last_obs = recall_latest("scope_estimator:observe_last_ts");
+    let observe_stale = if len(last_obs) > 0 {
+        if len(now_epoch) > 0 {
+            let delta = parse_int(now_epoch) - parse_int(last_obs);
+            if delta < 1800 { 0; } else { 1; };
+        } else { 1; };
+    } else { 1; };
+
     // 1. Observe: pull recent merged MRs and learn calibration
-    let merged_raw = try {
-        exec sh "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --view planning-mr";
-    } catch e {
-        print("[scope_estimator] GitLab merged-MR poll failed:", e);
-        "";
-    };
+    if observe_stale == 1 {
+        let merged_raw = try {
+            exec sh "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --view planning-mr";
+        } catch e {
+            print("[scope_estimator] GitLab merged-MR poll failed:", e);
+            "";
+        };
 
-    if len(merged_raw) > 10 {
-        let summary = prompt(
-            "Analyze these recently merged GitLab MRs. For each MR that closes an issue, compare the issue body's implied scope (phases, story points, or rough size) to the actual diff size and number of files touched. Summarize patterns (tendencies), give a rough over/under ratio hint (ratio_hint), and count the pairs you could compare (observed_pairs). Return JSON: observed_pairs (int), ratio_hint (string), tendencies (string).",
-            merged_raw
-        ) -> CalibrationSummary;
+        if len(merged_raw) > 10 {
+            let summary = prompt(
+                "Analyze these recently merged GitLab MRs. For each MR that closes an issue, compare the issue body's implied scope (phases, story points, or rough size) to the actual diff size and number of files touched. Summarize patterns (tendencies), give a rough over/under ratio hint (ratio_hint), and count the pairs you could compare (observed_pairs). Return JSON: observed_pairs (int), ratio_hint (string), tendencies (string).",
+                merged_raw
+            ) -> CalibrationSummary;
 
-        if summary.observed_pairs > 0 {
-            learn(
-                "scope_estimate",
-                "batch of " + to_string(summary.observed_pairs) + " shipped MRs",
-                "ratio: " + summary.ratio_hint + " | " + summary.tendencies,
-                "success",
-                ["observed", "planning"]
-            );
-            print("[scope_estimator] Observed", summary.observed_pairs, "shipped pairs");
+            if summary.observed_pairs > 0 {
+                learn(
+                    "scope_estimate",
+                    "batch of " + to_string(summary.observed_pairs) + " shipped MRs",
+                    "ratio: " + summary.ratio_hint + " | " + summary.tendencies,
+                    "success",
+                    ["observed", "planning"]
+                );
+                if len(now_epoch) > 0 {
+                    memo_write("scope_estimator:observe_last_ts", now_epoch);
+                };
+                print("[scope_estimator] Observed", summary.observed_pairs, "shipped pairs");
+            };
         };
     };
 
