@@ -36,6 +36,14 @@ FED_DIR=""
 DRY_RUN=0
 JSON_MODE=0
 NO_BACKUP=0
+# When set, revert the ancestor-chain walk to unconditional exclusion —
+# every ancestor is kept alive regardless of whether it matches a kill
+# pattern. Used by the dashboard /kill endpoint so the HTTP server that
+# invoked us survives long enough to flush its response. CLI callers
+# get the default (conditional exclusion) behaviour, which is what
+# colonies #188 actually requires — a stale dashboard higher up the
+# ancestor chain will be killed, freeing port 8420.
+PRESERVE_ANCESTORS=0
 # Default daemon match pattern. Narrowed from the original draft's bare
 # 'agentis' to 'agentis daemon' to avoid self-killing the running script,
 # sibling clones of agentis-colonies, the operator's editor titles, and
@@ -72,6 +80,15 @@ Options:
                      coloured prose still goes to stderr.
   --no-backup        Skip the tar.gz backup of .agentis/daemon/. Used by
                      CI / tests where the registry is fixture data.
+  --preserve-ancestors
+                     Exclude every process in this script's ancestor chain
+                     from the kill set, even if its argv matches a kill
+                     pattern or it holds the dashboard port. Used by the
+                     dashboard /kill endpoint so the HTTP server that
+                     invoked us survives long enough to flush the JSON
+                     response. CLI callers should normally NOT set this —
+                     stale dashboards in the ancestor chain will be
+                     missed (colonies #188).
   --fed-dir DIR      Federation dir (overrides positional argument). Used
                      by the dev-apprenticeship/kill-federation.sh wrapper.
 
@@ -109,6 +126,10 @@ while [ $# -gt 0 ]; do
             ;;
         --no-backup)
             NO_BACKUP=1
+            shift
+            ;;
+        --preserve-ancestors)
+            PRESERVE_ANCESTORS=1
             shift
             ;;
         --fed-dir)
@@ -212,26 +233,91 @@ AGENTIS_PIDS_NL="$(pgrep -f "$DAEMON_MATCH" 2>/dev/null | sort -u || true)"
 DASHBOARD_PIDS_NL="$(pgrep -f "$DASHBOARD_MATCH" 2>/dev/null | sort -u || true)"
 DASH_PY_PIDS_NL="$(pgrep -f "$DASH_PY_MATCH" 2>/dev/null | sort -u || true)"
 
-# Don't ever signal ourselves — exclude this script's PID, our parent
-# shell, AND our grandparent from every PID list and every pkill sweep.
-# Why all three: pgrep -f matches against the FULL command line, and
-# any test harness or wrapper that invokes us with a flag value like
+# Port-based fallback discovery (colonies #188): anything listening on the
+# dashboard's bound port is a dashboard by definition, even if its argv
+# drifted away from DASHBOARD_MATCH / DASH_PY_MATCH across commits (this
+# is what the #188 reporter observed — old leftover servers with argvs
+# that no longer matched the default regex survived a "kill federation").
+# Union the port-listener set into DASH_PY_PIDS_NL so the same filter_self
+# pass below applies uniformly.
+#
+# Uses lsof when present (universal on macOS + most Linux), falls back to
+# `ss` (iproute2, always present on modern Linux incl. Alpine). Non-root
+# may get empty pid= on some `ss` variants; that's fine — the pgrep pass
+# above is the primary mechanism.
+DASHBOARD_PORT=8420
+if command -v lsof >/dev/null 2>&1; then
+    PORT_PIDS_NL="$(lsof -iTCP:"$DASHBOARD_PORT" -sTCP:LISTEN -t 2>/dev/null | sort -u || true)"
+elif command -v ss >/dev/null 2>&1; then
+    # ss output line: LISTEN 0 128 ... users:(("python3",pid=1234,fd=5))
+    PORT_PIDS_NL="$(ss -ltnp "sport = :$DASHBOARD_PORT" 2>/dev/null \
+        | grep -oE 'pid=[0-9]+' \
+        | cut -d= -f2 \
+        | sort -u \
+        || true)"
+else
+    PORT_PIDS_NL=""
+fi
+if [ -n "$PORT_PIDS_NL" ]; then
+    DASH_PY_PIDS_NL="$(printf '%s\n%s\n' "$DASH_PY_PIDS_NL" "$PORT_PIDS_NL" \
+        | grep -v '^$' | sort -u || true)"
+fi
+
+# Don't ever signal ourselves — exclude this script's PID from every PID
+# list and every pkill sweep. We also walk our ancestor chain and exclude
+# any ancestor that is NOT itself a kill target (see _is_kill_target
+# below). Why: pgrep -f matches against the FULL command line, so any
+# test harness or wrapper that invokes us with a flag value like
 # `--match-pattern foo` will appear in pgrep results because `foo` is
-# a substring of *its own* argv. Excluding the ancestor chain prevents
-# this from killing the caller (e.g. the test runner shell, the
-# operator's terminal, a CI runner). The lifetime of these ancestors
-# is by definition longer than the script's, so they are never
-# legitimate kill targets.
+# a substring of *its own* argv. Blindly excluding the entire ancestor
+# chain prevents this from killing the caller — but it also drops
+# legitimate targets (colonies #188: the dashboard Python server
+# invoking us via /kill became our ancestor and got excluded from the
+# kill set, leaving the dashboard alive after a "kill federation"
+# request). Conditional exclusion keeps harmless ancestors (test
+# runners, CI shells) out while still killing federation ancestors.
 SELF_PID=$$
-# Walk the full parent chain back to PID 1 — pgrep -f matches the entire
-# command line of every process, and any ancestor invoking us with our
-# pattern as a flag value will appear in the results. Stop at PID 1 (init)
-# because it's never a kill target anyway.
+# Helper: decide whether a given PID is a legitimate kill target. Called
+# from the ancestor walk below to skip-exclude matching ancestors. A PID
+# is a kill target when its argv matches any of the three kill patterns,
+# OR when it holds the dashboard port (PORT_PIDS_NL).
+_is_kill_target() {
+    local pid="$1"
+    local cmd
+    cmd="$(ps -o command= -p "$pid" 2>/dev/null || echo '')"
+    if [ -n "$cmd" ]; then
+        if printf '%s\n' "$cmd" | grep -Eq -- "$DAEMON_MATCH" \
+        || printf '%s\n' "$cmd" | grep -Eq -- "$DASHBOARD_MATCH" \
+        || printf '%s\n' "$cmd" | grep -Eq -- "$DASH_PY_MATCH"; then
+            return 0
+        fi
+    fi
+    if [ -n "$PORT_PIDS_NL" ]; then
+        while IFS= read -r _pp; do
+            [ "$_pp" = "$pid" ] && return 0
+        done <<< "$PORT_PIDS_NL"
+    fi
+    return 1
+}
+# Walk the full parent chain back to PID 1. Exclude ancestors ONLY when
+# they are not themselves kill targets. Stop at PID 1 (init) — it's never
+# a kill target.
 EXCLUDE_PIDS="$SELF_PID"
 _walk_pid="$PPID"
 _walk_safety=0
 while [ -n "$_walk_pid" ] && [ "$_walk_pid" != "0" ] && [ "$_walk_pid" != "1" ] && [ "$_walk_safety" -lt 32 ]; do
-    EXCLUDE_PIDS="$EXCLUDE_PIDS $_walk_pid"
+    if [ "$PRESERVE_ANCESTORS" -eq 1 ]; then
+        # Backwards-compat mode for the dashboard /kill endpoint: the
+        # HTTP server must outlive subprocess.run so it can flush the
+        # JSON response. Exclude every ancestor unconditionally.
+        EXCLUDE_PIDS="$EXCLUDE_PIDS $_walk_pid"
+    elif _is_kill_target "$_walk_pid"; then
+        # Matching ancestor — leave it in the kill set (e.g. a stale
+        # dashboard Python server higher up the chain, colonies #188).
+        :
+    else
+        EXCLUDE_PIDS="$EXCLUDE_PIDS $_walk_pid"
+    fi
     # `ps -o ppid=` works on every POSIX ps; trim handles macOS leading spaces.
     _next_pid="$(ps -o ppid= -p "$_walk_pid" 2>/dev/null | tr -d ' ' || echo '')"
     if [ -z "$_next_pid" ] && [ "$_walk_pid" != "1" ]; then
@@ -464,24 +550,41 @@ fi
 # --- Verification ---
 step "Verification"
 
-FINAL_AGENTIS=$(count_pids "$(filter_self "$(pgrep -f "$DAEMON_MATCH" 2>/dev/null | sort -u || true)")")
-FINAL_DASH=$(count_pids "$(filter_self "$(pgrep -f "$DASHBOARD_MATCH" 2>/dev/null | sort -u || true)")")
+# Keep PID lists (not just counts) so we can include surviving_pids in
+# the --json output for callers to finish the job without re-discovery
+# (colonies #188, point 4).
+FINAL_AGENTIS_NL="$(filter_self "$(pgrep -f "$DAEMON_MATCH" 2>/dev/null | sort -u || true)")"
+FINAL_DASH_NL="$(filter_self "$(pgrep -f "$DASHBOARD_MATCH" 2>/dev/null | sort -u || true)")"
+FINAL_DASH_PY_NL="$(filter_self "$(pgrep -f "$DASH_PY_MATCH" 2>/dev/null | sort -u || true)")"
+FINAL_AGENTIS=$(count_pids "$FINAL_AGENTIS_NL")
+FINAL_DASH=$(count_pids "$FINAL_DASH_NL")
 
 # lsof is not installed everywhere (minimal containers, busybox). Try
 # `ss` (iproute2, universal on Linux including Alpine) before falling
 # back to "unknown" so the port check still works on minimal images.
+FINAL_PORT_PIDS_NL=""
 if command -v lsof >/dev/null 2>&1; then
-    FINAL_PORT=$(lsof -iTCP:8420 -sTCP:LISTEN -P 2>/dev/null | tail -n +2 | wc -l | tr -d ' ')
+    FINAL_PORT_PIDS_NL="$(lsof -iTCP:"$DASHBOARD_PORT" -sTCP:LISTEN -t 2>/dev/null | sort -u || true)"
+    FINAL_PORT=$(printf '%s\n' "$FINAL_PORT_PIDS_NL" | grep -c . || true)
     FINAL_PORT=${FINAL_PORT:-0}
 elif command -v ss >/dev/null 2>&1; then
-    # `ss -ltn 'sport = :8420'` lists only listeners on TCP port 8420 in
-    # numeric form. Header is one line; subtract it via `tail -n +2`.
-    FINAL_PORT=$(ss -ltn 'sport = :8420' 2>/dev/null | tail -n +2 | grep -c .)
+    # `ss -ltn 'sport = :<PORT>'` lists only listeners on that TCP port.
+    # Count via `grep -c .` after stripping the header line. `-ltnp`
+    # additionally exposes the `pid=<N>` field used for surviving_pids.
+    FINAL_PORT=$(ss -ltn "sport = :$DASHBOARD_PORT" 2>/dev/null | tail -n +2 | grep -c .)
     FINAL_PORT=${FINAL_PORT:-0}
+    FINAL_PORT_PIDS_NL="$(ss -ltnp "sport = :$DASHBOARD_PORT" 2>/dev/null \
+        | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u || true)"
 else
-    warn "neither lsof nor ss installed — skipping port 8420 check"
+    warn "neither lsof nor ss installed — skipping port $DASHBOARD_PORT check"
     FINAL_PORT="unknown"
 fi
+
+# Union all four survivor sources so the JSON caller (dashboard kill
+# button) has the complete list of PIDs still blocking a clean state.
+SURVIVING_PIDS_NL="$(printf '%s\n%s\n%s\n%s\n' \
+    "$FINAL_AGENTIS_NL" "$FINAL_DASH_NL" "$FINAL_DASH_PY_NL" "$FINAL_PORT_PIDS_NL" \
+    | grep -v '^$' | sort -u || true)"
 
 REGISTRY_REMAINING=0
 if [ -n "$AGENTIS_DIR" ] && [ -d "$AGENTIS_DIR/daemon" ]; then
@@ -526,8 +629,17 @@ if [ "$JSON_MODE" -eq 1 ]; then
     else
         PORT_JSON="$FINAL_PORT"
     fi
-    printf '{"dry_run":false,"agentis":%d,"dashboard":%d,"port_8420":%s,"registry_remaining":%d,"backup":%s,"exit":%d}\n' \
-        "$FINAL_AGENTIS" "$FINAL_DASH" "$PORT_JSON" "$REGISTRY_REMAINING" "$BACKUP_JSON" "$EXIT_CODE"
+    # surviving_pids: JSON array of every PID still alive across the three
+    # pgrep passes + the port listener set (colonies #188, point 4). Lets
+    # the dashboard surface "2 processes survived: [1234, 5678]" without
+    # shelling out again.
+    if [ -z "$SURVIVING_PIDS_NL" ]; then
+        SURVIVING_JSON="[]"
+    else
+        SURVIVING_JSON="[$(printf '%s' "$SURVIVING_PIDS_NL" | tr '\n' ',' | sed 's/,$//')]"
+    fi
+    printf '{"dry_run":false,"agentis":%d,"dashboard":%d,"port_8420":%s,"registry_remaining":%d,"backup":%s,"surviving_pids":%s,"exit":%d}\n' \
+        "$FINAL_AGENTIS" "$FINAL_DASH" "$PORT_JSON" "$REGISTRY_REMAINING" "$BACKUP_JSON" "$SURVIVING_JSON" "$EXIT_CODE"
 fi
 
 exit "$EXIT_CODE"

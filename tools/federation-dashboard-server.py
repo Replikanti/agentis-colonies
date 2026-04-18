@@ -742,7 +742,18 @@ class Handler(SimpleHTTPRequestHandler):
                     no_backup = bool(body.get('no_backup', False))
                 except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
                     no_backup = False
-            cmd = [kill_script, '--json', '--fed-dir', fed_dir]
+            # --preserve-ancestors: kill-federation.sh walks its parent
+            # chain and kills any ancestor that matches a kill pattern or
+            # holds the dashboard port (colonies #188). That default is
+            # correct for CLI callers but lethal here: this very server
+            # is the ancestor, and dying mid-subprocess.run prevents the
+            # JSON response from flushing. The flag reverts to
+            # unconditional ancestor exclusion so the server outlives the
+            # kill and can return exit/summary to the browser. Port
+            # freeing requires a separate CLI invocation (documented on
+            # the dashboard) — that is the /kill endpoint's contract.
+            cmd = [kill_script, '--json', '--fed-dir', fed_dir,
+                   '--preserve-ancestors']
             if no_backup:
                 cmd.append('--no-backup')
             try:
