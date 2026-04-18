@@ -105,11 +105,18 @@ agentis knowledge list
 
 # Filter by real tags this colony emits
 agentis knowledge list --tags code-review
-agentis knowledge list --tags acted         # entries from autonomous actions
-agentis knowledge list --tags emitted       # entries from suggestions
+agentis knowledge list --tags observed      # shadow-tier passive learning
+agentis knowledge list --tags emitted       # propose-tier suggestions
+agentis knowledge list --tags review-gated  # review-gated direct non-terminal writes
+agentis knowledge list --tags acted         # autonomous terminal writes
 
-# Bulk export/import (carries every entry as-is — there is no
-# "personal" tag today, so --tags personal would return [])
+# style_reviewer additionally tags its direct-write (review-gated + acted)
+# branches with `personal` or `team` based on the MR author (requires
+# `[gitlab] me = "..."` in colony.toml — see dev-apprenticeship/README.md).
+agentis knowledge list --tags personal      # style_reviewer on your MRs
+agentis knowledge list --tags team          # style_reviewer on others' MRs
+
+# Bulk export/import (carries every entry as-is)
 agentis knowledge export > review-knowledge.json
 agentis knowledge import review-knowledge.json --merge
 ```

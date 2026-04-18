@@ -66,11 +66,11 @@ Evaluated before promote. If true, emit `evolve` and skip promote check.
 `evolve_slope` is computed like `delta_slope_acting` but over a longer
 window (default 1000 acting rows).
 
-## Classification (tag buckets)
+## Classification
 
 Every row in the experience store carries a `tags` array (see the
 canonical `.ag` pattern in [CLAUDE.md](../CLAUDE.md#agent-conventions-ag-files)).
-The cron classifies each row by its tags:
+The cron classifies each row into one of three tag buckets:
 
 | Bucket | Match | Example tag set |
 |---|---|---|
