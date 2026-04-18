@@ -50,8 +50,14 @@ fn tick(reason: string) -> void {
     let last_obs = recall_latest("risk_assessor:observe_last_ts");
     let observe_stale = if len(last_obs) > 0 {
         if len(now_epoch) > 0 {
+            // Negative delta (operator ran `date -s <past>` or similar
+            // wall-clock regression) — treat as stale and re-observe
+            // rather than skipping forever on a clock that never catches
+            // up.
             let delta = parse_int(now_epoch) - parse_int(last_obs);
-            if delta < 1800 { 0; } else { 1; };
+            if delta >= 0 {
+                if delta < 1800 { 0; } else { 1; };
+            } else { 1; };
         } else { 1; };
     } else { 1; };
 
