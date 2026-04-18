@@ -218,6 +218,80 @@ else
     fail "8: backup location" "rc=$rc in_backups=$backups_count parent=$parent_pollution"
 fi
 
+# --- Test 9: ancestor matching a kill pattern is NOT excluded (colonies #188) ---
+# Regression for the bug where the dashboard /kill endpoint invoked
+# kill-federation.sh as a subprocess, making the dashboard Python server
+# an ancestor of kill-federation.sh. The unconditional ancestor-walk
+# exclusion dropped the dashboard from the kill set so the dashboard
+# survived a "kill federation" request. Build a wrapper whose argv
+# matches the configured dashboard-py pattern, invoke kill-federation.sh
+# from inside it, and verify the wrapper is signal-killed rather than
+# completing cleanly.
+FIX9="$TMPDIR_TEST/fix9"
+mkdir -p "$FIX9/.agentis/daemon"
+
+FIXTURE_TAG_9="kill-fed-test-ancestor-dashpy-$$"
+WRAPPER_SCRIPT_9="$TMPDIR_TEST/ancestor-wrapper-$$.sh"
+# Pass KILL_SH, FED_DIR, and TAG via environment rather than argv so the
+# wrapper's own argv does NOT contain "kill-federation.sh" — filter_self
+# has an independent *"$SCRIPT_BASENAME"* filter that drops any process
+# whose argv mentions the script name, which is INDEPENDENT of the
+# ancestor-walk bug under test. A real dashboard invokes us as a child
+# subprocess; its OWN argv doesn't contain "kill-federation.sh" either,
+# so using env here mirrors the real scenario faithfully.
+cat > "$WRAPPER_SCRIPT_9" <<'WRAP_EOF'
+#!/usr/bin/env bash
+# Invoked with argv0 = FIXTURE_TAG via the parent's `exec -a`. Spawns
+# kill-federation.sh pointing --dashboard-py-pattern at the tag so the
+# wrapper itself is a legitimate dashboard kill target.
+"$T9_KILL_SH" --fed-dir "$T9_FED_DIR" --no-backup \
+    --match-pattern "kill-fed-t9-no-daemon-$$" \
+    --dashboard-pattern "kill-fed-t9-no-dashboard-$$" \
+    --dashboard-py-pattern "$T9_TAG" > /dev/null 2>&1
+WRAP_EOF
+chmod +x "$WRAPPER_SCRIPT_9"
+
+# Spawn the wrapper with its argv0 rewritten to FIXTURE_TAG_9 via exec -a
+# so pgrep -f matches it against the tag.
+T9_KILL_SH="$KILL_SH" T9_FED_DIR="$FIX9" T9_TAG="$FIXTURE_TAG_9" \
+    bash -c "exec -a '$FIXTURE_TAG_9' bash '$WRAPPER_SCRIPT_9'" &
+WRAPPER_PID_9=$!
+SPAWNED_PIDS+=("$WRAPPER_PID_9")
+
+# kill-federation.sh takes ~4-5s (SIGTERM + 3s sleep + SIGKILL + 1s sleep
+# + verification). Poll for wrapper termination with a 20s upper bound.
+_t9_start=$(date +%s)
+while kill -0 "$WRAPPER_PID_9" 2>/dev/null; do
+    _t9_now=$(date +%s)
+    if [ $((_t9_now - _t9_start)) -gt 20 ]; then
+        break
+    fi
+    sleep 1
+done
+unset _t9_start _t9_now
+
+if kill -0 "$WRAPPER_PID_9" 2>/dev/null; then
+    fail "9: ancestor-pattern-match" "wrapper PID $WRAPPER_PID_9 still alive after kill-federation.sh window"
+    kill -KILL "$WRAPPER_PID_9" 2>/dev/null || true
+    set +e
+    wait "$WRAPPER_PID_9" 2>/dev/null
+    set -e
+else
+    # Wrapper dead — distinguish "signal-killed" from "clean exit". A
+    # clean exit (rc < 128) means kill-federation.sh excluded the
+    # wrapper from its kill set and the wrapper completed via its
+    # synchronous subprocess call returning → bug still present.
+    set +e
+    wait "$WRAPPER_PID_9" 2>/dev/null
+    rc9=$?
+    set -e
+    if [ "$rc9" -ge 128 ]; then
+        pass "9: ancestor matching dashboard-py pattern is signal-killed (rc=$rc9)"
+    else
+        fail "9: ancestor-pattern-match" "wrapper exited clean (rc=$rc9) — fix did not kill it"
+    fi
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
