@@ -129,7 +129,7 @@ for itself and for evolution, and nothing else.
 - **MAY:** perform LLM calls; write memos, including experience
   records tagged `observed`; read the bus.
 - **MUST NOT:** emit on the bus; perform any external write, draft
-  or direct; call `learn(..., tags=["emitted"|"acted"])`.
+  or direct; call `learn(..., tags=["emitted"|"review-gated"|"acted"])`.
 
 ### `propose` — `[0.6, 0.8)`
 
@@ -151,7 +151,7 @@ gate.
 
 - **MAY:** everything allowed at `propose`; create **direct**
   external writes (post a real review comment, open a non-draft MR,
-  publish a non-tag artefact); call `learn(..., tags=["acted"])`.
+  publish a non-tag artefact); call `learn(..., tags=["review-gated"])`.
 - **MUST NOT:** take any action that is terminal for a release
   artefact without a separate approver — specifically: merging an
   MR, pushing a release tag, promoting a package in the registry,
@@ -165,7 +165,7 @@ act as the final authority for its action class.
 
 - **MAY:** everything allowed at `review-gated`; perform terminal
   external writes (merge, tag, publish, rotate); act without a
-  second gate.
+  second gate; call `learn(..., tags=["acted"])`.
 - **MUST NOT:** escalate beyond its own action class — an
   autonomous code-review agent does not thereby acquire release
   authority. Tier is per topic, not per colony.
@@ -225,11 +225,16 @@ drifting from the ADR. The canonical way to gate behaviour is
 - Evolution gains a usable gradient in `[0.4, 0.6)` because agents
   in `shadow` emit experience records without acting.
 - The `learn(..., tags=...)` vocabulary acquires a concrete meaning:
-  `observed` at `shadow`, `emitted` at `propose`, `acted` at
-  `review-gated` and above.
+  `observed` at `shadow`, `emitted` at `propose`, `review-gated` at
+  `review-gated`, `acted` at `autonomous`. The authoritative
+  classification table consumed by the auto-promote heuristic
+  (acting vs. observe buckets) lives in
+  [`doc/auto-promote.md`](../auto-promote.md#classification); this
+  ADR governs the emission side, that document governs the
+  consumption side.
 - Downstream retrieval heuristics SHOULD prefer records tagged
-  `acted` for action recommendations and records tagged
-  `observed`/`emitted` for context-building.
+  `acted` or `review-gated` for action recommendations and records
+  tagged `observed`/`emitted` for context-building.
 
 ## Alternatives considered
 

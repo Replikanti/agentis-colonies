@@ -254,9 +254,9 @@ Cross-colony wiring: Triage routes issues to Implementation. Implementation sign
 
 ## Knowledge portability
 
-Every `learn()` call in the federation's agents tags entries with one of `observed` (shadow tier: passive learning from GitLab activity), `emitted` (propose tier: suggestion logged with draft external write), or `acted` (review-gated / autonomous tier: direct external write) plus the colony name (`triage`, `code-review`, `planning`, `implementation`, `release`).
+Every `learn()` call in the federation's agents tags entries with one of `observed` (shadow tier: passive learning from GitLab activity), `emitted` (propose tier: suggestion logged with draft external write), `review-gated` (review-gated tier: direct non-terminal external write under the review gate), or `acted` (autonomous tier: terminal external write with no second gate) plus the colony name (`triage`, `code-review`, `planning`, `implementation`, `release`). See [`doc/auto-promote.md#classification`](../doc/auto-promote.md#classification) for how the auto-promote heuristic consumes these tags.
 
-**Personal vs team (`#104`).** If you set your GitLab username during `./install.sh` (or in `colony.toml` under `[gitlab] me = "..."`), three agents (`labeler`, `prioritizer`, `style_reviewer`) additionally tag their `acted` learn calls as either `personal` (the issue/MR author matches your username) or `team` (anyone else). The remaining agents still tag only `observed|emitted|acted` + colony; widening coverage is tracked as future work. If you leave the username empty, every entry keeps the legacy `team` tag so exports stay stable.
+**Personal vs team (`#104`).** If you set your GitLab username during `./install.sh` (or in `colony.toml` under `[gitlab] me = "..."`), three agents (`labeler`, `prioritizer`, `style_reviewer`) additionally tag their `learn()` calls as either `personal` (the issue/MR author matches your username) or `team` (anyone else). `labeler` and `prioritizer` tag every tier's entries; `style_reviewer` tags only its direct-write (`review-gated` and `acted`) branches. The remaining agents still tag only the tier name + colony; widening coverage is tracked as future work. If you leave the username empty, every entry keeps the legacy `team` tag so exports stay stable.
 
 Bulk export/import is available at the runtime level and will carry all entries as-is:
 
@@ -266,7 +266,7 @@ agentis knowledge export --tags personal > my-preferences.json  # carry just you
 agentis knowledge import fed-knowledge.json --merge
 ```
 
-Filtering by `--tags observed`, `--tags emitted`, `--tags acted`, `--tags <colony>`, `--tags personal`, or `--tags team` works once the matching agents have acted at least once with the relevant author context.
+Filtering by `--tags observed`, `--tags emitted`, `--tags review-gated`, `--tags acted`, `--tags <colony>`, `--tags personal`, or `--tags team` works once the matching agents have acted at least once with the relevant author context.
 
 ## Troubleshooting
 
