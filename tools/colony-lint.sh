@@ -259,6 +259,59 @@ if [ -f "$REPO_ROOT/README.md" ]; then
     fi
 fi
 
+# --- Root CLAUDE.md check (#194) ---
+# CLAUDE.md is loaded into every Claude session and frequently links to
+# doc/ reference pages. A stale link there is a silent context leak —
+# the agent quotes a dead path as authoritative — so mirror the README
+# link check.
+if [ -f "$REPO_ROOT/CLAUDE.md" ]; then
+    claude_links_ok=true
+    while IFS= read -r link; do
+        case "$link" in
+            http://*|https://*|mailto:*|\#*|"") continue ;;
+        esac
+        target="$REPO_ROOT/$link"
+        target="${target%%#*}"
+        if [ ! -e "$target" ]; then
+            fail "CLAUDE.md: broken link: $link"
+            claude_links_ok=false
+        fi
+    done < <(grep -oP '\[.*?\]\(\K[^)]+' "$REPO_ROOT/CLAUDE.md" 2>/dev/null || true)
+    if $claude_links_ok; then
+        pass "CLAUDE.md: links OK"
+    fi
+fi
+
+# --- doc/ directory check (#194) ---
+# Reference docs under doc/ link back to other doc/ files, to tools/
+# and to agents under dev-apprenticeship/. Same check: file-relative
+# resolution, strip anchors, report broken targets.
+if [ -d "$REPO_ROOT/doc" ]; then
+    doc_links_ok=true
+    doc_files=()
+    while IFS= read -r -d '' f; do
+        doc_files+=("$f")
+    done < <(find "$REPO_ROOT/doc" -name "*.md" -print0 2>/dev/null)
+    for md in "${doc_files[@]}"; do
+        md_dir="$(dirname "$md")"
+        rel="${md#$REPO_ROOT/}"
+        while IFS= read -r link; do
+            case "$link" in
+                http://*|https://*|mailto:*|\#*|"") continue ;;
+            esac
+            target="$md_dir/$link"
+            target="${target%%#*}"
+            if [ ! -e "$target" ]; then
+                fail "$rel: broken link: $link"
+                doc_links_ok=false
+            fi
+        done < <(grep -oP '\[.*?\]\(\K[^)]+' "$md" 2>/dev/null || true)
+    done
+    if $doc_links_ok && [ ${#doc_files[@]} -gt 0 ]; then
+        pass "doc/: markdown links OK (${#doc_files[@]} files)"
+    fi
+fi
+
 # --- Agentis validation (optional) ---
 # `agentis commit` requires an .agentis/ directory in CWD, so we init a temp
 # repo once and run all commits from inside it.
