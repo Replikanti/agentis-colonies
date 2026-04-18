@@ -38,6 +38,45 @@ fn get_confidence() -> float {
     return 0.0;
 }
 
+// #200: suppress repeated refactor suggestions for the same `issue_id`
+// within a 300s cooldown window (5× the 60s tick interval).
+// Defense-in-depth: code_writer has its own (iid, updated_at) gate so
+// the bus shouldn't see dupes, but if it does we don't re-pay the LLM
+// cost. Cooldown expires so a genuine new draft for the same issue
+// after an edit eventually passes.
+fn should_handle_refactor(iid_str: string) -> bool {
+    // Malformed bus payload (missing issue_id) would otherwise collapse
+    // all drafts into the shared "void" memo slot. Skip — we have
+    // nothing to gate on.
+    if iid_str == "void" {
+        return false;
+    };
+    if len(iid_str) == 0 {
+        return false;
+    };
+    let last_iid = recall_latest("refactorer:last_handled_iid");
+    if len(last_iid) == 0 {
+        return true;
+    };
+    if iid_str != last_iid {
+        return true;
+    };
+    let last_ts_str = recall_latest("refactorer:last_handled_ts");
+    if len(last_ts_str) == 0 {
+        return true;
+    };
+    let now_str = try { exec sh "date +%s"; } catch e { ""; };
+    if len(now_str) == 0 {
+        return true;
+    };
+    let now_epoch = parse_int(now_str);
+    let last_epoch = parse_int(last_ts_str);
+    if now_epoch - last_epoch >= 300 {
+        return true;
+    };
+    return false;
+}
+
 fn tick(reason: string) -> void {
     // 1. Learn from refactoring patterns in merged MRs
     let cmd = merged_mr_cmd();
@@ -83,57 +122,69 @@ fn tick(reason: string) -> void {
     let draft_str = to_string(draft);
 
     if len(draft_str) > 5 {
-        let rec = recommend("refactor", ["accuracy"]);
-        let context = "Code draft to review: " + draft_str + "\nLearned refactoring patterns: " + to_string(rec);
-
-        let suggestion = prompt(
-            "You are a refactoring agent. A code draft has been produced for an issue. Review it against learned refactoring patterns and suggest improvements. Focus on: naming consistency, duplication, overly complex conditionals, missing error handling, extract/inline opportunities. Return JSON: issue_id (int, from the draft), suggestions (string, markdown list of specific improvements), priority (string, 'high' if structural issues or 'low' if cosmetic only), confidence (float 0-1). Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.",
-            context
-        ) -> RefactorSuggestion;
-
-        let my_tier = tier("refactorer");
-        print("[refactorer] Reviewed draft for issue", suggestion.issue_id, "(tier:", my_tier, ")");
-
-        if my_tier == "autonomous" {
-            // Generate refactored code and commit to branch.
-            // #131: read branch_name via field access on the bus-delivered
-            // record instead of stringifying + re-prompting.
-            let branch = draft.branch_name;
-            let refactor_context = "Code draft: " + draft_str + "\nSuggestions: " + suggestion.suggestions + "\nPatterns: " + to_string(rec);
-            let actions_json = prompt(
-                "You are a refactorer. Apply these refactoring suggestions to the code draft. Return a JSON array of objects, each with: action (string, 'update'), file_path (string), content (string, the refactored file content). Only return the JSON array, nothing else.",
-                refactor_context
-            ) -> string;
-            // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
-            let commit_cmd = "$COLONY_DIR/scripts/gitlab-api.sh commit-files --branch " + shell_escape(branch) + " --message " + shell_escape("refactor: apply improvements for #" + to_string(suggestion.issue_id)) + " --actions " + shell_escape(actions_json);
-            let commit_result = try { exec sh commit_cmd; } catch e {
-                print("[refactorer] Commit failed:", e);
-                "";
+        // #200: extract issue_id directly from the bus payload JSON and
+        // gate on (iid, 300s cooldown) before paying for the review LLM
+        // call. Stash the memos *before* prompt() so downstream failures
+        // don't force re-burn.
+        let incoming_iid = to_string(json_get(draft_str, "issue_id"));
+        if should_handle_refactor(incoming_iid) {
+            memo_write("refactorer:last_handled_iid", incoming_iid);
+            let ts_now = try { exec sh "date +%s"; } catch e { ""; };
+            if len(ts_now) > 0 {
+                memo_write("refactorer:last_handled_ts", ts_now);
             };
-            if len(commit_result) > 0 {
-                print("[refactorer] Committed refactoring to", branch);
-                emit("implementation:refactor_suggestions", suggestion);
-                learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "success", ["acted", "implementation"]);
-            };
-        } else {
-            if my_tier == "review-gated" {
-                // Non-terminal draft: post the refactoring suggestions as a
-                // comment on the issue so a human can approve before we
-                // commit refactored files. No commit at this tier.
-                let note = "[draft-refactor] **Refactoring Suggestions** (automated, pending approval) — priority: " + suggestion.priority + "\n\n" + suggestion.suggestions;
-                let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(suggestion.issue_id) + " --body " + shell_escape(note);
-                try { exec sh post_cmd; } catch e {
-                    print("[refactorer] Failed to post draft note:", e);
+            let rec = recommend("refactor", ["accuracy"]);
+            let context = "Code draft to review: " + draft_str + "\nLearned refactoring patterns: " + to_string(rec);
+
+            let suggestion = prompt(
+                "You are a refactoring agent. A code draft has been produced for an issue. Review it against learned refactoring patterns and suggest improvements. Focus on: naming consistency, duplication, overly complex conditionals, missing error handling, extract/inline opportunities. Return JSON: issue_id (int, from the draft), suggestions (string, markdown list of specific improvements), priority (string, 'high' if structural issues or 'low' if cosmetic only), confidence (float 0-1). Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.",
+                context
+            ) -> RefactorSuggestion;
+
+            let my_tier = tier("refactorer");
+            print("[refactorer] Reviewed draft for issue", suggestion.issue_id, "(tier:", my_tier, ")");
+
+            if my_tier == "autonomous" {
+                // Generate refactored code and commit to branch.
+                // #131: read branch_name via field access on the bus-delivered
+                // record instead of stringifying + re-prompting.
+                let branch = draft.branch_name;
+                let refactor_context = "Code draft: " + draft_str + "\nSuggestions: " + suggestion.suggestions + "\nPatterns: " + to_string(rec);
+                let actions_json = prompt(
+                    "You are a refactorer. Apply these refactoring suggestions to the code draft. Return a JSON array of objects, each with: action (string, 'update'), file_path (string), content (string, the refactored file content). Only return the JSON array, nothing else.",
+                    refactor_context
+                ) -> string;
+                // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+                let commit_cmd = "$COLONY_DIR/scripts/gitlab-api.sh commit-files --branch " + shell_escape(branch) + " --message " + shell_escape("refactor: apply improvements for #" + to_string(suggestion.issue_id)) + " --actions " + shell_escape(actions_json);
+                let commit_result = try { exec sh commit_cmd; } catch e {
+                    print("[refactorer] Commit failed:", e);
+                    "";
                 };
-                emit("implementation:refactor_suggestions", suggestion);
-                learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "partial", ["implementation", "review-gated"]);
-            } else {
-                if my_tier == "propose" {
+                if len(commit_result) > 0 {
+                    print("[refactorer] Committed refactoring to", branch);
                     emit("implementation:refactor_suggestions", suggestion);
-                    learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "partial", ["emitted", "implementation"]);
+                    learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "success", ["acted", "implementation"]);
+                };
+            } else {
+                if my_tier == "review-gated" {
+                    // Non-terminal draft: post the refactoring suggestions as a
+                    // comment on the issue so a human can approve before we
+                    // commit refactored files. No commit at this tier.
+                    let note = "[draft-refactor] **Refactoring Suggestions** (automated, pending approval) — priority: " + suggestion.priority + "\n\n" + suggestion.suggestions;
+                    let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(suggestion.issue_id) + " --body " + shell_escape(note);
+                    try { exec sh post_cmd; } catch e {
+                        print("[refactorer] Failed to post draft note:", e);
+                    };
+                    emit("implementation:refactor_suggestions", suggestion);
+                    learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "partial", ["implementation", "review-gated"]);
                 } else {
-                    print("[refactorer] Observing (tier:", my_tier, ")");
-                    learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "partial", ["observed", "implementation"]);
+                    if my_tier == "propose" {
+                        emit("implementation:refactor_suggestions", suggestion);
+                        learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "partial", ["emitted", "implementation"]);
+                    } else {
+                        print("[refactorer] Observing (tier:", my_tier, ")");
+                        learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "partial", ["observed", "implementation"]);
+                    };
                 };
             };
         };

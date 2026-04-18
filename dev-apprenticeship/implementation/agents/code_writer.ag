@@ -40,6 +40,37 @@ fn get_confidence() -> float {
     return 0.0;
 }
 
+// #200: skip the LLM draft when the top assigned issue hasn't changed
+// since our last run. `assigned-issues` has no --since filter server-side,
+// so without this gate the draft prompt re-fires every tick as long as
+// any issue remains assigned, re-paying the LLM cost for identical
+// input. Gate on (iid, updated_at) so that issue edits (title,
+// description, labels — anything that bumps updated_at) trigger a
+// fresh draft.
+fn should_draft_code(iid_str: string, upd: string) -> bool {
+    // Malformed GitLab payload (missing iid) would otherwise collapse
+    // all drafts into the shared "void" memo slot. Skip entirely — we
+    // have nothing to gate on, and the next tick will re-poll.
+    if iid_str == "void" {
+        return false;
+    };
+    if len(iid_str) == 0 {
+        return false;
+    };
+    let last_iid = recall_latest("code_writer:last_drafted_iid");
+    if len(last_iid) == 0 {
+        return true;
+    };
+    if iid_str != last_iid {
+        return true;
+    };
+    let last_upd = recall_latest("code_writer:last_drafted_updated_at");
+    if upd != last_upd {
+        return true;
+    };
+    return false;
+}
+
 fn tick(reason: string) -> void {
     // 1. Learn from recently merged MRs
     let cmd = merged_mr_cmd();
@@ -85,68 +116,79 @@ fn tick(reason: string) -> void {
     };
 
     if len(issues_raw) > 10 {
-        let rec = recommend("code_write", ["accuracy"]);
-        let context = "Assigned issues: " + issues_raw + "\nLearned code patterns: " + to_string(rec);
+        // #200: early-out when the top assigned issue is the same one we
+        // already drafted and its `updated_at` is unchanged. The iid /
+        // updated_at pair is stashed at the start of a fresh draft so
+        // subsequent ticks on a sticky assignment short-circuit before
+        // the `draft = prompt(...)` call below.
+        let first_iid_str = to_string(json_get(issues_raw, "[0].iid"));
+        let first_upd = to_string(json_get(issues_raw, "[0].updated_at"));
+        if should_draft_code(first_iid_str, first_upd) {
+            memo_write("code_writer:last_drafted_iid", first_iid_str);
+            memo_write("code_writer:last_drafted_updated_at", first_upd);
+            let rec = recommend("code_write", ["accuracy"]);
+            let context = "Assigned issues: " + issues_raw + "\nLearned code patterns: " + to_string(rec);
 
-        let draft = prompt(
-            "You are a code writer agent. Pick the highest-priority assigned issue and draft an implementation plan. Propose a branch name (kebab-case, prefixed with feat/ or fix/), list the files to create or modify with brief descriptions, and summarize the approach. Return JSON: issue_id (int), branch_name (string), files (string, markdown list of file paths and what each does), summary (string, 2-3 sentences), confidence (float 0-1). Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.",
-            context
-        ) -> CodeDraft;
+            let draft = prompt(
+                "You are a code writer agent. Pick the highest-priority assigned issue and draft an implementation plan. Propose a branch name (kebab-case, prefixed with feat/ or fix/), list the files to create or modify with brief descriptions, and summarize the approach. Return JSON: issue_id (int), branch_name (string), files (string, markdown list of file paths and what each does), summary (string, 2-3 sentences), confidence (float 0-1). Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.",
+                context
+            ) -> CodeDraft;
 
-        let my_tier = tier("code_writer");
-        print("[code_writer] Drafted code for issue", draft.issue_id, "(tier:", my_tier, ")");
+            let my_tier = tier("code_writer");
+            print("[code_writer] Drafted code for issue", draft.issue_id, "(tier:", my_tier, ")");
 
-        if my_tier == "autonomous" {
-            // Create branch
-            let branch_cmd = "$COLONY_DIR/scripts/gitlab-api.sh create-branch --name " + shell_escape(draft.branch_name) + " --ref main";
-            let branch_result = try { exec sh branch_cmd; } catch e {
-                print("[code_writer] Branch creation failed:", e);
-                "";
-            };
-
-            if len(branch_result) > 0 {
-                // Generate actual code and commit it to the branch
-                let issue_cmd = "$COLONY_DIR/scripts/gitlab-api.sh issue " + to_string(draft.issue_id);
-                let issue_detail = try { exec sh issue_cmd; } catch e { ""; };
-                let code_context = "Issue: " + issue_detail + "\nPlan: " + draft.files + "\nPatterns: " + to_string(rec);
-
-                let actions_json = prompt(
-                    "You are a code writer. Generate the actual file contents for this implementation plan. Return a JSON array of objects, each with: action (string, 'create' or 'update'), file_path (string), content (string, the full file content). Follow the learned naming and structure patterns. Only return the JSON array, nothing else.",
-                    code_context
-                ) -> string;
-
-                // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
-                let commit_cmd = "$COLONY_DIR/scripts/gitlab-api.sh commit-files --branch " + shell_escape(draft.branch_name) + " --message " + shell_escape("feat: implement #" + to_string(draft.issue_id) + " - " + draft.summary) + " --actions " + shell_escape(actions_json);
-                let commit_result = try { exec sh commit_cmd; } catch e {
-                    print("[code_writer] Commit failed:", e);
+            if my_tier == "autonomous" {
+                // Create branch
+                let branch_cmd = "$COLONY_DIR/scripts/gitlab-api.sh create-branch --name " + shell_escape(draft.branch_name) + " --ref main";
+                let branch_result = try { exec sh branch_cmd; } catch e {
+                    print("[code_writer] Branch creation failed:", e);
                     "";
                 };
 
-                if len(commit_result) > 0 {
-                    print("[code_writer] Committed code to", draft.branch_name);
-                    emit("implementation:code_draft", draft);
-                    learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "success", ["acted", "implementation"]);
+                if len(branch_result) > 0 {
+                    // Generate actual code and commit it to the branch
+                    let issue_cmd = "$COLONY_DIR/scripts/gitlab-api.sh issue " + to_string(draft.issue_id);
+                    let issue_detail = try { exec sh issue_cmd; } catch e { ""; };
+                    let code_context = "Issue: " + issue_detail + "\nPlan: " + draft.files + "\nPatterns: " + to_string(rec);
+
+                    let actions_json = prompt(
+                        "You are a code writer. Generate the actual file contents for this implementation plan. Return a JSON array of objects, each with: action (string, 'create' or 'update'), file_path (string), content (string, the full file content). Follow the learned naming and structure patterns. Only return the JSON array, nothing else.",
+                        code_context
+                    ) -> string;
+
+                    // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+                    let commit_cmd = "$COLONY_DIR/scripts/gitlab-api.sh commit-files --branch " + shell_escape(draft.branch_name) + " --message " + shell_escape("feat: implement #" + to_string(draft.issue_id) + " - " + draft.summary) + " --actions " + shell_escape(actions_json);
+                    let commit_result = try { exec sh commit_cmd; } catch e {
+                        print("[code_writer] Commit failed:", e);
+                        "";
+                    };
+
+                    if len(commit_result) > 0 {
+                        print("[code_writer] Committed code to", draft.branch_name);
+                        emit("implementation:code_draft", draft);
+                        learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "success", ["acted", "implementation"]);
+                    };
                 };
-            };
-        } else {
-            if my_tier == "review-gated" {
-                // Non-terminal draft: post the implementation plan as a comment
-                // on the issue so a human can approve before we create a branch
-                // and commit code. No branch or commit at this tier.
-                let note = "[draft-impl] **Implementation Plan** (automated, pending approval)\n\nBranch: `" + draft.branch_name + "`\n\n" + draft.summary + "\n\nFiles:\n" + draft.files;
-                let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(draft.issue_id) + " --body " + shell_escape(note);
-                try { exec sh post_cmd; } catch e {
-                    print("[code_writer] Failed to post draft plan:", e);
-                };
-                emit("implementation:code_draft", draft);
-                learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "partial", ["implementation", "review-gated"]);
             } else {
-                if my_tier == "propose" {
+                if my_tier == "review-gated" {
+                    // Non-terminal draft: post the implementation plan as a comment
+                    // on the issue so a human can approve before we create a branch
+                    // and commit code. No branch or commit at this tier.
+                    let note = "[draft-impl] **Implementation Plan** (automated, pending approval)\n\nBranch: `" + draft.branch_name + "`\n\n" + draft.summary + "\n\nFiles:\n" + draft.files;
+                    let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(draft.issue_id) + " --body " + shell_escape(note);
+                    try { exec sh post_cmd; } catch e {
+                        print("[code_writer] Failed to post draft plan:", e);
+                    };
                     emit("implementation:code_draft", draft);
-                    learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "partial", ["emitted", "implementation"]);
+                    learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "partial", ["implementation", "review-gated"]);
                 } else {
-                    print("[code_writer] Observing (tier:", my_tier, ")");
-                    learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "partial", ["observed", "implementation"]);
+                    if my_tier == "propose" {
+                        emit("implementation:code_draft", draft);
+                        learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "partial", ["emitted", "implementation"]);
+                    } else {
+                        print("[code_writer] Observing (tier:", my_tier, ")");
+                        learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "partial", ["observed", "implementation"]);
+                    };
                 };
             };
         };
