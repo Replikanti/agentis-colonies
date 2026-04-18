@@ -294,7 +294,7 @@ if [ -d "$REPO_ROOT/doc" ]; then
     done < <(find "$REPO_ROOT/doc" -name "*.md" -print0 2>/dev/null)
     for md in "${doc_files[@]}"; do
         md_dir="$(dirname "$md")"
-        rel="${md#$REPO_ROOT/}"
+        rel="${md#"$REPO_ROOT"/}"
         while IFS= read -r link; do
             case "$link" in
                 http://*|https://*|mailto:*|\#*|"") continue ;;
