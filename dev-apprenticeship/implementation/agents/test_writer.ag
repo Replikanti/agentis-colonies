@@ -47,6 +47,15 @@ fn get_confidence() -> float {
 // the LLM cost for generating identical tests. Cooldown expires so a
 // genuine new draft for the same issue after an edit eventually passes.
 fn should_handle_test_draft(iid_str: string) -> bool {
+    // Malformed bus payload (missing issue_id) would otherwise collapse
+    // all drafts into the shared "void" memo slot. Skip — we have
+    // nothing to gate on.
+    if iid_str == "void" {
+        return false;
+    };
+    if len(iid_str) == 0 {
+        return false;
+    };
     let last_iid = recall_latest("test_writer:last_handled_iid");
     if len(last_iid) == 0 {
         return true;
@@ -64,7 +73,7 @@ fn should_handle_test_draft(iid_str: string) -> bool {
     };
     let now_epoch = parse_int(now_str);
     let last_epoch = parse_int(last_ts_str);
-    if now_epoch - last_epoch > 300 {
+    if now_epoch - last_epoch >= 300 {
         return true;
     };
     return false;

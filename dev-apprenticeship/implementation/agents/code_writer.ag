@@ -48,6 +48,15 @@ fn get_confidence() -> float {
 // description, labels — anything that bumps updated_at) trigger a
 // fresh draft.
 fn should_draft_code(iid_str: string, upd: string) -> bool {
+    // Malformed GitLab payload (missing iid) would otherwise collapse
+    // all drafts into the shared "void" memo slot. Skip entirely — we
+    // have nothing to gate on, and the next tick will re-poll.
+    if iid_str == "void" {
+        return false;
+    };
+    if len(iid_str) == 0 {
+        return false;
+    };
     let last_iid = recall_latest("code_writer:last_drafted_iid");
     if len(last_iid) == 0 {
         return true;
