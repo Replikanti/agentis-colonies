@@ -99,6 +99,19 @@ fn signal_to_delta(signal: int) -> float {
     return 0.0;
 }
 
+// #195: map the reality-check signal to the experience-store outcome
+// enum. Signal 0 ("no signal yet") is handled by the caller via an
+// early return and never reaches this function.
+fn signal_to_outcome(signal: int) -> string {
+    if signal == 1 {
+        return "success";
+    };
+    if signal == 2 {
+        return "partial";
+    };
+    return "fail";
+}
+
 fn apply_feedback(delta: float) -> void {
     let cur = get_confidence();
     let target = clamp_auto(cur, delta);
@@ -159,6 +172,24 @@ fn evaluate_label_verdict() -> void {
         return;
     };
     apply_feedback(signal_to_delta(signal));
+    // #195: emit the reality-check outcome to the experience store so
+    // auto-promote's fitness gates (#186) see an honest acting-path
+    // reject rate. Tagged "acted" regardless of the original tier so
+    // the row lands in the acting bucket. Scope is derived from the
+    // current issue's author; when the field is missing `json_get`
+    // yields Void whose to_string is "void", which `scope_for_author`
+    // treats as non-match and falls through to "team" (safe default).
+    let cur_author = to_string(json_get(cur_raw, "author.username"));
+    let scope = scope_for_author(cur_author);
+    let outcome = signal_to_outcome(signal);
+    learn(
+        "label",
+        "issue " + to_string(issue_id) + " reality-check",
+        "suggested: " + suggested + " | signal: " + to_string(signal),
+        outcome,
+        [scope, "triage", "acted"]
+    );
+    print("[labeler] reality-check: issue", issue_id, "signal", signal, "->", outcome);
     memo_write("labeler:pending_verdict", "");
 }
 
