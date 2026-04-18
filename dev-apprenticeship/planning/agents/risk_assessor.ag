@@ -39,29 +39,56 @@ fn get_confidence() -> float {
 }
 
 fn tick(reason: string) -> void {
+    // Staleness gate for the observe step (#187): the pattern library
+    // only feeds `recommend()` inside the act branch below, which rarely
+    // fires on low-activity projects. Re-running the observe prompt on
+    // every 60 s tick burns ~1 440 LLM calls/day for a library that may
+    // never be read. Skip the observe prompt unless the last successful
+    // observe was >= OBSERVE_MIN_INTERVAL_SEC ago. 1 800 s (30 min) keeps
+    // the library fresh without the heartbeat-LLM pathology.
+    let now_epoch = try { exec sh "date -u +%s"; } catch e { ""; };
+    let last_obs = recall_latest("risk_assessor:observe_last_ts");
+    let observe_stale = if len(last_obs) > 0 {
+        if len(now_epoch) > 0 {
+            // Negative delta (operator ran `date -s <past>` or similar
+            // wall-clock regression) — treat as stale and re-observe
+            // rather than skipping forever on a clock that never catches
+            // up.
+            let delta = parse_int(now_epoch) - parse_int(last_obs);
+            if delta >= 0 {
+                if delta < 1800 { 0; } else { 1; };
+            } else { 1; };
+        } else { 1; };
+    } else { 1; };
+
     // 1. Observe: pull recent opened issues and skim for incident-style patterns
-    let recent_raw = try {
-        exec sh "$COLONY_DIR/scripts/gitlab-api.sh issues --view planning";
-    } catch e {
-        print("[risk_assessor] GitLab issues poll failed:", e);
-        "";
-    };
+    if observe_stale == 1 {
+        let recent_raw = try {
+            exec sh "$COLONY_DIR/scripts/gitlab-api.sh issues --view planning";
+        } catch e {
+            print("[risk_assessor] GitLab issues poll failed:", e);
+            "";
+        };
 
-    if len(recent_raw) > 10 {
-        let patterns = prompt(
-            "Analyze this recent GitLab issues JSON. Focus on issues labeled 'incident', 'bug', or 'blocker'. What recurring themes appear (dependency surprises, integration gotchas, flaky services)? Return JSON: observed_count (int, how many incident-style issues you saw), recurring_themes (string, one short paragraph).",
-            recent_raw
-        ) -> IncidentPatterns;
+        if len(recent_raw) > 10 {
+            let patterns = prompt(
+                "Analyze this recent GitLab issues JSON. Focus on issues labeled 'incident', 'bug', or 'blocker'. What recurring themes appear (dependency surprises, integration gotchas, flaky services)? Return JSON: observed_count (int, how many incident-style issues you saw), recurring_themes (string, one short paragraph).",
+                recent_raw
+            ) -> IncidentPatterns;
 
-        if patterns.observed_count > 0 {
-            learn(
-                "risk_assessment",
-                "batch of " + to_string(patterns.observed_count) + " incident-style issues",
-                patterns.recurring_themes,
-                "success",
-                ["observed", "planning"]
-            );
-            print("[risk_assessor] Observed", patterns.observed_count, "incident-style issues");
+            if patterns.observed_count > 0 {
+                learn(
+                    "risk_assessment",
+                    "batch of " + to_string(patterns.observed_count) + " incident-style issues",
+                    patterns.recurring_themes,
+                    "success",
+                    ["observed", "planning"]
+                );
+                if len(now_epoch) > 0 {
+                    memo_write("risk_assessor:observe_last_ts", now_epoch);
+                };
+                print("[risk_assessor] Observed", patterns.observed_count, "incident-style issues");
+            };
         };
     };
 
