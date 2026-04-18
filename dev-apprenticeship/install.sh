@@ -19,7 +19,7 @@ ALL_AGENTS=(
     code_writer test_writer refactorer commit_composer
     ship_decider changelog_writer version_bumper release_checker
 )
-MIN_VERSION="1.4.0"
+MIN_VERSION="1.4.1"
 
 # --- Helpers ---
 
@@ -112,11 +112,22 @@ fi
 # exec_foreign`, never receive emit/listen, get killed by the watchdog
 # every tick, fail every single tick on PII + ExecTimeout, leak zombie
 # daemons after every upgrade, or silently tick-error on adaptive calls.
+# v1.4.0 added the `tier()` builtin (#539) that all 21 agents branch on
+# for the four-tier confidence gating defined in ADR-0001; older builds
+# crash at parse time on every `.ag` file in this repo. v1.4.1 then
+# fixed `learn()` to populate `fitness_delta` from the `outcome`
+# argument (Success=+0.15, Partial=+0.02, Timeout=-0.05,
+# Failure=-0.15, Error=-0.15) instead of hardcoding 0.0 (#542). Without
+# that fix, every experience row carries `delta=0`, which makes the
+# auto-promote `delta_slope_acting` gate (#186) a no-op, the dashboard
+# evolve flat-slope threshold (#163) uncalibratable, and any
+# consumer reading `delta` from `.agentis/experience/*.jsonl` blind to
+# failure vs. success.
 AGENTIS_VERSION=$(agentis --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "0.0.0")
 info "agentis version: $AGENTIS_VERSION (minimum: $MIN_VERSION)"
 
 if ! version_gte "$AGENTIS_VERSION" "$MIN_VERSION"; then
-    fail "agentis >= $MIN_VERSION required (tier() builtin for four-tier confidence gating, #539). Please update."
+    fail "agentis >= $MIN_VERSION required (tier() builtin for four-tier confidence gating; fitness_delta wiring from the outcome argument to learn()). Please update."
     exit 1
 fi
 
