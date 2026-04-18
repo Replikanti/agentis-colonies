@@ -40,6 +40,36 @@ fn get_confidence() -> float {
     return 0.0;
 }
 
+// #200: suppress repeated test drafts for the same `issue_id` within a
+// 300s cooldown window (5× the 60s tick interval). Defense-in-depth
+// against upstream re-emits: code_writer has its own (iid, updated_at)
+// gate so the bus shouldn't see dupes, but if it does we don't re-pay
+// the LLM cost for generating identical tests. Cooldown expires so a
+// genuine new draft for the same issue after an edit eventually passes.
+fn should_handle_test_draft(iid_str: string) -> bool {
+    let last_iid = recall_latest("test_writer:last_handled_iid");
+    if len(last_iid) == 0 {
+        return true;
+    };
+    if iid_str != last_iid {
+        return true;
+    };
+    let last_ts_str = recall_latest("test_writer:last_handled_ts");
+    if len(last_ts_str) == 0 {
+        return true;
+    };
+    let now_str = try { exec sh "date +%s"; } catch e { ""; };
+    if len(now_str) == 0 {
+        return true;
+    };
+    let now_epoch = parse_int(now_str);
+    let last_epoch = parse_int(last_ts_str);
+    if now_epoch - last_epoch > 300 {
+        return true;
+    };
+    return false;
+}
+
 fn tick(reason: string) -> void {
     // 1. Learn from test files in recently merged MRs
     let cmd = merged_mr_cmd();
@@ -82,56 +112,68 @@ fn tick(reason: string) -> void {
     let draft_str = to_string(draft);
 
     if len(draft_str) > 5 {
-        let rec = recommend("test_write", ["accuracy"]);
-        let context = "Code draft: " + draft_str + "\nLearned test patterns: " + to_string(rec);
-
-        let tests = prompt(
-            "You are a test writer agent. A code draft has been produced for an issue. Generate matching tests that follow the learned test patterns (structure, assertion style, fixtures). Return JSON: issue_id (int, from the draft), branch_name (string, same branch as the draft), test_files (string, markdown list of test file paths with brief description of what each tests), summary (string), confidence (float 0-1). Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.",
-            context
-        ) -> TestDraft;
-
-        let my_tier = tier("test_writer");
-        print("[test_writer] Drafted tests for issue", tests.issue_id, "(tier:", my_tier, ")");
-
-        if my_tier == "autonomous" {
-            // Generate actual test file contents and commit to the branch
-            let test_context = "Code draft: " + draft_str + "\nTest plan: " + tests.test_files + "\nPatterns: " + to_string(rec);
-
-            let actions_json = prompt(
-                "You are a test writer. Generate the actual test file contents for this test plan. Return a JSON array of objects, each with: action (string, 'create' or 'update'), file_path (string), content (string, the full test file content). Follow the learned test structure and assertion patterns. Only return the JSON array, nothing else.",
-                test_context
-            ) -> string;
-
-            // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
-            let commit_cmd = "$COLONY_DIR/scripts/gitlab-api.sh commit-files --branch " + shell_escape(tests.branch_name) + " --message " + shell_escape("test: add tests for #" + to_string(tests.issue_id)) + " --actions " + shell_escape(actions_json);
-            let commit_result = try { exec sh commit_cmd; } catch e {
-                print("[test_writer] Commit failed:", e);
-                "";
+        // #200: extract issue_id directly from the bus payload JSON and
+        // gate on (iid, 300s cooldown) before paying for the test-draft
+        // LLM call. Stash the memos *before* prompt() so downstream
+        // failures don't force re-burn.
+        let incoming_iid = to_string(json_get(draft_str, "issue_id"));
+        if should_handle_test_draft(incoming_iid) {
+            memo_write("test_writer:last_handled_iid", incoming_iid);
+            let ts_now = try { exec sh "date +%s"; } catch e { ""; };
+            if len(ts_now) > 0 {
+                memo_write("test_writer:last_handled_ts", ts_now);
             };
+            let rec = recommend("test_write", ["accuracy"]);
+            let context = "Code draft: " + draft_str + "\nLearned test patterns: " + to_string(rec);
 
-            if len(commit_result) > 0 {
-                print("[test_writer] Committed tests to", tests.branch_name);
-                emit("implementation:test_draft", tests);
-                learn("test_write", "issue " + to_string(tests.issue_id), tests.summary, "success", ["acted", "implementation"]);
-            };
-        } else {
-            if my_tier == "review-gated" {
-                // Non-terminal draft: post the test plan as a comment on the
-                // issue so a human can approve before we commit test files.
-                let note = "[draft-tests] **Test Plan** (automated, pending approval)\n\nBranch: `" + tests.branch_name + "`\n\n" + tests.summary + "\n\nTest files:\n" + tests.test_files;
-                let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(tests.issue_id) + " --body " + shell_escape(note);
-                try { exec sh post_cmd; } catch e {
-                    print("[test_writer] Failed to post draft note:", e);
+            let tests = prompt(
+                "You are a test writer agent. A code draft has been produced for an issue. Generate matching tests that follow the learned test patterns (structure, assertion style, fixtures). Return JSON: issue_id (int, from the draft), branch_name (string, same branch as the draft), test_files (string, markdown list of test file paths with brief description of what each tests), summary (string), confidence (float 0-1). Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.",
+                context
+            ) -> TestDraft;
+
+            let my_tier = tier("test_writer");
+            print("[test_writer] Drafted tests for issue", tests.issue_id, "(tier:", my_tier, ")");
+
+            if my_tier == "autonomous" {
+                // Generate actual test file contents and commit to the branch
+                let test_context = "Code draft: " + draft_str + "\nTest plan: " + tests.test_files + "\nPatterns: " + to_string(rec);
+
+                let actions_json = prompt(
+                    "You are a test writer. Generate the actual test file contents for this test plan. Return a JSON array of objects, each with: action (string, 'create' or 'update'), file_path (string), content (string, the full test file content). Follow the learned test structure and assertion patterns. Only return the JSON array, nothing else.",
+                    test_context
+                ) -> string;
+
+                // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+                let commit_cmd = "$COLONY_DIR/scripts/gitlab-api.sh commit-files --branch " + shell_escape(tests.branch_name) + " --message " + shell_escape("test: add tests for #" + to_string(tests.issue_id)) + " --actions " + shell_escape(actions_json);
+                let commit_result = try { exec sh commit_cmd; } catch e {
+                    print("[test_writer] Commit failed:", e);
+                    "";
                 };
-                emit("implementation:test_draft", tests);
-                learn("test_write", "issue " + to_string(tests.issue_id), tests.summary, "partial", ["implementation", "review-gated"]);
-            } else {
-                if my_tier == "propose" {
+
+                if len(commit_result) > 0 {
+                    print("[test_writer] Committed tests to", tests.branch_name);
                     emit("implementation:test_draft", tests);
-                    learn("test_write", "issue " + to_string(tests.issue_id), tests.summary, "partial", ["emitted", "implementation"]);
+                    learn("test_write", "issue " + to_string(tests.issue_id), tests.summary, "success", ["acted", "implementation"]);
+                };
+            } else {
+                if my_tier == "review-gated" {
+                    // Non-terminal draft: post the test plan as a comment on the
+                    // issue so a human can approve before we commit test files.
+                    let note = "[draft-tests] **Test Plan** (automated, pending approval)\n\nBranch: `" + tests.branch_name + "`\n\n" + tests.summary + "\n\nTest files:\n" + tests.test_files;
+                    let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(tests.issue_id) + " --body " + shell_escape(note);
+                    try { exec sh post_cmd; } catch e {
+                        print("[test_writer] Failed to post draft note:", e);
+                    };
+                    emit("implementation:test_draft", tests);
+                    learn("test_write", "issue " + to_string(tests.issue_id), tests.summary, "partial", ["implementation", "review-gated"]);
                 } else {
-                    print("[test_writer] Observing (tier:", my_tier, ")");
-                    learn("test_write", "issue " + to_string(tests.issue_id), tests.summary, "partial", ["observed", "implementation"]);
+                    if my_tier == "propose" {
+                        emit("implementation:test_draft", tests);
+                        learn("test_write", "issue " + to_string(tests.issue_id), tests.summary, "partial", ["emitted", "implementation"]);
+                    } else {
+                        print("[test_writer] Observing (tier:", my_tier, ")");
+                        learn("test_write", "issue " + to_string(tests.issue_id), tests.summary, "partial", ["observed", "implementation"]);
+                    };
                 };
             };
         };
