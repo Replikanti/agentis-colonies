@@ -2,7 +2,9 @@
 
 Open-source agent colonies built on the [Agentis](https://github.com/Replikanti/agentis) runtime.
 
-**Agentis** is a proprietary AI-native platform for agent emergence. It provides the runtime, language, evolution engine, and distributed infrastructure. **Colonies** (this repo) are open-source (Apache 2.0) configurations of agents that solve real-world problems using that runtime.
+**Agentis** is a proprietary AI-native platform for agent emergence (runtime, language, evolution engine, distributed infrastructure). **Colonies** (this repo) are Apache 2.0 configurations of agents that solve real-world problems on that runtime.
+
+**What makes this repo distinctive:** every agent runs in `shadow` (observe-only) mode by default. It graduates up a four-tier confidence ladder — `shadow` → `propose` → `review-gated` → `autonomous` — based on measured experience, not hand-tuned thresholds. An agent only acts on your project once it has earned the tier. See [`doc/adr/ADR-0001-confidence-tiers.md`](./doc/adr/ADR-0001-confidence-tiers.md).
 
 ## Colonies and Federations
 
@@ -34,6 +36,8 @@ graph TD
     C3 --> A6
 ```
 
+[`dev-apprenticeship/`](./dev-apprenticeship/) is one concrete instance: 5 colonies, 21 agents covering triage, planning, implementation, code review, and release.
+
 ## Federations
 
 | Federation | Description | Agents | Status |
@@ -49,15 +53,47 @@ graph TD
 | **Alpha** | Core agents work. Some features incomplete or untested. |
 | **Planned** | Design exists, implementation not started. |
 
+## Quickstart
+
+```bash
+git clone https://github.com/Replikanti/agentis-colonies
+cd agentis-colonies/dev-apprenticeship
+./install.sh           # interactive: prereqs, config, GitLab creds, confidence seed
+./start-federation.sh  # launches 21 daemons
+```
+
+You now have 21 agents in `shadow` mode observing your GitLab project. Watch their reasoning via `./watch-suggestions.sh` or the web dashboard via `./dashboard.sh`.
+
+Need the runtime first? See [Replikanti/agentis](https://github.com/Replikanti/agentis).
+
 ## Prerequisites
 
 - [Agentis](https://github.com/Replikanti/agentis) runtime
 - An LLM backend (Claude CLI, Ollama, or any OpenAI-compatible API)
 - GitLab instance with API access
 
+## Repository structure
+
+```
+dev-apprenticeship/   # Federation: GitLab dev workflow (21 agents, Beta)
+tools/                # Shared federation tooling (lint, dashboard, auto-promote, kill)
+doc/                  # Reference docs (auto-promote, federation-dashboard)
+doc/adr/              # Architecture Decision Records (normative cross-repo contracts)
+```
+
 ## Operator scripts
 
-When you need to reliably stop a federation — agents, dashboard, registry sidecar files, with a backup tarball before cleanup — use [`tools/kill-federation.sh`](./tools/kill-federation.sh) (or its per-federation wrapper, e.g. `dev-apprenticeship/kill-federation.sh`). It bypasses the `agentis` CLI and uses OS signals with post-kill verification, so it works even when `agentis daemon stop --all` reports false success or false failure. Run with `--help` for options including `--dry-run` and `--json`.
+End-user scripts live inside each federation. For `dev-apprenticeship/`:
+
+| Script | Purpose |
+|--------|---------|
+| [`install.sh`](./dev-apprenticeship/install.sh) | Interactive setup: prerequisites, config, GitLab creds, confidence seed |
+| [`start-federation.sh`](./dev-apprenticeship/start-federation.sh) | Launch all 5 colonies (21 daemons) |
+| [`watch-suggestions.sh`](./dev-apprenticeship/watch-suggestions.sh) | Live feed of agent suggestions from all 21 logs |
+| [`dashboard.sh`](./dev-apprenticeship/dashboard.sh) | Web dashboard with operator controls (promote, demote, evolve, restart, kill). Full reference: [`doc/federation-dashboard.md`](./doc/federation-dashboard.md) |
+| [`kill-federation.sh`](./dev-apprenticeship/kill-federation.sh) | Reliable shutdown (wraps [`tools/kill-federation.sh`](./tools/kill-federation.sh) with `--fed-dir` scoping) |
+
+`kill-federation.sh` bypasses the `agentis` CLI and uses OS signals with post-kill verification, so it works even when `agentis daemon stop --all` reports false success or false failure. Run with `--help` for options including `--dry-run` and `--json`.
 
 ## Tiers
 
