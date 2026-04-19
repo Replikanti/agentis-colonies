@@ -57,6 +57,12 @@ fn tick(reason: string) -> void {
     let mr_cmd = "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --view reviewer";
     let recent_merged = try { exec sh mr_cmd; } catch e { "[]"; };
 
+    // Cold-path via upstream rate-limit: the bus-load early-exit above
+    // (total_len < 24) means we only reach this prompt when at least one
+    // reviewer emitted findings this tick, and after #201 each of the 4
+    // upstream reviewers emits at most once per 1800s per MR — so this
+    // prompt cannot sticky-re-burn without a reviewer burning first.
+    // colony-lint: prompt-gate-ok
     let approval_patterns = prompt(
         "Analyze these recently merged MRs. What patterns do you see in what gets approved quickly vs what takes multiple rounds? Summarize briefly.",
         recent_merged
@@ -70,6 +76,7 @@ fn tick(reason: string) -> void {
     let rec = recommend("approval_decision", ["accuracy", "safety"]);
     let all_findings = "Style findings: " + style_str + "\nLogic findings: " + logic_str + "\nSecurity findings: " + security_str + "\nTest findings: " + tests_str + "\nPast approval patterns: " + to_string(rec);
 
+    // colony-lint: prompt-gate-ok — same bus-load early-exit rationale as above.
     let decision = prompt(
         "You are the approval decider. Based on findings from style, logic, security, and test reviewers, decide the review outcome. Rules: any critical security finding = request changes. Multiple high-severity logic findings = request changes. Style-only findings = approve with comments. No findings = approve. Return JSON: mr_iid (int, from the findings), action (string: 'approve', 'request_changes', or 'escalate'), reasoning (string), critical_count (int), total_findings (int). Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.",
         all_findings

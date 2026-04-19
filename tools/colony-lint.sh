@@ -444,18 +444,19 @@ if [ -x "$REPO_ROOT/tools/check-exec-sh.sh" ]; then
     fi
 fi
 
-# --- Check implementation/agents/ for unguarded prompt() (#200 / #205) ---
-# The implementation colony ticks frequently; a `prompt()` that is not
-# gated on a memo-based staleness check drives ~60 LLM calls/hour per
-# stuck issue. This grep-level check fails the lint if any
-# `implementation/agents/*.ag` file has a `prompt()` not preceded (within
-# the same function) by `recall_latest()` or a call to a gate fn.
-if [ -x "$REPO_ROOT/tools/check-impl-prompt-gate.sh" ]; then
-    check_out="$("$REPO_ROOT/tools/check-impl-prompt-gate.sh" "$REPO_ROOT" 2>&1)" && check_rc=0 || check_rc=$?
+# --- Check ticking colonies for unguarded prompt() (#200 / #201 / #205 / #208) ---
+# The implementation, planning, and code-review colonies tick frequently;
+# a `prompt()` that is not gated on a memo-based staleness check drives
+# ~60 LLM calls/hour per stuck issue or stuck MR. This grep-level check
+# fails the lint if any `*.ag` file under those three colonies has a
+# `prompt()` not preceded (within the same function) by `recall_latest()`
+# or a call to a gate fn.
+if [ -x "$REPO_ROOT/tools/check-prompt-gate.sh" ]; then
+    check_out="$("$REPO_ROOT/tools/check-prompt-gate.sh" "$REPO_ROOT" 2>&1)" && check_rc=0 || check_rc=$?
     if [ "$check_rc" -eq 0 ]; then
-        pass "check-impl-prompt-gate: all implementation prompts memo-gated"
+        pass "check-prompt-gate: all ticking prompts (impl/planning/code-review) memo-gated"
     else
-        fail "check-impl-prompt-gate: unguarded prompt() in implementation/agents"
+        fail "check-prompt-gate: unguarded prompt() in ticking colony"
         printf '%s\n' "$check_out"
     fi
 fi
