@@ -1,20 +1,26 @@
 #!/bin/bash
 # tools/check-prompt-gate.sh: Flag unguarded `prompt()` calls in ticking colonies.
 #
-# The implementation, planning, and code-review colonies are wired to run
-# many times per minute against a GitLab project. If one of their agents
-# calls `prompt()` without a memo-based staleness gate, a single stuck
-# issue or stuck MR can drive ~60 LLM calls per hour per agent. Earlier
-# PRs fixed the three code paths one-by-one: #200 / PR #204 (implementation
-# drafts), #201 / PR #206 (code-review pattern-learning), #187 / PR #190
-# (planning observe-step). This lint prevents future edits in any of
-# those three colonies from silently re-introducing the same drift. Scope was
-# initially implementation-only (#205 / PR #207) and extended to all
-# three ticking colonies in #208.
+# The implementation, planning, code-review, and triage colonies are wired
+# to run many times per minute against a GitLab project. If one of their
+# agents calls `prompt()` without a memo-based staleness gate, a single
+# stuck issue or stuck MR can drive ~60 LLM calls per hour per agent.
+# Earlier PRs fixed three code paths one-by-one: #200 / PR #204
+# (implementation drafts), #187 / PR #190 (planning observe-step),
+# #201 / PR #206 (code-review pattern-learning). This lint prevents
+# future edits from silently (re-)introducing the same drift pattern in
+# any of the four ticking colonies. Scope was initially implementation-only
+# (#205 / PR #207), extended to planning + code-review in #208, and
+# extended preventively to triage in #210.
+#
+# Triage coverage is purely preventive (no prior drift incident occurred,
+# unlike the other three colonies). Triage ticks every 60–180s per #146,
+# so an unguarded `prompt()` would have the same cost impact as the
+# already-covered colonies.
 #
 # Rule: every `prompt(...)` call in a `*.ag` file under
-# `*/implementation/agents/`, `*/planning/agents/`, or
-# `*/code-review/agents/` must be preceded within the same function by
+# `*/implementation/agents/`, `*/planning/agents/`, `*/code-review/agents/`,
+# or `*/triage/agents/` must be preceded within the same function by
 # either:
 #   1. a `recall_latest(...)` read, or
 #   2. a call to a "gate function" — a free function defined in the same
@@ -199,9 +205,10 @@ check_file() {
     fi
 }
 
-# Main: walk *.ag files in the three ticking agent directories.
-# Covers all three ticking colonies that contain prompt()-based agents
-# that must be protected by a staleness gate (see #200, #201, #205, #208).
+# Main: walk *.ag files in the four ticking agent directories.
+# Covers all four ticking colonies that contain prompt()-based agents
+# that must be protected by a staleness gate (see #200, #201, #205, #208,
+# and #210 — triage coverage is preventive, not reactive).
 if [ -f "$SCAN_ROOT" ]; then
     # Single-file mode: scan regardless of path (useful for testing).
     check_file "$SCAN_ROOT"
@@ -211,7 +218,8 @@ else
     done < <(find "$SCAN_ROOT" -type f \( \
         -path '*/implementation/agents/*.ag' -o \
         -path '*/planning/agents/*.ag' -o \
-        -path '*/code-review/agents/*.ag' \
+        -path '*/code-review/agents/*.ag' -o \
+        -path '*/triage/agents/*.ag' \
     \) -print0)
 fi
 
