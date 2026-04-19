@@ -444,6 +444,22 @@ if [ -x "$REPO_ROOT/tools/check-exec-sh.sh" ]; then
     fi
 fi
 
+# --- Check implementation/agents/ for unguarded prompt() (#200 / #205) ---
+# The implementation colony ticks frequently; a `prompt()` that is not
+# gated on a memo-based staleness check drives ~60 LLM calls/hour per
+# stuck issue. This grep-level check fails the lint if any
+# `implementation/agents/*.ag` file has a `prompt()` not preceded (within
+# the same function) by `recall_latest()` or a call to a gate fn.
+if [ -x "$REPO_ROOT/tools/check-impl-prompt-gate.sh" ]; then
+    check_out="$("$REPO_ROOT/tools/check-impl-prompt-gate.sh" "$REPO_ROOT" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "check-impl-prompt-gate: all implementation prompts memo-gated"
+    else
+        fail "check-impl-prompt-gate: unguarded prompt() in implementation/agents"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- Lint tools themselves ---
 if command -v shellcheck &>/dev/null; then
     tools_dir="$REPO_ROOT/tools"

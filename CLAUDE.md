@@ -17,7 +17,7 @@ Pre-built agent colonies for the [Agentis](https://github.com/Replikanti/agentis
 bash -n scripts/gitlab-api.sh   # Bash syntax check on any script
 ```
 
-Colony lint must pass with 0 failures before merge. Current CI baseline: 38 passed, 0 failed, 1 skipped (agentis binary not installed on runners). Local runs add ~42 per-agent `.ag` syntax + tier-branch passes when `agentis` is installed, and 5 skips when `shellcheck` is not.
+Colony lint must pass with 0 failures before merge. Current CI baseline: 40 passed, 0 failed, 1 skipped (agentis binary not installed on runners). Local runs add ~42 per-agent `.ag` syntax + tier-branch passes when `agentis` is installed, and 5 skips when `shellcheck` is not.
 
 ## Colony structure
 
@@ -124,6 +124,7 @@ release:changelog_draft      -> version_bumper
 | `colony-lint.sh` | Full federation lint (structure, config, .ag syntax, exec-sh safety, daemon flag allowlist, markdown links) |
 | `new-colony.sh` | Scaffold a new colony (creates dirs, example config, starter scripts) |
 | `check-exec-sh.sh` | Grep-based check for unsafe string concat into `exec sh`. See `check-exec-sh.md` for known limitations. |
+| `check-impl-prompt-gate.sh` | Grep/awk-based check that every `prompt()` in `implementation/agents/*.ag` is preceded within the same fn by a `recall_latest()` read or a gate-fn call ([#200](https://github.com/Replikanti/agentis-colonies/issues/200), [#205](https://github.com/Replikanti/agentis-colonies/issues/205)). Annotate a cold-path prompt with `// colony-lint: impl-prompt-gate-ok` to suppress. |
 | `parse-toml.sh` | Shared TOML parser sourced by all start-colony.sh scripts |
 | `federation-dashboard.sh` | Generic web dashboard for any federation — auto-discovers colonies/agents, serves operator controls (promote, demote, evolve, restart, kill). Thin shell; orchestrates the four Python helpers + HTML template below. **Never inline heredocs here** (macOS bash parser bug; `test-timeline-rendering.sh` tests 13–19 enforce). Full reference: [`doc/federation-dashboard.md`](./doc/federation-dashboard.md). |
 | `federation-dashboard-collector.py` | Per-agent data collector (experience stats, `.ag` descriptions, log lines, PID liveness, timeline, confidence history). Called by `federation-dashboard.sh` once per regen. See [`doc/federation-dashboard.md`](./doc/federation-dashboard.md#architecture). |
