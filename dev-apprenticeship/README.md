@@ -33,6 +33,23 @@ graph LR
     style RE fill:#1a1e24,stroke:#57ab5a,color:#adbac7
 ```
 
+## Contents
+
+- [What you need](#what-you-need)
+- [Installation](#installation)
+- [Starting and stopping](#starting-and-stopping)
+- [Monitoring](#monitoring)
+- [How work enters the system](#how-work-enters-the-system)
+- [Confidence tiers](#confidence-tiers)
+- [Security](#security)
+- [What to expect](#what-to-expect)
+- [Auto-confidence from feedback](#auto-confidence-from-feedback-106)
+- [Colonies](#colonies)
+- [Knowledge portability](#knowledge-portability)
+- [Troubleshooting](#troubleshooting)
+- [Extension points](#extension-points)
+- [Auto-promote and auto-evolve](#auto-promote-and-auto-evolve-148)
+
 ## What you need
 
 - [Agentis](https://github.com/Replikanti/agentis) runtime **>= v1.4.1** (v1.4.0 provides the `tier()` builtin required by the four-tier confidence gating in all 21 agents; v1.4.1 wires `fitness_delta` from the `outcome` argument to `learn()` so downstream consumers — auto-promote, evolve, dashboard — see non-zero deltas)
@@ -48,7 +65,7 @@ cd agentis-colonies/dev-apprenticeship
 ./install.sh
 ```
 
-The install script checks prerequisites, creates configs for all 5 colonies, writes your GitLab credentials, and seeds agent confidence levels. Running it again is safe.
+The install script checks prerequisites, creates configs for all 5 colonies, writes your GitLab credentials, and seeds agent confidence levels. Running it again is safe. See [Security](#security) for how tokens are stored and rotated.
 
 ## Starting and stopping
 
@@ -219,7 +236,9 @@ Out-of-scope (not implemented): integration with a system secret store (Secret S
 
 **Week 1-2**: Knowledge entries accumulate from your GitLab activity. Run `agentis knowledge list` to inspect.
 
-**After promotion**: Proposals appear in logs at `propose` (0.6), direct non-terminal writes on GitLab at `review-gated` (0.8), and terminal writes (merge/tag/publish) at `autonomous` (0.95). Knowledge keeps growing with every tick. The runtime slowly decays the per-entry confidence score that `learn()` attaches to each unvalidated knowledge row (`knowledge.confidence_decay_rate`, default 0.01/hr, floor `knowledge.confidence_decay_min` 0.05; validated entries are left alone), which is a separate dial from the per-agent promotion level — it affects how much weight an old entry carries inside an agent, not which tier the agent is running at.
+**After promotion**: Proposals appear in logs at `propose` (0.6), direct non-terminal writes on GitLab at `review-gated` (0.8), and terminal writes (merge/tag/publish) at `autonomous` (0.95). Knowledge keeps growing with every tick.
+
+Separately from the tier ladder, the runtime slowly decays the per-entry confidence score that `learn()` attaches to each unvalidated knowledge row — `knowledge.confidence_decay_rate` defaults to `0.01/hr`, floored at `knowledge.confidence_decay_min` (`0.05`); validated entries are left alone. This affects how much weight an old entry carries inside an agent, not which tier the agent is running at.
 
 ## Auto-confidence from feedback (#106)
 
@@ -232,7 +251,16 @@ Suggestions don't just sit in logs — participating agents score themselves aga
 
 **Autonomy cap**. Auto-promotion stops at **0.85** (within `review-gated`). Positive deltas above the cap are clipped; the agent has to earn *review-gated trust* automatically, but you still have to manually bump it across the `autonomous` boundary at 0.95 (via the dashboard ▲ button or `agentis memo set <agent>:confidence 0.95`) before it is permitted to perform terminal writes (merge, tag, publish). This is deliberate — the auto-loop earns propose/review-gated trust from matching your style; terminal autonomy is your call. Negative deltas are not capped, so a confident agent that goes off the rails can still be pulled back down.
 
-**Phase 1 scope** (what ships today). The feedback loop is wired into the `labeler` agent as the reference implementation. Suggested labels are compared against the labels you actually apply to the issue (set overlap). The remaining four reference agents — `style_reviewer`, `plan_reviewer`, `code_writer`, `version_bumper` — will follow in separate PRs using the same pattern. Each needs its own matcher (did the MR get merged? was the plan followed? was the version tagged?) but the infrastructure (`clamp_auto`, `signal_to_delta`, `apply_feedback`, `record_*_verdict`, `evaluate_*_verdict`, `get-issue` gitlab-api subcommand) is in place.
+**Phase 1 scope** (what ships today). The feedback loop is wired into the `labeler` agent as the reference implementation — suggested labels are compared against the labels you actually apply to the issue (set overlap).
+
+Four more reference agents will follow in separate PRs using the same pattern:
+
+- `style_reviewer`
+- `plan_reviewer`
+- `code_writer`
+- `version_bumper`
+
+Each needs its own matcher (did the MR get merged? was the plan followed? was the version tagged?). Shared infrastructure (`clamp_auto`, `signal_to_delta`, `apply_feedback`, `record_*_verdict`, `evaluate_*_verdict`, `get-issue` gitlab-api subcommand) is in place.
 
 **Config knobs** live in each colony's `config/colony.toml` under `[feedback]`. The current shipment reads the defaults directly from the agent source (`match_rate = 0.02`, `partial_rate = 0.005`, `mismatch_rate = 0.01`, `timeout_s = 86400`, `autonomy_cap = 0.85`). The TOML section is declared so you can see where runtime-configurable knobs will land without a future config rewrite being disruptive.
 
@@ -256,7 +284,13 @@ Cross-colony wiring: Triage routes issues to Implementation. Implementation sign
 
 Every `learn()` call in the federation's agents tags entries with one of `observed` (shadow tier: passive learning from GitLab activity), `emitted` (propose tier: suggestion logged with draft external write), `review-gated` (review-gated tier: direct non-terminal external write under the review gate), or `acted` (autonomous tier: terminal external write with no second gate) plus the colony name (`triage`, `code-review`, `planning`, `implementation`, `release`). See [`doc/auto-promote.md#classification`](../doc/auto-promote.md#classification) for how the auto-promote heuristic consumes these tags.
 
-**Personal vs team (`#104`).** If you set your GitLab username during `./install.sh` (or in `colony.toml` under `[gitlab] me = "..."`), three agents (`labeler`, `prioritizer`, `style_reviewer`) additionally tag their `learn()` calls as either `personal` (the issue/MR author matches your username) or `team` (anyone else). `labeler` and `prioritizer` tag every tier's entries; `style_reviewer` tags only its direct-write (`review-gated` and `acted`) branches. The remaining agents still tag only the tier name + colony; widening coverage is tracked as future work. If you leave the username empty, every entry keeps the legacy `team` tag so exports stay stable.
+**Personal vs team (`#104`).** If you set your GitLab username during `./install.sh` (or in `colony.toml` under `[gitlab] me = "..."`), three agents additionally tag their `learn()` calls as either `personal` (the issue/MR author matches your username) or `team` (anyone else):
+
+- `labeler` — tags every tier's entries
+- `prioritizer` — tags every tier's entries
+- `style_reviewer` — tags only its direct-write (`review-gated` and `acted`) branches
+
+The remaining agents still tag only the tier name + colony; widening coverage is tracked as future work. If you leave the username empty, every entry keeps the legacy `team` tag so exports stay stable.
 
 Bulk export/import is available at the runtime level and will carry all entries as-is:
 
@@ -297,7 +331,7 @@ Terminal colony bus events with no internal listener, meant for external consump
 | `planning:draft_plan` | plan_reviewer | `propose` tier: assembled plan for human review |
 | `release:version_bumped` | version_bumper | After tag/release creation or version bump suggestion |
 
-## Auto-promote / auto-evolve (#148)
+## Auto-promote and auto-evolve (#148)
 
 An external cron script that evaluates per-agent fitness from experience data and decides when to promote (raise confidence) or evolve (mutate `.ag` source). Runs outside the federation, reads state via `agentis daemon list --json` and experience JSONL files.
 
