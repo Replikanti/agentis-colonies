@@ -207,8 +207,11 @@ fi
 # --- Test 10: regression — current dev-apprenticeship (4 ticking colonies) must pass ---
 # Covers implementation/ (4 agents), planning/ (4 agents, 7 prompts),
 # code-review/ (5 agents, 10 prompts including the 2 bus-load-suppressed
-# prompts in approval_decider.ag), and triage/ (4 agents, 11 prompts
-# — all already memo-gated, added preventively in #210).
+# prompts in approval_decider.ag), and triage/ (4 agents, 8 prompts
+# — all already memo-gated, added preventively in #210). Counts here
+# are real `prompt(` calls, i.e. comment-stripped (the raw `grep -c`
+# over triage/ would return 11 because 3 extra hits are inside `//`
+# comments).
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 run_checker "$REPO_ROOT/dev-apprenticeship"
 if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
