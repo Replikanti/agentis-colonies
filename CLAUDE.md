@@ -26,7 +26,7 @@ Cutting a release ([#218](https://github.com/Replikanti/agentis-colonies/issues/
    git push origin dev-apprenticeship-v<X.Y.Z>
    gh release create dev-apprenticeship-v<X.Y.Z> \
      --title "dev-apprenticeship v<X.Y.Z>" \
-     --notes "$(awk '/^## \[<X.Y.Z>\]/{flag=1;next} /^## \[/{flag=0} flag' dev-apprenticeship/CHANGELOG.md)"
+     --notes "$(awk '/^## \[<X.Y.Z>\]/{flag=1;next} /^## \[/{flag=0} /^\[[^]]+\]:/{flag=0} flag' dev-apprenticeship/CHANGELOG.md)"
    ```
 3. **Semver decisions** — bus-event rename/removal, agent removal, config-schema break, or a tier-semantics change in ADR-0001 is **MAJOR**. A new agent, new bus event (without removing one), a new optional config key, or a new install prompt defaulting to off is **MINOR**. Bug fixes, `.ag` tuning, docs, and new colony-lint rules that don't flag anything already-merged are **PATCH**.
 

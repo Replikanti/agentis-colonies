@@ -77,10 +77,9 @@ permissible per semver §4.
   [#188](https://github.com/Replikanti/agentis-colonies/issues/188))
 - **Prompt-gate linting** — `tools/check-prompt-gate.sh` ensures every `prompt()` call in a
   ticking colony (implementation, planning, code-review, triage) is preceded by a memo-based
-  staleness gate, preventing ~60 LLM-calls/hour waste per stuck issue/MR.
-  ([#200](https://github.com/Replikanti/agentis-colonies/issues/200),
-  [#201](https://github.com/Replikanti/agentis-colonies/issues/201),
-  [#205](https://github.com/Replikanti/agentis-colonies/issues/205),
+  staleness gate, preventing ~60 LLM-calls/hour waste per stuck issue/MR. Related agent-side
+  fixes that first introduced the memo gates are listed under **Fixed** below.
+  ([#205](https://github.com/Replikanti/agentis-colonies/issues/205),
   [#208](https://github.com/Replikanti/agentis-colonies/issues/208),
   [#210](https://github.com/Replikanti/agentis-colonies/issues/210))
 - **`check-exec-sh.sh`** — grep-based check that all dynamic values in `exec sh` are wrapped
@@ -127,8 +126,6 @@ permissible per semver §4.
   ([#125](https://github.com/Replikanti/agentis-colonies/issues/125),
   [#131](https://github.com/Replikanti/agentis-colonies/issues/131),
   [#138](https://github.com/Replikanti/agentis-colonies/issues/138))
-- **Planning observe step rate-limited** to 30 minutes to cut LLM waste in shadow mode.
-  ([#187](https://github.com/Replikanti/agentis-colonies/issues/187))
 - **GitLab API responses downselected via `--view`** at the script level instead of in-agent
   prompt massaging. ([#119](https://github.com/Replikanti/agentis-colonies/issues/119))
 - **Bash 3.2 / macOS compatibility** — `colony-lint.sh` and dashboard scripts avoid
@@ -152,6 +149,15 @@ permissible per semver §4.
   [#118](https://github.com/Replikanti/agentis-colonies/issues/118))
 - `gitlab-api.sh` accepts `--per-page` on merge-requests queries.
   ([#127](https://github.com/Replikanti/agentis-colonies/issues/127))
+- **Planning observe step** rate-limited to 30 minutes to cut LLM waste in shadow mode.
+  ([#187](https://github.com/Replikanti/agentis-colonies/issues/187))
+- **Implementation colony memo gate** — `code_writer` / `test_writer` / `refactorer` /
+  `commit_composer` no longer burn a `prompt()` each tick on the same already-processed MR;
+  a memo-based staleness gate short-circuits the hot path.
+  ([#200](https://github.com/Replikanti/agentis-colonies/issues/200))
+- **Code-review colony memo gate** — `logic_reviewer` / `style_reviewer` /
+  `security_reviewer` / `test_reviewer` apply the same memo-based staleness gate before each
+  `prompt()` call. ([#201](https://github.com/Replikanti/agentis-colonies/issues/201))
 
 ### Security
 
