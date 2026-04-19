@@ -204,20 +204,24 @@ else
     fail "boundary-reset" "rc=$rc out=$out"
 fi
 
-# --- Test 10: regression — current dev-apprenticeship (3 ticking colonies) must pass ---
-# Covers implementation/ (4 agents), planning/ (4 agents, 7 prompts), and
+# --- Test 10: regression — current dev-apprenticeship (4 ticking colonies) must pass ---
+# Covers implementation/ (4 agents), planning/ (4 agents, 7 prompts),
 # code-review/ (5 agents, 10 prompts including the 2 bus-load-suppressed
-# prompts in approval_decider.ag).
+# prompts in approval_decider.ag), and triage/ (4 agents, 8 prompts
+# — all already memo-gated, added preventively in #210). Counts here
+# are real `prompt(` calls, i.e. comment-stripped (the raw `grep -c`
+# over triage/ would return 11 because 3 extra hits are inside `//`
+# comments).
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 run_checker "$REPO_ROOT/dev-apprenticeship"
 if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
-    pass "regression: current implementation/planning/code-review agents clean"
+    pass "regression: current implementation/planning/code-review/triage agents clean"
 else
-    fail "regression: current implementation/planning/code-review agents" "rc=$rc out=$out"
+    fail "regression: current implementation/planning/code-review/triage agents" "rc=$rc out=$out"
 fi
 
 # --- Test 11: directory with no ticking-colony agents is clean ---
-# The checker only scans */{implementation,planning,code-review}/agents/*.ag.
+# The checker only scans */{implementation,planning,code-review,triage}/agents/*.ag.
 # An agent in another colony (e.g., release/) is not scanned.
 empty_dir="$TMPDIR_TEST/empty-fed"
 mkdir -p "$empty_dir/release/agents"
@@ -439,7 +443,38 @@ else
     fail "new-canonical-token" "rc=$rc out=$out"
 fi
 
-# --- Test 25: typo suppression token does NOT match (word-boundary) ---
+# --- Test 25 (#210): bare prompt() in triage/agents/ is flagged ---
+triage_fix="$TMPDIR_TEST/fed-triage/triage/agents"
+mkdir -p "$triage_fix"
+cat > "$triage_fix/foo.ag" <<'AGEOF'
+fn tick(reason: string) -> void {
+    let y = prompt("bare", "x") -> string;
+}
+AGEOF
+run_checker "$TMPDIR_TEST/fed-triage"
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q "\[UNGATED\]" && printf '%s' "$out" | grep -q "triage/agents/foo.ag"; then
+    pass "triage-bare-flagged: triage/agents/*.ag bare prompt flagged"
+else
+    fail "triage-bare-flagged" "rc=$rc out=$out"
+fi
+
+# --- Test 26 (#210): gated prompt() in triage/agents/ passes ---
+triage_ok="$TMPDIR_TEST/fed-triage-ok/triage/agents"
+mkdir -p "$triage_ok"
+cat > "$triage_ok/bar.ag" <<'AGEOF'
+fn tick(reason: string) -> void {
+    let ts = recall_latest("bar:last_check");
+    let y = prompt("gated", ts) -> string;
+}
+AGEOF
+run_checker "$TMPDIR_TEST/fed-triage-ok"
+if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
+    pass "triage-gated-passes: triage/agents/*.ag gated prompt not flagged"
+else
+    fail "triage-gated-passes" "rc=$rc out=$out"
+fi
+
+# --- Test 27: typo suppression token does NOT match (word-boundary) ---
 # `prompt-gate-okey` (or any other trailing word-character continuation)
 # must NOT suppress the warning, or a simple typo would silently neuter
 # the checker.
@@ -456,7 +491,7 @@ else
     fail "typo-token" "rc=$rc out=$out"
 fi
 
-# --- Test 26: canonical token followed by trailing text still suppresses ---
+# --- Test 28: canonical token followed by trailing text still suppresses ---
 # `prompt-gate-ok — rationale here` must still suppress (space delimiter).
 f="$(write_fixture "token-with-trailing-prose" '
 fn tick(reason: string) -> void {
