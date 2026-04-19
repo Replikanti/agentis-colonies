@@ -55,11 +55,24 @@ graph TD
 
 ## Quickstart
 
+From a release tarball (recommended — install-ready, no git clone needed):
+
+```bash
+VERSION=0.1.0   # or any tagged dev-apprenticeship release
+curl -LO https://github.com/Replikanti/agentis-colonies/releases/download/dev-apprenticeship-v${VERSION}/dev-apprenticeship-v${VERSION}.tar.gz
+tar xzf dev-apprenticeship-v${VERSION}.tar.gz
+cd dev-apprenticeship-v${VERSION}/dev-apprenticeship
+./install.sh           # interactive: prereqs, config, GitLab creds, confidence seed
+./start-federation.sh  # launches 21 daemons
+```
+
+Or from a clone of the repo (useful if you want to contribute):
+
 ```bash
 git clone https://github.com/Replikanti/agentis-colonies
 cd agentis-colonies/dev-apprenticeship
-./install.sh           # interactive: prereqs, config, GitLab creds, confidence seed
-./start-federation.sh  # launches 21 daemons
+./install.sh
+./start-federation.sh
 ```
 
 You now have 21 agents in `shadow` mode observing your GitLab project. Watch their reasoning via `./watch-suggestions.sh` or the web dashboard via `./dashboard.sh`.

@@ -17,6 +17,14 @@ is asserted until multi-version CI is in place.
 
 ### Added
 
+- **Curated install-ready release bundle** — `tools/make-federation-bundle.sh`
+  + `dev-apprenticeship/BUNDLE.manifest` assemble a slim tarball
+  (`dev-apprenticeship-v<X.Y.Z>.tar.gz`) containing only the paths this
+  federation needs at runtime. `.github/workflows/release.yml` runs on every
+  `dev-apprenticeship-v*` tag push and attaches the tarball + `.sha256` to the
+  GitHub release. End users can now `curl | tar x | install.sh` without
+  cloning the repo. ([#220](https://github.com/Replikanti/agentis-colonies/issues/220))
+
 ### Changed
 
 ### Deprecated

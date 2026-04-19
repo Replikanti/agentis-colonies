@@ -1,0 +1,92 @@
+name: Release
+
+# Tag-triggered bundle + asset upload for per-federation releases (#220).
+# Fires on pushes of tags shaped like `<federation>-v<X.Y.Z>`.
+#
+# The workflow:
+#   1. Checks out the tagged commit (full history so the awk on CHANGELOG has
+#      everything it needs).
+#   2. Parses `<federation>` and `<version>` from `$GITHUB_REF_NAME`.
+#   3. Builds the curated bundle via `tools/make-federation-bundle.sh`.
+#   4. Extracts the matching CHANGELOG section as release notes.
+#   5. Creates the GitHub release if it doesn't already exist (including the
+#      asset upload in the same call); otherwise uploads the asset onto the
+#      pre-existing release with `--clobber`.
+#
+# Maintainer workflow after a release PR merges is therefore:
+#   git tag <federation>-v<X.Y.Z> <merge-sha> -m "..."
+#   git push origin <federation>-v<X.Y.Z>
+# No manual `gh release create` / `gh release upload` needed.
+
+on:
+  push:
+    tags:
+      - 'dev-apprenticeship-v*'
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout at tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Parse federation + version from tag
+        id: tag
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          FED="${TAG%-v*}"
+          VER="${TAG##*-v}"
+          {
+            echo "tag=$TAG"
+            echo "fed=$FED"
+            echo "ver=$VER"
+          } >> "$GITHUB_OUTPUT"
+          echo "Parsed: federation='$FED', version='$VER' from tag '$TAG'"
+
+      - name: Build federation bundle
+        run: ./tools/make-federation-bundle.sh "${{ steps.tag.outputs.fed }}" "${{ steps.tag.outputs.ver }}"
+
+      - name: Extract release notes from CHANGELOG
+        run: |
+          FED='${{ steps.tag.outputs.fed }}'
+          VER='${{ steps.tag.outputs.ver }}'
+          mkdir -p dist
+          awk -v ver="$VER" '
+            $0 ~ "^## \\[" ver "\\]" { flag=1; next }
+            /^## \[/ { flag=0 }
+            /^\[[^]]+\]:/ { flag=0 }
+            flag
+          ' "$FED/CHANGELOG.md" > dist/release-notes.md
+          if [ ! -s dist/release-notes.md ]; then
+            echo "No CHANGELOG section matched '[${VER}]' — falling back to tag message." >&2
+            git tag -l --format='%(contents)' "${{ steps.tag.outputs.tag }}" > dist/release-notes.md
+          fi
+          echo "=== release notes preview (first 20 lines) ==="
+          head -20 dist/release-notes.md
+
+      - name: Create or update GitHub release with bundle asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG='${{ steps.tag.outputs.tag }}'
+          FED='${{ steps.tag.outputs.fed }}'
+          VER='${{ steps.tag.outputs.ver }}'
+          TARBALL="dist/${FED}-v${VER}.tar.gz"
+          SHAFILE="${TARBALL}.sha256"
+          if gh release view "$TAG" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — uploading asset with --clobber."
+            gh release upload "$TAG" "$TARBALL" "$SHAFILE" \
+              --repo "${GITHUB_REPOSITORY}" --clobber
+          else
+            echo "Creating release $TAG with curated bundle asset."
+            gh release create "$TAG" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${FED} v${VER}" \
+              --notes-file dist/release-notes.md \
+              "$TARBALL" "$SHAFILE"
+          fi
