@@ -251,11 +251,16 @@ Suggestions don't just sit in logs — participating agents score themselves aga
 
 **Autonomy cap**. Auto-promotion stops at **0.85** (within `review-gated`). Positive deltas above the cap are clipped; the agent has to earn *review-gated trust* automatically, but you still have to manually bump it across the `autonomous` boundary at 0.95 (via the dashboard ▲ button or `agentis memo set <agent>:confidence 0.95`) before it is permitted to perform terminal writes (merge, tag, publish). This is deliberate — the auto-loop earns propose/review-gated trust from matching your style; terminal autonomy is your call. Negative deltas are not capped, so a confident agent that goes off the rails can still be pulled back down.
 
-**Phase 1 scope** (what ships today):
+**Phase 1 scope** (what ships today). The feedback loop is wired into the `labeler` agent as the reference implementation — suggested labels are compared against the labels you actually apply to the issue (set overlap).
 
-- **Shipped**: The feedback loop is wired into the `labeler` agent as the reference implementation. Suggested labels are compared against the labels you actually apply to the issue (set overlap).
-- **In flight**: Four more reference agents — `style_reviewer`, `plan_reviewer`, `code_writer`, `version_bumper` — will follow in separate PRs using the same pattern. Each needs its own matcher (did the MR get merged? was the plan followed? was the version tagged?).
-- **Infrastructure ready**: `clamp_auto`, `signal_to_delta`, `apply_feedback`, `record_*_verdict`, `evaluate_*_verdict`, and the `get-issue` gitlab-api subcommand are all in place.
+Four more reference agents will follow in separate PRs using the same pattern:
+
+- `style_reviewer`
+- `plan_reviewer`
+- `code_writer`
+- `version_bumper`
+
+Each needs its own matcher (did the MR get merged? was the plan followed? was the version tagged?). Shared infrastructure (`clamp_auto`, `signal_to_delta`, `apply_feedback`, `record_*_verdict`, `evaluate_*_verdict`, `get-issue` gitlab-api subcommand) is in place.
 
 **Config knobs** live in each colony's `config/colony.toml` under `[feedback]`. The current shipment reads the defaults directly from the agent source (`match_rate = 0.02`, `partial_rate = 0.005`, `mismatch_rate = 0.01`, `timeout_s = 86400`, `autonomy_cap = 0.85`). The TOML section is declared so you can see where runtime-configurable knobs will land without a future config rewrite being disruptive.
 
