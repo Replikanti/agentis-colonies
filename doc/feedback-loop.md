@@ -183,7 +183,7 @@ The two paths are orthogonal and complementary:
   on the next tick. This is local, fast, and only affects that one
   agent.
 - `learn()` appends a row to the experience store, which feeds the
-  auto-promote cron's fitness stats. This is federation-wide and
+  auto-promote scheduler's fitness stats. This is federation-wide and
   affects all ladder-step decisions for the agent.
 
 Keeping both means the pilot does not regress the #106 auto-confidence
@@ -198,7 +198,7 @@ separate ledgers. The pattern deliberately writes to both:
 | Ledger | Writer | Reader | Effect |
 |---|---|---|---|
 | `<agent>:confidence` memo | `apply_feedback()` (#106) | `tier()` builtin | Next-tick branching (shadow / propose / review-gated / autonomous) |
-| Experience store `fitness_delta` | `learn(outcome=...)` (#195 / this pattern) | `auto-promote.sh` fitness stats (#186) | Cron-driven ladder promotions |
+| Experience store `fitness_delta` | `learn(outcome=...)` (#195 / this pattern) | `auto-promote.sh` fitness stats (#186) | Scheduler-driven ladder promotions |
 
 Signal scaling differs:
 
@@ -207,7 +207,7 @@ Signal scaling differs:
   pointer. Auto-promotion is capped at 0.85 here; anything above
   requires operator sign-off via the dashboard or CLI.
 - `fitness_delta` from v1.4.1 uses larger symmetric magnitudes (±0.15,
-  +0.02, etc.) because the auto-promote cron aggregates over ≥ 60
+  +0.02, etc.) because the auto-promote scheduler aggregates over ≥ 60
   acting rows before making any decision. The larger per-row magnitude
   preserves signal under aggregation.
 

@@ -333,9 +333,21 @@ Terminal colony bus events with no internal listener, meant for external consump
 
 ## Auto-promote and auto-evolve (#148)
 
-An external cron script that evaluates per-agent fitness from experience data and decides when to promote (raise confidence) or evolve (mutate `.ag` source). Runs outside the federation, reads state via `agentis daemon list --json` and experience JSONL files.
+A scheduler-driven script (`tools/auto-promote.sh`) that evaluates per-agent fitness from experience data and decides when to promote (raise confidence) or evolve (mutate `.ag` source). Reads state via `agentis daemon list --json` and experience JSONL files.
 
 ### Quick start
+
+Scheduling is installed by `./install.sh` — answer **Y** (the default) when it asks:
+
+```
+Enable auto-promote scheduling? [Y/n]:
+```
+
+The decision is persisted in `dev-apprenticeship/.auto-promote-install.toml`. `start-federation.sh` reads it on startup and spawns a sidecar that invokes `tools/auto-promote.sh` every 30 minutes while the federation is up. The sidecar dies when the federation is torn down (`kill-federation.sh`, Ctrl-C), so no scheduling state lingers system-wide.
+
+To change your mind, re-run `./install.sh` and answer the prompt again.
+
+Log: `.agentis/logs/auto-promote.log`. Manual runs are still possible:
 
 ```bash
 # Dry-run (default) — log what would happen, take no action:
@@ -343,12 +355,9 @@ An external cron script that evaluates per-agent fitness from experience data an
 
 # Live mode — actually promote/evolve:
 ./tools/auto-promote.sh dev-apprenticeship --live
-
-# Cron entry (every 30 minutes):
-# */30 * * * * cd /path/to/agentis-colonies && ./tools/auto-promote.sh dev-apprenticeship >> /var/log/auto-promote.log 2>&1
 ```
 
-Configuration lives in `tools/auto-promote-config.yaml`. Decisions are journaled to `tools/auto-promote-journal.jsonl` (append-only, one JSON line per decision).
+Configuration lives in `tools/auto-promote-config.yaml` (rules and `dry_run`). Decisions are journaled to `tools/auto-promote-journal.jsonl` (append-only, one JSON line per decision).
 
 ### Decision rules
 
@@ -365,7 +374,7 @@ Configuration lives in `tools/auto-promote-config.yaml`. Decisions are journaled
 ### Safety guards
 
 1. **Federation check**: exits cleanly when `agentis daemon list --json` returns empty
-2. **Lock file**: `tools/.auto-promote.lock` prevents overlapping cron runs
+2. **Lock file**: `tools/.auto-promote.lock` prevents overlapping scheduler runs
 3. **Confidence seeded**: skips agents where `recall_latest` returns null
 4. **PID liveness**: `kill -0` check before acting on a daemon
 5. **Dry-run default**: all actions are logged but not executed until you flip `dry_run: false` in the config
@@ -374,11 +383,11 @@ Configuration lives in `tools/auto-promote-config.yaml`. Decisions are journaled
 
 | Layer | Where | Status |
 |-------|-------|--------|
-| **1 — External cron** | `tools/auto-promote.sh` | Shipped (#148) |
+| **1 — External scheduler** | `tools/auto-promote.sh` + `start-federation.sh` sidecar (#216) | Shipped (#148) |
 | **2 — Supervisor agent** | `meta/agents/conductor.ag` | Planned (separate ticket) |
 | **3 — Daemon self-decide** | agentis-core | Long-horizon (needs months of L1+L2 data) |
 
-**Layer 1** (this) runs as a dumb cron job. It cannot observe the federation in real time — it snapshots state once per invocation, evaluates rules, and exits. Good enough for 30-minute decision cadence.
+**Layer 1** (this) runs as a dumb scheduler tick. It cannot observe the federation in real time — it snapshots state once per invocation, evaluates rules, and exits. Good enough for 30-minute decision cadence.
 
 **Layer 2** lifts the same logic into a native `.ag` agent (`conductor.ag`) running inside a new `meta` colony. The supervisor ticks every 5 minutes, reads other agents' state via the agentis API, and emits structured `promote`/`evolve` events. The federation learns how to manage itself — and you can evolve the supervisor too. Requires agentis-core support for cross-agent state reads (currently sandboxed).
 
