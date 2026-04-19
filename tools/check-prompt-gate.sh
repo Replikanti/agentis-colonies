@@ -4,11 +4,11 @@
 # The implementation, planning, and code-review colonies are wired to run
 # many times per minute against a GitLab project. If one of their agents
 # calls `prompt()` without a memo-based staleness gate, a single stuck
-# issue or stuck MR can drive ~60 LLM calls per hour per agent. Issues
-# fixed the three code paths: #200 / PR #204 (implementation drafts),
-# #201 / PR #206 (code-review pattern-learning), #187 / PR #190 (planning
-# observe-step). This lint prevents future edits in any of those three
-# colonies from silently re-introducing the same drift. Scope was
+# issue or stuck MR can drive ~60 LLM calls per hour per agent. Earlier
+# PRs fixed the three code paths one-by-one: #200 / PR #204 (implementation
+# drafts), #201 / PR #206 (code-review pattern-learning), #187 / PR #190
+# (planning observe-step). This lint prevents future edits in any of
+# those three colonies from silently re-introducing the same drift. Scope was
 # initially implementation-only (#205 / PR #207) and extended to all
 # three ticking colonies in #208.
 #
@@ -159,8 +159,11 @@ check_file() {
                     # Suppression comment check uses the ORIGINAL line so
                     # `// colony-lint: prompt-gate-ok` (or the legacy alias
                     # `// colony-lint: impl-prompt-gate-ok`) is visible.
-                    if ($0 ~ /colony-lint:[[:space:]]*(impl-)?prompt-gate-ok/) suppressed = 1
-                    else if (prev_original ~ /colony-lint:[[:space:]]*(impl-)?prompt-gate-ok/) suppressed = 1
+                    # The trailing `($|[[:space:]]|[^a-z0-9-])` is a
+                    # word-boundary — without it, a typo like
+                    # `prompt-gate-okey` would spuriously suppress the check.
+                    if ($0 ~ /colony-lint:[[:space:]]*(impl-)?prompt-gate-ok($|[[:space:]]|[^a-z0-9-])/) suppressed = 1
+                    else if (prev_original ~ /colony-lint:[[:space:]]*(impl-)?prompt-gate-ok($|[[:space:]]|[^a-z0-9-])/) suppressed = 1
 
                     if (!suppressed && !local_gate) {
                         printf "[UNGATED] %s:%d: prompt() in fn `%s` is not preceded by recall_latest() or a gate-fn call (add a memo gate or annotate with `// colony-lint: prompt-gate-ok`)\n", file, NR, fn_name

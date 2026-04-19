@@ -439,6 +439,38 @@ else
     fail "new-canonical-token" "rc=$rc out=$out"
 fi
 
+# --- Test 25: typo suppression token does NOT match (word-boundary) ---
+# `prompt-gate-okey` (or any other trailing word-character continuation)
+# must NOT suppress the warning, or a simple typo would silently neuter
+# the checker.
+f="$(write_fixture "typo-token" '
+fn tick(reason: string) -> void {
+    // colony-lint: prompt-gate-okey
+    let y = prompt("bare", "x") -> string;
+}
+')"
+run_checker "$f"
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q "\[UNGATED\]"; then
+    pass "typo-token: prompt-gate-okey does NOT suppress (word-boundary enforced)"
+else
+    fail "typo-token" "rc=$rc out=$out"
+fi
+
+# --- Test 26: canonical token followed by trailing text still suppresses ---
+# `prompt-gate-ok — rationale here` must still suppress (space delimiter).
+f="$(write_fixture "token-with-trailing-prose" '
+fn tick(reason: string) -> void {
+    // colony-lint: prompt-gate-ok — rationale here
+    let y = prompt("bare", "x") -> string;
+}
+')"
+run_checker "$f"
+if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
+    pass "token-with-trailing-prose: suffix after space still suppresses"
+else
+    fail "token-with-trailing-prose" "rc=$rc out=$out"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
