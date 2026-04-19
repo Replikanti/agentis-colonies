@@ -345,6 +345,8 @@ Enable auto-promote scheduling? [Y/n]:
 
 The decision is persisted in `dev-apprenticeship/.auto-promote-install.toml`. `start-federation.sh` reads it on startup and spawns a sidecar that invokes `tools/auto-promote.sh` every 30 minutes while the federation is up. The sidecar dies when the federation is torn down (`kill-federation.sh`, Ctrl-C), so no scheduling state lingers system-wide.
 
+> **Shutdown drift:** after `kill-federation.sh` sweeps the daemons in a second terminal, the sidecar exits on its next poll, so the foreground `start-federation.sh` terminal may take up to `interval_s` seconds (default 30 min) to return. Ctrl-C in the foreground terminal reaps the sidecar instantly via the `EXIT` trap.
+
 To change your mind, re-run `./install.sh` and answer the prompt again.
 
 Log: `.agentis/logs/auto-promote.log`. Manual runs are still possible:
