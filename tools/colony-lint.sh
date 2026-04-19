@@ -461,6 +461,25 @@ if [ -x "$REPO_ROOT/tools/check-prompt-gate.sh" ]; then
     fi
 fi
 
+# --- CHANGELOG consistency (#218) ---
+# Warn-only for feature PRs that touch dev-apprenticeship/ without updating
+# CHANGELOG.md; hard-fail for release PRs (VERSION bumped) that skip the
+# CHANGELOG bump. No-op in local runs (GITHUB_BASE_REF unset).
+if [ -x "$REPO_ROOT/tools/check-changelog.sh" ]; then
+    check_out="$("$REPO_ROOT/tools/check-changelog.sh" "$REPO_ROOT" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "check-changelog: CHANGELOG consistency OK"
+        # Surface the [WARN] line (if any) so the operator sees the reminder
+        # without the lint failing.
+        if printf '%s' "$check_out" | grep -Fq "[WARN]"; then
+            printf '%s\n' "$check_out"
+        fi
+    else
+        fail "check-changelog: release PR missing CHANGELOG update"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- Lint tools themselves ---
 if command -v shellcheck &>/dev/null; then
     tools_dir="$REPO_ROOT/tools"
