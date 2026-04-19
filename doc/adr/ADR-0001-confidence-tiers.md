@@ -16,7 +16,7 @@ tags: [confidence, autonomy, governance, dev-apprenticeship]
 Agents in the Agentis runtime keep a per-topic `confidence` value as a
 runtime memo (JSONL at `~/.agentis/memo/<agent>:confidence.jsonl`). The
 value is not a compile-time constant; it drifts as the agent observes
-outcomes and as the auto-promotion cron steps it along. Agent programs
+outcomes and as the auto-promotion scheduler steps it along. Agent programs
 written in the `.ag` DSL branch on this value to decide what the agent
 is allowed to do at a given moment: typically a low branch that merely
 emits a suggestion, and a high branch that performs a real side effect.
@@ -269,7 +269,7 @@ seed or the autonomy-or-silence reviewer pattern.
 
 - GitHub issue: Replikanti/agentis-colonies#173 (motivates this ADR)
 - `CLAUDE.md` — runtime and federation conventions for `.ag` scenarios
-- [`doc/auto-promote.md`](../auto-promote.md) — how agents move between these tiers (auto-promote / auto-evolve cron)
+- [`doc/auto-promote.md`](../auto-promote.md) — how agents move between these tiers (auto-promote / auto-evolve scheduler; installed by `dev-apprenticeship/install.sh`, see [#216](https://github.com/Replikanti/agentis-colonies/issues/216))
 
 ## Supersedes
 

@@ -521,6 +521,67 @@ echo "    llm.endpoint = https://api.example.com/v1/chat/completions"
 echo "    llm.api_key_env = MY_API_KEY"
 echo ""
 
+# --- 7. Auto-promote scheduling (#148 / #216) ---
+#
+# `tools/auto-promote.sh` needs periodic invocation to do its job
+# (classify experience rows, promote agents up the tier ladder,
+# trigger evolution). Instead of splicing a crontab entry that would
+# outlive the federation, we persist the operator's preference in a
+# federation-scoped TOML file. `start-federation.sh` reads it on
+# startup and spawns a sidecar loop that dies when the federation is
+# torn down. No state lingers system-wide.
+
+echo ""
+echo "Auto-promote scheduling"
+echo ""
+info "tools/auto-promote.sh (#148) promotes agents up the tier ladder and"
+info "triggers evolution when acting-row fitness passes configured thresholds."
+info "It needs periodic invocation."
+info ""
+info "If enabled, start-federation.sh spawns a sidecar that runs it every 30 min"
+info "while the federation is up. The sidecar dies when the federation is torn"
+info "down (Ctrl-C, kill-federation.sh) — no lingering crontab entry."
+info ""
+info "Note: dry_run: true is the default in tools/auto-promote-config.yaml, so"
+info "nothing actually acts until you flip it."
+
+AUTO_PROMOTE_INSTALL_FILE="$SCRIPT_DIR/.auto-promote-install.toml"
+
+ask "Enable auto-promote scheduling? [Y/n]:"
+read -r AUTO_PROMOTE_ANSWER
+AUTO_PROMOTE_ANSWER="${AUTO_PROMOTE_ANSWER:-Y}"
+
+case "$AUTO_PROMOTE_ANSWER" in
+    [Yy]|[Yy][Ee][Ss])
+        mkdir -p "$SCRIPT_DIR/.agentis/logs"
+        cat > "$AUTO_PROMOTE_INSTALL_FILE" <<'EOF'
+# Auto-promote scheduler settings (#148 / #216).
+#
+# Written by dev-apprenticeship/install.sh. Read by start-federation.sh
+# to decide whether to spawn the scheduler sidecar. Re-run install.sh
+# to change your mind.
+[auto_promote]
+enabled = true
+interval_s = 1800
+EOF
+        ok "Scheduling enabled — sidecar will run every 30 min once federation is up."
+        ok "Log: .agentis/logs/auto-promote.log"
+        info "Reminder: dry_run: true is still on in auto-promote-config.yaml."
+        ;;
+    *)
+        cat > "$AUTO_PROMOTE_INSTALL_FILE" <<'EOF'
+# Auto-promote scheduler settings (#148 / #216).
+#
+# Written by dev-apprenticeship/install.sh. Set enabled = true and
+# re-run install.sh to enable scheduling later.
+[auto_promote]
+enabled = false
+interval_s = 1800
+EOF
+        ok "Scheduling disabled. Re-run ./install.sh and answer Y to enable later."
+        ;;
+esac
+
 # --- Done ---
 
 echo ""

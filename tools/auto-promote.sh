@@ -1,12 +1,15 @@
 #!/bin/bash
-# auto-promote.sh — Layer 1 auto-promote / auto-evolve cron script
+# auto-promote.sh — Layer 1 auto-promote / auto-evolve scheduler script
 #
 # Reads experience + memo + daemon state, evaluates per-agent fitness
 # rules from auto-promote-config.yaml, and promotes or evolves agents
 # whose metrics meet the thresholds.
 #
-# Intended to be invoked by cron (e.g. */30 * * * *). Safe to run when
-# the federation is stopped — exits 0 with a no-op log line.
+# Intended to be invoked periodically (e.g. every 30 min) by the
+# sidecar that `dev-apprenticeship/start-federation.sh` spawns when
+# `.auto-promote-install.toml` (written by install.sh §7) has
+# `enabled = true`. See #216. Safe to run when the federation is
+# stopped — exits 0 with a no-op log line.
 #
 # All actions default to --dry-run (config: dry_run: true). Flip to
 # false in auto-promote-config.yaml only after reviewing the journal.
@@ -300,7 +303,7 @@ DAEMON_COUNT=$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(len
 if [ "$DAEMON_COUNT" -eq 0 ]; then
     # #177: no journal row for federation-down — otherwise a weekend with
     # the federation stopped accumulates ~96 identical _system no-op rows
-    # (cron runs every 30 min). The tick log still records the no-op.
+    # (scheduler ticks every 30 min). The tick log still records the no-op.
     log "Federation not running, no-op"
     exit 0
 fi
@@ -645,7 +648,7 @@ while IFS='|' read -r decision agent colony step_from step_to reason evidence_js
                 # Restart the daemon so it picks up the new confidence.
                 # Use the same stop+respawn pattern as the dashboard (#137).
                 # The respawn must export GITLAB_* env vars from colony.toml
-                # (the cron environment won't have them).
+                # (the scheduler's environment won't have them).
                 log "  Restarting daemon for $agent..."
                 AGENT_AG_FILE=""
                 AGENT_COLONY_DIR=""

@@ -95,4 +95,67 @@ echo ""
 echo "Stop:     agentis daemon stop --all"
 echo ""
 
+# --- Auto-promote scheduler sidecar (#216) ---
+#
+# Reads .auto-promote-install.toml (written by install.sh §7) and, if
+# enabled, spawns a background loop that invokes tools/auto-promote.sh
+# every interval_s seconds. The sidecar self-terminates once no agentis
+# daemons are running under this federation (e.g. after kill-federation.sh
+# has swept them), so its lifetime tracks the federation's without
+# needing kill-federation.sh to know about it. A trap on EXIT/TERM/INT
+# kills it immediately when the operator Ctrl-Cs this script.
+AUTO_PROMOTE_INSTALL_FILE="$FED_DIR/.auto-promote-install.toml"
+AUTO_PROMOTE_PID=""
+AP_PARSE_TOML="$SCRIPT_DIR/../tools/parse-toml.sh"
+if [ -f "$AUTO_PROMOTE_INSTALL_FILE" ]; then
+    if [ ! -r "$AP_PARSE_TOML" ]; then
+        # Broken checkout — parse-toml.sh is expected to ship with the repo.
+        # Sourcing a missing file under `set -e` would error-exit after the
+        # 5 colonies have already been backgrounded, orphaning them. Skip
+        # the sidecar block instead and let the federation run without it.
+        echo "[!!] Auto-promote scheduler: tools/parse-toml.sh not readable, skipping."
+    else
+        CONFIG="$AUTO_PROMOTE_INSTALL_FILE"
+        # shellcheck source=../tools/parse-toml.sh
+        source "$AP_PARSE_TOML"
+        AP_ENABLED="$(parse_toml auto_promote enabled 2>/dev/null || true)"
+        AP_INTERVAL="$(parse_toml auto_promote interval_s 2>/dev/null || true)"
+        case "$AP_INTERVAL" in
+            ''|*[!0-9]*) AP_INTERVAL=1800 ;;
+            *) [ "$AP_INTERVAL" -gt 0 ] || AP_INTERVAL=1800 ;;
+        esac
+        if [ "$AP_ENABLED" = "true" ]; then
+            AP_LOG_DIR="$FED_DIR/.agentis/logs"
+            AP_LOG="$AP_LOG_DIR/auto-promote.log"
+            mkdir -p "$AP_LOG_DIR"
+            AP_SCRIPT="$SCRIPT_DIR/../tools/auto-promote.sh"
+            AP_FED_NAME="$(basename "$FED_DIR")"
+            if [ ! -x "$AP_SCRIPT" ]; then
+                echo "[!!] Auto-promote scheduler: tools/auto-promote.sh not executable, skipping."
+            else
+                (
+                    while :; do
+                        sleep "$AP_INTERVAL"
+                        if ! agentis daemon list --json 2>/dev/null | grep -Fq '"state":"running"'; then
+                            printf '=== %s: no running daemons; sidecar exiting ===\n' \
+                                "$(date -Iseconds)" >> "$AP_LOG"
+                            exit 0
+                        fi
+                        {
+                            printf '=== %s: sidecar tick ===\n' "$(date -Iseconds)"
+                            "$AP_SCRIPT" "$AP_FED_NAME" 2>&1 \
+                                || printf '[sidecar] auto-promote.sh exited %s\n' "$?"
+                        } >> "$AP_LOG"
+                    done
+                ) &
+                AUTO_PROMOTE_PID=$!
+                # shellcheck disable=SC2064  # Expand PID at trap-install time, not at trigger time.
+                trap "[ -n \"$AUTO_PROMOTE_PID\" ] && kill \"$AUTO_PROMOTE_PID\" 2>/dev/null; exit" EXIT TERM INT
+                echo "Auto-promote scheduler: PID $AUTO_PROMOTE_PID, every ${AP_INTERVAL}s (log: .agentis/logs/auto-promote.log)"
+                echo ""
+            fi
+        fi
+    fi
+fi
+
 wait

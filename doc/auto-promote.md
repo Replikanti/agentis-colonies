@@ -1,11 +1,17 @@
 # Auto-promote / auto-evolve reference
 
-`tools/auto-promote.sh` is the layer-1 cron script that promotes agents up
+`tools/auto-promote.sh` is the layer-1 scheduler script that promotes agents up
 the four-tier confidence ladder (shadow → propose → review-gated →
 autonomous) when their fitness signal clears a statistical bar, or
 triggers `agentis evolve` when the signal degrades. This document is the
 reference for how the decision is made, what the thresholds mean, and
-how to audit what the cron did.
+how to audit what the scheduler did.
+
+Scheduling is installed by `dev-apprenticeship/install.sh` (§7). The
+sidecar that invokes this script is spawned by `start-federation.sh`
+when `.auto-promote-install.toml` has `enabled = true`; it dies when
+the federation is torn down, so no scheduling state lingers after
+`kill-federation.sh`. See [#216](https://github.com/Replikanti/agentis-colonies/issues/216) for the design rationale.
 
 For the tier boundaries themselves, see
 [ADR-0001: Four-tier confidence contract](./adr/ADR-0001-confidence-tiers.md).
@@ -21,7 +27,7 @@ For the tier boundaries themselves, see
 
 ## Decision table (DMN)
 
-For each running agent, the cron evaluates a conjunctive decision rule
+For each running agent, the scheduler evaluates a conjunctive decision rule
 against the agent's experience rows, runtime state, and configured
 thresholds. All inputs must evaluate `true` for a `promote` outcome;
 any `false` leads to `skip` with the failed criteria listed in the
@@ -70,7 +76,7 @@ window (default 1000 acting rows).
 
 Every row in the experience store carries a `tags` array (see the
 canonical `.ag` pattern in [CLAUDE.md](../CLAUDE.md#agent-conventions-ag-files)).
-The cron classifies each row into one of three tag buckets:
+The scheduler classifies each row into one of three tag buckets:
 
 | Bucket | Match | Example tag set |
 |---|---|---|
@@ -159,7 +165,7 @@ stay statistically consistent without manual re-tuning.
 Shadow-tier agents cannot produce acting rows, so the fitness gates
 (`reject_rate_acting`, `delta_slope_acting`) are not evaluated for the
 first promote step. This is wired by the `min_acting_entries_override:
-0` config on the step, which the cron reads as "no acting floor; and
+0` config on the step, which the scheduler reads as "no acting floor; and
 since acting count is zero, the ratio-based gates are also skipped".
 
 The skip is explicit, not silent. The journal records
@@ -170,7 +176,7 @@ bootstrap exception, not a malformed config.
 
 ## Journal format
 
-Every cron run appends one JSON line per agent to
+Every scheduler run appends one JSON line per agent to
 `tools/auto-promote-journal.jsonl`:
 
 ```json
@@ -207,7 +213,7 @@ criteria:
 "reason": "prerequisites not met: entries_acting=0 < 120; delta_slope_acting=0.000000 < 0"
 ```
 
-One line per failed criterion, separated by `; `. The cron collects
+One line per failed criterion, separated by `; `. The scheduler collects
 every failure (not just the first) so the journal shows complete
 evidence. `skip` rows also include `evidence` and `from` / `to` so an
 operator can compute the next-step bar without re-reading the source.
@@ -221,12 +227,12 @@ include `evidence` and a `reason` identifying which trigger fired
 
 ## Operator override
 
-The cron is one path to promotion; operators can promote manually via
+The scheduler is one path to promotion; operators can promote manually via
 the federation dashboard's Promote button on any agent card. That path
 does **not** consult `auto-promote-config.yaml` — it writes
 `<agent>:confidence` directly and restarts the daemon. Use it when:
 
-- You want to promote an agent outside the cron's `steps` ladder (e.g.
+- You want to promote an agent outside the scheduler's `steps` ladder (e.g.
   jump from 0.6 to 0.95 for a controlled test).
 - The fitness signal hasn't accumulated yet but you trust the agent
   from independent review.
@@ -241,11 +247,11 @@ timeline).
 
 `dry_run: true` in config (the default) logs decisions to the journal
 but does not write to memo or restart daemons. Flip to `false` only
-after reviewing a few cron runs' worth of journal entries.
+after reviewing a few scheduler runs' worth of journal entries.
 
 `./tools/auto-promote.sh <fed> --live` overrides `dry_run` for one run,
 irrespective of config. Useful for one-off "actually promote now" from
-cron.
+a shell, bypassing the installed scheduler's dry-run-preserving loop.
 
 ## Per-federation tuning
 
@@ -283,6 +289,6 @@ YAML include, but the use case hasn't surfaced yet.
 - [#148](https://github.com/Replikanti/agentis-colonies/issues/148) — auto-governance roadmap, layers 1-3.
 - [#186](https://github.com/Replikanti/agentis-colonies/issues/186) — tag-based classification fix (this document's origin).
 - [#163](https://github.com/Replikanti/agentis-colonies/issues/163) — related dashboard flat-slope threshold calibration.
-- `tools/auto-promote.sh` — the cron script itself.
+- `tools/auto-promote.sh` — the scheduler script itself.
 - `tools/auto-promote-config.yaml` — threshold configuration.
 - `tools/auto-promote-journal.jsonl` — audit log (created on first run).
