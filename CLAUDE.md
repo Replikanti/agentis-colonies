@@ -10,6 +10,28 @@ Pre-built agent colonies for the [Agentis](https://github.com/Replikanti/agentis
 - Branch protection is enforced via GitHub rulesets (require PR, no deletion, no force-push).
 - Branches are auto-deleted after merge.
 
+## Release process
+
+Each federation is versioned independently at the federation level. `dev-apprenticeship/` follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html); history is in [`dev-apprenticeship/CHANGELOG.md`](./dev-apprenticeship/CHANGELOG.md) (Keep a Changelog format).
+
+Cutting a release ([#218](https://github.com/Replikanti/agentis-colonies/issues/218)):
+
+1. **Open a release PR** titled `release: dev-apprenticeship v<X.Y.Z>` that changes only:
+   - `dev-apprenticeship/VERSION` (single-line bump).
+   - `dev-apprenticeship/CHANGELOG.md` — rename `## [Unreleased]` to `## [X.Y.Z] — YYYY-MM-DD`, add a fresh empty `## [Unreleased]` on top, update the trailing comparison link. If the runtime floor changed, update the `**Requires:** agentis >= ...` line.
+   - Optionally the version badges in `dev-apprenticeship/README.md` and the top-level `README.md`.
+2. **After merge:** tag and publish:
+   ```bash
+   git tag dev-apprenticeship-v<X.Y.Z> <merge-sha> -m "dev-apprenticeship v<X.Y.Z>"
+   git push origin dev-apprenticeship-v<X.Y.Z>
+   gh release create dev-apprenticeship-v<X.Y.Z> \
+     --title "dev-apprenticeship v<X.Y.Z>" \
+     --notes "$(awk '/^## \[<X.Y.Z>\]/{flag=1;next} /^## \[/{flag=0} flag' dev-apprenticeship/CHANGELOG.md)"
+   ```
+3. **Semver decisions** — bus-event rename/removal, agent removal, config-schema break, or a tier-semantics change in ADR-0001 is **MAJOR**. A new agent, new bus event (without removing one), a new optional config key, or a new install prompt defaulting to off is **MINOR**. Bug fixes, `.ag` tuning, docs, and new colony-lint rules that don't flag anything already-merged are **PATCH**.
+
+`colony-lint` (via `tools/check-changelog.sh`) warns whenever a PR touches `dev-apprenticeship/` without updating `CHANGELOG.md`, and fails whenever `VERSION` bumps without a matching CHANGELOG entry.
+
 ## Validation
 
 ```bash
@@ -17,7 +39,7 @@ Pre-built agent colonies for the [Agentis](https://github.com/Replikanti/agentis
 bash -n scripts/gitlab-api.sh   # Bash syntax check on any script
 ```
 
-Colony lint must pass with 0 failures before merge. Current CI baseline: 40 passed, 0 failed, 1 skipped (agentis binary not installed on runners). Local runs add ~42 per-agent `.ag` syntax + tier-branch passes when `agentis` is installed, and 5 skips when `shellcheck` is not.
+Colony lint must pass with 0 failures before merge. Current CI baseline: 41 passed, 0 failed, 1 skipped (agentis binary not installed on runners). Local runs add ~42 per-agent `.ag` syntax + tier-branch passes when `agentis` is installed, and 5 skips when `shellcheck` is not.
 
 ## Colony structure
 
@@ -125,6 +147,7 @@ release:changelog_draft      -> version_bumper
 | `new-colony.sh` | Scaffold a new colony (creates dirs, example config, starter scripts) |
 | `check-exec-sh.sh` | Grep-based check for unsafe string concat into `exec sh`. See `check-exec-sh.md` for known limitations. |
 | `check-prompt-gate.sh` | Grep/awk lint that ensures every `prompt()` in `implementation/`, `planning/`, `code-review/`, and `triage/` agents is preceded (same function) by a memo-based staleness gate (`recall_latest()` or gate fn) ([#200](https://github.com/Replikanti/agentis-colonies/issues/200), [#201](https://github.com/Replikanti/agentis-colonies/issues/201), [#205](https://github.com/Replikanti/agentis-colonies/issues/205), [#208](https://github.com/Replikanti/agentis-colonies/issues/208), [#210](https://github.com/Replikanti/agentis-colonies/issues/210)). Use `// colony-lint: prompt-gate-ok` on intentional cold-path prompts (legacy alias `// colony-lint: impl-prompt-gate-ok` still works). |
+| `check-changelog.sh` | CI-only soft check ([#218](https://github.com/Replikanti/agentis-colonies/issues/218)) that warns when a PR touches `dev-apprenticeship/` without updating `dev-apprenticeship/CHANGELOG.md`, and hard-fails when `dev-apprenticeship/VERSION` bumps without a matching CHANGELOG entry. No-op without `GITHUB_BASE_REF` (local runs). |
 | `parse-toml.sh` | Shared TOML parser sourced by all start-colony.sh scripts |
 | `federation-dashboard.sh` | Generic web dashboard for any federation — auto-discovers colonies/agents, serves operator controls (promote, demote, evolve, restart, kill). Thin shell; orchestrates the four Python helpers + HTML template below. **Never inline heredocs here** (macOS bash parser bug; `test-timeline-rendering.sh` tests 13–19 enforce). Full reference: [`doc/federation-dashboard.md`](./doc/federation-dashboard.md). |
 | `federation-dashboard-collector.py` | Per-agent data collector (experience stats, `.ag` descriptions, log lines, PID liveness, timeline, confidence history). Called by `federation-dashboard.sh` once per regen. See [`doc/federation-dashboard.md`](./doc/federation-dashboard.md#architecture). |

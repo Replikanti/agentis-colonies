@@ -118,6 +118,12 @@ Every decision is written to `tools/auto-promote-journal.jsonl` and defaults to 
 
 Normative design decisions for this repository are recorded as Architecture Decision Records under [`doc/adr/`](./doc/adr/README.md). External authors of `.ag` federations should treat the ADRs as the source of truth for cross-repo contracts such as the confidence-tier ladder.
 
+## Versioning
+
+Each federation is versioned independently at the federation level (not per-colony — the five colonies inside `dev-apprenticeship/` are coupled by bus events, so they ship as one unit). Tags use the prefixed form `<federation>-v<X.Y.Z>` (e.g. `dev-apprenticeship-v0.1.0`) so tool-level or alternate-federation releases can coexist without collision.
+
+See [`dev-apprenticeship/CHANGELOG.md`](./dev-apprenticeship/CHANGELOG.md) for the current release history and runtime compatibility floor. The release process is documented in [`CLAUDE.md`](./CLAUDE.md#release-process).
+
 ## License
 
 Apache 2.0. See [LICENSE](./LICENSE).
