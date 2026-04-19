@@ -1,0 +1,46 @@
+# BUNDLE.manifest — dev-apprenticeship federation release bundle (#220)
+#
+# Lists every repo-relative path that must be included in the curated install-ready
+# release tarball for this federation. Consumed by `tools/make-federation-bundle.sh`.
+#
+# Syntax:
+#   - One path per line (repo-relative, POSIX separators).
+#   - Directory entries end with `/` and are copied recursively.
+#   - Lines starting with `#` are comments.
+#   - Blank lines are ignored.
+#
+# Rules for editing:
+#   - Every path MUST exist at bundling time (the bundler fails if one is missing).
+#   - Paths MUST NOT be outside this federation's runtime surface. Contributor-only
+#     tooling (`tools/colony-lint.sh`, `tools/check-*.sh`, `tools/test-*.sh`,
+#     `tools/new-colony.sh`), repo-developer docs (`CLAUDE.md`), and CI config
+#     (`.github/`) are explicitly excluded by `tools/test-make-federation-bundle.sh`.
+#   - When a new runtime dependency is added under `tools/`, append it here in the
+#     same PR so the bundle stays install-ready.
+
+# ----- Federation itself -----
+dev-apprenticeship/
+
+# ----- Shared shell tooling required at runtime -----
+tools/parse-toml.sh
+tools/kill-federation.sh
+tools/auto-promote.sh
+tools/auto-promote-config.yaml
+tools/resolve-tick-interval.py
+
+# ----- Federation dashboard (sh entrypoint + 4 Python helpers + HTML template) -----
+tools/federation-dashboard.sh
+tools/federation-dashboard-collector.py
+tools/federation-dashboard-history.py
+tools/federation-dashboard-renderer.py
+tools/federation-dashboard-server.py
+tools/federation-dashboard.html.template
+
+# ----- Operator-facing documentation referenced from dev-apprenticeship/ -----
+doc/adr/
+doc/auto-promote.md
+doc/federation-dashboard.md
+
+# ----- Top-level repository surface users read on first contact -----
+README.md
+LICENSE

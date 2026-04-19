@@ -13,3 +13,6 @@
 # Python bytecode (from helper scripts in tools/)
 __pycache__/
 *.pyc
+
+# Federation release bundles (produced by tools/make-federation-bundle.sh; #220)
+/dist/

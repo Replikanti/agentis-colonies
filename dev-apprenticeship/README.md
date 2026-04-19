@@ -61,6 +61,24 @@ graph LR
 
 ## Installation
 
+Pick one of the two install paths.
+
+**Option A — release tarball** (recommended for running the federation; install-ready, no git tree required):
+
+```bash
+VERSION=0.1.0
+curl -LO https://github.com/Replikanti/agentis-colonies/releases/download/dev-apprenticeship-v${VERSION}/dev-apprenticeship-v${VERSION}.tar.gz
+curl -LO https://github.com/Replikanti/agentis-colonies/releases/download/dev-apprenticeship-v${VERSION}/dev-apprenticeship-v${VERSION}.tar.gz.sha256
+sha256sum -c dev-apprenticeship-v${VERSION}.tar.gz.sha256   # optional but recommended
+tar xzf dev-apprenticeship-v${VERSION}.tar.gz
+cd dev-apprenticeship-v${VERSION}/dev-apprenticeship
+./install.sh
+```
+
+The tarball ships only the runtime surface of this federation (the federation itself plus the `tools/` scripts and `doc/` references it needs at run time). Contributor tooling (`colony-lint.sh`, tests, CI config, `CLAUDE.md`) is intentionally excluded — see [`BUNDLE.manifest`](./BUNDLE.manifest).
+
+**Option B — clone the repo** (use this if you want to contribute or work from `main`):
+
 ```bash
 git clone https://github.com/Replikanti/agentis-colonies.git
 cd agentis-colonies/dev-apprenticeship
