@@ -253,7 +253,7 @@ Suggestions don't just sit in logs — participating agents score themselves aga
 
 **Phase 1 scope** (what ships today):
 
-- **Shipped**: The feedback loop is wired into the `labeler` agent. Suggested labels are compared against the labels you actually apply to the issue (set overlap).
+- **Shipped**: The feedback loop is wired into the `labeler` agent as the reference implementation. Suggested labels are compared against the labels you actually apply to the issue (set overlap).
 - **In flight**: Four more reference agents — `style_reviewer`, `plan_reviewer`, `code_writer`, `version_bumper` — will follow in separate PRs using the same pattern. Each needs its own matcher (did the MR get merged? was the plan followed? was the version tagged?).
 - **Infrastructure ready**: `clamp_auto`, `signal_to_delta`, `apply_feedback`, `record_*_verdict`, `evaluate_*_verdict`, and the `get-issue` gitlab-api subcommand are all in place.
 
