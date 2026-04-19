@@ -284,6 +284,67 @@ else
     fail "multiline-prompt" "rc=$rc out=$out"
 fi
 
+# --- Test 15: `prompt(` token inside a `//` line comment is ignored ---
+f="$(write_fixture "prompt-in-comment" '
+fn tick(reason: string) -> void {
+    // once called prompt() here but no longer
+    let y = 42;
+}
+')"
+run_checker "$f"
+if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
+    pass 'prompt-in-comment: prompt( in // comment not flagged'
+else
+    fail "prompt-in-comment" "rc=$rc out=$out"
+fi
+
+# --- Test 16: gate call AFTER prompt on same physical line does NOT cover it ---
+f="$(write_fixture "same-line-order" '
+fn tick(reason: string) -> void {
+    let y = prompt("bare", "x") -> string; let z = recall_latest("k");
+}
+')"
+run_checker "$f"
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q "\[UNGATED\]"; then
+    pass "same-line-order: gate after prompt on same line does not cover it"
+else
+    fail "same-line-order" "rc=$rc out=$out"
+fi
+
+# --- Test 17: gate call BEFORE prompt on same physical line DOES cover it ---
+f="$(write_fixture "same-line-gate-first" '
+fn tick(reason: string) -> void {
+    let x = recall_latest("k"); let y = prompt("ok", x) -> string;
+}
+')"
+run_checker "$f"
+if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
+    pass "same-line-gate-first: gate before prompt on same line covers it"
+else
+    fail "same-line-gate-first" "rc=$rc out=$out"
+fi
+
+# --- Test 18: commented-out `recall_latest` in a fn does NOT make it a gate fn ---
+f="$(write_fixture "commented-recall" '
+fn fake_gate() -> string {
+    // recall_latest("agent:x")
+    return "y";
+}
+
+fn tick(reason: string) -> void {
+    let x = fake_gate();
+    let y = prompt("bare", x) -> string;
+}
+')"
+run_checker "$f"
+# fake_gate is NOT a gate fn because its real body has no recall_latest —
+# the match is only inside a `//` line comment, which pass 1 strips.
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q "\[UNGATED\]"; then
+    pass "commented-recall: // recall_latest in fn body does not make it a gate fn"
+else
+    fail "commented-recall" "rc=$rc out=$out"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

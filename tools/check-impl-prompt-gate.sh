@@ -28,9 +28,15 @@
 #     suppression comment if you hit this deliberately; fix the code
 #     otherwise.
 #   - `/* */` block comments are not recognised (no .ag file uses them).
-#   - Braces inside string literals (e.g., `"{ foo }"`) are ignored by
-#     stripping `//` line comments only; none of the current .ag files
-#     exercises that pattern.
+#     `//` line comments are stripped before matching, so neither
+#     `prompt(` nor `recall_latest(` nor a gate-fn name inside a `//`
+#     comment triggers the checker.
+#   - Same-line ordering is respected: if a gate call appears AFTER a
+#     `prompt(` on the same physical line, it does NOT cover that
+#     prompt (only triggers on subsequent lines).
+#   - Braces or `prompt(` tokens inside string literals are not
+#     specially handled (comments are, string literals are not) — none
+#     of the current .ag files exercises that pattern.
 #
 # Usage: ./tools/check-impl-prompt-gate.sh [path]
 # Exit 0 if no unguarded prompts, 1 if one or more findings, 2 on usage error.
@@ -52,30 +58,33 @@ check_file() {
     local ag_file="$1"
 
     # Pass 1: collect gate function names — fns whose body contains
-    # `recall_latest(`. Output: one name per line.
+    # `recall_latest(` (outside of a `//` line comment). Output: one
+    # name per line.
     local gate_fns
     gate_fns="$(awk '
         BEGIN { depth = 0; in_fn = 0; fn_name = ""; gate_seen = 0 }
 
         {
+            # `clean` is the line with any `//` line-comment stripped,
+            # so comments cannot trigger gate detection or brace counting.
+            clean = $0
+            sub(/\/\/.*$/, "", clean)
+
             # Detect top-level `fn NAME(` when not already inside one.
-            if (!in_fn && depth == 0 && match($0, /^[[:space:]]*fn[[:space:]]+[a-zA-Z_][a-zA-Z_0-9]*/)) {
-                s = substr($0, RSTART, RLENGTH)
+            if (!in_fn && depth == 0 && match(clean, /^[[:space:]]*fn[[:space:]]+[a-zA-Z_][a-zA-Z_0-9]*/)) {
+                s = substr(clean, RSTART, RLENGTH)
                 sub(/^[[:space:]]*fn[[:space:]]+/, "", s)
                 fn_name = s
                 in_fn = 1
                 gate_seen = 0
             }
 
-            if (in_fn && $0 ~ /recall_latest[[:space:]]*\(/) {
+            if (in_fn && clean ~ /recall_latest[[:space:]]*\(/) {
                 gate_seen = 1
             }
 
-            # Update brace depth using a copy with line-comments stripped.
-            line = $0
-            sub(/\/\/.*$/, "", line)
-            opens = gsub(/\{/, "", line)
-            closes = gsub(/\}/, "", line)
+            opens = gsub(/\{/, "", clean)
+            closes = gsub(/\}/, "", clean)
             depth += opens - closes
 
             if (in_fn && depth <= 0) {
@@ -98,13 +107,29 @@ check_file() {
                 if (arr[i] != "") gate_fns[arr[i]] = 1
             }
             depth = 0; in_fn = 0; fn_name = ""; gate_seen = 0
-            prev_line = ""
+            prev_clean = ""
+        }
+
+        # is_gated(text): return 1 if `text` contains a gate trigger.
+        function is_gated(text,    g, pat) {
+            if (text ~ /recall_latest[[:space:]]*\(/) return 1
+            for (g in gate_fns) {
+                pat = "(^|[^a-zA-Z_0-9])" g "[[:space:]]*\\("
+                if (text ~ pat) return 1
+            }
+            return 0
         }
 
         {
+            # Strip `//` line-comments before any matching so that
+            # `prompt(`, `recall_latest(`, and gate-fn names inside a
+            # comment are ignored.
+            clean = $0
+            sub(/\/\/.*$/, "", clean)
+
             entered_fn_this_line = 0
-            if (!in_fn && depth == 0 && match($0, /^[[:space:]]*fn[[:space:]]+[a-zA-Z_][a-zA-Z_0-9]*/)) {
-                s = substr($0, RSTART, RLENGTH)
+            if (!in_fn && depth == 0 && match(clean, /^[[:space:]]*fn[[:space:]]+[a-zA-Z_][a-zA-Z_0-9]*/)) {
+                s = substr(clean, RSTART, RLENGTH)
                 sub(/^[[:space:]]*fn[[:space:]]+/, "", s)
                 fn_name = s
                 in_fn = 1
@@ -112,43 +137,37 @@ check_file() {
                 entered_fn_this_line = 1
             }
 
-            if (in_fn) {
-                # Rule 1: recall_latest() in same fn.
-                if ($0 ~ /recall_latest[[:space:]]*\(/) gate_seen = 1
+            if (in_fn && !entered_fn_this_line) {
+                # Check for a `prompt(` on this line first, so that a
+                # gate call that appears AFTER the prompt on the same
+                # physical line does not retroactively "cover" it.
+                pp = match(clean, /prompt[[:space:]]*\(/)
+                if (pp > 0) {
+                    # Only the portion of the line BEFORE the `prompt(`
+                    # counts as a preceding gate for this specific prompt.
+                    left = substr(clean, 1, pp - 1)
+                    local_gate = gate_seen
+                    if (!local_gate && is_gated(left)) local_gate = 1
 
-                # Rule 2: call to a known gate function in same fn.
-                if (!gate_seen) {
-                    for (g in gate_fns) {
-                        # `g(` where `g` is a whole-word identifier.
-                        # [^a-zA-Z_0-9] ensures we do not match a prefix
-                        # of another name.
-                        pat = "(^|[^a-zA-Z_0-9])" g "[[:space:]]*\\("
-                        if ($0 ~ pat) { gate_seen = 1; break }
+                    suppressed = 0
+                    # Suppression comment check uses the ORIGINAL line so
+                    # `// colony-lint: impl-prompt-gate-ok` is visible.
+                    if ($0 ~ /colony-lint:[[:space:]]*impl-prompt-gate-ok/) suppressed = 1
+                    else if (prev_original ~ /colony-lint:[[:space:]]*impl-prompt-gate-ok/) suppressed = 1
+
+                    if (!suppressed && !local_gate) {
+                        printf "[UNGATED] %s:%d: prompt() in fn `%s` is not preceded by recall_latest() or a gate-fn call (add a memo gate or annotate with `// colony-lint: impl-prompt-gate-ok`)\n", file, NR, fn_name
                     }
                 }
 
-                # Check for `prompt(` on this line — but only flag if this
-                # is not the `fn prompt(` definition line itself (defensive;
-                # agentis has no user-defined prompt function but belt-and-braces).
-                if (!entered_fn_this_line && $0 ~ /prompt[[:space:]]*\(/) {
-                    # Exclude the standalone `fn prompt(` definition case.
-                    if ($0 !~ /^[[:space:]]*fn[[:space:]]+prompt[[:space:]]*\(/) {
-                        suppressed = 0
-                        if ($0 ~ /colony-lint:[[:space:]]*impl-prompt-gate-ok/) suppressed = 1
-                        else if (prev_line ~ /colony-lint:[[:space:]]*impl-prompt-gate-ok/) suppressed = 1
-
-                        if (!suppressed && !gate_seen) {
-                            printf "[UNGATED] %s:%d: prompt() in fn `%s` is not preceded by recall_latest() or a gate-fn call (add a memo gate or annotate with `// colony-lint: impl-prompt-gate-ok`)\n", file, NR, fn_name
-                        }
-                    }
-                }
+                # Update gate_seen from the whole cleaned line AFTER the
+                # prompt check so that gate triggers carry forward to
+                # subsequent lines.
+                if (!gate_seen && is_gated(clean)) gate_seen = 1
             }
 
-            # Update brace depth for next iteration.
-            line = $0
-            sub(/\/\/.*$/, "", line)
-            opens = gsub(/\{/, "", line)
-            closes = gsub(/\}/, "", line)
+            opens = gsub(/\{/, "", clean)
+            closes = gsub(/\}/, "", clean)
             depth += opens - closes
 
             if (in_fn && depth <= 0) {
@@ -158,7 +177,7 @@ check_file() {
                 if (depth < 0) depth = 0
             }
 
-            prev_line = $0
+            prev_original = $0
         }
     ' "$ag_file")"
 
