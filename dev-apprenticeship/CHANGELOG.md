@@ -17,14 +17,6 @@ is asserted until multi-version CI is in place.
 
 ### Added
 
-- **Curated install-ready release bundle** — `tools/make-federation-bundle.sh`
-  + `dev-apprenticeship/BUNDLE.manifest` assemble a slim tarball
-  (`dev-apprenticeship-v<X.Y.Z>.tar.gz`) containing only the paths this
-  federation needs at runtime. `.github/workflows/release.yml` runs on every
-  `dev-apprenticeship-v*` tag push and attaches the tarball + `.sha256` to the
-  GitHub release. End users can now `curl | tar x | install.sh` without
-  cloning the repo. ([#220](https://github.com/Replikanti/agentis-colonies/issues/220))
-
 ### Changed
 
 ### Deprecated
@@ -34,6 +26,23 @@ is asserted until multi-version CI is in place.
 ### Fixed
 
 ### Security
+
+## [0.1.1] — 2026-04-19
+
+First release produced by the tag-triggered `.github/workflows/release.yml`
+workflow. Runtime compatibility floor unchanged from `0.1.0`.
+
+**Requires:** agentis >= 1.4.1
+
+### Added
+
+- **Curated install-ready release bundle** — `tools/make-federation-bundle.sh`
+  + `dev-apprenticeship/BUNDLE.manifest` assemble a slim tarball
+  (`dev-apprenticeship-v<X.Y.Z>.tar.gz`) containing only the paths this
+  federation needs at runtime. `.github/workflows/release.yml` runs on every
+  `dev-apprenticeship-v*` tag push and attaches the tarball + `.sha256` to the
+  GitHub release. End users can now `curl | tar x | install.sh` without
+  cloning the repo. ([#220](https://github.com/Replikanti/agentis-colonies/issues/220))
 
 ## [0.1.0] — 2026-04-19
 
@@ -172,5 +181,6 @@ permissible per semver §4.
 - All dynamic values flowing into `exec sh` are required to pass through `shell_escape()`;
   `check-exec-sh.sh` enforces this grep-level contract.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.1.0...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.1.1...HEAD
+[0.1.1]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.1.0...dev-apprenticeship-v0.1.1
 [0.1.0]: https://github.com/Replikanti/agentis-colonies/releases/tag/dev-apprenticeship-v0.1.0
