@@ -1,16 +1,16 @@
 #!/bin/bash
-# tools/test-check-impl-prompt-gate.sh: unit tests for tools/check-impl-prompt-gate.sh.
+# tools/test-check-prompt-gate.sh: unit tests for tools/check-prompt-gate.sh.
 #
 # Self-contained. Creates temporary .ag fixture files, runs the checker
 # against them, asserts exit code + output pattern. Cleans up on exit.
 #
-# Usage: ./tools/test-check-impl-prompt-gate.sh
+# Usage: ./tools/test-check-prompt-gate.sh
 # Exit 0 if all tests pass, 1 otherwise.
 
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-CHECKER="$SCRIPT_DIR/check-impl-prompt-gate.sh"
+CHECKER="$SCRIPT_DIR/check-prompt-gate.sh"
 
 if [ ! -x "$CHECKER" ]; then
     echo "[FAIL] checker not found or not executable: $CHECKER"
@@ -204,29 +204,33 @@ else
     fail "boundary-reset" "rc=$rc out=$out"
 fi
 
-# --- Test 10: regression — current dev-apprenticeship/implementation/agents must pass ---
+# --- Test 10: regression — current dev-apprenticeship (3 ticking colonies) must pass ---
+# Covers implementation/ (4 agents), planning/ (4 agents, 7 prompts), and
+# code-review/ (5 agents, 10 prompts including the 2 bus-load-suppressed
+# prompts in approval_decider.ag).
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 run_checker "$REPO_ROOT/dev-apprenticeship"
 if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
-    pass "regression: current implementation/agents clean"
+    pass "regression: current implementation/planning/code-review agents clean"
 else
-    fail "regression: current implementation/agents" "rc=$rc out=$out"
+    fail "regression: current implementation/planning/code-review agents" "rc=$rc out=$out"
 fi
 
-# --- Test 11: directory with no implementation/agents is clean ---
+# --- Test 11: directory with no ticking-colony agents is clean ---
+# The checker only scans */{implementation,planning,code-review}/agents/*.ag.
+# An agent in another colony (e.g., release/) is not scanned.
 empty_dir="$TMPDIR_TEST/empty-fed"
-mkdir -p "$empty_dir/other-colony/agents"
-cat > "$empty_dir/other-colony/agents/x.ag" <<'AGEOF'
+mkdir -p "$empty_dir/release/agents"
+cat > "$empty_dir/release/agents/x.ag" <<'AGEOF'
 fn tick(reason: string) -> void {
     let y = prompt("x", "y") -> string;
 }
 AGEOF
 run_checker "$empty_dir"
-# This file is NOT under */implementation/agents/*, so it must not be scanned.
 if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
-    pass "non-implementation-path: not scanned"
+    pass "non-ticking-colony: not scanned"
 else
-    fail "non-implementation-path" "rc=$rc out=$out"
+    fail "non-ticking-colony" "rc=$rc out=$out"
 fi
 
 # --- Test 12: nonexistent path exits 2 ---
@@ -343,6 +347,96 @@ if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q "\[UNGATED\]"; then
     pass "commented-recall: // recall_latest in fn body does not make it a gate fn"
 else
     fail "commented-recall" "rc=$rc out=$out"
+fi
+
+# --- Test 19 (#208): bare prompt() in planning/agents/ is flagged ---
+planning_fix="$TMPDIR_TEST/fed-planning/planning/agents"
+mkdir -p "$planning_fix"
+cat > "$planning_fix/foo.ag" <<'AGEOF'
+fn tick(reason: string) -> void {
+    let y = prompt("bare", "x") -> string;
+}
+AGEOF
+run_checker "$TMPDIR_TEST/fed-planning"
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q "\[UNGATED\]" && printf '%s' "$out" | grep -q "planning/agents/foo.ag"; then
+    pass "planning-bare-flagged: planning/agents/*.ag bare prompt flagged"
+else
+    fail "planning-bare-flagged" "rc=$rc out=$out"
+fi
+
+# --- Test 20 (#208): gated prompt() in planning/agents/ passes ---
+planning_ok="$TMPDIR_TEST/fed-planning-ok/planning/agents"
+mkdir -p "$planning_ok"
+cat > "$planning_ok/bar.ag" <<'AGEOF'
+fn tick(reason: string) -> void {
+    let ts = recall_latest("bar:last_check");
+    let y = prompt("gated", ts) -> string;
+}
+AGEOF
+run_checker "$TMPDIR_TEST/fed-planning-ok"
+if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
+    pass "planning-gated-passes: planning/agents/*.ag gated prompt not flagged"
+else
+    fail "planning-gated-passes" "rc=$rc out=$out"
+fi
+
+# --- Test 21 (#208): bare prompt() in code-review/agents/ is flagged ---
+review_fix="$TMPDIR_TEST/fed-review/code-review/agents"
+mkdir -p "$review_fix"
+cat > "$review_fix/baz.ag" <<'AGEOF'
+fn tick(reason: string) -> void {
+    let y = prompt("bare", "x") -> string;
+}
+AGEOF
+run_checker "$TMPDIR_TEST/fed-review"
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q "\[UNGATED\]" && printf '%s' "$out" | grep -q "code-review/agents/baz.ag"; then
+    pass "code-review-bare-flagged: code-review/agents/*.ag bare prompt flagged"
+else
+    fail "code-review-bare-flagged" "rc=$rc out=$out"
+fi
+
+# --- Test 22 (#208): gated prompt() in code-review/agents/ passes ---
+review_ok="$TMPDIR_TEST/fed-review-ok/code-review/agents"
+mkdir -p "$review_ok"
+cat > "$review_ok/qux.ag" <<'AGEOF'
+fn tick(reason: string) -> void {
+    let ts = recall_latest("qux:last_check");
+    let y = prompt("gated", ts) -> string;
+}
+AGEOF
+run_checker "$TMPDIR_TEST/fed-review-ok"
+if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
+    pass "code-review-gated-passes: code-review/agents/*.ag gated prompt not flagged"
+else
+    fail "code-review-gated-passes" "rc=$rc out=$out"
+fi
+
+# --- Test 23 (#208): legacy `// colony-lint: impl-prompt-gate-ok` alias still suppresses ---
+f="$(write_fixture "legacy-alias" '
+fn tick(reason: string) -> void {
+    // colony-lint: impl-prompt-gate-ok
+    let y = prompt("bare", "x") -> string;
+}
+')"
+run_checker "$f"
+if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
+    pass "legacy-alias: impl-prompt-gate-ok still suppresses"
+else
+    fail "legacy-alias" "rc=$rc out=$out"
+fi
+
+# --- Test 24 (#208): new canonical `// colony-lint: prompt-gate-ok` suppresses ---
+f="$(write_fixture "new-canonical-token" '
+fn tick(reason: string) -> void {
+    // colony-lint: prompt-gate-ok
+    let y = prompt("bare", "x") -> string;
+}
+')"
+run_checker "$f"
+if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
+    pass "new-canonical-token: prompt-gate-ok suppresses"
+else
+    fail "new-canonical-token" "rc=$rc out=$out"
 fi
 
 echo ""

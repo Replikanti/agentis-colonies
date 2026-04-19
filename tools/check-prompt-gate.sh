@@ -1,25 +1,31 @@
 #!/bin/bash
-# tools/check-impl-prompt-gate.sh: Flag unguarded `prompt()` calls in implementation/agents/*.ag.
+# tools/check-prompt-gate.sh: Flag unguarded `prompt()` calls in ticking colonies.
 #
-# The implementation colony is wired to run many times per minute against a
-# GitLab project. If an `implementation/` agent calls `prompt()` without a
-# memo-based staleness gate, a single stuck issue or stuck MR can drive
-# ~60 LLM calls per hour per agent. Issue #200 / PR #204 fixed the three
-# ticking agents; this lint prevents a future implementation/ agent from
-# silently re-introducing the same drift.
+# The implementation, planning, and code-review colonies are wired to run
+# many times per minute against a GitLab project. If one of their agents
+# calls `prompt()` without a memo-based staleness gate, a single stuck
+# issue or stuck MR can drive ~60 LLM calls per hour per agent. Issues
+# fixed the three code paths: #200 / PR #204 (implementation drafts),
+# #201 / PR #206 (code-review pattern-learning), #187 / PR #190 (planning
+# observe-step). This lint prevents future edits in any of those three
+# colonies from silently re-introducing the same drift. Scope was
+# initially implementation-only (#205 / PR #207) and extended to all
+# three ticking colonies in #208.
 #
 # Rule: every `prompt(...)` call in a `*.ag` file under
-# `*/implementation/agents/` must be preceded within the same function by
+# `*/implementation/agents/`, `*/planning/agents/`, or
+# `*/code-review/agents/` must be preceded within the same function by
 # either:
 #   1. a `recall_latest(...)` read, or
 #   2. a call to a "gate function" — a free function defined in the same
 #      file whose body contains `recall_latest(...)`.
 #
 # Authors can suppress a false positive on a specific line by adding
-# `// colony-lint: impl-prompt-gate-ok` to the `prompt(` line itself or to
-# the preceding line. Prefer a real memo gate; use the suppression only
-# when the prompt is on a proven cold-path (e.g., guarded by upstream
-# emitters that already carry memo gates).
+# `// colony-lint: prompt-gate-ok` (or the legacy alias
+# `// colony-lint: impl-prompt-gate-ok`) to the `prompt(` line itself or
+# to the preceding line. Prefer a real memo gate; use the suppression
+# only when the prompt is on a proven cold-path (e.g., guarded by
+# upstream emitters that already carry memo gates).
 #
 # This is a grep/awk-level check, not a full parser. Known caveats:
 #   - Gate check is textual within-function. If `recall_latest()` appears
@@ -38,7 +44,7 @@
 #     specially handled (comments are, string literals are not) — none
 #     of the current .ag files exercises that pattern.
 #
-# Usage: ./tools/check-impl-prompt-gate.sh [path]
+# Usage: ./tools/check-prompt-gate.sh [path]
 # Exit 0 if no unguarded prompts, 1 if one or more findings, 2 on usage error.
 
 set -euo pipefail
@@ -46,7 +52,7 @@ set -euo pipefail
 SCAN_ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 
 if [ ! -e "$SCAN_ROOT" ]; then
-    echo "check-impl-prompt-gate: scan root does not exist: $SCAN_ROOT" >&2
+    echo "check-prompt-gate: scan root does not exist: $SCAN_ROOT" >&2
     exit 2
 fi
 
@@ -151,12 +157,13 @@ check_file() {
 
                     suppressed = 0
                     # Suppression comment check uses the ORIGINAL line so
-                    # `// colony-lint: impl-prompt-gate-ok` is visible.
-                    if ($0 ~ /colony-lint:[[:space:]]*impl-prompt-gate-ok/) suppressed = 1
-                    else if (prev_original ~ /colony-lint:[[:space:]]*impl-prompt-gate-ok/) suppressed = 1
+                    # `// colony-lint: prompt-gate-ok` (or the legacy alias
+                    # `// colony-lint: impl-prompt-gate-ok`) is visible.
+                    if ($0 ~ /colony-lint:[[:space:]]*(impl-)?prompt-gate-ok/) suppressed = 1
+                    else if (prev_original ~ /colony-lint:[[:space:]]*(impl-)?prompt-gate-ok/) suppressed = 1
 
                     if (!suppressed && !local_gate) {
-                        printf "[UNGATED] %s:%d: prompt() in fn `%s` is not preceded by recall_latest() or a gate-fn call (add a memo gate or annotate with `// colony-lint: impl-prompt-gate-ok`)\n", file, NR, fn_name
+                        printf "[UNGATED] %s:%d: prompt() in fn `%s` is not preceded by recall_latest() or a gate-fn call (add a memo gate or annotate with `// colony-lint: prompt-gate-ok`)\n", file, NR, fn_name
                     }
                 }
 
@@ -189,19 +196,25 @@ check_file() {
     fi
 }
 
-# Main: walk only implementation/agents/*.ag files under SCAN_ROOT.
+# Main: walk *.ag files in the three ticking agent directories.
+# Covers all three ticking colonies that contain prompt()-based agents
+# that must be protected by a staleness gate (see #200, #201, #205, #208).
 if [ -f "$SCAN_ROOT" ]; then
     # Single-file mode: scan regardless of path (useful for testing).
     check_file "$SCAN_ROOT"
 else
     while IFS= read -r -d '' f; do
         check_file "$f"
-    done < <(find "$SCAN_ROOT" -type f -path '*/implementation/agents/*.ag' -print0)
+    done < <(find "$SCAN_ROOT" -type f \( \
+        -path '*/implementation/agents/*.ag' -o \
+        -path '*/planning/agents/*.ag' -o \
+        -path '*/code-review/agents/*.ag' \
+    \) -print0)
 fi
 
 if [ "$FAIL" -gt 0 ]; then
     echo ""
-    echo "check-impl-prompt-gate: $FAIL unguarded prompt() finding(s)"
+    echo "check-prompt-gate: $FAIL unguarded prompt() finding(s)"
     exit 1
 fi
 
