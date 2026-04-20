@@ -20,8 +20,8 @@ is asserted until multi-version CI is in place.
 - **Events-aware label observability for trigger-label agents**
   ([#235](https://github.com/Replikanti/agentis-colonies/issues/235)).
   Planning and implementation colonies now detect short-lived trigger
-  labels that are added and removed between two 60 s polls. Two new
-  `gitlab-api.sh` commands wrap GitLab's `resource_label_events`
+  labels that are added and removed between two 60 s polls. Three new
+  `gitlab-api.sh` sub-commands wrap GitLab's `resource_label_events`
   endpoint:
     - `issues-by-label-events --since <ISO8601> [--view <name>]` (planning) —
       union of currently-labeled open issues and issues where

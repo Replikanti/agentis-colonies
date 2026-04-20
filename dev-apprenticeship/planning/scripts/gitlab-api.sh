@@ -321,9 +321,13 @@ case "$CMD" in
             esac
         done
         body="$(gl_get "$API/issues/$IID/resource_label_events?per_page=100")" || exit $?
-        printf '%s' "$body" | EV_SINCE="$EV_SINCE" EV_LABEL="$EV_LABEL" python3 <<'PY'
-import os, sys, json
-events = json.load(sys.stdin)
+        # Pass body via env (BODY=) rather than stdin because the heredoc
+        # (<<'PY') would otherwise override the piped input — shellcheck
+        # SC2259. Same idiom as the split / hit / matched / final blocks
+        # below in issues-by-label-events.
+        BODY="$body" EV_SINCE="$EV_SINCE" EV_LABEL="$EV_LABEL" python3 <<'PY'
+import os, json
+events = json.loads(os.environ["BODY"])
 since = os.environ.get("EV_SINCE", "")
 label = os.environ.get("EV_LABEL", "")
 out = []
