@@ -17,6 +17,26 @@ is asserted until multi-version CI is in place.
 
 ### Added
 
+- **Events-aware label observability for trigger-label agents**
+  ([#235](https://github.com/Replikanti/agentis-colonies/issues/235)).
+  Planning and implementation colonies now detect short-lived trigger
+  labels that are added and removed between two 60 s polls. Two new
+  `gitlab-api.sh` commands wrap GitLab's `resource_label_events`
+  endpoint:
+    - `issues-by-label-events --since <ISO8601> [--view <name>]` (planning) —
+      union of currently-labeled open issues and issues where
+      `$PLANNING_TRIGGER_LABEL` was added in [since, now].
+    - `assigned-issues-by-label-events --since <ISO8601> [--view <name>]`
+      (implementation) — same, but assignee-scoped and uses
+      `$IMPLEMENTATION_TRIGGER_LABEL`.
+    - `issue-label-events <iid> [--since ISO8601] [--label NAME]` —
+      primitive events reader, available from both colonies.
+  `risk_assessor.ag`, `scope_estimator.ag`, `task_decomposer.ag`,
+  `plan_reviewer.ag`, and `code_writer.ag` now call the events-aware
+  variant whenever their `last_check` memo is populated; first tick
+  still issues the pre-#235 current-state snapshot, so boot behavior is
+  byte-identical.
+
 ### Changed
 
 ### Deprecated

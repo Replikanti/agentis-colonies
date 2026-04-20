@@ -26,8 +26,10 @@ type CalibrationSummary {
 fn unplanned_cmd() -> string {
     let ts = recall_latest("scope_estimator:last_check");
     if len(ts) > 0 {
-        return "$COLONY_DIR/scripts/gitlab-api.sh issues --needs-planning --since " + shell_escape(ts) + " --view planning";
+        // #235: events-aware query — see risk_assessor.ag for rationale.
+        return "$COLONY_DIR/scripts/gitlab-api.sh issues-by-label-events --since " + shell_escape(ts) + " --view planning";
     };
+    // First-tick fallback: no prior window; snapshot preserves pre-#235 boot behavior.
     return "$COLONY_DIR/scripts/gitlab-api.sh issues --needs-planning --view planning";
 }
 

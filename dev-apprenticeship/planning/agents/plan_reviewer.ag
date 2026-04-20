@@ -72,12 +72,21 @@ fn tick(reason: string) -> void {
 
     // 3. Pick the newest unplanned issue and see if we have all three
     //    slots filled for it. If not, keep waiting.
-    // #147: cheap delta-check. `issues --needs-planning` returns `[]`
-    // when every open issue already has a plan, so we early-exit
-    // before the assembly prompt(). last_check is refreshed so the
-    // agent's liveness signal advances on quiet projects.
+    // #147: cheap delta-check. The query returns `[]` when every open
+    // issue already has a plan, so we early-exit before the assembly
+    // prompt(). last_check is refreshed so the agent's liveness signal
+    // advances on quiet projects.
+    // #235: use issues-by-label-events when we have a prior window so
+    // short-lived trigger labels aren't missed; fall back to the current-
+    // state snapshot on first tick (byte-identical to pre-#235 boot).
+    let prev_check = recall_latest("plan_reviewer:last_check");
+    let issues_cmd = if len(prev_check) > 0 {
+        "$COLONY_DIR/scripts/gitlab-api.sh issues-by-label-events --since " + shell_escape(prev_check) + " --view planning";
+    } else {
+        "$COLONY_DIR/scripts/gitlab-api.sh issues --needs-planning --view planning";
+    };
     let issues_raw = try {
-        exec sh "$COLONY_DIR/scripts/gitlab-api.sh issues --needs-planning --view planning";
+        exec sh issues_cmd;
     } catch e {
         print("[plan_reviewer] GitLab unplanned-issue poll failed:", e);
         "";
