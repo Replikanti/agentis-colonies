@@ -49,11 +49,17 @@ GITLAB_ME=$(parse_toml gitlab me)
 # hardcoded default "implementation" via ${VAR:-implementation}.
 IMPLEMENTATION_TRIGGER_LABEL=$(parse_toml implementation trigger_label)
 
+# #224: primary branch name. Empty if not configured (pre-#224 setups);
+# gitlab-api.sh falls back to the hardcoded default "main" via
+# ${GITLAB_DEFAULT_BRANCH:-main}.
+GITLAB_DEFAULT_BRANCH=$(parse_toml gitlab default_branch)
+
 export GITLAB_URL
 export GITLAB_TOKEN
 export GITLAB_PROJECT
 export GITLAB_ME
 export IMPLEMENTATION_TRIGGER_LABEL
+export GITLAB_DEFAULT_BRANCH
 export COLONY_DIR
 
 AGENTS=(

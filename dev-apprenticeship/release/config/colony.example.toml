@@ -12,6 +12,7 @@ url = "https://gitlab.example.com"
 token = "glpat-your-token-here"
 project = "your-org/your-project"
 me = ""  # your GitLab username, e.g. "martin.holy" (optional, enables personal/team tagging)
+default_branch = "main"  # primary branch — override for projects using "master", "develop", "trunk", etc. (#224)
 
 [llm]
 # Only "backend" is read today. "cli" uses the agentis daemon default CLI adapter.

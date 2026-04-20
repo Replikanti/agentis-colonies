@@ -3,9 +3,12 @@
 # Called by .ag agents via exec sh.
 #
 # Required env vars (set by start-colony.sh from colony.toml):
-#   GITLAB_URL     - GitLab instance URL (e.g. https://gitlab.example.com)
-#   GITLAB_TOKEN   - Personal access token or project token
-#   GITLAB_PROJECT - URL-encoded project path (e.g. your-org%2Fyour-project)
+#   GITLAB_URL             - GitLab instance URL (e.g. https://gitlab.example.com)
+#   GITLAB_TOKEN           - Personal access token or project token
+#   GITLAB_PROJECT         - URL-encoded project path (e.g. your-org%2Fyour-project)
+#   GITLAB_DEFAULT_BRANCH  - (optional, #224) primary branch name used as the
+#                            default --ref for create-tag. Defaults to "main"
+#                            when unset.
 #
 # Usage:
 #   gitlab-api.sh releases [--per-page N] [--view <name>]
@@ -386,7 +389,9 @@ case "$CMD" in
 
     create-tag)
         NAME=""
-        REF="main"
+        # #224: honour operator-configured default branch; fall back to "main"
+        # for pre-#224 setups where the env var is unset.
+        REF="${GITLAB_DEFAULT_BRANCH:-main}"
         MESSAGE=""
         while [ $# -gt 0 ]; do
             case "$1" in

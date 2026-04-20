@@ -44,10 +44,16 @@ GITLAB_PROJECT="${GITLAB_PROJECT_RAW//\//%2F}"
 # memo gitlab:me and tag everything as team when both are empty.
 GITLAB_ME=$(parse_toml gitlab me)
 
+# #224: primary branch name. Empty if not configured (pre-#224 setups);
+# gitlab-api.sh falls back to the hardcoded default "main" via
+# ${GITLAB_DEFAULT_BRANCH:-main}.
+GITLAB_DEFAULT_BRANCH=$(parse_toml gitlab default_branch)
+
 export GITLAB_URL
 export GITLAB_TOKEN
 export GITLAB_PROJECT
 export GITLAB_ME
+export GITLAB_DEFAULT_BRANCH
 export COLONY_DIR
 
 AGENTS=(
