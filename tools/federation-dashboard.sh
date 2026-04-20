@@ -106,11 +106,26 @@ generate() {
     done
     COLONY_LIST_PY="[${COLONY_LIST_PY%,}]"
 
-    local EXPERIENCE_DIR="${FED_DIR}/../.agentis/experience"
+    # #238: prefer federation-local .agentis/ if present (standalone-federation
+    # layout with a real .agentis/ directory inside the federation root). Fall
+    # back to the parent-level .agentis/ only when local is absent — that is
+    # the symlinked single-federation layout where `<fed>/.agentis -> ../.agentis`
+    # already resolves through the local-first check. Without this ordering,
+    # sibling federations under a shared parent (e.g. dev-apprenticeship +
+    # dev-apprenticeship-app both under agentis-colonies/) cross-read each
+    # other's experience/logs because `<fed>/../.agentis` resolves to the same
+    # shared directory for both.
+    local EXPERIENCE_DIR="${FED_DIR}/.agentis/experience"
+    if [ ! -d "$EXPERIENCE_DIR" ]; then
+        EXPERIENCE_DIR="${FED_DIR}/../.agentis/experience"
+    fi
     if [ ! -d "$EXPERIENCE_DIR" ]; then
         EXPERIENCE_DIR=".agentis/experience"
     fi
-    local LOG_DIR="${FED_DIR}/../.agentis/logs"
+    local LOG_DIR="${FED_DIR}/.agentis/logs"
+    if [ ! -d "$LOG_DIR" ]; then
+        LOG_DIR="${FED_DIR}/../.agentis/logs"
+    fi
     if [ ! -d "$LOG_DIR" ]; then
         LOG_DIR=".agentis/logs"
     fi
