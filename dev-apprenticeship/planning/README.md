@@ -59,7 +59,9 @@ When a new issue needs planning, the Scope Estimator, Risk Assessor, and Task De
 
 3. (Optional) Override `[planning] trigger_label` if your project uses a label other than `needs-planning` to signal an issue is ready for planning. Scoped labels (`DEV::not started`) and labels with spaces are supported — `--data-urlencode` handles the encoding (#223).
 
-4. Start the colony:
+4. (Optional) Retune `[planning.labels]` if your project uses a different label taxonomy for incidents and epics (#226). Values are free-text and injected verbatim into the `risk_assessor` and `task_decomposer` prompt context, so operators can list comma-separated label names or describe non-label patterns (e.g. `epic = "umbrella-issue pattern, parent/child references in description"`). Defaults preserve pre-#226 vocabulary (`incident, bug, blocker` / `epic`).
+
+5. Start the colony:
    ```bash
    ./scripts/start-colony.sh
    ```

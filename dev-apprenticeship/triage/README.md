@@ -60,7 +60,9 @@ The last-check refresh inside the early-exit branch is load-bearing — otherwis
 
 2. Configure your GitLab connection in `colony.toml`.
 
-3. Start the colony:
+3. (Optional) Retune `[triage.labels] priority` if your project uses a different priority-label taxonomy (#226). The value is free-text and injected verbatim into the `prioritizer` prompt context, so operators can list comma-separated label names (e.g. `"P0, P1, P2, P3"`, or `"severity::1, severity::2, severity::3"`). Default preserves pre-#226 vocabulary (`priority::critical/high/medium/low, P1-P4, urgent`).
+
+4. Start the colony:
    ```bash
    ./scripts/start-colony.sh
    ```

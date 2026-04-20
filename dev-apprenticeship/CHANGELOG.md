@@ -30,11 +30,15 @@ is asserted until multi-version CI is in place.
   key) in the respective `colony.example.toml` files. `start-colony.sh`
   seeds these values into memo (`planning:labels:incident`,
   `planning:labels:epic`, `triage:labels:priority`) on every restart;
-  `risk_assessor`, `task_decomposer`, and `prioritizer` prompts splice
-  the memo value into the prompt string via `recall_latest()` with a
-  hardcoded-default fallback. Values are free-text so operators can list
-  label names or describe non-label patterns (e.g. `"umbrella-issue
-  pattern"`). Unset keys preserve pre-#226 prompts byte-identically.
+  `risk_assessor`, `task_decomposer`, and `prioritizer` inject the
+  vocabulary into their `prompt()` context arg via `recall_latest()`
+  with a hardcoded-default fallback. The agentis parser requires a
+  string literal for the prompt instruction arg, so vocabulary flows
+  through `context`; instruction strings were rephrased to reference
+  the context ("focus on the vocabulary above"). Values are free-text
+  so operators can list label names or describe non-label patterns
+  (e.g. `"umbrella-issue pattern"`). Unset keys preserve the pre-#226
+  vocabulary verbatim — LLM behaviour is semantically equivalent.
   ([#226](https://github.com/Replikanti/agentis-colonies/issues/226))
 
 ### Changed
