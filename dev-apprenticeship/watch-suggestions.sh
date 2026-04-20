@@ -12,11 +12,24 @@ set -e
 
 SCRIPT_PATH="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$0")"
 SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
-LOG_DIR="${1:-${SCRIPT_DIR}/../.agentis/logs}"
 
-if [ ! -d "$LOG_DIR" ]; then
-    # Try current working directory
-    LOG_DIR=".agentis/logs"
+# Resolve log directory with fed-local-first precedence (mirrors
+# tools/federation-dashboard.sh after #238). The previous default
+# "${SCRIPT_DIR}/../.agentis/logs" resolved to the repo-root shared
+# .agentis/ when two federations live as siblings under one checkout,
+# cross-reading the other federation's logs. Daemons write to
+# <federation>/.agentis/logs, so prefer that first and only fall
+# through to the parent-level or cwd path when the local one is absent.
+if [ -n "${1:-}" ]; then
+    LOG_DIR="$1"
+else
+    LOG_DIR="${SCRIPT_DIR}/.agentis/logs"
+    if [ ! -d "$LOG_DIR" ]; then
+        LOG_DIR="${SCRIPT_DIR}/../.agentis/logs"
+    fi
+    if [ ! -d "$LOG_DIR" ]; then
+        LOG_DIR=".agentis/logs"
+    fi
 fi
 
 if [ ! -d "$LOG_DIR" ]; then
