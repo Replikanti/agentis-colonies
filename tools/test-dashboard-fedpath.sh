@@ -53,8 +53,12 @@ free_port() {
 }
 
 boot_dashboard() {
-    local fed_dir="$1" port="$2" log_file="$3"
-    setsid bash "$DASHBOARD_SH" "$fed_dir" "$port" >"$log_file" 2>&1 &
+    local fed_dir="$1" port="$2" log_file="$3" cwd="${4:-}"
+    if [ -n "$cwd" ]; then
+        ( cd "$cwd" && setsid bash "$DASHBOARD_SH" "$fed_dir" "$port" >"$log_file" 2>&1 ) &
+    else
+        setsid bash "$DASHBOARD_SH" "$fed_dir" "$port" >"$log_file" 2>&1 &
+    fi
     local pid=$!
     DASH_PIDS="$DASH_PIDS $pid"
     for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -165,6 +169,79 @@ if grep -q 'shared:event' "$HTML_B"; then
     pass "B.1: symlinked layout resolves through symlink to parent-level log"
 else
     fail "B.1: symlinked layout should render shared_agent event" "missing shared:event"
+fi
+
+# ============================================================================
+# Case C: cwd-fallback layout — neither $FED/.agentis nor $FED/../.agentis
+# exists. Dashboard must fall through to the third arm of the precedence
+# (`.agentis/logs` relative to cwd). Regression guard for the resolver's
+# final fallback branch: if someone replaces the three-step precedence with
+# a two-step one, Case C fails even though Cases A and B still pass.
+#
+# Layout is isolated under $TMPDIR_TEST/case-c/ so the shared parent-level
+# .agentis/ at $TMPDIR_TEST/.agentis/ (used by Cases A and B) is NOT
+# $FED_C/../.agentis — that would be $TMPDIR_TEST/case-c/.agentis/, which
+# we deliberately leave absent to force the cwd fallback.
+# ============================================================================
+CASE_C_ROOT="$TMPDIR_TEST/case-c"
+FED_C="$CASE_C_ROOT/fed"
+CWD_C="$CASE_C_ROOT/cwd"
+mkdir -p "$FED_C/stub-colony/agents" "$FED_C/stub-colony/config" \
+         "$CWD_C/.agentis/logs" "$CWD_C/.agentis/daemon" "$CWD_C/.agentis/experience"
+
+cat > "$FED_C/stub-colony/config/colony.toml" <<'TOML'
+[colony]
+name = "stub-colony"
+TOML
+
+cat > "$FED_C/stub-colony/agents/cwd_agent.ag" <<'AG'
+cb 100;
+fn tick() { return Void; }
+AG
+
+cat > "$CWD_C/.agentis/logs/cwd_agent.log" <<'LOG'
+1776250033777 emit cwd:only_in_cwd_fallback
+LOG
+
+# Sanity: confirm fed-local and parent-level .agentis/ are absent so the
+# dashboard MUST use cwd fallback, not a silently-working fed-local path.
+if [ -d "$FED_C/.agentis" ] || [ -d "$CASE_C_ROOT/.agentis" ]; then
+    fail "C.0: Case C fixture misconfigured — fed-local or parent .agentis/ exists"
+    echo "Results: $PASS passed, $FAIL failed"
+    exit 1
+fi
+
+PORT_C="$(free_port)"
+LOG_C="$TMPDIR_TEST/dashboard-C.log"
+boot_dashboard "$FED_C" "$PORT_C" "$LOG_C" "$CWD_C" >/dev/null || {
+    fail "C.0: cwd-fallback dashboard never became ready" "log tail: $(tail -10 "$LOG_C" 2>/dev/null | tr '\n' ' ')"
+    echo "Results: $PASS passed, $FAIL failed"
+    exit 1
+}
+
+HTML_C="$TMPDIR_TEST/index-C.html"
+curl -s "http://127.0.0.1:$PORT_C/" -o "$HTML_C" || true
+
+if [ ! -s "$HTML_C" ]; then
+    fail "C.0: GET / returned empty body"
+    echo "Results: $PASS passed, $FAIL failed"
+    exit 1
+fi
+
+if grep -q 'cwd:only_in_cwd_fallback' "$HTML_C"; then
+    pass "C.1: cwd-fallback layout reads .agentis/logs relative to cwd"
+else
+    fail "C.1: cwd-fallback layout should render cwd_agent event" "missing cwd:only_in_cwd_fallback"
+fi
+
+# Cases A and B's shared_agent log lives at $TMPDIR_TEST/.agentis/logs,
+# which is NOT $FED_C/.agentis, NOT $FED_C/../.agentis, and NOT $CWD_C/.agentis.
+# Verify it doesn't leak through — the resolver must not silently walk further
+# up than the three defined arms.
+if grep -q 'shared:event' "$HTML_C"; then
+    fail "C.2: cwd-fallback layout must NOT reach an unrelated .agentis/ elsewhere on the filesystem" "found shared:event"
+else
+    pass "C.2: cwd-fallback layout does not leak unrelated parent-level .agentis/"
 fi
 
 echo ""

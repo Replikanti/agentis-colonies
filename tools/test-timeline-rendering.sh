@@ -44,8 +44,12 @@ fi
 
 # --- Fixture: federation directory with a single colony stub and a logs
 #     dir containing three crafted lines exercising each timestamp path.
-#     The dashboard reads logs from "$FED_DIR/../.agentis/logs", so the
-#     logs live at $TMPDIR_TEST/.agentis/logs/ (one level above FED_DIR). ---
+#     Post-#238, the dashboard resolves logs with fed-local-first
+#     precedence: "$FED_DIR/.agentis/logs" → "$FED_DIR/../.agentis/logs"
+#     → "./.agentis/logs". This fixture exercises the parent-level
+#     fallback (no $FED_DIR/.agentis present), so the logs live at
+#     $TMPDIR_TEST/.agentis/logs/ (one level above FED_DIR) and the
+#     dashboard picks them up via the second arm of that precedence. ---
 FED_DIR="$TMPDIR_TEST/fed"
 mkdir -p "$FED_DIR/.agentis/daemon" \
          "$TMPDIR_TEST/.agentis/logs" \
