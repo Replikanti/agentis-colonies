@@ -19,6 +19,8 @@
 #
 # Usage:
 #   gitlab-api.sh issues --needs-planning [--since ISO8601] [--view <name>]
+#   gitlab-api.sh issues-by-label-events --since ISO8601 [--view <name>]
+#   gitlab-api.sh issue-label-events <iid> [--since ISO8601] [--label NAME]
 #   gitlab-api.sh add-note <iid> --body <text>
 #   gitlab-api.sh merge-requests [--state merged] [--since ISO8601] [--per-page N] [--view <name>]
 #
@@ -299,6 +301,147 @@ case "$CMD" in
         # chars are all escaped correctly and markdown formatting is preserved.
         JSON_BODY=$(printf '%s' "$BODY" | python3 -c 'import sys,json; print(json.dumps({"body": sys.stdin.read()}))')
         gl_post "$API/issues/$ID/notes" "$JSON_BODY"
+        ;;
+
+    issue-label-events)
+        # #235: expose GitLab resource_label_events for a single issue, with
+        # optional client-side filter by label name and/or since timestamp.
+        # Projection: [{ts, action, label, user}] — stable shape independent
+        # of GitLab schema drift. The endpoint itself has no --since query
+        # param (unlike /issues), so the filter runs client-side.
+        IID="${1:?Usage: gitlab-api.sh issue-label-events <iid> [--since ISO8601] [--label NAME]}"
+        shift
+        EV_SINCE=""
+        EV_LABEL=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --since) EV_SINCE="$2"; shift 2 ;;
+                --label) EV_LABEL="$2"; shift 2 ;;
+                *) emit_error "unknown flag: $1"; exit 2 ;;
+            esac
+        done
+        body="$(gl_get "$API/issues/$IID/resource_label_events?per_page=100")" || exit $?
+        # Pass body via env (BODY=) rather than stdin because the heredoc
+        # (<<'PY') would otherwise override the piped input — shellcheck
+        # SC2259. Same idiom as the split / hit / matched / final blocks
+        # below in issues-by-label-events.
+        BODY="$body" EV_SINCE="$EV_SINCE" EV_LABEL="$EV_LABEL" python3 <<'PY'
+import os, json
+events = json.loads(os.environ["BODY"])
+since = os.environ.get("EV_SINCE", "")
+label = os.environ.get("EV_LABEL", "")
+out = []
+for ev in events:
+    ev_label = (ev.get("label") or {}).get("name")
+    ev_ts = ev.get("created_at") or ""
+    if since and ev_ts < since:
+        continue
+    if label and ev_label != label:
+        continue
+    out.append({
+        "ts": ev_ts,
+        "action": ev.get("action"),
+        "label": ev_label,
+        "user": (ev.get("user") or {}).get("username"),
+    })
+print(json.dumps(out))
+PY
+        ;;
+
+    issues-by-label-events)
+        # #235: events-aware trigger query. Returns the union of
+        #   (a) open issues that currently carry $PLANNING_TRIGGER_LABEL, and
+        #   (b) open issues that had the label added at any point in
+        #       [--since, now] per resource_label_events.
+        # Closes the observability gap where a short-lived trigger label
+        # (e.g. "DEV::not started" on projects that transition it in
+        # seconds) is added and removed between two 60 s polls and the
+        # current-state snapshot misses it entirely.
+        EV_SINCE=""
+        VIEW=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --since) EV_SINCE="$2"; shift 2 ;;
+                --view) VIEW="$2"; shift 2 ;;
+                *) emit_error "unknown flag: $1"; exit 2 ;;
+            esac
+        done
+        if [ -z "$EV_SINCE" ]; then
+            emit_error "--since is required for issues-by-label-events"
+            exit 2
+        fi
+        LABEL="${PLANNING_TRIGGER_LABEL:-needs-planning}"
+        # Fetch recent open issues with no label filter so we catch those
+        # that had the trigger label briefly and lost it again.
+        BASE_ARGS=(
+            --data-urlencode "state=opened"
+            --data-urlencode "per_page=20"
+            --data-urlencode "order_by=updated_at"
+            --data-urlencode "sort=desc"
+            --data-urlencode "updated_after=$EV_SINCE"
+        )
+        recent="$(gl_get_q "$API/issues" "${BASE_ARGS[@]}")" || exit $?
+        # Split into currently-labeled (include directly) and need-events-check.
+        split="$(RECENT="$recent" LABEL="$LABEL" python3 <<'PY'
+import os, json
+items = json.loads(os.environ["RECENT"])
+label = os.environ["LABEL"]
+current = [x for x in items if label in (x.get("labels") or [])]
+to_check = [x["iid"] for x in items if label not in (x.get("labels") or [])]
+print(json.dumps({"current": current, "to_check": to_check}))
+PY
+)" || exit $?
+        current_list="$(printf '%s' "$split" | python3 -c 'import sys,json;print(json.dumps(json.load(sys.stdin)["current"]))')"
+        iids_to_check="$(printf '%s' "$split" | python3 -c 'import sys,json;print(" ".join(str(i) for i in json.load(sys.stdin)["to_check"]))')"
+        matched="[]"
+        for IID in $iids_to_check; do
+            ev_body="$(gl_get "$API/issues/$IID/resource_label_events?per_page=100")" || continue
+            hit="$(EVBODY="$ev_body" LABEL="$LABEL" EV_SINCE="$EV_SINCE" python3 <<'PY'
+import os, json
+events = json.loads(os.environ["EVBODY"])
+label = os.environ["LABEL"]
+since = os.environ["EV_SINCE"]
+for ev in events:
+    ev_label = (ev.get("label") or {}).get("name")
+    ev_ts = ev.get("created_at") or ""
+    if ev_label == label and ev.get("action") == "add" and ev_ts >= since:
+        print("1"); break
+else:
+    print("")
+PY
+)"
+            if [ -n "$hit" ]; then
+                issue_body="$(gl_get "$API/issues/$IID")" || continue
+                matched="$(MATCHED="$matched" ISSUE="$issue_body" python3 <<'PY'
+import os, json
+acc = json.loads(os.environ["MATCHED"])
+acc.append(json.loads(os.environ["ISSUE"]))
+print(json.dumps(acc))
+PY
+)"
+            fi
+        done
+        # Union current + matched, dedup by iid, preserve current-first ordering.
+        final="$(CUR="$current_list" MATCHED="$matched" python3 <<'PY'
+import os, json
+a = json.loads(os.environ["CUR"])
+b = json.loads(os.environ["MATCHED"])
+seen = set()
+out = []
+for x in a + b:
+    iid = x.get("iid")
+    if iid in seen:
+        continue
+    seen.add(iid)
+    out.append(x)
+print(json.dumps(out))
+PY
+)"
+        if [ -n "$VIEW" ]; then
+            printf '%s' "$final" | project_json "$VIEW"
+        else
+            printf '%s' "$final"
+        fi
         ;;
 
     merge-requests)

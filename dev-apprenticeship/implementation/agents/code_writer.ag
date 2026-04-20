@@ -106,8 +106,17 @@ fn tick(reason: string) -> void {
         };
     };
 
-    // 2. Check for assigned issues needing implementation
-    let issues_cmd = "$COLONY_DIR/scripts/gitlab-api.sh assigned-issues --view assigned";
+    // 2. Check for assigned issues needing implementation.
+    // #235: use events-aware query when we have a prior window so short-
+    // lived trigger labels (e.g. "DEV::not started" transitioning through
+    // scoped states in seconds) aren't missed. The first tick falls back
+    // to the current-state snapshot — byte-identical to pre-#235 boot.
+    let prev_check = recall_latest("code_writer:last_check");
+    let issues_cmd = if len(prev_check) > 0 {
+        "$COLONY_DIR/scripts/gitlab-api.sh assigned-issues-by-label-events --since " + shell_escape(prev_check) + " --view assigned";
+    } else {
+        "$COLONY_DIR/scripts/gitlab-api.sh assigned-issues --view assigned";
+    };
     let issues_raw = try {
         exec sh issues_cmd;
     } catch e {
