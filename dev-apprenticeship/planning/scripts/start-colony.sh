@@ -63,6 +63,22 @@ AGENTS=(
     plan_reviewer
 )
 
+# #226: vocabulary memo seeding. Operator-tuned label vocabulary overrides
+# the hardcoded defaults baked into risk_assessor / task_decomposer
+# prompts. Read from colony.toml on every restart so config edits take
+# effect on the next start-colony cycle (no install.sh re-run). Failures
+# are non-fatal: agents fall back to the pre-#226 hardcoded strings via
+# the `recall_latest() / if len() > 0` pattern.
+INCIDENT_LABELS=$(parse_toml planning.labels incident)
+EPIC_LABELS=$(parse_toml planning.labels epic)
+FED_ROOT="$(cd "$REPO_ROOT/dev-apprenticeship" && pwd)"
+if [ -n "$INCIDENT_LABELS" ]; then
+    (cd "$FED_ROOT" && agentis memo set planning:labels:incident "$INCIDENT_LABELS" >/dev/null 2>&1) || true
+fi
+if [ -n "$EPIC_LABELS" ]; then
+    (cd "$FED_ROOT" && agentis memo set planning:labels:epic "$EPIC_LABELS" >/dev/null 2>&1) || true
+fi
+
 # Opt-in log truncation. Off by default so operators who rely on log
 # history across restarts are not surprised. Set TRUNCATE_LOGS=1 in
 # the environment (or via start-federation.sh) to bound disk use

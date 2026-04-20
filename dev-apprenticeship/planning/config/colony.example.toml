@@ -16,6 +16,16 @@ tick_interval_ms = 60000
 # encoding at the API layer.
 trigger_label = "needs-planning"
 
+# #226: label vocabulary injected into risk_assessor and task_decomposer
+# prompts. Free-text; the agents splice the value into their prompt
+# verbatim so operators can list comma-separated label names or describe
+# non-label patterns (e.g. `"umbrella-issue pattern, parent/child refs"`).
+# Leave unset to keep the pre-#226 hardcoded defaults
+# ('incident, bug, blocker' and 'epic').
+[planning.labels]
+incident = "incident, bug, blocker"   # labels risk_assessor treats as incident-class
+epic = "epic"                          # labels/patterns task_decomposer treats as epic-class
+
 [gitlab]
 url = "https://gitlab.example.com"
 token = "glpat-your-token-here"

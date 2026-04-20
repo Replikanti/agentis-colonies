@@ -17,6 +17,14 @@ me = ""  # your GitLab username, e.g. "martin.holy" (optional, enables personal/
 # Only "backend" is read today. "cli" uses the agentis daemon default CLI adapter.
 backend = "cli"
 
+# #226: label vocabulary injected into the prioritizer prompts. Free-text;
+# the agent splices the value into the prompt verbatim so operators can
+# list comma-separated label names or describe non-label patterns. Leave
+# unset to keep the pre-#226 hardcoded defaults
+# ('priority::critical/high/medium/low, P1-P4, urgent').
+[triage.labels]
+priority = "priority::critical, priority::high, priority::medium, priority::low, P1, P2, P3, P4, urgent"
+
 # Auto-confidence knobs (#106). These are informational in the current
 # Phase 1 shipment: the agents hard-code the defaults (match +0.02,
 # partial +0.005, mismatch -0.01, timeout 86400s, autonomy_cap 0.85) and

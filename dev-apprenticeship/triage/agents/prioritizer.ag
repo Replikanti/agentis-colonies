@@ -73,10 +73,26 @@ fn tick(reason: string) -> void {
         return;
     };
 
+    // #226: operator-configurable priority label vocabulary. The agentis
+    // parser requires a string literal for `prompt()` instruction args,
+    // so the vocabulary is spliced into the `context` arg instead. One
+    // `recall`, two uses (the analyze context here and the suggest
+    // context further down). Unseeded memo returns "" → the hardcoded
+    // fallback is used, byte-identical to pre-#226 for configs that
+    // don't set `[triage.labels].priority`.
+    let priority_vocab = recall_latest("triage:labels:priority");
+    let priority_example = if len(priority_vocab) > 0 {
+        priority_vocab;
+    } else {
+        "priority::critical, priority::high, priority::medium, priority::low, P1, P2, P3, P4, urgent";
+    };
+    let vocab_line = "Priority label vocabulary: " + priority_example;
+
     // Analyze: find prioritized and unprioritized issues
+    let analyze_ctx = vocab_line + "\n\nIssues JSON:\n" + raw;
     let analysis = prompt(
-        "Analyze this GitLab issues JSON. Count issues with priority labels like priority::critical/high/medium/low, P1-P4, urgent (prioritized_count) and those without (unprioritized_count). Summarize patterns (patterns). List unprioritized issue IDs, titles, labels (unprioritized_issues). Return JSON: prioritized_count (int), unprioritized_count (int), patterns (string), unprioritized_issues (string).",
-        raw
+        "Analyze the GitLab issues JSON in the context. Count issues with priority labels from the vocabulary above (prioritized_count) and those without (unprioritized_count). Summarize patterns (patterns). List unprioritized issue IDs, titles, labels (unprioritized_issues). Return JSON: prioritized_count (int), unprioritized_count (int), patterns (string), unprioritized_issues (string).",
+        analyze_ctx
     ) -> PriorityAnalysis;
 
     if analysis.prioritized_count > 0 {
@@ -94,10 +110,10 @@ fn tick(reason: string) -> void {
     if analysis.unprioritized_count > 0 {
         let my_tier = tier("prioritizer");
         let rec = recommend("prioritize", ["accuracy"]);
-        let context = "Unprioritized issues: " + analysis.unprioritized_issues + "\nPast learning: " + to_string(rec);
+        let context = vocab_line + "\nUnprioritized issues: " + analysis.unprioritized_issues + "\nPast learning: " + to_string(rec);
 
         let action = prompt(
-            "You are a prioritization agent. Suggest priority for the most important unprioritized issue. Return JSON: issue_id (int), priority (string, e.g. priority::high), reasoning (string), author (string, the GitLab username from the issue's author.username field in the context — empty string if absent), confidence (float 0-1).",
+            "You are a prioritization agent. Suggest priority for the most important unprioritized issue from the context. The priority value MUST be one label from the priority vocabulary listed above. Return JSON: issue_id (int), priority (string, from the vocabulary above), reasoning (string), author (string, the GitLab username from the issue's author.username field in the context — empty string if absent), confidence (float 0-1).",
             context
         ) -> PriorityAction;
 

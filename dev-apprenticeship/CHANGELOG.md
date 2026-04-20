@@ -25,6 +25,17 @@ is asserted until multi-version CI is in place.
   pre-#223 behavior. `--data-urlencode` handles scoped labels and spaces
   at the API layer, no new encoding logic required.
   ([#223](https://github.com/Replikanti/agentis-colonies/issues/223))
+- **Configurable prompt vocabulary** — new `[planning.labels]` section
+  (`incident`, `epic` keys) and `[triage.labels]` section (`priority`
+  key) in the respective `colony.example.toml` files. `start-colony.sh`
+  seeds these values into memo (`planning:labels:incident`,
+  `planning:labels:epic`, `triage:labels:priority`) on every restart;
+  `risk_assessor`, `task_decomposer`, and `prioritizer` prompts splice
+  the memo value into the prompt string via `recall_latest()` with a
+  hardcoded-default fallback. Values are free-text so operators can list
+  label names or describe non-label patterns (e.g. `"umbrella-issue
+  pattern"`). Unset keys preserve pre-#226 prompts byte-identically.
+  ([#226](https://github.com/Replikanti/agentis-colonies/issues/226))
 
 ### Changed
 
