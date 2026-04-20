@@ -37,7 +37,10 @@ check_agent() {
         return
     fi
 
-    if grep -Fq "fn should_learn_from_mr(mr_iid: int) -> bool {" "$file"; then
+    # Loose signature check (QA #7): match the function by name + open paren
+    # only, not the full `(mr_iid: int) -> bool` signature — a harmless
+    # parameter rename should not false-fail this test.
+    if grep -Eq "^fn should_learn_from_mr\(" "$file"; then
         ok "gate function defined"
     else
         bad "gate function missing"
@@ -49,16 +52,32 @@ check_agent() {
         bad "gate does not recall ${agent}:last_learned_mr_iid"
     fi
 
-    if grep -Fq "if should_learn_from_mr(mr_iid) {" "$file"; then
+    if grep -Fq "if should_learn_from_mr(" "$file"; then
         ok "tick() calls gate"
     else
-        bad "tick() does not call should_learn_from_mr(mr_iid)"
+        bad "tick() does not call should_learn_from_mr"
     fi
 
-    if grep -Fq "memo_write(\"${agent}:last_learned_mr_iid\", to_string(mr_iid));" "$file"; then
+    if grep -Fq "memo_write(\"${agent}:last_learned_mr_iid\"," "$file"; then
         ok "memo_write stashes iid"
     else
         bad "memo_write for ${agent}:last_learned_mr_iid missing"
+    fi
+
+    # Ordering invariant (QA #6): memo_write MUST appear before the first
+    # prompt() call that follows the `if should_learn_from_mr(...) {` line.
+    # The at-most-once-per-iid semantics depend on the memo being stamped
+    # before the prompt fires — a future refactor that moves the memo-write
+    # after prompt() re-opens the re-burn window on prompt failures.
+    local gate_line memo_line prompt_line
+    gate_line="$(grep -n "if should_learn_from_mr(" "$file" | head -1 | cut -d: -f1 || true)"
+    memo_line="$(grep -n "memo_write(\"${agent}:last_learned_mr_iid\"," "$file" | head -1 | cut -d: -f1 || true)"
+    prompt_line="$(awk -v g="${gate_line:-0}" 'NR>g && /prompt\(/ {print NR; exit}' "$file")"
+    if [ -n "$gate_line" ] && [ -n "$memo_line" ] && [ -n "$prompt_line" ] \
+       && [ "$memo_line" -gt "$gate_line" ] && [ "$memo_line" -lt "$prompt_line" ]; then
+        ok "memo_write before first prompt() inside gate body (lines ${gate_line} < ${memo_line} < ${prompt_line})"
+    else
+        bad "ordering broken: gate=${gate_line:-?} memo=${memo_line:-?} prompt=${prompt_line:-?} — memo_write must be between gate and first prompt()"
     fi
 
     # Defense-in-depth: the pre-gate `if mr_iid > 0 {` was removed (the
