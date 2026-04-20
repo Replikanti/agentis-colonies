@@ -26,6 +26,21 @@ is asserted until multi-version CI is in place.
   at the API layer, no new encoding logic required.
   ([#223](https://github.com/Replikanti/agentis-colonies/issues/223))
 
+- **Configurable implementation trigger label**
+  ([#225](https://github.com/Replikanti/agentis-colonies/issues/225)) — new
+  optional `[implementation] trigger_label` key in
+  `implementation/config/colony.toml` lets operators override the
+  hard-coded `implementation` label used by
+  `gitlab-api.sh assigned-issues` so projects whose workflow taxonomy
+  uses a different or scoped label (e.g. `DEV::in progress`) no longer
+  have to rename their GitLab labels to match the colony. Scoped labels
+  and labels containing spaces are handled safely via
+  `--data-urlencode`. Unset configs fall back to `implementation`
+  verbatim — fully backward compatible with pre-#225 setups. Mirrors
+  the [#223](https://github.com/Replikanti/agentis-colonies/issues/223)
+  pattern for the planning colony's `needs-planning` label; agent
+  files are unchanged (no `.ag` diff).
+
 ### Changed
 
 ### Deprecated

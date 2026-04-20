@@ -3,9 +3,12 @@
 # Called by .ag agents via exec sh.
 #
 # Required env vars (set by start-colony.sh from colony.toml):
-#   GITLAB_URL     - GitLab instance URL (e.g. https://gitlab.example.com)
-#   GITLAB_TOKEN   - Personal access token or project token
-#   GITLAB_PROJECT - URL-encoded project path (e.g. your-org%2Fyour-project)
+#   GITLAB_URL                     - GitLab instance URL (e.g. https://gitlab.example.com)
+#   GITLAB_TOKEN                   - Personal access token or project token
+#   GITLAB_PROJECT                 - URL-encoded project path (e.g. your-org%2Fyour-project)
+#   IMPLEMENTATION_TRIGGER_LABEL   - (optional, #225) label name used by
+#                                    `assigned-issues` filter. Defaults to
+#                                    "implementation" when unset.
 #
 # Usage:
 #   gitlab-api.sh merge-requests [--state merged] [--since ISO8601] [--per-page N] [--view <name>]
@@ -298,7 +301,7 @@ case "$CMD" in
         ARGS=(
             --data-urlencode "state=opened"
             --data-urlencode "assignee_id=Any"
-            --data-urlencode "labels=implementation"
+            --data-urlencode "labels=${IMPLEMENTATION_TRIGGER_LABEL:-implementation}"
             --data-urlencode "per_page=20"
             --data-urlencode "order_by=updated_at"
             --data-urlencode "sort=desc"

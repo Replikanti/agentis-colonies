@@ -47,7 +47,9 @@ When an issue is assigned, the Code Writer produces an implementation draft. The
 
 2. Configure your GitLab connection in `colony.toml`.
 
-3. Start the colony:
+3. (Optional) Override `[implementation] trigger_label` if your project uses a label other than `implementation` to signal an issue is ready for implementation work. Scoped labels (`DEV::in progress`) and labels with spaces are supported — `--data-urlencode` handles the encoding (#225).
+
+4. Start the colony:
    ```bash
    ./scripts/start-colony.sh
    ```
