@@ -17,6 +17,30 @@ is asserted until multi-version CI is in place.
 
 ### Added
 
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
+## [0.2.0] — 2026-04-20
+
+Portability-series release. Four new optional config keys let operators adapt
+the federation to project-local label taxonomies and primary-branch names
+without editing any `.ag` or `gitlab-api.sh` source. Two colonies gain
+idempotency guards so long-lived workflow labels no longer drive per-tick
+re-posting on the same issue. Operator-facing READMEs and `CLAUDE.md`'s
+"Script conventions" paragraph were refreshed to document all four new knobs
+and the accompanying memo-seed step. Runtime floor unchanged.
+
+**Requires:** agentis >= 1.4.1
+
+### Added
+
 - **Configurable planning trigger label** — new `[planning] trigger_label`
   key in `planning/config/colony.example.toml`. Operators on projects
   that don't use a flat `needs-planning` label (e.g. scoped-label
@@ -103,6 +127,17 @@ is asserted until multi-version CI is in place.
   non-empty `exec sh` output, so auth/rate-limit/5xx/transport failures
   leave the marker unset and the next tick retries (matches
   `version_bumper.ag`'s tag/release idiom).
+
+### Changed
+
+- **Operator-facing documentation refresh** — `implementation/README.md` and
+  `release/README.md` gain Setup bullets for `[gitlab] default_branch`
+  (#224); `CLAUDE.md` "Script conventions" now enumerates the real set of
+  per-colony `start-colony.sh` exports (GITLAB_ME #104,
+  PLANNING_TRIGGER_LABEL #223, IMPLEMENTATION_TRIGGER_LABEL #225,
+  GITLAB_DEFAULT_BRANCH #224) and documents the #226 memo-seed step for
+  the prompt-vocabulary knobs.
+  ([#233](https://github.com/Replikanti/agentis-colonies/pull/233))
 
 ### Security
 
@@ -260,6 +295,7 @@ permissible per semver §4.
 - All dynamic values flowing into `exec sh` are required to pass through `shell_escape()`;
   `check-exec-sh.sh` enforces this grep-level contract.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.1.1...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.2.0...HEAD
+[0.2.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.1.1...dev-apprenticeship-v0.2.0
 [0.1.1]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.1.0...dev-apprenticeship-v0.1.1
 [0.1.0]: https://github.com/Replikanti/agentis-colonies/releases/tag/dev-apprenticeship-v0.1.0
