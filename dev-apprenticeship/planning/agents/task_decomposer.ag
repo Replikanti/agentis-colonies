@@ -103,6 +103,16 @@ fn tick(reason: string) -> void {
         return;
     };
 
+    // #227: idempotency guard — see risk_assessor.ag for rationale.
+    let target_iid = parse_int(to_string(json_get(issues_raw, "[0].iid")));
+    if target_iid <= 0 {
+        return;
+    };
+    let posted_key = "task_decomposer:" + to_string(target_iid) + ":posted";
+    if len(recall_latest(posted_key)) > 0 {
+        return;
+    };
+
     let rec = recommend("task_decomposition", ["accuracy"]);
     let context = "Unplanned issues (newest first): " + issues_raw + "\nPast decomposition patterns: " + to_string(rec);
 
@@ -119,16 +129,29 @@ fn tick(reason: string) -> void {
         emit("planning:breakdown", breakdown);
         let note = "**Task Breakdown** (automated): " + to_string(breakdown.count) + " subtasks\n\n" + breakdown.subtasks;
         let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(breakdown.issue_id) + " --body " + shell_escape(note);
-        try { exec sh post_cmd; } catch e {
+        let post_result = try { exec sh post_cmd; } catch e {
             print("[task_decomposer] Failed to post note:", e);
+            "";
         };
-        learn(
-            "task_decomposition",
-            "issue " + to_string(breakdown.issue_id),
-            to_string(breakdown.count) + " subtasks: " + breakdown.subtasks,
-            "success",
-            ["acted", "planning"]
-        );
+        // #227: gate marker + success learn on non-empty post result.
+        if len(post_result) > 0 {
+            memo_write(posted_key, "1");
+            learn(
+                "task_decomposition",
+                "issue " + to_string(breakdown.issue_id),
+                to_string(breakdown.count) + " subtasks: " + breakdown.subtasks,
+                "success",
+                ["acted", "planning"]
+            );
+        } else {
+            learn(
+                "task_decomposition",
+                "issue " + to_string(breakdown.issue_id),
+                "post-failed: " + to_string(breakdown.count) + " subtasks",
+                "fail",
+                ["acted", "planning"]
+            );
+        };
     } else {
         if my_tier == "review-gated" {
             emit("planning:breakdown", breakdown);

@@ -105,6 +105,21 @@ fn tick(reason: string) -> void {
         return;
     };
 
+    // #227: idempotency guard. Long-lived workflow labels (e.g.
+    // "DEV::not started" on projects using scoped-label taxonomies)
+    // persist across human-gated transitions, so without this marker
+    // the act branch would re-prompt() + re-add-note() every tick.
+    // target_iid via json_get (mechanical JSON read, 0 LLM calls) —
+    // same idiom as plan_reviewer after #147.
+    let target_iid = parse_int(to_string(json_get(issues_raw, "[0].iid")));
+    if target_iid <= 0 {
+        return;
+    };
+    let posted_key = "risk_assessor:" + to_string(target_iid) + ":posted";
+    if len(recall_latest(posted_key)) > 0 {
+        return;
+    };
+
     let rec = recommend("risk_assessment", ["accuracy", "safety"]);
     let context = "Unplanned issues (newest first): " + issues_raw + "\nPast incident patterns: " + to_string(rec);
 
@@ -122,16 +137,32 @@ fn tick(reason: string) -> void {
         emit("planning:risks", assessment);
         let note = "**Risk Assessment** (automated): " + assessment.severity + "\n\n" + assessment.risks;
         let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(assessment.issue_id) + " --body " + shell_escape(note);
-        try { exec sh post_cmd; } catch e {
+        let post_result = try { exec sh post_cmd; } catch e {
             print("[risk_assessor] Failed to post note:", e);
+            "";
         };
-        learn(
-            "risk_assessment",
-            "issue " + to_string(assessment.issue_id),
-            assessment.severity + ": " + assessment.risks,
-            "success",
-            ["acted", "planning"]
-        );
+        // #227: only mark posted (and learn() success) when the GitLab
+        // call actually returned a body. On failure (auth/429/5xx/
+        // transport) leave the marker unset so the next tick retries
+        // instead of silently consuming the issue.
+        if len(post_result) > 0 {
+            memo_write(posted_key, "1");
+            learn(
+                "risk_assessment",
+                "issue " + to_string(assessment.issue_id),
+                assessment.severity + ": " + assessment.risks,
+                "success",
+                ["acted", "planning"]
+            );
+        } else {
+            learn(
+                "risk_assessment",
+                "issue " + to_string(assessment.issue_id),
+                "post-failed: " + assessment.severity,
+                "fail",
+                ["acted", "planning"]
+            );
+        };
     } else {
         if my_tier == "review-gated" {
             // Draft external write: stash in plan_reviewer's memo slot so
