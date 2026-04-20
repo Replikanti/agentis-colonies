@@ -44,10 +44,16 @@ GITLAB_PROJECT="${GITLAB_PROJECT_RAW//\//%2F}"
 # memo gitlab:me and tag everything as team when both are empty.
 GITLAB_ME=$(parse_toml gitlab me)
 
+# #223: operator-configurable trigger label. Empty if the config
+# predates #223 (no [planning] section); gitlab-api.sh falls back to
+# "needs-planning" in that case, preserving pre-#223 behavior.
+PLANNING_TRIGGER_LABEL=$(parse_toml planning trigger_label)
+
 export GITLAB_URL
 export GITLAB_TOKEN
 export GITLAB_PROJECT
 export GITLAB_ME
+export PLANNING_TRIGGER_LABEL
 export COLONY_DIR
 
 AGENTS=(
