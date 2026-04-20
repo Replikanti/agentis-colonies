@@ -79,6 +79,27 @@ fn should_handle_test_draft(iid_str: string) -> bool {
     return false;
 }
 
+// #239: learn from each merged MR at most once per daemon lifetime.
+// Without this gate, the `merge-requests --since <last_check>` query
+// keeps returning the same MR at index [0] as long as its `updated_at`
+// keeps getting bumped, so the learning-path prompt re-fires every
+// tick at cb_budget 1500. Single-key memo, no TTL: at-most-once per
+// distinct MR iid.
+fn should_learn_from_mr(mr_iid: int) -> bool {
+    if mr_iid <= 0 {
+        return false;
+    };
+    let iid_str = to_string(mr_iid);
+    let last_iid = recall_latest("test_writer:last_learned_mr_iid");
+    if len(last_iid) == 0 {
+        return true;
+    };
+    if iid_str != last_iid {
+        return true;
+    };
+    return false;
+}
+
 fn tick(reason: string) -> void {
     // 1. Learn from test files in recently merged MRs
     let cmd = merged_mr_cmd();
@@ -92,7 +113,8 @@ fn tick(reason: string) -> void {
     if len(raw) > 10 {
         let mr_iid = parse_int(to_string(json_get(raw, "[0].iid")));
 
-        if mr_iid > 0 {
+        if should_learn_from_mr(mr_iid) {
+            memo_write("test_writer:last_learned_mr_iid", to_string(mr_iid));
             let changes_cmd = "$COLONY_DIR/scripts/gitlab-api.sh mr-changes " + to_string(mr_iid);
             let changes_raw = try { exec sh changes_cmd; } catch e { ""; };
 
