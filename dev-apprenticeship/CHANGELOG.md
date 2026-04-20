@@ -47,6 +47,20 @@ is asserted until multi-version CI is in place.
   promotion isn't blocked by a stale marker).
   ([#223](https://github.com/Replikanti/agentis-colonies/issues/223))
 
+- **Planning peers now short-circuit re-posting to long-lived labeled issues**
+  ([#227](https://github.com/Replikanti/agentis-colonies/issues/227)) —
+  `risk_assessor`, `scope_estimator`, and `task_decomposer` each gain a
+  per-agent `<agent>:<iid>:posted` memo marker written only after a
+  successful `add-note` call. Prior to this fix, an issue carrying a
+  long-lived workflow label (e.g. `DEV::not started`) would be re-prompted
+  and re-posted every autonomous-tier tick for as long as the label
+  remained. Follow-up to
+  [#223](https://github.com/Replikanti/agentis-colonies/issues/223) which
+  applied the same pattern to `plan_reviewer`. The marker is gated on
+  non-empty `exec sh` output, so auth/rate-limit/5xx/transport failures
+  leave the marker unset and the next tick retries (matches
+  `version_bumper.ag`'s tag/release idiom).
+
 ### Security
 
 ## [0.1.1] — 2026-04-19

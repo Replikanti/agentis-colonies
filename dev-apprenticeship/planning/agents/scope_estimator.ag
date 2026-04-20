@@ -103,6 +103,16 @@ fn tick(reason: string) -> void {
         return;
     };
 
+    // #227: idempotency guard — see risk_assessor.ag for rationale.
+    let target_iid = parse_int(to_string(json_get(issues_raw, "[0].iid")));
+    if target_iid <= 0 {
+        return;
+    };
+    let posted_key = "scope_estimator:" + to_string(target_iid) + ":posted";
+    if len(recall_latest(posted_key)) > 0 {
+        return;
+    };
+
     let rec = recommend("scope_estimate", ["accuracy"]);
     let context = "Unplanned issues (newest first): " + issues_raw + "\nPast calibration: " + to_string(rec);
 
@@ -119,16 +129,29 @@ fn tick(reason: string) -> void {
         emit("planning:scope_estimate", estimate);
         let note = "**Scope Estimate** (automated): " + to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points\n\n" + estimate.reasoning;
         let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(estimate.issue_id) + " --body " + shell_escape(note);
-        try { exec sh post_cmd; } catch e {
+        let post_result = try { exec sh post_cmd; } catch e {
             print("[scope_estimator] Failed to post note:", e);
+            "";
         };
-        learn(
-            "scope_estimate",
-            "issue " + to_string(estimate.issue_id),
-            to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points: " + estimate.reasoning,
-            "success",
-            ["acted", "planning"]
-        );
+        // #227: gate marker + success learn on non-empty post result.
+        if len(post_result) > 0 {
+            memo_write(posted_key, "1");
+            learn(
+                "scope_estimate",
+                "issue " + to_string(estimate.issue_id),
+                to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points: " + estimate.reasoning,
+                "success",
+                ["acted", "planning"]
+            );
+        } else {
+            learn(
+                "scope_estimate",
+                "issue " + to_string(estimate.issue_id),
+                "post-failed: " + to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points",
+                "fail",
+                ["acted", "planning"]
+            );
+        };
     } else {
         if my_tier == "review-gated" {
             emit("planning:scope_estimate", estimate);
