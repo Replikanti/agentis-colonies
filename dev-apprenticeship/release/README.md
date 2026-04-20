@@ -56,7 +56,9 @@ The learn-on-demand shape is intentional: past releases don't change between tic
 
 2. Configure your GitLab connection in `colony.toml`.
 
-3. Start the colony:
+3. (Optional) Override `[gitlab] default_branch` if your project's primary branch is not `main` (e.g. `master`, `develop`, `trunk`). `version_bumper` passes this to `gitlab-api.sh create-tag` as the tag's source ref (#224).
+
+4. Start the colony:
    ```bash
    ./scripts/start-colony.sh
    ```
