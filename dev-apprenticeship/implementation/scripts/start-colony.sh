@@ -44,10 +44,16 @@ GITLAB_PROJECT="${GITLAB_PROJECT_RAW//\//%2F}"
 # memo gitlab:me and tag everything as team when both are empty.
 GITLAB_ME=$(parse_toml gitlab me)
 
+# #225: configurable trigger label for assigned-issues filter. Empty if
+# not configured (pre-#225 setups); gitlab-api.sh falls back to the
+# hardcoded default "implementation" via ${VAR:-implementation}.
+IMPLEMENTATION_TRIGGER_LABEL=$(parse_toml implementation trigger_label)
+
 export GITLAB_URL
 export GITLAB_TOKEN
 export GITLAB_PROJECT
 export GITLAB_ME
+export IMPLEMENTATION_TRIGGER_LABEL
 export COLONY_DIR
 
 AGENTS=(

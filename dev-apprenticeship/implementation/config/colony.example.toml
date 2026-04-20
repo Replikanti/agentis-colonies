@@ -13,6 +13,14 @@ token = "glpat-your-token-here"
 project = "your-org/your-project"
 me = ""  # your GitLab username, e.g. "martin.holy" (optional, enables personal/team tagging)
 
+[implementation]
+# GitLab label used to filter issues that are ready for implementation work.
+# Leave unset (or as default) to use "implementation". Override when your
+# project's workflow taxonomy uses a different or scoped label, e.g.
+# "DEV::in progress". Scoped labels and labels with spaces are handled
+# via --data-urlencode at the gitlab-api.sh layer. (#225)
+trigger_label = "implementation"
+
 [llm]
 # Only "backend" is read today. "cli" uses the agentis daemon default CLI adapter.
 backend = "cli"
