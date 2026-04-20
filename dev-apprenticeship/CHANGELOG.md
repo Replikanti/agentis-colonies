@@ -25,6 +25,26 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- **Implementation agents: MR-level idempotency gate on the learning path**
+  ([#239](https://github.com/Replikanti/agentis-colonies/issues/239)).
+  `code_writer`, `test_writer`, `refactorer`, and `commit_composer` each
+  gain a `should_learn_from_mr(mr_iid)` gate that memoizes the last MR
+  iid learned from and short-circuits before the `mr-changes` /
+  `mr-commits` subprocess, the LLM `prompt()`, and the `learn()` call
+  when the same MR is seen again. Without the gate, `merge-requests
+  --since <last_check>` kept returning the same MR at index `[0]` as
+  long as its `updated_at` kept getting bumped (new comment, pipeline
+  event, label change) — at the implementation colony's `cb_budget`
+  (600 – 2000 per agent), that produces hundreds of duplicate `Learned
+  from MR <N>` entries per hour on a long-lived issue and the memory
+  load that precedes the silent agent-daemon deaths described in the
+  issue. Memo keys: `<agent>:last_learned_mr_iid`. Single-key, no TTL —
+  we want at-most-once per distinct MR iid per daemon lifetime.
+  Upstream concerns (terminal `daemon.stopped` on SIGKILL-by-OS,
+  per-agent RSS instrumentation, watchdog auto-restart on silent death)
+  remain open in `agentis-core`; this colony-side fix removes the load
+  that triggers the class of runtime failure.
+
 ### Security
 
 ## [0.3.0] — 2026-04-20
