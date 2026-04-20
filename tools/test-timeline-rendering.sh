@@ -429,6 +429,33 @@ else
     fail "19: heredoc detected — extract content to a standalone file (see #172)"
 fi
 
+# --- #163: evolve flat-slope threshold is named, reachable, and calibrated.
+#     Guards against reverting to the pre-calibration 1e-6 guess or silently
+#     orphaning the constant (declared but never used). The production
+#     calibration in #163 picked 1e-4 as the natural separator between the
+#     true-plateau cluster (|slope| <= 1e-5) and the oscillation cluster
+#     (|slope| >= 1e-4). ---
+if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
+import sys, re
+with open(sys.argv[1]) as f:
+    src = f.read()
+m = re.search(r'const\s+SLOPE_FLAT_THRESHOLD\s*=\s*([0-9eE.+\-]+)\s*;', src)
+if not m: sys.exit(1)
+value = float(m.group(1))
+# Must equal the calibrated value (not the pre-calibration 1e-6).
+if abs(value - 1e-4) > 1e-12: sys.exit(2)
+# Must actually be referenced (no orphaned constant).
+if 'SLOPE_FLAT_THRESHOLD' not in src[m.end():]: sys.exit(3)
+# Legacy literal must no longer guard the flat-slope branch.
+if re.search(r'Math\.abs\(\s*f\.slope\s*\)\s*<\s*1e-6\b', src): sys.exit(4)
+sys.exit(0)
+PY
+then
+    pass "20: SLOPE_FLAT_THRESHOLD defined as 1e-4, referenced, no leftover 1e-6 guard (#163)"
+else
+    fail "20: SLOPE_FLAT_THRESHOLD missing, wrong value, orphaned, or 1e-6 guard survived (#163)"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

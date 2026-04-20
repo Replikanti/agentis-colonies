@@ -647,6 +647,17 @@ const TIMELINE_AUTO_HIDE_STALE_KEY = 'dashboard.timeline.autoHideStale.' + FED_N
 const TIMELINE_STALE_WINDOW_MS = 3600 * 1000;
 // #167: every class the timeline emits, in render order.
 const TIMELINE_CLASSES = ['emit', 'recv', 'suggest', 'error', 'action', 'finding'];
+// #163: magnitude below which the fitness slope over the last 100 experience
+// entries is treated as flat and evolve is disabled as an Opus plateau. Raised
+// from the original 1e-6 guess to 1e-4 after production calibration against
+// dev-apprenticeship on v1.4.3 with populated fitness_delta values: the
+// observed per-agent |slope| distribution splits cleanly into a true-plateau
+// cluster at |slope| <= 1e-5 (code_writer, commit_composer, router,
+// prioritizer — the canonical "evolve is pointless" cases the gate is meant
+// to catch) and an oscillation cluster at |slope| in [1e-4, 3e-3], with no
+// data in the gap between. 1e-4 is the natural separator — full snapshot
+// tables are on the issue.
+const SLOPE_FLAT_THRESHOLD = 1e-4;
 
 function tlReadJSON(key, fallback) {
   try {
@@ -1423,10 +1434,10 @@ function actionGate(a, type, target) {
         evidence: f
       };
     }
-    if (Math.abs(f.slope) < 1e-6) {
+    if (Math.abs(f.slope) < SLOPE_FLAT_THRESHOLD) {
       return {
         enabled: false, ruleType: 'flat-slope',
-        reason: 'Fitness slope flat over the last ' + f.window + ' entries (likely Opus plateau) \u2014 evolve unlikely to find improvement.',
+        reason: 'Fitness slope flat over the last ' + f.window + ' entries (|slope| < ' + SLOPE_FLAT_THRESHOLD.toExponential(0) + ', likely Opus plateau) \u2014 evolve unlikely to find improvement.',
         evidence: f
       };
     }
