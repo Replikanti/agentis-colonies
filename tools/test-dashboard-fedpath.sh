@@ -57,8 +57,7 @@ boot_dashboard() {
     setsid bash "$DASHBOARD_SH" "$fed_dir" "$port" >"$log_file" 2>&1 &
     local pid=$!
     DASH_PIDS="$DASH_PIDS $pid"
-    local i
-    for i in 1 2 3 4 5 6 7 8 9 10; do
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
         if curl -f -s -o /dev/null "http://127.0.0.1:$port/" 2>/dev/null; then
             echo "$pid"
             return 0
