@@ -36,11 +36,15 @@ is asserted until multi-version CI is in place.
 
 - **`plan_reviewer` idempotency guard** — new `plan_reviewer:<iid>:posted`
   memo marker short-circuits the `prompt()` + `add-note` path once a
-  plan has been posted for an issue. Long-lived workflow labels (e.g.
-  `DEV::not started` that persists for days until a human starts work)
-  previously drove re-assembly and re-posting every 60s for the same
-  still-labeled issue. Marker is written in the `autonomous` and
-  `review-gated` branches only; `propose`/`shadow` don't post.
+  plan has been successfully posted for an issue at `autonomous` or
+  `review-gated` tier. Long-lived workflow labels (e.g. `DEV::not started`
+  that persists for days until a human starts work) previously drove
+  per-tick re-posting on the same still-labeled issue. The marker is
+  written **only** when the GitLab call returns a non-empty body, so
+  failed posts (auth/rate-limit/5xx/transport) are retried on the next
+  tick instead of silently consumed. `propose`/`shadow` tiers do no
+  external write and remain unmarked by design (so a future tier
+  promotion isn't blocked by a stale marker).
   ([#223](https://github.com/Replikanti/agentis-colonies/issues/223))
 
 ### Security
