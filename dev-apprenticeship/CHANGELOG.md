@@ -17,6 +17,31 @@ is asserted until multi-version CI is in place.
 
 ### Added
 
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
+## [0.3.0] — 2026-04-20
+
+Observability release. Planning and implementation colonies can no longer
+silently miss short-lived trigger-label transitions (a label added and
+removed between two 60 s polls). A new `gitlab-api.sh` command family
+reads GitLab's `resource_label_events` endpoint and the 5 ticking agents
+that depend on trigger-label state (`risk_assessor`, `scope_estimator`,
+`task_decomposer`, `plan_reviewer`, `code_writer`) union current-state
+with in-window add events. First-tick boot behavior preserved byte-
+identically. Runtime floor unchanged.
+
+**Requires:** agentis >= 1.4.1
+
+### Added
+
 - **Events-aware label observability for trigger-label agents**
   ([#235](https://github.com/Replikanti/agentis-colonies/issues/235)).
   Planning and implementation colonies now detect short-lived trigger
@@ -36,16 +61,6 @@ is asserted until multi-version CI is in place.
   variant whenever their `last_check` memo is populated; first tick
   still issues the pre-#235 current-state snapshot, so boot behavior is
   byte-identical.
-
-### Changed
-
-### Deprecated
-
-### Removed
-
-### Fixed
-
-### Security
 
 ## [0.2.0] — 2026-04-20
 
@@ -315,7 +330,8 @@ permissible per semver §4.
 - All dynamic values flowing into `exec sh` are required to pass through `shell_escape()`;
   `check-exec-sh.sh` enforces this grep-level contract.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.2.0...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.3.0...HEAD
+[0.3.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.2.0...dev-apprenticeship-v0.3.0
 [0.2.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.1.1...dev-apprenticeship-v0.2.0
 [0.1.1]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.1.0...dev-apprenticeship-v0.1.1
 [0.1.0]: https://github.com/Replikanti/agentis-colonies/releases/tag/dev-apprenticeship-v0.1.0
