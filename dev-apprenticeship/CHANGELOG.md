@@ -17,6 +17,15 @@ is asserted until multi-version CI is in place.
 
 ### Added
 
+- **Configurable planning trigger label** — new `[planning] trigger_label`
+  key in `planning/config/colony.example.toml`. Operators on projects
+  that don't use a flat `needs-planning` label (e.g. scoped-label
+  taxonomies like `DEV::not started`) can point the planning colony at
+  the local label without edits to the 4 agent files. Default preserves
+  pre-#223 behavior. `--data-urlencode` handles scoped labels and spaces
+  at the API layer, no new encoding logic required.
+  ([#223](https://github.com/Replikanti/agentis-colonies/issues/223))
+
 ### Changed
 
 ### Deprecated
@@ -24,6 +33,19 @@ is asserted until multi-version CI is in place.
 ### Removed
 
 ### Fixed
+
+- **`plan_reviewer` idempotency guard** — new `plan_reviewer:<iid>:posted`
+  memo marker short-circuits the `prompt()` + `add-note` path once a
+  plan has been successfully posted for an issue at `autonomous` or
+  `review-gated` tier. Long-lived workflow labels (e.g. `DEV::not started`
+  that persists for days until a human starts work) previously drove
+  per-tick re-posting on the same still-labeled issue. The marker is
+  written **only** when the GitLab call returns a non-empty body, so
+  failed posts (auth/rate-limit/5xx/transport) are retried on the next
+  tick instead of silently consumed. `propose`/`shadow` tiers do no
+  external write and remain unmarked by design (so a future tier
+  promotion isn't blocked by a stale marker).
+  ([#223](https://github.com/Replikanti/agentis-colonies/issues/223))
 
 ### Security
 

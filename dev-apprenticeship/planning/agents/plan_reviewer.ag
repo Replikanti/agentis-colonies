@@ -104,6 +104,23 @@ fn tick(reason: string) -> void {
         return;
     };
 
+    // #223: idempotency guard. Long-lived workflow labels (e.g.
+    // "DEV::not started" on projects using scoped-label taxonomies)
+    // persist across human-gated transitions, so without this marker
+    // the reviewer would re-prompt() and re-add-note() every tick for
+    // days on end. Marker is written only in the branches that actually
+    // post a GitLab note (autonomous + review-gated); propose/shadow do
+    // no external write, so leaving them unmarked is correct.
+    let iid_str = to_string(target_iid);
+    let posted_key = "plan_reviewer:" + iid_str + ":posted";
+    if len(recall_latest(posted_key)) > 0 {
+        let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_e) > 0 {
+            memo_write("plan_reviewer:last_check", now_e);
+        };
+        return;
+    };
+
     let s = recall_latest("plan_reviewer:" + to_string(target_iid) + ":scope");
     let r = recall_latest("plan_reviewer:" + to_string(target_iid) + ":risks");
     let b = recall_latest("plan_reviewer:" + to_string(target_iid) + ":breakdown");
@@ -141,34 +158,65 @@ fn tick(reason: string) -> void {
     if my_tier == "autonomous" {
         // Direct external write: post the plan as an issue note.
         let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(draft.issue_id) + " --body " + shell_escape(draft.plan);
-        try { exec sh post_cmd; } catch e {
+        let post_result = try { exec sh post_cmd; } catch e {
             print("[plan_reviewer] Failed to post note:", e);
+            "";
         };
-        learn(
-            "review_plan",
-            "issue " + to_string(draft.issue_id),
-            "posted: score=" + to_string(draft.review_score),
-            "success",
-            ["acted", "planning"]
-        );
-        print("[plan_reviewer] Posted plan to issue", draft.issue_id);
+        // #223: only mark posted (and learn() success) when the GitLab
+        // call actually returned a body. Same shape as
+        // version_bumper.ag's tag/release pattern. On failure
+        // (auth/429/5xx/transport) we leave the marker unset so the
+        // next tick retries instead of silently consuming the issue.
+        if len(post_result) > 0 {
+            memo_write(posted_key, "1");
+            learn(
+                "review_plan",
+                "issue " + to_string(draft.issue_id),
+                "posted: score=" + to_string(draft.review_score),
+                "success",
+                ["acted", "planning"]
+            );
+            print("[plan_reviewer] Posted plan to issue", draft.issue_id);
+        } else {
+            learn(
+                "review_plan",
+                "issue " + to_string(draft.issue_id),
+                "post-failed: score=" + to_string(draft.review_score),
+                "fail",
+                ["acted", "planning"]
+            );
+        };
     } else {
         if my_tier == "review-gated" {
             // Draft external write: post with [draft-plan] prefix so a human
             // reviewer can promote or discard it.
             let draft_body = "[draft-plan] **Plan Review** (automated, pending approval)\n\n" + draft.plan;
             let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(draft.issue_id) + " --body " + shell_escape(draft_body);
-            try { exec sh post_cmd; } catch e {
+            let draft_result = try { exec sh post_cmd; } catch e {
                 print("[plan_reviewer] Failed to post draft note:", e);
+                "";
             };
-            learn(
-                "review_plan",
-                "issue " + to_string(draft.issue_id),
-                "drafted: score=" + to_string(draft.review_score),
-                "partial",
-                ["planning", "review-gated"]
-            );
-            print("[plan_reviewer] Drafted plan for issue", draft.issue_id);
+            // #223: same gating as autonomous — only mark posted when
+            // the GitLab call actually succeeded.
+            if len(draft_result) > 0 {
+                memo_write(posted_key, "1");
+                learn(
+                    "review_plan",
+                    "issue " + to_string(draft.issue_id),
+                    "drafted: score=" + to_string(draft.review_score),
+                    "partial",
+                    ["planning", "review-gated"]
+                );
+                print("[plan_reviewer] Drafted plan for issue", draft.issue_id);
+            } else {
+                learn(
+                    "review_plan",
+                    "issue " + to_string(draft.issue_id),
+                    "draft-post-failed: score=" + to_string(draft.review_score),
+                    "fail",
+                    ["planning", "review-gated"]
+                );
+            };
         } else {
             if my_tier == "propose" {
                 emit("planning:draft_plan", draft);

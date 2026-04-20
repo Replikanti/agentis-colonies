@@ -57,7 +57,9 @@ When a new issue needs planning, the Scope Estimator, Risk Assessor, and Task De
 
 2. Configure your GitLab connection in `colony.toml`.
 
-3. Start the colony:
+3. (Optional) Override `[planning] trigger_label` if your project uses a label other than `needs-planning` to signal an issue is ready for planning. Scoped labels (`DEV::not started`) and labels with spaces are supported — `--data-urlencode` handles the encoding (#223).
+
+4. Start the colony:
    ```bash
    ./scripts/start-colony.sh
    ```

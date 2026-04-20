@@ -7,6 +7,16 @@
 #   GITLAB_TOKEN   - Personal access token or project token
 #   GITLAB_PROJECT - URL-encoded project path (e.g. your-org%2Fyour-project)
 #
+# Optional env vars:
+#   PLANNING_TRIGGER_LABEL - label matched by --needs-planning
+#                            (default: "needs-planning"). Override via
+#                            the [planning] trigger_label key in
+#                            colony.toml to match project-local
+#                            taxonomies (e.g. "DEV::not started").
+#                            Scoped labels with `::` and spaces are
+#                            supported — `--data-urlencode` handles
+#                            the encoding.
+#
 # Usage:
 #   gitlab-api.sh issues --needs-planning [--since ISO8601] [--view <name>]
 #   gitlab-api.sh add-note <iid> --body <text>
@@ -250,7 +260,11 @@ case "$CMD" in
             --data-urlencode "sort=desc"
         )
         if [ "$NEEDS_PLANNING" -eq 1 ]; then
-            ARGS+=(--data-urlencode "labels=needs-planning")
+            # #223: label read from env var (seeded by start-colony.sh
+            # from colony.toml [planning] trigger_label). Default
+            # "needs-planning" preserves pre-#223 behavior for configs
+            # that lack the key.
+            ARGS+=(--data-urlencode "labels=${PLANNING_TRIGGER_LABEL:-needs-planning}")
         fi
         if [ -n "$SINCE" ]; then
             ARGS+=(--data-urlencode "updated_after=$SINCE")

@@ -7,6 +7,15 @@
 name = "planning"
 tick_interval_ms = 60000
 
+[planning]
+# GitLab label that marks an issue as ready for planning. The 4 planning
+# agents only look at issues carrying this label. Default preserves the
+# pre-#223 behavior; override to match the target project's workflow
+# taxonomy (e.g. "DEV::not started" on projects using scoped labels).
+# Scoped labels and spaces are supported — `--data-urlencode` handles
+# encoding at the API layer.
+trigger_label = "needs-planning"
+
 [gitlab]
 url = "https://gitlab.example.com"
 token = "glpat-your-token-here"
