@@ -40,6 +40,19 @@ is asserted until multi-version CI is in place.
   the [#223](https://github.com/Replikanti/agentis-colonies/issues/223)
   pattern for the planning colony's `needs-planning` label; agent
   files are unchanged (no `.ag` diff).
+- **Configurable primary branch for implementation + release colonies**
+  ([#224](https://github.com/Replikanti/agentis-colonies/issues/224)) — new
+  optional `[gitlab] default_branch` key in the implementation and
+  release colony configs replaces three hard-coded `"main"` references
+  in `gitlab-api.sh`: the default `--ref` for `create-branch`, the
+  `target_branch` body field on `create-mr` (implementation colony),
+  and the default `--ref` for `create-tag` (release colony). Projects
+  whose primary branch is `master`, `develop`, `trunk`, or any custom
+  name can now configure that once in `colony.toml` instead of
+  per-call `--ref` flags. Unset configs fall back to `"main"` — fully
+  backward compatible with pre-#224 setups. Explicit-config approach
+  chosen over API auto-detect (fails closed when PAT lacks
+  project-read scope; zero extra request per colony boot).
 
 ### Changed
 

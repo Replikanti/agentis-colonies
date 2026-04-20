@@ -9,6 +9,10 @@
 #   IMPLEMENTATION_TRIGGER_LABEL   - (optional, #225) label name used by
 #                                    `assigned-issues` filter. Defaults to
 #                                    "implementation" when unset.
+#   GITLAB_DEFAULT_BRANCH          - (optional, #224) primary branch name used as the
+#                                    default --ref for create-branch and the
+#                                    target_branch for create-mr. Defaults to "main"
+#                                    when unset.
 #
 # Usage:
 #   gitlab-api.sh merge-requests [--state merged] [--since ISO8601] [--per-page N] [--view <name>]
@@ -321,7 +325,9 @@ case "$CMD" in
 
     create-branch)
         NAME=""
-        REF="main"
+        # #224: honour operator-configured default branch; fall back to "main"
+        # for pre-#224 setups where the env var is unset.
+        REF="${GITLAB_DEFAULT_BRANCH:-main}"
         while [ $# -gt 0 ]; do
             case "$1" in
                 --name) NAME="$2"; shift 2 ;;
@@ -389,11 +395,15 @@ PY
             emit_error "--source and --title are required"
             exit 1
         fi
-        JSON_BODY=$(SOURCE="$SOURCE" TITLE="$TITLE" DESC="$DESC" python3 - <<'PY'
+        # #224: target_branch reads from operator-configured default branch;
+        # env var passed through to the heredoc since python3 cannot see the
+        # ${VAR:-fallback} expansion in the bash context.
+        JSON_BODY=$(SOURCE="$SOURCE" TITLE="$TITLE" DESC="$DESC" \
+            DEFAULT_BRANCH="${GITLAB_DEFAULT_BRANCH:-main}" python3 - <<'PY'
 import os, json
 body = {
     "source_branch": os.environ["SOURCE"],
-    "target_branch": "main",
+    "target_branch": os.environ["DEFAULT_BRANCH"],
     "title": os.environ["TITLE"],
 }
 if os.environ.get("DESC"):
