@@ -167,6 +167,25 @@ url = "llm-url"
 assert_eq "gitlab.url resolves to gitlab section" "gitlab-url" "$(parse_toml gitlab url)"
 assert_eq "llm.url resolves to llm section" "llm-url" "$(parse_toml llm url)"
 
+# --- Test 12: #226 — dotted sub-table header ---
+fixture "sub-table" '[planning]
+trigger_label = "needs-planning"
+
+[planning.labels]
+incident = "incident, bug, blocker"
+epic = "epic"
+
+[triage.labels]
+priority = "P1, P2, P3, P4"
+'
+assert_eq "#226: planning.labels.incident" "incident, bug, blocker" "$(parse_toml planning.labels incident)"
+assert_eq "#226: planning.labels.epic" "epic" "$(parse_toml planning.labels epic)"
+assert_eq "#226: triage.labels.priority" "P1, P2, P3, P4" "$(parse_toml triage.labels priority)"
+# Parent section does not leak into sub-table scope and vice versa.
+assert_eq "#226: parent planning.trigger_label unaffected" "needs-planning" "$(parse_toml planning trigger_label)"
+assert_eq "#226: parent does not see sub-table key" "" "$(parse_toml planning incident)"
+assert_eq "#226: sub-table does not see parent key" "" "$(parse_toml planning.labels trigger_label)"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

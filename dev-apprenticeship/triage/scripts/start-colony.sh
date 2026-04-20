@@ -57,6 +57,18 @@ AGENTS=(
     router
 )
 
+# #226: vocabulary memo seeding. Operator-tuned priority label vocabulary
+# overrides the hardcoded defaults baked into the prioritizer prompts.
+# Read from colony.toml on every restart so config edits take effect on
+# the next start-colony cycle (no install.sh re-run). Failures are
+# non-fatal: the agent falls back to the pre-#226 hardcoded strings via
+# the `recall_latest() / if len() > 0` pattern.
+PRIORITY_LABELS=$(parse_toml triage.labels priority)
+FED_ROOT="$(cd "$REPO_ROOT/dev-apprenticeship" && pwd)"
+if [ -n "$PRIORITY_LABELS" ]; then
+    (cd "$FED_ROOT" && agentis memo set triage:labels:priority "$PRIORITY_LABELS" >/dev/null 2>&1) || true
+fi
+
 # Opt-in log truncation. Off by default so operators who rely on log
 # history across restarts are not surprised. Set TRUNCATE_LOGS=1 in
 # the environment (or via start-federation.sh) to bound disk use

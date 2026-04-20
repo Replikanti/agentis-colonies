@@ -71,9 +71,22 @@ fn tick(reason: string) -> void {
         };
 
         if len(recent_raw) > 10 {
+            // #226: operator-configurable label vocabulary. The agentis
+            // parser requires a string literal for the `prompt()`
+            // instruction arg, so the vocabulary is spliced into the
+            // `context` arg instead. Unseeded memo returns "" → the
+            // hardcoded fallback below is used, byte-identical to
+            // pre-#226 for configs that don't set `[planning.labels]`.
+            let incident_vocab = recall_latest("planning:labels:incident");
+            let vocab_line = if len(incident_vocab) > 0 {
+                "Label vocabulary (focus on these): " + incident_vocab;
+            } else {
+                "Label vocabulary (focus on these): incident, bug, blocker";
+            };
+            let observe_ctx = vocab_line + "\n\nRecent GitLab issues JSON:\n" + recent_raw;
             let patterns = prompt(
-                "Analyze this recent GitLab issues JSON. Focus on issues labeled 'incident', 'bug', or 'blocker'. What recurring themes appear (dependency surprises, integration gotchas, flaky services)? Return JSON: observed_count (int, how many incident-style issues you saw), recurring_themes (string, one short paragraph).",
-                recent_raw
+                "Analyze the GitLab issues JSON in the context. Focus on issues matching the label vocabulary listed above. What recurring themes appear (dependency surprises, integration gotchas, flaky services)? Return JSON: observed_count (int, how many issues you saw matching the vocabulary), recurring_themes (string, one short paragraph).",
+                observe_ctx
             ) -> IncidentPatterns;
 
             if patterns.observed_count > 0 {
