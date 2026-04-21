@@ -167,6 +167,27 @@ else
     bad "propose-path timeout_s != 86400 s — #106/#195 spec drift"
 fi
 
+# -- (8) hardening asserts (QA PR #243 round 2) ------------------------------
+
+# Append catch-branch must preserve peer iids when the subprocess fails.
+# A refactor that falls back to plain `iid_str` (or `""`) silently discards
+# any previously-queued autonomous writes.
+if awk '/^fn append_autonomous_index\(/,/^}/' "$LABELER" | grep -Eq "catch e \{ append_csv\(existing, iid_str\); \}"; then
+    ok "append_autonomous_index catch-branch preserves peers via append_csv(existing, iid_str)"
+else
+    bad "append_autonomous_index catch-branch does NOT preserve peers — silently clobbers the index on subprocess failure"
+fi
+
+# End-of-scan index rewrite: evaluate_autonomous_verdicts MUST write the
+# surviving index at the end of the scan. A refactor that moves this into
+# eval_autonomous_at or drops it turns the scanner into a no-op after the
+# first still-soaking iid.
+if awk '/^fn evaluate_autonomous_verdicts\(/,/^}/' "$LABELER" | grep -Fq 'memo_write("labeler:autonomous_verdict_index",'; then
+    ok "evaluate_autonomous_verdicts rewrites the index at end of scan"
+else
+    bad "evaluate_autonomous_verdicts does NOT rewrite the index — scanner is a no-op after first keep"
+fi
+
 echo
 echo "labeler-autonomous-verdict: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

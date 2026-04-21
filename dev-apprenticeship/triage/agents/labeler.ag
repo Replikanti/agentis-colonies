@@ -228,7 +228,14 @@ fn append_autonomous_index(iid: int) -> void {
     let iid_str = to_string(iid);
     let append_cmd = "EX=" + shell_escape(existing) + " N=" + shell_escape(iid_str) +
         " python3 -c 'import os; ex=os.environ[\"EX\"]; n=os.environ[\"N\"]; parts=[p for p in ex.split(\",\") if p.strip() and p.strip()!=n]; parts.append(n); print(\",\".join(parts))'";
-    let next = try { exec sh append_cmd; } catch e { iid_str; };
+    // Catch-branch fallback preserves previously-queued peers: if the
+    // dedup+append subprocess itself fails (python3 missing, OOM,
+    // exec_foreign revoked mid-tick), we still want the current iid in
+    // the index, but falling back to `iid_str` alone would silently
+    // drop any peer iids that were already soaking. `append_csv`
+    // tolerates an already-present iid (the next successful scan
+    // naturally normalizes a brief duplicate on the next tick).
+    let next = try { exec sh append_cmd; } catch e { append_csv(existing, iid_str); };
     memo_write("labeler:autonomous_verdict_index", next);
 }
 
@@ -256,11 +263,11 @@ fn score_one_autonomous(issue_id: int) -> string {
     let key = "labeler:autonomous_verdict:" + to_string(issue_id);
     let blob = recall_latest(key);
     if len(blob) < 3 {
-        // Drift: index references a blob that was already cleared or
-        // never written (the `record` path writes blob first, then
-        // appends to index — if `append` failed the blob exists but
-        // the index never held this iid; if we got here, the index
-        // did hold it, so the blob was cleared by an earlier scan).
+        // Unexpected drift: index held the iid but the blob is gone.
+        // Possible causes: external memo clear, scanner/record race
+        // (not expected in single-threaded daemons), or a prior scan
+        // that cleared the blob but failed to rewrite the index.
+        // Self-heal by dropping from the index on this scan.
         return "drop";
     };
     let age = verdict_age_seconds(blob);
