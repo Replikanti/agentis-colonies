@@ -17,6 +17,32 @@ is asserted until multi-version CI is in place.
 
 ### Added
 
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
+## [0.3.1] — 2026-04-21
+
+Feedback-loop-and-reliability patch. Labeler gains an autonomous-tier
+reality check closing the remaining hole in the #195 feedback-loop
+pattern (autonomous writes are now scored against operator reverts
+rather than silently tracked at `"success"`). Implementation-colony
+agents stop re-burning LLM budget on the same MR iid across ticks.
+Federation-dashboard no longer cross-reads sibling federations'
+`.agentis/` state under a shared-parent layout, and the evolve
+flat-slope threshold is calibrated from production data. Runtime
+floor unchanged.
+
+**Requires:** agentis >= 1.4.1
+
+### Added
+
 - **Labeler autonomous-tier reality check (pilot)**
   ([#203](https://github.com/Replikanti/agentis-colonies/issues/203)).
   Extends the #195 reality-check pattern to the labeler's autonomous
@@ -42,12 +68,38 @@ is asserted until multi-version CI is in place.
 
 ### Changed
 
-### Deprecated
-
-### Removed
+- **Evolve flat-slope threshold calibrated from production data**
+  ([#163](https://github.com/Replikanti/agentis-colonies/issues/163)).
+  Bumped from `1e-6` (original guess) to `1e-4`; promoted to a named
+  const `SLOPE_FLAT_THRESHOLD` in
+  `tools/federation-dashboard.html.template` so future re-calibration
+  is a one-line tweak. Calibration source: 23-agent slope snapshot
+  captured on v1.4.3 against a long-running federation after core PR
+  #542 populated `fitness_delta` per outcome. The |slope|
+  distribution splits cleanly between a true plateau band
+  (|slope| ≤ 1e-5: `code_writer`, `commit_composer`, `router`,
+  `prioritizer` — the canonical "evolve is pointless" agents the
+  gate is meant to catch) and an oscillation band
+  (|slope| ∈ [1e-4, 3e-3]: most everything else), with no data in
+  the gap between. `1e-4` is the lower edge of the oscillation band.
 
 ### Fixed
 
+- **Federation-dashboard: prefer federation-local `.agentis/` over
+  parent-level**
+  ([#238](https://github.com/Replikanti/agentis-colonies/issues/238)).
+  Sibling federations sharing a parent directory were cross-reading
+  each other's experience/logs because `${FED_DIR}/../.agentis`
+  resolves to the same directory for both. Precedence flipped to:
+  federation-local `.agentis/` wins when present; parent-level is the
+  fallback (preserves the legacy symlinked single-federation layout
+  where `<fed>/.agentis -> ../.agentis` still resolves via the
+  local-first check); cwd-relative `.agentis/logs` is the final
+  fallback. Also fixes the same bug class in
+  `dev-apprenticeship/watch-suggestions.sh` (the default
+  `$SCRIPT_DIR/../.agentis/logs` resolved to the shared-parent
+  directory, reporting "no logs" under a sibling-federation layout
+  unless the user passed an explicit argument).
 - **Implementation agents: MR-level idempotency gate on the learning path**
   ([#239](https://github.com/Replikanti/agentis-colonies/issues/239)).
   `code_writer`, `test_writer`, `refactorer`, and `commit_composer` each
@@ -67,8 +119,6 @@ is asserted until multi-version CI is in place.
   per-agent RSS instrumentation, watchdog auto-restart on silent death)
   remain open in `agentis-core`; this colony-side fix removes the load
   that triggers the class of runtime failure.
-
-### Security
 
 ## [0.3.0] — 2026-04-20
 
@@ -373,7 +423,8 @@ permissible per semver §4.
 - All dynamic values flowing into `exec sh` are required to pass through `shell_escape()`;
   `check-exec-sh.sh` enforces this grep-level contract.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.3.0...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.3.1...HEAD
+[0.3.1]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.3.0...dev-apprenticeship-v0.3.1
 [0.3.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.2.0...dev-apprenticeship-v0.3.0
 [0.2.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.1.1...dev-apprenticeship-v0.2.0
 [0.1.1]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.1.0...dev-apprenticeship-v0.1.1
