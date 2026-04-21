@@ -17,6 +17,29 @@ is asserted until multi-version CI is in place.
 
 ### Added
 
+- **Labeler autonomous-tier reality check (pilot)**
+  ([#203](https://github.com/Replikanti/agentis-colonies/issues/203)).
+  Extends the #195 reality-check pattern to the labeler's autonomous
+  branch, where the agent writes labels to GitLab directly and the
+  ground-truth signal is "did the operator revert the write?" rather
+  than "did the operator apply our suggestion?". New memo schema is
+  multi-slot per-iid (`labeler:autonomous_verdict:<iid>` + an index
+  CSV `labeler:autonomous_verdict_index`) so multiple in-flight writes
+  can soak in parallel; the single-slot propose-path idiom remains
+  untouched. Soak window 30 min, ageout 48 h (longer than the propose
+  path's 24 h to match the slower human-response horizon on an
+  already-applied label). Two-row pattern per autonomous action:
+  at-write `learn("success", ..., "acted")` preserves the existing
+  acting-path fitness signal for #186, post-soak
+  `learn(<outcome>, ..., "acted")` lands in the same tag bucket and
+  averages in — so a consistently-reverted agent sees its acting
+  fitness drift down despite at-write optimism. Full pattern
+  documented in
+  [`doc/feedback-loop.md`](../doc/feedback-loop.md#autonomous-tier-extension-203-labeler-pilot);
+  structural regression in `tools/test-labeler-autonomous-verdict.sh`.
+  Fan-out to the other 20 agents is tracked per-agent in follow-up
+  tickets.
+
 ### Changed
 
 ### Deprecated
