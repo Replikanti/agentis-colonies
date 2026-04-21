@@ -237,15 +237,93 @@ a fresh agent is not penalised for having no reality-check rows yet.
   `delta_slope_negative_for` or `evolve.trigger.reject_rate_above`
   need re-calibration once real reject rows flow, that is a follow-up
   (see [#163](https://github.com/Replikanti/agentis-colonies/issues/163)).
-- **Autonomous-tier agents that write GitLab state directly.** When
-  the agent is the one writing the label / comment / tag, there is no
-  separable operator signal to score against. The pilot's
-  `record_label_verdict()` is called only in the propose and
-  review-gated branches for that reason. Future work may introduce a
-  longer-horizon check (e.g. does the operator *revert* the
-  autonomous write within N days?) but that is a separate pattern.
 - **Fan-out to the other 20 agents.** One follow-up per colony or per
   agent; the pilot validates the shape, subsequent tickets copy it.
+  Autonomous-tier coverage is tracked separately (see below).
+
+## Autonomous-tier extension (#203, labeler pilot)
+
+The propose / review-gated pattern above hinges on a separable
+operator signal: the agent suggests, the operator reacts, and the
+reaction is the ground truth. Autonomous-tier agents don't have that
+shape — the agent *is* the writer, so "did the operator apply our
+suggestion?" collapses into "yes, we did." The longer-horizon
+question that still makes sense is "**did the operator revert the
+autonomous write?**" — and that takes time to settle, so a
+single-slot `pending_verdict` idiom won't work.
+
+### Memo schema
+
+The autonomous path uses one blob per in-flight iid plus a separate
+index to make them iterable:
+
+```
+labeler:autonomous_verdict:<iid>  -> "[ts, iid, \"labels_csv\"]"
+labeler:autonomous_verdict_index  -> CSV of iids with pending blobs
+```
+
+The index is the only structure the per-tick scanner reads to decide
+which iids to check. Blobs are read per-iid inside the scanner, and
+a missing blob (index drift) triggers a self-heal that drops the iid
+from the index without emitting a learn row.
+
+### Soak and ageout
+
+- **Soak: 30 min (1800 s).** An autonomous write is scored no earlier
+  than 30 minutes after it lands. That gives the operator time to
+  notice and react before the agent decides "no revert = success."
+  Too short and the system converges on false positives; too long and
+  the feedback loop stalls.
+- **Ageout: 48 h (172 800 s).** After 48 hours the blob is dropped
+  without emitting a learn row. Absence of action is not evidence of
+  a wrong write (same rationale as the propose path's 24 h ageout at
+  line 150 of `labeler.ag`). The longer window reflects the longer
+  human-response horizon — operators notice a misapplied label within
+  a working day or two, not within a lunch hour.
+
+Both windows are intentionally `.ag` literals rather than config
+knobs; if they need tuning once signal flows, the next iteration
+lifts them into a memo or config file (same posture as propose-path
+`delta` values).
+
+### Two-row pattern at autonomous tier
+
+Autonomous writes emit **two** `learn()` rows per action, not one:
+
+| When               | Row                                                                             | Outcome    | Tag bucket  |
+|--------------------|---------------------------------------------------------------------------------|------------|-------------|
+| At write           | `learn("label", "issue <iid>", <labels>, "success", [scope, "triage", "acted"])` | success    | acted       |
+| After 30 min soak  | `learn("label", "issue <iid> autonomous-revert-check", ..., <outcome>, [scope, "triage", "acted"])` | success / partial / fail | acted       |
+
+The at-write row preserves the acting-path fitness signal the
+existing `#186` aggregation consumes. The post-soak row lands in the
+same tag bucket and averages in — so if operators consistently revert
+an autonomous write, the acting fitness for that agent drifts down
+despite the at-write optimism. One correctly-kept write plus one
+reverted write nets to ~0.0 fitness delta, which is the honest answer.
+
+### Signal interpretation
+
+The compare step in `score_one_autonomous()` differs from the propose
+path because we wrote the labels ourselves. There is no "no signal
+yet" case (signal 0 doesn't exist here) — if the operator has cleared
+our labels entirely, that is a reversal, not silence. The python3
+output is strict:
+
+- **1 — full match:** every suggested label still present → `success`
+- **2 — partial erosion:** some labels removed → `partial`
+- **3 — full reversal:** none of our labels remain → `fail`
+
+### Ordering invariant
+
+`record_autonomous_verdict` is called **before** the at-write
+`learn("success")` in the autonomous branch. If the memo write
+succeeds but `learn()` fails, we have a soak row coming but no
+at-write row — acceptable asymmetry (the soak row is the honest one).
+If `learn()` succeeds but the memo write fails, we have an at-write
+row with no future reality-check — acceptable asymmetry (the acting
+fitness is at worst slightly optimistic, which is the bias the
+two-row pattern is designed to correct over time).
 
 ## Related
 
@@ -253,5 +331,5 @@ a fresh agent is not penalised for having no reality-check rows yet.
 - [`auto-promote.md`](./auto-promote.md) — consumer of the honest signal.
 - [#106](https://github.com/Replikanti/agentis-colonies/issues/106) — auto-confidence from feedback (per-agent memo track).
 - [#186](https://github.com/Replikanti/agentis-colonies/issues/186) / [#192](https://github.com/Replikanti/agentis-colonies/pull/192) — tag classification that makes the honest signal consumable.
-- [#195](https://github.com/Replikanti/agentis-colonies/issues/195) — this pattern's parent issue.
-- [#163](https://github.com/Replikanti/agentis-colonies/issues/163) — follow-up calibration once signal flows.
+- [#195](https://github.com/Replikanti/agentis-colonies/issues/195) — this pattern's parent issue (propose / review-gated).
+- [#203](https://github.com/Replikanti/agentis-colonies/issues/203) — autonomous-tier extension documented in the section above.

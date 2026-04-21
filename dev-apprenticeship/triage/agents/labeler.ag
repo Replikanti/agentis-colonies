@@ -193,12 +193,183 @@ fn evaluate_label_verdict() -> void {
     memo_write("labeler:pending_verdict", "");
 }
 
+// #203: longer-horizon reality check for autonomous-tier writes.
+//
+// The propose / review-gated path above uses a single-slot
+// `labeler:pending_verdict` blob that the next tick overwrites. That
+// shape is fine there because the signal we want ("did the operator
+// apply our suggestion?") settles in minutes and a stale entry is
+// never wrong for long.
+//
+// Autonomous is different. The agent writes labels directly to GitLab,
+// and the ground-truth signal is "did the operator REVERT my write?"
+// — a question that only makes sense after the operator has had time
+// to notice and react. We soak each autonomous write for at least 30
+// minutes before scoring, and accept the verdict as stale ("aged out
+// without signal") after 48 hours. During that window the agent may
+// emit further autonomous writes for other issues, so we need one
+// slot per iid, not the single-slot idiom the propose path uses.
+//
+// Memo schema:
+//   labeler:autonomous_verdict:<iid>  -> "[ts, iid, \"labels_csv\"]"
+//   labeler:autonomous_verdict_index  -> CSV of iids with pending blobs
+//
+// The index is the only structure the per-tick scanner reads to
+// decide which iids to check. Blobs are read per-iid inside the
+// scanner, and a missing blob (drift) triggers a self-heal that drops
+// the iid from the index without emitting a learn row.
+
+// Append an iid to the autonomous-verdict index, deduping so the same
+// iid never appears twice. We store the freshest occurrence at the
+// tail (matches the "latest write wins" semantic for repeated writes
+// on the same issue).
+fn append_autonomous_index(iid: int) -> void {
+    let existing = recall_latest("labeler:autonomous_verdict_index");
+    let iid_str = to_string(iid);
+    let append_cmd = "EX=" + shell_escape(existing) + " N=" + shell_escape(iid_str) +
+        " python3 -c 'import os; ex=os.environ[\"EX\"]; n=os.environ[\"N\"]; parts=[p for p in ex.split(\",\") if p.strip() and p.strip()!=n]; parts.append(n); print(\",\".join(parts))'";
+    let next = try { exec sh append_cmd; } catch e { iid_str; };
+    memo_write("labeler:autonomous_verdict_index", next);
+}
+
+// Record a pending autonomous verdict for a specific iid. Called
+// immediately after a successful `update-issue --add-labels` in the
+// autonomous branch. Writing the blob BEFORE the at-write `learn()`
+// (see tick()) means a `learn()` failure does not leave a phantom iid
+// in the index; an `append_autonomous_index` failure means the blob
+// is unreachable from the scanner and gets GC'd on drift-cleanup when
+// it eventually expires.
+fn record_autonomous_verdict(issue_id: int, labels_csv: string) -> void {
+    let ts_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let blob = "[" + ts_raw + "," + to_string(issue_id) + ",\"" + labels_csv + "\"]";
+    memo_write("labeler:autonomous_verdict:" + to_string(issue_id), blob);
+    append_autonomous_index(issue_id);
+    print("[labeler] autonomous verdict recorded: issue", issue_id, "labels", labels_csv);
+}
+
+// Score a single pending autonomous verdict. Returns "keep" when the
+// verdict is still soaking (< 30 min) and should remain in the index
+// for a future tick; returns "drop" when the verdict is scored,
+// aged out (> 48 h), or was drift-orphaned (blob missing). Only the
+// scored-and-emitted path appends to the experience store.
+fn score_one_autonomous(issue_id: int) -> string {
+    let key = "labeler:autonomous_verdict:" + to_string(issue_id);
+    let blob = recall_latest(key);
+    if len(blob) < 3 {
+        // Drift: index references a blob that was already cleared or
+        // never written (the `record` path writes blob first, then
+        // appends to index — if `append` failed the blob exists but
+        // the index never held this iid; if we got here, the index
+        // did hold it, so the blob was cleared by an earlier scan).
+        return "drop";
+    };
+    let age = verdict_age_seconds(blob);
+    let soak_s = 1800;
+    if age < soak_s {
+        // Still soaking — operator hasn't had time to react. Leave
+        // the blob and keep the iid in the index for the next tick.
+        return "keep";
+    };
+    let ageout_s = 172800;
+    if age > ageout_s {
+        // Aged out without signal. Absence of action is not evidence
+        // of a wrong write — drop silently, no learn() row (matches
+        // the propose path's 24 h ageout semantic at line 150).
+        print("[labeler] autonomous verdict aged out: issue", issue_id);
+        memo_write(key, "");
+        return "drop";
+    };
+    let suggested = to_string(json_get(blob, "[2]"));
+    let cur_cmd = "$COLONY_DIR/scripts/gitlab-api.sh get-issue " + to_string(issue_id) + " --view feedback-issue";
+    let cur_raw = try { exec sh cur_cmd; } catch e { ""; };
+    if len(cur_raw) < 3 {
+        // GitLab query failed (network blip, issue deleted, etc.).
+        // Keep the iid in flight — next tick retries. Repeated
+        // failures will eventually hit the ageout and drop silently.
+        return "keep";
+    };
+    // Autonomous compare is different from the propose path: we WROTE
+    // the labels, so "act empty" is a reversal signal (signal 3, fail),
+    // not a "no signal yet" (which in propose we would leave pending).
+    // Output: 1 = full match (none removed), 2 = partial erosion,
+    // 3 = full reversal (none of ours remain).
+    let match_cmd = "SUGGESTED=" + shell_escape(suggested) + " RAW=" + shell_escape(cur_raw) + " python3 -c 'import os, json; sug={s.strip() for s in os.environ[\"SUGGESTED\"].split(\",\") if s.strip()}; act=set(json.loads(os.environ[\"RAW\"]).get(\"labels\", [])); print(1 if sug and sug.issubset(act) else (2 if sug & act else 3))'";
+    let signal_raw = try { exec sh match_cmd; } catch e { "3"; };
+    let signal = parse_int(signal_raw);
+    let outcome = signal_to_outcome(signal);
+    let cur_author = to_string(json_get(cur_raw, "author.username"));
+    let scope = scope_for_author(cur_author);
+    learn(
+        "label",
+        "issue " + to_string(issue_id) + " autonomous-revert-check",
+        "written: " + suggested + " | signal: " + to_string(signal),
+        outcome,
+        [scope, "triage", "acted"]
+    );
+    print("[labeler] autonomous reality-check: issue", issue_id, "signal", signal, "->", outcome);
+    memo_write(key, "");
+    return "drop";
+}
+
+// CSV accumulator helper — appends `iid_raw` to `acc` with a comma
+// separator, or returns `iid_raw` when `acc` is empty. Split out of
+// the recursive iterator so the control flow stays linear.
+fn append_csv(acc: string, iid_raw: string) -> string {
+    if len(acc) > 0 {
+        return acc + "," + iid_raw;
+    };
+    return iid_raw;
+}
+
+// Recursive iterator over `index_csv`. `.ag` has no loops, so we
+// substitute a tail-recursive function per the runtime convention
+// (agentis-core src/runtime.rs:2077 "Use recursive function as loop
+// substitute"). Each call reads one iid at position `pos`, scores it,
+// and appends to `acc` only when `score_one_autonomous` returned
+// "keep" (iid still soaking — carry forward to next tick).
+//
+// The CB budget per tick (400) bounds the recursion depth implicitly:
+// each hop costs ~50 CB (one exec sh + one memo read + optional
+// GitLab query + optional learn()). At worst ~8 iids evaluated per
+// tick; the rest stay in the carried-over index and get picked up on
+// subsequent ticks.
+fn eval_autonomous_at(index_csv: string, pos: int, acc: string) -> string {
+    let iid_raw = try {
+        exec sh "CSV=" + shell_escape(index_csv) + " POS=" + to_string(pos) +
+            " python3 -c 'import os; parts=[p for p in os.environ[\"CSV\"].split(\",\") if p.strip()]; p=int(os.environ[\"POS\"]); print(parts[p] if 0<=p<len(parts) else \"\")'";
+    } catch e { ""; };
+    if len(iid_raw) < 1 {
+        return acc;
+    };
+    let iid = parse_int(iid_raw);
+    let verdict = score_one_autonomous(iid);
+    if verdict == "keep" {
+        return eval_autonomous_at(index_csv, pos + 1, append_csv(acc, iid_raw));
+    };
+    return eval_autonomous_at(index_csv, pos + 1, acc);
+}
+
+// Entry point: scan the autonomous-verdict index, score every iid,
+// rewrite the index with the survivors (still-soaking ones). Cheap
+// no-op when the index is empty (the common case before the agent
+// reaches autonomous tier).
+fn evaluate_autonomous_verdicts() -> void {
+    let index_csv = recall_latest("labeler:autonomous_verdict_index");
+    if len(index_csv) < 1 {
+        return;
+    };
+    let new_index = eval_autonomous_at(index_csv, 0, "");
+    memo_write("labeler:autonomous_verdict_index", new_index);
+}
+
 fn tick(reason: string) -> void {
-    // #106: Check any pending verdict from a previous tick before doing
-    // new work. The matcher is cheap when there's nothing pending, and
-    // this placement means a verdict recorded at tick N is evaluated at
-    // tick N+1 onwards (matching the "subsequent tick" semantic).
+    // #106: Check any pending propose / review-gated verdict from a
+    // previous tick before doing new work. Cheap when nothing pending.
     evaluate_label_verdict();
+    // #203: Score any pending autonomous-tier verdicts. Multi-slot,
+    // keyed per-iid; the scanner drops scored/aged iids and keeps
+    // still-soaking ones for the next tick.
+    evaluate_autonomous_verdicts();
     let cmd = issues_cmd();
     let raw = try {
         exec sh cmd;
@@ -251,6 +422,14 @@ fn tick(reason: string) -> void {
                 // #104: tag knowledge as personal (operator's issue) vs team.
                 let scope = scope_for_author(action.author);
                 emit("triage:label_suggestion", action);
+                // #203: stash the write for the per-iid autonomous-tier
+                // reality check. Must precede the bare `learn("success")`:
+                // the two-row pattern is at-write optimism + post-soak
+                // honesty. If `record_autonomous_verdict` fails the `learn()`
+                // row still lands (acceptable asymmetry — a missing soak
+                // row means no reality-check adjustment for this iid, not a
+                // phantom success).
+                record_autonomous_verdict(action.issue_id, action.labels);
                 learn("label", "issue " + to_string(action.issue_id), action.labels, "success", [scope, "triage", "acted"]);
             };
         } else {
