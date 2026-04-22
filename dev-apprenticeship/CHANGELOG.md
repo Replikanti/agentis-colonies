@@ -25,6 +25,19 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+### Security
+
+## [0.3.2] — 2026-04-22
+
+Portability patch. `auto-promote.sh` now runs unmodified on stock macOS;
+the scheduler had previously silently no-op'd on every macOS invocation
+while the sidecar reported a misleading "Another auto-promote instance
+is running" line. Runtime floor unchanged.
+
+**Requires:** agentis >= 1.4.1
+
+### Fixed
+
 - **`tools/auto-promote.sh` portable on macOS**
   ([#245](https://github.com/Replikanti/agentis-colonies/issues/245)).
   Two independent failure modes on stock macOS hosts are fixed. The
@@ -39,11 +52,6 @@ is asserted until multi-version CI is in place.
   pattern previously applied to `federation-dashboard.sh`. Shebang on
   `auto-promote.sh` changed to `#!/usr/bin/env bash` as a secondary
   guard when users put homebrew bash ahead of `/bin/bash` on PATH.
-  Auto-promote now runs unmodified on every supported OS; before the
-  fix every macOS invocation silently no-op'd and the sidecar reported
-  a misleading "Another auto-promote instance is running" line.
-
-### Security
 
 ## [0.3.1] — 2026-04-21
 
@@ -441,7 +449,8 @@ permissible per semver §4.
 - All dynamic values flowing into `exec sh` are required to pass through `shell_escape()`;
   `check-exec-sh.sh` enforces this grep-level contract.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.3.1...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.3.2...HEAD
+[0.3.2]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.3.1...dev-apprenticeship-v0.3.2
 [0.3.1]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.3.0...dev-apprenticeship-v0.3.1
 [0.3.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.2.0...dev-apprenticeship-v0.3.0
 [0.2.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.1.1...dev-apprenticeship-v0.2.0
