@@ -22,7 +22,7 @@
 #   8: colony_list_json    — JSON array of colony names
 #   9..: all_agents        — agent names (one per positional arg)
 
-import sys, os, json, time, re, datetime
+import sys, os, json, time, re, datetime, subprocess
 
 daemons_json   = sys.argv[1]
 agent_map_json = sys.argv[2]
@@ -372,7 +372,6 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 decider = os.path.join(script_dir, 'auto-promote-decisions.py')
 config = os.path.join(script_dir, 'auto-promote-config.yaml')
 if os.path.isfile(decider) and os.path.isfile(config):
-    import subprocess
     try:
         dec_out = subprocess.run(
             ['python3', decider, '--preview', '--config', config,
@@ -387,11 +386,60 @@ if os.path.isfile(decider) and os.path.isfile(config):
     except (subprocess.SubprocessError, OSError):
         decisions = []
 
+# --- Sidecar liveness (#248 PR B) ---
+# Surface auto-promote scheduler state so the dashboard can render a
+# HEALTHY / DEGRADED banner. Source of truth:
+#   .auto-promote-install.toml  — whether the sidecar was ever installed
+#                                 (install.sh §7) and the configured cadence
+#   .agentis/logs/auto-promote.log — mtime is the last tick (sidecar appends
+#                                 '=== {iso}: sidecar tick ===' + auto-promote.sh
+#                                 stdout every interval_s; see
+#                                 start-federation.sh §auto-promote scheduler).
+# When no install file exists we emit installed=false and the banner falls
+# back to daemon-liveness only. No sidecar running is not itself DEGRADED.
+sidecar = {'installed': False, 'enabled': False, 'interval_s': None,
+           'last_tick_ts': None, 'log_path': None}
+install_file = os.path.join(fed_dir, '.auto-promote-install.toml')
+if os.path.isfile(install_file):
+    sidecar['installed'] = True
+    try:
+        in_section = False
+        with open(install_file) as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if line.startswith('[') and line.endswith(']'):
+                    in_section = (line[1:-1].strip() == 'auto_promote')
+                    continue
+                if not in_section or '=' not in line:
+                    continue
+                k, _, v = line.partition('=')
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k == 'enabled':
+                    sidecar['enabled'] = (v.lower() == 'true')
+                elif k == 'interval_s':
+                    try:
+                        sidecar['interval_s'] = int(v)
+                    except ValueError:
+                        pass
+    except OSError:
+        pass
+log_file = os.path.join(fed_dir, '.agentis', 'logs', 'auto-promote.log')
+if os.path.isfile(log_file):
+    sidecar['log_path'] = log_file
+    try:
+        sidecar['last_tick_ts'] = int(os.path.getmtime(log_file))
+    except OSError:
+        pass
+
 output = {
     'agents': result,
     'experience_counts': colony_exp,
     'events': events,
     'confidence_changes': conf_changes,
     'decisions': decisions,
+    'sidecar': sidecar,
 }
 print(json.dumps(output))

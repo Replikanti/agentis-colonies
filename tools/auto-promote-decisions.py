@@ -374,6 +374,35 @@ def main():
         # why this agent's bar differed from the global default.
         evidence['min_acting_entries_effective'] = effective_min_acting
 
+        # #248 (PR B): structured prereqs for dashboard rendering. The textual
+        # reason string above stays for journal back-compat; the dashboard walks
+        # this list to show a checklist instead of parsing the string.
+        prereqs = [
+            {'name': 'entries_total', 'value': entry_count,
+             'threshold': min_entries, 'op': '>=',
+             'meets': entry_count >= min_entries},
+            {'name': 'entries_acting', 'value': acting_count,
+             'threshold': effective_min_acting, 'op': '>=',
+             'meets': acting_count >= effective_min_acting},
+            {'name': 'runtime_hours', 'value': round(runtime_hours, 1),
+             'threshold': min_runtime_hours, 'op': '>=',
+             'meets': runtime_hours >= min_runtime_hours},
+        ]
+        if effective_min_acting > 0:
+            prereqs.append({
+                'name': 'reject_rate_acting',
+                'value': round(reject_rate_acting, 4),
+                'threshold': reject_rate_threshold, 'op': '<',
+                'meets': reject_rate_acting < reject_rate_threshold,
+            })
+            prereqs.append({
+                'name': 'delta_slope_acting',
+                'value': round(delta_slope_acting, 6),
+                'threshold': delta_slope_min, 'op': '>=',
+                'meets': delta_slope_acting >= delta_slope_min,
+            })
+        evidence['prereqs'] = prereqs
+
         if fails:
             decisions.append({
                 'agent': agent_name,

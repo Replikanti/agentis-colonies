@@ -439,6 +439,46 @@ else
     fail "preview arity" "expected exit 2 on missing args, got $BAD_EXIT"
 fi
 
+# --- Test 14: prereqs structure is attached to promote-path skips ---
+# #248 PR B: the dashboard's promote-candidates skipped rendering reads
+# evidence.prereqs to show a per-criterion checklist. If this array is
+# missing or malformed the UI silently degrades back to the raw reason
+# string. Verify every prereq object has {name, value, threshold, op, meets}.
+SELF_PID=$$
+LIVE_FIXTURE='[{"source":"/fake/y.ag","pid":'"$SELF_PID"',"agent_id":"y","colony":"c","started_at":'"$(date +%s)"',"confidence":0.4,"state":"running"}]'
+PREREQS_OUT=$(python3 "$SCRIPT_DIR/auto-promote-decisions.py" \
+    --preview --config "$SCRIPT_DIR/auto-promote-config.yaml" \
+    "$LIVE_FIXTURE" "$FED_DIR_FIXTURE")
+
+# Agent has zero experience + fresh started_at so it must fail on at least
+# two prereqs (entries_total, runtime_hours). Evidence must carry a
+# prereqs array with all required keys on each entry.
+PREREQS_OK=$(python3 -c "
+import json, sys
+arr = json.loads(sys.argv[1])
+if len(arr) != 1: sys.exit(1)
+d = arr[0]
+if d.get('decision') != 'skip': sys.exit(2)
+ev = d.get('evidence', {})
+pr = ev.get('prereqs')
+if not isinstance(pr, list) or len(pr) < 3: sys.exit(3)
+required = {'name', 'value', 'threshold', 'op', 'meets'}
+for p in pr:
+    if not isinstance(p, dict): sys.exit(4)
+    if not required.issubset(p.keys()): sys.exit(5)
+    if not isinstance(p['meets'], bool): sys.exit(6)
+names = {p['name'] for p in pr}
+# entries_total, entries_acting, runtime_hours always present
+for n in ('entries_total', 'entries_acting', 'runtime_hours'):
+    if n not in names: sys.exit(7)
+print('ok')
+" "$PREREQS_OUT" 2>&1 || true)
+if [ "$PREREQS_OK" = "ok" ]; then
+    pass "prereqs structure attached to promote-path skips (#248 PR B)"
+else
+    fail "prereqs structure" "got <$PREREQS_OK> from <$PREREQS_OUT>"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
