@@ -32,9 +32,10 @@ is asserted until multi-version CI is in place.
   `tools/auto-promote-lock.py` helper that acquires a POSIX
   `fcntl.flock(LOCK_EX | LOCK_NB)` lock on the inherited fd; the lock
   is held for the life of the parent shell on both Linux and macOS.
-  The embedded `eval "$(python3 - <<'PYCONFIG' ... PYCONFIG)"` heredoc
-  (which the macOS bash 3.2 parser cannot handle) is extracted to
-  `tools/auto-promote-config-parser.py`, matching the #170 / #172 fix
+  Both embedded heredocs (`eval "$(python3 - <<'PYCONFIG' ... PYCONFIG)"`
+  and `$(python3 - ... <<'PYEVAL' ... PYEVAL)`), which the macOS bash 3.2
+  parser cannot handle, are extracted to `tools/auto-promote-config-parser.py`
+  and `tools/auto-promote-decisions.py` — matching the #170 / #172 fix
   pattern previously applied to `federation-dashboard.sh`. Shebang on
   `auto-promote.sh` changed to `#!/usr/bin/env bash` as a secondary
   guard when users put homebrew bash ahead of `/bin/bash` on PATH.

@@ -341,8 +341,13 @@ fi
 # Same gate as #172 added for federation-dashboard.sh via
 # test-timeline-rendering.sh. Every embedded Python block must live in
 # its own .py file next to the script.
+#
+# Match `<<TAG`, `<<'TAG'`, or `<<"TAG"` anywhere on a non-comment line.
+# Previous pattern `^[[:space:]]*<<` missed the original PYEVAL case where
+# the heredoc marker sat at the end of a backslash-continued line.
 
-HEREDOC_COUNT=$(grep -c '^[[:space:]]*<<' "$SCRIPT_DIR/auto-promote.sh" || true)
+HEREDOC_COUNT=$(grep -vE '^[[:space:]]*#' "$SCRIPT_DIR/auto-promote.sh" \
+    | grep -cE "<<['\"]?[A-Z_]+['\"]?" || true)
 if [ "$HEREDOC_COUNT" -eq 0 ]; then
     pass "auto-promote.sh has no heredocs (#245)"
 else
