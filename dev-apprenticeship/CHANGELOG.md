@@ -25,6 +25,23 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- **`tools/auto-promote.sh` portable on macOS**
+  ([#245](https://github.com/Replikanti/agentis-colonies/issues/245)).
+  Two independent failure modes on stock macOS hosts are fixed. The
+  `flock -n` call (util-linux, not shipped on macOS) is replaced by a
+  `tools/auto-promote-lock.py` helper that acquires a POSIX
+  `fcntl.flock(LOCK_EX | LOCK_NB)` lock on the inherited fd; the lock
+  is held for the life of the parent shell on both Linux and macOS.
+  The embedded `eval "$(python3 - <<'PYCONFIG' ... PYCONFIG)"` heredoc
+  (which the macOS bash 3.2 parser cannot handle) is extracted to
+  `tools/auto-promote-config-parser.py`, matching the #170 / #172 fix
+  pattern previously applied to `federation-dashboard.sh`. Shebang on
+  `auto-promote.sh` changed to `#!/usr/bin/env bash` as a secondary
+  guard when users put homebrew bash ahead of `/bin/bash` on PATH.
+  Auto-promote now runs unmodified on every supported OS; before the
+  fix every macOS invocation silently no-op'd and the sidecar reported
+  a misleading "Another auto-promote instance is running" line.
+
 ### Security
 
 ## [0.3.1] — 2026-04-21

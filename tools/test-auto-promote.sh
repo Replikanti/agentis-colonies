@@ -286,53 +286,30 @@ for t in triples.split():
 print(steps)" \
     "[(0.4, 0.6, 0), (0.6, 0.8, None), (0.8, 0.95, 120)]"
 
-# --- Test 8: config parse produces the expected triples ---
-# End-to-end check on auto-promote-config.yaml: the PYCONFIG block
-# must emit the triples the PYEVAL block expects.
+# --- Test 8: config parser produces expected CFG_* exports ---
+# End-to-end check on the real parser helper (auto-promote-config-parser.py,
+# extracted from the PYCONFIG heredoc in #245). Running the production
+# helper here — not a mirror — so the test drifts with the helper and
+# cannot desync.
 
-CFG_OUT=$(python3 - "$SCRIPT_DIR/auto-promote-config.yaml" <<'PYCFG'
-import sys, json, math
-config_path = sys.argv[1]
+CFG_STEPS=$(python3 "$SCRIPT_DIR/auto-promote-config-parser.py" \
+    "$SCRIPT_DIR/auto-promote-config.yaml" \
+    | grep '^CFG_PROMOTE_STEPS=' \
+    | sed "s/CFG_PROMOTE_STEPS='\\(.*\\)'/\\1/")
 
-def _parse_value(v):
-    v = v.split('#', 1)[0].strip()
-    if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
-        return v[1:-1]
-    if v == 'true': return True
-    if v == 'false': return False
-    try: return int(v)
-    except ValueError: pass
-    try: return float(v)
-    except ValueError: pass
-    return v
-
-try:
-    import yaml
-    with open(config_path) as f:
-        cfg = yaml.safe_load(f)
-except ImportError:
-    # Shell out to the production parser in auto-promote.sh
-    # if PyYAML isn't present. For the test harness we assume PyYAML
-    # is available; skip otherwise.
-    print('SKIP_NO_YAML')
-    sys.exit(0)
-
-steps = cfg.get('promote', {}).get('steps', [])
-def _fmt(s):
-    override = s.get('min_acting_entries_override')
-    if override is None:
-        return f"{s['from']}:{s['to']}:"
-    return f"{s['from']}:{s['to']}:{int(override)}"
-print(' '.join(_fmt(s) for s in steps))
-PYCFG
-)
-
-if [ "$CFG_OUT" = "SKIP_NO_YAML" ]; then
-    echo "[SKIP] config parse: PyYAML not installed"
-elif [ "$CFG_OUT" = "0.4:0.6:0 0.6:0.8: 0.8:0.95:120" ]; then
-    pass "config parse: triples match ADR-0001 ladder"
+if [ "$CFG_STEPS" = "0.4:0.6:0 0.6:0.8: 0.8:0.95:120" ]; then
+    pass "config parser: triples match ADR-0001 ladder"
 else
-    fail "config parse" "expected <0.4:0.6:0 0.6:0.8: 0.8:0.95:120>, got <$CFG_OUT>"
+    fail "config parser" "expected <0.4:0.6:0 0.6:0.8: 0.8:0.95:120>, got <$CFG_STEPS>"
+fi
+
+# Verify output is shell-eval-able and sets every CFG_* the script needs.
+CFG_EVAL=$(bash -c "eval \"\$(python3 '$SCRIPT_DIR/auto-promote-config-parser.py' '$SCRIPT_DIR/auto-promote-config.yaml')\" && echo \"\$CFG_MIN_ENTRIES|\$CFG_DRY_RUN|\$CFG_REJECT_RATE_THRESHOLD\"")
+
+if [ "$CFG_EVAL" = "200|true|0.05" ]; then
+    pass "config parser: output shell-eval-able, CFG_* populated"
+else
+    fail "config parser eval" "expected <200|true|0.05>, got <$CFG_EVAL>"
 fi
 
 # --- Test 9: config has canonical tier boundaries ---
@@ -356,6 +333,65 @@ if [ "$ACTUAL_BOUNDS" = "$EXPECTED_BOUNDS" ]; then
     pass "config bounds match ADR-0001: 0.4 / 0.6 / 0.8 / 0.95"
 else
     fail "config bounds" "expected <$EXPECTED_BOUNDS>, got <$ACTUAL_BOUNDS>"
+fi
+
+# --- Test 10: no heredocs in auto-promote.sh ---
+# #245 invariant: no `<<HEREDOC` in auto-promote.sh. The macOS bash 3.2
+# parser cannot handle the `eval "$(python3 - <<'TAG' ... TAG)"` combo.
+# Same gate as #172 added for federation-dashboard.sh via
+# test-timeline-rendering.sh. Every embedded Python block must live in
+# its own .py file next to the script.
+
+HEREDOC_COUNT=$(grep -c '^[[:space:]]*<<' "$SCRIPT_DIR/auto-promote.sh" || true)
+if [ "$HEREDOC_COUNT" -eq 0 ]; then
+    pass "auto-promote.sh has no heredocs (#245)"
+else
+    fail "heredoc count" "expected 0 heredocs, found $HEREDOC_COUNT in auto-promote.sh"
+fi
+
+# --- Test 11: lock helper detects contention ---
+# auto-promote-lock.py replaces flock(1) (util-linux, missing on macOS).
+# Two parallel invocations against the same lock file must yield one
+# acquisition + one contention (exit 1) on both Linux and macOS.
+
+LOCK_TEST_FILE="$TMPDIR_TEST/contention.lock"
+
+# First acquire in a background shell that holds fd 200 open for 1.5s.
+# During that window, a second invocation must see contention.
+(
+    exec 200>"$LOCK_TEST_FILE"
+    python3 "$SCRIPT_DIR/auto-promote-lock.py" 200 2>/dev/null || exit 99
+    sleep 1.5
+) &
+BG_PID=$!
+sleep 0.3
+
+CONTEND_EXIT=0
+(
+    exec 201>"$LOCK_TEST_FILE"
+    python3 "$SCRIPT_DIR/auto-promote-lock.py" 201 2>/dev/null
+) || CONTEND_EXIT=$?
+
+wait "$BG_PID" || true
+
+if [ "$CONTEND_EXIT" -eq 1 ]; then
+    pass "lock helper: second invocation blocked while first holds (#245)"
+else
+    fail "lock contention" "expected exit 1 from second invocation, got $CONTEND_EXIT"
+fi
+
+# After the first shell exited, the lock must be released and a fresh
+# invocation must succeed.
+RECLAIM_EXIT=0
+(
+    exec 200>"$LOCK_TEST_FILE"
+    python3 "$SCRIPT_DIR/auto-promote-lock.py" 200 2>/dev/null
+) || RECLAIM_EXIT=$?
+
+if [ "$RECLAIM_EXIT" -eq 0 ]; then
+    pass "lock helper: lock released on parent shell exit"
+else
+    fail "lock reclaim" "expected exit 0 after first holder exited, got $RECLAIM_EXIT"
 fi
 
 echo ""

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # auto-promote.sh — Layer 1 auto-promote / auto-evolve scheduler script
 #
 # Reads experience + memo + daemon state, evaluates per-agent fitness
@@ -66,10 +66,20 @@ CONFIG_FILE="$SCRIPT_DIR/auto-promote-config.yaml"
 JOURNAL_FILE="$SCRIPT_DIR/auto-promote-journal.jsonl"
 LOCK_FILE="$SCRIPT_DIR/.auto-promote.lock"
 
-# --- Safety guard 2: Lock file (flock, atomic) ---
+# --- Safety guard 2: Lock file (advisory, atomic) ---
+# The parent shell opens fd 200 on LOCK_FILE, then the Python helper calls
+# fcntl.flock(LOCK_EX | LOCK_NB) on the inherited fd. POSIX flock locks are
+# per open-file-description: the helper exits after acquiring, but the lock
+# persists as long as this shell keeps fd 200 open — which it does until the
+# whole run exits. Replaces the flock(1) binary from util-linux, which is not
+# present on stock macOS (#245).
+#
+# Note: on NFS fcntl.flock is advisory and subject to server quirks. The
+# LOCK_FILE sits in $SCRIPT_DIR next to the script, which is a local FS on
+# every supported install path.
 
 exec 200>"$LOCK_FILE"
-if ! flock -n 200; then
+if ! python3 "$SCRIPT_DIR/auto-promote-lock.py" 200 2>/dev/null; then
     echo "Another auto-promote instance is running. Exiting."
     exit 0
 fi
@@ -114,174 +124,12 @@ if [ ! -f "$CONFIG_FILE" ]; then
     exit 1
 fi
 
-# Parse YAML config into shell variables via python3. We try PyYAML first,
-# fall back to a minimal regex parser for the flat structure we need.
-eval "$(python3 - "$CONFIG_FILE" <<'PYCONFIG'
-import sys, json
-
-config_path = sys.argv[1]
-
-def _strip_inline_comment(s):
-    """Strip YAML inline comments (# ...) respecting quoted strings."""
-    quote = None
-    for i, ch in enumerate(s):
-        if quote:
-            if ch == '\\' and i + 1 < len(s):
-                continue  # skip escaped char
-            if ch == quote:
-                quote = None
-            continue
-        if ch in ('"', "'"):
-            quote = ch
-            continue
-        if ch == '#':
-            return s[:i].rstrip()
-    return s
-
-def _parse_value(v):
-    v = _strip_inline_comment(v)
-    if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
-        return v[1:-1]
-    if v == 'true':
-        return True
-    if v == 'false':
-        return False
-    try:
-        return int(v)
-    except ValueError:
-        pass
-    try:
-        return float(v)
-    except ValueError:
-        pass
-    return v
-
-def parse_yaml_simple(path):
-    """Minimal YAML parser for our flat config structure.
-    Handles scalar values and simple lists (- from/to pairs)."""
-    cfg = {}
-    with open(path) as f:
-        lines = f.readlines()
-
-    indent_stack = [(-1, cfg)]
-    # Track the last dict appended to a list so continuation keys
-    # (e.g. "to: 0.6" indented under "- from: 0.4") can be added.
-    last_list_dict = None
-
-    for idx, raw in enumerate(lines):
-        line = raw.rstrip('\n')
-        stripped = line.lstrip()
-
-        if not stripped or stripped.startswith('#'):
-            continue
-
-        indent = len(line) - len(stripped)
-
-        # Pop indent stack to current level
-        while len(indent_stack) > 1 and indent_stack[-1][0] >= indent:
-            indent_stack.pop()
-
-        parent = indent_stack[-1][1]
-
-        # List item
-        if stripped.startswith('- '):
-            item_content = stripped[2:].strip()
-            if ':' in item_content:
-                k, _, v = item_content.partition(':')
-                k = k.strip()
-                v = v.strip()
-                if not isinstance(parent, list):
-                    continue
-                new_dict = {k: _parse_value(v)}
-                parent.append(new_dict)
-                last_list_dict = new_dict
-            else:
-                if isinstance(parent, list):
-                    parent.append(_parse_value(item_content))
-                    last_list_dict = None
-            continue
-
-        if ':' not in stripped:
-            continue
-
-        k, _, v = stripped.partition(':')
-        k = k.strip()
-        v = v.strip()
-
-        if not v:
-            # Section header
-            is_list = False
-            for upcoming in lines[idx+1:]:
-                us = upcoming.lstrip()
-                if not us or us.startswith('#'):
-                    continue
-                if us.startswith('- '):
-                    is_list = True
-                break
-
-            child = [] if is_list else {}
-            if isinstance(parent, dict):
-                parent[k] = child
-            indent_stack.append((indent, child))
-            last_list_dict = None
-        else:
-            if isinstance(parent, dict):
-                parent[k] = _parse_value(v)
-            elif isinstance(parent, list) and last_list_dict is not None:
-                # Continuation key for the last list-item dict
-                # e.g. "to: 0.6" after "- from: 0.4"
-                last_list_dict[k] = _parse_value(v)
-
-    return cfg
-
-try:
-    import yaml
-    with open(config_path) as f:
-        cfg = yaml.safe_load(f)
-except ImportError:
-    cfg = parse_yaml_simple(config_path)
-
-p = cfg.get('promote', {}).get('prerequisites', {})
-print(f"CFG_MIN_ENTRIES={p.get('min_entries', 200)}")
-# Default: ceil(3 / reject_rate_threshold). With reject_rate_threshold=0.05
-# that is 60 — see doc/auto-promote.md#formula for rule-of-three derivation.
-import math as _math
-_reject = float(p.get('reject_rate_threshold', 0.05))
-_default_acting = _math.ceil(3.0 / _reject) if _reject > 0 else 60
-print(f"CFG_MIN_ACTING_ENTRIES={p.get('min_acting_entries', _default_acting)}")
-print(f"CFG_MIN_RUNTIME_HOURS={p.get('min_runtime_hours', 48)}")
-print(f"CFG_REJECT_RATE_THRESHOLD={_reject}")
-print(f"CFG_DELTA_SLOPE_WINDOW={p.get('delta_slope_window', 100)}")
-print(f"CFG_DELTA_SLOPE_MIN={p.get('delta_slope_min', 0)}")
-
-steps = cfg.get('promote', {}).get('steps', [])
-# Encode each step as "from:to:override" where override is either a non-negative
-# integer (per-step min_acting_entries_override) or empty (use global default).
-# Empty third field distinguishes "no override" from "override = 0".
-def _fmt_step(s):
-    if 'from' not in s or 'to' not in s:
-        return None
-    override = s.get('min_acting_entries_override')
-    if override is None:
-        return f"{s['from']}:{s['to']}:"
-    return f"{s['from']}:{s['to']}:{int(override)}"
-step_triples = ' '.join(t for t in (_fmt_step(s) for s in steps) if t is not None)
-print(f"CFG_PROMOTE_STEPS='{step_triples}'")
-
-e = cfg.get('evolve', {}).get('trigger', {})
-print(f"CFG_EVOLVE_SLOPE_NEG_FOR={e.get('delta_slope_negative_for', 1000)}")
-print(f"CFG_EVOLVE_REJECT_ABOVE={e.get('reject_rate_above', 0.20)}")
-
-ec = cfg.get('evolve', {}).get('config', {})
-print(f"CFG_EVOLVE_GENERATIONS={ec.get('generations', 3)}")
-print(f"CFG_EVOLVE_POPULATION={ec.get('population', 4)}")
-print(f"CFG_EVOLVE_WEIGHTS='{ec.get('weights', 'cb,val,exp')}'")
-
-dr = cfg.get('dry_run', True)
-dr_str = 'true' if dr else 'false'
-print(f"CFG_DRY_RUN={dr_str}")
-PYCONFIG
-)"
+# Parse YAML config into shell variables. Config parsing lives in
+# auto-promote-config-parser.py (tries PyYAML, falls back to a minimal
+# parser). Inlining that block in a `eval "$(python3 - <<'PYCONFIG' ...)"`
+# heredoc tripped the macOS bash 3.2 parser — same class of bug as #170 /
+# #172 fixed for federation-dashboard.sh. See #245.
+eval "$(python3 "$SCRIPT_DIR/auto-promote-config-parser.py" "$CONFIG_FILE")"
 
 # --live flag overrides config dry_run
 if [ "$LIVE_OVERRIDE" = "true" ]; then
