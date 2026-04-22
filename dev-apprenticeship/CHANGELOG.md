@@ -25,6 +25,26 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- **Federation dashboard's `Promote Candidates` panel now shows the scheduler's own verdicts**
+  ([#248](https://github.com/Replikanti/agentis-colonies/issues/248)).
+  Before, the dashboard ran its own fitness heuristic (success/total
+  across every row, no runtime, no acting-vs-observe split) and silently
+  disagreed with `auto-promote.sh`. After [#186](https://github.com/Replikanti/agentis-colonies/issues/186)
+  split acting/observing rows on the scheduler side, and after
+  [#245](https://github.com/Replikanti/agentis-colonies/issues/245)
+  extracted the scheduler's logic into `tools/auto-promote-decisions.py`,
+  the dashboard still used the old formula — so operators saw stale
+  "ready to promote" rows for agents the scheduler had already ruled
+  out (runtime too short, reject-rate too high, not enough acting entries).
+  `auto-promote-decisions.py` now also runs as
+  `--preview --config <yaml>`; `federation-dashboard-collector.py`
+  invokes it each regen and the template renders the JSON verdicts
+  verbatim. The no-op-at-source guard (promoting to a confidence that
+  resolves to the same tier for this agent's `.ag` source) is still
+  enforced client-side. `test-auto-promote.sh` test 12 asserts
+  byte-identical output between the legacy positional mode and the
+  new `--preview` mode.
+
 ### Security
 
 ## [0.3.2] — 2026-04-22

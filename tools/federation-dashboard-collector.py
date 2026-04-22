@@ -359,10 +359,39 @@ if os.path.isfile(conf_log_path):
         pass
 conf_changes = conf_changes[-50:]
 
+# --- Promote decisions (#248) ---
+# Invoke auto-promote-decisions.py in --preview mode so the dashboard's
+# Promote Candidates list uses the same math the scheduler uses (acting
+# vs observe classification per #186, per-step bootstrap override, runtime
+# hours gate). Previously the template computed its own fitness from
+# success/total across all rows, which silently diverged from the
+# scheduler; operators saw "N skipped" for reasons the sidecar did not
+# enforce. See issue #248.
+decisions = []
+script_dir = os.path.dirname(os.path.abspath(__file__))
+decider = os.path.join(script_dir, 'auto-promote-decisions.py')
+config = os.path.join(script_dir, 'auto-promote-config.yaml')
+if os.path.isfile(decider) and os.path.isfile(config):
+    import subprocess
+    try:
+        dec_out = subprocess.run(
+            ['python3', decider, '--preview', '--config', config,
+             daemons_json, fed_dir],
+            capture_output=True, text=True, timeout=15,
+        )
+        if dec_out.returncode == 0:
+            try:
+                decisions = json.loads(dec_out.stdout or '[]')
+            except json.JSONDecodeError:
+                decisions = []
+    except (subprocess.SubprocessError, OSError):
+        decisions = []
+
 output = {
     'agents': result,
     'experience_counts': colony_exp,
     'events': events,
     'confidence_changes': conf_changes,
+    'decisions': decisions,
 }
 print(json.dumps(output))
