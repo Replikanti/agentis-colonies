@@ -6,7 +6,9 @@
 # as the federation-dashboard-*.py family (#170 / #172) and the adjacent
 # auto-promote-config-parser.py / auto-promote-lock.py helpers.
 #
-# Inputs (positional argv):
+# Two invocation modes:
+#
+# Legacy (auto-promote.sh sidecar) — 11 positional args:
 #   1  daemons JSON     (`agentis daemon list --json` output)
 #   2  fed_dir          federation directory (for .agentis/experience/ lookup)
 #   3  min_entries
@@ -19,30 +21,108 @@
 #   10 evolve_slope_neg_for
 #   11 evolve_reject_above
 #
+# Preview (dashboard, #248) — read-only, loads config itself:
+#   --preview --config <auto-promote-config.yaml> <daemons_json> <fed_dir>
+#
 # Output: JSON array of decision records on stdout. Each record has at least
 # {agent, colony, decision} where decision is one of {promote, evolve, skip}.
-# Consumed by the `while IFS='|' read ...` loop downstream in auto-promote.sh.
+# Consumed by the `while IFS='|' read ...` loop downstream in auto-promote.sh
+# and by federation-dashboard-collector.py via --preview (#248).
 #
 # Contract is frozen by doc/auto-promote.md and test-auto-promote.sh.
 
 import json
+import math
 import os
 import sys
 import time
 
 
+def _load_config(path):
+    """Load auto-promote-config.yaml into the same CFG_* shape the sh sidecar
+    receives via auto-promote-config-parser.py. Returns the 9 threshold values
+    as a tuple: (min_entries, min_acting_entries, min_runtime_hours,
+    reject_rate_threshold, delta_slope_window, delta_slope_min,
+    promote_steps_raw, evolve_slope_neg_for, evolve_reject_above)."""
+    # Import the simple parser from the sibling helper so both entrypoints
+    # share one YAML reader. PyYAML if available, fallback otherwise. The
+    # sibling file has a hyphen in its name (not a legal Python identifier),
+    # so we load it via importlib rather than `import`.
+    try:
+        import yaml  # type: ignore
+        with open(path) as f:
+            cfg = yaml.safe_load(f) or {}
+    except ImportError:
+        import importlib.util
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        parser_path = os.path.join(script_dir, 'auto-promote-config-parser.py')
+        spec = importlib.util.spec_from_file_location('apcp', parser_path)
+        apcp = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(apcp)
+        cfg = apcp.parse_yaml_simple(path)
+
+    p = cfg.get('promote', {}).get('prerequisites', {})
+    reject = float(p.get('reject_rate_threshold', 0.05))
+    default_acting = math.ceil(3.0 / reject) if reject > 0 else 60
+    steps = cfg.get('promote', {}).get('steps', [])
+
+    def _fmt_step(s):
+        if 'from' not in s or 'to' not in s:
+            return None
+        override = s.get('min_acting_entries_override')
+        if override is None:
+            return '%s:%s:' % (s['from'], s['to'])
+        return '%s:%s:%d' % (s['from'], s['to'], int(override))
+
+    promote_steps_raw = ' '.join(t for t in (_fmt_step(s) for s in steps) if t is not None)
+    e = cfg.get('evolve', {}).get('trigger', {})
+
+    return (
+        int(p.get('min_entries', 200)),
+        int(p.get('min_acting_entries', default_acting)),
+        float(p.get('min_runtime_hours', 48)),
+        reject,
+        int(p.get('delta_slope_window', 100)),
+        float(p.get('delta_slope_min', 0)),
+        promote_steps_raw,
+        int(e.get('delta_slope_negative_for', 1000)),
+        float(e.get('reject_rate_above', 0.20)),
+    )
+
+
 def main():
-    daemons = json.loads(sys.argv[1])
-    fed_dir = sys.argv[2]
-    min_entries = int(sys.argv[3])
-    min_acting_entries = int(sys.argv[4])
-    min_runtime_hours = float(sys.argv[5])
-    reject_rate_threshold = float(sys.argv[6])
-    delta_slope_window = int(sys.argv[7])
-    delta_slope_min = float(sys.argv[8])
-    promote_steps_raw = sys.argv[9]
-    evolve_slope_neg_for = int(sys.argv[10])
-    evolve_reject_above = float(sys.argv[11])
+    argv = sys.argv[1:]
+
+    if argv and argv[0] == '--preview':
+        # Preview mode: read-only call from federation-dashboard-collector.
+        # Syntax: --preview --config <yaml> <daemons_json> <fed_dir>
+        if len(argv) != 5 or argv[1] != '--config':
+            sys.stderr.write(
+                'Usage: %s --preview --config <yaml> <daemons_json> <fed_dir>\n'
+                % os.path.basename(sys.argv[0])
+            )
+            return 2
+        config_path = argv[2]
+        daemons = json.loads(argv[3])
+        fed_dir = argv[4]
+        (min_entries, min_acting_entries, min_runtime_hours,
+         reject_rate_threshold, delta_slope_window, delta_slope_min,
+         promote_steps_raw, evolve_slope_neg_for,
+         evolve_reject_above) = _load_config(config_path)
+    else:
+        # Legacy positional mode used by auto-promote.sh sidecar. Keep byte-
+        # identical contract — test-auto-promote.sh asserts it.
+        daemons = json.loads(sys.argv[1])
+        fed_dir = sys.argv[2]
+        min_entries = int(sys.argv[3])
+        min_acting_entries = int(sys.argv[4])
+        min_runtime_hours = float(sys.argv[5])
+        reject_rate_threshold = float(sys.argv[6])
+        delta_slope_window = int(sys.argv[7])
+        delta_slope_min = float(sys.argv[8])
+        promote_steps_raw = sys.argv[9]
+        evolve_slope_neg_for = int(sys.argv[10])
+        evolve_reject_above = float(sys.argv[11])
 
     # Tags that mark a row as exercising a tier-gated acting branch (not observe).
     # See doc/auto-promote.md#classification — must match the tag strings emitted
@@ -318,4 +398,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main() or 0)

@@ -708,6 +708,11 @@ const agents = data.agents || [];
 const experienceCounts = data.experience_counts || {};
 const events = data.events || [];
 const confChanges = data.confidence_changes || [];
+// #248: scheduler verdicts per agent (promote/evolve/skip + evidence).
+// Emitted by federation-dashboard-collector.py via auto-promote-decisions.py
+// --preview. Promote Candidates renders these verbatim so the dashboard
+// uses the same math as tools/auto-promote.sh.
+const decisions = data.decisions || [];
 
 // --- Federation Down Detection ---
 (function() {
@@ -966,94 +971,92 @@ renderAgentTable();
   el.innerHTML = html;
 })();
 
-// --- Promote Candidates (#160 actionable-only filter) ---
-// Four filter rules in order:
-//   1. fitness criteria (>=200 entries, success>=95%, slope>=0) — same as #148 cron
-//   2. target level exists in agent's confidence_gates (no-op-at-source guard)
-//   3. action would cross a behavioural tier (observable change)
-//   4. target not above clamp_auto cap
-// Only rows passing all four appear in the main list. Everything else falls
-// into a collapsed "Skipped candidates" section with the reason + Why button.
+// --- Promote Candidates (#248: unified with auto-promote-decisions.py) ---
+// Rows are rendered verbatim from the scheduler's own verdicts. The
+// decisions[] array is populated by federation-dashboard-collector.py,
+// which invokes tools/auto-promote-decisions.py --preview each regen.
+// Same Python tools/auto-promote.sh uses: classifies rows by tag
+// (acting vs observe per #186), checks runtime, reject_rate, walks the
+// promote step ladder with per-step bootstrap override.
+//
+// Before #248 this block had its own fitness heuristic (success/total
+// across all rows, no runtime, no tag split) and silently disagreed
+// with the sidecar. One source of truth now.
+//
+// Tier-crossing feasibility (the old no-op-at-source guard) is still
+// checked client-side after the scheduler says "promote" — moving
+// across two confidence values that resolve to the same tier for this
+// agent's .ag source is observable-no-op regardless of the scheduler.
 (function() {
   const el = document.getElementById('promote-candidates');
-  // #177: walk the four-tier ladder (shadow 0.4 -> propose 0.6 ->
-  // review-gated 0.8 -> autonomous 0.95). The candidate list proposes
-  // the next-higher tier for each agent based on its current confidence.
   let actionableHtml = '';
   let skippedHtml = '';
   let actionableCount = 0;
   let skippedCount = 0;
 
-  function nextTierTarget(cur) {
-    if (cur == null || cur < 0.6) return { value: 0.6, label: 'propose' };
-    if (cur < 0.8) return { value: 0.8, label: 'review-gated' };
-    if (cur < 0.95) return { value: 0.95, label: 'autonomous' };
-    return null;
-  }
+  const agentByName = {};
+  agents.forEach(a => { agentByName[a.name] = a; });
 
-  agents.forEach(a => {
-    const f = computeFitness(a);
-    const fitnessOK = f.count >= 200 && f.successRate >= 0.95 && f.slope >= 0;
+  decisions.forEach(d => {
+    const a = agentByName[d.agent];
+    if (!a) return;
 
-    // Skip silently: no entries AND not running. Stats row already surfaces
-    // these as inactive — listing them as "skipped" is just noise.
-    if (f.count === 0 && a.state !== 'running') return;
+    // Skip silently: no entries AND not running. Stats row already
+    // surfaces these as inactive; listing them as "skipped" is just noise.
+    const ev = d.evidence || {};
+    const evTotal = ev.entries_total || 0;
+    if (evTotal === 0 && a.state !== 'running') return;
 
-    // #177: unseeded confidence — skip with explicit reason rather than
-    // silently proposing "promote to propose 0.60" for an agent that
-    // doesn't even have a shadow-tier memo yet. Matches auto-promote.sh
-    // Python behaviour which skips when confidence is null.
-    if (a.confidence == null) {
+    if (d.decision === 'skip' || d.decision === 'evolve') {
+      const label = d.decision === 'evolve' ? 'evolve recommended' : (d.reason || 'skipped');
       skippedHtml += '<div class="skipped-row"><span class="agent-name">' + esc(a.name) + '</span>';
-      skippedHtml += '<span>\u2014 confidence not seeded (run install.sh or set memo)</span></div>';
+      skippedHtml += '<span>— ' + esc(label) + '</span></div>';
       skippedCount++;
       return;
     }
 
-    if (!fitnessOK) {
-      let reason;
-      if (f.count === 0) reason = '0 entries \u2014 reactive (no fitness signal yet)';
-      else if (f.count < 200) reason = f.count + ' entries \u2014 below 200 threshold';
-      else if (f.successRate < 0.95) reason = Math.round(f.successRate * 100) + '% success \u2014 below 95% threshold';
-      else reason = (f.slope >= 0 ? '+' : '') + f.slope.toFixed(3) + ' slope \u2014 fitness regressing';
-      skippedHtml += '<div class="skipped-row"><span class="agent-name">' + esc(a.name) + '</span><span>\u2014 ' + esc(reason) + '</span></div>';
-      skippedCount++;
-      return;
-    }
+    if (d.decision !== 'promote') return;
 
-    const next = nextTierTarget(a.confidence);
-    if (!next) {
-      skippedHtml += '<div class="skipped-row"><span class="agent-name">' + esc(a.name) + '</span>';
-      skippedHtml += '<span>\u2014 already autonomous (no higher tier)</span></div>';
-      skippedCount++;
-      return;
-    }
-
-    // Fitness passed — does the agent's source actually support promoting
-    // across the next tier boundary?
-    const promoteGate = actionGate(a, 'promote', next.value);
+    const target = d.to;
+    const promoteGate = actionGate(a, 'promote', target);
     if (!promoteGate.enabled) {
       registerWhy(a.name, 'rec-promote', promoteGate);
       skippedHtml += '<div class="skipped-row"><span class="agent-name">' + esc(a.name) + '</span>';
-      skippedHtml += '<span>\u2014 promote to ' + next.label + ' (' + next.value.toFixed(2) + ') would be a no-op</span>';
+      skippedHtml += '<span>— promote to ' + target.toFixed(2) + ' would be a no-op at this source</span>';
       skippedHtml += '<span class="skipped-info" onclick="showWhy(\'' + esc(a.name) + '\',\'rec-promote\')">why?</span></div>';
       skippedCount++;
       return;
     }
 
     actionableCount++;
-    actionableHtml += '<div class="promote-item"><span class="promote-check">\u2713</span>';
+    const slopeVal = (ev.delta_slope_acting == null ? 0 : ev.delta_slope_acting);
+    const rejectVal = (ev.reject_rate_acting == null ? 0 : ev.reject_rate_acting);
+    actionableHtml += '<div class="promote-item"><span class="promote-check">✓</span>';
     actionableHtml += '<span class="agent-name">' + esc(a.name) + '</span> ';
-    actionableHtml += f.count + ' entries, ' + Math.round(f.successRate * 100) + '% success, ';
-    actionableHtml += (f.slope >= 0 ? '+' : '') + f.slope.toFixed(3) + ' slope';
+    actionableHtml += (ev.entries_acting || 0) + ' acting, ';
+    actionableHtml += 'reject ' + (rejectVal * 100).toFixed(1) + '%, ';
+    actionableHtml += 'slope ' + (slopeVal >= 0 ? '+' : '') + slopeVal.toFixed(3);
     if (a.confidence != null) actionableHtml += ', on ' + a.confidence.toFixed(2);
-    actionableHtml += ' <span class="promote-suggest">\u2192 ' + next.label + ' ' + next.value.toFixed(2) + '</span>';
+    actionableHtml += ' <span class="promote-suggest">→ ' + target.toFixed(2) + '</span>';
     actionableHtml += '</div>';
+  });
+
+  // Agents the scheduler never saw (no daemon = no decision) but which
+  // are running with an unseeded confidence still deserve a visible row
+  // so the operator knows those are waiting on install.sh / memo seed.
+  const seen = new Set(decisions.map(d => d.agent));
+  agents.forEach(a => {
+    if (seen.has(a.name)) return;
+    if (a.confidence != null) return;
+    if (a.state !== 'running') return;
+    skippedHtml += '<div class="skipped-row"><span class="agent-name">' + esc(a.name) + '</span>';
+    skippedHtml += '<span>— confidence not seeded (run install.sh or set memo)</span></div>';
+    skippedCount++;
   });
 
   let html = '';
   if (actionableCount === 0) {
-    html += '<span class="empty">No agents meet all the criteria right now \u2014 ready + feasible + beneficial.</span>';
+    html += '<span class="empty">No agents meet all the criteria right now — ready + feasible + beneficial.</span>';
   } else {
     html += actionableHtml;
   }

@@ -399,6 +399,46 @@ else
     fail "lock reclaim" "expected exit 0 after first holder exited, got $RECLAIM_EXIT"
 fi
 
+# --- Test 12: --preview mode produces identical output to legacy mode ---
+# #248: federation-dashboard-collector invokes auto-promote-decisions.py
+# --preview to unify dashboard fitness math with the scheduler. The two
+# invocation shapes must produce byte-identical JSON so the dashboard and
+# the sidecar never disagree. If this drifts, operators will see the same
+# bug #248 originally reported (dashboard lying about promote candidates).
+
+DAEMONS_FIXTURE='[{"source":"/fake/x.ag","pid":1,"agent_id":"a","colony":"c","started_at":1,"confidence":0.6,"state":"running"}]'
+FED_DIR_FIXTURE=/tmp
+
+# Parse config once via the real helper to get the 9 threshold values in
+# the same positional form the sidecar uses.
+eval "$(python3 "$SCRIPT_DIR/auto-promote-config-parser.py" "$SCRIPT_DIR/auto-promote-config.yaml")"
+
+LEGACY_OUT=$(python3 "$SCRIPT_DIR/auto-promote-decisions.py" \
+    "$DAEMONS_FIXTURE" "$FED_DIR_FIXTURE" \
+    "$CFG_MIN_ENTRIES" "$CFG_MIN_ACTING_ENTRIES" "$CFG_MIN_RUNTIME_HOURS" \
+    "$CFG_REJECT_RATE_THRESHOLD" "$CFG_DELTA_SLOPE_WINDOW" "$CFG_DELTA_SLOPE_MIN" \
+    "$CFG_PROMOTE_STEPS" "$CFG_EVOLVE_SLOPE_NEG_FOR" "$CFG_EVOLVE_REJECT_ABOVE")
+
+PREVIEW_OUT=$(python3 "$SCRIPT_DIR/auto-promote-decisions.py" \
+    --preview --config "$SCRIPT_DIR/auto-promote-config.yaml" \
+    "$DAEMONS_FIXTURE" "$FED_DIR_FIXTURE")
+
+if [ "$LEGACY_OUT" = "$PREVIEW_OUT" ]; then
+    pass "preview mode matches legacy mode byte-for-byte (#248)"
+else
+    fail "preview parity" "legacy <$LEGACY_OUT> preview <$PREVIEW_OUT>"
+fi
+
+# Preview mode must reject unknown flags / wrong arity so the dashboard
+# gets a loud failure instead of silent empty decisions.
+BAD_EXIT=0
+python3 "$SCRIPT_DIR/auto-promote-decisions.py" --preview 2>/dev/null || BAD_EXIT=$?
+if [ "$BAD_EXIT" -eq 2 ]; then
+    pass "preview mode: missing args rejected with exit 2 (#248)"
+else
+    fail "preview arity" "expected exit 2 on missing args, got $BAD_EXIT"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
