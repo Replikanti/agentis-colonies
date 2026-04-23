@@ -89,9 +89,9 @@ for colony in $COLONIES; do
         fail "$colony: forge-api.sh does not reference FORGE_TYPE"
         continue
     fi
-    # grep -F to treat `$FORGE_TYPE` as a literal string (shellcheck SC2016
-    # flags escaped-$ in single-quoted patterns; -F sidesteps the ambiguity
-    # and matches the dispatcher's literal `case "$FORGE_TYPE"` line).
+    # Single-quoted pattern is intentional — we want to match the literal
+    # text `case "$FORGE_TYPE"` inside the dispatcher, not shell-expand it.
+    # shellcheck disable=SC2016
     if ! grep -qF 'case "$FORGE_TYPE"' "$disp"; then
         fail "$colony: forge-api.sh missing FORGE_TYPE case dispatch"
         continue
@@ -196,13 +196,15 @@ done
 # -----------------------------------------------------------------------------
 for colony in $COLONIES; do
     start="$REPO_ROOT/dev-apprenticeship/$colony/scripts/start-colony.sh"
-    # grep -F to match literal `$()` / `${}` shell syntax in the script
-    # (shellcheck SC2016 flags escaped-$ in single-quoted regex patterns;
-    # -F sidesteps it by treating the whole pattern as a fixed string).
+    # Single-quoted patterns are intentional — we want to match literal
+    # `$(...)` and `${...}` shell syntax in the target script, not
+    # shell-expand them here.
+    # shellcheck disable=SC2016
     if ! grep -qF 'FORGE_TYPE=$(parse_toml forge type)' "$start"; then
         fail "$colony: start-colony.sh does not parse [forge].type via parse_toml"
         continue
     fi
+    # shellcheck disable=SC2016
     if ! grep -qF 'FORGE_TYPE="${FORGE_TYPE:-gitlab}"' "$start"; then
         fail "$colony: start-colony.sh does not default FORGE_TYPE to \"gitlab\""
         continue
