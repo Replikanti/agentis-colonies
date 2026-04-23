@@ -120,7 +120,6 @@ else
 fi
 
 # --- Test 6: install.sh + bin/federation-dashboard executable bit preserved. ---
-PERM_BAD=""
 PERMS="$(tar -tzvf "$TARBALL" 2>/dev/null \
     | awk -v top="$TOPDIR" '
         $NF == top"/install.sh" || $NF == top"/bin/federation-dashboard" { print $1, $NF }
