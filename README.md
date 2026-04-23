@@ -40,9 +40,17 @@ graph TD
 
 ## Federations
 
-| Federation | Description | Agents | Status |
-|------------|-------------|--------|--------|
-| [dev-apprenticeship](./dev-apprenticeship/) | Learns a developer's complete workflow by observing how you work on GitLab. Covers triage, code review, planning, implementation, and release. | 21 | Beta |
+| Federation | Version | Description | Agents | Status |
+|------------|---------|-------------|--------|--------|
+| [dev-apprenticeship](./dev-apprenticeship/) | [`0.3.3`](https://github.com/Replikanti/agentis-colonies/releases/tag/dev-apprenticeship-v0.3.3) | Learns a developer's complete workflow by observing how you work on GitLab. Covers triage, code review, planning, implementation, and release. | 21 | Beta |
+
+## Components
+
+Federation-agnostic components are versioned and released independently so fixes ship without forcing a federation re-release.
+
+| Component | Version | Description |
+|-----------|---------|-------------|
+| [federation-dashboard](./federation-dashboard/) | [`0.1.0`](https://github.com/Replikanti/agentis-colonies/releases/tag/federation-dashboard-v0.1.0) | Generic web dashboard with operator controls (promote / demote / evolve / restart / kill). Auto-discovers colonies + agents from any federation directory. |
 
 ### Status
 

@@ -1,5 +1,9 @@
 # federation-dashboard
 
+![Version: 0.1.0](https://img.shields.io/badge/version-0.1.0-blue) ![Standalone component](https://img.shields.io/badge/component-standalone-green) ![Status: Beta](https://img.shields.io/badge/status-beta-yellow)
+
+**Version:** `0.1.0` · [Changelog](./CHANGELOG.md) · **Recommended for:** dev-apprenticeship >= `0.3.3`
+
 Generic web dashboard for any [Agentis](https://github.com/Replikanti/agentis)
 federation. Auto-discovers colonies and agents from the federation directory,
 collects per-agent data from the `agentis` CLI, regenerates a static HTML
