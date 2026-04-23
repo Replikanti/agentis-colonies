@@ -477,29 +477,31 @@ PY
         # no bulk remove endpoint — loop. URL-encode via python3 so label names
         # containing '/', ' ', '::' etc. survive. Idempotency parity with
         # gitlab-api.sh: a 404 (label already absent) is a no-op, not an error.
+        # Use gh_call so 429 + 5xx retry, secondary-rate-limit 403 detection,
+        # and the transport-failure handling all work identically to every
+        # other verb. gh_call emits to stderr + returns 4 on any 4xx; capture
+        # stderr, and if it reports HTTP 404 specifically, swallow silently.
         if [ -n "$REMOVE_LABELS" ]; then
             IFS=',' read -r -a _RM <<< "$REMOVE_LABELS"
             for lab in "${_RM[@]}"; do
                 lab_trimmed="$(printf '%s' "$lab" | python3 -c 'import sys; print(sys.stdin.read().strip())')"
                 [ -z "$lab_trimmed" ] && continue
                 enc="$(printf '%s' "$lab_trimmed" | python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.stdin.read(), safe=""))')"
-                del_code=$(curl -sS -o /dev/null -w '%{http_code}' \
-                    --max-time "${GITHUB_CURL_MAX_TIME:-90}" \
-                    -X DELETE \
-                    -H "Authorization: Bearer $GITHUB_TOKEN" \
-                    -H "Accept: application/vnd.github+json" \
-                    -H "X-GitHub-Api-Version: 2022-11-28" \
-                    "$API/issues/$ID/labels/$enc" 2>/dev/null) || {
-                    emit_error "curl transport failure on DELETE label '$lab_trimmed'"
-                    exit 5
-                }
-                case "$del_code" in
-                    2*|404) ;;  # success or already absent — no-op
-                    401|403)   emit_error "auth failure (HTTP $del_code) removing label '$lab_trimmed'"; exit 2 ;;
-                    429)       emit_error "rate limited (HTTP 429) removing label '$lab_trimmed'"; exit 3 ;;
-                    5*)        emit_error "server error (HTTP $del_code) removing label '$lab_trimmed'"; exit 5 ;;
-                    *)         emit_error "client error (HTTP $del_code) removing label '$lab_trimmed'"; exit 4 ;;
-                esac
+                del_err="$(mktemp)"
+                set +e
+                gh_call DELETE "$API/issues/$ID/labels/$enc" >/dev/null 2> "$del_err"
+                del_rc=$?
+                set -e
+                if [ "$del_rc" -eq 4 ] && grep -q 'HTTP 404' "$del_err"; then
+                    rm -f "$del_err"
+                    continue  # label already absent — no-op
+                fi
+                if [ "$del_rc" -ne 0 ]; then
+                    cat "$del_err" >&2
+                    rm -f "$del_err"
+                    exit "$del_rc"
+                fi
+                rm -f "$del_err"
             done
         fi
         # Assignee: POST /issues/{n}/assignees with {"assignees": [login]}.
