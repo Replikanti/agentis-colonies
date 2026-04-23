@@ -1921,8 +1921,10 @@ function setConfidence(agent, value) {
   // #177: confirm only at the autonomous boundary (terminal writes such
   // as merge / tag / publish). Review-gated (0.8) still allows direct
   // non-terminal writes, which are individually auditable.
+  // #257: vocabulary stays federation-agnostic — the dashboard ships as
+  // a standalone component and must not assume a specific forge workflow.
   if (value >= 0.95) {
-    if (!confirm('Promote ' + agent + ' to ' + value.toFixed(2) + ' (AUTONOMOUS)?\n\nAt this level the agent will perform terminal writes on GitLab \u2014 merging MRs, tagging releases, publishing. Proceed?')) {
+    if (!confirm('Promote ' + agent + ' to ' + value.toFixed(2) + ' (AUTONOMOUS)?\n\nAt this level the agent will perform irreversible actions \u2014 merging changes, tagging releases, publishing artifacts. Proceed?')) {
       return;
     }
   }

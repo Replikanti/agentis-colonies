@@ -69,7 +69,13 @@ the dashboard:
 | `auto-promote-decisions.py` | collector | Promote Candidates panel |
 | `auto-promote-config.yaml` | collector | Promote Candidates panel |
 | `kill-federation.sh` | server | `POST /kill` |
-| `resolve-tick-interval.py` | server | per-agent tick interval display |
+
+Restart is handled entirely by the federation side: `POST /restart` (and
+the auto-restart after a confidence change) invokes the target colony's
+own `scripts/start-colony.sh --restart-agent <name>`, which owns the
+forge-specific env wiring (`GITLAB_*`, etc). The dashboard does not
+parse `colony.toml` itself and does not need `resolve-tick-interval.py`
+— `start-colony.sh` resolves the tick interval for its own respawn.
 
 Resolution order (entry script):
 

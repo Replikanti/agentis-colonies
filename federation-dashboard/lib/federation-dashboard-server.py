@@ -19,10 +19,12 @@
 #   5: allowed_agents  — comma-separated allowlist for /confidence
 #   6: agent_map_json  — JSON array of {agent, colony} pairs
 #   7: fed_tools_dir   — federation shared-tools dir (#252); used to locate
-#                        kill-federation.sh and resolve-tick-interval.py.
-#                        Empty disables /kill and falls back to default tick.
+#                        kill-federation.sh. Empty disables /kill.
+#                        Post-#257 the dashboard no longer reaches into
+#                        tools/ for restart logic — spawning is delegated
+#                        to each colony's scripts/start-colony.sh.
 
-import sys, os, subprocess, json, time, signal, shutil, shlex, threading, re, urllib.parse
+import sys, os, subprocess, json, time, signal, shutil, shlex, urllib.parse
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 serve_dir, port = sys.argv[1], int(sys.argv[2])
@@ -37,76 +39,16 @@ agent_to_colony = {e.get('agent',''): e.get('colony','') for e in _map if e.get(
 os.chdir(serve_dir)
 fed_dir = os.path.dirname(serve_dir)
 confidence_log = os.path.join(serve_dir, 'confidence-log.jsonl')
-# #252: helpers live in the federation's shared tools dir, not next to this
-# script (the dashboard is a separately-versioned standalone component now).
-# The entry script resolves <fed-dir>/tools/ then <fed-dir>/../tools/ and
-# passes the result in argv[7]. Empty means no shared tools were found —
-# /kill returns a clear error, resolve_tick_interval falls back to 60000.
-_resolver_script = os.path.join(fed_tools_dir, 'resolve-tick-interval.py') if fed_tools_dir else ''
+# #252: kill-federation.sh lives in the federation's shared tools dir, not
+# next to this script (the dashboard is a separately-versioned standalone
+# component). The entry script resolves <fed-dir>/tools/ then
+# <fed-dir>/../tools/ and passes the result in argv[7]. Empty means no
+# shared tools were found — /kill returns a clear error.
+# #257: restart no longer needs a tools/ helper — spawning is delegated
+# to <colony>/scripts/start-colony.sh, which owns the federation's
+# forge-specific env wiring. parse_toml_section / resolve_tick_interval
+# used to live here for that purpose and were removed.
 kill_script = os.path.join(fed_tools_dir, 'kill-federation.sh') if fed_tools_dir else ''
-
-
-def resolve_tick_interval(agent, colony_dir):
-    """Return tick interval (str, ms) for *agent* using resolve-tick-interval.py.
-
-    Falls back to '60000' if the resolver is missing or fails.
-    """
-    try:
-        r = subprocess.run(
-            [sys.executable, _resolver_script, agent, colony_dir],
-            capture_output=True, text=True, timeout=5,
-        )
-        val = r.stdout.strip()
-        return val if r.returncode == 0 and val.isdigit() else '60000'
-    except (OSError, subprocess.SubprocessError):
-        return '60000'
-
-
-def parse_toml_section(toml_path, section):
-    """Extract key=value pairs under [section] from a colony TOML file."""
-    out = {}
-    try:
-        with open(toml_path, 'r', encoding='utf-8') as f:
-            in_section = False
-            for raw in f:
-                line = raw.rstrip('\n')
-                stripped_chars = []
-                quote = None
-                i = 0
-                while i < len(line):
-                    ch = line[i]
-                    if quote:
-                        stripped_chars.append(ch)
-                        if ch == '\\' and i + 1 < len(line):
-                            stripped_chars.append(line[i + 1])
-                            i += 2
-                            continue
-                        if ch == quote:
-                            quote = None
-                    else:
-                        if ch == '#':
-                            break
-                        if ch in ('"', "'"):
-                            quote = ch
-                        stripped_chars.append(ch)
-                    i += 1
-                s = ''.join(stripped_chars).strip()
-                if not s:
-                    continue
-                if s.startswith('[') and s.endswith(']'):
-                    in_section = (s[1:-1].strip() == section)
-                    continue
-                if not in_section or '=' not in s:
-                    continue
-                k, _, v = s.partition('=')
-                k = k.strip()
-                v = v.strip()
-                if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
-                    v = v[1:-1]
-                out[k] = v
-    except OSError:
-        pass
-    return out
 
 
 def list_daemons():
@@ -184,27 +126,31 @@ def cleanup_sidecars(agent_id):
 
 
 def build_manual_command(colony, colony_dir, agent_file):
-    """Single-line respawn command the operator can paste if auto-restart fails."""
+    """Single-line respawn command the operator can paste if auto-restart fails.
+
+    #257: delegates to the colony's start-colony.sh so the command stays
+    federation-agnostic and matches what the dashboard itself executes.
+    start-colony.sh owns the forge-specific env construction (GITLAB_*,
+    future GITHUB_*, etc) — the dashboard does not need to know.
+    """
     agent_name = os.path.basename(agent_file)
     if agent_name.endswith('.ag'):
         agent_name = agent_name[:-3]
-    tick = resolve_tick_interval(agent_name, colony_dir)
-    env_refs = (
-        'GITLAB_URL="$GITLAB_URL" GITLAB_TOKEN="$GITLAB_TOKEN" '
-        'GITLAB_PROJECT="$GITLAB_PROJECT" GITLAB_ME="$GITLAB_ME" '
-        f'COLONY_DIR={shlex.quote(colony_dir)}'
-    )
-    return (
-        f'cd {shlex.quote(colony_dir)} && '
-        f'{env_refs} '
-        f'agentis daemon {shlex.quote(agent_file)}'
-        f' --colony {shlex.quote(colony)}'
-        f' --enable-exec --enable-messaging --tick-interval {tick} &'
-    )
+    start_script = os.path.join(colony_dir, 'scripts', 'start-colony.sh')
+    return f'{shlex.quote(start_script)} --restart-agent {shlex.quote(agent_name)}'
 
 
 def restart_daemon(agent):
-    """Stop+cleanup+respawn sequence for one agent (#137 Option 2)."""
+    """Stop+cleanup+respawn sequence for one agent (#137 Option 2).
+
+    #257: spawning is delegated to <colony>/scripts/start-colony.sh
+    --restart-agent <agent>. The dashboard does not parse the colony's
+    TOML or construct forge-specific env vars — whatever env the colony
+    needs (GITLAB_*, future GITHUB_*, etc) start-colony.sh composes
+    itself. Stop + sidecar cleanup + spawn verification stay here
+    because they depend only on the agentis runtime, not on the
+    federation type.
+    """
     events = []
 
     def rec(step, status, **kw):
@@ -231,29 +177,15 @@ def restart_daemon(agent):
             'events': events,
         }
 
-    config_path = os.path.join(colony_dir, 'config', 'colony.toml')
-    gitlab = parse_toml_section(config_path, 'gitlab')
-    gl_url = gitlab.get('url', '')
-    gl_token = gitlab.get('token', '')
-    gl_project_raw = gitlab.get('project', '')
-    if not gl_url or not gl_token or not gl_project_raw:
-        rec('config', 'error',
-            message=f'incomplete [gitlab] in {config_path}: '
-                    f'url={bool(gl_url)} token={bool(gl_token)} project={bool(gl_project_raw)}')
+    start_script = os.path.join(colony_dir, 'scripts', 'start-colony.sh')
+    if not os.path.isfile(start_script):
+        rec('lookup', 'error', message=f'missing {start_script}')
         return {
             'attempted': False, 'succeeded': False,
-            'error': f'incomplete [gitlab] section in {config_path}',
+            'error': f'missing {start_script}',
             'events': events,
         }
-    gl_me = gitlab.get('me', '')
-    gl_project = gl_project_raw.replace('/', '%2F')
-    env_overrides = {
-        'GITLAB_URL': gl_url,
-        'GITLAB_TOKEN': gl_token,
-        'GITLAB_PROJECT': gl_project,
-        'GITLAB_ME': gl_me,
-        'COLONY_DIR': colony_dir,
-    }
+
     manual_cmd = build_manual_command(colony, colony_dir, agent_file)
 
     old = find_agent_daemon(agent)
@@ -312,27 +244,19 @@ def restart_daemon(agent):
         removed = cleanup_sidecars(old_agent_id)
         rec('cleanup', 'ok', removed=removed)
 
-    # Respawn detached so the dashboard process can die without taking
-    # the fresh daemon with it.
-    tick = resolve_tick_interval(agent, colony_dir)
-    rec('spawn', 'start', tick_interval=tick)
-    env = dict(os.environ)
-    env.update(env_overrides)
+    # #257: delegate spawn to start-colony.sh --restart-agent. The script
+    # composes forge env itself (GITLAB_*, future GITHUB_*, …), backgrounds
+    # a single `agentis daemon ... &` with the per-colony tick interval,
+    # then exits 0 with a single "started <agent> pid=<pid> tick=<ms>"
+    # line on stdout. start_new_session=True insulates the backgrounded
+    # daemon from SIGHUP when start-colony.sh returns.
+    rec('spawn', 'start', via=start_script)
     spawn_ts = int(time.time())
     try:
-        proc = subprocess.Popen(
-            [
-                'agentis', 'daemon', agent_file,
-                '--colony', colony,
-                '--enable-exec',
-                '--enable-messaging',
-                '--tick-interval', tick,
-            ],
-            cwd=colony_dir,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+        result = subprocess.run(
+            ['bash', start_script, '--restart-agent', agent],
+            capture_output=True, text=True,
+            timeout=15,
             start_new_session=True,
         )
     except (OSError, subprocess.SubprocessError) as e:
@@ -343,7 +267,20 @@ def restart_daemon(agent):
             'manual_command': manual_cmd,
             'events': events,
         }
-    rec('spawn', 'ok', launcher_pid=proc.pid, spawn_ts=spawn_ts)
+    if result.returncode != 0:
+        err = ((result.stderr or '') + (result.stdout or '')).strip()
+        rec('spawn', 'error',
+            returncode=result.returncode,
+            stderr=(result.stderr or '').strip(),
+            stdout=(result.stdout or '').strip())
+        return {
+            'attempted': True, 'succeeded': False,
+            'error': f'start-colony.sh exit {result.returncode}: {err}',
+            'manual_command': manual_cmd,
+            'events': events,
+        }
+    spawn_line = ((result.stdout or '').strip().splitlines() or [''])[0]
+    rec('spawn', 'ok', stdout=spawn_line)
 
     rec('verify', 'start', timeout_s=15)
     deadline = time.monotonic() + 15.0
@@ -367,18 +304,14 @@ def restart_daemon(agent):
         time.sleep(0.5)
 
     if not new_daemon:
-        code = proc.poll()
-        threading.Thread(target=proc.wait, daemon=True).start()
         rec('verify', 'error',
-            message=f'new daemon not registered within 15s (launcher exit={code})')
+            message='new daemon not registered within 15s')
         return {
             'attempted': True, 'succeeded': False,
             'error': 'new daemon not registered within 15s',
             'manual_command': manual_cmd,
             'events': events,
         }
-
-    threading.Thread(target=proc.wait, daemon=True).start()
 
     rec('verify', 'ok',
         new_pid=new_daemon.get('pid'),
