@@ -500,13 +500,18 @@ for cls in forbidden:
     if cls in src:
         sys.stderr.write('forbidden class still present: ' + cls + '\n'); sys.exit(2)
 # New tier-counter classes must be wired (CSS + JS render).
-required = ['phase-tier', 'phase-tier-label', 'phase-tier-count', 'has-shadow', 'has-propose', 'has-review-gated', 'has-autonomous']
+required = ['phase-tier', 'phase-tier-label', 'phase-tier-count', 'has-shadow', 'has-propose', 'has-review-gated', 'has-autonomous', 'has-dormant', 'has-no-conf']
 for cls in required:
     if cls not in src:
         sys.stderr.write('missing class: ' + cls + '\n'); sys.exit(3)
-# Renderer must include null-confidence-as-dormant treatment.
-if "tierFor" not in src or "'dormant'" not in src:
-    sys.stderr.write('tierFor / dormant fallback missing\n'); sys.exit(4)
+# Renderer must distinguish null-confidence ("no-conf") from conf<0.4 ("dormant").
+if "tierFor" not in src or "'dormant'" not in src or "'no-conf'" not in src:
+    sys.stderr.write('tierFor / dormant / no-conf missing\n'); sys.exit(4)
+# h2-in-summary anti-pattern must be gone in favour of .summary-h2 span.
+if '<summary><h2>' in src:
+    sys.stderr.write('h2-in-summary anti-pattern still present\n'); sys.exit(5)
+if 'summary-h2' not in src:
+    sys.stderr.write('summary-h2 class missing\n'); sys.exit(6)
 sys.exit(0)
 PY
 then

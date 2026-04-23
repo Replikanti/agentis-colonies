@@ -45,9 +45,11 @@ is asserted until multi-version CI is in place.
   Three changes derived from operator feedback in the parent issue:
   (1) **Phase Readiness** swapped from a colony-average bar with ETA-to-tier
   estimate (skewed by single-autonomous-outlier colonies, opaque X-axis) to
-  a compact per-colony per-tier counter (`shadow: 0  propose: 4
-  review-gated: 0  autonomous: 0`). Same ADR-0001 tier classification the
-  agent-row badges use; null-confidence agents render as `dormant: N`.
+  a compact per-colony per-tier counter (`shadow: 0  propose: 4  review-gated: 0  autonomous: 0`).
+  Same ADR-0001 tier classification the agent-row badges use;
+  null-confidence agents render in a separate `no-conf: N` bucket (mirrors
+  the table's `badge-na` vs `badge-dormant` distinction); zero-count tiers
+  are suppressed when at least one tier on the row is non-zero.
   (2) **Confidence Trend** chart moved behind a collapsed `<details>` —
   per-agent confidence-on-card already answers the operator's everyday
   question; the chart stays for trend-spotters.

@@ -167,13 +167,23 @@
   .phase-tier.has-review-gated .phase-tier-count { color: var(--orange); }
   .phase-tier.has-autonomous .phase-tier-count { color: var(--green); }
   .phase-tier.has-dormant .phase-tier-count { color: var(--red); }
+  .phase-tier.has-no-conf .phase-tier-count { color: var(--muted); }
 
-  /* --- Demoted charts: <details> with h2-inside-summary --- */
+  /* --- Demoted charts: <details> with .summary-h2 (avoids h2-in-summary) --- */
   .card-collapse > summary {
-    cursor: pointer; list-style: none; outline: none;
+    cursor: pointer; list-style: none;
+  }
+  .card-collapse > summary:focus-visible {
+    outline: 1px dotted var(--cyan); outline-offset: 2px;
   }
   .card-collapse > summary::-webkit-details-marker { display: none; }
-  .card-collapse > summary > h2 { display: inline-block; margin: 0; padding: 0; border: none; }
+  .card-collapse > summary > .summary-h2 {
+    display: inline-block;
+    font-size: 12px; font-weight: 400; color: var(--yellow);
+    text-transform: uppercase; letter-spacing: 3px;
+    text-shadow: 0 0 8px rgba(255,255,0,0.3);
+    vertical-align: middle;
+  }
   .card-collapse > summary::before {
     content: '\25B6'; color: var(--muted); margin-right: 8px;
     font-size: 10px; transition: transform 0.15s;
@@ -604,14 +614,14 @@
      questions these once served; charts remain for trend-spotters. -->
 <div class="card">
 <details class="card-collapse">
-<summary><h2>Experience Growth</h2></summary>
+<summary><span class="summary-h2">Experience Growth</span></summary>
 <div id="experience-trend" class="chart-container"></div>
 </details>
 </div>
 
 <div class="card">
 <details class="card-collapse">
-<summary><h2>Confidence Trend</h2></summary>
+<summary><span class="summary-h2">Confidence Trend</span></summary>
 <div id="confidence-trend" class="chart-container"></div>
 </details>
 </div>
@@ -1050,14 +1060,17 @@ renderAgentTable();
 // X-axis. Operators wanted "how many agents in each tier per colony" --
 // same data the badges in the Agents table carry, but aggregated. Tier
 // classification matches ADR-0001 / agent-row badges: >=0.95 autonomous,
-// >=0.8 review-gated, >=0.6 propose, >=0.4 shadow, else dormant.
-// Null-confidence agents (memo missing) render as dormant.
+// >=0.8 review-gated, >=0.6 propose, >=0.4 shadow, conf<0.4 dormant.
+// Null-confidence (memo missing) is the distinct "no-conf" bucket --
+// mirrors the table's separate badge-na vs badge-dormant rendering so an
+// operator who sees "no-conf:N" knows to scan the table for a "—" badge,
+// not a low-shadow-confidence one.
 (function() {
   const el = document.getElementById('readiness');
-  const TIERS = ['shadow', 'propose', 'review-gated', 'autonomous', 'dormant'];
+  const TIERS = ['shadow', 'propose', 'review-gated', 'autonomous', 'dormant', 'no-conf'];
 
   function tierFor(conf) {
-    if (conf == null) return 'dormant';
+    if (conf == null) return 'no-conf';
     if (conf >= 0.95) return 'autonomous';
     if (conf >= 0.8) return 'review-gated';
     if (conf >= 0.6) return 'propose';
@@ -1067,7 +1080,7 @@ renderAgentTable();
 
   const counts = {};
   colonyList.forEach(col => {
-    counts[col] = { shadow: 0, propose: 0, 'review-gated': 0, autonomous: 0, dormant: 0 };
+    counts[col] = { shadow: 0, propose: 0, 'review-gated': 0, autonomous: 0, dormant: 0, 'no-conf': 0 };
   });
   agents.forEach(a => {
     if (!counts[a.colony]) return;
@@ -1078,9 +1091,14 @@ renderAgentTable();
   colonyList.forEach(col => {
     html += '<div class="phase-row"><span class="phase-colony">' + esc(col) + '</span>';
     html += '<div class="phase-tiers">';
+    // Suppress every zero-count tier when at least one tier is non-zero.
+    // Falls back to "dormant: 0" for the all-zero / empty-colony case so
+    // the row never renders blank.
+    const nonZero = TIERS.some(t => counts[col][t] > 0);
     TIERS.forEach(t => {
       const n = counts[col][t];
-      if (t === 'dormant' && n === 0) return;
+      if (n === 0 && nonZero) return;
+      if (n === 0 && t !== 'dormant') return;
       html += '<span class="phase-tier has-' + t + '">';
       html += '<span class="phase-tier-label">' + t + ':</span>';
       html += '<span class="phase-tier-count">' + n + '</span>';
@@ -1090,7 +1108,6 @@ renderAgentTable();
   });
   el.innerHTML = html;
 })();
-
 
 // --- Promote Candidates (#248: unified with auto-promote-decisions.py) ---
 // Rows are rendered verbatim from the scheduler's own verdicts. The
