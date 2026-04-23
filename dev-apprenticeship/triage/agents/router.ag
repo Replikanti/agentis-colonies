@@ -25,9 +25,9 @@ type RouteAction {
 fn issues_cmd() -> string {
     let ts = recall_latest("router:last_check");
     if len(ts) > 0 {
-        return "$COLONY_DIR/scripts/gitlab-api.sh issues --since " + shell_escape(ts) + " --view router";
+        return "$COLONY_DIR/scripts/forge-api.sh issues --since " + shell_escape(ts) + " --view router";
     };
-    return "$COLONY_DIR/scripts/gitlab-api.sh issues --view router";
+    return "$COLONY_DIR/scripts/forge-api.sh issues --view router";
 }
 
 fn get_confidence() -> float {
@@ -62,7 +62,7 @@ fn tick(reason: string) -> void {
     };
 
     // Get team members
-    let members_raw = try { exec sh "$COLONY_DIR/scripts/gitlab-api.sh members --view summary"; } catch e { "[]"; };
+    let members_raw = try { exec sh "$COLONY_DIR/scripts/forge-api.sh members --view summary"; } catch e { "[]"; };
 
     // Analyze: find assigned and unassigned issues
     let analysis = prompt(
@@ -93,7 +93,7 @@ fn tick(reason: string) -> void {
         ) -> RouteAction;
 
         if my_tier == "autonomous" {
-            let update_cmd = "$COLONY_DIR/scripts/gitlab-api.sh update-issue " + to_string(action.issue_id) + " --assignee " + shell_escape(action.assignee);
+            let update_cmd = "$COLONY_DIR/scripts/forge-api.sh update-issue " + to_string(action.issue_id) + " --assignee " + shell_escape(action.assignee);
             let result = try { exec sh update_cmd; } catch e {
                 print("[router] Failed to assign:", e);
                 "";
@@ -108,7 +108,7 @@ fn tick(reason: string) -> void {
                 // Non-terminal draft: emit the suggestion and post an issue note
                 // flagged for human approval instead of directly assigning.
                 let note = "[draft-route] **Routing Suggestion** (automated, pending approval): assign to @" + action.assignee + "\n\n" + action.reasoning;
-                let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(action.issue_id) + " --body " + shell_escape(note);
+                let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(action.issue_id) + " --body " + shell_escape(note);
                 try { exec sh post_cmd; } catch e {
                     print("[router] Failed to post draft note:", e);
                 };

@@ -116,6 +116,17 @@ planning → implementation → code-review → release. `rate-limit-status`
 and the dashboard tile ship in PR 7 alongside the legacy
 `[gitlab]`-section retirement.
 
+**`.ag` migration is in-scope for every per-colony PR.** Each
+per-colony PR (PRs 2-6) MUST rewrite every `exec sh` call site in that
+colony's `.ag` agents from `scripts/gitlab-api.sh` to
+`scripts/forge-api.sh`. A colony that only ships `github-api.sh`
+without rewriting its `.ag` files is a silent-failure landmine: under
+`FORGE_TYPE=github`, `start-colony.sh` exports only `GITHUB_*` env, the
+direct `gitlab-api.sh` call trips its env check and exits 1, and the
+`.ag` try/catch swallows the error — the colony ticks doing zero work.
+The `check-forge-dispatch.sh` lint fires per-colony (once that colony
+ships a concrete `github-api.sh`), so forgetting this step breaks CI.
+
 **PR 2 deviations from the table below.** The triage contract in PR 2
 is a subset of the "full" shape listed here, because triage agents only
 consume issue + member + label data and only need the seven subcommands

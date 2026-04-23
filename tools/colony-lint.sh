@@ -444,6 +444,21 @@ if [ -x "$REPO_ROOT/tools/check-exec-sh.sh" ]; then
     fi
 fi
 
+# --- Check .ag files for direct backend-wrapper calls (ADR-0002, #256) ---
+# Colonies that ship a concrete github-api.sh MUST route .ag calls through
+# scripts/forge-api.sh — a hardcoded gitlab-api.sh / github-api.sh path
+# silently breaks on the other backend (start-colony.sh exports only the
+# env for the selected FORGE_TYPE, and .ag try/catch swallows the failure).
+if [ -x "$REPO_ROOT/tools/check-forge-dispatch.sh" ]; then
+    check_out="$("$REPO_ROOT/tools/check-forge-dispatch.sh" "$REPO_ROOT" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "check-forge-dispatch: .ag agents route through forge-api.sh"
+    else
+        fail "check-forge-dispatch: direct backend-wrapper call from .ag file"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- Check ticking colonies for unguarded prompt() (#200 / #201 / #205 / #208 / #210) ---
 # The implementation, planning, code-review, and triage colonies tick
 # frequently; a `prompt()` that is not gated on a memo-based staleness

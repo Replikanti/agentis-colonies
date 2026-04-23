@@ -63,7 +63,7 @@ for x in data:
         "title": x.get("title"),
         "description": x.get("body"),
         "state": "opened" if x.get("state") == "open" else x.get("state"),
-        "labels": [lab.get("name") for lab in (x.get("labels") or []) if isinstance(lab, dict)],
+        "labels": [lab if isinstance(lab, str) else lab.get("name") for lab in (x.get("labels") or []) if isinstance(lab, (str, dict))],
         "assignees": [{"username": a.get("login")} for a in (x.get("assignees") or [])],
         "author": {"username": (x.get("user") or {}).get("login")},
         "created_at": x.get("created_at"),
@@ -87,7 +87,7 @@ print(json.dumps({
     "title": x.get("title"),
     "description": x.get("body"),
     "state": "opened" if x.get("state") == "open" else x.get("state"),
-    "labels": [lab.get("name") for lab in (x.get("labels") or []) if isinstance(lab, dict)],
+    "labels": [lab if isinstance(lab, str) else lab.get("name") for lab in (x.get("labels") or []) if isinstance(lab, (str, dict))],
     "assignees": [{"username": a.get("login")} for a in (x.get("assignees") or [])],
     "author": {"username": (x.get("user") or {}).get("login")},
     "created_at": x.get("created_at"),
@@ -475,14 +475,31 @@ PY
         fi
         # Remove-labels: DELETE /issues/{n}/labels/{name} per label. GitHub has
         # no bulk remove endpoint — loop. URL-encode via python3 so label names
-        # containing '/', ' ', '::' etc. survive.
+        # containing '/', ' ', '::' etc. survive. Idempotency parity with
+        # gitlab-api.sh: a 404 (label already absent) is a no-op, not an error.
         if [ -n "$REMOVE_LABELS" ]; then
             IFS=',' read -r -a _RM <<< "$REMOVE_LABELS"
             for lab in "${_RM[@]}"; do
                 lab_trimmed="$(printf '%s' "$lab" | python3 -c 'import sys; print(sys.stdin.read().strip())')"
                 [ -z "$lab_trimmed" ] && continue
                 enc="$(printf '%s' "$lab_trimmed" | python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.stdin.read(), safe=""))')"
-                gh_call DELETE "$API/issues/$ID/labels/$enc" >/dev/null || exit $?
+                del_code=$(curl -sS -o /dev/null -w '%{http_code}' \
+                    --max-time "${GITHUB_CURL_MAX_TIME:-90}" \
+                    -X DELETE \
+                    -H "Authorization: Bearer $GITHUB_TOKEN" \
+                    -H "Accept: application/vnd.github+json" \
+                    -H "X-GitHub-Api-Version: 2022-11-28" \
+                    "$API/issues/$ID/labels/$enc" 2>/dev/null) || {
+                    emit_error "curl transport failure on DELETE label '$lab_trimmed'"
+                    exit 5
+                }
+                case "$del_code" in
+                    2*|404) ;;  # success or already absent — no-op
+                    401|403)   emit_error "auth failure (HTTP $del_code) removing label '$lab_trimmed'"; exit 2 ;;
+                    429)       emit_error "rate limited (HTTP 429) removing label '$lab_trimmed'"; exit 3 ;;
+                    5*)        emit_error "server error (HTTP $del_code) removing label '$lab_trimmed'"; exit 5 ;;
+                    *)         emit_error "client error (HTTP $del_code) removing label '$lab_trimmed'"; exit 4 ;;
+                esac
             done
         fi
         # Assignee: POST /issues/{n}/assignees with {"assignees": [login]}.

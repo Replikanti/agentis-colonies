@@ -39,9 +39,9 @@ fn scope_for_author(author: string) -> string {
 fn issues_cmd() -> string {
     let ts = recall_latest("labeler:last_check");
     if len(ts) > 0 {
-        return "$COLONY_DIR/scripts/gitlab-api.sh issues --since " + shell_escape(ts) + " --view labeler";
+        return "$COLONY_DIR/scripts/forge-api.sh issues --since " + shell_escape(ts) + " --view labeler";
     };
-    return "$COLONY_DIR/scripts/gitlab-api.sh issues --view labeler";
+    return "$COLONY_DIR/scripts/forge-api.sh issues --view labeler";
 }
 
 fn get_confidence() -> float {
@@ -154,7 +154,7 @@ fn evaluate_label_verdict() -> void {
     };
     let issue_id = parse_int(to_string(json_get(blob, "[1]")));
     let suggested = to_string(json_get(blob, "[2]"));
-    let cur_cmd = "$COLONY_DIR/scripts/gitlab-api.sh get-issue " + to_string(issue_id) + " --view feedback-issue";
+    let cur_cmd = "$COLONY_DIR/scripts/forge-api.sh get-issue " + to_string(issue_id) + " --view feedback-issue";
     let cur_raw = try { exec sh cur_cmd; } catch e { ""; };
     if len(cur_raw) < 3 {
         return;
@@ -287,7 +287,7 @@ fn score_one_autonomous(issue_id: int) -> string {
         return "drop";
     };
     let suggested = to_string(json_get(blob, "[2]"));
-    let cur_cmd = "$COLONY_DIR/scripts/gitlab-api.sh get-issue " + to_string(issue_id) + " --view feedback-issue";
+    let cur_cmd = "$COLONY_DIR/scripts/forge-api.sh get-issue " + to_string(issue_id) + " --view feedback-issue";
     let cur_raw = try { exec sh cur_cmd; } catch e { ""; };
     if len(cur_raw) < 3 {
         // GitLab query failed (network blip, issue deleted, etc.).
@@ -410,7 +410,7 @@ fn tick(reason: string) -> void {
     if analysis.unlabeled_count > 0 {
         let my_tier = tier("labeler");
         let rec = recommend("label", ["accuracy"]);
-        let labels_raw = try { exec sh "$COLONY_DIR/scripts/gitlab-api.sh labels --view summary"; } catch e { "[]"; };
+        let labels_raw = try { exec sh "$COLONY_DIR/scripts/forge-api.sh labels --view summary"; } catch e { "[]"; };
         let context = "Unlabeled issues: " + analysis.unlabeled_issues + "\nAvailable labels: " + labels_raw + "\nPast learning: " + to_string(rec);
 
         let action = prompt(
@@ -419,7 +419,7 @@ fn tick(reason: string) -> void {
         ) -> LabelAction;
 
         if my_tier == "autonomous" {
-            let update_cmd = "$COLONY_DIR/scripts/gitlab-api.sh update-issue " + to_string(action.issue_id) + " --add-labels " + shell_escape(action.labels);
+            let update_cmd = "$COLONY_DIR/scripts/forge-api.sh update-issue " + to_string(action.issue_id) + " --add-labels " + shell_escape(action.labels);
             let result = try { exec sh update_cmd; } catch e {
                 print("[labeler] Failed to apply labels:", e);
                 "";
@@ -442,7 +442,7 @@ fn tick(reason: string) -> void {
         } else {
             if my_tier == "review-gated" {
                 let note = "[draft-labels] **Label Suggestion** (automated, pending approval): " + action.labels + "\n\n" + action.reasoning;
-                let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(action.issue_id) + " --body " + shell_escape(note);
+                let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(action.issue_id) + " --body " + shell_escape(note);
                 try { exec sh post_cmd; } catch e {
                     print("[labeler] Failed to post draft note:", e);
                 };

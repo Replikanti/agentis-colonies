@@ -528,6 +528,9 @@ PY
             emit_error "--body is required"
             exit 1
         fi
+        case "$ID" in
+            ''|*[!0-9]*) emit_error "issue iid must be numeric: $ID"; exit 2 ;;
+        esac
         JSON_BODY=$(printf '%s' "$BODY" | python3 -c 'import sys,json; print(json.dumps({"body": sys.stdin.read()}))')
         gl_post "$API/issues/$ID/notes" "$JSON_BODY"
         ;;
