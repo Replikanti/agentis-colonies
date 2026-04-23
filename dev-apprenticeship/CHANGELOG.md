@@ -170,6 +170,43 @@ is asserted until multi-version CI is in place.
   output between `github-api.sh` and `gitlab-api.sh` for the `impl`
   and `assigned` views.
   [#256](https://github.com/Replikanti/agentis-colonies/issues/256)
+- **Code-review colony GitHub backend (PR 5 of 7 for #256).**
+  `dev-apprenticeship/code-review/scripts/github-api.sh` implements the
+  code-review contract against the GitHub REST API v3 (5 subcommands:
+  `merge-requests`, `mr-changes`, `mr-notes`, `post-note`, `approve`).
+  Two endpoint collapses unique to the review surface: GitHub unifies
+  issue and PR conversations under `/issues/{n}/comments`, so both
+  `mr-notes` and `post-note` target that endpoint (same one the
+  triage/planning/implementation `add-note` subcommands already hit);
+  `approve` maps GitLab's idempotent
+  `POST /merge_requests/{iid}/approve` to GitHub's non-idempotent
+  `POST /pulls/{n}/reviews` with `{"event": "APPROVE"}` (extra calls
+  from the same reviewer stack as additional APPROVED review events
+  but don't break the approvals collapse, since the approved-count
+  logic counts latest-per-reviewer). `normalize_pulls` adds a native
+  `draft` boolean from GitHub's `draft` field (consumed by the
+  `reviewer` view to skip draft PRs); GitHub has no `system` flag on
+  comments, so `normalize_notes` stamps `system: false` on every row
+  (correct because `/issues/{n}/comments` only surfaces human comments,
+  unlike GitLab's `/notes` which mixes in timeline events). As in
+  PRs 3-4, `--state merged` collapses to
+  `state=closed + merged_at != null` client-side and `--since` filters
+  client-side on `updated_at` (GitHub's `/pulls` has no `since` param).
+  All 28 `exec sh` call sites across `approval_decider`, `logic_reviewer`,
+  `security_reviewer`, `style_reviewer`, and `test_reviewer` were
+  rewritten from `scripts/gitlab-api.sh` to `scripts/forge-api.sh`.
+  `code-review/scripts/start-colony.sh` now branches on `FORGE_TYPE`
+  identically to triage/planning/implementation; no colony-specific
+  env additions (code-review agents don't create branches or issues).
+  Two new tests: `tools/test-github-code-review-normalize.sh` (32
+  assertions covering `normalize_pulls` state collapse + `draft` field
+  passthrough, `normalize_mr_changes` status → new_file/deleted_file/
+  renamed_file mapping, `normalize_notes` `system: false` invariant,
+  end-to-end pipe through the `reviewer` view); and a code-review-colony
+  extension to `tools/test-gitlab-views.sh` asserting byte-identical
+  `project_json` output between `github-api.sh` and `gitlab-api.sh`
+  for the `reviewer` view.
+  [#256](https://github.com/Replikanti/agentis-colonies/issues/256)
 
 ### Changed
 

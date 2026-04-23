@@ -121,8 +121,12 @@ subcommands (`merge-requests`, `mr-changes`, `mr-commits`, `issue`,
 `assigned-issues-by-label-events`, `create-branch`, `commit-files`,
 `create-mr`, `add-note`) plus the matching `[forge.github]` env-export
 branch and 25 `.ag` call-site migrations across the four implementation
-agents. The remaining colonies' wrappers land across PRs 5-6 in the
-order code-review → release. `rate-limit-status` and the dashboard tile
+agents. PR 5 (the current PR as of this writing) ships the code-review
+colony's `github-api.sh` with 5 subcommands (`merge-requests`,
+`mr-changes`, `mr-notes`, `post-note`, `approve`) plus the matching
+`[forge.github]` env-export branch and 28 `.ag` call-site migrations
+across the five code-review agents. The remaining colony wrapper
+(release) lands in PR 6. `rate-limit-status` and the dashboard tile
 ship in PR 7 alongside the legacy `[gitlab]`-section retirement.
 
 **`.ag` migration is in-scope for every per-colony PR.** Each
@@ -192,6 +196,31 @@ backends before this PR (the implementation `gitlab-api.sh` exposed
 only `post-note` targeting MRs), same failure pattern PR 2 fixed for
 triage. The back-port of `add-note` into the implementation
 `gitlab-api.sh` is in-scope for this PR.
+
+**PR 5 additions.** The code-review contract adds the comment-path
+subcommands agents use to leave findings and approve merges:
+`mr-notes`, `post-note`, and `approve`. GitHub unifies issue and PR
+conversations under `/issues/{n}/comments` — the same endpoint
+triage/planning/implementation already hit via `add-note` — so
+code-review's `mr-notes` reads from `/issues/{n}/comments` and
+`post-note` writes to it. There is no `system` flag on GitHub
+comments (GitLab uses it to mark timeline-event notes like
+`assigned user`, which the reviewer agents filter out to avoid
+echo-chamber loops); the normalizer stamps `system: false` on every
+row unconditionally, which is correct because `/issues/{n}/comments`
+only surfaces human-authored comments. `approve` maps GitLab's
+idempotent `POST /merge_requests/{iid}/approve` to GitHub's
+non-idempotent `POST /pulls/{n}/reviews` with
+`{"event": "APPROVE"}`; calling it twice creates two APPROVED review
+events on GitHub (the approvals collapse from the table above still
+holds — `approved = (count of latest-per-reviewer APPROVED reviews
+>= required)`, so extra approves from the same reviewer don't break
+the count). `normalize_pulls` adds a native `draft` boolean pulled
+from GitHub's `draft` field — code-review's `reviewer` view consumes
+it to skip draft PRs, which GitHub (unlike GitLab) exposes natively
+on the list response. As in PRs 3-4, `--state merged` collapses to
+`state=closed + merged_at != null` client-side and `--since` is a
+client-side filter on `updated_at`.
 
 | Subcommand           | Normalized output |
 |----------------------|-------------------|

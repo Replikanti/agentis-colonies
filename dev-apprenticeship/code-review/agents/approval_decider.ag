@@ -54,7 +54,7 @@ fn tick(reason: string) -> void {
     };
 
     // Learn from past human approval/rejection patterns
-    let mr_cmd = "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --view reviewer";
+    let mr_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --view reviewer";
     let recent_merged = try { exec sh mr_cmd; } catch e { "[]"; };
 
     // Cold-path via upstream rate-limit: the bus-load early-exit above
@@ -88,7 +88,7 @@ fn tick(reason: string) -> void {
 
     if my_tier == "autonomous" {
         if decision.action == "approve" {
-            let approve_cmd = "$COLONY_DIR/scripts/gitlab-api.sh approve " + to_string(decision.mr_iid);
+            let approve_cmd = "$COLONY_DIR/scripts/forge-api.sh approve " + to_string(decision.mr_iid);
             try { exec sh approve_cmd; } catch e {
                 print("[approval_decider] Failed to approve:", e);
             };
@@ -97,7 +97,7 @@ fn tick(reason: string) -> void {
         } else {
             if decision.action == "request_changes" {
                 let comment = "**Review Summary** (automated)\n\n" + decision.reasoning + "\n\nFindings: " + to_string(decision.total_findings) + " total, " + to_string(decision.critical_count) + " critical";
-                let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh post-note " + to_string(decision.mr_iid) + " --body " + shell_escape(comment);
+                let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(decision.mr_iid) + " --body " + shell_escape(comment);
                 try { exec sh post_cmd; } catch e {
                     print("[approval_decider] Failed to post:", e);
                 };
@@ -113,7 +113,7 @@ fn tick(reason: string) -> void {
             // a human can promote the approve / request_changes action instead
             // of acting directly.
             let comment = "[draft-review-decision] **Review Summary** (automated, pending approval): suggested action `" + decision.action + "`\n\n" + decision.reasoning + "\n\nFindings: " + to_string(decision.total_findings) + " total, " + to_string(decision.critical_count) + " critical";
-            let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh post-note " + to_string(decision.mr_iid) + " --body " + shell_escape(comment);
+            let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(decision.mr_iid) + " --body " + shell_escape(comment);
             try { exec sh post_cmd; } catch e {
                 print("[approval_decider] Failed to post draft summary:", e);
             };

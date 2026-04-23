@@ -369,6 +369,27 @@ if [ -f "$GH_IMPL_SCRIPT" ]; then
     done
 fi
 
+# --- code-review github-api.sh project_json parity (#256 PR 5) ---
+# code-review/scripts/github-api.sh duplicates project_json rather than
+# sourcing gitlab-api.sh. The code-review-specific view is `reviewer` (MR
+# list for the four reviewers + approval_decider); it must emit byte-identical
+# JSON to its gitlab twin when fed an already-GitLab-shape fixture.
+GH_CODE_REVIEW_SCRIPT="$REPO_ROOT/dev-apprenticeship/code-review/scripts/github-api.sh"
+if [ -f "$GH_CODE_REVIEW_SCRIPT" ]; then
+    # code-review only exposes one list view (`reviewer`); no for-loop over
+    # view:fixture pairs here (shellcheck SC2066 fires on a single-element
+    # for — the existing triage/planning/implementation blocks all have ≥2
+    # views so they're fine). If a second view lands, switch back to the
+    # for-pair idiom used above.
+    gl_out=$(run_view "$REPO_ROOT/dev-apprenticeship/code-review/scripts/gitlab-api.sh" "reviewer" "$FIXTURE_MRS")
+    gh_out=$(run_view_github "$GH_CODE_REVIEW_SCRIPT" "reviewer" "$FIXTURE_MRS")
+    if [ "$gl_out" = "$gh_out" ]; then
+        pass "code-review github-api.sh project_json parity: reviewer"
+    else
+        fail "code-review github-api.sh project_json drifted from gitlab-api.sh: reviewer"
+    fi
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -24,9 +24,9 @@ type TestReview {
 fn mr_cmd() -> string {
     let ts = recall_latest("test_reviewer:last_check");
     if len(ts) > 0 {
-        return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --since " + shell_escape(ts) + " --view reviewer";
+        return "$COLONY_DIR/scripts/forge-api.sh merge-requests --since " + shell_escape(ts) + " --view reviewer";
     };
-    return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --view reviewer";
+    return "$COLONY_DIR/scripts/forge-api.sh merge-requests --view reviewer";
 }
 
 fn get_confidence() -> float {
@@ -55,7 +55,7 @@ fn tick(reason: string) -> void {
     if mr_iid <= 0 {
         return;
     };
-    let changes_cmd = "$COLONY_DIR/scripts/gitlab-api.sh mr-changes " + to_string(mr_iid);
+    let changes_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-changes " + to_string(mr_iid);
     let changes_raw = try { exec sh changes_cmd; } catch e { ""; };
 
     if len(changes_raw) < 10 {
@@ -81,7 +81,7 @@ fn tick(reason: string) -> void {
 
     if should_learn == 1 {
         // Learn from human test-related comments
-        let notes_cmd = "$COLONY_DIR/scripts/gitlab-api.sh mr-notes " + to_string(mr_iid);
+        let notes_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-notes " + to_string(mr_iid);
         let notes_raw = try { exec sh notes_cmd; } catch e { "[]"; };
 
         let human_patterns = prompt(
@@ -114,7 +114,7 @@ fn tick(reason: string) -> void {
         if my_tier == "autonomous" {
             emit("review:test_findings", review);
             let comment = "**Test Review** (automated)\n\n" + review.summary;
-            let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment);
+            let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment);
             try { exec sh post_cmd; } catch e {
                 print("[test_reviewer] Failed to post comment:", e);
             };
@@ -123,7 +123,7 @@ fn tick(reason: string) -> void {
             if my_tier == "review-gated" {
                 emit("review:test_findings", review);
                 let comment = "[draft-review] **Test Review** (automated, pending approval)\n\n" + review.summary;
-                let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment);
+                let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment);
                 let result = try { exec sh post_cmd; } catch e {
                     print("[test_reviewer] Failed to post draft comment:", e);
                     "";
