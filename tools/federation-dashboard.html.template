@@ -64,6 +64,19 @@
   }
   .fed-down-banner .start-btn:hover { background: var(--yellow); color: #000; }
 
+  /* --- Federation Health Banner (#248 PR B) --- */
+  .fed-health-banner {
+    display: none; padding: 10px 16px; margin-bottom: 12px;
+    border-radius: 4px; font-size: 12px;
+    letter-spacing: 1px; text-transform: uppercase;
+  }
+  .fed-health-banner.visible { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+  .fed-health-banner.healthy { background: rgba(0,255,0,0.06); border: 1px solid rgba(0,255,0,0.3); color: var(--green); }
+  .fed-health-banner.degraded { background: rgba(255,136,0,0.08); border: 1px solid var(--orange); color: var(--orange); }
+  .fed-health-banner .health-label { font-weight: bold; }
+  .fed-health-banner .health-detail { opacity: 0.85; text-transform: none; letter-spacing: 0; font-size: 11px; }
+  .fed-health-banner .health-reasons { opacity: 0.75; text-transform: none; letter-spacing: 0; font-size: 11px; }
+
   /* --- Stats Row --- */
   .stats-row { display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
   .stat-box {
@@ -372,6 +385,12 @@
     padding: 0 5px; border-radius: 2px; font-size: 10px; line-height: 1.4;
   }
   .skipped-info:hover { color: var(--cyan); border-color: var(--cyan); }
+  /* #248 PR B: structured prereqs checklist inside skipped-row */
+  .prereqs-row { margin: 4px 0 0 14px; display: flex; flex-wrap: wrap; gap: 10px; }
+  .prereq { font-size: 10px; letter-spacing: 0.5px; }
+  .prereq.ok { color: var(--green); opacity: 0.75; }
+  .prereq.fail { color: var(--orange); }
+  .prereq .mark { margin-right: 3px; }
 
   /* --- Buttons --- */
   .refresh-btn {
@@ -526,6 +545,8 @@
   &#x26A0; Federation is stopped — showing last-seen data
   <button class="start-btn" onclick="startFederation()">Start Federation</button>
 </div>
+
+<div class="fed-health-banner" id="fed-health-banner"></div>
 
 <div class="stats-row" id="stats-row"></div>
 
@@ -713,6 +734,12 @@ const confChanges = data.confidence_changes || [];
 // --preview. Promote Candidates renders these verbatim so the dashboard
 // uses the same math as tools/auto-promote.sh.
 const decisions = data.decisions || [];
+// #248 PR B: sidecar (auto-promote scheduler) state. Surfaces installed,
+// enabled, interval_s, last_tick_ts so the health banner can detect
+// sidecar silence past 2× interval. Absent when collector ran against a
+// fed without .auto-promote-install.toml — banner falls back to
+// daemon-liveness only.
+const sidecar = data.sidecar || {installed: false, enabled: false, interval_s: null, last_tick_ts: null};
 
 // --- Federation Down Detection ---
 (function() {
@@ -720,6 +747,73 @@ const decisions = data.decisions || [];
   if (running.length === 0 && agents.length > 0) {
     document.getElementById('fed-down-banner').classList.add('visible');
   }
+})();
+
+// --- Federation Health Banner (#248 PR B) ---
+// HEALTHY = every running daemon has pid_alive === true AND (sidecar not
+// installed-and-enabled OR sidecar ticked within 2× interval_s).
+// DEGRADED = any running daemon with pid_alive === false, or sidecar
+// installed+enabled but silent past 2× interval_s.
+// Hidden entirely when federation is down (fed-down-banner owns that case).
+(function() {
+  const running = agents.filter(a => a.state === 'running');
+  if (running.length === 0) return;  // fed-down-banner handles this
+
+  const deadPids = running.filter(a => a.pid > 0 && !a.pid_alive);
+  const sidecarWatched = sidecar.installed && sidecar.enabled && sidecar.interval_s > 0;
+  const staleThreshold = sidecarWatched ? sidecar.interval_s * 2 : null;
+  const sidecarAge = (sidecarWatched && sidecar.last_tick_ts)
+    ? (nowEpoch - sidecar.last_tick_ts) : null;
+  const sidecarSilent = sidecarWatched && (sidecarAge === null || sidecarAge > staleThreshold);
+
+  const reasons = [];
+  if (deadPids.length > 0) {
+    reasons.push(deadPids.length + ' daemon' + (deadPids.length === 1 ? '' : 's') +
+                 ' with dead PID (' + deadPids.map(a => a.name).slice(0, 3).join(', ') +
+                 (deadPids.length > 3 ? ', ...' : '') + ')');
+  }
+  if (sidecarSilent) {
+    if (sidecarAge === null) {
+      reasons.push('auto-promote sidecar has never ticked');
+    } else {
+      const mins = Math.round(sidecarAge / 60);
+      const intervalMins = Math.round(sidecar.interval_s / 60);
+      reasons.push('auto-promote sidecar silent ' + mins + 'm (interval ' + intervalMins + 'm)');
+    }
+  }
+
+  const el = document.getElementById('fed-health-banner');
+  const degraded = reasons.length > 0;
+  el.classList.add(degraded ? 'degraded' : 'healthy');
+  el.classList.add('visible');
+
+  let detail = '';
+  if (!degraded) {
+    // QA finding #4: HEALTHY means every running daemon is alive, so
+    // "N/N alive" is the truthful denominator (agents.length includes
+    // intentionally-stopped agents and would render a misleading ratio).
+    const parts = [running.length + '/' + running.length + ' running daemons alive'];
+    if (sidecarWatched && sidecarAge !== null) {
+      const mins = Math.round(Math.max(0, sidecarAge) / 60);
+      parts.push('sidecar ticked ' + mins + 'm ago');
+    } else if (sidecar.installed && sidecar.enabled) {
+      // QA finding #2: installed+enabled but interval_s missing/non-numeric/<=0.
+      // Without this branch the operator sees no sidecar mention at all and
+      // assumes the sidecar is fine — the whole point of the banner.
+      parts.push('sidecar installed but interval_s misconfigured');
+    } else if (sidecar.installed && !sidecar.enabled) {
+      parts.push('sidecar installed but disabled');
+    } else if (!sidecar.installed) {
+      parts.push('sidecar not installed');
+    }
+    detail = parts.join(' · ');
+  } else {
+    detail = reasons.join(' · ');
+  }
+
+  el.innerHTML =
+    '<span class="health-label">' + (degraded ? '⚠ Degraded' : '✔ Healthy') + '</span>' +
+    '<span class="' + (degraded ? 'health-reasons' : 'health-detail') + '">' + esc(detail) + '</span>';
 })();
 
 // --- Stats Row ---
@@ -746,10 +840,37 @@ const decisions = data.decisions || [];
   const avgLabel = n === 0 ? '\u2014' : avgConf.toFixed(2);
   const quarantined = agents.filter(a => a.quarantine === 'yes').length;
   const deadPids = agents.filter(a => a.state === 'running' && a.pid > 0 && !a.pid_alive).length;
+
+  // #248 PR B: "Learning (24h)" — proof-of-life that the federation is
+  // actually moving. Snapshot-delta from history.json (total experience
+  // entries in the last 24h) plus confidence-log rows. Both are zero on
+  // a fresh install or a frozen federation. Missing history → box omitted.
+  let learningBox = '';
+  const dayAgo = nowEpoch - 86400;
+  let expDelta = null;
+  if (Array.isArray(history) && history.length >= 2) {
+    const baseline = history.find(h => h.t >= dayAgo) || history[0];
+    const current = history[history.length - 1];
+    const bTotal = (baseline.experience && baseline.experience.total) || 0;
+    const cTotal = (current.experience && current.experience.total) || 0;
+    expDelta = cTotal - bTotal;
+  }
+  const confMoves = confChanges.filter(c => (c.t || 0) >= dayAgo).length;
+  if (expDelta !== null || confMoves > 0) {
+    const parts = [];
+    if (expDelta !== null) parts.push((expDelta >= 0 ? '+' : '') + expDelta + ' entries');
+    if (confMoves > 0) parts.push(confMoves + ' conf moves');
+    const activeColor = ((expDelta && expDelta > 0) || confMoves > 0) ? 'var(--green)' : 'var(--muted)';
+    learningBox =
+      '<div class="stat-box"><div class="stat-value" style="color:' + activeColor + ';font-size:20px">' +
+      esc(parts.join(' \u00b7 ')) + '</div><div class="stat-label">Learning // 24h</div></div>';
+  }
+
   el.innerHTML =
     '<div class="stat-box"><div class="stat-value">' + running + '/' + totalAgents + '</div><div class="stat-label">Agents Running</div></div>' +
     '<div class="stat-box"><div class="stat-value" style="color:' + avgColor + '">' + avgLabel + '</div><div class="stat-label">Avg Confidence // ' + phase + '</div></div>' +
     '<div class="stat-box"><div class="stat-value">' + totalExperience + '</div><div class="stat-label">Experience Entries</div></div>' +
+    learningBox +
     '<div class="stat-box"><div class="stat-value" style="color:' + (quarantined > 0 ? 'var(--magenta)' : 'var(--green)') + '">' + quarantined + '</div><div class="stat-label">Quarantined</div></div>' +
     (deadPids > 0 ? '<div class="stat-box"><div class="stat-value" style="color:var(--red)">' + deadPids + ' \uD83D\uDC80</div><div class="stat-label">Dead PIDs</div></div>' : '');
 })();
@@ -994,6 +1115,29 @@ renderAgentTable();
   let actionableCount = 0;
   let skippedCount = 0;
 
+  // #248 PR B: one prereq badge. Shows fail lines verbose (value vs
+  // threshold) so the operator can see exactly how far below bar the
+  // agent is; pass lines stay compact. JS Number coercion drops trailing
+  // zeros (2.0 -> "2") so float-typed prereqs are formatted explicitly
+  // to preserve precision-of-intent — QA finding #5 on PR B.
+  const PREREQ_DECIMALS = {
+    runtime_hours: 1, reject_rate_acting: 4, delta_slope_acting: 6,
+  };
+  function fmtPrereqVal(name, v) {
+    const d = PREREQ_DECIMALS[name];
+    if (d != null && typeof v === 'number') return v.toFixed(d);
+    return String(v);
+  }
+  function renderPrereq(p) {
+    const cls = p.meets ? 'ok' : 'fail';
+    const mark = p.meets ? '✓' : '✗';
+    const label = p.meets
+      ? p.name
+      : p.name + ' ' + fmtPrereqVal(p.name, p.value) + ' ' + p.op + ' ' + fmtPrereqVal(p.name, p.threshold);
+    return '<span class="prereq ' + cls + '"><span class="mark">' +
+           mark + '</span>' + esc(label) + '</span>';
+  }
+
   const agentByName = {};
   agents.forEach(a => { agentByName[a.name] = a; });
 
@@ -1011,6 +1155,13 @@ renderAgentTable();
       const label = d.decision === 'evolve' ? 'evolve recommended' : (d.reason || 'skipped');
       skippedHtml += '<div class="skipped-row"><span class="agent-name">' + esc(a.name) + '</span>';
       skippedHtml += '<span>— ' + esc(label) + '</span></div>';
+      // #248 PR B: render structured prereqs checklist when the decider
+      // attached one (promote-path skips only — unseeded / dead-pid skips
+      // never reach the prereqs code path, so ev.prereqs stays undefined).
+      if (ev.prereqs && ev.prereqs.length) {
+        skippedHtml += '<div class="prereqs-row">' +
+          ev.prereqs.map(p => renderPrereq(p)).join('') + '</div>';
+      }
       skippedCount++;
       return;
     }

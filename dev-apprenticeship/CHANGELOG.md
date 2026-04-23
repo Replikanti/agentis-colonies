@@ -17,6 +17,28 @@ is asserted until multi-version CI is in place.
 
 ### Added
 
+- **Federation dashboard: HEALTHY / DEGRADED banner, per-agent promote-readiness breakdown, 24h learning indicator**
+  ([#248](https://github.com/Replikanti/agentis-colonies/issues/248)).
+  Three operator-visibility additions that share the same data surface:
+  (1) a health banner right under the header that goes HEALTHY when all
+  running daemons have a live PID AND (if installed + enabled) the
+  auto-promote sidecar has ticked within 2× its configured interval, and
+  DEGRADED with specific reason lines otherwise; (2) each skipped promote
+  candidate now expands to a checklist of which prereqs it meets vs fails
+  (entries_total, entries_acting, runtime_hours, and — when past the
+  bootstrap step — reject_rate and delta_slope) with the agent's actual
+  value and the threshold it was measured against; (3) a new "Learning //
+  24h" stat box showing the delta in total experience entries over the
+  last 24h (from history snapshots) plus the count of confidence moves
+  in the same window. All three are null-safe: the banner hides on a
+  stopped federation, the prereqs block is omitted when the decider didn't
+  attach one, the learning box is omitted when history has fewer than two
+  snapshots. `auto-promote-decisions.py` now emits an `evidence.prereqs`
+  array on every promote-path decision (skip + promote); test 14 asserts
+  the structure. `federation-dashboard-collector.py` surfaces a new
+  `sidecar` field (installed, enabled, interval_s, last_tick_ts) from
+  `.auto-promote-install.toml` and the sidecar log mtime.
+
 ### Changed
 
 ### Deprecated

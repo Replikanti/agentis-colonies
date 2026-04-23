@@ -433,6 +433,31 @@ else
     fail "19: heredoc detected — extract content to a standalone file (see #172)"
 fi
 
+# --- #248 PR B QA finding #1 regression guard ---
+# The confidence-log JSONL writer (federation-dashboard-server.py:494) writes
+# rows with field name `t`. The PR B "Learning // 24h" code originally read
+# `c.ts` instead — a one-char typo that silently zeroed the conf-moves count.
+# Lock the contract: the template must reference `c.t`, never `c.ts`, when
+# walking confChanges entries.
+if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
+import sys, re
+with open(sys.argv[1]) as f:
+    src = f.read()
+# Forbid `confChanges.filter(c => (c.ts` and similar c.ts reads.
+# Allow c.t reads. Match against the JS body inside <script>...</script>.
+m = re.search(r'<script>(.*?)</script>', src, re.DOTALL)
+js = m.group(1) if m else src
+# Look for any `c.ts` (word-boundary right) on a confChanges-related line.
+# We're conservative: flag any c.ts read in the JS body that's not c.tsv etc.
+bad = re.findall(r'\bc\.ts\b', js)
+sys.exit(1 if bad else 0)
+PY
+then
+    pass "20: template uses c.t (not c.ts) for confChanges entries (#248 PR B)"
+else
+    fail "20: template references c.ts on confChanges — server writes c.t, see #248 PR B QA #1"
+fi
+
 # --- #163: evolve flat-slope threshold is named, reachable, and calibrated.
 #     Guards against reverting to the pre-calibration 1e-6 guess or silently
 #     orphaning the constant (declared but never used). The production
