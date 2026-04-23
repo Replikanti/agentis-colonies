@@ -188,7 +188,7 @@ Served by `federation-dashboard-server.py`:
 |---|---|
 | `/refresh` | Re-run collector / history / renderer; reload `index.html`. |
 | `/confidence` | Read or write `<agent>:confidence`. Backs the promote / demote controls. |
-| `/restart` | Restart a daemon (per-agent) after a confidence change. |
+| `/restart` | Restart a daemon (per-agent) after a confidence change. Delegates to the target colony's `scripts/start-colony.sh --restart-agent <name>` — the dashboard does not parse `colony.toml` or compose forge env itself ([#257](https://github.com/Replikanti/agentis-colonies/issues/257)). |
 | `/quarantine` | Mark an agent as quarantined; the daemon loop honours the flag on next tick. |
 | `/evolve` | Invoke `agentis evolve` on an agent. |
 | `/cleanup` | Prune experience / memo state for a quarantined or killed agent. |
@@ -200,7 +200,9 @@ Served by `federation-dashboard-server.py`:
 - [`federation-dashboard/bin/federation-dashboard`](../federation-dashboard/bin/federation-dashboard) — thin-shell entry point.
 - [`federation-dashboard/README.md`](../federation-dashboard/README.md) — install + operator-facing reference for the standalone component.
 - [`tools/kill-federation.sh`](../tools/kill-federation.sh) — OS-level shutdown, consumed by `/kill`.
-- [`tools/test-timeline-rendering.sh`](../tools/test-timeline-rendering.sh) — regression harness (23 tests).
+- [`tools/test-timeline-rendering.sh`](../tools/test-timeline-rendering.sh) — regression harness (24 tests).
+- [`tools/test-start-colony-restart.sh`](../tools/test-start-colony-restart.sh) — every colony's `start-colony.sh` supports `--restart-agent <name>` (20 sub-tests across 5 colonies, [#257](https://github.com/Replikanti/agentis-colonies/issues/257)).
+- [`tools/test-dashboard-vocabulary.sh`](../tools/test-dashboard-vocabulary.sh) — the dashboard stays federation-type-agnostic: no GitLab vocabulary in the template and no `GITLAB_*` dispatch in the server ([#257](https://github.com/Replikanti/agentis-colonies/issues/257)).
 - [#158](https://github.com/Replikanti/agentis-colonies/issues/158) — timeline rendering + Clear cursor.
 - [#160](https://github.com/Replikanti/agentis-colonies/issues/160) — button gating + Why sidebar.
 - [#161](https://github.com/Replikanti/agentis-colonies/issues/161) — kill button + notification region.

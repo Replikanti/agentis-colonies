@@ -17,7 +17,24 @@ is asserted until multi-version CI is in place.
 
 ### Added
 
+- Every colony's `scripts/start-colony.sh` supports a new
+  `--restart-agent <name>` mode that respawns exactly one agent with the
+  full colony env, skipping memo seeding and log truncation (both of
+  which are full-colony bootstrap concerns). Exit codes: 0 ok, 2
+  unknown flag / missing arg, 3 unknown agent name for this colony, 4
+  daemon launch failure. Positional config-path arg still works for
+  pre-#257 callers. Enables the dashboard-side decoupling in
+  `federation-dashboard` 0.2.0.
+  [#257](https://github.com/Replikanti/agentis-colonies/issues/257)
+
 ### Changed
+
+- `.dashboard-version` floor bumped to 0.2.0. The new dashboard release
+  delegates agent restarts through `start-colony.sh --restart-agent`
+  instead of parsing `[gitlab]` from `colony.toml` — pairing a 0.1.0
+  dashboard with a 1.x federation is still safe (the dashboard
+  gracefully logs `start-colony.sh exit 2: unknown flag`), but the
+  recommended floor matches the pair tested together.
 
 ### Deprecated
 

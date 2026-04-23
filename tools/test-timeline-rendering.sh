@@ -553,6 +553,53 @@ else
     fail "23: chart-demotion regression — one or both charts no longer inside collapsed <details>"
 fi
 
+# --- #257: federation-agnostic vocabulary regression guard. ---
+# The dashboard ships as a separately-versioned standalone component and
+# auto-discovers colonies; nothing in the UI or server code may hard-code
+# forge-specific vocabulary (GitLab, GITLAB_*, MRs, "merge request"). The
+# only permitted GitLab references are historical comments inside
+# server.py that explain what was removed in #257 — those strings live
+# inside comment lines and do not leak into rendered text.
+t24_ok=1
+# 24a: HTML template must not mention GitLab / MRs anywhere.
+for pat in GitLab MRs 'merge request' GITLAB_; do
+    if grep -q -- "$pat" "$DASH_LIB_DIR/federation-dashboard.html.template"; then
+        echo "  template contains forbidden term: $pat"
+        t24_ok=0
+    fi
+done
+# 24b: server.py must not dispatch on any GitLab env var at runtime. The
+# only tolerated occurrences are inside Python comments (leading whitespace
+# then '#') explaining the pre-#257 history.
+if python3 - "$DASH_LIB_DIR/federation-dashboard-server.py" <<'PY' 2>/dev/null
+import sys
+bad = []
+with open(sys.argv[1]) as f:
+    for i, line in enumerate(f, 1):
+        stripped = line.lstrip()
+        if stripped.startswith('#') or stripped.startswith('"""'):
+            continue
+        for term in ('GITLAB_URL', 'GITLAB_TOKEN', 'GITLAB_PROJECT', 'GITLAB_ME'):
+            if term in line:
+                bad.append((i, term, line.rstrip()))
+if bad:
+    for i, t, l in bad[:5]:
+        sys.stderr.write(f'line {i}: {t}: {l}\n')
+    sys.exit(1)
+sys.exit(0)
+PY
+then
+    :
+else
+    echo "  server.py contains non-comment GitLab env references"
+    t24_ok=0
+fi
+if [ "$t24_ok" -eq 1 ]; then
+    pass "24: federation-agnostic vocabulary — no GitLab-specific terms in template or runtime server code (#257)"
+else
+    fail "24: forge-vocabulary regression — see lines above"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
