@@ -106,6 +106,8 @@ agentis daemon stop --all       # Stop everything
 
 A web dashboard that shows agent health, confidence levels, phase readiness with ETA, knowledge growth trends, remediation history, and a live suggestion feed. Auto-refreshes every 60 seconds. Includes a kill switch (two-click safety) to stop the entire federation from the browser.
 
+The dashboard is a [separately-versioned standalone component](../federation-dashboard/) ([#252](https://github.com/Replikanti/agentis-colonies/issues/252)). This federation recommends `federation-dashboard >= 0.1.0` (pinned in [`.dashboard-version`](./.dashboard-version)); `install.sh` step 8 offers to install it for you, and `./dashboard.sh` is a thin resolver that finds the installed binary.
+
 Per-agent **confidence bump** controls (▲▼) in the Confidence Levels card walk each agent through the canonical tier ladder: `shadow` (0.4) → `propose` (0.6) → `review-gated` (0.8) → `autonomous` (0.95). Promotions to `autonomous` trigger a confirmation dialog since at that level the agent performs terminal external writes (merge, tag, publish) without a second gate. Every change is appended to `.dashboard/confidence-log.jsonl` for audit. The CLI path (`agentis memo set <agent>:confidence <value>`) still works and is equivalent.
 
 ```bash
