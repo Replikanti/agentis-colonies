@@ -47,6 +47,9 @@ done
 
 if [ -z "$DATA_DIR" ]; then
     DATA_DIR="$DATA_HOME/federation-dashboard"
+    PREFIX_EXPLICIT=0
+else
+    PREFIX_EXPLICIT=1
 fi
 SYMLINK="$BIN_HOME/federation-dashboard"
 
@@ -83,6 +86,19 @@ echo "Installing federation-dashboard v$VERSION"
 echo "  data: $DATA_DIR"
 echo "  bin:  $SYMLINK"
 echo ""
+
+# If --prefix was given, verify its parent already exists. mkdir -p would
+# otherwise silently materialise a whole chain of garbage directories on a
+# typo (e.g. --prefix /opt/frederation-dashb), and --uninstall only wipes
+# $DATA_DIR itself, leaving the typo'd ancestors behind forever.
+if [ "$PREFIX_EXPLICIT" = "1" ]; then
+    PREFIX_PARENT="$(dirname "$DATA_DIR")"
+    if [ ! -d "$PREFIX_PARENT" ]; then
+        echo "install.sh: --prefix parent does not exist: $PREFIX_PARENT" >&2
+        echo "Create it yourself if the path is intentional, or re-run with a valid --prefix." >&2
+        exit 3
+    fi
+fi
 
 # Fresh install: nuke old install dir if present (single-operator project,
 # no persistent state lives here — state goes into <fed-dir>/.dashboard/).

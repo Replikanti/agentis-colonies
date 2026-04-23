@@ -225,6 +225,25 @@ else
     fail "12: install.sh --uninstall exited non-zero"
 fi
 
+# --- Test 13: --prefix with non-existent parent must error out, NOT silently
+#     materialise a chain of garbage directories via mkdir -p. Regression
+#     guard for the F6 fix on PR #253: --uninstall only removes $DATA_DIR,
+#     so a typo like --prefix /opt/frederation-dashb would otherwise leave
+#     the typo'd ancestors behind forever. ---
+BAD_PREFIX="$TMPDIR_TEST/nonexistent-parent/dashboard"
+if BAD_OUT="$(XDG_BIN_HOME="$PREFIX/.local/bin" \
+        "$EXTRACT/$TOPDIR/install.sh" --prefix "$BAD_PREFIX" 2>&1)"; then
+    fail "13: --prefix with non-existent parent should error" "stdout: $BAD_OUT"
+else
+    if [ -e "$TMPDIR_TEST/nonexistent-parent" ]; then
+        fail "13: --prefix garbage directory was created anyway" "found: $TMPDIR_TEST/nonexistent-parent"
+    elif echo "$BAD_OUT" | grep -q "parent does not exist"; then
+        pass "13: --prefix with non-existent parent errors cleanly (no garbage dirs created)"
+    else
+        fail "13: rejected but error wording unexpected" "$BAD_OUT"
+    fi
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
