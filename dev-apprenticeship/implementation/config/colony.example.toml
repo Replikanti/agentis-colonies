@@ -23,6 +23,7 @@ me             = ""      # your GitLab username (optional)
 default_branch = "main"  # primary branch (#224)
 
 # [forge.github]
+# url            = "https://api.github.com"  # optional; override for GitHub Enterprise
 # owner          = "your-org-or-user"
 # repo           = "your-repo"
 # token          = "ghp_your-token-here"

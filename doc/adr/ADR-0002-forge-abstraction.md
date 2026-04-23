@@ -118,8 +118,7 @@ branch in `triage/scripts/start-colony.sh`. PR 3 shipped the planning
 colony's `github-api.sh` with 5 subcommands (`issues`,
 `issues-by-label-events`, `issue-label-events`, `add-note`,
 `merge-requests`) plus the matching `[forge.github]` env-export branch
-and `.ag` dispatcher migration. PR 4 (the current PR as of this
-writing) ships the implementation colony's `github-api.sh` with 11
+and `.ag` dispatcher migration. PR 4 ships the implementation colony's `github-api.sh` with 11
 subcommands (`merge-requests`, `mr-changes`, `mr-commits`, `issue`,
 `assigned-issues`, `issue-label-events`,
 `assigned-issues-by-label-events`, `create-branch`, `commit-files`,
@@ -129,8 +128,7 @@ agents. PR 5 ships the code-review
 colony's `github-api.sh` with 5 subcommands (`merge-requests`,
 `mr-changes`, `mr-notes`, `post-note`, `approve`) plus the matching
 `[forge.github]` env-export branch and 28 `.ag` call-site migrations
-across the five code-review agents. PR 6 (the current PR as of this
-writing) ships the release colony's `github-api.sh` with 7 subcommands
+across the five code-review agents. PR 6 ships the release colony's `github-api.sh` with 7 subcommands
 (`releases`, `tags`, `pipelines`, `merge-requests`, `create-tag`,
 `create-release`, `post-note`) plus the matching `[forge.github]`
 env-export branch and 29 `.ag` call-site migrations across the four
