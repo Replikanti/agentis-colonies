@@ -151,21 +151,46 @@
   .conf-indicator.evolve { color: var(--magenta); }
   .empty { color: var(--muted); font-style: italic; font-size: 11px; }
 
-  /* --- Phase Readiness --- */
-  .phase-row { display: flex; align-items: center; gap: 12px; margin: 8px 0; }
-  .phase-colony { width: 120px; flex-shrink: 0; color: var(--cyan); font-size: 12px; text-shadow: 0 0 6px rgba(0,255,255,0.2); }
-  .phase-bar-outer {
-    flex: 1; height: 24px; background: rgba(0,255,255,0.05);
-    border: 1px solid var(--border); border-radius: 2px; position: relative;
+  /* --- Phase Readiness (#248 PR C: compact tier counter, not bars) --- */
+  .phase-row {
+    display: flex; align-items: center; gap: 16px; padding: 6px 0;
+    font-size: 12px; border-bottom: 1px solid var(--border2);
   }
-  .phase-bar-inner {
-    height: 100%; border-radius: 1px; transition: width 0.5s;
-    display: flex; align-items: center; justify-content: flex-end;
-    padding-right: 8px; font-size: 11px;
+  .phase-row:last-child { border-bottom: none; }
+  .phase-colony { width: 130px; flex-shrink: 0; color: var(--cyan); text-shadow: 0 0 6px rgba(0,255,255,0.2); }
+  .phase-tiers { display: flex; gap: 14px; flex-wrap: wrap; }
+  .phase-tier { color: var(--muted); }
+  .phase-tier-label { text-transform: uppercase; letter-spacing: 1px; font-size: 10px; margin-right: 4px; }
+  .phase-tier-count { font-weight: 400; }
+  .phase-tier.has-shadow .phase-tier-count { color: var(--cyan); }
+  .phase-tier.has-propose .phase-tier-count { color: var(--yellow); }
+  .phase-tier.has-review-gated .phase-tier-count { color: var(--orange); }
+  .phase-tier.has-autonomous .phase-tier-count { color: var(--green); }
+  .phase-tier.has-dormant .phase-tier-count { color: var(--red); }
+  .phase-tier.has-no-conf .phase-tier-count { color: var(--muted); }
+
+  /* --- Demoted charts: <details> with .summary-h2 (avoids h2-in-summary) --- */
+  .card-collapse > summary {
+    cursor: pointer; list-style: none;
   }
-  .phase-marker { position: absolute; top: -2px; bottom: -2px; width: 1px; border-left: 1px dashed rgba(255,255,255,0.2); }
-  .phase-marker-label { position: absolute; top: -16px; font-size: 9px; color: var(--muted); transform: translateX(-50%); white-space: nowrap; }
-  .phase-eta { width: 140px; flex-shrink: 0; text-align: right; font-size: 11px; color: var(--muted); }
+  .card-collapse > summary:focus-visible {
+    outline: 1px dotted var(--cyan); outline-offset: 2px;
+  }
+  .card-collapse > summary::-webkit-details-marker { display: none; }
+  .card-collapse > summary > .summary-h2 {
+    display: inline-block;
+    font-size: 12px; font-weight: 400; color: var(--yellow);
+    text-transform: uppercase; letter-spacing: 3px;
+    text-shadow: 0 0 8px rgba(255,255,0,0.3);
+    vertical-align: middle;
+  }
+  .card-collapse > summary::before {
+    content: '\25B6'; color: var(--muted); margin-right: 8px;
+    font-size: 10px; transition: transform 0.15s;
+    display: inline-block; vertical-align: middle;
+  }
+  .card-collapse[open] > summary::before { transform: rotate(90deg); }
+  .card-collapse[open] > summary { border-bottom: 1px solid rgba(255,255,0,0.15); margin-bottom: 12px; padding-bottom: 6px; }
 
   /* --- Promote Candidates --- */
   .promote-item { padding: 6px 0; border-bottom: 1px solid var(--border2); font-size: 12px; }
@@ -584,14 +609,21 @@
 <div id="event-timeline" class="timeline"></div>
 </div>
 
+<!-- #248 PR C: legacy charts demoted behind <details>. Per-agent
+     entries_total + per-agent confidence-on-card answer the operator
+     questions these once served; charts remain for trend-spotters. -->
 <div class="card">
-<h2>Experience Growth</h2>
+<details class="card-collapse">
+<summary><span class="summary-h2">Experience Growth</span></summary>
 <div id="experience-trend" class="chart-container"></div>
+</details>
 </div>
 
 <div class="card">
-<h2>Confidence Trend</h2>
+<details class="card-collapse">
+<summary><span class="summary-h2">Confidence Trend</span></summary>
 <div id="confidence-trend" class="chart-container"></div>
+</details>
 </div>
 
 </div>
@@ -1022,72 +1054,57 @@ function doSort(col) {
 
 renderAgentTable();
 
-// --- Phase Readiness ---
-// #144: colony with all-null agents renders muted "—" instead of 0.00
+// --- Phase Readiness (#248 PR C: compact tier counter) ---
+// Per the operator feedback in #248: the old bar visualisation used colony-
+// average confidence (skewed by single autonomous outliers) and an opaque
+// X-axis. Operators wanted "how many agents in each tier per colony" --
+// same data the badges in the Agents table carry, but aggregated. Tier
+// classification matches ADR-0001 / agent-row badges: >=0.95 autonomous,
+// >=0.8 review-gated, >=0.6 propose, >=0.4 shadow, conf<0.4 dormant.
+// Null-confidence (memo missing) is the distinct "no-conf" bucket --
+// mirrors the table's separate badge-na vs badge-dormant rendering so an
+// operator who sees "no-conf:N" knows to scan the table for a "—" badge,
+// not a low-shadow-confidence one.
 (function() {
   const el = document.getElementById('readiness');
-  const avgConf = {};
-  const confCount = {};
-  agents.forEach(a => {
-    if (a.confidence == null) return;
-    avgConf[a.colony] = (avgConf[a.colony] || 0) + a.confidence;
-    confCount[a.colony] = (confCount[a.colony] || 0) + 1;
-  });
-  colonyList.forEach(col => {
-    if (confCount[col]) avgConf[col] = avgConf[col] / confCount[col];
-  });
+  const TIERS = ['shadow', 'propose', 'review-gated', 'autonomous', 'dormant', 'no-conf'];
 
-  function estimateEta(colony, cur, hasData) {
-    if (!hasData) return { text: '\u2014', color: 'var(--muted)' };
-    // #177: four-tier ladder from ADR-0001. Target is the next-higher tier
-    // boundary; label matches the tier name reached once the boundary
-    // is crossed.
-    if (cur >= 0.95) return { text: 'AUTONOMOUS', color: 'var(--green)' };
-    let target;
-    let label;
-    if (cur < 0.6) { target = 0.6; label = 'PROPOSE'; }
-    else if (cur < 0.8) { target = 0.8; label = 'REVIEW-GATED'; }
-    else { target = 0.95; label = 'AUTONOMOUS'; }
-    if (history.length < 120) return { text: 'collecting data...', color: 'var(--muted)' };
-    const dayAgo = nowEpoch - 86400;
-    // #143: filter stale zeros from regression — old history entries may
-    // have 0.0 for colonies that were actually all-null before the fix.
-    const pts = history
-      .filter(h => h.t > dayAgo && h.confidence && h.confidence[colony] != null && h.confidence[colony] > 0)
-      .map(h => ({t:h.t, v:h.confidence[colony]}));
-    if (pts.length < 60) return { text: 'collecting data...', color: 'var(--muted)' };
-    const n = pts.length; let sX=0,sY=0,sXY=0,sX2=0;
-    pts.forEach(p => { sX+=p.t; sY+=p.v; sXY+=p.t*p.v; sX2+=p.t*p.t; });
-    const slope = (n*sXY - sX*sY) / (n*sX2 - sX*sX);
-    if (slope <= 0.000001) return { text: 'stable', color: 'var(--muted)' };
-    const days = Math.round((target - cur) / slope / 86400);
-    if (days < 1) return { text: label + ' today', color: 'var(--green)' };
-    if (days === 1) return { text: label + ' tomorrow', color: 'var(--yellow)' };
-    if (days > 90) return { text: label + ' > 90d', color: 'var(--red)' };
-    return { text: label + ' in ~' + days + 'd', color: 'var(--yellow)' };
+  function tierFor(conf) {
+    if (conf == null) return 'no-conf';
+    if (conf >= 0.95) return 'autonomous';
+    if (conf >= 0.8) return 'review-gated';
+    if (conf >= 0.6) return 'propose';
+    if (conf >= 0.4) return 'shadow';
+    return 'dormant';
   }
+
+  const counts = {};
+  colonyList.forEach(col => {
+    counts[col] = { shadow: 0, propose: 0, 'review-gated': 0, autonomous: 0, dormant: 0, 'no-conf': 0 };
+  });
+  agents.forEach(a => {
+    if (!counts[a.colony]) return;
+    counts[a.colony][tierFor(a.confidence)] += 1;
+  });
 
   let html = '';
   colonyList.forEach(col => {
-    const hasData = !!confCount[col];
-    const v = hasData ? avgConf[col] : 0;
-    const pct = Math.min(Math.round(v * 100), 100);
-    const color = colonyColors[col];
-    const eta = estimateEta(col, v, hasData);
     html += '<div class="phase-row"><span class="phase-colony">' + esc(col) + '</span>';
-    html += '<div class="phase-bar-outer">';
-    html += '<div class="phase-marker" style="left:40%"><span class="phase-marker-label">0.4 shadow</span></div>';
-    html += '<div class="phase-marker" style="left:60%"><span class="phase-marker-label">0.6 propose</span></div>';
-    html += '<div class="phase-marker" style="left:80%"><span class="phase-marker-label">0.8 review-gated</span></div>';
-    html += '<div class="phase-marker" style="left:95%"><span class="phase-marker-label">0.95 autonomous</span></div>';
-    if (hasData) {
-      html += '<div class="phase-bar-inner" style="width:' + pct + '%;background:' + color + ';box-shadow:0 0 10px ' + color + '50;color:#000">' + v.toFixed(2) + '</div>';
-    } else {
-      // #144: muted "—" label for all-null colonies
-      html += '<div class="phase-bar-inner" style="width:0%;"></div>';
-      html += '<span style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);color:var(--muted);font-size:11px;font-style:italic">\u2014</span>';
-    }
-    html += '</div><span class="phase-eta" style="color:' + eta.color + '">' + eta.text + '</span></div>';
+    html += '<div class="phase-tiers">';
+    // Suppress every zero-count tier when at least one tier is non-zero.
+    // Falls back to "dormant: 0" for the all-zero / empty-colony case so
+    // the row never renders blank.
+    const nonZero = TIERS.some(t => counts[col][t] > 0);
+    TIERS.forEach(t => {
+      const n = counts[col][t];
+      if (n === 0 && nonZero) return;
+      if (n === 0 && t !== 'dormant') return;
+      html += '<span class="phase-tier has-' + t + '">';
+      html += '<span class="phase-tier-label">' + t + ':</span>';
+      html += '<span class="phase-tier-count">' + n + '</span>';
+      html += '</span>';
+    });
+    html += '</div></div>';
   });
   el.innerHTML = html;
 })();

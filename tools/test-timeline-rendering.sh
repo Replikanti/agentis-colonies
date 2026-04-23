@@ -480,9 +480,71 @@ if re.search(r'Math\.abs\(\s*f\.slope\s*\)\s*<\s*1e-6\b', src): sys.exit(4)
 sys.exit(0)
 PY
 then
-    pass "20: SLOPE_FLAT_THRESHOLD defined as 1e-4, referenced, no leftover 1e-6 guard (#163)"
+    pass "21: SLOPE_FLAT_THRESHOLD defined as 1e-4, referenced, no leftover 1e-6 guard (#163)"
 else
-    fail "20: SLOPE_FLAT_THRESHOLD missing, wrong value, orphaned, or 1e-6 guard survived (#163)"
+    fail "21: SLOPE_FLAT_THRESHOLD missing, wrong value, orphaned, or 1e-6 guard survived (#163)"
+fi
+
+# --- #248 PR C: Phase Readiness compact tier counter (not bars) ---
+# The bar visualisation (phase-bar-outer, phase-marker, phase-eta) was
+# removed in PR C in favour of a compact per-colony per-tier counter.
+# Lock the contract so a stray revert that brings back the bar markup
+# trips this test instead of silently regressing the operator UX.
+if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
+import sys, re
+with open(sys.argv[1]) as f:
+    src = f.read()
+# Bar/marker/ETA classes must be gone.
+forbidden = ['phase-bar-outer', 'phase-bar-inner', 'phase-marker', 'phase-eta']
+for cls in forbidden:
+    if cls in src:
+        sys.stderr.write('forbidden class still present: ' + cls + '\n'); sys.exit(2)
+# New tier-counter classes must be wired (CSS + JS render).
+required = ['phase-tier', 'phase-tier-label', 'phase-tier-count', 'has-shadow', 'has-propose', 'has-review-gated', 'has-autonomous', 'has-dormant', 'has-no-conf']
+for cls in required:
+    if cls not in src:
+        sys.stderr.write('missing class: ' + cls + '\n'); sys.exit(3)
+# Renderer must distinguish null-confidence ("no-conf") from conf<0.4 ("dormant").
+if "tierFor" not in src or "'dormant'" not in src or "'no-conf'" not in src:
+    sys.stderr.write('tierFor / dormant / no-conf missing\n'); sys.exit(4)
+# h2-in-summary anti-pattern must be gone in favour of .summary-h2 span.
+if '<summary><h2>' in src:
+    sys.stderr.write('h2-in-summary anti-pattern still present\n'); sys.exit(5)
+if 'summary-h2' not in src:
+    sys.stderr.write('summary-h2 class missing\n'); sys.exit(6)
+sys.exit(0)
+PY
+then
+    pass "22: Phase Readiness uses compact tier counter, not bars (#248 PR C)"
+else
+    fail "22: Phase Readiness regression — bar markup still present or tier-counter classes missing"
+fi
+
+# --- #248 PR C: Confidence Trend + Experience Growth demoted behind <details> ---
+# Both charts were heavy panels of marginal value; they live inside collapsed
+# <details> now. Lock the contract so neither gets accidentally promoted back
+# to the always-on grid.
+if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
+import sys, re
+with open(sys.argv[1]) as f:
+    src = f.read()
+# Both chart containers must sit inside a <details class="card-collapse">.
+# Single-line regex-friendly check: each id must be preceded (within ~400
+# chars upward) by a "<details" with matching close before another card.
+for chart_id in ('experience-trend', 'confidence-trend'):
+    m = re.search(r'<details[^>]*class="card-collapse"[^>]*>([^<]|<(?!/details))*?id="' + chart_id + '"', src, re.DOTALL)
+    if not m:
+        sys.stderr.write(chart_id + ' not inside <details class=card-collapse>\n'); sys.exit(2)
+    # Default-collapsed: the <details> tag must NOT have an `open` attribute.
+    tag = m.group(0).split('>', 1)[0]
+    if re.search(r'\bopen\b', tag):
+        sys.stderr.write(chart_id + ' details opens by default — should be collapsed\n'); sys.exit(3)
+sys.exit(0)
+PY
+then
+    pass "23: Confidence Trend + Experience Growth wrapped in collapsed <details> (#248 PR C)"
+else
+    fail "23: chart-demotion regression — one or both charts no longer inside collapsed <details>"
 fi
 
 echo ""
