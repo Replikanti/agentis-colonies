@@ -125,9 +125,13 @@ agents. PR 5 (the current PR as of this writing) ships the code-review
 colony's `github-api.sh` with 5 subcommands (`merge-requests`,
 `mr-changes`, `mr-notes`, `post-note`, `approve`) plus the matching
 `[forge.github]` env-export branch and 28 `.ag` call-site migrations
-across the five code-review agents. The remaining colony wrapper
-(release) lands in PR 6. `rate-limit-status` and the dashboard tile
-ship in PR 7 alongside the legacy `[gitlab]`-section retirement.
+across the five code-review agents. PR 6 (the current PR as of this
+writing) ships the release colony's `github-api.sh` with 7 subcommands
+(`releases`, `tags`, `pipelines`, `merge-requests`, `create-tag`,
+`create-release`, `post-note`) plus the matching `[forge.github]`
+env-export branch and 29 `.ag` call-site migrations across the four
+release agents. `rate-limit-status` and the dashboard tile ship in PR 7
+alongside the legacy `[gitlab]`-section retirement.
 
 **`.ag` migration is in-scope for every per-colony PR.** Each
 per-colony PR (PRs 2-6) MUST rewrite every `exec sh` call site in that
@@ -221,6 +225,45 @@ it to skip draft PRs, which GitHub (unlike GitLab) exposes natively
 on the list response. As in PRs 3-4, `--state merged` collapses to
 `state=closed + merged_at != null` client-side and `--since` is a
 client-side filter on `updated_at`.
+
+**PR 6 additions.** The release contract adds the tag/release/pipeline
+read + write surface the four release agents depend on: `releases`,
+`tags`, `pipelines`, `create-tag`, `create-release`, plus the shared
+`merge-requests` and `post-note` already contracted in PRs 3-5.
+`normalize_releases` maps `body` → `description`, `published_at` →
+`released_at`, and `author.login` → `author.username`; the `commit`
+object is forwarded as `null` because GitHub's `/releases` response
+does not carry the tag's target commit inline (changelog_writer reads
+it from `tags` instead, which is the only consumer that needs it).
+`normalize_tags` forwards `message` and `commit.created_at` as `null`
+rather than doing the per-tag `GET /git/refs/tags/{name}` +
+`GET /git/tags/{sha}` + `GET /git/commits/{sha}` round-trip — for the
+release colony's list reads this would be ~20 extra API calls per
+`tags` fetch, and the one consumer (tag-summary view in
+release_checker) only needs `name` + `short_id` for prompt context.
+`commit.short_id` is derived as `sha[:8]` locally.
+`normalize_pipelines` unwraps GitHub's `{total_count, workflow_runs:
+[...]}` envelope (also tolerates a bare array for defensive test
+input) and collapses the 2-axis `(status, conclusion)` matrix to
+GitLab's single-field `status`: `completed + success|skipped|neutral`
+→ `success`, `completed + failure|cancelled|timed_out|action_required|
+stale` → `failed`, `in_progress` → `running`, `queued|requested|
+waiting|pending` → `pending`. `create-tag` implements the 3-step
+annotated-tag dance (`GET /git/refs` to resolve the ref, `POST
+/git/tags` to create the tag object, `POST /git/refs` to point
+`refs/tags/{name}` at the new tag SHA); when no `--message` is
+supplied it short-circuits to a single `POST /git/refs` for a
+lightweight tag. `create-release` posts to `/releases` with
+`{tag_name, name, body}` and normalizes the response through
+`normalize_releases` so the calling agent sees the same shape regardless
+of backend. `post-note` on the release colony (used by ship_decider
+and changelog_writer to post on MRs) goes through
+`/issues/{n}/comments`, same as code-review's. PR 6 also back-ports
+the `[forge.gitlab]`/`[forge.github]`-aware `default_branch` fix
+first called out in PR 4 QA into `release/scripts/start-colony.sh`
+(pre-PR 6 the release colony's gitlab arm silently ignored both
+`[forge.gitlab].default_branch` and `[forge.github].default_branch`,
+falling back to legacy `[gitlab].default_branch` only).
 
 | Subcommand           | Normalized output |
 |----------------------|-------------------|

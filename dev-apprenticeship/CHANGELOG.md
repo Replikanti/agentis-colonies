@@ -207,6 +207,54 @@ is asserted until multi-version CI is in place.
   `project_json` output between `github-api.sh` and `gitlab-api.sh`
   for the `reviewer` view.
   [#256](https://github.com/Replikanti/agentis-colonies/issues/256)
+- **Release colony GitHub backend (PR 6 of 7 for #256).**
+  `dev-apprenticeship/release/scripts/github-api.sh` implements the
+  release contract against the GitHub REST API v3 (7 subcommands:
+  `releases`, `tags`, `pipelines`, `merge-requests`, `create-tag`,
+  `create-release`, `post-note`). Three release-specific endpoint
+  collapses: `normalize_tags` forwards `message` and
+  `commit.created_at` as `null` rather than doing the per-tag
+  `/git/refs/tags` + `/git/tags` + `/git/commits` round-trip (~20
+  extra API calls per `tags` list read — the one consumer,
+  release_checker's `tag-summary` view, only needs `name` +
+  `commit.short_id` for prompt context, and `short_id` is derived as
+  `sha[:8]` locally). `normalize_pipelines` unwraps GitHub's
+  `{total_count, workflow_runs: [...]}` envelope and collapses the
+  2-axis `(status, conclusion)` matrix to GitLab's single-field
+  `status`: `completed + success|skipped|neutral` → `success`,
+  `completed + failure|cancelled|timed_out|action_required|stale` →
+  `failed`, `in_progress` → `running`, `queued|requested|waiting|
+  pending` → `pending`. `normalize_releases` maps `body` →
+  `description`, `published_at` → `released_at`, `author.login` →
+  `author.username`; the `commit` object is forwarded as `null` (not
+  carried inline by GitHub's `/releases` — changelog_writer reads it
+  from `tags` instead). `create-tag` implements the 3-step annotated-
+  tag dance (`GET /git/refs` to resolve the ref → `POST /git/tags` →
+  `POST /git/refs` to advance `refs/tags/{name}`); without a
+  `--message` it short-circuits to a single `POST /git/refs` for a
+  lightweight tag. `create-release` posts to `/releases` with
+  `{tag_name, name, body}` and normalizes the response.
+  `post-note <num>` on the release colony (used by ship_decider and
+  changelog_writer for MR comments) goes through
+  `/issues/{n}/comments`, same endpoint as code-review's. All 29
+  `exec sh` call sites across `version_bumper`, `ship_decider`,
+  `release_checker`, and `changelog_writer` were rewritten from
+  `scripts/gitlab-api.sh` to `scripts/forge-api.sh`.
+  `release/scripts/start-colony.sh` now branches on `FORGE_TYPE`
+  identically to triage/planning/implementation/code-review, and —
+  as a bonus fix deferred from PR 4 QA finding F1 — now honors
+  `[forge.gitlab].default_branch` and `[forge.github].default_branch`
+  (pre-PR 6 release silently ignored both, falling back only to
+  legacy `[gitlab].default_branch`). Two new tests:
+  `tools/test-github-release-normalize.sh` (47 assertions covering
+  all four normalizers with the full status/conclusion matrix,
+  annotated-vs-lightweight tag fixtures, the envelope-unwrap
+  fallback, and end-to-end pipes through all four release views);
+  and a release-colony extension to `tools/test-gitlab-views.sh`
+  asserting byte-identical `project_json` output between
+  `github-api.sh` and `gitlab-api.sh` for the `release-summary`,
+  `tag-summary`, `pipeline-summary`, and `release-mr` views.
+  [#256](https://github.com/Replikanti/agentis-colonies/issues/256)
 
 ### Changed
 

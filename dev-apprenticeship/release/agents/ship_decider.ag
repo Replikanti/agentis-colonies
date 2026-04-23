@@ -36,9 +36,9 @@ fn get_confidence() -> float {
 // work has landed since the last tick.
 fn mr_delta_cmd_for(ts: string) -> string {
     if len(ts) > 0 {
-        return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(ts) + " --per-page 1";
+        return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --since " + shell_escape(ts) + " --per-page 1";
     };
-    return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --per-page 1";
+    return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --per-page 1";
 }
 
 fn tick(reason: string) -> void {
@@ -67,7 +67,7 @@ fn tick(reason: string) -> void {
 
     // 1. Learn release patterns from history (only when there IS new work)
     let releases_raw = try {
-        exec sh "$COLONY_DIR/scripts/gitlab-api.sh releases --per-page 20 --view release-summary";
+        exec sh "$COLONY_DIR/scripts/forge-api.sh releases --per-page 20 --view release-summary";
     } catch e {
         print("[ship_decider] GitLab releases poll failed:", e);
         "";
@@ -75,7 +75,7 @@ fn tick(reason: string) -> void {
 
     if len(releases_raw) > 10 {
         let tags_raw = try {
-            exec sh "$COLONY_DIR/scripts/gitlab-api.sh tags --per-page 20 --view tag-summary";
+            exec sh "$COLONY_DIR/scripts/forge-api.sh tags --per-page 20 --view tag-summary";
         } catch e { "[]"; };
 
         let patterns = prompt(
@@ -122,11 +122,11 @@ fn tick(reason: string) -> void {
     // review-gated = post draft-flagged note + emit. propose = emit only.
     // shadow/dormant = observe.
     if my_tier == "autonomous" {
-        let mr_raw = try { exec sh "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --per-page 1"; } catch e { "[]"; };
+        let mr_raw = try { exec sh "$COLONY_DIR/scripts/forge-api.sh merge-requests --per-page 1"; } catch e { "[]"; };
         let mr_iid = parse_int(to_string(json_get(mr_raw, "[0].iid")));
         if mr_iid > 0 {
             let note = "**Ship Decision** (automated): " + decision.decision + "\n\n" + decision.reasoning;
-            let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note);
+            let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note);
             try { exec sh post_cmd; } catch e {
                 print("[ship_decider] Failed to post note:", e);
             };
@@ -135,11 +135,11 @@ fn tick(reason: string) -> void {
         learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "success", ["acted", "release"]);
     } else {
         if my_tier == "review-gated" {
-            let mr_raw = try { exec sh "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --per-page 1"; } catch e { "[]"; };
+            let mr_raw = try { exec sh "$COLONY_DIR/scripts/forge-api.sh merge-requests --per-page 1"; } catch e { "[]"; };
             let mr_iid = parse_int(to_string(json_get(mr_raw, "[0].iid")));
             if mr_iid > 0 {
                 let note = "[draft-ship] **Ship Decision** (automated, pending approval): " + decision.decision + "\n\n" + decision.reasoning;
-                let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note);
+                let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note);
                 try { exec sh post_cmd; } catch e {
                     print("[ship_decider] Failed to post draft note:", e);
                 };
