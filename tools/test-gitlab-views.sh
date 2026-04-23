@@ -390,6 +390,33 @@ if [ -f "$GH_CODE_REVIEW_SCRIPT" ]; then
     fi
 fi
 
+# --- release github-api.sh project_json parity (#256 PR 6) ---
+# release/scripts/github-api.sh duplicates project_json rather than sourcing
+# gitlab-api.sh. The release-specific views are `release-summary`,
+# `tag-summary`, `pipeline-summary`, and `release-mr`; all must emit
+# byte-identical JSON to their gitlab twin when fed an already-GitLab-shape
+# fixture. Drift here means a view in github-api.sh silently ships a
+# different projection than its gitlab twin.
+GH_RELEASE_SCRIPT="$REPO_ROOT/dev-apprenticeship/release/scripts/github-api.sh"
+if [ -f "$GH_RELEASE_SCRIPT" ]; then
+    for pair in \
+        "release-summary:$FIXTURE_RELEASES" \
+        "tag-summary:$FIXTURE_TAGS" \
+        "pipeline-summary:$FIXTURE_PIPELINES" \
+        "release-mr:$FIXTURE_MRS"
+    do
+        view="${pair%%:*}"
+        fixture="${pair#*:}"
+        gl_out=$(run_view "$REPO_ROOT/dev-apprenticeship/release/scripts/gitlab-api.sh" "$view" "$fixture")
+        gh_out=$(run_view_github "$GH_RELEASE_SCRIPT" "$view" "$fixture")
+        if [ "$gl_out" = "$gh_out" ]; then
+            pass "release github-api.sh project_json parity: $view"
+        else
+            fail "release github-api.sh project_json drifted from gitlab-api.sh: $view"
+        fi
+    done
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

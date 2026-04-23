@@ -53,7 +53,7 @@ fn tick(reason: string) -> void {
     // 1. Learn versioning patterns from tags (only when we're actually
     //    about to bump — gated by the delta-check above).
     let tags_raw = try {
-        exec sh "$COLONY_DIR/scripts/gitlab-api.sh tags --per-page 20 --view tag-summary";
+        exec sh "$COLONY_DIR/scripts/forge-api.sh tags --per-page 20 --view tag-summary";
     } catch e {
         print("[version_bumper] GitLab tags poll failed:", e);
         "";
@@ -98,12 +98,12 @@ fn tick(reason: string) -> void {
 
     // Get latest tags for current version context
     let latest_tags = try {
-        exec sh "$COLONY_DIR/scripts/gitlab-api.sh tags --per-page 5 --view tag-summary";
+        exec sh "$COLONY_DIR/scripts/forge-api.sh tags --per-page 5 --view tag-summary";
     } catch e { "[]"; };
 
     // Fetch merged MRs since last release for bump analysis
     let latest_release = try {
-        exec sh "$COLONY_DIR/scripts/gitlab-api.sh releases --per-page 1 --view release-summary";
+        exec sh "$COLONY_DIR/scripts/forge-api.sh releases --per-page 1 --view release-summary";
     } catch e { "[]"; };
 
     let since_date = prompt(
@@ -111,7 +111,7 @@ fn tick(reason: string) -> void {
         latest_release
     ) -> string;
 
-    let mrs_cmd = "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(since_date) + " --view release-mr";
+    let mrs_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --since " + shell_escape(since_date) + " --view release-mr";
     let mrs_raw = try { exec sh mrs_cmd; } catch e { "[]"; };
 
     let rec = recommend("version_bump", ["accuracy"]);
@@ -131,7 +131,7 @@ fn tick(reason: string) -> void {
     if my_tier == "autonomous" {
         // Create the tag
         // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
-        let tag_cmd = "$COLONY_DIR/scripts/gitlab-api.sh create-tag --name " + shell_escape(bump.next) + " --ref main --message " + shell_escape("Release " + bump.next);
+        let tag_cmd = "$COLONY_DIR/scripts/forge-api.sh create-tag --name " + shell_escape(bump.next) + " --ref main --message " + shell_escape("Release " + bump.next);
         let tag_result = try { exec sh tag_cmd; } catch e {
             print("[version_bumper] Tag creation failed:", e);
             "";
@@ -144,7 +144,7 @@ fn tick(reason: string) -> void {
             let release_desc = changelog_str + bump.reasoning;
 
             // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
-            let release_cmd = "$COLONY_DIR/scripts/gitlab-api.sh create-release --tag " + shell_escape(bump.next) + " --name " + shell_escape("Release " + bump.next) + " --description " + shell_escape(release_desc);
+            let release_cmd = "$COLONY_DIR/scripts/forge-api.sh create-release --tag " + shell_escape(bump.next) + " --name " + shell_escape("Release " + bump.next) + " --description " + shell_escape(release_desc);
             let release_result = try { exec sh release_cmd; } catch e {
                 print("[version_bumper] Release creation failed:", e);
                 "";
@@ -162,11 +162,11 @@ fn tick(reason: string) -> void {
             // Non-terminal proposal: post a draft note on the latest MR flagged as
             // a pending bump so a human can approve before we tag. No tag/release
             // is created at this tier.
-            let mr_raw = try { exec sh "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --per-page 1"; } catch e { "[]"; };
+            let mr_raw = try { exec sh "$COLONY_DIR/scripts/forge-api.sh merge-requests --per-page 1"; } catch e { "[]"; };
             let mr_iid = parse_int(to_string(json_get(mr_raw, "[0].iid")));
             if mr_iid > 0 {
                 let note = "[draft-bump] **Version Bump Proposal** (automated, pending approval): " + bump.current + " -> " + bump.next + " (" + bump.bump_type + ")\n\n" + bump.reasoning;
-                let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note);
+                let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note);
                 try { exec sh post_cmd; } catch e {
                     print("[version_bumper] Failed to post draft bump note:", e);
                 };

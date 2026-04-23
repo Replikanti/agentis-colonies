@@ -38,9 +38,9 @@ fn get_confidence() -> float {
 // the tick's pre-prompt delta-check.
 fn mr_delta_cmd_for(ts: string) -> string {
     if len(ts) > 0 {
-        return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(ts) + " --per-page 1";
+        return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --since " + shell_escape(ts) + " --per-page 1";
     };
-    return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --per-page 1";
+    return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --per-page 1";
 }
 
 fn tick(reason: string) -> void {
@@ -70,7 +70,7 @@ fn tick(reason: string) -> void {
     // 1. Learn from past releases and their pipeline outcomes (only when
     //    there IS new work — gated by the delta-check above).
     let releases_raw = try {
-        exec sh "$COLONY_DIR/scripts/gitlab-api.sh releases --per-page 10 --view release-summary";
+        exec sh "$COLONY_DIR/scripts/forge-api.sh releases --per-page 10 --view release-summary";
     } catch e {
         print("[release_checker] GitLab releases poll failed:", e);
         "";
@@ -98,7 +98,7 @@ fn tick(reason: string) -> void {
 
     // Also check the default branch pipeline status
     let pipeline_raw = try {
-        exec sh "$COLONY_DIR/scripts/gitlab-api.sh pipelines --ref main --view pipeline-summary";
+        exec sh "$COLONY_DIR/scripts/forge-api.sh pipelines --ref main --view pipeline-summary";
     } catch e {
         print("[release_checker] Pipeline poll failed:", e);
         "";
@@ -127,7 +127,7 @@ fn tick(reason: string) -> void {
                 let mr_iid = mr_ready.issue_id;
                 if mr_iid > 0 {
                     let note = "**Pre-release Check** (automated): " + result.ci_status + "\n\nIssues: " + result.issues_found;
-                    let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note);
+                    let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note);
                     try { exec sh post_cmd; } catch e {
                         print("[release_checker] Failed to post note:", e);
                     };
@@ -139,7 +139,7 @@ fn tick(reason: string) -> void {
                     let mr_iid = mr_ready.issue_id;
                     if mr_iid > 0 {
                         let note = "[draft-check] **Pre-release Check** (automated, pending approval): " + result.ci_status + "\n\nIssues: " + result.issues_found;
-                        let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note);
+                        let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note);
                         try { exec sh post_cmd; } catch e {
                             print("[release_checker] Failed to post draft note:", e);
                         };
