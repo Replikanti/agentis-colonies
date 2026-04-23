@@ -13,6 +13,7 @@
 #   gitlab-api.sh update-issue <id> [--add-labels l1,l2] [--remove-labels l1,l2] [--priority p] [--assignee username]
 #   gitlab-api.sh members [--view <name>]
 #   gitlab-api.sh labels  [--view <name>]
+#   gitlab-api.sh add-note <iid> --body <text>
 #
 # Views (opt-in projection; default is full JSON):
 #   issues  --view labeler        [{iid, title, labels}]
@@ -504,6 +505,31 @@ PY
         else
             gl_get "$API/labels?per_page=100"
         fi
+        ;;
+
+    add-note)
+        # Back-ported from planning/scripts/gitlab-api.sh (#256 PR 2). The
+        # labeler, prioritizer, and router agents' review-gated branches
+        # shell out to `gitlab-api.sh add-note <iid> --body ...` to post
+        # draft suggestions as comments; prior to this PR the call silently
+        # failed with "unknown command: add-note" (caught by the .ag try/catch
+        # so no operator noticed). Mirrors the github-api.sh add-note arm so
+        # the contract is symmetric across backends.
+        ID="${1:?Usage: gitlab-api.sh add-note <iid> --body <text>}"
+        shift
+        BODY=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --body) BODY="$2"; shift 2 ;;
+                *) emit_error "unknown flag: $1"; exit 2 ;;
+            esac
+        done
+        if [ -z "$BODY" ]; then
+            emit_error "--body is required"
+            exit 1
+        fi
+        JSON_BODY=$(printf '%s' "$BODY" | python3 -c 'import sys,json; print(json.dumps({"body": sys.stdin.read()}))')
+        gl_post "$API/issues/$ID/notes" "$JSON_BODY"
         ;;
 
     *)

@@ -52,6 +52,32 @@ is asserted until multi-version CI is in place.
   checks × 5 colonies + 7 install.sh + ADR checks = 37 sub-tests). See
   `doc/adr/ADR-0002-forge-abstraction.md` for the full contract.
   [#256](https://github.com/Replikanti/agentis-colonies/issues/256)
+- **Triage colony GitHub backend (PR 2 of 7 for #256).**
+  `dev-apprenticeship/triage/scripts/github-api.sh` implements the full
+  triage contract against the GitHub REST API v3 (7 subcommands: `issues`,
+  `create-issue`, `update-issue`, `members`, `get-issue`, `labels`,
+  `add-note`). Responses are normalized to GitLab shape (iid ← number,
+  author.username ← user.login, assignees[].username ← login, labels as
+  strings, state "open" → "opened", `pull_request`-bearing entries
+  filtered out) so the existing 8 views and all triage `.ag` agents work
+  unchanged. GitHub-specific error handling distinguishes HTTP 403 auth
+  failures from secondary rate-limit 403s (retryable) via response-body
+  inspection. The `--priority` flag rejects loud with guidance to use
+  `--add-labels "priority::<level>"` (GitHub has no native priority
+  field). `triage/scripts/start-colony.sh` now branches on `FORGE_TYPE`:
+  exports `GITHUB_URL` / `GITHUB_OWNER` / `GITHUB_REPO` / `GITHUB_TOKEN`
+  / `GITHUB_ME` from `[forge.github]` when `type = "github"`, reads
+  `[forge.gitlab]` with `[gitlab]` legacy fallback otherwise. Back-ports
+  missing `add-note` subcommand into `triage/scripts/gitlab-api.sh`
+  (closes a silent bug where labeler/prioritizer/router review-gated
+  comment-posting calls were swallowed by the `.ag` try/catch). Two new
+  tests: `tools/test-github-triage-normalize.sh` (25 assertions covering
+  shape, PR filtering, empty-list handling, and end-to-end pipe through
+  a view); extended `tools/test-gitlab-views.sh` with a 6-case parity
+  block that asserts byte-identical `project_json` output between
+  `github-api.sh` and `gitlab-api.sh` (drift detector for the
+  duplicated projection function).
+  [#256](https://github.com/Replikanti/agentis-colonies/issues/256)
 
 ### Changed
 

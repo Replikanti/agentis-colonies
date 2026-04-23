@@ -279,6 +279,50 @@ RAW_ARG_OUT=$(run_view \
     "raw" "$FIXTURE_ISSUES")
 check_equals "$FIXTURE_ISSUES" "$RAW_ARG_OUT" "triage: --view raw pass-through"
 
+# --- github-api.sh project_json parity (#256 PR 2) ---
+# The triage colony's github-api.sh duplicates project_json rather than sourcing
+# gitlab-api.sh so the two wrappers have no runtime coupling. Duplication is
+# only safe if the behavior stays byte-identical — this block runs the same
+# fixtures (already in GitLab shape; no normalization needed) through both
+# scripts' project_json and asserts the outputs match. Drift here means a view
+# in github-api.sh silently ships a different projection than its gitlab twin.
+run_view_github() {
+    local script="$1" view="$2" fixture="$3"
+    local prelude
+    prelude=$(mktemp)
+    build_prelude "$script" "$prelude"
+    # shellcheck disable=SC1090,SC2016  # $1/$2/$3 are inner bash -c argv
+    GITHUB_URL=http://x GITHUB_TOKEN=y GITHUB_OWNER=o GITHUB_REPO=r bash -c '
+        source "$1"
+        printf "%s" "$2" | project_json "$3"
+    ' _ "$prelude" "$fixture" "$view"
+    local rc=$?
+    rm -f "$prelude"
+    return $rc
+}
+
+GH_SCRIPT="$REPO_ROOT/dev-apprenticeship/triage/scripts/github-api.sh"
+if [ -f "$GH_SCRIPT" ]; then
+    for pair in \
+        "labeler:$FIXTURE_ISSUES" \
+        "router:$FIXTURE_ISSUES" \
+        "prioritizer:$FIXTURE_ISSUES" \
+        "issue_creator:$FIXTURE_ISSUES" \
+        "members-summary:$FIXTURE_MEMBERS" \
+        "labels-summary:$FIXTURE_LABELS"
+    do
+        view="${pair%%:*}"
+        fixture="${pair#*:}"
+        gl_out=$(run_view "$REPO_ROOT/dev-apprenticeship/triage/scripts/gitlab-api.sh" "$view" "$fixture")
+        gh_out=$(run_view_github "$GH_SCRIPT" "$view" "$fixture")
+        if [ "$gl_out" = "$gh_out" ]; then
+            pass "triage github-api.sh project_json parity: $view"
+        else
+            fail "triage github-api.sh project_json drifted from gitlab-api.sh: $view"
+        fi
+    done
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
