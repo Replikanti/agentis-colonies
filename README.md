@@ -66,7 +66,7 @@ Federation-agnostic components are versioned and released independently so fixes
 From a release tarball (recommended — install-ready, no git clone needed):
 
 ```bash
-VERSION=0.1.0   # or any tagged dev-apprenticeship release
+VERSION=0.3.3   # or any tagged dev-apprenticeship release
 curl -LO https://github.com/Replikanti/agentis-colonies/releases/download/dev-apprenticeship-v${VERSION}/dev-apprenticeship-v${VERSION}.tar.gz
 tar xzf dev-apprenticeship-v${VERSION}.tar.gz
 cd dev-apprenticeship-v${VERSION}/dev-apprenticeship
