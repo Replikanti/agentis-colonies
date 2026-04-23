@@ -346,6 +346,29 @@ if [ -f "$GH_PLANNING_SCRIPT" ]; then
     done
 fi
 
+# --- implementation github-api.sh project_json parity (#256 PR 4) ---
+# implementation/scripts/github-api.sh duplicates project_json rather than
+# sourcing gitlab-api.sh. The implementation-specific views are `impl` (MR
+# list) and `assigned` (trigger issues); both must emit byte-identical JSON
+# to their gitlab twin when fed an already-GitLab-shape fixture.
+GH_IMPL_SCRIPT="$REPO_ROOT/dev-apprenticeship/implementation/scripts/github-api.sh"
+if [ -f "$GH_IMPL_SCRIPT" ]; then
+    for pair in \
+        "impl:$FIXTURE_MRS" \
+        "assigned:$FIXTURE_ISSUES"
+    do
+        view="${pair%%:*}"
+        fixture="${pair#*:}"
+        gl_out=$(run_view "$REPO_ROOT/dev-apprenticeship/implementation/scripts/gitlab-api.sh" "$view" "$fixture")
+        gh_out=$(run_view_github "$GH_IMPL_SCRIPT" "$view" "$fixture")
+        if [ "$gl_out" = "$gh_out" ]; then
+            pass "implementation github-api.sh project_json parity: $view"
+        else
+            fail "implementation github-api.sh project_json drifted from gitlab-api.sh: $view"
+        fi
+    done
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -25,9 +25,9 @@ type RefactorSuggestion {
 fn merged_mr_cmd() -> string {
     let ts = recall_latest("refactorer:last_check");
     if len(ts) > 0 {
-        return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(ts) + " --view impl";
+        return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --since " + shell_escape(ts) + " --view impl";
     };
-    return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --view impl";
+    return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --view impl";
 }
 
 fn get_confidence() -> float {
@@ -113,11 +113,11 @@ fn tick(reason: string) -> void {
 
         if should_learn_from_mr(mr_iid) {
             memo_write("refactorer:last_learned_mr_iid", to_string(mr_iid));
-            let changes_cmd = "$COLONY_DIR/scripts/gitlab-api.sh mr-changes " + to_string(mr_iid);
+            let changes_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-changes " + to_string(mr_iid);
             let changes_raw = try { exec sh changes_cmd; } catch e { ""; };
 
             if len(changes_raw) > 10 {
-                let commits_cmd = "$COLONY_DIR/scripts/gitlab-api.sh mr-commits " + to_string(mr_iid);
+                let commits_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-commits " + to_string(mr_iid);
                 let commits_raw = try { exec sh commits_cmd; } catch e { "[]"; };
 
                 let patterns = prompt(
@@ -177,7 +177,7 @@ fn tick(reason: string) -> void {
                     refactor_context
                 ) -> string;
                 // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
-                let commit_cmd = "$COLONY_DIR/scripts/gitlab-api.sh commit-files --branch " + shell_escape(branch) + " --message " + shell_escape("refactor: apply improvements for #" + to_string(suggestion.issue_id)) + " --actions " + shell_escape(actions_json);
+                let commit_cmd = "$COLONY_DIR/scripts/forge-api.sh commit-files --branch " + shell_escape(branch) + " --message " + shell_escape("refactor: apply improvements for #" + to_string(suggestion.issue_id)) + " --actions " + shell_escape(actions_json);
                 let commit_result = try { exec sh commit_cmd; } catch e {
                     print("[refactorer] Commit failed:", e);
                     "";
@@ -193,7 +193,7 @@ fn tick(reason: string) -> void {
                     // comment on the issue so a human can approve before we
                     // commit refactored files. No commit at this tier.
                     let note = "[draft-refactor] **Refactoring Suggestions** (automated, pending approval) — priority: " + suggestion.priority + "\n\n" + suggestion.suggestions;
-                    let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(suggestion.issue_id) + " --body " + shell_escape(note);
+                    let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(suggestion.issue_id) + " --body " + shell_escape(note);
                     try { exec sh post_cmd; } catch e {
                         print("[refactorer] Failed to post draft note:", e);
                     };

@@ -25,6 +25,7 @@
 #   gitlab-api.sh create-branch --name <name> --ref <ref>
 #   gitlab-api.sh commit-files --branch <b> --message <m> --actions <json>
 #   gitlab-api.sh create-mr --source <branch> --title <title> [--description <d>]
+#   gitlab-api.sh add-note <iid> --body <text>
 #   gitlab-api.sh post-note <iid> --body <text>
 #
 # Views (opt-in projection; default is full JSON):
@@ -556,6 +557,34 @@ print(json.dumps(body))
 PY
 )
         gl_post "$API/merge_requests" "$JSON_BODY"
+        ;;
+
+    add-note)
+        # Back-ported from triage/scripts/gitlab-api.sh (#256 PR 4). All four
+        # implementation agents (code_writer, test_writer, refactorer,
+        # commit_composer) shell out to `gitlab-api.sh add-note <iid> --body …`
+        # on their review-gated branches; prior to this PR the call silently
+        # failed with "unknown command: add-note" (caught by the .ag try/catch
+        # so no operator noticed). Mirrors the github-api.sh add-note arm so
+        # the contract is symmetric across backends.
+        ID="${1:?Usage: gitlab-api.sh add-note <iid> --body <text>}"
+        shift
+        BODY=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --body) BODY="$2"; shift 2 ;;
+                *) emit_error "unknown flag: $1"; exit 2 ;;
+            esac
+        done
+        if [ -z "$BODY" ]; then
+            emit_error "--body is required"
+            exit 1
+        fi
+        case "$ID" in
+            ''|*[!0-9]*) emit_error "issue iid must be numeric: $ID"; exit 2 ;;
+        esac
+        JSON_BODY=$(printf '%s' "$BODY" | python3 -c 'import sys,json; print(json.dumps({"body": sys.stdin.read()}))')
+        gl_post "$API/issues/$ID/notes" "$JSON_BODY"
         ;;
 
     post-note)

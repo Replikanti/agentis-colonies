@@ -110,15 +110,20 @@ output for matching fixtures across both backends.
 schema only. PR 2 shipped the triage colony's `github-api.sh` with 7
 subcommands (`issues`, `create-issue`, `update-issue`, `members`,
 `get-issue`, `labels`, `add-note`) plus the `[forge.github]` env-export
-branch in `triage/scripts/start-colony.sh`. PR 3 (the current PR as of
-this writing) ships the planning colony's `github-api.sh` with 5
-subcommands (`issues`, `issues-by-label-events`, `issue-label-events`,
-`add-note`, `merge-requests`) plus the matching `[forge.github]`
-env-export branch and `.ag` dispatcher migration. The remaining
-colonies' wrappers land across PRs 4-6 in the order
-implementation → code-review → release. `rate-limit-status` and the
-dashboard tile ship in PR 7 alongside the legacy `[gitlab]`-section
-retirement.
+branch in `triage/scripts/start-colony.sh`. PR 3 shipped the planning
+colony's `github-api.sh` with 5 subcommands (`issues`,
+`issues-by-label-events`, `issue-label-events`, `add-note`,
+`merge-requests`) plus the matching `[forge.github]` env-export branch
+and `.ag` dispatcher migration. PR 4 (the current PR as of this
+writing) ships the implementation colony's `github-api.sh` with 11
+subcommands (`merge-requests`, `mr-changes`, `mr-commits`, `issue`,
+`assigned-issues`, `issue-label-events`,
+`assigned-issues-by-label-events`, `create-branch`, `commit-files`,
+`create-mr`, `add-note`) plus the matching `[forge.github]` env-export
+branch and 25 `.ag` call-site migrations across the four implementation
+agents. The remaining colonies' wrappers land across PRs 5-6 in the
+order code-review → release. `rate-limit-status` and the dashboard tile
+ship in PR 7 alongside the legacy `[gitlab]`-section retirement.
 
 **`.ag` migration is in-scope for every per-colony PR.** Each
 per-colony PR (PRs 2-6) MUST rewrite every `exec sh` call site in that
@@ -157,6 +162,36 @@ list endpoint omits `changed_files`; the normalizer forwards `null`,
 and scope_estimator tolerates it (complexity scoring is best-effort).
 GitHub's `/pulls` has no `since` query param, so `--since` is filtered
 client-side against `updated_at`.
+
+**PR 4 additions.** The implementation contract adds the write-path
+subcommands: `create-branch`, `commit-files`, `create-mr`, plus the
+two MR-detail readers `mr-changes` and `mr-commits`. GitHub has no
+single-call multi-file commit endpoint (unlike GitLab's
+`POST /repository/commits`); `commit-files` implements the 5-step Git
+Database API dance — `GET /git/refs/heads/{branch}` to resolve HEAD,
+`GET /git/commits/{sha}` to fetch the base tree, `POST /git/trees`
+with the per-file action list (supported: `create`/`update`/`delete`;
+`move`/`chmod` are rejected up-front with exit 1), `POST /git/commits`
+to create the commit object, then `PATCH /git/refs/heads/{branch}` to
+advance the ref. Failure at any step surfaces as a normal `gh_call`
+non-zero exit and the `.ag` try/catch rolls back. `create-branch`
+mirrors `/git/refs` — when `--ref` is a 40-hex SHA we short-circuit
+the ref resolution and POST directly; otherwise we resolve via
+`/git/refs/heads/{ref}` first. `mr-changes` maps GitHub's
+`/pulls/{n}/files` into the GitLab `{"changes": [{old_path, new_path,
+diff, new_file, deleted_file, renamed_file}]}` shape; the per-file
+`status` drives the three boolean flags, `previous_filename` (when
+present) drives `old_path`. `mr-commits` flattens
+`commit.author.{name,date}` into the GitLab-flat
+`{author_name, created_at}` shape. As in PR 3, GitHub's `/pulls` has
+no `since` query param, so `--since` is client-side on `updated_at`
+and the list response omits `changed_files` (forwarded as `null`).
+`add-note` is the `.ag`-layer call target for implementation agents'
+review-gated comment posts; it was silently failing against both
+backends before this PR (the implementation `gitlab-api.sh` exposed
+only `post-note` targeting MRs), same failure pattern PR 2 fixed for
+triage. The back-port of `add-note` into the implementation
+`gitlab-api.sh` is in-scope for this PR.
 
 | Subcommand           | Normalized output |
 |----------------------|-------------------|

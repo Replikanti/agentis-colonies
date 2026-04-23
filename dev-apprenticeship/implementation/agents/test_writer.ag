@@ -27,9 +27,9 @@ type TestDraft {
 fn merged_mr_cmd() -> string {
     let ts = recall_latest("test_writer:last_check");
     if len(ts) > 0 {
-        return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(ts) + " --view impl";
+        return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --since " + shell_escape(ts) + " --view impl";
     };
-    return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --view impl";
+    return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --view impl";
 }
 
 fn get_confidence() -> float {
@@ -115,7 +115,7 @@ fn tick(reason: string) -> void {
 
         if should_learn_from_mr(mr_iid) {
             memo_write("test_writer:last_learned_mr_iid", to_string(mr_iid));
-            let changes_cmd = "$COLONY_DIR/scripts/gitlab-api.sh mr-changes " + to_string(mr_iid);
+            let changes_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-changes " + to_string(mr_iid);
             let changes_raw = try { exec sh changes_cmd; } catch e { ""; };
 
             if len(changes_raw) > 10 {
@@ -175,7 +175,7 @@ fn tick(reason: string) -> void {
                 ) -> string;
 
                 // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
-                let commit_cmd = "$COLONY_DIR/scripts/gitlab-api.sh commit-files --branch " + shell_escape(tests.branch_name) + " --message " + shell_escape("test: add tests for #" + to_string(tests.issue_id)) + " --actions " + shell_escape(actions_json);
+                let commit_cmd = "$COLONY_DIR/scripts/forge-api.sh commit-files --branch " + shell_escape(tests.branch_name) + " --message " + shell_escape("test: add tests for #" + to_string(tests.issue_id)) + " --actions " + shell_escape(actions_json);
                 let commit_result = try { exec sh commit_cmd; } catch e {
                     print("[test_writer] Commit failed:", e);
                     "";
@@ -191,7 +191,7 @@ fn tick(reason: string) -> void {
                     // Non-terminal draft: post the test plan as a comment on the
                     // issue so a human can approve before we commit test files.
                     let note = "[draft-tests] **Test Plan** (automated, pending approval)\n\nBranch: `" + tests.branch_name + "`\n\n" + tests.summary + "\n\nTest files:\n" + tests.test_files;
-                    let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(tests.issue_id) + " --body " + shell_escape(note);
+                    let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(tests.issue_id) + " --body " + shell_escape(note);
                     try { exec sh post_cmd; } catch e {
                         print("[test_writer] Failed to post draft note:", e);
                     };
