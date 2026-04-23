@@ -41,6 +41,22 @@ is asserted until multi-version CI is in place.
 
 ### Changed
 
+- **Federation dashboard: low-value panels demoted** ([#248](https://github.com/Replikanti/agentis-colonies/issues/248) PR C).
+  Three changes derived from operator feedback in the parent issue:
+  (1) **Phase Readiness** swapped from a colony-average bar with ETA-to-tier
+  estimate (skewed by single-autonomous-outlier colonies, opaque X-axis) to
+  a compact per-colony per-tier counter (`shadow: 0  propose: 4
+  review-gated: 0  autonomous: 0`). Same ADR-0001 tier classification the
+  agent-row badges use; null-confidence agents render as `dormant: N`.
+  (2) **Confidence Trend** chart moved behind a collapsed `<details>` —
+  per-agent confidence-on-card already answers the operator's everyday
+  question; the chart stays for trend-spotters.
+  (3) **Experience Growth** chart same treatment — per-agent
+  `entries_total` is the number operators actually consult.
+  Locked by `test-timeline-rendering.sh` tests 22 (no `phase-bar-*`
+  classes; tier counter classes wired) and 23 (both charts inside a
+  default-collapsed `<details class="card-collapse">`).
+
 ### Deprecated
 
 ### Removed
