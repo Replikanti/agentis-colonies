@@ -17,6 +17,29 @@ is asserted until multi-version CI is in place.
 
 ### Added
 
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
+## [0.3.3] — 2026-04-23
+
+Operator-visibility release: a HEALTHY / DEGRADED banner and per-agent
+promote-readiness breakdown, `Promote Candidates` now runs the auto-promote
+scheduler's verdicts directly (no more silent drift between the two), and
+the dashboard is now a separately-versioned standalone component — dashboard
+fixes can ship without forcing a federation re-release. Runtime floor unchanged.
+
+**Requires:** agentis >= 1.4.1
+**Recommends:** federation-dashboard >= 0.1.0 (pinned via `dev-apprenticeship/.dashboard-version`)
+
+### Added
+
 - **Federation dashboard: HEALTHY / DEGRADED banner, per-agent promote-readiness breakdown, 24h learning indicator**
   ([#248](https://github.com/Replikanti/agentis-colonies/issues/248)).
   Three operator-visibility additions that share the same data surface:
@@ -531,7 +554,8 @@ permissible per semver §4.
 - All dynamic values flowing into `exec sh` are required to pass through `shell_escape()`;
   `check-exec-sh.sh` enforces this grep-level contract.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.3.2...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.3.3...HEAD
+[0.3.3]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.3.2...dev-apprenticeship-v0.3.3
 [0.3.2]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.3.1...dev-apprenticeship-v0.3.2
 [0.3.1]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.3.0...dev-apprenticeship-v0.3.1
 [0.3.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.2.0...dev-apprenticeship-v0.3.0
