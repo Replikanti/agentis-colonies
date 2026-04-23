@@ -15,3 +15,4 @@ not rewrite decisions.
 ## Index
 
 - [ADR-0001: Confidence tiers for autonomous agent behaviour](./ADR-0001-confidence-tiers.md) — Proposed, 2026-04-17
+- [ADR-0002: Forge abstraction — normalized wrapper dispatch for multi-forge federations](./ADR-0002-forge-abstraction.md) — Proposed, 2026-04-23

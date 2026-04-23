@@ -7,6 +7,28 @@
 name = "implementation"
 tick_interval_ms = 60000
 
+# Forge backend selection (ADR-0002, #256). `type` picks which of the
+# per-backend blocks below is active. Legal values: "gitlab", "github".
+# The top-level [gitlab] section below is retained for backwards
+# compatibility during the migration window — one release of overlap.
+# It is retired in the final PR of the port (PR 7 of #256).
+[forge]
+type = "gitlab"
+
+[forge.gitlab]
+url            = "https://gitlab.example.com"
+token          = "glpat-your-token-here"
+project        = "your-org/your-project"
+me             = ""      # your GitLab username (optional)
+default_branch = "main"  # primary branch (#224)
+
+# [forge.github]
+# owner          = "your-org-or-user"
+# repo           = "your-repo"
+# token          = "ghp_your-token-here"
+# me             = ""      # your GitHub username (optional)
+# default_branch = "main"  # primary branch
+
 [gitlab]
 url = "https://gitlab.example.com"
 token = "glpat-your-token-here"

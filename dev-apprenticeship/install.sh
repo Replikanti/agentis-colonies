@@ -162,6 +162,62 @@ if [ "$CONFIGS_EXISTED" -eq 5 ]; then
     fi
 fi
 
+# --- 3a. Forge backend selection (ADR-0002, #256) ---
+
+echo ""
+echo "Forge backend"
+echo "============="
+echo "All 5 colonies connect to the same forge (GitLab or GitHub)."
+echo ""
+
+# FEDERATION_FORGE_TYPE env var short-circuits the prompt for unattended
+# installs. Anything other than "gitlab" / "github" is rejected.
+if [ -n "${FEDERATION_FORGE_TYPE:-}" ]; then
+    case "$FEDERATION_FORGE_TYPE" in
+        gitlab|github)
+            FORGE_TYPE="$FEDERATION_FORGE_TYPE"
+            info "FEDERATION_FORGE_TYPE=$FORGE_TYPE (unattended selection)"
+            ;;
+        *)
+            fail "FEDERATION_FORGE_TYPE must be 'gitlab' or 'github' (got '$FEDERATION_FORGE_TYPE')"
+            exit 1
+            ;;
+    esac
+else
+    # Interactive prompt; default is "gitlab" for PR 1 parity with pre-#256
+    # installs. The full GitHub backend (per-colony github-api.sh wrappers,
+    # .ag agent audits) ships across PRs 2-6 of #256. Selecting "github"
+    # now is supported for config scaffolding; at runtime forge-api.sh
+    # returns exit 99 with a clear pointer to the ADR until the per-colony
+    # wrappers land.
+    ask "Forge backend [1] GitLab (default)  [2] GitHub:"
+    read -r FORGE_CHOICE
+    case "$FORGE_CHOICE" in
+        2|github|GitHub|GITHUB) FORGE_TYPE="github" ;;
+        *)                       FORGE_TYPE="gitlab" ;;
+    esac
+fi
+
+if [ "$FORGE_TYPE" = "github" ]; then
+    echo ""
+    fail "GitHub backend selected."
+    info "Foundation (ADR-0002 + config schema + forge-api.sh dispatcher)"
+    info "is available from PR 1 of issue #256. Per-colony github-api.sh"
+    info "wrappers ship in PRs 2-6; at runtime, forge-api.sh currently"
+    info "exits 99 for FORGE_TYPE=github. Track progress at:"
+    info "  https://github.com/Replikanti/agentis-colonies/issues/256"
+    echo ""
+    ask "Continue with GitHub scaffolding anyway? [y/N]:"
+    read -r CONTINUE_GITHUB
+    case "$CONTINUE_GITHUB" in
+        y|Y|yes|YES) info "Proceeding with GitHub scaffolding." ;;
+        *)
+            info "Aborting install. Re-run and select GitLab, or wait for PRs 2-6 of #256."
+            exit 0
+            ;;
+    esac
+fi
+
 # --- 3. GitLab credentials ---
 
 echo ""
@@ -229,10 +285,12 @@ if [ "$WRITE_CREDS" -eq 1 ]; then
 
     for colony in "${COLONIES[@]}"; do
         CONFIG="$SCRIPT_DIR/$colony/config/colony.toml"
-        # Write credentials by matching TOML keys (works on both fresh and existing configs)
-        python3 - "$CONFIG" "$GITLAB_URL" "$GITLAB_TOKEN" "$GITLAB_PROJECT" "$GITLAB_ME" <<'PY'
+        # Write credentials by matching TOML keys (works on both fresh and existing configs).
+        # The credential substitutions also hit the [forge.gitlab] block (same key names)
+        # so [gitlab] and [forge.gitlab] stay in sync during the migration overlap.
+        python3 - "$CONFIG" "$GITLAB_URL" "$GITLAB_TOKEN" "$GITLAB_PROJECT" "$GITLAB_ME" "$FORGE_TYPE" <<'PY'
 import sys, re
-path, url, token, project, me = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
+path, url, token, project, me, forge_type = sys.argv[1:7]
 with open(path) as f:
     content = f.read()
 content = re.sub(r'(url\s*=\s*)"[^"]*"', lambda m: m.group(1) + '"' + url + '"', content)
@@ -243,6 +301,24 @@ content = re.sub(r'(project\s*=\s*)"[^"]*"', lambda m: m.group(1) + '"' + projec
 # it manually if they want personal/team tagging). Anchor with ^ +
 # line flag so `name = ` / `some = ` don't match.
 content = re.sub(r'(?m)^(me\s*=\s*)"[^"]*"', lambda m: m.group(1) + '"' + me + '"', content)
+# #256: [forge].type selects the active backend. Section-scoped rewrite
+# so the literal key `type = "..."` inside [forge] is the only one
+# touched (there is no ambiguity today, but future sections may reuse
+# the word `type` and we want to fail loudly if that ever happens).
+def _set_forge_type(content, value):
+    lines = content.splitlines(keepends=True)
+    in_forge = False
+    out = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('[') and stripped.endswith(']'):
+            sect = stripped[1:-1].strip()
+            in_forge = (sect == 'forge')
+        if in_forge and re.match(r'\s*type\s*=\s*"[^"]*"', line):
+            line = re.sub(r'(type\s*=\s*)"[^"]*"', lambda m: m.group(1) + '"' + value + '"', line, count=1)
+        out.append(line)
+    return ''.join(out)
+content = _set_forge_type(content, forge_type)
 with open(path, 'w') as f:
     f.write(content)
 PY

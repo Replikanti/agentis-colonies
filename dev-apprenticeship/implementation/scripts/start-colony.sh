@@ -102,6 +102,16 @@ export IMPLEMENTATION_TRIGGER_LABEL
 export GITLAB_DEFAULT_BRANCH
 export COLONY_DIR
 
+# #256: forge backend selection. `[forge].type` picks which backend
+# wrapper forge-api.sh dispatches to. Defaults to "gitlab" so pre-#256
+# configs keep working unchanged. The github backend is skeleton-only
+# until PRs 2-6 of #256 land their per-colony github-api.sh wrappers;
+# until then, FORGE_TYPE=github yields exit 99 "not implemented" from
+# forge-api.sh.
+FORGE_TYPE=$(parse_toml forge type)
+FORGE_TYPE="${FORGE_TYPE:-gitlab}"
+export FORGE_TYPE
+
 AGENTS=(
     code_writer
     test_writer

@@ -26,6 +26,27 @@ is asserted until multi-version CI is in place.
   pre-#257 callers. Enables the dashboard-side decoupling in
   `federation-dashboard` 0.2.0.
   [#257](https://github.com/Replikanti/agentis-colonies/issues/257)
+- **Forge abstraction foundation (ADR-0002, PR 1 of 7 for #256).** Every
+  colony's `colony.example.toml` now carries a `[forge]` section with
+  `type = "gitlab"` plus `[forge.gitlab]` and a commented-out
+  `[forge.github]` template. Each colony ships a thin
+  `scripts/forge-api.sh` dispatcher that reads `$FORGE_TYPE` and execs
+  the right per-colony wrapper (`gitlab-api.sh` today, `github-api.sh`
+  in PRs 2-6). Unknown `FORGE_TYPE` → exit 2; `FORGE_TYPE=github` with
+  no wrapper yet → exit 99 with an ADR pointer. `start-colony.sh`
+  parses `[forge].type`, defaults to `"gitlab"` (pre-#256 configs keep
+  working verbatim), and exports `FORGE_TYPE`. `install.sh` gained a
+  new "3a. Forge backend selection" section with a
+  `FEDERATION_FORGE_TYPE=gitlab|github` env short-circuit for
+  unattended installs, an interactive prompt defaulting to gitlab,
+  a clear warning when github is chosen before PRs 2-6 land, and a
+  `_set_forge_type()` helper that rewrites `[forge].type` in the
+  generated `colony.toml`. The top-level `[gitlab]` section is
+  retained for one release of migration overlap (retired in PR 7 of
+  #256). New lint gate: `tools/test-forge-config.sh` (8 invariants ×
+  5 colonies + 4 global = 35 sub-tests). See
+  `doc/adr/ADR-0002-forge-abstraction.md` for the full contract.
+  [#256](https://github.com/Replikanti/agentis-colonies/issues/256)
 
 ### Changed
 
