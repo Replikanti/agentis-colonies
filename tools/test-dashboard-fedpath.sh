@@ -20,7 +20,9 @@
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DASHBOARD_SH="$SCRIPT_DIR/federation-dashboard.sh"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# #252: dashboard extracted to standalone component.
+DASHBOARD_SH="$REPO_ROOT/federation-dashboard/bin/federation-dashboard"
 
 PASS=0
 FAIL=0

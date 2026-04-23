@@ -19,6 +19,8 @@
 #     same PR so the bundle stays install-ready.
 
 # ----- Federation itself -----
+# Includes dev-apprenticeship/.dashboard-version (#252), the pin that
+# install.sh uses to fetch the matching federation-dashboard release.
 dev-apprenticeship/
 
 # ----- Shared shell tooling required at runtime -----
@@ -31,13 +33,13 @@ tools/auto-promote-lock.py
 tools/auto-promote-decisions.py
 tools/resolve-tick-interval.py
 
-# ----- Federation dashboard (sh entrypoint + 4 Python helpers + HTML template) -----
-tools/federation-dashboard.sh
-tools/federation-dashboard-collector.py
-tools/federation-dashboard-history.py
-tools/federation-dashboard-renderer.py
-tools/federation-dashboard-server.py
-tools/federation-dashboard.html.template
+# ----- Federation dashboard -----
+# Extracted to a separately-versioned standalone component in #252.
+# `dev-apprenticeship/install.sh` offers an opt-in download of
+# federation-dashboard-v<.dashboard-version>.tar.gz at install time.
+# Do NOT re-add tools/federation-dashboard* paths here — the dashboard is
+# no longer a federation file and `tools/test-make-federation-bundle.sh`
+# treats any leak as a regression.
 
 # ----- Operator-facing documentation referenced from dev-apprenticeship/ -----
 doc/adr/

@@ -1,0 +1,82 @@
+name: Release dashboard
+
+# Tag-triggered bundle + asset upload for the standalone federation-dashboard
+# component (#252). Fires on pushes of tags shaped like
+# `federation-dashboard-v<X.Y.Z>`.
+#
+# Mirrors release.yml but runs tools/make-dashboard-bundle.sh, which validates
+# that federation-dashboard/VERSION matches the tag's version before staging.
+#
+# Maintainer workflow after a release PR merges:
+#   git tag federation-dashboard-v<X.Y.Z> <merge-sha> -m "..."
+#   git push origin federation-dashboard-v<X.Y.Z>
+# No manual `gh release create` / `gh release upload` needed.
+
+on:
+  push:
+    tags:
+      - 'federation-dashboard-v*'
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout at tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Parse version from tag
+        id: tag
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VER="${TAG##*-v}"
+          {
+            echo "tag=$TAG"
+            echo "ver=$VER"
+          } >> "$GITHUB_OUTPUT"
+          echo "Parsed: version='$VER' from tag '$TAG'"
+
+      - name: Build dashboard bundle
+        run: ./tools/make-dashboard-bundle.sh "${{ steps.tag.outputs.ver }}"
+
+      - name: Extract release notes from CHANGELOG
+        run: |
+          VER='${{ steps.tag.outputs.ver }}'
+          mkdir -p dist
+          awk -v ver="$VER" '
+            $0 ~ "^## \\[" ver "\\]" { flag=1; next }
+            /^## \[/ { flag=0 }
+            /^\[[^]]+\]:/ { flag=0 }
+            flag
+          ' federation-dashboard/CHANGELOG.md > dist/release-notes.md
+          if [ ! -s dist/release-notes.md ]; then
+            echo "No CHANGELOG section matched '[${VER}]' — falling back to tag message." >&2
+            git tag -l --format='%(contents)' "${{ steps.tag.outputs.tag }}" > dist/release-notes.md
+          fi
+          echo "=== release notes preview (first 20 lines) ==="
+          head -20 dist/release-notes.md
+
+      - name: Create or update GitHub release with bundle asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG='${{ steps.tag.outputs.tag }}'
+          VER='${{ steps.tag.outputs.ver }}'
+          TARBALL="dist/federation-dashboard-v${VER}.tar.gz"
+          SHAFILE="${TARBALL}.sha256"
+          if gh release view "$TAG" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — uploading asset with --clobber."
+            gh release upload "$TAG" "$TARBALL" "$SHAFILE" \
+              --repo "${GITHUB_REPOSITORY}" --clobber
+          else
+            echo "Creating release $TAG with curated bundle asset."
+            gh release create "$TAG" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "federation-dashboard v${VER}" \
+              --notes-file dist/release-notes.md \
+              "$TARBALL" "$SHAFILE"
+          fi

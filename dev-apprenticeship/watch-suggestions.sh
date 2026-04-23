@@ -14,7 +14,7 @@ SCRIPT_PATH="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))'
 SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 
 # Resolve log directory with fed-local-first precedence (mirrors
-# tools/federation-dashboard.sh after #238). The previous default
+# federation-dashboard/bin/federation-dashboard after #238 / #252). The previous default
 # "${SCRIPT_DIR}/../.agentis/logs" resolved to the repo-root shared
 # .agentis/ when two federations live as siblings under one checkout,
 # cross-reading the other federation's logs. Daemons write to

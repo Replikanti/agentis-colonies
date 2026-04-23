@@ -13,7 +13,9 @@
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DASHBOARD_SH="$SCRIPT_DIR/federation-dashboard.sh"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# #252: dashboard extracted to standalone component.
+DASHBOARD_SH="$REPO_ROOT/federation-dashboard/bin/federation-dashboard"
 
 PASS=0
 FAIL=0
@@ -48,7 +50,8 @@ fi
 FED_DIR="$TMPDIR_TEST/fed"
 mkdir -p "$FED_DIR/.agentis/daemon" \
          "$FED_DIR/stub-colony/agents" \
-         "$FED_DIR/stub-colony/config"
+         "$FED_DIR/stub-colony/config" \
+         "$FED_DIR/tools"
 cat > "$FED_DIR/stub-colony/config/colony.toml" <<'TOML'
 [colony]
 name = "stub-colony"
@@ -58,6 +61,10 @@ cat > "$FED_DIR/stub-colony/agents/stub.ag" <<'AG'
 cb 100;
 fn tick() { return Void; }
 AG
+# #252: the dashboard resolves shared helpers via <fed-dir>/tools/ first,
+# then <fed-dir>/../tools/. /kill needs kill-federation.sh; symlink the
+# real one from the repo so the endpoint can shell out.
+ln -s "$REPO_ROOT/tools/kill-federation.sh" "$FED_DIR/tools/kill-federation.sh"
 
 # --- Pick a free port ---
 PORT="$(python3 -c "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); p=s.getsockname()[1]; s.close(); print(p)")"
