@@ -60,57 +60,96 @@ if [ ! -f "$CONFIG" ]; then
     exit 1
 fi
 
-# Parse GitLab config from TOML via the shared helper.
+# Parse forge config from TOML via the shared helper.
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # shellcheck source=../../../tools/parse-toml.sh
 # shellcheck disable=SC1091  # colony-lint runs shellcheck without -x
 . "$REPO_ROOT/tools/parse-toml.sh"
 
-GITLAB_URL=$(parse_toml gitlab url)
-GITLAB_TOKEN=$(parse_toml gitlab token)
-GITLAB_PROJECT_RAW=$(parse_toml gitlab project)
+# #256: forge backend selection. `[forge].type` picks which backend
+# wrapper forge-api.sh dispatches to. Defaults to "gitlab" so pre-#256
+# configs keep working unchanged. PR 4 of #256 ships the implementation
+# colony's github-api.sh, so FORGE_TYPE=github is now live for
+# implementation (other colonies still return exit 99 "not implemented"
+# until their respective PRs land).
+FORGE_TYPE=$(parse_toml forge type)
+FORGE_TYPE="${FORGE_TYPE:-gitlab}"
 
-if [ -z "$GITLAB_URL" ] || [ -z "$GITLAB_TOKEN" ] || [ -z "$GITLAB_PROJECT_RAW" ]; then
-    echo "Error: GitLab config incomplete in $CONFIG"
-    echo "Required: url, token, project under [gitlab]"
-    exit 1
-fi
+case "$FORGE_TYPE" in
+    gitlab)
+        # Prefer [forge.gitlab] (ADR-0002) if present; fall back to legacy
+        # [gitlab] so pre-#256 configs keep working during the overlap window.
+        GITLAB_URL=$(parse_toml forge.gitlab url)
+        [ -z "$GITLAB_URL" ] && GITLAB_URL=$(parse_toml gitlab url)
+        GITLAB_TOKEN=$(parse_toml forge.gitlab token)
+        [ -z "$GITLAB_TOKEN" ] && GITLAB_TOKEN=$(parse_toml gitlab token)
+        GITLAB_PROJECT_RAW=$(parse_toml forge.gitlab project)
+        [ -z "$GITLAB_PROJECT_RAW" ] && GITLAB_PROJECT_RAW=$(parse_toml gitlab project)
+        GITLAB_ME=$(parse_toml forge.gitlab me)
+        [ -z "$GITLAB_ME" ] && GITLAB_ME=$(parse_toml gitlab me)
 
-# URL-encode the project path (replace / with %2F)
-GITLAB_PROJECT="${GITLAB_PROJECT_RAW//\//%2F}"
+        if [ -z "$GITLAB_URL" ] || [ -z "$GITLAB_TOKEN" ] || [ -z "$GITLAB_PROJECT_RAW" ]; then
+            echo "Error: GitLab config incomplete in $CONFIG"
+            echo "Required: url, token, project under [forge.gitlab] (or legacy [gitlab])"
+            exit 1
+        fi
 
-# #104: operator identity. Empty if not configured (pre-#104 setups or
-# operators who skipped the install.sh prompt); agents fall back to
-# memo gitlab:me and tag everything as team when both are empty.
-GITLAB_ME=$(parse_toml gitlab me)
+        # URL-encode the project path (replace / with %2F)
+        GITLAB_PROJECT="${GITLAB_PROJECT_RAW//\//%2F}"
+
+        export GITLAB_URL
+        export GITLAB_TOKEN
+        export GITLAB_PROJECT
+        export GITLAB_ME
+        ;;
+    github)
+        GITHUB_URL=$(parse_toml forge.github url)
+        GITHUB_URL="${GITHUB_URL:-https://api.github.com}"
+        GITHUB_OWNER=$(parse_toml forge.github owner)
+        GITHUB_REPO=$(parse_toml forge.github repo)
+        GITHUB_TOKEN=$(parse_toml forge.github token)
+        GITHUB_ME=$(parse_toml forge.github me)
+
+        if [ -z "$GITHUB_OWNER" ] || [ -z "$GITHUB_REPO" ] || [ -z "$GITHUB_TOKEN" ]; then
+            echo "Error: GitHub config incomplete in $CONFIG"
+            echo "Required: owner, repo, token under [forge.github]"
+            exit 1
+        fi
+
+        # Use the project-raw variable name for the summary echo below so
+        # both branches can share one format string. Value is informational.
+        GITLAB_PROJECT_RAW="$GITHUB_OWNER/$GITHUB_REPO"
+
+        export GITHUB_URL
+        export GITHUB_OWNER
+        export GITHUB_REPO
+        export GITHUB_TOKEN
+        export GITHUB_ME
+        ;;
+    *)
+        echo "Error: unknown [forge].type '$FORGE_TYPE' in $CONFIG (expected: gitlab|github)" >&2
+        exit 1
+        ;;
+esac
 
 # #225: configurable trigger label for assigned-issues filter. Empty if
-# not configured (pre-#225 setups); gitlab-api.sh falls back to the
-# hardcoded default "implementation" via ${VAR:-implementation}.
+# not configured (pre-#225 setups); the backend wrapper falls back to the
+# hardcoded default "implementation" via ${VAR:-implementation}. The label
+# itself is backend-agnostic — both gitlab-api.sh and github-api.sh
+# consume IMPLEMENTATION_TRIGGER_LABEL identically.
 IMPLEMENTATION_TRIGGER_LABEL=$(parse_toml implementation trigger_label)
 
 # #224: primary branch name. Empty if not configured (pre-#224 setups);
-# gitlab-api.sh falls back to the hardcoded default "main" via
-# ${GITLAB_DEFAULT_BRANCH:-main}.
+# the backend wrapper falls back to the hardcoded default "main" via
+# ${GITLAB_DEFAULT_BRANCH:-main}. The env var name is kept as
+# GITLAB_DEFAULT_BRANCH for cross-backend parity; PR 7 of #256 may rename
+# it when the legacy [gitlab] section retires.
 GITLAB_DEFAULT_BRANCH=$(parse_toml gitlab default_branch)
 
-export GITLAB_URL
-export GITLAB_TOKEN
-export GITLAB_PROJECT
-export GITLAB_ME
+export FORGE_TYPE
 export IMPLEMENTATION_TRIGGER_LABEL
 export GITLAB_DEFAULT_BRANCH
 export COLONY_DIR
-
-# #256: forge backend selection. `[forge].type` picks which backend
-# wrapper forge-api.sh dispatches to. Defaults to "gitlab" so pre-#256
-# configs keep working unchanged. The github backend is skeleton-only
-# until PRs 2-6 of #256 land their per-colony github-api.sh wrappers;
-# until then, FORGE_TYPE=github yields exit 99 "not implemented" from
-# forge-api.sh.
-FORGE_TYPE=$(parse_toml forge type)
-FORGE_TYPE="${FORGE_TYPE:-gitlab}"
-export FORGE_TYPE
 
 AGENTS=(
     code_writer
@@ -189,7 +228,10 @@ if [ -n "$RESTART_AGENT" ]; then
 fi
 
 echo "Starting Implementation colony (${#AGENTS[@]} agents)..."
-echo "  GitLab: $GITLAB_URL ($GITLAB_PROJECT_RAW)"
+case "$FORGE_TYPE" in
+    gitlab) echo "  GitLab: $GITLAB_URL ($GITLAB_PROJECT_RAW)" ;;
+    github) echo "  GitHub: $GITHUB_URL ($GITHUB_OWNER/$GITHUB_REPO)" ;;
+esac
 
 for agent in "${AGENTS[@]}"; do
     interval=$(tick_interval_for "$agent")

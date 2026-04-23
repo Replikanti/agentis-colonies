@@ -35,20 +35,8 @@ case "$FORGE_TYPE" in
 esac
 
 if [ ! -x "$backend" ]; then
-    case "$FORGE_TYPE" in
-        github)
-            # Skeleton state: dispatcher exists but the per-colony wrapper is not yet
-            # shipped. Lands across PRs 2-6 of #256.
-            echo "forge-api.sh: FORGE_TYPE=github is not yet implemented for the implementation colony." >&2
-            echo "forge-api.sh: See doc/adr/ADR-0002-forge-abstraction.md and https://github.com/Replikanti/agentis-colonies/issues/256 (PRs 2-6)." >&2
-            ;;
-        *)
-            # Broken install — gitlab-api.sh should always be present alongside
-            # forge-api.sh in a valid federation checkout.
-            echo "forge-api.sh: backend wrapper missing or not executable: $backend" >&2
-            echo "forge-api.sh: this indicates a broken install — re-copy the implementation colony scripts/ directory." >&2
-            ;;
-    esac
+    echo "forge-api.sh: backend wrapper missing or not executable: $backend" >&2
+    echo "forge-api.sh: this indicates a broken install — re-copy the implementation colony scripts/ directory." >&2
     exit 99
 fi
 

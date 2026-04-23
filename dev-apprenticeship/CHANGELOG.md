@@ -130,6 +130,46 @@ is asserted until multi-version CI is in place.
   `github-api.sh` and `gitlab-api.sh` for the `planning` and
   `planning-mr` views.
   [#256](https://github.com/Replikanti/agentis-colonies/issues/256)
+- **Implementation colony GitHub backend (PR 4 of 7 for #256).**
+  `dev-apprenticeship/implementation/scripts/github-api.sh` implements
+  the implementation contract against the GitHub REST API v3 (11
+  subcommands: `merge-requests`, `mr-changes`, `mr-commits`, `issue`,
+  `assigned-issues`, `issue-label-events`,
+  `assigned-issues-by-label-events`, `create-branch`, `commit-files`,
+  `create-mr`, `add-note`). The write-path subcommands — `create-branch`,
+  `commit-files`, `create-mr` — carry the main GitHub-vs-GitLab
+  asymmetry: GitHub has no single-call multi-file commit endpoint, so
+  `commit-files` implements the 5-step Git Database API dance (resolve
+  HEAD ref → fetch base tree → `POST /git/trees` with per-file action
+  list → `POST /git/commits` → `PATCH /git/refs/heads/{branch}`).
+  Supported actions are `create`/`update`/`delete`; `move`/`chmod` are
+  rejected up-front with exit 1 (GitLab-only semantics). `mr-changes`
+  maps `/pulls/{n}/files` into the GitLab
+  `{"changes": [{old_path, new_path, diff, new_file, deleted_file,
+  renamed_file}]}` shape; `mr-commits` flattens
+  `commit.author.{name,date}` into the GitLab-flat
+  `{author_name, created_at}` shape. All 25 `exec sh` call sites across
+  `code_writer`, `test_writer`, `refactorer`, and `commit_composer`
+  were rewritten from `scripts/gitlab-api.sh` to `scripts/forge-api.sh`.
+  `implementation/scripts/start-colony.sh` now branches on `FORGE_TYPE`
+  identically to triage and planning; the `IMPLEMENTATION_TRIGGER_LABEL`
+  and `GITLAB_DEFAULT_BRANCH` exports are backend-agnostic and
+  unchanged. Back-port fix: `implementation/scripts/gitlab-api.sh`
+  gains an `add-note` subcommand targeting `/issues/{iid}/notes`; all
+  four implementation agents call `add-note` on their review-gated
+  branches but it never existed on the GitLab side (the existing
+  `post-note` arm targets MRs). Calls were silently failing through
+  `.ag` try/catch — same pattern that PR 2 fixed for triage. Two new
+  tests: `tools/test-github-implementation-normalize.sh` (50 assertions
+  covering `normalize_issues` PR-filter, `normalize_pulls` state
+  collapse, new `normalize_mr_changes` wrap-and-flag mapping, new
+  `normalize_mr_commits` author flattening, `normalize_timeline`
+  label/since filters, end-to-end pipes through `impl` and `assigned`
+  views); and an implementation-colony extension to
+  `tools/test-gitlab-views.sh` asserting byte-identical `project_json`
+  output between `github-api.sh` and `gitlab-api.sh` for the `impl`
+  and `assigned` views.
+  [#256](https://github.com/Replikanti/agentis-colonies/issues/256)
 
 ### Changed
 

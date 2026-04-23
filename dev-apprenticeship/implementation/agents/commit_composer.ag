@@ -29,9 +29,9 @@ type MRPlan {
 fn merged_mr_cmd() -> string {
     let ts = recall_latest("commit_composer:last_check");
     if len(ts) > 0 {
-        return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --since " + shell_escape(ts) + " --view impl";
+        return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --since " + shell_escape(ts) + " --view impl";
     };
-    return "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --view impl";
+    return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --view impl";
 }
 
 fn get_confidence() -> float {
@@ -78,7 +78,7 @@ fn tick(reason: string) -> void {
 
         if should_learn_from_mr(mr_iid) {
             memo_write("commit_composer:last_learned_mr_iid", to_string(mr_iid));
-            let commits_cmd = "$COLONY_DIR/scripts/gitlab-api.sh mr-commits " + to_string(mr_iid);
+            let commits_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-commits " + to_string(mr_iid);
             let commits_raw = try { exec sh commits_cmd; } catch e { "[]"; };
 
             if len(commits_raw) > 10 {
@@ -135,7 +135,7 @@ fn tick(reason: string) -> void {
 
     if my_tier == "autonomous" {
         // Create the MR
-        let mr_cmd = "$COLONY_DIR/scripts/gitlab-api.sh create-mr --source " + shell_escape(plan.branch_name) + " --title " + shell_escape(plan.mr_title) + " --description " + shell_escape(plan.mr_description);
+        let mr_cmd = "$COLONY_DIR/scripts/forge-api.sh create-mr --source " + shell_escape(plan.branch_name) + " --title " + shell_escape(plan.mr_title) + " --description " + shell_escape(plan.mr_description);
         let mr_result = try { exec sh mr_cmd; } catch e {
             print("[commit_composer] MR creation failed:", e);
             "";
@@ -151,7 +151,7 @@ fn tick(reason: string) -> void {
             // Non-terminal draft: post the MR plan as a comment on the issue
             // so a human can approve before we actually open a non-draft MR.
             let note = "[draft-mr] **Merge Request Plan** (automated, pending approval)\n\nBranch: `" + plan.branch_name + "`\nTitle: " + plan.mr_title + "\n\n" + plan.mr_description + "\n\nCommits:\n" + plan.commits;
-            let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(plan.issue_id) + " --body " + shell_escape(note);
+            let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(plan.issue_id) + " --body " + shell_escape(note);
             try { exec sh post_cmd; } catch e {
                 print("[commit_composer] Failed to post draft plan:", e);
             };
