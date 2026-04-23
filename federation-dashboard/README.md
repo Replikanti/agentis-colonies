@@ -1,8 +1,8 @@
 # federation-dashboard
 
-![Version: 0.1.0](https://img.shields.io/badge/version-0.1.0-blue) ![Standalone component](https://img.shields.io/badge/component-standalone-green) ![Status: Beta](https://img.shields.io/badge/status-beta-yellow)
+![Version: 0.2.0](https://img.shields.io/badge/version-0.2.0-blue) ![Standalone component](https://img.shields.io/badge/component-standalone-green) ![Status: Beta](https://img.shields.io/badge/status-beta-yellow)
 
-**Version:** `0.1.0` · [Changelog](./CHANGELOG.md) · **Recommended for:** dev-apprenticeship >= `0.3.3`
+**Version:** `0.2.0` · [Changelog](./CHANGELOG.md) · **Recommended for:** dev-apprenticeship >= `0.3.3` + `--restart-agent` mode in `start-colony.sh`
 
 Generic web dashboard for any [Agentis](https://github.com/Replikanti/agentis)
 federation. Auto-discovers colonies and agents from the federation directory,
@@ -13,7 +13,7 @@ evolve, restart, kill).
 This component is **separately versioned** from the federations it serves
 ([#252](https://github.com/Replikanti/agentis-colonies/issues/252)). Federations
 declare a soft minimum (e.g. `dev-apprenticeship` requires
-`federation-dashboard >= 0.1.0`) and the dashboard ships its own release
+`federation-dashboard >= 0.2.0`) and the dashboard ships its own release
 tarball, install script, and changelog.
 
 ## Install

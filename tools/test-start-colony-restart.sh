@@ -142,6 +142,48 @@ test_one_colony() {
         rc=$?
         fail "$colony: happy path non-zero exit" "rc=$rc body=$(head -c 300 "$out")"
     fi
+
+    # --- pipe-regression: the dashboard invokes start-colony.sh via
+    # subprocess.run(capture_output=True, timeout=N). If the backgrounded
+    # daemon inherits those capture pipes, Python blocks on read until its
+    # own timeout fires, producing spurious "restart failed" responses on
+    # every /restart. This test uses a shim that lives LONGER than the
+    # subprocess.run timeout; if stdio is detached from the inherited
+    # pipes the script returns in ~0.6s, otherwise Python hits TimeoutExpired.
+    out="$TMPDIR_TEST/$colony.pipe.log"
+    SHIM_PIPE_DIR="$TMPDIR_TEST/shim_pipe_$colony"
+    mkdir -p "$SHIM_PIPE_DIR"
+    cat > "$SHIM_PIPE_DIR/agentis" <<'SHIM'
+#!/bin/bash
+sleep 5
+exit 0
+SHIM
+    chmod +x "$SHIM_PIPE_DIR/agentis"
+    py_out="$(PATH="$SHIM_PIPE_DIR:$PATH" python3 - "$script" "$first_agent" "$FIXTURE_TOML" <<'PYEOF' 2>&1
+import subprocess, sys, time
+start = time.time()
+try:
+    r = subprocess.run(
+        ['bash', sys.argv[1], '--restart-agent', sys.argv[2], sys.argv[3]],
+        capture_output=True, text=True, timeout=3,
+    )
+    elapsed = time.time() - start
+    print(f'OK rc={r.returncode} elapsed={elapsed:.2f} stdout={r.stdout.strip()!r}')
+except subprocess.TimeoutExpired as e:
+    elapsed = time.time() - start
+    print(f'TIMEOUT elapsed={elapsed:.2f} stdout={(e.stdout or b"").decode(errors="replace").strip()!r}')
+    sys.exit(1)
+PYEOF
+    )" && py_rc=0 || py_rc=$?
+    echo "$py_out" > "$out"
+    if [ "$py_rc" = "0" ] && echo "$py_out" | grep -q '^OK rc=0' \
+         && echo "$py_out" | grep -qE "started $first_agent pid=[0-9]+ tick=[0-9]+"; then
+        pass "$colony: restart returns promptly under subprocess.run(capture_output=True) (no pipe inheritance)"
+    else
+        fail "$colony: subprocess.run(capture_output=True) hangs or fails — daemon stdio likely inherited" "body=$(head -c 300 "$out")"
+    fi
+    # Clean up the long-sleeping fake daemon so it doesn't linger past the test.
+    pkill -f "$SHIM_PIPE_DIR/agentis" 2>/dev/null || true
 }
 
 test_one_colony triage         "$agents_triage"

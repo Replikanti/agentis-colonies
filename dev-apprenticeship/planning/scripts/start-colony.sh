@@ -173,11 +173,16 @@ if [ -n "$RESTART_AGENT" ]; then
         exit 3
     fi
     tick=$(tick_interval_for "$RESTART_AGENT")
+    # Detach daemon stdio from any inherited pipes (e.g. the dashboard's
+    # subprocess.run(capture_output=True) pipes). Without this, the daemon
+    # keeps those fds open after start-colony.sh exits, and the Python
+    # caller blocks on read until its own timeout — reporting spurious
+    # "restart failed" even though the agent came up fine.
     agentis daemon "$COLONY_DIR/agents/${RESTART_AGENT}.ag" \
         --colony planning \
         --enable-exec \
         --enable-messaging \
-        --tick-interval "$tick" &
+        --tick-interval "$tick" </dev/null >/dev/null 2>&1 &
     agent_pid=$!
     sleep 0.5
     if ! kill -0 "$agent_pid" 2>/dev/null; then
