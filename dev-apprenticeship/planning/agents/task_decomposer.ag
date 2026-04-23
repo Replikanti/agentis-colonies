@@ -27,10 +27,10 @@ fn unplanned_cmd() -> string {
     let ts = recall_latest("task_decomposer:last_check");
     if len(ts) > 0 {
         // #235: events-aware query — see risk_assessor.ag for rationale.
-        return "$COLONY_DIR/scripts/gitlab-api.sh issues-by-label-events --since " + shell_escape(ts) + " --view planning";
+        return "$COLONY_DIR/scripts/forge-api.sh issues-by-label-events --since " + shell_escape(ts) + " --view planning";
     };
     // First-tick fallback: no prior window; snapshot preserves pre-#235 boot behavior.
-    return "$COLONY_DIR/scripts/gitlab-api.sh issues --needs-planning --view planning";
+    return "$COLONY_DIR/scripts/forge-api.sh issues --needs-planning --view planning";
 }
 
 fn get_confidence() -> float {
@@ -64,7 +64,7 @@ fn tick(reason: string) -> void {
     // 1. Observe: analyze recent issues to infer decomposition style
     if observe_stale == 1 {
         let recent_raw = try {
-            exec sh "$COLONY_DIR/scripts/gitlab-api.sh issues --view planning";
+            exec sh "$COLONY_DIR/scripts/forge-api.sh issues --view planning";
         } catch e {
             print("[task_decomposer] GitLab issues poll failed:", e);
             "";
@@ -143,7 +143,7 @@ fn tick(reason: string) -> void {
     if my_tier == "autonomous" {
         emit("planning:breakdown", breakdown);
         let note = "**Task Breakdown** (automated): " + to_string(breakdown.count) + " subtasks\n\n" + breakdown.subtasks;
-        let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(breakdown.issue_id) + " --body " + shell_escape(note);
+        let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(breakdown.issue_id) + " --body " + shell_escape(note);
         let post_result = try { exec sh post_cmd; } catch e {
             print("[task_decomposer] Failed to post note:", e);
             "";
