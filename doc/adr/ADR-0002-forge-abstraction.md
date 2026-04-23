@@ -107,14 +107,18 @@ authoritative contract; `test-forge-api.sh` enforces byte-identical
 output for matching fixtures across both backends.
 
 **Per-PR rollout.** PR 1 shipped the dispatcher skeleton and config
-schema only. PR 2 (the current PR as of this writing) ships the triage
-colony's `github-api.sh` with 7 subcommands (`issues`, `create-issue`,
-`update-issue`, `members`, `get-issue`, `labels`, `add-note`) plus the
-`[forge.github]` env-export branch in `triage/scripts/start-colony.sh`.
-The remaining colonies' wrappers land across PRs 3-6 in the order
-planning → implementation → code-review → release. `rate-limit-status`
-and the dashboard tile ship in PR 7 alongside the legacy
-`[gitlab]`-section retirement.
+schema only. PR 2 shipped the triage colony's `github-api.sh` with 7
+subcommands (`issues`, `create-issue`, `update-issue`, `members`,
+`get-issue`, `labels`, `add-note`) plus the `[forge.github]` env-export
+branch in `triage/scripts/start-colony.sh`. PR 3 (the current PR as of
+this writing) ships the planning colony's `github-api.sh` with 5
+subcommands (`issues`, `issues-by-label-events`, `issue-label-events`,
+`add-note`, `merge-requests`) plus the matching `[forge.github]`
+env-export branch and `.ag` dispatcher migration. The remaining
+colonies' wrappers land across PRs 4-6 in the order
+implementation → code-review → release. `rate-limit-status` and the
+dashboard tile ship in PR 7 alongside the legacy `[gitlab]`-section
+retirement.
 
 **`.ag` migration is in-scope for every per-colony PR.** Each
 per-colony PR (PRs 2-6) MUST rewrite every `exec sh` call site in that
@@ -138,6 +142,21 @@ not in the original ADR table; it is added here and back-ported to
 `triage/scripts/gitlab-api.sh` to match (the `.ag` agents were calling
 it against a non-existent gitlab-api.sh arm before PR 2, silently
 swallowed by `try/catch`).
+
+**PR 3 additions.** The planning contract layers two subcommands on
+top of the triage surface: `merge-requests` (maps to GitHub `/pulls`
+with `state=open|closed|all`, `--state merged` collapsing to
+`closed + merged_at != null` since GitHub has no separate "merged"
+state) and `issue-label-events` (maps to GitHub `/issues/{n}/timeline`
+filtered to `event in ("labeled", "unlabeled")`, since GitHub has no
+dedicated `resource_label_events` endpoint). `issues-by-label-events`
+(the composite the planning agents use to catch short-lived trigger
+labels) is shared contract for PRs 3-6 — any colony that ingests
+label-event-driven triggers uses the same shape. GitHub's `/pulls`
+list endpoint omits `changed_files`; the normalizer forwards `null`,
+and scope_estimator tolerates it (complexity scoring is best-effort).
+GitHub's `/pulls` has no `since` query param, so `--since` is filtered
+client-side against `updated_at`.
 
 | Subcommand           | Normalized output |
 |----------------------|-------------------|

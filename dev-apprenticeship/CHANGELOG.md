@@ -97,6 +97,39 @@ is asserted until multi-version CI is in place.
   `gitlab-api.sh` (drift detector for the duplicated projection
   function).
   [#256](https://github.com/Replikanti/agentis-colonies/issues/256)
+- **Planning colony GitHub backend (PR 3 of 7 for #256).**
+  `dev-apprenticeship/planning/scripts/github-api.sh` implements the
+  planning contract against the GitHub REST API v3 (5 subcommands:
+  `issues`, `issues-by-label-events`, `issue-label-events`, `add-note`,
+  `merge-requests`). Two GitHub-specific endpoint collapses that are not
+  a concern for triage: `/issues/{n}/timeline` replaces GitLab's
+  `/resource_label_events` (filtered to `event in ("labeled",
+  "unlabeled")`, mapped `labeled` → "add" / `unlabeled` → "remove");
+  `/pulls` replaces `/merge_requests` and has no distinct "merged"
+  state, so `--state merged` collapses to `state=closed` plus a
+  client-side `merged_at != null` filter. GitHub's `/pulls` also omits
+  `changed_files` on the list endpoint — the normalizer forwards `null`,
+  and `scope_estimator` already tolerates missing complexity scores.
+  All 16 `exec sh` call sites across `scope_estimator`, `risk_assessor`,
+  `task_decomposer`, and `plan_reviewer` were rewritten from
+  `scripts/gitlab-api.sh` to `scripts/forge-api.sh` (required so
+  `check-forge-dispatch.sh` stays green once the concrete
+  `github-api.sh` lands). `planning/scripts/start-colony.sh` now
+  branches on `FORGE_TYPE` identically to triage: exports
+  `GITHUB_URL` / `GITHUB_OWNER` / `GITHUB_REPO` / `GITHUB_TOKEN` /
+  `GITHUB_ME` from `[forge.github]` when `type = "github"`, reads
+  `[forge.gitlab]` with `[gitlab]` legacy fallback otherwise; the
+  `PLANNING_TRIGGER_LABEL` export is backend-agnostic and unchanged.
+  Two new tests: `tools/test-github-planning-normalize.sh` (32
+  assertions covering `normalize_issues` PR-filter + field mapping,
+  `normalize_pulls` state collapse + target_branch/source_branch/
+  changes_count handling, `normalize_timeline` label/since filters + add/
+  remove mapping, end-to-end pipes through `planning` and `planning-mr`
+  views); and a planning-colony extension to `tools/test-gitlab-views.sh`
+  asserting byte-identical `project_json` output between
+  `github-api.sh` and `gitlab-api.sh` for the `planning` and
+  `planning-mr` views.
+  [#256](https://github.com/Replikanti/agentis-colonies/issues/256)
 
 ### Changed
 

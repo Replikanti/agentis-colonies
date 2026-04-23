@@ -323,6 +323,29 @@ if [ -f "$GH_SCRIPT" ]; then
     done
 fi
 
+# --- planning github-api.sh project_json parity (#256 PR 3) ---
+# Same deal as triage: planning/scripts/github-api.sh duplicates project_json
+# instead of sourcing gitlab-api.sh. The planning-specific views are `planning`
+# and `planning-mr`; both must emit byte-identical JSON to their gitlab twin
+# when fed an already-GitLab-shape fixture.
+GH_PLANNING_SCRIPT="$REPO_ROOT/dev-apprenticeship/planning/scripts/github-api.sh"
+if [ -f "$GH_PLANNING_SCRIPT" ]; then
+    for pair in \
+        "planning:$FIXTURE_ISSUES" \
+        "planning-mr:$FIXTURE_MRS"
+    do
+        view="${pair%%:*}"
+        fixture="${pair#*:}"
+        gl_out=$(run_view "$REPO_ROOT/dev-apprenticeship/planning/scripts/gitlab-api.sh" "$view" "$fixture")
+        gh_out=$(run_view_github "$GH_PLANNING_SCRIPT" "$view" "$fixture")
+        if [ "$gl_out" = "$gh_out" ]; then
+            pass "planning github-api.sh project_json parity: $view"
+        else
+            fail "planning github-api.sh project_json drifted from gitlab-api.sh: $view"
+        fi
+    done
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

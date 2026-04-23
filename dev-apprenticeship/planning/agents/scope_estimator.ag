@@ -27,10 +27,10 @@ fn unplanned_cmd() -> string {
     let ts = recall_latest("scope_estimator:last_check");
     if len(ts) > 0 {
         // #235: events-aware query — see risk_assessor.ag for rationale.
-        return "$COLONY_DIR/scripts/gitlab-api.sh issues-by-label-events --since " + shell_escape(ts) + " --view planning";
+        return "$COLONY_DIR/scripts/forge-api.sh issues-by-label-events --since " + shell_escape(ts) + " --view planning";
     };
     // First-tick fallback: no prior window; snapshot preserves pre-#235 boot behavior.
-    return "$COLONY_DIR/scripts/gitlab-api.sh issues --needs-planning --view planning";
+    return "$COLONY_DIR/scripts/forge-api.sh issues --needs-planning --view planning";
 }
 
 fn get_confidence() -> float {
@@ -64,7 +64,7 @@ fn tick(reason: string) -> void {
     // 1. Observe: pull recent merged MRs and learn calibration
     if observe_stale == 1 {
         let merged_raw = try {
-            exec sh "$COLONY_DIR/scripts/gitlab-api.sh merge-requests --state merged --view planning-mr";
+            exec sh "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --view planning-mr";
         } catch e {
             print("[scope_estimator] GitLab merged-MR poll failed:", e);
             "";
@@ -130,7 +130,7 @@ fn tick(reason: string) -> void {
     if my_tier == "autonomous" {
         emit("planning:scope_estimate", estimate);
         let note = "**Scope Estimate** (automated): " + to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points\n\n" + estimate.reasoning;
-        let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(estimate.issue_id) + " --body " + shell_escape(note);
+        let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(estimate.issue_id) + " --body " + shell_escape(note);
         let post_result = try { exec sh post_cmd; } catch e {
             print("[scope_estimator] Failed to post note:", e);
             "";

@@ -81,9 +81,9 @@ fn tick(reason: string) -> void {
     // state snapshot on first tick (byte-identical to pre-#235 boot).
     let prev_check = recall_latest("plan_reviewer:last_check");
     let issues_cmd = if len(prev_check) > 0 {
-        "$COLONY_DIR/scripts/gitlab-api.sh issues-by-label-events --since " + shell_escape(prev_check) + " --view planning";
+        "$COLONY_DIR/scripts/forge-api.sh issues-by-label-events --since " + shell_escape(prev_check) + " --view planning";
     } else {
-        "$COLONY_DIR/scripts/gitlab-api.sh issues --needs-planning --view planning";
+        "$COLONY_DIR/scripts/forge-api.sh issues --needs-planning --view planning";
     };
     let issues_raw = try {
         exec sh issues_cmd;
@@ -166,7 +166,7 @@ fn tick(reason: string) -> void {
 
     if my_tier == "autonomous" {
         // Direct external write: post the plan as an issue note.
-        let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(draft.issue_id) + " --body " + shell_escape(draft.plan);
+        let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(draft.issue_id) + " --body " + shell_escape(draft.plan);
         let post_result = try { exec sh post_cmd; } catch e {
             print("[plan_reviewer] Failed to post note:", e);
             "";
@@ -200,7 +200,7 @@ fn tick(reason: string) -> void {
             // Draft external write: post with [draft-plan] prefix so a human
             // reviewer can promote or discard it.
             let draft_body = "[draft-plan] **Plan Review** (automated, pending approval)\n\n" + draft.plan;
-            let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(draft.issue_id) + " --body " + shell_escape(draft_body);
+            let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(draft.issue_id) + " --body " + shell_escape(draft_body);
             let draft_result = try { exec sh post_cmd; } catch e {
                 print("[plan_reviewer] Failed to post draft note:", e);
                 "";

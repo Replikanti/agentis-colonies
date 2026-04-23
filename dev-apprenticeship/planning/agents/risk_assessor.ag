@@ -30,11 +30,11 @@ fn unplanned_cmd() -> string {
         // the trigger label was added at any point in [ts, now] per
         // resource_label_events. Catches transitions we'd miss between
         // 60 s polls with a pure current-state snapshot.
-        return "$COLONY_DIR/scripts/gitlab-api.sh issues-by-label-events --since " + shell_escape(ts) + " --view planning";
+        return "$COLONY_DIR/scripts/forge-api.sh issues-by-label-events --since " + shell_escape(ts) + " --view planning";
     };
     // First-tick fallback: no prior window to diff against; the snapshot
     // preserves pre-#235 boot behavior byte-identically.
-    return "$COLONY_DIR/scripts/gitlab-api.sh issues --needs-planning --view planning";
+    return "$COLONY_DIR/scripts/forge-api.sh issues --needs-planning --view planning";
 }
 
 fn get_confidence() -> float {
@@ -71,7 +71,7 @@ fn tick(reason: string) -> void {
     // 1. Observe: pull recent opened issues and skim for incident-style patterns
     if observe_stale == 1 {
         let recent_raw = try {
-            exec sh "$COLONY_DIR/scripts/gitlab-api.sh issues --view planning";
+            exec sh "$COLONY_DIR/scripts/forge-api.sh issues --view planning";
         } catch e {
             print("[risk_assessor] GitLab issues poll failed:", e);
             "";
@@ -156,7 +156,7 @@ fn tick(reason: string) -> void {
         // Direct external write: post the risk assessment as an issue note.
         emit("planning:risks", assessment);
         let note = "**Risk Assessment** (automated): " + assessment.severity + "\n\n" + assessment.risks;
-        let post_cmd = "$COLONY_DIR/scripts/gitlab-api.sh add-note " + to_string(assessment.issue_id) + " --body " + shell_escape(note);
+        let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(assessment.issue_id) + " --body " + shell_escape(note);
         let post_result = try { exec sh post_cmd; } catch e {
             print("[risk_assessor] Failed to post note:", e);
             "";
