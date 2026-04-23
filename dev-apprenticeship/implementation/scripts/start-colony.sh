@@ -139,12 +139,23 @@ esac
 # consume IMPLEMENTATION_TRIGGER_LABEL identically.
 IMPLEMENTATION_TRIGGER_LABEL=$(parse_toml implementation trigger_label)
 
-# #224: primary branch name. Empty if not configured (pre-#224 setups);
-# the backend wrapper falls back to the hardcoded default "main" via
-# ${GITLAB_DEFAULT_BRANCH:-main}. The env var name is kept as
-# GITLAB_DEFAULT_BRANCH for cross-backend parity; PR 7 of #256 may rename
-# it when the legacy [gitlab] section retires.
-GITLAB_DEFAULT_BRANCH=$(parse_toml gitlab default_branch)
+# #224: primary branch name. Prefer the ADR-0002 sections first so
+# operators who move everything under [forge.*] aren't silently ignored,
+# then fall back to the legacy [gitlab].default_branch for pre-#256
+# configs. All three forms yield the same GITLAB_DEFAULT_BRANCH env var
+# that both backend wrappers consume (${GITLAB_DEFAULT_BRANCH:-main}).
+# The env var name is kept as GITLAB_DEFAULT_BRANCH for cross-backend
+# parity; PR 7 of #256 may rename it when the legacy [gitlab] section
+# retires.
+case "$FORGE_TYPE" in
+    github)
+        GITLAB_DEFAULT_BRANCH=$(parse_toml forge.github default_branch)
+        ;;
+    *)
+        GITLAB_DEFAULT_BRANCH=$(parse_toml forge.gitlab default_branch)
+        ;;
+esac
+[ -z "$GITLAB_DEFAULT_BRANCH" ] && GITLAB_DEFAULT_BRANCH=$(parse_toml gitlab default_branch)
 
 export FORGE_TYPE
 export IMPLEMENTATION_TRIGGER_LABEL
