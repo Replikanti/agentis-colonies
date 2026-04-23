@@ -40,20 +40,31 @@ if [ -z "$BIN" ]; then
 fi
 
 if [ -z "$BIN" ]; then
-    cat >&2 <<EOF
-dashboard.sh: federation-dashboard not found.
-
-The dashboard is now a separately-versioned standalone component (#252).
-Install the version pinned by this federation:
-
-  PIN="\$(cat "$SCRIPT_DIR/.dashboard-version" 2>/dev/null || echo 0.1.0)"
-  curl -fsSL -o /tmp/fd.tar.gz \\
-    "https://github.com/Replikanti/agentis-colonies/releases/download/federation-dashboard-v\$PIN/federation-dashboard-v\$PIN.tar.gz"
-  tar -xzf /tmp/fd.tar.gz -C /tmp
-  /tmp/federation-dashboard-v\$PIN/install.sh
-
-Or set FEDERATION_DASHBOARD_BIN to an explicit path.
-EOF
+    PIN_FILE="$SCRIPT_DIR/.dashboard-version"
+    if [ -r "$PIN_FILE" ]; then
+        PIN="$(tr -d ' \n' < "$PIN_FILE")"
+    else
+        PIN=""
+    fi
+    {
+        echo "dashboard.sh: federation-dashboard not found."
+        echo
+        echo "The dashboard is now a separately-versioned standalone component (#252)."
+        if [ -n "$PIN" ]; then
+            echo "Install the version pinned by this federation (federation-dashboard v$PIN):"
+            echo
+            echo "  curl -fsSL -o /tmp/fd.tar.gz \\"
+            echo "    \"https://github.com/Replikanti/agentis-colonies/releases/download/federation-dashboard-v${PIN}/federation-dashboard-v${PIN}.tar.gz\""
+            echo "  tar -xzf /tmp/fd.tar.gz -C /tmp"
+            echo "  /tmp/federation-dashboard-v${PIN}/install.sh"
+        else
+            echo "Could not read the federation's pin file at:"
+            echo "  $PIN_FILE"
+            echo "Re-run dev-apprenticeship/install.sh to restore it (it will also offer to install the pinned dashboard)."
+        fi
+        echo
+        echo "Or set FEDERATION_DASHBOARD_BIN to an explicit path."
+    } >&2
     exit 1
 fi
 

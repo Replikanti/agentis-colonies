@@ -111,8 +111,12 @@ mkdir -p "$STAGE"
 
 # Copy contents of federation-dashboard/ (flattened, no nested wrapper dir).
 # Skip BUNDLE.manifest (build-only artifact) and Python bytecode caches.
+# nullglob makes the dotfile pattern collapse to nothing instead of
+# expanding to its own literal text when there are no dotfiles (set -u
+# safe). dotglob included for symmetry if a future dotfile needs to ship.
+shopt -s nullglob dotglob
 copied=0
-for entry in "$COMP_DIR"/* "$COMP_DIR"/.[!.]*; do
+for entry in "$COMP_DIR"/*; do
     [ -e "$entry" ] || continue
     name="$(basename "$entry")"
     case "$name" in
@@ -121,6 +125,7 @@ for entry in "$COMP_DIR"/* "$COMP_DIR"/.[!.]*; do
     cp -pR "$entry" "$STAGE/"
     copied=$((copied + 1))
 done
+shopt -u nullglob dotglob
 
 # Strip nested __pycache__ that copied in via lib/ etc.
 find "$STAGE" -type d -name __pycache__ -exec rm -rf {} +

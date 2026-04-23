@@ -8,7 +8,7 @@
 # Usage:
 #   ./install.sh                  # install into XDG defaults
 #   ./install.sh --uninstall      # remove the install + symlink
-#   ./install.sh --prefix /opt/x  # override data dir; bin still XDG (or /opt/x/bin if no XDG_BIN_HOME)
+#   ./install.sh --prefix /opt/x  # override data dir; bin always XDG (use XDG_BIN_HOME to relocate the symlink)
 
 set -e
 

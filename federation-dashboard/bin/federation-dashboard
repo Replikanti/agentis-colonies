@@ -31,8 +31,10 @@ if [ ! -d "$LIB_DIR" ]; then
 fi
 
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 <federation-dir> [port]"
-    echo "Example: $0 /path/to/dev-apprenticeship"
+    {
+        echo "Usage: $0 <federation-dir> [port]"
+        echo "Example: $0 /path/to/dev-apprenticeship"
+    } >&2
     exit 1
 fi
 
@@ -227,7 +229,6 @@ generate
     done
 ) &
 REGEN_PID=$!
-trap 'kill $REGEN_PID 2>/dev/null; exit 0' INT TERM
 
 # Serve with all endpoints. SCRIPT_PATH and FED_DIR are passed through so
 # POST /refresh can re-exec this script in regen-only mode. ALL_AGENTS_CSV
@@ -235,5 +236,15 @@ trap 'kill $REGEN_PID 2>/dev/null; exit 0' INT TERM
 # match exactly or the endpoint rejects with 400. FED_TOOLS_DIR is the
 # resolved location of shared helpers (kill-federation.sh, resolve-tick-
 # interval.py); empty disables /kill and falls back to default tick interval.
+#
+# The server runs in the background so this shell can `wait` on it; that
+# way SIGTERM/SIGINT delivered to the wrapper PID alone (e.g. by a service
+# manager that doesn't signal the whole pgid) still tears down both the
+# regen loop and the python child via the trap below — without it, a
+# foreground `python3 ...` would block bash from running the trap until
+# python had already exited on its own.
 ALL_AGENTS_CSV="$(IFS=,; echo "${ALL_AGENTS[*]}")"
-python3 "$LIB_DIR/federation-dashboard-server.py" "$DASH_DIR" "$PORT" "$SCRIPT_PATH" "$FED_DIR" "$ALL_AGENTS_CSV" "$AGENT_COLONY_MAP" "$FED_TOOLS_DIR"
+python3 "$LIB_DIR/federation-dashboard-server.py" "$DASH_DIR" "$PORT" "$SCRIPT_PATH" "$FED_DIR" "$ALL_AGENTS_CSV" "$AGENT_COLONY_MAP" "$FED_TOOLS_DIR" &
+SERVER_PID=$!
+trap 'kill "$REGEN_PID" "$SERVER_PID" 2>/dev/null; wait "$SERVER_PID" 2>/dev/null; exit 0' INT TERM
+wait "$SERVER_PID"
