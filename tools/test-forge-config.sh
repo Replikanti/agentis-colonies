@@ -21,7 +21,27 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PASS=0
 FAIL=0
 TMPDIR_TEST="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR_TEST"' EXIT
+
+# Test 5 swaps each colony's real gitlab-api.sh with a printf shim so
+# the dispatcher-forwarding assertion does not require a real GitLab.
+# We *must* restore the originals no matter how this script exits —
+# a Ctrl+C / OOM / set -e abort that leaves the shim in place turns
+# every colony's committed gitlab-api.sh into a 3-line stub. Track the
+# backup pairs in an array and restore in the EXIT trap.
+declare -a SHIMMED_REALS=()
+declare -a SHIMMED_BACKUPS=()
+restore_shims() {
+    local i
+    for i in "${!SHIMMED_REALS[@]}"; do
+        local real="${SHIMMED_REALS[$i]}"
+        local backup="${SHIMMED_BACKUPS[$i]}"
+        if [ -f "$backup" ] && [ -f "$real" ]; then
+            cp -f "$backup" "$real" 2>/dev/null || true
+            chmod +x "$real" 2>/dev/null || true
+        fi
+    done
+}
+trap 'restore_shims; rm -rf "$TMPDIR_TEST"' EXIT INT TERM
 
 pass() { echo "[PASS] $1"; PASS=$((PASS + 1)); }
 fail() { echo "[FAIL] $1${2:+: $2}"; FAIL=$((FAIL + 1)); }
@@ -94,10 +114,13 @@ for colony in $COLONIES; do
     FORGE_TYPE=github bash "$disp" any-command >"$out" 2>&1
     rc=$?
     set -e
-    if [ "$rc" = "99" ] && grep -q "not yet implemented" "$out"; then
-        pass "$colony: FORGE_TYPE=github returns exit 99 with ADR pointer"
+    if [ "$rc" = "99" ] \
+       && grep -q "not yet implemented" "$out" \
+       && grep -q "ADR-0002" "$out" \
+       && grep -q "issues/256" "$out"; then
+        pass "$colony: FORGE_TYPE=github returns exit 99 with ADR + issue pointers"
     else
-        fail "$colony: FORGE_TYPE=github should exit 99 with clear message" "rc=$rc body=$(head -c 200 "$out")"
+        fail "$colony: FORGE_TYPE=github should exit 99 with clear message + ADR + issue pointers" "rc=$rc body=$(head -c 300 "$out")"
     fi
 done
 
@@ -122,8 +145,11 @@ done
 # Test 5: dispatcher forwards to gitlab-api.sh with argv preserved
 # -----------------------------------------------------------------------------
 # Shim gitlab-api.sh via PATH isn't enough because forge-api.sh resolves it
-# from $SCRIPT_DIR, not PATH. Instead we shim by renaming the colony's real
-# gitlab-api.sh aside for the duration of the test.
+# from $SCRIPT_DIR, not PATH. Instead we shim by copying a stub over each
+# colony's real gitlab-api.sh for the duration of the test. Backups are
+# tracked in SHIMMED_REALS/SHIMMED_BACKUPS so the EXIT trap restores the
+# originals even on Ctrl+C / set -e abort (otherwise a fatal mid-loop leaves
+# the repo with stubs in place of the committed gitlab-api.sh files).
 for colony in $COLONIES; do
     sd="$REPO_ROOT/dev-apprenticeship/$colony/scripts"
     real="$sd/gitlab-api.sh"
@@ -133,6 +159,10 @@ for colony in $COLONIES; do
     fi
     backup="$TMPDIR_TEST/gitlab-api.sh.$colony.bak"
     cp "$real" "$backup"
+    # Register for trap-based restore BEFORE writing the shim so a crash
+    # between cp+register and the shim install still restores correctly.
+    SHIMMED_REALS+=("$real")
+    SHIMMED_BACKUPS+=("$backup")
     cat > "$real" <<'SHIM'
 #!/bin/bash
 printf 'gitlab-shim argv=%s\n' "$*"
@@ -146,7 +176,8 @@ SHIM
     rc=$?
     set -e
 
-    # Restore real gitlab-api.sh regardless of test outcome.
+    # Synchronous restore (in addition to the EXIT trap) so subsequent
+    # tests see the real gitlab-api.sh rather than the shim.
     cp "$backup" "$real"
     chmod +x "$real"
 
@@ -191,10 +222,29 @@ if ! grep -q 'Forge backend' "$install"; then
 else
     pass "install.sh: interactive forge-choice prompt present"
 fi
-if ! grep -q '_set_forge_type' "$install"; then
-    fail "install.sh: [forge].type rewrite helper missing — operator's forge selection would not persist to colony.toml"
+# The [forge].type rewrite must run UNCONDITIONALLY (outside the WRITE_CREDS
+# branch) — otherwise an operator re-running install.sh purely to switch
+# forge (or answering "n" to the credential-update prompt) never has their
+# selection persisted. We assert this by pattern-matching the section
+# header that introduces the unconditional rewrite.
+if ! grep -q 'Setting \[forge\].type = ' "$install"; then
+    fail "install.sh: unconditional [forge].type rewrite missing — forge selection would not persist when WRITE_CREDS=0"
 else
-    pass "install.sh: [forge].type rewrite helper present"
+    pass "install.sh: unconditional [forge].type rewrite present"
+fi
+# The unattended-install short-circuit must also skip the two interactive
+# gates: (a) the "Continue with GitHub scaffolding anyway?" prompt when
+# FEDERATION_FORGE_TYPE=github; (b) the "Update GitLab credentials?" prompt
+# when configs already exist. Pattern-match the two short-circuit comments.
+if ! grep -q 'treating as confirmation, proceeding' "$install"; then
+    fail "install.sh: FEDERATION_FORGE_TYPE does not short-circuit the GitHub-confirm prompt"
+else
+    pass "install.sh: FEDERATION_FORGE_TYPE short-circuits the GitHub-confirm prompt"
+fi
+if ! grep -q 'FEDERATION_FORGE_TYPE set and configs exist' "$install"; then
+    fail "install.sh: FEDERATION_FORGE_TYPE does not short-circuit the credential-update prompt for existing configs"
+else
+    pass "install.sh: FEDERATION_FORGE_TYPE short-circuits the credential-update prompt"
 fi
 
 # -----------------------------------------------------------------------------

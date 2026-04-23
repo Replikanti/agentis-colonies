@@ -207,15 +207,21 @@ if [ "$FORGE_TYPE" = "github" ]; then
     info "exits 99 for FORGE_TYPE=github. Track progress at:"
     info "  https://github.com/Replikanti/agentis-colonies/issues/256"
     echo ""
-    ask "Continue with GitHub scaffolding anyway? [y/N]:"
-    read -r CONTINUE_GITHUB
-    case "$CONTINUE_GITHUB" in
-        y|Y|yes|YES) info "Proceeding with GitHub scaffolding." ;;
-        *)
-            info "Aborting install. Re-run and select GitLab, or wait for PRs 2-6 of #256."
-            exit 0
-            ;;
-    esac
+    if [ -n "${FEDERATION_FORGE_TYPE:-}" ]; then
+        # Env var already acts as explicit confirmation — skip interactive
+        # gate so unattended installs don't block on stdin.
+        info "FEDERATION_FORGE_TYPE=github → treating as confirmation, proceeding."
+    else
+        ask "Continue with GitHub scaffolding anyway? [y/N]:"
+        read -r CONTINUE_GITHUB
+        case "$CONTINUE_GITHUB" in
+            y|Y|yes|YES) info "Proceeding with GitHub scaffolding." ;;
+            *)
+                info "Aborting install. Re-run and select GitLab, or wait for PRs 2-6 of #256."
+                exit 0
+                ;;
+        esac
+    fi
 fi
 
 # --- 3. GitLab credentials ---
@@ -234,14 +240,23 @@ echo ""
 # redoing the install. See #116 gap 5.
 WRITE_CREDS=1
 if [ "$CONFIGS_EXISTED" -eq 5 ]; then
-    ask "Update GitLab credentials in existing configs? [Y/n]:"
-    read -r UPDATE_CREDS
-    case "$UPDATE_CREDS" in
-        n|N)
-            WRITE_CREDS=0
-            info "Keeping existing GitLab credentials. Skipping prompts."
-            ;;
-    esac
+    if [ -n "${FEDERATION_FORGE_TYPE:-}" ]; then
+        # Unattended re-install purely to switch forge (or reaffirm it).
+        # Don't block on stdin and don't silently overwrite existing
+        # credentials — the operator set the env var to pick the forge,
+        # not to rotate credentials.
+        WRITE_CREDS=0
+        info "FEDERATION_FORGE_TYPE set and configs exist → keeping existing credentials (forge type will still be updated below)."
+    else
+        ask "Update GitLab credentials in existing configs? [Y/n]:"
+        read -r UPDATE_CREDS
+        case "$UPDATE_CREDS" in
+            n|N)
+                WRITE_CREDS=0
+                info "Keeping existing GitLab credentials. Skipping prompts."
+                ;;
+        esac
+    fi
 fi
 
 if [ "$WRITE_CREDS" -eq 1 ]; then
@@ -285,40 +300,41 @@ if [ "$WRITE_CREDS" -eq 1 ]; then
 
     for colony in "${COLONIES[@]}"; do
         CONFIG="$SCRIPT_DIR/$colony/config/colony.toml"
-        # Write credentials by matching TOML keys (works on both fresh and existing configs).
-        # The credential substitutions also hit the [forge.gitlab] block (same key names)
-        # so [gitlab] and [forge.gitlab] stay in sync during the migration overlap.
-        python3 - "$CONFIG" "$GITLAB_URL" "$GITLAB_TOKEN" "$GITLAB_PROJECT" "$GITLAB_ME" "$FORGE_TYPE" <<'PY'
+        # Rewrite credentials in both [gitlab] and [forge.gitlab]. Section-
+        # scoped so an operator who uncommented [forge.github] (and perhaps
+        # dropped a ghp_* PAT there) does not see their GitHub token
+        # clobbered by the glpat rewrite.
+        python3 - "$CONFIG" "$GITLAB_URL" "$GITLAB_TOKEN" "$GITLAB_PROJECT" "$GITLAB_ME" <<'PY'
 import sys, re
-path, url, token, project, me, forge_type = sys.argv[1:7]
+path, url, token, project, me = sys.argv[1:6]
 with open(path) as f:
     content = f.read()
-content = re.sub(r'(url\s*=\s*)"[^"]*"', lambda m: m.group(1) + '"' + url + '"', content)
-content = re.sub(r'(token\s*=\s*)"[^"]*"', lambda m: m.group(1) + '"' + token + '"', content)
-content = re.sub(r'(project\s*=\s*)"[^"]*"', lambda m: m.group(1) + '"' + project + '"', content)
-# #104: `me` key. Only update if the template declared one; do not
-# inject into existing configs that predate #104 (operator can add
-# it manually if they want personal/team tagging). Anchor with ^ +
-# line flag so `name = ` / `some = ` don't match.
-content = re.sub(r'(?m)^(me\s*=\s*)"[^"]*"', lambda m: m.group(1) + '"' + me + '"', content)
-# #256: [forge].type selects the active backend. Section-scoped rewrite
-# so the literal key `type = "..."` inside [forge] is the only one
-# touched (there is no ambiguity today, but future sections may reuse
-# the word `type` and we want to fail loudly if that ever happens).
-def _set_forge_type(content, value):
+
+def _rewrite_in_sections(content, targets, rewrites):
     lines = content.splitlines(keepends=True)
-    in_forge = False
+    section = None
     out = []
     for line in lines:
         stripped = line.strip()
         if stripped.startswith('[') and stripped.endswith(']'):
-            sect = stripped[1:-1].strip()
-            in_forge = (sect == 'forge')
-        if in_forge and re.match(r'\s*type\s*=\s*"[^"]*"', line):
-            line = re.sub(r'(type\s*=\s*)"[^"]*"', lambda m: m.group(1) + '"' + value + '"', line, count=1)
+            section = stripped[1:-1].strip()
+        if section in targets:
+            for pat, sub in rewrites:
+                line = re.sub(pat, sub, line)
         out.append(line)
     return ''.join(out)
-content = _set_forge_type(content, forge_type)
+
+cred_sections = {'gitlab', 'forge.gitlab'}
+rewrites = [
+    (r'(url\s*=\s*)"[^"]*"',     lambda m: m.group(1) + '"' + url + '"'),
+    (r'(token\s*=\s*)"[^"]*"',   lambda m: m.group(1) + '"' + token + '"'),
+    (r'(project\s*=\s*)"[^"]*"', lambda m: m.group(1) + '"' + project + '"'),
+    # #104: `me` is optional; only rewrite if the template declared one
+    # (operator on a pre-#104 config can add it manually).
+    (r'(me\s*=\s*)"[^"]*"',      lambda m: m.group(1) + '"' + me + '"'),
+]
+content = _rewrite_in_sections(content, cred_sections, rewrites)
+
 with open(path, 'w') as f:
     f.write(content)
 PY
@@ -327,6 +343,50 @@ PY
             info "$colony: could not chmod 600 $CONFIG (filesystem may not support it)"
     done
 fi
+
+# #256: rewrite [forge].type unconditionally — runs even when WRITE_CREDS=0
+# (e.g. operator re-ran install.sh purely to switch forge via
+# FEDERATION_FORGE_TYPE, or answered "n" to the credential-update prompt).
+# Section-scoped so the literal key `type = "..."` inside [forge] is the
+# only one touched. Prints "no-forge-section" on stdout when the config
+# predates #256 and lacks a [forge] block — the outer loop flags that
+# visibly so the operator knows to re-copy colony.example.toml.
+echo ""
+echo "Setting [forge].type = \"$FORGE_TYPE\" in all colony configs..."
+for colony in "${COLONIES[@]}"; do
+    CONFIG="$SCRIPT_DIR/$colony/config/colony.toml"
+    RESULT=$(python3 - "$CONFIG" "$FORGE_TYPE" <<'PY'
+import sys, re
+path, forge_type = sys.argv[1:3]
+with open(path) as f:
+    content = f.read()
+lines = content.splitlines(keepends=True)
+in_forge = False
+rewrote = False
+out = []
+for line in lines:
+    stripped = line.strip()
+    if stripped.startswith('[') and stripped.endswith(']'):
+        sect = stripped[1:-1].strip()
+        in_forge = (sect == 'forge')
+    if in_forge and re.match(r'\s*type\s*=\s*"[^"]*"', line):
+        line = re.sub(r'(type\s*=\s*)"[^"]*"', lambda m: m.group(1) + '"' + forge_type + '"', line, count=1)
+        rewrote = True
+    out.append(line)
+if rewrote:
+    with open(path, 'w') as f:
+        f.write(''.join(out))
+    print("ok")
+else:
+    print("no-forge-section")
+PY
+)
+    case "$RESULT" in
+        ok)               ok "$colony: [forge].type = \"$FORGE_TYPE\"" ;;
+        no-forge-section) fail "$colony: no [forge] section in colony.toml (config predates #256). Re-copy from colony.example.toml or add [forge] manually." ;;
+        *)                fail "$colony: unexpected result from [forge].type rewrite: $RESULT" ;;
+    esac
+done
 
 # --- 4. Initialize agentis (if not already done) ---
 #

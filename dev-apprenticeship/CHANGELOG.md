@@ -40,11 +40,16 @@ is asserted until multi-version CI is in place.
   `FEDERATION_FORGE_TYPE=gitlab|github` env short-circuit for
   unattended installs, an interactive prompt defaulting to gitlab,
   a clear warning when github is chosen before PRs 2-6 land, and a
-  `_set_forge_type()` helper that rewrites `[forge].type` in the
-  generated `colony.toml`. The top-level `[gitlab]` section is
-  retained for one release of migration overlap (retired in PR 7 of
-  #256). New lint gate: `tools/test-forge-config.sh` (8 invariants ×
-  5 colonies + 4 global = 35 sub-tests). See
+  section-scoped rewrite that sets `[forge].type` in the generated
+  `colony.toml`. The `[forge].type` rewrite runs unconditionally (even
+  when the operator re-runs `install.sh` purely to switch forge and
+  declines to update credentials), and both the GitHub-confirm and
+  credential-update prompts short-circuit when `FEDERATION_FORGE_TYPE`
+  is set — unattended `FEDERATION_FORGE_TYPE=github ./install.sh`
+  installs no longer block on stdin. The top-level `[gitlab]` section
+  is retained for one release of migration overlap (retired in PR 7 of
+  #256). New lint gate: `tools/test-forge-config.sh` (6 per-colony
+  checks × 5 colonies + 7 install.sh + ADR checks = 37 sub-tests). See
   `doc/adr/ADR-0002-forge-abstraction.md` for the full contract.
   [#256](https://github.com/Replikanti/agentis-colonies/issues/256)
 

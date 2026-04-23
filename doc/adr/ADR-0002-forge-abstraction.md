@@ -78,13 +78,21 @@ type = "github"               # or "gitlab"
 [forge.github]
 owner = "me"
 repo  = "myrepo"
-token = "${GITHUB_TOKEN}"
+token = "ghp_your-token-here"
 
 [forge.gitlab]
 url     = "https://gitlab.com"
-project = 123
-token   = "${GITLAB_TOKEN}"
+project = "your-org/your-project"
+token   = "glpat-your-token-here"
 ```
+
+Values are literal strings. `parse-toml.sh` does not expand `${VAR}`
+references — tokens are stored verbatim in `colony.toml` (which is
+`chmod 600`) and `install.sh` writes the literal operator-supplied
+token, not an env-var reference. The `project` field is a path string
+(`owner/repo` or `group/subgroup/project`), matching the existing
+`[gitlab].project` convention; `gitlab-api.sh` URL-encodes it to
+`%2F`-separated form before calling the API.
 
 `start-colony.sh` reads `[forge].type`, exports `FORGE_TYPE`, and
 continues to export the legacy `GITLAB_*` env for backwards
@@ -97,6 +105,14 @@ retired and `[forge.*]` is authoritative.
 Every subcommand emits a fixed JSON shape. The following table is the
 authoritative contract; `test-forge-api.sh` enforces byte-identical
 output for matching fixtures across both backends.
+
+**Per-PR rollout.** PR 1 (this PR) ships only the dispatcher skeleton
+and config schema — none of the subcommands below are newly
+implemented in PR 1. Per-colony `github-api.sh` wrappers that
+implement the subcommands land across PRs 2-6 in the order triage
+→ planning → implementation → code-review → release. `rate-limit-status`
+and the dashboard tile ship in PR 7 alongside the legacy
+`[gitlab]`-section retirement.
 
 | Subcommand           | Normalized output |
 |----------------------|-------------------|
