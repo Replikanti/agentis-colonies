@@ -228,9 +228,9 @@ else
             "$REAL_FED-v0.0.0-smoke/$REAL_FED/start-federation.sh" \
             "$REAL_FED-v0.0.0-smoke/$REAL_FED/VERSION" \
             "$REAL_FED-v0.0.0-smoke/$REAL_FED/CHANGELOG.md" \
+            "$REAL_FED-v0.0.0-smoke/$REAL_FED/.dashboard-version" \
             "$REAL_FED-v0.0.0-smoke/tools/parse-toml.sh" \
             "$REAL_FED-v0.0.0-smoke/tools/auto-promote.sh" \
-            "$REAL_FED-v0.0.0-smoke/tools/federation-dashboard.sh" \
             "$REAL_FED-v0.0.0-smoke/doc/adr/ADR-0001-confidence-tiers.md" \
             "$REAL_FED-v0.0.0-smoke/README.md" \
             "$REAL_FED-v0.0.0-smoke/LICENSE"; do
@@ -238,7 +238,11 @@ else
                 MISSING="$MISSING $expected"
             fi
         done
-        # Contributor-only files that MUST NOT be present
+        # Contributor-only files that MUST NOT be present.
+        # #252: tools/federation-dashboard* must NEVER appear here. The
+        # dashboard is a separately-versioned standalone component now;
+        # leaking it back into the federation bundle would mean two
+        # competing dashboards at install time.
         REAL_LEAKED=""
         for blacklisted in \
             "CLAUDE.md" \
@@ -248,7 +252,9 @@ else
             "tools/check-exec-sh.sh" \
             "tools/check-prompt-gate.sh" \
             "tools/new-colony.sh" \
-            "tools/test-"; do
+            "tools/test-" \
+            "tools/federation-dashboard" \
+            "federation-dashboard/"; do
             if echo "$REAL_LIST" | grep -Fq "$blacklisted"; then
                 REAL_LEAKED="$REAL_LEAKED $blacklisted"
             fi

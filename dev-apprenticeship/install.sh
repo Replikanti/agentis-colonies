@@ -582,6 +582,82 @@ EOF
         ;;
 esac
 
+# --- 8. Federation dashboard (separately-versioned standalone) ---
+#
+# The dashboard was extracted to its own component in #252. This step
+# offers to download and install the version pinned by this federation
+# (.dashboard-version, kept in sync with federation-dashboard releases).
+# The dashboard is optional: the federation runs without it. Skip with
+# FEDERATION_DASHBOARD_SKIP=1 in the environment.
+
+DASHBOARD_PIN_FILE="$SCRIPT_DIR/.dashboard-version"
+if [ -f "$DASHBOARD_PIN_FILE" ]; then
+    DASHBOARD_PIN="$(tr -d '[:space:]' < "$DASHBOARD_PIN_FILE")"
+else
+    DASHBOARD_PIN=""
+fi
+
+DASHBOARD_TAG="federation-dashboard-v${DASHBOARD_PIN}"
+DASHBOARD_TARBALL="federation-dashboard-v${DASHBOARD_PIN}.tar.gz"
+DASHBOARD_URL="https://github.com/Replikanti/agentis-colonies/releases/download/${DASHBOARD_TAG}/${DASHBOARD_TARBALL}"
+
+echo ""
+echo "Federation dashboard"
+echo ""
+
+if [ -z "$DASHBOARD_PIN" ]; then
+    info "No .dashboard-version pin found. Skipping dashboard install."
+    info "Install manually later from https://github.com/Replikanti/agentis-colonies/releases"
+elif [ "${FEDERATION_DASHBOARD_SKIP:-0}" = "1" ]; then
+    info "FEDERATION_DASHBOARD_SKIP=1 — skipping dashboard install."
+    info "Re-run ./install.sh without that env var to install later."
+else
+    info "The dashboard is a separately-versioned standalone component (#252)."
+    info "This federation pins federation-dashboard v${DASHBOARD_PIN}."
+    info "Default install: \${XDG_DATA_HOME:-\$HOME/.local/share}/federation-dashboard/"
+    info "                 + symlink at \${XDG_BIN_HOME:-\$HOME/.local/bin}/federation-dashboard"
+
+    ask "Install federation-dashboard v${DASHBOARD_PIN} now? [Y/n]:"
+    read -r DASHBOARD_ANSWER
+    DASHBOARD_ANSWER="${DASHBOARD_ANSWER:-Y}"
+
+    case "$DASHBOARD_ANSWER" in
+        [Yy]|[Yy][Ee][Ss])
+            if ! command -v curl >/dev/null 2>&1; then
+                fail "curl not found — cannot download dashboard tarball."
+                info "Install curl, or fetch the tarball manually from $DASHBOARD_URL"
+            else
+                DASHBOARD_TMP="$(mktemp -d)"
+                trap 'rm -rf "$DASHBOARD_TMP"' EXIT
+                info "Downloading $DASHBOARD_URL"
+                if ! curl -fsSL -o "$DASHBOARD_TMP/$DASHBOARD_TARBALL" "$DASHBOARD_URL"; then
+                    fail "Download failed. Skipping dashboard install."
+                    info "Install manually later: see federation-dashboard/README.md"
+                elif ! tar -xzf "$DASHBOARD_TMP/$DASHBOARD_TARBALL" -C "$DASHBOARD_TMP"; then
+                    fail "Extract failed. Skipping dashboard install."
+                else
+                    DASHBOARD_EXTRACTED="$DASHBOARD_TMP/federation-dashboard-v${DASHBOARD_PIN}"
+                    if [ ! -x "$DASHBOARD_EXTRACTED/install.sh" ]; then
+                        fail "Tarball did not contain expected install.sh — skipping."
+                    elif ! "$DASHBOARD_EXTRACTED/install.sh"; then
+                        fail "federation-dashboard install.sh exited non-zero."
+                    else
+                        ok "federation-dashboard v${DASHBOARD_PIN} installed."
+                        ok "Run: ./dashboard.sh"
+                    fi
+                fi
+                rm -rf "$DASHBOARD_TMP"
+                trap - EXIT
+            fi
+            ;;
+        *)
+            info "Skipping dashboard install."
+            info "To install later, fetch and run install.sh from:"
+            info "  $DASHBOARD_URL"
+            ;;
+    esac
+fi
+
 # --- Done ---
 
 echo ""

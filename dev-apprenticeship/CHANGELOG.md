@@ -59,6 +59,28 @@ is asserted until multi-version CI is in place.
   classes; tier counter classes wired) and 23 (both charts inside a
   default-collapsed `<details class="card-collapse">`).
 
+- **Federation dashboard extracted to a standalone, separately-versioned component**
+  ([#252](https://github.com/Replikanti/agentis-colonies/issues/252)).
+  The dashboard now lives at `federation-dashboard/` in the repo and ships
+  its own release tarball (`federation-dashboard-v<X.Y.Z>.tar.gz`), its
+  own CHANGELOG, and its own XDG-aware `install.sh`. `dev-apprenticeship`
+  pins a soft minimum via the new `dev-apprenticeship/.dashboard-version`
+  file (currently `0.1.0`); `dev-apprenticeship/install.sh` gains a step 8
+  that prompts the operator to install that pinned version
+  (set `FEDERATION_DASHBOARD_SKIP=1` to opt out non-interactively).
+  `dashboard.sh` is now a resolver wrapper that finds the standalone
+  binary via `$FEDERATION_DASHBOARD_BIN` → XDG default
+  (`${XDG_DATA_HOME:-$HOME/.local/share}/federation-dashboard/bin/federation-dashboard`)
+  → `command -v federation-dashboard`. The dashboard binary resolves
+  federation-shared tools (`kill-federation.sh`, `auto-promote-decisions.py`,
+  `resolve-tick-interval.py`) via `<fed-dir>/tools/` first, then
+  `<fed-dir>/../tools/`, and gracefully degrades when a script is
+  unreachable (`/kill` returns 503, `Promote Candidates` renders empty,
+  the tick interval falls back to 60000ms) instead of hard-asserting at
+  startup. Net behaviour for an operator who runs `install.sh` and then
+  `dashboard.sh` is unchanged; the difference is that dashboard fixes
+  can now ship without forcing a federation re-release.
+
 ### Deprecated
 
 ### Removed

@@ -13,10 +13,14 @@
 # Args (positional):
 #   1: serve_dir       — federation-dashboard cache dir to serve from
 #   2: port            — TCP port to bind on 127.0.0.1
-#   3: script_path     — absolute path to federation-dashboard.sh
+#   3: script_path     — absolute path to the federation-dashboard entry
+#                        script (used by /refresh to re-exec in regen-only mode)
 #   4: fed_dir_arg     — federation root directory
 #   5: allowed_agents  — comma-separated allowlist for /confidence
 #   6: agent_map_json  — JSON array of {agent, colony} pairs
+#   7: fed_tools_dir   — federation shared-tools dir (#252); used to locate
+#                        kill-federation.sh and resolve-tick-interval.py.
+#                        Empty disables /kill and falls back to default tick.
 
 import sys, os, subprocess, json, time, signal, shutil, shlex, threading, re, urllib.parse
 from http.server import HTTPServer, SimpleHTTPRequestHandler
@@ -28,23 +32,18 @@ try:
     _map = json.loads(sys.argv[6])
 except (json.JSONDecodeError, ValueError, IndexError):
     _map = []
+fed_tools_dir = sys.argv[7] if len(sys.argv) > 7 else ''
 agent_to_colony = {e.get('agent',''): e.get('colony','') for e in _map if e.get('agent')}
 os.chdir(serve_dir)
 fed_dir = os.path.dirname(serve_dir)
 confidence_log = os.path.join(serve_dir, 'confidence-log.jsonl')
-# Path to the tick-interval resolver (#155). script_path is the absolute
-# path to this federation-dashboard.sh; the resolver lives next to it.
-_tools_dir = os.path.dirname(os.path.realpath(script_path))
-_resolver_script = os.path.join(_tools_dir, 'resolve-tick-interval.py')
-
-# Path to kill-federation.sh (#161). Resolved once at server start so the
-# /kill endpoint never has to re-discover it. Fail fast with a clear error
-# if the sibling script is missing — there is no graceful fallback.
-kill_script = os.path.join(_tools_dir, 'kill-federation.sh')
-assert os.path.isfile(kill_script), (
-    f'kill-federation.sh not found next to dashboard script: {kill_script}. '
-    'The dashboard /kill endpoint requires it. See #161 / #162.'
-)
+# #252: helpers live in the federation's shared tools dir, not next to this
+# script (the dashboard is a separately-versioned standalone component now).
+# The entry script resolves <fed-dir>/tools/ then <fed-dir>/../tools/ and
+# passes the result in argv[7]. Empty means no shared tools were found —
+# /kill returns a clear error, resolve_tick_interval falls back to 60000.
+_resolver_script = os.path.join(fed_tools_dir, 'resolve-tick-interval.py') if fed_tools_dir else ''
+kill_script = os.path.join(fed_tools_dir, 'kill-federation.sh') if fed_tools_dir else ''
 
 
 def resolve_tick_interval(agent, colony_dir):
@@ -733,6 +732,24 @@ class Handler(SimpleHTTPRequestHandler):
             # #162) instead of the spuriously-failing `agentis daemon stop
             # --all`. Always reply with structured JSON so the dashboard
             # button label never has to be derived from server text.
+            # #252: kill_script is empty when no shared-tools dir was found
+            # at startup. Return a clear error rather than crashing.
+            if not kill_script or not os.path.isfile(kill_script):
+                self.send_response(503)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    'ok': False,
+                    'exit': -1,
+                    'summary': ('kill-federation.sh not available: no shared '
+                                'tools/ found at <fed-dir>/tools or '
+                                '<fed-dir>/../tools. Install the federation '
+                                'bundle that ships kill-federation.sh, or '
+                                'invoke it directly from a shell.'),
+                    'json': None,
+                    'stderr_tail': '',
+                }).encode())
+                return
             length = int(self.headers.get('Content-Length', '0') or '0')
             no_backup = False
             if 0 < length <= 4096:

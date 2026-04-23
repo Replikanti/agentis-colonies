@@ -51,8 +51,9 @@ PRESERVE_ANCESTORS=0
 # that launches daemons with a different argv0 will be missed — the
 # `--match-pattern` test hook below exists to validate that path.
 DAEMON_MATCH='agentis daemon'
-# Dashboard pattern: federation-dashboard.sh wrapper + any dashboard.sh
-# shell processes. Separate from DAEMON_MATCH so the test harness can
+# Dashboard pattern: standalone federation-dashboard entry script (#252;
+# previously tools/federation-dashboard.sh) + any dashboard.sh shell
+# wrapper processes. Separate from DAEMON_MATCH so the test harness can
 # point it at a fixture tag without touching real dashboards.
 DASHBOARD_MATCH='federation-dashboard|dashboard\.sh'
 # Dashboard Python server pattern: the `python3 -m http.server` child of

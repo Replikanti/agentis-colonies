@@ -20,7 +20,9 @@
 #   6: log_dir             — .agentis/logs/ path
 #   7: dash_dir            — federation-dashboard cache dir
 #   8: colony_list_json    — JSON array of colony names
-#   9..: all_agents        — agent names (one per positional arg)
+#   9: fed_tools_dir       — federation shared-tools dir (or empty); used to
+#                            locate auto-promote-decisions.py + config (#252)
+#   10..: all_agents       — agent names (one per positional arg)
 
 import sys, os, json, time, re, datetime, subprocess
 
@@ -32,7 +34,8 @@ exp_dir        = sys.argv[5]
 log_dir        = sys.argv[6]
 dash_dir       = sys.argv[7]
 colony_list_json = sys.argv[8]
-all_agents     = sys.argv[9:]
+fed_tools_dir  = sys.argv[9]
+all_agents     = sys.argv[10:]
 
 def safe_json(s, default):
     try: return json.loads(s or '[]')
@@ -368,10 +371,14 @@ conf_changes = conf_changes[-50:]
 # scheduler; operators saw "N skipped" for reasons the sidecar did not
 # enforce. See issue #248.
 decisions = []
-script_dir = os.path.dirname(os.path.abspath(__file__))
-decider = os.path.join(script_dir, 'auto-promote-decisions.py')
-config = os.path.join(script_dir, 'auto-promote-config.yaml')
-if os.path.isfile(decider) and os.path.isfile(config):
+# #252: helpers live in the federation's shared tools dir, not next to this
+# file (the dashboard is a separately-versioned standalone component now).
+# fed_tools_dir comes from the entry script's resolution chain
+# (<fed-dir>/tools/ then <fed-dir>/../tools/). Empty string disables this
+# panel — the JSON shipped to the template is `decisions: []`.
+decider = os.path.join(fed_tools_dir, 'auto-promote-decisions.py') if fed_tools_dir else ''
+config  = os.path.join(fed_tools_dir, 'auto-promote-config.yaml')  if fed_tools_dir else ''
+if decider and config and os.path.isfile(decider) and os.path.isfile(config):
     try:
         dec_out = subprocess.run(
             ['python3', decider, '--preview', '--config', config,

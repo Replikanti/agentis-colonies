@@ -461,8 +461,9 @@ if [ -x "$REPO_ROOT/tools/check-prompt-gate.sh" ]; then
     fi
 fi
 
-# --- CHANGELOG consistency (#218) ---
-# Warn-only for feature PRs that touch dev-apprenticeship/ without updating
+# --- CHANGELOG consistency (#218, #252) ---
+# Warn-only for feature PRs that touch any versioned component
+# (dev-apprenticeship/, federation-dashboard/) without updating its
 # CHANGELOG.md; hard-fail for release PRs (VERSION bumped) that skip the
 # CHANGELOG bump. No-op in local runs (GITHUB_BASE_REF unset).
 if [ -x "$REPO_ROOT/tools/check-changelog.sh" ]; then

@@ -1,16 +1,21 @@
 #!/bin/bash
-# federation-dashboard.sh - Web dashboard for any Agentis federation
+# federation-dashboard - Web dashboard for any Agentis federation
 #
 # Auto-discovers colonies and agents from the federation directory
 # structure. Collects data from the agentis CLI, generates a static
 # HTML page, and serves it with a built-in kill switch.
 #
-# Usage: ./tools/federation-dashboard.sh <federation-dir> [port]
-#        ./tools/federation-dashboard.sh dev-apprenticeship
-#        ./tools/federation-dashboard.sh dev-apprenticeship 9000
+# Usage: federation-dashboard <federation-dir> [port]
+#        federation-dashboard /path/to/dev-apprenticeship
+#        federation-dashboard /path/to/dev-apprenticeship 9000
 #
 # The federation directory must contain colony subdirectories, each
 # with agents/*.ag files and config/colony.toml.
+#
+# Shared helpers (auto-promote-decisions.py, resolve-tick-interval.py,
+# kill-federation.sh, auto-promote-config.yaml) are resolved from the
+# federation bundle: first <fed-dir>/tools/, then <fed-dir>/../tools/.
+# Features that depend on a missing helper degrade gracefully.
 #
 # Prerequisites: agentis, python3
 
@@ -18,21 +23,38 @@ set -e
 
 SCRIPT_PATH="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$0")"
 SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
-REPO_ROOT="$(dirname "$SCRIPT_DIR")"
+LIB_DIR="$(dirname "$SCRIPT_DIR")/lib"
+
+if [ ! -d "$LIB_DIR" ]; then
+    echo "federation-dashboard: lib/ not found next to bin/ at $LIB_DIR" >&2
+    exit 1
+fi
 
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 <federation-dir> [port]"
-    echo "Example: $0 dev-apprenticeship"
+    {
+        echo "Usage: $0 <federation-dir> [port]"
+        echo "Example: $0 /path/to/dev-apprenticeship"
+    } >&2
     exit 1
 fi
 
-FED_DIR="$REPO_ROOT/$1"
+FED_DIR="$1"
 if [ ! -d "$FED_DIR" ]; then
-    FED_DIR="$1"  # try as absolute/relative path
-fi
-if [ ! -d "$FED_DIR" ]; then
-    echo "Federation directory not found: $1"
+    echo "Federation directory not found: $1" >&2
     exit 1
+fi
+FED_DIR="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$FED_DIR")"
+
+# --- Resolve federation shared-tools dir ---
+# Standalone dashboard: helpers (auto-promote-decisions.py, kill-federation.sh,
+# resolve-tick-interval.py, auto-promote-config.yaml) live in the federation
+# bundle, not next to this script. dev-apprenticeship ships them as a sibling
+# `tools/` directory. Other federations may ship them inside their own dir.
+FED_TOOLS_DIR=""
+if [ -d "$FED_DIR/tools" ]; then
+    FED_TOOLS_DIR="$FED_DIR/tools"
+elif [ -d "$FED_DIR/../tools" ]; then
+    FED_TOOLS_DIR="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$FED_DIR/../tools")"
 fi
 
 PORT="${2:-8420}"
@@ -87,6 +109,10 @@ fi
 echo ""
 echo "Federation Dashboard: $FED_NAME"
 echo "Discovered: $COLONY_COUNT colonies, $AGENT_COUNT agents"
+if [ -z "$FED_TOOLS_DIR" ]; then
+    echo "Note: no shared tools/ found at $FED_DIR/tools or $FED_DIR/../tools." >&2
+    echo "      Promote Candidates and /kill endpoint will be disabled." >&2
+fi
 echo ""
 
 # --- Collect data and generate HTML ---
@@ -135,7 +161,7 @@ generate() {
     # .ag descriptions, log lines, PID liveness, event timeline, and
     # confidence change history. Outputs a single JSON blob consumed by JS.
     local COLLECTOR_JSON
-    COLLECTOR_JSON="$(python3 "$SCRIPT_DIR/federation-dashboard-collector.py" "$DAEMONS" "$AGENT_COLONY_MAP" "$FED_DIR" "$EPOCH" "$EXPERIENCE_DIR" "$LOG_DIR" "$DASH_DIR" "$COLONY_LIST_PY" "${ALL_AGENTS[@]}")"
+    COLLECTOR_JSON="$(python3 "$LIB_DIR/federation-dashboard-collector.py" "$DAEMONS" "$AGENT_COLONY_MAP" "$FED_DIR" "$EPOCH" "$EXPERIENCE_DIR" "$LOG_DIR" "$DASH_DIR" "$COLONY_LIST_PY" "$FED_TOOLS_DIR" "${ALL_AGENTS[@]}")"
     if ! echo "$COLLECTOR_JSON" | python3 -c 'import sys,json;json.loads(sys.stdin.read())' 2>/dev/null; then
         COLLECTOR_JSON='{"agents":[],"experience_counts":{"total":0},"events":[],"confidence_changes":[]}'
     fi
@@ -149,7 +175,7 @@ generate() {
     # federation-dashboard-history.py — extracted in #172 alongside the
     # renderer to eliminate the last bash heredocs (macOS bash 3.2 / 5.3
     # parser was tripping on backticks in PYHISTORY and on \' in JSEOF).
-    python3 "$SCRIPT_DIR/federation-dashboard-history.py" "$HISTORY_FILE" "$EPOCH" "$COLLECTOR_JSON" "$COLONY_LIST_PY"
+    python3 "$LIB_DIR/federation-dashboard-history.py" "$HISTORY_FILE" "$EPOCH" "$COLLECTOR_JSON" "$COLONY_LIST_PY"
 
     local HISTORY
     HISTORY="$(cat "$HISTORY_FILE" 2>/dev/null || echo '[]')"
@@ -166,8 +192,8 @@ generate() {
     # eliminates the last 4 large heredocs (HTMLEOF / HEADEREOF / DATAEOF /
     # JSEOF) that were tripping the macOS bash 3.2 / 5.3 parser at line 962
     # (escaped single quote inside <<'JSEOF'). See #172.
-    python3 "$SCRIPT_DIR/federation-dashboard-renderer.py" \
-        "$SCRIPT_DIR/federation-dashboard.html.template" \
+    python3 "$LIB_DIR/federation-dashboard-renderer.py" \
+        "$LIB_DIR/federation-dashboard.html.template" \
         "$HTML_FILE" \
         "$FED_NAME" \
         "$FED_NAME_JS" \
@@ -203,11 +229,22 @@ generate
     done
 ) &
 REGEN_PID=$!
-trap 'kill $REGEN_PID 2>/dev/null; exit 0' INT TERM
 
 # Serve with all endpoints. SCRIPT_PATH and FED_DIR are passed through so
 # POST /refresh can re-exec this script in regen-only mode. ALL_AGENTS_CSV
 # is the allowlist for POST /confidence — operator-supplied agent names must
-# match exactly or the endpoint rejects with 400.
+# match exactly or the endpoint rejects with 400. FED_TOOLS_DIR is the
+# resolved location of shared helpers (kill-federation.sh, resolve-tick-
+# interval.py); empty disables /kill and falls back to default tick interval.
+#
+# The server runs in the background so this shell can `wait` on it; that
+# way SIGTERM/SIGINT delivered to the wrapper PID alone (e.g. by a service
+# manager that doesn't signal the whole pgid) still tears down both the
+# regen loop and the python child via the trap below — without it, a
+# foreground `python3 ...` would block bash from running the trap until
+# python had already exited on its own.
 ALL_AGENTS_CSV="$(IFS=,; echo "${ALL_AGENTS[*]}")"
-python3 "$SCRIPT_DIR/federation-dashboard-server.py" "$DASH_DIR" "$PORT" "$SCRIPT_PATH" "$FED_DIR" "$ALL_AGENTS_CSV" "$AGENT_COLONY_MAP"
+python3 "$LIB_DIR/federation-dashboard-server.py" "$DASH_DIR" "$PORT" "$SCRIPT_PATH" "$FED_DIR" "$ALL_AGENTS_CSV" "$AGENT_COLONY_MAP" "$FED_TOOLS_DIR" &
+SERVER_PID=$!
+trap 'kill "$REGEN_PID" "$SERVER_PID" 2>/dev/null; wait "$SERVER_PID" 2>/dev/null; exit 0' INT TERM
+wait "$SERVER_PID"

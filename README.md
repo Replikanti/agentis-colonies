@@ -88,10 +88,11 @@ Need the runtime first? See [Replikanti/agentis](https://github.com/Replikanti/a
 ## Repository structure
 
 ```
-dev-apprenticeship/   # Federation: GitLab dev workflow (21 agents, Beta)
-tools/                # Shared federation tooling (lint, dashboard, auto-promote, kill)
-doc/                  # Reference docs (auto-promote, federation-dashboard)
-doc/adr/              # Architecture Decision Records (normative cross-repo contracts)
+dev-apprenticeship/    # Federation: GitLab dev workflow (21 agents, Beta)
+federation-dashboard/  # Standalone, separately-versioned web dashboard component (#252)
+tools/                 # Shared federation tooling (lint, auto-promote, kill)
+doc/                   # Reference docs (auto-promote, federation-dashboard)
+doc/adr/               # Architecture Decision Records (normative cross-repo contracts)
 ```
 
 ## Operator scripts
@@ -103,7 +104,7 @@ End-user scripts live inside each federation. For `dev-apprenticeship/`:
 | [`install.sh`](./dev-apprenticeship/install.sh) | Interactive setup: prerequisites, config, GitLab creds, confidence seed |
 | [`start-federation.sh`](./dev-apprenticeship/start-federation.sh) | Launch all 5 colonies (21 daemons) |
 | [`watch-suggestions.sh`](./dev-apprenticeship/watch-suggestions.sh) | Live feed of agent suggestions from all 21 logs |
-| [`dashboard.sh`](./dev-apprenticeship/dashboard.sh) | Web dashboard with operator controls (promote, demote, evolve, restart, kill). Full reference: [`doc/federation-dashboard.md`](./doc/federation-dashboard.md) |
+| [`dashboard.sh`](./dev-apprenticeship/dashboard.sh) | Resolver wrapper that launches the standalone [`federation-dashboard`](./federation-dashboard/) component (installed independently, pinned via `dev-apprenticeship/.dashboard-version`). Web UI with operator controls (promote, demote, evolve, restart, kill). Full reference: [`doc/federation-dashboard.md`](./doc/federation-dashboard.md) |
 | [`kill-federation.sh`](./dev-apprenticeship/kill-federation.sh) | Reliable shutdown (wraps [`tools/kill-federation.sh`](./tools/kill-federation.sh) with `--fed-dir` scoping) |
 
 `kill-federation.sh` bypasses the `agentis` CLI and uses OS signals with post-kill verification, so it works even when `agentis daemon stop --all` reports false success or false failure. Run with `--help` for options including `--dry-run` and `--json`.
@@ -135,7 +136,9 @@ Normative design decisions for this repository are recorded as Architecture Deci
 
 Each federation is versioned independently at the federation level (not per-colony — the five colonies inside `dev-apprenticeship/` are coupled by bus events, so they ship as one unit). Tags use the prefixed form `<federation>-v<X.Y.Z>` (e.g. `dev-apprenticeship-v0.1.0`) so tool-level or alternate-federation releases can coexist without collision.
 
-See [`dev-apprenticeship/CHANGELOG.md`](./dev-apprenticeship/CHANGELOG.md) for the current release history and runtime compatibility floor. The release process is documented in [`CLAUDE.md`](./CLAUDE.md#release-process).
+The [`federation-dashboard/`](./federation-dashboard/) component is versioned and released independently (`federation-dashboard-v<X.Y.Z>`) so dashboard fixes ship without forcing a federation re-release, and the same dashboard install can serve any federation that meets its compatibility floor. Federations declare a soft minimum dashboard version via a per-federation pin (`dev-apprenticeship/.dashboard-version`).
+
+See [`dev-apprenticeship/CHANGELOG.md`](./dev-apprenticeship/CHANGELOG.md) and [`federation-dashboard/CHANGELOG.md`](./federation-dashboard/CHANGELOG.md) for release history and compatibility floors. The release process is documented in [`CLAUDE.md`](./CLAUDE.md#release-process).
 
 ## License
 

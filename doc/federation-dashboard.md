@@ -1,10 +1,19 @@
 # Federation dashboard reference
 
-`tools/federation-dashboard.sh` is the generic web dashboard for any
-Agentis federation. It auto-discovers the colony and agent layout, pulls
+`federation-dashboard` is the generic web dashboard for any Agentis
+federation. It auto-discovers the colony and agent layout, pulls
 per-agent state from the `agentis` CLI and from on-disk logs /
 experience stores, and serves a single-page HTML UI with operator
 controls (promote, demote, evolve, restart, quarantine, kill switch).
+
+The dashboard is a **separately-versioned standalone component**
+([#252](https://github.com/Replikanti/agentis-colonies/issues/252));
+its sources live under `federation-dashboard/` at the repo root, it
+ships its own release tarball (`federation-dashboard-v<X.Y.Z>.tar.gz`),
+and federations declare a soft minimum (e.g. `dev-apprenticeship`
+requires `federation-dashboard >= 0.1.0`). See
+[`federation-dashboard/README.md`](../federation-dashboard/README.md)
+for install instructions.
 
 This document is the reference for the dashboard's feature inventory,
 its helper-script architecture, and the regression guards that keep
@@ -22,20 +31,23 @@ that architecture intact across macOS + Linux.
 ## Invocation
 
 ```bash
-./tools/federation-dashboard.sh <federation-dir> [port]
-./tools/federation-dashboard.sh dev-apprenticeship            # default port 8420
-./tools/federation-dashboard.sh dev-apprenticeship 9000
+federation-dashboard <federation-dir> [port]
+federation-dashboard /path/to/dev-apprenticeship       # default port 8420
+federation-dashboard /path/to/dev-apprenticeship 9000
 ```
 
 The federation directory must contain colony subdirectories, each with
 `agents/*.ag` and `config/colony.toml`. Dashboard state (rendered HTML,
-history JSON) is written under `<federation-dir>/.dashboard/`.
+history JSON, sockets) is written under `<federation-dir>/.dashboard/`,
+never under `$HOME`.
 
 Prerequisites: `agentis`, `python3`.
 
 The `dev-apprenticeship/dashboard.sh` wrapper is the end-user entry
-point for that federation; it calls this script with the correct
-`--fed-dir` and adds kill-switch integration.
+point for that federation; it resolves the standalone dashboard binary
+via (1) `$FEDERATION_DASHBOARD_BIN`, (2) the XDG install path, (3)
+`command -v federation-dashboard`, then `exec`s it with the federation
+dir.
 
 ## Feature inventory
 
@@ -54,12 +66,12 @@ point for that federation; it calls this script with the correct
 ```mermaid
 graph LR
     OP["operator (browser)"]
-    SH["federation-dashboard.sh<br/>(thin shell)"]
-    COL["federation-dashboard-collector.py"]
-    HIST["federation-dashboard-history.py"]
-    REND["federation-dashboard-renderer.py"]
-    TPL["federation-dashboard.html.template"]
-    SRV["federation-dashboard-server.py"]
+    SH["bin/federation-dashboard<br/>(thin shell)"]
+    COL["lib/federation-dashboard-collector.py"]
+    HIST["lib/federation-dashboard-history.py"]
+    REND["lib/federation-dashboard-renderer.py"]
+    TPL["lib/federation-dashboard.html.template"]
+    SRV["lib/federation-dashboard-server.py"]
     OUT["index.html + history.json"]
 
     SH --> COL
@@ -74,16 +86,17 @@ graph LR
 ```
 
 The shell script is a thin orchestrator. Every multi-line content
-block — Python code, HTML, CSS, JS — lives in its own standalone file.
+block — Python code, HTML, CSS, JS — lives in its own standalone file
+under `lib/`.
 
 | File | Role |
 |---|---|
-| `tools/federation-dashboard.sh` | Entry point; discovers colonies / agents, calls the four Python helpers once per regen, launches the server. |
-| `tools/federation-dashboard-collector.py` | Produces a single JSON blob with per-agent enriched data (experience stats, `.ag` descriptions, log lines, PID liveness, event timeline, confidence change history). |
-| `tools/federation-dashboard-history.py` | Appends a single snapshot (per-colony avg confidence skipping null agents per [#143](https://github.com/Replikanti/agentis-colonies/issues/143), plus experience totals) to `history.json` and prunes entries older than 7 days. |
-| `tools/federation-dashboard-renderer.py` | Reads the template and substitutes 10 named sentinels with values supplied as positional args, then atomically writes `index.html`. |
-| `tools/federation-dashboard.html.template` | Static HTML page (CSS + body + JS) with 10 `{{SENTINEL}}` placeholders. Edit this file, not the shell script, to change markup / styling / JS. |
-| `tools/federation-dashboard-server.py` | HTTP server that serves the rendered HTML plus REST endpoints (`/refresh`, `/confidence`, `/restart`, `/quarantine`, `/evolve`, `/cleanup`, `/start`, `/kill`). |
+| `federation-dashboard/bin/federation-dashboard` | Entry point; discovers colonies / agents, calls the four Python helpers once per regen, launches the server. |
+| `federation-dashboard/lib/federation-dashboard-collector.py` | Produces a single JSON blob with per-agent enriched data (experience stats, `.ag` descriptions, log lines, PID liveness, event timeline, confidence change history). |
+| `federation-dashboard/lib/federation-dashboard-history.py` | Appends a single snapshot (per-colony avg confidence skipping null agents per [#143](https://github.com/Replikanti/agentis-colonies/issues/143), plus experience totals) to `history.json` and prunes entries older than 7 days. |
+| `federation-dashboard/lib/federation-dashboard-renderer.py` | Reads the template and substitutes 10 named sentinels with values supplied as positional args, then atomically writes `index.html`. |
+| `federation-dashboard/lib/federation-dashboard.html.template` | Static HTML page (CSS + body + JS) with 10 `{{SENTINEL}}` placeholders. Edit this file, not the shell script, to change markup / styling / JS. |
+| `federation-dashboard/lib/federation-dashboard-server.py` | HTTP server that serves the rendered HTML plus REST endpoints (`/refresh`, `/confidence`, `/restart`, `/quarantine`, `/evolve`, `/cleanup`, `/start`, `/kill`). |
 
 ### Template sentinels
 
@@ -109,8 +122,8 @@ served HTML. The regression harness (test 18) catches that.
 
 ## macOS bash heredoc gotcha
 
-`tools/federation-dashboard.sh` ships with a hard rule: **zero
-heredocs, of any kind**. The split in the table above is the
+`federation-dashboard/bin/federation-dashboard` ships with a hard rule:
+**zero heredocs, of any kind**. The split in the table above is the
 consequence of that rule, enforced by regression tests 13–19 in
 `tools/test-timeline-rendering.sh`.
 
@@ -126,8 +139,9 @@ macOS bash 3.2 / 5.3 mis-parses heredocs in two related ways:
    token" messages at runtime.
 2. `<<'JSEOF'` blocks containing a bare `\'` inside a JS string
    crashed the parser at line 962 of the previous monolithic
-   `federation-dashboard.sh`, even though the delimiter was
-   single-quoted. [#172](https://github.com/Replikanti/agentis-colonies/issues/172)
+   `federation-dashboard.sh` (now `bin/federation-dashboard`), even
+   though the delimiter was single-quoted.
+   [#172](https://github.com/Replikanti/agentis-colonies/issues/172)
    documents the final diagnosis.
 
 The fix history is:
@@ -148,22 +162,23 @@ through the Python helper.
 
 ### Regression guards
 
-`tools/test-timeline-rendering.sh` runs 19 tests; the architecture
+`tools/test-timeline-rendering.sh` runs 23 tests; the architecture
 guards are:
 
 | Test | Checks |
 |---|---|
-| 13 | `federation-dashboard-collector.py` exists and is valid Python ([#170](https://github.com/Replikanti/agentis-colonies/issues/170)). |
-| 14 | `federation-dashboard-server.py` exists and is valid Python ([#170](https://github.com/Replikanti/agentis-colonies/issues/170)). |
-| 15 | No `<<'P` heredoc nested inside `$()` in `federation-dashboard.sh` ([#170](https://github.com/Replikanti/agentis-colonies/issues/170)). |
-| 16 | `federation-dashboard-renderer.py` exists and is valid Python ([#172](https://github.com/Replikanti/agentis-colonies/issues/172)). |
-| 17 | `federation-dashboard-history.py` exists and is valid Python ([#172](https://github.com/Replikanti/agentis-colonies/issues/172)). |
+| 13 | `lib/federation-dashboard-collector.py` exists and is valid Python ([#170](https://github.com/Replikanti/agentis-colonies/issues/170)). |
+| 14 | `lib/federation-dashboard-server.py` exists and is valid Python ([#170](https://github.com/Replikanti/agentis-colonies/issues/170)). |
+| 15 | No `<<'P` heredoc nested inside `$()` in `bin/federation-dashboard` ([#170](https://github.com/Replikanti/agentis-colonies/issues/170)). |
+| 16 | `lib/federation-dashboard-renderer.py` exists and is valid Python ([#172](https://github.com/Replikanti/agentis-colonies/issues/172)). |
+| 17 | `lib/federation-dashboard-history.py` exists and is valid Python ([#172](https://github.com/Replikanti/agentis-colonies/issues/172)). |
 | 18 | Template contains all 10 renderer sentinels ([#172](https://github.com/Replikanti/agentis-colonies/issues/172)). |
-| 19 | `federation-dashboard.sh` contains zero heredocs of any kind ([#172](https://github.com/Replikanti/agentis-colonies/issues/172)). |
+| 19 | `bin/federation-dashboard` contains zero heredocs of any kind ([#172](https://github.com/Replikanti/agentis-colonies/issues/172)). |
 
 Tests 1–12 cover timeline rendering, cursor namespacing, tooltip wiring,
 `/kill` endpoint smoke, unit-mismatch guards, and `agent_last_ok_ts`
-emission.
+emission. Tests 20–23 cover Phase Readiness rendering and the
+`card-collapse` markup added in #248.
 
 ## REST endpoints
 
@@ -178,13 +193,14 @@ Served by `federation-dashboard-server.py`:
 | `/evolve` | Invoke `agentis evolve` on an agent. |
 | `/cleanup` | Prune experience / memo state for a quarantined or killed agent. |
 | `/start` | Restart a federation (per-colony). |
-| `/kill` | Invoke `tools/kill-federation.sh --json` and surface the result in the notification region. |
+| `/kill` | Invoke the federation's `kill-federation.sh --json` (resolved via `<fed-dir>/tools/` then `<fed-dir>/../tools/`) and surface the result in the notification region. Returns 503 when the script is not found in either location. |
 
 ## Related
 
-- [`tools/federation-dashboard.sh`](../tools/federation-dashboard.sh) — thin-shell entry point.
+- [`federation-dashboard/bin/federation-dashboard`](../federation-dashboard/bin/federation-dashboard) — thin-shell entry point.
+- [`federation-dashboard/README.md`](../federation-dashboard/README.md) — install + operator-facing reference for the standalone component.
 - [`tools/kill-federation.sh`](../tools/kill-federation.sh) — OS-level shutdown, consumed by `/kill`.
-- [`tools/test-timeline-rendering.sh`](../tools/test-timeline-rendering.sh) — regression harness (19 tests).
+- [`tools/test-timeline-rendering.sh`](../tools/test-timeline-rendering.sh) — regression harness (23 tests).
 - [#158](https://github.com/Replikanti/agentis-colonies/issues/158) — timeline rendering + Clear cursor.
 - [#160](https://github.com/Replikanti/agentis-colonies/issues/160) — button gating + Why sidebar.
 - [#161](https://github.com/Replikanti/agentis-colonies/issues/161) — kill button + notification region.
@@ -192,3 +208,4 @@ Served by `federation-dashboard-server.py`:
 - [#167](https://github.com/Replikanti/agentis-colonies/issues/167) — 5-layer log filter + `agent_last_ok_ts`.
 - [#170](https://github.com/Replikanti/agentis-colonies/issues/170) — collector / server extraction.
 - [#172](https://github.com/Replikanti/agentis-colonies/issues/172) — renderer / history / template extraction; zero-heredoc rule.
+- [#252](https://github.com/Replikanti/agentis-colonies/issues/252) — extracted as a standalone, separately-versioned component under `federation-dashboard/`.

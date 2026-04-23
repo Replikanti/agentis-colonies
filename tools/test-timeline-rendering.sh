@@ -15,7 +15,13 @@
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DASHBOARD_SH="$SCRIPT_DIR/federation-dashboard.sh"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# #252: federation-dashboard extracted to a standalone component. Entry point
+# moved from tools/federation-dashboard.sh to federation-dashboard/bin/...
+# and the four Python helpers + template moved to federation-dashboard/lib/.
+DASH_BIN_DIR="$REPO_ROOT/federation-dashboard/bin"
+DASH_LIB_DIR="$REPO_ROOT/federation-dashboard/lib"
+DASHBOARD_SH="$DASH_BIN_DIR/federation-dashboard"
 
 PASS=0
 FAIL=0
@@ -322,12 +328,12 @@ fi
 #     nested in $() get evaluated by macOS bash even with the single
 #     quotes, leading to runtime "syntax error" on every collector
 #     invocation. See #170 for the full diagnosis. ---
-DASH_FILE="$SCRIPT_DIR/federation-dashboard.sh"
-COLLECTOR_PY="$SCRIPT_DIR/federation-dashboard-collector.py"
-SERVER_PY="$SCRIPT_DIR/federation-dashboard-server.py"
-RENDERER_PY="$SCRIPT_DIR/federation-dashboard-renderer.py"
-HISTORY_PY="$SCRIPT_DIR/federation-dashboard-history.py"
-TEMPLATE_HTML="$SCRIPT_DIR/federation-dashboard.html.template"
+DASH_FILE="$DASH_BIN_DIR/federation-dashboard"
+COLLECTOR_PY="$DASH_LIB_DIR/federation-dashboard-collector.py"
+SERVER_PY="$DASH_LIB_DIR/federation-dashboard-server.py"
+RENDERER_PY="$DASH_LIB_DIR/federation-dashboard-renderer.py"
+HISTORY_PY="$DASH_LIB_DIR/federation-dashboard-history.py"
+TEMPLATE_HTML="$DASH_LIB_DIR/federation-dashboard.html.template"
 
 if [ -f "$COLLECTOR_PY" ] && python3 -c "import ast; ast.parse(open('$COLLECTOR_PY').read())" 2>/dev/null; then
     pass "13: federation-dashboard-collector.py exists and is valid Python (#170)"

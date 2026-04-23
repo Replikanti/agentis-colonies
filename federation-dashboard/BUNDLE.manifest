@@ -1,0 +1,21 @@
+# BUNDLE.manifest — federation-dashboard standalone release bundle (#252)
+#
+# Lists every repo-relative path that must be included in the install-ready
+# release tarball for this component. Consumed by `tools/make-dashboard-bundle.sh`.
+#
+# Syntax:
+#   - One path per line (repo-relative, POSIX separators).
+#   - Directory entries end with `/` and are copied recursively.
+#   - Lines starting with `#` are comments.
+#   - Blank lines are ignored.
+#
+# Rules for editing:
+#   - Every path MUST exist at bundling time (the bundler fails if one is missing).
+#   - Paths MUST be inside `federation-dashboard/`. Federation-specific files
+#     (any `dev-apprenticeship/` or `tools/` path) and contributor-only tooling
+#     (`tools/colony-lint.sh`, `tools/check-*.sh`, `tools/test-*.sh`,
+#     `tools/new-colony.sh`), repo-developer docs (`CLAUDE.md`), and CI config
+#     (`.github/`) are explicitly excluded by `tools/test-make-dashboard-bundle.sh`.
+
+# ----- The component itself -----
+federation-dashboard/
