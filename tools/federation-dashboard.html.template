@@ -789,10 +789,18 @@ const sidecar = data.sidecar || {installed: false, enabled: false, interval_s: n
 
   let detail = '';
   if (!degraded) {
-    const parts = [running.length + '/' + agents.length + ' daemons alive'];
+    // QA finding #4: HEALTHY means every running daemon is alive, so
+    // "N/N alive" is the truthful denominator (agents.length includes
+    // intentionally-stopped agents and would render a misleading ratio).
+    const parts = [running.length + '/' + running.length + ' running daemons alive'];
     if (sidecarWatched && sidecarAge !== null) {
-      const mins = Math.round(sidecarAge / 60);
+      const mins = Math.round(Math.max(0, sidecarAge) / 60);
       parts.push('sidecar ticked ' + mins + 'm ago');
+    } else if (sidecar.installed && sidecar.enabled) {
+      // QA finding #2: installed+enabled but interval_s missing/non-numeric/<=0.
+      // Without this branch the operator sees no sidecar mention at all and
+      // assumes the sidecar is fine — the whole point of the banner.
+      parts.push('sidecar installed but interval_s misconfigured');
     } else if (sidecar.installed && !sidecar.enabled) {
       parts.push('sidecar installed but disabled');
     } else if (!sidecar.installed) {
@@ -847,7 +855,7 @@ const sidecar = data.sidecar || {installed: false, enabled: false, interval_s: n
     const cTotal = (current.experience && current.experience.total) || 0;
     expDelta = cTotal - bTotal;
   }
-  const confMoves = confChanges.filter(c => (c.ts || 0) >= dayAgo).length;
+  const confMoves = confChanges.filter(c => (c.t || 0) >= dayAgo).length;
   if (expDelta !== null || confMoves > 0) {
     const parts = [];
     if (expDelta !== null) parts.push((expDelta >= 0 ? '+' : '') + expDelta + ' entries');
@@ -1109,13 +1117,23 @@ renderAgentTable();
 
   // #248 PR B: one prereq badge. Shows fail lines verbose (value vs
   // threshold) so the operator can see exactly how far below bar the
-  // agent is; pass lines stay compact.
+  // agent is; pass lines stay compact. JS Number coercion drops trailing
+  // zeros (2.0 -> "2") so float-typed prereqs are formatted explicitly
+  // to preserve precision-of-intent — QA finding #5 on PR B.
+  const PREREQ_DECIMALS = {
+    runtime_hours: 1, reject_rate_acting: 4, delta_slope_acting: 6,
+  };
+  function fmtPrereqVal(name, v) {
+    const d = PREREQ_DECIMALS[name];
+    if (d != null && typeof v === 'number') return v.toFixed(d);
+    return String(v);
+  }
   function renderPrereq(p) {
     const cls = p.meets ? 'ok' : 'fail';
     const mark = p.meets ? '✓' : '✗';
     const label = p.meets
       ? p.name
-      : p.name + ' ' + p.value + ' ' + p.op + ' ' + p.threshold;
+      : p.name + ' ' + fmtPrereqVal(p.name, p.value) + ' ' + p.op + ' ' + fmtPrereqVal(p.name, p.threshold);
     return '<span class="prereq ' + cls + '"><span class="mark">' +
            mark + '</span>' + esc(label) + '</span>';
   }
