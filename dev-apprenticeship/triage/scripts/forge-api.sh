@@ -35,20 +35,13 @@ case "$FORGE_TYPE" in
 esac
 
 if [ ! -x "$backend" ]; then
-    case "$FORGE_TYPE" in
-        github)
-            # Skeleton state: dispatcher exists but the per-colony wrapper is not yet
-            # shipped. Lands across PRs 2-6 of #256.
-            echo "forge-api.sh: FORGE_TYPE=github is not yet implemented for the triage colony." >&2
-            echo "forge-api.sh: See doc/adr/ADR-0002-forge-abstraction.md and https://github.com/Replikanti/agentis-colonies/issues/256 (PRs 2-6)." >&2
-            ;;
-        *)
-            # Broken install — gitlab-api.sh should always be present alongside
-            # forge-api.sh in a valid federation checkout.
-            echo "forge-api.sh: backend wrapper missing or not executable: $backend" >&2
-            echo "forge-api.sh: this indicates a broken install — re-copy the triage colony scripts/ directory." >&2
-            ;;
-    esac
+    # PR 2 of #256 ships github-api.sh for triage, so a missing github backend
+    # here means either a broken install (deleted / chmod -x'd post-install)
+    # or — if this dispatcher was copied to another colony pre-PR-2 — that
+    # colony's github-api.sh has not landed yet. Emit a uniform "missing or
+    # not executable" message and point at the ADR for the rollout state.
+    echo "forge-api.sh: backend wrapper missing or not executable: $backend" >&2
+    echo "forge-api.sh: re-copy the colony scripts/ directory, or — if upgrading from pre-#256 — see doc/adr/ADR-0002-forge-abstraction.md and https://github.com/Replikanti/agentis-colonies/issues/256 (PRs 2-6) for the GitHub-backend rollout status." >&2
     exit 99
 fi
 

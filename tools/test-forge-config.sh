@@ -108,22 +108,50 @@ for colony in $COLONIES; do
 done
 
 # -----------------------------------------------------------------------------
-# Test 3: dispatcher returns exit 99 for github (not implemented yet)
+# Test 3: dispatcher behaviour under FORGE_TYPE=github
 # -----------------------------------------------------------------------------
+# Two cases per colony, decided by whether github-api.sh has shipped:
+#   (a) skeleton state (no github-api.sh yet): exit 99 + ADR + issue pointers
+#       — same contract as when PR 1 landed
+#   (b) shipped (github-api.sh present): dispatcher execs the wrapper, which
+#       fails at its own env-check with rc=1 because GITHUB_TOKEN et al. are
+#       not set in the test shell. Assert that rc=1 and the error message
+#       names the three required env vars — proves routing works and surfaces
+#       an actionable message to operators who forgot to configure
+#       [forge.github].
+# This keeps the test stable as PRs 2-6 of #256 land additional wrappers.
 for colony in $COLONIES; do
     disp="$REPO_ROOT/dev-apprenticeship/$colony/scripts/forge-api.sh"
+    gh_backend="$REPO_ROOT/dev-apprenticeship/$colony/scripts/github-api.sh"
     out="$TMPDIR_TEST/$colony.github.log"
     set +e
+    # Scrub any inherited GITHUB_* env so the shipped-backend branch can
+    # deterministically trip the env-check in github-api.sh regardless of
+    # whether the operator's shell already has a PAT exported. FORGE_TYPE
+    # still takes effect (case arm below sets it explicitly).
+    unset GITHUB_TOKEN GITHUB_OWNER GITHUB_REPO GITHUB_URL GITHUB_ME 2>/dev/null || true
     FORGE_TYPE=github bash "$disp" any-command >"$out" 2>&1
     rc=$?
     set -e
-    if [ "$rc" = "99" ] \
-       && grep -q "not yet implemented" "$out" \
-       && grep -q "ADR-0002" "$out" \
-       && grep -q "issues/256" "$out"; then
-        pass "$colony: FORGE_TYPE=github returns exit 99 with ADR + issue pointers"
+    if [ -x "$gh_backend" ]; then
+        # Case (b): backend shipped. Dispatcher should exec it; the wrapper
+        # itself should fail at env-check with exit 1 naming the required vars.
+        if [ "$rc" = "1" ] && grep -q "GITHUB_TOKEN" "$out" && grep -q "GITHUB_OWNER" "$out" && grep -q "GITHUB_REPO" "$out"; then
+            pass "$colony: FORGE_TYPE=github routes to github-api.sh (env-check fires with clear message)"
+        else
+            fail "$colony: FORGE_TYPE=github routing to github-api.sh broken" "rc=$rc body=$(head -c 300 "$out")"
+        fi
     else
-        fail "$colony: FORGE_TYPE=github should exit 99 with clear message + ADR + issue pointers" "rc=$rc body=$(head -c 300 "$out")"
+        # Case (a): skeleton state. Dispatcher itself surfaces the ADR pointer
+        # and exits 99.
+        if [ "$rc" = "99" ] \
+           && grep -q "not yet implemented" "$out" \
+           && grep -q "ADR-0002" "$out" \
+           && grep -q "issues/256" "$out"; then
+            pass "$colony: FORGE_TYPE=github returns exit 99 with ADR + issue pointers (skeleton)"
+        else
+            fail "$colony: FORGE_TYPE=github should exit 99 with clear message + ADR + issue pointers" "rc=$rc body=$(head -c 300 "$out")"
+        fi
     fi
 done
 

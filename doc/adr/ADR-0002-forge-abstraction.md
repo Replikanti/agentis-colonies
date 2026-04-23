@@ -106,13 +106,38 @@ Every subcommand emits a fixed JSON shape. The following table is the
 authoritative contract; `test-forge-api.sh` enforces byte-identical
 output for matching fixtures across both backends.
 
-**Per-PR rollout.** PR 1 (this PR) ships only the dispatcher skeleton
-and config schema — none of the subcommands below are newly
-implemented in PR 1. Per-colony `github-api.sh` wrappers that
-implement the subcommands land across PRs 2-6 in the order triage
-→ planning → implementation → code-review → release. `rate-limit-status`
+**Per-PR rollout.** PR 1 shipped the dispatcher skeleton and config
+schema only. PR 2 (the current PR as of this writing) ships the triage
+colony's `github-api.sh` with 7 subcommands (`issues`, `create-issue`,
+`update-issue`, `members`, `get-issue`, `labels`, `add-note`) plus the
+`[forge.github]` env-export branch in `triage/scripts/start-colony.sh`.
+The remaining colonies' wrappers land across PRs 3-6 in the order
+planning → implementation → code-review → release. `rate-limit-status`
 and the dashboard tile ship in PR 7 alongside the legacy
 `[gitlab]`-section retirement.
+
+**`.ag` migration is in-scope for every per-colony PR.** Each
+per-colony PR (PRs 2-6) MUST rewrite every `exec sh` call site in that
+colony's `.ag` agents from `scripts/gitlab-api.sh` to
+`scripts/forge-api.sh`. A colony that only ships `github-api.sh`
+without rewriting its `.ag` files is a silent-failure landmine: under
+`FORGE_TYPE=github`, `start-colony.sh` exports only `GITHUB_*` env, the
+direct `gitlab-api.sh` call trips its env check and exits 1, and the
+`.ag` try/catch swallows the error — the colony ticks doing zero work.
+The `check-forge-dispatch.sh` lint fires per-colony (once that colony
+ships a concrete `github-api.sh`), so forgetting this step breaks CI.
+
+**PR 2 deviations from the table below.** The triage contract in PR 2
+is a subset of the "full" shape listed here, because triage agents only
+consume issue + member + label data and only need the seven subcommands
+enumerated above — there are no `merge-requests`, `mr-*`, or
+`rate-limit-status` calls in any triage `.ag` agent. That part of the
+contract will be implemented incrementally as PRs 3-6 wire it into the
+colonies that actually need it. Triage's `add-note` is a new subcommand
+not in the original ADR table; it is added here and back-ported to
+`triage/scripts/gitlab-api.sh` to match (the `.ag` agents were calling
+it against a non-existent gitlab-api.sh arm before PR 2, silently
+swallowed by `try/catch`).
 
 | Subcommand           | Normalized output |
 |----------------------|-------------------|

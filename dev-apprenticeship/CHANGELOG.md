@@ -52,6 +52,51 @@ is asserted until multi-version CI is in place.
   checks × 5 colonies + 7 install.sh + ADR checks = 37 sub-tests). See
   `doc/adr/ADR-0002-forge-abstraction.md` for the full contract.
   [#256](https://github.com/Replikanti/agentis-colonies/issues/256)
+- **Triage colony GitHub backend (PR 2 of 7 for #256).**
+  `dev-apprenticeship/triage/scripts/github-api.sh` implements the full
+  triage contract against the GitHub REST API v3 (7 subcommands: `issues`,
+  `create-issue`, `update-issue`, `members`, `get-issue`, `labels`,
+  `add-note`). Responses are normalized to GitLab shape (iid ← number,
+  author.username ← user.login, assignees[].username ← login, labels as
+  strings — both object-form `[{"name": ...}]` and bare-string form are
+  accepted for GitHub Enterprise compatibility — state "open" → "opened",
+  `pull_request`-bearing entries filtered out) so the existing 8 views
+  and the triage `.ag` agents keep parsing identical JSON across
+  backends. Every triage `.ag` `exec sh` call site was rewritten from
+  `scripts/gitlab-api.sh` to `scripts/forge-api.sh` (19 call sites
+  across `issue_creator`, `labeler`, `prioritizer`, `router`) — without
+  this, `FORGE_TYPE=github` silently fails because `start-colony.sh`
+  exports only the `GITHUB_*` env, `gitlab-api.sh` trips its env check,
+  and the `.ag` try/catch swallows the error. A new lint rule
+  `tools/check-forge-dispatch.sh` (wired into `colony-lint.sh`) now
+  fails CI whenever any `.ag` in a colony shipping `github-api.sh`
+  references a concrete backend wrapper directly. GitHub-specific error
+  handling distinguishes HTTP 403 auth failures from secondary
+  rate-limit 403s (retryable) via response-body inspection. The
+  `--priority` flag rejects loud with guidance to use
+  `--add-labels "priority::<level>"` (GitHub has no native priority
+  field). `--remove-labels` treats 404 as no-op for idempotency parity
+  with GitLab. `triage/scripts/start-colony.sh` now branches on
+  `FORGE_TYPE`: exports `GITHUB_URL` / `GITHUB_OWNER` / `GITHUB_REPO` /
+  `GITHUB_TOKEN` / `GITHUB_ME` from `[forge.github]` when
+  `type = "github"`, reads `[forge.gitlab]` with `[gitlab]` legacy
+  fallback otherwise. `[forge.github].url` is optional (defaults to
+  `https://api.github.com`) and exists solely to point the wrapper at a
+  GitHub Enterprise Server instance. Back-ports missing `add-note`
+  subcommand into `triage/scripts/gitlab-api.sh` with a numeric-iid
+  guard (closes a silent bug where labeler/prioritizer/router
+  review-gated comment-posting calls were swallowed by the `.ag`
+  try/catch). Four new tests:
+  `tools/test-github-triage-normalize.sh` (25 assertions covering
+  shape, PR filtering, empty-list handling, and end-to-end pipe through
+  a view); `tools/test-check-forge-dispatch.sh` (6 assertions);
+  `tools/test-gitlab-add-note.sh` (4 assertions for arg parsing and the
+  happy path via a curl shim); and an extension to
+  `tools/test-gitlab-views.sh` with a 6-case parity block asserting
+  byte-identical `project_json` output between `github-api.sh` and
+  `gitlab-api.sh` (drift detector for the duplicated projection
+  function).
+  [#256](https://github.com/Replikanti/agentis-colonies/issues/256)
 
 ### Changed
 
