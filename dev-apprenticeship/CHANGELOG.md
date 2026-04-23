@@ -255,16 +255,58 @@ is asserted until multi-version CI is in place.
   `github-api.sh` and `gitlab-api.sh` for the `release-summary`,
   `tag-summary`, `pipeline-summary`, and `release-mr` views.
   [#256](https://github.com/Replikanti/agentis-colonies/issues/256)
+- **Forge rate-limit primitive (PR 7 of 7 for #256).** Every per-colony
+  forge wrapper now supports a `rate-limit-status` subcommand that
+  emits a uniform `{"remaining": <int|null>, "limit": <int|null>,
+  "reset_at": <ISO-8601 UTC|null>}` JSON object. Both backends share
+  the same output contract; the source differs. GitHub reads
+  `/rate_limit` (an uncounted endpoint so operators can poll without
+  burning budget). GitLab reads `RateLimit-*` response headers off a
+  cheap `GET /api/v4/version` call — self-hosted GitLab instances
+  without rate-limiting configured (the common case) return no
+  headers; the arm forwards `null`s and exits 0 rather than
+  hard-failing, so operator dashboards can distinguish
+  "not-configured" from "over-budget" without a wrapper error.
+  Transport failure on GitHub propagates the non-zero `gh_call` exit;
+  transport failure on GitLab still yields exit 0 with nulls (the
+  absence of a `RateLimit-Remaining` header is identical to a DNS-less
+  self-hosted instance, by design). Dashboard consumption is
+  deliberately deferred to a separate `federation-dashboard` release so
+  a UI churn does not gate the federation's v1.0.0. New test:
+  `tools/test-rate-limit-status.sh` (25 assertions: 5 colonies × 3
+  GitLab modes + 5 colonies × 2 GitHub modes).
+  [#256](https://github.com/Replikanti/agentis-colonies/issues/256)
 
 ### Changed
 
-- `.dashboard-version` floor bumped to 0.2.0. The new dashboard release
-  delegates agent restarts through `start-colony.sh --restart-agent`
-  instead of parsing `[gitlab]` from `colony.toml` — pairing a 0.1.0
-  dashboard with a 1.x federation is still safe (the dashboard
-  gracefully logs `start-colony.sh exit 2: unknown flag`), but the
-  recommended floor matches the pair tested together.
-
+- **BREAKING (MAJOR, v1.0.0) — legacy top-level `[gitlab]` config
+  section retired federation-wide (#256 PR 7).** The transitional
+  dual-read behavior introduced in PR 1 has ended. All 5
+  `colony.example.toml` templates now ship `[forge.gitlab]` only (no
+  top-level `[gitlab]`). All 5 `scripts/start-colony.sh` scripts read
+  from `[forge.gitlab]` / `[forge.github]` and emit an explicit
+  "Required: url, token, project under [forge.gitlab]" error when the
+  section is missing — the pre-PR-7 fallback to a bare `[gitlab]`
+  section has been removed. `install.sh` no longer writes into the
+  legacy section. `tools/colony-lint.sh` gains a guard that flags a
+  top-level `[gitlab]` in any `colony.example.toml` as a retirement
+  regression. **Operator migration:** edit each `colony.toml`, rename
+  `[gitlab]` → `[forge.gitlab]`, and add a top-level `[forge]` block
+  with `type = "gitlab"` (see `colony.example.toml` for the exact
+  shape). The `me` / `default_branch` keys move with the section.
+  Pre-#256 installs that cannot migrate should stay on
+  `dev-apprenticeship v0.3.3` (the last release carrying the
+  dual-read fallback).
+- **BREAKING (MAJOR, v1.0.0) — install.sh GitHub credential prompting
+  (#256 PR 7).** The "GitHub scaffolding is partial, continue anyway?"
+  abort gate that guarded pre-PR-6 installs has been removed — both
+  backends are first-class after PR 6. Credential prompting now branches
+  on `FORGE_TYPE`: `gitlab` prompts for url/project/PAT/me and writes
+  `[forge.gitlab]` (identical semantics to v0.3.x); `github` prompts for
+  owner/repo/PAT plus optional Enterprise URL and optional `me`,
+  uncomments the `[forge.github]` template block in `colony.toml`, and
+  writes the credentials into it. `FEDERATION_FORGE_TYPE=github
+  ./install.sh` is now a supported unattended flow.
 ### Deprecated
 
 ### Removed

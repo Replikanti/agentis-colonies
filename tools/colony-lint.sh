@@ -97,8 +97,18 @@ with open(sys.argv[1], 'rb') as f:
 errors = []
 if 'colony' not in data:
     errors.append('missing [colony] section')
-if 'gitlab' not in data:
-    errors.append('missing [gitlab] section')
+if 'gitlab' in data:
+    errors.append('legacy top-level [gitlab] section still present — retired in #256 PR 7 (v1.0.0). Move keys under [forge.gitlab].')
+if 'forge' not in data or not isinstance(data.get('forge'), dict):
+    errors.append('missing [forge] section (post-#256: required)')
+else:
+    forge_type = data['forge'].get('type')
+    if forge_type not in ('gitlab', 'github'):
+        errors.append(f'[forge].type must be \"gitlab\" or \"github\" (got {forge_type!r})')
+    if forge_type == 'gitlab' and 'gitlab' not in data['forge']:
+        errors.append('[forge].type = \"gitlab\" but [forge.gitlab] is missing')
+    if forge_type == 'github' and 'github' not in data['forge']:
+        errors.append('[forge].type = \"github\" but [forge.github] is missing')
 if 'llm' not in data:
     errors.append('missing [llm] section')
 if 'agents' not in data or not isinstance(data['agents'], list) or len(data['agents']) == 0:

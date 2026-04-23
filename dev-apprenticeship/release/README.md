@@ -42,7 +42,7 @@ When a release candidate is ready, the Release Checker runs pre-release validati
 
 All four release agents follow the federation's **delta-check + early-exit** convention so ticks on a quiet repo cost ~0 LLM calls/h:
 
-- **`ship_decider`** / **`release_checker`**: a cheap `gitlab-api.sh merge-requests --state merged --since <last_check> --per-page 1` query answers "has anything release-worthy landed?" in one HTTP call. Combined with a `listen()` on the relevant event (`release:check_result` for ship_decider, `implementation:mr_ready` for release_checker), if both signals are empty the tick refreshes `last_check` and `return`s **before** any `prompt()` — including the release-pattern learning prompt that used to run every tick.
+- **`ship_decider`** / **`release_checker`**: a cheap `forge-api.sh merge-requests --state merged --since <last_check> --per-page 1` query answers "has anything release-worthy landed?" in one HTTP call. Combined with a `listen()` on the relevant event (`release:check_result` for ship_decider, `implementation:mr_ready` for release_checker), if both signals are empty the tick refreshes `last_check` and `return`s **before** any `prompt()` — including the release-pattern learning prompt that used to run every tick.
 - **`version_bumper`** / **`changelog_writer`**: pure event-driven. Each listens for `release:ship_decision`; empty inbox → refresh `last_check` and `return` before the tag/release-style learning prompt. The learn-from-history prompts only run on ticks where a ship decision actually arrived.
 
 The learn-on-demand shape is intentional: past releases don't change between ticks, so re-analyzing them every minute wastes Claude calls. Gating pattern learning behind the delta-check keeps the cost proportional to real activity.
@@ -56,7 +56,7 @@ The learn-on-demand shape is intentional: past releases don't change between tic
 
 2. Configure your GitLab connection in `colony.toml`.
 
-3. (Optional) Override `[gitlab] default_branch` if your project's primary branch is not `main` (e.g. `master`, `develop`, `trunk`). `version_bumper` passes this to `gitlab-api.sh create-tag` as the tag's source ref (#224).
+3. (Optional) Override `[forge.gitlab] default_branch` (or `[forge.github] default_branch`) if your project's primary branch is not `main` (e.g. `master`, `develop`, `trunk`). `version_bumper` passes this to `forge-api.sh create-tag` as the tag's source ref (#224).
 
 4. Start the colony:
    ```bash

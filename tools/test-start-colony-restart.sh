@@ -30,11 +30,15 @@ trap 'rm -rf "$TMPDIR_TEST"' EXIT
 pass() { echo "[PASS] $1"; PASS=$((PASS + 1)); }
 fail() { echo "[FAIL] $1${2:+: $2}"; FAIL=$((FAIL + 1)); }
 
-# Each colony's start-colony.sh expects a populated [gitlab] section.
+# Each colony's start-colony.sh expects a populated [forge.gitlab] section
+# (the legacy top-level [gitlab] section was retired in #256 PR 7 / v1.0.0).
 # Shared minimal TOML for all five colonies.
 FIXTURE_TOML="$TMPDIR_TEST/colony.toml"
 cat > "$FIXTURE_TOML" <<'TOML'
-[gitlab]
+[forge]
+type = "gitlab"
+
+[forge.gitlab]
 url = "https://example.invalid"
 token = "fake"
 project = "org/repo"

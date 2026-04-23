@@ -1,8 +1,9 @@
 ---
 id: ADR-0002
 title: Forge abstraction — normalized wrapper dispatch for multi-forge federations
-status: Proposed
+status: Accepted
 date: 2026-04-23
+accepted-date: 2026-04-24
 authors: [ylohnitram]
 supersedes: (none)
 superseded-by: (none)
@@ -95,10 +96,13 @@ token, not an env-var reference. The `project` field is a path string
 `%2F`-separated form before calling the API.
 
 `start-colony.sh` reads `[forge].type`, exports `FORGE_TYPE`, and
-continues to export the legacy `GITLAB_*` env for backwards
-compatibility during the migration window (one release). After the
-release PR at the end of the port, the top-level `[gitlab]` section is
-retired and `[forge.*]` is authoritative.
+exports the legacy `GITLAB_*` env names from whichever `[forge.<type>]`
+block is active. The migration window collapsed at PR 7 (v1.0.0): the
+top-level `[gitlab]` section has been retired and `[forge.*]` is
+authoritative. Operators on pre-#256 configs must move their
+`url`/`token`/`project`/`me` keys under `[forge.gitlab]` and add
+`[forge].type = "gitlab"` — the post-PR-7 start-colony.sh rejects
+configs that lack `[forge]`.
 
 ### Normalized shape contract (normative)
 
@@ -114,19 +118,17 @@ branch in `triage/scripts/start-colony.sh`. PR 3 shipped the planning
 colony's `github-api.sh` with 5 subcommands (`issues`,
 `issues-by-label-events`, `issue-label-events`, `add-note`,
 `merge-requests`) plus the matching `[forge.github]` env-export branch
-and `.ag` dispatcher migration. PR 4 (the current PR as of this
-writing) ships the implementation colony's `github-api.sh` with 11
+and `.ag` dispatcher migration. PR 4 ships the implementation colony's `github-api.sh` with 11
 subcommands (`merge-requests`, `mr-changes`, `mr-commits`, `issue`,
 `assigned-issues`, `issue-label-events`,
 `assigned-issues-by-label-events`, `create-branch`, `commit-files`,
 `create-mr`, `add-note`) plus the matching `[forge.github]` env-export
 branch and 25 `.ag` call-site migrations across the four implementation
-agents. PR 5 (the current PR as of this writing) ships the code-review
+agents. PR 5 ships the code-review
 colony's `github-api.sh` with 5 subcommands (`merge-requests`,
 `mr-changes`, `mr-notes`, `post-note`, `approve`) plus the matching
 `[forge.github]` env-export branch and 28 `.ag` call-site migrations
-across the five code-review agents. PR 6 (the current PR as of this
-writing) ships the release colony's `github-api.sh` with 7 subcommands
+across the five code-review agents. PR 6 ships the release colony's `github-api.sh` with 7 subcommands
 (`releases`, `tags`, `pipelines`, `merge-requests`, `create-tag`,
 `create-release`, `post-note`) plus the matching `[forge.github]`
 env-export branch and 29 `.ag` call-site migrations across the four
@@ -265,6 +267,35 @@ first called out in PR 4 QA into `release/scripts/start-colony.sh`
 `[forge.gitlab].default_branch` and `[forge.github].default_branch`,
 falling back to legacy `[gitlab].default_branch` only).
 
+**PR 7 additions (MAJOR, v1.0.0).** The final PR ships the
+`rate-limit-status` subcommand across all 10 per-colony wrappers (5
+GitLab, 5 GitHub) with a uniform `{"remaining", "limit", "reset_at"}`
+contract — GitHub reads `/rate_limit` (uncounted), GitLab reads
+`RateLimit-*` response headers from a cheap `/api/v4/version` call.
+GitLab behavior under a self-hosted instance without rate-limiting: the
+arm forwards `null`s and exits 0 (not-configured is common and
+non-fatal). GitHub behavior under transport failure: the arm propagates
+the non-zero `gh_call` exit so operators can distinguish "no rate-limit
+data" (never happens on github.com) from "PAT missing / API down".
+Dashboard consumption of the primitive is deliberately deferred to a
+separate `federation-dashboard` release; the rate-limit-status
+subcommand is a stable building block regardless of when the tile ships.
+The same PR retires the legacy top-level `[gitlab]` config section
+federation-wide: all 5 `colony.example.toml` templates, all 5
+`start-colony.sh` scripts, and `install.sh`'s credential-writer have
+been rewritten to read/write `[forge.<backend>]` only — the MAJOR bump
+that gates v1.0.0. Pre-#256 configs with a bare `[gitlab]` block now
+fail the `[forge]`-presence guard in `start-colony.sh` with an explicit
+retirement message pointing operators at the migration one-liner;
+`tools/colony-lint.sh` adds a matching lint rule so a regression
+re-introducing `[gitlab]` in any `colony.example.toml` fails CI.
+`install.sh` drops the PR-1-to-PR-6 "GitHub scaffolding is partial,
+continue anyway?" abort gate and splits credential prompting into
+FORGE_TYPE-conditional branches: GitLab selects the existing
+url/project/PAT/me flow; GitHub uncomments the `[forge.github]`
+template block and writes owner/repo/PAT + optional Enterprise URL +
+optional `me` into it.
+
 | Subcommand           | Normalized output |
 |----------------------|-------------------|
 | `get-issue <n>`      | `{"number", "title", "description", "labels": [...], "state", "assignees": [...], "author", "web_url"}` |
@@ -329,7 +360,8 @@ entry for the affected colony.
   is a single value, not a list. A user who wants to mirror a
   federation onto a second forge runs a second install.
 - **Keeping the top-level `[gitlab]` config section past the final
-  release of the port.** One release of overlap, then retire.
+  release of the port.** Retired in PR 7 (v1.0.0, MAJOR); operators
+  must migrate to `[forge.gitlab]`.
 - **Agent-layer knowledge of forge semantics.** Agents may branch on
   `$FORGE_TYPE` only for prompt-vocabulary tweaks ("pull request" vs
   "merge request"); they must never embed forge-specific API logic or
@@ -354,12 +386,17 @@ Per-colony edits land in the colony-port PRs (PRs 2–6 of #256).
 ### Runtime changes
 
 - `start-colony.sh` across all 5 colonies reads `[forge].type` and
-  exports `FORGE_TYPE`. Existing `GITLAB_*` exports are kept for one
-  release of overlap.
+  exports `FORGE_TYPE`. The `GITLAB_*` env-var names are kept as
+  backend-agnostic internal exports (populated from whichever
+  `[forge.<type>]` block is active); renaming to `FORGE_*` was deferred
+  past #256 to avoid a cross-colony churn that doesn't change operator
+  semantics.
 - `tools/forge-normalize.sh` (new) ships shared helpers: pagination
   walker, label-event filter, draft-flag inferrer, approvals collapse.
-- `install.sh` gains a forge-choice prompt, defaulting to GitLab for
-  one release then "ask" (no default) at the end of the port.
+- `install.sh` carries a forge-choice prompt defaulting to GitLab
+  (preserves Enter-key behavior for pre-#256 re-runs) and conditional
+  credential prompting branched on `FORGE_TYPE`. Legacy top-level
+  `[gitlab]` is never written (retired in PR 7).
   `FEDERATION_FORGE_TYPE=github|gitlab` env var short-circuits prompts
   for unattended installs.
 
@@ -375,10 +412,12 @@ current tick intervals:
 - release (300s) × 4 × ~3 = 144
 - **Total: ~2500 req/h** — comfortably under the limit.
 
-`rate-limit-status` subcommand + a dashboard tile are added in PR 7 of
-#256 so operators see a live remaining/limit counter. If a real install
-trips, the fix is per-agent tick-interval tuning, not a change to this
-ADR.
+`rate-limit-status` subcommand is shipped in PR 7 of #256 (contract:
+`{"remaining", "limit", "reset_at"}`) as the building block for an
+operator-visible counter. A dashboard tile is deliberately deferred to
+a separate `federation-dashboard` release so a UI churn does not gate
+v1.0.0 of the federation. If a real install trips the limit, the fix
+is per-agent tick-interval tuning, not a change to this ADR.
 
 ### Testing
 

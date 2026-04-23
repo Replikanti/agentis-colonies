@@ -49,7 +49,7 @@ When an issue is assigned, the Code Writer produces an implementation draft. The
 
 3. (Optional) Override `[implementation] trigger_label` if your project uses a label other than `implementation` to signal an issue is ready for implementation work. Scoped labels (`DEV::in progress`) and labels with spaces are supported — `--data-urlencode` handles the encoding (#225).
 
-4. (Optional) Override `[gitlab] default_branch` if your project's primary branch is not `main` (e.g. `master`, `develop`, `trunk`). `code_writer` uses this as the MR target branch when opening merge requests (#224).
+4. (Optional) Override `[forge.gitlab] default_branch` (or `[forge.github] default_branch`) if your project's primary branch is not `main` (e.g. `master`, `develop`, `trunk`). `code_writer` uses this as the MR/PR target branch when opening merge/pull requests (#224).
 
 5. Start the colony:
    ```bash

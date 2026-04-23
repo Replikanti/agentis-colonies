@@ -45,7 +45,7 @@ When a new event arrives (bug report, support ticket, alert), the Issue Creator 
 Reactive agents (`router`, `prioritizer`) follow a **delta-check + early-exit** pattern so a quiet GitLab project costs ~0 LLM calls/h on the 60-second tick interval:
 
 1. `recall_latest("<agent>:last_check")` → an ISO-8601 timestamp (empty on first ever tick).
-2. A single cheap `exec sh` call to `gitlab-api.sh issues --since <last_check> --view <agent>` filters server-side. An empty response (`[]`, 2 chars) means "nothing new".
+2. A single cheap `exec sh` call to `forge-api.sh issues --since <last_check> --view <agent>` filters server-side. An empty response (`[]`, 2 chars) means "nothing new".
 3. On empty: refresh `last_check` and `return` **before** any `prompt()` — no Claude invocation at all.
 4. On non-empty: proceed to the normal learning/analysis prompts.
 

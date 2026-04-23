@@ -47,8 +47,8 @@ When a new merge request appears, all four reviewers analyze it in parallel, eac
 
 `logic_reviewer`, `style_reviewer`, `security_reviewer`, and `approval_decider` follow the federation's **delta-check + early-exit** convention so a quiet repo costs ~0 LLM calls/h:
 
-- **MR reviewers** (`logic`, `style`, `security`): a single `gitlab-api.sh merge-requests --since <last_check> --view reviewer` call filters server-side. An empty response (`[]`) → refresh `last_check` and `return` before any `prompt()`.
-- **Approval decider**: has no GitLab poll. It listens on four bus topics (`review:{style,logic,security,test}_findings`); when all four `listen()` calls return Void (the empty inbox case), `return` before any `prompt()`. `last_check` is still refreshed on the early-exit path so operators can distinguish "nothing to do" from "daemon stalled".
+- **MR reviewers** (`logic`, `style`, `security`): a single `forge-api.sh merge-requests --since <last_check> --view reviewer` call filters server-side. An empty response (`[]`) → refresh `last_check` and `return` before any `prompt()`.
+- **Approval decider**: has no forge poll. It listens on four bus topics (`review:{style,logic,security,test}_findings`); when all four `listen()` calls return Void (the empty inbox case), `return` before any `prompt()`. `last_check` is still refreshed on the early-exit path so operators can distinguish "nothing to do" from "daemon stalled".
 
 See `agents/logic_reviewer.ag` for the canonical MR-reviewer shape and `agents/approval_decider.ag` for the event-driven variant.
 
@@ -59,13 +59,17 @@ See `agents/logic_reviewer.ag` for the canonical MR-reviewer shape and `agents/a
    cp config/colony.example.toml config/colony.toml
    ```
 
-2. Configure your GitLab connection:
+2. Configure your forge connection. For GitLab:
    ```toml
-   [gitlab]
-   url = "https://gitlab.example.com"
-   token = "glpat-..."
+   [forge]
+   type = "gitlab"
+
+   [forge.gitlab]
+   url     = "https://gitlab.example.com"
+   token   = "glpat-..."
    project = "your-org/your-project"
    ```
+   For GitHub, set `[forge].type = "github"` and populate `[forge.github]` (see `colony.example.toml`).
 
 3. Configure the LLM backend:
    ```toml
@@ -112,7 +116,8 @@ agentis knowledge list --tags acted         # autonomous terminal writes
 
 # style_reviewer additionally tags its direct-write (review-gated + acted)
 # branches with `personal` or `team` based on the MR author (requires
-# `[gitlab] me = "..."` in colony.toml — see dev-apprenticeship/README.md).
+# `[forge.gitlab] me = "..."` / `[forge.github] me = "..."` in colony.toml
+# — see dev-apprenticeship/README.md).
 agentis knowledge list --tags personal      # style_reviewer on your MRs
 agentis knowledge list --tags team          # style_reviewer on others' MRs
 

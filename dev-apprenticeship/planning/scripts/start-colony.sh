@@ -67,30 +67,26 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 . "$REPO_ROOT/tools/parse-toml.sh"
 
 # #256: forge backend selection. `[forge].type` picks which backend
-# wrapper forge-api.sh dispatches to. Defaults to "gitlab" so pre-#256
-# configs keep working unchanged. PR 3 of #256 ships the planning colony's
-# github-api.sh, so FORGE_TYPE=github is now live for planning (other
-# colonies still return exit 99 "not implemented" until their respective
-# PRs land).
+# wrapper forge-api.sh dispatches to. Legal values: "gitlab", "github".
+# PR 7 of #256 (MAJOR bump) made `[forge]` authoritative and retired
+# the legacy top-level `[gitlab]` section. `parse_toml forge type`
+# defaults to "gitlab" when unset so a fresh colony.toml that lists
+# only `[forge.gitlab]` without the selector still launches cleanly.
 FORGE_TYPE=$(parse_toml forge type)
 FORGE_TYPE="${FORGE_TYPE:-gitlab}"
 
 case "$FORGE_TYPE" in
     gitlab)
-        # Prefer [forge.gitlab] (ADR-0002) if present; fall back to legacy
-        # [gitlab] so pre-#256 configs keep working during the overlap window.
+        # PR 7 of #256 (MAJOR bump) made [forge.gitlab] authoritative.
+        # The legacy top-level [gitlab] fallback branches retired here.
         GITLAB_URL=$(parse_toml forge.gitlab url)
-        [ -z "$GITLAB_URL" ] && GITLAB_URL=$(parse_toml gitlab url)
         GITLAB_TOKEN=$(parse_toml forge.gitlab token)
-        [ -z "$GITLAB_TOKEN" ] && GITLAB_TOKEN=$(parse_toml gitlab token)
         GITLAB_PROJECT_RAW=$(parse_toml forge.gitlab project)
-        [ -z "$GITLAB_PROJECT_RAW" ] && GITLAB_PROJECT_RAW=$(parse_toml gitlab project)
         GITLAB_ME=$(parse_toml forge.gitlab me)
-        [ -z "$GITLAB_ME" ] && GITLAB_ME=$(parse_toml gitlab me)
 
         if [ -z "$GITLAB_URL" ] || [ -z "$GITLAB_TOKEN" ] || [ -z "$GITLAB_PROJECT_RAW" ]; then
             echo "Error: GitLab config incomplete in $CONFIG"
-            echo "Required: url, token, project under [forge.gitlab] (or legacy [gitlab])"
+            echo "Required: url, token, project under [forge.gitlab]"
             exit 1
         fi
 

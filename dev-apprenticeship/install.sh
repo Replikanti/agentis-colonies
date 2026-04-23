@@ -184,12 +184,9 @@ if [ -n "${FEDERATION_FORGE_TYPE:-}" ]; then
             ;;
     esac
 else
-    # Interactive prompt; default is "gitlab" for PR 1 parity with pre-#256
-    # installs. The full GitHub backend (per-colony github-api.sh wrappers,
-    # .ag agent audits) ships across PRs 2-6 of #256. Selecting "github"
-    # now is supported for config scaffolding; at runtime forge-api.sh
-    # returns exit 99 with a clear pointer to the ADR until the per-colony
-    # wrappers land.
+    # Both backends are first-class since #256 completion. Default is
+    # "gitlab" to keep interactive behavior stable for pre-#256 operators
+    # re-running install.sh; pressing Enter preserves the pre-#256 choice.
     ask "Forge backend [1] GitLab (default)  [2] GitHub:"
     read -r FORGE_CHOICE
     case "$FORGE_CHOICE" in
@@ -198,37 +195,16 @@ else
     esac
 fi
 
-if [ "$FORGE_TYPE" = "github" ]; then
-    echo ""
-    fail "GitHub backend selected."
-    info "Foundation (ADR-0002 + config schema + forge-api.sh dispatcher)"
-    info "is available from PR 1 of issue #256. Per-colony github-api.sh"
-    info "wrappers ship in PRs 2-6; at runtime, forge-api.sh currently"
-    info "exits 99 for FORGE_TYPE=github. Track progress at:"
-    info "  https://github.com/Replikanti/agentis-colonies/issues/256"
-    echo ""
-    if [ -n "${FEDERATION_FORGE_TYPE:-}" ]; then
-        # Env var already acts as explicit confirmation — skip interactive
-        # gate so unattended installs don't block on stdin.
-        info "FEDERATION_FORGE_TYPE=github → treating as confirmation, proceeding."
-    else
-        ask "Continue with GitHub scaffolding anyway? [y/N]:"
-        read -r CONTINUE_GITHUB
-        case "$CONTINUE_GITHUB" in
-            y|Y|yes|YES) info "Proceeding with GitHub scaffolding." ;;
-            *)
-                info "Aborting install. Re-run and select GitLab, or wait for PRs 2-6 of #256."
-                exit 0
-                ;;
-        esac
-    fi
-fi
-
-# --- 3. GitLab credentials ---
+# --- 3. Forge credentials ---
 
 echo ""
-echo "GitLab configuration"
-echo "All 5 colonies connect to the same GitLab project."
+if [ "$FORGE_TYPE" = "github" ]; then
+    echo "GitHub configuration"
+    echo "All 5 colonies connect to the same GitHub repository."
+else
+    echo "GitLab configuration"
+    echo "All 5 colonies connect to the same GitLab project."
+fi
 echo ""
 
 # Separate prompt for credentials. The existing "overwrite templates"
@@ -248,18 +224,18 @@ if [ "$CONFIGS_EXISTED" -eq 5 ]; then
         WRITE_CREDS=0
         info "FEDERATION_FORGE_TYPE set and configs exist → keeping existing credentials (forge type will still be updated below)."
     else
-        ask "Update GitLab credentials in existing configs? [Y/n]:"
+        ask "Update $FORGE_TYPE credentials in existing configs? [Y/n]:"
         read -r UPDATE_CREDS
         case "$UPDATE_CREDS" in
             n|N)
                 WRITE_CREDS=0
-                info "Keeping existing GitLab credentials. Skipping prompts."
+                info "Keeping existing $FORGE_TYPE credentials. Skipping prompts."
                 ;;
         esac
     fi
 fi
 
-if [ "$WRITE_CREDS" -eq 1 ]; then
+if [ "$WRITE_CREDS" -eq 1 ] && [ "$FORGE_TYPE" = "gitlab" ]; then
     # URL char class includes `_` because corporate self-hosted DNS
     # routinely uses underscores in hostnames (RFC-noncompliant but
     # widespread) — rejecting them was a regression in PR #122 v1.
@@ -300,10 +276,10 @@ if [ "$WRITE_CREDS" -eq 1 ]; then
 
     for colony in "${COLONIES[@]}"; do
         CONFIG="$SCRIPT_DIR/$colony/config/colony.toml"
-        # Rewrite credentials in both [gitlab] and [forge.gitlab]. Section-
-        # scoped so an operator who uncommented [forge.github] (and perhaps
-        # dropped a ghp_* PAT there) does not see their GitHub token
-        # clobbered by the glpat rewrite.
+        # Section-scoped rewrite into [forge.gitlab] only. The legacy
+        # top-level [gitlab] block was retired in PR 7 of #256 (MAJOR
+        # v1.0.0). Operators on pre-#256 configs must re-copy
+        # colony.example.toml; the [forge].type check below flags that.
         python3 - "$CONFIG" "$GITLAB_URL" "$GITLAB_TOKEN" "$GITLAB_PROJECT" "$GITLAB_ME" <<'PY'
 import sys, re
 path, url, token, project, me = sys.argv[1:6]
@@ -324,7 +300,7 @@ def _rewrite_in_sections(content, targets, rewrites):
         out.append(line)
     return ''.join(out)
 
-cred_sections = {'gitlab', 'forge.gitlab'}
+cred_sections = {'forge.gitlab'}
 rewrites = [
     (r'(url\s*=\s*)"[^"]*"',     lambda m: m.group(1) + '"' + url + '"'),
     (r'(token\s*=\s*)"[^"]*"',   lambda m: m.group(1) + '"' + token + '"'),
@@ -337,6 +313,104 @@ content = _rewrite_in_sections(content, cred_sections, rewrites)
 
 with open(path, 'w') as f:
     f.write(content)
+PY
+        ok "$colony"
+        chmod 600 "$CONFIG" 2>/dev/null || \
+            info "$colony: could not chmod 600 $CONFIG (filesystem may not support it)"
+    done
+fi
+
+if [ "$WRITE_CREDS" -eq 1 ] && [ "$FORGE_TYPE" = "github" ]; then
+    # GitHub owner/repo split. The per-colony forge.github section takes
+    # owner+repo as separate keys (not combined into a path) because
+    # GitHub's REST API keeps them separate at the route level; the
+    # wrappers concatenate them locally.
+    prompt_validated GITHUB_OWNER \
+        "GitHub owner (user or organization):" \
+        '^[A-Za-z0-9](-?[A-Za-z0-9]){0,38}$' \
+        "1-39 chars, alphanumeric + single hyphens (GitHub login rules)."
+
+    prompt_validated GITHUB_REPO \
+        "GitHub repository name:" \
+        '^[A-Za-z0-9._-]+$' \
+        "Alphanumeric, dot, underscore, dash only."
+
+    prompt_validated GITHUB_TOKEN \
+        "GitHub personal access token (ghp_... or github_pat_...):" \
+        '^(ghp_|github_pat_)[A-Za-z0-9_]+$' \
+        "Must start with 'ghp_' or 'github_pat_' followed by the token body." \
+        --secret
+
+    # Optional Enterprise override. github.com stays the default by
+    # leaving GITHUB_URL empty (template ships commented out).
+    ask "GitHub Enterprise API URL (optional, press Enter for github.com):"
+    read -r GITHUB_URL
+    if [ -n "$GITHUB_URL" ] && ! [[ "$GITHUB_URL" =~ ^https?://[A-Za-z0-9._-]+(:[0-9]+)?(/.*)?$ ]]; then
+        fail "Invalid URL; leaving blank (github.com will be used)."
+        GITHUB_URL=""
+    fi
+
+    ask "Your GitHub username for personal/team knowledge tagging (optional, press Enter to skip):"
+    read -r GITHUB_ME
+    if [ -n "$GITHUB_ME" ] && ! [[ "$GITHUB_ME" =~ ^[A-Za-z0-9](-?[A-Za-z0-9]){0,38}$ ]]; then
+        fail "Invalid GitHub username. 1-39 chars, alphanumeric + single hyphens."
+        GITHUB_ME=""
+    fi
+
+    echo ""
+    echo "Writing credentials to colony configs..."
+
+    for colony in "${COLONIES[@]}"; do
+        CONFIG="$SCRIPT_DIR/$colony/config/colony.toml"
+        # Two-step rewrite: (1) uncomment the [forge.github] template
+        # block if it ships commented (default in colony.example.toml),
+        # (2) section-scoped key rewrites inside [forge.github]. The
+        # [forge.gitlab] section is untouched so operators can switch
+        # back via FEDERATION_FORGE_TYPE without losing credentials.
+        python3 - "$CONFIG" "$GITHUB_URL" "$GITHUB_TOKEN" "$GITHUB_OWNER" "$GITHUB_REPO" "$GITHUB_ME" <<'PY'
+import sys, re
+path, url, token, owner, repo, me = sys.argv[1:7]
+with open(path) as f:
+    lines = f.readlines()
+
+# Step 1: uncomment [forge.github] block if it's fully commented.
+# Enter on `# [forge.github]`, stay while subsequent lines match
+# `# key = ...`, exit on the first line that doesn't (blank,
+# next section header, or anything else).
+out = []
+in_block = False
+for line in lines:
+    if re.match(r'\s*#\s*\[forge\.github\]\s*$', line):
+        in_block = True
+        out.append(re.sub(r'^(\s*)#\s?', r'\1', line))
+        continue
+    if in_block:
+        if re.match(r'\s*#\s*[A-Za-z_][\w.]*\s*=', line):
+            out.append(re.sub(r'^(\s*)#\s?', r'\1', line))
+            continue
+        in_block = False
+    out.append(line)
+
+# Step 2: rewrite keys inside the [forge.github] section.
+content = ''.join(out)
+lines = content.splitlines(keepends=True)
+section = None
+out2 = []
+for line in lines:
+    stripped = line.strip()
+    if stripped.startswith('[') and stripped.endswith(']'):
+        section = stripped[1:-1].strip()
+    if section == 'forge.github':
+        if url:
+            line = re.sub(r'(url\s*=\s*)"[^"]*"', lambda m: m.group(1) + '"' + url + '"', line)
+        line = re.sub(r'(owner\s*=\s*)"[^"]*"', lambda m: m.group(1) + '"' + owner + '"', line)
+        line = re.sub(r'(repo\s*=\s*)"[^"]*"',  lambda m: m.group(1) + '"' + repo  + '"', line)
+        line = re.sub(r'(token\s*=\s*)"[^"]*"', lambda m: m.group(1) + '"' + token + '"', line)
+        line = re.sub(r'(me\s*=\s*)"[^"]*"',    lambda m: m.group(1) + '"' + me    + '"', line)
+    out2.append(line)
+
+with open(path, 'w') as f:
+    f.write(''.join(out2))
 PY
         ok "$colony"
         chmod 600 "$CONFIG" 2>/dev/null || \

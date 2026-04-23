@@ -10,9 +10,11 @@
 #
 # Optional env vars:
 #   GITLAB_DEFAULT_BRANCH base/target branch for create-tag (default "main").
-#                         The env-var name is a GitLab holdover — ADR-0002
-#                         keeps it for backend-agnostic dispatch; PR 7 may
-#                         rename when [gitlab] retires.
+#                         The env-var name is a GitLab holdover kept for
+#                         backend-agnostic dispatch (ADR-0002); renaming was
+#                         deferred past #256 to avoid cross-colony churn —
+#                         operators still set the value via
+#                         [forge.<backend>] default_branch.
 #   GITHUB_ME             authenticated-user login (optional; used as the
 #                         `tagger.name` fallback when creating annotated tags)
 #   GITHUB_CURL_MAX_TIME  per-attempt --max-time seconds (default 90)
@@ -697,6 +699,31 @@ PY
         # conversation comments.
         JSON_BODY=$(printf '%s' "$BODY" | python3 -c 'import sys,json; print(json.dumps({"body": sys.stdin.read()}))')
         gh_post "$API/issues/$NUM/comments" "$JSON_BODY"
+        ;;
+
+    rate-limit-status)
+        # GitHub's /rate_limit endpoint does NOT count against the
+        # authenticated REST budget, so dashboards can poll this freely.
+        # Normalize the "core" resource (the same bucket REST reads draw
+        # from) to the GitLab-shape {remaining, limit, reset_at} contract.
+        # ADR-0002 PR 7 of 7 for #256.
+        resp="$(gh_get "$GITHUB_URL/rate_limit")" || exit $?
+        RATE_RESP="$resp" python3 <<'PY'
+import os, json, datetime
+try:
+    d = json.loads(os.environ["RATE_RESP"])
+except Exception:
+    print(json.dumps({"remaining": None, "limit": None, "reset_at": None}))
+    raise SystemExit(0)
+# Prefer resources.core (matches what REST reads draw from); fall back
+# to the top-level rate summary for old GHE instances that omit it.
+core = (d.get("resources") or {}).get("core") or d.get("rate") or {}
+reset = core.get("reset")
+reset_at = None
+if isinstance(reset, (int, float)):
+    reset_at = datetime.datetime.fromtimestamp(int(reset), tz=datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+print(json.dumps({"remaining": core.get("remaining"), "limit": core.get("limit"), "reset_at": reset_at}))
+PY
         ;;
 
     *)
