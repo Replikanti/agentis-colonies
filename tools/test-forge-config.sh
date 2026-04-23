@@ -89,7 +89,10 @@ for colony in $COLONIES; do
         fail "$colony: forge-api.sh does not reference FORGE_TYPE"
         continue
     fi
-    if ! grep -q 'case "\$FORGE_TYPE"' "$disp"; then
+    # grep -F to treat `$FORGE_TYPE` as a literal string (shellcheck SC2016
+    # flags escaped-$ in single-quoted patterns; -F sidesteps the ambiguity
+    # and matches the dispatcher's literal `case "$FORGE_TYPE"` line).
+    if ! grep -qF 'case "$FORGE_TYPE"' "$disp"; then
         fail "$colony: forge-api.sh missing FORGE_TYPE case dispatch"
         continue
     fi
@@ -193,11 +196,14 @@ done
 # -----------------------------------------------------------------------------
 for colony in $COLONIES; do
     start="$REPO_ROOT/dev-apprenticeship/$colony/scripts/start-colony.sh"
-    if ! grep -qE 'FORGE_TYPE=\$\(parse_toml forge type\)' "$start"; then
+    # grep -F to match literal `$()` / `${}` shell syntax in the script
+    # (shellcheck SC2016 flags escaped-$ in single-quoted regex patterns;
+    # -F sidesteps it by treating the whole pattern as a fixed string).
+    if ! grep -qF 'FORGE_TYPE=$(parse_toml forge type)' "$start"; then
         fail "$colony: start-colony.sh does not parse [forge].type via parse_toml"
         continue
     fi
-    if ! grep -qE 'FORGE_TYPE="\$\{FORGE_TYPE:-gitlab\}"' "$start"; then
+    if ! grep -qF 'FORGE_TYPE="${FORGE_TYPE:-gitlab}"' "$start"; then
         fail "$colony: start-colony.sh does not default FORGE_TYPE to \"gitlab\""
         continue
     fi
