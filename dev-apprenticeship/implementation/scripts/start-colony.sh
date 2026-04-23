@@ -67,30 +67,26 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 . "$REPO_ROOT/tools/parse-toml.sh"
 
 # #256: forge backend selection. `[forge].type` picks which backend
-# wrapper forge-api.sh dispatches to. Defaults to "gitlab" so pre-#256
-# configs keep working unchanged. PR 4 of #256 ships the implementation
-# colony's github-api.sh, so FORGE_TYPE=github is now live for
-# implementation (other colonies still return exit 99 "not implemented"
-# until their respective PRs land).
+# wrapper forge-api.sh dispatches to. Legal values: "gitlab", "github".
+# PR 7 of #256 (MAJOR bump) made `[forge]` authoritative and retired
+# the legacy top-level `[gitlab]` section. `parse_toml forge type`
+# defaults to "gitlab" when unset so a fresh colony.toml that lists
+# only `[forge.gitlab]` without the selector still launches cleanly.
 FORGE_TYPE=$(parse_toml forge type)
 FORGE_TYPE="${FORGE_TYPE:-gitlab}"
 
 case "$FORGE_TYPE" in
     gitlab)
-        # Prefer [forge.gitlab] (ADR-0002) if present; fall back to legacy
-        # [gitlab] so pre-#256 configs keep working during the overlap window.
+        # PR 7 of #256 (MAJOR bump) made [forge.gitlab] authoritative.
+        # The legacy top-level [gitlab] fallback branches retired here.
         GITLAB_URL=$(parse_toml forge.gitlab url)
-        [ -z "$GITLAB_URL" ] && GITLAB_URL=$(parse_toml gitlab url)
         GITLAB_TOKEN=$(parse_toml forge.gitlab token)
-        [ -z "$GITLAB_TOKEN" ] && GITLAB_TOKEN=$(parse_toml gitlab token)
         GITLAB_PROJECT_RAW=$(parse_toml forge.gitlab project)
-        [ -z "$GITLAB_PROJECT_RAW" ] && GITLAB_PROJECT_RAW=$(parse_toml gitlab project)
         GITLAB_ME=$(parse_toml forge.gitlab me)
-        [ -z "$GITLAB_ME" ] && GITLAB_ME=$(parse_toml gitlab me)
 
         if [ -z "$GITLAB_URL" ] || [ -z "$GITLAB_TOKEN" ] || [ -z "$GITLAB_PROJECT_RAW" ]; then
             echo "Error: GitLab config incomplete in $CONFIG"
-            echo "Required: url, token, project under [forge.gitlab] (or legacy [gitlab])"
+            echo "Required: url, token, project under [forge.gitlab]"
             exit 1
         fi
 
@@ -139,14 +135,11 @@ esac
 # consume IMPLEMENTATION_TRIGGER_LABEL identically.
 IMPLEMENTATION_TRIGGER_LABEL=$(parse_toml implementation trigger_label)
 
-# #224: primary branch name. Prefer the ADR-0002 sections first so
-# operators who move everything under [forge.*] aren't silently ignored,
-# then fall back to the legacy [gitlab].default_branch for pre-#256
-# configs. All three forms yield the same GITLAB_DEFAULT_BRANCH env var
-# that both backend wrappers consume (${GITLAB_DEFAULT_BRANCH:-main}).
-# The env var name is kept as GITLAB_DEFAULT_BRANCH for cross-backend
-# parity; PR 7 of #256 may rename it when the legacy [gitlab] section
-# retires.
+# #224: primary branch name. Read from whichever of [forge.gitlab] or
+# [forge.github] the operator selected via [forge].type. The env var
+# is kept as GITLAB_DEFAULT_BRANCH for cross-backend parity (both
+# backend wrappers consume ${GITLAB_DEFAULT_BRANCH:-main}). PR 7 of
+# #256 retired the legacy top-level [gitlab].default_branch fallback.
 case "$FORGE_TYPE" in
     github)
         GITLAB_DEFAULT_BRANCH=$(parse_toml forge.github default_branch)
@@ -155,7 +148,6 @@ case "$FORGE_TYPE" in
         GITLAB_DEFAULT_BRANCH=$(parse_toml forge.gitlab default_branch)
         ;;
 esac
-[ -z "$GITLAB_DEFAULT_BRANCH" ] && GITLAB_DEFAULT_BRANCH=$(parse_toml gitlab default_branch)
 
 export FORGE_TYPE
 export IMPLEMENTATION_TRIGGER_LABEL

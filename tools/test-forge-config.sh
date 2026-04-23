@@ -1,14 +1,15 @@
 #!/bin/bash
-# tools/test-forge-config.sh: verify the #256 forge-abstraction foundation.
+# tools/test-forge-config.sh: verify the #256 forge-abstraction end state.
 #
-# PR 1 of #256 adds:
+# #256 PR 1 (foundation) adds:
 #  - [forge] section (with type, [forge.gitlab], commented [forge.github]) to
 #    every colony.example.toml
 #  - per-colony scripts/forge-api.sh dispatcher that reads $FORGE_TYPE
 #  - start-colony.sh exports FORGE_TYPE from [forge].type (default "gitlab")
+# #256 PRs 2-6 ship the per-colony github-api.sh wrappers.
+# #256 PR 7 (MAJOR, v1.0.0) retires the legacy top-level [gitlab] section.
 #
-# This test locks all three invariants in place before PRs 2-6 land the
-# per-colony github-api.sh wrappers.
+# This test locks the full post-#256 contract in place.
 #
 # Usage: ./tools/test-forge-config.sh
 # Exit 0 if all tests pass, 1 otherwise.
@@ -268,20 +269,51 @@ if ! grep -q 'Setting \[forge\].type = ' "$install"; then
 else
     pass "install.sh: unconditional [forge].type rewrite present"
 fi
-# The unattended-install short-circuit must also skip the two interactive
-# gates: (a) the "Continue with GitHub scaffolding anyway?" prompt when
-# FEDERATION_FORGE_TYPE=github; (b) the "Update GitLab credentials?" prompt
-# when configs already exist. Pattern-match the two short-circuit comments.
-if ! grep -q 'treating as confirmation, proceeding' "$install"; then
-    fail "install.sh: FEDERATION_FORGE_TYPE does not short-circuit the GitHub-confirm prompt"
-else
-    pass "install.sh: FEDERATION_FORGE_TYPE short-circuits the GitHub-confirm prompt"
-fi
+# The FEDERATION_FORGE_TYPE short-circuit must skip the credential-update
+# prompt when configs already exist. Pattern-match the short-circuit comment.
 if ! grep -q 'FEDERATION_FORGE_TYPE set and configs exist' "$install"; then
     fail "install.sh: FEDERATION_FORGE_TYPE does not short-circuit the credential-update prompt for existing configs"
 else
     pass "install.sh: FEDERATION_FORGE_TYPE short-circuits the credential-update prompt"
 fi
+# #256 PR 7 (v1.0.0): the legacy GitHub-confirm abort gate ("Continue with
+# GitHub scaffolding anyway?" + "Aborting install. Re-run and select GitLab")
+# was removed when the per-colony github-api.sh wrappers landed — both
+# backends are first-class. Assert the gate stays gone.
+if grep -q 'Continue with GitHub scaffolding' "$install"; then
+    fail "install.sh: legacy GitHub-confirm abort gate is still present (must be removed in #256 PR 7)"
+else
+    pass "install.sh: legacy GitHub-confirm abort gate removed"
+fi
+if grep -q 'Aborting install. Re-run and select GitLab' "$install"; then
+    fail "install.sh: legacy 'Re-run and select GitLab' abort message still present (must be removed in #256 PR 7)"
+else
+    pass "install.sh: legacy abort-to-GitLab message removed"
+fi
+# #256 PR 7 (v1.0.0): install.sh must prompt for GitHub credentials when
+# FORGE_TYPE=github, and must NOT write to the retired top-level [gitlab]
+# section. Pattern-match the conditional branches and the cred_sections set.
+if ! grep -q 'FORGE_TYPE" = "github"' "$install"; then
+    fail "install.sh: FORGE_TYPE=github credential branch missing"
+else
+    pass "install.sh: FORGE_TYPE=github credential branch present"
+fi
+if ! grep -qE "cred_sections = \\{'forge\\.gitlab'\\}" "$install"; then
+    fail "install.sh: legacy [gitlab] still in cred_sections set (must be removed in PR 7)"
+else
+    pass "install.sh: cred_sections writes to [forge.gitlab] only (legacy [gitlab] retired)"
+fi
+# -----------------------------------------------------------------------------
+# Test 7b: colony.example.toml must NOT carry a top-level [gitlab] section
+# -----------------------------------------------------------------------------
+for colony in $COLONIES; do
+    cfg="$REPO_ROOT/dev-apprenticeship/$colony/config/colony.example.toml"
+    if grep -qE '^\[gitlab\]$' "$cfg"; then
+        fail "$colony: legacy top-level [gitlab] section still present in colony.example.toml (retired in #256 PR 7)"
+    else
+        pass "$colony: legacy [gitlab] section absent from colony.example.toml"
+    fi
+done
 
 # -----------------------------------------------------------------------------
 # Test 8: ADR-0002 exists and is indexed

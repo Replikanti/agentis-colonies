@@ -461,6 +461,50 @@ PY
         gl_post "$API/merge_requests/$IID/notes" "$JSON_BODY"
         ;;
 
+    rate-limit-status)
+        # GitLab does NOT have a dedicated rate-limit endpoint. We trigger
+        # a lightweight /version call and extract RateLimit-* response
+        # headers (documented at GitLab "User and IP rate limits"). Self-
+        # hosted instances with rate limiting disabled return no such
+        # headers; we forward nulls in that case so the dashboard tile
+        # renders "—" instead of a spurious "0 remaining".
+        # ADR-0002 PR 7 of 7 for #256.
+        hdr_file="$(mktemp)"
+        # /version is the cheapest authenticated endpoint. -D dumps
+        # response headers; -o discards body; || : keeps a transport
+        # failure from killing the script (nulls forwarded in that case).
+        curl -sS -D "$hdr_file" -o /dev/null \
+            --max-time "${GITLAB_CURL_MAX_TIME:-30}" \
+            -H "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+            "$GITLAB_URL/api/v4/version" 2>/dev/null || :
+        HDR_FILE="$hdr_file" python3 <<'PY'
+import os, json, datetime, re
+try:
+    with open(os.environ["HDR_FILE"], "r", errors="replace") as f:
+        lines = f.readlines()
+except Exception:
+    lines = []
+hdrs = {}
+for ln in lines:
+    m = re.match(r"([^:]+):\s*(.+?)\s*$", ln)
+    if m:
+        hdrs[m.group(1).lower()] = m.group(2)
+def _int(s):
+    try:
+        return int(s) if s is not None else None
+    except Exception:
+        return None
+remaining = _int(hdrs.get("ratelimit-remaining"))
+limit = _int(hdrs.get("ratelimit-limit"))
+reset = _int(hdrs.get("ratelimit-reset"))
+reset_at = None
+if reset is not None:
+    reset_at = datetime.datetime.fromtimestamp(reset, tz=datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+print(json.dumps({"remaining": remaining, "limit": limit, "reset_at": reset_at}))
+PY
+        rm -f "$hdr_file"
+        ;;
+
     *)
         emit_error "unknown command: $CMD"
         exit 1

@@ -306,7 +306,7 @@ Cross-colony wiring: Triage routes issues to Implementation. Implementation sign
 
 Every `learn()` call in the federation's agents tags entries with one of `observed` (shadow tier: passive learning from GitLab activity), `emitted` (propose tier: suggestion logged with draft external write), `review-gated` (review-gated tier: direct non-terminal external write under the review gate), or `acted` (autonomous tier: terminal external write with no second gate) plus the colony name (`triage`, `code-review`, `planning`, `implementation`, `release`). See [`doc/auto-promote.md#classification`](../doc/auto-promote.md#classification) for how the auto-promote heuristic consumes these tags.
 
-**Personal vs team (`#104`).** If you set your GitLab username during `./install.sh` (or in `colony.toml` under `[gitlab] me = "..."`), three agents additionally tag their `learn()` calls as either `personal` (the issue/MR author matches your username) or `team` (anyone else):
+**Personal vs team (`#104`).** If you set your forge username during `./install.sh` (or in `colony.toml` under `[forge.gitlab] me = "..."` / `[forge.github] me = "..."`), three agents additionally tag their `learn()` calls as either `personal` (the issue/MR author matches your username) or `team` (anyone else):
 
 - `labeler` — tags every tier's entries
 - `prioritizer` — tags every tier's entries
