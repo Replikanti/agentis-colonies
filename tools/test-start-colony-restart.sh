@@ -295,11 +295,43 @@ exit 0
 SHIM
     chmod +x "$SHIM_BG_DIR/agentis"
 
+    # #285 QA: aggressively scope PATH so the real `agentis` binary cannot be
+    # reached from within the script's subshells. Both /home/.../.cargo/bin
+    # and /usr/local/bin commonly contain the real binary on a contributor
+    # machine; if the shim ever fails to handle a subcommand, we want
+    # "command not found" rather than a silent fall-through that kills real
+    # daemons in the live federation registry. Keep /usr/bin + /bin so
+    # python3, pgrep, kill, sed, awk, etc. still resolve.
+    local SAFE_PATH="$SHIM_BG_DIR:/usr/bin:/bin"
+
+    # #285 QA: pre-flight sanity check — verify the shim wins under SAFE_PATH
+    # before we let start-colony.sh's kill-before-spawn block run. Two
+    # invariants:
+    #   1. `command -v agentis` resolves to the shim file, not the real
+    #      cargo / /usr/local/bin binary.
+    #   2. `agentis daemon list --json` under SAFE_PATH returns "[]" while
+    #      no fake daemons are alive yet — proves we're seeing shim output,
+    #      not the real federation's 21-agent registry.
+    # If either fails, the test bails with [SKIP] rather than risk killing
+    # real PIDs from the live federation.
+    local resolved
+    resolved="$(PATH="$SAFE_PATH" command -v agentis 2>/dev/null || true)"
+    if [ "$resolved" != "$SHIM_BG_DIR/agentis" ]; then
+        echo "[SKIP] $colony: shim isolation failed — agentis resolves to '$resolved' not '$SHIM_BG_DIR/agentis'; refusing to run kill-before-spawn against the live federation" >&2
+        return
+    fi
+    local sanity_out
+    sanity_out="$(PATH="$SAFE_PATH" agentis daemon list --json 2>/dev/null || true)"
+    if [ "$sanity_out" != "[]" ]; then
+        echo "[SKIP] $colony: shim sanity check failed — 'agentis daemon list --json' returned '$(printf '%s' "$sanity_out" | head -c 80)' instead of '[]'; refusing to run kill-before-spawn" >&2
+        return
+    fi
+
     local pgrep_pat="fake-daemon-inner-for-test-285.*agents/${agent}\\.ag"
     local restart_ok=1
     for iter in 1 2 3; do
         out="$TMPDIR_TEST/$colony.dup_iter$iter.log"
-        if ! PATH="$SHIM_BG_DIR:$PATH" bash "$script" --restart-agent "$agent" "$FIXTURE_TOML" >"$out" 2>&1; then
+        if ! PATH="$SAFE_PATH" bash "$script" --restart-agent "$agent" "$FIXTURE_TOML" >"$out" 2>&1; then
             rc=$?
             fail "$colony: iter$iter --restart-agent $agent returned rc=$rc" "body=$(head -c 200 "$out")"
             restart_ok=0
