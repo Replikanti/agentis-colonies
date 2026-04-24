@@ -509,10 +509,16 @@ if [ -d "$AGENTIS_DIR" ]; then
     #                                 directly (e.g. debug sessions), where
     #                                 without the config key the watchdog
     #                                 uses the 1 s default.
-    #   daemon.heartbeat_interval_ms — 3× tick is long enough for a
-    #                                  Claude CLI cold start (typ. 5-30 s).
-    #                                  Default 2× tick is fine for mock,
-    #                                  but kills real-LLM agents mid-tick.
+    #   daemon.heartbeat_interval_ms — 3× the longest tick interval in the
+    #                                  federation (300 000 ms reactive per
+    #                                  #146: release + code-review colonies
+    #                                  tick at 300 s), so the watchdog waits
+    #                                  one full reactive tick before it
+    #                                  considers an agent stuck. The pre-fix
+    #                                  180 000 value was calibrated for the
+    #                                  60 s active default (3× = 180 s) and
+    #                                  killed every reactive agent on its
+    #                                  first tick (#280).
     #   daemon.cb_per_tick          — 2000 covers ~40 prompt() calls per
     #                                 tick. Default 100 overflows on the
     #                                 first prompt (50 CB each) and makes
@@ -597,7 +603,16 @@ if [ -d "$AGENTIS_DIR" ]; then
     write_key 'federation.enabled'           'true'
     write_key 'knowledge.federation_enabled' 'true'
     write_key 'daemon.tick_interval_ms'      '60000'
-    write_key 'daemon.heartbeat_interval_ms' '180000'
+    # Migrate #280 pre-fix literal in-place. Exact-match only — any operator
+    # customization (e.g. 300000 for a slow-LLM deployment) is preserved.
+    if [ -f "$AGENTIS_CONFIG" ] && grep -qxF 'daemon.heartbeat_interval_ms = 180000' "$AGENTIS_CONFIG"; then
+        # Use a tmp file + mv for atomicity; no sed -i (BSD vs GNU portability).
+        awk '/^daemon\.heartbeat_interval_ms = 180000$/ \
+             { print "daemon.heartbeat_interval_ms = 900000"; next } { print }' \
+            "$AGENTIS_CONFIG" > "$AGENTIS_CONFIG.tmp" && mv "$AGENTIS_CONFIG.tmp" "$AGENTIS_CONFIG"
+        ok "upgraded daemon.heartbeat_interval_ms (#280)"
+    fi
+    write_key 'daemon.heartbeat_interval_ms' '900000'
     write_key 'daemon.cb_per_tick'           '2000'
     write_key 'experience.enabled'           'true'
     # Migrate #277 pre-fix literal in-place. Exact-match only — any operator

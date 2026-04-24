@@ -27,6 +27,7 @@ is asserted until multi-version CI is in place.
 
 - GitHub wrapper no longer fails on repos with >20 closed PRs — normalizers now read HTTP body via stdin instead of env var, bypassing `MAX_ARG_STRLEN` (#279).
 - `install.sh` now routes `FORGE_TYPE` and `GITHUB_*` through `exec.env_passthrough`; existing installs with the pre-fix literal are auto-upgraded in place. Unblocks GitHub-backend federations (#277).
+- `install.sh` now sets `daemon.heartbeat_interval_ms = 900000` (3× the longest tick interval, 300 000 ms, per #146) so reactive code-review/release agents are no longer killed by the watchdog after their first tick; existing installs with the pre-fix `180000` literal are auto-upgraded in place (#280).
 
 ### Security
 
