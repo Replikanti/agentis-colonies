@@ -243,6 +243,7 @@ if [ -n "$RESTART_AGENT" ]; then
     # the indirection via AGENTIS_BIN keeps colony-lint's launch-flag whitelist
     # (#68/#71) from misreading `--json` as a daemon flag on the same line.
     AGENTIS_BIN=agentis
+    # shellcheck disable=SC2015 # pipe to python3, not an if-then-else
     existing_entry="$(cd "$FED_ROOT" && "$AGENTIS_BIN" daemon list --json 2>/dev/null | python3 -c '
 import json, sys
 try:
