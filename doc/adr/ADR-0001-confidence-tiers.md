@@ -6,7 +6,7 @@ date: 2026-04-17
 authors: [ylohnitram]
 supersedes: (none)
 superseded-by: (none)
-tags: [confidence, autonomy, governance, dev-apprenticeship]
+tags: [confidence, autonomy, governance, platform]
 ---
 
 # ADR-0001: Confidence tiers for autonomous agent behaviour
@@ -164,7 +164,11 @@ The agent has demonstrated sustained, high-evidence success and may
 act as the final authority for its action class.
 
 - **MAY:** everything allowed at `review-gated`; perform terminal
-  external writes (merge, tag, publish, rotate); act without a
+  external writes (e.g. merge MR, push release tag, publish package,
+  rotate credential — coder federation; ack alert, dispatch on-call
+  page, trigger runbook — monitoring federation; post customer reply,
+  re-assign ticket — support federation; publish weekly digest,
+  silently drop a duplicate — research federation); act without a
   second gate; call `learn(..., tags=["acted"])`.
 - **MUST NOT:** escalate beyond its own action class — an
   autonomous code-review agent does not thereby acquire release
