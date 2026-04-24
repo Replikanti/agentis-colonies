@@ -198,6 +198,7 @@ run_install_fragment_gitlab_me() {
     OPERATOR_ME="${GITLAB_ME:-${GITHUB_ME:-}}"
     if [ -n "$OPERATOR_ME" ]; then
         local current
+        # shellcheck disable=SC2015
         current=$(cd "$FED_ROOT" && agentis memo get gitlab:me 2>/dev/null || true)
         if [ -z "$current" ] || [ "$current" = "$OPERATOR_ME" ]; then
             (cd "$FED_ROOT" && agentis memo set gitlab:me "$OPERATOR_ME" 2>/dev/null) || true
@@ -217,6 +218,7 @@ else
         export GITHUB_ME=ylohnitram
         run_install_fragment_gitlab_me "$T7_DIR"
     )
+    # shellcheck disable=SC2015
     T7_GOT=$(cd "$T7_DIR" && agentis memo get gitlab:me 2>/dev/null || true)
     if [ "$T7_GOT" = "ylohnitram" ]; then
         pass "GITHUB_ME=ylohnitram seeds gitlab:me memo to 'ylohnitram'"
@@ -233,6 +235,7 @@ else
         export GITLAB_ME=martinh
         run_install_fragment_gitlab_me "$T8_DIR"
     )
+    # shellcheck disable=SC2015
     T8_GOT=$(cd "$T8_DIR" && agentis memo get gitlab:me 2>/dev/null || true)
     if [ "$T8_GOT" = "martinh" ]; then
         pass "GITLAB_ME=martinh seeds gitlab:me memo to 'martinh'"
@@ -249,6 +252,7 @@ else
         unset GITHUB_ME
         run_install_fragment_gitlab_me "$T9_DIR"
     )
+    # shellcheck disable=SC2015
     T9_GOT=$(cd "$T9_DIR" && agentis memo get gitlab:me 2>/dev/null || true)
     if [ -z "$T9_GOT" ]; then
         pass "both GITLAB_ME and GITHUB_ME unset — gitlab:me memo left unset"
