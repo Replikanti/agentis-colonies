@@ -264,6 +264,43 @@ if [ -n "$PORT_PIDS_NL" ]; then
         | grep -v '^$' | sort -u || true)"
 fi
 
+# #296: scope dashboard PID lists to processes whose cwd lives under the
+# resolved FED_DIR. `pgrep -f federation-dashboard` matches ANY command
+# line containing that substring — including a contributor's live
+# dashboard running against a different federation. Without this filter,
+# any CI test that spawns a stub dashboard and then calls
+# kill-federation.sh sweeps away the host's live dashboard too (forensic
+# sigwaitinfo proved this behaviour: sender was a
+# /tmp/tmp.XXX/fed/tools/kill-federation.sh invoked from a stub's
+# dashboard test, which matched the production dashboard by pattern).
+# AGENTIS daemons are not filtered here — they routinely detach into
+# their own sessions and their /proc/<pid>/cwd can drift to / during
+# daemonize; the DAEMON_MATCH pattern already includes the agent file's
+# full absolute path, so it's inherently fed-dir-scoped. On /proc-less
+# platforms (macOS) the filter degrades to identity (no-op), preserving
+# legacy behaviour there.
+if [ -d /proc ] && command -v readlink >/dev/null 2>&1; then
+    FED_DIR_ABS="$(cd "$FED_DIR" && pwd -P 2>/dev/null)"
+    if [ -n "$FED_DIR_ABS" ]; then
+        _filter_by_fed_dir() {
+            # stdin: newline-separated PIDs; stdout: subset whose /proc/<pid>/cwd
+            # is rooted at FED_DIR_ABS. Non-existent/closed procs are dropped.
+            while IFS= read -r pid; do
+                [ -z "$pid" ] && continue
+                local cwd
+                cwd="$(readlink /proc/"$pid"/cwd 2>/dev/null || true)"
+                [ -z "$cwd" ] && continue
+                case "$cwd" in
+                    "$FED_DIR_ABS"|"$FED_DIR_ABS"/*) printf '%s\n' "$pid" ;;
+                    *) : ;;
+                esac
+            done
+        }
+        DASHBOARD_PIDS_NL="$(printf '%s\n' "$DASHBOARD_PIDS_NL" | _filter_by_fed_dir || true)"
+        DASH_PY_PIDS_NL="$(printf '%s\n' "$DASH_PY_PIDS_NL"   | _filter_by_fed_dir || true)"
+    fi
+fi
+
 # Don't ever signal ourselves — exclude this script's PID from every PID
 # list and every pkill sweep. We also walk our ancestor chain and exclude
 # any ancestor that is NOT itself a kill target (see _is_kill_target
