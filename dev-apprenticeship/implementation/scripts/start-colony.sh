@@ -13,13 +13,21 @@
 # concerns), and exits 0 on success with a single "started ... pid=... tick=..."
 # line on stdout for the dashboard to parse. Exit codes: 0=ok, 2=unknown flag,
 # 3=unknown agent name for this colony, 4=daemon launch failure.
+#
+# --rate-limit-status mode (federation-dashboard 0.3.0) reuses the env-load
+# path and execs `forge-api.sh rate-limit-status`, printing the JSON contract
+# `{remaining, limit, reset_at}` to stdout. Used by the dashboard's rate-limit
+# tile so it can surface remaining API budget per colony without parsing
+# colony.toml itself (the #257 decoupling principle).
 
 set -e
 
 # Parse flags. --restart-agent <name> swaps the script into single-agent
-# respawn mode. Positional arg (if any) remains the config path, for
-# backwards compatibility with pre-#257 callers.
+# respawn mode; --rate-limit-status execs forge-api.sh rate-limit-status
+# instead of launching daemons. Positional arg (if any) remains the config
+# path, for backwards compatibility with pre-#257 callers.
 RESTART_AGENT=""
+RATE_LIMIT_STATUS=0
 POSITIONAL=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -30,6 +38,10 @@ while [ $# -gt 0 ]; do
             fi
             RESTART_AGENT="$2"
             shift 2
+            ;;
+        --rate-limit-status)
+            RATE_LIMIT_STATUS=1
+            shift
             ;;
         --)
             shift
@@ -170,7 +182,7 @@ AGENTS=(
 # #257: skip on single-agent respawn — log truncation is a full-colony
 # fresh-start concern; clobbering a single agent's log surprises operators
 # and erases the timeline the dashboard is about to render.
-if [ -z "$RESTART_AGENT" ] && [ "${TRUNCATE_LOGS:-0}" = "1" ]; then
+if [ -z "$RESTART_AGENT" ] && [ "$RATE_LIMIT_STATUS" = "0" ] && [ "${TRUNCATE_LOGS:-0}" = "1" ]; then
     AGENTIS_LOGS="$REPO_ROOT/dev-apprenticeship/.agentis/logs"
     if [ -d "$AGENTIS_LOGS" ]; then
         for agent in "${AGENTS[@]}"; do
@@ -195,6 +207,14 @@ tick_interval_for() {
         *) echo 60000 ;;
     esac
 }
+
+# Rate-limit status mode (federation-dashboard 0.3.0). Same env-load path
+# as --restart-agent but execs forge-api.sh rate-limit-status and exits.
+# Skips the daemon launch entirely; safe to invoke every dashboard refresh
+# (60s) since it is a single read-only API call per colony.
+if [ "$RATE_LIMIT_STATUS" = "1" ]; then
+    exec "$COLONY_DIR/scripts/forge-api.sh" rate-limit-status
+fi
 
 # #257: single-agent respawn path. Dashboard's /restart endpoint delegates
 # here instead of reading [gitlab] config itself. All env exports above

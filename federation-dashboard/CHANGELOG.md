@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-04-24
+
+### Added
+
+- **Forge Rate Limits tile.** New card on the dashboard surfaces each
+  colony's remaining forge API budget. Powered by a new collector step
+  that loops over the federation's colonies and execs
+  `<colony>/scripts/start-colony.sh --rate-limit-status`, parsing the
+  JSON contract `{remaining, limit, reset_at}` shipped in
+  `dev-apprenticeship` 1.0.0 (PR 7 of #256). Colours: green normally,
+  yellow under 25 % budget, red under 10 %, orange "err" badge on
+  transport failure (with the failure reason in the tooltip), neutral
+  "—" when both fields are null (self-hosted GitLab without
+  rate-limiting, or pre-#256 federations). The collector tolerates
+  every per-colony failure mode (timeout, non-zero exit, malformed
+  JSON) without aborting regen.
+
+### Changed
+
+- `federation-dashboard-collector.py` adds a `forge_rate_limits` key
+  (object keyed by colony name) to its JSON output. The previous
+  six top-level keys (`agents`, `experience_counts`, `events`,
+  `confidence_changes`, `decisions`, `sidecar`) are unchanged.
+
+### Compat floor
+
+- Requires a federation that ships `start-colony.sh --rate-limit-status`
+  in every colony. The next `dev-apprenticeship` release (`1.0.1`,
+  with `.dashboard-version` bumped to `0.3.0` in lockstep) satisfies
+  this. Federations on `dev-apprenticeship <= 1.0.0` will see the tile
+  render an orange `err: exit 2` badge per colony (`start-colony.sh`
+  exits 2 on the unknown flag) but the rest of the dashboard keeps
+  working — pin `federation-dashboard` at `0.2.0` if a clean tile is
+  required before upgrading.
+
 ## [0.2.0] — 2026-04-23
 
 ### Fixed
@@ -62,6 +97,7 @@ First release as a standalone component. Code extracted from
 For history prior to extraction, see
 `git log -- tools/federation-dashboard*`.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.2.0...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.3.0...HEAD
+[0.3.0]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.2.0...federation-dashboard-v0.3.0
 [0.2.0]: https://github.com/Replikanti/agentis-colonies/releases/tag/federation-dashboard-v0.2.0
 [0.1.0]: https://github.com/Replikanti/agentis-colonies/releases/tag/federation-dashboard-v0.1.0
