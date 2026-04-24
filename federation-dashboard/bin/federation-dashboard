@@ -156,12 +156,35 @@ generate() {
         LOG_DIR=".agentis/logs"
     fi
 
+    # --- Temp-file argv routing (#293) ---
+    # Linux MAX_ARG_STRLEN caps any single argv string at 128 KB. After ~8 h
+    # of accumulation, $COLLECTOR_JSON / $HISTORY / $REMEDIATION / $DAEMONS
+    # cross that threshold and python3 fails with "Argument list too long".
+    # Spool large payloads to temp files and pass `@<path>` argv tokens; the
+    # Python helpers detect the prefix and read the file (non-`@` values
+    # still pass through inline for backward compat). Same class as #279
+    # (github-api.sh) but a different code path.
+    local DAEMON_FILE COLL_FILE HIST_FILE REMED_FILE
+    # Plain `mktemp` (no GNU-only --suffix flag) for macOS bash 3.2 portability;
+    # consumers locate the file by its argv slot, not by extension.
+    DAEMON_FILE="$(mktemp)"
+    COLL_FILE="$(mktemp)"
+    HIST_FILE="$(mktemp)"
+    REMED_FILE="$(mktemp)"
+    # In-function cleanup (RETURN trap) — generate() is also called from the
+    # regen-only path and from the 60 s background loop, so an EXIT trap on
+    # the wrapper would leak files for the duration of the long-running
+    # process. RETURN fires on every return path (success, set -e, return).
+    trap 'rm -f "$DAEMON_FILE" "$COLL_FILE" "$HIST_FILE" "$REMED_FILE"' RETURN
+
+    printf '%s' "$DAEMONS" > "$DAEMON_FILE"
+
     # --- Comprehensive per-agent data collection ---
     # Single python3 invocation collects all enriched data: experience stats,
     # .ag descriptions, log lines, PID liveness, event timeline, and
     # confidence change history. Outputs a single JSON blob consumed by JS.
     local COLLECTOR_JSON
-    COLLECTOR_JSON="$(python3 "$LIB_DIR/federation-dashboard-collector.py" "$DAEMONS" "$AGENT_COLONY_MAP" "$FED_DIR" "$EPOCH" "$EXPERIENCE_DIR" "$LOG_DIR" "$DASH_DIR" "$COLONY_LIST_PY" "$FED_TOOLS_DIR" "${ALL_AGENTS[@]}")"
+    COLLECTOR_JSON="$(python3 "$LIB_DIR/federation-dashboard-collector.py" "@$DAEMON_FILE" "$AGENT_COLONY_MAP" "$FED_DIR" "$EPOCH" "$EXPERIENCE_DIR" "$LOG_DIR" "$DASH_DIR" "$COLONY_LIST_PY" "$FED_TOOLS_DIR" "${ALL_AGENTS[@]}")"
     if ! echo "$COLLECTOR_JSON" | python3 -c 'import sys,json;json.loads(sys.stdin.read())' 2>/dev/null; then
         COLLECTOR_JSON='{"agents":[],"experience_counts":{"total":0},"events":[],"confidence_changes":[]}'
     fi
@@ -186,6 +209,10 @@ generate() {
     done
     COLONY_LIST_JS="[${COLONY_LIST_JS%,}]"
 
+    printf '%s' "$COLLECTOR_JSON" > "$COLL_FILE"
+    printf '%s' "$HISTORY" > "$HIST_FILE"
+    printf '%s' "$REMEDIATION" > "$REMED_FILE"
+
     # --- HTML generation ---
     # All HTML/CSS/JS lives in federation-dashboard.html.template. The renderer
     # substitutes 10 named sentinels and writes index.html atomically. This
@@ -201,9 +228,9 @@ generate() {
         "$AGENT_COUNT" \
         "$EPOCH" \
         "$TIMESTAMP" \
-        "$COLLECTOR_JSON" \
-        "$HISTORY" \
-        "$REMEDIATION" \
+        "@$COLL_FILE" \
+        "@$HIST_FILE" \
+        "@$REMED_FILE" \
         "$COLONY_LIST_JS"
 }
 

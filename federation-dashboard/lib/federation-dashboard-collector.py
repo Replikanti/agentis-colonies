@@ -12,7 +12,11 @@
 # and re-parsing the heredoc body as bash code at runtime.
 #
 # Args (positional):
-#   1: daemons_json        — JSON array from `agentis daemon list --json`
+#   1: daemons_json        — JSON array from `agentis daemon list --json`,
+#                            or "@<path>" to read from file (#293 — bypass
+#                            Linux MAX_ARG_STRLEN once the federation grows
+#                            past ~21 daemons and the JSON blob crosses the
+#                            128 KB per-argv-string cap).
 #   2: agent_map_json      — JSON array of {agent, colony} pairs
 #   3: fed_dir             — federation root directory
 #   4: epoch               — current epoch seconds
@@ -26,7 +30,14 @@
 
 import sys, os, json, time, re, datetime, subprocess
 
-daemons_json   = sys.argv[1]
+def _read(arg):
+    """Resolve `@<path>` argv prefix to file contents; otherwise pass through."""
+    if arg.startswith('@'):
+        with open(arg[1:], 'r', encoding='utf-8') as f:
+            return f.read()
+    return arg
+
+daemons_json   = _read(sys.argv[1])
 agent_map_json = sys.argv[2]
 fed_dir        = sys.argv[3]
 epoch          = int(sys.argv[4])
