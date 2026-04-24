@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Dashboard wrapper no longer crashes with `Argument list too long` after
+  several hours of accumulated history. `$COLLECTOR_JSON`, `$HISTORY`,
+  `$REMEDIATION`, and `$DAEMONS` now travel to the Python helpers via
+  temp files (`@<path>` argv prefix) instead of inline argv strings, so
+  they do not hit Linux's 128 KB `MAX_ARG_STRLEN` per-argv cap. Renderer
+  and collector accept both forms (`@`-prefix reads the file, plain
+  string passes through unchanged) — same class of failure as
+  [#279](https://github.com/Replikanti/agentis-colonies/issues/279) but
+  in a different code path
+  ([#293](https://github.com/Replikanti/agentis-colonies/issues/293)).
 - `/start` endpoint no longer SIGTERMs `start-federation.sh` (and its 21
   just-spawned agents) when the sidecar loop runs past 60s. Handler now
   detaches the subprocess with `start_new_session=True` and returns 202

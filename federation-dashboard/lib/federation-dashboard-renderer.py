@@ -22,13 +22,28 @@ Args (positional):
     6: agent_count       int as string
     7: epoch             int as string
     8: timestamp         human-readable timestamp string
-    9: collector_json    JSON blob (string)
-   10: history_json      JSON blob (string)
-   11: remediation_json  JSON blob (string)
+    9: collector_json    JSON blob (string) or "@<path>" to read from file (#293)
+   10: history_json      JSON blob (string) or "@<path>" to read from file (#293)
+   11: remediation_json  JSON blob (string) or "@<path>" to read from file (#293)
    12: colony_list_js    JS array literal (already formatted)
+
+The `@<path>` prefix on argv[9..11] is a #293 workaround for Linux's
+MAX_ARG_STRLEN (128 KB per single argv string): after several hours of
+accumulation the collector / history / remediation JSON blobs cross that
+threshold and exec(2) fails with E2BIG. The wrapper spools large payloads
+to temp files; values without the `@` prefix still pass through unchanged
+for backward compatibility.
 """
 import os
 import sys
+
+
+def _read(arg):
+    """Resolve `@<path>` argv prefix to file contents; otherwise pass through."""
+    if arg.startswith('@'):
+        with open(arg[1:], 'r', encoding='utf-8') as f:
+            return f.read()
+    return arg
 
 
 def main():
@@ -50,9 +65,9 @@ def main():
         '{{AGENT_COUNT}}': sys.argv[6],
         '{{EPOCH}}': sys.argv[7],
         '{{TIMESTAMP}}': sys.argv[8],
-        '{{COLLECTOR_JSON}}': sys.argv[9],
-        '{{HISTORY}}': sys.argv[10],
-        '{{REMEDIATION}}': sys.argv[11],
+        '{{COLLECTOR_JSON}}': _read(sys.argv[9]),
+        '{{HISTORY}}': _read(sys.argv[10]),
+        '{{REMEDIATION}}': _read(sys.argv[11]),
         '{{COLONY_LIST_JS}}': sys.argv[12],
     }
 
