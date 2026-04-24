@@ -37,6 +37,12 @@ default_branch = "main"  # primary branch (#224)
 # "DEV::in progress". Scoped labels and labels with spaces are handled
 # via --data-urlencode at the gitlab-api.sh layer. (#225)
 trigger_label = "implementation"
+# When false (default), code_writer's action path also fires on labeled-but-
+# unassigned issues — the label alone is a strong enough intent signal, and
+# most repos don't self-assign issues until a contributor picks them up. Set
+# to true to restore the pre-#291 contributor-hand-off gating (issue must be
+# both labeled AND assigned). (#291)
+require_assignee = false
 
 [llm]
 # Only "backend" is read today. "cli" uses the agentis daemon default CLI adapter.

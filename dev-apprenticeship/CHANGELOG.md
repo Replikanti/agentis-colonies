@@ -17,7 +17,11 @@ is asserted until multi-version CI is in place.
 
 ### Added
 
+- New `[implementation].require_assignee` config knob (default `false`) gates whether `code_writer`'s action path also fires on labeled-but-unassigned issues or stays restricted to labeled+assigned. The `implementation/scripts/{gitlab,github}-api.sh` wrappers gain a matching `--include-unassigned` flag on `assigned-issues` and `assigned-issues-by-label-events`; `start-colony.sh` seeds `code_writer:require_assignee` from the TOML, and `code_writer.ag` appends the flag when the memo reads `"false"`. Unblocks the 13 downstream agents that listen for `implementation:code_draft` / `implementation:mr_ready` on repos where labeled issues are typically unassigned ([#291](https://github.com/Replikanti/agentis-colonies/issues/291)).
+
 ### Changed
+
+- `code_writer`'s assigned-issues poll now defaults to firing on label alone (the pre-#291 behaviour gated on both label AND assignee). Operators who want to keep the old contributor-hand-off behaviour set `[implementation].require_assignee = true` ([#291](https://github.com/Replikanti/agentis-colonies/issues/291)).
 
 ### Deprecated
 

@@ -32,6 +32,21 @@ fn merged_mr_cmd() -> string {
     return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --view impl";
 }
 
+// #291: the forge wrappers' assigned-issues* subcommands gate on BOTH the
+// trigger label AND the assignee by default. On most repos labeled issues
+// are unassigned until a contributor picks them up, so the action path
+// never fires. start-colony.sh seeds code_writer:require_assignee from
+// [implementation].require_assignee (new default false); here we turn that
+// into the --include-unassigned flag when the operator has opted in to the
+// label-alone trigger.
+fn include_unassigned_flag() -> string {
+    let raw = recall_latest("code_writer:require_assignee");
+    if raw == "false" {
+        return " --include-unassigned";
+    };
+    return "";
+}
+
 fn get_confidence() -> float {
     let raw = recall_latest("code_writer:confidence");
     if len(raw) > 0 {
@@ -136,10 +151,11 @@ fn tick(reason: string) -> void {
     // scoped states in seconds) aren't missed. The first tick falls back
     // to the current-state snapshot — byte-identical to pre-#235 boot.
     let prev_check = recall_latest("code_writer:last_check");
+    let unassigned_flag = include_unassigned_flag();
     let issues_cmd = if len(prev_check) > 0 {
-        "$COLONY_DIR/scripts/forge-api.sh assigned-issues-by-label-events --since " + shell_escape(prev_check) + " --view assigned";
+        "$COLONY_DIR/scripts/forge-api.sh assigned-issues-by-label-events --since " + shell_escape(prev_check) + " --view assigned" + unassigned_flag;
     } else {
-        "$COLONY_DIR/scripts/forge-api.sh assigned-issues --view assigned";
+        "$COLONY_DIR/scripts/forge-api.sh assigned-issues --view assigned" + unassigned_flag;
     };
     let issues_raw = try {
         exec sh issues_cmd;
