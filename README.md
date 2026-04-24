@@ -42,7 +42,7 @@ graph TD
 
 | Federation | Version | Description | Agents | Status |
 |------------|---------|-------------|--------|--------|
-| [dev-apprenticeship](./dev-apprenticeship/) | [`0.3.3`](https://github.com/Replikanti/agentis-colonies/releases/tag/dev-apprenticeship-v0.3.3) | Learns a developer's complete workflow by observing how you work on GitLab. Covers triage, code review, planning, implementation, and release. | 21 | Beta |
+| [dev-apprenticeship](./dev-apprenticeship/) | [`1.0.0`](https://github.com/Replikanti/agentis-colonies/releases/tag/dev-apprenticeship-v1.0.0) | Learns a developer's complete workflow by observing how you work on GitLab or GitHub. Covers triage, code review, planning, implementation, and release. | 21 | Beta |
 
 ## Components
 
