@@ -246,6 +246,159 @@ else
     pass "C.2: cwd-fallback layout does not leak unrelated parent-level .agentis/"
 fi
 
+# ============================================================================
+# Case D (#288): wrapper must `cd "$FED_DIR"` for `agentis ...` invocations.
+# `agentis` resolves .agentis/ via cwd. If the wrapper inherits a cwd outside
+# the federation root (e.g. systemd-run --user defaults to $HOME), then
+# `agentis daemon list --json` returns [] and the collector renders every
+# agent as state=stopped/health=unknown even when the federation is alive.
+#
+# Fixture: 21 stub agents across 5 colonies. Mock `agentis` on $PATH that
+# emits 21 running-daemon JSON records ONLY when $PWD ends with the fixture
+# fed dir name; otherwise emits []. Boot wrapper from cd /tmp (outside the
+# fixture). Post-fix, the rendered HTML's agents array reports
+# state=running × 21 because the wrapper subshell-cd's into $FED_DIR.
+# Pre-fix, this assertion fails with state=stopped × 21.
+# ============================================================================
+CASE_D_ROOT="$TMPDIR_TEST/case-d"
+FED_D="$CASE_D_ROOT/fixture-fed"
+mkdir -p "$FED_D/.agentis/logs" "$FED_D/.agentis/daemon" "$FED_D/.agentis/experience"
+
+# Five colonies × varying agent counts to total 21 (mirrors dev-apprenticeship
+# shape but the names are arbitrary — the mock returns all of them).
+D_COLONIES="triage code-review planning implementation release"
+D_AGENTS_triage="router prioritizer labeler issue_creator"
+D_AGENTS_code_review="logic_reviewer style_reviewer security_reviewer test_reviewer approval_decider"
+D_AGENTS_planning="scope_estimator risk_assessor task_decomposer plan_reviewer"
+D_AGENTS_implementation="code_writer test_writer refactorer commit_composer"
+D_AGENTS_release="ship_decider changelog_writer version_bumper release_checker"
+
+for col in $D_COLONIES; do
+    mkdir -p "$FED_D/$col/agents" "$FED_D/$col/config"
+    cat > "$FED_D/$col/config/colony.toml" <<TOML
+[colony]
+name = "$col"
+TOML
+done
+
+# Generate 21 .ag files (one per agent name above).
+add_agent() {
+    local col="$1" name="$2"
+    cat > "$FED_D/$col/agents/$name.ag" <<AG
+cb 100;
+fn tick() { return Void; }
+AG
+}
+for a in $D_AGENTS_triage; do add_agent triage "$a"; done
+for a in $D_AGENTS_code_review; do add_agent code-review "$a"; done
+for a in $D_AGENTS_planning; do add_agent planning "$a"; done
+for a in $D_AGENTS_implementation; do add_agent implementation "$a"; done
+for a in $D_AGENTS_release; do add_agent release "$a"; done
+
+# Mock agentis. Only emits daemon JSON when cwd basename matches the fixture
+# fed dir name — that mirrors how real `agentis` reads .agentis/ relative to
+# cwd and so detects whether the dashboard wrapper actually cd'd into FED_DIR.
+MOCK_BIN_D="$CASE_D_ROOT/bin"
+mkdir -p "$MOCK_BIN_D"
+FED_D_NAME="$(basename "$FED_D")"
+cat > "$MOCK_BIN_D/agentis" <<MOCK
+#!/bin/bash
+# Mock agentis for #288 regression test.
+# Emits 21 running-daemon JSON only when invoked with cwd inside the fixture
+# fed dir; emits [] otherwise. Treats remediation history as always [].
+sub="\${1:-}"
+if [ "\$sub" = "daemon" ] && [ "\${2:-}" = "list" ]; then
+    if [ "\$(basename "\$PWD")" = "$FED_D_NAME" ]; then
+        cat <<'JSON'
+[
+  {"source":"$FED_D/triage/agents/router.ag","agent_id":"a01","state":"running","health":"healthy","pid":1001,"started_at":1,"confidence":0.5,"confidence_generation":1,"confidence_written_at":1,"tick_ok":1,"tick_err":0,"quarantine":""},
+  {"source":"$FED_D/triage/agents/prioritizer.ag","agent_id":"a02","state":"running","health":"healthy","pid":1002,"started_at":1,"confidence":0.5,"confidence_generation":1,"confidence_written_at":1,"tick_ok":1,"tick_err":0,"quarantine":""},
+  {"source":"$FED_D/triage/agents/labeler.ag","agent_id":"a03","state":"running","health":"healthy","pid":1003,"started_at":1,"confidence":0.5,"confidence_generation":1,"confidence_written_at":1,"tick_ok":1,"tick_err":0,"quarantine":""},
+  {"source":"$FED_D/triage/agents/issue_creator.ag","agent_id":"a04","state":"running","health":"healthy","pid":1004,"started_at":1,"confidence":0.5,"confidence_generation":1,"confidence_written_at":1,"tick_ok":1,"tick_err":0,"quarantine":""},
+  {"source":"$FED_D/code-review/agents/logic_reviewer.ag","agent_id":"a05","state":"running","health":"healthy","pid":1005,"started_at":1,"confidence":0.5,"confidence_generation":1,"confidence_written_at":1,"tick_ok":1,"tick_err":0,"quarantine":""},
+  {"source":"$FED_D/code-review/agents/style_reviewer.ag","agent_id":"a06","state":"running","health":"healthy","pid":1006,"started_at":1,"confidence":0.5,"confidence_generation":1,"confidence_written_at":1,"tick_ok":1,"tick_err":0,"quarantine":""},
+  {"source":"$FED_D/code-review/agents/security_reviewer.ag","agent_id":"a07","state":"running","health":"healthy","pid":1007,"started_at":1,"confidence":0.5,"confidence_generation":1,"confidence_written_at":1,"tick_ok":1,"tick_err":0,"quarantine":""},
+  {"source":"$FED_D/code-review/agents/test_reviewer.ag","agent_id":"a08","state":"running","health":"healthy","pid":1008,"started_at":1,"confidence":0.5,"confidence_generation":1,"confidence_written_at":1,"tick_ok":1,"tick_err":0,"quarantine":""},
+  {"source":"$FED_D/code-review/agents/approval_decider.ag","agent_id":"a09","state":"running","health":"healthy","pid":1009,"started_at":1,"confidence":0.5,"confidence_generation":1,"confidence_written_at":1,"tick_ok":1,"tick_err":0,"quarantine":""},
+  {"source":"$FED_D/planning/agents/scope_estimator.ag","agent_id":"a10","state":"running","health":"healthy","pid":1010,"started_at":1,"confidence":0.5,"confidence_generation":1,"confidence_written_at":1,"tick_ok":1,"tick_err":0,"quarantine":""},
+  {"source":"$FED_D/planning/agents/risk_assessor.ag","agent_id":"a11","state":"running","health":"healthy","pid":1011,"started_at":1,"confidence":0.5,"confidence_generation":1,"confidence_written_at":1,"tick_ok":1,"tick_err":0,"quarantine":""},
+  {"source":"$FED_D/planning/agents/task_decomposer.ag","agent_id":"a12","state":"running","health":"healthy","pid":1012,"started_at":1,"confidence":0.5,"confidence_generation":1,"confidence_written_at":1,"tick_ok":1,"tick_err":0,"quarantine":""},
+  {"source":"$FED_D/planning/agents/plan_reviewer.ag","agent_id":"a13","state":"running","health":"healthy","pid":1013,"started_at":1,"confidence":0.5,"confidence_generation":1,"confidence_written_at":1,"tick_ok":1,"tick_err":0,"quarantine":""},
+  {"source":"$FED_D/implementation/agents/code_writer.ag","agent_id":"a14","state":"running","health":"healthy","pid":1014,"started_at":1,"confidence":0.5,"confidence_generation":1,"confidence_written_at":1,"tick_ok":1,"tick_err":0,"quarantine":""},
+  {"source":"$FED_D/implementation/agents/test_writer.ag","agent_id":"a15","state":"running","health":"healthy","pid":1015,"started_at":1,"confidence":0.5,"confidence_generation":1,"confidence_written_at":1,"tick_ok":1,"tick_err":0,"quarantine":""},
+  {"source":"$FED_D/implementation/agents/refactorer.ag","agent_id":"a16","state":"running","health":"healthy","pid":1016,"started_at":1,"confidence":0.5,"confidence_generation":1,"confidence_written_at":1,"tick_ok":1,"tick_err":0,"quarantine":""},
+  {"source":"$FED_D/implementation/agents/commit_composer.ag","agent_id":"a17","state":"running","health":"healthy","pid":1017,"started_at":1,"confidence":0.5,"confidence_generation":1,"confidence_written_at":1,"tick_ok":1,"tick_err":0,"quarantine":""},
+  {"source":"$FED_D/release/agents/ship_decider.ag","agent_id":"a18","state":"running","health":"healthy","pid":1018,"started_at":1,"confidence":0.5,"confidence_generation":1,"confidence_written_at":1,"tick_ok":1,"tick_err":0,"quarantine":""},
+  {"source":"$FED_D/release/agents/changelog_writer.ag","agent_id":"a19","state":"running","health":"healthy","pid":1019,"started_at":1,"confidence":0.5,"confidence_generation":1,"confidence_written_at":1,"tick_ok":1,"tick_err":0,"quarantine":""},
+  {"source":"$FED_D/release/agents/version_bumper.ag","agent_id":"a20","state":"running","health":"healthy","pid":1020,"started_at":1,"confidence":0.5,"confidence_generation":1,"confidence_written_at":1,"tick_ok":1,"tick_err":0,"quarantine":""},
+  {"source":"$FED_D/release/agents/release_checker.ag","agent_id":"a21","state":"running","health":"healthy","pid":1021,"started_at":1,"confidence":0.5,"confidence_generation":1,"confidence_written_at":1,"tick_ok":1,"tick_err":0,"quarantine":""}
+]
+JSON
+        exit 0
+    fi
+    echo '[]'
+    exit 0
+fi
+# Any other subcommand (remediation history etc.) — return harmless [] so the
+# wrapper keeps going. We're only asserting on daemon-state derivation here.
+echo '[]'
+exit 0
+MOCK
+chmod +x "$MOCK_BIN_D/agentis"
+
+PORT_D="$(free_port)"
+LOG_D="$TMPDIR_TEST/dashboard-D.log"
+
+# Boot wrapper from /tmp (cwd != FED_D) with the mock agentis on PATH.
+# boot_dashboard's cwd arg is honoured before exec, so the dashboard inherits
+# /tmp as cwd — exactly the systemd-run --user failure mode #288 reproduces.
+( cd /tmp && PATH="$MOCK_BIN_D:$PATH" setsid bash "$DASHBOARD_SH" "$FED_D" "$PORT_D" >"$LOG_D" 2>&1 ) &
+DASH_PID_D=$!
+DASH_PIDS="$DASH_PIDS $DASH_PID_D"
+
+ready_d=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if curl -f -s -o /dev/null "http://127.0.0.1:$PORT_D/" 2>/dev/null; then
+        ready_d=1
+        break
+    fi
+    sleep 0.5
+done
+if [ "$ready_d" -ne 1 ]; then
+    fail "D.0: cwd-fix dashboard never became ready" "log tail: $(tail -10 "$LOG_D" 2>/dev/null | tr '\n' ' ')"
+    echo "Results: $PASS passed, $FAIL failed"
+    exit 1
+fi
+
+HTML_D="$TMPDIR_TEST/index-D.html"
+curl -s "http://127.0.0.1:$PORT_D/" -o "$HTML_D" || true
+
+if [ ! -s "$HTML_D" ]; then
+    fail "D.0: GET / returned empty body"
+    echo "Results: $PASS passed, $FAIL failed"
+    exit 1
+fi
+
+# Extract the agents array from the rendered HTML and tally state values.
+# Pre-fix this returns 21 stopped, 0 running. Post-fix it returns 21 running.
+RUN_COUNT="$(python3 -c '
+import re, json, sys
+with open(sys.argv[1]) as f:
+    html = f.read()
+m = re.search(r"\"agents\"\s*:\s*(\[.+?\])\s*,\s*\"experience", html, re.DOTALL)
+if not m:
+    print("0")
+    sys.exit(0)
+agents = json.loads(m.group(1))
+print(sum(1 for a in agents if a.get("state") == "running"))
+' "$HTML_D")"
+
+if [ "$RUN_COUNT" = "21" ]; then
+    pass "D.1: wrapper subshell-cd's into FED_DIR so agentis returns 21 running daemons"
+else
+    fail "D.1: wrapper inherited cwd and lost daemon list" "expected 21 running, got $RUN_COUNT"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 if [ "$FAIL" -gt 0 ]; then

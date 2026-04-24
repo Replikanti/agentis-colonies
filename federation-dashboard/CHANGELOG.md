@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Dashboard no longer renders every agent as `state=stopped` /
+  `health=unknown` when the wrapper inherits a cwd outside the
+  federation root (e.g. `systemd-run --user` defaults cwd to `$HOME`).
+  `agentis daemon list --json` and `agentis remediation history`
+  invocations are now wrapped in a `(cd "$FED_DIR" && agentis …)`
+  subshell so `.agentis/` resolves correctly regardless of the
+  wrapper's launch cwd. Operators who launched from the federation
+  root were unaffected; everyone else saw a healthy 21-agent
+  federation rendered as completely dead
+  ([#288](https://github.com/Replikanti/agentis-colonies/issues/288)).
 - Dashboard wrapper no longer crashes with `Argument list too long` after
   several hours of accumulated history. `$COLLECTOR_JSON`, `$HISTORY`,
   `$REMEDIATION`, and `$DAEMONS` now travel to the Python helpers via
