@@ -147,6 +147,13 @@ esac
 # consume IMPLEMENTATION_TRIGGER_LABEL identically.
 IMPLEMENTATION_TRIGGER_LABEL=$(parse_toml implementation trigger_label)
 
+# #291: require_assignee knob. When "false" (the new default), code_writer's
+# action path also fires on labeled-but-unassigned issues — the normal state
+# on most repos. Existing operators who want to keep the pre-#291 contributor-
+# hand-off behaviour set require_assignee = true in [implementation].
+IMPLEMENTATION_REQUIRE_ASSIGNEE=$(parse_toml implementation require_assignee)
+IMPLEMENTATION_REQUIRE_ASSIGNEE="${IMPLEMENTATION_REQUIRE_ASSIGNEE:-true}"
+
 # #224: primary branch name. Read from whichever of [forge.gitlab] or
 # [forge.github] the operator selected via [forge].type. The env var
 # is kept as GITLAB_DEFAULT_BRANCH for cross-backend parity (both
@@ -163,8 +170,18 @@ esac
 
 export FORGE_TYPE
 export IMPLEMENTATION_TRIGGER_LABEL
+export IMPLEMENTATION_REQUIRE_ASSIGNEE
 export GITLAB_DEFAULT_BRANCH
 export COLONY_DIR
+
+# #291: seed code_writer:require_assignee memo so the .ag agent can read the
+# knob via recall_latest() and pick the `--include-unassigned` forge flag on
+# assigned-issues polls. Skipped on single-agent respawn / rate-limit-status
+# for the same reason as the other seeds: bootstrap concern, not per-tick.
+if [ -z "$RESTART_AGENT" ] && [ "$RATE_LIMIT_STATUS" = "0" ]; then
+    FED_ROOT="$(cd "$REPO_ROOT/dev-apprenticeship" && pwd)"
+    (cd "$FED_ROOT" && agentis memo set code_writer:require_assignee "$IMPLEMENTATION_REQUIRE_ASSIGNEE" >/dev/null 2>&1) || true
+fi
 
 AGENTS=(
     code_writer

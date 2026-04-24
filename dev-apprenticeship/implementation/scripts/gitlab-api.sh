@@ -19,8 +19,8 @@
 #   gitlab-api.sh mr-changes <iid>
 #   gitlab-api.sh mr-commits <iid>
 #   gitlab-api.sh issue <iid>
-#   gitlab-api.sh assigned-issues [--since ISO8601] [--view <name>]
-#   gitlab-api.sh assigned-issues-by-label-events --since ISO8601 [--view <name>]
+#   gitlab-api.sh assigned-issues [--since ISO8601] [--view <name>] [--include-unassigned]
+#   gitlab-api.sh assigned-issues-by-label-events --since ISO8601 [--view <name>] [--include-unassigned]
 #   gitlab-api.sh issue-label-events <iid> [--since ISO8601] [--label NAME]
 #   gitlab-api.sh create-branch --name <name> --ref <ref>
 #   gitlab-api.sh commit-files --branch <b> --message <m> --actions <json>
@@ -298,21 +298,28 @@ case "$CMD" in
     assigned-issues)
         SINCE=""
         VIEW=""
+        INCLUDE_UNASSIGNED=0
         while [ $# -gt 0 ]; do
             case "$1" in
                 --since) SINCE="$2"; shift 2 ;;
                 --view) VIEW="$2"; shift 2 ;;
+                --include-unassigned) INCLUDE_UNASSIGNED=1; shift ;;
                 *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
+        # #291: --include-unassigned drops the assignee_id=Any filter so the
+        # label alone is the trigger signal. Unblocks code_writer's action
+        # path on repos where labeled issues are typically unassigned.
         ARGS=(
             --data-urlencode "state=opened"
-            --data-urlencode "assignee_id=Any"
             --data-urlencode "labels=${IMPLEMENTATION_TRIGGER_LABEL:-implementation}"
             --data-urlencode "per_page=20"
             --data-urlencode "order_by=updated_at"
             --data-urlencode "sort=desc"
         )
+        if [ "$INCLUDE_UNASSIGNED" = "0" ]; then
+            ARGS+=(--data-urlencode "assignee_id=Any")
+        fi
         if [ -n "$SINCE" ]; then
             ARGS+=(--data-urlencode "updated_after=$SINCE")
         fi
@@ -382,12 +389,16 @@ PY
         # is added and removed between two 60 s polls. Mirrors the planning
         # colony's issues-by-label-events (#235) but keeps the assignee_id
         # filter that assigned-issues uses.
+        # #291: --include-unassigned drops the assignee_id filter; label-event
+        # window matching is unchanged.
         EV_SINCE=""
         VIEW=""
+        INCLUDE_UNASSIGNED=0
         while [ $# -gt 0 ]; do
             case "$1" in
                 --since) EV_SINCE="$2"; shift 2 ;;
                 --view) VIEW="$2"; shift 2 ;;
+                --include-unassigned) INCLUDE_UNASSIGNED=1; shift ;;
                 *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
@@ -400,12 +411,14 @@ PY
         # those that had the trigger label briefly and lost it again.
         BASE_ARGS=(
             --data-urlencode "state=opened"
-            --data-urlencode "assignee_id=Any"
             --data-urlencode "per_page=20"
             --data-urlencode "order_by=updated_at"
             --data-urlencode "sort=desc"
             --data-urlencode "updated_after=$EV_SINCE"
         )
+        if [ "$INCLUDE_UNASSIGNED" = "0" ]; then
+            BASE_ARGS+=(--data-urlencode "assignee_id=Any")
+        fi
         recent="$(gl_get_q "$API/issues" "${BASE_ARGS[@]}")" || exit $?
         split="$(RECENT="$recent" LABEL="$LABEL" python3 <<'PY'
 import os, json

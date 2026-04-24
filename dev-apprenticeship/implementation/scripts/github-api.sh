@@ -29,8 +29,8 @@
 #   github-api.sh mr-changes <number>
 #   github-api.sh mr-commits <number>
 #   github-api.sh issue <number>
-#   github-api.sh assigned-issues [--since ISO8601] [--view <name>]
-#   github-api.sh assigned-issues-by-label-events --since ISO8601 [--view <name>]
+#   github-api.sh assigned-issues [--since ISO8601] [--view <name>] [--include-unassigned]
+#   github-api.sh assigned-issues-by-label-events --since ISO8601 [--view <name>] [--include-unassigned]
 #   github-api.sh issue-label-events <number> [--since ISO8601] [--label NAME]
 #   github-api.sh create-branch --name <name> [--ref <ref>]
 #   github-api.sh commit-files --branch <b> --message <m> --actions <json>
@@ -505,10 +505,12 @@ PY
     assigned-issues)
         SINCE=""
         VIEW=""
+        INCLUDE_UNASSIGNED=0
         while [ $# -gt 0 ]; do
             case "$1" in
                 --since) SINCE="$2"; shift 2 ;;
                 --view) VIEW="$2"; shift 2 ;;
+                --include-unassigned) INCLUDE_UNASSIGNED=1; shift ;;
                 *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
@@ -516,15 +518,20 @@ PY
         # endpoint accepts assignee=* with the same "assigned to any user"
         # semantic. When GITHUB_ME is set, narrow to that operator so the
         # colony doesn't process work assigned to teammates.
+        # #291: --include-unassigned drops the assignee filter so the label
+        # alone is the trigger signal. Unblocks code_writer's action path on
+        # repos where labeled issues are typically unassigned.
         ASSIGNEE="${GITHUB_ME:-*}"
         ARGS=(
             --data-urlencode "state=open"
-            --data-urlencode "assignee=$ASSIGNEE"
             --data-urlencode "labels=${IMPLEMENTATION_TRIGGER_LABEL:-implementation}"
             --data-urlencode "per_page=20"
             --data-urlencode "sort=updated"
             --data-urlencode "direction=desc"
         )
+        if [ "$INCLUDE_UNASSIGNED" = "0" ]; then
+            ARGS+=(--data-urlencode "assignee=$ASSIGNEE")
+        fi
         if [ -n "$SINCE" ]; then
             ARGS+=(--data-urlencode "since=$SINCE")
         fi
@@ -560,12 +567,16 @@ PY
         # Composite parity query: currently-assigned+labeled ∪ timeline-added-
         # in-window for the same assignee. Same structure as planning's
         # issues-by-label-events but with the assignee filter.
+        # #291: --include-unassigned drops the assignee filter; label-event
+        # window matching is unchanged.
         EV_SINCE=""
         VIEW=""
+        INCLUDE_UNASSIGNED=0
         while [ $# -gt 0 ]; do
             case "$1" in
                 --since) EV_SINCE="$2"; shift 2 ;;
                 --view) VIEW="$2"; shift 2 ;;
+                --include-unassigned) INCLUDE_UNASSIGNED=1; shift ;;
                 *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
@@ -577,12 +588,14 @@ PY
         ASSIGNEE="${GITHUB_ME:-*}"
         BASE_ARGS=(
             --data-urlencode "state=open"
-            --data-urlencode "assignee=$ASSIGNEE"
             --data-urlencode "per_page=20"
             --data-urlencode "sort=updated"
             --data-urlencode "direction=desc"
             --data-urlencode "since=$EV_SINCE"
         )
+        if [ "$INCLUDE_UNASSIGNED" = "0" ]; then
+            BASE_ARGS+=(--data-urlencode "assignee=$ASSIGNEE")
+        fi
         recent_raw="$(gh_get_q "$API/issues" "${BASE_ARGS[@]}")" || exit $?
         recent="$(printf '%s' "$recent_raw" | normalize_issues)"
         split="$(RECENT="$recent" LABEL="$LABEL" python3 <<'PY'
