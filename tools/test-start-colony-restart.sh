@@ -25,7 +25,15 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PASS=0
 FAIL=0
 TMPDIR_TEST="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR_TEST"' EXIT
+# Kill any surviving fake daemons spawned by test_no_duplicate_on_restart
+# before the tmpdir is removed. The marker is deliberately unique (suffix
+# -for-test-285) so pkill cannot hit a real agentis process on the
+# contributor's machine.
+cleanup() {
+    pkill -f 'fake-daemon-inner-for-test-285' 2>/dev/null || true
+    rm -rf "$TMPDIR_TEST"
+}
+trap cleanup EXIT
 
 pass() { echo "[PASS] $1"; PASS=$((PASS + 1)); }
 fail() { echo "[FAIL] $1${2:+: $2}"; FAIL=$((FAIL + 1)); }
@@ -159,6 +167,14 @@ test_one_colony() {
     mkdir -p "$SHIM_PIPE_DIR"
     cat > "$SHIM_PIPE_DIR/agentis" <<'SHIM'
 #!/bin/bash
+# #285: the --restart-agent pre-flight queries `agentis daemon list --json`
+# to find the existing PID; return an empty JSON array instantly so the
+# kill-before-spawn block exits quickly and the pipe-regression assertion
+# below (that the daemon launch itself is detached) remains the real signal.
+if [ "${1:-}" = "daemon" ] && [ "${2:-}" = "list" ]; then
+    printf '[]\n'
+    exit 0
+fi
 sleep 5
 exit 0
 SHIM
@@ -195,6 +211,149 @@ test_one_colony planning       "$agents_planning"
 test_one_colony implementation "$agents_implementation"
 test_one_colony code-review    "$agents_code_review"
 test_one_colony release        "$agents_release"
+
+# #285: --restart-agent must kill the pre-existing daemon before spawning the
+# new one; otherwise each invocation accumulates another live daemon-inner
+# process (the registry collapses by agent_id so duplicates are invisible).
+# Asserted against one colony since the kill-before-spawn block is identical
+# across all five start-colony.sh scripts.
+test_no_duplicate_on_restart() {
+    local colony="$1"
+    local agent="$2"
+    local script="$REPO_ROOT/dev-apprenticeship/$colony/scripts/start-colony.sh"
+
+    # Dedicated shim dir. `agentis` impersonation:
+    #   - `agentis daemon list --json` → JSON array of currently-alive
+    #     fake-daemon-inner-for-test-285 processes (colony, source, pid,
+    #     agent_id), constructed by pgrep-ing the marker.
+    #   - `agentis daemon <path> --colony X ...` → exec into the long-sleep
+    #     fake whose argv contains the marker and the agent source path
+    #     (matchable by pgrep -f).
+    #   - anything else → exit 0 (covers `agentis memo set`).
+    local SHIM_BG_DIR="$TMPDIR_TEST/shim_bg_$colony"
+    mkdir -p "$SHIM_BG_DIR"
+
+    cat > "$SHIM_BG_DIR/fake-daemon-inner-for-test-285" <<'FAKE'
+#!/bin/bash
+# Long-lived stand-in for a real `agentis daemon-inner` child. Exits on
+# SIGTERM so the kill-before-spawn block exercises the TERM + 5s poll path
+# without escalating to SIGKILL, which is what happens in a real restart.
+trap 'exit 0' TERM
+while :; do sleep 60 & wait $!; done
+FAKE
+    chmod +x "$SHIM_BG_DIR/fake-daemon-inner-for-test-285"
+
+    cat > "$SHIM_BG_DIR/agentis" <<SHIM
+#!/bin/bash
+SHIM_BG_DIR="$SHIM_BG_DIR"
+if [ "\${1:-}" = "daemon" ] && [ "\${2:-}" = "list" ]; then
+    python3 - "\$SHIM_BG_DIR" <<'PY'
+import json, os, re, subprocess, sys
+marker = os.path.basename(sys.argv[1] + '/fake-daemon-inner-for-test-285')
+try:
+    out = subprocess.check_output(
+        ['pgrep', '-af', marker], stderr=subprocess.DEVNULL, text=True
+    )
+except subprocess.CalledProcessError:
+    out = ''
+records = []
+for line in out.splitlines():
+    m = re.match(r'^(\d+)\s+(.*)$', line)
+    if not m:
+        continue
+    pid = int(m.group(1))
+    argv = m.group(2)
+    # Fake argv: "<shim>/fake-daemon-inner-for-test-285 <source.ag> <colony>".
+    m2 = re.search(r'(\S+\.ag)\s+(\S+)$', argv)
+    if not m2:
+        continue
+    source, colony_name = m2.group(1), m2.group(2)
+    agent = os.path.splitext(os.path.basename(source))[0]
+    records.append({
+        'pid': pid,
+        'source': source,
+        'colony': colony_name,
+        'agent_id': 'test-' + colony_name + '-' + agent,
+    })
+print(json.dumps(records))
+PY
+    exit 0
+fi
+if [ "\${1:-}" = "daemon" ]; then
+    script_path="\$2"
+    shift 2
+    colony=""
+    while [ \$# -gt 0 ]; do
+        case "\$1" in
+            --colony) colony="\$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    exec "\$SHIM_BG_DIR/fake-daemon-inner-for-test-285" "\$script_path" "\$colony"
+fi
+exit 0
+SHIM
+    chmod +x "$SHIM_BG_DIR/agentis"
+
+    # #285 QA: aggressively scope PATH so the real `agentis` binary cannot be
+    # reached from within the script's subshells. Both /home/.../.cargo/bin
+    # and /usr/local/bin commonly contain the real binary on a contributor
+    # machine; if the shim ever fails to handle a subcommand, we want
+    # "command not found" rather than a silent fall-through that kills real
+    # daemons in the live federation registry. Keep /usr/bin + /bin so
+    # python3, pgrep, kill, sed, awk, etc. still resolve.
+    local SAFE_PATH="$SHIM_BG_DIR:/usr/bin:/bin"
+
+    # #285 QA: pre-flight sanity check — verify the shim wins under SAFE_PATH
+    # before we let start-colony.sh's kill-before-spawn block run. Two
+    # invariants:
+    #   1. `command -v agentis` resolves to the shim file, not the real
+    #      cargo / /usr/local/bin binary.
+    #   2. `agentis daemon list --json` under SAFE_PATH returns "[]" while
+    #      no fake daemons are alive yet — proves we're seeing shim output,
+    #      not the real federation's 21-agent registry.
+    # If either fails, the test bails with [SKIP] rather than risk killing
+    # real PIDs from the live federation.
+    local resolved
+    resolved="$(PATH="$SAFE_PATH" command -v agentis 2>/dev/null || true)"
+    if [ "$resolved" != "$SHIM_BG_DIR/agentis" ]; then
+        echo "[SKIP] $colony: shim isolation failed — agentis resolves to '$resolved' not '$SHIM_BG_DIR/agentis'; refusing to run kill-before-spawn against the live federation" >&2
+        return
+    fi
+    local sanity_out
+    sanity_out="$(PATH="$SAFE_PATH" agentis daemon list --json 2>/dev/null || true)"
+    if [ "$sanity_out" != "[]" ]; then
+        echo "[SKIP] $colony: shim sanity check failed — 'agentis daemon list --json' returned '$(printf '%s' "$sanity_out" | head -c 80)' instead of '[]'; refusing to run kill-before-spawn" >&2
+        return
+    fi
+
+    local pgrep_pat="fake-daemon-inner-for-test-285.*agents/${agent}\\.ag"
+    local restart_ok=1
+    for iter in 1 2 3; do
+        out="$TMPDIR_TEST/$colony.dup_iter$iter.log"
+        if ! PATH="$SAFE_PATH" bash "$script" --restart-agent "$agent" "$FIXTURE_TOML" >"$out" 2>&1; then
+            rc=$?
+            fail "$colony: iter$iter --restart-agent $agent returned rc=$rc" "body=$(head -c 200 "$out")"
+            restart_ok=0
+            break
+        fi
+        # Give the newly-spawned fake a moment to register via /proc before
+        # pgrep counts. 0.3s is plenty for a shell exec on any supported host.
+        sleep 0.3
+        count=$(pgrep -cf "$pgrep_pat" 2>/dev/null || echo 0)
+        if [ "$count" != "1" ]; then
+            fail "$colony: iter$iter expected exactly 1 live fake, got $count" "pgrep=$(pgrep -af "$pgrep_pat" 2>/dev/null || true)"
+            restart_ok=0
+            break
+        fi
+    done
+    if [ "$restart_ok" = "1" ]; then
+        pass "$colony: 3× --restart-agent $agent leaves exactly 1 live daemon (#285 invariant)"
+    fi
+    pkill -f "$pgrep_pat" 2>/dev/null || true
+}
+
+test_no_duplicate_on_restart triage labeler
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
