@@ -1,8 +1,8 @@
 # Dev Apprenticeship
 
-![Version: 1.0.0](https://img.shields.io/badge/version-1.0.0-blue) ![Agentis >= v1.4.1](https://img.shields.io/badge/agentis-%3E%3D%20v1.4.1-blue) ![Agents: 21](https://img.shields.io/badge/agents-21-green) ![Status: Beta](https://img.shields.io/badge/status-beta-yellow)
+![Version: 1.1.0](https://img.shields.io/badge/version-1.1.0-blue) ![Agentis >= v1.4.1](https://img.shields.io/badge/agentis-%3E%3D%20v1.4.1-blue) ![Agents: 21](https://img.shields.io/badge/agents-21-green) ![Status: Beta](https://img.shields.io/badge/status-beta-yellow)
 
-**Version:** `1.0.0` · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.4.1`
+**Version:** `1.1.0` · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.4.1`
 
 A federation of 21 agents that learns how you work by watching your GitLab or GitHub activity. It observes how you triage issues, review merge requests, plan features, write code, and ship releases. Over time it takes over the mechanical parts, while you keep control over the decisions that matter.
 
