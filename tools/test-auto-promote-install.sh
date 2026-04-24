@@ -143,9 +143,13 @@ AP_FED_NAME="dev-apprenticeship"
 if [ "$AP_ENABLED" != "true" ]; then
     fail "sidecar pre-check AP_ENABLED!=true"
 else
+    # Mirror start-federation.sh: stamp sidecar-start time + tick-then-sleep
+    # loop so the dashboard's startup-grace gate has a timestamp to read and
+    # the first tick lands immediately (#274).
+    AP_STARTED_AT_FILE="$FAKE_FED/.agentis/logs/auto-promote.sidecar_started_at"
+    date +%s > "$AP_STARTED_AT_FILE"
     (
         while :; do
-            sleep "$AP_INTERVAL"
             if ! agentis daemon list --json 2>/dev/null | grep -Fq '"state":"running"'; then
                 printf '=== no daemons; exiting ===\n' >> "$AP_LOG"
                 exit 0
@@ -155,10 +159,33 @@ else
                 "$AP_SCRIPT" "$AP_FED_NAME" 2>&1 \
                     || printf '[sidecar] exited %s\n' "$?"
             } >> "$AP_LOG"
+            sleep "$AP_INTERVAL"
         done
     ) &
     SIDECAR_PID=$!
-    sleep 5  # Let at least 2 ticks happen at interval_s=2.
+    sleep 1  # Inverted loop: first tick must land before the first sleep.
+    if [ -f "$AP_STARTED_AT_FILE" ]; then
+        STARTED_AT_VAL="$(cat "$AP_STARTED_AT_FILE")"
+        case "$STARTED_AT_VAL" in
+            ''|*[!0-9]*) fail "sidecar_started_at not a positive integer ('$STARTED_AT_VAL')" ;;
+            *)
+                if [ "$STARTED_AT_VAL" -gt 0 ]; then
+                    pass "auto-promote.sidecar_started_at exists + holds positive integer ($STARTED_AT_VAL) (#274)"
+                else
+                    fail "sidecar_started_at value not positive ('$STARTED_AT_VAL')"
+                fi
+                ;;
+        esac
+    else
+        fail "auto-promote.sidecar_started_at file missing after spawn (#274)"
+    fi
+    EARLY_INV_COUNT=$(wc -l < "$AP_MARKER")
+    if [ "$EARLY_INV_COUNT" -ge 1 ]; then
+        pass "sidecar first tick lands within 1s (tick-then-sleep, #274)"
+    else
+        fail "sidecar produced no tick within 1s (loop still sleeps first?)"
+    fi
+    sleep 4  # Let at least one more tick happen at interval_s=2.
     INV_COUNT=$(wc -l < "$AP_MARKER")
     if [ "$INV_COUNT" -ge 1 ]; then
         pass "sidecar spawns + invokes auto-promote.sh ($INV_COUNT times in 5s)"

@@ -816,7 +816,12 @@ const sidecar = data.sidecar || {installed: false, enabled: false, interval_s: n
   const staleThreshold = sidecarWatched ? sidecar.interval_s * 2 : null;
   const sidecarAge = (sidecarWatched && sidecar.last_tick_ts)
     ? (nowEpoch - sidecar.last_tick_ts) : null;
-  const sidecarSilent = sidecarWatched && (sidecarAge === null || sidecarAge > staleThreshold);
+  // Suppress DEGRADED while the sidecar is still inside its startup grace
+  // window — log mtime can be stale from a previous run, but the sidecar
+  // hasn't had a chance to tick yet (#274).
+  const sidecarSilent = sidecarWatched
+    && !sidecar.in_startup_grace
+    && (sidecarAge === null || sidecarAge > staleThreshold);
 
   const reasons = [];
   if (deadPids.length > 0) {

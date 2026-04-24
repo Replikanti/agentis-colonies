@@ -29,6 +29,7 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- `start-federation.sh` auto-promote sidecar now ticks before sleeping (was: sleep `interval_s` first, then tick) and stamps `.agentis/logs/auto-promote.sidecar_started_at` on spawn. The first regression — the sidecar produced zero log activity for the first 30 min after restart even when healthy — is fixed by inverting the loop. The second — `auto-promote.log` inherits a stale mtime from the previous run so the dashboard reads "silent NNNNm DEGRADED" — is fixed by the start-timestamp file, which the dashboard collector reads to suppress DEGRADED while `now - started_at < interval_s + 120s` ([#274](https://github.com/Replikanti/agentis-colonies/issues/274)).
 - GitHub wrapper no longer fails on repos with >20 closed PRs — normalizers now read HTTP body via stdin instead of env var, bypassing `MAX_ARG_STRLEN` (#279).
 - `install.sh` now routes `FORGE_TYPE` and `GITHUB_*` through `exec.env_passthrough`; existing installs with the pre-fix literal are auto-upgraded in place. Unblocks GitHub-backend federations (#277).
 - `install.sh` now sets `daemon.heartbeat_interval_ms = 900000` (3× the longest tick interval, 300 000 ms, per #146) so reactive code-review/release agents are no longer killed by the watchdog after their first tick; existing installs with the pre-fix `180000` literal are auto-upgraded in place (#280).

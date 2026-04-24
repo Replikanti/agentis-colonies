@@ -461,7 +461,8 @@ if decider and config and os.path.isfile(decider) and os.path.isfile(config):
 # When no install file exists we emit installed=false and the banner falls
 # back to daemon-liveness only. No sidecar running is not itself DEGRADED.
 sidecar = {'installed': False, 'enabled': False, 'interval_s': None,
-           'last_tick_ts': None, 'log_path': None}
+           'last_tick_ts': None, 'log_path': None,
+           'started_at_ts': None, 'in_startup_grace': False}
 install_file = os.path.join(fed_dir, '.auto-promote-install.toml')
 if os.path.isfile(install_file):
     sidecar['installed'] = True
@@ -496,6 +497,26 @@ if os.path.isfile(log_file):
         sidecar['last_tick_ts'] = int(os.path.getmtime(log_file))
     except OSError:
         pass
+# Sidecar-start timestamp lets the template suppress DEGRADED on a fresh
+# restart, where auto-promote.log inherits a stale mtime from the previous
+# run (#274). The file is written by start-federation.sh's sidecar block
+# right before the subshell is backgrounded.
+started_at_file = os.path.join(fed_dir, '.agentis', 'logs',
+                               'auto-promote.sidecar_started_at')
+started_at_ts = None
+if os.path.isfile(started_at_file):
+    try:
+        with open(started_at_file) as f:
+            started_at_ts = int(f.read().strip())
+    except (OSError, ValueError):
+        started_at_ts = None
+if started_at_ts is not None:
+    sidecar['started_at_ts'] = started_at_ts
+    if sidecar['interval_s'] is not None and sidecar['interval_s'] > 0:
+        now_ts = int(time.time())
+        sidecar['in_startup_grace'] = (
+            (now_ts - started_at_ts) < (sidecar['interval_s'] + 120)
+        )
 
 output = {
     'agents': result,
