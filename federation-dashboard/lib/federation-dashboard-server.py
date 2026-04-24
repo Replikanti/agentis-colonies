@@ -625,7 +625,13 @@ class Handler(SimpleHTTPRequestHandler):
             return
 
         if self.path == '/start':
-            # Start federation: look for start-federation.sh in fed_dir
+            # #286: start-federation.sh never exits (auto-promote sidecar loops
+            # forever), so subprocess.run with timeout=60 would SIGTERM it after
+            # a minute and kill the 21 agents it just spawned. Detach via Popen
+            # + start_new_session=True (new process group, so the HTTP handler's
+            # exit doesn't take the federation down with it), return 202
+            # Accepted, let operator poll `agentis daemon list` for actual
+            # state.
             start_script = os.path.join(fed_dir, 'start-federation.sh')
             if not os.path.isfile(start_script):
                 self.send_response(404)
@@ -634,30 +640,27 @@ class Handler(SimpleHTTPRequestHandler):
                 self.wfile.write(b'start-federation.sh not found')
                 return
             try:
-                result = subprocess.run(
+                logf = open('/tmp/fed-start-dashboard.log', 'ab', buffering=0)
+                subprocess.Popen(
                     ['bash', start_script],
-                    capture_output=True, text=True,
-                    cwd=fed_dir, timeout=60,
+                    cwd=fed_dir,
+                    stdin=subprocess.DEVNULL,
+                    stdout=logf, stderr=logf,
+                    start_new_session=True,
+                    close_fds=True,
                 )
-            except (OSError, subprocess.SubprocessError) as e:
+            except OSError as e:
                 self.send_response(500)
                 self.send_header('Content-Type', 'text/plain')
                 self.end_headers()
                 self.wfile.write(f'exec failed: {e}'.encode())
                 return
-            out = (result.stdout or '').strip()
-            err = (result.stderr or '').strip()
-            if result.returncode != 0:
-                self.send_response(500)
-                self.send_header('Content-Type', 'text/plain')
-                self.end_headers()
-                msg = (err or out or 'start-federation.sh failed').strip()
-                self.wfile.write(msg.encode() or b'start-federation.sh failed')
-                return
-            self.send_response(200)
+            self.send_response(202)
             self.send_header('Content-Type', 'text/plain')
             self.end_headers()
-            self.wfile.write((out + ('\n' + err if err else '') or 'Federation started').encode())
+            self.wfile.write(b'Federation spawn initiated (detached). '
+                             b'Poll agentis daemon list for agent states; '
+                             b'tail /tmp/fed-start-dashboard.log for spawn output.')
             return
 
         if self.path == '/kill':
