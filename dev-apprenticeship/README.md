@@ -1,10 +1,10 @@
 # Dev Apprenticeship
 
-![Version: 0.3.3](https://img.shields.io/badge/version-0.3.3-blue) ![Agentis >= v1.4.1](https://img.shields.io/badge/agentis-%3E%3D%20v1.4.1-blue) ![Agents: 21](https://img.shields.io/badge/agents-21-green) ![Status: Beta](https://img.shields.io/badge/status-beta-yellow)
+![Version: 1.0.0](https://img.shields.io/badge/version-1.0.0-blue) ![Agentis >= v1.4.1](https://img.shields.io/badge/agentis-%3E%3D%20v1.4.1-blue) ![Agents: 21](https://img.shields.io/badge/agents-21-green) ![Status: Beta](https://img.shields.io/badge/status-beta-yellow)
 
-**Version:** `0.3.3` · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.4.1`
+**Version:** `1.0.0` · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.4.1`
 
-A federation of 21 agents that learns how you work by watching your GitLab activity. It observes how you triage issues, review merge requests, plan features, write code, and ship releases. Over time it takes over the mechanical parts, while you keep control over the decisions that matter.
+A federation of 21 agents that learns how you work by watching your GitLab or GitHub activity. It observes how you triage issues, review merge requests, plan features, write code, and ship releases. Over time it takes over the mechanical parts, while you keep control over the decisions that matter.
 
 The federation starts silent. Agents only watch. As you see what they are learning in the logs and trust what they would do, you progressively unlock autonomy by raising each agent's confidence memo through four named tiers — `shadow` (observe), `propose` (suggest), `review-gated` (act under review), and `autonomous` (act alone). The tier contract is defined in [`doc/adr/ADR-0001-confidence-tiers.md`](../doc/adr/ADR-0001-confidence-tiers.md) and is normative for every agent in this federation. Agents do not promote themselves; the gradient is operator-controlled. You can always veto or demote.
 

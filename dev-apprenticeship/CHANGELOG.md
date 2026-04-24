@@ -17,6 +17,25 @@ is asserted until multi-version CI is in place.
 
 ### Added
 
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
+## [1.0.0] — 2026-04-24
+
+First major release. Forge abstraction ([#256](https://github.com/Replikanti/agentis-colonies/issues/256)) lets each colony run against GitHub or GitLab via a new `[forge]` section; the legacy top-level `[gitlab]` block is retired (that is the MAJOR). Every forge wrapper also exposes a uniform `rate-limit-status` subcommand. Also bundles the #257 dashboard-restart decoupling that landed on `main` during the #256 phase work.
+
+**Requires:** agentis >= 1.4.1
+**Recommends:** federation-dashboard >= 0.2.0 (pinned via `dev-apprenticeship/.dashboard-version`)
+
+### Added
+
 - Every colony's `scripts/start-colony.sh` supports a new
   `--restart-agent <name>` mode that respawns exactly one agent with the
   full colony env, skipping memo seeding and log truncation (both of
@@ -842,7 +861,8 @@ permissible per semver §4.
 - All dynamic values flowing into `exec sh` are required to pass through `shell_escape()`;
   `check-exec-sh.sh` enforces this grep-level contract.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.3.3...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v1.0.0...HEAD
+[1.0.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.3.3...dev-apprenticeship-v1.0.0
 [0.3.3]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.3.2...dev-apprenticeship-v0.3.3
 [0.3.2]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.3.1...dev-apprenticeship-v0.3.2
 [0.3.1]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.3.0...dev-apprenticeship-v0.3.1
