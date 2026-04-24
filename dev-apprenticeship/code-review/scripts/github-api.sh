@@ -76,11 +76,9 @@ emit_error() {
 # ADR-0002. State collapse: open -> opened; closed + merged_at -> merged;
 # closed + no merged_at stays closed.
 normalize_pulls() {
-    local DATA
-    DATA="$(cat)"
-    DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+    python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 out = []
 for x in data:
     st = x.get("state")
@@ -118,11 +116,9 @@ PY
 # patch text) straight into prompt() so drift in this shape breaks all four
 # finding streams silently.
 normalize_mr_changes() {
-    local DATA
-    DATA="$(cat)"
-    DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+    python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 out = []
 for f in data:
     status = f.get("status") or ""
@@ -148,11 +144,9 @@ PY
 # row so the GitLab-shape filter (`if not system`) that reviewers apply over
 # mr-notes continues to work.
 normalize_notes() {
-    local DATA
-    DATA="$(cat)"
-    DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+    python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 out = [{
     "id": c.get("id"),
     "body": c.get("body"),
@@ -181,9 +175,9 @@ project_json() {
             printf '%s' "$DATA"
             ;;
         reviewer)
-            DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+            printf '%s' "$DATA" | python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 # #104 parity: keep author.username so style_reviewer tags personal vs team.
 out = [{"iid": x.get("iid"), "state": x.get("state"), "title": x.get("title"),
         "labels": x.get("labels", []), "source_branch": x.get("source_branch"),

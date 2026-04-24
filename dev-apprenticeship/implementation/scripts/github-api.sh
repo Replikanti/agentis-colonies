@@ -79,11 +79,9 @@ emit_error() {
 # Reads GitHub issues-list JSON from stdin, writes GitLab-shape JSON.
 # Filters pull_request entries (GitHub /issues mixes PRs with issues).
 normalize_issues() {
-    local DATA
-    DATA="$(cat)"
-    DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+    python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 out = []
 for x in data:
     if "pull_request" in x:
@@ -111,11 +109,9 @@ PY
 # Single-issue variant (used by `issue <n>` and by assigned-issues-by-label-events
 # after a timeline hit).
 normalize_issue() {
-    local DATA
-    DATA="$(cat)"
-    DATA="$DATA" python3 <<'PY'
-import os, json
-x = json.loads(os.environ["DATA"])
+    python3 /dev/fd/3 3<<'PY'
+import sys, json
+x = json.loads(sys.stdin.read())
 print(json.dumps({
     "iid": x.get("number"),
     "title": x.get("title"),
@@ -135,11 +131,9 @@ PY
 # normalize_pulls
 # Reads GitHub pulls-list JSON, writes GitLab-MR-shape JSON.
 normalize_pulls() {
-    local DATA
-    DATA="$(cat)"
-    DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+    python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 out = []
 for x in data:
     st = x.get("state")
@@ -176,11 +170,9 @@ PY
 # GitHub's "status" field drives new_file/deleted_file/renamed_file; "patch"
 # is the unified-diff text (may be absent on binary files).
 normalize_mr_changes() {
-    local DATA
-    DATA="$(cat)"
-    DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+    python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 out = []
 for f in data:
     status = f.get("status") or ""
@@ -205,11 +197,9 @@ PY
 # the flat author_name field for prompt-friendliness. "title" is the first
 # line of the commit message (same as GitLab's behavior).
 normalize_mr_commits() {
-    local DATA
-    DATA="$(cat)"
-    DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+    python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 out = []
 for c in data:
     commit = c.get("commit") or {}
@@ -277,18 +267,18 @@ project_json() {
             printf '%s' "$DATA"
             ;;
         impl)
-            DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+            printf '%s' "$DATA" | python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 out = [{"iid": x.get("iid"), "title": x.get("title"),
         "merged_at": x.get("merged_at"), "target_branch": x.get("target_branch")} for x in data]
 print(json.dumps(out))
 PY
             ;;
         assigned)
-            DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+            printf '%s' "$DATA" | python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 out = [{"iid": x.get("iid"), "title": x.get("title"), "description": x.get("description"),
         "labels": x.get("labels", []),
         "assignees": [{"username": a.get("username")} for a in x.get("assignees", [])],
@@ -460,9 +450,9 @@ case "$CMD" in
         body="$(gh_get_q "$API/pulls" "${ARGS[@]}")" || exit $?
         normalized="$(printf '%s' "$body" | normalize_pulls)"
         if [ "$MERGED_FILTER" -eq 1 ] || [ -n "$SINCE" ]; then
-            normalized="$(NORM="$normalized" SINCE="$SINCE" MERGED="$MERGED_FILTER" python3 <<'PY'
-import os, json
-items = json.loads(os.environ["NORM"])
+            normalized="$(printf '%s' "$normalized" | SINCE="$SINCE" MERGED="$MERGED_FILTER" python3 /dev/fd/3 3<<'PY'
+import os, sys, json
+items = json.loads(sys.stdin.read())
 since = os.environ.get("SINCE", "")
 merged_only = os.environ.get("MERGED", "0") == "1"
 out = []
