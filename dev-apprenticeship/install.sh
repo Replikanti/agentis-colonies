@@ -725,11 +725,17 @@ fi
 # activity as `personal` (operator's own) vs `team`. Seeding here
 # (rather than requiring a memo set step post-install) keeps all
 # identity wiring in one place.
-if [ -n "${GITLAB_ME:-}" ]; then
+OPERATOR_ME="${GITLAB_ME:-${GITHUB_ME:-}}"
+if [ -n "$OPERATOR_ME" ]; then
     echo ""
-    (cd "$FED_ROOT" && agentis memo set gitlab:me "$GITLAB_ME" 2>/dev/null) \
-        && ok "Seeded gitlab:me = $GITLAB_ME" \
-        || fail "Failed to seed gitlab:me (agents will tag everything as 'team')"
+    current=$(cd "$FED_ROOT" && agentis memo get gitlab:me 2>/dev/null || true)
+    if [ -z "$current" ] || [ "$current" = "$OPERATOR_ME" ]; then
+        (cd "$FED_ROOT" && agentis memo set gitlab:me "$OPERATOR_ME" 2>/dev/null) \
+            && ok "Seeded gitlab:me = $OPERATOR_ME" \
+            || fail "Failed to seed gitlab:me (agents will tag everything as 'team')"
+    else
+        info "gitlab:me already set to '$current' (operator-customized); leaving untouched"
+    fi
 fi
 
 # --- 6. LLM backend ---
