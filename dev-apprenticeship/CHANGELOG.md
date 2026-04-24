@@ -26,6 +26,7 @@ is asserted until multi-version CI is in place.
 ### Fixed
 
 - GitHub wrapper no longer fails on repos with >20 closed PRs — normalizers now read HTTP body via stdin instead of env var, bypassing `MAX_ARG_STRLEN` (#279).
+- `install.sh` now routes `FORGE_TYPE` and `GITHUB_*` through `exec.env_passthrough`; existing installs with the pre-fix literal are auto-upgraded in place. Unblocks GitHub-backend federations (#277).
 
 ### Security
 

@@ -600,7 +600,16 @@ if [ -d "$AGENTIS_DIR" ]; then
     write_key 'daemon.heartbeat_interval_ms' '180000'
     write_key 'daemon.cb_per_tick'           '2000'
     write_key 'experience.enabled'           'true'
-    write_key 'exec.env_passthrough'         'COLONY_DIR,GITLAB_*'
+    # Migrate #277 pre-fix literal in-place. Exact-match only — any operator
+    # customization (extra vars, reordering) is preserved untouched.
+    if [ -f "$AGENTIS_CONFIG" ] && grep -qxF 'exec.env_passthrough = COLONY_DIR,GITLAB_*' "$AGENTIS_CONFIG"; then
+        # Use a tmp file + mv for atomicity; no sed -i (BSD vs GNU portability).
+        awk '/^exec\.env_passthrough = COLONY_DIR,GITLAB_\*$/ \
+             { print "exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*"; next } { print }' \
+            "$AGENTIS_CONFIG" > "$AGENTIS_CONFIG.tmp" && mv "$AGENTIS_CONFIG.tmp" "$AGENTIS_CONFIG"
+        ok "upgraded exec.env_passthrough (#277)"
+    fi
+    write_key 'exec.env_passthrough'         'COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*'
     write_key 'exec.default_timeout_ms'      '120000'
     write_key 'pii_transmit'                 'allow'
     write_key 'knowledge.enabled'            'true'
