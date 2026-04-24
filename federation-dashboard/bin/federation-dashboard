@@ -124,7 +124,7 @@ generate() {
     EPOCH="$(date '+%s')"
 
     local DAEMONS
-    DAEMONS="$(agentis daemon list --json 2>/dev/null || echo '[]')"
+    DAEMONS="$( (cd "$FED_DIR" && agentis daemon list --json) 2>/dev/null || echo '[]')"
 
     local COLONY_LIST_PY=""
     for col in "${COLONIES[@]}"; do
@@ -190,7 +190,7 @@ generate() {
     fi
 
     local REMEDIATION
-    REMEDIATION="$(agentis remediation history --limit 5 --json 2>/dev/null || echo '[]')"
+    REMEDIATION="$( (cd "$FED_DIR" && agentis remediation history --limit 5 --json) 2>/dev/null || echo '[]')"
 
     # --- History append ---
     # Per-colony average confidence (skipping null agents per #143) appended
