@@ -1,8 +1,9 @@
 #!/bin/bash
 # tools/test-install-env-passthrough.sh: unit tests for the install.sh
-# exec.env_passthrough fix (#277) and the daemon.heartbeat_interval_ms fix
-# (#280). Both share the same `write_key` + exact-match migrate idiom, so
-# the coverage lives in one harness.
+# exec.env_passthrough fix (#277), the daemon.heartbeat_interval_ms fix
+# (#280), and the gitlab:me operator-identity seed fix (#278). All three
+# share the same `run_install_fragment*` harness idiom, so the coverage
+# lives in one file.
 #
 # Validates:
 #   Test 1: Fresh install writes the new env_passthrough literal
@@ -11,6 +12,9 @@
 #   Test 4: Fresh install writes daemon.heartbeat_interval_ms = 900000
 #   Test 5: Heartbeat upgrade rewrites the pre-fix 180000 literal
 #   Test 6: Operator-tuned heartbeat (e.g. 300000) preserved
+#   Test 7: GITHUB_ME (GITLAB_ME unset) seeds gitlab:me on github backend
+#   Test 8: GITLAB_ME (GITHUB_ME unset) seeds gitlab:me on gitlab backend
+#   Test 9: Both unset — gitlab:me memo left unset
 #
 # Usage: ./tools/test-install-env-passthrough.sh
 # Exit code 0 if all tests pass, 1 otherwise.
@@ -178,6 +182,79 @@ if grep -qxF "$HB_OPERATOR_TUNED" "$T6_CONFIG" \
 else
     fail "operator-tuned heartbeat preservation — expected '$HB_OPERATOR_TUNED' untouched, got:"
     cat "$T6_CONFIG"
+fi
+
+# ----- Operator identity seed (#278) -----
+#
+# Replicates the install.sh §5b gitlab:me seeding logic under FAKE_ROOT.
+# Unlike #277/#280 the fragment operates on the memo store via the
+# `agentis` CLI (not a config file), so each test needs a real
+# `agentis init`ed directory as FED_ROOT. Skip gracefully when
+# `agentis` is not on PATH (CI runners without the binary).
+# Keep in sync with dev-apprenticeship/install.sh §5b.
+run_install_fragment_gitlab_me() {
+    local FED_ROOT="$1"
+
+    OPERATOR_ME="${GITLAB_ME:-${GITHUB_ME:-}}"
+    if [ -n "$OPERATOR_ME" ]; then
+        local current
+        current=$(cd "$FED_ROOT" && agentis memo get gitlab:me 2>/dev/null || true)
+        if [ -z "$current" ] || [ "$current" = "$OPERATOR_ME" ]; then
+            (cd "$FED_ROOT" && agentis memo set gitlab:me "$OPERATOR_ME" 2>/dev/null) || true
+        fi
+    fi
+}
+
+if ! command -v agentis >/dev/null 2>&1; then
+    echo "[SKIP] agentis not on PATH — skipping #278 memo tests (T7/T8/T9)"
+else
+    # ----- Test 7: GITHUB_ME seeds gitlab:me on github backend -----
+    T7_DIR="$FAKE_ROOT/t7"
+    mkdir -p "$T7_DIR"
+    (cd "$T7_DIR" && agentis init >/dev/null 2>&1) || true
+    (
+        unset GITLAB_ME
+        export GITHUB_ME=ylohnitram
+        run_install_fragment_gitlab_me "$T7_DIR"
+    )
+    T7_GOT=$(cd "$T7_DIR" && agentis memo get gitlab:me 2>/dev/null || true)
+    if [ "$T7_GOT" = "ylohnitram" ]; then
+        pass "GITHUB_ME=ylohnitram seeds gitlab:me memo to 'ylohnitram'"
+    else
+        fail "GITHUB_ME seeding — expected 'ylohnitram', got: '$T7_GOT'"
+    fi
+
+    # ----- Test 8: GITLAB_ME seeds gitlab:me on gitlab backend -----
+    T8_DIR="$FAKE_ROOT/t8"
+    mkdir -p "$T8_DIR"
+    (cd "$T8_DIR" && agentis init >/dev/null 2>&1) || true
+    (
+        unset GITHUB_ME
+        export GITLAB_ME=martinh
+        run_install_fragment_gitlab_me "$T8_DIR"
+    )
+    T8_GOT=$(cd "$T8_DIR" && agentis memo get gitlab:me 2>/dev/null || true)
+    if [ "$T8_GOT" = "martinh" ]; then
+        pass "GITLAB_ME=martinh seeds gitlab:me memo to 'martinh'"
+    else
+        fail "GITLAB_ME seeding — expected 'martinh', got: '$T8_GOT'"
+    fi
+
+    # ----- Test 9: Both unset — gitlab:me left unset -----
+    T9_DIR="$FAKE_ROOT/t9"
+    mkdir -p "$T9_DIR"
+    (cd "$T9_DIR" && agentis init >/dev/null 2>&1) || true
+    (
+        unset GITLAB_ME
+        unset GITHUB_ME
+        run_install_fragment_gitlab_me "$T9_DIR"
+    )
+    T9_GOT=$(cd "$T9_DIR" && agentis memo get gitlab:me 2>/dev/null || true)
+    if [ -z "$T9_GOT" ]; then
+        pass "both GITLAB_ME and GITHUB_ME unset — gitlab:me memo left unset"
+    else
+        fail "no-op case — expected empty memo, got: '$T9_GOT'"
+    fi
 fi
 
 echo ""
