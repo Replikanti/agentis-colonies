@@ -133,9 +133,18 @@ if [ -f "$AUTO_PROMOTE_INSTALL_FILE" ]; then
             if [ ! -x "$AP_SCRIPT" ]; then
                 echo "[!!] Auto-promote scheduler: tools/auto-promote.sh not executable, skipping."
             else
+                # Stamp sidecar start time so the dashboard collector can
+                # distinguish "fresh sidecar that hasn't ticked yet" from
+                # "stuck sidecar that has stopped ticking" (#274). The
+                # template suppresses DEGRADED while now-started_at <
+                # interval_s + 120s grace.
+                date +%s > "$AP_LOG_DIR/auto-promote.sidecar_started_at"
                 (
+                    # First action is a tick (not a sleep) so log activity
+                    # appears immediately after spawn — the dashboard's
+                    # liveness probe is satisfied on first regen instead of
+                    # after a full interval_s (#274).
                     while :; do
-                        sleep "$AP_INTERVAL"
                         if ! agentis daemon list --json 2>/dev/null | grep -Fq '"state":"running"'; then
                             printf '=== %s: no running daemons; sidecar exiting ===\n' \
                                 "$(date -Iseconds)" >> "$AP_LOG"
@@ -146,6 +155,7 @@ if [ -f "$AUTO_PROMOTE_INSTALL_FILE" ]; then
                             "$AP_SCRIPT" "$AP_FED_NAME" 2>&1 \
                                 || printf '[sidecar] auto-promote.sh exited %s\n' "$?"
                         } >> "$AP_LOG"
+                        sleep "$AP_INTERVAL"
                     done
                 ) &
                 AUTO_PROMOTE_PID=$!
