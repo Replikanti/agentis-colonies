@@ -169,6 +169,21 @@
   .phase-tier.has-dormant .phase-tier-count { color: var(--red); }
   .phase-tier.has-no-conf .phase-tier-count { color: var(--muted); }
 
+  /* --- Forge Rate Limits (federation-dashboard 0.3.0) --- */
+  .rl-row {
+    display: flex; align-items: center; gap: 16px; padding: 6px 0;
+    font-size: 12px; border-bottom: 1px solid var(--border2);
+  }
+  .rl-row:last-child { border-bottom: none; }
+  .rl-colony { width: 130px; flex-shrink: 0; color: var(--cyan); text-shadow: 0 0 6px rgba(0,255,255,0.2); }
+  .rl-value { font-variant-numeric: tabular-nums; }
+  .rl-ok { color: var(--green); }
+  .rl-warn { color: var(--yellow); }
+  .rl-crit { color: var(--red); text-shadow: 0 0 6px rgba(255,68,68,0.4); }
+  .rl-na { color: var(--muted); }
+  .rl-err { color: var(--orange); cursor: help; text-decoration: underline dotted; }
+  .rl-reset { color: var(--muted); font-size: 11px; margin-left: auto; cursor: help; }
+
   /* --- Demoted charts: <details> with .summary-h2 (avoids h2-in-summary) --- */
   .card-collapse > summary {
     cursor: pointer; list-style: none;
@@ -585,6 +600,11 @@
 <div class="card">
 <h2>Phase Readiness</h2>
 <div id="readiness"></div>
+</div>
+
+<div class="card">
+<h2>Forge Rate Limits</h2>
+<div id="forge-rate-limits"></div>
 </div>
 
 <div class="card">
@@ -1106,6 +1126,69 @@ renderAgentTable();
     });
     html += '</div></div>';
   });
+  el.innerHTML = html;
+})();
+
+// --- Forge Rate Limits (federation-dashboard 0.3.0) ---
+// Per-colony forge API budget read by the collector via
+// `<colony>/scripts/start-colony.sh --rate-limit-status`. The collector
+// stores the JSON contract `{remaining, limit, reset_at}` (plus an
+// optional `error` string on failure) under `forge_rate_limits[colony]`.
+// Render order matches `colonyList` for consistency with Phase Readiness.
+//
+// Forges that do not advertise rate-limit headers and pre-#256 federations
+// both produce all-null fields; we render them as a neutral "—" so the
+// tile never falsely implies an exhausted budget.
+(function() {
+  const el = document.getElementById('forge-rate-limits');
+  if (!el) return;
+  const rl = (data && data.forge_rate_limits) || {};
+  let html = '';
+  colonyList.forEach(col => {
+    const r = rl[col] || {};
+    const rem = r.remaining;
+    const lim = r.limit;
+    const reset = r.reset_at;
+    const err = r.error;
+
+    let valueHtml;
+    if (err) {
+      valueHtml = '<span class="rl-err" title="' + esc(err) + '">err</span>';
+    } else if (rem == null && lim == null) {
+      valueHtml = '<span class="rl-na">&mdash;</span>';
+    } else {
+      let cls = 'rl-ok';
+      if (typeof rem === 'number' && typeof lim === 'number' && lim > 0) {
+        const ratio = rem / lim;
+        if (ratio < 0.10) cls = 'rl-crit';
+        else if (ratio < 0.25) cls = 'rl-warn';
+      }
+      const remStr = (rem == null) ? '?' : String(rem);
+      const limStr = (lim == null) ? '?' : String(lim);
+      valueHtml = '<span class="' + cls + '">' + remStr + ' / ' + limStr + '</span>';
+    }
+
+    let resetHtml = '';
+    if (reset) {
+      let resetMs = 0;
+      try { resetMs = Date.parse(reset); } catch(e) { resetMs = 0; }
+      const secs = resetMs ? Math.max(0, Math.round((resetMs - nowEpoch * 1000) / 1000)) : 0;
+      let txt;
+      if (!resetMs) txt = esc(reset);
+      else if (secs <= 0) txt = 'now';
+      else if (secs < 60) txt = 'reset in ' + secs + 's';
+      else if (secs < 3600) txt = 'reset in ' + Math.floor(secs / 60) + 'm';
+      else txt = 'reset in ' + Math.floor(secs / 3600) + 'h';
+      resetHtml = '<span class="rl-reset" title="' + esc(reset) + '">' + esc(txt) + '</span>';
+    }
+
+    html += '<div class="rl-row">';
+    html += '<span class="rl-colony">' + esc(col) + '</span>';
+    html += '<span class="rl-value">' + valueHtml + '</span>';
+    html += resetHtml;
+    html += '</div>';
+  });
+  if (!html) html = '<div class="rl-row"><span class="rl-na">no colonies</span></div>';
   el.innerHTML = html;
 })();
 

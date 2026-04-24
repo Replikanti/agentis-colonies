@@ -362,6 +362,51 @@ if os.path.isfile(conf_log_path):
         pass
 conf_changes = conf_changes[-50:]
 
+# --- Forge rate-limits (federation-dashboard 0.3.0) ---
+# Per-colony forge API budget. Each colony's `start-colony.sh
+# --rate-limit-status` execs its `forge-api.sh rate-limit-status` in the
+# fully-loaded env (FORGE_TYPE + GITLAB_*/GITHUB_*) and prints the JSON
+# contract `{remaining, limit, reset_at}` from PR 7 of #256. The dashboard
+# never parses colony.toml itself — that is the #257 decoupling principle.
+# Failure modes (timeout, non-zero exit, malformed JSON) collapse into
+# `{remaining: null, limit: null, reset_at: null, error: "<reason>"}` so
+# the tile can render a per-colony status without bringing down regen.
+forge_rate_limits = {}
+for colony in colonies:
+    script = os.path.join(fed_dir, colony, 'scripts', 'start-colony.sh')
+    if not os.path.isfile(script):
+        forge_rate_limits[colony] = {'remaining': None, 'limit': None,
+                                     'reset_at': None, 'error': 'no start-colony.sh'}
+        continue
+    try:
+        rl_out = subprocess.run(
+            ['bash', script, '--rate-limit-status'],
+            capture_output=True, text=True, timeout=10,
+        )
+        if rl_out.returncode != 0:
+            forge_rate_limits[colony] = {
+                'remaining': None, 'limit': None, 'reset_at': None,
+                'error': 'exit ' + str(rl_out.returncode),
+            }
+            continue
+        try:
+            payload = json.loads(rl_out.stdout or '{}')
+        except json.JSONDecodeError:
+            forge_rate_limits[colony] = {'remaining': None, 'limit': None,
+                                         'reset_at': None, 'error': 'malformed json'}
+            continue
+        forge_rate_limits[colony] = {
+            'remaining': payload.get('remaining'),
+            'limit':     payload.get('limit'),
+            'reset_at':  payload.get('reset_at'),
+        }
+    except subprocess.TimeoutExpired:
+        forge_rate_limits[colony] = {'remaining': None, 'limit': None,
+                                     'reset_at': None, 'error': 'timeout'}
+    except (subprocess.SubprocessError, OSError) as e:
+        forge_rate_limits[colony] = {'remaining': None, 'limit': None,
+                                     'reset_at': None, 'error': type(e).__name__}
+
 # --- Promote decisions (#248) ---
 # Invoke auto-promote-decisions.py in --preview mode so the dashboard's
 # Promote Candidates list uses the same math the scheduler uses (acting
@@ -448,5 +493,6 @@ output = {
     'confidence_changes': conf_changes,
     'decisions': decisions,
     'sidecar': sidecar,
+    'forge_rate_limits': forge_rate_limits,
 }
 print(json.dumps(output))
