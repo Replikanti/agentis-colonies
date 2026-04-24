@@ -29,6 +29,7 @@ is asserted until multi-version CI is in place.
 - `install.sh` now routes `FORGE_TYPE` and `GITHUB_*` through `exec.env_passthrough`; existing installs with the pre-fix literal are auto-upgraded in place. Unblocks GitHub-backend federations (#277).
 - `install.sh` now sets `daemon.heartbeat_interval_ms = 900000` (3× the longest tick interval, 300 000 ms, per #146) so reactive code-review/release agents are no longer killed by the watchdog after their first tick; existing installs with the pre-fix `180000` literal are auto-upgraded in place (#280).
 - `install.sh` now seeds the `gitlab:me` memo from `$GITHUB_ME` on github-backed federations (previously only `$GITLAB_ME` was honored, leaving the three `recall_latest("gitlab:me")` consumers — labeler, prioritizer, style_reviewer — falling back to `team` tagging). Re-runs preserve operator-customized memos (#278).
+- `start-colony.sh --restart-agent <name>` now kills the pre-existing daemon (SIGTERM → 5s wait → SIGKILL) before spawning the new one; previous behaviour silently accumulated duplicate `agentis daemon-inner` processes across dashboard `/restart` and `/confidence`-triggered respawns (#285).
 
 ### Security
 
