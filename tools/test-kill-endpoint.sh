@@ -76,9 +76,13 @@ fi
 
 # --- Boot the dashboard. setsid puts it in its own process group so the
 #     trap can take down the python3 child cleanly. Output silenced; we
-#     interrogate the server over HTTP instead. ---
+#     interrogate the server over HTTP instead.
+#     cwd = $FED_DIR so kill-federation.sh's #296 cwd-scoped filter sees
+#     the dashboard as legitimately "inside" this test's fed dir. Without
+#     this cd, the filter would (correctly) reject this stub dashboard as
+#     out-of-scope and the /kill endpoint would report 0 dashboards killed. ---
 LOG_FILE="$TMPDIR_TEST/dashboard.log"
-setsid bash "$DASHBOARD_SH" "$FED_DIR" "$PORT" >"$LOG_FILE" 2>&1 &
+(cd "$FED_DIR" && setsid bash "$DASHBOARD_SH" "$FED_DIR" "$PORT" >"$LOG_FILE" 2>&1) &
 DASH_PID=$!
 
 # --- Test 1: /  returns 200 within 5s. ---

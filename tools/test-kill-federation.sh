@@ -253,8 +253,14 @@ chmod +x "$WRAPPER_SCRIPT_9"
 
 # Spawn the wrapper with its argv0 rewritten to FIXTURE_TAG_9 via exec -a
 # so pgrep -f matches it against the tag.
-T9_KILL_SH="$KILL_SH" T9_FED_DIR="$FIX9" T9_TAG="$FIXTURE_TAG_9" \
-    bash -c "exec -a '$FIXTURE_TAG_9' bash '$WRAPPER_SCRIPT_9'" &
+# #296: cd into $FIX9 so the wrapper's /proc/<pid>/cwd is rooted under
+# the fed-dir. Without this cd, kill-federation.sh's cwd-scoped filter
+# (added in #296) would correctly drop the wrapper as out-of-scope,
+# which defeats this regression test's intent — test 9 wants to confirm
+# that a wrapper WITH cwd inside fed-dir and whose argv matches the
+# dashboard-py pattern gets killed even when it's the ancestor.
+(cd "$FIX9" && T9_KILL_SH="$KILL_SH" T9_FED_DIR="$FIX9" T9_TAG="$FIXTURE_TAG_9" \
+    bash -c "exec -a '$FIXTURE_TAG_9' bash '$WRAPPER_SCRIPT_9'") &
 WRAPPER_PID_9=$!
 SPAWNED_PIDS+=("$WRAPPER_PID_9")
 
