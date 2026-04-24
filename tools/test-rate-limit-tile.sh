@@ -121,7 +121,9 @@ chmod +x "$FED_DIR/$COLONY/scripts/start-colony.sh"
 # ---- Smoke-test the start-colony.sh --rate-limit-status arm directly ----
 # Catches breakage in the env-load → exec forge-api.sh chain before the
 # collector even gets involved.
-RL_OUT="$("$FED_DIR/$COLONY/scripts/start-colony.sh" --rate-limit-status 2>&1)"
+# stderr deliberately not captured: any future deprecation/parse-toml
+# warning would silently corrupt the JSON parse below if folded into stdout.
+RL_OUT="$("$FED_DIR/$COLONY/scripts/start-colony.sh" --rate-limit-status 2>"$TMPDIR_TEST/start-colony.err")"
 if echo "$RL_OUT" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); assert d['remaining']==$EXPECTED_REMAINING and d['limit']==$EXPECTED_LIMIT and d['reset_at']=='$EXPECTED_RESET'" 2>/dev/null; then
     pass "4: start-colony.sh --rate-limit-status emits stub JSON"
 else

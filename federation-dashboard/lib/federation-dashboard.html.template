@@ -1162,19 +1162,23 @@ renderAgentTable();
         const ratio = rem / lim;
         if (ratio < 0.10) cls = 'rl-crit';
         else if (ratio < 0.25) cls = 'rl-warn';
+      } else if (rem === 0) {
+        // rem known and exhausted but lim absent — still a clear warning.
+        cls = 'rl-warn';
       }
-      const remStr = (rem == null) ? '?' : String(rem);
-      const limStr = (lim == null) ? '?' : String(lim);
+      // QA F1: defense-in-depth. The contract is int|null but we never want
+      // a malformed value (or a future contract change) to inject HTML.
+      const remStr = (rem == null) ? '?' : esc(String(rem));
+      const limStr = (lim == null) ? '?' : esc(String(lim));
       valueHtml = '<span class="' + cls + '">' + remStr + ' / ' + limStr + '</span>';
     }
 
     let resetHtml = '';
     if (reset) {
-      let resetMs = 0;
-      try { resetMs = Date.parse(reset); } catch(e) { resetMs = 0; }
+      const resetMs = Date.parse(reset);  // returns NaN on failure (no throw)
       const secs = resetMs ? Math.max(0, Math.round((resetMs - nowEpoch * 1000) / 1000)) : 0;
       let txt;
-      if (!resetMs) txt = esc(reset);
+      if (!resetMs) txt = reset;
       else if (secs <= 0) txt = 'now';
       else if (secs < 60) txt = 'reset in ' + secs + 's';
       else if (secs < 3600) txt = 'reset in ' + Math.floor(secs / 60) + 'm';
