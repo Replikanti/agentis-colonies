@@ -73,7 +73,7 @@ cat > "$COL_PATH/README.md" << EOF
    cp config/colony.example.toml config/colony.toml
    \`\`\`
 
-2. Configure your GitLab connection in \`colony.toml\`.
+2. Configure your forge (GitLab or GitHub) connection in \`colony.toml\` under \`[forge]\` and the matching \`[forge.<type>]\` block (see [ADR-0002](../../doc/adr/ADR-0002-forge-abstraction.md)).
 
 3. Start the colony:
    \`\`\`bash
@@ -92,10 +92,22 @@ cat > "$COL_PATH/config/colony.example.toml" << EOF
 name = "$COLONY"
 tick_interval_ms = 60000
 
-[gitlab]
+# Forge configuration (post-#256, ADR-0002).
+# Set type to either "gitlab" or "github" and fill in the matching block.
+[forge]
+type = "gitlab"
+
+[forge.gitlab]
 url = "https://gitlab.example.com"
 token = "glpat-your-token-here"
 project = "your-org/your-project"
+me = "your-username"
+
+# [forge.github]
+# owner = "your-org"
+# repo  = "your-repo"
+# token = "ghp_your-token-here"
+# me    = "your-username"
 
 [llm]
 # Only "backend" is read today. "cli" uses the agentis daemon default CLI adapter.
@@ -105,11 +117,11 @@ backend = "cli"
 # Each agent runs as a separate agentis daemon process.
 # They discover each other via colony UDP and communicate over TCP emit/listen.
 
-# [[agents]]
-# name = "example_agent"
-# source = "agents/example_agent.ag"
-# cb_budget = 800
-# tick_interval_ms = 60000
+[[agents]]
+name = "example_agent"
+source = "agents/example_agent.ag"
+cb_budget = 800
+tick_interval_ms = 60000
 EOF
 
 # Generate start script

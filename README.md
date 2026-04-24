@@ -1,8 +1,8 @@
 # Agentis Colonies
 
-Open-source agent colonies built on the [Agentis](https://github.com/Replikanti/agentis) runtime.
+A home for [Agentis](https://github.com/Replikanti/agentis) agent federations. **Apache 2.0**.
 
-**Agentis** is a proprietary AI-native platform for agent emergence (runtime, language, evolution engine, distributed infrastructure). **Colonies** (this repo) are Apache 2.0 configurations of agents that solve real-world problems on that runtime.
+**Agentis** is a proprietary AI-native platform for agent emergence (runtime, language, evolution engine, distributed infrastructure). **This repo** hosts open-source federations and federation-agnostic platform components built on that runtime. [`dev-apprenticeship/`](./dev-apprenticeship/) is the first federation — coder workflow on GitLab/GitHub, 21 agents — and the platform contract in [ADR-0003](./doc/adr/ADR-0003-federation-portability-contract.md) keeps the door open for federations of other kinds (data-ops, research, support-triage, monitoring-ops — sketches in [`doc/federation-patterns.md`](./doc/federation-patterns.md)).
 
 **What makes this repo distinctive:** every agent runs in `shadow` (observe-only) mode by default. It graduates up a four-tier confidence ladder — `shadow` → `propose` → `review-gated` → `autonomous` — based on measured experience, not hand-tuned thresholds. An agent only acts on your project once it has earned the tier. See [`doc/adr/ADR-0001-confidence-tiers.md`](./doc/adr/ADR-0001-confidence-tiers.md).
 
@@ -36,7 +36,7 @@ graph TD
     C3 --> A6
 ```
 
-[`dev-apprenticeship/`](./dev-apprenticeship/) is one concrete instance: 5 colonies, 21 agents covering triage, planning, implementation, code review, and release.
+[`dev-apprenticeship/`](./dev-apprenticeship/) is the first concrete federation: 5 colonies, 21 agents covering triage, planning, implementation, code review, and release. The platform contract that makes a federation directory "platform-compliant" — and that the platform tooling (dashboard, auto-promote, kill-federation) consumes — is codified in [ADR-0003](./doc/adr/ADR-0003-federation-portability-contract.md).
 
 ## Federations
 
@@ -44,13 +44,15 @@ graph TD
 |------------|---------|-------------|--------|--------|
 | [dev-apprenticeship](./dev-apprenticeship/) | [`1.1.0`](https://github.com/Replikanti/agentis-colonies/releases/tag/dev-apprenticeship-v1.1.0) | Learns a developer's complete workflow by observing how you work on GitLab or GitHub. Covers triage, code review, planning, implementation, and release. | 21 | Beta |
 
-## Components
+To start a new federation, see [`tools/new-federation.sh`](./tools/new-federation.sh) and [`doc/federation-patterns.md`](./doc/federation-patterns.md). The contract every federation must satisfy is [ADR-0003](./doc/adr/ADR-0003-federation-portability-contract.md).
 
-Federation-agnostic components are versioned and released independently so fixes ship without forcing a federation re-release.
+## Platform components
+
+Federation-agnostic components are versioned and released independently so fixes ship without forcing any federation re-release. The same install can serve any federation that meets the component's compatibility floor.
 
 | Component | Version | Description |
 |-----------|---------|-------------|
-| [federation-dashboard](./federation-dashboard/) | [`0.1.0`](https://github.com/Replikanti/agentis-colonies/releases/tag/federation-dashboard-v0.1.0) | Generic web dashboard with operator controls (promote / demote / evolve / restart / kill). Auto-discovers colonies + agents from any federation directory. |
+| [federation-dashboard](./federation-dashboard/) | [`0.3.0`](https://github.com/Replikanti/agentis-colonies/releases/tag/federation-dashboard-v0.3.0) | Generic web dashboard with operator controls (promote / demote / evolve / restart / kill) plus Forge Rate Limits tile. Auto-discovers colonies + agents from any federation directory. |
 
 ### Status
 
@@ -96,12 +98,21 @@ Need the runtime first? See [Replikanti/agentis](https://github.com/Replikanti/a
 ## Repository structure
 
 ```
-dev-apprenticeship/    # Federation: GitLab dev workflow (21 agents, Beta)
-federation-dashboard/  # Standalone, separately-versioned web dashboard component (#252)
-tools/                 # Shared federation tooling (lint, auto-promote, kill)
-doc/                   # Reference docs (auto-promote, federation-dashboard)
+dev-apprenticeship/    # First federation: GitLab/GitHub coder workflow (21 agents, Beta)
+federation-dashboard/  # Standalone, separately-versioned platform component (#252)
+tools/                 # Shared platform tooling (lint, auto-promote, kill, scaffolders)
+doc/                   # Reference docs (auto-promote, federation-dashboard, federation patterns)
 doc/adr/               # Architecture Decision Records (normative cross-repo contracts)
 ```
+
+## Starting a new federation
+
+```bash
+./tools/new-federation.sh <federation-name>           # uses "core" as starter colony
+./tools/new-federation.sh <federation-name> <colony>  # custom starter colony
+```
+
+The scaffolder generates an [ADR-0003](./doc/adr/ADR-0003-federation-portability-contract.md)-compliant directory shape: `VERSION`, `CHANGELOG.md`, `BUNDLE.manifest`, `README.md`, `install.sh`, plus one starter colony with a `start-colony.sh` that already supports `--restart-agent` (so the dashboard can restart its agents) and `--rate-limit-status` (so the Forge Rate Limits tile renders). Output passes `colony-lint.sh` clean. Federation patterns beyond the coder workflow live in [`doc/federation-patterns.md`](./doc/federation-patterns.md).
 
 ## Operator scripts
 

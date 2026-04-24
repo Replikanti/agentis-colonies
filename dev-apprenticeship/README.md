@@ -4,6 +4,8 @@
 
 **Version:** `1.1.0` · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.4.1`
 
+> **One example federation** built on the [`agentis-colonies`](../) platform. The platform contract every federation must satisfy is [ADR-0003](../doc/adr/ADR-0003-federation-portability-contract.md); to scaffold a different kind of federation (data-ops, research, support-triage, monitoring-ops, …) see [`doc/federation-patterns.md`](../doc/federation-patterns.md) and [`tools/new-federation.sh`](../tools/new-federation.sh).
+
 A federation of 21 agents that learns how you work by watching your GitLab or GitHub activity. It observes how you triage issues, review merge requests, plan features, write code, and ship releases. Over time it takes over the mechanical parts, while you keep control over the decisions that matter.
 
 The federation starts silent. Agents only watch. As you see what they are learning in the logs and trust what they would do, you progressively unlock autonomy by raising each agent's confidence memo through four named tiers — `shadow` (observe), `propose` (suggest), `review-gated` (act under review), and `autonomous` (act alone). The tier contract is defined in [`doc/adr/ADR-0001-confidence-tiers.md`](../doc/adr/ADR-0001-confidence-tiers.md) and is normative for every agent in this federation. Agents do not promote themselves; the gradient is operator-controlled. You can always veto or demote.
