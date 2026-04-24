@@ -25,6 +25,8 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- GitHub wrapper no longer fails on repos with >20 closed PRs — normalizers now read HTTP body via stdin instead of env var, bypassing `MAX_ARG_STRLEN` (#279).
+
 ### Security
 
 ## [1.1.0] — 2026-04-24

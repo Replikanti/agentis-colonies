@@ -47,13 +47,9 @@ emit_error() {
 # Also filters out pull_request entries — GitHub's /issues endpoint mixes PRs
 # with issues, but the triage colony only cares about issues.
 normalize_issues() {
-    # stdin travels via env var because python3's <<'PY' heredoc already
-    # occupies python's stdin — same idiom as project_json below.
-    local DATA
-    DATA="$(cat)"
-    DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+    python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 out = []
 for x in data:
     if "pull_request" in x:  # skip PRs
@@ -77,11 +73,9 @@ PY
 # normalize_issue
 # Single-issue variant of normalize_issues. Outputs a single object (not array).
 normalize_issue() {
-    local DATA
-    DATA="$(cat)"
-    DATA="$DATA" python3 <<'PY'
-import os, json
-x = json.loads(os.environ["DATA"])
+    python3 /dev/fd/3 3<<'PY'
+import sys, json
+x = json.loads(sys.stdin.read())
 print(json.dumps({
     "iid": x.get("number"),
     "title": x.get("title"),
@@ -104,11 +98,9 @@ PY
 # has no nulls — the router agent uses `username` for mechanical assignment,
 # `name` is only for display and null-vs-login doesn't matter operationally.
 normalize_members() {
-    local DATA
-    DATA="$(cat)"
-    DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+    python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 out = []
 for x in data:
     login = x.get("login")
@@ -126,11 +118,9 @@ PY
 # (no text_color, no *_count fields). We forward name/description/color which
 # is what the labels-summary view keeps anyway.
 normalize_labels() {
-    local DATA
-    DATA="$(cat)"
-    DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+    python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 out = [{
     "name": x.get("name"),
     "description": x.get("description"),
@@ -160,34 +150,34 @@ project_json() {
             printf '%s' "$DATA"
             ;;
         labeler)
-            DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+            printf '%s' "$DATA" | python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 print(json.dumps([{"iid": x.get("iid"), "title": x.get("title"), "labels": x.get("labels", []),
                    "author": {"username": (x.get("author") or {}).get("username")}} for x in data]))
 PY
             ;;
         router)
-            DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+            printf '%s' "$DATA" | python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 out = [{"iid": x.get("iid"), "title": x.get("title"), "labels": x.get("labels", []),
         "assignees": [{"username": a.get("username")} for a in x.get("assignees", [])]} for x in data]
 print(json.dumps(out))
 PY
             ;;
         prioritizer)
-            DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+            printf '%s' "$DATA" | python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 print(json.dumps([{"iid": x.get("iid"), "title": x.get("title"), "labels": x.get("labels", []),
                    "author": {"username": (x.get("author") or {}).get("username")}} for x in data]))
 PY
             ;;
         issue_creator)
-            DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+            printf '%s' "$DATA" | python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 out = [{"iid": x.get("iid"), "title": x.get("title"), "description": x.get("description"),
         "labels": x.get("labels", []),
         "author": {"username": (x.get("author") or {}).get("username")}} for x in data]
@@ -195,23 +185,23 @@ print(json.dumps(out))
 PY
             ;;
         members-summary)
-            DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+            printf '%s' "$DATA" | python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 print(json.dumps([{"id": x.get("id"), "username": x.get("username"), "name": x.get("name")} for x in data]))
 PY
             ;;
         labels-summary)
-            DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+            printf '%s' "$DATA" | python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 print(json.dumps([{"name": x.get("name"), "description": x.get("description"), "color": x.get("color")} for x in data]))
 PY
             ;;
         feedback-issue)
-            DATA="$DATA" python3 <<'PY'
-import os, json
-x = json.loads(os.environ["DATA"])
+            printf '%s' "$DATA" | python3 /dev/fd/3 3<<'PY'
+import sys, json
+x = json.loads(sys.stdin.read())
 print(json.dumps({"iid": x.get("iid"), "state": x.get("state"), "labels": x.get("labels", [])}))
 PY
             ;;

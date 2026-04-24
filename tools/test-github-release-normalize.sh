@@ -326,6 +326,27 @@ assert_eq "description,iid,labels,merged_at,target_branch,title" "$E2E_MR_KEYS" 
 assert_eq "21" "$E2E_MR_IID" "e2e release-mr: iid through pipe"
 assert_eq "2026-04-05T12:00:00Z" "$E2E_MR_STATE_MERGED" "e2e release-mr: merged_at through pipe"
 
+# --- Large payload (>200 KB) regression test for #279 ---
+# 50 PRs × ~5 KB body each exceeds MAX_ARG_STRLEN when passed via env var.
+# Fix: normalize_pulls reads HTTP body from stdin instead of env var.
+# The payload is generated INSIDE the bash -c scope so the test harness itself
+# does not hit the exec argv limit it is trying to certify the wrapper against.
+LARGE_PRELUDE=$(mktemp)
+build_prelude "$LARGE_PRELUDE"
+# shellcheck disable=SC1090,SC2016
+LARGE_OUT=$(GITHUB_URL=http://x GITHUB_TOKEN=y GITHUB_OWNER=o GITHUB_REPO=r bash -c '
+    source "$1"
+    python3 -c "import json; print(json.dumps([{\"number\":i,\"title\":f\"t{i}\",\"body\":\"x\"*5000,\"state\":\"open\",\"labels\":[],\"user\":{\"login\":\"u\"},\"base\":{\"ref\":\"main\"},\"head\":{\"ref\":\"f\"},\"merged_at\":None,\"created_at\":\"2026-01-01T00:00:00Z\",\"updated_at\":\"2026-01-01T00:00:00Z\",\"changed_files\":0,\"additions\":0,\"deletions\":0} for i in range(50)]))" | normalize_pulls
+' _ "$LARGE_PRELUDE")
+LARGE_RC=$?
+rm -f "$LARGE_PRELUDE"
+assert_eq "0" "$LARGE_RC" "normalize_pulls: large payload (>200 KB) exits 0 (#279)"
+if [ -n "$LARGE_OUT" ]; then
+    pass "normalize_pulls: large payload produces non-empty stdout (#279)"
+else
+    fail "normalize_pulls: large payload produces non-empty stdout (#279): stdout was empty"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

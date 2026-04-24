@@ -92,11 +92,9 @@ emit_error() {
 # released_at, description) plus the fields changelog_writer reads from the
 # raw output (author, created_at) when prompted for release-note context.
 normalize_releases() {
-    local DATA
-    DATA="$(cat)"
-    DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+    python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 out = [{
     "tag_name": x.get("tag_name"),
     "name": x.get("name"),
@@ -119,11 +117,9 @@ PY
 # changelog_writer) use these fields for prompt context only — missing values
 # degrade prompt quality but do not break branching.
 normalize_tags() {
-    local DATA
-    DATA="$(cat)"
-    DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+    python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 out = []
 for x in data:
     commit = x.get("commit") or {}
@@ -154,11 +150,9 @@ PY
 # GitLab-pipelines-shape JSON. Status collapse mirrors the agentis-colonies
 # shape contract in ADR-0002 §"Semantic collapses".
 normalize_pipelines() {
-    local DATA
-    DATA="$(cat)"
-    DATA="$DATA" python3 <<'PY'
-import os, json
-envelope = json.loads(os.environ["DATA"])
+    python3 /dev/fd/3 3<<'PY'
+import sys, json
+envelope = json.loads(sys.stdin.read())
 # GitHub wraps the list in {total_count, workflow_runs: [...]}; other endpoints
 # return a bare array. Accept both so ad-hoc callers piping raw responses work.
 if isinstance(envelope, dict):
@@ -204,11 +198,9 @@ PY
 # does). State collapse: open -> opened; closed + merged_at -> merged;
 # closed + no merged_at stays closed.
 normalize_pulls() {
-    local DATA
-    DATA="$(cat)"
-    DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+    python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 out = []
 for x in data:
     st = x.get("state")
@@ -251,18 +243,18 @@ project_json() {
             printf '%s' "$DATA"
             ;;
         release-summary)
-            DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+            printf '%s' "$DATA" | python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 out = [{"tag_name": x.get("tag_name"), "name": x.get("name"),
         "released_at": x.get("released_at"), "description": x.get("description")} for x in data]
 print(json.dumps(out))
 PY
             ;;
         tag-summary)
-            DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+            printf '%s' "$DATA" | python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 out = [{"name": x.get("name"), "message": x.get("message"),
         "commit": {"short_id": (x.get("commit") or {}).get("short_id"),
                    "created_at": (x.get("commit") or {}).get("created_at")}} for x in data]
@@ -270,9 +262,9 @@ print(json.dumps(out))
 PY
             ;;
         pipeline-summary)
-            DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+            printf '%s' "$DATA" | python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 out = [{"id": x.get("id"), "status": x.get("status"), "ref": x.get("ref"),
         "sha": x.get("sha"), "created_at": x.get("created_at"),
         "web_url": x.get("web_url")} for x in data]
@@ -280,9 +272,9 @@ print(json.dumps(out))
 PY
             ;;
         release-mr)
-            DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+            printf '%s' "$DATA" | python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 out = [{"iid": x.get("iid"), "title": x.get("title"), "description": x.get("description"),
         "merged_at": x.get("merged_at"),
         "labels": x.get("labels", []), "target_branch": x.get("target_branch")} for x in data]

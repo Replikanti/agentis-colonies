@@ -51,11 +51,9 @@ emit_error() {
 # Filters out pull_request entries — GitHub's /issues mixes PRs with issues,
 # but planning only cares about issues for triage-time fields.
 normalize_issues() {
-    local DATA
-    DATA="$(cat)"
-    DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+    python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 out = []
 for x in data:
     if "pull_request" in x:
@@ -80,11 +78,9 @@ PY
 # Single-issue variant. Used by issues-by-label-events when re-fetching a
 # full issue body after a timeline hit.
 normalize_issue() {
-    local DATA
-    DATA="$(cat)"
-    DATA="$DATA" python3 <<'PY'
-import os, json
-x = json.loads(os.environ["DATA"])
+    python3 /dev/fd/3 3<<'PY'
+import sys, json
+x = json.loads(sys.stdin.read())
 print(json.dumps({
     "iid": x.get("number"),
     "title": x.get("title"),
@@ -115,11 +111,9 @@ PY
 #                 review_comments separately but comments is the closest analog
 #                 to GitLab's user_notes_count on MRs)
 normalize_pulls() {
-    local DATA
-    DATA="$(cat)"
-    DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+    python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 out = []
 for x in data:
     st = x.get("state")
@@ -201,9 +195,9 @@ project_json() {
             printf '%s' "$DATA"
             ;;
         planning)
-            DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+            printf '%s' "$DATA" | python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 out = [{"iid": x.get("iid"), "title": x.get("title"), "description": x.get("description"),
         "labels": x.get("labels", []),
         "author": {"username": (x.get("author") or {}).get("username")},
@@ -212,9 +206,9 @@ print(json.dumps(out))
 PY
             ;;
         planning-mr)
-            DATA="$DATA" python3 <<'PY'
-import os, json
-data = json.loads(os.environ["DATA"])
+            printf '%s' "$DATA" | python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
 out = [{"iid": x.get("iid"), "title": x.get("title"), "description": x.get("description"),
         "labels": x.get("labels", []), "changes_count": x.get("changes_count"),
         "user_notes_count": x.get("user_notes_count"),
@@ -567,9 +561,9 @@ PY
         body="$(gh_get_q "$API/pulls" "${ARGS[@]}")" || exit $?
         normalized="$(printf '%s' "$body" | normalize_pulls)"
         if [ "$MERGED_FILTER" -eq 1 ] || [ -n "$SINCE" ]; then
-            normalized="$(NORM="$normalized" SINCE="$SINCE" MERGED="$MERGED_FILTER" python3 <<'PY'
-import os, json
-items = json.loads(os.environ["NORM"])
+            normalized="$(printf '%s' "$normalized" | SINCE="$SINCE" MERGED="$MERGED_FILTER" python3 /dev/fd/3 3<<'PY'
+import os, sys, json
+items = json.loads(sys.stdin.read())
 since = os.environ.get("SINCE", "")
 merged_only = os.environ.get("MERGED", "0") == "1"
 out = []
