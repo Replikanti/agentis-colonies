@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `/start` endpoint no longer SIGTERMs `start-federation.sh` (and its 21
+  just-spawned agents) when the sidecar loop runs past 60s. Handler now
+  detaches the subprocess with `start_new_session=True` and returns 202
+  Accepted; operator polls `agentis daemon list` for actual state
+  ([#286](https://github.com/Replikanti/agentis-colonies/issues/286)).
+
 ## [0.3.0] — 2026-04-24
 
 ### Added
