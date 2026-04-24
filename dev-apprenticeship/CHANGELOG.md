@@ -17,16 +17,6 @@ is asserted until multi-version CI is in place.
 
 ### Added
 
-- Every colony's `scripts/start-colony.sh` supports a new
-  `--rate-limit-status` mode that reuses the env-load path and execs
-  `forge-api.sh rate-limit-status`, printing the JSON contract
-  `{remaining, limit, reset_at}` from PR 7 of [#256](https://github.com/Replikanti/agentis-colonies/issues/256).
-  Used by `federation-dashboard` 0.3.0's Forge Rate Limits tile so the
-  dashboard can surface remaining API budget per colony without parsing
-  `colony.toml` itself (the [#257](https://github.com/Replikanti/agentis-colonies/issues/257)
-  decoupling principle). Memo seeding and log truncation are gated on
-  the new flag too — both are full-colony bootstrap concerns.
-
 ### Changed
 
 ### Deprecated
@@ -36,6 +26,28 @@ is asserted until multi-version CI is in place.
 ### Fixed
 
 ### Security
+
+## [1.1.0] — 2026-04-24
+
+Adds a federation-wide `--rate-limit-status` mode to every colony's
+`start-colony.sh`, the colony-side half of the `federation-dashboard`
+0.3.0 Forge Rate Limits tile. Additive-only — no behaviour changes for
+existing callers.
+
+**Requires:** agentis >= 1.4.1
+**Recommends:** federation-dashboard >= 0.3.0 (pinned via `dev-apprenticeship/.dashboard-version`)
+
+### Added
+
+- Every colony's `scripts/start-colony.sh` supports a new
+  `--rate-limit-status` mode that reuses the env-load path and execs
+  `forge-api.sh rate-limit-status`, printing the JSON contract
+  `{remaining, limit, reset_at}` from PR 7 of [#256](https://github.com/Replikanti/agentis-colonies/issues/256).
+  Used by `federation-dashboard` 0.3.0's Forge Rate Limits tile so the
+  dashboard can surface remaining API budget per colony without parsing
+  `colony.toml` itself (the [#257](https://github.com/Replikanti/agentis-colonies/issues/257)
+  decoupling principle). Memo seeding and log truncation are gated on
+  the new flag too — both are full-colony bootstrap concerns.
 
 ## [1.0.0] — 2026-04-24
 
@@ -871,7 +883,8 @@ permissible per semver §4.
 - All dynamic values flowing into `exec sh` are required to pass through `shell_escape()`;
   `check-exec-sh.sh` enforces this grep-level contract.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v1.0.0...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v1.1.0...HEAD
+[1.1.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v1.0.0...dev-apprenticeship-v1.1.0
 [1.0.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.3.3...dev-apprenticeship-v1.0.0
 [0.3.3]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.3.2...dev-apprenticeship-v0.3.3
 [0.3.2]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.3.1...dev-apprenticeship-v0.3.2
