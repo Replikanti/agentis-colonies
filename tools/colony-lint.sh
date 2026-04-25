@@ -12,6 +12,13 @@
 
 set -euo pipefail
 
+# #272: Re-entrancy marker. Test 4 of `tools/test-colony-lint-bash32.sh`
+# (added in this PR) runs the lint with a stub-python3 PATH to verify the
+# new tomllib/tomli SKIP path. Without this marker, the lint would
+# discover that test, run it, and recurse forever (CI hits the 6h
+# ceiling). Tests can read this var to detect the nested run.
+export AGENTIS_COLONY_LINT_NESTED="${AGENTIS_COLONY_LINT_NESTED:-0}"
+
 REPO_ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 PASS=0
 FAIL=0
@@ -527,11 +534,14 @@ while IFS= read -r -d '' f; do
 done < <(find "$REPO_ROOT/tools" -name "test-*.sh" -print0 2>/dev/null)
 
 for t in "${test_scripts[@]}"; do
-    if bash "$t" &>/dev/null; then
+    # #272: Re-entrancy marker so test scripts that re-invoke
+    # colony-lint.sh (e.g. test-colony-lint-bash32.sh test 4) can
+    # detect the nested run and skip the recursive step.
+    if AGENTIS_COLONY_LINT_NESTED=1 bash "$t" &>/dev/null; then
         pass "tools: $(basename "$t") unit tests"
     else
         fail "tools: $(basename "$t") unit tests"
-        bash "$t" 2>&1 | tail -20
+        AGENTIS_COLONY_LINT_NESTED=1 bash "$t" 2>&1 | tail -20
     fi
 done
 

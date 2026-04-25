@@ -72,20 +72,30 @@ fi
 rm -f /tmp/colony-lint-bash32-err.$$
 
 # --- Test 4: missing tomllib/tomli triggers [SKIP], no traceback (#272) ---
-stub_dir=$(mktemp -d)
-cat > "$stub_dir/python3" <<'PYSTUB'
+# Skip when this script is invoked from inside colony-lint.sh — running
+# the lint again from here would recurse (lint discovers this test, runs
+# it, test 4 runs lint again, ...). The lint exports
+# AGENTIS_COLONY_LINT_NESTED=1 around each test-*.sh invocation so we
+# can detect that and short-circuit. Local direct runs see =0 and
+# exercise the full check.
+if [ "${AGENTIS_COLONY_LINT_NESTED:-0}" = "1" ]; then
+    skip "tomllib/tomli missing -> [SKIP] (nested colony-lint run)"
+else
+    stub_dir=$(mktemp -d)
+    cat > "$stub_dir/python3" <<'PYSTUB'
 #!/usr/bin/env bash
 case "${2:-}" in *"import tomllib"*|*"import tomli"*) exit 1 ;; esac
 exec /usr/bin/python3 "$@"
 PYSTUB
-chmod +x "$stub_dir/python3"
-stub_out=$(PATH="$stub_dir:$PATH" "$LINT" 2>&1 || true)
-rm -rf "$stub_dir"
-if printf '%s\n' "$stub_out" | grep -q 'config check (no TOML parser' \
-    && ! printf '%s\n' "$stub_out" | grep -q 'Traceback'; then
-    pass "tomllib/tomli missing -> [SKIP] config check, no traceback"
-else
-    fail "tomllib/tomli missing did not degrade to [SKIP] cleanly"
+    chmod +x "$stub_dir/python3"
+    stub_out=$(PATH="$stub_dir:$PATH" "$LINT" 2>&1 || true)
+    rm -rf "$stub_dir"
+    if printf '%s\n' "$stub_out" | grep -q 'config check (no TOML parser' \
+        && ! printf '%s\n' "$stub_out" | grep -q 'Traceback'; then
+        pass "tomllib/tomli missing -> [SKIP] config check, no traceback"
+    else
+        fail "tomllib/tomli missing did not degrade to [SKIP] cleanly"
+    fi
 fi
 
 echo ""
