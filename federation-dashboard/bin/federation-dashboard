@@ -68,6 +68,16 @@ HISTORY_FILE="$DASH_DIR/history.json"
 
 mkdir -p "$DASH_DIR"
 
+# --- Favicon + webmanifest (#295) ---
+# Copy the bundled favicon set into $DASH_DIR so the static HTTP server (which
+# does `os.chdir(serve_dir)`) picks them up at /favicon.ico, /favicon-32x32.png,
+# /apple-touch-icon.png, /android-chrome-{192,512}.png, /site.webmanifest.
+# Idempotent (cp -p), guarded so older fixtures without an assets/ tree still
+# pass.
+if [ -d "$LIB_DIR/../assets/favicon" ]; then
+    cp -p "$LIB_DIR/../assets/favicon"/* "$DASH_DIR/" 2>/dev/null || true
+fi
+
 if [ ! -f "$HISTORY_FILE" ]; then
     echo '[]' > "$HISTORY_FILE"
 fi
