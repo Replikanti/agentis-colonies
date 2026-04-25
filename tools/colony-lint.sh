@@ -487,6 +487,141 @@ if [ -x "$REPO_ROOT/tools/check-prompt-gate.sh" ]; then
     fi
 fi
 
+# --- Plaintext token detection (#321) ---
+# Walks `[forge.*]` sections in every colony.toml / colony.example.toml
+# under the repo and flags `token` / `*api_key*` / `*secret*` values
+# that are neither `secret://...` (vault-stored) nor `${VAR}` (env
+# expansion). Default behaviour is WARN so legacy plaintext configs
+# (the everything-pre-#321 baseline) keep CI green; set
+# COLONY_LINT_STRICT_SECRETS=1 to upgrade to a hard fail.
+secret_lint_findings=""
+secret_lint_count=0
+while IFS= read -r -d '' cfg; do
+    in_forge=0
+    while IFS= read -r line; do
+        stripped="${line#"${line%%[![:space:]]*}"}"
+        case "$stripped" in
+            \[forge.*\]*)
+                in_forge=1
+                continue
+                ;;
+            \[*)
+                in_forge=0
+                continue
+                ;;
+        esac
+        [ "$in_forge" = "0" ] && continue
+        case "$stripped" in
+            \#*) continue ;;
+            "") continue ;;
+        esac
+        # Only inspect lines shaped like `key = "value"` where the key
+        # carries token / api_key / secret in its name.
+        case "$stripped" in
+            token*=*|*api_key*=*|*secret*=*) ;;
+            *) continue ;;
+        esac
+        # Strip up through the first `=` and any surrounding whitespace.
+        rhs="${stripped#*=}"
+        rhs="${rhs#"${rhs%%[![:space:]]*}"}"
+        # Drop surrounding double quotes (single-quoted is also fine).
+        case "$rhs" in
+            \"*\") rhs="${rhs#\"}"; rhs="${rhs%\"*}" ;;
+            \'*\') rhs="${rhs#\'}"; rhs="${rhs%\'*}" ;;
+        esac
+        # Empty / placeholder / template values aren't tokens — skip.
+        case "$rhs" in
+            ""|"<"*">"|"your-"*) continue ;;
+        esac
+        # Vault-stored or env-expanded values are explicitly allowed.
+        case "$rhs" in
+            secret://*) continue ;;
+            \$\{*\}*) continue ;;
+            \$*) continue ;;
+        esac
+        # If we got here, the value is plaintext. Only flag obvious
+        # token-shaped strings (glpat-, ghp_, github_pat_) — anything
+        # else is likely a placeholder or a non-secret config knob.
+        case "$rhs" in
+            glpat-*|ghp_*|github_pat_*)
+                secret_lint_findings="${secret_lint_findings}
+$cfg: plaintext token detected (consider migrating to secret:// — see dev-apprenticeship/README.md#security)"
+                secret_lint_count=$((secret_lint_count + 1))
+                ;;
+        esac
+    done < "$cfg"
+done < <(find "$REPO_ROOT" -type f \( -name "colony.toml" -o -name "colony.example.toml" \) -print0 2>/dev/null)
+
+if [ "$secret_lint_count" -eq 0 ]; then
+    pass "check-secrets: no plaintext forge tokens found in colony.toml files"
+elif [ "${COLONY_LINT_STRICT_SECRETS:-0}" = "1" ]; then
+    fail "check-secrets: $secret_lint_count plaintext token(s) (COLONY_LINT_STRICT_SECRETS=1)"
+    printf '%s\n' "$secret_lint_findings"
+else
+    pass "check-secrets: scan complete (warning mode — set COLONY_LINT_STRICT_SECRETS=1 to fail)"
+    if [ "$secret_lint_count" -gt 0 ]; then
+        printf '[WARN] %d plaintext token(s) found:\n' "$secret_lint_count"
+        printf '%s\n' "$secret_lint_findings"
+    fi
+fi
+
+# --- Bash-3.2 forbidden-construct lint for #321 scripts ---
+# tools/secret-set.sh and tools/test-secret-resolver.sh MUST run on
+# stock macOS /bin/bash (3.2). Per the issue refinement: no heredocs,
+# no associative arrays, no ${var^^}/${var,,}, no mapfile/readarray.
+# Greps the source for the forbidden patterns and fails on hit.
+# Mirrors the check-exec-sh.sh style.
+bash32_targets=""
+for f in "$REPO_ROOT/tools/secret-set.sh" "$REPO_ROOT/tools/test-secret-resolver.sh"; do
+    [ -f "$f" ] && bash32_targets="$bash32_targets $f"
+done
+if [ -n "$bash32_targets" ]; then
+    bash32_findings=""
+    bash32_count=0
+    for f in $bash32_targets; do
+        # Strip comment lines and shebang before scanning. We feed the
+        # cleaned source to grep on stdin so the per-pattern check stays
+        # one expression each (mirrors the simpler check-exec-sh.sh style).
+        # The sed pipeline removes:
+        #   - leading-#-comment lines (with optional whitespace)
+        #   - inline `# ...` trailing comments after a real statement.
+        # Quoted-`#` inside strings is not perfectly preserved, but for
+        # this script (no `#` literals inside quoted forge tokens) the
+        # heuristic is good enough.
+        cleaned="$(sed -e 's/^[[:space:]]*#.*//' -e 's/[[:space:]]#[[:space:]].*//' "$f")"
+        # Heredoc: `<<EOF`, `<<'EOF'`, `<<-EOF`, `<<"EOF"`.
+        if printf '%s\n' "$cleaned" | grep -E '<<-?[[:space:]]*['"'"'"]?[A-Za-z_][A-Za-z_0-9]*['"'"'"]?' >/dev/null 2>&1; then
+            bash32_findings="${bash32_findings}
+$f: heredoc detected (forbidden under bash 3.2)"
+            bash32_count=$((bash32_count + 1))
+        fi
+        # Associative arrays.
+        if printf '%s\n' "$cleaned" | grep -E 'declare[[:space:]]+-A[[:space:]]' >/dev/null 2>&1; then
+            bash32_findings="${bash32_findings}
+$f: declare -A detected (associative arrays not in bash 3.2)"
+            bash32_count=$((bash32_count + 1))
+        fi
+        # Case-flip parameter expansion: `${var^^}` / `${var,,}`.
+        if printf '%s\n' "$cleaned" | grep -E '\$\{[A-Za-z_][A-Za-z_0-9]*[\^,]{1,2}\}' >/dev/null 2>&1; then
+            bash32_findings="${bash32_findings}
+$f: case-flip parameter expansion detected (\${var^^}/\${var,,} not in bash 3.2)"
+            bash32_count=$((bash32_count + 1))
+        fi
+        # mapfile / readarray.
+        if printf '%s\n' "$cleaned" | grep -E '\b(mapfile|readarray)\b' >/dev/null 2>&1; then
+            bash32_findings="${bash32_findings}
+$f: mapfile/readarray detected (not in bash 3.2)"
+            bash32_count=$((bash32_count + 1))
+        fi
+    done
+    if [ "$bash32_count" -eq 0 ]; then
+        pass "check-bash32: #321 scripts free of bash-4-only constructs"
+    else
+        fail "check-bash32: $bash32_count bash-4-only construct(s) in #321 scripts"
+        printf '%s\n' "$bash32_findings"
+    fi
+fi
+
 # --- CHANGELOG consistency (#218, #252) ---
 # Warn-only for feature PRs that touch any versioned component
 # (dev-apprenticeship/, federation-dashboard/) without updating its

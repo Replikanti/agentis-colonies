@@ -71,6 +71,32 @@ else
 fi
 rm -f /tmp/colony-lint-bash32-err.$$
 
+# --- Test 5: bash 3.2 parses #321 secret-set + secret-resolver scripts ---
+# Per the issue refinement: tools/secret-set.sh and tools/test-secret-resolver.sh
+# (added in #321 PR) MUST run on stock macOS /bin/bash (3.2). Keep both
+# under the same parser smoke check that already covers colony-lint.sh.
+SECRET_SCRIPTS="$SCRIPT_DIR/secret-set.sh $SCRIPT_DIR/test-secret-resolver.sh"
+for s in $SECRET_SCRIPTS; do
+    if [ ! -f "$s" ]; then
+        skip "$(basename "$s") not found (yet)"
+        continue
+    fi
+    if bash -n "$s" 2>/tmp/colony-lint-bash32-err.$$; then
+        pass "bash -n $(basename "$s")"
+    else
+        fail "bash -n $(basename "$s") failed: $(cat /tmp/colony-lint-bash32-err.$$)"
+    fi
+    rm -f /tmp/colony-lint-bash32-err.$$
+    if command -v bash-3.2 >/dev/null 2>&1; then
+        if bash-3.2 -n "$s" 2>/tmp/colony-lint-bash32-err.$$; then
+            pass "bash-3.2 -n $(basename "$s")"
+        else
+            fail "bash-3.2 -n $(basename "$s") failed: $(cat /tmp/colony-lint-bash32-err.$$)"
+        fi
+        rm -f /tmp/colony-lint-bash32-err.$$
+    fi
+done
+
 # --- Test 4: missing tomllib/tomli triggers [SKIP], no traceback (#272) ---
 # Skip when this script is invoked from inside colony-lint.sh — running
 # the lint again from here would recurse (lint discovers this test, runs

@@ -260,6 +260,40 @@ if [ "$WRITE_CREDS" -eq 1 ] && [ "$FORGE_TYPE" = "gitlab" ]; then
         "Must start with 'glpat-' followed by the token body." \
         --secret
 
+    # #321: optional vault hand-off. If the operator wants the token
+    # stored in libsecret / Keychain / pass instead of plaintext on
+    # disk, pipe it into tools/secret-set.sh and substitute the
+    # returned `secret://...` URI. Default is no — keeps the legacy
+    # behaviour for unattended installs that don't ship a vault.
+    REPO_ROOT_INSTALL="$(cd "$SCRIPT_DIR/.." && pwd)"
+    SECRET_SET="$REPO_ROOT_INSTALL/tools/secret-set.sh"
+    if [ -x "$SECRET_SET" ]; then
+        ask "Store this token in your OS vault (libsecret / Keychain / pass)? [y/N]:"
+        read -r STORE_VAULT
+        case "$STORE_VAULT" in
+            [Yy]|[Yy][Ee][Ss])
+                # Pipe the token to secret-set.sh on stdin; capture stdout
+                # (the URI) so we can substitute it for the plaintext value
+                # before writing colony.toml. Stderr stays on the operator's
+                # terminal so backend / failure messages are visible. The
+                # token NEVER appears on the secret-set.sh argv list.
+                set +e
+                STORED_URI=$(printf '%s\n' "$GITLAB_TOKEN" | "$SECRET_SET" \
+                    --service agentis-colonies \
+                    --account gitlab-token \
+                    --label "agentis-colonies gitlab token")
+                STORE_RC=$?
+                set -e
+                if [ "$STORE_RC" -eq 0 ] && [ -n "$STORED_URI" ]; then
+                    GITLAB_TOKEN="$STORED_URI"
+                    ok "GitLab token stored — colony.toml will reference $STORED_URI"
+                else
+                    fail "secret-set.sh exited $STORE_RC — keeping plaintext token"
+                fi
+                ;;
+        esac
+    fi
+
     # #104: operator GitLab username for personal/team knowledge
     # tagging. Optional — if left blank, agents tag everything as
     # "team" (pre-#104 behavior). The regex matches GitLab's username
@@ -340,6 +374,31 @@ if [ "$WRITE_CREDS" -eq 1 ] && [ "$FORGE_TYPE" = "github" ]; then
         '^(ghp_|github_pat_)[A-Za-z0-9_]+$' \
         "Must start with 'ghp_' or 'github_pat_' followed by the token body." \
         --secret
+
+    # #321: optional vault hand-off (mirrors the gitlab branch above).
+    REPO_ROOT_INSTALL="$(cd "$SCRIPT_DIR/.." && pwd)"
+    SECRET_SET="$REPO_ROOT_INSTALL/tools/secret-set.sh"
+    if [ -x "$SECRET_SET" ]; then
+        ask "Store this token in your OS vault (libsecret / Keychain / pass)? [y/N]:"
+        read -r STORE_VAULT
+        case "$STORE_VAULT" in
+            [Yy]|[Yy][Ee][Ss])
+                set +e
+                STORED_URI=$(printf '%s\n' "$GITHUB_TOKEN" | "$SECRET_SET" \
+                    --service agentis-colonies \
+                    --account github-token \
+                    --label "agentis-colonies github token")
+                STORE_RC=$?
+                set -e
+                if [ "$STORE_RC" -eq 0 ] && [ -n "$STORED_URI" ]; then
+                    GITHUB_TOKEN="$STORED_URI"
+                    ok "GitHub token stored — colony.toml will reference $STORED_URI"
+                else
+                    fail "secret-set.sh exited $STORE_RC — keeping plaintext token"
+                fi
+                ;;
+        esac
+    fi
 
     # Optional Enterprise override. github.com stays the default by
     # leaving GITHUB_URL empty (template ships commented out).

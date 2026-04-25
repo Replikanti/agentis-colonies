@@ -252,7 +252,38 @@ Your GitLab personal access token is stored in plaintext in 5 files:
 
 Rotate tokens periodically via GitLab (User Settings -> Access Tokens). Re-run `./install.sh` and answer `Y` to the "Update GitLab credentials" prompt — it accepts a new token without rewriting the colony templates.
 
-Out-of-scope (not implemented): integration with a system secret store (Secret Service, macOS Keychain, `pass`). If you need that today, replace `token = "..."` with a reference your shell evaluates before starting the federation.
+### Migrating to vault-stored tokens (#321)
+
+If you don't want a plaintext token on disk, the federation now understands `secret://` URIs in any `[forge.*]` `token` / `api_key` field. The token lives in your OS vault; `colony.toml` just carries a pointer.
+
+Three backends are supported:
+
+| Backend | URI shape | When |
+|---------|-----------|------|
+| `libsecret` (Linux GNOME-Keyring) | `secret://libsecret/<service>/<key>` | Linux desktop |
+| `keychain` (macOS) | `secret://keychain/<service>/<account>` | macOS |
+| `pass` (passwordstore.org) | `secret://pass/<path>` | cross-platform |
+| `env` (existing `${VAR}` idiom) | `secret://env/<VAR>` | unattended / CI |
+
+The `tools/secret-set.sh` helper auto-detects the backend, reads the token from stdin (no echo), writes it via the matching command, and prints the resulting URI on stdout:
+
+```bash
+# libsecret (Linux)
+echo "glpat-yourtoken" | tools/secret-set.sh --service agentis-colonies --account gitlab-token
+# → secret://libsecret/agentis-colonies/gitlab-token
+
+# keychain (macOS) — same invocation, autodetected
+echo "ghp_yourtoken" | tools/secret-set.sh --service agentis-colonies --account github-token
+# → secret://keychain/agentis-colonies/github-token
+
+# pass (cross-platform)
+echo "glpat-yourtoken" | tools/secret-set.sh --backend pass --service agentis-colonies --account gitlab-token
+# → secret://pass/agentis-colonies/gitlab-token
+```
+
+Paste the printed URI into each `colony.toml` in place of the plaintext token. `install.sh` will offer to do this for you on a fresh install — answer `y` when it asks "Store this token in your OS vault?".
+
+The plaintext path keeps working — vault use is opt-in. `tools/colony-lint.sh` warns when it spots a plaintext forge token; set `COLONY_LINT_STRICT_SECRETS=1` to upgrade the warning to a hard fail in CI.
 
 ## What to expect
 

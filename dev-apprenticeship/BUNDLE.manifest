@@ -25,6 +25,9 @@ dev-apprenticeship/
 
 # ----- Shared shell tooling required at runtime -----
 tools/parse-toml.sh
+tools/parse-toml-secret.py
+tools/secret-set.sh
+tools/secret-set.template.txt
 tools/kill-federation.sh
 tools/auto-promote.sh
 tools/auto-promote-config.yaml
