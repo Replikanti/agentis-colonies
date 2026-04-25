@@ -12,6 +12,13 @@
 
 set -euo pipefail
 
+# #272: Re-entrancy marker. Test 4 of `tools/test-colony-lint-bash32.sh`
+# (added in this PR) runs the lint with a stub-python3 PATH to verify the
+# new tomllib/tomli SKIP path. Without this marker, the lint would
+# discover that test, run it, and recurse forever (CI hits the 6h
+# ceiling). Tests can read this var to detect the nested run.
+export AGENTIS_COLONY_LINT_NESTED="${AGENTIS_COLONY_LINT_NESTED:-0}"
+
 REPO_ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 PASS=0
 FAIL=0
@@ -39,6 +46,16 @@ if [ ${#federations[@]} -eq 0 ]; then
     echo ""
     echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
     exit 1
+fi
+
+# --- Probe TOML parser availability (#272) ---
+# stdlib `tomllib` arrived in Python 3.11; macOS /usr/bin/python3 (3.9) lacks
+# both it and `tomli`. Probe once so per-colony TOML validation degrades to
+# one [SKIP] instead of N tracebacks.
+has_toml_parser=0
+if python3 -c 'import tomllib' 2>/dev/null \
+    || python3 -c 'import tomli' 2>/dev/null; then
+    has_toml_parser=1
 fi
 
 # --- Discover colonies within each federation ---
@@ -83,7 +100,9 @@ for fed in "${federations[@]}"; do
 
         # --- TOML validation ---
         config="$col_path/config/colony.example.toml"
-        if [ -f "$config" ]; then
+        if [ -f "$config" ] && [ "$has_toml_parser" = 0 ]; then
+            skip "$prefix: config check (no TOML parser; install tomli or use Python 3.11+)"
+        elif [ -f "$config" ]; then
             toml_errors=$(python3 -c "
 import sys
 try:
@@ -515,11 +534,14 @@ while IFS= read -r -d '' f; do
 done < <(find "$REPO_ROOT/tools" -name "test-*.sh" -print0 2>/dev/null)
 
 for t in "${test_scripts[@]}"; do
-    if bash "$t" &>/dev/null; then
+    # #272: Re-entrancy marker so test scripts that re-invoke
+    # colony-lint.sh (e.g. test-colony-lint-bash32.sh test 4) can
+    # detect the nested run and skip the recursive step.
+    if AGENTIS_COLONY_LINT_NESTED=1 bash "$t" &>/dev/null; then
         pass "tools: $(basename "$t") unit tests"
     else
         fail "tools: $(basename "$t") unit tests"
-        bash "$t" 2>&1 | tail -20
+        AGENTIS_COLONY_LINT_NESTED=1 bash "$t" 2>&1 | tail -20
     fi
 done
 
