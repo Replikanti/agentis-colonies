@@ -918,11 +918,13 @@ const sidecar = data.sidecar || {installed: false, enabled: false, interval_s: n
   const dayAgo = nowEpoch - 86400;
   let expDelta = null;
   if (Array.isArray(history) && history.length >= 2) {
-    const baseline = history.find(h => h.t >= dayAgo) || history[0];
-    const current = history[history.length - 1];
-    const bTotal = (baseline.experience && baseline.experience.total) || 0;
-    const cTotal = (current.experience && current.experience.total) || 0;
-    expDelta = cTotal - bTotal;
+    const baseline = history.find(h => h.t >= dayAgo);
+    if (baseline) {
+      const current = history[history.length - 1];
+      const bTotal = (baseline.experience && baseline.experience.total) || 0;
+      const cTotal = (current.experience && current.experience.total) || 0;
+      expDelta = cTotal - bTotal;
+    }
   }
   const confMoves = confChanges.filter(c => (c.t || 0) >= dayAgo).length;
   if (expDelta !== null || confMoves > 0) {
