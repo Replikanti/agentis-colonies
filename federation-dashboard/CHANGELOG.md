@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `tools/test-dashboard-fedpath.sh` no longer fails with `setsid: command
+  not found` on stock macOS (Darwin), which does not ship `util-linux`.
+  The three `setsid bash …` callsites that boot the dashboard for the
+  fixture (cwd-aware, no-cwd, and the Case D mock-`agentis` path) now
+  use a portable subshell-detach pattern (`( cd … && bash … >log 2>&1
+  < /dev/null ) &`) instead. Cleanup trap already falls back to bare
+  pid kills when the pgroup-kill fails, so the loss of the new session
+  leader is benign. Linux runs stay green
+  ([#273](https://github.com/Replikanti/agentis-colonies/issues/273)).
 - Auto-promote sidecar card no longer reports false-positive `DEGRADED — silent NNNNm (interval 30m)` for the first 30 min after federation restart. Collector now reads `.agentis/logs/auto-promote.sidecar_started_at` (stamped by `start-federation.sh` at sidecar spawn) and emits `sidecar.in_startup_grace=true` while `now - started_at < interval_s + 120s`; the template's `sidecarSilent` predicate gates DEGRADED on `!in_startup_grace`. Federations on the pre-#274 `start-federation.sh` produce no timestamp file and behave exactly as before ([#274](https://github.com/Replikanti/agentis-colonies/issues/274)).
 - Dashboard no longer renders every agent as `state=stopped` /
   `health=unknown` when the wrapper inherits a cwd outside the
