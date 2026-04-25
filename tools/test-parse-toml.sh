@@ -186,6 +186,24 @@ assert_eq "#226: parent planning.trigger_label unaffected" "needs-planning" "$(p
 assert_eq "#226: parent does not see sub-table key" "" "$(parse_toml planning incident)"
 assert_eq "#226: sub-table does not see parent key" "" "$(parse_toml planning.labels trigger_label)"
 
+# --- Test 13: #321 — plaintext passthrough still wins (regression) ---
+# After the secret-URI dispatch landed, every TOML value goes through
+# parse-toml-secret.py before reaching the caller. The passthrough path
+# (no `secret://` prefix) MUST stay byte-identical to the legacy heredoc.
+fixture "plaintext-321" '[forge.gitlab]
+token = "glpat-plain-passthrough-321"
+'
+assert_eq "#321: plaintext token passes through unchanged" "glpat-plain-passthrough-321" "$(parse_toml forge.gitlab token)"
+
+# --- Test 14: #321 — secret://env/<VAR> resolves to plaintext ---
+# Lightest backend to test in CI (no system vault required). Uses the
+# secret://env scheme which normalises the existing ${VAR} idiom.
+fixture "secret-env-321" '[forge.gitlab]
+token = "secret://env/AGENTIS_TEST_TOKEN_321"
+'
+AGENTIS_TEST_TOKEN_321="ghp_resolved_via_env" \
+    assert_eq "#321: secret://env resolves" "ghp_resolved_via_env" "$(AGENTIS_TEST_TOKEN_321=ghp_resolved_via_env parse_toml forge.gitlab token)"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

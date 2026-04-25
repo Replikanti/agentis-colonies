@@ -30,10 +30,13 @@ pass() { echo "[PASS] $1"; PASS=$((PASS + 1)); }
 fail() { echo "[FAIL] $1"; FAIL=$((FAIL + 1)); }
 
 # Simulate the federation layout under FAKE_ROOT with a copy of parse-toml.sh.
+# parse-toml-secret.py is the helper that parse-toml.sh now invokes (#321);
+# both must be co-located for the shell sourcing to work.
 FAKE_FED="$FAKE_ROOT/dev-apprenticeship"
 FAKE_TOOLS="$FAKE_ROOT/tools"
 mkdir -p "$FAKE_FED" "$FAKE_TOOLS"
 cp "$REPO_ROOT/tools/parse-toml.sh" "$FAKE_TOOLS/parse-toml.sh"
+cp "$REPO_ROOT/tools/parse-toml-secret.py" "$FAKE_TOOLS/parse-toml-secret.py"
 
 FAKE_BIN="$FAKE_ROOT/bin"
 mkdir -p "$FAKE_BIN"
