@@ -41,6 +41,16 @@ if [ ${#federations[@]} -eq 0 ]; then
     exit 1
 fi
 
+# --- Probe TOML parser availability (#272) ---
+# stdlib `tomllib` arrived in Python 3.11; macOS /usr/bin/python3 (3.9) lacks
+# both it and `tomli`. Probe once so per-colony TOML validation degrades to
+# one [SKIP] instead of N tracebacks.
+has_toml_parser=0
+if python3 -c 'import tomllib' 2>/dev/null \
+    || python3 -c 'import tomli' 2>/dev/null; then
+    has_toml_parser=1
+fi
+
 # --- Discover colonies within each federation ---
 # A colony is a subdirectory of a federation that has a config/ dir.
 for fed in "${federations[@]}"; do
@@ -83,7 +93,9 @@ for fed in "${federations[@]}"; do
 
         # --- TOML validation ---
         config="$col_path/config/colony.example.toml"
-        if [ -f "$config" ]; then
+        if [ -f "$config" ] && [ "$has_toml_parser" = 0 ]; then
+            skip "$prefix: config check (no TOML parser; install tomli or use Python 3.11+)"
+        elif [ -f "$config" ]; then
             toml_errors=$(python3 -c "
 import sys
 try:
