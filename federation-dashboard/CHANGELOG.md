@@ -32,6 +32,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pid kills when the pgroup-kill fails, so the loss of the new session
   leader is benign. Linux runs stay green
   ([#273](https://github.com/Replikanti/agentis-colonies/issues/273)).
+- Top-line "Agents Running" stat box no longer disagrees with per-agent
+  rendering when the daemon registry contains zombie rows (`state=running`
+  but the OS PID is gone). The summary counter previously read
+  `agents.filter(a => a.state === 'running')`, while every per-agent row
+  used `state === 'running' && pid > 0 && !pid_alive` to flag dead PIDs.
+  When the federation hit the zombie pattern, the top said `21/21
+  running` while every row below it rendered as DEAD. Collector now
+  emits a derived `is_running` field (`state == 'running' AND
+  pid_alive`) and the template's stats-row counter switches to
+  `agents.filter(a => a.is_running)`, so the summary agrees with the
+  effective per-agent state
+  ([#300](https://github.com/Replikanti/agentis-colonies/issues/300)).
 - Auto-promote sidecar card no longer reports false-positive `DEGRADED — silent NNNNm (interval 30m)` for the first 30 min after federation restart. Collector now reads `.agentis/logs/auto-promote.sidecar_started_at` (stamped by `start-federation.sh` at sidecar spawn) and emits `sidecar.in_startup_grace=true` while `now - started_at < interval_s + 120s`; the template's `sidecarSilent` predicate gates DEGRADED on `!in_startup_grace`. Federations on the pre-#274 `start-federation.sh` produce no timestamp file and behave exactly as before ([#274](https://github.com/Replikanti/agentis-colonies/issues/274)).
 - Dashboard no longer renders every agent as `state=stopped` /
   `health=unknown` when the wrapper inherits a cwd outside the

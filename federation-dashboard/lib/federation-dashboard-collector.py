@@ -87,6 +87,7 @@ for agent in all_agents:
         'confidence_written_at': None,
         'health': 'unknown', 'state': 'stopped',
         'pid': 0, 'pid_alive': False,
+        'is_running': False,
         'agent_id': '', 'started_at': 0, 'quarantine': '',
         'tick_ok': 0, 'tick_err': 0,
         'experience_count': 0, 'experience_rate': 0.0,
@@ -121,6 +122,16 @@ for agent in all_agents:
                 rec['pid_alive'] = True
             except OSError:
                 rec['pid_alive'] = False
+
+    # #300: derived "actually running" predicate. Registry state alone is
+    # not enough — a daemon's registry row stays state=running even after
+    # the OS has reaped its PID (zombie pattern). The dashboard summary
+    # must agree with per-agent rendering: a row with state=running but
+    # pid_alive=false is a dead/zombie agent and should NOT count as
+    # running. Per-agent table already reflects this (badge-dead);
+    # `is_running` extends the same effective-state semantics to the
+    # top-line "Agents Running" stat box.
+    rec['is_running'] = (rec['state'] == 'running' and rec['pid_alive'])
 
     # .ag description (first comment block) + confidence gate scan (#160)
     ag_path = os.path.join(fed_dir, colony, 'agents', agent + '.ag') if colony else ''
