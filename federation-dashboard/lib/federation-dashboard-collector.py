@@ -460,6 +460,88 @@ if decider and config and os.path.isfile(decider) and os.path.isfile(config):
     except (subprocess.SubprocessError, OSError):
         decisions = []
 
+# --- Promotion forecast (#276) ---
+# Project per-agent days-to-next-tier from the per-colony confidence series
+# already cached in history.json (the same series the Confidence Trend chart
+# renders). Linear regression on (t, conf) points → slope per second; for
+# each promote-path skip decision compute (next_tier - confidence) / slope.
+# All edge cases collapse to None: <3 history points, agent at autonomous,
+# flat/declining slope, colony missing from h.confidence (#143 skip-null),
+# unseeded confidence, or projected window > 30 days (clamped to 30 so the
+# template can render ">30d" instead of an unbounded number). Tier ladder
+# matches ADR-0001 normative tiers (0.4 → 0.6 → 0.8 → 0.95).
+hist_path = os.path.join(dash_dir, 'history.json')
+try:
+    with open(hist_path) as f:
+        hist_entries = json.load(f) or []
+except (OSError, json.JSONDecodeError, ValueError):
+    hist_entries = []
+colony_slopes = {}  # colony -> conf-per-second (None if not enough data)
+if isinstance(hist_entries, list) and len(hist_entries) >= 3:
+    cols = set()
+    for h in hist_entries:
+        if isinstance(h, dict) and isinstance(h.get('confidence'), dict):
+            cols.update(h['confidence'].keys())
+    for col in cols:
+        pts = []
+        for h in hist_entries:
+            if not isinstance(h, dict):
+                continue
+            cm = h.get('confidence') or {}
+            v = cm.get(col)
+            t = h.get('t')
+            if v is None or t is None:
+                continue
+            try:
+                pts.append((float(t), float(v)))
+            except (TypeError, ValueError):
+                continue
+        if len(pts) < 3:
+            continue
+        n = len(pts)
+        sx = sum(p[0] for p in pts)
+        sy = sum(p[1] for p in pts)
+        sxy = sum(p[0] * p[1] for p in pts)
+        sx2 = sum(p[0] * p[0] for p in pts)
+        denom = n * sx2 - sx * sx
+        if denom == 0:
+            continue
+        colony_slopes[col] = (n * sxy - sx * sy) / denom
+
+def _next_tier_target(conf):
+    # ADR-0001 ladder. Returns None for autonomous (top tier) or unseeded.
+    if conf is None:
+        return None
+    if conf < 0.6:
+        return 0.6
+    if conf < 0.8:
+        return 0.8
+    if conf < 0.95:
+        return 0.95
+    return None
+
+for d in decisions:
+    if not isinstance(d, dict):
+        continue
+    if d.get('decision') != 'skip':
+        continue
+    ev = d.get('evidence')
+    if not isinstance(ev, dict) or not ev.get('prereqs'):
+        continue
+    conf = ev.get('confidence')
+    target = _next_tier_target(conf)
+    slope = colony_slopes.get(d.get('colony', ''))
+    forecast_days = None
+    if target is not None and slope is not None and slope > 0:
+        delta = target - conf
+        if delta > 0:
+            days = (delta / slope) / 86400.0
+            if days >= 30:
+                forecast_days = 30.0
+            else:
+                forecast_days = round(days, 1)
+    ev['forecast_days_to_next_tier'] = forecast_days
+
 # --- Sidecar liveness (#248 PR B) ---
 # Surface auto-promote scheduler state so the dashboard can render a
 # HEALTHY / DEGRADED banner. Source of truth:
