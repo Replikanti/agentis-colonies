@@ -34,6 +34,7 @@ is asserted until multi-version CI is in place.
 - `install.sh` now sets `daemon.heartbeat_interval_ms = 900000` (3× the longest tick interval, 300 000 ms, per #146) so reactive code-review/release agents are no longer killed by the watchdog after their first tick; existing installs with the pre-fix `180000` literal are auto-upgraded in place (#280).
 - `install.sh` now seeds the `gitlab:me` memo from `$GITHUB_ME` on github-backed federations (previously only `$GITLAB_ME` was honored, leaving the three `recall_latest("gitlab:me")` consumers — labeler, prioritizer, style_reviewer — falling back to `team` tagging). Re-runs preserve operator-customized memos (#278).
 - `start-colony.sh --restart-agent <name>` now kills the pre-existing daemon (SIGTERM → 5s wait → SIGKILL) before spawning the new one; previous behaviour silently accumulated duplicate `agentis daemon-inner` processes across dashboard `/restart` and `/confidence`-triggered respawns (#285).
+- `tools/colony-lint.sh` no longer fails to parse on stock macOS bash 3.2 (`/bin/bash`). The inline `awk '...'` literal that extracted daemon flags from `start-colony.sh` is now sourced from `tools/colony-lint-flag-allowlist.awk` via `awk -f`, removing the multi-line single-quoted block that the bash 3.2 parser miscompiled near the case-statement at line 202. Same workaround pattern already applied to the `auto-promote.sh` family (#245) and the `federation-dashboard-*.py` family (#172). New smoke harness `tools/test-colony-lint-bash32.sh` enforces (#271).
 
 ### Security
 

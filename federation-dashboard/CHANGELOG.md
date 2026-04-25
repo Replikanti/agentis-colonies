@@ -34,6 +34,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   detaches the subprocess with `start_new_session=True` and returns 202
   Accepted; operator polls `agentis daemon list` for actual state
   ([#286](https://github.com/Replikanti/agentis-colonies/issues/286)).
+- `tools/colony-lint.sh` (the federation lint the dashboard's CI gate
+  depends on transitively) no longer fails to parse on stock macOS
+  bash 3.2 (`/bin/bash`). The inline `awk '...'` literal at line 179 is
+  now sourced from `tools/colony-lint-flag-allowlist.awk` via `awk -f`,
+  removing the multi-line single-quoted block that the bash 3.2 parser
+  miscompiled near the case-statement at line 202. Same workaround
+  pattern already applied to the `auto-promote.sh` family
+  ([#245](https://github.com/Replikanti/agentis-colonies/issues/245))
+  and the `federation-dashboard-*.py` family
+  ([#172](https://github.com/Replikanti/agentis-colonies/issues/172)).
+  New smoke harness `tools/test-colony-lint-bash32.sh` enforces
+  ([#271](https://github.com/Replikanti/agentis-colonies/issues/271)).
 
 ## [0.3.0] — 2026-04-24
 

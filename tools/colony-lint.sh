@@ -176,25 +176,7 @@ if errors:
         # If core adds a new daemon flag, add it here too.
         start_script="$col_path/scripts/start-colony.sh"
         if [ -f "$start_script" ]; then
-            bad_flags=$(awk '
-                /^[[:space:]]*#/ { next }
-                /^[[:space:]]*echo/ { next }
-                /agentis[[:space:]]+daemon/ { in_cmd=1 }
-                in_cmd {
-                    for (i=1; i<=NF; i++) {
-                        tok = $i
-                        sub(/\\$/, "", tok)
-                        if (tok == "&" || tok == "") continue
-                        if (tok ~ /^--[a-zA-Z][a-zA-Z-]*(=.*)?$/) {
-                            sub(/=.*/, "", tok)
-                            print tok
-                        } else if (tok ~ /^-[a-zA-Z]$/) {
-                            print tok
-                        }
-                    }
-                    if ($0 !~ /\\[[:space:]]*$/) { in_cmd = 0 }
-                }
-            ' "$start_script" | while read -r flag; do
+            bad_flags=$(awk -f "$REPO_ROOT/tools/colony-lint-flag-allowlist.awk" "$start_script" | while read -r flag; do
                 # Pattern is deliberately on one line: bash 3.2 (stock macOS)
                 # miscompiles backslash-newline inside case-pattern labels
                 # (#121). Keep all alternatives on a single line.
