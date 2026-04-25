@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Dashboard ships a full favicon set (ICO, multi-size PNG, Apple Touch icon,
+  Android Chrome 192/512) and a PWA `site.webmanifest` branded for Agentis
+  (`name="Agentis Federation Dashboard"`, `short_name="Agentis"`,
+  `theme_color`/`background_color="#0a0a0a"`). The wrapper copies
+  `assets/favicon/*` into `$DASH_DIR/` after `mkdir -p` so the static HTTP
+  server picks them up at `/favicon.ico`, `/favicon-32x32.png`,
+  `/apple-touch-icon.png`, `/android-chrome-{192,512}.png`, and
+  `/site.webmanifest`. The HTML template references all six via `<link>` tags
+  plus a `<meta name="theme-color">`. Browser tabs and installable PWA cards
+  now show the Agentis mark instead of the generic globe
+  ([#295](https://github.com/Replikanti/agentis-colonies/issues/295)).
+
 ### Fixed
 
 - `tools/test-dashboard-fedpath.sh` no longer fails with `setsid: command
