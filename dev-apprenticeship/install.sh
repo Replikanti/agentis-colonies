@@ -881,6 +881,150 @@ EOF
         ;;
 esac
 
+# --- 7.5. Cost cap sidecar (#318) ---
+#
+# Mode-aware hard daily/monthly LLM cost cap. tools/cost-cap.sh reads
+# the per-agent JSONL spend log (#311) and on breach either downgrades
+# every agent to llm.backend = mock or stops the federation. Operator
+# opt-in (default enabled = false). start-federation.sh reads this TOML
+# on startup and spawns the sidecar when enabled.
+
+echo ""
+echo "Cost cap (LLM budget guard, #318)"
+echo ""
+info "tools/cost-cap.sh reads <fed>/<colony>/.agentis/spend/*.jsonl and"
+info "evaluates against caps. Two modes:"
+info "  metered — per-token billing (Anthropic / OpenAI API). Sums cost_usd."
+info "  flat    — subscription / Ollama. Counts requests + slope detection."
+info "On breach, agents are restarted to llm.backend = mock (or the federation"
+info "is stopped) until UTC midnight / month boundary clears the cap."
+
+COST_CAP_INSTALL_FILE="$SCRIPT_DIR/.cost-cap.toml"
+
+ask "Enable cost cap? [y/N]:"
+read -r COST_CAP_ANSWER
+COST_CAP_ANSWER="${COST_CAP_ANSWER:-N}"
+
+case "$COST_CAP_ANSWER" in
+    [Yy]|[Yy][Ee][Ss])
+        ask "Mode [1] metered (per-token billing)  [2] flat (subscription / Ollama):"
+        read -r COST_CAP_MODE_CHOICE
+        case "$COST_CAP_MODE_CHOICE" in
+            2|flat|FLAT) COST_CAP_MODE="flat" ;;
+            *)           COST_CAP_MODE="metered" ;;
+        esac
+
+        COST_CAP_DAILY_USD="5.00"
+        COST_CAP_MONTHLY_USD="100.00"
+        COST_CAP_DAILY_REQ="1000"
+        COST_CAP_MONTHLY_REQ="20000"
+        COST_CAP_HOURLY_REQ="200"
+        COST_CAP_BREACH="downgrade"
+
+        if [ "$COST_CAP_MODE" = "metered" ]; then
+            ask "Daily USD limit [5.00]:"
+            read -r COST_CAP_DAILY_USD_IN
+            [ -n "$COST_CAP_DAILY_USD_IN" ] && COST_CAP_DAILY_USD="$COST_CAP_DAILY_USD_IN"
+            ask "Monthly USD limit [100.00]:"
+            read -r COST_CAP_MONTHLY_USD_IN
+            [ -n "$COST_CAP_MONTHLY_USD_IN" ] && COST_CAP_MONTHLY_USD="$COST_CAP_MONTHLY_USD_IN"
+        else
+            ask "Daily request limit [1000]:"
+            read -r COST_CAP_DAILY_REQ_IN
+            [ -n "$COST_CAP_DAILY_REQ_IN" ] && COST_CAP_DAILY_REQ="$COST_CAP_DAILY_REQ_IN"
+            ask "Monthly request limit [20000]:"
+            read -r COST_CAP_MONTHLY_REQ_IN
+            [ -n "$COST_CAP_MONTHLY_REQ_IN" ] && COST_CAP_MONTHLY_REQ="$COST_CAP_MONTHLY_REQ_IN"
+            ask "Hourly request limit [200]:"
+            read -r COST_CAP_HOURLY_REQ_IN
+            [ -n "$COST_CAP_HOURLY_REQ_IN" ] && COST_CAP_HOURLY_REQ="$COST_CAP_HOURLY_REQ_IN"
+        fi
+
+        ask "On breach [1] downgrade (switch agents to mock backend, default)  [2] stop (agentis daemon stop --all):"
+        read -r COST_CAP_BREACH_CHOICE
+        case "$COST_CAP_BREACH_CHOICE" in
+            2|stop|STOP) COST_CAP_BREACH="stop" ;;
+            *)           COST_CAP_BREACH="downgrade" ;;
+        esac
+
+        # Use python3 to write the TOML — keeps install.sh free of the
+        # nested-heredoc patterns that trip up bash 3.2.
+        python3 - "$COST_CAP_INSTALL_FILE" "$COST_CAP_MODE" \
+            "$COST_CAP_DAILY_USD" "$COST_CAP_MONTHLY_USD" \
+            "$COST_CAP_DAILY_REQ" "$COST_CAP_MONTHLY_REQ" "$COST_CAP_HOURLY_REQ" \
+            "$COST_CAP_BREACH" <<'PY'
+import sys
+path, mode, dusd, musd, dreq, mreq, hreq, breach = sys.argv[1:9]
+text = (
+    "# Cost cap settings (#318) — written by dev-apprenticeship/install.sh.\n"
+    "# Re-run install.sh to change values.\n"
+    "\n"
+    "[cost]\n"
+    "enabled = true\n"
+    'mode    = "' + mode + '"\n'
+    "warn_at_pct = 80\n"
+    "interval_s  = 60\n"
+    "\n"
+    "[cost.metered]\n"
+    "daily_usd_limit   = " + dusd + "\n"
+    "monthly_usd_limit = " + musd + "\n"
+    'on_breach         = "' + breach + '"\n'
+    "\n"
+    "[cost.flat]\n"
+    "daily_request_limit     = " + dreq + "\n"
+    "monthly_request_limit   = " + mreq + "\n"
+    "hourly_request_limit    = " + hreq + "\n"
+    "slope_window_min        = 60\n"
+    "slope_warn_multiplier   = 3.0\n"
+    "slope_breach_multiplier = 5.0\n"
+    'on_breach               = "' + breach + '"\n'
+)
+with open(path, 'w') as f:
+    f.write(text)
+PY
+        ok "Cost cap enabled (mode=$COST_CAP_MODE, on_breach=$COST_CAP_BREACH)"
+        info "Sidecar will tick every 60s once federation is up."
+        info "Log: .agentis/logs/cost-cap.log"
+        ;;
+    *)
+        # Disabled-by-default placeholder so the operator can flip enabled = true
+        # later without re-running install.sh.
+        if [ ! -f "$COST_CAP_INSTALL_FILE" ]; then
+            python3 - "$COST_CAP_INSTALL_FILE" <<'PY'
+import sys
+path = sys.argv[1]
+text = (
+    "# Cost cap settings (#318) — written by dev-apprenticeship/install.sh.\n"
+    "# Set enabled = true and re-run install.sh, or edit this file directly.\n"
+    "\n"
+    "[cost]\n"
+    "enabled = false\n"
+    'mode    = "metered"\n'
+    "warn_at_pct = 80\n"
+    "interval_s  = 60\n"
+    "\n"
+    "[cost.metered]\n"
+    "daily_usd_limit   = 5.00\n"
+    "monthly_usd_limit = 100.00\n"
+    'on_breach         = "downgrade"\n'
+    "\n"
+    "[cost.flat]\n"
+    "daily_request_limit     = 1000\n"
+    "monthly_request_limit   = 20000\n"
+    "hourly_request_limit    = 200\n"
+    "slope_window_min        = 60\n"
+    "slope_warn_multiplier   = 3.0\n"
+    "slope_breach_multiplier = 5.0\n"
+    'on_breach               = "downgrade"\n'
+)
+with open(path, 'w') as f:
+    f.write(text)
+PY
+        fi
+        ok "Cost cap disabled. Edit .cost-cap.toml and set enabled = true to enable later."
+        ;;
+esac
+
 # --- 8. Federation dashboard (separately-versioned standalone) ---
 #
 # The dashboard was extracted to its own component in #252. This step

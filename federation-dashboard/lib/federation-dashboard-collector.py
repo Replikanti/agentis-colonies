@@ -797,6 +797,131 @@ for rec in result:
     rec['cost_7d']    = bucket['week']  if bucket else 0.0
     rec['cost_30d']   = bucket['month'] if bucket else 0.0
 
+# --- Cost cap state (#318) ---
+# Read <fed>/.agentis/cost-cap-banner.json (warning/breach detail) +
+# <fed>/.agentis/cost-cap-state.json (state machine snapshot) and a
+# `installed` flag from <fed>/.cost-cap.toml. The dashboard tile shows
+# mode-aware progress bars (metered: $/cap, flat: requests + slope) and
+# a status pill (active|warning|downgraded|stopped). Sidecar liveness
+# follows the same #274 grace pattern as auto-promote.
+cost_cap = {
+    'installed': False,
+    'enabled': False,
+    'mode': 'metered',
+    'status': 'active',
+    'reasons': [],
+    'metrics': {},
+    'since_ts': None,
+    'period_day': '',
+    'period_month': '',
+    'log_path': None,
+    'last_tick_ts': None,
+    'started_at_ts': None,
+    'in_startup_grace': False,
+    'on_breach': None,
+}
+cost_cap_install = os.path.join(fed_dir, '.cost-cap.toml')
+cost_cap_interval = None
+if os.path.isfile(cost_cap_install):
+    cost_cap['installed'] = True
+    try:
+        section = None
+        with open(cost_cap_install) as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if line.startswith('[') and line.endswith(']'):
+                    section = line[1:-1].strip()
+                    continue
+                if section is None or '=' not in line:
+                    continue
+                k, _, v = line.partition('=')
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if section == 'cost':
+                    if k == 'enabled':
+                        cost_cap['enabled'] = (v.lower() == 'true')
+                    elif k == 'mode':
+                        cost_cap['mode'] = v or 'metered'
+                    elif k == 'interval_s':
+                        try:
+                            cost_cap_interval = int(v)
+                        except ValueError:
+                            pass
+    except OSError:
+        pass
+
+cost_cap_banner = os.path.join(fed_dir, '.agentis', 'cost-cap-banner.json')
+if os.path.isfile(cost_cap_banner):
+    try:
+        with open(cost_cap_banner) as f:
+            banner = json.load(f) or {}
+        cost_cap['status'] = banner.get('state') or cost_cap['status']
+        cost_cap['reasons'] = banner.get('reasons') or []
+        cost_cap['metrics'] = banner.get('metrics') or {}
+        cost_cap['since_ts'] = banner.get('since_ts')
+        cost_cap['period_day'] = banner.get('period_day') or ''
+        cost_cap['period_month'] = banner.get('period_month') or ''
+        cost_cap['on_breach'] = banner.get('on_breach')
+        if banner.get('mode'):
+            cost_cap['mode'] = banner['mode']
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass
+
+cost_cap_state = os.path.join(fed_dir, '.agentis', 'cost-cap-state.json')
+if os.path.isfile(cost_cap_state):
+    try:
+        with open(cost_cap_state) as f:
+            state = json.load(f) or {}
+        if not cost_cap['metrics']:
+            cost_cap['metrics'] = state.get('metrics') or {}
+        if state.get('status'):
+            cost_cap['status'] = state['status']
+        if state.get('mode'):
+            cost_cap['mode'] = state['mode']
+        if cost_cap['since_ts'] is None:
+            cost_cap['since_ts'] = state.get('since_ts')
+        if not cost_cap['period_day']:
+            cost_cap['period_day'] = state.get('period_day') or ''
+        if not cost_cap['period_month']:
+            cost_cap['period_month'] = state.get('period_month') or ''
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass
+
+cost_cap_log = os.path.join(fed_dir, '.agentis', 'logs', 'cost-cap.log')
+if os.path.isfile(cost_cap_log):
+    cost_cap['log_path'] = cost_cap_log
+    try:
+        cost_cap['last_tick_ts'] = int(os.path.getmtime(cost_cap_log))
+    except OSError:
+        pass
+
+cost_cap_started_at = os.path.join(fed_dir, '.agentis', 'logs',
+                                   'cost-cap.sidecar_started_at')
+if os.path.isfile(cost_cap_started_at):
+    try:
+        with open(cost_cap_started_at) as f:
+            cost_cap['started_at_ts'] = int(f.read().strip())
+    except (OSError, ValueError):
+        cost_cap['started_at_ts'] = None
+if (cost_cap['started_at_ts'] is not None and cost_cap_interval is not None
+        and cost_cap_interval > 0):
+    now_ts = int(time.time())
+    cost_cap['in_startup_grace'] = (
+        (now_ts - cost_cap['started_at_ts']) < (cost_cap_interval + 120)
+    )
+
+# Auto-detection warning: cost_source unknown rate above 50% suggests
+# operator should switch to flat mode. Surface in the JSON so the
+# dashboard tile can render a hint badge.
+m = cost_cap.get('metrics') or {}
+unknown = m.get('unknown_cost_pct')
+if isinstance(unknown, (int, float)) and unknown > 0.5 and cost_cap['mode'] == 'metered':
+    cost_cap['mode_mismatch_hint'] = True
+else:
+    cost_cap['mode_mismatch_hint'] = False
+
 output = {
     'agents': result,
     'experience_counts': colony_exp,
@@ -806,5 +931,6 @@ output = {
     'sidecar': sidecar,
     'forge_rate_limits': forge_rate_limits,
     'cost': cost,
+    'cost_cap': cost_cap,
 }
 print(json.dumps(output))

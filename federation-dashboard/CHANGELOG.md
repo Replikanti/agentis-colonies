@@ -29,6 +29,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `agentis-core::llm_cost`. Federations on agentis-core < 1.4.7 still
   render the tile; with no spend log present, every window reads $0.00
   ([#311](https://github.com/Replikanti/agentis-colonies/issues/311)).
+- Cost Cap tile + banner state, paired with the dev-apprenticeship `tools/cost-cap.sh` sidecar
+  ([#318](https://github.com/Replikanti/agentis-colonies/issues/318)). Collector reads
+  `<fed>/.agentis/cost-cap-banner.json` + `<fed>/.agentis/cost-cap-state.json` + the install file
+  `<fed>/.cost-cap.toml`, exposes a `cost_cap` block in `COLLECTOR_JSON` with status, mode,
+  per-cap progress percentages, slope multiplier (flat mode), and sidecar liveness fields.
+  HTML template renders a mode-aware tile (metered: `$X.XX / $5.00` daily + monthly bars; flat:
+  `234 / 1000 requests` daily/monthly/hourly bars + slope gauge with green/yellow/red bands)
+  and a status pill (`active | warning | downgraded | stopped`). The LLM Cost tile's status pill
+  (added in the previous bullet as a placeholder for #318) is now wired live to the cost-cap
+  sidecar's `status` field. The Federation Health Banner reuses its `.degraded` (warning) and
+  new `.stopped` (breach) states for cost-cap, and renders a `⛔ Cost cap` label when the sidecar
+  has tripped. New `POST /cost-cap/override` endpoint shells out to `tools/cost-cap.sh --override
+  <reason>` (returns 503 when no shared `tools/` is available, mirroring the `/kill` precedent).
+
 - Dashboard ships a full favicon set (ICO, multi-size PNG, Apple Touch icon,
   Android Chrome 192/512) and a PWA `site.webmanifest` branded for Agentis
   (`name="Agentis Federation Dashboard"`, `short_name="Agentis"`,

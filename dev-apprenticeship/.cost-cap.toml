@@ -1,0 +1,42 @@
+# Cost cap settings (#318).
+#
+# Mode-aware hard daily/monthly LLM cost cap. Read by tools/cost-cap.sh
+# (sidecar) and federation-dashboard-collector.py (banner). Default
+# enabled = false so an upgrade is a no-op until the operator opts in.
+#
+# Two modes:
+#   metered — per-token billing (Anthropic API, OpenAI API). Sums
+#             cost_usd from the spend log; breaches when daily/monthly
+#             $ caps exceeded.
+#   flat    — subscription / fixed-price (Claude Pro/Team, ChatGPT Plus,
+#             Ollama). Counts requests + monitors slope (current rate
+#             vs trailing 24h baseline) since cost_usd is meaningless
+#             on these plans.
+#   off     — sidecar block self-skips at start-federation.sh time.
+#
+# On breach the sidecar either downgrades agents to llm.backend = mock
+# (writing <fed>/.agentis/llm-backend-override and restarting each
+# agent through start-colony.sh --restart-agent) or stops the
+# federation entirely (agentis daemon stop --all). At UTC midnight /
+# month boundary the override is cleared and agents are restarted to
+# the real backend.
+
+[cost]
+enabled = false
+mode    = "metered"
+warn_at_pct = 80
+interval_s  = 60
+
+[cost.metered]
+daily_usd_limit   = 5.00
+monthly_usd_limit = 100.00
+on_breach         = "downgrade"
+
+[cost.flat]
+daily_request_limit     = 1000
+monthly_request_limit   = 20000
+hourly_request_limit    = 200
+slope_window_min        = 60
+slope_warn_multiplier   = 3.0
+slope_breach_multiplier = 5.0
+on_breach               = "downgrade"

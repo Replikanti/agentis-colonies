@@ -16,3 +16,7 @@ __pycache__/
 
 # Federation release bundles (produced by tools/make-federation-bundle.sh; #220)
 /dist/
+
+# Sidecar lock files (created next to the script via fcntl.flock; #245 / #318)
+tools/.auto-promote.lock
+tools/.cost-cap.lock

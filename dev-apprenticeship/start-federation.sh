@@ -170,8 +170,71 @@ if [ -f "$AUTO_PROMOTE_INSTALL_FILE" ]; then
                 ) &
                 AUTO_PROMOTE_PID=$!
                 # shellcheck disable=SC2064  # Expand PID at trap-install time, not at trigger time.
-                trap "[ -n \"$AUTO_PROMOTE_PID\" ] && kill \"$AUTO_PROMOTE_PID\" 2>/dev/null; exit" EXIT TERM INT
+                trap "[ -n \"$AUTO_PROMOTE_PID\" ] && kill \"$AUTO_PROMOTE_PID\" 2>/dev/null; [ -n \"\${COST_CAP_PID:-}\" ] && kill \"\$COST_CAP_PID\" 2>/dev/null; exit" EXIT TERM INT
                 echo "Auto-promote scheduler: PID $AUTO_PROMOTE_PID, every ${AP_INTERVAL}s (log: .agentis/logs/auto-promote.log)"
+                echo ""
+            fi
+        fi
+    fi
+fi
+
+# --- Cost-cap sidecar (#318) ---
+#
+# Reads .cost-cap.toml (written by install.sh §7.5) and, if enabled,
+# spawns a background loop that invokes tools/cost-cap.sh every
+# interval_s seconds. Mirrors the auto-promote sidecar shape: TOML
+# presence gate, self-terminate when the federation has zero running
+# daemons, EXIT/TERM/INT trap. Stamps cost-cap.sidecar_started_at for
+# the dashboard liveness check (#274 grace logic).
+COST_CAP_INSTALL_FILE="$FED_DIR/.cost-cap.toml"
+COST_CAP_PID=""
+CC_PARSE_TOML="$SCRIPT_DIR/../tools/parse-toml.sh"
+if [ -f "$COST_CAP_INSTALL_FILE" ]; then
+    if [ ! -r "$CC_PARSE_TOML" ]; then
+        echo "[!!] Cost-cap sidecar: tools/parse-toml.sh not readable, skipping."
+    else
+        CONFIG="$COST_CAP_INSTALL_FILE"
+        # shellcheck source=../tools/parse-toml.sh
+        source "$CC_PARSE_TOML"
+        CC_ENABLED_VAL="$(parse_toml cost enabled 2>/dev/null || true)"
+        CC_INTERVAL="$(parse_toml cost interval_s 2>/dev/null || true)"
+        case "$CC_INTERVAL" in
+            ''|*[!0-9]*) CC_INTERVAL=60 ;;
+            *) [ "$CC_INTERVAL" -gt 0 ] || CC_INTERVAL=60 ;;
+        esac
+        if [ "$CC_ENABLED_VAL" = "true" ]; then
+            CC_LOG_DIR="$FED_DIR/.agentis/logs"
+            CC_LOG="$CC_LOG_DIR/cost-cap.log"
+            mkdir -p "$CC_LOG_DIR"
+            CC_SCRIPT="$SCRIPT_DIR/../tools/cost-cap.sh"
+            CC_FED_NAME="$(basename "$FED_DIR")"
+            if [ ! -x "$CC_SCRIPT" ]; then
+                echo "[!!] Cost-cap sidecar: tools/cost-cap.sh not executable, skipping."
+            else
+                # Sidecar-start timestamp for the dashboard's startup grace
+                # window (#274 logic shared with auto-promote).
+                date +%s > "$CC_LOG_DIR/cost-cap.sidecar_started_at"
+                (
+                    # First action is a tick (not a sleep) so log activity
+                    # appears immediately after spawn.
+                    while :; do
+                        if ! agentis daemon list --json 2>/dev/null | grep -Fq '"state":"running"'; then
+                            printf '=== %s: no running daemons; sidecar exiting ===\n' \
+                                "$(date -Iseconds)" >> "$CC_LOG"
+                            exit 0
+                        fi
+                        {
+                            printf '=== %s: cost-cap tick ===\n' "$(date -Iseconds)"
+                            "$CC_SCRIPT" "$CC_FED_NAME" 2>&1 \
+                                || printf '[sidecar] cost-cap.sh exited %s\n' "$?"
+                        } >> "$CC_LOG"
+                        sleep "$CC_INTERVAL"
+                    done
+                ) &
+                COST_CAP_PID=$!
+                # shellcheck disable=SC2064
+                trap "[ -n \"\${AUTO_PROMOTE_PID:-}\" ] && kill \"\$AUTO_PROMOTE_PID\" 2>/dev/null; [ -n \"$COST_CAP_PID\" ] && kill \"$COST_CAP_PID\" 2>/dev/null; exit" EXIT TERM INT
+                echo "Cost-cap sidecar: PID $COST_CAP_PID, every ${CC_INTERVAL}s (log: .agentis/logs/cost-cap.log)"
                 echo ""
             fi
         fi
