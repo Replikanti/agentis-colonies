@@ -882,7 +882,13 @@ const sidecar = data.sidecar || {installed: false, enabled: false, interval_s: n
 // --- Stats Row ---
 (function() {
   const el = document.getElementById('stats-row');
-  const running = agents.filter(a => a.state === 'running').length;
+  // #300: count agents that are actually running, not just registered as
+  // running. `is_running` from the collector is `state === 'running' &&
+  // pid_alive` — matches the per-agent table's badge-dead detection so
+  // the top-line "Agents Running" stat agrees with what the rows below
+  // it show. Pre-#300 this was `a.state === 'running'`, which read "21/21
+  // running" while every per-agent row rendered as DEAD (zombie pattern).
+  const running = agents.filter(a => a.is_running).length;
   const totalExperience = experienceCounts.total || 0;
   let sum = 0, n = 0;
   agents.forEach(a => { if (a.confidence != null) { sum += a.confidence; n += 1; } });
