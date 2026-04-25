@@ -142,7 +142,7 @@ python3 "$COLLECTOR" \
     > "$COLLECTOR_OUT" 2>"$TMPDIR_TEST/collector.err"
 
 if [ ! -s "$COLLECTOR_OUT" ]; then
-    fail "1: collector produced empty output" "stderr: $(cat "$TMPDIR_TEST/collector.err" 2>/dev/null | head -3 | tr '\n' ' ')"
+    fail "1: collector produced empty output" "stderr: $(head -3 "$TMPDIR_TEST/collector.err" 2>/dev/null | tr '\n' ' ')"
     echo "Results: $PASS passed, $FAIL failed"
     exit 1
 fi
