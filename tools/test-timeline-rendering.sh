@@ -59,6 +59,8 @@ fi
 FED_DIR="$TMPDIR_TEST/fed"
 mkdir -p "$FED_DIR/.agentis/daemon" \
          "$TMPDIR_TEST/.agentis/logs" \
+         "$TMPDIR_TEST/.agentis/experience" \
+         "$TMPDIR_TEST/.agentis/spend" \
          "$FED_DIR/stub-colony/agents" \
          "$FED_DIR/stub-colony/config"
 
@@ -84,6 +86,19 @@ cat > "$TMPDIR_TEST/.agentis/logs/stub_agent.log" <<'LOG'
 [2026-04-15 13:23:58] error something failed
 corrupted line with no timestamp action draft
 LOG
+
+# #311 PR B: spend log fixture. Three rows in a now-anchored window so the
+# today/7d/30d aggregations are non-zero. The orphan agent_id (no daemon
+# registered) exercises the "no role mapping" path of collect_spend_log().
+NOW_MS_FIX="$(python3 -c 'import time; print(int(time.time()*1000))')"
+NOW_MS_T1=$((NOW_MS_FIX - 60000))
+NOW_MS_T2=$((NOW_MS_FIX - 120000))
+NOW_MS_T3=$((NOW_MS_FIX - 180000))
+cat > "$TMPDIR_TEST/.agentis/spend/aaaaaaaa.jsonl" <<SPEND
+{"v":1,"ts":$NOW_MS_T3,"agent":"aaaaaaaa","colony":"stub-colony","backend":"claude-cli","model":"claude-sonnet-4-20250514","input_tokens":100,"output_tokens":50,"cost_usd":0.0123,"cost_source":"native","cb":50,"instr_hash":"deadbeef","cached":false,"ok":true}
+{"v":1,"ts":$NOW_MS_T2,"agent":"aaaaaaaa","colony":"stub-colony","backend":"claude-cli","model":"claude-sonnet-4-20250514","input_tokens":200,"output_tokens":80,"cost_usd":0.0234,"cost_source":"native","cb":50,"instr_hash":"cafebabe","cached":false,"ok":true}
+{"v":1,"ts":$NOW_MS_T1,"agent":"aaaaaaaa","colony":"stub-colony","backend":"claude-cli","model":"claude-sonnet-4-20250514","input_tokens":150,"output_tokens":60,"cost_usd":0.0143,"cost_source":"native","cb":50,"instr_hash":"feedface","cached":false,"ok":true}
+SPEND
 
 # --- Pick a free port ---
 PORT="$(python3 -c "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); p=s.getsockname()[1]; s.close(); print(p)")"
@@ -664,6 +679,60 @@ then
     pass "25b: forecast algorithm — rising series projects ~3.7d (in [3.5, 4.5]); flat/declining → null (#276)"
 else
     fail "25b: forecast algorithm regression — see stderr above"
+fi
+
+# --- #311 PR B: LLM Cost tile structurally present + headline numbers ---
+# (a) Tile is wired in HTML (h2 + container div + JS renderer).
+# (b) `cost` block is emitted in COLLECTOR_JSON and headline values match
+#     the spend-log fixture above (sum of three rows = 0.0500).
+t26_ok=1
+if ! grep -q 'id="llm-cost"' "$HTML_FILE"; then echo "  missing #llm-cost container"; t26_ok=0; fi
+if ! grep -q '>LLM Cost</h2>' "$HTML_FILE"; then echo "  missing 'LLM Cost' h2"; t26_ok=0; fi
+if ! grep -q 'cost-headline' "$HTML_FILE"; then echo "  missing cost-headline class"; t26_ok=0; fi
+if [ "$t26_ok" -eq 1 ]; then
+    pass "26: LLM Cost tile structurally present (container, h2, headline class) (#311 PR B)"
+else
+    fail "26: LLM Cost tile missing one or more structural elements"
+fi
+
+# Cost block in COLLECTOR_JSON: parse the embedded JSON and assert the
+# windowed totals match the fixture sum (0.0123 + 0.0234 + 0.0143 = 0.0500).
+if python3 - "$HTML_FILE" <<'PY' 2>/dev/null
+import sys, re, json
+with open(sys.argv[1]) as f:
+    html = f.read()
+m = re.search(r'const data\s*=\s*(\{.*?\});\n', html, re.DOTALL)
+if not m: sys.exit(1)
+data = json.loads(m.group(1))
+cost = data.get('cost')
+if not isinstance(cost, dict):
+    sys.stderr.write('cost block missing\n'); sys.exit(2)
+fed = cost.get('federation') or {}
+# Allow tiny float rounding (round to 4 decimal places in collector).
+expected = 0.0500
+for k in ('today', 'week', 'month'):
+    v = fed.get(k)
+    if not isinstance(v, (int, float)):
+        sys.stderr.write('federation.%s not numeric: %r\n' % (k, v)); sys.exit(3)
+    if abs(v - expected) > 1e-3:
+        sys.stderr.write('federation.%s = %r, expected ~%r\n' % (k, v, expected)); sys.exit(4)
+# Sparkline arrays exist + correct length.
+if len(cost.get('sparkline_24h') or []) != 24: sys.exit(5)
+if len(cost.get('sparkline_30d') or []) != 30: sys.exit(6)
+# Currency + table_pin_date metadata exposed.
+if cost.get('currency') != 'USD': sys.exit(7)
+if not cost.get('table_pin_date'): sys.exit(8)
+# Per-agent injection: each agent record has cost_today / 7d / 30d fields
+# (always present, default 0.0 when no spend data for that agent).
+for a in data.get('agents', []):
+    for k in ('cost_today', 'cost_7d', 'cost_30d'):
+        if k not in a: sys.stderr.write('agent missing %s\n' % k); sys.exit(9)
+sys.exit(0)
+PY
+then
+    pass "27: cost block emitted with today/7d/30d ~= 0.0500, sparklines + per-agent fields (#311 PR B)"
+else
+    fail "27: cost block aggregations / per-agent injection regressed — see stderr above"
 fi
 
 echo ""

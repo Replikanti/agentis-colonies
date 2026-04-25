@@ -611,6 +611,192 @@ if started_at_ts is not None:
             (now_ts - started_at_ts) < (sidecar['interval_s'] + 120)
         )
 
+# --- LLM Cost telemetry (#311 PR B) ---
+# Reads the per-agent spend log written by agentis-core (#311 PR A, agentis
+# v1.4.7). Each row in <agentis_root>/spend/<agent_id>.jsonl is one prompt()
+# invocation; schema:
+#   {"v":1,"ts":<ms>,"agent":"<sha8>","colony":"<name>","backend":"...",
+#    "model":"...","input_tokens":N,"output_tokens":N,"cost_usd":F,
+#    "cost_source":"native|table|unknown","cb":N,"instr_hash":"<8hex>",
+#    "cached":bool,"ok":bool}
+# Spend dir lives alongside experience dir (both under .agentis/); we derive
+# its path from exp_dir to inherit the same fed-local-first resolution the
+# wrapper already performs.
+TABLE_PIN_DATE = '2026-04-01'
+
+def collect_spend_log(spend_dir, name_to_colony, id_to_role, epoch_s):
+    """Walk <spend_dir>/*.jsonl and aggregate cost into 3 windows + sparkline
+    buckets. Returns the `cost` block embedded in the collector JSON output.
+
+    Skips malformed rows silently (mirror existing collector tolerance).
+    Sparkline buckets: 24x1h (last 24 hours, oldest first) and 30x24h (last
+    30 days, oldest first). All cost values rounded to 4 decimal places to
+    keep the embedded JSON small.
+    """
+    today_start_ms = int(datetime.datetime.fromtimestamp(epoch_s)
+                         .replace(hour=0, minute=0, second=0, microsecond=0)
+                         .timestamp() * 1000)
+    week_start_ms  = (epoch_s - 7 * 86400) * 1000
+    month_start_ms = (epoch_s - 30 * 86400) * 1000
+    spark_24h_origin_ms = (epoch_s - 24 * 3600) * 1000
+    spark_30d_origin_ms = (epoch_s - 30 * 86400) * 1000
+
+    fed_total = {'today': 0.0, 'week': 0.0, 'month': 0.0}
+    by_colony = {}
+    by_agent  = {}
+    recent_by_agent = {}  # agent_id -> last 5 spend rows (most recent last)
+    spark_24h = [0.0] * 24
+    spark_30d = [0.0] * 30
+    newest_ts_ms = 0
+
+    if not os.path.isdir(spend_dir):
+        return {
+            'federation': fed_total,
+            'by_colony': by_colony,
+            'by_agent':  by_agent,
+            'recent_by_agent': recent_by_agent,
+            'sparkline_24h': spark_24h,
+            'sparkline_30d': spark_30d,
+            'currency': 'USD',
+            'stale_seconds': None,
+            'table_pin_date': TABLE_PIN_DATE,
+        }
+
+    try:
+        files = sorted(os.listdir(spend_dir))
+    except OSError:
+        files = []
+
+    for fn in files:
+        if not fn.endswith('.jsonl'):
+            continue
+        aid = fn[:-6]
+        # Resolve agent SHA-8 to its colony via the daemon mapping; the
+        # JSONL row also carries the colony, but the daemon mapping wins
+        # when both disagree (matches experience-table behaviour).
+        role = id_to_role.get(aid, '')
+        colony_from_map = name_to_colony.get(role, '')
+        path = os.path.join(spend_dir, fn)
+        # Bounded ring buffer of the last 5 valid rows for this agent. The
+        # JSONL writer in #311 PR A appends only — newest is always at EOF —
+        # but defensive sort by ts after the read keeps us safe against
+        # tooling that ever reorders.
+        agent_recent = []
+        try:
+            with open(path) as f:
+                for raw in f:
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        row = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(row, dict):
+                        continue
+                    cost = row.get('cost_usd')
+                    if not isinstance(cost, (int, float)):
+                        continue
+                    ts_ms = row.get('ts')
+                    if not isinstance(ts_ms, (int, float)) or ts_ms <= 0:
+                        continue
+                    ts_ms = int(ts_ms)
+                    if ts_ms > newest_ts_ms:
+                        newest_ts_ms = ts_ms
+                    cost = float(cost)
+                    colony = colony_from_map or row.get('colony') or ''
+                    agent_key = aid
+
+                    # Per-window aggregation
+                    if ts_ms >= today_start_ms:
+                        fed_total['today'] += cost
+                    if ts_ms >= week_start_ms:
+                        fed_total['week'] += cost
+                    if ts_ms >= month_start_ms:
+                        fed_total['month'] += cost
+
+                    if colony:
+                        cb = by_colony.setdefault(colony, {'today': 0.0, 'week': 0.0, 'month': 0.0})
+                        if ts_ms >= today_start_ms: cb['today'] += cost
+                        if ts_ms >= week_start_ms:  cb['week']  += cost
+                        if ts_ms >= month_start_ms: cb['month'] += cost
+
+                    ab = by_agent.setdefault(agent_key, {'today': 0.0, 'week': 0.0, 'month': 0.0})
+                    if ts_ms >= today_start_ms: ab['today'] += cost
+                    if ts_ms >= week_start_ms:  ab['week']  += cost
+                    if ts_ms >= month_start_ms: ab['month'] += cost
+
+                    # Sparkline bucketing (oldest-first, fixed-width)
+                    if ts_ms >= spark_24h_origin_ms:
+                        idx = int((ts_ms - spark_24h_origin_ms) // (3600 * 1000))
+                        if 0 <= idx < 24:
+                            spark_24h[idx] += cost
+                    if ts_ms >= spark_30d_origin_ms:
+                        idx = int((ts_ms - spark_30d_origin_ms) // (86400 * 1000))
+                        if 0 <= idx < 30:
+                            spark_30d[idx] += cost
+
+                    # Slim row for the modal-expansion table: only fields the
+                    # template renders. Keeps the embedded JSON small and
+                    # avoids passing through PII-shaped values (the schema in
+                    # #311 PR A is already PII-clean by construction).
+                    agent_recent.append({
+                        'ts': ts_ms,
+                        'backend': row.get('backend') or '',
+                        'model':   row.get('model')   or '',
+                        'input_tokens':  row.get('input_tokens')  or 0,
+                        'output_tokens': row.get('output_tokens') or 0,
+                        'cost_usd': round(cost, 6),
+                        'cost_source': row.get('cost_source') or 'unknown',
+                        'cached': bool(row.get('cached')),
+                        'ok': bool(row.get('ok', True)),
+                    })
+        except OSError:
+            continue
+        if agent_recent:
+            agent_recent.sort(key=lambda r: r['ts'])
+            recent_by_agent[aid] = agent_recent[-5:]
+
+    def _round(v):
+        return round(v, 4)
+    fed_total = {k: _round(v) for k, v in fed_total.items()}
+    by_colony = {c: {k: _round(v) for k, v in d.items()} for c, d in by_colony.items()}
+    by_agent  = {a: {k: _round(v) for k, v in d.items()} for a, d in by_agent.items()}
+    spark_24h = [_round(v) for v in spark_24h]
+    spark_30d = [_round(v) for v in spark_30d]
+
+    stale_seconds = None
+    if newest_ts_ms > 0:
+        stale_seconds = max(0, int(epoch_s - newest_ts_ms / 1000))
+
+    return {
+        'federation': fed_total,
+        'by_colony': by_colony,
+        'by_agent':  by_agent,
+        'recent_by_agent': recent_by_agent,
+        'sparkline_24h': spark_24h,
+        'sparkline_30d': spark_30d,
+        'currency': 'USD',
+        'stale_seconds': stale_seconds,
+        'table_pin_date': TABLE_PIN_DATE,
+    }
+
+# Spend dir is the sibling of exp_dir under <agentis_root>/. Inheriting the
+# resolved exp_dir avoids re-implementing the fed-local-first chain the
+# wrapper already encodes.
+spend_dir = os.path.join(os.path.dirname(exp_dir), 'spend') if exp_dir else ''
+cost = collect_spend_log(spend_dir, name_to_colony, id_to_role, epoch)
+
+# Inject per-agent cost windows into each agent record (mirrors the
+# experience_count placement above). The agent table can then expose a
+# "$ today" sortable column without requiring a second lookup at render time.
+for rec in result:
+    aid = rec.get('agent_id') or ''
+    bucket = cost['by_agent'].get(aid) if aid else None
+    rec['cost_today'] = bucket['today'] if bucket else 0.0
+    rec['cost_7d']    = bucket['week']  if bucket else 0.0
+    rec['cost_30d']   = bucket['month'] if bucket else 0.0
+
 output = {
     'agents': result,
     'experience_counts': colony_exp,
@@ -619,5 +805,6 @@ output = {
     'decisions': decisions,
     'sidecar': sidecar,
     'forge_rate_limits': forge_rate_limits,
+    'cost': cost,
 }
 print(json.dumps(output))
