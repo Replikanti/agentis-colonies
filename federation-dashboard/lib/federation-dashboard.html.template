@@ -437,6 +437,10 @@
   .prereq.ok { color: var(--green); opacity: 0.75; }
   .prereq.fail { color: var(--orange); }
   .prereq .mark { margin-right: 3px; }
+  /* #276: per-agent promotion forecast under the prereqs checklist */
+  .forecast { display: inline-block; margin: 4px 0 0 14px;
+              font-size: 10px; letter-spacing: 0.5px; color: var(--cyan);
+              opacity: 0.85; }
 
   /* --- Buttons --- */
   .refresh-btn {
@@ -1282,6 +1286,21 @@ renderAgentTable();
       if (ev.prereqs && ev.prereqs.length) {
         skippedHtml += '<div class="prereqs-row">' +
           ev.prereqs.map(p => renderPrereq(p)).join('') + '</div>';
+      }
+      // #276: per-agent promotion forecast. Collector enriches
+      // evidence.forecast_days_to_next_tier (number 0..30 or null) for
+      // promote-path skips with a positive per-colony confidence slope.
+      // Null = no badge; 30 = clamped (renders ">30d").
+      const fd = ev.forecast_days_to_next_tier;
+      if (fd != null && ev.confidence != null) {
+        const tgt = ev.confidence < 0.6 ? 0.6
+                  : ev.confidence < 0.8 ? 0.8
+                  : ev.confidence < 0.95 ? 0.95 : null;
+        if (tgt != null) {
+          const label = fd >= 30 ? '>30d to ' + tgt.toFixed(2)
+                                 : '~' + fd.toFixed(1) + 'd to ' + tgt.toFixed(2);
+          skippedHtml += '<span class="forecast">' + esc(label) + '</span>';
+        }
       }
       skippedCount++;
       return;

@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plus a `<meta name="theme-color">`. Browser tabs and installable PWA cards
   now show the Agentis mark instead of the generic globe
   ([#295](https://github.com/Replikanti/agentis-colonies/issues/295)).
+- Per-agent promotion forecast on Promote Candidates skipped rows. Linear
+  regression over `history.json` colony-confidence series projects
+  days-to-next-step; null/hidden when slope is flat, declining, or history
+  has fewer than 3 points
+  ([#276](https://github.com/Replikanti/agentis-colonies/issues/276)).
 
 ### Fixed
 

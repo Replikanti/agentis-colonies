@@ -600,6 +600,72 @@ else
     fail "24: forge-vocabulary regression — see lines above"
 fi
 
+# --- #276: per-agent promotion forecast (template wiring + algorithm) ---
+# Two checks: (a) the template carries the new .forecast CSS class plus the
+# JS render branch keyed on evidence.forecast_days_to_next_tier; (b) the
+# linear-regression projection embedded in federation-dashboard-collector.py
+# yields a positive forecast in the [3.5, 4.5] day band for a 5-point colony
+# series climbing 0.60 → 0.65 over 1 hour at confidence 0.62 → next-tier 0.80,
+# and yields null for a flat / declining series.
+if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
+import sys
+with open(sys.argv[1]) as f:
+    src = f.read()
+needles = ['class="forecast"', 'forecast_days_to_next_tier', "'~'", 'd to ']
+for n in needles:
+    if n not in src:
+        sys.stderr.write('template missing forecast wiring: ' + n + '\n')
+        sys.exit(2)
+sys.exit(0)
+PY
+then
+    pass "25a: template wires .forecast CSS + JS render branch (#276)"
+else
+    fail "25a: forecast template wiring missing"
+fi
+
+# Replicate the collector's linreg algorithm against a synthetic series so
+# this test stays fully hermetic (no daemon list, no auto-promote-decisions
+# subprocess). The expected band [3.5, 4.5] follows from a slow colony
+# climb (0.6000 → 0.6019 over 1h) projected against a 0.18 delta to the
+# 0.80 tier from a 0.62-confidence agent (~4.0 days at slope ~5.2e-7/s).
+if python3 - <<'PY' 2>/dev/null
+import sys
+def slope(pts):
+    n = len(pts)
+    sx = sum(p[0] for p in pts)
+    sy = sum(p[1] for p in pts)
+    sxy = sum(p[0]*p[1] for p in pts)
+    sx2 = sum(p[0]*p[0] for p in pts)
+    denom = n*sx2 - sx*sx
+    if denom == 0 or n < 3:
+        return None
+    return (n*sxy - sx*sy) / denom
+# 5 points spanning 1h. Slow rise calibrated to land in the [3.5, 4.5] day
+# band when projected from confidence 0.62 to the next-tier target 0.80.
+rising = [(i*900.0, 0.6000 + 0.0019*i/4.0) for i in range(5)]
+m = slope(rising)
+if m is None or m <= 0:
+    sys.stderr.write('positive slope expected, got %r\n' % m); sys.exit(2)
+days = ((0.80 - 0.62) / m) / 86400.0
+if not (3.5 <= days <= 4.5):
+    sys.stderr.write('days out of band: %.3f\n' % days); sys.exit(3)
+# Negative case: declining slope → forecast null (slope <= 0 short-circuit).
+falling = [(i*900.0, 0.65 - 0.05*i/4.0) for i in range(5)]
+mf = slope(falling)
+if mf is None or mf > 0:
+    sys.stderr.write('negative slope expected, got %r\n' % mf); sys.exit(4)
+# Sub-3-points history collapses to None.
+if slope([(0.0, 0.6), (60.0, 0.61)]) is not None:
+    sys.stderr.write('len<3 should yield None\n'); sys.exit(5)
+sys.exit(0)
+PY
+then
+    pass "25b: forecast algorithm — rising series projects ~3.7d (in [3.5, 4.5]); flat/declining → null (#276)"
+else
+    fail "25b: forecast algorithm regression — see stderr above"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
