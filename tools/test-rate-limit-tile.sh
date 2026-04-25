@@ -86,6 +86,10 @@ mkdir -p "$FED_DIR/$COLONY/scripts" \
 # Easier: copy the real one to <fed>/../tools/.
 mkdir -p "$TMPDIR_TEST/tools"
 cp "$REPO_ROOT/tools/parse-toml.sh" "$TMPDIR_TEST/tools/parse-toml.sh"
+# #321: parse-toml.sh now delegates secret:// resolution to the sibling
+# parse-toml-secret.py helper. Copy it alongside so the fixture's TOML
+# parse path stays self-contained.
+cp "$REPO_ROOT/tools/parse-toml-secret.py" "$TMPDIR_TEST/tools/parse-toml-secret.py"
 
 # Minimal colony.toml: must satisfy the gitlab-arm validation
 # (url + token + project all present).
