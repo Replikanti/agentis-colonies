@@ -60,16 +60,26 @@ done
 # tick. Wipe them before any child writes a fresh one. Safe because
 # the double-start guard above proved there is no live federation to
 # disrupt.
-FED_AGENTIS_DIR="$FED_DIR/.agentis/daemon"
-if [ -d "$FED_AGENTIS_DIR" ]; then
-    # *.pid / *.status / *.watchdog.pid go stale on the same axis as
-    # *.heartbeat — on wake they point at PIDs from the previous boot
-    # which may now belong to an unrelated process. Sweep them all.
-    rm -f "$FED_AGENTIS_DIR"/*.heartbeat \
-          "$FED_AGENTIS_DIR"/*.pid \
-          "$FED_AGENTIS_DIR"/*.status \
-          "$FED_AGENTIS_DIR"/*.watchdog.pid 2>/dev/null || true
-fi
+#
+# #302: the original wipe targeted "$FED_DIR/.agentis/daemon" which is
+# an empty placeholder dir created by install.sh §4. The actual agentis
+# registry lives at "$FED_DIR/../.agentis/daemon" (repo root); each
+# colony has a `.agentis` symlink pointing there. Daemons resolve their
+# agentis_root by walking up from cwd, so the heartbeat files always
+# materialise in the repo-root .agentis, never the federation-dir one.
+# Sweep both paths to cover legacy installs (real .agentis under fed)
+# AND the modern symlink layout (real .agentis at repo root).
+for candidate in "$FED_DIR/.agentis/daemon" "$FED_DIR/../.agentis/daemon"; do
+    if [ -d "$candidate" ]; then
+        # *.pid / *.status / *.watchdog.pid go stale on the same axis as
+        # *.heartbeat — on wake they point at PIDs from the previous boot
+        # which may now belong to an unrelated process. Sweep them all.
+        rm -f "$candidate"/*.heartbeat \
+              "$candidate"/*.pid \
+              "$candidate"/*.status \
+              "$candidate"/*.watchdog.pid 2>/dev/null || true
+    fi
+done
 
 # Start each colony
 TOTAL_AGENTS=0

@@ -15,6 +15,9 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Fixed
+- `start-federation.sh` heartbeat-wipe path now matches the actual agentis registry. The old wipe targeted `<fed-dir>/.agentis/daemon` (empty placeholder) but the real registry lives at `<fed-dir>/../.agentis/daemon` via the per-colony symlink layout — stale heartbeat files survived restarts and the watchdog killed every fresh child on its first poll iteration with `heartbeat stale (N ms > timeout)`. Both paths are now swept (#302).
+
 ### Added
 
 - New `[implementation].require_assignee` config knob (default `false`) gates whether `code_writer`'s action path also fires on labeled-but-unassigned issues or stays restricted to labeled+assigned. The `implementation/scripts/{gitlab,github}-api.sh` wrappers gain a matching `--include-unassigned` flag on `assigned-issues` and `assigned-issues-by-label-events`; `start-colony.sh` seeds `code_writer:require_assignee` from the TOML, and `code_writer.ag` appends the flag when the memo reads `"false"`. Unblocks the 13 downstream agents that listen for `implementation:code_draft` / `implementation:mr_ready` on repos where labeled issues are typically unassigned ([#291](https://github.com/Replikanti/agentis-colonies/issues/291)).
