@@ -57,9 +57,9 @@ free_port() {
 boot_dashboard() {
     local fed_dir="$1" port="$2" log_file="$3" cwd="${4:-}"
     if [ -n "$cwd" ]; then
-        ( cd "$cwd" && setsid bash "$DASHBOARD_SH" "$fed_dir" "$port" >"$log_file" 2>&1 ) &
+        ( cd "$cwd" && bash "$DASHBOARD_SH" "$fed_dir" "$port" >"$log_file" 2>&1 < /dev/null ) &
     else
-        setsid bash "$DASHBOARD_SH" "$fed_dir" "$port" >"$log_file" 2>&1 &
+        bash "$DASHBOARD_SH" "$fed_dir" "$port" >"$log_file" 2>&1 < /dev/null &
     fi
     local pid=$!
     DASH_PIDS="$DASH_PIDS $pid"
@@ -352,7 +352,7 @@ LOG_D="$TMPDIR_TEST/dashboard-D.log"
 # Boot wrapper from /tmp (cwd != FED_D) with the mock agentis on PATH.
 # boot_dashboard's cwd arg is honoured before exec, so the dashboard inherits
 # /tmp as cwd — exactly the systemd-run --user failure mode #288 reproduces.
-( cd /tmp && PATH="$MOCK_BIN_D:$PATH" setsid bash "$DASHBOARD_SH" "$FED_D" "$PORT_D" >"$LOG_D" 2>&1 ) &
+( cd /tmp && PATH="$MOCK_BIN_D:$PATH" bash "$DASHBOARD_SH" "$FED_D" "$PORT_D" >"$LOG_D" 2>&1 < /dev/null ) &
 DASH_PID_D=$!
 DASH_PIDS="$DASH_PIDS $DASH_PID_D"
 
