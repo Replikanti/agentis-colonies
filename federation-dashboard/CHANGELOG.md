@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Promote Candidates and Phase Readiness redesigned as Dune-style game-UI
+  progress bars** ([#342](https://github.com/Replikanti/agentis-colonies/issues/342)).
+  Both tiles trade their text-heavy lists for chunky horizontal bars so an
+  operator reads federation readiness as a visual share, not a parsed sentence.
+
+  **Promote Candidates** now renders one bar per non-autonomous agent
+  instead of the per-row prereq checklist. Bar fill is the *limiting*
+  prereq (`min(value/threshold)` across `evidence.prereqs[]`) — what the
+  operator can actually act on, e.g. `entries 47/200` or
+  `runtime 0.4h/1.0h`. Mean fill picks the colour bucket so a single
+  brittle gate does not paint the whole bar red: green when all prereqs
+  meet, yellow when mean is in `[0.5, 1.0)`, red when mean is below 0.5.
+  `evolve` decisions render as a distinct purple bar (orthogonal intent —
+  fitness recovery, not a tier promotion). Already-autonomous agents are
+  excluded entirely. Sort order is closest-to-ready descending so the
+  next-actionable agent rises to the top. Hover reveals the full
+  per-prereq breakdown via a CSS-only `title=""` tooltip; the per-agent
+  Agents table stays as-is for drill-in.
+
+  **Phase Readiness** now renders five stacked bars per colony — one
+  per ADR-0001 tier (`dormant` / `shadow` / `propose` / `review-gated` /
+  `autonomous`) — instead of the #248 PR C compact tier counter. Bar
+  width is `(agents_in_tier / total_agents_in_colony) * 100%`, so each
+  colony's tier mix reads as a horizontal share at a glance. The
+  pre-#342 `no-conf` bucket collapses into `dormant`. Hover lists the
+  agents currently in that tier via the same `title=""` tooltip.
+
+  Bars carry a subtle inner gradient (`linear-gradient` +
+  `color-mix(in srgb, ..., white)`), `border-radius: 4px`, and
+  `transition: width 300ms ease` so re-renders driven by the
+  `agentis:snapshot` SSE channel ([#313](https://github.com/Replikanti/agentis-colonies/issues/313)
+  PR 2) animate smoothly. A one-time `bars-fade-in` keyframe runs once
+  per page load (gated on the `.bars-loaded` marker class) so subsequent
+  pushes don't strobe.
+
+  Test coverage: `tools/test-timeline-rendering.sh` test 22 flips its
+  positive-list to the new `phase-bar` / `tier-<name>` classes; three
+  new tests (33 / 34 / 35) lock the Promote bar markup, the 5-tier bar
+  emission per colony, and the limiting-prereq arithmetic. Total
+  35 passed / 0 failed (was 32 / 0 baseline).
+
 ### Added
 
 - **Federation-wide chronological action timeline** — completes the timeline

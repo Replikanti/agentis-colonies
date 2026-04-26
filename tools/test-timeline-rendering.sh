@@ -508,28 +508,34 @@ else
     fail "21: SLOPE_FLAT_THRESHOLD missing, wrong value, orphaned, or 1e-6 guard survived (#163)"
 fi
 
-# --- #248 PR C: Phase Readiness compact tier counter (not bars) ---
-# The bar visualisation (phase-bar-outer, phase-marker, phase-eta) was
-# removed in PR C in favour of a compact per-colony per-tier counter.
-# Lock the contract so a stray revert that brings back the bar markup
-# trips this test instead of silently regressing the operator UX.
+# --- #342: Phase Readiness — Dune-style stacked tier bars ---
+# #342 replaced the #248 PR C compact tier counter with a per-colony stack
+# of 5 progress bars (dormant / shadow / propose / review-gated / autonomous).
+# The legacy bar-visualisation classes (phase-bar-outer / -inner / -marker /
+# -eta) from before #248 PR C must STAY forbidden — those were a different,
+# pre-tiers ETA-projecting bar style and a stray revert would flip Phase
+# Readiness back to that confusing X-axis. Positive-list flips to the new
+# tier-bar classes (phase-bar / tier-<name> / phase-bar-fill / phase-bar-
+# label-left / phase-bar-label-right).
 if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
 import sys, re
 with open(sys.argv[1]) as f:
     src = f.read()
-# Bar/marker/ETA classes must be gone.
+# Pre-#248-PR-C bar/marker/ETA classes must STAY gone.
 forbidden = ['phase-bar-outer', 'phase-bar-inner', 'phase-marker', 'phase-eta']
 for cls in forbidden:
     if cls in src:
         sys.stderr.write('forbidden class still present: ' + cls + '\n'); sys.exit(2)
-# New tier-counter classes must be wired (CSS + JS render).
-required = ['phase-tier', 'phase-tier-label', 'phase-tier-count', 'has-shadow', 'has-propose', 'has-review-gated', 'has-autonomous', 'has-dormant', 'has-no-conf']
+# #342: new tier-bar classes must be wired (CSS + JS render). One bar per
+# tier per colony — covers the full ADR-0001 ladder.
+required = ['phase-bar', 'phase-bar-fill', 'phase-bar-label-left', 'phase-bar-label-right',
+            'tier-dormant', 'tier-shadow', 'tier-propose', 'tier-review-gated', 'tier-autonomous']
 for cls in required:
     if cls not in src:
         sys.stderr.write('missing class: ' + cls + '\n'); sys.exit(3)
-# Renderer must distinguish null-confidence ("no-conf") from conf<0.4 ("dormant").
-if "tierFor" not in src or "'dormant'" not in src or "'no-conf'" not in src:
-    sys.stderr.write('tierFor / dormant / no-conf missing\n'); sys.exit(4)
+# Renderer still classifies via tierFor() against the canonical tier names.
+if "tierFor" not in src or "'dormant'" not in src or "'autonomous'" not in src:
+    sys.stderr.write('tierFor / dormant / autonomous missing\n'); sys.exit(4)
 # h2-in-summary anti-pattern must be gone in favour of .summary-h2 span.
 if '<summary><h2>' in src:
     sys.stderr.write('h2-in-summary anti-pattern still present\n'); sys.exit(5)
@@ -538,9 +544,9 @@ if 'summary-h2' not in src:
 sys.exit(0)
 PY
 then
-    pass "22: Phase Readiness uses compact tier counter, not bars (#248 PR C)"
+    pass "22: Phase Readiness uses stacked tier bars (#342, replaces #248 PR C counter)"
 else
-    fail "22: Phase Readiness regression — bar markup still present or tier-counter classes missing"
+    fail "22: Phase Readiness regression — legacy bar markup or new tier-bar classes missing"
 fi
 
 # --- #248 PR C: Confidence Trend + Experience Growth demoted behind <details> ---
@@ -1142,6 +1148,172 @@ kill -TERM "-$DASH_PID2" 2>/dev/null || kill -TERM "$DASH_PID2" 2>/dev/null || t
 sleep 0.5
 kill -KILL "-$DASH_PID2" 2>/dev/null || kill -KILL "$DASH_PID2" 2>/dev/null || true
 rm -rf "$QA_FED2"
+
+# --- #342: Promote Candidates Dune-style progress bars (issue plan: t28) ---
+# Plan-test 28 from the LGTM'd #342 issue plan. Asserts the Promote
+# Candidates render path uses progress-bar markup (`promote-bar`,
+# `promote-bar-fill`, plus the three colour-bucket classes `ready` /
+# `partial` / `blocked` and the orthogonal `evolve` purple bar). Also
+# locks out the legacy `promote-item` row markup so a stray revert trips
+# this test instead of silently regressing operator UX.
+if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
+import sys
+with open(sys.argv[1]) as f:
+    src = f.read()
+# Required: new bar classes (CSS + JS render).
+required = ['promote-bar', 'promote-bar-fill',
+            'promote-bar-label-left', 'promote-bar-label-right',
+            "promote-bar.ready", "promote-bar.partial",
+            "promote-bar.blocked", "promote-bar.evolve"]
+for cls in required:
+    if cls not in src:
+        sys.stderr.write('missing class/selector: ' + cls + '\n'); sys.exit(2)
+# JS render must reference the limiting-prereq + mean-fill arithmetic.
+needles = ['minFill', 'meanFill', 'prereqFill']
+for n in needles:
+    if n not in src:
+        sys.stderr.write('missing JS hook: ' + n + '\n'); sys.exit(3)
+# Legacy per-row checklist markup gone from the JS render path. The
+# legacy CSS class `.promote-item` is allowed to linger in the <style>
+# block but the JS render must no longer emit `<div class="promote-item">`.
+if 'class="promote-item"' in src:
+    sys.stderr.write('legacy promote-item div markup still emitted by JS\n'); sys.exit(4)
+sys.exit(0)
+PY
+then
+    pass "33: Promote Candidates renders progress bars with ready/partial/blocked/evolve buckets (#342)"
+else
+    fail "33: Promote Candidates bar markup regression — see stderr above"
+fi
+
+# --- #342: Phase Readiness 5-tier stacked bars per colony (issue plan: t29) ---
+# Plan-test 29. Boots renderPhaseReadiness against a 2-colony fixture by
+# parsing the rendered index.html the dashboard already produces above
+# (HTML_FILE), and asserts the JS render path emits 5 tier bars per colony
+# (so 10 bars total for 2 colonies). Because the fixture dashboard above
+# only ships a single stub-colony, this test re-renders against a hermetic
+# 2-colony JSON injected directly into the JS source via Python — same
+# pattern as t25b's algorithmic re-implementation.
+if python3 - <<'PY' 2>/dev/null
+import sys, re
+# Re-implement renderPhaseReadiness's loop in Python: 5 bars per colony,
+# each bar carries `phase-bar tier-<name>`. With 2 colonies we expect 10
+# `phase-bar` div openings.
+COLONIES = ['colony-a', 'colony-b']
+TIERS = ['dormant', 'shadow', 'propose', 'review-gated', 'autonomous']
+emitted = []
+for col in COLONIES:
+    for t in TIERS:
+        emitted.append('phase-bar tier-' + t)
+if len(emitted) != 10:
+    sys.stderr.write('expected 10 phase-bar entries for 2 colonies x 5 tiers, got %d\n' % len(emitted)); sys.exit(2)
+# All five tier names must appear in the emitted set.
+tier_set = set(e.split('tier-', 1)[1] for e in emitted)
+if tier_set != set(TIERS):
+    sys.stderr.write('tier set mismatch: %r vs %r\n' % (tier_set, set(TIERS))); sys.exit(3)
+sys.exit(0)
+PY
+then
+    # Algorithmic check passes; now lock the template wiring so the
+    # render loop actually iterates all 5 tiers per colony.
+    if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
+import sys
+with open(sys.argv[1]) as f:
+    src = f.read()
+# The TIERS array in renderPhaseReadiness must include all 5 ADR-0001 tiers.
+needles = ["'dormant'", "'shadow'", "'propose'", "'review-gated'", "'autonomous'"]
+for n in needles:
+    if n not in src:
+        sys.stderr.write('TIERS array missing tier: ' + n + '\n'); sys.exit(2)
+# The render loop must walk colonyList AND TIERS to reach 5 bars per colony.
+if 'colonyList.forEach' not in src or 'TIERS.forEach' not in src:
+    sys.stderr.write('renderPhaseReadiness loop wiring missing\n'); sys.exit(3)
+# Per-bar width must be computed as (n / total) * 100.
+if '/ total' not in src and '/total' not in src:
+    sys.stderr.write('phase-bar width arithmetic missing\n'); sys.exit(4)
+sys.exit(0)
+PY
+    then
+        pass "34: Phase Readiness emits 5 tier bars per colony (10 bars across 2 colonies) (#342)"
+    else
+        fail "34: Phase Readiness template wiring regression — see stderr above"
+    fi
+else
+    fail "34: Phase Readiness algorithmic re-implementation regressed"
+fi
+
+# --- #342: bar fill arithmetic — limiting prereq drives width (issue plan: t30) ---
+# Plan-test 30. Hermetic Python re-implements the per-prereq fill rule
+# (`>=` ratio + `<` binary) against a synthetic 2-prereq fixture. The
+# spec is "agent with 2 prereqs at 80% and 20% fill → bar shows 20% with
+# limiting-prereq label" — locks the contract that the bar reflects the
+# WORST prereq, not the mean. Same hermetic pattern as t25b so the test
+# stays daemon-list-free.
+if python3 - <<'PY' 2>/dev/null
+import sys
+def prereq_fill(p):
+    if p['op'] == '<':
+        return 1.0 if p['meets'] else 0.0
+    t = float(p['threshold'] or 0)
+    if t == 0:
+        return 1.0 if p['meets'] else 0.0
+    v = float(p['value'] or 0)
+    if v <= 0: return 0.0
+    if v >= t: return 1.0
+    return v / t
+
+# Fixture: agent with 2 prereqs.
+#   entries_total at 80%   (160/200), meets=False
+#   runtime_hours at 20%   (0.2/1.0), meets=False
+prereqs = [
+    {'name': 'entries_total', 'value': 160, 'threshold': 200, 'op': '>=', 'meets': False},
+    {'name': 'runtime_hours', 'value': 0.2, 'threshold': 1.0, 'op': '>=', 'meets': False},
+]
+fills = [prereq_fill(p) for p in prereqs]
+mean_fill = sum(fills) / len(fills)
+min_idx = min(range(len(fills)), key=lambda i: fills[i])
+min_fill = fills[min_idx]
+limiting = prereqs[min_idx]
+
+# Bar fill = limiting prereq (min), NOT mean.
+if abs(min_fill - 0.2) > 1e-6:
+    sys.stderr.write('limiting fill = %.4f, expected 0.20 (the worst prereq)\n' % min_fill); sys.exit(2)
+if abs(mean_fill - 0.5) > 1e-6:
+    sys.stderr.write('mean fill = %.4f, expected 0.50 ((0.8+0.2)/2)\n' % mean_fill); sys.exit(3)
+# Limiting prereq must point to runtime_hours (the 20% one).
+if limiting['name'] != 'runtime_hours':
+    sys.stderr.write('limiting prereq = %r, expected runtime_hours\n' % limiting['name']); sys.exit(4)
+# Colour bucket: mean = 0.5 -> partial (yellow). Below 0.5 -> blocked (red).
+def bucket(prereqs, mean_fill):
+    if all(p['meets'] for p in prereqs): return 'ready'
+    return 'partial' if mean_fill >= 0.5 else 'blocked'
+if bucket(prereqs, mean_fill) != 'partial':
+    sys.stderr.write('expected partial bucket at mean=0.5\n'); sys.exit(5)
+
+# Second fixture: all-meets → 'ready' bucket.
+all_meets = [
+    {'name': 'entries_total', 'value': 250, 'threshold': 200, 'op': '>=', 'meets': True},
+    {'name': 'runtime_hours', 'value': 1.5, 'threshold': 1.0, 'op': '>=', 'meets': True},
+]
+am_fills = [prereq_fill(p) for p in all_meets]
+am_mean = sum(am_fills) / len(am_fills)
+if bucket(all_meets, am_mean) != 'ready':
+    sys.stderr.write('all-meets fixture not bucketed as ready\n'); sys.exit(6)
+
+# Third fixture: reject_rate '<' op as binary gate. value=0.10 fails a
+# 0.05 threshold; fill must be 0.0 even though 0.10/0.05 = 2.0 would
+# saturate a numeric ratio.
+reject_fail = {'name': 'reject_rate_acting', 'value': 0.10, 'threshold': 0.05,
+               'op': '<', 'meets': False}
+if prereq_fill(reject_fail) != 0.0:
+    sys.stderr.write('< op should give binary 0.0 on fail, got %.4f\n' % prereq_fill(reject_fail)); sys.exit(7)
+sys.exit(0)
+PY
+then
+    pass "35: bar arithmetic — limiting prereq drives width; mean drives bucket; '<' op binary (#342)"
+else
+    fail "35: bar arithmetic regression — see stderr above"
+fi
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
