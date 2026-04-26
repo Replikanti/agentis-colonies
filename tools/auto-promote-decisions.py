@@ -332,10 +332,14 @@ def main():
             continue
 
         # --- Promote check ---
-        # Find applicable step for current confidence
+        # Find applicable step for current confidence by tier-range membership
+        # (ADR-0001: shadow [0.4,0.6), propose [0.6,0.8), review-gated [0.8,0.95)).
+        # Pre-#331 this used strict equality with step_from (within 0.001), which
+        # broke for any confidence not exactly seeded on a tier boundary — e.g.
+        # 0.61 from a typo at install matched no step and the agent was stuck.
         target_step = None
         for step_from, step_to, step_override in promote_steps:
-            if abs(confidence - step_from) < 0.001:
+            if step_from <= confidence < step_to:
                 target_step = (step_from, step_to, step_override)
                 break
 

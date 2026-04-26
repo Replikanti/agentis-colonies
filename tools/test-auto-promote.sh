@@ -479,6 +479,74 @@ else
     fail "prereqs structure" "got <$PREREQS_OK> from <$PREREQS_OUT>"
 fi
 
+# --- Test 15: tier-range step matcher (#331) ---
+# Pre-#331 the matcher used `abs(confidence - step_from) < 0.001`, which only
+# matched a confidence sitting exactly on a tier boundary (0.4 / 0.6 / 0.8).
+# Real federations end up with off-boundary confidences either via operator
+# typos at install (the live federation seeded 0.61) or via learn() nudges
+# moving the value by +/-0.005..0.02. The matcher now uses tier-range
+# membership (`step_from <= confidence < step_to`) aligned with ADR-0001.
+#
+# Each case below feeds a single-agent daemons fixture (using $$ as the pid
+# so the os.kill(pid, 0) liveness check passes) and asserts the resulting
+# decision matches expectation: either a skip with reason
+# "no applicable promote step" (below ladder / already autonomous) or a
+# step matched (the prereq fail path runs after target_step was identified;
+# the absence of the no-step reason is what we assert).
+
+# Helper: invoke decisions.py in --preview mode with a single-agent fixture.
+# Args: $1=confidence, $2=expected_outcome ("step:from-to" or "no_step").
+test_step_match() {
+    case_conf="$1"
+    case_expect="$2"
+    case_label="step matcher: confidence=$case_conf -> $case_expect (#331)"
+    case_fixture='[{"source":"/fake/x.ag","pid":'"$$"',"agent_id":"x","colony":"c","started_at":'"$(date +%s)"',"confidence":'"$case_conf"',"state":"running"}]'
+    if ! case_out=$(python3 "$SCRIPT_DIR/auto-promote-decisions.py" \
+            --preview --config "$SCRIPT_DIR/auto-promote-config.yaml" \
+            "$case_fixture" "$FED_DIR_FIXTURE" 2>&1); then
+        fail "$case_label" "decisions.py error: $case_out"
+        return
+    fi
+    case_check=$(python3 -c "
+import json, sys
+arr = json.loads(sys.argv[1])
+if len(arr) != 1:
+    print('arity:' + str(len(arr))); sys.exit(0)
+d = arr[0]
+expect = sys.argv[2]
+reason = d.get('reason', '')
+decision = d.get('decision', '')
+if expect == 'no_step':
+    if decision == 'skip' and reason.startswith('no applicable promote step'):
+        print('ok')
+    else:
+        print('expected no-step skip, got decision=' + decision + ' reason=' + reason)
+else:
+    if decision == 'skip' and reason.startswith('no applicable promote step'):
+        print('expected step ' + expect + ' to match, got no-step skip')
+    else:
+        ev = d.get('evidence', {})
+        pr = ev.get('prereqs')
+        if pr is None and decision != 'promote':
+            print('missing prereqs on skip and not a promote')
+        else:
+            print('ok')
+" "$case_out" "$case_expect" 2>&1 || true)
+    if [ "$case_check" = "ok" ]; then
+        pass "$case_label"
+    else
+        fail "$case_label" "$case_check"
+    fi
+}
+
+test_step_match "0.61" "step:0.6-0.8"
+test_step_match "0.4" "step:0.4-0.6"
+test_step_match "0.6" "step:0.6-0.8"
+test_step_match "0.8" "step:0.8-0.95"
+test_step_match "0.39" "no_step"
+test_step_match "0.95" "no_step"
+test_step_match "0.799" "step:0.6-0.8"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
