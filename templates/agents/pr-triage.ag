@@ -1,0 +1,219 @@
+// TEMPLATE: pr-triage — CODEOWNERS-style reviewer assignment for opened PRs | customization: [pr_triage].codeowners_file (memo key pr_triage:codeowners_file — defaults to ".github/CODEOWNERS"); recommended placement is a code-review-shaped colony with merge-requests + post-note + (for autonomous) update-mr / request-reviewers surface.
+//
+// pr-triage.ag — observes opened PRs on the configured forge, fetches
+// each PR's changed-files list, and matches the file paths against a
+// CODEOWNERS-style ruleset to derive a suggested-reviewer list. At the
+// review-gated tier the agent posts an `@-mention` comment; at the
+// autonomous tier it actually requests review via the forge API.
+//
+// Run as daemon: agentis daemon agents/pr-triage.ag --colony <colony>
+// Requires: exec_foreign capability, [forge] block configured (the colony's
+// scripts/start-colony.sh exports GITLAB_*/GITHUB_* env per ADR-0002), and
+// a forge-api.sh that supports `merge-requests --state opened --view raw`,
+// `mr-changes <iid> --view raw` (or equivalent), `post-note` (review-gated
+// surface), and `request-reviewers <iid> --reviewers <csv>` (autonomous —
+// operators wire that last one; the agent degrades gracefully into the
+// review-gated comment-only surface when the verb is unavailable).
+//
+// Customization knobs:
+//   [pr_triage].codeowners_file — operator-configurable path to the
+//     CODEOWNERS file inside the repo under review. Defaults to
+//     ".github/CODEOWNERS"; common alternatives are "CODEOWNERS" (root)
+//     and "docs/CODEOWNERS". Surface into the agent via
+//     `agentis memo set pr_triage:codeowners_file ".github/CODEOWNERS"`
+//     out of start-colony.sh; the agent reads it via
+//     `recall_latest("pr_triage:codeowners_file")` per tick.
+//
+// CODEOWNERS syntax: a line of the form
+//     <glob> <space-or-tabs> @user1 @user2 @org/team
+// Lines starting with `#` are comments. The agent uses a simplified
+// fnmatch-style glob (the same `**` / `*` / `?` semantics GitHub /
+// GitLab use, with last-match-wins precedence — which is the canonical
+// CODEOWNERS rule on both forges).
+//
+// Forge API surface used:
+//   forge-api.sh merge-requests --state opened --view raw
+//   forge-api.sh mr-changes <iid> --view raw          (per PR; changed files)
+//   forge-api.sh post-note <iid> --body <text>        (review-gated)
+//   forge-api.sh request-reviewers <iid> --reviewers @u1,@u2  (autonomous only)
+//
+// Memo gate: 5-minute reactive cadence via `pr_triage:last_check`.
+
+cb 100;
+
+type ReviewerSuggestion {
+    pr_iid: int,
+    pr_title: string,
+    changed_files: string,
+    suggested_reviewers: string,
+    matched_rules: string,
+    reasoning: string
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("pr_triage:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    };
+    return 0.0;
+}
+
+// Memo-gated cadence: bail if the last tick stamped less than 300s ago.
+// Reactive colonies tick at 300000ms anyway so this gate is a no-op
+// there; it doubles as a fail-safe for operators who configure a faster
+// tick interval. Time math in python3 to avoid GNU/BSD `date -d`
+// divergence (matches the `dependency-updater` / `security-scanner`
+// precedent from PR 2 of #322).
+fn should_run_now() -> int {
+    let last = recall_latest("pr_triage:last_check");
+    if len(last) == 0 {
+        return 1;
+    };
+    // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+    let cmd = "python3 -c 'import sys,datetime,time; ts=sys.argv[1]; t=datetime.datetime.strptime(ts.rstrip(\"Z\"), \"%Y-%m-%dT%H:%M:%S\").replace(tzinfo=datetime.timezone.utc).timestamp(); print(1 if (time.time() - t) >= 300 else 0)' " + shell_escape(last);
+    let raw = try { exec sh cmd; } catch e { "1"; };
+    return parse_int(raw);
+}
+
+fn tick(reason: string) -> void {
+    if should_run_now() == 0 {
+        return;
+    };
+
+    let raw = try {
+        exec sh "$COLONY_DIR/scripts/forge-api.sh merge-requests --state opened --view raw";
+    } catch e {
+        print("[pr_triage] forge poll (open MRs) failed:", e);
+        "";
+    };
+
+    if len(raw) < 3 {
+        let now_e0 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_e0) > 0 {
+            memo_write("pr_triage:last_check", now_e0);
+        };
+        return;
+    };
+
+    // Mechanical extraction first per CLAUDE.md
+    // `parse_int(to_string(json_get(...)))` idiom — saves a round-trip
+    // when the response array is empty.
+    let head_iid = parse_int(to_string(json_get(raw, "[0].iid")));
+    if head_iid == 0 {
+        let now_e1 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_e1) > 0 {
+            memo_write("pr_triage:last_check", now_e1);
+        };
+        return;
+    };
+
+    // Fetch the head PR's changed-files list. The agent batches one PR
+    // per tick to keep the CB budget bounded — operators with high PR
+    // throughput should configure a faster tick interval rather than
+    // scanning every open PR in a single tick (which would blow the
+    // cb 100 ceiling).
+    // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+    let changes_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-changes " + to_string(head_iid) + " --view raw";
+    let changes_raw = try { exec sh changes_cmd; } catch e {
+        print("[pr_triage] mr-changes fetch failed for iid", head_iid, ":", e);
+        "";
+    };
+
+    if len(changes_raw) < 3 {
+        let now_e2 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_e2) > 0 {
+            memo_write("pr_triage:last_check", now_e2);
+        };
+        return;
+    };
+
+    // Read the CODEOWNERS file. Path is operator-configurable; default
+    // is `.github/CODEOWNERS`. Read at exec time (not parse time) so
+    // operators can hot-edit the location without restarting the daemon.
+    let codeowners_path_raw = recall_latest("pr_triage:codeowners_file");
+    let codeowners_path = if len(codeowners_path_raw) == 0 {
+        ".github/CODEOWNERS";
+    } else {
+        codeowners_path_raw;
+    };
+    // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+    let cat_cmd = "cat \"$COLONY_DIR/../\"" + shell_escape(codeowners_path) + " 2>/dev/null || true";
+    let codeowners_raw = try { exec sh cat_cmd; } catch e { ""; };
+
+    let rec = recommend("pr_reviewer_suggestion", ["accuracy"]);
+    let context = "Open PR (head): " + raw + "\nChanged files: " + changes_raw + "\nCODEOWNERS contents (may be empty if not configured): " + codeowners_raw + "\nPast learning: " + to_string(rec);
+
+    let suggestion = prompt(
+        "You are a pr-triage agent emulating the CODEOWNERS reviewer-assignment heuristic. Examine the head open PR in the context: read its iid (pr_iid) and title (pr_title); collect its changed file paths into a comma-separated string (changed_files). Then, for each changed file, find the LAST matching glob in the CODEOWNERS contents (last-match-wins, the canonical CODEOWNERS rule on both GitHub and GitLab) and union the @-mentioned owners across all matched rules into a comma-separated suggested_reviewers list (e.g. '@alice,@bob,@org/security-team'; empty if no rule matched any changed file). Record which CODEOWNERS rules fired in matched_rules (one rule per line, '<glob> -> <owners>'). Provide a one-sentence reasoning. CODEOWNERS comment lines (starting with '#') and blank lines must be ignored. Glob semantics: '**' matches any path segment, '*' matches anything within a single segment, '?' matches one char. Return JSON: pr_iid (int), pr_title (string), changed_files (string), suggested_reviewers (string), matched_rules (string), reasoning (string).",
+        context
+    ) -> ReviewerSuggestion;
+
+    if len(suggestion.suggested_reviewers) == 0 {
+        // No CODEOWNERS rule matched (or no CODEOWNERS file present).
+        // Stamp the memo and bail — nothing to suggest.
+        let now_e3 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_e3) > 0 {
+            memo_write("pr_triage:last_check", now_e3);
+        };
+        learn("pr_reviewer_suggestion", "pr " + to_string(suggestion.pr_iid), "no-match", "partial", ["observed", "pr-triage"]);
+        return;
+    };
+
+    let my_tier = tier("pr_triage");
+    let suggest_body = "[pr-triage] **Suggested reviewers (CODEOWNERS):** " + suggestion.suggested_reviewers + "\n\n**Matched rules:**\n```\n" + suggestion.matched_rules + "\n```\n\n" + suggestion.reasoning;
+
+    if my_tier == "autonomous" {
+        // Terminal action: actually request review via the forge API. The
+        // request-reviewers verb is operator-wired (not all forge-api.sh
+        // shipped today implement it), so failure falls through to the
+        // review-gated `@-mention` comment surface — same precedent as
+        // dependency-updater's `merge` fall-back from PR 2 of #322.
+        // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+        let request_cmd = "$COLONY_DIR/scripts/forge-api.sh request-reviewers " + to_string(suggestion.pr_iid) + " --reviewers " + shell_escape(suggestion.suggested_reviewers);
+        let request_result = try { exec sh request_cmd; } catch e {
+            print("[pr_triage] request-reviewers failed (forge-api.sh may not implement it — falling back to comment):", e);
+            "";
+        };
+        if len(request_result) > 0 {
+            print("[pr_triage] Requested reviewers for PR", suggestion.pr_iid, ":", suggestion.suggested_reviewers);
+            emit("__COLONY_NAME__:reviewer_suggestion", suggestion);
+            learn("pr_reviewer_suggestion", "pr " + to_string(suggestion.pr_iid), "requested", "success", ["acted", "pr-triage"]);
+        } else {
+            // request-reviewers verb unavailable. Same surface as
+            // review-gated: post the @-mention comment instead.
+            // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+            let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(suggestion.pr_iid) + " --body " + shell_escape(suggest_body);
+            try { exec sh post_cmd; } catch e {
+                print("[pr_triage] failed to post suggestion (autonomous fall-back):", e);
+            };
+            emit("__COLONY_NAME__:reviewer_suggestion", suggestion);
+            learn("pr_reviewer_suggestion", "pr " + to_string(suggestion.pr_iid), "suggested-degraded", "partial", ["review-gated", "pr-triage"]);
+        };
+    } else if my_tier == "review-gated" {
+        // Post the @-mention comment. Non-terminal — the operator still
+        // has to formally request the review.
+        // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+        let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(suggestion.pr_iid) + " --body " + shell_escape(suggest_body);
+        try { exec sh post_cmd; } catch e {
+            print("[pr_triage] failed to post suggestion:", e);
+        };
+        emit("__COLONY_NAME__:reviewer_suggestion", suggestion);
+        learn("pr_reviewer_suggestion", "pr " + to_string(suggestion.pr_iid), "suggested", "partial", ["review-gated", "pr-triage"]);
+    } else if my_tier == "propose" {
+        // Bus-only emit. No comment posted.
+        emit("__COLONY_NAME__:reviewer_suggestion", suggestion);
+        print("[pr_triage] Drafted reviewer suggestion (propose) for PR", suggestion.pr_iid, ":", suggestion.suggested_reviewers);
+        learn("pr_reviewer_suggestion", "pr " + to_string(suggestion.pr_iid), "drafted", "partial", ["emitted", "pr-triage"]);
+    } else {
+        // shadow / dormant: observe-only. learn() outcome captures the
+        // proxy signal "would have suggested at least one reviewer" — the
+        // operator gets a real signal as confidence grows.
+        print("[pr_triage] Observing (tier:", my_tier, ") PR:", suggestion.pr_iid, "would-suggest:", suggestion.suggested_reviewers);
+        learn("pr_reviewer_suggestion", "pr " + to_string(suggestion.pr_iid), "observed", "partial", ["observed", "pr-triage"]);
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("pr_triage:last_check", now);
+    };
+}
