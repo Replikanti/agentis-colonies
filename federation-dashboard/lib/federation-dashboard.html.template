@@ -192,23 +192,15 @@
   .conf-indicator.evolve { color: var(--magenta); }
   .empty { color: var(--muted); font-style: italic; font-size: 11px; }
 
-  /* --- Phase Readiness (#248 PR C: compact tier counter, not bars) --- */
+  /* --- Phase Readiness header row (#342: stacked tier bars below) ---
+     Colony name + spacing for the per-colony stack underneath. The actual
+     bars live under .phase-stack / .phase-bar (defined later in this <style>
+     block alongside the Promote Candidates bars). */
   .phase-row {
-    display: flex; align-items: center; gap: 16px; padding: 6px 0;
-    font-size: 12px; border-bottom: 1px solid var(--border2);
+    display: flex; align-items: center; gap: 16px; padding: 4px 0 2px 0;
+    font-size: 12px;
   }
-  .phase-row:last-child { border-bottom: none; }
-  .phase-colony { width: 130px; flex-shrink: 0; color: var(--cyan); text-shadow: 0 0 6px rgba(0,255,255,0.2); }
-  .phase-tiers { display: flex; gap: 14px; flex-wrap: wrap; }
-  .phase-tier { color: var(--muted); }
-  .phase-tier-label { text-transform: uppercase; letter-spacing: 1px; font-size: 10px; margin-right: 4px; }
-  .phase-tier-count { font-weight: 400; }
-  .phase-tier.has-shadow .phase-tier-count { color: var(--cyan); }
-  .phase-tier.has-propose .phase-tier-count { color: var(--yellow); }
-  .phase-tier.has-review-gated .phase-tier-count { color: var(--orange); }
-  .phase-tier.has-autonomous .phase-tier-count { color: var(--green); }
-  .phase-tier.has-dormant .phase-tier-count { color: var(--red); }
-  .phase-tier.has-no-conf .phase-tier-count { color: var(--muted); }
+  .phase-colony { color: var(--cyan); text-shadow: 0 0 6px rgba(0,255,255,0.2); }
 
   /* --- Forge Rate Limits (federation-dashboard 0.3.0) --- */
   .rl-row {
@@ -523,6 +515,144 @@
   .forecast { display: inline-block; margin: 4px 0 0 14px;
               font-size: 10px; letter-spacing: 0.5px; color: var(--cyan);
               opacity: 0.85; }
+
+  /* --- Promote Candidates progress bars (#342) ---
+     One bar per non-autonomous, non-evolve agent. Bar fill = limiting-prereq
+     ratio (`min(value/threshold)` across `evidence.prereqs[]`); colour bucket
+     keyed off the MEAN of the same fills (so a single brittle gate does not
+     paint the whole bar red). Inline labels: agent name on the left,
+     limiting prereq formatted via `fmtPrereqVal` on the right. Hover
+     tooltip is the per-prereq breakdown via the native `title=""` attr —
+     CSS-only; no JS popover for v1. */
+  .promote-bar {
+    position: relative;
+    height: 22px;
+    margin: 6px 0;
+    background: var(--surface2);
+    border: 1px solid var(--border2);
+    border-radius: 4px;
+    overflow: hidden;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+  .promote-bar-fill {
+    position: absolute; top: 0; left: 0; bottom: 0;
+    border-radius: 4px 0 0 4px;
+    transition: width 300ms ease;
+    /* Inner gradient gives the bars the chunky game-UI feel; falls back
+       gracefully on browsers that ship without color-mix() support. */
+    background: var(--muted);
+  }
+  .promote-bar.ready .promote-bar-fill {
+    background: linear-gradient(to right,
+      var(--green),
+      color-mix(in srgb, var(--green) 70%, white));
+  }
+  .promote-bar.partial .promote-bar-fill {
+    background: linear-gradient(to right,
+      var(--yellow),
+      color-mix(in srgb, var(--yellow) 70%, white));
+  }
+  .promote-bar.blocked .promote-bar-fill {
+    background: linear-gradient(to right,
+      var(--red),
+      color-mix(in srgb, var(--red) 70%, white));
+  }
+  .promote-bar.evolve .promote-bar-fill {
+    background: linear-gradient(to right,
+      var(--magenta),
+      color-mix(in srgb, var(--magenta) 70%, white));
+  }
+  .promote-bar-label-left {
+    position: absolute; left: 8px; top: 50%; transform: translateY(-50%);
+    color: var(--text); text-shadow: 0 0 6px rgba(0,0,0,0.6);
+    z-index: 1; pointer-events: none;
+    max-width: 50%; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .promote-bar-label-right {
+    position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+    color: var(--muted); z-index: 1; pointer-events: none;
+    white-space: nowrap;
+  }
+  .promote-bars-empty { color: var(--muted); font-style: italic; font-size: 11px; }
+
+  /* --- Phase Readiness stacked tier bars (#342) ---
+     Per colony: 5 stacked bars (dormant / shadow / propose / review-gated /
+     autonomous). Bar width = `(agents_in_tier / total_agents_in_colony)*100%`.
+     Tier palette reuses existing CSS variables so bars + tier badges read
+     coherently. Labels: tier name on the left, `<count>/<total>` on the
+     right — inside the bar at width >= 30%, outside-right when emptier.
+     Hover tooltip lists the agents in that tier via the native `title=""`. */
+  .phase-stack {
+    display: flex; flex-direction: column; gap: 2px;
+    margin: 8px 0 14px 0;
+  }
+  .phase-stack:last-child { margin-bottom: 0; }
+  .phase-bar {
+    position: relative;
+    height: 18px;
+    background: var(--surface2);
+    border: 1px solid var(--border2);
+    border-radius: 4px;
+    overflow: hidden;
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.5px;
+  }
+  .phase-bar-fill {
+    position: absolute; top: 0; left: 0; bottom: 0;
+    border-radius: 4px 0 0 4px;
+    transition: width 300ms ease;
+  }
+  .phase-bar.tier-dormant .phase-bar-fill {
+    background: linear-gradient(to right,
+      #6b7280,
+      color-mix(in srgb, #6b7280 70%, white));
+  }
+  .phase-bar.tier-shadow .phase-bar-fill {
+    background: linear-gradient(to right,
+      #3b82f6,
+      color-mix(in srgb, #3b82f6 70%, white));
+  }
+  .phase-bar.tier-propose .phase-bar-fill {
+    background: linear-gradient(to right,
+      #06b6d4,
+      color-mix(in srgb, #06b6d4 70%, white));
+  }
+  .phase-bar.tier-review-gated .phase-bar-fill {
+    background: linear-gradient(to right,
+      #f59e0b,
+      color-mix(in srgb, #f59e0b 70%, white));
+  }
+  .phase-bar.tier-autonomous .phase-bar-fill {
+    background: linear-gradient(to right,
+      #22c55e,
+      color-mix(in srgb, #22c55e 70%, white));
+  }
+  .phase-bar-label-left {
+    position: absolute; left: 8px; top: 50%; transform: translateY(-50%);
+    color: var(--text); text-shadow: 0 0 6px rgba(0,0,0,0.6);
+    text-transform: uppercase; z-index: 1; pointer-events: none;
+    white-space: nowrap;
+  }
+  .phase-bar-label-right {
+    position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+    color: var(--muted); z-index: 1; pointer-events: none;
+    white-space: nowrap;
+  }
+
+  /* One-time fade-in on first render. Re-renders driven by the
+     `agentis:snapshot` SSE channel (#313 PR 2) only animate `width`
+     transitions; the fade-in keyframe is gated behind the `.bars-loaded`
+     marker class so it does not retrigger on every push. */
+  @keyframes bars-fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+  .bars-loaded {
+    animation: bars-fade-in 200ms ease-out 1;
+  }
 
   /* --- Buttons --- */
   .refresh-btn {
@@ -1294,24 +1424,28 @@ function doSort(col) {
   renderAgentTable(window.__data);
 }
 
-// --- Phase Readiness (#248 PR C: compact tier counter) ---
-// Per the operator feedback in #248: the old bar visualisation used colony-
-// average confidence (skewed by single autonomous outliers) and an opaque
-// X-axis. Operators wanted "how many agents in each tier per colony" --
-// same data the badges in the Agents table carry, but aggregated. Tier
-// classification matches ADR-0001 / agent-row badges: >=0.95 autonomous,
-// >=0.8 review-gated, >=0.6 propose, >=0.4 shadow, conf<0.4 dormant.
-// Null-confidence (memo missing) is the distinct "no-conf" bucket --
-// mirrors the table's separate badge-na vs badge-dormant rendering so an
-// operator who sees "no-conf:N" knows to scan the table for a "—" badge,
-// not a low-shadow-confidence one.
+// --- Phase Readiness (#342: Dune-style stacked tier bars) ---
+// Replaces the #248 PR C compact tier counter with a per-colony stack of
+// 5 progress bars (dormant / shadow / propose / review-gated / autonomous).
+// Bar width = (agents_in_tier / total_agents_in_colony) * 100%, so an
+// operator reads each colony's tier mix as a horizontal share at a glance.
+// The pre-#342 `no-conf` bucket from `tierFor()` collapses into `dormant`
+// (already styled identically); the dormant tooltip lists agents from
+// either source. Tier classification still matches ADR-0001 / agent-row
+// badges: >=0.95 autonomous, >=0.8 review-gated, >=0.6 propose,
+// >=0.4 shadow, conf<0.4 (or memo missing) dormant.
 function renderPhaseReadiness(data) {
   const el = document.getElementById('readiness');
   if (!el) return;
-  const TIERS = ['shadow', 'propose', 'review-gated', 'autonomous', 'dormant', 'no-conf'];
+  // Render order top→bottom, low to high tier. Every colony gets all five
+  // bars regardless of count so the operator can spot empties at a glance.
+  const TIERS = ['dormant', 'shadow', 'propose', 'review-gated', 'autonomous'];
 
   function tierFor(conf) {
-    if (conf == null) return 'no-conf';
+    // No-conf collapses into dormant for the bar view (same operator
+    // affordance: agent is below the seed floor, needs `install.sh` or
+    // a memo seed to climb out).
+    if (conf == null) return 'dormant';
     if (conf >= 0.95) return 'autonomous';
     if (conf >= 0.8) return 'review-gated';
     if (conf >= 0.6) return 'propose';
@@ -1319,34 +1453,47 @@ function renderPhaseReadiness(data) {
     return 'dormant';
   }
 
-  const counts = {};
+  // Bucket agents per (colony, tier) so the tooltip can list agent names
+  // without an O(N*5) re-scan inside the render loop.
+  const buckets = {};
   colonyList.forEach(col => {
-    counts[col] = { shadow: 0, propose: 0, 'review-gated': 0, autonomous: 0, dormant: 0, 'no-conf': 0 };
+    buckets[col] = { dormant: [], shadow: [], propose: [], 'review-gated': [], autonomous: [] };
   });
   agents.forEach(a => {
-    if (!counts[a.colony]) return;
-    counts[a.colony][tierFor(a.confidence)] += 1;
+    if (!buckets[a.colony]) return;
+    buckets[a.colony][tierFor(a.confidence)].push(a.name);
   });
 
   let html = '';
   colonyList.forEach(col => {
-    html += '<div class="phase-row"><span class="phase-colony">' + esc(col) + '</span>';
-    html += '<div class="phase-tiers">';
-    // Suppress every zero-count tier when at least one tier is non-zero.
-    // Falls back to "dormant: 0" for the all-zero / empty-colony case so
-    // the row never renders blank.
-    const nonZero = TIERS.some(t => counts[col][t] > 0);
+    const bk = buckets[col];
+    const total = TIERS.reduce((s, t) => s + bk[t].length, 0);
+    html += '<div class="phase-row"><span class="phase-colony">' + esc(col) + '</span></div>';
+    html += '<div class="phase-stack">';
     TIERS.forEach(t => {
-      const n = counts[col][t];
-      if (n === 0 && nonZero) return;
-      if (n === 0 && t !== 'dormant') return;
-      html += '<span class="phase-tier has-' + t + '">';
-      html += '<span class="phase-tier-label">' + t + ':</span>';
-      html += '<span class="phase-tier-count">' + n + '</span>';
-      html += '</span>';
+      const names = bk[t];
+      const n = names.length;
+      const pct = total > 0 ? (n / total) * 100 : 0;
+      // Inline-vs-outside label switch: count fits inside the fill at
+      // >=30% width, otherwise renders against the empty track on the
+      // right. Tier name always renders on the left of the bar.
+      const inside = pct >= 30;
+      const tip = n > 0
+        ? n + ' agent' + (n === 1 ? '' : 's') + ' in ' + t + ': ' + names.join(', ')
+        : 'no agents in ' + t;
+      html += '<div class="phase-bar tier-' + t + '" title="' + esc(tip) + '">';
+      html += '<div class="phase-bar-fill" style="width: ' + pct.toFixed(1) + '%"></div>';
+      html += '<span class="phase-bar-label-left">' + t + '</span>';
+      html += '<span class="phase-bar-label-right"' +
+        (inside ? ' style="color: #000; text-shadow: none;"' : '') +
+        '>' + n + '/' + total + '</span>';
+      html += '</div>';
     });
-    html += '</div></div>';
+    html += '</div>';
   });
+  // First-render fade-in (animation runs once per page load); subsequent
+  // SSE pushes only animate the per-bar `transition: width`.
+  if (!el.classList.contains('bars-loaded')) el.classList.add('bars-loaded');
   el.innerHTML = html;
 }
 
@@ -1609,39 +1756,44 @@ function renderCostCap(data) {
   el.innerHTML = html;
 }
 
-// --- Promote Candidates (#248: unified with auto-promote-decisions.py) ---
-// Rows are rendered verbatim from the scheduler's own verdicts. The
-// decisions[] array is populated by federation-dashboard-collector.py,
-// which invokes tools/auto-promote-decisions.py --preview each regen.
-// Same Python tools/auto-promote.sh uses: classifies rows by tag
-// (acting vs observe per #186), checks runtime, reject_rate, walks the
-// promote step ladder with per-step bootstrap override.
+// --- Promote Candidates (#342: Dune-style progress bars) ---
+// Replaces the per-row prereq-checklist (#248 PR B) with one horizontal
+// progress bar per non-autonomous agent. Rows are still rendered from the
+// scheduler's own verdicts (`decisions[]` — populated by
+// federation-dashboard-collector.py via tools/auto-promote-decisions.py
+// --preview), so the dashboard and the auto-promote sidecar always agree
+// on math. Tier-crossing feasibility (the old no-op-at-source guard) is
+// still checked client-side after the scheduler says "promote".
 //
-// Before #248 this block had its own fitness heuristic (success/total
-// across all rows, no runtime, no tag split) and silently disagreed
-// with the sidecar. One source of truth now.
+// Bar fill (the limiting prereq):
+//   width = min(value/threshold) across `evidence.prereqs[]`, clamped [0, 1]
+// — what the operator can actually act on. Mean fill drives ONLY the colour
+// bucket so a single brittle gate does not paint the whole bar red:
+//   green   = all prereqs meet (decision === 'promote' / feasible)
+//   yellow  = mean fill in [0.5, 1.0) with at least one fail
+//   red     = mean fill in [0,   0.5)
+//   purple  = decision === 'evolve' (orthogonal intent — fitness recovery,
+//             not a tier promotion)
+// Already-autonomous agents are excluded entirely (no further promote step).
 //
-// Tier-crossing feasibility (the old no-op-at-source guard) is still
-// checked client-side after the scheduler says "promote" — moving
-// across two confidence values that resolve to the same tier for this
-// agent's .ag source is observable-no-op regardless of the scheduler.
+// Hover tooltip (CSS-only `title=""`) carries the full per-prereq breakdown.
+// Skipped agents the scheduler does not classify on the promote path
+// (dead pid, unseeded confidence, no-op-at-source) collapse into a small
+// `<details>` underneath, preserving the #160 why-panel cross-reference.
 function renderPromoteCandidates(data) {
   const el = document.getElementById('promote-candidates');
   if (!el) return;
   // Preserve operator-expanded "Skipped candidates" disclosure across
-  // re-renders so a live SSE push doesn't collapse the panel mid-read.
+  // re-renders so a live SSE push (`agentis:snapshot`, #313 PR 2) doesn't
+  // collapse the panel mid-read.
   const prevSkipped = el.querySelector('details.skipped-section');
   const wasSkippedOpen = !!(prevSkipped && prevSkipped.open);
-  let actionableHtml = '';
+  const bars = [];
   let skippedHtml = '';
-  let actionableCount = 0;
   let skippedCount = 0;
 
-  // #248 PR B: one prereq badge. Shows fail lines verbose (value vs
-  // threshold) so the operator can see exactly how far below bar the
-  // agent is; pass lines stay compact. JS Number coercion drops trailing
-  // zeros (2.0 -> "2") so float-typed prereqs are formatted explicitly
-  // to preserve precision-of-intent — QA finding #5 on PR B.
+  // Format a prereq value with the decimal precision of intent — see
+  // PREREQ_DECIMALS rationale below.
   const PREREQ_DECIMALS = {
     runtime_hours: 1, reject_rate_acting: 4, delta_slope_acting: 6,
   };
@@ -1650,88 +1802,181 @@ function renderPromoteCandidates(data) {
     if (d != null && typeof v === 'number') return v.toFixed(d);
     return String(v);
   }
-  function renderPrereq(p) {
-    const cls = p.meets ? 'ok' : 'fail';
-    const mark = p.meets ? '✓' : '✗';
-    const label = p.meets
-      ? p.name
-      : p.name + ' ' + fmtPrereqVal(p.name, p.value) + ' ' + p.op + ' ' + fmtPrereqVal(p.name, p.threshold);
-    return '<span class="prereq ' + cls + '"><span class="mark">' +
-           mark + '</span>' + esc(label) + '</span>';
+  // Format the limiting prereq for the right-hand inline bar label.
+  // Picks the right unit per name so the operator reads the actionable
+  // signal without mental conversion: `entries 47/200`, `runtime 0.4h/1h`,
+  // `reject 12%/5%`, `slope 0.001/0.0005`.
+  function fmtBarRight(p) {
+    const v = p.value;
+    const t = p.threshold;
+    if (p.name === 'runtime_hours') {
+      return 'runtime ' + fmtPrereqVal(p.name, v) + 'h/' + fmtPrereqVal(p.name, t) + 'h';
+    }
+    if (p.name === 'reject_rate_acting') {
+      // reject_rate is a fraction in [0, 1]; render as % so a 5% threshold
+      // reads naturally. The op is `<`, but the operator just wants to
+      // know how close they are to bar.
+      return 'reject ' + (v * 100).toFixed(1) + '%/' + (t * 100).toFixed(1) + '%';
+    }
+    if (p.name === 'delta_slope_acting') {
+      return 'slope ' + fmtPrereqVal(p.name, v) + '/' + fmtPrereqVal(p.name, t);
+    }
+    if (p.name === 'entries_total') return 'entries ' + v + '/' + t;
+    if (p.name === 'entries_acting') return 'acting ' + v + '/' + t;
+    return p.name + ' ' + fmtPrereqVal(p.name, v) + '/' + fmtPrereqVal(p.name, t);
+  }
+  // Per-prereq fill ratio in [0, 1]. `>=` prereqs (entries / runtime /
+  // slope) project onto value/threshold; `<` prereqs (reject_rate) become
+  // a binary 1.0 if `meets`, 0.0 otherwise — quality gate, not a dial.
+  function prereqFill(p) {
+    if (p.op === '<') return p.meets ? 1.0 : 0.0;
+    const t = Number(p.threshold) || 0;
+    if (t === 0) return p.meets ? 1.0 : 0.0;
+    const v = Number(p.value) || 0;
+    if (v <= 0) return 0.0;
+    if (v >= t) return 1.0;
+    return v / t;
+  }
+  // Build the per-prereq tooltip — full breakdown (pass + fail lines) so
+  // the operator can hover for the whole story without expanding skipped.
+  function buildTooltip(prereqs) {
+    return prereqs.map(p => {
+      const mark = p.meets ? 'OK' : 'FAIL';
+      return p.name + ' ' + fmtPrereqVal(p.name, p.value) + ' ' + p.op + ' ' +
+             fmtPrereqVal(p.name, p.threshold) + ' [' + mark + ']';
+    }).join(' · ');
+  }
+  function truncate(name, max) {
+    if (name.length <= max) return name;
+    return name.slice(0, max - 1) + '…';
   }
 
   const agentByName = {};
   agents.forEach(a => { agentByName[a.name] = a; });
 
+  // The agent's runtime tier (used to exclude already-autonomous agents
+  // from the bar list — they have no further promote step).
+  function tierOfConf(c) {
+    if (c == null) return 'no-conf';
+    if (c >= 0.95) return 'autonomous';
+    if (c >= 0.8) return 'review-gated';
+    if (c >= 0.6) return 'propose';
+    if (c >= 0.4) return 'shadow';
+    return 'dormant';
+  }
+
   decisions.forEach(d => {
     const a = agentByName[d.agent];
     if (!a) return;
+    const ev = d.evidence || {};
 
     // Skip silently: no entries AND not running. Stats row already
     // surfaces these as inactive; listing them as "skipped" is just noise.
-    const ev = d.evidence || {};
     const evTotal = ev.entries_total || 0;
     if (evTotal === 0 && a.state !== 'running') return;
 
-    if (d.decision === 'skip' || d.decision === 'evolve') {
-      const label = d.decision === 'evolve' ? 'evolve recommended' : (d.reason || 'skipped');
+    // Already-autonomous agents have no promote step — exclude from bars.
+    if (tierOfConf(a.confidence) === 'autonomous') return;
+
+    // `evolve` decisions render as a distinct purple bar. The collector's
+    // evolve path does not attach prereqs[] (it is fitness-recovery, not a
+    // promote-prereq walk), so the bar is full purple and the right-hand
+    // label is the textual reason.
+    if (d.decision === 'evolve') {
+      const tip = (d.reason || 'evolve recommended');
+      bars.push({
+        agent: a.name, decision: 'evolve', meanFill: 1.0, minFill: 1.0,
+        cls: 'evolve', target: d.to,
+        rightLabel: 'evolve recommended', tooltip: tip,
+      });
+      return;
+    }
+
+    // For promote / promote-path skip: walk evidence.prereqs[]. Skip
+    // decisions WITHOUT prereqs[] (dead pid, unseeded conf — never on
+    // the promote path) collapse into the skipped <details> below.
+    if (d.decision !== 'promote' && d.decision !== 'skip') return;
+    if (!ev.prereqs || !ev.prereqs.length) {
+      // Promote-path skip without prereqs is unexpected; fall through to
+      // legacy skipped-row so the operator still sees the row.
       skippedHtml += '<div class="skipped-row"><span class="agent-name">' + esc(a.name) + '</span>';
-      skippedHtml += '<span>— ' + esc(label) + '</span></div>';
-      // #248 PR B: render structured prereqs checklist when the decider
-      // attached one (promote-path skips only — unseeded / dead-pid skips
-      // never reach the prereqs code path, so ev.prereqs stays undefined).
-      if (ev.prereqs && ev.prereqs.length) {
-        skippedHtml += '<div class="prereqs-row">' +
-          ev.prereqs.map(p => renderPrereq(p)).join('') + '</div>';
-      }
-      // #276: per-agent promotion forecast. Collector enriches
-      // evidence.forecast_days_to_next_tier (number 0..30 or null) for
-      // promote-path skips with a positive per-colony confidence slope.
-      // Null = no badge; 30 = clamped (renders ">30d").
-      const fd = ev.forecast_days_to_next_tier;
-      if (fd != null && ev.confidence != null) {
-        const tgt = ev.confidence < 0.6 ? 0.6
-                  : ev.confidence < 0.8 ? 0.8
-                  : ev.confidence < 0.95 ? 0.95 : null;
-        if (tgt != null) {
-          const label = fd >= 30 ? '>30d to ' + tgt.toFixed(2)
-                                 : '~' + fd.toFixed(1) + 'd to ' + tgt.toFixed(2);
-          skippedHtml += '<span class="forecast">' + esc(label) + '</span>';
-        }
-      }
+      skippedHtml += '<span>— ' + esc(d.reason || 'skipped') + '</span></div>';
       skippedCount++;
       return;
     }
 
-    if (d.decision !== 'promote') return;
-
-    const target = d.to;
-    const promoteGate = actionGate(a, 'promote', target);
-    if (!promoteGate.enabled) {
-      registerWhy(a.name, 'rec-promote', promoteGate);
-      skippedHtml += '<div class="skipped-row"><span class="agent-name">' + esc(a.name) + '</span>';
-      skippedHtml += '<span>— promote to ' + target.toFixed(2) + ' would be a no-op at this source</span>';
-      skippedHtml += '<span class="skipped-info" onclick="showWhy(\'' + esc(a.name) + '\',\'rec-promote\')">why?</span></div>';
-      skippedCount++;
-      return;
+    // Tier-crossing feasibility: a promote that resolves to the same tier
+    // for this agent's .ag source is observable-no-op. Surface that as a
+    // "why?" row, NOT a bar — the operator can't act on it from here.
+    if (d.decision === 'promote') {
+      const promoteGate = actionGate(a, 'promote', d.to);
+      if (!promoteGate.enabled) {
+        registerWhy(a.name, 'rec-promote', promoteGate);
+        skippedHtml += '<div class="skipped-row"><span class="agent-name">' + esc(a.name) + '</span>';
+        skippedHtml += '<span>— promote to ' + d.to.toFixed(2) + ' would be a no-op at this source</span>';
+        skippedHtml += '<span class="skipped-info" onclick="showWhy(\'' + esc(a.name) + '\',\'rec-promote\')">why?</span></div>';
+        skippedCount++;
+        return;
+      }
     }
 
-    actionableCount++;
-    const slopeVal = (ev.delta_slope_acting == null ? 0 : ev.delta_slope_acting);
-    const rejectVal = (ev.reject_rate_acting == null ? 0 : ev.reject_rate_acting);
-    actionableHtml += '<div class="promote-item"><span class="promote-check">✓</span>';
-    actionableHtml += '<span class="agent-name">' + esc(a.name) + '</span> ';
-    actionableHtml += (ev.entries_acting || 0) + ' acting, ';
-    actionableHtml += 'reject ' + (rejectVal * 100).toFixed(1) + '%, ';
-    actionableHtml += 'slope ' + (slopeVal >= 0 ? '+' : '') + slopeVal.toFixed(3);
-    if (a.confidence != null) actionableHtml += ', on ' + a.confidence.toFixed(2);
-    actionableHtml += ' <span class="promote-suggest">→ ' + target.toFixed(2) + '</span>';
-    actionableHtml += '</div>';
+    // Per-prereq fill ratios + the limiting prereq (`min`).
+    const fills = ev.prereqs.map(prereqFill);
+    const meanFill = fills.reduce((s, f) => s + f, 0) / fills.length;
+    let minIdx = 0;
+    for (let i = 1; i < fills.length; i++) {
+      if (fills[i] < fills[minIdx]) minIdx = i;
+    }
+    const minFill = fills[minIdx];
+    const limitingPrereq = ev.prereqs[minIdx];
+
+    // Colour bucket: `green` only when ALL prereqs meet (= decision is
+    // `promote`); else mean fill picks yellow (>= 0.5) vs red.
+    const allMeet = ev.prereqs.every(p => p.meets);
+    const cls = allMeet ? 'ready'
+              : (meanFill >= 0.5 ? 'partial' : 'blocked');
+
+    // #276: per-agent promotion forecast badge. Collector enriches
+    // evidence.forecast_days_to_next_tier (number 0..30 or null) for
+    // promote-path skips with a positive per-colony confidence slope.
+    // Null → no badge; 30 → clamped (renders as ">30d to <target>").
+    let forecastBadge = '';
+    const fd = ev.forecast_days_to_next_tier;
+    if (fd != null && ev.confidence != null) {
+      const tgt = ev.confidence < 0.6 ? 0.6
+                : ev.confidence < 0.8 ? 0.8
+                : ev.confidence < 0.95 ? 0.95 : null;
+      if (tgt != null) {
+        const fLabel = fd >= 30 ? '>30d to ' + tgt.toFixed(2)
+                                : '~' + fd.toFixed(1) + 'd to ' + tgt.toFixed(2);
+        forecastBadge = '<span class="forecast">' + esc(fLabel) + '</span>';
+      }
+    }
+
+    bars.push({
+      agent: a.name,
+      decision: d.decision,
+      meanFill: meanFill,
+      minFill: minFill,
+      cls: cls,
+      target: d.to,
+      rightLabel: fmtBarRight(limitingPrereq),
+      tooltip: buildTooltip(ev.prereqs),
+      forecastBadge: forecastBadge,
+    });
+  });
+
+  // Sort: closest-to-ready first (mean fill descending; ties broken by
+  // limiting prereq ascending so the next-actionable rises to the top).
+  bars.sort((x, y) => {
+    if (y.meanFill !== x.meanFill) return y.meanFill - x.meanFill;
+    return x.minFill - y.minFill;
   });
 
   // Agents the scheduler never saw (no daemon = no decision) but which
   // are running with an unseeded confidence still deserve a visible row
-  // so the operator knows those are waiting on install.sh / memo seed.
+  // in skipped so the operator knows those are waiting on install.sh
+  // / memo seed.
   const seen = new Set(decisions.map(d => d.agent));
   agents.forEach(a => {
     if (seen.has(a.name)) return;
@@ -1742,11 +1987,24 @@ function renderPromoteCandidates(data) {
     skippedCount++;
   });
 
+  // Render the bars. Bar fill width is the LIMITING prereq fill (`minFill`)
+  // — the operator's actionable signal. Colour bucket comes from `meanFill`.
   let html = '';
-  if (actionableCount === 0) {
-    html += '<span class="empty">No agents meet all the criteria right now — ready + feasible + beneficial.</span>';
+  if (bars.length === 0) {
+    html += '<span class="promote-bars-empty">No agents in flight to promote right now.</span>';
   } else {
-    html += actionableHtml;
+    bars.forEach(b => {
+      const pct = (b.minFill * 100).toFixed(1);
+      html += '<div class="promote-bar ' + b.cls + '" title="' + esc(b.tooltip) + '">';
+      html += '<div class="promote-bar-fill" style="width: ' + pct + '%"></div>';
+      html += '<span class="promote-bar-label-left">' + esc(truncate(b.agent, 20)) + '</span>';
+      html += '<span class="promote-bar-label-right">' + esc(b.rightLabel) + '</span>';
+      html += '</div>';
+      // #276 forecast badge (when collector has slope-projection data)
+      // renders below the bar so the operator reads "blocked at slope"
+      // alongside "~3.7d to 0.80".
+      if (b.forecastBadge) html += b.forecastBadge;
+    });
   }
   if (skippedCount > 0) {
     const openAttr = wasSkippedOpen ? ' open' : '';
@@ -1754,6 +2012,9 @@ function renderPromoteCandidates(data) {
     html += skippedHtml;
     html += '</details>';
   }
+  // First-render fade-in (gated on `.bars-loaded` so it only fires once
+  // per page load, not on every snapshot push).
+  if (!el.classList.contains('bars-loaded')) el.classList.add('bars-loaded');
   el.innerHTML = html;
 }
 
