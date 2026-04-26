@@ -84,7 +84,9 @@ if command -v pgrep >/dev/null 2>&1; then
     PIDS="$(pgrep -f "$SIDECAR_BIN" 2>/dev/null || true)"
     if [ -n "$PIDS" ]; then
         for pid in $PIDS; do
-            kill -TERM "$pid" 2>/dev/null && KILLED=$((KILLED + 1)) || true
+            if kill -TERM "$pid" 2>/dev/null; then
+                KILLED=$((KILLED + 1))
+            fi
         done
         # Wait up to 5s for graceful exit, then SIGKILL holdouts.
         sleep 1
