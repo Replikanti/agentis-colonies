@@ -482,11 +482,9 @@ def _serve_timeline(handler):
                     if kind_filter and row.get('kind', '') not in kind_filter:
                         continue
                     rows.append(row)
-                    if len(rows) > limit:
-                        # Defer trim until end so we keep the absolute-newest
-                        # `limit` rows (file is already ts-desc; this is just
-                        # belt-and-braces against an unsorted producer).
-                        pass
+                    # No early-trim — sort + slice happens once after the loop
+                    # below so we always keep the absolute-newest `limit` rows
+                    # even when the producer wrote out of order.
         except OSError as e:
             handler.send_response(500)
             handler.send_header('Content-Type', 'application/json')

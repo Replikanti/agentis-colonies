@@ -1081,10 +1081,11 @@ for rec in result:
     meta = aid_to_meta.get(aid, {'agent_name': rec.get('name', ''),
                                  'colony': rec.get('colony', '')})
     # Re-read just enough to build a per-agent row stream WITHOUT the
-    # 50-row per-agent cap. The four source-bucketing reads above already
-    # touched experience + spend + lifecycle + confidence-log exactly once
-    # apiece across all agents, so this re-read pulls from in-memory state
-    # only.
+    # 50-row per-agent cap. Spend / experience JSONLs are re-opened here
+    # (one short pass per agent — bounded by the spend / experience file
+    # size, NOT by total federation history); lifecycle + confidence-log
+    # are pulled from the buckets the four source-bucketing reads above
+    # already filled in memory, so they're free at this point.
     exp_for_agent = []
     if exp_dir and os.path.isdir(exp_dir):
         ep = os.path.join(exp_dir, aid + '.jsonl')
