@@ -648,6 +648,13 @@ def collect_spend_log(spend_dir, name_to_colony, id_to_role, epoch_s):
     spark_24h = [0.0] * 24
     spark_30d = [0.0] * 30
     newest_ts_ms = 0
+    # #352: token aggregation for the new Cost tab's "LLM Tokens" section.
+    # Federation-wide + per-agent input/output token counts, same windows
+    # as the dollar aggregation above. Cheap (one extra read per row that
+    # we already touched for the cost aggregation).
+    fed_tokens = {'input_today': 0, 'input_7d': 0, 'input_30d': 0,
+                  'output_today': 0, 'output_7d': 0, 'output_30d': 0}
+    tokens_by_agent = {}
 
     if not os.path.isdir(spend_dir):
         return {
@@ -660,6 +667,9 @@ def collect_spend_log(spend_dir, name_to_colony, id_to_role, epoch_s):
             'currency': 'USD',
             'stale_seconds': None,
             'table_pin_date': TABLE_PIN_DATE,
+            # #352: token totals for the Cost tab's tokens section.
+            'tokens_federation': fed_tokens,
+            'tokens_by_agent': tokens_by_agent,
         }
 
     try:
@@ -726,6 +736,31 @@ def collect_spend_log(spend_dir, name_to_colony, id_to_role, epoch_s):
                     if ts_ms >= week_start_ms:  ab['week']  += cost
                     if ts_ms >= month_start_ms: ab['month'] += cost
 
+                    # #352: token aggregation. Same window logic, accumulate
+                    # input + output separately so the Tokens section can
+                    # render either side in isolation.
+                    in_tok = row.get('input_tokens') or 0
+                    out_tok = row.get('output_tokens') or 0
+                    try:
+                        in_tok = int(in_tok)
+                        out_tok = int(out_tok)
+                    except (TypeError, ValueError):
+                        in_tok = 0
+                        out_tok = 0
+                    if ts_ms >= today_start_ms:
+                        fed_tokens['input_today'] += in_tok
+                        fed_tokens['output_today'] += out_tok
+                    if ts_ms >= week_start_ms:
+                        fed_tokens['input_7d'] += in_tok
+                        fed_tokens['output_7d'] += out_tok
+                    if ts_ms >= month_start_ms:
+                        fed_tokens['input_30d'] += in_tok
+                        fed_tokens['output_30d'] += out_tok
+                    tb = tokens_by_agent.setdefault(agent_key, {'input': 0, 'output': 0})
+                    if ts_ms >= week_start_ms:
+                        tb['input'] += in_tok
+                        tb['output'] += out_tok
+
                     # Sparkline bucketing (oldest-first, fixed-width)
                     if ts_ms >= spark_24h_origin_ms:
                         idx = int((ts_ms - spark_24h_origin_ms) // (3600 * 1000))
@@ -776,6 +811,9 @@ def collect_spend_log(spend_dir, name_to_colony, id_to_role, epoch_s):
         'recent_by_agent': recent_by_agent,
         'sparkline_24h': spark_24h,
         'sparkline_30d': spark_30d,
+        # #352: token totals for the Cost tab tokens section.
+        'tokens_federation': fed_tokens,
+        'tokens_by_agent': tokens_by_agent,
         'currency': 'USD',
         'stale_seconds': stale_seconds,
         'table_pin_date': TABLE_PIN_DATE,
@@ -1332,6 +1370,155 @@ if isinstance(unknown, (int, float)) and unknown > 0.5 and cost_cap['mode'] == '
 else:
     cost_cap['mode_mismatch_hint'] = False
 
+# --- #352: Per-sidecar listing for the Overview tab ---
+# Builds an array of one record per sidecar (auto-promote, cost-cap) for
+# the dashboard's `renderSidecarStatus(data)` to render. Each record
+# carries name, installed/enabled, age, and a derived health label
+# (healthy / silent / down / disabled / not-installed). The auto-promote
+# and cost-cap blocks above already collected the raw fields; this section
+# unifies them into a single shape the template iterates over.
+def _sidecar_status(installed, enabled, in_startup_grace, last_tick_ts,
+                   interval_s, now_ts):
+    """Reduce sidecar liveness fields to a single status enum the UI uses
+    for the per-row pill colour."""
+    if not installed:
+        return 'not-installed'
+    if not enabled:
+        return 'disabled'
+    if in_startup_grace:
+        return 'healthy'
+    if last_tick_ts is None:
+        return 'silent'  # never ticked since last installed
+    if interval_s is None or interval_s <= 0:
+        return 'degraded'  # configured wrong; shouldn't happen
+    age = now_ts - last_tick_ts
+    if age > 4 * interval_s:
+        return 'down'
+    if age > 2 * interval_s:
+        return 'silent'
+    return 'healthy'
+
+now_ts_for_sidecars = int(time.time())
+sidecars = [
+    {
+        'name': 'auto-promote',
+        'installed': sidecar.get('installed', False),
+        'enabled': sidecar.get('enabled', False),
+        'interval_s': sidecar.get('interval_s'),
+        'last_tick_ts': sidecar.get('last_tick_ts'),
+        'started_at_ts': sidecar.get('started_at_ts'),
+        'in_startup_grace': sidecar.get('in_startup_grace', False),
+        'status': _sidecar_status(
+            sidecar.get('installed', False),
+            sidecar.get('enabled', False),
+            sidecar.get('in_startup_grace', False),
+            sidecar.get('last_tick_ts'),
+            sidecar.get('interval_s'),
+            now_ts_for_sidecars,
+        ),
+    },
+    {
+        'name': 'cost-cap',
+        'installed': cost_cap.get('installed', False),
+        'enabled': cost_cap.get('enabled', False),
+        'interval_s': cost_cap_interval,
+        'last_tick_ts': cost_cap.get('last_tick_ts'),
+        'started_at_ts': cost_cap.get('started_at_ts'),
+        'in_startup_grace': cost_cap.get('in_startup_grace', False),
+        'status': _sidecar_status(
+            cost_cap.get('installed', False),
+            cost_cap.get('enabled', False),
+            cost_cap.get('in_startup_grace', False),
+            cost_cap.get('last_tick_ts'),
+            cost_cap_interval,
+            now_ts_for_sidecars,
+        ),
+    },
+]
+
+# --- #352: Config editor scope ---
+# Reads <fed>/.agentis/config to surface (a) operator_writes_enabled flag
+# (gates the Config tab's edit mode; default false), (b) per-colony +
+# federation-wide config snapshots so the editor can render without a
+# second round-trip. Read-only by default. Each scope record:
+#   {scope, path, exists, mtime, keys: [{section, key, value}]}
+def _read_toml_scope(path):
+    """Lightweight TOML reader. Returns {sections: {[section]: {key: val}},
+    flat: [(section, key, raw_value)], mtime, exists, error?}.
+    Only handles the simple key=value subset our configs use; complex
+    arrays or inline tables are surfaced as raw strings without
+    structured editing affordance."""
+    rec = {
+        'path': path,
+        'exists': os.path.isfile(path),
+        'mtime': None,
+        'keys': [],
+        'error': None,
+    }
+    if not rec['exists']:
+        return rec
+    try:
+        rec['mtime'] = int(os.path.getmtime(path))
+    except OSError:
+        pass
+    try:
+        section = ''
+        with open(path, encoding='utf-8') as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if line.startswith('[') and line.endswith(']'):
+                    section = line[1:-1].strip()
+                    continue
+                if '=' not in line:
+                    continue
+                k, _, v = line.partition('=')
+                k = k.strip()
+                v = v.strip()
+                # Strip trailing comment
+                if '#' in v and not v.startswith('"') and not v.startswith("'"):
+                    v = v.partition('#')[0].rstrip()
+                # Unwrap surrounding double quotes / single quotes so the
+                # editor renders a clean value field. The raw form (with
+                # quotes intact) is reserved for a future "raw mode" view
+                # — for v1 of the Config tab the unquoted value is what
+                # the operator wants to edit.
+                if len(v) >= 2 and ((v[0] == '"' and v[-1] == '"') or (v[0] == "'" and v[-1] == "'")):
+                    v = v[1:-1]
+                rec['keys'].append({
+                    'section': section,
+                    'key': k,
+                    'raw_value': v,
+                })
+    except (OSError, ValueError) as e:
+        rec['error'] = str(e)
+    return rec
+
+operator_writes_enabled = False
+fed_config_path = os.path.join(fed_dir, '.agentis', 'config')
+fed_config_scope = _read_toml_scope(fed_config_path)
+for kv in fed_config_scope.get('keys') or []:
+    if kv.get('section') == 'config_editor' and kv.get('key') == 'operator_writes_enabled':
+        rv = (kv.get('raw_value') or '').strip().strip('"').strip("'").lower()
+        operator_writes_enabled = (rv == 'true')
+
+config_scopes = [
+    {'scope': 'federation', 'label': 'federation default', **fed_config_scope},
+]
+for col in colonies:
+    p = os.path.join(fed_dir, col, 'config', 'colony.toml')
+    rec = _read_toml_scope(p)
+    rec['scope'] = col
+    rec['label'] = col + ' override'
+    config_scopes.append(rec)
+
+config_editor_block = {
+    'operator_writes_enabled': operator_writes_enabled,
+    'scopes': config_scopes,
+    'audit_log_path': os.path.join(fed_dir, '.agentis', 'logs', 'config-edits.jsonl'),
+}
+
 output = {
     'agents': result,
     'experience_counts': colony_exp,
@@ -1339,10 +1526,14 @@ output = {
     'confidence_changes': conf_changes,
     'decisions': decisions,
     'sidecar': sidecar,
+    # #352: per-sidecar listing for renderSidecarStatus(data).
+    'sidecars': sidecars,
     'forge_rate_limits': forge_rate_limits,
     'cost': cost,
     'cost_cap': cost_cap,
     # #315 PR 2: federation-wide unified timeline (last 200, ts-desc).
     'timeline': federation_timeline,
+    # #352: config editor scope + operator_writes_enabled gate.
+    'config_editor': config_editor_block,
 }
 print(json.dumps(output))

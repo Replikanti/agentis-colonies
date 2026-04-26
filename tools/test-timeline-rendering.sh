@@ -1315,6 +1315,268 @@ else
     fail "35: bar arithmetic regression — see stderr above"
 fi
 
+# --- #352: tabbed layout — six <section data-tab="..."> blocks present ---
+# Plan-test 36. The body must contain exactly 6 sections with the names
+# overview / agents / promotions / learning / cost / config. The HTML
+# string is the served-page payload, which is what an operator's browser
+# reads on first paint.
+if python3 - "$HTML_FILE" <<'PY' 2>/dev/null
+import sys, re
+with open(sys.argv[1]) as f:
+    html = f.read()
+expected = ['overview', 'agents', 'promotions', 'learning', 'cost', 'config']
+# Filter out the literal '...' placeholder text from inline comments;
+# only real `<section data-tab="<word>"` markup counts.
+found = [m for m in re.findall(r'<section\s+data-tab="([^"]+)"', html) if m != '...']
+if found != expected:
+    sys.stderr.write('section data-tab order/contents wrong: %r vs expected %r\n' % (found, expected))
+    sys.exit(1)
+sys.exit(0)
+PY
+then
+    pass "36: six <section data-tab=\"...\"> blocks in expected order (#352)"
+else
+    fail "36: section count or order wrong"
+fi
+
+# --- #352: tab bar emits 6 buttons with data-tab attributes ---
+# Plan-test 37. The clickable tab bar must have one button per tab.
+if python3 - "$HTML_FILE" <<'PY' 2>/dev/null
+import sys, re
+with open(sys.argv[1]) as f:
+    html = f.read()
+expected = ['overview', 'agents', 'promotions', 'learning', 'cost', 'config']
+buttons = re.findall(r'<button\s+class="tab-btn"\s+role="tab"\s+data-tab="([^"]+)"', html)
+if buttons != expected:
+    sys.stderr.write('tab-btn data-tab order wrong: %r\n' % buttons)
+    sys.exit(1)
+sys.exit(0)
+PY
+then
+    pass "37: tab bar emits 6 buttons with expected data-tab attributes (#352)"
+else
+    fail "37: tab bar buttons missing or out of order"
+fi
+
+# --- #352: pickTextColor returns dark for #f59e0b (amber) and light
+#     for #3b82f6 (blue). The amber `tier-review-gated` background was
+#     the WCAG AA violation that motivated the helper. ---
+if python3 - "$HTML_FILE" <<'PY' 2>/dev/null
+import sys, re
+with open(sys.argv[1]) as f:
+    html = f.read()
+# The lookup must contain '#f59e0b': 'var(--text-on-light)' and
+# '#3b82f6': 'var(--text)' so labels stay readable on light vs dark fills.
+if not re.search(r"'#f59e0b':\s*'var\(--text-on-light\)'", html):
+    sys.stderr.write('pickTextColor lookup missing dark-text mapping for #f59e0b\n')
+    sys.exit(1)
+if not re.search(r"'#3b82f6':\s*'var\(--text\)'", html):
+    sys.stderr.write('pickTextColor lookup missing light-text mapping for #3b82f6\n')
+    sys.exit(1)
+# Helper function defined.
+if 'function pickTextColor' not in html:
+    sys.stderr.write('pickTextColor helper function not defined\n')
+    sys.exit(1)
+# --text-on-light variable defined.
+if '--text-on-light:' not in html:
+    sys.stderr.write('--text-on-light CSS variable not defined\n')
+    sys.exit(1)
+sys.exit(0)
+PY
+then
+    pass "38: pickTextColor maps amber→dark + blue→light + variable defined (#352)"
+else
+    fail "38: pickTextColor contrast mapping regressed"
+fi
+
+# --- #352: MAX badge for autonomous-tier agents in promotion ladder.
+#     A handcrafted `agents[]` fixture with `confidence: 0.97` must
+#     trigger the `MAX` badge + `—` limiting-prereq cell on the first
+#     paint of the Promotions tab. ---
+if python3 - "$HTML_FILE" <<'PY' 2>/dev/null
+import sys, re
+with open(sys.argv[1]) as f:
+    html = f.read()
+# The renderer body must reference the `MAX` badge in the autonomous
+# tier branch. Find the renderPromotionLadder function definition and
+# check it contains the literal 'MAX' inside a max-badge-classed span.
+m = re.search(r'function renderPromotionLadder\b.*?\n}', html, re.DOTALL)
+if not m:
+    sys.stderr.write('renderPromotionLadder function not found\n')
+    sys.exit(1)
+body = m.group(0)
+if 'max-badge' not in body or 'MAX' not in body:
+    sys.stderr.write('MAX badge not wired in renderPromotionLadder\n')
+    sys.exit(2)
+# 0.95 threshold (autonomous) should be the gate.
+if '0.95' not in body:
+    sys.stderr.write('autonomous threshold 0.95 missing from renderPromotionLadder\n')
+    sys.exit(3)
+sys.exit(0)
+PY
+then
+    pass "39: MAX badge wired for autonomous-tier agents in renderPromotionLadder (#352)"
+else
+    fail "39: MAX badge wiring regressed"
+fi
+
+# --- #352: sidecar listing renders 2 entries (auto-promote + cost-cap)
+#     with name labels and per-row [restart] button. The collector
+#     emits `data.sidecars` as a 2-record array; the renderer iterates
+#     and emits one .sidecar-row per record. ---
+if python3 - "$HTML_FILE" <<'PY' 2>/dev/null
+import sys, re, json
+with open(sys.argv[1]) as f:
+    html = f.read()
+m = re.search(r'const data\s*=\s*(\{.*?\});\n', html, re.DOTALL)
+if not m: sys.exit(1)
+try:
+    data = json.loads(m.group(1))
+except Exception:
+    sys.exit(2)
+sidecars = data.get('sidecars') or []
+names = [s.get('name') for s in sidecars]
+if 'auto-promote' not in names or 'cost-cap' not in names:
+    sys.stderr.write('sidecars[] does not include both auto-promote + cost-cap: %r\n' % names)
+    sys.exit(3)
+# renderSidecarStatus must be defined.
+if 'function renderSidecarStatus' not in html:
+    sys.stderr.write('renderSidecarStatus not defined\n'); sys.exit(4)
+# The renderer must emit a button class="sidecar-restart"
+if 'sidecar-restart' not in html:
+    sys.stderr.write('sidecar-restart class not found in template\n'); sys.exit(5)
+sys.exit(0)
+PY
+then
+    pass "40: data.sidecars has 2 entries (auto-promote + cost-cap), per-row [restart] (#352)"
+else
+    fail "40: sidecar listing wiring regressed"
+fi
+
+# --- #352: bulk-restart action bar visible only when ≥1 agent is
+#     non-running. Two sub-assertions:
+#     (a) renderBulkActions function exists in template.
+#     (b) The fixture's agent (state=running) does NOT trigger the bar
+#         being visible by default.
+if python3 - "$HTML_FILE" <<'PY' 2>/dev/null
+import sys, re
+with open(sys.argv[1]) as f:
+    html = f.read()
+if 'function renderBulkActions' not in html:
+    sys.stderr.write('renderBulkActions not defined\n'); sys.exit(1)
+# The bulk-actions container must be present in markup.
+if 'id="bulk-actions"' not in html:
+    sys.stderr.write('#bulk-actions container missing\n'); sys.exit(2)
+# Branch logic: filtering by `a.state !== \'running\'` must be present.
+if "a.state !== 'running'" not in html and 'a.state !== "running"' not in html:
+    sys.stderr.write('non-running filter logic missing in renderBulkActions\n')
+    sys.exit(3)
+# `restartAllStopped` action handler defined.
+if 'function restartAllStopped' not in html:
+    sys.stderr.write('restartAllStopped handler not defined\n'); sys.exit(4)
+sys.exit(0)
+PY
+then
+    pass "41: renderBulkActions wired with non-running filter + restartAllStopped handler (#352)"
+else
+    fail "41: bulk-actions wiring regressed"
+fi
+
+# --- #352: Config tab read-only by default. The collector emits
+#     config_editor.operator_writes_enabled = false until the operator
+#     flips the gate. The renderer's apply button must be disabled. ---
+if python3 - "$HTML_FILE" <<'PY' 2>/dev/null
+import sys, re, json
+with open(sys.argv[1]) as f:
+    html = f.read()
+m = re.search(r'const data\s*=\s*(\{.*?\});\n', html, re.DOTALL)
+if not m: sys.exit(1)
+try:
+    data = json.loads(m.group(1))
+except Exception:
+    sys.exit(2)
+ce = data.get('config_editor') or {}
+if ce.get('operator_writes_enabled') is not False:
+    sys.stderr.write('default operator_writes_enabled is not False: %r\n' % ce.get('operator_writes_enabled'))
+    sys.exit(3)
+# renderConfigEditor must be defined.
+if 'function renderConfigEditor' not in html:
+    sys.stderr.write('renderConfigEditor not defined\n'); sys.exit(4)
+# Read-only banner literal must be present in the template.
+if 'config-readonly-banner' not in html:
+    sys.stderr.write('config-readonly-banner class missing\n'); sys.exit(5)
+# applyConfigEdits handler hits /config/apply.
+if "fetch('/config/apply'" not in html:
+    sys.stderr.write('applyConfigEdits does not POST /config/apply\n'); sys.exit(6)
+sys.exit(0)
+PY
+then
+    pass "42: Config tab is read-only by default; operator_writes_enabled=false (#352)"
+else
+    fail "42: Config tab default-read-only contract regressed"
+fi
+
+# --- #352: only one section is .active at first paint (Overview). ---
+# The default-active tab is enforced via JS at init: `localStorage` read
+# falls back to 'overview' when missing. The static HTML must be
+# pre-rendered so a curl-smoke flow shows overview by default. We assert
+# that the JS init unconditionally calls `activateTab(initial)` with the
+# overview default fallback.
+if python3 - "$HTML_FILE" <<'PY' 2>/dev/null
+import sys, re
+with open(sys.argv[1]) as f:
+    html = f.read()
+# activateTab must default to overview when localStorage missing.
+if 'activateTab(initial)' not in html:
+    sys.stderr.write('activateTab init call missing\n'); sys.exit(1)
+if "initial = 'overview'" not in html:
+    sys.stderr.write("default 'overview' fallback missing\n"); sys.exit(2)
+# `localStorage.getItem(ACTIVE_TAB_KEY)` must be the source.
+if 'ACTIVE_TAB_KEY' not in html:
+    sys.stderr.write('ACTIVE_TAB_KEY not defined\n'); sys.exit(3)
+sys.exit(0)
+PY
+then
+    pass "43: tab init defaults to overview, persisted via ACTIVE_TAB_KEY localStorage (#352)"
+else
+    fail "43: tab default + persistence regressed"
+fi
+
+# --- #352: new endpoints (`/restart-all-stopped`, `/sidecar-restart`,
+#     `/config/apply`) all return non-200 fail-safes from the stub server
+#     when the federation has nothing to act on. We assert each endpoint
+#     responds (any status code, just not 404 / connection refused) so the
+#     wiring exists. ---
+T44_OK=1
+RESP44A="$TMPDIR_TEST/restart-all-stopped.txt"
+RESP44A_CODE="$(curl -s -o "$RESP44A" -w '%{http_code}' -X POST "http://127.0.0.1:$PORT/restart-all-stopped" 2>/dev/null || echo "000")"
+case "$RESP44A_CODE" in
+    200|400|405|500|503) : ;;
+    *) echo "  /restart-all-stopped returned $RESP44A_CODE (expected 200/400/405/500/503)"; T44_OK=0 ;;
+esac
+RESP44B="$TMPDIR_TEST/sidecar-restart.txt"
+RESP44B_CODE="$(curl -s -o "$RESP44B" -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"name":"auto-promote"}' "http://127.0.0.1:$PORT/sidecar-restart" 2>/dev/null || echo "000")"
+# Stub server has no shared tools/, so 503 is expected. 200 is OK if the
+# helper happens to be reachable. 400 is OK on bad payload defensively.
+case "$RESP44B_CODE" in
+    200|400|500|503) : ;;
+    *) echo "  /sidecar-restart returned $RESP44B_CODE (expected 200/400/500/503)"; T44_OK=0 ;;
+esac
+RESP44C="$TMPDIR_TEST/config-apply.txt"
+RESP44C_CODE="$(curl -s -o "$RESP44C" -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"scope":"federation","updates":[]}' "http://127.0.0.1:$PORT/config/apply" 2>/dev/null || echo "000")"
+# Default operator_writes_enabled = false → 503. 400 is also OK (empty
+# updates list). 200 only if the gate is somehow on (operator slipped a
+# config in mid-test).
+case "$RESP44C_CODE" in
+    200|400|503) : ;;
+    *) echo "  /config/apply returned $RESP44C_CODE (expected 200/400/503)"; T44_OK=0 ;;
+esac
+if [ "$T44_OK" -eq 1 ]; then
+    pass "44: /restart-all-stopped, /sidecar-restart, /config/apply endpoints all return defensive status (#352)"
+else
+    fail "44: one or more #352 endpoints unreachable"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

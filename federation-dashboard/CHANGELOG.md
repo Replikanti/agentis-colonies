@@ -9,6 +9,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Tabbed dashboard layout + WCAG-AA contrast fixes + per-sidecar listing +
+  bulk-restart actions + read-only Config tab**
+  ([#352](https://github.com/Replikanti/agentis-colonies/issues/352)). The
+  single vertical-scroll page is replaced with a six-tab single-page app
+  whose content fits a 1080×720 viewport on every tab without scrolling.
+
+  **Six tabs**, persisted via `localStorage` (key
+  `agentis:dashboard:active-tab`, default `overview`), keyboard-jumpable via
+  digits `1`–`6`:
+  - **Overview** — federation health stat tiles, per-sidecar listing
+    (auto-promote + cost-cap, with name + age-since-tick + status pill +
+    `[restart]` button), bulk-restart action bar (visible only when ≥1
+    agent is non-running or ≥1 sidecar is silent), Phase Readiness
+    stacked bars (#342), Forge Rate Limits.
+  - **Agents** — per-agent dossier table (sortable, modal-expandable;
+    unchanged from #311 PR B + #313 PR 2).
+  - **Promotions** — new per-agent **promotion ladder** + Promote
+    Candidates bars. Each ladder row is a single full-width bar with five
+    tier segments (`dormant` / `shadow` / `propose` / `review-gated` /
+    `autonomous`) sized to ADR-0001 tier ranges, a vertical marker at
+    the agent's current confidence, an ETA cell (`X.Xd` or `—` when no
+    forecast), and a limiting-prereq cell. Autonomous-tier agents
+    (confidence ≥ 0.95) render the full ladder filled with a `MAX`
+    badge replacing the ETA cell — no more empty bars for already-promoted
+    agents.
+  - **Learning** — federation-wide Event Timeline (#315 PR 2) +
+    Confidence Trend / Experience Growth charts (#248 PR C, demoted
+    behind `<details>`).
+  - **Cost** — split into two sections: **LLM Tokens** (federation-wide
+    input/output token counts, today/7d, per-agent breakdown) on top,
+    **LLM Cost (USD)** + **Cost Cap** below. The previous single
+    `renderLlmCost` IIFE is now `renderLlmTokens` + `renderLlmUsd` (the
+    legacy `renderLlmCost` is preserved as an alias targeting the same
+    container so any third-party scrape that hits `id="llm-cost"`
+    selectors keeps working).
+  - **Config** — new per-colony + federation-wide TOML config editor.
+    **Read-only by default**; flipping
+    `[config_editor].operator_writes_enabled = true` in
+    `<fed>/.agentis/config` unlocks the apply path. Two-pane layout:
+    left scope picker (federation / each colony), right key-value editor
+    with typed input controls (number / bool toggle / text / enum
+    dropdown for known-vocab keys). `[Apply]` POSTs `/config/apply` —
+    audit-logged to `<fed>/.agentis/logs/config-edits.jsonl`. Drift
+    detection: when the on-disk file mtime changes between dashboard
+    reads a banner + `[Reload]` surfaces.
+
+  **WCAG-AA contrast fixes** via a new `pickTextColor(bg)` JS helper.
+  Two-stage strategy: (1) static lookup mapping known palette entries
+  (`#f59e0b` amber, `#ffff00` yellow, `#22c55e` light green, `#06b6d4`
+  cyan-blue, `#ff8800` orange) to `var(--text-on-light)` (a new
+  near-black token, `#1a1a1a`), and dark fills (red, blue, magenta,
+  gray) to the original `var(--text)` cyan; (2) WCAG relative-luminance
+  fallback for hex colors not in the lookup. Migrated label-color sites:
+  `.phase-bar` (every tier inside Phase Readiness), `.promote-bar`
+  (every bucket on Promote Candidates), `.ladder-segment` (every tier
+  on the new Promotion Ladder). The previous `tier-review-gated` (amber
+  fill) + white left label combination failed WCAG AA — the helper
+  routes that label to dark text now.
+
+  **Bulk-restart endpoints** (server-side): `POST /restart-all-stopped`
+  walks running daemons vs `agent_to_colony` and shells each non-running
+  agent through `start-colony.sh --restart-agent <name>` in parallel
+  (bounded by `os.cpu_count()`); returns
+  `{stopped: [...], started: [...], failed: [...]}`. `POST
+  /sidecar-restart` thin-shells into a new
+  `tools/sidecar-restart.sh <fed-dir> <name>` helper (mirrors the
+  `cost-cap.sh --override` precedent — the actual kill+respawn lives in
+  shell). `POST /config/apply` appends every applied edit to the JSONL
+  audit trail; gated on `operator_writes_enabled` so a stub server
+  defaults to 503.
+
+  **Collector extensions**: `data.sidecars[]` (per-sidecar status array),
+  `data.config_editor` (operator_writes_enabled flag + per-scope
+  key-value snapshot), `cost.tokens_federation` + `cost.tokens_by_agent`
+  (token aggregation alongside the existing dollar aggregation).
+
+  Test coverage: `tools/test-timeline-rendering.sh` grows nine new
+  assertions (36–44) — six structural (sections, tab buttons,
+  pickTextColor lookup, MAX badge, sidecar rows, read-only Config), one
+  init-default (Overview default + persisted), one endpoint-existence
+  (three new endpoints respond with defensive status codes). Total
+  44 passed / 0 failed (was 35 / 0 baseline).
+
+  No version bump; the next federation-dashboard release PR collects
+  #313 + #315 + #342 + this and bumps to 0.6.0.
+
 - **Promote Candidates and Phase Readiness redesigned as Dune-style game-UI
   progress bars** ([#342](https://github.com/Replikanti/agentis-colonies/issues/342)).
   Both tiles trade their text-heavy lists for chunky horizontal bars so an
