@@ -190,6 +190,25 @@
   .rl-err { color: var(--orange); cursor: help; text-decoration: underline dotted; }
   .rl-reset { color: var(--muted); font-size: 11px; margin-left: auto; cursor: help; }
 
+  /* --- LLM Cost tile (#311 PR B) --- */
+  .cost-headline { display: flex; gap: 24px; margin-bottom: 12px; flex-wrap: wrap; }
+  .cost-headline-item { display: flex; flex-direction: column; gap: 2px; min-width: 80px; }
+  .cost-headline-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+  .cost-headline-value { font-size: 18px; color: var(--cyan); text-shadow: 0 0 8px rgba(0,255,255,0.3); font-variant-numeric: tabular-nums; }
+  .cost-status-pill {
+    display: inline-block; padding: 2px 10px; border-radius: 10px;
+    font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+    border: 1px solid var(--green); color: var(--green);
+    text-shadow: 0 0 6px rgba(0,255,0,0.3);
+    margin-left: auto; align-self: flex-start;
+  }
+  .cost-status-pill.warn { border-color: var(--yellow); color: var(--yellow); text-shadow: 0 0 6px rgba(255,255,0,0.3); }
+  .cost-status-pill.crit { border-color: var(--red); color: var(--red); text-shadow: 0 0 6px rgba(255,68,68,0.4); }
+  .cost-spark { margin: 8px 0 12px; }
+  .cost-spark svg { display: block; width: 100%; height: 60px; }
+  .cost-spark-bar { fill: var(--cyan); opacity: 0.6; }
+  .cost-stale { font-size: 10px; color: var(--muted); margin-top: 6px; }
+
   /* --- Demoted charts: <details> with .summary-h2 (avoids h2-in-summary) --- */
   .card-collapse > summary {
     cursor: pointer; list-style: none;
@@ -617,6 +636,17 @@
 <div id="forge-rate-limits"></div>
 </div>
 
+<!-- #311 PR B: LLM Cost tile. Reads cost{} block populated by the collector
+     from <agentis_root>/spend/*.jsonl (#311 PR A). Headline row shows the
+     federation-wide today/7d/30d totals; the 24h sparkline below it gives
+     per-hour shape; per-colony rows reuse the rl-row layout from Forge
+     Rate Limits for visual consistency. Status pill is a stub today (#318
+     will wire the breach states once the cost-cap sidecar lands). -->
+<div class="card">
+<h2>LLM Cost</h2>
+<div id="llm-cost"></div>
+</div>
+
 <div class="card">
 <h2>Promote Candidates</h2>
 <div id="promote-candidates"></div>
@@ -966,6 +996,10 @@ function renderAgentTable() {
     if (sortCol === 'experience_count' || sortCol === 'experience_rate' || sortCol === 'tick_ok') {
       va = va || 0; vb = vb || 0;
     }
+    // #311 PR B: cost columns sort numerically (treat missing as 0).
+    if (sortCol === 'cost_today' || sortCol === 'cost_7d' || sortCol === 'cost_30d') {
+      va = va || 0; vb = vb || 0;
+    }
     if (sortCol === 'success_pct') {
       va = (a.tick_ok + a.tick_err) > 0 ? a.tick_ok / (a.tick_ok + a.tick_err) : -1;
       vb = (b.tick_ok + b.tick_err) > 0 ? b.tick_ok / (b.tick_ok + b.tick_err) : -1;
@@ -999,6 +1033,7 @@ function renderAgentTable() {
     thSort('tick_ok', 'Ticks') +
     thSort('success_pct', 'Success%') +
     thSort('experience_count', 'Learning') +
+    thSort('cost_today', '$ today') +
     '<th>Last Action</th></tr>';
 
   sorted.forEach(a => {
@@ -1074,6 +1109,19 @@ function renderAgentTable() {
       actionHtml = '<span class="muted">\u2014</span>';
     }
 
+    // #311 PR B: per-agent cost column. Tooltip carries the full
+    // today / 7d / 30d trio so the table view stays compact.
+    const costToday = a.cost_today || 0;
+    const cost7d    = a.cost_7d    || 0;
+    const cost30d   = a.cost_30d   || 0;
+    let costHtml;
+    if (costToday > 0 || cost7d > 0 || cost30d > 0) {
+      const tip = 'today ' + fmtUsd(costToday) + ' / 7d ' + fmtUsd(cost7d) + ' / 30d ' + fmtUsd(cost30d);
+      costHtml = '<span title="' + esc(tip) + '">' + esc(fmtUsd(costToday)) + '</span>';
+    } else {
+      costHtml = '<span class="muted">\u2014</span>';
+    }
+
     html += '<tr class="clickable" onclick="openDetail(\'' + esc(a.name) + '\')">' +
       '<td class="agent-name">' + esc(a.name) + '</td>' +
       '<td class="colony-name">' + esc(a.colony) + '</td>' +
@@ -1082,6 +1130,7 @@ function renderAgentTable() {
       '<td>' + ticksHtml + '</td>' +
       '<td>' + successHtml + '</td>' +
       '<td>' + learnHtml + '</td>' +
+      '<td>' + costHtml + '</td>' +
       '<td>' + actionHtml + '</td>' +
       '</tr>';
   });
@@ -1216,6 +1265,94 @@ renderAgentTable();
     html += '</div>';
   });
   if (!html) html = '<div class="rl-row"><span class="rl-na">no colonies</span></div>';
+  el.innerHTML = html;
+})();
+
+// --- LLM Cost (#311 PR B) ---
+// Reads the `cost` block populated by the collector from
+// <agentis_root>/spend/*.jsonl (#311 PR A — agentis-core v1.4.7+). When the
+// federation has never run on a spend-log-aware build the block is still
+// emitted with zeroed totals + null stale_seconds; the renderer treats that
+// as "no data yet" and shows zeros (no errors).
+//
+// Status pill is a placeholder ("active") for now. #318 will wire the
+// active/warning/critical states from a cost_cap sidecar that reads the
+// same JSONL and surfaces breach state through this same block.
+function fmtUsd(v) {
+  if (v == null) return '—';
+  if (typeof v !== 'number' || !isFinite(v)) return '—';
+  if (v >= 100) return '$' + v.toFixed(0);
+  if (v >= 10)  return '$' + v.toFixed(2);
+  if (v >= 1)   return '$' + v.toFixed(2);
+  if (v >= 0.01) return '$' + v.toFixed(3);
+  return '$' + v.toFixed(4);
+}
+(function() {
+  const el = document.getElementById('llm-cost');
+  if (!el) return;
+  const cost = (data && data.cost) || {};
+  const fed = cost.federation || {today: 0, week: 0, month: 0};
+  const byCol = cost.by_colony || {};
+  const spark = cost.sparkline_24h || [];
+  const stale = cost.stale_seconds;
+  const currency = cost.currency || 'USD';
+
+  // Headline row + status pill. Always-active stub today (#318 will set
+  // warn/crit when the cost cap is breached).
+  let html = '<div class="cost-headline">';
+  html += '<div class="cost-headline-item"><span class="cost-headline-label">Today</span><span class="cost-headline-value" title="federation-wide cost since 00:00 local">' + esc(fmtUsd(fed.today)) + '</span></div>';
+  html += '<div class="cost-headline-item"><span class="cost-headline-label">7d</span><span class="cost-headline-value" title="rolling 168h">' + esc(fmtUsd(fed.week)) + '</span></div>';
+  html += '<div class="cost-headline-item"><span class="cost-headline-label">30d</span><span class="cost-headline-value" title="rolling 720h">' + esc(fmtUsd(fed.month)) + '</span></div>';
+  html += '<span class="cost-status-pill" title="cost cap status (placeholder; wired in #318)">active</span>';
+  html += '</div>';
+
+  // 24h sparkline. SVG bar chart, oldest hour on the left. Suppress the
+  // chart when every bucket is empty (avoids a flat line that suggests
+  // dead data when the federation simply has no traffic in the last 24h).
+  if (spark.length > 0) {
+    const maxV = Math.max.apply(null, spark);
+    if (maxV > 0) {
+      const N = spark.length;
+      const W = 600, H = 60, BW = W / N;
+      let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">';
+      for (let i = 0; i < N; i++) {
+        const v = spark[i] || 0;
+        const h = Math.max(1, (v / maxV) * (H - 4));
+        const x = i * BW;
+        const y = H - h;
+        svg += '<rect class="cost-spark-bar" x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + (BW - 1).toFixed(1) + '" height="' + h.toFixed(1) + '"><title>' + i + 'h ago bucket: ' + esc(fmtUsd(v)) + '</title></rect>';
+      }
+      svg += '</svg>';
+      html += '<div class="cost-spark" title="24h hourly cost (oldest left → newest right)">' + svg + '</div>';
+    }
+  }
+
+  // Per-colony breakdown. Reuses rl-row two-column layout matching Forge
+  // Rate Limits style. Order matches colonyList for cross-tile consistency.
+  colonyList.forEach(col => {
+    const c = byCol[col] || {today: 0, week: 0, month: 0};
+    html += '<div class="rl-row">';
+    html += '<span class="rl-colony">' + esc(col) + '</span>';
+    html += '<span class="rl-value" title="today / 7d / 30d">' + esc(fmtUsd(c.today)) + ' <span class="muted">/</span> ' + esc(fmtUsd(c.week)) + ' <span class="muted">/</span> ' + esc(fmtUsd(c.month)) + '</span>';
+    html += '</div>';
+  });
+
+  // Footer: stale indicator + currency / pin-date metadata.
+  let footer = '';
+  if (typeof stale === 'number') {
+    let staleTxt;
+    if (stale < 60) staleTxt = stale + 's ago';
+    else if (stale < 3600) staleTxt = Math.floor(stale / 60) + 'm ago';
+    else if (stale < 86400) staleTxt = Math.floor(stale / 3600) + 'h ago';
+    else staleTxt = Math.floor(stale / 86400) + 'd ago';
+    footer += 'last spend ' + esc(staleTxt);
+  } else {
+    footer += 'no spend yet';
+  }
+  footer += ' · ' + esc(currency);
+  if (cost.table_pin_date) footer += ' · table ' + esc(cost.table_pin_date);
+  html += '<div class="cost-stale">' + footer + '</div>';
+
   el.innerHTML = html;
 })();
 
@@ -1944,6 +2081,48 @@ function openDetail(agentName) {
     html += '</table></div>';
   } else {
     html += '<span class="empty">No experience entries</span>';
+  }
+  html += '</div>';
+
+  // #311 PR B: per-agent LLM Cost section. Surfaces the today/7d/30d
+  // windows from the by_agent block plus the last 5 spend rows from
+  // recent_by_agent (both populated by collect_spend_log()). Modal is the
+  // right place for this drill-down — tile shows aggregates only.
+  html += '<div class="modal-section"><h3>LLM Cost</h3>';
+  const aCostToday = a.cost_today || 0;
+  const aCost7d    = a.cost_7d    || 0;
+  const aCost30d   = a.cost_30d   || 0;
+  const recentSpend = (data && data.cost && data.cost.recent_by_agent && a.agent_id)
+    ? (data.cost.recent_by_agent[a.agent_id] || []) : [];
+  if (aCostToday > 0 || aCost7d > 0 || aCost30d > 0 || recentSpend.length > 0) {
+    html += '<div class="modal-meta">';
+    html += '<div class="modal-meta-item"><span class="modal-meta-label">Today</span><span class="modal-meta-value">' + esc(fmtUsd(aCostToday)) + '</span></div>';
+    html += '<div class="modal-meta-item"><span class="modal-meta-label">7d</span><span class="modal-meta-value">' + esc(fmtUsd(aCost7d)) + '</span></div>';
+    html += '<div class="modal-meta-item"><span class="modal-meta-label">30d</span><span class="modal-meta-value">' + esc(fmtUsd(aCost30d)) + '</span></div>';
+    html += '</div>';
+    if (recentSpend.length > 0) {
+      html += '<div class="exp-table"><table><tr><th>Time</th><th>Backend</th><th>Model</th><th>In</th><th>Out</th><th>Cost</th><th>Source</th></tr>';
+      // Newest-first display, mirroring Recent Experience.
+      recentSpend.slice().reverse().forEach(e => {
+        // ts is epoch-MS (written by agentis-core spend JSONL); divide
+        // by 1000 to align with relTime()'s epoch-seconds contract.
+        const ts = e.ts ? relTime(Math.floor(e.ts / 1000)) : '';
+        const backend = esc(String(e.backend || '').slice(0, 20));
+        const model = esc(String(e.model || '').slice(0, 30));
+        const inp = e.input_tokens || 0;
+        const out = e.output_tokens || 0;
+        const c = (typeof e.cost_usd === 'number') ? fmtUsd(e.cost_usd) : '—';
+        const src = esc(String(e.cost_source || 'unknown'));
+        const okMark = e.ok ? '' : ' ⚠';
+        html += '<tr><td class="muted">' + ts + okMark + '</td><td>' + backend + '</td><td>' + model + '</td>';
+        html += '<td>' + inp + '</td><td>' + out + '</td>';
+        html += '<td>' + esc(c) + '</td>';
+        html += '<td><span class="muted">' + src + '</span></td></tr>';
+      });
+      html += '</table></div>';
+    }
+  } else {
+    html += '<span class="empty">No spend recorded</span>';
   }
   html += '</div>';
 

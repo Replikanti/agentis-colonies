@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **LLM Cost tile.** New card on the dashboard surfaces the federation's
+  LLM-prompt spend across three rolling windows (today / 7d / 30d).
+  Powered by a new collector step that walks
+  `<agentis_root>/spend/<agent_id>.jsonl` (written by agentis-core
+  v1.4.7 — see #311 PR A) and aggregates per-federation, per-colony, and
+  per-agent. The tile renders three headline numbers, a 24×1h SVG
+  sparkline, a per-colony breakdown reusing the Forge Rate Limits
+  `rl-row` layout, and a placeholder status pill ("active" today; #318
+  will wire active/warning/critical states once the cost-cap sidecar
+  lands). The Agents table gains a sortable "$ today" column with a
+  tooltip exposing the today/7d/30d trio; the per-agent modal carries a
+  full LLM Cost section with the last 5 spend rows (backend, model,
+  in/out tokens, cost, source). Currency is USD; the cost-table pin
+  date (2026-04-01) is surfaced in the tile footer for #319 multi-
+  backend audit. Supported backends today: Claude CLI (native cost via
+  `total_cost_usd`), Claude HTTP, OpenAI, Gemini, Ollama, mock — all
+  resolved through the `(backend, model)` lookup table in
+  `agentis-core::llm_cost`. Federations on agentis-core < 1.4.7 still
+  render the tile; with no spend log present, every window reads $0.00
+  ([#311](https://github.com/Replikanti/agentis-colonies/issues/311)).
 - Dashboard ships a full favicon set (ICO, multi-size PNG, Apple Touch icon,
   Android Chrome 192/512) and a PWA `site.webmanifest` branded for Agentis
   (`name="Agentis Federation Dashboard"`, `short_name="Agentis"`,
