@@ -1,0 +1,203 @@
+// TEMPLATE: security-scanner — runs `npm audit` / `cargo audit` / `pip-audit` and files issues for findings | customization: [security_scanner].oncall_handle (memo key security_scanner:oncall_handle); audit cadence is one run per 24h regardless of tick interval; recommended placement is a colony with forge-api.sh `create-issue` + `update-issue` (e.g. a triage/-shaped colony).
+//
+// security-scanner.ag — auto-detects the language toolchain in the
+// repository (via lockfile presence), runs the corresponding audit
+// command, and at the autonomous tier files a forge issue for each
+// new advisory.
+//
+// Run as daemon: agentis daemon agents/security-scanner.ag --colony <colony>
+// Requires: exec_foreign capability, [forge] block configured (the colony's
+// scripts/start-colony.sh exports GITLAB_*/GITHUB_* env per ADR-0002), the
+// audit toolchain reachable on PATH (`npm` / `cargo audit` / `pip-audit`
+// pick whichever applies — the agent runs only the one whose lockfile is
+// present), and a forge-api.sh that supports `create-issue --title --body
+// --labels` and (optionally) `update-issue <iid> --add-assignee` for the
+// autonomous-tier on-call assignment.
+//
+// Customization knobs:
+//   [security_scanner].oncall_handle — operator-configurable forge-handle
+//     of the on-call rotation (e.g. `@oncall-eng` on GitLab, `@oncall-eng`
+//     on GitHub). When set, the autonomous tier additionally assigns the
+//     filed issue to this handle. Surface into the agent via
+//     `agentis memo set security_scanner:oncall_handle "<handle>"` from
+//     start-colony.sh; the agent reads it via
+//     `recall_latest("security_scanner:oncall_handle")`.
+//
+// Cadence: the daily-window guard lives in tick() (the colony tick
+// interval is typically 5 min for reactive colonies; the agent must NOT
+// run a real audit subprocess every 5 min — `npm audit` against a sizeable
+// node_modules tree is multi-second and `cargo audit` rebuilds the
+// advisory DB on each call).
+
+cb 200;
+
+type AuditResult {
+    tool: string,
+    vuln_count: int,
+    high_count: int,
+    advisory_ids: string,
+    summary: string
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("security_scanner:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    };
+    return 0.0;
+}
+
+// Daily-window gate. Returns 1 if at least 24h have elapsed since the
+// last successful audit (or the memo is empty), 0 otherwise. Time math
+// in python3 to avoid GNU/BSD `date` divergence.
+fn should_audit_now() -> int {
+    let last = recall_latest("security_scanner:last_check");
+    if len(last) == 0 {
+        return 1;
+    };
+    // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+    let cmd = "python3 -c 'import sys,datetime,time; ts=sys.argv[1]; t=datetime.datetime.strptime(ts.rstrip(\"Z\"), \"%Y-%m-%dT%H:%M:%S\").replace(tzinfo=datetime.timezone.utc).timestamp(); print(1 if (time.time() - t) >= 86400 else 0)' " + shell_escape(last);
+    let raw = try { exec sh cmd; } catch e { "1"; };
+    return parse_int(raw);
+}
+
+// Auto-detect which audit command to run based on lockfile presence.
+// Returns an empty string if no recognised lockfile is present (the
+// agent tick will short-circuit). Repository root is assumed to be
+// $COLONY_DIR's parent (the federation root), which is where most
+// operators check out their target repo. Operators with a different
+// layout can fork the template and point at their actual repo root.
+fn detect_audit_cmd() -> string {
+    let detect = try {
+        exec sh "if [ -f \"$COLONY_DIR/../package-lock.json\" ] || [ -f \"$COLONY_DIR/../yarn.lock\" ] || [ -f \"$COLONY_DIR/../pnpm-lock.yaml\" ]; then echo npm; elif [ -f \"$COLONY_DIR/../Cargo.lock\" ]; then echo cargo; elif [ -f \"$COLONY_DIR/../requirements.txt\" ] || [ -f \"$COLONY_DIR/../pyproject.toml\" ]; then echo pip; else echo none; fi";
+    } catch e { "none"; };
+    return detect;
+}
+
+fn audit_cmd_for(tool: string) -> string {
+    if tool == "npm" {
+        // --omit=dev keeps the runtime advisories distinct from dev-only
+        // ones; operators who care about both can fork. `cd` wraps so we
+        // run in the repo root, which is where the lockfile lives.
+        return "cd \"$COLONY_DIR/..\" && npm audit --json --omit=dev 2>/dev/null || true";
+    };
+    if tool == "cargo" {
+        return "cd \"$COLONY_DIR/..\" && cargo audit --json 2>/dev/null || true";
+    };
+    if tool == "pip" {
+        return "cd \"$COLONY_DIR/..\" && pip-audit --format json 2>/dev/null || true";
+    };
+    return "";
+}
+
+fn tick(reason: string) -> void {
+    if should_audit_now() == 0 {
+        return;
+    };
+
+    let tool = detect_audit_cmd();
+    if tool == "none" {
+        // No recognised lockfile — record the tick so we don't re-detect
+        // every 5 min, but don't run the audit subprocess.
+        let now_e0 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_e0) > 0 {
+            memo_write("security_scanner:last_check", now_e0);
+        };
+        return;
+    };
+
+    let audit_cmd = audit_cmd_for(tool);
+    let raw = try { exec sh audit_cmd; } catch e {
+        print("[security_scanner] audit failed for tool", tool, ":", e);
+        "";
+    };
+
+    if len(raw) < 3 {
+        let now_e1 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_e1) > 0 {
+            memo_write("security_scanner:last_check", now_e1);
+        };
+        return;
+    };
+
+    let rec = recommend("audit_findings", ["accuracy"]);
+    let context = "Audit tool: " + tool + "\nAudit JSON: " + raw + "\nPast learning: " + to_string(rec);
+
+    let result = prompt(
+        "You are a security audit triage agent. Examine the audit JSON in the context (the tool field tells you which schema applies: 'npm' = npm audit JSON, 'cargo' = cargo-audit JSON, 'pip' = pip-audit JSON). Count total vulnerabilities (vuln_count) and high+critical-severity ones (high_count). Extract the advisory id list as a comma-separated string (advisory_ids — e.g. 'GHSA-xxxx, RUSTSEC-2024-yyyy, PYSEC-2024-zzz'; empty string if vuln_count == 0). Summarise the top 3 advisories in one sentence each (summary). Return JSON: tool (string, echo back the tool name), vuln_count (int), high_count (int), advisory_ids (string), summary (string).",
+        context
+    ) -> AuditResult;
+
+    if result.vuln_count == 0 {
+        // Clean audit. Stamp the memo so we don't re-run for 24h, but do
+        // not file an issue.
+        let now_e2 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_e2) > 0 {
+            memo_write("security_scanner:last_check", now_e2);
+        };
+        learn("audit_findings", tool + " audit", "clean", "success", ["observed", "security-scanner"]);
+        return;
+    };
+
+    let my_tier = tier("security_scanner");
+    let severity_label = if result.high_count > 0 { "priority=high"; } else { "priority=normal"; };
+    let issue_title = "[security] " + to_string(result.vuln_count) + " advisories from " + tool + " audit (" + to_string(result.high_count) + " high+critical)";
+    let issue_body = "**Auto-filed by `security-scanner` template (PR2 of #322).**\n\n**Tool:** `" + tool + " audit`\n**Total:** " + to_string(result.vuln_count) + " advisories (" + to_string(result.high_count) + " high or critical).\n\n**Advisory IDs:**\n```\n" + result.advisory_ids + "\n```\n\n**Summary:**\n" + result.summary + "\n\n**Remediation:**\n1. Run `" + tool + " audit` locally to reproduce.\n2. For fixable advisories, run `" + tool + " audit fix` (npm) / `cargo update` (cargo) / `pip install --upgrade <pkg>` (pip).\n3. For unfixable advisories, file a remediation tracking issue and link it back here.";
+
+    if my_tier == "autonomous" {
+        // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+        let create_cmd = "$COLONY_DIR/scripts/forge-api.sh create-issue --title " + shell_escape(issue_title) + " --body " + shell_escape(issue_body) + " --labels " + shell_escape("security," + severity_label);
+        let create_raw = try { exec sh create_cmd; } catch e {
+            print("[security_scanner] create-issue failed:", e);
+            "";
+        };
+        if len(create_raw) > 0 {
+            // Try to assign to the on-call rotation if configured. Failure
+            // here is non-fatal — the issue is already filed.
+            let oncall = recall_latest("security_scanner:oncall_handle");
+            if len(oncall) > 0 {
+                let new_iid = parse_int(to_string(json_get(create_raw, "iid")));
+                if new_iid > 0 {
+                    // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+                    let assign_cmd = "$COLONY_DIR/scripts/forge-api.sh update-issue " + to_string(new_iid) + " --add-assignee " + shell_escape(oncall);
+                    try { exec sh assign_cmd; } catch e {
+                        print("[security_scanner] on-call assignment failed (issue still filed):", e);
+                    };
+                };
+            };
+            print("[security_scanner] Filed security issue: tool=", tool, "vulns=", result.vuln_count);
+            emit("__COLONY_NAME__:security_finding", result);
+            learn("audit_findings", tool + " audit", "filed-and-assigned", "success", ["acted", "security-scanner"]);
+        } else {
+            // create-issue silently failed (forge-api.sh may not implement
+            // it on this colony). Fall back to the review-gated surface so
+            // the operator still gets the bus emission + draft.
+            emit("__COLONY_NAME__:security_finding", result);
+            learn("audit_findings", tool + " audit", "filed-degraded", "partial", ["review-gated", "security-scanner"]);
+        };
+    } else if my_tier == "review-gated" {
+        // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+        let create_cmd = "$COLONY_DIR/scripts/forge-api.sh create-issue --title " + shell_escape(issue_title) + " --body " + shell_escape(issue_body) + " --labels " + shell_escape("security," + severity_label);
+        try { exec sh create_cmd; } catch e {
+            print("[security_scanner] create-issue failed (review-gated):", e);
+        };
+        emit("__COLONY_NAME__:security_finding", result);
+        learn("audit_findings", tool + " audit", "filed", "partial", ["review-gated", "security-scanner"]);
+    } else if my_tier == "propose" {
+        // Draft only: emit the result on the bus with severity + advisory
+        // id list. No external write here.
+        emit("__COLONY_NAME__:security_finding", result);
+        print("[security_scanner] Proposed security issue (propose) tool=", tool, "vulns=", result.vuln_count, "high=", result.high_count);
+        learn("audit_findings", tool + " audit", "drafted", "partial", ["emitted", "security-scanner"]);
+    } else {
+        // shadow / dormant: observe-only. learn() outcome captures whether
+        // there are vulnerabilities in the audit run.
+        print("[security_scanner] Observing (tier:", my_tier, ") tool:", tool, "vulns:", result.vuln_count);
+        learn("audit_findings", tool + " audit", "observed:" + to_string(result.vuln_count) + " vulns", "partial", ["observed", "security-scanner"]);
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("security_scanner:last_check", now);
+    };
+}
