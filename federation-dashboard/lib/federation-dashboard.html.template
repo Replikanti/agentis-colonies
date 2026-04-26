@@ -311,6 +311,28 @@
   .timeline-chip.active.error { color: var(--red); border-color: var(--red); }
   .timeline-chip.active.action { color: var(--cyan); border-color: var(--cyan); }
   .timeline-chip.active.finding { color: var(--magenta); border-color: var(--magenta); }
+  /* #315 PR 2: kind chips for the federation-wide timeline tile. The four
+     kinds (learn/prompt/confidence_change/lifecycle) reuse the existing
+     active-chip palette via type-name aliases below. */
+  .timeline-chip.active.learn { color: var(--cyan); border-color: var(--cyan); }
+  .timeline-chip.active.prompt { color: var(--green); border-color: var(--green); }
+  .timeline-chip.active.confidence_change { color: var(--magenta); border-color: var(--magenta); }
+  .timeline-chip.active.lifecycle { color: var(--yellow); border-color: var(--yellow); }
+  /* #315 PR 2: colony filter dropdown. Inline with chip row so the entire
+     filter bar reads as a single line. */
+  .timeline-colony-filter {
+    background: transparent; border: 1px solid var(--border2);
+    color: var(--muted); font-family: 'Share Tech Mono', monospace;
+    font-size: 10px; padding: 2px 8px;
+    text-transform: uppercase; letter-spacing: 1px;
+    border-radius: 10px;
+  }
+  .timeline-colony-filter:focus { outline: none; color: var(--text); border-color: var(--text); }
+  .timeline-colony-chip {
+    color: var(--cyan); font-size: 10px; padding: 1px 6px;
+    border: 1px solid var(--border2); border-radius: 8px;
+    flex-shrink: 0; text-transform: lowercase;
+  }
   .timeline-dismiss {
     background: transparent; border: none; color: var(--muted);
     font-family: inherit; font-size: 12px; cursor: pointer;
@@ -342,6 +364,12 @@
   .timeline-type.error { color: var(--red); }
   .timeline-type.action { color: var(--cyan); }
   .timeline-type.finding { color: var(--magenta); }
+  /* #315 PR 2: kind-keyed type cells for the federation-wide timeline tile.
+     Mirrors the per-agent modal palette so colour cues line up across views. */
+  .timeline-type.learn { color: var(--cyan); }
+  .timeline-type.prompt { color: var(--green); }
+  .timeline-type.confidence_change { color: var(--magenta); }
+  .timeline-type.lifecycle { color: var(--yellow); }
   .timeline-content { color: var(--text); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   /* --- Charts --- */
@@ -696,6 +724,7 @@
 <div class="timeline-header">
   <h2>Event Timeline</h2>
   <div class="timeline-actions">
+    <select class="timeline-colony-filter" id="timeline-colony-filter" title="Filter timeline rows by colony"></select>
     <label class="timeline-toggle" title="Auto-hide errors from agents that have ticked cleanly in the last hour">
       <input type="checkbox" id="timeline-auto-hide-stale"> Auto-hide stale
     </label>
@@ -807,6 +836,12 @@ const TIMELINE_AUTO_HIDE_STALE_KEY = 'dashboard.timeline.autoHideStale.' + FED_N
 const TIMELINE_STALE_WINDOW_MS = 3600 * 1000;
 // #167: every class the timeline emits, in render order.
 const TIMELINE_CLASSES = ['emit', 'recv', 'suggest', 'error', 'action', 'finding'];
+// #315 PR 2: colony filter persistence for the federation-wide timeline tile.
+// '' (empty string) means "all colonies".
+const TIMELINE_COLONY_FILTER_KEY = 'dashboard.timeline.colonyFilter.' + FED_NAME;
+// #315 PR 2: every kind the unified timeline emits, in render order. Drives
+// the chip-row build and the kind-filter checkbox group.
+const TIMELINE_KINDS = ['learn', 'prompt', 'confidence_change', 'lifecycle'];
 // #163: magnitude below which the fitness slope over the last 100 experience
 // entries is treated as flat and evolve is disabled as an Opus plateau. Raised
 // from the original 1e-6 guess to 1e-4 after production calibration against
@@ -870,6 +905,9 @@ document.addEventListener('keydown', (e) => {
 let agents = data.agents || [];
 let experienceCounts = data.experience_counts || {};
 let events = data.events || [];
+// #315 PR 2: federation-wide unified timeline (last 200 rows, ts-desc).
+// Source for renderEventTimeline (which used to scrape `events`).
+let timelineRows = data.timeline || [];
 let confChanges = data.confidence_changes || [];
 // #248: scheduler verdicts per agent (promote/evolve/skip + evidence).
 // Emitted by federation-dashboard-collector.py via auto-promote-decisions.py
@@ -893,6 +931,7 @@ function extractRefs(d) {
   agents = d.agents || [];
   experienceCounts = d.experience_counts || {};
   events = d.events || [];
+  timelineRows = d.timeline || [];
   confChanges = d.confidence_changes || [];
   decisions = d.decisions || [];
   sidecar = d.sidecar || {installed: false, enabled: false, interval_s: null, last_tick_ts: null};
@@ -1719,24 +1758,40 @@ function renderPromoteCandidates(data) {
 }
 
 // --- Event Timeline ---
+// #315 PR 2: federation-wide unified timeline tile. Switched from the
+// regex-log-scraper `events[]` source to the structured `data.timeline[]`
+// stream the collector produces (PR 1 envelope: {ts, agent_id, kind,
+// payload, severity, agent_name, colony}). Renders up to 200 rows reverse-
+// chronological with timestamp, agent + colony chip, kind-keyed type cell,
+// and a 1-line summary string per kind (mirrors the per-agent modal).
+//
+// Filter UI:
+//   * Colony dropdown (built from colonyList).
+//   * Per-kind chips (learn / prompt / confidence_change / lifecycle).
+//   * Pre-existing filters survive verbatim: blanket cursor (Clear all),
+//     per-(agent_name, kind) cursor (Clear stale), dismissed set, time
+//     mode toggle, auto-hide-stale on `error`-severity rows from cleanly-
+//     ticking agents.
 function renderEventTimeline(data) {
   const el = document.getElementById('event-timeline');
   if (!el) return;
   const banner = document.getElementById('timeline-banner');
   const chipsEl = document.getElementById('timeline-chips');
+  const colonySelect = document.getElementById('timeline-colony-filter');
   // #313 PR 2: preserve scroll position across live re-renders so the
   // operator's view doesn't snap to the top mid-snapshot.
   const prevScroll = el.scrollTop;
 
-  // Read all five filter layers from localStorage.
+  // Read all six filter layers from localStorage.
   const cursor = parseInt(localStorage.getItem(TIMELINE_CURSOR_KEY) || '0', 10);
   const cursorClass = tlReadJSON(TIMELINE_CURSOR_CLASS_KEY, {}) || {};
   const dismissedArr = tlReadJSON(TIMELINE_DISMISSED_KEY, []) || [];
   const dismissed = new Set(dismissedArr);
-  const hiddenClassesArr = tlReadJSON(TIMELINE_CLASS_FILTER_KEY, []) || [];
-  const hiddenClasses = new Set(hiddenClassesArr);
+  const hiddenKindsArr = tlReadJSON(TIMELINE_CLASS_FILTER_KEY, []) || [];
+  const hiddenKinds = new Set(hiddenKindsArr);
   const timeMode = (localStorage.getItem(TIMELINE_TIME_MODE_KEY) === 'rel') ? 'rel' : 'abs';
   const autoHideStale = (localStorage.getItem(TIMELINE_AUTO_HIDE_STALE_KEY) === 'on');
+  const colonyFilter = localStorage.getItem(TIMELINE_COLONY_FILTER_KEY) || '';
 
   // Index agents by name for O(1) `agent_last_ok_ts` lookup in the
   // stale-error filter.
@@ -1744,43 +1799,70 @@ function renderEventTimeline(data) {
   agents.forEach(a => { agentByName[a.name] = a; });
   const nowMs = Date.now();
 
+  // The federation-wide stream: each row carries {ts, agent_id, kind,
+  // payload, severity, agent_name, colony}.
+  const allRows = Array.isArray(timelineRows) ? timelineRows : [];
+
   // Filter rules, in order. An entry must pass ALL of them. Entries
   // with ts === 0 (no parseable timestamp) bypass the time-based
   // filters so the operator can still see them.
-  function visible(e) {
-    if (hiddenClasses.has(e.type)) return false;
-    if (e.ts && cursor && e.ts < cursor) return false;
-    const ckey = e.agent + ':' + e.type;
-    if (e.ts && cursorClass[ckey] && e.ts < cursorClass[ckey]) return false;
-    if (e.ts && dismissed.has(e.agent + ':' + e.ts)) return false;
-    if (autoHideStale && e.type === 'error') {
-      const a = agentByName[e.agent];
+  function visible(r) {
+    const kind = r.kind || '';
+    const agentName = r.agent_name || '';
+    if (hiddenKinds.has(kind)) return false;
+    if (colonyFilter && (r.colony || '') !== colonyFilter) return false;
+    if (r.ts && cursor && r.ts < cursor) return false;
+    const ckey = agentName + ':' + kind;
+    if (r.ts && cursorClass[ckey] && r.ts < cursorClass[ckey]) return false;
+    if (r.ts && dismissed.has(agentName + ':' + r.ts)) return false;
+    if (autoHideStale && r.severity === 'error') {
+      const a = agentByName[agentName];
       if (a && a.agent_last_ok_ts && (nowMs - a.agent_last_ok_ts) >= TIMELINE_STALE_WINDOW_MS) {
         return false;
       }
     }
     return true;
   }
-  const filtered = events.filter(visible);
-  const hidden = events.length - filtered.length;
+  const filtered = allRows.filter(visible);
+  const hidden = allRows.length - filtered.length;
 
-  // Render class-filter chips. A chip is `active` (highlighted) when
-  // its class is currently SHOWN; clicking toggles its hidden state.
+  // Build the colony dropdown from colonyList. Selected option mirrors
+  // localStorage so the filter survives reloads.
+  if (colonySelect) {
+    let opts = '<option value="">all colonies</option>';
+    colonyList.forEach(c => {
+      opts += '<option value="' + esc(c) + '"' +
+        (colonyFilter === c ? ' selected' : '') + '>' + esc(c) + '</option>';
+    });
+    colonySelect.innerHTML = opts;
+    colonySelect.onchange = () => {
+      const v = colonySelect.value || '';
+      if (v) {
+        localStorage.setItem(TIMELINE_COLONY_FILTER_KEY, v);
+      } else {
+        localStorage.removeItem(TIMELINE_COLONY_FILTER_KEY);
+      }
+      location.reload();
+    };
+  }
+
+  // Render kind-filter chips. A chip is `active` (highlighted) when
+  // its kind is currently SHOWN; clicking toggles its hidden state.
   if (chipsEl) {
     let chipsHtml = '';
-    TIMELINE_CLASSES.forEach(cls => {
-      const isShown = !hiddenClasses.has(cls);
-      const cnt = events.filter(e => e.type === cls).length;
-      chipsHtml += '<button type="button" class="timeline-chip ' + cls +
-        (isShown ? ' active' : '') + '" data-class="' + cls + '">' +
-        cls + (cnt ? ' (' + cnt + ')' : '') + '</button>';
+    TIMELINE_KINDS.forEach(kind => {
+      const isShown = !hiddenKinds.has(kind);
+      const cnt = allRows.filter(r => r.kind === kind).length;
+      chipsHtml += '<button type="button" class="timeline-chip ' + kind +
+        (isShown ? ' active' : '') + '" data-kind="' + kind + '">' +
+        kind + (cnt ? ' (' + cnt + ')' : '') + '</button>';
     });
     chipsEl.innerHTML = chipsHtml;
     chipsEl.querySelectorAll('.timeline-chip').forEach(chip => {
       chip.addEventListener('click', () => {
-        const cls = chip.dataset.class;
-        const next = new Set(hiddenClasses);
-        if (next.has(cls)) next.delete(cls); else next.add(cls);
+        const kind = chip.dataset.kind;
+        const next = new Set(hiddenKinds);
+        if (next.has(kind)) next.delete(kind); else next.add(kind);
         tlWriteJSON(TIMELINE_CLASS_FILTER_KEY, Array.from(next));
         location.reload();
       });
@@ -1795,9 +1877,9 @@ function renderEventTimeline(data) {
       const showAll = document.getElementById('timeline-show-all');
       if (showAll) {
         // "Show all" only resets dismissal-style filters (cursor,
-        // per-(agent,class) cursor, dismissed set). Class chips,
-        // time-mode, and auto-hide are operator-set preferences and
-        // survive — they get their own controls.
+        // per-(agent_name, kind) cursor, dismissed set). Kind chips,
+        // colony filter, time-mode, and auto-hide are operator-set
+        // preferences and survive — they get their own controls.
         showAll.addEventListener('click', () => {
           localStorage.removeItem(TIMELINE_CURSOR_KEY);
           localStorage.removeItem(TIMELINE_CURSOR_CLASS_KEY);
@@ -1811,36 +1893,76 @@ function renderEventTimeline(data) {
     }
   }
 
+  // 1-line summary string per kind. Mirrors the per-agent modal renderer
+  // so the colour cues + content shape line up across the two views.
+  function summarizeRow(r) {
+    const kind = r.kind || '';
+    const payload = r.payload || {};
+    if (kind === 'learn') {
+      const outcome = payload.outcome || '';
+      const delta = (typeof payload.delta === 'number')
+        ? (payload.delta >= 0 ? '+' : '') + payload.delta.toFixed(3) : '';
+      return 'outcome=' + outcome + (delta ? ', fitness_delta=' + delta : '');
+    }
+    if (kind === 'prompt') {
+      const cost = (typeof payload.cost_usd === 'number') ? fmtUsd(payload.cost_usd) : '$?';
+      const inp = payload.input_tokens || 0;
+      const out = payload.output_tokens || 0;
+      const model = payload.model || '';
+      return cost + ' · ' + inp + '/' + out + ' tokens · ' + model;
+    }
+    if (kind === 'confidence_change') {
+      const fromV = (typeof payload.from === 'number') ? payload.from.toFixed(2) : (payload.from || '?');
+      const toV = (typeof payload.to === 'number') ? payload.to.toFixed(2) : (payload.to || '?');
+      const delta = (typeof payload.delta === 'number')
+        ? (payload.delta >= 0 ? '+' : '') + payload.delta.toFixed(3) : '';
+      return fromV + ' → ' + toV + (delta ? ' (Δ' + delta + ')' : '');
+    }
+    if (kind === 'lifecycle') {
+      return payload.event || '';
+    }
+    return JSON.stringify(payload);
+  }
+
   if (!filtered.length) {
-    el.innerHTML = '<span class="empty">No inter-agent events captured yet.</span>';
+    el.innerHTML = '<span class="empty">No timeline rows captured yet.</span>';
   } else {
     let html = '';
-    filtered.forEach(e => {
+    filtered.forEach(r => {
+      const kind = r.kind || 'log';
+      const agentName = r.agent_name || '';
+      const colony = r.colony || '';
       let tsDisplay;
-      if (timeMode === 'rel' && e.ts) {
-        tsDisplay = relTime(e.ts / 1000);
+      if (timeMode === 'rel' && r.ts) {
+        tsDisplay = relTime(r.ts / 1000);
       } else {
-        tsDisplay = formatTimestamp(e.ts) || '?';
+        tsDisplay = formatTimestamp(r.ts) || '?';
       }
       let tip;
-      if (e.ts) {
-        try { tip = new Date(e.ts).toISOString() + '\n' + relTime(e.ts / 1000); }
-        catch (err) { tip = String(e.ts); }
+      if (r.ts) {
+        try { tip = new Date(r.ts).toISOString() + '\n' + relTime(r.ts / 1000); }
+        catch (err) { tip = String(r.ts); }
       } else {
-        tip = 'no timestamp parsed from log line';
+        tip = 'no timestamp parsed';
       }
-      const tsAttr = String(e.ts || 0);
-      const dismissData = e.ts ? (' data-agent="' + esc(e.agent) + '" data-ts="' + tsAttr + '"') : '';
-      const dismissBtn = e.ts
+      const tsAttr = String(r.ts || 0);
+      const dismissData = r.ts ? (' data-agent="' + esc(agentName) + '" data-ts="' + tsAttr + '"') : '';
+      const dismissBtn = r.ts
         ? '<button type="button" class="timeline-dismiss" title="Dismiss this row"' + dismissData + '>&times;</button>'
         : '';
+      const summary = summarizeRow(r);
+      // severity escalates the type cell colour: error -> red, warning -> orange.
+      let typeClass = kind;
+      if (r.severity === 'error') typeClass = kind + ' error';
+      else if (r.severity === 'warning') typeClass = kind + ' suggest';
       html += '<div class="timeline-entry">' +
         '<span class="timeline-ts tooltip">' + esc(tsDisplay) +
           '<span class="tip-text">' + esc(tip) + '</span>' +
         '</span>' +
-        '<span class="timeline-agent">' + esc(e.agent) + '</span>' +
-        '<span class="timeline-type ' + e.type + '">' + esc(e.type) + '</span>' +
-        '<span class="timeline-content">' + esc(e.content) + '</span>' +
+        '<span class="timeline-agent">' + esc(agentName) + '</span>' +
+        (colony ? '<span class="timeline-colony-chip">' + esc(colony) + '</span>' : '') +
+        '<span class="timeline-type ' + typeClass + '">' + esc(kind) + '</span>' +
+        '<span class="timeline-content">' + esc(summary) + '</span>' +
         dismissBtn +
         '</div>';
     });
@@ -1873,23 +1995,24 @@ function renderEventTimeline(data) {
     });
   }
 
-  // Wire "Clear stale" — for each (agent, error) pair currently
-  // visible whose agent has ticked cleanly in the last hour, snapshot
-  // a per-(agent, error) cursor at "now". Snapshot semantics so that
-  // operators get reproducible behaviour even if they later disable
-  // auto-hide.
+  // Wire "Clear stale" — for each (agent_name, kind) pair currently
+  // visible whose severity is `error` and whose agent has ticked cleanly
+  // in the last hour, snapshot a per-(agent_name, kind) cursor at "now".
+  // Snapshot semantics so that operators get reproducible behaviour even
+  // if they later disable auto-hide.
   const clearStaleBtn = document.getElementById('timeline-clear-stale-btn');
   if (clearStaleBtn) {
     clearStaleBtn.addEventListener('click', () => {
       const map = tlReadJSON(TIMELINE_CURSOR_CLASS_KEY, {}) || {};
       const stamp = Date.now();
       let changed = 0;
-      events.forEach(e => {
-        if (e.type !== 'error') return;
-        const a = agentByName[e.agent];
+      allRows.forEach(r => {
+        if (r.severity !== 'error') return;
+        const agentName = r.agent_name || '';
+        const a = agentByName[agentName];
         if (!a || !a.agent_last_ok_ts) return;
         if ((stamp - a.agent_last_ok_ts) >= TIMELINE_STALE_WINDOW_MS) return;
-        const k = e.agent + ':error';
+        const k = agentName + ':' + (r.kind || '');
         if (!map[k] || map[k] < stamp) {
           map[k] = stamp;
           changed += 1;

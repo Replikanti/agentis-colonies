@@ -398,8 +398,122 @@ def restart_daemon(agent):
         'events': events,
     }
 
+# #315 PR 2: timeline-full.jsonl path. Written by the wrapper after each
+# generate() cycle (last 7 days, 5000-row cap, ts-desc). The /timeline
+# endpoint reads from this file. Missing file is non-fatal: /timeline
+# returns 200 with an empty rows array so the client can degrade gracefully.
+timeline_full_path = os.path.join(serve_dir, 'timeline-full.jsonl')
+
+
+def _serve_timeline(handler):
+    """GET /timeline?since=<unix-ms>&limit=<N>&colony=<name>&kind=<csv>.
+
+    Returns JSON {rows: [...], next_cursor: <ts>|null} of timeline rows
+    OLDER than `since` (default = current time, returning the most-recent
+    N rows). limit is capped at 500 to bound memory; default 200.
+    Read-only: no side effects, no daemon mutation.
+
+    400 on bad params (limit > 500, malformed since/limit), 500 on
+    internal read error, 200 on success including missing file.
+    """
+    parsed = urllib.parse.urlparse(handler.path)
+    qs = urllib.parse.parse_qs(parsed.query, keep_blank_values=False)
+
+    # Parse `since` (default: now). Older rows = ts < since.
+    since_raw = (qs.get('since') or [''])[0]
+    if since_raw:
+        try:
+            since_ms = int(since_raw)
+            if since_ms < 0:
+                raise ValueError('negative since')
+        except (ValueError, TypeError):
+            handler.send_response(400)
+            handler.send_header('Content-Type', 'application/json')
+            handler.end_headers()
+            handler.wfile.write(json.dumps({'error': 'bad since (expected unix-ms int)'}).encode())
+            return
+    else:
+        since_ms = int(time.time() * 1000) + 1  # +1 so ts < since includes "now"
+
+    # Parse `limit` (default 200, max 500).
+    limit_raw = (qs.get('limit') or [''])[0]
+    if limit_raw:
+        try:
+            limit = int(limit_raw)
+        except (ValueError, TypeError):
+            handler.send_response(400)
+            handler.send_header('Content-Type', 'application/json')
+            handler.end_headers()
+            handler.wfile.write(json.dumps({'error': 'bad limit (expected int)'}).encode())
+            return
+        if limit < 1 or limit > 500:
+            handler.send_response(400)
+            handler.send_header('Content-Type', 'application/json')
+            handler.end_headers()
+            handler.wfile.write(json.dumps({'error': 'limit out of range [1, 500]'}).encode())
+            return
+    else:
+        limit = 200
+
+    colony_filter = (qs.get('colony') or [''])[0].strip()
+    kind_raw = (qs.get('kind') or [''])[0].strip()
+    kind_filter = set(k.strip() for k in kind_raw.split(',') if k.strip()) if kind_raw else set()
+
+    # Read timeline-full.jsonl. Missing file → empty rows (graceful).
+    rows = []
+    if os.path.isfile(timeline_full_path):
+        try:
+            with open(timeline_full_path, encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(row, dict):
+                        continue
+                    ts = row.get('ts')
+                    if not isinstance(ts, (int, float)) or ts >= since_ms:
+                        continue
+                    if colony_filter and row.get('colony', '') != colony_filter:
+                        continue
+                    if kind_filter and row.get('kind', '') not in kind_filter:
+                        continue
+                    rows.append(row)
+                    if len(rows) > limit:
+                        # Defer trim until end so we keep the absolute-newest
+                        # `limit` rows (file is already ts-desc; this is just
+                        # belt-and-braces against an unsorted producer).
+                        pass
+        except OSError as e:
+            handler.send_response(500)
+            handler.send_header('Content-Type', 'application/json')
+            handler.end_headers()
+            handler.wfile.write(json.dumps({'error': 'read failed: ' + str(e)}).encode())
+            return
+
+    # File is already ts-desc, but resort defensively (cheap on bounded N).
+    rows.sort(key=lambda r: r.get('ts', 0), reverse=True)
+    if len(rows) > limit:
+        rows = rows[:limit]
+
+    next_cursor = rows[-1].get('ts') if rows else None
+    handler.send_response(200)
+    handler.send_header('Content-Type', 'application/json')
+    handler.end_headers()
+    handler.wfile.write(json.dumps({
+        'rows': rows,
+        'next_cursor': next_cursor,
+    }).encode())
+
+
 class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
+        if self.path.startswith('/timeline?') or self.path == '/timeline':
+            _serve_timeline(self)
+            return
         if self.path == '/events':
             # #313 PR 1: live SSE channel. Holds the connection open, pushes
             # one `event: snapshot\ndata: <COLLECTOR_JSON>\n\n` frame whenever

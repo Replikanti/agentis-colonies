@@ -9,6 +9,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Federation-wide chronological action timeline** — completes the timeline
+  story for [#315](https://github.com/Replikanti/agentis-colonies/issues/315)
+  (PR 2 of 2). Combined with PR 1 (per-agent modal section + collector-side
+  `build_agent_timeline()` merge of experience / spend / confidence-log /
+  lifecycle JSONL streams), the timeline story is complete. PR 2 lands the
+  federation-wide tile + a new `GET /timeline` HTTP endpoint with pagination.
+
+  The collector emits a new top-level `timeline[]` array (last 200 rows,
+  reverse-chronological across all agents) as part of `COLLECTOR_JSON`.
+  Each row carries the PR 1 envelope (`{ts, agent_id, kind, payload,
+  severity}`) plus two new fields — `agent_name` and `colony` — so the
+  client renders colony chips without a second `agents` lookup. The
+  merge re-uses the per-source bucketing PR 1 already does
+  (lifecycle + confidence-log keyed by `agent_id` once across the
+  federation; experience + spend re-read per agent from the same files
+  the per-agent timelines slice). Total complexity stays
+  `O(N_lifecycle + N_experience + N_spend + N_confidence)` — no
+  quadratic per-agent re-reads.
+
+  The federation-wide Event Timeline tile (template lines around 696–710)
+  drops the legacy regex log scraper (`data.events`) and renders directly
+  from the structured `data.timeline[]`. Each row shows: timestamp
+  (ABS / REL toggle), agent name, colony chip, kind icon, and a 1-line
+  summary string per kind that mirrors the per-agent modal verbatim.
+  Filter UI grows two new layers: a colony dropdown built from
+  `colonyList`, and a kind chip row (`learn` / `prompt` /
+  `confidence_change` / `lifecycle`) that supersedes the pre-PR2
+  classifier-typed chips. Pre-existing filters survive: blanket cursor
+  (Clear all), per-(agent_name, kind) cursor (Clear stale), per-row
+  dismiss set, time-mode toggle, auto-hide-stale on `error`-severity
+  rows from cleanly-ticking agents. Every chip / filter persists in
+  `localStorage` namespaced by `FED_NAME`. Reuses the existing
+  `timeline-entry` / `timeline-ts` / `timeline-type` CSS so colour cues
+  match the per-agent modal palette. Live updates flow through the
+  `agentis:snapshot` SSE channel landed by [#344](https://github.com/Replikanti/agentis-colonies/issues/344)
+  (#313 PR 2): `renderEventTimeline(data)` is one of the eleven
+  `renderXxx` functions called on every fresh snapshot, so the tile
+  refreshes in place without `location.reload()`.
+
+  **`GET /timeline?since=<unix-ms>&limit=<N>&colony=<name>&kind=<csv>`**
+  — new read-only HTTP endpoint that returns
+  `{rows: [...], next_cursor: <ts>|null}` of timeline rows OLDER than
+  `since` (default = current time, returning the most-recent N rows).
+  `limit` defaults to 200, capped at 500 to bound memory. `colony` is
+  an exact-match string filter; `kind` is a comma-separated list of
+  kinds. Backed by a precomputed `<dash-dir>/timeline-full.jsonl`
+  written atomically by the wrapper alongside `snapshot.json` after
+  each generate cycle (last 7 days OR 5000 rows, whichever is smaller,
+  reverse-chronological). The new
+  `lib/federation-dashboard-timeline.py` helper reads the four source
+  streams once and writes the JSONL output directly without going
+  through the embedded 200-row cap. Endpoint contract: `200` on
+  success (including missing file → empty rows), `400` on malformed
+  query params (bad since/limit, limit out of `[1, 500]`), `500` on
+  internal read error. No side effects, no signals, no daemon
+  mutation — purely read-only.
+
+  New tests in `tools/test-timeline-rendering.sh`:
+  - **t30**: drives the collector against a 3-agent fixture and
+    asserts `data.timeline[]` is non-empty, ts-desc sorted, capped at
+    200, contains rows from at least 2 distinct agents, and every row
+    carries `agent_name` + `colony`.
+  - **t31**: HTTP smoke against `/timeline?since=<future>&limit=5` —
+    asserts `rows` is ts-desc sorted, length ≤ 5, and `next_cursor`
+    is non-null when more rows remain.
+  - **t32**: HTTP smoke against `/timeline?colony=colony-b` — asserts
+    every returned row carries `colony=colony-b` and only the
+    expected agent ids appear.
+
+  Out of scope (deferred): calendar-picker date range, CSV export,
+  full-text search, per-row drill-in to a separate page.
+
 - **Live tile updates via Server-Sent Events** — IIFE → `renderXxx(data)`
   refactor that closes [#313](https://github.com/Replikanti/agentis-colonies/issues/313)
   (PR 2 of 2). Combined with PR 1 (server-side `/events` plumbing,

@@ -193,36 +193,37 @@ else
 fi
 
 # --- Test 6: no raw 13-digit ms leaks into rendered timeline rows. The
-#     events array literal in the JS source legitimately contains the raw
+#     timeline array literal in the JS source legitimately contains the raw
 #     ms values (that's the JSON payload), so we restrict the check to
-#     the JS that builds the row HTML — i.e. the timeline IIFE body and
-#     the format helpers must not contain a 13-digit standalone literal
-#     in a way that would render in the row. We instead assert that the
-#     row template uses formatTimestamp(e.ts), not bare e.ts string
-#     concatenation. ---
+#     the JS that builds the row HTML — i.e. the timeline renderer body
+#     must not contain a 13-digit standalone literal in a way that would
+#     render in the row. We instead assert that the row template uses
+#     formatTimestamp(<row>.ts), not bare <row>.ts string concatenation.
+#     #315 PR 2: federation-wide timeline now iterates `r` over
+#     data.timeline[]; pre-PR2 it was `e` over data.events[]. Accept both
+#     names so this test stays useful across the refactor.
 if python3 - "$HTML_FILE" <<'PY' 2>/dev/null
 import sys, re
 with open(sys.argv[1]) as f:
     html = f.read()
-# Locate the timeline IIFE: from "// --- Event Timeline ---" to the next
-# "// --- " marker.
+# Locate the timeline renderer: from "// --- Event Timeline ---" to the
+# next "// --- " marker.
 m = re.search(r'// --- Event Timeline ---(.*?)// --- ', html, re.DOTALL)
 if not m:
     sys.exit(1)
 body = m.group(1)
-# Must reference formatTimestamp on e.ts; must NOT concat e.ts directly
-# into a span without going through formatTimestamp/esc/Date.
-if 'formatTimestamp(e.ts)' not in body:
+# Must reference formatTimestamp on the row var (`e` pre-PR2, `r` post).
+if not re.search(r'formatTimestamp\(\s*[er]\.ts\s*\)', body):
     sys.exit(1)
-# Defensive: ensure no naked '+ e.ts +' that would dump a 13-digit number.
-if re.search(r'\+\s*e\.ts\s*\+', body):
+# Defensive: ensure no naked '+ <row>.ts +' that would dump a 13-digit number.
+if re.search(r'\+\s*[er]\.ts\s*\+', body):
     sys.exit(1)
 sys.exit(0)
 PY
 then
-    pass "6: timeline row template renders e.ts via formatTimestamp, no raw-ms leak"
+    pass "6: timeline row template renders ts via formatTimestamp, no raw-ms leak"
 else
-    fail "6: rendered timeline row template still references e.ts directly"
+    fail "6: rendered timeline row template still references ts directly"
 fi
 
 # --- Test 7: /kill regression smoke (issue #161). ---
@@ -243,20 +244,21 @@ else
 fi
 
 # --- Test 8: unit-mismatch guard. relTime() expects epoch-SECONDS. The
-#     timeline IIFE works in epoch-ms (post-#158) and must divide by 1000
+#     timeline body works in epoch-ms (post-#158) and must divide by 1000
 #     before passing to relTime. Recent Experience modal works in epoch-
 #     seconds and must NOT divide. Lock both in to prevent the next
-#     refactor from mixing units. ---
+#     refactor from mixing units. #315 PR 2 renamed the timeline loop var
+#     from `e` to `r`; accept both. ---
 if python3 - "$HTML_FILE" <<'PY' 2>/dev/null
 import sys, re
 with open(sys.argv[1]) as f:
     html = f.read()
-# Timeline IIFE must call relTime(e.ts / 1000) (or e.ts/1000) somewhere.
+# Timeline body must call relTime(<row>.ts / 1000) somewhere.
 m = re.search(r'// --- Event Timeline ---(.*?)// --- ', html, re.DOTALL)
 if not m:
     sys.exit(1)
 timeline_body = m.group(1)
-if not re.search(r'relTime\(\s*e\.ts\s*/\s*1000\s*\)', timeline_body):
+if not re.search(r'relTime\(\s*[er]\.ts\s*/\s*1000\s*\)', timeline_body):
     sys.exit(1)
 # Recent Experience modal must call relTime(e.ts) — no division. Locate
 # the modal block by its header marker.
@@ -853,6 +855,293 @@ else
     fail "28: per-agent timeline injection regressed — see stderr above"
 fi
 rm -rf "$QA_FED"
+
+# --- #315 PR 2: federation-wide unified timeline + /timeline endpoint.
+#     Build a 3-agent fixture so we can assert the merged stream contains
+#     rows from multiple agents, ts-desc sorted, capped at 200. Then boot
+#     the dashboard against the same fixture and smoke /timeline with
+#     pagination + colony filtering. ---
+QA_FED2="/tmp/qa-315-pr2-fed"
+COLLECTOR_PY="$REPO_ROOT/federation-dashboard/lib/federation-dashboard-collector.py"
+rm -rf "$QA_FED2"
+mkdir -p "$QA_FED2/.agentis/experience" \
+         "$QA_FED2/.agentis/spend" \
+         "$QA_FED2/.agentis/lifecycle" \
+         "$QA_FED2/.dashboard" \
+         "$QA_FED2/colony-a/agents" \
+         "$QA_FED2/colony-a/config" \
+         "$QA_FED2/colony-b/agents" \
+         "$QA_FED2/colony-b/config"
+cat > "$QA_FED2/colony-a/config/colony.toml" <<'TOML'
+[colony]
+name = "colony-a"
+TOML
+cat > "$QA_FED2/colony-b/config/colony.toml" <<'TOML'
+[colony]
+name = "colony-b"
+TOML
+
+# Three agents: agent_a1, agent_a2 in colony-a; agent_b1 in colony-b.
+for ag_pair in colony-a/agents/agent_a1.ag colony-a/agents/agent_a2.ag colony-b/agents/agent_b1.ag; do
+    cat > "$QA_FED2/$ag_pair" <<'AG'
+cb 100;
+fn tick() { return Void; }
+AG
+done
+
+QA_AID_A1="aaaaaaa1"
+QA_AID_A2="aaaaaaa2"
+QA_AID_B1="bbbbbbb1"
+QA_NOW2="$(date '+%s')"
+QA_NOW2_MS=$((QA_NOW2 * 1000))
+
+# Each agent gets >=1 experience row + >=1 spend row + >=1 lifecycle row,
+# so the merged feed carries rows from all three. Stagger ts so the desc
+# sort is observable.
+cat > "$QA_FED2/.agentis/experience/$QA_AID_A1.jsonl" <<EXP
+{"v":1,"ts":$((QA_NOW2 - 300)),"agent":"$QA_AID_A1","action":"draft","in":"MR 1","outcome":"success","delta":0.05}
+{"v":1,"ts":$((QA_NOW2 - 200)),"agent":"$QA_AID_A1","action":"draft","in":"MR 2","outcome":"success","delta":0.10}
+EXP
+cat > "$QA_FED2/.agentis/experience/$QA_AID_A2.jsonl" <<EXP
+{"v":1,"ts":$((QA_NOW2 - 250)),"agent":"$QA_AID_A2","action":"review","in":"MR 3","outcome":"failure","delta":-0.02}
+EXP
+cat > "$QA_FED2/.agentis/experience/$QA_AID_B1.jsonl" <<EXP
+{"v":1,"ts":$((QA_NOW2 - 150)),"agent":"$QA_AID_B1","action":"merge","in":"MR 4","outcome":"success","delta":0.20}
+EXP
+
+cat > "$QA_FED2/.agentis/spend/$QA_AID_A1.jsonl" <<SPEND
+{"v":1,"ts":$((QA_NOW2_MS - 280000)),"agent":"$QA_AID_A1","colony":"colony-a","backend":"claude-cli","model":"claude-sonnet-4-20250514","input_tokens":100,"output_tokens":50,"cost_usd":0.0123,"cost_source":"native","cb":50,"instr_hash":"deadbeef","cached":false,"ok":true}
+SPEND
+cat > "$QA_FED2/.agentis/spend/$QA_AID_A2.jsonl" <<SPEND
+{"v":1,"ts":$((QA_NOW2_MS - 220000)),"agent":"$QA_AID_A2","colony":"colony-a","backend":"claude-cli","model":"claude-sonnet-4-20250514","input_tokens":120,"output_tokens":60,"cost_usd":0.0150,"cost_source":"native","cb":50,"instr_hash":"cafebabe","cached":false,"ok":true}
+SPEND
+cat > "$QA_FED2/.agentis/spend/$QA_AID_B1.jsonl" <<SPEND
+{"v":1,"ts":$((QA_NOW2_MS - 100000)),"agent":"$QA_AID_B1","colony":"colony-b","backend":"claude-cli","model":"claude-sonnet-4-20250514","input_tokens":150,"output_tokens":70,"cost_usd":0.0180,"cost_source":"native","cb":50,"instr_hash":"feedface","cached":false,"ok":true}
+SPEND
+
+cat > "$QA_FED2/.agentis/lifecycle/events.jsonl" <<LIFE
+{"agent_id":"$QA_AID_A1","event":"daemon.started","cb_per_tick":2000,"tick_interval_ms":60000,"ts":$((QA_NOW2 - 350))}
+{"agent_id":"$QA_AID_A2","event":"daemon.started","cb_per_tick":2000,"tick_interval_ms":60000,"ts":$((QA_NOW2 - 340))}
+{"agent_id":"$QA_AID_B1","event":"daemon.started","cb_per_tick":2000,"tick_interval_ms":60000,"ts":$((QA_NOW2 - 330))}
+LIFE
+
+QA_DAEMONS2=$(python3 -c "
+import json
+print(json.dumps([
+  {'agent_id':'$QA_AID_A1','source':'$QA_FED2/colony-a/agents/agent_a1.ag','state':'running','health':'healthy','pid':0,'confidence':0.5,'tick_ok':1,'tick_err':0,'started_at':$QA_NOW2 - 400},
+  {'agent_id':'$QA_AID_A2','source':'$QA_FED2/colony-a/agents/agent_a2.ag','state':'running','health':'healthy','pid':0,'confidence':0.5,'tick_ok':1,'tick_err':0,'started_at':$QA_NOW2 - 400},
+  {'agent_id':'$QA_AID_B1','source':'$QA_FED2/colony-b/agents/agent_b1.ag','state':'running','health':'healthy','pid':0,'confidence':0.5,'tick_ok':1,'tick_err':0,'started_at':$QA_NOW2 - 400},
+]))
+")
+QA_AGENT_MAP2='[{"agent":"agent_a1","colony":"colony-a"},{"agent":"agent_a2","colony":"colony-a"},{"agent":"agent_b1","colony":"colony-b"}]'
+QA_COLONIES2='["colony-a","colony-b"]'
+
+QA_JSON2="$(python3 "$COLLECTOR_PY" \
+    "$QA_DAEMONS2" \
+    "$QA_AGENT_MAP2" \
+    "$QA_FED2" \
+    "$QA_NOW2" \
+    "$QA_FED2/.agentis/experience" \
+    "$QA_FED2/.agentis/logs" \
+    "$QA_FED2/.dashboard" \
+    "$QA_COLONIES2" \
+    "" \
+    agent_a1 agent_a2 agent_b1 2>/dev/null)"
+
+t30_ok=1
+if [ -z "$QA_JSON2" ]; then
+    echo "  collector returned empty output"
+    t30_ok=0
+elif ! python3 - <<PY 2>&1
+import json, sys
+blob = json.loads('''$QA_JSON2''')
+tl = blob.get('timeline')
+if not isinstance(tl, list):
+    sys.stderr.write('federation-wide timeline missing or not a list: %r\n' % type(tl)); sys.exit(2)
+if len(tl) == 0:
+    sys.stderr.write('federation-wide timeline is empty\n'); sys.exit(3)
+if len(tl) > 200:
+    sys.stderr.write('federation-wide timeline exceeds 200-row cap: %d\n' % len(tl)); sys.exit(4)
+# ts-desc sort.
+ts_seq = [r.get('ts') for r in tl if isinstance(r.get('ts'), int)]
+if ts_seq != sorted(ts_seq, reverse=True):
+    sys.stderr.write('federation-wide timeline not ts-desc sorted: %r\n' % ts_seq[:10]); sys.exit(5)
+# Rows from MULTIPLE agents — at least 2 distinct agent_ids must appear.
+aids = set(r.get('agent_id') for r in tl)
+if len(aids) < 2:
+    sys.stderr.write('only one agent in federation timeline: %r\n' % aids); sys.exit(6)
+# Augmentation: every row carries agent_name + colony.
+for r in tl:
+    if 'agent_name' not in r or 'colony' not in r:
+        sys.stderr.write('row missing agent_name/colony: %r\n' % r); sys.exit(7)
+# Per-agent timelines also still populated (PR1 contract preserved).
+for a in blob.get('agents') or []:
+    if not isinstance(a.get('timeline'), list):
+        sys.stderr.write('per-agent timeline regression on %s\n' % a.get('name')); sys.exit(8)
+sys.exit(0)
+PY
+then
+    t30_ok=0
+fi
+if [ "$t30_ok" -eq 1 ]; then
+    pass "30: data.timeline[] federation-wide field exists, ts-desc, capped at 200, multi-agent (#315 PR 2)"
+else
+    fail "30: federation-wide timeline assertion failed — see stderr above"
+fi
+
+# --- t31 / t32: HTTP smoke against /timeline endpoint. We boot
+#     federation-dashboard-server.py directly (NOT the wrapper) against a
+#     hand-written timeline-full.jsonl in the dashboard cache dir.
+#     Booting the wrapper would shell out to `agentis daemon list --json`
+#     which hits the global registry and returns daemons unrelated to the
+#     fixture — causing the wrapper's timeline regen to write zero rows.
+#     The server endpoint contract is "read timeline-full.jsonl from
+#     <dash-dir>"; we exercise that contract directly. ---
+DASH_DIR2="$QA_FED2/.dashboard"
+TIMELINE_FULL2="$DASH_DIR2/timeline-full.jsonl"
+# Hand-write 9 rows: 3 per agent × 3 agents, ts-desc.
+python3 - <<PY
+import json, os, time
+out = "$TIMELINE_FULL2"
+QA_NOW2_MS = $((QA_NOW2 * 1000))
+rows = [
+  # colony-a, agent_a1
+  {"ts": QA_NOW2_MS - 200000, "agent_id": "aaaaaaa1", "kind": "learn",
+   "payload": {"outcome": "success", "delta": 0.10}, "severity": "info",
+   "agent_name": "agent_a1", "colony": "colony-a"},
+  {"ts": QA_NOW2_MS - 280000, "agent_id": "aaaaaaa1", "kind": "prompt",
+   "payload": {"cost_usd": 0.0123, "input_tokens": 100, "output_tokens": 50,
+               "model": "claude-sonnet-4-20250514", "ok": True}, "severity": "info",
+   "agent_name": "agent_a1", "colony": "colony-a"},
+  {"ts": QA_NOW2_MS - 350000, "agent_id": "aaaaaaa1", "kind": "lifecycle",
+   "payload": {"event": "daemon.started"}, "severity": "info",
+   "agent_name": "agent_a1", "colony": "colony-a"},
+  # colony-a, agent_a2
+  {"ts": QA_NOW2_MS - 250000, "agent_id": "aaaaaaa2", "kind": "learn",
+   "payload": {"outcome": "failure", "delta": -0.02}, "severity": "error",
+   "agent_name": "agent_a2", "colony": "colony-a"},
+  {"ts": QA_NOW2_MS - 220000, "agent_id": "aaaaaaa2", "kind": "prompt",
+   "payload": {"cost_usd": 0.0150, "input_tokens": 120, "output_tokens": 60,
+               "model": "claude-sonnet-4-20250514", "ok": True}, "severity": "info",
+   "agent_name": "agent_a2", "colony": "colony-a"},
+  {"ts": QA_NOW2_MS - 340000, "agent_id": "aaaaaaa2", "kind": "lifecycle",
+   "payload": {"event": "daemon.started"}, "severity": "info",
+   "agent_name": "agent_a2", "colony": "colony-a"},
+  # colony-b, agent_b1
+  {"ts": QA_NOW2_MS - 150000, "agent_id": "bbbbbbb1", "kind": "learn",
+   "payload": {"outcome": "success", "delta": 0.20}, "severity": "info",
+   "agent_name": "agent_b1", "colony": "colony-b"},
+  {"ts": QA_NOW2_MS - 100000, "agent_id": "bbbbbbb1", "kind": "prompt",
+   "payload": {"cost_usd": 0.0180, "input_tokens": 150, "output_tokens": 70,
+               "model": "claude-sonnet-4-20250514", "ok": True}, "severity": "info",
+   "agent_name": "agent_b1", "colony": "colony-b"},
+  {"ts": QA_NOW2_MS - 330000, "agent_id": "bbbbbbb1", "kind": "lifecycle",
+   "payload": {"event": "daemon.started"}, "severity": "info",
+   "agent_name": "agent_b1", "colony": "colony-b"},
+]
+rows.sort(key=lambda r: r["ts"], reverse=True)
+os.makedirs(os.path.dirname(out), exist_ok=True)
+with open(out, "w") as f:
+    for r in rows:
+        f.write(json.dumps(r, separators=(",", ":")))
+        f.write("\n")
+PY
+
+PORT2="$(python3 -c "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); p=s.getsockname()[1]; s.close(); print(p)")"
+LOG2="$TMPDIR_TEST/server-pr2.log"
+SERVER_PY_PR2="$DASH_LIB_DIR/federation-dashboard-server.py"
+# Direct server boot. Args: serve_dir, port, script_path, fed_dir,
+# allowed_agents, agent_map_json, fed_tools_dir.
+setsid python3 "$SERVER_PY_PR2" "$DASH_DIR2" "$PORT2" \
+    "$DASHBOARD_SH" "$QA_FED2" \
+    "agent_a1,agent_a2,agent_b1" "$QA_AGENT_MAP2" "" \
+    >"$LOG2" 2>&1 &
+DASH_PID2=$!
+
+ready2=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if curl -f -s -o /dev/null "http://127.0.0.1:$PORT2/timeline?limit=1" 2>/dev/null; then
+        ready2=1
+        break
+    fi
+    sleep 0.5
+done
+if [ "$ready2" -ne 1 ]; then
+    fail "31/32: server-pr2 never became ready" "log tail: $(tail -10 "$LOG2" 2>/dev/null | tr '\n' ' ')"
+    kill -TERM "-$DASH_PID2" 2>/dev/null || kill -TERM "$DASH_PID2" 2>/dev/null || true
+    rm -rf "$QA_FED2"
+    echo ""
+    echo "Results: $PASS passed, $FAIL failed"
+    exit 1
+fi
+
+# --- t31: /timeline?since=<future-ms>&limit=10 returns rows + next_cursor.
+#     The fixture has ~9 timeline-eligible rows (3 exp + 3 spend + 3 lifecycle
+#     after the 7-day window filter), but the contract is "returns up to limit
+#     rows with non-null next_cursor when more remain". Use limit=5 so we
+#     reliably get a non-null next_cursor. ---
+FUTURE_MS=$(( ( QA_NOW2 + 3600 ) * 1000 ))
+TL_RESP="$TMPDIR_TEST/timeline.json"
+curl -s "http://127.0.0.1:$PORT2/timeline?since=$FUTURE_MS&limit=5" -o "$TL_RESP" || true
+if python3 - "$TL_RESP" <<'PY' 2>/dev/null
+import sys, json
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+assert isinstance(data, dict), 'response is not a dict'
+rows = data.get('rows')
+assert isinstance(rows, list), 'rows is not a list: %r' % type(rows)
+# At least 1 row from the 9-row fixture + limit cap respected.
+if len(rows) == 0:
+    sys.stderr.write('no rows returned by /timeline\n'); sys.exit(2)
+if len(rows) > 5:
+    sys.stderr.write('rows exceeds limit=5: %d\n' % len(rows)); sys.exit(3)
+# ts-desc sort within the response.
+ts_seq = [r.get('ts') for r in rows]
+if ts_seq != sorted(ts_seq, reverse=True):
+    sys.stderr.write('rows not ts-desc: %r\n' % ts_seq); sys.exit(4)
+# next_cursor non-null because the fixture has more rows than limit=5.
+if data.get('next_cursor') is None:
+    sys.stderr.write('next_cursor is null but more rows should remain\n'); sys.exit(5)
+sys.exit(0)
+PY
+then
+    pass "31: /timeline?since=<future>&limit=5 returns rows ts-desc with non-null next_cursor (#315 PR 2)"
+else
+    fail "31: /timeline pagination smoke regressed — body: $(head -c 400 "$TL_RESP" 2>/dev/null)"
+fi
+
+# --- t32: /timeline?colony=<name> filters correctly. colony-b has only
+#     agent_b1, which contributes 3 rows (1 exp + 1 spend + 1 lifecycle). ---
+TL_RESP_B="$TMPDIR_TEST/timeline-b.json"
+curl -s "http://127.0.0.1:$PORT2/timeline?colony=colony-b&since=$FUTURE_MS&limit=200" -o "$TL_RESP_B" || true
+if python3 - "$TL_RESP_B" <<'PY' 2>/dev/null
+import sys, json
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+rows = data.get('rows') or []
+if not rows:
+    sys.stderr.write('no rows returned for colony=colony-b\n'); sys.exit(2)
+# Every row must carry colony=colony-b.
+for r in rows:
+    if r.get('colony') != 'colony-b':
+        sys.stderr.write('row leaked from another colony: %r\n' % r); sys.exit(3)
+# Same agent_id across all rows (only agent_b1 in colony-b).
+aids = set(r.get('agent_id') for r in rows)
+if aids != {'bbbbbbb1'}:
+    sys.stderr.write('unexpected agents under colony-b filter: %r\n' % aids); sys.exit(4)
+sys.exit(0)
+PY
+then
+    pass "32: /timeline?colony=colony-b returns only colony-b rows (#315 PR 2)"
+else
+    fail "32: /timeline colony filter regressed — body: $(head -c 400 "$TL_RESP_B" 2>/dev/null)"
+fi
+
+# Tear down the second dashboard before finishing.
+kill -TERM "-$DASH_PID2" 2>/dev/null || kill -TERM "$DASH_PID2" 2>/dev/null || true
+sleep 0.5
+kill -KILL "-$DASH_PID2" 2>/dev/null || kill -KILL "$DASH_PID2" 2>/dev/null || true
+rm -rf "$QA_FED2"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

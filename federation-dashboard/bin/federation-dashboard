@@ -70,6 +70,10 @@ HISTORY_FILE="$DASH_DIR/history.json"
 # rename); the server's watcher thread polls mtime every 250ms and pushes
 # `event: snapshot` frames to /events subscribers on change.
 SNAPSHOT_FILE="$DASH_DIR/snapshot.json"
+# #315 PR 2: full timeline (last 7 days or 5000 rows, ts-desc) written
+# alongside snapshot.json. The /timeline HTTP endpoint reads from this file
+# to serve older rows than the in-page tile carries (capped at 200).
+TIMELINE_FULL_FILE="$DASH_DIR/timeline-full.jsonl"
 
 mkdir -p "$DASH_DIR"
 
@@ -257,6 +261,34 @@ generate() {
         mv -f "${SNAPSHOT_FILE}.tmp.$$" "$SNAPSHOT_FILE" 2>/dev/null \
             || rm -f "${SNAPSHOT_FILE}.tmp.$$" 2>/dev/null || true
     fi
+
+    # #315 PR 2: write the full federation-wide timeline (last 7 days,
+    # 5000-row cap, ts-desc) as JSONL alongside snapshot.json. The
+    # /timeline HTTP endpoint reads from this file to paginate beyond the
+    # 200-row in-page cap. Atomic temp + rename so concurrent reads never
+    # see a torn payload. Failure is non-fatal — /timeline returns 200
+    # with an empty rows array if the file is missing or unreadable.
+    # The dedicated helper lib/federation-dashboard-timeline.py re-reads
+    # the four source streams ONCE and writes the JSONL output directly,
+    # without going through the embedded 200-row cap.
+    local SPEND_DIR="${FED_DIR}/.agentis/spend"
+    if [ ! -d "$SPEND_DIR" ]; then
+        SPEND_DIR="${FED_DIR}/../.agentis/spend"
+    fi
+    if [ ! -d "$SPEND_DIR" ]; then
+        SPEND_DIR=".agentis/spend"
+    fi
+    local LIFECYCLE_DIR="${FED_DIR}/.agentis/lifecycle"
+    if [ ! -d "$LIFECYCLE_DIR" ]; then
+        LIFECYCLE_DIR="${FED_DIR}/../.agentis/lifecycle"
+    fi
+    if [ ! -d "$LIFECYCLE_DIR" ]; then
+        LIFECYCLE_DIR=".agentis/lifecycle"
+    fi
+    python3 "$LIB_DIR/federation-dashboard-timeline.py" \
+        "$EXPERIENCE_DIR" "$SPEND_DIR" "$LIFECYCLE_DIR" \
+        "$DASH_DIR" "$AGENT_COLONY_MAP" "@$DAEMON_FILE" \
+        "$TIMELINE_FULL_FILE" 2>/dev/null || true
 }
 
 # --- Regen-only mode ---
