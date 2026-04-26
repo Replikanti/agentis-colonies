@@ -16,6 +16,7 @@ is asserted until multi-version CI is in place.
 ## [Unreleased]
 
 ### Fixed
+- `tools/colony-lint.sh` no longer transitively runs `tools/test-kill-endpoint.sh` and `tools/test-kill-federation.sh` (which kill the live federation despite the #296 cwd-filter). The auto-discovered test loop now `[SKIP]`s both by default; opt in via `AGENTIS_RUN_KILL_TESTS=1` for CI in isolated environments ([#329](https://github.com/Replikanti/agentis-colonies/issues/329)).
 - `start-federation.sh` heartbeat-wipe path now matches the actual agentis registry. The old wipe targeted `<fed-dir>/.agentis/daemon` (empty placeholder) but the real registry lives at `<fed-dir>/../.agentis/daemon` via the per-colony symlink layout — stale heartbeat files survived restarts and the watchdog killed every fresh child on its first poll iteration with `heartbeat stale (N ms > timeout)`. Both paths are now swept (#302).
 
 ### Added
