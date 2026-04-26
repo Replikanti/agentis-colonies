@@ -245,24 +245,26 @@ tick_interval_for() {
 # Each line of stdout is one CLI token; the caller reads the stream into
 # the CC_ARGS bash array via `while IFS= read -r line` so quoting is preserved.
 llm_override_args() {
-    local fed_root="$REPO_ROOT/dev-apprenticeship"
-    local override_file="$fed_root/.agentis/llm-backend-override"
-    if [ -f "$override_file" ]; then
-        local backend
-        backend="$(tr -d '[:space:]' < "$override_file" 2>/dev/null || true)"
-        if [ -n "$backend" ]; then
-            printf -- '--config-override\nllm.backend=%s\n' "$backend"
-            return 0
-        fi
-    fi
-    # No cost-cap override; consult the colony [llm] block.
-    local k v
-    for k in backend command model api_key_env; do
-        v="$(parse_toml llm "$k" 2>/dev/null || true)"
-        if [ -n "$v" ]; then
-            printf -- '--config-override\nllm.%s=%s\n' "$k" "$v"
-        fi
-    done
+    # NOTE: `agentis daemon` does NOT accept `--config-override` (#351 — the
+    # flag is in upstream's release-notes / colonies CLAUDE.md but never landed
+    # on the actual binary as of agentis 1.4.7). Emitting it makes every
+    # respawn die with `unknown flag: --config-override`, breaking restart on
+    # any colony that has either a `[llm]` block or a cost-cap downgrade
+    # override file.
+    #
+    # Until the upstream flag lands, we emit nothing here. Colonies fall back
+    # to the federation-wide `<fed>/.agentis/config` for `llm.*` keys, which
+    # is the same behaviour as pre-#348 federations. The colony.toml `[llm]`
+    # block stays in the schema as a forward-compatible documentation surface
+    # so operators don't have to delete it before the upstream fix; it just
+    # has no runtime effect today.
+    #
+    # Cost-cap downgrade (#318) is also affected — the `<fed>/.agentis/llm-
+    # backend-override` file write succeeds but the spliced flag was always
+    # rejected by the binary, so the breach path never actually re-spawned
+    # daemons on `mock`. A follow-up coordinated with upstream restores the
+    # primitive once the flag exists.
+    :
 }
 
 # Rate-limit status mode (federation-dashboard 0.3.0). Same env-load path
