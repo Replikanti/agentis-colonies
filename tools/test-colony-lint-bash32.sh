@@ -97,6 +97,33 @@ for s in $SECRET_SCRIPTS; do
     fi
 done
 
+# --- Test 5: destructive kill-tests skipped by default (#329) ---
+# colony-lint.sh auto-discovers tools/test-*.sh and ran them all, including
+# test-kill-{endpoint,federation}.sh which shell out to kill-federation.sh
+# and (despite the #296 cwd-filter) kill the operator's live federation.
+# We assert the source carries a case-statement that gates both scripts on
+# AGENTIS_RUN_KILL_TESTS=1 with a [SKIP] emit by default. NOT spawning the
+# loop here on purpose — that would re-introduce the very bug we're
+# fixing.
+test5_ok=1
+if ! grep -q 'test-kill-endpoint.sh' "$LINT"; then
+    test5_ok=0
+fi
+if ! grep -q 'test-kill-federation.sh' "$LINT"; then
+    test5_ok=0
+fi
+if ! grep -q 'AGENTIS_RUN_KILL_TESTS' "$LINT"; then
+    test5_ok=0
+fi
+if ! grep -q 'destructive .* AGENTIS_RUN_KILL_TESTS=1 to run' "$LINT"; then
+    test5_ok=0
+fi
+if [ "$test5_ok" = "1" ]; then
+    pass "kill-tests gated behind AGENTIS_RUN_KILL_TESTS (#329)"
+else
+    fail "kill-tests guard missing or malformed in colony-lint.sh"
+fi
+
 # --- Test 4: missing tomllib/tomli triggers [SKIP], no traceback (#272) ---
 # Skip when this script is invoked from inside colony-lint.sh — running
 # the lint again from here would recurse (lint discovers this test, runs

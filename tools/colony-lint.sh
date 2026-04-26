@@ -672,12 +672,35 @@ for t in "${test_scripts[@]}"; do
     # #272: Re-entrancy marker so test scripts that re-invoke
     # colony-lint.sh (e.g. test-colony-lint-bash32.sh test 4) can
     # detect the nested run and skip the recursive step.
-    if AGENTIS_COLONY_LINT_NESTED=1 bash "$t" &>/dev/null; then
-        pass "tools: $(basename "$t") unit tests"
-    else
-        fail "tools: $(basename "$t") unit tests"
-        AGENTIS_COLONY_LINT_NESTED=1 bash "$t" 2>&1 | tail -20
-    fi
+    case "$(basename "$t")" in
+        test-kill-endpoint.sh|test-kill-federation.sh)
+            # #329: these tests exercise kill-federation.sh which sends
+            # SIGTERM/SIGKILL to processes matching `agentis daemon-inner`
+            # in the host's scope. Despite cwd-filter (#296), in practice
+            # they still kill the operator's live federation when invoked
+            # from a worktree or shared lint pipeline. Run only when
+            # explicitly requested via AGENTIS_RUN_KILL_TESTS=1 (CI-only
+            # in isolated environments).
+            if [ "${AGENTIS_RUN_KILL_TESTS:-0}" = "1" ]; then
+                if AGENTIS_COLONY_LINT_NESTED=1 bash "$t" &>/dev/null; then
+                    pass "tools: $(basename "$t") unit tests"
+                else
+                    fail "tools: $(basename "$t") unit tests"
+                    AGENTIS_COLONY_LINT_NESTED=1 bash "$t" 2>&1 | tail -20
+                fi
+            else
+                skip "tools: $(basename "$t") (destructive — set AGENTIS_RUN_KILL_TESTS=1 to run)"
+            fi
+            ;;
+        *)
+            if AGENTIS_COLONY_LINT_NESTED=1 bash "$t" &>/dev/null; then
+                pass "tools: $(basename "$t") unit tests"
+            else
+                fail "tools: $(basename "$t") unit tests"
+                AGENTIS_COLONY_LINT_NESTED=1 bash "$t" 2>&1 | tail -20
+            fi
+            ;;
+    esac
 done
 
 # --- Summary ---
