@@ -212,12 +212,21 @@ def main():
         runtime_hours = (now - started_at) / 3600 if started_at else 0
 
         # Find experience file: .agentis/experience/<agent_id>.jsonl
-        # Try both agent_id-based and agent_name-based paths
+        # Try fed-local first (preferred since #238 — keeps sibling
+        # federations under a shared parent isolated), then the
+        # parent-level .agentis/ that the symlinked single-federation
+        # layout produced by `dev-apprenticeship/install.sh` lands on
+        # (#333). Mirrors the resolver in
+        # federation-dashboard/bin/federation-dashboard so the
+        # dashboard's Experience Growth and the sidecar's prereq
+        # checklist agree on entry counts.
         exp_file = None
         exp_entries = []
         for pattern in [
             os.path.join(fed_dir, '.agentis', 'experience', f'{agent_id}.jsonl'),
             os.path.join(fed_dir, '.agentis', 'experience', f'{agent_name}.jsonl'),
+            os.path.normpath(os.path.join(fed_dir, '..', '.agentis', 'experience', f'{agent_id}.jsonl')),
+            os.path.normpath(os.path.join(fed_dir, '..', '.agentis', 'experience', f'{agent_name}.jsonl')),
         ]:
             if os.path.isfile(pattern):
                 exp_file = pattern

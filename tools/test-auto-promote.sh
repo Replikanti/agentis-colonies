@@ -547,6 +547,103 @@ test_step_match "0.39" "no_step"
 test_step_match "0.95" "no_step"
 test_step_match "0.799" "step:0.6-0.8"
 
+# --- Test 16: experience-dir resolver — symlinked-layout fallback (#333) ---
+# `dev-apprenticeship/install.sh` produces a federation layout where each
+# colony's `.agentis/` is a symlink to the parent `agentis-colonies/.agentis/`,
+# so the real experience JSONL lives at `<fed>/../.agentis/experience/`. The
+# pre-#333 resolver only checked `<fed>/.agentis/experience/` and reported
+# `entries_total = 0` for every agent on the live federation. The fix adds
+# `<fed>/..` as a second-priority lookup so the sidecar agrees with the
+# dashboard wrapper's resolver (federation-dashboard/bin/federation-dashboard
+# lines 154-160). Test A: parent-only layout produces N>0 entries.
+
+FED_A="$TMPDIR_TEST/fed-a"
+mkdir -p "$FED_A/.agentis"
+mkdir -p "$FED_A/../.agentis/experience"
+PARENT_EXP_A="$(cd "$FED_A/.." && pwd)/.agentis/experience"
+python3 -c "
+import json
+agent_id = 'aaaa1111'
+with open('$PARENT_EXP_A/' + agent_id + '.jsonl', 'w') as f:
+    for _ in range(3):
+        f.write(json.dumps({'tags': ['acted'], 'outcome': 'success', 'delta': 0.1}) + '\n')
+"
+
+DAEMONS_A='[{"source":"/fake/symlinked.ag","pid":'"$$"',"agent_id":"aaaa1111","colony":"c","started_at":'"$(date +%s)"',"confidence":0.4,"state":"running"}]'
+
+OUT_A=$(python3 "$SCRIPT_DIR/auto-promote-decisions.py" \
+    --preview --config "$SCRIPT_DIR/auto-promote-config.yaml" \
+    "$DAEMONS_A" "$FED_A")
+
+ENTRIES_A=$(python3 -c "
+import json, sys
+arr = json.loads(sys.argv[1])
+if len(arr) != 1:
+    print('arity:' + str(len(arr))); sys.exit(0)
+ev = arr[0].get('evidence', {})
+pr = ev.get('prereqs') or []
+for p in pr:
+    if p.get('name') == 'entries_total':
+        print(p.get('value'))
+        sys.exit(0)
+print('missing')
+" "$OUT_A" 2>&1 || true)
+
+if [ "$ENTRIES_A" = "3" ]; then
+    pass "experience resolver: parent-fallback finds JSONL on symlinked layout (#333)"
+else
+    fail "symlinked-layout fallback" "expected entries_total=3, got <$ENTRIES_A> from <$OUT_A>"
+fi
+
+# --- Test 17: experience-dir resolver — fed-local takes priority (#333) ---
+# Test B: when BOTH `<fed>/.agentis/experience/<id>.jsonl` (5 rows) AND
+# `<fed>/../.agentis/experience/<id>.jsonl` (100 rows) exist, the script
+# must read the fed-local one. This protects the sibling-federation
+# isolation invariant from #238 (two federations under a shared parent
+# must not cross-read each other's experience). The dashboard wrapper
+# already preserves this; the sidecar must too.
+
+FED_B="$TMPDIR_TEST/fed-b"
+mkdir -p "$FED_B/.agentis/experience"
+mkdir -p "$FED_B/../.agentis/experience"
+PARENT_EXP_B="$(cd "$FED_B/.." && pwd)/.agentis/experience"
+python3 -c "
+import json
+agent_id = 'bbbb2222'
+with open('$FED_B/.agentis/experience/' + agent_id + '.jsonl', 'w') as f:
+    for _ in range(5):
+        f.write(json.dumps({'tags': ['acted'], 'outcome': 'success', 'delta': 0.1}) + '\n')
+with open('$PARENT_EXP_B/' + agent_id + '.jsonl', 'w') as f:
+    for _ in range(100):
+        f.write(json.dumps({'tags': ['acted'], 'outcome': 'success', 'delta': 0.1}) + '\n')
+"
+
+DAEMONS_B='[{"source":"/fake/fedlocal.ag","pid":'"$$"',"agent_id":"bbbb2222","colony":"c","started_at":'"$(date +%s)"',"confidence":0.4,"state":"running"}]'
+
+OUT_B=$(python3 "$SCRIPT_DIR/auto-promote-decisions.py" \
+    --preview --config "$SCRIPT_DIR/auto-promote-config.yaml" \
+    "$DAEMONS_B" "$FED_B")
+
+ENTRIES_B=$(python3 -c "
+import json, sys
+arr = json.loads(sys.argv[1])
+if len(arr) != 1:
+    print('arity:' + str(len(arr))); sys.exit(0)
+ev = arr[0].get('evidence', {})
+pr = ev.get('prereqs') or []
+for p in pr:
+    if p.get('name') == 'entries_total':
+        print(p.get('value'))
+        sys.exit(0)
+print('missing')
+" "$OUT_B" 2>&1 || true)
+
+if [ "$ENTRIES_B" = "5" ]; then
+    pass "experience resolver: fed-local takes priority over parent (#333 / #238)"
+else
+    fail "fed-local priority" "expected entries_total=5, got <$ENTRIES_B> from <$OUT_B>"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
