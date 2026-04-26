@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Server-Sent Events (SSE) live snapshot stream** — server-side plumbing
+  ([#313](https://github.com/Replikanti/agentis-colonies/issues/313) PR 1).
+  The dashboard server now exposes `GET /events` (text/event-stream); each
+  regen tick the wrapper writes the freshly-collected `COLLECTOR_JSON` to
+  `<dash-dir>/snapshot.json` atomically (temp + rename). A daemon thread
+  inside the server polls the snapshot file's mtime every 250ms and
+  `notify_all()`s a `threading.Condition`; every connected `/events`
+  handler then writes one `event: snapshot\ndata: <bytes>\n\n` frame.
+  Idle keepalive (`: keepalive\n\n`) every 30s so proxies / browsers
+  don't time the stream out. The HTTP server upgrades from
+  `HTTPServer` to `ThreadingHTTPServer` so SSE handlers don't block
+  the existing endpoints (`/refresh`, `/confidence`, `/restart`,
+  `/quarantine`, `/evolve`, `/cleanup`, `/start`, `/kill`,
+  `/cost-cap/override`). Each pushed payload carries an 8-char
+  `__hash` field (server-side sha256 of canonical JSON) so the
+  browser dedupes identical pushes. The HTML template ships a
+  minimal `EventSource('/events')` consumer that re-emits each
+  snapshot as a DOM `agentis:snapshot` CustomEvent — PR 2 will
+  refactor the per-tile IIFE renderers into `renderXxx(data)`
+  callbacks listening on this event to update the DOM in-place
+  without `location.reload()`. Static first paint of `/` is
+  unchanged; SSE is purely additive — older browsers without
+  `EventSource` keep using the existing 60s background regen path.
+
 ## [0.5.0] — 2026-04-26
 
 Cost Cap tile + Federation Health Banner cost-cap state, paired with the

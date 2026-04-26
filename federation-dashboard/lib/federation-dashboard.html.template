@@ -2795,6 +2795,46 @@ function killSwitch() {
       showError('Kill request failed (network error)', String((e && e.message) || e), () => location.reload());
     });
 }
+
+// --- SSE live snapshot consumer (#313 PR 1) ---
+// Server pushes one `event: snapshot` frame per regen tick whenever
+// .dashboard/snapshot.json changes. PR 1 just dispatches an
+// `agentis:snapshot` CustomEvent + dedupes by the server-injected
+// 8-char `__hash`; PR 2 (deferred) will refactor the IIFE renderers
+// into renderXxx(data) callbacks listeners on this event can invoke
+// to update the DOM in-place without `location.reload()`. For PR 1
+// the static first paint is unchanged; SSE is purely additive — when
+// the channel works the page silently receives snapshots, when it
+// breaks (older browser, CORS proxy stripping text/event-stream)
+// the existing background regen + manual refresh paths keep the
+// dashboard alive.
+(function setupSSE() {
+  if (!('EventSource' in window)) return;  // graceful no-op on ancient browsers
+  let es;
+  try {
+    es = new EventSource('/events');
+  } catch (_) {
+    return;
+  }
+  es.addEventListener('snapshot', function (ev) {
+    let snap;
+    try { snap = JSON.parse(ev.data); }
+    catch (e) {
+      if (window.console) console.warn('SSE snapshot parse failed', e);
+      return;
+    }
+    if (!snap || typeof snap !== 'object') return;
+    const h = snap.__hash || null;
+    if (h && window.__lastSnapshotHash === h) return;  // dedupe identical pushes
+    window.__lastSnapshotHash = h;
+    window.dispatchEvent(new CustomEvent('agentis:snapshot', { detail: snap }));
+  });
+  es.onerror = function () {
+    // EventSource auto-reconnects with backoff. Nothing to do here; the
+    // existing 60s background regen keeps the dashboard fresh in the
+    // meantime.
+  };
+})();
 </script>
 </body>
 </html>

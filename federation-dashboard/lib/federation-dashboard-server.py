@@ -24,8 +24,8 @@
 #                        tools/ for restart logic — spawning is delegated
 #                        to each colony's scripts/start-colony.sh.
 
-import sys, os, subprocess, json, time, signal, shutil, shlex, urllib.parse
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+import sys, os, subprocess, json, time, signal, shutil, shlex, threading, hashlib, urllib.parse
+from http.server import HTTPServer, SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 serve_dir, port = sys.argv[1], int(sys.argv[2])
 script_path, fed_dir_arg = sys.argv[3], sys.argv[4]
@@ -39,6 +39,69 @@ agent_to_colony = {e.get('agent',''): e.get('colony','') for e in _map if e.get(
 os.chdir(serve_dir)
 fed_dir = os.path.dirname(serve_dir)
 confidence_log = os.path.join(serve_dir, 'confidence-log.jsonl')
+
+# --- SSE plumbing (#313 PR 1) ---
+# The wrapper writes the latest collector JSON snapshot to <serve_dir>/snapshot.json
+# atomically (temp + rename) after each generate() cycle. A daemon thread polls
+# the file's mtime every 250ms; on change it loads the bytes, attaches an
+# 8-char sha hash for client-side dedupe, parks the result in latest_snapshot,
+# and notify_all()'s on snapshot_cv. /events handlers wait on the condition
+# and write each new bytes blob as one `event: snapshot\ndata: ...\n\n` frame
+# (plus a `: keepalive\n\n` comment frame every 30s when nothing fires, so
+# proxies / browsers don't time the connection out).
+snapshot_path = os.path.join(serve_dir, 'snapshot.json')
+snapshot_lock = threading.Lock()
+snapshot_cv = threading.Condition(snapshot_lock)
+latest_snapshot = None  # bytes (UTF-8 JSON with `__hash` injected) or None
+_last_snapshot_mtime = 0.0
+
+
+def _augment_snapshot(raw_bytes):
+    """Inject an 8-char `__hash` of the canonical JSON so clients can dedupe.
+    Returns augmented bytes; on parse failure returns the raw bytes unchanged
+    (the SSE consumer will catch the exception client-side)."""
+    try:
+        obj = json.loads(raw_bytes.decode('utf-8'))
+    except (ValueError, UnicodeDecodeError):
+        return raw_bytes
+    if not isinstance(obj, dict):
+        return raw_bytes
+    # Hash without the __hash field (idempotent across re-augmentations).
+    obj.pop('__hash', None)
+    canon = json.dumps(obj, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    digest = hashlib.sha256(canon).hexdigest()[:8]
+    obj['__hash'] = digest
+    return json.dumps(obj, separators=(',', ':')).encode('utf-8')
+
+
+def _snapshot_watcher():
+    """Daemon thread: polls snapshot.json mtime every 250ms; on change reads
+    the bytes, augments with a hash, parks in latest_snapshot, and notifies
+    waiting /events handlers. No-op until the wrapper produces the file."""
+    global latest_snapshot, _last_snapshot_mtime
+    while True:
+        try:
+            mtime = os.path.getmtime(snapshot_path)
+        except OSError:
+            time.sleep(0.25)
+            continue
+        if mtime != _last_snapshot_mtime:
+            try:
+                with open(snapshot_path, 'rb') as f:
+                    raw = f.read()
+            except OSError:
+                time.sleep(0.25)
+                continue
+            augmented = _augment_snapshot(raw)
+            with snapshot_cv:
+                latest_snapshot = augmented
+                _last_snapshot_mtime = mtime
+                snapshot_cv.notify_all()
+        time.sleep(0.25)
+
+
+threading.Thread(target=_snapshot_watcher, daemon=True).start()
+
 # #252: kill-federation.sh lives in the federation's shared tools dir, not
 # next to this script (the dashboard is a separately-versioned standalone
 # component). The entry script resolves <fed-dir>/tools/ then
@@ -336,6 +399,59 @@ def restart_daemon(agent):
     }
 
 class Handler(SimpleHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/events':
+            # #313 PR 1: live SSE channel. Holds the connection open, pushes
+            # one `event: snapshot\ndata: <COLLECTOR_JSON>\n\n` frame whenever
+            # the snapshot file changes (the watcher thread notify_all()'s
+            # snapshot_cv). Sends a `: keepalive\n\n` comment every 30s when
+            # nothing fires so proxies / browsers don't drop the idle stream.
+            try:
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/event-stream')
+                self.send_header('Cache-Control', 'no-cache')
+                self.send_header('Connection', 'keep-alive')
+                self.send_header('X-Accel-Buffering', 'no')  # disable nginx buffering
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                # Push the most recent snapshot immediately so a fresh
+                # connection doesn't have to wait for the next regen tick.
+                with snapshot_cv:
+                    last_seen_id = id(latest_snapshot)
+                    if latest_snapshot is not None:
+                        self.wfile.write(b'event: snapshot\ndata: ')
+                        self.wfile.write(latest_snapshot)
+                        self.wfile.write(b'\n\n')
+                        self.wfile.flush()
+                while True:
+                    with snapshot_cv:
+                        # Wait up to 30s for a new snapshot; on timeout we
+                        # send a keepalive comment and loop. id() is fine
+                        # because latest_snapshot is rebound (new bytes
+                        # object) on every update.
+                        snapshot_cv.wait(timeout=30.0)
+                        current_id = id(latest_snapshot)
+                        snapshot_to_send = None
+                        if current_id != last_seen_id and latest_snapshot is not None:
+                            snapshot_to_send = latest_snapshot
+                            last_seen_id = current_id
+                    if snapshot_to_send is not None:
+                        self.wfile.write(b'event: snapshot\ndata: ')
+                        self.wfile.write(snapshot_to_send)
+                        self.wfile.write(b'\n\n')
+                    else:
+                        # Idle timeout: keepalive comment frame.
+                        self.wfile.write(b': keepalive\n\n')
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+                # Client went away. The thread exits cleanly; the watcher
+                # daemon keeps running for the next subscriber.
+                return
+            return
+        # Defer to SimpleHTTPRequestHandler for static-file serving (/, /index.html,
+        # /favicon.ico, etc.).
+        return SimpleHTTPRequestHandler.do_GET(self)
+
     def do_POST(self):
         if self.path == '/refresh':
             env = dict(os.environ)
@@ -843,4 +959,12 @@ class Handler(SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
-HTTPServer(('127.0.0.1', port), Handler).serve_forever()
+# #313 PR 1: ThreadingHTTPServer so SSE handlers (which hold their connection
+# open indefinitely) don't block other endpoints. Each request gets its own
+# thread; POST endpoints already shell out to subprocesses, so they're
+# naturally thread-safe at the HTTP layer. daemon_threads=True so an
+# Ctrl-C / SIGTERM at the wrapper level tears down lingering SSE threads
+# instead of waiting for every connected browser to close.
+server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
+server.daemon_threads = True
+server.serve_forever()

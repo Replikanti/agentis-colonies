@@ -65,6 +65,11 @@ FED_NAME_JS="$(printf '%s' "$FED_NAME" | python3 -c 'import sys,json; print(json
 DASH_DIR="$FED_DIR/.dashboard"
 HTML_FILE="$DASH_DIR/index.html"
 HISTORY_FILE="$DASH_DIR/history.json"
+# #313 PR 1: snapshot file watched by the SSE server. After each generate()
+# cycle the wrapper writes the COLLECTOR_JSON blob here atomically (temp +
+# rename); the server's watcher thread polls mtime every 250ms and pushes
+# `event: snapshot` frames to /events subscribers on change.
+SNAPSHOT_FILE="$DASH_DIR/snapshot.json"
 
 mkdir -p "$DASH_DIR"
 
@@ -242,6 +247,16 @@ generate() {
         "@$HIST_FILE" \
         "@$REMED_FILE" \
         "$COLONY_LIST_JS"
+
+    # #313 PR 1: write the freshly-collected snapshot bytes to a stable file
+    # the SSE server watches. Atomic rename so a /events handler reading
+    # mid-write never sees a torn payload. Failure to write is non-fatal —
+    # the static index.html refresh path still works; only push-on-change
+    # degrades.
+    if printf '%s' "$COLLECTOR_JSON" > "${SNAPSHOT_FILE}.tmp.$$" 2>/dev/null; then
+        mv -f "${SNAPSHOT_FILE}.tmp.$$" "$SNAPSHOT_FILE" 2>/dev/null \
+            || rm -f "${SNAPSHOT_FILE}.tmp.$$" 2>/dev/null || true
+    fi
 }
 
 # --- Regen-only mode ---
