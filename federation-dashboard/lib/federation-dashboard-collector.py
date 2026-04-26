@@ -1045,6 +1045,158 @@ for rec in result:
         lifecycle_by_aid.get(aid, []),
     )
 
+# --- Federation-wide unified timeline (#315 PR 2) ---
+# Merge every agent's normalized rows into one reverse-chronological feed for
+# the federation-wide tile. Each row inherits the PR 1 envelope ({ts,
+# agent_id, kind, payload, severity}) and is augmented with agent_name +
+# colony for chip rendering on the client.
+#
+# Implementation note: we deliberately rebuild per-agent rows from the
+# already-loaded source dicts rather than reading rec['timeline'], because
+# the per-agent slice is capped at TIMELINE_PER_AGENT_CAP (50). For the
+# federation-wide top-N we want the absolute newest rows across all agents
+# regardless of any single agent's per-agent volume — an agent firing 100
+# events in the last hour shouldn't lose its 51st-newest entry just because
+# the per-agent view trimmed it. Total complexity stays O(N_lifecycle +
+# N_experience + N_spend + N_confidence) — the source dicts are already
+# bucketed (lifecycle_by_aid, conf_by_aid) or read once per agent above.
+TIMELINE_FED_CAP = 200
+
+# Lookup table: agent_id -> {name, colony}. Built once for O(1) augmentation
+# of every row in the merged stream.
+aid_to_meta = {}
+for rec in result:
+    aid = rec.get('agent_id') or ''
+    if aid:
+        aid_to_meta[aid] = {
+            'agent_name': rec.get('name', ''),
+            'colony': rec.get('colony', ''),
+        }
+
+federation_timeline = []
+for rec in result:
+    aid = rec.get('agent_id') or ''
+    if not aid:
+        continue
+    meta = aid_to_meta.get(aid, {'agent_name': rec.get('name', ''),
+                                 'colony': rec.get('colony', '')})
+    # Re-read just enough to build a per-agent row stream WITHOUT the
+    # 50-row per-agent cap. Spend / experience JSONLs are re-opened here
+    # (one short pass per agent — bounded by the spend / experience file
+    # size, NOT by total federation history); lifecycle + confidence-log
+    # are pulled from the buckets the four source-bucketing reads above
+    # already filled in memory, so they're free at this point.
+    exp_for_agent = []
+    if exp_dir and os.path.isdir(exp_dir):
+        ep = os.path.join(exp_dir, aid + '.jsonl')
+        if os.path.isfile(ep):
+            try:
+                with open(ep) as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            exp_for_agent.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            continue
+            except OSError:
+                pass
+
+    spend_for_agent = []
+    if spend_dir and os.path.isdir(spend_dir):
+        sp = os.path.join(spend_dir, aid + '.jsonl')
+        if os.path.isfile(sp):
+            try:
+                with open(sp) as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            spend_for_agent.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            continue
+            except OSError:
+                pass
+
+    # Use build_agent_timeline with a temporarily-disabled cap by passing
+    # the same lists; build_agent_timeline always caps at TIMELINE_PER_AGENT_CAP
+    # so we re-implement the merge inline to keep the cap separate.
+    rows = []
+    for e in exp_for_agent:
+        if not isinstance(e, dict):
+            continue
+        ts_ms = _coerce_ms(e.get('ts'))
+        if ts_ms == 0:
+            continue
+        payload = {
+            'outcome': e.get('outcome'),
+            'delta':   e.get('delta'),
+            'action':  e.get('action'),
+            'in':      e.get('in'),
+        }
+        rows.append({
+            'ts': ts_ms, 'agent_id': aid, 'kind': 'learn',
+            'payload': payload,
+            'severity': _summary_severity('learn', payload),
+        })
+    for s in spend_for_agent:
+        if not isinstance(s, dict):
+            continue
+        ts_ms = _coerce_ms(s.get('ts'))
+        if ts_ms == 0:
+            continue
+        payload = {
+            'cost_usd':      s.get('cost_usd'),
+            'input_tokens':  s.get('input_tokens'),
+            'output_tokens': s.get('output_tokens'),
+            'model':         s.get('model'),
+            'backend':       s.get('backend'),
+            'ok':            s.get('ok', True),
+        }
+        rows.append({
+            'ts': ts_ms, 'agent_id': aid, 'kind': 'prompt',
+            'payload': payload,
+            'severity': _summary_severity('prompt', payload),
+        })
+    for c in conf_by_aid.get(aid, []):
+        if not isinstance(c, dict):
+            continue
+        ts_ms = _coerce_ms(c.get('ts'))
+        if ts_ms == 0:
+            continue
+        payload = {
+            'from':   c.get('from') if c.get('from') is not None else c.get('prev'),
+            'to':     c.get('to')   if c.get('to')   is not None else c.get('new'),
+            'delta':  c.get('delta'),
+            'reason': c.get('reason') or c.get('source'),
+        }
+        rows.append({
+            'ts': ts_ms, 'agent_id': aid, 'kind': 'confidence_change',
+            'payload': payload,
+            'severity': _summary_severity('confidence_change', payload),
+        })
+    for ev in lifecycle_by_aid.get(aid, []):
+        if not isinstance(ev, dict):
+            continue
+        ts_ms = _coerce_ms(ev.get('ts'))
+        if ts_ms == 0:
+            continue
+        payload = {k: v for k, v in ev.items() if k != 'agent_id'}
+        rows.append({
+            'ts': ts_ms, 'agent_id': aid, 'kind': 'lifecycle',
+            'payload': payload,
+            'severity': _summary_severity('lifecycle', payload),
+        })
+    for row in rows:
+        row['agent_name'] = meta['agent_name']
+        row['colony'] = meta['colony']
+        federation_timeline.append(row)
+
+federation_timeline.sort(key=lambda r: r.get('ts', 0), reverse=True)
+federation_timeline = federation_timeline[:TIMELINE_FED_CAP]
+
 # Inject per-agent cost windows into each agent record (mirrors the
 # experience_count placement above). The agent table can then expose a
 # "$ today" sortable column without requiring a second lookup at render time.
@@ -1190,5 +1342,7 @@ output = {
     'forge_rate_limits': forge_rate_limits,
     'cost': cost,
     'cost_cap': cost_cap,
+    # #315 PR 2: federation-wide unified timeline (last 200, ts-desc).
+    'timeline': federation_timeline,
 }
 print(json.dumps(output))
