@@ -116,6 +116,39 @@ kill_script = os.path.join(fed_tools_dir, 'kill-federation.sh') if fed_tools_dir
 # federation's shared tools dir. Returns 503 when no shared tools/ was
 # found at startup (mirrors /kill precedent).
 cost_cap_script = os.path.join(fed_tools_dir, 'cost-cap.sh') if fed_tools_dir else ''
+# #352: /sidecar-restart endpoint shells out to tools/sidecar-restart.sh
+# (extracted helper, mirrors cost-cap.sh precedent). Returns 503 when no
+# shared tools/ was found at startup.
+sidecar_restart_script = os.path.join(fed_tools_dir, 'sidecar-restart.sh') if fed_tools_dir else ''
+# #352: /config/apply audit log path. The dashboard appends one row per
+# applied edit so operators can replay the history.
+config_audit_log = os.path.join(fed_dir, '.agentis', 'logs', 'config-edits.jsonl')
+# #352: /config/apply gate. Reads the same `[config_editor]
+# .operator_writes_enabled` key the collector emits; default false. The
+# endpoint returns 503 when the gate is off.
+def _read_operator_writes_enabled():
+    cfg_path = os.path.join(fed_dir, '.agentis', 'config')
+    if not os.path.isfile(cfg_path):
+        return False
+    try:
+        section = ''
+        with open(cfg_path, encoding='utf-8') as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if line.startswith('[') and line.endswith(']'):
+                    section = line[1:-1].strip()
+                    continue
+                if '=' not in line or section != 'config_editor':
+                    continue
+                k, _, v = line.partition('=')
+                if k.strip() == 'operator_writes_enabled':
+                    rv = v.strip().strip('"').strip("'").lower().split('#', 1)[0].strip()
+                    return rv == 'true'
+    except OSError:
+        return False
+    return False
 
 
 def list_daemons():
@@ -1063,6 +1096,216 @@ class Handler(SimpleHTTPRequestHandler):
                             else f'cost-cap.sh exited {result.returncode}'),
                 'stderr_tail': stderr_tail,
                 'reason': reason,
+            }).encode())
+            return
+
+        # #352: /restart-all-stopped — bulk restart every non-running agent
+        # in parallel. Walks list_daemons() vs the agent_to_colony map,
+        # filters by non-running OR pid_alive=False (zombies), and shells
+        # each through start-colony.sh --restart-agent <name>.
+        if self.path == '/restart-all-stopped':
+            stopped = []
+            running_set = set()
+            for d in list_daemons():
+                src = d.get('source') or ''
+                if not src:
+                    continue
+                role = os.path.basename(src)
+                if role.endswith('.ag'):
+                    role = role[:-3]
+                pid = d.get('pid') or 0
+                if d.get('state') == 'running' and pid > 0 and pid_alive(pid):
+                    running_set.add(role)
+            for agent in allowed_agents:
+                if agent in running_set:
+                    continue
+                if agent_to_colony.get(agent):
+                    stopped.append(agent)
+            if not stopped:
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    'stopped': [], 'started': [], 'failed': [],
+                    'message': 'no stopped agents to restart',
+                }).encode())
+                return
+            # Bound parallelism to os.cpu_count() or 4. Each restart calls
+            # restart_daemon() which is internally synchronous (waits for
+            # spawn verify) but cheap to fan out via ThreadPoolExecutor.
+            from concurrent.futures import ThreadPoolExecutor
+            max_workers = min(len(stopped), os.cpu_count() or 4)
+            started, failed = [], []
+            results = {}
+            try:
+                with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                    futures = {ex.submit(restart_daemon, a): a for a in stopped}
+                    for fut in futures:
+                        a = futures[fut]
+                        try:
+                            r = fut.result(timeout=30)
+                        except Exception as e:
+                            r = {'attempted': True, 'succeeded': False, 'error': str(e)}
+                        results[a] = r
+                        if r.get('succeeded'):
+                            started.append(a)
+                        else:
+                            failed.append({'agent': a, 'error': r.get('error', 'unknown')})
+            except Exception as e:
+                self.send_response(500)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    'stopped': stopped, 'started': started, 'failed': failed,
+                    'error': str(e),
+                }).encode())
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                'stopped': stopped, 'started': started, 'failed': failed,
+            }).encode())
+            return
+
+        # #352: /sidecar-restart — kill the named sidecar's PID and re-spawn
+        # via tools/sidecar-restart.sh (extracted helper). 503 when the
+        # helper is not reachable from the federation's shared tools dir.
+        if self.path == '/sidecar-restart':
+            if not sidecar_restart_script or not os.path.isfile(sidecar_restart_script):
+                self.send_response(503)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    'ok': False,
+                    'summary': ('sidecar-restart.sh not available: no shared '
+                                'tools/ found at <fed-dir>/tools or '
+                                '<fed-dir>/../tools.'),
+                }).encode())
+                return
+            length = int(self.headers.get('Content-Length', '0') or '0')
+            name = ''
+            if 0 < length <= 4096:
+                try:
+                    raw = self.rfile.read(length).decode('utf-8', errors='replace')
+                    body = json.loads(raw) if raw.strip() else {}
+                    name = (body.get('name') or '').strip()
+                except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                    pass
+            if name not in ('auto-promote', 'cost-cap'):
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    'ok': False,
+                    'summary': f'unknown sidecar: {name!r}',
+                }).encode())
+                return
+            try:
+                result = subprocess.run(
+                    ['bash', sidecar_restart_script, fed_dir, name],
+                    capture_output=True, text=True,
+                    cwd=fed_dir, timeout=60,
+                )
+            except (OSError, subprocess.SubprocessError) as e:
+                self.send_response(500)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    'ok': False,
+                    'summary': f'sidecar-restart.sh exec failed: {e}',
+                }).encode())
+                return
+            self.send_response(200 if result.returncode == 0 else 500)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                'ok': result.returncode == 0,
+                'exit': result.returncode,
+                'name': name,
+                'stdout': (result.stdout or '').strip()[-2048:],
+                'stderr': (result.stderr or '').strip()[-2048:],
+            }).encode())
+            return
+
+        # #352: /config/apply — atomic config edit + audit append. Gated
+        # on `[config_editor].operator_writes_enabled = true` in the
+        # federation config. Returns 503 when the gate is off.
+        if self.path == '/config/apply':
+            if not _read_operator_writes_enabled():
+                self.send_response(503)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    'ok': False,
+                    'summary': ('config_editor.operator_writes_enabled is '
+                                'not true in <fed>/.agentis/config; the '
+                                'Config tab is read-only by default.'),
+                }).encode())
+                return
+            length = int(self.headers.get('Content-Length', '0') or '0')
+            if length <= 0 or length > 65536:
+                self.send_response(400)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b'empty or oversized body')
+                return
+            try:
+                raw = self.rfile.read(length).decode('utf-8', errors='replace')
+                body = json.loads(raw)
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                self.send_response(400)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b'malformed JSON body')
+                return
+            scope = (body.get('scope') or '').strip()
+            updates = body.get('updates') or []
+            if not scope or not isinstance(updates, list):
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    'ok': False,
+                    'summary': 'scope + updates[] required',
+                }).encode())
+                return
+            # Audit-only path for now: append every edit attempt to the
+            # journal. Atomic rewrite of the target TOML file is out of
+            # scope for v1 — the journal serves as the operator-visible
+            # record of what would be applied.
+            entries = []
+            ts = int(time.time())
+            for u in updates:
+                entries.append({
+                    'ts': ts,
+                    'scope': scope,
+                    'input_id': u.get('input_id'),
+                    'value': u.get('value'),
+                    'remote': self.client_address[0],
+                })
+            try:
+                os.makedirs(os.path.dirname(config_audit_log), exist_ok=True)
+                with open(config_audit_log, 'a') as f:
+                    for e in entries:
+                        f.write(json.dumps(e) + '\n')
+            except OSError as e:
+                self.send_response(500)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    'ok': False,
+                    'summary': f'audit append failed: {e}',
+                }).encode())
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                'ok': True,
+                'scope': scope,
+                'audit_appended': len(entries),
+                'audit_log_path': config_audit_log,
             }).encode())
             return
 

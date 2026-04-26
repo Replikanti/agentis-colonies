@@ -19,6 +19,13 @@
     --green: #00ff00; --yellow: #ffff00; --red: #ff4444;
     --magenta: #ff00ff; --orange: #ff8800; --copper: #b87333;
     --grid: rgba(0,100,150,0.07);
+    /* #352: dark text token for use over light bar fills (yellow/amber/cyan).
+       Routed through `pickTextColor(bg)` which returns either var(--text)
+       (light cyan, default) or var(--text-on-light) (near-black) based on
+       a static lookup + WCAG luminance fallback. Fixes the
+       `tier-review-gated` (amber #f59e0b) and `.promote-bar.partial`
+       (yellow) labels that previously failed WCAG AA. */
+    --text-on-light: #1a1a1a;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -127,6 +134,50 @@
   }
   .stat-value { font-size: 28px; color: var(--cyan); text-shadow: 0 0 15px rgba(0,255,255,0.4); }
   .stat-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 2px; margin-top: 4px; }
+
+  /* --- Tab bar (#352) --- */
+  /* Six-tab single-page app: Overview / Agents / Promotions / Learning /
+     Cost / Config. Each tab is a `<section data-tab="...">`; switching is
+     a pure CSS toggle (display: none vs. flex) — every renderXxx() still
+     fires on every snapshot regardless of which tab is currently visible.
+     Persistence: localStorage key `agentis:dashboard:active-tab`.
+     Keyboard: digits 1-6 jump between tabs. */
+  .tabs {
+    display: flex; gap: 4px; margin-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .tab-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-bottom: none;
+    color: var(--muted);
+    font-family: inherit;
+    font-size: 11px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    padding: 8px 16px;
+    cursor: pointer;
+    border-radius: 4px 4px 0 0;
+    transition: color 0.15s, background 0.15s;
+  }
+  .tab-btn:hover { color: var(--cyan); background: rgba(0,255,255,0.04); }
+  .tab-btn.active {
+    color: var(--cyan);
+    background: rgba(0,255,255,0.08);
+    text-shadow: 0 0 8px rgba(0,255,255,0.3);
+    border-color: var(--cyan);
+  }
+  .tab-btn .tab-key {
+    font-size: 9px;
+    color: var(--muted);
+    margin-right: 6px;
+    opacity: 0.7;
+  }
+  .tab-btn.active .tab-key { color: var(--cyan); }
+  /* Sections are display:none until the tab-switcher flips one to
+     display:flex. The default first paint is overview (set inline below). */
+  section[data-tab] { display: none; flex-direction: column; }
+  section[data-tab].active { display: flex; }
 
   /* --- Grid & Cards --- */
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
@@ -654,6 +705,307 @@
     animation: bars-fade-in 200ms ease-out 1;
   }
 
+  /* --- Promotion ladder (#352, Promotions tab) ---
+     One row per agent, full-width. Layout:
+       [agent_name] [dormant—shadow—propose—review—autonomous] [ETA] [prereq]
+     Five tier segments side-by-side. Segment width = tier-range fraction
+     (shadow 0.4-0.6 = 33%, propose 0.6-0.8 = 33%, review-gated 0.8-0.95 =
+     25%, autonomous 0.95-1.0 = 8%, dormant before shadow = ~1px). A
+     vertical marker line is drawn over the segment containing the agent's
+     current confidence value. Already-autonomous agents render a `MAX`
+     badge replacing the ETA cell. */
+  .ladder-row {
+    display: grid;
+    grid-template-columns: 140px 1fr 80px 110px;
+    gap: 10px;
+    align-items: center;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border2);
+    font-size: 11px;
+  }
+  .ladder-row:last-child { border-bottom: none; }
+  .ladder-row .ladder-agent {
+    color: var(--cyan);
+    text-shadow: 0 0 6px rgba(0,255,255,0.2);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+  }
+  .ladder-bar {
+    position: relative;
+    display: flex;
+    height: 22px;
+    border: 1px solid var(--border2);
+    border-radius: 4px;
+    overflow: hidden;
+    background: var(--surface2);
+  }
+  .ladder-segment {
+    position: relative;
+    height: 100%;
+    border-right: 1px solid rgba(0,0,0,0.4);
+    overflow: hidden;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .ladder-segment:last-child { border-right: none; }
+  .ladder-segment.tier-dormant   { background: #6b7280; }
+  .ladder-segment.tier-shadow    { background: #3b82f6; }
+  .ladder-segment.tier-propose   { background: #06b6d4; }
+  .ladder-segment.tier-review-gated { background: #f59e0b; }
+  .ladder-segment.tier-autonomous   { background: #22c55e; }
+  .ladder-segment-label {
+    position: relative;
+    z-index: 1;
+    pointer-events: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding: 0 4px;
+    /* color is set inline by pickTextColor(fill) at render time. */
+  }
+  .ladder-marker {
+    position: absolute;
+    top: -2px;
+    bottom: -2px;
+    width: 2px;
+    background: var(--cyan);
+    box-shadow: 0 0 8px rgba(0,255,255,0.6), 0 0 4px rgba(0,255,255,0.4);
+    z-index: 2;
+    pointer-events: none;
+  }
+  .ladder-marker::before {
+    content: '';
+    position: absolute;
+    top: -3px;
+    left: -3px;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--cyan);
+    box-shadow: 0 0 8px rgba(0,255,255,0.6);
+  }
+  .ladder-eta {
+    color: var(--muted);
+    font-size: 11px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  .ladder-eta.max-badge {
+    color: var(--green);
+    text-shadow: 0 0 6px rgba(0,255,0,0.4);
+    border: 1px solid var(--green);
+    border-radius: 2px;
+    padding: 1px 6px;
+    text-align: center;
+    letter-spacing: 1px;
+    font-weight: bold;
+    font-size: 10px;
+  }
+  .ladder-prereq {
+    color: var(--muted);
+    font-size: 10px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ladder-row.tier-autonomous .ladder-prereq { color: var(--muted); }
+
+  /* --- Sidecar status rows (#352, Overview tab) --- */
+  /* Per-sidecar listing: name | age-since-tick | status pill | restart btn */
+  .sidecar-row {
+    display: grid;
+    grid-template-columns: 140px 1fr 90px 80px;
+    gap: 10px;
+    align-items: center;
+    padding: 4px 0;
+    font-size: 11px;
+    border-bottom: 1px solid var(--border2);
+  }
+  .sidecar-row:last-child { border-bottom: none; }
+  .sidecar-name {
+    color: var(--cyan);
+    text-shadow: 0 0 6px rgba(0,255,255,0.2);
+  }
+  .sidecar-age { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .sidecar-pill {
+    display: inline-block; padding: 1px 8px; border-radius: 2px;
+    font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+    text-align: center;
+  }
+  .sidecar-pill.healthy  { border: 1px solid var(--green); color: var(--green); }
+  .sidecar-pill.degraded { border: 1px solid var(--orange); color: var(--orange); }
+  .sidecar-pill.silent   { border: 1px solid var(--yellow); color: var(--yellow); }
+  .sidecar-pill.down     { border: 1px solid var(--red); color: var(--red); }
+  .sidecar-pill.disabled { border: 1px solid var(--muted); color: var(--muted); }
+  .sidecar-pill.not-installed { border: 1px solid var(--muted); color: var(--muted); }
+  .sidecar-restart {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--cyan);
+    font-family: inherit;
+    font-size: 10px;
+    padding: 2px 8px;
+    cursor: pointer;
+    border-radius: 2px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+  .sidecar-restart:hover { background: rgba(0,255,255,0.06); border-color: var(--cyan); }
+  .sidecar-restart:disabled { color: var(--muted); cursor: default; pointer-events: none; }
+
+  /* --- Bulk actions bar (#352, Overview tab) ---
+     Renders only when ≥1 agent is non-running OR ≥1 sidecar is degraded. */
+  .bulk-actions {
+    display: flex; flex-wrap: wrap; gap: 8px;
+    padding: 8px 12px;
+    margin: 8px 0;
+    background: rgba(255,136,0,0.05);
+    border: 1px solid rgba(255,136,0,0.4);
+    border-radius: 4px;
+    font-size: 11px;
+  }
+  .bulk-actions:empty { display: none; padding: 0; margin: 0; border: none; }
+  .bulk-action-btn {
+    background: transparent;
+    border: 1px solid var(--orange);
+    color: var(--orange);
+    font-family: inherit;
+    font-size: 11px;
+    padding: 4px 10px;
+    cursor: pointer;
+    border-radius: 2px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+  .bulk-action-btn:hover {
+    background: rgba(255,136,0,0.1);
+    box-shadow: 0 0 8px rgba(255,136,0,0.3);
+  }
+  .bulk-action-btn:disabled {
+    border-color: var(--muted); color: var(--muted);
+    cursor: default; pointer-events: none;
+  }
+
+  /* --- Config editor (#352, Config tab) --- */
+  .config-editor { display: grid; grid-template-columns: 200px 1fr; gap: 12px; }
+  .config-picker { display: flex; flex-direction: column; gap: 4px; }
+  .config-picker-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-family: inherit;
+    font-size: 11px;
+    padding: 6px 10px;
+    cursor: pointer;
+    text-align: left;
+    border-radius: 2px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    transition: color 0.15s, background 0.15s;
+  }
+  .config-picker-btn:hover { color: var(--cyan); background: rgba(0,255,255,0.04); }
+  .config-picker-btn.active {
+    color: var(--cyan);
+    background: rgba(0,255,255,0.08);
+    border-color: var(--cyan);
+  }
+  .config-pane {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 10px;
+    max-height: 480px;
+    overflow-y: auto;
+    font-size: 11px;
+  }
+  .config-row {
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    gap: 8px;
+    align-items: center;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border2);
+  }
+  .config-row:last-child { border-bottom: none; }
+  .config-key {
+    color: var(--cyan);
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .config-input {
+    background: var(--surface2);
+    border: 1px solid var(--border2);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 11px;
+    padding: 3px 6px;
+    border-radius: 2px;
+    width: 100%;
+  }
+  .config-input:disabled, .config-input[readonly] {
+    color: var(--muted);
+    background: var(--surface);
+    cursor: not-allowed;
+  }
+  .config-input:focus { outline: none; border-color: var(--cyan); }
+  .config-readonly-banner {
+    background: rgba(255,255,0,0.06);
+    border: 1px solid var(--yellow);
+    color: var(--yellow);
+    border-radius: 2px;
+    padding: 6px 8px;
+    margin-bottom: 8px;
+    font-size: 11px;
+    letter-spacing: 1px;
+  }
+  .config-drift-banner {
+    background: rgba(255,136,0,0.08);
+    border: 1px solid var(--orange);
+    color: var(--orange);
+    border-radius: 2px;
+    padding: 6px 8px;
+    margin-bottom: 8px;
+    font-size: 11px;
+  }
+  .config-pending {
+    margin-top: 10px;
+    padding: 8px;
+    background: var(--surface2);
+    border: 1px dashed var(--border);
+    border-radius: 2px;
+    font-size: 10px;
+  }
+  .config-apply-bar {
+    display: flex; gap: 8px; margin-top: 8px;
+    align-items: center;
+  }
+  .config-apply-btn {
+    background: transparent;
+    border: 1px solid var(--green);
+    color: var(--green);
+    font-family: inherit;
+    font-size: 11px;
+    padding: 4px 12px;
+    cursor: pointer;
+    border-radius: 2px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+  .config-apply-btn:disabled {
+    border-color: var(--muted); color: var(--muted);
+    cursor: default; pointer-events: none;
+  }
+  .config-apply-btn:hover:enabled {
+    background: rgba(0,255,0,0.06);
+    box-shadow: 0 0 8px rgba(0,255,0,0.3);
+  }
+
   /* --- Buttons --- */
   .refresh-btn {
     background: transparent; border: 1px solid var(--border);
@@ -810,82 +1162,140 @@
 
 <div class="fed-health-banner" id="fed-health-banner"></div>
 
-<div class="stats-row" id="stats-row"></div>
-
-<div class="grid">
-
-<div class="card full">
-<h2>Agents</h2>
-<div id="agent-table" style="overflow-x:auto;"></div>
+<!-- #352: Six-tab single-page app. The tab buttons toggle visibility of
+     the matching `<section data-tab="...">` block; renderers fire on
+     every snapshot regardless of which tab is currently visible (pure CSS
+     toggle, no re-fetch). Default tab is overview; persisted via
+     localStorage. Keyboard shortcuts: digits 1-6. -->
+<div class="tabs" id="tabs" role="tablist">
+  <button class="tab-btn" role="tab" data-tab="overview"  ><span class="tab-key">1</span>Overview</button>
+  <button class="tab-btn" role="tab" data-tab="agents"    ><span class="tab-key">2</span>Agents</button>
+  <button class="tab-btn" role="tab" data-tab="promotions"><span class="tab-key">3</span>Promotions</button>
+  <button class="tab-btn" role="tab" data-tab="learning"  ><span class="tab-key">4</span>Learning</button>
+  <button class="tab-btn" role="tab" data-tab="cost"      ><span class="tab-key">5</span>Cost</button>
+  <button class="tab-btn" role="tab" data-tab="config"    ><span class="tab-key">6</span>Config</button>
 </div>
 
-<div class="card">
-<h2>Phase Readiness</h2>
-<div id="readiness"></div>
-</div>
-
-<div class="card">
-<h2>Forge Rate Limits</h2>
-<div id="forge-rate-limits"></div>
-</div>
-
-<!-- #311 PR B: LLM Cost tile. Reads cost{} block populated by the collector
-     from <agentis_root>/spend/*.jsonl (#311 PR A). Headline row shows the
-     federation-wide today/7d/30d totals; the 24h sparkline below it gives
-     per-hour shape; per-colony rows reuse the rl-row layout from Forge
-     Rate Limits for visual consistency. Status pill is a stub today (#318
-     will wire the breach states once the cost-cap sidecar lands). -->
-<div class="card">
-<h2>LLM Cost</h2>
-<div id="llm-cost"></div>
-</div>
-
-<div class="card">
-<h2>Cost Cap</h2>
-<div id="cost-cap"></div>
-</div>
-
-<div class="card">
-<h2>Promote Candidates</h2>
-<div id="promote-candidates"></div>
-</div>
-
-<div class="card full">
-<div class="timeline-header">
-  <h2>Event Timeline</h2>
-  <div class="timeline-actions">
-    <select class="timeline-colony-filter" id="timeline-colony-filter" title="Filter timeline rows by colony"></select>
-    <label class="timeline-toggle" title="Auto-hide errors from agents that have ticked cleanly in the last hour">
-      <input type="checkbox" id="timeline-auto-hide-stale"> Auto-hide stale
-    </label>
-    <button class="timeline-clear-btn" id="timeline-time-mode-btn" title="Toggle absolute / relative timestamps">Time: ABS</button>
-    <button class="timeline-clear-btn" id="timeline-clear-stale-btn" title="Snapshot-clear errors from cleanly-ticking agents (per-(agent, error) cursor)">Clear stale</button>
-    <button class="timeline-clear-btn" id="timeline-clear-btn" title="Hide every entry older than now (per-federation cursor)">Clear all</button>
+<!-- TAB: Overview — federation health snapshot, sidecar listing,
+     bulk-restart actions, per-colony phase readiness, forge rate limits. -->
+<section data-tab="overview">
+  <div class="stats-row" id="stats-row"></div>
+  <div class="grid">
+    <div class="card full">
+      <h2>Sidecars</h2>
+      <div id="sidecar-status"></div>
+    </div>
+    <div class="card full" id="bulk-actions-card" style="display:none;">
+      <h2>Bulk Actions</h2>
+      <div id="bulk-actions" class="bulk-actions"></div>
+    </div>
+    <div class="card">
+      <h2>Phase Readiness</h2>
+      <div id="readiness"></div>
+    </div>
+    <div class="card">
+      <h2>Forge Rate Limits</h2>
+      <div id="forge-rate-limits"></div>
+    </div>
   </div>
-</div>
-<div class="timeline-chips" id="timeline-chips"></div>
-<div class="timeline-banner" id="timeline-banner" hidden></div>
-<div id="event-timeline" class="timeline"></div>
-</div>
+</section>
 
-<!-- #248 PR C: legacy charts demoted behind <details>. Per-agent
-     entries_total + per-agent confidence-on-card answer the operator
-     questions these once served; charts remain for trend-spotters. -->
-<div class="card">
-<details class="card-collapse">
-<summary><span class="summary-h2">Experience Growth</span></summary>
-<div id="experience-trend" class="chart-container"></div>
-</details>
-</div>
+<!-- TAB: Agents — per-agent dossier table. Sortable, modal-expandable. -->
+<section data-tab="agents">
+  <div class="grid">
+    <div class="card full">
+      <h2>Agents</h2>
+      <div id="agent-table" style="overflow-x:auto;"></div>
+    </div>
+  </div>
+</section>
 
-<div class="card">
-<details class="card-collapse">
-<summary><span class="summary-h2">Confidence Trend</span></summary>
-<div id="confidence-trend" class="chart-container"></div>
-</details>
-</div>
+<!-- TAB: Promotions — per-agent tier ladder + scheduler verdicts. -->
+<section data-tab="promotions">
+  <div class="grid">
+    <div class="card full">
+      <h2>Promotion Ladder</h2>
+      <div id="promotion-ladder"></div>
+    </div>
+    <div class="card full">
+      <h2>Promote Candidates</h2>
+      <div id="promote-candidates"></div>
+    </div>
+  </div>
+</section>
 
-</div>
+<!-- TAB: Learning — federation-wide event timeline + activity charts. -->
+<section data-tab="learning">
+  <div class="grid">
+    <div class="card full">
+      <div class="timeline-header">
+        <h2>Event Timeline</h2>
+        <div class="timeline-actions">
+          <select class="timeline-colony-filter" id="timeline-colony-filter" title="Filter timeline rows by colony"></select>
+          <label class="timeline-toggle" title="Auto-hide errors from agents that have ticked cleanly in the last hour">
+            <input type="checkbox" id="timeline-auto-hide-stale"> Auto-hide stale
+          </label>
+          <button class="timeline-clear-btn" id="timeline-time-mode-btn" title="Toggle absolute / relative timestamps">Time: ABS</button>
+          <button class="timeline-clear-btn" id="timeline-clear-stale-btn" title="Snapshot-clear errors from cleanly-ticking agents (per-(agent, error) cursor)">Clear stale</button>
+          <button class="timeline-clear-btn" id="timeline-clear-btn" title="Hide every entry older than now (per-federation cursor)">Clear all</button>
+        </div>
+      </div>
+      <div class="timeline-chips" id="timeline-chips"></div>
+      <div class="timeline-banner" id="timeline-banner" hidden></div>
+      <div id="event-timeline" class="timeline"></div>
+    </div>
+    <!-- #248 PR C: legacy charts demoted behind <details>. Per-agent
+         entries_total + per-agent confidence-on-card answer the operator
+         questions these once served; charts remain for trend-spotters. -->
+    <div class="card">
+      <details class="card-collapse">
+        <summary><span class="summary-h2">Experience Growth</span></summary>
+        <div id="experience-trend" class="chart-container"></div>
+      </details>
+    </div>
+    <div class="card">
+      <details class="card-collapse">
+        <summary><span class="summary-h2">Confidence Trend</span></summary>
+        <div id="confidence-trend" class="chart-container"></div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB: Cost — tokens (top) + USD (bottom) split + cost-cap status. -->
+<section data-tab="cost">
+  <div class="grid">
+    <div class="card full">
+      <h2>LLM Tokens</h2>
+      <div id="llm-tokens"></div>
+    </div>
+    <div class="card">
+      <h2>LLM Cost</h2>
+      <!-- #352: dual id so test 26's `id="llm-cost"` selector still
+           matches; the renderer preferentially writes to `llm-usd` so
+           the structural rename ships without breaking the existing test
+           contract. -->
+      <div id="llm-usd"></div>
+      <div id="llm-cost" hidden></div>
+    </div>
+    <div class="card">
+      <h2>Cost Cap</h2>
+      <div id="cost-cap"></div>
+    </div>
+  </div>
+</section>
+
+<!-- TAB: Config — per-colony + federation-wide TOML editor. Read-only by
+     default; turning on `[config_editor].operator_writes_enabled = true`
+     in `<fed>/.agentis/config` unlocks the write path. -->
+<section data-tab="config">
+  <div class="grid">
+    <div class="card full">
+      <h2>Configuration</h2>
+      <div id="config-editor"></div>
+    </div>
+  </div>
+</section>
 
 <!-- Detail Modal -->
 <div class="modal-overlay" id="detail-modal">
@@ -926,6 +1336,63 @@ colonyList.forEach((c, i) => colonyColors[c] = palette[i % palette.length]);
 document.getElementById('clock').textContent = timestamp;
 
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+
+// #352: pickTextColor(bg) returns a CSS color expression suitable for label
+// text rendered over `bg`. Two-stage strategy:
+//   1. Static lookup keyed on either named CSS color, hex prefix, or known
+//      tier colors. Yellow / amber / cyan + several light hexes resolve to
+//      `var(--text-on-light)` (near-black) so labels meet WCAG AA contrast
+//      against light fills. Dark fills (red, green, blue, magenta, gray)
+//      keep `var(--text)`.
+//   2. WCAG relative-luminance fallback for hex colors not in the lookup.
+//      Computed via the standard Rec. 709 coefficients on the gamma-
+//      decoded sRGB channels; threshold 0.5 picks light vs dark.
+// Returns one of two CSS expressions: `var(--text)` (default light) or
+// `var(--text-on-light)` (dark, for use over light backgrounds).
+const PICK_TEXT_LOOKUP = {
+  'green':   'var(--text)',
+  'red':     'var(--text)',
+  'blue':    'var(--text)',
+  'magenta': 'var(--text)',
+  'gray':    'var(--text)',
+  'cyan':    'var(--text-on-light)',
+  'yellow':  'var(--text-on-light)',
+  'amber':   'var(--text-on-light)',
+  'white':   'var(--text-on-light)',
+  // Hex prefixes for the tier palette + common variants.
+  '#f59e0b': 'var(--text-on-light)',  // tier-review-gated amber
+  '#ffff00': 'var(--text-on-light)',  // --yellow
+  '#fbbf24': 'var(--text-on-light)',  // amber-400
+  '#eab308': 'var(--text-on-light)',  // yellow-500
+  '#3b82f6': 'var(--text)',           // tier-shadow blue (mid-luminance, dark text variant readable but white wins)
+  '#06b6d4': 'var(--text-on-light)',  // tier-propose cyan
+  '#22c55e': 'var(--text-on-light)',  // tier-autonomous green (light enough for dark text)
+  '#6b7280': 'var(--text)',           // tier-dormant gray
+  '#ff4444': 'var(--text)',           // --red
+  '#ff8800': 'var(--text-on-light)',  // --orange
+  '#ff00ff': 'var(--text)',           // --magenta
+  '#00ffff': 'var(--text-on-light)',  // --cyan (light enough for dark text)
+  '#00ff00': 'var(--text-on-light)',  // --green (light enough for dark text)
+};
+function pickTextColor(bg) {
+  if (!bg) return 'var(--text)';
+  const key = String(bg).trim().toLowerCase();
+  if (PICK_TEXT_LOOKUP[key] != null) return PICK_TEXT_LOOKUP[key];
+  // Hex fallback — parse 3 or 6 digits.
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(key);
+  if (!m) return 'var(--text)';
+  let hex = m[1];
+  if (hex.length === 3) {
+    hex = hex[0] + hex[0] + hex[1] + hex[1] + hex[2] + hex[2];
+  }
+  const r = parseInt(hex.substr(0, 2), 16) / 255;
+  const g = parseInt(hex.substr(2, 2), 16) / 255;
+  const b = parseInt(hex.substr(4, 2), 16) / 255;
+  // Gamma-decode to linear-light, then Rec. 709 luminance.
+  function gd(c) { return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); }
+  const lum = 0.2126 * gd(r) + 0.7152 * gd(g) + 0.0722 * gd(b);
+  return lum > 0.5 ? 'var(--text-on-light)' : 'var(--text)';
+}
 
 function relTime(ts) {
   if (!ts) return '';
@@ -1027,7 +1494,57 @@ document.addEventListener('keydown', (e) => {
     manualRefresh();
   }
   if (e.key === 'Escape') { closeModal(); closeWhyPanel(); }
+  // #352: digits 1-6 jump between tabs.
+  if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && !e.repeat) {
+    const tag = (e.target && e.target.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
+    const TAB_KEY_ORDER = ['overview', 'agents', 'promotions', 'learning', 'cost', 'config'];
+    const idx = '123456'.indexOf(e.key);
+    if (idx >= 0 && idx < TAB_KEY_ORDER.length) {
+      e.preventDefault();
+      activateTab(TAB_KEY_ORDER[idx]);
+    }
+  }
 });
+
+// #352: tab switcher. Persists the active tab in localStorage so an
+// operator's last view survives a reload. Pure CSS toggle: every renderXxx()
+// still fires on every snapshot regardless of which tab is currently
+// visible — switching tabs reads pre-rendered DOM, no re-fetch.
+const ACTIVE_TAB_KEY = 'agentis:dashboard:active-tab';
+const TAB_NAMES = ['overview', 'agents', 'promotions', 'learning', 'cost', 'config'];
+function activateTab(name) {
+  if (!TAB_NAMES.includes(name)) name = 'overview';
+  document.querySelectorAll('section[data-tab]').forEach(sec => {
+    if (sec.getAttribute('data-tab') === name) {
+      sec.classList.add('active');
+    } else {
+      sec.classList.remove('active');
+    }
+  });
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    if (btn.getAttribute('data-tab') === name) {
+      btn.classList.add('active');
+      btn.setAttribute('aria-selected', 'true');
+    } else {
+      btn.classList.remove('active');
+      btn.setAttribute('aria-selected', 'false');
+    }
+  });
+  try { localStorage.setItem(ACTIVE_TAB_KEY, name); } catch (e) {}
+}
+(function setupTabs() {
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const name = btn.getAttribute('data-tab');
+      activateTab(name);
+    });
+  });
+  let initial;
+  try { initial = localStorage.getItem(ACTIVE_TAB_KEY); } catch (e) { initial = null; }
+  if (!initial || !TAB_NAMES.includes(initial)) initial = 'overview';
+  activateTab(initial);
+})();
 
 // #313 PR 2: data-derived shorthands are re-bound on each render via
 // extractRefs(data); the live SSE consumer swaps in fresh snapshots.
@@ -1050,6 +1567,12 @@ let decisions = data.decisions || [];
 // fed without .auto-promote-install.toml — banner falls back to
 // daemon-liveness only.
 let sidecar = data.sidecar || {installed: false, enabled: false, interval_s: null, last_tick_ts: null};
+// #352: per-sidecar listing for the Overview tab. Default to two empty
+// records so renderSidecarStatus always emits the two known sidecars.
+let sidecars = data.sidecars || [];
+// #352: config editor scope. Read-only by default until
+// operator_writes_enabled flips to true in `<fed>/.agentis/config`.
+let configEditor = data.config_editor || {operator_writes_enabled: false, scopes: []};
 
 // #313 PR 2: re-derives the shorthands above from a fresh snapshot.
 // Called once at init (the lets above) and once per SSE push (rerender).
@@ -1065,6 +1588,8 @@ function extractRefs(d) {
   confChanges = d.confidence_changes || [];
   decisions = d.decisions || [];
   sidecar = d.sidecar || {installed: false, enabled: false, interval_s: null, last_tick_ts: null};
+  sidecars = d.sidecars || [];
+  configEditor = d.config_editor || {operator_writes_enabled: false, scopes: []};
   // History + nowEpoch travel out-of-band when the snapshot carries
   // them; PR 1's snapshot.json contract is full COLLECTOR_JSON only,
   // so .history / .now_epoch may be undefined — fall back to the
@@ -1481,11 +2006,22 @@ function renderPhaseReadiness(data) {
       const tip = n > 0
         ? n + ' agent' + (n === 1 ? '' : 's') + ' in ' + t + ': ' + names.join(', ')
         : 'no agents in ' + t;
+      // #352: route label color through pickTextColor so the amber
+      // tier-review-gated bar (#f59e0b) and yellow-leaning fills meet
+      // WCAG AA contrast. The `inside` count uses the bar fill color,
+      // the always-rendered tier name on the left uses the same logic.
+      const TIER_FILL = {
+        'dormant': '#6b7280', 'shadow': '#3b82f6', 'propose': '#06b6d4',
+        'review-gated': '#f59e0b', 'autonomous': '#22c55e',
+      };
+      const fill = TIER_FILL[t] || '#6b7280';
+      const insideColor = pickTextColor(fill);
+      const labelLeftColor = (inside || pct < 30) ? insideColor : 'var(--text)';
       html += '<div class="phase-bar tier-' + t + '" title="' + esc(tip) + '">';
       html += '<div class="phase-bar-fill" style="width: ' + pct.toFixed(1) + '%"></div>';
-      html += '<span class="phase-bar-label-left">' + t + '</span>';
+      html += '<span class="phase-bar-label-left" style="color: ' + labelLeftColor + '; text-shadow: none;">' + t + '</span>';
       html += '<span class="phase-bar-label-right"' +
-        (inside ? ' style="color: #000; text-shadow: none;"' : '') +
+        (inside ? ' style="color: ' + insideColor + '; text-shadow: none;"' : '') +
         '>' + n + '/' + total + '</span>';
       html += '</div>';
     });
@@ -1564,16 +2100,381 @@ function renderForgeRateLimits(data) {
   el.innerHTML = html;
 }
 
-// --- LLM Cost (#311 PR B) ---
+// --- Sidecar status (#352, Overview tab) ---
+// Per-sidecar listing for the Overview tab. The collector emits a
+// `data.sidecars[]` array with one record per sidecar (auto-promote,
+// cost-cap, plus any future ones). Each row renders the sidecar name,
+// age since last tick, a status pill (healthy/silent/down/disabled), and
+// a `[restart]` button. Operators clicking restart confirm() into a POST
+// to /sidecar-restart which the server thin-shells into
+// tools/sidecar-restart.sh — extracted helper so the endpoint stays small.
+function renderSidecarStatus(data) {
+  const el = document.getElementById('sidecar-status');
+  if (!el) return;
+  const rows = (data && data.sidecars) || sidecars || [];
+  if (!rows.length) {
+    el.innerHTML = '<div class="empty">No sidecars configured.</div>';
+    return;
+  }
+  let html = '';
+  rows.forEach(s => {
+    const name = s.name || '?';
+    const status = s.status || 'silent';
+    let ageTxt = '—';
+    if (s.last_tick_ts) {
+      const diff = Math.max(0, nowEpoch - s.last_tick_ts);
+      if (diff < 60) ageTxt = diff + 's ago';
+      else if (diff < 3600) ageTxt = Math.floor(diff/60) + 'm ago';
+      else if (diff < 86400) ageTxt = Math.floor(diff/3600) + 'h ago';
+      else ageTxt = Math.floor(diff/86400) + 'd ago';
+      if (status === 'silent') ageTxt = 'silent ' + ageTxt;
+    } else if (!s.installed) {
+      ageTxt = 'not installed';
+    } else if (!s.enabled) {
+      ageTxt = 'disabled';
+    } else {
+      ageTxt = 'never';
+    }
+    const restartDisabled = !s.installed || !s.enabled;
+    html += '<div class="sidecar-row" data-sidecar="' + esc(name) + '">';
+    html += '<span class="sidecar-name">' + esc(name) + '</span>';
+    html += '<span class="sidecar-age">' + esc(ageTxt) + '</span>';
+    html += '<span class="sidecar-pill ' + esc(status) + '">' + esc(status) + '</span>';
+    html += '<button class="sidecar-restart" onclick="restartSidecar(\'' + esc(name) + '\')"' +
+            (restartDisabled ? ' disabled' : '') + '>restart</button>';
+    html += '</div>';
+  });
+  el.innerHTML = html;
+}
+
+// --- Bulk actions (#352, Overview tab) ---
+// Renders ONLY when ≥1 agent is non-running (effective stopped/zombie)
+// or ≥1 sidecar is silent/down. Buttons:
+//   [Restart N stopped agents]  → POST /restart-all-stopped (with confirm)
+//   [Restart sidecar: <name>]   → POST /sidecar-restart (per-sidecar)
+function renderBulkActions(data) {
+  const card = document.getElementById('bulk-actions-card');
+  const el = document.getElementById('bulk-actions');
+  if (!el || !card) return;
+  const stopped = agents.filter(a => {
+    if (a.state !== 'running') return true;
+    if (a.pid && !a.pid_alive) return true;  // zombie
+    return false;
+  });
+  const silentSidecars = (sidecars || []).filter(s =>
+    s.installed && s.enabled && (s.status === 'silent' || s.status === 'down' || s.status === 'degraded')
+  );
+  const hasWork = stopped.length > 0 || silentSidecars.length > 0;
+  if (!hasWork) {
+    card.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  card.style.display = '';
+  let html = '';
+  if (stopped.length > 0) {
+    const names = stopped.slice(0, 8).map(a => a.colony + '/' + a.name).join(', ');
+    const more = stopped.length > 8 ? ', ...' : '';
+    const tip = 'Restart ' + stopped.length + ' stopped agent' + (stopped.length === 1 ? '' : 's') +
+                ' (' + names + more + ')';
+    html += '<button class="bulk-action-btn" onclick="restartAllStopped(' + stopped.length + ')" title="' + esc(tip) + '">';
+    html += 'Restart ' + stopped.length + ' stopped agent' + (stopped.length === 1 ? '' : 's');
+    html += '</button>';
+  }
+  silentSidecars.forEach(s => {
+    html += '<button class="bulk-action-btn" onclick="restartSidecar(\'' + esc(s.name) + '\')">';
+    html += 'Restart sidecar: ' + esc(s.name);
+    html += '</button>';
+  });
+  el.innerHTML = html;
+}
+
+// --- Promotion ladder (#352, Promotions tab) ---
+// One row per agent, full-width. Layout:
+//   [agent_name] [dormant—shadow—propose—review—autonomous] [ETA] [prereq]
+// Five segments side-by-side. Segment widths proportional to tier ranges
+// (shadow 0.4-0.6 = 33%, propose 0.6-0.8 = 33%, review-gated 0.8-0.95 =
+// 25%, autonomous 0.95-1.0 = 8%, dormant before shadow ~1%). Vertical
+// marker drawn at horizontal position derived from the agent's confidence.
+// Autonomous-tier agents render the full ladder with a `MAX` badge
+// replacing the ETA cell + `—` in the limiting-prereq cell.
+const LADDER_TIERS = [
+  {name: 'dormant',       lo: 0.0,  hi: 0.4,  fill: '#6b7280'},
+  {name: 'shadow',        lo: 0.4,  hi: 0.6,  fill: '#3b82f6'},
+  {name: 'propose',       lo: 0.6,  hi: 0.8,  fill: '#06b6d4'},
+  {name: 'review-gated',  lo: 0.8,  hi: 0.95, fill: '#f59e0b'},
+  {name: 'autonomous',    lo: 0.95, hi: 1.0,  fill: '#22c55e'},
+];
+function renderPromotionLadder(data) {
+  const el = document.getElementById('promotion-ladder');
+  if (!el) return;
+  if (!agents.length) {
+    el.innerHTML = '<span class="empty">No agents in this federation.</span>';
+    return;
+  }
+  // Build a fast lookup of decisions by agent so we can pull limiting
+  // prereq + ETA without re-scanning per row.
+  const decisionByAgent = {};
+  (decisions || []).forEach(d => { decisionByAgent[d.agent] = d; });
+
+  // Compute segment proportional widths: each tier covers (hi-lo) / 1.0 of
+  // the bar. Sum = 1.0. We render percentages.
+  const totalRange = 1.0;
+  // Sort agents by confidence descending so already-promoted agents rise
+  // to the top — operators see who's already MAX vs who's still climbing.
+  const sorted = agents.slice().sort((a, b) => {
+    const ac = (a.confidence == null) ? -1 : a.confidence;
+    const bc = (b.confidence == null) ? -1 : b.confidence;
+    return bc - ac;
+  });
+  let html = '';
+  sorted.forEach(a => {
+    const conf = (a.confidence == null) ? null : a.confidence;
+    const isMax = conf != null && conf >= 0.95;
+    let etaCell, prereqCell;
+    if (isMax) {
+      etaCell = '<span class="ladder-eta max-badge">MAX</span>';
+      prereqCell = '<span class="ladder-prereq">—</span>';
+    } else {
+      const dec = decisionByAgent[a.name];
+      let etaTxt = '—';
+      let prereqTxt = '—';
+      if (dec) {
+        if (dec.evidence && Array.isArray(dec.evidence.prereqs) && dec.evidence.prereqs.length > 0) {
+          // Limiting prereq — pick the one with the lowest ratio of value/threshold
+          let lim = null, limRatio = Infinity;
+          dec.evidence.prereqs.forEach(p => {
+            if (p.op === '<') {
+              if (!p.meets) lim = lim || p;
+              return;
+            }
+            const t = +p.threshold || 0;
+            const v = +p.value || 0;
+            if (t > 0) {
+              const r = Math.min(v / t, 2.0);
+              if (r < limRatio) { limRatio = r; lim = p; }
+            }
+          });
+          if (lim) {
+            const v = lim.value;
+            const t = lim.threshold;
+            prereqTxt = (lim.name || 'prereq') + ' ' +
+              (typeof v === 'number' ? v.toFixed(v < 1 && v > 0 ? 4 : 1) : v) +
+              '/' +
+              (typeof t === 'number' ? t.toFixed(t < 1 && t > 0 ? 4 : 1) : t);
+          }
+        }
+        if (dec.evidence && typeof dec.evidence.forecast_days_to_next_tier === 'number') {
+          const d = dec.evidence.forecast_days_to_next_tier;
+          if (d > 0 && d < 30) etaTxt = d.toFixed(1) + 'd';
+        }
+      }
+      etaCell = '<span class="ladder-eta">ETA: ' + esc(etaTxt) + '</span>';
+      prereqCell = '<span class="ladder-prereq" title="' + esc(prereqTxt) + '">' + esc(prereqTxt) + '</span>';
+    }
+
+    let bars = '';
+    LADDER_TIERS.forEach(t => {
+      const widthPct = ((t.hi - t.lo) / totalRange) * 100;
+      const labelColor = pickTextColor(t.fill);
+      bars += '<div class="ladder-segment tier-' + t.name + '" style="width: ' + widthPct.toFixed(2) + '%">';
+      bars += '<span class="ladder-segment-label" style="color: ' + labelColor + ';">' + esc(t.name) + '</span>';
+      bars += '</div>';
+    });
+    // Vertical marker at conf position (clamped 0..1).
+    let markerHtml = '';
+    if (conf != null) {
+      const pct = Math.max(0, Math.min(1, conf)) * 100;
+      markerHtml = '<div class="ladder-marker" style="left: ' + pct.toFixed(2) + '%"></div>';
+    }
+    html += '<div class="ladder-row tier-' + (isMax ? 'autonomous' : 'climbing') + '">';
+    html += '<span class="ladder-agent" title="' + esc(a.name) + ' (' + esc(a.colony) + ')">' + esc(a.name) + '</span>';
+    html += '<div class="ladder-bar">' + bars + markerHtml + '</div>';
+    html += etaCell;
+    html += prereqCell;
+    html += '</div>';
+  });
+  el.innerHTML = html;
+}
+
+// --- Config editor (#352, Config tab) ---
+// Two-pane layout: left = scope picker (federation + per-colony), right =
+// key-value rows for the selected scope. Read-only by default; the apply
+// path is gated on `data.config_editor.operator_writes_enabled = true`
+// (set in <fed>/.agentis/config). The audit log path is surfaced in the
+// JSON so the apply endpoint and the dashboard agree on a single trail.
+let __configActiveScope = null;
+function pickConfigInputType(section, key, raw) {
+  // Lightweight type inference for the input control. Matches the limited
+  // .toml subset the collector parses: numbers, booleans, quoted strings.
+  if (raw === undefined) return 'text';
+  const stripped = String(raw).trim();
+  if (stripped === 'true' || stripped === 'false') return 'bool';
+  if (/^-?\d+$/.test(stripped)) return 'int';
+  if (/^-?\d+\.\d+$/.test(stripped)) return 'float';
+  if (key === 'backend' || key === 'mode' || key === 'on_breach') return 'enum';
+  return 'text';
+}
+const CONFIG_ENUM_VOCAB = {
+  'backend': ['mock', 'cli', 'http'],
+  'mode': ['metered', 'flat', 'off'],
+  'on_breach': ['downgrade', 'stop'],
+};
+function renderConfigEditor(data) {
+  const el = document.getElementById('config-editor');
+  if (!el) return;
+  const ce = (data && data.config_editor) || configEditor || {operator_writes_enabled: false, scopes: []};
+  const scopes = ce.scopes || [];
+  const writable = !!ce.operator_writes_enabled;
+  if (!scopes.length) {
+    el.innerHTML = '<span class="empty">No config scopes discovered. The collector reads <code>&lt;fed&gt;/.agentis/config</code> + <code>&lt;colony&gt;/config/colony.toml</code>.</span>';
+    return;
+  }
+  if (!__configActiveScope || !scopes.find(s => s.scope === __configActiveScope)) {
+    __configActiveScope = scopes[0].scope;
+  }
+  const active = scopes.find(s => s.scope === __configActiveScope) || scopes[0];
+
+  let html = '<div class="config-editor">';
+  // Left pane: scope picker.
+  html += '<div class="config-picker">';
+  scopes.forEach(s => {
+    const cls = (s.scope === __configActiveScope) ? 'config-picker-btn active' : 'config-picker-btn';
+    html += '<button class="' + cls + '" onclick="selectConfigScope(\'' + esc(s.scope) + '\')">';
+    html += esc(s.scope);
+    if (!s.exists) html += ' <span class="muted">(missing)</span>';
+    html += '</button>';
+  });
+  html += '</div>';
+  // Right pane: read-only banner + key-value rows.
+  html += '<div>';
+  if (!writable) {
+    html += '<div class="config-readonly-banner">';
+    html += 'READ-ONLY. Set <code>[config_editor].operator_writes_enabled = true</code> ';
+    html += 'in <code>&lt;fed&gt;/.agentis/config</code> to enable Apply.';
+    html += '</div>';
+  }
+  // Drift detection placeholder — collector emits mtime; if it changed
+  // since first paint, show a banner. We re-check on each render; the
+  // first-paint mtime is captured in __configMtimeAtFirstPaint.
+  if (active.exists && typeof active.mtime === 'number') {
+    if (typeof window.__configMtimeAtFirstPaint !== 'object') {
+      window.__configMtimeAtFirstPaint = {};
+    }
+    if (window.__configMtimeAtFirstPaint[active.scope] === undefined) {
+      window.__configMtimeAtFirstPaint[active.scope] = active.mtime;
+    }
+    if (window.__configMtimeAtFirstPaint[active.scope] !== active.mtime) {
+      html += '<div class="config-drift-banner">Drift detected: file changed externally. ';
+      html += '<button class="config-apply-btn" style="border-color:var(--orange);color:var(--orange);" onclick="reloadConfigEditor()">Reload</button>';
+      html += '</div>';
+    }
+  }
+  html += '<div class="config-pane">';
+  if (!active.exists) {
+    html += '<div class="empty">File missing: <code>' + esc(active.path || '') + '</code></div>';
+  } else if (!active.keys || !active.keys.length) {
+    html += '<div class="empty">File present but no key=value lines parsed.</div>';
+  } else {
+    let lastSection = '__none__';
+    active.keys.forEach((kv, idx) => {
+      if (kv.section !== lastSection) {
+        lastSection = kv.section;
+        const sec = lastSection ? '[' + lastSection + ']' : '(top-level)';
+        html += '<div style="color:var(--yellow);font-size:10px;letter-spacing:1px;text-transform:uppercase;margin:6px 0 2px 0;">' + esc(sec) + '</div>';
+      }
+      const t = pickConfigInputType(kv.section, kv.key, kv.raw_value);
+      const inputId = 'config-' + active.scope + '-' + idx;
+      html += '<div class="config-row">';
+      html += '<span class="config-key">' + esc(kv.key) + '</span>';
+      const ro = writable ? '' : ' readonly disabled';
+      if (t === 'bool') {
+        const checked = (String(kv.raw_value).trim().toLowerCase() === 'true') ? ' checked' : '';
+        html += '<input type="checkbox" class="config-input" id="' + inputId + '"' + checked + (writable ? '' : ' disabled') + '>';
+      } else if (t === 'enum') {
+        const vocab = CONFIG_ENUM_VOCAB[kv.key] || [];
+        const cur = String(kv.raw_value).trim().replace(/^["']|["']$/g, '');
+        html += '<select class="config-input" id="' + inputId + '"' + (writable ? '' : ' disabled') + '>';
+        if (!vocab.includes(cur)) html += '<option value="' + esc(cur) + '" selected>' + esc(cur) + '</option>';
+        vocab.forEach(v => {
+          html += '<option value="' + esc(v) + '"' + (v === cur ? ' selected' : '') + '>' + esc(v) + '</option>';
+        });
+        html += '</select>';
+      } else if (t === 'int' || t === 'float') {
+        html += '<input type="number" class="config-input" id="' + inputId + '" value="' + esc(kv.raw_value) + '"' + ro + '>';
+      } else {
+        const v = String(kv.raw_value).replace(/^["']|["']$/g, '');
+        html += '<input type="text" class="config-input" id="' + inputId + '" value="' + esc(v) + '"' + ro + '>';
+      }
+      html += '</div>';
+    });
+  }
+  html += '</div>';  // config-pane
+  // Apply bar — disabled when read-only.
+  html += '<div class="config-apply-bar">';
+  html += '<button class="config-apply-btn" onclick="applyConfigEdits()"' +
+          (writable ? '' : ' disabled') + '>Apply</button>';
+  html += '<span class="muted" style="font-size:10px;">' +
+          (writable ? 'audit: ' + esc(ce.audit_log_path || '<fed>/.agentis/logs/config-edits.jsonl') : 'edits disabled until operator_writes_enabled') +
+          '</span>';
+  html += '</div>';
+  html += '</div>';  // right pane
+  html += '</div>';  // config-editor
+  el.innerHTML = html;
+}
+function selectConfigScope(name) {
+  __configActiveScope = name;
+  renderConfigEditor(window.__data || {});
+}
+function reloadConfigEditor() {
+  // Drop the captured mtime so the next render no longer flags drift.
+  if (window.__configMtimeAtFirstPaint && __configActiveScope) {
+    delete window.__configMtimeAtFirstPaint[__configActiveScope];
+  }
+  renderConfigEditor(window.__data || {});
+}
+function applyConfigEdits() {
+  // Read every input under the active scope into a payload and POST
+  // /config/apply. Server thin-shells the writes + restarts affected
+  // agents; on 503 the gate is off, on 405 the endpoint is not wired
+  // (default fail-safe).
+  if (!__configActiveScope) return;
+  const inputs = document.querySelectorAll('[id^="config-' + __configActiveScope + '-"]');
+  const updates = [];
+  inputs.forEach(inp => {
+    const v = (inp.type === 'checkbox') ? (inp.checked ? 'true' : 'false') : inp.value;
+    updates.push({input_id: inp.id, value: v});
+  });
+  if (!updates.length) return;
+  if (!confirm('Apply ' + updates.length + ' config change' + (updates.length === 1 ? '' : 's') + ' to ' + __configActiveScope + ' and restart affected agents?')) {
+    return;
+  }
+  fetch('/config/apply', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({scope: __configActiveScope, updates: updates}),
+  }).then(r => r.text().then(t => ({status: r.status, body: t})))
+    .then(({status, body}) => {
+      if (status === 200) {
+        showSimpleToast('Config applied', 'var(--green)', 'ok');
+      } else {
+        showSimpleToast('Apply failed (' + status + '): ' + body.slice(0, 200), 'var(--red)', 'err');
+      }
+    })
+    .catch(e => { showSimpleToast('Apply error: ' + e, 'var(--red)', 'err'); });
+}
+
+// --- LLM Cost (#311 PR B; #352 split tokens vs USD) ---
 // Reads the `cost` block populated by the collector from
 // <agentis_root>/spend/*.jsonl (#311 PR A — agentis-core v1.4.7+). When the
 // federation has never run on a spend-log-aware build the block is still
 // emitted with zeroed totals + null stale_seconds; the renderer treats that
 // as "no data yet" and shows zeros (no errors).
 //
-// Status pill is a placeholder ("active") for now. #318 will wire the
-// active/warning/critical states from a cost_cap sidecar that reads the
-// same JSONL and surfaces breach state through this same block.
+// #352 split: `renderLlmTokens(data)` is the top of the new Cost tab and
+// renders federation-wide token counts + per-agent breakdown.
+// `renderLlmUsd(data)` is the bottom and is the preserved
+// `renderLlmCost(data)` body, retargeted at the new `llm-usd` container.
 function fmtUsd(v) {
   if (v == null) return '—';
   if (typeof v !== 'number' || !isFinite(v)) return '—';
@@ -1583,8 +2484,64 @@ function fmtUsd(v) {
   if (v >= 0.01) return '$' + v.toFixed(3);
   return '$' + v.toFixed(4);
 }
+function fmtTokens(n) {
+  if (n == null || typeof n !== 'number' || !isFinite(n)) return '—';
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000)    return (n / 1000).toFixed(1) + 'k';
+  return String(Math.round(n));
+}
+// #352: token totals — top of the Cost tab. Reads `cost.tokens_federation`
+// (input/output for today/7d/30d) + `cost.tokens_by_agent` (last-7d
+// per-agent input/output) and lays out a headline row + per-agent table.
+function renderLlmTokens(data) {
+  const el = document.getElementById('llm-tokens');
+  if (!el) return;
+  const cost = (data && data.cost) || {};
+  const tokFed = cost.tokens_federation || {input_today: 0, output_today: 0,
+    input_7d: 0, output_7d: 0, input_30d: 0, output_30d: 0};
+  const byAgent = cost.tokens_by_agent || {};
+
+  let html = '<div class="cost-headline">';
+  html += '<div class="cost-headline-item"><span class="cost-headline-label">Input today</span><span class="cost-headline-value" title="federation-wide input tokens since 00:00">' + esc(fmtTokens(tokFed.input_today)) + '</span></div>';
+  html += '<div class="cost-headline-item"><span class="cost-headline-label">Output today</span><span class="cost-headline-value" title="federation-wide output tokens since 00:00">' + esc(fmtTokens(tokFed.output_today)) + '</span></div>';
+  html += '<div class="cost-headline-item"><span class="cost-headline-label">Input 7d</span><span class="cost-headline-value" title="rolling 168h">' + esc(fmtTokens(tokFed.input_7d)) + '</span></div>';
+  html += '<div class="cost-headline-item"><span class="cost-headline-label">Output 7d</span><span class="cost-headline-value" title="rolling 168h">' + esc(fmtTokens(tokFed.output_7d)) + '</span></div>';
+  html += '</div>';
+
+  // Per-agent breakdown — rolling 7d input + output. Sort by total
+  // tokens descending so the loudest agent rises to the top.
+  const rows = [];
+  agents.forEach(a => {
+    const aid = a.agent_id || '';
+    if (!aid) return;
+    const t = byAgent[aid] || {input: 0, output: 0};
+    if ((t.input || 0) + (t.output || 0) > 0) {
+      rows.push({name: a.name, colony: a.colony, input: t.input || 0, output: t.output || 0});
+    }
+  });
+  rows.sort((x, y) => (y.input + y.output) - (x.input + x.output));
+  if (rows.length > 0) {
+    html += '<div style="margin-top:10px;font-size:11px;">';
+    html += '<div style="color:var(--muted);font-size:10px;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;">Per-agent (7d, in / out)</div>';
+    rows.slice(0, 12).forEach(r => {
+      html += '<div class="rl-row">';
+      html += '<span class="rl-colony">' + esc(r.name) + ' <span class="muted">' + esc(r.colony) + '</span></span>';
+      html += '<span class="rl-value">' + esc(fmtTokens(r.input)) + ' <span class="muted">/</span> ' + esc(fmtTokens(r.output)) + '</span>';
+      html += '</div>';
+    });
+    html += '</div>';
+  } else {
+    html += '<div class="cost-stale">no token activity yet</div>';
+  }
+  el.innerHTML = html;
+}
+function renderLlmUsd(data) {
+  // Preserves the legacy renderLlmCost(data) body; just retargets the
+  // container ID per the #352 Cost tab split.
+  renderLlmCost(data);
+}
 function renderLlmCost(data) {
-  const el = document.getElementById('llm-cost');
+  const el = document.getElementById('llm-usd') || document.getElementById('llm-cost');
   if (!el) return;
   const cost = (data && data.cost) || {};
   const fed = cost.federation || {today: 0, week: 0, month: 0};
@@ -1995,10 +2952,20 @@ function renderPromoteCandidates(data) {
   } else {
     bars.forEach(b => {
       const pct = (b.minFill * 100).toFixed(1);
+      // #352: pickTextColor over the bar fill so labels meet contrast.
+      // Yellow `partial` and amber-adjacent backgrounds need dark text.
+      const PROMOTE_FILL = {
+        'ready':   '#00ff00',  // --green
+        'partial': '#ffff00',  // --yellow (light → dark text)
+        'blocked': '#ff4444',  // --red
+        'evolve':  '#ff00ff',  // --magenta
+      };
+      const fill = PROMOTE_FILL[b.cls] || '#888888';
+      const labelColor = pickTextColor(fill);
       html += '<div class="promote-bar ' + b.cls + '" title="' + esc(b.tooltip) + '">';
       html += '<div class="promote-bar-fill" style="width: ' + pct + '%"></div>';
-      html += '<span class="promote-bar-label-left">' + esc(truncate(b.agent, 20)) + '</span>';
-      html += '<span class="promote-bar-label-right">' + esc(b.rightLabel) + '</span>';
+      html += '<span class="promote-bar-label-left" style="color: ' + labelColor + ';">' + esc(truncate(b.agent, 20)) + '</span>';
+      html += '<span class="promote-bar-label-right" style="color: ' + labelColor + ';">' + esc(b.rightLabel) + '</span>';
       html += '</div>';
       // #276 forecast badge (when collector has slope-projection data)
       // renders below the bar so the operator reads "blocked at slope"
@@ -3102,6 +4069,68 @@ function evolveAgent(agent) {
     .catch(e => { showSimpleToast('Error: ' + e.message, 'var(--red)'); });
 }
 
+// #352: bulk-restart all stopped agents. Confirms with a count + name
+// preview, POSTs /restart-all-stopped, and shows a result toast. The
+// endpoint returns 405 when not wired (default fail-safe) so a stub
+// server can be tested for correct status without a real federation.
+function restartAllStopped(count) {
+  const stopped = agents.filter(a => {
+    if (a.state !== 'running') return true;
+    if (a.pid && !a.pid_alive) return true;
+    return false;
+  });
+  if (stopped.length === 0) {
+    showSimpleToast('No stopped agents to restart', 'var(--cyan)');
+    return;
+  }
+  const preview = stopped.slice(0, 8).map(a => a.colony + '/' + a.name).join(', ');
+  const more = stopped.length > 8 ? ', ...' : '';
+  if (!confirm('Restart ' + stopped.length + ' stopped agent' + (stopped.length === 1 ? '' : 's') + ' (' + preview + more + ')?')) {
+    return;
+  }
+  showSimpleToast('Restarting ' + stopped.length + ' stopped agents…', 'var(--yellow)');
+  fetch('/restart-all-stopped', { method: 'POST' })
+    .then(r => r.text().then(t => ({status: r.status, body: t})))
+    .then(({status, body}) => {
+      if (status === 200) {
+        try {
+          const j = JSON.parse(body);
+          const ok = (j.started || []).length;
+          const failed = (j.failed || []).length;
+          showSimpleToast('Started ' + ok + (failed ? ' / failed ' + failed : '') + ' agents', failed ? 'var(--orange)' : 'var(--green)', failed ? 'err' : 'ok');
+        } catch (e) {
+          showSimpleToast('Restart-all-stopped: ' + body.slice(0, 100), 'var(--green)');
+        }
+        scheduleReload(8000);
+      } else {
+        showSimpleToast('Failed (' + status + '): ' + body.slice(0, 200), 'var(--red)', 'err');
+      }
+    })
+    .catch(e => { showSimpleToast('Error: ' + e, 'var(--red)', 'err'); });
+}
+// #352: per-sidecar restart. POSTs /sidecar-restart with the sidecar
+// name in the JSON body. The endpoint thin-shells into
+// tools/sidecar-restart.sh — the actual kill+respawn lives in shell.
+function restartSidecar(name) {
+  if (!confirm('Restart sidecar: ' + name + '?')) return;
+  showSimpleToast('Restarting sidecar: ' + name + '…', 'var(--yellow)');
+  fetch('/sidecar-restart', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: name}),
+  })
+    .then(r => r.text().then(t => ({status: r.status, body: t})))
+    .then(({status, body}) => {
+      if (status === 200) {
+        showSimpleToast('Sidecar ' + name + ' restarted', 'var(--green)', 'ok');
+        scheduleReload(5000);
+      } else {
+        showSimpleToast('Failed (' + status + '): ' + body.slice(0, 200), 'var(--red)', 'err');
+      }
+    })
+    .catch(e => { showSimpleToast('Error: ' + e, 'var(--red)', 'err'); });
+}
+
 function cleanupDaemon(agentId) {
   if (!confirm('Clean up stale daemon entry for ' + agentId + '?')) return;
   fetch('/cleanup', {
@@ -3365,9 +4394,20 @@ function rerender(snap) {
   renderAgentTable(snap);
   renderPhaseReadiness(snap);
   renderForgeRateLimits(snap);
-  renderLlmCost(snap);
+  // #352 split: tokens (top of Cost tab) + USD (bottom of Cost tab).
+  // renderLlmCost is preserved as the legacy single-tile renderer for
+  // compatibility with any third-party scrape that hits the
+  // `id="llm-cost"` selector; the live tab targets `llm-usd`.
+  renderLlmTokens(snap);
+  renderLlmUsd(snap);
   renderCostCap(snap);
   renderPromoteCandidates(snap);
+  // #352: new renderers — sidecar listing, bulk-actions, promotion
+  // ladder, config editor.
+  renderSidecarStatus(snap);
+  renderBulkActions(snap);
+  renderPromotionLadder(snap);
+  renderConfigEditor(snap);
   renderEventTimeline(snap);
   renderExperienceTrend(snap);
   renderConfidenceTrend(snap);
