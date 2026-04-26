@@ -225,6 +225,28 @@ tick_interval_for() {
     esac
 }
 
+# #318: cost-cap downgrade. When the cost-cap sidecar (tools/cost-cap.sh)
+# detects a daily/monthly budget breach with on_breach = "downgrade", it
+# writes <fed>/.agentis/llm-backend-override containing the backend
+# name (e.g. "mock"). Splice that as `--config-override llm.backend=<v>`
+# onto every daemon CLI so newly-spawned agents pick the cheap path
+# without an agentis-core change. The override is cleared at UTC
+# midnight / month boundary by the sidecar itself, which then re-runs
+# this script via --restart-agent to flip every daemon back. The file
+# lives under the federation root, walked from this colony script via
+# the standard repo layout. Empty / missing file → no flag spliced.
+cost_cap_override_args() {
+    local fed_root="$REPO_ROOT/dev-apprenticeship"
+    local override_file="$fed_root/.agentis/llm-backend-override"
+    if [ -f "$override_file" ]; then
+        local backend
+        backend="$(tr -d '[:space:]' < "$override_file" 2>/dev/null || true)"
+        if [ -n "$backend" ]; then
+            printf -- '--config-override\nllm.backend=%s\n' "$backend"
+        fi
+    fi
+}
+
 # Rate-limit status mode (federation-dashboard 0.3.0). Same env-load path
 # as --restart-agent but execs forge-api.sh rate-limit-status and exits.
 # Skips the daemon launch entirely; safe to invoke every dashboard refresh
@@ -304,11 +326,17 @@ for d in daemons:
     # keeps those fds open after start-colony.sh exits, and the Python
     # caller blocks on read until its own timeout — reporting spurious
     # "restart failed" even though the agent came up fine.
+    CC_ARGS=()
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        CC_ARGS+=("$line")
+    done < <(cost_cap_override_args)
     agentis daemon "$COLONY_DIR/agents/${RESTART_AGENT}.ag" \
         --colony implementation \
         --enable-exec \
         --enable-messaging \
-        --tick-interval "$tick" </dev/null >/dev/null 2>&1 &
+        --tick-interval "$tick" \
+        ${CC_ARGS[@]+"${CC_ARGS[@]}"} </dev/null >/dev/null 2>&1 &
     agent_pid=$!
     sleep 0.5
     if ! kill -0 "$agent_pid" 2>/dev/null; then
@@ -325,6 +353,11 @@ case "$FORGE_TYPE" in
     github) echo "  GitHub: $GITHUB_URL ($GITHUB_OWNER/$GITHUB_REPO)" ;;
 esac
 
+CC_ARGS=()
+while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    CC_ARGS+=("$line")
+done < <(cost_cap_override_args)
 for agent in "${AGENTS[@]}"; do
     interval=$(tick_interval_for "$agent")
     echo "  Starting $agent (tick=${interval}ms)..."
@@ -332,7 +365,8 @@ for agent in "${AGENTS[@]}"; do
         --colony implementation \
         --enable-exec \
         --enable-messaging \
-        --tick-interval "$interval" &
+        --tick-interval "$interval" \
+        ${CC_ARGS[@]+"${CC_ARGS[@]}"} &
     sleep 2  # stagger starts to reduce API contention
 done
 

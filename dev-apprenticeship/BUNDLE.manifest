@@ -35,6 +35,9 @@ tools/auto-promote-config-parser.py
 tools/auto-promote-lock.py
 tools/auto-promote-decisions.py
 tools/resolve-tick-interval.py
+tools/cost-cap.sh
+tools/cost-cap-sum.py
+tools/cost-cap-lock.py
 
 # ----- Federation dashboard -----
 # Extracted to a separately-versioned standalone component in #252.

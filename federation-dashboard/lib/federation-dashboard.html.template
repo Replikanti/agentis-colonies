@@ -79,9 +79,44 @@
   .fed-health-banner.visible { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
   .fed-health-banner.healthy { background: rgba(0,255,0,0.06); border: 1px solid rgba(0,255,0,0.3); color: var(--green); }
   .fed-health-banner.degraded { background: rgba(255,136,0,0.08); border: 1px solid var(--orange); color: var(--orange); }
+  .fed-health-banner.stopped { background: rgba(255,68,68,0.08); border: 1px solid var(--red); color: var(--red); }
   .fed-health-banner .health-label { font-weight: bold; }
   .fed-health-banner .health-detail { opacity: 0.85; text-transform: none; letter-spacing: 0; font-size: 11px; }
   .fed-health-banner .health-reasons { opacity: 0.75; text-transform: none; letter-spacing: 0; font-size: 11px; }
+
+  /* --- Cost Cap Tile (#318) --- */
+  .cost-cap-pill {
+    display: inline-block; padding: 2px 8px; border-radius: 10px;
+    font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+    font-weight: bold;
+  }
+  .cost-cap-pill.active { background: rgba(0,255,0,0.12); color: var(--green); }
+  .cost-cap-pill.warning { background: rgba(255,255,0,0.12); color: var(--yellow); }
+  .cost-cap-pill.breach,
+  .cost-cap-pill.downgraded { background: rgba(255,136,0,0.18); color: var(--orange); }
+  .cost-cap-pill.stopped { background: rgba(255,68,68,0.18); color: var(--red); }
+  .cost-cap-bar {
+    background: var(--surface2); height: 8px; border-radius: 4px;
+    overflow: hidden; margin: 4px 0; position: relative;
+    border: 1px solid var(--border2);
+  }
+  .cost-cap-bar-fill { height: 100%; transition: width 0.3s ease; }
+  .cost-cap-bar-fill.ok { background: var(--green); }
+  .cost-cap-bar-fill.warn { background: var(--yellow); }
+  .cost-cap-bar-fill.breach { background: var(--red); }
+  .cost-cap-row { font-size: 11px; margin-bottom: 8px; }
+  .cost-cap-row .cap-label { color: var(--muted); display: inline-block; min-width: 80px; }
+  .cost-cap-row .cap-value { color: var(--text); }
+  .cost-cap-slope {
+    background: var(--surface2); padding: 8px; margin-top: 8px;
+    border-radius: 4px; border: 1px solid var(--border2);
+    font-size: 10px;
+  }
+  .cost-cap-hint {
+    margin-top: 8px; padding: 6px 8px; font-size: 10px;
+    background: rgba(255,255,0,0.06); border: 1px solid rgba(255,255,0,0.3);
+    color: var(--yellow); border-radius: 4px;
+  }
 
   /* --- Stats Row --- */
   .stats-row { display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
@@ -648,6 +683,11 @@
 </div>
 
 <div class="card">
+<h2>Cost Cap</h2>
+<div id="cost-cap"></div>
+</div>
+
+<div class="card">
 <h2>Promote Candidates</h2>
 <div id="promote-candidates"></div>
 </div>
@@ -878,10 +918,31 @@ const sidecar = data.sidecar || {installed: false, enabled: false, interval_s: n
       reasons.push('auto-promote sidecar silent ' + mins + 'm (interval ' + intervalMins + 'm)');
     }
   }
+  // #318: cost-cap drives banner severity too. warning -> degraded;
+  // breach -> stopped (the worst-tier banner state). Keep this after
+  // sidecar checks so an explicit cost-breach overrides any prior
+  // "degraded" classification when the operator needs to act.
+  const cc = (data && data.cost_cap) || {installed: false};
+  let costStopped = false;
+  if (cc.installed && cc.enabled) {
+    if (cc.status === 'breach') {
+      costStopped = true;
+      const label = (cc.on_breach === 'stop') ? 'stopped' : 'downgraded';
+      reasons.push('cost cap ' + label +
+                   (cc.reasons && cc.reasons.length ? ' (' + cc.reasons[0] + ')' : ''));
+    } else if (cc.status === 'warning') {
+      reasons.push('cost cap warning' +
+                   (cc.reasons && cc.reasons.length ? ' (' + cc.reasons[0] + ')' : ''));
+    }
+  }
 
   const el = document.getElementById('fed-health-banner');
   const degraded = reasons.length > 0;
-  el.classList.add(degraded ? 'degraded' : 'healthy');
+  if (costStopped) {
+    el.classList.add('stopped');
+  } else {
+    el.classList.add(degraded ? 'degraded' : 'healthy');
+  }
   el.classList.add('visible');
 
   let detail = '';
@@ -908,8 +969,16 @@ const sidecar = data.sidecar || {installed: false, enabled: false, interval_s: n
     detail = reasons.join(' · ');
   }
 
+  let labelText;
+  if (costStopped) {
+    labelText = '⛔ Cost cap';
+  } else if (degraded) {
+    labelText = '⚠ Degraded';
+  } else {
+    labelText = '✔ Healthy';
+  }
   el.innerHTML =
-    '<span class="health-label">' + (degraded ? '⚠ Degraded' : '✔ Healthy') + '</span>' +
+    '<span class="health-label">' + labelText + '</span>' +
     '<span class="' + (degraded ? 'health-reasons' : 'health-detail') + '">' + esc(detail) + '</span>';
 })();
 
@@ -1352,6 +1421,110 @@ function fmtUsd(v) {
   footer += ' · ' + esc(currency);
   if (cost.table_pin_date) footer += ' · table ' + esc(cost.table_pin_date);
   html += '<div class="cost-stale">' + footer + '</div>';
+
+  el.innerHTML = html;
+})();
+
+// --- Cost Cap Tile (#318) ---
+// Mode-aware: metered renders $-bars + $/cap; flat renders requests/cap +
+// slope gauge. Status pill mirrors the sidecar's state machine.
+//   active     — under warn_at_pct%
+//   warning    — [warn_at_pct%, 100%) of any cap, OR slope between warn/breach multipliers
+//   breach     — sidecar tripped, on_breach pending
+//   downgraded — breach + on_breach=downgrade applied (agents on mock backend)
+//   stopped    — breach + on_breach=stop applied (federation halted)
+//
+// "downgraded" / "stopped" are presentation-only relabels of "breach"
+// driven by the on_breach config. The collector emits the raw `breach`
+// status; this UI thread maps it to the friendlier label.
+(function() {
+  const el = document.getElementById('cost-cap');
+  if (!el) return;
+  const cc = (data && data.cost_cap) || {installed: false};
+  if (!cc.installed) {
+    el.innerHTML = '<span class="empty">Cost cap not installed. See dev-apprenticeship/.cost-cap.toml.</span>';
+    return;
+  }
+  if (!cc.enabled) {
+    el.innerHTML = '<span class="empty">Cost cap installed but disabled (cost.enabled=false in .cost-cap.toml).</span>';
+    return;
+  }
+  const status = cc.status || 'active';
+  const onBreach = cc.on_breach || '';
+  let pillLabel = status;
+  if (status === 'breach') {
+    pillLabel = (onBreach === 'stop') ? 'stopped' : 'downgraded';
+  }
+  const pillClass = (pillLabel === 'stopped' || pillLabel === 'downgraded') ? pillLabel : status;
+  const m = cc.metrics || {};
+
+  function bar(label, spent, cap, pct) {
+    if (cap == null || cap === 0) {
+      return '<div class="cost-cap-row"><span class="cap-label">' + esc(label) +
+             ':</span> <span class="cap-value">' + esc(String(spent)) + ' (no cap)</span></div>';
+    }
+    const p = Math.min(100, Math.max(0, pct || 0));
+    let cls = 'ok';
+    if (p >= 100) cls = 'breach';
+    else if (p >= 80) cls = 'warn';
+    return '<div class="cost-cap-row">' +
+           '<span class="cap-label">' + esc(label) + ':</span> ' +
+           '<span class="cap-value">' + esc(String(spent)) + ' / ' + esc(String(cap)) +
+           ' (' + p.toFixed(1) + '%)</span>' +
+           '<div class="cost-cap-bar"><div class="cost-cap-bar-fill ' + cls +
+           '" style="width:' + p.toFixed(1) + '%"></div></div></div>';
+  }
+
+  let html = '<div style="margin-bottom:10px;">';
+  html += '<span class="cost-cap-pill ' + pillClass + '">' + esc(pillLabel) + '</span>';
+  html += ' <span style="color:var(--muted);font-size:11px;">mode=' + esc(cc.mode || 'metered') + '</span>';
+  html += '</div>';
+
+  if ((cc.mode || 'metered') === 'metered') {
+    html += bar('Daily',   '$' + Number(m.daily_spent || 0).toFixed(4),
+                            '$' + Number(m.daily_cap || 0).toFixed(2),
+                            m.daily_pct);
+    html += bar('Monthly', '$' + Number(m.monthly_spent || 0).toFixed(4),
+                            '$' + Number(m.monthly_cap || 0).toFixed(2),
+                            m.monthly_pct);
+  } else {
+    html += bar('Daily',   String(m.daily_spent || 0) + ' req',
+                           String(m.daily_cap || 0),
+                           m.daily_pct);
+    html += bar('Monthly', String(m.monthly_spent || 0) + ' req',
+                           String(m.monthly_cap || 0),
+                           m.monthly_pct);
+    html += bar('Hourly',  String(m.hourly_spent || 0) + ' req',
+                           String(m.hourly_cap || 0),
+                           m.hourly_pct);
+    if (m.slope_multiplier != null) {
+      const sm = Number(m.slope_multiplier);
+      let slopeCls = 'ok';
+      if (sm >= 5.0) slopeCls = 'breach';
+      else if (sm >= 3.0) slopeCls = 'warn';
+      html += '<div class="cost-cap-slope">';
+      html += '<span class="cap-label">Slope:</span> ' +
+              '<span class="cap-value cost-cap-pill ' + slopeCls + '">' + sm.toFixed(2) + 'x baseline</span>';
+      html += ' <span style="color:var(--muted);">(' +
+              Number(m.current_rate || 0).toFixed(2) + ' / min current vs ' +
+              Number(m.baseline_rate || 0).toFixed(2) + ' / min trailing 24h)</span>';
+      html += '</div>';
+    }
+  }
+
+  if (cc.reasons && cc.reasons.length > 0 && status !== 'active') {
+    html += '<div style="margin-top:8px;font-size:11px;color:var(--muted);">' +
+            cc.reasons.map(r => esc(r)).join(' &middot; ') + '</div>';
+  }
+
+  if (cc.mode_mismatch_hint) {
+    html += '<div class="cost-cap-hint">cost_source unknown on &gt;50% of rows &mdash; consider switching mode = "flat".</div>';
+  }
+
+  if (cc.since_ts) {
+    html += '<div style="margin-top:6px;font-size:10px;color:var(--muted);">since ' +
+            esc(formatTimestamp(cc.since_ts * 1000)) + '</div>';
+  }
 
   el.innerHTML = html;
 })();

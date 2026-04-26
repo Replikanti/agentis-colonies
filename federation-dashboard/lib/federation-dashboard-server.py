@@ -49,6 +49,10 @@ confidence_log = os.path.join(serve_dir, 'confidence-log.jsonl')
 # forge-specific env wiring. parse_toml_section / resolve_tick_interval
 # used to live here for that purpose and were removed.
 kill_script = os.path.join(fed_tools_dir, 'kill-federation.sh') if fed_tools_dir else ''
+# #318: cost-cap override endpoint shells out to tools/cost-cap.sh in the
+# federation's shared tools dir. Returns 503 when no shared tools/ was
+# found at startup (mirrors /kill precedent).
+cost_cap_script = os.path.join(fed_tools_dir, 'cost-cap.sh') if fed_tools_dir else ''
 
 
 def list_daemons():
@@ -759,6 +763,78 @@ class Handler(SimpleHTTPRequestHandler):
                 'summary': summary,
                 'json': parsed_json,
                 'stderr_tail': stderr_tail,
+            }).encode())
+            return
+
+        if self.path == '/cost-cap/override':
+            # #318: clear cost-cap flags + restart agents to real backend.
+            # Operator-facing manual reset; the sidecar normally clears
+            # flags itself at UTC midnight / month boundary.
+            if not cost_cap_script or not os.path.isfile(cost_cap_script):
+                self.send_response(503)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    'ok': False,
+                    'summary': ('cost-cap.sh not available: no shared tools/ '
+                                'found at <fed-dir>/tools or <fed-dir>/../tools.'),
+                }).encode())
+                return
+            length = int(self.headers.get('Content-Length', '0') or '0')
+            reason = 'manual override via dashboard'
+            if 0 < length <= 4096:
+                try:
+                    raw = self.rfile.read(length).decode('utf-8', errors='replace')
+                    body = json.loads(raw) if raw.strip() else {}
+                    rsn = body.get('reason')
+                    if isinstance(rsn, str) and rsn.strip():
+                        reason = rsn.strip()[:200]
+                except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                    pass
+            try:
+                result = subprocess.run(
+                    [cost_cap_script, fed_dir, '--override', reason],
+                    capture_output=True, text=True,
+                    cwd=fed_dir, timeout=60,
+                )
+            except (OSError, subprocess.SubprocessError) as e:
+                self.send_response(500)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    'ok': False,
+                    'summary': f'cost-cap.sh exec failed: {e}',
+                }).encode())
+                return
+            stderr_tail = (result.stderr or '')[-2048:]
+            if result.returncode == 75:
+                # cost-cap.sh:99 — sidecar lock contention on --override.
+                # Surface as 409 so operators see the retry hint instead of
+                # a misleading "applied" success (PR #328 LOW finding).
+                self.send_response(409)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    'ok': False,
+                    'exit': 75,
+                    'summary': ('cost-cap override deferred: another '
+                                'cost-cap instance is running. Retry in a '
+                                'few seconds.'),
+                    'stderr_tail': stderr_tail,
+                    'reason': reason,
+                }).encode())
+                return
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                'ok': result.returncode == 0,
+                'exit': result.returncode,
+                'summary': ('cost-cap override applied'
+                            if result.returncode == 0
+                            else f'cost-cap.sh exited {result.returncode}'),
+                'stderr_tail': stderr_tail,
+                'reason': reason,
             }).encode())
             return
 
