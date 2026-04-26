@@ -357,6 +357,41 @@ agentis knowledge import fed-knowledge.json --merge
 
 Filtering by `--tags observed`, `--tags emitted`, `--tags review-gated`, `--tags acted`, `--tags <colony>`, `--tags personal`, or `--tags team` works once the matching agents have acted at least once with the relevant author context.
 
+### Bootstrap from another federation (#323)
+
+A fresh federation starts every agent at `confidence = 0.4` with zero rows in its experience store, so the first auto-promote step (`min_entries: 200`) is unreachable for weeks. To shorten that ramp, you can transfer experience and (optionally) knowledge from a healthy federation.
+
+**Experience track.** `tools/experience-transfer.sh` packs each agent's `.agentis/experience/<agent_id>.jsonl` keyed by agent **name** (since `agent_id = sha8(...)` is never stable across federations) and re-imports into the recipient by remapping name to the recipient's current `agent_id`:
+
+```bash
+# Donor: pack experience tagged for the autonomous tier, last 30 days, scrubbed.
+./tools/experience-transfer.sh export dev-apprenticeship \
+    --out /tmp/devapp-pack.tar.gz \
+    --since 2026-03-26 \
+    --tags acted,emitted \
+    --max-rows-per-agent 500 \
+    --scrub
+
+# Recipient (new federation, same colony layout): import the pack.
+./tools/experience-transfer.sh import my-fresh-fed /tmp/devapp-pack.tar.gz
+```
+
+Imported rows are stamped with `donor=<src-fed-name>` so the auto-promote sidecar can later distinguish imported rows from native ones. Re-imports of the same pack are idempotent (rows are deduped by sha256). Agents present in the pack but missing on the recipient are reported on stderr and skipped — only same-shape colony decompositions transfer cleanly.
+
+**`--scrub` strips:** `row.in` (free-text input excerpts), nested `row.signal.in_summary` / `row.signal.title`, and any tag matching `forge_user=*` or `assignee=*`. Default is **off** — review what you're shipping outside your org before flipping it on.
+
+**Confidence is intentionally NOT transferred.** The recipient keeps its install-time defaults (every agent at `0.4`). Imported experience rows count toward `min_entries` / `min_acting_entries`, so the first auto-promote tick on the recipient fires fast on real local activity instead of artificially lifting confidence to a level the agent has not earned in its own environment.
+
+**Knowledge track.** Knowledge transfer reuses the existing upstream CLI verbatim — no new tool needed:
+
+```bash
+# Donor:
+agentis knowledge export --tags personal > /tmp/donor-knowledge.json
+
+# Recipient:
+agentis knowledge import /tmp/donor-knowledge.json --merge
+```
+
 ## Troubleshooting
 
 **Agents are silent after starting**: Expected in `shadow` tier (seed 0.4). Check `agentis daemon list`. If running, check logs: `tail -f .agentis/logs/router.log`.
