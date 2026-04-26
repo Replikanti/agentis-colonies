@@ -61,7 +61,9 @@ When a new issue needs planning, the Scope Estimator, Risk Assessor, and Task De
 
 4. (Optional) Retune `[planning.labels]` if your project uses a different label taxonomy for incidents and epics (#226). Values are free-text and injected verbatim into the `risk_assessor` and `task_decomposer` prompt context, so operators can list comma-separated label names or describe non-label patterns (e.g. `epic = "umbrella-issue pattern, parent/child references in description"`). Defaults preserve pre-#226 vocabulary (`incident, bug, blocker` / `epic`).
 
-5. Start the colony:
+5. (Optional) Pin a per-colony LLM backend via the `[llm]` block in `colony.toml` (#319). Each set key is spliced onto every daemon as `--config-override llm.<key>=<value>`; absent keys fall through to the federation-wide default in `<fed>/.agentis/config`. See `dev-apprenticeship/README.md#llm-backend-per-colony-override-319`.
+
+6. Start the colony:
    ```bash
    ./scripts/start-colony.sh
    ```

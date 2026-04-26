@@ -51,7 +51,9 @@ When an issue is assigned, the Code Writer produces an implementation draft. The
 
 4. (Optional) Override `[forge.gitlab] default_branch` (or `[forge.github] default_branch`) if your project's primary branch is not `main` (e.g. `master`, `develop`, `trunk`). `code_writer` uses this as the MR/PR target branch when opening merge/pull requests (#224).
 
-5. Start the colony:
+5. (Optional) Pin a per-colony LLM backend via the `[llm]` block in `colony.toml` (#319). Each set key is spliced onto every daemon as `--config-override llm.<key>=<value>`; absent keys fall through to the federation-wide default in `<fed>/.agentis/config`. See `dev-apprenticeship/README.md#llm-backend-per-colony-override-319`.
+
+6. Start the colony:
    ```bash
    ./scripts/start-colony.sh
    ```

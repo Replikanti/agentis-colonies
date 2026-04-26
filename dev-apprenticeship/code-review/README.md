@@ -71,11 +71,13 @@ See `agents/logic_reviewer.ag` for the canonical MR-reviewer shape and `agents/a
    ```
    For GitHub, set `[forge].type = "github"` and populate `[forge.github]` (see `colony.example.toml`).
 
-3. Configure the LLM backend:
+3. (Optional) Pin a per-colony LLM backend via the `[llm]` block in `colony.toml` (#319). Each set key is spliced onto every daemon as `--config-override llm.<key>=<value>`; absent keys fall through to the federation-wide default in `<fed>/.agentis/config`. See `dev-apprenticeship/README.md#llm-backend-per-colony-override-319`.
    ```toml
    [llm]
-   # Only "backend" is read today. "cli" uses the agentis daemon default CLI adapter.
    backend = "cli"
+   # command = "claude"
+   # model = "claude-sonnet-4"
+   # api_key_env = "ANTHROPIC_API_KEY"
    ```
 
 4. Start the colony:

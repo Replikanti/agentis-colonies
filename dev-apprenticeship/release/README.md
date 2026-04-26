@@ -58,7 +58,9 @@ The learn-on-demand shape is intentional: past releases don't change between tic
 
 3. (Optional) Override `[forge.gitlab] default_branch` (or `[forge.github] default_branch`) if your project's primary branch is not `main` (e.g. `master`, `develop`, `trunk`). `version_bumper` passes this to `forge-api.sh create-tag` as the tag's source ref (#224).
 
-4. Start the colony:
+4. (Optional) Pin a per-colony LLM backend via the `[llm]` block in `colony.toml` (#319). Each set key is spliced onto every daemon as `--config-override llm.<key>=<value>`; absent keys fall through to the federation-wide default in `<fed>/.agentis/config`. See `dev-apprenticeship/README.md#llm-backend-per-colony-override-319`.
+
+5. Start the colony:
    ```bash
    ./scripts/start-colony.sh
    ```
