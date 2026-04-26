@@ -1436,11 +1436,12 @@ sidecars = [
     },
 ]
 
-# --- #352: Config editor scope ---
-# Reads <fed>/.agentis/config to surface (a) operator_writes_enabled flag
-# (gates the Config tab's edit mode; default false), (b) per-colony +
-# federation-wide config snapshots so the editor can render without a
-# second round-trip. Read-only by default. Each scope record:
+# --- #352 (rewritten in #357): Config editor scope ---
+# Reads <fed>/.agentis/config + per-colony colony.toml to surface
+# (a) optional operator_writes_disabled flag (defensive opt-out — default
+# false, i.e. the Config tab is editable by default after #357), and
+# (b) per-colony + federation-wide config snapshots so the editor can
+# render without a second round-trip. Each scope record:
 #   {scope, path, exists, mtime, keys: [{section, key, value}]}
 def _read_toml_scope(path):
     """Lightweight TOML reader. Returns {sections: {[section]: {key: val}},
@@ -1458,7 +1459,11 @@ def _read_toml_scope(path):
     if not rec['exists']:
         return rec
     try:
-        rec['mtime'] = int(os.path.getmtime(path))
+        # #357: emit ms-precision mtime so the dashboard can drift-check
+        # /config/apply against sub-second external rewrites. Server reads
+        # mtime in ns and compares ms; the dashboard echoes the value back
+        # in the apply payload.
+        rec['mtime'] = int(os.path.getmtime(path) * 1000)
     except OSError:
         pass
     try:
@@ -1495,13 +1500,18 @@ def _read_toml_scope(path):
         rec['error'] = str(e)
     return rec
 
-operator_writes_enabled = False
+# #357: defensive opt-out gate. Default false (== editable). Only flips
+# to read-only when the operator explicitly sets
+# `[config_editor].operator_writes_disabled = true` in <fed>/.agentis/
+# config. Existing federations have neither key, so they get the new
+# editable default with no migration.
+operator_writes_disabled = False
 fed_config_path = os.path.join(fed_dir, '.agentis', 'config')
 fed_config_scope = _read_toml_scope(fed_config_path)
 for kv in fed_config_scope.get('keys') or []:
-    if kv.get('section') == 'config_editor' and kv.get('key') == 'operator_writes_enabled':
+    if kv.get('section') == 'config_editor' and kv.get('key') == 'operator_writes_disabled':
         rv = (kv.get('raw_value') or '').strip().strip('"').strip("'").lower()
-        operator_writes_enabled = (rv == 'true')
+        operator_writes_disabled = (rv == 'true')
 
 config_scopes = [
     {'scope': 'federation', 'label': 'federation default', **fed_config_scope},
@@ -1514,7 +1524,7 @@ for col in colonies:
     config_scopes.append(rec)
 
 config_editor_block = {
-    'operator_writes_enabled': operator_writes_enabled,
+    'operator_writes_disabled': operator_writes_disabled,
     'scopes': config_scopes,
     'audit_log_path': os.path.join(fed_dir, '.agentis', 'logs', 'config-edits.jsonl'),
 }
@@ -1533,7 +1543,9 @@ output = {
     'cost_cap': cost_cap,
     # #315 PR 2: federation-wide unified timeline (last 200, ts-desc).
     'timeline': federation_timeline,
-    # #352: config editor scope + operator_writes_enabled gate.
+    # #352 (rewritten #357): config editor scope + defensive opt-out
+    # gate. Default-editable; `operator_writes_disabled = true` flips to
+    # read-only.
     'config_editor': config_editor_block,
 }
 print(json.dumps(output))

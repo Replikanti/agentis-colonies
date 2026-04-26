@@ -1005,6 +1005,37 @@
     background: rgba(0,255,0,0.06);
     box-shadow: 0 0 8px rgba(0,255,0,0.3);
   }
+  /* #357: structured Apply confirm modal — one row per key change. */
+  .config-confirm-rows {
+    display: flex; flex-direction: column; gap: 6px;
+    margin: 8px 0; padding: 8px;
+    border: 1px dashed var(--border); border-radius: 2px;
+    max-height: 320px; overflow-y: auto;
+    font-size: 11px;
+  }
+  .config-confirm-row {
+    display: grid; grid-template-columns: 1fr auto auto auto;
+    gap: 8px; align-items: center;
+  }
+  .config-confirm-key {
+    color: var(--copper); font-family: inherit; font-size: 11px;
+  }
+  .config-confirm-old {
+    color: var(--muted); text-decoration: line-through;
+  }
+  .config-confirm-arrow { color: var(--cyan); }
+  .config-confirm-new { color: var(--green); }
+  /* #357: clickable colony chip → showColonyModal(name). */
+  .colony-clickable {
+    cursor: pointer; text-decoration: underline;
+    text-decoration-style: dotted; text-decoration-color: var(--copper);
+  }
+  .colony-clickable:hover { color: var(--cyan); }
+  .ladder-agent-colony {
+    color: var(--copper); font-size: 10px; margin-left: 6px;
+  }
+  .ladder-agent-name { cursor: pointer; }
+  .ladder-agent-name:hover { color: var(--cyan); }
 
   /* --- Buttons --- */
   .refresh-btn {
@@ -1177,7 +1208,11 @@
 </div>
 
 <!-- TAB: Overview — federation health snapshot, sidecar listing,
-     bulk-restart actions, per-colony phase readiness, forge rate limits. -->
+     bulk-restart actions. #357 dropped Phase Readiness (moved to
+     Promotions, top card) and Forge Rate Limits (moved into per-colony
+     modal, opened from Promotions/Agents colony headers) so the tab fits
+     ~480 px of actionable surface and leaves headroom for the Health
+     Banner to expand without scroll. -->
 <section data-tab="overview">
   <div class="stats-row" id="stats-row"></div>
   <div class="grid">
@@ -1188,14 +1223,6 @@
     <div class="card full" id="bulk-actions-card" style="display:none;">
       <h2>Bulk Actions</h2>
       <div id="bulk-actions" class="bulk-actions"></div>
-    </div>
-    <div class="card">
-      <h2>Phase Readiness</h2>
-      <div id="readiness"></div>
-    </div>
-    <div class="card">
-      <h2>Forge Rate Limits</h2>
-      <div id="forge-rate-limits"></div>
     </div>
   </div>
 </section>
@@ -1210,9 +1237,15 @@
   </div>
 </section>
 
-<!-- TAB: Promotions — per-agent tier ladder + scheduler verdicts. -->
+<!-- TAB: Promotions — Phase Readiness (federation-wide tier counts, #357
+     relocated from Overview), per-agent promotion ladder, scheduler
+     verdicts. -->
 <section data-tab="promotions">
   <div class="grid">
+    <div class="card full">
+      <h2>Phase Readiness</h2>
+      <div id="readiness"></div>
+    </div>
     <div class="card full">
       <h2>Promotion Ladder</h2>
       <div id="promotion-ladder"></div>
@@ -1285,9 +1318,12 @@
   </div>
 </section>
 
-<!-- TAB: Config — per-colony + federation-wide TOML editor. Read-only by
-     default; turning on `[config_editor].operator_writes_enabled = true`
-     in `<fed>/.agentis/config` unlocks the write path. -->
+<!-- TAB: Config — per-colony + federation-wide TOML editor. Editable by
+     default after #357 (the v0.6.0 read-only gate was a feature
+     regression). Setting `[config_editor].operator_writes_disabled =
+     true` in `<fed>/.agentis/config` flips the tab back to read-only as
+     a defensive opt-out. Each Apply pops a structured confirm modal
+     listing every key change before the POST /config/apply fires. -->
 <section data-tab="config">
   <div class="grid">
     <div class="card full">
@@ -1297,9 +1333,22 @@
   </div>
 </section>
 
-<!-- Detail Modal -->
+<!-- Detail Modal (per-agent dossier expand surface) -->
 <div class="modal-overlay" id="detail-modal">
 <div class="modal-content" id="modal-body"></div>
+</div>
+
+<!-- Colony Modal (#357: per-colony expand surface, opened by clicking a
+     colony header on Promotions / Agents). Reuses .modal-overlay infra. -->
+<div class="modal-overlay" id="colony-modal">
+<div class="modal-content" id="colony-modal-body"></div>
+</div>
+
+<!-- Config Confirm Modal (#357: structured "Apply N changes" diff dialog
+     replacing the bare confirm() call. Listed line-per-line so the
+     operator sees exactly what writes before they fire). -->
+<div class="modal-overlay" id="config-confirm-modal">
+<div class="modal-content" id="config-confirm-body"></div>
 </div>
 
 <!-- #160: Why panel for disabled buttons + skipped recommendations -->
@@ -1570,9 +1619,13 @@ let sidecar = data.sidecar || {installed: false, enabled: false, interval_s: nul
 // #352: per-sidecar listing for the Overview tab. Default to two empty
 // records so renderSidecarStatus always emits the two known sidecars.
 let sidecars = data.sidecars || [];
-// #352: config editor scope. Read-only by default until
-// operator_writes_enabled flips to true in `<fed>/.agentis/config`.
-let configEditor = data.config_editor || {operator_writes_enabled: false, scopes: []};
+// #357: config editor scope. Editable by default; setting
+// `[config_editor].operator_writes_disabled = true` in
+// `<fed>/.agentis/config` flips the tab to read-only (defensive opt-out
+// for operators who explicitly want to lock the dashboard). Tests can
+// also pin read-only via `data.config_editor.read_only_override = true`
+// without touching the disabled gate.
+let configEditor = data.config_editor || {operator_writes_disabled: false, scopes: []};
 
 // #313 PR 2: re-derives the shorthands above from a fresh snapshot.
 // Called once at init (the lets above) and once per SSE push (rerender).
@@ -1589,7 +1642,7 @@ function extractRefs(d) {
   decisions = d.decisions || [];
   sidecar = d.sidecar || {installed: false, enabled: false, interval_s: null, last_tick_ts: null};
   sidecars = d.sidecars || [];
-  configEditor = d.config_editor || {operator_writes_enabled: false, scopes: []};
+  configEditor = d.config_editor || {operator_writes_disabled: false, scopes: []};
   // History + nowEpoch travel out-of-band when the snapshot carries
   // them; PR 1's snapshot.json contract is full COLLECTOR_JSON only,
   // so .history / .now_epoch may be undefined — fall back to the
@@ -1927,9 +1980,13 @@ function renderAgentTable(data) {
       costHtml = '<span class="muted">\u2014</span>';
     }
 
+    // #357: colony cell is clickable → opens showColonyModal(colony) (the
+    // Forge Rate Limits row + agent list moved into a per-colony modal
+    // when Overview shed its Forge tile). event.stopPropagation() so the
+    // row's openDetail() handler doesn't also fire on a colony-cell click.
     html += '<tr class="clickable" onclick="openDetail(\'' + esc(a.name) + '\')">' +
       '<td class="agent-name">' + esc(a.name) + '</td>' +
-      '<td class="colony-name">' + esc(a.colony) + '</td>' +
+      '<td class="colony-name colony-clickable" onclick="event.stopPropagation();showColonyModal(\'' + esc(a.colony) + '\')" title="Open colony view">' + esc(a.colony) + '</td>' +
       '<td>' + confHtml + '</td>' +
       '<td>' + healthHtml + '</td>' +
       '<td>' + ticksHtml + '</td>' +
@@ -2288,7 +2345,13 @@ function renderPromotionLadder(data) {
       markerHtml = '<div class="ladder-marker" style="left: ' + pct.toFixed(2) + '%"></div>';
     }
     html += '<div class="ladder-row tier-' + (isMax ? 'autonomous' : 'climbing') + '">';
-    html += '<span class="ladder-agent" title="' + esc(a.name) + ' (' + esc(a.colony) + ')">' + esc(a.name) + '</span>';
+    // #357: agent label + clickable colony chip. Clicking the chip opens
+    // the per-colony modal (Forge Rate Limits + agent list); clicking the
+    // agent name opens the per-agent modal.
+    html += '<span class="ladder-agent" title="' + esc(a.name) + ' (' + esc(a.colony) + ')">';
+    html += '<span class="ladder-agent-name clickable" onclick="openDetail(\'' + esc(a.name) + '\')">' + esc(a.name) + '</span>';
+    html += ' <span class="ladder-agent-colony colony-clickable" onclick="showColonyModal(\'' + esc(a.colony) + '\')" title="Open colony view">' + esc(a.colony) + '</span>';
+    html += '</span>';
     html += '<div class="ladder-bar">' + bars + markerHtml + '</div>';
     html += etaCell;
     html += prereqCell;
@@ -2297,13 +2360,22 @@ function renderPromotionLadder(data) {
   el.innerHTML = html;
 }
 
-// --- Config editor (#352, Config tab) ---
+// --- Config editor (#352, rewritten in #357) ---
 // Two-pane layout: left = scope picker (federation + per-colony), right =
-// key-value rows for the selected scope. Read-only by default; the apply
-// path is gated on `data.config_editor.operator_writes_enabled = true`
-// (set in <fed>/.agentis/config). The audit log path is surfaced in the
+// key-value rows for the selected scope. Editable by default after #357;
+// `[config_editor].operator_writes_disabled = true` in `<fed>/.agentis/
+// config` flips back to read-only as a defensive opt-out. Tests can pin
+// read-only via `data.config_editor.read_only_override = true`. Apply
+// fires a structured confirm modal listing each key's old → new value
+// before POSTing /config/apply. The audit log path is surfaced in the
 // JSON so the apply endpoint and the dashboard agree on a single trail.
+//
+// __configBaseValues: a parallel map (scope → key → raw_value as last
+// rendered) so the apply diff can be computed without re-fetching the
+// snapshot. Repopulated on every renderConfigEditor() call.
 let __configActiveScope = null;
+let __configBaseValues = {};
+let __configMtimes = {};
 function pickConfigInputType(section, key, raw) {
   // Lightweight type inference for the input control. Matches the limited
   // .toml subset the collector parses: numbers, booleans, quoted strings.
@@ -2323,9 +2395,14 @@ const CONFIG_ENUM_VOCAB = {
 function renderConfigEditor(data) {
   const el = document.getElementById('config-editor');
   if (!el) return;
-  const ce = (data && data.config_editor) || configEditor || {operator_writes_enabled: false, scopes: []};
+  const ce = (data && data.config_editor) || configEditor || {operator_writes_disabled: false, scopes: []};
   const scopes = ce.scopes || [];
-  const writable = !!ce.operator_writes_enabled;
+  // #357: editable by default. `operator_writes_disabled = true` is the
+  // defensive opt-out (still respected so an operator who explicitly
+  // locks their federation keeps the lock). `read_only_override = true`
+  // is the test-fixture lever for pinning read-only without touching the
+  // gate.
+  const writable = !ce.operator_writes_disabled && !ce.read_only_override;
   if (!scopes.length) {
     el.innerHTML = '<span class="empty">No config scopes discovered. The collector reads <code>&lt;fed&gt;/.agentis/config</code> + <code>&lt;colony&gt;/config/colony.toml</code>.</span>';
     return;
@@ -2334,6 +2411,13 @@ function renderConfigEditor(data) {
     __configActiveScope = scopes[0].scope;
   }
   const active = scopes.find(s => s.scope === __configActiveScope) || scopes[0];
+
+  // #357: rebuild the per-scope base-values map so applyConfigEdits()
+  // can diff old → new without re-reading the snapshot.
+  __configBaseValues[active.scope] = {};
+  if (typeof active.mtime === 'number') {
+    __configMtimes[active.scope] = active.mtime;
+  }
 
   let html = '<div class="config-editor">';
   // Left pane: scope picker.
@@ -2350,13 +2434,13 @@ function renderConfigEditor(data) {
   html += '<div>';
   if (!writable) {
     html += '<div class="config-readonly-banner">';
-    html += 'READ-ONLY. Set <code>[config_editor].operator_writes_enabled = true</code> ';
-    html += 'in <code>&lt;fed&gt;/.agentis/config</code> to enable Apply.';
+    html += 'READ-ONLY. Remove <code>[config_editor].operator_writes_disabled = true</code> ';
+    html += 'from <code>&lt;fed&gt;/.agentis/config</code> to enable Apply.';
     html += '</div>';
   }
-  // Drift detection placeholder — collector emits mtime; if it changed
-  // since first paint, show a banner. We re-check on each render; the
-  // first-paint mtime is captured in __configMtimeAtFirstPaint.
+  // Drift detection — collector emits mtime; if it changed since first
+  // paint, show a banner. We re-check on each render; the first-paint
+  // mtime is captured in __configMtimeAtFirstPaint.
   if (active.exists && typeof active.mtime === 'number') {
     if (typeof window.__configMtimeAtFirstPaint !== 'object') {
       window.__configMtimeAtFirstPaint = {};
@@ -2385,7 +2469,17 @@ function renderConfigEditor(data) {
       }
       const t = pickConfigInputType(kv.section, kv.key, kv.raw_value);
       const inputId = 'config-' + active.scope + '-' + idx;
-      html += '<div class="config-row">';
+      // #357: stash the dotted path + base value so applyConfigEdits()
+      // can build a clean {key, value} payload + diff old vs new.
+      const dottedKey = kv.section ? (kv.section + '.' + kv.key) : kv.key;
+      __configBaseValues[active.scope][inputId] = {
+        section: kv.section || '',
+        key: kv.key,
+        dotted: dottedKey,
+        type: t,
+        raw_value: kv.raw_value,
+      };
+      html += '<div class="config-row" data-config-row="1" data-input-id="' + esc(inputId) + '" data-dotted="' + esc(dottedKey) + '">';
       html += '<span class="config-key">' + esc(kv.key) + '</span>';
       const ro = writable ? '' : ' readonly disabled';
       if (t === 'bool') {
@@ -2415,7 +2509,7 @@ function renderConfigEditor(data) {
   html += '<button class="config-apply-btn" onclick="applyConfigEdits()"' +
           (writable ? '' : ' disabled') + '>Apply</button>';
   html += '<span class="muted" style="font-size:10px;">' +
-          (writable ? 'audit: ' + esc(ce.audit_log_path || '<fed>/.agentis/logs/config-edits.jsonl') : 'edits disabled until operator_writes_enabled') +
+          (writable ? 'audit: ' + esc(ce.audit_log_path || '<fed>/.agentis/logs/config-edits.jsonl') : 'edits disabled until operator_writes_disabled is unset') +
           '</span>';
   html += '</div>';
   html += '</div>';  // right pane
@@ -2433,30 +2527,117 @@ function reloadConfigEditor() {
   }
   renderConfigEditor(window.__data || {});
 }
+// #357: structured confirm modal. Replaces the bare confirm() so the
+// operator can read every key change line-per-line before commit. Filters
+// the input set down to the rows whose value diverges from the snapshot
+// base, builds a {key, old, new} list, and renders into the
+// .config-confirm-modal overlay. The Apply button on the modal POSTs
+// /config/apply with the full {scope, mtime_ms, changes:[{key, value}]}
+// shape the server expects.
+function _normalizeInputValue(t, raw) {
+  // Strip surrounding quotes from the snapshot value so the diff compares
+  // apples to apples — the input field renders unquoted strings.
+  if (t === 'bool') {
+    const s = String(raw).trim().toLowerCase();
+    return (s === 'true') ? 'true' : 'false';
+  }
+  if (t === 'enum' || t === 'text') {
+    return String(raw).replace(/^["']|["']$/g, '');
+  }
+  return String(raw).trim();
+}
 function applyConfigEdits() {
-  // Read every input under the active scope into a payload and POST
-  // /config/apply. Server thin-shells the writes + restarts affected
-  // agents; on 503 the gate is off, on 405 the endpoint is not wired
-  // (default fail-safe).
   if (!__configActiveScope) return;
+  const base = __configBaseValues[__configActiveScope] || {};
   const inputs = document.querySelectorAll('[id^="config-' + __configActiveScope + '-"]');
-  const updates = [];
+  const changes = [];
   inputs.forEach(inp => {
-    const v = (inp.type === 'checkbox') ? (inp.checked ? 'true' : 'false') : inp.value;
-    updates.push({input_id: inp.id, value: v});
+    const meta = base[inp.id];
+    if (!meta) return;
+    const newVal = (inp.type === 'checkbox')
+      ? (inp.checked ? 'true' : 'false')
+      : String(inp.value);
+    const oldVal = _normalizeInputValue(meta.type, meta.raw_value);
+    if (newVal === oldVal) return;
+    changes.push({
+      input_id: inp.id,
+      dotted: meta.dotted,
+      key: meta.dotted,
+      old_value: oldVal,
+      new_value: newVal,
+      type: meta.type,
+    });
   });
-  if (!updates.length) return;
-  if (!confirm('Apply ' + updates.length + ' config change' + (updates.length === 1 ? '' : 's') + ' to ' + __configActiveScope + ' and restart affected agents?')) {
+  if (!changes.length) {
+    showSimpleToast('No changes to apply', 'var(--cyan)', 'ok');
     return;
   }
+  _showConfigConfirm(__configActiveScope, changes);
+}
+
+function _showConfigConfirm(scope, changes) {
+  const overlay = document.getElementById('config-confirm-modal');
+  const body = document.getElementById('config-confirm-body');
+  if (!overlay || !body) return;
+  let html = '<div class="modal-header">';
+  html += '<h2>Apply ' + changes.length + ' change' + (changes.length === 1 ? '' : 's') + '<span class="colony-tag">' + esc(scope) + '</span></h2>';
+  html += '<button class="modal-close" onclick="_closeConfigConfirm()">×</button>';
+  html += '</div>';
+  html += '<div class="modal-desc">The following keys will be written to <code>' + esc(scope) + '</code> and any affected agents will be restarted.</div>';
+  html += '<div class="config-confirm-rows">';
+  changes.forEach(c => {
+    html += '<div class="config-confirm-row" data-confirm-row="1">';
+    html += '<span class="config-confirm-key">' + esc(c.key) + '</span>';
+    html += '<span class="config-confirm-old">' + esc(c.old_value) + '</span>';
+    html += '<span class="config-confirm-arrow">→</span>';
+    html += '<span class="config-confirm-new">' + esc(c.new_value) + '</span>';
+    html += '</div>';
+  });
+  html += '</div>';
+  html += '<div class="config-apply-bar" style="margin-top:14px;">';
+  html += '<button class="config-apply-btn" onclick="_closeConfigConfirm()">Cancel</button>';
+  html += '<button class="config-apply-btn" id="config-confirm-apply-btn" onclick="_postConfigApply()">Apply</button>';
+  html += '</div>';
+  body.innerHTML = html;
+  // Stash the payload on the modal so _postConfigApply can read it
+  // without going through the DOM a second time.
+  overlay.__pendingChanges = changes;
+  overlay.__pendingScope = scope;
+  overlay.classList.add('visible');
+}
+
+function _closeConfigConfirm() {
+  const overlay = document.getElementById('config-confirm-modal');
+  if (!overlay) return;
+  overlay.classList.remove('visible');
+  overlay.__pendingChanges = null;
+  overlay.__pendingScope = null;
+}
+
+function _postConfigApply() {
+  const overlay = document.getElementById('config-confirm-modal');
+  if (!overlay || !overlay.__pendingChanges) return;
+  const scope = overlay.__pendingScope;
+  const changes = overlay.__pendingChanges.map(c => ({
+    key: c.key,
+    value: c.new_value,
+    type: c.type,
+  }));
+  const mtime_ms = (typeof __configMtimes[scope] === 'number')
+    ? Math.round(__configMtimes[scope] * 1000) : 0;
+  _closeConfigConfirm();
   fetch('/config/apply', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({scope: __configActiveScope, updates: updates}),
+    body: JSON.stringify({scope: scope, mtime_ms: mtime_ms, changes: changes}),
   }).then(r => r.text().then(t => ({status: r.status, body: t})))
     .then(({status, body}) => {
       if (status === 200) {
-        showSimpleToast('Config applied', 'var(--green)', 'ok');
+        showSimpleToast('Config applied (' + changes.length + ' change' + (changes.length === 1 ? '' : 's') + ')', 'var(--green)', 'ok');
+      } else if (status === 409) {
+        showSimpleToast('Drift detected — file changed externally. Reload required.', 'var(--orange)', 'err');
+      } else if (status === 422) {
+        showSimpleToast('Apply rejected: ' + body.slice(0, 200), 'var(--red)', 'err');
       } else {
         showSimpleToast('Apply failed (' + status + '): ' + body.slice(0, 200), 'var(--red)', 'err');
       }
@@ -3847,6 +4028,106 @@ function closeModal() {
 }
 document.getElementById('detail-modal').addEventListener('click', function(e) {
   if (e.target === this) closeModal();
+});
+
+// --- Colony Modal (#357) ---
+// Per-colony expand surface. Lists the colony's agents (clickable into
+// the per-agent modal) + a Forge Rate Limits row sourced from
+// data.forge_rate_limits[colony]. Opened by clicking a colony header on
+// the Promotions or Agents tab. Reuses .modal-overlay so the visual
+// language matches the per-agent modal.
+function showColonyModal(colonyName) {
+  const modal = document.getElementById('colony-modal');
+  const body = document.getElementById('colony-modal-body');
+  if (!modal || !body) return;
+  const colonyAgents = (agents || []).filter(a => a.colony === colonyName);
+  const rl = (window.__data && window.__data.forge_rate_limits && window.__data.forge_rate_limits[colonyName]) || {};
+
+  let html = '<div class="modal-header"><div>';
+  html += '<h2>' + esc(colonyName) + '<span class="colony-tag">colony</span></h2>';
+  html += '</div><button class="modal-close" onclick="closeColonyModal()">×</button></div>';
+
+  // Forge Rate Limits row — sourced from data.forge_rate_limits[colony].
+  html += '<div class="modal-section"><h3>Forge Rate Limits</h3>';
+  html += '<div class="rl-row" id="colony-modal-forge-rate-limits">';
+  const rem = rl.remaining;
+  const lim = rl.limit;
+  const reset = rl.reset_at;
+  const err = rl.error;
+  const lastSuccess = rl.last_success_ts;
+  let valueHtml;
+  if (err) {
+    valueHtml = '<span class="rl-err" title="' + esc(err) + '">err: ' + esc(String(err).slice(0, 80)) + '</span>';
+  } else if (rem == null && lim == null) {
+    valueHtml = '<span class="rl-na">— (no rate-limit headers from this forge)</span>';
+  } else {
+    let cls = 'rl-ok';
+    if (typeof rem === 'number' && typeof lim === 'number' && lim > 0) {
+      const ratio = rem / lim;
+      if (ratio < 0.10) cls = 'rl-crit';
+      else if (ratio < 0.25) cls = 'rl-warn';
+    } else if (rem === 0) {
+      cls = 'rl-warn';
+    }
+    const remStr = (rem == null) ? '?' : esc(String(rem));
+    const limStr = (lim == null) ? '?' : esc(String(lim));
+    valueHtml = '<span class="' + cls + '">' + remStr + ' / ' + limStr + '</span>';
+  }
+  html += '<span class="rl-colony">remaining</span>';
+  html += '<span class="rl-value">' + valueHtml + '</span>';
+  if (reset) {
+    const resetMs = Date.parse(reset);
+    const secs = resetMs ? Math.max(0, Math.round((resetMs - nowEpoch * 1000) / 1000)) : 0;
+    let txt;
+    if (!resetMs) txt = reset;
+    else if (secs <= 0) txt = 'now';
+    else if (secs < 60) txt = 'reset in ' + secs + 's';
+    else if (secs < 3600) txt = 'reset in ' + Math.floor(secs / 60) + 'm';
+    else txt = 'reset in ' + Math.floor(secs / 3600) + 'h';
+    html += '<span class="rl-reset" title="' + esc(reset) + '">' + esc(txt) + '</span>';
+  }
+  html += '</div>';
+  if (lastSuccess) {
+    html += '<div class="muted" style="font-size:11px;margin-top:4px;">last success: ' + relTime(lastSuccess) + '</div>';
+  }
+  html += '</div>';
+
+  // Agent listing — click into the per-agent modal.
+  html += '<div class="modal-section"><h3>Agents (' + colonyAgents.length + ')</h3>';
+  if (!colonyAgents.length) {
+    html += '<span class="empty">No agents discovered for this colony.</span>';
+  } else {
+    html += '<table style="width:100%;font-size:12px;"><tr>' +
+            '<th style="text-align:left;">Name</th>' +
+            '<th style="text-align:left;">State</th>' +
+            '<th style="text-align:left;">Confidence</th>' +
+            '</tr>';
+    colonyAgents.forEach(a => {
+      const conf = (a.confidence == null) ? '—' : a.confidence.toFixed(2);
+      html += '<tr class="clickable" onclick="closeColonyModal();openDetail(\'' + esc(a.name) + '\')">';
+      html += '<td class="agent-name">' + esc(a.name) + '</td>';
+      html += '<td>' + esc(a.state || '—') + '</td>';
+      html += '<td>' + conf + '</td>';
+      html += '</tr>';
+    });
+    html += '</table>';
+  }
+  html += '</div>';
+
+  body.innerHTML = html;
+  modal.classList.add('visible');
+}
+function closeColonyModal() {
+  const m = document.getElementById('colony-modal');
+  if (m) m.classList.remove('visible');
+}
+document.getElementById('colony-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeColonyModal();
+});
+
+// Config-confirm modal: backdrop-click closes (Cancel parity).
+document.getElementById('config-confirm-modal').addEventListener('click', function(e) {
+  if (e.target === this) _closeConfigConfirm();
 });
 
 // --- Confidence set with auto-restart (#137 Option 2) ---

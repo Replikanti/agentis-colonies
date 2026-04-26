@@ -45,11 +45,16 @@ for f in "$COLLECTOR" "$RENDERER" "$TEMPLATE" "$START_COLONY_SRC"; do
     fi
 done
 
-# ---- Static template assertions: tile DOM + render JS exist ----
-if grep -q 'id="forge-rate-limits"' "$TEMPLATE"; then
-    pass "1: template contains #forge-rate-limits container"
+# ---- Static template assertions: per-colony modal wires the tile ----
+# #357 relocated the Forge Rate Limits card from the Overview tab into a
+# per-colony modal (showColonyModal). The tile container is now built
+# inline by the modal renderer; the assertions become "the modal entry
+# point exists + reads forge_rate_limits + renders a Forge Rate Limits
+# heading" rather than a static `<div id=forge-rate-limits>` slot.
+if grep -q 'function showColonyModal' "$TEMPLATE"; then
+    pass "1: template defines showColonyModal (per-colony modal entry, #357)"
 else
-    fail "1: template missing #forge-rate-limits container"
+    fail "1: template missing showColonyModal — Forge Rate Limits relocation regressed"
 fi
 
 if grep -q 'forge_rate_limits' "$TEMPLATE"; then
@@ -58,8 +63,8 @@ else
     fail "2: template JS does not reference forge_rate_limits"
 fi
 
-if grep -q '<h2>Forge Rate Limits</h2>' "$TEMPLATE"; then
-    pass "3: template contains 'Forge Rate Limits' heading"
+if grep -q 'Forge Rate Limits' "$TEMPLATE"; then
+    pass "3: template emits 'Forge Rate Limits' heading (now in colony modal, #357)"
 else
     fail "3: template missing 'Forge Rate Limits' heading"
 fi
@@ -233,10 +238,10 @@ python3 "$RENDERER" \
 
 if [ ! -s "$OUT_HTML" ]; then
     fail "8: renderer produced no output" "stderr: $(cat "$TMPDIR_TEST/render.err")"
-elif grep -q '<h2>Forge Rate Limits</h2>' "$OUT_HTML" && grep -q 'forge_rate_limits' "$OUT_HTML"; then
-    pass "8: rendered HTML contains the new tile"
+elif grep -q 'Forge Rate Limits' "$OUT_HTML" && grep -q 'forge_rate_limits' "$OUT_HTML" && grep -q 'showColonyModal' "$OUT_HTML"; then
+    pass "8: rendered HTML wires colony modal + Forge Rate Limits heading + data.forge_rate_limits"
 else
-    fail "8: rendered HTML missing tile markers"
+    fail "8: rendered HTML missing colony-modal Forge Rate Limits markers (#357)"
 fi
 
 # ---- Summary ----
