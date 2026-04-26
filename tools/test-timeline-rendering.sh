@@ -508,13 +508,12 @@ else
     fail "21: SLOPE_FLAT_THRESHOLD missing, wrong value, orphaned, or 1e-6 guard survived (#163)"
 fi
 
-# --- #342 + #357: Phase Readiness — stacked tier bars on Promotions tab ---
-# #342 replaced the #248 PR C compact tier counter with a per-colony stack
-# of 5 progress bars (dormant / shadow / propose / review-gated / autonomous).
-# #357 RELOCATED the markup container from the Overview tab to the top of
-# the Promotions tab (above the per-agent ladders) so the Overview tab is
-# actionable-first and the readiness pairs with the ladder. Test enforces
-# both class wiring (#342) and section placement (#357).
+# --- #359: Phase Readiness — relocated from Promotions to Progress tab ---
+# #342 introduced stacked tier bars; #357 moved markup from Overview to
+# Promotions; #359 collapses Promotions/Learning into Progress and so the
+# Phase Readiness card now lives on the Progress tab (as a SMALL card
+# capped at 200px max-height, not the dominant tile). Test enforces class
+# wiring + section placement on the new Progress tab.
 if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
 import sys, re
 with open(sys.argv[1]) as f:
@@ -531,17 +530,14 @@ required = ['phase-bar', 'phase-bar-fill', 'phase-bar-label-left', 'phase-bar-la
 for cls in required:
     if cls not in src:
         sys.stderr.write('missing class: ' + cls + '\n'); sys.exit(3)
-# Renderer still classifies via tierFor() against the canonical tier names.
 if "tierFor" not in src or "'dormant'" not in src or "'autonomous'" not in src:
     sys.stderr.write('tierFor / dormant / autonomous missing\n'); sys.exit(4)
-# h2-in-summary anti-pattern must be gone in favour of .summary-h2 span.
 if '<summary><h2>' in src:
     sys.stderr.write('h2-in-summary anti-pattern still present\n'); sys.exit(5)
 if 'summary-h2' not in src:
     sys.stderr.write('summary-h2 class missing\n'); sys.exit(6)
-# #357: id="readiness" must live INSIDE the Promotions <section>, not the
-# Overview <section>. Slice on data-tab="promotions"...next data-tab=, and
-# require id="readiness" inside that slice + absent from the overview slice.
+# #359: id="readiness" must live INSIDE the Progress <section>, not on
+# any of the eliminated Overview / Agents / Promotions / Learning tabs.
 def slice_section(haystack, name):
     m = re.search(r'<section\s+data-tab="' + re.escape(name) + r'"[^>]*>', haystack)
     if not m: return None
@@ -549,45 +545,53 @@ def slice_section(haystack, name):
     n = re.search(r'<section\s+data-tab="', haystack[start:])
     end = start + n.start() if n else len(haystack)
     return haystack[start:end]
-overview = slice_section(src, 'overview') or ''
-promotions = slice_section(src, 'promotions') or ''
-if 'id="readiness"' not in promotions:
-    sys.stderr.write('Phase Readiness markup missing from Promotions tab (#357)\n'); sys.exit(7)
-if 'id="readiness"' in overview:
-    sys.stderr.write('Phase Readiness markup still in Overview tab (should be Promotions per #357)\n'); sys.exit(8)
+progress = slice_section(src, 'progress') or ''
+if 'id="readiness"' not in progress:
+    sys.stderr.write('Phase Readiness markup missing from Progress tab (#359)\n'); sys.exit(7)
 sys.exit(0)
 PY
 then
-    pass "22: Phase Readiness stacked tier bars relocated to Promotions tab (#357, was #342 in Overview)"
+    pass "22: Phase Readiness stacked tier bars relocated to Progress tab (#359, was Promotions in #357)"
 else
-    fail "22: Phase Readiness regression — class wiring missing or markup not in Promotions tab"
+    fail "22: Phase Readiness regression — class wiring missing or markup not in Progress tab"
 fi
 
-# --- #248 PR C: Confidence Trend + Experience Growth demoted behind <details> ---
-# Both charts were heavy panels of marginal value; they live inside collapsed
-# <details> now. Lock the contract so neither gets accidentally promoted back
-# to the always-on grid.
+# --- #359 (was #248 PR C): Confidence Trend + Experience Growth charts on
+#     the Progress tab are NOW DEFAULT-EXPANDED (no <details> wrapper).
+#     The charts moved from the demoted #248 PR C placement on the
+#     Learning tab to first-class cards on Progress. Lock the contract:
+#     neither chart container is wrapped in <details> on the Progress tab.
+#     (Test 54 below adds a stricter check.)
 if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
 import sys, re
 with open(sys.argv[1]) as f:
     src = f.read()
-# Both chart containers must sit inside a <details class="card-collapse">.
-# Single-line regex-friendly check: each id must be preceded (within ~400
-# chars upward) by a "<details" with matching close before another card.
+# Find the Progress tab body slice.
+m_sec = re.search(r'<section\s+data-tab="progress"[^>]*>', src)
+if not m_sec:
+    sys.stderr.write('Progress tab section not found\n'); sys.exit(1)
+start = m_sec.end()
+m_next = re.search(r'<section\s+data-tab="', src[start:])
+end = start + m_next.start() if m_next else len(src)
+progress = src[start:end]
+# Each chart container must NOT sit inside a <details>.
 for chart_id in ('experience-trend', 'confidence-trend'):
-    m = re.search(r'<details[^>]*class="card-collapse"[^>]*>([^<]|<(?!/details))*?id="' + chart_id + '"', src, re.DOTALL)
-    if not m:
-        sys.stderr.write(chart_id + ' not inside <details class=card-collapse>\n'); sys.exit(2)
-    # Default-collapsed: the <details> tag must NOT have an `open` attribute.
-    tag = m.group(0).split('>', 1)[0]
-    if re.search(r'\bopen\b', tag):
-        sys.stderr.write(chart_id + ' details opens by default — should be collapsed\n'); sys.exit(3)
+    if 'id="' + chart_id + '"' not in progress:
+        sys.stderr.write(chart_id + ' not in Progress tab\n'); sys.exit(2)
+    # Walk backwards from the id to nearest opening <details> or <section>.
+    pos = progress.find('id="' + chart_id + '"')
+    head = progress[:pos]
+    last_open = head.rfind('<details')
+    last_close = head.rfind('</details>')
+    if last_open > last_close:
+        sys.stderr.write(chart_id + ' is wrapped in <details> on Progress tab — should be default-expanded (#359)\n')
+        sys.exit(3)
 sys.exit(0)
 PY
 then
-    pass "23: Confidence Trend + Experience Growth wrapped in collapsed <details> (#248 PR C)"
+    pass "23: Confidence Trend + Experience Growth default-expanded on Progress tab (#359)"
 else
-    fail "23: chart-demotion regression — one or both charts no longer inside collapsed <details>"
+    fail "23: chart wrapping regressed — should NOT be inside <details> on Progress (#359)"
 fi
 
 # --- #257: federation-agnostic vocabulary regression guard. ---
@@ -1329,16 +1333,14 @@ else
     fail "35: bar arithmetic regression — see stderr above"
 fi
 
-# --- #352: tabbed layout — six <section data-tab="..."> blocks present ---
-# Plan-test 36. The body must contain exactly 6 sections with the names
-# overview / agents / promotions / learning / cost / config. The HTML
-# string is the served-page payload, which is what an operator's browser
-# reads on first paint.
+# --- #359: 5-tab intent-driven cut (was 6 tabs in #352). ---
+# Sections must be exactly: status / cost / recovery / progress / config.
+# Default first-paint tab is `status` (not `overview`; Overview is gone).
 if python3 - "$HTML_FILE" <<'PY' 2>/dev/null
 import sys, re
 with open(sys.argv[1]) as f:
     html = f.read()
-expected = ['overview', 'agents', 'promotions', 'learning', 'cost', 'config']
+expected = ['status', 'cost', 'recovery', 'progress', 'config']
 # Filter out the literal '...' placeholder text from inline comments;
 # only real `<section data-tab="<word>"` markup counts.
 found = [m for m in re.findall(r'<section\s+data-tab="([^"]+)"', html) if m != '...']
@@ -1348,18 +1350,17 @@ if found != expected:
 sys.exit(0)
 PY
 then
-    pass "36: six <section data-tab=\"...\"> blocks in expected order (#352)"
+    pass "36: five <section data-tab=\"...\"> blocks in expected order (#359)"
 else
-    fail "36: section count or order wrong"
+    fail "36: section count or order wrong (#359 expects 5 tabs)"
 fi
 
-# --- #352: tab bar emits 6 buttons with data-tab attributes ---
-# Plan-test 37. The clickable tab bar must have one button per tab.
+# --- #359: tab bar emits 5 buttons (Status/Cost/Recovery/Progress/Config) ---
 if python3 - "$HTML_FILE" <<'PY' 2>/dev/null
 import sys, re
 with open(sys.argv[1]) as f:
     html = f.read()
-expected = ['overview', 'agents', 'promotions', 'learning', 'cost', 'config']
+expected = ['status', 'cost', 'recovery', 'progress', 'config']
 buttons = re.findall(r'<button\s+class="tab-btn"\s+role="tab"\s+data-tab="([^"]+)"', html)
 if buttons != expected:
     sys.stderr.write('tab-btn data-tab order wrong: %r\n' % buttons)
@@ -1367,9 +1368,9 @@ if buttons != expected:
 sys.exit(0)
 PY
 then
-    pass "37: tab bar emits 6 buttons with expected data-tab attributes (#352)"
+    pass "37: tab bar emits 5 buttons with expected data-tab attributes (#359)"
 else
-    fail "37: tab bar buttons missing or out of order"
+    fail "37: tab bar buttons missing or out of order (#359 expects 5)"
 fi
 
 # --- #352: pickTextColor returns dark for #f59e0b (amber) and light
@@ -1467,33 +1468,41 @@ else
     fail "40: sidecar listing wiring regressed"
 fi
 
-# --- #352: bulk-restart action bar visible only when ≥1 agent is
-#     non-running. Two sub-assertions:
-#     (a) renderBulkActions function exists in template.
-#     (b) The fixture's agent (state=running) does NOT trigger the bar
-#         being visible by default.
+# --- #359 (was #352 test 41): bulk-restart action wired on the new
+#     Recovery tab. The pre-#359 #bulk-actions container is gone (the
+#     Overview tab is gone); the equivalent surface lives in the Recovery
+#     tab as #recovery-bulk-actions. The legacy renderBulkActions is
+#     preserved as a no-op for back-compat (its #bulk-actions container is
+#     absent → it bails). Test enforces the new path. ---
 if python3 - "$HTML_FILE" <<'PY' 2>/dev/null
 import sys, re
 with open(sys.argv[1]) as f:
     html = f.read()
-if 'function renderBulkActions' not in html:
-    sys.stderr.write('renderBulkActions not defined\n'); sys.exit(1)
-# The bulk-actions container must be present in markup.
-if 'id="bulk-actions"' not in html:
-    sys.stderr.write('#bulk-actions container missing\n'); sys.exit(2)
-# Branch logic: filtering by `a.state !== \'running\'` must be present.
+# New Recovery-tab renderer.
+if 'function renderRecoveryActions' not in html:
+    sys.stderr.write('renderRecoveryActions not defined\n'); sys.exit(1)
+if 'id="recovery-bulk-actions"' not in html:
+    sys.stderr.write('#recovery-bulk-actions container missing\n'); sys.exit(2)
+# Branch logic: filtering by non-running state still present.
 if "a.state !== 'running'" not in html and 'a.state !== "running"' not in html:
-    sys.stderr.write('non-running filter logic missing in renderBulkActions\n')
+    sys.stderr.write('non-running filter logic missing\n')
     sys.exit(3)
-# `restartAllStopped` action handler defined.
+# `restartAllStopped` action handler still defined.
 if 'function restartAllStopped' not in html:
     sys.stderr.write('restartAllStopped handler not defined\n'); sys.exit(4)
+# Per-agent restart handler (new in #359).
+if 'function restartAgent' not in html:
+    sys.stderr.write('restartAgent handler not defined\n'); sys.exit(5)
+# The legacy renderBulkActions function stays around (back-compat
+# no-op when the #bulk-actions container is absent).
+if 'function renderBulkActions' not in html:
+    sys.stderr.write('legacy renderBulkActions removed (should remain as no-op)\n'); sys.exit(6)
 sys.exit(0)
 PY
 then
-    pass "41: renderBulkActions wired with non-running filter + restartAllStopped handler (#352)"
+    pass "41: bulk-restart wired on Recovery tab + per-agent restartAgent handler (#359)"
 else
-    fail "41: bulk-actions wiring regressed"
+    fail "41: Recovery bulk + per-agent restart wiring regressed (#359)"
 fi
 
 # --- #357: Config tab EDITABLE by default. The v0.6.0 read-only gate
@@ -1556,30 +1565,31 @@ else
     fail "42: Config tab default-editable contract regressed (#357)"
 fi
 
-# --- #352: only one section is .active at first paint (Overview). ---
+# --- #359: tab init defaults to STATUS (was 'overview' in #352). ---
 # The default-active tab is enforced via JS at init: `localStorage` read
-# falls back to 'overview' when missing. The static HTML must be
-# pre-rendered so a curl-smoke flow shows overview by default. We assert
-# that the JS init unconditionally calls `activateTab(initial)` with the
-# overview default fallback.
+# falls back to 'status' when missing. Legacy values (overview/agents/
+# promotions/learning) migrate via LEGACY_TAB_MIGRATION so a returning
+# operator from #357 doesn't see a blank tab on first load post-upgrade.
 if python3 - "$HTML_FILE" <<'PY' 2>/dev/null
 import sys, re
 with open(sys.argv[1]) as f:
     html = f.read()
-# activateTab must default to overview when localStorage missing.
 if 'activateTab(initial)' not in html:
     sys.stderr.write('activateTab init call missing\n'); sys.exit(1)
-if "initial = 'overview'" not in html:
-    sys.stderr.write("default 'overview' fallback missing\n"); sys.exit(2)
-# `localStorage.getItem(ACTIVE_TAB_KEY)` must be the source.
+if "initial = 'status'" not in html:
+    sys.stderr.write("default 'status' fallback missing — #359 should NOT default to 'overview'\n"); sys.exit(2)
 if 'ACTIVE_TAB_KEY' not in html:
     sys.stderr.write('ACTIVE_TAB_KEY not defined\n'); sys.exit(3)
+# Legacy migration is in place so #357-era localStorage values don't
+# leave the operator on a blank tab.
+if 'LEGACY_TAB_MIGRATION' not in html:
+    sys.stderr.write('LEGACY_TAB_MIGRATION map missing — pre-#359 localStorage values would crash\n'); sys.exit(4)
 sys.exit(0)
 PY
 then
-    pass "43: tab init defaults to overview, persisted via ACTIVE_TAB_KEY localStorage (#352)"
+    pass "43: tab init defaults to status (was overview), legacy values migrate (#359)"
 else
-    fail "43: tab default + persistence regressed"
+    fail "43: tab default + persistence regressed (#359)"
 fi
 
 # --- #352: new endpoints (`/restart-all-stopped`, `/sidecar-restart`,
@@ -1618,11 +1628,10 @@ else
     fail "44: one or more #352 endpoints unreachable"
 fi
 
-# --- #357 test 45: Forge Rate Limits is NOT a top-level Overview child.
-#     The card was relocated to a per-colony modal (showColonyModal). The
-#     id="forge-rate-limits" container must NOT live inside the Overview
-#     <section> markup. The renderer function stays defined for the per-
-#     colony modal. ---
+# --- #359 (was #357 test 45): Forge Rate Limits container NOT a top-level
+#     tab child. Lives only inside the per-colony modal (showColonyModal).
+#     The Overview tab is gone in #359; we now assert the container does
+#     not appear inside any of the 5 tab sections. ---
 if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
 import sys, re
 with open(sys.argv[1]) as f:
@@ -1634,10 +1643,11 @@ def slice_section(haystack, name):
     n = re.search(r'<section\s+data-tab="', haystack[start:])
     end = start + n.start() if n else len(haystack)
     return haystack[start:end]
-overview = slice_section(src, 'overview') or ''
-if 'id="forge-rate-limits"' in overview:
-    sys.stderr.write('Forge Rate Limits container still in Overview tab — should be in colony modal (#357)\n')
-    sys.exit(1)
+for name in ('status', 'cost', 'recovery', 'progress', 'config'):
+    body = slice_section(src, name) or ''
+    if 'id="forge-rate-limits"' in body:
+        sys.stderr.write('Forge Rate Limits container in tab "' + name + '" — should be in colony modal (#359)\n')
+        sys.exit(1)
 # Per-colony modal entry point must exist.
 if 'function showColonyModal' not in src:
     sys.stderr.write('showColonyModal not defined (#357 per-colony modal missing)\n')
@@ -1651,7 +1661,7 @@ if 'forge_rate_limits' not in src:
 sys.exit(0)
 PY
 then
-    pass "45: Forge Rate Limits relocated from Overview to per-colony modal (#357)"
+    pass "45: Forge Rate Limits stays in per-colony modal under 5-tab cut (#359)"
 else
     fail "45: Forge Rate Limits relocation regression"
 fi
@@ -1915,6 +1925,411 @@ then
     pass "50: collector emits inverted gate (operator_writes_disabled), audit_log_path always present (#357)"
 else
     fail "50: collector config_editor block contract regression"
+fi
+
+# =====================================================================
+# #359 tests 51-58: stray quote bug, SSE flicker bug, Status verdict,
+# Cost projections, cross-colony matrix, bulk-apply checkbox group.
+# =====================================================================
+
+# --- #359 test 51: stray quote scalar fix + complex-value marker ---
+# Build a fixture colony.toml with a SCALAR string (`backend = "cli"`) and
+# an INLINE ARRAY (`priority = ["p0", "p1", "p2"]`). Drive the collector
+# directly, parse data.config_editor.scopes[*].keys, assert:
+#   * scalar `backend` is emitted with raw_value="cli" (NOT "\"cli\"" and
+#     NOT empty) AND complex_value=False.
+#   * inline-array `priority` is emitted with complex_value=True so the
+#     renderer can show the read-only marker instead of an editable input.
+T51_FED="/tmp/qa-359-fed-51"
+rm -rf "$T51_FED"
+mkdir -p "$T51_FED/.agentis/experience" \
+         "$T51_FED/.agentis/spend" \
+         "$T51_FED/.agentis/lifecycle" \
+         "$T51_FED/.dashboard" \
+         "$T51_FED/triage/agents" \
+         "$T51_FED/triage/config"
+cat > "$T51_FED/triage/config/colony.toml" <<'TOML'
+name = "triage"
+
+[forge.gitlab]
+project = "owner/repo"
+
+[llm]
+backend = "cli"
+
+[planning.labels]
+epic = "epic"
+
+[triage.labels]
+priority = ["p0", "p1", "p2"]
+TOML
+cat > "$T51_FED/triage/agents/qa_agent.ag" <<'AG'
+cb 100;
+fn tick() { return Void; }
+AG
+
+T51_AID="cccccccc"
+T51_NOW="$(date '+%s')"
+T51_DAEMONS=$(python3 -c "
+import json
+print(json.dumps([{
+    'agent_id': '$T51_AID',
+    'source':   '$T51_FED/triage/agents/qa_agent.ag',
+    'state':    'running',
+    'health':   'healthy',
+    'pid':      0,
+    'confidence': 0.5,
+    'tick_ok': 1,
+    'tick_err': 0,
+    'started_at': $T51_NOW - 100,
+}]))
+")
+T51_AGENT_MAP='[{"agent":"qa_agent","colony":"triage"}]'
+T51_COLONIES='["triage"]'
+T51_JSON="$(python3 "$COLLECTOR_PY" \
+    "$T51_DAEMONS" \
+    "$T51_AGENT_MAP" \
+    "$T51_FED" \
+    "$T51_NOW" \
+    "$T51_FED/.agentis/experience" \
+    "$T51_FED/.agentis/logs" \
+    "$T51_FED/.dashboard" \
+    "$T51_COLONIES" \
+    "" \
+    qa_agent 2>/dev/null)"
+
+# Pass T51_JSON via env-var so the heredoc body can stay quoted (no
+# shell expansion / backslash munging on the embedded JSON).
+T51_JSON_FILE="$TMPDIR_TEST/t51-collector.json"
+printf '%s' "$T51_JSON" > "$T51_JSON_FILE"
+if [ -s "$T51_JSON_FILE" ] && python3 - "$T51_JSON_FILE" <<'PY' 2>&1
+import json, sys
+with open(sys.argv[1]) as f:
+    blob = json.loads(f.read())
+ce = blob.get('config_editor') or {}
+scopes = ce.get('scopes') or []
+triage = next((s for s in scopes if s.get('scope') == 'triage'), None)
+if triage is None:
+    sys.stderr.write('triage scope missing\n'); sys.exit(2)
+keys = triage.get('keys') or []
+def find(section, key):
+    for kv in keys:
+        if kv.get('section') == section and kv.get('key') == key:
+            return kv
+    return None
+backend = find('llm', 'backend')
+if not backend:
+    sys.stderr.write('[llm].backend not parsed\n'); sys.exit(3)
+if backend.get('raw_value') != 'cli':
+    sys.stderr.write('backend raw_value = %r, expected "cli" (no surrounding quotes)\n' % backend.get('raw_value'))
+    sys.exit(4)
+if backend.get('complex_value') is not False:
+    sys.stderr.write('backend complex_value = %r, expected False\n' % backend.get('complex_value'))
+    sys.exit(5)
+priority = find('triage.labels', 'priority')
+if not priority:
+    sys.stderr.write('[triage.labels].priority not parsed\n'); sys.exit(6)
+if priority.get('complex_value') is not True:
+    sys.stderr.write('priority complex_value = %r, expected True (inline array)\n' % priority.get('complex_value'))
+    sys.exit(7)
+# Scalar string `epic = "epic"` must also strip quotes cleanly.
+epic_kv = find('planning.labels', 'epic')
+if not epic_kv or epic_kv.get('raw_value') != 'epic':
+    sys.stderr.write('planning.labels.epic raw_value = %r, expected "epic"\n' % (epic_kv and epic_kv.get('raw_value')))
+    sys.exit(8)
+if epic_kv.get('complex_value'):
+    sys.stderr.write('planning.labels.epic flagged as complex (it is scalar)\n'); sys.exit(9)
+sys.exit(0)
+PY
+then
+    pass "51: stray quote — scalar strips cleanly, inline array gets complex_value flag (#359)"
+else
+    fail "51: stray quote bug regression — see stderr above (#359)"
+fi
+rm -rf "$T51_FED"
+rm -f "$T51_JSON_FILE"
+
+# --- #359 test 52: NO <meta http-equiv="refresh"> in served HTML ---
+# The pre-#359 dashboard had <meta http-equiv="refresh" content="60"> on
+# line 5 of the template. It triggered full-page reloads every minute,
+# wiping operator in-flight state (Bug 2). Removed in #359; SSE keeps
+# the page fresh in-place. Regression guard.
+if python3 - "$HTML_FILE" <<'PY' 2>/dev/null
+import sys, re
+with open(sys.argv[1]) as f:
+    html = f.read()
+# Scrub HTML comments AND <script>/<style> blocks (which can mention the
+# tag historically in a JS/CSS comment) so the regex only matches a real
+# <meta> element in the document head.
+no_comments = re.sub(r'<!--.*?-->', '', html, flags=re.DOTALL)
+no_scripts = re.sub(r'<script\b[^>]*>.*?</script>', '', no_comments, flags=re.DOTALL | re.IGNORECASE)
+no_styles = re.sub(r'<style\b[^>]*>.*?</style>', '', no_scripts, flags=re.DOTALL | re.IGNORECASE)
+if re.search(r'<meta\b[^>]*http-equiv\s*=\s*"refresh"', no_styles, re.IGNORECASE):
+    sys.stderr.write('<meta http-equiv="refresh"> still present in document head — removed in #359 to fix flicker\n')
+    sys.exit(1)
+sys.exit(0)
+PY
+then
+    pass "52: <meta http-equiv=\"refresh\"> removed from served HTML (#359 Bug 2 + Bug 4)"
+else
+    fail "52: meta refresh tag is back — would re-introduce 60s flicker (#359)"
+fi
+
+# --- #359 test 53: SSE status indicator markup + dot states ---
+# A small `#sse-dot` lives in the page header. CSS classes sse-dot-init /
+# sse-dot-ok / sse-dot-err are bound to EventSource lifecycle.
+if python3 - "$HTML_FILE" <<'PY' 2>/dev/null
+import sys, re
+with open(sys.argv[1]) as f:
+    html = f.read()
+needles = [
+    'id="sse-dot"',
+    'sse-dot-init',
+    'sse-dot-ok',
+    'sse-dot-err',
+    '_sseSetDot',
+    'es.onopen',
+]
+for n in needles:
+    if n not in html:
+        sys.stderr.write('SSE dot wiring missing: ' + n + '\n')
+        sys.exit(2)
+sys.exit(0)
+PY
+then
+    pass "53: SSE status indicator markup + onopen/onerror wiring present (#359)"
+else
+    fail "53: SSE dot wiring regressed (#359)"
+fi
+
+# --- #359 test 54: Confidence Trend + Experience Growth render WITHOUT
+#     <details> wrapper on the Progress tab (default-expanded). ---
+if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
+import sys, re
+with open(sys.argv[1]) as f:
+    src = f.read()
+m_sec = re.search(r'<section\s+data-tab="progress"[^>]*>', src)
+if not m_sec:
+    sys.stderr.write('progress section missing\n'); sys.exit(1)
+start = m_sec.end()
+m_next = re.search(r'<section\s+data-tab="', src[start:])
+end = start + m_next.start() if m_next else len(src)
+progress = src[start:end]
+for cid in ('confidence-trend', 'experience-trend'):
+    pos = progress.find('id="' + cid + '"')
+    if pos < 0:
+        sys.stderr.write(cid + ' not in Progress tab\n'); sys.exit(2)
+    head = progress[:pos]
+    last_open = head.rfind('<details')
+    last_close = head.rfind('</details>')
+    if last_open > last_close:
+        sys.stderr.write(cid + ' is inside <details> on Progress tab — should be default-expanded\n'); sys.exit(3)
+sys.exit(0)
+PY
+then
+    pass "54: Confidence Trend + Experience Growth default-expanded on Progress tab (#359)"
+else
+    fail "54: charts wrapped in <details> on Progress (#359 expects default-expanded)"
+fi
+
+# --- #359 test 55: Status tab body has NO charts, NO bars, NO tables,
+#     NO `<details>` (pure single-glance verdict). ---
+# This is the operator's "no charts no bars no tables" requirement
+# expressed as a regression guard. Slice on data-tab="status" and walk
+# the contained markup; reject any of <canvas>, <svg>, <table>, <details>.
+if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
+import sys, re
+with open(sys.argv[1]) as f:
+    src = f.read()
+m_sec = re.search(r'<section\s+data-tab="status"[^>]*>', src)
+if not m_sec:
+    sys.stderr.write('status section missing\n'); sys.exit(1)
+start = m_sec.end()
+m_next = re.search(r'<section\s+data-tab="', src[start:])
+end = start + m_next.start() if m_next else len(src)
+body = src[start:end]
+for forbidden in ('<canvas', '<svg', '<table', '<details'):
+    if forbidden in body:
+        sys.stderr.write('Status tab body contains forbidden element: ' + forbidden + '\n'); sys.exit(2)
+# Verdict pill class must be present so the test isn't a vacuous true on
+# an empty section.
+if 'status-verdict-pill' not in src:
+    sys.stderr.write('status-verdict-pill class missing — Status verdict not wired\n'); sys.exit(3)
+if 'pulse-grid' not in src:
+    sys.stderr.write('pulse-grid class missing — 21-cell pulse grid not wired\n'); sys.exit(4)
+sys.exit(0)
+PY
+then
+    pass "55: Status tab body has no charts / bars / tables / <details> (#359)"
+else
+    fail "55: Status tab body contains a forbidden element (#359 single-glance verdict)"
+fi
+
+# --- #359 test 56: Cost tab renders 4 projection stat tiles backed by
+#     data.cost.projected_* fields (1h, 1d in headline; 1w / 1m in tile
+#     extras). The collector emits all four projections; the renderer
+#     references them. ---
+if python3 - "$HTML_FILE" <<'PY' 2>/dev/null
+import sys, re, json
+with open(sys.argv[1]) as f:
+    html = f.read()
+m = re.search(r'const data\s*=\s*(\{.*?\});\n', html, re.DOTALL)
+if not m: sys.exit(1)
+data = json.loads(m.group(1))
+cost = data.get('cost') or {}
+# All four projection fields must be present (default 0.0 on a fresh
+# fed with no spend rows in the 5-min window).
+for k in ('rate_per_min_usd', 'rate_per_min_tokens',
+          'projected_1h_usd', 'projected_1d_usd',
+          'projected_1w_usd', 'projected_1m_usd'):
+    if k not in cost:
+        sys.stderr.write('cost.%s missing from collector output\n' % k); sys.exit(2)
+# Threshold fields are also surfaced so JS can render the traffic-light.
+for k in ('cost_threshold_yellow_usd_per_h', 'cost_threshold_red_usd_per_h'):
+    if k not in cost:
+        sys.stderr.write('cost.%s missing\n' % k); sys.exit(3)
+# Renderer markup: id="cost-projections" container + projection-tile class.
+if 'id="cost-projections"' not in html:
+    sys.stderr.write('cost-projections container missing\n'); sys.exit(4)
+if 'projection-tile' not in html:
+    sys.stderr.write('projection-tile class missing\n'); sys.exit(5)
+if 'function renderCostProjections' not in html:
+    sys.stderr.write('renderCostProjections renderer missing\n'); sys.exit(6)
+sys.exit(0)
+PY
+then
+    pass "56: Cost tab renders 4 projection tiles backed by data.cost.projected_* (#359)"
+else
+    fail "56: Cost projections wiring regressed (#359)"
+fi
+
+# --- #359 test 57: Cross-colony matrix renders one row per dotted key
+#     with at least one override. The collector emits
+#     data.config_editor.matrix; the renderer walks it. ---
+T57_FED="/tmp/qa-359-fed-57"
+rm -rf "$T57_FED"
+mkdir -p "$T57_FED/.agentis/logs" \
+         "$T57_FED/triage/agents" "$T57_FED/triage/config" \
+         "$T57_FED/code-review/agents" "$T57_FED/code-review/config"
+cat > "$T57_FED/.agentis/config" <<'CFG'
+[daemon]
+tick_interval_ms = 60000
+heartbeat_interval_ms = 1800000
+CFG
+cat > "$T57_FED/triage/config/colony.toml" <<'TOML'
+[daemon]
+tick_interval_ms = 30000
+
+[llm]
+backend = "cli"
+TOML
+cat > "$T57_FED/code-review/config/colony.toml" <<'TOML'
+[daemon]
+tick_interval_ms = 60000
+
+[llm]
+backend = "mock"
+TOML
+cat > "$T57_FED/triage/agents/x.ag" <<'AG'
+cb 100;
+fn tick() { return Void; }
+AG
+cat > "$T57_FED/code-review/agents/y.ag" <<'AG'
+cb 100;
+fn tick() { return Void; }
+AG
+T57_DAEMONS='[]'
+T57_AGENT_MAP='[{"agent":"x","colony":"triage"},{"agent":"y","colony":"code-review"}]'
+T57_COLONIES='["triage","code-review"]'
+T57_JSON="$(python3 "$COLLECTOR_PY" \
+    "$T57_DAEMONS" \
+    "$T57_AGENT_MAP" \
+    "$T57_FED" \
+    "$(date '+%s')" \
+    "$T57_FED/.agentis/experience" \
+    "$T57_FED/.agentis/logs" \
+    "$T57_FED/.dashboard" \
+    "$T57_COLONIES" \
+    "" \
+    x y 2>/dev/null)"
+
+T57_JSON_FILE="$TMPDIR_TEST/t57-collector.json"
+printf '%s' "$T57_JSON" > "$T57_JSON_FILE"
+if [ -s "$T57_JSON_FILE" ] && python3 - "$T57_JSON_FILE" <<'PY' 2>&1
+import json, sys
+with open(sys.argv[1]) as f:
+    blob = json.loads(f.read())
+ce = blob.get('config_editor') or {}
+matrix = ce.get('matrix')
+if not isinstance(matrix, list):
+    sys.stderr.write('config_editor.matrix missing or not list\n'); sys.exit(2)
+# At least one override exists in the fixture (triage.daemon.tick_interval_ms
+# overrides federation default; both colonies override [llm].backend).
+if not matrix:
+    sys.stderr.write('matrix empty (expected at least one override row)\n'); sys.exit(3)
+keys = [r.get('key') for r in matrix]
+if 'daemon.tick_interval_ms' not in keys:
+    sys.stderr.write('expected daemon.tick_interval_ms in matrix; got %r\n' % keys); sys.exit(4)
+if 'llm.backend' not in keys:
+    sys.stderr.write('expected llm.backend in matrix; got %r\n' % keys); sys.exit(5)
+# Each row carries cells keyed by scope name + the federation default.
+backend_row = next((r for r in matrix if r.get('key') == 'llm.backend'), None)
+cells = (backend_row or {}).get('cells') or {}
+if 'triage' not in cells or 'code-review' not in cells:
+    sys.stderr.write('per-colony cells missing on llm.backend: %r\n' % cells); sys.exit(6)
+sys.exit(0)
+PY
+then
+    T57_DATA_OK=1
+else
+    T57_DATA_OK=0
+fi
+rm -rf "$T57_FED"
+rm -f "$T57_JSON_FILE"
+
+if [ "$T57_DATA_OK" -eq 1 ] && python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
+import sys
+with open(sys.argv[1]) as f:
+    src = f.read()
+needles = ['id="config-matrix"', 'function renderConfigMatrix', 'config-matrix-table']
+for n in needles:
+    if n not in src:
+        sys.stderr.write('matrix renderer wiring missing: ' + n + '\n'); sys.exit(2)
+sys.exit(0)
+PY
+then
+    pass "57: cross-colony matrix emitted by collector + rendered on Config tab (#359)"
+else
+    fail "57: cross-colony matrix wiring regressed (#359)"
+fi
+
+# --- #359 test 58: bulk-apply confirm modal has per-colony checkbox
+#     group when editing a federation-wide key. The renderer reads
+#     configEditor.scopes to build the group; the confirm modal walks
+#     `.bulk-apply-scope:checked` to decide which scopes to include in
+#     the POST. ---
+if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
+import sys
+with open(sys.argv[1]) as f:
+    src = f.read()
+# CSS class for the checkbox group.
+if 'config-confirm-scopes' not in src:
+    sys.stderr.write('config-confirm-scopes CSS class missing\n'); sys.exit(2)
+# Renderer must emit `.bulk-apply-scope` checkboxes inside the modal
+# only when scope === 'federation'.
+if 'bulk-apply-scope' not in src:
+    sys.stderr.write('bulk-apply-scope class never emitted\n'); sys.exit(3)
+# _showConfigConfirm + _postConfigApply must reference the bulk path.
+if 'isFedScope' not in src:
+    sys.stderr.write('isFedScope branch missing in _showConfigConfirm\n'); sys.exit(4)
+if "scopes:" not in src and 'scopes:' not in src and 'scopes: checked' not in src and 'scopes: ' not in src:
+    sys.stderr.write('bulk payload {scopes:[...]} never built in _postConfigApply\n'); sys.exit(5)
+sys.exit(0)
+PY
+then
+    pass "58: bulk-apply confirm modal renders per-colony checkbox group on fed-wide edits (#359)"
+else
+    fail "58: bulk-apply checkbox group wiring regressed (#359)"
 fi
 
 echo ""

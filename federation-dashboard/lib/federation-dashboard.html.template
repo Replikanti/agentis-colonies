@@ -2,7 +2,15 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="refresh" content="60">
+<!--
+  #359 (Bug 2 + Bug 4): the <meta http-equiv="refresh" content="60"> tag
+  used to live on this line. It triggered a full-page reload every 60s
+  which (a) caused the dashboard to flicker and (b) wiped any operator
+  in-flight state (modal scroll, sort column, expanded <details>). The
+  SSE channel (/events) already keeps the dashboard updated in-place via
+  rerender(snap); the meta refresh was redundant + harmful and is now
+  removed. The kill-switch state machine no longer has to scrub it.
+-->
 <title>{{FED_NAME}} // Agentis Federation</title>
 <link rel="icon" type="image/x-icon" href="/favicon.ico">
 <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
@@ -1166,6 +1174,186 @@
   ::-webkit-scrollbar { width: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  /* --- #359 SSE status dot (header-right, next to refresh button) --- */
+  /* Three states bound to EventSource lifecycle:
+       sse-dot-init (unknown / connecting) — muted gray
+       sse-dot-ok   (es.onopen fired)      — green steady
+       sse-dot-err  (es.onerror fired)     — red, no shadow
+     The .pulse class is added briefly (200ms) on each `snapshot` event
+     to give the operator a visual confirmation that updates are flowing.
+  */
+  .sse-dot {
+    display: inline-block; width: 8px; height: 8px;
+    border-radius: 50%; background: var(--muted);
+    margin-left: 4px; vertical-align: middle;
+    transition: background 0.15s, box-shadow 0.15s;
+  }
+  .sse-dot-init { background: var(--muted); }
+  .sse-dot-ok   { background: var(--green); box-shadow: 0 0 4px rgba(0,255,0,0.4); }
+  .sse-dot-err  { background: var(--red);   box-shadow: 0 0 4px rgba(255,68,68,0.4); }
+  .sse-dot.pulse { box-shadow: 0 0 12px rgba(0,255,0,0.9); transform: scale(1.4); }
+
+  /* --- #359 Status tab — single-glance verdict --- */
+  /* Pure text + colored pulse cells; no charts, no tables, no <details>.
+     The vertical budget is ≤480px so the operator can absorb the federation
+     state in one eye-pass without scrolling. */
+  .status-verdict-pill {
+    display: inline-block;
+    padding: 4px 16px; border-radius: 20px;
+    font-size: 14px; letter-spacing: 2px; text-transform: uppercase;
+    border: 1px solid var(--green); color: var(--green);
+    text-shadow: 0 0 8px rgba(0,255,0,0.4);
+    margin-bottom: 16px;
+  }
+  .status-verdict-pill.warn {
+    border-color: var(--yellow); color: var(--yellow);
+    text-shadow: 0 0 8px rgba(255,255,0,0.4);
+  }
+  .status-verdict-pill.crit {
+    border-color: var(--red); color: var(--red);
+    text-shadow: 0 0 8px rgba(255,68,68,0.4);
+  }
+  .pulse-grid {
+    display: grid; grid-template-columns: repeat(7, 1fr);
+    gap: 6px; margin: 12px 0; max-width: 560px;
+  }
+  .pulse-cell {
+    aspect-ratio: 1 / 1; border-radius: 4px; cursor: pointer;
+    border: 1px solid var(--border); position: relative;
+    transition: transform 0.1s, box-shadow 0.1s;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; color: var(--muted); padding: 2px;
+    text-align: center; word-break: break-all; line-height: 1.1;
+  }
+  .pulse-cell:hover { transform: scale(1.06); box-shadow: 0 0 10px var(--cyan); }
+  .pulse-cell.pulse-running   { background: rgba(0,255,0,0.18);   border-color: var(--green); color: var(--green); }
+  .pulse-cell.pulse-degraded  { background: rgba(255,255,0,0.16); border-color: var(--yellow); color: var(--yellow); }
+  .pulse-cell.pulse-stopped   { background: rgba(255,68,68,0.18); border-color: var(--red); color: var(--red); }
+  .pulse-cell.pulse-zombie    { background: rgba(255,68,68,0.30); border-color: var(--red); color: #fff; }
+  .pulse-cell.pulse-quarantine { background: rgba(255,0,255,0.16); border-color: var(--magenta); color: var(--magenta); }
+  .status-meta { font-size: 11px; color: var(--muted); display: flex; gap: 16px; flex-wrap: wrap; margin-top: 6px; }
+  .status-meta strong { color: var(--text); font-weight: normal; }
+  .status-pill-row { display: flex; gap: 12px; margin: 12px 0; flex-wrap: wrap; }
+  .status-pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 4px 12px; border-radius: 14px; border: 1px solid var(--border);
+    font-size: 11px; letter-spacing: 1px; text-transform: uppercase;
+  }
+  .status-pill.ok    { border-color: var(--green);  color: var(--green);  }
+  .status-pill.warn  { border-color: var(--yellow); color: var(--yellow); }
+  .status-pill.crit  { border-color: var(--red);    color: var(--red);    }
+  .status-pill.muted { color: var(--muted); }
+  .status-pill .status-pill-age { color: var(--muted); font-size: 10px; }
+
+  /* --- #359 Cost tab projection tiles --- */
+  .projection-row {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 12px; margin-bottom: 16px;
+  }
+  .projection-tile {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 4px; padding: 12px; text-align: center;
+    position: relative;
+  }
+  .projection-tile.warn { border-color: var(--yellow); }
+  .projection-tile.crit { border-color: var(--red); }
+  .projection-tile-label { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: 2px; }
+  .projection-tile-value { font-size: 22px; color: var(--cyan); margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .projection-tile.warn .projection-tile-value { color: var(--yellow); }
+  .projection-tile.crit .projection-tile-value { color: var(--red); }
+  .projection-tile-extra { font-size: 9px; color: var(--muted); margin-top: 4px; }
+
+  /* --- #359 Recovery tab --- */
+  .recovery-actions {
+    display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 12px;
+  }
+  .recovery-actions button {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--text); font-family: inherit; font-size: 11px;
+    padding: 6px 14px; cursor: pointer; border-radius: 3px;
+    text-transform: uppercase; letter-spacing: 1px;
+  }
+  .recovery-actions button:hover { border-color: var(--cyan); color: var(--cyan); }
+  .recovery-actions button.crit { border-color: var(--red); color: var(--red); }
+  .recovery-actions button.crit:hover { background: var(--red); color: #000; }
+  .recovery-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .recovery-table th, .recovery-table td { padding: 5px 8px; border-bottom: 1px solid var(--border2); text-align: left; }
+  .recovery-row-restart-btn {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--cyan); font-family: inherit; font-size: 10px;
+    padding: 2px 8px; cursor: pointer; border-radius: 2px;
+  }
+  .recovery-row-restart-btn:hover { background: rgba(0,255,255,0.06); }
+  .recovery-row-restart-btn:disabled { color: var(--muted); border-color: var(--border2); cursor: default; }
+  .watchdog-timeline {
+    max-height: 200px; overflow-y: auto; font-size: 11px;
+    border: 1px solid var(--border2); border-radius: 4px;
+    padding: 8px; margin-top: 8px;
+  }
+  .watchdog-row {
+    display: grid; grid-template-columns: 110px 110px 1fr;
+    gap: 8px; padding: 3px 0; border-bottom: 1px solid var(--border2);
+  }
+  .watchdog-row:last-child { border-bottom: none; }
+  .watchdog-ts { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .watchdog-agent { color: var(--cyan); }
+  .watchdog-reason { color: var(--text); }
+  .log-tail-block {
+    background: #050505; border: 1px solid var(--border2);
+    color: var(--text); padding: 8px; border-radius: 3px;
+    font-family: 'Share Tech Mono', monospace; font-size: 10px;
+    white-space: pre-wrap; max-height: 280px; overflow: auto;
+    margin-top: 4px;
+  }
+
+  /* Kill-confirm modal: defensive double-confirm (operator types fed name). */
+  .kill-confirm-input {
+    width: 100%; background: #050505; border: 1px solid var(--red);
+    color: var(--red); padding: 6px 10px; font-family: inherit;
+    font-size: 13px; border-radius: 3px; margin: 8px 0;
+  }
+  .kill-confirm-input:focus { outline: none; box-shadow: 0 0 8px rgba(255,68,68,0.4); }
+  .kill-confirm-fed { color: var(--red); font-weight: bold; letter-spacing: 1px; }
+
+  /* Cross-colony matrix (Config tab). */
+  .config-matrix-table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 12px; }
+  .config-matrix-table th, .config-matrix-table td {
+    padding: 4px 8px; border-bottom: 1px solid var(--border2);
+    text-align: left; vertical-align: top;
+  }
+  .config-matrix-table th { color: var(--muted); font-weight: 400; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
+  .config-matrix-key { color: var(--cyan); font-family: 'Share Tech Mono', monospace; }
+  .config-matrix-value { color: var(--text); font-family: 'Share Tech Mono', monospace; }
+  .config-matrix-value.fed-default { color: var(--muted); font-style: italic; }
+  .config-matrix-value.complex { color: var(--orange); }
+  .config-matrix-value.empty { color: var(--muted); }
+
+  /* Bulk-apply scopes checkbox group inside the confirm modal. */
+  .config-confirm-scopes {
+    display: flex; gap: 12px; flex-wrap: wrap;
+    margin: 8px 0; padding: 8px;
+    border: 1px solid var(--border2); border-radius: 4px;
+  }
+  .config-confirm-scopes label {
+    font-size: 11px; color: var(--text);
+    display: inline-flex; align-items: center; gap: 4px;
+    cursor: pointer;
+  }
+  .config-confirm-scopes input[type="checkbox"] { vertical-align: middle; }
+
+  /* Complex value marker on Config tab rows. */
+  .config-row.complex { opacity: 0.85; }
+  .config-row.complex .config-input {
+    pointer-events: none; cursor: not-allowed; color: var(--muted);
+    background: rgba(255,136,0,0.05); border: 1px dashed var(--orange);
+  }
+  .config-complex-marker {
+    display: inline-block; padding: 1px 6px; border-radius: 2px;
+    font-size: 9px; letter-spacing: 1px; text-transform: uppercase;
+    border: 1px solid var(--orange); color: var(--orange);
+    margin-left: 6px;
+  }
 </style>
 </head>
 <body>
@@ -1177,7 +1365,7 @@
   <div class="header-right" style="display:flex;align-items:center;gap:16px;">
     <div>
       <div class="time" id="clock"></div>
-      <div><span id="countdown">auto-refresh in 60s</span> <button class="refresh-btn" id="refresh-btn" onclick="manualRefresh()" title="Refresh now (press 'r')" aria-label="Refresh now">&#x21bb;</button></div>
+      <div><span id="countdown" title="SSE pushes updates live; counter is a fallback poll cue">live</span> <span id="sse-dot" class="sse-dot sse-dot-init" title="SSE connecting…" aria-label="SSE status"></span> <button class="refresh-btn" id="refresh-btn" onclick="manualRefresh()" title="Refresh now (press 'r')" aria-label="Refresh now">&#x21bb;</button></div>
     </div>
     <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
       <button class="kill-btn" id="kill-btn" onclick="killSwitch()">Kill Federation</button>
@@ -1193,110 +1381,39 @@
 
 <div class="fed-health-banner" id="fed-health-banner"></div>
 
-<!-- #352: Six-tab single-page app. The tab buttons toggle visibility of
-     the matching `<section data-tab="...">` block; renderers fire on
-     every snapshot regardless of which tab is currently visible (pure CSS
-     toggle, no re-fetch). Default tab is overview; persisted via
-     localStorage. Keyboard shortcuts: digits 1-6. -->
+<!-- #359: 5-tab intent-driven cut, replacing the 6-tab #352 layout.
+     Each tab maps to a single operator question:
+       Status   — am I healthy NOW? (verdict + pulse grid + sidecars)
+       Cost     — am I burning money? (per-min rate + projections + caps)
+       Recovery — what do I need to restart? (bulk + per-agent + sidecars + kill)
+       Progress — are agents climbing? (charts default-expanded + ETA)
+       Config   — what's running where? (editor + cross-colony matrix + bulk apply)
+     Default first paint is `status` (was `overview`; Overview is gone).
+     Persisted via localStorage `agentis:dashboard:active-tab`. Keyboard
+     shortcuts: digits 1-5. -->
 <div class="tabs" id="tabs" role="tablist">
-  <button class="tab-btn" role="tab" data-tab="overview"  ><span class="tab-key">1</span>Overview</button>
-  <button class="tab-btn" role="tab" data-tab="agents"    ><span class="tab-key">2</span>Agents</button>
-  <button class="tab-btn" role="tab" data-tab="promotions"><span class="tab-key">3</span>Promotions</button>
-  <button class="tab-btn" role="tab" data-tab="learning"  ><span class="tab-key">4</span>Learning</button>
-  <button class="tab-btn" role="tab" data-tab="cost"      ><span class="tab-key">5</span>Cost</button>
-  <button class="tab-btn" role="tab" data-tab="config"    ><span class="tab-key">6</span>Config</button>
+  <button class="tab-btn" role="tab" data-tab="status"  ><span class="tab-key">1</span>Status</button>
+  <button class="tab-btn" role="tab" data-tab="cost"    ><span class="tab-key">2</span>Cost</button>
+  <button class="tab-btn" role="tab" data-tab="recovery"><span class="tab-key">3</span>Recovery</button>
+  <button class="tab-btn" role="tab" data-tab="progress"><span class="tab-key">4</span>Progress</button>
+  <button class="tab-btn" role="tab" data-tab="config"  ><span class="tab-key">5</span>Config</button>
 </div>
 
-<!-- TAB: Overview — federation health snapshot, sidecar listing,
-     bulk-restart actions. #357 dropped Phase Readiness (moved to
-     Promotions, top card) and Forge Rate Limits (moved into per-colony
-     modal, opened from Promotions/Agents colony headers) so the tab fits
-     ~480 px of actionable surface and leaves headroom for the Health
-     Banner to expand without scroll. -->
-<section data-tab="overview">
-  <div class="stats-row" id="stats-row"></div>
-  <div class="grid">
-    <div class="card full">
-      <h2>Sidecars</h2>
-      <div id="sidecar-status"></div>
-    </div>
-    <div class="card full" id="bulk-actions-card" style="display:none;">
-      <h2>Bulk Actions</h2>
-      <div id="bulk-actions" class="bulk-actions"></div>
-    </div>
-  </div>
+<!-- TAB: Status — single-glance verdict. NO charts, NO bars, NO tables,
+     NO `<details>`. Operator absorbs the whole federation in one eye-pass.
+     Vertical budget ≤480 px. -->
+<section data-tab="status">
+  <div id="status-verdict"></div>
+  <div id="status-pulse"></div>
+  <div id="status-sidecar-pills"></div>
+  <div id="status-meta"></div>
 </section>
 
-<!-- TAB: Agents — per-agent dossier table. Sortable, modal-expandable. -->
-<section data-tab="agents">
-  <div class="grid">
-    <div class="card full">
-      <h2>Agents</h2>
-      <div id="agent-table" style="overflow-x:auto;"></div>
-    </div>
-  </div>
-</section>
-
-<!-- TAB: Promotions — Phase Readiness (federation-wide tier counts, #357
-     relocated from Overview), per-agent promotion ladder, scheduler
-     verdicts. -->
-<section data-tab="promotions">
-  <div class="grid">
-    <div class="card full">
-      <h2>Phase Readiness</h2>
-      <div id="readiness"></div>
-    </div>
-    <div class="card full">
-      <h2>Promotion Ladder</h2>
-      <div id="promotion-ladder"></div>
-    </div>
-    <div class="card full">
-      <h2>Promote Candidates</h2>
-      <div id="promote-candidates"></div>
-    </div>
-  </div>
-</section>
-
-<!-- TAB: Learning — federation-wide event timeline + activity charts. -->
-<section data-tab="learning">
-  <div class="grid">
-    <div class="card full">
-      <div class="timeline-header">
-        <h2>Event Timeline</h2>
-        <div class="timeline-actions">
-          <select class="timeline-colony-filter" id="timeline-colony-filter" title="Filter timeline rows by colony"></select>
-          <label class="timeline-toggle" title="Auto-hide errors from agents that have ticked cleanly in the last hour">
-            <input type="checkbox" id="timeline-auto-hide-stale"> Auto-hide stale
-          </label>
-          <button class="timeline-clear-btn" id="timeline-time-mode-btn" title="Toggle absolute / relative timestamps">Time: ABS</button>
-          <button class="timeline-clear-btn" id="timeline-clear-stale-btn" title="Snapshot-clear errors from cleanly-ticking agents (per-(agent, error) cursor)">Clear stale</button>
-          <button class="timeline-clear-btn" id="timeline-clear-btn" title="Hide every entry older than now (per-federation cursor)">Clear all</button>
-        </div>
-      </div>
-      <div class="timeline-chips" id="timeline-chips"></div>
-      <div class="timeline-banner" id="timeline-banner" hidden></div>
-      <div id="event-timeline" class="timeline"></div>
-    </div>
-    <!-- #248 PR C: legacy charts demoted behind <details>. Per-agent
-         entries_total + per-agent confidence-on-card answer the operator
-         questions these once served; charts remain for trend-spotters. -->
-    <div class="card">
-      <details class="card-collapse">
-        <summary><span class="summary-h2">Experience Growth</span></summary>
-        <div id="experience-trend" class="chart-container"></div>
-      </details>
-    </div>
-    <div class="card">
-      <details class="card-collapse">
-        <summary><span class="summary-h2">Confidence Trend</span></summary>
-        <div id="confidence-trend" class="chart-container"></div>
-      </details>
-    </div>
-  </div>
-</section>
-
-<!-- TAB: Cost — tokens (top) + USD (bottom) split + cost-cap status. -->
+<!-- TAB: Cost — 4 projection tiles (per-min × {1h, 1d, 1w, 1m}) +
+     cumulative row + cost-cap progress + per-colony split. Vertical
+     budget ≤700 px. -->
 <section data-tab="cost">
+  <div id="cost-projections"></div>
   <div class="grid">
     <div class="card full">
       <h2>LLM Tokens</h2>
@@ -1318,17 +1435,101 @@
   </div>
 </section>
 
+<!-- TAB: Recovery — bulk-restart, per-agent restart, per-sidecar restart,
+     federation kill switch (with confirm-by-name modal), watchdog kills
+     timeline (forensic), per-agent log tail (<details> per agent). -->
+<section data-tab="recovery">
+  <div class="grid">
+    <div class="card full">
+      <h2>Recovery Actions</h2>
+      <div id="recovery-bulk-actions" class="recovery-actions"></div>
+      <div id="recovery-agents"></div>
+    </div>
+    <div class="card full">
+      <h2>Sidecars</h2>
+      <div id="sidecar-status"></div>
+    </div>
+    <div class="card full">
+      <h2>Watchdog Kills (last 10)</h2>
+      <div id="watchdog-kills" class="watchdog-timeline"></div>
+    </div>
+    <div class="card full">
+      <h2>Per-Agent Log Tail</h2>
+      <div id="recovery-log-tails"></div>
+    </div>
+  </div>
+</section>
+
+<!-- TAB: Progress — Confidence Trend + Experience Growth charts default
+     EXPANDED (no <details> wrapper); Phase Readiness as a small card;
+     per-agent promotion ladder + ETA + limiting prereq. Vertical budget
+     ≤700 px. -->
+<section data-tab="progress">
+  <div class="grid">
+    <div class="card">
+      <h2>Confidence Trend</h2>
+      <div id="confidence-trend" class="chart-container"></div>
+    </div>
+    <div class="card">
+      <h2>Experience Growth</h2>
+      <div id="experience-trend" class="chart-container"></div>
+    </div>
+    <div class="card full">
+      <h2>Phase Readiness</h2>
+      <div id="readiness" style="max-height:200px;overflow-y:auto;"></div>
+    </div>
+    <div class="card full">
+      <h2>Promotion Ladder</h2>
+      <div id="promotion-ladder"></div>
+    </div>
+    <div class="card full">
+      <h2>Promote Candidates</h2>
+      <div id="promote-candidates"></div>
+    </div>
+    <div class="card full">
+      <div class="timeline-header">
+        <h2>Event Timeline</h2>
+        <div class="timeline-actions">
+          <select class="timeline-colony-filter" id="timeline-colony-filter" title="Filter timeline rows by colony"></select>
+          <label class="timeline-toggle" title="Auto-hide errors from agents that have ticked cleanly in the last hour">
+            <input type="checkbox" id="timeline-auto-hide-stale"> Auto-hide stale
+          </label>
+          <button class="timeline-clear-btn" id="timeline-time-mode-btn" title="Toggle absolute / relative timestamps">Time: ABS</button>
+          <button class="timeline-clear-btn" id="timeline-clear-stale-btn" title="Snapshot-clear errors from cleanly-ticking agents (per-(agent, error) cursor)">Clear stale</button>
+          <button class="timeline-clear-btn" id="timeline-clear-btn" title="Hide every entry older than now (per-federation cursor)">Clear all</button>
+        </div>
+      </div>
+      <div class="timeline-chips" id="timeline-chips"></div>
+      <div class="timeline-banner" id="timeline-banner" hidden></div>
+      <div id="event-timeline" class="timeline"></div>
+    </div>
+    <!-- Per-agent dossier table preserved for full drill-in. The Status
+         tab's pulse-grid hands operators here when they click a cell. -->
+    <div class="card full">
+      <h2>Agents</h2>
+      <div id="agent-table" style="overflow-x:auto;"></div>
+    </div>
+  </div>
+</section>
+
 <!-- TAB: Config — per-colony + federation-wide TOML editor. Editable by
      default after #357 (the v0.6.0 read-only gate was a feature
      regression). Setting `[config_editor].operator_writes_disabled =
      true` in `<fed>/.agentis/config` flips the tab back to read-only as
      a defensive opt-out. Each Apply pops a structured confirm modal
-     listing every key change before the POST /config/apply fires. -->
+     listing every key change before the POST /config/apply fires. #359
+     adds bulk apply (per-scope checkbox group on the modal) and a
+     cross-colony matrix view (one row per dotted key with at least one
+     override). -->
 <section data-tab="config">
   <div class="grid">
     <div class="card full">
       <h2>Configuration</h2>
       <div id="config-editor"></div>
+    </div>
+    <div class="card full">
+      <h2>Cross-Colony Matrix</h2>
+      <div id="config-matrix"></div>
     </div>
   </div>
 </section>
@@ -1349,6 +1550,13 @@
      operator sees exactly what writes before they fire). -->
 <div class="modal-overlay" id="config-confirm-modal">
 <div class="modal-content" id="config-confirm-body"></div>
+</div>
+
+<!-- Kill Confirm Modal (#359: defensive double-confirm for the federation
+     kill switch. Operator must type the federation name to enable Kill —
+     the type-to-confirm pattern is borrowed from GitHub repo deletion. -->
+<div class="modal-overlay" id="kill-confirm-modal">
+<div class="modal-content" id="kill-confirm-body"></div>
 </div>
 
 <!-- #160: Why panel for disabled buttons + skipped recommendations -->
@@ -1512,16 +1720,24 @@ function tlWriteJSON(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
 }
 
-// --- Refresh countdown ---
+// --- Refresh status (#359) ---
+// The pre-#359 dashboard relied on a `<meta http-equiv="refresh" content="60">`
+// tag to do a full-page reload every minute. That meta tag is gone (it caused
+// flicker + wiped operator in-flight state); the SSE channel already keeps
+// every renderer in sync with the live snapshot. The countdown element now
+// just surfaces seconds-since-last-snapshot so the operator can see at a
+// glance how fresh the data is.
 (function() {
-  const REFRESH_MS = 60000;
   const el = document.getElementById('countdown');
   if (!el) return;
-  const loadedAt = Date.now();
   function tick() {
-    const remaining = Math.max(0, REFRESH_MS - (Date.now() - loadedAt));
-    const s = Math.ceil(remaining / 1000);
-    el.textContent = 'auto-refresh in ' + String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
+    const last = window.__lastSnapshotAt || 0;
+    if (!last) {
+      el.textContent = 'live';
+      return;
+    }
+    const age = Math.max(0, Math.floor((Date.now() - last) / 1000));
+    el.textContent = age < 5 ? 'live' : (age + 's ago');
   }
   tick();
   setInterval(tick, 1000);
@@ -1542,13 +1758,13 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     manualRefresh();
   }
-  if (e.key === 'Escape') { closeModal(); closeWhyPanel(); }
-  // #352: digits 1-6 jump between tabs.
+  if (e.key === 'Escape') { closeModal(); closeWhyPanel(); closeKillConfirm(); }
+  // #359: digits 1-5 jump between tabs (was 1-6 in #352).
   if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && !e.repeat) {
     const tag = (e.target && e.target.tagName) || '';
     if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
-    const TAB_KEY_ORDER = ['overview', 'agents', 'promotions', 'learning', 'cost', 'config'];
-    const idx = '123456'.indexOf(e.key);
+    const TAB_KEY_ORDER = ['status', 'cost', 'recovery', 'progress', 'config'];
+    const idx = '12345'.indexOf(e.key);
     if (idx >= 0 && idx < TAB_KEY_ORDER.length) {
       e.preventDefault();
       activateTab(TAB_KEY_ORDER[idx]);
@@ -1556,14 +1772,26 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-// #352: tab switcher. Persists the active tab in localStorage so an
-// operator's last view survives a reload. Pure CSS toggle: every renderXxx()
-// still fires on every snapshot regardless of which tab is currently
-// visible — switching tabs reads pre-rendered DOM, no re-fetch.
+// #359: 5-tab intent-driven cut (Status / Cost / Recovery / Progress /
+// Config). Replaces the 6-tab #352 layout (Overview / Agents / Promotions
+// / Learning / Cost / Config). Persists the active tab in localStorage so
+// an operator's last view survives a reload. Pure CSS toggle: every
+// renderXxx() still fires on every snapshot regardless of which tab is
+// currently visible — switching tabs reads pre-rendered DOM, no re-fetch.
+// Default first paint is `status` (Overview is gone). Legacy values for
+// the localStorage key (`overview`, `agents`, `promotions`, `learning`)
+// migrate to a sensible new home so a returning operator doesn't see a
+// blank tab on the first load post-upgrade.
 const ACTIVE_TAB_KEY = 'agentis:dashboard:active-tab';
-const TAB_NAMES = ['overview', 'agents', 'promotions', 'learning', 'cost', 'config'];
+const TAB_NAMES = ['status', 'cost', 'recovery', 'progress', 'config'];
+const LEGACY_TAB_MIGRATION = {
+  'overview':   'status',
+  'agents':     'progress',
+  'promotions': 'progress',
+  'learning':   'progress',
+};
 function activateTab(name) {
-  if (!TAB_NAMES.includes(name)) name = 'overview';
+  if (!TAB_NAMES.includes(name)) name = 'status';
   document.querySelectorAll('section[data-tab]').forEach(sec => {
     if (sec.getAttribute('data-tab') === name) {
       sec.classList.add('active');
@@ -1591,7 +1819,10 @@ function activateTab(name) {
   });
   let initial;
   try { initial = localStorage.getItem(ACTIVE_TAB_KEY); } catch (e) { initial = null; }
-  if (!initial || !TAB_NAMES.includes(initial)) initial = 'overview';
+  if (initial && LEGACY_TAB_MIGRATION[initial]) {
+    initial = LEGACY_TAB_MIGRATION[initial];
+  }
+  if (!initial || !TAB_NAMES.includes(initial)) initial = 'status';
   activateTab(initial);
 })();
 
@@ -1626,6 +1857,12 @@ let sidecars = data.sidecars || [];
 // also pin read-only via `data.config_editor.read_only_override = true`
 // without touching the disabled gate.
 let configEditor = data.config_editor || {operator_writes_disabled: false, scopes: []};
+// #359: forensic watchdog kills (Recovery tab) + per-minute burn rate
+// fields are inline on data.cost (already exposed via the `data` shorthand
+// in renderXxx callbacks). watchdog_kills gets a top-level shorthand only
+// so the Status verdict + Recovery timeline don't have to thread the data
+// arg through every helper.
+let watchdogKills = data.watchdog_kills || [];
 
 // #313 PR 2: re-derives the shorthands above from a fresh snapshot.
 // Called once at init (the lets above) and once per SSE push (rerender).
@@ -1643,6 +1880,7 @@ function extractRefs(d) {
   sidecar = d.sidecar || {installed: false, enabled: false, interval_s: null, last_tick_ts: null};
   sidecars = d.sidecars || [];
   configEditor = d.config_editor || {operator_writes_disabled: false, scopes: []};
+  watchdogKills = d.watchdog_kills || [];
   // History + nowEpoch travel out-of-band when the snapshot carries
   // them; PR 1's snapshot.json contract is full COLLECTOR_JSON only,
   // so .history / .now_epoch may be undefined — fall back to the
@@ -2472,33 +2710,58 @@ function renderConfigEditor(data) {
       // #357: stash the dotted path + base value so applyConfigEdits()
       // can build a clean {key, value} payload + diff old vs new.
       const dottedKey = kv.section ? (kv.section + '.' + kv.key) : kv.key;
+      // #359: complex_value flag from the collector (inline arrays /
+      // inline tables — `labels = ["a", "b"]`, `limits = {hi=1, lo=0}`).
+      // Render read-only with a "complex value (edit colony.toml directly)"
+      // marker so an operator can see the value without accidentally
+      // corrupting the array via the line-level patcher (which only
+      // handles scalar values).
+      const isComplex = !!kv.complex_value;
       __configBaseValues[active.scope][inputId] = {
         section: kv.section || '',
         key: kv.key,
         dotted: dottedKey,
         type: t,
         raw_value: kv.raw_value,
+        complex_value: isComplex,
       };
-      html += '<div class="config-row" data-config-row="1" data-input-id="' + esc(inputId) + '" data-dotted="' + esc(dottedKey) + '">';
+      const rowCls = 'config-row' + (isComplex ? ' complex' : '');
+      html += '<div class="' + rowCls + '" data-config-row="1" data-input-id="' + esc(inputId) + '" data-dotted="' + esc(dottedKey) + '"' + (isComplex ? ' data-complex-value="1"' : '') + '>';
       html += '<span class="config-key">' + esc(kv.key) + '</span>';
-      const ro = writable ? '' : ' readonly disabled';
-      if (t === 'bool') {
-        const checked = (String(kv.raw_value).trim().toLowerCase() === 'true') ? ' checked' : '';
-        html += '<input type="checkbox" class="config-input" id="' + inputId + '"' + checked + (writable ? '' : ' disabled') + '>';
-      } else if (t === 'enum') {
-        const vocab = CONFIG_ENUM_VOCAB[kv.key] || [];
-        const cur = String(kv.raw_value).trim().replace(/^["']|["']$/g, '');
-        html += '<select class="config-input" id="' + inputId + '"' + (writable ? '' : ' disabled') + '>';
-        if (!vocab.includes(cur)) html += '<option value="' + esc(cur) + '" selected>' + esc(cur) + '</option>';
-        vocab.forEach(v => {
-          html += '<option value="' + esc(v) + '"' + (v === cur ? ' selected' : '') + '>' + esc(v) + '</option>';
-        });
-        html += '</select>';
-      } else if (t === 'int' || t === 'float') {
-        html += '<input type="number" class="config-input" id="' + inputId + '" value="' + esc(kv.raw_value) + '"' + ro + '>';
+      if (isComplex) {
+        // Complex values: render as a read-only text input (so the row
+        // structure stays consistent) with a "complex value" marker.
+        // applyConfigEdits() skips these rows by checking the
+        // complex_value flag in __configBaseValues.
+        const cv = String(kv.raw_value || '');
+        html += '<input type="text" class="config-input" id="' + inputId +
+                '" value="' + esc(cv.length > 80 ? cv.slice(0, 78) + '…' : cv) +
+                '" readonly disabled>';
+        html += '<span class="config-complex-marker" title="Inline array / table — edit colony.toml directly">complex</span>';
       } else {
-        const v = String(kv.raw_value).replace(/^["']|["']$/g, '');
-        html += '<input type="text" class="config-input" id="' + inputId + '" value="' + esc(v) + '"' + ro + '>';
+        const ro = writable ? '' : ' readonly disabled';
+        if (t === 'bool') {
+          const checked = (String(kv.raw_value).trim().toLowerCase() === 'true') ? ' checked' : '';
+          html += '<input type="checkbox" class="config-input" id="' + inputId + '"' + checked + (writable ? '' : ' disabled') + '>';
+        } else if (t === 'enum') {
+          const vocab = CONFIG_ENUM_VOCAB[kv.key] || [];
+          const cur = String(kv.raw_value).trim().replace(/^["']|["']$/g, '');
+          html += '<select class="config-input" id="' + inputId + '"' + (writable ? '' : ' disabled') + '>';
+          if (!vocab.includes(cur)) html += '<option value="' + esc(cur) + '" selected>' + esc(cur) + '</option>';
+          vocab.forEach(v => {
+            html += '<option value="' + esc(v) + '"' + (v === cur ? ' selected' : '') + '>' + esc(v) + '</option>';
+          });
+          html += '</select>';
+        } else if (t === 'int' || t === 'float') {
+          html += '<input type="number" class="config-input" id="' + inputId + '" value="' + esc(kv.raw_value) + '"' + ro + '>';
+        } else {
+          // SCALAR string value. The collector strips surrounding quotes
+          // before emitting raw_value, so the input renders the bare
+          // value (e.g. `cli`, not `"cli"`). #359 verifies this with
+          // test 51.
+          const v = String(kv.raw_value);
+          html += '<input type="text" class="config-input" id="' + inputId + '" value="' + esc(v) + '"' + ro + '>';
+        }
       }
       html += '</div>';
     });
@@ -2554,6 +2817,11 @@ function applyConfigEdits() {
   inputs.forEach(inp => {
     const meta = base[inp.id];
     if (!meta) return;
+    // #359: skip complex_value rows. They render read-only with a
+    // "complex" marker; the operator must edit colony.toml directly to
+    // mutate inline arrays / tables. The line-level patcher would
+    // corrupt them.
+    if (meta.complex_value) return;
     const newVal = (inp.type === 'checkbox')
       ? (inp.checked ? 'true' : 'false')
       : String(inp.value);
@@ -2579,11 +2847,29 @@ function _showConfigConfirm(scope, changes) {
   const overlay = document.getElementById('config-confirm-modal');
   const body = document.getElementById('config-confirm-body');
   if (!overlay || !body) return;
+  // #359: bulk-apply scope checkbox group. When the operator is editing
+  // a federation-wide key, the modal renders a per-colony checkbox group
+  // (federation default + every colony) pre-checked. Operator can uncheck
+  // a colony to skip it. Only meaningful when scope === 'federation'; for
+  // colony-scoped edits the existing single-scope path is preserved.
+  const isFedScope = (scope === 'federation' || scope === 'fed');
+  const colonyScopes = (configEditor && configEditor.scopes
+    ? configEditor.scopes.map(s => s.scope).filter(s => s && s !== 'federation')
+    : []);
   let html = '<div class="modal-header">';
   html += '<h2>Apply ' + changes.length + ' change' + (changes.length === 1 ? '' : 's') + '<span class="colony-tag">' + esc(scope) + '</span></h2>';
   html += '<button class="modal-close" onclick="_closeConfigConfirm()">×</button>';
   html += '</div>';
-  html += '<div class="modal-desc">The following keys will be written to <code>' + esc(scope) + '</code> and any affected agents will be restarted.</div>';
+  html += '<div class="modal-desc">The following keys will be written and any affected agents will be restarted.</div>';
+  if (isFedScope && colonyScopes.length > 0) {
+    html += '<div class="modal-desc" style="margin-top:8px;">Apply to which scopes?</div>';
+    html += '<div class="config-confirm-scopes" data-bulk-scopes="1">';
+    html += '<label><input type="checkbox" class="bulk-apply-scope" value="federation" checked> federation default</label>';
+    colonyScopes.forEach(c => {
+      html += '<label><input type="checkbox" class="bulk-apply-scope" value="' + esc(c) + '" checked> ' + esc(c) + '</label>';
+    });
+    html += '</div>';
+  }
   html += '<div class="config-confirm-rows">';
   changes.forEach(c => {
     html += '<div class="config-confirm-row" data-confirm-row="1">';
@@ -2603,6 +2889,7 @@ function _showConfigConfirm(scope, changes) {
   // without going through the DOM a second time.
   overlay.__pendingChanges = changes;
   overlay.__pendingScope = scope;
+  overlay.__pendingBulk = isFedScope && colonyScopes.length > 0;
   overlay.classList.add('visible');
 }
 
@@ -2618,22 +2905,60 @@ function _postConfigApply() {
   const overlay = document.getElementById('config-confirm-modal');
   if (!overlay || !overlay.__pendingChanges) return;
   const scope = overlay.__pendingScope;
+  const isBulk = !!overlay.__pendingBulk;
   const changes = overlay.__pendingChanges.map(c => ({
     key: c.key,
     value: c.new_value,
     type: c.type,
   }));
-  const mtime_ms = (typeof __configMtimes[scope] === 'number')
-    ? Math.round(__configMtimes[scope] * 1000) : 0;
+  // #359 bulk apply: collect every checked scope from the per-colony
+  // checkbox group. If at least one colony is checked, send the bulk
+  // payload (`scopes:[...]`); otherwise fall back to single-scope.
+  let payload;
+  if (isBulk) {
+    const checked = Array.from(document.querySelectorAll('.bulk-apply-scope:checked'))
+      .map(c => c.value).filter(Boolean);
+    if (!checked.length) {
+      showSimpleToast('No scopes selected — uncheck Cancel or check at least one scope.', 'var(--orange)', 'err');
+      return;
+    }
+    // Drop the legacy mtime drift check on bulk apply — it doesn't
+    // generalise across N scopes (the file mtime depends on which scope
+    // was last touched). Server still validates per-scope.
+    payload = {scopes: checked, mtime_ms: 0, changes: changes};
+  } else {
+    const mtime_ms = (typeof __configMtimes[scope] === 'number')
+      ? Math.round(__configMtimes[scope] * 1000) : 0;
+    payload = {scope: scope, mtime_ms: mtime_ms, changes: changes};
+  }
   _closeConfigConfirm();
   fetch('/config/apply', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({scope: scope, mtime_ms: mtime_ms, changes: changes}),
+    body: JSON.stringify(payload),
   }).then(r => r.text().then(t => ({status: r.status, body: t})))
     .then(({status, body}) => {
       if (status === 200) {
-        showSimpleToast('Config applied (' + changes.length + ' change' + (changes.length === 1 ? '' : 's') + ')', 'var(--green)', 'ok');
+        // Bulk path returns {applied_scopes:[...], failed_scopes:[...]}.
+        // Surface partial-success in the toast.
+        if (isBulk) {
+          let summary;
+          try {
+            const j = JSON.parse(body);
+            const a = (j.applied_scopes || []).length;
+            const f = (j.failed_scopes || []).length;
+            summary = 'Applied to ' + a + ' scope' + (a === 1 ? '' : 's') +
+                      (f ? ' (' + f + ' failed)' : '');
+          } catch (e) {
+            summary = 'Config applied';
+          }
+          showSimpleToast(summary, 'var(--green)', 'ok');
+        } else {
+          showSimpleToast('Config applied (' + changes.length + ' change' + (changes.length === 1 ? '' : 's') + ')', 'var(--green)', 'ok');
+        }
+      } else if (status === 207) {
+        showSimpleToast('Bulk apply: every scope failed. See console.', 'var(--red)', 'err');
+        if (window.console) console.warn('[bulk-apply] all scopes failed', body);
       } else if (status === 409) {
         showSimpleToast('Drift detected — file changed externally. Reload required.', 'var(--orange)', 'err');
       } else if (status === 422) {
@@ -3537,6 +3862,445 @@ function renderConfidenceTrend(data) {
   colonyList.forEach(col => { legend += '<span><span class="legend-dot" style="background:'+colonyColors[col]+';box-shadow:0 0 4px '+colonyColors[col]+'"></span>'+col+'</span>'; });
   legend += '</div>';
   el.innerHTML = svg + legend;
+}
+
+// =====================================================================
+// #359 Status / Cost / Recovery / Progress / Config — new renderers
+// =====================================================================
+// All five new tab bodies render through these functions. The data shape
+// is unchanged from #357 except for three additions:
+//   data.cost.{rate_per_min_usd, rate_per_min_tokens, projected_*}
+//   data.config_editor.matrix (cross-colony override view)
+//   data.watchdog_kills (forensic last 10)
+// Each renderer is fully idempotent — SSE rerender(snap) calls them all
+// regardless of which tab the operator is currently viewing.
+
+// --- Status verdict pill + 21-cell pulse grid + sidecar status pills ---
+// Status tab body: NO charts, NO bars, NO tables, NO `<details>`. Pure
+// single-glance verdict. Operator absorbs the federation in one eye-pass.
+function renderStatusVerdict(data) {
+  const verdEl = document.getElementById('status-verdict');
+  const pulseEl = document.getElementById('status-pulse');
+  const pillsEl = document.getElementById('status-sidecar-pills');
+  const metaEl = document.getElementById('status-meta');
+  if (!verdEl || !pulseEl || !pillsEl || !metaEl) return;
+
+  // Verdict pill: ✅ running 21/21 / ⚠️ degraded / ❌ stopped.
+  const total = totalAgents || agents.length || 0;
+  const running = agents.filter(a => a.is_running).length;
+  const stopped = agents.filter(a => a.state !== 'running').length;
+  const zombies = agents.filter(a => a.state === 'running'
+                                  && a.pid > 0 && !a.pid_alive).length;
+  const quarantined = agents.filter(a => a.quarantine === 'yes').length;
+  let verdict, vClass;
+  if (total > 0 && running === total && zombies === 0 && quarantined === 0) {
+    verdict = '✅ Running ' + running + '/' + total;
+    vClass = '';
+  } else if (running === 0) {
+    verdict = '❌ Federation stopped';
+    vClass = 'crit';
+  } else if (zombies > 0 || quarantined > 0) {
+    verdict = '⚠️ Degraded — running ' + running + '/' + total +
+              (zombies ? ', ' + zombies + ' zombie' + (zombies > 1 ? 's' : '') : '') +
+              (quarantined ? ', ' + quarantined + ' quarantined' : '');
+    vClass = 'warn';
+  } else {
+    verdict = '⚠️ Running ' + running + '/' + total;
+    vClass = 'warn';
+  }
+  verdEl.innerHTML = '<span class="status-verdict-pill ' + vClass + '">' + esc(verdict) + '</span>';
+
+  // 21-cell pulse-grid (7 cols × 3 rows for the canonical 21-agent
+  // dev-apprenticeship federation; auto-flexes for federations of any
+  // size since CSS grid wraps naturally). Color encodes per-agent state.
+  // Click-through opens the existing per-agent detail modal.
+  let pulseHtml = '<div class="pulse-grid" role="grid" aria-label="Per-agent status pulse">';
+  // Sort by colony then name so cells stay stable across re-renders.
+  const sorted = agents.slice().sort((a, b) => {
+    const ca = (a.colony || '').toLowerCase();
+    const cb = (b.colony || '').toLowerCase();
+    if (ca !== cb) return ca < cb ? -1 : 1;
+    const na = (a.name || '').toLowerCase();
+    const nb = (b.name || '').toLowerCase();
+    return na < nb ? -1 : 1;
+  });
+  sorted.forEach(a => {
+    let cls = 'pulse-running';
+    if (a.quarantine === 'yes') cls = 'pulse-quarantine';
+    else if (a.state === 'running' && a.pid > 0 && !a.pid_alive) cls = 'pulse-zombie';
+    else if (a.state !== 'running') cls = 'pulse-stopped';
+    else if (a.state === 'running' && a.health && a.health !== 'healthy') cls = 'pulse-degraded';
+    const tip = a.colony + '/' + a.name + ' — ' + (a.state || '?') +
+                (a.confidence != null ? ' (conf ' + a.confidence.toFixed(2) + ')' : '');
+    pulseHtml += '<div class="pulse-cell ' + cls + '" tabindex="0" ' +
+                 'onclick="openDetail(\'' + esc(a.name) + '\')" ' +
+                 'onkeydown="if(event.key===\'Enter\'||event.key===\' \'){openDetail(\'' + esc(a.name) + '\');event.preventDefault();}" ' +
+                 'title="' + esc(tip) + '">' + esc(a.name) + '</div>';
+  });
+  pulseHtml += '</div>';
+  pulseEl.innerHTML = pulseHtml;
+
+  // Sidecar status pills + age. Compact single-line summary (no <details>).
+  const sc = sidecars || [];
+  let pillsHtml = '<div class="status-pill-row">';
+  sc.forEach(s => {
+    const name = s.name || '?';
+    let ageTxt = '—';
+    if (s.last_tick_ts) {
+      const diff = Math.max(0, nowEpoch - s.last_tick_ts);
+      if (diff < 60) ageTxt = diff + 's ago';
+      else if (diff < 3600) ageTxt = Math.floor(diff/60) + 'm ago';
+      else if (diff < 86400) ageTxt = Math.floor(diff/3600) + 'h ago';
+      else ageTxt = Math.floor(diff/86400) + 'd ago';
+    } else if (!s.installed) ageTxt = 'not installed';
+    else if (!s.enabled) ageTxt = 'disabled';
+    else ageTxt = 'never';
+    let pillCls = 'muted';
+    const status = (s.status || '').toLowerCase();
+    if (status === 'healthy') pillCls = 'ok';
+    else if (status === 'degraded' || status === 'silent') pillCls = 'warn';
+    else if (status === 'down') pillCls = 'crit';
+    pillsHtml += '<span class="status-pill ' + pillCls + '">' + esc(name) +
+                 '<span class="status-pill-age">' + esc(ageTxt) + '</span>' +
+                 '</span>';
+  });
+  pillsHtml += '</div>';
+  pillsEl.innerHTML = pillsHtml;
+
+  // Last-error timestamp + count. Pulled from the federation-wide
+  // timeline (severity === 'error'); cheap because the timeline is already
+  // ts-desc and capped at 200 rows.
+  const errorRows = (timelineRows || []).filter(r => r.severity === 'error');
+  const errorCount = errorRows.length;
+  let lastErrTxt = '— none —';
+  if (errorCount > 0) {
+    const newest = errorRows[0];
+    const ts = newest.ts ? Math.floor(newest.ts / 1000) : 0;
+    const ago = ts > 0 ? Math.max(0, nowEpoch - ts) : 0;
+    let agoStr;
+    if (ago < 60) agoStr = ago + 's';
+    else if (ago < 3600) agoStr = Math.floor(ago/60) + 'm';
+    else if (ago < 86400) agoStr = Math.floor(ago/3600) + 'h';
+    else agoStr = Math.floor(ago/86400) + 'd';
+    lastErrTxt = errorCount + ' error' + (errorCount === 1 ? '' : 's') +
+                 ' (last ' + agoStr + ' ago: ' + (newest.agent_name || newest.agent_id || '?') + ')';
+  }
+  metaEl.innerHTML = '<div class="status-meta">' +
+                    '<span><strong>' + running + '/' + total + '</strong> running</span>' +
+                    '<span><strong>' + quarantined + '</strong> quarantined</span>' +
+                    '<span><strong>' + zombies + '</strong> zombie PID' + (zombies === 1 ? '' : 's') + '</span>' +
+                    '<span>last error: ' + esc(lastErrTxt) + '</span>' +
+                    '</div>';
+}
+
+// --- Cost projection tiles (Cost tab top row) ---
+// Four tiles: $/min, tokens/min, projected 1h, projected 1d. The 1w / 1m
+// projections live in the tooltip on the 1d tile so the headline row stays
+// at four cells. Traffic-light color: green when projected $/h <
+// `cost_threshold_yellow_usd_per_h`, yellow up to red, red above
+// `cost_threshold_red_usd_per_h`.
+function renderCostProjections(data) {
+  const el = document.getElementById('cost-projections');
+  if (!el) return;
+  const c = (data && data.cost) || {};
+  const ratePerMinUsd  = +c.rate_per_min_usd || 0;
+  const ratePerMinTok  = +c.rate_per_min_tokens || 0;
+  const proj1h = +c.projected_1h_usd || 0;
+  const proj1d = +c.projected_1d_usd || 0;
+  const proj1w = +c.projected_1w_usd || 0;
+  const proj1m = +c.projected_1m_usd || 0;
+  const yel = +c.cost_threshold_yellow_usd_per_h || 1.0;
+  const red = +c.cost_threshold_red_usd_per_h    || 5.0;
+  function tileClass(usdPerH) {
+    if (usdPerH >= red) return 'crit';
+    if (usdPerH >= yel) return 'warn';
+    return '';
+  }
+  const cls = tileClass(proj1h);
+  function tile(label, value, extra, klass) {
+    return '<div class="projection-tile ' + (klass || '') + '">' +
+           '<div class="projection-tile-label">' + esc(label) + '</div>' +
+           '<div class="projection-tile-value">' + esc(value) + '</div>' +
+           (extra ? '<div class="projection-tile-extra">' + esc(extra) + '</div>' : '') +
+           '</div>';
+  }
+  const win = c.burn_window_seconds || 300;
+  const winMin = Math.round(win / 60);
+  const html =
+    '<div class="projection-row">' +
+      tile('$/min',        fmtUsd(ratePerMinUsd),     winMin + 'm EMA', cls) +
+      tile('tokens/min',   ratePerMinTok.toLocaleString(), winMin + 'm EMA', '') +
+      tile('Projected 1h', fmtUsd(proj1h),
+           'thresholds: yellow ' + fmtUsd(yel) + '/h, red ' + fmtUsd(red) + '/h',
+           cls) +
+      tile('Projected 1d', fmtUsd(proj1d),
+           '1w ' + fmtUsd(proj1w) + ' / 1m ' + fmtUsd(proj1m),
+           cls) +
+    '</div>';
+  el.innerHTML = html;
+}
+
+// --- Recovery tab: bulk + per-agent + watchdog timeline + log tails ---
+// renderRecoveryActions wires the bulk-restart button + federation kill
+// switch (with confirm-by-name modal). renderRecoveryAgents builds the
+// per-agent table with one [restart] button per row (disabled when
+// running). renderWatchdogKills renders the forensic 10-row timeline
+// from data.watchdog_kills. renderLogTails generates per-agent <details>
+// blocks; expand fetches /log-tail/<agent_id> on demand.
+function renderRecoveryActions(data) {
+  const el = document.getElementById('recovery-bulk-actions');
+  if (!el) return;
+  const stopped = agents.filter(a => {
+    if (a.state !== 'running') return true;
+    if (a.pid && !a.pid_alive) return true;
+    return false;
+  });
+  const stoppedCount = stopped.length;
+  let html = '';
+  html += '<button onclick="restartAllStopped(' + stoppedCount + ')"' +
+          (stoppedCount === 0 ? ' disabled' : '') + ' title="Restart every non-running agent">' +
+          'Restart all stopped (' + stoppedCount + ')</button>';
+  html += '<button class="crit" onclick="openKillConfirm()" title="Kill the federation (confirm by typing the federation name)">' +
+          'Kill Federation …</button>';
+  el.innerHTML = html;
+}
+
+function renderRecoveryAgents(data) {
+  const el = document.getElementById('recovery-agents');
+  if (!el) return;
+  if (!agents.length) {
+    el.innerHTML = '<span class="empty">No agents discovered.</span>';
+    return;
+  }
+  const sorted = agents.slice().sort((a, b) => {
+    const ca = (a.colony || '').toLowerCase();
+    const cb = (b.colony || '').toLowerCase();
+    if (ca !== cb) return ca < cb ? -1 : 1;
+    return (a.name || '').localeCompare(b.name || '');
+  });
+  let html = '<table class="recovery-table">';
+  html += '<tr><th>Agent</th><th>Colony</th><th>State</th><th>PID alive</th><th>Action</th></tr>';
+  sorted.forEach(a => {
+    const isRunning = a.is_running;
+    const pidAliveTxt = (a.pid > 0)
+      ? (a.pid_alive ? '✅' : '❌')
+      : '—';
+    html += '<tr>';
+    html += '<td><span class="agent-name">' + esc(a.name) + '</span></td>';
+    html += '<td><span class="colony-name">' + esc(a.colony) + '</span></td>';
+    html += '<td>' + esc(a.state || '?') + '</td>';
+    html += '<td>' + pidAliveTxt + '</td>';
+    html += '<td>';
+    html += '<button class="recovery-row-restart-btn" ' +
+            'onclick="restartAgent(\'' + esc(a.name) + '\')"' +
+            (isRunning ? ' disabled title="Already running"' : '') +
+            '>Restart</button>';
+    html += '</td>';
+    html += '</tr>';
+  });
+  html += '</table>';
+  el.innerHTML = html;
+}
+
+function renderWatchdogKills(data) {
+  const el = document.getElementById('watchdog-kills');
+  if (!el) return;
+  const rows = (data && data.watchdog_kills) || [];
+  if (!rows.length) {
+    el.innerHTML = '<span class="empty">No watchdog kills recorded.</span>';
+    return;
+  }
+  let html = '';
+  rows.forEach(r => {
+    const ts = r.ts ? Math.floor(r.ts / 1000) : 0;
+    const ago = ts > 0 ? Math.max(0, nowEpoch - ts) : 0;
+    let agoStr;
+    if (ago < 60) agoStr = ago + 's ago';
+    else if (ago < 3600) agoStr = Math.floor(ago/60) + 'm ago';
+    else if (ago < 86400) agoStr = Math.floor(ago/3600) + 'h ago';
+    else agoStr = Math.floor(ago/86400) + 'd ago';
+    html += '<div class="watchdog-row" data-watchdog="1">';
+    html += '<span class="watchdog-ts">' + esc(agoStr) + '</span>';
+    html += '<span class="watchdog-agent">' + esc(r.agent || '?') + '</span>';
+    html += '<span class="watchdog-reason">' + esc(r.reason || r.event || '') + '</span>';
+    html += '</div>';
+  });
+  el.innerHTML = html;
+}
+
+function renderLogTails(data) {
+  const el = document.getElementById('recovery-log-tails');
+  if (!el) return;
+  if (!agents.length) {
+    el.innerHTML = '<span class="empty">No agents discovered.</span>';
+    return;
+  }
+  const sorted = agents.slice().sort((a, b) => {
+    const ca = (a.colony || '').toLowerCase();
+    const cb = (b.colony || '').toLowerCase();
+    if (ca !== cb) return ca < cb ? -1 : 1;
+    return (a.name || '').localeCompare(b.name || '');
+  });
+  let html = '';
+  sorted.forEach(a => {
+    const aid = a.agent_id || a.name;
+    html += '<details class="recovery-log-tail" data-log-tail="1" data-aid="' + esc(aid) + '"' +
+            ' ontoggle="if(this.open) loadLogTail(this);">';
+    html += '<summary><span class="agent-name">' + esc(a.name) + '</span> ' +
+            '<span class="muted">(' + esc(a.colony) + ')</span></summary>';
+    html += '<div class="log-tail-block" data-empty="1">click to load…</div>';
+    html += '</details>';
+  });
+  el.innerHTML = html;
+}
+
+// Lazy fetch of /log-tail/<agent_id>?lines=20 — one HTTP per agent,
+// fired only when the operator expands the <details>. Updates the
+// .log-tail-block in place.
+function loadLogTail(detailsEl) {
+  if (!detailsEl) return;
+  const aid = detailsEl.getAttribute('data-aid') || '';
+  if (!aid) return;
+  const block = detailsEl.querySelector('.log-tail-block');
+  if (!block) return;
+  if (block.getAttribute('data-loaded') === '1') return;  // dedupe re-opens
+  block.textContent = 'loading…';
+  fetch('/log-tail/' + encodeURIComponent(aid) + '?lines=20')
+    .then(r => r.text().then(t => ({status: r.status, body: t})))
+    .then(({status, body}) => {
+      if (status === 200) {
+        block.textContent = body || '(empty)';
+        block.setAttribute('data-loaded', '1');
+      } else {
+        block.textContent = '(error: ' + status + ' ' + body.slice(0, 200) + ')';
+      }
+    })
+    .catch(e => { block.textContent = '(fetch error: ' + e + ')'; });
+}
+
+// --- Federation kill confirm modal (Recovery tab) ---
+// Defensive double-confirm: operator must TYPE the federation name. The
+// kill-no-backup checkbox + the existing /kill endpoint stay; only the
+// trigger UX changes. Reuses the .modal-overlay infra used by detail-modal.
+function openKillConfirm() {
+  const overlay = document.getElementById('kill-confirm-modal');
+  if (!overlay) return;
+  const body = document.getElementById('kill-confirm-body');
+  if (!body) return;
+  let html = '<div class="modal-header">';
+  html += '<h2>Confirm Kill Federation</h2>';
+  html += '<button class="modal-close" onclick="closeKillConfirm()">×</button>';
+  html += '</div>';
+  html += '<div class="modal-desc">Killing <span class="kill-confirm-fed">' + esc(FED_NAME) + '</span> will SIGTERM/SIGKILL every running agent + sidecar. Type the federation name to confirm.</div>';
+  html += '<input type="text" class="kill-confirm-input" id="kill-confirm-input" placeholder="' + esc(FED_NAME) + '" autocomplete="off" onkeydown="if(event.key===\'Enter\')_killConfirmSubmit();">';
+  html += '<label style="font-size:11px;color:var(--muted);"><input type="checkbox" id="kill-confirm-no-backup"> skip backup</label>';
+  html += '<div class="config-apply-bar" style="margin-top:14px;">';
+  html += '<button class="config-apply-btn" onclick="closeKillConfirm()">Cancel</button>';
+  html += '<button class="config-apply-btn" id="kill-confirm-submit" onclick="_killConfirmSubmit()" style="border-color:var(--red);color:var(--red);">Kill</button>';
+  html += '</div>';
+  body.innerHTML = html;
+  overlay.classList.add('visible');
+  setTimeout(() => {
+    const inp = document.getElementById('kill-confirm-input');
+    if (inp) inp.focus();
+  }, 30);
+}
+function closeKillConfirm() {
+  const overlay = document.getElementById('kill-confirm-modal');
+  if (overlay) overlay.classList.remove('visible');
+}
+function _killConfirmSubmit() {
+  const inp = document.getElementById('kill-confirm-input');
+  const noBackup = !!(document.getElementById('kill-confirm-no-backup') || {}).checked;
+  if (!inp) return;
+  if ((inp.value || '').trim() !== String(FED_NAME)) {
+    inp.style.boxShadow = '0 0 12px rgba(255,68,68,0.6)';
+    setTimeout(() => { inp.style.boxShadow = ''; }, 600);
+    return;
+  }
+  closeKillConfirm();
+  // Delegate to the existing kill flow; reuse the existing kill-no-backup
+  // checkbox by mirroring the value before invoking the legacy entrypoint.
+  const legacyChk = document.getElementById('kill-no-backup');
+  if (legacyChk) legacyChk.checked = noBackup;
+  // Bypass the arm-confirm state machine — operator already confirmed
+  // by typing the name. Set the flag and call killSwitch() directly.
+  killArmed = true;
+  killSwitch();
+}
+
+// --- Cross-colony matrix (Config tab) ---
+// One row per dotted key with at least one override. Columns: federation
+// default + every colony scope. Cells render the value verbatim, marker
+// for complex values, italic for federation default echo, "—" for
+// no-override. Read-only by intent; the operator goes back to the editor
+// pane to mutate.
+function renderConfigMatrix(data) {
+  const el = document.getElementById('config-matrix');
+  if (!el) return;
+  const ce = (data && data.config_editor) || configEditor || {};
+  const matrix = ce.matrix || [];
+  const scopes = (ce.scopes || []).map(s => s.scope).filter(Boolean);
+  if (!scopes.length) {
+    el.innerHTML = '<span class="empty">No scopes discovered.</span>';
+    return;
+  }
+  if (!matrix.length) {
+    el.innerHTML = '<span class="empty">No cross-colony overrides — every colony inherits the federation default.</span>';
+    return;
+  }
+  let html = '<table class="config-matrix-table">';
+  html += '<tr><th>Key</th>';
+  scopes.forEach(s => { html += '<th>' + esc(s) + '</th>'; });
+  html += '</tr>';
+  matrix.forEach(row => {
+    html += '<tr>';
+    html += '<td><span class="config-matrix-key">' + esc(row.key) + '</span></td>';
+    scopes.forEach(s => {
+      const cell = row.cells[s];
+      if (!cell) {
+        html += '<td><span class="config-matrix-value empty">—</span></td>';
+      } else {
+        const v = cell.value === null || cell.value === undefined ? '' : String(cell.value);
+        let cls = 'config-matrix-value';
+        if (cell.complex_value) cls += ' complex';
+        if (s !== 'federation') {
+          // If a colony's value matches federation default, render italic
+          // ("inherits"). Otherwise render plain.
+          const fed = row.cells['federation'];
+          if (fed && fed.value === cell.value) cls += ' fed-default';
+        }
+        html += '<td><span class="' + cls + '" title="' + esc(v) + '">' + esc(v.length > 32 ? v.slice(0, 30) + '…' : v) + '</span></td>';
+      }
+    });
+    html += '</tr>';
+  });
+  html += '</table>';
+  el.innerHTML = html;
+}
+
+// --- Single-agent restart helper (Recovery tab per-row button) ---
+// Mirrors restartAllStopped() but for one agent. POSTs /restart with
+// the agent name in the body — reuses the existing legacy endpoint.
+function restartAgent(name) {
+  if (!name) return;
+  if (!confirm('Restart agent ' + name + '?')) return;
+  showSimpleToast('Restarting ' + name + '…', 'var(--yellow)');
+  fetch('/restart', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: 'agent=' + encodeURIComponent(name),
+  })
+    .then(r => r.text().then(t => ({status: r.status, body: t})))
+    .then(({status, body}) => {
+      if (status === 200) {
+        showSimpleToast('Restarted ' + name, 'var(--green)', 'ok');
+        scheduleReload(5000);
+      } else {
+        showSimpleToast('Restart failed (' + status + '): ' + body.slice(0, 200), 'var(--red)', 'err');
+      }
+    })
+    .catch(e => { showSimpleToast('Error: ' + e, 'var(--red)', 'err'); });
 }
 
 // --- #160: Capability + fitness gating + Why panel ---
@@ -4609,7 +5373,7 @@ function killSwitch() {
     });
 }
 
-// --- SSE live snapshot consumer (#313 PR 1) ---
+// --- SSE live snapshot consumer (#313 PR 1, extended in #359) ---
 // Server pushes one `event: snapshot` frame per regen tick whenever
 // .dashboard/snapshot.json changes. PR 1 dispatches an `agentis:snapshot`
 // CustomEvent + dedupes by the server-injected 8-char `__hash`; PR 2
@@ -4620,14 +5384,54 @@ function killSwitch() {
 // snapshots, when it breaks (older browser, CORS proxy stripping
 // text/event-stream) the existing background regen + manual refresh
 // paths keep the dashboard alive.
+//
+// #359 additions:
+//   * SSE status indicator (small dot in the page header). Bound to
+//     EventSource lifecycle so an operator can see at a glance whether
+//     SSE is live, briefly pulsing on each snapshot, or dead (channel
+//     fell over and the operator should reload).
+//   * `?debug=1` query-string flag enables console.log on `onopen` and
+//     each `renderXxx(snap)` entry so production-mode operators don't
+//     see noise but a debugger can verify the wiring.
+const SSE_DEBUG = (function() {
+  try {
+    return new URLSearchParams(window.location.search).get('debug') === '1';
+  } catch (e) { return false; }
+})();
+function _sseSetDot(state) {
+  const el = document.getElementById('sse-dot');
+  if (!el) return;
+  el.classList.remove('sse-dot-init', 'sse-dot-ok', 'sse-dot-err', 'pulse');
+  if (state === 'ok') {
+    el.classList.add('sse-dot-ok'); el.title = 'SSE live';
+  } else if (state === 'err') {
+    el.classList.add('sse-dot-err'); el.title = 'SSE disconnected — falling back to manual refresh';
+  } else {
+    el.classList.add('sse-dot-init'); el.title = 'SSE connecting…';
+  }
+}
+function _ssePulse() {
+  const el = document.getElementById('sse-dot');
+  if (!el) return;
+  el.classList.add('pulse');
+  setTimeout(() => { if (el) el.classList.remove('pulse'); }, 200);
+}
 (function setupSSE() {
-  if (!('EventSource' in window)) return;  // graceful no-op on ancient browsers
+  if (!('EventSource' in window)) {
+    _sseSetDot('err');
+    return;  // graceful no-op on ancient browsers
+  }
   let es;
   try {
     es = new EventSource('/events');
   } catch (_) {
+    _sseSetDot('err');
     return;
   }
+  es.onopen = function () {
+    _sseSetDot('ok');
+    if (SSE_DEBUG && window.console) console.log('[sse] onopen');
+  };
   es.addEventListener('snapshot', function (ev) {
     let snap;
     try { snap = JSON.parse(ev.data); }
@@ -4639,12 +5443,18 @@ function killSwitch() {
     const h = snap.__hash || null;
     if (h && window.__lastSnapshotHash === h) return;  // dedupe identical pushes
     window.__lastSnapshotHash = h;
+    window.__lastSnapshotAt = Date.now();
+    _ssePulse();
+    if (SSE_DEBUG && window.console) console.log('[sse] snapshot', h);
     window.dispatchEvent(new CustomEvent('agentis:snapshot', { detail: snap }));
   });
   es.onerror = function () {
-    // EventSource auto-reconnects with backoff. Nothing to do here; the
-    // existing 60s background regen keeps the dashboard fresh in the
+    // EventSource auto-reconnects with backoff. Surface the dead channel
+    // on the dot so the operator knows updates are stale; the existing
+    // background regen + manual refresh keep the dashboard alive in the
     // meantime.
+    _sseSetDot('err');
+    if (SSE_DEBUG && window.console) console.log('[sse] onerror');
   };
 })();
 
@@ -4671,6 +5481,11 @@ function rerender(snap) {
   extractRefs(snap);
   renderFedDownBanner(snap);
   renderFedHealthBanner(snap);
+  // #359: stats-row removed from the main page (its tiles are folded
+  // into Status verdict + Cost tab). Renderer kept only as a no-op so
+  // legacy callers don't crash. The function checks for #stats-row
+  // presence and bails if the element is missing — same pattern as
+  // every other renderer.
   renderStatsRow(snap);
   renderAgentTable(snap);
   renderPhaseReadiness(snap);
@@ -4683,8 +5498,7 @@ function rerender(snap) {
   renderLlmUsd(snap);
   renderCostCap(snap);
   renderPromoteCandidates(snap);
-  // #352: new renderers — sidecar listing, bulk-actions, promotion
-  // ladder, config editor.
+  // #352: sidecar listing, bulk-actions, promotion ladder, config editor.
   renderSidecarStatus(snap);
   renderBulkActions(snap);
   renderPromotionLadder(snap);
@@ -4692,6 +5506,15 @@ function rerender(snap) {
   renderEventTimeline(snap);
   renderExperienceTrend(snap);
   renderConfidenceTrend(snap);
+  // #359: new tab-driven renderers.
+  renderStatusVerdict(snap);
+  renderCostProjections(snap);
+  renderRecoveryActions(snap);
+  renderRecoveryAgents(snap);
+  renderWatchdogKills(snap);
+  renderLogTails(snap);
+  renderConfigMatrix(snap);
+  if (SSE_DEBUG && window.console) console.log('[render] rerender done');
 }
 
 window.addEventListener('agentis:snapshot', function (ev) {
