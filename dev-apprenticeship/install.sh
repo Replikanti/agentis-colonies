@@ -19,7 +19,15 @@ ALL_AGENTS=(
     code_writer test_writer refactorer commit_composer
     ship_decider changelog_writer version_bumper release_checker
 )
-MIN_VERSION="1.4.1"
+# Runtime floor. Sourced from `.agentis-version` (single line, SemVer) when
+# present so the Dockerfile builder, install.sh, and the federation-wide
+# documentation share one source of truth (#324). Falls back to the literal
+# `1.4.1` for legacy checkouts that predate the pin file.
+if [ -f "$SCRIPT_DIR/.agentis-version" ]; then
+    MIN_VERSION="$(tr -d '[:space:]' < "$SCRIPT_DIR/.agentis-version")"
+else
+    MIN_VERSION="1.4.1"
+fi
 
 # --- Helpers ---
 
