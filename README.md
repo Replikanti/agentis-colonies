@@ -147,6 +147,12 @@ Agents don't stay at their seed confidence forever. [`tools/auto-promote.sh`](./
 
 Every decision is written to `tools/auto-promote-journal.jsonl` and defaults to dry-run. The full reference — DMN decision table, per-step rationale, statistical derivation of the `ceil(3 / reject_rate_threshold)` acting-floor formula, and operator override workflow — lives in [`doc/auto-promote.md`](./doc/auto-promote.md).
 
+## Test-mode replay
+
+Before swapping a hand-edited or `agentis evolve`-d `.ag` into a running federation, score it against captured history without side effects. The upstream `agentis replay` mode replays an experience pack against the candidate, mocks `exec sh` / `prompt()` / `emit` / `learn()` / external writes, and emits a per-row diff (`predicted_match` vs `expected`) plus a recommend / skip verdict.
+
+- [`doc/replay-mode.md`](./doc/replay-mode.md) — operator workflow, export pipeline, verdict interpretation, integration with `auto-promote`. Wraps the upstream CLI; uses [`tools/replay-export-experience.sh`](./tools/replay-export-experience.sh) to package a federation's experience store as a single replay-friendly JSONL pack keyed by agent name. See [`examples/replay/`](./examples/replay/) for a sample fixture and dry-run walk-through.
+
 ## Design decisions
 
 Normative design decisions for this repository are recorded as Architecture Decision Records under [`doc/adr/`](./doc/adr/README.md). External authors of `.ag` federations should treat the ADRs as the source of truth for cross-repo contracts such as the confidence-tier ladder.

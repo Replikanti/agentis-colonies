@@ -1,0 +1,84 @@
+// candidate_labeler.ag -- Sample candidate rewrite for replay-mode demo.
+//
+// This is a synthetic stub used by the examples/replay/ walk-through.
+// It is NOT a real federation agent — it lives outside any colony's
+// agents/ directory so colony-lint and the live federation never
+// pick it up. Edit a real agent (e.g. dev-apprenticeship/triage/agents/labeler.ag),
+// not this file, when you are practicing the replay flow against a
+// production federation.
+//
+// What it shows: the canonical .ag tier-branch shape that replay
+// mode scores against history. The replay engine reads each row
+// from the experience pack, sets up the same (recall_latest, tier,
+// inbox) preconditions, runs tick(), and compares the predicted
+// action and outcome against the captured row.
+//
+// Run as: agentis replay examples/replay/candidate_labeler.ag \
+//                        --experience examples/replay/sample-pack.jsonl
+//
+// Expected on the bundled sample pack: 14 / 15 matched, 1 diff
+// (one row deliberately drifts to demonstrate the diff bucket).
+
+cb 200;
+
+type LabelDecision {
+    issue_id: int,
+    labels: string,
+    confidence: float
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("candidate_labeler:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    };
+    return 0.0;
+}
+
+fn tick(reason: string) -> void {
+    let inbox = try { poll_inbox(); } catch e { ""; };
+    if len(to_string(inbox)) < 3 {
+        return;
+    };
+
+    let my_tier = tier("candidate_labeler");
+    if my_tier == "autonomous" {
+        // Real agent would exec_foreign a label apply; stubbed here.
+        learn(
+            "label_issue",
+            to_string(inbox),
+            "labels-applied",
+            "success",
+            ["acted", "triage"]
+        );
+    } else if my_tier == "review-gated" {
+        // Real agent would draft via forge-api.sh; stubbed here.
+        learn(
+            "label_issue",
+            to_string(inbox),
+            "labels-drafted",
+            "success",
+            ["review-gated", "triage"]
+        );
+    } else if my_tier == "propose" {
+        emit("triage:label_suggestion", to_string(inbox));
+        learn(
+            "label_issue",
+            to_string(inbox),
+            "labels-emitted",
+            "partial",
+            ["emitted", "triage"]
+        );
+    } else {
+        // shadow / dormant: observe only.
+        learn(
+            "label_issue",
+            to_string(inbox),
+            "labels-observed",
+            "success",
+            ["observed", "triage"]
+        );
+    };
+
+    memo_write("candidate_labeler:last_check", to_string(now()));
+}
