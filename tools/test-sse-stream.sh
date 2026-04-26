@@ -1,7 +1,7 @@
 #!/bin/bash
 # tools/test-sse-stream.sh: smoke test for the Server-Sent Events stream
-# in federation-dashboard (#313 PR 1). Boots the dashboard against a
-# minimal fixture federation on a free local port, then exercises:
+# in federation-dashboard (#313). Boots the dashboard against a minimal
+# fixture federation on a free local port, then exercises:
 #
 #   t1: GET /events emits at least one `event: snapshot` frame within 5s.
 #   t2: GET /  still returns 200 + non-empty HTML (static first-paint
@@ -12,6 +12,12 @@
 #       serving / and accepts a new GET /events afterwards).
 #   t5: a second GET /events succeeds after the first one was killed
 #       (multi-client + reconnect path).
+#   t6: PR 2 — IIFE -> renderXxx(data) refactor landed (12 named
+#       renderers + rerender + extractRefs + agentis:snapshot listener).
+#   t7: PR 2 — bootstrap shape: single rerender(window.__data) call,
+#       no leftover anon IIFE renderers, window.__data hung off window.
+#   t8: PR 2 — test-timeline-rendering.sh stays green (29/0 baseline)
+#       under the refactor.
 #
 # Self-contained: only bash, python3, curl. Cleans up via trap on every
 # exit path. Auto-skips when python3 or a free port is unavailable.
@@ -228,6 +234,101 @@ if grep -q '^event: snapshot' "$SSE_OUT_T5"; then
 else
     fail "5: second /events connection did not deliver a snapshot frame" \
          "head: $(head -5 "$SSE_OUT_T5" 2>/dev/null | tr '\n' ' ')"
+fi
+
+# --- #313 PR 2 extension tests ---
+# t6: assert the IIFE -> renderXxx(data) refactor landed in the rendered
+#     HTML. We re-fetch GET / and grep for each top-level renderer plus
+#     the rerender() entry point. If anything is missing, live SSE
+#     updates won't reach the DOM.
+HTML_OUT_T6="$TMPDIR_TEST/index-t6.html"
+curl -s -o "$HTML_OUT_T6" "http://127.0.0.1:$PORT/" 2>/dev/null || true
+T6_OK=1
+T6_MISS=""
+for fn in renderFedDownBanner renderFedHealthBanner renderStatsRow \
+          renderAgentTable renderPhaseReadiness renderForgeRateLimits \
+          renderLlmCost renderCostCap renderPromoteCandidates \
+          renderEventTimeline renderExperienceTrend renderConfidenceTrend \
+          rerender extractRefs; do
+    if ! grep -q "function $fn" "$HTML_OUT_T6"; then
+        T6_OK=0
+        T6_MISS="$T6_MISS $fn"
+    fi
+done
+# The bootstrap must call rerender(window.__data) once at first paint.
+if ! grep -q 'rerender(window.__data)' "$HTML_OUT_T6"; then
+    T6_OK=0
+    T6_MISS="$T6_MISS bootstrap-call"
+fi
+# And the agentis:snapshot listener must wire rerender into the event.
+if ! grep -q "addEventListener.*agentis:snapshot" "$HTML_OUT_T6"; then
+    T6_OK=0
+    T6_MISS="$T6_MISS event-listener"
+fi
+if [ "$T6_OK" -eq 1 ]; then
+    pass "6: IIFE -> renderXxx(data) refactor present (12 renderers + rerender + agentis:snapshot wire)"
+else
+    fail "6: refactor incomplete; missing:$T6_MISS"
+fi
+
+# t7: end-to-end live-update smoke. We grep that the rendered HTML's
+#     bootstrap path is the single rerender(window.__data) call (no
+#     leftover renderAgentTable() invocation from the pre-refactor
+#     code), and that __data is hung off window so the SSE listener
+#     and the renderers share a reference. This is the closest a
+#     bash-only test can get to "the SSE channel actually re-renders
+#     the tile" without standing up a headless JS environment;
+#     test-timeline-rendering.sh covers the static-render correctness
+#     (29/0 baseline) and test 3 above covers the wire-level push.
+T7_OK=1
+T7_MSG=""
+if ! grep -q 'window.__data = data' "$HTML_OUT_T6"; then
+    T7_OK=0
+    T7_MSG="missing window.__data assignment"
+fi
+# Pre-refactor bootstrap was a bare `renderAgentTable();` (no args) —
+# that line MUST be gone, otherwise we're rendering twice on first paint.
+if grep -qE '^[[:space:]]*renderAgentTable\(\);[[:space:]]*$' "$HTML_OUT_T6"; then
+    T7_OK=0
+    T7_MSG="${T7_MSG:+$T7_MSG; }leftover renderAgentTable() bootstrap (pre-refactor)"
+fi
+# The 11 IIFEs we converted MUST all be gone. The two remaining are
+# the refresh-countdown ticker (line 832) and setupSSE (line 2922) —
+# neither has a data dependency. So total `(function() {` IIFE openers
+# in the rendered HTML must be exactly 1 (the countdown), since
+# setupSSE uses `(function setupSSE() {` (named — easy to grep out).
+ANON_IIFE_COUNT="$(grep -cE '^\(function\(\) \{$' "$HTML_OUT_T6" || echo 0)"
+if [ "$ANON_IIFE_COUNT" -ne 1 ]; then
+    T7_OK=0
+    T7_MSG="${T7_MSG:+$T7_MSG; }unexpected anon IIFE count ($ANON_IIFE_COUNT, expected 1 for refresh countdown)"
+fi
+if [ "$T7_OK" -eq 1 ]; then
+    pass "7: live-update bootstrap shape — single rerender(window.__data) call, no leftover anon IIFE renderers"
+else
+    fail "7: bootstrap shape regression: $T7_MSG"
+fi
+
+# t8: validate that test-timeline-rendering.sh still passes (the IIFE
+#     refactor must not break any of the 29 existing tile-rendering
+#     tests). We invoke it as a child and grep for "0 failed" — if it
+#     fails, this top-level test fails too. Skip cleanly when the
+#     timeline test isn't reachable (CI shape change).
+T8_HARNESS="$REPO_ROOT/tools/test-timeline-rendering.sh"
+if [ -x "$T8_HARNESS" ] || [ -r "$T8_HARNESS" ]; then
+    T8_OUT="$TMPDIR_TEST/timeline-rendering.log"
+    if bash "$T8_HARNESS" >"$T8_OUT" 2>&1; then
+        if grep -q '0 failed' "$T8_OUT"; then
+            pass "8: test-timeline-rendering.sh stays green after IIFE -> renderXxx refactor"
+        else
+            fail "8: test-timeline-rendering.sh exited 0 but reported failures" \
+                 "tail: $(tail -3 "$T8_OUT" | tr '\n' ' ')"
+        fi
+    else
+        fail "8: test-timeline-rendering.sh failed under the refactor" \
+             "tail: $(tail -3 "$T8_OUT" 2>/dev/null | tr '\n' ' ')"
+    fi
+else
+    skip "8: test-timeline-rendering.sh not reachable"
 fi
 
 echo ""

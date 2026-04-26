@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Live tile updates via Server-Sent Events** — IIFE → `renderXxx(data)`
+  refactor that closes [#313](https://github.com/Replikanti/agentis-colonies/issues/313)
+  (PR 2 of 2). Combined with PR 1 (server-side `/events` plumbing,
+  `ThreadingHTTPServer` upgrade, snapshot-watcher thread, atomic
+  `snapshot.json` writer, browser `EventSource` consumer dispatching
+  `agentis:snapshot` CustomEvents) the SSE story is complete: each regen
+  tick the dashboard's tiles refresh in place without `location.reload()`,
+  inside ~1s of the snapshot landing on disk. PR 2 converts the eleven
+  data-driven IIFE renderers in `federation-dashboard.html.template` into
+  named `renderXxx(data)` functions wired to `agentis:snapshot`: Federation
+  Down / Federation Health banners, Stats Row, Agent Table, Phase Readiness,
+  Forge Rate Limits, LLM Cost, Cost Cap, Promote Candidates, Event Timeline,
+  Experience Growth, Confidence Trend. A new `rerender(snap)` entry point
+  re-derives the data shorthands (`agents`, `events`, `decisions`,
+  `sidecar`, `history`, `nowEpoch`) from the freshest snapshot via
+  `extractRefs(snap)` and invokes every renderer in sequence; total
+  per-snapshot wall-clock budget stays well below the 500ms target on
+  typical federations. DOM-state preservation: the agent-table sort
+  column + direction (`sortCol` / `sortDir`) survive across re-renders
+  because the renderers read them rather than reset them; the open/closed
+  state of the "Skipped candidates" `<details>` panel in Promote Candidates
+  is captured before the rebuild and restored after; Event Timeline's
+  `scrollTop` is preserved so a long inspection doesn't snap to the top
+  mid-snapshot; the agent-detail modal is never touched by any renderer
+  so it stays open across pushes (re-clicking still picks up fresh data
+  because `openDetail()` reads `agents` lazily). The static `{{COLLECTOR_JSON}}`
+  first-paint contract is unchanged — `curl /` still returns a fully
+  rendered HTML page, and browsers without `EventSource` fall back to the
+  existing 60s `meta http-equiv="refresh"` cadence. New tests in
+  `tools/test-sse-stream.sh` (t6 / t7 / t8) assert the refactored shape:
+  every renderer is present, the bootstrap is a single
+  `rerender(window.__data)` call, and `tools/test-timeline-rendering.sh`
+  stays green at 29 / 0 under the refactor.
+
 - **Per-agent unified timeline modal section** — collector + UI plumbing
   ([#315](https://github.com/Replikanti/agentis-colonies/issues/315) PR 1 of 2).
   The agent-detail modal now ships a "Timeline (last 50)" section between
@@ -48,8 +82,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `__hash` field (server-side sha256 of canonical JSON) so the
   browser dedupes identical pushes. The HTML template ships a
   minimal `EventSource('/events')` consumer that re-emits each
-  snapshot as a DOM `agentis:snapshot` CustomEvent — PR 2 will
-  refactor the per-tile IIFE renderers into `renderXxx(data)`
+  snapshot as a DOM `agentis:snapshot` CustomEvent — PR 2 (above)
+  refactors the per-tile IIFE renderers into `renderXxx(data)`
   callbacks listening on this event to update the DOM in-place
   without `location.reload()`. Static first paint of `/` is
   unchanged; SSE is purely additive — older browsers without

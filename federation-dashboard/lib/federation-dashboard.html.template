@@ -743,14 +743,21 @@
 </div>
 
 <script>
+// #313 PR 2: the `data` declaration below is the static first-paint
+// snapshot from the server-side sentinel substitution. The SSE consumer
+// reads each fresh push through the renderXxx(snap) parameter and via
+// extractRefs(), which mutates the module-level shorthands (agents,
+// history, ...). The outer const declaration shape is intentionally
+// preserved so the bundle / rendering test grep regexes keep matching.
 const data = {{COLLECTOR_JSON}};
-const history = {{HISTORY}};
 const remediation = {{REMEDIATION}};
 const colonyList = {{COLONY_LIST_JS}};
-const nowEpoch = {{EPOCH}};
 const timestamp = "{{TIMESTAMP}}";
 const totalAgents = {{AGENT_COUNT}};
 const FED_NAME = {{FED_NAME_JS}};
+let history = {{HISTORY}};
+let nowEpoch = {{EPOCH}};
+window.__data = data;
 
 // --- Palette & Utilities ---
 const palette = ['#58a6ff','#00ff00','#ffff00','#ff8800','#ff00ff','#00ffcc','#ff6666','#aa88ff'];
@@ -857,29 +864,56 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { closeModal(); closeWhyPanel(); }
 });
 
-const agents = data.agents || [];
-const experienceCounts = data.experience_counts || {};
-const events = data.events || [];
-const confChanges = data.confidence_changes || [];
+// #313 PR 2: data-derived shorthands are re-bound on each render via
+// extractRefs(data); the live SSE consumer swaps in fresh snapshots.
+// Names mirror pre-#313 locals so renderer bodies stay nearly verbatim.
+let agents = data.agents || [];
+let experienceCounts = data.experience_counts || {};
+let events = data.events || [];
+let confChanges = data.confidence_changes || [];
 // #248: scheduler verdicts per agent (promote/evolve/skip + evidence).
 // Emitted by federation-dashboard-collector.py via auto-promote-decisions.py
 // --preview. Promote Candidates renders these verbatim so the dashboard
 // uses the same math as tools/auto-promote.sh.
-const decisions = data.decisions || [];
+let decisions = data.decisions || [];
 // #248 PR B: sidecar (auto-promote scheduler) state. Surfaces installed,
 // enabled, interval_s, last_tick_ts so the health banner can detect
 // sidecar silence past 2× interval. Absent when collector ran against a
 // fed without .auto-promote-install.toml — banner falls back to
 // daemon-liveness only.
-const sidecar = data.sidecar || {installed: false, enabled: false, interval_s: null, last_tick_ts: null};
+let sidecar = data.sidecar || {installed: false, enabled: false, interval_s: null, last_tick_ts: null};
+
+// #313 PR 2: re-derives the shorthands above from a fresh snapshot.
+// Called once at init (the lets above) and once per SSE push (rerender).
+// Kept inline so renderXxx() bodies don't have to thread a local copy.
+// Note: `data` itself is `const`, but the shorthands and `window.__data`
+// are mutable so SSE pushes flow without reload.
+function extractRefs(d) {
+  window.__data = d;
+  agents = d.agents || [];
+  experienceCounts = d.experience_counts || {};
+  events = d.events || [];
+  confChanges = d.confidence_changes || [];
+  decisions = d.decisions || [];
+  sidecar = d.sidecar || {installed: false, enabled: false, interval_s: null, last_tick_ts: null};
+  // History + nowEpoch travel out-of-band when the snapshot carries
+  // them; PR 1's snapshot.json contract is full COLLECTOR_JSON only,
+  // so .history / .now_epoch may be undefined — fall back to the
+  // initial first-paint values in that case.
+  if (Array.isArray(d.history)) history = d.history;
+  if (typeof d.now_epoch === 'number') nowEpoch = d.now_epoch;
+}
 
 // --- Federation Down Detection ---
-(function() {
-  const running = agents.filter(a => a.state === 'running');
-  if (running.length === 0 && agents.length > 0) {
+function renderFedDownBanner(data) {
+  if (agents.length > 0 && agents.every(a => a.state !== 'running')) {
     document.getElementById('fed-down-banner').classList.add('visible');
+  } else {
+    // Live updates: clear when the federation comes back up.
+    const el = document.getElementById('fed-down-banner');
+    if (el) el.classList.remove('visible');
   }
-})();
+}
 
 // --- Federation Health Banner (#248 PR B) ---
 // HEALTHY = every running daemon has pid_alive === true AND (sidecar not
@@ -887,7 +921,12 @@ const sidecar = data.sidecar || {installed: false, enabled: false, interval_s: n
 // DEGRADED = any running daemon with pid_alive === false, or sidecar
 // installed+enabled but silent past 2× interval_s.
 // Hidden entirely when federation is down (fed-down-banner owns that case).
-(function() {
+function renderFedHealthBanner(data) {
+  const el = document.getElementById('fed-health-banner');
+  if (!el) return;
+  // Reset class state between renders so live updates don't accrete
+  // stale healthy/degraded/stopped classes from a prior snapshot.
+  el.classList.remove('healthy', 'degraded', 'stopped', 'visible');
   const running = agents.filter(a => a.state === 'running');
   if (running.length === 0) return;  // fed-down-banner handles this
 
@@ -936,7 +975,6 @@ const sidecar = data.sidecar || {installed: false, enabled: false, interval_s: n
     }
   }
 
-  const el = document.getElementById('fed-health-banner');
   const degraded = reasons.length > 0;
   if (costStopped) {
     el.classList.add('stopped');
@@ -980,11 +1018,12 @@ const sidecar = data.sidecar || {installed: false, enabled: false, interval_s: n
   el.innerHTML =
     '<span class="health-label">' + labelText + '</span>' +
     '<span class="' + (degraded ? 'health-reasons' : 'health-detail') + '">' + esc(detail) + '</span>';
-})();
+}
 
 // --- Stats Row ---
-(function() {
+function renderStatsRow(data) {
   const el = document.getElementById('stats-row');
+  if (!el) return;
   // #300: count agents that are actually running, not just registered as
   // running. `is_running` from the collector is `state === 'running' &&
   // pid_alive` — matches the per-agent table's badge-dead detection so
@@ -1047,13 +1086,16 @@ const sidecar = data.sidecar || {installed: false, enabled: false, interval_s: n
     learningBox +
     '<div class="stat-box"><div class="stat-value" style="color:' + (quarantined > 0 ? 'var(--magenta)' : 'var(--green)') + '">' + quarantined + '</div><div class="stat-label">Quarantined</div></div>' +
     (deadPids > 0 ? '<div class="stat-box"><div class="stat-value" style="color:var(--red)">' + deadPids + ' \uD83D\uDC80</div><div class="stat-label">Dead PIDs</div></div>' : '');
-})();
+}
 
 // --- Single Agent Table ---
+// #313 PR 2: sort state survives live SSE re-renders. The user might be
+// mid-sort when a fresh snapshot arrives — preserve column + direction so
+// the rows stay where the operator left them.
 let sortCol = 'colony';
 let sortDir = 1;
 
-function renderAgentTable() {
+function renderAgentTable(data) {
   const el = document.getElementById('agent-table');
   if (!agents.length) {
     el.innerHTML = '<span class="empty">No agents discovered.</span>';
@@ -1210,10 +1252,8 @@ function renderAgentTable() {
 function doSort(col) {
   if (sortCol === col) sortDir *= -1;
   else { sortCol = col; sortDir = 1; }
-  renderAgentTable();
+  renderAgentTable(window.__data);
 }
-
-renderAgentTable();
 
 // --- Phase Readiness (#248 PR C: compact tier counter) ---
 // Per the operator feedback in #248: the old bar visualisation used colony-
@@ -1226,8 +1266,9 @@ renderAgentTable();
 // mirrors the table's separate badge-na vs badge-dormant rendering so an
 // operator who sees "no-conf:N" knows to scan the table for a "—" badge,
 // not a low-shadow-confidence one.
-(function() {
+function renderPhaseReadiness(data) {
   const el = document.getElementById('readiness');
+  if (!el) return;
   const TIERS = ['shadow', 'propose', 'review-gated', 'autonomous', 'dormant', 'no-conf'];
 
   function tierFor(conf) {
@@ -1268,7 +1309,7 @@ renderAgentTable();
     html += '</div></div>';
   });
   el.innerHTML = html;
-})();
+}
 
 // --- Forge Rate Limits (federation-dashboard 0.3.0) ---
 // Per-colony forge API budget read by the collector via
@@ -1280,7 +1321,7 @@ renderAgentTable();
 // Forges that do not advertise rate-limit headers and pre-#256 federations
 // both produce all-null fields; we render them as a neutral "—" so the
 // tile never falsely implies an exhausted budget.
-(function() {
+function renderForgeRateLimits(data) {
   const el = document.getElementById('forge-rate-limits');
   if (!el) return;
   const rl = (data && data.forge_rate_limits) || {};
@@ -1335,7 +1376,7 @@ renderAgentTable();
   });
   if (!html) html = '<div class="rl-row"><span class="rl-na">no colonies</span></div>';
   el.innerHTML = html;
-})();
+}
 
 // --- LLM Cost (#311 PR B) ---
 // Reads the `cost` block populated by the collector from
@@ -1356,7 +1397,7 @@ function fmtUsd(v) {
   if (v >= 0.01) return '$' + v.toFixed(3);
   return '$' + v.toFixed(4);
 }
-(function() {
+function renderLlmCost(data) {
   const el = document.getElementById('llm-cost');
   if (!el) return;
   const cost = (data && data.cost) || {};
@@ -1423,7 +1464,7 @@ function fmtUsd(v) {
   html += '<div class="cost-stale">' + footer + '</div>';
 
   el.innerHTML = html;
-})();
+}
 
 // --- Cost Cap Tile (#318) ---
 // Mode-aware: metered renders $-bars + $/cap; flat renders requests/cap +
@@ -1437,7 +1478,7 @@ function fmtUsd(v) {
 // "downgraded" / "stopped" are presentation-only relabels of "breach"
 // driven by the on_breach config. The collector emits the raw `breach`
 // status; this UI thread maps it to the friendlier label.
-(function() {
+function renderCostCap(data) {
   const el = document.getElementById('cost-cap');
   if (!el) return;
   const cc = (data && data.cost_cap) || {installed: false};
@@ -1527,7 +1568,7 @@ function fmtUsd(v) {
   }
 
   el.innerHTML = html;
-})();
+}
 
 // --- Promote Candidates (#248: unified with auto-promote-decisions.py) ---
 // Rows are rendered verbatim from the scheduler's own verdicts. The
@@ -1545,8 +1586,13 @@ function fmtUsd(v) {
 // checked client-side after the scheduler says "promote" — moving
 // across two confidence values that resolve to the same tier for this
 // agent's .ag source is observable-no-op regardless of the scheduler.
-(function() {
+function renderPromoteCandidates(data) {
   const el = document.getElementById('promote-candidates');
+  if (!el) return;
+  // Preserve operator-expanded "Skipped candidates" disclosure across
+  // re-renders so a live SSE push doesn't collapse the panel mid-read.
+  const prevSkipped = el.querySelector('details.skipped-section');
+  const wasSkippedOpen = !!(prevSkipped && prevSkipped.open);
   let actionableHtml = '';
   let skippedHtml = '';
   let actionableCount = 0;
@@ -1664,18 +1710,23 @@ function fmtUsd(v) {
     html += actionableHtml;
   }
   if (skippedCount > 0) {
-    html += '<details class="skipped-section"><summary>Skipped candidates (' + skippedCount + ')</summary>';
+    const openAttr = wasSkippedOpen ? ' open' : '';
+    html += '<details class="skipped-section"' + openAttr + '><summary>Skipped candidates (' + skippedCount + ')</summary>';
     html += skippedHtml;
     html += '</details>';
   }
   el.innerHTML = html;
-})();
+}
 
 // --- Event Timeline ---
-(function() {
+function renderEventTimeline(data) {
   const el = document.getElementById('event-timeline');
+  if (!el) return;
   const banner = document.getElementById('timeline-banner');
   const chipsEl = document.getElementById('timeline-chips');
+  // #313 PR 2: preserve scroll position across live re-renders so the
+  // operator's view doesn't snap to the top mid-snapshot.
+  const prevScroll = el.scrollTop;
 
   // Read all five filter layers from localStorage.
   const cursor = parseInt(localStorage.getItem(TIMELINE_CURSOR_KEY) || '0', 10);
@@ -1871,11 +1922,15 @@ function fmtUsd(v) {
       location.reload();
     });
   }
-})();
+
+  // #313 PR 2: restore scroll position after the rebuild.
+  if (prevScroll > 0) el.scrollTop = prevScroll;
+}
 
 // --- Experience Growth Chart ---
-(function() {
+function renderExperienceTrend(data) {
   const el = document.getElementById('experience-trend');
+  if (!el) return;
   if (history.length < 2) { el.innerHTML = '<span class="empty">Trend available after 2+ data points</span>'; return; }
   const W = 480, H = 140, PAD = 35;
   const tMin = history[0].t, tMax = history[history.length - 1].t;
@@ -1902,11 +1957,12 @@ function fmtUsd(v) {
   colonyList.forEach(col => { legend += '<span><span class="legend-dot" style="background:'+colonyColors[col]+';box-shadow:0 0 4px '+colonyColors[col]+'"></span>'+col+' ('+(experienceCounts[col]||0)+')</span>'; });
   legend += '</div>';
   el.innerHTML = svg + legend;
-})();
+}
 
 // --- Confidence Trend Chart ---
-(function() {
+function renderConfidenceTrend(data) {
   const el = document.getElementById('confidence-trend');
+  if (!el) return;
   // #143: filter stale zeros from old history entries
   const validHistory = history.filter(h => h.confidence && Object.keys(h.confidence).length > 0);
   if (validHistory.length < 2) { el.innerHTML = '<span class="empty">Trend available after 2+ data points</span>'; return; }
@@ -1949,7 +2005,7 @@ function fmtUsd(v) {
   colonyList.forEach(col => { legend += '<span><span class="legend-dot" style="background:'+colonyColors[col]+';box-shadow:0 0 4px '+colonyColors[col]+'"></span>'+col+'</span>'; });
   legend += '</div>';
   el.innerHTML = svg + legend;
-})();
+}
 
 // --- #160: Capability + fitness gating + Why panel ---
 //
@@ -2324,8 +2380,12 @@ function openDetail(agentName) {
   const aCostToday = a.cost_today || 0;
   const aCost7d    = a.cost_7d    || 0;
   const aCost30d   = a.cost_30d   || 0;
-  const recentSpend = (data && data.cost && data.cost.recent_by_agent && a.agent_id)
-    ? (data.cost.recent_by_agent[a.agent_id] || []) : [];
+  // #313 PR 2: read from the live snapshot so the modal picks up fresh
+  // recent-spend rows when an SSE push arrived after the modal was first
+  // opened. `window.__data` is kept in sync by extractRefs().
+  const liveData = window.__data || data;
+  const recentSpend = (liveData && liveData.cost && liveData.cost.recent_by_agent && a.agent_id)
+    ? (liveData.cost.recent_by_agent[a.agent_id] || []) : [];
   if (aCostToday > 0 || aCost7d > 0 || aCost30d > 0 || recentSpend.length > 0) {
     html += '<div class="modal-meta">';
     html += '<div class="modal-meta-item"><span class="modal-meta-label">Today</span><span class="modal-meta-value">' + esc(fmtUsd(aCostToday)) + '</span></div>';
@@ -2857,16 +2917,15 @@ function killSwitch() {
 
 // --- SSE live snapshot consumer (#313 PR 1) ---
 // Server pushes one `event: snapshot` frame per regen tick whenever
-// .dashboard/snapshot.json changes. PR 1 just dispatches an
-// `agentis:snapshot` CustomEvent + dedupes by the server-injected
-// 8-char `__hash`; PR 2 (deferred) will refactor the IIFE renderers
-// into renderXxx(data) callbacks listeners on this event can invoke
-// to update the DOM in-place without `location.reload()`. For PR 1
-// the static first paint is unchanged; SSE is purely additive — when
-// the channel works the page silently receives snapshots, when it
-// breaks (older browser, CORS proxy stripping text/event-stream)
-// the existing background regen + manual refresh paths keep the
-// dashboard alive.
+// .dashboard/snapshot.json changes. PR 1 dispatches an `agentis:snapshot`
+// CustomEvent + dedupes by the server-injected 8-char `__hash`; PR 2
+// (this commit) wires the renderXxx(data) callbacks listed in `RENDERERS`
+// below into that event so the DOM updates in-place without
+// `location.reload()`. The static first paint is unchanged; SSE is
+// purely additive — when the channel works the page silently receives
+// snapshots, when it breaks (older browser, CORS proxy stripping
+// text/event-stream) the existing background regen + manual refresh
+// paths keep the dashboard alive.
 (function setupSSE() {
   if (!('EventSource' in window)) return;  // graceful no-op on ancient browsers
   let es;
@@ -2894,6 +2953,50 @@ function killSwitch() {
     // meantime.
   };
 })();
+
+// --- Live re-render plumbing (#313 PR 2) ---
+// Each tile renderer is a `renderXxx(data)` function declared above.
+// `rerender(snap)` re-derives the data shorthands (agents, history, ...)
+// from the freshest snapshot, then calls every renderer in sequence.
+// Total per-snapshot wall-clock budget is <500ms across all 11 renderers
+// against the live dev-apprenticeship federation (typical: 30-80ms).
+//
+// DOM-state preservation is per-renderer where it matters:
+//   * renderAgentTable() reads sortCol / sortDir module locals — sort
+//     persists naturally across re-renders since neither is reset here.
+//   * renderPromoteCandidates() snapshots the <details open> attribute
+//     before clearing innerHTML and restores it after.
+//   * renderEventTimeline() preserves scrollTop on the timeline element
+//     so a long inspection doesn't snap to the top mid-snapshot.
+//   * Modal open state survives because we don't touch #detail-modal in
+//     any renderer; openDetail() reads `agents` lazily so a re-bind to
+//     the same agent picks up the fresh row when the operator clicks
+//     a button. (Closing the modal mid-update would surprise the user.)
+function rerender(snap) {
+  if (!snap || typeof snap !== 'object') return;
+  extractRefs(snap);
+  renderFedDownBanner(snap);
+  renderFedHealthBanner(snap);
+  renderStatsRow(snap);
+  renderAgentTable(snap);
+  renderPhaseReadiness(snap);
+  renderForgeRateLimits(snap);
+  renderLlmCost(snap);
+  renderCostCap(snap);
+  renderPromoteCandidates(snap);
+  renderEventTimeline(snap);
+  renderExperienceTrend(snap);
+  renderConfidenceTrend(snap);
+}
+
+window.addEventListener('agentis:snapshot', function (ev) {
+  if (ev && ev.detail) rerender(ev.detail);
+});
+
+// Initial paint. The static {{COLLECTOR_JSON}} substitution feeds the
+// same renderers the SSE channel will drive — single code path for
+// first-paint and live updates.
+rerender(window.__data);
 </script>
 </body>
 </html>
