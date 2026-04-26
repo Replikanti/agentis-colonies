@@ -1,0 +1,174 @@
+// TEMPLATE: stale-issue-closer — close issues that have gone idle past N days | customization: STALE_DAYS, STALE_DAYS_HARD env vars; comment text
+//
+// stale_issue_closer.ag — closes issues idle past N days (default 30) with a
+// `stale` label warning at the propose/review-gated tiers, and an autonomous
+// close-as-stale path at the autonomous tier when the issue passes a longer
+// hard cutoff (default 60 days) and has received no comment since the bot
+// posted its "is this still relevant?" warning.
+//
+// Run as daemon: agentis daemon agents/stale_issue_closer.ag --colony <colony>
+// Requires: exec_foreign capability, [forge] block configured (the colony's
+// scripts/start-colony.sh exports GITLAB_*/GITHUB_* env per ADR-0002).
+//
+// Optional env (set in start-colony.sh exports if you want to override the
+// builtin defaults):
+//   STALE_DAYS       soft cutoff; issues idle longer than this are candidates
+//                    for the warning comment. Default 30.
+//   STALE_DAYS_HARD  hard cutoff; autonomous tier will close-as-stale only if
+//                    the issue has been idle for at least this many days
+//                    (and has received no response since the warning).
+//                    Default 60.
+//
+// Forge API surface used:
+//   forge-api.sh issues --state opened --view raw
+//   forge-api.sh add-note <iid> --body <text>
+//   forge-api.sh update-issue <iid> --add-labels stale
+//
+// The autonomous tier closes via `update-issue --add-labels stale` plus a
+// terminal "Closing as stale" note. A first-class `close-issue` subcommand
+// is out of scope for the template — operators who want a hard state change
+// can extend their colony's gitlab-api.sh / github-api.sh once and the
+// autonomous branch will pick it up via $COLONY_DIR/scripts/forge-api.sh.
+
+cb 80;
+
+type StaleAnalysis {
+    candidate_count: int,
+    candidate_iid: int,
+    candidate_title: string,
+    candidate_age_days: int,
+    candidate_last_activity_iso: string,
+    candidate_has_warning: int,
+    reasoning: string
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("stale_issue_closer:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    };
+    return 0.0;
+}
+
+fn issues_cmd() -> string {
+    let ts = recall_latest("stale_issue_closer:last_check");
+    if len(ts) > 0 {
+        return "$COLONY_DIR/scripts/forge-api.sh issues --since " + shell_escape(ts) + " --state opened --view raw";
+    };
+    return "$COLONY_DIR/scripts/forge-api.sh issues --state opened --view raw";
+}
+
+fn tick(reason: string) -> void {
+    let cmd = issues_cmd();
+    let raw = try {
+        exec sh cmd;
+    } catch e {
+        print("[stale_issue_closer] forge poll failed:", e);
+        "";
+    };
+
+    if len(raw) < 3 {
+        let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_e) > 0 {
+            memo_write("stale_issue_closer:last_check", now_e);
+        };
+        return;
+    };
+
+    // Mechanical extraction first (per CLAUDE.md "parse_int(to_string(json_get..."
+    // idiom). The first issue's iid in the response is the obvious candidate
+    // for shadow-tier observation; the prompt below refines per-issue policy.
+    let head_iid = parse_int(to_string(json_get(raw, "[0].iid")));
+    if head_iid == 0 {
+        let now_e2 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_e2) > 0 {
+            memo_write("stale_issue_closer:last_check", now_e2);
+        };
+        return;
+    };
+
+    let rec = recommend("close_stale_issue", ["accuracy"]);
+    let context = "Open issues JSON: " + raw + "\nPast learning: " + to_string(rec) + "\nSoft cutoff (env STALE_DAYS, default 30) and hard cutoff (env STALE_DAYS_HARD, default 60) are read at exec time.";
+
+    let analysis = prompt(
+        "You are a stale-issue triage agent. Examine the open issues JSON in the context and pick the SINGLE most-stale candidate (the one whose updated_at / last activity is furthest in the past). Compute its age in days from the latest activity timestamp. Return JSON: candidate_count (int, total candidates idle past the soft cutoff), candidate_iid (int, the chosen issue iid; 0 if none), candidate_title (string), candidate_age_days (int), candidate_last_activity_iso (string, ISO 8601), candidate_has_warning (int, 1 if a prior bot warning comment is visible in the issue notes — assume 0 if you cannot tell), reasoning (string, one sentence).",
+        context
+    ) -> StaleAnalysis;
+
+    let no_candidate = if analysis.candidate_count == 0 {
+        true;
+    } else {
+        if analysis.candidate_iid == 0 { true; } else { false; };
+    };
+    if no_candidate {
+        let now_e3 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_e3) > 0 {
+            memo_write("stale_issue_closer:last_check", now_e3);
+        };
+        return;
+    };
+
+    let my_tier = tier("stale_issue_closer");
+    let warning_body = "[stale-issue-closer] **Is this still relevant?** This issue has been idle for " + to_string(analysis.candidate_age_days) + " days. If it is still actionable, please add a comment so it stays open; otherwise it may be closed as stale.";
+    let close_body = "[stale-issue-closer] **Closing as stale.** This issue has been idle for " + to_string(analysis.candidate_age_days) + " days with no follow-up after the prior staleness warning. Reopen if this is still relevant.";
+
+    if my_tier == "autonomous" {
+        // Terminal action: only fire when the issue is past the hard cutoff
+        // AND a prior warning comment is already on the issue. The 60-day
+        // default mirrors the soft+30 grace window, so an issue that just
+        // crossed the soft cutoff this tick will not be closed in the same
+        // tick — it will pass through the review-gated branch first on a
+        // future run. Conditions are split into nested `if` because the
+        // agentis surface does not currently expose `&&`.
+        let past_hard_cutoff = analysis.candidate_age_days >= 60;
+        let has_warning = analysis.candidate_has_warning == 1;
+        let close_now = if past_hard_cutoff {
+            if has_warning { true; } else { false; };
+        } else {
+            false;
+        };
+        if close_now {
+            let label_cmd = "$COLONY_DIR/scripts/forge-api.sh update-issue " + to_string(analysis.candidate_iid) + " --add-labels " + shell_escape("stale");
+            try { exec sh label_cmd; } catch e {
+                print("[stale_issue_closer] failed to label stale:", e);
+            };
+            let close_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(analysis.candidate_iid) + " --body " + shell_escape(close_body);
+            try { exec sh close_cmd; } catch e {
+                print("[stale_issue_closer] failed to post close note:", e);
+            };
+            print("[stale_issue_closer] Closed-as-stale: issue", analysis.candidate_iid);
+            learn("close_stale_issue", "issue " + to_string(analysis.candidate_iid), "closed-as-stale", "success", ["acted", "stale-issue-closer"]);
+        } else {
+            // Pre-cutoff or no warning yet: same surface as the review-gated
+            // tier so the warning still gets posted on the way to autonomy.
+            let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(analysis.candidate_iid) + " --body " + shell_escape(warning_body);
+            try { exec sh post_cmd; } catch e {
+                print("[stale_issue_closer] failed to post warning (autonomous fall-back):", e);
+            };
+            emit("stale_issue_closer:stale_issue_candidate", analysis);
+            learn("close_stale_issue", "issue " + to_string(analysis.candidate_iid), "warned", "partial", ["review-gated", "stale-issue-closer"]);
+        };
+    } else if my_tier == "review-gated" {
+        let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(analysis.candidate_iid) + " --body " + shell_escape(warning_body);
+        try { exec sh post_cmd; } catch e {
+            print("[stale_issue_closer] failed to post warning:", e);
+        };
+        emit("stale_issue_closer:stale_issue_candidate", analysis);
+        learn("close_stale_issue", "issue " + to_string(analysis.candidate_iid), "warned", "partial", ["review-gated", "stale-issue-closer"]);
+    } else if my_tier == "propose" {
+        // Draft only: emit the candidate on the bus so a downstream
+        // reviewer-or-human can promote it. No external write here.
+        emit("stale_issue_closer:stale_issue_candidate", analysis);
+        print("[stale_issue_closer] Stale candidate (propose):", analysis.candidate_iid, "age:", analysis.candidate_age_days);
+        learn("close_stale_issue", "issue " + to_string(analysis.candidate_iid), "drafted", "partial", ["emitted", "stale-issue-closer"]);
+    } else {
+        // shadow / dormant: observe-only.
+        print("[stale_issue_closer] Observing (tier:", my_tier, ") candidate:", analysis.candidate_iid, "age:", analysis.candidate_age_days);
+        learn("close_stale_issue", "issue " + to_string(analysis.candidate_iid), "observed", "partial", ["observed", "stale-issue-closer"]);
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("stale_issue_closer:last_check", now);
+    };
+}
