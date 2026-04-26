@@ -169,9 +169,12 @@ fi
 
 cd "$COLONY_DIR"
 
-# Note: LLM backend is read by agentis daemon from the llm.backend key in
-# .agentis/config, not from a CLI flag. The [llm] section in colony.toml is
-# informational only. Operators should mirror it into .agentis/config.
+# #319 PR 1: per-colony LLM backend override. The optional [llm] block
+# in colony.toml lets a colony pin its own backend / command / model /
+# api_key_env. When any key is set we splice it as `--config-override
+# llm.<key>=<value>` onto every daemon CLI; absent keys inherit the
+# federation-wide default from `<fed>/.agentis/config`. The cost-cap
+# downgrade override file (read below) takes precedence over this block.
 # `--enable-exec` is required since agentis v1.1.6 (exec sh is opt-in; see #484/#489).
 # `--enable-messaging` is required for cross-agent emit/listen (#484, v1.1.6+).
 
@@ -188,17 +191,23 @@ tick_interval_for() {
     esac
 }
 
-# #318: cost-cap downgrade. When the cost-cap sidecar (tools/cost-cap.sh)
-# detects a daily/monthly budget breach with on_breach = "downgrade", it
-# writes <fed>/.agentis/llm-backend-override containing the backend
-# name (e.g. "mock"). Splice that as `--config-override llm.backend=<v>`
-# onto every daemon CLI so newly-spawned agents pick the cheap path
-# without an agentis-core change. The override is cleared at UTC
-# midnight / month boundary by the sidecar itself, which then re-runs
-# this script via --restart-agent to flip every daemon back. The file
-# lives under the federation root, walked from this colony script via
-# the standard repo layout. Empty / missing file → no flag spliced.
-cost_cap_override_args() {
+# #319 PR 1 + #318: combined LLM-config override emitter.
+#
+# Precedence (highest first):
+#   1. <fed>/.agentis/llm-backend-override file written by tools/cost-cap.sh
+#      on a metered breach. Today the file is a single line containing the
+#      backend name (e.g. "mock"); future PRs in #319 generalise this to a
+#      small TOML doc. When this file exists we emit ONLY the override-file
+#      backend and ignore the colony [llm] block — downgrade should be a
+#      clean snap to mock without leaking colony-specific keys.
+#   2. [llm] block in colony.toml (this PR). Each set key emits one
+#      `--config-override llm.<key>=<value>` flag pair.
+#   3. Federation-wide default from <fed>/.agentis/config (consumed by
+#      agentis daemon directly when no overrides are spliced).
+#
+# Each line of stdout is one CLI token; the caller reads the stream into
+# the CC_ARGS bash array via `while IFS= read -r line` so quoting is preserved.
+llm_override_args() {
     local fed_root="$REPO_ROOT/dev-apprenticeship"
     local override_file="$fed_root/.agentis/llm-backend-override"
     if [ -f "$override_file" ]; then
@@ -206,8 +215,17 @@ cost_cap_override_args() {
         backend="$(tr -d '[:space:]' < "$override_file" 2>/dev/null || true)"
         if [ -n "$backend" ]; then
             printf -- '--config-override\nllm.backend=%s\n' "$backend"
+            return 0
         fi
     fi
+    # No cost-cap override; consult the colony [llm] block.
+    local k v
+    for k in backend command model api_key_env; do
+        v="$(parse_toml llm "$k" 2>/dev/null || true)"
+        if [ -n "$v" ]; then
+            printf -- '--config-override\nllm.%s=%s\n' "$k" "$v"
+        fi
+    done
 }
 
 # Rate-limit status mode (federation-dashboard 0.3.0). Same env-load path
@@ -294,7 +312,7 @@ for d in daemons:
     while IFS= read -r line; do
         [ -z "$line" ] && continue
         CC_ARGS+=("$line")
-    done < <(cost_cap_override_args)
+    done < <(llm_override_args)
     agentis daemon "$COLONY_DIR/agents/${RESTART_AGENT}.ag" \
         --colony code-review \
         --enable-exec \
@@ -321,7 +339,7 @@ CC_ARGS=()
 while IFS= read -r line; do
     [ -z "$line" ] && continue
     CC_ARGS+=("$line")
-done < <(cost_cap_override_args)
+done < <(llm_override_args)
 for agent in "${AGENTS[@]}"; do
     interval=$(tick_interval_for "$agent")
     echo "  Starting $agent (tick=${interval}ms)..."

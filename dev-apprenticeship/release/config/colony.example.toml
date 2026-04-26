@@ -30,9 +30,20 @@ default_branch = "main"  # primary branch (#224)
 # me             = ""      # your GitHub username (optional)
 # default_branch = "main"  # primary branch
 
+# Per-colony LLM backend override (#319, PR 1 of 5). All four keys are
+# OPTIONAL — when absent, the agent inherits the federation-wide default
+# from `<fed>/.agentis/config`. When any key is set, start-colony.sh
+# splices it onto every `agentis daemon` invocation as
+# `--config-override llm.<key>=<value>`. Legal `backend` values: `mock`,
+# `cli`, `http`. `command` is consumed by the `cli` backend; `model`
+# and `api_key_env` are consumed by the `http` backend. The cost-cap
+# downgrade override file (`<fed>/.agentis/llm-backend-override`)
+# takes precedence over this block — see CHANGELOG.
 [llm]
-# Only "backend" is read today. "cli" uses the agentis daemon default CLI adapter.
 backend = "cli"
+# command = "claude"
+# model = "claude-sonnet-4"
+# api_key_env = "ANTHROPIC_API_KEY"
 
 # Agent definitions
 # Each agent runs as a separate agentis daemon process.

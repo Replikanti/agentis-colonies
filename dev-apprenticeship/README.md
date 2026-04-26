@@ -285,6 +285,24 @@ Paste the printed URI into each `colony.toml` in place of the plaintext token. `
 
 The plaintext path keeps working — vault use is opt-in. `tools/colony-lint.sh` warns when it spots a plaintext forge token; set `COLONY_LINT_STRICT_SECRETS=1` to upgrade the warning to a hard fail in CI.
 
+## LLM backend (per-colony override, [#319](https://github.com/Replikanti/agentis-colonies/issues/319))
+
+Every agent reads its LLM backend from `<fed>/.agentis/config` by default — that is the federation-wide pin written by `install.sh` step 4 (one of `cli` / `http` / `mock`). A colony can pin its own backend via an optional `[llm]` block in `<colony>/config/colony.toml`:
+
+```toml
+[llm]
+backend = "http"               # mock | cli | http
+# command = "claude"           # for cli backend
+# model = "claude-sonnet-4"    # for http backend
+# api_key_env = "ANTHROPIC_API_KEY"  # for http backend
+```
+
+All four keys are optional. Each set key is spliced onto every `agentis daemon` invocation as `--config-override llm.<key>=<value>`; absent keys fall through to the federation-wide default. Use this to put a low-stakes colony (e.g. `triage`) on a cheap local Ollama / OpenAI endpoint while reserving Claude for `release` / `code-review`. Edits take effect on the next colony restart (`./scripts/start-colony.sh` or the dashboard's per-agent ▶ Restart button).
+
+The cost-cap downgrade primitive ([#318](https://github.com/Replikanti/agentis-colonies/issues/318)) takes precedence over the colony block: when the sidecar trips a daily/monthly budget breach with `on_breach = "downgrade"`, every running daemon is restarted onto `--config-override llm.backend=mock` until UTC midnight or the operator runs `tools/cost-cap.sh <fed> --override "<reason>"`. While the override file is in place, the colony's `[llm]` block is ignored entirely (downgrade snaps to mock cleanly without leaking colony-specific keys onto the daemon CLI).
+
+This is PR 1 of a 5-PR rollout. Per-agent backend selection (e.g. `@llm("ollama")` decorators) is explicitly deferred — split the agent into its own colony if heterogeneity is real. Subsequent PRs land the portable pricing registry (`tools/llm-pricing.toml` for `cost-cap-sum.py` in metered mode), the swap-without-restart primitive (generalising the override file into a TOML doc with `model` / `endpoint` keys), the `install.sh` interactive backend prompt, and the dashboard's `cost_source` chip + per-colony backend column.
+
 ## What to expect
 
 **Day 1**: Nothing visible. Agents are silent in `shadow` (seeded at 0.4). Check `agentis daemon list` and logs to confirm they are polling.
