@@ -7,7 +7,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Intent-driven 5-tab dashboard restructure**
+  ([#359](https://github.com/Replikanti/agentis-colonies/issues/359),
+  follow-up to [#352](https://github.com/Replikanti/agentis-colonies/issues/352)
+  + [#357](https://github.com/Replikanti/agentis-colonies/issues/357)).
+  The dashboard now opens to one of five operator-question tabs instead
+  of six topic tabs:
+  - **Status** — am I healthy NOW? Federation health verdict pill
+    (✅/⚠️/❌), 21-cell pulse-grid (color encodes per-agent state, click
+    drills into the existing per-agent detail modal), sidecar status
+    pills + last-tick age, last-error timestamp + count. NO charts, NO
+    bars, NO tables, NO `<details>` — pure single-glance verdict.
+    Vertical budget ≤480 px.
+  - **Cost** — am I burning money? 4 projection tiles (per-min $/min,
+    per-min tokens/min, projected 1h, projected 1d with 1w / 1m in the
+    tooltip), today/7d/30d cumulative row, cost-cap progress bar + per-
+    colony split. Traffic-light color from a 5-min cost-rate EMA against
+    operator-tunable thresholds (`[dashboard].cost_yellow_per_h` /
+    `.cost_red_per_h`, default $1/h yellow / $5/h red).
+  - **Recovery** — what do I need to restart? Bulk "Restart all stopped"
+    button, per-agent restart table (one [Restart] button per row,
+    disabled when running), per-sidecar restart, federation kill switch
+    with type-the-name confirm modal (defensive double-confirm). Last
+    10 watchdog kills as a forensic timeline. Per-agent log-tail
+    expandable behind a `<details>` (lazy-fetched from new
+    `/log-tail/<agent_id>` endpoint, 20 lines by default).
+  - **Progress** — are agents climbing? Confidence Trend +
+    Experience Growth charts default-EXPANDED (the `<details>` wrapper
+    from #248 PR C is removed on this tab). Phase Readiness as a small
+    capped-height card (no longer dominant). Per-agent promotion ladder
+    + ETA + limiting prereq + Promote Candidates + Event Timeline.
+  - **Config** — what's running where? The #357 per-scope editor
+    is preserved; #359 adds bulk apply (per-colony checkbox group on
+    the confirm modal when editing federation-wide keys, server-side
+    `/config/apply` accepts `scopes:[...]` + reports per-scope
+    success/failure) and a cross-colony matrix view (one row per
+    dotted key with at least one override).
+  Eliminated tabs (their content moved): Overview → split across Status
+  + Cost + Recovery; Agents → folds into Status pulse-grid + drill-in
+  modal + Progress agent-table; Promotions → folds into Progress;
+  Learning → folds into Progress (charts + Event Timeline). Default
+  first-paint tab is `status` (was `overview`); legacy localStorage
+  values migrate via `LEGACY_TAB_MIGRATION` so a returning operator
+  doesn't see a blank tab on first load post-upgrade. Keyboard shortcuts:
+  digits 1-5 jump between tabs (was 1-6).
+
 ### Fixed
+
+- **Stray-quote rendering on Config tab inline arrays / tables**
+  ([#359](https://github.com/Replikanti/agentis-colonies/issues/359)
+  Bug 1). The pre-#359 collector's strip-quotes logic only fired when a
+  value started AND ended with the same quote character; inline arrays
+  (`labels = ["a", "b"]`) and inline tables (`limits = { hi=1 }`) slipped
+  through and the Config tab rendered them as editable `<input>`s. Any
+  edit then corrupted the array because the line-level patcher only
+  handles scalars. Collector now emits a `complex_value: true` flag for
+  inline-array / inline-table values; the renderer shows them read-only
+  with a "complex" marker so the operator can see the value but can't
+  accidentally mutate it. Scalar string values (`backend = "cli"`) keep
+  their existing strip-quotes path and render `<input value="cli">`,
+  not `<input value="\"cli\"">`. Test 51 is the regression guard.
+
+- **60-second flicker + lost in-flight state**
+  ([#359](https://github.com/Replikanti/agentis-colonies/issues/359)
+  Bug 2 + Bug 4). The `<meta http-equiv="refresh" content="60">` tag
+  on line 5 of the template triggered a full-page reload every minute.
+  That wiped any operator in-flight state (modal scroll position, sort
+  column, expanded `<details>`, mid-edit Config rows) — and the SSE
+  channel from #313 was already keeping the page fresh in-place
+  anyway. The meta tag is now removed; SSE is the single source of
+  live updates. A small `#sse-dot` in the page header surfaces the
+  EventSource lifecycle (green steady on `onopen`, brief pulse on each
+  snapshot, red on `onerror`) so the operator can see at a glance
+  whether updates are flowing. `?debug=1` enables `console.log` on
+  every renderer entry for browser-DevTools verification. Tests 52 + 53
+  are the regression guards.
 
 - **Overview tab compactness, Forge Rate Limits relocation, and Config tab
   writability**

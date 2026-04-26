@@ -708,6 +708,75 @@ class Handler(SimpleHTTPRequestHandler):
         if self.path.startswith('/timeline?') or self.path == '/timeline':
             _serve_timeline(self)
             return
+        # #359: /log-tail/<agent_id>?lines=N — read-only tail of an agent's
+        # log file from <fed>/.agentis/logs/<agent_id>.log. Used by the
+        # Recovery tab's per-agent <details> expand. Defaults: 20 lines,
+        # max 200 lines (defensive — log file can be megabytes). Returns
+        # text/plain. 404 if the log file is missing, 400 if the agent_id
+        # is structurally invalid.
+        if self.path.startswith('/log-tail/'):
+            tail = self.path[len('/log-tail/'):]
+            qpos = tail.find('?')
+            qs = ''
+            if qpos >= 0:
+                qs = tail[qpos + 1:]
+                tail = tail[:qpos]
+            agent_id = tail.strip()
+            # SHA-8 lowercase hex is the daemon's canonical id; allow
+            # alphanumerics + underscore + dash so a future scheme can be
+            # accommodated without re-coding the gate.
+            import re as _re
+            if not agent_id or not _re.match(r'^[a-zA-Z0-9_\-]{1,64}$', agent_id):
+                self.send_response(400)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b'invalid agent_id')
+                return
+            n_lines = 20
+            if 'lines=' in qs:
+                try:
+                    raw_n = qs.split('lines=', 1)[1].split('&', 1)[0]
+                    n_lines = max(1, min(200, int(raw_n)))
+                except (TypeError, ValueError):
+                    n_lines = 20
+            log_path = os.path.join(fed_dir, '.agentis', 'logs', agent_id + '.log')
+            if not os.path.isfile(log_path):
+                # Try parent-level fallback (mirrors the resolved exp_dir
+                # convention used by the collector).
+                log_path_alt = os.path.join(fed_dir, '..', '.agentis', 'logs',
+                                            agent_id + '.log')
+                if not os.path.isfile(log_path_alt):
+                    self.send_response(404)
+                    self.send_header('Content-Type', 'text/plain')
+                    self.end_headers()
+                    self.wfile.write(b'log file not found')
+                    return
+                log_path = log_path_alt
+            try:
+                # Tail-only read: seek to last ~n_lines * 4KB worth of bytes,
+                # split into lines, take the last n_lines. Avoids slurping
+                # gigabyte-sized log files into memory.
+                size = os.path.getsize(log_path)
+                read_bytes = min(size, n_lines * 4096)
+                with open(log_path, 'rb') as f:
+                    if size > read_bytes:
+                        f.seek(size - read_bytes)
+                        f.readline()  # discard partial first line
+                    chunk = f.read()
+                text = chunk.decode('utf-8', errors='replace')
+                lines = text.splitlines()
+                tail_lines = lines[-n_lines:]
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/plain; charset=utf-8')
+                self.send_header('Cache-Control', 'no-cache')
+                self.end_headers()
+                self.wfile.write(('\n'.join(tail_lines) + '\n').encode())
+            except (OSError, ValueError) as e:
+                self.send_response(500)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(f'log read failed: {e}'.encode())
+            return
         if self.path == '/events':
             # #313 PR 1: live SSE channel. Holds the connection open, pushes
             # one `event: snapshot\ndata: <COLLECTOR_JSON>\n\n` frame whenever
@@ -1424,24 +1493,39 @@ class Handler(SimpleHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(b'malformed JSON body')
                 return
+            # #359: dual-mode payload. Single-scope (legacy):
+            #   {scope: <name>, mtime_ms: <int>, changes: [{key,value,type}]}
+            # Multi-scope (bulk apply):
+            #   {scopes: [<n1>, <n2>, ...], mtime_ms: <int>,
+            #    changes: [{key,value,type}]}
+            # The bulk path loops over scopes and reuses the same line-level
+            # patcher per scope. Each scope's file write is atomic; the
+            # cross-scope apply is best-effort and the response surfaces
+            # `applied_scopes: [...]` + `failed_scopes: [{scope, reason}]`.
             scope = (body.get('scope') or '').strip()
-            # Accept the new {changes:[{key, value, type}]} contract +
-            # the legacy {updates:[{input_id, value}]} shape (audit-only
-            # fallback) so any in-flight tab open during the upgrade
-            # doesn't crash the server. Empty changes ⇒ 400.
+            scopes_list = body.get('scopes')
             changes = body.get('changes')
             mtime_ms = body.get('mtime_ms') or 0
             try:
                 mtime_ms = int(mtime_ms)
             except (ValueError, TypeError):
                 mtime_ms = 0
+            # If `scopes` is provided + non-empty, dispatch to the
+            # multi-scope path early so we return a single aggregated
+            # response. Otherwise fall through to single-scope (back-compat).
+            if (isinstance(scopes_list, list) and scopes_list
+                    and isinstance(changes, list) and changes):
+                return self._apply_config_multi(
+                    scopes_list, changes, fed_dir, config_audit_log,
+                )
             if not scope or not isinstance(changes, list) or not changes:
                 self.send_response(400)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
                 self.wfile.write(json.dumps({
                     'ok': False,
-                    'summary': 'scope + changes[] (with at least one entry) required',
+                    'summary': ('scope + changes[] (with at least one entry) '
+                                'OR scopes:[...] + changes[] required'),
                 }).encode())
                 return
             # Resolve target file. scope = "fed" or "federation" → fed-
@@ -1634,6 +1718,174 @@ class Handler(SimpleHTTPRequestHandler):
             return
 
         self.send_error(404)
+
+    # #359: bulk /config/apply helper. Loops over the requested scopes,
+    # reusing the same single-scope line-level patcher logic for each.
+    # Best-effort: a per-scope failure does NOT abort the rest. Returns
+    # a 200 if at least one scope succeeded, 207 if all scopes failed
+    # (so the dashboard can surface partial-success without an error
+    # toast). Each scope's file write is atomic; the cross-scope apply
+    # is intentionally NOT wrapped in a single transaction (mtime drift
+    # on one colony shouldn't roll back a clean apply on the others).
+    def _apply_config_multi(self, scopes, changes, fed_dir_arg, audit_log):
+        if _read_operator_writes_disabled():
+            self.send_response(503)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                'ok': False,
+                'summary': ('config_editor.operator_writes_disabled is '
+                            'true; the Config tab is locked.'),
+            }).encode())
+            return
+        applied_scopes = []
+        failed_scopes = []
+        per_scope_results = {}
+        for scope_name in scopes:
+            scope_name = (scope_name or '').strip()
+            if not scope_name:
+                failed_scopes.append({'scope': '', 'reason': 'empty scope'})
+                continue
+            if scope_name in ('fed', 'federation'):
+                target_path = os.path.join(fed_dir_arg, '.agentis', 'config')
+                target_colony = ''
+            else:
+                target_path = os.path.join(fed_dir_arg, scope_name,
+                                           'config', 'colony.toml')
+                target_colony = scope_name
+            if not os.path.isfile(target_path):
+                failed_scopes.append({
+                    'scope': scope_name,
+                    'reason': f'target file not found: {target_path}',
+                })
+                continue
+            # Read source as a list of lines. Patch in-memory, write back
+            # atomically. Mirrors the single-scope path but trimmed of
+            # the per-scope error responses (we collect into the
+            # aggregated response instead).
+            try:
+                with open(target_path, encoding='utf-8') as f:
+                    lines = f.readlines()
+            except OSError as e:
+                failed_scopes.append({
+                    'scope': scope_name,
+                    'reason': f'read failed: {e}',
+                })
+                continue
+            sections_present = _scan_sections(lines)
+            applied_here = []
+            try:
+                for change in changes:
+                    if not isinstance(change, dict):
+                        raise TypeMismatchError('change entries must be objects')
+                    dotted_key = (change.get('key') or '').strip()
+                    declared_type = (change.get('type') or 'text').strip().lower()
+                    new_value = change.get('value')
+                    if not dotted_key or new_value is None:
+                        raise TypeMismatchError(
+                            f'change missing key or value: {change!r}'
+                        )
+                    target_section, bare_key = _split_dotted_key(
+                        dotted_key, sections_present,
+                    )
+                    formatted = _format_toml_value(new_value, declared_type)
+                    idx, old_value = _patch_line(
+                        lines, target_section, bare_key, formatted,
+                    )
+                    applied_here.append({
+                        'key': dotted_key,
+                        'section': target_section,
+                        'bare_key': bare_key,
+                        'old_value': old_value.strip(),
+                        'new_value': str(new_value),
+                        'line': idx + 1,
+                    })
+            except (MultilineValueError, KeyNotFoundError,
+                    TypeMismatchError) as e:
+                failed_scopes.append({
+                    'scope': scope_name,
+                    'reason': type(e).__name__ + ': ' + str(e),
+                })
+                continue
+            try:
+                _atomic_write(target_path, ''.join(lines))
+            except OSError as e:
+                failed_scopes.append({
+                    'scope': scope_name,
+                    'reason': f'atomic write failed: {e}',
+                })
+                continue
+            ts_now = int(time.time())
+            try:
+                os.makedirs(os.path.dirname(audit_log), exist_ok=True)
+                with open(audit_log, 'a') as af:
+                    for a in applied_here:
+                        af.write(json.dumps({
+                            'ts': ts_now,
+                            'scope': scope_name,
+                            'key': a['key'],
+                            'old_value': a['old_value'],
+                            'new_value': a['new_value'],
+                            'line': a['line'],
+                            'remote': self.client_address[0],
+                            'bulk': True,
+                        }) + '\n')
+            except OSError:
+                pass
+            # Restart trigger — same convention as single-scope.
+            restart_results = []
+            try:
+                if target_colony:
+                    colony_dir = os.path.join(fed_dir_arg, target_colony)
+                    agents_dir = os.path.join(colony_dir, 'agents')
+                    if os.path.isdir(agents_dir):
+                        names = sorted(
+                            f[:-3] for f in os.listdir(agents_dir)
+                            if f.endswith('.ag')
+                        )
+                        restart_results = _restart_colony_agents(
+                            colony_dir, names,
+                        )
+                else:
+                    for entry in sorted(os.listdir(fed_dir_arg)):
+                        sub = os.path.join(fed_dir_arg, entry)
+                        if not os.path.isdir(sub):
+                            continue
+                        agents_dir = os.path.join(sub, 'agents')
+                        if not os.path.isdir(agents_dir):
+                            continue
+                        names = sorted(
+                            f[:-3] for f in os.listdir(agents_dir)
+                            if f.endswith('.ag')
+                        )
+                        restart_results.extend(
+                            _restart_colony_agents(sub, names)
+                        )
+            except OSError:
+                pass
+            applied_scopes.append(scope_name)
+            per_scope_results[scope_name] = {
+                'applied': applied_here,
+                'restart_results': restart_results,
+                'new_mtime_ms': int(os.path.getmtime(target_path) * 1000),
+            }
+        # 200 if anything succeeded; 207 (Multi-Status, repurposed
+        # informally) if every scope failed so the operator can see the
+        # per-scope reasons without a generic 500 / 400.
+        if applied_scopes:
+            status_code = 200
+        else:
+            status_code = 207
+        self.send_response(status_code)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps({
+            'ok': bool(applied_scopes),
+            'applied_scopes': applied_scopes,
+            'failed_scopes': failed_scopes,
+            'per_scope': per_scope_results,
+            'audit_log_path': audit_log,
+        }).encode())
 
     def log_message(self, format, *args):
         pass

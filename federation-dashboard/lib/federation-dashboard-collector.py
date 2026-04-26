@@ -825,6 +825,143 @@ def collect_spend_log(spend_dir, name_to_colony, id_to_role, epoch_s):
 spend_dir = os.path.join(os.path.dirname(exp_dir), 'spend') if exp_dir else ''
 cost = collect_spend_log(spend_dir, name_to_colony, id_to_role, epoch)
 
+
+# --- #359: per-minute burn rate + projections (Cost tab) ---
+# 5-minute EMA of cost_usd + tokens from spend log, plus 1h/1d/1w/1m
+# projections. Surfaced on the Cost tab as 4 stat tiles. Operator can also
+# override the traffic-light thresholds via <fed>/.agentis/config:
+#   [dashboard]
+#   cost_yellow_per_h = 1.0   # default
+#   cost_red_per_h    = 5.0   # default
+def collect_cost_burn_rate(spend_dir, epoch_s, fed_config_keys):
+    """Walk the spend log, compute the 5-min EMA of cost & tokens, and
+    project out to 1h / 1d / 1w / 1m. Returns a dict with 7 numeric
+    fields suitable for direct rendering. All zero if spend dir missing
+    or empty (the live federation will trickle in fresh rows over time).
+    """
+    window_seconds = 300  # 5 minutes
+    cutoff_ms = (epoch_s - window_seconds) * 1000
+    sum_cost = 0.0
+    sum_tokens = 0
+    if spend_dir and os.path.isdir(spend_dir):
+        try:
+            for fn in os.listdir(spend_dir):
+                if not fn.endswith('.jsonl'):
+                    continue
+                path = os.path.join(spend_dir, fn)
+                try:
+                    with open(path) as f:
+                        for raw in f:
+                            raw = raw.strip()
+                            if not raw:
+                                continue
+                            try:
+                                row = json.loads(raw)
+                            except json.JSONDecodeError:
+                                continue
+                            if not isinstance(row, dict):
+                                continue
+                            ts = row.get('ts')
+                            if not isinstance(ts, (int, float)):
+                                continue
+                            ts_ms = int(ts)
+                            if ts_ms < cutoff_ms:
+                                continue
+                            c = row.get('cost_usd')
+                            if isinstance(c, (int, float)):
+                                sum_cost += float(c)
+                            i_tok = row.get('input_tokens') or 0
+                            o_tok = row.get('output_tokens') or 0
+                            try:
+                                sum_tokens += int(i_tok) + int(o_tok)
+                            except (TypeError, ValueError):
+                                pass
+                except OSError:
+                    continue
+        except OSError:
+            pass
+    rate_per_min_usd = sum_cost / 5.0
+    rate_per_min_tokens = sum_tokens / 5.0
+    # Threshold overrides: read from fed_config_keys (the federation-wide
+    # `[dashboard]` section). Yellow defaults to $1/h, red to $5/h —
+    # operator-tunable so cheap dev backends can stay green and expensive
+    # fleets can flag faster.
+    cost_yellow = 1.0
+    cost_red = 5.0
+    for kv in (fed_config_keys or []):
+        if kv.get('section') != 'dashboard':
+            continue
+        try:
+            if kv.get('key') == 'cost_yellow_per_h':
+                cost_yellow = float((kv.get('raw_value') or '').strip()
+                                    .strip('"').strip("'") or '1.0')
+            elif kv.get('key') == 'cost_red_per_h':
+                cost_red = float((kv.get('raw_value') or '').strip()
+                                 .strip('"').strip("'") or '5.0')
+        except (TypeError, ValueError):
+            pass
+    return {
+        'rate_per_min_usd': round(rate_per_min_usd, 6),
+        'rate_per_min_tokens': int(rate_per_min_tokens),
+        'projected_1h_usd':  round(rate_per_min_usd * 60, 4),
+        'projected_1d_usd':  round(rate_per_min_usd * 60 * 24, 4),
+        'projected_1w_usd':  round(rate_per_min_usd * 60 * 24 * 7, 4),
+        'projected_1m_usd':  round(rate_per_min_usd * 60 * 24 * 30, 4),
+        'cost_threshold_yellow_usd_per_h': cost_yellow,
+        'cost_threshold_red_usd_per_h': cost_red,
+        'window_seconds': window_seconds,
+    }
+
+
+# --- #359: forensic last-N watchdog kills (Recovery tab) ---
+# Reads <fed>/.agentis/lifecycle/events.jsonl, filters to the watchdog
+# kill flavour (heuristic: event names containing "killed", "watchdog",
+# or "respawn"; severity inferred from new_status). Returns up to 10
+# most-recent rows, ts-desc, with {ts, agent, reason} for the renderer.
+def collect_watchdog_kills(lifecycle_path, id_to_role, max_rows=10):
+    if not lifecycle_path or not os.path.isfile(lifecycle_path):
+        return []
+    out = []
+    try:
+        with open(lifecycle_path) as f:
+            for raw in f:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    row = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                ev = (row.get('event') or '').lower()
+                ns = (row.get('new_status') or '').lower()
+                # Match any kill / watchdog / respawn flavour. Real-world
+                # writers haven't standardised yet; this catches every
+                # variant we know about + leaves room for new ones.
+                if not ('killed' in ev or 'watchdog' in ev or 'sigkill' in ev
+                        or 'respawn' in ev or 'critical' in ns):
+                    continue
+                ts = row.get('ts')
+                if not isinstance(ts, (int, float)):
+                    continue
+                ts_ms = int(ts) if int(ts) >= 10**11 else int(ts) * 1000
+                aid = row.get('agent_id') or ''
+                role = id_to_role.get(aid, aid)
+                reason = (row.get('reason') or row.get('event')
+                          or 'watchdog kill')
+                out.append({
+                    'ts': ts_ms,
+                    'agent_id': aid,
+                    'agent': role or '?',
+                    'event': row.get('event') or '',
+                    'reason': reason,
+                })
+    except OSError:
+        return []
+    out.sort(key=lambda r: r['ts'], reverse=True)
+    return out[:max_rows]
+
 # --- Per-agent unified timeline (#315 PR 1) ---
 # Merges four on-disk JSONL streams into a single chronological array per
 # agent: experience (kind=learn), spend (kind=prompt), confidence-log
@@ -1481,20 +1618,40 @@ def _read_toml_scope(path):
                 k, _, v = line.partition('=')
                 k = k.strip()
                 v = v.strip()
-                # Strip trailing comment
-                if '#' in v and not v.startswith('"') and not v.startswith("'"):
+                # #359: detect inline arrays (`labels = ["a", "b"]`) and inline
+                # tables (`limits = { hi = 1, lo = 0 }`) BEFORE the strip-quotes
+                # logic below. The strip-quotes branch only fires when the
+                # value starts AND ends with the same quote char, so an inline
+                # array slipped through unmodified — but the rendered <input>
+                # then carried the literal `["a", "b"]` text and any operator
+                # edit corrupted the array. Mark complex values so the
+                # renderer can show them read-only with a "complex value"
+                # marker instead of an editable input.
+                complex_value = False
+                if v.startswith('[') or v.startswith('{'):
+                    complex_value = True
+                # Strip trailing comment (only on scalar values; complex
+                # values can contain `#` legitimately inside string elements).
+                if (not complex_value and '#' in v
+                        and not v.startswith('"') and not v.startswith("'")):
                     v = v.partition('#')[0].rstrip()
-                # Unwrap surrounding double quotes / single quotes so the
-                # editor renders a clean value field. The raw form (with
-                # quotes intact) is reserved for a future "raw mode" view
-                # — for v1 of the Config tab the unquoted value is what
-                # the operator wants to edit.
-                if len(v) >= 2 and ((v[0] == '"' and v[-1] == '"') or (v[0] == "'" and v[-1] == "'")):
+                # Unwrap surrounding double quotes / single quotes on SCALAR
+                # values so the editor renders a clean value field. The raw
+                # form (with quotes intact) is reserved for a future
+                # "raw mode" view — for v1 of the Config tab the unquoted
+                # value is what the operator wants to edit.
+                # Complex values (inline arrays / tables) skip the strip so
+                # the read-only marker shows the on-disk text verbatim.
+                if (not complex_value
+                        and len(v) >= 2
+                        and ((v[0] == '"' and v[-1] == '"')
+                             or (v[0] == "'" and v[-1] == "'"))):
                     v = v[1:-1]
                 rec['keys'].append({
                     'section': section,
                     'key': k,
                     'raw_value': v,
+                    'complex_value': complex_value,
                 })
     except (OSError, ValueError) as e:
         rec['error'] = str(e)
@@ -1523,11 +1680,74 @@ for col in colonies:
     rec['label'] = col + ' override'
     config_scopes.append(rec)
 
+# #359: cross-colony matrix. One row per dotted key that has at least one
+# override; columns = federation default + per-colony scopes. The renderer
+# shows the matrix on the Config tab so an operator can see at-a-glance
+# which colonies override which keys without flipping between scopes.
+def _build_config_matrix(scopes):
+    """Build {dotted_key: {scope_name: value}} from the scopes list. We
+    only emit rows where at least one colony overrides the federation
+    default — pure-federation keys are not interesting here."""
+    by_key = {}  # dotted_key -> {scope_name: value}
+    for s in scopes:
+        scope_name = s.get('scope') or ''
+        if not scope_name:
+            continue
+        for kv in (s.get('keys') or []):
+            section = kv.get('section') or ''
+            key = kv.get('key') or ''
+            if not key:
+                continue
+            dotted = (section + '.' + key) if section else key
+            row = by_key.setdefault(dotted, {})
+            row[scope_name] = {
+                'value': kv.get('raw_value'),
+                'complex_value': bool(kv.get('complex_value')),
+            }
+    # Filter: keep rows where at least one non-federation scope sets the
+    # key (== an override exists). Pure-federation keys are uninteresting.
+    matrix_rows = []
+    for dotted in sorted(by_key.keys()):
+        cells = by_key[dotted]
+        non_fed_scopes = [s for s in cells.keys() if s != 'federation']
+        if not non_fed_scopes:
+            continue
+        matrix_rows.append({
+            'key': dotted,
+            'cells': cells,
+        })
+    return matrix_rows
+
+config_matrix = _build_config_matrix(config_scopes)
+
 config_editor_block = {
     'operator_writes_disabled': operator_writes_disabled,
     'scopes': config_scopes,
     'audit_log_path': os.path.join(fed_dir, '.agentis', 'logs', 'config-edits.jsonl'),
+    # #359: cross-colony matrix — sorted list of dotted keys × per-scope
+    # values for every key with at least one override.
+    'matrix': config_matrix,
 }
+
+# #359: per-minute burn rate + projections (Cost tab) and forensic last-N
+# watchdog kills (Recovery tab). Both source from existing on-disk streams
+# already touched by the collector — no extra disk traffic on the hot path
+# beyond the spend / lifecycle reads we already perform once each.
+cost_burn = collect_cost_burn_rate(spend_dir, epoch,
+                                   fed_config_scope.get('keys') or [])
+cost.update({
+    'rate_per_min_usd': cost_burn['rate_per_min_usd'],
+    'rate_per_min_tokens': cost_burn['rate_per_min_tokens'],
+    'projected_1h_usd': cost_burn['projected_1h_usd'],
+    'projected_1d_usd': cost_burn['projected_1d_usd'],
+    'projected_1w_usd': cost_burn['projected_1w_usd'],
+    'projected_1m_usd': cost_burn['projected_1m_usd'],
+    'cost_threshold_yellow_usd_per_h': cost_burn['cost_threshold_yellow_usd_per_h'],
+    'cost_threshold_red_usd_per_h': cost_burn['cost_threshold_red_usd_per_h'],
+    'burn_window_seconds': cost_burn['window_seconds'],
+})
+
+watchdog_kills = collect_watchdog_kills(lifecycle_path, id_to_role, max_rows=10)
 
 output = {
     'agents': result,
@@ -1545,7 +1765,12 @@ output = {
     'timeline': federation_timeline,
     # #352 (rewritten #357): config editor scope + defensive opt-out
     # gate. Default-editable; `operator_writes_disabled = true` flips to
-    # read-only.
+    # read-only. Plus cross-colony matrix per #359.
     'config_editor': config_editor_block,
+    # #359: forensic last-10 watchdog-kill events (Recovery tab).
+    'watchdog_kills': watchdog_kills,
+    # #359: epoch-now stamp so renderers don't have to derive a "stale"
+    # cue from a missing field; SSE pushes update this in-place.
+    'now_epoch': epoch,
 }
 print(json.dumps(output))
