@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-04-26
+
+Tabbed layout + live SSE pipeline complete. Replaces the long-scroll
+single-page layout with **six tabs** (Overview / Agents / Promotions /
+Learning / Cost / Config) — each tab fits a 720px content area, the
+operator clicks between focused views instead of scrolling. Fixes the
+contrast bugs on amber / yellow bars (white text was unreadable) via a
+`pickTextColor()` helper that auto-picks dark or light text based on
+the bar fill colour. Adds a per-sidecar listing in Overview (auto-promote
++ cost-cap, named with status pills + per-row restart buttons) — the
+prior banner just said "sidecar ticked" without naming which one. Adds
+a bulk-restart action bar surfacing `[Restart N stopped agents]` only
+when the federation has non-running agents, with operator confirmation.
+Adds a Config tab — read-only by default — where operators can audit
+per-colony + federation-wide TOML keys; `/config/apply` is audit-only
+in v1 (logs intent to `<fed>/.agentis/logs/config-edits.jsonl`). Live
+SSE updates ([#313](https://github.com/Replikanti/agentis-colonies/issues/313))
+push fresh snapshots via `EventSource('/events')` without a hard reload,
+with DOM-state preservation across re-renders (modals stay open, sort /
+scroll survive). Federation-wide chronological timeline tile + `/timeline`
+HTTP endpoint ([#315](https://github.com/Replikanti/agentis-colonies/issues/315))
+merges all 21 agents' streams capped at last 200 reverse-chronological
+for the in-page tile + `/timeline?since=<ts>&limit=&colony=&kind=` for
+older data, served from a precomputed `<dash-dir>/timeline-full.jsonl`
+(7-day or 5000-row cap, atomic write per generate cycle).
+
+**Recommends:** dev-apprenticeship >= **1.3.0** (Sidecars listing reads
+the auto-promote + cost-cap sidecar liveness files; Config tab reads
+`<fed>/.agentis/config` and per-colony `colony.toml`; spend log fields
+match dev-apprenticeship 1.3.0's runtime expectations).
+
 ### Changed
 
 - **Tabbed dashboard layout + WCAG-AA contrast fixes + per-sidecar listing +
