@@ -1,0 +1,66 @@
+# .dockerignore — keep the build context tight (#324).
+#
+# Goal: produce a runtime image under ~500 MB compressed by excluding everything
+# the running container does not need. Anything listed here is invisible to the
+# Dockerfile's COPY statements.
+
+# --- VCS / worktree state ---
+.git/
+.gitignore
+worktrees/
+
+# --- Local agentis runtime state (every developer machine has this) ---
+.agentis/
+**/.agentis/
+**/colony.toml
+
+# --- Build outputs ---
+dist/
+**/.dashboard/
+
+# --- Python bytecode (the federation ships only .py sources) ---
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# --- Contributor-only platform tooling — never executed inside the image ---
+tools/colony-lint.sh
+tools/colony-lint-flag-allowlist.awk
+tools/check-changelog.sh
+tools/check-exec-sh.sh
+tools/check-exec-sh.md
+tools/check-forge-dispatch.sh
+tools/check-prompt-gate.sh
+tools/test-*.sh
+tools/new-colony.sh
+tools/new-federation.sh
+
+# --- CI + repo-developer surface ---
+.github/
+CLAUDE.md
+
+# --- Standalone component shipped via its own image / tarball ---
+federation-dashboard/
+
+# --- Editor / OS noise ---
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.swo
+
+# --- Docker artefacts themselves ---
+Dockerfile
+.dockerignore
+
+# --- Examples: not needed at runtime ---
+# (examples/docker/entrypoint.sh is COPYed explicitly by the Dockerfile, so it
+# is NOT excluded; everything else under examples/ is operator-facing only.)
+examples/k8s/
+examples/docker/docker-compose.yml
+examples/docker/.env.example
+examples/README.md
+examples/docker/README.md
+
+# --- Agentis-version pin file is read at build time (build context only) ---
+# but the federation tree itself is COPYed, so explicitly NOT excluded.

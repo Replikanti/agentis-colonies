@@ -1,0 +1,25 @@
+# TEMPLATE — copy to configmap.yaml, fill in real values, then `kubectl apply`.
+#
+# Forge knobs consumed by entrypoint.sh and propagated via env vars to the
+# colony start scripts. Per-colony colony.toml files are materialised inside
+# the container from each colony's colony.example.toml on first start.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agentis-colonies
+  labels:
+    app.kubernetes.io/name: agentis-colonies
+    app.kubernetes.io/component: federation
+data:
+  # gitlab | github. Default is gitlab if unset.
+  forge_type: "gitlab"
+
+  # ----- GitLab (when forge_type = gitlab) -----
+  gitlab_url: "https://gitlab.com"
+  gitlab_project: "my-org/my-project"
+
+  # ----- GitHub (when forge_type = github) -----
+  # Use these when forge_type = github. Leave blank otherwise.
+  github_owner: ""
+  github_repo: ""

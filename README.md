@@ -76,6 +76,20 @@ cd dev-apprenticeship-v${VERSION}/dev-apprenticeship
 ./start-federation.sh  # launches 21 daemons
 ```
 
+From the official Docker image (multi-arch `linux/amd64` + `linux/arm64`, no host-side `agentis` install required, [#324](https://github.com/Replikanti/agentis-colonies/issues/324)):
+
+```bash
+docker run --rm -d \
+  --name agentis-colonies \
+  -e GITLAB_URL=https://gitlab.com \
+  -e GITLAB_PROJECT=my-org/my-project \
+  -e GITLAB_TOKEN=glpat-... \
+  -v $PWD/data:/data \
+  ghcr.io/replikanti/agentis-colonies:dev-apprenticeship-1.2.0
+```
+
+Sample compose + Kubernetes manifests under [`examples/docker/`](./examples/docker/) and [`examples/k8s/`](./examples/k8s/).
+
 Or from a clone of the repo (useful if you want to contribute):
 
 ```bash

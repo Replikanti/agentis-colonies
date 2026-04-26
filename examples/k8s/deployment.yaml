@@ -1,0 +1,146 @@
+# Sample Kubernetes Deployment for the dev-apprenticeship federation.
+#
+# Single-replica Deployment (NOT a StatefulSet — the federation is stateless
+# at the pod level; the only durable state is experience JSONL + memo store
+# under /data/.agentis, which is preserved across pod restarts via the
+# `agentis-data` PersistentVolumeClaim below).
+#
+# Apply order:
+#   1. kubectl apply -f secret.yaml     (cp secret.yaml.example, fill creds)
+#   2. kubectl apply -f configmap.yaml  (cp configmap.yaml.example, edit knobs)
+#   3. kubectl apply -f deployment.yaml
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: agentis-data
+  labels:
+    app.kubernetes.io/name: agentis-colonies
+    app.kubernetes.io/component: federation
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      # 5 GiB covers ~6 months of dev-apprenticeship experience JSONL on a
+      # busy project. Bump if you observe `.agentis/experience/*.jsonl`
+      # crossing 1 GiB; the federation has no built-in pruning beyond the
+      # auto-promote rolling window.
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentis-colonies
+  labels:
+    app.kubernetes.io/name: agentis-colonies
+    app.kubernetes.io/component: federation
+spec:
+  # Hard-coded to 1: a second replica would race the first against the same
+  # forge for label/comment/MR writes. The federation runs all 21 daemons
+  # inside one pod by design.
+  replicas: 1
+  strategy:
+    # Recreate (not RollingUpdate): a second pod cannot start while the
+    # first holds the agentis registry lock.
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agentis-colonies
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: agentis-colonies
+        app.kubernetes.io/component: federation
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: federation
+          # Pin to the released tag in production; the `:latest` form is for
+          # dev only. Replace <REGISTRY> with your registry path (e.g.
+          # ghcr.io/replikanti/agentis-colonies) and X.Y.Z with the federation
+          # version.
+          image: ghcr.io/replikanti/agentis-colonies:dev-apprenticeship-1.2.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: FORGE_TYPE
+              valueFrom:
+                configMapKeyRef:
+                  name: agentis-colonies
+                  key: forge_type
+                  optional: true
+            - name: GITLAB_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: agentis-colonies
+                  key: gitlab_url
+                  optional: true
+            - name: GITLAB_PROJECT
+              valueFrom:
+                configMapKeyRef:
+                  name: agentis-colonies
+                  key: gitlab_project
+                  optional: true
+            - name: GITLAB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: agentis-colonies
+                  key: gitlab_token
+                  optional: true
+            - name: GITHUB_OWNER
+              valueFrom:
+                configMapKeyRef:
+                  name: agentis-colonies
+                  key: github_owner
+                  optional: true
+            - name: GITHUB_REPO
+              valueFrom:
+                configMapKeyRef:
+                  name: agentis-colonies
+                  key: github_repo
+                  optional: true
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: agentis-colonies
+                  key: github_token
+                  optional: true
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+          # The HEALTHCHECK in the Dockerfile is fine for `docker run` but
+          # k8s ignores it. Replicate it here as a livenessProbe.
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - 'agentis daemon list >/dev/null 2>&1'
+            initialDelaySeconds: 60
+            periodSeconds: 60
+            timeoutSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - 'test -f /data/.agentis/config'
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: agentis-data
