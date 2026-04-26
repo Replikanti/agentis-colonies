@@ -38,6 +38,8 @@ tools/resolve-tick-interval.py
 tools/cost-cap.sh
 tools/cost-cap-sum.py
 tools/cost-cap-lock.py
+tools/experience-transfer.sh
+tools/experience-transfer-pack.py
 
 # ----- Federation dashboard -----
 # Extracted to a separately-versioned standalone component in #252.
