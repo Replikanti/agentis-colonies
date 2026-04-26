@@ -30,6 +30,13 @@
 # -----------------------------------------------------------------------------
 # Stage 1: builder — downloads + verifies the agentis binary.
 # -----------------------------------------------------------------------------
+# Why debian:13-slim (not 12)? agentis >= 1.4.7 binaries are dynamically linked
+# against GLIBC 2.39 (the toolchain the release runners use). Debian 12 ships
+# GLIBC 2.36 — running the binary on 12-slim fails at startup with "GLIBC_2.39
+# not found". Debian 13 ships GLIBC 2.41 which satisfies the requirement. If a
+# future agentis release lowers the GLIBC floor, this can be downgraded; until
+# then, do NOT bump down without verifying `ldd --version` against the pinned
+# AGENTIS_VERSION below.
 FROM debian:13-slim AS builder
 
 ARG AGENTIS_VERSION=1.4.7
@@ -67,6 +74,9 @@ RUN set -eu; \
 # -----------------------------------------------------------------------------
 # Stage 2: runtime — minimal image with bash, python3, jq, curl, git.
 # -----------------------------------------------------------------------------
+# Same GLIBC 2.39 constraint as the builder stage (see comment above the
+# builder FROM); keep both stages on debian:13-slim until agentis lowers
+# the floor. If you ever change one, change both.
 FROM debian:13-slim AS runtime
 
 ARG AGENTIS_VERSION=1.4.7
