@@ -26,6 +26,17 @@
 #            in the rendered file matches the template's value
 #            (regression guard against scaffolder substitutions
 #            accidentally rewriting the budget).
+#   Test 14: scaffold pr-triage; assert tier("pr_triage"), the four
+#            canonical-tier learn() tags, end-of-tick memo_write, and
+#            at least one shell_escape() call in the rendered file
+#            (CODEOWNERS path knob and reviewer CSV both flow through
+#            shell_escape per the safe-exec-concat directives).
+#   Test 15: scaffold digest-poster; assert the schedule-parsing
+#            python3 inline is present in the rendered file (regression
+#            guard against scaffolder substitutions mangling the
+#            multi-line schedule parser), plus the standard structural
+#            checks (tier(), per-tier learn() tags, end-of-tick
+#            memo_write, cb 150 budget round-trip).
 #
 # Live-federation safety: every fixture is built under $TMPDIR_TEST
 # (mktemp -d). The tests never write to $REPO_ROOT/dev-apprenticeship/.
@@ -343,6 +354,85 @@ else
             fail "release-manager cb header" "expected 'cb 150;' (per #322 PR2 plan), got '$TEMPLATE_CB'"
         else
             pass "release-manager scaffolds + cb header round-trips byte-for-byte ($TEMPLATE_CB)"
+        fi
+    fi
+fi
+
+# ----- Test 14: pr-triage scaffolds + tier-branch + memo_write + shell_escape -----
+build_fed_colony "$FAKE_FED" "pr-triage-target"
+PRT_TEMPLATE="$REPO_ROOT/templates/agents/pr-triage.ag"
+if [ ! -f "$PRT_TEMPLATE" ]; then
+    fail "pr-triage template missing" "expected $PRT_TEMPLATE"
+else
+    set +e
+    OUT="$("$TOOL" pr-triage "$FAKE_FED" pr-triage-target 2>&1)"; RC=$?
+    set -e
+    PRT_DEST="$FAKE_FED/pr-triage-target/agents/pr-triage.ag"
+    if [ "$RC" -ne 0 ] || [ ! -f "$PRT_DEST" ]; then
+        fail "pr-triage scaffold" "rc=$RC, out=$OUT, dest_exists=$( [ -f "$PRT_DEST" ] && echo yes || echo no )"
+    else
+        # Structural tier-branch + memo + shell_escape checks. Mirrors
+        # the test-11 (dependency-updater) shape.
+        TIER_HITS="$(grep -c 'tier("pr_triage")' "$PRT_DEST" || true)"
+        SHADOW_HIT="$(grep -c '\["observed", "pr-triage"\]' "$PRT_DEST" || true)"
+        PROPOSE_HIT="$(grep -c '\["emitted", "pr-triage"\]' "$PRT_DEST" || true)"
+        REVIEW_HIT="$(grep -c '\["review-gated", "pr-triage"\]' "$PRT_DEST" || true)"
+        ACTED_HIT="$(grep -c '\["acted", "pr-triage"\]' "$PRT_DEST" || true)"
+        MEMO_HIT="$(grep -c 'memo_write("pr_triage:last_check"' "$PRT_DEST" || true)"
+        SHELL_ESCAPE_HIT="$(grep -c 'shell_escape(' "$PRT_DEST" || true)"
+
+        if [ "$TIER_HITS" -lt 1 ]; then
+            fail "pr-triage tier-branch" "no tier(\"pr_triage\") call found"
+        elif [ "$SHADOW_HIT" -lt 1 ] || [ "$PROPOSE_HIT" -lt 1 ] || [ "$REVIEW_HIT" -lt 1 ] || [ "$ACTED_HIT" -lt 1 ]; then
+            fail "pr-triage tier-branch" "missing one of the four canonical-tier learn() tags (shadow=$SHADOW_HIT propose=$PROPOSE_HIT review-gated=$REVIEW_HIT acted=$ACTED_HIT)"
+        elif [ "$MEMO_HIT" -lt 1 ]; then
+            fail "pr-triage memo_write" "no memo_write(\"pr_triage:last_check\", ...) call found"
+        elif [ "$SHELL_ESCAPE_HIT" -lt 1 ]; then
+            fail "pr-triage shell_escape" "no shell_escape(...) call found — at least the CODEOWNERS path or the reviewer CSV must flow through shell_escape"
+        else
+            pass "pr-triage scaffolds + tier-branch + memo_write + shell_escape all present"
+        fi
+    fi
+fi
+
+# ----- Test 15: digest-poster scaffolds + schedule python3 inline + cb header -----
+build_fed_colony "$FAKE_FED" "digest-poster-target"
+DIG_TEMPLATE="$REPO_ROOT/templates/agents/digest-poster.ag"
+if [ ! -f "$DIG_TEMPLATE" ]; then
+    fail "digest-poster template missing" "expected $DIG_TEMPLATE"
+else
+    set +e
+    OUT="$("$TOOL" digest-poster "$FAKE_FED" digest-poster-target 2>&1)"; RC=$?
+    set -e
+    DIG_DEST="$FAKE_FED/digest-poster-target/agents/digest-poster.ag"
+    if [ "$RC" -ne 0 ] || [ ! -f "$DIG_DEST" ]; then
+        fail "digest-poster scaffold" "rc=$RC, out=$OUT, dest_exists=$( [ -f "$DIG_DEST" ] && echo yes || echo no )"
+    else
+        # Standard tier-branch + memo + cb-header checks plus a
+        # schedule-parser regression guard: the multi-line python3
+        # inline that parses the "weekly@mon@09:00" schedule string
+        # must be present and reference the `schedule` arg by name.
+        TIER_HITS="$(grep -c 'tier("digest_poster")' "$DIG_DEST" || true)"
+        SHADOW_HIT="$(grep -c '\["observed", "digest-poster"\]' "$DIG_DEST" || true)"
+        PROPOSE_HIT="$(grep -c '\["emitted", "digest-poster"\]' "$DIG_DEST" || true)"
+        REVIEW_HIT="$(grep -c '\["review-gated", "digest-poster"\]' "$DIG_DEST" || true)"
+        ACTED_HIT="$(grep -c '\["acted", "digest-poster"\]' "$DIG_DEST" || true)"
+        MEMO_HIT="$(grep -c 'memo_write("digest_poster:last_check"' "$DIG_DEST" || true)"
+        CB_HIT="$(grep -cE '^cb 150;' "$DIG_DEST" || true)"
+        SCHEDULE_HIT="$(grep -cE 'python3 -c.*schedule' "$DIG_DEST" || true)"
+
+        if [ "$TIER_HITS" -lt 1 ]; then
+            fail "digest-poster tier-branch" "no tier(\"digest_poster\") call found"
+        elif [ "$SHADOW_HIT" -lt 1 ] || [ "$PROPOSE_HIT" -lt 1 ] || [ "$REVIEW_HIT" -lt 1 ] || [ "$ACTED_HIT" -lt 1 ]; then
+            fail "digest-poster tier-branch" "missing one of the four canonical-tier learn() tags (shadow=$SHADOW_HIT propose=$PROPOSE_HIT review-gated=$REVIEW_HIT acted=$ACTED_HIT)"
+        elif [ "$MEMO_HIT" -lt 1 ]; then
+            fail "digest-poster memo_write" "no memo_write(\"digest_poster:last_check\", ...) call found"
+        elif [ "$CB_HIT" -ne 1 ]; then
+            fail "digest-poster cb header" "expected exactly one 'cb 150;' line, got $CB_HIT"
+        elif [ "$SCHEDULE_HIT" -lt 1 ]; then
+            fail "digest-poster schedule parser" "no 'python3 -c ... schedule ...' inline found — the schedule-parsing python3 inline must be present (regression guard against scaffolder substitutions mangling the multi-line parser)"
+        else
+            pass "digest-poster scaffolds + tier-branch + memo_write + cb 150 header + schedule python3 inline all present"
         fi
     fi
 fi

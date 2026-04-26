@@ -1,0 +1,280 @@
+// TEMPLATE: digest-poster — daily/weekly summary of merged PRs + closed issues + recent tags + agent promotions | customization: [digest_poster].digest_thread_iid (memo key digest_poster:digest_thread_iid — required for review-gated/autonomous posting); [digest_poster].schedule (memo key digest_poster:schedule — defaults to "weekly@mon@09:00"); [digest_poster].window_days (memo key digest_poster:window_days — defaults to 7); recommended placement is colony-agnostic — any colony with merge-requests / issues / releases surface works.
+//
+// digest-poster.ag — aggregates a "what happened in the last D days"
+// digest from forge data (merged PRs + closed issues + recent tags) and
+// posts it to a configured target (a forge issue thread, a Slack
+// webhook, a file). The agent ticks frequently but only posts on a
+// configurable schedule (e.g. every Monday 09:00 UTC); the schedule
+// string is parsed by inline python3 so we do not depend on a host
+// cron daemon.
+//
+// Run as daemon: agentis daemon agents/digest-poster.ag --colony <colony>
+// Requires: exec_foreign capability, [forge] block configured (the colony's
+// scripts/start-colony.sh exports GITLAB_*/GITHUB_* env per ADR-0002),
+// and a forge-api.sh that supports `merge-requests --state merged --since
+// <iso>`, `issues --state closed --since <iso>`, `releases --per-page 5`,
+// and `post-note <iid>` (review-gated and autonomous tiers; both target
+// the configured digest-thread issue iid).
+//
+// Customization knobs (read at exec time, never at parse time):
+//   [digest_poster].digest_thread_iid — operator-configurable iid of the
+//     "weekly digest" issue thread the digest is posted to. Required for
+//     the review-gated and autonomous tiers; absent operator config
+//     degrades autonomous into the review-gated surface (which itself
+//     no-ops politely until the iid is set). Surface via
+//     `agentis memo set digest_poster:digest_thread_iid 42` from
+//     start-colony.sh.
+//   [digest_poster].schedule — cron-like schedule string. Default
+//     "weekly@mon@09:00" (every Monday at 09:00 UTC). Other accepted
+//     forms: "daily@09:00", "weekly@<dow>@<HH:MM>" where <dow> is one
+//     of mon/tue/wed/thu/fri/sat/sun. The autonomous tier posts only
+//     when the current UTC time is within a 5-minute window past the
+//     scheduled fire time AND no digest was posted in the last 12h
+//     (debounce — same idea as the release-manager 24h double-release
+//     guard, scaled to weekly cadence).
+//   [digest_poster].window_days — how many days back the digest
+//     aggregates over. Default 7 (matches the weekly schedule).
+//
+// Memo gate: 5-minute reactive cadence via `digest_poster:last_check`,
+// but the actual posting cadence is gated by the schedule string. The
+// agent can tick frequently without posting; only `digest_poster:last_post`
+// gets stamped after a successful post.
+//
+// Operator approval handshake (review-gated tier):
+//   The first review-gated post emits a draft on the bus. The agent
+//   stamps its own memo `digest_poster:last_approved_draft` with an
+//   empty value and waits. Operator approval is the explicit act of
+//   `agentis memo set digest_poster:last_approved_draft "<digest-id>"`
+//   on a digest the operator has reviewed; thereafter the agent will
+//   post the digest to the configured thread on each scheduled fire.
+
+cb 150;
+
+type DigestSummary {
+    window_days: int,
+    merged_pr_count: int,
+    closed_issue_count: int,
+    recent_tags: string,
+    rendered_digest: string,
+    rationale: string
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("digest_poster:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    };
+    return 0.0;
+}
+
+// 5-minute reactive memo gate. Distinct from the schedule gate — this
+// one lets a fast-tick colony skip the prompt() call when nothing has
+// changed since the last tick. Time math in python3 (BSD-date safe per
+// the PR 2 of #322 precedent).
+fn should_run_now() -> int {
+    let last = recall_latest("digest_poster:last_check");
+    if len(last) == 0 {
+        return 1;
+    };
+    // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+    let cmd = "python3 -c 'import sys,datetime,time; ts=sys.argv[1]; t=datetime.datetime.strptime(ts.rstrip(\"Z\"), \"%Y-%m-%dT%H:%M:%S\").replace(tzinfo=datetime.timezone.utc).timestamp(); print(1 if (time.time() - t) >= 300 else 0)' " + shell_escape(last);
+    let raw = try { exec sh cmd; } catch e { "1"; };
+    return parse_int(raw);
+}
+
+// Schedule fire-now check. Returns 1 if the current UTC time is within
+// a 5-minute window past the scheduled fire time AND we have not posted
+// in the last 12h (debounce). The schedule string is parsed inline in
+// python3 — we accept "daily@HH:MM" and "weekly@<dow>@HH:MM" forms.
+// Any parse failure returns 0 so a malformed knob never accidentally
+// fires the autonomous post path.
+fn should_post_now(schedule: string, last_post: string) -> int {
+    // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+    let cmd = "python3 -c 'import sys,datetime,time;\nschedule=sys.argv[1]; last_post=sys.argv[2];\ntry:\n  parts=schedule.split(\"@\");\n  kind=parts[0];\n  if kind==\"daily\":\n    hh,mm=map(int, parts[1].split(\":\"));\n    dow=None;\n  elif kind==\"weekly\":\n    dow_map={\"mon\":0,\"tue\":1,\"wed\":2,\"thu\":3,\"fri\":4,\"sat\":5,\"sun\":6};\n    dow=dow_map[parts[1]];\n    hh,mm=map(int, parts[2].split(\":\"));\n  else:\n    print(0); sys.exit(0);\n  now=datetime.datetime.now(datetime.timezone.utc);\n  if dow is not None and now.weekday()!=dow:\n    print(0); sys.exit(0);\n  scheduled=now.replace(hour=hh, minute=mm, second=0, microsecond=0);\n  delta=(now-scheduled).total_seconds();\n  if delta<0 or delta>300:\n    print(0); sys.exit(0);\n  if last_post:\n    lp=datetime.datetime.strptime(last_post.rstrip(\"Z\"), \"%Y-%m-%dT%H:%M:%S\").replace(tzinfo=datetime.timezone.utc);\n    if (now-lp).total_seconds()<43200:\n      print(0); sys.exit(0);\n  print(1)\nexcept Exception:\n  print(0)\n' " + shell_escape(schedule) + " " + shell_escape(last_post);
+    let raw = try { exec sh cmd; } catch e { "0"; };
+    return parse_int(raw);
+}
+
+fn tick(reason: string) -> void {
+    if should_run_now() == 0 {
+        return;
+    };
+
+    // Window-days knob (defaults to 7 to match the weekly schedule).
+    let window_raw = recall_latest("digest_poster:window_days");
+    let window_days = if len(window_raw) == 0 {
+        7;
+    } else {
+        parse_int(window_raw);
+    };
+    let window_days_safe = if window_days <= 0 { 7; } else { window_days; };
+
+    // Build the since-cursor as <window_days_safe> days ago. The
+    // python3 inline keeps us on macOS bash 3.2 / BSD-date paths
+    // identical to the rest of the catalog.
+    // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+    let since_cmd = "python3 -c 'import sys,datetime; n=int(sys.argv[1]); print((datetime.datetime.utcnow()-datetime.timedelta(days=n)).strftime(\"%Y-%m-%dT%H:%M:%SZ\"))' " + shell_escape(to_string(window_days_safe));
+    let since_iso = try { exec sh since_cmd; } catch e { "2000-01-01T00:00:00Z"; };
+
+    // Aggregate the three forge sources. Each call is independent — a
+    // failure in one source only zeros that source's contribution to
+    // the digest, not the whole tick.
+    // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+    let merged_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --since " + shell_escape(since_iso) + " --view raw";
+    let merged_raw = try { exec sh merged_cmd; } catch e {
+        print("[digest_poster] merged-MR poll failed:", e);
+        "[]";
+    };
+    // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+    let closed_cmd = "$COLONY_DIR/scripts/forge-api.sh issues --state closed --since " + shell_escape(since_iso) + " --view raw";
+    let closed_raw = try { exec sh closed_cmd; } catch e {
+        print("[digest_poster] closed-issues poll failed:", e);
+        "[]";
+    };
+    let tags_raw = try {
+        exec sh "$COLONY_DIR/scripts/forge-api.sh releases --per-page 5 --view release-summary";
+    } catch e {
+        print("[digest_poster] releases poll failed:", e);
+        "[]";
+    };
+
+    let rec = recommend("digest_aggregation", ["accuracy"]);
+    let context = "Window: " + to_string(window_days_safe) + " days (since " + since_iso + ")\nMerged PRs JSON: " + merged_raw + "\nClosed issues JSON: " + closed_raw + "\nRecent releases JSON: " + tags_raw + "\nPast learning: " + to_string(rec);
+
+    let summary = prompt(
+        "You are a digest-poster agent. Render a plain-text 'what happened in the last D days' digest from the context. Count merged PRs (merged_pr_count), closed issues (closed_issue_count), and pull the most recent 1-3 release tag names into recent_tags as a comma-separated string (e.g. 'v1.2.0, v1.1.0'; empty if none). Compose rendered_digest as a markdown block: a one-sentence opening line stating the window, then ### Merged PRs (a bulleted list of up to 10 most-recent merged PR titles + iids), then ### Closed Issues (similar), then ### Releases (the recent_tags inline). Provide a one-sentence rationale explaining the digest's headline (e.g. which area of the repo saw the most activity). echo back the window_days argument verbatim (window_days). Return JSON: window_days (int), merged_pr_count (int), closed_issue_count (int), recent_tags (string), rendered_digest (string), rationale (string).",
+        context
+    ) -> DigestSummary;
+
+    // Empty window — nothing happened in the last D days. Stamp the
+    // memo (so a fast-tick colony does not re-prompt) but do not post
+    // a content-free digest.
+    let empty_window = if summary.merged_pr_count == 0 {
+        if summary.closed_issue_count == 0 { true; } else { false; };
+    } else {
+        false;
+    };
+    if empty_window {
+        let now_e0 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_e0) > 0 {
+            memo_write("digest_poster:last_check", now_e0);
+        };
+        learn("digest_aggregation", "window " + to_string(window_days_safe) + "d", "empty", "partial", ["observed", "digest-poster"]);
+        return;
+    };
+
+    let my_tier = tier("digest_poster");
+    let digest_thread_raw = recall_latest("digest_poster:digest_thread_iid");
+    let digest_thread_iid = parse_int(digest_thread_raw);
+    let schedule_raw = recall_latest("digest_poster:schedule");
+    let schedule = if len(schedule_raw) == 0 { "weekly@mon@09:00"; } else { schedule_raw; };
+
+    if my_tier == "autonomous" {
+        // Autonomous posts on the configured schedule, but ONLY when:
+        //   1. digest_thread_iid is set (otherwise no destination — fall
+        //      through to review-gated surface).
+        //   2. The schedule fire-now check returns 1 (within 5-min
+        //      window past the scheduled time + 12h debounce since the
+        //      last post).
+        let last_post = recall_latest("digest_poster:last_post");
+        let scheduled_fire = should_post_now(schedule, last_post);
+        let has_thread = digest_thread_iid > 0;
+        let safe_to_post = if has_thread {
+            if scheduled_fire == 1 { true; } else { false; };
+        } else {
+            false;
+        };
+
+        if safe_to_post {
+            // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+            let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(digest_thread_iid) + " --body " + shell_escape(summary.rendered_digest);
+            let post_result = try { exec sh post_cmd; } catch e {
+                print("[digest_poster] scheduled post failed:", e);
+                "";
+            };
+            if len(post_result) > 0 {
+                let now_post = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+                if len(now_post) > 0 {
+                    memo_write("digest_poster:last_post", now_post);
+                };
+                print("[digest_poster] Posted digest to thread", digest_thread_iid, "(schedule:", schedule, ", merged:", summary.merged_pr_count, ", closed:", summary.closed_issue_count, ")");
+                emit("__COLONY_NAME__:digest_posted", summary);
+                learn("digest_aggregation", "window " + to_string(window_days_safe) + "d", "posted-scheduled", "success", ["acted", "digest-poster"]);
+            } else {
+                // Post call failed silently. Same surface as review-gated
+                // emits the draft on the bus.
+                emit("__COLONY_NAME__:digest_draft", summary);
+                learn("digest_aggregation", "window " + to_string(window_days_safe) + "d", "posted-degraded", "partial", ["review-gated", "digest-poster"]);
+            };
+        } else {
+            // Either no thread iid configured, or schedule says not now.
+            // Same surface as review-gated: emit the draft on the bus
+            // for the operator to consume manually.
+            emit("__COLONY_NAME__:digest_draft", summary);
+            learn("digest_aggregation", "window " + to_string(window_days_safe) + "d", "deferred", "partial", ["review-gated", "digest-poster"]);
+        };
+    } else if my_tier == "review-gated" {
+        // Operator-approval handshake. The agent posts to the configured
+        // thread iff the operator has stamped
+        // `digest_poster:last_approved_draft` with a non-empty value
+        // (signalling they reviewed an earlier draft and approved the
+        // template). Otherwise we emit on the bus + record an empty
+        // approval marker so the operator knows a draft is awaiting
+        // review.
+        let approved = recall_latest("digest_poster:last_approved_draft");
+        let has_thread = digest_thread_iid > 0;
+        let approved_and_threaded = if len(approved) > 0 {
+            if has_thread { true; } else { false; };
+        } else {
+            false;
+        };
+
+        if approved_and_threaded {
+            // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+            let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(digest_thread_iid) + " --body " + shell_escape(summary.rendered_digest);
+            try { exec sh post_cmd; } catch e {
+                print("[digest_poster] review-gated post failed:", e);
+            };
+            let now_post = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+            if len(now_post) > 0 {
+                memo_write("digest_poster:last_post", now_post);
+            };
+            emit("__COLONY_NAME__:digest_posted", summary);
+            learn("digest_aggregation", "window " + to_string(window_days_safe) + "d", "posted-approved", "success", ["acted", "digest-poster"]);
+        } else {
+            // Awaiting operator approval (or no thread iid configured).
+            // Emit the draft on the bus so the operator can pull it
+            // manually and stamp the approval memo when ready.
+            emit("__COLONY_NAME__:digest_draft", summary);
+            // Stamp an empty approval marker so the operator can see a
+            // draft is pending the first time. Subsequent ticks leave
+            // any operator-set value in place.
+            if len(approved) == 0 {
+                memo_write("digest_poster:last_approved_draft", "");
+            };
+            print("[digest_poster] Drafted digest (review-gated, awaiting approval) merged:", summary.merged_pr_count, "closed:", summary.closed_issue_count);
+            learn("digest_aggregation", "window " + to_string(window_days_safe) + "d", "drafted-pending-approval", "partial", ["review-gated", "digest-poster"]);
+        };
+    } else if my_tier == "propose" {
+        // Bus-only emit. No post.
+        emit("__COLONY_NAME__:digest_draft", summary);
+        print("[digest_poster] Drafted digest (propose) merged:", summary.merged_pr_count, "closed:", summary.closed_issue_count);
+        learn("digest_aggregation", "window " + to_string(window_days_safe) + "d", "drafted", "partial", ["emitted", "digest-poster"]);
+    } else {
+        // shadow / dormant: observe-only. learn() outcome captures the
+        // headline activity volume as a proxy for "would have been worth
+        // posting" — operators get a real signal as confidence grows.
+        let outcome = if summary.merged_pr_count >= 3 {
+            "success";
+        } else {
+            "partial";
+        };
+        print("[digest_poster] Observing (tier:", my_tier, ") merged:", summary.merged_pr_count, "closed:", summary.closed_issue_count);
+        learn("digest_aggregation", "window " + to_string(window_days_safe) + "d", "observed", outcome, ["observed", "digest-poster"]);
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("digest_poster:last_check", now);
+    };
+}
