@@ -84,7 +84,10 @@ fetch_daemons_json() {
         printf '%s' "[]"
         return
     fi
-    out="$(cd "$fed" && agentis daemon list --json 2>/dev/null || true)"
+    # Subshell wrapping isolates `cd` failure and silences shellcheck SC2015
+    # — the `|| :` keeps the assignment safe under `set -e` even when the
+    # `cd` or `agentis daemon list` step exits non-zero.
+    out="$( (cd "$fed" && agentis daemon list --json) 2>/dev/null || : )"
     if [ -z "$out" ]; then
         printf '%s' "[]"
         return
