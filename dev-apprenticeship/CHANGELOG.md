@@ -15,6 +15,10 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Added
+
+- Operator-side reference for **test-mode replay** ([#320](https://github.com/Replikanti/agentis-colonies/issues/320)). Adds [`doc/replay-mode.md`](../doc/replay-mode.md) (when to score a candidate `.ag` against history vs use the auto-promote ladder, the five-step export → modify → replay → diff → deploy flow, and how the verdict composes with [`auto-promote`](../doc/auto-promote.md) and the [`feedback-loop`](../doc/feedback-loop.md) reality-check pattern), `tools/replay-export-experience.sh` (a thin wrapper that walks `<fed>/.agentis/experience/<agent_id>.jsonl`, remaps each id to its agent name via `agentis daemon list --json` so the candidate matches even when its eventual id differs from the historical one, and emits a single replay-friendly JSONL pack with the same parent-fallback resolver auto-promote uses for the symlinked single-federation layout), and a sample fixture under `examples/replay/` (a stub `candidate_labeler.ag` plus a 15-row synthetic pack) that lets operators dry-run the flow before exporting from a live federation. The replay engine itself ships in a separate upstream `agentis` release; this colonies-side PR lands the operator surface against `agentis >= TBD` (release-PR fixup once the upstream MINOR is tagged) per the two-PR split rationale on the issue. If [#323](https://github.com/Replikanti/agentis-colonies/issues/323) (`tools/experience-transfer.sh`) lands, the replay export will delegate to it via `experience-transfer.sh export --replay-pack`; until then the wrapper carries the minimal walk replay needs.
+
 ## [1.2.0] — 2026-04-26
 
 Hard LLM cost cap (`tools/cost-cap.sh` sidecar with metered + flat-tariff modes,
