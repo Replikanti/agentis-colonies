@@ -217,7 +217,14 @@ generate() {
     # federation-dashboard-history.py — extracted in #172 alongside the
     # renderer to eliminate the last bash heredocs (macOS bash 3.2 / 5.3
     # parser was tripping on backticks in PYHISTORY and on \' in JSEOF).
-    python3 "$LIB_DIR/federation-dashboard-history.py" "$HISTORY_FILE" "$EPOCH" "$COLLECTOR_JSON" "$COLONY_LIST_PY"
+    # Spool COLLECTOR_JSON to the same @<path> temp file the renderer/server
+    # use. #315 PR 2 grew the blob past the 128 KB MAX_ARG_STRLEN cap by
+    # adding `data.timeline[]` (last 200 federation-wide rows + per-agent
+    # buckets), and history.py was the one helper still passing the JSON
+    # via inline argv — same class of failure as #279/#293. Spool now,
+    # consume via @<path>.
+    printf '%s' "$COLLECTOR_JSON" > "$COLL_FILE"
+    python3 "$LIB_DIR/federation-dashboard-history.py" "$HISTORY_FILE" "$EPOCH" "@$COLL_FILE" "$COLONY_LIST_PY"
 
     local HISTORY
     HISTORY="$(cat "$HISTORY_FILE" 2>/dev/null || echo '[]')"

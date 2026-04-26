@@ -20,6 +20,17 @@ import os
 import sys
 
 
+def _read(arg):
+    """Resolve `@<path>` argv prefix to file contents; otherwise pass through.
+    Mirrors the collector / renderer pattern so callers can spool large
+    JSON blobs (e.g. COLLECTOR_JSON post-#315 PR 2) past Linux's 128 KB
+    MAX_ARG_STRLEN per-argv cap. Same class of failure as #279/#293."""
+    if arg.startswith('@'):
+        with open(arg[1:], 'r', encoding='utf-8') as f:
+            return f.read()
+    return arg
+
+
 def main():
     if len(sys.argv) != 5:
         sys.stderr.write(
@@ -32,14 +43,14 @@ def main():
     epoch = int(sys.argv[2])
 
     try:
-        collector = json.loads(sys.argv[3])
-    except (json.JSONDecodeError, TypeError, ValueError):
+        collector = json.loads(_read(sys.argv[3]))
+    except (json.JSONDecodeError, TypeError, ValueError, OSError):
         collector = {'agents': [], 'experience_counts': {'total': 0}}
 
     try:
         # colony_list parsed for forward compatibility; not consumed here.
-        json.loads(sys.argv[4])
-    except (json.JSONDecodeError, TypeError, ValueError):
+        json.loads(_read(sys.argv[4]))
+    except (json.JSONDecodeError, TypeError, ValueError, OSError):
         pass
 
     try:
