@@ -42,7 +42,7 @@ graph TD
 
 | Federation | Version | Description | Agents | Status |
 |------------|---------|-------------|--------|--------|
-| [dev-apprenticeship](./dev-apprenticeship/) | [`1.1.0`](https://github.com/Replikanti/agentis-colonies/releases/tag/dev-apprenticeship-v1.1.0) | Learns a developer's complete workflow by observing how you work on GitLab or GitHub. Covers triage, code review, planning, implementation, and release. | 21 | Beta |
+| [dev-apprenticeship](./dev-apprenticeship/) | [`1.2.0`](https://github.com/Replikanti/agentis-colonies/releases/tag/dev-apprenticeship-v1.2.0) | Learns a developer's complete workflow by observing how you work on GitLab or GitHub. Covers triage, code review, planning, implementation, and release. | 21 | Beta |
 
 To start a new federation, see [`tools/new-federation.sh`](./tools/new-federation.sh) and [`doc/federation-patterns.md`](./doc/federation-patterns.md). The contract every federation must satisfy is [ADR-0003](./doc/adr/ADR-0003-federation-portability-contract.md).
 
