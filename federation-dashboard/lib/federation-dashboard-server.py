@@ -806,10 +806,27 @@ class Handler(SimpleHTTPRequestHandler):
                     'summary': f'cost-cap.sh exec failed: {e}',
                 }).encode())
                 return
+            stderr_tail = (result.stderr or '')[-2048:]
+            if result.returncode == 75:
+                # cost-cap.sh:99 — sidecar lock contention on --override.
+                # Surface as 409 so operators see the retry hint instead of
+                # a misleading "applied" success (PR #328 LOW finding).
+                self.send_response(409)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    'ok': False,
+                    'exit': 75,
+                    'summary': ('cost-cap override deferred: another '
+                                'cost-cap instance is running. Retry in a '
+                                'few seconds.'),
+                    'stderr_tail': stderr_tail,
+                    'reason': reason,
+                }).encode())
+                return
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
-            stderr_tail = (result.stderr or '')[-2048:]
             self.wfile.write(json.dumps({
                 'ok': result.returncode == 0,
                 'exit': result.returncode,

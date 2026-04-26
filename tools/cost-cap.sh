@@ -97,6 +97,14 @@ mkdir -p "$FED_DIR/.agentis/logs" 2>/dev/null || true
 
 exec 200>"$LOCK_FILE"
 if ! python3 "$SCRIPT_DIR/cost-cap-lock.py" 200 2>/dev/null; then
+    # Operator-initiated --override needs to surface lock contention so the
+    # dashboard can prompt for retry instead of falsely reporting success
+    # (matches QA finding on PR #328). Cron-style sidecar invocations keep
+    # the silent-skip exit 0 (consistency with auto-promote.sh).
+    if [ -n "$OVERRIDE_REASON" ]; then
+        echo "cost-cap.sh: another instance is running; --override deferred. Retry in a few seconds." >&2
+        exit 75
+    fi
     echo "Another cost-cap instance is running. Exiting."
     exit 0
 fi

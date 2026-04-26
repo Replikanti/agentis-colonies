@@ -337,6 +337,52 @@ else
     fail "--override did not clear flag/override files"
 fi
 
+# ----- Test 15: --override under lock contention exits 75 (PR #328 LOW) -----
+# Sidecar cron-style invocations silently exit 0 on contention (consistency
+# with auto-promote.sh). Operator-facing --override needs to bubble the
+# failure so the dashboard can prompt for retry instead of falsely
+# reporting success.
+LOCK_FILE="$SCRIPT_DIR/.cost-cap.lock"
+# Hold the flock from a python subprocess for 2s, then run --override.
+python3 -c "
+import fcntl, sys, time
+f = open(sys.argv[1], 'w')
+fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+time.sleep(2)
+" "$LOCK_FILE" &
+HOLDER_PID=$!
+sleep 0.3  # let the holder grab the lock first
+OVERRIDE_RC=0
+"$SCRIPT_DIR/cost-cap.sh" "$FAKE_FED" --override "contention probe" >/dev/null 2>/tmp/cost-cap-15.stderr || OVERRIDE_RC=$?
+wait "$HOLDER_PID" 2>/dev/null || true
+if [ "$OVERRIDE_RC" = "75" ]; then
+    if grep -q "another instance is running" /tmp/cost-cap-15.stderr; then
+        pass "--override under lock contention exits 75 with retry hint on stderr"
+    else
+        fail "--override exit 75 but stderr lacks contention message" "$(cat /tmp/cost-cap-15.stderr)"
+    fi
+else
+    fail "--override under lock contention did not exit 75 (got $OVERRIDE_RC)"
+fi
+
+# ----- Test 16: sidecar (no --override) under lock contention still exits 0 -----
+python3 -c "
+import fcntl, sys, time
+f = open(sys.argv[1], 'w')
+fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+time.sleep(2)
+" "$LOCK_FILE" &
+HOLDER_PID=$!
+sleep 0.3
+SIDECAR_RC=0
+"$SCRIPT_DIR/cost-cap.sh" "$FAKE_FED" >/dev/null 2>&1 || SIDECAR_RC=$?
+wait "$HOLDER_PID" 2>/dev/null || true
+if [ "$SIDECAR_RC" = "0" ]; then
+    pass "sidecar (no --override) under lock contention exits 0 (silent skip)"
+else
+    fail "sidecar under contention should exit 0, got $SIDECAR_RC"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
