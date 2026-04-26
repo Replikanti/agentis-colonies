@@ -29,12 +29,16 @@ fail() { echo "[FAIL] $1"; FAIL=$((FAIL + 1)); }
 skip() { echo "[SKIP] $1"; SKIP=$((SKIP + 1)); }
 
 # --- Discover federations ---
-# A federation is a top-level directory with a README.md, excluding dotdirs and tools.
+# A federation is a top-level directory with a README.md, excluding dotdirs,
+# tools/, and templates/ (the templates/ tree from #322 is a contributor-only
+# catalog of pre-built `.ag` templates, not a runtime federation — its
+# `.ag` files are linted only after they have been scaffolded into a real
+# colony via tools/scaffold-agent.sh).
 federations=()
 for dir in "$REPO_ROOT"/*/; do
     name="$(basename "$dir")"
     case "$name" in
-        .*|tools) continue ;;
+        .*|tools|templates) continue ;;
     esac
     if [ -f "$dir/README.md" ]; then
         federations+=("$name")

@@ -40,6 +40,11 @@ tools/cost-cap-sum.py
 tools/cost-cap-lock.py
 tools/experience-transfer.sh
 tools/experience-transfer-pack.py
+# scaffold-agent.sh ships so installed federations can scaffold pre-built
+# agent templates (#322). The `templates/` catalog itself is contributor-
+# only at PR 1 stage and is NOT included in the bundle — the dev fetches
+# templates by checking out the source repo.
+tools/scaffold-agent.sh
 
 # ----- Federation dashboard -----
 # Extracted to a separately-versioned standalone component in #252.
