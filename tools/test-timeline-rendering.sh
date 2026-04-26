@@ -1780,7 +1780,7 @@ print(json.dumps({
     DIFF_LINES_47="$(grep -cE '^[<>] ' "$DIFF47" 2>/dev/null || echo 0)"
     if [ "$DIFF_LINES_47" -gt 2 ]; then
         echo "  more than 1 line rewritten by /config/apply (diff lines: $DIFF_LINES_47)"
-        cat "$DIFF47" | head -20
+        head -20 "$DIFF47"
         T47_OK=0
     fi
     # Inline comment after the changed key must survive.
