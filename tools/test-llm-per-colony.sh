@@ -1,21 +1,32 @@
 #!/usr/bin/env bash
 # tools/test-llm-per-colony.sh: per-colony [llm] config block + start-colony.sh
-# wiring (#319 PR 1 of 5).
+# wiring (#319 PR 1 of 5; reduced to NO-RUNTIME-EFFECT in #351 — see below).
 #
-# Validates:
-#   t1: no [llm] block at all in colony.toml -> zero --config-override flags
-#       on the daemon CLI. Pre-#319 colonies stay byte-identical.
-#   t2: [llm] backend = "mock" -> exactly one --config-override pair spliced
-#       (llm.backend=mock).
-#   t3: [llm] backend = "cli", command = "claude" -> two --config-override
-#       pairs spliced (llm.backend=cli + llm.command=claude).
-#   t4: [llm] backend = "http", model = "...", api_key_env = "..." -> three
-#       --config-override pairs spliced (one per non-empty key).
-#   t5: precedence guard — when both <fed>/.agentis/llm-backend-override
-#       (cost-cap downgrade) and a populated [llm] block in colony.toml are
-#       present, the override-file backend wins and the colony block is
-#       ignored. This catches the precedence bug between #319 (per-colony
-#       config) and the existing #318 cost-cap downgrade primitive.
+# Validates the post-#351 contract:
+#
+#   `agentis daemon` does NOT accept `--config-override` (the flag was
+#   referenced in colonies docs but never landed upstream). PR #348 spliced
+#   it anyway, breaking every restart on any colony with either a [llm]
+#   block or a cost-cap downgrade override file. #351 removes the splice;
+#   the [llm] block stays in the schema as forward-compatible documentation
+#   but emits no daemon flags. Cost-cap downgrade (#318) is also reduced to
+#   no-op until upstream lands the flag.
+#
+#   t1: no [llm] block at all -> zero --config-override flags. Same as old.
+#   t2: [llm] backend = "mock" -> still zero --config-override flags
+#       (post-#351 the splice is a no-op so the block has no runtime effect).
+#       restart-agent must succeed (the regression we're guarding against).
+#   t3: [llm] backend = "cli", command = "claude" -> zero overrides, restart
+#       still succeeds. Same shape as t2 but verifies multiple keys also
+#       silently no-op.
+#   t4: [llm] http with three keys -> zero overrides, restart succeeds.
+#   t5: cost-cap override file (= "mock") + [llm] http block both present
+#       -> zero overrides emitted, restart still succeeds. The file write is
+#       harmless; agents fall through to <fed>/.agentis/config.
+#   t6 (regression): the literal token `--config-override` MUST NEVER appear
+#       in the recorded argv across any t1-t5 run. This is the primary
+#       safety net catching any future re-introduction of the splice before
+#       upstream ships the flag.
 #
 # Each test builds a synthetic federation under /tmp/qa-319-pr1-fed/ and
 # invokes start-colony.sh --restart-agent <name> with a shim `agentis` on
@@ -161,60 +172,68 @@ assert_no_override() {
     fi
 }
 
+assert_no_config_override_token() {
+    local name="$1" recorded="$2"
+    if printf '%s\n' "$recorded" | tr ' ' '\n' | grep -qx -- '--config-override'; then
+        fail "$name" "FORBIDDEN '--config-override' token leaked into argv (regression of #351): $recorded"
+    else
+        pass "$name"
+    fi
+}
+
+assert_restart_ok() {
+    local name="$1" tag="$2"
+    # start-colony.sh exits 0 on success and prints `started <agent> pid=<n> tick=<ms>`.
+    # The shim's `sleep 1` keeps the simulated agentis-daemon alive long enough
+    # for the start-colony.sh `kill -0` liveness probe.
+    if grep -qE '^started ' "$FIXTURE_ROOT/$tag/start-colony.stdout" 2>/dev/null; then
+        pass "$name"
+    else
+        fail "$name" "expected 'started <agent>' line in stdout: $(cat "$FIXTURE_ROOT/$tag/start-colony.stdout" 2>/dev/null) / stderr: $(cat "$FIXTURE_ROOT/$tag/start-colony.stderr" 2>/dev/null)"
+    fi
+}
+
 # ----- t1: no [llm] block at all -----
 make_colony_fixture t1 ""
 T1_OUT="$(run_for_fixture t1)"
-assert_no_override "t1: colony.toml without [llm] emits zero --config-override flags" "$T1_OUT"
+assert_no_override "t1: colony.toml without [llm] emits zero llm.* overrides" "$T1_OUT"
+assert_no_config_override_token "t1: --config-override token absent (post-#351)" "$T1_OUT"
+assert_restart_ok "t1: --restart-agent succeeds" t1
 
-# ----- t2: [llm] backend = "mock" -----
+# ----- t2: [llm] backend = "mock" — schema-only, no runtime effect -----
 make_colony_fixture t2 '[llm]
 backend = "mock"'
 T2_OUT="$(run_for_fixture t2)"
-assert_has_override "t2: [llm] backend = mock splices --config-override llm.backend=mock" "$T2_OUT" "llm.backend=mock"
-T2_COUNT=$(override_count "$T2_OUT")
-if [ "$T2_COUNT" = "1" ]; then
-    pass "t2: exactly one llm.* override emitted (got $T2_COUNT)"
-else
-    fail "t2: expected exactly 1 llm.* override, got $T2_COUNT" "argv=$T2_OUT"
-fi
+assert_no_override "t2: [llm] mock present but emits zero llm.* overrides (#351)" "$T2_OUT"
+assert_no_config_override_token "t2: --config-override token absent" "$T2_OUT"
+assert_restart_ok "t2: --restart-agent succeeds with [llm] block" t2
 
-# ----- t3: [llm] backend = "cli", command = "claude" -----
+# ----- t3: [llm] backend = "cli", command = "claude" — schema-only -----
 make_colony_fixture t3 '[llm]
 backend = "cli"
 command = "claude"'
 T3_OUT="$(run_for_fixture t3)"
-assert_has_override "t3: [llm] cli backend splices llm.backend=cli"     "$T3_OUT" "llm.backend=cli"
-assert_has_override "t3: [llm] cli backend splices llm.command=claude" "$T3_OUT" "llm.command=claude"
-T3_COUNT=$(override_count "$T3_OUT")
-if [ "$T3_COUNT" = "2" ]; then
-    pass "t3: exactly two llm.* overrides emitted (got $T3_COUNT)"
-else
-    fail "t3: expected exactly 2 llm.* overrides, got $T3_COUNT" "argv=$T3_OUT"
-fi
+assert_no_override "t3: [llm] cli + command keys emit zero overrides" "$T3_OUT"
+assert_no_config_override_token "t3: --config-override token absent" "$T3_OUT"
+assert_restart_ok "t3: --restart-agent succeeds with multi-key [llm]" t3
 
-# ----- t4: [llm] backend = "http", model = "...", api_key_env = "..." -----
+# ----- t4: [llm] http full block — schema-only -----
 make_colony_fixture t4 '[llm]
 backend = "http"
 model = "claude-sonnet-4"
 api_key_env = "ANTHROPIC_API_KEY"'
 T4_OUT="$(run_for_fixture t4)"
-assert_has_override "t4: [llm] http backend splices llm.backend=http"                         "$T4_OUT" "llm.backend=http"
-assert_has_override "t4: [llm] http backend splices llm.model=claude-sonnet-4"               "$T4_OUT" "llm.model=claude-sonnet-4"
-assert_has_override "t4: [llm] http backend splices llm.api_key_env=ANTHROPIC_API_KEY"       "$T4_OUT" "llm.api_key_env=ANTHROPIC_API_KEY"
-T4_COUNT=$(override_count "$T4_OUT")
-if [ "$T4_COUNT" = "3" ]; then
-    pass "t4: exactly three llm.* overrides emitted (got $T4_COUNT)"
-else
-    fail "t4: expected exactly 3 llm.* overrides, got $T4_COUNT" "argv=$T4_OUT"
-fi
+assert_no_override "t4: [llm] http full block emits zero overrides" "$T4_OUT"
+assert_no_config_override_token "t4: --config-override token absent" "$T4_OUT"
+assert_restart_ok "t4: --restart-agent succeeds with full http [llm]" t4
 
-# ----- t5: cost-cap override file precedence -----
-# Both <fed>/.agentis/llm-backend-override (= "mock") AND a fully
-# populated [llm] block in colony.toml are present. The override file
-# must win — agents are downgraded to mock without leaking the colony's
-# http config onto the daemon CLI. Per the function precedence comment:
-# "downgrade should be a clean snap to mock without leaking colony-
-# specific keys."
+# ----- t5: cost-cap override file present — also no-op until upstream flag lands -----
+# Pre-#351 the override file's "mock" value was spliced as
+# --config-override llm.backend=mock and broke the spawn (agentis didn't
+# accept the flag). Post-#351 the file is harmless: the helper emits
+# nothing, the daemon inherits federation-wide config, and the operator-
+# triggered restart succeeds. Cost-cap downgrade itself stays broken until
+# upstream agentis ships --config-override (filed as #351's track 2).
 make_colony_fixture t5 '[llm]
 backend = "http"
 model = "claude-sonnet-4"
@@ -222,12 +241,21 @@ api_key_env = "ANTHROPIC_API_KEY"'
 mkdir -p "$FIXTURE_ROOT/t5/dev-apprenticeship/.agentis"
 echo "mock" > "$FIXTURE_ROOT/t5/dev-apprenticeship/.agentis/llm-backend-override"
 T5_OUT="$(run_for_fixture t5)"
-assert_has_override "t5: cost-cap override file -> llm.backend=mock spliced" "$T5_OUT" "llm.backend=mock"
-T5_COUNT=$(override_count "$T5_OUT")
-if [ "$T5_COUNT" = "1" ]; then
-    pass "t5: cost-cap override wins — exactly one llm.* override emitted (got $T5_COUNT, [llm] block ignored)"
+assert_no_override "t5: cost-cap override file present, but emits zero overrides post-#351" "$T5_OUT"
+assert_no_config_override_token "t5: --config-override token absent even with override file present" "$T5_OUT"
+assert_restart_ok "t5: --restart-agent succeeds with both override file AND [llm] block" t5
+
+# ----- t6 (regression): aggregate check across all 5 prior tests -----
+# Walks every recorded argv file and asserts the literal --config-override
+# token is absent. This is the primary safety net for future drift.
+ALL_RECORDED=""
+for tag in t1 t2 t3 t4 t5; do
+    ALL_RECORDED="$ALL_RECORDED $(cat "$FIXTURE_ROOT/$tag/agentis-argv.log" 2>/dev/null)"
+done
+if printf '%s\n' "$ALL_RECORDED" | tr ' ' '\n' | grep -qx -- '--config-override'; then
+    fail "t6: --config-override token leaked across one of t1-t5" "$ALL_RECORDED"
 else
-    fail "t5: expected exactly 1 llm.* override (cost-cap precedence), got $T5_COUNT" "argv=$T5_OUT"
+    pass "t6: --config-override never appears in any recorded argv (regression guard for #351)"
 fi
 
 echo ""
