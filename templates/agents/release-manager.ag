@@ -1,0 +1,231 @@
+// TEMPLATE: release-manager — generalised release/ship_decider for any forge | customization: [release_manager].auto_tag (memo key release_manager:auto_tag — string "true" enables autonomous-tier merge+tag, default off); [release_manager].release_branch (memo key release_manager:release_branch — defaults to "main"); recommended placement is a colony with merge-requests + create-tag + create-release + create-mr surface (e.g. a release/-shaped colony — but this template is repo-agnostic, NOT tied to dev-apprenticeship's release colony).
+//
+// release-manager.ag — watches a repository's recent merged PRs, drafts a
+// release-readiness assessment, opens a "release: vX.Y.Z" PR with VERSION
+// + CHANGELOG bumps at the review-gated tier, and (when explicitly opted
+// into via [release_manager].auto_tag) merges the release PR + pushes
+// the tag at the autonomous tier.
+//
+// Run as daemon: agentis daemon agents/release-manager.ag --colony <colony>
+// Requires: exec_foreign capability, [forge] block configured (the colony's
+// scripts/start-colony.sh exports GITLAB_*/GITHUB_* env per ADR-0002), and
+// a forge-api.sh that supports `releases --per-page 1`, `merge-requests
+// --state merged --since <iso>`, `create-mr` (review-gated terminal-ish
+// step), and (when auto_tag is true) `merge` + `create-tag` +
+// `create-release` for the autonomous tier.
+//
+// Customization knobs:
+//   [release_manager].auto_tag — string "true" / "false". When "true" the
+//     autonomous tier merges the release PR and pushes the tag terminally;
+//     when "false" or empty, the autonomous branch degrades into the same
+//     surface as review-gated (open the release PR but never merge). Surface
+//     into the agent via `agentis memo set release_manager:auto_tag true`
+//     out of start-colony.sh; read via
+//     `recall_latest("release_manager:auto_tag")` per tick.
+//   [release_manager].release_branch — defaults to "main"; the ref new
+//     release tags are created against. Surface via the same memo idiom
+//     (`agentis memo set release_manager:release_branch main`).
+//
+// Forge API surface used:
+//   forge-api.sh releases --per-page 1 --view release-summary
+//   forge-api.sh merge-requests --state merged --since <iso> --view release-mr
+//   forge-api.sh create-mr ...                  (review-gated)
+//   forge-api.sh merge <iid>                    (autonomous, only with auto_tag=true)
+//   forge-api.sh create-tag --name --ref --message    (autonomous, ditto)
+//   forge-api.sh create-release --tag --name --description (autonomous, ditto)
+//
+// Double-release guard: even at the autonomous tier, the agent refuses to
+// fire if any release was created in the last 24h. This is a belt-and-
+// braces backstop against a bad LLM call producing two consecutive
+// release tags inside one operator window.
+
+cb 150;
+
+type ReleaseAssessment {
+    mr_count_since_last: int,
+    suggested_version: string,
+    bump_type: string,
+    last_release_iso: string,
+    last_release_within_24h: int,
+    suggested_changelog: string,
+    rationale: string
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("release_manager:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    };
+    return 0.0;
+}
+
+// Memo gate: only call prompt() if at least 5 minutes have passed since
+// the last tick — same idiom as `dependency-updater`.
+fn should_run_now() -> int {
+    let last = recall_latest("release_manager:last_check");
+    if len(last) == 0 {
+        return 1;
+    };
+    // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+    let cmd = "python3 -c 'import sys,datetime,time; ts=sys.argv[1]; t=datetime.datetime.strptime(ts.rstrip(\"Z\"), \"%Y-%m-%dT%H:%M:%S\").replace(tzinfo=datetime.timezone.utc).timestamp(); print(1 if (time.time() - t) >= 300 else 0)' " + shell_escape(last);
+    let raw = try { exec sh cmd; } catch e { "1"; };
+    return parse_int(raw);
+}
+
+fn tick(reason: string) -> void {
+    if should_run_now() == 0 {
+        return;
+    };
+
+    // Latest release (since= source). Mechanical extraction first per the
+    // CLAUDE.md `parse_int(to_string(json_get(...)))` idiom.
+    let latest_release_raw = try {
+        exec sh "$COLONY_DIR/scripts/forge-api.sh releases --per-page 1 --view release-summary";
+    } catch e {
+        print("[release_manager] forge poll (releases) failed:", e);
+        "[]";
+    };
+
+    // Pull a since-cursor from the latest release; fall back to 30 days
+    // ago if the array is empty (fresh repo with no release yet).
+    let last_iso_via_json = to_string(json_get(latest_release_raw, "[0].released_at"));
+    let last_iso = if len(last_iso_via_json) >= 5 {
+        last_iso_via_json;
+    } else {
+        let fallback = try {
+            exec sh "date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-30d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo 2000-01-01T00:00:00Z";
+        } catch e { "2000-01-01T00:00:00Z"; };
+        fallback;
+    };
+
+    // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+    let mrs_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --since " + shell_escape(last_iso) + " --view release-mr";
+    let mrs_raw = try { exec sh mrs_cmd; } catch e {
+        print("[release_manager] forge poll (merged MRs) failed:", e);
+        "[]";
+    };
+
+    // Mechanical extraction: if the merged-MR array is empty, no release
+    // window even worth assessing. Skip the prompt entirely.
+    let head_iid = parse_int(to_string(json_get(mrs_raw, "[0].iid")));
+    if head_iid == 0 {
+        let now_e0 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_e0) > 0 {
+            memo_write("release_manager:last_check", now_e0);
+        };
+        return;
+    };
+
+    let rec = recommend("release_window", ["accuracy"]);
+    let context = "Latest release: " + latest_release_raw + "\nMerged MRs since last release: " + mrs_raw + "\nPast learning: " + to_string(rec);
+
+    let assessment = prompt(
+        "You are a release-manager agent. Examine the merged MRs since the last release in the context. Decide: (a) how many MRs landed (mr_count_since_last); (b) suggested next version (suggested_version, bare semver string e.g. '1.4.7' — derive from the last release tag if present in the context, otherwise '0.1.0'); (c) bump type rationale (bump_type: 'major' if any breaking change is signposted in MR titles, 'minor' if any new feature, 'patch' otherwise); (d) the last release's released_at/created_at (last_release_iso, ISO 8601, '' if no prior release); (e) whether that last release is within the past 24 hours from now (last_release_within_24h, int 0|1); (f) a draft changelog block in Keep-a-Changelog style grouped under ### Added / ### Fixed / ### Changed (suggested_changelog, markdown); (g) a one-sentence rationale explaining the bump (rationale). Return JSON: mr_count_since_last (int), suggested_version (string), bump_type (string), last_release_iso (string), last_release_within_24h (int 0|1), suggested_changelog (string), rationale (string).",
+        context
+    ) -> ReleaseAssessment;
+
+    if assessment.mr_count_since_last == 0 {
+        let now_e1 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_e1) > 0 {
+            memo_write("release_manager:last_check", now_e1);
+        };
+        return;
+    };
+
+    let my_tier = tier("release_manager");
+    let release_branch_raw = recall_latest("release_manager:release_branch");
+    let release_branch = if len(release_branch_raw) == 0 { "main"; } else { release_branch_raw; };
+    let auto_tag = recall_latest("release_manager:auto_tag");
+    let release_pr_title = "release: v" + assessment.suggested_version;
+    let release_pr_body = "**Auto-drafted by `release-manager` template (PR2 of #322).**\n\n" + assessment.rationale + "\n\n**MRs in this window:** " + to_string(assessment.mr_count_since_last) + "\n**Bump type:** " + assessment.bump_type + "\n\n## CHANGELOG\n\n" + assessment.suggested_changelog;
+
+    if my_tier == "autonomous" {
+        // No-double-release guard: refuse to fire the terminal action if
+        // a release happened in the last 24h, even if the LLM voted to.
+        let too_recent = assessment.last_release_within_24h == 1;
+        let opted_in = if auto_tag == "true" { true; } else { false; };
+        let safe_to_tag = if opted_in {
+            if too_recent { false; } else { true; };
+        } else {
+            false;
+        };
+
+        if safe_to_tag {
+            // Open the release PR (so there's an audit trail), then merge
+            // it, then push the tag + create the GitHub/GitLab release.
+            // Each step is independent so a failure mid-sequence is
+            // recoverable by the operator.
+            // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+            let create_mr_cmd = "$COLONY_DIR/scripts/forge-api.sh create-mr --title " + shell_escape(release_pr_title) + " --description " + shell_escape(release_pr_body) + " --target-branch " + shell_escape(release_branch);
+            let create_raw = try { exec sh create_mr_cmd; } catch e {
+                print("[release_manager] create-mr failed:", e);
+                "";
+            };
+            let new_mr_iid = if len(create_raw) > 0 {
+                parse_int(to_string(json_get(create_raw, "iid")));
+            } else {
+                0;
+            };
+
+            if new_mr_iid > 0 {
+                let merge_cmd = "$COLONY_DIR/scripts/forge-api.sh merge " + to_string(new_mr_iid);
+                try { exec sh merge_cmd; } catch e {
+                    print("[release_manager] merge of release MR failed:", e);
+                };
+            };
+
+            // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+            let tag_cmd = "$COLONY_DIR/scripts/forge-api.sh create-tag --name " + shell_escape("v" + assessment.suggested_version) + " --ref " + shell_escape(release_branch) + " --message " + shell_escape("Release v" + assessment.suggested_version);
+            try { exec sh tag_cmd; } catch e {
+                print("[release_manager] create-tag failed:", e);
+            };
+
+            // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+            let release_cmd = "$COLONY_DIR/scripts/forge-api.sh create-release --tag " + shell_escape("v" + assessment.suggested_version) + " --name " + shell_escape("Release v" + assessment.suggested_version) + " --description " + shell_escape(assessment.suggested_changelog);
+            try { exec sh release_cmd; } catch e {
+                print("[release_manager] create-release failed:", e);
+            };
+
+            print("[release_manager] Released v", assessment.suggested_version, "(", assessment.bump_type, ",", assessment.mr_count_since_last, "MRs)");
+            emit("__COLONY_NAME__:release_window_assessment", assessment);
+            learn("release_window", "v" + assessment.suggested_version, assessment.bump_type + ": " + assessment.rationale, "success", ["acted", "release-manager"]);
+        } else {
+            // Either auto_tag is off or a release happened in the last 24h.
+            // Same surface as review-gated: open the release PR but do
+            // NOT tag.
+            // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+            let create_mr_cmd = "$COLONY_DIR/scripts/forge-api.sh create-mr --title " + shell_escape(release_pr_title) + " --description " + shell_escape(release_pr_body) + " --target-branch " + shell_escape(release_branch);
+            try { exec sh create_mr_cmd; } catch e {
+                print("[release_manager] create-mr failed (autonomous fall-back):", e);
+            };
+            emit("__COLONY_NAME__:release_window_assessment", assessment);
+            learn("release_window", "v" + assessment.suggested_version, assessment.bump_type + ": " + assessment.rationale, "partial", ["review-gated", "release-manager"]);
+        };
+    } else if my_tier == "review-gated" {
+        // Open the release PR with VERSION + CHANGELOG bump rationale.
+        // Don't merge it — operator gates the terminal action.
+        // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+        let create_mr_cmd = "$COLONY_DIR/scripts/forge-api.sh create-mr --title " + shell_escape(release_pr_title) + " --description " + shell_escape(release_pr_body) + " --target-branch " + shell_escape(release_branch);
+        try { exec sh create_mr_cmd; } catch e {
+            print("[release_manager] create-mr failed (review-gated):", e);
+        };
+        emit("__COLONY_NAME__:release_window_assessment", assessment);
+        learn("release_window", "v" + assessment.suggested_version, assessment.bump_type + ": " + assessment.rationale, "partial", ["review-gated", "release-manager"]);
+    } else if my_tier == "propose" {
+        // Bus-only emit. No PR opened.
+        emit("__COLONY_NAME__:release_window_assessment", assessment);
+        print("[release_manager] Drafted release window (propose) v", assessment.suggested_version, "(", assessment.mr_count_since_last, "MRs)");
+        learn("release_window", "v" + assessment.suggested_version, assessment.bump_type + ": " + assessment.rationale, "partial", ["emitted", "release-manager"]);
+    } else {
+        // shadow / dormant: observe-only. learn() outcome captures whether
+        // a release looked due (>= 1 MRs and we got an LLM-suggested
+        // version back — proxy for "would have released around now").
+        print("[release_manager] Observing (tier:", my_tier, ") suggested:", assessment.suggested_version, "(", assessment.mr_count_since_last, "MRs)");
+        learn("release_window", "v" + assessment.suggested_version, assessment.bump_type + ": " + assessment.rationale, "partial", ["observed", "release-manager"]);
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("release_manager:last_check", now);
+    };
+}

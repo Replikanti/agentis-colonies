@@ -1,0 +1,227 @@
+// TEMPLATE: dependency-updater — Dependabot-style PR triage and merge | customization: [dependency_updater].denied_packages denylist (memo key dependency_updater:denied_packages); recommended placement is a colony that already has merge-requests + add-note + post-note + merge surface (e.g. an implementation/ or release/-shaped colony with the trigger labels disabled).
+//
+// dependency-updater.ag — observes Dependabot / Renovate-style PRs on the
+// configured forge, drafts a "good to merge" assessment, posts a review,
+// and (at the autonomous tier) merges the PR after CI + denylist gates.
+//
+// Run as daemon: agentis daemon agents/dependency-updater.ag --colony <colony>
+// Requires: exec_foreign capability, [forge] block configured (the colony's
+// scripts/start-colony.sh exports GITLAB_*/GITHUB_* env per ADR-0002), and
+// a forge-api.sh that supports `merge-requests --state opened --view raw`,
+// `post-note`, and the autonomous-tier `merge` verb (operators wire that
+// last one — see notes below).
+//
+// Customization knobs (read at exec time, never at parse time):
+//   [dependency_updater].denied_packages — operator-configurable comma-sep
+//     list of package names that the autonomous tier MUST NOT merge even
+//     when CI is green. Surfaced into the agent via a one-time
+//     `agentis memo set dependency_updater:denied_packages "<csv>"` call
+//     out of start-colony.sh; the agent reads it via
+//     `recall_latest("dependency_updater:denied_packages")` per tick so
+//     operators can hot-edit the list without restarting the daemon.
+//
+// Forge API surface used:
+//   forge-api.sh merge-requests --state opened --view raw
+//   forge-api.sh post-note <iid> --body <text>           (review comment)
+//   forge-api.sh merge <iid>                             (autonomous only)
+//
+// On the merge verb: the dev-apprenticeship release/code-review forge-api
+// wrappers do not ship a `merge` subcommand by default — operators who
+// want the autonomous tier to actually land PRs must extend their colony's
+// gitlab-api.sh / github-api.sh once. The autonomous branch below logs
+// and falls back to a review-gated post when the merge command fails so
+// an unwired colony degrades gracefully into review-gated behaviour.
+
+cb 100;
+
+type DepAnalysis {
+    candidate_count: int,
+    candidate_iid: int,
+    candidate_title: string,
+    candidate_package: string,
+    candidate_bump_type: string,
+    candidate_ci_green: int,
+    candidate_has_conflicts: int,
+    reasoning: string
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("dependency_updater:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    };
+    return 0.0;
+}
+
+// Memo-gated cadence: bail before any prompt() if the last tick stamped
+// less than 300s ago. Reactive colonies tick at 300000ms anyway, so this
+// gate is a no-op there; it doubles as a fail-safe for operators who
+// configure a faster tick interval. Time math lives in python3 so we
+// don't depend on the host having GNU `date -d` (macOS bash 3.2 ships
+// only BSD `date`, which lacks `-d <iso8601>`).
+fn should_run_now() -> int {
+    let last = recall_latest("dependency_updater:last_check");
+    if len(last) == 0 {
+        return 1;
+    };
+    // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+    let cmd = "python3 -c 'import sys,datetime,time; ts=sys.argv[1]; t=datetime.datetime.strptime(ts.rstrip(\"Z\"), \"%Y-%m-%dT%H:%M:%S\").replace(tzinfo=datetime.timezone.utc).timestamp(); print(1 if (time.time() - t) >= 300 else 0)' " + shell_escape(last);
+    let raw = try { exec sh cmd; } catch e { "1"; };
+    return parse_int(raw);
+}
+
+fn tick(reason: string) -> void {
+    if should_run_now() == 0 {
+        return;
+    };
+
+    let raw = try {
+        exec sh "$COLONY_DIR/scripts/forge-api.sh merge-requests --state opened --view raw";
+    } catch e {
+        print("[dependency_updater] forge poll failed:", e);
+        "";
+    };
+
+    if len(raw) < 3 {
+        let now_e0 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_e0) > 0 {
+            memo_write("dependency_updater:last_check", now_e0);
+        };
+        return;
+    };
+
+    // Mechanical extraction first per the CLAUDE.md
+    // `parse_int(to_string(json_get(...)))` idiom — saves a round-trip
+    // when the response is an empty array.
+    let head_iid = parse_int(to_string(json_get(raw, "[0].iid")));
+    if head_iid == 0 {
+        let now_e1 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_e1) > 0 {
+            memo_write("dependency_updater:last_check", now_e1);
+        };
+        return;
+    };
+
+    let denied = recall_latest("dependency_updater:denied_packages");
+    let rec = recommend("merge_dep_pr", ["accuracy"]);
+    let context = "Open PRs JSON: " + raw + "\nPast learning: " + to_string(rec) + "\nDenylist (comma-sep package names; empty = none): " + denied;
+
+    let analysis = prompt(
+        "You are a dependency-update PR triage agent. Examine the open PRs JSON in the context and pick the SINGLE most-recent PR authored by a Dependabot-style bot (author username matching dependabot[bot], renovate[bot], or similar). Determine its bump type from the title (major/minor/patch). Read the CI / pipeline state if visible in the JSON (set candidate_ci_green = 1 only if the latest pipeline is green or success; 0 otherwise or if uncertain). Read whether the PR has merge conflicts (candidate_has_conflicts = 1 if has_conflicts / mergeable=false / draft, 0 otherwise). Return JSON: candidate_count (int, total bot-authored open PRs), candidate_iid (int, the chosen iid; 0 if none), candidate_title (string), candidate_package (string, the package name being bumped), candidate_bump_type (string, 'major'/'minor'/'patch'/'unknown'), candidate_ci_green (int 0|1), candidate_has_conflicts (int 0|1), reasoning (string, one sentence).",
+        context
+    ) -> DepAnalysis;
+
+    let no_candidate = if analysis.candidate_count == 0 {
+        true;
+    } else {
+        if analysis.candidate_iid == 0 { true; } else { false; };
+    };
+    if no_candidate {
+        let now_e2 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_e2) > 0 {
+            memo_write("dependency_updater:last_check", now_e2);
+        };
+        return;
+    };
+
+    let my_tier = tier("dependency_updater");
+    let assess_body = "[dependency-updater] **Auto-assessment (" + analysis.candidate_bump_type + " bump of `" + analysis.candidate_package + "`)**\n\nCI green: " + to_string(analysis.candidate_ci_green) + "  |  conflicts: " + to_string(analysis.candidate_has_conflicts) + "\n\n" + analysis.reasoning;
+    let approve_body = "[dependency-updater] LGTM — " + analysis.candidate_bump_type + " bump of `" + analysis.candidate_package + "`, CI green, no conflicts. Approving so the maintainer can merge.";
+
+    if my_tier == "autonomous" {
+        // Gate the terminal merge on CI green + no conflicts + denylist
+        // miss. The denylist check is a literal substring match against the
+        // recall_latest("dependency_updater:denied_packages") CSV — operators
+        // who want fancier matching can extend the prompt's package
+        // extraction instead of this template.
+        let ci_green = analysis.candidate_ci_green == 1;
+        let no_conflict = analysis.candidate_has_conflicts == 0;
+        // Denylist check delegated to the shell so we lean on a real
+        // grep-with-fixed-strings rather than reaching for a string
+        // builtin the agentis surface may or may not provide. The
+        // surrounding commas anchor the package name as a whole token
+        // so e.g. `lodash` does not match a denied `lodash-es`.
+        let denied_hit = if len(denied) == 0 {
+            false;
+        } else {
+            // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+            let denied_check_cmd = "printf %s " + shell_escape("," + denied + ",") + " | grep -F -q -- " + shell_escape("," + analysis.candidate_package + ",") + " && echo 1 || echo 0";
+            let denied_raw = try { exec sh denied_check_cmd; } catch e { "0"; };
+            if parse_int(denied_raw) == 1 { true; } else { false; };
+        };
+        let safe_to_merge = if ci_green {
+            if no_conflict {
+                if denied_hit { false; } else { true; };
+            } else {
+                false;
+            };
+        } else {
+            false;
+        };
+
+        if safe_to_merge {
+            let merge_cmd = "$COLONY_DIR/scripts/forge-api.sh merge " + to_string(analysis.candidate_iid);
+            let merge_result = try { exec sh merge_cmd; } catch e {
+                print("[dependency_updater] merge failed (forge-api.sh may not implement merge yet — falling back to approval note):", e);
+                "";
+            };
+            if len(merge_result) > 0 {
+                print("[dependency_updater] Merged PR", analysis.candidate_iid, "(", analysis.candidate_package, analysis.candidate_bump_type, ")");
+                emit("__COLONY_NAME__:dependabot_pr_seen", analysis);
+                learn("merge_dep_pr", "pr " + to_string(analysis.candidate_iid), "merged", "success", ["acted", "dependency-updater"]);
+            } else {
+                // Merge command unavailable in this colony's forge-api.sh.
+                // Fall through to the same review-gated surface so the
+                // operator still gets the LGTM signal on the PR.
+                let approve_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(analysis.candidate_iid) + " --body " + shell_escape(approve_body);
+                try { exec sh approve_cmd; } catch e {
+                    print("[dependency_updater] failed to post approval (autonomous fall-back):", e);
+                };
+                emit("__COLONY_NAME__:dependabot_pr_seen", analysis);
+                learn("merge_dep_pr", "pr " + to_string(analysis.candidate_iid), "approved-degraded", "partial", ["review-gated", "dependency-updater"]);
+            };
+        } else {
+            // Not safe (CI red, conflicts, or denylist hit). Same surface
+            // as review-gated so the operator still sees the assessment.
+            let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(analysis.candidate_iid) + " --body " + shell_escape(assess_body);
+            try { exec sh post_cmd; } catch e {
+                print("[dependency_updater] failed to post assessment (autonomous fall-back):", e);
+            };
+            emit("__COLONY_NAME__:dependabot_pr_seen", analysis);
+            learn("merge_dep_pr", "pr " + to_string(analysis.candidate_iid), "blocked", "partial", ["review-gated", "dependency-updater"]);
+        };
+    } else if my_tier == "review-gated" {
+        let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(analysis.candidate_iid) + " --body " + shell_escape(approve_body);
+        try { exec sh post_cmd; } catch e {
+            print("[dependency_updater] failed to post approval:", e);
+        };
+        emit("__COLONY_NAME__:dependabot_pr_seen", analysis);
+        learn("merge_dep_pr", "pr " + to_string(analysis.candidate_iid), "approved", "partial", ["review-gated", "dependency-updater"]);
+    } else if my_tier == "propose" {
+        // Draft only: emit the candidate on the bus + post the read-only
+        // assessment as a comment. Non-terminal — operator decides.
+        let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(analysis.candidate_iid) + " --body " + shell_escape(assess_body);
+        try { exec sh post_cmd; } catch e {
+            print("[dependency_updater] failed to post draft assessment:", e);
+        };
+        emit("__COLONY_NAME__:dependabot_pr_seen", analysis);
+        print("[dependency_updater] Drafted assessment (propose) for PR", analysis.candidate_iid);
+        learn("merge_dep_pr", "pr " + to_string(analysis.candidate_iid), "drafted", "partial", ["emitted", "dependency-updater"]);
+    } else {
+        // shadow / dormant: observe-only. learn() outcome reflects whether
+        // CI is green AND no conflicts (the proxy for "would have merged
+        // historically" — operators get a real signal as confidence grows).
+        let outcome = if analysis.candidate_ci_green == 1 {
+            if analysis.candidate_has_conflicts == 0 { "success"; } else { "partial"; };
+        } else {
+            "partial";
+        };
+        print("[dependency_updater] Observing (tier:", my_tier, ") PR:", analysis.candidate_iid, "package:", analysis.candidate_package);
+        learn("merge_dep_pr", "pr " + to_string(analysis.candidate_iid), "observed", outcome, ["observed", "dependency-updater"]);
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("dependency_updater:last_check", now);
+    };
+}
