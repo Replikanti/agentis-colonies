@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-agent unified timeline modal section** — collector + UI plumbing
+  ([#315](https://github.com/Replikanti/agentis-colonies/issues/315) PR 1 of 2).
+  The agent-detail modal now ships a "Timeline (last 50)" section between
+  "Recent Experience" and "LLM Cost" that merges four on-disk JSONL streams
+  into a single chronological feed: experience entries (kind=learn), spend
+  rows (kind=prompt), confidence-log entries (kind=confidence_change), and
+  daemon lifecycle events (kind=lifecycle). The collector reads each source
+  at most once per regen — lifecycle and confidence-log are bucketed by
+  `agent_id` up-front so the per-agent slice is O(1) rather than re-reading
+  the ~12k-line lifecycle file for every agent. All four sources tolerate
+  missing files / malformed lines silently. Timestamps are normalized to
+  epoch-ms regardless of source convention (experience writes seconds,
+  spend writes ms, lifecycle writes seconds). Each row carries a
+  `{ts, agent_id, kind, payload, severity}` envelope; `severity` escalates
+  to `warning` on quarantine / restart / health-degradation lifecycle
+  events and to `error` on `outcome=failure` learn rows or `ok=false`
+  prompt rows. The renderer reuses the existing `timeline-entry` /
+  `timeline-ts` / `timeline-type` CSS so colour cues match the
+  federation-wide tile palette. PR 2 will land the federation-wide
+  Timeline tile expansion + a `/timeline?since=<ts>` HTTP endpoint with
+  pagination; this PR is additive and ships per-agent only.
+
 - **Server-Sent Events (SSE) live snapshot stream** — server-side plumbing
   ([#313](https://github.com/Replikanti/agentis-colonies/issues/313) PR 1).
   The dashboard server now exposes `GET /events` (text/event-stream); each
