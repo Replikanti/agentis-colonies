@@ -508,15 +508,13 @@ else
     fail "21: SLOPE_FLAT_THRESHOLD missing, wrong value, orphaned, or 1e-6 guard survived (#163)"
 fi
 
-# --- #342: Phase Readiness — Dune-style stacked tier bars ---
+# --- #342 + #357: Phase Readiness — stacked tier bars on Promotions tab ---
 # #342 replaced the #248 PR C compact tier counter with a per-colony stack
 # of 5 progress bars (dormant / shadow / propose / review-gated / autonomous).
-# The legacy bar-visualisation classes (phase-bar-outer / -inner / -marker /
-# -eta) from before #248 PR C must STAY forbidden — those were a different,
-# pre-tiers ETA-projecting bar style and a stray revert would flip Phase
-# Readiness back to that confusing X-axis. Positive-list flips to the new
-# tier-bar classes (phase-bar / tier-<name> / phase-bar-fill / phase-bar-
-# label-left / phase-bar-label-right).
+# #357 RELOCATED the markup container from the Overview tab to the top of
+# the Promotions tab (above the per-agent ladders) so the Overview tab is
+# actionable-first and the readiness pairs with the ladder. Test enforces
+# both class wiring (#342) and section placement (#357).
 if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
 import sys, re
 with open(sys.argv[1]) as f:
@@ -541,12 +539,28 @@ if '<summary><h2>' in src:
     sys.stderr.write('h2-in-summary anti-pattern still present\n'); sys.exit(5)
 if 'summary-h2' not in src:
     sys.stderr.write('summary-h2 class missing\n'); sys.exit(6)
+# #357: id="readiness" must live INSIDE the Promotions <section>, not the
+# Overview <section>. Slice on data-tab="promotions"...next data-tab=, and
+# require id="readiness" inside that slice + absent from the overview slice.
+def slice_section(haystack, name):
+    m = re.search(r'<section\s+data-tab="' + re.escape(name) + r'"[^>]*>', haystack)
+    if not m: return None
+    start = m.end()
+    n = re.search(r'<section\s+data-tab="', haystack[start:])
+    end = start + n.start() if n else len(haystack)
+    return haystack[start:end]
+overview = slice_section(src, 'overview') or ''
+promotions = slice_section(src, 'promotions') or ''
+if 'id="readiness"' not in promotions:
+    sys.stderr.write('Phase Readiness markup missing from Promotions tab (#357)\n'); sys.exit(7)
+if 'id="readiness"' in overview:
+    sys.stderr.write('Phase Readiness markup still in Overview tab (should be Promotions per #357)\n'); sys.exit(8)
 sys.exit(0)
 PY
 then
-    pass "22: Phase Readiness uses stacked tier bars (#342, replaces #248 PR C counter)"
+    pass "22: Phase Readiness stacked tier bars relocated to Promotions tab (#357, was #342 in Overview)"
 else
-    fail "22: Phase Readiness regression — legacy bar markup or new tier-bar classes missing"
+    fail "22: Phase Readiness regression — class wiring missing or markup not in Promotions tab"
 fi
 
 # --- #248 PR C: Confidence Trend + Experience Growth demoted behind <details> ---
@@ -1482,9 +1496,12 @@ else
     fail "41: bulk-actions wiring regressed"
 fi
 
-# --- #352: Config tab read-only by default. The collector emits
-#     config_editor.operator_writes_enabled = false until the operator
-#     flips the gate. The renderer's apply button must be disabled. ---
+# --- #357: Config tab EDITABLE by default. The v0.6.0 read-only gate
+#     was a feature regression; #357 inverts the gate so writes are
+#     permitted unless `operator_writes_disabled = true` is explicitly
+#     set. Inputs render without disabled / readonly attributes by
+#     default. The read-only branch is reachable via fixture-only
+#     `read_only_override = true`. ---
 if python3 - "$HTML_FILE" <<'PY' 2>/dev/null
 import sys, re, json
 with open(sys.argv[1]) as f:
@@ -1496,24 +1513,47 @@ try:
 except Exception:
     sys.exit(2)
 ce = data.get('config_editor') or {}
-if ce.get('operator_writes_enabled') is not False:
-    sys.stderr.write('default operator_writes_enabled is not False: %r\n' % ce.get('operator_writes_enabled'))
+# #357: the new defensive gate is `operator_writes_disabled` (not
+# `_enabled`). Default-absent or False means the tab is editable.
+if ce.get('operator_writes_disabled') is True:
+    sys.stderr.write('default operator_writes_disabled is unexpectedly True: %r\n' % ce)
     sys.exit(3)
 # renderConfigEditor must be defined.
 if 'function renderConfigEditor' not in html:
     sys.stderr.write('renderConfigEditor not defined\n'); sys.exit(4)
-# Read-only banner literal must be present in the template.
-if 'config-readonly-banner' not in html:
-    sys.stderr.write('config-readonly-banner class missing\n'); sys.exit(5)
 # applyConfigEdits handler hits /config/apply.
 if "fetch('/config/apply'" not in html:
     sys.stderr.write('applyConfigEdits does not POST /config/apply\n'); sys.exit(6)
+# #357: writable branch — inputs without `disabled` / `readonly`. The
+# fixture has no operator_writes_disabled, so the renderer must NOT
+# apply the disabled attribute literal to .config-input elements. We
+# grep the rendered Config tab section for `class="config-input"` and
+# assert no occurrence carries ` disabled` on the same line.
+m = re.search(r'<div\s+id="config-editor"[^>]*>(.*?)</section>', html, re.DOTALL)
+config_section = m.group(1) if m else ''
+disabled_inputs = re.findall(r'class="config-input"[^>]*disabled', config_section)
+if disabled_inputs:
+    # First-paint should never carry disabled on the editable default.
+    sys.stderr.write('disabled attribute on .config-input under default editable mode: %r\n' % disabled_inputs[:3])
+    sys.exit(5)
+# The renderer body must reference the `operator_writes_disabled` and
+# `read_only_override` gate keys so the inverted-gate logic is wired.
+m = re.search(r'function renderConfigEditor\b.*?\n\}', html, re.DOTALL)
+body = m.group(0) if m else ''
+if 'operator_writes_disabled' not in body:
+    sys.stderr.write('renderConfigEditor missing operator_writes_disabled gate\n'); sys.exit(7)
+if 'read_only_override' not in body:
+    sys.stderr.write('renderConfigEditor missing read_only_override fixture lever\n'); sys.exit(8)
+# Read-only banner literal MUST still be defined (we only flipped the
+# default; the read-only render path stays).
+if 'config-readonly-banner' not in html:
+    sys.stderr.write('config-readonly-banner class missing\n'); sys.exit(9)
 sys.exit(0)
 PY
 then
-    pass "42: Config tab is read-only by default; operator_writes_enabled=false (#352)"
+    pass "42: Config tab editable by default; operator_writes_disabled gate inverted (#357)"
 else
-    fail "42: Config tab default-read-only contract regressed"
+    fail "42: Config tab default-editable contract regressed (#357)"
 fi
 
 # --- #352: only one section is .active at first paint (Overview). ---
@@ -1563,18 +1603,318 @@ case "$RESP44B_CODE" in
     *) echo "  /sidecar-restart returned $RESP44B_CODE (expected 200/400/500/503)"; T44_OK=0 ;;
 esac
 RESP44C="$TMPDIR_TEST/config-apply.txt"
-RESP44C_CODE="$(curl -s -o "$RESP44C" -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"scope":"federation","updates":[]}' "http://127.0.0.1:$PORT/config/apply" 2>/dev/null || echo "000")"
-# Default operator_writes_enabled = false → 503. 400 is also OK (empty
-# updates list). 200 only if the gate is somehow on (operator slipped a
-# config in mid-test).
+RESP44C_CODE="$(curl -s -o "$RESP44C" -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{"scope":"fed","mtime_ms":0,"changes":[]}' "http://127.0.0.1:$PORT/config/apply" 2>/dev/null || echo "000")"
+# #357: editable by default. Empty changes[] → 400. 503 only if the
+# operator pre-flipped operator_writes_disabled (not in this fixture).
+# 404 if the fed config file doesn't exist (fixture has no .agentis/config).
+# 200 only on a non-empty payload, which we don't send here.
 case "$RESP44C_CODE" in
-    200|400|503) : ;;
-    *) echo "  /config/apply returned $RESP44C_CODE (expected 200/400/503)"; T44_OK=0 ;;
+    200|400|404|409|422|503) : ;;
+    *) echo "  /config/apply returned $RESP44C_CODE (expected 200/400/404/409/422/503)"; T44_OK=0 ;;
 esac
 if [ "$T44_OK" -eq 1 ]; then
     pass "44: /restart-all-stopped, /sidecar-restart, /config/apply endpoints all return defensive status (#352)"
 else
     fail "44: one or more #352 endpoints unreachable"
+fi
+
+# --- #357 test 45: Forge Rate Limits is NOT a top-level Overview child.
+#     The card was relocated to a per-colony modal (showColonyModal). The
+#     id="forge-rate-limits" container must NOT live inside the Overview
+#     <section> markup. The renderer function stays defined for the per-
+#     colony modal. ---
+if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
+import sys, re
+with open(sys.argv[1]) as f:
+    src = f.read()
+def slice_section(haystack, name):
+    m = re.search(r'<section\s+data-tab="' + re.escape(name) + r'"[^>]*>', haystack)
+    if not m: return None
+    start = m.end()
+    n = re.search(r'<section\s+data-tab="', haystack[start:])
+    end = start + n.start() if n else len(haystack)
+    return haystack[start:end]
+overview = slice_section(src, 'overview') or ''
+if 'id="forge-rate-limits"' in overview:
+    sys.stderr.write('Forge Rate Limits container still in Overview tab — should be in colony modal (#357)\n')
+    sys.exit(1)
+# Per-colony modal entry point must exist.
+if 'function showColonyModal' not in src:
+    sys.stderr.write('showColonyModal not defined (#357 per-colony modal missing)\n')
+    sys.exit(2)
+# Modal markup container must be present.
+if 'id="colony-modal"' not in src:
+    sys.stderr.write('#colony-modal container missing\n'); sys.exit(3)
+# The per-colony modal renderer must reference data.forge_rate_limits.
+if 'forge_rate_limits' not in src:
+    sys.stderr.write('forge_rate_limits never read in template\n'); sys.exit(4)
+sys.exit(0)
+PY
+then
+    pass "45: Forge Rate Limits relocated from Overview to per-colony modal (#357)"
+else
+    fail "45: Forge Rate Limits relocation regression"
+fi
+
+# --- #357 test 46: confirm-modal markup. The bare `confirm()` was
+#     replaced with a structured config-confirm-modal listing each key
+#     diff. Asserts the modal container + the function that opens it. ---
+if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
+import sys
+with open(sys.argv[1]) as f:
+    src = f.read()
+needles = [
+    'id="config-confirm-modal"',
+    'config-confirm-rows',
+    'config-confirm-key',
+    '_showConfigConfirm',
+    '_postConfigApply',
+]
+for n in needles:
+    if n not in src:
+        sys.stderr.write('config-confirm wiring missing: ' + n + '\n')
+        sys.exit(2)
+# The bare confirm() in applyConfigEdits (which we replaced) must be gone.
+import re
+m = re.search(r'function applyConfigEdits\b.*?\n\}', src, re.DOTALL)
+body = m.group(0) if m else ''
+if re.search(r'\bconfirm\(', body):
+    sys.stderr.write('bare confirm() still in applyConfigEdits — should be _showConfigConfirm\n')
+    sys.exit(3)
+sys.exit(0)
+PY
+then
+    pass "46: structured confirm modal replaces bare confirm() in applyConfigEdits (#357)"
+else
+    fail "46: confirm-modal markup regression"
+fi
+
+# --- #357 test 47: line-level TOML patcher smoke. Build a fixture
+#     colony.toml with comments + sections + 5 keys. POST /config/apply
+#     touching ONE key. Assert: file mutated (key has new value), every
+#     OTHER line byte-identical, comments preserved. ---
+PATCHER_FED="$TMPDIR_TEST/qa357-fed"
+mkdir -p "$PATCHER_FED/.agentis/logs" "$PATCHER_FED/sample-colony/config" \
+         "$PATCHER_FED/sample-colony/agents" "$PATCHER_FED/sample-colony/scripts"
+cat > "$PATCHER_FED/sample-colony/config/colony.toml" <<'TOML'
+# colony.toml — sample fixture for #357 patcher smoke
+# Top of file comment must survive a patch.
+
+[gitlab]
+url = "https://example.test"  # inline comment must survive
+project = "sample/repo"
+
+[forge.gitlab]
+api_root = "https://gitlab.example.test/api/v4"
+url = "https://gitlab.example.test"
+
+[llm]
+backend = "cli"
+
+[daemon]
+tick_interval_ms = 60000
+heartbeat_interval_ms = 1800000  # very long for live federations
+TOML
+cat > "$PATCHER_FED/sample-colony/agents/dummy.ag" <<'AG'
+cb 100;
+fn tick() { return Void; }
+AG
+cat > "$PATCHER_FED/sample-colony/scripts/start-colony.sh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$PATCHER_FED/sample-colony/scripts/start-colony.sh"
+PORT2="$(python3 -c "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); p=s.getsockname()[1]; s.close(); print(p)")"
+LOG2="$TMPDIR_TEST/dashboard-357.log"
+setsid bash "$DASHBOARD_SH" "$PATCHER_FED" "$PORT2" >"$LOG2" 2>&1 &
+DASH2_PID=$!
+ready2=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if curl -f -s -o /dev/null "http://127.0.0.1:$PORT2/" 2>/dev/null; then
+        ready2=1; break
+    fi
+    sleep 0.5
+done
+
+if [ "$ready2" -eq 1 ]; then
+    ORIG_FIXTURE="$PATCHER_FED/sample-colony/config/colony.toml"
+    # Capture original via `cp`, not `$(cat)` — bash command substitution
+    # strips trailing newlines, which would create false-positive diff
+    # rows in the byte-identity assertion below.
+    ORIG_FILE_47="$TMPDIR_TEST/orig-47.toml"
+    cp "$ORIG_FIXTURE" "$ORIG_FILE_47"
+    MTIME_MS_47="$(python3 -c "import os,sys; print(int(os.path.getmtime(sys.argv[1]) * 1000))" "$ORIG_FIXTURE")"
+    PAYLOAD_47="$(python3 -c "
+import json, sys
+print(json.dumps({
+    'scope': 'sample-colony',
+    'mtime_ms': int(sys.argv[1]),
+    'changes': [{'key': 'daemon.tick_interval_ms', 'value': '30000', 'type': 'int'}],
+}))" "$MTIME_MS_47")"
+    RESP47="$TMPDIR_TEST/apply-47.txt"
+    RESP47_CODE="$(curl -s -o "$RESP47" -w '%{http_code}' -X POST \
+        -H 'Content-Type: application/json' \
+        -d "$PAYLOAD_47" \
+        "http://127.0.0.1:$PORT2/config/apply" 2>/dev/null || echo "000")"
+    T47_OK=1
+    if [ "$RESP47_CODE" != "200" ]; then
+        echo "  /config/apply returned $RESP47_CODE (expected 200): $(head -c 400 "$RESP47" 2>/dev/null)"
+        T47_OK=0
+    fi
+    if cmp -s "$ORIG_FILE_47" "$ORIG_FIXTURE"; then
+        echo "  fixture not mutated after /config/apply"
+        T47_OK=0
+    fi
+    # The mutated key must hold the new value.
+    if ! grep -q '^tick_interval_ms = 30000' "$ORIG_FIXTURE"; then
+        echo "  daemon.tick_interval_ms not rewritten to 30000"
+        T47_OK=0
+    fi
+    # Every other line must be byte-identical to the original — the
+    # patcher only rewrites the matching `tick_interval_ms = ...` line.
+    DIFF47="$TMPDIR_TEST/diff-47.txt"
+    diff "$ORIG_FILE_47" "$ORIG_FIXTURE" > "$DIFF47" 2>&1 || true
+    # Count only content-bearing diff lines (skip the `\ No newline at
+    # end of file` markers, which are formatting noise rather than
+    # content changes).
+    DIFF_LINES_47="$(grep -cE '^[<>] ' "$DIFF47" 2>/dev/null || echo 0)"
+    if [ "$DIFF_LINES_47" -gt 2 ]; then
+        echo "  more than 1 line rewritten by /config/apply (diff lines: $DIFF_LINES_47)"
+        cat "$DIFF47" | head -20
+        T47_OK=0
+    fi
+    # Inline comment after the changed key must survive.
+    if ! grep -q '# inline comment must survive' "$ORIG_FIXTURE"; then
+        echo "  inline comment lost after patch"
+        T47_OK=0
+    fi
+    if ! grep -q '# Top of file comment must survive a patch.' "$ORIG_FIXTURE"; then
+        echo "  top-of-file comment lost after patch"
+        T47_OK=0
+    fi
+    if [ "$T47_OK" -eq 1 ]; then
+        pass "47: line-level TOML patcher mutates target key, byte-preserves the rest (#357)"
+    else
+        fail "47: line-level TOML patcher smoke regression"
+    fi
+
+    # --- #357 test 48: drift detection. Stat fixture, externally bump
+    #     mtime, POST apply with stale mtime → 409 + drift:true. ---
+    sleep 1  # ensure mtime can advance
+    : > "$ORIG_FIXTURE.touch"
+    python3 -c "
+import os, sys, time
+p = sys.argv[1]
+ts = time.time() + 5  # future mtime so the disk_mtime > payload_mtime
+os.utime(p, (ts, ts))
+" "$ORIG_FIXTURE"
+    PAYLOAD_48="$(python3 -c "
+import json, sys
+print(json.dumps({
+    'scope': 'sample-colony',
+    'mtime_ms': int(sys.argv[1]),
+    'changes': [{'key': 'daemon.tick_interval_ms', 'value': '12345', 'type': 'int'}],
+}))" "$MTIME_MS_47")"
+    RESP48="$TMPDIR_TEST/apply-48.txt"
+    RESP48_CODE="$(curl -s -o "$RESP48" -w '%{http_code}' -X POST \
+        -H 'Content-Type: application/json' \
+        -d "$PAYLOAD_48" \
+        "http://127.0.0.1:$PORT2/config/apply" 2>/dev/null || echo "000")"
+    T48_OK=1
+    if [ "$RESP48_CODE" != "409" ]; then
+        echo "  drift detection returned $RESP48_CODE (expected 409): $(head -c 400 "$RESP48" 2>/dev/null)"
+        T48_OK=0
+    fi
+    if ! grep -q '"drift": *true' "$RESP48" 2>/dev/null; then
+        echo "  drift response missing drift:true: $(head -c 400 "$RESP48" 2>/dev/null)"
+        T48_OK=0
+    fi
+    if [ "$T48_OK" -eq 1 ]; then
+        pass "48: /config/apply returns 409 + drift:true on stale mtime (#357)"
+    else
+        fail "48: drift detection regression"
+    fi
+
+    # --- #357 test 49: multi-line value rejection. Append a multi-line
+    #     array to the fixture, POST apply targeting that key, expect
+    #     422 + clear error message. ---
+    cat >> "$ORIG_FIXTURE" <<'TOML'
+
+[multiline]
+big_array = [
+  "alpha",
+  "beta",
+  "gamma",
+]
+TOML
+    MTIME_MS_49="$(python3 -c "import os,sys; print(int(os.path.getmtime(sys.argv[1]) * 1000))" "$ORIG_FIXTURE")"
+    PAYLOAD_49="$(python3 -c "
+import json, sys
+print(json.dumps({
+    'scope': 'sample-colony',
+    'mtime_ms': int(sys.argv[1]),
+    'changes': [{'key': 'multiline.big_array', 'value': 'whatever', 'type': 'text'}],
+}))" "$MTIME_MS_49")"
+    RESP49="$TMPDIR_TEST/apply-49.txt"
+    RESP49_CODE="$(curl -s -o "$RESP49" -w '%{http_code}' -X POST \
+        -H 'Content-Type: application/json' \
+        -d "$PAYLOAD_49" \
+        "http://127.0.0.1:$PORT2/config/apply" 2>/dev/null || echo "000")"
+    T49_OK=1
+    if [ "$RESP49_CODE" != "422" ]; then
+        echo "  multi-line rejection returned $RESP49_CODE (expected 422): $(head -c 400 "$RESP49" 2>/dev/null)"
+        T49_OK=0
+    fi
+    if ! grep -q 'value spans multiple lines' "$RESP49" 2>/dev/null; then
+        echo "  422 response missing 'value spans multiple lines' message: $(head -c 400 "$RESP49" 2>/dev/null)"
+        T49_OK=0
+    fi
+    if [ "$T49_OK" -eq 1 ]; then
+        pass "49: /config/apply rejects multi-line values with 422 + clear message (#357)"
+    else
+        fail "49: multi-line rejection regression"
+    fi
+
+    # Tear down the second dashboard before the final summary.
+    kill -TERM "-$DASH2_PID" 2>/dev/null || kill -TERM "$DASH2_PID" 2>/dev/null || true
+    sleep 0.5
+    kill -KILL "-$DASH2_PID" 2>/dev/null || kill -KILL "$DASH2_PID" 2>/dev/null || true
+else
+    fail "47/48/49: second dashboard never became ready" "log tail: $(tail -10 "$LOG2" 2>/dev/null | tr '\n' ' ')"
+fi
+
+# --- #357 test 50: collector emits the inverted gate field. The new
+#     contract is `operator_writes_disabled` (not `_enabled`); the
+#     audit_log_path must always be present. ---
+if python3 - "$HTML_FILE" <<'PY' 2>/dev/null
+import sys, re, json
+with open(sys.argv[1]) as f:
+    html = f.read()
+m = re.search(r'const data\s*=\s*(\{.*?\});\n', html, re.DOTALL)
+if not m: sys.exit(1)
+try:
+    data = json.loads(m.group(1))
+except Exception:
+    sys.exit(2)
+ce = data.get('config_editor') or {}
+# audit_log_path always present.
+if not ce.get('audit_log_path'):
+    sys.stderr.write('audit_log_path missing from config_editor block\n'); sys.exit(3)
+# operator_writes_disabled key present (default False).
+if 'operator_writes_disabled' not in ce:
+    sys.stderr.write('operator_writes_disabled key missing — collector still emits old _enabled gate?\n'); sys.exit(4)
+if ce.get('operator_writes_disabled') is True:
+    sys.stderr.write('default operator_writes_disabled is True — should be False (editable)\n'); sys.exit(5)
+# Legacy operator_writes_enabled must be GONE so callers don't read a
+# stale field.
+if 'operator_writes_enabled' in ce:
+    sys.stderr.write('legacy operator_writes_enabled key leaked into output\n'); sys.exit(6)
+sys.exit(0)
+PY
+then
+    pass "50: collector emits inverted gate (operator_writes_disabled), audit_log_path always present (#357)"
+else
+    fail "50: collector config_editor block contract regression"
 fi
 
 echo ""

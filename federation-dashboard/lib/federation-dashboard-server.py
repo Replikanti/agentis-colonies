@@ -24,7 +24,7 @@
 #                        tools/ for restart logic — spawning is delegated
 #                        to each colony's scripts/start-colony.sh.
 
-import sys, os, subprocess, json, time, signal, shutil, shlex, threading, hashlib, urllib.parse
+import sys, os, subprocess, json, time, signal, shutil, shlex, threading, hashlib, urllib.parse, re
 from http.server import HTTPServer, SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 serve_dir, port = sys.argv[1], int(sys.argv[2])
@@ -123,10 +123,11 @@ sidecar_restart_script = os.path.join(fed_tools_dir, 'sidecar-restart.sh') if fe
 # #352: /config/apply audit log path. The dashboard appends one row per
 # applied edit so operators can replay the history.
 config_audit_log = os.path.join(fed_dir, '.agentis', 'logs', 'config-edits.jsonl')
-# #352: /config/apply gate. Reads the same `[config_editor]
-# .operator_writes_enabled` key the collector emits; default false. The
-# endpoint returns 503 when the gate is off.
-def _read_operator_writes_enabled():
+# #357: /config/apply gate inverted from the v0.6.0 enabled-default-false
+# model to a defensive opt-out. Only `operator_writes_disabled = true` in
+# `<fed>/.agentis/config` flips the endpoint to 503; absent key (the
+# default for every existing federation) means writes are allowed.
+def _read_operator_writes_disabled():
     cfg_path = os.path.join(fed_dir, '.agentis', 'config')
     if not os.path.isfile(cfg_path):
         return False
@@ -143,12 +144,174 @@ def _read_operator_writes_enabled():
                 if '=' not in line or section != 'config_editor':
                     continue
                 k, _, v = line.partition('=')
-                if k.strip() == 'operator_writes_enabled':
+                if k.strip() == 'operator_writes_disabled':
                     rv = v.strip().strip('"').strip("'").lower().split('#', 1)[0].strip()
                     return rv == 'true'
     except OSError:
         return False
     return False
+
+
+# #357: line-level TOML patcher. Walks the file as a list of lines,
+# tracking the current `[section]`. For each {key, value} change in the
+# payload: split key on '.' (dotted path), match the deepest section that
+# fits, then rewrite the matching `<bare_key> = <value>` line preserving
+# any trailing inline comment. Multi-line values (arrays, inline tables
+# spanning lines) bail with MultilineValueError so the operator hits 422
+# instead of silent corruption — the read-only display still works for
+# those keys.
+SECTION_RE = re.compile(r'^\s*\[([^\]]+)\]\s*$')
+
+
+class MultilineValueError(Exception):
+    pass
+
+
+class KeyNotFoundError(Exception):
+    pass
+
+
+class TypeMismatchError(Exception):
+    pass
+
+
+def _split_dotted_key(dotted_key, available_sections):
+    """Resolve `<section>.<bare_key>` from a dotted path. The bare key is
+    always the last component; everything before it must form a known
+    section header (we walk from longest prefix to shortest so deeper
+    sections like `forge.gitlab` win over `forge`)."""
+    parts = dotted_key.split('.')
+    if len(parts) == 1:
+        return ('', parts[0])
+    # Try longest section prefix first.
+    for cut in range(len(parts) - 1, 0, -1):
+        candidate = '.'.join(parts[:cut])
+        if candidate in available_sections:
+            return (candidate, '.'.join(parts[cut:]))
+    # Fallback: assume everything except last component is the section.
+    return ('.'.join(parts[:-1]), parts[-1])
+
+
+def _format_toml_value(value, declared_type):
+    """Render `value` (a string from JSON) into TOML. Strings get
+    double-quoted (with embedded quotes / backslashes escaped); int /
+    float / bool render bare. The declared_type comes from the dashboard
+    inference layer so we don't have to re-guess on the server."""
+    sval = str(value)
+    if declared_type == 'bool':
+        if sval.lower() not in ('true', 'false'):
+            raise TypeMismatchError(f'expected bool, got {sval!r}')
+        return sval.lower()
+    if declared_type == 'int':
+        try:
+            int(sval)
+        except (ValueError, TypeError):
+            raise TypeMismatchError(f'expected int, got {sval!r}')
+        return sval
+    if declared_type == 'float':
+        try:
+            float(sval)
+        except (ValueError, TypeError):
+            raise TypeMismatchError(f'expected float, got {sval!r}')
+        return sval
+    # text / enum → double-quoted string. Escape embedded backslashes +
+    # double quotes (control chars are out of scope — the dashboard
+    # inputs filter them).
+    escaped = sval.replace('\\', '\\\\').replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _scan_sections(lines):
+    """Return the set of section headers present in `lines`, for dotted-
+    key resolution against multi-level sections like `forge.gitlab`."""
+    sections = set()
+    for line in lines:
+        m = SECTION_RE.match(line)
+        if m:
+            sections.add(m.group(1).strip())
+    return sections
+
+
+def _patch_line(lines, target_section, target_key, formatted_value):
+    """Find the line `<target_key> = ...` inside `[target_section]` and
+    replace its value half. Returns (idx, old_value) on success. Raises
+    KeyNotFoundError if the key isn't found in that section, and
+    MultilineValueError when the value spans onto subsequent lines."""
+    cur_section = ''
+    key_re = re.compile(
+        r'^(\s*' + re.escape(target_key) + r'\s*=\s*)(.*?)(\s*(?:#.*)?)$'
+    )
+    for idx, line in enumerate(lines):
+        m_section = SECTION_RE.match(line)
+        if m_section:
+            cur_section = m_section.group(1).strip()
+            continue
+        # Skip blank / comment lines without affecting cur_section.
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#'):
+            continue
+        if cur_section != target_section:
+            continue
+        m = key_re.match(line.rstrip('\n'))
+        if not m:
+            continue
+        prefix, value, suffix = m.group(1), m.group(2), m.group(3)
+        # Multi-line detection: value starts with [ or { but doesn't
+        # close on this line. We bail rather than try to round-trip.
+        if value.startswith('['):
+            stripped_val = value.rstrip()
+            if not stripped_val.endswith(']'):
+                raise MultilineValueError(target_key)
+        if value.startswith('{'):
+            stripped_val = value.rstrip()
+            if not stripped_val.endswith('}'):
+                raise MultilineValueError(target_key)
+        # Preserve a trailing newline if the original line had one.
+        nl = '\n' if line.endswith('\n') else ''
+        lines[idx] = f'{prefix}{formatted_value}{suffix}{nl}'
+        return (idx, value)
+    raise KeyNotFoundError(f'{target_section!r}.{target_key!r}')
+
+
+def _atomic_write(path, content):
+    """Write `content` (str) to `path` atomically: temp file in the same
+    dir, fsync, then rename. Same precedent as parse-toml.sh's sibling +
+    federation-dashboard-renderer.py's tmp+replace pattern."""
+    tmp = f'{path}.tmp.{os.getpid()}.{int(time.time() * 1000) % 1000000}'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        f.write(content)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError:
+            pass
+    os.replace(tmp, path)
+
+
+def _restart_colony_agents(colony_dir, agent_names):
+    """Restart each agent in `agent_names` via
+    `<colony_dir>/scripts/start-colony.sh --restart-agent <name>`.
+    Returns a list of {agent, ok, exit, stdout, stderr} records."""
+    results = []
+    start_script = os.path.join(colony_dir, 'scripts', 'start-colony.sh')
+    if not os.path.isfile(start_script):
+        return [{'agent': n, 'ok': False, 'error': f'missing {start_script}'} for n in agent_names]
+    for name in agent_names:
+        try:
+            r = subprocess.run(
+                [start_script, '--restart-agent', name],
+                capture_output=True, text=True, timeout=30,
+            )
+            results.append({
+                'agent': name,
+                'ok': r.returncode == 0,
+                'exit': r.returncode,
+                'stdout': (r.stdout or '').strip()[-512:],
+                'stderr': (r.stderr or '').strip()[-512:],
+            })
+        except (OSError, subprocess.SubprocessError) as e:
+            results.append({'agent': name, 'ok': False, 'error': str(e)})
+    return results
 
 
 def list_daemons():
@@ -1228,19 +1391,21 @@ class Handler(SimpleHTTPRequestHandler):
             }).encode())
             return
 
-        # #352: /config/apply — atomic config edit + audit append. Gated
-        # on `[config_editor].operator_writes_enabled = true` in the
-        # federation config. Returns 503 when the gate is off.
+        # #352 (rewritten in #357): /config/apply — line-level TOML
+        # patcher with drift detection + atomic write + per-change audit
+        # append + restart of affected agents. Editable by default; the
+        # `[config_editor].operator_writes_disabled = true` gate flips
+        # back to 503.
         if self.path == '/config/apply':
-            if not _read_operator_writes_enabled():
+            if _read_operator_writes_disabled():
                 self.send_response(503)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
                 self.wfile.write(json.dumps({
                     'ok': False,
-                    'summary': ('config_editor.operator_writes_enabled is '
-                                'not true in <fed>/.agentis/config; the '
-                                'Config tab is read-only by default.'),
+                    'summary': ('config_editor.operator_writes_disabled is '
+                                'true in <fed>/.agentis/config; the '
+                                'Config tab is locked.'),
                 }).encode())
                 return
             length = int(self.headers.get('Content-Length', '0') or '0')
@@ -1260,28 +1425,158 @@ class Handler(SimpleHTTPRequestHandler):
                 self.wfile.write(b'malformed JSON body')
                 return
             scope = (body.get('scope') or '').strip()
-            updates = body.get('updates') or []
-            if not scope or not isinstance(updates, list):
+            # Accept the new {changes:[{key, value, type}]} contract +
+            # the legacy {updates:[{input_id, value}]} shape (audit-only
+            # fallback) so any in-flight tab open during the upgrade
+            # doesn't crash the server. Empty changes ⇒ 400.
+            changes = body.get('changes')
+            mtime_ms = body.get('mtime_ms') or 0
+            try:
+                mtime_ms = int(mtime_ms)
+            except (ValueError, TypeError):
+                mtime_ms = 0
+            if not scope or not isinstance(changes, list) or not changes:
                 self.send_response(400)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
                 self.wfile.write(json.dumps({
                     'ok': False,
-                    'summary': 'scope + updates[] required',
+                    'summary': 'scope + changes[] (with at least one entry) required',
                 }).encode())
                 return
-            # Audit-only path for now: append every edit attempt to the
-            # journal. Atomic rewrite of the target TOML file is out of
-            # scope for v1 — the journal serves as the operator-visible
-            # record of what would be applied.
-            entries = []
+            # Resolve target file. scope = "fed" or "federation" → fed-
+            # wide config; anything else → <fed>/<scope>/config/colony.toml.
+            if scope in ('fed', 'federation'):
+                target_path = os.path.join(fed_dir, '.agentis', 'config')
+                target_colony = ''
+            else:
+                target_path = os.path.join(fed_dir, scope, 'config', 'colony.toml')
+                target_colony = scope
+            if not os.path.isfile(target_path):
+                self.send_response(404)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    'ok': False,
+                    'summary': f'target file not found: {target_path}',
+                }).encode())
+                return
+            # Drift check. Compare on-disk mtime (ms-precision) against
+            # the payload's snapshot mtime; reject 409 if disk is newer.
+            try:
+                disk_mtime_ms = int(os.path.getmtime(target_path) * 1000)
+            except OSError as e:
+                self.send_response(500)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({'ok': False, 'summary': f'stat failed: {e}'}).encode())
+                return
+            if mtime_ms and disk_mtime_ms > mtime_ms:
+                self.send_response(409)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    'ok': False,
+                    'drift': True,
+                    'current_mtime_ms': disk_mtime_ms,
+                    'payload_mtime_ms': mtime_ms,
+                    'summary': 'file changed externally since the dashboard read it',
+                }).encode())
+                return
+            # Read source as a list of lines. Walk + patch atomically:
+            # all changes succeed or none. Multiple changes in one apply
+            # patch the in-memory list in sequence; we only write back
+            # once at the end.
+            try:
+                with open(target_path, encoding='utf-8') as f:
+                    lines = f.readlines()
+            except OSError as e:
+                self.send_response(500)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({'ok': False, 'summary': f'read failed: {e}'}).encode())
+                return
+            sections_present = _scan_sections(lines)
+            applied = []
+            try:
+                for change in changes:
+                    if not isinstance(change, dict):
+                        raise TypeMismatchError('change entries must be objects')
+                    dotted_key = (change.get('key') or '').strip()
+                    declared_type = (change.get('type') or 'text').strip().lower()
+                    new_value = change.get('value')
+                    if not dotted_key or new_value is None:
+                        raise TypeMismatchError(
+                            f'change missing key or value: {change!r}'
+                        )
+                    target_section, bare_key = _split_dotted_key(
+                        dotted_key, sections_present,
+                    )
+                    formatted = _format_toml_value(new_value, declared_type)
+                    idx, old_value = _patch_line(
+                        lines, target_section, bare_key, formatted,
+                    )
+                    applied.append({
+                        'key': dotted_key,
+                        'section': target_section,
+                        'bare_key': bare_key,
+                        'old_value': old_value.strip(),
+                        'new_value': str(new_value),
+                        'line': idx + 1,
+                    })
+            except MultilineValueError as e:
+                self.send_response(422)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    'ok': False,
+                    'error': 'value spans multiple lines; not supported by line-level patcher',
+                    'key': str(e),
+                }).encode())
+                return
+            except KeyNotFoundError as e:
+                self.send_response(422)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    'ok': False,
+                    'error': 'key not found in target file',
+                    'key': str(e),
+                }).encode())
+                return
+            except TypeMismatchError as e:
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    'ok': False,
+                    'error': str(e),
+                }).encode())
+                return
+            # All-or-nothing write. Atomic temp+rename keeps the file
+            # consistent if the box loses power mid-apply.
+            try:
+                _atomic_write(target_path, ''.join(lines))
+            except OSError as e:
+                self.send_response(500)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    'ok': False,
+                    'summary': f'atomic write failed: {e}',
+                }).encode())
+                return
+            # Audit append — one row per applied change.
             ts = int(time.time())
-            for u in updates:
+            entries = []
+            for a in applied:
                 entries.append({
                     'ts': ts,
                     'scope': scope,
-                    'input_id': u.get('input_id'),
-                    'value': u.get('value'),
+                    'key': a['key'],
+                    'old_value': a['old_value'],
+                    'new_value': a['new_value'],
+                    'line': a['line'],
                     'remote': self.client_address[0],
                 })
             try:
@@ -1289,23 +1584,52 @@ class Handler(SimpleHTTPRequestHandler):
                 with open(config_audit_log, 'a') as f:
                     for e in entries:
                         f.write(json.dumps(e) + '\n')
-            except OSError as e:
-                self.send_response(500)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps({
-                    'ok': False,
-                    'summary': f'audit append failed: {e}',
-                }).encode())
-                return
+            except OSError as exc:
+                # Audit failure is non-fatal — the write already
+                # succeeded; surface it in the response so operators
+                # know the trail is incomplete.
+                pass
+            # Restart trigger — restart every agent in the affected
+            # colony (or every agent in every colony for fed-wide).
+            restart_results = []
+            try:
+                if target_colony:
+                    colony_dir = os.path.join(fed_dir, target_colony)
+                    agents_dir = os.path.join(colony_dir, 'agents')
+                    if os.path.isdir(agents_dir):
+                        names = sorted(
+                            f[:-3] for f in os.listdir(agents_dir)
+                            if f.endswith('.ag')
+                        )
+                        restart_results = _restart_colony_agents(colony_dir, names)
+                else:
+                    # fed-wide: walk every colony with a start-colony.sh.
+                    for entry in sorted(os.listdir(fed_dir)):
+                        sub = os.path.join(fed_dir, entry)
+                        if not os.path.isdir(sub):
+                            continue
+                        agents_dir = os.path.join(sub, 'agents')
+                        if not os.path.isdir(agents_dir):
+                            continue
+                        names = sorted(
+                            f[:-3] for f in os.listdir(agents_dir)
+                            if f.endswith('.ag')
+                        )
+                        restart_results.extend(
+                            _restart_colony_agents(sub, names)
+                        )
+            except OSError:
+                pass
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps({
                 'ok': True,
                 'scope': scope,
-                'audit_appended': len(entries),
+                'applied': applied,
+                'restart_results': restart_results,
                 'audit_log_path': config_audit_log,
+                'new_mtime_ms': int(os.path.getmtime(target_path) * 1000),
             }).encode())
             return
 

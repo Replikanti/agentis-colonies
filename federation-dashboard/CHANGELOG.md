@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Overview tab compactness, Forge Rate Limits relocation, and Config tab
+  writability**
+  ([#357](https://github.com/Replikanti/agentis-colonies/issues/357),
+  follow-up to
+  [#352](https://github.com/Replikanti/agentis-colonies/issues/352)).
+  Three v0.6.0 mistakes corrected in one PR:
+  - **Overview tab cut to ~480 px**. Phase Readiness moved to the top of
+    the Promotions tab (where it pairs with the per-agent ladders);
+    Forge Rate Limits dropped from Overview entirely. Overview now
+    renders Federation Health Banner + bulk-restart action bar, the stat
+    tiles row, and the Sidecars listing — operator-actionable surface
+    only — leaving ~240 px headroom for the Health Banner to expand
+    without scroll.
+  - **Forge Rate Limits → per-colony modal**. A new `showColonyModal()`
+    overlay opens when an operator clicks a colony chip on the
+    Promotions or Agents tab, listing that colony's agents (clickable
+    into the per-agent modal) plus a Forge Rate Limits row sourced from
+    `data.forge_rate_limits[<colony>]`. Trades a 7th tab for a per-
+    colony drill-in (the data is colony-scoped anyway).
+  - **Config tab editable by default**. The
+    `[config_editor].operator_writes_enabled` gate that defaulted false
+    is replaced with a defensive opt-out:
+    `operator_writes_disabled = true` in `<fed>/.agentis/config` flips
+    the tab back to read-only for operators who explicitly want a lock.
+    Default-absent or `false` ⇒ editable. Every Apply pops a structured
+    confirm modal listing each key change line-per-line
+    (`<scope.key>: <old> → <new>`) before the POST fires, replacing the
+    bare `confirm()` dialog. Cancel bails clean.
+  - **`/config/apply` line-level TOML patcher**. Audit-only v1 endpoint
+    rewritten as a real write path. Reads the target `<fed>/.agentis/
+    config` (scope `fed`/`federation`) or `<fed>/<colony>/config/
+    colony.toml` as a list of lines, walks tracking the current
+    `[section]`, and rewrites only the matching `<bare_key> = <value>`
+    line for each change in the payload. Inline comments are preserved
+    verbatim via a `(prefix)(value)(suffix)` regex capture; everything
+    else is byte-copied. Multi-line array / inline-table values bail
+    with 422 + a clear error rather than risk silent corruption.
+    Atomic temp-file + `os.rename` write so a crash mid-apply leaves
+    the file intact. Drift detection: the dashboard echoes the
+    snapshot's mtime back in the apply payload; if disk mtime is newer,
+    the server returns 409 with `{drift: true, current_mtime_ms}` and
+    the dashboard surfaces a banner. Successful applies append one
+    JSONL row per change to `<fed>/.agentis/logs/config-edits.jsonl`
+    (audit trail kept) and trigger a per-colony agent restart via
+    `<colony>/scripts/start-colony.sh --restart-agent <name>`.
+
+  Operator-facing summary: Overview is actionable-first, Forge Rate
+  Limits is a colony drill-in instead of an Overview tile, and the
+  Config tab actually writes the file when an operator clicks Apply.
+  The `--config-override` upstream gap from
+  [#351](https://github.com/Replikanti/agentis-colonies/issues/351) is
+  still open, so cost-cap / per-colony `[llm]` writes remain no-ops at
+  the runtime layer until upstream lands the flag — the Config tab now
+  records the intent in the file and the audit log either way, so the
+  edit surface is no longer the blocker.
+
+  No federation-dashboard MINOR bump; deferred to the next release PR.
+
 ## [0.6.0] — 2026-04-26
 
 Tabbed layout + live SSE pipeline complete. Replaces the long-scroll
