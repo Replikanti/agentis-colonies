@@ -2257,6 +2257,65 @@ function openDetail(agentName) {
   }
   html += '</div>';
 
+  // #315 PR 1: per-agent unified Timeline (last 50 rows, reverse-chrono).
+  // Merges experience (kind=learn) + spend (kind=prompt) + confidence-log
+  // (kind=confidence_change) + lifecycle (kind=lifecycle) into one stream
+  // collector-side. Federation-wide tile + /timeline endpoint are PR 2.
+  html += '<div class="modal-section"><h3>Timeline (last 50)</h3>';
+  if (a.timeline && a.timeline.length > 0) {
+    html += '<div class="timeline">';
+    a.timeline.forEach(row => {
+      // ts is epoch-MS (collector coerces all four sources to ms).
+      const ts = row.ts || 0;
+      const tsStr = ts ? formatTimestamp(ts).slice(11) : ''; // HH:MM:SS local
+      const kind = row.kind || 'log';
+      const payload = row.payload || {};
+      let summary = '';
+      if (kind === 'learn') {
+        const outcome = payload.outcome || '';
+        const delta = (typeof payload.delta === 'number')
+          ? (payload.delta >= 0 ? '+' : '') + payload.delta.toFixed(3) : '';
+        summary = 'outcome=' + outcome + (delta ? ', fitness_delta=' + delta : '');
+      } else if (kind === 'prompt') {
+        const cost = (typeof payload.cost_usd === 'number') ? fmtUsd(payload.cost_usd) : '$?';
+        const inp = payload.input_tokens || 0;
+        const out = payload.output_tokens || 0;
+        const model = payload.model || '';
+        summary = cost + ' · ' + inp + '/' + out + ' tokens · ' + model;
+      } else if (kind === 'confidence_change') {
+        const fromV = (typeof payload.from === 'number') ? payload.from.toFixed(2) : (payload.from || '?');
+        const toV = (typeof payload.to === 'number') ? payload.to.toFixed(2) : (payload.to || '?');
+        const delta = (typeof payload.delta === 'number')
+          ? (payload.delta >= 0 ? '+' : '') + payload.delta.toFixed(3) : '';
+        summary = fromV + ' → ' + toV + (delta ? ' (Δ' + delta + ')' : '');
+      } else if (kind === 'lifecycle') {
+        summary = payload.event || '';
+      } else {
+        summary = JSON.stringify(payload);
+      }
+      // Map kind -> existing timeline-type CSS class so colour cues
+      // (green/yellow/orange/red/cyan/magenta) come from the same
+      // palette the federation tile uses. learn=action, prompt=emit,
+      // confidence_change=finding, lifecycle=recv (or error/suggest
+      // when severity escalates).
+      let typeClass = 'action';
+      if (kind === 'prompt') typeClass = 'emit';
+      else if (kind === 'confidence_change') typeClass = 'finding';
+      else if (kind === 'lifecycle') typeClass = 'recv';
+      if (row.severity === 'error') typeClass = 'error';
+      else if (row.severity === 'warning') typeClass = 'suggest';
+      html += '<div class="timeline-entry">';
+      html += '<span class="timeline-ts">' + esc(tsStr) + '</span>';
+      html += '<span class="timeline-type ' + typeClass + '">' + esc(kind) + '</span>';
+      html += '<span class="timeline-content">' + esc(summary) + '</span>';
+      html += '</div>';
+    });
+    html += '</div>';
+  } else {
+    html += '<span class="empty">No timeline events</span>';
+  }
+  html += '</div>';
+
   // #311 PR B: per-agent LLM Cost section. Surfaces the today/7d/30d
   // windows from the by_agent block plus the last 5 spend rows from
   // recent_by_agent (both populated by collect_spend_log()). Modal is the

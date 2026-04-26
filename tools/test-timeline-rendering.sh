@@ -735,6 +735,125 @@ else
     fail "27: cost block aggregations / per-agent injection regressed — see stderr above"
 fi
 
+# --- #315 PR 1: per-agent unified timeline injection. Drives the collector
+#     directly against a synthetic fixture (no second dashboard boot) and
+#     asserts each agent record carries a non-empty `timeline[]` field
+#     containing rows from at least 2 of the 4 sources (experience, spend,
+#     confidence-log, lifecycle). Fixture lives at /tmp/qa-315-fed/ per the
+#     plan in #315 PR 1. ---
+QA_FED="/tmp/qa-315-fed"
+COLLECTOR_PY="$REPO_ROOT/federation-dashboard/lib/federation-dashboard-collector.py"
+rm -rf "$QA_FED"
+mkdir -p "$QA_FED/.agentis/experience" \
+         "$QA_FED/.agentis/spend" \
+         "$QA_FED/.agentis/lifecycle" \
+         "$QA_FED/.dashboard" \
+         "$QA_FED/qa-colony/agents" \
+         "$QA_FED/qa-colony/config"
+cat > "$QA_FED/qa-colony/config/colony.toml" <<'TOML'
+[colony]
+name = "qa-colony"
+TOML
+cat > "$QA_FED/qa-colony/agents/qa_agent.ag" <<'AG'
+cb 100;
+fn tick() { return Void; }
+AG
+
+QA_AID="bbbbbbbb"
+QA_NOW="$(date '+%s')"
+QA_NOW_MS=$((QA_NOW * 1000))
+
+# 1 experience row (epoch-SECONDS, mirroring agentis-core's writer).
+cat > "$QA_FED/.agentis/experience/$QA_AID.jsonl" <<EXP
+{"v":1,"ts":$((QA_NOW - 30)),"agent":"$QA_AID","action":"draft","in":"MR 281","outcome":"success","delta":0.150}
+EXP
+
+# 1 spend row (epoch-MS, mirroring agentis-core's spend writer).
+cat > "$QA_FED/.agentis/spend/$QA_AID.jsonl" <<SPEND
+{"v":1,"ts":$((QA_NOW_MS - 60000)),"agent":"$QA_AID","colony":"qa-colony","backend":"claude-cli","model":"claude-sonnet-4-20250514","input_tokens":120,"output_tokens":40,"cost_usd":0.0150,"cost_source":"native","cb":50,"instr_hash":"deadbeef","cached":false,"ok":true}
+SPEND
+
+# 1 lifecycle event (epoch-SECONDS, mirroring agentis-core's daemon writer).
+cat > "$QA_FED/.agentis/lifecycle/events.jsonl" <<LIFE
+{"agent_id":"$QA_AID","event":"daemon.started","cb_per_tick":2000,"tick_interval_ms":60000,"ts":$((QA_NOW - 90))}
+LIFE
+
+# Synthetic daemon entry so the collector resolves agent_id -> rec for our
+# fixture agent. `source` path mapping to qa_agent.ag wires the role-to-id.
+QA_DAEMONS=$(python3 -c "
+import json
+print(json.dumps([{
+    'agent_id': '$QA_AID',
+    'source':   '$QA_FED/qa-colony/agents/qa_agent.ag',
+    'state':    'running',
+    'health':   'healthy',
+    'pid':      0,
+    'confidence': 0.5,
+    'tick_ok': 1,
+    'tick_err': 0,
+    'started_at': $QA_NOW - 100,
+}]))
+")
+QA_AGENT_MAP='[{"agent":"qa_agent","colony":"qa-colony"}]'
+QA_COLONIES='["qa-colony"]'
+
+QA_JSON="$(python3 "$COLLECTOR_PY" \
+    "$QA_DAEMONS" \
+    "$QA_AGENT_MAP" \
+    "$QA_FED" \
+    "$QA_NOW" \
+    "$QA_FED/.agentis/experience" \
+    "$QA_FED/.agentis/logs" \
+    "$QA_FED/.dashboard" \
+    "$QA_COLONIES" \
+    "" \
+    qa_agent 2>/dev/null)"
+
+t28_ok=1
+if [ -z "$QA_JSON" ]; then
+    echo "  collector returned empty output"
+    t28_ok=0
+elif ! python3 - <<PY 2>&1
+import json, sys
+blob = json.loads('''$QA_JSON''')
+agents = blob.get('agents') or []
+if not agents:
+    sys.stderr.write('no agents in collector output\n'); sys.exit(2)
+agent = next((a for a in agents if a.get('name') == 'qa_agent'), None)
+if agent is None:
+    sys.stderr.write('qa_agent not found in agents array\n'); sys.exit(3)
+tl = agent.get('timeline')
+if not isinstance(tl, list):
+    sys.stderr.write('timeline missing or not a list: %r\n' % type(tl)); sys.exit(4)
+if len(tl) == 0:
+    sys.stderr.write('timeline is empty\n'); sys.exit(5)
+kinds = set(r.get('kind') for r in tl)
+# At least 2 of {learn, prompt, lifecycle, confidence_change} must be present.
+expected = {'learn', 'prompt', 'lifecycle', 'confidence_change'}
+overlap = kinds & expected
+if len(overlap) < 2:
+    sys.stderr.write('only %d source(s) merged, need >= 2: %r\n' % (len(overlap), kinds)); sys.exit(6)
+# Verify reverse-chronological order (newest first).
+ts_seq = [r.get('ts') for r in tl if isinstance(r.get('ts'), int)]
+if ts_seq != sorted(ts_seq, reverse=True):
+    sys.stderr.write('timeline not sorted ts-desc: %r\n' % ts_seq); sys.exit(7)
+# Verify shape: each row has ts, agent_id, kind, payload, severity.
+for r in tl:
+    for k in ('ts', 'agent_id', 'kind', 'payload', 'severity'):
+        if k not in r:
+            sys.stderr.write('row missing %s: %r\n' % (k, r)); sys.exit(8)
+sys.exit(0)
+PY
+then
+    t28_ok=0
+fi
+if [ "$t28_ok" -eq 1 ]; then
+    pass "28: per-agent timeline[] populated from >=2 sources, ts-desc sorted, normalized shape (#315 PR 1)"
+else
+    fail "28: per-agent timeline injection regressed — see stderr above"
+fi
+rm -rf "$QA_FED"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

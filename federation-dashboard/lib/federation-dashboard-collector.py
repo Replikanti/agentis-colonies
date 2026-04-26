@@ -787,6 +787,264 @@ def collect_spend_log(spend_dir, name_to_colony, id_to_role, epoch_s):
 spend_dir = os.path.join(os.path.dirname(exp_dir), 'spend') if exp_dir else ''
 cost = collect_spend_log(spend_dir, name_to_colony, id_to_role, epoch)
 
+# --- Per-agent unified timeline (#315 PR 1) ---
+# Merges four on-disk JSONL streams into a single chronological array per
+# agent: experience (kind=learn), spend (kind=prompt), confidence-log
+# (kind=confidence_change), lifecycle (kind=lifecycle, payload carries the
+# event subtype). Read once, bucket once; embed last 50 reverse-chrono per
+# agent. Federation-wide stream + /timeline endpoint are PR 2 (#315).
+#
+# Schema per row:
+#   {ts: <int, ms>, agent_id: "<sha8>", kind: "<enum>",
+#    payload: <object, source-specific>, severity: "info"|"warning"|"error"}
+#
+# All ts coerced to epoch-ms on read (experience writes seconds, spend
+# writes ms, lifecycle writes seconds, confidence-log writes seconds).
+TIMELINE_PER_AGENT_CAP = 50
+
+# Bucket lifecycle events by agent_id ONCE — file is ~12k lines on the live
+# federation; per-agent re-reads would be O(N*M).
+lifecycle_dir = os.path.join(os.path.dirname(exp_dir), 'lifecycle') if exp_dir else ''
+lifecycle_path = os.path.join(lifecycle_dir, 'events.jsonl') if lifecycle_dir else ''
+lifecycle_by_aid = {}
+if lifecycle_path and os.path.isfile(lifecycle_path):
+    try:
+        with open(lifecycle_path) as f:
+            for raw in f:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    row = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                aid = row.get('agent_id') or ''
+                if not aid:
+                    continue
+                lifecycle_by_aid.setdefault(aid, []).append(row)
+    except OSError:
+        pass
+
+# Bucket confidence-log entries by agent_id ONCE for the same reason. The
+# `conf_changes` array above is federation-wide (last 50 across all agents)
+# and not suitable for per-agent slicing.
+conf_log_path = os.path.join(dash_dir, 'confidence-log.jsonl')
+conf_by_aid = {}
+if os.path.isfile(conf_log_path):
+    try:
+        with open(conf_log_path) as f:
+            for raw in f:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    row = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                # confidence-log rows historically key by either agent_id
+                # (sha8) or agent (role) — accept both, prefer agent_id when
+                # present so the per-agent bucketing matches the daemon's
+                # canonical id (mirrors the spend-log convention).
+                aid = row.get('agent_id') or ''
+                if not aid:
+                    continue
+                conf_by_aid.setdefault(aid, []).append(row)
+    except OSError:
+        pass
+
+
+def _coerce_ms(ts):
+    """Coerce a timestamp to epoch-ms. Accepts seconds (10-digit), ms
+    (13-digit), or None/garbage. Returns 0 on failure."""
+    if not isinstance(ts, (int, float)):
+        return 0
+    n = int(ts)
+    if n <= 0:
+        return 0
+    # 13-digit ms: ~ year 2001+ in ms. 10-digit s: ~ year 2001+ in s.
+    # Anything < 10**11 is treated as seconds (covers 1973-5138 in s).
+    return n if n >= 10 ** 11 else n * 1000
+
+
+def _summary_severity(kind, payload):
+    """Best-effort severity classification — kept conservative so the modal
+    doesn't paint everything red. info by default; warning for known
+    health-degradation lifecycle events; error reserved for explicit
+    failure outcomes."""
+    if kind == 'learn':
+        outcome = (payload.get('outcome') or '').lower()
+        if outcome == 'failure':
+            return 'error'
+        return 'info'
+    if kind == 'prompt':
+        return 'info' if payload.get('ok', True) else 'error'
+    if kind == 'confidence_change':
+        return 'info'
+    if kind == 'lifecycle':
+        ev = (payload.get('event') or '').lower()
+        if 'critical' in (payload.get('new_status') or '').lower():
+            return 'warning'
+        if 'quarantine' in ev or 'restart' in ev or 'health_changed' in ev:
+            return 'warning'
+        if 'failed' in ev or 'crashed' in ev:
+            return 'error'
+    return 'info'
+
+
+def build_agent_timeline(agent_id, exp_entries, spend_entries, conf_entries, lifecycle_entries):
+    """Merge the four sources for a single agent and return the last
+    TIMELINE_PER_AGENT_CAP rows, sorted by ts descending. All four input
+    lists may be empty — output is then []. Each input is an iterable of
+    raw JSONL dicts; this function normalizes them into the unified shape.
+    """
+    rows = []
+
+    for e in exp_entries or []:
+        if not isinstance(e, dict):
+            continue
+        ts_ms = _coerce_ms(e.get('ts'))
+        if ts_ms == 0:
+            continue
+        payload = {
+            'outcome': e.get('outcome'),
+            'delta': e.get('delta'),
+            'action': e.get('action'),
+            'in': e.get('in'),
+        }
+        rows.append({
+            'ts': ts_ms,
+            'agent_id': agent_id,
+            'kind': 'learn',
+            'payload': payload,
+            'severity': _summary_severity('learn', payload),
+        })
+
+    for s in spend_entries or []:
+        if not isinstance(s, dict):
+            continue
+        ts_ms = _coerce_ms(s.get('ts'))
+        if ts_ms == 0:
+            continue
+        payload = {
+            'cost_usd': s.get('cost_usd'),
+            'input_tokens': s.get('input_tokens'),
+            'output_tokens': s.get('output_tokens'),
+            'model': s.get('model'),
+            'backend': s.get('backend'),
+            'ok': s.get('ok', True),
+        }
+        rows.append({
+            'ts': ts_ms,
+            'agent_id': agent_id,
+            'kind': 'prompt',
+            'payload': payload,
+            'severity': _summary_severity('prompt', payload),
+        })
+
+    for c in conf_entries or []:
+        if not isinstance(c, dict):
+            continue
+        ts_ms = _coerce_ms(c.get('ts'))
+        if ts_ms == 0:
+            continue
+        payload = {
+            'from': c.get('from') if c.get('from') is not None else c.get('prev'),
+            'to': c.get('to') if c.get('to') is not None else c.get('new'),
+            'delta': c.get('delta'),
+            'reason': c.get('reason') or c.get('source'),
+        }
+        rows.append({
+            'ts': ts_ms,
+            'agent_id': agent_id,
+            'kind': 'confidence_change',
+            'payload': payload,
+            'severity': _summary_severity('confidence_change', payload),
+        })
+
+    for ev in lifecycle_entries or []:
+        if not isinstance(ev, dict):
+            continue
+        ts_ms = _coerce_ms(ev.get('ts'))
+        if ts_ms == 0:
+            continue
+        # Pass the whole row through as payload so the renderer can show
+        # subtype-specific detail (e.g. old_status -> new_status for
+        # agent.health_changed). Strip agent_id (already on the envelope)
+        # to keep the payload small.
+        payload = {k: v for k, v in ev.items() if k != 'agent_id'}
+        rows.append({
+            'ts': ts_ms,
+            'agent_id': agent_id,
+            'kind': 'lifecycle',
+            'payload': payload,
+            'severity': _summary_severity('lifecycle', payload),
+        })
+
+    rows.sort(key=lambda r: r['ts'], reverse=True)
+    return rows[:TIMELINE_PER_AGENT_CAP]
+
+
+# Inject `timeline` into each agent record. Sources: experience entries are
+# already cached in rec['recent_experience'] but only as a 10-row tail —
+# re-read the full file via the existing exp_path resolution to keep the
+# 50-row window. Spend rows live in cost['recent_by_agent'] but capped at
+# 5; mirror the same logic to read the full spend file. Lifecycle and
+# confidence-log are bucketed above.
+for rec in result:
+    aid = rec.get('agent_id') or ''
+    if not aid:
+        rec['timeline'] = []
+        continue
+
+    # Re-read experience file for up to 50 rows (vs the 10-row tail in
+    # rec['recent_experience']). The collector pattern above already
+    # tolerates missing files / malformed lines.
+    exp_entries_full = []
+    if exp_dir and os.path.isdir(exp_dir):
+        ep = os.path.join(exp_dir, aid + '.jsonl')
+        if os.path.isfile(ep):
+            try:
+                with open(ep) as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            exp_entries_full.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            continue
+            except OSError:
+                pass
+
+    spend_entries_full = []
+    if spend_dir and os.path.isdir(spend_dir):
+        sp = os.path.join(spend_dir, aid + '.jsonl')
+        if os.path.isfile(sp):
+            try:
+                with open(sp) as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            spend_entries_full.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            continue
+            except OSError:
+                pass
+
+    rec['timeline'] = build_agent_timeline(
+        aid,
+        exp_entries_full,
+        spend_entries_full,
+        conf_by_aid.get(aid, []),
+        lifecycle_by_aid.get(aid, []),
+    )
+
 # Inject per-agent cost windows into each agent record (mirrors the
 # experience_count placement above). The agent table can then expose a
 # "$ today" sortable column without requiring a second lookup at render time.
