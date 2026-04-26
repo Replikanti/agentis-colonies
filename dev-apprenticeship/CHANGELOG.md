@@ -15,6 +15,32 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-04-26
+
+LLM cost-cap and per-colony LLM-backend wiring continue maturing. New
+production-ready agent template catalog (1 canary + 5 templates:
+`dependency-updater`, `security-scanner`, `release-manager`, `pr-triage`,
+`digest-poster`) ships with `tools/scaffold-agent.sh`. Operator-facing
+**test-mode replay** docs + `tools/replay-export-experience.sh` (paired
+with the upstream `agentis replay` engine that follows). Federation
+**experience transfer** via `tools/experience-transfer.sh` lets a fresh
+federation bootstrap from a healthy donor's experience JSONL — clear
+auto-promote `min_entries` prereq in hours instead of weeks. Official
+multi-arch **Docker image** at `ghcr.io/replikanti/agentis-colonies` +
+sample `examples/k8s/` and `examples/docker/` manifests. Per-colony
+`[llm]` config block plumbing landed but is currently a no-op (see
+Fixed: `start-colony.sh` change for #351 — `agentis daemon` does not
+yet accept `--config-override`; cost-cap downgrade is also no-op until
+upstream lands the flag).
+
+**Requires:** agentis >= **1.4.7** (unchanged from 1.2.0; cost-cap
+consumes the per-agent JSONL spend log shipped by [agentis-core
+1.4.7+](https://github.com/Replikanti/agentis/releases/tag/v1.4.7)).
+**Recommends:** federation-dashboard >= **0.6.0** (pinned via
+`dev-apprenticeship/.dashboard-version`; tabbed layout, sidecar
+listing, bulk-restart, Config tab — operators get a focused
+single-screen-per-tab view instead of the long-scroll layout).
+
 ### Fixed
 
 - `start-colony.sh` no longer splices a non-existent `--config-override llm.<key>=<value>` flag onto the `agentis daemon` command line ([#351](https://github.com/Replikanti/agentis-colonies/issues/351)). PR [#348](https://github.com/Replikanti/agentis-colonies/pull/348) (#319 PR 1) and the cost-cap downgrade path (#318) both relied on a CLI flag that `agentis daemon` does not actually accept (`agentis daemon --help` lists `--tick-interval` / `--cb-per-tick` / `--deadline` / `--priority` / `--colony` / `--enable-*` / `--skip-prompt-*` only — no `--config-override`). On every respawn that hit either the colony-toml `[llm]` block or the cost-cap `<fed>/.agentis/llm-backend-override` file, `agentis daemon` errored out with `unknown flag: --config-override` and the spawn died inside `start-colony.sh`'s 0.5-second liveness probe, exiting 4 with `agentis daemon failed to launch <agent>`. Live impact on the dev-apprenticeship federation: `risk_assessor` got watchdog-killed for stale heartbeat earlier in the day and could not be revived by `start-colony.sh --restart-agent`, leaving the federation indefinitely at 19/20 (and any other agent killed by the watchdog post-#348 would have the same fate). Fix collapses `llm_override_args()` to a no-op in all five colonies; the `[llm]` block stays in the schema as forward-compatible documentation but emits no daemon flags. Cost-cap's downgrade path is reduced to no-op for the same reason — the override-file write succeeds but its value is never consumed; the `tools/cost-cap.sh` sidecar continues to track usage and emit warnings via `cost-cap-banner.json`, but the actual backend swap on metered breach waits on upstream agentis ([Replikanti/agentis](https://github.com/Replikanti/agentis)) shipping `--config-override`. `tools/test-llm-per-colony.sh` rewritten to assert the new contract (16 PASS): no `llm.*` overrides emitted in any of the 5 historical scenarios, no `--config-override` token ever appears in the recorded argv (regression guard), `--restart-agent` succeeds even with both an `[llm]` block AND a cost-cap override file present.
