@@ -57,18 +57,11 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Security
 
-## [0.1.0] — 2026-04-27
+<!--
+tribes-bench has no released version yet. `VERSION` carries the placeholder
+`0.0.0` until Stage 2 (#365) lands and is judged worth releasing. Once a
+real release is cut, this file gains a `## [X.Y.Z] — YYYY-MM-DD` section
+plus Keep-a-Changelog comparison links at the bottom (see
+`dev-apprenticeship/CHANGELOG.md` for the template).
+-->
 
-Initial scaffold via `tools/new-federation.sh`. Conforms to
-[ADR-0003](../doc/adr/ADR-0003-federation-portability-contract.md).
-
-**Requires:** agentis >= 1.4.1
-
-### Added
-
-- One starter colony: `tribe-alpha/` with placeholder agent slot.
-- ADR-0003-compliant `scripts/start-colony.sh` (supports
-  `--restart-agent`, `--rate-limit-status`, exit 2 on unknown flag).
-
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/tribes-bench-v0.1.0...HEAD
-[0.1.0]: https://github.com/Replikanti/agentis-colonies/releases/tag/tribes-bench-v0.1.0

@@ -43,7 +43,7 @@ graph TD
 | Federation | Version | Description | Agents | Status |
 |------------|---------|-------------|--------|--------|
 | [dev-apprenticeship](./dev-apprenticeship/) | [`1.3.0`](https://github.com/Replikanti/agentis-colonies/releases/tag/dev-apprenticeship-v1.3.0) | Learns a developer's complete workflow by observing how you work on GitLab or GitHub. Covers triage, code review, planning, implementation, and release. | 21 | Beta |
-| [tribes-bench](./tribes-bench/) | `0.1.0` | Tribal-emergence harness — two seed colonies hunt command-injection bugs in a synthetic Rust target via a deterministic verifier. Stage 0 wiring test only; replication, market, and reputation arrive in Stage 1+. | 2 | Experimental |
+| [tribes-bench](./tribes-bench/) | unreleased | Tribal-emergence harness — two seed colonies hunt command-injection bugs in a synthetic Rust target via a deterministic verifier. Stage 0 wiring test only; replication, market, and reputation arrive in Stage 1+. | 2 | Experimental |
 
 To start a new federation, see [`tools/new-federation.sh`](./tools/new-federation.sh) and [`doc/federation-patterns.md`](./doc/federation-patterns.md). The contract every federation must satisfy is [ADR-0003](./doc/adr/ADR-0003-federation-portability-contract.md).
 

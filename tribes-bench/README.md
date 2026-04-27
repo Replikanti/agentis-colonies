@@ -1,8 +1,8 @@
 # Tribes Bench
 
-![Version: 0.1.0](https://img.shields.io/badge/version-0.1.0-blue) ![Status: Experimental](https://img.shields.io/badge/status-experimental-purple)
+![Version: unreleased](https://img.shields.io/badge/version-unreleased-lightgrey) ![Status: Experimental](https://img.shields.io/badge/status-experimental-purple)
 
-**Version:** `0.1.0` · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.4.1` · **Status:** Experimental
+**Version:** `0.0.0` (unreleased) · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.4.1` · **Status:** Experimental
 
 > A research scaffold that tests whether the agentis runtime's
 > emergent-layer primitives (replication, scarcity, selection,
