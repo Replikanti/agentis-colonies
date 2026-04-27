@@ -35,6 +35,7 @@ to temp files; values without the `@` prefix still pass through unchanged
 for backward compatibility.
 """
 import os
+import re
 import sys
 
 
@@ -74,8 +75,16 @@ def main():
     with open(template_path, 'r', encoding='utf-8') as f:
         html = f.read()
 
-    for sentinel, value in substitutions.items():
-        html = html.replace(sentinel, value)
+    # Single-pass substitution (#366): a value (notably {{COLLECTOR_JSON}}) can
+    # contain the literal text of another sentinel — e.g. an agent's experience
+    # row whose `out` field discusses "{{HISTORY}}" while reasoning about a
+    # template change. A sequential `for s in subs: html.replace(s, v)` would
+    # then re-substitute that literal in the next iteration and inject the
+    # history payload into the collector data string, breaking
+    # `const data = ...;` parsing in the browser. re.sub() advances past the
+    # replacement value, so any sentinel literal inside a value is left intact.
+    pattern = re.compile('|'.join(re.escape(s) for s in substitutions))
+    html = pattern.sub(lambda m: substitutions[m.group(0)], html)
 
     tmp = output_path + '.tmp.' + str(os.getpid())
     with open(tmp, 'w', encoding='utf-8') as f:
