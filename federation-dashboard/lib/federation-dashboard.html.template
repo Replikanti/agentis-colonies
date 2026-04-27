@@ -1289,6 +1289,39 @@
     text-transform: uppercase; letter-spacing: 2px;
   }
   #phase-readiness-host { margin-bottom: 12px; }
+  /* #369: Promotion Progress is collapsible (default collapsed) so the
+     Status tab does not lead with a 280-px panel. <summary> renders the
+     card title plus a federation-wide one-liner (ready / close / not yet)
+     so the operator sees the verdict without expanding. */
+  #promotion-progress-details > summary {
+    cursor: pointer; list-style: none; user-select: none;
+    display: flex; align-items: center; gap: 12px;
+    padding: 2px 0; margin-bottom: 8px;
+  }
+  #promotion-progress-details > summary::-webkit-details-marker { display: none; }
+  #promotion-progress-details > summary::before {
+    content: '▸'; color: var(--muted); font-size: 11px; width: 10px;
+    transition: transform 0.1s ease;
+  }
+  #promotion-progress-details[open] > summary::before { content: '▾'; }
+  #promotion-progress-details .card-title {
+    font-size: 12px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 2px;
+  }
+  #promotion-progress-details .promotion-summary {
+    font-size: 11px; color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  #promotion-progress-details .promotion-summary .ready { color: var(--green); }
+  #promotion-progress-details .promotion-summary .close { color: var(--yellow); }
+  #promotion-progress-details .promotion-summary .not-yet { color: var(--muted); }
+  /* #369: top-5 cap hint for the Promote Candidates list. Renders below
+     the bars when the source list has >5 entries; static counter (no
+     expand) — the Agents table on Status is the canonical full sort. */
+  .more-candidates {
+    font-size: 11px; color: var(--muted); font-style: italic;
+    margin-top: 6px; padding: 2px 0;
+  }
 
   /* --- #359 Cost tab projection tiles --- */
   .projection-row {
@@ -1456,9 +1489,18 @@
   <div class="status-bottom-row">
     <div id="experience-trend" class="card chart-container"></div>
     <div id="promotion-progress" class="card">
-      <h3>Promotion Progress</h3>
-      <div id="phase-readiness-host"></div>
-      <div id="promote-candidates-host"></div>
+      <details id="promotion-progress-details">
+        <summary>
+          <span class="card-title">Promotion Progress</span>
+          <span class="promotion-summary" id="promotion-progress-summary">
+            <span class="ready">0 ready</span> ·
+            <span class="close">0 close</span> ·
+            <span class="not-yet">0 not yet</span>
+          </span>
+        </summary>
+        <div id="phase-readiness-host"></div>
+        <div id="promote-candidates-host"></div>
+      </details>
     </div>
   </div>
 </section>
@@ -1491,7 +1533,8 @@
 
 <!-- TAB: Recovery — bulk-restart, per-agent restart, per-sidecar restart,
      federation kill switch (with confirm-by-name modal), watchdog kills
-     timeline (forensic), per-agent log tail (<details> per agent). -->
+     timeline (forensic). The per-agent log tail moved to the Logs & Events
+     tab in #369 so Recovery stays focused on action surfaces. -->
 <section data-tab="recovery">
   <div class="grid">
     <div class="card full">
@@ -1507,10 +1550,6 @@
       <h2>Watchdog Kills (last 10)</h2>
       <div id="watchdog-kills" class="watchdog-timeline"></div>
     </div>
-    <div class="card full">
-      <h2>Per-Agent Log Tail</h2>
-      <div id="recovery-log-tails"></div>
-    </div>
   </div>
 </section>
 
@@ -1519,7 +1558,9 @@
      Resurrected as its own tab in iter5 of #362; pre-iter4 it lived inside
      the Progress tab. Filter UI: kind chips, colony dropdown, ABS / REL
      toggle, auto-hide-stale, Clear stale, Clear all. The renderEventTimeline
-     function body never moved — only the host divs are re-added here. -->
+     function body never moved — only the host divs are re-added here.
+     #369 moved the Per-Agent Log Tail card here from Recovery so Logs &
+     Events owns every read/log/event surface. -->
 <section data-tab="logs">
   <div class="grid">
     <div class="card full">
@@ -1538,6 +1579,10 @@
       <div class="timeline-chips" id="timeline-chips"></div>
       <div class="timeline-banner" id="timeline-banner" hidden></div>
       <div id="event-timeline" class="timeline"></div>
+    </div>
+    <div class="card full">
+      <h2>Per-Agent Log Tail</h2>
+      <div id="recovery-log-tails"></div>
     </div>
   </div>
 </section>
@@ -3635,13 +3680,21 @@ function renderPromoteCandidates(data) {
     skippedCount++;
   });
 
+  // #369: cap the candidate list at top 5 (already sorted closest-to-ready
+  // first). Hidden rows are surfaced by a static "+N more" hint pointing
+  // operators at the Agents table on Status — that table is the canonical
+  // full sort by limiting prereq.
+  const totalBars = bars.length;
+  const visibleBars = bars.slice(0, 5);
+  const hiddenBars = totalBars > 5 ? totalBars - 5 : 0;
+
   // Render the bars. Bar fill width is the LIMITING prereq fill (`minFill`)
   // — the operator's actionable signal. Colour bucket comes from `meanFill`.
   let html = '';
-  if (bars.length === 0) {
+  if (visibleBars.length === 0) {
     html += '<span class="promote-bars-empty">No agents in flight to promote right now.</span>';
   } else {
-    bars.forEach(b => {
+    visibleBars.forEach(b => {
       const pct = (b.minFill * 100).toFixed(1);
       // #352: pickTextColor over the bar fill so labels meet contrast.
       // Yellow `partial` and amber-adjacent backgrounds need dark text.
@@ -3663,6 +3716,12 @@ function renderPromoteCandidates(data) {
       // alongside "~3.7d to 0.80".
       if (b.forecastBadge) html += b.forecastBadge;
     });
+    // #369: top-5 cap teaser — surfaces the count of hidden candidates so
+    // the operator knows the Agents table has more rows to inspect.
+    if (hiddenBars > 0) {
+      html += '<div class="more-candidates">+' + hiddenBars +
+              ' more (see Agents table)</div>';
+    }
   }
   if (skippedCount > 0) {
     const openAttr = wasSkippedOpen ? ' open' : '';
@@ -3678,9 +3737,46 @@ function renderPromoteCandidates(data) {
 
 // Thin combined-panel wrapper — one dispatch entry, two child renderers.
 // Each child writes into its own host inside the #promotion-progress card.
+// #369: also computes the federation-wide ready / close / not-yet summary
+// rendered inside the <summary> line of the collapsible <details> wrap so
+// the operator reads the verdict without expanding the panel.
 function renderPromotionProgress(data) {
   renderPhaseReadiness(data);
   renderPromoteCandidates(data);
+  renderPromotionSummary(data);
+}
+
+// #369: aggregate three counts for the collapsible <summary> line:
+//   ready   = decision === 'promote' (next sidecar pass will lift them)
+//   close   = forecast_days_to_next_tier in (0, 14) (within 2 weeks)
+//   not yet = remaining non-dormant / non-quarantined agents
+// Excludes dormant + quarantined agents from the denominator (operator
+// can't act on them from the promote panel).
+function renderPromotionSummary(data) {
+  const el = document.getElementById('promotion-progress-summary');
+  if (!el) return;
+  const decisionsArr = (data && data.decisions) || [];
+  const decisionByAgent = {};
+  decisionsArr.forEach(d => { if (d && d.agent) decisionByAgent[d.agent] = d; });
+  let ready = 0, close = 0, notYet = 0;
+  const agentsArr = (data && data.agents) || [];
+  agentsArr.forEach(a => {
+    if (a.state === 'dormant' || a.state === 'quarantined') return;
+    const dec = decisionByAgent[a.name];
+    if (dec && dec.decision === 'promote') {
+      ready++;
+    } else if (dec && dec.evidence &&
+               dec.evidence.forecast_days_to_next_tier > 0 &&
+               dec.evidence.forecast_days_to_next_tier < 14) {
+      close++;
+    } else {
+      notYet++;
+    }
+  });
+  el.innerHTML =
+    '<span class="ready">' + ready + ' ready</span> · ' +
+    '<span class="close">' + close + ' close</span> · ' +
+    '<span class="not-yet">' + notYet + ' not yet</span>';
 }
 
 // --- Experience Growth Chart ---

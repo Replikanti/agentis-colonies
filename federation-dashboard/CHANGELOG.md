@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **dashboard**: Promotion Progress panel is now collapsible (default collapsed) with a federation-wide summary line (ready / close / not yet); contrast on tier bars and limiting-prereq partial bars meets WCAG-AA via the `pickTextColor` helper; Promote Candidates list capped at top 5 with a `+N more` hint pointing operators at the Agents table for the full sort. Per-Agent Log Tail moved from Recovery to Logs & Events alongside the Event Timeline. ([#369](https://github.com/Replikanti/agentis-colonies/issues/369))
+
 - **Status tab redesign + 5-tab cut + Promotion Progress combined panel
   + Logs & Events tab**
   ([#362](https://github.com/Replikanti/agentis-colonies/issues/362),
