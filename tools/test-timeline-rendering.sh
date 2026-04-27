@@ -2253,6 +2253,123 @@ else
     fail "61: Status tab bottom row wiring regressed (#362 iter5)"
 fi
 
+# --- #369 test 62: Promotion Progress contrast — pickTextColor is applied
+#     inside renderPhaseReadiness AND renderPromoteCandidates function
+#     bodies so labels rendered on amber / yellow tier + partial bars use
+#     dark fill (var(--text-on-light)) instead of the default light cyan
+#     and meet WCAG-AA. Also asserts the lookup table covers the tier-
+#     review-gated amber `#f59e0b` and the `--yellow` partial-fill `#ffff00`
+#     entries — the two surfaces operators flagged as unreadable. ---
+if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
+import sys, re
+with open(sys.argv[1]) as f:
+    src = f.read()
+m_phase = re.search(r'function renderPhaseReadiness\b.*?\n\}', src, re.DOTALL)
+phase_body = m_phase.group(0) if m_phase else ''
+if 'pickTextColor(' not in phase_body:
+    sys.stderr.write('renderPhaseReadiness does not call pickTextColor(\n'); sys.exit(2)
+m_prom = re.search(r'function renderPromoteCandidates\b.*?\n\}', src, re.DOTALL)
+prom_body = m_prom.group(0) if m_prom else ''
+if 'pickTextColor(' not in prom_body:
+    sys.stderr.write('renderPromoteCandidates does not call pickTextColor(\n'); sys.exit(3)
+# Sanity: the pickTextColor lookup table maps amber + yellow to dark text.
+if "'#f59e0b': 'var(--text-on-light)'" not in src:
+    sys.stderr.write('PICK_TEXT_LOOKUP missing tier-review-gated amber → dark text\n'); sys.exit(4)
+if "'#ffff00': 'var(--text-on-light)'" not in src:
+    sys.stderr.write('PICK_TEXT_LOOKUP missing partial-fill yellow → dark text\n'); sys.exit(5)
+sys.exit(0)
+PY
+then
+    pass "62: Promotion Progress contrast — pickTextColor is applied inside renderPhaseReadiness AND renderPromoteCandidates so amber/yellow bar labels meet WCAG-AA (#369)"
+else
+    fail "62: Promotion Progress contrast regression — pickTextColor missing on tier or partial bar labels (#369)"
+fi
+
+# --- #369 test 63: Promotion Progress is collapsible — <details
+#     id="promotion-progress-details"> wraps the content, <summary>
+#     contains the three counters (ready / close / not yet), default
+#     collapsed (no `open` attribute on the outer <details>). Per-agent
+#     log tail removed from Recovery tab in the same iteration; assert
+#     the host card lives inside <section data-tab="logs">. ---
+if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
+import sys, re
+with open(sys.argv[1]) as f:
+    src = f.read()
+# <details id="promotion-progress-details"> wraps the panel.
+m_det = re.search(r'<details\s+id="promotion-progress-details"([^>]*)>', src)
+if not m_det:
+    sys.stderr.write('<details id="promotion-progress-details"> not found\n'); sys.exit(2)
+attrs = m_det.group(1)
+if re.search(r'\bopen\b', attrs):
+    sys.stderr.write('<details id="promotion-progress-details"> has `open` attribute (must default collapsed)\n'); sys.exit(3)
+# <summary> with three counters present.
+m_sum = re.search(r'<details\s+id="promotion-progress-details"[^>]*>\s*<summary>(.*?)</summary>', src, re.DOTALL)
+if not m_sum:
+    sys.stderr.write('<summary> inside #promotion-progress-details not found\n'); sys.exit(4)
+sum_body = m_sum.group(1)
+for needle in ('ready', 'close', 'not yet'):
+    if needle not in sum_body:
+        sys.stderr.write('<summary> missing counter: ' + needle + '\n'); sys.exit(5)
+# Children rehosted inside the <details>.
+m_full = re.search(
+    r'<details\s+id="promotion-progress-details"[^>]*>(.*?)</details>',
+    src, re.DOTALL,
+)
+if not m_full:
+    sys.stderr.write('<details id="promotion-progress-details"> close not found\n'); sys.exit(6)
+panel_body = m_full.group(1)
+for needle in ('id="phase-readiness-host"', 'id="promote-candidates-host"'):
+    if needle not in panel_body:
+        sys.stderr.write('child host missing inside <details>: ' + needle + '\n'); sys.exit(7)
+# rerender() must dispatch the summary aggregate alongside the children.
+if 'renderPromotionSummary' not in src:
+    sys.stderr.write('renderPromotionSummary helper missing\n'); sys.exit(8)
+# Per-Agent Log Tail moved from Recovery to Logs & Events.
+m_logs = re.search(r'<section\s+data-tab="logs"[^>]*>(.*?)</section>', src, re.DOTALL)
+if not m_logs:
+    sys.stderr.write('<section data-tab="logs"> not found\n'); sys.exit(9)
+if 'id="recovery-log-tails"' not in m_logs.group(1):
+    sys.stderr.write('Per-Agent Log Tail host (#recovery-log-tails) not inside Logs & Events\n'); sys.exit(10)
+# And NOT inside Recovery any more.
+m_rec = re.search(r'<section\s+data-tab="recovery"[^>]*>(.*?)</section>', src, re.DOTALL)
+if not m_rec:
+    sys.stderr.write('<section data-tab="recovery"> not found\n'); sys.exit(11)
+if 'id="recovery-log-tails"' in m_rec.group(1):
+    sys.stderr.write('Per-Agent Log Tail still inside Recovery tab (must move to Logs & Events)\n'); sys.exit(12)
+sys.exit(0)
+PY
+then
+    pass "63: Promotion Progress is collapsible — <details id=\"promotion-progress-details\"> wraps content with ready/close/not-yet summary, default collapsed; Per-Agent Log Tail moved to Logs & Events (#369)"
+else
+    fail "63: Promotion Progress collapsible wrap or log-tail relocation regressed (#369)"
+fi
+
+# --- #369 test 64: Promote Candidates list capped at top 5 with a
+#     "+N more" hint pointing at the Agents table. Asserts the renderer
+#     slices to 5 (or equivalent) and emits a `more-candidates` marker
+#     when the source list is longer. ---
+if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
+import sys, re
+with open(sys.argv[1]) as f:
+    src = f.read()
+m = re.search(r'function renderPromoteCandidates\b.*?\n\}', src, re.DOTALL)
+body = m.group(0) if m else ''
+if not body:
+    sys.stderr.write('renderPromoteCandidates body not found\n'); sys.exit(2)
+# Slice cap to 5 entries (visible bars).
+if not re.search(r'\.slice\s*\(\s*0\s*,\s*5\s*\)', body):
+    sys.stderr.write('renderPromoteCandidates does not .slice(0, 5) the bar list\n'); sys.exit(3)
+# "+N more" hint emitted via the more-candidates marker.
+if 'more-candidates' not in body:
+    sys.stderr.write('renderPromoteCandidates does not emit the `more-candidates` marker\n'); sys.exit(4)
+sys.exit(0)
+PY
+then
+    pass "64: Promote Candidates list capped at top 5 + +N more hint when there are >5 candidates (#369)"
+else
+    fail "64: Promote Candidates top-5 cap or more-candidates hint regressed (#369)"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
