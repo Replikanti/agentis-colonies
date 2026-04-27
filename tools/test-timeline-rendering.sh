@@ -2332,6 +2332,51 @@ else
     fail "58: bulk-apply checkbox group wiring regressed (#359)"
 fi
 
+# --- #366 test 59: renderer is sentinel-injection-safe. When COLLECTOR_JSON
+#     contains the literal text of another sentinel ({{HISTORY}}), the
+#     rendered output keeps the literal as-is and does NOT inject the
+#     history payload. Sequential str.replace would re-substitute and
+#     break `const data = ...;` parsing in the browser, blanking the
+#     dashboard. The fix uses a single-pass re.sub. ---
+T59_DIR="$(mktemp -d)"
+T59_TEMPLATE="$T59_DIR/template.html"
+T59_OUTPUT="$T59_DIR/output.html"
+cat > "$T59_TEMPLATE" <<'TPL'
+<!doctype html><html><body>
+const data = {{COLLECTOR_JSON}};
+let history = {{HISTORY}};
+let remediation = {{REMEDIATION}};
+</body></html>
+TPL
+# Note the {{HISTORY}} literal embedded inside the COLLECTOR_JSON value.
+T59_COLLECTOR='{"timeline":[{"out":"agent reasoned about {{HISTORY}} sentinel"}]}'
+T59_HISTORY='[{"sentinel":true}]'
+T59_REMEDIATION='[]'
+T59_OK=0
+if python3 "$RENDERER_PY" \
+        "$T59_TEMPLATE" \
+        "$T59_OUTPUT" \
+        "fed" '"fed"' "1" "1" "0" "ts" \
+        "$T59_COLLECTOR" "$T59_HISTORY" "$T59_REMEDIATION" "[]" \
+        2>/dev/null
+then
+    # The {{HISTORY}} literal must survive inside the COLLECTOR_JSON value
+    # (one occurrence). The history payload [{"sentinel":true}] must appear
+    # exactly once — at the {{HISTORY}} substitution site, NOT also injected
+    # into the COLLECTOR_JSON spot.
+    T59_HIST_LIT_COUNT="$(grep -cF '{{HISTORY}}' "$T59_OUTPUT" 2>/dev/null || echo 0)"
+    T59_PAYLOAD_COUNT="$(grep -cF '[{"sentinel":true}]' "$T59_OUTPUT" 2>/dev/null || echo 0)"
+    if [ "$T59_HIST_LIT_COUNT" = "1" ] && [ "$T59_PAYLOAD_COUNT" = "1" ]; then
+        T59_OK=1
+    fi
+fi
+if [ "$T59_OK" -eq 1 ]; then
+    pass "59: renderer is sentinel-injection-safe — {{HISTORY}} inside COLLECTOR_JSON is not re-substituted (#366)"
+else
+    fail "59: renderer re-substituted a sentinel literal inside another sentinel's value (#366)"
+fi
+rm -rf "$T59_DIR"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
