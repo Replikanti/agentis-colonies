@@ -164,11 +164,16 @@ else
     fail "3: TIMELINE_CURSOR_KEY namespacing missing"
 fi
 
-# --- Test 4: Clear button structurally present. ---
+# --- Test 4: per-federation Clear button is rendered with the namespaced
+#     id="timeline-clear-btn" so the JS click handler in renderEventTimeline
+#     can wire `localStorage[TIMELINE_CURSOR_KEY] = now` without a stray-
+#     selector miss. Resurrected in #362 iter5: the timeline UI moved to
+#     its own "Logs & Events" tab and the host divs (chips, banner, clear-
+#     btn, event-timeline) are back in the served HTML. ---
 if grep -q 'id="timeline-clear-btn"' "$HTML_FILE"; then
-    pass "4: timeline Clear button present in HTML"
+    pass "4: timeline Clear button renders with id=\"timeline-clear-btn\" on Logs & Events tab"
 else
-    fail "4: #timeline-clear-btn missing"
+    fail "4: timeline Clear button id missing — Logs & Events tab host divs likely not rendered"
 fi
 
 # --- Test 5: Tooltip wired — at least one tip-text near a timeline-ts. ---
@@ -284,15 +289,15 @@ else
     fail "9: TIMELINE_CURSOR_CLASS_KEY namespacing missing"
 fi
 
-# --- #167: all four timeline controls structurally present. ---
-t10_ok=1
-for id in timeline-clear-stale-btn timeline-time-mode-btn timeline-auto-hide-stale timeline-chips; do
-    if ! grep -q "id=\"$id\"" "$HTML_FILE"; then echo "  missing #$id"; t10_ok=0; fi
-done
-if [ "$t10_ok" -eq 1 ]; then
-    pass "10: #167 controls (Clear stale, Time mode, Auto-hide, chips) present"
+# --- Test 10: kind-filter chip row renders with id="timeline-chips" so
+#     renderEventTimeline can populate it with one button per
+#     TIMELINE_KINDS entry. Resurrected in #362 iter5: the Logs & Events
+#     tab re-introduces the chip host. Without the host the chip-toggle
+#     persistence (`TIMELINE_CLASS_FILTER_KEY` per #167) silently no-ops. ---
+if grep -q 'id="timeline-chips"' "$HTML_FILE"; then
+    pass "10: timeline chip row renders with id=\"timeline-chips\" on Logs & Events tab"
 else
-    fail "10: one or more #167 controls missing"
+    fail "10: timeline chip row host missing — Logs & Events tab not wired"
 fi
 
 # --- #167: TIMELINE_CLASSES constant lists every classified type so the
@@ -508,90 +513,51 @@ else
     fail "21: SLOPE_FLAT_THRESHOLD missing, wrong value, orphaned, or 1e-6 guard survived (#163)"
 fi
 
-# --- #359: Phase Readiness — relocated from Promotions to Progress tab ---
-# #342 introduced stacked tier bars; #357 moved markup from Overview to
-# Promotions; #359 collapses Promotions/Learning into Progress and so the
-# Phase Readiness card now lives on the Progress tab (as a SMALL card
-# capped at 200px max-height, not the dominant tile). Test enforces class
-# wiring + section placement on the new Progress tab.
+# --- #362 iter5 test 22: 5-tab cut — exactly 5 <section data-tab="...">
+#     blocks in the order status / cost / recovery / logs / config. iter4
+#     was 4-tab (no Logs); iter5 resurrects Event Timeline as its own tab. ---
 if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
 import sys, re
 with open(sys.argv[1]) as f:
     src = f.read()
-# Pre-#248-PR-C bar/marker/ETA classes must STAY gone.
-forbidden = ['phase-bar-outer', 'phase-bar-inner', 'phase-marker', 'phase-eta']
-for cls in forbidden:
-    if cls in src:
-        sys.stderr.write('forbidden class still present: ' + cls + '\n'); sys.exit(2)
-# #342: new tier-bar classes must be wired (CSS + JS render). One bar per
-# tier per colony — covers the full ADR-0001 ladder.
-required = ['phase-bar', 'phase-bar-fill', 'phase-bar-label-left', 'phase-bar-label-right',
-            'tier-dormant', 'tier-shadow', 'tier-propose', 'tier-review-gated', 'tier-autonomous']
-for cls in required:
-    if cls not in src:
-        sys.stderr.write('missing class: ' + cls + '\n'); sys.exit(3)
-if "tierFor" not in src or "'dormant'" not in src or "'autonomous'" not in src:
-    sys.stderr.write('tierFor / dormant / autonomous missing\n'); sys.exit(4)
-if '<summary><h2>' in src:
-    sys.stderr.write('h2-in-summary anti-pattern still present\n'); sys.exit(5)
-if 'summary-h2' not in src:
-    sys.stderr.write('summary-h2 class missing\n'); sys.exit(6)
-# #359: id="readiness" must live INSIDE the Progress <section>, not on
-# any of the eliminated Overview / Agents / Promotions / Learning tabs.
-def slice_section(haystack, name):
-    m = re.search(r'<section\s+data-tab="' + re.escape(name) + r'"[^>]*>', haystack)
-    if not m: return None
-    start = m.end()
-    n = re.search(r'<section\s+data-tab="', haystack[start:])
-    end = start + n.start() if n else len(haystack)
-    return haystack[start:end]
-progress = slice_section(src, 'progress') or ''
-if 'id="readiness"' not in progress:
-    sys.stderr.write('Phase Readiness markup missing from Progress tab (#359)\n'); sys.exit(7)
+expected = ['status', 'cost', 'recovery', 'logs', 'config']
+found = [m for m in re.findall(r'<section\s+data-tab="([^"]+)"', src) if m != '...']
+if found != expected:
+    sys.stderr.write('section data-tab order/contents wrong: %r vs expected %r\n' % (found, expected))
+    sys.exit(1)
+# Negative-assert: progress section is gone.
+if '<section data-tab="progress"' in src:
+    sys.stderr.write('progress section still present (should be deleted in #362)\n')
+    sys.exit(2)
 sys.exit(0)
 PY
 then
-    pass "22: Phase Readiness stacked tier bars relocated to Progress tab (#359, was Promotions in #357)"
+    pass "22: 5-tab cut — exactly 5 <section data-tab=\"...\"> blocks (status / cost / recovery / logs / config) (#362 iter5)"
 else
-    fail "22: Phase Readiness regression — class wiring missing or markup not in Progress tab"
+    fail "22: 5-tab section count or order wrong (#362 iter5 expects status / cost / recovery / logs / config)"
 fi
 
-# --- #359 (was #248 PR C): Confidence Trend + Experience Growth charts on
-#     the Progress tab are NOW DEFAULT-EXPANDED (no <details> wrapper).
-#     The charts moved from the demoted #248 PR C placement on the
-#     Learning tab to first-class cards on Progress. Lock the contract:
-#     neither chart container is wrapped in <details> on the Progress tab.
-#     (Test 54 below adds a stricter check.)
+# --- #362 iter5 test 23: 5-tab bar emits exactly 5 buttons; no
+#     data-tab="progress". Logs & Events button is in 4th position. ---
 if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
 import sys, re
 with open(sys.argv[1]) as f:
     src = f.read()
-# Find the Progress tab body slice.
-m_sec = re.search(r'<section\s+data-tab="progress"[^>]*>', src)
-if not m_sec:
-    sys.stderr.write('Progress tab section not found\n'); sys.exit(1)
-start = m_sec.end()
-m_next = re.search(r'<section\s+data-tab="', src[start:])
-end = start + m_next.start() if m_next else len(src)
-progress = src[start:end]
-# Each chart container must NOT sit inside a <details>.
-for chart_id in ('experience-trend', 'confidence-trend'):
-    if 'id="' + chart_id + '"' not in progress:
-        sys.stderr.write(chart_id + ' not in Progress tab\n'); sys.exit(2)
-    # Walk backwards from the id to nearest opening <details> or <section>.
-    pos = progress.find('id="' + chart_id + '"')
-    head = progress[:pos]
-    last_open = head.rfind('<details')
-    last_close = head.rfind('</details>')
-    if last_open > last_close:
-        sys.stderr.write(chart_id + ' is wrapped in <details> on Progress tab — should be default-expanded (#359)\n')
-        sys.exit(3)
+expected = ['status', 'cost', 'recovery', 'logs', 'config']
+buttons = re.findall(r'<button\s+class="tab-btn"\s+role="tab"\s+data-tab="([^"]+)"', src)
+if buttons != expected:
+    sys.stderr.write('tab-btn data-tab order wrong: %r vs expected %r\n' % (buttons, expected))
+    sys.exit(1)
+# Negative-assert: progress button is gone.
+if 'data-tab="progress"' in src:
+    sys.stderr.write('Progress tab button still present (#362 deletes it)\n')
+    sys.exit(2)
 sys.exit(0)
 PY
 then
-    pass "23: Confidence Trend + Experience Growth default-expanded on Progress tab (#359)"
+    pass "23: 5-tab bar emits exactly 5 buttons; no data-tab=\"progress\" (#362 iter5)"
 else
-    fail "23: chart wrapping regressed — should NOT be inside <details> on Progress (#359)"
+    fail "23: tab bar buttons missing or out of order (#362 iter5 expects 5: status / cost / recovery / logs / config)"
 fi
 
 # --- #257: federation-agnostic vocabulary regression guard. ---
@@ -641,18 +607,19 @@ else
     fail "24: forge-vocabulary regression — see lines above"
 fi
 
-# --- #276: per-agent promotion forecast (template wiring + algorithm) ---
-# Two checks: (a) the template carries the new .forecast CSS class plus the
-# JS render branch keyed on evidence.forecast_days_to_next_tier; (b) the
-# linear-regression projection embedded in federation-dashboard-collector.py
-# yields a positive forecast in the [3.5, 4.5] day band for a 5-point colony
-# series climbing 0.60 → 0.65 over 1 hour at confidence 0.62 → next-tier 0.80,
-# and yields null for a flat / declining series.
+# --- #276 / #362: per-agent promotion forecast (template wiring + algorithm) ---
+# Two checks: (a) the template carries the JS render branch keyed on
+# evidence.forecast_days_to_next_tier (now in renderStatusAgentTable's
+# ETA column after #362, replaces the deleted Promote Candidates badge);
+# (b) the linear-regression projection embedded in federation-dashboard-
+# collector.py yields a positive forecast in the [3.5, 4.5] day band for
+# a 5-point colony series climbing 0.60 → 0.65 over 1 hour at confidence
+# 0.62 → next-tier 0.80, and yields null for a flat / declining series.
 if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
 import sys
 with open(sys.argv[1]) as f:
     src = f.read()
-needles = ['class="forecast"', 'forecast_days_to_next_tier', "'~'", 'd to ']
+needles = ['forecast_days_to_next_tier', "'d'", 'function renderStatusAgentTable']
 for n in needles:
     if n not in src:
         sys.stderr.write('template missing forecast wiring: ' + n + '\n')
@@ -660,7 +627,7 @@ for n in needles:
 sys.exit(0)
 PY
 then
-    pass "25a: template wires .forecast CSS + JS render branch (#276)"
+    pass "25a: template wires forecast JS render branch in per-agent table ETA column (#276 / #362)"
 else
     fail "25a: forecast template wiring missing"
 fi
@@ -1167,210 +1134,121 @@ sleep 0.5
 kill -KILL "-$DASH_PID2" 2>/dev/null || kill -KILL "$DASH_PID2" 2>/dev/null || true
 rm -rf "$QA_FED2"
 
-# --- #342: Promote Candidates Dune-style progress bars (issue plan: t28) ---
-# Plan-test 28 from the LGTM'd #342 issue plan. Asserts the Promote
-# Candidates render path uses progress-bar markup (`promote-bar`,
-# `promote-bar-fill`, plus the three colour-bucket classes `ready` /
-# `partial` / `blocked` and the orthogonal `evolve` purple bar). Also
-# locks out the legacy `promote-item` row markup so a stray revert trips
-# this test instead of silently regressing operator UX.
+# --- #362 test 33: Status tab renders per-agent table tbody with one row
+#     per agent (one in this single-stub-agent fixture). Each row carries
+#     `data-agent` for the click-row → modal handler, plus the 8 expected
+#     columns (state-dot / agent / colony / conf / next / eta / limiting /
+#     last-err). Replaces the deleted Promote Candidates test. ---
+if python3 - "$HTML_FILE" "$TEMPLATE_HTML" <<'PY' 2>/dev/null
+import sys, re
+with open(sys.argv[1]) as f:
+    rendered = f.read()
+with open(sys.argv[2]) as f:
+    src = f.read()
+# Container element exists in the template + rendered HTML.
+if 'id="status-agent-table"' not in src:
+    sys.stderr.write('#status-agent-table host missing from template\n'); sys.exit(2)
+if 'id="status-agent-table"' not in rendered:
+    sys.stderr.write('#status-agent-table host missing from rendered HTML\n'); sys.exit(3)
+# Renderer + sort persistence wiring are present.
+for needle in ('function renderStatusAgentTable', 'STATUS_AGENT_TABLE_COLUMNS',
+               'data-agent="', 'agentis:dashboard:agent-table-sort'):
+    if needle not in src:
+        sys.stderr.write('per-agent table wiring missing: ' + needle + '\n'); sys.exit(4)
+# 8 column headers in declaration order.
+expected_labels = ['State', 'Agent', 'Colony', 'Conf', 'Next', 'ETA', 'Limiting', 'Last err']
+m = re.search(r'STATUS_AGENT_TABLE_COLUMNS\s*=\s*\[(.*?)\];', src, re.DOTALL)
+if not m:
+    sys.stderr.write('STATUS_AGENT_TABLE_COLUMNS array not found\n'); sys.exit(5)
+labels = re.findall(r"label:\s*'([^']+)'", m.group(1))
+if labels != expected_labels:
+    sys.stderr.write('column labels wrong: %r vs %r\n' % (labels, expected_labels)); sys.exit(6)
+sys.exit(0)
+PY
+then
+    pass "33: Status tab renders per-agent table tbody with data-agent rows + 8 columns (#362)"
+else
+    fail "33: per-agent table wiring regressed (#362)"
+fi
+
+# --- #362 test 34: Status tab stat-tile row includes a Total Experience
+#     tile sourced from `data.experience_counts.total` with thousands
+#     separator. This is the operator's missing-since-#359 contract —
+#     federation-wide cumulative experience count back on the dashboard. ---
 if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
-import sys
+import sys, re
 with open(sys.argv[1]) as f:
     src = f.read()
-# Required: new bar classes (CSS + JS render).
-required = ['promote-bar', 'promote-bar-fill',
-            'promote-bar-label-left', 'promote-bar-label-right',
-            "promote-bar.ready", "promote-bar.partial",
-            "promote-bar.blocked", "promote-bar.evolve"]
-for cls in required:
-    if cls not in src:
-        sys.stderr.write('missing class/selector: ' + cls + '\n'); sys.exit(2)
-# JS render must reference the limiting-prereq + mean-fill arithmetic.
-needles = ['minFill', 'meanFill', 'prereqFill']
-for n in needles:
-    if n not in src:
-        sys.stderr.write('missing JS hook: ' + n + '\n'); sys.exit(3)
-# Legacy per-row checklist markup gone from the JS render path. The
-# legacy CSS class `.promote-item` is allowed to linger in the <style>
-# block but the JS render must no longer emit `<div class="promote-item">`.
-if 'class="promote-item"' in src:
-    sys.stderr.write('legacy promote-item div markup still emitted by JS\n'); sys.exit(4)
+# Renderer wiring present.
+for needle in ('function renderStatusStatTiles',
+               'id="status-stat-tiles"',
+               'data.experience_counts',
+               "toLocaleString('en-US')",
+               "'Total Experience'"):
+    if needle not in src:
+        sys.stderr.write('stat-tile wiring missing: ' + needle + '\n'); sys.exit(2)
+# Hermetic re-implementation: experience_counts.total = 12345 must format
+# as '12,345 entries' under en-US thousands separator.
+n = 12345
+formatted = '{:,}'.format(n) + ' entries'
+if formatted != '12,345 entries':
+    sys.stderr.write('en-US locale formatter regression: %r\n' % formatted); sys.exit(3)
+# Verify the JS string concatenation pattern is present in source so the
+# rendered HTML carries the formatted total verbatim once the live federation
+# pushes a non-zero value.
+if "expTotal.toLocaleString('en-US') + ' entries'" not in src:
+    sys.stderr.write('Total Experience tile string-concat pattern missing\n'); sys.exit(4)
 sys.exit(0)
 PY
 then
-    pass "33: Promote Candidates renders progress bars with ready/partial/blocked/evolve buckets (#342)"
+    pass "34: Status tab Total Experience tile sourced from data.experience_counts.total with thousands separator (#362)"
 else
-    fail "33: Promote Candidates bar markup regression — see stderr above"
+    fail "34: Total Experience tile wiring regressed (#362)"
 fi
 
-# --- #342: Phase Readiness 5-tier stacked bars per colony (issue plan: t29) ---
-# Plan-test 29. Boots renderPhaseReadiness against a 2-colony fixture by
-# parsing the rendered index.html the dashboard already produces above
-# (HTML_FILE), and asserts the JS render path emits 5 tier bars per colony
-# (so 10 bars total for 2 colonies). Because the fixture dashboard above
-# only ships a single stub-colony, this test re-renders against a hermetic
-# 2-colony JSON injected directly into the JS source via Python — same
-# pattern as t25b's algorithmic re-implementation.
-if python3 - <<'PY' 2>/dev/null
+# --- #362 test 35: Experience Growth chart renders at the bottom of the
+#     Status tab (after status-meta), NOT inside <details>, NOT inside the
+#     deleted Progress tab. Confidence Trend container is gone everywhere.
+#     Replaces tests 23 + 54 from #359. ---
+if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
 import sys, re
-# Re-implement renderPhaseReadiness's loop in Python: 5 bars per colony,
-# each bar carries `phase-bar tier-<name>`. With 2 colonies we expect 10
-# `phase-bar` div openings.
-COLONIES = ['colony-a', 'colony-b']
-TIERS = ['dormant', 'shadow', 'propose', 'review-gated', 'autonomous']
-emitted = []
-for col in COLONIES:
-    for t in TIERS:
-        emitted.append('phase-bar tier-' + t)
-if len(emitted) != 10:
-    sys.stderr.write('expected 10 phase-bar entries for 2 colonies x 5 tiers, got %d\n' % len(emitted)); sys.exit(2)
-# All five tier names must appear in the emitted set.
-tier_set = set(e.split('tier-', 1)[1] for e in emitted)
-if tier_set != set(TIERS):
-    sys.stderr.write('tier set mismatch: %r vs %r\n' % (tier_set, set(TIERS))); sys.exit(3)
-sys.exit(0)
-PY
-then
-    # Algorithmic check passes; now lock the template wiring so the
-    # render loop actually iterates all 5 tiers per colony.
-    if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
-import sys
 with open(sys.argv[1]) as f:
     src = f.read()
-# The TIERS array in renderPhaseReadiness must include all 5 ADR-0001 tiers.
-needles = ["'dormant'", "'shadow'", "'propose'", "'review-gated'", "'autonomous'"]
-for n in needles:
-    if n not in src:
-        sys.stderr.write('TIERS array missing tier: ' + n + '\n'); sys.exit(2)
-# The render loop must walk colonyList AND TIERS to reach 5 bars per colony.
-if 'colonyList.forEach' not in src or 'TIERS.forEach' not in src:
-    sys.stderr.write('renderPhaseReadiness loop wiring missing\n'); sys.exit(3)
-# Per-bar width must be computed as (n / total) * 100.
-if '/ total' not in src and '/total' not in src:
-    sys.stderr.write('phase-bar width arithmetic missing\n'); sys.exit(4)
-sys.exit(0)
-PY
-    then
-        pass "34: Phase Readiness emits 5 tier bars per colony (10 bars across 2 colonies) (#342)"
-    else
-        fail "34: Phase Readiness template wiring regression — see stderr above"
-    fi
-else
-    fail "34: Phase Readiness algorithmic re-implementation regressed"
-fi
-
-# --- #342: bar fill arithmetic — limiting prereq drives width (issue plan: t30) ---
-# Plan-test 30. Hermetic Python re-implements the per-prereq fill rule
-# (`>=` ratio + `<` binary) against a synthetic 2-prereq fixture. The
-# spec is "agent with 2 prereqs at 80% and 20% fill → bar shows 20% with
-# limiting-prereq label" — locks the contract that the bar reflects the
-# WORST prereq, not the mean. Same hermetic pattern as t25b so the test
-# stays daemon-list-free.
-if python3 - <<'PY' 2>/dev/null
-import sys
-def prereq_fill(p):
-    if p['op'] == '<':
-        return 1.0 if p['meets'] else 0.0
-    t = float(p['threshold'] or 0)
-    if t == 0:
-        return 1.0 if p['meets'] else 0.0
-    v = float(p['value'] or 0)
-    if v <= 0: return 0.0
-    if v >= t: return 1.0
-    return v / t
-
-# Fixture: agent with 2 prereqs.
-#   entries_total at 80%   (160/200), meets=False
-#   runtime_hours at 20%   (0.2/1.0), meets=False
-prereqs = [
-    {'name': 'entries_total', 'value': 160, 'threshold': 200, 'op': '>=', 'meets': False},
-    {'name': 'runtime_hours', 'value': 0.2, 'threshold': 1.0, 'op': '>=', 'meets': False},
-]
-fills = [prereq_fill(p) for p in prereqs]
-mean_fill = sum(fills) / len(fills)
-min_idx = min(range(len(fills)), key=lambda i: fills[i])
-min_fill = fills[min_idx]
-limiting = prereqs[min_idx]
-
-# Bar fill = limiting prereq (min), NOT mean.
-if abs(min_fill - 0.2) > 1e-6:
-    sys.stderr.write('limiting fill = %.4f, expected 0.20 (the worst prereq)\n' % min_fill); sys.exit(2)
-if abs(mean_fill - 0.5) > 1e-6:
-    sys.stderr.write('mean fill = %.4f, expected 0.50 ((0.8+0.2)/2)\n' % mean_fill); sys.exit(3)
-# Limiting prereq must point to runtime_hours (the 20% one).
-if limiting['name'] != 'runtime_hours':
-    sys.stderr.write('limiting prereq = %r, expected runtime_hours\n' % limiting['name']); sys.exit(4)
-# Colour bucket: mean = 0.5 -> partial (yellow). Below 0.5 -> blocked (red).
-def bucket(prereqs, mean_fill):
-    if all(p['meets'] for p in prereqs): return 'ready'
-    return 'partial' if mean_fill >= 0.5 else 'blocked'
-if bucket(prereqs, mean_fill) != 'partial':
-    sys.stderr.write('expected partial bucket at mean=0.5\n'); sys.exit(5)
-
-# Second fixture: all-meets → 'ready' bucket.
-all_meets = [
-    {'name': 'entries_total', 'value': 250, 'threshold': 200, 'op': '>=', 'meets': True},
-    {'name': 'runtime_hours', 'value': 1.5, 'threshold': 1.0, 'op': '>=', 'meets': True},
-]
-am_fills = [prereq_fill(p) for p in all_meets]
-am_mean = sum(am_fills) / len(am_fills)
-if bucket(all_meets, am_mean) != 'ready':
-    sys.stderr.write('all-meets fixture not bucketed as ready\n'); sys.exit(6)
-
-# Third fixture: reject_rate '<' op as binary gate. value=0.10 fails a
-# 0.05 threshold; fill must be 0.0 even though 0.10/0.05 = 2.0 would
-# saturate a numeric ratio.
-reject_fail = {'name': 'reject_rate_acting', 'value': 0.10, 'threshold': 0.05,
-               'op': '<', 'meets': False}
-if prereq_fill(reject_fail) != 0.0:
-    sys.stderr.write('< op should give binary 0.0 on fail, got %.4f\n' % prereq_fill(reject_fail)); sys.exit(7)
+# Negative: confidence-trend container must be gone everywhere.
+if 'id="confidence-trend"' in src:
+    sys.stderr.write('confidence-trend container still in template (deleted in #362)\n'); sys.exit(2)
+# Negative: progress section must be gone.
+if '<section data-tab="progress"' in src:
+    sys.stderr.write('progress section still present (deleted in #362)\n'); sys.exit(3)
+# Slice the Status tab body and verify experience-trend lives there.
+m_sec = re.search(r'<section\s+data-tab="status"[^>]*>', src)
+if not m_sec:
+    sys.stderr.write('status section missing\n'); sys.exit(4)
+start = m_sec.end()
+m_next = re.search(r'<section\s+data-tab="', src[start:])
+end = start + m_next.start() if m_next else len(src)
+status_body = src[start:end]
+if 'id="experience-trend"' not in status_body:
+    sys.stderr.write('experience-trend chart missing from Status tab body\n'); sys.exit(5)
+# Verify experience-trend appears AFTER status-meta in document order.
+pos_meta = status_body.find('id="status-meta"')
+pos_trend = status_body.find('id="experience-trend"')
+if pos_meta < 0 or pos_trend < 0:
+    sys.stderr.write('status-meta or experience-trend not found in Status body\n'); sys.exit(6)
+if pos_trend <= pos_meta:
+    sys.stderr.write('experience-trend should render AFTER status-meta\n'); sys.exit(7)
+# Verify experience-trend is NOT wrapped in <details>.
+head = status_body[:pos_trend]
+last_open = head.rfind('<details')
+last_close = head.rfind('</details>')
+if last_open > last_close:
+    sys.stderr.write('experience-trend is inside <details> on Status tab\n'); sys.exit(8)
 sys.exit(0)
 PY
 then
-    pass "35: bar arithmetic — limiting prereq drives width; mean drives bucket; '<' op binary (#342)"
+    pass "35: Experience Growth chart at bottom of Status tab; #confidence-trend gone everywhere (#362)"
 else
-    fail "35: bar arithmetic regression — see stderr above"
-fi
-
-# --- #359: 5-tab intent-driven cut (was 6 tabs in #352). ---
-# Sections must be exactly: status / cost / recovery / progress / config.
-# Default first-paint tab is `status` (not `overview`; Overview is gone).
-if python3 - "$HTML_FILE" <<'PY' 2>/dev/null
-import sys, re
-with open(sys.argv[1]) as f:
-    html = f.read()
-expected = ['status', 'cost', 'recovery', 'progress', 'config']
-# Filter out the literal '...' placeholder text from inline comments;
-# only real `<section data-tab="<word>"` markup counts.
-found = [m for m in re.findall(r'<section\s+data-tab="([^"]+)"', html) if m != '...']
-if found != expected:
-    sys.stderr.write('section data-tab order/contents wrong: %r vs expected %r\n' % (found, expected))
-    sys.exit(1)
-sys.exit(0)
-PY
-then
-    pass "36: five <section data-tab=\"...\"> blocks in expected order (#359)"
-else
-    fail "36: section count or order wrong (#359 expects 5 tabs)"
-fi
-
-# --- #359: tab bar emits 5 buttons (Status/Cost/Recovery/Progress/Config) ---
-if python3 - "$HTML_FILE" <<'PY' 2>/dev/null
-import sys, re
-with open(sys.argv[1]) as f:
-    html = f.read()
-expected = ['status', 'cost', 'recovery', 'progress', 'config']
-buttons = re.findall(r'<button\s+class="tab-btn"\s+role="tab"\s+data-tab="([^"]+)"', html)
-if buttons != expected:
-    sys.stderr.write('tab-btn data-tab order wrong: %r\n' % buttons)
-    sys.exit(1)
-sys.exit(0)
-PY
-then
-    pass "37: tab bar emits 5 buttons with expected data-tab attributes (#359)"
-else
-    fail "37: tab bar buttons missing or out of order (#359 expects 5)"
+    fail "35: Experience Growth chart relocation regressed (#362)"
 fi
 
 # --- #352: pickTextColor returns dark for #f59e0b (amber) and light
@@ -1402,37 +1280,6 @@ then
     pass "38: pickTextColor maps amber→dark + blue→light + variable defined (#352)"
 else
     fail "38: pickTextColor contrast mapping regressed"
-fi
-
-# --- #352: MAX badge for autonomous-tier agents in promotion ladder.
-#     A handcrafted `agents[]` fixture with `confidence: 0.97` must
-#     trigger the `MAX` badge + `—` limiting-prereq cell on the first
-#     paint of the Promotions tab. ---
-if python3 - "$HTML_FILE" <<'PY' 2>/dev/null
-import sys, re
-with open(sys.argv[1]) as f:
-    html = f.read()
-# The renderer body must reference the `MAX` badge in the autonomous
-# tier branch. Find the renderPromotionLadder function definition and
-# check it contains the literal 'MAX' inside a max-badge-classed span.
-m = re.search(r'function renderPromotionLadder\b.*?\n}', html, re.DOTALL)
-if not m:
-    sys.stderr.write('renderPromotionLadder function not found\n')
-    sys.exit(1)
-body = m.group(0)
-if 'max-badge' not in body or 'MAX' not in body:
-    sys.stderr.write('MAX badge not wired in renderPromotionLadder\n')
-    sys.exit(2)
-# 0.95 threshold (autonomous) should be the gate.
-if '0.95' not in body:
-    sys.stderr.write('autonomous threshold 0.95 missing from renderPromotionLadder\n')
-    sys.exit(3)
-sys.exit(0)
-PY
-then
-    pass "39: MAX badge wired for autonomous-tier agents in renderPromotionLadder (#352)"
-else
-    fail "39: MAX badge wiring regressed"
 fi
 
 # --- #352: sidecar listing renders 2 entries (auto-promote + cost-cap)
@@ -1643,7 +1490,7 @@ def slice_section(haystack, name):
     n = re.search(r'<section\s+data-tab="', haystack[start:])
     end = start + n.start() if n else len(haystack)
     return haystack[start:end]
-for name in ('status', 'cost', 'recovery', 'progress', 'config'):
+for name in ('status', 'cost', 'recovery', 'logs', 'config'):
     body = slice_section(src, name) or ''
     if 'id="forge-rate-limits"' in body:
         sys.stderr.write('Forge Rate Limits container in tab "' + name + '" — should be in colony modal (#359)\n')
@@ -2102,69 +1949,6 @@ else
     fail "53: SSE dot wiring regressed (#359)"
 fi
 
-# --- #359 test 54: Confidence Trend + Experience Growth render WITHOUT
-#     <details> wrapper on the Progress tab (default-expanded). ---
-if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
-import sys, re
-with open(sys.argv[1]) as f:
-    src = f.read()
-m_sec = re.search(r'<section\s+data-tab="progress"[^>]*>', src)
-if not m_sec:
-    sys.stderr.write('progress section missing\n'); sys.exit(1)
-start = m_sec.end()
-m_next = re.search(r'<section\s+data-tab="', src[start:])
-end = start + m_next.start() if m_next else len(src)
-progress = src[start:end]
-for cid in ('confidence-trend', 'experience-trend'):
-    pos = progress.find('id="' + cid + '"')
-    if pos < 0:
-        sys.stderr.write(cid + ' not in Progress tab\n'); sys.exit(2)
-    head = progress[:pos]
-    last_open = head.rfind('<details')
-    last_close = head.rfind('</details>')
-    if last_open > last_close:
-        sys.stderr.write(cid + ' is inside <details> on Progress tab — should be default-expanded\n'); sys.exit(3)
-sys.exit(0)
-PY
-then
-    pass "54: Confidence Trend + Experience Growth default-expanded on Progress tab (#359)"
-else
-    fail "54: charts wrapped in <details> on Progress (#359 expects default-expanded)"
-fi
-
-# --- #359 test 55: Status tab body has NO charts, NO bars, NO tables,
-#     NO `<details>` (pure single-glance verdict). ---
-# This is the operator's "no charts no bars no tables" requirement
-# expressed as a regression guard. Slice on data-tab="status" and walk
-# the contained markup; reject any of <canvas>, <svg>, <table>, <details>.
-if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
-import sys, re
-with open(sys.argv[1]) as f:
-    src = f.read()
-m_sec = re.search(r'<section\s+data-tab="status"[^>]*>', src)
-if not m_sec:
-    sys.stderr.write('status section missing\n'); sys.exit(1)
-start = m_sec.end()
-m_next = re.search(r'<section\s+data-tab="', src[start:])
-end = start + m_next.start() if m_next else len(src)
-body = src[start:end]
-for forbidden in ('<canvas', '<svg', '<table', '<details'):
-    if forbidden in body:
-        sys.stderr.write('Status tab body contains forbidden element: ' + forbidden + '\n'); sys.exit(2)
-# Verdict pill class must be present so the test isn't a vacuous true on
-# an empty section.
-if 'status-verdict-pill' not in src:
-    sys.stderr.write('status-verdict-pill class missing — Status verdict not wired\n'); sys.exit(3)
-if 'pulse-grid' not in src:
-    sys.stderr.write('pulse-grid class missing — 21-cell pulse grid not wired\n'); sys.exit(4)
-sys.exit(0)
-PY
-then
-    pass "55: Status tab body has no charts / bars / tables / <details> (#359)"
-else
-    fail "55: Status tab body contains a forbidden element (#359 single-glance verdict)"
-fi
-
 # --- #359 test 56: Cost tab renders 4 projection stat tiles backed by
 #     data.cost.projected_* fields (1h, 1d in headline; 1w / 1m in tile
 #     extras). The collector emits all four projections; the renderer
@@ -2376,6 +2160,98 @@ else
     fail "59: renderer re-substituted a sentinel literal inside another sentinel's value (#366)"
 fi
 rm -rf "$T59_DIR"
+
+# --- #362 iter5 test 60: Promotion Progress combined panel — Phase
+#     Readiness writes into #phase-readiness-host (NOT the pre-iter4 top-
+#     level #readiness), Promote Candidates writes into
+#     #promote-candidates-host (NOT the pre-iter4 top-level
+#     #promote-candidates). Both renderers were resurrected from sha
+#     90ffef4 and retargeted at the combined-panel hosts so the bottom-row
+#     card stays self-contained on Status. ---
+if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
+import sys, re
+with open(sys.argv[1]) as f:
+    src = f.read()
+# Renderer functions exist + their wrapper.
+for fn in ('function renderPhaseReadiness',
+           'function renderPromoteCandidates',
+           'function renderPromotionProgress'):
+    if fn not in src:
+        sys.stderr.write('renderer missing: ' + fn + '\n'); sys.exit(2)
+# Phase Readiness must target #phase-readiness-host, NOT #readiness.
+m_phase = re.search(r'function renderPhaseReadiness\b.*?\n\}', src, re.DOTALL)
+phase_body = m_phase.group(0) if m_phase else ''
+if "getElementById('readiness')" in phase_body:
+    sys.stderr.write('renderPhaseReadiness still targets pre-iter4 #readiness host\n'); sys.exit(3)
+if "getElementById('phase-readiness-host')" not in phase_body:
+    sys.stderr.write('renderPhaseReadiness does not target #phase-readiness-host\n'); sys.exit(4)
+# Promote Candidates must target #promote-candidates-host, NOT #promote-candidates.
+m_prom = re.search(r'function renderPromoteCandidates\b.*?\n\}', src, re.DOTALL)
+prom_body = m_prom.group(0) if m_prom else ''
+if "getElementById('promote-candidates')" in prom_body:
+    sys.stderr.write('renderPromoteCandidates still targets pre-iter4 #promote-candidates host\n'); sys.exit(5)
+if "getElementById('promote-candidates-host')" not in prom_body:
+    sys.stderr.write('renderPromoteCandidates does not target #promote-candidates-host\n'); sys.exit(6)
+# The combined panel hosts must exist in the template.
+for needle in ('id="promotion-progress"', 'id="phase-readiness-host"', 'id="promote-candidates-host"'):
+    if needle not in src:
+        sys.stderr.write('combined-panel host missing: ' + needle + '\n'); sys.exit(7)
+# rerender() must dispatch the combined wrapper.
+if 'renderPromotionProgress(snap)' not in src:
+    sys.stderr.write('rerender() does not call renderPromotionProgress(snap)\n'); sys.exit(8)
+sys.exit(0)
+PY
+then
+    pass "60: Promotion Progress combined panel — Phase Readiness and Promote Candidates retargeted at #phase-readiness-host / #promote-candidates-host (#362 iter5)"
+else
+    fail "60: Promotion Progress combined panel wiring regressed (#362 iter5)"
+fi
+
+# --- #362 iter5 test 61: Status tab bottom row — `.status-bottom-row`
+#     flex container holds #experience-trend and #promotion-progress
+#     side-by-side. Asserts both children live inside the same
+#     .status-bottom-row sibling and the row CSS is wired (display: flex
+#     + min-width: 0 children) so a long chart SVG / bar label cannot
+#     force the row wider than the viewport. ---
+if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
+import sys, re
+with open(sys.argv[1]) as f:
+    src = f.read()
+# Slice the Status tab body so the assertion is scoped to the right tab.
+m_sec = re.search(r'<section\s+data-tab="status"[^>]*>', src)
+if not m_sec:
+    sys.stderr.write('status section missing\n'); sys.exit(2)
+start = m_sec.end()
+m_next = re.search(r'<section\s+data-tab="', src[start:])
+end = start + m_next.start() if m_next else len(src)
+status_body = src[start:end]
+# .status-bottom-row container present inside Status.
+m_row = re.search(r'<div\s+class="status-bottom-row"[^>]*>(.*?)</div>\s*</section>', status_body, re.DOTALL)
+if not m_row:
+    sys.stderr.write('.status-bottom-row not found at end of Status section\n'); sys.exit(3)
+row_body = m_row.group(1)
+# Both children inside the row.
+if 'id="experience-trend"' not in row_body:
+    sys.stderr.write('#experience-trend not inside .status-bottom-row\n'); sys.exit(4)
+if 'id="promotion-progress"' not in row_body:
+    sys.stderr.write('#promotion-progress not inside .status-bottom-row\n'); sys.exit(5)
+# Document order: experience-trend before promotion-progress (left → right).
+pos_trend = row_body.find('id="experience-trend"')
+pos_prom = row_body.find('id="promotion-progress"')
+if pos_trend < 0 or pos_prom < 0 or pos_trend >= pos_prom:
+    sys.stderr.write('expected #experience-trend before #promotion-progress in .status-bottom-row\n'); sys.exit(6)
+# CSS rules wired so the row actually flexes.
+if not re.search(r'\.status-bottom-row\s*\{[^}]*display:\s*flex', src):
+    sys.stderr.write('.status-bottom-row CSS does not set display:flex\n'); sys.exit(7)
+if not re.search(r'\.status-bottom-row\s*>\s*\*\s*\{[^}]*min-width:\s*0', src):
+    sys.stderr.write('.status-bottom-row > * does not set min-width: 0\n'); sys.exit(8)
+sys.exit(0)
+PY
+then
+    pass "61: Status tab bottom row — .status-bottom-row flex container holds #experience-trend and #promotion-progress side-by-side (#362 iter5)"
+else
+    fail "61: Status tab bottom row wiring regressed (#362 iter5)"
+fi
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

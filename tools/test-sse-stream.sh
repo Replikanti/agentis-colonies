@@ -12,8 +12,12 @@
 #       serving / and accepts a new GET /events afterwards).
 #   t5: a second GET /events succeeds after the first one was killed
 #       (multi-client + reconnect path).
-#   t6: PR 2 — IIFE -> renderXxx(data) refactor landed (12 named
+#   t6: PR 2 — IIFE -> renderXxx(data) refactor landed (15 named
 #       renderers + rerender + extractRefs + agentis:snapshot listener).
+#       Iter5 of #362 grew the list to 15 by resurrecting
+#       renderPhaseReadiness + renderPromoteCandidates (combined-panel
+#       Promotion Progress on Status) and re-adding renderEventTimeline's
+#       host divs on the new Logs & Events tab.
 #   t7: PR 2 — bootstrap shape: single rerender(window.__data) call,
 #       no leftover anon IIFE renderers, window.__data hung off window.
 #   t8: PR 2 — test-timeline-rendering.sh stays green (29/0 baseline)
@@ -246,9 +250,11 @@ curl -s -o "$HTML_OUT_T6" "http://127.0.0.1:$PORT/" 2>/dev/null || true
 T6_OK=1
 T6_MISS=""
 for fn in renderFedDownBanner renderFedHealthBanner renderStatsRow \
-          renderAgentTable renderPhaseReadiness renderForgeRateLimits \
-          renderLlmCost renderCostCap renderPromoteCandidates \
-          renderEventTimeline renderExperienceTrend renderConfidenceTrend \
+          renderAgentTable renderForgeRateLimits \
+          renderLlmCost renderCostCap \
+          renderEventTimeline renderExperienceTrend \
+          renderStatusVerdict renderStatusStatTiles renderStatusAgentTable \
+          renderPhaseReadiness renderPromoteCandidates renderPromotionProgress \
           rerender extractRefs; do
     if ! grep -q "function $fn" "$HTML_OUT_T6"; then
         T6_OK=0
@@ -266,7 +272,7 @@ if ! grep -q "addEventListener.*agentis:snapshot" "$HTML_OUT_T6"; then
     T6_MISS="$T6_MISS event-listener"
 fi
 if [ "$T6_OK" -eq 1 ]; then
-    pass "6: IIFE -> renderXxx(data) refactor present (12 renderers + rerender + agentis:snapshot wire)"
+    pass "6: IIFE -> renderXxx(data) refactor present (15 renderers + rerender + agentis:snapshot wire)"
 else
     fail "6: refactor incomplete; missing:$T6_MISS"
 fi
