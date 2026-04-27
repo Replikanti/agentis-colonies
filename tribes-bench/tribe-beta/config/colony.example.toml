@@ -1,0 +1,40 @@
+# Tribe Beta Colony Configuration
+#
+# Part of the Tribes Bench federation.
+# Copy to colony.toml and edit for your environment.
+
+[colony]
+name = "tribe-beta"
+tick_interval_ms = 60000
+
+# Forge stub. tribes-bench is not a forge-backed federation: the hunter
+# agent reads a checked-in synthetic Rust file under TARGET_DIR and runs
+# the deterministic verifier under VERIFIER_PATH. The [forge] block here
+# satisfies the post-#256 colony-lint contract only — no Stage 0 agent
+# calls forge-api.sh. Lint relaxation for non-forge federations is in the
+# #258 deferred bucket.
+[forge]
+type = "github"
+
+[forge.github]
+url = "https://api.github.invalid"
+owner = "tribes-bench-stub"
+repo = "tribes-bench-stub"
+token = "your-tribes-bench-stub-token"
+me = "tribes-bench-stub"
+
+[llm]
+# Only "backend" is read today. "cli" uses the agentis daemon default CLI
+# adapter. Stage 0 expects Claude CLI on $PATH (subscription-backed; no
+# per-token API cost). Override via STAGE0_LLM_BACKEND if needed.
+backend = "cli"
+
+# Agent definitions
+# Each agent runs as a separate agentis daemon process.
+# They discover each other via colony UDP and communicate over TCP emit/listen.
+
+[[agents]]
+name = "hunter"
+source = "agents/hunter.ag"
+cb_budget = 800
+tick_interval_ms = 60000

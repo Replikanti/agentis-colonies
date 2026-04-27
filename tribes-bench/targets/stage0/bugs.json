@@ -1,0 +1,29 @@
+{
+  "target": "vulnerable.rs",
+  "bugs": [
+    {
+      "id": "ci-001",
+      "file": "vulnerable.rs",
+      "line": 12,
+      "line_tolerance": 2,
+      "signature": "format!(\"ls {}\"",
+      "class": "command-injection"
+    },
+    {
+      "id": "ci-002",
+      "file": "vulnerable.rs",
+      "line": 21,
+      "line_tolerance": 2,
+      "signature": "format!(\"/bin/{}\"",
+      "class": "command-injection"
+    },
+    {
+      "id": "ci-003",
+      "file": "vulnerable.rs",
+      "line": 29,
+      "line_tolerance": 2,
+      "signature": "format!(\"cat {} | grep",
+      "class": "command-injection"
+    }
+  ]
+}

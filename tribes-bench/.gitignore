@@ -1,0 +1,6 @@
+# Per-run hermetic outputs from tools/run-stage0.sh (#363).
+# Each run lives at runs/<utc-timestamp>/ and contains a fresh
+# .agentis/, the federation start log, the kill-federation log, and
+# the produced telemetry.csv. Reproduce a run via tools/run-stage0.sh;
+# do not check the outputs in.
+runs/

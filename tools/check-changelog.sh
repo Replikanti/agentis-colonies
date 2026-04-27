@@ -33,6 +33,7 @@ REPO_ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 COMPONENTS=(
     "dev-apprenticeship/"
     "federation-dashboard/"
+    "tribes-bench/"
 )
 
 if [ -z "${GITHUB_BASE_REF:-}" ]; then

@@ -1,0 +1,40 @@
+# BUNDLE.manifest — tribes-bench experimental federation
+#
+# tribes-bench Stage 0 (#363) is NOT releaseable. This manifest exists for
+# ADR-0003 compliance and to defend against accidental tarball generation
+# from a directory that contains operator-edited configs (`colony.toml`) or
+# runtime artifacts (`runs/<ts>/`, `.agentis/`). The bundler uses `cp -pR`,
+# which does NOT honour `.gitignore`, so an unscoped `tribes-bench/` line
+# would leak both into a release tarball if anyone ran the federation
+# locally before bundling.
+#
+# Stage 2 (#365) will refine this manifest to include the platform tooling
+# required for a working tarball install (e.g. `tools/parse-toml.sh` and
+# friends, per `dev-apprenticeship/BUNDLE.manifest`). Until then we list
+# only the file-set that defines the federation in the source repo.
+
+# ----- Federation-level files -----
+tribes-bench/VERSION
+tribes-bench/CHANGELOG.md
+tribes-bench/BUNDLE.manifest
+tribes-bench/README.md
+tribes-bench/.gitignore
+tribes-bench/install.sh
+tribes-bench/start-federation.sh
+
+# ----- Shared assets -----
+tribes-bench/targets/
+tribes-bench/tools/
+
+# ----- Per-tribe colony surface -----
+# Explicitly excludes `config/colony.toml` (operator-edited) — only the
+# `colony.example.toml` template is shipped.
+tribes-bench/tribe-alpha/README.md
+tribes-bench/tribe-alpha/agents/
+tribes-bench/tribe-alpha/config/colony.example.toml
+tribes-bench/tribe-alpha/scripts/
+
+tribes-bench/tribe-beta/README.md
+tribes-bench/tribe-beta/agents/
+tribes-bench/tribe-beta/config/colony.example.toml
+tribes-bench/tribe-beta/scripts/
