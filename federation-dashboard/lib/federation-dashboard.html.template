@@ -646,6 +646,14 @@
   .phase-stack {
     display: flex; flex-direction: column; gap: 2px;
     margin: 8px 0 14px 0;
+    /* Cap bar width so Phase Readiness doesn't stretch the bars across the
+       full Progress-tab card width (operator feedback after #359 — bars
+       reading like a billboard rather than a compact summary). */
+    max-width: 480px;
+  }
+  .phase-row {
+    /* Same cap on the colony-name header so it lines up with the bars. */
+    max-width: 480px;
   }
   .phase-stack:last-child { margin-bottom: 0; }
   .phase-bar {
