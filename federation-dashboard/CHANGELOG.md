@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Status tab redesign + 5-tab cut + Promotion Progress combined panel
+  + Logs & Events tab**
+  ([#362](https://github.com/Replikanti/agentis-colonies/issues/362),
+  follow-up to [#359](https://github.com/Replikanti/agentis-colonies/issues/359)).
+  Two-step rework. **Iter4** dropped the Progress tab in favour of a
+  sortable per-agent compact table operators were hand-pasting from logs:
+  `-Progress tab`, `-Confidence Trend` card, `-Phase Readiness` card,
+  `-Promote Candidates` card, `-Promotion Ladder` top-level card,
+  `-21-cell pulse-grid`; `+5-tile stat row` (incl. federation-wide
+  cumulative `data.experience_counts.total` — the missing-since-#359
+  ask), `+per-agent table` (state-dot / name / colony / conf / next /
+  ETA / limiting prereq / last error, sortable headers persisted in
+  `localStorage[agentis:dashboard:agent-table-sort]`), `+Experience
+  Growth chart` relocated to the bottom of Status. **Iter5** course-
+  corrects in two places after operator preview: (1) the Event Timeline
+  was dropped along with Progress in iter4 even though operators still
+  needed it for "what just happened?" — iter5 resurrects it on a new
+  **Logs & Events** tab; the renderer body never moved, only the host
+  divs. (2) Phase Readiness + Promote Candidates were also dropped, but
+  the question "who is closest to next promotion?" remains operator-
+  level — iter5 resurrects both renderers (verbatim from sha 90ffef4)
+  retargeted at a new combined **Promotion Progress** panel
+  (`#phase-readiness-host` + `#promote-candidates-host` stacked inside
+  one card) and places it on the Status tab in a 2-column flex row
+  alongside the relocated Experience Growth chart
+  (`.status-bottom-row { display: flex; gap: 16px; }`). Tab bar now
+  emits 5 buttons (Status / Cost / Recovery / Logs & Events / Config);
+  keyboard shortcuts remap to digits 1-5 (was 1-4 in iter4). Subsumes
+  [#361](https://github.com/Replikanti/agentis-colonies/pull/361) by
+  redesign (Phase Readiness back, but as half of the Promotion Progress
+  combined panel).
+
 - **Intent-driven 5-tab dashboard restructure**
   ([#359](https://github.com/Replikanti/agentis-colonies/issues/359),
   follow-up to [#352](https://github.com/Replikanti/agentis-colonies/issues/352)

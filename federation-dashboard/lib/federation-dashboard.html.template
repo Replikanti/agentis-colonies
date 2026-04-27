@@ -144,12 +144,12 @@
   .stat-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 2px; margin-top: 4px; }
 
   /* --- Tab bar (#352) --- */
-  /* Six-tab single-page app: Overview / Agents / Promotions / Learning /
-     Cost / Config. Each tab is a `<section data-tab="...">`; switching is
-     a pure CSS toggle (display: none vs. flex) — every renderXxx() still
-     fires on every snapshot regardless of which tab is currently visible.
+  /* Five-tab single-page app: Status / Cost / Recovery / Logs / Config.
+     Each tab is a `<section data-tab="...">`; switching is a pure CSS
+     toggle (display: none vs. flex) — every renderXxx() still fires on
+     every snapshot regardless of which tab is currently visible.
      Persistence: localStorage key `agentis:dashboard:active-tab`.
-     Keyboard: digits 1-6 jump between tabs. */
+     Keyboard: digits 1-5 jump between tabs. */
   .tabs {
     display: flex; gap: 4px; margin-bottom: 16px;
     border-bottom: 1px solid var(--border);
@@ -1222,24 +1222,46 @@
     border-color: var(--red); color: var(--red);
     text-shadow: 0 0 8px rgba(255,68,68,0.4);
   }
-  .pulse-grid {
-    display: grid; grid-template-columns: repeat(7, 1fr);
-    gap: 6px; margin: 12px 0; max-width: 560px;
+  /* --- Status tab stat-tile row + per-agent table (#362) ---
+     Replaces the #359 21-cell pulse-grid. Five 60-px tiles spanning the
+     federation: Running / Total Experience / Avg confidence / Learning
+     24h / Quarantined. The agent table caps at 600 px and scrolls inside
+     on viewports below 1080p. */
+  .status-stat-tiles {
+    display: grid; grid-template-columns: repeat(5, 1fr);
+    gap: 12px; margin: 12px 0;
   }
-  .pulse-cell {
-    aspect-ratio: 1 / 1; border-radius: 4px; cursor: pointer;
-    border: 1px solid var(--border); position: relative;
-    transition: transform 0.1s, box-shadow 0.1s;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 9px; color: var(--muted); padding: 2px;
-    text-align: center; word-break: break-all; line-height: 1.1;
+  .status-stat-tile {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 4px; padding: 8px 12px; height: 60px;
+    display: flex; flex-direction: column; justify-content: center;
+    box-shadow: 0 0 8px rgba(0,255,255,0.04);
   }
-  .pulse-cell:hover { transform: scale(1.06); box-shadow: 0 0 10px var(--cyan); }
-  .pulse-cell.pulse-running   { background: rgba(0,255,0,0.18);   border-color: var(--green); color: var(--green); }
-  .pulse-cell.pulse-degraded  { background: rgba(255,255,0,0.16); border-color: var(--yellow); color: var(--yellow); }
-  .pulse-cell.pulse-stopped   { background: rgba(255,68,68,0.18); border-color: var(--red); color: var(--red); }
-  .pulse-cell.pulse-zombie    { background: rgba(255,68,68,0.30); border-color: var(--red); color: #fff; }
-  .pulse-cell.pulse-quarantine { background: rgba(255,0,255,0.16); border-color: var(--magenta); color: var(--magenta); }
+  .status-stat-tile-label {
+    font-size: 9px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .status-stat-tile-value {
+    font-size: 16px; color: var(--cyan); margin-top: 4px;
+    font-variant-numeric: tabular-nums;
+  }
+  .status-stat-tile.crit  { border-color: var(--red); }
+  .status-stat-tile.crit  .status-stat-tile-value { color: var(--red); }
+  .status-agent-table {
+    max-height: 600px; overflow-y: auto;
+    border: 1px solid var(--border2); border-radius: 4px;
+    margin: 12px 0;
+  }
+  .status-agent-table table { font-size: 11px; }
+  .status-agent-table tr.clickable td { padding: 4px 8px; }
+  .status-agent-state-dot {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    margin-right: 4px; vertical-align: middle;
+  }
+  .status-agent-state-dot.dot-green { background: var(--green); box-shadow: 0 0 4px rgba(0,255,0,0.5); }
+  .status-agent-state-dot.dot-amber { background: var(--yellow); box-shadow: 0 0 4px rgba(255,255,0,0.5); }
+  .status-agent-state-dot.dot-red   { background: var(--red); box-shadow: 0 0 4px rgba(255,68,68,0.5); }
+  .status-agent-state-dot.dot-gray  { background: var(--muted); }
   .status-meta { font-size: 11px; color: var(--muted); display: flex; gap: 16px; flex-wrap: wrap; margin-top: 6px; }
   .status-meta strong { color: var(--text); font-weight: normal; }
   .status-pill-row { display: flex; gap: 12px; margin: 12px 0; flex-wrap: wrap; }
@@ -1253,6 +1275,20 @@
   .status-pill.crit  { border-color: var(--red);    color: var(--red);    }
   .status-pill.muted { color: var(--muted); }
   .status-pill .status-pill-age { color: var(--muted); font-size: 10px; }
+
+  /* --- iter5 of #362: 2-col bottom row on Status (Experience Growth +
+     Promotion Progress side-by-side). Each child claims half the row;
+     `min-width: 0` lets long content (chart SVG, bar labels) truncate
+     instead of forcing the row wider than the viewport. The Promotion
+     Progress card stacks Phase Readiness above Promote Candidates so the
+     operator reads tier mix → next-actionable agent top-to-bottom. */
+  .status-bottom-row { display: flex; gap: 16px; }
+  .status-bottom-row > * { flex: 1; min-width: 0; }
+  #promotion-progress h3 {
+    margin: 0 0 8px 0; font-size: 12px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 2px;
+  }
+  #phase-readiness-host { margin-bottom: 12px; }
 
   /* --- #359 Cost tab projection tiles --- */
   .projection-row {
@@ -1389,32 +1425,42 @@
 
 <div class="fed-health-banner" id="fed-health-banner"></div>
 
-<!-- #359: 5-tab intent-driven cut, replacing the 6-tab #352 layout.
+<!-- #362 iter5: 5-tab intent-driven cut, replacing the iter4 4-tab cut.
      Each tab maps to a single operator question:
-       Status   — am I healthy NOW? (verdict + pulse grid + sidecars)
-       Cost     — am I burning money? (per-min rate + projections + caps)
-       Recovery — what do I need to restart? (bulk + per-agent + sidecars + kill)
-       Progress — are agents climbing? (charts default-expanded + ETA)
-       Config   — what's running where? (editor + cross-colony matrix + bulk apply)
-     Default first paint is `status` (was `overview`; Overview is gone).
-     Persisted via localStorage `agentis:dashboard:active-tab`. Keyboard
-     shortcuts: digits 1-5. -->
+       Status        — am I healthy NOW? (verdict + per-agent table + bottom row)
+       Cost          — am I burning money? (per-min rate + projections + caps)
+       Recovery      — what do I need to restart? (bulk + per-agent + sidecars + kill)
+       Logs & Events — what just happened? (federation-wide Event Timeline)
+       Config        — what's running where? (editor + cross-colony matrix + bulk apply)
+     Default first paint is `status`. Persisted via localStorage
+     `agentis:dashboard:active-tab`. Keyboard shortcuts: digits 1-5. -->
 <div class="tabs" id="tabs" role="tablist">
   <button class="tab-btn" role="tab" data-tab="status"  ><span class="tab-key">1</span>Status</button>
   <button class="tab-btn" role="tab" data-tab="cost"    ><span class="tab-key">2</span>Cost</button>
   <button class="tab-btn" role="tab" data-tab="recovery"><span class="tab-key">3</span>Recovery</button>
-  <button class="tab-btn" role="tab" data-tab="progress"><span class="tab-key">4</span>Progress</button>
+  <button class="tab-btn" role="tab" data-tab="logs"    ><span class="tab-key">4</span>Logs &amp; Events</button>
   <button class="tab-btn" role="tab" data-tab="config"  ><span class="tab-key">5</span>Config</button>
 </div>
 
-<!-- TAB: Status — single-glance verdict. NO charts, NO bars, NO tables,
-     NO `<details>`. Operator absorbs the whole federation in one eye-pass.
-     Vertical budget ≤480 px. -->
+<!-- TAB: Status — single-glance verdict + per-agent compact table + 5-tile
+     stat row + 2-col bottom row (Experience Growth + Promotion Progress).
+     Replaces the #359 Status pulse-grid + the deleted Progress tab.
+     Order: verdict → stat tiles → per-agent table → sidecar pills →
+     status-meta → bottom row (experience-trend | promotion-progress). -->
 <section data-tab="status">
   <div id="status-verdict"></div>
-  <div id="status-pulse"></div>
+  <div id="status-stat-tiles"></div>
+  <div id="status-agent-table"></div>
   <div id="status-sidecar-pills"></div>
   <div id="status-meta"></div>
+  <div class="status-bottom-row">
+    <div id="experience-trend" class="card chart-container"></div>
+    <div id="promotion-progress" class="card">
+      <h3>Promotion Progress</h3>
+      <div id="phase-readiness-host"></div>
+      <div id="promote-candidates-host"></div>
+    </div>
+  </div>
 </section>
 
 <!-- TAB: Cost — 4 projection tiles (per-min × {1h, 1d, 1w, 1m}) +
@@ -1468,32 +1514,14 @@
   </div>
 </section>
 
-<!-- TAB: Progress — Confidence Trend + Experience Growth charts default
-     EXPANDED (no <details> wrapper); Phase Readiness as a small card;
-     per-agent promotion ladder + ETA + limiting prereq. Vertical budget
-     ≤700 px. -->
-<section data-tab="progress">
+
+<!-- TAB: Logs & Events — federation-wide unified Event Timeline (#315 PR 2).
+     Resurrected as its own tab in iter5 of #362; pre-iter4 it lived inside
+     the Progress tab. Filter UI: kind chips, colony dropdown, ABS / REL
+     toggle, auto-hide-stale, Clear stale, Clear all. The renderEventTimeline
+     function body never moved — only the host divs are re-added here. -->
+<section data-tab="logs">
   <div class="grid">
-    <div class="card">
-      <h2>Confidence Trend</h2>
-      <div id="confidence-trend" class="chart-container"></div>
-    </div>
-    <div class="card">
-      <h2>Experience Growth</h2>
-      <div id="experience-trend" class="chart-container"></div>
-    </div>
-    <div class="card full">
-      <h2>Phase Readiness</h2>
-      <div id="readiness" style="max-height:200px;overflow-y:auto;"></div>
-    </div>
-    <div class="card full">
-      <h2>Promotion Ladder</h2>
-      <div id="promotion-ladder"></div>
-    </div>
-    <div class="card full">
-      <h2>Promote Candidates</h2>
-      <div id="promote-candidates"></div>
-    </div>
     <div class="card full">
       <div class="timeline-header">
         <h2>Event Timeline</h2>
@@ -1510,12 +1538,6 @@
       <div class="timeline-chips" id="timeline-chips"></div>
       <div class="timeline-banner" id="timeline-banner" hidden></div>
       <div id="event-timeline" class="timeline"></div>
-    </div>
-    <!-- Per-agent dossier table preserved for full drill-in. The Status
-         tab's pulse-grid hands operators here when they click a cell. -->
-    <div class="card full">
-      <h2>Agents</h2>
-      <div id="agent-table" style="overflow-x:auto;"></div>
     </div>
   </div>
 </section>
@@ -1767,11 +1789,11 @@ document.addEventListener('keydown', (e) => {
     manualRefresh();
   }
   if (e.key === 'Escape') { closeModal(); closeWhyPanel(); closeKillConfirm(); }
-  // #359: digits 1-5 jump between tabs (was 1-6 in #352).
+  // #362 iter5: digits 1-5 jump between tabs (added Logs & Events tab).
   if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && !e.repeat) {
     const tag = (e.target && e.target.tagName) || '';
     if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
-    const TAB_KEY_ORDER = ['status', 'cost', 'recovery', 'progress', 'config'];
+    const TAB_KEY_ORDER = ['status', 'cost', 'recovery', 'logs', 'config'];
     const idx = '12345'.indexOf(e.key);
     if (idx >= 0 && idx < TAB_KEY_ORDER.length) {
       e.preventDefault();
@@ -1780,23 +1802,25 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-// #359: 5-tab intent-driven cut (Status / Cost / Recovery / Progress /
-// Config). Replaces the 6-tab #352 layout (Overview / Agents / Promotions
-// / Learning / Cost / Config). Persists the active tab in localStorage so
-// an operator's last view survives a reload. Pure CSS toggle: every
-// renderXxx() still fires on every snapshot regardless of which tab is
-// currently visible — switching tabs reads pre-rendered DOM, no re-fetch.
-// Default first paint is `status` (Overview is gone). Legacy values for
-// the localStorage key (`overview`, `agents`, `promotions`, `learning`)
-// migrate to a sensible new home so a returning operator doesn't see a
-// blank tab on the first load post-upgrade.
+// #362 iter5: 5-tab intent-driven cut (Status / Cost / Recovery / Logs &
+// Events / Config). Replaces the iter4 4-tab cut (Status / Cost / Recovery
+// / Config). Persists the active tab in localStorage so an operator's
+// last view survives a reload. Pure CSS toggle: every renderXxx() still
+// fires on every snapshot regardless of which tab is currently visible —
+// switching tabs reads pre-rendered DOM, no re-fetch. Default first paint
+// is `status`. Legacy values for the localStorage key (`overview`,
+// `agents`, `promotions`, `learning`, `progress`) migrate to a sensible
+// new home so a returning operator doesn't see a blank tab on first load
+// post-upgrade — `learning` lands on the new Logs & Events tab where the
+// Event Timeline now lives.
 const ACTIVE_TAB_KEY = 'agentis:dashboard:active-tab';
-const TAB_NAMES = ['status', 'cost', 'recovery', 'progress', 'config'];
+const TAB_NAMES = ['status', 'cost', 'recovery', 'logs', 'config'];
 const LEGACY_TAB_MIGRATION = {
   'overview':   'status',
-  'agents':     'progress',
-  'promotions': 'progress',
-  'learning':   'progress',
+  'agents':     'status',
+  'promotions': 'status',
+  'learning':   'logs',
+  'progress':   'status',
 };
 function activateTab(name) {
   if (!TAB_NAMES.includes(name)) name = 'status';
@@ -2090,6 +2114,7 @@ let sortDir = 1;
 
 function renderAgentTable(data) {
   const el = document.getElementById('agent-table');
+  if (!el) return;
   if (!agents.length) {
     el.innerHTML = '<span class="empty">No agents discovered.</span>';
     return;
@@ -2252,90 +2277,6 @@ function doSort(col) {
   renderAgentTable(window.__data);
 }
 
-// --- Phase Readiness (#342: Dune-style stacked tier bars) ---
-// Replaces the #248 PR C compact tier counter with a per-colony stack of
-// 5 progress bars (dormant / shadow / propose / review-gated / autonomous).
-// Bar width = (agents_in_tier / total_agents_in_colony) * 100%, so an
-// operator reads each colony's tier mix as a horizontal share at a glance.
-// The pre-#342 `no-conf` bucket from `tierFor()` collapses into `dormant`
-// (already styled identically); the dormant tooltip lists agents from
-// either source. Tier classification still matches ADR-0001 / agent-row
-// badges: >=0.95 autonomous, >=0.8 review-gated, >=0.6 propose,
-// >=0.4 shadow, conf<0.4 (or memo missing) dormant.
-function renderPhaseReadiness(data) {
-  const el = document.getElementById('readiness');
-  if (!el) return;
-  // Render order top→bottom, low to high tier. Every colony gets all five
-  // bars regardless of count so the operator can spot empties at a glance.
-  const TIERS = ['dormant', 'shadow', 'propose', 'review-gated', 'autonomous'];
-
-  function tierFor(conf) {
-    // No-conf collapses into dormant for the bar view (same operator
-    // affordance: agent is below the seed floor, needs `install.sh` or
-    // a memo seed to climb out).
-    if (conf == null) return 'dormant';
-    if (conf >= 0.95) return 'autonomous';
-    if (conf >= 0.8) return 'review-gated';
-    if (conf >= 0.6) return 'propose';
-    if (conf >= 0.4) return 'shadow';
-    return 'dormant';
-  }
-
-  // Bucket agents per (colony, tier) so the tooltip can list agent names
-  // without an O(N*5) re-scan inside the render loop.
-  const buckets = {};
-  colonyList.forEach(col => {
-    buckets[col] = { dormant: [], shadow: [], propose: [], 'review-gated': [], autonomous: [] };
-  });
-  agents.forEach(a => {
-    if (!buckets[a.colony]) return;
-    buckets[a.colony][tierFor(a.confidence)].push(a.name);
-  });
-
-  let html = '';
-  colonyList.forEach(col => {
-    const bk = buckets[col];
-    const total = TIERS.reduce((s, t) => s + bk[t].length, 0);
-    html += '<div class="phase-row"><span class="phase-colony">' + esc(col) + '</span></div>';
-    html += '<div class="phase-stack">';
-    TIERS.forEach(t => {
-      const names = bk[t];
-      const n = names.length;
-      const pct = total > 0 ? (n / total) * 100 : 0;
-      // Inline-vs-outside label switch: count fits inside the fill at
-      // >=30% width, otherwise renders against the empty track on the
-      // right. Tier name always renders on the left of the bar.
-      const inside = pct >= 30;
-      const tip = n > 0
-        ? n + ' agent' + (n === 1 ? '' : 's') + ' in ' + t + ': ' + names.join(', ')
-        : 'no agents in ' + t;
-      // #352: route label color through pickTextColor so the amber
-      // tier-review-gated bar (#f59e0b) and yellow-leaning fills meet
-      // WCAG AA contrast. The `inside` count uses the bar fill color,
-      // the always-rendered tier name on the left uses the same logic.
-      const TIER_FILL = {
-        'dormant': '#6b7280', 'shadow': '#3b82f6', 'propose': '#06b6d4',
-        'review-gated': '#f59e0b', 'autonomous': '#22c55e',
-      };
-      const fill = TIER_FILL[t] || '#6b7280';
-      const insideColor = pickTextColor(fill);
-      const labelLeftColor = (inside || pct < 30) ? insideColor : 'var(--text)';
-      html += '<div class="phase-bar tier-' + t + '" title="' + esc(tip) + '">';
-      html += '<div class="phase-bar-fill" style="width: ' + pct.toFixed(1) + '%"></div>';
-      html += '<span class="phase-bar-label-left" style="color: ' + labelLeftColor + '; text-shadow: none;">' + t + '</span>';
-      html += '<span class="phase-bar-label-right"' +
-        (inside ? ' style="color: ' + insideColor + '; text-shadow: none;"' : '') +
-        '>' + n + '/' + total + '</span>';
-      html += '</div>';
-    });
-    html += '</div>';
-  });
-  // First-render fade-in (animation runs once per page load); subsequent
-  // SSE pushes only animate the per-bar `transition: width`.
-  if (!el.classList.contains('bars-loaded')) el.classList.add('bars-loaded');
-  el.innerHTML = html;
-}
-
 // --- Forge Rate Limits (federation-dashboard 0.3.0) ---
 // Per-colony forge API budget read by the collector via
 // `<colony>/scripts/start-colony.sh --rate-limit-status`. The collector
@@ -2488,120 +2429,6 @@ function renderBulkActions(data) {
     html += '<button class="bulk-action-btn" onclick="restartSidecar(\'' + esc(s.name) + '\')">';
     html += 'Restart sidecar: ' + esc(s.name);
     html += '</button>';
-  });
-  el.innerHTML = html;
-}
-
-// --- Promotion ladder (#352, Promotions tab) ---
-// One row per agent, full-width. Layout:
-//   [agent_name] [dormant—shadow—propose—review—autonomous] [ETA] [prereq]
-// Five segments side-by-side. Segment widths proportional to tier ranges
-// (shadow 0.4-0.6 = 33%, propose 0.6-0.8 = 33%, review-gated 0.8-0.95 =
-// 25%, autonomous 0.95-1.0 = 8%, dormant before shadow ~1%). Vertical
-// marker drawn at horizontal position derived from the agent's confidence.
-// Autonomous-tier agents render the full ladder with a `MAX` badge
-// replacing the ETA cell + `—` in the limiting-prereq cell.
-const LADDER_TIERS = [
-  {name: 'dormant',       lo: 0.0,  hi: 0.4,  fill: '#6b7280'},
-  {name: 'shadow',        lo: 0.4,  hi: 0.6,  fill: '#3b82f6'},
-  {name: 'propose',       lo: 0.6,  hi: 0.8,  fill: '#06b6d4'},
-  {name: 'review-gated',  lo: 0.8,  hi: 0.95, fill: '#f59e0b'},
-  {name: 'autonomous',    lo: 0.95, hi: 1.0,  fill: '#22c55e'},
-];
-function renderPromotionLadder(data) {
-  const el = document.getElementById('promotion-ladder');
-  if (!el) return;
-  if (!agents.length) {
-    el.innerHTML = '<span class="empty">No agents in this federation.</span>';
-    return;
-  }
-  // Build a fast lookup of decisions by agent so we can pull limiting
-  // prereq + ETA without re-scanning per row.
-  const decisionByAgent = {};
-  (decisions || []).forEach(d => { decisionByAgent[d.agent] = d; });
-
-  // Compute segment proportional widths: each tier covers (hi-lo) / 1.0 of
-  // the bar. Sum = 1.0. We render percentages.
-  const totalRange = 1.0;
-  // Sort agents by confidence descending so already-promoted agents rise
-  // to the top — operators see who's already MAX vs who's still climbing.
-  const sorted = agents.slice().sort((a, b) => {
-    const ac = (a.confidence == null) ? -1 : a.confidence;
-    const bc = (b.confidence == null) ? -1 : b.confidence;
-    return bc - ac;
-  });
-  let html = '';
-  sorted.forEach(a => {
-    const conf = (a.confidence == null) ? null : a.confidence;
-    const isMax = conf != null && conf >= 0.95;
-    let etaCell, prereqCell;
-    if (isMax) {
-      etaCell = '<span class="ladder-eta max-badge">MAX</span>';
-      prereqCell = '<span class="ladder-prereq">—</span>';
-    } else {
-      const dec = decisionByAgent[a.name];
-      let etaTxt = '—';
-      let prereqTxt = '—';
-      if (dec) {
-        if (dec.evidence && Array.isArray(dec.evidence.prereqs) && dec.evidence.prereqs.length > 0) {
-          // Limiting prereq — pick the one with the lowest ratio of value/threshold
-          let lim = null, limRatio = Infinity;
-          dec.evidence.prereqs.forEach(p => {
-            if (p.op === '<') {
-              if (!p.meets) lim = lim || p;
-              return;
-            }
-            const t = +p.threshold || 0;
-            const v = +p.value || 0;
-            if (t > 0) {
-              const r = Math.min(v / t, 2.0);
-              if (r < limRatio) { limRatio = r; lim = p; }
-            }
-          });
-          if (lim) {
-            const v = lim.value;
-            const t = lim.threshold;
-            prereqTxt = (lim.name || 'prereq') + ' ' +
-              (typeof v === 'number' ? v.toFixed(v < 1 && v > 0 ? 4 : 1) : v) +
-              '/' +
-              (typeof t === 'number' ? t.toFixed(t < 1 && t > 0 ? 4 : 1) : t);
-          }
-        }
-        if (dec.evidence && typeof dec.evidence.forecast_days_to_next_tier === 'number') {
-          const d = dec.evidence.forecast_days_to_next_tier;
-          if (d > 0 && d < 30) etaTxt = d.toFixed(1) + 'd';
-        }
-      }
-      etaCell = '<span class="ladder-eta">ETA: ' + esc(etaTxt) + '</span>';
-      prereqCell = '<span class="ladder-prereq" title="' + esc(prereqTxt) + '">' + esc(prereqTxt) + '</span>';
-    }
-
-    let bars = '';
-    LADDER_TIERS.forEach(t => {
-      const widthPct = ((t.hi - t.lo) / totalRange) * 100;
-      const labelColor = pickTextColor(t.fill);
-      bars += '<div class="ladder-segment tier-' + t.name + '" style="width: ' + widthPct.toFixed(2) + '%">';
-      bars += '<span class="ladder-segment-label" style="color: ' + labelColor + ';">' + esc(t.name) + '</span>';
-      bars += '</div>';
-    });
-    // Vertical marker at conf position (clamped 0..1).
-    let markerHtml = '';
-    if (conf != null) {
-      const pct = Math.max(0, Math.min(1, conf)) * 100;
-      markerHtml = '<div class="ladder-marker" style="left: ' + pct.toFixed(2) + '%"></div>';
-    }
-    html += '<div class="ladder-row tier-' + (isMax ? 'autonomous' : 'climbing') + '">';
-    // #357: agent label + clickable colony chip. Clicking the chip opens
-    // the per-colony modal (Forge Rate Limits + agent list); clicking the
-    // agent name opens the per-agent modal.
-    html += '<span class="ladder-agent" title="' + esc(a.name) + ' (' + esc(a.colony) + ')">';
-    html += '<span class="ladder-agent-name clickable" onclick="openDetail(\'' + esc(a.name) + '\')">' + esc(a.name) + '</span>';
-    html += ' <span class="ladder-agent-colony colony-clickable" onclick="showColonyModal(\'' + esc(a.colony) + '\')" title="Open colony view">' + esc(a.colony) + '</span>';
-    html += '</span>';
-    html += '<div class="ladder-bar">' + bars + markerHtml + '</div>';
-    html += etaCell;
-    html += prereqCell;
-    html += '</div>';
   });
   el.innerHTML = html;
 }
@@ -3227,278 +3054,6 @@ function renderCostCap(data) {
   el.innerHTML = html;
 }
 
-// --- Promote Candidates (#342: Dune-style progress bars) ---
-// Replaces the per-row prereq-checklist (#248 PR B) with one horizontal
-// progress bar per non-autonomous agent. Rows are still rendered from the
-// scheduler's own verdicts (`decisions[]` — populated by
-// federation-dashboard-collector.py via tools/auto-promote-decisions.py
-// --preview), so the dashboard and the auto-promote sidecar always agree
-// on math. Tier-crossing feasibility (the old no-op-at-source guard) is
-// still checked client-side after the scheduler says "promote".
-//
-// Bar fill (the limiting prereq):
-//   width = min(value/threshold) across `evidence.prereqs[]`, clamped [0, 1]
-// — what the operator can actually act on. Mean fill drives ONLY the colour
-// bucket so a single brittle gate does not paint the whole bar red:
-//   green   = all prereqs meet (decision === 'promote' / feasible)
-//   yellow  = mean fill in [0.5, 1.0) with at least one fail
-//   red     = mean fill in [0,   0.5)
-//   purple  = decision === 'evolve' (orthogonal intent — fitness recovery,
-//             not a tier promotion)
-// Already-autonomous agents are excluded entirely (no further promote step).
-//
-// Hover tooltip (CSS-only `title=""`) carries the full per-prereq breakdown.
-// Skipped agents the scheduler does not classify on the promote path
-// (dead pid, unseeded confidence, no-op-at-source) collapse into a small
-// `<details>` underneath, preserving the #160 why-panel cross-reference.
-function renderPromoteCandidates(data) {
-  const el = document.getElementById('promote-candidates');
-  if (!el) return;
-  // Preserve operator-expanded "Skipped candidates" disclosure across
-  // re-renders so a live SSE push (`agentis:snapshot`, #313 PR 2) doesn't
-  // collapse the panel mid-read.
-  const prevSkipped = el.querySelector('details.skipped-section');
-  const wasSkippedOpen = !!(prevSkipped && prevSkipped.open);
-  const bars = [];
-  let skippedHtml = '';
-  let skippedCount = 0;
-
-  // Format a prereq value with the decimal precision of intent — see
-  // PREREQ_DECIMALS rationale below.
-  const PREREQ_DECIMALS = {
-    runtime_hours: 1, reject_rate_acting: 4, delta_slope_acting: 6,
-  };
-  function fmtPrereqVal(name, v) {
-    const d = PREREQ_DECIMALS[name];
-    if (d != null && typeof v === 'number') return v.toFixed(d);
-    return String(v);
-  }
-  // Format the limiting prereq for the right-hand inline bar label.
-  // Picks the right unit per name so the operator reads the actionable
-  // signal without mental conversion: `entries 47/200`, `runtime 0.4h/1h`,
-  // `reject 12%/5%`, `slope 0.001/0.0005`.
-  function fmtBarRight(p) {
-    const v = p.value;
-    const t = p.threshold;
-    if (p.name === 'runtime_hours') {
-      return 'runtime ' + fmtPrereqVal(p.name, v) + 'h/' + fmtPrereqVal(p.name, t) + 'h';
-    }
-    if (p.name === 'reject_rate_acting') {
-      // reject_rate is a fraction in [0, 1]; render as % so a 5% threshold
-      // reads naturally. The op is `<`, but the operator just wants to
-      // know how close they are to bar.
-      return 'reject ' + (v * 100).toFixed(1) + '%/' + (t * 100).toFixed(1) + '%';
-    }
-    if (p.name === 'delta_slope_acting') {
-      return 'slope ' + fmtPrereqVal(p.name, v) + '/' + fmtPrereqVal(p.name, t);
-    }
-    if (p.name === 'entries_total') return 'entries ' + v + '/' + t;
-    if (p.name === 'entries_acting') return 'acting ' + v + '/' + t;
-    return p.name + ' ' + fmtPrereqVal(p.name, v) + '/' + fmtPrereqVal(p.name, t);
-  }
-  // Per-prereq fill ratio in [0, 1]. `>=` prereqs (entries / runtime /
-  // slope) project onto value/threshold; `<` prereqs (reject_rate) become
-  // a binary 1.0 if `meets`, 0.0 otherwise — quality gate, not a dial.
-  function prereqFill(p) {
-    if (p.op === '<') return p.meets ? 1.0 : 0.0;
-    const t = Number(p.threshold) || 0;
-    if (t === 0) return p.meets ? 1.0 : 0.0;
-    const v = Number(p.value) || 0;
-    if (v <= 0) return 0.0;
-    if (v >= t) return 1.0;
-    return v / t;
-  }
-  // Build the per-prereq tooltip — full breakdown (pass + fail lines) so
-  // the operator can hover for the whole story without expanding skipped.
-  function buildTooltip(prereqs) {
-    return prereqs.map(p => {
-      const mark = p.meets ? 'OK' : 'FAIL';
-      return p.name + ' ' + fmtPrereqVal(p.name, p.value) + ' ' + p.op + ' ' +
-             fmtPrereqVal(p.name, p.threshold) + ' [' + mark + ']';
-    }).join(' · ');
-  }
-  function truncate(name, max) {
-    if (name.length <= max) return name;
-    return name.slice(0, max - 1) + '…';
-  }
-
-  const agentByName = {};
-  agents.forEach(a => { agentByName[a.name] = a; });
-
-  // The agent's runtime tier (used to exclude already-autonomous agents
-  // from the bar list — they have no further promote step).
-  function tierOfConf(c) {
-    if (c == null) return 'no-conf';
-    if (c >= 0.95) return 'autonomous';
-    if (c >= 0.8) return 'review-gated';
-    if (c >= 0.6) return 'propose';
-    if (c >= 0.4) return 'shadow';
-    return 'dormant';
-  }
-
-  decisions.forEach(d => {
-    const a = agentByName[d.agent];
-    if (!a) return;
-    const ev = d.evidence || {};
-
-    // Skip silently: no entries AND not running. Stats row already
-    // surfaces these as inactive; listing them as "skipped" is just noise.
-    const evTotal = ev.entries_total || 0;
-    if (evTotal === 0 && a.state !== 'running') return;
-
-    // Already-autonomous agents have no promote step — exclude from bars.
-    if (tierOfConf(a.confidence) === 'autonomous') return;
-
-    // `evolve` decisions render as a distinct purple bar. The collector's
-    // evolve path does not attach prereqs[] (it is fitness-recovery, not a
-    // promote-prereq walk), so the bar is full purple and the right-hand
-    // label is the textual reason.
-    if (d.decision === 'evolve') {
-      const tip = (d.reason || 'evolve recommended');
-      bars.push({
-        agent: a.name, decision: 'evolve', meanFill: 1.0, minFill: 1.0,
-        cls: 'evolve', target: d.to,
-        rightLabel: 'evolve recommended', tooltip: tip,
-      });
-      return;
-    }
-
-    // For promote / promote-path skip: walk evidence.prereqs[]. Skip
-    // decisions WITHOUT prereqs[] (dead pid, unseeded conf — never on
-    // the promote path) collapse into the skipped <details> below.
-    if (d.decision !== 'promote' && d.decision !== 'skip') return;
-    if (!ev.prereqs || !ev.prereqs.length) {
-      // Promote-path skip without prereqs is unexpected; fall through to
-      // legacy skipped-row so the operator still sees the row.
-      skippedHtml += '<div class="skipped-row"><span class="agent-name">' + esc(a.name) + '</span>';
-      skippedHtml += '<span>— ' + esc(d.reason || 'skipped') + '</span></div>';
-      skippedCount++;
-      return;
-    }
-
-    // Tier-crossing feasibility: a promote that resolves to the same tier
-    // for this agent's .ag source is observable-no-op. Surface that as a
-    // "why?" row, NOT a bar — the operator can't act on it from here.
-    if (d.decision === 'promote') {
-      const promoteGate = actionGate(a, 'promote', d.to);
-      if (!promoteGate.enabled) {
-        registerWhy(a.name, 'rec-promote', promoteGate);
-        skippedHtml += '<div class="skipped-row"><span class="agent-name">' + esc(a.name) + '</span>';
-        skippedHtml += '<span>— promote to ' + d.to.toFixed(2) + ' would be a no-op at this source</span>';
-        skippedHtml += '<span class="skipped-info" onclick="showWhy(\'' + esc(a.name) + '\',\'rec-promote\')">why?</span></div>';
-        skippedCount++;
-        return;
-      }
-    }
-
-    // Per-prereq fill ratios + the limiting prereq (`min`).
-    const fills = ev.prereqs.map(prereqFill);
-    const meanFill = fills.reduce((s, f) => s + f, 0) / fills.length;
-    let minIdx = 0;
-    for (let i = 1; i < fills.length; i++) {
-      if (fills[i] < fills[minIdx]) minIdx = i;
-    }
-    const minFill = fills[minIdx];
-    const limitingPrereq = ev.prereqs[minIdx];
-
-    // Colour bucket: `green` only when ALL prereqs meet (= decision is
-    // `promote`); else mean fill picks yellow (>= 0.5) vs red.
-    const allMeet = ev.prereqs.every(p => p.meets);
-    const cls = allMeet ? 'ready'
-              : (meanFill >= 0.5 ? 'partial' : 'blocked');
-
-    // #276: per-agent promotion forecast badge. Collector enriches
-    // evidence.forecast_days_to_next_tier (number 0..30 or null) for
-    // promote-path skips with a positive per-colony confidence slope.
-    // Null → no badge; 30 → clamped (renders as ">30d to <target>").
-    let forecastBadge = '';
-    const fd = ev.forecast_days_to_next_tier;
-    if (fd != null && ev.confidence != null) {
-      const tgt = ev.confidence < 0.6 ? 0.6
-                : ev.confidence < 0.8 ? 0.8
-                : ev.confidence < 0.95 ? 0.95 : null;
-      if (tgt != null) {
-        const fLabel = fd >= 30 ? '>30d to ' + tgt.toFixed(2)
-                                : '~' + fd.toFixed(1) + 'd to ' + tgt.toFixed(2);
-        forecastBadge = '<span class="forecast">' + esc(fLabel) + '</span>';
-      }
-    }
-
-    bars.push({
-      agent: a.name,
-      decision: d.decision,
-      meanFill: meanFill,
-      minFill: minFill,
-      cls: cls,
-      target: d.to,
-      rightLabel: fmtBarRight(limitingPrereq),
-      tooltip: buildTooltip(ev.prereqs),
-      forecastBadge: forecastBadge,
-    });
-  });
-
-  // Sort: closest-to-ready first (mean fill descending; ties broken by
-  // limiting prereq ascending so the next-actionable rises to the top).
-  bars.sort((x, y) => {
-    if (y.meanFill !== x.meanFill) return y.meanFill - x.meanFill;
-    return x.minFill - y.minFill;
-  });
-
-  // Agents the scheduler never saw (no daemon = no decision) but which
-  // are running with an unseeded confidence still deserve a visible row
-  // in skipped so the operator knows those are waiting on install.sh
-  // / memo seed.
-  const seen = new Set(decisions.map(d => d.agent));
-  agents.forEach(a => {
-    if (seen.has(a.name)) return;
-    if (a.confidence != null) return;
-    if (a.state !== 'running') return;
-    skippedHtml += '<div class="skipped-row"><span class="agent-name">' + esc(a.name) + '</span>';
-    skippedHtml += '<span>— confidence not seeded (run install.sh or set memo)</span></div>';
-    skippedCount++;
-  });
-
-  // Render the bars. Bar fill width is the LIMITING prereq fill (`minFill`)
-  // — the operator's actionable signal. Colour bucket comes from `meanFill`.
-  let html = '';
-  if (bars.length === 0) {
-    html += '<span class="promote-bars-empty">No agents in flight to promote right now.</span>';
-  } else {
-    bars.forEach(b => {
-      const pct = (b.minFill * 100).toFixed(1);
-      // #352: pickTextColor over the bar fill so labels meet contrast.
-      // Yellow `partial` and amber-adjacent backgrounds need dark text.
-      const PROMOTE_FILL = {
-        'ready':   '#00ff00',  // --green
-        'partial': '#ffff00',  // --yellow (light → dark text)
-        'blocked': '#ff4444',  // --red
-        'evolve':  '#ff00ff',  // --magenta
-      };
-      const fill = PROMOTE_FILL[b.cls] || '#888888';
-      const labelColor = pickTextColor(fill);
-      html += '<div class="promote-bar ' + b.cls + '" title="' + esc(b.tooltip) + '">';
-      html += '<div class="promote-bar-fill" style="width: ' + pct + '%"></div>';
-      html += '<span class="promote-bar-label-left" style="color: ' + labelColor + ';">' + esc(truncate(b.agent, 20)) + '</span>';
-      html += '<span class="promote-bar-label-right" style="color: ' + labelColor + ';">' + esc(b.rightLabel) + '</span>';
-      html += '</div>';
-      // #276 forecast badge (when collector has slope-projection data)
-      // renders below the bar so the operator reads "blocked at slope"
-      // alongside "~3.7d to 0.80".
-      if (b.forecastBadge) html += b.forecastBadge;
-    });
-  }
-  if (skippedCount > 0) {
-    const openAttr = wasSkippedOpen ? ' open' : '';
-    html += '<details class="skipped-section"' + openAttr + '><summary>Skipped candidates (' + skippedCount + ')</summary>';
-    html += skippedHtml;
-    html += '</details>';
-  }
-  // First-render fade-in (gated on `.bars-loaded` so it only fires once
-  // per page load, not on every snapshot push).
-  if (!el.classList.contains('bars-loaded')) el.classList.add('bars-loaded');
-  el.innerHTML = html;
-}
-
 // --- Event Timeline ---
 // #315 PR 2: federation-wide unified timeline tile. Switched from the
 // regex-log-scraper `events[]` source to the structured `data.timeline[]`
@@ -3792,6 +3347,342 @@ function renderEventTimeline(data) {
   if (prevScroll > 0) el.scrollTop = prevScroll;
 }
 
+// --- Promotion Progress combined panel (#362 iter5) ---
+// Stacks Phase Readiness above Promote Candidates inside a single Status
+// tab card. Both renderers were resurrected verbatim from sha 90ffef4 (the
+// parent of the iter4 commit), retargeted at the new combined-panel hosts
+// (#phase-readiness-host and #promote-candidates-host) instead of their
+// pre-iter4 top-level containers (#readiness and #promote-candidates).
+
+function renderPhaseReadiness(data) {
+  const el = document.getElementById('phase-readiness-host');
+  if (!el) return;
+  // Render order top→bottom, low to high tier. Every colony gets all five
+  // bars regardless of count so the operator can spot empties at a glance.
+  const TIERS = ['dormant', 'shadow', 'propose', 'review-gated', 'autonomous'];
+
+  function tierFor(conf) {
+    // No-conf collapses into dormant for the bar view (same operator
+    // affordance: agent is below the seed floor, needs `install.sh` or
+    // a memo seed to climb out).
+    if (conf == null) return 'dormant';
+    if (conf >= 0.95) return 'autonomous';
+    if (conf >= 0.8) return 'review-gated';
+    if (conf >= 0.6) return 'propose';
+    if (conf >= 0.4) return 'shadow';
+    return 'dormant';
+  }
+
+  // Bucket agents per (colony, tier) so the tooltip can list agent names
+  // without an O(N*5) re-scan inside the render loop.
+  const buckets = {};
+  colonyList.forEach(col => {
+    buckets[col] = { dormant: [], shadow: [], propose: [], 'review-gated': [], autonomous: [] };
+  });
+  agents.forEach(a => {
+    if (!buckets[a.colony]) return;
+    buckets[a.colony][tierFor(a.confidence)].push(a.name);
+  });
+
+  let html = '';
+  colonyList.forEach(col => {
+    const bk = buckets[col];
+    const total = TIERS.reduce((s, t) => s + bk[t].length, 0);
+    html += '<div class="phase-row"><span class="phase-colony">' + esc(col) + '</span></div>';
+    html += '<div class="phase-stack">';
+    TIERS.forEach(t => {
+      const names = bk[t];
+      const n = names.length;
+      const pct = total > 0 ? (n / total) * 100 : 0;
+      // Inline-vs-outside label switch: count fits inside the fill at
+      // >=30% width, otherwise renders against the empty track on the
+      // right. Tier name always renders on the left of the bar.
+      const inside = pct >= 30;
+      const tip = n > 0
+        ? n + ' agent' + (n === 1 ? '' : 's') + ' in ' + t + ': ' + names.join(', ')
+        : 'no agents in ' + t;
+      // #352: route label color through pickTextColor so the amber
+      // tier-review-gated bar (#f59e0b) and yellow-leaning fills meet
+      // WCAG AA contrast. The `inside` count uses the bar fill color,
+      // the always-rendered tier name on the left uses the same logic.
+      const TIER_FILL = {
+        'dormant': '#6b7280', 'shadow': '#3b82f6', 'propose': '#06b6d4',
+        'review-gated': '#f59e0b', 'autonomous': '#22c55e',
+      };
+      const fill = TIER_FILL[t] || '#6b7280';
+      const insideColor = pickTextColor(fill);
+      const labelLeftColor = (inside || pct < 30) ? insideColor : 'var(--text)';
+      html += '<div class="phase-bar tier-' + t + '" title="' + esc(tip) + '">';
+      html += '<div class="phase-bar-fill" style="width: ' + pct.toFixed(1) + '%"></div>';
+      html += '<span class="phase-bar-label-left" style="color: ' + labelLeftColor + '; text-shadow: none;">' + t + '</span>';
+      html += '<span class="phase-bar-label-right"' +
+        (inside ? ' style="color: ' + insideColor + '; text-shadow: none;"' : '') +
+        '>' + n + '/' + total + '</span>';
+      html += '</div>';
+    });
+    html += '</div>';
+  });
+  // First-render fade-in (animation runs once per page load); subsequent
+  // SSE pushes only animate the per-bar `transition: width`.
+  if (!el.classList.contains('bars-loaded')) el.classList.add('bars-loaded');
+  el.innerHTML = html;
+}
+
+function renderPromoteCandidates(data) {
+  const el = document.getElementById('promote-candidates-host');
+  if (!el) return;
+  // Preserve operator-expanded "Skipped candidates" disclosure across
+  // re-renders so a live SSE push (`agentis:snapshot`, #313 PR 2) doesn't
+  // collapse the panel mid-read.
+  const prevSkipped = el.querySelector('details.skipped-section');
+  const wasSkippedOpen = !!(prevSkipped && prevSkipped.open);
+  const bars = [];
+  let skippedHtml = '';
+  let skippedCount = 0;
+
+  // Format a prereq value with the decimal precision of intent — see
+  // PREREQ_DECIMALS rationale below.
+  const PREREQ_DECIMALS = {
+    runtime_hours: 1, reject_rate_acting: 4, delta_slope_acting: 6,
+  };
+  function fmtPrereqVal(name, v) {
+    const d = PREREQ_DECIMALS[name];
+    if (d != null && typeof v === 'number') return v.toFixed(d);
+    return String(v);
+  }
+  // Format the limiting prereq for the right-hand inline bar label.
+  // Picks the right unit per name so the operator reads the actionable
+  // signal without mental conversion: `entries 47/200`, `runtime 0.4h/1h`,
+  // `reject 12%/5%`, `slope 0.001/0.0005`.
+  function fmtBarRight(p) {
+    const v = p.value;
+    const t = p.threshold;
+    if (p.name === 'runtime_hours') {
+      return 'runtime ' + fmtPrereqVal(p.name, v) + 'h/' + fmtPrereqVal(p.name, t) + 'h';
+    }
+    if (p.name === 'reject_rate_acting') {
+      // reject_rate is a fraction in [0, 1]; render as % so a 5% threshold
+      // reads naturally. The op is `<`, but the operator just wants to
+      // know how close they are to bar.
+      return 'reject ' + (v * 100).toFixed(1) + '%/' + (t * 100).toFixed(1) + '%';
+    }
+    if (p.name === 'delta_slope_acting') {
+      return 'slope ' + fmtPrereqVal(p.name, v) + '/' + fmtPrereqVal(p.name, t);
+    }
+    if (p.name === 'entries_total') return 'entries ' + v + '/' + t;
+    if (p.name === 'entries_acting') return 'acting ' + v + '/' + t;
+    return p.name + ' ' + fmtPrereqVal(p.name, v) + '/' + fmtPrereqVal(p.name, t);
+  }
+  // Per-prereq fill ratio in [0, 1]. `>=` prereqs (entries / runtime /
+  // slope) project onto value/threshold; `<` prereqs (reject_rate) become
+  // a binary 1.0 if `meets`, 0.0 otherwise — quality gate, not a dial.
+  function prereqFill(p) {
+    if (p.op === '<') return p.meets ? 1.0 : 0.0;
+    const t = Number(p.threshold) || 0;
+    if (t === 0) return p.meets ? 1.0 : 0.0;
+    const v = Number(p.value) || 0;
+    if (v <= 0) return 0.0;
+    if (v >= t) return 1.0;
+    return v / t;
+  }
+  // Build the per-prereq tooltip — full breakdown (pass + fail lines) so
+  // the operator can hover for the whole story without expanding skipped.
+  function buildTooltip(prereqs) {
+    return prereqs.map(p => {
+      const mark = p.meets ? 'OK' : 'FAIL';
+      return p.name + ' ' + fmtPrereqVal(p.name, p.value) + ' ' + p.op + ' ' +
+             fmtPrereqVal(p.name, p.threshold) + ' [' + mark + ']';
+    }).join(' · ');
+  }
+  function truncate(name, max) {
+    if (name.length <= max) return name;
+    return name.slice(0, max - 1) + '…';
+  }
+
+  const agentByName = {};
+  agents.forEach(a => { agentByName[a.name] = a; });
+
+  // The agent's runtime tier (used to exclude already-autonomous agents
+  // from the bar list — they have no further promote step).
+  function tierOfConf(c) {
+    if (c == null) return 'no-conf';
+    if (c >= 0.95) return 'autonomous';
+    if (c >= 0.8) return 'review-gated';
+    if (c >= 0.6) return 'propose';
+    if (c >= 0.4) return 'shadow';
+    return 'dormant';
+  }
+
+  decisions.forEach(d => {
+    const a = agentByName[d.agent];
+    if (!a) return;
+    const ev = d.evidence || {};
+
+    // Skip silently: no entries AND not running. Stats row already
+    // surfaces these as inactive; listing them as "skipped" is just noise.
+    const evTotal = ev.entries_total || 0;
+    if (evTotal === 0 && a.state !== 'running') return;
+
+    // Already-autonomous agents have no promote step — exclude from bars.
+    if (tierOfConf(a.confidence) === 'autonomous') return;
+
+    // `evolve` decisions render as a distinct purple bar. The collector's
+    // evolve path does not attach prereqs[] (it is fitness-recovery, not a
+    // promote-prereq walk), so the bar is full purple and the right-hand
+    // label is the textual reason.
+    if (d.decision === 'evolve') {
+      const tip = (d.reason || 'evolve recommended');
+      bars.push({
+        agent: a.name, decision: 'evolve', meanFill: 1.0, minFill: 1.0,
+        cls: 'evolve', target: d.to,
+        rightLabel: 'evolve recommended', tooltip: tip,
+      });
+      return;
+    }
+
+    // For promote / promote-path skip: walk evidence.prereqs[]. Skip
+    // decisions WITHOUT prereqs[] (dead pid, unseeded conf — never on
+    // the promote path) collapse into the skipped <details> below.
+    if (d.decision !== 'promote' && d.decision !== 'skip') return;
+    if (!ev.prereqs || !ev.prereqs.length) {
+      // Promote-path skip without prereqs is unexpected; fall through to
+      // legacy skipped-row so the operator still sees the row.
+      skippedHtml += '<div class="skipped-row"><span class="agent-name">' + esc(a.name) + '</span>';
+      skippedHtml += '<span>— ' + esc(d.reason || 'skipped') + '</span></div>';
+      skippedCount++;
+      return;
+    }
+
+    // Tier-crossing feasibility: a promote that resolves to the same tier
+    // for this agent's .ag source is observable-no-op. Surface that as a
+    // "why?" row, NOT a bar — the operator can't act on it from here.
+    if (d.decision === 'promote') {
+      const promoteGate = actionGate(a, 'promote', d.to);
+      if (!promoteGate.enabled) {
+        registerWhy(a.name, 'rec-promote', promoteGate);
+        skippedHtml += '<div class="skipped-row"><span class="agent-name">' + esc(a.name) + '</span>';
+        skippedHtml += '<span>— promote to ' + d.to.toFixed(2) + ' would be a no-op at this source</span>';
+        skippedHtml += '<span class="skipped-info" onclick="showWhy(\'' + esc(a.name) + '\',\'rec-promote\')">why?</span></div>';
+        skippedCount++;
+        return;
+      }
+    }
+
+    // Per-prereq fill ratios + the limiting prereq (`min`).
+    const fills = ev.prereqs.map(prereqFill);
+    const meanFill = fills.reduce((s, f) => s + f, 0) / fills.length;
+    let minIdx = 0;
+    for (let i = 1; i < fills.length; i++) {
+      if (fills[i] < fills[minIdx]) minIdx = i;
+    }
+    const minFill = fills[minIdx];
+    const limitingPrereq = ev.prereqs[minIdx];
+
+    // Colour bucket: `green` only when ALL prereqs meet (= decision is
+    // `promote`); else mean fill picks yellow (>= 0.5) vs red.
+    const allMeet = ev.prereqs.every(p => p.meets);
+    const cls = allMeet ? 'ready'
+              : (meanFill >= 0.5 ? 'partial' : 'blocked');
+
+    // #276: per-agent promotion forecast badge. Collector enriches
+    // evidence.forecast_days_to_next_tier (number 0..30 or null) for
+    // promote-path skips with a positive per-colony confidence slope.
+    // Null → no badge; 30 → clamped (renders as ">30d to <target>").
+    let forecastBadge = '';
+    const fd = ev.forecast_days_to_next_tier;
+    if (fd != null && ev.confidence != null) {
+      const tgt = ev.confidence < 0.6 ? 0.6
+                : ev.confidence < 0.8 ? 0.8
+                : ev.confidence < 0.95 ? 0.95 : null;
+      if (tgt != null) {
+        const fLabel = fd >= 30 ? '>30d to ' + tgt.toFixed(2)
+                                : '~' + fd.toFixed(1) + 'd to ' + tgt.toFixed(2);
+        forecastBadge = '<span class="forecast">' + esc(fLabel) + '</span>';
+      }
+    }
+
+    bars.push({
+      agent: a.name,
+      decision: d.decision,
+      meanFill: meanFill,
+      minFill: minFill,
+      cls: cls,
+      target: d.to,
+      rightLabel: fmtBarRight(limitingPrereq),
+      tooltip: buildTooltip(ev.prereqs),
+      forecastBadge: forecastBadge,
+    });
+  });
+
+  // Sort: closest-to-ready first (mean fill descending; ties broken by
+  // limiting prereq ascending so the next-actionable rises to the top).
+  bars.sort((x, y) => {
+    if (y.meanFill !== x.meanFill) return y.meanFill - x.meanFill;
+    return x.minFill - y.minFill;
+  });
+
+  // Agents the scheduler never saw (no daemon = no decision) but which
+  // are running with an unseeded confidence still deserve a visible row
+  // in skipped so the operator knows those are waiting on install.sh
+  // / memo seed.
+  const seen = new Set(decisions.map(d => d.agent));
+  agents.forEach(a => {
+    if (seen.has(a.name)) return;
+    if (a.confidence != null) return;
+    if (a.state !== 'running') return;
+    skippedHtml += '<div class="skipped-row"><span class="agent-name">' + esc(a.name) + '</span>';
+    skippedHtml += '<span>— confidence not seeded (run install.sh or set memo)</span></div>';
+    skippedCount++;
+  });
+
+  // Render the bars. Bar fill width is the LIMITING prereq fill (`minFill`)
+  // — the operator's actionable signal. Colour bucket comes from `meanFill`.
+  let html = '';
+  if (bars.length === 0) {
+    html += '<span class="promote-bars-empty">No agents in flight to promote right now.</span>';
+  } else {
+    bars.forEach(b => {
+      const pct = (b.minFill * 100).toFixed(1);
+      // #352: pickTextColor over the bar fill so labels meet contrast.
+      // Yellow `partial` and amber-adjacent backgrounds need dark text.
+      const PROMOTE_FILL = {
+        'ready':   '#00ff00',  // --green
+        'partial': '#ffff00',  // --yellow (light → dark text)
+        'blocked': '#ff4444',  // --red
+        'evolve':  '#ff00ff',  // --magenta
+      };
+      const fill = PROMOTE_FILL[b.cls] || '#888888';
+      const labelColor = pickTextColor(fill);
+      html += '<div class="promote-bar ' + b.cls + '" title="' + esc(b.tooltip) + '">';
+      html += '<div class="promote-bar-fill" style="width: ' + pct + '%"></div>';
+      html += '<span class="promote-bar-label-left" style="color: ' + labelColor + ';">' + esc(truncate(b.agent, 20)) + '</span>';
+      html += '<span class="promote-bar-label-right" style="color: ' + labelColor + ';">' + esc(b.rightLabel) + '</span>';
+      html += '</div>';
+      // #276 forecast badge (when collector has slope-projection data)
+      // renders below the bar so the operator reads "blocked at slope"
+      // alongside "~3.7d to 0.80".
+      if (b.forecastBadge) html += b.forecastBadge;
+    });
+  }
+  if (skippedCount > 0) {
+    const openAttr = wasSkippedOpen ? ' open' : '';
+    html += '<details class="skipped-section"' + openAttr + '><summary>Skipped candidates (' + skippedCount + ')</summary>';
+    html += skippedHtml;
+    html += '</details>';
+  }
+  // First-render fade-in (gated on `.bars-loaded` so it only fires once
+  // per page load, not on every snapshot push).
+  if (!el.classList.contains('bars-loaded')) el.classList.add('bars-loaded');
+  el.innerHTML = html;
+}
+
+// Thin combined-panel wrapper — one dispatch entry, two child renderers.
+// Each child writes into its own host inside the #promotion-progress card.
+function renderPromotionProgress(data) {
+  renderPhaseReadiness(data);
+  renderPromoteCandidates(data);
+}
+
 // --- Experience Growth Chart ---
 function renderExperienceTrend(data) {
   const el = document.getElementById('experience-trend');
@@ -3824,54 +3715,6 @@ function renderExperienceTrend(data) {
   el.innerHTML = svg + legend;
 }
 
-// --- Confidence Trend Chart ---
-function renderConfidenceTrend(data) {
-  const el = document.getElementById('confidence-trend');
-  if (!el) return;
-  // #143: filter stale zeros from old history entries
-  const validHistory = history.filter(h => h.confidence && Object.keys(h.confidence).length > 0);
-  if (validHistory.length < 2) { el.innerHTML = '<span class="empty">Trend available after 2+ data points</span>'; return; }
-  const W = 480, H = 140, PAD = 35;
-  const tMin = validHistory[0].t, tMax = validHistory[validHistory.length - 1].t;
-  const tRange = Math.max(tMax - tMin, 1);
-  let svg = '<svg width="100%" viewBox="0 0 '+W+' '+(H+20)+'">';
-  // Y axis: 0 to 1
-  for (let i = 0; i <= 4; i++) {
-    const y = 10+(H-10)*i/4;
-    const label = (1 - i/4).toFixed(1);
-    svg += '<line x1="'+PAD+'" y1="'+y+'" x2="'+W+'" y2="'+y+'" stroke="rgba(0,255,255,0.06)" />';
-    svg += '<text x="'+(PAD-4)+'" y="'+(y+3)+'" fill="var(--muted)" font-family="Share Tech Mono,monospace" font-size="8" text-anchor="end">'+label+'</text>';
-  }
-  // Phase markers — #177: four tier boundaries from ADR-0001.
-  const shadowY = 10+(H-10)*(1-0.4);
-  const proposeY = 10+(H-10)*(1-0.6);
-  const reviewY = 10+(H-10)*(1-0.8);
-  const autoY = 10+(H-10)*(1-0.95);
-  svg += '<line x1="'+PAD+'" y1="'+shadowY+'" x2="'+W+'" y2="'+shadowY+'" stroke="rgba(0,255,255,0.10)" stroke-dasharray="2,4" />';
-  svg += '<line x1="'+PAD+'" y1="'+proposeY+'" x2="'+W+'" y2="'+proposeY+'" stroke="rgba(255,255,0,0.15)" stroke-dasharray="4,4" />';
-  svg += '<line x1="'+PAD+'" y1="'+reviewY+'" x2="'+W+'" y2="'+reviewY+'" stroke="rgba(255,170,0,0.15)" stroke-dasharray="4,4" />';
-  svg += '<line x1="'+PAD+'" y1="'+autoY+'" x2="'+W+'" y2="'+autoY+'" stroke="rgba(0,255,0,0.15)" stroke-dasharray="4,4" />';
-  svg += '<line x1="'+PAD+'" y1="'+H+'" x2="'+W+'" y2="'+H+'" stroke="var(--border)" />';
-  svg += '<text x="'+PAD+'" y="'+(H+14)+'" fill="var(--muted)" font-family="Share Tech Mono,monospace" font-size="9">'+new Date(tMin*1000).toLocaleDateString()+'</text>';
-  svg += '<text x="'+W+'" y="'+(H+14)+'" fill="var(--muted)" font-family="Share Tech Mono,monospace" font-size="9" text-anchor="end">'+new Date(tMax*1000).toLocaleDateString()+'</text>';
-  colonyList.forEach(col => {
-    // #143: skip 0.0 values (stale zeros from before null-handling fix)
-    const pts = validHistory.filter(h => h.confidence[col] != null && h.confidence[col] > 0).map(h => {
-      const x = PAD+((h.t-tMin)/tRange)*(W-PAD);
-      const y = 10+(H-10)*(1-h.confidence[col]);
-      return x.toFixed(1)+','+y.toFixed(1);
-    });
-    if (pts.length > 1) {
-      svg += '<polyline points="'+pts.join(' ')+'" fill="none" stroke="'+colonyColors[col]+'" stroke-width="1.5" opacity="0.8" />';
-    }
-  });
-  svg += '</svg>';
-  let legend = '<div class="chart-legend">';
-  colonyList.forEach(col => { legend += '<span><span class="legend-dot" style="background:'+colonyColors[col]+';box-shadow:0 0 4px '+colonyColors[col]+'"></span>'+col+'</span>'; });
-  legend += '</div>';
-  el.innerHTML = svg + legend;
-}
-
 // =====================================================================
 // #359 Status / Cost / Recovery / Progress / Config — new renderers
 // =====================================================================
@@ -3883,15 +3726,17 @@ function renderConfidenceTrend(data) {
 // Each renderer is fully idempotent — SSE rerender(snap) calls them all
 // regardless of which tab the operator is currently viewing.
 
-// --- Status verdict pill + 21-cell pulse grid + sidecar status pills ---
-// Status tab body: NO charts, NO bars, NO tables, NO `<details>`. Pure
-// single-glance verdict. Operator absorbs the federation in one eye-pass.
+// --- Status verdict pill + sidecar status pills ---
+// Status tab body: verdict pill + 5-tile stat row + per-agent compact
+// table + sidecar pills + status-meta + Experience Growth chart (#362).
+// The 21-cell pulse-grid was retired in #362 in favour of the per-agent
+// table which exposes the per-row diagnostics operators kept hand-pasting
+// from logs (limiting prereq + ETA + last error).
 function renderStatusVerdict(data) {
   const verdEl = document.getElementById('status-verdict');
-  const pulseEl = document.getElementById('status-pulse');
   const pillsEl = document.getElementById('status-sidecar-pills');
   const metaEl = document.getElementById('status-meta');
-  if (!verdEl || !pulseEl || !pillsEl || !metaEl) return;
+  if (!verdEl || !pillsEl || !metaEl) return;
 
   // Verdict pill: ✅ running 21/21 / ⚠️ degraded / ❌ stopped.
   const total = totalAgents || agents.length || 0;
@@ -3917,36 +3762,6 @@ function renderStatusVerdict(data) {
     vClass = 'warn';
   }
   verdEl.innerHTML = '<span class="status-verdict-pill ' + vClass + '">' + esc(verdict) + '</span>';
-
-  // 21-cell pulse-grid (7 cols × 3 rows for the canonical 21-agent
-  // dev-apprenticeship federation; auto-flexes for federations of any
-  // size since CSS grid wraps naturally). Color encodes per-agent state.
-  // Click-through opens the existing per-agent detail modal.
-  let pulseHtml = '<div class="pulse-grid" role="grid" aria-label="Per-agent status pulse">';
-  // Sort by colony then name so cells stay stable across re-renders.
-  const sorted = agents.slice().sort((a, b) => {
-    const ca = (a.colony || '').toLowerCase();
-    const cb = (b.colony || '').toLowerCase();
-    if (ca !== cb) return ca < cb ? -1 : 1;
-    const na = (a.name || '').toLowerCase();
-    const nb = (b.name || '').toLowerCase();
-    return na < nb ? -1 : 1;
-  });
-  sorted.forEach(a => {
-    let cls = 'pulse-running';
-    if (a.quarantine === 'yes') cls = 'pulse-quarantine';
-    else if (a.state === 'running' && a.pid > 0 && !a.pid_alive) cls = 'pulse-zombie';
-    else if (a.state !== 'running') cls = 'pulse-stopped';
-    else if (a.state === 'running' && a.health && a.health !== 'healthy') cls = 'pulse-degraded';
-    const tip = a.colony + '/' + a.name + ' — ' + (a.state || '?') +
-                (a.confidence != null ? ' (conf ' + a.confidence.toFixed(2) + ')' : '');
-    pulseHtml += '<div class="pulse-cell ' + cls + '" tabindex="0" ' +
-                 'onclick="openDetail(\'' + esc(a.name) + '\')" ' +
-                 'onkeydown="if(event.key===\'Enter\'||event.key===\' \'){openDetail(\'' + esc(a.name) + '\');event.preventDefault();}" ' +
-                 'title="' + esc(tip) + '">' + esc(a.name) + '</div>';
-  });
-  pulseHtml += '</div>';
-  pulseEl.innerHTML = pulseHtml;
 
   // Sidecar status pills + age. Compact single-line summary (no <details>).
   const sc = sidecars || [];
@@ -3999,6 +3814,238 @@ function renderStatusVerdict(data) {
                     '<span><strong>' + zombies + '</strong> zombie PID' + (zombies === 1 ? '' : 's') + '</span>' +
                     '<span>last error: ' + esc(lastErrTxt) + '</span>' +
                     '</div>';
+}
+
+// --- Status stat tiles (#362) ---
+// 5-tile row across the top of the Status tab: Running / Total
+// Experience / Avg confidence / Learning 24h / Quarantined. Total
+// Experience surfaces `data.experience_counts.total` — the federation-
+// wide cumulative count operators were missing since the #359 stats-row
+// fold. Each tile is fully derivable from `data` so the renderer is
+// idempotent across SSE pushes.
+function renderStatusStatTiles(data) {
+  const el = document.getElementById('status-stat-tiles');
+  if (!el) return;
+  const total = totalAgents || agents.length || 0;
+  const running = agents.filter(a => a.state === 'running' && a.is_running).length;
+  const quarantined = agents.filter(a => a.state === 'quarantined').length;
+  const expCounts = (data && data.experience_counts) || experienceCounts || {};
+  const expTotal = +expCounts.total || 0;
+  const confs = agents.filter(a => a.confidence != null).map(a => a.confidence);
+  const avgConf = confs.length > 0
+    ? (confs.reduce((s, c) => s + c, 0) / confs.length).toFixed(2)
+    : '—';
+  const dayCutoff = Date.now() - 86400000;
+  const learning24h = agents.reduce(function (acc, a) {
+    return acc + (a.recent_experience || []).filter(function (e) {
+      return e && typeof e.ts === 'number' && e.ts > dayCutoff;
+    }).length;
+  }, 0);
+
+  function tile(label, value, klass) {
+    return '<div class="status-stat-tile' + (klass ? ' ' + klass : '') + '">' +
+           '<div class="status-stat-tile-label">' + esc(label) + '</div>' +
+           '<div class="status-stat-tile-value">' + esc(value) + '</div>' +
+           '</div>';
+  }
+  const runningCls = (total > 0 && running < total) ? 'crit' : '';
+  const quarCls    = quarantined > 0 ? 'crit' : '';
+  let html = '<div class="status-stat-tiles">';
+  html += tile('Running',          running + '/' + total + ' running', runningCls);
+  html += tile('Total Experience', expTotal.toLocaleString('en-US') + ' entries', '');
+  html += tile('Avg confidence',   avgConf, '');
+  html += tile('Learning 24h',     '+' + learning24h + ' last 24h', '');
+  html += tile('Quarantined',      quarantined + ' quarantined', quarCls);
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+// --- Status agent table (#362) ---
+// Sortable per-agent compact table on the Status tab. Replaces the #359
+// 21-cell pulse-grid with row-level diagnostics operators were hand-
+// pasting from logs (limiting prereq + ETA + last error). Default sort:
+// state desc (failures first) then confidence desc; persisted in
+// localStorage[agentis:dashboard:agent-table-sort]. Click row → modal.
+const STATUS_AGENT_TABLE_SORT_KEY = 'agentis:dashboard:agent-table-sort';
+const STATUS_AGENT_TABLE_COLUMNS = [
+  {key: 'state',   label: 'State'},
+  {key: 'name',    label: 'Agent'},
+  {key: 'colony',  label: 'Colony'},
+  {key: 'conf',    label: 'Conf'},
+  {key: 'next',    label: 'Next'},
+  {key: 'eta',     label: 'ETA'},
+  {key: 'limiting', label: 'Limiting'},
+  {key: 'lastErr', label: 'Last err'},
+];
+const STATUS_AGENT_TABLE_CONF_STEPS = [0.4, 0.6, 0.8, 0.95];
+function _statusReadSort() {
+  try {
+    const raw = localStorage.getItem(STATUS_AGENT_TABLE_SORT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    return parsed;
+  } catch (e) { return null; }
+}
+function _statusWriteSort(col, dir) {
+  try {
+    localStorage.setItem(STATUS_AGENT_TABLE_SORT_KEY,
+      JSON.stringify({col: col, dir: dir}));
+  } catch (e) {}
+}
+function statusAgentTableSort(col) {
+  const cur = _statusReadSort() || {col: 'state', dir: -1};
+  const dir = (cur.col === col) ? -cur.dir : 1;
+  _statusWriteSort(col, dir);
+  renderStatusAgentTable(window.__data || {});
+}
+function renderStatusAgentTable(data) {
+  const el = document.getElementById('status-agent-table');
+  if (!el) return;
+  if (!agents.length) {
+    el.innerHTML = '<span class="empty">No agents discovered.</span>';
+    return;
+  }
+  const decisionByAgent = {};
+  (decisions || []).forEach(function (d) { decisionByAgent[d.agent] = d; });
+
+  // Build derived row records once so the sort comparator is cheap.
+  function deriveRow(a) {
+    const conf = (a.confidence == null) ? null : a.confidence;
+    let nextTxt = '—';
+    if (conf != null) {
+      let next = null;
+      for (let i = 0; i < STATUS_AGENT_TABLE_CONF_STEPS.length; i++) {
+        if (STATUS_AGENT_TABLE_CONF_STEPS[i] > conf) {
+          next = STATUS_AGENT_TABLE_CONF_STEPS[i];
+          break;
+        }
+      }
+      nextTxt = (next == null) ? 'MAX' : next.toFixed(2);
+    }
+    let etaTxt = '—';
+    let etaSort = Number.POSITIVE_INFINITY;
+    let limitingTxt = (decisionByAgent[a.name] ? '—' : 'no acting');
+    let limitingSort = '';
+    const dec = decisionByAgent[a.name];
+    if (dec && dec.evidence) {
+      const ev = dec.evidence;
+      if (typeof ev.forecast_days_to_next_tier === 'number') {
+        const d = ev.forecast_days_to_next_tier;
+        if (d > 0 && d < 30) {
+          etaTxt = d.toFixed(1) + 'd';
+          etaSort = d;
+        }
+      }
+      if (Array.isArray(ev.prereqs) && ev.prereqs.length > 0) {
+        let lim = null, limRatio = Infinity;
+        ev.prereqs.forEach(function (p) {
+          if (p.op === '<') {
+            if (!p.meets) lim = lim || p;
+            return;
+          }
+          const t = +p.threshold || 0;
+          const v = +p.value || 0;
+          if (t > 0) {
+            const r = Math.min(v / t, 2.0);
+            if (r < limRatio) { limRatio = r; lim = p; }
+          }
+        });
+        if (lim) {
+          const v = lim.value;
+          const t = lim.threshold;
+          const vfmt = (typeof v === 'number')
+            ? v.toFixed(v < 1 && v > 0 ? 4 : 1) : v;
+          const tfmt = (typeof t === 'number')
+            ? t.toFixed(t < 1 && t > 0 ? 4 : 1) : t;
+          limitingTxt = (lim.name || 'prereq') + ' ' + vfmt + '/' + tfmt;
+          limitingSort = lim.name || '';
+        }
+      }
+    }
+    let lastErrTxt = '—';
+    let lastErrSort = 0;
+    const errRows = (a.timeline || [])
+      .filter(function (r) { return r && r.severity === 'error'; })
+      .slice()
+      .sort(function (x, y) { return (y.ts || 0) - (x.ts || 0); });
+    if (errRows.length > 0) {
+      const newest = errRows[0];
+      const ts = (typeof newest.ts === 'number') ? Math.floor(newest.ts / 1000) : 0;
+      lastErrSort = ts;
+      lastErrTxt = ts > 0 ? relTime(ts) : 'recent';
+    }
+    let dotCls = 'dot-green';
+    let stateRank = 4;
+    if (a.state === 'quarantined') { dotCls = 'dot-gray'; stateRank = 1; }
+    else if (a.state !== 'running') { dotCls = 'dot-red'; stateRank = 0; }
+    else if (a.state === 'running' && !a.is_running) { dotCls = 'dot-amber'; stateRank = 2; }
+    else if (a.health && a.health !== 'healthy') { dotCls = 'dot-amber'; stateRank = 3; }
+    return {
+      a: a, dotCls: dotCls, stateRank: stateRank,
+      conf: conf, nextTxt: nextTxt,
+      etaTxt: etaTxt, etaSort: etaSort,
+      limitingTxt: limitingTxt, limitingSort: limitingSort,
+      lastErrTxt: lastErrTxt, lastErrSort: lastErrSort,
+    };
+  }
+  const rows = agents.map(deriveRow);
+
+  const sortPref = _statusReadSort() || {col: 'state', dir: -1};
+  rows.sort(function (x, y) {
+    let va, vb;
+    switch (sortPref.col) {
+      case 'name':    va = x.a.name || '';      vb = y.a.name || ''; break;
+      case 'colony':  va = x.a.colony || '';    vb = y.a.colony || ''; break;
+      case 'conf':    va = (x.conf == null) ? -1 : x.conf;
+                      vb = (y.conf == null) ? -1 : y.conf; break;
+      case 'next':    va = x.nextTxt;           vb = y.nextTxt; break;
+      case 'eta':     va = x.etaSort;           vb = y.etaSort; break;
+      case 'limiting': va = x.limitingSort;     vb = y.limitingSort; break;
+      case 'lastErr': va = x.lastErrSort;       vb = y.lastErrSort; break;
+      case 'state':
+      default:        va = x.stateRank;         vb = y.stateRank; break;
+    }
+    if (typeof va === 'string') va = va.toLowerCase();
+    if (typeof vb === 'string') vb = vb.toLowerCase();
+    if (va < vb) return -sortPref.dir;
+    if (va > vb) return sortPref.dir;
+    // Tie-breaker: confidence desc.
+    const ca = (x.conf == null) ? -1 : x.conf;
+    const cb = (y.conf == null) ? -1 : y.conf;
+    return cb - ca;
+  });
+
+  let html = '<table>';
+  html += '<thead><tr>';
+  STATUS_AGENT_TABLE_COLUMNS.forEach(function (col) {
+    const arrow = (sortPref.col === col.key)
+      ? (sortPref.dir === 1 ? ' ▲' : ' ▼') : '';
+    html += '<th onclick="statusAgentTableSort(\'' + col.key + '\')">' +
+            esc(col.label) + '<span class="sort-arrow">' + arrow + '</span></th>';
+  });
+  html += '</tr></thead>';
+  html += '<tbody>';
+  rows.forEach(function (r) {
+    const a = r.a;
+    const confTxt = (r.conf == null) ? '—' : r.conf.toFixed(2);
+    html += '<tr class="clickable" data-agent="' + esc(a.name) + '" ' +
+            'onclick="openDetail(\'' + esc(a.name) + '\')">';
+    html += '<td><span class="status-agent-state-dot ' + r.dotCls + '"></span>' +
+            esc(a.state || '?') + '</td>';
+    html += '<td><span class="agent-name">' + esc(a.name) + '</span></td>';
+    html += '<td><span class="colony-name colony-clickable" ' +
+            'onclick="event.stopPropagation();showColonyModal(\'' + esc(a.colony) + '\')">' +
+            esc(a.colony) + '</span></td>';
+    html += '<td>' + esc(confTxt) + '</td>';
+    html += '<td>' + esc(r.nextTxt) + '</td>';
+    html += '<td>' + esc(r.etaTxt) + '</td>';
+    html += '<td title="' + esc(r.limitingTxt) + '">' + esc(r.limitingTxt) + '</td>';
+    html += '<td>' + esc(r.lastErrTxt) + '</td>';
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
 }
 
 // --- Cost projection tiles (Cost tab top row) ---
@@ -5496,7 +5543,6 @@ function rerender(snap) {
   // every other renderer.
   renderStatsRow(snap);
   renderAgentTable(snap);
-  renderPhaseReadiness(snap);
   renderForgeRateLimits(snap);
   // #352 split: tokens (top of Cost tab) + USD (bottom of Cost tab).
   // renderLlmCost is preserved as the legacy single-tile renderer for
@@ -5505,23 +5551,29 @@ function rerender(snap) {
   renderLlmTokens(snap);
   renderLlmUsd(snap);
   renderCostCap(snap);
-  renderPromoteCandidates(snap);
-  // #352: sidecar listing, bulk-actions, promotion ladder, config editor.
+  // #352: sidecar listing, bulk-actions, config editor.
   renderSidecarStatus(snap);
   renderBulkActions(snap);
-  renderPromotionLadder(snap);
   renderConfigEditor(snap);
   renderEventTimeline(snap);
   renderExperienceTrend(snap);
-  renderConfidenceTrend(snap);
   // #359: new tab-driven renderers.
   renderStatusVerdict(snap);
+  // #362: Status tab stat-tile row + per-agent table (replaces pulse-grid).
+  renderStatusStatTiles(snap);
+  renderStatusAgentTable(snap);
   renderCostProjections(snap);
   renderRecoveryActions(snap);
   renderRecoveryAgents(snap);
   renderWatchdogKills(snap);
   renderLogTails(snap);
   renderConfigMatrix(snap);
+  // #362 iter5: combined Promotion Progress panel on Status tab bottom
+  // row (Phase Readiness + Promote Candidates side-by-side with Experience
+  // Growth). Resurrects renderPhaseReadiness + renderPromoteCandidates
+  // from sha 90ffef4 retargeted at #phase-readiness-host /
+  // #promote-candidates-host.
+  renderPromotionProgress(snap);
   if (SSE_DEBUG && window.console) console.log('[render] rerender done');
 }
 
