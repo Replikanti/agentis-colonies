@@ -1,19 +1,36 @@
 #!/bin/bash
-# verify-finding.sh: Stage 0 deterministic verifier for tribes-bench.
+# verify-finding.sh: deterministic verifier for tribes-bench Stages 0/1.
 #
-# Reads a JSON finding object on stdin (`{"line": <int>, "rationale": <string>}`)
-# and emits a verdict on stdout (`{"verified": <bool>, "bug_id": <string|null>}`).
+# Reads a JSON finding object on stdin (`{"line": <int>, "rationale": <string>,
+# "class": <string|optional>}`) and emits a verdict on stdout
+# (`{"verified": <bool>, "bug_id": <string|null>}`).
 #
 # Verification rule: a finding matches a planted bug iff
 #   |finding.line - bug.line| <= bug.line_tolerance
-# AND the source slice at the planted line contains bug.signature.
+# AND the source slice at the planted line contains bug.signature
+# AND (when finding.class is set) bug.class == finding.class.
+#
+# Stage 0 wire format does not include `class` — Stage 0 inputs keep the
+# Stage 0 (line, signature) predicate unchanged. Stage 1 inputs include
+# `class` and additionally require the manifest entry's `class` field
+# match. Note: Stage 0's `bugs.json` uses `class = "command-injection"`
+# (hyphen) and Stage 1 standardises on `class = "command_injection"`
+# (underscore) — they never collide because Stage 0 never sends `class`
+# on the wire.
 #
 # Pure shell + jq + grep — no LLM, no agentis. The verifier is the source
-# of ground truth for Stage 0 telemetry; do not call into prompt() here.
+# of ground truth for Stages 0/1 telemetry; do not call into prompt() here.
 #
 # Env (with sane defaults relative to the federation directory):
 #   TARGET_DIR      (default: <fed>/targets/stage0)
 #   BUGS_MANIFEST   (default: $TARGET_DIR/bugs.json)
+#
+# CLI flags (all optional; stdin JSON remains the primary input channel):
+#   --help, -h           Print usage and exit 0.
+#   --class <CLASS>      Override `class` field if absent on stdin (Stage 1
+#                        smoke testing). When set, requires bug.class match.
+#   --bug-id <ID>        When set, additionally require the matched bug's id
+#                        equals <ID> (Stage 1 smoke testing).
 #
 # Exit codes: 0 always (the verdict goes on stdout). The script never
 # fails the caller — a malformed input emits {"verified": false,
@@ -21,6 +38,64 @@
 # a false positive.
 
 set -e
+
+print_help() {
+    cat <<'EOF'
+Usage: verify-finding.sh [--class <CLASS>] [--bug-id <ID>]
+
+Reads a JSON finding from stdin and emits a JSON verdict on stdout.
+
+Stdin: {"line": <int>, "class": <string|optional>}
+Stdout: {"verified": <bool>, "bug_id": <string|null>}
+
+Env:
+  TARGET_DIR     default: <fed>/targets/stage0
+  BUGS_MANIFEST  default: $TARGET_DIR/bugs.json
+
+Flags (Stage 1 smoke testing; back-compat default = Stage 0 behaviour):
+  --class <CLASS>   Provide class when stdin omits it.
+  --bug-id <ID>     Require the matched bug.id equals <ID>.
+  --help, -h        Print this help and exit 0.
+EOF
+}
+
+CLI_CLASS=""
+CLI_BUG_ID=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --help|-h)
+            print_help
+            exit 0
+            ;;
+        --class)
+            if [ -z "${2:-}" ]; then
+                echo "verify-finding.sh: --class requires an argument" >&2
+                exit 0
+            fi
+            CLI_CLASS="$2"
+            shift 2
+            ;;
+        --bug-id)
+            if [ -z "${2:-}" ]; then
+                echo "verify-finding.sh: --bug-id requires an argument" >&2
+                exit 0
+            fi
+            CLI_BUG_ID="$2"
+            shift 2
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -*)
+            echo "verify-finding.sh: unknown flag: $1" >&2
+            exit 0
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FED_DIR="$(dirname "$SCRIPT_DIR")"
@@ -53,9 +128,17 @@ case "$FINDING_LINE" in
         ;;
 esac
 
+# Read optional class field. Empty == "any class accepted" (Stage 0 path).
+# CLI --class overrides only when stdin omits the field.
+FINDING_CLASS="$(printf '%s' "$INPUT" | jq -r '.class // empty' 2>/dev/null || true)"
+if [ -z "$FINDING_CLASS" ] && [ -n "$CLI_CLASS" ]; then
+    FINDING_CLASS="$CLI_CLASS"
+fi
+
 # Iterate planted bugs. For each, check the line-window predicate first
 # (cheap), then confirm the signature substring is present at the
-# planted line in the source file.
+# planted line in the source file. When class is set, additionally
+# require manifest bug.class match.
 BUG_COUNT="$(jq -r '.bugs | length' "$BUGS_MANIFEST" 2>/dev/null || echo 0)"
 case "$BUG_COUNT" in
     ''|*[!0-9]*) BUG_COUNT=0 ;;
@@ -68,6 +151,16 @@ while [ "$i" -lt "$BUG_COUNT" ]; do
     BUG_LINE="$(jq -r ".bugs[$i].line" "$BUGS_MANIFEST")"
     BUG_TOL="$(jq -r ".bugs[$i].line_tolerance" "$BUGS_MANIFEST")"
     BUG_SIG="$(jq -r ".bugs[$i].signature" "$BUGS_MANIFEST")"
+
+    # Class predicate: only enforced when finding.class is set. Stage 0
+    # inputs keep the Stage 0 line+signature predicate unchanged.
+    if [ -n "$FINDING_CLASS" ]; then
+        BUG_CLASS="$(jq -r ".bugs[$i].class // \"\"" "$BUGS_MANIFEST")"
+        if [ "$BUG_CLASS" != "$FINDING_CLASS" ]; then
+            i=$((i + 1))
+            continue
+        fi
+    fi
 
     # Line-window predicate: |finding - planted| <= tolerance.
     DIFF=$((FINDING_LINE - BUG_LINE))
@@ -86,6 +179,12 @@ while [ "$i" -lt "$BUG_COUNT" ]; do
     fi
     LINE_TEXT="$(sed -n "${BUG_LINE}p" "$SRC")"
     if printf '%s' "$LINE_TEXT" | grep -qF -- "$BUG_SIG"; then
+        # Bug-id predicate: when --bug-id is set, additionally require
+        # the matched bug's id equals it.
+        if [ -n "$CLI_BUG_ID" ] && [ "$BUG_ID" != "$CLI_BUG_ID" ]; then
+            i=$((i + 1))
+            continue
+        fi
         emit_verdict "true" "$BUG_ID"
         exit 0
     fi

@@ -1,8 +1,13 @@
 #!/bin/bash
-# test-verify-finding.sh: unit tests for the Stage 0 deterministic verifier.
+# test-verify-finding.sh: unit tests for the deterministic verifier.
 #
-# Feeds three known-good and three known-bad finding fixtures into
-# verify-finding.sh and asserts the expected verdicts. Exit 0 on pass.
+# Default mode: feeds three known-good and three known-bad Stage 0
+# finding fixtures into verify-finding.sh and asserts the expected
+# verdicts. Exit 0 on pass.
+#
+# `STAGE1=1` mode: switches BUGS_MANIFEST + TARGET_DIR to targets/stage1
+# and runs six additional fixtures (one good per class + three bad
+# fixtures exercising class dispatch, line-window, and malformed input).
 
 set -e
 
@@ -10,7 +15,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FED_DIR="$(dirname "$SCRIPT_DIR")"
 
 VERIFIER="$SCRIPT_DIR/verify-finding.sh"
-TARGET_DIR="$FED_DIR/targets/stage0"
+
+STAGE_MODE="${STAGE1:-0}"
+if [ "$STAGE_MODE" = "1" ]; then
+    TARGET_DIR="$FED_DIR/targets/stage1"
+else
+    TARGET_DIR="$FED_DIR/targets/stage0"
+fi
 
 if [ ! -x "$VERIFIER" ]; then
     echo "Error: verify-finding.sh not found or not executable at $VERIFIER" >&2
@@ -54,6 +65,37 @@ run_case() {
         FAIL=$((FAIL + 1))
     fi
 }
+
+if [ "$STAGE_MODE" = "1" ]; then
+    # --- Stage 1 mode (STAGE1=1): six fixtures across 3 classes ---
+
+    run_case "good: S1-CMDINJ-001 with class" "true" "S1-CMDINJ-001" \
+        '{"line": 12, "class": "command_injection"}'
+
+    run_case "good: S1-PATHTRV-002 with class" "true" "S1-PATHTRV-002" \
+        '{"line": 20, "class": "path_traversal"}'
+
+    run_case "good: S1-FMTSTR-002 with class" "true" "S1-FMTSTR-002" \
+        '{"line": 24, "class": "format_string"}'
+
+    # Class-dispatch: line 12 declared as format_string. cmd_inj bugs at
+    # lines 12,21,28,35 are filtered out by the class predicate; no
+    # format_string bug is within tolerance of line 12 (fmtstr bugs at
+    # lines 16,24,36 → ranges 14-18, 22-26, 34-38), so verdict = false.
+    run_case "bad: cmd_inj line claimed as format_string" "false" "" \
+        '{"line": 12, "class": "format_string"}'
+
+    run_case "bad: line outside any planted bug window" "false" "" \
+        '{"line": 99, "class": "command_injection"}'
+
+    run_case "bad: malformed (missing line)" "false" "" \
+        '{"class": "command_injection"}'
+
+    echo ""
+    echo "Results (Stage 1): $PASS passed, $FAIL failed"
+    [ "$FAIL" -eq 0 ]
+    exit
+fi
 
 # --- Three known-good fixtures (one per planted bug, exact line) ---
 

@@ -1,0 +1,15 @@
+{
+  "stage": "stage1",
+  "bugs": [
+    {"id": "S1-CMDINJ-001", "class": "command_injection", "file": "cmd_exec.rs", "line": 12, "line_tolerance": 2, "signature": "format!(\"ls -la {}\"", "severity": "high", "verifier_test": "test_cmd_inj_001"},
+    {"id": "S1-CMDINJ-002", "class": "command_injection", "file": "cmd_exec.rs", "line": 21, "line_tolerance": 2, "signature": ".args(parts)", "severity": "high", "verifier_test": "test_cmd_inj_002"},
+    {"id": "S1-CMDINJ-003", "class": "command_injection", "file": "cmd_exec.rs", "line": 28, "line_tolerance": 2, "signature": "Command::new(bin)", "severity": "high", "verifier_test": "test_cmd_inj_003"},
+    {"id": "S1-CMDINJ-004", "class": "command_injection", "file": "cmd_exec.rs", "line": 35, "line_tolerance": 2, "signature": ".unwrap_or(raw.to_string())", "severity": "medium", "verifier_test": "test_cmd_inj_004"},
+    {"id": "S1-PATHTRV-001", "class": "path_traversal", "file": "path_io.rs", "line": 13, "line_tolerance": 2, "signature": "base.push(name)", "severity": "high", "verifier_test": "test_path_trv_001"},
+    {"id": "S1-PATHTRV-002", "class": "path_traversal", "file": "path_io.rs", "line": 20, "line_tolerance": 2, "signature": "fs::read(path)", "severity": "high", "verifier_test": "test_path_trv_002"},
+    {"id": "S1-PATHTRV-003", "class": "path_traversal", "file": "path_io.rs", "line": 27, "line_tolerance": 2, "signature": ".unwrap_or_else(|_| PathBuf::from(rel))", "severity": "medium", "verifier_test": "test_path_trv_003"},
+    {"id": "S1-FMTSTR-001", "class": "format_string", "file": "fmt_str.rs", "line": 16, "line_tolerance": 2, "signature": "write!(out, \"{}\", tmpl)", "severity": "medium", "verifier_test": "test_fmt_str_001"},
+    {"id": "S1-FMTSTR-002", "class": "format_string", "file": "fmt_str.rs", "line": 24, "line_tolerance": 2, "signature": "println!(\"{}\", banner)", "severity": "low", "verifier_test": "test_fmt_str_002"},
+    {"id": "S1-FMTSTR-003", "class": "format_string", "file": "fmt_str.rs", "line": 36, "line_tolerance": 2, "signature": "format!(\"parse failed: {}\", raw)", "severity": "medium", "verifier_test": "test_fmt_str_003"}
+  ]
+}
