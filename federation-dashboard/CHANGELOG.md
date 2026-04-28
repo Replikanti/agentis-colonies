@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **dashboard**: detect "orphan" sidecars — sidecar process is alive (recent ticks in `auto-promote.log` / `cost-cap.log`) but the install file (`.auto-promote-install.toml` / `.cost-cap.toml`) is missing on disk. Per-sidecar pill renders `orphan` (orange) instead of `not installed`; age column shows `Nm ago (install file missing)`; restart button stays disabled with a tooltip pointing at re-running `install.sh §7`. Federation health banner stays HEALTHY (the loop is scheduling) but adds a "sidecar running but install file missing" hint to the detail line. Detection threshold is 4× the production default interval (7200s). New collector field `data.sidecars[].running_orphan` and new enum value `data.sidecars[].status === 'orphan'`. ([#378](https://github.com/Replikanti/agentis-colonies/issues/378))
+
 ### Changed
 
 - **dashboard**: Promotion Progress panel is now collapsible (default collapsed) with a federation-wide summary line (ready / close / not yet); contrast on tier bars and limiting-prereq partial bars meets WCAG-AA via the `pickTextColor` helper; Promote Candidates list capped at top 5 with a `+N more` hint pointing operators at the Agents table for the full sort. Per-Agent Log Tail moved from Recovery to Logs & Events alongside the Event Timeline. ([#369](https://github.com/Replikanti/agentis-colonies/issues/369))
