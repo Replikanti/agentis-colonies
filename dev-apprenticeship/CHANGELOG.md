@@ -15,6 +15,27 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Added
+
+- Multi-repo schema (#316 M1): a colony's `[forge.github]` may now be repeated as
+  array-of-tables `[[forge.github]]`. Each entry has its own `owner / repo / token /
+  url / me`. Single-block `[forge.github]` continues to work unchanged in this
+  release. Per-repo runtime + per-repo confidence + per-repo dashboard tiles ship
+  in follow-up PRs M2-M5; M6 retires the single-block form (MAJOR, v2.0.0).
+- `tools/parse-toml.sh` grows three entrypoints: `parse_toml_array_count`,
+  `parse_toml_array_get`, `parse_toml_array_keys` (delegates to the existing
+  `parse-toml-secret.py` helper, no new dependencies).
+- `tools/migrate-to-multi-repo.sh` rewrites a legacy single `[forge.github]`
+  block to a single-entry `[[forge.github]]` array. Idempotent. Preserves
+  operator hand-edits.
+
+### Deprecated
+
+- Single-table `[forge.github]` (and by symmetry `[forge.gitlab]`). The form
+  remains valid throughout the v1.x line; M6 (#316, scheduled v2.0.0) retires
+  it. Run `tools/migrate-to-multi-repo.sh <colony.toml>` to migrate ahead of
+  the cutover.
+
 ## [1.3.0] — 2026-04-26
 
 LLM cost-cap and per-colony LLM-backend wiring continue maturing. New
