@@ -1,0 +1,123 @@
+// hunter.ag -- Tribe Gamma hunter: looks for command-injection,
+// path-traversal, and format-string bugs in the Stage 1 synthetic Rust
+// targets via an error-path data-flow heuristic.
+//
+// Stage 1 M1 (#364) infrastructure: the hunter ticks at 60s, reads the
+// checked-in target, asks the LLM for one structured finding (now
+// including a `class` field), and (at propose tier or higher) verifies
+// it against the deterministic bugs.json manifest. No replication, no
+// asymmetric reward, no tribe death — those land in M2/M3.
+//
+// Run as daemon: agentis daemon agents/hunter.ag --colony tribe-gamma
+// Requires: exec capability, TARGET_DIR + VERIFIER_PATH env vars (set by
+// scripts/start-colony.sh).
+
+cb 800;
+
+type Finding {
+    line: int,
+    severity: string,
+    rationale: string,
+    signature_hint: string,
+    class: string
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("hunter:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    };
+    return 0.0;
+}
+
+fn tick(reason: string) -> void {
+    let _ = reason;
+    let conf = get_confidence();
+    print("[hunter] tick conf=", conf);
+
+    // Read the synthetic target once per tick. Stage 1 hunter scans the
+    // first stage-1 file by default; M2/M3 will rotate across all three
+    // class-shard files (cmd_exec.rs, path_io.rs, fmt_str.rs).
+    let src = try {
+        exec sh "cat $TARGET_DIR/cmd_exec.rs";
+    } catch e {
+        print("[hunter] target read failed:", e);
+        "";
+    };
+
+    if len(src) < 10 {
+        let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_e) > 0 {
+            memo_write("hunter:last_check", now_e);
+        };
+        return;
+    };
+
+    // Tribe-gamma seed prompt: error-path data-flow heuristic. Plausibly
+    // equally good as tribe-alpha's format!()-pattern prompt and
+    // tribe-beta's source-to-sink prompt; the calibration check (M3)
+    // reruns the experiment with prompts swapped between tribes if TP
+    // rates differ by >2x.
+    let finding = prompt(
+        "Look for error-path data flow: places where a value derived from external input (function arg, env var, file content) reaches a Command, sh, fs, or format!/println! sink along an error-handling branch (Result::unwrap_or, ? after a fallible parse, .ok().unwrap_or). Suspect that the error path drops sanitisation. Return JSON: line (int, 1-indexed source line of the suspect call), severity (string, low|medium|high), rationale (string, one sentence), signature_hint (string, a short literal substring grep can find on that line), class (string, one of: command_injection, path_traversal, format_string).",
+        src
+    ) -> Finding;
+
+    let my_tier = tier("hunter");
+    if my_tier == "autonomous" {
+        // Stage 1 M1 has no autonomous path — collapse to propose semantics.
+        // Reserved for Stage 2+ when verified findings might open issues.
+        learn("hunt", "line " + to_string(finding.line), finding.rationale, "partial", ["acted", "tribes-bench"]);
+    } else {
+        if my_tier == "review-gated" {
+            // No review-gated draft target in Stage 1 M1 — same fall-through.
+            learn("hunt", "line " + to_string(finding.line), finding.rationale, "partial", ["review-gated", "tribes-bench"]);
+        } else {
+            if my_tier == "propose" {
+                // The Stage 1 hot path: emit the finding on the bus,
+                // then run the deterministic verifier and learn the
+                // verdict.
+                emit("tribe-gamma:finding", finding);
+
+                // The verifier reads {"line": int, "class": string} on
+                // stdin and emits {"verified": bool, "bug_id":
+                // string|null} on stdout. The rationale is intentionally
+                // not piped through — the verifier classifies on (line,
+                // signature, class) only, and round-tripping
+                // LLM-tainted text through the JSON-on-stdin channel
+                // would force shell-vs-JSON quote interleaving with no
+                // benefit.
+                let finding_json = "{\"line\": " + to_string(finding.line) + ", \"class\": \"" + finding.class + "\"}";
+                let verify_cmd = "printf '%s' " + shell_escape(finding_json) + " | bash \"$VERIFIER_PATH\"";
+                let verdict_raw = try {
+                    exec sh verify_cmd;
+                } catch e {
+                    print("[hunter] verifier call failed:", e);
+                    "";
+                };
+
+                // Extract verdict via json_get. A miss returns Void
+                // → "void" (str), so the substring check below is
+                // safe on every failure mode.
+                let verified_str = to_string(json_get(verdict_raw, "verified"));
+                let bug_id = to_string(json_get(verdict_raw, "bug_id"));
+                if verified_str == "true" {
+                    print("[hunter] verified ", bug_id, " at line ", finding.line);
+                    learn("hunt", "line " + to_string(finding.line), bug_id, "success", ["acted", "tribes-bench"]);
+                } else {
+                    print("[hunter] false positive at line ", finding.line);
+                    learn("hunt", "line " + to_string(finding.line), finding.rationale, "failure", ["false-positive", "tribes-bench"]);
+                };
+            } else {
+                // shadow / dormant: observe-only.
+                print("[hunter] observing (tier:", my_tier, ") line=", finding.line);
+                learn("hunt", "line " + to_string(finding.line), finding.rationale, "partial", ["observed", "tribes-bench"]);
+            };
+        };
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("hunter:last_check", now);
+    };
+}

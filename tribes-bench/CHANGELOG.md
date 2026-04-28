@@ -16,6 +16,39 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **Stage 1 infrastructure** ([#364](https://github.com/Replikanti/agentis-colonies/issues/364), M1).
+  - `tribe-gamma/` colony — third seed tribe with an error-path
+    data-flow seed prompt (orthogonal to tribe-alpha's `format!()`-pattern
+    heuristic and tribe-beta's source-to-sink heuristic).
+  - `targets/stage1/{cmd_exec,path_io,fmt_str}.rs` — three new synthetic
+    Rust files, ~450 LOC total, with 10 planted bugs across three CWE
+    classes (CMD-INJ, PATH-TRAV, FMT-STR). Each file carries the
+    `TRIBES-BENCH STAGE 1 PLANTED-BUG TARGET. INTENTIONALLY INSECURE.
+    NEVER COMPILE INTO PRODUCTION.` header banner.
+  - `targets/stage1/bugs.json` — manifest with `class` field. Stage 1
+    standardises on the underscore convention (`command_injection`,
+    `path_traversal`, `format_string`) matching the bug-ID convention.
+    Stage 0's `bugs.json` keeps its hyphen variant (`command-injection`)
+    untouched — they never collide because Stage 0 never sends `class`
+    on the wire.
+  - `tools/verify-finding.sh` extended with optional `class` dispatch
+    (back-compat: empty `class` keeps Stage 0 behaviour). Adds
+    `--help`, `--class`, `--bug-id` flags for Stage 1 smoke testing.
+  - `tools/test-verify-finding.sh` `STAGE1=1` mode adds 6 new fixtures
+    (3 known-good + 3 known-bad). Default mode (Stage 0) unchanged.
+  - `tools/analyse-stage1.py` produces a 10-column telemetry CSV
+    (Stage 0 columns + `bug_class`, `is_first_finder`, `tribe_size`).
+    `is_first_finder` and `tribe_size` are forward-compat placeholders
+    (always 0 / 1 in M1; populated in M2 and M3 respectively). The
+    schema stability avoids a migration when M2/M3 land.
+  - `start-federation.sh` `COLONIES=` array gains `tribe-gamma`; banner
+    is now stage-agnostic.
+  - `install.sh` copy-loop gains `tribe-gamma`.
+  - `BUNDLE.manifest` lists tribe-gamma's surface alongside the other
+    two tribes.
+  - Stage 0 surface (`targets/stage0/`, `tools/run-stage0.sh`,
+    `tools/analyse-stage0.py`, `tribe-alpha/`, `tribe-beta/`) untouched.
+    Stage 0 reruns continue to pass.
 - **Non-forge marker `forge.type = "none"`** ([#373](https://github.com/Replikanti/agentis-colonies/issues/373)).
   Both seed tribes (`tribe-alpha`, `tribe-beta`) now declare
   `[forge].type = "none"` in `colony.example.toml`. The previous

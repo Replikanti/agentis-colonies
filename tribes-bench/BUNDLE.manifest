@@ -38,3 +38,8 @@ tribes-bench/tribe-beta/README.md
 tribes-bench/tribe-beta/agents/
 tribes-bench/tribe-beta/config/colony.example.toml
 tribes-bench/tribe-beta/scripts/
+
+tribes-bench/tribe-gamma/README.md
+tribes-bench/tribe-gamma/agents/
+tribes-bench/tribe-gamma/config/colony.example.toml
+tribes-bench/tribe-gamma/scripts/

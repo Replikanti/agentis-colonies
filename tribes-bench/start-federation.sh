@@ -1,10 +1,15 @@
 #!/bin/bash
-# start-federation.sh — Start both Stage 0 tribes (#363).
+# start-federation.sh — Start the Tribes Bench federation tribes.
 #
-# Launches tribe-alpha and tribe-beta in parallel by invoking each
-# colony's start-colony.sh. Stage 0 has no auto-promote sidecar, no
-# cost-cap sidecar, no dashboard auto-launch. ADR-0003 expects the
-# script to launch the federation and wait — that is all this does.
+# Launches every tribe in COLONIES in parallel by invoking each colony's
+# start-colony.sh. The bench has no auto-promote sidecar, no cost-cap
+# sidecar, no dashboard auto-launch. ADR-0003 expects the script to
+# launch the federation and wait — that is all this does.
+#
+# Stage 0 (#363) shipped tribe-alpha + tribe-beta; Stage 1 M1 (#364)
+# adds tribe-gamma. The default target stays targets/stage0/ (Stage 0
+# back-compat); set TARGET_DIR/BUGS_MANIFEST in the env to point a run
+# at targets/stage1/.
 #
 # Usage:
 #   ./start-federation.sh [path/to/federation-dir]
@@ -16,11 +21,11 @@ SCRIPT_PATH="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))'
 SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 FED_DIR="${1:-$SCRIPT_DIR}"
 
-COLONIES=(tribe-alpha tribe-beta)
+COLONIES=(tribe-alpha tribe-beta tribe-gamma)
 
 echo ""
-echo "Tribes Bench Federation (Stage 0)"
-echo "================================="
+echo "Tribes Bench Federation"
+echo "======================="
 echo ""
 
 # Pre-flight: every tribe must have its colony.toml in place.
