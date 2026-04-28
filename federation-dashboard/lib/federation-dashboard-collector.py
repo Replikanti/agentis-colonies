@@ -553,9 +553,17 @@ for d in decisions:
 #                                 start-federation.sh §auto-promote scheduler).
 # When no install file exists we emit installed=false and the banner falls
 # back to daemon-liveness only. No sidecar running is not itself DEGRADED.
+#
+# Orphan detection (#378): when the install file is missing we have no
+# operator-set interval_s to compare against, so we infer "still running"
+# from a recent log tick using 4× the production default of 1800s baked
+# into install.sh §7. 4× matches the `down` cutoff in _sidecar_status()
+# below — keeps the orphan liveness ceiling identical to a healthy install.
+ORPHAN_INFER_S = 4 * 1800
 sidecar = {'installed': False, 'enabled': False, 'interval_s': None,
            'last_tick_ts': None, 'log_path': None,
-           'started_at_ts': None, 'in_startup_grace': False}
+           'started_at_ts': None, 'in_startup_grace': False,
+           'running_orphan': False}
 install_file = os.path.join(fed_dir, '.auto-promote-install.toml')
 if os.path.isfile(install_file):
     sidecar['installed'] = True
@@ -610,6 +618,14 @@ if started_at_ts is not None:
         sidecar['in_startup_grace'] = (
             (now_ts - started_at_ts) < (sidecar['interval_s'] + 120)
         )
+
+# Orphan check (#378): install file gone but a recent log tick proves the
+# loop is still running. Only meaningful when last_tick_ts is fresher than
+# ORPHAN_INFER_S — older ticks resolve to plain `not-installed`.
+if not sidecar['installed'] and sidecar['last_tick_ts'] is not None:
+    now_ts_orphan = int(time.time())
+    if (now_ts_orphan - sidecar['last_tick_ts']) < ORPHAN_INFER_S:
+        sidecar['running_orphan'] = True
 
 # --- LLM Cost telemetry (#311 PR B) ---
 # Reads the per-agent spend log written by agentis-core (#311 PR A, agentis
@@ -1403,6 +1419,7 @@ cost_cap = {
     'last_tick_ts': None,
     'started_at_ts': None,
     'in_startup_grace': False,
+    'running_orphan': False,
     'on_breach': None,
 }
 cost_cap_install = os.path.join(fed_dir, '.cost-cap.toml')
@@ -1497,6 +1514,12 @@ if (cost_cap['started_at_ts'] is not None and cost_cap_interval is not None
         (now_ts - cost_cap['started_at_ts']) < (cost_cap_interval + 120)
     )
 
+# Orphan check (#378), parallel to the auto-promote path above.
+if not cost_cap['installed'] and cost_cap['last_tick_ts'] is not None:
+    now_ts_orphan = int(time.time())
+    if (now_ts_orphan - cost_cap['last_tick_ts']) < ORPHAN_INFER_S:
+        cost_cap['running_orphan'] = True
+
 # Auto-detection warning: cost_source unknown rate above 50% suggests
 # operator should switch to flat mode. Surface in the JSON so the
 # dashboard tile can render a hint badge.
@@ -1518,7 +1541,13 @@ def _sidecar_status(installed, enabled, in_startup_grace, last_tick_ts,
                    interval_s, now_ts):
     """Reduce sidecar liveness fields to a single status enum the UI uses
     for the per-row pill colour."""
+    # Orphan check must run before the `not-installed` short-circuit (#378):
+    # a running loop without an install file resolves to `orphan`, not the
+    # bare `not-installed` label that misleads the operator into thinking
+    # the sidecar is dead.
     if not installed:
+        if last_tick_ts is not None and (now_ts - last_tick_ts) < ORPHAN_INFER_S:
+            return 'orphan'
         return 'not-installed'
     if not enabled:
         return 'disabled'
@@ -1545,6 +1574,7 @@ sidecars = [
         'last_tick_ts': sidecar.get('last_tick_ts'),
         'started_at_ts': sidecar.get('started_at_ts'),
         'in_startup_grace': sidecar.get('in_startup_grace', False),
+        'running_orphan': sidecar.get('running_orphan', False),
         'status': _sidecar_status(
             sidecar.get('installed', False),
             sidecar.get('enabled', False),
@@ -1562,6 +1592,7 @@ sidecars = [
         'last_tick_ts': cost_cap.get('last_tick_ts'),
         'started_at_ts': cost_cap.get('started_at_ts'),
         'in_startup_grace': cost_cap.get('in_startup_grace', False),
+        'running_orphan': cost_cap.get('running_orphan', False),
         'status': _sidecar_status(
             cost_cap.get('installed', False),
             cost_cap.get('enabled', False),

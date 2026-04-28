@@ -859,6 +859,7 @@
   .sidecar-pill.down     { border: 1px solid var(--red); color: var(--red); }
   .sidecar-pill.disabled { border: 1px solid var(--muted); color: var(--muted); }
   .sidecar-pill.not-installed { border: 1px solid var(--muted); color: var(--muted); }
+  .sidecar-pill.orphan { border: 1px solid var(--orange); color: var(--orange); }
   .sidecar-restart {
     background: transparent;
     border: 1px solid var(--border);
@@ -2061,6 +2062,11 @@ function renderFedHealthBanner(data) {
       parts.push('sidecar installed but interval_s misconfigured');
     } else if (sidecar.installed && !sidecar.enabled) {
       parts.push('sidecar installed but disabled');
+    } else if (sidecar.running_orphan) {
+      // #378: orphan does NOT trigger DEGRADED — the loop is scheduling.
+      // Surface the gap inside the healthy detail line so the operator
+      // still sees the install record is missing.
+      parts.push('sidecar running but install file missing');
     } else if (!sidecar.installed) {
       parts.push('sidecar not installed');
     }
@@ -2424,13 +2430,24 @@ function renderSidecarStatus(data) {
     } else {
       ageTxt = 'never';
     }
+    // #378: orphan rows already have a tick-age (running_orphan implies
+    // last_tick_ts != null), so suffix the missing-install hint.
+    if (s.running_orphan) ageTxt = ageTxt + ' (install file missing)';
     const restartDisabled = !s.installed || !s.enabled;
+    // #378: restart is the wrong recovery for an orphan — the loop is
+    // fine, the install file is what's missing. Keep the button disabled
+    // and surface the action via tooltip.
+    const restartTitle = s.running_orphan
+      ? 'Sidecar is running but install file is missing. Re-run dev-apprenticeship/install.sh §7 to restore the install record.'
+      : '';
     html += '<div class="sidecar-row" data-sidecar="' + esc(name) + '">';
     html += '<span class="sidecar-name">' + esc(name) + '</span>';
     html += '<span class="sidecar-age">' + esc(ageTxt) + '</span>';
     html += '<span class="sidecar-pill ' + esc(status) + '">' + esc(status) + '</span>';
     html += '<button class="sidecar-restart" onclick="restartSidecar(\'' + esc(name) + '\')"' +
-            (restartDisabled ? ' disabled' : '') + '>restart</button>';
+            (restartDisabled ? ' disabled' : '') +
+            (restartTitle ? ' title="' + esc(restartTitle) + '"' : '') +
+            '>restart</button>';
     html += '</div>';
   });
   el.innerHTML = html;
@@ -3874,9 +3891,14 @@ function renderStatusVerdict(data) {
     } else if (!s.installed) ageTxt = 'not installed';
     else if (!s.enabled) ageTxt = 'disabled';
     else ageTxt = 'never';
+    // #378: orphan rows already have a tick-age (running_orphan requires
+    // last_tick_ts != null), so suffix the missing-install hint instead of
+    // overwriting.
+    if (s.running_orphan) ageTxt = ageTxt + ' (install file missing)';
     let pillCls = 'muted';
     const status = (s.status || '').toLowerCase();
     if (status === 'healthy') pillCls = 'ok';
+    else if (status === 'orphan') pillCls = 'warn';
     else if (status === 'degraded' || status === 'silent') pillCls = 'warn';
     else if (status === 'down') pillCls = 'crit';
     pillsHtml += '<span class="status-pill ' + pillCls + '">' + esc(name) +
