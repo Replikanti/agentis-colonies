@@ -41,16 +41,18 @@ is asserted until multi-version CI is in place.
   serialisation. The existing `dev-apprenticeship/.agentis/config`
   `exec.env_passthrough = ...,GITHUB_*` glob carries `GITHUB_REPOS_JSON`
   through to `exec sh` children for free.
-- Multi-repo runtime (#316 M3): `forge-api.sh` accepts `--repo <owner/repo>` flag
+- Multi-repo runtime (#316 M3a): `forge-api.sh` accepts `--repo <owner/repo>` flag
   resolving the matching `[[forge.github]]` entry's token/url/me from
-  `GITHUB_REPOS_JSON`. All 21 agents iterate per-repo on each tick;
-  experience rows tagged `repo:<owner>/<name>`; per-repo state memos use
-  `<agent>:<owner>/<repo>:<suffix>` keys. Single-block `[forge.github]`
-  configs continue to work byte-identically — same call-graph, same
-  experience rows, same memo keys, same `.ag` source. `tools/iter-repos.sh`
-  is the per-tick fan-out helper. ADR-0002 grows a "Multi-repo dispatch"
-  subsection. Per-repo confidence keys ship in M4; per-repo trigger label
-  vocabulary in M5.
+  `GITHUB_REPOS_JSON`. The 4 triage agents now iterate per-repo on each tick
+  (M3b will fan out to the remaining 17 agents); experience rows tagged
+  `repo:<owner>/<name>`; per-repo state memos use
+  `<owner>__<repo>:<agent>:<suffix>` keys (double-underscore separator
+  avoids `/` in memo keys, which the runtime treats as a path component).
+  Single-block `[forge.github]` configs continue to work byte-identically —
+  same call-graph, same experience rows, same memo keys, same `.ag` source.
+  `tools/iter-repos.sh` is the per-tick fan-out helper. ADR-0002 grows a
+  "Multi-repo dispatch" subsection. Per-repo confidence keys ship in M4;
+  per-repo trigger label vocabulary in M5.
 
 ### Deprecated
 

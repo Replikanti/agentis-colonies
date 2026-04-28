@@ -484,9 +484,11 @@ own row history. Per-repo confidence keys are explicitly deferred to
 M4.
 
 **Memo scoping.** Per-repo state memos use the
-`<owner>/<repo>:<suffix>` prefix (e.g.
-`acme/frontend:labeler:autonomous_verdict_index`). The unscoped form
-remains valid throughout the v1.x line for back-compat. M4 lands the
+`<owner>__<repo>:<suffix>` prefix (e.g.
+`acme__frontend:labeler:autonomous_verdict_index`). The double-underscore
+separator between owner and repo avoids `/` in memo keys (which the
+runtime treats as a path component). The unscoped form remains valid
+throughout the v1.x line for back-compat. M4 lands the
 fallback-keying scheme that lets `tier()` for agent X on repo R look
 for `X:R:confidence` first then fall back to `X:confidence`.
 
