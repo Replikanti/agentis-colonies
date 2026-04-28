@@ -28,6 +28,19 @@ is asserted until multi-version CI is in place.
 - `tools/migrate-to-multi-repo.sh` rewrites a legacy single `[forge.github]`
   block to a single-entry `[[forge.github]]` array. Idempotent. Preserves
   operator hand-edits.
+- Multi-repo runtime wiring (#316 M2): when a colony.toml uses the
+  `[[forge.github]]` array form, all 5 `dev-apprenticeship/*/scripts/
+  start-colony.sh` scripts now export `GITHUB_REPOS_JSON` — a JSON array
+  carrying every entry's resolved `{url, owner, repo, token, me}` —
+  alongside the existing `GITHUB_OWNER`/`GITHUB_REPO`/`GITHUB_TOKEN`/
+  `GITHUB_URL`/`GITHUB_ME` env vars. Back-compat: single-block configs
+  continue to set only the latter; multi-block configs additionally set
+  the back-compat vars from entry [0] so M2-only deployments keep
+  working against the first repo until M3 lands per-repo iteration in
+  agents. `secret://` URI tokens resolve to plaintext before
+  serialisation. The existing `dev-apprenticeship/.agentis/config`
+  `exec.env_passthrough = ...,GITHUB_*` glob carries `GITHUB_REPOS_JSON`
+  through to `exec sh` children for free.
 
 ### Deprecated
 
