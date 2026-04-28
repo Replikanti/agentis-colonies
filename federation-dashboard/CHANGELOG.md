@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-04-29
+
+5-tab Status redesign + Promotion Progress collapsible + orphan sidecar
+detection. The Status tab swaps the prior 21-cell pulse-grid + Confidence
+Trend + standalone Promote Candidates / Promotion Ladder cards for a
+sortable per-agent compact table (state-dot / name / colony / conf /
+next / ETA / limiting prereq / last error, sortable headers persisted in
+`localStorage`), a 5-tile stat row including federation-wide cumulative
+`data.experience_counts.total`, sidecar pills, and a 2-column bottom row
+pairing the Experience Growth chart with a collapsible **Promotion
+Progress** panel (`<details>` default collapsed; expanded body stacks
+Phase Readiness above a top-5 Promote Candidates list). Logs & Events
+becomes its own tab hosting the federation-wide Event Timeline and the
+Per-Agent Log Tail (relocated from Recovery). Tier and limiting-prereq
+bar contrast meets WCAG-AA via `pickTextColor()`. New `orphan` enum on
+per-sidecar pills (orange) — sidecar process is alive (recent ticks in
+`auto-promote.log` / `cost-cap.log`) but the install file
+(`.auto-promote-install.toml` / `.cost-cap.toml`) is missing on disk;
+restart button stays disabled with a tooltip pointing at re-running
+`install.sh §7`; federation health banner stays HEALTHY (the loop is
+scheduling) and adds a "sidecar running but install file missing" hint
+to the detail line.
+
+Schema additions: `data.sidecars[].running_orphan` boolean and `'orphan'`
+value in the `data.sidecars[].status` enum. Detection threshold for
+orphan inference is 4× the production default interval (7200s).
+
+**Recommends:** dev-apprenticeship >= **1.4.10** (orphan detection reads
+the same sidecar liveness files the Sidecars listing already consumes;
+no new runtime floor beyond v0.6.0).
+
 ### Added
 
 - **dashboard**: detect "orphan" sidecars — sidecar process is alive (recent ticks in `auto-promote.log` / `cost-cap.log`) but the install file (`.auto-promote-install.toml` / `.cost-cap.toml`) is missing on disk. Per-sidecar pill renders `orphan` (orange) instead of `not installed`; age column shows `Nm ago (install file missing)`; restart button stays disabled with a tooltip pointing at re-running `install.sh §7`. Federation health banner stays HEALTHY (the loop is scheduling) but adds a "sidecar running but install file missing" hint to the detail line. Detection threshold is 4× the production default interval (7200s). New collector field `data.sidecars[].running_orphan` and new enum value `data.sidecars[].status === 'orphan'`. ([#378](https://github.com/Replikanti/agentis-colonies/issues/378))
@@ -731,7 +762,11 @@ First release as a standalone component. Code extracted from
 For history prior to extraction, see
 `git log -- tools/federation-dashboard*`.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.3.0...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.7.0...HEAD
+[0.7.0]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.6.0...federation-dashboard-v0.7.0
+[0.6.0]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.5.0...federation-dashboard-v0.6.0
+[0.5.0]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.4.0...federation-dashboard-v0.5.0
+[0.4.0]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.3.0...federation-dashboard-v0.4.0
 [0.3.0]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.2.0...federation-dashboard-v0.3.0
 [0.2.0]: https://github.com/Replikanti/agentis-colonies/releases/tag/federation-dashboard-v0.2.0
 [0.1.0]: https://github.com/Replikanti/agentis-colonies/releases/tag/federation-dashboard-v0.1.0
