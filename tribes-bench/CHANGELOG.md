@@ -16,6 +16,20 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **Non-forge marker `forge.type = "none"`** ([#373](https://github.com/Replikanti/agentis-colonies/issues/373)).
+  Both seed tribes (`tribe-alpha`, `tribe-beta`) now declare
+  `[forge].type = "none"` in `colony.example.toml`. The previous
+  `[forge.github]` stub block was dropped. `colony-lint` recognises the
+  marker as the explicit non-forge opt-out: the `[forge]` section stays
+  required (post-#256 contract), but no backend sub-block is needed and
+  any present sub-block is ignored. ADR-0002 documents the marker;
+  ADR-0003 remains normative for federations that do not talk to a forge.
+- **Tribe READMEs corrected** ([#373](https://github.com/Replikanti/agentis-colonies/issues/373)).
+  The misleading "Configure your forge or data-source connection in
+  `colony.toml`" Setup step in `tribe-alpha/README.md` and
+  `tribe-beta/README.md` was replaced with the actual env-var override
+  surface (`TARGET_DIR`, `BUGS_MANIFEST`, `VERIFIER_PATH`) that
+  `start-colony.sh` consumes. Closes the #363 QA finding #1.
 - **Stage 0 wiring test** ([#363](https://github.com/Replikanti/agentis-colonies/issues/363)).
   Two seed tribes (`tribe-alpha`, `tribe-beta`), each with a single
   `hunter` agent. Plus:

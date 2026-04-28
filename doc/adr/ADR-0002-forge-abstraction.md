@@ -104,6 +104,20 @@ authoritative. Operators on pre-#256 configs must move their
 `[forge].type = "gitlab"` — the post-PR-7 start-colony.sh rejects
 configs that lack `[forge]`.
 
+#### Non-forge federations (`forge.type = "none"`)
+
+[ADR-0003](./ADR-0003-federation-portability-contract.md) explicitly
+allows federations that do not talk to a forge ("a federation that does
+not talk to a forge has no obligation to that ADR"). Since #373, the
+post-#256 `[forge]`-required contract enforced by `colony-lint`
+recognises `[forge].type = "none"` as the explicit non-forge marker:
+the `[forge]` block stays present (so the schema check still passes)
+but no `[forge.gitlab]` / `[forge.github]` sub-block is required, and
+any backend-specific keys are ignored. This ADR remains normative for
+every forge-bound colony; non-forge colonies opt out of it
+block-and-tackle. `tribes-bench/tribe-alpha` and `tribes-bench/tribe-beta`
+are the first consumers.
+
 ### Normalized shape contract (normative)
 
 Every subcommand emits a fixed JSON shape. The following table is the
