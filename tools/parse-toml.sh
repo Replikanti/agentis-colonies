@@ -31,3 +31,40 @@ parse_toml() {
     fi
     python3 "$_PARSE_TOML_DIR/parse-toml-secret.py" "$CONFIG" "$1" "$2"
 }
+
+# parse_toml_array_count SECTION
+# Echo the number of `[[SECTION]]` array-of-tables entries in $CONFIG.
+# Returns `0` (and exit 0) on missing — compatible with legacy single-table
+# configs that have zero `[[SECTION]]` entries. Added in #316 M1.
+parse_toml_array_count() {
+    if [ "$#" -ne 1 ]; then
+        echo "parse_toml_array_count: usage: parse_toml_array_count SECTION (got $# args)" >&2
+        return 2
+    fi
+    python3 "$_PARSE_TOML_DIR/parse-toml-secret.py" --array-count "$CONFIG" "$1"
+}
+
+# parse_toml_array_get SECTION IDX KEY
+# Echo the value of KEY in the IDX-th (0-indexed) `[[SECTION]]` entry.
+# Empty stdout when the index is out of range or the key is missing.
+# `secret://` URIs are resolved to plaintext before being printed
+# (mirrors `parse_toml`). Added in #316 M1.
+parse_toml_array_get() {
+    if [ "$#" -ne 3 ]; then
+        echo "parse_toml_array_get: usage: parse_toml_array_get SECTION IDX KEY (got $# args)" >&2
+        return 2
+    fi
+    python3 "$_PARSE_TOML_DIR/parse-toml-secret.py" --array-get "$CONFIG" "$1" "$2" "$3"
+}
+
+# parse_toml_array_keys SECTION IDX
+# Echo (newline-separated) the key names declared in the IDX-th
+# `[[SECTION]]` entry, in source order. Empty stdout when IDX is out of
+# range. Added in #316 M1.
+parse_toml_array_keys() {
+    if [ "$#" -ne 2 ]; then
+        echo "parse_toml_array_keys: usage: parse_toml_array_keys SECTION IDX (got $# args)" >&2
+        return 2
+    fi
+    python3 "$_PARSE_TOML_DIR/parse-toml-secret.py" --array-keys "$CONFIG" "$1" "$2"
+}
