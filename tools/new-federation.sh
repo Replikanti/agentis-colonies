@@ -7,14 +7,16 @@
 # start-colony.sh that already supports the --restart-agent and
 # --rate-limit-status flags consumed by federation-dashboard.
 #
-# Output passes `tools/colony-lint.sh` clean. The generated TOML carries a
-# forge=gitlab stub because colony-lint currently requires `[forge]` to be
-# present (post-#256 contract). Federations whose data source is not a forge
-# can keep the stub or remove it; the lint relaxation for non-forge
-# federations is in the #258 deferred bucket.
+# Output passes `tools/colony-lint.sh` clean. By default the generated TOML
+# carries a forge=gitlab stub. Pass `--no-forge` (#373) to scaffold a
+# non-forge federation: the generated `colony.example.toml` declares
+# `forge.type = "none"` and the generated `start-colony.sh` skips the
+# forge env-wiring block entirely. ADR-0002 remains normative for forge-bound
+# colonies; ADR-0003 covers the non-forge case.
 #
-# Usage: ./tools/new-federation.sh <federation-name> [<starter-colony-name>]
+# Usage: ./tools/new-federation.sh [--no-forge] <federation-name> [<starter-colony-name>]
 # Example: ./tools/new-federation.sh data-ops ingestion
+# Example: ./tools/new-federation.sh --no-forge metrics-bench ingestion
 
 set -euo pipefail
 
@@ -22,7 +24,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 usage() {
     cat <<EOF
-Usage: $0 <federation-name> [<starter-colony-name>]
+Usage: $0 [--no-forge] <federation-name> [<starter-colony-name>]
 
 Scaffolds a new federation under \$REPO_ROOT/<federation-name>/ with one
 starter colony. Output conforms to ADR-0003 and passes colony-lint.
@@ -30,9 +32,39 @@ starter colony. Output conforms to ADR-0003 and passes colony-lint.
 Arguments:
   <federation-name>        Lowercase alphanumeric with dashes. Required.
   <starter-colony-name>    Lowercase alphanumeric with dashes. Defaults to "core".
+
+Flags:
+  --no-forge               Scaffold a non-forge federation (#373). The generated
+                           colony.example.toml declares \`forge.type = "none"\`
+                           and start-colony.sh skips the forge env-wiring block.
 EOF
     exit 1
 }
+
+NO_FORGE=0
+POSITIONAL=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --no-forge)
+            NO_FORGE=1
+            shift
+            ;;
+        --)
+            shift
+            POSITIONAL+=("$@")
+            break
+            ;;
+        -*)
+            echo "Error: unknown flag: $1" >&2
+            usage
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            shift
+            ;;
+    esac
+done
+set -- "${POSITIONAL[@]}"
 
 [ $# -ge 1 ] || usage
 [ $# -le 2 ] || usage
@@ -232,20 +264,23 @@ cat > "$COL_PATH/README.md" <<EOF
    \`\`\`
 EOF
 
-cat > "$COL_PATH/config/colony.example.toml" <<EOF
-# $COL_PRETTY Colony Configuration
-#
-# Part of the $FED_PRETTY federation.
-# Copy to colony.toml and edit for your environment.
-
-[colony]
-name = "$COLONY"
-tick_interval_ms = 60000
-
+# Build the [forge] section once, depending on --no-forge. The two branches
+# are kept as standalone heredocs (no nesting) so bash 3.2 stays happy.
+if [ "$NO_FORGE" = "1" ]; then
+    forge_block="$(cat <<'FORGE_EOF'
+# Non-forge federation (#373, ADR-0003).
+# `forge.type = "none"` is the explicit opt-out: colony-lint enforces the
+# [forge] block presence but skips sub-block validation. Replace this
+# with a real [forge] block (see ADR-0002) if/when the federation grows
+# a forge dependency.
+[forge]
+type = "none"
+FORGE_EOF
+)"
+else
+    forge_block="$(cat <<'FORGE_EOF'
 # Forge configuration (post-#256, ADR-0002).
-# Set type to either "gitlab" or "github" and fill the matching block.
-# Federations whose data source is not a forge can keep this stub for
-# colony-lint compatibility (lint relaxation tracked in #258 deferred bucket).
+# Set type to "gitlab", "github", or "none" (non-forge federation, #373).
 [forge]
 type = "gitlab"
 
@@ -260,6 +295,21 @@ me = "your-username"
 # repo  = "your-repo"
 # token = "ghp_your-token-here"
 # me    = "your-username"
+FORGE_EOF
+)"
+fi
+
+cat > "$COL_PATH/config/colony.example.toml" <<EOF
+# $COL_PRETTY Colony Configuration
+#
+# Part of the $FED_PRETTY federation.
+# Copy to colony.toml and edit for your environment.
+
+[colony]
+name = "$COLONY"
+tick_interval_ms = 60000
+
+$forge_block
 
 [llm]
 # Only "backend" is read today. "cli" uses the agentis daemon default CLI adapter.
@@ -367,6 +417,7 @@ fi
 # shellcheck source=/dev/null
 . "$PARSE_TOML"
 
+# BEGIN FORGE_BLOCK
 # Forge env wiring (ADR-0002). Replace this block with whatever env vars
 # this colony's .ag agents consume via exec sh.
 FORGE_TYPE=$(parse_toml forge type)
@@ -408,6 +459,7 @@ esac
 
 export FORGE_TYPE
 export COLONY_DIR
+# END FORGE_BLOCK
 
 # TODO: list this colony's agent names here. Each must have a matching
 # <colony>/agents/<name>.ag file.
@@ -492,9 +544,62 @@ sed -i \
     -e "s/COLONY_NAME_PLACEHOLDER/$COLONY/g" \
     "$COL_PATH/scripts/start-colony.sh"
 
+# When --no-forge is set, swap the BEGIN FORGE_BLOCK..END FORGE_BLOCK
+# range for a non-forge no-op (mirroring tribes-bench/tribe-*/scripts/
+# start-colony.sh). Done with awk for portability across macOS bash 3.2.
+if [ "$NO_FORGE" = "1" ]; then
+    NF_TMP="$(mktemp)"
+    awk '
+        /^# BEGIN FORGE_BLOCK$/ {
+            print "# Non-forge federation (#373, ADR-0003). The colony.example.toml"
+            print "# declares forge.type = \"none\" so colony-lint accepts the config"
+            print "# without a [forge.gitlab] / [forge.github] sub-block; no agent"
+            print "# in this colony calls forge-api.sh. Replace TODO env vars below"
+            print "# with whatever your data source needs (data warehouse, helpdesk"
+            print "# API, on-disk corpus, …)."
+            print "# TODO: export DATA_SOURCE_URL / TOKEN / etc. for your .ag agents."
+            print "export COLONY_DIR"
+            skip = 1
+            next
+        }
+        /^# END FORGE_BLOCK$/ {
+            skip = 0
+            next
+        }
+        skip != 1 { print }
+    ' "$COL_PATH/scripts/start-colony.sh" > "$NF_TMP"
+    mv "$NF_TMP" "$COL_PATH/scripts/start-colony.sh"
+else
+    # Strip the marker comments — they are only meaningful to the scaffolder.
+    sed -i \
+        -e '/^# BEGIN FORGE_BLOCK$/d' \
+        -e '/^# END FORGE_BLOCK$/d' \
+        "$COL_PATH/scripts/start-colony.sh"
+fi
+
 chmod +x "$COL_PATH/scripts/start-colony.sh"
 
 # --- Print next steps ---
+
+if [ "$NO_FORGE" = "1" ]; then
+    config_step="Edit $COL_PATH/config/colony.example.toml — this federation was scaffolded
+     with --no-forge, so the [forge] block declares \`type = \"none\"\` (#373,
+     ADR-0003). Wire your real data source (data warehouse, helpdesk API,
+     on-disk corpus, …) by adding env vars consumed by your .ag agents via
+     exec sh; do NOT add [forge.gitlab] / [forge.github] sub-blocks unless
+     this federation grows a forge dependency."
+    script_step="Edit $COL_PATH/scripts/start-colony.sh — fill in the AGENTS=() array
+     and replace the placeholder \`export COLONY_DIR\` block with whatever
+     env vars your agents consume via exec sh. The forge env-wiring case
+     statement was omitted because of --no-forge."
+else
+    config_step="Edit $COL_PATH/config/colony.example.toml — adapt the [forge] block
+     (set type to \"gitlab\", \"github\", or \"none\" per #373 / ADR-0003)
+     and fill the matching sub-block."
+    script_step="Edit $COL_PATH/scripts/start-colony.sh — fill in the AGENTS=() array
+     and replace the forge env block with whatever env vars your agents
+     consume via exec sh."
+fi
 
 cat <<EOF
 
@@ -505,12 +610,8 @@ Next steps:
      federation's real domain identity.
   2. Edit $FED_PATH/install.sh — add prerequisite checks + credential prompts
      for your data source (forge, data warehouse, helpdesk API, …).
-  3. Edit $COL_PATH/config/colony.example.toml — adapt the [forge] block (or
-     replace it with your data-source config; the lint relaxation for
-     non-forge federations is in #258's deferred bucket).
-  4. Edit $COL_PATH/scripts/start-colony.sh — fill in the AGENTS=() array
-     and replace the forge env block with whatever env vars your agents
-     consume via exec sh.
+  3. $config_step
+  4. $script_step
   5. Author .ag agents under $COL_PATH/agents/. Tier-gate every external
      write per ADR-0001.
   6. Add '$FEDERATION' to the COMPONENTS array in tools/check-changelog.sh
