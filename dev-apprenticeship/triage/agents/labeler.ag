@@ -36,12 +36,49 @@ fn scope_for_author(author: string) -> string {
     return "team";
 }
 
-fn issues_cmd() -> string {
-    let ts = recall_latest("labeler:last_check");
+// #316 M3a: per-tick fan-out helpers. See router.ag for the full
+// rationale. Single-block configs collapse to owner=="" sentinel,
+// repo_arg/repo_tag return "", scoped_memo passes the suffix through —
+// the verdict memos and the experience tags stay byte-identical to
+// pre-M3 on the back-compat path.
+
+fn repo_arg(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return " --repo " + shell_escape(owner + "/" + repo);
+}
+
+fn repo_tag(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return "repo:" + owner + "/" + repo;
+}
+
+fn scoped_memo(owner: string, repo: string, suffix: string) -> string {
+    if len(owner) == 0 { return suffix; };
+    // `__` between owner and repo is the per-repo segment separator. The
+    // memo-key validator (agentis runtime) accepts only [A-Za-z0-9_:.-],
+    // so `/` (the natural GitHub spelling in repo_arg / repo_tag) is
+    // reserved for the experience-tag and CLI-flag surfaces; memo keys
+    // use the underscore form instead. The `:` after repo continues the
+    // existing `<agent>:<key>` convention so `<owner>__<repo>:<suffix>`
+    // sorts predictably alongside legacy unscoped keys.
+    return owner + "__" + repo + ":" + suffix;
+}
+
+fn repo_field(line: string, idx: int) -> string {
+    let cmd = "L=" + shell_escape(line) + " I=" + to_string(idx) +
+        " python3 -c 'import os; parts=os.environ[\"L\"].split(\"\t\"); i=int(os.environ[\"I\"]); print(parts[i] if 0<=i<len(parts) else \"\")'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+fn issues_cmd(owner: string, repo: string) -> string {
+    let ts = recall_latest(scoped_memo(owner, repo, "labeler:last_check"));
+    // colony-lint: safe-exec-concat
     if len(ts) > 0 {
-        return "$COLONY_DIR/scripts/forge-api.sh issues --since " + shell_escape(ts) + " --view labeler";
+        return "$COLONY_DIR/scripts/forge-api.sh issues --since " + shell_escape(ts) + " --view labeler" + repo_arg(owner, repo);
     };
-    return "$COLONY_DIR/scripts/forge-api.sh issues --view labeler";
+    // colony-lint: safe-exec-concat
+    return "$COLONY_DIR/scripts/forge-api.sh issues --view labeler" + repo_arg(owner, repo);
 }
 
 fn get_confidence() -> float {
@@ -123,10 +160,10 @@ fn apply_feedback(delta: float) -> void {
 // the three fields are ASCII-safe (epoch int, iid int, label names have
 // no quotes/newlines/backslashes in practice on GitLab) so naive
 // concatenation is sufficient and we skip a JSON encoder.
-fn record_label_verdict(issue_id: int, labels_csv: string) -> void {
+fn record_label_verdict(owner: string, repo: string, issue_id: int, labels_csv: string) -> void {
     let ts_raw = try { exec sh "date +%s"; } catch e { "0"; };
     let blob = "[" + ts_raw + "," + to_string(issue_id) + ",\"" + labels_csv + "\"]";
-    memo_write("labeler:pending_verdict", blob);
+    memo_write(scoped_memo(owner, repo, "labeler:pending_verdict"), blob);
     print("[labeler] verdict recorded: issue", issue_id, "suggested", labels_csv);
 }
 
@@ -141,20 +178,22 @@ fn verdict_age_seconds(blob: string) -> int {
 // did on GitLab. Returns early (leaves verdict pending) when no verdict
 // exists or the issue still has no labels (no signal yet). Clears the
 // verdict when scored or aged out (> 24h).
-fn evaluate_label_verdict() -> void {
-    let blob = recall_latest("labeler:pending_verdict");
+fn evaluate_label_verdict(owner: string, repo: string) -> void {
+    let key = scoped_memo(owner, repo, "labeler:pending_verdict");
+    let blob = recall_latest(key);
     if len(blob) < 3 {
         return;
     };
     let timeout_s = 86400;
     if verdict_age_seconds(blob) > timeout_s {
         print("[labeler] verdict aged out without signal");
-        memo_write("labeler:pending_verdict", "");
+        memo_write(key, "");
         return;
     };
     let issue_id = parse_int(to_string(json_get(blob, "[1]")));
     let suggested = to_string(json_get(blob, "[2]"));
-    let cur_cmd = "$COLONY_DIR/scripts/forge-api.sh get-issue " + to_string(issue_id) + " --view feedback-issue";
+    // colony-lint: safe-exec-concat
+    let cur_cmd = "$COLONY_DIR/scripts/forge-api.sh get-issue " + to_string(issue_id) + " --view feedback-issue" + repo_arg(owner, repo);
     let cur_raw = try { exec sh cur_cmd; } catch e { ""; };
     if len(cur_raw) < 3 {
         return;
@@ -182,15 +221,25 @@ fn evaluate_label_verdict() -> void {
     let cur_author = to_string(json_get(cur_raw, "author.username"));
     let scope = scope_for_author(cur_author);
     let outcome = signal_to_outcome(signal);
-    learn(
-        "label",
-        "issue " + to_string(issue_id) + " reality-check",
-        "suggested: " + suggested + " | signal: " + to_string(signal),
-        outcome,
-        [scope, "triage", "acted"]
-    );
+    if len(owner) > 0 {
+        learn(
+            "label",
+            "issue " + to_string(issue_id) + " reality-check",
+            "suggested: " + suggested + " | signal: " + to_string(signal),
+            outcome,
+            [scope, "triage", "acted", repo_tag(owner, repo)]
+        );
+    } else {
+        learn(
+            "label",
+            "issue " + to_string(issue_id) + " reality-check",
+            "suggested: " + suggested + " | signal: " + to_string(signal),
+            outcome,
+            [scope, "triage", "acted"]
+        );
+    };
     print("[labeler] reality-check: issue", issue_id, "signal", signal, "->", outcome);
-    memo_write("labeler:pending_verdict", "");
+    memo_write(key, "");
 }
 
 // #203: longer-horizon reality check for autonomous-tier writes.
@@ -210,7 +259,7 @@ fn evaluate_label_verdict() -> void {
 // emit further autonomous writes for other issues, so we need one
 // slot per iid, not the single-slot idiom the propose path uses.
 //
-// Memo schema:
+// Memo schema (per repo via scoped_memo):
 //   labeler:autonomous_verdict:<iid>  -> "[ts, iid, \"labels_csv\"]"
 //   labeler:autonomous_verdict_index  -> CSV of iids with pending blobs
 //
@@ -223,8 +272,9 @@ fn evaluate_label_verdict() -> void {
 // iid never appears twice. We store the freshest occurrence at the
 // tail (matches the "latest write wins" semantic for repeated writes
 // on the same issue).
-fn append_autonomous_index(iid: int) -> void {
-    let existing = recall_latest("labeler:autonomous_verdict_index");
+fn append_autonomous_index(owner: string, repo: string, iid: int) -> void {
+    let key = scoped_memo(owner, repo, "labeler:autonomous_verdict_index");
+    let existing = recall_latest(key);
     let iid_str = to_string(iid);
     let append_cmd = "EX=" + shell_escape(existing) + " N=" + shell_escape(iid_str) +
         " python3 -c 'import os; ex=os.environ[\"EX\"]; n=os.environ[\"N\"]; parts=[p for p in ex.split(\",\") if p.strip() and p.strip()!=n]; parts.append(n); print(\",\".join(parts))'";
@@ -236,7 +286,7 @@ fn append_autonomous_index(iid: int) -> void {
     // tolerates an already-present iid (the next successful scan
     // naturally normalizes a brief duplicate on the next tick).
     let next = try { exec sh append_cmd; } catch e { append_csv(existing, iid_str); };
-    memo_write("labeler:autonomous_verdict_index", next);
+    memo_write(key, next);
 }
 
 // Record a pending autonomous verdict for a specific iid. Called
@@ -246,11 +296,11 @@ fn append_autonomous_index(iid: int) -> void {
 // in the index; an `append_autonomous_index` failure means the blob
 // is unreachable from the scanner and gets GC'd on drift-cleanup when
 // it eventually expires.
-fn record_autonomous_verdict(issue_id: int, labels_csv: string) -> void {
+fn record_autonomous_verdict(owner: string, repo: string, issue_id: int, labels_csv: string) -> void {
     let ts_raw = try { exec sh "date +%s"; } catch e { "0"; };
     let blob = "[" + ts_raw + "," + to_string(issue_id) + ",\"" + labels_csv + "\"]";
-    memo_write("labeler:autonomous_verdict:" + to_string(issue_id), blob);
-    append_autonomous_index(issue_id);
+    memo_write(scoped_memo(owner, repo, "labeler:autonomous_verdict:" + to_string(issue_id)), blob);
+    append_autonomous_index(owner, repo, issue_id);
     print("[labeler] autonomous verdict recorded: issue", issue_id, "labels", labels_csv);
 }
 
@@ -259,8 +309,8 @@ fn record_autonomous_verdict(issue_id: int, labels_csv: string) -> void {
 // for a future tick; returns "drop" when the verdict is scored,
 // aged out (> 48 h), or was drift-orphaned (blob missing). Only the
 // scored-and-emitted path appends to the experience store.
-fn score_one_autonomous(issue_id: int) -> string {
-    let key = "labeler:autonomous_verdict:" + to_string(issue_id);
+fn score_one_autonomous(owner: string, repo: string, issue_id: int) -> string {
+    let key = scoped_memo(owner, repo, "labeler:autonomous_verdict:" + to_string(issue_id));
     let blob = recall_latest(key);
     if len(blob) < 3 {
         // Unexpected drift: index held the iid but the blob is gone.
@@ -287,7 +337,8 @@ fn score_one_autonomous(issue_id: int) -> string {
         return "drop";
     };
     let suggested = to_string(json_get(blob, "[2]"));
-    let cur_cmd = "$COLONY_DIR/scripts/forge-api.sh get-issue " + to_string(issue_id) + " --view feedback-issue";
+    // colony-lint: safe-exec-concat
+    let cur_cmd = "$COLONY_DIR/scripts/forge-api.sh get-issue " + to_string(issue_id) + " --view feedback-issue" + repo_arg(owner, repo);
     let cur_raw = try { exec sh cur_cmd; } catch e { ""; };
     if len(cur_raw) < 3 {
         // GitLab query failed (network blip, issue deleted, etc.).
@@ -306,13 +357,23 @@ fn score_one_autonomous(issue_id: int) -> string {
     let outcome = signal_to_outcome(signal);
     let cur_author = to_string(json_get(cur_raw, "author.username"));
     let scope = scope_for_author(cur_author);
-    learn(
-        "label",
-        "issue " + to_string(issue_id) + " autonomous-revert-check",
-        "written: " + suggested + " | signal: " + to_string(signal),
-        outcome,
-        [scope, "triage", "acted"]
-    );
+    if len(owner) > 0 {
+        learn(
+            "label",
+            "issue " + to_string(issue_id) + " autonomous-revert-check",
+            "written: " + suggested + " | signal: " + to_string(signal),
+            outcome,
+            [scope, "triage", "acted", repo_tag(owner, repo)]
+        );
+    } else {
+        learn(
+            "label",
+            "issue " + to_string(issue_id) + " autonomous-revert-check",
+            "written: " + suggested + " | signal: " + to_string(signal),
+            outcome,
+            [scope, "triage", "acted"]
+        );
+    };
     print("[labeler] autonomous reality-check: issue", issue_id, "signal", signal, "->", outcome);
     memo_write(key, "");
     return "drop";
@@ -340,7 +401,7 @@ fn append_csv(acc: string, iid_raw: string) -> string {
 // GitLab query + optional learn()). At worst ~8 iids evaluated per
 // tick; the rest stay in the carried-over index and get picked up on
 // subsequent ticks.
-fn eval_autonomous_at(index_csv: string, pos: int, acc: string) -> string {
+fn eval_autonomous_at(owner: string, repo: string, index_csv: string, pos: int, acc: string) -> string {
     let iid_raw = try {
         exec sh "CSV=" + shell_escape(index_csv) + " POS=" + to_string(pos) +
             " python3 -c 'import os; parts=[p for p in os.environ[\"CSV\"].split(\",\") if p.strip()]; p=int(os.environ[\"POS\"]); print(parts[p] if 0<=p<len(parts) else \"\")'";
@@ -349,35 +410,36 @@ fn eval_autonomous_at(index_csv: string, pos: int, acc: string) -> string {
         return acc;
     };
     let iid = parse_int(iid_raw);
-    let verdict = score_one_autonomous(iid);
+    let verdict = score_one_autonomous(owner, repo, iid);
     if verdict == "keep" {
-        return eval_autonomous_at(index_csv, pos + 1, append_csv(acc, iid_raw));
+        return eval_autonomous_at(owner, repo, index_csv, pos + 1, append_csv(acc, iid_raw));
     };
-    return eval_autonomous_at(index_csv, pos + 1, acc);
+    return eval_autonomous_at(owner, repo, index_csv, pos + 1, acc);
 }
 
 // Entry point: scan the autonomous-verdict index, score every iid,
 // rewrite the index with the survivors (still-soaking ones). Cheap
 // no-op when the index is empty (the common case before the agent
 // reaches autonomous tier).
-fn evaluate_autonomous_verdicts() -> void {
-    let index_csv = recall_latest("labeler:autonomous_verdict_index");
+fn evaluate_autonomous_verdicts(owner: string, repo: string) -> void {
+    let key = scoped_memo(owner, repo, "labeler:autonomous_verdict_index");
+    let index_csv = recall_latest(key);
     if len(index_csv) < 1 {
         return;
     };
-    let new_index = eval_autonomous_at(index_csv, 0, "");
-    memo_write("labeler:autonomous_verdict_index", new_index);
+    let new_index = eval_autonomous_at(owner, repo, index_csv, 0, "");
+    memo_write(key, new_index);
 }
 
-fn tick(reason: string) -> void {
+fn tick_for_repo(owner: string, repo: string) -> void {
     // #106: Check any pending propose / review-gated verdict from a
     // previous tick before doing new work. Cheap when nothing pending.
-    evaluate_label_verdict();
+    evaluate_label_verdict(owner, repo);
     // #203: Score any pending autonomous-tier verdicts. Multi-slot,
     // keyed per-iid; the scanner drops scored/aged iids and keeps
     // still-soaking ones for the next tick.
-    evaluate_autonomous_verdicts();
-    let cmd = issues_cmd();
+    evaluate_autonomous_verdicts(owner, repo);
+    let cmd = issues_cmd(owner, repo);
     let raw = try {
         exec sh cmd;
     } catch e {
@@ -396,13 +458,23 @@ fn tick(reason: string) -> void {
     ) -> LabelAnalysis;
 
     if analysis.labeled_count > 0 {
-        learn(
-            "label",
-            "batch of " + to_string(analysis.labeled_count) + " labeled issues",
-            analysis.patterns,
-            "success",
-            ["observed", "triage"]
-        );
+        if len(owner) > 0 {
+            learn(
+                "label",
+                "batch of " + to_string(analysis.labeled_count) + " labeled issues",
+                analysis.patterns,
+                "success",
+                ["observed", "triage", repo_tag(owner, repo)]
+            );
+        } else {
+            learn(
+                "label",
+                "batch of " + to_string(analysis.labeled_count) + " labeled issues",
+                analysis.patterns,
+                "success",
+                ["observed", "triage"]
+            );
+        };
         print("[labeler] Observed", analysis.labeled_count, "labeled issues");
     };
 
@@ -410,7 +482,9 @@ fn tick(reason: string) -> void {
     if analysis.unlabeled_count > 0 {
         let my_tier = tier("labeler");
         let rec = recommend("label", ["accuracy"]);
-        let labels_raw = try { exec sh "$COLONY_DIR/scripts/forge-api.sh labels --view summary"; } catch e { "[]"; };
+        // colony-lint: safe-exec-concat
+        let labels_cmd = "$COLONY_DIR/scripts/forge-api.sh labels --view summary" + repo_arg(owner, repo);
+        let labels_raw = try { exec sh labels_cmd; } catch e { "[]"; };
         let context = "Unlabeled issues: " + analysis.unlabeled_issues + "\nAvailable labels: " + labels_raw + "\nPast learning: " + to_string(rec);
 
         let action = prompt(
@@ -419,7 +493,8 @@ fn tick(reason: string) -> void {
         ) -> LabelAction;
 
         if my_tier == "autonomous" {
-            let update_cmd = "$COLONY_DIR/scripts/forge-api.sh update-issue " + to_string(action.issue_id) + " --add-labels " + shell_escape(action.labels);
+            // colony-lint: safe-exec-concat
+            let update_cmd = "$COLONY_DIR/scripts/forge-api.sh update-issue " + to_string(action.issue_id) + " --add-labels " + shell_escape(action.labels) + repo_arg(owner, repo);
             let result = try { exec sh update_cmd; } catch e {
                 print("[labeler] Failed to apply labels:", e);
                 "";
@@ -436,13 +511,18 @@ fn tick(reason: string) -> void {
                 // row still lands (acceptable asymmetry — a missing soak
                 // row means no reality-check adjustment for this iid, not a
                 // phantom success).
-                record_autonomous_verdict(action.issue_id, action.labels);
-                learn("label", "issue " + to_string(action.issue_id), action.labels, "success", [scope, "triage", "acted"]);
+                record_autonomous_verdict(owner, repo, action.issue_id, action.labels);
+                if len(owner) > 0 {
+                    learn("label", "issue " + to_string(action.issue_id), action.labels, "success", [scope, "triage", "acted", repo_tag(owner, repo)]);
+                } else {
+                    learn("label", "issue " + to_string(action.issue_id), action.labels, "success", [scope, "triage", "acted"]);
+                };
             };
         } else {
             if my_tier == "review-gated" {
                 let note = "[draft-labels] **Label Suggestion** (automated, pending approval): " + action.labels + "\n\n" + action.reasoning;
-                let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(action.issue_id) + " --body " + shell_escape(note);
+                // colony-lint: safe-exec-concat
+                let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(action.issue_id) + " --body " + shell_escape(note) + repo_arg(owner, repo);
                 try { exec sh post_cmd; } catch e {
                     print("[labeler] Failed to post draft note:", e);
                 };
@@ -450,9 +530,13 @@ fn tick(reason: string) -> void {
                 // #106: stash the verdict so the next tick can score this
                 // suggestion against whatever the operator eventually applies
                 // to the issue.
-                record_label_verdict(action.issue_id, action.labels);
+                record_label_verdict(owner, repo, action.issue_id, action.labels);
                 let scope = scope_for_author(action.author);
-                learn("label", "issue " + to_string(action.issue_id), action.labels, "partial", [scope, "triage", "review-gated"]);
+                if len(owner) > 0 {
+                    learn("label", "issue " + to_string(action.issue_id), action.labels, "partial", [scope, "triage", "review-gated", repo_tag(owner, repo)]);
+                } else {
+                    learn("label", "issue " + to_string(action.issue_id), action.labels, "partial", [scope, "triage", "review-gated"]);
+                };
             } else {
                 if my_tier == "propose" {
                     print("[labeler] Suggesting labels for issue", action.issue_id, ":", action.labels);
@@ -462,13 +546,21 @@ fn tick(reason: string) -> void {
                     // to the issue. Only records at propose/review-gated level —
                     // at autonomous the agent writes its own labels, so there's
                     // no separable operator signal to score against.
-                    record_label_verdict(action.issue_id, action.labels);
+                    record_label_verdict(owner, repo, action.issue_id, action.labels);
                     let scope = scope_for_author(action.author);
-                    learn("label", "issue " + to_string(action.issue_id), action.labels, "partial", [scope, "triage", "emitted"]);
+                    if len(owner) > 0 {
+                        learn("label", "issue " + to_string(action.issue_id), action.labels, "partial", [scope, "triage", "emitted", repo_tag(owner, repo)]);
+                    } else {
+                        learn("label", "issue " + to_string(action.issue_id), action.labels, "partial", [scope, "triage", "emitted"]);
+                    };
                 } else {
                     print("[labeler] Observing (tier:", my_tier, ")");
                     let scope = scope_for_author(action.author);
-                    learn("label", "issue " + to_string(action.issue_id), action.labels, "partial", [scope, "triage", "observed"]);
+                    if len(owner) > 0 {
+                        learn("label", "issue " + to_string(action.issue_id), action.labels, "partial", [scope, "triage", "observed", repo_tag(owner, repo)]);
+                    } else {
+                        learn("label", "issue " + to_string(action.issue_id), action.labels, "partial", [scope, "triage", "observed"]);
+                    };
                 };
             };
         };
@@ -481,6 +573,31 @@ fn tick(reason: string) -> void {
 
     let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
     if len(now) > 0 {
-        memo_write("labeler:last_check", now);
+        memo_write(scoped_memo(owner, repo, "labeler:last_check"), now);
     };
+}
+
+// Recursive iterator over `iter-repos.sh` output. See router.ag for the
+// empty-owner sentinel rationale.
+fn tick_at(spool: string, line_no: int) -> void {
+    let line_cmd = "SP=" + shell_escape(spool) + " N=" + to_string(line_no) +
+        " python3 -c 'import os; lines=os.environ[\"SP\"].splitlines(); n=int(os.environ[\"N\"]); print(lines[n] if 0<=n<len(lines) else \"\")'";
+    let line = try { exec sh line_cmd; } catch e { ""; };
+    if len(line) == 0 { return; };
+    let owner = repo_field(line, 0);
+    let repo = repo_field(line, 1);
+    tick_for_repo(owner, repo);
+    return tick_at(spool, line_no + 1);
+}
+
+fn tick(reason: string) -> void {
+    // #316 M3a: per-repo fan-out. See router.ag for the back-compat
+    // sentinel pattern and byte-identity rationale. Each repo gets its
+    // own pending-verdict slot and autonomous-verdict index — no cross-
+    // repo blob mixing.
+    let spool = try { exec sh "$COLONY_DIR/../../tools/iter-repos.sh"; } catch e { ""; };
+    if len(spool) == 0 {
+        return;
+    };
+    tick_at(spool, 0);
 }

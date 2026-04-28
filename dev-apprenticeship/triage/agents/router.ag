@@ -22,12 +22,55 @@ type RouteAction {
     confidence: float
 }
 
-fn issues_cmd() -> string {
-    let ts = recall_latest("router:last_check");
+// #316 M3a: per-tick fan-out helpers.
+//
+// `iter-repos.sh` emits one TSV line per repo (owner\trepo\turl\tme).
+// On single-block configs the spool collapses to one line with
+// `owner==""` (sentinel) — repo_arg returns "", repo_tag returns "",
+// scoped_memo passes the suffix through unchanged. Net effect: pre-M3
+// behaviour is byte-identical (no --repo flag, no per-repo memo
+// keys, no repo: tag on experience rows).
+
+fn repo_arg(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return " --repo " + shell_escape(owner + "/" + repo);
+}
+
+fn repo_tag(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return "repo:" + owner + "/" + repo;
+}
+
+fn scoped_memo(owner: string, repo: string, suffix: string) -> string {
+    if len(owner) == 0 { return suffix; };
+    // `__` between owner and repo is the per-repo segment separator. The
+    // memo-key validator (agentis runtime) accepts only [A-Za-z0-9_:.-],
+    // so `/` (the natural GitHub spelling in repo_arg / repo_tag) is
+    // reserved for the experience-tag and CLI-flag surfaces; memo keys
+    // use the underscore form instead. The `:` after repo continues the
+    // existing `<agent>:<key>` convention so `<owner>__<repo>:<suffix>`
+    // sorts predictably alongside legacy unscoped keys.
+    return owner + "__" + repo + ":" + suffix;
+}
+
+// Read the `idx`-th tab-separated field of a TSV `line`. Empty string
+// when out of range (defensive; iter-repos always emits exactly four
+// fields per line). Delegates to python3 — `.ag` has no split builtin.
+fn repo_field(line: string, idx: int) -> string {
+    let cmd = "L=" + shell_escape(line) + " I=" + to_string(idx) +
+        " python3 -c 'import os; parts=os.environ[\"L\"].split(\"\t\"); i=int(os.environ[\"I\"]); print(parts[i] if 0<=i<len(parts) else \"\")'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+fn issues_cmd(owner: string, repo: string) -> string {
+    let ts = recall_latest(scoped_memo(owner, repo, "router:last_check"));
+    // colony-lint: safe-exec-concat
     if len(ts) > 0 {
-        return "$COLONY_DIR/scripts/forge-api.sh issues --since " + shell_escape(ts) + " --view router";
+        return "$COLONY_DIR/scripts/forge-api.sh issues --since " + shell_escape(ts) + " --view router" + repo_arg(owner, repo);
     };
-    return "$COLONY_DIR/scripts/forge-api.sh issues --view router";
+    // colony-lint: safe-exec-concat
+    return "$COLONY_DIR/scripts/forge-api.sh issues --view router" + repo_arg(owner, repo);
 }
 
 fn get_confidence() -> float {
@@ -38,14 +81,14 @@ fn get_confidence() -> float {
     return 0.0;
 }
 
-fn tick(reason: string) -> void {
+fn tick_for_repo(owner: string, repo: string) -> void {
     // #147: cheap delta-check. `issues_cmd()` already filters
     // server-side via --since last_check, so an empty response
     // (`[]`, 2 chars) means "no new issues since last tick" and we
     // early-exit *before* any prompt(). The last_check memo is
     // refreshed here too — otherwise the --since window would never
     // advance on a quiet project.
-    let cmd = issues_cmd();
+    let cmd = issues_cmd(owner, repo);
     let raw = try {
         exec sh cmd;
     } catch e {
@@ -56,13 +99,15 @@ fn tick(reason: string) -> void {
     if len(raw) < 3 {
         let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
         if len(now_e) > 0 {
-            memo_write("router:last_check", now_e);
+            memo_write(scoped_memo(owner, repo, "router:last_check"), now_e);
         };
         return;
     };
 
     // Get team members
-    let members_raw = try { exec sh "$COLONY_DIR/scripts/forge-api.sh members --view summary"; } catch e { "[]"; };
+    // colony-lint: safe-exec-concat
+    let members_cmd = "$COLONY_DIR/scripts/forge-api.sh members --view summary" + repo_arg(owner, repo);
+    let members_raw = try { exec sh members_cmd; } catch e { "[]"; };
 
     // Analyze: find assigned and unassigned issues
     let analysis = prompt(
@@ -71,13 +116,23 @@ fn tick(reason: string) -> void {
     ) -> RoutingAnalysis;
 
     if analysis.assigned_count > 0 {
-        learn(
-            "route",
-            "batch of " + to_string(analysis.assigned_count) + " assigned issues",
-            analysis.patterns,
-            "success",
-            ["observed", "triage"]
-        );
+        if len(owner) > 0 {
+            learn(
+                "route",
+                "batch of " + to_string(analysis.assigned_count) + " assigned issues",
+                analysis.patterns,
+                "success",
+                ["observed", "triage", repo_tag(owner, repo)]
+            );
+        } else {
+            learn(
+                "route",
+                "batch of " + to_string(analysis.assigned_count) + " assigned issues",
+                analysis.patterns,
+                "success",
+                ["observed", "triage"]
+            );
+        };
         print("[router] Observed", analysis.assigned_count, "assignment patterns");
     };
 
@@ -93,7 +148,8 @@ fn tick(reason: string) -> void {
         ) -> RouteAction;
 
         if my_tier == "autonomous" {
-            let update_cmd = "$COLONY_DIR/scripts/forge-api.sh update-issue " + to_string(action.issue_id) + " --assignee " + shell_escape(action.assignee);
+            // colony-lint: safe-exec-concat
+            let update_cmd = "$COLONY_DIR/scripts/forge-api.sh update-issue " + to_string(action.issue_id) + " --assignee " + shell_escape(action.assignee) + repo_arg(owner, repo);
             let result = try { exec sh update_cmd; } catch e {
                 print("[router] Failed to assign:", e);
                 "";
@@ -101,27 +157,44 @@ fn tick(reason: string) -> void {
             if len(result) > 0 {
                 print("[router] Assigned issue", action.issue_id, "to", action.assignee);
                 emit("triage:route_suggestion", action);
-                learn("route", "issue " + to_string(action.issue_id), action.assignee, "success", ["acted", "triage"]);
+                if len(owner) > 0 {
+                    learn("route", "issue " + to_string(action.issue_id), action.assignee, "success", ["acted", "triage", repo_tag(owner, repo)]);
+                } else {
+                    learn("route", "issue " + to_string(action.issue_id), action.assignee, "success", ["acted", "triage"]);
+                };
             };
         } else {
             if my_tier == "review-gated" {
                 // Non-terminal draft: emit the suggestion and post an issue note
                 // flagged for human approval instead of directly assigning.
                 let note = "[draft-route] **Routing Suggestion** (automated, pending approval): assign to @" + action.assignee + "\n\n" + action.reasoning;
-                let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(action.issue_id) + " --body " + shell_escape(note);
+                // colony-lint: safe-exec-concat
+                let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(action.issue_id) + " --body " + shell_escape(note) + repo_arg(owner, repo);
                 try { exec sh post_cmd; } catch e {
                     print("[router] Failed to post draft note:", e);
                 };
                 emit("triage:route_suggestion", action);
-                learn("route", "issue " + to_string(action.issue_id), action.assignee, "partial", ["triage", "review-gated"]);
+                if len(owner) > 0 {
+                    learn("route", "issue " + to_string(action.issue_id), action.assignee, "partial", ["triage", "review-gated", repo_tag(owner, repo)]);
+                } else {
+                    learn("route", "issue " + to_string(action.issue_id), action.assignee, "partial", ["triage", "review-gated"]);
+                };
             } else {
                 if my_tier == "propose" {
                     print("[router] Suggesting assignee for issue", action.issue_id, ":", action.assignee);
                     emit("triage:route_suggestion", action);
-                    learn("route", "issue " + to_string(action.issue_id), action.assignee, "partial", ["emitted", "triage"]);
+                    if len(owner) > 0 {
+                        learn("route", "issue " + to_string(action.issue_id), action.assignee, "partial", ["emitted", "triage", repo_tag(owner, repo)]);
+                    } else {
+                        learn("route", "issue " + to_string(action.issue_id), action.assignee, "partial", ["emitted", "triage"]);
+                    };
                 } else {
                     print("[router] Observing (tier:", my_tier, ")");
-                    learn("route", "issue " + to_string(action.issue_id), action.assignee, "partial", ["observed", "triage"]);
+                    if len(owner) > 0 {
+                        learn("route", "issue " + to_string(action.issue_id), action.assignee, "partial", ["observed", "triage", repo_tag(owner, repo)]);
+                    } else {
+                        learn("route", "issue " + to_string(action.issue_id), action.assignee, "partial", ["observed", "triage"]);
+                    };
                 };
             };
         };
@@ -134,6 +207,41 @@ fn tick(reason: string) -> void {
 
     let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
     if len(now) > 0 {
-        memo_write("router:last_check", now);
+        memo_write(scoped_memo(owner, repo, "router:last_check"), now);
     };
+}
+
+// Recursive iterator over `iter-repos.sh` output. `.ag` has no for/while
+// loops; tail-recursion is the loop substitute (per labeler.ag's
+// `eval_autonomous_at` precedent). Each call processes one TSV line and
+// recurses to the next index. Empty line = past EOF, terminate.
+//
+// An empty owner field on a present line is the byte-identity sentinel
+// from iter-repos.sh: pass it through to tick_for_repo("", "") so the
+// scoped_memo / repo_arg / repo_tag helpers branch onto the legacy
+// behaviour. Differs from "missing line" (= past EOF, return).
+fn tick_at(spool: string, line_no: int) -> void {
+    let line_cmd = "SP=" + shell_escape(spool) + " N=" + to_string(line_no) +
+        " python3 -c 'import os; lines=os.environ[\"SP\"].splitlines(); n=int(os.environ[\"N\"]); print(lines[n] if 0<=n<len(lines) else \"\")'";
+    let line = try { exec sh line_cmd; } catch e { ""; };
+    if len(line) == 0 { return; };
+    let owner = repo_field(line, 0);
+    let repo = repo_field(line, 1);
+    tick_for_repo(owner, repo);
+    return tick_at(spool, line_no + 1);
+}
+
+fn tick(reason: string) -> void {
+    // #316 M3a: fan out across every repo declared in this colony's
+    // [[forge.github]] array. iter-repos.sh emits TSV for each repo.
+    // On single-block configs (no GITHUB_REPOS_JSON env), the helper
+    // emits exactly one line from the legacy GITHUB_OWNER/REPO/URL/ME
+    // env — same call shape, byte-identical experience rows.
+    let spool = try { exec sh "$COLONY_DIR/../../tools/iter-repos.sh"; } catch e { ""; };
+    if len(spool) == 0 {
+        // No repos configured at all (or iter-repos.sh failed). Nothing
+        // to tick — same shape as the pre-M3 empty-issues early-exit.
+        return;
+    };
+    tick_at(spool, 0);
 }

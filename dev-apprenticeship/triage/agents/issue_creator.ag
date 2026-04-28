@@ -21,12 +21,47 @@ type ObservationSummary {
     patterns: string
 }
 
-fn issues_cmd() -> string {
-    let ts = recall_latest("issue_creator:last_check");
+// #316 M3a: per-tick fan-out helpers. See router.ag for the full
+// rationale. Single-block configs collapse to owner=="" sentinel,
+// repo_arg/repo_tag return "", scoped_memo passes the suffix through.
+
+fn repo_arg(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return " --repo " + shell_escape(owner + "/" + repo);
+}
+
+fn repo_tag(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return "repo:" + owner + "/" + repo;
+}
+
+fn scoped_memo(owner: string, repo: string, suffix: string) -> string {
+    if len(owner) == 0 { return suffix; };
+    // `__` between owner and repo is the per-repo segment separator. The
+    // memo-key validator (agentis runtime) accepts only [A-Za-z0-9_:.-],
+    // so `/` (the natural GitHub spelling in repo_arg / repo_tag) is
+    // reserved for the experience-tag and CLI-flag surfaces; memo keys
+    // use the underscore form instead. The `:` after repo continues the
+    // existing `<agent>:<key>` convention so `<owner>__<repo>:<suffix>`
+    // sorts predictably alongside legacy unscoped keys.
+    return owner + "__" + repo + ":" + suffix;
+}
+
+fn repo_field(line: string, idx: int) -> string {
+    let cmd = "L=" + shell_escape(line) + " I=" + to_string(idx) +
+        " python3 -c 'import os; parts=os.environ[\"L\"].split(\"\t\"); i=int(os.environ[\"I\"]); print(parts[i] if 0<=i<len(parts) else \"\")'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+fn issues_cmd(owner: string, repo: string) -> string {
+    let ts = recall_latest(scoped_memo(owner, repo, "issue_creator:last_check"));
+    // colony-lint: safe-exec-concat
     if len(ts) > 0 {
-        return "$COLONY_DIR/scripts/forge-api.sh issues --since " + shell_escape(ts) + " --view issue_creator";
+        return "$COLONY_DIR/scripts/forge-api.sh issues --since " + shell_escape(ts) + " --view issue_creator" + repo_arg(owner, repo);
     };
-    return "$COLONY_DIR/scripts/forge-api.sh issues --view issue_creator";
+    // colony-lint: safe-exec-concat
+    return "$COLONY_DIR/scripts/forge-api.sh issues --view issue_creator" + repo_arg(owner, repo);
 }
 
 fn get_confidence() -> float {
@@ -37,8 +72,8 @@ fn get_confidence() -> float {
     return 0.0;
 }
 
-fn tick(reason: string) -> void {
-    let cmd = issues_cmd();
+fn tick_for_repo(owner: string, repo: string) -> void {
+    let cmd = issues_cmd(owner, repo);
     let raw = try {
         exec sh cmd;
     } catch e {
@@ -57,13 +92,23 @@ fn tick(reason: string) -> void {
     ) -> ObservationSummary;
 
     if summary.count > 0 {
-        learn(
-            "create_issue",
-            "batch of " + to_string(summary.count) + " issues",
-            summary.patterns,
-            "success",
-            ["observed", "triage"]
-        );
+        if len(owner) > 0 {
+            learn(
+                "create_issue",
+                "batch of " + to_string(summary.count) + " issues",
+                summary.patterns,
+                "success",
+                ["observed", "triage", repo_tag(owner, repo)]
+            );
+        } else {
+            learn(
+                "create_issue",
+                "batch of " + to_string(summary.count) + " issues",
+                summary.patterns,
+                "success",
+                ["observed", "triage"]
+            );
+        };
         print("[issue_creator] Observed", summary.count, "human-created issues");
     };
 
@@ -81,7 +126,8 @@ fn tick(reason: string) -> void {
         ) -> DraftIssue;
 
         if my_tier == "autonomous" {
-            let create_cmd = "$COLONY_DIR/scripts/forge-api.sh create-issue --title " + shell_escape(draft.title) + " --description " + shell_escape(draft.description) + " --labels " + shell_escape(draft.suggested_labels);
+            // colony-lint: safe-exec-concat
+            let create_cmd = "$COLONY_DIR/scripts/forge-api.sh create-issue --title " + shell_escape(draft.title) + " --description " + shell_escape(draft.description) + " --labels " + shell_escape(draft.suggested_labels) + repo_arg(owner, repo);
             let result = try {
                 exec sh create_cmd;
             } catch e {
@@ -91,7 +137,11 @@ fn tick(reason: string) -> void {
             if len(result) > 0 {
                 print("[issue_creator] Created issue:", draft.title);
                 emit("triage:new_issue", draft);
-                learn("create_issue", "created", draft.title, "success", ["acted", "triage"]);
+                if len(owner) > 0 {
+                    learn("create_issue", "created", draft.title, "success", ["acted", "triage", repo_tag(owner, repo)]);
+                } else {
+                    learn("create_issue", "created", draft.title, "success", ["acted", "triage"]);
+                };
             };
         } else {
             if my_tier == "review-gated" {
@@ -100,15 +150,27 @@ fn tick(reason: string) -> void {
                 // stays behind the autonomous branch.
                 print("[issue_creator] Drafted issue (pending approval):", draft.title);
                 emit("triage:new_issue", draft);
-                learn("create_issue", "drafted", draft.title, "partial", ["triage", "review-gated"]);
+                if len(owner) > 0 {
+                    learn("create_issue", "drafted", draft.title, "partial", ["triage", "review-gated", repo_tag(owner, repo)]);
+                } else {
+                    learn("create_issue", "drafted", draft.title, "partial", ["triage", "review-gated"]);
+                };
             } else {
                 if my_tier == "propose" {
                     print("[issue_creator] Suggesting issue:", draft.title);
                     emit("triage:new_issue", draft);
-                    learn("create_issue", "suggested", draft.title, "partial", ["emitted", "triage"]);
+                    if len(owner) > 0 {
+                        learn("create_issue", "suggested", draft.title, "partial", ["emitted", "triage", repo_tag(owner, repo)]);
+                    } else {
+                        learn("create_issue", "suggested", draft.title, "partial", ["emitted", "triage"]);
+                    };
                 } else {
                     print("[issue_creator] Observing (tier:", my_tier, ")");
-                    learn("create_issue", "observed", draft.title, "partial", ["observed", "triage"]);
+                    if len(owner) > 0 {
+                        learn("create_issue", "observed", draft.title, "partial", ["observed", "triage", repo_tag(owner, repo)]);
+                    } else {
+                        learn("create_issue", "observed", draft.title, "partial", ["observed", "triage"]);
+                    };
                 };
             };
         };
@@ -116,6 +178,29 @@ fn tick(reason: string) -> void {
 
     let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
     if len(now) > 0 {
-        memo_write("issue_creator:last_check", now);
+        memo_write(scoped_memo(owner, repo, "issue_creator:last_check"), now);
     };
+}
+
+// Recursive iterator over `iter-repos.sh` output. See router.ag for the
+// empty-owner sentinel rationale.
+fn tick_at(spool: string, line_no: int) -> void {
+    let line_cmd = "SP=" + shell_escape(spool) + " N=" + to_string(line_no) +
+        " python3 -c 'import os; lines=os.environ[\"SP\"].splitlines(); n=int(os.environ[\"N\"]); print(lines[n] if 0<=n<len(lines) else \"\")'";
+    let line = try { exec sh line_cmd; } catch e { ""; };
+    if len(line) == 0 { return; };
+    let owner = repo_field(line, 0);
+    let repo = repo_field(line, 1);
+    tick_for_repo(owner, repo);
+    return tick_at(spool, line_no + 1);
+}
+
+fn tick(reason: string) -> void {
+    // #316 M3a: per-repo fan-out. See router.ag for the back-compat
+    // sentinel pattern and byte-identity rationale.
+    let spool = try { exec sh "$COLONY_DIR/../../tools/iter-repos.sh"; } catch e { ""; };
+    if len(spool) == 0 {
+        return;
+    };
+    tick_at(spool, 0);
 }
