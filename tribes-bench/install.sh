@@ -21,7 +21,7 @@ FED_NAME="$(basename "$SCRIPT_DIR")"
 
 echo "Installing $FED_NAME federation..."
 
-for tribe in tribe-alpha tribe-beta; do
+for tribe in tribe-alpha tribe-beta tribe-gamma; do
     example="$SCRIPT_DIR/$tribe/config/colony.example.toml"
     target="$SCRIPT_DIR/$tribe/config/colony.toml"
     if [ ! -f "$target" ] && [ -f "$example" ]; then
