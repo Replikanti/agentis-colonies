@@ -126,11 +126,18 @@ if 'forge' not in data or not isinstance(data.get('forge'), dict):
     errors.append('missing [forge] section (post-#256: required)')
 else:
     forge_type = data['forge'].get('type')
-    if forge_type not in ('gitlab', 'github'):
-        errors.append(f'[forge].type must be \"gitlab\" or \"github\" (got {forge_type!r})')
-    if forge_type == 'gitlab' and 'gitlab' not in data['forge']:
+    if forge_type not in ('gitlab', 'github', 'none'):
+        errors.append(f'[forge].type must be \"gitlab\", \"github\", or \"none\" (got {forge_type!r})')
+    elif forge_type == 'none':
+        # ADR-0003 explicitly allows non-forge federations. forge.type = \"none\"
+        # is the explicit opt-out (#373): the [forge] block is present so the
+        # post-#256 schema check still passes, but no [forge.gitlab] / [forge.github]
+        # sub-block is required and any present sub-block is ignored. ADR-0002
+        # remains normative for forge-bound colonies.
+        pass
+    elif forge_type == 'gitlab' and 'gitlab' not in data['forge']:
         errors.append('[forge].type = \"gitlab\" but [forge.gitlab] is missing')
-    if forge_type == 'github' and 'github' not in data['forge']:
+    elif forge_type == 'github' and 'github' not in data['forge']:
         errors.append('[forge].type = \"github\" but [forge.github] is missing')
 if 'llm' not in data:
     errors.append('missing [llm] section')
