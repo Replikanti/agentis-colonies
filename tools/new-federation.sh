@@ -451,8 +451,13 @@ case "$FORGE_TYPE" in
         fi
         export GITHUB_URL GITHUB_OWNER GITHUB_REPO GITHUB_TOKEN GITHUB_ME
         ;;
+    none)
+        # ADR-0003 / #373 — non-forge federation: nothing to export here.
+        # If this colony's agents need data-source env vars (e.g. TARGET_DIR,
+        # VERIFIER_PATH), wire them below this case block.
+        ;;
     *)
-        echo "Error: unknown [forge].type '$FORGE_TYPE' in $CONFIG (expected: gitlab|github)" >&2
+        echo "Error: unknown [forge].type '$FORGE_TYPE' in $CONFIG (expected: gitlab|github|none)" >&2
         exit 1
         ;;
 esac

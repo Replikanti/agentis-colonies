@@ -16,6 +16,12 @@
 #   Test 5: negative — a colony with a typo'd forge type (e.g. "non")
 #           is rejected with the updated allowed-list message that
 #           includes "none".
+#   Test 6: integration — `new-federation.sh` (default, no `--no-forge`)
+#           generates a `start-colony.sh` whose `case "$FORGE_TYPE"` block
+#           includes a `none)` arm and an error message that lists all
+#           three valid types. Guards the post-hoc-flip path: an operator
+#           who scaffolds default and later edits `colony.toml` to
+#           `type = "none"` does not get an "unknown [forge].type" error.
 #
 # Each test builds a synthetic federation tree under $TMPDIR_TEST and
 # runs `tools/colony-lint.sh <tmpdir>` against it, then greps the output.
@@ -202,6 +208,37 @@ if printf '%s\n' "$out" | grep -q '\[forge\].type must be "gitlab", "github", or
 else
     fail "test 5: typo'd forge type rejected with updated allowed-list message" \
          "expected updated allowed-list message in output, got: $out"
+fi
+
+# --- Test 6: integration — default new-federation.sh emits none) arm ---
+# Scaffolds a default (forge-bound) federation and inspects the generated
+# start-colony.sh. The `none)` arm + updated error message let an operator
+# flip `colony.toml` to `type = "none"` post-hoc without runtime breakage.
+#
+# new-federation.sh always writes to its REPO_ROOT (parent of tools/), so
+# the test cannot redirect output to $TMPDIR_TEST. Use a unique federation
+# name and clean up explicitly. PID + RANDOM disambiguates parallel runs.
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+TEST6_FED="fd-no-forge-test6-$$-${RANDOM}"
+TEST6_PATH="$REPO_ROOT/$TEST6_FED"
+# Add cleanup to the existing EXIT trap rather than overwriting it.
+trap 'rm -rf "$TMPDIR_TEST" "$TEST6_PATH"' EXIT
+(
+    cd "$REPO_ROOT"
+    "$SCRIPT_DIR/new-federation.sh" "$TEST6_FED" "col-default" >/dev/null 2>&1
+)
+gen_start_colony="$TEST6_PATH/col-default/scripts/start-colony.sh"
+if [ ! -f "$gen_start_colony" ]; then
+    fail "test 6: default new-federation.sh emits none) arm" \
+         "scaffolded start-colony.sh not found at $gen_start_colony"
+elif ! grep -qE '^[[:space:]]*none\)' "$gen_start_colony"; then
+    fail "test 6: default new-federation.sh emits none) arm" \
+         "no 'none)' case arm in $gen_start_colony"
+elif ! grep -q 'expected: gitlab|github|none' "$gen_start_colony"; then
+    fail "test 6: default new-federation.sh emits none) arm" \
+         "wildcard error message did not list 'none' as a valid type"
+else
+    pass "test 6: default new-federation.sh emits none) arm + updated error msg"
 fi
 
 echo ""
