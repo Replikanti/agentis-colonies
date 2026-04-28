@@ -45,6 +45,11 @@ tools/experience-transfer-pack.py
 # only at PR 1 stage and is NOT included in the bundle — the dev fetches
 # templates by checking out the source repo.
 tools/scaffold-agent.sh
+# Multi-repo runtime helpers (#316 M3): per-tick fan-out spool +
+# `--repo` resolver invoked by every colony's forge-api.sh dispatcher.
+tools/iter-repos.sh
+tools/iter-repos.py
+tools/forge-resolve-repo.py
 
 # ----- Federation dashboard -----
 # Extracted to a separately-versioned standalone component in #252.

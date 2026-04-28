@@ -288,6 +288,28 @@ PY
     esac
 }
 
+# #316 M3a: defensive --repo strip. The forge-api.sh dispatcher consumes
+# --repo before exec'ing this wrapper, so reaching this code with --repo
+# in argv means either (a) someone called github-api.sh directly bypassing
+# the dispatcher (e.g. an operator debugging) or (b) a future caller
+# evolves and the dispatcher's strip regresses. Either way, swallow it
+# silently here so the verb-parser case below never sees an unknown flag.
+# Tokens travel via env (GITHUB_TOKEN already exported by the dispatcher
+# on the multi-repo path), never argv.
+NEW_ARGS=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --repo)
+            shift 2
+            ;;
+        *)
+            NEW_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+set -- ${NEW_ARGS[@]+"${NEW_ARGS[@]}"}
+
 if [ -z "${GITHUB_TOKEN:-}" ] || [ -z "${GITHUB_OWNER:-}" ] || [ -z "${GITHUB_REPO:-}" ]; then
     emit_error "GITHUB_TOKEN, GITHUB_OWNER, and GITHUB_REPO must be set"
     exit 1

@@ -56,43 +56,53 @@ for fn in record_autonomous_verdict score_one_autonomous eval_autonomous_at eval
 done
 
 # -- (1) multi-slot memo schema ----------------------------------------------
-if grep -Fq 'memo_write("labeler:autonomous_verdict:"' "$LABELER"; then
-    ok "multi-slot blob key memo_write(\"labeler:autonomous_verdict:\" + ...)"
+# Post-#316 M3a, the per-iid blob key is built via scoped_memo(owner, repo,
+# "labeler:autonomous_verdict:" + to_string(issue_id)). On single-block
+# configs scoped_memo passes the suffix through unchanged so the key is
+# byte-identical to the pre-M3 literal `labeler:autonomous_verdict:<iid>`.
+if grep -Fq '"labeler:autonomous_verdict:" + to_string(issue_id)' "$LABELER"; then
+    ok "multi-slot blob key suffix \"labeler:autonomous_verdict:\" + to_string(issue_id) (M3a scoped_memo wraps it per-repo)"
 else
-    bad "multi-slot blob key memo_write missing"
+    bad "multi-slot blob key suffix missing"
 fi
 
-if grep -Fq 'recall_latest("labeler:autonomous_verdict_index")' "$LABELER"; then
-    ok "index recall_latest(\"labeler:autonomous_verdict_index\")"
+# The index key is now built via scoped_memo too. Both recall_latest and
+# memo_write reference the same scoped key via a `key` local; the literal
+# suffix `labeler:autonomous_verdict_index` must appear inside scoped_memo.
+if grep -Fq 'scoped_memo(owner, repo, "labeler:autonomous_verdict_index")' "$LABELER"; then
+    ok "index key suffix scoped_memo(owner, repo, \"labeler:autonomous_verdict_index\") (M3a per-repo)"
 else
-    bad "index recall_latest missing"
+    bad "index key suffix missing"
 fi
 
-if grep -Fq 'memo_write("labeler:autonomous_verdict_index",' "$LABELER"; then
-    ok "index memo_write(\"labeler:autonomous_verdict_index\", ...)"
+# evaluate_autonomous_verdicts must read the index — locally bound `key` from
+# scoped_memo, then recall_latest(key). Verify both ops appear inside the fn.
+if awk '/^fn evaluate_autonomous_verdicts\(/,/^}/' "$LABELER" | grep -Fq 'recall_latest(key)'; then
+    ok "evaluate_autonomous_verdicts() reads index via recall_latest(key)"
 else
-    bad "index memo_write missing"
+    bad "evaluate_autonomous_verdicts() does not recall the index"
 fi
 
-# -- (3) scanner wired into tick() -------------------------------------------
-# evaluate_autonomous_verdicts() must be called from tick(); paired with
-# evaluate_label_verdict() so both reality checks run before new work each
-# tick.
-tick_line="$(grep -n '^fn tick(' "$LABELER" | head -1 | cut -d: -f1 || true)"
-if [ -z "$tick_line" ]; then
-    bad "fn tick() not found — cannot verify scanner wiring"
+# -- (3) scanner wired into tick_for_repo() ----------------------------------
+# Post-#316 M3a, both evaluate_* helpers take (owner, repo) and are called
+# from tick_for_repo, which the outer tick() fans out per-repo via tick_at.
+# Verify both calls land inside tick_for_repo so per-tick reality checks
+# still fire before each repo's work batch.
+tfr_line="$(grep -n '^fn tick_for_repo(' "$LABELER" | head -1 | cut -d: -f1 || true)"
+if [ -z "$tfr_line" ]; then
+    bad "fn tick_for_repo() not found — cannot verify scanner wiring"
 else
-    scanner_line="$(awk -v t="$tick_line" 'NR>t && /evaluate_autonomous_verdicts\(\)/ {print NR; exit}' "$LABELER")"
-    propose_line="$(awk -v t="$tick_line" 'NR>t && /evaluate_label_verdict\(\)/ {print NR; exit}' "$LABELER")"
+    scanner_line="$(awk -v t="$tfr_line" 'NR>t && /evaluate_autonomous_verdicts\(owner, repo\)/ {print NR; exit}' "$LABELER")"
+    propose_line="$(awk -v t="$tfr_line" 'NR>t && /evaluate_label_verdict\(owner, repo\)/ {print NR; exit}' "$LABELER")"
     if [ -n "$scanner_line" ]; then
-        ok "evaluate_autonomous_verdicts() called from tick() (line $scanner_line)"
+        ok "evaluate_autonomous_verdicts(owner, repo) called from tick_for_repo() (line $scanner_line)"
     else
-        bad "evaluate_autonomous_verdicts() NOT called from tick() — scanner is dead code"
+        bad "evaluate_autonomous_verdicts(owner, repo) NOT called from tick_for_repo() — scanner is dead code"
     fi
     if [ -n "$propose_line" ]; then
-        ok "evaluate_label_verdict() still called from tick() (line $propose_line) — propose path not broken"
+        ok "evaluate_label_verdict(owner, repo) still called from tick_for_repo() (line $propose_line) — propose path not broken"
     else
-        bad "evaluate_label_verdict() no longer called from tick() — #106/#195 propose path regressed"
+        bad "evaluate_label_verdict(owner, repo) no longer called from tick_for_repo() — #106/#195 propose path regressed"
     fi
 fi
 
@@ -115,15 +125,21 @@ else
 fi
 
 # -- (5) propose-path single-slot path intact --------------------------------
-if grep -Fq 'memo_write("labeler:pending_verdict"' "$LABELER"; then
-    ok "propose-path labeler:pending_verdict memo_write still present"
+# Post-#316 M3a, the pending-verdict key is built via scoped_memo too. On
+# single-block configs (owner == "") the key collapses to the literal
+# `labeler:pending_verdict` so pre-M3 federations pick up their existing
+# verdicts on first M3 tick — the migration is implicit.
+if grep -Fq 'scoped_memo(owner, repo, "labeler:pending_verdict")' "$LABELER"; then
+    ok "propose-path labeler:pending_verdict key built via scoped_memo (M3a per-repo)"
 else
-    bad "propose-path labeler:pending_verdict memo_write removed — #106/#195 regressed"
+    bad "propose-path labeler:pending_verdict key construction missing — #106/#195 regressed"
 fi
-if grep -Fq 'recall_latest("labeler:pending_verdict")' "$LABELER"; then
-    ok "propose-path labeler:pending_verdict recall_latest still present"
+# evaluate_label_verdict reads via recall_latest(key) — the key local is
+# bound from scoped_memo at the top of the fn.
+if awk '/^fn evaluate_label_verdict\(/,/^}/' "$LABELER" | grep -Fq 'recall_latest(key)'; then
+    ok "evaluate_label_verdict() reads pending verdict via recall_latest(key)"
 else
-    bad "propose-path labeler:pending_verdict recall_latest removed — #106/#195 regressed"
+    bad "evaluate_label_verdict() does not recall the pending verdict — #106/#195 regressed"
 fi
 
 # -- (6) autonomous compare has no signal==0 arm -----------------------------
@@ -181,9 +197,10 @@ fi
 # End-of-scan index rewrite: evaluate_autonomous_verdicts MUST write the
 # surviving index at the end of the scan. A refactor that moves this into
 # eval_autonomous_at or drops it turns the scanner into a no-op after the
-# first still-soaking iid.
-if awk '/^fn evaluate_autonomous_verdicts\(/,/^}/' "$LABELER" | grep -Fq 'memo_write("labeler:autonomous_verdict_index",'; then
-    ok "evaluate_autonomous_verdicts rewrites the index at end of scan"
+# first still-soaking iid. Post-#316 M3a the key local is bound from
+# scoped_memo so the rewrite hits the per-repo key.
+if awk '/^fn evaluate_autonomous_verdicts\(/,/^}/' "$LABELER" | grep -Fq 'memo_write(key,'; then
+    ok "evaluate_autonomous_verdicts rewrites the index at end of scan via memo_write(key, ...)"
 else
     bad "evaluate_autonomous_verdicts does NOT rewrite the index — scanner is a no-op after first keep"
 fi

@@ -433,6 +433,90 @@ a separate `federation-dashboard` release so a UI churn does not gate
 v1.0.0 of the federation. If a real install trips the limit, the fix
 is per-agent tick-interval tuning, not a change to this ADR.
 
+### Multi-repo dispatch (#316 M3)
+
+The original ADR pinned one federation to one repo. #316 lifts that to
+N repos per colony without breaking the one-federation-one-forge rule:
+all repos still share a single backend (gitlab OR github), still share
+the dispatcher, and still share the normalized JSON contract.
+
+**`--repo <owner/repo>` flag.** `forge-api.sh` learns one new flag,
+`--repo <owner/repo>`, that overrides `GITHUB_OWNER` / `GITHUB_REPO` /
+`GITHUB_TOKEN` / `GITHUB_URL` / `GITHUB_ME` for the duration of one
+wrapper invocation. The dispatcher pre-scans argv, consumes the two
+tokens, and re-exports the resolved env vars by delegating
+`(owner, repo) → {token, url, me}` lookup to a small Python helper
+(`tools/forge-resolve-repo.py`) that reads `GITHUB_REPOS_JSON` (the
+M2-shipped env carrying the resolved per-repo list). Tokens flow
+through the environment, never argv — they would otherwise appear on
+`ps`. The flag is stripped from argv before the backend wrapper runs,
+so each per-colony `github-api.sh` stays byte-identical at the
+verb-parser level. `github-api.sh` also defensively strips a leftover
+`--repo` to harden against direct-invoke calls that bypass the
+dispatcher; the `gitlab-api.sh` arm silently strips `--repo` too,
+because GitLab multi-repo runtime is post-M6.
+
+**Agent iteration pattern.** Each `.ag` agent's `tick()` becomes a
+fan-out over `tools/iter-repos.sh`, which emits one tab-separated
+`<owner>\t<repo>\t<url>\t<me>` line per repository (sourced from
+`GITHUB_REPOS_JSON` when set, otherwise from the legacy single-repo
+env). The legacy tick body becomes `tick_for_repo(owner, repo)`, and
+the agent recurses through the spool calling `tick_for_repo` once per
+record. `.ag` has no `for` / `while` — recursion is the only loop
+shape (labeler.ag's `eval_autonomous_at` is the canonical precedent).
+Five small helper functions added to each agent — `repo_arg`,
+`repo_tag`, `scoped_memo`, `repo_field`, `tick_at` — wrap `--repo`
+appending, learn-tag construction, memo-key scoping, TSV field
+extraction, and the recursive iterator. `repo_arg("","")` returns `""`,
+`repo_tag("","")` returns `""`, `scoped_memo("","",suffix)` returns
+`suffix` unchanged: this is the empty-owner sentinel that single-block
+configs ride to byte-identical output.
+
+**Experience tagging.** Every `learn(...)` row inside `tick_for_repo`
+gets a `repo:<owner>/<name>` tag appended to its tag list (skipped on
+the empty-owner sentinel path). Auto-promote (`tools/auto-promote.sh`)
+treats unknown tags as no-ops by construction, so pre-M3 rows that
+lack the tag continue to influence promotion decisions. The
+`evidence.prereqs` aggregation stays keyed by agent (not by
+`(agent, repo)`) — splitting per-repo would shatter promotion buckets
+and pin every newly-added repo at `dormant` until it accumulates its
+own row history. Per-repo confidence keys are explicitly deferred to
+M4.
+
+**Memo scoping.** Per-repo state memos use the
+`<owner>__<repo>:<suffix>` prefix (e.g.
+`acme__frontend:labeler:autonomous_verdict_index`). The double-underscore
+separator between owner and repo avoids `/` in memo keys (which the
+runtime treats as a path component). The unscoped form remains valid
+throughout the v1.x line for back-compat. M4 lands the
+fallback-keying scheme that lets `tier()` for agent X on repo R look
+for `X:R:confidence` first then fall back to `X:confidence`.
+
+**Single-block byte-identity (load-bearing).**
+`tools/test-single-block-byte-identity.sh` is the CI defence: it runs
+the same agent against (a) a legacy `[forge.github]` config and (b) a
+single-entry `[[forge.github]]` config with `GITHUB_REPOS_JSON`
+exported, and asserts identical memo keys + experience row count + bus
+emit count. The `iter-repos.sh` collapse rule (a single valid
+GITHUB_REPOS_JSON entry collapses to the legacy fallback's sentinel
+TSV line shape) is what makes this work — both code paths converge on
+`tick_for_repo("", "")` so the per-repo helpers all return their
+empty-owner sentinels.
+
+**Rate-limit projection.** Per-repo polls multiply request count by N.
+The §"Rate limits" projection above (~2500 req/h for one repo) becomes
+~2500 × N at full per-repo iteration. GitHub's 5000 req/h authenticated
+ceiling is comfortable through N=2 with no tuning; N=3+ may need
+per-agent `tick_interval_for()` extension. A dedicated per-repo
+rate-limit dashboard tile is deferred to M5 (it depends on
+`/rate-limit-status` per-token, which the wrappers expose for free
+once `--repo` lands).
+
+**Deferred from M3.** Per-repo confidence keys (M4); per-repo trigger
+label vocabulary (M5); per-repo rate-limit dashboard tile (M5);
+single-block retirement / MAJOR bump to v2.0.0 (M6); GitLab multi-repo
+runtime (post-M6).
+
 ### Testing
 
 - `tools/test-forge-api.sh` (new) — fixture-based replay harness.
