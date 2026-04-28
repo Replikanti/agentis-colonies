@@ -1,0 +1,33 @@
+# Tribe Gamma Colony Configuration
+#
+# Part of the Tribes Bench federation.
+# Copy to colony.toml and edit for your environment.
+
+[colony]
+name = "tribe-gamma"
+tick_interval_ms = 60000
+
+# tribes-bench is a non-forge federation (#373, ADR-0003). The hunter
+# agent reads a checked-in synthetic Rust file under TARGET_DIR and runs
+# the deterministic verifier under VERIFIER_PATH; no Stage 0 agent calls
+# forge-api.sh. `forge.type = "none"` is the explicit non-forge marker
+# recognised by colony-lint — no [forge.gitlab] / [forge.github] sub-block
+# is required. See ADR-0002 for the forge-bound contract this opts out of.
+[forge]
+type = "none"
+
+[llm]
+# Only "backend" is read today. "cli" uses the agentis daemon default CLI
+# adapter. Stage 0 expects Claude CLI on $PATH (subscription-backed; no
+# per-token API cost). Override via STAGE0_LLM_BACKEND if needed.
+backend = "cli"
+
+# Agent definitions
+# Each agent runs as a separate agentis daemon process.
+# They discover each other via colony UDP and communicate over TCP emit/listen.
+
+[[agents]]
+name = "hunter"
+source = "agents/hunter.ag"
+cb_budget = 800
+tick_interval_ms = 60000
