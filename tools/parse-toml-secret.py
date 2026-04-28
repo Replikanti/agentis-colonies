@@ -105,6 +105,115 @@ def lookup(path, section, key):
     return ''
 
 
+# ---------------- Array-of-tables lookup (#316 M1) ----------------
+
+def _array_lookup(path, section):
+    """Return list[dict] for every `[[<section>]]` block in source order.
+
+    Each dict carries the raw `key = value` pairs found inside that array
+    entry, with surrounding quotes stripped (mirrors `lookup()`).
+
+    Single-table headers `[<section>]` and any other `[...]` headers
+    close the currently open entry (a single-table sibling section ends
+    array-entry parsing for `<section>`).
+
+    `secret://` URIs are returned as-is — the caller resolves on demand
+    via `--array-get`, never at walk time, so callers that only count
+    do not pay a `secret-tool` round-trip per entry.
+    """
+    entries = []
+    in_array = False
+    array_header = "[[" + section + "]]"
+    with open(path, "r", encoding="utf-8") as f:
+        for raw in f:
+            line = _strip_inline_comment(raw).rstrip("\n")
+            stripped = line.strip()
+            if stripped.startswith("[[") and stripped.endswith("]]"):
+                hdr = stripped[2:-2].strip()
+                if hdr == section:
+                    entries.append({})
+                    in_array = True
+                else:
+                    in_array = False
+                continue
+            if stripped.startswith("[") and stripped.endswith("]"):
+                in_array = False
+                continue
+            if not in_array:
+                continue
+            if "=" not in stripped:
+                continue
+            key_part, _, value_part = stripped.partition("=")
+            k = key_part.strip()
+            if not k:
+                continue
+            value = value_part.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                value = value[1:-1]
+            entries[-1][k] = value
+    return entries
+
+
+def _array_main(argv):
+    """Dispatch the three new array-of-tables argv shapes.
+
+    --array-count <path> <section>            -> integer count on stdout
+    --array-get   <path> <section> <idx> <key> -> scalar (resolves secret://)
+    --array-keys  <path> <section> <idx>       -> newline-separated key list
+    """
+    op = argv[0]
+    if op == '--array-count':
+        if len(argv) != 3:
+            sys.stderr.write('Usage: %s --array-count <path> <section>\n' % sys.argv[0])
+            return 2
+        _, path, section = argv
+        entries = _array_lookup(path, section)
+        sys.stdout.write('%d\n' % len(entries))
+        return 0
+    if op == '--array-get':
+        if len(argv) != 5:
+            sys.stderr.write('Usage: %s --array-get <path> <section> <idx> <key>\n' % sys.argv[0])
+            return 2
+        _, path, section, idx_str, key = argv
+        try:
+            idx = int(idx_str)
+        except ValueError:
+            sys.stderr.write('parse-toml-secret: --array-get IDX must be an integer (got %r)\n' % idx_str)
+            return 2
+        entries = _array_lookup(path, section)
+        if idx < 0 or idx >= len(entries):
+            return 0
+        value = entries[idx].get(key, '')
+        if not value:
+            return 0
+        if value.startswith('secret://'):
+            sys.stdout.write(resolve(value))
+            sys.stdout.write('\n')
+        else:
+            sys.stdout.write(value)
+            sys.stdout.write('\n')
+        return 0
+    if op == '--array-keys':
+        if len(argv) != 4:
+            sys.stderr.write('Usage: %s --array-keys <path> <section> <idx>\n' % sys.argv[0])
+            return 2
+        _, path, section, idx_str = argv
+        try:
+            idx = int(idx_str)
+        except ValueError:
+            sys.stderr.write('parse-toml-secret: --array-keys IDX must be an integer (got %r)\n' % idx_str)
+            return 2
+        entries = _array_lookup(path, section)
+        if idx < 0 or idx >= len(entries):
+            return 0
+        for k in entries[idx].keys():
+            sys.stdout.write(k)
+            sys.stdout.write('\n')
+        return 0
+    sys.stderr.write('parse-toml-secret: unknown array op %r\n' % op)
+    return 2
+
+
 # ---------------- secret:// resolution ----------------
 
 def _decode_segment(seg):
@@ -269,6 +378,14 @@ def main():
             sys.stdout.write(value)
             sys.stdout.write('\n')
         return 0
+    # New (#316 M1): array-of-tables count + per-index lookup. Three argv shapes:
+    #   --array-count <path> <section>            -> integer count on stdout
+    #   --array-get   <path> <section> <idx> <key> -> scalar value or empty
+    #   --array-keys  <path> <section> <idx>       -> newline-separated key list
+    # `<section>` is the inner-table name, e.g. `forge.github`. The lookup
+    # walks `[[<section>]]` headers in order, 0-indexed.
+    if argv and argv[0] in ('--array-count', '--array-get', '--array-keys'):
+        return _array_main(argv)
     if len(argv) != 3:
         sys.stderr.write('Usage: %s <path> <section> <key>\n' % sys.argv[0])
         sys.stderr.write('   or: %s --resolve <value>\n' % sys.argv[0])

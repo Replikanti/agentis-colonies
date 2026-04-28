@@ -114,10 +114,27 @@ try:
 except ImportError:
     import tomli as tomllib
 
+# #316 M1: scan the raw text for the both-forms-present case so we emit a
+# migration-friendly error instead of the bare TOMLDecodeError tomllib
+# would otherwise raise. Mirror checks for both [forge.github] and
+# [forge.gitlab].
+with open(sys.argv[1], 'r', encoding='utf-8') as _f:
+    _raw_lines = [ln.strip() for ln in _f]
+
+errors = []
+for _backend in ('github', 'gitlab'):
+    _has_single = any(ln == '[forge.' + _backend + ']' for ln in _raw_lines)
+    _has_multi  = any(ln == '[[forge.' + _backend + ']]' for ln in _raw_lines)
+    if _has_single and _has_multi:
+        errors.append('config has both [forge.' + _backend + '] and [[forge.' + _backend + ']] — pick one (run tools/migrate-to-multi-repo.sh to migrate)')
+
+if errors:
+    print('\n'.join(errors))
+    sys.exit(1)
+
 with open(sys.argv[1], 'rb') as f:
     data = tomllib.load(f)
 
-errors = []
 if 'colony' not in data:
     errors.append('missing [colony] section')
 if 'gitlab' in data:
@@ -135,10 +152,45 @@ else:
         # sub-block is required and any present sub-block is ignored. ADR-0002
         # remains normative for forge-bound colonies.
         pass
-    elif forge_type == 'gitlab' and 'gitlab' not in data['forge']:
-        errors.append('[forge].type = \"gitlab\" but [forge.gitlab] is missing')
-    elif forge_type == 'github' and 'github' not in data['forge']:
-        errors.append('[forge].type = \"github\" but [forge.github] is missing')
+    elif forge_type == 'gitlab':
+        # Pre-#316 contract preserved: gitlab uses 'project' (not 'owner'/
+        # 'repo'); legacy single-table presence is the only post-#256
+        # invariant. Multi-repo for gitlab is symmetric to github but the
+        # required-keys list differs (project vs owner/repo); M1 ships
+        # github-only key validation per the plan, gitlab still gets the
+        # presence-only check it had before.
+        sub = data['forge'].get('gitlab')
+        if sub is None:
+            errors.append('[forge].type = \"gitlab\" but [forge.gitlab] (or [[forge.gitlab]]) is missing')
+        elif isinstance(sub, list) and not sub:
+            errors.append('[[forge.gitlab]] array is empty (need >= 1 entry)')
+    elif forge_type == 'github':
+        # #316 M1: accept either a single-table [forge.github] OR an
+        # array-of-tables [[forge.github]]. tomllib surfaces the latter as a
+        # Python list, the former as a dict. Both forms in one file are
+        # rejected by the raw-text pre-check above, so by the time we get
+        # here we know we are looking at exactly one shape.
+        gh = data['forge'].get('github')
+        if gh is None:
+            errors.append('[forge].type = \"github\" but [forge.github] (or [[forge.github]]) is missing')
+        elif isinstance(gh, list):
+            # Multi-repo schema (#316 M1). Each entry must carry owner+repo.
+            if not gh:
+                errors.append('[[forge.github]] array is empty (need >= 1 entry)')
+            for i, entry in enumerate(gh):
+                if not isinstance(entry, dict):
+                    errors.append(f'[[forge.github]][{i}] is not a table')
+                    continue
+                for required_key in ('owner', 'repo'):
+                    if not entry.get(required_key):
+                        errors.append(f'[[forge.github]][{i}] missing required key: {required_key}')
+        elif isinstance(gh, dict):
+            # Legacy single-block schema. Still supported in M1.
+            for required_key in ('owner', 'repo'):
+                if not gh.get(required_key):
+                    errors.append(f'[forge.github] missing required key: {required_key}')
+        else:
+            errors.append(f'[forge.github] is wrong type: {type(gh).__name__}')
 if 'llm' not in data:
     errors.append('missing [llm] section')
 if 'agents' not in data or not isinstance(data['agents'], list) or len(data['agents']) == 0:
@@ -513,6 +565,11 @@ while IFS= read -r -d '' cfg; do
         stripped="${line#"${line%%[![:space:]]*}"}"
         case "$stripped" in
             \[forge.*\]*)
+                # Matches both legacy `[forge.github]` and #316 M1
+                # array-of-tables `[[forge.github]]` headers — the
+                # trailing `*` in the glob consumes the second `]` and
+                # another `[`. Scope check is intentionally loose: any
+                # line under any [forge.*] table gets token-scanned.
                 in_forge=1
                 continue
                 ;;

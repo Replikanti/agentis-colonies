@@ -151,7 +151,9 @@ cb_budget = 100
 TOML
 
 out="$(run_lint_on "fed-3-github-missing" || true)"
-if printf '%s\n' "$out" | grep -q '\[forge\].type = "github" but \[forge.github\] is missing'; then
+# #316 M1 widened the missing-block error message to mention the
+# alternate `[[forge.github]]` array-of-tables shape.
+if printf '%s\n' "$out" | grep -q '\[forge\].type = "github" but \[forge.github\] (or \[\[forge.github\]\]) is missing'; then
     pass "test 3: forge.type=github with no [forge.github] still fails"
 else
     fail "test 3: forge.type=github with no [forge.github] still fails" \
@@ -176,7 +178,9 @@ cb_budget = 100
 TOML
 
 out="$(run_lint_on "fed-4-gitlab-missing" || true)"
-if printf '%s\n' "$out" | grep -q '\[forge\].type = "gitlab" but \[forge.gitlab\] is missing'; then
+# #316 M1 widened the missing-block error message to mention the
+# alternate `[[forge.gitlab]]` array-of-tables shape.
+if printf '%s\n' "$out" | grep -q '\[forge\].type = "gitlab" but \[forge.gitlab\] (or \[\[forge.gitlab\]\]) is missing'; then
     pass "test 4: forge.type=gitlab with no [forge.gitlab] still fails"
 else
     fail "test 4: forge.type=gitlab with no [forge.gitlab] still fails" \

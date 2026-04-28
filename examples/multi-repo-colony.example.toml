@@ -1,0 +1,30 @@
+# Multi-repo example (#316). One colony serving two GitHub repos.
+# Each [[forge.github]] entry is independent; agents iterate them per tick.
+# Per-repo trigger labels, confidence, and rate-limit metrics follow.
+
+[colony]
+name = "triage"
+
+[forge]
+type = "github"
+
+[[forge.github]]
+url   = "https://api.github.com"
+owner = "acme"
+repo  = "frontend"
+token = "secret://libsecret/agentis-colonies/github-acme-frontend"
+me    = "alice"
+labels = { trigger = "needs-triage" }   # per-repo override
+
+[[forge.github]]
+url   = "https://api.github.com"
+owner = "acme"
+repo  = "backend"
+token = "secret://libsecret/agentis-colonies/github-acme-backend"
+me    = "alice"
+labels = { trigger = "triage-me" }      # different label vocabulary
+
+[[agents]]
+name = "router"
+source = "agents/router.ag"
+cb_budget = 400
