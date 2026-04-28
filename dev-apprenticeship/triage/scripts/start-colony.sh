@@ -111,28 +111,78 @@ case "$FORGE_TYPE" in
         export GITLAB_ME
         ;;
     github)
-        GITHUB_URL=$(parse_toml forge.github url)
-        GITHUB_URL="${GITHUB_URL:-https://api.github.com}"
-        GITHUB_OWNER=$(parse_toml forge.github owner)
-        GITHUB_REPO=$(parse_toml forge.github repo)
-        GITHUB_TOKEN=$(parse_toml forge.github token)
-        GITHUB_ME=$(parse_toml forge.github me)
+        # #316 M2: detect single-block [forge.github] vs array-of-tables
+        # [[forge.github]]. parse_toml_array_count returns 0 for the legacy
+        # single-table shape, N>0 for the new shape. M1's lint guarantees
+        # exactly one shape is present (both-forms is a hard fail).
+        REPO_COUNT=$(parse_toml_array_count forge.github)
+        REPO_COUNT="${REPO_COUNT:-0}"
 
-        if [ -z "$GITHUB_OWNER" ] || [ -z "$GITHUB_REPO" ] || [ -z "$GITHUB_TOKEN" ]; then
-            echo "Error: GitHub config incomplete in $CONFIG"
-            echo "Required: owner, repo, token under [forge.github]"
-            exit 1
+        if [ "$REPO_COUNT" = "0" ]; then
+            # Legacy single-block path — byte-identical to pre-#316 behaviour.
+            GITHUB_URL=$(parse_toml forge.github url)
+            GITHUB_URL="${GITHUB_URL:-https://api.github.com}"
+            GITHUB_OWNER=$(parse_toml forge.github owner)
+            GITHUB_REPO=$(parse_toml forge.github repo)
+            GITHUB_TOKEN=$(parse_toml forge.github token)
+            GITHUB_ME=$(parse_toml forge.github me)
+
+            if [ -z "$GITHUB_OWNER" ] || [ -z "$GITHUB_REPO" ] || [ -z "$GITHUB_TOKEN" ]; then
+                echo "Error: GitHub config incomplete in $CONFIG"
+                echo "Required: owner, repo, token under [forge.github]"
+                exit 1
+            fi
+
+            export GITHUB_URL GITHUB_OWNER GITHUB_REPO GITHUB_TOKEN GITHUB_ME
+            # GITHUB_REPOS_JSON intentionally NOT exported on this path —
+            # M3 agents probe `${GITHUB_REPOS_JSON:-}` and fall back to the
+            # single-repo flow when empty.
+        else
+            # #316 M2: multi-block path. Build a JSON array of every entry
+            # and export as GITHUB_REPOS_JSON; back-compat-export entry [0]
+            # as GITHUB_OWNER/GITHUB_REPO/etc. so M2-only deployments (no
+            # M3 agents yet) keep working against the first repo.
+            REPOS_JSON_TMP=""
+            FIRST_OWNER=""; FIRST_REPO=""; FIRST_TOKEN=""; FIRST_URL=""; FIRST_ME=""
+            i=0
+            while [ "$i" -lt "$REPO_COUNT" ]; do
+                ent_url=$(parse_toml_array_get forge.github "$i" url)
+                ent_url="${ent_url:-https://api.github.com}"
+                ent_owner=$(parse_toml_array_get forge.github "$i" owner)
+                ent_repo=$(parse_toml_array_get forge.github "$i" repo)
+                ent_token=$(parse_toml_array_get forge.github "$i" token)
+                ent_me=$(parse_toml_array_get forge.github "$i" me)
+
+                if [ -z "$ent_owner" ] || [ -z "$ent_repo" ] || [ -z "$ent_token" ]; then
+                    echo "Error: GitHub config incomplete in $CONFIG" >&2
+                    echo "Required: owner, repo, token under [[forge.github]] entry [$i]" >&2
+                    exit 1
+                fi
+
+                if [ "$i" = "0" ]; then
+                    FIRST_URL="$ent_url"; FIRST_OWNER="$ent_owner"; FIRST_REPO="$ent_repo"
+                    FIRST_TOKEN="$ent_token"; FIRST_ME="$ent_me"
+                fi
+
+                # Build per-entry JSON via env (NEVER argv — tokens stay off `ps`).
+                ent_json=$(GH_URL="$ent_url" GH_OWNER="$ent_owner" GH_REPO="$ent_repo" \
+                           GH_TOKEN="$ent_token" GH_ME="$ent_me" \
+                    python3 -c 'import json,os; print(json.dumps({"url":os.environ["GH_URL"],"owner":os.environ["GH_OWNER"],"repo":os.environ["GH_REPO"],"token":os.environ["GH_TOKEN"],"me":os.environ.get("GH_ME","")}))')
+
+                if [ -z "$REPOS_JSON_TMP" ]; then
+                    REPOS_JSON_TMP="$ent_json"
+                else
+                    REPOS_JSON_TMP="$REPOS_JSON_TMP,$ent_json"
+                fi
+                i=$((i + 1))
+            done
+
+            GITHUB_REPOS_JSON="[$REPOS_JSON_TMP]"
+            GITHUB_URL="$FIRST_URL"; GITHUB_OWNER="$FIRST_OWNER"; GITHUB_REPO="$FIRST_REPO"
+            GITHUB_TOKEN="$FIRST_TOKEN"; GITHUB_ME="$FIRST_ME"
+
+            export GITHUB_URL GITHUB_OWNER GITHUB_REPO GITHUB_TOKEN GITHUB_ME GITHUB_REPOS_JSON
         fi
-
-        # Use the project-raw variable name for the summary echo below so
-        # both branches can share one format string. Value is informational.
-        GITLAB_PROJECT_RAW="$GITHUB_OWNER/$GITHUB_REPO"
-
-        export GITHUB_URL
-        export GITHUB_OWNER
-        export GITHUB_REPO
-        export GITHUB_TOKEN
-        export GITHUB_ME
         ;;
     *)
         echo "Error: unknown [forge].type '$FORGE_TYPE' in $CONFIG (expected: gitlab|github)" >&2
