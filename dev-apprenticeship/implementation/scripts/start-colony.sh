@@ -231,6 +231,17 @@ export IMPLEMENTATION_REQUIRE_ASSIGNEE
 export GITLAB_DEFAULT_BRANCH
 export COLONY_DIR
 
+# #316 M5a: --print-repos-json probe for the federation-dashboard collector.
+# Emits the GITHUB_REPOS_JSON value (empty string for legacy single-block
+# configs) and exits. Probed once per colony per dashboard regen so the
+# collector can fan rate-limit + per-(agent, repo) memo lookups out across
+# every entry. Placed right after env load so the probe is fast (no daemon
+# launches, no memo seeding) and stays cheap to call every refresh cycle.
+if [ "${1:-}" = "--print-repos-json" ]; then
+    echo "${GITHUB_REPOS_JSON:-}"
+    exit 0
+fi
+
 # #291: seed code_writer:require_assignee memo so the .ag agent can read the
 # knob via recall_latest() and pick the `--include-unassigned` forge flag on
 # assigned-issues polls. Skipped on single-agent respawn / rate-limit-status
@@ -238,6 +249,26 @@ export COLONY_DIR
 if [ -z "$RESTART_AGENT" ] && [ "$RATE_LIMIT_STATUS" = "0" ]; then
     FED_ROOT="$(cd "$REPO_ROOT/dev-apprenticeship" && pwd)"
     (cd "$FED_ROOT" && agentis memo set code_writer:require_assignee "$IMPLEMENTATION_REQUIRE_ASSIGNEE" >/dev/null 2>&1) || true
+
+    # #316 M5a: per-repo trigger label memo seeding. When the colony is
+    # configured with [[forge.github]] array form (REPO_COUNT > 0), loop
+    # entries and seed `<owner>__<repo>:implementation:labels:trigger` for
+    # each entry that declares an inline `labels = { trigger = "..." }`
+    # value. Single-block configs (REPO_COUNT=0) skip this loop entirely
+    # — implementation has no legacy unscoped trigger memo, only the
+    # IMPLEMENTATION_TRIGGER_LABEL env var, so this is purely additive.
+    if [ "${REPO_COUNT:-0}" -gt 0 ]; then
+        i=0
+        while [ "$i" -lt "$REPO_COUNT" ]; do
+            ent_owner=$(parse_toml_array_get forge.github "$i" owner)
+            ent_repo=$(parse_toml_array_get forge.github "$i" repo)
+            ent_trigger=$(parse_toml_array_get_inline forge.github "$i" labels trigger)
+            if [ -n "$ent_owner" ] && [ -n "$ent_repo" ] && [ -n "$ent_trigger" ]; then
+                (cd "$FED_ROOT" && agentis memo set "${ent_owner}__${ent_repo}:implementation:labels:trigger" "$ent_trigger" >/dev/null 2>&1) || true
+            fi
+            i=$((i + 1))
+        done
+    fi
 fi
 
 AGENTS=(

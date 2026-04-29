@@ -74,6 +74,14 @@ is asserted until multi-version CI is in place.
   writes ship in a follow-up; until then the sidecar continues to write only
   the unscoped key. `colony-lint.sh` gains a check failing on direct `tier()`
   calls inside `fn tick_for_repo`.
+- Multi-repo runtime (#316 M5): per-repo trigger label memo seeding. `triage`,
+  `planning`, and `implementation` start-colony.sh now read each
+  `[[forge.github]]` entry's `labels = { trigger = "..." }` inline table and
+  seed `<owner>__<repo>:<colony>:labels:trigger` on full-colony bootstrap.
+  Single-block configs continue to seed only the legacy unscoped vocabulary
+  memos. `tools/parse-toml.sh` grows `parse_toml_array_get_inline` for
+  inline-table subkey lookup. **Recommends:** federation-dashboard >= **0.8.0**
+  (M5b) for the per-repo Forge Rate Limits + confidence overlay on dashboard.
 
 ### Deprecated
 

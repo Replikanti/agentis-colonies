@@ -267,6 +267,101 @@ else
          "A: $EMIT_A / B: $EMIT_B"
 fi
 
+# --- Test 6: collector forge_rate_limits shape byte-identity (#316 M5a) -
+# M5a extends the dashboard collector to fan rate-limit fetches out per
+# repo when N>=2. The byte-identity guarantee for legacy operators must
+# hold for BOTH single-block (no GITHUB_REPOS_JSON) AND N=1 multi-block
+# (single-entry GITHUB_REPOS_JSON). Both must produce the v0.7.0 scalar
+# `{remaining, limit, reset_at}` shape — no `repos[]`, no `aggregate`.
+# Builds two minimal fixture colonies whose start-colony.sh stubs differ
+# only in their --print-repos-json output (empty vs 1-entry JSON), runs
+# the collector against each, and asserts the emitted forge_rate_limits
+# record is shape-identical.
+COLLECTOR="$REPO_ROOT/federation-dashboard/lib/federation-dashboard-collector.py"
+if [ -f "$COLLECTOR" ]; then
+    TEST6_DIR="$TMPDIR_TEST/test6"
+    FED_LEGACY="$TEST6_DIR/legacy"
+    FED_MULTI1="$TEST6_DIR/multi1"
+    COLONY6="solo"
+    for fed in "$FED_LEGACY" "$FED_MULTI1"; do
+        mkdir -p "$fed/$COLONY6/scripts" "$fed/$COLONY6/agents" \
+                 "$fed/$COLONY6/config" \
+                 "$fed/.agentis/logs" "$fed/.agentis/experience"
+    done
+    # Legacy single-block: --print-repos-json prints nothing.
+    cat > "$FED_LEGACY/$COLONY6/scripts/start-colony.sh" <<'SCRIPT_LEG'
+#!/bin/bash
+if [ "$1" = "--print-repos-json" ]; then exit 0; fi
+if [ "$1" = "--rate-limit-status" ]; then
+    echo '{"remaining": 4321, "limit": 5000, "reset_at": "2026-04-29T12:00:00Z"}'
+    exit 0
+fi
+exit 0
+SCRIPT_LEG
+    chmod +x "$FED_LEGACY/$COLONY6/scripts/start-colony.sh"
+    # N=1 multi-block: --print-repos-json prints a 1-entry JSON array.
+    # The collector's `len(repos) >= 2` guard means N=1 falls through
+    # to the scalar code path — same byte-identity contract as legacy.
+    cat > "$FED_MULTI1/$COLONY6/scripts/start-colony.sh" <<'SCRIPT_M1'
+#!/bin/bash
+if [ "$1" = "--print-repos-json" ]; then
+    echo '[{"owner":"acme","repo":"only","token":"x","url":"https://api.github.com"}]'
+    exit 0
+fi
+if [ "$1" = "--rate-limit-status" ]; then
+    echo '{"remaining": 4321, "limit": 5000, "reset_at": "2026-04-29T12:00:00Z"}'
+    exit 0
+fi
+exit 0
+SCRIPT_M1
+    chmod +x "$FED_MULTI1/$COLONY6/scripts/start-colony.sh"
+
+    OUT_LEG="$TEST6_DIR/legacy.json"
+    OUT_M1="$TEST6_DIR/multi1.json"
+    for run in legacy multi1; do
+        if [ "$run" = "legacy" ]; then
+            FED_DIR_RUN="$FED_LEGACY"
+            OUT_RUN="$OUT_LEG"
+        else
+            FED_DIR_RUN="$FED_MULTI1"
+            OUT_RUN="$OUT_M1"
+        fi
+        python3 "$COLLECTOR" \
+            '[]' \
+            '[]' \
+            "$FED_DIR_RUN" \
+            "$(date '+%s')" \
+            "$FED_DIR_RUN/.agentis/experience" \
+            "$FED_DIR_RUN/.agentis/logs" \
+            "$TEST6_DIR/dash" \
+            "[\"$COLONY6\"]" \
+            "" \
+            > "$OUT_RUN" 2>"$TEST6_DIR/$run.err"
+    done
+
+    if python3 -c "
+import json, sys
+with open('$OUT_LEG') as f:
+    a = json.load(f).get('forge_rate_limits', {}).get('$COLONY6', {})
+with open('$OUT_M1') as f:
+    b = json.load(f).get('forge_rate_limits', {}).get('$COLONY6', {})
+# Both must be scalar shape: same keys, same values.
+assert set(a.keys()) == set(b.keys()), 'key sets differ: legacy=%s n1=%s' % (sorted(a.keys()), sorted(b.keys()))
+assert 'repos' not in a and 'repos' not in b, 'repos[] leaked into single-block path'
+assert 'aggregate' not in a and 'aggregate' not in b, 'aggregate leaked into single-block path'
+assert a.get('remaining') == b.get('remaining'), 'remaining differs: %r vs %r' % (a.get('remaining'), b.get('remaining'))
+assert a.get('limit') == b.get('limit'), 'limit differs'
+assert a.get('reset_at') == b.get('reset_at'), 'reset_at differs'
+" 2>"$TEST6_DIR/assert.err"; then
+        pass "test 6: collector forge_rate_limits shape byte-identical for single-block AND N=1 multi-block (#316 M5a)"
+    else
+        fail "test 6: collector forge_rate_limits shape regressed" \
+             "$(cat "$TEST6_DIR/assert.err")"
+    fi
+else
+    echo "[SKIP] test 6: collector not found at $COLLECTOR"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -193,6 +193,17 @@ esac
 export FORGE_TYPE
 export COLONY_DIR
 
+# #316 M5a: --print-repos-json probe for the federation-dashboard collector.
+# Emits the GITHUB_REPOS_JSON value (empty string for legacy single-block
+# configs) and exits. Probed once per colony per dashboard regen so the
+# collector can fan rate-limit + per-(agent, repo) memo lookups out across
+# every entry. Placed right after env load so the probe is fast (no daemon
+# launches, no memo seeding) and stays cheap to call every refresh cycle.
+if [ "${1:-}" = "--print-repos-json" ]; then
+    echo "${GITHUB_REPOS_JSON:-}"
+    exit 0
+fi
+
 AGENTS=(
     style_reviewer
     logic_reviewer
