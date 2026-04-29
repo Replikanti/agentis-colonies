@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-04-29
+
 ### Added
 
 - **dashboard**: per-repo Forge Rate Limits — multi-repo colonies (`[[forge.github]]` with N>=2 entries) now render one rate-limit row per repo inside the per-colony modal, with a colony-wide aggregate footer (sum-of-remaining / sum-of-limit, earliest reset_at). Single-block and N=1 multi-block colonies keep the v0.7.0 single-row layout byte-identical. New `data.forge_rate_limits[colony].repos[]` shape on multi-repo. (#316 M5)
@@ -767,7 +769,8 @@ First release as a standalone component. Code extracted from
 For history prior to extraction, see
 `git log -- tools/federation-dashboard*`.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.7.0...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.8.0...HEAD
+[0.8.0]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.7.0...federation-dashboard-v0.8.0
 [0.7.0]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.6.0...federation-dashboard-v0.7.0
 [0.6.0]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.5.0...federation-dashboard-v0.6.0
 [0.5.0]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.4.0...federation-dashboard-v0.5.0
