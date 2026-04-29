@@ -1,0 +1,55 @@
+# tribes-bench Stage 1 M3 calibration parameters.
+#
+# Consumed by `tools/run-stage1.sh` — exported into the federation
+# environment as INITIAL_CB / BASE_COST / K_MALTHUSIAN / MAX_REPLICAS /
+# REWARD_FULL / REWARD_SUBSEQUENT / DEATH_THRESHOLD, then seeded into
+# per-tribe memos by each colony's `start-colony.sh` before the daemon
+# loop fires.
+#
+# These defaults are *seed* values, not measured optima. AC #7 of #364
+# requires the operator to run multi-hour live calibration runs and
+# update this file. Each section below documents the reasoning behind
+# the chosen value so the operator's calibration PR can refute or refine
+# it with empirical evidence.
+
+[tribe.economy]
+# Initial CB pool seeded into each tribe at federation start. ≈ 13
+# minutes of warmup before any reward (50 CB/tick × 1 tick/min ≈ 65 min
+# of pure-cost operation; with replication gating off until first
+# verification, the worst case is the tribe's first verified bug).
+initial_cb = 1000
+
+# Replication base cost: C(0) = base = 100. C(1) = base * (1 + 1/k) =
+# 133. C(3) = base * (1 + 3/3) = 200, i.e. doubles. Gates replication
+# behind at least one verified true positive (full reward 200 + carry
+# over from initial_cb − burn).
+base_replication_cost = 100
+
+# Malthusian k. C(n) = base * (1 + n/k). k=3 → tribe size 3 doubles the
+# cost of the next replica. Higher k = slower brake; lower k = harder
+# brake. AC #2 wants natural saturation around 3-4 replicas under the
+# default reward profile.
+k_malthusian = 3
+
+# Defensive cap. Even with a runaway reward stream the tribe cannot
+# grow unbounded. Set at 5 to keep the per-host process count bounded
+# during multi-hour runs.
+max_replicas_per_tribe = 5
+
+[tribe.reward]
+# Full reward = first-finder reward. Set to 200 ≈ 4 prompt() calls so a
+# single first-find recoups the next replica cost (C(1) ≈ 133) plus
+# leaves the tribe net-positive.
+full = 200
+
+# Subsequent reward = full / 4. Asymmetric enough to favour prompt
+# diversification (first-finder bonus) without disincentivising
+# verification of bugs another tribe already found.
+subsequent = 50
+
+[tribe.death]
+# Pool falls below threshold → tribe initiates graceful sibling-stop +
+# KB preservation. 100 CB ≈ below cost of a single prompt() call;
+# without rewards a tribe drains from initial_cb (1000) to threshold
+# (100) in ~18 min at 50 CB/tick × 60 ticks/hour.
+threshold = 100

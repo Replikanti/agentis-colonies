@@ -138,6 +138,8 @@ if [ -n "$RESTART_AGENT" ]; then
         --colony tribe-beta \
         --enable-exec \
         --enable-messaging \
+        --enable-replication \
+        --allow-replica-replication \
         --tick-interval "$tick" </dev/null >/dev/null 2>&1 &
     agent_pid=$!
     sleep 0.5
@@ -149,6 +151,36 @@ if [ -n "$RESTART_AGENT" ]; then
     exit 0
 fi
 
+# Stage 1 M2+M3 memo seeds: per-tribe pool, replication cost knobs,
+# reward levels, death threshold, bug-ledger path, run dir. All derive
+# from env vars exported by tools/run-stage1.sh from calibration.toml;
+# the `:-` defaults below match calibration.toml documented values so an
+# operator can launch the federation directly without the harness for
+# Stage 0 reruns or smoke tests.
+INITIAL_CB="${INITIAL_CB:-1000}"
+BASE_COST="${BASE_COST:-100}"
+K_MALTHUSIAN="${K_MALTHUSIAN:-3}"
+MAX_REPLICAS="${MAX_REPLICAS:-5}"
+REWARD_FULL="${REWARD_FULL:-200}"
+REWARD_SUBSEQUENT="${REWARD_SUBSEQUENT:-50}"
+DEATH_THRESHOLD="${DEATH_THRESHOLD:-100}"
+BUG_LEDGER_PATH="${BUG_LEDGER_PATH:-}"
+RUN_DIR="${RUN_DIR:-}"
+agentis memo set "tribe-${TRIBE_NAME}:pool" "$INITIAL_CB" >/dev/null 2>&1 || true
+agentis memo set "tribe-${TRIBE_NAME}:size" "1" >/dev/null 2>&1 || true
+agentis memo set "tribe-${TRIBE_NAME}:replication_base_cost" "$BASE_COST" >/dev/null 2>&1 || true
+agentis memo set "tribe-${TRIBE_NAME}:replication_k" "$K_MALTHUSIAN" >/dev/null 2>&1 || true
+agentis memo set "tribe-${TRIBE_NAME}:max_replicas" "$MAX_REPLICAS" >/dev/null 2>&1 || true
+agentis memo set "tribe-${TRIBE_NAME}:reward_full" "$REWARD_FULL" >/dev/null 2>&1 || true
+agentis memo set "tribe-${TRIBE_NAME}:reward_subsequent" "$REWARD_SUBSEQUENT" >/dev/null 2>&1 || true
+agentis memo set "tribe-${TRIBE_NAME}:death_threshold" "$DEATH_THRESHOLD" >/dev/null 2>&1 || true
+if [ -n "$BUG_LEDGER_PATH" ]; then
+    agentis memo set "tribe-${TRIBE_NAME}:bug_ledger" "$BUG_LEDGER_PATH" >/dev/null 2>&1 || true
+fi
+if [ -n "$RUN_DIR" ]; then
+    agentis memo set "tribe-${TRIBE_NAME}:run_dir" "$RUN_DIR" >/dev/null 2>&1 || true
+fi
+
 echo "Starting Tribe Beta colony (${#AGENTS[@]} agents)..."
 
 for agent in "${AGENTS[@]}"; do
@@ -158,6 +190,8 @@ for agent in "${AGENTS[@]}"; do
         --colony tribe-beta \
         --enable-exec \
         --enable-messaging \
+        --enable-replication \
+        --allow-replica-replication \
         --tick-interval "$interval" &
     sleep 2
 done

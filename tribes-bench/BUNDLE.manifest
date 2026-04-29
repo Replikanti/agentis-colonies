@@ -21,10 +21,19 @@ tribes-bench/README.md
 tribes-bench/.gitignore
 tribes-bench/install.sh
 tribes-bench/start-federation.sh
+tribes-bench/calibration.toml
 
 # ----- Shared assets -----
 tribes-bench/targets/
 tribes-bench/tools/
+# Stage 1 M2+M3 (#364) tooling already covered by `tribes-bench/tools/`
+# above; explicitly listed for documentation:
+#   tribes-bench/tools/run-stage1.sh
+#   tribes-bench/tools/run-stage1-calibration.py
+#   tribes-bench/tools/analyse-stage1.py
+#   tribes-bench/tools/test-stage1-replication.sh
+#   tribes-bench/tools/test-stage1-bug-ledger.sh
+#   tribes-bench/tools/test-stage1-bug-ledger-reduce.py
 
 # ----- Per-tribe colony surface -----
 # Explicitly excludes `config/colony.toml` (operator-edited) — only the

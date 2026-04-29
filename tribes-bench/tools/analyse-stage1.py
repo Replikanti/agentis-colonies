@@ -1,46 +1,38 @@
 #!/usr/bin/env python3
-"""Stage 1 telemetry analyser for tribes-bench (#364, M1).
+"""Stage 1 telemetry analyser for tribes-bench (#364, M2+M3).
 
 Sibling of `analyse-stage0.py` — does NOT replace it. Stage 0 telemetry
 must remain reproducible byte-for-byte from `tools/run-stage0.sh`. This
-module is a copy-paste of analyse-stage0.py (revision corresponding to
-the Stage 1 M1 PR baseline) extended with three new columns:
+module is a copy-paste of analyse-stage0.py extended in M1 with three
+forward-compat columns (`bug_class`, `is_first_finder`, `tribe_size`)
+and now in M2+M3 promoted to read real signals plus two new columns
+(`replication_event_count`, `tribe_death_ts`).
 
-    bug_class         Comma-joined class(es) of verified findings in the
-                      minute. Empty when no verified finding lands.
-    is_first_finder   M1 placeholder — always 0. M3 will populate this
-                      from a shared journal under runs/<ts>/journal.jsonl
-                      (asymmetric reward signal).
-    tribe_size        M1 placeholder — always 1 (no replication yet).
-                      M2 will populate this from `agentis daemon list
-                      --colony <tribe> --json | jq '. | length'`
-                      (replication signal).
+Final M2+M3 12-column schema:
 
-Why placeholders ship in M1: keeping the schema stable across milestones
-makes M2 / M3 pure plumbing changes (no schema migration). Documented in
-README.md's Stage 1 telemetry table as well.
+    minute, tribe, agents_alive, cb_balance,
+    findings_emitted, true_positives, false_positives,
+    bug_class, is_first_finder, tribe_size,
+    replication_event_count, tribe_death_ts
 
-Reads the per-agent JSONL state under `runs/<ts>/.agentis/` and joins by
-tribe (= colony name) and minute bucket. Emits
-`runs/<ts>/telemetry.csv` with columns:
+Sources:
 
-    minute, tribe, agents_alive, cb_balance, findings_emitted,
-    true_positives, false_positives,
-    bug_class, is_first_finder, tribe_size
+    .agentis/daemon/<agent_id>.colony     plain text, tribe name
+    .agentis/experience/<agent_id>.jsonl  learn() rows with tags
+    .agentis/spend/<agent_id>.jsonl       prompt() spend rows with cb
+    <fed>/targets/stage1/bugs.json        manifest for bug_id -> class lookup
+    <run-dir>/bug-ledger.jsonl            shared M3 ledger; first-finder
+                                         determined post-hoc by min(ts)
+                                         per bug_id, sidestepping the
+                                         in-band race documented in §7.
 
-Inputs (each optional — every column degrades to 0 / "" when its source
-file is missing, so the CSV always has a header + at least one data row):
-
-  .agentis/daemon/<agent_id>.colony     plain text, tribe name
-  .agentis/experience/<agent_id>.jsonl  learn() rows with tags
-  .agentis/spend/<agent_id>.jsonl       prompt() spend rows with cb
-  <fed>/targets/stage1/bugs.json        manifest for bug_id -> class lookup
-
-Bug-class extraction: this analyser looks up `learn()` rows tagged
-`tribes-bench` + `acted` whose `outcome` field carries a Stage 1 bug_id
-(e.g. `S1-CMDINJ-001`) and joins through `targets/stage1/bugs.json`
-to derive the class. Bug-id field absent / not in manifest → row
-contributes "" to bug_class.
+`is_first_finder` is now populated from bug-ledger.jsonl: per-bug-id we
+sort the rows by ts and the lowest-ts tribe gets is_first_finder=1 in
+the row's minute bucket. `tribe_size` is the count of distinct alive
+agent_ids per (minute, tribe) (bumped by replicate()-driven daemon
+spawns). `replication_event_count` counts experience rows tagged
+`replicated`. `tribe_death_ts` is sticky from the minute the
+`died`-tagged row appears onward.
 
 Usage:
     analyse-stage1.py <runs/<ts> path>
@@ -136,6 +128,33 @@ def load_bug_class_map(fed_dir: str) -> dict[str, str]:
     return out
 
 
+def load_first_finder_map(run_dir: str) -> dict[str, tuple[str, int]]:
+    """Read bug-ledger.jsonl, group by bug_id, return {bug_id -> (tribe,
+    minute)} where (tribe, minute) is the first-finder tribe + the minute
+    of the lowest-ts row for that bug_id. Empty map when the ledger is
+    missing.
+    """
+    path = os.path.join(run_dir, "bug-ledger.jsonl")
+    if not os.path.isfile(path):
+        return {}
+    by_bug: dict[str, list[tuple[int, str]]] = defaultdict(list)
+    for rec in read_jsonl(path):
+        bug_id = rec.get("bug_id")
+        ts_ms = rec.get("ts")
+        tribe = rec.get("tribe")
+        if not isinstance(bug_id, str) or not isinstance(ts_ms, int):
+            continue
+        if not isinstance(tribe, str):
+            continue
+        by_bug[bug_id].append((ts_ms, tribe))
+    out: dict[str, tuple[str, int]] = {}
+    for bug_id, rows in by_bug.items():
+        rows.sort(key=lambda r: r[0])
+        ts_ms, tribe = rows[0]
+        out[bug_id] = (tribe, minute_of(ts_ms // 1000))
+    return out
+
+
 def main() -> None:
     run_dir = parse_args(sys.argv)
     agentis_root = os.path.join(run_dir, ".agentis")
@@ -149,6 +168,7 @@ def main() -> None:
     # different (the analyser still works, bug_class just stays "").
     fed_dir = os.path.dirname(os.path.dirname(os.path.abspath(run_dir)))
     bug_class_map = load_bug_class_map(fed_dir)
+    first_finder_map = load_first_finder_map(run_dir)
 
     agent_to_tribe = load_agent_to_tribe(daemon_dir)
 
@@ -158,6 +178,10 @@ def main() -> None:
     fp_by: dict[tuple[int, str], int] = defaultdict(int)
     cb_by: dict[tuple[int, str], int] = defaultdict(int)
     classes_by: dict[tuple[int, str], set[str]] = defaultdict(set)
+    first_finder_by: dict[tuple[int, str], int] = defaultdict(int)
+    replication_by: dict[tuple[int, str], int] = defaultdict(int)
+    death_minute_by: dict[str, int] = {}
+    death_ts_ms_by: dict[str, int] = {}
     alive_minutes: dict[str, set[int]] = defaultdict(set)
     tribe_to_agents: dict[str, set[str]] = defaultdict(set)
     for agent_id, tribe in agent_to_tribe.items():
@@ -201,8 +225,22 @@ def main() -> None:
                         cls = bug_class_map.get(outcome)
                         if cls:
                             classes_by[key].add(cls)
+                        # First-finder check: if this tribe was the
+                        # bug-ledger first-finder for this bug_id and
+                        # this is the matching minute, bump the column.
+                        ff = first_finder_map.get(outcome)
+                        if ff is not None:
+                            ff_tribe, ff_minute = ff
+                            if ff_tribe == tribe and minute == ff_minute:
+                                first_finder_by[key] += 1
                 if "false-positive" in tags:
                     fp_by[key] += 1
+                if "replicated" in tags:
+                    replication_by[key] += 1
+                if "died" in tags:
+                    if tribe not in death_ts_ms_by or ts_ms < death_ts_ms_by[tribe]:
+                        death_ts_ms_by[tribe] = ts_ms
+                        death_minute_by[tribe] = minute
 
     # --- Spend rows: cb per row, by colony field ---
     if os.path.isdir(spend_dir):
@@ -239,6 +277,7 @@ def main() -> None:
             "minute", "tribe", "agents_alive", "cb_balance",
             "findings_emitted", "true_positives", "false_positives",
             "bug_class", "is_first_finder", "tribe_size",
+            "replication_event_count", "tribe_death_ts",
         ])
 
         # Always emit at least one row per known tribe so consumers
@@ -248,8 +287,7 @@ def main() -> None:
         )
         if not all_minutes:
             for tribe in known_tribes:
-                # tribe_size placeholder = 1 in M1; is_first_finder = 0.
-                w.writerow([0, tribe, 0, 0, 0, 0, 0, "", 0, 1])
+                w.writerow([0, tribe, 0, 0, 0, 0, 0, "", 0, 0, 0, ""])
             print(out_path)
             return
 
@@ -268,8 +306,13 @@ def main() -> None:
                 alive = sum(1 for a in agents if minute in alive_minutes.get(a, set()))
                 key = (minute, tribe)
                 bug_class = ",".join(sorted(classes_by.get(key, set())))
-                # M1 placeholders: is_first_finder always 0; tribe_size
-                # always 1 (M2 wires replicate(), M3 wires journal).
+                # Sticky death timestamp: when a `died`-tagged row is
+                # observed in some minute m for `tribe`, every minute >= m
+                # carries that timestamp.
+                death_ts_str = ""
+                d_minute = death_minute_by.get(tribe)
+                if d_minute is not None and minute >= d_minute:
+                    death_ts_str = str(death_ts_ms_by.get(tribe, ""))
                 w.writerow([
                     minute,
                     tribe,
@@ -279,8 +322,10 @@ def main() -> None:
                     tp_by.get(key, 0),
                     fp_by.get(key, 0),
                     bug_class,
-                    0,
-                    1,
+                    first_finder_by.get(key, 0),
+                    alive,
+                    replication_by.get(key, 0),
+                    death_ts_str,
                 ])
 
     print(out_path)

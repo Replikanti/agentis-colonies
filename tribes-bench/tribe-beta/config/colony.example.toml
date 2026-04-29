@@ -31,3 +31,24 @@ name = "hunter"
 source = "agents/hunter.ag"
 cb_budget = 800
 tick_interval_ms = 60000
+
+# Stage 1 M2+M3 (#364) economy knobs. Operator override path: edit
+# tribes-bench/calibration.toml (consumed by tools/run-stage1.sh) and
+# rerun the harness — it exports these values into the start-colony.sh
+# environment, which seeds them into per-tribe memos before the daemon
+# loop. The values below are documentation defaults that match
+# calibration.toml; they are NOT read by start-colony.sh today.
+
+[tribe.replication]
+enabled = true
+initial_cb = 1000
+base_cost = 100
+k_malthusian = 3
+max_replicas = 5
+
+[tribe.reward]
+full = 200
+subsequent = 50
+
+[tribe.death]
+threshold = 100

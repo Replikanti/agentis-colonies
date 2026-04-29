@@ -16,6 +16,95 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **Stage 1 M2+M3 — replication, Malthusian, reward, death** ([#364](https://github.com/Replikanti/agentis-colonies/issues/364), M2+M3).
+  - All three `tribe-{alpha,beta,gamma}/agents/hunter.ag` now (a) wire
+    `replicate(target_node)` inside a Malthusian per-replica cost gate
+    (`C(n) = base + (base * n) / k` with documented `max_replicas`
+    cap), with seed-prompt mutation routed via the `hunter:prompt_variant`
+    memo set just before the replicate call (the runtime byte-copies
+    the agent, so source-level mutation is impossible — splicing the
+    variant tag through a memo sidesteps that constraint); (b) credit
+    the per-tribe pool with a first-finder full reward / subsequent
+    partial reward via the shared `runs/<ts>/bug-ledger.jsonl`, with
+    the in-band first-finder check provisional and the analyser
+    determining the canonical first-finder post-hoc by `min(ts)` per
+    `bug_id` (sidesteps the cross-process race documented in §7 of
+    the M2+M3 plan); (c) initiate tribe death via sibling-stop +
+    `agentis knowledge export` KB preservation when the pool drains
+    below the configured `death_threshold`. The death path is guarded
+    by a one-shot `tribe-<name>:death_initiated` memo so racing
+    siblings do not all run the preserve+stop sequence.
+  - All three `tribe-{alpha,beta,gamma}/scripts/start-colony.sh` now
+    pass `--enable-replication --allow-replica-replication` to BOTH
+    the main launch and the `--restart-agent` paths, and seed the
+    M2+M3 economy memos (pool, size, `replication_base_cost`,
+    `replication_k`, `max_replicas`, `reward_full`, `reward_subsequent`,
+    `death_threshold`, `bug_ledger`, `run_dir`) before the daemon
+    loop fires. Defaults match `calibration.toml` so an operator can
+    launch the federation directly without the M3 harness for Stage 0
+    reruns or smoke tests.
+  - `start-federation.sh` spawns one local `agentis worker
+    127.0.0.1:9100` per launch with a randomised per-run secret when
+    `RUN_DIR` is set (the harness path); skipped when `RUN_DIR` is
+    unset (Stage 0 reruns continue to work). Worker pid recorded in
+    `runs/<ts>/worker.pid`, log in `runs/<ts>/worker.log`. The
+    `tribes-bench:worker_addr` memo seeds the `replicate(target_node)`
+    target for each hunter.
+  - All three `tribe-{alpha,beta,gamma}/config/colony.example.toml`
+    document the new `[tribe.replication]`, `[tribe.reward]`,
+    `[tribe.death]` blocks. The values are documentation defaults
+    matching `calibration.toml`; they are NOT consumed by
+    `start-colony.sh` — calibration overrides arrive via the env from
+    `tools/run-stage1.sh`.
+  - `tribes-bench/calibration.toml` (new) — single source of truth
+    for the Stage 1 economy (initial CB pool, replication base cost,
+    Malthusian `k`, max replicas per tribe, full + subsequent reward,
+    death threshold). Each value carries an inline justification
+    comment refutable by AC #7 calibration runs.
+  - `tribes-bench/tools/run-stage1.sh` (new) — operator-facing
+    one-shot harness modeled on `run-stage0.sh`. Reads
+    `calibration.toml` via `run-stage1-calibration.py`, exports
+    economy env vars + `BUG_LEDGER_PATH` + `RUN_DIR`, expands
+    `exec.env_passthrough` so daemons can read the new env, default
+    `STAGE1_WALL_CLOCK_S=3600` (vs Stage 0's 900), captures a
+    snapshot every `STAGE1_SNAPSHOT_S=600`, runs `analyse-stage1.py`
+    at the end. Reaps the colony worker on shutdown.
+  - `tribes-bench/tools/run-stage1-calibration.py` (new) — tiny
+    stdlib helper sourced by `run-stage1.sh` to dodge the macOS bash
+    3.2 heredoc parser bug per CLAUDE.md "no heredocs in tools/*.sh"
+    invariant. Returns the requested key with a documented fallback
+    default when missing.
+  - `tools/analyse-stage1.py` extended to populate the M1
+    forward-compat columns from real signals: `is_first_finder` joined
+    from `bug-ledger.jsonl` (group by bug_id, min(ts) tribe wins),
+    `tribe_size` joined from per-agent alive minutes (replicate-driven
+    daemon spawns bump the count). Two new columns appended:
+    `replication_event_count` (`replicated`-tagged experience rows
+    per (minute, tribe)) and `tribe_death_ts` (sticky timestamp from
+    the `died`-tagged experience row onward; empty = alive). Final
+    schema: 12 columns.
+  - `tribes-bench/tools/test-stage1-replication.sh` (new) — pure
+    offline. Asserts `replicate(` calls present, Malthusian arithmetic
+    in source, `--enable-replication` on both daemon launch paths,
+    `agentis worker` spawn in `start-federation.sh`, and the M2+M3
+    memo seeds. 48 assertions; pure-shell with no agentis dependency.
+  - `tribes-bench/tools/test-stage1-bug-ledger.sh` (new) — race
+    resilience smoke. 10 background workers each append 10 simulated
+    finding rows for 10 bug_ids, then asserts the same first-finder
+    reduction `analyse-stage1.py` uses produces exactly one
+    first-finder per bug_id. Mirrors the post-hoc race resolution
+    documented in plan §7.
+  - `tribes-bench/tools/test-stage1-bug-ledger-reduce.py` (new) — the
+    reducer the bug-ledger test exercises. Same shape as
+    `analyse-stage1.load_first_finder_map` for fidelity.
+  - `BUNDLE.manifest` lists the new files (`calibration.toml`,
+    `tools/run-stage1.sh`, `tools/run-stage1-calibration.py`,
+    `tools/test-stage1-replication.sh`, `tools/test-stage1-bug-ledger.sh`,
+    `tools/test-stage1-bug-ledger-reduce.py`).
+  - Stage 0 surface (`targets/stage0/`, `tools/run-stage0.sh`,
+    `tools/analyse-stage0.py`, `tools/verify-finding.sh`,
+    `tools/test-verify-finding.sh`) untouched. Stage 0 reruns continue
+    to pass.
 - **Stage 1 infrastructure** ([#364](https://github.com/Replikanti/agentis-colonies/issues/364), M1).
   - `tribe-gamma/` colony — third seed tribe with an error-path
     data-flow seed prompt (orthogonal to tribe-alpha's `format!()`-pattern
