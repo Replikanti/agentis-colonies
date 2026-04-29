@@ -6,10 +6,12 @@
 #   Test 1: parse_toml_array_count on a 0-block config returns 0
 #   Test 2: parse_toml_array_count on a 3-block config returns 3
 #   Test 3: parse_toml_array_get returns the right owner/repo per index
-#   Test 4: legacy single-block config passes colony-lint
+#   Test 4: legacy single-block config FAILS colony-lint with v2.0.0 retirement
+#           message (#316 M6) and names tools/migrate-to-multi-repo.sh
 #   Test 5: multi-block (1 entry) passes colony-lint
 #   Test 6: multi-block (5 entries) passes colony-lint
-#   Test 7: both-forms config fails colony-lint with "pick one" message
+#   Test 7: both-forms config fails colony-lint with new "drop the [forge.github]
+#           block" wording (#316 M6)
 #   Test 8: missing owner in entry [1] fails colony-lint
 #   Test 9: empty [[forge.github]] array fails colony-lint
 #   Test 10: migration tool round-trip — legacy -> migrate -> lint -> multi-repo passes
@@ -19,6 +21,10 @@
 #   Test 14: migration preserves operator hand-edited indentation
 #   Test 15: migration on already-migrated file exits 0 with "already migrated" message
 #   Test 16: migration on bare-`[forge.gitlab]`-only config exits 3 (no github block)
+#   Test 17: migration tool on a fresh-from-template (already `[[forge.github]]`)
+#            colony.example.toml exits 0 with "already migrated" (#316 M6)
+#   Test 18: lint the post-M6 fresh dev-apprenticeship/triage/config/colony.example.toml
+#            directly — must pass (#316 M6)
 #
 # Standard scaffold: set -eu, mktemp -d isolation, EXIT trap for cleanup.
 # Auto-discovered by colony-lint.sh's tools-test loop.
@@ -132,7 +138,10 @@ else
          "owner[0]='$got_owner_0' repo[1]='$got_repo_1' repo[2]='$got_repo_2' oor='$got_oor'"
 fi
 
-# --- Test 4: legacy single-block config passes colony-lint -------------
+# --- Test 4: legacy single-block config FAILS colony-lint (#316 M6) ----
+# Post-M6 lint hard-fails on `[forge.github]` single-table form. The
+# error message must name `tools/migrate-to-multi-repo.sh` so operators
+# upgrading from v1.x have an actionable migration step.
 make_fixture "fed-4-legacy" "col-a" <<'TOML'
 [colony]
 name = "col-a"
@@ -156,11 +165,12 @@ source = "agents/demo.ag"
 cb_budget = 100
 TOML
 out="$(run_lint_on "fed-4-legacy" || true)"
-if printf '%s\n' "$out" | grep -q "fed-4-legacy/col-a: config OK"; then
-    pass "test 4: legacy single-block config passes colony-lint"
+if printf '%s\n' "$out" | grep -q 'single-table form is retired in v2.0.0' \
+   && printf '%s\n' "$out" | grep -q 'tools/migrate-to-multi-repo.sh'; then
+    pass "test 4: legacy single-block config FAILS colony-lint with v2.0.0 retirement message and migration command (#316 M6)"
 else
-    fail "test 4: legacy single-block config passes colony-lint" \
-         "expected '[PASS] fed-4-legacy/col-a: config OK', got: $out"
+    fail "test 4: legacy single-block config FAILS colony-lint with v2.0.0 retirement message and migration command (#316 M6)" \
+         "expected 'single-table form is retired in v2.0.0' AND 'tools/migrate-to-multi-repo.sh' in output, got: $out"
 fi
 
 # --- Test 5: multi-block (1 entry) passes colony-lint ------------------
@@ -243,7 +253,7 @@ else
          "expected '[PASS] fed-6-multi-5/col-c: config OK', got: $out"
 fi
 
-# --- Test 7: both-forms config fails colony-lint with "pick one" -------
+# --- Test 7: both-forms config fails colony-lint (#316 M6 wording) -----
 make_fixture "fed-7-both-forms" "col-d" <<'TOML'
 [colony]
 name = "col-d"
@@ -270,11 +280,11 @@ source = "agents/demo.ag"
 cb_budget = 100
 TOML
 out="$(run_lint_on "fed-7-both-forms" || true)"
-if printf '%s\n' "$out" | grep -q 'pick one (run tools/migrate-to-multi-repo.sh'; then
-    pass "test 7: both-forms config fails colony-lint with 'pick one' message"
+if printf '%s\n' "$out" | grep -q 'drop the \[forge.github\] block'; then
+    pass "test 7: both-forms config fails colony-lint with 'drop the [forge.github] block' message"
 else
-    fail "test 7: both-forms config fails colony-lint with 'pick one' message" \
-         "expected 'pick one (run tools/migrate-to-multi-repo.sh' in output, got: $out"
+    fail "test 7: both-forms config fails colony-lint with 'drop the [forge.github] block' message" \
+         "expected 'drop the [forge.github] block' in output, got: $out"
 fi
 
 # --- Test 8: missing owner in entry [1] fails colony-lint --------------
@@ -516,6 +526,107 @@ if [ "$rc16" -eq 3 ]; then
 else
     fail "test 16: migration on bare-[forge.gitlab]-only config exits 3 (no github block)" \
          "rc=$rc16 out='$out16'"
+fi
+
+# --- Test 17: migrate on fresh-from-template colony.example.toml -------
+# Post-#316 M6 the 5 dev-apprenticeship colony.example.toml templates ship
+# the array-of-tables `[[forge.github]]` form. After an operator has
+# uncommented the github block (via dev-apprenticeship/install.sh's writer
+# step or by hand), the config carries an active `[[forge.github]]`
+# header. Running the migration tool on this fresh-active-github shape
+# MUST be a no-op and print "already migrated" — operators bootstrapping
+# a v2.0.0 federation (or running the tool defensively in a CI step)
+# should never see a spurious rewrite or a non-zero exit code.
+TARGET17="$TMPDIR_TEST/fresh-template.toml"
+{
+    printf '%s\n' '[colony]'
+    printf '%s\n' 'name = "fresh-template"'
+    printf '%s\n' ''
+    printf '%s\n' '[forge]'
+    printf '%s\n' 'type = "github"'
+    printf '%s\n' ''
+    printf '%s\n' '[[forge.github]]'
+    printf '%s\n' 'url   = "https://api.github.com"'
+    printf '%s\n' 'owner = "your-org-or-user"'
+    printf '%s\n' 'repo  = "your-repo"'
+    printf '%s\n' 'token = "ghp_your-token-here"'
+    printf '%s\n' 'me    = ""'
+    printf '%s\n' ''
+    printf '%s\n' '#'
+    printf '%s\n' '# To serve N repos from this colony, repeat the [[forge.github]] block once'
+    printf '%s\n' '# per repo. Each entry has its own owner/repo/token/url/me.'
+} > "$TARGET17"
+set +e
+out17="$("$MIGRATE" "$TARGET17" 2>&1)"
+rc17=$?
+set -e
+if [ "$rc17" -eq 0 ] && printf '%s' "$out17" | grep -q 'already migrated'; then
+    pass "test 17: migrate on fresh-from-template colony.example.toml exits 0 with 'already migrated' (#316 M6)"
+else
+    fail "test 17: migrate on fresh-from-template colony.example.toml exits 0 with 'already migrated' (#316 M6)" \
+         "rc=$rc17 out='$out17'"
+fi
+
+# --- Test 18: lint the post-M6 fresh dev-apprenticeship triage template -
+# After #316 M6 the shipped dev-apprenticeship/triage/config/colony.example.toml
+# carries `# [[forge.github]]` (commented). The lint must accept this template
+# unchanged — it is what every fresh `tools/new-colony.sh`-style scaffold
+# produces and what `dev-apprenticeship/install.sh` copies before writing
+# credentials. A regression here would mean every fresh install fails lint.
+SCRIPT_DIR_LINT="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT_LINT="$(cd "$SCRIPT_DIR_LINT/.." && pwd)"
+TRIAGE_TEMPLATE="$REPO_ROOT_LINT/dev-apprenticeship/triage/config/colony.example.toml"
+if [ ! -f "$TRIAGE_TEMPLATE" ]; then
+    fail "test 18: post-M6 fresh dev-apprenticeship/triage/config/colony.example.toml lints clean" \
+         "fixture missing: $TRIAGE_TEMPLATE"
+else
+    set +e
+    out18=$(python3 - "$TRIAGE_TEMPLATE" <<'PY' 2>&1
+import sys
+try:
+    import tomllib
+except ImportError:
+    try:
+        import tomli as tomllib
+    except ImportError:
+        print("SKIP: no TOML parser")
+        sys.exit(0)
+
+with open(sys.argv[1], 'r', encoding='utf-8') as _f:
+    _raw_lines = [ln.strip() for ln in _f]
+
+errors = []
+for _backend in ('github', 'gitlab'):
+    _has_single = any(ln == '[forge.' + _backend + ']' for ln in _raw_lines)
+    _has_multi  = any(ln == '[[forge.' + _backend + ']]' for ln in _raw_lines)
+    if _has_single and _has_multi:
+        errors.append('config has both [forge.' + _backend + '] and [[forge.' + _backend + ']]')
+
+if errors:
+    print('\n'.join(errors))
+    sys.exit(1)
+
+with open(sys.argv[1], 'rb') as f:
+    data = tomllib.load(f)
+
+forge_type = data.get('forge', {}).get('type')
+if forge_type == 'github':
+    gh = data.get('forge', {}).get('github')
+    if isinstance(gh, dict):
+        print('FAIL: [forge.github] single-table form still present')
+        sys.exit(1)
+
+print('OK')
+PY
+)
+    rc18=$?
+    set -e
+    if [ "$rc18" -eq 0 ] && (printf '%s' "$out18" | grep -q '^OK$' || printf '%s' "$out18" | grep -q '^SKIP'); then
+        pass "test 18: post-M6 fresh dev-apprenticeship/triage/config/colony.example.toml lints clean (#316 M6)"
+    else
+        fail "test 18: post-M6 fresh dev-apprenticeship/triage/config/colony.example.toml lints clean (#316 M6)" \
+             "rc=$rc18 out='$out18'"
+    fi
 fi
 
 echo ""

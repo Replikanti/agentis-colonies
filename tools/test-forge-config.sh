@@ -70,11 +70,11 @@ for colony in $COLONIES; do
         fail "$colony: [forge.gitlab] block missing"
         continue
     fi
-    if ! grep -qE '^# \[forge\.github\]$' "$cfg"; then
-        fail "$colony: commented-out [forge.github] block missing (operators need a template to uncomment)"
+    if ! grep -qE '^# \[\[forge\.github\]\]$' "$cfg"; then
+        fail "$colony: commented-out [[forge.github]] array-of-tables block missing (operators need a template to uncomment; #316 M6 retired the single-table form)"
         continue
     fi
-    pass "$colony: [forge] + [forge.gitlab] + commented [forge.github] present in colony.example.toml"
+    pass "$colony: [forge] + [forge.gitlab] + commented [[forge.github]] present in colony.example.toml"
 done
 
 # -----------------------------------------------------------------------------
