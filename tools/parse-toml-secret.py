@@ -154,12 +154,68 @@ def _array_lookup(path, section):
     return entries
 
 
-def _array_main(argv):
-    """Dispatch the three new array-of-tables argv shapes.
+def _inline_table_lookup(value, subkey):
+    """Return the SUBKEY scalar from an inline TOML table string.
 
-    --array-count <path> <section>            -> integer count on stdout
-    --array-get   <path> <section> <idx> <key> -> scalar (resolves secret://)
-    --array-keys  <path> <section> <idx>       -> newline-separated key list
+    Given a value like `{ trigger = "needs-triage", color = "red" }` and a
+    subkey of `trigger`, returns `needs-triage` (with surrounding quotes
+    stripped). Returns '' when the value is not an inline table or when
+    the subkey is not present. Added in #316 M5a so per-repo trigger-label
+    memo seeding can read inline-table values without taking a hard
+    Python `tomllib` dependency on operator boxes.
+
+    The parser is intentionally lenient: it splits on top-level commas,
+    matches `<subkey> = <value>` per entry, strips surrounding quotes.
+    Comma-inside-quotes tolerance mirrors the host TOML grammar.
+    """
+    if not value:
+        return ''
+    s = value.strip()
+    if not (s.startswith('{') and s.endswith('}')):
+        return ''
+    body = s[1:-1].strip()
+    if not body:
+        return ''
+    entries = []
+    buf = []
+    quote = None
+    for ch in body:
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+            continue
+        if ch in ('"', "'"):
+            quote = ch
+            buf.append(ch)
+            continue
+        if ch == ',':
+            entries.append(''.join(buf))
+            buf = []
+            continue
+        buf.append(ch)
+    if buf:
+        entries.append(''.join(buf))
+    for entry in entries:
+        key_part, sep, val_part = entry.partition('=')
+        if not sep:
+            continue
+        if key_part.strip() != subkey:
+            continue
+        v = val_part.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
+            v = v[1:-1]
+        return v
+    return ''
+
+
+def _array_main(argv):
+    """Dispatch the four new array-of-tables argv shapes.
+
+    --array-count       <path> <section>                      -> integer count on stdout
+    --array-get         <path> <section> <idx> <key>          -> scalar (resolves secret://)
+    --array-keys        <path> <section> <idx>                -> newline-separated key list
+    --array-get-inline  <path> <section> <idx> <key> <subkey> -> inline-table subkey value
     """
     op = argv[0]
     if op == '--array-count':
@@ -209,6 +265,28 @@ def _array_main(argv):
         for k in entries[idx].keys():
             sys.stdout.write(k)
             sys.stdout.write('\n')
+        return 0
+    if op == '--array-get-inline':
+        if len(argv) != 6:
+            sys.stderr.write('Usage: %s --array-get-inline <path> <section> <idx> <key> <subkey>\n' % sys.argv[0])
+            return 2
+        _, path, section, idx_str, key, subkey = argv
+        try:
+            idx = int(idx_str)
+        except ValueError:
+            sys.stderr.write('parse-toml-secret: --array-get-inline IDX must be an integer (got %r)\n' % idx_str)
+            return 2
+        entries = _array_lookup(path, section)
+        if idx < 0 or idx >= len(entries):
+            return 0
+        raw = entries[idx].get(key, '')
+        if not raw:
+            return 0
+        sub_value = _inline_table_lookup(raw, subkey)
+        if not sub_value:
+            return 0
+        sys.stdout.write(sub_value)
+        sys.stdout.write('\n')
         return 0
     sys.stderr.write('parse-toml-secret: unknown array op %r\n' % op)
     return 2
@@ -378,13 +456,14 @@ def main():
             sys.stdout.write(value)
             sys.stdout.write('\n')
         return 0
-    # New (#316 M1): array-of-tables count + per-index lookup. Three argv shapes:
-    #   --array-count <path> <section>            -> integer count on stdout
-    #   --array-get   <path> <section> <idx> <key> -> scalar value or empty
-    #   --array-keys  <path> <section> <idx>       -> newline-separated key list
+    # New (#316 M1): array-of-tables count + per-index lookup. Four argv shapes:
+    #   --array-count       <path> <section>                      -> integer count on stdout
+    #   --array-get         <path> <section> <idx> <key>          -> scalar value or empty
+    #   --array-keys        <path> <section> <idx>                -> newline-separated key list
+    #   --array-get-inline  <path> <section> <idx> <key> <subkey> -> inline-table subkey (#316 M5a)
     # `<section>` is the inner-table name, e.g. `forge.github`. The lookup
     # walks `[[<section>]]` headers in order, 0-indexed.
-    if argv and argv[0] in ('--array-count', '--array-get', '--array-keys'):
+    if argv and argv[0] in ('--array-count', '--array-get', '--array-keys', '--array-get-inline'):
         return _array_main(argv)
     if len(argv) != 3:
         sys.stderr.write('Usage: %s <path> <section> <key>\n' % sys.argv[0])

@@ -68,3 +68,20 @@ parse_toml_array_keys() {
     fi
     python3 "$_PARSE_TOML_DIR/parse-toml-secret.py" --array-keys "$CONFIG" "$1" "$2"
 }
+
+# parse_toml_array_get_inline SECTION IDX KEY SUBKEY
+# Echo the SUBKEY value of an inline TOML table assigned to KEY in the
+# IDX-th (0-indexed) `[[SECTION]]` entry. For example, given an entry
+#   [[forge.github]]
+#   labels = { trigger = "needs-triage" }
+# `parse_toml_array_get_inline forge.github 0 labels trigger` echoes
+# `needs-triage`. Empty stdout when the index, key, or subkey is missing.
+# Added in #316 M5a so per-repo trigger-label memo seeding can read inline-
+# table values without paying for a heavyweight TOML library.
+parse_toml_array_get_inline() {
+    if [ "$#" -ne 4 ]; then
+        echo "parse_toml_array_get_inline: usage: parse_toml_array_get_inline SECTION IDX KEY SUBKEY (got $# args)" >&2
+        return 2
+    fi
+    python3 "$_PARSE_TOML_DIR/parse-toml-secret.py" --array-get-inline "$CONFIG" "$1" "$2" "$3" "$4"
+}

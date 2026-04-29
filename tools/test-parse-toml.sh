@@ -204,6 +204,88 @@ token = "secret://env/AGENTIS_TEST_TOKEN_321"
 AGENTIS_TEST_TOKEN_321="ghp_resolved_via_env" \
     assert_eq "#321: secret://env resolves" "ghp_resolved_via_env" "$(AGENTIS_TEST_TOKEN_321=ghp_resolved_via_env parse_toml forge.gitlab token)"
 
+# --- Test 15: #316 M5a — parse_toml_array_get_inline round-trips ---
+# Inline table values declared on per-array-entry keys must be readable
+# via the new wrapper. Used by start-colony.sh per-repo trigger label
+# memo seeding (`labels = { trigger = "..." }`).
+fixture "inline-roundtrip" '[forge]
+type = "github"
+
+[[forge.github]]
+owner = "acme"
+repo = "frontend"
+token = "x"
+labels = { trigger = "needs-triage" }
+'
+assert_eq "#316 M5a: inline subkey round-trip" "needs-triage" "$(parse_toml_array_get_inline forge.github 0 labels trigger)"
+
+# --- Test 16: #316 M5a — missing inline subkey returns empty ---
+# Entry has the `labels` key declared but no `trigger` subkey inside the
+# inline table. The parse must collapse to empty stdout (not error out).
+fixture "inline-missing-subkey" '[forge]
+type = "github"
+
+[[forge.github]]
+owner = "acme"
+repo = "frontend"
+token = "x"
+labels = { color = "red" }
+'
+assert_eq "#316 M5a: missing subkey returns empty" "" "$(parse_toml_array_get_inline forge.github 0 labels trigger)"
+# And missing `labels` key entirely also returns empty.
+fixture "inline-missing-key" '[forge]
+type = "github"
+
+[[forge.github]]
+owner = "acme"
+repo = "frontend"
+token = "x"
+'
+assert_eq "#316 M5a: missing inline-table key returns empty" "" "$(parse_toml_array_get_inline forge.github 0 labels trigger)"
+
+# --- Test 17: #316 M5a — quoted vs unquoted subkey values ---
+# Subkey value strings may carry surrounding double or single quotes; the
+# helper strips matching pairs and passes plaintext through unchanged.
+fixture "inline-quoted" '[forge]
+type = "github"
+
+[[forge.github]]
+owner = "acme"
+repo = "frontend"
+token = "x"
+labels = { trigger = "double-quoted-trigger" }
+
+[[forge.github]]
+owner = "acme"
+repo = "backend"
+token = "y"
+labels = { trigger = '"'"'single-quoted-trigger'"'"' }
+'
+assert_eq "#316 M5a: double-quoted subkey value" "double-quoted-trigger" "$(parse_toml_array_get_inline forge.github 0 labels trigger)"
+assert_eq "#316 M5a: single-quoted subkey value" "single-quoted-trigger" "$(parse_toml_array_get_inline forge.github 1 labels trigger)"
+
+# --- Test 18: #316 M5a — interior whitespace tolerated ---
+# Operators may declare inline tables with extra spaces around `=`, `,`,
+# and the surrounding braces. The lookup must tolerate all three patterns.
+fixture "inline-spaces" '[forge]
+type = "github"
+
+[[forge.github]]
+owner = "acme"
+repo = "frontend"
+token = "x"
+labels = {trigger="no-spaces"}
+
+[[forge.github]]
+owner = "acme"
+repo = "backend"
+token = "y"
+labels = {   trigger   =   "lots-of-spaces"   ,   color   =   "blue"   }
+'
+assert_eq "#316 M5a: inline-table no spaces" "no-spaces" "$(parse_toml_array_get_inline forge.github 0 labels trigger)"
+assert_eq "#316 M5a: inline-table extra spaces around tokens" "lots-of-spaces" "$(parse_toml_array_get_inline forge.github 1 labels trigger)"
+assert_eq "#316 M5a: inline-table second subkey tolerates spaces" "blue" "$(parse_toml_array_get_inline forge.github 1 labels color)"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
