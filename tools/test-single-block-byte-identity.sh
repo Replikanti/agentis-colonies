@@ -1,21 +1,30 @@
 #!/bin/bash
-# tools/test-single-block-byte-identity.sh: pin the #316 M3a byte-identity
-# guarantee — pre-M3 single-block configs and post-M3 single-entry array
-# configs MUST produce identical experience rows + memo keys + bus emit
-# semantics.
+# tools/test-single-block-byte-identity.sh: pin the #316 M3a runtime
+# byte-identity guarantee — the empty-owner sentinel path (legacy
+# GITHUB_OWNER env without GITHUB_REPOS_JSON) and the single-entry
+# GITHUB_REPOS_JSON path MUST produce identical experience rows + memo
+# keys + bus emit semantics.
+#
+# Post-#316 M6 the legacy single-table `[forge.github]` config form is
+# retired at the lint layer (colony-lint.sh hard-fails) so no operator
+# config can produce the no-GITHUB_REPOS_JSON env shape via the M6+
+# config path. The runtime sentinel path remains load-bearing for
+# non-forge federations (tribes-bench-style, no `colony.toml` at all)
+# and for any colony.toml-less harness that exports GITHUB_OWNER /
+# GITHUB_REPO directly without going through start-colony.sh's
+# GITHUB_REPOS_JSON composition.
 #
 # This test is the load-bearing defence against per-repo scoping silently
-# regressing legacy operators. Plan §13: "MUST pass 5/5".
+# regressing those callers. Plan §13: "MUST pass 5/5".
 #
 # Method (per plan §9 point 2): run the triage/router agent twice — once
-# against a synthetic legacy `[forge.github]`-shape config (no
-# GITHUB_REPOS_JSON env), once against a synthetic single-entry
-# `[[forge.github]]`-shape config (GITHUB_REPOS_JSON env carrying one
-# entry whose owner/repo/url/me match the legacy config). Both runs use
-# the same forge-api stub that returns `[]` for every call, so the agent
-# exits its tick early with the same memo updates. Compare the memo
-# files, experience JSONL, and the agent runtime descriptors that
-# callers can observe.
+# with the legacy env shape (no GITHUB_REPOS_JSON), once with the
+# single-entry GITHUB_REPOS_JSON env carrying one entry whose
+# owner/repo/url/me match the legacy env. Both runs use the same
+# forge-api stub that returns `[]` for every call, so the agent exits
+# its tick early with the same memo updates. Compare the memo files,
+# experience JSONL, and the agent runtime descriptors that callers can
+# observe.
 #
 # Cases:
 #   1. Both runs produce a memo file named `router:last_check.jsonl`

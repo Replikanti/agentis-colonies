@@ -429,25 +429,28 @@ if [ "$WRITE_CREDS" -eq 1 ] && [ "$FORGE_TYPE" = "github" ]; then
 
     for colony in "${COLONIES[@]}"; do
         CONFIG="$SCRIPT_DIR/$colony/config/colony.toml"
-        # Two-step rewrite: (1) uncomment the [forge.github] template
+        # Two-step rewrite: (1) uncomment the [[forge.github]] template
         # block if it ships commented (default in colony.example.toml),
-        # (2) section-scoped key rewrites inside [forge.github]. The
+        # (2) section-scoped key rewrites inside [[forge.github]]. The
         # [forge.gitlab] section is untouched so operators can switch
         # back via FEDERATION_FORGE_TYPE without losing credentials.
+        # Post-#316 M6: templates ship the array-of-tables `[[forge.github]]`
+        # form; the section parser below treats the doubled-bracket header
+        # as the same logical section as `[forge.github]` for key rewrite.
         python3 - "$CONFIG" "$GITHUB_URL" "$GITHUB_TOKEN" "$GITHUB_OWNER" "$GITHUB_REPO" "$GITHUB_ME" <<'PY'
 import sys, re
 path, url, token, owner, repo, me = sys.argv[1:7]
 with open(path) as f:
     lines = f.readlines()
 
-# Step 1: uncomment [forge.github] block if it's fully commented.
-# Enter on `# [forge.github]`, stay while subsequent lines match
+# Step 1: uncomment [[forge.github]] block if it's fully commented.
+# Enter on `# [[forge.github]]`, stay while subsequent lines match
 # `# key = ...`, exit on the first line that doesn't (blank,
 # next section header, or anything else).
 out = []
 in_block = False
 for line in lines:
-    if re.match(r'\s*#\s*\[forge\.github\]\s*$', line):
+    if re.match(r'\s*#\s*\[\[forge\.github\]\]\s*$', line):
         in_block = True
         out.append(re.sub(r'^(\s*)#\s?', r'\1', line))
         continue
@@ -458,7 +461,10 @@ for line in lines:
         in_block = False
     out.append(line)
 
-# Step 2: rewrite keys inside the [forge.github] section.
+# Step 2: rewrite keys inside the [[forge.github]] section. The
+# bracket-strip below collapses `[[forge.github]]` to `forge.github`
+# so the post-M6 array-of-tables header matches the same logical
+# section that the legacy single-table form used.
 content = ''.join(out)
 lines = content.splitlines(keepends=True)
 section = None
@@ -466,7 +472,10 @@ out2 = []
 for line in lines:
     stripped = line.strip()
     if stripped.startswith('[') and stripped.endswith(']'):
-        section = stripped[1:-1].strip()
+        inner = stripped[1:-1].strip()
+        if inner.startswith('[') and inner.endswith(']'):
+            inner = inner[1:-1].strip()
+        section = inner
     if section == 'forge.github':
         if url:
             line = re.sub(r'(url\s*=\s*)"[^"]*"', lambda m: m.group(1) + '"' + url + '"', line)

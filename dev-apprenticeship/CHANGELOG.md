@@ -90,6 +90,32 @@ is asserted until multi-version CI is in place.
   it. Run `tools/migrate-to-multi-repo.sh <colony.toml>` to migrate ahead of
   the cutover.
 
+### Removed
+
+- Legacy single-table `[forge.github]` config form (#316 M6, MAJOR). Use
+  `[[forge.github]]` array-of-tables instead — single-entry arrays are
+  byte-identical at runtime to the retired single-table form. **Breaking**
+  for operators upgrading from v1.x — run
+  `tools/migrate-to-multi-repo.sh <colony.toml>` once per colony before
+  starting v2.0.0. `colony-lint.sh` now hard-fails on a single-table
+  `[forge.github]` block with the migration command in the error message.
+  `[forge.gitlab]` single-table form is **unchanged** in v2.0.0 — its
+  symmetric retirement waits for a future GitLab multi-repo runtime
+  milestone.
+
+  Migration recipe:
+
+  ```bash
+  for colony in triage code-review planning implementation release; do
+    ./tools/migrate-to-multi-repo.sh dev-apprenticeship/$colony/config/colony.toml
+  done
+  ./tools/colony-lint.sh dev-apprenticeship/
+  ./dev-apprenticeship/kill-federation.sh
+  ./dev-apprenticeship/start-federation.sh
+  ```
+
+  The migration tool is idempotent (test 11 of `test-multi-repo-schema.sh`).
+
 ## [1.3.0] — 2026-04-26
 
 LLM cost-cap and per-colony LLM-backend wiring continue maturing. New

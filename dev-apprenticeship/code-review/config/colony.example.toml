@@ -21,12 +21,15 @@ token   = "glpat-your-token-here"
 project = "your-org/your-project"
 me      = ""  # your GitLab username (optional, enables personal/team tagging)
 
-# [forge.github]
+# [[forge.github]]
 # url   = "https://api.github.com"  # optional; override for GitHub Enterprise
 # owner = "your-org-or-user"
 # repo  = "your-repo"
 # token = "ghp_your-token-here"
 # me    = ""  # your GitHub username (optional)
+#
+# To serve N repos from this colony, repeat the [[forge.github]] block once
+# per repo. Each entry has its own owner/repo/token/url/me.
 
 # Per-colony LLM backend override (#319, schema reserved for forward-
 # compat — NO RUNTIME EFFECT today; see #351). All four keys are
