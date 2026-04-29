@@ -25,7 +25,33 @@ fn get_confidence() -> float {
     return 0.0;
 }
 
-fn tick(reason: string) -> void {
+// #316 M3b: per-tick fan-out helpers. See triage/agents/router.ag for
+// the full rationale. Single-block configs collapse to owner=="" sentinel,
+// repo_arg/repo_tag return "", scoped_memo passes the suffix through.
+
+fn repo_arg(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return " --repo " + shell_escape(owner + "/" + repo);
+}
+
+fn repo_tag(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return "repo:" + owner + "/" + repo;
+}
+
+fn scoped_memo(owner: string, repo: string, suffix: string) -> string {
+    if len(owner) == 0 { return suffix; };
+    return owner + "__" + repo + ":" + suffix;
+}
+
+fn repo_field(line: string, idx: int) -> string {
+    let cmd = "L=" + shell_escape(line) + " I=" + to_string(idx) +
+        " python3 -c 'import os; parts=os.environ[\"L\"].split(\"\t\"); i=int(os.environ[\"I\"]); print(parts[i] if 0<=i<len(parts) else \"\")'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+fn tick_for_repo(owner: string, repo: string) -> void {
     // #147: cheap delta-check. approval_decider has no GitLab poll —
     // its input is the colony bus. If no reviewer emitted findings
     // since the last tick (all four `listen()` calls returned Void —
@@ -48,13 +74,14 @@ fn tick(reason: string) -> void {
     if total_len < 24 {
         let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
         if len(now_e) > 0 {
-            memo_write("approval_decider:last_check", now_e);
+            memo_write(scoped_memo(owner, repo, "approval_decider:last_check"), now_e);
         };
         return;
     };
 
     // Learn from past human approval/rejection patterns
-    let mr_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --view reviewer";
+    // colony-lint: safe-exec-concat
+    let mr_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --view reviewer" + repo_arg(owner, repo);
     let recent_merged = try { exec sh mr_cmd; } catch e { "[]"; };
 
     // Cold-path via upstream rate-limit: the bus-load early-exit above
@@ -69,7 +96,11 @@ fn tick(reason: string) -> void {
     ) -> string;
 
     if len(approval_patterns) > 10 {
-        learn("approval_decision", "merged MRs batch", approval_patterns, "success", ["observed", "code-review"]);
+        if len(owner) > 0 {
+            learn("approval_decision", "merged MRs batch", approval_patterns, "success", ["observed", "code-review", repo_tag(owner, repo)]);
+        } else {
+            learn("approval_decision", "merged MRs batch", approval_patterns, "success", ["observed", "code-review"]);
+        };
     };
 
     // Aggregate findings and decide
@@ -88,20 +119,30 @@ fn tick(reason: string) -> void {
 
     if my_tier == "autonomous" {
         if decision.action == "approve" {
-            let approve_cmd = "$COLONY_DIR/scripts/forge-api.sh approve " + to_string(decision.mr_iid);
+            // colony-lint: safe-exec-concat
+            let approve_cmd = "$COLONY_DIR/scripts/forge-api.sh approve " + to_string(decision.mr_iid) + repo_arg(owner, repo);
             try { exec sh approve_cmd; } catch e {
                 print("[approval_decider] Failed to approve:", e);
             };
             print("[approval_decider] Approved MR", decision.mr_iid);
-            learn("approval_decision", "MR " + to_string(decision.mr_iid), "approved: " + decision.reasoning, "success", ["acted", "code-review"]);
+            if len(owner) > 0 {
+                learn("approval_decision", "MR " + to_string(decision.mr_iid), "approved: " + decision.reasoning, "success", ["acted", "code-review", repo_tag(owner, repo)]);
+            } else {
+                learn("approval_decision", "MR " + to_string(decision.mr_iid), "approved: " + decision.reasoning, "success", ["acted", "code-review"]);
+            };
         } else {
             if decision.action == "request_changes" {
                 let comment = "**Review Summary** (automated)\n\n" + decision.reasoning + "\n\nFindings: " + to_string(decision.total_findings) + " total, " + to_string(decision.critical_count) + " critical";
-                let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(decision.mr_iid) + " --body " + shell_escape(comment);
+                // colony-lint: safe-exec-concat
+                let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(decision.mr_iid) + " --body " + shell_escape(comment) + repo_arg(owner, repo);
                 try { exec sh post_cmd; } catch e {
                     print("[approval_decider] Failed to post:", e);
                 };
-                learn("approval_decision", "MR " + to_string(decision.mr_iid), "request_changes: " + decision.reasoning, "success", ["acted", "code-review"]);
+                if len(owner) > 0 {
+                    learn("approval_decision", "MR " + to_string(decision.mr_iid), "request_changes: " + decision.reasoning, "success", ["acted", "code-review", repo_tag(owner, repo)]);
+                } else {
+                    learn("approval_decision", "MR " + to_string(decision.mr_iid), "request_changes: " + decision.reasoning, "success", ["acted", "code-review"]);
+                };
             } else {
                 print("[approval_decider] Escalating MR", decision.mr_iid, "to human");
                 emit("review:escalation", decision);
@@ -113,20 +154,33 @@ fn tick(reason: string) -> void {
             // a human can promote the approve / request_changes action instead
             // of acting directly.
             let comment = "[draft-review-decision] **Review Summary** (automated, pending approval): suggested action `" + decision.action + "`\n\n" + decision.reasoning + "\n\nFindings: " + to_string(decision.total_findings) + " total, " + to_string(decision.critical_count) + " critical";
-            let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(decision.mr_iid) + " --body " + shell_escape(comment);
+            // colony-lint: safe-exec-concat
+            let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(decision.mr_iid) + " --body " + shell_escape(comment) + repo_arg(owner, repo);
             try { exec sh post_cmd; } catch e {
                 print("[approval_decider] Failed to post draft summary:", e);
             };
             emit("review:decision_suggestion", decision);
-            learn("approval_decision", "MR " + to_string(decision.mr_iid), "drafted: " + decision.action + " — " + decision.reasoning, "partial", ["code-review", "review-gated"]);
+            if len(owner) > 0 {
+                learn("approval_decision", "MR " + to_string(decision.mr_iid), "drafted: " + decision.action + " — " + decision.reasoning, "partial", ["code-review", "review-gated", repo_tag(owner, repo)]);
+            } else {
+                learn("approval_decision", "MR " + to_string(decision.mr_iid), "drafted: " + decision.action + " — " + decision.reasoning, "partial", ["code-review", "review-gated"]);
+            };
         } else {
             if my_tier == "propose" {
                 print("[approval_decider] Suggesting:", decision.action, "for MR", decision.mr_iid);
                 emit("review:decision_suggestion", decision);
-                learn("approval_decision", "MR " + to_string(decision.mr_iid), "suggested: " + decision.action + " — " + decision.reasoning, "partial", ["emitted", "code-review"]);
+                if len(owner) > 0 {
+                    learn("approval_decision", "MR " + to_string(decision.mr_iid), "suggested: " + decision.action + " — " + decision.reasoning, "partial", ["emitted", "code-review", repo_tag(owner, repo)]);
+                } else {
+                    learn("approval_decision", "MR " + to_string(decision.mr_iid), "suggested: " + decision.action + " — " + decision.reasoning, "partial", ["emitted", "code-review"]);
+                };
             } else {
                 print("[approval_decider] Observing (tier:", my_tier, ")");
-                learn("approval_decision", "MR " + to_string(decision.mr_iid), "observed: " + decision.action + " — " + decision.reasoning, "partial", ["observed", "code-review"]);
+                if len(owner) > 0 {
+                    learn("approval_decision", "MR " + to_string(decision.mr_iid), "observed: " + decision.action + " — " + decision.reasoning, "partial", ["observed", "code-review", repo_tag(owner, repo)]);
+                } else {
+                    learn("approval_decision", "MR " + to_string(decision.mr_iid), "observed: " + decision.action + " — " + decision.reasoning, "partial", ["observed", "code-review"]);
+                };
             };
         };
     };
@@ -139,6 +193,29 @@ fn tick(reason: string) -> void {
 
     let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
     if len(now) > 0 {
-        memo_write("approval_decider:last_check", now);
+        memo_write(scoped_memo(owner, repo, "approval_decider:last_check"), now);
     };
+}
+
+// Recursive iterator over `iter-repos.sh` output. See router.ag for the
+// empty-owner sentinel rationale.
+fn tick_at(spool: string, line_no: int) -> void {
+    let line_cmd = "SP=" + shell_escape(spool) + " N=" + to_string(line_no) +
+        " python3 -c 'import os; lines=os.environ[\"SP\"].splitlines(); n=int(os.environ[\"N\"]); print(lines[n] if 0<=n<len(lines) else \"\")'";
+    let line = try { exec sh line_cmd; } catch e { ""; };
+    if len(line) == 0 { return; };
+    let owner = repo_field(line, 0);
+    let repo = repo_field(line, 1);
+    tick_for_repo(owner, repo);
+    return tick_at(spool, line_no + 1);
+}
+
+fn tick(reason: string) -> void {
+    // #316 M3b: per-repo fan-out. See triage/agents/router.ag for the
+    // back-compat sentinel pattern and byte-identity rationale.
+    let spool = try { exec sh "$COLONY_DIR/../../tools/iter-repos.sh"; } catch e { ""; };
+    if len(spool) == 0 {
+        return;
+    };
+    tick_at(spool, 0);
 }

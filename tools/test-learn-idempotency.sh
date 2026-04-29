@@ -46,22 +46,30 @@ check_agent() {
         bad "gate function missing"
     fi
 
-    if grep -Fq "recall_latest(\"${agent}:last_learned_mr_iid\")" "$file"; then
-        ok "gate reads ${agent}:last_learned_mr_iid"
+    # Post-#316 M3b, the per-repo memo key is built via scoped_memo(owner,
+    # repo, "<agent>:last_learned_mr_iid"). On single-block configs scoped_memo
+    # passes the suffix through unchanged so the resolved key is byte-identical
+    # to the pre-M3 literal `<agent>:last_learned_mr_iid`. The literal suffix
+    # must still appear (as the third arg to scoped_memo) anywhere in the file.
+    if grep -Fq "scoped_memo(owner, repo, \"${agent}:last_learned_mr_iid\")" "$file"; then
+        ok "gate reads ${agent}:last_learned_mr_iid via scoped_memo (M3b per-repo)"
     else
-        bad "gate does not recall ${agent}:last_learned_mr_iid"
+        bad "gate does not recall ${agent}:last_learned_mr_iid via scoped_memo"
     fi
 
     if grep -Fq "if should_learn_from_mr(" "$file"; then
-        ok "tick() calls gate"
+        ok "tick_for_repo() calls gate"
     else
-        bad "tick() does not call should_learn_from_mr"
+        bad "tick_for_repo() does not call should_learn_from_mr"
     fi
 
-    if grep -Fq "memo_write(\"${agent}:last_learned_mr_iid\"," "$file"; then
-        ok "memo_write stashes iid"
+    # The memo_write call now wraps the key in scoped_memo; the literal
+    # suffix `<agent>:last_learned_mr_iid` must still appear inside that
+    # scoped_memo call (matched by the recall check above).
+    if grep -Fq "memo_write(scoped_memo(owner, repo, \"${agent}:last_learned_mr_iid\")," "$file"; then
+        ok "memo_write stashes iid via scoped_memo (M3b per-repo)"
     else
-        bad "memo_write for ${agent}:last_learned_mr_iid missing"
+        bad "memo_write for ${agent}:last_learned_mr_iid via scoped_memo missing"
     fi
 
     # Ordering invariant (QA #6): memo_write MUST appear before the first
@@ -71,7 +79,7 @@ check_agent() {
     # after prompt() re-opens the re-burn window on prompt failures.
     local gate_line memo_line prompt_line
     gate_line="$(grep -n "if should_learn_from_mr(" "$file" | head -1 | cut -d: -f1 || true)"
-    memo_line="$(grep -n "memo_write(\"${agent}:last_learned_mr_iid\"," "$file" | head -1 | cut -d: -f1 || true)"
+    memo_line="$(grep -n "memo_write(scoped_memo(owner, repo, \"${agent}:last_learned_mr_iid\")," "$file" | head -1 | cut -d: -f1 || true)"
     prompt_line="$(awk -v g="${gate_line:-0}" 'NR>g && /prompt\(/ {print NR; exit}' "$file")"
     if [ -n "$gate_line" ] && [ -n "$memo_line" ] && [ -n "$prompt_line" ] \
        && [ "$memo_line" -gt "$gate_line" ] && [ "$memo_line" -lt "$prompt_line" ]; then

@@ -34,16 +34,44 @@ fn get_confidence() -> float {
     return 0.0;
 }
 
-// #147: build the merged-MR delta query with optional --since. Used by
-// the tick's pre-prompt delta-check.
-fn mr_delta_cmd_for(ts: string) -> string {
-    if len(ts) > 0 {
-        return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --since " + shell_escape(ts) + " --per-page 1";
-    };
-    return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --per-page 1";
+// #316 M3b: per-tick fan-out helpers. See triage/agents/router.ag for
+// the full rationale. Single-block configs collapse to owner=="" sentinel,
+// repo_arg/repo_tag return "", scoped_memo passes the suffix through.
+
+fn repo_arg(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return " --repo " + shell_escape(owner + "/" + repo);
 }
 
-fn tick(reason: string) -> void {
+fn repo_tag(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return "repo:" + owner + "/" + repo;
+}
+
+fn scoped_memo(owner: string, repo: string, suffix: string) -> string {
+    if len(owner) == 0 { return suffix; };
+    return owner + "__" + repo + ":" + suffix;
+}
+
+fn repo_field(line: string, idx: int) -> string {
+    let cmd = "L=" + shell_escape(line) + " I=" + to_string(idx) +
+        " python3 -c 'import os; parts=os.environ[\"L\"].split(\"\t\"); i=int(os.environ[\"I\"]); print(parts[i] if 0<=i<len(parts) else \"\")'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+// #147: build the merged-MR delta query with optional --since. Used by
+// the tick's pre-prompt delta-check.
+fn mr_delta_cmd_for(owner: string, repo: string, ts: string) -> string {
+    // colony-lint: safe-exec-concat
+    if len(ts) > 0 {
+        return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --since " + shell_escape(ts) + " --per-page 1" + repo_arg(owner, repo);
+    };
+    // colony-lint: safe-exec-concat
+    return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --per-page 1" + repo_arg(owner, repo);
+}
+
+fn tick_for_repo(owner: string, repo: string) -> void {
     // #147: cheap delta-check BEFORE any prompt(). release_checker's
     // real work is driven by two signals: `implementation:mr_ready`
     // (a new MR needs a pre-release check) and newly-merged MRs (re-
@@ -53,7 +81,7 @@ fn tick(reason: string) -> void {
     let mr_str = to_string(mr_ready);
     let has_event = len(mr_str) >= 5;
 
-    let mr_delta_cmd = mr_delta_cmd_for(recall_latest("release_checker:last_check"));
+    let mr_delta_cmd = mr_delta_cmd_for(owner, repo, recall_latest(scoped_memo(owner, repo, "release_checker:last_check")));
     let mr_delta = try { exec sh mr_delta_cmd; } catch e { "[]"; };
     let has_new_mr = len(mr_delta) >= 3;
 
@@ -61,7 +89,7 @@ fn tick(reason: string) -> void {
         if !has_new_mr {
             let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
             if len(now_e) > 0 {
-                memo_write("release_checker:last_check", now_e);
+                memo_write(scoped_memo(owner, repo, "release_checker:last_check"), now_e);
             };
             return;
         };
@@ -69,8 +97,10 @@ fn tick(reason: string) -> void {
 
     // 1. Learn from past releases and their pipeline outcomes (only when
     //    there IS new work — gated by the delta-check above).
+    // colony-lint: safe-exec-concat
+    let releases_cmd = "$COLONY_DIR/scripts/forge-api.sh releases --per-page 10 --view release-summary" + repo_arg(owner, repo);
     let releases_raw = try {
-        exec sh "$COLONY_DIR/scripts/forge-api.sh releases --per-page 10 --view release-summary";
+        exec sh releases_cmd;
     } catch e {
         print("[release_checker] GitLab releases poll failed:", e);
         "";
@@ -83,13 +113,23 @@ fn tick(reason: string) -> void {
         ) -> CheckPatterns;
 
         if patterns.releases_seen > 0 {
-            learn(
-                "release_check",
-                "batch of " + to_string(patterns.releases_seen) + " releases",
-                "ci_gates: " + patterns.ci_gates + " | validation: " + patterns.validation_steps + " | failures: " + patterns.failure_patterns,
-                "success",
-                ["observed", "release"]
-            );
+            if len(owner) > 0 {
+                learn(
+                    "release_check",
+                    "batch of " + to_string(patterns.releases_seen) + " releases",
+                    "ci_gates: " + patterns.ci_gates + " | validation: " + patterns.validation_steps + " | failures: " + patterns.failure_patterns,
+                    "success",
+                    ["observed", "release", repo_tag(owner, repo)]
+                );
+            } else {
+                learn(
+                    "release_check",
+                    "batch of " + to_string(patterns.releases_seen) + " releases",
+                    "ci_gates: " + patterns.ci_gates + " | validation: " + patterns.validation_steps + " | failures: " + patterns.failure_patterns,
+                    "success",
+                    ["observed", "release"]
+                );
+            };
             print("[release_checker] Learned from", patterns.releases_seen, "past releases");
         };
     };
@@ -97,8 +137,10 @@ fn tick(reason: string) -> void {
     // 2. Check pipeline state for the pending MR (or periodic check).
 
     // Also check the default branch pipeline status
+    // colony-lint: safe-exec-concat
+    let pipeline_cmd = "$COLONY_DIR/scripts/forge-api.sh pipelines --ref main --view pipeline-summary" + repo_arg(owner, repo);
     let pipeline_raw = try {
-        exec sh "$COLONY_DIR/scripts/forge-api.sh pipelines --ref main --view pipeline-summary";
+        exec sh pipeline_cmd;
     } catch e {
         print("[release_checker] Pipeline poll failed:", e);
         "";
@@ -127,32 +169,50 @@ fn tick(reason: string) -> void {
                 let mr_iid = mr_ready.issue_id;
                 if mr_iid > 0 {
                     let note = "**Pre-release Check** (automated): " + result.ci_status + "\n\nIssues: " + result.issues_found;
-                    let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note);
+                    // colony-lint: safe-exec-concat
+                    let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note) + repo_arg(owner, repo);
                     try { exec sh post_cmd; } catch e {
                         print("[release_checker] Failed to post note:", e);
                     };
                 };
                 emit("release:check_result", result);
-                learn("release_check", "pipeline check", result.ci_status + " | " + result.issues_found, "success", ["acted", "release"]);
+                if len(owner) > 0 {
+                    learn("release_check", "pipeline check", result.ci_status + " | " + result.issues_found, "success", ["acted", "release", repo_tag(owner, repo)]);
+                } else {
+                    learn("release_check", "pipeline check", result.ci_status + " | " + result.issues_found, "success", ["acted", "release"]);
+                };
             } else {
                 if my_tier == "review-gated" {
                     let mr_iid = mr_ready.issue_id;
                     if mr_iid > 0 {
                         let note = "[draft-check] **Pre-release Check** (automated, pending approval): " + result.ci_status + "\n\nIssues: " + result.issues_found;
-                        let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note);
+                        // colony-lint: safe-exec-concat
+                        let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note) + repo_arg(owner, repo);
                         try { exec sh post_cmd; } catch e {
                             print("[release_checker] Failed to post draft note:", e);
                         };
                     };
                     emit("release:check_result", result);
-                    learn("release_check", "pipeline check", result.ci_status + " | " + result.issues_found, "partial", ["release", "review-gated"]);
+                    if len(owner) > 0 {
+                        learn("release_check", "pipeline check", result.ci_status + " | " + result.issues_found, "partial", ["release", "review-gated", repo_tag(owner, repo)]);
+                    } else {
+                        learn("release_check", "pipeline check", result.ci_status + " | " + result.issues_found, "partial", ["release", "review-gated"]);
+                    };
                 } else {
                     if my_tier == "propose" {
                         emit("release:check_result", result);
-                        learn("release_check", "pipeline check", result.ci_status + " | " + result.issues_found, "partial", ["emitted", "release"]);
+                        if len(owner) > 0 {
+                            learn("release_check", "pipeline check", result.ci_status + " | " + result.issues_found, "partial", ["emitted", "release", repo_tag(owner, repo)]);
+                        } else {
+                            learn("release_check", "pipeline check", result.ci_status + " | " + result.issues_found, "partial", ["emitted", "release"]);
+                        };
                     } else {
                         print("[release_checker] Observing (tier:", my_tier, ")");
-                        learn("release_check", "pipeline check", result.ci_status + " | " + result.issues_found, "partial", ["observed", "release"]);
+                        if len(owner) > 0 {
+                            learn("release_check", "pipeline check", result.ci_status + " | " + result.issues_found, "partial", ["observed", "release", repo_tag(owner, repo)]);
+                        } else {
+                            learn("release_check", "pipeline check", result.ci_status + " | " + result.issues_found, "partial", ["observed", "release"]);
+                        };
                     };
                 };
             };
@@ -166,17 +226,33 @@ fn tick(reason: string) -> void {
             let my_tier = tier("release_checker");
             if my_tier == "autonomous" {
                 emit("release:check_result", result);
-                learn("release_check", "periodic check", result.ci_status, "success", ["acted", "release"]);
+                if len(owner) > 0 {
+                    learn("release_check", "periodic check", result.ci_status, "success", ["acted", "release", repo_tag(owner, repo)]);
+                } else {
+                    learn("release_check", "periodic check", result.ci_status, "success", ["acted", "release"]);
+                };
             } else {
                 if my_tier == "review-gated" {
                     emit("release:check_result", result);
-                    learn("release_check", "periodic check", result.ci_status, "partial", ["release", "review-gated"]);
+                    if len(owner) > 0 {
+                        learn("release_check", "periodic check", result.ci_status, "partial", ["release", "review-gated", repo_tag(owner, repo)]);
+                    } else {
+                        learn("release_check", "periodic check", result.ci_status, "partial", ["release", "review-gated"]);
+                    };
                 } else {
                     if my_tier == "propose" {
                         emit("release:check_result", result);
-                        learn("release_check", "periodic check", result.ci_status, "partial", ["emitted", "release"]);
+                        if len(owner) > 0 {
+                            learn("release_check", "periodic check", result.ci_status, "partial", ["emitted", "release", repo_tag(owner, repo)]);
+                        } else {
+                            learn("release_check", "periodic check", result.ci_status, "partial", ["emitted", "release"]);
+                        };
                     } else {
-                        learn("release_check", "periodic check", result.ci_status, "partial", ["observed", "release"]);
+                        if len(owner) > 0 {
+                            learn("release_check", "periodic check", result.ci_status, "partial", ["observed", "release", repo_tag(owner, repo)]);
+                        } else {
+                            learn("release_check", "periodic check", result.ci_status, "partial", ["observed", "release"]);
+                        };
                     };
                 };
             };
@@ -185,6 +261,29 @@ fn tick(reason: string) -> void {
 
     let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
     if len(now) > 0 {
-        memo_write("release_checker:last_check", now);
+        memo_write(scoped_memo(owner, repo, "release_checker:last_check"), now);
     };
+}
+
+// Recursive iterator over `iter-repos.sh` output. See router.ag for the
+// empty-owner sentinel rationale.
+fn tick_at(spool: string, line_no: int) -> void {
+    let line_cmd = "SP=" + shell_escape(spool) + " N=" + to_string(line_no) +
+        " python3 -c 'import os; lines=os.environ[\"SP\"].splitlines(); n=int(os.environ[\"N\"]); print(lines[n] if 0<=n<len(lines) else \"\")'";
+    let line = try { exec sh line_cmd; } catch e { ""; };
+    if len(line) == 0 { return; };
+    let owner = repo_field(line, 0);
+    let repo = repo_field(line, 1);
+    tick_for_repo(owner, repo);
+    return tick_at(spool, line_no + 1);
+}
+
+fn tick(reason: string) -> void {
+    // #316 M3b: per-repo fan-out. See triage/agents/router.ag for the
+    // back-compat sentinel pattern and byte-identity rationale.
+    let spool = try { exec sh "$COLONY_DIR/../../tools/iter-repos.sh"; } catch e { ""; };
+    if len(spool) == 0 {
+        return;
+    };
+    tick_at(spool, 0);
 }

@@ -33,7 +33,33 @@ fn get_confidence() -> float {
     return 0.0;
 }
 
-fn tick(reason: string) -> void {
+// #316 M3b: per-tick fan-out helpers. See triage/agents/router.ag for
+// the full rationale. Single-block configs collapse to owner=="" sentinel,
+// repo_arg/repo_tag return "", scoped_memo passes the suffix through.
+
+fn repo_arg(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return " --repo " + shell_escape(owner + "/" + repo);
+}
+
+fn repo_tag(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return "repo:" + owner + "/" + repo;
+}
+
+fn scoped_memo(owner: string, repo: string, suffix: string) -> string {
+    if len(owner) == 0 { return suffix; };
+    return owner + "__" + repo + ":" + suffix;
+}
+
+fn repo_field(line: string, idx: int) -> string {
+    let cmd = "L=" + shell_escape(line) + " I=" + to_string(idx) +
+        " python3 -c 'import os; parts=os.environ[\"L\"].split(\"\t\"); i=int(os.environ[\"I\"]); print(parts[i] if 0<=i<len(parts) else \"\")'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+fn tick_for_repo(owner: string, repo: string) -> void {
     // #147: version_bumper is pure event-driven. It reacts to a
     // `release:ship_decision` emit from ship_decider — no GitLab poll
     // is needed to decide whether to do work. If the inbox is empty,
@@ -45,15 +71,17 @@ fn tick(reason: string) -> void {
     if len(decision_str) < 5 {
         let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
         if len(now_e) > 0 {
-            memo_write("version_bumper:last_check", now_e);
+            memo_write(scoped_memo(owner, repo, "version_bumper:last_check"), now_e);
         };
         return;
     };
 
     // 1. Learn versioning patterns from tags (only when we're actually
     //    about to bump — gated by the delta-check above).
+    // colony-lint: safe-exec-concat
+    let tags_cmd = "$COLONY_DIR/scripts/forge-api.sh tags --per-page 20 --view tag-summary" + repo_arg(owner, repo);
     let tags_raw = try {
-        exec sh "$COLONY_DIR/scripts/forge-api.sh tags --per-page 20 --view tag-summary";
+        exec sh tags_cmd;
     } catch e {
         print("[version_bumper] GitLab tags poll failed:", e);
         "";
@@ -66,13 +94,23 @@ fn tick(reason: string) -> void {
         ) -> VersionPatterns;
 
         if patterns.tags_seen > 0 {
-            learn(
-                "version_bump",
-                "batch of " + to_string(patterns.tags_seen) + " version tags",
-                "format: " + patterns.format + " | strategy: " + patterns.bump_strategy + " | prerelease: " + patterns.prerelease,
-                "success",
-                ["observed", "release"]
-            );
+            if len(owner) > 0 {
+                learn(
+                    "version_bump",
+                    "batch of " + to_string(patterns.tags_seen) + " version tags",
+                    "format: " + patterns.format + " | strategy: " + patterns.bump_strategy + " | prerelease: " + patterns.prerelease,
+                    "success",
+                    ["observed", "release", repo_tag(owner, repo)]
+                );
+            } else {
+                learn(
+                    "version_bump",
+                    "batch of " + to_string(patterns.tags_seen) + " version tags",
+                    "format: " + patterns.format + " | strategy: " + patterns.bump_strategy + " | prerelease: " + patterns.prerelease,
+                    "success",
+                    ["observed", "release"]
+                );
+            };
             print("[version_bumper] Learned from", patterns.tags_seen, "version tags");
         };
     };
@@ -87,7 +125,7 @@ fn tick(reason: string) -> void {
         print("[version_bumper] Ship decision is no-ship, skipping version bump");
         let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
         if len(now) > 0 {
-            memo_write("version_bumper:last_check", now);
+            memo_write(scoped_memo(owner, repo, "version_bumper:last_check"), now);
         };
         return;
     };
@@ -97,13 +135,17 @@ fn tick(reason: string) -> void {
     let changelog_str = to_string(changelog_draft);
 
     // Get latest tags for current version context
+    // colony-lint: safe-exec-concat
+    let latest_tags_cmd = "$COLONY_DIR/scripts/forge-api.sh tags --per-page 5 --view tag-summary" + repo_arg(owner, repo);
     let latest_tags = try {
-        exec sh "$COLONY_DIR/scripts/forge-api.sh tags --per-page 5 --view tag-summary";
+        exec sh latest_tags_cmd;
     } catch e { "[]"; };
 
     // Fetch merged MRs since last release for bump analysis
+    // colony-lint: safe-exec-concat
+    let latest_release_cmd = "$COLONY_DIR/scripts/forge-api.sh releases --per-page 1 --view release-summary" + repo_arg(owner, repo);
     let latest_release = try {
-        exec sh "$COLONY_DIR/scripts/forge-api.sh releases --per-page 1 --view release-summary";
+        exec sh latest_release_cmd;
     } catch e { "[]"; };
 
     let since_date = prompt(
@@ -111,7 +153,8 @@ fn tick(reason: string) -> void {
         latest_release
     ) -> string;
 
-    let mrs_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --since " + shell_escape(since_date) + " --view release-mr";
+    // colony-lint: safe-exec-concat
+    let mrs_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --since " + shell_escape(since_date) + " --view release-mr" + repo_arg(owner, repo);
     let mrs_raw = try { exec sh mrs_cmd; } catch e { "[]"; };
 
     let rec = recommend("version_bump", ["accuracy"]);
@@ -131,7 +174,7 @@ fn tick(reason: string) -> void {
     if my_tier == "autonomous" {
         // Create the tag
         // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
-        let tag_cmd = "$COLONY_DIR/scripts/forge-api.sh create-tag --name " + shell_escape(bump.next) + " --ref main --message " + shell_escape("Release " + bump.next);
+        let tag_cmd = "$COLONY_DIR/scripts/forge-api.sh create-tag --name " + shell_escape(bump.next) + " --ref main --message " + shell_escape("Release " + bump.next) + repo_arg(owner, repo);
         let tag_result = try { exec sh tag_cmd; } catch e {
             print("[version_bumper] Tag creation failed:", e);
             "";
@@ -144,7 +187,7 @@ fn tick(reason: string) -> void {
             let release_desc = changelog_str + bump.reasoning;
 
             // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
-            let release_cmd = "$COLONY_DIR/scripts/forge-api.sh create-release --tag " + shell_escape(bump.next) + " --name " + shell_escape("Release " + bump.next) + " --description " + shell_escape(release_desc);
+            let release_cmd = "$COLONY_DIR/scripts/forge-api.sh create-release --tag " + shell_escape(bump.next) + " --name " + shell_escape("Release " + bump.next) + " --description " + shell_escape(release_desc) + repo_arg(owner, repo);
             let release_result = try { exec sh release_cmd; } catch e {
                 print("[version_bumper] Release creation failed:", e);
                 "";
@@ -155,37 +198,79 @@ fn tick(reason: string) -> void {
             };
 
             emit("release:version_bumped", bump);
-            learn("version_bump", bump.next, bump.bump_type + ": " + bump.reasoning, "success", ["acted", "release"]);
+            if len(owner) > 0 {
+                learn("version_bump", bump.next, bump.bump_type + ": " + bump.reasoning, "success", ["acted", "release", repo_tag(owner, repo)]);
+            } else {
+                learn("version_bump", bump.next, bump.bump_type + ": " + bump.reasoning, "success", ["acted", "release"]);
+            };
         };
     } else {
         if my_tier == "review-gated" {
             // Non-terminal proposal: post a draft note on the latest MR flagged as
             // a pending bump so a human can approve before we tag. No tag/release
             // is created at this tier.
-            let mr_raw = try { exec sh "$COLONY_DIR/scripts/forge-api.sh merge-requests --per-page 1"; } catch e { "[]"; };
+            // colony-lint: safe-exec-concat
+            let mr_listing_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --per-page 1" + repo_arg(owner, repo);
+            let mr_raw = try { exec sh mr_listing_cmd; } catch e { "[]"; };
             let mr_iid = parse_int(to_string(json_get(mr_raw, "[0].iid")));
             if mr_iid > 0 {
                 let note = "[draft-bump] **Version Bump Proposal** (automated, pending approval): " + bump.current + " -> " + bump.next + " (" + bump.bump_type + ")\n\n" + bump.reasoning;
-                let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note);
+                // colony-lint: safe-exec-concat
+                let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note) + repo_arg(owner, repo);
                 try { exec sh post_cmd; } catch e {
                     print("[version_bumper] Failed to post draft bump note:", e);
                 };
             };
             emit("release:version_bumped", bump);
-            learn("version_bump", bump.next, bump.bump_type + ": " + bump.reasoning, "partial", ["release", "review-gated"]);
+            if len(owner) > 0 {
+                learn("version_bump", bump.next, bump.bump_type + ": " + bump.reasoning, "partial", ["release", "review-gated", repo_tag(owner, repo)]);
+            } else {
+                learn("version_bump", bump.next, bump.bump_type + ": " + bump.reasoning, "partial", ["release", "review-gated"]);
+            };
         } else {
             if my_tier == "propose" {
                 emit("release:version_bumped", bump);
-                learn("version_bump", bump.next, bump.bump_type + ": " + bump.reasoning, "partial", ["emitted", "release"]);
+                if len(owner) > 0 {
+                    learn("version_bump", bump.next, bump.bump_type + ": " + bump.reasoning, "partial", ["emitted", "release", repo_tag(owner, repo)]);
+                } else {
+                    learn("version_bump", bump.next, bump.bump_type + ": " + bump.reasoning, "partial", ["emitted", "release"]);
+                };
             } else {
                 print("[version_bumper] Observing (tier:", my_tier, ")");
-                learn("version_bump", bump.next, bump.bump_type + ": " + bump.reasoning, "partial", ["observed", "release"]);
+                if len(owner) > 0 {
+                    learn("version_bump", bump.next, bump.bump_type + ": " + bump.reasoning, "partial", ["observed", "release", repo_tag(owner, repo)]);
+                } else {
+                    learn("version_bump", bump.next, bump.bump_type + ": " + bump.reasoning, "partial", ["observed", "release"]);
+                };
             };
         };
     };
 
     let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
     if len(now) > 0 {
-        memo_write("version_bumper:last_check", now);
+        memo_write(scoped_memo(owner, repo, "version_bumper:last_check"), now);
     };
+}
+
+// Recursive iterator over `iter-repos.sh` output. See router.ag for the
+// empty-owner sentinel rationale.
+fn tick_at(spool: string, line_no: int) -> void {
+    let line_cmd = "SP=" + shell_escape(spool) + " N=" + to_string(line_no) +
+        " python3 -c 'import os; lines=os.environ[\"SP\"].splitlines(); n=int(os.environ[\"N\"]); print(lines[n] if 0<=n<len(lines) else \"\")'";
+    let line = try { exec sh line_cmd; } catch e { ""; };
+    if len(line) == 0 { return; };
+    let owner = repo_field(line, 0);
+    let repo = repo_field(line, 1);
+    tick_for_repo(owner, repo);
+    return tick_at(spool, line_no + 1);
+}
+
+fn tick(reason: string) -> void {
+    // #316 M3b: per-repo fan-out. See triage/agents/router.ag for the
+    // back-compat sentinel pattern and byte-identity rationale.
+    let spool = try { exec sh "$COLONY_DIR/../../tools/iter-repos.sh"; } catch e { ""; };
+    if len(spool) == 0 {
+        return;
+    };
+    tick_at(spool, 0);
 }

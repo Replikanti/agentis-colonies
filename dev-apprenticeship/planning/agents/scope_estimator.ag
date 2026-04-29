@@ -23,14 +23,42 @@ type CalibrationSummary {
     tendencies: string
 }
 
-fn unplanned_cmd() -> string {
-    let ts = recall_latest("scope_estimator:last_check");
+// #316 M3b: per-tick fan-out helpers. See triage/agents/router.ag for
+// the full rationale. Single-block configs collapse to owner=="" sentinel,
+// repo_arg/repo_tag return "", scoped_memo passes the suffix through.
+
+fn repo_arg(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return " --repo " + shell_escape(owner + "/" + repo);
+}
+
+fn repo_tag(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return "repo:" + owner + "/" + repo;
+}
+
+fn scoped_memo(owner: string, repo: string, suffix: string) -> string {
+    if len(owner) == 0 { return suffix; };
+    return owner + "__" + repo + ":" + suffix;
+}
+
+fn repo_field(line: string, idx: int) -> string {
+    let cmd = "L=" + shell_escape(line) + " I=" + to_string(idx) +
+        " python3 -c 'import os; parts=os.environ[\"L\"].split(\"\t\"); i=int(os.environ[\"I\"]); print(parts[i] if 0<=i<len(parts) else \"\")'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+fn unplanned_cmd(owner: string, repo: string) -> string {
+    let ts = recall_latest(scoped_memo(owner, repo, "scope_estimator:last_check"));
+    // colony-lint: safe-exec-concat
     if len(ts) > 0 {
         // #235: events-aware query — see risk_assessor.ag for rationale.
-        return "$COLONY_DIR/scripts/forge-api.sh issues-by-label-events --since " + shell_escape(ts) + " --view planning";
+        return "$COLONY_DIR/scripts/forge-api.sh issues-by-label-events --since " + shell_escape(ts) + " --view planning" + repo_arg(owner, repo);
     };
     // First-tick fallback: no prior window; snapshot preserves pre-#235 boot behavior.
-    return "$COLONY_DIR/scripts/forge-api.sh issues --needs-planning --view planning";
+    // colony-lint: safe-exec-concat
+    return "$COLONY_DIR/scripts/forge-api.sh issues --needs-planning --view planning" + repo_arg(owner, repo);
 }
 
 fn get_confidence() -> float {
@@ -41,13 +69,13 @@ fn get_confidence() -> float {
     return 0.0;
 }
 
-fn tick(reason: string) -> void {
+fn tick_for_repo(owner: string, repo: string) -> void {
     // Staleness gate for the observe step (#187). See risk_assessor.ag
     // for rationale. 1 800 s = 30 min between observe prompts keeps
     // calibration fresh without a heartbeat-LLM pathology on idle
     // projects where the act branch rarely fires.
     let now_epoch = try { exec sh "date -u +%s"; } catch e { ""; };
-    let last_obs = recall_latest("scope_estimator:observe_last_ts");
+    let last_obs = recall_latest(scoped_memo(owner, repo, "scope_estimator:observe_last_ts"));
     let observe_stale = if len(last_obs) > 0 {
         if len(now_epoch) > 0 {
             // Negative delta (operator ran `date -s <past>` or similar
@@ -63,8 +91,10 @@ fn tick(reason: string) -> void {
 
     // 1. Observe: pull recent merged MRs and learn calibration
     if observe_stale == 1 {
+        // colony-lint: safe-exec-concat
+        let merged_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --view planning-mr" + repo_arg(owner, repo);
         let merged_raw = try {
-            exec sh "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --view planning-mr";
+            exec sh merged_cmd;
         } catch e {
             print("[scope_estimator] GitLab merged-MR poll failed:", e);
             "";
@@ -77,15 +107,25 @@ fn tick(reason: string) -> void {
             ) -> CalibrationSummary;
 
             if summary.observed_pairs > 0 {
-                learn(
-                    "scope_estimate",
-                    "batch of " + to_string(summary.observed_pairs) + " shipped MRs",
-                    "ratio: " + summary.ratio_hint + " | " + summary.tendencies,
-                    "success",
-                    ["observed", "planning"]
-                );
+                if len(owner) > 0 {
+                    learn(
+                        "scope_estimate",
+                        "batch of " + to_string(summary.observed_pairs) + " shipped MRs",
+                        "ratio: " + summary.ratio_hint + " | " + summary.tendencies,
+                        "success",
+                        ["observed", "planning", repo_tag(owner, repo)]
+                    );
+                } else {
+                    learn(
+                        "scope_estimate",
+                        "batch of " + to_string(summary.observed_pairs) + " shipped MRs",
+                        "ratio: " + summary.ratio_hint + " | " + summary.tendencies,
+                        "success",
+                        ["observed", "planning"]
+                    );
+                };
                 if len(now_epoch) > 0 {
-                    memo_write("scope_estimator:observe_last_ts", now_epoch);
+                    memo_write(scoped_memo(owner, repo, "scope_estimator:observe_last_ts"), now_epoch);
                 };
                 print("[scope_estimator] Observed", summary.observed_pairs, "shipped pairs");
             };
@@ -93,7 +133,7 @@ fn tick(reason: string) -> void {
     };
 
     // 2. Act: estimate scope for the next unplanned issue
-    let cmd = unplanned_cmd();
+    let cmd = unplanned_cmd(owner, repo);
     let issues_raw = try {
         exec sh cmd;
     } catch e {
@@ -110,7 +150,7 @@ fn tick(reason: string) -> void {
     if target_iid <= 0 {
         return;
     };
-    let posted_key = "scope_estimator:" + to_string(target_iid) + ":posted";
+    let posted_key = scoped_memo(owner, repo, "scope_estimator:" + to_string(target_iid) + ":posted");
     if len(recall_latest(posted_key)) > 0 {
         return;
     };
@@ -130,7 +170,8 @@ fn tick(reason: string) -> void {
     if my_tier == "autonomous" {
         emit("planning:scope_estimate", estimate);
         let note = "**Scope Estimate** (automated): " + to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points\n\n" + estimate.reasoning;
-        let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(estimate.issue_id) + " --body " + shell_escape(note);
+        // colony-lint: safe-exec-concat
+        let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(estimate.issue_id) + " --body " + shell_escape(note) + repo_arg(owner, repo);
         let post_result = try { exec sh post_cmd; } catch e {
             print("[scope_estimator] Failed to post note:", e);
             "";
@@ -138,58 +179,131 @@ fn tick(reason: string) -> void {
         // #227: gate marker + success learn on non-empty post result.
         if len(post_result) > 0 {
             memo_write(posted_key, "1");
-            learn(
-                "scope_estimate",
-                "issue " + to_string(estimate.issue_id),
-                to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points: " + estimate.reasoning,
-                "success",
-                ["acted", "planning"]
-            );
+            if len(owner) > 0 {
+                learn(
+                    "scope_estimate",
+                    "issue " + to_string(estimate.issue_id),
+                    to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points: " + estimate.reasoning,
+                    "success",
+                    ["acted", "planning", repo_tag(owner, repo)]
+                );
+            } else {
+                learn(
+                    "scope_estimate",
+                    "issue " + to_string(estimate.issue_id),
+                    to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points: " + estimate.reasoning,
+                    "success",
+                    ["acted", "planning"]
+                );
+            };
         } else {
-            learn(
-                "scope_estimate",
-                "issue " + to_string(estimate.issue_id),
-                "post-failed: " + to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points",
-                "fail",
-                ["acted", "planning"]
-            );
+            if len(owner) > 0 {
+                learn(
+                    "scope_estimate",
+                    "issue " + to_string(estimate.issue_id),
+                    "post-failed: " + to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points",
+                    "fail",
+                    ["acted", "planning", repo_tag(owner, repo)]
+                );
+            } else {
+                learn(
+                    "scope_estimate",
+                    "issue " + to_string(estimate.issue_id),
+                    "post-failed: " + to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points",
+                    "fail",
+                    ["acted", "planning"]
+                );
+            };
         };
     } else {
         if my_tier == "review-gated" {
             emit("planning:scope_estimate", estimate);
-            memo_write("plan_reviewer:" + to_string(estimate.issue_id) + ":scope_drafted", "true");
-            learn(
-                "scope_estimate",
-                "issue " + to_string(estimate.issue_id),
-                to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points: " + estimate.reasoning,
-                "partial",
-                ["planning", "review-gated"]
-            );
+            memo_write(scoped_memo(owner, repo, "plan_reviewer:" + to_string(estimate.issue_id) + ":scope_drafted"), "true");
+            if len(owner) > 0 {
+                learn(
+                    "scope_estimate",
+                    "issue " + to_string(estimate.issue_id),
+                    to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points: " + estimate.reasoning,
+                    "partial",
+                    ["planning", "review-gated", repo_tag(owner, repo)]
+                );
+            } else {
+                learn(
+                    "scope_estimate",
+                    "issue " + to_string(estimate.issue_id),
+                    to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points: " + estimate.reasoning,
+                    "partial",
+                    ["planning", "review-gated"]
+                );
+            };
         } else {
             if my_tier == "propose" {
                 emit("planning:scope_estimate", estimate);
-                learn(
-                    "scope_estimate",
-                    "issue " + to_string(estimate.issue_id),
-                    to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points: " + estimate.reasoning,
-                    "partial",
-                    ["emitted", "planning"]
-                );
+                if len(owner) > 0 {
+                    learn(
+                        "scope_estimate",
+                        "issue " + to_string(estimate.issue_id),
+                        to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points: " + estimate.reasoning,
+                        "partial",
+                        ["emitted", "planning", repo_tag(owner, repo)]
+                    );
+                } else {
+                    learn(
+                        "scope_estimate",
+                        "issue " + to_string(estimate.issue_id),
+                        to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points: " + estimate.reasoning,
+                        "partial",
+                        ["emitted", "planning"]
+                    );
+                };
             } else {
                 print("[scope_estimator] Observing (tier:", my_tier, ")");
-                learn(
-                    "scope_estimate",
-                    "issue " + to_string(estimate.issue_id),
-                    to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points: " + estimate.reasoning,
-                    "partial",
-                    ["observed", "planning"]
-                );
+                if len(owner) > 0 {
+                    learn(
+                        "scope_estimate",
+                        "issue " + to_string(estimate.issue_id),
+                        to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points: " + estimate.reasoning,
+                        "partial",
+                        ["observed", "planning", repo_tag(owner, repo)]
+                    );
+                } else {
+                    learn(
+                        "scope_estimate",
+                        "issue " + to_string(estimate.issue_id),
+                        to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points: " + estimate.reasoning,
+                        "partial",
+                        ["observed", "planning"]
+                    );
+                };
             };
         };
     };
 
     let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
     if len(now) > 0 {
-        memo_write("scope_estimator:last_check", now);
+        memo_write(scoped_memo(owner, repo, "scope_estimator:last_check"), now);
     };
+}
+
+// Recursive iterator over `iter-repos.sh` output. See router.ag for the
+// empty-owner sentinel rationale.
+fn tick_at(spool: string, line_no: int) -> void {
+    let line_cmd = "SP=" + shell_escape(spool) + " N=" + to_string(line_no) +
+        " python3 -c 'import os; lines=os.environ[\"SP\"].splitlines(); n=int(os.environ[\"N\"]); print(lines[n] if 0<=n<len(lines) else \"\")'";
+    let line = try { exec sh line_cmd; } catch e { ""; };
+    if len(line) == 0 { return; };
+    let owner = repo_field(line, 0);
+    let repo = repo_field(line, 1);
+    tick_for_repo(owner, repo);
+    return tick_at(spool, line_no + 1);
+}
+
+fn tick(reason: string) -> void {
+    // #316 M3b: per-repo fan-out. See triage/agents/router.ag for the
+    // back-compat sentinel pattern and byte-identity rationale.
+    let spool = try { exec sh "$COLONY_DIR/../../tools/iter-repos.sh"; } catch e { ""; };
+    if len(spool) == 0 {
+        return;
+    };
+    tick_at(spool, 0);
 }

@@ -26,12 +26,40 @@ type MRPlan {
     confidence: float
 }
 
-fn merged_mr_cmd() -> string {
-    let ts = recall_latest("commit_composer:last_check");
+// #316 M3b: per-tick fan-out helpers. See triage/agents/router.ag for
+// the full rationale. Single-block configs collapse to owner=="" sentinel,
+// repo_arg/repo_tag return "", scoped_memo passes the suffix through.
+
+fn repo_arg(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return " --repo " + shell_escape(owner + "/" + repo);
+}
+
+fn repo_tag(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return "repo:" + owner + "/" + repo;
+}
+
+fn scoped_memo(owner: string, repo: string, suffix: string) -> string {
+    if len(owner) == 0 { return suffix; };
+    return owner + "__" + repo + ":" + suffix;
+}
+
+fn repo_field(line: string, idx: int) -> string {
+    let cmd = "L=" + shell_escape(line) + " I=" + to_string(idx) +
+        " python3 -c 'import os; parts=os.environ[\"L\"].split(\"\t\"); i=int(os.environ[\"I\"]); print(parts[i] if 0<=i<len(parts) else \"\")'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+fn merged_mr_cmd(owner: string, repo: string) -> string {
+    let ts = recall_latest(scoped_memo(owner, repo, "commit_composer:last_check"));
+    // colony-lint: safe-exec-concat
     if len(ts) > 0 {
-        return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --since " + shell_escape(ts) + " --view impl";
+        return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --since " + shell_escape(ts) + " --view impl" + repo_arg(owner, repo);
     };
-    return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --view impl";
+    // colony-lint: safe-exec-concat
+    return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --view impl" + repo_arg(owner, repo);
 }
 
 fn get_confidence() -> float {
@@ -48,12 +76,12 @@ fn get_confidence() -> float {
 // keeps getting bumped, so the learning-path prompt re-fires every
 // tick at cb_budget 600. Single-key memo, no TTL: at-most-once per
 // distinct MR iid.
-fn should_learn_from_mr(mr_iid: int) -> bool {
+fn should_learn_from_mr(owner: string, repo: string, mr_iid: int) -> bool {
     if mr_iid <= 0 {
         return false;
     };
     let iid_str = to_string(mr_iid);
-    let last_iid = recall_latest("commit_composer:last_learned_mr_iid");
+    let last_iid = recall_latest(scoped_memo(owner, repo, "commit_composer:last_learned_mr_iid"));
     if len(last_iid) == 0 {
         return true;
     };
@@ -63,9 +91,9 @@ fn should_learn_from_mr(mr_iid: int) -> bool {
     return false;
 }
 
-fn tick(reason: string) -> void {
+fn tick_for_repo(owner: string, repo: string) -> void {
     // 1. Learn commit conventions from recently merged MRs
-    let cmd = merged_mr_cmd();
+    let cmd = merged_mr_cmd(owner, repo);
     let raw = try {
         exec sh cmd;
     } catch e {
@@ -76,9 +104,10 @@ fn tick(reason: string) -> void {
     if len(raw) > 10 {
         let mr_iid = parse_int(to_string(json_get(raw, "[0].iid")));
 
-        if should_learn_from_mr(mr_iid) {
-            memo_write("commit_composer:last_learned_mr_iid", to_string(mr_iid));
-            let commits_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-commits " + to_string(mr_iid);
+        if should_learn_from_mr(owner, repo, mr_iid) {
+            memo_write(scoped_memo(owner, repo, "commit_composer:last_learned_mr_iid"), to_string(mr_iid));
+            // colony-lint: safe-exec-concat
+            let commits_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-commits " + to_string(mr_iid) + repo_arg(owner, repo);
             let commits_raw = try { exec sh commits_cmd; } catch e { "[]"; };
 
             if len(commits_raw) > 10 {
@@ -88,13 +117,23 @@ fn tick(reason: string) -> void {
                 ) -> CommitStyle;
 
                 if style.commits_seen > 0 {
-                    learn(
-                        "commit_compose",
-                        "MR " + to_string(mr_iid) + " (" + to_string(style.commits_seen) + " commits)",
-                        "format: " + style.format + " | grouping: " + style.grouping + " | prefixes: " + style.prefixes,
-                        "success",
-                        ["observed", "implementation"]
-                    );
+                    if len(owner) > 0 {
+                        learn(
+                            "commit_compose",
+                            "MR " + to_string(mr_iid) + " (" + to_string(style.commits_seen) + " commits)",
+                            "format: " + style.format + " | grouping: " + style.grouping + " | prefixes: " + style.prefixes,
+                            "success",
+                            ["observed", "implementation", repo_tag(owner, repo)]
+                        );
+                    } else {
+                        learn(
+                            "commit_compose",
+                            "MR " + to_string(mr_iid) + " (" + to_string(style.commits_seen) + " commits)",
+                            "format: " + style.format + " | grouping: " + style.grouping + " | prefixes: " + style.prefixes,
+                            "success",
+                            ["observed", "implementation"]
+                        );
+                    };
                     print("[commit_composer] Learned from", style.commits_seen, "commits in MR", mr_iid);
                 };
             };
@@ -109,7 +148,7 @@ fn tick(reason: string) -> void {
         // No code draft ready yet, nothing to compose
         let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
         if len(now) > 0 {
-            memo_write("commit_composer:last_check", now);
+            memo_write(scoped_memo(owner, repo, "commit_composer:last_check"), now);
         };
         return;
     };
@@ -135,7 +174,8 @@ fn tick(reason: string) -> void {
 
     if my_tier == "autonomous" {
         // Create the MR
-        let mr_cmd = "$COLONY_DIR/scripts/forge-api.sh create-mr --source " + shell_escape(plan.branch_name) + " --title " + shell_escape(plan.mr_title) + " --description " + shell_escape(plan.mr_description);
+        // colony-lint: safe-exec-concat
+        let mr_cmd = "$COLONY_DIR/scripts/forge-api.sh create-mr --source " + shell_escape(plan.branch_name) + " --title " + shell_escape(plan.mr_title) + " --description " + shell_escape(plan.mr_description) + repo_arg(owner, repo);
         let mr_result = try { exec sh mr_cmd; } catch e {
             print("[commit_composer] MR creation failed:", e);
             "";
@@ -144,32 +184,72 @@ fn tick(reason: string) -> void {
         if len(mr_result) > 0 {
             print("[commit_composer] Created MR for issue", plan.issue_id);
             emit("implementation:mr_ready", plan);
-            learn("commit_compose", "issue " + to_string(plan.issue_id), plan.mr_title, "success", ["acted", "implementation"]);
+            if len(owner) > 0 {
+                learn("commit_compose", "issue " + to_string(plan.issue_id), plan.mr_title, "success", ["acted", "implementation", repo_tag(owner, repo)]);
+            } else {
+                learn("commit_compose", "issue " + to_string(plan.issue_id), plan.mr_title, "success", ["acted", "implementation"]);
+            };
         };
     } else {
         if my_tier == "review-gated" {
             // Non-terminal draft: post the MR plan as a comment on the issue
             // so a human can approve before we actually open a non-draft MR.
             let note = "[draft-mr] **Merge Request Plan** (automated, pending approval)\n\nBranch: `" + plan.branch_name + "`\nTitle: " + plan.mr_title + "\n\n" + plan.mr_description + "\n\nCommits:\n" + plan.commits;
-            let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(plan.issue_id) + " --body " + shell_escape(note);
+            // colony-lint: safe-exec-concat
+            let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(plan.issue_id) + " --body " + shell_escape(note) + repo_arg(owner, repo);
             try { exec sh post_cmd; } catch e {
                 print("[commit_composer] Failed to post draft plan:", e);
             };
             emit("implementation:mr_ready", plan);
-            learn("commit_compose", "issue " + to_string(plan.issue_id), plan.mr_title, "partial", ["implementation", "review-gated"]);
+            if len(owner) > 0 {
+                learn("commit_compose", "issue " + to_string(plan.issue_id), plan.mr_title, "partial", ["implementation", "review-gated", repo_tag(owner, repo)]);
+            } else {
+                learn("commit_compose", "issue " + to_string(plan.issue_id), plan.mr_title, "partial", ["implementation", "review-gated"]);
+            };
         } else {
             if my_tier == "propose" {
                 emit("implementation:mr_ready", plan);
-                learn("commit_compose", "issue " + to_string(plan.issue_id), plan.mr_title, "partial", ["emitted", "implementation"]);
+                if len(owner) > 0 {
+                    learn("commit_compose", "issue " + to_string(plan.issue_id), plan.mr_title, "partial", ["emitted", "implementation", repo_tag(owner, repo)]);
+                } else {
+                    learn("commit_compose", "issue " + to_string(plan.issue_id), plan.mr_title, "partial", ["emitted", "implementation"]);
+                };
             } else {
                 print("[commit_composer] Observing (tier:", my_tier, ")");
-                learn("commit_compose", "issue " + to_string(plan.issue_id), plan.mr_title, "partial", ["observed", "implementation"]);
+                if len(owner) > 0 {
+                    learn("commit_compose", "issue " + to_string(plan.issue_id), plan.mr_title, "partial", ["observed", "implementation", repo_tag(owner, repo)]);
+                } else {
+                    learn("commit_compose", "issue " + to_string(plan.issue_id), plan.mr_title, "partial", ["observed", "implementation"]);
+                };
             };
         };
     };
 
     let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
     if len(now) > 0 {
-        memo_write("commit_composer:last_check", now);
+        memo_write(scoped_memo(owner, repo, "commit_composer:last_check"), now);
     };
+}
+
+// Recursive iterator over `iter-repos.sh` output. See router.ag for the
+// empty-owner sentinel rationale.
+fn tick_at(spool: string, line_no: int) -> void {
+    let line_cmd = "SP=" + shell_escape(spool) + " N=" + to_string(line_no) +
+        " python3 -c 'import os; lines=os.environ[\"SP\"].splitlines(); n=int(os.environ[\"N\"]); print(lines[n] if 0<=n<len(lines) else \"\")'";
+    let line = try { exec sh line_cmd; } catch e { ""; };
+    if len(line) == 0 { return; };
+    let owner = repo_field(line, 0);
+    let repo = repo_field(line, 1);
+    tick_for_repo(owner, repo);
+    return tick_at(spool, line_no + 1);
+}
+
+fn tick(reason: string) -> void {
+    // #316 M3b: per-repo fan-out. See triage/agents/router.ag for the
+    // back-compat sentinel pattern and byte-identity rationale.
+    let spool = try { exec sh "$COLONY_DIR/../../tools/iter-repos.sh"; } catch e { ""; };
+    if len(spool) == 0 {
+        return;
+    };
+    tick_at(spool, 0);
 }

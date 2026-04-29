@@ -22,12 +22,40 @@ type RefactorSuggestion {
     confidence: float
 }
 
-fn merged_mr_cmd() -> string {
-    let ts = recall_latest("refactorer:last_check");
+// #316 M3b: per-tick fan-out helpers. See triage/agents/router.ag for
+// the full rationale. Single-block configs collapse to owner=="" sentinel,
+// repo_arg/repo_tag return "", scoped_memo passes the suffix through.
+
+fn repo_arg(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return " --repo " + shell_escape(owner + "/" + repo);
+}
+
+fn repo_tag(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return "repo:" + owner + "/" + repo;
+}
+
+fn scoped_memo(owner: string, repo: string, suffix: string) -> string {
+    if len(owner) == 0 { return suffix; };
+    return owner + "__" + repo + ":" + suffix;
+}
+
+fn repo_field(line: string, idx: int) -> string {
+    let cmd = "L=" + shell_escape(line) + " I=" + to_string(idx) +
+        " python3 -c 'import os; parts=os.environ[\"L\"].split(\"\t\"); i=int(os.environ[\"I\"]); print(parts[i] if 0<=i<len(parts) else \"\")'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+fn merged_mr_cmd(owner: string, repo: string) -> string {
+    let ts = recall_latest(scoped_memo(owner, repo, "refactorer:last_check"));
+    // colony-lint: safe-exec-concat
     if len(ts) > 0 {
-        return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --since " + shell_escape(ts) + " --view impl";
+        return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --since " + shell_escape(ts) + " --view impl" + repo_arg(owner, repo);
     };
-    return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --view impl";
+    // colony-lint: safe-exec-concat
+    return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --view impl" + repo_arg(owner, repo);
 }
 
 fn get_confidence() -> float {
@@ -44,7 +72,7 @@ fn get_confidence() -> float {
 // the bus shouldn't see dupes, but if it does we don't re-pay the LLM
 // cost. Cooldown expires so a genuine new draft for the same issue
 // after an edit eventually passes.
-fn should_handle_refactor(iid_str: string) -> bool {
+fn should_handle_refactor(owner: string, repo: string, iid_str: string) -> bool {
     // Malformed bus payload (missing issue_id) would otherwise collapse
     // all drafts into the shared "void" memo slot. Skip — we have
     // nothing to gate on.
@@ -54,14 +82,14 @@ fn should_handle_refactor(iid_str: string) -> bool {
     if len(iid_str) == 0 {
         return false;
     };
-    let last_iid = recall_latest("refactorer:last_handled_iid");
+    let last_iid = recall_latest(scoped_memo(owner, repo, "refactorer:last_handled_iid"));
     if len(last_iid) == 0 {
         return true;
     };
     if iid_str != last_iid {
         return true;
     };
-    let last_ts_str = recall_latest("refactorer:last_handled_ts");
+    let last_ts_str = recall_latest(scoped_memo(owner, repo, "refactorer:last_handled_ts"));
     if len(last_ts_str) == 0 {
         return true;
     };
@@ -83,12 +111,12 @@ fn should_handle_refactor(iid_str: string) -> bool {
 // keeps getting bumped, so the learning-path prompt re-fires every
 // tick at cb_budget 1000. Single-key memo, no TTL: at-most-once per
 // distinct MR iid.
-fn should_learn_from_mr(mr_iid: int) -> bool {
+fn should_learn_from_mr(owner: string, repo: string, mr_iid: int) -> bool {
     if mr_iid <= 0 {
         return false;
     };
     let iid_str = to_string(mr_iid);
-    let last_iid = recall_latest("refactorer:last_learned_mr_iid");
+    let last_iid = recall_latest(scoped_memo(owner, repo, "refactorer:last_learned_mr_iid"));
     if len(last_iid) == 0 {
         return true;
     };
@@ -98,9 +126,9 @@ fn should_learn_from_mr(mr_iid: int) -> bool {
     return false;
 }
 
-fn tick(reason: string) -> void {
+fn tick_for_repo(owner: string, repo: string) -> void {
     // 1. Learn from refactoring patterns in merged MRs
-    let cmd = merged_mr_cmd();
+    let cmd = merged_mr_cmd(owner, repo);
     let raw = try {
         exec sh cmd;
     } catch e {
@@ -111,13 +139,15 @@ fn tick(reason: string) -> void {
     if len(raw) > 10 {
         let mr_iid = parse_int(to_string(json_get(raw, "[0].iid")));
 
-        if should_learn_from_mr(mr_iid) {
-            memo_write("refactorer:last_learned_mr_iid", to_string(mr_iid));
-            let changes_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-changes " + to_string(mr_iid);
+        if should_learn_from_mr(owner, repo, mr_iid) {
+            memo_write(scoped_memo(owner, repo, "refactorer:last_learned_mr_iid"), to_string(mr_iid));
+            // colony-lint: safe-exec-concat
+            let changes_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-changes " + to_string(mr_iid) + repo_arg(owner, repo);
             let changes_raw = try { exec sh changes_cmd; } catch e { ""; };
 
             if len(changes_raw) > 10 {
-                let commits_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-commits " + to_string(mr_iid);
+                // colony-lint: safe-exec-concat
+                let commits_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-commits " + to_string(mr_iid) + repo_arg(owner, repo);
                 let commits_raw = try { exec sh commits_cmd; } catch e { "[]"; };
 
                 let patterns = prompt(
@@ -126,13 +156,23 @@ fn tick(reason: string) -> void {
                 ) -> RefactorPatterns;
 
                 if patterns.refactor_mrs > 0 {
-                    learn(
-                        "refactor",
-                        "MR " + to_string(mr_iid),
-                        "smells: " + patterns.smells_fixed + " | techniques: " + patterns.techniques,
-                        "success",
-                        ["observed", "implementation"]
-                    );
+                    if len(owner) > 0 {
+                        learn(
+                            "refactor",
+                            "MR " + to_string(mr_iid),
+                            "smells: " + patterns.smells_fixed + " | techniques: " + patterns.techniques,
+                            "success",
+                            ["observed", "implementation", repo_tag(owner, repo)]
+                        );
+                    } else {
+                        learn(
+                            "refactor",
+                            "MR " + to_string(mr_iid),
+                            "smells: " + patterns.smells_fixed + " | techniques: " + patterns.techniques,
+                            "success",
+                            ["observed", "implementation"]
+                        );
+                    };
                     print("[refactorer] Learned refactoring patterns from MR", mr_iid);
                 };
             };
@@ -149,11 +189,11 @@ fn tick(reason: string) -> void {
         // call. Stash the memos *before* prompt() so downstream failures
         // don't force re-burn.
         let incoming_iid = to_string(json_get(draft_str, "issue_id"));
-        if should_handle_refactor(incoming_iid) {
-            memo_write("refactorer:last_handled_iid", incoming_iid);
+        if should_handle_refactor(owner, repo, incoming_iid) {
+            memo_write(scoped_memo(owner, repo, "refactorer:last_handled_iid"), incoming_iid);
             let ts_now = try { exec sh "date +%s"; } catch e { ""; };
             if len(ts_now) > 0 {
-                memo_write("refactorer:last_handled_ts", ts_now);
+                memo_write(scoped_memo(owner, repo, "refactorer:last_handled_ts"), ts_now);
             };
             let rec = recommend("refactor", ["accuracy"]);
             let context = "Code draft to review: " + draft_str + "\nLearned refactoring patterns: " + to_string(rec);
@@ -177,7 +217,7 @@ fn tick(reason: string) -> void {
                     refactor_context
                 ) -> string;
                 // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
-                let commit_cmd = "$COLONY_DIR/scripts/forge-api.sh commit-files --branch " + shell_escape(branch) + " --message " + shell_escape("refactor: apply improvements for #" + to_string(suggestion.issue_id)) + " --actions " + shell_escape(actions_json);
+                let commit_cmd = "$COLONY_DIR/scripts/forge-api.sh commit-files --branch " + shell_escape(branch) + " --message " + shell_escape("refactor: apply improvements for #" + to_string(suggestion.issue_id)) + " --actions " + shell_escape(actions_json) + repo_arg(owner, repo);
                 let commit_result = try { exec sh commit_cmd; } catch e {
                     print("[refactorer] Commit failed:", e);
                     "";
@@ -185,7 +225,11 @@ fn tick(reason: string) -> void {
                 if len(commit_result) > 0 {
                     print("[refactorer] Committed refactoring to", branch);
                     emit("implementation:refactor_suggestions", suggestion);
-                    learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "success", ["acted", "implementation"]);
+                    if len(owner) > 0 {
+                        learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "success", ["acted", "implementation", repo_tag(owner, repo)]);
+                    } else {
+                        learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "success", ["acted", "implementation"]);
+                    };
                 };
             } else {
                 if my_tier == "review-gated" {
@@ -193,19 +237,32 @@ fn tick(reason: string) -> void {
                     // comment on the issue so a human can approve before we
                     // commit refactored files. No commit at this tier.
                     let note = "[draft-refactor] **Refactoring Suggestions** (automated, pending approval) — priority: " + suggestion.priority + "\n\n" + suggestion.suggestions;
-                    let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(suggestion.issue_id) + " --body " + shell_escape(note);
+                    // colony-lint: safe-exec-concat
+                    let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(suggestion.issue_id) + " --body " + shell_escape(note) + repo_arg(owner, repo);
                     try { exec sh post_cmd; } catch e {
                         print("[refactorer] Failed to post draft note:", e);
                     };
                     emit("implementation:refactor_suggestions", suggestion);
-                    learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "partial", ["implementation", "review-gated"]);
+                    if len(owner) > 0 {
+                        learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "partial", ["implementation", "review-gated", repo_tag(owner, repo)]);
+                    } else {
+                        learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "partial", ["implementation", "review-gated"]);
+                    };
                 } else {
                     if my_tier == "propose" {
                         emit("implementation:refactor_suggestions", suggestion);
-                        learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "partial", ["emitted", "implementation"]);
+                        if len(owner) > 0 {
+                            learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "partial", ["emitted", "implementation", repo_tag(owner, repo)]);
+                        } else {
+                            learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "partial", ["emitted", "implementation"]);
+                        };
                     } else {
                         print("[refactorer] Observing (tier:", my_tier, ")");
-                        learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "partial", ["observed", "implementation"]);
+                        if len(owner) > 0 {
+                            learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "partial", ["observed", "implementation", repo_tag(owner, repo)]);
+                        } else {
+                            learn("refactor", "issue " + to_string(suggestion.issue_id), suggestion.suggestions, "partial", ["observed", "implementation"]);
+                        };
                     };
                 };
             };
@@ -214,6 +271,29 @@ fn tick(reason: string) -> void {
 
     let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
     if len(now) > 0 {
-        memo_write("refactorer:last_check", now);
+        memo_write(scoped_memo(owner, repo, "refactorer:last_check"), now);
     };
+}
+
+// Recursive iterator over `iter-repos.sh` output. See router.ag for the
+// empty-owner sentinel rationale.
+fn tick_at(spool: string, line_no: int) -> void {
+    let line_cmd = "SP=" + shell_escape(spool) + " N=" + to_string(line_no) +
+        " python3 -c 'import os; lines=os.environ[\"SP\"].splitlines(); n=int(os.environ[\"N\"]); print(lines[n] if 0<=n<len(lines) else \"\")'";
+    let line = try { exec sh line_cmd; } catch e { ""; };
+    if len(line) == 0 { return; };
+    let owner = repo_field(line, 0);
+    let repo = repo_field(line, 1);
+    tick_for_repo(owner, repo);
+    return tick_at(spool, line_no + 1);
+}
+
+fn tick(reason: string) -> void {
+    // #316 M3b: per-repo fan-out. See triage/agents/router.ag for the
+    // back-compat sentinel pattern and byte-identity rationale.
+    let spool = try { exec sh "$COLONY_DIR/../../tools/iter-repos.sh"; } catch e { ""; };
+    if len(spool) == 0 {
+        return;
+    };
+    tick_at(spool, 0);
 }

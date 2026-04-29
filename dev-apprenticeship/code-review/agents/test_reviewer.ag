@@ -21,12 +21,40 @@ type TestReview {
     summary: string
 }
 
-fn mr_cmd() -> string {
-    let ts = recall_latest("test_reviewer:last_check");
+// #316 M3b: per-tick fan-out helpers. See triage/agents/router.ag for
+// the full rationale. Single-block configs collapse to owner=="" sentinel,
+// repo_arg/repo_tag return "", scoped_memo passes the suffix through.
+
+fn repo_arg(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return " --repo " + shell_escape(owner + "/" + repo);
+}
+
+fn repo_tag(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return "repo:" + owner + "/" + repo;
+}
+
+fn scoped_memo(owner: string, repo: string, suffix: string) -> string {
+    if len(owner) == 0 { return suffix; };
+    return owner + "__" + repo + ":" + suffix;
+}
+
+fn repo_field(line: string, idx: int) -> string {
+    let cmd = "L=" + shell_escape(line) + " I=" + to_string(idx) +
+        " python3 -c 'import os; parts=os.environ[\"L\"].split(\"\t\"); i=int(os.environ[\"I\"]); print(parts[i] if 0<=i<len(parts) else \"\")'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+fn mr_cmd(owner: string, repo: string) -> string {
+    let ts = recall_latest(scoped_memo(owner, repo, "test_reviewer:last_check"));
+    // colony-lint: safe-exec-concat
     if len(ts) > 0 {
-        return "$COLONY_DIR/scripts/forge-api.sh merge-requests --since " + shell_escape(ts) + " --view reviewer";
+        return "$COLONY_DIR/scripts/forge-api.sh merge-requests --since " + shell_escape(ts) + " --view reviewer" + repo_arg(owner, repo);
     };
-    return "$COLONY_DIR/scripts/forge-api.sh merge-requests --view reviewer";
+    // colony-lint: safe-exec-concat
+    return "$COLONY_DIR/scripts/forge-api.sh merge-requests --view reviewer" + repo_arg(owner, repo);
 }
 
 fn get_confidence() -> float {
@@ -37,8 +65,8 @@ fn get_confidence() -> float {
     return 0.0;
 }
 
-fn tick(reason: string) -> void {
-    let cmd = mr_cmd();
+fn tick_for_repo(owner: string, repo: string) -> void {
+    let cmd = mr_cmd(owner, repo);
     let raw = try {
         exec sh cmd;
     } catch e {
@@ -55,7 +83,8 @@ fn tick(reason: string) -> void {
     if mr_iid <= 0 {
         return;
     };
-    let changes_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-changes " + to_string(mr_iid);
+    // colony-lint: safe-exec-concat
+    let changes_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-changes " + to_string(mr_iid) + repo_arg(owner, repo);
     let changes_raw = try { exec sh changes_cmd; } catch e { ""; };
 
     if len(changes_raw) < 10 {
@@ -69,7 +98,7 @@ fn tick(reason: string) -> void {
     // observe prompt on a 1800s window aligned with the #187 planning
     // gate.
     let now_epoch_s = try { exec sh "date -u +%s"; } catch e { ""; };
-    let last_learn = recall_latest("test_reviewer:last_pattern_learn_ts");
+    let last_learn = recall_latest(scoped_memo(owner, repo, "test_reviewer:last_pattern_learn_ts"));
     let should_learn = if len(last_learn) > 0 {
         if len(now_epoch_s) > 0 {
             let delta = parse_int(now_epoch_s) - parse_int(last_learn);
@@ -81,7 +110,8 @@ fn tick(reason: string) -> void {
 
     if should_learn == 1 {
         // Learn from human test-related comments
-        let notes_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-notes " + to_string(mr_iid);
+        // colony-lint: safe-exec-concat
+        let notes_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-notes " + to_string(mr_iid) + repo_arg(owner, repo);
         let notes_raw = try { exec sh notes_cmd; } catch e { "[]"; };
 
         let human_patterns = prompt(
@@ -90,9 +120,13 @@ fn tick(reason: string) -> void {
         ) -> string;
 
         if len(human_patterns) > 5 {
-            learn("test_review", "MR " + to_string(mr_iid), human_patterns, "success", ["observed", "code-review"]);
+            if len(owner) > 0 {
+                learn("test_review", "MR " + to_string(mr_iid), human_patterns, "success", ["observed", "code-review", repo_tag(owner, repo)]);
+            } else {
+                learn("test_review", "MR " + to_string(mr_iid), human_patterns, "success", ["observed", "code-review"]);
+            };
             if len(now_epoch_s) > 0 {
-                memo_write("test_reviewer:last_pattern_learn_ts", now_epoch_s);
+                memo_write(scoped_memo(owner, repo, "test_reviewer:last_pattern_learn_ts"), now_epoch_s);
             };
         };
     };
@@ -114,31 +148,49 @@ fn tick(reason: string) -> void {
         if my_tier == "autonomous" {
             emit("review:test_findings", review);
             let comment = "**Test Review** (automated)\n\n" + review.summary;
-            let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment);
+            // colony-lint: safe-exec-concat
+            let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment) + repo_arg(owner, repo);
             try { exec sh post_cmd; } catch e {
                 print("[test_reviewer] Failed to post comment:", e);
             };
-            learn("test_review", "MR " + to_string(mr_iid), review.summary, "success", ["code-review", "acted"]);
+            if len(owner) > 0 {
+                learn("test_review", "MR " + to_string(mr_iid), review.summary, "success", ["code-review", "acted", repo_tag(owner, repo)]);
+            } else {
+                learn("test_review", "MR " + to_string(mr_iid), review.summary, "success", ["code-review", "acted"]);
+            };
         } else {
             if my_tier == "review-gated" {
                 emit("review:test_findings", review);
                 let comment = "[draft-review] **Test Review** (automated, pending approval)\n\n" + review.summary;
-                let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment);
+                // colony-lint: safe-exec-concat
+                let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment) + repo_arg(owner, repo);
                 let result = try { exec sh post_cmd; } catch e {
                     print("[test_reviewer] Failed to post draft comment:", e);
                     "";
                 };
                 if len(result) > 0 {
-                    memo_write("test_reviewer:approved:" + to_string(mr_iid), "drafted");
-                    learn("test_review", "drafted on MR " + to_string(mr_iid), review.summary, "partial", ["code-review", "review-gated"]);
+                    memo_write(scoped_memo(owner, repo, "test_reviewer:approved:" + to_string(mr_iid)), "drafted");
+                    if len(owner) > 0 {
+                        learn("test_review", "drafted on MR " + to_string(mr_iid), review.summary, "partial", ["code-review", "review-gated", repo_tag(owner, repo)]);
+                    } else {
+                        learn("test_review", "drafted on MR " + to_string(mr_iid), review.summary, "partial", ["code-review", "review-gated"]);
+                    };
                 };
             } else {
                 if my_tier == "propose" {
                     emit("review:test_findings", review);
-                    learn("test_review", "MR " + to_string(mr_iid), review.summary, "partial", ["code-review", "emitted"]);
+                    if len(owner) > 0 {
+                        learn("test_review", "MR " + to_string(mr_iid), review.summary, "partial", ["code-review", "emitted", repo_tag(owner, repo)]);
+                    } else {
+                        learn("test_review", "MR " + to_string(mr_iid), review.summary, "partial", ["code-review", "emitted"]);
+                    };
                 } else {
                     print("[test_reviewer] MR", mr_iid, ": observing (tier:", my_tier, ")");
-                    learn("test_review", "MR " + to_string(mr_iid), review.summary, "partial", ["code-review", "observed"]);
+                    if len(owner) > 0 {
+                        learn("test_review", "MR " + to_string(mr_iid), review.summary, "partial", ["code-review", "observed", repo_tag(owner, repo)]);
+                    } else {
+                        learn("test_review", "MR " + to_string(mr_iid), review.summary, "partial", ["code-review", "observed"]);
+                    };
                 };
             };
         };
@@ -159,6 +211,29 @@ fn tick(reason: string) -> void {
 
     let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
     if len(now) > 0 {
-        memo_write("test_reviewer:last_check", now);
+        memo_write(scoped_memo(owner, repo, "test_reviewer:last_check"), now);
     };
+}
+
+// Recursive iterator over `iter-repos.sh` output. See router.ag for the
+// empty-owner sentinel rationale.
+fn tick_at(spool: string, line_no: int) -> void {
+    let line_cmd = "SP=" + shell_escape(spool) + " N=" + to_string(line_no) +
+        " python3 -c 'import os; lines=os.environ[\"SP\"].splitlines(); n=int(os.environ[\"N\"]); print(lines[n] if 0<=n<len(lines) else \"\")'";
+    let line = try { exec sh line_cmd; } catch e { ""; };
+    if len(line) == 0 { return; };
+    let owner = repo_field(line, 0);
+    let repo = repo_field(line, 1);
+    tick_for_repo(owner, repo);
+    return tick_at(spool, line_no + 1);
+}
+
+fn tick(reason: string) -> void {
+    // #316 M3b: per-repo fan-out. See triage/agents/router.ag for the
+    // back-compat sentinel pattern and byte-identity rationale.
+    let spool = try { exec sh "$COLONY_DIR/../../tools/iter-repos.sh"; } catch e { ""; };
+    if len(spool) == 0 {
+        return;
+    };
+    tick_at(spool, 0);
 }
