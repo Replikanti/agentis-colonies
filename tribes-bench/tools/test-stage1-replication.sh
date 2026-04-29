@@ -1,0 +1,115 @@
+#!/bin/bash
+# test-stage1-replication.sh — pure-offline assertions for Stage 1 M2.
+#
+# Verifies that:
+#   1. All three hunter.ag files contain a `replicate(` call.
+#   2. All three hunter.ag files contain Malthusian cost arithmetic
+#      (`base * n`/`/ k` form) and a max_replicas guard.
+#   3. The Malthusian cost formula `cost(n) = base + (base * n) / k`
+#      computes expected values for representative tribe sizes.
+#   4. start-colony.sh launches add `--enable-replication` and
+#      `--allow-replica-replication` to BOTH the main launch AND the
+#      `--restart-agent` paths.
+#   5. start-federation.sh spawns an `agentis worker` when RUN_DIR is
+#      set (without depending on a live agentis binary; we grep the
+#      script source).
+#
+# The test does not exercise replicate() at runtime: that would need a
+# colony worker and a live federation. The exercise is offline so it
+# stays CI-friendly.
+
+set -eu
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+FED_DIR="$(dirname "$SCRIPT_DIR")"
+
+PASS=0
+FAIL=0
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+assert_contains() {
+    # $1 label, $2 file, $3 needle (literal substring)
+    local label="$1" file="$2" needle="$3"
+    if grep -Fq -- "$needle" "$file"; then
+        echo "[PASS] $label"
+        PASS=$((PASS + 1))
+    else
+        echo "[FAIL] $label"
+        echo "       file:   $file"
+        echo "       needle: $needle"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+assert_eq() {
+    # $1 label, $2 expected, $3 got
+    local label="$1" exp="$2" got="$3"
+    if [ "$exp" = "$got" ]; then
+        echo "[PASS] $label"
+        PASS=$((PASS + 1))
+    else
+        echo "[FAIL] $label"
+        echo "       expected: $exp"
+        echo "       got:      $got"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+# --- 1. replicate() calls present in all three hunters ---
+for tribe in tribe-alpha tribe-beta tribe-gamma; do
+    assert_contains "$tribe hunter.ag has replicate(" \
+        "$FED_DIR/$tribe/agents/hunter.ag" "replicate("
+done
+
+# --- 2. Malthusian cost arithmetic + max_replicas gate ---
+for tribe in tribe-alpha tribe-beta tribe-gamma; do
+    assert_contains "$tribe hunter.ag computes Malthusian cost (base + base*n/k)" \
+        "$FED_DIR/$tribe/agents/hunter.ag" "base + (base * n) / k"
+    assert_contains "$tribe hunter.ag reads max_replicas memo" \
+        "$FED_DIR/$tribe/agents/hunter.ag" ":max_replicas"
+done
+
+# --- 3. Malthusian cost formula sanity (shell arithmetic) ---
+malthusian() {
+    # $1 base, $2 n, $3 k
+    local base="$1" n="$2" k="$3"
+    echo "$((base + (base * n) / k))"
+}
+
+assert_eq "C(0, base=100, k=3) == 100" "100" "$(malthusian 100 0 3)"
+assert_eq "C(1, base=100, k=3) == 133" "133" "$(malthusian 100 1 3)"
+assert_eq "C(3, base=100, k=3) == 200" "200" "$(malthusian 100 3 3)"
+assert_eq "C(5, base=100, k=3) == 266" "266" "$(malthusian 100 5 3)"
+assert_eq "C(0, base=200, k=4) == 200" "200" "$(malthusian 200 0 4)"
+assert_eq "C(2, base=200, k=4) == 300" "300" "$(malthusian 200 2 4)"
+
+# --- 4. start-colony.sh has --enable-replication on BOTH paths ---
+for tribe in tribe-alpha tribe-beta tribe-gamma; do
+    cnt="$(grep -c -- '--enable-replication' "$FED_DIR/$tribe/scripts/start-colony.sh" || true)"
+    assert_eq "$tribe start-colony.sh: --enable-replication on >=2 lines (main + restart)" \
+        "yes" "$([ "$cnt" -ge 2 ] && echo yes || echo no)"
+    cnt="$(grep -c -- '--allow-replica-replication' "$FED_DIR/$tribe/scripts/start-colony.sh" || true)"
+    assert_eq "$tribe start-colony.sh: --allow-replica-replication on >=2 lines (main + restart)" \
+        "yes" "$([ "$cnt" -ge 2 ] && echo yes || echo no)"
+done
+
+# --- 5. start-federation.sh spawns agentis worker when RUN_DIR set ---
+assert_contains "start-federation.sh spawns agentis worker" \
+    "$FED_DIR/start-federation.sh" "agentis worker"
+assert_contains "start-federation.sh writes worker.pid" \
+    "$FED_DIR/start-federation.sh" "worker.pid"
+assert_contains "start-federation.sh seeds tribes-bench:worker_addr memo" \
+    "$FED_DIR/start-federation.sh" "tribes-bench:worker_addr"
+
+# --- 6. start-colony.sh seeds the M2+M3 economy memos ---
+for tribe in tribe-alpha tribe-beta tribe-gamma; do
+    for memo in pool size replication_base_cost replication_k max_replicas reward_full reward_subsequent death_threshold; do
+        assert_contains "$tribe start-colony.sh seeds tribe:$memo" \
+            "$FED_DIR/$tribe/scripts/start-colony.sh" ":${memo}\""
+    done
+done
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]
