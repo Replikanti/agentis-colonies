@@ -92,6 +92,7 @@ fn mr_cmd(owner: string, repo: string) -> string {
 // Empty return => byte-identical context vs pre-#317.
 fn cross_repo_context(owner: string, repo: string, mr_iid: int, body: string) -> string {
     if len(body) < 5 { return ""; };
+    if len(owner) == 0 { return ""; };  // M3a sentinel: skip cross-repo scan on single-block path
     let self_arg = if len(owner) > 0 { " --self " + shell_escape(owner + "/" + repo); } else { ""; };
     // colony-lint: safe-exec-concat
     let scan_cmd = "printf '%s' " + shell_escape(body) +
