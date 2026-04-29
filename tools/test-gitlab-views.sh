@@ -185,7 +185,7 @@ test_view "triage" "members-summary" "id,username,name"                         
 test_view "triage" "labels-summary"  "name,description,color"                            "$FIXTURE_LABELS"
 
 # --- Code-review ---
-test_view "code-review" "reviewer" "iid,state,title,labels,source_branch,target_branch,draft,author" "$FIXTURE_MRS"
+test_view "code-review" "reviewer" "iid,state,title,description,labels,source_branch,target_branch,draft,author" "$FIXTURE_MRS"
 
 # --- Planning ---
 test_view "planning" "planning"    "iid,title,description,labels,author,created_at"                    "$FIXTURE_ISSUES"

@@ -200,8 +200,9 @@ assert_eq "True" "$ALL_FALSE" "normalize_notes: system:false invariant holds for
 # --- End-to-end: normalize_pulls -> project_json reviewer ---
 # The four reviewer agents (style/logic/security/test) + approval_decider
 # consume `merge-requests --view reviewer` on every tick. The view keys
-# must stay locked to {iid, state, title, labels, source_branch,
-# target_branch, draft, author}.
+# must stay locked to {iid, state, title, description, labels,
+# source_branch, target_branch, draft, author}. `description` was added
+# in #317 so the reviewers can scan the PR body for cross-repo refs.
 PIPE_PRELUDE=$(mktemp)
 build_prelude "$PIPE_PRELUDE"
 # shellcheck disable=SC1090,SC2016
@@ -217,7 +218,7 @@ E2E_IID=$(json_extract "$E2E_OUT" "data[0]['iid']")
 E2E_DRAFT=$(json_extract "$E2E_OUT" "data[0]['draft']")
 E2E_AUTHOR=$(json_extract "$E2E_OUT" "data[0]['author']['username']")
 assert_eq "3" "$E2E_COUNT" "e2e reviewer: normalize | reviewer view emits 3 items"
-assert_eq "author,draft,iid,labels,source_branch,state,target_branch,title" "$E2E_KEYS" "e2e reviewer: view keys match gitlab reviewer shape"
+assert_eq "author,description,draft,iid,labels,source_branch,state,target_branch,title" "$E2E_KEYS" "e2e reviewer: view keys match gitlab reviewer shape"
 assert_eq "10" "$E2E_IID" "e2e reviewer: view carries iid through pipe"
 assert_eq "True" "$E2E_DRAFT" "e2e reviewer: draft flows through pipe"
 assert_eq "alice" "$E2E_AUTHOR" "e2e reviewer: author.username preserved"

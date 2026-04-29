@@ -21,6 +21,7 @@
 #   github-api.sh mr-notes <number>
 #   github-api.sh post-note <number> --body <text>
 #   github-api.sh approve <number>
+#   github-api.sh get-issue <number>
 #
 # Views (opt-in projection; byte-identical to gitlab-api.sh):
 #   merge-requests --view reviewer  [{iid, state, title, labels,
@@ -136,6 +137,32 @@ print(json.dumps({"changes": out}))
 PY
 }
 
+# normalize_issue
+# Single-issue variant. Reads GitHub /issues/{n} JSON, writes GitLab-issue-
+# shape JSON: {iid, title, description, state, labels, assignees, author,
+# created_at, updated_at, user_notes_count}. Lifted from triage/scripts/
+# github-api.sh's normalize_issue (#317) so the reviewer-side resolver can
+# consume the same shape across the two callers without depending on the
+# triage colony being installed alongside.
+normalize_issue() {
+    python3 /dev/fd/3 3<<'PY'
+import sys, json
+x = json.loads(sys.stdin.read())
+print(json.dumps({
+    "iid": x.get("number"),
+    "title": x.get("title"),
+    "description": x.get("body"),
+    "state": "opened" if x.get("state") == "open" else x.get("state"),
+    "labels": [lab if isinstance(lab, str) else lab.get("name") for lab in (x.get("labels") or []) if isinstance(lab, (str, dict))],
+    "assignees": [{"username": a.get("login")} for a in (x.get("assignees") or [])],
+    "author": {"username": (x.get("user") or {}).get("login")},
+    "created_at": x.get("created_at"),
+    "updated_at": x.get("updated_at"),
+    "user_notes_count": x.get("comments", 0),
+}))
+PY
+}
+
 # normalize_notes
 # Reads GitHub /issues/{n}/comments JSON, writes GitLab /notes-shape:
 # [{id, body, author:{username}, created_at, system}]. GitHub's issue-comments
@@ -179,7 +206,9 @@ project_json() {
 import sys, json
 data = json.loads(sys.stdin.read())
 # #104 parity: keep author.username so style_reviewer tags personal vs team.
+# #317: keep description so reviewers can scan it for cross-repo refs.
 out = [{"iid": x.get("iid"), "state": x.get("state"), "title": x.get("title"),
+        "description": x.get("description"),
         "labels": x.get("labels", []), "source_branch": x.get("source_branch"),
         "target_branch": x.get("target_branch"), "draft": x.get("draft"),
         "author": {"username": (x.get("author") or {}).get("username")}} for x in data]
@@ -453,6 +482,30 @@ PY
         # approval_decider already guards via its decide-once memo so double
         # invocations here would only waste a round-trip and a review row.
         gh_post "$API/pulls/$NUM/reviews" '{"event":"APPROVE"}'
+        ;;
+
+    get-issue)
+        # #317: single-issue fetch for the cross-repo reference resolver.
+        # Argv parity with triage/scripts/github-api.sh's get-issue (lifted
+        # there for the planning/triage feedback matcher); the resolver in
+        # tools/resolve-cross-repo-ref.sh consumes the normalized GitLab-
+        # shape JSON for cache record reshaping.
+        if [ $# -lt 1 ]; then
+            emit_error "Usage: github-api.sh get-issue <number>"
+            exit 2
+        fi
+        NUM="$1"
+        shift
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                *) emit_error "unknown flag: $1"; exit 2 ;;
+            esac
+        done
+        case "$NUM" in
+            ''|*[!0-9]*) emit_error "issue number must be numeric: $NUM"; exit 2 ;;
+        esac
+        body="$(gh_get "$API/issues/$NUM")" || exit $?
+        printf '%s' "$body" | normalize_issue
         ;;
 
     rate-limit-status)

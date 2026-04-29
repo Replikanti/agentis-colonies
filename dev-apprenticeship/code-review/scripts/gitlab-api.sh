@@ -13,6 +13,7 @@
 #   gitlab-api.sh mr-notes <iid>
 #   gitlab-api.sh post-note <iid> --body <text>
 #   gitlab-api.sh approve <iid>
+#   gitlab-api.sh get-issue <iid>
 #
 # Views (opt-in projection; default is full JSON):
 #   merge-requests --view reviewer  [{iid, state, title, labels,
@@ -61,7 +62,9 @@ import os, json
 data = json.loads(os.environ["DATA"])
 # #104: include author.username so style_reviewer can tag knowledge
 # as personal (operator's own MR) vs team.
+# #317: include description so reviewers can scan it for cross-repo refs.
 out = [{"iid": x.get("iid"), "state": x.get("state"), "title": x.get("title"),
+        "description": x.get("description"),
         "labels": x.get("labels", []), "source_branch": x.get("source_branch"),
         "target_branch": x.get("target_branch"), "draft": x.get("draft"),
         "author": {"username": (x.get("author") or {}).get("username")}} for x in data]
@@ -288,6 +291,30 @@ case "$CMD" in
     approve)
         IID="${1:?Usage: gitlab-api.sh approve <iid>}"
         gl_post "$API/merge_requests/$IID/approve" "{}"
+        ;;
+
+    get-issue)
+        # #317: single-issue fetch for the cross-repo reference resolver.
+        # Argv parity with the triage colony's gitlab-api.sh get-issue (#106
+        # introduced it there for the feedback matcher); the resolver in
+        # tools/resolve-cross-repo-ref.sh consumes the GitLab-shape JSON
+        # directly — no normalization step needed since GitLab issues are
+        # the canonical shape that github-api.sh's normalize_issue mirrors.
+        if [ $# -lt 1 ]; then
+            emit_error "Usage: gitlab-api.sh get-issue <iid>"
+            exit 2
+        fi
+        IID="$1"
+        shift
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                *) emit_error "unknown flag: $1"; exit 2 ;;
+            esac
+        done
+        case "$IID" in
+            ''|*[!0-9]*) emit_error "iid must be numeric: $IID"; exit 2 ;;
+        esac
+        gl_get "$API/issues/$IID"
         ;;
 
     rate-limit-status)
