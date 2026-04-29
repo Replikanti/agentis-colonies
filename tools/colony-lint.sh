@@ -126,7 +126,7 @@ for _backend in ('github', 'gitlab'):
     _has_single = any(ln == '[forge.' + _backend + ']' for ln in _raw_lines)
     _has_multi  = any(ln == '[[forge.' + _backend + ']]' for ln in _raw_lines)
     if _has_single and _has_multi:
-        errors.append('config has both [forge.' + _backend + '] and [[forge.' + _backend + ']] — pick one (run tools/migrate-to-multi-repo.sh to migrate)')
+        errors.append('config has both [forge.' + _backend + '] and [[forge.' + _backend + ']] — drop the [forge.' + _backend + '] block (single-table form retired in v2.0.0; run tools/migrate-to-multi-repo.sh)')
 
 if errors:
     print('\n'.join(errors))
@@ -185,10 +185,8 @@ else:
                     if not entry.get(required_key):
                         errors.append(f'[[forge.github]][{i}] missing required key: {required_key}')
         elif isinstance(gh, dict):
-            # Legacy single-block schema. Still supported in M1.
-            for required_key in ('owner', 'repo'):
-                if not gh.get(required_key):
-                    errors.append(f'[forge.github] missing required key: {required_key}')
+            # M6 (#316): single-table form retired in v2.0.0.
+            errors.append('[forge.github] single-table form is retired in v2.0.0 (#316 M6). Run tools/migrate-to-multi-repo.sh <colony.toml> to convert to [[forge.github]] array form.')
         else:
             errors.append(f'[forge.github] is wrong type: {type(gh).__name__}')
 if 'llm' not in data:
