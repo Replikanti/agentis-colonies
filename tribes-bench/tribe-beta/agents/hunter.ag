@@ -1,15 +1,18 @@
 // hunter.ag -- Tribe Beta hunter: looks for command-injection bugs in
-// the Stage 0 synthetic Rust target via a source-to-sink data-flow
+// the Stage 0/1 synthetic Rust target via a source-to-sink data-flow
 // heuristic.
 //
-// Stage 0 wiring test only (#363). The hunter ticks at 60s, reads the
-// checked-in target, asks the LLM for one structured finding, and (at
-// propose tier or higher) verifies it against the deterministic
-// bugs.json manifest. No replication, no market, no reputation.
+// Stage 1 M2+M3 (#364): in addition to verifying findings, the hunter
+// now (a) seeds prompt-variant memo + replicates inside the Malthusian
+// per-replica cost gate when the tribe pool is rich enough, (b) credits
+// the tribe pool with a first-finder full reward / subsequent partial
+// reward via the shared bug-ledger.jsonl, and (c) initiates tribe death
+// via sibling-stop + KB preservation when the pool drains below the
+// configured threshold.
 //
 // Run as daemon: agentis daemon agents/hunter.ag --colony tribe-beta
-// Requires: exec capability, TARGET_DIR + VERIFIER_PATH env vars (set by
-// scripts/start-colony.sh).
+// Requires: exec capability, replication capability, TARGET_DIR +
+// VERIFIER_PATH env vars (set by scripts/start-colony.sh).
 
 cb 800;
 
@@ -26,6 +29,34 @@ fn get_confidence() -> float {
         return parse_float(raw);
     };
     return 0.0;
+}
+
+fn tribe_name() -> string {
+    let n = try { exec sh "printenv TRIBE_NAME"; } catch e { ""; };
+    if len(n) > 0 {
+        return n;
+    };
+    return "tribe-beta";
+}
+
+fn pick_variant(tribe: string, n: int) -> string {
+    let _ = tribe;
+    let idx = n - ((n / 3) * 3);
+    if idx == 0 {
+        return "source-sink-default";
+    };
+    if idx == 1 {
+        return "source-sink-arg-only";
+    };
+    return "source-sink-broad-flow";
+}
+
+fn self_node_addr() -> string {
+    let addr = recall_latest("tribes-bench:worker_addr");
+    if len(addr) > 0 {
+        return addr;
+    };
+    return "127.0.0.1:9100";
 }
 
 fn tick(reason: string) -> void {
@@ -99,10 +130,79 @@ fn tick(reason: string) -> void {
                 let bug_id = to_string(json_get(verdict_raw, "bug_id"));
                 if verified_str == "true" {
                     print("[hunter] verified ", bug_id, " at line ", finding.line);
-                    learn("hunt", "line " + to_string(finding.line), bug_id, "success", ["acted", "tribes-bench"]);
+
+                    // M3 reward: provisional first-finder check via memo,
+                    // append to bug-ledger.jsonl, credit tribe pool.
+                    let prior_finder = recall_latest("bug-ledger:" + bug_id + ":first_finder_tribe");
+                    let reward = if len(prior_finder) == 0 {
+                        memo_write("bug-ledger:" + bug_id + ":first_finder_tribe", tribe_name());
+                        parse_int(recall_latest("tribe-" + tribe_name() + ":reward_full"));
+                    } else {
+                        parse_int(recall_latest("tribe-" + tribe_name() + ":reward_subsequent"));
+                    };
+
+                    let ledger_path = recall_latest("tribe-" + tribe_name() + ":bug_ledger");
+                    if len(ledger_path) > 0 {
+                        let row = "{\"ts\": " + to_string(now_ms()) + ", \"tribe\": \"" + tribe_name() + "\", \"bug_id\": \"" + bug_id + "\", \"reward\": " + to_string(reward) + "}";
+                        // colony-lint: safe-exec-concat
+                        let append_cmd = "printf '%s\\n' " + shell_escape(row) + " >> " + shell_escape(ledger_path);
+                        let _ = try { exec sh append_cmd; } catch e { ""; };
+                    };
+
+                    let cur_pool = parse_int(recall_latest("tribe-" + tribe_name() + ":pool"));
+                    memo_write("tribe-" + tribe_name() + ":pool", to_string(cur_pool + reward));
+                    learn("hunt", "line " + to_string(finding.line), bug_id, "success", ["acted", "tribes-bench", tribe_name(), "reward=" + to_string(reward)]);
+
+                    // M2 replication: Malthusian-gated. C(n) = base * (1 + n/k).
+                    let pool_after = cur_pool + reward;
+                    let n = parse_int(recall_latest("tribe-" + tribe_name() + ":size"));
+                    let base = parse_int(recall_latest("tribe-" + tribe_name() + ":replication_base_cost"));
+                    let raw_k = parse_int(recall_latest("tribe-" + tribe_name() + ":replication_k"));
+                    let k = if raw_k <= 0 { 3; } else { raw_k; };
+                    let max_replicas = parse_int(recall_latest("tribe-" + tribe_name() + ":max_replicas"));
+                    let cost = base + (base * n) / k;
+                    if pool_after >= cost {
+                        if n < max_replicas {
+                            let variant = pick_variant(tribe_name(), n);
+                            memo_write("hunter:prompt_variant", variant);
+                            let target = self_node_addr();
+                            let replica_id = try { replicate(target); } catch e { ""; };
+                            if len(replica_id) > 0 {
+                                memo_write("tribe-" + tribe_name() + ":pool", to_string(pool_after - cost));
+                                memo_write("tribe-" + tribe_name() + ":size", to_string(n + 1));
+                                learn("replicate", "n=" + to_string(n), "cost=" + to_string(cost), "success", ["replicated", "tribes-bench", tribe_name()]);
+                            } else {
+                                learn("replicate", "n=" + to_string(n), "cost=" + to_string(cost), "failure", ["replicate-nak", "tribes-bench", tribe_name()]);
+                            };
+                        };
+                    };
                 } else {
                     print("[hunter] false positive at line ", finding.line);
                     learn("hunt", "line " + to_string(finding.line), finding.rationale, "failure", ["false-positive", "tribes-bench"]);
+                };
+
+                // M3 death: pool-drain → KB preserve + sibling stop. Guarded
+                // by a one-shot `death_initiated` memo so racing siblings
+                // don't all run the preserve+stop sequence.
+                let pool_now = parse_int(recall_latest("tribe-" + tribe_name() + ":pool"));
+                let death_thr = parse_int(recall_latest("tribe-" + tribe_name() + ":death_threshold"));
+                if pool_now < death_thr {
+                    let already = recall_latest("tribe-" + tribe_name() + ":death_initiated");
+                    if len(already) == 0 {
+                        memo_write("tribe-" + tribe_name() + ":death_initiated", "1");
+                        let run_dir = recall_latest("tribe-" + tribe_name() + ":run_dir");
+                        if len(run_dir) > 0 {
+                            let dead_dir = run_dir + "/dead-tribes/" + tribe_name();
+                            // colony-lint: safe-exec-concat
+                            let preserve_cmd = "mkdir -p " + shell_escape(dead_dir) + " && cp -p $AGENTIS_ROOT/experience/*.jsonl " + shell_escape(dead_dir) + "/ 2>/dev/null; cp -p $AGENTIS_ROOT/spend/*.jsonl " + shell_escape(dead_dir) + "/ 2>/dev/null; agentis knowledge export --tags " + shell_escape("tribes-bench-" + tribe_name()) + " > " + shell_escape(dead_dir) + "/knowledge.json 2>/dev/null";
+                            let _ = try { exec sh preserve_cmd; } catch e { ""; };
+                        };
+                        learn("death", tribe_name(), "pool=" + to_string(pool_now), "failure", ["died", "tribes-bench", tribe_name()]);
+                        // colony-lint: safe-exec-concat
+                        let stop_cmd = "agentis daemon list --json 2>/dev/null | jq -r '.[] | select(.colony==\"" + tribe_name() + "\" and .state==\"running\") | .agent_id' | while read id; do agentis daemon stop \"$id\" --async --grace-ms 2000 --timeout-ms 8000 || true; done";
+                        let _ = try { exec sh stop_cmd; } catch e { ""; };
+                    };
+                    return;
                 };
             } else {
                 // shadow / dormant: observe-only.
