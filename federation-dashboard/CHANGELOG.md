@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **dashboard**: per-repo Forge Rate Limits — multi-repo colonies (`[[forge.github]]` with N>=2 entries) now render one rate-limit row per repo inside the per-colony modal, with a colony-wide aggregate footer (sum-of-remaining / sum-of-limit, earliest reset_at). Single-block and N=1 multi-block colonies keep the v0.7.0 single-row layout byte-identical. New `data.forge_rate_limits[colony].repos[]` shape on multi-repo. (#316 M5)
+- **dashboard**: per-repo confidence overlay on the per-agent table — when M4-shipped `<owner>__<repo>:<agent>:confidence` memos are seeded, the agent row carries a `(per-repo)` pill and the per-agent modal grows a "Per-repo overrides" subsection. New per-agent collector field `data.agents[].per_repo_confidence`. (#316 M5)
+
 ## [0.7.0] — 2026-04-29
 
 5-tab Status redesign + Promotion Progress collapsible + orphan sidecar
