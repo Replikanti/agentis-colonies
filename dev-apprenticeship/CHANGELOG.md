@@ -59,6 +59,21 @@ is asserted until multi-version CI is in place.
   dev-apprenticeship now serve N repositories from one colony when `colony.toml`
   uses the `[[forge.github]]` array form. Single-block configs continue to work
   byte-identically.
+- Multi-repo runtime (#316 M4): per-repo confidence keys + `repo_tier()` helper.
+  All 21 agents now read tier via `repo_tier("<agent>", owner, repo)` instead of
+  the runtime `tier("<agent>")` builtin. The helper looks up
+  `<owner>__<repo>:<agent>:confidence` first, falls back to the legacy unscoped
+  `<agent>:confidence` when missing, and maps to the same five-tier string set
+  the runtime returns using ADR-0001 thresholds. Single-block configs (M3a
+  sentinel `owner==""`) bypass the scoped lookup entirely and stay
+  byte-identical to legacy. Operators set per-repo divergence via
+  `agentis memo set acme__frontend:labeler:confidence 0.95`; the legacy
+  unscoped key continues to govern every repo without an override.
+  `labeler.ag`'s reality-check `apply_feedback()` now writes to the per-repo
+  memo so per-repo confidence drifts independently. `auto-promote.sh` per-repo
+  writes ship in a follow-up; until then the sidecar continues to write only
+  the unscoped key. `colony-lint.sh` gains a check failing on direct `tier()`
+  calls inside `fn tick_for_repo`.
 
 ### Deprecated
 
