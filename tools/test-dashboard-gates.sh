@@ -64,7 +64,10 @@ EXPECTED = {
 # tier-branch comparison in the agent. We look for any occurrence of
 # `== "<tier_name>"` that follows a `my_tier` identifier, gathering the
 # set of tier names that the agent branches on.
-TIER_CALL_RE = re.compile(r'\btier\s*\(\s*"([^"]+)"\s*\)')
+# #316 M4: post-M3 agents call `repo_tier("name", owner, repo)` instead
+# of the legacy `tier("name")`. Both forms count as a tier-call for the
+# else-fallthrough rescue below.
+TIER_CALL_RE = re.compile(r'\btier\s*\(\s*"([^"]+)"\s*\)|\brepo_tier\s*\(\s*"([^"]+)"\s*,')
 TIER_BRANCH_RE = re.compile(r'my_tier\s*==\s*"(shadow|propose|review-gated|autonomous|dormant)"')
 CLAMP_RE = re.compile(r'\bfn\s+clamp_auto\s*\(')
 CAP_RE = re.compile(r'\blet\s+cap\s*=\s*([0-9]+(?:\.[0-9]+)?)')

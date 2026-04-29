@@ -452,11 +452,17 @@ if command -v agentis &>/dev/null; then
                         ag_rel="$fed/$colony/$(basename "$ag")"
                         tier_ok=true
 
-                        if grep -qE 'tier\s*\(\s*"[^"]+"\s*\)' "$ag"; then
+                        # #316 M4: post-M3 agents use repo_tier(name, owner, repo)
+                        # instead of tier(name); both forms satisfy the ADR-0001
+                        # tier-call requirement. The first regex matches the
+                        # legacy single-arg tier("..."); the second matches the
+                        # M4 multi-arg repo_tier("...", owner, repo) call.
+                        if grep -qE '\btier\s*\(\s*"[^"]+"\s*\)' "$ag" \
+                            || grep -qE '\brepo_tier\s*\(\s*"[^"]+"\s*,' "$ag"; then
                             has_tier_call=true
                         else
                             has_tier_call=false
-                            fail "$ag_rel: missing tier(\"...\") call (required by ADR-0001)"
+                            fail "$ag_rel: missing tier(\"...\") or repo_tier(\"...\", ...) call (required by ADR-0001 / #316 M4)"
                             tier_ok=false
                         fi
 
@@ -489,6 +495,31 @@ if command -v agentis &>/dev/null; then
                         if grep -nE '\bconfidence\s*>=\s*[0-9]+(\.[0-9]+)?' "$ag" >/dev/null; then
                             fail "$ag_rel: raw confidence >= <number> literal (use tier() per ADR-0001)"
                             tier_ok=false
+                        fi
+
+                        # --- M4 per-repo tier convention (#316 M4) ---
+                        # Agents that fan out per-repo (post-M3 fn tick_for_repo)
+                        # must read tier via repo_tier(name, owner, repo) so the
+                        # per-repo confidence memo wins over the legacy unscoped
+                        # key. A bare `let my_tier = tier("...")` inside such an
+                        # agent silently shares tier across every repo the
+                        # colony serves, defeating M4's per-repo divergence.
+                        # Escape hatch: `// colony-lint: m4-direct-tier-ok` for
+                        # intentional opt-out (e.g. an inner-helper that always
+                        # wants legacy semantics regardless of repo scope).
+                        if grep -qE '^\s*fn\s+tick_for_repo\s*\(' "$ag"; then
+                            if grep -qE '//\s*colony-lint:\s*m4-direct-tier-ok' "$ag"; then
+                                : # opt-out present, skip both rules
+                            else
+                                if grep -nE 'let\s+my_tier\s*=\s*tier\s*\(' "$ag" >/dev/null; then
+                                    fail "$ag_rel: direct tier() call inside tick_for_repo (use repo_tier per #316 M4)"
+                                    tier_ok=false
+                                fi
+                                if ! grep -qE 'fn\s+repo_tier\s*\(' "$ag"; then
+                                    fail "$ag_rel: missing repo_tier() helper (required by #316 M4)"
+                                    tier_ok=false
+                                fi
+                            fi
                         fi
 
                         if $tier_ok; then
