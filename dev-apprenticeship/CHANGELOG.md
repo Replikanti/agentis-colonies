@@ -15,6 +15,23 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Added
+
+- Cross-repo reference detection in PR review prompts (#317): the four
+  code-review agents (logic / style / security / test) scan PR body
+  for `<owner>/<repo>#<N>` references and splice resolved issue context
+  (title / state / labels) into their review prompt — capped at 5 refs
+  per tick. Resolved records cached at
+  `<fed>/.agentis/cross-repo-cache/<owner>__<repo>__<N>.json` with 1h
+  TTL (override via `CROSS_REPO_CACHE_TTL_SECS` env). Out-of-colony
+  repos resolve to a tombstone and skip silently. Reviewer view of
+  `merge-requests` gains `description` for the scanner. Triage `router`
+  agent gains bidirectional closed-by lookup. Single-block configs
+  (M3a sentinel) skip the scan entirely (byte-identical). Helpers:
+  `tools/{scan-cross-repo-refs,cross-repo-cache,resolve-cross-repo-ref,
+  closed-by-index}.{sh,py}`. Test: `tools/test-cross-repo-refs.sh` (7
+  cases). Dashboard timeline overlay deferred to follow-up.
+
 ## [2.0.0] — 2026-04-29
 
 **Requires:** agentis >= 1.4.7

@@ -50,6 +50,16 @@ tools/scaffold-agent.sh
 tools/iter-repos.sh
 tools/iter-repos.py
 tools/forge-resolve-repo.py
+# Cross-repo reference detection (#317): scan PR bodies for
+# `<owner>/<repo>#<N>` refs, resolve via forge-api get-issue with cache,
+# record bidirectional closed-by index for the router agent.
+tools/scan-cross-repo-refs.sh
+tools/scan-cross-repo-refs.py
+tools/cross-repo-cache.sh
+tools/cross-repo-cache.py
+tools/resolve-cross-repo-ref.sh
+tools/closed-by-index.sh
+tools/closed-by-index.py
 
 # ----- Federation dashboard -----
 # Extracted to a separately-versioned standalone component in #252.
