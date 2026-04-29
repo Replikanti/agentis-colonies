@@ -58,6 +58,47 @@ colonies   = safe_json(colony_list_json, [])
 
 name_to_colony = {e.get('agent',''): e.get('colony','') for e in agent_map}
 
+# #316 M5a: pre-compute multi-repo expansion per colony.
+# Each colony's `start-colony.sh --print-repos-json` echoes the
+# `GITHUB_REPOS_JSON` env value the script would export under the
+# multi-block `[[forge.github]]` configuration shape, or empty for
+# legacy single-block configs. Parsed once here so the rate-limit
+# loop and the per-agent confidence overlay below can both reuse the
+# answer without re-spawning subprocesses. Empty list means "single-
+# block / N=1 / no GitHub backend" — every downstream call site MUST
+# fall back to the legacy single-record behaviour for byte-identity.
+repos_for_colony = {}
+for colony in colonies:
+    repos_for_colony[colony] = []
+    script = os.path.join(fed_dir, colony, 'scripts', 'start-colony.sh')
+    if not os.path.isfile(script):
+        continue
+    try:
+        probe = subprocess.run(
+            ['bash', script, '--print-repos-json'],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (subprocess.SubprocessError, OSError):
+        continue
+    if probe.returncode != 0:
+        continue
+    raw = (probe.stdout or '').strip()
+    if not raw:
+        continue
+    try:
+        repos = json.loads(raw)
+    except json.JSONDecodeError:
+        continue
+    if not isinstance(repos, list):
+        continue
+    for entry in repos:
+        if not isinstance(entry, dict):
+            continue
+        owner = str(entry.get('owner') or '').strip()
+        repo  = str(entry.get('repo')  or '').strip()
+        if owner and repo:
+            repos_for_colony[colony].append((owner, repo))
+
 # Build role -> daemon mapping from daemon list source field
 role_to_daemon = {}
 id_to_role = {}
@@ -258,6 +299,42 @@ for agent in all_agents:
             except OSError:
                 pass
 
+    # #316 M5a: per-repo confidence overlay. Multi-repo colonies (N>=2
+    # entries in [[forge.github]]) carry per-(agent, repo) overrides via
+    # M4-shipped `<owner>__<repo>:<agent>:confidence` memos. We surface
+    # the overrides as a sibling field so the dashboard's per-agent
+    # row + modal can render a `(per-repo)` pill plus drill-down.
+    # Bound the cost: only fetch when (a) the colony actually has >=2
+    # repos and (b) the daemon's unscoped confidence is non-None (a
+    # daemon with no confidence at all has nothing to override). Default
+    # to an empty list so legacy single-block / N=1 / GitLab colonies
+    # render byte-identical to v0.7.0.
+    rec['per_repo_confidence'] = []
+    repos = repos_for_colony.get(colony, [])
+    if len(repos) >= 2 and rec['confidence'] is not None:
+        for owner, repo in repos:
+            memo_key = '%s__%s:%s:confidence' % (owner, repo, agent)
+            conf_value = None
+            try:
+                memo_proc = subprocess.run(
+                    ['agentis', 'memo', 'get', memo_key, '--raw'],
+                    cwd=fed_dir, capture_output=True, text=True, timeout=2,
+                )
+                if memo_proc.returncode == 0:
+                    raw = (memo_proc.stdout or '').strip()
+                    if raw:
+                        try:
+                            conf_value = float(raw)
+                        except (TypeError, ValueError):
+                            conf_value = None
+            except (subprocess.SubprocessError, OSError):
+                conf_value = None
+            rec['per_repo_confidence'].append({
+                'owner': owner,
+                'repo': repo,
+                'confidence': conf_value,
+            })
+
     result.append(rec)
 
 colony_exp['total'] = total_exp
@@ -384,7 +461,7 @@ if os.path.isfile(conf_log_path):
         pass
 conf_changes = conf_changes[-50:]
 
-# --- Forge rate-limits (federation-dashboard 0.3.0) ---
+# --- Forge rate-limits (federation-dashboard 0.3.0; #316 M5a per-repo) ---
 # Per-colony forge API budget. Each colony's `start-colony.sh
 # --rate-limit-status` execs its `forge-api.sh rate-limit-status` in the
 # fully-loaded env (FORGE_TYPE + GITLAB_*/GITHUB_*) and prints the JSON
@@ -393,6 +470,79 @@ conf_changes = conf_changes[-50:]
 # Failure modes (timeout, non-zero exit, malformed JSON) collapse into
 # `{remaining: null, limit: null, reset_at: null, error: "<reason>"}` so
 # the tile can render a per-colony status without bringing down regen.
+#
+# #316 M5a: when the colony's [[forge.github]] array carries N>=2 entries
+# (read from the pre-computed `repos_for_colony` map above), fan the
+# rate-limit fetch out across each repo via `start-colony.sh
+# --rate-limit-status --repo owner/repo` and emit a new shape:
+#     forge_rate_limits[colony] = {
+#         repos:    [{owner, repo, remaining, limit, reset_at}, ...],
+#         aggregate: {remaining, limit, reset_at},
+#     }
+# The aggregate is sum-of-remaining / sum-of-limit / earliest reset_at
+# across the per-repo records (None values skipped). Single-block / N=1
+# / GitLab colonies preserve the existing scalar shape byte-identically
+# — that is the load-bearing back-compat invariant for v0.7.0 operators.
+def _scalar_rate_limit(script):
+    """Run start-colony.sh --rate-limit-status (no per-repo arg) and
+    return a `{remaining, limit, reset_at}` dict (with optional `error`
+    field when the call fails). Mirrors the v0.7.0 scalar contract."""
+    try:
+        rl_out = subprocess.run(
+            ['bash', script, '--rate-limit-status'],
+            capture_output=True, text=True, timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        return {'remaining': None, 'limit': None, 'reset_at': None, 'error': 'timeout'}
+    except (subprocess.SubprocessError, OSError) as e:
+        return {'remaining': None, 'limit': None, 'reset_at': None, 'error': type(e).__name__}
+    if rl_out.returncode != 0:
+        return {'remaining': None, 'limit': None, 'reset_at': None,
+                'error': 'exit ' + str(rl_out.returncode)}
+    try:
+        payload = json.loads(rl_out.stdout or '{}')
+    except json.JSONDecodeError:
+        return {'remaining': None, 'limit': None, 'reset_at': None,
+                'error': 'malformed json'}
+    return {
+        'remaining': payload.get('remaining'),
+        'limit':     payload.get('limit'),
+        'reset_at':  payload.get('reset_at'),
+    }
+
+
+def _per_repo_rate_limit(script, owner, repo):
+    """Run start-colony.sh --rate-limit-status --repo owner/repo and
+    return the per-repo `{remaining, limit, reset_at}` dict (with
+    optional `error` field). Same failure-mode contract as the scalar
+    helper above; the `--repo` flag is consumed by forge-api.sh
+    (M3a-shipped) which re-resolves GITHUB_OWNER/REPO/TOKEN/URL/ME via
+    tools/forge-resolve-repo.py before exec'ing the backend wrapper."""
+    repo_arg = '%s/%s' % (owner, repo)
+    try:
+        rl_out = subprocess.run(
+            ['bash', script, '--rate-limit-status', '--repo', repo_arg],
+            capture_output=True, text=True, timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        return {'remaining': None, 'limit': None, 'reset_at': None, 'error': 'timeout'}
+    except (subprocess.SubprocessError, OSError) as e:
+        return {'remaining': None, 'limit': None, 'reset_at': None, 'error': type(e).__name__}
+    if rl_out.returncode != 0:
+        return {'remaining': None, 'limit': None, 'reset_at': None,
+                'error': 'exit ' + str(rl_out.returncode)}
+    try:
+        payload = json.loads(rl_out.stdout or '{}')
+    except json.JSONDecodeError:
+        return {'remaining': None, 'limit': None, 'reset_at': None,
+                'error': 'malformed json'}
+    return {
+        'remaining': payload.get('remaining'),
+        'limit':     payload.get('limit'),
+        'reset_at':  payload.get('reset_at'),
+    }
+
+
 forge_rate_limits = {}
 for colony in colonies:
     script = os.path.join(fed_dir, colony, 'scripts', 'start-colony.sh')
@@ -400,34 +550,42 @@ for colony in colonies:
         forge_rate_limits[colony] = {'remaining': None, 'limit': None,
                                      'reset_at': None, 'error': 'no start-colony.sh'}
         continue
-    try:
-        rl_out = subprocess.run(
-            ['bash', script, '--rate-limit-status'],
-            capture_output=True, text=True, timeout=10,
-        )
-        if rl_out.returncode != 0:
-            forge_rate_limits[colony] = {
-                'remaining': None, 'limit': None, 'reset_at': None,
-                'error': 'exit ' + str(rl_out.returncode),
-            }
-            continue
-        try:
-            payload = json.loads(rl_out.stdout or '{}')
-        except json.JSONDecodeError:
-            forge_rate_limits[colony] = {'remaining': None, 'limit': None,
-                                         'reset_at': None, 'error': 'malformed json'}
-            continue
-        forge_rate_limits[colony] = {
-            'remaining': payload.get('remaining'),
-            'limit':     payload.get('limit'),
-            'reset_at':  payload.get('reset_at'),
-        }
-    except subprocess.TimeoutExpired:
-        forge_rate_limits[colony] = {'remaining': None, 'limit': None,
-                                     'reset_at': None, 'error': 'timeout'}
-    except (subprocess.SubprocessError, OSError) as e:
-        forge_rate_limits[colony] = {'remaining': None, 'limit': None,
-                                     'reset_at': None, 'error': type(e).__name__}
+    repos = repos_for_colony.get(colony, [])
+    if len(repos) < 2:
+        # Single-block / N=1 / GitLab — byte-identical to v0.7.0.
+        forge_rate_limits[colony] = _scalar_rate_limit(script)
+        continue
+    # Multi-block N>=2: fan out per-repo, then derive an aggregate.
+    per_repo_records = []
+    for owner, repo in repos:
+        rec_repo = _per_repo_rate_limit(script, owner, repo)
+        per_repo_records.append({
+            'owner': owner,
+            'repo': repo,
+            'remaining': rec_repo.get('remaining'),
+            'limit': rec_repo.get('limit'),
+            'reset_at': rec_repo.get('reset_at'),
+            'error': rec_repo.get('error'),
+        })
+    rem_total = 0
+    lim_total = 0
+    earliest_reset = None
+    for r in per_repo_records:
+        if isinstance(r['remaining'], (int, float)):
+            rem_total += r['remaining']
+        if isinstance(r['limit'], (int, float)):
+            lim_total += r['limit']
+        if r['reset_at']:
+            if earliest_reset is None or r['reset_at'] < earliest_reset:
+                earliest_reset = r['reset_at']
+    forge_rate_limits[colony] = {
+        'repos': per_repo_records,
+        'aggregate': {
+            'remaining': rem_total if rem_total > 0 else None,
+            'limit': lim_total if lim_total > 0 else None,
+            'reset_at': earliest_reset,
+        },
+    }
 
 # --- Promote decisions (#248) ---
 # Invoke auto-promote-decisions.py in --preview mode so the dashboard's
