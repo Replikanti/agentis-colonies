@@ -50,6 +50,10 @@ tools/scaffold-agent.sh
 tools/iter-repos.sh
 tools/iter-repos.py
 tools/forge-resolve-repo.py
+# Cross-repo reference detector (#317): invoked by code-review reviewers
+# between mr-changes and the review prompt(). Default-off via colony.toml.
+tools/cross-repo-grep.sh
+tools/cross-repo-grep.py
 
 # ----- Federation dashboard -----
 # Extracted to a separately-versioned standalone component in #252.

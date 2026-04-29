@@ -183,9 +183,21 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         };
     };
 
+    // #317: cross-repo reference detection. Off by default — gated on the
+    // `code_review:cross_repo_enabled` memo seeded by start-colony.sh from
+    // `[code_review].cross_repo`. The helper consumes `CROSS_REPO_*` env
+    // vars exported by start-colony.sh and only `DIFF_INPUT_FILE` +
+    // `CROSS_REPO_ACTIVE` are added per-tick. Empty stdout = no context.
+    let cross_refs = if recall_latest("code_review:cross_repo_enabled") == "true" {
+        let active_repo = if len(owner) > 0 { owner + "/" + repo; } else { ""; };
+        // colony-lint: safe-exec-concat
+        let stage_cmd = "f=$(mktemp) && printf '%s' " + shell_escape(changes_raw) + " > \"$f\" && DIFF_INPUT_FILE=\"$f\" CROSS_REPO_ACTIVE=" + shell_escape(active_repo) + " \"$COLONY_DIR/../../tools/cross-repo-grep.sh\"; rc=$?; rm -f \"$f\"; exit $rc";
+        try { exec sh stage_cmd; } catch e { ""; };
+    } else { ""; };
+
     // Perform style review on the diff
     let rec = recommend("style_review", ["accuracy"]);
-    let context = "MR diff:\n" + changes_raw + "\n\nLearned preferences: " + to_string(rec);
+    let context = cross_refs + "MR diff:\n" + changes_raw + "\n\nLearned preferences: " + to_string(rec);
 
     // #104: Extract author from the MR listing so the review prompt
     // has access to it. `raw` holds the first-page MR JSON; json_get

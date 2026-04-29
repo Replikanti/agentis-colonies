@@ -28,6 +28,20 @@ idempotent and byte-identical at runtime.
 
 ### Added
 
+- Cross-repo reference detection in PR-review prompts (#317). The four
+  code-review agents (`logic_reviewer`, `style_reviewer`,
+  `security_reviewer`, `test_reviewer`) now optionally scan operator-
+  declared sibling repo checkouts for symbols added in the MR diff and
+  prefix the matched contexts onto the review prompt. Five new optional
+  keys under `[code_review]` in `colony.toml`: `cross_repo` (default
+  `false`, opt-in only), `cross_repo_repos` (CSV of `<owner>/<repo>`
+  allowlist entries), `cross_repo_repo_paths` (parallel CSV of absolute
+  checkout paths — mandatory when `cross_repo = true`),
+  `cross_repo_max_refs` (default 10), `cross_repo_max_lines` (default
+  200). Detection is heuristic-grep only (no symbol index, no extra
+  forge tokens — `git -C <path> grep` reads local sibling checkouts).
+  Default off: zero behavioural change for existing operators. Helper
+  lives in `tools/cross-repo-grep.sh` + `tools/cross-repo-grep.py`.
 - Multi-repo schema (#316 M1): a colony's `[forge.github]` may now be repeated as
   array-of-tables `[[forge.github]]`. Each entry has its own `owner / repo / token /
   url / me`. Single-block `[forge.github]` continues to work unchanged in this

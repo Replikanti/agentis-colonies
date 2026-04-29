@@ -193,6 +193,34 @@ esac
 export FORGE_TYPE
 export COLONY_DIR
 
+# #317: cross-repo reference detection knobs. Read from [code_review] in
+# colony.toml; export as CROSS_REPO_* env so tools/cross-repo-grep.sh
+# (invoked by the four reviewer agents between the mr-changes diff fetch
+# and the review prompt()) sees the operator's allowlist + caps without
+# the agents reparsing TOML. Default: cross_repo = false, no env-driven
+# behaviour change. The memo `code_review:cross_repo_enabled` is the
+# .ag-side gate so the agent's `recall_latest()` branch is single-line.
+CROSS_REPO=$(parse_toml code_review cross_repo)
+CROSS_REPO="${CROSS_REPO:-false}"
+CROSS_REPO_REPOS=$(parse_toml code_review cross_repo_repos)
+CROSS_REPO_REPO_PATHS=$(parse_toml code_review cross_repo_repo_paths)
+CROSS_REPO_MAX_REFS=$(parse_toml code_review cross_repo_max_refs)
+CROSS_REPO_MAX_REFS="${CROSS_REPO_MAX_REFS:-10}"
+CROSS_REPO_MAX_LINES=$(parse_toml code_review cross_repo_max_lines)
+CROSS_REPO_MAX_LINES="${CROSS_REPO_MAX_LINES:-200}"
+export CROSS_REPO CROSS_REPO_REPOS CROSS_REPO_REPO_PATHS CROSS_REPO_MAX_REFS CROSS_REPO_MAX_LINES
+
+# Memo seed is a full-colony bootstrap concern: --restart-agent reuses
+# an already-live colony's memo store, and --rate-limit-status is a
+# read-only API probe. Skip seeding on both so the fast paths stay fast.
+if [ -z "$RESTART_AGENT" ] && [ "$RATE_LIMIT_STATUS" = "0" ]; then
+    if [ "$CROSS_REPO" = "true" ]; then
+        agentis memo set code_review:cross_repo_enabled true >/dev/null 2>&1 || true
+    else
+        agentis memo set code_review:cross_repo_enabled false >/dev/null 2>&1 || true
+    fi
+fi
+
 # #316 M5a: --print-repos-json probe for the federation-dashboard collector.
 # Emits the GITHUB_REPOS_JSON value (empty string for legacy single-block
 # configs) and exits. Probed once per colony per dashboard regen so the

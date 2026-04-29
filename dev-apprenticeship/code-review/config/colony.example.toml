@@ -31,6 +31,18 @@ me      = ""  # your GitLab username (optional, enables personal/team tagging)
 # To serve N repos from this colony, repeat the [[forge.github]] block once
 # per repo. Each entry has its own owner/repo/token/url/me.
 
+# Cross-repo reference detection (#317). When enabled, the four review
+# agents scan operator-declared sibling checkouts for symbols added in
+# the MR diff and prefix the matched contexts onto the review prompt.
+# Default off: zero behavioural change. Sibling checkouts are read
+# locally via `git -C <path> grep` — no extra forge tokens are used.
+[code_review]
+# cross_repo            = false                                   # default off
+# cross_repo_repos      = "shared-libs, client-sdk"               # keys from [forge.github] / [[forge.github]]
+# cross_repo_repo_paths = "/abs/path/shared-libs, /abs/path/sdk"  # parallel CSV; mandatory when cross_repo=true
+# cross_repo_max_refs   = 10
+# cross_repo_max_lines  = 200
+
 # Per-colony LLM backend override (#319, schema reserved for forward-
 # compat — NO RUNTIME EFFECT today; see #351). All four keys are
 # OPTIONAL — when absent, the agent inherits the federation-wide default
