@@ -45,6 +45,25 @@ fn scoped_memo(owner: string, repo: string, suffix: string) -> string {
     return owner + "__" + repo + ":" + suffix;
 }
 
+// #316 M4: per-repo confidence read with legacy fallback. Mirrors the
+// runtime tier() builtin's threshold table from ADR-0001 / CLAUDE.md.
+// `agent_name` (not `agent`) — `agent` is a reserved keyword in `.ag`.
+fn repo_tier(agent_name: string, owner: string, repo: string) -> string {
+    let raw = if len(owner) == 0 {
+        recall_latest(agent_name + ":confidence");
+    } else {
+        let scoped = recall_latest(scoped_memo(owner, repo, agent_name + ":confidence"));
+        if len(scoped) > 0 { scoped; } else { recall_latest(agent_name + ":confidence"); };
+    };
+    if len(raw) == 0 { return "dormant"; };
+    let c = parse_float(raw);
+    if c >= 0.95 { return "autonomous"; };
+    if c >= 0.8  { return "review-gated"; };
+    if c >= 0.6  { return "propose"; };
+    if c >= 0.4  { return "shadow"; };
+    return "dormant";
+}
+
 fn repo_field(line: string, idx: int) -> string {
     let cmd = "L=" + shell_escape(line) + " I=" + to_string(idx) +
         " python3 -c 'import os; parts=os.environ[\"L\"].split(\"\t\"); i=int(os.environ[\"I\"]); print(parts[i] if 0<=i<len(parts) else \"\")'";
@@ -169,7 +188,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         context
     ) -> MRPlan;
 
-    let my_tier = tier("commit_composer");
+    let my_tier = repo_tier("commit_composer", owner, repo);
     print("[commit_composer] Composed MR plan for issue", plan.issue_id, "(tier:", my_tier, ")");
 
     if my_tier == "autonomous" {
