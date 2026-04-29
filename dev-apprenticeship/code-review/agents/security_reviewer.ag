@@ -77,6 +77,28 @@ fn mr_cmd(owner: string, repo: string) -> string {
     return "$COLONY_DIR/scripts/forge-api.sh merge-requests --view reviewer" + repo_arg(owner, repo);
 }
 
+// #317: cross-repo reference enrichment. See logic_reviewer.ag for the
+// full design rationale. Returns "" => byte-identical context vs pre-#317.
+fn cross_repo_context(owner: string, repo: string, mr_iid: int, body: string) -> string {
+    if len(body) < 5 { return ""; };
+    if len(owner) == 0 { return ""; };  // M3a sentinel: skip cross-repo scan on single-block path
+    let self_arg = if len(owner) > 0 { " --self " + shell_escape(owner + "/" + repo); } else { ""; };
+    // colony-lint: safe-exec-concat
+    let scan_cmd = "printf '%s' " + shell_escape(body) +
+        " | $COLONY_DIR/../../tools/scan-cross-repo-refs.sh" + self_arg;
+    let refs_raw = try { exec sh scan_cmd; } catch e { ""; };
+    if len(refs_raw) == 0 { return ""; };
+    let src_args = if len(owner) > 0 {
+        " --src-owner " + shell_escape(owner) +
+        " --src-repo " + shell_escape(repo) +
+        " --src-iid " + to_string(mr_iid);
+    } else { ""; };
+    // colony-lint: safe-exec-concat
+    let resolve_cmd = "printf '%s' " + shell_escape(refs_raw) +
+        " | $COLONY_DIR/../../tools/resolve-cross-repo-ref.sh --colony-dir \"$COLONY_DIR\" --max 5" + src_args;
+    return try { exec sh resolve_cmd; } catch e { ""; };
+}
+
 fn get_confidence() -> float {
     let raw = recall_latest("security_reviewer:confidence");
     if len(raw) > 0 {
@@ -160,7 +182,12 @@ fn tick_for_repo(owner: string, repo: string) -> void {
 
     // Perform security review
     let rec = recommend("security_review", ["accuracy"]);
-    let context = "MR diff:\n" + changes_raw + "\n\nLearned patterns: " + to_string(rec);
+    // #317: scan PR body for cross-repo refs and prefix the resolved
+    // markdown context onto the prompt. Empty xrepo_block =>
+    // byte-identical context vs pre-#317. See logic_reviewer.ag.
+    let pr_body = to_string(json_get(raw, "[0].description"));
+    let xrepo_block = cross_repo_context(owner, repo, mr_iid, pr_body);
+    let context = "MR diff:\n" + changes_raw + "\n\nLearned patterns: " + to_string(rec) + xrepo_block;
 
     let review = prompt(
         "You are a security reviewer. Analyze this merge request diff for security vulnerabilities: SQL/command injection, XSS, CSRF, hardcoded secrets, insecure auth, path traversal, SSRF, insecure deserialization, dependency issues. Include CWE IDs where applicable. Return JSON: mr_iid (int), findings (array with file, issue, severity, cwe, remediation), summary (string). If clean, return empty findings. Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.",

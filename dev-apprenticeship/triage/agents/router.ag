@@ -82,6 +82,43 @@ fn repo_field(line: string, idx: int) -> string {
     return out;
 }
 
+// #317: bidirectional closed-by lookup for unassigned issues. The four
+// reviewer agents call closed-by-index.sh `record` whenever a PR body
+// mentions `<owner>/<repo>#<N>`; here we read the reverse direction so
+// the routing prompt sees a "closed by PR ..." hint per unassigned
+// issue with at least one closing PR. Returns "" when:
+//   - owner == "" (back-compat sentinel — no per-repo key to look up).
+//   - the unassigned issues blob has no parseable iid digits.
+//   - no issues have a closed-by entry in the federation index.
+// Empty return => byte-identical routing context vs pre-#317.
+//
+// All lookup logic delegated to a python -c one-liner so the .ag layer
+// stays bash-3.2 portable. Inputs travel via env to avoid quoting
+// hazards. The inline helper greps the blob for `#<digits>` tokens
+// (iids) plus json `"iid": N` shapes, dedupes (preserve first-seen
+// order), then shells out to closed-by-index.sh lookup per iid (cap 20).
+fn closed_by_context(owner: string, repo: string, blob: string) -> string {
+    if len(owner) == 0 { return ""; };
+    if len(blob) < 2 { return ""; };
+    // colony-lint: safe-exec-concat
+    let cmd = "BLOB=" + shell_escape(blob) +
+        " OWNER=" + shell_escape(owner) +
+        " REPO=" + shell_escape(repo) +
+        " python3 -c 'import os,re,json,subprocess,sys; " +
+        "b=os.environ[\"BLOB\"]; o=os.environ[\"OWNER\"]; r=os.environ[\"REPO\"]; " +
+        "c=os.environ[\"COLONY_DIR\"]; " +
+        "lk=c+\"/../../tools/closed-by-index.sh\"; " +
+        "iids=[]; s=set(); " +
+        "[ (s.add(m.group(1)) or iids.append(m.group(1))) for m in re.finditer(r\"(?<![A-Za-z0-9_])#(\\d+)\", b) if m.group(1) not in s ]; " +
+        "[ (s.add(m.group(1)) or iids.append(m.group(1))) for m in re.finditer(r\"\\\"iid\\\"\\s*:\\s*(\\d+)\", b) if m.group(1) not in s ]; " +
+        "out=[]; " +
+        "[ out.append((n, json.loads(subprocess.check_output([lk,\"lookup\",\"--colony-dir\",c,\"--tgt-owner\",o,\"--tgt-repo\",r,\"--tgt-iid\",n], stderr=subprocess.DEVNULL).decode(\"utf-8\",\"replace\").strip() or \"[]\"))) for n in iids[:20] ]; " +
+        "lines=[]; " +
+        "[ lines.append(\"- #%s: closed by %s\" % (n, \", \".join([\"%s/%s#%s\" % (e.get(\"src_owner\",\"\"), e.get(\"src_repo\",\"\"), e.get(\"src_iid\",\"\")) for e in arr[:5] if isinstance(e, dict)]))) for (n, arr) in out if arr ]; " +
+        "sys.stdout.write(\"\\n\\n## Closed-by hints (cross-repo)\\n\" + \"\\n\".join(lines) + \"\\n\") if lines else None'";
+    return try { exec sh cmd; } catch e { ""; };
+}
+
 fn issues_cmd(owner: string, repo: string) -> string {
     let ts = recall_latest(scoped_memo(owner, repo, "router:last_check"));
     // colony-lint: safe-exec-concat
@@ -159,7 +196,13 @@ fn tick_for_repo(owner: string, repo: string) -> void {
     if analysis.unassigned_count > 0 {
         let my_tier = repo_tier("router", owner, repo);
         let rec = recommend("route", ["accuracy"]);
-        let context = "Unassigned issues: " + analysis.unassigned_issues + "\nTeam members: " + members_raw + "\nPast learning: " + to_string(rec);
+        // #317: bidirectional surface — pass the unassigned issues blob
+        // through closed-by-index lookup so the router prompt sees
+        // "closed by PR <other>#<N>" hints alongside the issue list.
+        // Empty owner sentinel skips the lookup (no per-repo key to
+        // search) — byte-identical to pre-#317 routing context.
+        let closed_by_block = closed_by_context(owner, repo, analysis.unassigned_issues);
+        let context = "Unassigned issues: " + analysis.unassigned_issues + "\nTeam members: " + members_raw + "\nPast learning: " + to_string(rec) + closed_by_block;
 
         let action = prompt(
             "You are a routing agent. Suggest who should be assigned to the most important unassigned issue based on team expertise. Return JSON: issue_id (int), assignee (string, username), reasoning (string), confidence (float 0-1).",
