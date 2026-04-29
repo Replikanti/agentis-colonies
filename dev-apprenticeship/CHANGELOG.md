@@ -15,6 +15,17 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+## [2.0.0] — 2026-04-29
+
+**Requires:** agentis >= 1.4.7
+**Recommends:** federation-dashboard >= 0.8.0
+
+This release ships full multi-repo capability across the federation (#316
+M1-M6) and **retires the legacy single-table `[forge.github]` config form**.
+Operators upgrading from v1.x MUST run the migration recipe in the
+`### Removed` block below before starting v2.0.0; the migration is
+idempotent and byte-identical at runtime.
+
 ### Added
 
 - Multi-repo schema (#316 M1): a colony's `[forge.github]` may now be repeated as
@@ -1051,7 +1062,10 @@ permissible per semver §4.
 - All dynamic values flowing into `exec sh` are required to pass through `shell_escape()`;
   `check-exec-sh.sh` enforces this grep-level contract.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v1.1.0...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.0.0...HEAD
+[2.0.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v1.3.0...dev-apprenticeship-v2.0.0
+[1.3.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v1.2.0...dev-apprenticeship-v1.3.0
+[1.2.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v1.1.0...dev-apprenticeship-v1.2.0
 [1.1.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v1.0.0...dev-apprenticeship-v1.1.0
 [1.0.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.3.3...dev-apprenticeship-v1.0.0
 [0.3.3]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v0.3.2...dev-apprenticeship-v0.3.3
