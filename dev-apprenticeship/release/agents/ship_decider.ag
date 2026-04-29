@@ -31,17 +31,45 @@ fn get_confidence() -> float {
     return 0.0;
 }
 
+// #316 M3b: per-tick fan-out helpers. See triage/agents/router.ag for
+// the full rationale. Single-block configs collapse to owner=="" sentinel,
+// repo_arg/repo_tag return "", scoped_memo passes the suffix through.
+
+fn repo_arg(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return " --repo " + shell_escape(owner + "/" + repo);
+}
+
+fn repo_tag(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return "repo:" + owner + "/" + repo;
+}
+
+fn scoped_memo(owner: string, repo: string, suffix: string) -> string {
+    if len(owner) == 0 { return suffix; };
+    return owner + "__" + repo + ":" + suffix;
+}
+
+fn repo_field(line: string, idx: int) -> string {
+    let cmd = "L=" + shell_escape(line) + " I=" + to_string(idx) +
+        " python3 -c 'import os; parts=os.environ[\"L\"].split(\"\t\"); i=int(os.environ[\"I\"]); print(parts[i] if 0<=i<len(parts) else \"\")'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
 // #147: build the merged-MR delta query with optional --since. Used by
 // the tick's pre-prompt delta-check to tell whether any release-relevant
 // work has landed since the last tick.
-fn mr_delta_cmd_for(ts: string) -> string {
+fn mr_delta_cmd_for(owner: string, repo: string, ts: string) -> string {
+    // colony-lint: safe-exec-concat
     if len(ts) > 0 {
-        return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --since " + shell_escape(ts) + " --per-page 1";
+        return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --since " + shell_escape(ts) + " --per-page 1" + repo_arg(owner, repo);
     };
-    return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --per-page 1";
+    // colony-lint: safe-exec-concat
+    return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --per-page 1" + repo_arg(owner, repo);
 }
 
-fn tick(reason: string) -> void {
+fn tick_for_repo(owner: string, repo: string) -> void {
     // #147: cheap delta-check BEFORE any prompt(). ship_decider's work
     // is reactive: decide ship/no-ship when `release:check_result`
     // arrives, and re-learn release cadence when new merged MRs show
@@ -51,7 +79,7 @@ fn tick(reason: string) -> void {
     let check_str = to_string(check_result);
     let has_event = len(check_str) >= 5;
 
-    let mr_delta_cmd = mr_delta_cmd_for(recall_latest("ship_decider:last_check"));
+    let mr_delta_cmd = mr_delta_cmd_for(owner, repo, recall_latest(scoped_memo(owner, repo, "ship_decider:last_check")));
     let mr_delta = try { exec sh mr_delta_cmd; } catch e { "[]"; };
     let has_new_mr = len(mr_delta) >= 3;
 
@@ -59,23 +87,27 @@ fn tick(reason: string) -> void {
         if !has_new_mr {
             let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
             if len(now_e) > 0 {
-                memo_write("ship_decider:last_check", now_e);
+                memo_write(scoped_memo(owner, repo, "ship_decider:last_check"), now_e);
             };
             return;
         };
     };
 
     // 1. Learn release patterns from history (only when there IS new work)
+    // colony-lint: safe-exec-concat
+    let releases_cmd = "$COLONY_DIR/scripts/forge-api.sh releases --per-page 20 --view release-summary" + repo_arg(owner, repo);
     let releases_raw = try {
-        exec sh "$COLONY_DIR/scripts/forge-api.sh releases --per-page 20 --view release-summary";
+        exec sh releases_cmd;
     } catch e {
         print("[ship_decider] GitLab releases poll failed:", e);
         "";
     };
 
     if len(releases_raw) > 10 {
+        // colony-lint: safe-exec-concat
+        let tags_cmd = "$COLONY_DIR/scripts/forge-api.sh tags --per-page 20 --view tag-summary" + repo_arg(owner, repo);
         let tags_raw = try {
-            exec sh "$COLONY_DIR/scripts/forge-api.sh tags --per-page 20 --view tag-summary";
+            exec sh tags_cmd;
         } catch e { "[]"; };
 
         let patterns = prompt(
@@ -84,13 +116,23 @@ fn tick(reason: string) -> void {
         ) -> ShipPatterns;
 
         if patterns.releases_seen > 0 {
-            learn(
-                "ship_decide",
-                "batch of " + to_string(patterns.releases_seen) + " releases",
-                "cadence: " + patterns.cadence + " | blockers: " + patterns.blocker_types + " | risk: " + patterns.risk_tolerance,
-                "success",
-                ["observed", "release"]
-            );
+            if len(owner) > 0 {
+                learn(
+                    "ship_decide",
+                    "batch of " + to_string(patterns.releases_seen) + " releases",
+                    "cadence: " + patterns.cadence + " | blockers: " + patterns.blocker_types + " | risk: " + patterns.risk_tolerance,
+                    "success",
+                    ["observed", "release", repo_tag(owner, repo)]
+                );
+            } else {
+                learn(
+                    "ship_decide",
+                    "batch of " + to_string(patterns.releases_seen) + " releases",
+                    "cadence: " + patterns.cadence + " | blockers: " + patterns.blocker_types + " | risk: " + patterns.risk_tolerance,
+                    "success",
+                    ["observed", "release"]
+                );
+            };
             print("[ship_decider] Learned from", patterns.releases_seen, "past releases");
         };
     };
@@ -101,7 +143,7 @@ fn tick(reason: string) -> void {
     if !has_event {
         let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
         if len(now_e) > 0 {
-            memo_write("ship_decider:last_check", now_e);
+            memo_write(scoped_memo(owner, repo, "ship_decider:last_check"), now_e);
         };
         return;
     };
@@ -122,43 +164,88 @@ fn tick(reason: string) -> void {
     // review-gated = post draft-flagged note + emit. propose = emit only.
     // shadow/dormant = observe.
     if my_tier == "autonomous" {
-        let mr_raw = try { exec sh "$COLONY_DIR/scripts/forge-api.sh merge-requests --per-page 1"; } catch e { "[]"; };
+        // colony-lint: safe-exec-concat
+        let mr_listing_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --per-page 1" + repo_arg(owner, repo);
+        let mr_raw = try { exec sh mr_listing_cmd; } catch e { "[]"; };
         let mr_iid = parse_int(to_string(json_get(mr_raw, "[0].iid")));
         if mr_iid > 0 {
             let note = "**Ship Decision** (automated): " + decision.decision + "\n\n" + decision.reasoning;
-            let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note);
+            // colony-lint: safe-exec-concat
+            let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note) + repo_arg(owner, repo);
             try { exec sh post_cmd; } catch e {
                 print("[ship_decider] Failed to post note:", e);
             };
         };
         emit("release:ship_decision", decision);
-        learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "success", ["acted", "release"]);
+        if len(owner) > 0 {
+            learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "success", ["acted", "release", repo_tag(owner, repo)]);
+        } else {
+            learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "success", ["acted", "release"]);
+        };
     } else {
         if my_tier == "review-gated" {
-            let mr_raw = try { exec sh "$COLONY_DIR/scripts/forge-api.sh merge-requests --per-page 1"; } catch e { "[]"; };
+            // colony-lint: safe-exec-concat
+            let mr_listing_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --per-page 1" + repo_arg(owner, repo);
+            let mr_raw = try { exec sh mr_listing_cmd; } catch e { "[]"; };
             let mr_iid = parse_int(to_string(json_get(mr_raw, "[0].iid")));
             if mr_iid > 0 {
                 let note = "[draft-ship] **Ship Decision** (automated, pending approval): " + decision.decision + "\n\n" + decision.reasoning;
-                let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note);
+                // colony-lint: safe-exec-concat
+                let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note) + repo_arg(owner, repo);
                 try { exec sh post_cmd; } catch e {
                     print("[ship_decider] Failed to post draft note:", e);
                 };
             };
             emit("release:ship_decision", decision);
-            learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "partial", ["release", "review-gated"]);
+            if len(owner) > 0 {
+                learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "partial", ["release", "review-gated", repo_tag(owner, repo)]);
+            } else {
+                learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "partial", ["release", "review-gated"]);
+            };
         } else {
             if my_tier == "propose" {
                 emit("release:ship_decision", decision);
-                learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "partial", ["emitted", "release"]);
+                if len(owner) > 0 {
+                    learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "partial", ["emitted", "release", repo_tag(owner, repo)]);
+                } else {
+                    learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "partial", ["emitted", "release"]);
+                };
             } else {
                 print("[ship_decider] Observing (tier:", my_tier, ")");
-                learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "partial", ["observed", "release"]);
+                if len(owner) > 0 {
+                    learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "partial", ["observed", "release", repo_tag(owner, repo)]);
+                } else {
+                    learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "partial", ["observed", "release"]);
+                };
             };
         };
     };
 
     let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
     if len(now) > 0 {
-        memo_write("ship_decider:last_check", now);
+        memo_write(scoped_memo(owner, repo, "ship_decider:last_check"), now);
     };
+}
+
+// Recursive iterator over `iter-repos.sh` output. See router.ag for the
+// empty-owner sentinel rationale.
+fn tick_at(spool: string, line_no: int) -> void {
+    let line_cmd = "SP=" + shell_escape(spool) + " N=" + to_string(line_no) +
+        " python3 -c 'import os; lines=os.environ[\"SP\"].splitlines(); n=int(os.environ[\"N\"]); print(lines[n] if 0<=n<len(lines) else \"\")'";
+    let line = try { exec sh line_cmd; } catch e { ""; };
+    if len(line) == 0 { return; };
+    let owner = repo_field(line, 0);
+    let repo = repo_field(line, 1);
+    tick_for_repo(owner, repo);
+    return tick_at(spool, line_no + 1);
+}
+
+fn tick(reason: string) -> void {
+    // #316 M3b: per-repo fan-out. See triage/agents/router.ag for the
+    // back-compat sentinel pattern and byte-identity rationale.
+    let spool = try { exec sh "$COLONY_DIR/../../tools/iter-repos.sh"; } catch e { ""; };
+    if len(spool) == 0 {
+        return;
+    };
+    tick_at(spool, 0);
 }

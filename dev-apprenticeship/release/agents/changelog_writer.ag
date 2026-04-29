@@ -33,7 +33,33 @@ fn get_confidence() -> float {
     return 0.0;
 }
 
-fn tick(reason: string) -> void {
+// #316 M3b: per-tick fan-out helpers. See triage/agents/router.ag for
+// the full rationale. Single-block configs collapse to owner=="" sentinel,
+// repo_arg/repo_tag return "", scoped_memo passes the suffix through.
+
+fn repo_arg(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return " --repo " + shell_escape(owner + "/" + repo);
+}
+
+fn repo_tag(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return "repo:" + owner + "/" + repo;
+}
+
+fn scoped_memo(owner: string, repo: string, suffix: string) -> string {
+    if len(owner) == 0 { return suffix; };
+    return owner + "__" + repo + ":" + suffix;
+}
+
+fn repo_field(line: string, idx: int) -> string {
+    let cmd = "L=" + shell_escape(line) + " I=" + to_string(idx) +
+        " python3 -c 'import os; parts=os.environ[\"L\"].split(\"\t\"); i=int(os.environ[\"I\"]); print(parts[i] if 0<=i<len(parts) else \"\")'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+fn tick_for_repo(owner: string, repo: string) -> void {
     // #147: changelog_writer is pure event-driven. It reacts to a
     // `release:ship_decision` emit from ship_decider. If the inbox is
     // empty, early-exit before any prompt() (including the release-
@@ -44,15 +70,17 @@ fn tick(reason: string) -> void {
     if len(decision_str) < 5 {
         let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
         if len(now_e) > 0 {
-            memo_write("changelog_writer:last_check", now_e);
+            memo_write(scoped_memo(owner, repo, "changelog_writer:last_check"), now_e);
         };
         return;
     };
 
     // 1. Learn changelog style from past releases (only when we're
     //    actually about to write one — gated by the delta-check above).
+    // colony-lint: safe-exec-concat
+    let releases_cmd = "$COLONY_DIR/scripts/forge-api.sh releases --per-page 10 --view release-summary" + repo_arg(owner, repo);
     let releases_raw = try {
-        exec sh "$COLONY_DIR/scripts/forge-api.sh releases --per-page 10 --view release-summary";
+        exec sh releases_cmd;
     } catch e {
         print("[changelog_writer] GitLab releases poll failed:", e);
         "";
@@ -65,13 +93,23 @@ fn tick(reason: string) -> void {
         ) -> ChangelogStyle;
 
         if style.releases_seen > 0 {
-            learn(
-                "changelog_write",
-                "batch of " + to_string(style.releases_seen) + " releases",
-                "grouping: " + style.grouping + " | tone: " + style.tone + " | include: " + style.inclusions + " | exclude: " + style.exclusions,
-                "success",
-                ["observed", "release"]
-            );
+            if len(owner) > 0 {
+                learn(
+                    "changelog_write",
+                    "batch of " + to_string(style.releases_seen) + " releases",
+                    "grouping: " + style.grouping + " | tone: " + style.tone + " | include: " + style.inclusions + " | exclude: " + style.exclusions,
+                    "success",
+                    ["observed", "release", repo_tag(owner, repo)]
+                );
+            } else {
+                learn(
+                    "changelog_write",
+                    "batch of " + to_string(style.releases_seen) + " releases",
+                    "grouping: " + style.grouping + " | tone: " + style.tone + " | include: " + style.inclusions + " | exclude: " + style.exclusions,
+                    "success",
+                    ["observed", "release"]
+                );
+            };
             print("[changelog_writer] Learned from", style.releases_seen, "past release notes");
         };
     };
@@ -86,14 +124,16 @@ fn tick(reason: string) -> void {
         print("[changelog_writer] Ship decision is no-ship, skipping changelog");
         let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
         if len(now) > 0 {
-            memo_write("changelog_writer:last_check", now);
+            memo_write(scoped_memo(owner, repo, "changelog_writer:last_check"), now);
         };
         return;
     };
 
     // Get the latest release tag to find MRs merged since then
+    // colony-lint: safe-exec-concat
+    let latest_release_cmd = "$COLONY_DIR/scripts/forge-api.sh releases --per-page 1 --view release-summary" + repo_arg(owner, repo);
     let latest_release = try {
-        exec sh "$COLONY_DIR/scripts/forge-api.sh releases --per-page 1 --view release-summary";
+        exec sh latest_release_cmd;
     } catch e { "[]"; };
 
     let since_date = prompt(
@@ -102,7 +142,8 @@ fn tick(reason: string) -> void {
     ) -> string;
 
     // Fetch MRs merged since last release
-    let mrs_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --since " + shell_escape(since_date) + " --view release-mr";
+    // colony-lint: safe-exec-concat
+    let mrs_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --since " + shell_escape(since_date) + " --view release-mr" + repo_arg(owner, repo);
     let mrs_raw = try { exec sh mrs_cmd; } catch e {
         print("[changelog_writer] MR fetch failed:", e);
         "";
@@ -124,37 +165,59 @@ fn tick(reason: string) -> void {
         // external write. The terminal action (create-release / create-tag)
         // belongs to version_bumper and is gated on autonomous there.
         if my_tier == "autonomous" {
-            let mr_raw = try { exec sh "$COLONY_DIR/scripts/forge-api.sh merge-requests --per-page 1"; } catch e { "[]"; };
+            // colony-lint: safe-exec-concat
+            let mr_listing_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --per-page 1" + repo_arg(owner, repo);
+            let mr_raw = try { exec sh mr_listing_cmd; } catch e { "[]"; };
             let mr_iid = parse_int(to_string(json_get(mr_raw, "[0].iid")));
             if mr_iid > 0 {
                 let note = "**Release Notes Draft** (automated)\n\n" + draft.changelog;
-                let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note);
+                // colony-lint: safe-exec-concat
+                let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note) + repo_arg(owner, repo);
                 try { exec sh post_cmd; } catch e {
                     print("[changelog_writer] Failed to post note:", e);
                 };
             };
             emit("release:changelog_draft", draft);
-            learn("changelog_write", "release " + draft.version, to_string(draft.mr_count) + " MRs", "success", ["acted", "release"]);
+            if len(owner) > 0 {
+                learn("changelog_write", "release " + draft.version, to_string(draft.mr_count) + " MRs", "success", ["acted", "release", repo_tag(owner, repo)]);
+            } else {
+                learn("changelog_write", "release " + draft.version, to_string(draft.mr_count) + " MRs", "success", ["acted", "release"]);
+            };
         } else {
             if my_tier == "review-gated" {
-                let mr_raw = try { exec sh "$COLONY_DIR/scripts/forge-api.sh merge-requests --per-page 1"; } catch e { "[]"; };
+                // colony-lint: safe-exec-concat
+                let mr_listing_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --per-page 1" + repo_arg(owner, repo);
+                let mr_raw = try { exec sh mr_listing_cmd; } catch e { "[]"; };
                 let mr_iid = parse_int(to_string(json_get(mr_raw, "[0].iid")));
                 if mr_iid > 0 {
                     let note = "[draft-changelog] **Release Notes Draft** (automated, pending approval)\n\n" + draft.changelog;
-                    let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note);
+                    // colony-lint: safe-exec-concat
+                    let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(note) + repo_arg(owner, repo);
                     try { exec sh post_cmd; } catch e {
                         print("[changelog_writer] Failed to post draft note:", e);
                     };
                 };
                 emit("release:changelog_draft", draft);
-                learn("changelog_write", "release " + draft.version, to_string(draft.mr_count) + " MRs", "partial", ["release", "review-gated"]);
+                if len(owner) > 0 {
+                    learn("changelog_write", "release " + draft.version, to_string(draft.mr_count) + " MRs", "partial", ["release", "review-gated", repo_tag(owner, repo)]);
+                } else {
+                    learn("changelog_write", "release " + draft.version, to_string(draft.mr_count) + " MRs", "partial", ["release", "review-gated"]);
+                };
             } else {
                 if my_tier == "propose" {
                     emit("release:changelog_draft", draft);
-                    learn("changelog_write", "release " + draft.version, to_string(draft.mr_count) + " MRs", "partial", ["emitted", "release"]);
+                    if len(owner) > 0 {
+                        learn("changelog_write", "release " + draft.version, to_string(draft.mr_count) + " MRs", "partial", ["emitted", "release", repo_tag(owner, repo)]);
+                    } else {
+                        learn("changelog_write", "release " + draft.version, to_string(draft.mr_count) + " MRs", "partial", ["emitted", "release"]);
+                    };
                 } else {
                     print("[changelog_writer] Observing (tier:", my_tier, ")");
-                    learn("changelog_write", "release " + draft.version, to_string(draft.mr_count) + " MRs", "partial", ["observed", "release"]);
+                    if len(owner) > 0 {
+                        learn("changelog_write", "release " + draft.version, to_string(draft.mr_count) + " MRs", "partial", ["observed", "release", repo_tag(owner, repo)]);
+                    } else {
+                        learn("changelog_write", "release " + draft.version, to_string(draft.mr_count) + " MRs", "partial", ["observed", "release"]);
+                    };
                 };
             };
         };
@@ -162,6 +225,29 @@ fn tick(reason: string) -> void {
 
     let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
     if len(now) > 0 {
-        memo_write("changelog_writer:last_check", now);
+        memo_write(scoped_memo(owner, repo, "changelog_writer:last_check"), now);
     };
+}
+
+// Recursive iterator over `iter-repos.sh` output. See router.ag for the
+// empty-owner sentinel rationale.
+fn tick_at(spool: string, line_no: int) -> void {
+    let line_cmd = "SP=" + shell_escape(spool) + " N=" + to_string(line_no) +
+        " python3 -c 'import os; lines=os.environ[\"SP\"].splitlines(); n=int(os.environ[\"N\"]); print(lines[n] if 0<=n<len(lines) else \"\")'";
+    let line = try { exec sh line_cmd; } catch e { ""; };
+    if len(line) == 0 { return; };
+    let owner = repo_field(line, 0);
+    let repo = repo_field(line, 1);
+    tick_for_repo(owner, repo);
+    return tick_at(spool, line_no + 1);
+}
+
+fn tick(reason: string) -> void {
+    // #316 M3b: per-repo fan-out. See triage/agents/router.ag for the
+    // back-compat sentinel pattern and byte-identity rationale.
+    let spool = try { exec sh "$COLONY_DIR/../../tools/iter-repos.sh"; } catch e { ""; };
+    if len(spool) == 0 {
+        return;
+    };
+    tick_at(spool, 0);
 }

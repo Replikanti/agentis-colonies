@@ -22,19 +22,47 @@ type IncidentPatterns {
     recurring_themes: string
 }
 
-fn unplanned_cmd() -> string {
-    let ts = recall_latest("risk_assessor:last_check");
+// #316 M3b: per-tick fan-out helpers. See triage/agents/router.ag for
+// the full rationale. Single-block configs collapse to owner=="" sentinel,
+// repo_arg/repo_tag return "", scoped_memo passes the suffix through.
+
+fn repo_arg(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return " --repo " + shell_escape(owner + "/" + repo);
+}
+
+fn repo_tag(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return "repo:" + owner + "/" + repo;
+}
+
+fn scoped_memo(owner: string, repo: string, suffix: string) -> string {
+    if len(owner) == 0 { return suffix; };
+    return owner + "__" + repo + ":" + suffix;
+}
+
+fn repo_field(line: string, idx: int) -> string {
+    let cmd = "L=" + shell_escape(line) + " I=" + to_string(idx) +
+        " python3 -c 'import os; parts=os.environ[\"L\"].split(\"\t\"); i=int(os.environ[\"I\"]); print(parts[i] if 0<=i<len(parts) else \"\")'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+fn unplanned_cmd(owner: string, repo: string) -> string {
+    let ts = recall_latest(scoped_memo(owner, repo, "risk_assessor:last_check"));
+    // colony-lint: safe-exec-concat
     if len(ts) > 0 {
         // #235: events-aware query closes the short-lived-label gap.
         // issues-by-label-events unions currently-labeled + issues where
         // the trigger label was added at any point in [ts, now] per
         // resource_label_events. Catches transitions we'd miss between
         // 60 s polls with a pure current-state snapshot.
-        return "$COLONY_DIR/scripts/forge-api.sh issues-by-label-events --since " + shell_escape(ts) + " --view planning";
+        return "$COLONY_DIR/scripts/forge-api.sh issues-by-label-events --since " + shell_escape(ts) + " --view planning" + repo_arg(owner, repo);
     };
     // First-tick fallback: no prior window to diff against; the snapshot
     // preserves pre-#235 boot behavior byte-identically.
-    return "$COLONY_DIR/scripts/forge-api.sh issues --needs-planning --view planning";
+    // colony-lint: safe-exec-concat
+    return "$COLONY_DIR/scripts/forge-api.sh issues --needs-planning --view planning" + repo_arg(owner, repo);
 }
 
 fn get_confidence() -> float {
@@ -45,7 +73,7 @@ fn get_confidence() -> float {
     return 0.0;
 }
 
-fn tick(reason: string) -> void {
+fn tick_for_repo(owner: string, repo: string) -> void {
     // Staleness gate for the observe step (#187): the pattern library
     // only feeds `recommend()` inside the act branch below, which rarely
     // fires on low-activity projects. Re-running the observe prompt on
@@ -54,7 +82,7 @@ fn tick(reason: string) -> void {
     // observe was >= OBSERVE_MIN_INTERVAL_SEC ago. 1 800 s (30 min) keeps
     // the library fresh without the heartbeat-LLM pathology.
     let now_epoch = try { exec sh "date -u +%s"; } catch e { ""; };
-    let last_obs = recall_latest("risk_assessor:observe_last_ts");
+    let last_obs = recall_latest(scoped_memo(owner, repo, "risk_assessor:observe_last_ts"));
     let observe_stale = if len(last_obs) > 0 {
         if len(now_epoch) > 0 {
             // Negative delta (operator ran `date -s <past>` or similar
@@ -70,8 +98,10 @@ fn tick(reason: string) -> void {
 
     // 1. Observe: pull recent opened issues and skim for incident-style patterns
     if observe_stale == 1 {
+        // colony-lint: safe-exec-concat
+        let recent_cmd = "$COLONY_DIR/scripts/forge-api.sh issues --view planning" + repo_arg(owner, repo);
         let recent_raw = try {
-            exec sh "$COLONY_DIR/scripts/forge-api.sh issues --view planning";
+            exec sh recent_cmd;
         } catch e {
             print("[risk_assessor] GitLab issues poll failed:", e);
             "";
@@ -97,15 +127,25 @@ fn tick(reason: string) -> void {
             ) -> IncidentPatterns;
 
             if patterns.observed_count > 0 {
-                learn(
-                    "risk_assessment",
-                    "batch of " + to_string(patterns.observed_count) + " incident-style issues",
-                    patterns.recurring_themes,
-                    "success",
-                    ["observed", "planning"]
-                );
+                if len(owner) > 0 {
+                    learn(
+                        "risk_assessment",
+                        "batch of " + to_string(patterns.observed_count) + " incident-style issues",
+                        patterns.recurring_themes,
+                        "success",
+                        ["observed", "planning", repo_tag(owner, repo)]
+                    );
+                } else {
+                    learn(
+                        "risk_assessment",
+                        "batch of " + to_string(patterns.observed_count) + " incident-style issues",
+                        patterns.recurring_themes,
+                        "success",
+                        ["observed", "planning"]
+                    );
+                };
                 if len(now_epoch) > 0 {
-                    memo_write("risk_assessor:observe_last_ts", now_epoch);
+                    memo_write(scoped_memo(owner, repo, "risk_assessor:observe_last_ts"), now_epoch);
                 };
                 print("[risk_assessor] Observed", patterns.observed_count, "incident-style issues");
             };
@@ -113,7 +153,7 @@ fn tick(reason: string) -> void {
     };
 
     // 2. Act: assess risk for the next unplanned issue
-    let cmd = unplanned_cmd();
+    let cmd = unplanned_cmd(owner, repo);
     let issues_raw = try {
         exec sh cmd;
     } catch e {
@@ -135,7 +175,7 @@ fn tick(reason: string) -> void {
     if target_iid <= 0 {
         return;
     };
-    let posted_key = "risk_assessor:" + to_string(target_iid) + ":posted";
+    let posted_key = scoped_memo(owner, repo, "risk_assessor:" + to_string(target_iid) + ":posted");
     if len(recall_latest(posted_key)) > 0 {
         return;
     };
@@ -156,7 +196,8 @@ fn tick(reason: string) -> void {
         // Direct external write: post the risk assessment as an issue note.
         emit("planning:risks", assessment);
         let note = "**Risk Assessment** (automated): " + assessment.severity + "\n\n" + assessment.risks;
-        let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(assessment.issue_id) + " --body " + shell_escape(note);
+        // colony-lint: safe-exec-concat
+        let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(assessment.issue_id) + " --body " + shell_escape(note) + repo_arg(owner, repo);
         let post_result = try { exec sh post_cmd; } catch e {
             print("[risk_assessor] Failed to post note:", e);
             "";
@@ -167,60 +208,133 @@ fn tick(reason: string) -> void {
         // instead of silently consuming the issue.
         if len(post_result) > 0 {
             memo_write(posted_key, "1");
-            learn(
-                "risk_assessment",
-                "issue " + to_string(assessment.issue_id),
-                assessment.severity + ": " + assessment.risks,
-                "success",
-                ["acted", "planning"]
-            );
+            if len(owner) > 0 {
+                learn(
+                    "risk_assessment",
+                    "issue " + to_string(assessment.issue_id),
+                    assessment.severity + ": " + assessment.risks,
+                    "success",
+                    ["acted", "planning", repo_tag(owner, repo)]
+                );
+            } else {
+                learn(
+                    "risk_assessment",
+                    "issue " + to_string(assessment.issue_id),
+                    assessment.severity + ": " + assessment.risks,
+                    "success",
+                    ["acted", "planning"]
+                );
+            };
         } else {
-            learn(
-                "risk_assessment",
-                "issue " + to_string(assessment.issue_id),
-                "post-failed: " + assessment.severity,
-                "fail",
-                ["acted", "planning"]
-            );
+            if len(owner) > 0 {
+                learn(
+                    "risk_assessment",
+                    "issue " + to_string(assessment.issue_id),
+                    "post-failed: " + assessment.severity,
+                    "fail",
+                    ["acted", "planning", repo_tag(owner, repo)]
+                );
+            } else {
+                learn(
+                    "risk_assessment",
+                    "issue " + to_string(assessment.issue_id),
+                    "post-failed: " + assessment.severity,
+                    "fail",
+                    ["acted", "planning"]
+                );
+            };
         };
     } else {
         if my_tier == "review-gated" {
             // Draft external write: stash in plan_reviewer's memo slot so
             // plan_reviewer can pick it up and optionally promote to a real post.
             emit("planning:risks", assessment);
-            memo_write("plan_reviewer:" + to_string(assessment.issue_id) + ":risks_drafted", "true");
-            learn(
-                "risk_assessment",
-                "issue " + to_string(assessment.issue_id),
-                assessment.severity + ": " + assessment.risks,
-                "partial",
-                ["planning", "review-gated"]
-            );
+            memo_write(scoped_memo(owner, repo, "plan_reviewer:" + to_string(assessment.issue_id) + ":risks_drafted"), "true");
+            if len(owner) > 0 {
+                learn(
+                    "risk_assessment",
+                    "issue " + to_string(assessment.issue_id),
+                    assessment.severity + ": " + assessment.risks,
+                    "partial",
+                    ["planning", "review-gated", repo_tag(owner, repo)]
+                );
+            } else {
+                learn(
+                    "risk_assessment",
+                    "issue " + to_string(assessment.issue_id),
+                    assessment.severity + ": " + assessment.risks,
+                    "partial",
+                    ["planning", "review-gated"]
+                );
+            };
         } else {
             if my_tier == "propose" {
                 emit("planning:risks", assessment);
-                learn(
-                    "risk_assessment",
-                    "issue " + to_string(assessment.issue_id),
-                    assessment.severity + ": " + assessment.risks,
-                    "partial",
-                    ["emitted", "planning"]
-                );
+                if len(owner) > 0 {
+                    learn(
+                        "risk_assessment",
+                        "issue " + to_string(assessment.issue_id),
+                        assessment.severity + ": " + assessment.risks,
+                        "partial",
+                        ["emitted", "planning", repo_tag(owner, repo)]
+                    );
+                } else {
+                    learn(
+                        "risk_assessment",
+                        "issue " + to_string(assessment.issue_id),
+                        assessment.severity + ": " + assessment.risks,
+                        "partial",
+                        ["emitted", "planning"]
+                    );
+                };
             } else {
                 print("[risk_assessor] Observing (tier:", my_tier, ")");
-                learn(
-                    "risk_assessment",
-                    "issue " + to_string(assessment.issue_id),
-                    assessment.severity + ": " + assessment.risks,
-                    "partial",
-                    ["observed", "planning"]
-                );
+                if len(owner) > 0 {
+                    learn(
+                        "risk_assessment",
+                        "issue " + to_string(assessment.issue_id),
+                        assessment.severity + ": " + assessment.risks,
+                        "partial",
+                        ["observed", "planning", repo_tag(owner, repo)]
+                    );
+                } else {
+                    learn(
+                        "risk_assessment",
+                        "issue " + to_string(assessment.issue_id),
+                        assessment.severity + ": " + assessment.risks,
+                        "partial",
+                        ["observed", "planning"]
+                    );
+                };
             };
         };
     };
 
     let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
     if len(now) > 0 {
-        memo_write("risk_assessor:last_check", now);
+        memo_write(scoped_memo(owner, repo, "risk_assessor:last_check"), now);
     };
+}
+
+// Recursive iterator over `iter-repos.sh` output. See router.ag for the
+// empty-owner sentinel rationale.
+fn tick_at(spool: string, line_no: int) -> void {
+    let line_cmd = "SP=" + shell_escape(spool) + " N=" + to_string(line_no) +
+        " python3 -c 'import os; lines=os.environ[\"SP\"].splitlines(); n=int(os.environ[\"N\"]); print(lines[n] if 0<=n<len(lines) else \"\")'";
+    let line = try { exec sh line_cmd; } catch e { ""; };
+    if len(line) == 0 { return; };
+    let owner = repo_field(line, 0);
+    let repo = repo_field(line, 1);
+    tick_for_repo(owner, repo);
+    return tick_at(spool, line_no + 1);
+}
+
+fn tick(reason: string) -> void {
+    // #316 M3b: per-repo fan-out. See triage/agents/router.ag for the
+    // back-compat sentinel pattern and byte-identity rationale.
+    let spool = try { exec sh "$COLONY_DIR/../../tools/iter-repos.sh"; } catch e { ""; };
+    if len(spool) == 0 {
+        return;
+    };
+    tick_at(spool, 0);
 }

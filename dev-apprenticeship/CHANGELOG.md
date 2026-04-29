@@ -53,6 +53,12 @@ is asserted until multi-version CI is in place.
   `tools/iter-repos.sh` is the per-tick fan-out helper. ADR-0002 grows a
   "Multi-repo dispatch" subsection. Per-repo confidence keys ship in M4;
   per-repo trigger label vocabulary in M5.
+- Multi-repo runtime (#316 M3b): the remaining 17 agents (5 code-review + 4 planning
+  + 4 implementation + 4 release) now iterate per-repo on each tick, completing the
+  M3 fan-out started in M3a (4 triage agents, PR #381). All 21 agents in
+  dev-apprenticeship now serve N repositories from one colony when `colony.toml`
+  uses the `[[forge.github]]` array form. Single-block configs continue to work
+  byte-identically.
 
 ### Deprecated
 

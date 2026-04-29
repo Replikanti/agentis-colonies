@@ -24,12 +24,40 @@ type CodeDraft {
     confidence: float
 }
 
-fn merged_mr_cmd() -> string {
-    let ts = recall_latest("code_writer:last_check");
+// #316 M3b: per-tick fan-out helpers. See triage/agents/router.ag for
+// the full rationale. Single-block configs collapse to owner=="" sentinel,
+// repo_arg/repo_tag return "", scoped_memo passes the suffix through.
+
+fn repo_arg(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return " --repo " + shell_escape(owner + "/" + repo);
+}
+
+fn repo_tag(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return "repo:" + owner + "/" + repo;
+}
+
+fn scoped_memo(owner: string, repo: string, suffix: string) -> string {
+    if len(owner) == 0 { return suffix; };
+    return owner + "__" + repo + ":" + suffix;
+}
+
+fn repo_field(line: string, idx: int) -> string {
+    let cmd = "L=" + shell_escape(line) + " I=" + to_string(idx) +
+        " python3 -c 'import os; parts=os.environ[\"L\"].split(\"\t\"); i=int(os.environ[\"I\"]); print(parts[i] if 0<=i<len(parts) else \"\")'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+fn merged_mr_cmd(owner: string, repo: string) -> string {
+    let ts = recall_latest(scoped_memo(owner, repo, "code_writer:last_check"));
+    // colony-lint: safe-exec-concat
     if len(ts) > 0 {
-        return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --since " + shell_escape(ts) + " --view impl";
+        return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --since " + shell_escape(ts) + " --view impl" + repo_arg(owner, repo);
     };
-    return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --view impl";
+    // colony-lint: safe-exec-concat
+    return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --view impl" + repo_arg(owner, repo);
 }
 
 // #291: the forge wrappers' assigned-issues* subcommands gate on BOTH the
@@ -62,7 +90,7 @@ fn get_confidence() -> float {
 // input. Gate on (iid, updated_at) so that issue edits (title,
 // description, labels — anything that bumps updated_at) trigger a
 // fresh draft.
-fn should_draft_code(iid_str: string, upd: string) -> bool {
+fn should_draft_code(owner: string, repo: string, iid_str: string, upd: string) -> bool {
     // Malformed GitLab payload (missing iid) would otherwise collapse
     // all drafts into the shared "void" memo slot. Skip entirely — we
     // have nothing to gate on, and the next tick will re-poll.
@@ -72,14 +100,14 @@ fn should_draft_code(iid_str: string, upd: string) -> bool {
     if len(iid_str) == 0 {
         return false;
     };
-    let last_iid = recall_latest("code_writer:last_drafted_iid");
+    let last_iid = recall_latest(scoped_memo(owner, repo, "code_writer:last_drafted_iid"));
     if len(last_iid) == 0 {
         return true;
     };
     if iid_str != last_iid {
         return true;
     };
-    let last_upd = recall_latest("code_writer:last_drafted_updated_at");
+    let last_upd = recall_latest(scoped_memo(owner, repo, "code_writer:last_drafted_updated_at"));
     if upd != last_upd {
         return true;
     };
@@ -94,12 +122,12 @@ fn should_draft_code(iid_str: string, upd: string) -> bool {
 // hundreds of duplicate `Learned from MR <N>` log entries and an
 // OOM-class load on long-lived MRs. Single-key memo, no TTL: we want
 // at-most-once per distinct MR iid.
-fn should_learn_from_mr(mr_iid: int) -> bool {
+fn should_learn_from_mr(owner: string, repo: string, mr_iid: int) -> bool {
     if mr_iid <= 0 {
         return false;
     };
     let iid_str = to_string(mr_iid);
-    let last_iid = recall_latest("code_writer:last_learned_mr_iid");
+    let last_iid = recall_latest(scoped_memo(owner, repo, "code_writer:last_learned_mr_iid"));
     if len(last_iid) == 0 {
         return true;
     };
@@ -109,9 +137,9 @@ fn should_learn_from_mr(mr_iid: int) -> bool {
     return false;
 }
 
-fn tick(reason: string) -> void {
+fn tick_for_repo(owner: string, repo: string) -> void {
     // 1. Learn from recently merged MRs
-    let cmd = merged_mr_cmd();
+    let cmd = merged_mr_cmd(owner, repo);
     let raw = try {
         exec sh cmd;
     } catch e {
@@ -122,9 +150,10 @@ fn tick(reason: string) -> void {
     if len(raw) > 10 {
         let mr_iid = parse_int(to_string(json_get(raw, "[0].iid")));
 
-        if should_learn_from_mr(mr_iid) {
-            memo_write("code_writer:last_learned_mr_iid", to_string(mr_iid));
-            let changes_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-changes " + to_string(mr_iid);
+        if should_learn_from_mr(owner, repo, mr_iid) {
+            memo_write(scoped_memo(owner, repo, "code_writer:last_learned_mr_iid"), to_string(mr_iid));
+            // colony-lint: safe-exec-concat
+            let changes_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-changes " + to_string(mr_iid) + repo_arg(owner, repo);
             let changes_raw = try { exec sh changes_cmd; } catch e { ""; };
 
             if len(changes_raw) > 10 {
@@ -133,13 +162,23 @@ fn tick(reason: string) -> void {
                     changes_raw
                 ) -> CodePatterns;
 
-                learn(
-                    "code_write",
-                    "MR " + to_string(mr_iid),
-                    "naming: " + patterns.naming + " | structure: " + patterns.structure + " | errors: " + patterns.error_handling,
-                    "success",
-                    ["observed", "implementation"]
-                );
+                if len(owner) > 0 {
+                    learn(
+                        "code_write",
+                        "MR " + to_string(mr_iid),
+                        "naming: " + patterns.naming + " | structure: " + patterns.structure + " | errors: " + patterns.error_handling,
+                        "success",
+                        ["observed", "implementation", repo_tag(owner, repo)]
+                    );
+                } else {
+                    learn(
+                        "code_write",
+                        "MR " + to_string(mr_iid),
+                        "naming: " + patterns.naming + " | structure: " + patterns.structure + " | errors: " + patterns.error_handling,
+                        "success",
+                        ["observed", "implementation"]
+                    );
+                };
                 print("[code_writer] Learned from MR", mr_iid);
             };
         };
@@ -150,12 +189,13 @@ fn tick(reason: string) -> void {
     // lived trigger labels (e.g. "DEV::not started" transitioning through
     // scoped states in seconds) aren't missed. The first tick falls back
     // to the current-state snapshot — byte-identical to pre-#235 boot.
-    let prev_check = recall_latest("code_writer:last_check");
+    let prev_check = recall_latest(scoped_memo(owner, repo, "code_writer:last_check"));
     let unassigned_flag = include_unassigned_flag();
+    // colony-lint: safe-exec-concat
     let issues_cmd = if len(prev_check) > 0 {
-        "$COLONY_DIR/scripts/forge-api.sh assigned-issues-by-label-events --since " + shell_escape(prev_check) + " --view assigned" + unassigned_flag;
+        "$COLONY_DIR/scripts/forge-api.sh assigned-issues-by-label-events --since " + shell_escape(prev_check) + " --view assigned" + unassigned_flag + repo_arg(owner, repo);
     } else {
-        "$COLONY_DIR/scripts/forge-api.sh assigned-issues --view assigned" + unassigned_flag;
+        "$COLONY_DIR/scripts/forge-api.sh assigned-issues --view assigned" + unassigned_flag + repo_arg(owner, repo);
     };
     let issues_raw = try {
         exec sh issues_cmd;
@@ -172,9 +212,9 @@ fn tick(reason: string) -> void {
         // the `draft = prompt(...)` call below.
         let first_iid_str = to_string(json_get(issues_raw, "[0].iid"));
         let first_upd = to_string(json_get(issues_raw, "[0].updated_at"));
-        if should_draft_code(first_iid_str, first_upd) {
-            memo_write("code_writer:last_drafted_iid", first_iid_str);
-            memo_write("code_writer:last_drafted_updated_at", first_upd);
+        if should_draft_code(owner, repo, first_iid_str, first_upd) {
+            memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_iid"), first_iid_str);
+            memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_updated_at"), first_upd);
             let rec = recommend("code_write", ["accuracy"]);
             let context = "Assigned issues: " + issues_raw + "\nLearned code patterns: " + to_string(rec);
 
@@ -188,7 +228,8 @@ fn tick(reason: string) -> void {
 
             if my_tier == "autonomous" {
                 // Create branch
-                let branch_cmd = "$COLONY_DIR/scripts/forge-api.sh create-branch --name " + shell_escape(draft.branch_name) + " --ref main";
+                // colony-lint: safe-exec-concat
+                let branch_cmd = "$COLONY_DIR/scripts/forge-api.sh create-branch --name " + shell_escape(draft.branch_name) + " --ref main" + repo_arg(owner, repo);
                 let branch_result = try { exec sh branch_cmd; } catch e {
                     print("[code_writer] Branch creation failed:", e);
                     "";
@@ -196,7 +237,8 @@ fn tick(reason: string) -> void {
 
                 if len(branch_result) > 0 {
                     // Generate actual code and commit it to the branch
-                    let issue_cmd = "$COLONY_DIR/scripts/forge-api.sh issue " + to_string(draft.issue_id);
+                    // colony-lint: safe-exec-concat
+                    let issue_cmd = "$COLONY_DIR/scripts/forge-api.sh issue " + to_string(draft.issue_id) + repo_arg(owner, repo);
                     let issue_detail = try { exec sh issue_cmd; } catch e { ""; };
                     let code_context = "Issue: " + issue_detail + "\nPlan: " + draft.files + "\nPatterns: " + to_string(rec);
 
@@ -206,7 +248,7 @@ fn tick(reason: string) -> void {
                     ) -> string;
 
                     // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
-                    let commit_cmd = "$COLONY_DIR/scripts/forge-api.sh commit-files --branch " + shell_escape(draft.branch_name) + " --message " + shell_escape("feat: implement #" + to_string(draft.issue_id) + " - " + draft.summary) + " --actions " + shell_escape(actions_json);
+                    let commit_cmd = "$COLONY_DIR/scripts/forge-api.sh commit-files --branch " + shell_escape(draft.branch_name) + " --message " + shell_escape("feat: implement #" + to_string(draft.issue_id) + " - " + draft.summary) + " --actions " + shell_escape(actions_json) + repo_arg(owner, repo);
                     let commit_result = try { exec sh commit_cmd; } catch e {
                         print("[code_writer] Commit failed:", e);
                         "";
@@ -215,7 +257,11 @@ fn tick(reason: string) -> void {
                     if len(commit_result) > 0 {
                         print("[code_writer] Committed code to", draft.branch_name);
                         emit("implementation:code_draft", draft);
-                        learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "success", ["acted", "implementation"]);
+                        if len(owner) > 0 {
+                            learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "success", ["acted", "implementation", repo_tag(owner, repo)]);
+                        } else {
+                            learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "success", ["acted", "implementation"]);
+                        };
                     };
                 };
             } else {
@@ -224,19 +270,32 @@ fn tick(reason: string) -> void {
                     // on the issue so a human can approve before we create a branch
                     // and commit code. No branch or commit at this tier.
                     let note = "[draft-impl] **Implementation Plan** (automated, pending approval)\n\nBranch: `" + draft.branch_name + "`\n\n" + draft.summary + "\n\nFiles:\n" + draft.files;
-                    let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(draft.issue_id) + " --body " + shell_escape(note);
+                    // colony-lint: safe-exec-concat
+                    let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(draft.issue_id) + " --body " + shell_escape(note) + repo_arg(owner, repo);
                     try { exec sh post_cmd; } catch e {
                         print("[code_writer] Failed to post draft plan:", e);
                     };
                     emit("implementation:code_draft", draft);
-                    learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "partial", ["implementation", "review-gated"]);
+                    if len(owner) > 0 {
+                        learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "partial", ["implementation", "review-gated", repo_tag(owner, repo)]);
+                    } else {
+                        learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "partial", ["implementation", "review-gated"]);
+                    };
                 } else {
                     if my_tier == "propose" {
                         emit("implementation:code_draft", draft);
-                        learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "partial", ["emitted", "implementation"]);
+                        if len(owner) > 0 {
+                            learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "partial", ["emitted", "implementation", repo_tag(owner, repo)]);
+                        } else {
+                            learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "partial", ["emitted", "implementation"]);
+                        };
                     } else {
                         print("[code_writer] Observing (tier:", my_tier, ")");
-                        learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "partial", ["observed", "implementation"]);
+                        if len(owner) > 0 {
+                            learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "partial", ["observed", "implementation", repo_tag(owner, repo)]);
+                        } else {
+                            learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "partial", ["observed", "implementation"]);
+                        };
                     };
                 };
             };
@@ -251,6 +310,29 @@ fn tick(reason: string) -> void {
 
     let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
     if len(now) > 0 {
-        memo_write("code_writer:last_check", now);
+        memo_write(scoped_memo(owner, repo, "code_writer:last_check"), now);
     };
+}
+
+// Recursive iterator over `iter-repos.sh` output. See router.ag for the
+// empty-owner sentinel rationale.
+fn tick_at(spool: string, line_no: int) -> void {
+    let line_cmd = "SP=" + shell_escape(spool) + " N=" + to_string(line_no) +
+        " python3 -c 'import os; lines=os.environ[\"SP\"].splitlines(); n=int(os.environ[\"N\"]); print(lines[n] if 0<=n<len(lines) else \"\")'";
+    let line = try { exec sh line_cmd; } catch e { ""; };
+    if len(line) == 0 { return; };
+    let owner = repo_field(line, 0);
+    let repo = repo_field(line, 1);
+    tick_for_repo(owner, repo);
+    return tick_at(spool, line_no + 1);
+}
+
+fn tick(reason: string) -> void {
+    // #316 M3b: per-repo fan-out. See triage/agents/router.ag for the
+    // back-compat sentinel pattern and byte-identity rationale.
+    let spool = try { exec sh "$COLONY_DIR/../../tools/iter-repos.sh"; } catch e { ""; };
+    if len(spool) == 0 {
+        return;
+    };
+    tick_at(spool, 0);
 }
