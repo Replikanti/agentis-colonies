@@ -1,0 +1,10 @@
+{
+  "stage": "stage2",
+  "bugs": [
+    {"id": "S2-SMVUAF-001", "class": "use_after_free", "file": "lib.rs", "line": 827, "line_tolerance": 5, "signature": "pub fn insert_many", "severity": "high", "verifier_test": "test_smv_uaf_001", "rationale": "RUSTSEC-2018-0003: SmallVec::insert_many double-free during unwind"},
+    {"id": "S2-SMVMEM-001", "class": "uninitialised_memory", "file": "lib.rs", "line": 534, "line_tolerance": 5, "signature": "pub unsafe fn from_buf_and_len_unchecked", "severity": "high", "verifier_test": "test_smv_mem_001", "rationale": "RUSTSEC-2018-0018: SmallVec::from_buf_and_len_unchecked uninitialised memory"},
+    {"id": "S2-SMVUAF-002", "class": "use_after_free", "file": "lib.rs", "line": 656, "line_tolerance": 5, "signature": "pub fn grow", "severity": "high", "verifier_test": "test_smv_uaf_002", "rationale": "RUSTSEC-2019-0009: SmallVec::grow use-after-free + double-free"},
+    {"id": "S2-SMVMEM-002", "class": "memory_corruption", "file": "lib.rs", "line": 656, "line_tolerance": 5, "signature": "pub fn grow", "severity": "high", "verifier_test": "test_smv_mem_002", "rationale": "RUSTSEC-2019-0012: SmallVec::grow memory corruption with capacity-shrink"},
+    {"id": "S2-SMVOFL-001", "class": "heap_overflow", "file": "lib.rs", "line": 833, "line_tolerance": 5, "signature": "iter.size_hint()", "severity": "high", "verifier_test": "test_smv_ofl_001", "rationale": "RUSTSEC-2021-0003: SmallVec::insert_many heap overflow on lying size_hint"}
+  ]
+}

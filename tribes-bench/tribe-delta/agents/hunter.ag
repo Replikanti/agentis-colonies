@@ -1,0 +1,223 @@
+// hunter.ag -- Tribe Delta hunter: looks for use-after-free,
+// double-free, and dangling-borrow bugs in the Stage 2 vendored Rust
+// target via a lifetime / aliasing reasoning heuristic.
+//
+// Stage 1 M2+M3 (#364): in addition to verifying findings, the hunter
+// now (a) seeds prompt-variant memo + replicates inside the Malthusian
+// per-replica cost gate when the tribe pool is rich enough, (b) credits
+// the tribe pool with a first-finder full reward / subsequent partial
+// reward via the shared bug-ledger.jsonl, and (c) initiates tribe death
+// via sibling-stop + KB preservation when the pool drains below the
+// configured threshold.
+//
+// Run as daemon: agentis daemon agents/hunter.ag --colony tribe-delta
+// Requires: exec capability, replication capability, TARGET_DIR +
+// VERIFIER_PATH env vars (set by scripts/start-colony.sh).
+
+cb 800;
+
+type Finding {
+    line: int,
+    severity: string,
+    rationale: string,
+    signature_hint: string,
+    class: string
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("hunter:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    };
+    return 0.0;
+}
+
+fn tribe_name() -> string {
+    let n = try { exec sh "printenv TRIBE_NAME"; } catch e { ""; };
+    if len(n) > 0 {
+        return n;
+    };
+    return "tribe-delta";
+}
+
+fn pick_variant(tribe: string, n: int) -> string {
+    let _ = tribe;
+    let idx = n - ((n / 3) * 3);
+    if idx == 0 {
+        return "lifetime-default";
+    };
+    if idx == 1 {
+        return "lifetime-strict-aliasing";
+    };
+    return "lifetime-broad-borrow";
+}
+
+fn self_node_addr() -> string {
+    let addr = recall_latest("tribes-bench:worker_addr");
+    if len(addr) > 0 {
+        return addr;
+    };
+    return "127.0.0.1:9100";
+}
+
+fn tick(reason: string) -> void {
+    let _ = reason;
+    let conf = get_confidence();
+    print("[hunter] tick conf=", conf);
+
+    // Read the synthetic target once per tick. Stage 1 hunter scans the
+    // first stage-1 file by default; M2/M3 will rotate across all three
+    // class-shard files (cmd_exec.rs, path_io.rs, fmt_str.rs).
+    let src = try {
+        exec sh "cat $TARGET_DIR/cmd_exec.rs";
+    } catch e {
+        print("[hunter] target read failed:", e);
+        "";
+    };
+
+    if len(src) < 10 {
+        let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_e) > 0 {
+            memo_write("hunter:last_check", now_e);
+        };
+        return;
+    };
+
+    // Tribe-delta seed prompt: lifetime / aliasing reasoning heuristic.
+    // Orthogonal to alpha (format!()-pattern), beta (source-to-sink) and
+    // gamma (error-path) — those reason about data flow, delta reasons
+    // about temporal validity. The calibration check (M3) reruns the
+    // experiment with prompts swapped between tribes if TP rates differ
+    // by >2x.
+    let finding = prompt(
+        "Look for places where a borrow outlives the value it points into, including Vec reallocation invalidating prior &/&mut slices, unsafe { ... } blocks that transmute lifetimes, and raw pointers that survive past the safe Rust lifetime of their source. Pay special attention to ptr::copy / ptr::write through pointers obtained before a reallocation, set_len() on a SmallVec or Vec while a derived raw pointer still aliases the old buffer, and unsafe fn signatures whose preconditions are not visibly established by callers. Return JSON: line (int, 1-indexed source line of the suspect call), severity (string, low|medium|high), rationale (string, one sentence), signature_hint (string, a short literal substring grep can find on that line), class (string, one of: use_after_free, double_free, dangling_borrow).",
+        src
+    ) -> Finding;
+
+    let my_tier = tier("hunter");
+    if my_tier == "autonomous" {
+        // Stage 1 M1 has no autonomous path — collapse to propose semantics.
+        // Reserved for Stage 2+ when verified findings might open issues.
+        learn("hunt", "line " + to_string(finding.line), finding.rationale, "partial", ["acted", "tribes-bench"]);
+    } else {
+        if my_tier == "review-gated" {
+            // No review-gated draft target in Stage 1 M1 — same fall-through.
+            learn("hunt", "line " + to_string(finding.line), finding.rationale, "partial", ["review-gated", "tribes-bench"]);
+        } else {
+            if my_tier == "propose" {
+                // The Stage 1 hot path: emit the finding on the bus,
+                // then run the deterministic verifier and learn the
+                // verdict.
+                emit("tribe-delta:finding", finding);
+
+                // The verifier reads {"line": int, "class": string} on
+                // stdin and emits {"verified": bool, "bug_id":
+                // string|null} on stdout. The rationale is intentionally
+                // not piped through — the verifier classifies on (line,
+                // signature, class) only, and round-tripping
+                // LLM-tainted text through the JSON-on-stdin channel
+                // would force shell-vs-JSON quote interleaving with no
+                // benefit.
+                let finding_json = "{\"line\": " + to_string(finding.line) + ", \"class\": \"" + finding.class + "\"}";
+                let verify_cmd = "printf '%s' " + shell_escape(finding_json) + " | bash \"$VERIFIER_PATH\"";
+                let verdict_raw = try {
+                    exec sh verify_cmd;
+                } catch e {
+                    print("[hunter] verifier call failed:", e);
+                    "";
+                };
+
+                // Extract verdict via json_get. A miss returns Void
+                // → "void" (str), so the substring check below is
+                // safe on every failure mode.
+                let verified_str = to_string(json_get(verdict_raw, "verified"));
+                let bug_id = to_string(json_get(verdict_raw, "bug_id"));
+                if verified_str == "true" {
+                    print("[hunter] verified ", bug_id, " at line ", finding.line);
+
+                    // M3 reward: provisional first-finder check via memo,
+                    // append to bug-ledger.jsonl, credit tribe pool.
+                    let prior_finder = recall_latest("bug-ledger:" + bug_id + ":first_finder_tribe");
+                    let reward = if len(prior_finder) == 0 {
+                        memo_write("bug-ledger:" + bug_id + ":first_finder_tribe", tribe_name());
+                        parse_int(recall_latest("tribe-" + tribe_name() + ":reward_full"));
+                    } else {
+                        parse_int(recall_latest("tribe-" + tribe_name() + ":reward_subsequent"));
+                    };
+
+                    let ledger_path = recall_latest("tribe-" + tribe_name() + ":bug_ledger");
+                    if len(ledger_path) > 0 {
+                        let row = "{\"ts\": " + to_string(now_ms()) + ", \"tribe\": \"" + tribe_name() + "\", \"bug_id\": \"" + bug_id + "\", \"reward\": " + to_string(reward) + "}";
+                        // colony-lint: safe-exec-concat
+                        let append_cmd = "printf '%s\\n' " + shell_escape(row) + " >> " + shell_escape(ledger_path);
+                        let _ = try { exec sh append_cmd; } catch e { ""; };
+                    };
+
+                    let cur_pool = parse_int(recall_latest("tribe-" + tribe_name() + ":pool"));
+                    memo_write("tribe-" + tribe_name() + ":pool", to_string(cur_pool + reward));
+                    learn("hunt", "line " + to_string(finding.line), bug_id, "success", ["acted", "tribes-bench", tribe_name(), "reward=" + to_string(reward)]);
+
+                    // M2 replication: Malthusian-gated. C(n) = base * (1 + n/k).
+                    let pool_after = cur_pool + reward;
+                    let n = parse_int(recall_latest("tribe-" + tribe_name() + ":size"));
+                    let base = parse_int(recall_latest("tribe-" + tribe_name() + ":replication_base_cost"));
+                    let raw_k = parse_int(recall_latest("tribe-" + tribe_name() + ":replication_k"));
+                    let k = if raw_k <= 0 { 3; } else { raw_k; };
+                    let max_replicas = parse_int(recall_latest("tribe-" + tribe_name() + ":max_replicas"));
+                    let cost = base + (base * n) / k;
+                    if pool_after >= cost {
+                        if n < max_replicas {
+                            let variant = pick_variant(tribe_name(), n);
+                            memo_write("hunter:prompt_variant", variant);
+                            let target = self_node_addr();
+                            let replica_id = try { replicate(target); } catch e { ""; };
+                            if len(replica_id) > 0 {
+                                memo_write("tribe-" + tribe_name() + ":pool", to_string(pool_after - cost));
+                                memo_write("tribe-" + tribe_name() + ":size", to_string(n + 1));
+                                learn("replicate", "n=" + to_string(n), "cost=" + to_string(cost), "success", ["replicated", "tribes-bench", tribe_name()]);
+                            } else {
+                                learn("replicate", "n=" + to_string(n), "cost=" + to_string(cost), "failure", ["replicate-nak", "tribes-bench", tribe_name()]);
+                            };
+                        };
+                    };
+                } else {
+                    print("[hunter] false positive at line ", finding.line);
+                    learn("hunt", "line " + to_string(finding.line), finding.rationale, "failure", ["false-positive", "tribes-bench"]);
+                };
+
+                // M3 death: pool-drain → KB preserve + sibling stop. Guarded
+                // by a one-shot `death_initiated` memo so racing siblings
+                // don't all run the preserve+stop sequence.
+                let pool_now = parse_int(recall_latest("tribe-" + tribe_name() + ":pool"));
+                let death_thr = parse_int(recall_latest("tribe-" + tribe_name() + ":death_threshold"));
+                if pool_now < death_thr {
+                    let already = recall_latest("tribe-" + tribe_name() + ":death_initiated");
+                    if len(already) == 0 {
+                        memo_write("tribe-" + tribe_name() + ":death_initiated", "1");
+                        let run_dir = recall_latest("tribe-" + tribe_name() + ":run_dir");
+                        if len(run_dir) > 0 {
+                            let dead_dir = run_dir + "/dead-tribes/" + tribe_name();
+                            // colony-lint: safe-exec-concat
+                            let preserve_cmd = "mkdir -p " + shell_escape(dead_dir) + " && cp -p $AGENTIS_ROOT/experience/*.jsonl " + shell_escape(dead_dir) + "/ 2>/dev/null; cp -p $AGENTIS_ROOT/spend/*.jsonl " + shell_escape(dead_dir) + "/ 2>/dev/null; agentis knowledge export --tags " + shell_escape("tribes-bench-" + tribe_name()) + " > " + shell_escape(dead_dir) + "/knowledge.json 2>/dev/null";
+                            let _ = try { exec sh preserve_cmd; } catch e { ""; };
+                        };
+                        learn("death", tribe_name(), "pool=" + to_string(pool_now), "failure", ["died", "tribes-bench", tribe_name()]);
+                        // colony-lint: safe-exec-concat
+                        let stop_cmd = "agentis daemon list --json 2>/dev/null | jq -r '.[] | select(.colony==\"" + tribe_name() + "\" and .state==\"running\") | .agent_id' | while read id; do agentis daemon stop \"$id\" --async --grace-ms 2000 --timeout-ms 8000 || true; done";
+                        let _ = try { exec sh stop_cmd; } catch e { ""; };
+                    };
+                    return;
+                };
+            } else {
+                // shadow / dormant: observe-only.
+                print("[hunter] observing (tier:", my_tier, ") line=", finding.line);
+                learn("hunt", "line " + to_string(finding.line), finding.rationale, "partial", ["observed", "tribes-bench"]);
+            };
+        };
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("hunter:last_check", now);
+    };
+}
