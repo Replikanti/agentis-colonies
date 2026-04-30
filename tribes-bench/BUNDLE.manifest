@@ -52,3 +52,24 @@ tribes-bench/tribe-gamma/README.md
 tribes-bench/tribe-gamma/agents/
 tribes-bench/tribe-gamma/config/colony.example.toml
 tribes-bench/tribe-gamma/scripts/
+
+tribes-bench/tribe-delta/README.md
+tribes-bench/tribe-delta/agents/
+tribes-bench/tribe-delta/config/colony.example.toml
+tribes-bench/tribe-delta/scripts/
+
+tribes-bench/tribe-epsilon/README.md
+tribes-bench/tribe-epsilon/agents/
+tribes-bench/tribe-epsilon/config/colony.example.toml
+tribes-bench/tribe-epsilon/scripts/
+
+# ----- Stage 2 (#392) tooling and target -----
+# Stage 2 surface lives under `tribes-bench/targets/stage2/` (covered by
+# `tribes-bench/targets/` above) and `tribes-bench/tools/` (covered above).
+# Listed explicitly for documentation:
+#   tribes-bench/targets/stage2/smallvec-v0.6.13/{lib.rs,Cargo.toml,LICENSE-MIT,LICENSE-APACHE,README.md,PROVENANCE.md}
+#   tribes-bench/targets/stage2/bugs.json
+#   tribes-bench/tools/run-stage2.sh
+#   tribes-bench/tools/verify-finding-stage2.sh
+#   tribes-bench/tools/analyse-stage2.py
+#   tribes-bench/tools/test-stage2-scaffold.sh

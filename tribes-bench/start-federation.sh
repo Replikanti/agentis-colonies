@@ -28,7 +28,7 @@ SCRIPT_PATH="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))'
 SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 FED_DIR="${1:-$SCRIPT_DIR}"
 
-COLONIES=(tribe-alpha tribe-beta tribe-gamma)
+COLONIES=(tribe-alpha tribe-beta tribe-gamma tribe-delta tribe-epsilon)
 
 echo ""
 echo "Tribes Bench Federation"

@@ -16,6 +16,19 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Stage 2 M1 scaffolding: 2 new tribes (`tribe-delta` lifetime/aliasing,
+  `tribe-epsilon` concurrency/Send+Sync) bringing the federation to 5
+  tribes. Real-world target swap from synthetic Stage 1 → vendored
+  `smallvec v0.6.13` snapshot with 5 documented RustSec advisories
+  (RUSTSEC-2018-0003, -2018-0018, -2019-0009, -2019-0012, -2021-0003).
+  New `tools/verify-finding-stage2.sh` (separate file from the Stage 0/1
+  verifier — back-compat preserved), `tools/run-stage2.sh`,
+  `tools/analyse-stage2.py`, `tools/test-stage2-scaffold.sh`.
+  Calibration parameters unchanged (Stage 1 economy is already per-tribe;
+  the federation-wide CB pool delta is zero — that argument lives in
+  M2 #393). Stage 0/Stage 1 surface byte-identical; pre-existing
+  Stage 0/1 tests pass unchanged. Pure infrastructure — no live
+  experimental run yet (that's M3 #394). ([#392](https://github.com/Replikanti/agentis-colonies/issues/392))
 - **Stage 1 M2+M3 — replication, Malthusian, reward, death** ([#364](https://github.com/Replikanti/agentis-colonies/issues/364), M2+M3).
   - All three `tribe-{alpha,beta,gamma}/agents/hunter.ag` now (a) wire
     `replicate(target_node)` inside a Malthusian per-replica cost gate
