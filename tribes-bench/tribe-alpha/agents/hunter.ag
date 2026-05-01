@@ -58,6 +58,100 @@ fn self_node_addr() -> string {
     return "127.0.0.1:9100";
 }
 
+// --- Stage 2 M2 (#393) cognitive-market helpers ---------------------------
+//
+// Reputation, ask/max_cb formulas, sibling round-robin, trade-CSV row
+// emission. These helpers are byte-identical across all 5 tribes; only
+// the seed prompts and variant tags above this fence differ.
+
+fn pick_sibling(idx: int, self_tribe: string) -> string {
+    let i = idx - ((idx / 4) * 4);
+    if self_tribe == "tribe-alpha" {
+        if i == 0 { return "tribe-beta"; };
+        if i == 1 { return "tribe-gamma"; };
+        if i == 2 { return "tribe-delta"; };
+        return "tribe-epsilon";
+    };
+    if self_tribe == "tribe-beta" {
+        if i == 0 { return "tribe-alpha"; };
+        if i == 1 { return "tribe-gamma"; };
+        if i == 2 { return "tribe-delta"; };
+        return "tribe-epsilon";
+    };
+    if self_tribe == "tribe-gamma" {
+        if i == 0 { return "tribe-alpha"; };
+        if i == 1 { return "tribe-beta"; };
+        if i == 2 { return "tribe-delta"; };
+        return "tribe-epsilon";
+    };
+    if self_tribe == "tribe-delta" {
+        if i == 0 { return "tribe-alpha"; };
+        if i == 1 { return "tribe-beta"; };
+        if i == 2 { return "tribe-gamma"; };
+        return "tribe-epsilon";
+    };
+    if i == 0 { return "tribe-alpha"; };
+    if i == 1 { return "tribe-beta"; };
+    if i == 2 { return "tribe-gamma"; };
+    return "tribe-delta";
+}
+
+fn rep_bucket(rep_str: string) -> int {
+    if len(rep_str) == 0 {
+        return 5;
+    };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys; r=float(sys.argv[1] or 0.5); v=int(r*10); print(0 if v<0 else (10 if v>10 else v))' " + shell_escape(rep_str);
+    let out = try { exec sh cmd; } catch e { "5"; };
+    let i = parse_int(out);
+    if i < 0 { return 0; };
+    if i > 10 { return 10; };
+    return i;
+}
+
+fn ask_for_rep(rep_str: string) -> int {
+    let v = rep_bucket(rep_str) + 1;
+    if v < 1 { return 1; };
+    return v;
+}
+
+fn max_cb_for_rep(rep_str: string) -> int {
+    return rep_bucket(rep_str) * 2 + 5;
+}
+
+fn premium_factor_for_rep(rep_str: string) -> int {
+    return 5 * (rep_bucket(rep_str) + 1);
+}
+
+fn pick_highest_rep_sibling(self_tribe: string) -> string {
+    let ba = if self_tribe == "tribe-alpha" { -1; } else { rep_bucket(recall_latest("reputation:tribes-bench-tribe-alpha")); };
+    let bb = if self_tribe == "tribe-beta" { -1; } else { rep_bucket(recall_latest("reputation:tribes-bench-tribe-beta")); };
+    let bg = if self_tribe == "tribe-gamma" { -1; } else { rep_bucket(recall_latest("reputation:tribes-bench-tribe-gamma")); };
+    let bd = if self_tribe == "tribe-delta" { -1; } else { rep_bucket(recall_latest("reputation:tribes-bench-tribe-delta")); };
+    let be = if self_tribe == "tribe-epsilon" { -1; } else { rep_bucket(recall_latest("reputation:tribes-bench-tribe-epsilon")); };
+    let m1 = if ba >= bb { ba; } else { bb; };
+    let n1 = if ba >= bb { "tribe-alpha"; } else { "tribe-beta"; };
+    let m2 = if m1 >= bg { m1; } else { bg; };
+    let n2 = if m1 >= bg { n1; } else { "tribe-gamma"; };
+    let m3 = if m2 >= bd { m2; } else { bd; };
+    let n3 = if m2 >= bd { n2; } else { "tribe-delta"; };
+    let m4 = if m3 >= be { m3; } else { be; };
+    let n4 = if m3 >= be { n3; } else { "tribe-epsilon"; };
+    if m4 < 0 { return ""; };
+    return n4;
+}
+
+fn emit_market_csv(op: string, topic: string, topic_kind: string, ask_price_s: string, max_cb_s: string, paid_price_s: string, cache_hit_s: string, op_outcome: string) -> void {
+    let csv_path = recall_latest("tribes-bench-" + tribe_name() + ":knowledge_market_csv");
+    if len(csv_path) == 0 {
+        return;
+    };
+    let row = to_string(now_ms()) + "," + tribe_name() + "," + tribe_name() + "," + op + "," + topic + "," + topic_kind + "," + ask_price_s + "," + max_cb_s + "," + paid_price_s + "," + cache_hit_s + ",," + op_outcome;
+    // colony-lint: safe-exec-concat
+    let append_cmd = "printf '%s\n' " + shell_escape(row) + " >> " + shell_escape(csv_path);
+    let _ = try { exec sh append_cmd; } catch e { ""; };
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let conf = get_confidence();
@@ -79,6 +173,80 @@ fn tick(reason: string) -> void {
             memo_write("hunter:last_check", now_e);
         };
         return;
+    };
+
+    // Stage 2 M2 (#393): cognitive-market buy at start of tick, before
+    // seed prompt fires. Buy-gate widened to %8 + pool-aware skip per
+    // §9 risk 5; lifecycle discriminator + cache-hit learn() per risk 1+2.
+    let m_now = now_ms();
+    let pool_for_buy = parse_int(recall_latest("tribe-" + tribe_name() + ":pool"));
+    let pool_min_buy_str = recall_latest("pool_minimum_for_buy");
+    let pool_min_buy = if len(pool_min_buy_str) > 0 { parse_int(pool_min_buy_str); } else { 50; };
+    if (m_now - ((m_now / 8) * 8)) == 0 {
+        if pool_for_buy > pool_min_buy {
+            let sib_idx = m_now - ((m_now / 4) * 4);
+            let sibling = pick_sibling(sib_idx, tribe_name());
+            let sib_ledger = recall_latest("tribe-" + sibling + ":bug_ledger");
+            if len(sib_ledger) > 0 {
+                // colony-lint: safe-exec-concat
+                let head_cmd = "grep -F '\"tribe\": \"" + sibling + "\"' " + shell_escape(sib_ledger) + " 2>/dev/null | head -1 | jq -r '.bug_id // empty' 2>/dev/null";
+                let head_bug = try { exec sh head_cmd; } catch e { ""; };
+                if len(head_bug) > 0 {
+                    let buy_topic = "tribes-bench-" + sibling + "/" + head_bug;
+                    let cur_rep_buy_str = recall_latest("reputation:tribes-bench-" + tribe_name());
+                    let max_cb_buy = max_cb_for_rep(cur_rep_buy_str);
+                    let bought = knowledge_buy(buy_topic, max_cb_buy);
+                    let kind_buy = recall_latest("agent:lifecycle:cognitive:last_event_kind");
+                    let outcome_buy = if len(bought) > 0 {
+                        if kind_buy == "cognitive.cache_hit" { "cache_hit"; } else { "succeeded"; };
+                    } else {
+                        if kind_buy == "cognitive.rejected" { "rejected"; } else { "fallback"; };
+                    };
+                    let cache_buy_s = if outcome_buy == "cache_hit" { "1"; } else { "0"; };
+                    if len(bought) > 0 {
+                        if outcome_buy == "cache_hit" {
+                            learn("market", buy_topic, "", "cache_hit", ["tribes-bench", "buyer:" + tribe_name(), "topic_kind:finding"]);
+                        };
+                        memo_write("hunter:bought_context", bought);
+                    };
+                    emit_market_csv("buy", buy_topic, "finding", "", to_string(max_cb_buy), "", cache_buy_s, outcome_buy);
+                };
+            };
+        };
+    };
+
+    // Espionage buy (§4): low own-rep + surplus pool + at least one
+    // high-rep sibling => buy a bundle topic at premium price. Same
+    // lifecycle discriminator + cache-hit learn() pattern.
+    let own_rep_str_e = recall_latest("reputation:tribes-bench-" + tribe_name());
+    let cb_surplus_str_e = recall_latest("cb_surplus_threshold");
+    let cb_surplus_e = if len(cb_surplus_str_e) > 0 { parse_int(cb_surplus_str_e); } else { 300; };
+    if rep_bucket(own_rep_str_e) < 3 {
+        if pool_for_buy >= cb_surplus_e {
+            let best_t = pick_highest_rep_sibling(tribe_name());
+            if len(best_t) > 0 {
+                let best_s = recall_latest("reputation:tribes-bench-" + best_t);
+                if rep_bucket(best_s) > 7 {
+                    let espionage_topic = "tribes-bench-bundle/" + best_t;
+                    let prem_max_cb = premium_factor_for_rep(best_s);
+                    let bought_b = knowledge_buy(espionage_topic, prem_max_cb);
+                    let kind_eb = recall_latest("agent:lifecycle:cognitive:last_event_kind");
+                    let outcome_eb = if len(bought_b) > 0 {
+                        if kind_eb == "cognitive.cache_hit" { "cache_hit"; } else { "succeeded"; };
+                    } else {
+                        if kind_eb == "cognitive.rejected" { "rejected"; } else { "fallback"; };
+                    };
+                    let cache_eb_s = if outcome_eb == "cache_hit" { "1"; } else { "0"; };
+                    if len(bought_b) > 0 {
+                        if outcome_eb == "cache_hit" {
+                            learn("market", espionage_topic, "", "cache_hit", ["tribes-bench", "buyer:" + tribe_name(), "topic_kind:bundle"]);
+                        };
+                        memo_write("hunter:bought_context", bought_b);
+                    };
+                    emit_market_csv("buy", espionage_topic, "bundle", "", to_string(prem_max_cb), "", cache_eb_s, outcome_eb);
+                };
+            };
+        };
     };
 
     // Tribe-alpha seed prompt: format!()-as-shell-builder heuristic.
@@ -173,9 +341,80 @@ fn tick(reason: string) -> void {
                             };
                         };
                     };
+
+                    // Stage 2 M2 (#393): reputation +0.05 (clamp 1.0) on
+                    // verified finding. Asymmetry +0.05/-0.10 absorbs
+                    // single-tick lag (§9 risk 6) and gives natural
+                    // ~10-find ceiling, ~5-find floor.
+                    let rep_str_v = recall_latest("reputation:tribes-bench-" + tribe_name());
+                    let cur_rep_v = if len(rep_str_v) > 0 { parse_float(rep_str_v); } else { 0.5; };
+                    let next_rep_v = if cur_rep_v + 0.05 > 1.0 { 1.0; } else { cur_rep_v + 0.05; };
+                    memo_write("reputation:tribes-bench-" + tribe_name(), to_string(next_rep_v));
+                    let new_rep_str_v = to_string(next_rep_v);
+
+                    // Knowledge sell on per-finder topic prefix (§9
+                    // risk 3 mitigation eliminates seller-collision class).
+                    let sell_topic = "tribes-bench-" + tribe_name() + "/" + bug_id;
+                    let answer = "line=" + to_string(finding.line) + " bug=" + bug_id + " rationale=" + finding.rationale;
+                    let ask_price = ask_for_rep(new_rep_str_v);
+                    let sold = knowledge_sell(sell_topic, answer, ask_price);
+                    let kind_s = recall_latest("agent:lifecycle:cognitive:last_event_kind");
+                    let outcome_s = if sold {
+                        "succeeded";
+                    } else {
+                        if kind_s == "cognitive.rejected" { "rejected"; } else { "fallback"; };
+                    };
+                    if sold == false {
+                        learn("knowledge_sell", sell_topic, "", "failure", ["sell-failed", "tribes-bench"]);
+                    };
+                    emit_market_csv("sell", sell_topic, "finding", to_string(ask_price), "", "", "0", outcome_s);
+
+                    // Bundle listing (§4): high-rep tribes proactively
+                    // list a bundle topic once per `bundle_period` verified
+                    // findings. Counter increments on every verified
+                    // finding; bundle fires when post-increment counter
+                    // is divisible by bundle_period.
+                    let bc_str = recall_latest("hunter:bundle_counter");
+                    let bc = if len(bc_str) > 0 { parse_int(bc_str); } else { 0; };
+                    let new_bc = bc + 1;
+                    memo_write("hunter:bundle_counter", to_string(new_bc));
+                    let bp_str = recall_latest("bundle_period");
+                    let bp = if len(bp_str) > 0 { parse_int(bp_str); } else { 3; };
+                    if rep_bucket(new_rep_str_v) > 7 {
+                        if (new_bc - ((new_bc / bp) * bp)) == 0 {
+                            let bundle_topic = "tribes-bench-bundle/" + tribe_name();
+                            let bundle_summary = if len(ledger_path) > 0 {
+                                // colony-lint: safe-exec-concat
+                                let last_k_cmd = "grep -F '\"tribe\": \"" + tribe_name() + "\"' " + shell_escape(ledger_path) + " 2>/dev/null | tail -" + to_string(bp) + " | jq -r '.bug_id' 2>/dev/null | tr '\n' ';'";
+                                try { exec sh last_k_cmd; } catch e { ""; };
+                            } else {
+                                "";
+                            };
+                            let prem_ask = premium_factor_for_rep(new_rep_str_v);
+                            let sold_b = knowledge_sell(bundle_topic, bundle_summary, prem_ask);
+                            let kind_bs = recall_latest("agent:lifecycle:cognitive:last_event_kind");
+                            let outcome_bs = if sold_b {
+                                "succeeded";
+                            } else {
+                                if kind_bs == "cognitive.rejected" { "rejected"; } else { "fallback"; };
+                            };
+                            if sold_b == false {
+                                learn("knowledge_sell", bundle_topic, "", "failure", ["sell-failed", "tribes-bench"]);
+                            };
+                            emit_market_csv("sell", bundle_topic, "bundle", to_string(prem_ask), "", "", "0", outcome_bs);
+                        };
+                    };
                 } else {
                     print("[hunter] false positive at line ", finding.line);
                     learn("hunt", "line " + to_string(finding.line), finding.rationale, "failure", ["false-positive", "tribes-bench"]);
+
+                    // Stage 2 M2 (#393): reputation -0.10 (clamp 0.0) on
+                    // false positive. Asymmetry vs verified-finding
+                    // +0.05 keeps the signal direction-stable.
+                    let rep_str_f = recall_latest("reputation:tribes-bench-" + tribe_name());
+                    let cur_rep_f = if len(rep_str_f) > 0 { parse_float(rep_str_f); } else { 0.5; };
+                    let next_rep_f = if cur_rep_f - 0.10 < 0.0 { 0.0; } else { cur_rep_f - 0.10; };
+                    memo_write("reputation:tribes-bench-" + tribe_name(), to_string(next_rep_f));
                 };
 
                 // M3 death: pool-drain → KB preserve + sibling stop. Guarded
