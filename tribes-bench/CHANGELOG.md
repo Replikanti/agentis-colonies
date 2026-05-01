@@ -16,6 +16,85 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **Stage 2 M2 — cognitive market + reputation** ([#393](https://github.com/Replikanti/agentis-colonies/issues/393)).
+  - All 5 `tribe-{alpha,beta,gamma,delta,epsilon}/agents/hunter.ag`
+    now (a) update a `reputation:tribes-bench-<tribe>` float memo
+    inline (`+0.05` clamp 1.0 on verified findings, `-0.10` clamp 0.0
+    on false positives), (b) sell every verified finding via
+    `knowledge_sell` on a per-finder topic prefix
+    (`tribes-bench-<finder>/<bug_id>`) at the reputation-keyed ask
+    `max(1, floor(rep*10) + 1)`, (c) buy a sibling's head ledger row
+    via `knowledge_buy` at the start of every 8th tick (pool-aware
+    skip below `pool_minimum_for_buy`) at the reputation-keyed
+    `max_cb = floor(rep*20) + 5`, (d) list a
+    `tribes-bench-bundle/<tribe>` espionage topic once per
+    `bundle_period` verified findings when reputation > 0.7, and
+    (e) buy the highest-rep sibling's bundle at a 5× premium when own
+    reputation < 0.3 and own pool ≥ `cb_surplus_threshold` and at
+    least one sibling clears the 0.7 reputation gate. Per-finder
+    topic-prefix discipline eliminates the `query_by_tags` seller-
+    collision class entirely (plan §9 risk 3). Every buy and every
+    sell call wraps a lifecycle-event discriminator
+    (`recall_latest("agent:lifecycle:cognitive:last_event_kind")`)
+    and emits a `cognitive.cache_hit`-aware `learn("market", ...)`
+    row so the federation experience log surfaces free-ride traffic
+    (plan §9 risk 1+2).
+  - All 5 `tribe-*/scripts/start-colony.sh` seed the new memos
+    (`reputation:tribes-bench-<tribe>` = `0.5`, `cb_surplus_threshold`
+    = `300`, `bundle_period` = `3`, `pool_minimum_for_buy` = `50`,
+    `tribes-bench-<tribe>:knowledge_market_csv` from `RUN_DIR` when
+    set) before the daemon loop fires.
+  - `tribes-bench/tools/check-agentis-version.sh` (new, ~50 LOC)
+    refuses install or start when `agentis --version` parses below
+    `v1.5.0` (the floor where `knowledge_buy` / `knowledge_sell`
+    ship as `.ag` builtins). Wired into `install.sh` first executable
+    line and every `tribe-*/scripts/start-colony.sh` first executable
+    line. Refusal exit code is 78 (`EX_CONFIG`); error text points at
+    `https://github.com/Replikanti/agentis/releases/tag/v1.5.0`. Plan
+    §9 risk 7 mitigation — zero crash exposure on pre-v1.5.0 runtimes.
+  - `tribes-bench/calibration.toml` (extended) — new `[reputation]`
+    and `[knowledge_market]` blocks documenting the four formulas
+    (ask, max_cb, premium_ask, premium_max_cb), the buy-gate modulus,
+    pool-aware skip threshold, bundle pacing, and the surplus
+    threshold. M1's `[tribe.economy]`/`[tribe.reward]`/`[tribe.death]`
+    sections are byte-identical (asserted in
+    `test-stage2-scaffold.sh` test 8).
+  - `tribes-bench/tools/analyse-stage2.py` (extended) — adds
+    `load_market_log` reader, `resolve_downstream_verified` (scans
+    each buyer's experience JSONL within 5 ticks of every buy ts to
+    mark verified=1 / false=0 / no-finding=""), and `write_market_log`
+    that rewrites `<run-dir>/knowledge-market.csv` with a header line.
+    Existing `telemetry.csv` schema byte-identical.
+  - `tribes-bench/tools/test-stage2-cognitive-market.sh` (new) — 41
+    pure-offline assertions covering knowledge_sell + knowledge_buy
+    placement, topic-prefix discipline, ask/max_cb formula sanity,
+    bundle listing, espionage three-predicate gate, CSV column count,
+    and the cache-hit-aware revenue contract (plan §9 risk 2).
+  - `tribes-bench/tools/test-stage2-reputation.sh` (new) — 56 pure-
+    offline assertions covering initial seed, verified `+0.05`,
+    false-positive `-0.10`, ceiling/floor clamps after 30 simulated
+    ticks, and the gate effect on ask_price + max_cb. Includes a
+    regression check that the four pre-existing test scripts continue
+    to PASS unchanged (`test-verify-finding.sh`,
+    `test-stage1-replication.sh`, `test-stage1-bug-ledger.sh`,
+    `test-stage2-scaffold.sh`).
+  - `tribes-bench/tools/test-stage2-scaffold.sh` test 8 relaxed from
+    full-file byte-identity to "M1 [tribe.economy/reward/death]
+    sections unchanged" — M2 appends `[reputation]` and
+    `[knowledge_market]` sections so the M1 byte-identity gate is
+    stale; the section-scoped diff preserves the original spirit of
+    the assertion (M2 must not edit M1 calibration values).
+  - Runtime floor bumped from `agentis >= 1.4.1` to
+    `agentis >= 1.5.0` in `tribes-bench/README.md`. README gains a
+    Stage 2 M2 ecosystem section (~80 lines) documenting the four
+    deliverables, the analyser revenue contract, and the
+    calibration knobs.
+  - Stage 0/Stage 1 surface (`targets/stage0/`, `targets/stage1/`,
+    `targets/stage2/`, `tools/run-stage{0,1,2}.sh`,
+    `tools/verify-finding{,−stage2}.sh`, `tools/test-verify-finding.sh`,
+    `tools/test-stage1-replication.sh`,
+    `tools/test-stage1-bug-ledger.sh`) byte-identical. Pre-existing
+    Stage 0/1 + Stage 2 M1 tests continue to PASS unchanged.
 - Stage 2 M1 scaffolding: 2 new tribes (`tribe-delta` lifetime/aliasing,
   `tribe-epsilon` concurrency/Send+Sync) bringing the federation to 5
   tribes. Real-world target swap from synthetic Stage 1 → vendored

@@ -278,23 +278,33 @@ if [ -f "$FED_DIR/tools/test-verify-finding.sh" ]; then
     fi
 fi
 
-# --- 8. Calibration unchanged vs origin/main ---
+# --- 8. Calibration: M1 economy sections unchanged vs origin/main ---
+# Stage 2 M2 (#393) appends `[reputation]` and `[knowledge_market]`
+# blocks to calibration.toml; the original M1-shipped sections
+# `[tribe.economy]`, `[tribe.reward]`, `[tribe.death]` must remain
+# byte-identical so the existing run-stage1.sh harness keeps reading
+# the same defaults. This assertion was a byte-identity gate in M1; it
+# is relaxed to a section-scoped diff for M2 forward.
 CALIB="tribes-bench/calibration.toml"
-GIT_DIR="$REPO_ROOT/.git"
 if [ -d "$REPO_ROOT/.git" ] || git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
     if git -C "$REPO_ROOT" rev-parse --verify origin/main >/dev/null 2>&1; then
-        if git -C "$REPO_ROOT" diff --quiet origin/main -- "$CALIB" 2>/dev/null; then
-            echo "[PASS] calibration.toml byte-identical to origin/main"
+        # Extract the M1-defined economy block: from line 1 through the
+        # last line of [tribe.death]. M2 additions live BELOW that.
+        upstream="$(git -C "$REPO_ROOT" show "origin/main:$CALIB" 2>/dev/null || true)"
+        upstream_econ="$(printf '%s' "$upstream" | awk 'BEGIN{p=1} /^\[reputation\]|^\[knowledge_market\]/{p=0} p{print}')"
+        local_econ="$(awk 'BEGIN{p=1} /^\[reputation\]|^\[knowledge_market\]/{p=0} p{print}' "$REPO_ROOT/$CALIB" 2>/dev/null || true)"
+        if [ "$upstream_econ" = "$local_econ" ] && [ -n "$upstream_econ" ]; then
+            echo "[PASS] calibration.toml: M1 [tribe.economy/reward/death] sections unchanged"
             PASS=$((PASS + 1))
         else
-            echo "[FAIL] calibration.toml differs from origin/main (Stage 2 M1 must not change calibration)"
+            echo "[FAIL] calibration.toml: M1 [tribe.economy/reward/death] sections changed (M2 must only APPEND new blocks)"
             FAIL=$((FAIL + 1))
         fi
     else
-        skip_case "calibration.toml byte-identical to origin/main" "origin/main not available"
+        skip_case "calibration.toml: M1 sections unchanged" "origin/main not available"
     fi
 else
-    skip_case "calibration.toml byte-identical to origin/main" "not a git repository"
+    skip_case "calibration.toml: M1 sections unchanged" "not a git repository"
 fi
 
 echo ""

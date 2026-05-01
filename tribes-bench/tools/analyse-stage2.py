@@ -177,6 +177,133 @@ def discover_known_tribes(fed_dir: str) -> set[str]:
     return out
 
 
+# --- Stage 2 M2 (#393) cognitive-market readers + downstream resolver ---
+
+MARKET_COLUMNS = [
+    "ts_ms", "agent_id", "tribe", "op", "topic", "topic_kind",
+    "ask_price", "max_cb", "paid_price", "cache_hit",
+    "downstream_verified", "op_outcome",
+]
+
+
+def load_market_log(run_dir: str) -> list[dict[str, Any]]:
+    """Read `<run-dir>/knowledge-market.csv` (the append-only trade log
+    written by hunter.ag's `emit_market_csv` helper) into a list of dict
+    rows. Schema is fixed at MARKET_COLUMNS; the hunter writes data rows
+    only (no header), so this reader synthesises the column names. Empty
+    file → empty list. Missing file → empty list (the analyser stays
+    useful when the M2 wiring did not run).
+    """
+    path = os.path.join(run_dir, "knowledge-market.csv")
+    out: list[dict[str, Any]] = []
+    if not os.path.isfile(path):
+        return out
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            parts = line.split(",")
+            # Defensive: tolerate rows with too few/too many columns by
+            # padding/truncating to the fixed schema.
+            if len(parts) < len(MARKET_COLUMNS):
+                parts = parts + [""] * (len(MARKET_COLUMNS) - len(parts))
+            elif len(parts) > len(MARKET_COLUMNS):
+                parts = parts[: len(MARKET_COLUMNS)]
+            row: dict[str, Any] = {}
+            for k, v in zip(MARKET_COLUMNS, parts):
+                row[k] = v
+            out.append(row)
+    return out
+
+
+def resolve_downstream_verified(
+    market_rows: list[dict[str, Any]], experience_dir: str
+) -> None:
+    """For each `op == "buy"` row, scan the buyer tribe's experience
+    JSONL within ±5 ticks of the buy ts; mark `downstream_verified` to
+    `1` when an `acted` (verified) tribes-bench row appears, `0` when a
+    `false-positive` row appears, `""` when neither fires. Mutates
+    market_rows in place. Sell rows are left untouched.
+
+    Tick boundary chosen as 5 minutes (300_000 ms) per plan §5; the
+    buyer's seed prompt fires once per minute, so 5 ticks is the worst-
+    case "within next 5 ticks" window the plan calls for.
+    """
+    if not os.path.isdir(experience_dir):
+        return
+    # Build per-tribe sorted list of (ts_ms, kind ∈ {"verified", "false"}).
+    by_tribe: dict[str, list[tuple[int, str]]] = defaultdict(list)
+    for fname in sorted(os.listdir(experience_dir)):
+        if not fname.endswith(".jsonl"):
+            continue
+        for rec in read_jsonl(os.path.join(experience_dir, fname)):
+            tags = rec.get("tags") or []
+            if not isinstance(tags, list):
+                continue
+            if "tribes-bench" not in tags:
+                continue
+            ts_ms = rec.get("ts")
+            if not isinstance(ts_ms, int):
+                continue
+            tribe = next((t for t in tags if t.startswith("tribe-")), None)
+            if not tribe:
+                continue
+            if "acted" in tags:
+                by_tribe[tribe].append((ts_ms, "verified"))
+            elif "false-positive" in tags:
+                by_tribe[tribe].append((ts_ms, "false"))
+    for v in by_tribe.values():
+        v.sort(key=lambda r: r[0])
+    window_ms = 5 * 60 * 1000
+    for row in market_rows:
+        if row.get("op") != "buy":
+            continue
+        try:
+            ts = int(row.get("ts_ms") or 0)
+        except (TypeError, ValueError):
+            continue
+        tribe = row.get("tribe") or ""
+        if not isinstance(tribe, str) or not tribe:
+            continue
+        events = by_tribe.get(tribe, [])
+        verdict = ""
+        for ev_ts, kind in events:
+            if ev_ts < ts:
+                continue
+            if ev_ts > ts + window_ms:
+                break
+            if kind == "verified":
+                verdict = "1"
+                break
+            if kind == "false":
+                verdict = "0"
+                break
+        row["downstream_verified"] = verdict
+
+
+def write_market_log(run_dir: str, rows: list[dict[str, Any]]) -> str | None:
+    """Write resolved market rows back to `<run-dir>/knowledge-market.csv`
+    with a header line prepended. Existing file (header-less append-only
+    from hunter.ag) is overwritten. No-op when rows is empty.
+
+    Per plan §9 risk 2: the analyser revenue contract is
+    `revenue = sum(ask_price for r in rows if r.op=="buy" and r.cache_hit=="0")`,
+    NOT total trade volume. cache_hit=1 rows must be excluded from
+    seller-revenue accounting. The CSV preserves the cache_hit column so
+    downstream consumers can compute revenue correctly.
+    """
+    if not rows:
+        return None
+    path = os.path.join(run_dir, "knowledge-market.csv")
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(MARKET_COLUMNS)
+        for row in rows:
+            w.writerow([row.get(k, "") for k in MARKET_COLUMNS])
+    return path
+
+
 def main() -> None:
     run_dir = parse_args(sys.argv)
     agentis_root = os.path.join(run_dir, ".agentis")
@@ -358,6 +485,19 @@ def main() -> None:
                 ])
 
     print(out_path)
+
+    # Stage 2 M2 (#393) sidecar CSV: read the append-only trade log
+    # written by every hunter.ag's `emit_market_csv`, resolve the
+    # `downstream_verified` column post-hoc by scanning each buyer's
+    # experience JSONL within 5 ticks, and rewrite the CSV with a
+    # header line. No-op when no trade rows exist (M2 wiring not run
+    # or hunter never reached the buy/sell branch).
+    market_rows = load_market_log(run_dir)
+    if market_rows:
+        resolve_downstream_verified(market_rows, experience_dir)
+        market_path = write_market_log(run_dir, market_rows)
+        if market_path:
+            print(market_path)
 
 
 if __name__ == "__main__":

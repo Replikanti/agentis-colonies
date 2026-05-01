@@ -14,6 +14,10 @@
 
 set -e
 
+# §9 risk 7: refuse start if the agentis runtime cannot reach the M2
+# floor (knowledge_buy / knowledge_sell are not .ag builtins pre-v1.5.0).
+"$(cd "$(dirname "$0")/../.." && pwd)/tools/check-agentis-version.sh"
+
 RESTART_AGENT=""
 RATE_LIMIT_STATUS=0
 POSITIONAL=()
@@ -179,6 +183,18 @@ if [ -n "$BUG_LEDGER_PATH" ]; then
 fi
 if [ -n "$RUN_DIR" ]; then
     agentis memo set "tribe-${TRIBE_NAME}:run_dir" "$RUN_DIR" >/dev/null 2>&1 || true
+fi
+
+# Stage 2 M2 (#393) cognitive-market memos. Initial reputation 0.5
+# (mid-band per plan §2 bootstrap analysis); cb_surplus_threshold,
+# bundle_period, pool_minimum_for_buy are calibration-tunable knobs
+# documented in calibration.toml [knowledge_market].
+agentis memo set "reputation:tribes-bench-${TRIBE_NAME}" "0.5" >/dev/null 2>&1 || true
+agentis memo set "cb_surplus_threshold" "300" >/dev/null 2>&1 || true
+agentis memo set "bundle_period" "3" >/dev/null 2>&1 || true
+agentis memo set "pool_minimum_for_buy" "50" >/dev/null 2>&1 || true
+if [ -n "$RUN_DIR" ]; then
+    agentis memo set "tribes-bench-${TRIBE_NAME}:knowledge_market_csv" "$RUN_DIR/knowledge-market.csv" >/dev/null 2>&1 || true
 fi
 
 echo "Starting Tribe Epsilon colony (${#AGENTS[@]} agents)..."

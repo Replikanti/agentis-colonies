@@ -19,6 +19,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FED_NAME="$(basename "$SCRIPT_DIR")"
 
+# §9 risk 7: refuse install if the agentis runtime cannot reach the M2
+# floor. The federation's hunters call `knowledge_buy` / `knowledge_sell`
+# unconditionally; pre-v1.5.0 daemons quarantine on first tick.
+"$SCRIPT_DIR/tools/check-agentis-version.sh"
+
 echo "Installing $FED_NAME federation..."
 
 for tribe in tribe-alpha tribe-beta tribe-gamma tribe-delta tribe-epsilon; do

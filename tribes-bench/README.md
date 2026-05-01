@@ -2,7 +2,7 @@
 
 ![Version: unreleased](https://img.shields.io/badge/version-unreleased-lightgrey) ![Status: Experimental](https://img.shields.io/badge/status-experimental-purple)
 
-**Version:** `0.0.0` (unreleased) · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.4.1` · **Status:** Experimental
+**Version:** `0.0.0` (unreleased) · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.5.0` · **Status:** Experimental
 
 > A research scaffold that tests whether the agentis runtime's
 > emergent-layer primitives (replication, scarcity, selection,
@@ -192,6 +192,83 @@ echo '{"line": 12, "class": "command_injection"}' \
       bash tribes-bench/tools/verify-finding.sh
 # {"verified": true, "bug_id": "S1-CMDINJ-001"}
 ```
+
+## Stage 2 (M2 — cognitive market + reputation)
+
+Stage 2 M2 ([#393](https://github.com/Replikanti/agentis-colonies/issues/393))
+turns the 5-tribe federation into an **ecosystem** by wiring four
+inter-tribe coordination primitives on top of the M1 scaffolding. Pure
+infrastructure — no live experimental run lands here (that's M3, #394).
+
+**The four deliverables:**
+
+1. **Reputation memos.** Every tribe carries a single float in
+   `reputation:tribes-bench-<tribe>` initialised to `0.5` and updated
+   inline in the hunter on every verified finding (`+0.05`, clamp 1.0)
+   and every false positive (`-0.10`, clamp 0.0). The asymmetry
+   produces a ~10-find ceiling and a ~5-find floor; no per-tick decay
+   to keep the M3 cost-per-finding reading clean.
+
+2. **Knowledge market wiring.** The hunter calls `knowledge_sell` on
+   every verified finding (per-finder topic prefix
+   `tribes-bench-<finder>/<bug_id>`) and `knowledge_buy` at the start
+   of every 8th tick (pool-aware skip below `pool_minimum_for_buy`).
+   The seller's ask-price formula is `max(1, floor(rep*10) + 1)`; the
+   buyer's max_cb is `floor(rep*20) + 5`. Bootstrap stays trade-active
+   at t=0 because every tribe's mid-band reputation (0.5) lists at ask
+   6 against a max_cb of 15.
+
+3. **Espionage primitive.** High-rep tribes (rep > 0.7) list a
+   `tribes-bench-bundle/<self>` topic once per `bundle_period` verified
+   findings, holding the last-K bug_ids. Low-rep tribes (rep < 0.3)
+   with a CB surplus above `cb_surplus_threshold` buy the highest-rep
+   sibling's bundle at a 5× premium. Asymmetric information at premium
+   price; M3 will measure whether this stratifies the federation.
+
+4. **Telemetry CSV.** Every buy and every sell call writes one row to
+   `<run-dir>/knowledge-market.csv` via an `exec sh "printf >> ..."`
+   path-safe append. Schema:
+
+   ```
+   ts_ms, agent_id, tribe, op, topic, topic_kind,
+   ask_price, max_cb, paid_price, cache_hit,
+   downstream_verified, op_outcome
+   ```
+
+   `tools/analyse-stage2.py` reads the log, resolves
+   `downstream_verified` post-hoc by scanning the buyer's experience
+   JSONL within 5 ticks, and rewrites the CSV with a header line.
+
+**Analyser revenue contract** (per #393 §9 risk 2): seller revenue is
+
+> `revenue = Σ(ask_price for r in rows where r.op="buy" AND r.cache_hit=0)`
+
+NOT total trade volume. The runtime caches successful purchases under
+`knowledge:<topic>`; subsequent buyers in the TTL window get
+`cognitive.cache_hit` and pay zero CB to the original seller. The
+trade CSV's `cache_hit` column tags every free-ride row so the M3
+analyser can compute revenue strictly on substrate (non-cache-hit)
+purchases.
+
+**Calibration.** All knobs (`buy_gate_modulus`, `pool_minimum_for_buy`,
+`bundle_period`, `cb_surplus_threshold`, `ask_floor`,
+`ask_max_at_full_rep`, `max_cb_at_full_rep`, `premium_multiplier`,
+`reputation.{initial,verify_step,false_positive_step,ceiling,floor}`)
+ship in [`tribes-bench/calibration.toml`](./calibration.toml) under
+`[reputation]` and `[knowledge_market]`. Defaults match the in-script
+`:-` fallbacks and the hard-coded values in the hunter formulas;
+operators tune via the M3 harness (#394) without touching `.ag`.
+
+**Stage 2 M2 reproduction recipe** (offline / pure-test):
+
+```bash
+cd tribes-bench/
+./install.sh                                          # idempotent; refuses on agentis < 1.5.0
+bash tools/test-stage2-cognitive-market.sh            # market wiring assertions
+bash tools/test-stage2-reputation.sh                  # reputation primitive assertions
+```
+
+End-to-end multi-day live runs land in M3 (#394).
 
 ## Layout
 

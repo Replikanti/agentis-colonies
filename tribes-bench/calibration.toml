@@ -53,3 +53,59 @@ subsequent = 50
 # without rewards a tribe drains from initial_cb (1000) to threshold
 # (100) in ~18 min at 50 CB/tick × 60 ticks/hour.
 threshold = 100
+[reputation]
+# Stage 2 M2 (#393) cognitive-market knobs. None of the values below
+# are read by start-colony.sh today — they are documentation defaults
+# that match the in-script `:-` fallbacks and the hard-coded values in
+# the hunter.ag formulas. AC #7-equivalent calibration runs (M3, #394)
+# will refute or refine these via the trade CSV
+# (`<run-dir>/knowledge-market.csv`).
+#
+# Initial reputation seeded by every tribe's start-colony.sh (mid-band
+# bootstrap; see plan §2 for why every tribe trades at t=0). Updated
+# inline in hunter.ag on verified findings (+verify_step, clamp ceiling)
+# and on false positives (-false_positive_step, clamp floor).
+initial = 0.5
+verify_step = 0.05
+false_positive_step = 0.10
+ceiling = 1.0
+floor = 0.0
+
+[knowledge_market]
+# Buy-gate modulus on now_ms() % buy_gate_modulus == 0 (default 8 ⇒
+# ~12.5% of ticks fire a buy). Plan §9 risk 5: at full federation
+# replication this caps the buy-side CB drain below the per-replica
+# replenish rate.
+buy_gate_modulus = 8
+
+# Pool-aware skip: tribes near the death threshold do not buy. Plan
+# §9 risk 5 mitigation; lets the federation degrade gracefully under
+# famine instead of deadlocking.
+pool_minimum_for_buy = 50
+
+# Bundle pacing: high-rep tribes (rep > 0.7) list a `tribes-bench-bundle/<tribe>`
+# topic once per `bundle_period` verified findings. Default 3.
+bundle_period = 3
+
+# Espionage-buy gate: low-rep tribes (rep < 0.3) buy bundle topics from
+# high-rep siblings only when their own pool clears this surplus. Plan
+# §4 — this is the asymmetric-information premium-price entry point.
+cb_surplus_threshold = 300
+
+# Ask-price formula: `ask = max(ask_floor, floor(rep * 10) + 1)`.
+# Range at rep ∈ [0, 1]: [1, 11]. Floor of 1 keeps every tribe on-market
+# even at rep=0.0; ceiling of 11 makes a verified finding worth ~2x a
+# single knowledge_buy round-trip CB cost.
+ask_floor = 1
+ask_max_at_full_rep = 11
+
+# max_cb formula: `max_cb = floor(rep * 20) + 5`. Range [5, 25]. Covers
+# the [1, 11] ask range with margin so high-rep buyers can win against
+# competing buyers; low-rep buyers (rep=0.0, max_cb=5) still afford the
+# floor-priced listings.
+max_cb_at_full_rep = 25
+
+# Premium multiplier on bundle topics: `premium = multiplier * (floor(rep * 10) + 1)`.
+# Asks ~5× a single-finding ask; buyers cap their max_cb at the same
+# formula keyed on the seller's reputation.
+premium_multiplier = 5
