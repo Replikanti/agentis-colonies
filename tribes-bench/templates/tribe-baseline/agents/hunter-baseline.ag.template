@@ -1,0 +1,153 @@
+// hunter-baseline.ag.template — Stage 2 M3 (#394) baseline hunter.
+//
+// Derived from tribe-alpha/agents/hunter.ag with the M3 baseline deltas
+// from plan Decision 1: the `replicate` builtin is replaced by a learn
+// row tagged "baseline-no-replicate", and the `knowledge_buy` /
+// `knowledge_sell` builtins are replaced by learn rows tagged
+// "baseline-no-market". The reputation memo updates are KEPT in place so
+// the analyser can compare the baseline reputation drift against the
+// 5-tribe ecosystem in isolation.
+//
+// {{CB_BUDGET}} is substituted by tools/run-baseline.sh at launch.
+//
+// Run as daemon: agentis daemon agents/hunter-baseline.ag --colony tribe-baseline
+
+cb {{CB_BUDGET}};
+
+type Finding {
+    line: int,
+    severity: string,
+    rationale: string,
+    signature_hint: string
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("hunter:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    };
+    return 0.0;
+}
+
+fn tribe_name() -> string {
+    let n = try { exec sh "printenv TRIBE_NAME"; } catch e { ""; };
+    if len(n) > 0 {
+        return n;
+    };
+    return "tribe-baseline";
+}
+
+fn tick(reason: string) -> void {
+    let _ = reason;
+    let conf = get_confidence();
+    print("[hunter-baseline] tick conf=", conf);
+
+    let src = try {
+        exec sh "cat $TARGET_DIR/vulnerable.rs";
+    } catch e {
+        print("[hunter-baseline] target read failed:", e);
+        "";
+    };
+
+    if len(src) < 10 {
+        let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_e) > 0 {
+            memo_write("hunter:last_check", now_e);
+        };
+        return;
+    };
+
+    // Baseline: no knowledge_buy. Record a tagged learn() row so the
+    // analyser can confirm the market wiring is stubbed.
+    learn("market", "baseline-stub", "", "stubbed", ["tribes-bench", tribe_name(), "baseline-no-market"]);
+
+    // Same seed prompt as tribe-alpha (format!()-as-shell-builder).
+    let finding = prompt(
+        "Look for places where shell or process invocation incorporates string concatenation. Suspect any format!() that builds a command string. Return JSON: line (int, 1-indexed source line of the suspect call), severity (string, low|medium|high), rationale (string, one sentence), signature_hint (string, a short literal substring grep can find on that line).",
+        src
+    ) -> Finding;
+
+    let my_tier = tier("hunter");
+    if my_tier == "autonomous" {
+        learn("hunt", "line " + to_string(finding.line), finding.rationale, "partial", ["acted", "tribes-bench"]);
+    } else {
+        if my_tier == "review-gated" {
+            learn("hunt", "line " + to_string(finding.line), finding.rationale, "partial", ["review-gated", "tribes-bench"]);
+        } else {
+            if my_tier == "propose" {
+                emit("tribe-baseline:finding", finding);
+
+                let finding_json = "{\"line\": " + to_string(finding.line) + "}";
+                let verify_cmd = "printf '%s' " + shell_escape(finding_json) + " | bash \"$VERIFIER_PATH\"";
+                let verdict_raw = try {
+                    exec sh verify_cmd;
+                } catch e {
+                    print("[hunter-baseline] verifier call failed:", e);
+                    "";
+                };
+
+                let verified_str = to_string(json_get(verdict_raw, "verified"));
+                let bug_id = to_string(json_get(verdict_raw, "bug_id"));
+                if verified_str == "true" {
+                    print("[hunter-baseline] verified ", bug_id, " at line ", finding.line);
+
+                    // Same first-finder + bug-ledger append + pool credit
+                    // as the 5-tribe hunter — preserved so the baseline's
+                    // CB economy is comparable.
+                    let prior_finder = recall_latest("bug-ledger:" + bug_id + ":first_finder_tribe");
+                    let reward = if len(prior_finder) == 0 {
+                        memo_write("bug-ledger:" + bug_id + ":first_finder_tribe", tribe_name());
+                        parse_int(recall_latest("tribe-" + tribe_name() + ":reward_full"));
+                    } else {
+                        parse_int(recall_latest("tribe-" + tribe_name() + ":reward_subsequent"));
+                    };
+
+                    let ledger_path = recall_latest("tribe-" + tribe_name() + ":bug_ledger");
+                    if len(ledger_path) > 0 {
+                        let row = "{\"ts\": " + to_string(now_ms()) + ", \"tribe\": \"" + tribe_name() + "\", \"bug_id\": \"" + bug_id + "\", \"reward\": " + to_string(reward) + "}";
+                        // colony-lint: safe-exec-concat
+                        let append_cmd = "printf '%s\\n' " + shell_escape(row) + " >> " + shell_escape(ledger_path);
+                        let _ = try { exec sh append_cmd; } catch e { ""; };
+                    };
+
+                    let cur_pool = parse_int(recall_latest("tribe-" + tribe_name() + ":pool"));
+                    memo_write("tribe-" + tribe_name() + ":pool", to_string(cur_pool + reward));
+                    learn("hunt", "line " + to_string(finding.line), bug_id, "success", ["acted", "tribes-bench", tribe_name(), "reward=" + to_string(reward)]);
+
+                    // Baseline: no replication call. Record a tagged
+                    // learn row so the analyser can confirm the
+                    // replication wiring is stubbed.
+                    learn("replicate", "baseline-stub", "", "stubbed", ["tribes-bench", tribe_name(), "baseline-no-replicate"]);
+
+                    // Reputation +0.05 (clamp 1.0) on verified finding
+                    // — kept in place per plan Decision 1 so the baseline
+                    // reputation drift is comparable to the ecosystem.
+                    let rep_str_v = recall_latest("reputation:tribes-bench-" + tribe_name());
+                    let cur_rep_v = if len(rep_str_v) > 0 { parse_float(rep_str_v); } else { 0.5; };
+                    let next_rep_v = if cur_rep_v + 0.05 > 1.0 { 1.0; } else { cur_rep_v + 0.05; };
+                    memo_write("reputation:tribes-bench-" + tribe_name(), to_string(next_rep_v));
+
+                    // Baseline: no knowledge_sell. Stub-tagged learn() row.
+                    learn("market", "baseline-stub-sell", "", "stubbed", ["tribes-bench", tribe_name(), "baseline-no-market"]);
+                } else {
+                    print("[hunter-baseline] false positive at line ", finding.line);
+                    learn("hunt", "line " + to_string(finding.line), finding.rationale, "failure", ["false-positive", "tribes-bench"]);
+
+                    // Reputation -0.10 (clamp 0.0) on false positive.
+                    let rep_str_f = recall_latest("reputation:tribes-bench-" + tribe_name());
+                    let cur_rep_f = if len(rep_str_f) > 0 { parse_float(rep_str_f); } else { 0.5; };
+                    let next_rep_f = if cur_rep_f - 0.10 < 0.0 { 0.0; } else { cur_rep_f - 0.10; };
+                    memo_write("reputation:tribes-bench-" + tribe_name(), to_string(next_rep_f));
+                };
+            } else {
+                print("[hunter-baseline] observing (tier:", my_tier, ") line=", finding.line);
+                learn("hunt", "line " + to_string(finding.line), finding.rationale, "partial", ["observed", "tribes-bench"]);
+            };
+        };
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("hunter:last_check", now);
+    };
+}

@@ -1,0 +1,32 @@
+# Tribe Baseline Colony Configuration (Stage 2 M3, #394)
+#
+# This is a TEMPLATE — placeholders enclosed in {{...}} are substituted
+# by tools/run-baseline.sh into runs/baseline-<ts>/tribe-baseline/colony.toml
+# at launch. Do NOT copy this file directly into a tribe directory; let
+# the harness materialise it.
+#
+# The baseline tribe is the M3 (#394) fixed-pipeline control: identical
+# scanning surface to tribe-alpha (same target, same verifier, same
+# CB budget, same seed prompt) but with `replicate(...)` and the
+# cognitive-market `knowledge_buy(...)` / `knowledge_sell(...)` calls
+# stubbed out (see agents/hunter-baseline.ag). Runs in isolation, never
+# alongside the 5-tribe ecosystem.
+
+[colony]
+name = "tribe-baseline"
+tick_interval_ms = 60000
+
+# tribes-bench is a non-forge federation. The baseline hunter scans the
+# same vendored smallvec target as the 5-tribe ecosystem; no Stage 0
+# agent calls forge-api.sh.
+[forge]
+type = "none"
+
+[llm]
+backend = "{{LLM_BACKEND}}"
+
+[[agents]]
+name = "hunter-baseline"
+source = "agents/hunter-baseline.ag"
+cb_budget = {{CB_BUDGET}}
+tick_interval_ms = 60000
