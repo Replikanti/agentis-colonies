@@ -16,6 +16,80 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **Stage 2 M3 — baseline harness + long-run defaults + comparison report**
+  ([#394](https://github.com/Replikanti/agentis-colonies/issues/394)).
+  - `tribes-bench/tools/run-baseline.sh` (new) — fixed-pipeline control
+    harness for the M3 thesis verdict. Runs a single tribe scanning the
+    same Stage 2 target as the 5-tribe ecosystem with `replicate` /
+    `knowledge_buy` / `knowledge_sell` stubbed via tagged `learn` rows
+    (`baseline-no-replicate`, `baseline-no-market`). Total CB is
+    `5 * initial_cb` so the single-tribe baseline burns the same total
+    compute envelope as the federation. Materialises
+    `tribes-bench/templates/tribe-baseline/` (new directory under
+    version control with `colony.toml.template` +
+    `agents/hunter-baseline.ag.template`) into a hermetic per-run dir
+    `runs/baseline-<ts>/tribe-baseline/`. Captures
+    `agentis-version.txt`, `llm-backend.txt`, `run-meta.json`. Periodic
+    snapshots use the new shared `tools/snapshot-stanza.sh` 7-section
+    payload. Reliable shutdown via `tools/kill-federation.sh
+    --no-backup`. Drives `tools/analyse-stage2.py` at the end. Env vars
+    `STAGE2_BASELINE_WALL_CLOCK_S` (default 3600s),
+    `STAGE2_BASELINE_LLM_BACKEND` (default `claude`),
+    `STAGE2_BASELINE_SNAPSHOT_S` (default 600s). Two stdlib helpers
+    (`tools/run-baseline-render.py`,
+    `tools/run-baseline-meta.py`) keep the shell heredoc-free per the
+    macOS bash 3.2 invariant.
+  - `tribes-bench/tools/run-stage2.sh` upgrades for the M3 long-run
+    reproduction recipe. Defaults: `STAGE2_WALL_CLOCK_S`
+    `3600` -> `172800` (48h); `STAGE2_SNAPSHOT_S` `600` -> `3600` (1h).
+    New env `STAGE2_CRASH_AT_S` triggers a `kill-federation.sh +
+    exit 99` after the elapsed counter reaches it (drives the M3
+    crash-recovery drill). New env `STAGE2_RESUME_RUN_DIR` reuses an
+    existing run-dir's `.agentis/` + `bug-ledger.jsonl` +
+    `knowledge-market.csv`, continues snapshot numbering from
+    `max(elapsed)`, defensively kills any stale daemon state before
+    relaunch, prunes `*.colony` files older than the snapshot mtime
+    via the new stdlib helper `tools/run-stage2-prune.py`. Snapshot
+    payload upgraded to the 7-section header-stanza form via the new
+    shared `tools/snapshot-stanza.sh` (`## daemon-list`,
+    `## experience-counts`, `## spend-counts`, `## bug-ledger`,
+    `## market-csv`, `## reputation-memos`, `## per-tribe-cb`).
+    Captures `agentis-version.txt`, `llm-backend.txt`, `run-meta.json`
+    once per run; resume path appends `run-meta-resume-<n>.json`
+    instead of clobbering the original meta.
+  - `tribes-bench/tools/analyse-stage2.py` extended (existing
+    behaviour byte-identical when `--baseline` is omitted). New
+    `--baseline <path>` flag triggers `<run-dir>/comparison.md`
+    emission with 5 fixed sections in plan Decision 4 order:
+    (1) Findings volume, (2) Cost per true positive, (3) Replication /
+    tribe-size dynamics, (4) Run shape, (5) Knowledge market activity
+    (ecosystem only). Section 5 prints `_no market activity in this
+    run_` when `knowledge-market.csv` is missing or empty. The
+    substrate-revenue aggregation excludes rows where `cache_hit=1`
+    per Risk 7 mitigation.
+  - `tribes-bench/tools/test-stage2-baseline-runner.sh` (new) — 7-case
+    test for the baseline harness. Live smoke skips when `agentis`
+    is not on PATH or no LLM API key is in env.
+  - `tribes-bench/tools/test-stage2-crash-recovery.sh` (new) — 7-case
+    drill (static doc + live crash + live resume + snapshot stanza
+    payload). `trap EXIT` cleanup runs `kill-federation.sh`
+    unconditionally.
+  - `tribes-bench/tools/test-stage2-analyse-comparison.sh` (new) —
+    fixture-driven 24-assertion test for the comparison report
+    (no live `agentis` spawn).
+  - `tribes-bench/README.md` — new "Stage 2 (M3 — long-run + baseline)
+    reproduction recipe" section documenting the 3-step recipe
+    (`run-baseline.sh` -> `run-stage2.sh` -> `analyse-stage2.py
+    --baseline`), the snapshot SHAs to pin at merge, the
+    non-determinism caveat (LLM backend dominates), and the 6-test
+    inventory split into live-fire vs fixture-only.
+  - Stage 0 / Stage 1 / Stage 2 M2 surface (`hunter.ag` files in
+    `tribe-{alpha,beta,gamma,delta,epsilon}`, calibration.toml,
+    `start-colony.sh` files, `verify-finding{,-stage2}.sh`,
+    `analyse-stage{0,1}.py`, `run-stage{0,1}.sh`,
+    pre-existing tests) byte-identical. Pre-existing
+    Stage 0/1/2 tests continue to PASS unchanged.
+
 - **Stage 2 M2 — cognitive market + reputation** ([#393](https://github.com/Replikanti/agentis-colonies/issues/393)).
   - All 5 `tribe-{alpha,beta,gamma,delta,epsilon}/agents/hunter.ag`
     now (a) update a `reputation:tribes-bench-<tribe>` float memo

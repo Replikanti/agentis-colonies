@@ -57,15 +57,48 @@ from collections import defaultdict
 from typing import Any
 
 
-def parse_args(argv: list[str]) -> str:
-    if len(argv) != 2:
-        print("Usage: analyse-stage2.py <run-dir>", file=sys.stderr)
+def parse_args(argv: list[str]) -> tuple[str, str | None]:
+    """Parse argv. Returns (run_dir, baseline_csv_path_or_None).
+
+    Backward-compatible: bare ``analyse-stage2.py <run-dir>`` returns
+    (run_dir, None) and produces byte-identical output to the M2 form.
+    The optional ``--baseline <path>`` flag (M3 #394) triggers
+    comparison-report emission to ``<run-dir>/comparison.md``.
+    """
+    args = argv[1:]
+    if not args:
+        print("Usage: analyse-stage2.py <run-dir> [--baseline <path>]", file=sys.stderr)
         sys.exit(2)
-    run_dir = argv[1]
+    run_dir: str | None = None
+    baseline: str | None = None
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--baseline":
+            if i + 1 >= len(args):
+                print("analyse-stage2: --baseline requires a path", file=sys.stderr)
+                sys.exit(2)
+            baseline = args[i + 1]
+            i += 2
+            continue
+        if a.startswith("--"):
+            print(f"analyse-stage2: unknown flag: {a}", file=sys.stderr)
+            sys.exit(2)
+        if run_dir is not None:
+            print("analyse-stage2: too many positional args", file=sys.stderr)
+            sys.exit(2)
+        run_dir = a
+        i += 1
+    if run_dir is None:
+        print("Usage: analyse-stage2.py <run-dir> [--baseline <path>]", file=sys.stderr)
+        sys.exit(2)
     if not os.path.isdir(run_dir):
         print(f"analyse-stage2: run dir not found: {run_dir}", file=sys.stderr)
         sys.exit(2)
-    return run_dir
+    if baseline is not None and not os.path.isfile(baseline):
+        print(f"analyse-stage2: baseline csv not found: {baseline}", file=sys.stderr)
+        sys.exit(2)
+    return run_dir, baseline
 
 
 def load_agent_to_tribe(daemon_dir: str) -> dict[str, str]:
@@ -305,7 +338,7 @@ def write_market_log(run_dir: str, rows: list[dict[str, Any]]) -> str | None:
 
 
 def main() -> None:
-    run_dir = parse_args(sys.argv)
+    run_dir, baseline_csv = parse_args(sys.argv)
     agentis_root = os.path.join(run_dir, ".agentis")
     daemon_dir = os.path.join(agentis_root, "daemon")
     experience_dir = os.path.join(agentis_root, "experience")
@@ -498,6 +531,236 @@ def main() -> None:
         market_path = write_market_log(run_dir, market_rows)
         if market_path:
             print(market_path)
+
+    # Stage 2 M3 (#394) optional comparison report. When --baseline is
+    # set, emit `<run-dir>/comparison.md` with the 5 fixed sections from
+    # plan Decision 4. When --baseline is omitted, behaviour is
+    # byte-identical to the M2 form (no comparison.md, no extra prints).
+    if baseline_csv is not None:
+        comparison_path = write_comparison_report(
+            run_dir=run_dir,
+            telemetry_csv=out_path,
+            baseline_csv=baseline_csv,
+            market_rows=market_rows,
+        )
+        if comparison_path:
+            print(comparison_path)
+
+
+# --- Stage 2 M3 (#394) comparison report -------------------------------------
+
+COMPARISON_COLUMNS = [
+    "minute", "tribe", "agents_alive", "cb_balance",
+    "findings_emitted", "true_positives", "false_positives",
+    "bug_class", "is_first_finder", "tribe_size",
+    "replication_event_count", "tribe_death_ts",
+]
+
+
+def _read_telemetry_csv(path: str) -> list[dict[str, str]]:
+    """Read a 12-column telemetry.csv and return rows as dicts. Skips
+    the header line. Tolerates short/long rows defensively."""
+    if not os.path.isfile(path):
+        return []
+    out: list[dict[str, str]] = []
+    with open(path, encoding="utf-8") as f:
+        reader = csv.reader(f)
+        try:
+            header = next(reader)
+        except StopIteration:
+            return []
+        # Trust the documented schema if the row count matches; otherwise
+        # the first row IS the header — skip it positionally.
+        if header[:1] != ["minute"]:
+            # Not a header — re-open to include it.
+            f.seek(0)
+            reader = csv.reader(f)
+        for row in reader:
+            if not row:
+                continue
+            d: dict[str, str] = {}
+            for i, k in enumerate(COMPARISON_COLUMNS):
+                d[k] = row[i] if i < len(row) else ""
+            out.append(d)
+    return out
+
+
+def _safe_int(s: str | int | None) -> int:
+    if isinstance(s, int):
+        return s
+    if s is None:
+        return 0
+    try:
+        return int(s)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _aggregate_telemetry(rows: list[dict[str, str]]) -> dict[str, int | float]:
+    """Aggregate a telemetry.csv into the comparison-relevant scalars.
+    Sum across all rows: total findings, TPs, FPs, CB, replication events,
+    first-finder ticks. Also count distinct minutes (run length proxy).
+    """
+    total_findings = 0
+    total_tp = 0
+    total_fp = 0
+    total_cb = 0
+    total_rep = 0
+    total_ff = 0
+    minutes: set[int] = set()
+    tribes: set[str] = set()
+    for r in rows:
+        total_findings += _safe_int(r.get("findings_emitted"))
+        total_tp += _safe_int(r.get("true_positives"))
+        total_fp += _safe_int(r.get("false_positives"))
+        total_cb += _safe_int(r.get("cb_balance"))
+        total_rep += _safe_int(r.get("replication_event_count"))
+        total_ff += _safe_int(r.get("is_first_finder"))
+        m = _safe_int(r.get("minute"))
+        minutes.add(m)
+        t = r.get("tribe") or ""
+        if t:
+            tribes.add(t)
+    cost_per_tp = (float(total_cb) / total_tp) if total_tp > 0 else 0.0
+    return {
+        "total_findings": total_findings,
+        "total_tp": total_tp,
+        "total_fp": total_fp,
+        "total_cb": total_cb,
+        "total_rep": total_rep,
+        "total_ff": total_ff,
+        "n_minutes": len(minutes),
+        "n_tribes": len(tribes),
+        "cost_per_tp": cost_per_tp,
+    }
+
+
+def _aggregate_market(rows: list[dict[str, object]]) -> dict[str, int]:
+    """Aggregate market.csv rows into substrate revenue + cache-hit count.
+    Per Risk 7 mitigation: substrate revenue excludes rows where
+    cache_hit == "1". The substrate-revenue is computed by joining sell
+    rows to substrate (cache_hit=0) buy rows on topic.
+    """
+    if not rows:
+        return {
+            "n_buy": 0,
+            "n_sell": 0,
+            "n_cache_hit": 0,
+            "substrate_revenue": 0,
+        }
+    buy_substrate: set[str] = set()
+    n_buy = 0
+    n_sell = 0
+    n_cache_hit = 0
+    for r in rows:
+        op = (r.get("op") or "")
+        cache_hit = (r.get("cache_hit") or "")
+        topic = (r.get("topic") or "")
+        if op == "buy":
+            n_buy += 1
+            if cache_hit == "1":
+                n_cache_hit += 1
+            if cache_hit == "0" and isinstance(topic, str) and topic:
+                buy_substrate.add(topic)
+        elif op == "sell":
+            n_sell += 1
+    revenue = 0
+    for r in rows:
+        if (r.get("op") or "") != "sell":
+            continue
+        topic = (r.get("topic") or "")
+        if not isinstance(topic, str) or topic not in buy_substrate:
+            continue
+        try:
+            revenue += int(r.get("ask_price") or 0)
+        except (TypeError, ValueError):
+            continue
+    return {
+        "n_buy": n_buy,
+        "n_sell": n_sell,
+        "n_cache_hit": n_cache_hit,
+        "substrate_revenue": revenue,
+    }
+
+
+def write_comparison_report(
+    run_dir: str,
+    telemetry_csv: str,
+    baseline_csv: str,
+    market_rows: list[dict[str, object]],
+) -> str | None:
+    """Emit ``<run-dir>/comparison.md`` with the 5 fixed sections from
+    plan Decision 4. Section order and headings are stable so downstream
+    consumers can grep by section.
+    """
+    eco_rows = _read_telemetry_csv(telemetry_csv)
+    base_rows = _read_telemetry_csv(baseline_csv)
+    eco = _aggregate_telemetry(eco_rows)
+    base = _aggregate_telemetry(base_rows)
+    market = _aggregate_market(market_rows)
+
+    lines: list[str] = []
+    lines.append("# Stage 2 M3 (#394) baseline-vs-ecosystem comparison")
+    lines.append("")
+    lines.append(f"- ecosystem run dir: `{run_dir}`")
+    lines.append(f"- baseline csv:       `{baseline_csv}`")
+    lines.append("")
+
+    lines.append("## 1. Findings volume")
+    lines.append("")
+    lines.append("| metric | ecosystem | baseline |")
+    lines.append("|---|---|---|")
+    lines.append(f"| total findings | {eco['total_findings']} | {base['total_findings']} |")
+    lines.append(f"| true positives | {eco['total_tp']} | {base['total_tp']} |")
+    lines.append(f"| false positives | {eco['total_fp']} | {base['total_fp']} |")
+    lines.append(f"| first-finder ticks | {eco['total_ff']} | {base['total_ff']} |")
+    lines.append("")
+
+    lines.append("## 2. Cost per true positive")
+    lines.append("")
+    lines.append("| metric | ecosystem | baseline |")
+    lines.append("|---|---|---|")
+    lines.append(f"| total CB | {eco['total_cb']} | {base['total_cb']} |")
+    lines.append(f"| TPs | {eco['total_tp']} | {base['total_tp']} |")
+    lines.append(
+        f"| CB / TP | {eco['cost_per_tp']:.2f} | {base['cost_per_tp']:.2f} |"
+    )
+    lines.append("")
+
+    lines.append("## 3. Replication / tribe-size dynamics")
+    lines.append("")
+    lines.append("| metric | ecosystem | baseline |")
+    lines.append("|---|---|---|")
+    lines.append(f"| replication events | {eco['total_rep']} | {base['total_rep']} |")
+    lines.append(f"| distinct tribes seen | {eco['n_tribes']} | {base['n_tribes']} |")
+    lines.append("")
+
+    lines.append("## 4. Run shape")
+    lines.append("")
+    lines.append("| metric | ecosystem | baseline |")
+    lines.append("|---|---|---|")
+    lines.append(f"| distinct minutes covered | {eco['n_minutes']} | {base['n_minutes']} |")
+    lines.append("")
+
+    lines.append("## 5. Knowledge market activity (ecosystem only)")
+    lines.append("")
+    if not market_rows:
+        lines.append("_no market activity in this run_")
+    else:
+        lines.append("| metric | value |")
+        lines.append("|---|---|")
+        lines.append(f"| buy ops | {market['n_buy']} |")
+        lines.append(f"| sell ops | {market['n_sell']} |")
+        lines.append(f"| cache-hit buys | {market['n_cache_hit']} |")
+        lines.append(
+            f"| substrate revenue (cache_hit=0 only) | {market['substrate_revenue']} |"
+        )
+    lines.append("")
+
+    out_path = os.path.join(run_dir, "comparison.md")
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    return out_path
 
 
 if __name__ == "__main__":
