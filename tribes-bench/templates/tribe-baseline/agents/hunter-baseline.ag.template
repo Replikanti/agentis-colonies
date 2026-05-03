@@ -43,7 +43,7 @@ fn tick(reason: string) -> void {
     print("[hunter-baseline] tick conf=", conf);
 
     let src = try {
-        exec sh "cat $TARGET_DIR/vulnerable.rs";
+        exec sh "cat $TARGET_DIR/$TARGET_FILE";
     } catch e {
         print("[hunter-baseline] target read failed:", e);
         "";

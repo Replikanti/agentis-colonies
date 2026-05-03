@@ -174,7 +174,7 @@ export AGENTIS_ROOT
 CONFIG_FILE="$RUN_DIR/.agentis/config"
 if [ "$RESUMING" = "0" ] && [ -f "$CONFIG_FILE" ]; then
     if ! grep -q '^exec\.env_passthrough' "$CONFIG_FILE"; then
-        printf '\nexec.env_passthrough = COLONY_DIR,TRIBE_NAME,TARGET_DIR,BUGS_MANIFEST,VERIFIER_PATH,RUN_DIR,BUG_LEDGER_PATH,INITIAL_CB,BASE_COST,K_MALTHUSIAN,MAX_REPLICAS,REWARD_FULL,REWARD_SUBSEQUENT,DEATH_THRESHOLD,AGENTIS_ROOT\n' >> "$CONFIG_FILE"
+        printf '\nexec.env_passthrough = COLONY_DIR,TRIBE_NAME,TARGET_DIR,TARGET_FILE,BUGS_MANIFEST,VERIFIER_PATH,RUN_DIR,BUG_LEDGER_PATH,INITIAL_CB,BASE_COST,K_MALTHUSIAN,MAX_REPLICAS,REWARD_FULL,REWARD_SUBSEQUENT,DEATH_THRESHOLD,AGENTIS_ROOT\n' >> "$CONFIG_FILE"
     fi
     if ! grep -q '^experience\.enabled' "$CONFIG_FILE"; then
         printf 'experience.enabled = true\n' >> "$CONFIG_FILE"
@@ -205,6 +205,7 @@ done
 
 # --- Export Stage 2 env consumed by hunter.ag via exec sh ---
 export TARGET_DIR="$FED_DIR/targets/stage2/smallvec-v0.6.13"
+export TARGET_FILE="lib.rs"
 export BUGS_MANIFEST="$FED_DIR/targets/stage2/bugs.json"
 export VERIFIER_PATH="$FED_DIR/tools/verify-finding-stage2.sh"
 export RUN_DIR
@@ -217,8 +218,8 @@ if [ "$RESUMING" = "0" ]; then
     : > "$BUG_LEDGER_PATH"
 fi
 
-if [ ! -f "$TARGET_DIR/lib.rs" ]; then
-    echo "run-stage2: target source not found at $TARGET_DIR/lib.rs" >&2
+if [ ! -f "$TARGET_DIR/$TARGET_FILE" ]; then
+    echo "run-stage2: target source not found at $TARGET_DIR/$TARGET_FILE" >&2
     exit 1
 fi
 if [ ! -f "$BUGS_MANIFEST" ]; then

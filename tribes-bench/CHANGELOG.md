@@ -357,6 +357,8 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Fixed
 
+- Fixed (#398): hunters read `$TARGET_DIR/$TARGET_FILE` instead of hardcoded `vulnerable.rs` / `cmd_exec.rs` (Stage 0/1 carryovers); harness exports `TARGET_FILE=lib.rs` for Stage 2.
+
 ### Security
 
 <!--

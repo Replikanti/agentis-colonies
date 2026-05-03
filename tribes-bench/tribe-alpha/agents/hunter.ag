@@ -161,7 +161,7 @@ fn tick(reason: string) -> void {
     // re-reads on every tick: the target is a checked-in static file,
     // not a live forge, so there is no upstream "since last tick" gate.
     let src = try {
-        exec sh "cat $TARGET_DIR/vulnerable.rs";
+        exec sh "cat $TARGET_DIR/$TARGET_FILE";
     } catch e {
         print("[hunter] target read failed:", e);
         "";

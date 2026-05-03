@@ -159,11 +159,12 @@ fn tick(reason: string) -> void {
     let conf = get_confidence();
     print("[hunter] tick conf=", conf);
 
-    // Read the synthetic target once per tick. Stage 1 hunter scans the
-    // first stage-1 file by default; M2/M3 will rotate across all three
-    // class-shard files (cmd_exec.rs, path_io.rs, fmt_str.rs).
+    // Read the target file once per tick. Stage 2 scans a single file
+    // selected by `$TARGET_FILE` under `$TARGET_DIR` (set by run-stage2.sh).
+    // The Stage 1 per-tribe class-shard rotation referenced in the prior
+    // comment was never wired and is out-of-scope for #398.
     let src = try {
-        exec sh "cat $TARGET_DIR/cmd_exec.rs";
+        exec sh "cat $TARGET_DIR/$TARGET_FILE";
     } catch e {
         print("[hunter] target read failed:", e);
         "";

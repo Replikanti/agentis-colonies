@@ -307,6 +307,12 @@ else
     skip_case "calibration.toml: M1 sections unchanged" "not a git repository"
 fi
 
+# --- 9. #398 — TARGET_FILE in env_passthrough of harness scripts ---
+assert_contains "run-stage2.sh exec.env_passthrough lists TARGET_FILE" \
+    "$FED_DIR/tools/run-stage2.sh" "TARGET_DIR,TARGET_FILE,"
+assert_contains "run-baseline.sh exec.env_passthrough lists TARGET_FILE" \
+    "$FED_DIR/tools/run-baseline.sh" "TARGET_DIR,TARGET_FILE,"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
 [ "$FAIL" -eq 0 ]
