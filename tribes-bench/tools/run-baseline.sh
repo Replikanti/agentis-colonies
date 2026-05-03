@@ -143,6 +143,18 @@ python3 "$TOOLS_DIR/run-baseline-render.py" \
 AGENTIS_ROOT="$RUN_DIR/.agentis"
 export AGENTIS_ROOT
 
+# #409: file_read() sandbox is hardcoded to <agentis_root>/sandbox/. Copy
+# the Stage 2 target tree INTO sandbox (symlink fails because the runtime
+# canonicalizes the candidate path before the sandbox-containment check —
+# a symlink dereferences to its outside-sandbox target). Resume path
+# refreshes the copy so a target-tree edit during a paused run doesn't
+# desync.
+SANDBOX_DIR="$AGENTIS_ROOT/sandbox"
+mkdir -p "$SANDBOX_DIR"
+rm -rf "$SANDBOX_DIR/targets-stage2"
+cp -r "$FED_DIR/targets/stage2" "$SANDBOX_DIR/targets-stage2"
+export TARGET_DIR_SANDBOX="targets-stage2/smallvec-v0.6.13"
+
 # Configure config so analyse-stage2.py can find inputs.
 CONFIG_FILE="$RUN_DIR/.agentis/config"
 if [ -f "$CONFIG_FILE" ]; then
@@ -164,11 +176,12 @@ export TARGET_FILE="lib.rs"
 # Seed hunter:confidence to 0.7 (mid-propose). #405: hunter:target_dir +
 # hunter:target_file feed the recall_latest() + file_read() path that
 # replaces the old `exec sh "cat $TARGET_DIR/$TARGET_FILE"` (blocked by
-# exec_foreign denial on agentis 1.6.0).
+# exec_foreign denial on agentis 1.6.0). #409: seed the sandbox-relative
+# path so file_read() can reach the target through the in-sandbox copy.
 (
     cd "$RUN_DIR"
     agentis memo set hunter:confidence 0.7 >/dev/null 2>&1 || true
-    agentis memo set "hunter:target_dir" "$TARGET_DIR" >/dev/null 2>&1 || true
+    agentis memo set "hunter:target_dir" "$TARGET_DIR_SANDBOX" >/dev/null 2>&1 || true
     agentis memo set "hunter:target_file" "$TARGET_FILE" >/dev/null 2>&1 || true
     agentis memo set "tribe-tribe-baseline:pool" "$BASELINE_CB" >/dev/null 2>&1 || true
     agentis memo set "tribe-tribe-baseline:size" "1" >/dev/null 2>&1 || true

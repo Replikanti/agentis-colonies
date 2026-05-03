@@ -175,7 +175,13 @@ RUN_DIR="${RUN_DIR:-}"
 # via recall_latest() + file_read() instead of `exec sh "cat $TARGET_DIR/..."`.
 # agentis 1.6.0 has no env_get builtin, and exec_foreign denial blocked the
 # old shell-cat path even with --enable-exec.
-agentis memo set "hunter:target_dir" "$TARGET_DIR" >/dev/null 2>&1 || true
+# #409: when running under the run-stage2/run-baseline harness,
+# TARGET_DIR_SANDBOX is the sandbox-relative path file_read() can reach.
+# Operators running this script directly (no harness) fall back to
+# TARGET_DIR — that path must already be under <agentis_root>/sandbox/
+# or file_read will reject it.
+TARGET_DIR_FOR_MEMO="${TARGET_DIR_SANDBOX:-$TARGET_DIR}"
+agentis memo set "hunter:target_dir" "$TARGET_DIR_FOR_MEMO" >/dev/null 2>&1 || true
 agentis memo set "hunter:target_file" "$TARGET_FILE" >/dev/null 2>&1 || true
 agentis memo set "tribe-${TRIBE_NAME}:pool" "$INITIAL_CB" >/dev/null 2>&1 || true
 agentis memo set "tribe-${TRIBE_NAME}:size" "1" >/dev/null 2>&1 || true
