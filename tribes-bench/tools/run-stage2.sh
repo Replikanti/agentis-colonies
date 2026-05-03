@@ -161,6 +161,18 @@ fi
 AGENTIS_ROOT="$RUN_DIR/.agentis"
 export AGENTIS_ROOT
 
+# #409: file_read() sandbox is hardcoded to <agentis_root>/sandbox/. Copy
+# the Stage 2 target tree INTO sandbox (symlink fails because the runtime
+# canonicalizes the candidate path before the sandbox-containment check —
+# a symlink dereferences to its outside-sandbox target). Resume path
+# refreshes the copy so a target-tree edit during a paused run doesn't
+# desync.
+SANDBOX_DIR="$AGENTIS_ROOT/sandbox"
+mkdir -p "$SANDBOX_DIR"
+rm -rf "$SANDBOX_DIR/targets-stage2"
+cp -r "$FED_DIR/targets/stage2" "$SANDBOX_DIR/targets-stage2"
+export TARGET_DIR_SANDBOX="targets-stage2/smallvec-v0.6.13"
+
 # Configure the hermetic .agentis/config so analyse-stage2.py can find
 # the inputs it expects:
 #   exec.env_passthrough — the Stage 0 trio (TARGET_DIR, BUGS_MANIFEST,
