@@ -42,13 +42,27 @@ fn now_ms_via_shell() -> int {
     return parse_int(s);
 }
 
+// #405: read TARGET_DIR / TARGET_FILE through memo seeds (not env vars)
+// because agentis 1.6.0 has no `env_get`/`getenv` builtin. The harness
+// (`tools/run-baseline.sh`) `agentis memo set`s these values before
+// daemon launch. file_read() then operates under FileRead capability
+// (granted by default), sidestepping the exec_foreign denial that
+// blocked `exec sh "cat $TARGET_DIR/$TARGET_FILE"`.
+fn target_dir() -> string {
+    return recall_latest("hunter:target_dir");
+}
+
+fn target_file() -> string {
+    return recall_latest("hunter:target_file");
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let conf = get_confidence();
     print("[hunter-baseline] tick conf=", conf);
 
     let src = try {
-        exec sh "cat $TARGET_DIR/$TARGET_FILE";
+        file_read(target_dir() + "/" + target_file());
     } catch e {
         print("[hunter-baseline] target read failed:", e);
         "";

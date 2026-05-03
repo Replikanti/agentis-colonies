@@ -43,6 +43,21 @@ fn now_ms_via_shell() -> int {
     return parse_int(s);
 }
 
+// #405: read TARGET_DIR / TARGET_FILE through memo seeds (not env vars)
+// because agentis 1.6.0 has no `env_get`/`getenv` builtin. The harness
+// (`tools/run-stage2.sh` / `tools/run-baseline.sh`) and each tribe's
+// `scripts/start-colony.sh` `agentis memo set` these values before
+// daemon launch. file_read() then operates under FileRead capability
+// (granted by default), sidestepping the exec_foreign denial that
+// blocked `exec sh "cat $TARGET_DIR/$TARGET_FILE"`.
+fn target_dir() -> string {
+    return recall_latest("hunter:target_dir");
+}
+
+fn target_file() -> string {
+    return recall_latest("hunter:target_file");
+}
+
 fn pick_variant(tribe: string, n: int) -> string {
     let _ = tribe;
     let idx = n - ((n / 3) * 3);
@@ -166,7 +181,7 @@ fn tick(reason: string) -> void {
     // re-reads on every tick: the target is a checked-in static file,
     // not a live forge, so there is no upstream "since last tick" gate.
     let src = try {
-        exec sh "cat $TARGET_DIR/$TARGET_FILE";
+        file_read(target_dir() + "/" + target_file());
     } catch e {
         print("[hunter] target read failed:", e);
         "";

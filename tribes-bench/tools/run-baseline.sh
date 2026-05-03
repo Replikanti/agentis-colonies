@@ -157,10 +157,19 @@ if [ -f "$CONFIG_FILE" ]; then
     fi
 fi
 
-# Seed hunter:confidence to 0.7 (mid-propose).
+# --- Export env consumed by hunter-baseline.ag via exec sh ---
+export TARGET_DIR
+export TARGET_FILE="lib.rs"
+
+# Seed hunter:confidence to 0.7 (mid-propose). #405: hunter:target_dir +
+# hunter:target_file feed the recall_latest() + file_read() path that
+# replaces the old `exec sh "cat $TARGET_DIR/$TARGET_FILE"` (blocked by
+# exec_foreign denial on agentis 1.6.0).
 (
     cd "$RUN_DIR"
     agentis memo set hunter:confidence 0.7 >/dev/null 2>&1 || true
+    agentis memo set "hunter:target_dir" "$TARGET_DIR" >/dev/null 2>&1 || true
+    agentis memo set "hunter:target_file" "$TARGET_FILE" >/dev/null 2>&1 || true
     agentis memo set "tribe-tribe-baseline:pool" "$BASELINE_CB" >/dev/null 2>&1 || true
     agentis memo set "tribe-tribe-baseline:size" "1" >/dev/null 2>&1 || true
     agentis memo set "tribe-tribe-baseline:reward_full" "$REWARD_FULL" >/dev/null 2>&1 || true
@@ -171,9 +180,6 @@ fi
     agentis memo set "reputation:tribes-bench-tribe-baseline" "0.5" >/dev/null 2>&1 || true
 )
 
-# --- Export env consumed by hunter-baseline.ag via exec sh ---
-export TARGET_DIR
-export TARGET_FILE="lib.rs"
 export BUGS_MANIFEST="$FED_DIR/targets/stage2/bugs.json"
 export VERIFIER_PATH
 export RUN_DIR
