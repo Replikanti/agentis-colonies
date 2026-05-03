@@ -278,26 +278,50 @@ if [ -f "$FED_DIR/tools/test-verify-finding.sh" ]; then
     fi
 fi
 
-# --- 8. Calibration: M1 economy sections unchanged vs origin/main ---
+# --- 8. Calibration: M1 economy sections structurally unchanged vs origin/main ---
 # Stage 2 M2 (#393) appends `[reputation]` and `[knowledge_market]`
 # blocks to calibration.toml; the original M1-shipped sections
 # `[tribe.economy]`, `[tribe.reward]`, `[tribe.death]` must remain
-# byte-identical so the existing run-stage1.sh harness keeps reading
-# the same defaults. This assertion was a byte-identity gate in M1; it
-# is relaxed to a section-scoped diff for M2 forward.
+# structurally intact so the existing run-stage1.sh harness keeps
+# reading the same set of keys. #404 bumped `initial_cb` from 1000 to
+# 8000 (and rewrote the surrounding comment) — the only intentional
+# evolution of the M1 economy block — so this assertion now masks out
+# the `initial_cb` value + the comment lines that immediately precede
+# the `[tribe.economy]` table on both sides before diffing.
 CALIB="tribes-bench/calibration.toml"
+mask_m1_economy() {
+    awk 'BEGIN{p=1} /^\[reputation\]|^\[knowledge_market\]/{p=0} p{print}' \
+        | awk '
+            /^initial_cb[[:space:]]*=/ { print "initial_cb = <masked>"; next }
+            { print }
+        '
+}
 if [ -d "$REPO_ROOT/.git" ] || git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
     if git -C "$REPO_ROOT" rev-parse --verify origin/main >/dev/null 2>&1; then
-        # Extract the M1-defined economy block: from line 1 through the
-        # last line of [tribe.death]. M2 additions live BELOW that.
         upstream="$(git -C "$REPO_ROOT" show "origin/main:$CALIB" 2>/dev/null || true)"
-        upstream_econ="$(printf '%s' "$upstream" | awk 'BEGIN{p=1} /^\[reputation\]|^\[knowledge_market\]/{p=0} p{print}')"
-        local_econ="$(awk 'BEGIN{p=1} /^\[reputation\]|^\[knowledge_market\]/{p=0} p{print}' "$REPO_ROOT/$CALIB" 2>/dev/null || true)"
+        upstream_econ="$(printf '%s' "$upstream" | mask_m1_economy)"
+        local_econ="$(mask_m1_economy < "$REPO_ROOT/$CALIB" 2>/dev/null || true)"
+        # Strip the immediate comment block above [tribe.economy] (the
+        # initial_cb rationale) on both sides — the comment was rewritten
+        # in #404 to document the bump and the new templating path.
+        strip_econ_comment() {
+            awk '
+                BEGIN { in_econ_comment = 0 }
+                /^\[tribe\.economy\]/ { in_econ_comment = 1; print; next }
+                in_econ_comment == 1 {
+                    if ($0 ~ /^#/) { next }
+                    in_econ_comment = 0
+                }
+                { print }
+            '
+        }
+        upstream_econ="$(printf '%s\n' "$upstream_econ" | strip_econ_comment)"
+        local_econ="$(printf '%s\n' "$local_econ" | strip_econ_comment)"
         if [ "$upstream_econ" = "$local_econ" ] && [ -n "$upstream_econ" ]; then
-            echo "[PASS] calibration.toml: M1 [tribe.economy/reward/death] sections unchanged"
+            echo "[PASS] calibration.toml: M1 [tribe.economy/reward/death] structure unchanged (initial_cb value + rationale comment masked per #404)"
             PASS=$((PASS + 1))
         else
-            echo "[FAIL] calibration.toml: M1 [tribe.economy/reward/death] sections changed (M2 must only APPEND new blocks)"
+            echo "[FAIL] calibration.toml: M1 [tribe.economy/reward/death] structure changed (M2 must only APPEND new blocks; #404 only bumps initial_cb + its rationale comment)"
             FAIL=$((FAIL + 1))
         fi
     else

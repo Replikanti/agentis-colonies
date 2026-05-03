@@ -13,11 +13,15 @@
 # it with empirical evidence.
 
 [tribe.economy]
-# Initial CB pool seeded into each tribe at federation start. ≈ 13
-# minutes of warmup before any reward (50 CB/tick × 1 tick/min ≈ 65 min
-# of pure-cost operation; with replication gating off until first
-# verification, the worst case is the tribe's first verified bug).
-initial_cb = 1000
+# Initial CB pool seeded into each tribe at federation start. Bumped
+# from 1000 → 8000 in #404 to give hunters enough per-tick budget for
+# one prompt() LLM call (~hundreds of CB) plus helper fns + exec sh +
+# bookkeeping per tick. tools/run-stage2.sh now templates this value
+# into each scaffolded colony.toml's [[agents]] cb_budget, making
+# calibration the single source of truth for the per-tick budget. The
+# `cb <N>;` declaration at the top of hunter.ag is still hardcoded at
+# compile time and must match this default — tracked as a follow-up.
+initial_cb = 8000
 
 # Replication base cost: C(0) = base = 100. C(1) = base * (1 + 1/k) =
 # 133. C(3) = base * (1 + 3/3) = 200, i.e. doubles. Gates replication

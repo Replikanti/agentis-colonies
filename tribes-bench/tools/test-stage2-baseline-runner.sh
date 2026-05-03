@@ -9,7 +9,7 @@
 # Cases:
 #   1. tools/run-baseline.sh exists, executable, bash -n clean.
 #   2. tools/run-baseline.sh prints "[run-baseline] total CB: <n>" with
-#      n == 5 * initial_cb (calibration default 1000 → 5000).
+#      n == 5 * initial_cb (calibration default 8000 → 40000 post-#404).
 #   3. templates/tribe-baseline/colony.toml.template + agents/
 #      hunter-baseline.ag.template exist with the documented placeholders.
 #   4. hunter-baseline.ag.template has the three M3 deltas vs alpha:
@@ -104,10 +104,10 @@ else
     FAIL=$((FAIL + 1))
 fi
 
-# --- 2. Total CB: 5 * initial_cb (calibration default 1000 -> 5000) ---
+# --- 2. Total CB: 5 * initial_cb (calibration default 8000 -> 40000) ---
 # Read the source for the BASELINE_CB arithmetic — we don't need to run
 # the script; we just verify the formula. Then verify the calibration
-# default is 1000 so the inferred total matches expectation.
+# default is 8000 (#404) so the inferred total matches expectation.
 if [ -f "$RB" ]; then
     if grep -Fq 'BASELINE_CB="$((INITIAL_CB * 5))"' "$RB"; then
         echo "[PASS] run-baseline.sh: BASELINE_CB = 5 * initial_cb"
@@ -125,9 +125,9 @@ if [ -f "$RB" ]; then
     fi
 fi
 
-INITIAL_CB_TOML="$(python3 "$FED_DIR/tools/run-stage1-calibration.py" "$FED_DIR/calibration.toml" tribe.economy initial_cb 1000)"
+INITIAL_CB_TOML="$(python3 "$FED_DIR/tools/run-stage1-calibration.py" "$FED_DIR/calibration.toml" tribe.economy initial_cb 8000)"
 EXPECTED_CB=$((INITIAL_CB_TOML * 5))
-assert_eq "calibration.toml initial_cb * 5 = expected baseline CB" "5000" "$EXPECTED_CB"
+assert_eq "calibration.toml initial_cb * 5 = expected baseline CB" "40000" "$EXPECTED_CB"
 
 # --- 3. Templates exist with documented placeholders ---
 TMPL_TOML="$FED_DIR/templates/tribe-baseline/colony.toml.template"
