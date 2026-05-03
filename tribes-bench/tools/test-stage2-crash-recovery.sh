@@ -127,6 +127,7 @@ else
         echo "[FAIL] live: pre-crash snapshots missing"
         FAIL=$((FAIL + 1))
     fi
+    pre_bl_lines="$(wc -l < "$last_run/bug-ledger.jsonl" 2>/dev/null | tr -d ' ' || echo 0)"
 
     # T+1: resume the same run dir.
     if [ -n "$last_run" ]; then
@@ -157,6 +158,31 @@ else
         else
             echo "[FAIL] live resume: snapshot count did not grow"
             FAIL=$((FAIL + 1))
+        fi
+
+        # #399: bug-ledger size-delta — resume must not truncate.
+        post_bl_lines="$(wc -l < "$last_run/bug-ledger.jsonl" 2>/dev/null | tr -d ' ' || echo 0)"
+        if [ "$post_bl_lines" -ge "$pre_bl_lines" ]; then
+            echo "[PASS] live resume: bug-ledger preserved ($pre_bl_lines -> $post_bl_lines lines)"
+            PASS=$((PASS + 1))
+        else
+            echo "[FAIL] live resume: bug-ledger truncated ($pre_bl_lines -> $post_bl_lines lines)"
+            FAIL=$((FAIL + 1))
+        fi
+
+        # #399: no duplicate (bug_id, ts) rows in resumed bug-ledger.
+        if command -v jq >/dev/null 2>&1; then
+            dup_count="$(jq -s 'group_by([.bug_id, .ts]) | map(select(length > 1)) | length' "$last_run/bug-ledger.jsonl" 2>/dev/null || echo -1)"
+            if [ "$dup_count" = "0" ]; then
+                echo "[PASS] live resume: no duplicate (bug_id, ts) rows in bug-ledger"
+                PASS=$((PASS + 1))
+            else
+                echo "[FAIL] live resume: $dup_count duplicate (bug_id, ts) row group(s) in bug-ledger"
+                FAIL=$((FAIL + 1))
+            fi
+        else
+            echo "[SKIP] live resume: jq missing — duplicate-row check skipped"
+            SKIP=$((SKIP + 1))
         fi
 
         # Snapshot stanza payload: at least one snapshot must contain

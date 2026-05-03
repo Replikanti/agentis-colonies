@@ -358,6 +358,7 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ### Fixed
 
 - Fixed (#398): hunters read `$TARGET_DIR/$TARGET_FILE` instead of hardcoded `vulnerable.rs` / `cmd_exec.rs` (Stage 0/1 carryovers); harness exports `TARGET_FILE=lib.rs` for Stage 2.
+- Fixed (#399): `tools/test-stage2-crash-recovery.sh` adds bug-ledger size-delta + duplicate-row assertions on resume. Belt-and-suspenders coverage for the existing `RESUMING=0` truncate guard in `run-stage2.sh`.
 
 ### Security
 
