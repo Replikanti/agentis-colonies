@@ -161,6 +161,14 @@ fi
 AGENTIS_ROOT="$RUN_DIR/.agentis"
 export AGENTIS_ROOT
 
+# #409: file_read() sandbox is hardcoded to <agentis_root>/sandbox/. Symlink
+# the Stage 2 target tree into sandbox so hunters can read lib.rs via
+# file_read("targets-stage2/smallvec-v0.6.13/lib.rs"). Idempotent across
+# resume.
+SANDBOX_DIR="$AGENTIS_ROOT/sandbox"
+mkdir -p "$SANDBOX_DIR"
+ln -sfn "$FED_DIR/targets/stage2" "$SANDBOX_DIR/targets-stage2"
+
 # Configure the hermetic .agentis/config so analyse-stage2.py can find
 # the inputs it expects:
 #   exec.env_passthrough — the Stage 0 trio (TARGET_DIR, BUGS_MANIFEST,
@@ -220,6 +228,12 @@ done
 # --- Export Stage 2 env consumed by hunter.ag via exec sh ---
 export TARGET_DIR="$FED_DIR/targets/stage2/smallvec-v0.6.13"
 export TARGET_FILE="lib.rs"
+# #409: hunters resolve file_read paths relative to <agentis_root>/sandbox/
+# (file_read sandbox guard). Memo store gets the relative path so the hunter
+# helper concatenation `target_dir() + "/" + target_file()` stays inside the
+# sandbox. The absolute TARGET_DIR above is still consumed by shell-side
+# code (verify-finding-stage2.sh, etc.) that does not go through file_read.
+export TARGET_DIR_SANDBOX="targets-stage2/smallvec-v0.6.13"
 export BUGS_MANIFEST="$FED_DIR/targets/stage2/bugs.json"
 export VERIFIER_PATH="$FED_DIR/tools/verify-finding-stage2.sh"
 export RUN_DIR
