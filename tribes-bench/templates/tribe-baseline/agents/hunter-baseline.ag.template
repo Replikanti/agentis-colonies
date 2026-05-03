@@ -37,6 +37,11 @@ fn tribe_name() -> string {
     return "tribe-baseline";
 }
 
+fn now_ms_via_shell() -> int {
+    let s = try { exec sh "date +%s%3N"; } catch e { "0"; };
+    return parse_int(s);
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let conf = get_confidence();
@@ -104,7 +109,7 @@ fn tick(reason: string) -> void {
 
                     let ledger_path = recall_latest("tribe-" + tribe_name() + ":bug_ledger");
                     if len(ledger_path) > 0 {
-                        let row = "{\"ts\": " + to_string(now_ms()) + ", \"tribe\": \"" + tribe_name() + "\", \"bug_id\": \"" + bug_id + "\", \"reward\": " + to_string(reward) + "}";
+                        let row = "{\"ts\": " + to_string(now_ms_via_shell()) + ", \"tribe\": \"" + tribe_name() + "\", \"bug_id\": \"" + bug_id + "\", \"reward\": " + to_string(reward) + "}";
                         // colony-lint: safe-exec-concat
                         let append_cmd = "printf '%s\\n' " + shell_escape(row) + " >> " + shell_escape(ledger_path);
                         let _ = try { exec sh append_cmd; } catch e { ""; };

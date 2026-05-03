@@ -39,6 +39,11 @@ fn tribe_name() -> string {
     return "tribe-beta";
 }
 
+fn now_ms_via_shell() -> int {
+    let s = try { exec sh "date +%s%3N"; } catch e { "0"; };
+    return parse_int(s);
+}
+
 fn pick_variant(tribe: string, n: int) -> string {
     let _ = tribe;
     let idx = n - ((n / 3) * 3);
@@ -147,7 +152,7 @@ fn emit_market_csv(op: string, topic: string, topic_kind: string, ask_price_s: s
     if len(csv_path) == 0 {
         return;
     };
-    let row = to_string(now_ms()) + "," + tribe_name() + "," + tribe_name() + "," + op + "," + topic + "," + topic_kind + "," + ask_price_s + "," + max_cb_s + "," + paid_price_s + "," + cache_hit_s + ",," + op_outcome;
+    let row = to_string(now_ms_via_shell()) + "," + tribe_name() + "," + tribe_name() + "," + op + "," + topic + "," + topic_kind + "," + ask_price_s + "," + max_cb_s + "," + paid_price_s + "," + cache_hit_s + ",," + op_outcome;
     // colony-lint: safe-exec-concat
     let append_cmd = "printf '%s\n' " + shell_escape(row) + " >> " + shell_escape(csv_path);
     let _ = try { exec sh append_cmd; } catch e { ""; };
@@ -179,7 +184,7 @@ fn tick(reason: string) -> void {
     // Stage 2 M2 (#393): cognitive-market buy at start of tick, before
     // seed prompt fires. Buy-gate widened to %8 + pool-aware skip per
     // §9 risk 5; lifecycle discriminator + cache-hit learn() per risk 1+2.
-    let m_now = now_ms();
+    let m_now = now_ms_via_shell();
     let pool_for_buy = parse_int(recall_latest("tribe-" + tribe_name() + ":pool"));
     let pool_min_buy_str = recall_latest("pool_minimum_for_buy");
     let pool_min_buy = if len(pool_min_buy_str) > 0 { parse_int(pool_min_buy_str); } else { 50; };
@@ -311,7 +316,7 @@ fn tick(reason: string) -> void {
 
                     let ledger_path = recall_latest("tribe-" + tribe_name() + ":bug_ledger");
                     if len(ledger_path) > 0 {
-                        let row = "{\"ts\": " + to_string(now_ms()) + ", \"tribe\": \"" + tribe_name() + "\", \"bug_id\": \"" + bug_id + "\", \"reward\": " + to_string(reward) + "}";
+                        let row = "{\"ts\": " + to_string(now_ms_via_shell()) + ", \"tribe\": \"" + tribe_name() + "\", \"bug_id\": \"" + bug_id + "\", \"reward\": " + to_string(reward) + "}";
                         // colony-lint: safe-exec-concat
                         let append_cmd = "printf '%s\\n' " + shell_escape(row) + " >> " + shell_escape(ledger_path);
                         let _ = try { exec sh append_cmd; } catch e { ""; };
