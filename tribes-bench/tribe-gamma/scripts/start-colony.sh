@@ -90,10 +90,11 @@ fi
 # Stage 0 agent calls forge-api.sh.
 TRIBE_NAME="tribe-gamma"
 TARGET_DIR="${TARGET_DIR:-$FED_DIR/targets/stage0}"
+TARGET_FILE="${TARGET_FILE:-vulnerable.rs}"
 BUGS_MANIFEST="${BUGS_MANIFEST:-$TARGET_DIR/bugs.json}"
 VERIFIER_PATH="${VERIFIER_PATH:-$FED_DIR/tools/verify-finding.sh}"
 
-export COLONY_DIR TRIBE_NAME TARGET_DIR BUGS_MANIFEST VERIFIER_PATH
+export COLONY_DIR TRIBE_NAME TARGET_DIR TARGET_FILE BUGS_MANIFEST VERIFIER_PATH
 
 # Stage 0: a single hunter agent per tribe. See tribes-bench/README.md for
 # the staircase Stage 0 -> 1 -> 2 plan.
@@ -170,6 +171,12 @@ REWARD_SUBSEQUENT="${REWARD_SUBSEQUENT:-50}"
 DEATH_THRESHOLD="${DEATH_THRESHOLD:-100}"
 BUG_LEDGER_PATH="${BUG_LEDGER_PATH:-}"
 RUN_DIR="${RUN_DIR:-}"
+# #405: seed TARGET_DIR / TARGET_FILE as memos so hunter.ag can read them
+# via recall_latest() + file_read() instead of `exec sh "cat $TARGET_DIR/..."`.
+# agentis 1.6.0 has no env_get builtin, and exec_foreign denial blocked the
+# old shell-cat path even with --enable-exec.
+agentis memo set "hunter:target_dir" "$TARGET_DIR" >/dev/null 2>&1 || true
+agentis memo set "hunter:target_file" "$TARGET_FILE" >/dev/null 2>&1 || true
 agentis memo set "tribe-${TRIBE_NAME}:pool" "$INITIAL_CB" >/dev/null 2>&1 || true
 agentis memo set "tribe-${TRIBE_NAME}:size" "1" >/dev/null 2>&1 || true
 agentis memo set "tribe-${TRIBE_NAME}:replication_base_cost" "$BASE_COST" >/dev/null 2>&1 || true
