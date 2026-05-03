@@ -13,7 +13,7 @@
 // Requires: exec capability, replication capability, TARGET_DIR +
 // VERIFIER_PATH env vars (set by scripts/start-colony.sh).
 
-cb 800;
+cb 8000;
 
 type Finding {
     line: int,

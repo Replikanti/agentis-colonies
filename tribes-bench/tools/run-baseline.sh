@@ -113,6 +113,16 @@ python3 "$TOOLS_DIR/run-baseline-render.py" \
     "VERIFIER_PATH=$VERIFIER_PATH" \
     "BUG_LEDGER_PATH=$BUG_LEDGER_PATH"
 
+# #404: rewrite cb_budget in the rendered baseline colony.toml from
+# INITIAL_CB so the per-tick budget matches the calibration default
+# (the hunter-baseline.ag `cb <N>;` keeps BASELINE_CB = 5 * INITIAL_CB
+# as its lifetime CB pool — different concept from the per-tick budget).
+python3 "$TOOLS_DIR/run-stage2-rewrite-cb.py" \
+    "$RUN_DIR/tribe-baseline/config/colony.toml" "$INITIAL_CB" || {
+    echo "run-baseline: failed to rewrite cb_budget in baseline colony.toml" >&2
+    exit 1
+}
+
 python3 "$TOOLS_DIR/run-baseline-render.py" \
     "$TEMPLATE_DIR/agents/hunter-baseline.ag.template" \
     "$RUN_DIR/tribe-baseline/agents/hunter-baseline.ag" \

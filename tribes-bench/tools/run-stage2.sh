@@ -203,6 +203,20 @@ for tribe in tribe-alpha tribe-beta tribe-gamma tribe-delta tribe-epsilon; do
     fi
 done
 
+# --- #404: rewrite cb_budget in each scaffolded colony.toml from
+# INITIAL_CB so calibration.toml is the single source of truth for the
+# per-tick budget. Always rewrite (even on a pre-existing colony.toml
+# from a prior run) — the operator's calibration edit must propagate.
+for tribe in tribe-alpha tribe-beta tribe-gamma tribe-delta tribe-epsilon; do
+    target="$FED_DIR/$tribe/config/colony.toml"
+    if [ -f "$target" ]; then
+        python3 "$TOOLS_DIR/run-stage2-rewrite-cb.py" "$target" "$INITIAL_CB" || {
+            echo "run-stage2: failed to rewrite cb_budget in $target" >&2
+            exit 1
+        }
+    fi
+done
+
 # --- Export Stage 2 env consumed by hunter.ag via exec sh ---
 export TARGET_DIR="$FED_DIR/targets/stage2/smallvec-v0.6.13"
 export TARGET_FILE="lib.rs"
