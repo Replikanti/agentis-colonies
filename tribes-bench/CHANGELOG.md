@@ -359,6 +359,7 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 - Fixed (#398): hunters read `$TARGET_DIR/$TARGET_FILE` instead of hardcoded `vulnerable.rs` / `cmd_exec.rs` (Stage 0/1 carryovers); harness exports `TARGET_FILE=lib.rs` for Stage 2.
 - Fixed (#399): `tools/test-stage2-crash-recovery.sh` adds bug-ledger size-delta + duplicate-row assertions on resume. Belt-and-suspenders coverage for the existing `RESUMING=0` truncate guard in `run-stage2.sh`.
+- Fixed (#402): hunter agents detour `now_ms()` through `exec sh "date +%s%3N"` because agentis 1.6.0 does not expose `now_ms` as an `.ag` evaluator builtin. Every M2 hunter tick was failing with `undefined function: now_ms` before this fix; this is what blocked the operator-driven verdict run. Tracked upstream as a follow-up to register `now_ms` as a proper builtin in agentis-core.
 
 ### Security
 
