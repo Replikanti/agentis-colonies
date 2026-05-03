@@ -17,16 +17,31 @@
 # tools/analyse-stage2.py at the end.
 #
 # Env vars:
-#   STAGE2_WALL_CLOCK_S    Wall-clock cap in seconds (default: 3600)
+#   STAGE2_WALL_CLOCK_S    Wall-clock cap in seconds (default: 172800
+#                          = 48h, M3 #394). Lower values still work for
+#                          smoke tests; the M3 reproduction recipe
+#                          assumes the 48h default.
 #   STAGE2_LLM_BACKEND     Override [llm].backend in colony.toml
 #                          (default: leave config alone, which means cli)
-#   STAGE2_SNAPSHOT_S      Snapshot interval in seconds (default: 600)
+#   STAGE2_SNAPSHOT_S      Snapshot interval in seconds (default: 3600
+#                          = 1h, M3 #394).
+#   STAGE2_CRASH_AT_S      M3 #394: when set to a positive integer N,
+#                          run-stage2.sh calls kill-federation.sh after
+#                          elapsed >= N and exits 99. Used by the M3
+#                          crash-recovery drill.
+#   STAGE2_RESUME_RUN_DIR  M3 #394: when set to a runs/<ts> path, skip
+#                          mkdir + agentis init + memo seeding; reuse the
+#                          existing .agentis/, bug-ledger.jsonl, and
+#                          knowledge-market.csv. Snapshot numbering
+#                          continues from max(existing). A fresh
+#                          run-meta-resume-<n>.json is written.
 #
 # Exit codes:
-#   0  run completed and telemetry.csv produced
-#   1  prerequisite missing (agentis CLI, jq, python3)
-#   2  start-federation.sh failed to launch
-#   3  analyse-stage2.py failed
+#   0   run completed and telemetry.csv produced
+#   1   prerequisite missing (agentis CLI, jq, python3)
+#   2   start-federation.sh failed to launch
+#   3   analyse-stage2.py failed
+#   99  STAGE2_CRASH_AT_S simulated crash (M3 #394 drill)
 
 set -euo pipefail
 
@@ -35,7 +50,7 @@ TOOLS_DIR="$(dirname "$SCRIPT_PATH")"
 FED_DIR="$(dirname "$TOOLS_DIR")"
 REPO_ROOT="$(dirname "$FED_DIR")"
 
-WALL_CLOCK="${STAGE2_WALL_CLOCK_S:-3600}"
+WALL_CLOCK="${STAGE2_WALL_CLOCK_S:-172800}"
 case "$WALL_CLOCK" in
     ''|*[!0-9]*)
         echo "run-stage2: STAGE2_WALL_CLOCK_S must be a positive integer (got: $WALL_CLOCK)" >&2
@@ -43,13 +58,29 @@ case "$WALL_CLOCK" in
         ;;
 esac
 
-SNAPSHOT_INTERVAL="${STAGE2_SNAPSHOT_S:-600}"
+SNAPSHOT_INTERVAL="${STAGE2_SNAPSHOT_S:-3600}"
 case "$SNAPSHOT_INTERVAL" in
     ''|*[!0-9]*)
         echo "run-stage2: STAGE2_SNAPSHOT_S must be a positive integer (got: $SNAPSHOT_INTERVAL)" >&2
         exit 1
         ;;
 esac
+
+CRASH_AT="${STAGE2_CRASH_AT_S:-}"
+if [ -n "$CRASH_AT" ]; then
+    case "$CRASH_AT" in
+        ''|*[!0-9]*)
+            echo "run-stage2: STAGE2_CRASH_AT_S must be a positive integer (got: $CRASH_AT)" >&2
+            exit 1
+            ;;
+    esac
+fi
+
+RESUME_RUN_DIR="${STAGE2_RESUME_RUN_DIR:-}"
+if [ -n "$RESUME_RUN_DIR" ] && [ ! -d "$RESUME_RUN_DIR" ]; then
+    echo "run-stage2: STAGE2_RESUME_RUN_DIR not a directory: $RESUME_RUN_DIR" >&2
+    exit 1
+fi
 
 # --- Prerequisite checks ---
 for bin in agentis jq python3; do
@@ -80,24 +111,52 @@ DEATH_THRESHOLD="$(python3 "$TOOLS_DIR/run-stage1-calibration.py" "$CALIBRATION"
 
 export INITIAL_CB BASE_COST K_MALTHUSIAN MAX_REPLICAS REWARD_FULL REWARD_SUBSEQUENT DEATH_THRESHOLD
 
-# --- Per-run hermetic directory ---
-TS="$(date -u +%Y%m%dT%H%M%SZ)"
-RUN_DIR="$FED_DIR/runs/$TS"
-mkdir -p "$RUN_DIR" "$RUN_DIR/snapshots"
+# --- Per-run hermetic directory (or resume an existing one) ---
+if [ -n "$RESUME_RUN_DIR" ]; then
+    RUN_DIR="$RESUME_RUN_DIR"
+    RESUMING=1
+    mkdir -p "$RUN_DIR/snapshots"
+    echo "[run-stage2] resuming run dir: $RUN_DIR"
+else
+    TS="$(date -u +%Y%m%dT%H%M%SZ)"
+    RUN_DIR="$FED_DIR/runs/$TS"
+    RESUMING=0
+    mkdir -p "$RUN_DIR" "$RUN_DIR/snapshots"
+    echo "[run-stage2] run dir: $RUN_DIR"
+fi
 
-echo "[run-stage2] run dir: $RUN_DIR"
 echo "[run-stage2] wall-clock cap: ${WALL_CLOCK}s"
 echo "[run-stage2] snapshot interval: ${SNAPSHOT_INTERVAL}s"
 echo "[run-stage2] calibration: initial_cb=$INITIAL_CB base_cost=$BASE_COST k=$K_MALTHUSIAN reward_full=$REWARD_FULL reward_subsequent=$REWARD_SUBSEQUENT death=$DEATH_THRESHOLD"
+if [ -n "$CRASH_AT" ]; then
+    echo "[run-stage2] STAGE2_CRASH_AT_S=${CRASH_AT}s (M3 crash-recovery drill)"
+fi
+
+# On resume, defensively kill any stale daemons under fed-dir and remove
+# orphan *.colony files older than the highest-elapsed snapshot ts so a
+# crashed daemon's leftover record doesn't masquerade as alive.
+if [ "$RESUMING" = "1" ]; then
+    KILL_SCRIPT_PRE="$REPO_ROOT/tools/kill-federation.sh"
+    if [ -x "$KILL_SCRIPT_PRE" ]; then
+        bash "$KILL_SCRIPT_PRE" --fed-dir "$FED_DIR" --no-backup \
+            >>"$RUN_DIR/kill-federation.log" 2>&1 || true
+    fi
+    if [ -d "$RUN_DIR/.agentis/daemon" ]; then
+        python3 "$TOOLS_DIR/run-stage2-prune.py" "$RUN_DIR" || true
+    fi
+fi
 
 # Initialise a fresh .agentis/ inside the run dir so daemons walking up
 # from cwd find this root rather than the operator's persistent store.
-(
-    cd "$RUN_DIR"
-    if [ ! -d .agentis ]; then
-        agentis init >/dev/null 2>&1
-    fi
-)
+# Resume path skips this — the existing .agentis/ is reused as-is.
+if [ "$RESUMING" = "0" ]; then
+    (
+        cd "$RUN_DIR"
+        if [ ! -d .agentis ]; then
+            agentis init >/dev/null 2>&1
+        fi
+    )
+fi
 
 AGENTIS_ROOT="$RUN_DIR/.agentis"
 export AGENTIS_ROOT
@@ -111,8 +170,9 @@ export AGENTIS_ROOT
 #       .agentis/experience/<agent-id>.jsonl.
 #   telemetry.enabled — required so daemon.started / daemon.stopped /
 #       agent.completed events land in .agentis/lifecycle/events.jsonl.
+# Resume path skips this — config is already correct.
 CONFIG_FILE="$RUN_DIR/.agentis/config"
-if [ -f "$CONFIG_FILE" ]; then
+if [ "$RESUMING" = "0" ] && [ -f "$CONFIG_FILE" ]; then
     if ! grep -q '^exec\.env_passthrough' "$CONFIG_FILE"; then
         printf '\nexec.env_passthrough = COLONY_DIR,TRIBE_NAME,TARGET_DIR,BUGS_MANIFEST,VERIFIER_PATH,RUN_DIR,BUG_LEDGER_PATH,INITIAL_CB,BASE_COST,K_MALTHUSIAN,MAX_REPLICAS,REWARD_FULL,REWARD_SUBSEQUENT,DEATH_THRESHOLD,AGENTIS_ROOT\n' >> "$CONFIG_FILE"
     fi
@@ -125,11 +185,14 @@ if [ -f "$CONFIG_FILE" ]; then
 fi
 
 # Seed all five tribes' confidence memo to 0.7 (mid-`propose`) inside
-# the hermetic root.
-(
-    cd "$RUN_DIR"
-    agentis memo set hunter:confidence 0.7 >/dev/null 2>&1 || true
-)
+# the hermetic root. Resume path skips the seed: the existing memo
+# carries the post-crash state that the test wants to verify survives.
+if [ "$RESUMING" = "0" ]; then
+    (
+        cd "$RUN_DIR"
+        agentis memo set hunter:confidence 0.7 >/dev/null 2>&1 || true
+    )
+fi
 
 # --- Make sure each tribe has a colony.toml (install.sh idempotent) ---
 for tribe in tribe-alpha tribe-beta tribe-gamma tribe-delta tribe-epsilon; do
@@ -147,8 +210,12 @@ export VERIFIER_PATH="$FED_DIR/tools/verify-finding-stage2.sh"
 export RUN_DIR
 export BUG_LEDGER_PATH="$RUN_DIR/bug-ledger.jsonl"
 
-# Touch the bug-ledger so JSONL append never races mkdir.
-: > "$BUG_LEDGER_PATH"
+# Touch the bug-ledger so JSONL append never races mkdir. Resume path
+# preserves the existing ledger (the recovery-drill assertion checks
+# that the ledger survives crash + relaunch).
+if [ "$RESUMING" = "0" ]; then
+    : > "$BUG_LEDGER_PATH"
+fi
 
 if [ ! -f "$TARGET_DIR/lib.rs" ]; then
     echo "run-stage2: target source not found at $TARGET_DIR/lib.rs" >&2
@@ -161,6 +228,37 @@ fi
 if [ ! -x "$VERIFIER_PATH" ]; then
     echo "run-stage2: verifier not executable at $VERIFIER_PATH" >&2
     exit 1
+fi
+
+# --- Capture run metadata (M3 #394). On resume, write a sidecar instead
+# of clobbering the original. ---
+RUN_LLM_BACKEND="${STAGE2_LLM_BACKEND:-cli}"
+STARTED_AT_NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+if [ "$RESUMING" = "0" ]; then
+    agentis --version > "$RUN_DIR/agentis-version.txt" 2>&1 || true
+    printf '%s\n' "$RUN_LLM_BACKEND" > "$RUN_DIR/llm-backend.txt"
+    python3 "$TOOLS_DIR/run-baseline-meta.py" \
+        "$RUN_DIR/run-meta.json" \
+        "$STARTED_AT_NOW" \
+        "$WALL_CLOCK" \
+        "$SNAPSHOT_INTERVAL" \
+        "$RUN_LLM_BACKEND" \
+        "$INITIAL_CB" \
+        "ecosystem"
+else
+    # Find the next available resume slot N.
+    n=1
+    while [ -f "$RUN_DIR/run-meta-resume-${n}.json" ]; do
+        n=$((n + 1))
+    done
+    python3 "$TOOLS_DIR/run-baseline-meta.py" \
+        "$RUN_DIR/run-meta-resume-${n}.json" \
+        "$STARTED_AT_NOW" \
+        "$WALL_CLOCK" \
+        "$SNAPSHOT_INTERVAL" \
+        "$RUN_LLM_BACKEND" \
+        "$INITIAL_CB" \
+        "ecosystem-resume-${n}"
 fi
 
 # --- Launch federation in the background, anchored at RUN_DIR ---
@@ -180,8 +278,18 @@ if ! kill -0 "$FED_PID" 2>/dev/null; then
 fi
 
 # --- Sleep the wall-clock cap with periodic snapshots ---
-echo "[run-stage2] sleeping ${WALL_CLOCK}s with snapshots every ${SNAPSHOT_INTERVAL}s..."
+# On resume, continue snapshot numbering from max(elapsed) of existing
+# snapshot files in <run>/snapshots/ (numeric stem) so the recovery-drill
+# can assert old snapshots survive AND new snapshots are appended.
 elapsed=0
+if [ "$RESUMING" = "1" ]; then
+    elapsed="$(python3 "$TOOLS_DIR/run-stage2-snapshot-max.py" "$RUN_DIR/snapshots" 2>/dev/null || echo 0)"
+    case "$elapsed" in
+        ''|*[!0-9]*) elapsed=0 ;;
+    esac
+fi
+
+echo "[run-stage2] sleeping ${WALL_CLOCK}s with snapshots every ${SNAPSHOT_INTERVAL}s (start elapsed=${elapsed})..."
 while [ "$elapsed" -lt "$WALL_CLOCK" ]; do
     remaining=$((WALL_CLOCK - elapsed))
     if [ "$remaining" -gt "$SNAPSHOT_INTERVAL" ]; then
@@ -192,12 +300,24 @@ while [ "$elapsed" -lt "$WALL_CLOCK" ]; do
         elapsed="$WALL_CLOCK"
     fi
     snap_path="$RUN_DIR/snapshots/${elapsed}.txt"
-    {
-        echo "# snapshot at elapsed=${elapsed}s"
-        date -u +%Y-%m-%dT%H:%M:%SZ
-        agentis daemon list --json 2>/dev/null || true
-    } > "$snap_path" 2>&1 || true
+    bash "$TOOLS_DIR/snapshot-stanza.sh" "$RUN_DIR" "$elapsed" > "$snap_path" 2>/dev/null || true
     echo "[run-stage2] snapshot $snap_path"
+
+    # M3 #394 crash-recovery drill: when STAGE2_CRASH_AT_S is set and
+    # elapsed has reached it, kill the federation hard and exit 99 so
+    # the operator drill can verify the ledger + .agentis/ survives and
+    # a STAGE2_RESUME_RUN_DIR=<run> rerun continues from the same dir.
+    if [ -n "$CRASH_AT" ] && [ "$elapsed" -ge "$CRASH_AT" ]; then
+        echo "[run-stage2] STAGE2_CRASH_AT_S triggered at elapsed=${elapsed}s — killing federation and exiting 99"
+        KILL_SCRIPT="$REPO_ROOT/tools/kill-federation.sh"
+        if [ -x "$KILL_SCRIPT" ]; then
+            bash "$KILL_SCRIPT" --fed-dir "$FED_DIR" --no-backup \
+                >>"$RUN_DIR/kill-federation.log" 2>&1 || true
+        else
+            kill "$FED_PID" 2>/dev/null || true
+        fi
+        exit 99
+    fi
 done
 
 # --- Reliable shutdown via tools/kill-federation.sh ---

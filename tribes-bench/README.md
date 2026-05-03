@@ -270,6 +270,73 @@ bash tools/test-stage2-reputation.sh                  # reputation primitive ass
 
 End-to-end multi-day live runs land in M3 (#394).
 
+## Stage 2 (M3 — long-run + baseline) reproduction recipe
+
+Stage 2 M3 ([#394](https://github.com/Replikanti/agentis-colonies/issues/394))
+ships the infrastructure for the long-run thesis verdict: a
+fixed-pipeline baseline harness, a 48h/1h-default ecosystem harness, a
+crash-recovery drill, and a comparison report. The thesis verdict
+itself is operator-driven — M3 PR ships the tooling that produces it,
+not the verdict.
+
+**3-step recipe** (plan Decision 4):
+
+1. Run the baseline (single tribe, no replication, no market):
+
+   ```bash
+   bash tools/run-baseline.sh
+   # produces: runs/baseline-<utc-ts>/telemetry.csv
+   ```
+
+2. Run the 5-tribe ecosystem (long-run defaults: 48h wall clock, 1h
+   snapshot interval):
+
+   ```bash
+   bash tools/run-stage2.sh
+   # produces: runs/<utc-ts>/{telemetry.csv,knowledge-market.csv,bug-ledger.jsonl,...}
+   ```
+
+3. Produce the comparison report:
+
+   ```bash
+   python3 tools/analyse-stage2.py runs/<eco-ts> \
+       --baseline runs/baseline-<bl-ts>/telemetry.csv
+   # produces: runs/<eco-ts>/comparison.md
+   ```
+
+**Snapshot SHAs to record at PR-merge time** (placeholders below — the
+operator running M3 must pin the actual SHAs from their pre-run
+`sha256sum` of the inputs and any reproducibility-relevant binaries):
+
+| Input | sha256 |
+|---|---|
+| `tribes-bench/calibration.toml` | `<pin at merge>` |
+| `tribes-bench/targets/stage2/smallvec-v0.6.13/lib.rs` | `<pin at merge>` |
+| `tribes-bench/targets/stage2/bugs.json` | `<pin at merge>` |
+
+**Non-determinism caveat** (plan Decision 6). The LLM backend is the
+dominant non-deterministic factor: even with identical seed prompts +
+identical CB budget + identical target, two runs through Claude (or any
+hosted LLM) will produce divergent finding sets. The harness pins
+`agentis --version`, the snapshot SHAs, and the LLM backend label
+(`runs/<ts>/llm-backend.txt`); the operator should record the LLM
+provider's model version separately. The comparison report's arithmetic
+is reproducible; the underlying telemetry is not byte-identical between
+runs.
+
+**M3 test inventory** (6 tribes-bench tests). Live-fire tests skip when
+agentis is not on PATH or no LLM API key is in env; fixture-driven tests
+always run:
+
+| Test | Mode |
+|---|---|
+| `tools/test-stage2-baseline-runner.sh` | static + opportunistic live smoke (15s) |
+| `tools/test-stage2-crash-recovery.sh` | static + opportunistic live drill |
+| `tools/test-stage2-analyse-comparison.sh` | fixture-only (no agentis spawn) |
+| `tools/test-stage2-scaffold.sh` | fixture-only (M1) |
+| `tools/test-stage2-cognitive-market.sh` | fixture-only (M2) |
+| `tools/test-stage2-reputation.sh` | fixture-only (M2) |
+
 ## Layout
 
 ```
