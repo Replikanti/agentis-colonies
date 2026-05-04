@@ -88,7 +88,7 @@ fn tick(reason: string) -> void {
 
     // Same seed prompt as tribe-alpha (format!()-as-shell-builder).
     let finding = prompt(
-        "Look for places where shell or process invocation incorporates string concatenation. Suspect any format!() that builds a command string. Return JSON: line (int, 1-indexed source line of the suspect call), severity (string, low|medium|high), rationale (string, one sentence), signature_hint (string, a short literal substring grep can find on that line).",
+        "Look for places where shell or process invocation incorporates string concatenation. Suspect any format!() that builds a command string. IMPORTANT — REPORT THE FUNCTION SIGNATURE LINE, NOT THE OPERATION LINE: when you spot a suspicious unsafe operation inside a function body, scroll up to find the function declaration line (e.g. `pub fn foo(...)` or `pub unsafe fn bar(...)`) and report THAT line number. The verifier matches at function-level granularity with ±5 line tolerance, anchored on the function signature. So if you find `ptr::write` at line 854 inside a function declared at line 827, report line=827, NOT line=854. Use signature_hint to record the function-name + parameter snippet (e.g. `pub fn insert_many` or `unsafe fn from_buf_and_len_unchecked`), NOT the operation. Return JSON: line (int, 1-indexed source line of the function signature where the suspect call lives), severity (string, low|medium|high), rationale (string, one sentence), signature_hint (string, a short literal substring (5-30 chars) of the function signature that grep can find on that line, e.g. `pub fn foo` or `unsafe fn bar`).",
         src
     ) -> Finding;
 
