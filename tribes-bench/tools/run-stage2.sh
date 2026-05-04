@@ -229,6 +229,23 @@ for tribe in tribe-alpha tribe-beta tribe-gamma tribe-delta tribe-epsilon; do
     fi
 done
 
+# #407: keep the in-source `cb <N>;` declaration aligned with the
+# calibration-driven INITIAL_CB. The daemon enforces the lower of the
+# in-source literal and colony.toml cb_budget, so both must match.
+# Idempotent — when cb 8000; matches initial_cb=8000, the rewrite is a
+# no-op. When operator overrides calibration past the literal, this fix
+# moves the literal too; otherwise the daemon would cap at the older
+# in-source value.
+for tribe in tribe-alpha tribe-beta tribe-gamma tribe-delta tribe-epsilon; do
+    target="$FED_DIR/$tribe/agents/hunter.ag"
+    if [ -f "$target" ]; then
+        python3 "$TOOLS_DIR/run-stage2-rewrite-cb-decl.py" "$target" "$INITIAL_CB" || {
+            echo "run-stage2: failed to rewrite cb decl in $target" >&2
+            exit 1
+        }
+    fi
+done
+
 # --- Export Stage 2 env consumed by hunter.ag via exec sh ---
 export TARGET_DIR="$FED_DIR/targets/stage2/smallvec-v0.6.13"
 export TARGET_FILE="lib.rs"
