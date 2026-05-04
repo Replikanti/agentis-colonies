@@ -20,7 +20,8 @@ type Finding {
     line: int,
     severity: string,
     rationale: string,
-    signature_hint: string
+    signature_hint: string,
+    class: string
 }
 
 fn get_confidence() -> float {
@@ -276,12 +277,15 @@ fn tick(reason: string) -> void {
         };
     };
 
-    // Tribe-beta seed prompt: source-to-sink data-flow heuristic.
-    // Plausibly equally good as tribe-alpha's format!()-pattern prompt;
-    // the calibration check (M4) reruns the experiment with prompts
-    // swapped between tribes if TP rates differ by >2x.
+    // Tribe-beta seed prompt (#421): retargeted from Stage 0
+    // source-to-sink heuristic to Stage 2 heap_overflow bug class.
+    // Smallvec-style `unsafe` libraries overflow the heap when capacity
+    // is reserved from an externally-controllable iterator's
+    // size_hint() / len() and the loop body trusts that hint without
+    // re-checking, so a malicious iterator that returns a small lower
+    // bound but yields more elements writes past the allocated buffer.
     let finding = prompt(
-        "Look for data flow from external input (function arguments, environment variables, file contents) into Command, sh, or any subprocess call. Suspect the path from source to sink. Return JSON: line (int, 1-indexed source line of the sink call), severity (string, low|medium|high), rationale (string, one sentence describing the source-to-sink path), signature_hint (string, a short literal substring grep can find on that line).",
+        "You are a Rust unsafe-code auditor scanning a smallvec-style library file. Look specifically for heap overflow: code that allocates capacity based on an externally-controllable iterator's size_hint() or len() and copies more elements than allocated when the iterator lies about its length. SmallVec / Vec methods named extend, insert_many, from_iter, append are the typical environment. The classic example is: let (lower, _) = iter.size_hint(); self.reserve(lower); for x in iter { unsafe { ptr::write(self.as_mut_ptr().add(idx), x); idx += 1; } } -- a hostile iterator returns lower=0 but yields N items, blowing past the buffer. Pay attention to size_hint, ptr::write, ptr::add, set_len without prior re-grow, missing capacity recheck inside the copy loop, and any unsafe block inside an iterator-driven extend / insert / append. Return JSON with these fields: line: int -- 1-indexed source line where the bug is, OR 0 if you genuinely cannot find one. severity: string -- low | medium | high. rationale: string -- one sentence explaining why this line is suspicious. signature_hint: string -- short literal substring (5-30 chars) that grep can find on that line; this lets the verifier confirm the line was not shifted by a code edit. class: string -- must be exactly \"heap_overflow\". Do NOT return line=0 unless you have genuinely scanned the file and found nothing. Default to your best guess on a suspicious unsafe operation if you are unsure.",
         src
     ) -> Finding;
 
@@ -308,7 +312,7 @@ fn tick(reason: string) -> void {
                 // only, and round-tripping LLM-tainted text through the
                 // JSON-on-stdin channel would force shell-vs-JSON quote
                 // interleaving with no benefit.
-                let finding_json = "{\"line\": " + to_string(finding.line) + "}";
+                let finding_json = "{\"line\": " + to_string(finding.line) + ", \"class\": \"" + finding.class + "\"}";
                 let verify_cmd = "printf '%s' " + shell_escape(finding_json) + " | bash \"$VERIFIER_PATH\"";
                 let verdict_raw = try {
                     exec sh verify_cmd;
