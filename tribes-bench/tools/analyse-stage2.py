@@ -123,6 +123,30 @@ def load_agent_to_tribe(daemon_dir: str) -> dict[str, str]:
     return out
 
 
+def load_agent_to_tribe_snapshot(run_dir: str) -> dict[str, str]:
+    """Stage 2 #416: read `<run-dir>/agent-tribe-map.json` written by
+    `run-stage2.sh` / `run-baseline.sh` BEFORE kill-federation cleared
+    the daemon registry. Returns an empty map when the snapshot is
+    missing or unparseable so the analyser falls back to the legacy
+    daemon-dir scan for runs from before this fix.
+    """
+    out: dict[str, str] = {}
+    path = os.path.join(run_dir, "agent-tribe-map.json")
+    if not os.path.isfile(path):
+        return out
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return out
+    if not isinstance(data, dict):
+        return out
+    for agent_id, tribe in data.items():
+        if isinstance(agent_id, str) and isinstance(tribe, str) and tribe:
+            out[agent_id] = tribe
+    return out
+
+
 def read_jsonl(path: str) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     if not os.path.isfile(path):
@@ -353,7 +377,12 @@ def main() -> None:
     first_finder_map = load_first_finder_map(run_dir)
     known_tribes_fs = discover_known_tribes(fed_dir)
 
-    agent_to_tribe = load_agent_to_tribe(daemon_dir)
+    # #416: prefer the snapshot taken before kill-federation cleared the
+    # registry; fall back to the daemon-dir scan for legacy runs from
+    # before that fix shipped.
+    agent_to_tribe = load_agent_to_tribe_snapshot(run_dir)
+    if not agent_to_tribe:
+        agent_to_tribe = load_agent_to_tribe(daemon_dir)
 
     # Per-minute aggregations, keyed by (minute, tribe).
     findings_by: dict[tuple[int, str], int] = defaultdict(int)

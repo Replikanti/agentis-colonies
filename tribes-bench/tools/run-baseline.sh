@@ -266,6 +266,12 @@ while [ "$elapsed" -lt "$WALL_CLOCK" ]; do
     echo "[run-baseline] snapshot $snap_path"
 done
 
+# #416: snapshot agent_id -> tribe mapping before kill-federation removes
+# the daemon registry. analyse-stage2.py reads this for tribe attribution.
+python3 "$TOOLS_DIR/snapshot-agent-tribe-map.py" "$AGENTIS_ROOT/daemon" \
+    > "$RUN_DIR/agent-tribe-map.json" || \
+    echo "run-baseline: agent-tribe-map snapshot failed" >&2
+
 # --- Reliable shutdown via tools/kill-federation.sh ---
 echo "[run-baseline] stopping baseline..."
 KILL_SCRIPT="$REPO_ROOT/tools/kill-federation.sh"

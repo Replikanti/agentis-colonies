@@ -347,6 +347,12 @@ while [ "$elapsed" -lt "$WALL_CLOCK" ]; do
     fi
 done
 
+# #416: snapshot agent_id -> tribe mapping before kill-federation removes
+# the daemon registry. analyse-stage2.py reads this for tribe attribution.
+python3 "$TOOLS_DIR/snapshot-agent-tribe-map.py" "$AGENTIS_ROOT/daemon" \
+    > "$RUN_DIR/agent-tribe-map.json" || \
+    echo "run-stage2: agent-tribe-map snapshot failed" >&2
+
 # --- Reliable shutdown via tools/kill-federation.sh ---
 echo "[run-stage2] stopping federation..."
 KILL_SCRIPT="$REPO_ROOT/tools/kill-federation.sh"
