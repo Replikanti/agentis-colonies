@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-05-02
+
+### Fixed
+
+- **dashboard**: per-agent table now correctly renders one row per `(colony, agent_name)` pair instead of collapsing N agents that share the same role basename across N colonies. Discovered when `tribes-bench` (5 colonies × 1 agent named `hunter` each) rendered a single row instead of 5. `dev-apprenticeship`'s 21 agents have unique role names so it was unaffected. Collector now keys `role_to_daemon` by `(colony, role)` tuple, derives the colony from the daemon's `source` field, and iterates the per-(colony, agent) records the entry script's `AGENT_COLONY_MAP` already builds rather than the flat `all_agents` list. Spend / cost aggregation switches from `name_to_colony[role]` to a new `id_to_colony[agent_id]` lookup so per-(agent, colony) cost stays attributed to the correct colony for N×same-role topologies. ([#412](https://github.com/Replikanti/agentis-colonies/issues/412))
+
 ## [0.8.0] — 2026-04-29
 
 ### Added
@@ -769,7 +775,8 @@ First release as a standalone component. Code extracted from
 For history prior to extraction, see
 `git log -- tools/federation-dashboard*`.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.8.0...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.9.0...HEAD
+[0.9.0]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.8.0...federation-dashboard-v0.9.0
 [0.8.0]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.7.0...federation-dashboard-v0.8.0
 [0.7.0]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.6.0...federation-dashboard-v0.7.0
 [0.6.0]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.5.0...federation-dashboard-v0.6.0
