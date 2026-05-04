@@ -56,7 +56,29 @@ daemons    = safe_json(daemons_json, [])
 agent_map  = safe_json(agent_map_json, [])
 colonies   = safe_json(colony_list_json, [])
 
-name_to_colony = {e.get('agent',''): e.get('colony','') for e in agent_map}
+# #412: index agent records by `(colony, role)` tuple instead of `role`
+# alone. Federations like `tribes-bench` run N colonies × 1 same-named
+# agent each (5 colonies × `hunter`), and a single-key map collapses the
+# N records into one — the per-agent table then renders 1 row instead of
+# N. Tuple keying preserves one record per (colony, agent_name) pair.
+# Federations with globally-unique agent names (e.g. `dev-apprenticeship`'s
+# 21 agents) are unaffected: every (colony, name) pair already maps to a
+# distinct entry under either keying.
+#
+# `name_to_colony` is preserved as a plain dict for backward compatibility
+# with the spend / lifecycle / id_to_role lookups below — those paths
+# resolve agent_id → role first, and collisions on `role` there are
+# benign (each agent_id is globally unique). The rendering loop uses
+# `agent_map` (list of {agent, colony} pairs) directly to iterate one
+# record per (colony, agent_name) pair without losing the colony binding.
+name_to_colony = {}
+for e in agent_map:
+    a = e.get('agent', '')
+    c = e.get('colony', '')
+    # First-seen wins — keep deterministic for downstream consumers that
+    # only need a single colony per role (id_to_role / spend bucketing).
+    if a and a not in name_to_colony:
+        name_to_colony[a] = c
 
 # #316 M5a: pre-compute multi-repo expansion per colony.
 # Each colony's `start-colony.sh --print-repos-json` echoes the
@@ -99,9 +121,22 @@ for colony in colonies:
         if owner and repo:
             repos_for_colony[colony].append((owner, repo))
 
-# Build role -> daemon mapping from daemon list source field
+# Build (colony, role) -> daemon mapping from daemon list source field.
+# #412: tuple keying so federations with N colonies × 1 same-named agent
+# (e.g. `tribes-bench` with 5 × `hunter`) keep one daemon record per
+# colony instead of collapsing all N into the last-seen entry. The colony
+# half comes from the `source` field's parent directory
+# (`tribe-alpha/agents/hunter.ag` → colony `tribe-alpha`, role `hunter`);
+# legacy single-segment sources fall back to the colony from `name_to_colony`
+# / a blank string so federations whose daemons predate the multi-segment
+# source convention still render a usable record.
 role_to_daemon = {}
 id_to_role = {}
+# #412: agent_id → colony lookup, used by the spend / cost aggregation
+# below to resolve a daemon's owning colony without going through the
+# (now-tuple) role_to_daemon map. agent_id is globally unique, so this
+# stays a flat dict.
+id_to_colony = {}
 for d in daemons:
     src = d.get('source') or ''
     if not src:
@@ -109,18 +144,51 @@ for d in daemons:
     role = os.path.basename(src)
     if role.endswith('.ag'):
         role = role[:-3]
-    role_to_daemon[role] = d
+    # Derive colony from source path: `<colony>/agents/<role>.ag` → `<colony>`.
+    parts = src.split('/')
+    daemon_colony = ''
+    if len(parts) >= 3 and parts[-2] == 'agents':
+        daemon_colony = parts[-3]
+    if not daemon_colony:
+        daemon_colony = name_to_colony.get(role, '')
+    role_to_daemon[(daemon_colony, role)] = d
     aid = d.get('agent_id') or ''
     if aid:
+        # id_to_role stays role-only (each agent_id is globally unique, no
+        # collision risk) — used by spend / lifecycle bucketing where the
+        # downstream consumers expect a bare role string.
         id_to_role[aid] = role
+        id_to_colony[aid] = daemon_colony
 
 result = []
 total_exp = 0
 colony_exp = {c: 0 for c in colonies}
 
-for agent in all_agents:
-    colony = name_to_colony.get(agent, '')
-    daemon = role_to_daemon.get(agent)
+# #412: iterate over `agent_map` (the per-(colony, agent) records the
+# entry script builds from the on-disk colony×agents/*.ag tree) instead
+# of the flat `all_agents` list, so each (colony, agent_name) pair gets
+# its own record. The flat list is preserved for backward compat with
+# callers that drive the collector directly (e.g. fixture tests) — when
+# `agent_map` is empty we fall back to the legacy single-record-per-name
+# iteration to keep that path byte-identical.
+agent_pairs = []
+for e in agent_map:
+    a = e.get('agent', '')
+    c = e.get('colony', '')
+    if a:
+        agent_pairs.append((c, a))
+if not agent_pairs:
+    # Legacy fallback: synthesize pairs from the flat list using the
+    # single-key colony map (same behaviour as pre-#412).
+    seen = set()
+    for a in all_agents:
+        if a in seen:
+            continue
+        seen.add(a)
+        agent_pairs.append((name_to_colony.get(a, ''), a))
+
+for colony, agent in agent_pairs:
+    daemon = role_to_daemon.get((colony, agent))
 
     rec = {
         'name': agent, 'colony': colony,
@@ -798,7 +866,7 @@ if not sidecar['installed'] and sidecar['last_tick_ts'] is not None:
 # wrapper already performs.
 TABLE_PIN_DATE = '2026-04-01'
 
-def collect_spend_log(spend_dir, name_to_colony, id_to_role, epoch_s):
+def collect_spend_log(spend_dir, id_to_colony, id_to_role, epoch_s):
     """Walk <spend_dir>/*.jsonl and aggregate cost into 3 windows + sparkline
     buckets. Returns the `cost` block embedded in the collector JSON output.
 
@@ -858,8 +926,11 @@ def collect_spend_log(spend_dir, name_to_colony, id_to_role, epoch_s):
         # Resolve agent SHA-8 to its colony via the daemon mapping; the
         # JSONL row also carries the colony, but the daemon mapping wins
         # when both disagree (matches experience-table behaviour).
+        # #412: agent_id → colony directly, so federations with N colonies
+        # × 1 same-named agent (e.g. tribes-bench's 5 hunters) attribute
+        # spend to the correct colony rather than the first-seen one.
         role = id_to_role.get(aid, '')
-        colony_from_map = name_to_colony.get(role, '')
+        colony_from_map = id_to_colony.get(aid, '')
         path = os.path.join(spend_dir, fn)
         # Bounded ring buffer of the last 5 valid rows for this agent. The
         # JSONL writer in #311 PR A appends only — newest is always at EOF —
@@ -997,7 +1068,7 @@ def collect_spend_log(spend_dir, name_to_colony, id_to_role, epoch_s):
 # resolved exp_dir avoids re-implementing the fed-local-first chain the
 # wrapper already encodes.
 spend_dir = os.path.join(os.path.dirname(exp_dir), 'spend') if exp_dir else ''
-cost = collect_spend_log(spend_dir, name_to_colony, id_to_role, epoch)
+cost = collect_spend_log(spend_dir, id_to_colony, id_to_role, epoch)
 
 
 # --- #359: per-minute burn rate + projections (Cost tab) ---
