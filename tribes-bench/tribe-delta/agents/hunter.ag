@@ -33,9 +33,9 @@ fn get_confidence() -> float {
 }
 
 fn tribe_name() -> string {
-    let n = try { exec sh "printenv TRIBE_NAME"; } catch e { ""; };
-    if len(n) > 0 {
-        return n;
+    let _tn = try { exec sh "printenv TRIBE_NAME"; } catch e { ""; };
+    if len(_tn) > 0 {
+        return _tn;
     };
     return "tribe-delta";
 }
