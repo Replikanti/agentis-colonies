@@ -194,6 +194,15 @@ if [ "$RESUMING" = "0" ] && [ -f "$CONFIG_FILE" ]; then
     if ! grep -q '^telemetry\.enabled' "$CONFIG_FILE"; then
         printf 'telemetry.enabled = true\n' >> "$CONFIG_FILE"
     fi
+    # #426: bump heartbeat-staleness budget. Default is tick_interval * 2
+    # = 120s, which kills any daemon whose LLM call takes longer than 2
+    # minutes. Real Claude Code calls on the smallvec target sometimes
+    # take 60-120s; combined with tick housekeeping the daemon misses
+    # heartbeat → watchdog kill cascade. 10-minute budget gives slow
+    # LLM rounds enough headroom without sacrificing crash detection.
+    if ! grep -q '^daemon\.heartbeat_interval_ms' "$CONFIG_FILE"; then
+        printf 'daemon.heartbeat_interval_ms = 600000\n' >> "$CONFIG_FILE"
+    fi
     # #423: agentis init emits `llm.backend = mock` as the default. The
     # harness writes `llm-backend.txt` for telemetry but never propagated
     # the chosen backend into the daemon config — every pilot silently
