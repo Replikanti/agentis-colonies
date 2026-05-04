@@ -194,6 +194,15 @@ if [ "$RESUMING" = "0" ] && [ -f "$CONFIG_FILE" ]; then
     if ! grep -q '^telemetry\.enabled' "$CONFIG_FILE"; then
         printf 'telemetry.enabled = true\n' >> "$CONFIG_FILE"
     fi
+    # #426: bump heartbeat-staleness budget. Default is tick_interval * 2
+    # = 120s, which kills any daemon whose LLM call takes longer than 2
+    # minutes. Real Claude Code calls on the smallvec target sometimes
+    # take 60-120s; combined with tick housekeeping the daemon misses
+    # heartbeat → watchdog kill cascade. 10-minute budget gives slow
+    # LLM rounds enough headroom without sacrificing crash detection.
+    if ! grep -q '^daemon\.heartbeat_interval_ms' "$CONFIG_FILE"; then
+        printf 'daemon.heartbeat_interval_ms = 600000\n' >> "$CONFIG_FILE"
+    fi
     # #423: agentis init emits `llm.backend = mock` as the default. The
     # harness writes `llm-backend.txt` for telemetry but never propagated
     # the chosen backend into the daemon config — every pilot silently
@@ -342,6 +351,15 @@ if ! kill -0 "$FED_PID" 2>/dev/null; then
     exit 2
 fi
 
+# #426: snapshot agent_id -> tribe map RIGHT AFTER spawn (5s post-launch)
+# instead of at end-of-pilot. Daemons that die mid-run (CB-exhaustion,
+# watchdog kill, llm.cancelled cascade) clean their .colony file on
+# shutdown, so an end-of-pilot snapshot misses them. The launch-time
+# snapshot captures all 5 tribes reliably.
+python3 "$TOOLS_DIR/snapshot-agent-tribe-map.py" "$AGENTIS_ROOT/daemon" \
+    > "$RUN_DIR/agent-tribe-map.json" || \
+    echo "run-stage2: agent-tribe-map snapshot at launch failed" >&2
+
 # --- Sleep the wall-clock cap with periodic snapshots ---
 # On resume, continue snapshot numbering from max(elapsed) of existing
 # snapshot files in <run>/snapshots/ (numeric stem) so the recovery-drill
@@ -385,11 +403,10 @@ while [ "$elapsed" -lt "$WALL_CLOCK" ]; do
     fi
 done
 
-# #416: snapshot agent_id -> tribe mapping before kill-federation removes
-# the daemon registry. analyse-stage2.py reads this for tribe attribution.
-python3 "$TOOLS_DIR/snapshot-agent-tribe-map.py" "$AGENTIS_ROOT/daemon" \
-    > "$RUN_DIR/agent-tribe-map.json" || \
-    echo "run-stage2: agent-tribe-map snapshot failed" >&2
+# #426: agent-tribe-map snapshot was moved from here to right after
+# start-federation.sh + sleep 5 (post-launch). Daemons that die mid-run
+# clean their .colony file on shutdown — an end-of-pilot snapshot would
+# miss them.
 
 # --- Reliable shutdown via tools/kill-federation.sh ---
 echo "[run-stage2] stopping federation..."

@@ -167,6 +167,12 @@ if [ -f "$CONFIG_FILE" ]; then
     if ! grep -q '^telemetry\.enabled' "$CONFIG_FILE"; then
         printf 'telemetry.enabled = true\n' >> "$CONFIG_FILE"
     fi
+    # #426: bump heartbeat-staleness budget so slow LLM calls don't
+    # trigger watchdog kill (default 120s, real Claude responses can
+    # exceed it; 10 min is generous).
+    if ! grep -q '^daemon\.heartbeat_interval_ms' "$CONFIG_FILE"; then
+        printf 'daemon.heartbeat_interval_ms = 600000\n' >> "$CONFIG_FILE"
+    fi
     # #423: agentis init defaults to `llm.backend = mock`. Force-rewrite
     # to the harness-resolved backend so prompt() actually calls the LLM.
     RESOLVED_BACKEND="$LLM_BACKEND"
