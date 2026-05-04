@@ -190,7 +190,7 @@ run_verifier_case "good: S2-SMVUAF-002 (grow UAF)" "true" "S2-SMVUAF-002" \
 run_verifier_case "good: S2-SMVMEM-002 (grow corruption)" "true" "S2-SMVMEM-002" \
     '{"line": 656, "class": "memory_corruption"}'
 run_verifier_case "good: S2-SMVOFL-001 (insert_many size_hint)" "true" "S2-SMVOFL-001" \
-    '{"line": 833, "class": "heap_overflow"}'
+    '{"line": 827, "class": "heap_overflow"}'
 
 # Known-bad: line outside any window (off-by-much).
 run_verifier_case "bad: line outside any planted bug window" "false" "" \
