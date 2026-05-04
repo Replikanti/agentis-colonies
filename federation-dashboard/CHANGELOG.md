@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-05-04
+
+### Fixed
+
+- **dashboard**: click-handlers (`openDetail`, `restartAgent`, `quarantineAgent`, `evolveAgent`, `setConfidence`) and `agentByName` lookups in the embedded JS now key by `(colony, name)` composite. Without this fix, federations with N agents sharing a role basename across N colonies (e.g. `tribes-bench`'s 5×hunter topology) had click-actions that all resolved to the same record (last-write-wins on a name-only dict). PR #413 fixed the collector data shape so each `(colony, role)` pair gets its own agent record; this fix cascades the (colony, role) keying through the template's JS layer + the `/restart`, `/quarantine`, `/evolve`, `/confidence` server endpoints. Per-row HTML now carries `data-colony` alongside `data-agent`. Single-arg legacy callers (e.g. third-party scrapers) keep working — handlers detect the old shape and fall through to a name-only server lookup, matching pre-#414 behaviour for federations whose role names are globally unique (e.g. `dev-apprenticeship`). `WHY_REGISTRY` keys grew a `colony` prefix so two open modals for same-named agents in different colonies don't overwrite each other's gate state. ([#414](https://github.com/Replikanti/agentis-colonies/issues/414))
+
 ## [0.9.0] — 2026-05-02
 
 ### Fixed

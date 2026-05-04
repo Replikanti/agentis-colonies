@@ -2317,7 +2317,9 @@ function renderAgentTable(data) {
     // Forge Rate Limits row + agent list moved into a per-colony modal
     // when Overview shed its Forge tile). event.stopPropagation() so the
     // row's openDetail() handler doesn't also fire on a colony-cell click.
-    html += '<tr class="clickable" onclick="openDetail(\'' + esc(a.name) + '\')">' +
+    // #414: openDetail() now takes (colony, name) so N×same-role rows
+    // resolve to the correct per-tribe agent record.
+    html += '<tr class="clickable" data-agent="' + esc(a.name) + '" data-colony="' + esc(a.colony || '') + '" onclick="openDetail(\'' + esc(a.colony || '') + '\',\'' + esc(a.name) + '\')">' +
       '<td class="agent-name">' + esc(a.name) + '</td>' +
       '<td class="colony-name colony-clickable" onclick="event.stopPropagation();showColonyModal(\'' + esc(a.colony) + '\')" title="Open colony view">' + esc(a.colony) + '</td>' +
       '<td>' + confHtml + '</td>' +
@@ -3163,10 +3165,14 @@ function renderEventTimeline(data) {
   const autoHideStale = (localStorage.getItem(TIMELINE_AUTO_HIDE_STALE_KEY) === 'on');
   const colonyFilter = localStorage.getItem(TIMELINE_COLONY_FILTER_KEY) || '';
 
-  // Index agents by name for O(1) `agent_last_ok_ts` lookup in the
-  // stale-error filter.
-  const agentByName = {};
-  agents.forEach(a => { agentByName[a.name] = a; });
+  // Index agents by `(colony, name)` composite key for O(1)
+  // `agent_last_ok_ts` lookup in the stale-error filter. #414: switched
+  // from a name-only key after PR #413 fixed the collector data shape —
+  // a name-only key collapsed N×same-role agents to one record (e.g.
+  // tribes-bench's 5×hunter), so timeline rows for hunters in tribe-A
+  // would read tribe-E's `agent_last_ok_ts`.
+  const agentByKey = {};
+  agents.forEach(a => { agentByKey[(a.colony || '') + ':' + a.name] = a; });
   const nowMs = Date.now();
 
   // The federation-wide stream: each row carries {ts, agent_id, kind,
@@ -3186,7 +3192,9 @@ function renderEventTimeline(data) {
     if (r.ts && cursorClass[ckey] && r.ts < cursorClass[ckey]) return false;
     if (r.ts && dismissed.has(agentName + ':' + r.ts)) return false;
     if (autoHideStale && r.severity === 'error') {
-      const a = agentByName[agentName];
+      // #414: timeline rows carry both `agent_name` and `colony`; key
+      // by the composite so N×same-role topologies hit the right row.
+      const a = agentByKey[(r.colony || '') + ':' + agentName];
       if (a && a.agent_last_ok_ts && (nowMs - a.agent_last_ok_ts) >= TIMELINE_STALE_WINDOW_MS) {
         return false;
       }
@@ -3379,7 +3387,8 @@ function renderEventTimeline(data) {
       allRows.forEach(r => {
         if (r.severity !== 'error') return;
         const agentName = r.agent_name || '';
-        const a = agentByName[agentName];
+        // #414: composite-key lookup matches the rendering filter above.
+        const a = agentByKey[(r.colony || '') + ':' + agentName];
         if (!a || !a.agent_last_ok_ts) return;
         if ((stamp - a.agent_last_ok_ts) >= TIMELINE_STALE_WINDOW_MS) return;
         const k = agentName + ':' + (r.kind || '');
@@ -3572,8 +3581,14 @@ function renderPromoteCandidates(data) {
     return name.slice(0, max - 1) + '…';
   }
 
-  const agentByName = {};
-  agents.forEach(a => { agentByName[a.name] = a; });
+  // #414: composite (colony, name) key. Decision records carry both
+  // `colony` and `agent` post-#412, so we look up the per-(colony, role)
+  // record rather than the last-write-wins single-key entry. Without
+  // this, federations with N×same-role agents (e.g. tribes-bench's 5
+  // hunters) would have all 5 promote-candidate bars resolve to the
+  // same agent record.
+  const agentByKey = {};
+  agents.forEach(a => { agentByKey[(a.colony || '') + ':' + a.name] = a; });
 
   // The agent's runtime tier (used to exclude already-autonomous agents
   // from the bar list — they have no further promote step).
@@ -3587,7 +3602,7 @@ function renderPromoteCandidates(data) {
   }
 
   decisions.forEach(d => {
-    const a = agentByName[d.agent];
+    const a = agentByKey[(d.colony || '') + ':' + d.agent];
     if (!a) return;
     const ev = d.evidence || {};
 
@@ -3632,10 +3647,10 @@ function renderPromoteCandidates(data) {
     if (d.decision === 'promote') {
       const promoteGate = actionGate(a, 'promote', d.to);
       if (!promoteGate.enabled) {
-        registerWhy(a.name, 'rec-promote', promoteGate);
+        registerWhy(a.colony || '', a.name, 'rec-promote', promoteGate);
         skippedHtml += '<div class="skipped-row"><span class="agent-name">' + esc(a.name) + '</span>';
         skippedHtml += '<span>— promote to ' + d.to.toFixed(2) + ' would be a no-op at this source</span>';
-        skippedHtml += '<span class="skipped-info" onclick="showWhy(\'' + esc(a.name) + '\',\'rec-promote\')">why?</span></div>';
+        skippedHtml += '<span class="skipped-info" onclick="showWhy(\'' + esc(a.colony || '') + '\',\'' + esc(a.name) + '\',\'rec-promote\')">why?</span></div>';
         skippedCount++;
         return;
       }
@@ -4158,8 +4173,11 @@ function renderStatusAgentTable(data) {
   rows.forEach(function (r) {
     const a = r.a;
     const confTxt = (r.conf == null) ? '—' : r.conf.toFixed(2);
-    html += '<tr class="clickable" data-agent="' + esc(a.name) + '" ' +
-            'onclick="openDetail(\'' + esc(a.name) + '\')">';
+    // #414: row carries `data-colony` alongside `data-agent` so any
+    // delegated handler picks the correct per-tribe record; openDetail
+    // takes the (colony, name) pair.
+    html += '<tr class="clickable" data-agent="' + esc(a.name) + '" data-colony="' + esc(a.colony || '') + '" ' +
+            'onclick="openDetail(\'' + esc(a.colony || '') + '\',\'' + esc(a.name) + '\')">';
     html += '<td><span class="status-agent-state-dot ' + r.dotCls + '"></span>' +
             esc(a.state || '?') + '</td>';
     html += '<td><span class="agent-name">' + esc(a.name) + '</span></td>';
@@ -4275,8 +4293,11 @@ function renderRecoveryAgents(data) {
     html += '<td>' + esc(a.state || '?') + '</td>';
     html += '<td>' + pidAliveTxt + '</td>';
     html += '<td>';
+    // #414: pass (colony, name) so N×same-role topologies kick the
+    // correct daemon. The button stays disabled when the row's agent
+    // is already running, mirroring the per-row data attributes.
     html += '<button class="recovery-row-restart-btn" ' +
-            'onclick="restartAgent(\'' + esc(a.name) + '\')"' +
+            'onclick="restartAgent(\'' + esc(a.colony || '') + '\',\'' + esc(a.name) + '\')"' +
             (isRunning ? ' disabled title="Already running"' : '') +
             '>Restart</button>';
     html += '</td>';
@@ -4466,14 +4487,25 @@ function renderConfigMatrix(data) {
 // --- Single-agent restart helper (Recovery tab per-row button) ---
 // Mirrors restartAllStopped() but for one agent. POSTs /restart with
 // the agent name in the body — reuses the existing legacy endpoint.
-function restartAgent(name) {
+// #414: now takes (colony, name) and POSTs both so N×same-role
+// federations restart the correct daemon. Single-arg legacy callers
+// still work (the server falls back to its name-only `agent_to_colony`
+// lookup when `colony` is empty / missing).
+function restartAgent(colony, name) {
+  // Back-compat: legacy single-arg form is `restartAgent(name)`.
+  if (name === undefined) {
+    name = colony;
+    colony = '';
+  }
   if (!name) return;
-  if (!confirm('Restart agent ' + name + '?')) return;
+  if (!confirm('Restart agent ' + name + (colony ? ' (' + colony + ')' : '') + '?')) return;
   showSimpleToast('Restarting ' + name + '…', 'var(--yellow)');
+  let body = 'agent=' + encodeURIComponent(name);
+  if (colony) body += '&colony=' + encodeURIComponent(colony);
   fetch('/restart', {
     method: 'POST',
     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-    body: 'agent=' + encodeURIComponent(name),
+    body: body,
   })
     .then(r => r.text().then(t => ({status: r.status, body: t})))
     .then(({status, body}) => {
@@ -4668,16 +4700,36 @@ document.addEventListener('click', function(e) {
 // Stash gate objects keyed by agent+slot so onclick handlers can look them up
 // (avoids embedding JSON.stringify in HTML attributes).
 const WHY_REGISTRY = {};
-function registerWhy(agentName, slot, gate) {
-  WHY_REGISTRY[agentName + '|' + slot] = gate;
+// #414: WHY_REGISTRY keys grew a `colony` prefix so N×same-role
+// federations don't have two agents stomping on each other's `promote`
+// / `demote` / `evolve` slots. Callers (registerWhy/showWhy) must pass
+// the same colony for the registration and the open call.
+function registerWhy(colony, agentName, slot, gate) {
+  WHY_REGISTRY[colony + '|' + agentName + '|' + slot] = gate;
 }
-function showWhy(agentName, slot) {
-  openWhyPanel(agentName, WHY_REGISTRY[agentName + '|' + slot]);
+function showWhy(colony, agentName, slot) {
+  openWhyPanel(agentName, WHY_REGISTRY[colony + '|' + agentName + '|' + slot]);
 }
 
 // --- Detail Modal ---
-function openDetail(agentName) {
-  const a = agents.find(x => x.name === agentName);
+// #414: openDetail() takes (colony, agentName). N×same-role federations
+// (e.g. tribes-bench's 5×hunter) need both halves to resolve to the
+// correct per-colony record — passing only the role basename
+// last-write-wins onto whichever record was inserted into `agents` last.
+// The single-arg form (legacy callers) still works: when `colony` is
+// missing/empty we fall back to find-by-name (matches pre-#414
+// behaviour for federations whose role names are globally unique).
+function openDetail(colony, agentName) {
+  // Back-compat: the legacy single-arg form is `openDetail(name)`.
+  // Detect by sniffing the first argument's role: if the second arg is
+  // missing, treat the first as the agent name.
+  if (agentName === undefined) {
+    agentName = colony;
+    colony = '';
+  }
+  const a = colony
+    ? agents.find(x => x.name === agentName && (x.colony || '') === colony)
+    : agents.find(x => x.name === agentName);
   if (!a) return;
   const modal = document.getElementById('detail-modal');
   const body = document.getElementById('modal-body');
@@ -4965,31 +5017,35 @@ function openDetail(agentName) {
   const upGate = actionGate(a, 'promote', up);
   const downGate = actionGate(a, 'demote', down);
   const evolveGate = actionGate(a, 'evolve', null);
-  registerWhy(a.name, 'promote', upGate);
-  registerWhy(a.name, 'demote', downGate);
-  registerWhy(a.name, 'evolve', evolveGate);
+  // #414: include colony in the WHY_REGISTRY key so two open modals for
+  // same-named agents in different colonies don't overwrite each other's
+  // gate state.
+  const aColony = a.colony || '';
+  registerWhy(aColony, a.name, 'promote', upGate);
+  registerWhy(aColony, a.name, 'demote', downGate);
+  registerWhy(aColony, a.name, 'evolve', evolveGate);
 
   const promoteLabel = '\u25B2 Promote' + (up != null ? ' to ' + up.toFixed(2) : '');
   if (upGate.enabled) {
-    html += '<button class="action-btn promote" title="' + esc(upGate.reason) + '" onclick="setConfidence(\'' + esc(a.name) + '\',' + up + ')">' + promoteLabel + '</button>';
+    html += '<button class="action-btn promote" title="' + esc(upGate.reason) + '" onclick="setConfidence(\'' + esc(aColony) + '\',\'' + esc(a.name) + '\',' + up + ')">' + promoteLabel + '</button>';
   } else {
-    html += '<button class="action-btn promote is-disabled" data-why="promote" title="' + esc(upGate.reason) + ' (click for details)" onclick="showWhy(\'' + esc(a.name) + '\',\'promote\')">' + promoteLabel + '</button>';
+    html += '<button class="action-btn promote is-disabled" data-why="promote" title="' + esc(upGate.reason) + ' (click for details)" onclick="showWhy(\'' + esc(aColony) + '\',\'' + esc(a.name) + '\',\'promote\')">' + promoteLabel + '</button>';
   }
 
   const demoteLabel = '\u25BC Demote' + (down != null ? ' to ' + down.toFixed(2) : '');
   if (downGate.enabled) {
-    html += '<button class="action-btn demote" title="' + esc(downGate.reason) + '" onclick="setConfidence(\'' + esc(a.name) + '\',' + down + ')">' + demoteLabel + '</button>';
+    html += '<button class="action-btn demote" title="' + esc(downGate.reason) + '" onclick="setConfidence(\'' + esc(aColony) + '\',\'' + esc(a.name) + '\',' + down + ')">' + demoteLabel + '</button>';
   } else {
-    html += '<button class="action-btn demote is-disabled" data-why="demote" title="' + esc(downGate.reason) + ' (click for details)" onclick="showWhy(\'' + esc(a.name) + '\',\'demote\')">' + demoteLabel + '</button>';
+    html += '<button class="action-btn demote is-disabled" data-why="demote" title="' + esc(downGate.reason) + ' (click for details)" onclick="showWhy(\'' + esc(aColony) + '\',\'' + esc(a.name) + '\',\'demote\')">' + demoteLabel + '</button>';
   }
 
-  html += '<button class="action-btn restart" title="Stop the daemon and respawn it (preserves confidence + experience)." onclick="restartAgent(\'' + esc(a.name) + '\')">\u21BB Restart</button>';
-  html += '<button class="action-btn quarantine-btn" title="Mark the agent as quarantined: it stops ticking until reset." onclick="quarantineAgent(\'' + esc(a.name) + '\')">\u2298 Quarantine</button>';
+  html += '<button class="action-btn restart" title="Stop the daemon and respawn it (preserves confidence + experience)." onclick="restartAgent(\'' + esc(aColony) + '\',\'' + esc(a.name) + '\')">\u21BB Restart</button>';
+  html += '<button class="action-btn quarantine-btn" title="Mark the agent as quarantined: it stops ticking until reset." onclick="quarantineAgent(\'' + esc(aColony) + '\',\'' + esc(a.name) + '\')">\u2298 Quarantine</button>';
 
   if (evolveGate.enabled) {
-    html += '<button class="action-btn evolve" title="' + esc(evolveGate.reason) + '" onclick="evolveAgent(\'' + esc(a.name) + '\')">\u2197 Evolve</button>';
+    html += '<button class="action-btn evolve" title="' + esc(evolveGate.reason) + '" onclick="evolveAgent(\'' + esc(aColony) + '\',\'' + esc(a.name) + '\')">\u2197 Evolve</button>';
   } else {
-    html += '<button class="action-btn evolve is-disabled" data-why="evolve" title="' + esc(evolveGate.reason) + ' (click for details)" onclick="showWhy(\'' + esc(a.name) + '\',\'evolve\')">\u2197 Evolve</button>';
+    html += '<button class="action-btn evolve is-disabled" data-why="evolve" title="' + esc(evolveGate.reason) + ' (click for details)" onclick="showWhy(\'' + esc(aColony) + '\',\'' + esc(a.name) + '\',\'evolve\')">\u2197 Evolve</button>';
   }
 
   if (a.pid > 0 && !a.pid_alive && a.agent_id) {
@@ -5137,7 +5193,9 @@ function showColonyModal(colonyName) {
             '</tr>';
     colonyAgents.forEach(a => {
       const conf = (a.confidence == null) ? '—' : a.confidence.toFixed(2);
-      html += '<tr class="clickable" onclick="closeColonyModal();openDetail(\'' + esc(a.name) + '\')">';
+      // #414: openDetail takes (colony, name) so the right per-tribe
+      // record opens even when role basenames repeat across colonies.
+      html += '<tr class="clickable" data-agent="' + esc(a.name) + '" data-colony="' + esc(a.colony || '') + '" onclick="closeColonyModal();openDetail(\'' + esc(a.colony || '') + '\',\'' + esc(a.name) + '\')">';
       html += '<td class="agent-name">' + esc(a.name) + '</td>';
       html += '<td>' + esc(a.state || '—') + '</td>';
       html += '<td>' + conf + '</td>';
@@ -5178,14 +5236,23 @@ function nextStep(cur, dir) {
   return CONF_STEPS[target];
 }
 
-function setConfidence(agent, value) {
+function setConfidence(colony, agent, value) {
+  // #414: signature is now (colony, agent, value). The legacy two-arg
+  // form (`setConfidence(name, value)` from third-party callers) is
+  // detected by sniffing the second argument's type — when it's a
+  // number, treat the first arg as the agent name.
+  if (typeof agent === 'number' && value === undefined) {
+    value = agent;
+    agent = colony;
+    colony = '';
+  }
   // #177: confirm only at the autonomous boundary (terminal writes such
   // as merge / tag / publish). Review-gated (0.8) still allows direct
   // non-terminal writes, which are individually auditable.
   // #257: vocabulary stays federation-agnostic — the dashboard ships as
   // a standalone component and must not assume a specific forge workflow.
   if (value >= 0.95) {
-    if (!confirm('Promote ' + agent + ' to ' + value.toFixed(2) + ' (AUTONOMOUS)?\n\nAt this level the agent will perform irreversible actions \u2014 merging changes, tagging releases, publishing artifacts. Proceed?')) {
+    if (!confirm('Promote ' + agent + (colony ? ' (' + colony + ')' : '') + ' to ' + value.toFixed(2) + ' (AUTONOMOUS)?\n\nAt this level the agent will perform irreversible actions \u2014 merging changes, tagging releases, publishing artifacts. Proceed?')) {
       return;
     }
   }
@@ -5198,7 +5265,8 @@ function setConfidence(agent, value) {
   const t3 = setTimeout(() => { toast.setStep('spawn', 'done'); toast.setStep('verify', 'active'); }, 15000);
   const clearFakes = () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
 
-  const body = 'agent=' + encodeURIComponent(agent) + '&value=' + encodeURIComponent(value);
+  let body = 'agent=' + encodeURIComponent(agent) + '&value=' + encodeURIComponent(value);
+  if (colony) body += '&colony=' + encodeURIComponent(colony);
   fetch('/confidence', {
     method: 'POST',
     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
@@ -5340,15 +5408,27 @@ function createProgressToast(agent, requestedValue) {
 }
 
 // --- Action handlers ---
-function restartAgent(agent) {
-  if (!confirm('Restart daemon for ' + agent + '?')) return;
+// #414: each handler now takes (colony, agent) and POSTs both so
+// N\u00d7same-role federations route to the correct daemon. Single-arg
+// legacy form `handler(name)` still works (the server falls back to
+// its name-only `agent_to_colony` lookup when `colony` is missing /
+// empty), preserving pre-#414 behaviour for federations whose role
+// names are globally unique (e.g. dev-apprenticeship).
+function restartAgent(colony, agent) {
+  if (agent === undefined) {
+    agent = colony;
+    colony = '';
+  }
+  if (!confirm('Restart daemon for ' + agent + (colony ? ' (' + colony + ')' : '') + '?')) return;
   const m = document.querySelector('meta[http-equiv="refresh"]');
   if (m) m.remove();
   showSimpleToast('Restarting ' + agent + '\u2026', 'var(--yellow)');
+  let body = 'agent=' + encodeURIComponent(agent);
+  if (colony) body += '&colony=' + encodeURIComponent(colony);
   fetch('/restart', {
     method: 'POST',
     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-    body: 'agent=' + encodeURIComponent(agent),
+    body: body,
   })
     .then(r => r.ok ? r.json() : r.text().then(t => { throw new Error(t); }))
     .then(d => {
@@ -5359,24 +5439,36 @@ function restartAgent(agent) {
     .catch(e => { showSimpleToast('Error: ' + e.message, 'var(--red)'); scheduleReload(10000); });
 }
 
-function quarantineAgent(agent) {
-  if (!confirm('Quarantine ' + agent + '? This will stop the agent from acting.')) return;
+function quarantineAgent(colony, agent) {
+  if (agent === undefined) {
+    agent = colony;
+    colony = '';
+  }
+  if (!confirm('Quarantine ' + agent + (colony ? ' (' + colony + ')' : '') + '? This will stop the agent from acting.')) return;
+  let body = 'agent=' + encodeURIComponent(agent);
+  if (colony) body += '&colony=' + encodeURIComponent(colony);
   fetch('/quarantine', {
     method: 'POST',
     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-    body: 'agent=' + encodeURIComponent(agent),
+    body: body,
   })
     .then(r => r.ok ? r.json() : r.text().then(t => { throw new Error(t); }))
     .then(d => { showSimpleToast(d.message || 'Quarantine sent', 'var(--magenta)'); scheduleReload(5000); })
     .catch(e => { showSimpleToast('Error: ' + e.message, 'var(--red)'); });
 }
 
-function evolveAgent(agent) {
-  if (!confirm('Trigger evolution for ' + agent + '?')) return;
+function evolveAgent(colony, agent) {
+  if (agent === undefined) {
+    agent = colony;
+    colony = '';
+  }
+  if (!confirm('Trigger evolution for ' + agent + (colony ? ' (' + colony + ')' : '') + '?')) return;
+  let body = 'agent=' + encodeURIComponent(agent);
+  if (colony) body += '&colony=' + encodeURIComponent(colony);
   fetch('/evolve', {
     method: 'POST',
     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-    body: 'agent=' + encodeURIComponent(agent),
+    body: body,
   })
     .then(r => r.ok ? r.json() : r.text().then(t => { throw new Error(t); }))
     .then(d => { showSimpleToast(d.message || 'Evolve triggered', 'var(--cyan)'); scheduleReload(5000); })

@@ -36,6 +36,14 @@ except (json.JSONDecodeError, ValueError, IndexError):
     _map = []
 fed_tools_dir = sys.argv[7] if len(sys.argv) > 7 else ''
 agent_to_colony = {e.get('agent',''): e.get('colony','') for e in _map if e.get('agent')}
+# #414: (colony, agent_name) → True allowlist so /restart, /quarantine,
+# /evolve, /confidence can disambiguate N×same-role topologies (e.g.
+# tribes-bench's 5 colonies × 1 `hunter`). Single-key `agent_to_colony`
+# above is kept for back-compat with callers that still POST `agent` only
+# — when no `colony` field accompanies the request we fall back to its
+# (last-write-wins) lookup, matching pre-#414 behaviour for federations
+# whose role names are globally unique (e.g. dev-apprenticeship).
+agent_colony_pairs = {(e.get('colony',''), e.get('agent','')) for e in _map if e.get('agent')}
 os.chdir(serve_dir)
 fed_dir = os.path.dirname(serve_dir)
 confidence_log = os.path.join(serve_dir, 'confidence-log.jsonl')
@@ -327,10 +335,19 @@ def list_daemons():
         return []
 
 
-def find_agent_daemon(agent):
+def find_agent_daemon(agent, colony=''):
     """Return the running daemon record whose source basename matches
-    <agent>.ag, or None."""
+    <agent>.ag, or None.
+
+    #414: when `colony` is non-empty, also require the daemon's `source`
+    starts with `<colony>/agents/` so N×same-role topologies (e.g.
+    tribes-bench's 5×hunter across 5 colonies) match the correct row.
+    Empty `colony` keeps pre-#414 behaviour (first-running, then any-match
+    by basename) — back-compat for /restart, /quarantine and /confidence
+    callers that still POST `agent` alone.
+    """
     ag_file = f'{agent}.ag'
+    expect_prefix = f'{colony}/agents/' if colony else ''
     running = None
     any_match = None
     for d in list_daemons():
@@ -338,6 +355,8 @@ def find_agent_daemon(agent):
         if not src:
             continue
         if os.path.basename(src) != ag_file:
+            continue
+        if expect_prefix and not src.startswith(expect_prefix):
             continue
         any_match = any_match or d
         if d.get('state') == 'running' and running is None:
@@ -403,7 +422,7 @@ def build_manual_command(colony, colony_dir, agent_file):
     return f'{shlex.quote(start_script)} --restart-agent {shlex.quote(agent_name)}'
 
 
-def restart_daemon(agent):
+def restart_daemon(agent, colony=''):
     """Stop+cleanup+respawn sequence for one agent (#137 Option 2).
 
     #257: spawning is delegated to <colony>/scripts/start-colony.sh
@@ -413,6 +432,11 @@ def restart_daemon(agent):
     itself. Stop + sidecar cleanup + spawn verification stay here
     because they depend only on the agentis runtime, not on the
     federation type.
+
+    #414: when `colony` is non-empty, use it directly (lets N×same-role
+    topologies disambiguate). Empty falls back to the legacy
+    `agent_to_colony[agent]` lookup, preserving pre-#414 behaviour for
+    federations whose role names are globally unique.
     """
     events = []
 
@@ -421,7 +445,8 @@ def restart_daemon(agent):
         entry.update(kw)
         events.append(entry)
 
-    colony = agent_to_colony.get(agent, '')
+    if not colony:
+        colony = agent_to_colony.get(agent, '')
     if not colony:
         rec('lookup', 'error', message=f'no colony mapping for {agent}')
         return {
@@ -451,7 +476,9 @@ def restart_daemon(agent):
 
     manual_cmd = build_manual_command(colony, colony_dir, agent_file)
 
-    old = find_agent_daemon(agent)
+    # #414: scope the lookup to this colony so an N×same-role federation
+    # (e.g. tribes-bench's 5×hunter) restarts the correct daemon.
+    old = find_agent_daemon(agent, colony=colony)
     old_agent_id = (old or {}).get('agent_id') or ''
     old_pid = (old or {}).get('pid') or 0
     old_started_at = (old or {}).get('started_at') or 0
@@ -553,6 +580,10 @@ def restart_daemon(agent):
             src = d.get('source') or ''
             if not src or os.path.basename(src) != f'{agent}.ag':
                 continue
+            # #414: same-role daemons in other colonies must not be
+            # mistaken for "the freshly respawned one we just kicked".
+            if colony and not src.startswith(f'{colony}/agents/'):
+                continue
             if d.get('state') != 'running':
                 continue
             new_pid = d.get('pid') or 0
@@ -599,6 +630,26 @@ def restart_daemon(agent):
 # endpoint reads from this file. Missing file is non-fatal: /timeline
 # returns 200 with an empty rows array so the client can degrade gracefully.
 timeline_full_path = os.path.join(serve_dir, 'timeline-full.jsonl')
+
+
+def _resolve_agent_colony(agent, colony):
+    """#414: validate that (colony, agent) is a known pair (or, when
+    `colony` is empty, that `agent` exists at all). Returns the resolved
+    colony string (possibly looked up from the legacy single-key map when
+    the caller omitted it), or None when the pair is unknown.
+
+    Empty-colony callers preserve pre-#414 behaviour for federations
+    whose role names are globally unique (e.g. dev-apprenticeship).
+    Colony-aware callers (post-#414 dashboards) get a hard rejection on
+    unknown (colony, agent) so the operator never sees a no-op restart.
+    """
+    if agent not in allowed_agents:
+        return None
+    if colony:
+        if (colony, agent) not in agent_colony_pairs:
+            return None
+        return colony
+    return agent_to_colony.get(agent, '')
 
 
 def _serve_timeline(handler):
@@ -876,12 +927,17 @@ class Handler(SimpleHTTPRequestHandler):
                 self.wfile.write(b'malformed form body')
                 return
             agent = (params.get('agent') or [''])[0]
+            colony = (params.get('colony') or [''])[0]
             value_raw = (params.get('value') or [''])[0]
-            if agent not in allowed_agents:
+            resolved_colony = _resolve_agent_colony(agent, colony)
+            if resolved_colony is None:
                 self.send_response(400)
                 self.send_header('Content-Type', 'text/plain')
                 self.end_headers()
-                self.wfile.write(f'unknown agent: {agent!r}'.encode())
+                if colony:
+                    self.wfile.write(f'unknown (colony, agent): ({colony!r}, {agent!r})'.encode())
+                else:
+                    self.wfile.write(f'unknown agent: {agent!r}'.encode())
                 return
             try:
                 value = float(value_raw)
@@ -928,12 +984,13 @@ class Handler(SimpleHTTPRequestHandler):
                 audit_ok = True
             except OSError:
                 pass
-            restart = restart_daemon(agent)
+            restart = restart_daemon(agent, colony=resolved_colony)
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps({
                 'agent': agent,
+                'colony': resolved_colony,
                 'value': f'{value:.3f}',
                 'memo_written': True,
                 'audit_logged': audit_ok,
@@ -960,13 +1017,18 @@ class Handler(SimpleHTTPRequestHandler):
                 self.wfile.write(b'malformed form body')
                 return
             agent = (params.get('agent') or [''])[0]
-            if agent not in allowed_agents:
+            colony = (params.get('colony') or [''])[0]
+            resolved_colony = _resolve_agent_colony(agent, colony)
+            if resolved_colony is None:
                 self.send_response(400)
                 self.send_header('Content-Type', 'text/plain')
                 self.end_headers()
-                self.wfile.write(f'unknown agent: {agent!r}'.encode())
+                if colony:
+                    self.wfile.write(f'unknown (colony, agent): ({colony!r}, {agent!r})'.encode())
+                else:
+                    self.wfile.write(f'unknown agent: {agent!r}'.encode())
                 return
-            result = restart_daemon(agent)
+            result = restart_daemon(agent, colony=resolved_colony)
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
@@ -991,13 +1053,18 @@ class Handler(SimpleHTTPRequestHandler):
                 self.wfile.write(b'malformed form body')
                 return
             agent = (params.get('agent') or [''])[0]
-            if agent not in allowed_agents:
+            colony = (params.get('colony') or [''])[0]
+            resolved_colony = _resolve_agent_colony(agent, colony)
+            if resolved_colony is None:
                 self.send_response(400)
                 self.send_header('Content-Type', 'text/plain')
                 self.end_headers()
-                self.wfile.write(f'unknown agent: {agent!r}'.encode())
+                if colony:
+                    self.wfile.write(f'unknown (colony, agent): ({colony!r}, {agent!r})'.encode())
+                else:
+                    self.wfile.write(f'unknown agent: {agent!r}'.encode())
                 return
-            daemon = find_agent_daemon(agent)
+            daemon = find_agent_daemon(agent, colony=resolved_colony)
             if not daemon:
                 self.send_response(404)
                 self.send_header('Content-Type', 'text/plain')
@@ -1045,14 +1112,18 @@ class Handler(SimpleHTTPRequestHandler):
                 self.wfile.write(b'malformed form body')
                 return
             agent = (params.get('agent') or [''])[0]
-            if agent not in allowed_agents:
+            colony = (params.get('colony') or [''])[0]
+            resolved_colony = _resolve_agent_colony(agent, colony)
+            if resolved_colony is None:
                 self.send_response(400)
                 self.send_header('Content-Type', 'text/plain')
                 self.end_headers()
-                self.wfile.write(f'unknown agent: {agent!r}'.encode())
+                if colony:
+                    self.wfile.write(f'unknown (colony, agent): ({colony!r}, {agent!r})'.encode())
+                else:
+                    self.wfile.write(f'unknown agent: {agent!r}'.encode())
                 return
-            colony = agent_to_colony.get(agent, '')
-            agent_file = os.path.join(fed_dir, colony, 'agents', f'{agent}.ag') if colony else ''
+            agent_file = os.path.join(fed_dir, resolved_colony, 'agents', f'{agent}.ag') if resolved_colony else ''
             if not agent_file or not os.path.isfile(agent_file):
                 self.send_response(404)
                 self.send_header('Content-Type', 'text/plain')
