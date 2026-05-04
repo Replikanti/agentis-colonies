@@ -84,7 +84,7 @@ fn tick(reason: string) -> void {
 
     // Baseline: no knowledge_buy. Record a tagged learn() row so the
     // analyser can confirm the market wiring is stubbed.
-    learn("market", "baseline-stub", "", "stubbed", ["tribes-bench", tribe_name(), "baseline-no-market"]);
+    learn("market", "baseline-stub", "", "partial", ["tribes-bench", tribe_name(), "baseline-no-market"]);
 
     // Same seed prompt as tribe-alpha (format!()-as-shell-builder).
     let finding = prompt(
@@ -142,7 +142,7 @@ fn tick(reason: string) -> void {
                     // Baseline: no replication call. Record a tagged
                     // learn row so the analyser can confirm the
                     // replication wiring is stubbed.
-                    learn("replicate", "baseline-stub", "", "stubbed", ["tribes-bench", tribe_name(), "baseline-no-replicate"]);
+                    learn("replicate", "baseline-stub", "", "partial", ["tribes-bench", tribe_name(), "baseline-no-replicate"]);
 
                     // Reputation +0.05 (clamp 1.0) on verified finding
                     // — kept in place per plan Decision 1 so the baseline
@@ -153,7 +153,7 @@ fn tick(reason: string) -> void {
                     memo_write("reputation:tribes-bench-" + tribe_name(), to_string(next_rep_v));
 
                     // Baseline: no knowledge_sell. Stub-tagged learn() row.
-                    learn("market", "baseline-stub-sell", "", "stubbed", ["tribes-bench", tribe_name(), "baseline-no-market"]);
+                    learn("market", "baseline-stub-sell", "", "partial", ["tribes-bench", tribe_name(), "baseline-no-market"]);
                 } else {
                     print("[hunter-baseline] false positive at line ", finding.line);
                     learn("hunt", "line " + to_string(finding.line), finding.rationale, "failure", ["false-positive", "tribes-bench"]);
