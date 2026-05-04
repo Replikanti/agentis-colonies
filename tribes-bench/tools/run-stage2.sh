@@ -194,6 +194,27 @@ if [ "$RESUMING" = "0" ] && [ -f "$CONFIG_FILE" ]; then
     if ! grep -q '^telemetry\.enabled' "$CONFIG_FILE"; then
         printf 'telemetry.enabled = true\n' >> "$CONFIG_FILE"
     fi
+    # #423: agentis init emits `llm.backend = mock` as the default. The
+    # harness writes `llm-backend.txt` for telemetry but never propagated
+    # the chosen backend into the daemon config — every pilot silently
+    # ran against the mock backend. Resolve `cli` legacy alias to
+    # `claude` (per agentis 1.6.0 rename) and force-rewrite the line.
+    RESOLVED_BACKEND="${STAGE2_LLM_BACKEND:-cli}"
+    if [ "$RESOLVED_BACKEND" = "cli" ]; then
+        RESOLVED_BACKEND="claude"
+    fi
+    python3 -c "
+import sys, re
+p = sys.argv[1]; want = sys.argv[2]
+with open(p) as f: s = f.read()
+s2 = re.sub(r'^llm\.backend\s*=.*$', f'llm.backend = {want}', s, count=1, flags=re.M)
+if 'llm.backend' not in s2:
+    s2 = s2.rstrip() + f'\nllm.backend = {want}\n'
+with open(p, 'w') as f: f.write(s2)
+" "$CONFIG_FILE" "$RESOLVED_BACKEND" || {
+        echo "run-stage2: failed to rewrite llm.backend in $CONFIG_FILE" >&2
+        exit 1
+    }
 fi
 
 # Seed all five tribes' confidence memo to 0.7 (mid-`propose`) inside
