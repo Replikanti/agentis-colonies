@@ -342,6 +342,15 @@ if ! kill -0 "$FED_PID" 2>/dev/null; then
     exit 2
 fi
 
+# #426: snapshot agent_id -> tribe map RIGHT AFTER spawn (5s post-launch)
+# instead of at end-of-pilot. Daemons that die mid-run (CB-exhaustion,
+# watchdog kill, llm.cancelled cascade) clean their .colony file on
+# shutdown, so an end-of-pilot snapshot misses them. The launch-time
+# snapshot captures all 5 tribes reliably.
+python3 "$TOOLS_DIR/snapshot-agent-tribe-map.py" "$AGENTIS_ROOT/daemon" \
+    > "$RUN_DIR/agent-tribe-map.json" || \
+    echo "run-stage2: agent-tribe-map snapshot at launch failed" >&2
+
 # --- Sleep the wall-clock cap with periodic snapshots ---
 # On resume, continue snapshot numbering from max(elapsed) of existing
 # snapshot files in <run>/snapshots/ (numeric stem) so the recovery-drill
@@ -385,11 +394,10 @@ while [ "$elapsed" -lt "$WALL_CLOCK" ]; do
     fi
 done
 
-# #416: snapshot agent_id -> tribe mapping before kill-federation removes
-# the daemon registry. analyse-stage2.py reads this for tribe attribution.
-python3 "$TOOLS_DIR/snapshot-agent-tribe-map.py" "$AGENTIS_ROOT/daemon" \
-    > "$RUN_DIR/agent-tribe-map.json" || \
-    echo "run-stage2: agent-tribe-map snapshot failed" >&2
+# #426: agent-tribe-map snapshot was moved from here to right after
+# start-federation.sh + sleep 5 (post-launch). Daemons that die mid-run
+# clean their .colony file on shutdown — an end-of-pilot snapshot would
+# miss them.
 
 # --- Reliable shutdown via tools/kill-federation.sh ---
 echo "[run-stage2] stopping federation..."
