@@ -42,8 +42,8 @@ graph TD
 
 | Federation | Version | Description | Agents | Status |
 |------------|---------|-------------|--------|--------|
-| [dev-apprenticeship](./dev-apprenticeship/) | [`1.3.0`](https://github.com/Replikanti/agentis-colonies/releases/tag/dev-apprenticeship-v1.3.0) | Learns a developer's complete workflow by observing how you work on GitLab or GitHub. Covers triage, code review, planning, implementation, and release. | 21 | Beta |
-| [tribes-bench](./tribes-bench/) | unreleased | Tribal-emergence harness — two seed colonies hunt command-injection bugs in a synthetic Rust target via a deterministic verifier. Stage 0 wiring test only; replication, market, and reputation arrive in Stage 1+. | 2 | Experimental |
+| [dev-apprenticeship](./dev-apprenticeship/) | [`2.0.0`](https://github.com/Replikanti/agentis-colonies/releases/tag/dev-apprenticeship-v2.0.0) | Learns a developer's complete workflow by observing how you work on GitLab or GitHub. Covers triage, code review, planning, implementation, and release. | 21 | Beta |
+| [tribes-bench](./tribes-bench/) | unreleased | Tribal-emergence harness — five seed colonies hunt CVE-grade memory safety bugs in vendored Rust crates via a deterministic verifier. Stage 2 M3 reached: 5-tribe ecosystem vs 1-tribe baseline verdict apparatus + N=3 paired pilot results. | 5 | Experimental |
 
 To start a new federation, see [`tools/new-federation.sh`](./tools/new-federation.sh) and [`doc/federation-patterns.md`](./doc/federation-patterns.md). The contract every federation must satisfy is [ADR-0003](./doc/adr/ADR-0003-federation-portability-contract.md).
 
@@ -53,7 +53,7 @@ Federation-agnostic components are versioned and released independently so fixes
 
 | Component | Version | Description |
 |-----------|---------|-------------|
-| [federation-dashboard](./federation-dashboard/) | [`0.6.0`](https://github.com/Replikanti/agentis-colonies/releases/tag/federation-dashboard-v0.6.0) | Generic web dashboard with operator controls (promote / demote / evolve / restart / kill), 5-tab surface (Status / Cost / Recovery / Logs & Events / Config), per-agent table, federation-wide Experience tile, collapsible Promotion Progress, and Forge Rate Limits tile. Auto-discovers colonies + agents from any federation directory. |
+| [federation-dashboard](./federation-dashboard/) | [`0.9.1`](https://github.com/Replikanti/agentis-colonies/releases/tag/federation-dashboard-v0.9.1) | Generic web dashboard with operator controls (promote / demote / evolve / restart / kill), 5-tab surface (Status / Cost / Recovery / Logs & Events / Config), per-agent table, federation-wide Experience tile, collapsible Promotion Progress, and Forge Rate Limits tile. Auto-discovers colonies + agents from any federation directory. |
 
 ### Status
 
@@ -70,7 +70,7 @@ Federation-agnostic components are versioned and released independently so fixes
 From a release tarball (recommended — install-ready, no git clone needed):
 
 ```bash
-VERSION=0.3.3   # or any tagged dev-apprenticeship release
+VERSION=2.0.0   # or any tagged dev-apprenticeship release
 curl -LO https://github.com/Replikanti/agentis-colonies/releases/download/dev-apprenticeship-v${VERSION}/dev-apprenticeship-v${VERSION}.tar.gz
 tar xzf dev-apprenticeship-v${VERSION}.tar.gz
 cd dev-apprenticeship-v${VERSION}/dev-apprenticeship
@@ -87,7 +87,7 @@ docker run --rm -d \
   -e GITLAB_PROJECT=my-org/my-project \
   -e GITLAB_TOKEN=glpat-... \
   -v $PWD/data:/data \
-  ghcr.io/replikanti/agentis-colonies:dev-apprenticeship-1.2.0
+  ghcr.io/replikanti/agentis-colonies:dev-apprenticeship-2.0.0
 ```
 
 Sample compose + Kubernetes manifests under [`examples/docker/`](./examples/docker/) and [`examples/k8s/`](./examples/k8s/).
