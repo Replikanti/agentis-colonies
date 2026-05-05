@@ -138,7 +138,7 @@ fi
 if [ "$RESUMING" = "1" ]; then
     KILL_SCRIPT_PRE="$REPO_ROOT/tools/kill-federation.sh"
     if [ -x "$KILL_SCRIPT_PRE" ]; then
-        bash "$KILL_SCRIPT_PRE" --fed-dir "$FED_DIR" --no-backup \
+        bash "$KILL_SCRIPT_PRE" --fed-dir "$RUN_DIR" --no-backup \
             >>"$RUN_DIR/kill-federation.log" 2>&1 || true
     fi
     if [ -d "$RUN_DIR/.agentis/daemon" ]; then
@@ -394,7 +394,7 @@ while [ "$elapsed" -lt "$WALL_CLOCK" ]; do
         echo "[run-stage2] STAGE2_CRASH_AT_S triggered at elapsed=${elapsed}s — killing federation and exiting 99"
         KILL_SCRIPT="$REPO_ROOT/tools/kill-federation.sh"
         if [ -x "$KILL_SCRIPT" ]; then
-            bash "$KILL_SCRIPT" --fed-dir "$FED_DIR" --no-backup \
+            bash "$KILL_SCRIPT" --fed-dir "$RUN_DIR" --no-backup \
                 >>"$RUN_DIR/kill-federation.log" 2>&1 || true
         else
             kill "$FED_PID" 2>/dev/null || true
@@ -412,7 +412,7 @@ done
 echo "[run-stage2] stopping federation..."
 KILL_SCRIPT="$REPO_ROOT/tools/kill-federation.sh"
 if [ -x "$KILL_SCRIPT" ]; then
-    bash "$KILL_SCRIPT" --fed-dir "$FED_DIR" --no-backup >>"$RUN_DIR/kill-federation.log" 2>&1 || true
+    bash "$KILL_SCRIPT" --fed-dir "$RUN_DIR" --no-backup >>"$RUN_DIR/kill-federation.log" 2>&1 || true
 else
     echo "run-stage2: kill-federation.sh not found at $KILL_SCRIPT — falling back to kill" >&2
     kill "$FED_PID" 2>/dev/null || true
