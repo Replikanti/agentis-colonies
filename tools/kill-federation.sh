@@ -264,36 +264,93 @@ if [ -n "$PORT_PIDS_NL" ]; then
         | grep -v '^$' | sort -u || true)"
 fi
 
-# #296: scope dashboard PID lists to processes whose cwd lives under the
-# resolved FED_DIR. `pgrep -f federation-dashboard` matches ANY command
-# line containing that substring — including a contributor's live
-# dashboard running against a different federation. Without this filter,
-# any CI test that spawns a stub dashboard and then calls
+# #296 + #440: scope dashboard PID lists to processes that are clearly
+# part of THIS federation. `pgrep -f federation-dashboard` matches ANY
+# command line containing that substring — including a contributor's
+# live dashboard running against a different federation. Without this
+# filter, any CI test that spawns a stub dashboard and then calls
 # kill-federation.sh sweeps away the host's live dashboard too (forensic
 # sigwaitinfo proved this behaviour: sender was a
 # /tmp/tmp.XXX/fed/tools/kill-federation.sh invoked from a stub's
 # dashboard test, which matched the production dashboard by pattern).
-# AGENTIS daemons are not filtered here — they routinely detach into
-# their own sessions and their /proc/<pid>/cwd can drift to / during
-# daemonize; the DAEMON_MATCH pattern already includes the agent file's
-# full absolute path, so it's inherently fed-dir-scoped. On /proc-less
-# platforms (macOS) the filter degrades to identity (no-op), preserving
-# legacy behaviour there.
+#
+# A dashboard PID is kept in the kill set iff BOTH:
+#   (a) /proc/<pid>/cwd is rooted at $FED_DIR_ABS (same federation tree),
+#       AND
+#   (b) the PID also appears in $AGENTIS_DIR/daemon/*.pid (or the matching
+#       *.watchdog.pid sidecar) — i.e. the daemon registry recognises it
+#       as one of THIS federation's processes (#440). The registry is
+#       written by the federation's own start scripts (start-federation,
+#       start-colony, run-stage*, run-baseline), so a dashboard running
+#       under tribes-bench's fed-dir but launched by hand (e.g. via
+#       `setsid -f federation-dashboard <fed> 8420`) is NOT registered
+#       and is correctly preserved across pilot runs (#440 issue body).
+#
+# The OR-equivalent collapse: when $AGENTIS_DIR/daemon/ does not exist
+# or is empty (no registry yet), behaviour falls back to (a)-only —
+# matching the pre-#440 cwd-only filter so non-tribes-bench callers see
+# zero behavioural change.
+#
+# AGENTIS daemons (DAEMON_MATCH) are not filtered here — they routinely
+# detach into their own sessions and their /proc/<pid>/cwd can drift to
+# / during daemonize; the DAEMON_MATCH pattern already includes the
+# agent file's full absolute path, so it's inherently fed-dir-scoped.
+# On /proc-less platforms (macOS) the filter degrades to identity (no-op),
+# preserving legacy behaviour there.
 if [ -d /proc ] && command -v readlink >/dev/null 2>&1; then
     FED_DIR_ABS="$(cd "$FED_DIR" && pwd -P 2>/dev/null)"
     if [ -n "$FED_DIR_ABS" ]; then
+        # Build the registered-PID set once, up front. Empty when the
+        # registry dir does not exist or contains no *.pid files — the
+        # _in_fed_scope helper falls back to cwd-only in that case.
+        REGISTERED_PIDS_NL=""
+        if [ -n "$AGENTIS_DIR" ] && [ -d "$AGENTIS_DIR/daemon" ]; then
+            # Each daemon writes a single-line file containing its PID.
+            # `*.pid` covers both the primary (<id>.pid) and watchdog
+            # (<id>.watchdog.pid) sidecars.
+            REGISTERED_PIDS_NL="$(find "$AGENTIS_DIR/daemon" -maxdepth 1 -name '*.pid' -type f 2>/dev/null \
+                | while IFS= read -r f; do
+                    [ -z "$f" ] && continue
+                    _pid="$(head -n 1 "$f" 2>/dev/null | tr -d ' \t\r\n' || true)"
+                    case "$_pid" in
+                        ''|*[!0-9]*) : ;;
+                        *) printf '%s\n' "$_pid" ;;
+                    esac
+                  done | sort -u || true)"
+        fi
+        _in_fed_scope() {
+            # Stage (a): /proc/<pid>/cwd rooted at FED_DIR_ABS.
+            local pid="$1"
+            [ -z "$pid" ] && return 1
+            local cwd
+            cwd="$(readlink /proc/"$pid"/cwd 2>/dev/null || true)"
+            [ -z "$cwd" ] && return 1
+            case "$cwd" in
+                "$FED_DIR_ABS"|"$FED_DIR_ABS"/*) : ;;
+                *) return 1 ;;
+            esac
+            # Stage (b): if the registry is non-empty, require membership.
+            # If the registry is empty (or absent), accept on cwd alone —
+            # this preserves the pre-#440 behaviour for callers that do
+            # not have a daemon/ dir populated yet.
+            if [ -z "$REGISTERED_PIDS_NL" ]; then
+                return 0
+            fi
+            while IFS= read -r _rp; do
+                [ -z "$_rp" ] && continue
+                [ "$_rp" = "$pid" ] && return 0
+            done <<< "$REGISTERED_PIDS_NL"
+            return 1
+        }
         _filter_by_fed_dir() {
-            # stdin: newline-separated PIDs; stdout: subset whose /proc/<pid>/cwd
-            # is rooted at FED_DIR_ABS. Non-existent/closed procs are dropped.
+            # stdin: newline-separated PIDs; stdout: subset that pass
+            # _in_fed_scope (cwd AND registry, with registry-empty fallback
+            # to cwd-only). Non-existent/closed procs are dropped.
             while IFS= read -r pid; do
                 [ -z "$pid" ] && continue
-                local cwd
-                cwd="$(readlink /proc/"$pid"/cwd 2>/dev/null || true)"
-                [ -z "$cwd" ] && continue
-                case "$cwd" in
-                    "$FED_DIR_ABS"|"$FED_DIR_ABS"/*) printf '%s\n' "$pid" ;;
-                    *) : ;;
-                esac
+                if _in_fed_scope "$pid"; then
+                    printf '%s\n' "$pid"
+                fi
             done
         }
         DASHBOARD_PIDS_NL="$(printf '%s\n' "$DASHBOARD_PIDS_NL" | _filter_by_fed_dir || true)"
