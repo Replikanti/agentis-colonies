@@ -1,8 +1,8 @@
 # Dev Apprenticeship
 
-![Version: 1.3.0](https://img.shields.io/badge/version-1.3.0-blue) ![Agentis >= v1.4.7](https://img.shields.io/badge/agentis-%3E%3D%20v1.4.7-blue) ![Agents: 21](https://img.shields.io/badge/agents-21-green) ![Status: Beta](https://img.shields.io/badge/status-beta-yellow)
+![Version: 2.0.0](https://img.shields.io/badge/version-2.0.0-blue) ![Agentis >= v1.4.7](https://img.shields.io/badge/agentis-%3E%3D%20v1.4.7-blue) ![Agents: 21](https://img.shields.io/badge/agents-21-green) ![Status: Beta](https://img.shields.io/badge/status-beta-yellow)
 
-**Version:** `1.3.0` · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.4.7`
+**Version:** `2.0.0` · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.4.7`
 
 > **One example federation** built on the [`agentis-colonies`](../) platform. The platform contract every federation must satisfy is [ADR-0003](../doc/adr/ADR-0003-federation-portability-contract.md); to scaffold a different kind of federation (data-ops, research, support-triage, monitoring-ops, …) see [`doc/federation-patterns.md`](../doc/federation-patterns.md) and [`tools/new-federation.sh`](../tools/new-federation.sh).
 
@@ -56,7 +56,7 @@ graph LR
 
 ## What you need
 
-- [Agentis](https://github.com/Replikanti/agentis) runtime **>= v1.4.1** (v1.4.0 provides the `tier()` builtin required by the four-tier confidence gating in all 21 agents; v1.4.1 wires `fitness_delta` from the `outcome` argument to `learn()` so downstream consumers — auto-promote, evolve, dashboard — see non-zero deltas)
+- [Agentis](https://github.com/Replikanti/agentis) runtime **>= v1.4.7** (v1.4.0 provides the `tier()` builtin required by the four-tier confidence gating in all 21 agents; v1.4.1 wires `fitness_delta` from the `outcome` argument to `learn()` so downstream consumers — auto-promote, evolve, dashboard — see non-zero deltas; v1.4.7 is the floor pinned by the [2.0.0] CHANGELOG entry)
 - An LLM backend (Claude CLI, Ollama, or any OpenAI-compatible API)
 - GitLab instance with API access (personal access token with `api` scope)
 - Python 3 and git
@@ -68,7 +68,7 @@ Pick one of the two install paths.
 **Option A — release tarball** (recommended for running the federation; install-ready, no git tree required):
 
 ```bash
-VERSION=0.1.0
+VERSION=2.0.0
 curl -LO https://github.com/Replikanti/agentis-colonies/releases/download/dev-apprenticeship-v${VERSION}/dev-apprenticeship-v${VERSION}.tar.gz
 curl -LO https://github.com/Replikanti/agentis-colonies/releases/download/dev-apprenticeship-v${VERSION}/dev-apprenticeship-v${VERSION}.tar.gz.sha256
 sha256sum -c dev-apprenticeship-v${VERSION}.tar.gz.sha256   # optional but recommended
@@ -93,7 +93,8 @@ The install script checks prerequisites, creates configs for all 5 colonies, wri
 
 ```bash
 ./start-federation.sh           # Start all 5 colonies (21 agents)
-agentis daemon stop --all       # Stop everything
+./kill-federation.sh            # Stop everything reliably (preferred)
+agentis daemon stop --all       # Fallback only — known false-positive / false-negative on stale registry entries (see top-level README)
 ```
 
 > Agents must be launched via `start-federation.sh` or a colony's
@@ -108,7 +109,7 @@ agentis daemon stop --all       # Stop everything
 
 A web dashboard that shows agent health, confidence levels, phase readiness with ETA, knowledge growth trends, remediation history, and a live suggestion feed. Auto-refreshes every 60 seconds. Includes a kill switch (two-click safety) to stop the entire federation from the browser.
 
-The dashboard is a [separately-versioned standalone component](../federation-dashboard/) ([#252](https://github.com/Replikanti/agentis-colonies/issues/252)). This federation recommends `federation-dashboard >= 0.1.0` (pinned in [`.dashboard-version`](./.dashboard-version)); `install.sh` step 8 offers to install it for you, and `./dashboard.sh` is a thin resolver that finds the installed binary.
+The dashboard is a [separately-versioned standalone component](../federation-dashboard/) ([#252](https://github.com/Replikanti/agentis-colonies/issues/252)). This federation recommends `federation-dashboard >= 0.8.0` (pinned in [`.dashboard-version`](./.dashboard-version)); `install.sh` step 8 offers to install it for you, and `./dashboard.sh` is a thin resolver that finds the installed binary.
 
 Per-agent **confidence bump** controls (▲▼) in the Confidence Levels card walk each agent through the canonical tier ladder: `shadow` (0.4) → `propose` (0.6) → `review-gated` (0.8) → `autonomous` (0.95). Promotions to `autonomous` trigger a confirmation dialog since at that level the agent performs terminal external writes (merge, tag, publish) without a second gate. Every change is appended to `.dashboard/confidence-log.jsonl` for audit. The CLI path (`agentis memo set <agent>:confidence <value>`) still works and is equivalent.
 

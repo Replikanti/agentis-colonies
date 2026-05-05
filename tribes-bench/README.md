@@ -145,7 +145,7 @@ Stage 1 primitives (`replicate()`, Malthusian per-replica cost,
 asymmetric first-finder reward) ship in M2 and M3 — they are explicitly
 **not** part of M1.
 
-**M1 proves:**
+**M1 proves** (historical — current `start-federation.sh` spawns 5 tribes after Stage 2 M2 added `tribe-delta` + `tribe-epsilon`; see Stage 2 sections below):
 
 - Three-tribe topology launches cleanly (`tribe-alpha`, `tribe-beta`,
   `tribe-gamma`) via `start-federation.sh`.
@@ -173,7 +173,7 @@ asymmetric first-finder reward) ship in M2 and M3 — they are explicitly
   ./install.sh                                # idempotent: copies tribe-gamma config too
   bash tools/test-verify-finding.sh           # Stage 0 fixtures (back-compat)
   STAGE1=1 bash tools/test-verify-finding.sh  # Stage 1 fixtures (3 classes)
-  bash start-federation.sh                    # spawns 3 tribes against targets/stage0 by default
+  bash start-federation.sh                    # M1: spawns 3 tribes against targets/stage0; M2 added delta + epsilon for 5 total
   ```
 
   To exercise targets/stage1 manually, set `TARGET_DIR` and
@@ -374,15 +374,13 @@ always run:
 
 ```
 tribes-bench/
-  tribe-alpha/        First tribe colony (one hunter agent)
-    agents/hunter.ag  Seed prompt: format!()-as-shell-builder heuristic
-    config/, scripts/
-  tribe-beta/         Second tribe colony (one hunter agent)
-    agents/hunter.ag  Seed prompt: source-to-sink data-flow heuristic
-    config/, scripts/
-  tribe-gamma/        Third tribe colony (one hunter agent, Stage 1 M1)
-    agents/hunter.ag  Seed prompt: error-path data-flow heuristic
-    config/, scripts/
+  tribe-alpha/        Seed colony, one hunter agent (Stage 0/1 prompt: format!()-as-shell-builder; Stage 2 specialty: uninitialised memory)
+  tribe-beta/         Seed colony, one hunter agent (Stage 0/1 prompt: source-to-sink data-flow; Stage 2 specialty: heap overflow)
+  tribe-gamma/        Stage 1 M1 colony, one hunter agent (Stage 1 prompt: error-path data-flow; Stage 2 specialty: memory corruption)
+  tribe-delta/        Stage 2 M2 colony, one hunter agent (specialty: use after free)
+  tribe-epsilon/      Stage 2 M2 colony, one hunter agent (specialty: use after free, panic-unwind variant)
+  templates/
+    tribe-baseline/   Stage 2 M3 baseline-arm template (single-tribe generalist with stubbed market primitives)
   targets/stage0/
     vulnerable.rs     ~50 LOC Rust with three planted bugs
     bugs.json         Ground-truth manifest (id, line, line_tolerance, signature)
@@ -391,16 +389,27 @@ tribes-bench/
     path_io.rs        3 path-traversal bugs (CWE-22), ~120 LOC
     fmt_str.rs        3 format-string bugs (CWE-134), ~140 LOC
     bugs.json         Ground-truth manifest with `class` field
+  targets/stage2/     Stage 2 — vendored real-world Rust crate(s) with RUSTSEC bug palette
+    smallvec-v0.6.13/ Vendored smallvec lib.rs with 5 CVE-grade memory safety bugs
+    bugs.json         Ground-truth manifest keyed on RUSTSEC bug class
   tools/
-    verify-finding.sh  Pure-shell + jq verifier (no LLM, no agentis)
-                       Optional `class` dispatch for Stage 1
-    test-verify-finding.sh  Six-fixture unit test (Stage 0)
-                            STAGE1=1 mode adds 6 Stage 1 fixtures
-    run-stage0.sh      Hermetic one-shot run wrapper (Stage 0)
-    analyse-stage0.py  Telemetry CSV producer (Stage 0, 7 columns)
-    analyse-stage1.py  Telemetry CSV producer (Stage 1 M1, 10 columns)
-  start-federation.sh  ADR-0003-friendly launcher (3 tribes)
-  install.sh           Memo seed + colony.toml copy
+    verify-finding.sh         Pure-shell + jq verifier (no LLM, no agentis), Stage 0/1 dispatch
+    verify-finding-stage2.sh  Stage 2 verifier with bug-class match + signature substring check
+    test-verify-finding.sh    Six-fixture unit test (Stage 0); STAGE1=1 mode adds Stage 1 fixtures
+    run-stage0.sh             Hermetic one-shot run wrapper (Stage 0)
+    run-stage1.sh             Hermetic one-shot run wrapper (Stage 1 M1)
+    run-stage2.sh             Hermetic one-shot run wrapper (Stage 2 M3 ecosystem arm)
+    run-baseline.sh           Hermetic one-shot run wrapper (Stage 2 M3 baseline arm)
+    run-verdict-pair.sh       Orchestrator: run-stage2 -> run-baseline -> analyse with --baseline (Stage 2 M3)
+    analyse-stage0.py         Telemetry CSV producer (Stage 0, 7 columns)
+    analyse-stage1.py         Telemetry CSV producer (Stage 1 M1, 10 columns)
+    analyse-stage2.py         Telemetry CSV + comparison.md producer (Stage 2 M3)
+    check-agentis-version.sh  Runtime floor check; prints download URL when binary missing
+    snapshot-stanza.sh        Append per-pilot snapshot stanza to runs/<ts>/snapshots/
+    test-stage2-*.sh          Six fixture-driven + opportunistic-live tests for Stage 2 M3
+    test-run-verdict-pair.sh  Smoke test for run-verdict-pair.sh dry-run output
+  start-federation.sh         ADR-0003-friendly launcher (5 tribes after Stage 2 M2)
+  install.sh                  Memo seed + colony.toml copy + Next-steps summary
 ```
 
 ## Tier contract
@@ -430,6 +439,8 @@ calling it from the propose branch is consistent with ADR-0001.
 
 ## Related
 
-- Issue: [#363](https://github.com/Replikanti/agentis-colonies/issues/363) — Stage 0 wiring (this PR)
+- Issue: [#363](https://github.com/Replikanti/agentis-colonies/issues/363) — Stage 0 wiring
 - Issue: [#364](https://github.com/Replikanti/agentis-colonies/issues/364) — Stage 1 replication + scarcity
 - Issue: [#365](https://github.com/Replikanti/agentis-colonies/issues/365) — Stage 2 selection + market + reputation
+- Issue: [#394](https://github.com/Replikanti/agentis-colonies/issues/394) — Stage 2 M3 verdict apparatus (5-tribe vs baseline)
+- Issue: [#439](https://github.com/Replikanti/agentis-colonies/issues/439) — Stage 3 emergence prerequisites (multi-node, mutation, target rotation, real selection pressure)
