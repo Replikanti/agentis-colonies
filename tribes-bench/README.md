@@ -420,18 +420,13 @@ calling it from the propose branch is consistent with ADR-0001.
 
 ## Known gotchas
 
-- **`tools/kill-federation.sh` cascades to the dashboard.** The
-  shutdown script is called automatically at the end of every
-  `run-stage2.sh` / `run-baseline.sh` run (and therefore by
-  `run-verdict-pair.sh` too). Its current process matching is broad
-  enough that any running `federation-dashboard` instance is also
-  terminated when the federation shuts down. Workarounds: restart the
-  dashboard after each verdict pair, or run it under a separate
-  session manager (`systemd` user unit, `tmux`, `setsid`) so the
-  cascade does not reach it. Selectivity fix tracked separately in
-  [#440](https://github.com/Replikanti/agentis-colonies/issues/440)
-  (out of scope for #436 due to wider blast radius across all
-  federations).
+- **Dashboard cascade on `tools/kill-federation.sh`:** resolved by
+  [#440](https://github.com/Replikanti/agentis-colonies/issues/440).
+  The shutdown script (called automatically at the end of every
+  `run-stage2.sh` / `run-baseline.sh` / `run-verdict-pair.sh`) now
+  scopes dashboard kills by daemon-registry membership, so a
+  `federation-dashboard` launched by hand (e.g. via `setsid -f`)
+  persists across pilot runs.
 
 ## Related
 
