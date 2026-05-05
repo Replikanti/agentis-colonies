@@ -18,6 +18,39 @@ This federation was scaffolded via
 agent contract follows
 [ADR-0001](../doc/adr/ADR-0001-confidence-tiers.md) end-to-end.
 
+## Quick start
+
+**Prerequisites**
+
+- The `agentis` runtime binary on PATH. It is a proprietary closed
+  source binary distributed for free for Linux and macOS at
+  https://github.com/Replikanti/agentis. tribes-bench requires
+  `agentis >= 1.5.0`.
+- Claude Code CLI (`claude`) on PATH for the LLM backend.
+- `git`, `python3`, and `jq` on PATH (standard on most distros).
+
+**Three-line recipe**
+
+```bash
+bash tribes-bench/install.sh                    # idempotent setup
+bash tribes-bench/tools/run-verdict-pair.sh     # ~30-min ecosystem + baseline pair
+# (optional) open dashboard at http://localhost:8420 after starting it
+```
+
+`install.sh` checks the runtime version, copies each tribe's
+`colony.toml` from the example, and seeds `hunter:confidence = 0.7`.
+`run-verdict-pair.sh` orchestrates `run-stage2.sh` -> `run-baseline.sh`
+-> `analyse-stage2.py --baseline <latest>` and prints the resulting
+`comparison.md` to stdout. Each step is echoed with a leading `+ `
+prefix before executing so operators can copy individual lines if
+they want to drive the steps manually. Defaults:
+`STAGE2_WALL_CLOCK_S=1800` and `STAGE2_BASELINE_WALL_CLOCK_S=1800`
+(30 min each); override the env vars for longer pilots.
+
+For the long-form Stage 2 M3 (48h ecosystem + 1h baseline) recipe see
+[Stage 2 M3 reproduction recipe](#stage-2-m3--long-run--baseline-reproduction-recipe)
+below.
+
 ## Hypothesis
 
 A federation that uses the agentis emergent-layer primitives produces
@@ -384,6 +417,21 @@ confidence ladder defined in
 Stage 0 hunters seed at `0.7` (mid-`propose`). Verification (running
 `tools/verify-finding.sh`) is internal — not an external write — so
 calling it from the propose branch is consistent with ADR-0001.
+
+## Known gotchas
+
+- **`tools/kill-federation.sh` cascades to the dashboard.** The
+  shutdown script is called automatically at the end of every
+  `run-stage2.sh` / `run-baseline.sh` run (and therefore by
+  `run-verdict-pair.sh` too). Its current process matching is broad
+  enough that any running `federation-dashboard` instance is also
+  terminated when the federation shuts down. Workarounds: restart the
+  dashboard after each verdict pair, or run it under a separate
+  session manager (`systemd` user unit, `tmux`, `setsid`) so the
+  cascade does not reach it. Selectivity fix tracked separately in
+  [#440](https://github.com/Replikanti/agentis-colonies/issues/440)
+  (out of scope for #436 due to wider blast radius across all
+  federations).
 
 ## Related
 

@@ -17,11 +17,20 @@ set -eu
 
 REQUIRED="1.5.0"
 RELEASE_URL="https://github.com/Replikanti/agentis/releases/tag/v1.5.0"
+RUNTIME_DOWNLOAD_URL="https://github.com/Replikanti/agentis"
 
 if ! command -v agentis >/dev/null 2>&1; then
     echo "check-agentis-version: agentis CLI not on PATH" >&2
-    echo "                       install agentis >= ${REQUIRED}: ${RELEASE_URL}" >&2
-    exit 78
+    echo "" >&2
+    echo "  The agentis runtime is a proprietary closed source binary" >&2
+    echo "  distributed for free for Linux and macOS at:" >&2
+    echo "" >&2
+    echo "    ${RUNTIME_DOWNLOAD_URL}" >&2
+    echo "" >&2
+    echo "  Download the binary for your platform, place it on your PATH," >&2
+    echo "  then re-run this command. tribes-bench requires agentis >= ${REQUIRED}." >&2
+    echo "" >&2
+    exit 1
 fi
 
 raw="$(agentis --version 2>/dev/null || true)"

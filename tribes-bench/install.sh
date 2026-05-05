@@ -48,4 +48,9 @@ else
 fi
 
 echo
-echo "Done. Next: bash tools/run-stage0.sh"
+echo "Done."
+echo
+echo "Next steps:"
+echo "  1. (optional) install dashboard: bash federation-dashboard/install.sh"
+echo "  2. run a 30-min verdict pair:    bash tribes-bench/tools/run-verdict-pair.sh"
+echo "  3. open dashboard at http://localhost:8420 (after starting it)"
