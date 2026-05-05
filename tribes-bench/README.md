@@ -7,10 +7,10 @@
 > A research scaffold that tests whether the agentis runtime's
 > emergent-layer primitives (replication, scarcity, selection,
 > reputation, market) produce qualitatively different behaviour than
-> LangGraph-class multi-agent tools. Two seed tribes hunt
-> command-injection bugs in a synthetic Rust target via a deterministic
-> verifier — no human in the loop, no API budget, deterministic ground
-> truth.
+> LangGraph-class multi-agent tools. Five seed tribes (alpha, beta,
+> gamma, delta, epsilon) hunt CVE-grade memory safety bugs in vendored
+> Rust crates via a deterministic verifier — no human in the loop, no
+> API budget, deterministic ground truth.
 
 This federation was scaffolded via
 [`tools/new-federation.sh`](../tools/new-federation.sh) and conforms to
