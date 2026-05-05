@@ -298,6 +298,150 @@ else
     fi
 fi
 
+# --- Test 10: dashboard with cwd OUTSIDE fed-dir survives (#296 + #440) ---
+# A dashboard process whose argv matches DASHBOARD_MATCH but whose
+# /proc/<pid>/cwd is rooted OUTSIDE the resolved fed-dir must NOT be
+# signalled. This is the regression #296 originally guarded against —
+# made explicit here so the cwd-stage of the two-stage filter has its
+# own assertion.
+FIX10="$TMPDIR_TEST/fix10"
+FIX10_OUTSIDE="$TMPDIR_TEST/fix10-outside"
+mkdir -p "$FIX10/.agentis/daemon" "$FIX10_OUTSIDE"
+
+FIXTURE_TAG_10="kill-fed-test-dash-outside-$$"
+# cwd OUTSIDE fed-dir — the wrapper's /proc/<pid>/cwd must NOT match
+# the FED_DIR_ABS prefix. Mirrors test 5's spawn idiom: outer bash -c
+# runs `exec -a TAG sleep N`, replacing itself with sleep whose argv0
+# is TAG so pgrep -f matches the dashboard pattern.
+(cd "$FIX10_OUTSIDE" && exec bash -c "exec -a '$FIXTURE_TAG_10' sleep 9999") &
+DUMMY_PID_10=$!
+SPAWNED_PIDS+=("$DUMMY_PID_10")
+sleep 1
+
+if ! kill -0 "$DUMMY_PID_10" 2>/dev/null; then
+    fail "10: spawn dummy" "PID $DUMMY_PID_10 not alive after spawn"
+else
+    set +e
+    "$KILL_SH" --fed-dir "$FIX10" --no-backup \
+        --match-pattern "kill-fed-t10-no-daemon-$$" \
+        --dashboard-pattern "$FIXTURE_TAG_10" \
+        --dashboard-py-pattern "kill-fed-t10-no-dashpy-$$" >/dev/null 2>&1
+    set -e
+    # Poll up to 20s for either signal-kill or survival.
+    _t10_start=$(date +%s)
+    while kill -0 "$DUMMY_PID_10" 2>/dev/null; do
+        _t10_now=$(date +%s)
+        if [ $((_t10_now - _t10_start)) -gt 20 ]; then
+            break
+        fi
+        sleep 1
+    done
+    unset _t10_start _t10_now
+    if kill -0 "$DUMMY_PID_10" 2>/dev/null; then
+        pass "10: dashboard with cwd OUTSIDE fed-dir survives the kill"
+        kill -KILL "$DUMMY_PID_10" 2>/dev/null || true
+    else
+        fail "10: cwd-outside" "dashboard PID $DUMMY_PID_10 was killed despite cwd outside fed-dir"
+    fi
+fi
+
+# --- Test 11: dashboard with cwd INSIDE fed-dir but unregistered survives (#440) ---
+# New behaviour from #440: a dashboard whose cwd is rooted at fed-dir
+# but whose PID is NOT in $AGENTIS_DIR/daemon/*.pid must NOT be
+# signalled. Simulates the tribes-bench operator scenario where the
+# dashboard is launched by hand (`setsid -f federation-dashboard ...`)
+# and is not registered in the daemon registry. Requires at least one
+# *.pid file in daemon/ so the registered-PID set is non-empty —
+# otherwise the filter falls back to cwd-only and would kill T11.
+FIX11="$TMPDIR_TEST/fix11"
+mkdir -p "$FIX11/.agentis/daemon"
+# Seed the registry with a fake PID file (PID 1 — init, never our
+# fixture). This forces the registered-PID set to be non-empty so the
+# filter requires both cwd AND registry membership.
+echo "1" > "$FIX11/.agentis/daemon/seed.pid"
+
+FIXTURE_TAG_11="kill-fed-test-dash-inside-unregistered-$$"
+# Mirrors test 5's spawn idiom (see test 10).
+(cd "$FIX11" && exec bash -c "exec -a '$FIXTURE_TAG_11' sleep 9999") &
+DUMMY_PID_11=$!
+SPAWNED_PIDS+=("$DUMMY_PID_11")
+sleep 1
+
+if ! kill -0 "$DUMMY_PID_11" 2>/dev/null; then
+    fail "11: spawn dummy" "PID $DUMMY_PID_11 not alive after spawn"
+else
+    set +e
+    "$KILL_SH" --fed-dir "$FIX11" --no-backup \
+        --match-pattern "kill-fed-t11-no-daemon-$$" \
+        --dashboard-pattern "$FIXTURE_TAG_11" \
+        --dashboard-py-pattern "kill-fed-t11-no-dashpy-$$" >/dev/null 2>&1
+    set -e
+    _t11_start=$(date +%s)
+    while kill -0 "$DUMMY_PID_11" 2>/dev/null; do
+        _t11_now=$(date +%s)
+        if [ $((_t11_now - _t11_start)) -gt 20 ]; then
+            break
+        fi
+        sleep 1
+    done
+    unset _t11_start _t11_now
+    if kill -0 "$DUMMY_PID_11" 2>/dev/null; then
+        pass "11: dashboard with cwd INSIDE fed-dir but unregistered survives the kill"
+        kill -KILL "$DUMMY_PID_11" 2>/dev/null || true
+    else
+        fail "11: unregistered" "dashboard PID $DUMMY_PID_11 was killed despite missing daemon-registry entry"
+    fi
+fi
+
+# --- Test 12: registered dashboard inside fed-dir is killed (#440) ---
+# OR-branch coverage: a process whose argv matches DASHBOARD_MATCH,
+# whose cwd is inside fed-dir, AND whose PID is recorded in
+# $AGENTIS_DIR/daemon/<id>.pid must be killed. This mirrors the
+# behaviour the federation's own start scripts produce (each daemon
+# writes its PID into the registry). Without this assertion, an empty
+# daemon registry could silently collapse #440's filter to "no
+# dashboards killable" — which would defeat the whole script.
+FIX12="$TMPDIR_TEST/fix12"
+mkdir -p "$FIX12/.agentis/daemon"
+
+FIXTURE_TAG_12="kill-fed-test-dash-registered-$$"
+# Mirrors test 5's spawn idiom (see test 10).
+(cd "$FIX12" && exec bash -c "exec -a '$FIXTURE_TAG_12' sleep 9999") &
+DUMMY_PID_12=$!
+SPAWNED_PIDS+=("$DUMMY_PID_12")
+sleep 1
+
+# Register the dummy's PID in the daemon registry so stage (b) of the
+# filter accepts it. The file's basename is informational only — the
+# script reads its single-line content.
+echo "$DUMMY_PID_12" > "$FIX12/.agentis/daemon/dummy12.pid"
+
+if ! kill -0 "$DUMMY_PID_12" 2>/dev/null; then
+    fail "12: spawn dummy" "PID $DUMMY_PID_12 not alive after spawn"
+else
+    set +e
+    "$KILL_SH" --fed-dir "$FIX12" --no-backup \
+        --match-pattern "kill-fed-t12-no-daemon-$$" \
+        --dashboard-pattern "$FIXTURE_TAG_12" \
+        --dashboard-py-pattern "kill-fed-t12-no-dashpy-$$" >/dev/null 2>&1
+    set -e
+    _t12_start=$(date +%s)
+    while kill -0 "$DUMMY_PID_12" 2>/dev/null; do
+        _t12_now=$(date +%s)
+        if [ $((_t12_now - _t12_start)) -gt 20 ]; then
+            break
+        fi
+        sleep 1
+    done
+    unset _t12_start _t12_now
+    if kill -0 "$DUMMY_PID_12" 2>/dev/null; then
+        fail "12: registered" "registered dashboard PID $DUMMY_PID_12 still alive after kill window"
+        kill -KILL "$DUMMY_PID_12" 2>/dev/null || true
+    else
+        pass "12: registered dashboard inside fed-dir is killed"
+    fi
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
