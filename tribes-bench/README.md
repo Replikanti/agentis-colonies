@@ -51,6 +51,19 @@ For the long-form Stage 2 M3 (48h ecosystem + 1h baseline) recipe see
 [Stage 2 M3 reproduction recipe](#stage-2-m3--long-run--baseline-reproduction-recipe)
 below.
 
+**Multi-LLM backends**
+
+`STAGE2_LLM_BACKEND` selects the LLM provider for a run. The default
+is `claude` (Claude Code CLI). When `STAGE2_LLM_BACKEND=openai`,
+`run-stage2.sh` auto-injects `llm.openai.endpoint`, `llm.openai.model`,
+`llm.openai.api_key_env`, and `llm.openai.timeout_ms` into the
+hermetic per-run config; `OPENAI_API_KEY` (or whatever env var name
+`STAGE2_OPENAI_KEY_ENV` points at) must be exported in the launching
+shell. When `STAGE2_LLM_BACKEND=ollama`, `llm.endpoint` and `llm.model`
+are auto-injected pointing at a local Ollama daemon. The full list of
+backend-specific env vars (and their defaults) lives in the env-var
+preamble of [`tools/run-stage2.sh`](./tools/run-stage2.sh).
+
 ## Hypothesis
 
 A federation that uses the agentis emergent-layer primitives produces

@@ -16,6 +16,28 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **Multi-LLM config injection in `run-stage2.sh`**
+  ([#438](https://github.com/Replikanti/agentis-colonies/issues/438)).
+  `agentis init` only seeds `llm.backend` in the hermetic per-run
+  config; the matching endpoint / model / api_key_env / timeout keys
+  were missing, so picking a non-default backend via
+  `STAGE2_LLM_BACKEND` left the daemon falling back to mock at first
+  dispatch. `run-stage2.sh` now injects the correct keys when
+  `STAGE2_LLM_BACKEND=openai` (`llm.openai.endpoint`, `llm.openai.model`,
+  `llm.openai.api_key_env`, `llm.openai.timeout_ms`) or
+  `STAGE2_LLM_BACKEND=ollama` (`llm.endpoint`, `llm.model`). Six new
+  env vars carry the defaults and are overrideable per-run:
+  `STAGE2_OPENAI_MODEL` (default `gpt-4o-mini`),
+  `STAGE2_OPENAI_ENDPOINT`
+  (default `https://api.openai.com/v1/chat/completions`),
+  `STAGE2_OPENAI_KEY_ENV` (default `OPENAI_API_KEY`),
+  `STAGE2_OPENAI_TIMEOUT_MS` (default `180000`),
+  `STAGE2_OLLAMA_ENDPOINT`
+  (default `http://127.0.0.1:11434/api/generate`),
+  `STAGE2_OLLAMA_MODEL` (default `llama3.1:8b`). All injections are
+  idempotent (skipped when an active key already exists). New test:
+  `tools/test-run-stage2-llm-backend.sh`.
+
 - **Install + DX polish** ([#436](https://github.com/Replikanti/agentis-colonies/issues/436)).
   - `tribes-bench/tools/run-verdict-pair.sh` (new) — operator-friendly
     orchestrator that runs `run-stage2.sh` -> `run-baseline.sh` ->
