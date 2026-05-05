@@ -35,6 +35,23 @@
 #                          knowledge-market.csv. Snapshot numbering
 #                          continues from max(existing). A fresh
 #                          run-meta-resume-<n>.json is written.
+#   STAGE2_OPENAI_MODEL    #438: model id when STAGE2_LLM_BACKEND=openai
+#                          (default: gpt-4o-mini).
+#   STAGE2_OPENAI_ENDPOINT #438: chat-completions URL when
+#                          STAGE2_LLM_BACKEND=openai
+#                          (default: https://api.openai.com/v1/chat/completions).
+#   STAGE2_OPENAI_KEY_ENV  #438: name of the env var that carries the
+#                          OpenAI API key (default: OPENAI_API_KEY). The
+#                          named env var must itself be exported in the
+#                          shell that launches run-stage2.sh.
+#   STAGE2_OPENAI_TIMEOUT_MS #438: per-request timeout in milliseconds
+#                          when STAGE2_LLM_BACKEND=openai
+#                          (default: 180000 = 3 minutes).
+#   STAGE2_OLLAMA_ENDPOINT #438: generate URL when
+#                          STAGE2_LLM_BACKEND=ollama
+#                          (default: http://127.0.0.1:11434/api/generate).
+#   STAGE2_OLLAMA_MODEL    #438: model id when STAGE2_LLM_BACKEND=ollama
+#                          (default: llama3.1:8b).
 #
 # Exit codes:
 #   0   run completed and telemetry.csv produced
@@ -224,6 +241,26 @@ with open(p, 'w') as f: f.write(s2)
         echo "run-stage2: failed to rewrite llm.backend in $CONFIG_FILE" >&2
         exit 1
     }
+    # #438: inject backend-specific config keys so the daemon can reach
+    # the configured provider. agentis init only writes `llm.backend`; the
+    # endpoint / model / api_key_env keys are otherwise missing and the
+    # daemon falls back to mock at first dispatch.
+    if [ "$RESOLVED_BACKEND" = "openai" ]; then
+        OPENAI_MODEL="${STAGE2_OPENAI_MODEL:-gpt-4o-mini}"
+        OPENAI_ENDPOINT="${STAGE2_OPENAI_ENDPOINT:-https://api.openai.com/v1/chat/completions}"
+        OPENAI_KEY_ENV="${STAGE2_OPENAI_KEY_ENV:-OPENAI_API_KEY}"
+        OPENAI_TIMEOUT="${STAGE2_OPENAI_TIMEOUT_MS:-180000}"
+        grep -q '^llm\.openai\.endpoint'    "$CONFIG_FILE" || printf 'llm.openai.endpoint = %s\n'    "$OPENAI_ENDPOINT" >> "$CONFIG_FILE"
+        grep -q '^llm\.openai\.model'       "$CONFIG_FILE" || printf 'llm.openai.model = %s\n'       "$OPENAI_MODEL" >> "$CONFIG_FILE"
+        grep -q '^llm\.openai\.api_key_env' "$CONFIG_FILE" || printf 'llm.openai.api_key_env = %s\n' "$OPENAI_KEY_ENV" >> "$CONFIG_FILE"
+        grep -q '^llm\.openai\.timeout_ms'  "$CONFIG_FILE" || printf 'llm.openai.timeout_ms = %s\n'  "$OPENAI_TIMEOUT" >> "$CONFIG_FILE"
+    fi
+    if [ "$RESOLVED_BACKEND" = "ollama" ]; then
+        OLLAMA_ENDPOINT="${STAGE2_OLLAMA_ENDPOINT:-http://127.0.0.1:11434/api/generate}"
+        OLLAMA_MODEL="${STAGE2_OLLAMA_MODEL:-llama3.1:8b}"
+        grep -q '^llm\.endpoint' "$CONFIG_FILE" || printf 'llm.endpoint = %s\n' "$OLLAMA_ENDPOINT" >> "$CONFIG_FILE"
+        grep -q '^llm\.model'    "$CONFIG_FILE" || printf 'llm.model = %s\n'    "$OLLAMA_MODEL" >> "$CONFIG_FILE"
+    fi
 fi
 
 # Seed all five tribes' confidence memo to 0.7 (mid-`propose`) inside
