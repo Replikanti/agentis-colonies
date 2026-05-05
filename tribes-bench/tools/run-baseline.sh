@@ -300,7 +300,7 @@ python3 "$TOOLS_DIR/snapshot-agent-tribe-map.py" "$AGENTIS_ROOT/daemon" \
 echo "[run-baseline] stopping baseline..."
 KILL_SCRIPT="$REPO_ROOT/tools/kill-federation.sh"
 if [ -x "$KILL_SCRIPT" ]; then
-    bash "$KILL_SCRIPT" --fed-dir "$FED_DIR" --no-backup >>"$RUN_DIR/kill-federation.log" 2>&1 || true
+    bash "$KILL_SCRIPT" --fed-dir "$RUN_DIR" --no-backup >>"$RUN_DIR/kill-federation.log" 2>&1 || true
 else
     echo "run-baseline: kill-federation.sh not found at $KILL_SCRIPT — falling back to kill" >&2
     kill "$FED_PID" 2>/dev/null || true
