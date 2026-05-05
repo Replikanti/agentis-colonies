@@ -16,6 +16,24 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **Install + DX polish** ([#436](https://github.com/Replikanti/agentis-colonies/issues/436)).
+  - `tribes-bench/tools/run-verdict-pair.sh` (new) — operator-friendly
+    orchestrator that runs `run-stage2.sh` -> `run-baseline.sh` ->
+    `analyse-stage2.py --baseline <latest>` and prints `comparison.md`
+    inline. Each step is echoed with a leading `+ ` prefix BEFORE
+    executing so operators can copy individual lines. Defaults
+    `STAGE2_WALL_CLOCK_S=1800` and `STAGE2_BASELINE_WALL_CLOCK_S=1800`
+    (30 min each) for a fast verdict pair. Flags: `--dry-run`,
+    `--skip-stage2`, `--skip-baseline`. Smoke test:
+    `tools/test-run-verdict-pair.sh`.
+  - `tribes-bench/README.md` — new **Quick start** section near the top
+    (prerequisites + three-line recipe) and **Known gotchas** section
+    near the bottom (kill-federation cascade behaviour, links the
+    selectivity-fix follow-up #440).
+  - `tribes-bench/install.sh` — post-install Next-steps block listing
+    the optional dashboard install, the `run-verdict-pair.sh`
+    invocation, and the dashboard URL labelled "after starting it".
+
 - **Stage 2 M3 — baseline harness + long-run defaults + comparison report**
   ([#394](https://github.com/Replikanti/agentis-colonies/issues/394)).
   - `tribes-bench/tools/run-baseline.sh` (new) — fixed-pipeline control
@@ -350,6 +368,13 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   source-to-sink data-flow seed prompt.
 
 ### Changed
+
+- `tribes-bench/tools/check-agentis-version.sh` missing-binary branch
+  now prints a multi-line message pointing operators to
+  https://github.com/Replikanti/agentis (the runtime is a proprietary
+  closed source binary distributed for free for Linux and macOS) and
+  exits 1 instead of 78. The version-floor branch is unchanged
+  ([#436](https://github.com/Replikanti/agentis-colonies/issues/436)).
 
 ### Deprecated
 
