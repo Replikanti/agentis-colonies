@@ -231,7 +231,10 @@ close_tunnel() {
 # --- 2) agentis serve (remote + local) ---
 start_remote_serve() {
     emit_step "starting remote agentis serve on 127.0.0.1:$TUNNEL_REMOTE_PORT"
-    emit_cmd "ssh -S $TUNNEL_SOCK $REMOTE_HOST bash -lc '$REMOTE_AGENTIS serve 127.0.0.1:$TUNNEL_REMOTE_PORT >>$REMOTE_RUN_ROOT/serve.log 2>&1 & echo \$! >$REMOTE_RUN_ROOT/serve.pid'"
+    # mkdir -p $REMOTE_RUN_ROOT must run before serve.log/serve.pid writes
+    # — the dir is otherwise created later by configure_remote_node, but
+    # the writes here would fail with "no such file or directory".
+    emit_cmd "ssh -S $TUNNEL_SOCK $REMOTE_HOST bash -lc 'mkdir -p $REMOTE_RUN_ROOT && $REMOTE_AGENTIS serve 127.0.0.1:$TUNNEL_REMOTE_PORT >>$REMOTE_RUN_ROOT/serve.log 2>&1 & echo \$! >$REMOTE_RUN_ROOT/serve.pid'"
 }
 
 stop_remote_serve() {
