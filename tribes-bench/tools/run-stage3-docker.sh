@@ -290,10 +290,34 @@ write_bootstrap() {
         for tribe in $tribes_str; do
             printf 'cp -r /repo/tribes-bench/%s /run-root/%s\n' "$tribe" "$tribe"
         done
+        # agentis sandbox refuses any path outside <agentis-root>/sandbox/.
+        # run-stage2.sh handles this by copying targets INTO the sandbox
+        # tree (see lines 187-190 of run-stage2.sh) and exporting
+        # TARGET_DIR_SANDBOX as a relative path. Mirror that pattern here
+        # so hunter agents can read the planted-bug source files at tick
+        # time without "path outside sandbox" errors.
+        printf 'mkdir -p /run-root/.agentis/sandbox\n'
+        printf 'cp -r /run-root/targets/stage2 /run-root/.agentis/sandbox/targets-stage2\n'
+        printf 'cp -r /run-root/targets/stage3 /run-root/.agentis/sandbox/targets-stage3 2>/dev/null || true\n'
+        printf 'cp -r /run-root/targets/stage0 /run-root/.agentis/sandbox/targets-stage0 2>/dev/null || true\n'
+        printf 'cp -r /run-root/targets/stage1 /run-root/.agentis/sandbox/targets-stage1 2>/dev/null || true\n'
+        # Seed propose-tier confidence (default tier without seed is
+        # dormant; tribes-bench Stage 2 convention is propose at 0.7,
+        # mirrored from run-stage2.sh line 272). Without this seed the
+        # hunter ticks at conf=0 → dormant → no LLM call → no findings.
+        printf '(cd /run-root && agentis memo set hunter:confidence 0.7 >/dev/null 2>&1 || true)\n'
         printf 'agentis serve 127.0.0.1:%s > /run-root/serve.log 2>&1 &\n' "$self_port"
         printf 'echo $! > /run-root/serve.pid\n'
         for tribe in $tribes_str; do
-            printf 'DEATH_THRESHOLD=%s AGENTIS_ROOT=/run-root/.agentis bash /run-root/%s/scripts/start-colony.sh > /run-root/%s.log 2>&1 &\n' \
+            # Pass TARGET_DIR + TARGET_FILE + BUGS_MANIFEST + VERIFIER_PATH
+            # as env into start-colony.sh so the hunter resolves planted-
+            # bug source files inside the sandbox. TARGET_DIR is a path
+            # RELATIVE to /run-root/.agentis/sandbox/ (agentis sandbox
+            # convention). The rotation timer overrides these via memo
+            # writes once the first rotation interval elapses, but the
+            # bootstrap default lets daemons land on a working Stage 2
+            # target on tick 1 instead of the broken Stage 0 fallback.
+            printf 'DEATH_THRESHOLD=%s AGENTIS_ROOT=/run-root/.agentis TARGET_DIR=targets-stage2/smallvec-v0.6.13 TARGET_FILE=lib.rs BUGS_MANIFEST=/run-root/.agentis/sandbox/targets-stage2/bugs.json VERIFIER_PATH=/run-root/tools/verify-finding-stage2.sh bash /run-root/%s/scripts/start-colony.sh > /run-root/%s.log 2>&1 &\n' \
                 "$DEATH_THRESHOLD" "$tribe" "$tribe"
         done
         printf 'while [ ! -e /run-root/.shutdown ]; do sleep 5; done\n'
