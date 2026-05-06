@@ -351,12 +351,11 @@ stitch_telemetry() {
     # analyse-stage2.py runs against the laptop run-dir (Stage 2 schema).
     # Server-side artefacts live at $RUN_DIR/server-runs/$TS/.agentis/ +
     # bug-ledger.jsonl after pull_server_artifacts(). The combined
-    # telemetry.csv with node column is produced by analyse-stage3.py
-    # (Stage 3 piece 4 — a separate PR). Until that lands, the
-    # operator can analyse each node's telemetry independently.
-    emit_step "running per-node analyse-stage2.py on laptop run-dir"
-    emit_cmd "python3 $TOOLS_DIR/analyse-stage2.py $RUN_DIR >>$ORCH_LOG 2>&1 || true"
-    emit_step "server-side bug-ledger pulled to $RUN_DIR/server-runs/<ts>/bug-ledger.jsonl for offline review (combined telemetry awaits Stage 3 analyse-stage3.py)"
+    # telemetry-combined.csv (Stage 2 schema + node column) plus the
+    # lineage / mutation / survivor / comparison-stage3.md outputs are
+    # produced by analyse-stage3.py (Stage 3 piece 4, #439).
+    emit_step "running analyse-stage3.py to stitch laptop + server telemetry"
+    emit_cmd "python3 $TOOLS_DIR/analyse-stage3.py $RUN_DIR >>$ORCH_LOG 2>&1 || true"
 }
 
 # --- Orchestration body ---
