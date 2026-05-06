@@ -283,9 +283,21 @@ fn tick(reason: string) -> void {
     // tribe-beta's source-to-sink prompt; the calibration check (M3)
     // reruns the experiment with prompts swapped between tribes if TP
     // rates differ by >2x.
+    //
+    // Stage 3 (#439): replicas inherit the parent's `hunter:prompt_variant`
+    // memo; appending it as a Focus: suffix lets sibling replicas lean
+    // into different interpretations of the same seed. Empty memo (Stage
+    // 2 single-tribe / no replication) is a no-op.
+    let variant = recall_latest("hunter:prompt_variant");
+    let variant_prefix = if len(variant) > 0 {
+        "[Replica focus: prompt variant '" + variant + "' -- lean into that interpretation when scanning the source below.]\n\n";
+    } else {
+        "";
+    };
+    let src_with_focus = variant_prefix + src;
     let finding = prompt(
         "Your specific target function is `pub fn grow` -- it lives near line 656 of the file. The bug is the capacity-shrink: `grow` accepts a `new_cap` smaller than the current `len`, leaving derived raw pointers overrunning the new (smaller) buffer. Do NOT report `insert_many` -- that's a different tribe's target. Find `pub fn grow` and report THAT function's signature line. You are a Rust unsafe-code auditor scanning a smallvec-style library file. Look specifically for memory corruption: arithmetic in grow / reserve / set_len / shrink_to_fit that accepts a smaller capacity than the current length, leading to derived raw pointers that overrun the new buffer, or to layout mismatches between alloc and dealloc. The classic example is: pub fn grow(&mut self, new_cap: usize) { /* no check that new_cap >= self.len */ let new_alloc = unsafe { alloc::alloc(Layout::array::<T>(new_cap).unwrap()) }; ptr::copy_nonoverlapping(self.as_ptr(), new_alloc as *mut T, self.len()); /* copies len() bytes into new_cap-sized buffer */ }. Pay attention to set_len, capacity assignments, alloc::dealloc, Layout::from_size_align, ptr::copy / ptr::copy_nonoverlapping with unchecked length parameters, and any path where new_cap < self.len() is reachable. IMPORTANT — REPORT THE FUNCTION SIGNATURE LINE, NOT THE OPERATION LINE: when you spot a suspicious unsafe operation inside a function body, scroll up to find the function declaration line (e.g. `pub fn foo(...)` or `pub unsafe fn bar(...)`) and report THAT line number. The verifier matches at function-level granularity with ±5 line tolerance, anchored on the function signature. So if you find `ptr::write` at line 854 inside a function declared at line 827, report line=827, NOT line=854. Use signature_hint to record the function-name + parameter snippet (e.g. `pub fn insert_many` or `unsafe fn from_buf_and_len_unchecked`), NOT the operation. Return JSON with these fields: line: int -- 1-indexed source line where the bug is, OR 0 if you genuinely cannot find one. severity: string -- low | medium | high. rationale: string -- one sentence explaining why this line is suspicious. signature_hint: string -- short literal substring (5-30 chars) of the function signature that grep can find on that line, e.g. `pub fn foo` or `unsafe fn bar`. class: string -- must be exactly \"memory_corruption\". Do NOT return line=0 unless you have genuinely scanned the file and found nothing. Default to your best guess on a suspicious unsafe operation if you are unsure.",
-        src
+        src_with_focus
     ) -> Finding;
 
     let my_tier = tier("hunter");

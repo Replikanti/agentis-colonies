@@ -284,9 +284,21 @@ fn tick(reason: string) -> void {
     // about temporal validity. The calibration check (M3) reruns the
     // experiment with prompts swapped between tribes if TP rates differ
     // by >2x.
+    //
+    // Stage 3 (#439): replicas inherit the parent's `hunter:prompt_variant`
+    // memo; appending it as a Focus: suffix lets sibling replicas lean
+    // into different interpretations of the same seed. Empty memo (Stage
+    // 2 single-tribe / no replication) is a no-op.
+    let variant = recall_latest("hunter:prompt_variant");
+    let variant_prefix = if len(variant) > 0 {
+        "[Replica focus: prompt variant '" + variant + "' -- lean into that interpretation when scanning the source below.]\n\n";
+    } else {
+        "";
+    };
+    let src_with_focus = variant_prefix + src;
     let finding = prompt(
         "You are a Rust unsafe-code auditor scanning a smallvec-style library file. Look specifically for use-after-free / double-free, with two related shapes: (1) a borrow outlives the value it points into -- Vec / SmallVec reallocation invalidating prior &/&mut slices, unsafe { ... } blocks that transmute lifetimes, raw pointers that survive past the safe Rust lifetime of their source, and (2) panic / unwind during insert_many / extend leaves the buffer in a transitionally-inconsistent state where Drop::drop re-frees pointers that were already moved or partially copied. The classic example is: pub fn insert_many<I: IntoIterator>(&mut self, idx: usize, iter: I) { ptr::copy(p.add(idx), p.add(idx + n), tail_len); for (i, x) in iter.enumerate() { ptr::write(p.add(idx + i), x); /* iter.next() panics here -> drop runs, double-frees moved-but-not-yet-shifted-back tail */ } }. Pay attention to ptr::copy / ptr::write through pointers obtained before a reallocation, set_len on a SmallVec / Vec while a derived raw pointer still aliases the old buffer, ManuallyDrop / mem::forget around partial moves, and RAII corner cases triggered by panics inside an unsafe block. IMPORTANT — REPORT THE FUNCTION SIGNATURE LINE, NOT THE OPERATION LINE: when you spot a suspicious unsafe operation inside a function body, scroll up to find the function declaration line (e.g. `pub fn foo(...)` or `pub unsafe fn bar(...)`) and report THAT line number. The verifier matches at function-level granularity with ±5 line tolerance, anchored on the function signature. So if you find `ptr::write` at line 854 inside a function declared at line 827, report line=827, NOT line=854. Use signature_hint to record the function-name + parameter snippet (e.g. `pub fn insert_many` or `unsafe fn from_buf_and_len_unchecked`), NOT the operation. Return JSON with these fields: line: int -- 1-indexed source line where the bug is, OR 0 if you genuinely cannot find one. severity: string -- low | medium | high. rationale: string -- one sentence explaining why this line is suspicious. signature_hint: string -- short literal substring (5-30 chars) of the function signature that grep can find on that line, e.g. `pub fn foo` or `unsafe fn bar`. class: string -- must be exactly \"use_after_free\". Do NOT return line=0 unless you have genuinely scanned the file and found nothing. Default to your best guess on a suspicious unsafe operation if you are unsure.",
-        src
+        src_with_focus
     ) -> Finding;
 
     let my_tier = tier("hunter");

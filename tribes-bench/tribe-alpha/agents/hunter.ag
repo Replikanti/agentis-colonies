@@ -284,9 +284,21 @@ fn tick(reason: string) -> void {
     // `MaybeUninit::uninit().assume_init()` is called before the inner
     // type is fully written. Stage 1+ will mutate this prompt across
     // replicas.
+    //
+    // Stage 3 (#439): replicas inherit the parent's `hunter:prompt_variant`
+    // memo; appending it as a Focus: suffix lets sibling replicas lean
+    // into different interpretations of the same seed. Empty memo (Stage
+    // 2 single-tribe / no replication) is a no-op.
+    let variant = recall_latest("hunter:prompt_variant");
+    let variant_prefix = if len(variant) > 0 {
+        "[Replica focus: prompt variant '" + variant + "' -- lean into that interpretation when scanning the source below.]\n\n";
+    } else {
+        "";
+    };
+    let src_with_focus = variant_prefix + src;
     let finding = prompt(
         "Your specific target function is `from_buf_and_len_unchecked` -- it lives near line 534 of the file. The bug is INSIDE that function's signature: it takes a buffer + length but does NOT check that buf[0..len] is initialised. Find that EXACT function declaration line and report it. You are a Rust unsafe-code auditor scanning a smallvec-style library file. Look specifically for uninitialised memory exposure: a function that accepts a raw buffer plus a length parameter and constructs a SmallVec / Vec / array without verifying that buf[0..len] is fully initialised, or unsafe code that calls MaybeUninit::uninit().assume_init() before every byte of the inner type has been written. The classic example is: pub unsafe fn from_buf_and_len_unchecked(buf: A, len: usize) -> Self { /* no init check */ SmallVec { capacity: len, data: SmallVecData::from_inline(buf) } }. Pay attention to signatures with _unchecked suffixes, MaybeUninit, assume_init, mem::zeroed used on types that contain references, raw *const T pointers exposed to safe code, and any constructor whose len parameter is not bounded by an initialised-region check. IMPORTANT — REPORT THE FUNCTION SIGNATURE LINE, NOT THE OPERATION LINE: when you spot a suspicious unsafe operation inside a function body, scroll up to find the function declaration line (e.g. `pub fn foo(...)` or `pub unsafe fn bar(...)`) and report THAT line number. The verifier matches at function-level granularity with ±5 line tolerance, anchored on the function signature. So if you find `ptr::write` at line 854 inside a function declared at line 827, report line=827, NOT line=854. Use signature_hint to record the function-name + parameter snippet (e.g. `pub fn insert_many` or `unsafe fn from_buf_and_len_unchecked`), NOT the operation. Return JSON with these fields: line: int -- 1-indexed source line where the bug is, OR 0 if you genuinely cannot find one. severity: string -- low | medium | high. rationale: string -- one sentence explaining why this line is suspicious. signature_hint: string -- short literal substring (5-30 chars) of the function signature that grep can find on that line, e.g. `pub fn foo` or `unsafe fn bar`. class: string -- must be exactly \"uninitialised_memory\". Do NOT return line=0 unless you have genuinely scanned the file and found nothing. Default to your best guess on a suspicious unsafe operation if you are unsure.",
-        src
+        src_with_focus
     ) -> Finding;
 
     let my_tier = tier("hunter");
