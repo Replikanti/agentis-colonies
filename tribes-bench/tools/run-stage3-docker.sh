@@ -266,9 +266,21 @@ write_bootstrap() {
         printf 'set -euo pipefail\n'
         printf 'cd /run-root\n'
         printf 'agentis init >/dev/null 2>&1 || true\n'
+        # Mirror run-stage2.sh lines 193-263 setup. Without these keys
+        # the agent runtime silently degrades: exec sh in .ag agents
+        # cannot see TARGET_DIR / VERIFIER_PATH (no env_passthrough),
+        # learn() rows never land in .agentis/experience/ (experience
+        # disabled), telemetry events vanish (telemetry disabled), and
+        # slow LLM rounds trigger watchdog kill cascade (default
+        # heartbeat = tick_interval * 2 = 120s; openai gpt-4o-mini at
+        # 20k tokens can take 90+ seconds).
         printf '{\n'
         printf '  printf "federation.enabled = true\\n"\n'
         printf '  printf "federation.peers = host.containers.internal:%s\\n"\n' "$peer_port"
+        printf '  printf "exec.env_passthrough = COLONY_DIR,TRIBE_NAME,TARGET_DIR,TARGET_FILE,BUGS_MANIFEST,VERIFIER_PATH,RUN_DIR,BUG_LEDGER_PATH,INITIAL_CB,BASE_COST,K_MALTHUSIAN,MAX_REPLICAS,REWARD_FULL,REWARD_SUBSEQUENT,DEATH_THRESHOLD,AGENTIS_ROOT\\n"\n'
+        printf '  printf "experience.enabled = true\\n"\n'
+        printf '  printf "telemetry.enabled = true\\n"\n'
+        printf '  printf "daemon.heartbeat_interval_ms = 600000\\n"\n'
         printf '  printf "llm.backend = %s\\n"\n' "$LLM_BACKEND"
         if [ "$LLM_BACKEND" = "openai" ]; then
             printf '  printf "llm.openai.endpoint = %s\\n"\n' "$OPENAI_ENDPOINT"
