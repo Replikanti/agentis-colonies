@@ -277,7 +277,14 @@ write_bootstrap() {
             printf '  printf "llm.openai.timeout_ms = %s\\n"\n' "$OPENAI_TIMEOUT_MS"
         fi
         printf '} >> .agentis/config\n'
+        # Bring tribes-bench/tools first, then merge in the repo-root tools/
+        # which carries platform helpers (parse-toml.sh, kill-federation.sh)
+        # that start-colony.sh's `<fed>/tools/parse-toml.sh` lookup needs.
+        # The two source dirs have non-overlapping filenames so the order
+        # is stable; cp -n is a defensive no-clobber in case a future
+        # rename ever introduces a collision.
         printf 'cp -r /repo/tribes-bench/tools /run-root/tools\n'
+        printf 'cp -rn /repo/tools/. /run-root/tools/\n'
         printf 'cp -r /repo/tribes-bench/targets /run-root/targets\n'
         printf 'cp /repo/tribes-bench/calibration.toml /run-root/calibration.toml\n'
         for tribe in $tribes_str; do
