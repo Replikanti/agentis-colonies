@@ -35,14 +35,14 @@ RUN apt-get update \
         ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL -o /tmp/agentis \
+RUN cd /tmp \
+ && curl -fsSL -o agentis-linux-x86_64 \
         "https://github.com/Replikanti/agentis/releases/download/${AGENTIS_VERSION}/agentis-linux-x86_64" \
- && curl -fsSL -o /tmp/agentis.sha256 \
+ && curl -fsSL -o agentis-linux-x86_64.sha256 \
         "https://github.com/Replikanti/agentis/releases/download/${AGENTIS_VERSION}/agentis-linux-x86_64.sha256" \
- && cd /tmp \
- && sha256sum -c agentis.sha256 \
- && install -m 0755 agentis /usr/local/bin/agentis \
- && rm /tmp/agentis /tmp/agentis.sha256
+ && sha256sum -c agentis-linux-x86_64.sha256 \
+ && install -m 0755 agentis-linux-x86_64 /usr/local/bin/agentis \
+ && rm /tmp/agentis-linux-x86_64 /tmp/agentis-linux-x86_64.sha256
 
 WORKDIR /run-root
 
