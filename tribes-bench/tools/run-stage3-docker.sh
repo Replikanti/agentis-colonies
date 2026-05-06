@@ -329,7 +329,11 @@ write_bootstrap() {
             # writes once the first rotation interval elapses, but the
             # bootstrap default lets daemons land on a working Stage 2
             # target on tick 1 instead of the broken Stage 0 fallback.
-            printf 'DEATH_THRESHOLD=%s AGENTIS_ROOT=/run-root/.agentis TARGET_DIR=targets-stage2/smallvec-v0.6.13 TARGET_FILE=lib.rs BUGS_MANIFEST=/run-root/.agentis/sandbox/targets-stage2/bugs.json VERIFIER_PATH=/run-root/tools/verify-finding-stage2.sh bash /run-root/%s/scripts/start-colony.sh > /run-root/%s.log 2>&1 &\n' \
+            # BUG_LEDGER_PATH gives start-colony.sh the host-side ledger
+            # file to seed the tribe-<name>:bug_ledger memo from. Without
+            # it, hunters verify findings but the JSONL ledger never
+            # grows (visible in experience but missing from bug-ledger).
+            printf 'DEATH_THRESHOLD=%s AGENTIS_ROOT=/run-root/.agentis TARGET_DIR=targets-stage2/smallvec-v0.6.13 TARGET_FILE=lib.rs BUGS_MANIFEST=/run-root/.agentis/sandbox/targets-stage2/bugs.json VERIFIER_PATH=/run-root/tools/verify-finding-stage2.sh BUG_LEDGER_PATH=/run-root/bug-ledger.jsonl bash /run-root/%s/scripts/start-colony.sh > /run-root/%s.log 2>&1 &\n' \
                 "$DEATH_THRESHOLD" "$tribe" "$tribe"
         done
         printf 'while [ ! -e /run-root/.shutdown ]; do sleep 5; done\n'
