@@ -257,10 +257,14 @@ stop_local_serve() {
 }
 
 # --- 3) hermetic .agentis/config injection (federation.enabled = true) ---
+# Note: cb_budget rewriting (run-stage2-rewrite-cb.py) is NOT done here.
+# That script operates on tribe colony.toml files, not on the run-dir's
+# top-level .agentis/config. Default cb_budget values from each tribe's
+# colony.example.toml carry through for Stage 3; calibration tuning is a
+# Stage 2 optimisation, not a Stage 3 prerequisite.
 configure_local_node() {
     emit_step "configuring laptop hermetic .agentis/config (federation.enabled=true, llm.backend=$LLM_BACKEND)"
     emit_cmd "cd $RUN_DIR && agentis init >/dev/null 2>&1 || true"
-    emit_cmd "python3 $TOOLS_DIR/run-stage2-rewrite-cb.py --noop-if-missing $RUN_DIR/.agentis/config || true"
     emit_cmd "printf 'federation.enabled = true\\n' >>$RUN_DIR/.agentis/config"
     emit_cmd "printf 'llm.backend = $LLM_BACKEND\\n' >>$RUN_DIR/.agentis/config"
     if [ "$LLM_BACKEND" = "openai" ]; then
@@ -368,10 +372,14 @@ stitch_telemetry() {
 # --- Orchestration body ---
 install_cleanup_trap
 open_tunnel
-start_remote_serve
-start_local_serve
+# Init the hermetic .agentis/ on both nodes BEFORE start_*_serve writes
+# files (serve.log, serve.pid) into the run-root. agentis init refuses
+# to initialize into a non-empty directory, so doing init first keeps
+# the order: empty run-root → init → write serve.* → start serve.
 configure_local_node
 configure_remote_node
+start_remote_serve
+start_local_serve
 push_server_scaffolding
 write_run_meta
 spawn_laptop_daemons
