@@ -1,0 +1,49 @@
+# Containerfile.stage3 — base image for the Docker-based Stage 3 multinode
+# orchestrator (#439).
+#
+# WARNING: this image deliberately bakes ONLY the agentis runtime + base OS
+# tooling. The planted-bug target tree (tribes-bench/targets/stage{2,3}/...),
+# tribe scaffolding (tribe-{alpha,beta,...}/), and per-run hermetic .agentis/
+# state are mounted in at run time via `-v $REPO_ROOT:/repo:ro` and
+# `-v $RUN_DIR/<node>:/run-root:rw`. Do NOT `COPY` any of the above into the
+# image; doing so would (a) freeze the planted-bug surface to image-build
+# time, defeating the rotation timer, and (b) bake a copy of the smallvec
+# v0.6.13 + bumpalo v3.2.0 vendored crates into every image push, both of
+# which already live in the public repo.
+#
+# WARNING: OPENAI_API_KEY MUST NOT be baked in. The orchestrator passes it
+# at run time via `podman run -e OPENAI_API_KEY=...`. Any attempt to embed
+# the key here (ARG OPENAI_API_KEY, ENV OPENAI_API_KEY, secret file COPY)
+# would leak into the image layers and `podman save` exports.
+#
+# The agentis binary fetch is sha256-verified against the publisher's
+# detached signature so a compromised CDN can't substitute a backdoored
+# build mid-pull.
+
+FROM ubuntu:24.04
+
+ARG AGENTIS_VERSION=v1.7.0
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        python3 \
+        jq \
+        git \
+        curl \
+        ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL -o /tmp/agentis \
+        "https://github.com/Replikanti/agentis/releases/download/${AGENTIS_VERSION}/agentis-linux-x86_64" \
+ && curl -fsSL -o /tmp/agentis.sha256 \
+        "https://github.com/Replikanti/agentis/releases/download/${AGENTIS_VERSION}/agentis-linux-x86_64.sha256" \
+ && cd /tmp \
+ && sha256sum -c agentis.sha256 \
+ && install -m 0755 agentis /usr/local/bin/agentis \
+ && rm /tmp/agentis /tmp/agentis.sha256
+
+WORKDIR /run-root
+
+ENTRYPOINT ["/bin/bash"]
