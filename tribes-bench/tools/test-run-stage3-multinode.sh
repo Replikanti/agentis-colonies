@@ -87,6 +87,16 @@ for tribe in tribe-gamma tribe-delta tribe-epsilon; do
     assert_contains "server daemon spawn: $tribe" "$OUT" \
         "$tribe/scripts/start-colony.sh"
 done
+# Server-side scaffolding must be pushed before daemon spawn (otherwise
+# the remote start-colony.sh paths cannot resolve).
+for tribe in tribe-gamma tribe-delta tribe-epsilon; do
+    assert_contains "scaffolding push: $tribe" "$OUT" \
+        "rsync -az --delete -e 'ssh -S $TMP_SOCK'"
+done
+assert_contains "tools/ rsync to server" "$OUT" \
+    "tools/ ylohnitram@94.112.2.177:"
+assert_contains "targets/ rsync to server" "$OUT" \
+    "targets/ ylohnitram@94.112.2.177:"
 # Server-side spawns must go through ssh + bash -lc (login-shell PATH).
 assert_contains "server spawns route through ssh + bash -lc" "$OUT" \
     "ssh -S $TMP_SOCK"

@@ -270,6 +270,22 @@ configure_remote_node() {
     fi
 }
 
+# Push tribe scaffolding (agents/, scripts/, config/) plus tools/ and
+# targets/ over the SSH tunnel so spawn_server_daemons() can resolve
+# $REMOTE_RUN_ROOT/$tribe/scripts/start-colony.sh + the verifier + the
+# bug manifests on the server side. Without this step the remote
+# daemons would have no source files and target rotation could not
+# resolve TARGET_DIR / BUGS_MANIFEST. rsync --delete keeps the remote
+# tree byte-identical to the laptop's tribes-bench source.
+push_server_scaffolding() {
+    emit_step "pushing tribe scaffolding to server: ${SERVER_TRIBES[*]}"
+    for tribe in "${SERVER_TRIBES[@]}"; do
+        emit_cmd "rsync -az --delete -e 'ssh -S $TUNNEL_SOCK' $FED_DIR/$tribe/ $REMOTE_HOST:$REMOTE_RUN_ROOT/$tribe/"
+    done
+    emit_cmd "rsync -az --delete -e 'ssh -S $TUNNEL_SOCK' $FED_DIR/tools/ $REMOTE_HOST:$REMOTE_RUN_ROOT/tools/"
+    emit_cmd "rsync -az --delete -e 'ssh -S $TUNNEL_SOCK' $FED_DIR/targets/ $REMOTE_HOST:$REMOTE_RUN_ROOT/targets/"
+}
+
 # --- 4 + 5) daemon spawns (laptop + server) ---
 # Laptop side reuses run-stage2.sh's --enable-replication infrastructure
 # by exporting STAGE2_RESUME_RUN_DIR-equivalent state and calling the
@@ -332,8 +348,15 @@ pull_server_artifacts() {
 }
 
 stitch_telemetry() {
-    emit_step "stitching combined telemetry.csv (with node column)"
-    emit_cmd "python3 $TOOLS_DIR/analyse-stage2.py $RUN_DIR --multinode-server-runs $RUN_DIR/server-runs >>$ORCH_LOG 2>&1 || true"
+    # analyse-stage2.py runs against the laptop run-dir (Stage 2 schema).
+    # Server-side artefacts live at $RUN_DIR/server-runs/$TS/.agentis/ +
+    # bug-ledger.jsonl after pull_server_artifacts(). The combined
+    # telemetry.csv with node column is produced by analyse-stage3.py
+    # (Stage 3 piece 4 — a separate PR). Until that lands, the
+    # operator can analyse each node's telemetry independently.
+    emit_step "running per-node analyse-stage2.py on laptop run-dir"
+    emit_cmd "python3 $TOOLS_DIR/analyse-stage2.py $RUN_DIR >>$ORCH_LOG 2>&1 || true"
+    emit_step "server-side bug-ledger pulled to $RUN_DIR/server-runs/<ts>/bug-ledger.jsonl for offline review (combined telemetry awaits Stage 3 analyse-stage3.py)"
 }
 
 # --- Orchestration body ---
@@ -343,6 +366,7 @@ start_remote_serve
 start_local_serve
 configure_local_node
 configure_remote_node
+push_server_scaffolding
 write_run_meta
 spawn_laptop_daemons
 spawn_server_daemons
