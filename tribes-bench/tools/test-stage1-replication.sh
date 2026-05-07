@@ -110,6 +110,18 @@ for tribe in tribe-alpha tribe-beta tribe-gamma; do
     done
 done
 
+# --- 7. Defensive replicate target check (#460 PR A) ---
+# All 5 hunters must guard replicate() with a `len(target) > 0` check and
+# tag a distinct `replicate-skip` failure row when the target is empty,
+# so empty self_node_addr() no longer pollutes the experience log with
+# phantom `replicate-nak` rows.
+for tribe in tribe-alpha tribe-beta tribe-gamma tribe-delta tribe-epsilon; do
+    assert_contains "$tribe hunter.ag guards replicate() with len(target) > 0" \
+        "$FED_DIR/$tribe/agents/hunter.ag" "len(target) > 0"
+    assert_contains "$tribe hunter.ag tags replicate-skip on empty target" \
+        "$FED_DIR/$tribe/agents/hunter.ag" "replicate-skip"
+done
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

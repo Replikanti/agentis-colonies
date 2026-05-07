@@ -376,13 +376,21 @@ fn tick(reason: string) -> void {
                             let variant = pick_variant(tribe_name(), n);
                             memo_write("hunter:prompt_variant", variant);
                             let target = self_node_addr();
-                            let replica_id = try { replicate(target); } catch e { ""; };
-                            if len(replica_id) > 0 {
-                                memo_write("tribe-" + tribe_name() + ":pool", to_string(pool_after - cost));
-                                memo_write("tribe-" + tribe_name() + ":size", to_string(n + 1));
-                                learn("replicate", "n=" + to_string(n), "cost=" + to_string(cost), "success", ["replicated", "tribes-bench", tribe_name()]);
+                            if len(target) > 0 {
+                                let replica_id = try { replicate(target); } catch e { "__replicate_error__"; };
+                                if replica_id == "__replicate_error__" {
+                                    learn("replicate", "n=" + to_string(n), "cost=" + to_string(cost), "failure", ["replicate-error", "tribes-bench", tribe_name()]);
+                                } else {
+                                    if len(replica_id) > 0 {
+                                        memo_write("tribe-" + tribe_name() + ":pool", to_string(pool_after - cost));
+                                        memo_write("tribe-" + tribe_name() + ":size", to_string(n + 1));
+                                        learn("replicate", "n=" + to_string(n), "cost=" + to_string(cost), "success", ["replicated", "tribes-bench", tribe_name()]);
+                                    } else {
+                                        learn("replicate", "n=" + to_string(n), "cost=" + to_string(cost), "failure", ["replicate-nak", "tribes-bench", tribe_name()]);
+                                    };
+                                };
                             } else {
-                                learn("replicate", "n=" + to_string(n), "cost=" + to_string(cost), "failure", ["replicate-nak", "tribes-bench", tribe_name()]);
+                                learn("replicate", "n=" + to_string(n), "cost=" + to_string(cost), "failure", ["replicate-skip", "tribes-bench", tribe_name()]);
                             };
                         };
                     };
