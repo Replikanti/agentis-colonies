@@ -61,6 +61,9 @@ OUT="$(STAGE3_WALL_CLOCK_S=1800 \
        STAGE3_DEATH_THRESHOLD=300 \
        STAGE3_LAPTOP_PORT=9100 \
        STAGE3_SERVER_PORT=9101 \
+       STAGE3_LAPTOP_WORKER_PORT=9200 \
+       STAGE3_SERVER_WORKER_PORT=9201 \
+       STAGE3_WORKER_SECRET=testsecret \
        bash "$ORCH" --dry-run 2>&1)"
 
 # 1. image build / reuse
@@ -98,6 +101,43 @@ assert_contains "laptop tribes threaded into bootstrap" "$OUT" \
     "tribes=\"tribe-alpha tribe-beta\""
 assert_contains "server tribes threaded into bootstrap" "$OUT" \
     "tribes=\"tribe-gamma tribe-delta tribe-epsilon\""
+# 3b. Worker-port threading + secret injection (#465)
+assert_contains "laptop bootstrap describes self_worker_port=9200 peer_worker_port=9201" "$OUT" \
+    "self_worker_port=9200 peer_worker_port=9201"
+assert_contains "server bootstrap describes self_worker_port=9201 peer_worker_port=9200" "$OUT" \
+    "self_worker_port=9201 peer_worker_port=9200"
+assert_contains "laptop worker port -p mapping" "$OUT" \
+    "-p 9200:9200"
+assert_contains "server worker port -p mapping" "$OUT" \
+    "-p 9201:9201"
+assert_contains "WORKER_SECRET injected into laptop container" "$OUT" \
+    "--name stage3-laptop -p 9100:9100 -p 9200:9200 -e OPENAI_API_KEY=\"\${OPENAI_API_KEY:-}\" -e WORKER_SECRET=\"testsecret\""
+assert_contains "WORKER_SECRET injected into server container" "$OUT" \
+    "--name stage3-server -p 9101:9101 -p 9201:9201 -e OPENAI_API_KEY=\"\${OPENAI_API_KEY:-}\" -e WORKER_SECRET=\"testsecret\""
+assert_contains "header documents STAGE3_LAPTOP_WORKER_PORT" \
+    "$(cat "$ORCH")" \
+    "STAGE3_LAPTOP_WORKER_PORT  Host port for the laptop container"
+assert_contains "header documents STAGE3_SERVER_WORKER_PORT" \
+    "$(cat "$ORCH")" \
+    "STAGE3_SERVER_WORKER_PORT  Host port for the server container"
+assert_contains "header documents STAGE3_WORKER_SECRET" \
+    "$(cat "$ORCH")" \
+    "STAGE3_WORKER_SECRET       Shared secret"
+# Bootstrap body asserted via source inspection: the `printf` lines that
+# emit the worker spawn + the peer_worker_addr memo seed live in the
+# script source verbatim, so grepping the source is deterministic.
+assert_contains "bootstrap body spawns agentis worker on self_worker_port" \
+    "$(cat "$ORCH")" \
+    "agentis worker 0.0.0.0:%s --secret \"\$WORKER_SECRET\" --max-concurrent 8"
+assert_contains "bootstrap body seeds peer_worker_addr memo at worker port" \
+    "$(cat "$ORCH")" \
+    'agentis memo set tribes-bench:peer_worker_addr:0 host.containers.internal:%s'
+assert_contains "peer_worker_addr memo printf binds to peer_worker_port (not peer_port)" \
+    "$(cat "$ORCH")" \
+    'host.containers.internal:%s >/dev/null 2>&1 || true)\n'"'"' "$peer_worker_port"'
+assert_contains "bootstrap body polls /dev/tcp before tribe launch" \
+    "$(cat "$ORCH")" \
+    "/dev/tcp/127.0.0.1/%s"
 
 # 4. rotation timer
 assert_contains "rotation timer with configured interval" "$OUT" \
@@ -153,6 +193,27 @@ assert_not_contains "no SSH tunnel sock referenced" "$OUT" \
     "/tmp/stage3-tunnel.sock"
 assert_not_contains "no ssh -fN -M command" "$OUT" \
     "ssh -fN -M"
+
+# 7. Secret auto-generation fallback (#465). When STAGE3_WORKER_SECRET is
+# unset the orchestrator must mint a per-run secret via the
+# start-federation.sh idiom and emit only its length (not value) into
+# the orchestrator log surface.
+unset STAGE3_WORKER_SECRET || true
+OUT_FALLBACK="$(env -u STAGE3_WORKER_SECRET \
+       STAGE3_WALL_CLOCK_S=1800 \
+       STAGE3_ROTATION_INTERVAL_S=120 \
+       STAGE3_DEATH_THRESHOLD=300 \
+       STAGE3_LAPTOP_PORT=9100 \
+       STAGE3_SERVER_PORT=9101 \
+       STAGE3_LAPTOP_WORKER_PORT=9200 \
+       STAGE3_SERVER_WORKER_PORT=9201 \
+       bash "$ORCH" --dry-run 2>&1)"
+assert_contains "secret generation falls back when STAGE3_WORKER_SECRET unset" \
+    "$OUT_FALLBACK" \
+    "generated worker secret (len="
+assert_not_contains "fallback secret length is non-zero" \
+    "$OUT_FALLBACK" \
+    "generated worker secret (len=0)"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
