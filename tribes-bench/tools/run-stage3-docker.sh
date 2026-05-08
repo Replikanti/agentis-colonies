@@ -50,6 +50,19 @@
 #                              agentis serve. Default: 9100.
 #   STAGE3_SERVER_PORT         Host port for the server container's
 #                              agentis serve. Default: 9101.
+#   STAGE3_LAPTOP_WORKER_PORT  Host port for the laptop container's
+#                              agentis worker (replicate dispatch target).
+#                              Default: 9200.
+#   STAGE3_SERVER_WORKER_PORT  Host port for the server container's
+#                              agentis worker. Default: 9201.
+#   STAGE3_WORKER_SECRET       Shared secret for cross-container worker
+#                              auth. Default: auto-generated per run via
+#                              the same idiom as start-federation.sh
+#                              (16 bytes urandom, base64-trimmed).
+#                              Override only for debugging — restarting
+#                              one container with a stale value while the
+#                              other holds the auto-generated secret will
+#                              break replicate() auth.
 #   STAGE3_IMAGE_TAG           Image tag built from Containerfile.stage3.
 #                              Default: tribes-bench-stage3:latest.
 #   STAGE3_LAPTOP_TRIBES       Space-separated tribe list for the laptop
@@ -134,6 +147,8 @@ OPENAI_KEY_ENV="${STAGE3_OPENAI_KEY_ENV:-OPENAI_API_KEY}"
 OPENAI_TIMEOUT_MS="${STAGE3_OPENAI_TIMEOUT_MS:-180000}"
 LAPTOP_PORT="${STAGE3_LAPTOP_PORT:-9100}"
 SERVER_PORT="${STAGE3_SERVER_PORT:-9101}"
+LAPTOP_WORKER_PORT="${STAGE3_LAPTOP_WORKER_PORT:-9200}"
+SERVER_WORKER_PORT="${STAGE3_SERVER_WORKER_PORT:-9201}"
 IMAGE_TAG="${STAGE3_IMAGE_TAG:-tribes-bench-stage3:latest}"
 LAPTOP_TRIBES_RAW="${STAGE3_LAPTOP_TRIBES:-tribe-alpha tribe-beta}"
 SERVER_TRIBES_RAW="${STAGE3_SERVER_TRIBES:-tribe-gamma tribe-delta tribe-epsilon}"
@@ -144,7 +159,8 @@ TARGET_B_BUGS_REL="${STAGE3_TARGET_B_BUGS:-targets/stage3/bugs.json}"
 
 val=""
 for var_name in WALL_CLOCK ROTATION_INTERVAL DEATH_THRESHOLD \
-                OPENAI_TIMEOUT_MS LAPTOP_PORT SERVER_PORT; do
+                OPENAI_TIMEOUT_MS LAPTOP_PORT SERVER_PORT \
+                LAPTOP_WORKER_PORT SERVER_WORKER_PORT; do
     eval "val=\${$var_name}"
     case "$val" in
         ''|*[!0-9]*)
@@ -161,6 +177,13 @@ unset val
 LAPTOP_TRIBES=( $LAPTOP_TRIBES_RAW )
 # shellcheck disable=SC2206
 SERVER_TRIBES=( $SERVER_TRIBES_RAW )
+
+# --- Per-run worker secret (#465) ---
+# Mirrors the start-federation.sh:64 idiom so cross-container
+# replicate() lands on a peer `agentis worker` with matching auth.
+# Operator override via STAGE3_WORKER_SECRET is supported but
+# discouraged outside debugging — see header.
+WORKER_SECRET="${STAGE3_WORKER_SECRET:-$(head -c 16 /dev/urandom | base64 | tr -d '/+=' | head -c 16)}"
 
 # --- Per-run hermetic dir ---
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -222,6 +245,8 @@ emit_step "wall clock: ${WALL_CLOCK}s, rotation: ${ROTATION_INTERVAL}s, death th
 emit_step "tribes: laptop=[${LAPTOP_TRIBES[*]}] server=[${SERVER_TRIBES[*]}]"
 emit_step "image tag: $IMAGE_TAG"
 emit_step "host ports: laptop=$LAPTOP_PORT server=$SERVER_PORT"
+emit_step "worker ports: laptop=$LAPTOP_WORKER_PORT server=$SERVER_WORKER_PORT"
+emit_step "generated worker secret (len=${#WORKER_SECRET})"
 
 # --- 1) Build (or reuse) the container image ---
 build_image() {
@@ -243,11 +268,13 @@ build_image() {
 #      AGENTIS_ROOT exported
 #   6. Block until /run-root/.shutdown is touched by the host orchestrator
 write_bootstrap() {
-    role="$1"            # laptop | server
-    node_dir="$2"        # $LAPTOP_DIR or $SERVER_DIR
-    self_port="$3"       # in-container port (also host port)
-    peer_port="$4"
-    tribes_str="$5"      # space-separated
+    role="$1"             # laptop | server
+    node_dir="$2"         # $LAPTOP_DIR or $SERVER_DIR
+    self_port="$3"        # in-container serve port (also host port)
+    peer_port="$4"        # peer serve port (federation discovery)
+    self_worker_port="$5" # in-container worker port (#465)
+    peer_worker_port="$6" # peer worker port — replicate() target (#465)
+    tribes_str="$7"       # space-separated
 
     bootstrap_path="$node_dir/bootstrap.sh"
     emit_step "generating bootstrap script for $role at $bootstrap_path"
@@ -256,7 +283,7 @@ write_bootstrap() {
         # Echo a synthesised path-only command line so the dry-run
         # transcript covers each bootstrap.sh write without inflating
         # the dry-run output with the full multi-line file body.
-        emit_cmd "write-bootstrap role=$role path=$bootstrap_path self_port=$self_port peer_port=$peer_port tribes=\"$tribes_str\""
+        emit_cmd "write-bootstrap role=$role path=$bootstrap_path self_port=$self_port peer_port=$peer_port self_worker_port=$self_worker_port peer_worker_port=$peer_worker_port tribes=\"$tribes_str\""
         return
     fi
 
@@ -318,17 +345,35 @@ write_bootstrap() {
         # mirrored from run-stage2.sh line 272). Without this seed the
         # hunter ticks at conf=0 → dormant → no LLM call → no findings.
         printf '(cd /run-root && agentis memo set hunter:confidence 0.7 >/dev/null 2>&1 || true)\n'
-        # Stage 3 cross-node replication (#460 PR B): seed the peer-worker
-        # address list so hunter's select_replication_target() rotates the
-        # replicate(target) call across nodes. Each container gets exactly
-        # one peer (the other node), reachable at host.containers.internal
-        # on the peer's in-container port. Indexed key + count memo shape
-        # is read by the hunter helper via recall_latest("...:peer_worker_addr:0")
-        # plus recall_latest("...:peer_worker_count").
-        printf '(cd /run-root && agentis memo set tribes-bench:peer_worker_addr:0 host.containers.internal:%s >/dev/null 2>&1 || true)\n' "$peer_port"
+        # Stage 3 cross-node replication (#460 PR B + #465): seed the
+        # peer-worker address list so hunter's
+        # select_replication_target() rotates the replicate(target) call
+        # across nodes. Each container gets exactly one peer (the other
+        # node), reachable at host.containers.internal on the peer's
+        # WORKER port (not the serve port — replicate dispatch needs an
+        # `agentis worker` listener on the matching shared secret).
+        # Indexed key + count memo shape is read by the hunter helper
+        # via recall_latest("...:peer_worker_addr:0") plus
+        # recall_latest("...:peer_worker_count").
+        printf '(cd /run-root && agentis memo set tribes-bench:peer_worker_addr:0 host.containers.internal:%s >/dev/null 2>&1 || true)\n' "$peer_worker_port"
         printf '(cd /run-root && agentis memo set tribes-bench:peer_worker_count 1 >/dev/null 2>&1 || true)\n'
         printf 'agentis serve 0.0.0.0:%s > /run-root/serve.log 2>&1 &\n' "$self_port"
         printf 'echo $! > /run-root/serve.pid\n'
+        # Stage 3 cross-container replicate dispatch (#465): a peer's
+        # replicate(target) call lands on this worker. WORKER_SECRET is
+        # injected via `podman run -e WORKER_SECRET=...` and must match
+        # on both nodes for auth to succeed. Bind 0.0.0.0 so podman's
+        # host-bridge maps host:<self_worker_port> → container:<self_worker_port>.
+        # Pure-bash poll on /dev/tcp avoids relying on iproute2 / netcat
+        # being present in the base image (Containerfile.stage3 ships
+        # only python3/jq/git/curl/ca-certificates). Cap at 30 iterations
+        # (~15s) so a broken worker does not hang bootstrap forever.
+        printf 'agentis worker 0.0.0.0:%s --secret "$WORKER_SECRET" --max-concurrent 8 > /run-root/worker.log 2>&1 &\n' "$self_worker_port"
+        printf 'echo $! > /run-root/worker.pid\n'
+        printf 'for _ in $(seq 1 30); do\n'
+        printf '    if (exec 3<>/dev/tcp/127.0.0.1/%s) 2>/dev/null; then exec 3<&-; exec 3>&-; break; fi\n' "$self_worker_port"
+        printf '    sleep 0.5\n'
+        printf 'done\n'
         for tribe in $tribes_str; do
             # Pass TARGET_DIR + TARGET_FILE + BUGS_MANIFEST + VERIFIER_PATH
             # as env into start-colony.sh so the hunter resolves planted-
@@ -352,8 +397,10 @@ write_bootstrap() {
 }
 
 write_bootstraps() {
-    write_bootstrap "laptop" "$LAPTOP_DIR" "$LAPTOP_PORT" "$SERVER_PORT" "${LAPTOP_TRIBES[*]}"
-    write_bootstrap "server" "$SERVER_DIR" "$SERVER_PORT" "$LAPTOP_PORT" "${SERVER_TRIBES[*]}"
+    write_bootstrap "laptop" "$LAPTOP_DIR" "$LAPTOP_PORT" "$SERVER_PORT" \
+        "$LAPTOP_WORKER_PORT" "$SERVER_WORKER_PORT" "${LAPTOP_TRIBES[*]}"
+    write_bootstrap "server" "$SERVER_DIR" "$SERVER_PORT" "$LAPTOP_PORT" \
+        "$SERVER_WORKER_PORT" "$LAPTOP_WORKER_PORT" "${SERVER_TRIBES[*]}"
 }
 
 # --- 3) Spawn the two containers ---
@@ -363,10 +410,10 @@ write_bootstraps() {
 # podman setup misses this alias (some legacy CNI configs), pass
 # --add-host host.containers.internal:<host-bridge-ip> to both runs.
 spawn_containers() {
-    emit_step "spawning stage3-laptop container (host port $LAPTOP_PORT)"
-    emit_cmd "podman run -d --name stage3-laptop -p $LAPTOP_PORT:$LAPTOP_PORT -e $OPENAI_KEY_ENV=\"\${$OPENAI_KEY_ENV:-}\" -v $REPO_ROOT:/repo:ro -v $LAPTOP_DIR:/run-root:rw $IMAGE_TAG /run-root/bootstrap.sh"
-    emit_step "spawning stage3-server container (host port $SERVER_PORT)"
-    emit_cmd "podman run -d --name stage3-server -p $SERVER_PORT:$SERVER_PORT -e $OPENAI_KEY_ENV=\"\${$OPENAI_KEY_ENV:-}\" -v $REPO_ROOT:/repo:ro -v $SERVER_DIR:/run-root:rw $IMAGE_TAG /run-root/bootstrap.sh"
+    emit_step "spawning stage3-laptop container (host port $LAPTOP_PORT, worker port $LAPTOP_WORKER_PORT)"
+    emit_cmd "podman run -d --name stage3-laptop -p $LAPTOP_PORT:$LAPTOP_PORT -p $LAPTOP_WORKER_PORT:$LAPTOP_WORKER_PORT -e $OPENAI_KEY_ENV=\"\${$OPENAI_KEY_ENV:-}\" -e WORKER_SECRET=\"$WORKER_SECRET\" -v $REPO_ROOT:/repo:ro -v $LAPTOP_DIR:/run-root:rw $IMAGE_TAG /run-root/bootstrap.sh"
+    emit_step "spawning stage3-server container (host port $SERVER_PORT, worker port $SERVER_WORKER_PORT)"
+    emit_cmd "podman run -d --name stage3-server -p $SERVER_PORT:$SERVER_PORT -p $SERVER_WORKER_PORT:$SERVER_WORKER_PORT -e $OPENAI_KEY_ENV=\"\${$OPENAI_KEY_ENV:-}\" -e WORKER_SECRET=\"$WORKER_SECRET\" -v $REPO_ROOT:/repo:ro -v $SERVER_DIR:/run-root:rw $IMAGE_TAG /run-root/bootstrap.sh"
 }
 
 # --- 4) Target rotation timer (runs on the host, not inside containers) ---
