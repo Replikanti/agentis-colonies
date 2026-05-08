@@ -318,6 +318,15 @@ write_bootstrap() {
         # mirrored from run-stage2.sh line 272). Without this seed the
         # hunter ticks at conf=0 → dormant → no LLM call → no findings.
         printf '(cd /run-root && agentis memo set hunter:confidence 0.7 >/dev/null 2>&1 || true)\n'
+        # Stage 3 cross-node replication (#460 PR B): seed the peer-worker
+        # address list so hunter's select_replication_target() rotates the
+        # replicate(target) call across nodes. Each container gets exactly
+        # one peer (the other node), reachable at host.containers.internal
+        # on the peer's in-container port. Indexed key + count memo shape
+        # is read by the hunter helper via recall_latest("...:peer_worker_addr:0")
+        # plus recall_latest("...:peer_worker_count").
+        printf '(cd /run-root && agentis memo set tribes-bench:peer_worker_addr:0 host.containers.internal:%s >/dev/null 2>&1 || true)\n' "$peer_port"
+        printf '(cd /run-root && agentis memo set tribes-bench:peer_worker_count 1 >/dev/null 2>&1 || true)\n'
         printf 'agentis serve 127.0.0.1:%s > /run-root/serve.log 2>&1 &\n' "$self_port"
         printf 'echo $! > /run-root/serve.pid\n'
         for tribe in $tribes_str; do
