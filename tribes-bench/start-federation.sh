@@ -64,6 +64,15 @@ if [ -n "${RUN_DIR:-}" ]; then
     WORKER_ADDR="${WORKER_ADDR:-127.0.0.1:9100}"
     WORKER_SECRET="$(head -c 16 /dev/urandom | base64 | tr -d '/+=' | head -c 16)"
     mkdir -p "$RUN_DIR"
+    # Stage 1 M2 colony auth (#468). Replicate's MSG_REPLICATE handshake
+    # reads colony.secret from .agentis/config; the worker will reject
+    # any caller missing the matching secret. Append unconditionally —
+    # last-line-wins overrides agentis init's random default, mirroring
+    # how federation.enabled / llm.backend overwrite the same way.
+    CONFIG_FILE="$RUN_DIR/.agentis/config"
+    if [ -f "$CONFIG_FILE" ]; then
+        printf 'colony.secret = %s\n' "$WORKER_SECRET" >> "$CONFIG_FILE"
+    fi
     agentis worker "$WORKER_ADDR" --secret "$WORKER_SECRET" --max-concurrent 8 \
         >>"$RUN_DIR/worker.log" 2>&1 &
     echo "$!" > "$RUN_DIR/worker.pid"
