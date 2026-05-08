@@ -69,6 +69,22 @@ if [ -n "${RUN_DIR:-}" ]; then
     echo "$!" > "$RUN_DIR/worker.pid"
     agentis memo set "tribes-bench:worker_addr" "$WORKER_ADDR" >/dev/null 2>&1 || true
     echo "Started agentis worker on $WORKER_ADDR (pid=$(cat "$RUN_DIR/worker.pid"))"
+
+    # Stage 3 cross-node replication (#460 PR B): when the operator declares
+    # additional peer workers via PEER_WORKER_ADDRS (space-separated host:port
+    # list), seed the indexed memo keys + count memo so hunter's
+    # select_replication_target() rotates replicate(target) calls across
+    # nodes. Empty / unset PEER_WORKER_ADDRS keeps the legacy single-node
+    # path byte-identical (count=0 → fallback to self_node_addr()).
+    if [ -n "${PEER_WORKER_ADDRS:-}" ]; then
+        i=0
+        for addr in $PEER_WORKER_ADDRS; do
+            agentis memo set "tribes-bench:peer_worker_addr:$i" "$addr" >/dev/null 2>&1 || true
+            i=$((i + 1))
+        done
+        agentis memo set "tribes-bench:peer_worker_count" "$i" >/dev/null 2>&1 || true
+        echo "Seeded $i peer worker address(es) for cross-node replication"
+    fi
 fi
 
 TOTAL_AGENTS=0

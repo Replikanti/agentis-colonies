@@ -270,6 +270,13 @@ configure_local_node() {
     if [ "$LLM_BACKEND" = "openai" ]; then
         emit_cmd "printf 'llm.openai.endpoint = $OPENAI_ENDPOINT\\nllm.openai.model = $OPENAI_MODEL\\nllm.openai.api_key_env = $OPENAI_KEY_ENV\\nllm.openai.timeout_ms = $OPENAI_TIMEOUT_MS\\n' >>$RUN_DIR/.agentis/config"
     fi
+    # Stage 3 cross-node replication (#460 PR B): seed the peer-worker
+    # address list so hunter's select_replication_target() picks the
+    # remote node when deciding where to dispatch replicate(target).
+    # Laptop -> server is reachable through the SSH local-forward
+    # 127.0.0.1:$TUNNEL_LOCAL_PORT (set up by open_tunnel above).
+    emit_cmd "cd $RUN_DIR && agentis memo set tribes-bench:peer_worker_addr:0 127.0.0.1:$TUNNEL_LOCAL_PORT >/dev/null 2>&1 || true"
+    emit_cmd "cd $RUN_DIR && agentis memo set tribes-bench:peer_worker_count 1 >/dev/null 2>&1 || true"
 }
 
 configure_remote_node() {
@@ -278,6 +285,19 @@ configure_remote_node() {
     emit_cmd "ssh -S $TUNNEL_SOCK $REMOTE_HOST bash -lc 'printf \"federation.enabled = true\\nllm.backend = $LLM_BACKEND\\n\" >>$REMOTE_RUN_ROOT/.agentis/config'"
     if [ "$LLM_BACKEND" = "openai" ]; then
         emit_cmd "ssh -S $TUNNEL_SOCK $REMOTE_HOST bash -lc 'printf \"llm.openai.endpoint = $OPENAI_ENDPOINT\\nllm.openai.model = $OPENAI_MODEL\\nllm.openai.api_key_env = $OPENAI_KEY_ENV\\nllm.openai.timeout_ms = $OPENAI_TIMEOUT_MS\\n\" >>$REMOTE_RUN_ROOT/.agentis/config'"
+    fi
+    # Stage 3 cross-node replication (#460 PR B): mirror the laptop seed
+    # so server-side hunters also rotate replicate() across nodes. The
+    # current SSH topology only opens a local-forward laptop -> server
+    # (no reverse-forward server -> laptop), so the server-side peer
+    # address is best-effort: when the operator has arranged inbound
+    # reachability to the laptop's serve port (e.g. WireGuard or a
+    # separate -R forward), $STAGE3_LAPTOP_PEER_ADDR carries it; when
+    # unset, the count stays 0 and the server-side hunter falls back to
+    # self_node_addr() the same as today.
+    if [ -n "${STAGE3_LAPTOP_PEER_ADDR:-}" ]; then
+        emit_cmd "ssh -S $TUNNEL_SOCK $REMOTE_HOST bash -lc 'cd $REMOTE_RUN_ROOT && $REMOTE_AGENTIS memo set tribes-bench:peer_worker_addr:0 $STAGE3_LAPTOP_PEER_ADDR >/dev/null 2>&1 || true'"
+        emit_cmd "ssh -S $TUNNEL_SOCK $REMOTE_HOST bash -lc 'cd $REMOTE_RUN_ROOT && $REMOTE_AGENTIS memo set tribes-bench:peer_worker_count 1 >/dev/null 2>&1 || true'"
     fi
 }
 

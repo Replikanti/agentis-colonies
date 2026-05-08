@@ -122,6 +122,50 @@ for tribe in tribe-alpha tribe-beta tribe-gamma tribe-delta tribe-epsilon; do
         "$FED_DIR/$tribe/agents/hunter.ag" "replicate-skip"
 done
 
+# --- 8. Cross-node replication target selection (#460 PR B) ---
+# All 5 hunters must call select_replication_target() at the replicate()
+# call site (replacing the bare self_node_addr() seed) so Stage 3
+# Malthusian growth crosses node boundaries. The bare line must be gone
+# from the call site to prevent regressions.
+for tribe in tribe-alpha tribe-beta tribe-gamma tribe-delta tribe-epsilon; do
+    assert_contains "$tribe hunter.ag calls select_replication_target() at replicate site" \
+        "$FED_DIR/$tribe/agents/hunter.ag" "let target = select_replication_target();"
+    if grep -Fq "let target = self_node_addr();" "$FED_DIR/$tribe/agents/hunter.ag"; then
+        echo "[FAIL] $tribe hunter.ag still has bare \`let target = self_node_addr();\` at call site"
+        FAIL=$((FAIL + 1))
+    else
+        echo "[PASS] $tribe hunter.ag has no bare \`let target = self_node_addr();\` at call site"
+        PASS=$((PASS + 1))
+    fi
+done
+
+# Bootstrap seed memos for Stage 3 docker (write_bootstrap body).
+assert_contains "run-stage3-docker.sh seeds tribes-bench:peer_worker_addr:0" \
+    "$FED_DIR/tools/run-stage3-docker.sh" "tribes-bench:peer_worker_addr:0"
+assert_contains "run-stage3-docker.sh seeds tribes-bench:peer_worker_count" \
+    "$FED_DIR/tools/run-stage3-docker.sh" "tribes-bench:peer_worker_count"
+
+# start-federation.sh exposes PEER_WORKER_ADDRS env var and seeds count.
+assert_contains "start-federation.sh references PEER_WORKER_ADDRS env var" \
+    "$FED_DIR/start-federation.sh" "PEER_WORKER_ADDRS"
+assert_contains "start-federation.sh seeds tribes-bench:peer_worker_count" \
+    "$FED_DIR/start-federation.sh" "tribes-bench:peer_worker_count"
+
+# Modulus identity sanity: rr - ((rr / cnt) * cnt) for (rr=0..5, cnt=2)
+# must produce [0,1,0,1,0,1] (matches the pick_sibling/pick_variant idiom
+# the hunter helper relies on).
+modulus_idx() {
+    # $1 rr, $2 cnt
+    local rr="$1" cnt="$2"
+    echo "$((rr - ((rr / cnt) * cnt)))"
+}
+assert_eq "modulus rr=0,cnt=2 == 0" "0" "$(modulus_idx 0 2)"
+assert_eq "modulus rr=1,cnt=2 == 1" "1" "$(modulus_idx 1 2)"
+assert_eq "modulus rr=2,cnt=2 == 0" "0" "$(modulus_idx 2 2)"
+assert_eq "modulus rr=3,cnt=2 == 1" "1" "$(modulus_idx 3 2)"
+assert_eq "modulus rr=4,cnt=2 == 0" "0" "$(modulus_idx 4 2)"
+assert_eq "modulus rr=5,cnt=2 == 1" "1" "$(modulus_idx 5 2)"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

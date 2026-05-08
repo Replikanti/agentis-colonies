@@ -80,6 +80,23 @@ fn self_node_addr() -> string {
     return "127.0.0.1:9100";
 }
 
+fn select_replication_target() -> string {
+    let cnt_str = recall_latest("tribes-bench:peer_worker_count");
+    let cnt = if len(cnt_str) > 0 { parse_int(cnt_str); } else { 0; };
+    if cnt <= 0 {
+        return self_node_addr();
+    };
+    let rr_str = recall_latest("hunter:replicate_rr_counter");
+    let rr = if len(rr_str) > 0 { parse_int(rr_str); } else { 0; };
+    let idx = rr - ((rr / cnt) * cnt);
+    memo_write("hunter:replicate_rr_counter", to_string(rr + 1));
+    let addr = recall_latest("tribes-bench:peer_worker_addr:" + to_string(idx));
+    if len(addr) > 0 {
+        return addr;
+    };
+    return self_node_addr();
+}
+
 // --- Stage 2 M2 (#393) cognitive-market helpers ---------------------------
 //
 // Reputation, ask/max_cb formulas, sibling round-robin, trade-CSV row
@@ -376,7 +393,7 @@ fn tick(reason: string) -> void {
                         if n < max_replicas {
                             let variant = pick_variant(tribe_name(), n);
                             memo_write("hunter:prompt_variant", variant);
-                            let target = self_node_addr();
+                            let target = select_replication_target();
                             if len(target) > 0 {
                                 let replica_id = try { replicate(target); } catch e { "__replicate_error__"; };
                                 if replica_id == "__replicate_error__" {
