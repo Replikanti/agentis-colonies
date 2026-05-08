@@ -29,7 +29,7 @@ backend = "cli"
 [[agents]]
 name = "hunter"
 source = "agents/hunter.ag"
-cb_budget = 256000
+cb_budget = 2000000
 tick_interval_ms = 60000
 
 # Stage 1 M2+M3 (#364) economy knobs. Operator override path: edit
