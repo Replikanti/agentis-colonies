@@ -327,7 +327,7 @@ write_bootstrap() {
         # plus recall_latest("...:peer_worker_count").
         printf '(cd /run-root && agentis memo set tribes-bench:peer_worker_addr:0 host.containers.internal:%s >/dev/null 2>&1 || true)\n' "$peer_port"
         printf '(cd /run-root && agentis memo set tribes-bench:peer_worker_count 1 >/dev/null 2>&1 || true)\n'
-        printf 'agentis serve 127.0.0.1:%s > /run-root/serve.log 2>&1 &\n' "$self_port"
+        printf 'agentis serve 0.0.0.0:%s > /run-root/serve.log 2>&1 &\n' "$self_port"
         printf 'echo $! > /run-root/serve.pid\n'
         for tribe in $tribes_str; do
             # Pass TARGET_DIR + TARGET_FILE + BUGS_MANIFEST + VERIFIER_PATH
