@@ -315,6 +315,7 @@ write_bootstrap() {
             printf '  printf "llm.openai.api_key_env = %s\\n"\n' "$OPENAI_KEY_ENV"
             printf '  printf "llm.openai.timeout_ms = %s\\n"\n' "$OPENAI_TIMEOUT_MS"
         fi
+        printf '  printf "colony.secret = %%s\\n" "$WORKER_SECRET"\n'
         printf '} >> .agentis/config\n'
         # Bring tribes-bench/tools first, then merge in the repo-root tools/
         # which carries platform helpers (parse-toml.sh, kill-federation.sh)

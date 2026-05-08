@@ -101,6 +101,10 @@ assert_contains "start-federation.sh writes worker.pid" \
     "$FED_DIR/start-federation.sh" "worker.pid"
 assert_contains "start-federation.sh seeds tribes-bench:worker_addr memo" \
     "$FED_DIR/start-federation.sh" "tribes-bench:worker_addr"
+assert_contains "start-federation.sh writes colony.secret to hermetic config" \
+    "$FED_DIR/start-federation.sh" "colony.secret"
+assert_contains "start-federation.sh binds colony.secret to \$WORKER_SECRET" \
+    "$FED_DIR/start-federation.sh" 'colony.secret = %s'
 
 # --- 6. start-colony.sh seeds the M2+M3 economy memos ---
 for tribe in tribe-alpha tribe-beta tribe-gamma; do

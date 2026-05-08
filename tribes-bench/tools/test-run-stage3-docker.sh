@@ -138,6 +138,9 @@ assert_contains "peer_worker_addr memo printf binds to peer_worker_port (not pee
 assert_contains "bootstrap body polls /dev/tcp before tribe launch" \
     "$(cat "$ORCH")" \
     "/dev/tcp/127.0.0.1/%s"
+assert_contains "bootstrap body writes colony.secret bound to \$WORKER_SECRET" \
+    "$(cat "$ORCH")" \
+    'printf "colony.secret = %%s\\n" "$WORKER_SECRET"'
 
 # 4. rotation timer
 assert_contains "rotation timer with configured interval" "$OUT" \
