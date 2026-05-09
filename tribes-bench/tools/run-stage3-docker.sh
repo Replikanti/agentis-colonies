@@ -47,6 +47,15 @@
 #                              hunter just for existing. Creates
 #                              carrying-capacity pressure (more hunters
 #                              = more drain). Default 0 = OFF.
+#   STAGE3_TRIBE_INITIAL_POOL  #487 finite-pool follow-up: starting
+#                              capital for the shared tribe pool. Lets
+#                              tribes accumulate replication budget
+#                              before metabolic drain or DEATH_THRESHOLD
+#                              culls them. Default 0 = OFF (legacy
+#                              cold-start economy where pool begins at 0
+#                              and any positive METABOLIC_COST drives
+#                              the tribe immediately into death-pressure
+#                              regime before the burst phase can land).
 #   STAGE3_LLM_BACKEND         llm.backend value injected into both
 #                              hermetic configs. Default: openai (#445).
 #   STAGE3_OPENAI_MODEL        Model id when STAGE3_LLM_BACKEND=openai.
@@ -155,6 +164,7 @@ DEATH_THRESHOLD="${STAGE3_DEATH_THRESHOLD:-300}"
 # unbounded pool, byte-identical to v1.7.4). Set non-zero to activate Option 2.
 TRIBE_POOL_CAP="${STAGE3_TRIBE_POOL_CAP:-0}"
 TRIBE_METABOLIC_COST="${STAGE3_TRIBE_METABOLIC_COST:-0}"
+TRIBE_INITIAL_POOL="${STAGE3_TRIBE_INITIAL_POOL:-0}"
 LLM_BACKEND="${STAGE3_LLM_BACKEND:-openai}"
 OPENAI_MODEL="${STAGE3_OPENAI_MODEL:-gpt-4o-mini}"
 OPENAI_ENDPOINT="${STAGE3_OPENAI_ENDPOINT:-https://api.openai.com/v1/chat/completions}"
@@ -421,8 +431,8 @@ write_bootstrap() {
             # file to seed the tribe-<name>:bug_ledger memo from. Without
             # it, hunters verify findings but the JSONL ledger never
             # grows (visible in experience but missing from bug-ledger).
-            printf 'DEATH_THRESHOLD=%s POOL_CAP=%s METABOLIC_COST=%s AGENTIS_ROOT=/run-root/.agentis TARGET_DIR=targets-stage2/smallvec-v0.6.13 TARGET_FILE=lib.rs BUGS_MANIFEST=/run-root/.agentis/sandbox/targets-stage2/bugs.json VERIFIER_PATH=/run-root/tools/verify-finding-stage2.sh BUG_LEDGER_PATH=/run-root/bug-ledger.jsonl bash /run-root/%s/scripts/start-colony.sh > /run-root/%s.log 2>&1 &\n' \
-                "$DEATH_THRESHOLD" "$TRIBE_POOL_CAP" "$TRIBE_METABOLIC_COST" "$tribe" "$tribe"
+            printf 'DEATH_THRESHOLD=%s POOL_CAP=%s METABOLIC_COST=%s INITIAL_POOL=%s AGENTIS_ROOT=/run-root/.agentis TARGET_DIR=targets-stage2/smallvec-v0.6.13 TARGET_FILE=lib.rs BUGS_MANIFEST=/run-root/.agentis/sandbox/targets-stage2/bugs.json VERIFIER_PATH=/run-root/tools/verify-finding-stage2.sh BUG_LEDGER_PATH=/run-root/bug-ledger.jsonl bash /run-root/%s/scripts/start-colony.sh > /run-root/%s.log 2>&1 &\n' \
+                "$DEATH_THRESHOLD" "$TRIBE_POOL_CAP" "$TRIBE_METABOLIC_COST" "$TRIBE_INITIAL_POOL" "$tribe" "$tribe"
         done
         printf 'while [ ! -e /run-root/.shutdown ]; do sleep 5; done\n'
         printf 'exit 0\n'

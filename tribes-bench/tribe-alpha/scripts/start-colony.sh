@@ -198,6 +198,7 @@ agentis memo set "tribe-${TRIBE_NAME}:death_threshold" "$DEATH_THRESHOLD" >/dev/
 # orchestrator env to activate Option 2 emergence-research dynamics.
 agentis memo set "tribe-${TRIBE_NAME}:pool_cap" "${POOL_CAP:-0}" >/dev/null 2>&1 || true
 agentis memo set "tribe-${TRIBE_NAME}:metabolic_cost" "${METABOLIC_COST:-0}" >/dev/null 2>&1 || true
+agentis memo set "tribe-${TRIBE_NAME}:pool" "${INITIAL_POOL:-0}" >/dev/null 2>&1 || true
 if [ -n "$BUG_LEDGER_PATH" ]; then
     agentis memo set "tribe-${TRIBE_NAME}:bug_ledger" "$BUG_LEDGER_PATH" >/dev/null 2>&1 || true
 fi
