@@ -310,6 +310,58 @@ fn tick(reason: string) -> void {
         };
     };
 
+    // #490 follow-up: time-based reproductive replication. Decouples
+    // breeding from finding-success. The existing M2-Malthusian path
+    // (verified-finding -> reward-pool -> replicate) gates breeding on
+    // hunting luck, which means high-fit hunters who don't find bugs
+    // can't reproduce even when they should dominate. Smokes #24-#27
+    // showed selection consuming the population faster than findings
+    // could fuel breeding -- exponential growth structurally blocked.
+    // This second path lets any hunter whose fitness exceeds the
+    // reproductive threshold replicate per-tick (subject to pool budget
+    // + max_replicas), so elite parents produce offspring continuously.
+    // Default-absent memo => OFF, byte-identical to v1.7.5 + #489 + #490
+    // pre-this-PR. Inheritance applies (parent_fit/2 -> seed memo) for
+    // both paths.
+    let repr_thr = parse_int(recall_latest("hunter:reproductive_fitness_threshold"));
+    if repr_thr > 0 {
+        if len(_self_pid) > 0 {
+            let my_fit_r = parse_int(recall_latest("hunter:" + _self_pid + ":fitness"));
+            if my_fit_r > repr_thr {
+                let n_r = parse_int(recall_latest("tribe-" + tribe_name() + ":size"));
+                let max_repl_r = parse_int(recall_latest("tribe-" + tribe_name() + ":max_replicas"));
+                if n_r < max_repl_r {
+                    let pool_r = parse_int(recall_latest("tribe-" + tribe_name() + ":pool"));
+                    let base_r = parse_int(recall_latest("tribe-" + tribe_name() + ":replication_base_cost"));
+                    let raw_k_r = parse_int(recall_latest("tribe-" + tribe_name() + ":replication_k"));
+                    let k_r = if raw_k_r <= 0 { 3; } else { raw_k_r; };
+                    let cost_r = base_r + (base_r * n_r) / k_r;
+                    if pool_r >= cost_r {
+                        let target_r = select_replication_target();
+                        if len(target_r) > 0 {
+                            // Seed inherited fitness for the offspring (parent_fit/2)
+                            let seed_r = my_fit_r / 2;
+                            memo_write("hunter:next_replica_seed_" + tribe_name(), to_string(seed_r));
+                            let replica_id_r = try { replicate(target_r); } catch e { "__replicate_error__"; };
+                            if replica_id_r != "__replicate_error__" {
+                                if len(replica_id_r) > 0 {
+                                    memo_write("tribe-" + tribe_name() + ":pool", to_string(pool_r - cost_r));
+                                    memo_write("tribe-" + tribe_name() + ":size", to_string(n_r + 1));
+                                    // Fitness reward for the parent (same as M2 path)
+                                    let fit_repl_r = parse_int(recall_latest("hunter:fitness_reward_replicate"));
+                                    if fit_repl_r > 0 {
+                                        memo_write("hunter:" + _self_pid + ":fitness", to_string(my_fit_r + fit_repl_r));
+                                    };
+                                    learn("reproductive_replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "success", ["replicated", "reproductive", "tribes-bench", tribe_name()]);
+                                };
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
+
 
     // Read the synthetic target once per tick. Stage 0 deliberately
     // re-reads on every tick: the target is a checked-in static file,

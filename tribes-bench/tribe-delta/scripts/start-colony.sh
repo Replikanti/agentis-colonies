@@ -210,6 +210,7 @@ agentis memo set "hunter:fitness_reward_verified" "${HUNTER_FITNESS_REWARD_VERIF
 agentis memo set "hunter:fitness_penalty_falsepos" "${HUNTER_FITNESS_PENALTY_FALSEPOS:-5}" >/dev/null 2>&1 || true
 agentis memo set "hunter:fitness_reward_replicate" "${HUNTER_FITNESS_REWARD_REPLICATE:-5}" >/dev/null 2>&1 || true
 agentis memo set "hunter:fitness_grace_ms" "${HUNTER_FITNESS_GRACE_MS:-180000}" >/dev/null 2>&1 || true
+agentis memo set "hunter:reproductive_fitness_threshold" "${HUNTER_REPRODUCTIVE_FITNESS_THRESHOLD:-0}" >/dev/null 2>&1 || true
 # Epoch start (ms since unix epoch). Set on first colony bootstrap so
 # all 5 tribes share a common time origin for the threshold ramp.
 EPOCH_START_MS=$(date +%s%3N)
