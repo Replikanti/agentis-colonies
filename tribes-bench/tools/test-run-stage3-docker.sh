@@ -182,7 +182,7 @@ assert_contains "cleanup trap rms both containers" "$OUT" \
 # invocation. This still gates against accidental removal of the call.
 assert_contains "analyse-stage3.py invocation present in source" \
     "$(cat "$ORCH")" \
-    "analyse-stage3.py \$RUN_DIR --server-runs server-node"
+    "analyse-stage3.py \$RUN_DIR --laptop-dir laptop-node --server-runs server-node"
 
 # Death threshold injected.
 assert_contains "death threshold 300 propagated to laptop bootstrap arg" "$OUT" \

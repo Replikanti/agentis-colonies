@@ -492,7 +492,7 @@ verify_artefacts() {
 # until the follow-up lands. Captured non-fatally with || true.
 stitch_telemetry() {
     emit_step "running analyse-stage3.py to stitch laptop + server telemetry"
-    emit_cmd "python3 $TOOLS_DIR/analyse-stage3.py $RUN_DIR --server-runs server-node >>$ORCH_LOG 2>&1 || true"
+    emit_cmd "python3 $TOOLS_DIR/analyse-stage3.py $RUN_DIR --laptop-dir laptop-node --server-runs server-node >>$ORCH_LOG 2>&1 || true"
 }
 
 # --- Orchestration body ---
