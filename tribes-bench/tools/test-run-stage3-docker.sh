@@ -144,6 +144,12 @@ assert_contains "bootstrap body polls /dev/tcp before tribe launch" \
 assert_contains "bootstrap body writes colony.secret bound to \$WORKER_SECRET" \
     "$(cat "$ORCH")" \
     'printf "colony.secret = %%s\\n" "$WORKER_SECRET"'
+assert_contains "bootstrap body enables distributed messaging in config" \
+    "$(cat "$ORCH")" \
+    'printf "messaging.distributed = true\\n"'
+assert_contains "bootstrap body writes colony.workers bound to peer worker IP:port" \
+    "$(cat "$ORCH")" \
+    'printf "colony.workers = %%s:%%s\\n" "$PEER_HOST_IP"'
 
 # 4. rotation timer
 assert_contains "rotation timer with configured interval" "$OUT" \

@@ -293,6 +293,13 @@ write_bootstrap() {
         printf 'set -euo pipefail\n'
         printf 'cd /run-root\n'
         printf 'agentis init >/dev/null 2>&1 || true\n'
+        # #474 + #476: resolve host.containers.internal once at bootstrap
+        # start so the config block (colony.workers) AND the memo seed
+        # (peer_worker_addr) both see the IP form. parse_workers in
+        # agentis-core accepts hostnames in colony.workers but
+        # SocketAddr::parse() in perform_replication() rejects them, so
+        # both must be resolved at container exec time.
+        printf 'PEER_HOST_IP=$(getent hosts host.containers.internal | awk '\''{print $1}'\'')\n'
         # Mirror run-stage2.sh lines 193-263 setup. Without these keys
         # the agent runtime silently degrades: exec sh in .ag agents
         # cannot see TARGET_DIR / VERIFIER_PATH (no env_passthrough),
@@ -308,6 +315,13 @@ write_bootstrap() {
         printf '  printf "experience.enabled = true\\n"\n'
         printf '  printf "telemetry.enabled = true\\n"\n'
         printf '  printf "daemon.heartbeat_interval_ms = 600000\\n"\n'
+        # #476: agentis daemon wires colony_peers (which carries
+        # colony.secret for replicate AUTH) only when BOTH messaging.distributed
+        # is true AND colony.workers is set. Without this, the replicate caller
+        # skips the AUTH handshake and sends MSG_REPLICATE (0x1B) directly,
+        # which the worker rejects with "expected AUTH (0x09), got 0x1b".
+        printf '  printf "messaging.distributed = true\\n"\n'
+        printf '  printf "colony.workers = %%s:%%s\\n" "$PEER_HOST_IP" "%s"\n' "$peer_worker_port"
         printf '  printf "llm.backend = %s\\n"\n' "$LLM_BACKEND"
         if [ "$LLM_BACKEND" = "openai" ]; then
             printf '  printf "llm.openai.endpoint = %s\\n"\n' "$OPENAI_ENDPOINT"
@@ -357,10 +371,9 @@ write_bootstrap() {
         # via recall_latest("...:peer_worker_addr:0") plus
         # recall_latest("...:peer_worker_count").
         # #474: agentis-core perform_replication() parses target via
-        # SocketAddr::parse() which rejects hostnames; resolve
-        # host.containers.internal to its IP at container exec time and
-        # seed the memo with IP:port so the parse succeeds.
-        printf 'PEER_HOST_IP=$(getent hosts host.containers.internal | awk '\''{print $1}'\'')\n'
+        # SocketAddr::parse() which rejects hostnames; PEER_HOST_IP is
+        # resolved earlier (after agentis init) and reused here so the
+        # memo seed contains IP:port.
         printf '(cd /run-root && agentis memo set tribes-bench:peer_worker_addr:0 "$PEER_HOST_IP:%s" >/dev/null 2>&1 || true)\n' "$peer_worker_port"
         printf '(cd /run-root && agentis memo set tribes-bench:peer_worker_count 1 >/dev/null 2>&1 || true)\n'
         printf 'agentis serve 0.0.0.0:%s > /run-root/serve.log 2>&1 &\n' "$self_port"
