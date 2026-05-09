@@ -282,6 +282,17 @@ fn tick(reason: string) -> void {
                     parse_int(birth_str);
                 } else {
                     memo_write(birth_key, to_string(_tick_now_ms));
+                    // #489 follow-up: fitness inheritance from parent. The
+                    // most recent replicating hunter in this tribe wrote
+                    // `hunter:next_replica_seed_<tribe>` with parent_fit/2
+                    // before calling replicate(). Seed this replica's
+                    // fitness counter with that value so the newborn has
+                    // a head start proportional to its parent's success.
+                    let seed_str = recall_latest("hunter:next_replica_seed_" + tribe_name());
+                    if len(seed_str) > 0 {
+                        let seed_val = parse_int(seed_str);
+                        memo_write("hunter:" + _self_pid + ":fitness", to_string(seed_val));
+                    };
                     _tick_now_ms;
                 };
                 let grace_ms = parse_int(recall_latest("hunter:fitness_grace_ms"));
@@ -520,6 +531,19 @@ fn tick(reason: string) -> void {
                             memo_write("hunter:prompt_variant", variant);
                             let target = select_replication_target();
                             if len(target) > 0 {
+                                // #489 follow-up: seed the replica's initial
+                                // fitness with parent_fit/2. Replica reads this
+                                // memo on its first tick (see fitness-selection
+                                // block birth-init branch). Tribe-level key, so
+                                // overlapping parents may overwrite each other's
+                                // seeds — acceptable approximation since seeds
+                                // converge to a tribe-wide running average of
+                                // recent breeders.
+                                if len(_self_pid) > 0 {
+                                    let my_fit = parse_int(recall_latest("hunter:" + _self_pid + ":fitness"));
+                                    let seed_inherit = my_fit / 2;
+                                    memo_write("hunter:next_replica_seed_" + tribe_name(), to_string(seed_inherit));
+                                };
                                 let replica_id = try { replicate(target); } catch e { "__replicate_error__"; };
                                 if replica_id == "__replicate_error__" {
                                     learn("replicate", "n=" + to_string(n), "cost=" + to_string(cost), "failure", ["replicate-error", "tribes-bench", tribe_name()]);
