@@ -200,6 +200,19 @@ agentis memo set "tribe-${TRIBE_NAME}:pool_cap" "${POOL_CAP:-0}" >/dev/null 2>&1
 agentis memo set "tribe-${TRIBE_NAME}:metabolic_cost" "${METABOLIC_COST:-0}" >/dev/null 2>&1 || true
 agentis memo set "tribe-${TRIBE_NAME}:pool" "${INITIAL_POOL:-0}" >/dev/null 2>&1 || true
 agentis memo set "hunter:max_age" "${HUNTER_MAX_AGE:-0}" >/dev/null 2>&1 || true
+# #489 follow-up: fitness-driven selection knobs. Threshold creeps up
+# from baseline at creep_per_minute units per minute since epoch_start_ms.
+# Each hunter tracks its own fitness counter (per-PPID); rewards on
+# verified findings + replicates, penalty on false positives.
+agentis memo set "hunter:fitness_creep_per_minute" "${HUNTER_FITNESS_CREEP_PER_MINUTE:-0}" >/dev/null 2>&1 || true
+agentis memo set "hunter:fitness_threshold_baseline" "${HUNTER_FITNESS_THRESHOLD_BASELINE:-0}" >/dev/null 2>&1 || true
+agentis memo set "hunter:fitness_reward_verified" "${HUNTER_FITNESS_REWARD_VERIFIED:-10}" >/dev/null 2>&1 || true
+agentis memo set "hunter:fitness_penalty_falsepos" "${HUNTER_FITNESS_PENALTY_FALSEPOS:-5}" >/dev/null 2>&1 || true
+agentis memo set "hunter:fitness_reward_replicate" "${HUNTER_FITNESS_REWARD_REPLICATE:-5}" >/dev/null 2>&1 || true
+# Epoch start (ms since unix epoch). Set on first colony bootstrap so
+# all 5 tribes share a common time origin for the threshold ramp.
+EPOCH_START_MS=$(date +%s%3N)
+agentis memo set "hunter:epoch_start_ms" "${EPOCH_START_MS}" >/dev/null 2>&1 || true
 if [ -n "$BUG_LEDGER_PATH" ]; then
     agentis memo set "tribe-${TRIBE_NAME}:bug_ledger" "$BUG_LEDGER_PATH" >/dev/null 2>&1 || true
 fi

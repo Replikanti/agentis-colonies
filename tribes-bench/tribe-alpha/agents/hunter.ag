@@ -198,6 +198,11 @@ fn tick(reason: string) -> void {
     // BEFORE any other expensive op so we don't lose budget on this
     // call, and reuse the cached value at every downstream site.
     let _tick_now_ms = now_ms_via_shell();
+    // #487 follow-up: cache $PPID once per tick. Both the age block (#489)
+    // and the fitness-selection block need a stable per-daemon
+    // self-id; computing it once here saves two extra `exec sh` forks
+    // (~50 CB each) per tick.
+    let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
     let conf = get_confidence();
     print("[hunter] tick conf=", conf);
     // #485 finite-pool: per-tick metabolic cost drains the shared tribe
@@ -226,7 +231,7 @@ fn tick(reason: string) -> void {
     // STAGE3_HUNTER_MAX_AGE env var.
     let max_age = parse_int(recall_latest("hunter:max_age"));
     if max_age > 0 {
-        let self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
+        let self_pid = _self_pid;
         if len(self_pid) > 0 {
             let age_key = "hunter:" + self_pid + ":age";
             let age_pre = parse_int(recall_latest(age_key));
@@ -242,6 +247,37 @@ fn tick(reason: string) -> void {
                 let stop_cmd = "own_id=$(grep -l \"^$PPID\\$\" \"$AGENTIS_ROOT/daemon\"/*.pid 2>/dev/null | head -1 | xargs -I{} basename {} .pid 2>/dev/null); if [ -n \"$own_id\" ]; then agentis daemon stop \"$own_id\" --async --grace-ms 1000 --timeout-ms 5000 >/dev/null 2>&1 || true; fi";
                 let _ = try { exec sh stop_cmd; } catch e { ""; };
                 return;
+            };
+        };
+    };
+
+    // #489 follow-up: fitness-driven selection with rising threshold. Each
+    // hunter tracks its own per-PPID fitness counter, updated on verified
+    // findings (+reward), false positives (-penalty), and successful
+    // replicates (+reward). Threshold rises monotonically with elapsed
+    // time since hunter:epoch_start_ms at hunter:fitness_creep_per_minute
+    // units per minute. Hunters whose fitness drops below the rising
+    // threshold die via the same suicide path used by the age model.
+    // Default-absent memos => OFF (byte-identical to v1.7.5 + #489).
+    let creep_per_min = parse_int(recall_latest("hunter:fitness_creep_per_minute"));
+    if creep_per_min > 0 {
+        if len(_self_pid) > 0 {
+            let epoch_ms = parse_int(recall_latest("hunter:epoch_start_ms"));
+            if epoch_ms > 0 {
+                let elapsed_ms = _tick_now_ms - epoch_ms;
+                let elapsed_min = if elapsed_ms > 0 { elapsed_ms / 60000; } else { 0; };
+                let baseline = parse_int(recall_latest("hunter:fitness_threshold_baseline"));
+                let threshold = baseline + creep_per_min * elapsed_min;
+                let fit_str = recall_latest("hunter:" + _self_pid + ":fitness");
+                let fit = if len(fit_str) > 0 { parse_int(fit_str); } else { 0; };
+                if fit < threshold {
+                    print("[hunter] selection_death pid=", _self_pid, " fitness=", fit, " < threshold=", threshold, " (min=", elapsed_min, ")");
+                    learn("selection_death", tribe_name() + "/" + _self_pid, "fitness=" + to_string(fit) + " threshold=" + to_string(threshold), "failure", ["died", "low-fitness", "tribes-bench", tribe_name()]);
+                    // colony-lint: safe-exec-concat
+                    let stop_cmd = "own_id=$(grep -l \"^$PPID\\$\" \"$AGENTIS_ROOT/daemon\"/*.pid 2>/dev/null | head -1 | xargs -I{} basename {} .pid 2>/dev/null); if [ -n \"$own_id\" ]; then agentis daemon stop \"$own_id\" --async --grace-ms 1000 --timeout-ms 5000 >/dev/null 2>&1 || true; fi";
+                    let _ = try { exec sh stop_cmd; } catch e { ""; };
+                    return;
+                };
             };
         };
     };
@@ -442,6 +478,16 @@ fn tick(reason: string) -> void {
                     memo_write("tribe-" + tribe_name() + ":pool", to_string(cur_pool + actual_reward));
                     learn("hunt", "line " + to_string(finding.line), bug_id, "success", ["acted", "tribes-bench", tribe_name(), "reward=" + to_string(actual_reward)]);
 
+                    // #489 follow-up: fitness credit for verified finding.
+                    // Per-PPID counter, no race (each hunter owns its key).
+                    if len(_self_pid) > 0 {
+                        let fit_reward = parse_int(recall_latest("hunter:fitness_reward_verified"));
+                        if fit_reward > 0 {
+                            let fit_pre_v = parse_int(recall_latest("hunter:" + _self_pid + ":fitness"));
+                            memo_write("hunter:" + _self_pid + ":fitness", to_string(fit_pre_v + fit_reward));
+                        };
+                    };
+
                     // M2 replication: Malthusian-gated. C(n) = base * (1 + n/k).
                     let pool_after = cur_pool + actual_reward;
                     let n = parse_int(recall_latest("tribe-" + tribe_name() + ":size"));
@@ -464,6 +510,15 @@ fn tick(reason: string) -> void {
                                         memo_write("tribe-" + tribe_name() + ":pool", to_string(pool_after - cost));
                                         memo_write("tribe-" + tribe_name() + ":size", to_string(n + 1));
                                         learn("replicate", "n=" + to_string(n), "cost=" + to_string(cost), "success", ["replicated", "tribes-bench", tribe_name()]);
+
+                                        // #489 follow-up: fitness credit on successful replicate.
+                                        if len(_self_pid) > 0 {
+                                            let fit_repl = parse_int(recall_latest("hunter:fitness_reward_replicate"));
+                                            if fit_repl > 0 {
+                                                let fit_pre_r = parse_int(recall_latest("hunter:" + _self_pid + ":fitness"));
+                                                memo_write("hunter:" + _self_pid + ":fitness", to_string(fit_pre_r + fit_repl));
+                                            };
+                                        };
                                     } else {
                                         learn("replicate", "n=" + to_string(n), "cost=" + to_string(cost), "failure", ["replicate-nak", "tribes-bench", tribe_name()]);
                                     };
@@ -539,6 +594,15 @@ fn tick(reason: string) -> void {
                 } else {
                     print("[hunter] false positive at line ", finding.line);
                     learn("hunt", "line " + to_string(finding.line), finding.rationale, "failure", ["false-positive", "tribes-bench"]);
+
+                    // #489 follow-up: fitness penalty for false positive.
+                    if len(_self_pid) > 0 {
+                        let fit_penalty = parse_int(recall_latest("hunter:fitness_penalty_falsepos"));
+                        if fit_penalty > 0 {
+                            let fit_pre_f = parse_int(recall_latest("hunter:" + _self_pid + ":fitness"));
+                            memo_write("hunter:" + _self_pid + ":fitness", to_string(fit_pre_f - fit_penalty));
+                        };
+                    };
 
                     // Stage 2 M2 (#393): reputation -0.10 (clamp 0.0) on
                     // false positive. Asymmetry vs verified-finding
