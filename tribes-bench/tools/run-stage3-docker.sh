@@ -356,7 +356,12 @@ write_bootstrap() {
         # Indexed key + count memo shape is read by the hunter helper
         # via recall_latest("...:peer_worker_addr:0") plus
         # recall_latest("...:peer_worker_count").
-        printf '(cd /run-root && agentis memo set tribes-bench:peer_worker_addr:0 host.containers.internal:%s >/dev/null 2>&1 || true)\n' "$peer_worker_port"
+        # #474: agentis-core perform_replication() parses target via
+        # SocketAddr::parse() which rejects hostnames; resolve
+        # host.containers.internal to its IP at container exec time and
+        # seed the memo with IP:port so the parse succeeds.
+        printf 'PEER_HOST_IP=$(getent hosts host.containers.internal | awk '\''{print $1}'\'')\n'
+        printf '(cd /run-root && agentis memo set tribes-bench:peer_worker_addr:0 "$PEER_HOST_IP:%s" >/dev/null 2>&1 || true)\n' "$peer_worker_port"
         printf '(cd /run-root && agentis memo set tribes-bench:peer_worker_count 1 >/dev/null 2>&1 || true)\n'
         printf 'agentis serve 0.0.0.0:%s > /run-root/serve.log 2>&1 &\n' "$self_port"
         printf 'echo $! > /run-root/serve.pid\n'
