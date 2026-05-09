@@ -119,12 +119,20 @@ def pick_variant(tribe: str, n: int) -> str:
     return VARIANT_CYCLE[n % 3]
 
 
-def parse_args(argv: list[str]) -> tuple[str, str, str]:
-    """Parse argv into (run_dir, server_runs_dir, out_dir).
+def parse_args(argv: list[str]) -> tuple[str, str, str, str]:
+    """Parse argv into (run_dir, laptop_dir, server_runs_dir, out_dir).
 
     Defaults:
-        --server-runs  <run-dir>/server-runs/
+        --laptop-dir   <run-dir>                 (SSH multinode shape)
+        --server-runs  <run-dir>/server-runs/    (SSH multinode shape)
         --out          <run-dir>/
+
+    Docker (#478) shape: pass --laptop-dir <run-dir>/laptop-node and
+    --server-runs <run-dir>/server-node. discover_server_node_dirs
+    falls through to flat mode when the dir itself has .agentis/.
+
+    Relative --server-runs / --laptop-dir paths are resolved relative
+    to run_dir (not cwd) so the orchestrator can pass short names.
     """
     p = argparse.ArgumentParser(
         prog="analyse-stage3.py",
@@ -135,9 +143,15 @@ def parse_args(argv: list[str]) -> tuple[str, str, str]:
     )
     p.add_argument("run_dir", help="Stage 3 run directory")
     p.add_argument(
+        "--laptop-dir",
+        default=None,
+        help="laptop hermetic root (default: <run-dir>)",
+    )
+    p.add_argument(
         "--server-runs",
         default=None,
-        help="server-runs/ subdir (default: <run-dir>/server-runs)",
+        help="server-runs/ subdir or flat server hermetic root "
+             "(default: <run-dir>/server-runs)",
     )
     p.add_argument(
         "--out",
@@ -155,7 +169,18 @@ def parse_args(argv: list[str]) -> tuple[str, str, str]:
     if not os.path.isdir(run_dir):
         print(f"analyse-stage3: run dir not found: {run_dir}", file=sys.stderr)
         sys.exit(2)
-    server_runs = ns.server_runs or os.path.join(run_dir, "server-runs")
+
+    def _resolve(path: str | None, default_subdir: str) -> str:
+        if path is None:
+            return os.path.join(run_dir, default_subdir)
+        return path if os.path.isabs(path) else os.path.join(run_dir, path)
+
+    laptop_dir = ns.laptop_dir
+    if laptop_dir is None:
+        laptop_dir = run_dir
+    elif not os.path.isabs(laptop_dir):
+        laptop_dir = os.path.join(run_dir, laptop_dir)
+    server_runs = _resolve(ns.server_runs, "server-runs")
     out_dir = ns.out or run_dir
     if not os.path.isdir(out_dir):
         try:
@@ -163,7 +188,7 @@ def parse_args(argv: list[str]) -> tuple[str, str, str]:
         except OSError as exc:
             print(f"analyse-stage3: cannot create out dir {out_dir}: {exc}", file=sys.stderr)
             sys.exit(2)
-    return run_dir, server_runs, out_dir
+    return run_dir, laptop_dir, server_runs, out_dir
 
 
 # --- Per-node telemetry -----------------------------------------------------
@@ -172,9 +197,17 @@ def discover_server_node_dirs(server_runs: str) -> list[str]:
     """Each server-runs subdir maps to one server node's hermetic
     .agentis/ tree. Returns a sorted list of full paths. Missing or
     empty server-runs/ -> empty list (single-node mode).
+
+    Two shapes are supported:
+      - SSH multinode: <server-runs>/<timestamp>/.agentis/
+      - Docker (#478): <server-runs>/.agentis/ directly. Detected by
+        the presence of .agentis/ inside server_runs itself; returns
+        [server_runs] in that case.
     """
     if not os.path.isdir(server_runs):
         return []
+    if os.path.isdir(os.path.join(server_runs, ".agentis")):
+        return [server_runs]
     out: list[str] = []
     for name in sorted(os.listdir(server_runs)):
         sub = os.path.join(server_runs, name)
@@ -909,7 +942,7 @@ def write_comparison_md(
 # --- Main -------------------------------------------------------------------
 
 def main() -> None:
-    run_dir, server_runs, out_dir = parse_args(sys.argv)
+    run_dir, laptop_dir, server_runs, out_dir = parse_args(sys.argv)
 
     server_node_dirs = discover_server_node_dirs(server_runs)
     if not server_node_dirs:
@@ -926,7 +959,7 @@ def main() -> None:
                 file=sys.stderr,
             )
 
-    laptop_rows = run_stage2_analyser(run_dir)
+    laptop_rows = run_stage2_analyser(laptop_dir)
     server_rows_by_node: list[list[list[str]]] = []
     for node_dir in server_node_dirs:
         server_rows_by_node.append(run_stage2_analyser(node_dir))
@@ -935,7 +968,7 @@ def main() -> None:
     print(combined_path)
 
     # Per-node agent inventory.
-    laptop_agents = collect_node_agents(run_dir, "laptop")
+    laptop_agents = collect_node_agents(laptop_dir, "laptop")
     server_agents: dict[str, dict[str, Any]] = {}
     for node_dir in server_node_dirs:
         server_agents.update(collect_node_agents(node_dir, "server"))
@@ -959,7 +992,7 @@ def main() -> None:
 
     rotations = _read_rotations(run_dir)
     market_rows: list[dict[str, Any]] = []
-    market_rows.extend(load_market_log(run_dir))
+    market_rows.extend(load_market_log(laptop_dir))
     for node_dir in server_node_dirs:
         market_rows.extend(load_market_log(node_dir))
 
