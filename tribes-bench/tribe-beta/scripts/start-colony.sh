@@ -191,6 +191,13 @@ agentis memo set "tribe-${TRIBE_NAME}:max_replicas" "$MAX_REPLICAS" >/dev/null 2
 agentis memo set "tribe-${TRIBE_NAME}:reward_full" "$REWARD_FULL" >/dev/null 2>&1 || true
 agentis memo set "tribe-${TRIBE_NAME}:reward_subsequent" "$REWARD_SUBSEQUENT" >/dev/null 2>&1 || true
 agentis memo set "tribe-${TRIBE_NAME}:death_threshold" "$DEATH_THRESHOLD" >/dev/null 2>&1 || true
+# #485 finite-pool R&D substrate. POOL_CAP bounds the shared tribe
+# resource pool (zero-sum reward economy); METABOLIC_COST drains the
+# pool per hunter per tick (carrying-capacity dynamics). Defaults are
+# 0 = OFF (byte-identical legacy behaviour); set non-zero in the
+# orchestrator env to activate Option 2 emergence-research dynamics.
+agentis memo set "tribe-${TRIBE_NAME}:pool_cap" "${POOL_CAP:-0}" >/dev/null 2>&1 || true
+agentis memo set "tribe-${TRIBE_NAME}:metabolic_cost" "${METABOLIC_COST:-0}" >/dev/null 2>&1 || true
 if [ -n "$BUG_LEDGER_PATH" ]; then
     agentis memo set "tribe-${TRIBE_NAME}:bug_ledger" "$BUG_LEDGER_PATH" >/dev/null 2>&1 || true
 fi

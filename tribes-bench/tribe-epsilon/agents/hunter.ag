@@ -201,6 +201,18 @@ fn tick(reason: string) -> void {
     let _tick_now_ms = now_ms_via_shell();
     let conf = get_confidence();
     print("[hunter] tick conf=", conf);
+    // #485 finite-pool: per-tick metabolic cost drains the shared tribe
+    // pool. Pool capacity bounded at tribe:pool_cap (default unset =
+    // legacy uncapped); metabolic creates zero-sum competition (more
+    // hunters in tribe = more drain = harder to accumulate replication
+    // budget). Both memos default-absent => byte-identical to v1.7.4
+    // behaviour, only seeded by start-colony.sh under #485 opt-in.
+    let metabolic = parse_int(recall_latest("tribe-" + tribe_name() + ":metabolic_cost"));
+    if metabolic > 0 {
+        let pool_pre = parse_int(recall_latest("tribe-" + tribe_name() + ":pool"));
+        memo_write("tribe-" + tribe_name() + ":pool", to_string(pool_pre - metabolic));
+    };
+
 
     // Read the target file once per tick. Stage 2 scans a single file
     // selected by `$TARGET_FILE` under `$TARGET_DIR` (set by run-stage2.sh).
@@ -378,12 +390,28 @@ fn tick(reason: string) -> void {
                         let _ = try { exec sh append_cmd; } catch e { ""; };
                     };
 
+                    // #485 finite-pool: cap-aware reward credit. When
+                    // tribe-X:pool_cap is set, reward is bounded so pool
+                    // does not exceed cap. Without cap memo (absent or 0),
+                    // legacy uncapped behaviour preserved.
                     let cur_pool = parse_int(recall_latest("tribe-" + tribe_name() + ":pool"));
-                    memo_write("tribe-" + tribe_name() + ":pool", to_string(cur_pool + reward));
-                    learn("hunt", "line " + to_string(finding.line), bug_id, "success", ["acted", "tribes-bench", tribe_name(), "reward=" + to_string(reward)]);
+                    let pool_cap_str = recall_latest("tribe-" + tribe_name() + ":pool_cap");
+                    let pool_cap = if len(pool_cap_str) > 0 { parse_int(pool_cap_str); } else { 0; };
+                    let actual_reward = if pool_cap > 0 {
+                        if cur_pool >= pool_cap {
+                            0;
+                        } else {
+                            let headroom = pool_cap - cur_pool;
+                            if reward > headroom { headroom; } else { reward; }
+                        }
+                    } else {
+                        reward;
+                    };
+                    memo_write("tribe-" + tribe_name() + ":pool", to_string(cur_pool + actual_reward));
+                    learn("hunt", "line " + to_string(finding.line), bug_id, "success", ["acted", "tribes-bench", tribe_name(), "reward=" + to_string(actual_reward)]);
 
                     // M2 replication: Malthusian-gated. C(n) = base * (1 + n/k).
-                    let pool_after = cur_pool + reward;
+                    let pool_after = cur_pool + actual_reward;
                     let n = parse_int(recall_latest("tribe-" + tribe_name() + ":size"));
                     let base = parse_int(recall_latest("tribe-" + tribe_name() + ":replication_base_cost"));
                     let raw_k = parse_int(recall_latest("tribe-" + tribe_name() + ":replication_k"));

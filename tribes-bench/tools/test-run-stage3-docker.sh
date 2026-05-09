@@ -188,6 +188,17 @@ assert_contains "analyse-stage3.py invocation present in source" \
 assert_contains "death threshold 300 propagated to laptop bootstrap arg" "$OUT" \
     "death threshold: 300"
 
+# #485 finite-pool: env defaults documented + propagated through bootstrap.
+assert_contains "STAGE3_TRIBE_POOL_CAP env var documented" \
+    "$(cat "$ORCH")" \
+    "STAGE3_TRIBE_POOL_CAP"
+assert_contains "STAGE3_TRIBE_METABOLIC_COST env var documented" \
+    "$(cat "$ORCH")" \
+    "STAGE3_TRIBE_METABOLIC_COST"
+assert_contains "POOL_CAP env propagated into start-colony.sh bootstrap line" \
+    "$(cat "$ORCH")" \
+    "POOL_CAP=%s METABOLIC_COST=%s"
+
 # OpenAI backend defaults wired in.
 assert_contains "llm.backend=openai default" "$OUT" \
     "llm_backend\":\"openai"
