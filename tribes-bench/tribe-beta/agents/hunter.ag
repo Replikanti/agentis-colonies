@@ -214,6 +214,40 @@ fn tick(reason: string) -> void {
     };
 
 
+    // #487 follow-up: per-hunter age mortality. Each hunter has its own
+    // monotonic age counter keyed on its PPID (stable for the daemon's
+    // lifetime, unique across tribe-mates and replicas). When age exceeds
+    // hunter:max_age, the hunter suicides via `agentis daemon stop` --
+    // eliminating the shared-state RMW race that the tribe-pool drain
+    // pattern hits (5 hunters concurrent read-modify-write on
+    // tribe-X:pool lose updates), and giving individual hunters
+    // predictable lifespans + per-hunter reproductive pressure rather
+    // than tribe-wide cascade. Default-absent memo => OFF, byte-identical
+    // to v1.7.5 behaviour. Only seeded by start-colony.sh under the
+    // STAGE3_HUNTER_MAX_AGE env var.
+    let max_age = parse_int(recall_latest("hunter:max_age"));
+    if max_age > 0 {
+        let self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
+        if len(self_pid) > 0 {
+            let age_key = "hunter:" + self_pid + ":age";
+            let age_pre = parse_int(recall_latest(age_key));
+            let age = age_pre + 1;
+            memo_write(age_key, to_string(age));
+            if age > max_age {
+                print("[hunter] self_death pid=", self_pid, " age=", age, " > max_age=", max_age);
+                learn("self_death", tribe_name() + "/" + self_pid, "age=" + to_string(age), "failure", ["died", "self-aged", "tribes-bench", tribe_name()]);
+                // Look up own agent_id by finding the .pid registry file
+                // matching $PPID, then async-stop self. Variables are
+                // shell-side ($PPID, $AGENTIS_ROOT, $own_id) -- no .ag-side
+                // concatenation, so the static-string `exec sh` is safe.
+                let stop_cmd = "own_id=$(grep -l \"^$PPID\\$\" \"$AGENTIS_ROOT/daemon\"/*.pid 2>/dev/null | head -1 | xargs -I{} basename {} .pid 2>/dev/null); if [ -n \"$own_id\" ]; then agentis daemon stop \"$own_id\" --async --grace-ms 1000 --timeout-ms 5000 >/dev/null 2>&1 || true; fi";
+                let _ = try { exec sh stop_cmd; } catch e { ""; };
+                return;
+            };
+        };
+    };
+
+
     // Read the synthetic target once per tick. Stage 0 deliberately
     // re-reads on every tick: the target is a checked-in static file,
     // not a live forge, so there is no upstream "since last tick" gate.
