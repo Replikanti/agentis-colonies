@@ -129,12 +129,15 @@ assert_contains "header documents STAGE3_WORKER_SECRET" \
 assert_contains "bootstrap body spawns agentis worker on self_worker_port" \
     "$(cat "$ORCH")" \
     "agentis worker 0.0.0.0:%s --secret \"\$WORKER_SECRET\" --max-concurrent 8"
-assert_contains "bootstrap body seeds peer_worker_addr memo at worker port" \
+assert_contains "bootstrap body resolves host.containers.internal to IP via getent" \
     "$(cat "$ORCH")" \
-    'agentis memo set tribes-bench:peer_worker_addr:0 host.containers.internal:%s'
+    "PEER_HOST_IP=\$(getent hosts host.containers.internal | awk"
+assert_contains "bootstrap body seeds peer_worker_addr memo at resolved IP:worker_port" \
+    "$(cat "$ORCH")" \
+    'agentis memo set tribes-bench:peer_worker_addr:0 "$PEER_HOST_IP:%s"'
 assert_contains "peer_worker_addr memo printf binds to peer_worker_port (not peer_port)" \
     "$(cat "$ORCH")" \
-    'host.containers.internal:%s >/dev/null 2>&1 || true)\n'"'"' "$peer_worker_port"'
+    '"$PEER_HOST_IP:%s" >/dev/null 2>&1 || true)\n'"'"' "$peer_worker_port"'
 assert_contains "bootstrap body polls /dev/tcp before tribe launch" \
     "$(cat "$ORCH")" \
     "/dev/tcp/127.0.0.1/%s"
