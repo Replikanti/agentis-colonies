@@ -271,13 +271,30 @@ fn tick(reason: string) -> void {
                 let threshold = baseline + creep_per_min * elapsed_min;
                 let fit_str = recall_latest("hunter:" + _self_pid + ":fitness");
                 let fit = if len(fit_str) > 0 { parse_int(fit_str); } else { 0; };
-                if fit < threshold {
-                    print("[hunter] selection_death pid=", _self_pid, " fitness=", fit, " < threshold=", threshold, " (min=", elapsed_min, ")");
-                    learn("selection_death", tribe_name() + "/" + _self_pid, "fitness=" + to_string(fit) + " threshold=" + to_string(threshold), "failure", ["died", "low-fitness", "tribes-bench", tribe_name()]);
-                    // colony-lint: safe-exec-concat
-                    let stop_cmd = "own_id=$(grep -l \"^$PPID\\$\" \"$AGENTIS_ROOT/daemon\"/*.pid 2>/dev/null | head -1 | xargs -I{} basename {} .pid 2>/dev/null); if [ -n \"$own_id\" ]; then agentis daemon stop \"$own_id\" --async --grace-ms 1000 --timeout-ms 5000 >/dev/null 2>&1 || true; fi";
-                    let _ = try { exec sh stop_cmd; } catch e { ""; };
-                    return;
+                // #489 follow-up: grace period for newborns. Seed birth_ms on
+                // first tick, then suppress selection-death until grace_ms has
+                // elapsed. Without grace, replicas (fit=0) die before they get
+                // a chance to call prompt() once and score a finding -- the
+                // population can't sustain itself.
+                let birth_key = "hunter:" + _self_pid + ":birth_ms";
+                let birth_str = recall_latest(birth_key);
+                let birth_ms = if len(birth_str) > 0 {
+                    parse_int(birth_str);
+                } else {
+                    memo_write(birth_key, to_string(_tick_now_ms));
+                    _tick_now_ms;
+                };
+                let grace_ms = parse_int(recall_latest("hunter:fitness_grace_ms"));
+                let age_ms = _tick_now_ms - birth_ms;
+                if age_ms >= grace_ms {
+                    if fit < threshold {
+                        print("[hunter] selection_death pid=", _self_pid, " fitness=", fit, " < threshold=", threshold, " (min=", elapsed_min, " age_ms=", age_ms, ")");
+                        learn("selection_death", tribe_name() + "/" + _self_pid, "fitness=" + to_string(fit) + " threshold=" + to_string(threshold), "failure", ["died", "low-fitness", "tribes-bench", tribe_name()]);
+                        // colony-lint: safe-exec-concat
+                        let stop_cmd = "own_id=$(grep -l \"^$PPID\\$\" \"$AGENTIS_ROOT/daemon\"/*.pid 2>/dev/null | head -1 | xargs -I{} basename {} .pid 2>/dev/null); if [ -n \"$own_id\" ]; then agentis daemon stop \"$own_id\" --async --grace-ms 1000 --timeout-ms 5000 >/dev/null 2>&1 || true; fi";
+                        let _ = try { exec sh stop_cmd; } catch e { ""; };
+                        return;
+                    };
                 };
             };
         };
