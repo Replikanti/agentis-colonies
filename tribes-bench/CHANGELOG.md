@@ -14,6 +14,35 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`analyse-stage3.py` now reads the variant model observationally**
+  ([#495](https://github.com/Replikanti/agentis-colonies/issues/495)).
+  The previous build hardcoded a 3-element `VARIANT_CYCLE` and a
+  Python `pick_variant()` mirror that synthesised every agent's
+  `prompt_variant` and parent/child mutation kind. Post-#494 each
+  tribe owns a 7-variant pool with disjoint domain prefixes
+  (`format-pattern-*`, `source-sink-*`, `error-path-*`, `lifetime-*`,
+  `concurrency-*`), and hunters write per-variant `variant_stats:*`
+  memos but no longer emit per-row variant tags. The synthesised
+  output silently masked the smoke #42 truth that
+  `format-pattern-default` was a 0-verified / 59-falsepos dead
+  variant. The analyser now (a) parses each tribe's pool from
+  `tribe-<name>/agents/hunter.ag` via `parse_variant_pool()` and
+  fails loud on an empty pool, (b) aggregates `variant_stats:*` memos
+  per node via `agentis memo list --prefix variant_stats:`, (c)
+  replaces the synthetic "Top-3 surviving variants per tribe" table
+  with an observational "Variant outcomes per tribe" listing every
+  variant with `verified + falsepos > 0` ordered by `verified DESC,
+  falsepos ASC, name ASC` plus a per-tribe dead-variants subsection,
+  and (d) augments `mutation-diff.csv` with `source` (`observed` /
+  `unresolved`), `parent_variant_verified`, and
+  `parent_variant_falsepos` columns. New CLI flags: `--fed-root`
+  (default autodetect), `--no-variant-stats` (skip memo reads in
+  offline tests), `--legacy-top-variants` (emit the pre-#495 table
+  alongside for one release of diff-review continuity). The five
+  `hunter.ag` files are unchanged.
+
 ### Added
 
 - **B2 variant evolution: 7-variant prompt pool with mutation + per-variant fitness telemetry**
