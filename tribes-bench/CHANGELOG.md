@@ -14,6 +14,35 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Security
+
+- **Verifier becomes sole `bug-ledger.jsonl` writer**
+  ([#491](https://github.com/Replikanti/agentis-colonies/issues/491),
+  Loose category a). Pre-#491 every `hunter.ag` appended its own JSONL
+  row to the shared bug-ledger via an `exec sh "printf ... >> ledger"`
+  call **after** the verifier returned `verified=true`. A hunter that
+  learned the row format (or simply a hunter whose self-evolved code
+  decided to skip the verifier call entirely) could fabricate
+  fitness-bearing ledger rows that bypassed the deterministic match
+  against `bugs.json`. Post-#491 the verifier
+  (`tribes-bench/tools/verify-finding-stage2.sh`) writes the row
+  internally on the verified-true path, gated on `BUG_LEDGER_PATH` +
+  `TRIBE_NAME` env. First-finder vs subsequent reward (configurable via
+  `LEDGER_REWARD_FULL` / `LEDGER_REWARD_SUBSEQUENT`, defaults 200 / 50)
+  is decided inside the script by grepping the ledger for any prior row
+  claiming the same `bug_id`. Concurrent tribes serialise via
+  `flock -x` on `${BUG_LEDGER_PATH}.lock` (util-linux; macOS falls back
+  to a plain `>>`). Row schema is byte-identical to the previous
+  hunter-emitted shape (`{"ts": <ms>, "tribe": ..., "bug_id": ...,
+  "reward": ...}`), so `analyse-stage3.py` and every downstream
+  consumer see no change. All 5 `tribe-{alpha,beta,gamma,delta,epsilon}/
+  agents/hunter.ag` files lose the append block; the
+  `tribe-X:bug_ledger` memo is still read so the bundle-sell tail
+  summary keeps working. `run-stage3-docker.sh` adds
+  `LEDGER_REWARD_FULL` / `LEDGER_REWARD_SUBSEQUENT` to
+  `exec.env_passthrough` and seeds them on the per-tribe
+  `start-colony.sh` invocation.
+
 ### Added
 
 - **M98 v2 — class-parametrized hunter prompts**

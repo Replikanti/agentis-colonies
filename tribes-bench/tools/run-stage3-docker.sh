@@ -370,7 +370,7 @@ write_bootstrap() {
         printf '{\n'
         printf '  printf "federation.enabled = true\\n"\n'
         printf '  printf "federation.peers = host.containers.internal:%s\\n"\n' "$peer_port"
-        printf '  printf "exec.env_passthrough = COLONY_DIR,TRIBE_NAME,TARGET_DIR,TARGET_FILE,BUGS_MANIFEST,VERIFIER_PATH,RUN_DIR,BUG_LEDGER_PATH,INITIAL_CB,BASE_COST,K_MALTHUSIAN,MAX_REPLICAS,REWARD_FULL,REWARD_SUBSEQUENT,DEATH_THRESHOLD,AGENTIS_ROOT,HUNTER_INITIAL_FITNESS,HUNTER_INITIAL_VARIANT\\n"\n'
+        printf '  printf "exec.env_passthrough = COLONY_DIR,TRIBE_NAME,TARGET_DIR,TARGET_FILE,BUGS_MANIFEST,VERIFIER_PATH,RUN_DIR,BUG_LEDGER_PATH,INITIAL_CB,BASE_COST,K_MALTHUSIAN,MAX_REPLICAS,REWARD_FULL,REWARD_SUBSEQUENT,LEDGER_REWARD_FULL,LEDGER_REWARD_SUBSEQUENT,DEATH_THRESHOLD,AGENTIS_ROOT,HUNTER_INITIAL_FITNESS,HUNTER_INITIAL_VARIANT\\n"\n'
         printf '  printf "experience.enabled = true\\n"\n'
         printf '  printf "telemetry.enabled = true\\n"\n'
         printf '  printf "daemon.heartbeat_interval_ms = 600000\\n"\n'
@@ -465,7 +465,7 @@ write_bootstrap() {
             # file to seed the tribe-<name>:bug_ledger memo from. Without
             # it, hunters verify findings but the JSONL ledger never
             # grows (visible in experience but missing from bug-ledger).
-            printf 'DEATH_THRESHOLD=%s POOL_CAP=%s METABOLIC_COST=%s INITIAL_POOL=%s HUNTER_MAX_AGE=%s HUNTER_FITNESS_CREEP_PER_MINUTE=%s HUNTER_FITNESS_THRESHOLD_BASELINE=%s HUNTER_FITNESS_REWARD_VERIFIED=%s HUNTER_FITNESS_PENALTY_FALSEPOS=%s HUNTER_FITNESS_REWARD_REPLICATE=%s HUNTER_FITNESS_GRACE_MS=%s HUNTER_REPRODUCTIVE_FITNESS_THRESHOLD=%s AGENTIS_ROOT=/run-root/.agentis TARGET_DIR=targets-stage2/smallvec-v0.6.13 TARGET_FILE=lib.rs BUGS_MANIFEST=/run-root/.agentis/sandbox/targets-stage2/bugs.json VERIFIER_PATH=/run-root/tools/verify-finding-stage2.sh BUG_LEDGER_PATH=/run-root/bug-ledger.jsonl bash /run-root/%s/scripts/start-colony.sh > /run-root/%s.log 2>&1 &\n' \
+            printf 'DEATH_THRESHOLD=%s POOL_CAP=%s METABOLIC_COST=%s INITIAL_POOL=%s HUNTER_MAX_AGE=%s HUNTER_FITNESS_CREEP_PER_MINUTE=%s HUNTER_FITNESS_THRESHOLD_BASELINE=%s HUNTER_FITNESS_REWARD_VERIFIED=%s HUNTER_FITNESS_PENALTY_FALSEPOS=%s HUNTER_FITNESS_REWARD_REPLICATE=%s HUNTER_FITNESS_GRACE_MS=%s HUNTER_REPRODUCTIVE_FITNESS_THRESHOLD=%s AGENTIS_ROOT=/run-root/.agentis TARGET_DIR=targets-stage2/smallvec-v0.6.13 TARGET_FILE=lib.rs BUGS_MANIFEST=/run-root/.agentis/sandbox/targets-stage2/bugs.json VERIFIER_PATH=/run-root/tools/verify-finding-stage2.sh BUG_LEDGER_PATH=/run-root/bug-ledger.jsonl LEDGER_REWARD_FULL=200 LEDGER_REWARD_SUBSEQUENT=50 bash /run-root/%s/scripts/start-colony.sh > /run-root/%s.log 2>&1 &\n' \
                 "$DEATH_THRESHOLD" "$TRIBE_POOL_CAP" "$TRIBE_METABOLIC_COST" "$TRIBE_INITIAL_POOL" "$HUNTER_MAX_AGE" "$HUNTER_FITNESS_CREEP_PER_MINUTE" "$HUNTER_FITNESS_THRESHOLD_BASELINE" "$HUNTER_FITNESS_REWARD_VERIFIED" "$HUNTER_FITNESS_PENALTY_FALSEPOS" "$HUNTER_FITNESS_REWARD_REPLICATE" "$HUNTER_FITNESS_GRACE_MS" "$HUNTER_REPRODUCTIVE_FITNESS_THRESHOLD" "$tribe" "$tribe"
         done
         printf 'while [ ! -e /run-root/.shutdown ]; do sleep 5; done\n'

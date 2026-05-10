@@ -29,8 +29,32 @@
 # of ground truth for Stage 2 telemetry; do not call into prompt() here.
 #
 # Env (with sane defaults relative to the federation directory):
-#   TARGET_DIR      (default: <fed>/targets/stage2/smallvec-v0.6.13)
-#   BUGS_MANIFEST   (default: <fed>/targets/stage2/bugs.json)
+#   TARGET_DIR              (default: <fed>/targets/stage2/smallvec-v0.6.13)
+#   BUGS_MANIFEST           (default: <fed>/targets/stage2/bugs.json)
+#   BUG_LEDGER_PATH         (optional: when set, the verifier appends a
+#                            row to this file on every verified=true
+#                            path. Closes #491 -- hunters no longer write
+#                            the ledger directly via `exec sh ... >>`.
+#                            Stage 0/1 callers omit this env and see no
+#                            behaviour change.)
+#   TRIBE_NAME              (required when BUG_LEDGER_PATH is set: tribe
+#                            identity stamped on the ledger row + used
+#                            for the first-finder check.)
+#   LEDGER_REWARD_FULL      (default: 200; reward for first-finder)
+#   LEDGER_REWARD_SUBSEQUENT (default: 50; reward for re-finders)
+#
+# Linux-only concurrency note: when BUG_LEDGER_PATH is set, append uses
+# `flock -x` (util-linux) on `${BUG_LEDGER_PATH}.lock` so concurrent
+# tribes do not interleave bytes. Stage 3 runs Ubuntu 24.04 in container
+# so util-linux is present; on macOS the verifier falls back to a plain
+# `>>` append (the gameable-channel risk is the issue, not the
+# concurrency one).
+#
+# Schema invariant: the appended row is byte-identical to the row
+# previously emitted by hunter.ag, namely
+#   {"ts": <ms>, "tribe": "<name>", "bug_id": "<id>", "reward": <int>}
+# with `ts` from `date +%s%3N`. analyse-stage3.py and downstream
+# consumers see no schema change.
 #
 # CLI flags (all optional; stdin JSON remains the primary input channel):
 #   --help, -h           Print usage and exit 0.
@@ -108,6 +132,10 @@ FED_DIR="$(dirname "$SCRIPT_DIR")"
 
 TARGET_DIR="${TARGET_DIR:-$FED_DIR/targets/stage2/smallvec-v0.6.13}"
 BUGS_MANIFEST="${BUGS_MANIFEST:-$FED_DIR/targets/stage2/bugs.json}"
+BUG_LEDGER_PATH="${BUG_LEDGER_PATH:-}"
+TRIBE_NAME="${TRIBE_NAME:-}"
+LEDGER_REWARD_FULL="${LEDGER_REWARD_FULL:-200}"
+LEDGER_REWARD_SUBSEQUENT="${LEDGER_REWARD_SUBSEQUENT:-50}"
 
 emit_verdict() {
     # $1: "true" | "false"
@@ -116,6 +144,67 @@ emit_verdict() {
         printf '{"verified": %s, "bug_id": "%s"}\n' "$1" "$2"
     else
         printf '{"verified": %s, "bug_id": null}\n' "$1"
+    fi
+}
+
+ts_ms() {
+    # GNU date %N supports millisecond precision on Linux; if unavailable
+    # (BSD date on macOS), fall back to python3 which the Stage 3 base
+    # image always ships.
+    local out
+    out="$(date +%s%3N 2>/dev/null || true)"
+    case "$out" in
+        ''|*N*)
+            python3 -c 'import time; print(int(time.time()*1000))' 2>/dev/null || echo 0
+            ;;
+        *)
+            printf '%s\n' "$out"
+            ;;
+    esac
+}
+
+append_ledger_row() {
+    # $1: bug_id (non-empty on the verified=true path)
+    # No-op when BUG_LEDGER_PATH or TRIBE_NAME is empty so Stage 0/1
+    # callers and unit-tests without ledger plumbing keep working.
+    local bug_id="$1"
+    if [ -z "$BUG_LEDGER_PATH" ] || [ -z "$TRIBE_NAME" ] || [ -z "$bug_id" ]; then
+        return 0
+    fi
+
+    # First-finder check: grep the ledger for any prior row that already
+    # claimed this bug_id. If absent OR the first claim is by this same
+    # tribe (idempotent re-find within the tribe), reward is the FULL
+    # bounty; otherwise the SUBSEQUENT discount applies.
+    local reward="$LEDGER_REWARD_FULL"
+    if [ -f "$BUG_LEDGER_PATH" ]; then
+        local prior
+        prior="$(grep -F "\"bug_id\": \"$bug_id\"" "$BUG_LEDGER_PATH" 2>/dev/null | head -1 || true)"
+        if [ -n "$prior" ]; then
+            if printf '%s' "$prior" | grep -qF "\"tribe\": \"$TRIBE_NAME\""; then
+                reward="$LEDGER_REWARD_FULL"
+            else
+                reward="$LEDGER_REWARD_SUBSEQUENT"
+            fi
+        fi
+    fi
+
+    local ts
+    ts="$(ts_ms)"
+    local row
+    row="$(printf '{"ts": %s, "tribe": "%s", "bug_id": "%s", "reward": %s}' \
+        "$ts" "$TRIBE_NAME" "$bug_id" "$reward")"
+
+    # flock -x on a sibling .lock file so concurrent tribes do not
+    # interleave bytes mid-append. Falls back to a plain `>>` when
+    # flock(1) is missing (BSD / macOS).
+    if command -v flock >/dev/null 2>&1; then
+        (
+            flock -x 9
+            printf '%s\n' "$row" >>"$BUG_LEDGER_PATH"
+        ) 9>>"${BUG_LEDGER_PATH}.lock"
+    else
+        printf '%s\n' "$row" >>"$BUG_LEDGER_PATH"
     fi
 }
 
@@ -190,6 +279,7 @@ while [ "$i" -lt "$BUG_COUNT" ]; do
             i=$((i + 1))
             continue
         fi
+        append_ledger_row "$BUG_ID"
         emit_verdict "true" "$BUG_ID"
         exit 0
     fi

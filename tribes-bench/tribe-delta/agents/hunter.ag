@@ -772,7 +772,8 @@ fn tick(reason: string) -> void {
                     print("[hunter] verified ", bug_id, " at line ", finding.line);
 
                     // M3 reward: provisional first-finder check via memo,
-                    // append to bug-ledger.jsonl, credit tribe pool.
+                    // credit tribe pool. The shared bug-ledger.jsonl row is
+                    // appended by verify-finding-stage2.sh itself post-#491.
                     let prior_finder = recall_latest("bug-ledger:" + bug_id + ":first_finder_tribe");
                     let reward = if len(prior_finder) == 0 {
                         memo_write("bug-ledger:" + bug_id + ":first_finder_tribe", _tribe_name);
@@ -781,13 +782,13 @@ fn tick(reason: string) -> void {
                         parse_int(recall_latest("tribe-" + _tribe_name + ":reward_subsequent"));
                     };
 
+                    // #491: bug-ledger append moved into verify-finding-stage2.sh.
+                    // Hunter no longer writes the ledger directly via `exec sh` --
+                    // closes the gaming surface where a hunter could fabricate
+                    // ledger rows that bypass the verifier (Loose category a).
+                    // `ledger_path` is still read here because the bundle-sell
+                    // tail summary below grep-reads the same file.
                     let ledger_path = recall_latest("tribe-" + _tribe_name + ":bug_ledger");
-                    if len(ledger_path) > 0 {
-                        let row = "{\"ts\": " + to_string(_tick_now_ms) + ", \"tribe\": \"" + _tribe_name + "\", \"bug_id\": \"" + bug_id + "\", \"reward\": " + to_string(reward) + "}";
-                        // colony-lint: safe-exec-concat
-                        let append_cmd = "printf '%s\\n' " + shell_escape(row) + " >> " + shell_escape(ledger_path);
-                        let _ = try { exec sh append_cmd; } catch e { ""; };
-                    };
 
                     // #485 finite-pool: cap-aware reward credit. When
                     // tribe-X:pool_cap is set, reward is bounded so pool
