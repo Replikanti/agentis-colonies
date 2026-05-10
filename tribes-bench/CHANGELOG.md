@@ -16,6 +16,29 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Fixed
 
+- **M98 hunter CB exhaustion + missing env_passthrough for HUNTER_INITIAL_VARIANT**
+  (#499 follow-up). Two regressions surfaced in smoke #49 against PR
+  #500:
+  1. `cb 50000000;` per-tick budget was insufficient for the post-#500
+     hunter.ag tick body (expanded `pick_variant()` from 7 to 14
+     literals + class-flip path + variant parser at verifier-call
+     site). Daemons hit `CognitiveOverload: budget 0, required 1` on
+     every tick → `tick_err: 32, tick_ok: 0` per `agentis daemon list
+     --json`. Bumped `cb` declaration in all 5 hunter.ag and matching
+     `cb_budget` in colony.example.toml from 50000000 to 200000000
+     (4× headroom).
+  2. `run-stage3-docker.sh` bootstrap wrote
+     `exec.env_passthrough = ... HUNTER_INITIAL_FITNESS` but omitted
+     `HUNTER_INITIAL_VARIANT`. Even though M106 wire (agentis-core
+     v1.7.8 / #632) correctly set the env on the spawned process,
+     hunter's `exec sh "printenv HUNTER_INITIAL_VARIANT"` saw an
+     empty string because the agentis sandbox filtered it out. PR
+     #498's federation-side reader was a no-op in practice. Added
+     `HUNTER_INITIAL_VARIANT` to the env_passthrough list.
+
+  No production logic changes. Hot-fix only — restores B2 v2 + M98
+  the way they were meant to behave.
+
 - **`analyse-stage3.py` now reads the variant model observationally**
   ([#495](https://github.com/Replikanti/agentis-colonies/issues/495)).
   The previous build hardcoded a 3-element `VARIANT_CYCLE` and a
