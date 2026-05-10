@@ -123,6 +123,25 @@ make_colony_fixture() {
     } > "$fed/triage/config/colony.toml"
 }
 
+# Retry-with-backoff read of the recorded argv file. The shim `agentis`
+# appends to `$record_file` via `>>` from a forked child of start-colony.sh,
+# and our follow-up read can race the kernel flush of that append on busy
+# hosts. Up to 10 attempts x 150ms backoff (~1.5s ceiling) suppresses the
+# race without changing the shim or start-colony.sh. See #509 (flush race)
+# and #257 (the underlying `--restart-agent` flow that owns the real
+# ordering bug).
+read_recorded_argv() {
+    local record_file="$1"
+    local content=""
+    local _i
+    for _i in 1 2 3 4 5 6 7 8 9 10; do
+        content="$(cat "$record_file" 2>/dev/null || true)"
+        [ -n "$content" ] && break
+        sleep 0.15
+    done
+    printf '%s' "$content"
+}
+
 # Run start-colony.sh --restart-agent labeler for a fixture and capture
 # the daemon-launch argv into the recorded file. Returns the exit code
 # of start-colony.sh.
@@ -141,7 +160,7 @@ run_for_fixture() {
             "$fed/triage/config/colony.toml" \
             >"$FIXTURE_ROOT/$tag/start-colony.stdout" \
             2>"$FIXTURE_ROOT/$tag/start-colony.stderr" || true
-    cat "$record_file"
+    read_recorded_argv "$record_file"
 }
 
 # Count exact occurrences of `llm.<key>=<value>` lines in the recorded
@@ -186,11 +205,20 @@ assert_restart_ok() {
     # start-colony.sh exits 0 on success and prints `started <agent> pid=<n> tick=<ms>`.
     # The shim's `sleep 1` keeps the simulated agentis-daemon alive long enough
     # for the start-colony.sh `kill -0` liveness probe.
-    if grep -qE '^started ' "$FIXTURE_ROOT/$tag/start-colony.stdout" 2>/dev/null; then
-        pass "$name"
-    else
-        fail "$name" "expected 'started <agent>' line in stdout: $(cat "$FIXTURE_ROOT/$tag/start-colony.stdout" 2>/dev/null) / stderr: $(cat "$FIXTURE_ROOT/$tag/start-colony.stderr" 2>/dev/null)"
-    fi
+    #
+    # Retry-with-backoff: same flush race as `read_recorded_argv` — the
+    # start-colony.sh stdout redirect can lag the immediate grep on busy
+    # hosts. Up to 10 attempts x 150ms backoff (~1.5s ceiling). See #509.
+    local stdout_file="$FIXTURE_ROOT/$tag/start-colony.stdout"
+    local _i
+    for _i in 1 2 3 4 5 6 7 8 9 10; do
+        if grep -qE '^started ' "$stdout_file" 2>/dev/null; then
+            pass "$name"
+            return 0
+        fi
+        sleep 0.15
+    done
+    fail "$name" "expected 'started <agent>' line in stdout: $(cat "$stdout_file" 2>/dev/null) / stderr: $(cat "$FIXTURE_ROOT/$tag/start-colony.stderr" 2>/dev/null)"
 }
 
 # ----- t1: no [llm] block at all -----
@@ -250,7 +278,9 @@ assert_restart_ok "t5: --restart-agent succeeds with both override file AND [llm
 # token is absent. This is the primary safety net for future drift.
 ALL_RECORDED=""
 for tag in t1 t2 t3 t4 t5; do
-    ALL_RECORDED="$ALL_RECORDED $(cat "$FIXTURE_ROOT/$tag/agentis-argv.log" 2>/dev/null)"
+    # Re-read via the retry helper for the same flush-race reason
+    # documented above (#509).
+    ALL_RECORDED="$ALL_RECORDED $(read_recorded_argv "$FIXTURE_ROOT/$tag/agentis-argv.log")"
 done
 if printf '%s\n' "$ALL_RECORDED" | tr ' ' '\n' | grep -qx -- '--config-override'; then
     fail "t6: --config-override token leaked across one of t1-t5" "$ALL_RECORDED"
