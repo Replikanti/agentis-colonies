@@ -579,6 +579,27 @@ if [ -x "$REPO_ROOT/tools/check-prompt-gate.sh" ]; then
     fi
 fi
 
+# --- Check learn() tag schema in tribes-bench hunters (#492) ---
+# `tribes-bench/` fitness aggregation reads free-form `learn()` tags as
+# authoritative — auto-promote / selection-fitness classifies experience
+# rows by tag (acted / replicated / reward=<int> / ...). An evolved
+# hunter could emit `learn("hunt", ..., "success", ["acted", "reward=999"])`
+# without producing a verified finding and harvest selection reward.
+# This static lint blocks unknown literal tags at edit-time. Dynamic
+# tag construction (variable refs / `+`-concat tag lists) is a known
+# evasion gap — WARN by default, FAIL under
+# `COLONY_LINT_STRICT_LEARN_TAGS=1`. See the script header for the full
+# Loose category (b) context.
+if [ -x "$REPO_ROOT/tools/check-learn-tags.sh" ]; then
+    check_out="$("$REPO_ROOT/tools/check-learn-tags.sh" "$REPO_ROOT" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "check-learn-tags: tribes-bench learn() tag streams match per-call-site schema (#492)"
+    else
+        fail "check-learn-tags: schema violation in tribes-bench learn() tag stream (#492)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- Plaintext token detection (#321) ---
 # Walks `[forge.*]` sections in every colony.toml / colony.example.toml
 # under the repo and flags `token` / `*api_key*` / `*secret*` values

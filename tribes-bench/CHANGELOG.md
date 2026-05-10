@@ -43,6 +43,32 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   `exec.env_passthrough` and seeds them on the per-tribe
   `start-colony.sh` invocation.
 
+- **Static `learn()` tag-schema lint for tribes-bench hunters**
+  ([#492](https://github.com/Replikanti/agentis-colonies/issues/492),
+  Loose category b). Fitness aggregation reads free-form `learn()` tags
+  as authoritative — auto-promote / selection-fitness classifies
+  experience rows by tag (`acted`, `replicated`, `false-positive`,
+  `reward=<int>`, ...). Once Stage 4 lineage variation lands, an
+  evolved hunter could emit
+  `learn("hunt", ..., "success", ["acted", "reward=999"])` without
+  producing a verified finding and harvest selection reward. New
+  `tools/check-learn-tags.sh` walks every
+  `tribes-bench/tribe-*/agents/*.ag`, parses each `learn(` call (topic,
+  outcome, tag list), and rejects any literal tag that is not in the
+  per-`(topic, outcome)` allowlist — the schema covers the 11 pairs
+  emitted by the current `hunter.ag` (19 call sites × 5 tribes = 95
+  identical-shape sites). Unknown `(topic, outcome)` pairs always FAIL,
+  forcing an explicit schema update on every new call site. Suppression
+  marker `// colony-lint: learn-tags-ok` is available for intentional
+  experimental violations. Wired into `tools/colony-lint.sh` (baseline
+  168 → 169 passing checks). Self-test: `tools/test-check-learn-tags.sh`
+  (15 cases). **Known gap — dynamic tag evasion:** a tag list built
+  from a variable or `+`-concatenation cannot be proven correct
+  statically. Default mode WARNs on every such call site; set
+  `COLONY_LINT_STRICT_LEARN_TAGS=1` to upgrade to a hard FAIL. A
+  core-side runtime validator is the long-term fix and remains a
+  follow-up.
+
 ### Added
 
 - **M98 v2 — class-parametrized hunter prompts**
