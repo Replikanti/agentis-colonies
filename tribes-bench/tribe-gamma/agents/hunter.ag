@@ -181,11 +181,11 @@ fn pick_highest_rep_sibling(self_tribe: string) -> string {
 }
 
 fn emit_market_csv(tick_now_ms: int, op: string, topic: string, topic_kind: string, ask_price_s: string, max_cb_s: string, paid_price_s: string, cache_hit_s: string, op_outcome: string) -> void {
-    let csv_path = recall_latest("tribes-bench-" + tribe_name() + ":knowledge_market_csv");
+    let csv_path = recall_latest("tribes-bench-" + "tribe-gamma" + ":knowledge_market_csv");
     if len(csv_path) == 0 {
         return;
     };
-    let row = to_string(tick_now_ms) + "," + tribe_name() + "," + tribe_name() + "," + op + "," + topic + "," + topic_kind + "," + ask_price_s + "," + max_cb_s + "," + paid_price_s + "," + cache_hit_s + ",," + op_outcome;
+    let row = to_string(tick_now_ms) + "," + "tribe-gamma" + "," + "tribe-gamma" + "," + op + "," + topic + "," + topic_kind + "," + ask_price_s + "," + max_cb_s + "," + paid_price_s + "," + cache_hit_s + ",," + op_outcome;
     // colony-lint: safe-exec-concat
     let append_cmd = "printf '%s\n' " + shell_escape(row) + " >> " + shell_escape(csv_path);
     let _ = try { exec sh append_cmd; } catch e { ""; };
