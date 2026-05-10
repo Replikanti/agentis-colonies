@@ -346,9 +346,10 @@ def case_2(tmp: str) -> None:
     laptop_alpha_seed = laptop_seeds["tribe-alpha"]
     seed_path = os.path.join(run_dir, ".agentis", "experience", f"{laptop_alpha_seed}.jsonl")
     with open(seed_path, "a", encoding="utf-8") as f:
-        # Bare-name variant tag is recognised against known_variants
-        # (alpha's parsed pool); seeds the seed agent's
-        # observational prompt_variant to "format-pattern-default".
+        # #499 M98: variant tag is `<class>:<phrasing>` (alpha primary
+        # class is `uninitialised_memory`). Tag is recognised against
+        # known_variants (alpha's parsed pool); seeds the seed agent's
+        # observational prompt_variant to the alpha primary default.
         f.write(json.dumps({
             "ts": 1_700_000_000_500,
             "topic": "hunt",
@@ -356,7 +357,7 @@ def case_2(tmp: str) -> None:
             "outcome": "BUG-A",
             "tags": [
                 "acted", "tribes-bench", "tribe-alpha", "reward=10",
-                "format-pattern-default",
+                "uninitialised_memory:format-pattern-default",
             ],
         }) + "\n")
         # Death of the seed at a fixed ts so a descendant can outlive it.
@@ -378,7 +379,7 @@ def case_2(tmp: str) -> None:
     add_replicate_event(
         run_dir, laptop_alpha_seed, "tribe-alpha",
         n_before=1, ts=1_700_000_120_000,
-        variant_tag="format-pattern-default",
+        variant_tag="uninitialised_memory:format-pattern-default",
     )
     laptop_alpha_child1 = "laptop-c1"
     add_child_agent(
@@ -389,7 +390,7 @@ def case_2(tmp: str) -> None:
     add_replicate_event(
         run_dir, laptop_alpha_child1, "tribe-alpha",
         n_before=2, ts=1_700_000_240_000,
-        variant_tag="format-pattern-default",
+        variant_tag="uninitialised_memory:format-pattern-default",
     )
     laptop_alpha_child2 = "laptop-c2"
     # The child2 outlives the seed -- it is born after the seed dies.
@@ -400,15 +401,19 @@ def case_2(tmp: str) -> None:
     )
 
     # 2 server single-level lineages (one in tribe-gamma, one in
-    # tribe-delta). Each tribe uses its own pool's index-0 variant
-    # (gamma: error-path-default, delta: lifetime-default) so the
-    # mutation_kind cycle-N math resolves against the right pool. We
-    # also tag the seed agent with the same bare variant so its
-    # observational prompt_variant settles before the replicate event.
+    # tribe-delta). Each tribe uses its own pool's primary-class index-0
+    # variant (gamma: memory_corruption:error-path-default,
+    # delta: use_after_free:lifetime-default) so the mutation_kind
+    # cycle-N math resolves against the right pool. We also tag the
+    # seed agent with the same bare variant so its observational
+    # prompt_variant settles before the replicate event.
+    # #499 M98: variant tag is `<class>:<phrasing>`.
     for seed_tribe, seed_id, default_variant, child_id, ts in (
-        ("tribe-gamma", server_seeds["tribe-gamma"], "error-path-default",
+        ("tribe-gamma", server_seeds["tribe-gamma"],
+         "memory_corruption:error-path-default",
          "server-c-g", 1_700_000_300_000),
-        ("tribe-delta", server_seeds["tribe-delta"], "lifetime-default",
+        ("tribe-delta", server_seeds["tribe-delta"],
+         "use_after_free:lifetime-default",
          "server-c-d", 1_700_000_400_000),
     ):
         seed_path = os.path.join(
@@ -548,16 +553,18 @@ def case_3(tmp: str) -> None:
             "outcome": "obs",
             "tags": [
                 "observed", "tribes-bench", "tribe-beta",
-                "source-sink-default",
+                # #499 M98: beta primary class is `heap_overflow`.
+                "heap_overflow:source-sink-default",
             ],
         }) + "\n")
     # Single replicate on tribe-beta with explicit variant tag that
-    # advances the parent (source-sink-default) to the next pool
-    # position (source-sink-arg-only) -> mutation_kind = cycle-1.
+    # advances the parent (heap_overflow:source-sink-default) to the
+    # next pool position (heap_overflow:source-sink-arg-only) ->
+    # mutation_kind = cycle-1.
     add_replicate_event(
         run_dir, laptop_seeds["tribe-beta"], "tribe-beta",
         n_before=1, ts=1_700_000_300_000,
-        variant_tag="source-sink-arg-only",
+        variant_tag="heap_overflow:source-sink-arg-only",
     )
     add_child_agent(
         run_dir, "tribe-beta", "laptop-c-beta",
@@ -851,12 +858,17 @@ def test_variant_outcomes_table_orders_by_verified_desc_falsepos_asc(tmp: str) -
         shim_path,
         "#!/bin/sh\n"
         'cat <<EOF\n'
-        "variant_stats:format-pattern-substitution-aware:verified = 4\n"
-        "variant_stats:format-pattern-substitution-aware:falsepos = 1\n"
-        "variant_stats:format-pattern-strict-literal:verified = 4\n"
-        "variant_stats:format-pattern-strict-literal:falsepos = 0\n"
-        "variant_stats:format-pattern-default:verified = 0\n"
-        "variant_stats:format-pattern-default:falsepos = 59\n"
+        # #499 M98: variant pool literals are now `<class>:<phrasing>`,
+        # so the shim emits the post-#499 alpha pool keys (primary class
+        # `uninitialised_memory`). `read_variant_stats` rpartition(':')
+        # splits on the LAST colon, so the embedded class:phrasing colon
+        # round-trips intact.
+        "variant_stats:uninitialised_memory:format-pattern-substitution-aware:verified = 4\n"
+        "variant_stats:uninitialised_memory:format-pattern-substitution-aware:falsepos = 1\n"
+        "variant_stats:uninitialised_memory:format-pattern-strict-literal:verified = 4\n"
+        "variant_stats:uninitialised_memory:format-pattern-strict-literal:falsepos = 0\n"
+        "variant_stats:uninitialised_memory:format-pattern-default:verified = 0\n"
+        "variant_stats:uninitialised_memory:format-pattern-default:falsepos = 59\n"
         "EOF\n",
     )
     os.chmod(shim_path, 0o755)
@@ -915,6 +927,9 @@ def test_mutation_diff_csv_has_observational_columns(tmp: str) -> None:
     seed_ids = {t: f"seed-{t}" for t in tribes}
     make_seed_node(run_dir, tribes, seed_ids)
     # tribe-alpha: claim default via bare tag, then replicate also tagged.
+    # #499 M98: variant tag is now `<class>:<phrasing>` (alpha primary
+    # class is `uninitialised_memory`); experience-row tag mirrors the
+    # post-#499 pool literal so the analyser resolves it to "observed".
     seed_path = os.path.join(
         run_dir, ".agentis", "experience", f"{seed_ids['tribe-alpha']}.jsonl"
     )
@@ -926,13 +941,13 @@ def test_mutation_diff_csv_has_observational_columns(tmp: str) -> None:
             "outcome": "obs",
             "tags": [
                 "observed", "tribes-bench", "tribe-alpha",
-                "format-pattern-default",
+                "uninitialised_memory:format-pattern-default",
             ],
         }) + "\n")
     add_replicate_event(
         run_dir, seed_ids["tribe-alpha"], "tribe-alpha",
         n_before=1, ts=1_700_000_400_000,
-        variant_tag="format-pattern-default",
+        variant_tag="uninitialised_memory:format-pattern-default",
     )
     add_child_agent(
         run_dir, "tribe-alpha", "obs-c1",

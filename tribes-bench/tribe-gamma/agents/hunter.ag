@@ -60,41 +60,107 @@ fn target_file() -> string {
     return recall_latest("hunter:target_file");
 }
 
+// #499: per-tribe primary class — used as fallback when a variant string
+// lacks the `<class>:<phrasing>` colon separator (legacy memo replay from
+// pre-#499 builds where pick_variant emitted phrasing-only strings).
+fn _tribe_default_class() -> string {
+    return "memory_corruption";
+}
+
+// #499: 8-class universe used by the class-flip mutation in
+// `pick_variant`. Indices 0..1 are the tribe's primary + sibling classes
+// (also seeded directly into the 14-literal pool below); 2..7 are
+// off-pool classes reachable only via the 10% class-flip mutation, so
+// `data_race` and `missing_lock` enter circulation only when the dice
+// fall that way.
+fn _class_pick_universe(idx: int) -> string {
+    if idx == 0 { return "memory_corruption"; };
+    if idx == 1 { return "dangling_borrow"; };
+    if idx == 2 { return "use_after_free"; };
+    if idx == 3 { return "heap_overflow"; };
+    if idx == 4 { return "data_race"; };
+    if idx == 5 { return "send_violation"; };
+    if idx == 6 { return "missing_lock"; };
+    return "uninitialised_memory";
+}
+
 fn pick_variant(tribe: string, n: int) -> string {
     let _ = tribe;
-    // B2 variation source: 7-variant pool with 20% mutation rate.
-    // Cyclic baseline (n mod 7) gives sibling diversity at spawn time.
-    // Mutation roll uses now_ms_via_shell() pseudo-random to pick a
-    // different variant ~20% of the time, breaking cyclic ruts and
-    // exposing new variants to selection pressure.
-    let cyclic_idx = n - ((n / 7) * 7);
+    // #499 M98 self-evolution: variant string carries `<class>:<phrasing>`
+    // so selection operates on the hunt-class trait, not just wording.
+    // Pool expanded from 7 phrasings to 14 = 7 phrasings * 2 sibling
+    // classes. Cyclic baseline `n mod 14` covers the seeded pool;
+    // `idx / 7` picks the primary (0) vs sibling (1) class, `idx % 7`
+    // picks the phrasing.
+    //
+    // Mutation operators (independent rolls, decorrelated by different
+    // moduli on the same `now_ms_via_shell()` source):
+    //   - 20% phrasing-flip (carry-over from #494): re-rolls the
+    //     phrasing within whatever class the cyclic baseline picked.
+    //   - 10% class-flip (#499 new): re-rolls the class against the
+    //     full 8-class universe. This is the only path by which
+    //     `data_race` and `missing_lock` enter circulation.
+    //
+    // Implementation note: the seeded pool is emitted as 14 bare
+    // string-literal returns so `analyse-stage3.py`'s
+    // `parse_variant_pool` regex picks them up unmodified. The
+    // class-flip mutation path falls through to a string concatenation
+    // tail that the parser ignores by design (off-pool variants).
+    let cyclic_idx = n - ((n / 14) * 14);
+    let cyclic_class_idx = cyclic_idx / 7;
+    let cyclic_phr_idx = cyclic_idx - (cyclic_class_idx * 7);
     let mut_now = now_ms_via_shell();
+    // Phrasing-flip roll: 20% (mut_now % 100 < 20).
     let mut_roll = mut_now - ((mut_now / 100) * 100);
-    let idx = if mut_roll < 20 {
-        let rand_idx = mut_now - ((mut_now / 7) * 7);
-        rand_idx;
+    let phr_idx = if mut_roll < 20 {
+        let rand_phr = mut_now - ((mut_now / 7) * 7);
+        rand_phr;
     } else {
-        cyclic_idx;
+        cyclic_phr_idx;
     };
-    if idx == 0 {
-        return "error-path-default";
+    // Class-flip roll: 10%, decorrelated by /7 then %100. The picked
+    // class index is decorrelated again via /11 then %8.
+    let class_now = mut_now / 7;
+    let class_roll = class_now - ((class_now / 100) * 100);
+    if class_roll < 10 {
+        let class_pick_now = mut_now / 11;
+        let class_pick = class_pick_now - ((class_pick_now / 8) * 8);
+        let phr_str_mut = if phr_idx == 0 {
+            "error-path-default";
+        } else { if phr_idx == 1 {
+            "error-path-unwrap-only";
+        } else { if phr_idx == 2 {
+            "error-path-broad-fallible";
+        } else { if phr_idx == 3 {
+            "error-path-question-mark";
+        } else { if phr_idx == 4 {
+            "error-path-panic-recovery";
+        } else { if phr_idx == 5 {
+            "error-path-result-coercion";
+        } else {
+            "error-path-error-conversion";
+        }; }; }; }; }; };
+        return _class_pick_universe(class_pick) + ":" + phr_str_mut;
     };
-    if idx == 1 {
-        return "error-path-unwrap-only";
+    // Seeded pool: 14 bare-literal returns parsed by analyse-stage3.
+    // class_idx == 0 => primary (memory_corruption).
+    if cyclic_class_idx == 0 {
+        if phr_idx == 0 { return "memory_corruption:error-path-default"; };
+        if phr_idx == 1 { return "memory_corruption:error-path-unwrap-only"; };
+        if phr_idx == 2 { return "memory_corruption:error-path-broad-fallible"; };
+        if phr_idx == 3 { return "memory_corruption:error-path-question-mark"; };
+        if phr_idx == 4 { return "memory_corruption:error-path-panic-recovery"; };
+        if phr_idx == 5 { return "memory_corruption:error-path-result-coercion"; };
+        return "memory_corruption:error-path-error-conversion";
     };
-    if idx == 2 {
-        return "error-path-broad-fallible";
-    };
-    if idx == 3 {
-        return "error-path-question-mark";
-    };
-    if idx == 4 {
-        return "error-path-panic-recovery";
-    };
-    if idx == 5 {
-        return "error-path-result-coercion";
-    };
-    return "error-path-error-conversion";
+    // class_idx == 1 => sibling (dangling_borrow).
+    if phr_idx == 0 { return "dangling_borrow:error-path-default"; };
+    if phr_idx == 1 { return "dangling_borrow:error-path-unwrap-only"; };
+    if phr_idx == 2 { return "dangling_borrow:error-path-broad-fallible"; };
+    if phr_idx == 3 { return "dangling_borrow:error-path-question-mark"; };
+    if phr_idx == 4 { return "dangling_borrow:error-path-panic-recovery"; };
+    if phr_idx == 5 { return "dangling_borrow:error-path-result-coercion"; };
+    return "dangling_borrow:error-path-error-conversion";
 }
 
 fn self_node_addr() -> string {
@@ -565,7 +631,25 @@ fn tick(reason: string) -> void {
                 // LLM-tainted text through the JSON-on-stdin channel
                 // would force shell-vs-JSON quote interleaving with no
                 // benefit.
-                let finding_json = "{\"line\": " + to_string(finding.line) + ", \"class\": \"" + finding.class + "\"}";
+                // #499 M98 self-evolution: derive the verifier-payload
+                // class from the variant string (`<class>:<phrasing>`),
+                // not from the LLM's `finding.class` field. Misalignment
+                // between LLM-hunt-target and variant-claimed class
+                // becomes a verifier-falsepos that selection rewards or
+                // penalises via `variant_stats:<full-variant>:*` memos.
+                // Empty `_variant` (cold start) or legacy phrasing-only
+                // strings (no `:`) fall back to the tribe's primary class.
+                let _colon_idx = index_of(_variant, ":");
+                let _variant_class = if len(_variant) == 0 {
+                    _tribe_default_class();
+                } else {
+                    if _colon_idx >= 0 {
+                        substring(_variant, 0, _colon_idx);
+                    } else {
+                        _tribe_default_class();
+                    };
+                };
+                let finding_json = "{\"line\": " + to_string(finding.line) + ", \"class\": \"" + _variant_class + "\"}";
                 let verify_cmd = "printf '%s' " + shell_escape(finding_json) + " | bash \"$VERIFIER_PATH\"";
                 let verdict_raw = try {
                     exec sh verify_cmd;
