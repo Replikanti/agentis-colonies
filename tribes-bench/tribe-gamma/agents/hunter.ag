@@ -289,16 +289,21 @@ fn tick(reason: string) -> void {
                     parse_int(birth_str);
                 } else {
                     memo_write(birth_key, to_string(_tick_now_ms));
-                    // #489 follow-up: fitness inheritance from parent. The
-                    // most recent replicating hunter in this tribe wrote
-                    // `hunter:next_replica_seed_<tribe>` with parent_fit/2
-                    // before calling replicate(). Seed this replica's
-                    // fitness counter with that value so the newborn has
-                    // a head start proportional to its parent's success.
-                    let seed_str = recall_latest("hunter:next_replica_seed_" + _tribe_name);
-                    if len(seed_str) > 0 {
-                        let seed_val = parse_int(seed_str);
-                        memo_write("hunter:" + _self_pid + ":fitness", to_string(seed_val));
+                    // v1.7.7 follow-up: per-instance fitness inheritance via
+                    // HUNTER_INITIAL_FITNESS env, set by the M106 spawn site
+                    // on the receiving worker after decoding parent_fitness
+                    // from the wire payload. Bypasses the per-tribe seed memo
+                    // race that pinned smokes #38..#40 at 80%+ mortality.
+                    let env_seed = try { exec sh "printenv HUNTER_INITIAL_FITNESS"; } catch e { ""; };
+                    if len(env_seed) > 0 {
+                        let env_val = parse_int(env_seed);
+                        memo_write("hunter:" + _self_pid + ":fitness", to_string(env_val));
+                    } else {
+                        let seed_str = recall_latest("hunter:next_replica_seed_" + _tribe_name);
+                        if len(seed_str) > 0 {
+                            let seed_val = parse_int(seed_str);
+                            memo_write("hunter:" + _self_pid + ":fitness", to_string(seed_val));
+                        };
                     };
                     _tick_now_ms;
                 };
@@ -355,7 +360,8 @@ fn tick(reason: string) -> void {
                             if seed_r > curr_r {
                                 memo_write("hunter:next_replica_seed_" + _tribe_name, to_string(seed_r));
                             };
-                            let replica_id_r = try { replicate(target_r); } catch e { "__replicate_error__"; };
+                            let my_fit_repr_arg = if len(_self_pid) > 0 { parse_int(recall_latest("hunter:" + _self_pid + ":fitness")); } else { 0; };
+                            let replica_id_r = try { replicate(target_r, my_fit_repr_arg); } catch e { "__replicate_error__"; };
                             if replica_id_r != "__replicate_error__" {
                                 if len(replica_id_r) > 0 {
                                     memo_write("tribe-" + _tribe_name + ":pool", to_string(pool_r - cost_r));
@@ -611,7 +617,8 @@ fn tick(reason: string) -> void {
                                         memo_write("hunter:next_replica_seed_" + _tribe_name, to_string(seed_inherit));
                                     };
                                 };
-                                let replica_id = try { replicate(target); } catch e { "__replicate_error__"; };
+                                let my_fit_m2_arg = if len(_self_pid) > 0 { parse_int(recall_latest("hunter:" + _self_pid + ":fitness")); } else { 0; };
+                                let replica_id = try { replicate(target, my_fit_m2_arg); } catch e { "__replicate_error__"; };
                                 if replica_id == "__replicate_error__" {
                                     learn("replicate", "n=" + to_string(n), "cost=" + to_string(cost), "failure", ["replicate-error", "tribes-bench", _tribe_name]);
                                 } else {
