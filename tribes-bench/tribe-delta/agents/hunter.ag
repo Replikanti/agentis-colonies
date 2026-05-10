@@ -14,7 +14,7 @@
 // Requires: exec capability, replication capability, TARGET_DIR +
 // VERIFIER_PATH env vars (set by scripts/start-colony.sh).
 
-cb 2000000;
+cb 50000000;
 
 type Finding {
     line: int,
@@ -181,11 +181,11 @@ fn pick_highest_rep_sibling(self_tribe: string) -> string {
 }
 
 fn emit_market_csv(tick_now_ms: int, op: string, topic: string, topic_kind: string, ask_price_s: string, max_cb_s: string, paid_price_s: string, cache_hit_s: string, op_outcome: string) -> void {
-    let csv_path = recall_latest("tribes-bench-" + tribe_name() + ":knowledge_market_csv");
+    let csv_path = recall_latest("tribes-bench-" + "tribe-delta" + ":knowledge_market_csv");
     if len(csv_path) == 0 {
         return;
     };
-    let row = to_string(tick_now_ms) + "," + tribe_name() + "," + tribe_name() + "," + op + "," + topic + "," + topic_kind + "," + ask_price_s + "," + max_cb_s + "," + paid_price_s + "," + cache_hit_s + ",," + op_outcome;
+    let row = to_string(tick_now_ms) + "," + "tribe-delta" + "," + "tribe-delta" + "," + op + "," + topic + "," + topic_kind + "," + ask_price_s + "," + max_cb_s + "," + paid_price_s + "," + cache_hit_s + ",," + op_outcome;
     // colony-lint: safe-exec-concat
     let append_cmd = "printf '%s\n' " + shell_escape(row) + " >> " + shell_escape(csv_path);
     let _ = try { exec sh append_cmd; } catch e { ""; };
@@ -199,6 +199,18 @@ fn tick(reason: string) -> void {
     // BEFORE any other expensive op so we don't lose budget on this
     // call, and reuse the cached value at every downstream site.
     let _tick_now_ms = now_ms_via_shell();
+    // #490 perf: cache tribe_name() once per tick. Pre-cache the result
+    // came from a fresh `exec sh "printenv TRIBE_NAME"` fork on every call,
+    // and the tick body referenced tribe_name() ~60 times (in memo keys,
+    // learn tags, log messages). At ~1M CB per exec sh, that drained the
+    // entire 50M per-tick budget on this one helper alone, causing
+    // CognitiveOverload before the fitness/age/replicate logic could run.
+    let _tribe_name = tribe_name();
+    // #487 follow-up: cache $PPID once per tick. Both the age block (#489)
+    // and the fitness-selection block need a stable per-daemon
+    // self-id; computing it once here saves two extra `exec sh` forks
+    // (~50 CB each) per tick.
+    let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
     let conf = get_confidence();
     print("[hunter] tick conf=", conf);
     // #485 finite-pool: per-tick metabolic cost drains the shared tribe
@@ -207,10 +219,10 @@ fn tick(reason: string) -> void {
     // hunters in tribe = more drain = harder to accumulate replication
     // budget). Both memos default-absent => byte-identical to v1.7.4
     // behaviour, only seeded by start-colony.sh under #485 opt-in.
-    let metabolic = parse_int(recall_latest("tribe-" + tribe_name() + ":metabolic_cost"));
+    let metabolic = parse_int(recall_latest("tribe-" + _tribe_name + ":metabolic_cost"));
     if metabolic > 0 {
-        let pool_pre = parse_int(recall_latest("tribe-" + tribe_name() + ":pool"));
-        memo_write("tribe-" + tribe_name() + ":pool", to_string(pool_pre - metabolic));
+        let pool_pre = parse_int(recall_latest("tribe-" + _tribe_name + ":pool"));
+        memo_write("tribe-" + _tribe_name + ":pool", to_string(pool_pre - metabolic));
     };
 
 
@@ -227,7 +239,7 @@ fn tick(reason: string) -> void {
     // STAGE3_HUNTER_MAX_AGE env var.
     let max_age = parse_int(recall_latest("hunter:max_age"));
     if max_age > 0 {
-        let self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
+        let self_pid = _self_pid;
         if len(self_pid) > 0 {
             let age_key = "hunter:" + self_pid + ":age";
             let age_pre = parse_int(recall_latest(age_key));
@@ -235,14 +247,136 @@ fn tick(reason: string) -> void {
             memo_write(age_key, to_string(age));
             if age > max_age {
                 print("[hunter] self_death pid=", self_pid, " age=", age, " > max_age=", max_age);
-                learn("self_death", tribe_name() + "/" + self_pid, "age=" + to_string(age), "failure", ["died", "self-aged", "tribes-bench", tribe_name()]);
+                learn("self_death", _tribe_name + "/" + self_pid, "age=" + to_string(age), "failure", ["died", "self-aged", "tribes-bench", _tribe_name]);
                 // Look up own agent_id by finding the .pid registry file
                 // matching $PPID, then async-stop self. Variables are
                 // shell-side ($PPID, $AGENTIS_ROOT, $own_id) -- no .ag-side
                 // concatenation, so the static-string `exec sh` is safe.
-                let stop_cmd = "own_id=$(grep -l \"^$PPID\\$\" \"$AGENTIS_ROOT/daemon\"/*.pid 2>/dev/null | head -1 | xargs -I{} basename {} .pid 2>/dev/null); if [ -n \"$own_id\" ]; then agentis daemon stop \"$own_id\" --async --grace-ms 1000 --timeout-ms 5000 >/dev/null 2>&1 || true; fi";
+                let stop_cmd = "for pf in /run-root/.agentis/daemon/*.pid; do [ \"$(head -1 \"$pf\" 2>/dev/null)\" = \"" + _self_pid + "\" ] && touch \"$(echo \"$pf\" | sed s/.pid/.stop/)\" && break; done";
                 let _ = try { exec sh stop_cmd; } catch e { ""; };
                 return;
+            };
+        };
+    };
+
+    // #489 follow-up: fitness-driven selection with rising threshold. Each
+    // hunter tracks its own per-PPID fitness counter, updated on verified
+    // findings (+reward), false positives (-penalty), and successful
+    // replicates (+reward). Threshold rises monotonically with elapsed
+    // time since hunter:epoch_start_ms at hunter:fitness_creep_per_minute
+    // units per minute. Hunters whose fitness drops below the rising
+    // threshold die via the same suicide path used by the age model.
+    // Default-absent memos => OFF (byte-identical to v1.7.5 + #489).
+    let creep_per_min = parse_int(recall_latest("hunter:fitness_creep_per_minute"));
+    if creep_per_min > 0 {
+        if len(_self_pid) > 0 {
+            let epoch_ms = parse_int(recall_latest("hunter:epoch_start_ms"));
+            if epoch_ms > 0 {
+                let elapsed_ms = _tick_now_ms - epoch_ms;
+                let elapsed_min = if elapsed_ms > 0 { elapsed_ms / 60000; } else { 0; };
+                let baseline = parse_int(recall_latest("hunter:fitness_threshold_baseline"));
+                let threshold = baseline; let _ = creep_per_min; let _ = elapsed_min;
+                let fit_str = recall_latest("hunter:" + _self_pid + ":fitness");
+                let fit = if len(fit_str) > 0 { parse_int(fit_str); } else { 0; };
+                // #489 follow-up: grace period for newborns. Seed birth_ms on
+                // first tick, then suppress selection-death until grace_ms has
+                // elapsed. Without grace, replicas (fit=0) die before they get
+                // a chance to call prompt() once and score a finding -- the
+                // population can't sustain itself.
+                let birth_key = "hunter:" + _self_pid + ":birth_ms";
+                let birth_str = recall_latest(birth_key);
+                let birth_ms = if len(birth_str) > 0 {
+                    parse_int(birth_str);
+                } else {
+                    memo_write(birth_key, to_string(_tick_now_ms));
+                    // v1.7.7 follow-up: per-instance fitness inheritance via
+                    // HUNTER_INITIAL_FITNESS env, set by the M106 spawn site
+                    // on the receiving worker after decoding parent_fitness
+                    // from the wire payload. Bypasses the per-tribe seed memo
+                    // race that pinned smokes #38..#40 at 80%+ mortality.
+                    let env_seed = try { exec sh "printenv HUNTER_INITIAL_FITNESS"; } catch e { ""; };
+                    if len(env_seed) > 0 {
+                        let env_val = parse_int(env_seed);
+                        memo_write("hunter:" + _self_pid + ":fitness", to_string(env_val));
+                    } else {
+                        let seed_str = recall_latest("hunter:next_replica_seed_" + _tribe_name);
+                        if len(seed_str) > 0 {
+                            let seed_val = parse_int(seed_str);
+                            memo_write("hunter:" + _self_pid + ":fitness", to_string(seed_val));
+                        };
+                    };
+                    _tick_now_ms;
+                };
+                let grace_ms = parse_int(recall_latest("hunter:fitness_grace_ms"));
+                let age_ms = _tick_now_ms - birth_ms;
+                if age_ms >= grace_ms {
+                    if fit < threshold {
+                        print("[hunter] selection_death pid=", _self_pid, " fitness=", fit, " < threshold=", threshold, " (min=", elapsed_min, " age_ms=", age_ms, ")");
+                        learn("selection_death", _tribe_name + "/" + _self_pid, "fitness=" + to_string(fit) + " threshold=" + to_string(threshold), "failure", ["died", "low-fitness", "tribes-bench", _tribe_name]);
+                        // colony-lint: safe-exec-concat
+                        let stop_cmd = "for pf in /run-root/.agentis/daemon/*.pid; do [ \"$(head -1 \"$pf\" 2>/dev/null)\" = \"" + _self_pid + "\" ] && touch \"$(echo \"$pf\" | sed s/.pid/.stop/)\" && break; done";
+                        let _ = try { exec sh stop_cmd; } catch e { ""; };
+                        return;
+                    };
+                };
+            };
+        };
+    };
+
+    // #490 follow-up: time-based reproductive replication. Decouples
+    // breeding from finding-success. The existing M2-Malthusian path
+    // (verified-finding -> reward-pool -> replicate) gates breeding on
+    // hunting luck, which means high-fit hunters who don't find bugs
+    // can't reproduce even when they should dominate. Smokes #24-#27
+    // showed selection consuming the population faster than findings
+    // could fuel breeding -- exponential growth structurally blocked.
+    // This second path lets any hunter whose fitness exceeds the
+    // reproductive threshold replicate per-tick (subject to pool budget
+    // + max_replicas), so elite parents produce offspring continuously.
+    // Default-absent memo => OFF, byte-identical to v1.7.5 + #489 + #490
+    // pre-this-PR. Inheritance applies (parent_fit/2 -> seed memo) for
+    // both paths.
+    let repr_thr = parse_int(recall_latest("hunter:reproductive_fitness_threshold"));
+    if repr_thr > 0 {
+        if len(_self_pid) > 0 {
+            let my_fit_r = parse_int(recall_latest("hunter:" + _self_pid + ":fitness"));
+            if my_fit_r > repr_thr {
+                let n_r = parse_int(recall_latest("tribe-" + _tribe_name + ":size"));
+                let max_repl_r = parse_int(recall_latest("tribe-" + _tribe_name + ":max_replicas"));
+                if n_r < max_repl_r {
+                    let pool_r = parse_int(recall_latest("tribe-" + _tribe_name + ":pool"));
+                    let base_r = parse_int(recall_latest("tribe-" + _tribe_name + ":replication_base_cost"));
+                    let raw_k_r = parse_int(recall_latest("tribe-" + _tribe_name + ":replication_k"));
+                    let k_r = if raw_k_r <= 0 { 3; } else { raw_k_r; };
+                    let cost_r = base_r + (base_r * n_r) / k_r;
+                    if pool_r >= cost_r {
+                        let target_r = select_replication_target();
+                        if len(target_r) > 0 {
+                            // Seed inherited fitness for the offspring (parent_fit/2),
+                            // max-overwrite so only better lineage propagates
+                            let seed_r = my_fit_r / 2;
+                            let curr_r_str = recall_latest("hunter:next_replica_seed_" + _tribe_name);
+                            let curr_r = if len(curr_r_str) > 0 { parse_int(curr_r_str); } else { -999999; };
+                            if seed_r > curr_r {
+                                memo_write("hunter:next_replica_seed_" + _tribe_name, to_string(seed_r));
+                            };
+                            let my_fit_repr_arg = if len(_self_pid) > 0 { parse_int(recall_latest("hunter:" + _self_pid + ":fitness")); } else { 0; };
+                            let replica_id_r = try { replicate(target_r, my_fit_repr_arg); } catch e { "__replicate_error__"; };
+                            if replica_id_r != "__replicate_error__" {
+                                if len(replica_id_r) > 0 {
+                                    memo_write("tribe-" + _tribe_name + ":pool", to_string(pool_r - cost_r));
+                                    memo_write("tribe-" + _tribe_name + ":size", to_string(n_r + 1));
+                                    // Fitness reward for the parent (same as M2 path)
+                                    let fit_repl_r = parse_int(recall_latest("hunter:fitness_reward_replicate"));
+                                    if fit_repl_r > 0 {
+                                        memo_write("hunter:" + _self_pid + ":fitness", to_string(my_fit_r + fit_repl_r));
+                                    };
+                                    learn("reproductive_replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "success", ["replicated", "reproductive", "tribes-bench", _tribe_name]);
+                                };
+                            };
+                        };
+                    };
+                };
             };
         };
     };
@@ -271,13 +405,13 @@ fn tick(reason: string) -> void {
     // seed prompt fires. Buy-gate widened to %8 + pool-aware skip per
     // §9 risk 5; lifecycle discriminator + cache-hit learn() per risk 1+2.
     let m_now = _tick_now_ms;
-    let pool_for_buy = parse_int(recall_latest("tribe-" + tribe_name() + ":pool"));
+    let pool_for_buy = parse_int(recall_latest("tribe-" + _tribe_name + ":pool"));
     let pool_min_buy_str = recall_latest("pool_minimum_for_buy");
     let pool_min_buy = if len(pool_min_buy_str) > 0 { parse_int(pool_min_buy_str); } else { 50; };
     if (m_now - ((m_now / 8) * 8)) == 0 {
         if pool_for_buy > pool_min_buy {
             let sib_idx = m_now - ((m_now / 4) * 4);
-            let sibling = pick_sibling(sib_idx, tribe_name());
+            let sibling = pick_sibling(sib_idx, _tribe_name);
             let sib_ledger = recall_latest("tribe-" + sibling + ":bug_ledger");
             if len(sib_ledger) > 0 {
                 // colony-lint: safe-exec-concat
@@ -285,7 +419,7 @@ fn tick(reason: string) -> void {
                 let head_bug = try { exec sh head_cmd; } catch e { ""; };
                 if len(head_bug) > 0 {
                     let buy_topic = "tribes-bench-" + sibling + "/" + head_bug;
-                    let cur_rep_buy_str = recall_latest("reputation:tribes-bench-" + tribe_name());
+                    let cur_rep_buy_str = recall_latest("reputation:tribes-bench-" + _tribe_name);
                     let max_cb_buy = max_cb_for_rep(cur_rep_buy_str);
                     let bought = knowledge_buy(buy_topic, max_cb_buy);
                     let kind_buy = recall_latest("agent:lifecycle:cognitive:last_event_kind");
@@ -297,7 +431,7 @@ fn tick(reason: string) -> void {
                     let cache_buy_s = if outcome_buy == "cache_hit" { "1"; } else { "0"; };
                     if len(bought) > 0 {
                         if outcome_buy == "cache_hit" {
-                            learn("market", buy_topic, "", "cache_hit", ["tribes-bench", "buyer:" + tribe_name(), "topic_kind:finding"]);
+                            learn("market", buy_topic, "", "cache_hit", ["tribes-bench", "buyer:" + _tribe_name, "topic_kind:finding"]);
                         };
                         memo_write("hunter:bought_context", bought);
                     };
@@ -310,12 +444,12 @@ fn tick(reason: string) -> void {
     // Espionage buy (§4): low own-rep + surplus pool + at least one
     // high-rep sibling => buy a bundle topic at premium price. Same
     // lifecycle discriminator + cache-hit learn() pattern.
-    let own_rep_str_e = recall_latest("reputation:tribes-bench-" + tribe_name());
+    let own_rep_str_e = recall_latest("reputation:tribes-bench-" + _tribe_name);
     let cb_surplus_str_e = recall_latest("cb_surplus_threshold");
     let cb_surplus_e = if len(cb_surplus_str_e) > 0 { parse_int(cb_surplus_str_e); } else { 300; };
     if rep_bucket(own_rep_str_e) < 3 {
         if pool_for_buy >= cb_surplus_e {
-            let best_t = pick_highest_rep_sibling(tribe_name());
+            let best_t = pick_highest_rep_sibling(_tribe_name);
             if len(best_t) > 0 {
                 let best_s = recall_latest("reputation:tribes-bench-" + best_t);
                 if rep_bucket(best_s) > 7 {
@@ -331,7 +465,7 @@ fn tick(reason: string) -> void {
                     let cache_eb_s = if outcome_eb == "cache_hit" { "1"; } else { "0"; };
                     if len(bought_b) > 0 {
                         if outcome_eb == "cache_hit" {
-                            learn("market", espionage_topic, "", "cache_hit", ["tribes-bench", "buyer:" + tribe_name(), "topic_kind:bundle"]);
+                            learn("market", espionage_topic, "", "cache_hit", ["tribes-bench", "buyer:" + _tribe_name, "topic_kind:bundle"]);
                         };
                         memo_write("hunter:bought_context", bought_b);
                     };
@@ -409,15 +543,15 @@ fn tick(reason: string) -> void {
                     // append to bug-ledger.jsonl, credit tribe pool.
                     let prior_finder = recall_latest("bug-ledger:" + bug_id + ":first_finder_tribe");
                     let reward = if len(prior_finder) == 0 {
-                        memo_write("bug-ledger:" + bug_id + ":first_finder_tribe", tribe_name());
-                        parse_int(recall_latest("tribe-" + tribe_name() + ":reward_full"));
+                        memo_write("bug-ledger:" + bug_id + ":first_finder_tribe", _tribe_name);
+                        parse_int(recall_latest("tribe-" + _tribe_name + ":reward_full"));
                     } else {
-                        parse_int(recall_latest("tribe-" + tribe_name() + ":reward_subsequent"));
+                        parse_int(recall_latest("tribe-" + _tribe_name + ":reward_subsequent"));
                     };
 
-                    let ledger_path = recall_latest("tribe-" + tribe_name() + ":bug_ledger");
+                    let ledger_path = recall_latest("tribe-" + _tribe_name + ":bug_ledger");
                     if len(ledger_path) > 0 {
-                        let row = "{\"ts\": " + to_string(_tick_now_ms) + ", \"tribe\": \"" + tribe_name() + "\", \"bug_id\": \"" + bug_id + "\", \"reward\": " + to_string(reward) + "}";
+                        let row = "{\"ts\": " + to_string(_tick_now_ms) + ", \"tribe\": \"" + _tribe_name + "\", \"bug_id\": \"" + bug_id + "\", \"reward\": " + to_string(reward) + "}";
                         // colony-lint: safe-exec-concat
                         let append_cmd = "printf '%s\\n' " + shell_escape(row) + " >> " + shell_escape(ledger_path);
                         let _ = try { exec sh append_cmd; } catch e { ""; };
@@ -427,8 +561,8 @@ fn tick(reason: string) -> void {
                     // tribe-X:pool_cap is set, reward is bounded so pool
                     // does not exceed cap. Without cap memo (absent or 0),
                     // legacy uncapped behaviour preserved.
-                    let cur_pool = parse_int(recall_latest("tribe-" + tribe_name() + ":pool"));
-                    let pool_cap_str = recall_latest("tribe-" + tribe_name() + ":pool_cap");
+                    let cur_pool = parse_int(recall_latest("tribe-" + _tribe_name + ":pool"));
+                    let pool_cap_str = recall_latest("tribe-" + _tribe_name + ":pool_cap");
                     let pool_cap = if len(pool_cap_str) > 0 { parse_int(pool_cap_str); } else { 0; };
                     let actual_reward = if pool_cap > 0 {
                         if cur_pool >= pool_cap {
@@ -440,37 +574,74 @@ fn tick(reason: string) -> void {
                     } else {
                         reward;
                     };
-                    memo_write("tribe-" + tribe_name() + ":pool", to_string(cur_pool + actual_reward));
-                    learn("hunt", "line " + to_string(finding.line), bug_id, "success", ["acted", "tribes-bench", tribe_name(), "reward=" + to_string(actual_reward)]);
+                    memo_write("tribe-" + _tribe_name + ":pool", to_string(cur_pool + actual_reward));
+                    learn("hunt", "line " + to_string(finding.line), bug_id, "success", ["acted", "tribes-bench", _tribe_name, "reward=" + to_string(actual_reward)]);
+
+                    // #489 follow-up: fitness credit for verified finding.
+                    if len(_self_pid) > 0 {
+                        let fit_reward = parse_int(recall_latest("hunter:fitness_reward_verified"));
+                        if fit_reward > 0 {
+                            let fit_pre_v = parse_int(recall_latest("hunter:" + _self_pid + ":fitness"));
+                            memo_write("hunter:" + _self_pid + ":fitness", to_string(fit_pre_v + fit_reward));
+                        };
+                    };
 
                     // M2 replication: Malthusian-gated. C(n) = base * (1 + n/k).
                     let pool_after = cur_pool + actual_reward;
-                    let n = parse_int(recall_latest("tribe-" + tribe_name() + ":size"));
-                    let base = parse_int(recall_latest("tribe-" + tribe_name() + ":replication_base_cost"));
-                    let raw_k = parse_int(recall_latest("tribe-" + tribe_name() + ":replication_k"));
+                    let n = parse_int(recall_latest("tribe-" + _tribe_name + ":size"));
+                    let base = parse_int(recall_latest("tribe-" + _tribe_name + ":replication_base_cost"));
+                    let raw_k = parse_int(recall_latest("tribe-" + _tribe_name + ":replication_k"));
                     let k = if raw_k <= 0 { 3; } else { raw_k; };
-                    let max_replicas = parse_int(recall_latest("tribe-" + tribe_name() + ":max_replicas"));
+                    let max_replicas = parse_int(recall_latest("tribe-" + _tribe_name + ":max_replicas"));
                     let cost = base + (base * n) / k;
                     if pool_after >= cost {
                         if n < max_replicas {
-                            let variant = pick_variant(tribe_name(), n);
+                            let variant = pick_variant(_tribe_name, n);
                             memo_write("hunter:prompt_variant", variant);
                             let target = select_replication_target();
                             if len(target) > 0 {
-                                let replica_id = try { replicate(target); } catch e { "__replicate_error__"; };
+                                // #489 follow-up: seed the replica's initial
+                                // fitness with parent_fit/2. Replica reads this
+                                // memo on its first tick (see fitness-selection
+                                // block birth-init branch). Tribe-level key, so
+                                // overlapping parents may overwrite each other's
+                                // seeds — acceptable approximation since seeds
+                                // converge to a tribe-wide running average of
+                                // recent breeders.
+                                if len(_self_pid) > 0 {
+                                    let my_fit = parse_int(recall_latest("hunter:" + _self_pid + ":fitness"));
+                                    let seed_inherit = my_fit / 2;
+                                    // Max-overwrite: only better lineage propagates seed
+                                    let curr_seed_str = recall_latest("hunter:next_replica_seed_" + _tribe_name);
+                                    let curr_seed = if len(curr_seed_str) > 0 { parse_int(curr_seed_str); } else { -999999; };
+                                    if seed_inherit > curr_seed {
+                                        memo_write("hunter:next_replica_seed_" + _tribe_name, to_string(seed_inherit));
+                                    };
+                                };
+                                let my_fit_m2_arg = if len(_self_pid) > 0 { parse_int(recall_latest("hunter:" + _self_pid + ":fitness")); } else { 0; };
+                                let replica_id = try { replicate(target, my_fit_m2_arg); } catch e { "__replicate_error__"; };
                                 if replica_id == "__replicate_error__" {
-                                    learn("replicate", "n=" + to_string(n), "cost=" + to_string(cost), "failure", ["replicate-error", "tribes-bench", tribe_name()]);
+                                    learn("replicate", "n=" + to_string(n), "cost=" + to_string(cost), "failure", ["replicate-error", "tribes-bench", _tribe_name]);
                                 } else {
                                     if len(replica_id) > 0 {
-                                        memo_write("tribe-" + tribe_name() + ":pool", to_string(pool_after - cost));
-                                        memo_write("tribe-" + tribe_name() + ":size", to_string(n + 1));
-                                        learn("replicate", "n=" + to_string(n), "cost=" + to_string(cost), "success", ["replicated", "tribes-bench", tribe_name()]);
+                                        memo_write("tribe-" + _tribe_name + ":pool", to_string(pool_after - cost));
+                                        memo_write("tribe-" + _tribe_name + ":size", to_string(n + 1));
+                                        learn("replicate", "n=" + to_string(n), "cost=" + to_string(cost), "success", ["replicated", "tribes-bench", _tribe_name]);
+
+                                        // #489 follow-up: fitness credit on successful replicate.
+                                        if len(_self_pid) > 0 {
+                                            let fit_repl = parse_int(recall_latest("hunter:fitness_reward_replicate"));
+                                            if fit_repl > 0 {
+                                                let fit_pre_r = parse_int(recall_latest("hunter:" + _self_pid + ":fitness"));
+                                                memo_write("hunter:" + _self_pid + ":fitness", to_string(fit_pre_r + fit_repl));
+                                            };
+                                        };
                                     } else {
-                                        learn("replicate", "n=" + to_string(n), "cost=" + to_string(cost), "failure", ["replicate-nak", "tribes-bench", tribe_name()]);
+                                        learn("replicate", "n=" + to_string(n), "cost=" + to_string(cost), "failure", ["replicate-nak", "tribes-bench", _tribe_name]);
                                     };
                                 };
                             } else {
-                                learn("replicate", "n=" + to_string(n), "cost=" + to_string(cost), "failure", ["replicate-skip", "tribes-bench", tribe_name()]);
+                                learn("replicate", "n=" + to_string(n), "cost=" + to_string(cost), "failure", ["replicate-skip", "tribes-bench", _tribe_name]);
                             };
                         };
                     };
@@ -479,15 +650,15 @@ fn tick(reason: string) -> void {
                     // verified finding. Asymmetry +0.05/-0.10 absorbs
                     // single-tick lag (§9 risk 6) and gives natural
                     // ~10-find ceiling, ~5-find floor.
-                    let rep_str_v = recall_latest("reputation:tribes-bench-" + tribe_name());
+                    let rep_str_v = recall_latest("reputation:tribes-bench-" + _tribe_name);
                     let cur_rep_v = if len(rep_str_v) > 0 { parse_float(rep_str_v); } else { 0.5; };
                     let next_rep_v = if cur_rep_v + 0.05 > 1.0 { 1.0; } else { cur_rep_v + 0.05; };
-                    memo_write("reputation:tribes-bench-" + tribe_name(), to_string(next_rep_v));
+                    memo_write("reputation:tribes-bench-" + _tribe_name, to_string(next_rep_v));
                     let new_rep_str_v = to_string(next_rep_v);
 
                     // Knowledge sell on per-finder topic prefix (§9
                     // risk 3 mitigation eliminates seller-collision class).
-                    let sell_topic = "tribes-bench-" + tribe_name() + "/" + bug_id;
+                    let sell_topic = "tribes-bench-" + _tribe_name + "/" + bug_id;
                     let answer = "line=" + to_string(finding.line) + " bug=" + bug_id + " rationale=" + finding.rationale;
                     let ask_price = ask_for_rep(new_rep_str_v);
                     let sold = knowledge_sell(sell_topic, answer, ask_price);
@@ -515,10 +686,10 @@ fn tick(reason: string) -> void {
                     let bp = if len(bp_str) > 0 { parse_int(bp_str); } else { 3; };
                     if rep_bucket(new_rep_str_v) > 7 {
                         if (new_bc - ((new_bc / bp) * bp)) == 0 {
-                            let bundle_topic = "tribes-bench-bundle/" + tribe_name();
+                            let bundle_topic = "tribes-bench-bundle/" + _tribe_name;
                             let bundle_summary = if len(ledger_path) > 0 {
                                 // colony-lint: safe-exec-concat
-                                let last_k_cmd = "grep -F '\"tribe\": \"" + tribe_name() + "\"' " + shell_escape(ledger_path) + " 2>/dev/null | tail -" + to_string(bp) + " | jq -r '.bug_id' 2>/dev/null | tr '\n' ';'";
+                                let last_k_cmd = "grep -F '\"tribe\": \"" + _tribe_name + "\"' " + shell_escape(ledger_path) + " 2>/dev/null | tail -" + to_string(bp) + " | jq -r '.bug_id' 2>/dev/null | tr '\n' ';'";
                                 try { exec sh last_k_cmd; } catch e { ""; };
                             } else {
                                 "";
@@ -541,34 +712,43 @@ fn tick(reason: string) -> void {
                     print("[hunter] false positive at line ", finding.line);
                     learn("hunt", "line " + to_string(finding.line), finding.rationale, "failure", ["false-positive", "tribes-bench"]);
 
+                    // #489 follow-up: fitness penalty for false positive.
+                    if len(_self_pid) > 0 {
+                        let fit_penalty = parse_int(recall_latest("hunter:fitness_penalty_falsepos"));
+                        if fit_penalty > 0 {
+                            let fit_pre_f = parse_int(recall_latest("hunter:" + _self_pid + ":fitness"));
+                            memo_write("hunter:" + _self_pid + ":fitness", to_string(fit_pre_f - fit_penalty));
+                        };
+                    };
+
                     // Stage 2 M2 (#393): reputation -0.10 (clamp 0.0) on
                     // false positive. Asymmetry vs verified-finding
                     // +0.05 keeps the signal direction-stable.
-                    let rep_str_f = recall_latest("reputation:tribes-bench-" + tribe_name());
+                    let rep_str_f = recall_latest("reputation:tribes-bench-" + _tribe_name);
                     let cur_rep_f = if len(rep_str_f) > 0 { parse_float(rep_str_f); } else { 0.5; };
                     let next_rep_f = if cur_rep_f - 0.10 < 0.0 { 0.0; } else { cur_rep_f - 0.10; };
-                    memo_write("reputation:tribes-bench-" + tribe_name(), to_string(next_rep_f));
+                    memo_write("reputation:tribes-bench-" + _tribe_name, to_string(next_rep_f));
                 };
 
                 // M3 death: pool-drain → KB preserve + sibling stop. Guarded
                 // by a one-shot `death_initiated` memo so racing siblings
                 // don't all run the preserve+stop sequence.
-                let pool_now = parse_int(recall_latest("tribe-" + tribe_name() + ":pool"));
-                let death_thr = parse_int(recall_latest("tribe-" + tribe_name() + ":death_threshold"));
+                let pool_now = parse_int(recall_latest("tribe-" + _tribe_name + ":pool"));
+                let death_thr = parse_int(recall_latest("tribe-" + _tribe_name + ":death_threshold"));
                 if pool_now < death_thr {
-                    let already = recall_latest("tribe-" + tribe_name() + ":death_initiated");
+                    let already = recall_latest("tribe-" + _tribe_name + ":death_initiated");
                     if len(already) == 0 {
-                        memo_write("tribe-" + tribe_name() + ":death_initiated", "1");
-                        let run_dir = recall_latest("tribe-" + tribe_name() + ":run_dir");
+                        memo_write("tribe-" + _tribe_name + ":death_initiated", "1");
+                        let run_dir = recall_latest("tribe-" + _tribe_name + ":run_dir");
                         if len(run_dir) > 0 {
-                            let dead_dir = run_dir + "/dead-tribes/" + tribe_name();
+                            let dead_dir = run_dir + "/dead-tribes/" + _tribe_name;
                             // colony-lint: safe-exec-concat
-                            let preserve_cmd = "mkdir -p " + shell_escape(dead_dir) + " && cp -p $AGENTIS_ROOT/experience/*.jsonl " + shell_escape(dead_dir) + "/ 2>/dev/null; cp -p $AGENTIS_ROOT/spend/*.jsonl " + shell_escape(dead_dir) + "/ 2>/dev/null; agentis knowledge export --tags " + shell_escape("tribes-bench-" + tribe_name()) + " > " + shell_escape(dead_dir) + "/knowledge.json 2>/dev/null";
+                            let preserve_cmd = "mkdir -p " + shell_escape(dead_dir) + " && cp -p $AGENTIS_ROOT/experience/*.jsonl " + shell_escape(dead_dir) + "/ 2>/dev/null; cp -p $AGENTIS_ROOT/spend/*.jsonl " + shell_escape(dead_dir) + "/ 2>/dev/null; agentis knowledge export --tags " + shell_escape("tribes-bench-" + _tribe_name) + " > " + shell_escape(dead_dir) + "/knowledge.json 2>/dev/null";
                             let _ = try { exec sh preserve_cmd; } catch e { ""; };
                         };
-                        learn("death", tribe_name(), "pool=" + to_string(pool_now), "failure", ["died", "tribes-bench", tribe_name()]);
+                        learn("death", _tribe_name, "pool=" + to_string(pool_now), "failure", ["died", "tribes-bench", _tribe_name]);
                         // colony-lint: safe-exec-concat
-                        let stop_cmd = "agentis daemon list --json 2>/dev/null | jq -r '.[] | select(.colony==\"" + tribe_name() + "\" and .state==\"running\") | .agent_id' | while read id; do agentis daemon stop \"$id\" --async --grace-ms 2000 --timeout-ms 8000 || true; done";
+                        let stop_cmd = "agentis daemon list --json 2>/dev/null | jq -r '.[] | select(.colony==\"" + _tribe_name + "\" and .state==\"running\") | .agent_id' | while read id; do agentis daemon stop \"$id\" --async --grace-ms 2000 --timeout-ms 8000 || true; done";
                         let _ = try { exec sh stop_cmd; } catch e { ""; };
                     };
                     return;

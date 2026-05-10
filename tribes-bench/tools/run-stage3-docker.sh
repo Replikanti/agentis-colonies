@@ -178,6 +178,27 @@ TRIBE_INITIAL_POOL="${STAGE3_TRIBE_INITIAL_POOL:-0}"
 # tribe-pool drain pattern hits. Default 0 = OFF (byte-identical to
 # v1.7.5; tribe-wide cascade still applies as before).
 HUNTER_MAX_AGE="${STAGE3_HUNTER_MAX_AGE:-0}"
+# #489 follow-up: fitness-driven selection with rising threshold. Each
+# hunter tracks its own per-PPID fitness counter; reward on verified
+# findings + replicates, penalty on false positives. Threshold creeps
+# up at HUNTER_FITNESS_CREEP_PER_MINUTE units per minute. Default 0
+# = OFF (byte-identical to v1.7.5 + #489).
+HUNTER_FITNESS_CREEP_PER_MINUTE="${STAGE3_HUNTER_FITNESS_CREEP_PER_MINUTE:-0}"
+HUNTER_FITNESS_THRESHOLD_BASELINE="${STAGE3_HUNTER_FITNESS_THRESHOLD_BASELINE:-0}"
+HUNTER_FITNESS_REWARD_VERIFIED="${STAGE3_HUNTER_FITNESS_REWARD_VERIFIED:-10}"
+HUNTER_FITNESS_PENALTY_FALSEPOS="${STAGE3_HUNTER_FITNESS_PENALTY_FALSEPOS:-5}"
+HUNTER_FITNESS_REWARD_REPLICATE="${STAGE3_HUNTER_FITNESS_REWARD_REPLICATE:-5}"
+# Grace period (ms) for newborn hunters before selection-death kicks in.
+# Without grace, replicas (start at fit=0) die before they get a tick to
+# call prompt() and score a verified finding -- population collapses.
+# Default 180000ms = 3 minutes = 3 ticks at 60s tick interval.
+HUNTER_FITNESS_GRACE_MS="${STAGE3_HUNTER_FITNESS_GRACE_MS:-180000}"
+# #490 follow-up: time-based reproductive replication. When set > 0,
+# hunters whose fitness exceeds this threshold replicate per-tick
+# (decoupled from verified findings) subject to pool/max_replicas.
+# Default 0 = OFF (byte-identical to v1.7.5 + #489 + #490 -- only the
+# existing M2-Malthusian finding-gated replicate path fires).
+HUNTER_REPRODUCTIVE_FITNESS_THRESHOLD="${STAGE3_HUNTER_REPRODUCTIVE_FITNESS_THRESHOLD:-0}"
 LLM_BACKEND="${STAGE3_LLM_BACKEND:-openai}"
 OPENAI_MODEL="${STAGE3_OPENAI_MODEL:-gpt-4o-mini}"
 OPENAI_ENDPOINT="${STAGE3_OPENAI_ENDPOINT:-https://api.openai.com/v1/chat/completions}"
@@ -349,7 +370,7 @@ write_bootstrap() {
         printf '{\n'
         printf '  printf "federation.enabled = true\\n"\n'
         printf '  printf "federation.peers = host.containers.internal:%s\\n"\n' "$peer_port"
-        printf '  printf "exec.env_passthrough = COLONY_DIR,TRIBE_NAME,TARGET_DIR,TARGET_FILE,BUGS_MANIFEST,VERIFIER_PATH,RUN_DIR,BUG_LEDGER_PATH,INITIAL_CB,BASE_COST,K_MALTHUSIAN,MAX_REPLICAS,REWARD_FULL,REWARD_SUBSEQUENT,DEATH_THRESHOLD,AGENTIS_ROOT\\n"\n'
+        printf '  printf "exec.env_passthrough = COLONY_DIR,TRIBE_NAME,TARGET_DIR,TARGET_FILE,BUGS_MANIFEST,VERIFIER_PATH,RUN_DIR,BUG_LEDGER_PATH,INITIAL_CB,BASE_COST,K_MALTHUSIAN,MAX_REPLICAS,REWARD_FULL,REWARD_SUBSEQUENT,DEATH_THRESHOLD,AGENTIS_ROOT,HUNTER_INITIAL_FITNESS\\n"\n'
         printf '  printf "experience.enabled = true\\n"\n'
         printf '  printf "telemetry.enabled = true\\n"\n'
         printf '  printf "daemon.heartbeat_interval_ms = 600000\\n"\n'
@@ -444,8 +465,8 @@ write_bootstrap() {
             # file to seed the tribe-<name>:bug_ledger memo from. Without
             # it, hunters verify findings but the JSONL ledger never
             # grows (visible in experience but missing from bug-ledger).
-            printf 'DEATH_THRESHOLD=%s POOL_CAP=%s METABOLIC_COST=%s INITIAL_POOL=%s HUNTER_MAX_AGE=%s AGENTIS_ROOT=/run-root/.agentis TARGET_DIR=targets-stage2/smallvec-v0.6.13 TARGET_FILE=lib.rs BUGS_MANIFEST=/run-root/.agentis/sandbox/targets-stage2/bugs.json VERIFIER_PATH=/run-root/tools/verify-finding-stage2.sh BUG_LEDGER_PATH=/run-root/bug-ledger.jsonl bash /run-root/%s/scripts/start-colony.sh > /run-root/%s.log 2>&1 &\n' \
-                "$DEATH_THRESHOLD" "$TRIBE_POOL_CAP" "$TRIBE_METABOLIC_COST" "$TRIBE_INITIAL_POOL" "$HUNTER_MAX_AGE" "$tribe" "$tribe"
+            printf 'DEATH_THRESHOLD=%s POOL_CAP=%s METABOLIC_COST=%s INITIAL_POOL=%s HUNTER_MAX_AGE=%s HUNTER_FITNESS_CREEP_PER_MINUTE=%s HUNTER_FITNESS_THRESHOLD_BASELINE=%s HUNTER_FITNESS_REWARD_VERIFIED=%s HUNTER_FITNESS_PENALTY_FALSEPOS=%s HUNTER_FITNESS_REWARD_REPLICATE=%s HUNTER_FITNESS_GRACE_MS=%s HUNTER_REPRODUCTIVE_FITNESS_THRESHOLD=%s AGENTIS_ROOT=/run-root/.agentis TARGET_DIR=targets-stage2/smallvec-v0.6.13 TARGET_FILE=lib.rs BUGS_MANIFEST=/run-root/.agentis/sandbox/targets-stage2/bugs.json VERIFIER_PATH=/run-root/tools/verify-finding-stage2.sh BUG_LEDGER_PATH=/run-root/bug-ledger.jsonl bash /run-root/%s/scripts/start-colony.sh > /run-root/%s.log 2>&1 &\n' \
+                "$DEATH_THRESHOLD" "$TRIBE_POOL_CAP" "$TRIBE_METABOLIC_COST" "$TRIBE_INITIAL_POOL" "$HUNTER_MAX_AGE" "$HUNTER_FITNESS_CREEP_PER_MINUTE" "$HUNTER_FITNESS_THRESHOLD_BASELINE" "$HUNTER_FITNESS_REWARD_VERIFIED" "$HUNTER_FITNESS_PENALTY_FALSEPOS" "$HUNTER_FITNESS_REWARD_REPLICATE" "$HUNTER_FITNESS_GRACE_MS" "$HUNTER_REPRODUCTIVE_FITNESS_THRESHOLD" "$tribe" "$tribe"
         done
         printf 'while [ ! -e /run-root/.shutdown ]; do sleep 5; done\n'
         printf 'exit 0\n'
