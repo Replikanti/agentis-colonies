@@ -396,7 +396,17 @@ check_file() {
             *"colony-lint: learn-tags-ok"*) suppressed=1 ;;
         esac
         case "$prev_line" in
-            *"colony-lint: learn-tags-ok"*) suppressed=1 ;;
+            *"colony-lint: learn-tags-ok"*)
+                # If prev_line ALSO contains a learn( call, the marker was
+                # inline-paired with prev's learn() and must not propagate
+                # suppression forward to the current line (issue #510).
+                # Only above-line markers (sitting on their own line) silence
+                # the next learn() call.
+                case "$prev_line" in
+                    *learn\(*) ;;
+                    *) suppressed=1 ;;
+                esac
+                ;;
         esac
         if [ "$suppressed" = "1" ]; then
             prev_line="$line"

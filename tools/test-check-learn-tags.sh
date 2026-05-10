@@ -237,6 +237,20 @@ else
     fail "violation-tribe-name-disallowed" "rc=$rc out=$out"
 fi
 
+# --- Test 14: inline marker on prev line does NOT bleed to next learn() (#510) ---
+f="$(write_fixture "inline-marker-no-bleed" '
+fn tick(rec: string) -> void {
+    learn("hunt", "x", "y", "success", ["acted", "tribes-bench", "fake1"]); // colony-lint: learn-tags-ok
+    learn("hunt", "x", "y", "success", ["acted", "tribes-bench", "fake2"]);
+}
+')"
+run_checker "$f"
+if [ "$rc" -eq 2 ] && (printf '%s' "$out" | grep -q "VIOLATION: topic=hunt outcome=success unexpected tag fake2"); then
+    pass "inline-marker-no-bleed: inline marker silences own line only, next-line violation still reported (#510)"
+else
+    fail "inline-marker-no-bleed" "rc=$rc out=$out"
+fi
+
 # --- Summary ---
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
