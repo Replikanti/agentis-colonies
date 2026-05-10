@@ -333,6 +333,20 @@ fn tick(reason: string) -> void {
                             memo_write("hunter:" + _self_pid + ":fitness", to_string(seed_val));
                         };
                     };
+                    // v1.7.8 follow-up: per-instance prompt-variant inheritance via
+                    // HUNTER_INITIAL_VARIANT env, set by M106 spawn after decoding
+                    // parent_variant from wire (agentis-core#632). Bypasses the
+                    // shared `hunter:prompt_variant` memo race that pinned smoke
+                    // #42 at T+5:23 (high-verified variants overwritten by replicas
+                    // with low-fit lineage). Empty env => fall through to
+                    // pick_variant() on next M2-Malthusian replicate.
+                    let env_variant = try { exec sh "printenv HUNTER_INITIAL_VARIANT"; } catch e { ""; };
+                    if len(env_variant) > 0 {
+                        memo_write("hunter:prompt_variant", env_variant);
+                        if len(_self_pid) > 0 {
+                            memo_write("hunter:" + _self_pid + ":variant", env_variant);
+                        };
+                    };
                     _tick_now_ms;
                 };
                 let grace_ms = parse_int(recall_latest("hunter:fitness_grace_ms"));
@@ -389,7 +403,8 @@ fn tick(reason: string) -> void {
                                 memo_write("hunter:next_replica_seed_" + _tribe_name, to_string(seed_r));
                             };
                             let my_fit_repr_arg = if len(_self_pid) > 0 { parse_int(recall_latest("hunter:" + _self_pid + ":fitness")); } else { 0; };
-                            let replica_id_r = try { replicate(target_r, my_fit_repr_arg); } catch e { "__replicate_error__"; };
+                            let variant_arg_r = recall_latest("hunter:prompt_variant");
+                            let replica_id_r = try { replicate(target_r, my_fit_repr_arg, variant_arg_r); } catch e { "__replicate_error__"; };
                             if replica_id_r != "__replicate_error__" {
                                 if len(replica_id_r) > 0 {
                                     memo_write("tribe-" + _tribe_name + ":pool", to_string(pool_r - cost_r));
@@ -657,7 +672,7 @@ fn tick(reason: string) -> void {
                                     };
                                 };
                                 let my_fit_m2_arg = if len(_self_pid) > 0 { parse_int(recall_latest("hunter:" + _self_pid + ":fitness")); } else { 0; };
-                                let replica_id = try { replicate(target, my_fit_m2_arg); } catch e { "__replicate_error__"; };
+                                let replica_id = try { replicate(target, my_fit_m2_arg, variant); } catch e { "__replicate_error__"; };
                                 if replica_id == "__replicate_error__" {
                                     learn("replicate", "n=" + to_string(n), "cost=" + to_string(cost), "failure", ["replicate-error", "tribes-bench", _tribe_name]);
                                 } else {
