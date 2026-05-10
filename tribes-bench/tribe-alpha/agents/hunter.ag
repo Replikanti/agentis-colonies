@@ -244,7 +244,7 @@ fn tick(reason: string) -> void {
                 // matching $PPID, then async-stop self. Variables are
                 // shell-side ($PPID, $AGENTIS_ROOT, $own_id) -- no .ag-side
                 // concatenation, so the static-string `exec sh` is safe.
-                let stop_cmd = "for pf in /run-root/.agentis/daemon/*.pid; do [ \"$(cat \"$pf\" 2>/dev/null)\" = \"" + _self_pid + "\" ] && touch \"$(echo \"$pf\" | sed s/.pid/.stop/)\" && break; done";
+                let stop_cmd = "for pf in /run-root/.agentis/daemon/*.pid; do [ \"$(head -1 \"$pf\" 2>/dev/null)\" = \"" + _self_pid + "\" ] && touch \"$(echo \"$pf\" | sed s/.pid/.stop/)\" && break; done";
                 let _ = try { exec sh stop_cmd; } catch e { ""; };
                 return;
             };
@@ -301,7 +301,7 @@ fn tick(reason: string) -> void {
                         print("[hunter] selection_death pid=", _self_pid, " fitness=", fit, " < threshold=", threshold, " (min=", elapsed_min, " age_ms=", age_ms, ")");
                         learn("selection_death", tribe_name() + "/" + _self_pid, "fitness=" + to_string(fit) + " threshold=" + to_string(threshold), "failure", ["died", "low-fitness", "tribes-bench", tribe_name()]);
                         // colony-lint: safe-exec-concat
-                        let stop_cmd = "for pf in /run-root/.agentis/daemon/*.pid; do [ \"$(cat \"$pf\" 2>/dev/null)\" = \"" + _self_pid + "\" ] && touch \"$(echo \"$pf\" | sed s/.pid/.stop/)\" && break; done";
+                        let stop_cmd = "for pf in /run-root/.agentis/daemon/*.pid; do [ \"$(head -1 \"$pf\" 2>/dev/null)\" = \"" + _self_pid + "\" ] && touch \"$(echo \"$pf\" | sed s/.pid/.stop/)\" && break; done";
                         let _ = try { exec sh stop_cmd; } catch e { ""; };
                         return;
                     };
