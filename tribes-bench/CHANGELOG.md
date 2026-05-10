@@ -69,6 +69,43 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   core-side runtime validator is the long-term fix and remains a
   follow-up.
 
+- **Consumer-side `knowledge_buy` answer validation (Loose category c)**
+  ([#493](https://github.com/Replikanti/agentis-colonies/issues/493),
+  partial pair with the verifier-only ledger-writer hardening tracked in
+  [#491](https://github.com/Replikanti/agentis-colonies/issues/491)).
+  Every `knowledge_buy` callsite in `tribes-bench/tribe-*/agents/hunter.ag`
+  now runs a `verify-then-trust` gate on the returned answer before the
+  buyer treats it as truth: the claimed `bug_id` is parsed out of the
+  answer string and cross-checked against the seller tribe's
+  verifier-stamped `bug-ledger.jsonl` via `grep -F`. Two callsites are
+  gated — the single-finding buy (`tribes-bench-<sibling>/<bug>` topic)
+  parses ` bug=<ID>` from the `line=N bug=ID rationale=...` producer
+  format, and the espionage bundle buy (`tribes-bench-bundle/<sibling>`
+  topic) verifies every `;`-separated id in the producer's bundle list.
+  Both gates are fail-safe — empty answer, missing seller-ledger memo,
+  parse failure, or non-zero `exec sh` exit all collapse to "reject the
+  answer" (`false`), never to "accept" — and rejection is non-punitive
+  (no reputation hit, just discard) because punishment-on-rejection is
+  itself a gaming vector that needs adversarial-reputation analysis
+  before it lands. The gate runs *after* the existing lifecycle-event
+  switch so the four memo-store outcomes (`cache_hit` / `succeeded` /
+  `rejected` / `fallback`) stay attributable; a failed semantic
+  validation collapses the outcome to a new distinct
+  `rejected_unverified` value emitted on both the `learn("market", ...)`
+  tag set (with `reason:unverifiable`) and the per-tick
+  `emit_market_csv` outcome column. On rejection the
+  `memo_write("hunter:bought_context", ...)` is suppressed so the
+  buyer's downstream prompt never sees an unverifiable answer. The
+  `_validate_bought_answer(answer, seller_tribe, topic_kind)` helper
+  and both gate sites are byte-identical across all 5 hunter.ag files;
+  no new runtime builtins, no agentis floor bump. **Limitation**: the
+  gate only catches sells whose claimed `bug_id` is absent from the
+  seller's verifier-stamped ledger. A sell that quotes a `bug_id` that
+  *did* happen but lies in the `rationale=<...>` substring is not
+  caught — the verifier never inspects free-text rationale. Closing
+  that gap (rationale-string anchoring to measurements) is an explicit
+  Loose follow-up.
+
 ### Added
 
 - **M98 v2 — class-parametrized hunter prompts**

@@ -60,6 +60,70 @@ fn target_file() -> string {
     return recall_latest("hunter:target_file");
 }
 
+// #493: consumer-side `knowledge_buy` answer validator (Loose category c).
+// Every `knowledge_buy` callsite cross-checks the returned answer's
+// claimed `bug_id` against the seller-tribe's verifier-stamped
+// `bug-ledger.jsonl` before trusting it. Fail-safe: any parse failure,
+// missing seller-ledger memo, or non-matching grep => return `false`
+// (reject the answer). Never falsely accept.
+//
+// `topic_kind == "finding"`: answer format produced by the single-finding
+// sell at hunter.ag L903 is `line=<N> bug=<ID> rationale=<...>`. Parse
+// the `bug=` token (space-delimited) and require one verifier-stamped
+// row in the seller's ledger.
+//
+// `topic_kind == "bundle"`: answer format produced by the bundle sell at
+// hunter.ag L933 is a `;`-separated list of bug_ids. Require *all* listed
+// ids to resolve to verifier-stamped rows. Empty list => `false`.
+//
+// Limitation (deferred): the gate only catches sells whose claimed
+// `bug_id` does not exist in the seller's ledger. A sell that quotes a
+// bug_id that *did* happen but whose `rationale=<...>` substring is
+// fabricated is NOT caught — the verifier never inspects free-text
+// rationale. Tracked separately as Loose's rationale-string anchoring
+// follow-up.
+fn _validate_bought_answer(answer: string, seller_tribe: string, topic_kind: string) -> bool {
+    if len(answer) == 0 { return false; };
+    let seller_ledger = recall_latest("tribe-" + seller_tribe + ":bug_ledger");
+    if len(seller_ledger) == 0 { return false; };
+
+    if topic_kind == "finding" {
+        // Parse `bug=<ID>` from the answer. Producer guarantees the
+        // token is preceded by " bug=" (single space) per L903.
+        let bug_marker = " bug=";
+        let bm_idx = index_of(answer, bug_marker);
+        if bm_idx < 0 { return false; };
+        let bug_start = bm_idx + len(bug_marker);
+        let after = substring(answer, bug_start, len(answer));
+        let space_idx = index_of(after, " ");
+        let bug_id = if space_idx >= 0 {
+            substring(after, 0, space_idx);
+        } else {
+            after;
+        };
+        if len(bug_id) == 0 { return false; };
+        // colony-lint: safe-exec-concat
+        let grep_cmd = "grep -F " + shell_escape("\"bug_id\": \"" + bug_id + "\"") + " " + shell_escape(seller_ledger) + " 2>/dev/null | head -1";
+        let hit = try { exec sh grep_cmd; } catch e { ""; };
+        return len(hit) > 0;
+    };
+
+    if topic_kind == "bundle" {
+        // Bundle producer emits `bug_id1;bug_id2;…;` (trailing `;`).
+        // One `exec sh` splits on `;`, counts non-empty ids (denom), and
+        // counts how many resolve to a verifier-stamped row (numer).
+        // Validation passes iff denom > 0 AND numer == denom. The pipeline
+        // is total: empty answer => denom=0 => reject. shell_escape on the
+        // dynamic args keeps user-controlled string substitution safe.
+        // colony-lint: safe-exec-concat
+        let bundle_cmd = "answer=" + shell_escape(answer) + "; ledger=" + shell_escape(seller_ledger) + "; denom=$(printf '%s' \"$answer\" | tr ';' '\\n' | grep -cv '^$'); if [ \"$denom\" -eq 0 ]; then exit 0; fi; numer=$(printf '%s' \"$answer\" | tr ';' '\\n' | grep -v '^$' | while read id; do grep -F \"\\\"bug_id\\\": \\\"$id\\\"\" \"$ledger\" >/dev/null 2>&1 && echo 1; done | wc -l); if [ \"$numer\" = \"$denom\" ]; then echo OK; fi";
+        let res = try { exec sh bundle_cmd; } catch e { ""; };
+        return len(res) > 0;
+    };
+
+    return false;
+}
+
 // #499: per-tribe primary class — used as fallback when a variant string
 // lacks the `<class>:<phrasing>` colon separator (legacy memo replay from
 // pre-#499 builds where pick_variant emitted phrasing-only strings).
@@ -588,17 +652,38 @@ fn tick(reason: string) -> void {
                     let max_cb_buy = max_cb_for_rep(cur_rep_buy_str);
                     let bought = knowledge_buy(buy_topic, max_cb_buy);
                     let kind_buy = recall_latest("agent:lifecycle:cognitive:last_event_kind");
-                    let outcome_buy = if len(bought) > 0 {
+                    let lifecycle_outcome_buy = if len(bought) > 0 {
                         if kind_buy == "cognitive.cache_hit" { "cache_hit"; } else { "succeeded"; };
                     } else {
                         if kind_buy == "cognitive.rejected" { "rejected"; } else { "fallback"; };
                     };
+                    // #493 (Loose category c): semantic-validation gate. Runs
+                    // *after* the lifecycle-event switch so cache_hit /
+                    // succeeded / rejected / fallback stay attributable to
+                    // the memo-store layer; a failed validation collapses to
+                    // a distinct `rejected_unverified` outcome and suppresses
+                    // the bought_context memo write so downstream prompts
+                    // never see an unverifiable answer.
+                    let validated_buy = if len(bought) > 0 {
+                        _validate_bought_answer(bought, sibling, "finding");
+                    } else {
+                        false;
+                    };
+                    let outcome_buy = if len(bought) > 0 {
+                        if validated_buy { lifecycle_outcome_buy; } else { "rejected_unverified"; };
+                    } else {
+                        lifecycle_outcome_buy;
+                    };
                     let cache_buy_s = if outcome_buy == "cache_hit" { "1"; } else { "0"; };
                     if len(bought) > 0 {
-                        if outcome_buy == "cache_hit" {
-                            learn("market", buy_topic, "", "cache_hit", ["tribes-bench", "buyer:" + _tribe_name, "topic_kind:finding"]);
+                        if validated_buy {
+                            if outcome_buy == "cache_hit" {
+                                learn("market", buy_topic, "", "cache_hit", ["tribes-bench", "buyer:" + _tribe_name, "topic_kind:finding"]);
+                            };
+                            memo_write("hunter:bought_context", bought);
+                        } else {
+                            learn("market", buy_topic, "", "rejected", ["tribes-bench", "buyer:" + _tribe_name, "topic_kind:finding", "reason:unverifiable"]);
                         };
-                        memo_write("hunter:bought_context", bought);
                     };
                     emit_market_csv(_tick_now_ms, "buy", buy_topic, "finding", "", to_string(max_cb_buy), "", cache_buy_s, outcome_buy);
                 };
@@ -622,17 +707,36 @@ fn tick(reason: string) -> void {
                     let prem_max_cb = premium_factor_for_rep(best_s);
                     let bought_b = knowledge_buy(espionage_topic, prem_max_cb);
                     let kind_eb = recall_latest("agent:lifecycle:cognitive:last_event_kind");
-                    let outcome_eb = if len(bought_b) > 0 {
+                    let lifecycle_outcome_eb = if len(bought_b) > 0 {
                         if kind_eb == "cognitive.cache_hit" { "cache_hit"; } else { "succeeded"; };
                     } else {
                         if kind_eb == "cognitive.rejected" { "rejected"; } else { "fallback"; };
                     };
+                    // #493 (Loose category c): bundle semantic-validation
+                    // gate. Every `;`-separated bug_id in the bundle must
+                    // resolve to a verifier-stamped row in the seller's
+                    // ledger; first miss => `rejected_unverified` + suppress
+                    // memo write.
+                    let validated_eb = if len(bought_b) > 0 {
+                        _validate_bought_answer(bought_b, best_t, "bundle");
+                    } else {
+                        false;
+                    };
+                    let outcome_eb = if len(bought_b) > 0 {
+                        if validated_eb { lifecycle_outcome_eb; } else { "rejected_unverified"; };
+                    } else {
+                        lifecycle_outcome_eb;
+                    };
                     let cache_eb_s = if outcome_eb == "cache_hit" { "1"; } else { "0"; };
                     if len(bought_b) > 0 {
-                        if outcome_eb == "cache_hit" {
-                            learn("market", espionage_topic, "", "cache_hit", ["tribes-bench", "buyer:" + _tribe_name, "topic_kind:bundle"]);
+                        if validated_eb {
+                            if outcome_eb == "cache_hit" {
+                                learn("market", espionage_topic, "", "cache_hit", ["tribes-bench", "buyer:" + _tribe_name, "topic_kind:bundle"]);
+                            };
+                            memo_write("hunter:bought_context", bought_b);
+                        } else {
+                            learn("market", espionage_topic, "", "rejected", ["tribes-bench", "buyer:" + _tribe_name, "topic_kind:bundle", "reason:unverifiable"]);
                         };
-                        memo_write("hunter:bought_context", bought_b);
                     };
                     emit_market_csv(_tick_now_ms, "buy", espionage_topic, "bundle", "", to_string(prem_max_cb), "", cache_eb_s, outcome_eb);
                 };
