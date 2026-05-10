@@ -14,6 +14,47 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+
+- **M98 v2 — class-parametrized hunter prompts**
+  ([#504](https://github.com/Replikanti/agentis-colonies/issues/504),
+  builds on
+  [#503](https://github.com/Replikanti/agentis-colonies/issues/503) M98
+  reapply + v1.7.9 pin). Closes the cross-class hunting gap from M98:
+  pre-#504 every variant — including the class-flipped mutants emitted
+  by `pick_variant`'s 10% class-flip path
+  ([#499](https://github.com/Replikanti/agentis-colonies/issues/499)) —
+  reached the LLM through the same hardcoded uninitialised-memory
+  prompt that named smallvec-specific functions
+  (`from_buf_and_len_unchecked`, `pub fn insert_many`, `pub fn grow`).
+  Mutated lineages were guaranteed verifier-falsepos because the LLM
+  could not see the variant's class trait. All 5 hunter.ag files now
+  dispatch the `prompt()` call across the 8 classes emitted by
+  `_class_pick_universe` (`uninitialised_memory`, `use_after_free`,
+  `memory_corruption`, `heap_overflow`, `data_race`, `send_violation`,
+  `missing_lock`, `dangling_borrow`) via an if-chain at the call site,
+  with each arm passing a generic Rust unsafe-code instruction (no
+  smallvec function names) as a string literal first argument so the
+  v1.7.9 parser's literal-string requirement on `prompt(...)` is
+  satisfied without bumping the runtime floor. The variant string
+  parser is hoisted to the top of the tick body so both the prompt
+  dispatcher and the verifier-call site reuse the same
+  `_variant_class` / `_variant_phrasing` locals (the duplicate parser
+  block at the verifier-call site is removed). A new
+  `_phrasing_hint(phrasing)` helper maps each of the 35 phrasing tags
+  across the 5 tribes (`format-pattern-*`, `source-sink-*`,
+  `error-path-*`, `lifetime-*`, `concurrency-*`) to a 1-sentence focus
+  hint that sharpens *where* in the file to look (never overrides the
+  class); the hint is prepended into `src_with_focus` orthogonally to
+  the existing replica-focus line from
+  [#439](https://github.com/Replikanti/agentis-colonies/issues/439).
+  Tribe-specific surface stays minimal: only `_tribe_default_class()`
+  and `pick_variant()`'s pool seeding differ across the 5 hunter.ag
+  files (already differed pre-#504); the new `_phrasing_hint` body
+  and the 8-arm dispatcher block are byte-identical across all 5
+  tribes. Runtime floor unchanged (`agentis >= 1.7.9` per #503); no
+  new builtins.
+
 ### Fixed
 
 - **M98 hunter CB exhaustion + missing env_passthrough for HUNTER_INITIAL_VARIANT**
