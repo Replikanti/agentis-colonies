@@ -275,7 +275,7 @@ fn tick(reason: string) -> void {
                 let elapsed_ms = _tick_now_ms - epoch_ms;
                 let elapsed_min = if elapsed_ms > 0 { elapsed_ms / 60000; } else { 0; };
                 let baseline = parse_int(recall_latest("hunter:fitness_threshold_baseline"));
-                let threshold = baseline + creep_per_min * elapsed_min;
+                let threshold = baseline; let _ = creep_per_min; let _ = elapsed_min;
                 let fit_str = recall_latest("hunter:" + _self_pid + ":fitness");
                 let fit = if len(fit_str) > 0 { parse_int(fit_str); } else { 0; };
                 // #489 follow-up: grace period for newborns. Seed birth_ms on
@@ -347,9 +347,14 @@ fn tick(reason: string) -> void {
                     if pool_r >= cost_r {
                         let target_r = select_replication_target();
                         if len(target_r) > 0 {
-                            // Seed inherited fitness for the offspring (parent_fit/2)
+                            // Seed inherited fitness for the offspring (parent_fit/2),
+                            // max-overwrite so only better lineage propagates
                             let seed_r = my_fit_r / 2;
-                            memo_write("hunter:next_replica_seed_" + _tribe_name, to_string(seed_r));
+                            let curr_r_str = recall_latest("hunter:next_replica_seed_" + _tribe_name);
+                            let curr_r = if len(curr_r_str) > 0 { parse_int(curr_r_str); } else { -999999; };
+                            if seed_r > curr_r {
+                                memo_write("hunter:next_replica_seed_" + _tribe_name, to_string(seed_r));
+                            };
                             let replica_id_r = try { replicate(target_r); } catch e { "__replicate_error__"; };
                             if replica_id_r != "__replicate_error__" {
                                 if len(replica_id_r) > 0 {
@@ -601,7 +606,12 @@ fn tick(reason: string) -> void {
                                 if len(_self_pid) > 0 {
                                     let my_fit = parse_int(recall_latest("hunter:" + _self_pid + ":fitness"));
                                     let seed_inherit = my_fit / 2;
-                                    memo_write("hunter:next_replica_seed_" + _tribe_name, to_string(seed_inherit));
+                                    // Max-overwrite: only better lineage propagates seed
+                                    let curr_seed_str = recall_latest("hunter:next_replica_seed_" + _tribe_name);
+                                    let curr_seed = if len(curr_seed_str) > 0 { parse_int(curr_seed_str); } else { -999999; };
+                                    if seed_inherit > curr_seed {
+                                        memo_write("hunter:next_replica_seed_" + _tribe_name, to_string(seed_inherit));
+                                    };
                                 };
                                 let replica_id = try { replicate(target); } catch e { "__replicate_error__"; };
                                 if replica_id == "__replicate_error__" {
