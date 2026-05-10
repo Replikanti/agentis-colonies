@@ -140,6 +140,19 @@ topic_kind:finding
 topic_kind:bundle"
             PAIR_KNOWN=1
             ;;
+        "market:rejected")
+            # #493 Loose category (c): consumer-side knowledge_sell validation
+            # rejects answers whose claimed bug_id is not in the seller's
+            # verifier-stamped bug-ledger.jsonl. Emits this learn() with
+            # reason:unverifiable so downstream telemetry can distinguish
+            # rejections from cache hits.
+            ALLOWED_LITERALS="tribes-bench"
+            ALLOWED_PARAMS="buyer:<tn>
+topic_kind:finding
+topic_kind:bundle
+reason:unverifiable"
+            PAIR_KNOWN=1
+            ;;
     esac
 }
 
@@ -190,6 +203,9 @@ EOF
                 ;;
             "topic_kind:bundle")
                 [ "$tok" = "topic_kind:bundle" ] && return 0
+                ;;
+            "reason:unverifiable")
+                [ "$tok" = "reason:unverifiable" ] && return 0
                 ;;
         esac
     done <<EOF
