@@ -45,6 +45,50 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **M98 self-evolution: variant carries `<class>:<phrasing>`, hunters
+  evolve hunt strategy via class-flip mutation**
+  ([#499](https://github.com/Replikanti/agentis-colonies/issues/499)).
+  Builds on [#498](https://github.com/Replikanti/agentis-colonies/issues/498)
+  variant inheritance to put the bug-class trait under selection pressure
+  alongside the phrasing trait. All 5 hunter.ag files now emit variant
+  strings of the form `<class>:<phrasing>` (e.g.
+  `uninitialised_memory:format-pattern-strict-literal`); `pick_variant()`
+  seeds 14 variants per tribe across 2 sibling bug classes (7 phrasings
+  each) instead of the prior 7-phrasings-only pool. Per-tribe seeding
+  follows the bench's stage2 RUSTSEC alignment: alpha primary
+  `uninitialised_memory` + sibling `memory_corruption`; beta
+  `heap_overflow` + `memory_corruption`; gamma `memory_corruption` +
+  `dangling_borrow`; delta `use_after_free` + `dangling_borrow`; epsilon
+  `use_after_free` + `send_violation`. The 8-class universe also includes
+  `data_race` and `missing_lock` — both reachable only via the new 10%
+  class-flip mutation (independent from the existing 20% phrasing-flip
+  roll, decorrelated with a different prime modulus on the same
+  `now_ms_via_shell()` source so a tick can mutate phrasing only, class
+  only, both, or neither). At the verifier-call site, the JSON `class`
+  field is now derived from the variant string (split on `:`) rather
+  than the LLM's `finding.class` -- misalignment between what the LLM
+  hunted for (per the still-frozen prompt strings) and what the variant
+  claims becomes a verifier-falsepos that selection rewards or penalises
+  through the existing `variant_stats:<variant>:{verified,falsepos}`
+  memos. Combined with #498's wire-path variant inheritance this
+  produces sustained variation × selection × inheritance over the
+  hunt-class trait, bypassing the structural bottleneck where pre-#499
+  hunter prompts hardcoded one class per tribe and the federation could
+  only flow within tribe-pinned class lanes. Each hunter declares a
+  `_tribe_default_class()` helper used as a fallback when a variant
+  string lacks the `:` separator (legacy memo replay from pre-#499
+  builds); empty `_variant` (cold start) and phrasing-only strings both
+  collapse to the tribe primary, so the cold-start verifier-payload
+  matches pre-#499 behaviour byte-for-byte. The seeded 14-literal pool
+  emits bare `return "<class>:<phrasing>";` literals so
+  `analyse-stage3.py`'s `parse_variant_pool` regex picks up the post-#499
+  pool unmodified; off-pool class-flip mutants are emitted via string
+  concatenation by design (the analyser will report them under the
+  observational "Variant outcomes per tribe" section as out-of-pool
+  entries). Runtime floor unchanged (`agentis >= 1.7.8`); the new
+  `index_of` and `substring` builtins used at the verifier-call site
+  ship since v1.5.x and are included in the existing v1.7.8 floor.
+
 - **B2 variant-evolution per-instance inheritance — federation-side reader**
   ([#497](https://github.com/Replikanti/agentis-colonies/issues/497)).
   Companion to [agentis-core#632](https://github.com/Replikanti/agentis/issues/632)
