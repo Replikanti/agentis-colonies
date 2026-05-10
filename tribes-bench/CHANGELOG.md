@@ -45,6 +45,24 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **B2 variant-evolution per-instance inheritance — federation-side reader**
+  ([#497](https://github.com/Replikanti/agentis-colonies/issues/497)).
+  Companion to [agentis-core#632](https://github.com/Replikanti/agentis/issues/632)
+  (v1.7.8). All 5 hunter.ag files read `HUNTER_INITIAL_VARIANT` on first
+  tick (mirroring the v1.7.7 `HUNTER_INITIAL_FITNESS` path from #494) and
+  seed both `hunter:prompt_variant` (tribe-shared, picked up by the
+  prompt-prefix branch on the same tick) and `hunter:<ppid>:variant`
+  (per-PPID, future-proof attribution for analyse-stage3). Both
+  `replicate()` call sites upgraded to the 3-arg `replicate(target,
+  fitness, variant)` form: the M2-Malthusian site reuses the local
+  `variant` already in scope from `pick_variant()`, the time-based
+  reproductive site adds an inline `recall_latest("hunter:prompt_variant")`
+  one line above the call. Both stay inside their existing `try/catch`
+  so a runtime skew surfaces as a learn row, not a crash. Closes the
+  variant-overwrite race observed in smoke #42 (T+5:23 collapse).
+  Containerfile.stage3 `AGENTIS_VERSION` pin bumped v1.7.7 → v1.7.8.
+  **Requires:** agentis >= 1.7.8.
+
 - **B2 variant evolution: 7-variant prompt pool with mutation + per-variant fitness telemetry**
   (Stage 4 emergence work, follow-up to #490). `pick_variant()` in all 5
   hunter.ag files now picks from a 7-variant pool (vs prior 3-variant
