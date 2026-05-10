@@ -16,6 +16,22 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **B2 variant evolution: 7-variant prompt pool with mutation + per-variant fitness telemetry**
+  (Stage 4 emergence work, follow-up to #490). `pick_variant()` in all 5
+  hunter.ag files now picks from a 7-variant pool (vs prior 3-variant
+  cyclic) with a 20% mutation rate that breaks cyclic ruts and exposes
+  fresh variants to selection pressure. The pseudo-random source is
+  `now_ms_via_shell() % 100` (same builtin already cached at top of
+  tick). Each tribe keeps its own domain-specific variant set
+  (format-pattern-* for alpha, source-sink-* for beta, etc., 7 each).
+  Hunters cache the active variant once per tick (`_variant`) and
+  increment per-variant counters on every verified finding
+  (`variant_stats:<variant>:verified`) and false positive
+  (`variant_stats:<variant>:falsepos`). The counters are
+  tribe-aggregated and provide selection-feedback observability over
+  the variant pool, so analyse-stage3 can produce per-variant fitness
+  curves once smoke #42 lands.
+
 - **Multi-LLM config injection in `run-stage2.sh`**
   ([#438](https://github.com/Replikanti/agentis-colonies/issues/438)).
   `agentis init` only seeds `llm.backend` in the hermetic per-run
