@@ -20,9 +20,14 @@ operator-readable bundle:
                              its tps > root tps) per Stage 3 success
                              criterion in #439.
     mutation-diff.csv        One row per replicate event. Records the
-                             `parent_variant -> child_variant` pair plus
-                             a `mutation_kind` derived from the
-                             `pick_variant(tribe, n)` cycle in hunter.ag.
+                             observed `parent_variant -> child_variant`
+                             pair, a `mutation_kind` over the parsed
+                             per-tribe variant pool, a `source` flag
+                             (`observed` when the replicate row carried
+                             a `variant:` tag, `unresolved` otherwise),
+                             and the parent variant's aggregated
+                             `verified` / `falsepos` counts from the
+                             `variant_stats:*` memos.
     comparison-stage3.md     Operator-readable summary mirroring the
                              Stage 2 comparison.md shape but with the
                              6 sections from this PR's plan: run shape,
@@ -63,6 +68,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import subprocess
 import sys
 from collections import defaultdict
@@ -100,32 +106,215 @@ TELEMETRY_COLUMNS = [
     "replication_event_count", "tribe_death_ts",
 ]
 
-# pick_variant() in hunter.ag rotates over a 3-element cycle keyed by
-# the tribe's current size. We re-implement it in Python so the
-# analyser can compute parent/child variant-deltas without depending on
-# the .ag scenario being available at analysis time.
-VARIANT_CYCLE = (
-    "format-pattern-default",
-    "format-pattern-strict-literal",
-    "format-pattern-broad-shellbuilder",
-)
+# Per-tribe variant pools are parsed from each tribe's hunter.ag at
+# analysis time. The analyser is observational only -- it does NOT
+# re-implement pick_variant(). Variant attribution to agents comes
+# from `variant:<name>` tags written by hunter.ag on each replicate
+# row, plus per-tribe `variant_stats:<variant>:{verified,falsepos}`
+# memos that hunters increment on findings/false-positives.
+#
+# Any future hunter.ag refactor that returns variants via concatenation
+# or a lookup table (i.e. not bare `return "<literal>";` lines inside
+# `fn pick_variant`) MUST add a sibling `pick_variant_pool() ->
+# list<string>` helper or a `tribe-<name>/agents/variant-pool.txt`
+# metadata file so this analyser can keep enumerating the pool.
+
+_VARIANT_POOL_CACHE: dict[str, list[str]] = {}
 
 
-def pick_variant(tribe: str, n: int) -> str:
-    """Mirror of hunter.ag::pick_variant. `tribe` is unused (the .ag
-    helper takes the tribe name purely for symmetry with future
-    per-tribe overrides). `n` is the tribe's size at replicate time."""
-    _ = tribe
-    return VARIANT_CYCLE[n % 3]
+def parse_variant_pool(hunter_ag_path: str) -> list[str]:
+    """Regex-scan the body of `fn pick_variant(...) { ... }` in a
+    tribe's hunter.ag and return the list of bare-literal `return
+    "<value>";` strings in source order.
+
+    Raises ValueError when the function body has zero return literals
+    -- a silent empty pool would re-introduce the stale-variant model
+    bug that #495 fixes. Caches results by absolute path.
+    """
+    abs_path = os.path.abspath(hunter_ag_path)
+    cached = _VARIANT_POOL_CACHE.get(abs_path)
+    if cached is not None:
+        return list(cached)
+    try:
+        with open(abs_path, encoding="utf-8") as f:
+            src = f.read()
+    except OSError as exc:
+        raise ValueError(f"parse_variant_pool: cannot read {abs_path}: {exc}") from exc
+    # Locate the start of `fn pick_variant(...)` and scan the matching
+    # body. The grammar is brace-delimited, so we count `{` / `}`
+    # characters until the function body closes. This survives nested
+    # `if { ... }` blocks inside pick_variant (which every tribe has).
+    fn_match = re.search(r"\bfn\s+pick_variant\b[^{]*\{", src)
+    if fn_match is None:
+        raise ValueError(
+            f"parse_variant_pool: no `fn pick_variant` in {abs_path}"
+        )
+    body_start = fn_match.end()
+    depth = 1
+    i = body_start
+    while i < len(src) and depth > 0:
+        ch = src[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        i += 1
+    body = src[body_start:i - 1]
+    literals = re.findall(r'return\s+"([^"\\]*)"\s*;', body)
+    if not literals:
+        raise ValueError(
+            f"parse_variant_pool: zero return literals in `fn pick_variant` "
+            f"of {abs_path}; refactor must add a pick_variant_pool() helper "
+            f"or variant-pool.txt metadata file"
+        )
+    _VARIANT_POOL_CACHE[abs_path] = list(literals)
+    return list(literals)
 
 
-def parse_args(argv: list[str]) -> tuple[str, str, str, str]:
-    """Parse argv into (run_dir, laptop_dir, server_runs_dir, out_dir).
+def discover_tribe_pools(fed_root: str) -> dict[str, list[str]]:
+    """Walk `<fed_root>/tribe-*/agents/hunter.ag` and return a dict
+    `{tribe_name: [variant, ...]}`. Asserts the union of pools is
+    duplicate-free (every tribe uses a disjoint domain prefix).
+    """
+    pools: dict[str, list[str]] = {}
+    if not os.path.isdir(fed_root):
+        return pools
+    for name in sorted(os.listdir(fed_root)):
+        if not name.startswith("tribe-"):
+            continue
+        hunter = os.path.join(fed_root, name, "agents", "hunter.ag")
+        if not os.path.isfile(hunter):
+            continue
+        pools[name] = parse_variant_pool(hunter)
+    seen: dict[str, str] = {}
+    for tribe, variants in pools.items():
+        for v in variants:
+            if v in seen and seen[v] != tribe:
+                raise ValueError(
+                    f"discover_tribe_pools: variant {v!r} appears in both "
+                    f"{seen[v]} and {tribe}; pools must be disjoint"
+                )
+            seen[v] = tribe
+    return pools
+
+
+def _resolve_fed_root(fed_root_arg: str | None, run_dir: str) -> str:
+    """Resolve the federation root used for variant-pool discovery.
+
+    Order: explicit --fed-root > $AGENTIS_FED_ROOT > autodetect via
+    run_dir/../.. (the tribes-bench/runs/<ts> shape produced by
+    run-stage3-docker.sh).
+    """
+    if fed_root_arg:
+        return os.path.abspath(fed_root_arg)
+    env = os.environ.get("AGENTIS_FED_ROOT")
+    if env:
+        return os.path.abspath(env)
+    # Autodetect: tribes-bench/runs/<ts>/  ->  tribes-bench/
+    candidate = os.path.abspath(os.path.join(run_dir, "..", ".."))
+    return candidate
+
+
+def read_variant_stats(node_dir: str) -> dict[str, dict[str, int]]:
+    """Invoke `agentis memo list --prefix variant_stats:` from
+    `node_dir` (so the hermetic .agentis/ tree is the runtime's cwd)
+    and parse the `variant_stats:<variant>:{verified,falsepos} = <n>`
+    pairs into `{variant: {"verified": int, "falsepos": int}}`.
+
+    Decoupled from the runtime's storage backend by going through the
+    CLI rather than reading sled directly. Missing binary, non-zero
+    exit, or empty output -> `{}` with a stderr warning. Never raises.
+    """
+    out: dict[str, dict[str, int]] = {}
+    try:
+        proc = subprocess.run(
+            ["agentis", "memo", "list", "--prefix", "variant_stats:"],
+            cwd=node_dir,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        print(
+            "analyse-stage3: warning: `agentis` binary not on PATH; "
+            "variant_stats memos skipped",
+            file=sys.stderr,
+        )
+        return {}
+    except OSError as exc:
+        print(
+            f"analyse-stage3: warning: cannot invoke agentis memo list "
+            f"in {node_dir}: {exc}",
+            file=sys.stderr,
+        )
+        return {}
+    if proc.returncode != 0:
+        return out
+    for raw_line in (proc.stdout or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        # Expected shape: `variant_stats:<variant>:<metric> = <int>`
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if not key.startswith("variant_stats:"):
+            continue
+        rest = key[len("variant_stats:"):]
+        if ":" not in rest:
+            continue
+        variant, _, metric = rest.rpartition(":")
+        if metric not in ("verified", "falsepos"):
+            continue
+        try:
+            n = int(value)
+        except ValueError:
+            continue
+        out.setdefault(variant, {"verified": 0, "falsepos": 0})[metric] = n
+    return out
+
+
+def aggregate_variant_stats(
+    node_dirs: list[str],
+    tribe_pools: dict[str, list[str]],
+) -> dict[str, dict[str, dict[str, int]]]:
+    """Reverse-lookup variant -> tribe via tribe_pools, then aggregate
+    `read_variant_stats()` from every node into `{tribe: {variant:
+    {"verified": N, "falsepos": N}}}`.
+    """
+    variant_to_tribe: dict[str, str] = {}
+    for tribe, variants in tribe_pools.items():
+        for v in variants:
+            variant_to_tribe[v] = tribe
+    aggregated: dict[str, dict[str, dict[str, int]]] = {
+        tribe: {v: {"verified": 0, "falsepos": 0} for v in variants}
+        for tribe, variants in tribe_pools.items()
+    }
+    for node_dir in node_dirs:
+        per_node = read_variant_stats(node_dir)
+        for variant, counts in per_node.items():
+            tribe = variant_to_tribe.get(variant)
+            if tribe is None:
+                continue
+            slot = aggregated.setdefault(tribe, {}).setdefault(
+                variant, {"verified": 0, "falsepos": 0}
+            )
+            slot["verified"] += int(counts.get("verified", 0))
+            slot["falsepos"] += int(counts.get("falsepos", 0))
+    return aggregated
+
+
+def parse_args(argv: list[str]) -> tuple[str, str, str, str, str | None, bool, bool]:
+    """Parse argv into (run_dir, laptop_dir, server_runs_dir, out_dir,
+    fed_root, no_variant_stats, legacy_top_variants).
 
     Defaults:
         --laptop-dir   <run-dir>                 (SSH multinode shape)
         --server-runs  <run-dir>/server-runs/    (SSH multinode shape)
         --out          <run-dir>/
+        --fed-root     autodetect via run_dir/../.. (or $AGENTIS_FED_ROOT)
 
     Docker (#478) shape: pass --laptop-dir <run-dir>/laptop-node and
     --server-runs <run-dir>/server-node. discover_server_node_dirs
@@ -158,6 +347,24 @@ def parse_args(argv: list[str]) -> tuple[str, str, str, str]:
         default=None,
         help="output dir for stitched artefacts (default: <run-dir>)",
     )
+    p.add_argument(
+        "--fed-root",
+        default=None,
+        help="federation root (tribes-bench/) for variant-pool discovery; "
+             "default autodetect via run_dir/../.. or $AGENTIS_FED_ROOT",
+    )
+    p.add_argument(
+        "--no-variant-stats",
+        action="store_true",
+        help="skip `agentis memo list` reads (for tests / hosts without "
+             "the agentis binary on PATH)",
+    )
+    p.add_argument(
+        "--legacy-top-variants",
+        action="store_true",
+        help="emit the pre-#495 synthetic Top-3 surviving variants table "
+             "alongside the observational Variant outcomes table",
+    )
     try:
         ns = p.parse_args(argv[1:])
     except SystemExit as e:
@@ -188,7 +395,10 @@ def parse_args(argv: list[str]) -> tuple[str, str, str, str]:
         except OSError as exc:
             print(f"analyse-stage3: cannot create out dir {out_dir}: {exc}", file=sys.stderr)
             sys.exit(2)
-    return run_dir, laptop_dir, server_runs, out_dir
+    return (
+        run_dir, laptop_dir, server_runs, out_dir,
+        ns.fed_root, bool(ns.no_variant_stats), bool(ns.legacy_top_variants),
+    )
 
 
 # --- Per-node telemetry -----------------------------------------------------
@@ -365,22 +575,67 @@ def _replicate_events(experience_dir: str, agent_id: str) -> list[dict[str, Any]
     return out
 
 
-def _variant_from_tags(tags: list[Any]) -> str:
+def _variant_from_tags(
+    tags: list[Any],
+    known_variants: set[str] | None = None,
+) -> str:
     """Extract a prompt_variant value from a learn() tag list. Tries
-    `variant:<name>` and bare-name match against VARIANT_CYCLE so the
-    analyser stays compatible with both the legacy hunter.ag (no
-    variant tag) and the post-#447 form that includes it."""
+    `variant:<name>` first; falls back to a bare-name match against
+    `known_variants` (the union of every tribe's parsed pool) when the
+    legacy untagged hunter.ag form is in play."""
     for t in tags:
         if not isinstance(t, str):
             continue
         if t.startswith("variant:"):
             return t.split(":", 1)[1]
-        if t in VARIANT_CYCLE:
+        if known_variants is not None and t in known_variants:
             return t
     return ""
 
 
-def collect_node_agents(node_root: str, node_label: str) -> dict[str, dict[str, Any]]:
+def _agent_observed_variant(
+    experience_dir: str,
+    agent_id: str,
+    known_variants: set[str] | None = None,
+) -> str:
+    """Earliest variant claim seen on any learn row authored by the
+    agent. Recognises `variant:<name>` tags first, then -- when
+    `known_variants` is supplied -- bare-name tags matching the union
+    of every tribe's parsed pool. Empty string when no claim is found.
+    Observational fallback used by collect_node_agents() to seed each
+    agent's prompt_variant before lineage linking runs.
+    """
+    path = os.path.join(experience_dir, f"{agent_id}.jsonl")
+    earliest_ts: int | None = None
+    earliest_variant = ""
+    for rec in read_jsonl(path):
+        tags = rec.get("tags") or []
+        if not isinstance(tags, list):
+            continue
+        ts = rec.get("ts")
+        if not isinstance(ts, int):
+            continue
+        for t in tags:
+            if not isinstance(t, str):
+                continue
+            claim = ""
+            if t.startswith("variant:"):
+                claim = t.split(":", 1)[1]
+            elif known_variants is not None and t in known_variants:
+                claim = t
+            if claim:
+                if earliest_ts is None or ts < earliest_ts:
+                    earliest_ts = ts
+                    earliest_variant = claim
+                break
+    return earliest_variant
+
+
+def collect_node_agents(
+    node_root: str,
+    node_label: str,
+    known_variants: set[str] | None = None,
+) -> dict[str, dict[str, Any]]:
     """Build a per-agent dict keyed by agent_id, populated with
     (tribe, node, born_ts, died_ts, tps, fps, replicate_events). The
     parent_id and prompt_variant fields are filled in by
@@ -397,6 +652,9 @@ def collect_node_agents(node_root: str, node_label: str) -> dict[str, dict[str, 
         died = _agent_death_ts(experience_dir, agent_id)
         tps, fps = _agent_tps_fps(experience_dir, agent_id)
         rep_events = _replicate_events(experience_dir, agent_id)
+        observed_variant = _agent_observed_variant(
+            experience_dir, agent_id, known_variants
+        )
         out[agent_id] = {
             "agent_id": agent_id,
             "tribe": tribe,
@@ -406,6 +664,7 @@ def collect_node_agents(node_root: str, node_label: str) -> dict[str, dict[str, 
             "tps_total": tps,
             "fps_total": fps,
             "_replicate_events": rep_events,
+            "_observed_variant": observed_variant,
         }
     # Ensure every JSONL author appears in the inventory even when the
     # daemon snapshot lost their .colony entry (the post-kill cleanup
@@ -432,6 +691,9 @@ def collect_node_agents(node_root: str, node_label: str) -> dict[str, dict[str, 
             died = _agent_death_ts(experience_dir, agent_id)
             tps, fps = _agent_tps_fps(experience_dir, agent_id)
             rep_events = _replicate_events(experience_dir, agent_id)
+            observed_variant = _agent_observed_variant(
+            experience_dir, agent_id, known_variants
+        )
             out[agent_id] = {
                 "agent_id": agent_id,
                 "tribe": tribe,
@@ -441,11 +703,15 @@ def collect_node_agents(node_root: str, node_label: str) -> dict[str, dict[str, 
                 "tps_total": tps,
                 "fps_total": fps,
                 "_replicate_events": rep_events,
+                "_observed_variant": observed_variant,
             }
     return out
 
 
-def _link_parents(agents: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+def _link_parents(
+    agents: dict[str, dict[str, Any]],
+    known_variants: set[str] | None = None,
+) -> list[dict[str, Any]]:
     """Walk every agent's per-tribe replicate event list and link each
     Nth replicate event (for tribe T) to the (N+1)th-born agent in
     that tribe. The first agent in each tribe (lowest born_ts) is the
@@ -460,11 +726,15 @@ def _link_parents(agents: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
         if a["tribe"]:
             by_tribe[a["tribe"]].append(a)
     for tribe, lst in by_tribe.items():
+        _ = tribe  # symmetry with prior signature; tribe unused below
         lst.sort(key=lambda x: (x["born_ts"], x["agent_id"]))
-        # Root: first agent.
+        # Root: first agent. The prompt_variant is observational --
+        # taken from the earliest `variant:<name>` tag the agent
+        # actually emitted (collect_node_agents:_observed_variant).
+        # Empty when the agent never tagged a variant.
         for idx, a in enumerate(lst):
             a["_birth_index"] = idx
-            a["prompt_variant"] = pick_variant(tribe, idx)
+            a["prompt_variant"] = a.get("_observed_variant", "") or ""
             if idx == 0:
                 a["parent_id"] = None
             else:
@@ -489,11 +759,14 @@ def _link_parents(agents: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
         if not tribe:
             continue
         children = pending_children.get(tribe, [])
+        tags = rec.get("tags") or []
+        tag_variant = (
+            _variant_from_tags(tags, known_variants)
+            if isinstance(tags, list) else ""
+        )
         if not children:
             # No more un-parented children -- record the event with an
             # unresolved child for mutation-diff anyway.
-            tags = rec.get("tags") or []
-            tag_variant = _variant_from_tags(tags) if isinstance(tags, list) else ""
             events_out.append({
                 "ts": ts,
                 "parent_id": parent["agent_id"],
@@ -501,16 +774,14 @@ def _link_parents(agents: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
                 "tribe": tribe,
                 "parent_variant": parent.get("prompt_variant", ""),
                 "child_variant": tag_variant,
+                "source": "unresolved",
             })
             continue
         child = children.pop(0)
         child["parent_id"] = parent["agent_id"]
-        # Prefer the variant tagged on the replicate row when present
-        # (post-#447 hunter.ag). Fall back to the deterministic
-        # pick_variant() rotation when the legacy hunter.ag emitted no
-        # variant tag.
-        tags = rec.get("tags") or []
-        tag_variant = _variant_from_tags(tags) if isinstance(tags, list) else ""
+        # The on-row `variant:` tag is the legitimate observational
+        # source of the child variant; absence stays empty (no
+        # synthesised cycle fallback after #495).
         if tag_variant:
             child["prompt_variant"] = tag_variant
         events_out.append({
@@ -520,13 +791,15 @@ def _link_parents(agents: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
             "tribe": tribe,
             "parent_variant": parent.get("prompt_variant", ""),
             "child_variant": child.get("prompt_variant", ""),
+            "source": "observed" if tag_variant else "unresolved",
         })
     return events_out
 
 
-def build_lineage(agents: dict[str, dict[str, Any]]) -> tuple[
-    list[dict[str, Any]], list[dict[str, Any]]
-]:
+def build_lineage(
+    agents: dict[str, dict[str, Any]],
+    known_variants: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Return (lineage_roots, replicate_events).
 
     `lineage_roots` is a list of dicts in the schema documented in the
@@ -534,7 +807,7 @@ def build_lineage(agents: dict[str, dict[str, Any]]) -> tuple[
     `replicate_events` is the parent->child event list used by
     mutation-diff.csv.
     """
-    events = _link_parents(agents)
+    events = _link_parents(agents, known_variants)
     children_of: dict[str, list[str]] = defaultdict(list)
     for a in agents.values():
         if a.get("parent_id"):
@@ -628,39 +901,80 @@ def write_survivor_analysis(out_dir: str, roots: list[dict[str, Any]]) -> str:
 
 # --- Mutation diff ----------------------------------------------------------
 
-def _mutation_kind(parent_variant: str, child_variant: str) -> str:
+def _mutation_kind(
+    parent_variant: str,
+    child_variant: str,
+    tribe: str = "",
+    tribe_pools: dict[str, list[str]] | None = None,
+) -> str:
+    """Classify the parent->child variant transition. Empty parent or
+    child stays `""` (unresolved). Same-name -> `same`. When a tribe
+    pool is available and both ends are known members, the cycle delta
+    is `cycle-N` over that pool; otherwise the relation is `other`.
+    """
     if not parent_variant or not child_variant:
         return ""
     if parent_variant == child_variant:
         return "same"
-    try:
-        pi = VARIANT_CYCLE.index(parent_variant)
-        ci = VARIANT_CYCLE.index(child_variant)
-    except ValueError:
-        return "other"
-    delta = (ci - pi) % len(VARIANT_CYCLE)
-    if delta == 0:
-        return "same"
-    return f"cycle-{delta}"
+    if tribe_pools and tribe and tribe in tribe_pools:
+        pool = tribe_pools[tribe]
+        try:
+            pi = pool.index(parent_variant)
+            ci = pool.index(child_variant)
+        except ValueError:
+            return "other"
+        delta = (ci - pi) % len(pool)
+        if delta == 0:
+            return "same"
+        return f"cycle-{delta}"
+    return "other"
 
 
-def write_mutation_diff(out_dir: str, events: list[dict[str, Any]]) -> str:
+def write_mutation_diff(
+    out_dir: str,
+    events: list[dict[str, Any]],
+    tribe_pools: dict[str, list[str]] | None = None,
+    aggregated_stats: dict[str, dict[str, dict[str, int]]] | None = None,
+) -> str:
+    """Emit `mutation-diff.csv` augmented with the observational
+    columns `source` (`observed` when the replicate row carried a
+    `variant:` tag, `unresolved` otherwise) and the parent variant's
+    aggregated `verified` / `falsepos` counts pulled from the
+    `variant_stats:*` memos. Empty parent_variant rows leave the two
+    stat columns blank.
+    """
     out_path = os.path.join(out_dir, "mutation-diff.csv")
     with open(out_path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow([
             "ts", "parent_id", "child_id", "tribe",
             "parent_variant", "child_variant", "mutation_kind",
+            "source", "parent_variant_verified", "parent_variant_falsepos",
         ])
         for ev in sorted(events, key=lambda e: int(e.get("ts") or 0)):
+            tribe = ev.get("tribe", "")
+            parent_variant = ev.get("parent_variant", "")
+            verified_cell: str = ""
+            falsepos_cell: str = ""
+            if aggregated_stats and tribe and parent_variant:
+                stats = aggregated_stats.get(tribe, {}).get(parent_variant)
+                if stats is not None:
+                    verified_cell = str(stats.get("verified", 0))
+                    falsepos_cell = str(stats.get("falsepos", 0))
             w.writerow([
                 ev.get("ts", 0),
                 ev.get("parent_id", ""),
                 ev.get("child_id", ""),
-                ev.get("tribe", ""),
-                ev.get("parent_variant", ""),
+                tribe,
+                parent_variant,
                 ev.get("child_variant", ""),
-                _mutation_kind(ev.get("parent_variant", ""), ev.get("child_variant", "")),
+                _mutation_kind(
+                    parent_variant, ev.get("child_variant", ""),
+                    tribe=tribe, tribe_pools=tribe_pools,
+                ),
+                ev.get("source", ""),
+                verified_cell,
+                falsepos_cell,
             ])
     return out_path
 
@@ -731,6 +1045,9 @@ def write_comparison_md(
     events: list[dict[str, Any]],
     market_rows: list[dict[str, Any]],
     server_node_count: int,
+    tribe_pools: dict[str, list[str]] | None = None,
+    aggregated_stats: dict[str, dict[str, dict[str, int]]] | None = None,
+    legacy_top_variants: bool = False,
 ) -> str:
     out_path = os.path.join(out_dir, "comparison-stage3.md")
     meta = _read_run_meta(run_dir)
@@ -770,7 +1087,10 @@ def write_comparison_md(
     # Mutation outcomes.
     mut_counts: dict[str, int] = defaultdict(int)
     for ev in events:
-        mut_counts[_mutation_kind(ev.get("parent_variant", ""), ev.get("child_variant", ""))] += 1
+        mut_counts[_mutation_kind(
+            ev.get("parent_variant", ""), ev.get("child_variant", ""),
+            tribe=ev.get("tribe", ""), tribe_pools=tribe_pools,
+        )] += 1
     n_unauthored = 0
     for root in roots:
         descendants = _collect_descendants(root)
@@ -906,8 +1226,66 @@ def write_comparison_md(
     lines.append("")
     lines.append(f"unauthored-specialist lineages: {n_unauthored}")
     lines.append("")
-    if top_variants_per_tribe:
-        lines.append("Top-3 surviving variants per tribe (ranked by aggregate TPs):")
+    # #495: Variant outcomes per tribe -- observational, sourced from
+    # `variant_stats:<variant>:{verified,falsepos}` memos that hunters
+    # increment on every finding. Replaces the synthetic Top-3 surviving
+    # variants table that was driven by a hardcoded 3-element cycle.
+    if aggregated_stats:
+        any_active = any(
+            (counts.get("verified", 0) + counts.get("falsepos", 0)) > 0
+            for variants in aggregated_stats.values()
+            for counts in variants.values()
+        )
+        if any_active:
+            lines.append("Variant outcomes per tribe "
+                         "(observational, from variant_stats memos):")
+            lines.append("")
+            lines.append("| tribe | variant | verified | falsepos | hit_rate |")
+            lines.append("|---|---|---|---|---|")
+            for tribe in sorted(aggregated_stats.keys()):
+                ordered = sorted(
+                    aggregated_stats[tribe].items(),
+                    key=lambda kv: (
+                        -int(kv[1].get("verified", 0)),
+                        int(kv[1].get("falsepos", 0)),
+                        kv[0],
+                    ),
+                )
+                for variant, counts in ordered:
+                    v_n = int(counts.get("verified", 0))
+                    fp_n = int(counts.get("falsepos", 0))
+                    if v_n + fp_n == 0:
+                        continue
+                    hit_rate = (v_n / (v_n + fp_n)) if (v_n + fp_n) > 0 else 0.0
+                    lines.append(
+                        f"| {tribe} | {variant} | {v_n} | {fp_n} | "
+                        f"{hit_rate:.2f} |"
+                    )
+            lines.append("")
+            # Dead variants: pool members with verified=0 AND falsepos>=1.
+            dead_lines: list[str] = []
+            for tribe in sorted(aggregated_stats.keys()):
+                dead = [
+                    (variant, int(counts.get("falsepos", 0)))
+                    for variant, counts in aggregated_stats[tribe].items()
+                    if int(counts.get("verified", 0)) == 0
+                    and int(counts.get("falsepos", 0)) >= 1
+                ]
+                dead.sort(key=lambda kv: (-kv[1], kv[0]))
+                for variant, fp_n in dead:
+                    dead_lines.append(f"| {tribe} | {variant} | {fp_n} |")
+            if dead_lines:
+                lines.append("Dead variants per tribe (0 verified, >=1 falsepos):")
+                lines.append("")
+                lines.append("| tribe | variant | falsepos |")
+                lines.append("|---|---|---|")
+                lines.extend(dead_lines)
+                lines.append("")
+    if legacy_top_variants and top_variants_per_tribe:
+        lines.append(
+            "Top-3 surviving variants per tribe (legacy synthetic; "
+            "kept behind --legacy-top-variants for diff-review continuity):"
+        )
         lines.append("")
         lines.append("| tribe | rank | variant | tps |")
         lines.append("|---|---|---|---|")
@@ -942,7 +1320,10 @@ def write_comparison_md(
 # --- Main -------------------------------------------------------------------
 
 def main() -> None:
-    run_dir, laptop_dir, server_runs, out_dir = parse_args(sys.argv)
+    (
+        run_dir, laptop_dir, server_runs, out_dir,
+        fed_root_arg, no_variant_stats, legacy_top_variants,
+    ) = parse_args(sys.argv)
 
     server_node_dirs = discover_server_node_dirs(server_runs)
     if not server_node_dirs:
@@ -959,6 +1340,21 @@ def main() -> None:
                 file=sys.stderr,
             )
 
+    # Discover per-tribe variant pools from hunter.ag sources. A
+    # missing fed root is non-fatal -- variants that show up only via
+    # `variant:` tags on replicate rows will still resolve, and the
+    # mutation_kind column will fall back to "other".
+    fed_root = _resolve_fed_root(fed_root_arg, run_dir)
+    tribe_pools: dict[str, list[str]] = {}
+    try:
+        tribe_pools = discover_tribe_pools(fed_root)
+    except ValueError as exc:
+        print(
+            f"analyse-stage3: warning: variant-pool discovery failed: {exc}",
+            file=sys.stderr,
+        )
+    known_variants: set[str] = {v for vs in tribe_pools.values() for v in vs}
+
     laptop_rows = run_stage2_analyser(laptop_dir)
     server_rows_by_node: list[list[list[str]]] = []
     for node_dir in server_node_dirs:
@@ -968,10 +1364,12 @@ def main() -> None:
     print(combined_path)
 
     # Per-node agent inventory.
-    laptop_agents = collect_node_agents(laptop_dir, "laptop")
+    laptop_agents = collect_node_agents(laptop_dir, "laptop", known_variants)
     server_agents: dict[str, dict[str, Any]] = {}
     for node_dir in server_node_dirs:
-        server_agents.update(collect_node_agents(node_dir, "server"))
+        server_agents.update(
+            collect_node_agents(node_dir, "server", known_variants)
+        )
 
     # Collision-safe merge: laptop wins on duplicate agent_id (should
     # never happen in practice -- the daemon registry uses 16-byte hex
@@ -980,14 +1378,34 @@ def main() -> None:
     all_agents.update(server_agents)
     all_agents.update(laptop_agents)
 
-    roots, events = build_lineage(all_agents)
+    roots, events = build_lineage(all_agents, known_variants)
     lineage_path = write_lineage_json(out_dir, roots)
     print(lineage_path)
 
     survivor_path = write_survivor_analysis(out_dir, roots)
     print(survivor_path)
 
-    mutation_path = write_mutation_diff(out_dir, events)
+    # Aggregate `variant_stats:*` memos across every node (laptop +
+    # each server node). When --no-variant-stats was passed (or the
+    # binary is missing), aggregated_stats stays a skeleton keyed by
+    # tribe pool with all counters 0; the comparison md skips its
+    # outcomes table when nothing has fired.
+    aggregated_stats: dict[str, dict[str, dict[str, int]]]
+    if no_variant_stats:
+        aggregated_stats = {
+            tribe: {v: {"verified": 0, "falsepos": 0} for v in variants}
+            for tribe, variants in tribe_pools.items()
+        }
+    else:
+        aggregated_stats = aggregate_variant_stats(
+            [laptop_dir, *server_node_dirs], tribe_pools,
+        )
+
+    mutation_path = write_mutation_diff(
+        out_dir, events,
+        tribe_pools=tribe_pools,
+        aggregated_stats=aggregated_stats,
+    )
     print(mutation_path)
 
     rotations = _read_rotations(run_dir)
@@ -1009,6 +1427,9 @@ def main() -> None:
         events=events,
         market_rows=market_rows,
         server_node_count=len(server_node_dirs),
+        tribe_pools=tribe_pools,
+        aggregated_stats=aggregated_stats,
+        legacy_top_variants=legacy_top_variants,
     )
     print(comparison_path)
 
