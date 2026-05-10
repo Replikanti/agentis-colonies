@@ -62,14 +62,39 @@ fn target_file() -> string {
 
 fn pick_variant(tribe: string, n: int) -> string {
     let _ = tribe;
-    let idx = n - ((n / 3) * 3);
+    // B2 variation source: 7-variant pool with 20% mutation rate.
+    // Cyclic baseline (n mod 7) gives sibling diversity at spawn time.
+    // Mutation roll uses now_ms_via_shell() pseudo-random to pick a
+    // different variant ~20% of the time, breaking cyclic ruts and
+    // exposing new variants to selection pressure.
+    let cyclic_idx = n - ((n / 7) * 7);
+    let mut_now = now_ms_via_shell();
+    let mut_roll = mut_now - ((mut_now / 100) * 100);
+    let idx = if mut_roll < 20 {
+        let rand_idx = mut_now - ((mut_now / 7) * 7);
+        rand_idx;
+    } else {
+        cyclic_idx;
+    };
     if idx == 0 {
         return "lifetime-default";
     };
     if idx == 1 {
         return "lifetime-strict-aliasing";
     };
-    return "lifetime-broad-borrow";
+    if idx == 2 {
+        return "lifetime-broad-borrow";
+    };
+    if idx == 3 {
+        return "lifetime-elision-corner";
+    };
+    if idx == 4 {
+        return "lifetime-static-promotion";
+    };
+    if idx == 5 {
+        return "lifetime-self-referential";
+    };
+    return "lifetime-trait-object-bounds";
 }
 
 fn self_node_addr() -> string {
@@ -211,6 +236,10 @@ fn tick(reason: string) -> void {
     // self-id; computing it once here saves two extra `exec sh` forks
     // (~50 CB each) per tick.
     let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
+    // B2: cache current prompt variant once per tick. Used by
+    // variant_stats:* memos at verified-finding / false-positive sites
+    // for per-variant fitness telemetry.
+    let _variant = recall_latest("hunter:prompt_variant");
     let conf = get_confidence();
     print("[hunter] tick conf=", conf);
     // #485 finite-pool: per-tick metabolic cost drains the shared tribe
@@ -486,7 +515,7 @@ fn tick(reason: string) -> void {
     // memo; appending it as a Focus: suffix lets sibling replicas lean
     // into different interpretations of the same seed. Empty memo (Stage
     // 2 single-tribe / no replication) is a no-op.
-    let variant = recall_latest("hunter:prompt_variant");
+    let variant = _variant;
     let variant_prefix = if len(variant) > 0 {
         "[Replica focus: prompt variant '" + variant + "' -- lean into that interpretation when scanning the source below.]\n\n";
     } else {
@@ -585,6 +614,15 @@ fn tick(reason: string) -> void {
                             memo_write("hunter:" + _self_pid + ":fitness", to_string(fit_pre_v + fit_reward));
                         };
                     };
+
+                    // B2: per-variant verified-finding counter. Tribe-aggregated
+                    // (each hunter writes under its own _variant tag), drives
+                    // selection feedback over variant pool.
+                    if len(_variant) > 0 {
+                        let vs_v = parse_int(recall_latest("variant_stats:" + _variant + ":verified"));
+                        memo_write("variant_stats:" + _variant + ":verified", to_string(vs_v + 1));
+                    };
+
 
                     // M2 replication: Malthusian-gated. C(n) = base * (1 + n/k).
                     let pool_after = cur_pool + actual_reward;
@@ -720,6 +758,15 @@ fn tick(reason: string) -> void {
                             memo_write("hunter:" + _self_pid + ":fitness", to_string(fit_pre_f - fit_penalty));
                         };
                     };
+
+                    // B2: per-variant false-positive counter. Mirror of the
+                    // verified-finding stats; a variant with high falsepos and
+                    // low verified loses replicating parents over time.
+                    if len(_variant) > 0 {
+                        let vs_f = parse_int(recall_latest("variant_stats:" + _variant + ":falsepos"));
+                        memo_write("variant_stats:" + _variant + ":falsepos", to_string(vs_f + 1));
+                    };
+
 
                     // Stage 2 M2 (#393): reputation -0.10 (clamp 0.0) on
                     // false positive. Asymmetry vs verified-finding
