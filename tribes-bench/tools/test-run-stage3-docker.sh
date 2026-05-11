@@ -342,6 +342,21 @@ assert_contains "per-tribe bootstrap line propagates HUNTER_PROMPT_EVOLUTION_THR
     "$(cat "$ORCH")" \
     "HUNTER_PROMPT_EVOLUTION_THRESHOLD=%s HUNTER_PROMPT_GEN_CAP=%s HUNTER_PROMPT_LEVENSHTEIN_FLOOR=%s"
 
+# 9b. #528: STAGE3_DAEMON_CB_PER_TICK env var is documented, has the
+# documented default of 2000, and its hermetic-config emit line is
+# present (so the spawned daemon's per-tick CB budget actually rises
+# above the agentis-core default of 100 which empirically bricks
+# LLM-heavy tribes-bench daemons after ~10 ticks).
+assert_contains "header documents STAGE3_DAEMON_CB_PER_TICK" \
+    "$(cat "$ORCH")" \
+    "STAGE3_DAEMON_CB_PER_TICK"
+assert_contains "STAGE3_DAEMON_CB_PER_TICK default is 2000" \
+    "$(cat "$ORCH")" \
+    'DAEMON_CB_PER_TICK="${STAGE3_DAEMON_CB_PER_TICK:-2000}"'
+assert_contains "hermetic config emits daemon.cb_per_tick line" \
+    "$(cat "$ORCH")" \
+    'printf "daemon.cb_per_tick = %s'
+
 # 10. #520 M98 v3 PR 3/3: M106 hash-pointer inheritance — assert each
 # hunter.ag carries the new helpers, the bootstrap inheritance branch,
 # and that both replicate() sites call the parent-wrap helper. Source-

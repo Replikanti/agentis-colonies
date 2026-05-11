@@ -100,6 +100,18 @@
 #                              (5%). A rewrite below the floor is
 #                              treated as no-op: old prompt retained,
 #                              generation not bumped, buffer untouched.
+#   STAGE3_DAEMON_CB_PER_TICK  Per-tick CB replenishment written into
+#                              hermetic .agentis/config as
+#                              `daemon.cb_per_tick` (#528). Default 2000
+#                              — well above the agentis-core default of
+#                              100 which empirically bricks LLM-heavy
+#                              tribes-bench daemons after ~10 ticks once
+#                              the `cb 200000000;` lifetime budget
+#                              drains (M98 v3 evolution-path ticks spend
+#                              ~250-300 CB on prompt + meta-prompt +
+#                              schema-sanity ping + exec-sh helpers).
+#                              Lower this only when intentionally
+#                              reproducing CB-exhaustion behaviour.
 #   STAGE3_LLM_BACKEND         llm.backend value injected into both
 #                              hermetic configs. Default: openai (#445).
 #   STAGE3_OPENAI_MODEL        Model id when STAGE3_LLM_BACKEND=openai.
@@ -273,6 +285,7 @@ HUNTER_PROMPT_GEN_CAP="${STAGE3_HUNTER_PROMPT_GEN_CAP:-10}"
 # #520 M98 v3 PR 2/3: minimum dissimilarity (integer percent, 0..100)
 # for an LLM-proposed prompt rewrite to be accepted. Default 5 (5%).
 HUNTER_PROMPT_LEVENSHTEIN_FLOOR="${STAGE3_HUNTER_PROMPT_LEVENSHTEIN_FLOOR:-5}"
+DAEMON_CB_PER_TICK="${STAGE3_DAEMON_CB_PER_TICK:-2000}"
 LLM_BACKEND="${STAGE3_LLM_BACKEND:-openai}"
 OPENAI_MODEL="${STAGE3_OPENAI_MODEL:-gpt-4o-mini}"
 OPENAI_ENDPOINT="${STAGE3_OPENAI_ENDPOINT:-https://api.openai.com/v1/chat/completions}"
@@ -468,6 +481,11 @@ write_bootstrap() {
         printf '  printf "messaging.distributed = true\\n"\n'
         printf '  printf "colony.workers = %%s:%%s\\n" "$PEER_HOST_IP" "%s"\n' "$peer_worker_port"
         printf '  printf "llm.backend = %s\\n"\n' "$LLM_BACKEND"
+        # #528: bump daemon.cb_per_tick well above the agentis-core default (100)
+        # so M98 v3 evolution-path ticks (which can spend 250-300 CB on prompt
+        # + meta-prompt + schema-sanity ping + exec-sh helpers) don't drain
+        # the daemon's 200M lifetime budget within ~10 ticks.
+        printf '  printf "daemon.cb_per_tick = %s\\n"\n' "$DAEMON_CB_PER_TICK"
         if [ "$LLM_BACKEND" = "openai" ]; then
             printf '  printf "llm.openai.endpoint = %s\\n"\n' "$OPENAI_ENDPOINT"
             printf '  printf "llm.openai.model = %s\\n"\n' "$OPENAI_MODEL"
