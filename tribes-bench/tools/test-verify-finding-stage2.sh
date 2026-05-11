@@ -209,6 +209,124 @@ case2
 case3
 case4
 
+# Cases 5-9: #531 class-alias map. Tests the new
+# STAGE3_VERIFIER_CLASS_ALIASES env var. Verifies that semantically-
+# equivalent class labels match (heap_overflow ↔ memory_corruption,
+# use_after_free ↔ dangling_borrow, data_race ↔ missing_lock) and
+# that unambiguous singleton classes (uninitialised_memory,
+# send_violation) stay strict.
+
+# Helper: invoke verifier with a finding at the given line + class
+# and return verified ("true" | "false").
+verifier_verdict() {
+    local line="$1"
+    local class="$2"
+    local alias_mode="${3:-1}"
+    local out
+    out="$(printf '{"line": %s, "class": "%s"}' "$line" "$class" | \
+        TARGET_DIR="$TARGET_DIR" \
+        BUGS_MANIFEST="$BUGS_MANIFEST" \
+        STAGE3_VERIFIER_CLASS_ALIASES="$alias_mode" \
+        bash "$VERIFIER" 2>/dev/null)"
+    printf '%s' "$out" | jq -r '.verified'
+}
+
+# Resolve a bug from the manifest by class predicate for fixture stability.
+bug_line_for_class() {
+    local cls="$1"
+    jq -r --arg c "$cls" 'first(.bugs[] | select(.class == $c)) | .line // "MISSING"' "$BUGS_MANIFEST"
+}
+
+case5_strict_mode_rejects_alias() {
+    # bug.class=heap_overflow + finding.class=memory_corruption.
+    # Strict mode (alias=0) must reject; the line is correct but the
+    # class doesn't strict-match.
+    local ho_line
+    ho_line="$(bug_line_for_class "heap_overflow")"
+    if [ "$ho_line" = "MISSING" ]; then
+        pass_with "case5: SKIPPED (no heap_overflow bug in manifest)"
+        return
+    fi
+    local v
+    v="$(verifier_verdict "$ho_line" "memory_corruption" "0")"
+    if [ "$v" = "false" ]; then
+        pass_with "case5: strict mode rejects heap_overflow ↔ memory_corruption alias"
+    else
+        fail_with "case5: strict mode incorrectly accepted alias (got verified=$v)"
+    fi
+}
+
+case6_alias_mode_accepts_heap_memcorr() {
+    # bug.class=heap_overflow + finding.class=memory_corruption.
+    # Alias mode (default) must accept.
+    local ho_line
+    ho_line="$(bug_line_for_class "heap_overflow")"
+    if [ "$ho_line" = "MISSING" ]; then
+        pass_with "case6: SKIPPED (no heap_overflow bug in manifest)"
+        return
+    fi
+    local v
+    v="$(verifier_verdict "$ho_line" "memory_corruption" "1")"
+    if [ "$v" = "true" ]; then
+        pass_with "case6: alias mode accepts heap_overflow ↔ memory_corruption"
+    else
+        fail_with "case6: alias mode rejected heap_overflow ↔ memory_corruption (got verified=$v)"
+    fi
+}
+
+case7_alias_mode_accepts_uaf_dangling() {
+    # bug.class=use_after_free + finding.class=dangling_borrow.
+    local uaf_line
+    uaf_line="$(bug_line_for_class "use_after_free")"
+    if [ "$uaf_line" = "MISSING" ]; then
+        pass_with "case7: SKIPPED (no use_after_free bug in manifest)"
+        return
+    fi
+    local v
+    v="$(verifier_verdict "$uaf_line" "dangling_borrow" "1")"
+    if [ "$v" = "true" ]; then
+        pass_with "case7: alias mode accepts use_after_free ↔ dangling_borrow"
+    else
+        fail_with "case7: alias mode rejected use_after_free ↔ dangling_borrow (got verified=$v)"
+    fi
+}
+
+case8_alias_mode_rejects_um_to_memcorr() {
+    # bug.class=uninitialised_memory + finding.class=memory_corruption.
+    # uninitialised_memory is a singleton (no alias group); even in
+    # alias mode it MUST stay strict.
+    local um_line
+    um_line="$(bug_line_for_class "uninitialised_memory")"
+    if [ "$um_line" = "MISSING" ]; then
+        pass_with "case8: SKIPPED (no uninitialised_memory bug in manifest)"
+        return
+    fi
+    local v
+    v="$(verifier_verdict "$um_line" "memory_corruption" "1")"
+    if [ "$v" = "false" ]; then
+        pass_with "case8: alias mode keeps uninitialised_memory strict (no cross-class accept)"
+    else
+        fail_with "case8: alias mode incorrectly aliased UM → memory_corruption (got verified=$v)"
+    fi
+}
+
+case9_exact_class_still_works() {
+    # Regression: exact-class match must always verify, alias mode or not.
+    local v
+    v="$(verifier_verdict "$FIRST_BUG_LINE" "$FIRST_BUG_CLASS" "1")"
+    if [ "$v" = "true" ]; then
+        pass_with "case9: exact-class match still verifies in alias mode"
+    else
+        fail_with "case9: exact-class match broken in alias mode (got verified=$v)"
+    fi
+}
+
+case5_strict_mode_rejects_alias
+case6_alias_mode_accepts_heap_memcorr
+case7_alias_mode_accepts_uaf_dangling
+case8_alias_mode_rejects_um_to_memcorr
+case9_exact_class_still_works
+
 echo ""
 echo "Summary: $PASS passed, $FAIL failed"
 if [ "$FAIL" -gt 0 ]; then

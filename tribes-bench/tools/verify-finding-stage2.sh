@@ -248,11 +248,44 @@ while [ "$i" -lt "$BUG_COUNT" ]; do
     BUG_SIG="$(jq -r ".bugs[$i].signature" "$BUGS_MANIFEST")"
 
     # Class predicate: only enforced when finding.class is set.
+    # #531: when STAGE3_VERIFIER_CLASS_ALIASES is "1" (default), a
+    # finding.class in the same alias group as bug.class also matches.
+    # Alias groups capture LLM-naming ambiguities the M98 v3 take-4
+    # smoke surfaced — heap_overflow described as memory_corruption,
+    # use_after_free as dangling_borrow, data_race as missing_lock.
+    # Set STAGE3_VERIFIER_CLASS_ALIASES=0 for strict matching.
     if [ -n "$FINDING_CLASS" ]; then
         BUG_CLASS="$(jq -r ".bugs[$i].class // \"\"" "$BUGS_MANIFEST")"
         if [ "$BUG_CLASS" != "$FINDING_CLASS" ]; then
-            i=$((i + 1))
-            continue
+            ALIAS_MODE="${STAGE3_VERIFIER_CLASS_ALIASES:-1}"
+            CLASS_MATCH=0
+            if [ "$ALIAS_MODE" = "1" ]; then
+                case "$BUG_CLASS" in
+                    heap_overflow|memory_corruption|buffer_overflow)
+                        case "$FINDING_CLASS" in
+                            heap_overflow|memory_corruption|buffer_overflow) CLASS_MATCH=1 ;;
+                        esac
+                        ;;
+                    use_after_free|dangling_borrow)
+                        case "$FINDING_CLASS" in
+                            use_after_free|dangling_borrow) CLASS_MATCH=1 ;;
+                        esac
+                        ;;
+                    data_race|missing_lock)
+                        case "$FINDING_CLASS" in
+                            data_race|missing_lock) CLASS_MATCH=1 ;;
+                        esac
+                        ;;
+                esac
+            fi
+            if [ "$CLASS_MATCH" -eq 0 ]; then
+                i=$((i + 1))
+                continue
+            fi
+            # Aliased match — log to stderr so post-mortems can
+            # distinguish strict vs aliased verifications without
+            # changing the JSON verdict shape on stdout.
+            echo "verify-finding-stage2: aliased class match: bug.class=$BUG_CLASS finding.class=$FINDING_CLASS bug_id=$(jq -r ".bugs[$i].id" "$BUGS_MANIFEST")" >&2
         fi
     fi
 
