@@ -1,0 +1,9 @@
+{
+  "stage": "stage4",
+  "target_dir": "targets/stage4-owning_ref-v0.4.1",
+  "bugs": [
+    {"id": "S4-ORDB-001", "class": "dangling_borrow", "file": "src/lib.rs", "line": 357, "line_tolerance": 5, "signature": "pub fn map<F, U: ?Sized>(self, f: F) -> OwningRef<O, U>", "severity": "high", "verifier_test": "test_or_db_001", "rationale": "RUSTSEC-2022-0040: OwningRef::map's closure bound `FnOnce(&T) -> &U` lacks a higher-ranked lifetime `for<'a>`, letting the returned reference escape via the closure return type to outlive the owner -- dangling-borrow soundness hole. Unmaintained; no upstream fix."},
+    {"id": "S4-ORDB-002", "class": "dangling_borrow", "file": "src/lib.rs", "line": 389, "line_tolerance": 5, "signature": "pub fn map_with_owner<F, U: ?Sized>(self, f: F) -> OwningRef<O, U>", "severity": "high", "verifier_test": "test_or_db_002", "rationale": "RUSTSEC-2022-0040: OwningRef::map_with_owner has the same unsound HRTB-missing pattern as map; the second `&T` parameter can be aliased through the closure return to forge a dangling borrow tied to neither the owner nor the original reference."},
+    {"id": "S4-ORDB-003", "class": "dangling_borrow", "file": "src/lib.rs", "line": 785, "line_tolerance": 5, "signature": "pub fn as_owner_mut(&mut self) -> &mut O", "severity": "high", "verifier_test": "test_or_db_003", "rationale": "RUSTSEC-2022-0040: OwningRef::as_owner_mut hands out `&mut O` while an outstanding `&T` borrow (derived from O via map) is still live inside the same OwningRef -- two co-existing aliases of an exclusive borrow, classic UB."}
+  ]
+}

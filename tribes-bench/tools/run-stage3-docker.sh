@@ -105,6 +105,25 @@
 #                              Default: targets/stage3/bumpalo-v3.2.0.
 #   STAGE3_TARGET_B_BUGS       Rotation-B bugs.json.
 #                              Default: targets/stage3/bugs.json.
+#   STAGE3_TARGET_C_DIR        Optional rotation-C target dir
+#                              (Stage 4 Phase 1 chunk 1, #519). When set,
+#                              the rotation timer round-robins A,B,C
+#                              instead of alternating A/B. Suggested:
+#                              targets/stage4-crossbeam-deque-v0.7.2.
+#   STAGE3_TARGET_C_BUGS       Optional rotation-C bugs.json.
+#                              Required when STAGE3_TARGET_C_DIR is set.
+#                              Suggested:
+#                              targets/stage4-crossbeam-deque-v0.7.2/bugs.json.
+#   STAGE3_TARGET_D_DIR        Optional rotation-D target dir (#519).
+#                              Suggested: targets/stage4-owning_ref-v0.4.1.
+#   STAGE3_TARGET_D_BUGS       Optional rotation-D bugs.json (#519).
+#                              Suggested:
+#                              targets/stage4-owning_ref-v0.4.1/bugs.json.
+#   STAGE3_TARGET_E_DIR        Optional rotation-E target dir (#519).
+#                              Suggested: targets/stage4-generator-v0.6.25.
+#   STAGE3_TARGET_E_BUGS       Optional rotation-E bugs.json (#519).
+#                              Suggested:
+#                              targets/stage4-generator-v0.6.25/bugs.json.
 #   STAGE3_DRY_RUN             1 = echo every command (with `+ ` prefix),
 #                              do not build the image, do not spawn
 #                              containers, do not exec rotation memos,
@@ -215,6 +234,18 @@ TARGET_A_DIR_REL="${STAGE3_TARGET_A_DIR:-targets/stage2/smallvec-v0.6.13}"
 TARGET_A_BUGS_REL="${STAGE3_TARGET_A_BUGS:-targets/stage2/bugs.json}"
 TARGET_B_DIR_REL="${STAGE3_TARGET_B_DIR:-targets/stage3/bumpalo-v3.2.0}"
 TARGET_B_BUGS_REL="${STAGE3_TARGET_B_BUGS:-targets/stage3/bugs.json}"
+# Stage 4 Phase 1 chunk 1 (#519) — optional C/D/E slots. When all three
+# *_DIR vars are unset the rotation falls back to byte-identical A/B
+# alternation. When any *_DIR is set its paired *_BUGS must also be set;
+# missing pairs are silently skipped (the rotation arm is dropped from
+# the round-robin so a partially-configured operator override never
+# emits an empty memo).
+TARGET_C_DIR_REL="${STAGE3_TARGET_C_DIR:-}"
+TARGET_C_BUGS_REL="${STAGE3_TARGET_C_BUGS:-}"
+TARGET_D_DIR_REL="${STAGE3_TARGET_D_DIR:-}"
+TARGET_D_BUGS_REL="${STAGE3_TARGET_D_BUGS:-}"
+TARGET_E_DIR_REL="${STAGE3_TARGET_E_DIR:-}"
+TARGET_E_BUGS_REL="${STAGE3_TARGET_E_BUGS:-}"
 
 val=""
 for var_name in WALL_CLOCK ROTATION_INTERVAL DEATH_THRESHOLD \
@@ -502,7 +533,35 @@ spawn_containers() {
 # paths (/run-root/targets/...), since memos are read inside containers.
 rotation_timer() {
     emit_step "starting target-rotation timer (interval=${ROTATION_INTERVAL}s)"
-    emit_cmd "( phase=0; while true; do sleep $ROTATION_INTERVAL; phase=\$((1 - phase)); if [ \"\$phase\" = \"0\" ]; then td=/run-root/$TARGET_A_DIR_REL; bm=/run-root/$TARGET_A_BUGS_REL; else td=/run-root/$TARGET_B_DIR_REL; bm=/run-root/$TARGET_B_BUGS_REL; fi; printf '%s,%s,%s\\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"\$td\" \"\$bm\" >>$ROTATIONS_CSV; podman exec stage3-laptop agentis memo set tribes-bench:target_dir \"\$td\" >/dev/null 2>&1 || true; podman exec stage3-laptop agentis memo set tribes-bench:bugs_manifest \"\$bm\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set tribes-bench:target_dir \"\$td\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set tribes-bench:bugs_manifest \"\$bm\" >/dev/null 2>&1 || true; done ) >>$RUN_DIR/rotation.log 2>&1 & echo \$! >$RUN_DIR/rotation.pid"
+    # Stage 4 Phase 1 chunk 1 (#519): if any of TARGET_C_DIR_REL /
+    # TARGET_D_DIR_REL / TARGET_E_DIR_REL is set together with its
+    # paired *_BUGS_REL, fall through to the array-based round-robin
+    # branch. Otherwise emit the byte-identical legacy A/B alternation
+    # so the default invocation stays unchanged.
+    extra_targets=""
+    if [ -n "$TARGET_C_DIR_REL" ] && [ -n "$TARGET_C_BUGS_REL" ]; then
+        extra_targets="$extra_targets C"
+    fi
+    if [ -n "$TARGET_D_DIR_REL" ] && [ -n "$TARGET_D_BUGS_REL" ]; then
+        extra_targets="$extra_targets D"
+    fi
+    if [ -n "$TARGET_E_DIR_REL" ] && [ -n "$TARGET_E_BUGS_REL" ]; then
+        extra_targets="$extra_targets E"
+    fi
+    if [ -z "$extra_targets" ]; then
+        emit_cmd "( phase=0; while true; do sleep $ROTATION_INTERVAL; phase=\$((1 - phase)); if [ \"\$phase\" = \"0\" ]; then td=/run-root/$TARGET_A_DIR_REL; bm=/run-root/$TARGET_A_BUGS_REL; else td=/run-root/$TARGET_B_DIR_REL; bm=/run-root/$TARGET_B_BUGS_REL; fi; printf '%s,%s,%s\\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"\$td\" \"\$bm\" >>$ROTATIONS_CSV; podman exec stage3-laptop agentis memo set tribes-bench:target_dir \"\$td\" >/dev/null 2>&1 || true; podman exec stage3-laptop agentis memo set tribes-bench:bugs_manifest \"\$bm\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set tribes-bench:target_dir \"\$td\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set tribes-bench:bugs_manifest \"\$bm\" >/dev/null 2>&1 || true; done ) >>$RUN_DIR/rotation.log 2>&1 & echo \$! >$RUN_DIR/rotation.pid"
+    else
+        # Round-robin across A, B, plus whichever of C/D/E were
+        # configured. Each iteration picks the next entry by integer
+        # modulo of a monotonic counter; bash 4 `${arr[idx]}` indexing
+        # with `${!var}` indirect expansion resolves
+        # TARGET_<K>_DIR_REL / TARGET_<K>_BUGS_REL for K in {A,B,C,D,E}.
+        targets_init="targets=(A B)"
+        for k in $extra_targets; do
+            targets_init="$targets_init; targets+=($k)"
+        done
+        emit_cmd "( $targets_init; i=0; n=\${#targets[@]}; while true; do sleep $ROTATION_INTERVAL; k=\${targets[\$((i % n))]}; i=\$((i+1)); td_var=\"TARGET_\${k}_DIR_REL\"; bm_var=\"TARGET_\${k}_BUGS_REL\"; td=/run-root/\${!td_var}; bm=/run-root/\${!bm_var}; printf '%s,%s,%s\\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"\$td\" \"\$bm\" >>$ROTATIONS_CSV; podman exec stage3-laptop agentis memo set tribes-bench:target_dir \"\$td\" >/dev/null 2>&1 || true; podman exec stage3-laptop agentis memo set tribes-bench:bugs_manifest \"\$bm\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set tribes-bench:target_dir \"\$td\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set tribes-bench:bugs_manifest \"\$bm\" >/dev/null 2>&1 || true; done ) >>$RUN_DIR/rotation.log 2>&1 & echo \$! >$RUN_DIR/rotation.pid"
+    fi
 }
 
 stop_rotation_timer() {
