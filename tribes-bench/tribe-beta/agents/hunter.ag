@@ -148,62 +148,6 @@ fn _class_pick_universe(idx: int) -> string {
     return "dangling_borrow";
 }
 
-// #504 M98 v2: phrasing-derived focus hint. The pre-#504 prompt
-// hardcoded smallvec-specific function names and a single bug class,
-// which collapsed every variant -- including class-flipped mutants
-// from `pick_variant` -- to the same uninitialised-memory text. v1.7.9
-// `prompt(...)` requires a string-literal first argument, so each of
-// the 8 emitted classes is dispatched via an if-chain at the call site
-// (see tick() below) and the phrasing hint is prepended to
-// `src_with_focus` instead of appended to the prompt instruction.
-// Hints are shared across all 5 tribes since each tribe's 7 phrasings
-// are descriptive, not target-specific. Unknown / empty phrasing -> ""
-// so the dispatcher remains valid for future tags added to `pick_variant`.
-fn _phrasing_hint(p: string) -> string {
-    if len(p) == 0 { return ""; };
-    // alpha tribe (format-pattern-*)
-    if p == "format-pattern-default" { return "Scan the whole file uniformly and rank by raw suspicion density."; };
-    if p == "format-pattern-strict-literal" { return "Bias toward signatures whose name literally contains _unchecked / _raw / _unsafe."; };
-    if p == "format-pattern-broad-shellbuilder" { return "Bias toward constructors and builders that compose multiple unsafe primitives."; };
-    if p == "format-pattern-substitution-aware" { return "Bias toward functions where one parameter is substituted into a length / capacity / index field used by an unsafe op."; };
-    if p == "format-pattern-quoting-edge" { return "Bias toward boundary cases: empty input, len=0, capacity=0, single-element, isize::MAX."; };
-    if p == "format-pattern-pipe-chain" { return "Bias toward call chains where one unsafe method's output feeds another unsafe method's input."; };
-    if p == "format-pattern-deferred-eval" { return "Bias toward functions whose unsafe op runs inside a closure / iterator / future executed later."; };
-    // beta tribe (source-sink-*)
-    if p == "source-sink-default" { return "Trace each external input from its public-API entry point to the first unsafe sink it reaches."; };
-    if p == "source-sink-arg-only" { return "Restrict the source set to direct function arguments; ignore values pulled from globals or thread-locals."; };
-    if p == "source-sink-broad-flow" { return "Expand the source set to include fields, globals, and previously-stored state, not just immediate arguments."; };
-    if p == "source-sink-call-graph" { return "Follow source-to-sink across at least one helper-function call boundary, not only within a single body."; };
-    if p == "source-sink-async-boundary" { return "Pay attention to async fn / .await points where the source value's lifetime crosses a suspension."; };
-    if p == "source-sink-trait-dispatch" { return "Pay attention to trait-object / dyn-dispatch sinks where the concrete unsafe impl is selected at runtime."; };
-    if p == "source-sink-iterator-chain" { return "Pay attention to iterator combinators (map, flat_map, scan) where the unsafe op sits inside a closure several layers deep."; };
-    // gamma tribe (error-path-*)
-    if p == "error-path-default" { return "Walk the file's error paths -- early returns, unwind, panic -- and check what the unsafe state looks like at each exit."; };
-    if p == "error-path-unwrap-only" { return "Bias toward .unwrap() / .expect() on values that gate an unsafe op; on None / Err the panic happens with the unsafe state half-built."; };
-    if p == "error-path-broad-fallible" { return "Bias toward any fallible call (Result, Option, ?) inside an unsafe block -- enumerate the recovery state along each branch."; };
-    if p == "error-path-question-mark" { return "Bias toward `?` operators between an alloc and a corresponding mem::forget or set_len -- the early return skips the cleanup."; };
-    if p == "error-path-panic-recovery" { return "Bias toward panic! / assert! / debug_assert! inside an unsafe scope where the unwinder runs Drop on partially-initialised state."; };
-    if p == "error-path-result-coercion" { return "Bias toward Result -> Result conversions (From, ?, map_err) that drop the original error context together with cleanup info."; };
-    if p == "error-path-error-conversion" { return "Bias toward custom Error / From impls whose Drop or finalisation step runs while an unsafe invariant is still broken."; };
-    // delta tribe (lifetime-*)
-    if p == "lifetime-default" { return "Trace each `&` / `*const` / `*mut` from its origin to the unsafe op that uses it; flag anything whose origin can outlive its referent."; };
-    if p == "lifetime-strict-aliasing" { return "Bias toward &mut + & coexistence over the same allocation, especially through raw pointers reborrowed inside unsafe blocks."; };
-    if p == "lifetime-broad-borrow" { return "Expand the borrow set: include borrows derived from fields, slice projections, iterator items, and trait method receivers."; };
-    if p == "lifetime-elision-corner" { return "Bias toward signatures that rely on lifetime elision rules where the elided lifetime is wider than the implementation's invariant."; };
-    if p == "lifetime-static-promotion" { return "Bias toward 'static promotion via transmute, Box::leak, or unsafe-extended lifetimes that escape their original scope."; };
-    if p == "lifetime-self-referential" { return "Bias toward self-referential structs: an owned buffer plus a pointer / reference into it stored in the same value."; };
-    if p == "lifetime-trait-object-bounds" { return "Bias toward `dyn Trait + 'a` bounds whose erased lifetime allows the inner value to outlive its safe origin."; };
-    // epsilon tribe (concurrency-*)
-    if p == "concurrency-default" { return "Walk every shared-state access and check the synchronisation primitive that protects it; missing or under-strength is the bug."; };
-    if p == "concurrency-shared-state" { return "Bias toward `static mut` / UnsafeCell / Arc<UnsafeCell<...>> patterns where the contract relies on \"caller does not race\"."; };
-    if p == "concurrency-lock-audit" { return "Bias toward Mutex / RwLock usage where the lock is held on one path but bypassed on a fast path or unsafe shortcut."; };
-    if p == "concurrency-channel-deadlock" { return "Bias toward channel send / recv pairs where an unsafe finalisation step assumes the other side has made progress."; };
-    if p == "concurrency-atomic-ordering" { return "Bias toward Atomic*::load / store with Relaxed where the value gates an unsafe dereference or capacity decision."; };
-    if p == "concurrency-cell-interior-mut" { return "Bias toward Cell / RefCell / UnsafeCell exposed through a Sync wrapper without thread-safe access discipline."; };
-    if p == "concurrency-async-await-races" { return "Bias toward async fn awaits where the held state across a suspension point is also accessible from another task."; };
-    return "";
-}
-
 fn pick_variant(tribe: string, n: int) -> string {
     let _ = tribe;
     // #499 M98 self-evolution: variant string carries `<class>:<phrasing>`
@@ -757,74 +701,16 @@ fn tick(reason: string) -> void {
     // into different interpretations of the same seed. Empty memo (Stage
     // 2 single-tribe / no replication) is a no-op.
     let variant = _variant;
-    // #504: hoist variant parsing once per tick. Both the prompt
-    // dispatcher (below) and the verifier-call site share these
-    // locals; pre-#504 the parser ran only at the verifier-call
-    // site, so the prompt could not see the variant class. Empty
-    // `_variant` (cold start) or phrasing-only legacy strings
-    // (no `:`) fall back to the tribe's primary class.
-    let _colon_idx = index_of(_variant, ":");
-    let _variant_class = if len(_variant) == 0 {
-        _tribe_default_class();
-    } else {
-        if _colon_idx >= 0 {
-            substring(_variant, 0, _colon_idx);
-        } else {
-            _tribe_default_class();
-        };
-    };
-    let _variant_phrasing = if len(_variant) == 0 {
-        "";
-    } else {
-        if _colon_idx >= 0 {
-            substring(_variant, _colon_idx + 1, len(_variant));
-        } else {
-            "";
-        };
-    };
-    // #504: src overlay carries (a) the existing replica-focus line
-    // from #439 and (b) a 1-sentence phrasing-derived focus hint.
-    // The class trait is dispatched at the prompt() call below;
-    // the phrasing hint sharpens *where* in the file to look.
-    let _phr_hint = _phrasing_hint(_variant_phrasing);
     let variant_prefix = if len(variant) > 0 {
         "[Replica focus: prompt variant '" + variant + "' -- lean into that interpretation when scanning the source below.]\n\n";
     } else {
         "";
     };
-    let phrasing_prefix = if len(_phr_hint) > 0 {
-        "[Phrasing focus hint: " + _phr_hint + "]\n\n";
-    } else {
-        "";
-    };
-    let src_with_focus = variant_prefix + phrasing_prefix + src;
-    // #504 M98 v2: class-parametrized prompt dispatcher. v1.7.9 requires
-    // `prompt(...)` to take a string literal as its first argument, so
-    // each of the 8 classes emitted by `pick_variant` /
-    // `_class_pick_universe` gets its own `prompt("<literal>", ...) ->
-    // Finding` arm. Unknown class falls through to the
-    // uninitialised_memory branch, matching the federation's historical
-    // default and every tribe's index-0 fallback. Phrasing-derived focus
-    // hints are composed orthogonally via `_phrasing_hint()` into
-    // `src_with_focus` above; the per-class instruction strings here are
-    // byte-identical across all 5 hunter.ag files.
-    let finding = if _variant_class == "use_after_free" {
-        prompt("You are a Rust unsafe-code auditor scanning a library file. Look specifically for use-after-free or double-free: code where a borrow or raw pointer outlives the value it points into, or where a panic / early return leaves an owner state from which Drop will free already-moved or already-shifted memory. Concrete signature shapes to scan for: (1) any function that retains a `*const T` / `*mut T` derived from a `Vec` or `SmallVec` across a call that may reallocate (push, extend, reserve, insert_many); (2) any `unsafe { ... }` block that performs `ptr::copy` / `ptr::write` followed by a fallible step (`?`, `iter.next()`, user closure) before the buffer's `len` is restored; (3) any `ManuallyDrop` / `mem::forget` pattern whose forget call is on the happy path only and absent on the early-exit path. IMPORTANT -- REPORT THE FUNCTION SIGNATURE LINE, NOT THE OPERATION LINE: when you spot a suspicious unsafe operation inside a function body, scroll up to find the function declaration line and report THAT line number. The verifier matches at function-level granularity with +/-5 line tolerance, anchored on the function signature. Use signature_hint to record the function-name + parameter snippet, NOT the operation. Return JSON with these fields: line: int -- 1-indexed source line where the bug is, OR 0 if you genuinely cannot find one. severity: string -- low | medium | high. rationale: string -- one sentence explaining why this line is suspicious. signature_hint: string -- short literal substring (5-30 chars) of the function signature that grep can find on that line. class: must be exactly \"use_after_free\". Do NOT return line=0 unless you have genuinely scanned the file and found nothing.", src_with_focus) -> Finding;
-    } else { if _variant_class == "memory_corruption" {
-        prompt("You are a Rust unsafe-code auditor scanning a library file. Look specifically for memory corruption: arithmetic in capacity / length / alloc / dealloc paths that lets the buffer disagree with its layout, so derived raw pointers overrun the actual allocation or deallocation runs against a different layout than allocation. Concrete signature shapes to scan for: (1) any `fn grow` / `fn reserve` / `fn shrink_to_fit` / `fn set_len` whose body assigns a new capacity without checking it against `self.len()`; (2) any `unsafe` path where `Layout::array::<T>(new_cap)` is paired with a `ptr::copy*` of `self.len()` elements and the relationship between `new_cap` and `self.len()` is not enforced; (3) any `alloc::dealloc` that uses a layout derived from a different capacity than the corresponding `alloc::alloc`. IMPORTANT -- REPORT THE FUNCTION SIGNATURE LINE, NOT THE OPERATION LINE: when you spot a suspicious unsafe operation inside a function body, scroll up to find the function declaration line and report THAT line number. The verifier matches at function-level granularity with +/-5 line tolerance, anchored on the function signature. Use signature_hint to record the function-name + parameter snippet, NOT the operation. Return JSON with these fields: line: int -- 1-indexed source line where the bug is, OR 0 if you genuinely cannot find one. severity: string -- low | medium | high. rationale: string -- one sentence explaining why this line is suspicious. signature_hint: string -- short literal substring (5-30 chars) of the function signature that grep can find on that line. class: must be exactly \"memory_corruption\". Do NOT return line=0 unless you have genuinely scanned the file and found nothing.", src_with_focus) -> Finding;
-    } else { if _variant_class == "heap_overflow" {
-        prompt("You are a Rust unsafe-code auditor scanning a library file. Look specifically for heap overflow: code that sizes an allocation from an externally-controllable iterator's `size_hint()` / `len()` and then writes past the allocation when the iterator lies about its length, or any unchecked length parameter passed straight into `ptr::write` / `ptr::copy_nonoverlapping`. Concrete signature shapes to scan for: (1) any `fn extend` / `fn insert_many` / `fn from_iter` / `fn append` that calls `iter.size_hint()` once, reserves `lower`, then writes one element per loop step without re-checking capacity; (2) any `unsafe` block whose write count comes from a caller-supplied `usize` rather than from `self.capacity() - self.len()`; (3) any `set_len` after a write loop without an intervening `reserve` proportional to the count actually consumed. IMPORTANT -- REPORT THE FUNCTION SIGNATURE LINE, NOT THE OPERATION LINE: when you spot a suspicious unsafe operation inside a function body, scroll up to find the function declaration line and report THAT line number. The verifier matches at function-level granularity with +/-5 line tolerance, anchored on the function signature. Use signature_hint to record the function-name + parameter snippet, NOT the operation. Return JSON with these fields: line: int -- 1-indexed source line where the bug is, OR 0 if you genuinely cannot find one. severity: string -- low | medium | high. rationale: string -- one sentence explaining why this line is suspicious. signature_hint: string -- short literal substring (5-30 chars) of the function signature that grep can find on that line. class: must be exactly \"heap_overflow\". Do NOT return line=0 unless you have genuinely scanned the file and found nothing.", src_with_focus) -> Finding;
-    } else { if _variant_class == "data_race" {
-        prompt("You are a Rust unsafe-code auditor scanning a library file. Look specifically for data race: shared mutable state accessed from multiple threads without synchronisation, or atomics with too-weak orderings to enforce the invariants the surrounding `unsafe` code relies on. Concrete signature shapes to scan for: (1) any `static mut` / `UnsafeCell` / raw pointer field of a `Sync` type whose only protection is convention rather than a lock or atomic operation; (2) any `AtomicUsize` / `AtomicPtr` load-store sequence that uses `Ordering::Relaxed` while the read value gates an unsafe dereference; (3) any `unsafe impl Sync` whose body relies on a non-atomic counter or pointer being mutated under contention. IMPORTANT -- REPORT THE FUNCTION SIGNATURE LINE, NOT THE OPERATION LINE: when you spot a suspicious unsafe operation inside a function body, scroll up to find the function declaration line and report THAT line number. The verifier matches at function-level granularity with +/-5 line tolerance, anchored on the function signature. Use signature_hint to record the function-name + parameter snippet, NOT the operation. Return JSON with these fields: line: int -- 1-indexed source line where the bug is, OR 0 if you genuinely cannot find one. severity: string -- low | medium | high. rationale: string -- one sentence explaining why this line is suspicious. signature_hint: string -- short literal substring (5-30 chars) of the function signature that grep can find on that line. class: must be exactly \"data_race\". Do NOT return line=0 unless you have genuinely scanned the file and found nothing.", src_with_focus) -> Finding;
-    } else { if _variant_class == "send_violation" {
-        prompt("You are a Rust unsafe-code auditor scanning a library file. Look specifically for Send / Sync violations: types that hand out an `unsafe impl Send` or `unsafe impl Sync` without actually upholding the contract, or wrappers that allow non-thread-safe interior values to cross thread boundaries. Concrete signature shapes to scan for: (1) any `unsafe impl Send for Foo<T>` / `unsafe impl Sync for Foo<T>` whose body has no `where T: Send` / `T: Sync` bound and whose internal storage holds raw pointers or `UnsafeCell`; (2) any constructor that boxes a `Rc<...>` / non-`Send` type and re-exposes it through a `Send` newtype; (3) any function that transmutes a `&T` / `*mut T` across a thread boundary via `std::thread::spawn` / `crossbeam::scope` without proving the value is thread-safe. IMPORTANT -- REPORT THE FUNCTION SIGNATURE LINE, NOT THE OPERATION LINE: when you spot a suspicious unsafe operation inside a function body, scroll up to find the function declaration line and report THAT line number. The verifier matches at function-level granularity with +/-5 line tolerance, anchored on the function signature. Use signature_hint to record the function-name + parameter snippet, NOT the operation. Return JSON with these fields: line: int -- 1-indexed source line where the bug is, OR 0 if you genuinely cannot find one. severity: string -- low | medium | high. rationale: string -- one sentence explaining why this line is suspicious. signature_hint: string -- short literal substring (5-30 chars) of the function signature that grep can find on that line. class: must be exactly \"send_violation\". Do NOT return line=0 unless you have genuinely scanned the file and found nothing.", src_with_focus) -> Finding;
-    } else { if _variant_class == "missing_lock" {
-        prompt("You are a Rust unsafe-code auditor scanning a library file. Look specifically for missing-lock bugs: shared mutable state where the read path or the write path bypasses the lock the type's invariant depends on. Concrete signature shapes to scan for: (1) any `fn` that reads a field protected by a `Mutex` / `RwLock` via an unsafe shortcut (raw pointer, cached snapshot, lock-free fast path) without re-validating under the lock; (2) any `unsafe` block that writes to interior state outside a `MutexGuard` / `RwLockWriteGuard` scope while other paths hold one; (3) any `pub fn` whose docstring says \"caller must hold the lock\" but the type provides no API that enforces it. IMPORTANT -- REPORT THE FUNCTION SIGNATURE LINE, NOT THE OPERATION LINE: when you spot a suspicious unsafe operation inside a function body, scroll up to find the function declaration line and report THAT line number. The verifier matches at function-level granularity with +/-5 line tolerance, anchored on the function signature. Use signature_hint to record the function-name + parameter snippet, NOT the operation. Return JSON with these fields: line: int -- 1-indexed source line where the bug is, OR 0 if you genuinely cannot find one. severity: string -- low | medium | high. rationale: string -- one sentence explaining why this line is suspicious. signature_hint: string -- short literal substring (5-30 chars) of the function signature that grep can find on that line. class: must be exactly \"missing_lock\". Do NOT return line=0 unless you have genuinely scanned the file and found nothing.", src_with_focus) -> Finding;
-    } else { if _variant_class == "dangling_borrow" {
-        prompt("You are a Rust unsafe-code auditor scanning a library file. Look specifically for dangling borrows: references that the borrow checker accepts but whose referent is invalidated before the reference's lifetime ends -- typically via `unsafe` lifetime extension, self-referential structs, or `transmute` of `'_` bounds. Concrete signature shapes to scan for: (1) any `unsafe fn` that returns `&'a T` / `&'a mut T` whose `'a` was synthesised via `transmute` or `std::mem::transmute_copy` rather than tied to an input parameter; (2) any self-referential struct that stores both an owned buffer and a `&` / `*const` into that buffer, exposed through a safe API; (3) any closure / future / iterator whose captured reference outlives the value it borrows because the safe wrapper hands the closure to a longer-lived executor. IMPORTANT -- REPORT THE FUNCTION SIGNATURE LINE, NOT THE OPERATION LINE: when you spot a suspicious unsafe operation inside a function body, scroll up to find the function declaration line and report THAT line number. The verifier matches at function-level granularity with +/-5 line tolerance, anchored on the function signature. Use signature_hint to record the function-name + parameter snippet, NOT the operation. Return JSON with these fields: line: int -- 1-indexed source line where the bug is, OR 0 if you genuinely cannot find one. severity: string -- low | medium | high. rationale: string -- one sentence explaining why this line is suspicious. signature_hint: string -- short literal substring (5-30 chars) of the function signature that grep can find on that line. class: must be exactly \"dangling_borrow\". Do NOT return line=0 unless you have genuinely scanned the file and found nothing.", src_with_focus) -> Finding;
-    } else {
-        prompt("You are a Rust unsafe-code auditor scanning a library file. Look specifically for uninitialised memory exposure: code that reads or hands out bytes from a buffer or struct that was never fully initialised. Concrete signature shapes to scan for: (1) any `unsafe fn` whose name ends in `_unchecked` and constructs a value out of a caller-supplied length without verifying that the corresponding region is initialised; (2) any function that calls `MaybeUninit::uninit().assume_init()` or `mem::zeroed()` before every byte of the inner type has been written; (3) any constructor that takes a raw buffer plus a length parameter and exposes it as a safe owned value without an initialisation check. IMPORTANT -- REPORT THE FUNCTION SIGNATURE LINE, NOT THE OPERATION LINE: when you spot a suspicious unsafe operation inside a function body, scroll up to find the function declaration line and report THAT line number. The verifier matches at function-level granularity with +/-5 line tolerance, anchored on the function signature. Use signature_hint to record the function-name + parameter snippet, NOT the operation. Return JSON with these fields: line: int -- 1-indexed source line where the bug is, OR 0 if you genuinely cannot find one. severity: string -- low | medium | high. rationale: string -- one sentence explaining why this line is suspicious. signature_hint: string -- short literal substring (5-30 chars) of the function signature that grep can find on that line. class: must be exactly \"uninitialised_memory\". Do NOT return line=0 unless you have genuinely scanned the file and found nothing.", src_with_focus) -> Finding;
-    }; }; }; }; }; }; };
+    let src_with_focus = variant_prefix + src;
+    let finding = prompt(
+        "Your specific target function is `pub fn insert_many` -- it lives near line 827 of the file. The bug is the heap overflow inside this function: `iter.size_hint()` returns a lower bound that the function trusts to size the buffer, but a hostile iterator can lie (return lower=0 then yield N items) and the inner ptr::write loop blows past the allocation. Find `pub fn insert_many` (NOT `from_buf_and_len_unchecked`, NOT `grow`) and report THAT function's signature line. You are a Rust unsafe-code auditor scanning a smallvec-style library file. Look specifically for heap overflow: code that allocates capacity based on an externally-controllable iterator's size_hint() or len() and copies more elements than allocated when the iterator lies about its length. SmallVec / Vec methods named extend, insert_many, from_iter, append are the typical environment. The classic example is: let (lower, _) = iter.size_hint(); self.reserve(lower); for x in iter { unsafe { ptr::write(self.as_mut_ptr().add(idx), x); idx += 1; } } -- a hostile iterator returns lower=0 but yields N items, blowing past the buffer. Pay attention to size_hint, ptr::write, ptr::add, set_len without prior re-grow, missing capacity recheck inside the copy loop, and any unsafe block inside an iterator-driven extend / insert / append. IMPORTANT — REPORT THE FUNCTION SIGNATURE LINE, NOT THE OPERATION LINE: when you spot a suspicious unsafe operation inside a function body, scroll up to find the function declaration line (e.g. `pub fn foo(...)` or `pub unsafe fn bar(...)`) and report THAT line number. The verifier matches at function-level granularity with ±5 line tolerance, anchored on the function signature. So if you find `ptr::write` at line 854 inside a function declared at line 827, report line=827, NOT line=854. Use signature_hint to record the function-name + parameter snippet (e.g. `pub fn insert_many` or `unsafe fn from_buf_and_len_unchecked`), NOT the operation. Return JSON with these fields: line: int -- 1-indexed source line where the bug is, OR 0 if you genuinely cannot find one. severity: string -- low | medium | high. rationale: string -- one sentence explaining why this line is suspicious. signature_hint: string -- short literal substring (5-30 chars) of the function signature that grep can find on that line, e.g. `pub fn foo` or `unsafe fn bar`. class: string -- must be exactly \"heap_overflow\". Do NOT return line=0 unless you have genuinely scanned the file and found nothing. Default to your best guess on a suspicious unsafe operation if you are unsure.",
+        src_with_focus
+    ) -> Finding;
 
     let my_tier = tier("hunter");
     if my_tier == "autonomous" {
@@ -857,6 +743,16 @@ fn tick(reason: string) -> void {
                 // penalises via `variant_stats:<full-variant>:*` memos.
                 // Empty `_variant` (cold start) or legacy phrasing-only
                 // strings (no `:`) fall back to the tribe's primary class.
+                let _colon_idx = index_of(_variant, ":");
+                let _variant_class = if len(_variant) == 0 {
+                    _tribe_default_class();
+                } else {
+                    if _colon_idx >= 0 {
+                        substring(_variant, 0, _colon_idx);
+                    } else {
+                        _tribe_default_class();
+                    };
+                };
                 let finding_json = "{\"line\": " + to_string(finding.line) + ", \"class\": \"" + _variant_class + "\"}";
                 let verify_cmd = "printf '%s' " + shell_escape(finding_json) + " | bash \"$VERIFIER_PATH\"";
                 let verdict_raw = try {
