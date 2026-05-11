@@ -1,12 +1,16 @@
 #!/bin/bash
 # check-agentis-version.sh — refuses install or start when the agentis
-# runtime is older than v1.5.0 (the floor where knowledge_buy /
-# knowledge_sell ship as .ag builtins; pre-v1.5.0 hunters quarantine on
-# first tick — see #393 §9 risk 7).
+# runtime is older than v1.7.10 (the floor where prompt() accepts a
+# non-literal string expression as first argument — required by M98 v3
+# memo-stored hunting prompts in #520; agentis-core #638).
+#
+# Earlier floors:
+#   v1.5.0 — knowledge_buy / knowledge_sell ship as .ag builtins (#393)
+#   v1.7.10 — prompt() first-arg parser accepts non-literal expressions (#520, agentis-core #638)
 #
 # Usage: check-agentis-version.sh
 #
-# Exit 0  : version >= 1.5.0
+# Exit 0  : version >= 1.7.10
 # Exit 78 : EX_CONFIG, version too low or unparseable
 #
 # Bash 3.2 portable (no mapfile, no `${var,,}`, no GNU-only sed). The
@@ -15,8 +19,8 @@
 
 set -eu
 
-REQUIRED="1.5.0"
-RELEASE_URL="https://github.com/Replikanti/agentis/releases/tag/v1.5.0"
+REQUIRED="1.7.10"
+RELEASE_URL="https://github.com/Replikanti/agentis/releases/tag/v1.7.10"
 RUNTIME_DOWNLOAD_URL="https://github.com/Replikanti/agentis"
 
 if ! command -v agentis >/dev/null 2>&1; then
