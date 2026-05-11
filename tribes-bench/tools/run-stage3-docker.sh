@@ -121,6 +121,20 @@
 #   STAGE3_OPENAI_KEY_ENV      Name of the env var that carries the
 #                              OpenAI API key. Default: OPENAI_API_KEY.
 #   STAGE3_OPENAI_TIMEOUT_MS   Per-request timeout (ms). Default: 180000.
+#   STAGE3_HOST_CLAUDE_DIR     #535: when STAGE3_LLM_BACKEND=claude,
+#                              host directory bind-mounted into both
+#                              containers' `/root/.claude` (read-write
+#                              so the Claude Code CLI can refresh
+#                              session tokens). Default: $HOME/.claude
+#                              on the orchestrator host. Required when
+#                              backend=claude; orchestrator exits 1
+#                              when the directory does not exist.
+#                              SECURITY NOTE: mounting ~/.claude
+#                              exposes .credentials.json (the host
+#                              operator's Claude Code session token)
+#                              to the containers. Acceptable on a
+#                              single-user dev machine; on shared CI
+#                              runners, provision a dedicated session.
 #   STAGE3_LAPTOP_PORT         Host port for the laptop container's
 #                              agentis serve. Default: 9100.
 #   STAGE3_SERVER_PORT         Host port for the server container's
@@ -591,11 +605,33 @@ write_bootstraps() {
 # bridge under both rootful and rootless podman 4.x+. If a future host's
 # podman setup misses this alias (some legacy CNI configs), pass
 # --add-host host.containers.internal:<host-bridge-ip> to both runs.
+#
+# #535: when STAGE3_LLM_BACKEND=claude, the orchestrator bind-mounts the
+# host operator's $STAGE3_HOST_CLAUDE_DIR (default $HOME/.claude) into
+# each container's /root/.claude (read-write so the Claude Code CLI can
+# refresh session tokens). The OpenAI-backend code path is unchanged
+# when STAGE3_LLM_BACKEND=openai (default).
+#
+# Operator security note: mounting ~/.claude exposes the host's
+# .credentials.json (Claude Code session token) to the container. On a
+# single-user dev machine this is acceptable; on shared CI runners
+# operators should provision a dedicated Claude Code session.
 spawn_containers() {
+    local CLAUDE_MOUNT_FLAG=""
+    if [ "$LLM_BACKEND" = "claude" ]; then
+        local HOST_CLAUDE_DIR="${STAGE3_HOST_CLAUDE_DIR:-$HOME/.claude}"
+        if [ -d "$HOST_CLAUDE_DIR" ]; then
+            CLAUDE_MOUNT_FLAG="-v $HOST_CLAUDE_DIR:/root/.claude:rw"
+        else
+            echo "run-stage3-docker: STAGE3_HOST_CLAUDE_DIR=$HOST_CLAUDE_DIR does not exist" >&2
+            echo "                   set STAGE3_HOST_CLAUDE_DIR or install Claude Code first" >&2
+            exit 1
+        fi
+    fi
     emit_step "spawning stage3-laptop container (host port $LAPTOP_PORT, worker port $LAPTOP_WORKER_PORT)"
-    emit_cmd "podman run -d --name stage3-laptop -p $LAPTOP_PORT:$LAPTOP_PORT -p $LAPTOP_WORKER_PORT:$LAPTOP_WORKER_PORT -e $OPENAI_KEY_ENV=\"\${$OPENAI_KEY_ENV:-}\" -e WORKER_SECRET=\"$WORKER_SECRET\" -v $REPO_ROOT:/repo:ro -v $LAPTOP_DIR:/run-root:rw $IMAGE_TAG /run-root/bootstrap.sh"
+    emit_cmd "podman run -d --name stage3-laptop -p $LAPTOP_PORT:$LAPTOP_PORT -p $LAPTOP_WORKER_PORT:$LAPTOP_WORKER_PORT -e $OPENAI_KEY_ENV=\"\${$OPENAI_KEY_ENV:-}\" -e WORKER_SECRET=\"$WORKER_SECRET\" -v $REPO_ROOT:/repo:ro -v $LAPTOP_DIR:/run-root:rw $CLAUDE_MOUNT_FLAG $IMAGE_TAG /run-root/bootstrap.sh"
     emit_step "spawning stage3-server container (host port $SERVER_PORT, worker port $SERVER_WORKER_PORT)"
-    emit_cmd "podman run -d --name stage3-server -p $SERVER_PORT:$SERVER_PORT -p $SERVER_WORKER_PORT:$SERVER_WORKER_PORT -e $OPENAI_KEY_ENV=\"\${$OPENAI_KEY_ENV:-}\" -e WORKER_SECRET=\"$WORKER_SECRET\" -v $REPO_ROOT:/repo:ro -v $SERVER_DIR:/run-root:rw $IMAGE_TAG /run-root/bootstrap.sh"
+    emit_cmd "podman run -d --name stage3-server -p $SERVER_PORT:$SERVER_PORT -p $SERVER_WORKER_PORT:$SERVER_WORKER_PORT -e $OPENAI_KEY_ENV=\"\${$OPENAI_KEY_ENV:-}\" -e WORKER_SECRET=\"$WORKER_SECRET\" -v $REPO_ROOT:/repo:ro -v $SERVER_DIR:/run-root:rw $CLAUDE_MOUNT_FLAG $IMAGE_TAG /run-root/bootstrap.sh"
 }
 
 # --- 4) Target rotation timer (runs on the host, not inside containers) ---

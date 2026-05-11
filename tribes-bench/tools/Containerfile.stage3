@@ -16,13 +16,20 @@
 # the key here (ARG OPENAI_API_KEY, ENV OPENAI_API_KEY, secret file COPY)
 # would leak into the image layers and `podman save` exports.
 #
+# WARNING: Claude Code session credentials (`~/.claude/.credentials.json`)
+# MUST NOT be baked in either. The orchestrator bind-mounts the host
+# operator's `$HOME/.claude` into the container at run time when
+# `STAGE3_LLM_BACKEND=claude` is set; never `COPY` the directory into
+# the image (#535).
+#
 # The agentis binary fetch is sha256-verified against the publisher's
 # detached signature so a compromised CDN can't substitute a backdoored
-# build mid-pull.
+# build mid-pull. The Claude Code installer is fetched from the
+# Anthropic-published canonical URL (claude.ai/install.sh).
 
 FROM ubuntu:24.04
 
-ARG AGENTIS_VERSION=v1.7.9
+ARG AGENTIS_VERSION=v1.7.11
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -43,6 +50,19 @@ RUN cd /tmp \
  && sha256sum -c agentis-linux-x86_64.sha256 \
  && install -m 0755 agentis-linux-x86_64 /usr/local/bin/agentis \
  && rm /tmp/agentis-linux-x86_64 /tmp/agentis-linux-x86_64.sha256
+
+# Install Claude Code CLI (#535). The standalone installer fetches a
+# statically-linked Linux x86_64 ELF binary into
+# /root/.local/share/claude/versions/<X.Y.Z> and symlinks /root/.local/bin/claude.
+# We then symlink to /usr/local/bin/claude so the agentis cli backend
+# (which spawns the `claude` subprocess) resolves it via PATH.
+#
+# The installer is fetched from the Anthropic-published canonical URL.
+# No version pin: Claude Code auto-updates frequently and the
+# orchestrator falls through to whatever the installer publishes today.
+# Operators who need reproducibility should rebuild the image periodically.
+RUN curl -fsSL https://claude.ai/install.sh | bash \
+ && ln -s /root/.local/bin/claude /usr/local/bin/claude
 
 WORKDIR /run-root
 
