@@ -16,6 +16,26 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **run-stage3-docker.sh `--help` no longer truncates env-var docs + claude-backend test coverage (#537)**.
+  Two LOW-severity follow-ups from the #536 QA report. (1)
+  `run-stage3-docker.sh --help` used a fixed `sed -n '2,98p'` range
+  that truncated as the env-var docblock grew past line 98; new env
+  vars from #535 (`STAGE3_HOST_CLAUDE_DIR`), #528 (`STAGE3_DAEMON_CB_PER_TICK`),
+  the `STAGE3_OPENAI_*` family, and `STAGE3_LLM_BACKEND` itself were
+  all invisible to `--help`. Replaced the fixed range with an
+  `awk '/^#/ {sub(/^# ?/,""); print; next} {exit}'` extractor that
+  prints every leading comment line until the first non-comment line —
+  future env-var additions will surface automatically. (2)
+  `test-run-stage3-docker.sh` (145 → 149 assertions) now covers the
+  #535 claude-backend wiring: default-openai dry-run contains no
+  `/root/.claude` reference; claude-backend dry-run with a valid host
+  dir mounts `-v <host>:/root/.claude:rw` into BOTH containers (asserted
+  by count, not just presence); claude-backend with a missing host dir
+  exits 1. The two other LOW findings from the #536 QA report
+  (`/root/.claude.json` builder userID bake + claude installer not
+  version-pinned) are deferred — both documented inline in the
+  Containerfile and only relevant if/when the image is published to a
+  public registry. No behavior change for `--dry-run` or non-help paths.
 - **Containerize Claude Code CLI in Stage 3 docker image (#535)**.
   Unblocks full Stage 3 docker federation with claude backend — the
   path to real population-scale emergence research. Tonight's marathon

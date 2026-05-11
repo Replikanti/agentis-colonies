@@ -234,7 +234,12 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         -h|--help)
-            sed -n '2,98p' "$SCRIPT_PATH" | sed 's/^# \{0,1\}//'
+            # #537: extract every leading comment line (from after the shebang
+            # until the first non-comment line). Pre-#537 used a fixed
+            # `sed -n '2,98p'` range that truncated as the env-var docblock
+            # grew past line 98 — STAGE3_HOST_CLAUDE_DIR (#535), STAGE3_LLM_BACKEND,
+            # STAGE3_OPENAI_*, STAGE3_DAEMON_CB_PER_TICK (#528) were all hidden.
+            awk 'NR==1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "$SCRIPT_PATH"
             exit 0
             ;;
         *)
