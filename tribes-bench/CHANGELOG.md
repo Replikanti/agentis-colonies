@@ -16,6 +16,33 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **Containerize Claude Code CLI in Stage 3 docker image (#535)**.
+  Unblocks full Stage 3 docker federation with claude backend — the
+  path to real population-scale emergence research. Tonight's marathon
+  shipped 5 architectural fixes to M98 v3 and validated cross-class
+  drift end-to-end via take-6 single-process smoke; the substrate
+  works. But replication never fires in single-process (M106 needs
+  peer workers), no multi-tribe competition, no real selection
+  pressure. The full Stage 3 docker orchestrator already wires all of
+  that — only blocker was that the container had no LLM client
+  installed (assumed OpenAI HTTP backend). This PR fixes that.
+  Containerfile changes: bump `AGENTIS_VERSION` v1.7.9 → v1.7.11
+  (picks up agentis-core #640 sticky-degraded fix) + install Claude
+  Code CLI via the Anthropic-published `claude.ai/install.sh`
+  installer + symlink `/root/.local/bin/claude` →
+  `/usr/local/bin/claude` so the agentis CLI backend resolves it via
+  PATH. Orchestrator changes (`run-stage3-docker.sh`): new env var
+  `STAGE3_HOST_CLAUDE_DIR` (default `$HOME/.claude`); when
+  `STAGE3_LLM_BACKEND=claude`, bind-mounts the host directory into
+  each container's `/root/.claude` (read-write so the Claude Code
+  CLI can refresh session tokens). OpenAI-backend code path unchanged
+  when `STAGE3_LLM_BACKEND=openai` (default). Build + smoke-verified:
+  `podman build` succeeds; `agentis --version` → `v1.7.11`,
+  `claude --version` → `2.1.139` inside the image. Operator security
+  note shipped in the script comments + header doc-block: mounting
+  ~/.claude exposes `.credentials.json` to the container; acceptable
+  on single-user dev machines; shared CI runners should provision a
+  dedicated session.
 - **hunter.ag: pass LLM `finding.class` directly to verifier (closes M98 v3 architectural hole)**
   ([#533](https://github.com/Replikanti/agentis-colonies/issues/533),
   follows the take-5 emergence smoke that exposed every prior M98 v3
