@@ -184,6 +184,29 @@ rewritten
 tribes-bench"
             PAIR_KNOWN=1
             ;;
+        "hunter_prompt_inherit:success")
+            # #520 M98 v3 PR 3/3: child's first-tick bootstrap found a
+            # valid `pp:<sha>` prefix in its variant_tag AND the body
+            # memo at `hunter:prompt_body:<sha>` was populated. The
+            # parent's evolved prompt is now this child's hunting
+            # prompt; generation reset to "0" for a fresh K-window.
+            ALLOWED_LITERALS="prompt-inheritance
+adopted
+tribes-bench"
+            PAIR_KNOWN=1
+            ;;
+        "hunter_prompt_inherit:failure")
+            # #520 M98 v3 PR 3/3: child's first-tick bootstrap saw a
+            # `pp:<sha>` prefix but the body memo at
+            # `hunter:prompt_body:<sha>` was empty (cache miss / race
+            # / content-addressed write hadn't propagated). Falls
+            # through to seed; emitted so `analyse-stage3.py` can
+            # surface inheritance misses without scraping logs.
+            ALLOWED_LITERALS="prompt-inheritance
+miss
+tribes-bench"
+            PAIR_KNOWN=1
+            ;;
     esac
 }
 

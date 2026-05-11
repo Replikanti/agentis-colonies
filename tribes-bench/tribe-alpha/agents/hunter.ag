@@ -101,6 +101,103 @@ fn _variant_overlay_suffix() -> string {
     return "";
 }
 
+// #520 M98 v3 PR 3/3: hash-pointer extraction over the M106 wire.
+// Parent hunters wrap their replicate() variant_tag as
+// `pp:<sha256-hex>|<old_variant>` (delimiter `|`: SHA-256 hex is
+// 0-9a-f only and the legacy variant pool tokens — `format-pattern-*`,
+// `<class>:format-pattern-*` — never contain `|`, so the split is
+// unambiguous on both sides). Encoded length: 3 (`pp:`) + 64 (hex)
+// + 1 (`|`) + ≤original variant length; trivially under
+// agentis-core's pre-existing M106 `MAX_VARIANT_TAG_BYTES` = 1024,
+// so no runtime cap bump is required.
+//
+// `_extract_pp_hash` returns the 64-hex SHA when `variant_tag`
+// starts with `pp:` AND the next 64 chars validate as lowercase hex.
+// Returns `""` on any miss (no prefix, too short, non-hex chars,
+// corrupted tag) so the caller can fall through to the seed
+// bootstrap path without attempting a memo read with a bad key.
+//
+// Hex validation is load-bearing: a child receiving a corrupted or
+// malicious variant_tag starting with `pp:` but with non-hex chars
+// after must NOT issue `recall_latest("hunter:prompt_body:<garbage>")`
+// — that would still succeed (returning ""), but the empty-body
+// guard in the bootstrap is the second line of defense; explicit
+// hex validation here keeps the failure mode visible.
+//
+// agentis has no loops and no per-char hex builtin; a single
+// `exec sh` round trip into `tr -d '0-9a-f'` is the cheapest
+// pure-runtime expression. This helper only fires on the
+// inheritance path (first tick of a child whose parent wrapped its
+// variant), so the per-hunter cost is exactly one extra exec sh
+// over the child's lifetime — comparable to the existing
+// `_self_pid = exec sh "echo $PPID"` cache.
+fn _extract_pp_hash(variant_tag: string) -> string {
+    if len(variant_tag) < 67 { return ""; };
+    if substring(variant_tag, 0, 3) != "pp:" { return ""; };
+    let hex = substring(variant_tag, 3, 67);
+    // Pure-shell hex validation: `tr -d '0-9a-f'` strips every
+    // valid hex char; anything left (including uppercase, dashes,
+    // pipes, whitespace, or shell metachars consumed by
+    // shell_escape) means the candidate is not 64 lowercase hex.
+    // colony-lint: safe-exec-concat
+    let cmd = "printf '%s' " + shell_escape(hex) + " | tr -d '0-9a-f' | wc -c";
+    let leftover = try { exec sh cmd; } catch e { "1"; };
+    if parse_int(leftover) != 0 { return ""; };
+    return hex;
+}
+
+// #520 M98 v3 PR 3/3: strip the `pp:<sha>|` prefix from a wrapped
+// variant_tag, returning the original variant flavor (e.g.,
+// `uninitialised_memory:format-pattern-default`) for downstream
+// consumers. Returns `variant_tag` unchanged when no `pp:` prefix
+// is present or when the SHA portion fails to validate, so legacy
+// first-generation hunters (no parent inheritance) see the same
+// variant string they always saw. The 68th char is `|`; the
+// stripped portion is the substring from index 68 to the end.
+fn _strip_pp_prefix(variant_tag: string) -> string {
+    let h = _extract_pp_hash(variant_tag);
+    if len(h) == 0 { return variant_tag; };
+    if len(variant_tag) < 68 { return ""; };
+    if substring(variant_tag, 67, 68) != "|" { return variant_tag; };
+    return substring(variant_tag, 68, len(variant_tag));
+}
+
+// #520 M98 v3 PR 3/3: parent pre-replicate hash-pointer wrap.
+// Called from the two replicate() call sites (M2-Malthusian + #490
+// reproductive). Body:
+//   1. Read the parent's current hunting prompt body from memo.
+//   2. If empty (cold start; PR 1/3 bootstrap hasn't fired yet for
+//      this parent), return the unchanged variant_tag — no body to
+//      inherit, no wrap. Guards against an inheriting child
+//      adopting an empty body and emitting empty prompt() first-arg.
+//   3. Compute sha256 of the body via a single `python3 -c` exec sh
+//      (same one-liner pattern as `_levenshtein_ratio_pct` for
+//      consistency; pure-agentis sha256 would need a host builtin
+//      that does not exist).
+//   4. Write-once content-addressed registry:
+//      `hunter:prompt_body:<sha>` is the canonical store. Only
+//      write when the memo is currently empty (read-before-write
+//      avoids a churn write per replicate). Content-addressed +
+//      sha256 collision-impossible-in-practice means no eviction
+//      ever needed within a single colony lifetime; memos persist
+//      across colony restarts so cached bodies survive.
+//   5. Return `"pp:" + h + "|" + variant_tag`. Total bytes well
+//      under M106 cap (67 + ≤original variant tag length ≤ 200
+//      observed in #499 pool; well under 1024).
+fn _publish_prompt_body_and_wrap_variant(self_pid: string, variant_tag: string) -> string {
+    if len(self_pid) == 0 { return variant_tag; };
+    let body = recall_latest("hunter:" + self_pid + ":hunting_prompt");
+    if len(body) == 0 { return variant_tag; };
+    // colony-lint: safe-exec-concat
+    let sha_cmd = "python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.argv[1].encode(\"utf-8\")).hexdigest())' " + shell_escape(body);
+    let h = try { exec sh sha_cmd; } catch e { ""; };
+    if len(h) != 64 { return variant_tag; };
+    let body_key = "hunter:prompt_body:" + h;
+    let existing = recall_latest(body_key);
+    if len(existing) == 0 { memo_write(body_key, body); };
+    return "pp:" + h + "|" + variant_tag;
+}
+
 // #520 M98 v3 PR 2/3: Levenshtein ratio in integer percent (0..100).
 // Returns 100 when both inputs are empty (identical), 0 when exactly one
 // is empty. Single `exec sh` round trip into a python3 one-liner — fires
@@ -684,7 +781,12 @@ fn tick(reason: string) -> void {
                                 memo_write("hunter:next_replica_seed_" + _tribe_name, to_string(seed_r));
                             };
                             let my_fit_repr_arg = if len(_self_pid) > 0 { parse_int(recall_latest("hunter:" + _self_pid + ":fitness")); } else { 0; };
-                            let variant_arg_r = recall_latest("hunter:prompt_variant");
+                            let variant_arg_r_raw = recall_latest("hunter:prompt_variant");
+                            // #520 M98 v3 PR 3/3: wrap the M106 variant_tag
+                            // with a content-addressed hash-pointer to the
+                            // parent's evolved prompt body so the child can
+                            // adopt it on first tick (see bootstrap block).
+                            let variant_arg_r = _publish_prompt_body_and_wrap_variant(_self_pid, variant_arg_r_raw);
                             let replica_id_r = try { replicate(target_r, my_fit_repr_arg, variant_arg_r); } catch e { "__replicate_error__"; };
                             if replica_id_r != "__replicate_error__" {
                                 if len(replica_id_r) > 0 {
@@ -817,16 +919,52 @@ fn tick(reason: string) -> void {
     // env_passthrough exposes the var to the runtime; clamp is best-
     // effort byte-count via len() (UTF-8 not character count -- the
     // seed prompts are ASCII so this is the same value either way).
+    //
+    // #520 M98 v3 PR 3/3: M106 hash-pointer inheritance. When the
+    // child hunter's `hunter:prompt_variant` memo (seeded from the
+    // M106 wire's variant_tag via HUNTER_INITIAL_VARIANT) starts
+    // with `pp:`, decode the 64-hex SHA after the prefix and look
+    // up the parent's full prompt body in the content-addressed
+    // `hunter:prompt_body:<sha>` registry. Cache hit: adopt the
+    // parent's evolved prompt and reset generation to "0" (fresh
+    // K-window per the M98 v3 plan). Cache miss / non-hex /
+    // empty body: log via learn("hunter_prompt_inherit", ...,
+    // "miss", ...) for inheritance-miss telemetry consumed by
+    // analyse-stage3.py and fall through to the seed bootstrap so
+    // the child never emits an empty prompt() first-arg (the
+    // v1.7.10 typechecker warns but still runs; an empty body
+    // would produce 0 useful LLM output).
     let prompt_text_raw = recall_latest("hunter:" + _self_pid + ":hunting_prompt");
     let prompt_text = if len(prompt_text_raw) == 0 {
-        let seed = _seed_prompt_for_class(_tribe_default_class());
         let max_bytes_env = try { exec sh "printenv HUNTER_PROMPT_MAX_BYTES"; } catch e { ""; };
         let max_bytes = if len(max_bytes_env) > 0 { parse_int(max_bytes_env); } else { 4096; };
         let max_bytes_eff = if max_bytes <= 0 { 4096; } else { max_bytes; };
-        let seed_clamped = if len(seed) > max_bytes_eff { substring(seed, 0, max_bytes_eff); } else { seed; };
-        memo_write("hunter:" + _self_pid + ":hunting_prompt", seed_clamped);
-        memo_write("hunter:" + _self_pid + ":hunting_prompt_generation", "0");
-        seed_clamped;
+        let pp_hash = _extract_pp_hash(_variant);
+        if len(pp_hash) > 0 {
+            let inherited = recall_latest("hunter:prompt_body:" + pp_hash);
+            if len(inherited) > 0 {
+                let inh_clamped = if len(inherited) > max_bytes_eff { substring(inherited, 0, max_bytes_eff); } else { inherited; };
+                memo_write("hunter:" + _self_pid + ":hunting_prompt", inh_clamped);
+                memo_write("hunter:" + _self_pid + ":hunting_prompt_generation", "0");
+                learn("hunter_prompt_inherit", _tribe_name + "/" + _self_pid, "sha=" + substring(pp_hash, 0, 12), "success", ["prompt-inheritance", "adopted", "tribes-bench"]);
+                inh_clamped;
+            } else {
+                // pp:<sha> arrived but body memo missed -- log + fall
+                // through to seed so the child still hunts.
+                let seed_m = _seed_prompt_for_class(_tribe_default_class());
+                let seed_m_clamped = if len(seed_m) > max_bytes_eff { substring(seed_m, 0, max_bytes_eff); } else { seed_m; };
+                memo_write("hunter:" + _self_pid + ":hunting_prompt", seed_m_clamped);
+                memo_write("hunter:" + _self_pid + ":hunting_prompt_generation", "0");
+                learn("hunter_prompt_inherit", _tribe_name + "/" + _self_pid, "sha=" + substring(pp_hash, 0, 12), "failure", ["prompt-inheritance", "miss", "tribes-bench"]);
+                seed_m_clamped;
+            };
+        } else {
+            let seed = _seed_prompt_for_class(_tribe_default_class());
+            let seed_clamped = if len(seed) > max_bytes_eff { substring(seed, 0, max_bytes_eff); } else { seed; };
+            memo_write("hunter:" + _self_pid + ":hunting_prompt", seed_clamped);
+            memo_write("hunter:" + _self_pid + ":hunting_prompt_generation", "0");
+            seed_clamped;
+        };
     } else {
         prompt_text_raw;
     };
@@ -1007,7 +1145,11 @@ fn tick(reason: string) -> void {
                                     };
                                 };
                                 let my_fit_m2_arg = if len(_self_pid) > 0 { parse_int(recall_latest("hunter:" + _self_pid + ":fitness")); } else { 0; };
-                                let replica_id = try { replicate(target, my_fit_m2_arg, variant); } catch e { "__replicate_error__"; };
+                                // #520 M98 v3 PR 3/3: wrap variant_tag with
+                                // hash-pointer to parent's prompt body for
+                                // inheritance over the M106 wire.
+                                let variant_wrapped = _publish_prompt_body_and_wrap_variant(_self_pid, variant);
+                                let replica_id = try { replicate(target, my_fit_m2_arg, variant_wrapped); } catch e { "__replicate_error__"; };
                                 if replica_id == "__replicate_error__" {
                                     learn("replicate", "n=" + to_string(n), "cost=" + to_string(cost), "failure", ["replicate-error", "tribes-bench", _tribe_name]);
                                 } else {

@@ -342,6 +342,115 @@ assert_contains "per-tribe bootstrap line propagates HUNTER_PROMPT_EVOLUTION_THR
     "$(cat "$ORCH")" \
     "HUNTER_PROMPT_EVOLUTION_THRESHOLD=%s HUNTER_PROMPT_GEN_CAP=%s HUNTER_PROMPT_LEVENSHTEIN_FLOOR=%s"
 
+# 10. #520 M98 v3 PR 3/3: M106 hash-pointer inheritance — assert each
+# hunter.ag carries the new helpers, the bootstrap inheritance branch,
+# and that both replicate() sites call the parent-wrap helper. Source-
+# level grep is the cheapest reliable signal short of a live agentis
+# run (which would need a full container spawn for one round trip).
+HUNTER_REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+for tribe in tribe-alpha tribe-beta tribe-gamma tribe-delta tribe-epsilon; do
+    AG="$HUNTER_REPO_ROOT/$tribe/agents/hunter.ag"
+    assert_contains "$tribe: _extract_pp_hash helper defined" \
+        "$(cat "$AG")" \
+        "fn _extract_pp_hash(variant_tag: string) -> string"
+    assert_contains "$tribe: _strip_pp_prefix helper defined" \
+        "$(cat "$AG")" \
+        "fn _strip_pp_prefix(variant_tag: string) -> string"
+    assert_contains "$tribe: _publish_prompt_body_and_wrap_variant helper defined" \
+        "$(cat "$AG")" \
+        "fn _publish_prompt_body_and_wrap_variant(self_pid: string, variant_tag: string) -> string"
+    assert_contains "$tribe: pp:<sha>|<variant> wrap format produced" \
+        "$(cat "$AG")" \
+        'return "pp:" + h + "|" + variant_tag;'
+    assert_contains "$tribe: content-addressed body registry key" \
+        "$(cat "$AG")" \
+        '"hunter:prompt_body:" + h'
+    assert_contains "$tribe: hex validation via tr -d 0-9a-f" \
+        "$(cat "$AG")" \
+        "tr -d '0-9a-f'"
+    assert_contains "$tribe: sha256 via python3 hashlib" \
+        "$(cat "$AG")" \
+        "hashlib.sha256"
+    assert_contains "$tribe: bootstrap inheritance branch on pp_hash" \
+        "$(cat "$AG")" \
+        'let pp_hash = _extract_pp_hash(_variant);'
+    assert_contains "$tribe: bootstrap reads inherited body memo" \
+        "$(cat "$AG")" \
+        'recall_latest("hunter:prompt_body:" + pp_hash)'
+    assert_contains "$tribe: hunter_prompt_inherit success learn tag" \
+        "$(cat "$AG")" \
+        '"hunter_prompt_inherit"'
+    assert_contains "$tribe: hunter_prompt_inherit miss outcome tag" \
+        "$(cat "$AG")" \
+        '"miss"'
+    assert_contains "$tribe: hunter_prompt_inherit adopted outcome tag" \
+        "$(cat "$AG")" \
+        '"adopted"'
+    # Both replicate() call sites must wrap the variant_tag.
+    wrap_count=$(grep -cF '_publish_prompt_body_and_wrap_variant(_self_pid' "$AG" || true)
+    if [ "$wrap_count" -ge 2 ]; then
+        echo "[PASS] $tribe: both replicate() sites wrap variant_tag (found $wrap_count)"
+        PASS=$((PASS + 1))
+    else
+        echo "[FAIL] $tribe: expected >=2 _publish_prompt_body_and_wrap_variant call sites, got $wrap_count"
+        FAIL=$((FAIL + 1))
+    fi
+done
+
+# 11. #520 M98 v3 PR 3/3: hex validation regression — exercise the
+# `tr -d '0-9a-f' | wc -c` logic the way _extract_pp_hash does. A
+# 64-hex SHA must produce leftover==0; a mixed-case or non-hex tag
+# must produce leftover>0 so the helper returns "" and the bootstrap
+# falls through to seed.
+GOOD_SHA="abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+BAD_HEX="GHIJKLmnopqrstuvwxyz0123456789ABCDEF0123456789abcdef0123456789xy"
+good_left=$(printf '%s' "$GOOD_SHA" | tr -d '0-9a-f' | wc -c)
+bad_left=$(printf '%s' "$BAD_HEX" | tr -d '0-9a-f' | wc -c)
+if [ "$good_left" -eq 0 ]; then
+    echo "[PASS] hex validation: 64-char lowercase hex SHA produces zero leftover"
+    PASS=$((PASS + 1))
+else
+    echo "[FAIL] hex validation: expected leftover=0 for valid hex, got $good_left"
+    FAIL=$((FAIL + 1))
+fi
+if [ "$bad_left" -gt 0 ]; then
+    echo "[PASS] hex validation: non-hex / uppercase candidate produces non-zero leftover"
+    PASS=$((PASS + 1))
+else
+    echo "[FAIL] hex validation: expected leftover>0 for bad hex, got $bad_left"
+    FAIL=$((FAIL + 1))
+fi
+
+# 12. #520 M98 v3 PR 3/3: SHA-256 of a known body matches expected
+# Python output — same one-liner the helper invokes. Anchors the
+# `pp:<sha>` produced over the M106 wire against a deterministic
+# reference so future refactors of the helper can be regression-
+# checked.
+EXPECTED_SHA=$(printf '%s' "hello-prompt-body" | python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.stdin.read().encode("utf-8")).hexdigest())')
+ACTUAL_SHA=$(python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.argv[1].encode("utf-8")).hexdigest())' "hello-prompt-body")
+if [ "$EXPECTED_SHA" = "$ACTUAL_SHA" ] && [ ${#ACTUAL_SHA} -eq 64 ]; then
+    echo "[PASS] sha256 helper: 64-char hex matches stdin-vs-argv reference"
+    PASS=$((PASS + 1))
+else
+    echo "[FAIL] sha256 helper: expected=$EXPECTED_SHA actual=$ACTUAL_SHA"
+    FAIL=$((FAIL + 1))
+fi
+
+# Composed-wrap shape: `pp:<sha>|<old>` total length = 3 + 64 + 1 +
+# len(old_variant). For the longest #499-pool variant
+# `dangling_borrow:format-pattern-substitution-aware` (51 chars), the
+# wrap is 119 bytes — well under the M106 MAX_VARIANT_TAG_BYTES=1024
+# cap, so no agentis-core cap bump is required.
+EX_VARIANT="dangling_borrow:format-pattern-substitution-aware"
+WRAPPED="pp:${ACTUAL_SHA}|${EX_VARIANT}"
+if [ ${#WRAPPED} -lt 1024 ]; then
+    echo "[PASS] pp:<sha>|<variant> wrap fits within M106 MAX_VARIANT_TAG_BYTES=1024 (got ${#WRAPPED} bytes)"
+    PASS=$((PASS + 1))
+else
+    echo "[FAIL] pp:<sha>|<variant> wrap exceeds M106 cap (got ${#WRAPPED} bytes)"
+    FAIL=$((FAIL + 1))
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

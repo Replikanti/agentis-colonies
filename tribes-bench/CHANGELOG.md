@@ -16,6 +16,101 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **M98 v3 PR 3/3 — M106 hash-pointer inheritance across replicate() — M98 v3 COMPLETE**
+  ([#520](https://github.com/Replikanti/agentis-colonies/issues/520),
+  PR 3/3 of three and the FINAL piece of M98 v3; depends on PR 1/3
+  ([#523](https://github.com/Replikanti/agentis-colonies/pull/523))
+  merged + PR 2/3
+  ([#524](https://github.com/Replikanti/agentis-colonies/pull/524))
+  merged + agentis-core v1.7.10
+  ([#638](https://github.com/Replikanti/agentis-core/issues/638));
+  [#515](https://github.com/Replikanti/agentis-colonies/issues/515)
+  carries the architectural rationale.) Evolved hunting prompts now
+  propagate from parent to child across `replicate()` over the M106
+  wire via a hash-pointer scheme that sidesteps the pre-existing
+  `MAX_VARIANT_TAG_BYTES = 1024` cap — **no agentis-core change is
+  required**. Mechanics: before each `replicate(target, fit,
+  variant_tag)` call (both call sites: M2-Malthusian on a verified
+  finding, and the #490 reproductive path on a high-fit parent), the
+  parent (a) computes `h = sha256(hunting_prompt)` of its current
+  prompt body via a single `python3 -c hashlib.sha256(...)` exec sh
+  one-liner, (b) write-once memos the body in the content-addressed
+  registry `hunter:prompt_body:<h>` (read-before-write, so steady-
+  state replicates churn zero memo writes after the first), and (c)
+  wraps the variant_tag as `pp:<sha>|<old_variant>`. Delimiter `|`
+  is deliberate: SHA-256 hex is 0-9a-f only and the #499 variant
+  pool tokens (`format-pattern-*`, `<class>:format-pattern-*`) never
+  contain `|`, so the split is unambiguous on both sides. Encoded
+  length: 3 (`pp:`) + 64 (hex) + 1 (`|`) + ≤original variant length
+  (≤200 bytes observed) = ≤268 bytes, trivially under
+  `MAX_VARIANT_TAG_BYTES`. On the child side, the bootstrap block
+  added in PR 1/3 now checks `_variant` for a `pp:` prefix BEFORE
+  falling back to the tribe's seed prompt; on a hit, the child
+  reads `hunter:prompt_body:<sha>`, adopts the parent's evolved
+  body as its starting hunting prompt, and resets
+  `hunter:<pid>:hunting_prompt_generation` to `"0"` so the child
+  gets a fresh K-window (per the M98 v3 plan; without this, an
+  inherited child at gen=5 would evolve only 5 more times before
+  cap-reset, defeating the purpose of cross-replicate inheritance).
+  Cache miss / empty body / non-hex SHA fall through to the seed
+  bootstrap and emit a `learn("hunter_prompt_inherit", _tribe + "/"
+  + _self_pid, "sha=<12-hex-prefix>", "failure",
+  ["prompt-inheritance", "miss", "tribes-bench"])` row so
+  `analyse-stage3.py` can surface inheritance misses (a successful
+  adoption emits the same topic with `"success"` /
+  `["prompt-inheritance", "adopted", "tribes-bench"]`; both
+  outcomes are now allowlisted in `tools/check-learn-tags.sh`).
+  **Hex validation is load-bearing:** a corrupted or malicious
+  variant_tag starting with `pp:` but with non-hex characters in
+  the 64-char SHA slot would otherwise produce an
+  unconstrained-byte `hunter:prompt_body:<garbage>` memo lookup;
+  `_extract_pp_hash` strips through `tr -d '0-9a-f' | wc -c` and
+  returns `""` on any leftover, forcing the bootstrap to fall
+  through to the seed instead of attempting the bad memo read.
+  **Empty-body guard:** `_publish_prompt_body_and_wrap_variant`
+  returns the original variant_tag unchanged when the parent's
+  hunting_prompt memo is empty (cold-start race), so an inheriting
+  child never adopts an empty body — sha256 of an empty string is
+  a valid hex digest and would otherwise propagate, hitting the
+  v1.7.10 typechecker's warn-only empty-first-arg path and
+  producing zero useful LLM output. **Cache management for the
+  `hunter:prompt_body:<sha>` registry:** content-addressed
+  write-once. Within a single colony lifetime, sha256 collisions
+  are impossible in practice, so no eviction is needed; on colony
+  restart memos persist, so cached bodies survive across reboots
+  and the new replicas spawned post-restart can still adopt their
+  parent's pre-restart body if the parent's pid registry was
+  preserved. Three new pure helpers added to each tribe's
+  `hunter.ag`: `_extract_pp_hash(variant_tag) -> string` (returns
+  the 64-hex SHA on a valid `pp:<sha>` prefix, `""` otherwise — one
+  exec sh on the inheritance path only, never the per-tick hot
+  path), `_strip_pp_prefix(variant_tag) -> string` (returns the
+  original variant flavor after the `pp:<sha>|` prefix; preserves
+  legacy first-generation variant strings as-is when no prefix is
+  present), and `_publish_prompt_body_and_wrap_variant(self_pid,
+  variant_tag) -> string` (the parent-side write-and-wrap helper).
+  **Anti-gaming invariant intact:** the verifier remains a
+  deterministic shell script with zero LLM in the verification
+  path; parent→child prompt inheritance is information bandwidth
+  (the child inherits its parent's best-evolved hunting heuristic),
+  not selection pressure (the verifier still classifies on `(line,
+  signature)` only, independent of prompt body). #491 (no direct
+  ledger writes from `.ag`) and #493 (no `knowledge_sell`
+  answer-validation bypass) guardrails are unchanged. **Now
+  testable end-to-end:** the cross-class drift smoke from the M98
+  v3 plan test 7 — 90 min, single tribe — should now produce ≥1
+  verified finding in a non-primary class for lineages where
+  `variant.class != tribe.default_class`; the pre-#505 baseline is
+  0 such findings (lineages drifted off-class get the wrong seed
+  every time without inheritance). `tools/check-learn-tags.sh`
+  extended with `hunter_prompt_inherit:success` and
+  `hunter_prompt_inherit:failure` outcome rows; tribes-bench/tools/
+  test-run-stage3-docker.sh extended from 73 to 142 passing
+  assertions (per-tribe helper presence + bootstrap branch + both
+  replicate-site wraps; hex validation regression; sha256 reference;
+  M106 cap fit). With this PR landed, M98 v3 is **complete** and
+  ready for the cross-class drift smoke (operator-driven HItL).
+
 - **Retro-add `publish = false` to all 5 vendored target `Cargo.toml` files**
   ([#522](https://github.com/Replikanti/agentis-colonies/issues/522)).
   Defence-in-depth against accidental `cargo publish` of intentionally
