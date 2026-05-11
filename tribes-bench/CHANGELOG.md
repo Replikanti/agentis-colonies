@@ -16,6 +16,16 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **Retro-add `publish = false` to all 5 vendored target `Cargo.toml` files**
+  ([#522](https://github.com/Replikanti/agentis-colonies/issues/522)).
+  Defence-in-depth against accidental `cargo publish` of intentionally
+  vulnerable vendored code. Covers `tribes-bench/targets/stage2/smallvec-v0.6.13/`,
+  `targets/stage3/bumpalo-v3.2.0/`, `targets/stage4-crossbeam-deque-v0.7.2/`,
+  `targets/stage4-owning_ref-v0.4.1/`, `targets/stage4-generator-v0.6.25/`.
+  No production-leak path exists today (no top-level `Cargo.toml` workspace,
+  no `cargo publish` invocation anywhere in repo or CI) — this is a belt-and-braces
+  addition so crates.io would reject upload of duplicate-version-by-non-owner
+  even if someone runs `cargo publish` in a vendored target dir.
 - **M98 v3 PR 2/3 — verified-buffer + meta-prompt evolution + anti-degeneracy guards**
   ([#520](https://github.com/Replikanti/agentis-colonies/issues/520),
   PR 2/3 of three; depends on PR 1/3
