@@ -16,6 +16,33 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **M98 v3 meta-prompt rewritten to drive diversification (exploration), not exploitation**
+  ([#527](https://github.com/Replikanti/agentis-colonies/issues/527),
+  follows the plan-test-7 emergence smoke from #520 / [PR #526](https://github.com/Replikanti/agentis-colonies/pull/526).)
+  The pre-#527 meta-prompt template in `_evolve_hunting_prompt()` said
+  `"Focus on patterns that produced verified hits."` — which is an
+  explicit exploitation directive. Empirically (M98 v3 smoke at
+  `/tmp/m98v3-smoke-*`): 6/6 verified hits on the same `S2-SMVMEM-001`
+  uninitialised_memory bug, evolved prompt converged to hyper-target
+  `from_buf_and_len_unchecked` line 534. Zero cross-class drift —
+  exactly opposite of the plan-test-7 success criterion. The rewrite
+  in this PR replaces the convergence directive with an explicit
+  expansion directive: "if all (or most) verified findings are in one
+  bug class, the rewrite MUST explicitly probe for OTHER classes from
+  the stage2 verifier set (use_after_free, heap_overflow,
+  memory_corruption, data_race, send_violation, missing_lock,
+  dangling_borrow, uninitialised_memory) in the same target file. The
+  goal is a hunter that finds the NEXT class of bug, not more
+  instances of the same one." Identical text applied to all 5 tribes
+  (`tribe-{alpha,beta,gamma,delta,epsilon}/agents/hunter.ag`) since
+  every tribe's `_evolve_hunting_prompt()` body is byte-identical at
+  the meta-prompt site. Anti-gaming and #491/#493 guardrails are
+  unchanged (the meta-prompt rewrites the prompt body that the
+  hunter sends to the LLM; the verifier remains a deterministic
+  shell script with zero LLM in the path, and selection pressure
+  still flows only from real verified hits). No new env vars, no
+  new memo keys, no new helpers — purely a string rewrite at one
+  site per tribe.
 - **Bump `daemon.cb_per_tick` from agentis-core default 100 to 2000 in the Stage 3 docker orchestrator hermetic config**
   ([#528](https://github.com/Replikanti/agentis-colonies/issues/528)).
   Surfaced by the M98 v3 plan-test-7 emergence smoke: hunter daemons
