@@ -16,6 +16,25 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **Bump `daemon.cb_per_tick` from agentis-core default 100 to 2000 in the Stage 3 docker orchestrator hermetic config**
+  ([#528](https://github.com/Replikanti/agentis-colonies/issues/528)).
+  Surfaced by the M98 v3 plan-test-7 emergence smoke: hunter daemons
+  CB-exhausted after ~10 LLM-heavy ticks, became zombies (alive,
+  ticking, watchdog-happy) that consumed wall clock + LLM API spend
+  without producing any verified findings. M98 v3 evolution-path ticks
+  spend ~250-300 CB on prompt + meta-prompt + schema-sanity ping +
+  exec-sh helpers; the agentis-core default of 100 CB/tick refill is
+  net-negative against this workload and drains the `cb 200000000;`
+  lifetime budget within ~10 ticks. New env var
+  `STAGE3_DAEMON_CB_PER_TICK` (default 2000) is written into both
+  hermetic `.agentis/config` files as `daemon.cb_per_tick = <value>`.
+  2000 gives ~7× safety headroom on evolution ticks and sustained
+  operation across the full 6-hour wall clock. Lower the value only
+  when intentionally reproducing CB-exhaustion behaviour. Affects only
+  the docker orchestrator; the non-orchestrator entry points
+  (`start-colony.sh` direct invocations) still inherit the
+  agentis-core default unless the operator overrides in their own
+  `.agentis/config`.
 - **M98 v3 PR 3/3 — M106 hash-pointer inheritance across replicate() — M98 v3 COMPLETE**
   ([#520](https://github.com/Replikanti/agentis-colonies/issues/520),
   PR 3/3 of three and the FINAL piece of M98 v3; depends on PR 1/3
