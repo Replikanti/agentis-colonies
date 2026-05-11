@@ -16,6 +16,41 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **verify-finding-stage2.sh: class-alias map breaks false-positive local optimum in cross-class drift**
+  ([#531](https://github.com/Replikanti/agentis-colonies/issues/531),
+  follows the M98 v3 take-4 emergence smoke surfaced after #527
+  ([#530](https://github.com/Replikanti/agentis-colonies/pull/530))
+  and #528 ([#529](https://github.com/Replikanti/agentis-colonies/pull/529))
+  shipped. Take-4 confirmed cross-class drift behaviorally — hunter
+  drifted from line 534 (saturated UM) to line 827 (`insert_many`,
+  heap_overflow zone) — but 9/9 attempts were false positives because
+  the LLM labelled the described pattern `memory_corruption` while
+  the planted bug's `class` field is `heap_overflow`. The verifier
+  was strict on class equality, so the LLM-grammar ambiguity blocked
+  every verified hit, which in turn prevented the meta-prompt
+  evolution from firing again (PR #524 only triggers on K=3 verified
+  hits). The daemon ended stuck at a local optimum in false-positive
+  loop.) The verifier (`tribes-bench/tools/verify-finding-stage2.sh`)
+  now accepts class-alias matches when `STAGE3_VERIFIER_CLASS_ALIASES`
+  is `1` (default; set to `0` for strict matching). Alias groups
+  capture the LLM-naming ambiguities the smoke surfaced:
+  `{heap_overflow, memory_corruption, buffer_overflow}` (out-of-bounds
+  writes), `{use_after_free, dangling_borrow}` (references to invalid
+  memory), `{data_race, missing_lock}` (concurrent state mutation).
+  Singletons `{uninitialised_memory}` and `{send_violation}` stay
+  strict — they are unambiguous and aliasing them would dilute the
+  cross-class signal. Aliased matches emit one line to stderr so
+  post-mortems can distinguish strict vs aliased verifications
+  without changing the stdout verdict shape. 5 new tests added to
+  `test-verify-finding-stage2.sh` (4→9 cases): strict mode rejects
+  alias, alias mode accepts heap↔memcorr, alias mode accepts uaf↔
+  dangling, alias mode keeps UM strict (singleton), exact-class
+  match still works in alias mode. No new env vars beyond
+  `STAGE3_VERIFIER_CLASS_ALIASES`. No bugs.json edits. Anti-gaming
+  invariant unchanged — the alias map is in the verifier (the
+  ground-truth side); the hunter still cannot influence what counts
+  as a verified hit through prompt content. Option B from the issue
+  body; Option A (failure-driven mini-evolution) is deferred.
 - **M98 v3 meta-prompt rewritten to drive diversification (exploration), not exploitation**
   ([#527](https://github.com/Replikanti/agentis-colonies/issues/527),
   follows the plan-test-7 emergence smoke from #520 / [PR #526](https://github.com/Replikanti/agentis-colonies/pull/526).)
