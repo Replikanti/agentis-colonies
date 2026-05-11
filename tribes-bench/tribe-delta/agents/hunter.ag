@@ -900,25 +900,19 @@ fn tick(reason: string) -> void {
                 // LLM-tainted text through the JSON-on-stdin channel
                 // would force shell-vs-JSON quote interleaving with no
                 // benefit.
-                // #499 M98 self-evolution: derive the verifier-payload
-                // class from the variant string (`<class>:<phrasing>`),
-                // not from the LLM's `finding.class` field. Misalignment
-                // between LLM-hunt-target and variant-claimed class
-                // becomes a verifier-falsepos that selection rewards or
-                // penalises via `variant_stats:<full-variant>:*` memos.
-                // Empty `_variant` (cold start) or legacy phrasing-only
-                // strings (no `:`) fall back to the tribe's primary class.
-                let _colon_idx = index_of(_variant, ":");
-                let _variant_class = if len(_variant) == 0 {
-                    _tribe_default_class();
+                // #533: pass LLM's `finding.class` directly to verifier
+                // instead of deriving from variant memo. See
+                // tribe-alpha/agents/hunter.ag for full rationale (take-5
+                // smoke evidence + structural argument). Variant memo
+                // still maintained for M106 inheritance + variant_stats
+                // selection signal; defensive fallback to tribe default
+                // class on empty finding.class string.
+                let finding_class = if len(finding.class) > 0 {
+                    finding.class;
                 } else {
-                    if _colon_idx >= 0 {
-                        substring(_variant, 0, _colon_idx);
-                    } else {
-                        _tribe_default_class();
-                    };
+                    _tribe_default_class();
                 };
-                let finding_json = "{\"line\": " + to_string(finding.line) + ", \"class\": \"" + _variant_class + "\"}";
+                let finding_json = "{\"line\": " + to_string(finding.line) + ", \"class\": \"" + finding_class + "\"}";
                 let verify_cmd = "printf '%s' " + shell_escape(finding_json) + " | bash \"$VERIFIER_PATH\"";
                 let verdict_raw = try {
                     exec sh verify_cmd;
