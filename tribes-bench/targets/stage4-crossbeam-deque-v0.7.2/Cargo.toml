@@ -1,5 +1,6 @@
 [package]
 name = "crossbeam-deque"
+publish = false  # tribes-bench: intentionally vulnerable, never publish (#522)
 # When publishing a new version:
 # - Update CHANGELOG.md
 # - Update README.md
