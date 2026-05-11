@@ -1010,25 +1010,37 @@ fn tick(reason: string) -> void {
                 // only, and round-tripping LLM-tainted text through the
                 // JSON-on-stdin channel would force shell-vs-JSON quote
                 // interleaving with no benefit.
-                // #499 M98 self-evolution: derive the verifier-payload
-                // class from the variant string (`<class>:<phrasing>`),
-                // not from the LLM's `finding.class` field. Misalignment
-                // between LLM-hunt-target and variant-claimed class
-                // becomes a verifier-falsepos that selection rewards or
-                // penalises via `variant_stats:<full-variant>:*` memos.
-                // Empty `_variant` (cold start) or legacy phrasing-only
-                // strings (no `:`) fall back to the tribe's primary class.
-                let _colon_idx = index_of(_variant, ":");
-                let _variant_class = if len(_variant) == 0 {
-                    _tribe_default_class();
+                // #533: pass the LLM's `finding.class` directly to the
+                // verifier instead of deriving from the variant memo.
+                // Pre-#533 the verifier-payload class was frozen at the
+                // tribe's `_tribe_default_class()` whenever `_variant` was
+                // empty (the default state for any local-spawn hunter).
+                // The M98 v3 take-5 smoke confirmed this made cross-class
+                // drift structurally unreachable: the diversification meta-
+                // prompt (#530) rewrote the LLM-facing text, the LLM
+                // correctly described non-UM patterns, but the verifier-
+                // payload class stayed `uninitialised_memory` → every
+                // non-UM line attempt was a false positive, and the
+                // evolution loop never re-fired because the K=3 verified
+                // threshold (#524) needed successful verifications to bump.
+                //
+                // The variant memo is still maintained (for M106 hash-
+                // pointer inheritance — see `_publish_prompt_body_and_
+                // wrap_variant` below). The verifier-side class-alias map
+                // (#532) catches LLM-grammar ambiguity; when the LLM picks
+                // a class outside the canonical 8 or any alias group the
+                // verifier returns false-positive, which selection still
+                // rewards via variant_stats falsepos counts. Fall back to
+                // tribe's default class only when the LLM returns an
+                // empty class string (defensive — should not happen given
+                // the prompt schema requirement, but `len(...) == 0` is
+                // cheap insurance).
+                let finding_class = if len(finding.class) > 0 {
+                    finding.class;
                 } else {
-                    if _colon_idx >= 0 {
-                        substring(_variant, 0, _colon_idx);
-                    } else {
-                        _tribe_default_class();
-                    };
+                    _tribe_default_class();
                 };
-                let finding_json = "{\"line\": " + to_string(finding.line) + ", \"class\": \"" + _variant_class + "\"}";
+                let finding_json = "{\"line\": " + to_string(finding.line) + ", \"class\": \"" + finding_class + "\"}";
                 let verify_cmd = "printf '%s' " + shell_escape(finding_json) + " | bash \"$VERIFIER_PATH\"";
                 let verdict_raw = try {
                     exec sh verify_cmd;

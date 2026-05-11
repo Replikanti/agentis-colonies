@@ -16,6 +16,34 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **hunter.ag: pass LLM `finding.class` directly to verifier (closes M98 v3 architectural hole)**
+  ([#533](https://github.com/Replikanti/agentis-colonies/issues/533),
+  follows the take-5 emergence smoke that exposed every prior M98 v3
+  fix (#527/#528/#640/#531) as architecturally bypassed by frozen
+  verifier-payload class.) Pre-#533 the verifier received `class` from
+  `_variant_class`, derived from `hunter:<pid>:variant` memo — which
+  was empty for any local-spawn hunter, falling back to
+  `_tribe_default_class()`. Cross-class drift was therefore
+  structurally unreachable: the diversification meta-prompt (#530)
+  rewrote the LLM-facing text, the LLM correctly described non-UM
+  patterns, but the verifier still received `class=uninitialised_memory`
+  → every non-UM line attempt was a false positive, and the K=3
+  verified threshold (#524) for re-firing evolution never met. Take-5
+  confirmed: 17 ticks, 2 verified UM, 15 false positives, evolution
+  never re-fired. The fix is one-line per `hunter.ag`: replace the
+  `_variant_class` derivation with `finding.class` from the LLM
+  output, with a defensive fallback to `_tribe_default_class()` when
+  the LLM returns an empty class string. The variant memo is still
+  maintained for M106 hash-pointer inheritance (`pp:<sha>|<variant>`)
+  + `variant_stats:*` selection signal — only the verifier-facing
+  class label changes. The class-alias map (#532) catches LLM-grammar
+  ambiguity for any LLM-picked class outside the canonical 8;
+  out-of-set classes fall through to false-positive and selection
+  still punishes via variant_stats. Option D from the issue body;
+  Option C (re-introduce `pick_variant()`) and Option E (couple
+  variant class to evolved prompt) deferred — Option D is the
+  smallest change that unblocks emergence and preserves the existing
+  M98 v3 inheritance + selection scaffolding.
 - **verify-finding-stage2.sh: class-alias map breaks false-positive local optimum in cross-class drift**
   ([#531](https://github.com/Replikanti/agentis-colonies/issues/531),
   follows the M98 v3 take-4 emergence smoke surfaced after #527
