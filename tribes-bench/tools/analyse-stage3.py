@@ -106,6 +106,20 @@ TELEMETRY_COLUMNS = [
     "replication_event_count", "tribe_death_ts",
 ]
 
+# Stage2 bug-class universe (#513) mirrors the 8 classes the post-#499
+# hunter.ag class-flip path emits (`_class_pick_universe`). The list is
+# the canonical row order for the per-class fitness summary table in
+# `comparison-stage3.md` and the per-class CSV reductions in
+# `variant-trajectory.csv`. Unknown classes seen in `variant_stats:*`
+# memos are appended after these 8 in sorted order with an `unknown:`
+# prefix so an off-pool class-flip mutation does not silently disappear
+# from the operator-facing summary.
+STAGE2_CLASSES = [
+    "uninitialised_memory", "use_after_free", "memory_corruption",
+    "heap_overflow", "data_race", "send_violation", "missing_lock",
+    "dangling_borrow",
+]
+
 # Per-tribe variant pools are parsed from each tribe's hunter.ag at
 # analysis time. The analyser is observational only -- it does NOT
 # re-implement pick_variant(). Variant attribution to agents comes
@@ -979,6 +993,193 @@ def write_mutation_diff(
     return out_path
 
 
+# --- Per-class trajectory + summary (#513) ---------------------------------
+
+def _split_class_phrasing(variant: str) -> tuple[str, str]:
+    """Parse a variant string into `(class, phrasing)`. Post-#499 the
+    canonical variant shape is `<class>:<phrasing>`. Empty or
+    separator-less inputs collapse to `("", "")` so callers can filter
+    them out of the trajectory and summary.
+    """
+    if not variant or ":" not in variant:
+        return ("", "")
+    cls, _, phrasing = variant.partition(":")
+    return (cls, phrasing)
+
+
+def emit_variant_trajectory(
+    out_dir: str,
+    events: list[dict[str, Any]],
+    aggregated_stats: dict[str, dict[str, dict[str, int]]] | None = None,
+) -> str:
+    """Emit `variant-trajectory.csv` (#513): a reconstructed per-(tribe,
+    class, phrasing) time series.
+
+    The trajectory is NOT observed history. Hunters do not write
+    per-tick `variant_stats` snapshots; we only know the end-of-run
+    totals plus the replicate-event timeline from `mutation-diff.csv`.
+    For each (tribe, variant) we distribute the final verified /
+    falsepos counters proportionally across the replicate events that
+    targeted that (tribe, variant) pair, using each event's ordinal
+    position over `event_count[tribe,variant]`.
+
+    The hunter-side write-through (observed trajectory) is the deferred
+    path; the CSV header carries an inline caveat that links #513 so
+    downstream operators do not misread the file as real per-tick
+    dynamics. Schema (after the comment line):
+
+        ts,tribe,class,phrasing,verified_cumul,falsepos_cumul,hit_rate
+    """
+    out_path = os.path.join(out_dir, "variant-trajectory.csv")
+    caveat = (
+        "# trajectory: reconstructed from end-of-run totals + "
+        "replicate-event timeline. Hunter-side write-through is the "
+        "observed alternative, deferred (#513).\n"
+    )
+    header_cols = [
+        "ts", "tribe", "class", "phrasing",
+        "verified_cumul", "falsepos_cumul", "hit_rate",
+    ]
+    # Filter to events that carry a usable (tribe, child_variant) pair.
+    usable: list[dict[str, Any]] = []
+    for ev in events:
+        tribe = ev.get("tribe", "")
+        variant = ev.get("child_variant", "")
+        if not tribe or not variant:
+            continue
+        usable.append(ev)
+    usable.sort(key=lambda e: (int(e.get("ts") or 0), e.get("tribe", "")))
+    # Event count per (tribe, variant) over the usable timeline.
+    event_count: dict[tuple[str, str], int] = defaultdict(int)
+    for ev in usable:
+        event_count[(ev.get("tribe", ""), ev.get("child_variant", ""))] += 1
+    # Walk timeline; emit one CSV row per usable event whose
+    # (tribe, variant) has end totals > 0. Cumulative counters are
+    # rounded(final * seen / event_count) so the final row matches the
+    # end-of-run total byte-for-byte.
+    seen: dict[tuple[str, str], int] = defaultdict(int)
+    with open(out_path, "w", newline="", encoding="utf-8") as f:
+        f.write(caveat)
+        w = csv.writer(f)
+        w.writerow(header_cols)
+        if not usable or not aggregated_stats:
+            return out_path
+        for ev in usable:
+            tribe = ev.get("tribe", "")
+            variant = ev.get("child_variant", "")
+            stats = aggregated_stats.get(tribe, {}).get(variant)
+            if stats is None:
+                continue
+            final_v = int(stats.get("verified", 0))
+            final_fp = int(stats.get("falsepos", 0))
+            if final_v + final_fp == 0:
+                continue
+            n = event_count[(tribe, variant)]
+            if n <= 0:
+                continue
+            seen[(tribe, variant)] += 1
+            k = seen[(tribe, variant)]
+            verified_cumul = int(round(final_v * k / n))
+            falsepos_cumul = int(round(final_fp * k / n))
+            denom = verified_cumul + falsepos_cumul
+            hit_rate = (verified_cumul / denom) if denom > 0 else 0.0
+            cls, phrasing = _split_class_phrasing(variant)
+            w.writerow([
+                int(ev.get("ts") or 0),
+                tribe,
+                cls,
+                phrasing,
+                verified_cumul,
+                falsepos_cumul,
+                f"{hit_rate:.4f}",
+            ])
+    return out_path
+
+
+def render_per_class_summary(
+    aggregated_stats: dict[str, dict[str, dict[str, int]]] | None,
+) -> list[str]:
+    """Render the `### Per-class fitness summary` section lines (#513).
+
+    Returns the markdown lines (no trailing blank) for the new section
+    appended to `comparison-stage3.md`. The table has 8 fixed rows in
+    `STAGE2_CLASSES` order even when a class has zero counters, so
+    cross-tribe drift is visible at a glance. Unknown classes (e.g. an
+    off-pool class-flip mutation) are appended sorted with an
+    `unknown:` prefix.
+
+    Columns: `class | verified | falsepos | hit_rate | dominant_tribe |
+    spread`. `dominant_tribe` is the tribe with the most verified
+    counters for the class (`-` when zero); `spread` counts tribes with
+    verified > 0 for the class (0-5).
+    """
+    # Aggregate verified / falsepos per (class, tribe).
+    per_class_tribe_verified: dict[str, dict[str, int]] = defaultdict(
+        lambda: defaultdict(int)
+    )
+    per_class_verified: dict[str, int] = defaultdict(int)
+    per_class_falsepos: dict[str, int] = defaultdict(int)
+    seen_classes: set[str] = set()
+    if aggregated_stats:
+        for tribe, variants in aggregated_stats.items():
+            for variant, counts in variants.items():
+                cls, _ = _split_class_phrasing(variant)
+                if not cls:
+                    continue
+                v_n = int(counts.get("verified", 0))
+                fp_n = int(counts.get("falsepos", 0))
+                per_class_tribe_verified[cls][tribe] += v_n
+                per_class_verified[cls] += v_n
+                per_class_falsepos[cls] += fp_n
+                seen_classes.add(cls)
+    # Fixed rows first; unknown classes appended sorted with prefix.
+    unknown_classes = sorted(
+        c for c in seen_classes if c not in STAGE2_CLASSES
+    )
+    row_classes = list(STAGE2_CLASSES) + unknown_classes
+    lines: list[str] = []
+    lines.append("### Per-class fitness summary")
+    lines.append("")
+    lines.append(
+        "Reconstructed per-class rollup over `variant_stats:*` memos "
+        "(#513). End-of-run totals only; the per-tick fitness curve in "
+        "`variant-trajectory.csv` is proportionally reconstructed -- "
+        "hunter-side write-through is the deferred observed-trajectory "
+        "path."
+    )
+    lines.append("")
+    lines.append(
+        "| class | verified | falsepos | hit_rate | dominant_tribe | spread |"
+    )
+    lines.append("|---|---|---|---|---|---|")
+    for cls in row_classes:
+        v_n = per_class_verified.get(cls, 0)
+        fp_n = per_class_falsepos.get(cls, 0)
+        denom = v_n + fp_n
+        hit_rate_cell = f"{v_n / denom:.2f}" if denom > 0 else "n/a"
+        tribe_counts = per_class_tribe_verified.get(cls, {})
+        if v_n > 0 and tribe_counts:
+            dominant = sorted(
+                tribe_counts.items(),
+                key=lambda kv: (-int(kv[1]), kv[0]),
+            )
+            # The first entry with verified > 0 is the dominant tribe.
+            dominant_tribe = "-"
+            for t, c in dominant:
+                if int(c) > 0:
+                    dominant_tribe = t
+                    break
+        else:
+            dominant_tribe = "-"
+        spread = sum(1 for c in tribe_counts.values() if int(c) > 0)
+        label = cls if cls in STAGE2_CLASSES else f"unknown:{cls}"
+        lines.append(
+            f"| {label} | {v_n} | {fp_n} | {hit_rate_cell} | "
+            f"{dominant_tribe} | {spread} |"
+        )
+    return lines
+
+
 # --- Comparison report ------------------------------------------------------
 
 def _read_run_meta(run_dir: str) -> dict[str, Any]:
@@ -1298,6 +1499,12 @@ def write_comparison_md(
                 lines.append(f"| {tribe} | {i} | {v} | {tps} |")
         lines.append("")
 
+    # #513: per-class fitness summary. Always emitted (8 fixed rows even
+    # when zero counters) so the cross-tribe drift surface stays
+    # comparable across runs even before the first verified finding.
+    lines.extend(render_per_class_summary(aggregated_stats))
+    lines.append("")
+
     lines.append("## 6. Knowledge market activity")
     lines.append("")
     if not market_rows:
@@ -1407,6 +1614,14 @@ def main() -> None:
         aggregated_stats=aggregated_stats,
     )
     print(mutation_path)
+
+    # #513: reconstructed per-(tribe, class, phrasing) trajectory CSV.
+    # The trajectory is proportional reconstruction over the replicate
+    # timeline, not observed history -- caveat lives in the CSV header.
+    trajectory_path = emit_variant_trajectory(
+        out_dir, events, aggregated_stats=aggregated_stats,
+    )
+    print(trajectory_path)
 
     rotations = _read_rotations(run_dir)
     market_rows: list[dict[str, Any]] = []

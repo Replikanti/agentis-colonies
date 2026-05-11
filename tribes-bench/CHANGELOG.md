@@ -108,6 +108,34 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **`analyse-stage3.py` per-class fitness curves + `variant-trajectory.csv`**
+  ([#513](https://github.com/Replikanti/agentis-colonies/issues/513)).
+  Closes the observability gap for the
+  [#459](https://github.com/Replikanti/agentis-colonies/issues/459)
+  Stage 4 Phase 1 commit decision: until #513, `comparison-stage3.md`
+  reduced fitness to a per-tribe variant table that hid cross-tribe
+  drift on the 8 stage2 bug classes the post-#499 class-flip path emits
+  (`uninitialised_memory`, `use_after_free`, `memory_corruption`,
+  `heap_overflow`, `data_race`, `send_violation`, `missing_lock`,
+  `dangling_borrow`). Two new artefacts: a `variant-trajectory.csv`
+  reconstructed per-(tribe, class, phrasing) time series, and a
+  `### Per-class fitness summary` markdown section appended to the
+  existing comparison report with 8 fixed rows (one per stage2 class,
+  zero-row included so cross-run diffs stay comparable) plus a
+  trailing `unknown:<class>` block for any off-pool class-flip
+  mutations. The trajectory CSV is a **proportional reconstruction**
+  over the `mutation-diff.csv` event timeline -- end-of-run totals
+  distributed across replicate-event ordinals -- not observed history;
+  the file carries an inline `# trajectory: reconstructed from
+  end-of-run totals + replicate-event timeline. Hunter-side
+  write-through is the observed alternative, deferred (#513).` header
+  comment and the markdown section repeats the caveat so downstream
+  readers do not misread the curve as real per-tick dynamics. No
+  hunter-side changes; reuses the `variant_stats:*` memos hunters
+  already increment plus the per-event timeline that #496 emits. Per-run
+  only, no cross-run aggregation. Schema:
+  `ts,tribe,class,phrasing,verified_cumul,falsepos_cumul,hit_rate`.
+
 - **M98 v2 — class-parametrized hunter prompts**
   ([#504](https://github.com/Replikanti/agentis-colonies/issues/504),
   builds on
