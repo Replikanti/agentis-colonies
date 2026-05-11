@@ -16,6 +16,24 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **Re-apply #493 consumer-side `knowledge_buy` answer validation (Loose category c)**.
+  PR #508 (commit aa21220) originally added a `_validate_bought_answer` gate
+  to every `knowledge_buy` callsite in `hunter.ag`, cross-checking the
+  returned answer's claimed `bug_id` against the seller-tribe's
+  verifier-stamped `bug-ledger.jsonl` before trusting it. The surgical
+  restore PR #517 reverted to the pre-#493 baseline (9aacf65) to recover
+  from an unrelated regression; PR #518 brought back #491 (verifier-only
+  ledger writes) but not #493. This re-applies #493 byte-identically
+  across all 5 hunter.ag files: same helper body, same two-callsite gate
+  (single-finding buy + bundle/espionage buy), same `rejected_unverified`
+  outcome on the per-tick `emit_market_csv` column, same
+  `learn("market", ..., "rejected", [..., "reason:unverifiable"])` tag
+  schema (already covered by `tools/check-learn-tags.sh`). Rejection is
+  non-punitive (no reputation hit, just discard the answer + suppress
+  the `hunter:bought_context` memo write so downstream prompts never see
+  an unverifiable bought answer); fail-safe defaults collapse every
+  parse / exec / lookup failure to `false` (reject), never to accept.
+  Closes the Loose category (c) gap re-opened by PR #517.
 - **run-stage3-docker.sh `--help` no longer truncates env-var docs + claude-backend test coverage (#537)**.
   Two LOW-severity follow-ups from the #536 QA report. (1)
   `run-stage3-docker.sh --help` used a fixed `sed -n '2,98p'` range
