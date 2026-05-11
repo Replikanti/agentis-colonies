@@ -1001,6 +1001,392 @@ def test_mutation_diff_csv_has_observational_columns(tmp: str) -> None:
 
 
 # -------------------------------------------------------------------------
+# #513: per-class fitness summary + variant-trajectory.csv
+# -------------------------------------------------------------------------
+
+def test_per_class_summary_table_orders_by_stage2_class_order(_tmp: str) -> None:
+    """All 8 STAGE2_CLASSES appear as fixed rows in the canonical
+    order, even when zero counters are present."""
+    mod = _import_analyser()
+    lines = mod.render_per_class_summary({})
+    body = "\n".join(lines)
+    if "### Per-class fitness summary" not in body:
+        report_fail(
+            "test_per_class_summary_table_orders_by_stage2_class_order: header"
+        )
+        return
+    report_pass(
+        "test_per_class_summary_table_orders_by_stage2_class_order: header"
+    )
+    indices = []
+    for cls in mod.STAGE2_CLASSES:
+        idx = body.find(f"| {cls} ")
+        indices.append((cls, idx))
+    missing = [cls for cls, idx in indices if idx < 0]
+    if missing:
+        report_fail(
+            "test_per_class_summary_table_orders_by_stage2_class_order: all 8 rows",
+            f"missing classes: {missing}",
+        )
+        return
+    report_pass(
+        "test_per_class_summary_table_orders_by_stage2_class_order: all 8 rows"
+    )
+    ordered = all(
+        indices[i][1] < indices[i + 1][1]
+        for i in range(len(indices) - 1)
+    )
+    if ordered:
+        report_pass(
+            "test_per_class_summary_table_orders_by_stage2_class_order: order"
+        )
+    else:
+        report_fail(
+            "test_per_class_summary_table_orders_by_stage2_class_order: order",
+            f"indices={indices}",
+        )
+
+
+def test_per_class_summary_aggregates_across_tribes(_tmp: str) -> None:
+    """verified and falsepos sum across tribes (and phrasings) for a
+    given class."""
+    mod = _import_analyser()
+    stats = {
+        "tribe-alpha": {
+            "use_after_free:format-pattern-default": {
+                "verified": 3, "falsepos": 1,
+            },
+            "use_after_free:format-pattern-strict-literal": {
+                "verified": 2, "falsepos": 0,
+            },
+        },
+        "tribe-beta": {
+            "use_after_free:source-sink-call-graph": {
+                "verified": 4, "falsepos": 2,
+            },
+        },
+    }
+    lines = mod.render_per_class_summary(stats)
+    body = "\n".join(lines)
+    # use_after_free row: verified=9, falsepos=3, hit_rate=0.75
+    target = "| use_after_free | 9 | 3 | 0.75 |"
+    if target in body:
+        report_pass(
+            "test_per_class_summary_aggregates_across_tribes: aggregation"
+        )
+    else:
+        report_fail(
+            "test_per_class_summary_aggregates_across_tribes: aggregation",
+            f"target={target!r} not in body",
+        )
+
+
+def test_per_class_summary_dominant_tribe(_tmp: str) -> None:
+    """dominant_tribe is the tribe with most verified for the class."""
+    mod = _import_analyser()
+    stats = {
+        "tribe-alpha": {
+            "heap_overflow:format-pattern-default": {
+                "verified": 2, "falsepos": 0,
+            },
+        },
+        "tribe-beta": {
+            "heap_overflow:source-sink-call-graph": {
+                "verified": 7, "falsepos": 1,
+            },
+        },
+        "tribe-gamma": {
+            "heap_overflow:error-path-trait-dispatch": {
+                "verified": 1, "falsepos": 0,
+            },
+        },
+    }
+    lines = mod.render_per_class_summary(stats)
+    body = "\n".join(lines)
+    # heap_overflow row should name tribe-beta as dominant.
+    heap_line = ""
+    for ln in lines:
+        if ln.startswith("| heap_overflow |"):
+            heap_line = ln
+            break
+    if "tribe-beta" in heap_line:
+        report_pass(
+            "test_per_class_summary_dominant_tribe: dominant naming"
+        )
+    else:
+        report_fail(
+            "test_per_class_summary_dominant_tribe: dominant naming",
+            f"heap_line={heap_line!r}",
+        )
+    # Sanity: a class with no verified rows should show `-`.
+    for cls in ("data_race", "send_violation", "missing_lock"):
+        for ln in lines:
+            if ln.startswith(f"| {cls} |"):
+                if " | - | 0 |" in ln:
+                    break
+                report_fail(
+                    "test_per_class_summary_dominant_tribe: zero-verified dash",
+                    f"{cls} line={ln!r}",
+                )
+                return
+    report_pass(
+        "test_per_class_summary_dominant_tribe: zero-verified dash"
+    )
+    # Avoid an unused-variable warning when the body grows below.
+    _ = body
+
+
+def test_per_class_summary_spread_count(_tmp: str) -> None:
+    """spread = number of tribes with verified > 0 for the class."""
+    mod = _import_analyser()
+    stats = {
+        "tribe-alpha": {
+            "memory_corruption:format-pattern-default": {
+                "verified": 1, "falsepos": 0,
+            },
+        },
+        "tribe-beta": {
+            "memory_corruption:source-sink-call-graph": {
+                "verified": 1, "falsepos": 0,
+            },
+        },
+        "tribe-gamma": {
+            "memory_corruption:error-path-trait-dispatch": {
+                "verified": 0, "falsepos": 3,
+            },
+        },
+    }
+    lines = mod.render_per_class_summary(stats)
+    spread_line = ""
+    for ln in lines:
+        if ln.startswith("| memory_corruption |"):
+            spread_line = ln
+            break
+    # Trailing cell of memory_corruption row should be `| 2 |`.
+    if spread_line.rstrip().endswith("| 2 |"):
+        report_pass(
+            "test_per_class_summary_spread_count: spread=2"
+        )
+    else:
+        report_fail(
+            "test_per_class_summary_spread_count: spread=2",
+            f"line={spread_line!r}",
+        )
+
+
+def test_per_class_summary_unknown_class_handling(_tmp: str) -> None:
+    """Unknown classes (not in STAGE2_CLASSES) are appended sorted with
+    `unknown:` prefix."""
+    mod = _import_analyser()
+    stats = {
+        "tribe-alpha": {
+            "weird_class:foo": {"verified": 1, "falsepos": 0},
+            "other_weird:bar": {"verified": 0, "falsepos": 1},
+        },
+    }
+    lines = mod.render_per_class_summary(stats)
+    body = "\n".join(lines)
+    if "| unknown:weird_class |" not in body:
+        report_fail(
+            "test_per_class_summary_unknown_class_handling: weird_class row",
+            f"body tail={body[-300:]!r}",
+        )
+        return
+    report_pass(
+        "test_per_class_summary_unknown_class_handling: weird_class row"
+    )
+    if "| unknown:other_weird |" not in body:
+        report_fail(
+            "test_per_class_summary_unknown_class_handling: other_weird row"
+        )
+        return
+    report_pass(
+        "test_per_class_summary_unknown_class_handling: other_weird row"
+    )
+    # Unknown classes must appear AFTER the last STAGE2_CLASSES row.
+    last_known = max(
+        body.find(f"| {cls} |") for cls in mod.STAGE2_CLASSES
+    )
+    unknown_idx = body.find("| unknown:")
+    if last_known > 0 and unknown_idx > last_known:
+        report_pass(
+            "test_per_class_summary_unknown_class_handling: append after fixed rows"
+        )
+    else:
+        report_fail(
+            "test_per_class_summary_unknown_class_handling: append after fixed rows",
+            f"last_known={last_known} unknown_idx={unknown_idx}",
+        )
+    # Sorted: `other_weird` should come before `weird_class`.
+    o_idx = body.find("| unknown:other_weird |")
+    w_idx = body.find("| unknown:weird_class |")
+    if o_idx > 0 and w_idx > 0 and o_idx < w_idx:
+        report_pass(
+            "test_per_class_summary_unknown_class_handling: sorted append"
+        )
+    else:
+        report_fail(
+            "test_per_class_summary_unknown_class_handling: sorted append",
+            f"o_idx={o_idx} w_idx={w_idx}",
+        )
+
+
+def test_variant_trajectory_csv_schema(tmp: str) -> None:
+    """variant-trajectory.csv has the documented header + caveat
+    comment, and is emitted alongside the other artefacts."""
+    run_dir = os.path.join(tmp, "traj-schema")
+    os.makedirs(run_dir, exist_ok=True)
+    tribes = ["tribe-alpha"]
+    seed_ids = {t: f"seed-{t}" for t in tribes}
+    make_seed_node(run_dir, tribes, seed_ids)
+    write_text(os.path.join(run_dir, "bug-ledger.jsonl"), "")
+    write_text(
+        os.path.join(run_dir, "rotations.csv"),
+        "ts,target_dir,bugs_manifest\n",
+    )
+    write_text(
+        os.path.join(run_dir, "run-meta.json"),
+        json.dumps({
+            "started_at": "2026-05-10T12:00:00Z",
+            "wall_clock_s": 60,
+            "rotation_interval_s": 60,
+        }),
+    )
+    rc, _stdout, _stderr = run_analyser(run_dir)
+    assert_eq("test_variant_trajectory_csv_schema: analyser ok", 0, rc)
+    traj_path = os.path.join(run_dir, "variant-trajectory.csv")
+    assert_file_exists(
+        "test_variant_trajectory_csv_schema: csv emitted", traj_path,
+    )
+    with open(traj_path, encoding="utf-8") as f:
+        body = f.read()
+    if body.startswith("# trajectory: reconstructed from"):
+        report_pass(
+            "test_variant_trajectory_csv_schema: caveat comment leads"
+        )
+    else:
+        report_fail(
+            "test_variant_trajectory_csv_schema: caveat comment leads",
+            f"head={body[:120]!r}",
+        )
+    if "#513" in body:
+        report_pass(
+            "test_variant_trajectory_csv_schema: caveat references #513"
+        )
+    else:
+        report_fail(
+            "test_variant_trajectory_csv_schema: caveat references #513",
+        )
+    expected_header = (
+        "ts,tribe,class,phrasing,verified_cumul,falsepos_cumul,hit_rate"
+    )
+    if expected_header in body:
+        report_pass(
+            "test_variant_trajectory_csv_schema: column order"
+        )
+    else:
+        report_fail(
+            "test_variant_trajectory_csv_schema: column order",
+            f"missing header={expected_header!r}",
+        )
+
+
+def test_variant_trajectory_csv_reconstruction_proportional(_tmp: str) -> None:
+    """Proportional reconstruction: walking N events with end totals
+    (V, FP) emits rounded-cumulative rows; the final row matches the
+    end totals byte-for-byte."""
+    mod = _import_analyser()
+    out_dir = tempfile.mkdtemp(prefix="traj-proportional-")
+    try:
+        events = [
+            {
+                "ts": 1000, "tribe": "tribe-alpha",
+                "child_variant": "use_after_free:format-pattern-default",
+                "parent_variant": "", "source": "observed",
+                "parent_id": "p", "child_id": "c1",
+            },
+            {
+                "ts": 2000, "tribe": "tribe-alpha",
+                "child_variant": "use_after_free:format-pattern-default",
+                "parent_variant": "", "source": "observed",
+                "parent_id": "p", "child_id": "c2",
+            },
+            {
+                "ts": 3000, "tribe": "tribe-alpha",
+                "child_variant": "use_after_free:format-pattern-default",
+                "parent_variant": "", "source": "observed",
+                "parent_id": "p", "child_id": "c3",
+            },
+            {
+                "ts": 4000, "tribe": "tribe-alpha",
+                "child_variant": "use_after_free:format-pattern-default",
+                "parent_variant": "", "source": "observed",
+                "parent_id": "p", "child_id": "c4",
+            },
+        ]
+        stats = {
+            "tribe-alpha": {
+                "use_after_free:format-pattern-default": {
+                    "verified": 8, "falsepos": 4,
+                },
+            },
+        }
+        path = mod.emit_variant_trajectory(out_dir, events, stats)
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        # Drop caveat + header rows.
+        data_rows = [
+            ln.split(",") for ln in lines
+            if ln and not ln.startswith("#") and not ln.startswith("ts,")
+        ]
+        if len(data_rows) != 4:
+            report_fail(
+                "test_variant_trajectory_csv_reconstruction_proportional: row count",
+                f"got {len(data_rows)} rows; lines={lines!r}",
+            )
+            return
+        report_pass(
+            "test_variant_trajectory_csv_reconstruction_proportional: row count"
+        )
+        # Expected cumulatives: V=8 across 4 events -> 2,4,6,8;
+        # FP=4 across 4 events -> 1,2,3,4.
+        expected_v = [2, 4, 6, 8]
+        expected_fp = [1, 2, 3, 4]
+        v_cumuls = [int(r[4]) for r in data_rows]
+        fp_cumuls = [int(r[5]) for r in data_rows]
+        if v_cumuls == expected_v and fp_cumuls == expected_fp:
+            report_pass(
+                "test_variant_trajectory_csv_reconstruction_proportional: cumulatives"
+            )
+        else:
+            report_fail(
+                "test_variant_trajectory_csv_reconstruction_proportional: cumulatives",
+                f"verified={v_cumuls} falsepos={fp_cumuls}",
+            )
+        # Final row must reach end totals byte-for-byte.
+        if v_cumuls[-1] == 8 and fp_cumuls[-1] == 4:
+            report_pass(
+                "test_variant_trajectory_csv_reconstruction_proportional: final row matches totals"
+            )
+        else:
+            report_fail(
+                "test_variant_trajectory_csv_reconstruction_proportional: final row matches totals",
+            )
+        # class + phrasing parsed from `class:phrasing`.
+        if all(r[2] == "use_after_free" and r[3] == "format-pattern-default" for r in data_rows):
+            report_pass(
+                "test_variant_trajectory_csv_reconstruction_proportional: class/phrasing split"
+            )
+        else:
+            report_fail(
+                "test_variant_trajectory_csv_reconstruction_proportional: class/phrasing split",
+                f"rows={data_rows!r}",
+            )
+    finally:
+        shutil.rmtree(out_dir, ignore_errors=True)
+
+
+# -------------------------------------------------------------------------
 # Snapshot test (#495): runs against a real archived stage3-docker run dir
 # when it is available, otherwise reports a [SKIP].
 # -------------------------------------------------------------------------
@@ -1010,6 +1396,17 @@ SNAPSHOT_DIR = os.environ.get(
     os.path.join(
         os.path.dirname(FED_ROOT), "tribes-bench",
         "runs", "stage3-docker-20260510T120610Z",
+    ),
+)
+
+# #513 snapshot: smoke #51 run dir. When present, asserts the per-class
+# summary actually shows multiple stage2 classes with verified > 0,
+# matching the cross-tribe activity captured by smoke #51.
+SNAPSHOT_DIR_513 = os.environ.get(
+    "AGENTIS_STAGE3_SNAPSHOT_DIR_513",
+    os.path.join(
+        os.path.dirname(FED_ROOT), "tribes-bench",
+        "runs", "stage3-docker-20260510T195436Z",
     ),
 )
 
@@ -1028,6 +1425,68 @@ def case_snapshot() -> None:
         report_fail("snapshot: comparison.md produced", f"missing {cmp_path}")
         return
     report_pass("snapshot: comparison.md produced")
+
+
+def case_snapshot_513() -> None:
+    """#513 smoke #51 snapshot: assert the per-class summary captures
+    >= 4 stage2 classes with verified > 0 (expected: heap_overflow,
+    use_after_free, memory_corruption, uninitialised_memory). Skips
+    cleanly when the reference run dir is absent."""
+    if not os.path.isdir(SNAPSHOT_DIR_513):
+        print(
+            f"[SKIP] snapshot 513: reference run dir absent ({SNAPSHOT_DIR_513})"
+        )
+        return
+    out_sub = os.path.join(SNAPSHOT_DIR_513, "_513-snapshot")
+    rc, _stdout, _stderr = run_analyser(
+        SNAPSHOT_DIR_513,
+        extra_args=["--out", out_sub],
+    )
+    assert_eq("snapshot 513: analyser exits 0", 0, rc)
+    cmp_path = os.path.join(out_sub, "comparison-stage3.md")
+    if not os.path.isfile(cmp_path):
+        report_fail(
+            "snapshot 513: comparison.md produced",
+            f"missing {cmp_path}",
+        )
+        return
+    report_pass("snapshot 513: comparison.md produced")
+    with open(cmp_path, encoding="utf-8") as f:
+        body = f.read()
+    if "### Per-class fitness summary" not in body:
+        report_fail(
+            "snapshot 513: per-class section present",
+            f"body tail={body[-400:]!r}",
+        )
+        return
+    report_pass("snapshot 513: per-class section present")
+    # Count stage2 classes with verified > 0 by scanning the table
+    # rows. Each row is `| <class> | <verified> | <falsepos> | ...`.
+    mod = _import_analyser()
+    classes_with_verified = 0
+    for cls in mod.STAGE2_CLASSES:
+        marker = f"| {cls} | "
+        idx = body.find(marker)
+        if idx < 0:
+            continue
+        row = body[idx:body.find("\n", idx)]
+        parts = [p.strip() for p in row.split("|")]
+        # parts: ['', class, verified, falsepos, hit_rate, dominant_tribe, spread, '']
+        if len(parts) >= 4:
+            try:
+                if int(parts[2]) > 0:
+                    classes_with_verified += 1
+            except ValueError:
+                pass
+    if classes_with_verified >= 4:
+        report_pass(
+            "snapshot 513: >= 4 stage2 classes with verified > 0"
+        )
+    else:
+        report_fail(
+            "snapshot 513: >= 4 stage2 classes with verified > 0",
+            f"got {classes_with_verified}",
+        )
 
 
 # -------------------------------------------------------------------------
@@ -1053,7 +1512,16 @@ def main() -> int:
         test_read_variant_stats_missing_binary_returns_empty(tmp)
         test_variant_outcomes_table_orders_by_verified_desc_falsepos_asc(tmp)
         test_mutation_diff_csv_has_observational_columns(tmp)
+        # #513 unit tests: per-class fitness summary + trajectory CSV.
+        test_per_class_summary_table_orders_by_stage2_class_order(tmp)
+        test_per_class_summary_aggregates_across_tribes(tmp)
+        test_per_class_summary_dominant_tribe(tmp)
+        test_per_class_summary_spread_count(tmp)
+        test_per_class_summary_unknown_class_handling(tmp)
+        test_variant_trajectory_csv_schema(tmp)
+        test_variant_trajectory_csv_reconstruction_proportional(tmp)
         case_snapshot()
+        case_snapshot_513()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print("")
