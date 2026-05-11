@@ -153,6 +153,37 @@ topic_kind:bundle
 reason:unverifiable"
             PAIR_KNOWN=1
             ;;
+        "hunter_prompt_evolve:partial")
+            # #520 M98 v3 PR 2/3: emitted when the evolution path runs but
+            # the new prompt body is not committed. Two sub-cases:
+            # no-op (Levenshtein floor rejected the rewrite as
+            # too similar to the prior prompt) and lineage-reset
+            # (generation cap reached; hunting prompt reset to the
+            # tribe's seed and lineage_id bumped).
+            ALLOWED_LITERALS="prompt-evolution
+no-op
+lineage-reset
+tribes-bench"
+            PAIR_KNOWN=1
+            ;;
+        "hunter_prompt_evolve:failure")
+            # #520 M98 v3 PR 2/3: schema-sanity ping rejected the
+            # candidate prompt. Colony reverts to prior working prompt;
+            # generation not bumped.
+            ALLOWED_LITERALS="prompt-evolution
+schema-revert
+tribes-bench"
+            PAIR_KNOWN=1
+            ;;
+        "hunter_prompt_evolve:success")
+            # #520 M98 v3 PR 2/3: rewrite passed all guards (length,
+            # Levenshtein floor, schema-sanity); the new prompt is now
+            # the active hunting prompt and generation is incremented.
+            ALLOWED_LITERALS="prompt-evolution
+rewritten
+tribes-bench"
+            PAIR_KNOWN=1
+            ;;
     esac
 }
 

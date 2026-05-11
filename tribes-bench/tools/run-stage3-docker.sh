@@ -66,12 +66,40 @@
 #   STAGE3_HUNTER_PROMPT_MAX_BYTES
 #                              #520 M98 v3 PR 1/3: clamp on the per-pid
 #                              `hunter:<pid>:hunting_prompt` body length
-#                              at bootstrap-read. Default 4096 covers
+#                              at bootstrap-read AND on every PR 2/3
+#                              evolution rewrite. Default 4096 covers
 #                              every pre-#505 seed (~3 KB max) with
-#                              headroom for PR 2/3 evolution rewrites.
+#                              headroom for evolution rewrites.
 #                              Threaded into env_passthrough so
 #                              hunter.ag reads it via
 #                              `exec sh "printenv HUNTER_PROMPT_MAX_BYTES"`.
+#   STAGE3_HUNTER_PROMPT_EVOLUTION_THRESHOLD
+#                              #520 M98 v3 PR 2/3: K verified findings
+#                              required before the hunter fires the
+#                              meta-prompt evolution path. Default 3.
+#                              Lower => faster prompt drift but more
+#                              extra LLM calls; higher => slower drift,
+#                              fewer rewrites. Surfaces to hunter.ag via
+#                              env_passthrough +
+#                              `printenv HUNTER_PROMPT_EVOLUTION_THRESHOLD`.
+#   STAGE3_HUNTER_PROMPT_GEN_CAP
+#                              #520 M98 v3 PR 2/3: max generations per
+#                              lineage before the next evolution resets
+#                              the hunting prompt to the tribe's seed
+#                              and bumps `hunter:<pid>:lineage_id`.
+#                              Default 10. Prevents unbounded recursive
+#                              degeneration; lineage telemetry traceable
+#                              via the `lineage_id` memo (consumed by
+#                              `analyse-stage3.py`'s per-class fitness
+#                              curves).
+#   STAGE3_HUNTER_PROMPT_LEVENSHTEIN_FLOOR
+#                              #520 M98 v3 PR 2/3: minimum dissimilarity
+#                              (in integer percent, 0..100) between the
+#                              old prompt and an LLM-proposed rewrite for
+#                              the rewrite to be accepted. Default 5
+#                              (5%). A rewrite below the floor is
+#                              treated as no-op: old prompt retained,
+#                              generation not bumped, buffer untouched.
 #   STAGE3_LLM_BACKEND         llm.backend value injected into both
 #                              hermetic configs. Default: openai (#445).
 #   STAGE3_OPENAI_MODEL        Model id when STAGE3_LLM_BACKEND=openai.
@@ -230,11 +258,21 @@ HUNTER_REPRODUCTIVE_FITNESS_THRESHOLD="${STAGE3_HUNTER_REPRODUCTIVE_FITNESS_THRE
 # #520 M98 v3 PR 1/3: per-hunter LLM-evolved hunting-prompt byte clamp.
 # Hunters read this on bootstrap and clamp the seed-prompt body length
 # (substring 0..N) before writing it to `hunter:<pid>:hunting_prompt`.
-# Default 4096 covers every pre-#505 seed (~3 KB max) with headroom for
-# the PR 2/3 evolution rewrites. Set via STAGE3_HUNTER_PROMPT_MAX_BYTES.
-# Surfaces via env_passthrough so hunter.ag reads it through
+# PR 2/3 reuses the same clamp on every evolution rewrite. Default 4096
+# covers every pre-#505 seed (~3 KB max) with headroom for the PR 2/3
+# evolution rewrites. Set via STAGE3_HUNTER_PROMPT_MAX_BYTES. Surfaces
+# via env_passthrough so hunter.ag reads it through
 # `exec sh "printenv HUNTER_PROMPT_MAX_BYTES"`.
 HUNTER_PROMPT_MAX_BYTES="${STAGE3_HUNTER_PROMPT_MAX_BYTES:-4096}"
+# #520 M98 v3 PR 2/3: K verified findings before the hunter fires the
+# meta-prompt evolution path. Default 3. Surfaces via env_passthrough.
+HUNTER_PROMPT_EVOLUTION_THRESHOLD="${STAGE3_HUNTER_PROMPT_EVOLUTION_THRESHOLD:-3}"
+# #520 M98 v3 PR 2/3: max generations per lineage before the next
+# evolution resets to the tribe's seed and bumps lineage_id. Default 10.
+HUNTER_PROMPT_GEN_CAP="${STAGE3_HUNTER_PROMPT_GEN_CAP:-10}"
+# #520 M98 v3 PR 2/3: minimum dissimilarity (integer percent, 0..100)
+# for an LLM-proposed prompt rewrite to be accepted. Default 5 (5%).
+HUNTER_PROMPT_LEVENSHTEIN_FLOOR="${STAGE3_HUNTER_PROMPT_LEVENSHTEIN_FLOOR:-5}"
 LLM_BACKEND="${STAGE3_LLM_BACKEND:-openai}"
 OPENAI_MODEL="${STAGE3_OPENAI_MODEL:-gpt-4o-mini}"
 OPENAI_ENDPOINT="${STAGE3_OPENAI_ENDPOINT:-https://api.openai.com/v1/chat/completions}"
@@ -418,7 +456,7 @@ write_bootstrap() {
         printf '{\n'
         printf '  printf "federation.enabled = true\\n"\n'
         printf '  printf "federation.peers = host.containers.internal:%s\\n"\n' "$peer_port"
-        printf '  printf "exec.env_passthrough = COLONY_DIR,TRIBE_NAME,TARGET_DIR,TARGET_FILE,BUGS_MANIFEST,VERIFIER_PATH,RUN_DIR,BUG_LEDGER_PATH,INITIAL_CB,BASE_COST,K_MALTHUSIAN,MAX_REPLICAS,REWARD_FULL,REWARD_SUBSEQUENT,LEDGER_REWARD_FULL,LEDGER_REWARD_SUBSEQUENT,DEATH_THRESHOLD,AGENTIS_ROOT,HUNTER_INITIAL_FITNESS,HUNTER_INITIAL_VARIANT,HUNTER_PROMPT_MAX_BYTES\\n"\n'
+        printf '  printf "exec.env_passthrough = COLONY_DIR,TRIBE_NAME,TARGET_DIR,TARGET_FILE,BUGS_MANIFEST,VERIFIER_PATH,RUN_DIR,BUG_LEDGER_PATH,INITIAL_CB,BASE_COST,K_MALTHUSIAN,MAX_REPLICAS,REWARD_FULL,REWARD_SUBSEQUENT,LEDGER_REWARD_FULL,LEDGER_REWARD_SUBSEQUENT,DEATH_THRESHOLD,AGENTIS_ROOT,HUNTER_INITIAL_FITNESS,HUNTER_INITIAL_VARIANT,HUNTER_PROMPT_MAX_BYTES,HUNTER_PROMPT_EVOLUTION_THRESHOLD,HUNTER_PROMPT_GEN_CAP,HUNTER_PROMPT_LEVENSHTEIN_FLOOR\\n"\n'
         printf '  printf "experience.enabled = true\\n"\n'
         printf '  printf "telemetry.enabled = true\\n"\n'
         printf '  printf "daemon.heartbeat_interval_ms = 600000\\n"\n'
@@ -513,8 +551,8 @@ write_bootstrap() {
             # file to seed the tribe-<name>:bug_ledger memo from. Without
             # it, hunters verify findings but the JSONL ledger never
             # grows (visible in experience but missing from bug-ledger).
-            printf 'DEATH_THRESHOLD=%s POOL_CAP=%s METABOLIC_COST=%s INITIAL_POOL=%s HUNTER_MAX_AGE=%s HUNTER_FITNESS_CREEP_PER_MINUTE=%s HUNTER_FITNESS_THRESHOLD_BASELINE=%s HUNTER_FITNESS_REWARD_VERIFIED=%s HUNTER_FITNESS_PENALTY_FALSEPOS=%s HUNTER_FITNESS_REWARD_REPLICATE=%s HUNTER_FITNESS_GRACE_MS=%s HUNTER_REPRODUCTIVE_FITNESS_THRESHOLD=%s HUNTER_PROMPT_MAX_BYTES=%s AGENTIS_ROOT=/run-root/.agentis TARGET_DIR=targets-stage2/smallvec-v0.6.13 TARGET_FILE=lib.rs BUGS_MANIFEST=/run-root/.agentis/sandbox/targets-stage2/bugs.json VERIFIER_PATH=/run-root/tools/verify-finding-stage2.sh BUG_LEDGER_PATH=/run-root/bug-ledger.jsonl LEDGER_REWARD_FULL=200 LEDGER_REWARD_SUBSEQUENT=50 bash /run-root/%s/scripts/start-colony.sh > /run-root/%s.log 2>&1 &\n' \
-                "$DEATH_THRESHOLD" "$TRIBE_POOL_CAP" "$TRIBE_METABOLIC_COST" "$TRIBE_INITIAL_POOL" "$HUNTER_MAX_AGE" "$HUNTER_FITNESS_CREEP_PER_MINUTE" "$HUNTER_FITNESS_THRESHOLD_BASELINE" "$HUNTER_FITNESS_REWARD_VERIFIED" "$HUNTER_FITNESS_PENALTY_FALSEPOS" "$HUNTER_FITNESS_REWARD_REPLICATE" "$HUNTER_FITNESS_GRACE_MS" "$HUNTER_REPRODUCTIVE_FITNESS_THRESHOLD" "$HUNTER_PROMPT_MAX_BYTES" "$tribe" "$tribe"
+            printf 'DEATH_THRESHOLD=%s POOL_CAP=%s METABOLIC_COST=%s INITIAL_POOL=%s HUNTER_MAX_AGE=%s HUNTER_FITNESS_CREEP_PER_MINUTE=%s HUNTER_FITNESS_THRESHOLD_BASELINE=%s HUNTER_FITNESS_REWARD_VERIFIED=%s HUNTER_FITNESS_PENALTY_FALSEPOS=%s HUNTER_FITNESS_REWARD_REPLICATE=%s HUNTER_FITNESS_GRACE_MS=%s HUNTER_REPRODUCTIVE_FITNESS_THRESHOLD=%s HUNTER_PROMPT_MAX_BYTES=%s HUNTER_PROMPT_EVOLUTION_THRESHOLD=%s HUNTER_PROMPT_GEN_CAP=%s HUNTER_PROMPT_LEVENSHTEIN_FLOOR=%s AGENTIS_ROOT=/run-root/.agentis TARGET_DIR=targets-stage2/smallvec-v0.6.13 TARGET_FILE=lib.rs BUGS_MANIFEST=/run-root/.agentis/sandbox/targets-stage2/bugs.json VERIFIER_PATH=/run-root/tools/verify-finding-stage2.sh BUG_LEDGER_PATH=/run-root/bug-ledger.jsonl LEDGER_REWARD_FULL=200 LEDGER_REWARD_SUBSEQUENT=50 bash /run-root/%s/scripts/start-colony.sh > /run-root/%s.log 2>&1 &\n' \
+                "$DEATH_THRESHOLD" "$TRIBE_POOL_CAP" "$TRIBE_METABOLIC_COST" "$TRIBE_INITIAL_POOL" "$HUNTER_MAX_AGE" "$HUNTER_FITNESS_CREEP_PER_MINUTE" "$HUNTER_FITNESS_THRESHOLD_BASELINE" "$HUNTER_FITNESS_REWARD_VERIFIED" "$HUNTER_FITNESS_PENALTY_FALSEPOS" "$HUNTER_FITNESS_REWARD_REPLICATE" "$HUNTER_FITNESS_GRACE_MS" "$HUNTER_REPRODUCTIVE_FITNESS_THRESHOLD" "$HUNTER_PROMPT_MAX_BYTES" "$HUNTER_PROMPT_EVOLUTION_THRESHOLD" "$HUNTER_PROMPT_GEN_CAP" "$HUNTER_PROMPT_LEVENSHTEIN_FLOOR" "$tribe" "$tribe"
         done
         printf 'while [ ! -e /run-root/.shutdown ]; do sleep 5; done\n'
         printf 'exit 0\n'
