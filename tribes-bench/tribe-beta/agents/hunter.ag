@@ -87,6 +87,43 @@ fn _variant_overlay_suffix() -> string {
     return "";
 }
 
+// #520 M98 v3 PR 3/3: hash-pointer extraction + strip + parent wrap.
+// See alpha hunter header comment for the architectural rationale
+// (`pp:<sha256-hex>|<old_variant>` delimiter, write-once content-
+// addressed `hunter:prompt_body:<sha>` registry, no M106 cap bump).
+fn _extract_pp_hash(variant_tag: string) -> string {
+    if len(variant_tag) < 67 { return ""; };
+    if substring(variant_tag, 0, 3) != "pp:" { return ""; };
+    let hex = substring(variant_tag, 3, 67);
+    // colony-lint: safe-exec-concat
+    let cmd = "printf '%s' " + shell_escape(hex) + " | tr -d '0-9a-f' | wc -c";
+    let leftover = try { exec sh cmd; } catch e { "1"; };
+    if parse_int(leftover) != 0 { return ""; };
+    return hex;
+}
+
+fn _strip_pp_prefix(variant_tag: string) -> string {
+    let h = _extract_pp_hash(variant_tag);
+    if len(h) == 0 { return variant_tag; };
+    if len(variant_tag) < 68 { return ""; };
+    if substring(variant_tag, 67, 68) != "|" { return variant_tag; };
+    return substring(variant_tag, 68, len(variant_tag));
+}
+
+fn _publish_prompt_body_and_wrap_variant(self_pid: string, variant_tag: string) -> string {
+    if len(self_pid) == 0 { return variant_tag; };
+    let body = recall_latest("hunter:" + self_pid + ":hunting_prompt");
+    if len(body) == 0 { return variant_tag; };
+    // colony-lint: safe-exec-concat
+    let sha_cmd = "python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.argv[1].encode(\"utf-8\")).hexdigest())' " + shell_escape(body);
+    let h = try { exec sh sha_cmd; } catch e { ""; };
+    if len(h) != 64 { return variant_tag; };
+    let body_key = "hunter:prompt_body:" + h;
+    let existing = recall_latest(body_key);
+    if len(existing) == 0 { memo_write(body_key, body); };
+    return "pp:" + h + "|" + variant_tag;
+}
+
 // #520 M98 v3 PR 2/3: Levenshtein ratio in integer percent (0..100).
 // Returns 100 when both inputs are empty (identical), 0 when exactly one
 // is empty. Single `exec sh` round trip into a python3 one-liner — fires
@@ -670,7 +707,9 @@ fn tick(reason: string) -> void {
                                 memo_write("hunter:next_replica_seed_" + _tribe_name, to_string(seed_r));
                             };
                             let my_fit_repr_arg = if len(_self_pid) > 0 { parse_int(recall_latest("hunter:" + _self_pid + ":fitness")); } else { 0; };
-                            let variant_arg_r = recall_latest("hunter:prompt_variant");
+                            let variant_arg_r_raw = recall_latest("hunter:prompt_variant");
+                            // #520 M98 v3 PR 3/3: M106 hash-pointer wrap.
+                            let variant_arg_r = _publish_prompt_body_and_wrap_variant(_self_pid, variant_arg_r_raw);
                             let replica_id_r = try { replicate(target_r, my_fit_repr_arg, variant_arg_r); } catch e { "__replicate_error__"; };
                             if replica_id_r != "__replicate_error__" {
                                 if len(replica_id_r) > 0 {
@@ -786,16 +825,40 @@ fn tick(reason: string) -> void {
 
     // #520 M98 v3 PR 1/3: memo-stored hunting prompt + per-tribe seed
     // bootstrap. See alpha hunter for the architectural rationale.
+    // #520 M98 v3 PR 3/3: M106 hash-pointer inheritance — see alpha
+    // hunter bootstrap for the architectural rationale (pp:<sha> in
+    // variant_tag => adopt parent body from
+    // `hunter:prompt_body:<sha>`; miss / non-hex / empty body =>
+    // log + fall through to seed).
     let prompt_text_raw = recall_latest("hunter:" + _self_pid + ":hunting_prompt");
     let prompt_text = if len(prompt_text_raw) == 0 {
-        let seed = _seed_prompt_for_class(_tribe_default_class());
         let max_bytes_env = try { exec sh "printenv HUNTER_PROMPT_MAX_BYTES"; } catch e { ""; };
         let max_bytes = if len(max_bytes_env) > 0 { parse_int(max_bytes_env); } else { 4096; };
         let max_bytes_eff = if max_bytes <= 0 { 4096; } else { max_bytes; };
-        let seed_clamped = if len(seed) > max_bytes_eff { substring(seed, 0, max_bytes_eff); } else { seed; };
-        memo_write("hunter:" + _self_pid + ":hunting_prompt", seed_clamped);
-        memo_write("hunter:" + _self_pid + ":hunting_prompt_generation", "0");
-        seed_clamped;
+        let pp_hash = _extract_pp_hash(_variant);
+        if len(pp_hash) > 0 {
+            let inherited = recall_latest("hunter:prompt_body:" + pp_hash);
+            if len(inherited) > 0 {
+                let inh_clamped = if len(inherited) > max_bytes_eff { substring(inherited, 0, max_bytes_eff); } else { inherited; };
+                memo_write("hunter:" + _self_pid + ":hunting_prompt", inh_clamped);
+                memo_write("hunter:" + _self_pid + ":hunting_prompt_generation", "0");
+                learn("hunter_prompt_inherit", _tribe_name + "/" + _self_pid, "sha=" + substring(pp_hash, 0, 12), "success", ["prompt-inheritance", "adopted", "tribes-bench"]);
+                inh_clamped;
+            } else {
+                let seed_m = _seed_prompt_for_class(_tribe_default_class());
+                let seed_m_clamped = if len(seed_m) > max_bytes_eff { substring(seed_m, 0, max_bytes_eff); } else { seed_m; };
+                memo_write("hunter:" + _self_pid + ":hunting_prompt", seed_m_clamped);
+                memo_write("hunter:" + _self_pid + ":hunting_prompt_generation", "0");
+                learn("hunter_prompt_inherit", _tribe_name + "/" + _self_pid, "sha=" + substring(pp_hash, 0, 12), "failure", ["prompt-inheritance", "miss", "tribes-bench"]);
+                seed_m_clamped;
+            };
+        } else {
+            let seed = _seed_prompt_for_class(_tribe_default_class());
+            let seed_clamped = if len(seed) > max_bytes_eff { substring(seed, 0, max_bytes_eff); } else { seed; };
+            memo_write("hunter:" + _self_pid + ":hunting_prompt", seed_clamped);
+            memo_write("hunter:" + _self_pid + ":hunting_prompt_generation", "0");
+            seed_clamped;
+        };
     } else {
         prompt_text_raw;
     };
@@ -976,7 +1039,9 @@ fn tick(reason: string) -> void {
                                     };
                                 };
                                 let my_fit_m2_arg = if len(_self_pid) > 0 { parse_int(recall_latest("hunter:" + _self_pid + ":fitness")); } else { 0; };
-                                let replica_id = try { replicate(target, my_fit_m2_arg, variant); } catch e { "__replicate_error__"; };
+                                // #520 M98 v3 PR 3/3: M106 hash-pointer wrap.
+                                let variant_wrapped = _publish_prompt_body_and_wrap_variant(_self_pid, variant);
+                                let replica_id = try { replicate(target, my_fit_m2_arg, variant_wrapped); } catch e { "__replicate_error__"; };
                                 if replica_id == "__replicate_error__" {
                                     learn("replicate", "n=" + to_string(n), "cost=" + to_string(cost), "failure", ["replicate-error", "tribes-bench", _tribe_name]);
                                 } else {
