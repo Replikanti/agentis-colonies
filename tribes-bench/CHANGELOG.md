@@ -14,6 +14,48 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Changed
+
+- **M98 v3 PR 1/3 — memo-stored hunting prompts + per-tribe seed bootstrap**
+  ([#520](https://github.com/Replikanti/agentis-colonies/issues/520),
+  PR 1/3 of three; PR 2/3 will add the verified-buffer + meta-prompt
+  evolution path, PR 3/3 will add the M106 hash-pointer inheritance
+  path. M98 v2 ([#505](https://github.com/Replikanti/agentis-colonies/issues/505))
+  stays reverted; M98 v3 supersedes both M98 v1 (hardcoded smallvec
+  prompts) and the M98 v2 generic class templates).
+  Each hunter's hunting prompt body now lives in
+  `hunter:<pid>:hunting_prompt` instead of a baked literal string at
+  the `prompt()` call site. On the first tick of a fresh hunter the
+  memo is empty, so the hunter falls back to `_seed_prompt_for_class(_tribe_default_class())`
+  — a per-tribe registry that restores the pre-#505 hardcoded prompt
+  verbatim — and writes it back to memo together with
+  `hunter:<pid>:hunting_prompt_generation = 0`. This preserves
+  byte-identical hunting behaviour on the first tick of a fresh colony
+  (seed equals pre-#505 prompt; no evolution yet). The hunting call
+  becomes `prompt(prompt_text + _variant_overlay_suffix(), src)` — the
+  #439 variant-prefix overlay is preserved verbatim, moved from a
+  prefix on the source to a suffix on the instruction. A new
+  `STAGE3_HUNTER_PROMPT_MAX_BYTES` env var (default 4096) clamps the
+  seed body length on bootstrap-read; it is threaded through
+  `exec.env_passthrough` so hunter.ag reads it via `printenv`.
+  **Depends on agentis-core v1.7.10 ([#638](https://github.com/Replikanti/agentis-core/issues/638))**:
+  the new `prompt(prompt_text + ..., src)` shape needs the v1.7.10
+  parser relaxation that accepts a non-literal first argument; pre-v1.7.10
+  builds will fail to parse hunter.ag with
+  `parse error: expected string literal for prompt instruction`.
+  **Anti-gaming invariant unchanged**: the verifier remains a
+  deterministic shell script with no LLM in the path. Hunters cannot
+  influence verifier behaviour through evolved prompt content;
+  selection pressure flows only from real verified hits. The
+  [#491](https://github.com/Replikanti/agentis-colonies/issues/491)
+  ledger-write monopoly and the
+  [#493](https://github.com/Replikanti/agentis-colonies/issues/493)
+  knowledge-sell answer-path guardrails are preserved verbatim. PR 1/3
+  introduces no new direct ledger writes, no new knowledge-market
+  answer paths, no evolution call, no inheritance call, no buffer
+  maintenance, and no anti-degeneracy guards beyond the length clamp
+  — those are PR 2/3 and PR 3/3 territory.
+
 ### Added
 
 - **Stage 4 Phase 1 chunk 1 — vendor 3 real RUSTSEC crates with 5 planted bugs covering 4 previously-missing stage2 classes**

@@ -66,6 +66,41 @@ fn _tribe_default_class() -> string {
     return "uninitialised_memory";
 }
 
+// #520 M98 v3 PR 1/3: per-class seed prompt registry. Returns the
+// pre-#505 hardcoded hunting prompt verbatim for the tribe's primary
+// class. Used by the bootstrap path in tick() to populate the
+// `hunter:<pid>:hunting_prompt` memo on a fresh hunter's first tick.
+// All five tribe-specific seed strings live next to their respective
+// `_tribe_default_class()` so the per-tribe diff stays bounded; the
+// shared evolution/clamp/inheritance scaffolding (PR 2/3, PR 3/3) is
+// out of scope here.
+fn _seed_prompt_for_class(class: string) -> string {
+    if class == "uninitialised_memory" {
+        return "Your specific target function is `from_buf_and_len_unchecked` -- it lives near line 534 of the file. The bug is INSIDE that function's signature: it takes a buffer + length but does NOT check that buf[0..len] is initialised. Find that EXACT function declaration line and report it. You are a Rust unsafe-code auditor scanning a smallvec-style library file. Look specifically for uninitialised memory exposure: a function that accepts a raw buffer plus a length parameter and constructs a SmallVec / Vec / array without verifying that buf[0..len] is fully initialised, or unsafe code that calls MaybeUninit::uninit().assume_init() before every byte of the inner type has been written. The classic example is: pub unsafe fn from_buf_and_len_unchecked(buf: A, len: usize) -> Self { /* no init check */ SmallVec { capacity: len, data: SmallVecData::from_inline(buf) } }. Pay attention to signatures with _unchecked suffixes, MaybeUninit, assume_init, mem::zeroed used on types that contain references, raw *const T pointers exposed to safe code, and any constructor whose len parameter is not bounded by an initialised-region check. IMPORTANT — REPORT THE FUNCTION SIGNATURE LINE, NOT THE OPERATION LINE: when you spot a suspicious unsafe operation inside a function body, scroll up to find the function declaration line (e.g. `pub fn foo(...)` or `pub unsafe fn bar(...)`) and report THAT line number. The verifier matches at function-level granularity with ±5 line tolerance, anchored on the function signature. So if you find `ptr::write` at line 854 inside a function declared at line 827, report line=827, NOT line=854. Use signature_hint to record the function-name + parameter snippet (e.g. `pub fn insert_many` or `unsafe fn from_buf_and_len_unchecked`), NOT the operation. Return JSON with these fields: line: int -- 1-indexed source line where the bug is, OR 0 if you genuinely cannot find one. severity: string -- low | medium | high. rationale: string -- one sentence explaining why this line is suspicious. signature_hint: string -- short literal substring (5-30 chars) of the function signature that grep can find on that line, e.g. `pub fn foo` or `unsafe fn bar`. class: string -- must be exactly \"uninitialised_memory\". Do NOT return line=0 unless you have genuinely scanned the file and found nothing. Default to your best guess on a suspicious unsafe operation if you are unsure.";
+    };
+    // Fallback: empty string. PR 1/3 only seeds the tribe's primary
+    // class; off-class seeds are PR 2/3 territory once evolution
+    // produces a non-primary lineage.
+    return "";
+}
+
+// #520 M98 v3 PR 1/3: variant-prefix overlay extracted into a helper.
+// Pre-#520 the overlay was prepended to `src` before being passed as
+// the second arg to prompt(). M98 v3 moves the overlay to a suffix on
+// the instruction (first arg), because v1.7.10 (#638) is the first
+// runtime that accepts a non-literal first arg, and the seed-then-
+// evolve loop needs the entire instruction body to live in memo. The
+// returned text is byte-identical to the pre-#520 prefix string, so
+// the LLM sees the same overlay content; only its position in the
+// composite prompt moves from "before source" to "after instruction".
+fn _variant_overlay_suffix() -> string {
+    let variant = recall_latest("hunter:prompt_variant");
+    if len(variant) > 0 {
+        return "\n\n[Replica focus: prompt variant '" + variant + "' -- lean into that interpretation when scanning the source below.]";
+    };
+    return "";
+}
+
 // #499: 8-class universe used by the class-flip mutation in
 // `pick_variant`. Indices 0..1 are the tribe's primary + sibling classes
 // (also seeded directly into the 14-literal pool below); 2..7 are
@@ -583,29 +618,41 @@ fn tick(reason: string) -> void {
         };
     };
 
-    // Tribe-alpha seed prompt (#421): retargeted from Stage 0
-    // command-injection heuristic to Stage 2 uninitialised_memory bug
-    // class. Smallvec-style `unsafe` libraries leak uninitialised heap
-    // bytes when a constructor accepts (raw_buffer, len) without
-    // verifying that `buf[0..len]` is initialised, or when
-    // `MaybeUninit::uninit().assume_init()` is called before the inner
-    // type is fully written. Stage 1+ will mutate this prompt across
-    // replicas.
+    // #520 M98 v3 PR 1/3: memo-stored hunting prompt + per-tribe seed
+    // bootstrap. Pre-#520 each tribe's hunting prompt was a baked
+    // literal string fed verbatim to prompt(). M98 v3 stores the prompt
+    // body in `hunter:<pid>:hunting_prompt` so PR 2/3 (evolution) and
+    // PR 3/3 (M106 hash-pointer inheritance) can mutate / propagate it.
+    // First tick on a fresh hunter populates the memo from
+    // `_seed_prompt_for_class(_tribe_default_class())`; the seed body
+    // is byte-identical to the pre-#505 hardcoded prompt this tribe
+    // had been using, so first-tick hunting behaviour is preserved.
+    // The #439 variant-prefix overlay is preserved via
+    // `_variant_overlay_suffix()`, now appended to the instruction
+    // instead of prepended to the source.
     //
-    // Stage 3 (#439): replicas inherit the parent's `hunter:prompt_variant`
-    // memo; appending it as a Focus: suffix lets sibling replicas lean
-    // into different interpretations of the same seed. Empty memo (Stage
-    // 2 single-tribe / no replication) is a no-op.
-    let variant = _variant;
-    let variant_prefix = if len(variant) > 0 {
-        "[Replica focus: prompt variant '" + variant + "' -- lean into that interpretation when scanning the source below.]\n\n";
+    // STAGE3_HUNTER_PROMPT_MAX_BYTES (default 4096) clamps the seed
+    // body length on bootstrap-read so a future operator-overridden
+    // seed cannot blow up the prompt(). Read via printenv because
+    // env_passthrough exposes the var to the runtime; clamp is best-
+    // effort byte-count via len() (UTF-8 not character count -- the
+    // seed prompts are ASCII so this is the same value either way).
+    let prompt_text_raw = recall_latest("hunter:" + _self_pid + ":hunting_prompt");
+    let prompt_text = if len(prompt_text_raw) == 0 {
+        let seed = _seed_prompt_for_class(_tribe_default_class());
+        let max_bytes_env = try { exec sh "printenv HUNTER_PROMPT_MAX_BYTES"; } catch e { ""; };
+        let max_bytes = if len(max_bytes_env) > 0 { parse_int(max_bytes_env); } else { 4096; };
+        let max_bytes_eff = if max_bytes <= 0 { 4096; } else { max_bytes; };
+        let seed_clamped = if len(seed) > max_bytes_eff { substring(seed, 0, max_bytes_eff); } else { seed; };
+        memo_write("hunter:" + _self_pid + ":hunting_prompt", seed_clamped);
+        memo_write("hunter:" + _self_pid + ":hunting_prompt_generation", "0");
+        seed_clamped;
     } else {
-        "";
+        prompt_text_raw;
     };
-    let src_with_focus = variant_prefix + src;
     let finding = prompt(
-        "Your specific target function is `from_buf_and_len_unchecked` -- it lives near line 534 of the file. The bug is INSIDE that function's signature: it takes a buffer + length but does NOT check that buf[0..len] is initialised. Find that EXACT function declaration line and report it. You are a Rust unsafe-code auditor scanning a smallvec-style library file. Look specifically for uninitialised memory exposure: a function that accepts a raw buffer plus a length parameter and constructs a SmallVec / Vec / array without verifying that buf[0..len] is fully initialised, or unsafe code that calls MaybeUninit::uninit().assume_init() before every byte of the inner type has been written. The classic example is: pub unsafe fn from_buf_and_len_unchecked(buf: A, len: usize) -> Self { /* no init check */ SmallVec { capacity: len, data: SmallVecData::from_inline(buf) } }. Pay attention to signatures with _unchecked suffixes, MaybeUninit, assume_init, mem::zeroed used on types that contain references, raw *const T pointers exposed to safe code, and any constructor whose len parameter is not bounded by an initialised-region check. IMPORTANT — REPORT THE FUNCTION SIGNATURE LINE, NOT THE OPERATION LINE: when you spot a suspicious unsafe operation inside a function body, scroll up to find the function declaration line (e.g. `pub fn foo(...)` or `pub unsafe fn bar(...)`) and report THAT line number. The verifier matches at function-level granularity with ±5 line tolerance, anchored on the function signature. So if you find `ptr::write` at line 854 inside a function declared at line 827, report line=827, NOT line=854. Use signature_hint to record the function-name + parameter snippet (e.g. `pub fn insert_many` or `unsafe fn from_buf_and_len_unchecked`), NOT the operation. Return JSON with these fields: line: int -- 1-indexed source line where the bug is, OR 0 if you genuinely cannot find one. severity: string -- low | medium | high. rationale: string -- one sentence explaining why this line is suspicious. signature_hint: string -- short literal substring (5-30 chars) of the function signature that grep can find on that line, e.g. `pub fn foo` or `unsafe fn bar`. class: string -- must be exactly \"uninitialised_memory\". Do NOT return line=0 unless you have genuinely scanned the file and found nothing. Default to your best guess on a suspicious unsafe operation if you are unsure.",
-        src_with_focus
+        prompt_text + _variant_overlay_suffix(),
+        src
     ) -> Finding;
 
     let my_tier = tier("hunter");
