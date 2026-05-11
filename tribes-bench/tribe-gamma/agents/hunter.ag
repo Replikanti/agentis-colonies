@@ -249,9 +249,17 @@ fn _evolve_hunting_prompt(self_pid: string, prompt_text: string) -> string {
     // Always fire the meta-prompt call (whether or not we are at cap).
     // The schema-sanity ping below will dry-run it; the actual write
     // is gated on all guards passing.
+    // #527: meta-prompt drives diversification, not exploitation. See
+    // tribe-alpha/agents/hunter.ag for full rationale.
     let meta = "Rewrite the hunting prompt below given these verified findings. "
              + "Keep the JSON output schema identical (return Finding{class, line, severity, rationale, signature_hint}). "
-             + "Focus on patterns that produced verified hits. Old prompt: <"
+             + "Focus on EXPANDING class coverage: if all (or most) verified findings are in one bug class, the "
+             + "rewrite MUST explicitly probe for OTHER classes from the stage2 verifier set "
+             + "(use_after_free, heap_overflow, memory_corruption, data_race, send_violation, "
+             + "missing_lock, dangling_borrow, uninitialised_memory) in the same target file. "
+             + "The goal is a hunter that finds the NEXT class of bug, not more instances of the same one. "
+             + "Only converge on a single class when the verified findings genuinely span multiple classes already. "
+             + "Old prompt: <"
              + prompt_text + ">. Verified findings: <" + buffer_json + ">.";
     let new_prompt_raw = try { prompt(meta, "") -> string; } catch e { ""; };
     let new_prompt = if len(new_prompt_raw) > max_bytes_eff { substring(new_prompt_raw, 0, max_bytes_eff); } else { new_prompt_raw; };
