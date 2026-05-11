@@ -1,0 +1,7 @@
+{
+  "stage": "stage4",
+  "target_dir": "targets/stage4-generator-v0.6.25",
+  "bugs": [
+    {"id": "S4-GENSV-001", "class": "send_violation", "file": "src/gen_impl.rs", "line": 29, "line_tolerance": 5, "signature": "unsafe impl<A, T> Send for Generator", "severity": "high", "verifier_test": "test_gen_sv_001", "rationale": "RUSTSEC-2020-0151 / CVE-2020-36471: `unsafe impl<A, T> Send for Generator<'static, A, T>` covers Generator regardless of whether the captured generator function is Send. Allows wrapping a non-Send type (e.g. Rc) inside a generator and sending it across threads -- send-bound violation leading to data races. Fixed in 0.7.0. Substituted for atomicwrites per plan (no live RUSTSEC entry for atomicwrites at vendoring time)."}
+  ]
+}

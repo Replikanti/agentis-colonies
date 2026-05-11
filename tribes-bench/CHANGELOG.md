@@ -14,6 +14,63 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+
+- **Stage 4 Phase 1 chunk 1 — vendor 3 real RUSTSEC crates with 5 planted bugs covering 4 previously-missing stage2 classes**
+  ([#519](https://github.com/Replikanti/agentis-colonies/issues/519),
+  closes the bug-class-coverage gap surfaced in
+  [#515](https://github.com/Replikanti/agentis-colonies/issues/515),
+  follow-up to
+  [#459](https://github.com/Replikanti/agentis-colonies/issues/459)).
+  Three new vendored target directories under
+  `tribes-bench/targets/`:
+  `stage4-crossbeam-deque-v0.7.2/`
+  ([RUSTSEC-2021-0093](https://rustsec.org/advisories/RUSTSEC-2021-0093.html),
+  `data_race`, 1 planted bug `S4-CBDR-001` on
+  `Stealer::steal`),
+  `stage4-owning_ref-v0.4.1/`
+  ([RUSTSEC-2022-0040](https://rustsec.org/advisories/RUSTSEC-2022-0040.html),
+  `dangling_borrow`, 3 planted bugs `S4-ORDB-001`/`002`/`003` on
+  `OwningRef::map`, `OwningRef::map_with_owner`,
+  `OwningRef::as_owner_mut`),
+  `stage4-generator-v0.6.25/`
+  ([RUSTSEC-2020-0151](https://rustsec.org/advisories/RUSTSEC-2020-0151.html),
+  `send_violation`, 1 planted bug `S4-GENSV-001` on the
+  unsound `unsafe impl<A, T> Send for Generator<'static, A, T>`).
+  Each target ships verbatim `LICENSE-APACHE` + `LICENSE-MIT`
+  (owning_ref is MIT-only — see its
+  `PROVENANCE.md`), a `PROVENANCE.md` documenting upstream URL +
+  commit SHA + RUSTSEC advisory + reproduction recipe, a verifier-
+  anchored `bugs.json` whose `line` fields are derived via `grep -n`
+  against the post-banner source so the +2 banner shift is baked in.
+  All 5 bugs roundtrip cleanly through
+  `tribes-bench/tools/verify-finding-stage2.sh`. The
+  atomicwrites slot from the original plan was substituted with
+  `generator` at vendoring time because
+  `advisory-db/crates/atomicwrites/` does not exist — recorded in
+  `stage4-generator-v0.6.25/PROVENANCE.md` and the PR body.
+  With smallvec (5 bugs) and bumpalo (2 bugs) the planted-bug pool
+  now stands at **12 bugs across 5 targets** covering the stage2
+  classes `use_after_free`, `uninitialised_memory`,
+  `memory_corruption`, `heap_overflow`, `data_race`,
+  `dangling_borrow`, and `send_violation` — so M98 mutation
+  cross-class drift now has real bugs to find in the 4 classes the
+  pre-#519 pool was missing.
+- **`run-stage3-docker.sh` rotation timer extended to 5-target round-robin**
+  ([#519](https://github.com/Replikanti/agentis-colonies/issues/519)).
+  Three new optional env vars
+  (`STAGE3_TARGET_C_DIR` / `STAGE3_TARGET_C_BUGS`,
+  `STAGE3_TARGET_D_DIR` / `STAGE3_TARGET_D_BUGS`,
+  `STAGE3_TARGET_E_DIR` / `STAGE3_TARGET_E_BUGS`) let the orchestrator
+  round-robin across up to 5 planted-bug targets per pilot. Each
+  optional slot is activated only when both its `_DIR` and `_BUGS`
+  pair are set; missing/partial pairs collapse silently so a
+  half-configured override never emits an empty memo. **Backward
+  compat: when no C/D/E vars are set, the rotation emits the
+  byte-identical legacy A/B alternation** — existing pilots see no
+  change. `test-run-stage3-docker.sh` adds 13 new assertions
+  covering both modes; baseline now 65 passed / 0 failed.
+
 ### Removed
 
 - **M98 v2 class-parametrized hunter prompts ([#505](https://github.com/Replikanti/agentis-colonies/issues/505)) — REVERTED via [#515](https://github.com/Replikanti/agentis-colonies/issues/515) finding.** Per smoke validation, generic class-prompt templates structurally drop LLM hit rate from ~30% (with M98 smallvec-specific prompts, smoke #51 baseline = 16 verified in 30 min) to ~0% on real-Rust targets (smokes against original + 7 injected bugs covering all 8 stage2 classes: 0 verified at T+15 min across two fitness-param sweeps). Cross-class drift via M98 mutation is not viable at current LLM capabilities + hand-engineered generic prompts. The hardcoded single-prompt M98 (#503) baseline is restored. Future emergence work pivots to either M98 v3 (LLM-generated prompts learning from past verified finds) or Stage 4 Phase 1 (#459) with diverse vendored real crates re-architected per-crate rather than per-class.

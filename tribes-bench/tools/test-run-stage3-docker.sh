@@ -238,6 +238,82 @@ assert_not_contains "fallback secret length is non-zero" \
     "$OUT_FALLBACK" \
     "generated worker secret (len=0)"
 
+# 8. Stage 4 Phase 1 chunk 1 (#519): when STAGE3_TARGET_C/D/E_{DIR,BUGS}
+# are all set the rotation timer must emit a round-robin loop over the
+# 5-element `targets` array with each TARGET_<K>_DIR_REL referenced via
+# indirect expansion. Tests below run with all 5 env vars set.
+OUT_5TARGET="$(STAGE3_WALL_CLOCK_S=1800 \
+       STAGE3_ROTATION_INTERVAL_S=120 \
+       STAGE3_DEATH_THRESHOLD=300 \
+       STAGE3_LAPTOP_PORT=9100 \
+       STAGE3_SERVER_PORT=9101 \
+       STAGE3_LAPTOP_WORKER_PORT=9200 \
+       STAGE3_SERVER_WORKER_PORT=9201 \
+       STAGE3_WORKER_SECRET=testsecret \
+       STAGE3_TARGET_C_DIR=targets/stage4-crossbeam-deque-v0.7.2 \
+       STAGE3_TARGET_C_BUGS=targets/stage4-crossbeam-deque-v0.7.2/bugs.json \
+       STAGE3_TARGET_D_DIR=targets/stage4-owning_ref-v0.4.1 \
+       STAGE3_TARGET_D_BUGS=targets/stage4-owning_ref-v0.4.1/bugs.json \
+       STAGE3_TARGET_E_DIR=targets/stage4-generator-v0.6.25 \
+       STAGE3_TARGET_E_BUGS=targets/stage4-generator-v0.6.25/bugs.json \
+       bash "$ORCH" --dry-run 2>&1)"
+
+assert_contains "5-target rotation initialises targets=(A B) array" \
+    "$OUT_5TARGET" \
+    "targets=(A B)"
+assert_contains "5-target rotation appends C" \
+    "$OUT_5TARGET" \
+    "targets+=(C)"
+assert_contains "5-target rotation appends D" \
+    "$OUT_5TARGET" \
+    "targets+=(D)"
+assert_contains "5-target rotation appends E" \
+    "$OUT_5TARGET" \
+    "targets+=(E)"
+assert_contains "5-target rotation uses modulo round-robin counter" \
+    "$OUT_5TARGET" \
+    'k=${targets[$((i % n))]}'
+assert_contains "5-target rotation references TARGET_<K>_DIR_REL via indirect expansion" \
+    "$OUT_5TARGET" \
+    'td_var="TARGET_${k}_DIR_REL"'
+assert_contains "5-target rotation references TARGET_<K>_BUGS_REL via indirect expansion" \
+    "$OUT_5TARGET" \
+    'bm_var="TARGET_${k}_BUGS_REL"'
+# Concrete /run-root/targets/stage4-* paths only materialise at runtime:
+# the rotation timer's `${!td_var}` indirect expansion is interpreted
+# inside the backgrounded subshell, NOT when the dry-run echoes the
+# emit_cmd argument. The dry-run line therefore contains the literal
+# string `TARGET_${k}_DIR_REL` (with the `${k}` placeholder), not the
+# expanded crossbeam/owning_ref/generator path. Source-level coverage
+# of those paths lives in (a) the round-robin counter + indirect-
+# expansion assertions above, (b) the header-docs assertions below
+# that prove C/D/E env vars are documented, and (c) the targets+=(C/D/E)
+# assertions that prove the array slot is populated. End-to-end runtime
+# path resolution is covered by the per-target verifier-roundtrip step
+# in the issue acceptance criteria, not by this dry-run smoke.
+assert_contains "5-target rotation still execs into laptop container" \
+    "$OUT_5TARGET" \
+    "podman exec stage3-laptop agentis memo set"
+assert_contains "5-target rotation still execs into server container" \
+    "$OUT_5TARGET" \
+    "podman exec stage3-server agentis memo set"
+# A/B-only fallback path: the legacy `phase=0; ... phase=\$((1 - phase))`
+# branch must NOT appear when any of C/D/E is set (we picked the array
+# branch instead).
+assert_not_contains "5-target mode does not emit legacy phase alternation" \
+    "$OUT_5TARGET" \
+    "phase=\$((1 - phase))"
+# Header docs the three new env vars.
+assert_contains "header documents STAGE3_TARGET_C_DIR" \
+    "$(cat "$ORCH")" \
+    "STAGE3_TARGET_C_DIR"
+assert_contains "header documents STAGE3_TARGET_D_DIR" \
+    "$(cat "$ORCH")" \
+    "STAGE3_TARGET_D_DIR"
+assert_contains "header documents STAGE3_TARGET_E_DIR" \
+    "$(cat "$ORCH")" \
+    "STAGE3_TARGET_E_DIR"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
