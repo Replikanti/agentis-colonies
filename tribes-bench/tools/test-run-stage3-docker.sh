@@ -314,6 +314,34 @@ assert_contains "header documents STAGE3_TARGET_E_DIR" \
     "$(cat "$ORCH")" \
     "STAGE3_TARGET_E_DIR"
 
+# 9. #520 M98 v3 PR 2/3: three new evolution env vars are documented,
+# threaded into exec.env_passthrough, and propagated into the per-tribe
+# bootstrap line so hunter.ag can read them via `printenv`.
+assert_contains "header documents STAGE3_HUNTER_PROMPT_EVOLUTION_THRESHOLD" \
+    "$(cat "$ORCH")" \
+    "STAGE3_HUNTER_PROMPT_EVOLUTION_THRESHOLD"
+assert_contains "header documents STAGE3_HUNTER_PROMPT_GEN_CAP" \
+    "$(cat "$ORCH")" \
+    "STAGE3_HUNTER_PROMPT_GEN_CAP"
+assert_contains "header documents STAGE3_HUNTER_PROMPT_LEVENSHTEIN_FLOOR" \
+    "$(cat "$ORCH")" \
+    "STAGE3_HUNTER_PROMPT_LEVENSHTEIN_FLOOR"
+assert_contains "HUNTER_PROMPT_EVOLUTION_THRESHOLD threaded into env_passthrough" \
+    "$(cat "$ORCH")" \
+    "HUNTER_PROMPT_EVOLUTION_THRESHOLD"
+assert_contains "HUNTER_PROMPT_GEN_CAP threaded into env_passthrough" \
+    "$(cat "$ORCH")" \
+    "HUNTER_PROMPT_GEN_CAP"
+assert_contains "HUNTER_PROMPT_LEVENSHTEIN_FLOOR threaded into env_passthrough" \
+    "$(cat "$ORCH")" \
+    "HUNTER_PROMPT_LEVENSHTEIN_FLOOR"
+assert_contains "env_passthrough config line lists HUNTER_PROMPT_EVOLUTION_THRESHOLD" \
+    "$(cat "$ORCH")" \
+    "HUNTER_PROMPT_MAX_BYTES,HUNTER_PROMPT_EVOLUTION_THRESHOLD,HUNTER_PROMPT_GEN_CAP,HUNTER_PROMPT_LEVENSHTEIN_FLOOR"
+assert_contains "per-tribe bootstrap line propagates HUNTER_PROMPT_EVOLUTION_THRESHOLD" \
+    "$(cat "$ORCH")" \
+    "HUNTER_PROMPT_EVOLUTION_THRESHOLD=%s HUNTER_PROMPT_GEN_CAP=%s HUNTER_PROMPT_LEVENSHTEIN_FLOOR=%s"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

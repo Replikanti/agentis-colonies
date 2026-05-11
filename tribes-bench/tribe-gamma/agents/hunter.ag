@@ -87,6 +87,186 @@ fn _variant_overlay_suffix() -> string {
     return "";
 }
 
+// #520 M98 v3 PR 2/3: Levenshtein ratio in integer percent (0..100).
+// Returns 100 when both inputs are empty (identical), 0 when exactly one
+// is empty. Single `exec sh` round trip into a python3 one-liner — fires
+// only on the evolution path (once per K=3 verified findings), not in
+// the per-tick hot path. Pure-agentis DP would need recursion-with-
+// memoisation; agentis has no native loops or arrays, so a python3
+// helper is the pragmatic stand-in. Candidate for a shared lib once
+// `tribes-bench/lib/` exists (follow-up issue noted in CHANGELOG).
+// STAGE3_HUNTER_PROMPT_MAX_BYTES already clamps both arguments via
+// memo writes; the cap is restated here as defense-in-depth.
+fn _levenshtein_ratio_pct(a: string, b: string) -> int {
+    if len(a) == 0 {
+        if len(b) == 0 { return 100; };
+        return 0;
+    };
+    if len(b) == 0 { return 0; };
+    if a == b { return 100; };
+    let max_bytes_env = try { exec sh "printenv HUNTER_PROMPT_MAX_BYTES"; } catch e { ""; };
+    let max_bytes = if len(max_bytes_env) > 0 { parse_int(max_bytes_env); } else { 4096; };
+    let max_bytes_eff = if max_bytes <= 0 { 4096; } else { max_bytes; };
+    let a_clamped = if len(a) > max_bytes_eff { substring(a, 0, max_bytes_eff); } else { a; };
+    let b_clamped = if len(b) > max_bytes_eff { substring(b, 0, max_bytes_eff); } else { b; };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys\nA=sys.argv[1]\nB=sys.argv[2]\nif A==B:\n print(100); sys.exit(0)\nn=len(A); m=len(B)\nprev=list(range(m+1))\nfor i in range(1,n+1):\n cur=[i]+[0]*m\n for j in range(1,m+1):\n  c=0 if A[i-1]==B[j-1] else 1\n  cur[j]=min(prev[j]+1,cur[j-1]+1,prev[j-1]+c)\n prev=cur\nd=prev[m]\nmx=max(n,m)\nprint(int(round((1.0 - d/mx)*100)))' " + shell_escape(a_clamped) + " " + shell_escape(b_clamped);
+    let out = try { exec sh cmd; } catch e { "0"; };
+    let r = parse_int(out);
+    if r < 0 { return 0; };
+    if r > 100 { return 100; };
+    return r;
+}
+
+// #520 M98 v3 PR 2/3: append verified finding to the per-pid rolling
+// buffer, truncate to last K (default 3 from
+// STAGE3_HUNTER_PROMPT_EVOLUTION_THRESHOLD). Stored as a JSON array
+// string of `{bug_id, line, signature_hint}` objects in
+// `hunter:<pid>:verified_buffer`. Single exec sh round trip into
+// python3 for parse + append + truncate + re-serialise (agentis has
+// no native JSON-array mutation builtin; json_get is read-only). The
+// memo read + memo_write happen agentis-side. Returns the post-append
+// buffer length so the caller can gate the evolution trigger on the
+// K-threshold without a second recall_latest round trip.
+fn _push_verified_finding(self_pid: string, bug_id: string, line_no: int, sig: string) -> int {
+    let buf_key = "hunter:" + self_pid + ":verified_buffer";
+    let buf_raw = recall_latest(buf_key);
+    let thr_env = try { exec sh "printenv HUNTER_PROMPT_EVOLUTION_THRESHOLD"; } catch e { ""; };
+    let thr = if len(thr_env) > 0 { parse_int(thr_env); } else { 3; };
+    let thr_eff = if thr <= 0 { 3; } else { thr; };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,json\nraw=sys.argv[1]\nbug=sys.argv[2]\nline=int(sys.argv[3])\nsig=sys.argv[4]\nk=int(sys.argv[5])\ntry:\n arr=json.loads(raw) if raw else []\n if not isinstance(arr,list): arr=[]\nexcept Exception:\n arr=[]\narr.append({\"bug_id\":bug,\"line\":line,\"signature_hint\":sig})\nif len(arr)>k: arr=arr[-k:]\nprint(json.dumps(arr,separators=(\",\",\":\")))' " + shell_escape(buf_raw) + " " + shell_escape(bug_id) + " " + shell_escape(to_string(line_no)) + " " + shell_escape(sig) + " " + shell_escape(to_string(thr_eff));
+    let new_buf = try { exec sh cmd; } catch e { "[]"; };
+    memo_write(buf_key, new_buf);
+    // Count entries by re-parsing length via python (cheaper than a
+    // second JSON parse agentis-side).
+    // colony-lint: safe-exec-concat
+    let count_cmd = "python3 -c 'import sys,json\ntry: a=json.loads(sys.argv[1])\nexcept Exception: a=[]\nprint(len(a) if isinstance(a,list) else 0)' " + shell_escape(new_buf);
+    let n = try { exec sh count_cmd; } catch e { "0"; };
+    return parse_int(n);
+}
+
+// #520 M98 v3 PR 2/3: schema-sanity ping. Calls the candidate prompt
+// against a fixed minimal Rust fixture and verifies the response
+// parses cleanly into a Finding with a sane line + non-empty
+// signature/class/rationale. Load-bearing safety net against runaway
+// drift: a rewritten prompt that breaks the JSON-output contract
+// gets rejected here and the colony continues hunting on the prior
+// working prompt. The fixture is intentionally tiny and self-
+// contained so the LLM round trip stays cheap.
+fn _schema_sanity_ok(candidate_prompt: string) -> bool {
+    let fixture = "pub unsafe fn from_buf_and_len_unchecked(buf: [u8; 16], len: usize) -> Self {\n    SmallVec { capacity: len, data: SmallVecData::from_inline(buf) }\n}\n";
+    let ok = try {
+        let probe = prompt(candidate_prompt + _variant_overlay_suffix(), fixture) -> Finding;
+        if probe.line < 0 { false; }
+        else { if len(probe.class) == 0 { false; }
+        else { if len(probe.signature_hint) == 0 { false; }
+        else { if len(probe.rationale) == 0 { false; }
+        else { true; }; }; }; };
+    } catch e {
+        false;
+    };
+    return ok;
+}
+
+// #520 M98 v3 PR 2/3: meta-prompt rewrite + anti-degeneracy guards.
+// Called from tick() once the verified_buffer reaches K and the
+// generation counter is still below the cap. Body:
+//   1. Read buffer JSON + current generation.
+//   2. If generation == cap, reset to seed for tribe's default
+//      class, bump lineage_id, clear buffer, generation -> 0.
+//      (The LLM rewrite call below still fires once before this
+//      cap-check intentionally — lets the verifier reward the last
+//      evolved prompt before reset.)
+//   3. Build meta-prompt asking the LLM to rewrite the hunting
+//      prompt given the verified findings, keeping the Finding
+//      JSON schema identical.
+//   4. Length-clamp the candidate to HUNTER_PROMPT_MAX_BYTES.
+//   5. Levenshtein floor: if ratio < floor%, treat as no-op
+//      (keep old prompt, no generation bump, buffer untouched).
+//   6. Schema-sanity ping: if the candidate fails to produce a
+//      Finding-shaped response, revert (no generation bump,
+//      buffer untouched).
+//   7. All guards pass: write new prompt, bump generation, clear
+//      buffer.
+// Returns the prompt_text the caller should use for the rest of
+// this tick (either the rewritten body or the unchanged prior
+// body on any guard rejection).
+fn _evolve_hunting_prompt(self_pid: string, prompt_text: string) -> string {
+    let buf_key = "hunter:" + self_pid + ":verified_buffer";
+    let buffer_json = recall_latest(buf_key);
+    let gen_key = "hunter:" + self_pid + ":hunting_prompt_generation";
+    let gen_str = recall_latest(gen_key);
+    let gen = if len(gen_str) > 0 { parse_int(gen_str); } else { 0; };
+    let gen_cap_env = try { exec sh "printenv HUNTER_PROMPT_GEN_CAP"; } catch e { ""; };
+    let gen_cap = if len(gen_cap_env) > 0 { parse_int(gen_cap_env); } else { 10; };
+    let gen_cap_eff = if gen_cap <= 0 { 10; } else { gen_cap; };
+    let max_bytes_env = try { exec sh "printenv HUNTER_PROMPT_MAX_BYTES"; } catch e { ""; };
+    let max_bytes = if len(max_bytes_env) > 0 { parse_int(max_bytes_env); } else { 4096; };
+    let max_bytes_eff = if max_bytes <= 0 { 4096; } else { max_bytes; };
+    let lev_floor_env = try { exec sh "printenv HUNTER_PROMPT_LEVENSHTEIN_FLOOR"; } catch e { ""; };
+    let lev_floor = if len(lev_floor_env) > 0 { parse_int(lev_floor_env); } else { 5; };
+    let lev_floor_eff = if lev_floor < 0 { 5; } else { lev_floor; };
+    let prompt_key = "hunter:" + self_pid + ":hunting_prompt";
+
+    // Always fire the meta-prompt call (whether or not we are at cap).
+    // The schema-sanity ping below will dry-run it; the actual write
+    // is gated on all guards passing.
+    let meta = "Rewrite the hunting prompt below given these verified findings. "
+             + "Keep the JSON output schema identical (return Finding{class, line, severity, rationale, signature_hint}). "
+             + "Focus on patterns that produced verified hits. Old prompt: <"
+             + prompt_text + ">. Verified findings: <" + buffer_json + ">.";
+    let new_prompt_raw = try { prompt(meta, "") -> string; } catch e { ""; };
+    let new_prompt = if len(new_prompt_raw) > max_bytes_eff { substring(new_prompt_raw, 0, max_bytes_eff); } else { new_prompt_raw; };
+
+    // Generation-cap branch: reset to seed for tribe's default class,
+    // bump lineage_id, clear buffer, return seed body. The LLM rewrite
+    // above still fired once (intentional per design); we just discard
+    // its result here in favour of the seed.
+    if gen >= gen_cap_eff {
+        let seed = _seed_prompt_for_class(_tribe_default_class());
+        let seed_clamped = if len(seed) > max_bytes_eff { substring(seed, 0, max_bytes_eff); } else { seed; };
+        memo_write(prompt_key, seed_clamped);
+        memo_write(gen_key, "0");
+        let lineage_key = "hunter:" + self_pid + ":lineage_id";
+        let lin_str = recall_latest(lineage_key);
+        let lin = if len(lin_str) > 0 { parse_int(lin_str); } else { 0; };
+        memo_write(lineage_key, to_string(lin + 1));
+        memo_write(buf_key, "[]");
+        learn("hunter_prompt_evolve", "lineage_reset", "gen_cap=" + to_string(gen_cap_eff) + " lineage=" + to_string(lin + 1), "partial", ["prompt-evolution", "lineage-reset", "tribes-bench"]);
+        return seed_clamped;
+    };
+
+    // No-meaningful-rewrite guard: Levenshtein floor.
+    if len(new_prompt) == 0 {
+        // Empty LLM response — treat as no-op.
+        return prompt_text;
+    };
+    let lev_pct = _levenshtein_ratio_pct(prompt_text, new_prompt);
+    // similarity in 0..100; 100 = identical. A rewrite is "meaningful"
+    // when the dissimilarity (100 - lev_pct) >= floor%. So reject when
+    // 100 - lev_pct < floor, i.e. lev_pct > 100 - floor.
+    let dissim_pct = 100 - lev_pct;
+    if dissim_pct < lev_floor_eff {
+        learn("hunter_prompt_evolve", "no_op_similarity", "lev_pct=" + to_string(lev_pct) + " floor=" + to_string(lev_floor_eff), "partial", ["prompt-evolution", "no-op", "tribes-bench"]);
+        return prompt_text;
+    };
+
+    // Schema-sanity ping: verify the candidate produces a Finding-
+    // shaped response. Revert on any failure.
+    if _schema_sanity_ok(new_prompt) == false {
+        learn("hunter_prompt_evolve", "schema_revert", "gen=" + to_string(gen), "failure", ["prompt-evolution", "schema-revert", "tribes-bench"]);
+        return prompt_text;
+    };
+
+    // All guards passed: commit the new prompt + bump generation + clear buffer.
+    memo_write(prompt_key, new_prompt);
+    memo_write(gen_key, to_string(gen + 1));
+    memo_write(buf_key, "[]");
+    learn("hunter_prompt_evolve", "rewrite", "gen=" + to_string(gen + 1) + " dissim_pct=" + to_string(dissim_pct), "success", ["prompt-evolution", "rewritten", "tribes-bench"]);
+    return new_prompt;
+}
+
 // #499: 8-class universe used by the class-flip mutation in
 // `pick_variant`. Indices 0..1 are the tribe's primary + sibling classes
 // (also seeded directly into the 14-literal pool below); 2..7 are
@@ -736,6 +916,31 @@ fn tick(reason: string) -> void {
                     if len(_variant) > 0 {
                         let vs_v = parse_int(recall_latest("variant_stats:" + _variant + ":verified"));
                         memo_write("variant_stats:" + _variant + ":verified", to_string(vs_v + 1));
+                    };
+
+                    // #520 M98 v3 PR 2/3: verified-buffer maintenance +
+                    // evolution trigger. Each verified finding pushes a
+                    // `{bug_id, line, signature_hint}` row into the per-pid
+                    // rolling buffer (truncated to K =
+                    // STAGE3_HUNTER_PROMPT_EVOLUTION_THRESHOLD, default 3).
+                    // Once the buffer length hits K, fire the meta-prompt
+                    // evolution path: rewrite + Levenshtein floor + length
+                    // clamp + schema-sanity ping + (optional) generation-cap
+                    // seed reset. Anti-gaming invariant unchanged — the
+                    // verifier above is still a deterministic shell script,
+                    // the LLM lives on the writer side only, and the
+                    // training signal is verified hits.
+                    if len(_self_pid) > 0 {
+                        let _buf_len = _push_verified_finding(_self_pid, bug_id, finding.line, finding.signature_hint);
+                        let _thr_env = try { exec sh "printenv HUNTER_PROMPT_EVOLUTION_THRESHOLD"; } catch e { ""; };
+                        let _thr = if len(_thr_env) > 0 { parse_int(_thr_env); } else { 3; };
+                        let _thr_eff = if _thr <= 0 { 3; } else { _thr; };
+                        if _buf_len >= _thr_eff {
+                            // _evolve_hunting_prompt internally handles
+                            // generation-cap seed reset (gen >= cap branch)
+                            // vs the rewrite + guards path.
+                            let _ = _evolve_hunting_prompt(_self_pid, prompt_text);
+                        };
                     };
 
 

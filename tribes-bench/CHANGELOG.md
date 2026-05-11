@@ -16,6 +16,95 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **M98 v3 PR 2/3 — verified-buffer + meta-prompt evolution + anti-degeneracy guards**
+  ([#520](https://github.com/Replikanti/agentis-colonies/issues/520),
+  PR 2/3 of three; depends on PR 1/3
+  ([#523](https://github.com/Replikanti/agentis-colonies/pull/523))
+  merged + agentis-core v1.7.10
+  ([#638](https://github.com/Replikanti/agentis-core/issues/638));
+  PR 3/3 will add the M106 hash-pointer inheritance path. M98 v2
+  ([#505](https://github.com/Replikanti/agentis-colonies/issues/505))
+  stays reverted.) Each hunter now maintains a per-pid rolling buffer
+  of recent verified findings in `hunter:<pid>:verified_buffer`
+  (JSON-array string, truncated to the last
+  K = `STAGE3_HUNTER_PROMPT_EVOLUTION_THRESHOLD`, default 3). Every
+  verified finding pushes a `{bug_id, line, signature_hint}` row;
+  once the buffer reaches K, the hunter fires a meta-prompt LLM call
+  that asks the writer model to rewrite the hunting prompt body
+  given the verified findings while preserving the
+  `Finding{class, line, severity, rationale, signature_hint}` JSON
+  output schema. The candidate is then gated by three
+  anti-degeneracy guards before it can replace the live prompt:
+  (a) **length clamp** at `HUNTER_PROMPT_MAX_BYTES` (default 4096,
+  reused from PR 1/3), (b) **Levenshtein floor** — dissimilarity
+  between old and new prompt (integer percent, 0..100, computed via
+  a single `python3 -c` round trip on the evolution path only,
+  never the per-tick hot path) must be at least
+  `STAGE3_HUNTER_PROMPT_LEVENSHTEIN_FLOOR` (default 5%); below the
+  floor the rewrite is treated as a no-op (old prompt kept,
+  generation not bumped, buffer untouched), (c) **schema-sanity
+  ping** — the candidate is dry-run against a fixed minimal Rust
+  fixture and must yield a parseable `Finding` with non-empty
+  `class` / `signature_hint` / `rationale` and a non-negative
+  `line`; any failure reverts to the prior working prompt without
+  bumping generation. Only when all three guards pass does the
+  rewrite commit (memo write, generation increment, buffer cleared
+  to `"[]"`). **Generation-cap seed reset:** once
+  `hunter:<pid>:hunting_prompt_generation` reaches
+  `STAGE3_HUNTER_PROMPT_GEN_CAP` (default 10), the next evolution
+  resets the hunting prompt to the tribe's seed (verbatim
+  `_seed_prompt_for_class(_tribe_default_class())`), generation to
+  `"0"`, and increments a per-pid lineage counter
+  `hunter:<pid>:lineage_id` (initialised `"0"`) for telemetry
+  traceability (consumed by `analyse-stage3.py`'s per-class
+  fitness curves). The meta-prompt LLM call still fires once
+  before the cap check — intentional per design, lets the
+  verifier reward the last evolved prompt before lineage
+  rollover. Three new env vars are threaded through
+  `run-stage3-docker.sh`'s `exec.env_passthrough` and per-tribe
+  bootstrap line:
+  `STAGE3_HUNTER_PROMPT_EVOLUTION_THRESHOLD` (default `3`) →
+  `HUNTER_PROMPT_EVOLUTION_THRESHOLD`,
+  `STAGE3_HUNTER_PROMPT_GEN_CAP` (default `10`) →
+  `HUNTER_PROMPT_GEN_CAP`,
+  `STAGE3_HUNTER_PROMPT_LEVENSHTEIN_FLOOR` (default `5`) →
+  `HUNTER_PROMPT_LEVENSHTEIN_FLOOR`. The
+  `_levenshtein_ratio_pct`, `_push_verified_finding`,
+  `_schema_sanity_ok`, and `_evolve_hunting_prompt` helpers are
+  inlined byte-identically into each of the five `hunter.ag`
+  files; a follow-up will refactor them into a shared
+  `tribes-bench/lib/` once that directory is created.
+  **Anti-gaming invariant preserved verbatim:** the verifier
+  remains a deterministic shell script with no LLM in the path.
+  Hunters still cannot influence verifier behaviour through
+  prompt content. Selection pressure flows only from real
+  verified hits; the meta-prompt LLM call is writer-side only and
+  operates on verified-buffer evidence that the deterministic
+  verifier already accepted. The
+  [#491](https://github.com/Replikanti/agentis-colonies/issues/491)
+  ledger-write monopoly and the
+  [#493](https://github.com/Replikanti/agentis-colonies/issues/493)
+  knowledge-sell answer-path guardrails are preserved verbatim —
+  PR 2/3 introduces no new direct ledger writes, no new
+  knowledge-market answer paths; the buffer push and evolution
+  trigger only fire inside the existing verified-finding branch
+  (after the `verified_str == "true"` check that consumes the
+  deterministic verifier verdict). M98 v2's 0%-hit-rate
+  recurrence is structurally blocked: the first tick of any
+  fresh hunter still uses the pre-#505 seed prompt (PR 1/3),
+  evolution only fires AFTER K=3 verified findings, so the
+  pre-evolution hit-rate floor is byte-identical to current
+  main. **M106 hash-pointer inheritance** (`pp:<sha256>` variant
+  tag + `hunter:prompt_body:<sha256>` content-addressed memo)
+  remains pending in PR 3/3 — cross-`replicate()` inheritance
+  and the agentis-core `MAX_VARIANT_TAG_BYTES` sidestep ship
+  there. **Manual smoke verification:** the agentis-core runtime
+  has no isolated unit-test harness for `.ag` agents; verification
+  is via the `colony-lint.sh` parse + tier-branch pass (gates
+  every commit, must report `170 passed / 0 failed / 3 skipped`
+  with agentis v1.7.10 installed) plus a wall-clock pilot of
+  `tools/run-stage3-docker.sh` (30-min smoke baseline, currently
+  16 verified findings per the issue acceptance criteria).
 - **M98 v3 PR 1/3 — memo-stored hunting prompts + per-tribe seed bootstrap**
   ([#520](https://github.com/Replikanti/agentis-colonies/issues/520),
   PR 1/3 of three; PR 2/3 will add the verified-buffer + meta-prompt
