@@ -677,13 +677,12 @@ fn tick(reason: string) -> void {
                         parse_int(recall_latest("tribe-" + _tribe_name + ":reward_subsequent"));
                     };
 
+                    // #491 (Loose category a): ledger writes are now done
+                    // exclusively by verify-finding-stage2.sh on the
+                    // verified=true path. ledger_path is still read here
+                    // because the bundle-sell tail summary below
+                    // grep-reads the same file.
                     let ledger_path = recall_latest("tribe-" + _tribe_name + ":bug_ledger");
-                    if len(ledger_path) > 0 {
-                        let row = "{\"ts\": " + to_string(_tick_now_ms) + ", \"tribe\": \"" + _tribe_name + "\", \"bug_id\": \"" + bug_id + "\", \"reward\": " + to_string(reward) + "}";
-                        // colony-lint: safe-exec-concat
-                        let append_cmd = "printf '%s\\n' " + shell_escape(row) + " >> " + shell_escape(ledger_path);
-                        let _ = try { exec sh append_cmd; } catch e { ""; };
-                    };
 
                     // #485 finite-pool: cap-aware reward credit. When
                     // tribe-X:pool_cap is set, reward is bounded so pool
