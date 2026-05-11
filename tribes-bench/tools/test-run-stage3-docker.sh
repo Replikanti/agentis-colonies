@@ -357,6 +357,56 @@ assert_contains "hermetic config emits daemon.cb_per_tick line" \
     "$(cat "$ORCH")" \
     'printf "daemon.cb_per_tick = %s'
 
+# 9c. #535 + #537: claude-backend wiring. Default OpenAI dry-run must
+# NOT emit any /root/.claude reference; claude-backend dry-run with a
+# valid host dir must inject -v <host>:/root/.claude:rw into BOTH
+# containers; claude-backend dry-run with a missing host dir must
+# exit 1 with the helpful message.
+assert_not_contains "default openai dry-run has no /root/.claude mount" \
+    "$OUT" \
+    "/root/.claude"
+CLAUDE_OUT="$(STAGE3_WALL_CLOCK_S=1800 \
+              STAGE3_ROTATION_INTERVAL_S=120 \
+              STAGE3_DEATH_THRESHOLD=300 \
+              STAGE3_LAPTOP_PORT=9100 \
+              STAGE3_SERVER_PORT=9101 \
+              STAGE3_LAPTOP_WORKER_PORT=9200 \
+              STAGE3_SERVER_WORKER_PORT=9201 \
+              STAGE3_WORKER_SECRET=testsecret \
+              STAGE3_LLM_BACKEND=claude \
+              STAGE3_HOST_CLAUDE_DIR=/tmp \
+              bash "$ORCH" --dry-run 2>&1 || true)"
+assert_contains "claude backend mounts /tmp:/root/.claude:rw on laptop" \
+    "$CLAUDE_OUT" \
+    "-v /tmp:/root/.claude:rw"
+LAPTOP_CLAUDE_COUNT="$(printf '%s' "$CLAUDE_OUT" | grep -cF -- '-v /tmp:/root/.claude:rw' || true)"
+if [ "$LAPTOP_CLAUDE_COUNT" -ge 2 ]; then
+    echo "[PASS] claude backend mounts /tmp:/root/.claude:rw on BOTH containers (found $LAPTOP_CLAUDE_COUNT instances)"
+    PASS=$((PASS + 1))
+else
+    echo "[FAIL] claude backend should mount /root/.claude on both containers (found only $LAPTOP_CLAUDE_COUNT instance(s))"
+    FAIL=$((FAIL + 1))
+fi
+CLAUDE_MISSING_RC=0
+STAGE3_LLM_BACKEND=claude \
+STAGE3_HOST_CLAUDE_DIR=/nonexistent-path-$$ \
+STAGE3_WALL_CLOCK_S=1800 \
+STAGE3_ROTATION_INTERVAL_S=120 \
+STAGE3_DEATH_THRESHOLD=300 \
+STAGE3_LAPTOP_PORT=9100 \
+STAGE3_SERVER_PORT=9101 \
+STAGE3_LAPTOP_WORKER_PORT=9200 \
+STAGE3_SERVER_WORKER_PORT=9201 \
+STAGE3_WORKER_SECRET=testsecret \
+bash "$ORCH" --dry-run >/dev/null 2>&1 || CLAUDE_MISSING_RC=$?
+if [ "$CLAUDE_MISSING_RC" -eq 1 ]; then
+    echo "[PASS] claude backend with missing STAGE3_HOST_CLAUDE_DIR exits 1"
+    PASS=$((PASS + 1))
+else
+    echo "[FAIL] claude backend with missing STAGE3_HOST_CLAUDE_DIR should exit 1 (got $CLAUDE_MISSING_RC)"
+    FAIL=$((FAIL + 1))
+fi
+
 # 10. #520 M98 v3 PR 3/3: M106 hash-pointer inheritance — assert each
 # hunter.ag carries the new helpers, the bootstrap inheritance branch,
 # and that both replicate() sites call the parent-wrap helper. Source-
