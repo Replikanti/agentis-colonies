@@ -16,6 +16,24 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **`run-stage3-docker.sh`: add `:z` SELinux relabel to claude bind-mount (#540)**.
+  Take-7 multi-tribe federation smoke surfaced that on SELinux-enforcing hosts
+  (Fedora, RHEL, openSUSE) the post-#536 mount `-v $HOST_CLAUDE_DIR:/root/.claude:rw`
+  is invisible to containers because `~/.claude` carries `user_home_t` SELinux
+  type which `container_t` processes cannot read — regardless of UID or
+  permission bits. Inside the container, `stat /root/.claude/.credentials.json`
+  returned `Permission denied` and `claude --print` returned `Not logged in`.
+  Take-7 was unblocked by a manual `chcon -t container_file_t /tmp/claude-dir
+  -R` workaround. Adding `,z` to the bind-mount tells podman to apply a shared
+  SELinux relabel automatically — the same approach used by other rootless
+  podman tooling. `:z` is a no-op on SELinux-disabled hosts (Ubuntu, Debian).
+  Operator security notes expanded in the script comment block: (1) existing
+  `.credentials.json` exposure warning preserved; (2) NEW warning not to debug
+  the credentials path with raw `cat`/`stat` (terminal scrollback leakage);
+  (3) NEW warning that `:z` mutates the SELinux type of the host source
+  directory permanently. test-run-stage3-docker.sh assertion count 149 → 150
+  with one new "claude mount includes :z SELinux relabel suffix" check.
+  colony-lint 170/0/3 baseline preserved.
 - **Re-apply #493 consumer-side `knowledge_buy` answer validation (Loose category c)**.
   PR #508 (commit aa21220) originally added a `_validate_bought_answer` gate
   to every `knowledge_buy` callsite in `hunter.ag`, cross-checking the
