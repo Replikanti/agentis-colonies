@@ -34,7 +34,11 @@
 #   STAGE3_WALL_CLOCK_S        Wall-clock cap in seconds. Default: 21600
 #                              (6h full pilot). 30-min smoke runs at 1800.
 #   STAGE3_ROTATION_INTERVAL_S Seconds between TARGET_DIR rotations.
-#                              Default: 1200 (20 min).
+#                              Default: 600 (10 min); bumped from 1200
+#                              in #544 chunk 2 because the 10-target
+#                              rotation (A..J) needs shorter dwell to
+#                              cycle through all targets inside a 6h
+#                              smoke run.
 #   STAGE3_DEATH_THRESHOLD     CB level at which a hunter is culled.
 #                              Default: 300 (Stage 2 was 100).
 #   STAGE3_TRIBE_POOL_CAP      #485 finite-pool: max value of the
@@ -51,11 +55,14 @@
 #                              capital for the shared tribe pool. Lets
 #                              tribes accumulate replication budget
 #                              before metabolic drain or DEATH_THRESHOLD
-#                              culls them. Default 0 = OFF (legacy
-#                              cold-start economy where pool begins at 0
-#                              and any positive METABOLIC_COST drives
-#                              the tribe immediately into death-pressure
-#                              regime before the burst phase can land).
+#                              culls them. Default 20000 (#544 chunk 2);
+#                              bumped from 0 to give each tribe a
+#                              ~10-generation replication-budget runway
+#                              before the cold-start METABOLIC_COST
+#                              drain bites — keeps the long-wall-clock
+#                              smoke alive past the first burst phase.
+#                              Set to 0 to recover legacy cold-start
+#                              economy.
 #   STAGE3_HUNTER_MAX_AGE      #487 follow-up: per-hunter age cap. Each
 #                              hunter increments its own age counter
 #                              (keyed on PPID, no shared-state RMW race)
@@ -187,6 +194,36 @@
 #   STAGE3_TARGET_E_BUGS       Optional rotation-E bugs.json (#519).
 #                              Suggested:
 #                              targets/stage4-generator-v0.6.25/bugs.json.
+#   STAGE3_TARGET_F_DIR        Optional rotation-F target dir
+#                              (Stage 4 Phase 1 chunk 2, #544). When set,
+#                              the rotation timer round-robins A..F (and
+#                              any further configured slots) instead of
+#                              stopping at the A-E set. Suggested:
+#                              targets/stage4-ticketed_lock-v0.3.0.
+#   STAGE3_TARGET_F_BUGS       Optional rotation-F bugs.json (#544).
+#                              Required when STAGE3_TARGET_F_DIR is set.
+#                              Suggested:
+#                              targets/stage4-ticketed_lock-v0.3.0/bugs.json.
+#   STAGE3_TARGET_G_DIR        Optional rotation-G target dir (#544).
+#                              Suggested: targets/stage4-lock_api-v0.3.4.
+#   STAGE3_TARGET_G_BUGS       Optional rotation-G bugs.json (#544).
+#                              Suggested:
+#                              targets/stage4-lock_api-v0.3.4/bugs.json.
+#   STAGE3_TARGET_H_DIR        Optional rotation-H target dir (#544).
+#                              Suggested: targets/stage4-atomic-option-v0.1.2.
+#   STAGE3_TARGET_H_BUGS       Optional rotation-H bugs.json (#544).
+#                              Suggested:
+#                              targets/stage4-atomic-option-v0.1.2/bugs.json.
+#   STAGE3_TARGET_I_DIR        Optional rotation-I target dir (#544).
+#                              Suggested: targets/stage4-atom-v0.3.5.
+#   STAGE3_TARGET_I_BUGS       Optional rotation-I bugs.json (#544).
+#                              Suggested:
+#                              targets/stage4-atom-v0.3.5/bugs.json.
+#   STAGE3_TARGET_J_DIR        Optional rotation-J target dir (#544).
+#                              Suggested: targets/stage4-syncpool-v0.1.5.
+#   STAGE3_TARGET_J_BUGS       Optional rotation-J bugs.json (#544).
+#                              Suggested:
+#                              targets/stage4-syncpool-v0.1.5/bugs.json.
 #   STAGE3_DRY_RUN             1 = echo every command (with `+ ` prefix),
 #                              do not build the image, do not spawn
 #                              containers, do not exec rotation memos,
@@ -251,14 +288,14 @@ done
 
 # --- Env-var defaults + validation ---
 WALL_CLOCK="${STAGE3_WALL_CLOCK_S:-21600}"
-ROTATION_INTERVAL="${STAGE3_ROTATION_INTERVAL_S:-1200}"
+ROTATION_INTERVAL="${STAGE3_ROTATION_INTERVAL_S:-600}"
 DEATH_THRESHOLD="${STAGE3_DEATH_THRESHOLD:-300}"
 # #485 finite-pool R&D substrate: zero-sum reward economy + carrying-capacity
 # dynamics for niche/hierarchy emergence. Defaults are 0 = OFF (legacy
 # unbounded pool, byte-identical to v1.7.4). Set non-zero to activate Option 2.
 TRIBE_POOL_CAP="${STAGE3_TRIBE_POOL_CAP:-0}"
 TRIBE_METABOLIC_COST="${STAGE3_TRIBE_METABOLIC_COST:-0}"
-TRIBE_INITIAL_POOL="${STAGE3_TRIBE_INITIAL_POOL:-0}"
+TRIBE_INITIAL_POOL="${STAGE3_TRIBE_INITIAL_POOL:-20000}"
 # #487 follow-up: per-hunter age mortality. Each hunter has its own
 # monotonic age counter keyed on PPID; suicides via `agentis daemon stop`
 # when age > HUNTER_MAX_AGE. Eliminates the shared-state RMW race the
@@ -333,6 +370,20 @@ TARGET_D_DIR_REL="${STAGE3_TARGET_D_DIR:-}"
 TARGET_D_BUGS_REL="${STAGE3_TARGET_D_BUGS:-}"
 TARGET_E_DIR_REL="${STAGE3_TARGET_E_DIR:-}"
 TARGET_E_BUGS_REL="${STAGE3_TARGET_E_BUGS:-}"
+# Stage 4 Phase 1 chunk 2 (#544) — optional F/G/H/I/J slots. Same
+# pairwise-empty fallback policy as C/D/E (#519): a partially-configured
+# operator override (DIR set, BUGS unset, or vice versa) drops that arm
+# from the round-robin so the rotation never emits an empty memo.
+TARGET_F_DIR_REL="${STAGE3_TARGET_F_DIR:-}"
+TARGET_F_BUGS_REL="${STAGE3_TARGET_F_BUGS:-}"
+TARGET_G_DIR_REL="${STAGE3_TARGET_G_DIR:-}"
+TARGET_G_BUGS_REL="${STAGE3_TARGET_G_BUGS:-}"
+TARGET_H_DIR_REL="${STAGE3_TARGET_H_DIR:-}"
+TARGET_H_BUGS_REL="${STAGE3_TARGET_H_BUGS:-}"
+TARGET_I_DIR_REL="${STAGE3_TARGET_I_DIR:-}"
+TARGET_I_BUGS_REL="${STAGE3_TARGET_I_BUGS:-}"
+TARGET_J_DIR_REL="${STAGE3_TARGET_J_DIR:-}"
+TARGET_J_BUGS_REL="${STAGE3_TARGET_J_BUGS:-}"
 
 val=""
 for var_name in WALL_CLOCK ROTATION_INTERVAL DEATH_THRESHOLD \
@@ -505,6 +556,15 @@ write_bootstrap() {
         # + meta-prompt + schema-sanity ping + exec-sh helpers) don't drain
         # the daemon's 200M lifetime budget within ~10 ticks.
         printf '  printf "daemon.cb_per_tick = %s\\n"\n' "$DAEMON_CB_PER_TICK"
+        # #544 chunk 2: bump memo.max_keys above the agentis-core default
+        # (500, #555) to cover ~50 hunters × ~100 distinct per-pid keys
+        # under the post-#544 population scaling (max_replicas_per_tribe
+        # = 10, STAGE3_TRIBE_INITIAL_POOL default 20000). Without this
+        # bump the long-wall-clock smoke wedges on `memo: max 500 keys
+        # exceeded` once the replica fleet saturates, with the agents
+        # still appearing `state = running` in `daemon list` (the
+        # tick_success_rate-on-RATE-column signal lands in v1.4.4+).
+        printf '  printf "memo.max_keys = 50000\\n"\n'
         if [ "$LLM_BACKEND" = "openai" ]; then
             printf '  printf "llm.openai.endpoint = %s\\n"\n' "$OPENAI_ENDPOINT"
             printf '  printf "llm.openai.model = %s\\n"\n' "$OPENAI_MODEL"
@@ -662,11 +722,11 @@ spawn_containers() {
 # paths (/run-root/targets/...), since memos are read inside containers.
 rotation_timer() {
     emit_step "starting target-rotation timer (interval=${ROTATION_INTERVAL}s)"
-    # Stage 4 Phase 1 chunk 1 (#519): if any of TARGET_C_DIR_REL /
-    # TARGET_D_DIR_REL / TARGET_E_DIR_REL is set together with its
-    # paired *_BUGS_REL, fall through to the array-based round-robin
-    # branch. Otherwise emit the byte-identical legacy A/B alternation
-    # so the default invocation stays unchanged.
+    # Stage 4 Phase 1 chunk 1 (#519) + chunk 2 (#544): if any of
+    # TARGET_C..J_DIR_REL is set together with its paired *_BUGS_REL,
+    # fall through to the array-based round-robin branch. Otherwise emit
+    # the byte-identical legacy A/B alternation so the default
+    # invocation stays unchanged.
     extra_targets=""
     if [ -n "$TARGET_C_DIR_REL" ] && [ -n "$TARGET_C_BUGS_REL" ]; then
         extra_targets="$extra_targets C"
@@ -677,14 +737,29 @@ rotation_timer() {
     if [ -n "$TARGET_E_DIR_REL" ] && [ -n "$TARGET_E_BUGS_REL" ]; then
         extra_targets="$extra_targets E"
     fi
+    if [ -n "$TARGET_F_DIR_REL" ] && [ -n "$TARGET_F_BUGS_REL" ]; then
+        extra_targets="$extra_targets F"
+    fi
+    if [ -n "$TARGET_G_DIR_REL" ] && [ -n "$TARGET_G_BUGS_REL" ]; then
+        extra_targets="$extra_targets G"
+    fi
+    if [ -n "$TARGET_H_DIR_REL" ] && [ -n "$TARGET_H_BUGS_REL" ]; then
+        extra_targets="$extra_targets H"
+    fi
+    if [ -n "$TARGET_I_DIR_REL" ] && [ -n "$TARGET_I_BUGS_REL" ]; then
+        extra_targets="$extra_targets I"
+    fi
+    if [ -n "$TARGET_J_DIR_REL" ] && [ -n "$TARGET_J_BUGS_REL" ]; then
+        extra_targets="$extra_targets J"
+    fi
     if [ -z "$extra_targets" ]; then
         emit_cmd "( phase=0; while true; do sleep $ROTATION_INTERVAL; phase=\$((1 - phase)); if [ \"\$phase\" = \"0\" ]; then td=/run-root/$TARGET_A_DIR_REL; bm=/run-root/$TARGET_A_BUGS_REL; else td=/run-root/$TARGET_B_DIR_REL; bm=/run-root/$TARGET_B_BUGS_REL; fi; printf '%s,%s,%s\\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"\$td\" \"\$bm\" >>$ROTATIONS_CSV; podman exec stage3-laptop agentis memo set tribes-bench:target_dir \"\$td\" >/dev/null 2>&1 || true; podman exec stage3-laptop agentis memo set tribes-bench:bugs_manifest \"\$bm\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set tribes-bench:target_dir \"\$td\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set tribes-bench:bugs_manifest \"\$bm\" >/dev/null 2>&1 || true; done ) >>$RUN_DIR/rotation.log 2>&1 & echo \$! >$RUN_DIR/rotation.pid"
     else
-        # Round-robin across A, B, plus whichever of C/D/E were
-        # configured. Each iteration picks the next entry by integer
+        # Round-robin across A, B, plus whichever of C/D/E/F/G/H/I/J
+        # were configured. Each iteration picks the next entry by integer
         # modulo of a monotonic counter; bash 4 `${arr[idx]}` indexing
         # with `${!var}` indirect expansion resolves
-        # TARGET_<K>_DIR_REL / TARGET_<K>_BUGS_REL for K in {A,B,C,D,E}.
+        # TARGET_<K>_DIR_REL / TARGET_<K>_BUGS_REL for K in {A..J}.
         targets_init="targets=(A B)"
         for k in $extra_targets; do
             targets_init="$targets_init; targets+=($k)"

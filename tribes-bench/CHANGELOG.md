@@ -16,6 +16,54 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **Stage 4 Phase 1 chunk 2: vendor 5 new RUSTSEC-anchored planted-bug crates + population-scaling knobs (#544)**.
+  Brings the Stage 4 planted-bug substrate from 5 bugs / 3 classes
+  (chunk 1: `crossbeam-deque`, `owning_ref`, `generator`) to 12 bugs /
+  4 classes by vendoring five additional crates at deliberately-vulnerable
+  historical tags:
+  `ticketed_lock 0.3.0` (RUSTSEC-2020-0119, missing_lock),
+  `lock_api 0.3.4` (RUSTSEC-2020-0070 / CVE-2020-35910, missing_lock —
+  3-for-1: `MappedMutexGuard` + `MappedRwLockReadGuard` +
+  `MappedRwLockWriteGuard`),
+  `atomic-option 0.1.2` (RUSTSEC-2020-0113, send_violation),
+  `atom 0.3.5` (RUSTSEC-2020-0044, data_race), and
+  `syncpool 0.1.5` (RUSTSEC-2020-0142 / CVE-2020-36462, send_violation).
+  Class-coverage delta: missing_lock 0 → 4 (closes the gap that left
+  the entire bug class untargetable by hunters), send_violation 1 → 3,
+  data_race 1 → 2, dangling_borrow 3 (unchanged). Each vendored
+  directory follows the chunk-1 template byte-for-byte: 2-line
+  `// TRIBES-BENCH STAGE 4 PHASE 1 CHUNK 2 PLANTED-BUG TARGET. INTENTIONALLY VULNERABLE`
+  banner prepended on the source file holding the bug, `publish = false`
+  in `Cargo.toml`, verbatim `LICENSE-{APACHE,MIT}` files (matching each
+  upstream's actual license — `lock_api` is dual; `ticketed_lock` /
+  `atom` are Apache-2.0-only; `atomic-option` / `syncpool` are
+  MIT-only), `PROVENANCE.md` documenting upstream commit / advisory /
+  intentionally-vulnerable warning, and `bugs.json` with line numbers
+  derived via `grep -n` against the post-banner source (each upstream
+  line shifts +2). All 7 new manifest entries roundtrip clean through
+  `verify-finding-stage2.sh` (`{"verified": true, "bug_id": "S4-..."}`).
+  `run-stage3-docker.sh` gains `STAGE3_TARGET_F..J_{DIR,BUGS}` env-var
+  slots (header docblock + variable declarations + rotation-array
+  init blocks parallel to C/D/E from #519); the round-robin counter +
+  indirect-expansion logic already generalises to 10 targets. Population
+  scaling knobs: `STAGE3_ROTATION_INTERVAL_S` default 1200 → 600 (10
+  targets need shorter dwell to cycle inside 6h), `STAGE3_TRIBE_INITIAL_POOL`
+  default 0 → 20000 (~10-generation replication runway), and a new
+  hermetic-config emit line `printf "memo.max_keys = 50000\n"` to cover
+  ~50 hunters × ~100 distinct per-pid keys after the
+  `max_replicas_per_tribe` bump. `calibration.toml`: `max_replicas_per_tribe`
+  5 → 10 for the long-wall-clock smoke. The originally-planned
+  `memo.gc_interval_ticks = 100` emit line was dropped after verifying
+  the key does not exist in agentis-core v1.7.12 (`memo.max_keys` is
+  the only memo config knob upstream wires); `memo.max_keys = 50000`
+  ships solo. Default invocation (no F-J env vars set) emits
+  byte-identical dry-run to the chunk-1 baseline — the legacy A/B
+  phase-alternation branch in `rotation_timer` is still selected when
+  no extra targets are configured. test-run-stage3-docker.sh assertion
+  count 150 → 165 (5 header-docs for F/G/H/I/J + 6 rotation-array /
+  no-phase-alternation in 10-target mode + 4 config-knob asserts;
+  memo.gc_interval_ticks assertion correspondingly absent). colony-lint
+  170/0/3 baseline preserved.
 - **Containerfile.stage3: bump `AGENTIS_VERSION` v1.7.11 → v1.7.12**.
   Picks up agentis-core [#642](https://github.com/Replikanti/agentis-core/issues/642) (M106 `prepare_replica_spawn` propagates parent's `exec.env_passthrough` resolved values to replica spawns via new wire trailer). Unblocks take-8 multi-tribe federation: M106-spawned replicas in v1.7.11 died on verifier exec sh because `$VERIFIER_PATH` / `$TARGET_DIR` / `$BUG_LEDGER_PATH` weren't propagated from parent. With v1.7.12, replicas inherit the parent's allowlisted env vars and can run their own verifier exec sh round trips. Build verified: `agentis --version` → `agentis v1.7.12` inside the rebuilt image.
 - **`run-stage3-docker.sh`: add `:z` SELinux relabel to claude bind-mount (#540)**.

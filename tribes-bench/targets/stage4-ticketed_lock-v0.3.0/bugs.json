@@ -1,0 +1,7 @@
+{
+  "stage": "stage4",
+  "target_dir": "targets/stage4-ticketed_lock-v0.3.0",
+  "bugs": [
+    {"id": "S4-TKLO-001", "class": "missing_lock", "file": "src/lib.rs", "line": 60, "line_tolerance": 5, "signature": "unsafe impl<T: Send> Send for ReadTicket<T>", "severity": "high", "verifier_test": "test_tk_ml_001", "rationale": "RUSTSEC-2020-0119: ticketed_lock's ReadTicket / WriteTicket carry hand-written `unsafe impl Send` bounds that do not enforce the exclusive-access invariant the abstraction documents. The crate exposes a 'ticketed lock' interface but the Send/Sync surface lets the guard escape to a thread that did not acquire the ticket -- the documented `RwLock`-like exclusion never lands. Unmaintained; no upstream fix."}
+  ]
+}

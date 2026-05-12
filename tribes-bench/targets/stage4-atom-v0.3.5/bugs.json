@@ -1,0 +1,7 @@
+{
+  "stage": "stage4",
+  "target_dir": "targets/stage4-atom-v0.3.5",
+  "bugs": [
+    {"id": "S4-ATOM-001", "class": "data_race", "file": "src/lib.rs", "line": 156, "line_tolerance": 5, "signature": "unsafe impl<P> Send for Atom<P>", "severity": "high", "verifier_test": "test_atom_dr_001", "rationale": "RUSTSEC-2020-0044: Atom<P>'s Send / Sync impls require only `P: IntoRawPtr + FromRawPtr`, NOT `P: Send`. Combined with the swap-based AtomicPtr API, this lets a non-Send P (e.g. one whose inner ptr is to thread-local data, or one carrying a !Send Drop side effect) be moved across threads -- two threads can race on the inner pointer's drop / reinit. Fixed in 0.3.6 by adding the missing `P: Send` bound."}
+  ]
+}

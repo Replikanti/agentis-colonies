@@ -1,0 +1,7 @@
+{
+  "stage": "stage4",
+  "target_dir": "targets/stage4-atomic-option-v0.1.2",
+  "bugs": [
+    {"id": "S4-AOSV-001", "class": "send_violation", "file": "src/lib.rs", "line": 25, "line_tolerance": 5, "signature": "unsafe impl<T> Sync for AtomicOption<T> {}", "severity": "high", "verifier_test": "test_ao_sv_001", "rationale": "RUSTSEC-2020-0113: AtomicOption<T> exposes `unsafe impl<T> Sync for AtomicOption<T>` with no `T: Send` bound. Holding `AtomicOption<NonSend>` across threads + calling `.take()` lets a non-Send value (e.g. Rc, RefCell) cross the thread boundary -- a send-bound violation that leads to data races on the inner value's interior mutability. Unmaintained; no upstream fix."}
+  ]
+}

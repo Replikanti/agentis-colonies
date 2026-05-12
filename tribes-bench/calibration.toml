@@ -38,7 +38,8 @@ k_malthusian = 3
 # Defensive cap. Even with a runaway reward stream the tribe cannot
 # grow unbounded. Set at 5 to keep the per-host process count bounded
 # during multi-hour runs.
-max_replicas_per_tribe = 5
+# Bumped 5 → 10 in #544 chunk 2 for long-wall-clock smoke population scaling.
+max_replicas_per_tribe = 10
 
 [tribe.reward]
 # Full reward = first-finder reward. Set to 200 ≈ 4 prompt() calls so a
