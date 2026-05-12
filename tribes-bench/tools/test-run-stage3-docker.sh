@@ -314,6 +314,89 @@ assert_contains "header documents STAGE3_TARGET_E_DIR" \
     "$(cat "$ORCH")" \
     "STAGE3_TARGET_E_DIR"
 
+# 8b. Stage 4 Phase 1 chunk 2 (#544): when STAGE3_TARGET_F/G/H/I/J_{DIR,BUGS}
+# are all set in addition to C/D/E, the rotation timer must emit a
+# round-robin loop over the 10-element `targets` array; header documents
+# the five new env vars; and the legacy phase-alternation branch must
+# stay suppressed.
+OUT_10TARGET="$(STAGE3_WALL_CLOCK_S=1800 \
+       STAGE3_ROTATION_INTERVAL_S=120 \
+       STAGE3_DEATH_THRESHOLD=300 \
+       STAGE3_LAPTOP_PORT=9100 \
+       STAGE3_SERVER_PORT=9101 \
+       STAGE3_LAPTOP_WORKER_PORT=9200 \
+       STAGE3_SERVER_WORKER_PORT=9201 \
+       STAGE3_WORKER_SECRET=testsecret \
+       STAGE3_TARGET_C_DIR=targets/stage4-crossbeam-deque-v0.7.2 \
+       STAGE3_TARGET_C_BUGS=targets/stage4-crossbeam-deque-v0.7.2/bugs.json \
+       STAGE3_TARGET_D_DIR=targets/stage4-owning_ref-v0.4.1 \
+       STAGE3_TARGET_D_BUGS=targets/stage4-owning_ref-v0.4.1/bugs.json \
+       STAGE3_TARGET_E_DIR=targets/stage4-generator-v0.6.25 \
+       STAGE3_TARGET_E_BUGS=targets/stage4-generator-v0.6.25/bugs.json \
+       STAGE3_TARGET_F_DIR=targets/stage4-ticketed_lock-v0.3.0 \
+       STAGE3_TARGET_F_BUGS=targets/stage4-ticketed_lock-v0.3.0/bugs.json \
+       STAGE3_TARGET_G_DIR=targets/stage4-lock_api-v0.3.4 \
+       STAGE3_TARGET_G_BUGS=targets/stage4-lock_api-v0.3.4/bugs.json \
+       STAGE3_TARGET_H_DIR=targets/stage4-atomic-option-v0.1.2 \
+       STAGE3_TARGET_H_BUGS=targets/stage4-atomic-option-v0.1.2/bugs.json \
+       STAGE3_TARGET_I_DIR=targets/stage4-atom-v0.3.5 \
+       STAGE3_TARGET_I_BUGS=targets/stage4-atom-v0.3.5/bugs.json \
+       STAGE3_TARGET_J_DIR=targets/stage4-syncpool-v0.1.5 \
+       STAGE3_TARGET_J_BUGS=targets/stage4-syncpool-v0.1.5/bugs.json \
+       bash "$ORCH" --dry-run 2>&1)"
+assert_contains "10-target rotation appends F" \
+    "$OUT_10TARGET" \
+    "targets+=(F)"
+assert_contains "10-target rotation appends G" \
+    "$OUT_10TARGET" \
+    "targets+=(G)"
+assert_contains "10-target rotation appends H" \
+    "$OUT_10TARGET" \
+    "targets+=(H)"
+assert_contains "10-target rotation appends I" \
+    "$OUT_10TARGET" \
+    "targets+=(I)"
+assert_contains "10-target rotation appends J" \
+    "$OUT_10TARGET" \
+    "targets+=(J)"
+assert_not_contains "10-target mode does not emit legacy phase alternation" \
+    "$OUT_10TARGET" \
+    "phase=\$((1 - phase))"
+assert_contains "header documents STAGE3_TARGET_F_DIR" \
+    "$(cat "$ORCH")" \
+    "STAGE3_TARGET_F_DIR"
+assert_contains "header documents STAGE3_TARGET_G_DIR" \
+    "$(cat "$ORCH")" \
+    "STAGE3_TARGET_G_DIR"
+assert_contains "header documents STAGE3_TARGET_H_DIR" \
+    "$(cat "$ORCH")" \
+    "STAGE3_TARGET_H_DIR"
+assert_contains "header documents STAGE3_TARGET_I_DIR" \
+    "$(cat "$ORCH")" \
+    "STAGE3_TARGET_I_DIR"
+assert_contains "header documents STAGE3_TARGET_J_DIR" \
+    "$(cat "$ORCH")" \
+    "STAGE3_TARGET_J_DIR"
+
+# 8c. Stage 4 Phase 1 chunk 2 (#544): population-scaling knobs.
+# calibration.toml's max_replicas_per_tribe must be 10 (bumped from 5);
+# hermetic config emits `memo.max_keys = 50000`; default
+# STAGE3_TRIBE_INITIAL_POOL is 20000 (bumped from 0); default
+# STAGE3_ROTATION_INTERVAL_S is 600 (bumped from 1200).
+CALIB_FILE="$(cd "$SCRIPT_DIR/.." && pwd)/calibration.toml"
+assert_contains "calibration.toml max_replicas_per_tribe bumped to 10 (#544)" \
+    "$(cat "$CALIB_FILE")" \
+    "max_replicas_per_tribe = 10"
+assert_contains "hermetic config emits memo.max_keys = 50000 (#544)" \
+    "$(cat "$ORCH")" \
+    'printf "memo.max_keys = 50000\\n"'
+assert_contains "STAGE3_TRIBE_INITIAL_POOL default bumped to 20000 (#544)" \
+    "$(cat "$ORCH")" \
+    'TRIBE_INITIAL_POOL="${STAGE3_TRIBE_INITIAL_POOL:-20000}"'
+assert_contains "STAGE3_ROTATION_INTERVAL_S default bumped to 600 (#544)" \
+    "$(cat "$ORCH")" \
+    'ROTATION_INTERVAL="${STAGE3_ROTATION_INTERVAL_S:-600}"'
+
 # 9. #520 M98 v3 PR 2/3: three new evolution env vars are documented,
 # threaded into exec.env_passthrough, and propagated into the per-tribe
 # bootstrap line so hunter.ag can read them via `printenv`.

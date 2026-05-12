@@ -1,0 +1,9 @@
+{
+  "stage": "stage4",
+  "target_dir": "targets/stage4-lock_api-v0.3.4",
+  "bugs": [
+    {"id": "S4-LAPI-001", "class": "missing_lock", "file": "src/mutex.rs", "line": 532, "line_tolerance": 5, "signature": "unsafe impl<'a, R: RawMutex + 'a, T: ?Sized + 'a> Send for MappedMutexGuard<'a, R, T>", "severity": "high", "verifier_test": "test_la_ml_001", "rationale": "RUSTSEC-2020-0070 / CVE-2020-35910: MappedMutexGuard's Send impl uses only `R::GuardMarker: Send` but ignores whether T itself is Send/Sync. The mapped projection can therefore send a reference to non-Sync data across threads while the underlying lock guard is still live -- breaks the `lock_api` exclusion invariant. Fixed in 0.4.2."},
+    {"id": "S4-LAPI-002", "class": "missing_lock", "file": "src/rwlock.rs", "line": 1359, "line_tolerance": 5, "signature": "unsafe impl<'a, R: RawRwLock + 'a, T: ?Sized + 'a> Send for MappedRwLockReadGuard<'a, R, T>", "severity": "high", "verifier_test": "test_la_ml_002", "rationale": "RUSTSEC-2020-0070 / CVE-2020-35910: MappedRwLockReadGuard's Send impl uses only `R::GuardMarker: Send` but ignores whether T itself is Send/Sync. Read projection can send a `&T` to a thread where T's interior mutability invariants do not hold -- same missing_lock soundness hole as the mutex case. Fixed in 0.4.2."},
+    {"id": "S4-LAPI-003", "class": "missing_lock", "file": "src/rwlock.rs", "line": 1491, "line_tolerance": 5, "signature": "unsafe impl<'a, R: RawRwLock + 'a, T: ?Sized + 'a> Send for MappedRwLockWriteGuard<'a, R, T>", "severity": "high", "verifier_test": "test_la_ml_003", "rationale": "RUSTSEC-2020-0070 / CVE-2020-35910: MappedRwLockWriteGuard's Send impl uses only `R::GuardMarker: Send` but ignores whether T itself is Send/Sync. Write projection can send `&mut T` to a thread that cannot legally hold the writer's exclusive borrow -- third site of the same missing_lock pattern. Fixed in 0.4.2."}
+  ]
+}

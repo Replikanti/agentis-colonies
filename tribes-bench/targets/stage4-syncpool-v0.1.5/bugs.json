@@ -1,0 +1,7 @@
+{
+  "stage": "stage4",
+  "target_dir": "targets/stage4-syncpool-v0.1.5",
+  "bugs": [
+    {"id": "S4-SYPL-001", "class": "send_violation", "file": "src/bucket.rs", "line": 336, "line_tolerance": 5, "signature": "unsafe impl<T> Send for Bucket2<T> {}", "severity": "high", "verifier_test": "test_sp_sv_001", "rationale": "RUSTSEC-2020-0142 / CVE-2020-36462: Bucket2<T> exposes `unsafe impl<T> Send for Bucket2<T>` with no `T: Send` bound. Pushing a non-Send T (e.g. Rc) into the pool and pulling it on a different thread crosses the thread boundary on a !Send value -- send-bound violation that can lead to data races on T's interior state. Fixed in 0.1.6."}
+  ]
+}
