@@ -16,6 +16,8 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **Containerfile.stage3: bump `AGENTIS_VERSION` v1.7.11 → v1.7.12**.
+  Picks up agentis-core [#642](https://github.com/Replikanti/agentis-core/issues/642) (M106 `prepare_replica_spawn` propagates parent's `exec.env_passthrough` resolved values to replica spawns via new wire trailer). Unblocks take-8 multi-tribe federation: M106-spawned replicas in v1.7.11 died on verifier exec sh because `$VERIFIER_PATH` / `$TARGET_DIR` / `$BUG_LEDGER_PATH` weren't propagated from parent. With v1.7.12, replicas inherit the parent's allowlisted env vars and can run their own verifier exec sh round trips. Build verified: `agentis --version` → `agentis v1.7.12` inside the rebuilt image.
 - **`run-stage3-docker.sh`: add `:z` SELinux relabel to claude bind-mount (#540)**.
   Take-7 multi-tribe federation smoke surfaced that on SELinux-enforcing hosts
   (Fedora, RHEL, openSUSE) the post-#536 mount `-v $HOST_CLAUDE_DIR:/root/.claude:rw`
