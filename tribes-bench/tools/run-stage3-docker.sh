@@ -617,16 +617,31 @@ write_bootstraps() {
 # refresh session tokens). The OpenAI-backend code path is unchanged
 # when STAGE3_LLM_BACKEND=openai (default).
 #
-# Operator security note: mounting ~/.claude exposes the host's
-# .credentials.json (Claude Code session token) to the container. On a
-# single-user dev machine this is acceptable; on shared CI runners
-# operators should provision a dedicated Claude Code session.
+# Operator security notes:
+#   1. Mounting ~/.claude exposes the host's .credentials.json (Claude
+#      Code session token) to the container. On a single-user dev
+#      machine this is acceptable; on shared CI runners operators
+#      should provision a dedicated Claude Code session.
+#   2. Do NOT debug the credentials path with raw `cat` or `stat` —
+#      the token will end up in terminal scrollback. Use `test -r
+#      <file>` for existence checks.
+#   3. #540: the `:z` SELinux relabel option appended below mutates
+#      the SELinux type of $STAGE3_HOST_CLAUDE_DIR on the host
+#      (typically `user_home_t` → `container_file_t`). This is
+#      required on SELinux-enforcing distros (Fedora, RHEL, openSUSE)
+#      where `user_home_t` is denied to `container_t` processes —
+#      without `:z` the container sees `Permission denied` on every
+#      file under the mount despite UID/permission bits being correct.
+#      `:z` is a no-op on SELinux-disabled hosts (Ubuntu, Debian).
 spawn_containers() {
     local CLAUDE_MOUNT_FLAG=""
     if [ "$LLM_BACKEND" = "claude" ]; then
         local HOST_CLAUDE_DIR="${STAGE3_HOST_CLAUDE_DIR:-$HOME/.claude}"
         if [ -d "$HOST_CLAUDE_DIR" ]; then
-            CLAUDE_MOUNT_FLAG="-v $HOST_CLAUDE_DIR:/root/.claude:rw"
+            # #540: append `:z` so podman applies a shared SELinux
+            # relabel — required on SELinux-enforcing hosts. No-op
+            # on SELinux-disabled hosts.
+            CLAUDE_MOUNT_FLAG="-v $HOST_CLAUDE_DIR:/root/.claude:rw,z"
         else
             echo "run-stage3-docker: STAGE3_HOST_CLAUDE_DIR=$HOST_CLAUDE_DIR does not exist" >&2
             echo "                   set STAGE3_HOST_CLAUDE_DIR or install Claude Code first" >&2

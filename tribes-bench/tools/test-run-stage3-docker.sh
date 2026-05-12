@@ -376,17 +376,23 @@ CLAUDE_OUT="$(STAGE3_WALL_CLOCK_S=1800 \
               STAGE3_LLM_BACKEND=claude \
               STAGE3_HOST_CLAUDE_DIR=/tmp \
               bash "$ORCH" --dry-run 2>&1 || true)"
-assert_contains "claude backend mounts /tmp:/root/.claude:rw on laptop" \
+assert_contains "claude backend mounts /tmp:/root/.claude:rw,z on laptop" \
     "$CLAUDE_OUT" \
-    "-v /tmp:/root/.claude:rw"
-LAPTOP_CLAUDE_COUNT="$(printf '%s' "$CLAUDE_OUT" | grep -cF -- '-v /tmp:/root/.claude:rw' || true)"
+    "-v /tmp:/root/.claude:rw,z"
+LAPTOP_CLAUDE_COUNT="$(printf '%s' "$CLAUDE_OUT" | grep -cF -- '-v /tmp:/root/.claude:rw,z' || true)"
 if [ "$LAPTOP_CLAUDE_COUNT" -ge 2 ]; then
-    echo "[PASS] claude backend mounts /tmp:/root/.claude:rw on BOTH containers (found $LAPTOP_CLAUDE_COUNT instances)"
+    echo "[PASS] claude backend mounts /tmp:/root/.claude:rw,z on BOTH containers (found $LAPTOP_CLAUDE_COUNT instances)"
     PASS=$((PASS + 1))
 else
     echo "[FAIL] claude backend should mount /root/.claude on both containers (found only $LAPTOP_CLAUDE_COUNT instance(s))"
     FAIL=$((FAIL + 1))
 fi
+# #540: explicit `:z` SELinux relabel suffix presence assertion.
+# Distinct from the count assertion above so a regression that drops
+# `:z` while keeping the mount on both containers is still caught.
+assert_contains "claude mount includes :z SELinux relabel suffix" \
+    "$CLAUDE_OUT" \
+    ":rw,z"
 CLAUDE_MISSING_RC=0
 STAGE3_LLM_BACKEND=claude \
 STAGE3_HOST_CLAUDE_DIR=/nonexistent-path-$$ \
