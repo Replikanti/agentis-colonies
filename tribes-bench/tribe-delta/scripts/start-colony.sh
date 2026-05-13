@@ -108,10 +108,13 @@ if [ ${#AGENTS[@]} -eq 0 ] && [ "$RATE_LIMIT_STATUS" = "0" ] && [ -z "$RESTART_A
 fi
 
 # Per-agent tick-interval override. Stage 0 hunter agents tick at 60s for
-# ~15 ticks per agent over the 900s wall-clock cap.
+# ~15 ticks per agent over the 900s wall-clock cap. HUNTER_TICK_MS env
+# (set by Stage 3 orchestrator via STAGE3_HUNTER_TICK_MS, default 240000
+# = 240s) extends wall-clock observation window within flat-rate LLM
+# budget (#552).
 tick_interval_for() {
     case "$1" in
-        hunter) echo 60000 ;;
+        hunter) echo "${HUNTER_TICK_MS:-60000}" ;;
         *) echo 60000 ;;
     esac
 }

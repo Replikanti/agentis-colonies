@@ -70,6 +70,17 @@
 #                              daemons across 5 tribes (5 source + 10
 #                              replicas) vs take-10's observed 26-daemon
 #                              peak that exhausted the budget at T+25min.
+#   STAGE3_HUNTER_TICK_MS      #552 burn-rate extension: hunter tick
+#                              interval (ms). Default 240000 (240s) is
+#                              4x the start-colony.sh hardcoded 60000;
+#                              preserves total LLM-call budget per smoke
+#                              but stretches wall clock 4x, giving
+#                              emergence observation a longer continuous
+#                              window within the Claude Code flat-rate
+#                              5h ceiling. Threaded into env_passthrough
+#                              as HUNTER_TICK_MS; each tribe's
+#                              start-colony.sh tick_interval_for()
+#                              hunter branch reads it (fallback 60000).
 #   STAGE3_HUNTER_MAX_AGE      #487 follow-up: per-hunter age cap. Each
 #                              hunter increments its own age counter
 #                              (keyed on PPID, no shared-state RMW race)
@@ -308,6 +319,12 @@ TRIBE_INITIAL_POOL="${STAGE3_TRIBE_INITIAL_POOL:-20000}"
 # ~15 concurrent daemons across 5 tribes (5 source + 10 replicas) vs
 # take-10's observed 26-daemon peak that exhausted the budget at T+25min.
 STAGE3_MAX_REPLICAS_VAL="${STAGE3_MAX_REPLICAS:-3}"
+# #552 burn-rate extension: hunter tick interval (ms). Default 240000
+# (240s) is 4x the start-colony.sh hardcoded 60000; preserves total
+# LLM-call budget per smoke but stretches wall clock 4x, giving
+# emergence observation longer continuous window within Claude Code
+# flat-rate 5h ceiling.
+STAGE3_HUNTER_TICK_MS_VAL="${STAGE3_HUNTER_TICK_MS:-240000}"
 # #487 follow-up: per-hunter age mortality. Each hunter has its own
 # monotonic age counter keyed on PPID; suicides via `agentis daemon stop`
 # when age > HUNTER_MAX_AGE. Eliminates the shared-state RMW race the
@@ -401,7 +418,8 @@ val=""
 for var_name in WALL_CLOCK ROTATION_INTERVAL DEATH_THRESHOLD \
                 OPENAI_TIMEOUT_MS LAPTOP_PORT SERVER_PORT \
                 LAPTOP_WORKER_PORT SERVER_WORKER_PORT \
-                STAGE3_MAX_REPLICAS_VAL; do
+                STAGE3_MAX_REPLICAS_VAL \
+                STAGE3_HUNTER_TICK_MS_VAL; do
     eval "val=\${$var_name}"
     case "$val" in
         ''|*[!0-9]*)
@@ -484,6 +502,7 @@ emit_step "run-stage3-docker: starting (dry_run=$DRY_RUN)"
 emit_step "run dir: $RUN_DIR"
 emit_step "wall clock: ${WALL_CLOCK}s, rotation: ${ROTATION_INTERVAL}s, death threshold: ${DEATH_THRESHOLD}"
 emit_step "max replicas per tribe: $STAGE3_MAX_REPLICAS_VAL"
+emit_step "hunter tick interval: ${STAGE3_HUNTER_TICK_MS_VAL} ms"
 emit_step "tribes: laptop=[${LAPTOP_TRIBES[*]}] server=[${SERVER_TRIBES[*]}]"
 emit_step "image tag: $IMAGE_TAG"
 emit_step "host ports: laptop=$LAPTOP_PORT server=$SERVER_PORT"
@@ -662,8 +681,8 @@ write_bootstrap() {
             # file to seed the tribe-<name>:bug_ledger memo from. Without
             # it, hunters verify findings but the JSONL ledger never
             # grows (visible in experience but missing from bug-ledger).
-            printf 'DEATH_THRESHOLD=%s POOL_CAP=%s METABOLIC_COST=%s INITIAL_POOL=%s HUNTER_MAX_AGE=%s HUNTER_FITNESS_CREEP_PER_MINUTE=%s HUNTER_FITNESS_THRESHOLD_BASELINE=%s HUNTER_FITNESS_REWARD_VERIFIED=%s HUNTER_FITNESS_PENALTY_FALSEPOS=%s HUNTER_FITNESS_REWARD_REPLICATE=%s HUNTER_FITNESS_GRACE_MS=%s HUNTER_REPRODUCTIVE_FITNESS_THRESHOLD=%s HUNTER_PROMPT_MAX_BYTES=%s HUNTER_PROMPT_EVOLUTION_THRESHOLD=%s HUNTER_PROMPT_GEN_CAP=%s HUNTER_PROMPT_LEVENSHTEIN_FLOOR=%s MAX_REPLICAS=%s AGENTIS_ROOT=/run-root/.agentis TARGET_DIR=targets-stage2/smallvec-v0.6.13 TARGET_FILE=lib.rs BUGS_MANIFEST=/run-root/.agentis/sandbox/targets-stage2/bugs.json VERIFIER_PATH=/run-root/tools/verify-finding-stage2.sh BUG_LEDGER_PATH=/run-root/bug-ledger.jsonl LEDGER_REWARD_FULL=200 LEDGER_REWARD_SUBSEQUENT=50 bash /run-root/%s/scripts/start-colony.sh > /run-root/%s.log 2>&1 &\n' \
-                "$DEATH_THRESHOLD" "$TRIBE_POOL_CAP" "$TRIBE_METABOLIC_COST" "$TRIBE_INITIAL_POOL" "$HUNTER_MAX_AGE" "$HUNTER_FITNESS_CREEP_PER_MINUTE" "$HUNTER_FITNESS_THRESHOLD_BASELINE" "$HUNTER_FITNESS_REWARD_VERIFIED" "$HUNTER_FITNESS_PENALTY_FALSEPOS" "$HUNTER_FITNESS_REWARD_REPLICATE" "$HUNTER_FITNESS_GRACE_MS" "$HUNTER_REPRODUCTIVE_FITNESS_THRESHOLD" "$HUNTER_PROMPT_MAX_BYTES" "$HUNTER_PROMPT_EVOLUTION_THRESHOLD" "$HUNTER_PROMPT_GEN_CAP" "$HUNTER_PROMPT_LEVENSHTEIN_FLOOR" "$STAGE3_MAX_REPLICAS_VAL" "$tribe" "$tribe"
+            printf 'DEATH_THRESHOLD=%s POOL_CAP=%s METABOLIC_COST=%s INITIAL_POOL=%s HUNTER_MAX_AGE=%s HUNTER_FITNESS_CREEP_PER_MINUTE=%s HUNTER_FITNESS_THRESHOLD_BASELINE=%s HUNTER_FITNESS_REWARD_VERIFIED=%s HUNTER_FITNESS_PENALTY_FALSEPOS=%s HUNTER_FITNESS_REWARD_REPLICATE=%s HUNTER_FITNESS_GRACE_MS=%s HUNTER_REPRODUCTIVE_FITNESS_THRESHOLD=%s HUNTER_PROMPT_MAX_BYTES=%s HUNTER_PROMPT_EVOLUTION_THRESHOLD=%s HUNTER_PROMPT_GEN_CAP=%s HUNTER_PROMPT_LEVENSHTEIN_FLOOR=%s MAX_REPLICAS=%s HUNTER_TICK_MS=%s AGENTIS_ROOT=/run-root/.agentis TARGET_DIR=targets-stage2/smallvec-v0.6.13 TARGET_FILE=lib.rs BUGS_MANIFEST=/run-root/.agentis/sandbox/targets-stage2/bugs.json VERIFIER_PATH=/run-root/tools/verify-finding-stage2.sh BUG_LEDGER_PATH=/run-root/bug-ledger.jsonl LEDGER_REWARD_FULL=200 LEDGER_REWARD_SUBSEQUENT=50 bash /run-root/%s/scripts/start-colony.sh > /run-root/%s.log 2>&1 &\n' \
+                "$DEATH_THRESHOLD" "$TRIBE_POOL_CAP" "$TRIBE_METABOLIC_COST" "$TRIBE_INITIAL_POOL" "$HUNTER_MAX_AGE" "$HUNTER_FITNESS_CREEP_PER_MINUTE" "$HUNTER_FITNESS_THRESHOLD_BASELINE" "$HUNTER_FITNESS_REWARD_VERIFIED" "$HUNTER_FITNESS_PENALTY_FALSEPOS" "$HUNTER_FITNESS_REWARD_REPLICATE" "$HUNTER_FITNESS_GRACE_MS" "$HUNTER_REPRODUCTIVE_FITNESS_THRESHOLD" "$HUNTER_PROMPT_MAX_BYTES" "$HUNTER_PROMPT_EVOLUTION_THRESHOLD" "$HUNTER_PROMPT_GEN_CAP" "$HUNTER_PROMPT_LEVENSHTEIN_FLOOR" "$STAGE3_MAX_REPLICAS_VAL" "$STAGE3_HUNTER_TICK_MS_VAL" "$tribe" "$tribe"
         done
         printf 'while [ ! -e /run-root/.shutdown ]; do sleep 5; done\n'
         printf 'exit 0\n'
