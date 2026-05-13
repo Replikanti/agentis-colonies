@@ -472,6 +472,26 @@ assert_contains "STAGE3_HUNTER_TICK_MS=600000 override surfaces in emit_step out
     "$OUT_HUNTER_TICK_OVERRIDE" \
     "hunter tick interval: 600000 ms"
 
+# 9a-554. #554 burn-rate mitigation: STAGE3_CLAUDE_CAVEMAN gates the
+# minimal-overhead claude CLI mode. Default 0 must surface as `caveman
+# mode: disabled`; an override of STAGE3_CLAUDE_CAVEMAN=1 must surface
+# as `caveman mode: enabled (...)`.
+assert_contains "STAGE3_CLAUDE_CAVEMAN default surfaces as disabled (#554)" "$OUT" \
+    "caveman mode: disabled"
+OUT_CAVEMAN_ENABLED="$(STAGE3_WALL_CLOCK_S=1800 \
+       STAGE3_ROTATION_INTERVAL_S=120 \
+       STAGE3_DEATH_THRESHOLD=300 \
+       STAGE3_LAPTOP_PORT=9100 \
+       STAGE3_SERVER_PORT=9101 \
+       STAGE3_LAPTOP_WORKER_PORT=9200 \
+       STAGE3_SERVER_WORKER_PORT=9201 \
+       STAGE3_WORKER_SECRET=testsecret \
+       STAGE3_CLAUDE_CAVEMAN=1 \
+       bash "$ORCH" --dry-run 2>&1)"
+assert_contains "STAGE3_CLAUDE_CAVEMAN=1 override surfaces in emit_step output (#554)" \
+    "$OUT_CAVEMAN_ENABLED" \
+    "caveman mode: enabled (--tools '' --system-prompt minimal --effort low)"
+
 # 9b. #528: STAGE3_DAEMON_CB_PER_TICK env var is documented, has the
 # documented default of 2000, and its hermetic-config emit line is
 # present (so the spawned daemon's per-tick CB budget actually rises
