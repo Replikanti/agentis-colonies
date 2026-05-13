@@ -23,6 +23,9 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **chore(rate-limit):** orchestrator now caps per-tribe replicas at 3 by default via
+  `STAGE3_MAX_REPLICAS` env var. Keeps total concurrent daemon count predictable for
+  Claude Code flat-rate budgets ([#549](https://github.com/Replikanti/agentis-colonies/issues/549)).
 - **Stage 4 Phase 1 chunk 2: vendor 5 new RUSTSEC-anchored planted-bug crates + population-scaling knobs (#544)**.
   Brings the Stage 4 planted-bug substrate from 5 bugs / 3 classes
   (chunk 1: `crossbeam-deque`, `owning_ref`, `generator`) to 12 bugs /
