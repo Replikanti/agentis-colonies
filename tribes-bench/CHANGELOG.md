@@ -14,6 +14,13 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Fix(rotation):** orchestrator's rotation timer now writes the memo keys hunters
+  actually read (`hunter:target_dir`, `hunter:target_file`, `hunter:bugs_manifest`)
+  instead of unread `tribes-bench:*` variants — hunters now rotate in lockstep with
+  `STAGE3_ROTATION_INTERVAL_S` ([#546](https://github.com/Replikanti/agentis-colonies/issues/546)).
+
 ### Changed
 
 - **Stage 4 Phase 1 chunk 2: vendor 5 new RUSTSEC-anchored planted-bug crates + population-scaling knobs (#544)**.

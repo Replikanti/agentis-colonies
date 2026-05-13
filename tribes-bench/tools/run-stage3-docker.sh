@@ -720,6 +720,10 @@ spawn_containers() {
 # them into BOTH containers via `podman exec ... agentis memo set`.
 # Daemons re-read on each tick. Path values use container-side absolute
 # paths (/run-root/targets/...), since memos are read inside containers.
+# Memo key alignment: hunters read hunter:target_dir + hunter:target_file
+# (seeded by start-colony.sh at bootstrap). We overwrite those keys here
+# so rotation actually changes what hunters target. The bugs_manifest write
+# is a no-op stub for a future verifier-side change (see issue #546).
 rotation_timer() {
     emit_step "starting target-rotation timer (interval=${ROTATION_INTERVAL}s)"
     # Stage 4 Phase 1 chunk 1 (#519) + chunk 2 (#544): if any of
@@ -753,7 +757,7 @@ rotation_timer() {
         extra_targets="$extra_targets J"
     fi
     if [ -z "$extra_targets" ]; then
-        emit_cmd "( phase=0; while true; do sleep $ROTATION_INTERVAL; phase=\$((1 - phase)); if [ \"\$phase\" = \"0\" ]; then td=/run-root/$TARGET_A_DIR_REL; bm=/run-root/$TARGET_A_BUGS_REL; else td=/run-root/$TARGET_B_DIR_REL; bm=/run-root/$TARGET_B_BUGS_REL; fi; printf '%s,%s,%s\\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"\$td\" \"\$bm\" >>$ROTATIONS_CSV; podman exec stage3-laptop agentis memo set tribes-bench:target_dir \"\$td\" >/dev/null 2>&1 || true; podman exec stage3-laptop agentis memo set tribes-bench:bugs_manifest \"\$bm\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set tribes-bench:target_dir \"\$td\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set tribes-bench:bugs_manifest \"\$bm\" >/dev/null 2>&1 || true; done ) >>$RUN_DIR/rotation.log 2>&1 & echo \$! >$RUN_DIR/rotation.pid"
+        emit_cmd "( phase=0; while true; do sleep $ROTATION_INTERVAL; phase=\$((1 - phase)); if [ \"\$phase\" = \"0\" ]; then td=/run-root/$TARGET_A_DIR_REL; bm=/run-root/$TARGET_A_BUGS_REL; else td=/run-root/$TARGET_B_DIR_REL; bm=/run-root/$TARGET_B_BUGS_REL; fi; tf=\$(podman exec stage3-laptop python3 -c \"import json,collections; j=json.load(open('\$bm')); fs=[b.get('file','') for b in j.get('bugs',[])]; c=collections.Counter(fs); print(c.most_common(1)[0][0] if c else 'lib.rs')\" 2>/dev/null || echo lib.rs); printf '%s,%s,%s\\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"\$td\" \"\$bm\" >>$ROTATIONS_CSV; podman exec stage3-laptop agentis memo set hunter:target_dir \"\$td\" >/dev/null 2>&1 || true; podman exec stage3-laptop agentis memo set hunter:target_file \"\$tf\" >/dev/null 2>&1 || true; podman exec stage3-laptop agentis memo set hunter:bugs_manifest \"\$bm\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set hunter:target_dir \"\$td\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set hunter:target_file \"\$tf\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set hunter:bugs_manifest \"\$bm\" >/dev/null 2>&1 || true; done ) >>$RUN_DIR/rotation.log 2>&1 & echo \$! >$RUN_DIR/rotation.pid"
     else
         # Round-robin across A, B, plus whichever of C/D/E/F/G/H/I/J
         # were configured. Each iteration picks the next entry by integer
@@ -764,7 +768,7 @@ rotation_timer() {
         for k in $extra_targets; do
             targets_init="$targets_init; targets+=($k)"
         done
-        emit_cmd "( $targets_init; i=0; n=\${#targets[@]}; while true; do sleep $ROTATION_INTERVAL; k=\${targets[\$((i % n))]}; i=\$((i+1)); td_var=\"TARGET_\${k}_DIR_REL\"; bm_var=\"TARGET_\${k}_BUGS_REL\"; td=/run-root/\${!td_var}; bm=/run-root/\${!bm_var}; printf '%s,%s,%s\\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"\$td\" \"\$bm\" >>$ROTATIONS_CSV; podman exec stage3-laptop agentis memo set tribes-bench:target_dir \"\$td\" >/dev/null 2>&1 || true; podman exec stage3-laptop agentis memo set tribes-bench:bugs_manifest \"\$bm\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set tribes-bench:target_dir \"\$td\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set tribes-bench:bugs_manifest \"\$bm\" >/dev/null 2>&1 || true; done ) >>$RUN_DIR/rotation.log 2>&1 & echo \$! >$RUN_DIR/rotation.pid"
+        emit_cmd "( $targets_init; i=0; n=\${#targets[@]}; while true; do sleep $ROTATION_INTERVAL; k=\${targets[\$((i % n))]}; i=\$((i+1)); td_var=\"TARGET_\${k}_DIR_REL\"; bm_var=\"TARGET_\${k}_BUGS_REL\"; td=/run-root/\${!td_var}; bm=/run-root/\${!bm_var}; tf=\$(podman exec stage3-laptop python3 -c \"import json,collections; j=json.load(open('\$bm')); fs=[b.get('file','') for b in j.get('bugs',[])]; c=collections.Counter(fs); print(c.most_common(1)[0][0] if c else 'lib.rs')\" 2>/dev/null || echo lib.rs); printf '%s,%s,%s\\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"\$td\" \"\$bm\" >>$ROTATIONS_CSV; podman exec stage3-laptop agentis memo set hunter:target_dir \"\$td\" >/dev/null 2>&1 || true; podman exec stage3-laptop agentis memo set hunter:target_file \"\$tf\" >/dev/null 2>&1 || true; podman exec stage3-laptop agentis memo set hunter:bugs_manifest \"\$bm\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set hunter:target_dir \"\$td\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set hunter:target_file \"\$tf\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set hunter:bugs_manifest \"\$bm\" >/dev/null 2>&1 || true; done ) >>$RUN_DIR/rotation.log 2>&1 & echo \$! >$RUN_DIR/rotation.pid"
     fi
 }
 
