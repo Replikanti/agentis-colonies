@@ -427,6 +427,29 @@ assert_contains "per-tribe bootstrap line propagates HUNTER_PROMPT_EVOLUTION_THR
     "$(cat "$ORCH")" \
     "HUNTER_PROMPT_EVOLUTION_THRESHOLD=%s HUNTER_PROMPT_GEN_CAP=%s HUNTER_PROMPT_LEVENSHTEIN_FLOOR=%s"
 
+# 9a-549. #549 burn-rate mitigation: STAGE3_MAX_REPLICAS caps per-tribe
+# replicas so concurrent LLM-call traffic stays under Claude Code
+# flat-rate ceiling. Default 3 yields ~15 concurrent daemons across 5
+# tribes (5 source + 10 replicas) vs take-10's observed 26-daemon peak
+# that exhausted the budget at T+25min. Default dry-run must emit
+# `max replicas per tribe: 3`; an override of STAGE3_MAX_REPLICAS=7 must
+# propagate into the same emit_step line.
+assert_contains "STAGE3_MAX_REPLICAS default surfaces as 3 (#549)" "$OUT" \
+    "max replicas per tribe: 3"
+OUT_MAX_REPLICAS_OVERRIDE="$(STAGE3_WALL_CLOCK_S=1800 \
+       STAGE3_ROTATION_INTERVAL_S=120 \
+       STAGE3_DEATH_THRESHOLD=300 \
+       STAGE3_LAPTOP_PORT=9100 \
+       STAGE3_SERVER_PORT=9101 \
+       STAGE3_LAPTOP_WORKER_PORT=9200 \
+       STAGE3_SERVER_WORKER_PORT=9201 \
+       STAGE3_WORKER_SECRET=testsecret \
+       STAGE3_MAX_REPLICAS=7 \
+       bash "$ORCH" --dry-run 2>&1)"
+assert_contains "STAGE3_MAX_REPLICAS=7 override surfaces in emit_step output (#549)" \
+    "$OUT_MAX_REPLICAS_OVERRIDE" \
+    "max replicas per tribe: 7"
+
 # 9b. #528: STAGE3_DAEMON_CB_PER_TICK env var is documented, has the
 # documented default of 2000, and its hermetic-config emit line is
 # present (so the spawned daemon's per-tick CB budget actually rises
