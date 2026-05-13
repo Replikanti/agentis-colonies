@@ -155,9 +155,11 @@ assert_contains "bootstrap body writes colony.workers bound to peer worker IP:po
 assert_contains "rotation timer with configured interval" "$OUT" \
     "interval=120s"
 assert_contains "rotation timer cycles target_dir" "$OUT" \
-    "tribes-bench:target_dir"
+    "hunter:target_dir"
+assert_contains "rotation timer cycles target_file" "$OUT" \
+    "hunter:target_file"
 assert_contains "rotation timer cycles bugs_manifest" "$OUT" \
-    "tribes-bench:bugs_manifest"
+    "hunter:bugs_manifest"
 assert_contains "rotation toggles smallvec target" "$OUT" \
     "/run-root/targets/stage2/smallvec-v0.6.13"
 assert_contains "rotation toggles bumpalo target" "$OUT" \
