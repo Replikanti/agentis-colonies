@@ -23,6 +23,9 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **chore(rate-limit):** hunter tick interval now overridable via `STAGE3_HUNTER_TICK_MS`
+  env, default 240000 ms (was hardcoded 60000). Extends wall-clock observation window
+  ~4x for emergence experiments within Claude Code flat-rate 5h ceiling ([#552](https://github.com/Replikanti/agentis-colonies/issues/552)).
 - **chore(rate-limit):** orchestrator now caps per-tribe replicas at 3 by default via
   `STAGE3_MAX_REPLICAS` env var. Keeps total concurrent daemon count predictable for
   Claude Code flat-rate budgets ([#549](https://github.com/Replikanti/agentis-colonies/issues/549)).
