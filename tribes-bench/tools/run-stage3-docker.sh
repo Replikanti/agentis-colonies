@@ -81,6 +81,13 @@
 #                              as HUNTER_TICK_MS; each tribe's
 #                              start-colony.sh tick_interval_for()
 #                              hunter branch reads it (fallback 60000).
+#   STAGE3_CLAUDE_CAVEMAN      #554 burn-rate mitigation: when "1",
+#                              passes --tools "" --system-prompt <min>
+#                              --effort low to claude CLI. Strips
+#                              Claude Code session overhead from ~38K
+#                              to ~11K tokens per hunter call. Stays
+#                              on flat-rate (does NOT use --bare which
+#                              would force API key auth). Default "0".
 #   STAGE3_HUNTER_MAX_AGE      #487 follow-up: per-hunter age cap. Each
 #                              hunter increments its own age counter
 #                              (keyed on PPID, no shared-state RMW race)
@@ -325,6 +332,17 @@ STAGE3_MAX_REPLICAS_VAL="${STAGE3_MAX_REPLICAS:-3}"
 # emergence observation longer continuous window within Claude Code
 # flat-rate 5h ceiling.
 STAGE3_HUNTER_TICK_MS_VAL="${STAGE3_HUNTER_TICK_MS:-240000}"
+# #554 burn-rate mitigation: caveman Claude CLI mode. When on, the
+# orchestrator passes --tools "" --system-prompt <minimal> --effort low
+# to claude CLI to strip default Claude Code session overhead from
+# ~38K to ~11K tokens per hunter call. Stays on flat-rate (no --bare).
+# Default off to keep current behaviour as baseline until validation
+# smoke confirms quality parity.
+STAGE3_CLAUDE_CAVEMAN_VAL="${STAGE3_CLAUDE_CAVEMAN:-0}"
+# Minimal system prompt used in caveman mode. ~200 tokens (vs ~38K
+# default Claude Code system prompt). Single-line for shell-escape
+# simplicity through bootstrap.sh + .agentis/config layers.
+STAGE3_CAVEMAN_SYSTEM_PROMPT='You are a Rust unsafe-code static analyzer. Return ONLY valid JSON matching the requested schema. Do not explain or chain-of-thought outside the JSON.'
 # #487 follow-up: per-hunter age mortality. Each hunter has its own
 # monotonic age counter keyed on PPID; suicides via `agentis daemon stop`
 # when age > HUNTER_MAX_AGE. Eliminates the shared-state RMW race the
@@ -430,6 +448,16 @@ for var_name in WALL_CLOCK ROTATION_INTERVAL DEATH_THRESHOLD \
 done
 unset val
 
+# #554 burn-rate mitigation: STAGE3_CLAUDE_CAVEMAN is a boolean toggle
+# (0 or 1), not an integer; validate separately from the positive-int loop.
+case "$STAGE3_CLAUDE_CAVEMAN_VAL" in
+    0|1) ;;
+    *)
+        echo "run-stage3-docker: STAGE3_CLAUDE_CAVEMAN must be 0 or 1 (got '$STAGE3_CLAUDE_CAVEMAN_VAL')" >&2
+        exit 2
+        ;;
+esac
+
 # Convert space-separated tribe lists into arrays (set -u + IFS-default
 # splitting cooperate as long as we don't quote the expansion here).
 # shellcheck disable=SC2206
@@ -503,6 +531,11 @@ emit_step "run dir: $RUN_DIR"
 emit_step "wall clock: ${WALL_CLOCK}s, rotation: ${ROTATION_INTERVAL}s, death threshold: ${DEATH_THRESHOLD}"
 emit_step "max replicas per tribe: $STAGE3_MAX_REPLICAS_VAL"
 emit_step "hunter tick interval: ${STAGE3_HUNTER_TICK_MS_VAL} ms"
+if [ "$STAGE3_CLAUDE_CAVEMAN_VAL" = "1" ]; then
+    emit_step "caveman mode: enabled (--tools '' --system-prompt minimal --effort low)"
+else
+    emit_step "caveman mode: disabled (default Claude CLI overhead)"
+fi
 emit_step "tribes: laptop=[${LAPTOP_TRIBES[*]}] server=[${SERVER_TRIBES[*]}]"
 emit_step "image tag: $IMAGE_TAG"
 emit_step "host ports: laptop=$LAPTOP_PORT server=$SERVER_PORT"
@@ -603,6 +636,18 @@ write_bootstrap() {
             printf '  printf "llm.openai.model = %s\\n"\n' "$OPENAI_MODEL"
             printf '  printf "llm.openai.api_key_env = %s\\n"\n' "$OPENAI_KEY_ENV"
             printf '  printf "llm.openai.timeout_ms = %s\\n"\n' "$OPENAI_TIMEOUT_MS"
+        fi
+        # #554 burn-rate mitigation: when caveman mode is on, inject
+        # llm.command + llm.args to drive the claude CLI with minimal
+        # session overhead (--tools "" --system-prompt <minimal> --effort
+        # low). Strips Claude Code default system prompt + tools manifest
+        # from each hunter call (~38K → ~11K tokens). Stays on flat-rate
+        # OAuth (no --bare). Default off keeps the emitted config
+        # byte-identical to the pre-#554 baseline.
+        if [ "$STAGE3_CLAUDE_CAVEMAN_VAL" = "1" ]; then
+            escaped_caveman_prompt=$(printf '%s' "$STAGE3_CAVEMAN_SYSTEM_PROMPT" | sed 's/"/\\"/g')
+            printf '  printf "llm.command = claude\\n"\n'
+            printf '  printf "llm.args = -p --output-format json --tools \\"\\" --system-prompt \\"%s\\" --effort low\\n"\n' "$escaped_caveman_prompt"
         fi
         printf '  printf "colony.secret = %%s\\n" "$WORKER_SECRET"\n'
         printf '} >> .agentis/config\n'
