@@ -490,7 +490,49 @@ OUT_CAVEMAN_ENABLED="$(STAGE3_WALL_CLOCK_S=1800 \
        bash "$ORCH" --dry-run 2>&1)"
 assert_contains "STAGE3_CLAUDE_CAVEMAN=1 override surfaces in emit_step output (#554)" \
     "$OUT_CAVEMAN_ENABLED" \
-    "caveman mode: enabled (--tools '' --system-prompt minimal --effort low)"
+    "caveman mode: enabled (--tools '' --system-prompt minimal --effort medium)"
+
+# 9a-557. #557 quality-vs-burn tuning: STAGE3_CLAUDE_EFFORT gates the
+# claude CLI --effort flag value when caveman mode is on. Default
+# "medium" must surface in the emit_step transcript; an override to
+# "high" must surface as `--effort high`; an invalid value must exit 2
+# with a helpful stderr message (validated unconditionally so operators
+# learn about misconfig regardless of caveman state).
+OUT_EFFORT_HIGH="$(STAGE3_WALL_CLOCK_S=1800 \
+       STAGE3_ROTATION_INTERVAL_S=120 \
+       STAGE3_DEATH_THRESHOLD=300 \
+       STAGE3_LAPTOP_PORT=9100 \
+       STAGE3_SERVER_PORT=9101 \
+       STAGE3_LAPTOP_WORKER_PORT=9200 \
+       STAGE3_SERVER_WORKER_PORT=9201 \
+       STAGE3_WORKER_SECRET=testsecret \
+       STAGE3_CLAUDE_CAVEMAN=1 \
+       STAGE3_CLAUDE_EFFORT=high \
+       bash "$ORCH" --dry-run 2>&1)"
+assert_contains "STAGE3_CLAUDE_EFFORT=high override surfaces in emit_step output (#557)" \
+    "$OUT_EFFORT_HIGH" \
+    "caveman mode: enabled (--tools '' --system-prompt minimal --effort high)"
+EFFORT_BAD_RC=0
+EFFORT_BAD_OUT="$(STAGE3_WALL_CLOCK_S=1800 \
+       STAGE3_ROTATION_INTERVAL_S=120 \
+       STAGE3_DEATH_THRESHOLD=300 \
+       STAGE3_LAPTOP_PORT=9100 \
+       STAGE3_SERVER_PORT=9101 \
+       STAGE3_LAPTOP_WORKER_PORT=9200 \
+       STAGE3_SERVER_WORKER_PORT=9201 \
+       STAGE3_WORKER_SECRET=testsecret \
+       STAGE3_CLAUDE_EFFORT=garbage \
+       bash "$ORCH" --dry-run 2>&1)" || EFFORT_BAD_RC=$?
+if [ "$EFFORT_BAD_RC" -eq 2 ]; then
+    echo "[PASS] STAGE3_CLAUDE_EFFORT=garbage exits 2 (#557)"
+    PASS=$((PASS + 1))
+else
+    echo "[FAIL] STAGE3_CLAUDE_EFFORT=garbage should exit 2, got $EFFORT_BAD_RC (#557)"
+    FAIL=$((FAIL + 1))
+fi
+assert_contains "STAGE3_CLAUDE_EFFORT=garbage stderr names allowed values (#557)" \
+    "$EFFORT_BAD_OUT" \
+    "STAGE3_CLAUDE_EFFORT must be one of low|medium|high|xhigh|max"
 
 # 9b. #528: STAGE3_DAEMON_CB_PER_TICK env var is documented, has the
 # documented default of 2000, and its hermetic-config emit line is

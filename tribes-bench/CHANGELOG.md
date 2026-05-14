@@ -32,6 +32,9 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **chore(rate-limit):** `STAGE3_CLAUDE_EFFORT` env knob (low|medium|high|xhigh|max, default
+  medium). Tunes claude CLI reasoning depth in caveman mode. Replaces PR #555's hardcoded
+  `--effort low` after take-12 showed 46% verified-hit regression at low ([#557](https://github.com/Replikanti/agentis-colonies/issues/557)).
 - **chore(rate-limit):** `STAGE3_CLAUDE_CAVEMAN` env knob (default off). When set to 1,
   orchestrator passes `--tools "" --system-prompt <minimal> --effort low` to claude CLI,
   stripping default Claude Code session overhead from ~38K to ~11K tokens per hunter call.

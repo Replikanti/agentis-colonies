@@ -88,6 +88,9 @@
 #                              to ~11K tokens per hunter call. Stays
 #                              on flat-rate (does NOT use --bare which
 #                              would force API key auth). Default "0".
+#   STAGE3_CLAUDE_EFFORT       #557: claude CLI reasoning depth when
+#                              caveman mode is on. One of: low, medium,
+#                              high, xhigh, max. Default "medium".
 #   STAGE3_HUNTER_MAX_AGE      #487 follow-up: per-hunter age cap. Each
 #                              hunter increments its own age counter
 #                              (keyed on PPID, no shared-state RMW race)
@@ -339,6 +342,12 @@ STAGE3_HUNTER_TICK_MS_VAL="${STAGE3_HUNTER_TICK_MS:-240000}"
 # Default off to keep current behaviour as baseline until validation
 # smoke confirms quality parity.
 STAGE3_CLAUDE_CAVEMAN_VAL="${STAGE3_CLAUDE_CAVEMAN:-0}"
+# #557 quality-vs-burn tuning: claude CLI --effort flag. Gates chain-of-
+# thought reasoning depth. Default "medium" recovers most of take-11
+# quality at modest burn cost; "low" is most aggressive burn-reduction
+# but regressed verified hits 46% in take-12. Only consulted when
+# STAGE3_CLAUDE_CAVEMAN=1.
+STAGE3_CLAUDE_EFFORT_VAL="${STAGE3_CLAUDE_EFFORT:-medium}"
 # Minimal system prompt used in caveman mode. ~200 tokens (vs ~38K
 # default Claude Code system prompt). Single-line for shell-escape
 # simplicity through bootstrap.sh + .agentis/config layers.
@@ -458,6 +467,16 @@ case "$STAGE3_CLAUDE_CAVEMAN_VAL" in
         ;;
 esac
 
+# #557 quality-vs-burn tuning: validate STAGE3_CLAUDE_EFFORT always (not
+# conditional on caveman) so misconfigurations surface early.
+case "$STAGE3_CLAUDE_EFFORT_VAL" in
+    low|medium|high|xhigh|max) ;;
+    *)
+        echo "run-stage3-docker: STAGE3_CLAUDE_EFFORT must be one of low|medium|high|xhigh|max (got '$STAGE3_CLAUDE_EFFORT_VAL')" >&2
+        exit 2
+        ;;
+esac
+
 # Convert space-separated tribe lists into arrays (set -u + IFS-default
 # splitting cooperate as long as we don't quote the expansion here).
 # shellcheck disable=SC2206
@@ -532,7 +551,7 @@ emit_step "wall clock: ${WALL_CLOCK}s, rotation: ${ROTATION_INTERVAL}s, death th
 emit_step "max replicas per tribe: $STAGE3_MAX_REPLICAS_VAL"
 emit_step "hunter tick interval: ${STAGE3_HUNTER_TICK_MS_VAL} ms"
 if [ "$STAGE3_CLAUDE_CAVEMAN_VAL" = "1" ]; then
-    emit_step "caveman mode: enabled (--tools '' --system-prompt minimal --effort low)"
+    emit_step "caveman mode: enabled (--tools '' --system-prompt minimal --effort $STAGE3_CLAUDE_EFFORT_VAL)"
 else
     emit_step "caveman mode: disabled (default Claude CLI overhead)"
 fi
@@ -647,7 +666,7 @@ write_bootstrap() {
         if [ "$STAGE3_CLAUDE_CAVEMAN_VAL" = "1" ]; then
             escaped_caveman_prompt=$(printf '%s' "$STAGE3_CAVEMAN_SYSTEM_PROMPT" | sed 's/"/\\"/g')
             printf '  printf "llm.command = claude\\n"\n'
-            printf '  printf "llm.args = -p --output-format json --tools \\"\\" --system-prompt \\"%s\\" --effort low\\n"\n' "$escaped_caveman_prompt"
+            printf '  printf "llm.args = -p --output-format json --tools \\"\\" --system-prompt \\"%s\\" --effort %s\\n"\n' "$escaped_caveman_prompt" "$STAGE3_CLAUDE_EFFORT_VAL"
         fi
         printf '  printf "colony.secret = %%s\\n" "$WORKER_SECRET"\n'
         printf '} >> .agentis/config\n'
