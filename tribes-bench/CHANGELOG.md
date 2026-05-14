@@ -16,6 +16,10 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Fixed
 
+- **Fix(emergence):** `STAGE3_DAEMON_HEARTBEAT_MS` env knob (default 1800000 ms = 30min).
+  Replaces hardcoded 600000 ms (10min) which was killing Sonnet caveman daemons mid-tick
+  due to LLM call latency variance. Take-19 had only 2 ticks/daemon over 30min wall;
+  with 30min heartbeat daemons can complete 20+ ticks unimpeded ([#571](https://github.com/Replikanti/agentis-colonies/issues/571)).
 - **Fix(rotation, layer 6):** rotation timer now derives `hunter:bugs_manifest` from
   `raw_bm` (user's STAGE3_TARGET_X_BUGS) via separate case conversion, not from
   `$td` source dir. Fixes stage0-3 where bugs.json lives one dir above crate

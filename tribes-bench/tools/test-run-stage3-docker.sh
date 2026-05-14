@@ -624,6 +624,48 @@ else
     FAIL=$((FAIL + 1))
 fi
 
+# 9a-571. #571 emergence-blocker fix: STAGE3_DAEMON_HEARTBEAT_MS overrides
+# the previously hardcoded 600000 (10min) heartbeat threshold used by the
+# watchdog. Default 1800000 (30min) must surface in the emit_step
+# transcript; an override of STAGE3_DAEMON_HEARTBEAT_MS=3600000 must
+# propagate into the same emit_step line; a non-integer override must be
+# rejected by the positive-int validation block (exit 1 with a helpful
+# stderr naming the offending var).
+assert_contains "STAGE3_DAEMON_HEARTBEAT_MS default surfaces as 1800000 ms (#571)" "$OUT" \
+    "daemon heartbeat: 1800000 ms"
+OUT_HEARTBEAT_OVERRIDE="$(STAGE3_WALL_CLOCK_S=1800 \
+       STAGE3_ROTATION_INTERVAL_S=120 \
+       STAGE3_DEATH_THRESHOLD=300 \
+       STAGE3_LAPTOP_PORT=9100 \
+       STAGE3_SERVER_PORT=9101 \
+       STAGE3_LAPTOP_WORKER_PORT=9200 \
+       STAGE3_SERVER_WORKER_PORT=9201 \
+       STAGE3_WORKER_SECRET=testsecret \
+       STAGE3_DAEMON_HEARTBEAT_MS=3600000 \
+       bash "$ORCH" --dry-run 2>&1)"
+assert_contains "STAGE3_DAEMON_HEARTBEAT_MS=3600000 override surfaces in emit_step output (#571)" \
+    "$OUT_HEARTBEAT_OVERRIDE" \
+    "daemon heartbeat: 3600000 ms"
+HEARTBEAT_BAD_RC=0
+HEARTBEAT_BAD_OUT="$(STAGE3_WALL_CLOCK_S=1800 \
+       STAGE3_ROTATION_INTERVAL_S=120 \
+       STAGE3_DEATH_THRESHOLD=300 \
+       STAGE3_LAPTOP_PORT=9100 \
+       STAGE3_SERVER_PORT=9101 \
+       STAGE3_LAPTOP_WORKER_PORT=9200 \
+       STAGE3_SERVER_WORKER_PORT=9201 \
+       STAGE3_WORKER_SECRET=testsecret \
+       STAGE3_DAEMON_HEARTBEAT_MS=abc \
+       bash "$ORCH" --dry-run 2>&1)" || HEARTBEAT_BAD_RC=$?
+if [ "$HEARTBEAT_BAD_RC" -eq 1 ] && printf '%s' "$HEARTBEAT_BAD_OUT" | grep -Fq -- \
+    "STAGE3_DAEMON_HEARTBEAT_MS_VAL must be a positive integer"; then
+    echo "[PASS] STAGE3_DAEMON_HEARTBEAT_MS=abc exits 1 with helpful stderr (#571)"
+    PASS=$((PASS + 1))
+else
+    echo "[FAIL] STAGE3_DAEMON_HEARTBEAT_MS=abc should exit 1 with helpful stderr, got rc=$HEARTBEAT_BAD_RC stderr=$HEARTBEAT_BAD_OUT (#571)"
+    FAIL=$((FAIL + 1))
+fi
+
 # 9b. #528: STAGE3_DAEMON_CB_PER_TICK env var is documented, has the
 # documented default of 2000, and its hermetic-config emit line is
 # present (so the spawned daemon's per-tick CB budget actually rises
