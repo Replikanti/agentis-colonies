@@ -535,6 +535,61 @@ assert_contains "STAGE3_CLAUDE_EFFORT=garbage stderr names allowed values (#557)
     "$EFFORT_BAD_OUT" \
     "STAGE3_CLAUDE_EFFORT must be one of low|medium|high|xhigh|max"
 
+# 9a-563. #563 cost-reduction: STAGE3_CLAUDE_MODEL injects an explicit
+# --model flag into the claude CLI invocation so Claude Code no longer
+# falls back to the subscription-tier default (Opus on Max 20x). Default
+# "sonnet" must surface in emit_step transcript; aliases (haiku) and
+# explicit model names (claude-sonnet-4-20250514) must round-trip; an
+# unrecognised value must exit 2 with a helpful stderr message.
+assert_contains "STAGE3_CLAUDE_MODEL default surfaces as sonnet (#563)" \
+    "$OUT" \
+    "claude model: sonnet"
+OUT_MODEL_HAIKU="$(STAGE3_WALL_CLOCK_S=1800 \
+       STAGE3_ROTATION_INTERVAL_S=120 \
+       STAGE3_DEATH_THRESHOLD=300 \
+       STAGE3_LAPTOP_PORT=9100 \
+       STAGE3_SERVER_PORT=9101 \
+       STAGE3_LAPTOP_WORKER_PORT=9200 \
+       STAGE3_SERVER_WORKER_PORT=9201 \
+       STAGE3_WORKER_SECRET=testsecret \
+       STAGE3_CLAUDE_MODEL=haiku \
+       bash "$ORCH" --dry-run 2>&1)"
+assert_contains "STAGE3_CLAUDE_MODEL=haiku alias override surfaces (#563)" \
+    "$OUT_MODEL_HAIKU" \
+    "claude model: haiku"
+OUT_MODEL_EXPLICIT="$(STAGE3_WALL_CLOCK_S=1800 \
+       STAGE3_ROTATION_INTERVAL_S=120 \
+       STAGE3_DEATH_THRESHOLD=300 \
+       STAGE3_LAPTOP_PORT=9100 \
+       STAGE3_SERVER_PORT=9101 \
+       STAGE3_LAPTOP_WORKER_PORT=9200 \
+       STAGE3_SERVER_WORKER_PORT=9201 \
+       STAGE3_WORKER_SECRET=testsecret \
+       STAGE3_CLAUDE_MODEL=claude-sonnet-4-20250514 \
+       bash "$ORCH" --dry-run 2>&1)"
+assert_contains "STAGE3_CLAUDE_MODEL explicit name override surfaces (#563)" \
+    "$OUT_MODEL_EXPLICIT" \
+    "claude model: claude-sonnet-4-20250514"
+MODEL_BAD_RC=0
+MODEL_BAD_OUT="$(STAGE3_WALL_CLOCK_S=1800 \
+       STAGE3_ROTATION_INTERVAL_S=120 \
+       STAGE3_DEATH_THRESHOLD=300 \
+       STAGE3_LAPTOP_PORT=9100 \
+       STAGE3_SERVER_PORT=9101 \
+       STAGE3_LAPTOP_WORKER_PORT=9200 \
+       STAGE3_SERVER_WORKER_PORT=9201 \
+       STAGE3_WORKER_SECRET=testsecret \
+       STAGE3_CLAUDE_MODEL=gpt-4 \
+       bash "$ORCH" --dry-run 2>&1)" || MODEL_BAD_RC=$?
+if [ "$MODEL_BAD_RC" -eq 2 ] && printf '%s' "$MODEL_BAD_OUT" | grep -Fq -- \
+    "STAGE3_CLAUDE_MODEL must be alias (sonnet|haiku|opus) or explicit model name"; then
+    echo "[PASS] STAGE3_CLAUDE_MODEL=gpt-4 exits 2 with helpful stderr (#563)"
+    PASS=$((PASS + 1))
+else
+    echo "[FAIL] STAGE3_CLAUDE_MODEL=gpt-4 should exit 2 with helpful stderr, got rc=$MODEL_BAD_RC stderr=$MODEL_BAD_OUT (#563)"
+    FAIL=$((FAIL + 1))
+fi
+
 # 9b. #528: STAGE3_DAEMON_CB_PER_TICK env var is documented, has the
 # documented default of 2000, and its hermetic-config emit line is
 # present (so the spawned daemon's per-tick CB budget actually rises

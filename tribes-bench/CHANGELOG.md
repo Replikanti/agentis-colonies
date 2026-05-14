@@ -28,6 +28,10 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **chore(rate-limit):** `STAGE3_CLAUDE_MODEL` env knob (default `sonnet`). Adds explicit
+  `--model` flag to claude CLI invocation; without it, Claude Code defaults to subscription
+  tier model (Opus on Max 20x), burning ~5x more tokens than necessary. Restores agentis-core's
+  original Sonnet design intent. Operators can opt to Haiku/Opus via override ([#563](https://github.com/Replikanti/agentis-colonies/issues/563)).
 - **chore(rate-limit):** `STAGE3_CLAUDE_CAVEMAN` default flipped from 0 to 1 after take-13
   acceptance smoke confirmed caveman+medium effort is quality-equivalent to baseline (5/5
   stage2 bugs identified) at 52% native cost / 80% output tokens. Operators wanting default
