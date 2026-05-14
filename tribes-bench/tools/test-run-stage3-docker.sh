@@ -473,12 +473,13 @@ assert_contains "STAGE3_HUNTER_TICK_MS=600000 override surfaces in emit_step out
     "hunter tick interval: 600000 ms"
 
 # 9a-554. #554 burn-rate mitigation: STAGE3_CLAUDE_CAVEMAN gates the
-# minimal-overhead claude CLI mode. Default 0 must surface as `caveman
-# mode: disabled`; an override of STAGE3_CLAUDE_CAVEMAN=1 must surface
-# as `caveman mode: enabled (...)`.
-assert_contains "STAGE3_CLAUDE_CAVEMAN default surfaces as disabled (#554)" "$OUT" \
-    "caveman mode: disabled"
-OUT_CAVEMAN_ENABLED="$(STAGE3_WALL_CLOCK_S=1800 \
+# minimal-overhead claude CLI mode. Post-#559 the default is "1", so the
+# default dry-run must surface as `caveman mode: enabled (...)`; an
+# override of STAGE3_CLAUDE_CAVEMAN=0 must surface as `caveman mode:
+# disabled`.
+assert_contains "STAGE3_CLAUDE_CAVEMAN default surfaces as enabled (#559)" "$OUT" \
+    "caveman mode: enabled (--tools '' --system-prompt minimal --effort medium)"
+OUT_CAVEMAN_DISABLED="$(STAGE3_WALL_CLOCK_S=1800 \
        STAGE3_ROTATION_INTERVAL_S=120 \
        STAGE3_DEATH_THRESHOLD=300 \
        STAGE3_LAPTOP_PORT=9100 \
@@ -486,11 +487,11 @@ OUT_CAVEMAN_ENABLED="$(STAGE3_WALL_CLOCK_S=1800 \
        STAGE3_LAPTOP_WORKER_PORT=9200 \
        STAGE3_SERVER_WORKER_PORT=9201 \
        STAGE3_WORKER_SECRET=testsecret \
-       STAGE3_CLAUDE_CAVEMAN=1 \
+       STAGE3_CLAUDE_CAVEMAN=0 \
        bash "$ORCH" --dry-run 2>&1)"
-assert_contains "STAGE3_CLAUDE_CAVEMAN=1 override surfaces in emit_step output (#554)" \
-    "$OUT_CAVEMAN_ENABLED" \
-    "caveman mode: enabled (--tools '' --system-prompt minimal --effort medium)"
+assert_contains "STAGE3_CLAUDE_CAVEMAN=0 override surfaces in emit_step output (#559)" \
+    "$OUT_CAVEMAN_DISABLED" \
+    "caveman mode: disabled"
 
 # 9a-557. #557 quality-vs-burn tuning: STAGE3_CLAUDE_EFFORT gates the
 # claude CLI --effort flag value when caveman mode is on. Default

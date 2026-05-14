@@ -23,6 +23,10 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **chore(rate-limit):** `STAGE3_CLAUDE_CAVEMAN` default flipped from 0 to 1 after take-13
+  acceptance smoke confirmed caveman+medium effort is quality-equivalent to baseline (5/5
+  stage2 bugs identified) at 52% native cost / 80% output tokens. Operators wanting default
+  Claude Code session behavior can opt out via `STAGE3_CLAUDE_CAVEMAN=0` ([#559](https://github.com/Replikanti/agentis-colonies/issues/559)).
 - **chore(rate-limit):** hunter tick interval now overridable via `STAGE3_HUNTER_TICK_MS`
   env, default 240000 ms (was hardcoded 60000). Extends wall-clock observation window
   ~4x for emergence experiments within Claude Code flat-rate 5h ceiling ([#552](https://github.com/Replikanti/agentis-colonies/issues/552)).
