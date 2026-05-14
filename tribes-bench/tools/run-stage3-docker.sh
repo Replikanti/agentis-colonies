@@ -92,6 +92,11 @@
 #   STAGE3_CLAUDE_EFFORT       #557: claude CLI reasoning depth when
 #                              caveman mode is on. One of: low, medium,
 #                              high, xhigh, max. Default "medium".
+#   STAGE3_CLAUDE_MODEL        #563: claude CLI --model flag value.
+#                              Accepts aliases (sonnet, haiku, opus) or
+#                              explicit model names (e.g. claude-sonnet-4-6).
+#                              Default "sonnet" cuts cost ~5x vs subscription-
+#                              tier default (Opus on Max 20x).
 #   STAGE3_HUNTER_MAX_AGE      #487 follow-up: per-hunter age cap. Each
 #                              hunter increments its own age counter
 #                              (keyed on PPID, no shared-state RMW race)
@@ -352,6 +357,11 @@ STAGE3_CLAUDE_CAVEMAN_VAL="${STAGE3_CLAUDE_CAVEMAN:-1}"
 # but regressed verified hits 46% in take-12. Only consulted when
 # STAGE3_CLAUDE_CAVEMAN=1.
 STAGE3_CLAUDE_EFFORT_VAL="${STAGE3_CLAUDE_EFFORT:-medium}"
+# #563 cost-reduction: explicit claude CLI --model flag. Without it
+# Claude Code defaults to subscription tier (Opus on Max 20x), burning
+# ~5x the tokens Sonnet would. Default "sonnet" matches agentis-core's
+# original llm.model = claude-sonnet-4-20250514 design intent.
+STAGE3_CLAUDE_MODEL_VAL="${STAGE3_CLAUDE_MODEL:-sonnet}"
 # Minimal system prompt used in caveman mode. ~200 tokens (vs ~38K
 # default Claude Code system prompt). Single-line for shell-escape
 # simplicity through bootstrap.sh + .agentis/config layers.
@@ -481,6 +491,19 @@ case "$STAGE3_CLAUDE_EFFORT_VAL" in
         ;;
 esac
 
+# #563 cost-reduction: validate STAGE3_CLAUDE_MODEL always so a typo
+# never silently falls through to subscription-tier default. Accept
+# both short aliases (sonnet|haiku|opus) and explicit Anthropic model
+# names (claude-<family>-<rest>).
+case "$STAGE3_CLAUDE_MODEL_VAL" in
+    sonnet|haiku|opus) ;;
+    claude-*-*) ;;
+    *)
+        echo "run-stage3-docker: STAGE3_CLAUDE_MODEL must be alias (sonnet|haiku|opus) or explicit model name like 'claude-sonnet-4-6' (got '$STAGE3_CLAUDE_MODEL_VAL')" >&2
+        exit 2
+        ;;
+esac
+
 # Convert space-separated tribe lists into arrays (set -u + IFS-default
 # splitting cooperate as long as we don't quote the expansion here).
 # shellcheck disable=SC2206
@@ -559,6 +582,7 @@ if [ "$STAGE3_CLAUDE_CAVEMAN_VAL" = "1" ]; then
 else
     emit_step "caveman mode: disabled (default Claude CLI overhead)"
 fi
+emit_step "claude model: $STAGE3_CLAUDE_MODEL_VAL"
 emit_step "tribes: laptop=[${LAPTOP_TRIBES[*]}] server=[${SERVER_TRIBES[*]}]"
 emit_step "image tag: $IMAGE_TAG"
 emit_step "host ports: laptop=$LAPTOP_PORT server=$SERVER_PORT"
@@ -665,12 +689,21 @@ write_bootstrap() {
         # session overhead (--tools "" --system-prompt <minimal> --effort
         # low). Strips Claude Code default system prompt + tools manifest
         # from each hunter call (~38K → ~11K tokens). Stays on flat-rate
-        # OAuth (no --bare). Default off keeps the emitted config
-        # byte-identical to the pre-#554 baseline.
+        # OAuth (no --bare).
+        # #563 cost-reduction: in BOTH caveman states, inject the
+        # explicit --model flag right after --output-format json so the
+        # claude CLI no longer silently falls back to subscription tier
+        # (Opus on Max 20x). The non-caveman branch also emits
+        # llm.command = claude + a minimal llm.args carrying just
+        # -p --output-format json --model <model> so the model knob
+        # applies even when operators opt out of caveman mode.
         if [ "$STAGE3_CLAUDE_CAVEMAN_VAL" = "1" ]; then
             escaped_caveman_prompt=$(printf '%s' "$STAGE3_CAVEMAN_SYSTEM_PROMPT" | sed 's/"/\\"/g')
             printf '  printf "llm.command = claude\\n"\n'
-            printf '  printf "llm.args = -p --output-format json --tools \\"\\" --system-prompt \\"%s\\" --effort %s\\n"\n' "$escaped_caveman_prompt" "$STAGE3_CLAUDE_EFFORT_VAL"
+            printf '  printf "llm.args = -p --output-format json --model %s --tools \\"\\" --system-prompt \\"%s\\" --effort %s\\n"\n' "$STAGE3_CLAUDE_MODEL_VAL" "$escaped_caveman_prompt" "$STAGE3_CLAUDE_EFFORT_VAL"
+        else
+            printf '  printf "llm.command = claude\\n"\n'
+            printf '  printf "llm.args = -p --output-format json --model %s\\n"\n' "$STAGE3_CLAUDE_MODEL_VAL"
         fi
         printf '  printf "colony.secret = %%s\\n" "$WORKER_SECRET"\n'
         printf '} >> .agentis/config\n'
