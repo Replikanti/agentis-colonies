@@ -16,6 +16,11 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Fixed
 
+- **Fix(rotation, layer 3):** stage3/bugs.json bug.file paths stripped of `bumpalo-v3.2.0/`
+  prefix to match the convention used by stage2 and stage4 manifests (relative to target
+  source root, not to stage dir). Unlocks cross-stage rotation for stage3 hunters which were
+  previously hitting 'path outside sandbox' due to doubled prefix
+  ([#565](https://github.com/Replikanti/agentis-colonies/issues/565)).
 - **Fix(rotation, layer 2):** verifier scripts (`verify-finding.sh`, `verify-finding-stage2.sh`)
   now read `BUGS_MANIFEST` and `TARGET_DIR` from `hunter:bugs_manifest` / `hunter:target_dir`
   memos (set by orchestrator rotation timer per #546/#547), with env-var fallback. Enables
