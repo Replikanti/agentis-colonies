@@ -16,6 +16,13 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Fixed
 
+- **Fix(rotation, layer 6):** rotation timer now derives `hunter:bugs_manifest` from
+  `raw_bm` (user's STAGE3_TARGET_X_BUGS) via separate case conversion, not from
+  `$td` source dir. Fixes stage0-3 where bugs.json lives one dir above crate
+  (`targets-stage2/bugs.json` vs source at `targets-stage2/smallvec/...`).
+  Unlocks cross-stage verification — verifier no longer falls back to env when
+  rotated bm path was constructed against wrong location
+  ([#569](https://github.com/Replikanti/agentis-colonies/issues/569)).
 - **Fix(rotation, layer 5):** orchestrator container bootstrap now copies stage4-*
   crate dirs into sandbox alongside stage0/1/2/3, enabling cross-stage rotation
   to stage4 RUSTSEC crates ([#567](https://github.com/Replikanti/agentis-colonies/issues/567)).
