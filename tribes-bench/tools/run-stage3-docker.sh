@@ -97,6 +97,11 @@
 #                              explicit model names (e.g. claude-sonnet-4-6).
 #                              Default "sonnet" cuts cost ~5x vs subscription-
 #                              tier default (Opus on Max 20x).
+#   STAGE3_DAEMON_HEARTBEAT_MS  #571: watchdog heartbeat threshold (ms).
+#                              Daemons not progressing past this duration
+#                              get killed by watchdog. Default 1800000 (30min)
+#                              accommodates slow Sonnet caveman LLM ticks
+#                              (replaces hardcoded 600000 = 10min).
 #   STAGE3_HUNTER_MAX_AGE      #487 follow-up: per-hunter age cap. Each
 #                              hunter increments its own age counter
 #                              (keyed on PPID, no shared-state RMW race)
@@ -362,6 +367,11 @@ STAGE3_CLAUDE_EFFORT_VAL="${STAGE3_CLAUDE_EFFORT:-medium}"
 # ~5x the tokens Sonnet would. Default "sonnet" matches agentis-core's
 # original llm.model = claude-sonnet-4-20250514 design intent.
 STAGE3_CLAUDE_MODEL_VAL="${STAGE3_CLAUDE_MODEL:-sonnet}"
+# #571 emergence-blocker fix: heartbeat default 30min (was hardcoded 10min).
+# Sonnet caveman ticks can take 5+ minutes due to Claude CLI latency variance;
+# 10min watchdog kills daemons mid-tick, capping ticks-per-daemon at ~2 over
+# 30min smoke. 30min gives 5x safety margin.
+STAGE3_DAEMON_HEARTBEAT_MS_VAL="${STAGE3_DAEMON_HEARTBEAT_MS:-1800000}"
 # Minimal system prompt used in caveman mode. ~200 tokens (vs ~38K
 # default Claude Code system prompt). Single-line for shell-escape
 # simplicity through bootstrap.sh + .agentis/config layers.
@@ -460,7 +470,8 @@ for var_name in WALL_CLOCK ROTATION_INTERVAL DEATH_THRESHOLD \
                 OPENAI_TIMEOUT_MS LAPTOP_PORT SERVER_PORT \
                 LAPTOP_WORKER_PORT SERVER_WORKER_PORT \
                 STAGE3_MAX_REPLICAS_VAL \
-                STAGE3_HUNTER_TICK_MS_VAL; do
+                STAGE3_HUNTER_TICK_MS_VAL \
+                STAGE3_DAEMON_HEARTBEAT_MS_VAL; do
     eval "val=\${$var_name}"
     case "$val" in
         ''|*[!0-9]*)
@@ -577,6 +588,7 @@ emit_step "run dir: $RUN_DIR"
 emit_step "wall clock: ${WALL_CLOCK}s, rotation: ${ROTATION_INTERVAL}s, death threshold: ${DEATH_THRESHOLD}"
 emit_step "max replicas per tribe: $STAGE3_MAX_REPLICAS_VAL"
 emit_step "hunter tick interval: ${STAGE3_HUNTER_TICK_MS_VAL} ms"
+emit_step "daemon heartbeat: ${STAGE3_DAEMON_HEARTBEAT_MS_VAL} ms"
 if [ "$STAGE3_CLAUDE_CAVEMAN_VAL" = "1" ]; then
     emit_step "caveman mode: enabled (--tools '' --system-prompt minimal --effort $STAGE3_CLAUDE_EFFORT_VAL)"
 else
@@ -655,7 +667,7 @@ write_bootstrap() {
         printf '  printf "exec.env_passthrough = COLONY_DIR,TRIBE_NAME,TARGET_DIR,TARGET_FILE,BUGS_MANIFEST,VERIFIER_PATH,RUN_DIR,BUG_LEDGER_PATH,INITIAL_CB,BASE_COST,K_MALTHUSIAN,MAX_REPLICAS,REWARD_FULL,REWARD_SUBSEQUENT,LEDGER_REWARD_FULL,LEDGER_REWARD_SUBSEQUENT,DEATH_THRESHOLD,AGENTIS_ROOT,HUNTER_INITIAL_FITNESS,HUNTER_INITIAL_VARIANT,HUNTER_PROMPT_MAX_BYTES,HUNTER_PROMPT_EVOLUTION_THRESHOLD,HUNTER_PROMPT_GEN_CAP,HUNTER_PROMPT_LEVENSHTEIN_FLOOR\\n"\n'
         printf '  printf "experience.enabled = true\\n"\n'
         printf '  printf "telemetry.enabled = true\\n"\n'
-        printf '  printf "daemon.heartbeat_interval_ms = 600000\\n"\n'
+        printf '  printf "daemon.heartbeat_interval_ms = %s\\n"\n' "$STAGE3_DAEMON_HEARTBEAT_MS_VAL"
         # #476: agentis daemon wires colony_peers (which carries
         # colony.secret for replicate AUTH) only when BOTH messaging.distributed
         # is true AND colony.workers is set. Without this, the replicate caller
