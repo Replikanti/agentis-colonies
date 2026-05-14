@@ -16,6 +16,11 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Fixed
 
+- **Fix(rotation, layer 2):** verifier scripts (`verify-finding.sh`, `verify-finding-stage2.sh`)
+  now read `BUGS_MANIFEST` and `TARGET_DIR` from `hunter:bugs_manifest` / `hunter:target_dir`
+  memos (set by orchestrator rotation timer per #546/#547), with env-var fallback. Enables
+  cross-stage rotation — hunters can now hunt stage4 crates and have findings verified
+  against the rotated manifest ([#561](https://github.com/Replikanti/agentis-colonies/issues/561)).
 - **Fix(rotation):** orchestrator's rotation timer now writes the memo keys hunters
   actually read (`hunter:target_dir`, `hunter:target_file`, `hunter:bugs_manifest`)
   instead of unread `tribes-bench:*` variants — hunters now rotate in lockstep with

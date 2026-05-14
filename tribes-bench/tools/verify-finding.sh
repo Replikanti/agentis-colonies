@@ -101,6 +101,20 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 FED_DIR="$(dirname "$SCRIPT_DIR")"
 
 TARGET_DIR="${TARGET_DIR:-$FED_DIR/targets/stage0}"
+
+# #561 rotation layer-2: prefer hunter:bugs_manifest memo (set by orchestrator
+# rotation timer post-#547) over env var. Memo > env > hardcoded default chain.
+# Backward compatible: deployments without memo writes fall back to env behavior.
+ROTATED_MANIFEST=$(agentis memo get hunter:bugs_manifest 2>/dev/null | python3 -c 'import sys,json; data=sys.stdin.read().strip(); print(json.loads(data) if data.startswith(chr(34)) else data)' 2>/dev/null)
+ROTATED_DIR=$(agentis memo get hunter:target_dir 2>/dev/null | python3 -c 'import sys,json; data=sys.stdin.read().strip(); print(json.loads(data) if data.startswith(chr(34)) else data)' 2>/dev/null)
+
+if [ -n "$ROTATED_DIR" ] && [ -d "$ROTATED_DIR" ]; then
+    TARGET_DIR="$ROTATED_DIR"
+fi
+if [ -n "$ROTATED_MANIFEST" ] && [ -f "$ROTATED_MANIFEST" ]; then
+    BUGS_MANIFEST="$ROTATED_MANIFEST"
+fi
+
 BUGS_MANIFEST="${BUGS_MANIFEST:-$TARGET_DIR/bugs.json}"
 
 emit_verdict() {
