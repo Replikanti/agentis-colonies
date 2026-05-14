@@ -87,7 +87,8 @@
 #                              Claude Code session overhead from ~38K
 #                              to ~11K tokens per hunter call. Stays
 #                              on flat-rate (does NOT use --bare which
-#                              would force API key auth). Default "0".
+#                              would force API key auth). Default "1"
+#                              since #559.
 #   STAGE3_CLAUDE_EFFORT       #557: claude CLI reasoning depth when
 #                              caveman mode is on. One of: low, medium,
 #                              high, xhigh, max. Default "medium".
@@ -339,9 +340,12 @@ STAGE3_HUNTER_TICK_MS_VAL="${STAGE3_HUNTER_TICK_MS:-240000}"
 # orchestrator passes --tools "" --system-prompt <minimal> --effort low
 # to claude CLI to strip default Claude Code session overhead from
 # ~38K to ~11K tokens per hunter call. Stays on flat-rate (no --bare).
-# Default off to keep current behaviour as baseline until validation
-# smoke confirms quality parity.
-STAGE3_CLAUDE_CAVEMAN_VAL="${STAGE3_CLAUDE_CAVEMAN:-0}"
+# Default on as of #559 — take-13 acceptance smoke validated caveman+medium
+# (STAGE3_CLAUDE_EFFORT=medium) as quality-equivalent to baseline (5/5 stage2
+# bugs found) at ~52% cost / ~80% output-token reduction. Operators wanting
+# the pre-#559 default Claude Code session behaviour can opt out via
+# STAGE3_CLAUDE_CAVEMAN=0.
+STAGE3_CLAUDE_CAVEMAN_VAL="${STAGE3_CLAUDE_CAVEMAN:-1}"
 # #557 quality-vs-burn tuning: claude CLI --effort flag. Gates chain-of-
 # thought reasoning depth. Default "medium" recovers most of take-11
 # quality at modest burn cost; "low" is most aggressive burn-reduction
