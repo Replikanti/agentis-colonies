@@ -160,10 +160,20 @@ assert_contains "rotation timer cycles target_file" "$OUT" \
     "hunter:target_file"
 assert_contains "rotation timer cycles bugs_manifest" "$OUT" \
     "hunter:bugs_manifest"
-assert_contains "rotation toggles smallvec target" "$OUT" \
-    "/run-root/targets/stage2/smallvec-v0.6.13"
-assert_contains "rotation toggles bumpalo target" "$OUT" \
-    "/run-root/targets/stage3/bumpalo-v3.2.0"
+# #567 layer 4: rotation timer now writes sandbox-relative target_dir
+# (not absolute /run-root/... paths). The raw_td variable carries the
+# original `targets/stage2/...` rel-path and a bash case-statement maps
+# it to the sandbox-relative `targets-stage2/...` form before memo-set.
+assert_contains "rotation toggles smallvec target (raw_td)" "$OUT" \
+    "raw_td=targets/stage2/smallvec-v0.6.13"
+assert_contains "rotation toggles bumpalo target (raw_td)" "$OUT" \
+    "raw_td=targets/stage3/bumpalo-v3.2.0"
+assert_contains "rotation path-conversion case for stage0-3" "$OUT" \
+    'targets/stage[0-3]/*) td=${raw_td/targets\/stage/targets-stage}'
+assert_contains "rotation path-conversion case for stage4" "$OUT" \
+    'targets/stage4-*) td=${raw_td/targets\//targets-}'
+assert_contains "rotation bugs_manifest under sandbox root" "$OUT" \
+    'bm=/run-root/.agentis/sandbox/$td/bugs.json'
 assert_contains "rotation timer execs into laptop container" "$OUT" \
     "podman exec stage3-laptop agentis memo set"
 assert_contains "rotation timer execs into server container" "$OUT" \
@@ -278,9 +288,13 @@ assert_contains "5-target rotation uses modulo round-robin counter" \
 assert_contains "5-target rotation references TARGET_<K>_DIR_REL via indirect expansion" \
     "$OUT_5TARGET" \
     'td_var="TARGET_${k}_DIR_REL"'
-assert_contains "5-target rotation references TARGET_<K>_BUGS_REL via indirect expansion" \
+# #567 layer 4: bm is now derived from $td (sandbox-relative path) rather
+# than from a parallel TARGET_<K>_BUGS_REL env var, so the indirect bm_var
+# expansion is no longer emitted. The bugs.json filename is fixed by
+# convention (bootstrap copies stage*/bugs.json into the sandbox).
+assert_contains "5-target rotation derives bm from sandbox-rel td" \
     "$OUT_5TARGET" \
-    'bm_var="TARGET_${k}_BUGS_REL"'
+    'bm=/run-root/.agentis/sandbox/$td/bugs.json'
 # Concrete /run-root/targets/stage4-* paths only materialise at runtime:
 # the rotation timer's `${!td_var}` indirect expansion is interpreted
 # inside the backgrounded subshell, NOT when the dry-run echoes the

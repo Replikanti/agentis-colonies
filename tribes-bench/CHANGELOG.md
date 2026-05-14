@@ -16,6 +16,13 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Fixed
 
+- **Fix(rotation, layer 5):** orchestrator container bootstrap now copies stage4-*
+  crate dirs into sandbox alongside stage0/1/2/3, enabling cross-stage rotation
+  to stage4 RUSTSEC crates ([#567](https://github.com/Replikanti/agentis-colonies/issues/567)).
+- **Fix(rotation, layer 4):** rotation timer now writes sandbox-relative paths
+  (`targets-stage2/smallvec-v0.6.13`) instead of absolute filesystem paths
+  (`/run-root/targets/stage2/smallvec-v0.6.13`) which were rejected by agentis
+  file_read as 'outside sandbox' ([#567](https://github.com/Replikanti/agentis-colonies/issues/567)).
 - **Fix(rotation, layer 3):** stage3/bugs.json bug.file paths stripped of `bumpalo-v3.2.0/`
   prefix to match the convention used by stage2 and stage4 manifests (relative to target
   source root, not to stage dir). Unlocks cross-stage rotation for stage3 hunters which were

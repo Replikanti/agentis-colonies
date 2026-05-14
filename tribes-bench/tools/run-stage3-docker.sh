@@ -731,6 +731,18 @@ write_bootstrap() {
         printf 'cp -r /run-root/targets/stage3 /run-root/.agentis/sandbox/targets-stage3 2>/dev/null || true\n'
         printf 'cp -r /run-root/targets/stage0 /run-root/.agentis/sandbox/targets-stage0 2>/dev/null || true\n'
         printf 'cp -r /run-root/targets/stage1 /run-root/.agentis/sandbox/targets-stage1 2>/dev/null || true\n'
+        # #567 layer 5: stage4-* crates (vendored #519/#545) are iterated and
+        # copied into the sandbox with their corresponding sandbox-relative
+        # name (targets-stage4-<crate>-v<version>). Without this loop the
+        # stage4 RUSTSEC crates are present under /run-root/targets/ but
+        # missing from /run-root/.agentis/sandbox/, so hunters hit
+        # 'path outside sandbox' on every stage4 rotation tick. The for-loop
+        # is emitted as 4 lines so the inner $d / $name expansions land in
+        # bootstrap.sh literally (rather than expanding here in the host).
+        printf 'for d in /run-root/targets/stage4-*; do\n'
+        printf '    name="$(basename "$d")"\n'
+        printf '    cp -r "$d" "/run-root/.agentis/sandbox/targets-$name" 2>/dev/null || true\n'
+        printf 'done\n'
         # Seed propose-tier confidence (default tier without seed is
         # dormant; tribes-bench Stage 2 convention is propose at 0.7,
         # mirrored from run-stage2.sh line 272). Without this seed the
@@ -891,7 +903,7 @@ rotation_timer() {
         extra_targets="$extra_targets J"
     fi
     if [ -z "$extra_targets" ]; then
-        emit_cmd "( phase=0; while true; do sleep $ROTATION_INTERVAL; phase=\$((1 - phase)); if [ \"\$phase\" = \"0\" ]; then td=/run-root/$TARGET_A_DIR_REL; bm=/run-root/$TARGET_A_BUGS_REL; else td=/run-root/$TARGET_B_DIR_REL; bm=/run-root/$TARGET_B_BUGS_REL; fi; tf=\$(podman exec stage3-laptop python3 -c \"import json,collections; j=json.load(open('\$bm')); fs=[b.get('file','') for b in j.get('bugs',[])]; c=collections.Counter(fs); print(c.most_common(1)[0][0] if c else 'lib.rs')\" 2>/dev/null || echo lib.rs); printf '%s,%s,%s\\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"\$td\" \"\$bm\" >>$ROTATIONS_CSV; podman exec stage3-laptop agentis memo set hunter:target_dir \"\$td\" >/dev/null 2>&1 || true; podman exec stage3-laptop agentis memo set hunter:target_file \"\$tf\" >/dev/null 2>&1 || true; podman exec stage3-laptop agentis memo set hunter:bugs_manifest \"\$bm\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set hunter:target_dir \"\$td\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set hunter:target_file \"\$tf\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set hunter:bugs_manifest \"\$bm\" >/dev/null 2>&1 || true; done ) >>$RUN_DIR/rotation.log 2>&1 & echo \$! >$RUN_DIR/rotation.pid"
+        emit_cmd "( phase=0; while true; do sleep $ROTATION_INTERVAL; phase=\$((1 - phase)); if [ \"\$phase\" = \"0\" ]; then raw_td=$TARGET_A_DIR_REL; else raw_td=$TARGET_B_DIR_REL; fi; case \"\$raw_td\" in targets/stage[0-3]/*) td=\${raw_td/targets\\/stage/targets-stage} ;; targets/stage4-*) td=\${raw_td/targets\\//targets-} ;; *) td=\$raw_td ;; esac; bm=/run-root/.agentis/sandbox/\$td/bugs.json; tf=\$(podman exec stage3-laptop python3 -c \"import json,collections; j=json.load(open('\$bm')); fs=[b.get('file','') for b in j.get('bugs',[])]; c=collections.Counter(fs); print(c.most_common(1)[0][0] if c else 'lib.rs')\" 2>/dev/null || echo lib.rs); printf '%s,%s,%s\\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"\$td\" \"\$bm\" >>$ROTATIONS_CSV; podman exec stage3-laptop agentis memo set hunter:target_dir \"\$td\" >/dev/null 2>&1 || true; podman exec stage3-laptop agentis memo set hunter:target_file \"\$tf\" >/dev/null 2>&1 || true; podman exec stage3-laptop agentis memo set hunter:bugs_manifest \"\$bm\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set hunter:target_dir \"\$td\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set hunter:target_file \"\$tf\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set hunter:bugs_manifest \"\$bm\" >/dev/null 2>&1 || true; done ) >>$RUN_DIR/rotation.log 2>&1 & echo \$! >$RUN_DIR/rotation.pid"
     else
         # Round-robin across A, B, plus whichever of C/D/E/F/G/H/I/J
         # were configured. Each iteration picks the next entry by integer
@@ -902,7 +914,7 @@ rotation_timer() {
         for k in $extra_targets; do
             targets_init="$targets_init; targets+=($k)"
         done
-        emit_cmd "( $targets_init; i=0; n=\${#targets[@]}; while true; do sleep $ROTATION_INTERVAL; k=\${targets[\$((i % n))]}; i=\$((i+1)); td_var=\"TARGET_\${k}_DIR_REL\"; bm_var=\"TARGET_\${k}_BUGS_REL\"; td=/run-root/\${!td_var}; bm=/run-root/\${!bm_var}; tf=\$(podman exec stage3-laptop python3 -c \"import json,collections; j=json.load(open('\$bm')); fs=[b.get('file','') for b in j.get('bugs',[])]; c=collections.Counter(fs); print(c.most_common(1)[0][0] if c else 'lib.rs')\" 2>/dev/null || echo lib.rs); printf '%s,%s,%s\\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"\$td\" \"\$bm\" >>$ROTATIONS_CSV; podman exec stage3-laptop agentis memo set hunter:target_dir \"\$td\" >/dev/null 2>&1 || true; podman exec stage3-laptop agentis memo set hunter:target_file \"\$tf\" >/dev/null 2>&1 || true; podman exec stage3-laptop agentis memo set hunter:bugs_manifest \"\$bm\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set hunter:target_dir \"\$td\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set hunter:target_file \"\$tf\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set hunter:bugs_manifest \"\$bm\" >/dev/null 2>&1 || true; done ) >>$RUN_DIR/rotation.log 2>&1 & echo \$! >$RUN_DIR/rotation.pid"
+        emit_cmd "( $targets_init; i=0; n=\${#targets[@]}; while true; do sleep $ROTATION_INTERVAL; k=\${targets[\$((i % n))]}; i=\$((i+1)); td_var=\"TARGET_\${k}_DIR_REL\"; raw_td=\${!td_var}; case \"\$raw_td\" in targets/stage[0-3]/*) td=\${raw_td/targets\\/stage/targets-stage} ;; targets/stage4-*) td=\${raw_td/targets\\//targets-} ;; *) td=\$raw_td ;; esac; bm=/run-root/.agentis/sandbox/\$td/bugs.json; tf=\$(podman exec stage3-laptop python3 -c \"import json,collections; j=json.load(open('\$bm')); fs=[b.get('file','') for b in j.get('bugs',[])]; c=collections.Counter(fs); print(c.most_common(1)[0][0] if c else 'lib.rs')\" 2>/dev/null || echo lib.rs); printf '%s,%s,%s\\n' \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"\$td\" \"\$bm\" >>$ROTATIONS_CSV; podman exec stage3-laptop agentis memo set hunter:target_dir \"\$td\" >/dev/null 2>&1 || true; podman exec stage3-laptop agentis memo set hunter:target_file \"\$tf\" >/dev/null 2>&1 || true; podman exec stage3-laptop agentis memo set hunter:bugs_manifest \"\$bm\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set hunter:target_dir \"\$td\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set hunter:target_file \"\$tf\" >/dev/null 2>&1 || true; podman exec stage3-server agentis memo set hunter:bugs_manifest \"\$bm\" >/dev/null 2>&1 || true; done ) >>$RUN_DIR/rotation.log 2>&1 & echo \$! >$RUN_DIR/rotation.pid"
     fi
 }
 
