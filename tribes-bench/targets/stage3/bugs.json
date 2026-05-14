@@ -2,7 +2,7 @@
   "stage": "stage3",
   "target_dir": "targets/stage3",
   "bugs": [
-    {"id": "S3-BPOFL-001", "class": "heap_overflow", "file": "bumpalo-v3.2.0/src/lib.rs", "line": 1093, "line_tolerance": 5, "signature": "unsafe fn realloc", "severity": "high", "verifier_test": "test_bp_ofl_001", "rationale": "RUSTSEC-2020-0006: Bump::realloc copied new_size bytes instead of old_size, reading past the source allocation into unknown memory (CVE-2020-35861)"},
-    {"id": "S3-BPUAF-001", "class": "use_after_free", "file": "bumpalo-v3.2.0/src/collections/vec.rs", "line": 1767, "line_tolerance": 5, "signature": "fn into_iter(mut self) -> IntoIter<T>", "severity": "high", "verifier_test": "test_bp_uaf_001", "rationale": "RUSTSEC-2022-0078: Vec::into_iter returns IntoIter<T> with no lifetime tied to the &Bump arena, allowing iteration after the Bump is dropped (use-after-free)"}
+    {"id": "S3-BPOFL-001", "class": "heap_overflow", "file": "src/lib.rs", "line": 1093, "line_tolerance": 5, "signature": "unsafe fn realloc", "severity": "high", "verifier_test": "test_bp_ofl_001", "rationale": "RUSTSEC-2020-0006: Bump::realloc copied new_size bytes instead of old_size, reading past the source allocation into unknown memory (CVE-2020-35861)"},
+    {"id": "S3-BPUAF-001", "class": "use_after_free", "file": "src/collections/vec.rs", "line": 1767, "line_tolerance": 5, "signature": "fn into_iter(mut self) -> IntoIter<T>", "severity": "high", "verifier_test": "test_bp_uaf_001", "rationale": "RUSTSEC-2022-0078: Vec::into_iter returns IntoIter<T> with no lifetime tied to the &Bump arena, allowing iteration after the Bump is dropped (use-after-free)"}
   ]
 }
