@@ -47,6 +47,12 @@
 #                                strategist daemons after ~1 tick once
 #                                the `cb 200000000;` lifetime budget
 #                                drains. Mirrors tribes-bench #528.
+#   REPLAY_DAEMON_HEARTBEAT_MS   Watchdog heartbeat threshold (ms). Default
+#                                1800000 (30min). agentis-core default is
+#                                10000ms which kills daemons mid-prompt
+#                                when LLM round-trip exceeds 10s (Qwen3
+#                                with 21KB candle context takes 5-15s).
+#                                Mirrors tribes-bench #571.
 #   REPLAY_LOOKBACK_WINDOW       Past candles visible to daemon per tick.
 #                                Default: 200
 #   REPLAY_HOLD_PERIOD           Forward candles for PnL settlement.
@@ -146,6 +152,7 @@ OPENAI_MODEL="${REPLAY_OPENAI_MODEL:-qwen/qwen3-coder-30b-a3b-instruct}"
 OPENAI_KEY_ENV="${REPLAY_OPENAI_KEY_ENV:-OPENROUTER_API_KEY}"
 OPENAI_TIMEOUT_MS="${REPLAY_OPENAI_TIMEOUT_MS:-180000}"
 DAEMON_CB_PER_TICK="${REPLAY_DAEMON_CB_PER_TICK:-2000}"
+DAEMON_HEARTBEAT_MS="${REPLAY_DAEMON_HEARTBEAT_MS:-1800000}"
 LOOKBACK_WINDOW="${REPLAY_LOOKBACK_WINDOW:-200}"
 HOLD_PERIOD="${REPLAY_HOLD_PERIOD:-8}"
 IMAGE_TAG="${REPLAY_IMAGE_TAG:-trading-binance-replay:latest}"
@@ -348,6 +355,11 @@ write_bootstrap() {
         printf '  printf "telemetry.enabled = true\\n"\n'
         printf '  printf "llm.backend = %s\\n"\n' "$LLM_BACKEND"
         printf '  printf "daemon.cb_per_tick = %s\\n"\n' "$DAEMON_CB_PER_TICK"
+        # Watchdog heartbeat must exceed worst-case LLM round-trip time
+        # (Qwen3-coder on 21KB candle context: 5-15s observed). Without
+        # this bump, the default 10s heartbeat kills children mid-prompt
+        # before any decision is written. Mirrors tribes-bench #571.
+        printf '  printf "daemon.heartbeat_interval_ms = %s\\n"\n' "$DAEMON_HEARTBEAT_MS"
         # Candle OHLCV strings trip agentis-core's PII heuristic
         # (long numeric runs flagged as phone / credit_card / czech_birth_number).
         # Without this allow, every prompt() returns 'capability denied: pii_transmit'
