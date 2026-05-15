@@ -1,2 +1,5 @@
 trading-binance/
 trading-binance/tools/binance-feed-download.py
+trading-binance/tools/run-replay.sh
+trading-binance/tools/load-candles.py
+trading-binance/tools/Containerfile.replay
