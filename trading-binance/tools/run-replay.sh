@@ -47,6 +47,11 @@
 #                                strategist daemons after ~1 tick once
 #                                the `cb 200000000;` lifetime budget
 #                                drains. Mirrors tribes-bench #528.
+#                                Hermetic memo store also bumped from
+#                                agentis-core default 500 to 50000 in the
+#                                hermetic config to cover ~100 ticks ×
+#                                5 daemons × per-pid decision keys.
+#                                Mirrors tribes-bench #544 chunk 2.
 #   REPLAY_DAEMON_HEARTBEAT_MS   Watchdog heartbeat threshold (ms). Default
 #                                1800000 (30min). agentis-core default is
 #                                10000ms which kills daemons mid-prompt
@@ -365,6 +370,13 @@ write_bootstrap() {
         # Without this allow, every prompt() returns 'capability denied: pii_transmit'
         # and no decisions are ever produced. Closes #581.
         printf '  printf "pii_transmit = allow\\n"\n'
+        # agentis-core default memo cap is 500 keys. Strategist daemons
+        # write strategist:<pid>:decision:tick-<N> per-tick — 5 daemons
+        # × ~100 ticks fills 500 fast and subsequent memo_write calls
+        # fail with 'memo: max 500 keys exceeded'. Settlement path (and
+        # M98 v3 prompt-evolution buffer) both depend on memo, so the
+        # whole experiment degrades. Mirrors tribes-bench #544 chunk 2.
+        printf '  printf "memo.max_keys = 50000\\n"\n'
         if [ "$LLM_BACKEND" = "openai" ]; then
             printf '  printf "llm.openai.endpoint = %s\\n"\n' "$OPENAI_ENDPOINT"
             printf '  printf "llm.openai.model = %s\\n"\n' "$OPENAI_MODEL"
