@@ -135,6 +135,7 @@ if direction == 0:
     verdict = {
         "verified": True,
         "pnl_bps": 0.0,
+        "pnl_bps_x100": 0,
         "classification": "FLAT",
         "entry": None,
         "exit": None,
@@ -169,11 +170,14 @@ pnl_bps = raw_bps - slippage_cost - funding_cost
 
 classification = "WIN" if pnl_bps > 0 else "LOSS"
 
-# Round to 2 decimals (basis-point precision is plenty for telemetry;
-# avoids float-printing noise like 0.30000000000000004).
+# Emit pnl_bps as integer (bps × 100 = pnl_bps_x100) so the .ag side
+# can parse_int() without truncating sub-bp precision to zero. Keeps
+# legacy pnl_bps float field for human-readable telemetry / analyser.
+# Closes #589.
 verdict = {
     "verified": True,
     "pnl_bps": round(pnl_bps, 2),
+    "pnl_bps_x100": int(round(pnl_bps * 100)),
     "classification": classification,
     "entry": round(entry_price, 4),
     "exit": round(exit_price, 4),
