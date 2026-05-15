@@ -39,6 +39,14 @@
 #   REPLAY_OPENAI_KEY_ENV        Env var carrying the LLM API key.
 #                                Default: OPENROUTER_API_KEY
 #   REPLAY_OPENAI_TIMEOUT_MS     Per-request timeout (ms). Default: 180000
+#   REPLAY_DAEMON_CB_PER_TICK    Per-tick CB replenishment written into
+#                                hermetic .agentis/config as
+#                                `daemon.cb_per_tick`. Default 2000 —
+#                                well above the agentis-core default of
+#                                100 which empirically bricks LLM-heavy
+#                                strategist daemons after ~1 tick once
+#                                the `cb 200000000;` lifetime budget
+#                                drains. Mirrors tribes-bench #528.
 #   REPLAY_LOOKBACK_WINDOW       Past candles visible to daemon per tick.
 #                                Default: 200
 #   REPLAY_HOLD_PERIOD           Forward candles for PnL settlement.
@@ -137,6 +145,7 @@ OPENAI_ENDPOINT="${REPLAY_OPENAI_ENDPOINT:-https://openrouter.ai/api/v1/chat/com
 OPENAI_MODEL="${REPLAY_OPENAI_MODEL:-qwen/qwen3-coder-30b-a3b-instruct}"
 OPENAI_KEY_ENV="${REPLAY_OPENAI_KEY_ENV:-OPENROUTER_API_KEY}"
 OPENAI_TIMEOUT_MS="${REPLAY_OPENAI_TIMEOUT_MS:-180000}"
+DAEMON_CB_PER_TICK="${REPLAY_DAEMON_CB_PER_TICK:-2000}"
 LOOKBACK_WINDOW="${REPLAY_LOOKBACK_WINDOW:-200}"
 HOLD_PERIOD="${REPLAY_HOLD_PERIOD:-8}"
 IMAGE_TAG="${REPLAY_IMAGE_TAG:-trading-binance-replay:latest}"
@@ -338,6 +347,7 @@ write_bootstrap() {
         printf '  printf "experience.enabled = true\\n"\n'
         printf '  printf "telemetry.enabled = true\\n"\n'
         printf '  printf "llm.backend = %s\\n"\n' "$LLM_BACKEND"
+        printf '  printf "daemon.cb_per_tick = %s\\n"\n' "$DAEMON_CB_PER_TICK"
         if [ "$LLM_BACKEND" = "openai" ]; then
             printf '  printf "llm.openai.endpoint = %s\\n"\n' "$OPENAI_ENDPOINT"
             printf '  printf "llm.openai.model = %s\\n"\n' "$OPENAI_MODEL"
