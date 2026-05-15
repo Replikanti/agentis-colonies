@@ -225,9 +225,34 @@ rc=$?
 set -e
 assert_exit_code "12: malformed DECISION_JSON exits 4" "$rc" "4"
 
+# --- Test 13: pnl_bps_x100 field present and = int(pnl_bps * 100) ---
+# Closes #589: strategist.ag parse_int truncates float pnl_bps to 0,
+# so verify-trade.sh emits pnl_bps_x100 for precision-preserving int parse.
+PRICES_CSV13="$(mktemp --suffix=.csv)"
+{
+    printf 'open\n'
+    for i in $(seq 0 20); do printf '%s\n' "$(python3 -c "print(60000 + $i * 7)")"; done
+} > "$PRICES_CSV13"
+verdict13="$(DECISION_JSON='{"action":"LONG","size":1.0,"rationale":"r","setup":"s"}' \
+    CONTEXT_TICK=0 HOLD_PERIOD=8 CANDLES_CSV="$PRICES_CSV13" \
+    SLIPPAGE_BPS=0 FUNDING_RATE_BPS=0 \
+    bash "$VERIFIER")"
+field_x100="$(python3 -c 'import sys,json; print(json.loads(sys.argv[1])["pnl_bps_x100"])' "$verdict13")"
+field_float="$(python3 -c 'import sys,json; print(json.loads(sys.argv[1])["pnl_bps"])' "$verdict13")"
+expected="$(python3 -c "print(int(round($field_float * 100)))")"
+if [ "$field_x100" = "$expected" ]; then
+    PASS=$((PASS+1))
+    echo "[PASS] 13b: pnl_bps_x100 = int(pnl_bps*100) (x100=$field_x100 float=$field_float)"
+else
+    FAIL=$((FAIL+1))
+    echo "[FAIL] 13b: pnl_bps_x100 expected $expected got $field_x100"
+fi
+rm -f "$PRICES_CSV13"
+
 # --- Summary ---
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 if [ "$FAIL" -gt 0 ]; then
     exit 1
 fi
+

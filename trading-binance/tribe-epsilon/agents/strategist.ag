@@ -403,11 +403,12 @@ fn tick(reason: string) -> void {
                                 };
                                 let verified_str = to_string(json_get(verdict_raw, "verified"));
                                 let classification = to_string(json_get(verdict_raw, "classification"));
-                                let pnl_bps_str = to_string(json_get(verdict_raw, "pnl_bps"));
-                                let pnl_bps = parse_int(pnl_bps_str);
+                                let pnl_bps_x100_str = to_string(json_get(verdict_raw, "pnl_bps_x100"));
+                                let pnl_bps_x100 = parse_int(pnl_bps_x100_str);
+                                let pnl_bps = pnl_bps_x100 / 100;
                                 if verified_str == "true" {
                                     print("[strategist] settled tick=", settle_tick, " classification=", classification, " pnl_bps=", pnl_bps);
-                                    learn("settle", "tick " + to_string(settle_tick) + " " + classification, "pnl_bps=" + to_string(pnl_bps), "success", ["acted", "trading-binance", _tribe_name, "classification:" + classification]);
+                                    learn("settle", "tick " + to_string(settle_tick) + " " + classification, "pnl_bps=" + to_string(pnl_bps) + " pnl_bps_x100=" + to_string(pnl_bps_x100), "success", ["acted", "trading-binance", _tribe_name, "classification:" + classification]);
 
                                     // Fitness update: reward WIN, penalty
                                     // LOSS, neutral FLAT. Knob env vars are
