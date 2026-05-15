@@ -4,10 +4,14 @@
 
 **Version:** `0.1.0` · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.4.1`
 
-> One-paragraph description of what real-world workflow this federation
-> learns. Replace this stub with the federation's domain identity (the
-> top-level `README.md` and `doc/federation-patterns.md` cross-link to
-> this paragraph).
+Federation that hunts profitable USDT-M perpetual-futures trade setups
+on Binance via five competing tribe colonies, each encoding a
+different Ludvik Turek style trading hypothesis (volume profile /
+fibonacci retracement / market structure / price action / mean
+reversion). Strategy decisions settle through a deterministic PnL
+verifier (`tools/verify-trade.sh`) — no LLM in the verifier path — and
+feed back into per-tribe fitness, M98 v3 prompt evolution, and the
+M2-Malthusian replicate gate borrowed from `tribes-bench/`.
 
 This federation was scaffolded via
 [`tools/new-federation.sh`](../tools/new-federation.sh) and conforms to
@@ -19,13 +23,19 @@ federation shapes.
 
 | Colony | Description | Agents |
 |--------|-------------|--------|
-| [market](./market/) | <!-- TODO: describe what this colony does --> | 0 |
+| [tribe-alpha](./tribe-alpha/) | Volume profile (POC / VAH / VAL) | 1 |
+| [tribe-beta](./tribe-beta/) | Fibonacci retracement (38.2 / 50 / 61.8) | 1 |
+| [tribe-gamma](./tribe-gamma/) | Market structure (BOS / CHoCH) | 1 |
+| [tribe-delta](./tribe-delta/) | Price action (engulfings / pin bars / momentum) | 1 |
+| [tribe-epsilon](./tribe-epsilon/) | Mean reversion (50-bar median, 2-stddev band) | 1 |
 
 ## Quickstart
 
 ```bash
-./install.sh             # interactive setup
-./market/scripts/start-colony.sh
+./install.sh                                  # interactive setup
+python3 tools/binance-feed-download.py --help # PR-2: download historical klines
+bash tools/run-replay.sh --dry-run            # PR-3: orchestrator dry-run
+bash tools/run-replay.sh                      # real run — spawns 5 tribes in podman
 ```
 
 ## Tier contract

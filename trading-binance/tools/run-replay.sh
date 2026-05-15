@@ -9,10 +9,11 @@
 # but adapts the rotation loop into a candle-tick loop instead of a
 # planted-bug-surface rotation.
 #
-# Daemons spawned in PR-3 will look for /run-root/market/agents/strategist.ag
-# which PR-4 ships. Until PR-4 lands the daemons will error out on missing
-# file; this is intentional — PR-3 validates orchestrator wiring + candle
-# loading + telemetry layout, not strategy decisions.
+# Spawns one source strategist daemon per tribe (alpha / beta / gamma /
+# delta / epsilon). Each tribe's M2-Malthusian replicate gate grows the
+# population from there. The deterministic PnL verifier
+# (`tools/verify-trade.sh`) settles trades HOLD_PERIOD candles forward
+# of each decision; no LLM is involved in the verifier path.
 #
 # Env vars (all optional; defaults shown):
 #   REPLAY_DATA_DIR              PR-2 CSV root.
@@ -229,10 +230,19 @@ emit_step "image tag: $IMAGE_TAG"
 emit_step "data dir: $DATA_DIR"
 
 # --- 1) Load candles via helper (single point of file-existence enforcement) ---
+# Candles land in two places:
+#   - $RUN_DIR/candles.csv (host-side; primary copy for the analyser
+#     pipeline that consumes the run dir after the container exits).
+#   - $LAPTOP_DIR/candles.csv (mirror; visible inside the container at
+#     /run-root/candles.csv so the strategist daemons' verifier
+#     invocations resolve via CANDLES_CSV env).
+# The mirror is cp'd (not symlinked) so the container does not need
+# host-path resolution at runtime.
 load_candles() {
     emit_step "loading candle stream via load-candles.py"
     if [ "$DRY_RUN" = "1" ]; then
         emit_cmd "python3 $TOOLS_DIR/load-candles.py --data-dir $DATA_DIR --symbol $SYMBOL --timeframe $TIMEFRAME --start \"$START\" --end \"$END\" > $CANDLES_CSV"
+        emit_cmd "cp $CANDLES_CSV $LAPTOP_DIR/candles.csv"
         return 0
     fi
     if ! python3 "$TOOLS_DIR/load-candles.py" \
@@ -244,8 +254,9 @@ load_candles() {
         echo "run-replay: load-candles.py failed (see $ORCH_LOG)" >&2
         exit 3
     fi
+    cp "$CANDLES_CSV" "$LAPTOP_DIR/candles.csv"
     candle_lines=$(($(wc -l <"$CANDLES_CSV") - 1))
-    emit_step "candles loaded: $candle_lines rows"
+    emit_step "candles loaded: $candle_lines rows (mirrored into laptop-node)"
 }
 
 # --- 2) Build (or reuse) the container image ---
@@ -259,16 +270,23 @@ build_image() {
 # bootstrap.sh that, when executed inside the container, performs:
 #   1. agentis init in /run-root (idempotent)
 #   2. Append llm config lines to .agentis/config
-#   3. Copy market/ agents + tools/ from the read-only /repo bind-mount
+#   3. Copy the 5 tribe colonies + tools/ from the read-only /repo bind-mount
 #      into /run-root
-#   4. Spawn N strategist daemons (one per DAEMON_ID)
+#   4. Spawn one source strategist daemon per tribe (alpha / beta / gamma /
+#      delta / epsilon). Replication grows the population from there per the
+#      M2-Malthusian gate inside strategist.ag.
 #   5. Block until /run-root/.shutdown is touched by the host orchestrator
+#
+# Per-tribe env passthrough: VERIFIER_PATH points at the deterministic
+# PnL verifier shipped in PR-4 (`tools/verify-trade.sh`), CANDLES_CSV at
+# the unified candle stream produced by load-candles.py, and HOLD_PERIOD
+# at the per-trade settlement window.
 write_bootstrap() {
     bootstrap_path="$LAPTOP_DIR/bootstrap.sh"
-    emit_step "generating bootstrap script at $bootstrap_path (daemons=$DAEMON_COUNT)"
+    emit_step "generating bootstrap script at $bootstrap_path (tribes=5 daemon_per_tribe=1)"
 
     if [ "$DRY_RUN" = "1" ]; then
-        emit_cmd "write-bootstrap path=$bootstrap_path daemon_count=$DAEMON_COUNT symbol=$SYMBOL timeframe=$TIMEFRAME"
+        emit_cmd "write-bootstrap path=$bootstrap_path tribes=alpha,beta,gamma,delta,epsilon symbol=$SYMBOL timeframe=$TIMEFRAME"
         return
     fi
 
@@ -279,7 +297,7 @@ write_bootstrap() {
         printf 'cd /run-root\n'
         printf 'agentis init >/dev/null 2>&1 || true\n'
         printf '{\n'
-        printf '  printf "exec.env_passthrough = DAEMON_ID,REPLAY_SYMBOL,REPLAY_TIMEFRAME,REPLAY_LOOKBACK_WINDOW,REPLAY_HOLD_PERIOD,AGENTIS_ROOT\\n"\n'
+        printf '  printf "exec.env_passthrough = DAEMON_ID,TRIBE_NAME,REPLAY_SYMBOL,REPLAY_TIMEFRAME,REPLAY_LOOKBACK_WINDOW,REPLAY_HOLD_PERIOD,HOLD_PERIOD,VERIFIER_PATH,CANDLES_CSV,TRADE_LEDGER,AGENTIS_ROOT\\n"\n'
         printf '  printf "experience.enabled = true\\n"\n'
         printf '  printf "telemetry.enabled = true\\n"\n'
         printf '  printf "llm.backend = %s\\n"\n' "$LLM_BACKEND"
@@ -290,19 +308,20 @@ write_bootstrap() {
             printf '  printf "llm.openai.timeout_ms = %s\\n"\n' "$OPENAI_TIMEOUT_MS"
         fi
         printf '} >> .agentis/config\n'
-        printf 'cp -r /repo/trading-binance/market /run-root/market\n'
+        printf 'for t in alpha beta gamma delta epsilon; do\n'
+        printf '    cp -r /repo/trading-binance/tribe-$t /run-root/tribe-$t\n'
+        printf 'done\n'
         printf 'cp -r /repo/trading-binance/tools /run-root/tools\n'
-        printf 'mkdir -p /run-root/.agentis/sandbox\n'
-        # Seed propose-tier confidence so the strategist daemon ticks past
-        # dormant. PR-4 will own the actual seed convention; for now we
-        # seed a placeholder so PR-3 wiring is observable end-to-end.
-        printf '(cd /run-root && agentis memo set strategist:confidence 0.7 >/dev/null 2>&1 || true)\n'
-        # Spawn N strategist daemons. strategist.ag arrives in PR-4; in PR-3
-        # the daemons will fail to load the missing scenario file, which is
-        # the documented PR-3 outcome.
-        printf 'for i in $(seq 1 %s); do\n' "$DAEMON_COUNT"
-        printf '    DAEMON_ID=$i REPLAY_SYMBOL=%s REPLAY_TIMEFRAME=%s REPLAY_LOOKBACK_WINDOW=%s REPLAY_HOLD_PERIOD=%s AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/market/agents/strategist.ag --colony market --tick-interval %s > /run-root/.agentis/logs/strategist-$i.log 2>&1 &\n' \
-            "$SYMBOL" "$TIMEFRAME" "$LOOKBACK_WINDOW" "$HOLD_PERIOD" "$((INTERVAL_SECONDS * 1000 / SPEED))"
+        printf 'mkdir -p /run-root/.agentis/sandbox /run-root/.agentis/logs\n'
+        # Seed propose-tier confidence for each tribe's strategist daemon.
+        printf 'for t in alpha beta gamma delta epsilon; do\n'
+        printf '    (cd /run-root && agentis memo set strategist:confidence 0.7 >/dev/null 2>&1 || true)\n'
+        printf 'done\n'
+        # Spawn one source strategist daemon per tribe. Each tribe's
+        # M2-Malthusian replicate path grows the population from there.
+        printf 'for t in alpha beta gamma delta epsilon; do\n'
+        printf '    DAEMON_ID=1 TRIBE_NAME=tribe-$t REPLAY_SYMBOL=%s REPLAY_TIMEFRAME=%s REPLAY_LOOKBACK_WINDOW=%s REPLAY_HOLD_PERIOD=%s HOLD_PERIOD=%s VERIFIER_PATH=/run-root/tools/verify-trade.sh CANDLES_CSV=/run-root/candles.csv TRADE_LEDGER=/run-root/trade-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/tribe-$t/agents/strategist.ag --colony tribe-$t --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval %s > /run-root/.agentis/logs/strategist-$t.log 2>&1 &\n' \
+            "$SYMBOL" "$TIMEFRAME" "$LOOKBACK_WINDOW" "$HOLD_PERIOD" "$HOLD_PERIOD" "$((INTERVAL_SECONDS * 1000 / SPEED))"
         printf 'done\n'
         printf 'while [ ! -e /run-root/.shutdown ]; do sleep 5; done\n'
         printf 'exit 0\n'

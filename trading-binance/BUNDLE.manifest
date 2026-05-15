@@ -3,3 +3,9 @@ trading-binance/tools/binance-feed-download.py
 trading-binance/tools/run-replay.sh
 trading-binance/tools/load-candles.py
 trading-binance/tools/Containerfile.replay
+trading-binance/tools/verify-trade.sh
+trading-binance/tribe-alpha/
+trading-binance/tribe-beta/
+trading-binance/tribe-gamma/
+trading-binance/tribe-delta/
+trading-binance/tribe-epsilon/
