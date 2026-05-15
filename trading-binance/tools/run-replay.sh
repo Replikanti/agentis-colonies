@@ -348,6 +348,11 @@ write_bootstrap() {
         printf '  printf "telemetry.enabled = true\\n"\n'
         printf '  printf "llm.backend = %s\\n"\n' "$LLM_BACKEND"
         printf '  printf "daemon.cb_per_tick = %s\\n"\n' "$DAEMON_CB_PER_TICK"
+        # Candle OHLCV strings trip agentis-core's PII heuristic
+        # (long numeric runs flagged as phone / credit_card / czech_birth_number).
+        # Without this allow, every prompt() returns 'capability denied: pii_transmit'
+        # and no decisions are ever produced. Closes #581.
+        printf '  printf "pii_transmit = allow\\n"\n'
         if [ "$LLM_BACKEND" = "openai" ]; then
             printf '  printf "llm.openai.endpoint = %s\\n"\n' "$OPENAI_ENDPOINT"
             printf '  printf "llm.openai.model = %s\\n"\n' "$OPENAI_MODEL"
