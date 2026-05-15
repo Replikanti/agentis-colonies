@@ -33,7 +33,7 @@ federation shapes.
 
 ```bash
 ./install.sh                                  # interactive setup
-bash tools/binance-feed-download.py --help    # PR-2: download historical klines
+python3 tools/binance-feed-download.py --help # PR-2: download historical klines
 bash tools/run-replay.sh --dry-run            # PR-3: orchestrator dry-run
 bash tools/run-replay.sh                      # real run — spawns 5 tribes in podman
 ```
