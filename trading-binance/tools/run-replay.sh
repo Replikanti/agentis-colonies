@@ -50,6 +50,30 @@
 #   REPLAY_IMAGE_TAG             Container image tag built from
 #                                Containerfile.replay.
 #                                Default: trading-binance-replay:latest
+#   REPLAY_STRATEGIST_PROMPT_EVOLUTION_THRESHOLD
+#                                Verified-trade count required before
+#                                strategist.ag rewrites its prompt body
+#                                (M98 v3). Set to a large number (e.g.
+#                                999) to disable prompt evolution for
+#                                the A/B control arm. Default: 3
+#   REPLAY_STRATEGIST_PROMPT_GEN_CAP
+#                                Per-lineage generation cap before
+#                                reset; forward-compat knob threaded
+#                                into the daemon env so the A/B harness
+#                                can pin it. Default: 10
+#   REPLAY_STRATEGIST_PROMPT_MAX_BYTES
+#                                Hard byte cap on rewritten prompt
+#                                bodies; forward-compat. Default: 8192
+#   REPLAY_STRATEGIST_PROMPT_LEVENSHTEIN_FLOOR
+#                                Minimum dissimilarity percent for a
+#                                rewrite to be accepted (else no-op);
+#                                forward-compat. Default: 20
+#   REPLAY_STRATEGIST_FITNESS_REWARD_WIN_PER_BPS
+#                                Fitness reward multiplier per bps of
+#                                positive PnL; forward-compat. Default: 1
+#   REPLAY_STRATEGIST_FITNESS_PENALTY_LOSS_PER_BPS
+#                                Fitness penalty multiplier per bps of
+#                                negative PnL; forward-compat. Default: 1
 #
 # Flags:
 #   --dry-run    Same as REPLAY_DRY_RUN=1.
@@ -116,6 +140,19 @@ OPENAI_TIMEOUT_MS="${REPLAY_OPENAI_TIMEOUT_MS:-180000}"
 LOOKBACK_WINDOW="${REPLAY_LOOKBACK_WINDOW:-200}"
 HOLD_PERIOD="${REPLAY_HOLD_PERIOD:-8}"
 IMAGE_TAG="${REPLAY_IMAGE_TAG:-trading-binance-replay:latest}"
+
+# Strategist M98 v3 prompt-evolution + fitness knobs. The first one
+# (THRESHOLD) is the A/B emergence experiment's primary lever:
+#   control arm  = 999  (evolution effectively off)
+#   treatment arm = 3   (evolution armed, matches strategist.ag default)
+# The rest are forward-compat knobs threaded through to the per-tribe
+# daemon env so the A/B harness has a single surface to pin them on.
+: "${REPLAY_STRATEGIST_PROMPT_EVOLUTION_THRESHOLD:=3}"
+: "${REPLAY_STRATEGIST_PROMPT_GEN_CAP:=10}"
+: "${REPLAY_STRATEGIST_PROMPT_MAX_BYTES:=8192}"
+: "${REPLAY_STRATEGIST_PROMPT_LEVENSHTEIN_FLOOR:=20}"
+: "${REPLAY_STRATEGIST_FITNESS_REWARD_WIN_PER_BPS:=1}"
+: "${REPLAY_STRATEGIST_FITNESS_PENALTY_LOSS_PER_BPS:=1}"
 
 # --- Validation ---
 case "$TIMEFRAME" in
@@ -297,7 +334,7 @@ write_bootstrap() {
         printf 'cd /run-root\n'
         printf 'agentis init >/dev/null 2>&1 || true\n'
         printf '{\n'
-        printf '  printf "exec.env_passthrough = DAEMON_ID,TRIBE_NAME,REPLAY_SYMBOL,REPLAY_TIMEFRAME,REPLAY_LOOKBACK_WINDOW,REPLAY_HOLD_PERIOD,HOLD_PERIOD,VERIFIER_PATH,CANDLES_CSV,TRADE_LEDGER,AGENTIS_ROOT\\n"\n'
+        printf '  printf "exec.env_passthrough = DAEMON_ID,TRIBE_NAME,REPLAY_SYMBOL,REPLAY_TIMEFRAME,REPLAY_LOOKBACK_WINDOW,REPLAY_HOLD_PERIOD,HOLD_PERIOD,VERIFIER_PATH,CANDLES_CSV,TRADE_LEDGER,AGENTIS_ROOT,STRATEGIST_PROMPT_EVOLUTION_THRESHOLD,STRATEGIST_PROMPT_GEN_CAP,STRATEGIST_PROMPT_MAX_BYTES,STRATEGIST_PROMPT_LEVENSHTEIN_FLOOR,STRATEGIST_FITNESS_REWARD_WIN_PER_BPS,STRATEGIST_FITNESS_PENALTY_LOSS_PER_BPS\\n"\n'
         printf '  printf "experience.enabled = true\\n"\n'
         printf '  printf "telemetry.enabled = true\\n"\n'
         printf '  printf "llm.backend = %s\\n"\n' "$LLM_BACKEND"
@@ -320,8 +357,15 @@ write_bootstrap() {
         # Spawn one source strategist daemon per tribe. Each tribe's
         # M2-Malthusian replicate path grows the population from there.
         printf 'for t in alpha beta gamma delta epsilon; do\n'
-        printf '    DAEMON_ID=1 TRIBE_NAME=tribe-$t REPLAY_SYMBOL=%s REPLAY_TIMEFRAME=%s REPLAY_LOOKBACK_WINDOW=%s REPLAY_HOLD_PERIOD=%s HOLD_PERIOD=%s VERIFIER_PATH=/run-root/tools/verify-trade.sh CANDLES_CSV=/run-root/candles.csv TRADE_LEDGER=/run-root/trade-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/tribe-$t/agents/strategist.ag --colony tribe-$t --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval %s > /run-root/.agentis/logs/strategist-$t.log 2>&1 &\n' \
-            "$SYMBOL" "$TIMEFRAME" "$LOOKBACK_WINDOW" "$HOLD_PERIOD" "$HOLD_PERIOD" "$((INTERVAL_SECONDS * 1000 / SPEED))"
+        printf '    DAEMON_ID=1 TRIBE_NAME=tribe-$t REPLAY_SYMBOL=%s REPLAY_TIMEFRAME=%s REPLAY_LOOKBACK_WINDOW=%s REPLAY_HOLD_PERIOD=%s HOLD_PERIOD=%s VERIFIER_PATH=/run-root/tools/verify-trade.sh CANDLES_CSV=/run-root/candles.csv TRADE_LEDGER=/run-root/trade-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis STRATEGIST_PROMPT_EVOLUTION_THRESHOLD=%s STRATEGIST_PROMPT_GEN_CAP=%s STRATEGIST_PROMPT_MAX_BYTES=%s STRATEGIST_PROMPT_LEVENSHTEIN_FLOOR=%s STRATEGIST_FITNESS_REWARD_WIN_PER_BPS=%s STRATEGIST_FITNESS_PENALTY_LOSS_PER_BPS=%s agentis daemon /run-root/tribe-$t/agents/strategist.ag --colony tribe-$t --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval %s > /run-root/.agentis/logs/strategist-$t.log 2>&1 &\n' \
+            "$SYMBOL" "$TIMEFRAME" "$LOOKBACK_WINDOW" "$HOLD_PERIOD" "$HOLD_PERIOD" \
+            "$REPLAY_STRATEGIST_PROMPT_EVOLUTION_THRESHOLD" \
+            "$REPLAY_STRATEGIST_PROMPT_GEN_CAP" \
+            "$REPLAY_STRATEGIST_PROMPT_MAX_BYTES" \
+            "$REPLAY_STRATEGIST_PROMPT_LEVENSHTEIN_FLOOR" \
+            "$REPLAY_STRATEGIST_FITNESS_REWARD_WIN_PER_BPS" \
+            "$REPLAY_STRATEGIST_FITNESS_PENALTY_LOSS_PER_BPS" \
+            "$((INTERVAL_SECONDS * 1000 / SPEED))"
         printf 'done\n'
         printf 'while [ ! -e /run-root/.shutdown ]; do sleep 5; done\n'
         printf 'exit 0\n'
