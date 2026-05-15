@@ -210,7 +210,7 @@ assert_eq "11. load-candles.py rejects continuity-gap fixture with exit 4" \
 assert_contains "12. bootstrap-script generation step emitted" "$OUT" \
     "generating bootstrap script"
 assert_contains "13. container spawn command emitted via echo prefix" "$OUT" \
-    "+ podman run -d --name replay-laptop"
+    "+ podman run -d --replace --name replay-laptop"
 assert_contains "14. run-meta.json write step emitted" "$OUT" \
     "writing run-meta.json"
 assert_contains "15. cleanup trap installed" "$OUT" \

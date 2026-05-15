@@ -403,7 +403,7 @@ write_bootstrap() {
 # --- 4) Spawn the container ---
 spawn_container() {
     emit_step "spawning replay-laptop container (image=$IMAGE_TAG)"
-    emit_cmd "podman run -d --name replay-laptop -e $OPENAI_KEY_ENV=\"\${$OPENAI_KEY_ENV:-}\" -v $REPO_ROOT:/repo:ro -v $LAPTOP_DIR:/run-root:rw $IMAGE_TAG /run-root/bootstrap.sh"
+    emit_cmd "podman run -d --replace --name replay-laptop -e $OPENAI_KEY_ENV=\"\${$OPENAI_KEY_ENV:-}\" -v $REPO_ROOT:/repo:ro -v $LAPTOP_DIR:/run-root:rw $IMAGE_TAG /run-root/bootstrap.sh"
 }
 
 # --- 5) Cleanup trap ---
