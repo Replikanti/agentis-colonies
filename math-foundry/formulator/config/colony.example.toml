@@ -1,0 +1,23 @@
+# Formulator Colony Configuration
+#
+# Part of the Math Foundry federation. The formulator colony reads the
+# noticer's surprise record and crafts a competition-style problem
+# whose answer IS the discovered value. Copy to colony.toml and edit
+# for your environment.
+
+[colony]
+name = "formulator"
+tick_interval_ms = 60000
+
+# math-foundry is a non-forge federation (ADR-0003).
+[forge]
+type = "none"
+
+[llm]
+backend = "cli"
+
+[[agents]]
+name = "formulator"
+source = "agents/formulator.ag"
+cb_budget = 200000000
+tick_interval_ms = 60000

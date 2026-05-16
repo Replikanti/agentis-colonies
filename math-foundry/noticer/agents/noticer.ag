@@ -1,0 +1,122 @@
+// noticer.ag -- Math Foundry noticer: reads the explorer's code +
+// stdout, asks the LLM whether anything in the output is surprising or
+// non-obvious, and publishes a structured surprise record for the
+// formulator to pick up.
+//
+// Per-tick behaviour:
+//   1. listen("math-foundry:exploration_done") triggers the agent; the
+//      payload carries the explorer's exploration record (the agent
+//      also reads the latest exploration from memo for robustness).
+//   2. Build the NOTICE_PROMPT and call prompt() -> Surprise JSON.
+//   3. Persist the surprise verdict to memo
+//      (`noticer:<pid>:surprise:tick-N`) and emit
+//      "math-foundry:notice_done" so the formulator can pick up.
+//   4. Light fitness tracking; no replication for noticer in Phase 1.
+//
+// Run as daemon: agentis daemon agents/noticer.ag --colony noticer
+// Requires: exec capability, messaging capability.
+
+cb 200000000;
+
+type Surprise {
+    surprise_found: bool,
+    surprise_description: string,
+    specific_value: string,
+    why_surprising: string,
+    confidence_in_surprise: float
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("noticer:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    };
+    return 0.0;
+}
+
+fn colony_name() -> string {
+    let _cn = try { exec sh "printenv COLONY_NAME"; } catch e { ""; };
+    if len(_cn) > 0 {
+        return _cn;
+    };
+    return "noticer";
+}
+
+fn _seed_prompt() -> string {
+    return "You ran a computational exploration. The user-supplied input below carries the exploration GOAL, the Python CODE that was run, and the OUTPUT printed to stdout. What is SURPRISING or NON-OBVIOUS? Look for specific small numbers that don't match closed form, pattern breaks, numerical coincidences. If the output just confirms a classical formula, mark boring (surprise_found=false). Output ONLY valid JSON: {\"surprise_found\": true|false, \"surprise_description\": \"...\", \"specific_value\": \"...\", \"why_surprising\": \"...\", \"confidence_in_surprise\": 0.0-1.0}.";
+}
+
+fn tick(reason: string) -> void {
+    let _ = reason;
+    let _colony_name = colony_name();
+    let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
+    let conf = get_confidence();
+    print("[noticer] tick conf=", conf);
+
+    let tick_idx_str = recall_latest("replay:current_tick");
+    let tick_idx = if len(tick_idx_str) > 0 { parse_int(tick_idx_str); } else { -1; };
+    if tick_idx < 0 {
+        print("[noticer] no foundry tick yet");
+        return;
+    };
+
+    // Read the explorer's latest output from memo. The orchestrator
+    // exposes the producing explorer pid via `replay:current_explorer_pid`.
+    let explorer_pid = recall_latest("replay:current_explorer_pid");
+    if len(explorer_pid) == 0 {
+        print("[noticer] no explorer pid for tick=", tick_idx);
+        return;
+    };
+    let code = recall_latest("explorer:" + explorer_pid + ":code:tick-" + to_string(tick_idx));
+    let output = recall_latest("explorer:" + explorer_pid + ":output:tick-" + to_string(tick_idx));
+    let expl_goal = recall_latest("explorer:" + explorer_pid + ":goal:tick-" + to_string(tick_idx));
+    if len(output) == 0 {
+        print("[noticer] no explorer output for tick=", tick_idx);
+        return;
+    };
+
+    let ctx = "GOAL: " + expl_goal + "\nCODE: " + code + "\nOUTPUT: " + output + "\n";
+
+    let surprise = prompt(_seed_prompt(), ctx) -> Surprise;
+
+    let my_tier = tier("noticer");
+    if my_tier == "autonomous" {
+        learn("notice", "tick " + to_string(tick_idx), surprise.surprise_description, "partial", ["acted", "math-foundry"]);
+    } else {
+        if my_tier == "review-gated" {
+            learn("notice", "tick " + to_string(tick_idx), surprise.surprise_description, "partial", ["review-gated", "math-foundry"]);
+        } else {
+            if my_tier == "propose" {
+                // Persist surprise verdict + downstream pointers.
+                let conf_str = to_string(surprise.confidence_in_surprise);
+                let surprise_found_str = if surprise.surprise_found { "true"; } else { "false"; };
+                let surprise_json = "{\"surprise_found\":" + surprise_found_str
+                                  + ",\"surprise_description\":\"" + surprise.surprise_description
+                                  + "\",\"specific_value\":\"" + surprise.specific_value
+                                  + "\",\"why_surprising\":\"" + surprise.why_surprising
+                                  + "\",\"confidence_in_surprise\":" + conf_str + "}";
+                memo_write("noticer:" + _self_pid + ":surprise:tick-" + to_string(tick_idx), surprise_json);
+                memo_write("noticer:" + _self_pid + ":surprise_found:tick-" + to_string(tick_idx), surprise_found_str);
+                memo_write("replay:current_noticer_pid", _self_pid);
+                emit("math-foundry:notice_done", surprise);
+
+                // Light fitness tracking: +1 if surprise found, 0 otherwise.
+                if len(_self_pid) > 0 {
+                    let fit_pre = parse_int(recall_latest("noticer:" + _self_pid + ":fitness"));
+                    let fit_delta = if surprise.surprise_found { 1; } else { 0; };
+                    memo_write("noticer:" + _self_pid + ":fitness", to_string(fit_pre + fit_delta));
+                };
+
+                learn("notice", "tick " + to_string(tick_idx), "surprise_found=" + surprise_found_str, "success", ["emitted", "math-foundry"]);
+            } else {
+                print("[noticer] observing (tier:", my_tier, ") surprise_found=", surprise.surprise_found);
+                learn("notice", "tick " + to_string(tick_idx), surprise.surprise_description, "partial", ["observed", "math-foundry"]);
+            };
+        };
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("noticer:last_check", now);
+    };
+}

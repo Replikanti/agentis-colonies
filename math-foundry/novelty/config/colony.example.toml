@@ -1,0 +1,24 @@
+# Novelty Colony Configuration
+#
+# Part of the Math Foundry federation. The novelty colony reads the
+# verifier's ACCEPT-ed problem and runs a strict NOVELTY_PROMPT that
+# defaults to NOT_NOVEL unless the answer requires genuine computation
+# and is not a famous constant. Copy to colony.toml and edit for your
+# environment.
+
+[colony]
+name = "novelty"
+tick_interval_ms = 60000
+
+# math-foundry is a non-forge federation (ADR-0003).
+[forge]
+type = "none"
+
+[llm]
+backend = "cli"
+
+[[agents]]
+name = "novelty"
+source = "agents/novelty.ag"
+cb_budget = 200000000
+tick_interval_ms = 60000

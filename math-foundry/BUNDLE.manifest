@@ -1,0 +1,12 @@
+math-foundry/
+math-foundry/tools/run-foundry.sh
+math-foundry/tools/Containerfile.foundry
+math-foundry/tools/fetch-papers.py
+math-foundry/tools/test-run-foundry.sh
+math-foundry/tools/test-fetch-papers.py
+math-foundry/data/
+math-foundry/explorer/
+math-foundry/noticer/
+math-foundry/formulator/
+math-foundry/verifier/
+math-foundry/novelty/

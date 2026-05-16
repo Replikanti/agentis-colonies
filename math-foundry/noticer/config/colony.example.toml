@@ -1,0 +1,23 @@
+# Noticer Colony Configuration
+#
+# Part of the Math Foundry federation. The noticer colony consumes the
+# explorer's (code, stdout) pair and asks the LLM whether anything in
+# the output is surprising or non-obvious. Copy to colony.toml and edit
+# for your environment.
+
+[colony]
+name = "noticer"
+tick_interval_ms = 60000
+
+# math-foundry is a non-forge federation (ADR-0003).
+[forge]
+type = "none"
+
+[llm]
+backend = "cli"
+
+[[agents]]
+name = "noticer"
+source = "agents/noticer.ag"
+cb_budget = 200000000
+tick_interval_ms = 60000
