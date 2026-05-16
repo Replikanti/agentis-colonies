@@ -1,0 +1,23 @@
+# Verifier Colony Configuration
+#
+# Part of the Math Foundry federation. The verifier colony independently
+# solves the formulator's problem (without seeing the original code) via
+# a SOLVER_PROMPT, then runs a VERIFIER_PROMPT to ACCEPT / REJECT the
+# stated answer. Copy to colony.toml and edit for your environment.
+
+[colony]
+name = "verifier"
+tick_interval_ms = 60000
+
+# math-foundry is a non-forge federation (ADR-0003).
+[forge]
+type = "none"
+
+[llm]
+backend = "cli"
+
+[[agents]]
+name = "verifier"
+source = "agents/verifier.ag"
+cb_budget = 200000000
+tick_interval_ms = 60000

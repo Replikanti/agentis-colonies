@@ -1,0 +1,481 @@
+// explorer.ag -- Math Foundry explorer: drives compute-first novelty
+// discovery by emitting Python code that runs in the hermetic sandbox
+// via `exec sh`. The agent picks two papers from a cached arxiv corpus
+// plus a math topic, has the LLM craft a Python exploration script,
+// executes the script through `exec sh "python3 -c '<code>'"`, captures
+// stdout, and writes the resulting (code, output) pair to memo for the
+// downstream noticer / formulator / verifier / novelty chain.
+//
+// Per-tick behaviour:
+//   1. Read foundry tick state (`replay:current_tick`,
+//      `replay:current_topic`, `replay:current_paper_a/b`) seeded by
+//      `tools/run-foundry.sh` before each tick.
+//   2. Build the COMPUTE_PROMPT with the topic + paper-pair context and
+//      call prompt() -> Exploration JSON.
+//   3. Execute the produced Python code in the sandbox via `exec sh`
+//      with a temp file; capture stdout.
+//   4. Persist code + output to memo (`explorer:<pid>:code:tick-N`,
+//      `explorer:<pid>:output:tick-N`) and append to the per-run
+//      discovery ledger.
+//   5. Emit "math-foundry:exploration_done" so the noticer can pick up
+//      the produced output without polling.
+//   6. Settle the novelty verdict for tick - HOLD_PERIOD by reading
+//      `novelty:final_verdict:<pid>:tick-<N>` from memo. Update fitness:
+//      +2 NOVEL, +0.5 BORDERLINE, -1 NOT_NOVEL, -0.5 REJECT (#591 drift
+//      bug applies — known Phase 1 limitation per ADR-0008).
+//   7. M98 v3 prompt evolution: when the settled_explorations buffer
+//      accumulates K NOT_NOVEL outcomes, rewrite the exploration prompt
+//      via meta-prompt + Levenshtein floor + schema-sanity ping.
+//   8. M2-Malthusian replicate when fitness > threshold AND tribe pool
+//      sufficient AND colony population < cap.
+//
+// Run as daemon: agentis daemon agents/explorer.ag --colony explorer
+// Requires: exec capability, replication capability, FOUNDRY_PAPER_CORPUS +
+// HOLD_PERIOD + DISCOVERY_LEDGER env (set by tools/run-foundry.sh
+// bootstrap).
+
+cb 200000000;
+
+type Exploration {
+    exploration_goal: string,
+    code: string,
+    expected_output_format: string
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("explorer:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    };
+    return 0.0;
+}
+
+fn colony_name() -> string {
+    let _cn = try { exec sh "printenv COLONY_NAME"; } catch e { ""; };
+    if len(_cn) > 0 {
+        return _cn;
+    };
+    return "explorer";
+}
+
+fn now_ms_via_shell() -> int {
+    let s = try { exec sh "date +%s%3N"; } catch e { "0"; };
+    return parse_int(s);
+}
+
+// Seed exploration prompt. Mirrors strategist.ag _seed_prompt_for_setup
+// shape; the LLM gets the topic + two arxiv abstracts and must emit a
+// Python script. M98 v3 rewrites this body once K NOT_NOVEL outcomes
+// accumulate.
+fn _seed_prompt() -> string {
+    return "You are a research mathematician doing COMPUTATIONAL EXPLORATION. The user-supplied input below carries the topic label, topic description, compute hints, and two arxiv paper abstracts (Paper A and Paper B). Your task: write a Python script that EXPLORES this topic computationally. Define mathematical objects, COMPUTE specific properties for several cases, PRINT results with clear labels. The goal is to DISCOVER something -- coincidence, unexpected value, pattern break. Available stdlib: math, itertools, fractions, functools, collections, random. Available third-party: sympy, numpy, networkx. DO NOT use file I/O, network, subprocess. Pure computation only. Output ONLY valid JSON: {\"exploration_goal\": \"...\", \"code\": \"...\", \"expected_output_format\": \"...\"}.";
+}
+
+fn _variant_overlay_suffix() -> string {
+    let variant = recall_latest("explorer:prompt_variant");
+    if len(variant) > 0 {
+        return "\n\n[Replica focus: prompt variant '" + variant + "' -- lean into that interpretation when reading the topic + paper-pair context below.]";
+    };
+    return "";
+}
+
+// #520 M98 v3 PR 3/3: hash-pointer extraction over the M106 wire.
+fn _extract_pp_hash(variant_tag: string) -> string {
+    if len(variant_tag) < 67 { return ""; };
+    if substring(variant_tag, 0, 3) != "pp:" { return ""; };
+    let hex = substring(variant_tag, 3, 67);
+    // colony-lint: safe-exec-concat
+    let cmd = "printf '%s' " + shell_escape(hex) + " | tr -d '0-9a-f' | wc -c";
+    let leftover = try { exec sh cmd; } catch e { "1"; };
+    if parse_int(leftover) != 0 { return ""; };
+    return hex;
+}
+
+// Parent pre-replicate hash-pointer wrap. Same shape as strategist.ag.
+fn _publish_prompt_body_and_wrap_variant(self_pid: string, variant_tag: string) -> string {
+    if len(self_pid) == 0 { return variant_tag; };
+    let body = recall_latest("explorer:" + self_pid + ":exploration_prompt");
+    if len(body) == 0 { return variant_tag; };
+    // colony-lint: safe-exec-concat
+    let sha_cmd = "python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.argv[1].encode(\"utf-8\")).hexdigest())' " + shell_escape(body);
+    let h = try { exec sh sha_cmd; } catch e { ""; };
+    if len(h) != 64 { return variant_tag; };
+    let body_key = "explorer:prompt_body:" + h;
+    let existing = recall_latest(body_key);
+    if len(existing) == 0 { memo_write(body_key, body); };
+    return "pp:" + h + "|" + variant_tag;
+}
+
+// Levenshtein ratio in integer percent (0..100).
+fn _levenshtein_ratio_pct(a: string, b: string) -> int {
+    if len(a) == 0 {
+        if len(b) == 0 { return 100; };
+        return 0;
+    };
+    if len(b) == 0 { return 0; };
+    if a == b { return 100; };
+    let max_bytes_env = try { exec sh "printenv EXPLORER_PROMPT_MAX_BYTES"; } catch e { ""; };
+    let max_bytes = if len(max_bytes_env) > 0 { parse_int(max_bytes_env); } else { 4096; };
+    let max_bytes_eff = if max_bytes <= 0 { 4096; } else { max_bytes; };
+    let a_clamped = if len(a) > max_bytes_eff { substring(a, 0, max_bytes_eff); } else { a; };
+    let b_clamped = if len(b) > max_bytes_eff { substring(b, 0, max_bytes_eff); } else { b; };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys\nA=sys.argv[1]\nB=sys.argv[2]\nif A==B:\n print(100); sys.exit(0)\nn=len(A); m=len(B)\nprev=list(range(m+1))\nfor i in range(1,n+1):\n cur=[i]+[0]*m\n for j in range(1,m+1):\n  c=0 if A[i-1]==B[j-1] else 1\n  cur[j]=min(prev[j]+1,cur[j-1]+1,prev[j-1]+c)\n prev=cur\nd=prev[m]\nmx=max(n,m)\nprint(int(round((1.0 - d/mx)*100)))' " + shell_escape(a_clamped) + " " + shell_escape(b_clamped);
+    let out = try { exec sh cmd; } catch e { "0"; };
+    let r = parse_int(out);
+    if r < 0 { return 0; };
+    if r > 100 { return 100; };
+    return r;
+}
+
+// Append a settled exploration outcome to the per-pid rolling buffer.
+fn _push_settled_exploration(self_pid: string, verdict: string) -> int {
+    let buf_key = "explorer:" + self_pid + ":settled_explorations";
+    let buf_raw = recall_latest(buf_key);
+    let thr_env = try { exec sh "printenv EXPLORER_PROMPT_EVOLUTION_THRESHOLD"; } catch e { ""; };
+    let thr = if len(thr_env) > 0 { parse_int(thr_env); } else { 3; };
+    let thr_eff = if thr <= 0 { 3; } else { thr; };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,json\nraw=sys.argv[1]\nv=sys.argv[2]\nk=int(sys.argv[3])\ntry:\n arr=json.loads(raw) if raw else []\n if not isinstance(arr,list): arr=[]\nexcept Exception:\n arr=[]\narr.append({\"verdict\":v})\nif len(arr)>k: arr=arr[-k:]\nprint(json.dumps(arr,separators=(\",\",\":\")))' " + shell_escape(buf_raw) + " " + shell_escape(verdict) + " " + shell_escape(to_string(thr_eff));
+    let new_buf = try { exec sh cmd; } catch e { "[]"; };
+    memo_write(buf_key, new_buf);
+    // colony-lint: safe-exec-concat
+    let count_cmd = "python3 -c 'import sys,json\ntry: a=json.loads(sys.argv[1])\nexcept Exception: a=[]\nprint(len(a) if isinstance(a,list) else 0)' " + shell_escape(new_buf);
+    let n = try { exec sh count_cmd; } catch e { "0"; };
+    return parse_int(n);
+}
+
+// Count NOT_NOVEL entries in the buffer.
+fn _count_not_novel(self_pid: string) -> int {
+    let buf_key = "explorer:" + self_pid + ":settled_explorations";
+    let buf_raw = recall_latest(buf_key);
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,json\ntry: a=json.loads(sys.argv[1])\nexcept Exception: a=[]\nprint(sum(1 for r in a if isinstance(r,dict) and r.get(\"verdict\")==\"NOT_NOVEL\"))' " + shell_escape(buf_raw);
+    let n = try { exec sh cmd; } catch e { "0"; };
+    return parse_int(n);
+}
+
+// Schema-sanity ping: dry-run the candidate prompt against a tiny
+// fixture topic + paper pair and verify it produces an Exploration-
+// shaped response.
+fn _schema_sanity_ok(candidate_prompt: string) -> bool {
+    let fixture = "TOPIC: number_theory (sample)\nPAPER A (1234.5678): Fixture\nABSTRACT: a\nPAPER B (2345.6789): Fixture\nABSTRACT: b\n";
+    let ok = try {
+        let probe = prompt(candidate_prompt + _variant_overlay_suffix(), fixture) -> Exploration;
+        if len(probe.exploration_goal) == 0 { false; }
+        else { if len(probe.code) == 0 { false; }
+        else { true; }; };
+    } catch e {
+        false;
+    };
+    return ok;
+}
+
+// Meta-prompt rewrite + anti-degeneracy guards. Mirrors strategist.ag.
+fn _evolve_exploration_prompt(self_pid: string, prompt_text: string) -> string {
+    let buf_key = "explorer:" + self_pid + ":settled_explorations";
+    let buffer_json = recall_latest(buf_key);
+    let gen_key = "explorer:" + self_pid + ":exploration_generation";
+    let gen_str = recall_latest(gen_key);
+    let gen = if len(gen_str) > 0 { parse_int(gen_str); } else { 0; };
+    let gen_cap_env = try { exec sh "printenv EXPLORER_PROMPT_GEN_CAP"; } catch e { ""; };
+    let gen_cap = if len(gen_cap_env) > 0 { parse_int(gen_cap_env); } else { 10; };
+    let gen_cap_eff = if gen_cap <= 0 { 10; } else { gen_cap; };
+    let max_bytes_env = try { exec sh "printenv EXPLORER_PROMPT_MAX_BYTES"; } catch e { ""; };
+    let max_bytes = if len(max_bytes_env) > 0 { parse_int(max_bytes_env); } else { 4096; };
+    let max_bytes_eff = if max_bytes <= 0 { 4096; } else { max_bytes; };
+    let lev_floor_env = try { exec sh "printenv EXPLORER_PROMPT_LEVENSHTEIN_FLOOR"; } catch e { ""; };
+    let lev_floor = if len(lev_floor_env) > 0 { parse_int(lev_floor_env); } else { 5; };
+    let lev_floor_eff = if lev_floor < 0 { 5; } else { lev_floor; };
+    let prompt_key = "explorer:" + self_pid + ":exploration_prompt";
+
+    let meta = "Rewrite the exploration prompt below given these settled-exploration outcomes. "
+             + "Keep the JSON output schema identical (return Exploration{exploration_goal, code, expected_output_format}). "
+             + "Refine the exploration goal section to lean away from goals that produced NOT_NOVEL classifications and toward goals that produced NOVEL classifications. "
+             + "Old prompt: <"
+             + prompt_text + ">. Settled explorations: <" + buffer_json + ">.";
+    let new_prompt_raw = try { prompt(meta, "") -> string; } catch e { ""; };
+    let new_prompt = if len(new_prompt_raw) > max_bytes_eff { substring(new_prompt_raw, 0, max_bytes_eff); } else { new_prompt_raw; };
+
+    if gen >= gen_cap_eff {
+        let seed = _seed_prompt();
+        let seed_clamped = if len(seed) > max_bytes_eff { substring(seed, 0, max_bytes_eff); } else { seed; };
+        memo_write(prompt_key, seed_clamped);
+        memo_write(gen_key, "0");
+        let lineage_key = "explorer:" + self_pid + ":lineage_id";
+        let lin_str = recall_latest(lineage_key);
+        let lin = if len(lin_str) > 0 { parse_int(lin_str); } else { 0; };
+        memo_write(lineage_key, to_string(lin + 1));
+        memo_write(buf_key, "[]");
+        learn("explorer_prompt_evolve", "lineage_reset", "gen_cap=" + to_string(gen_cap_eff) + " lineage=" + to_string(lin + 1), "partial", ["prompt-evolution", "lineage-reset", "math-foundry"]);
+        return seed_clamped;
+    };
+
+    if len(new_prompt) == 0 {
+        return prompt_text;
+    };
+    let lev_pct = _levenshtein_ratio_pct(prompt_text, new_prompt);
+    let dissim_pct = 100 - lev_pct;
+    if dissim_pct < lev_floor_eff {
+        learn("explorer_prompt_evolve", "no_op_similarity", "lev_pct=" + to_string(lev_pct) + " floor=" + to_string(lev_floor_eff), "partial", ["prompt-evolution", "no-op", "math-foundry"]);
+        return prompt_text;
+    };
+
+    if _schema_sanity_ok(new_prompt) == false {
+        learn("explorer_prompt_evolve", "schema_revert", "gen=" + to_string(gen), "failure", ["prompt-evolution", "schema-revert", "math-foundry"]);
+        return prompt_text;
+    };
+
+    memo_write(prompt_key, new_prompt);
+    memo_write(gen_key, to_string(gen + 1));
+    memo_write(buf_key, "[]");
+    learn("explorer_prompt_evolve", "rewrite", "gen=" + to_string(gen + 1) + " dissim_pct=" + to_string(dissim_pct), "success", ["prompt-evolution", "rewritten", "math-foundry"]);
+    return new_prompt;
+}
+
+fn pick_variant(n: int) -> string {
+    let idx = n - ((n / 5) * 5);
+    if idx == 0 { return "compute:default"; };
+    if idx == 1 { return "compute:tight-cases"; };
+    if idx == 2 { return "compute:wide-sweep"; };
+    if idx == 3 { return "compute:boundary-search"; };
+    return "compute:coincidence-hunt";
+}
+
+fn self_node_addr() -> string {
+    let addr = recall_latest("math-foundry:worker_addr");
+    if len(addr) > 0 {
+        return addr;
+    };
+    return "127.0.0.1:9100";
+}
+
+fn select_replication_target() -> string {
+    let cnt_str = recall_latest("math-foundry:peer_worker_count");
+    let cnt = if len(cnt_str) > 0 { parse_int(cnt_str); } else { 0; };
+    if cnt <= 0 {
+        return self_node_addr();
+    };
+    let rr_str = recall_latest("explorer:replicate_rr_counter");
+    let rr = if len(rr_str) > 0 { parse_int(rr_str); } else { 0; };
+    let idx = rr - ((rr / cnt) * cnt);
+    memo_write("explorer:replicate_rr_counter", to_string(rr + 1));
+    let addr = recall_latest("math-foundry:peer_worker_addr:" + to_string(idx));
+    if len(addr) > 0 {
+        return addr;
+    };
+    return self_node_addr();
+}
+
+fn tick(reason: string) -> void {
+    let _ = reason;
+    let _tick_now_ms = now_ms_via_shell();
+    let _colony_name = colony_name();
+    let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
+    let _variant = recall_latest("explorer:prompt_variant");
+    let conf = get_confidence();
+    print("[explorer] tick conf=", conf);
+
+    // Read foundry tick state seeded by the orchestrator
+    // (`tools/run-foundry.sh`) before each tick.
+    let tick_idx_str = recall_latest("replay:current_tick");
+    let tick_idx = if len(tick_idx_str) > 0 { parse_int(tick_idx_str); } else { -1; };
+    let topic_label = recall_latest("replay:current_topic");
+    let topic_desc = recall_latest("replay:current_topic_desc");
+    let compute_hints = recall_latest("replay:current_compute_hints");
+    let paper_a_id = recall_latest("replay:current_paper_a_id");
+    let paper_a_title = recall_latest("replay:current_paper_a_title");
+    let paper_a_abstract = recall_latest("replay:current_paper_a_abstract");
+    let paper_b_id = recall_latest("replay:current_paper_b_id");
+    let paper_b_title = recall_latest("replay:current_paper_b_title");
+    let paper_b_abstract = recall_latest("replay:current_paper_b_abstract");
+    if tick_idx < 0 {
+        print("[explorer] no foundry tick yet");
+        return;
+    };
+    if len(topic_label) == 0 {
+        print("[explorer] no topic for tick=", tick_idx);
+        return;
+    };
+
+    // Bootstrap the exploration prompt: first tick on a fresh explorer
+    // populates the memo from _seed_prompt() or adopts a parent's evolved
+    // body via the M106 hash-pointer wire when _variant starts with `pp:`.
+    let prompt_text_raw = recall_latest("explorer:" + _self_pid + ":exploration_prompt");
+    let prompt_text = if len(prompt_text_raw) == 0 {
+        let max_bytes_env = try { exec sh "printenv EXPLORER_PROMPT_MAX_BYTES"; } catch e { ""; };
+        let max_bytes = if len(max_bytes_env) > 0 { parse_int(max_bytes_env); } else { 4096; };
+        let max_bytes_eff = if max_bytes <= 0 { 4096; } else { max_bytes; };
+        let pp_hash = _extract_pp_hash(_variant);
+        if len(pp_hash) > 0 {
+            let inherited = recall_latest("explorer:prompt_body:" + pp_hash);
+            if len(inherited) > 0 {
+                let inh_clamped = if len(inherited) > max_bytes_eff { substring(inherited, 0, max_bytes_eff); } else { inherited; };
+                memo_write("explorer:" + _self_pid + ":exploration_prompt", inh_clamped);
+                memo_write("explorer:" + _self_pid + ":exploration_generation", "0");
+                learn("explorer_prompt_inherit", _colony_name + "/" + _self_pid, "sha=" + substring(pp_hash, 0, 12), "success", ["prompt-inheritance", "adopted", "math-foundry"]);
+                inh_clamped;
+            } else {
+                let seed_m = _seed_prompt();
+                let seed_m_clamped = if len(seed_m) > max_bytes_eff { substring(seed_m, 0, max_bytes_eff); } else { seed_m; };
+                memo_write("explorer:" + _self_pid + ":exploration_prompt", seed_m_clamped);
+                memo_write("explorer:" + _self_pid + ":exploration_generation", "0");
+                learn("explorer_prompt_inherit", _colony_name + "/" + _self_pid, "sha=" + substring(pp_hash, 0, 12), "failure", ["prompt-inheritance", "miss", "math-foundry"]);
+                seed_m_clamped;
+            };
+        } else {
+            let seed = _seed_prompt();
+            let seed_clamped = if len(seed) > max_bytes_eff { substring(seed, 0, max_bytes_eff); } else { seed; };
+            memo_write("explorer:" + _self_pid + ":exploration_prompt", seed_clamped);
+            memo_write("explorer:" + _self_pid + ":exploration_generation", "0");
+            seed_clamped;
+        };
+    } else {
+        prompt_text_raw;
+    };
+
+    // Build the topic + paper-pair context string.
+    let ctx = "TOPIC: " + topic_label + " (" + topic_desc + ")\n"
+            + "TOOLS AVAILABLE: " + compute_hints + "\n"
+            + "PAPER A (" + paper_a_id + "): " + paper_a_title + "\n"
+            + "ABSTRACT: " + paper_a_abstract + "\n"
+            + "PAPER B (" + paper_b_id + "): " + paper_b_title + "\n"
+            + "ABSTRACT: " + paper_b_abstract + "\n";
+
+    let exploration = prompt(
+        prompt_text + _variant_overlay_suffix(),
+        ctx
+    ) -> Exploration;
+
+    let my_tier = tier("explorer");
+    if my_tier == "autonomous" {
+        learn("explore", "tick " + to_string(tick_idx) + " " + topic_label, exploration.exploration_goal, "partial", ["acted", "math-foundry"]);
+    } else {
+        if my_tier == "review-gated" {
+            learn("explore", "tick " + to_string(tick_idx) + " " + topic_label, exploration.exploration_goal, "partial", ["review-gated", "math-foundry"]);
+        } else {
+            if my_tier == "propose" {
+                emit("math-foundry:exploration_done", exploration);
+
+                // Execute the Python code in the sandbox via a temp file +
+                // python3 invocation. Pure compute only -- no file I/O,
+                // network, subprocess (enforced by prompt body, not by
+                // sandbox today).
+                let sandbox_dir = try { exec sh "printenv AGENTIS_ROOT"; } catch e { ""; };
+                let sandbox_eff = if len(sandbox_dir) > 0 { sandbox_dir + "/sandbox"; } else { "/run-root/.agentis/sandbox"; };
+                // colony-lint: safe-exec-concat
+                let write_cmd = "mkdir -p " + shell_escape(sandbox_eff) + " && printf '%s' " + shell_escape(exploration.code) + " > " + shell_escape(sandbox_eff + "/explore-" + _self_pid + "-tick-" + to_string(tick_idx) + ".py");
+                let _ = try { exec sh write_cmd; } catch e { ""; };
+                // colony-lint: safe-exec-concat
+                let run_cmd = "python3 " + shell_escape(sandbox_eff + "/explore-" + _self_pid + "-tick-" + to_string(tick_idx) + ".py") + " 2>&1";
+                let output = try { exec sh run_cmd; } catch e { ""; };
+
+                memo_write("explorer:" + _self_pid + ":code:tick-" + to_string(tick_idx), exploration.code);
+                memo_write("explorer:" + _self_pid + ":output:tick-" + to_string(tick_idx), output);
+                memo_write("explorer:" + _self_pid + ":goal:tick-" + to_string(tick_idx), exploration.exploration_goal);
+                memo_write("explorer:" + _self_pid + ":topic:tick-" + to_string(tick_idx), topic_label);
+
+                // Append to per-run discovery ledger.
+                let ledger_path = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
+                if len(ledger_path) > 0 {
+                    let ledger_row = "{\"ts\":" + to_string(_tick_now_ms) + ",\"colony\":\"" + _colony_name + "\",\"pid\":\"" + _self_pid + "\",\"tick\":" + to_string(tick_idx) + ",\"topic\":\"" + topic_label + "\",\"event\":\"exploration_done\"}";
+                    // colony-lint: safe-exec-concat
+                    let append_cmd = "printf '%s\n' " + shell_escape(ledger_row) + " >> " + shell_escape(ledger_path);
+                    let _ = try { exec sh append_cmd; } catch e { ""; };
+                };
+
+                // Settlement: read the novelty verdict for tick - HOLD_PERIOD.
+                let hold_env = try { exec sh "printenv HOLD_PERIOD"; } catch e { ""; };
+                let hold = if len(hold_env) > 0 { parse_int(hold_env); } else { 4; };
+                let hold_eff = if hold <= 0 { 4; } else { hold; };
+                let settle_tick = tick_idx - hold_eff;
+                if settle_tick >= 0 {
+                    let verdict_raw = recall_latest("novelty:final_verdict:" + _self_pid + ":tick-" + to_string(settle_tick));
+                    if len(verdict_raw) > 0 {
+                        print("[explorer] settled tick=", settle_tick, " verdict=", verdict_raw);
+                        learn("settle", "tick " + to_string(settle_tick) + " " + verdict_raw, "novelty=" + verdict_raw, "success", ["acted", "math-foundry", _colony_name, "verdict:" + verdict_raw]);
+
+                        // Fitness update: +2 NOVEL, +0.5 (mapped int 1)
+                        // BORDERLINE, -1 NOT_NOVEL, -0.5 (mapped int 1)
+                        // REJECT. Knob env vars are integer-scaled per-tick.
+                        if len(_self_pid) > 0 {
+                            let reward_novel_env = try { exec sh "printenv FOUNDRY_FITNESS_REWARD_NOVEL_PER_TICK"; } catch e { ""; };
+                            let reward_novel = if len(reward_novel_env) > 0 { parse_int(reward_novel_env); } else { 2; };
+                            let penalty_not_novel_env = try { exec sh "printenv FOUNDRY_FITNESS_PENALTY_NOT_NOVEL_PER_TICK"; } catch e { ""; };
+                            let penalty_not_novel = if len(penalty_not_novel_env) > 0 { parse_int(penalty_not_novel_env); } else { 1; };
+                            let fit_pre = parse_int(recall_latest("explorer:" + _self_pid + ":fitness"));
+                            let fit_delta = if verdict_raw == "NOVEL" {
+                                reward_novel;
+                            } else { if verdict_raw == "BORDERLINE" {
+                                1;
+                            } else { if verdict_raw == "NOT_NOVEL" {
+                                0 - penalty_not_novel;
+                            } else { if verdict_raw == "REJECT" {
+                                0 - 1;
+                            } else {
+                                0;
+                            }; }; }; };
+                            memo_write("explorer:" + _self_pid + ":fitness", to_string(fit_pre + fit_delta));
+                        };
+
+                        // M98 v3 evolution trigger.
+                        if len(_self_pid) > 0 {
+                            let _buf_len = _push_settled_exploration(_self_pid, verdict_raw);
+                            let _thr_env = try { exec sh "printenv EXPLORER_PROMPT_EVOLUTION_THRESHOLD"; } catch e { ""; };
+                            let _thr = if len(_thr_env) > 0 { parse_int(_thr_env); } else { 3; };
+                            let _thr_eff = if _thr <= 0 { 3; } else { _thr; };
+                            let _not_novel = _count_not_novel(_self_pid);
+                            if _not_novel >= _thr_eff {
+                                let _ = _evolve_exploration_prompt(_self_pid, prompt_text);
+                            };
+                        };
+
+                        // M2-Malthusian replicate gate.
+                        let repr_thr = parse_int(recall_latest("explorer:reproductive_fitness_threshold"));
+                        if repr_thr > 0 {
+                            let my_fit_r = parse_int(recall_latest("explorer:" + _self_pid + ":fitness"));
+                            if my_fit_r > repr_thr {
+                                let n_r = parse_int(recall_latest("colony-" + _colony_name + ":size"));
+                                let max_repl_r = parse_int(recall_latest("colony-" + _colony_name + ":max_replicas"));
+                                if n_r < max_repl_r {
+                                    let pool_r = parse_int(recall_latest("colony-" + _colony_name + ":pool"));
+                                    let base_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_base_cost"));
+                                    let raw_k_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_k"));
+                                    let k_r = if raw_k_r <= 0 { 3; } else { raw_k_r; };
+                                    let cost_r = base_r + (base_r * n_r) / k_r;
+                                    if pool_r >= cost_r {
+                                        let variant_pick = pick_variant(n_r);
+                                        memo_write("explorer:prompt_variant", variant_pick);
+                                        let target_r = select_replication_target();
+                                        if len(target_r) > 0 {
+                                            let variant_wrapped = _publish_prompt_body_and_wrap_variant(_self_pid, variant_pick);
+                                            let replica_id = try { replicate(target_r, my_fit_r, variant_wrapped); } catch e { "__replicate_error__"; };
+                                            if replica_id != "__replicate_error__" {
+                                                if len(replica_id) > 0 {
+                                                    memo_write("colony-" + _colony_name + ":pool", to_string(pool_r - cost_r));
+                                                    memo_write("colony-" + _colony_name + ":size", to_string(n_r + 1));
+                                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "success", ["replicated", "math-foundry", _colony_name]);
+                                                } else {
+                                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "failure", ["replicate-nak", "math-foundry", _colony_name]);
+                                                };
+                                            };
+                                        };
+                                    };
+                                };
+                            };
+                        };
+                    };
+                };
+            } else {
+                // shadow / dormant: observe-only.
+                print("[explorer] observing (tier:", my_tier, ") goal=", exploration.exploration_goal);
+                learn("explore", "tick " + to_string(tick_idx) + " " + topic_label, exploration.exploration_goal, "partial", ["observed", "math-foundry"]);
+            };
+        };
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("explorer:last_check", now);
+    };
+}

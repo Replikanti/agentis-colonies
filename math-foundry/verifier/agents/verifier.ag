@@ -1,0 +1,133 @@
+// verifier.ag -- Math Foundry verifier: independently solves the
+// formulator's problem (without seeing the original computational
+// code) via a SOLVER_PROMPT, then runs a VERIFIER_PROMPT that compares
+// the independent solution to the stated answer and emits ACCEPT /
+// REJECT / NEEDS_REVISION.
+//
+// Per-tick behaviour:
+//   1. listen("math-foundry:problem_ready") triggers the agent.
+//   2. Read the problem text from memo.
+//   3. First prompt() call: SOLVER -- solve from scratch.
+//   4. Second prompt() call: VERIFIER -- compare answers, decide.
+//   5. Persist the verdict and emit "math-foundry:verified" or
+//      "math-foundry:verifier_rejected".
+//
+// Run as daemon: agentis daemon agents/verifier.ag --colony verifier
+// Requires: exec capability, messaging capability.
+
+cb 200000000;
+
+type SolverOutput {
+    solution: string,
+    answer: string,
+    confidence: float
+}
+
+type Verdict {
+    answers_agree: bool,
+    solver_rigorous: bool,
+    problem_well_defined: bool,
+    verdict: string,
+    reasoning: string
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("verifier:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    };
+    return 0.0;
+}
+
+fn colony_name() -> string {
+    let _cn = try { exec sh "printenv COLONY_NAME"; } catch e { ""; };
+    if len(_cn) > 0 {
+        return _cn;
+    };
+    return "verifier";
+}
+
+fn _solver_prompt() -> string {
+    return "You are an independent reviewer. Solve the problem below from scratch (you do NOT see the original author's code or answer). Output ONLY valid JSON: {\"solution\": \"...\", \"answer\": \"...\", \"confidence\": 0.0-1.0}.";
+}
+
+fn _verifier_prompt() -> string {
+    return "You are a strict referee. The user-supplied input below carries the PROBLEM, the STATED answer, the SOLVER solution, and the SOLVER ANSWER from an independent reviewer. Decide whether the answers agree, whether the solver was rigorous, whether the problem is well-defined, and the overall verdict (ACCEPT / REJECT / NEEDS_REVISION). Output ONLY valid JSON: {\"answers_agree\": true|false, \"solver_rigorous\": true|false, \"problem_well_defined\": true|false, \"verdict\": \"ACCEPT|REJECT|NEEDS_REVISION\", \"reasoning\": \"...\"}.";
+}
+
+fn tick(reason: string) -> void {
+    let _ = reason;
+    let _colony_name = colony_name();
+    let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
+    let conf = get_confidence();
+    print("[verifier] tick conf=", conf);
+
+    let tick_idx_str = recall_latest("replay:current_tick");
+    let tick_idx = if len(tick_idx_str) > 0 { parse_int(tick_idx_str); } else { -1; };
+    if tick_idx < 0 {
+        print("[verifier] no foundry tick yet");
+        return;
+    };
+
+    let formulator_pid = recall_latest("replay:current_formulator_pid");
+    if len(formulator_pid) == 0 {
+        print("[verifier] no formulator pid for tick=", tick_idx);
+        return;
+    };
+    let problem_text = recall_latest("formulator:" + formulator_pid + ":problem_text:tick-" + to_string(tick_idx));
+    let stated_answer = recall_latest("formulator:" + formulator_pid + ":answer:tick-" + to_string(tick_idx));
+    if len(problem_text) == 0 {
+        print("[verifier] no problem text for tick=", tick_idx);
+        return;
+    };
+
+    // Step 1: independent solve.
+    let solver_ctx = "PROBLEM: " + problem_text + "\n";
+    let solver = prompt(_solver_prompt(), solver_ctx) -> SolverOutput;
+
+    // Step 2: referee.
+    let verify_ctx = "PROBLEM: " + problem_text + "\n"
+                   + "STATED: " + stated_answer + "\n"
+                   + "SOLVER: " + solver.solution + "\n"
+                   + "SOLVER ANSWER: " + solver.answer + "\n";
+    let verdict = prompt(_verifier_prompt(), verify_ctx) -> Verdict;
+
+    let my_tier = tier("verifier");
+    if my_tier == "autonomous" {
+        learn("verify", "tick " + to_string(tick_idx) + " " + verdict.verdict, verdict.reasoning, "partial", ["acted", "math-foundry"]);
+    } else {
+        if my_tier == "review-gated" {
+            learn("verify", "tick " + to_string(tick_idx) + " " + verdict.verdict, verdict.reasoning, "partial", ["review-gated", "math-foundry"]);
+        } else {
+            if my_tier == "propose" {
+                let agree_str = if verdict.answers_agree { "true"; } else { "false"; };
+                let rigorous_str = if verdict.solver_rigorous { "true"; } else { "false"; };
+                let well_defined_str = if verdict.problem_well_defined { "true"; } else { "false"; };
+                let verdict_json = "{\"answers_agree\":" + agree_str
+                                 + ",\"solver_rigorous\":" + rigorous_str
+                                 + ",\"problem_well_defined\":" + well_defined_str
+                                 + ",\"verdict\":\"" + verdict.verdict
+                                 + "\",\"reasoning\":\"" + verdict.reasoning + "\"}";
+                memo_write("verifier:" + _self_pid + ":verdict:tick-" + to_string(tick_idx), verdict_json);
+                memo_write("verifier:" + _self_pid + ":verdict_label:tick-" + to_string(tick_idx), verdict.verdict);
+                memo_write("replay:current_verifier_pid", _self_pid);
+
+                if verdict.verdict == "ACCEPT" {
+                    emit("math-foundry:verified", verdict);
+                    learn("verify", "tick " + to_string(tick_idx) + " ACCEPT", verdict.reasoning, "success", ["emitted", "math-foundry"]);
+                } else {
+                    emit("math-foundry:verifier_rejected", verdict);
+                    learn("verify", "tick " + to_string(tick_idx) + " " + verdict.verdict, verdict.reasoning, "failure", ["emitted", "math-foundry"]);
+                };
+            } else {
+                print("[verifier] observing (tier:", my_tier, ") verdict=", verdict.verdict);
+                learn("verify", "tick " + to_string(tick_idx) + " " + verdict.verdict, verdict.reasoning, "partial", ["observed", "math-foundry"]);
+            };
+        };
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("verifier:last_check", now);
+    };
+}

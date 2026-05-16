@@ -1,0 +1,139 @@
+// formulator.ag -- Math Foundry formulator: reads the noticer's
+// surprise record and crafts a competition-style problem whose answer
+// is the discovered value. The formulated problem feeds the verifier
+// chain for independent solve + accept/reject.
+//
+// Per-tick behaviour:
+//   1. listen("math-foundry:notice_done") triggers the agent; the
+//      payload carries the noticer's Surprise record (the agent also
+//      reads the latest surprise from memo for robustness).
+//   2. Build the FORMULATE_PROMPT and call prompt() -> Problem JSON.
+//   3. Persist the problem to memo
+//      (`formulator:<pid>:problem:tick-N`) and append to the per-run
+//      discovery ledger.
+//   4. Emit "math-foundry:problem_ready" so the verifier can pick up.
+//
+// Run as daemon: agentis daemon agents/formulator.ag --colony formulator
+// Requires: exec capability, messaging capability, DISCOVERY_LEDGER env.
+
+cb 200000000;
+
+type Problem {
+    problem: string,
+    answer: string,
+    solution_full: string,
+    novelty_claim: string,
+    self_check_confidence: float
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("formulator:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    };
+    return 0.0;
+}
+
+fn colony_name() -> string {
+    let _cn = try { exec sh "printenv COLONY_NAME"; } catch e { ""; };
+    if len(_cn) > 0 {
+        return _cn;
+    };
+    return "formulator";
+}
+
+fn now_ms_via_shell() -> int {
+    let s = try { exec sh "date +%s%3N"; } catch e { "0"; };
+    return parse_int(s);
+}
+
+fn _seed_prompt() -> string {
+    return "You discovered a surprising result through computation. Craft a competition-style problem whose answer IS this discovery. The user-supplied input below carries the TOPIC, the DISCOVERY description, the SPECIFIC VALUE, and the WHY SURPRISING reasoning. Craft a self-contained problem (no code, just math). The stated answer must be the specific value. Output ONLY valid JSON: {\"problem\": \"...\", \"answer\": \"...\", \"solution_full\": \"...\", \"novelty_claim\": \"...\", \"self_check_confidence\": 0.0-1.0}.";
+}
+
+fn tick(reason: string) -> void {
+    let _ = reason;
+    let _tick_now_ms = now_ms_via_shell();
+    let _colony_name = colony_name();
+    let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
+    let conf = get_confidence();
+    print("[formulator] tick conf=", conf);
+
+    let tick_idx_str = recall_latest("replay:current_tick");
+    let tick_idx = if len(tick_idx_str) > 0 { parse_int(tick_idx_str); } else { -1; };
+    if tick_idx < 0 {
+        print("[formulator] no foundry tick yet");
+        return;
+    };
+
+    let noticer_pid = recall_latest("replay:current_noticer_pid");
+    if len(noticer_pid) == 0 {
+        print("[formulator] no noticer pid for tick=", tick_idx);
+        return;
+    };
+    let surprise_found = recall_latest("noticer:" + noticer_pid + ":surprise_found:tick-" + to_string(tick_idx));
+    if surprise_found != "true" {
+        print("[formulator] surprise not found (or noticer unset) for tick=", tick_idx);
+        return;
+    };
+    let surprise_json = recall_latest("noticer:" + noticer_pid + ":surprise:tick-" + to_string(tick_idx));
+    if len(surprise_json) == 0 {
+        print("[formulator] no surprise json for tick=", tick_idx);
+        return;
+    };
+    let surprise_description = to_string(json_get(surprise_json, "surprise_description"));
+    let specific_value = to_string(json_get(surprise_json, "specific_value"));
+    let why_surprising = to_string(json_get(surprise_json, "why_surprising"));
+    let explorer_pid = recall_latest("replay:current_explorer_pid");
+    let topic_label = recall_latest("explorer:" + explorer_pid + ":topic:tick-" + to_string(tick_idx));
+
+    let ctx = "TOPIC: " + topic_label + "\n"
+            + "DISCOVERY: " + surprise_description + "\n"
+            + "SPECIFIC VALUE: " + specific_value + "\n"
+            + "WHY SURPRISING: " + why_surprising + "\n";
+
+    let problem = prompt(_seed_prompt(), ctx) -> Problem;
+
+    let my_tier = tier("formulator");
+    if my_tier == "autonomous" {
+        learn("formulate", "tick " + to_string(tick_idx) + " " + topic_label, problem.novelty_claim, "partial", ["acted", "math-foundry"]);
+    } else {
+        if my_tier == "review-gated" {
+            learn("formulate", "tick " + to_string(tick_idx) + " " + topic_label, problem.novelty_claim, "partial", ["review-gated", "math-foundry"]);
+        } else {
+            if my_tier == "propose" {
+                let self_conf_str = to_string(problem.self_check_confidence);
+                let problem_json = "{\"problem\":\"" + problem.problem
+                                 + "\",\"answer\":\"" + problem.answer
+                                 + "\",\"solution_full\":\"" + problem.solution_full
+                                 + "\",\"novelty_claim\":\"" + problem.novelty_claim
+                                 + "\",\"self_check_confidence\":" + self_conf_str + "}";
+                memo_write("formulator:" + _self_pid + ":problem:tick-" + to_string(tick_idx), problem_json);
+                memo_write("formulator:" + _self_pid + ":problem_text:tick-" + to_string(tick_idx), problem.problem);
+                memo_write("formulator:" + _self_pid + ":answer:tick-" + to_string(tick_idx), problem.answer);
+                memo_write("formulator:" + _self_pid + ":novelty_claim:tick-" + to_string(tick_idx), problem.novelty_claim);
+                memo_write("replay:current_formulator_pid", _self_pid);
+                emit("math-foundry:problem_ready", problem);
+
+                // Append to per-run discovery ledger.
+                let ledger_path = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
+                if len(ledger_path) > 0 {
+                    let ledger_row = "{\"ts\":" + to_string(_tick_now_ms) + ",\"colony\":\"" + _colony_name + "\",\"pid\":\"" + _self_pid + "\",\"tick\":" + to_string(tick_idx) + ",\"topic\":\"" + topic_label + "\",\"event\":\"problem_ready\",\"answer\":\"" + problem.answer + "\"}";
+                    // colony-lint: safe-exec-concat
+                    let append_cmd = "printf '%s\n' " + shell_escape(ledger_row) + " >> " + shell_escape(ledger_path);
+                    let _ = try { exec sh append_cmd; } catch e { ""; };
+                };
+
+                learn("formulate", "tick " + to_string(tick_idx) + " " + topic_label, "answer=" + problem.answer, "success", ["emitted", "math-foundry"]);
+            } else {
+                print("[formulator] observing (tier:", my_tier, ") novelty_claim=", problem.novelty_claim);
+                learn("formulate", "tick " + to_string(tick_idx) + " " + topic_label, problem.novelty_claim, "partial", ["observed", "math-foundry"]);
+            };
+        };
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("formulator:last_check", now);
+    };
+}
