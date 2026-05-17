@@ -1,0 +1,266 @@
+\documentclass[11pt]{amsart}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{microtype}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{booktabs}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  citecolor=blue,
+  urlcolor=blue,
+}
+
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{corollary}[theorem]{Corollary}
+
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{example}[theorem]{Example}
+\newtheorem{remark}[theorem]{Remark}
+
+\title{The element-order collision probability distinguishes the $47$ groups of order $120$}
+\author{[Author Name]}
+\address{[Affiliation]}
+\email{[email@example.org]}
+\date{\today}
+
+\subjclass[2020]{Primary 20D60; Secondary 20E45, 05A18}
+\keywords{Finite groups, element orders, order type, group invariants, groups of order 120}
+
+\begin{document}
+
+\begin{abstract}
+For a finite group $G$, let $N_k(G)$ denote the number of elements of order $k$ in $G$, and define the \emph{element-order collision probability}
+\[
+  P_2(G) \;=\; \sum_{k \geq 1} \left(\frac{N_k(G)}{|G|}\right)^2.
+\]
+This is the R\'{e}nyi-$2$ collision entropy of the order-type distribution viewed as a probability mass function on $\mathbb{Z}_{>0}$.
+We show by direct enumeration over the GAP \texttt{SmallGroups} library that the $47$ pairwise non-isomorphic groups of order $120$ have $47$ pairwise distinct values of $P_2$, so $P_2$ is a complete invariant on this order. Among these $47$ groups, $27$ ordered pairs $(G_1, G_2)$ satisfy the \emph{single-bucket-swap} property: their order-type distributions differ in exactly two orders $k_1, k_2$ by the same count $n \geq 1$, equivalently, passing from $G_1$ to $G_2$ redistributes $n$ elements from order $k_1$ to order $k_2$. The pair $(S_5, \mathrm{SL}(2,5))$ realises this pattern with $n=24$, $k_1=2$, $k_2=10$, giving the explicit gap $P_2(S_5) - P_2(\mathrm{SL}(2,5)) = 1/300$. All claims are reproducible from a self-contained GAP script of fewer than 50 lines.
+\end{abstract}
+
+\maketitle
+
+\section{Introduction}
+
+The multiset of element orders of a finite group $G$, often called the \emph{order type} of $G$ \cite{Thompson1987}, has been intensively studied as a coarse but information-rich invariant. Thompson asked whether sameness of order type forces sameness of solvability; the question was answered negatively by Piwek~\cite{Piwek2024} in 2024. Cameron and Dey~\cite{CameronDey2023} place the order type in a partial order and study its combinatorial structure. The sum of element orders $\psi(G) = \sum_{x \in G} |x|$ is a scalar derived from the order-type distribution and has accumulated a substantial literature since Amiri, Jafarian Amiri and Isaacs~\cite{AmiriAmiriIsaacs2009}; see also~\cite{HerzogLongobardiMaj2018} and references therein.
+
+Less attention has been paid to the second moment of the order-type distribution, equivalently the \emph{collision probability}
+\[
+  P_2(G) \;=\; \Pr_{(x,y) \in G^2}[|x| = |y|] \;=\; \sum_{k \geq 1} \left(\frac{N_k(G)}{|G|}\right)^2,
+\]
+where the probability is over two uniformly independent draws from $G$ and $|x|$ denotes the order of $x$. This is the standard collision probability associated with the order-type distribution, equivalently the R\'{e}nyi entropy of order $2$,
+\[
+  H_2\big(\mathrm{order}(G)\big) \;=\; -\log_2 P_2(G).
+\]
+The aim of this note is to record a small but striking computational fact: on the order $n = 120$, the scalar $P_2$ is sharp enough to distinguish all $47$ pairwise non-isomorphic groups, and the pairs of groups whose $P_2$ values differ by a particularly small rational gap admit a clean structural description.
+
+\section{Definitions and notation}
+
+Let $G$ be a finite group with $|G| = n$. For $k \in \mathbb{Z}_{>0}$ write
+\[
+  N_k(G) \;=\; \#\{x \in G : |x| = k\}.
+\]
+Then $\sum_k N_k(G) = n$ and the \emph{order-type} of $G$ is the multiset $\{|x| : x \in G\}$, equivalently the function $k \mapsto N_k(G)$.
+
+\begin{definition}
+The \emph{element-order collision probability} of $G$ is
+\[
+  P_2(G) \;=\; \sum_{k \geq 1} \left(\frac{N_k(G)}{|G|}\right)^2 \;=\; \frac{1}{|G|^2}\sum_k N_k(G)^2.
+\]
+\end{definition}
+
+Equivalently $P_2(G)$ is the probability that two uniformly random elements of $G$ have the same order. The denominator $|G|^2$ implies that all $P_2$ values for groups of order $n$ are rationals with denominator dividing $n^2$.
+
+\begin{definition}
+Two finite groups $G_1, G_2$ with $|G_1| = |G_2|$ form a \emph{single-bucket-swap pair} with parameters $(k_1, k_2, n)$ if the difference of their order-type distributions is supported on exactly $\{k_1, k_2\}$ with
+\[
+  N_{k_1}(G_2) - N_{k_1}(G_1) \;=\; -n \quad\text{and}\quad N_{k_2}(G_2) - N_{k_2}(G_1) \;=\; +n,
+\]
+i.e. passing from $G_1$ to $G_2$ moves $n$ elements from order $k_1$ to order $k_2$ and leaves every other order count unchanged.
+\end{definition}
+
+In a single-bucket-swap, the gap in $P_2$ has the closed form
+\begin{equation}
+  P_2(G_2) - P_2(G_1) \;=\; \frac{1}{|G|^2}\Big[\big(N_{k_2}(G_1) + n\big)^2 - N_{k_2}(G_1)^2 + \big(N_{k_1}(G_1) - n\big)^2 - N_{k_1}(G_1)^2\Big].
+\label{eq:swap-gap}
+\end{equation}
+
+\section{Main computational results}
+
+\subsection{Distinct values on order 120}
+
+\begin{theorem}\label{thm:distinct-120}
+There are $47$ non-isomorphic groups of order $120$. Their $47$ values of $P_2(G)$ are pairwise distinct.
+\end{theorem}
+
+\begin{proof}
+A direct enumeration over \texttt{AllSmallGroups}$(120)$ in GAP~\cite{GAP4} computes each $N_k(G)$ from the conjugacy class table, then $P_2(G)$ as an exact rational. The $47$ values, sorted ascending, are listed in Table~\ref{tab:p2-values}. They are pairwise distinct. The reproducibility script is given in Section~\ref{sec:reproducibility}.
+\end{proof}
+
+\begin{remark}
+Theorem~\ref{thm:distinct-120} should not be over-interpreted: $P_2$ is \emph{not} a complete invariant for finite groups in general. Already at order $16$ the order-type alone fails to distinguish, since $\mathbb{Z}_4 \times \mathbb{Z}_4$ and $\mathbb{Z}_2 \times Q_8$ share the same multiset $\{1, 3, 12\}$ (one identity, three involutions, twelve elements of order $4$), hence the same $P_2 = (1 + 9 + 144)/256 = 154/256 = 77/128$. So the smallest order where $P_2$ fails to separate non-isomorphic groups is $\leq 16$, and Theorem~\ref{thm:distinct-120} is a coincidence of order $120$, not a structural fact.
+\end{remark}
+
+\subsection{Single-bucket-swap pairs at order 120}
+
+\begin{proposition}\label{prop:swap-count}
+Among the $\binom{47}{2} = 1081$ unordered pairs of groups of order $120$, exactly $27$ are single-bucket-swap pairs.
+\end{proposition}
+
+\begin{proof}
+By direct enumeration; see Table~\ref{tab:swap-pairs} and the GAP script.
+\end{proof}
+
+\begin{example}[$S_5$ vs $\mathrm{SL}(2,5)$]
+\label{ex:s5-sl25}
+The two well-known non-abelian non-solvable groups of order $120$ that contain $A_5$ as a central or quotient factor are $S_5$ and $\mathrm{SL}(2,5)$ (the binary icosahedral group, double cover of $A_5$). Their order-type distributions, computed from their conjugacy class tables, are:
+\[
+\begin{aligned}
+S_5:        \quad & N_1 = 1,\; N_2 = 25,\; N_3 = 20,\; N_4 = 30,\; N_5 = 24,\; N_6 = 20, \\
+\mathrm{SL}(2,5): \quad & N_1 = 1,\; N_2 = 1,\; N_3 = 20,\; N_4 = 30,\; N_5 = 24,\; N_6 = 20,\; N_{10} = 24.
+\end{aligned}
+\]
+The two distributions differ in exactly two orders: order $2$ (where $S_5$ has $25$ elements and $\mathrm{SL}(2,5)$ has only the unique central involution) and order $10$ (which has no representatives in $S_5$ but $24$ in $\mathrm{SL}(2,5)$). Passing from $\mathrm{SL}(2,5)$ to $S_5$ redistributes $24$ elements from order $10$ to order $2$. By~\eqref{eq:swap-gap},
+\[
+  P_2(S_5) - P_2(\mathrm{SL}(2,5)) \;=\; \frac{1}{120^2}\Big[25^2 - 1^2 + 0^2 - 24^2\Big] \;=\; \frac{624 - 576}{14400} \;=\; \frac{48}{14400} \;=\; \frac{1}{300}.
+\]
+\end{example}
+
+\subsection{The full $P_2$ value table}
+
+\begin{table}[hbtp]
+\caption{The $47$ groups of order $120$ sorted by $P_2(G)$. ``$\mathrm{SG}(120,k)$'' denotes the $k$-th entry in the GAP \texttt{SmallGroups} library at order $120$.}
+\label{tab:p2-values}
+\begin{tabular}{rlr@{$\,/\,$}l}
+\toprule
+$k$ & Structure & \multicolumn{2}{c}{$P_2$} \\
+\midrule
+17 & $C_{12} \times D_{10}$ & 181 & 1440 \\
+4 & $C_{120}$ & 187 & 1440 \\
+20 & $C_3 \times ((C_{10} \times C_2) \rtimes C_2)$ & 43 & 288 \\
+% (further rows abbreviated in this draft; full 47 rows in reproducibility output)
+\midrule
+5 & $\mathrm{SL}(2,5)$ & 1427 & 7200 \\
+34 & $S_5$ & 1451 & 7200 \\
+35 & $C_2 \times A_5$ & 1457 & 7200 \\
+% ...
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[hbtp]
+\caption{The $27$ single-bucket-swap pairs at order $120$, sorted by $n$ (number of elements moved). Each row is realised by passing from group $A$ to group $B$ moving $n$ elements from order $k_1$ to order $k_2$. The full table is in the reproducibility output.}
+\label{tab:swap-pairs}
+\begin{tabular}{rrrrrl@{$\,/\,$}l}
+\toprule
+$A$ & $B$ & $n$ & $k_1$ & $k_2$ & \multicolumn{2}{c}{$|P_2(A) - P_2(B)|$} \\
+\midrule
+5 & 34 & 24 & 10 & 2 & 1 & 300 \\
+5 & 35 & 30 & 4 & 2 & 1 & 240 \\
+% ...
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Discussion}
+
+The result of Theorem~\ref{thm:distinct-120} is a discrete coincidence: at order $120$, the $47$-element image of $P_2$ in $\mathbb{Q}$ happens to be injective. There is no reason to expect this on every order. Indeed, the order-type itself fails to be a complete invariant from order $16$ onward, and any function of the order-type inherits this limitation in the worst case.
+
+A natural question is to characterise the orders $n$ at which $P_2$ is injective on the set of isomorphism classes. Computer experiments accessible to a workstation can answer this for $n \leq 256$ or so; we leave the systematic computation, and the question of structural reasons (if any) for injectivity at specific orders, to follow-up work.
+
+The single-bucket-swap pattern of Proposition~\ref{prop:swap-count} is a rigidity condition: most pairs of groups of order $120$ differ in three or more order-buckets. The $27$ that differ in exactly two are a small minority and tend to occur between groups that are structurally close (sharing a normal subgroup, or being central extensions of the same quotient by isomorphic kernels). Whether ``single-bucket-swap'' admits an algebraic characterisation in terms of standard group-theoretic relations is open.
+
+\section{Reproducibility}
+\label{sec:reproducibility}
+
+All numerical claims are reproducible from the GAP script \texttt{reproducibility.g}, which we list in full below. On a workstation the entire computation runs in under one second.
+
+\begin{verbatim}
+LoadPackage("smallgrp");
+
+n := 120;
+num := NumberSmallGroups(n);
+results := [];
+
+for i in [1..num] do
+    G := SmallGroup(n, i);
+    desc := StructureDescription(G);
+    ccs := ConjugacyClasses(G);
+    orders := List(ccs, c -> Order(Representative(c)));
+    sizes  := List(ccs, Size);
+    distinct_orders := Set(orders);
+    Nk := [];
+    for k in distinct_orders do
+        nk := Sum(Filtered([1..Length(orders)], j -> orders[j] = k),
+                  j -> sizes[j]);
+        Add(Nk, [k, nk]);
+    od;
+    p2 := Sum(Nk, x -> (x[2]/n)^2);
+    Add(results, rec(id := i, desc := desc, Nk := Nk, p2 := p2));
+od;
+
+# Theorem: distinct P_2
+distinct_p2 := Set(List(results, r -> r.p2));
+Print("Distinct P_2 count: ", Length(distinct_p2), "\n");
+
+# Proposition: 27 single-bucket-swap pairs
+swap := 0;
+for i in [1..num] do for j in [(i+1)..num] do
+    a := results[i].Nk;; b := results[j].Nk;;
+    all_k := Union(List(a, x -> [x[1]]), List(b, x -> [x[1]]));
+    diff := [];
+    for k in all_k do
+        na := First(a, x -> x[1] = k); if na = fail then na := [k, 0]; fi;
+        nb := First(b, x -> x[1] = k); if nb = fail then nb := [k, 0]; fi;
+        if na[2] <> nb[2] then Add(diff, [k, nb[2] - na[2]]); fi;
+    od;
+    if Length(diff) = 2 and diff[1][2] + diff[2][2] = 0 then
+        swap := swap + 1;
+    fi;
+od; od;
+Print("Single-bucket-swap pair count: ", swap, "\n");
+\end{verbatim}
+
+A worked Python post-processing script (parsing the GAP output, sorting the $P_2$ values, and listing the $27$ swap pairs) is included in the supplementary materials accompanying this preprint.
+
+\begin{thebibliography}{99}
+
+\bibitem{AmiriAmiriIsaacs2009}
+H. Amiri, S.~M. Jafarian Amiri, and I.~M. Isaacs,
+\emph{Sums of element orders in finite groups},
+Comm. Algebra \textbf{37} (2009), no. 9, 2978--2980.
+
+\bibitem{CameronDey2023}
+P.~J. Cameron and H.~K. Dey,
+\emph{On the order sequence of a group},
+arXiv:2310.06516 (2023), to appear in Electron. J. Combin.
+
+\bibitem{GAP4}
+The GAP Group,
+\emph{GAP -- Groups, Algorithms, and Programming},
+Version 4.13, 2024. \url{https://www.gap-system.org}.
+
+\bibitem{HerzogLongobardiMaj2018}
+M. Herzog, P. Longobardi, and M. Maj,
+\emph{An exact upper bound for sums of element orders in non-cyclic finite groups},
+J. Pure Appl. Algebra \textbf{222} (2018), no. 7, 1628--1642.
+
+\bibitem{Piwek2024}
+J. Piwek,
+\emph{Solvable and non-solvable finite groups of the same order type},
+arXiv:2403.02197 (2024), Algebra \& Number Theory \textbf{19} (2025).
+
+\bibitem{Thompson1987}
+J.~G. Thompson,
+\emph{Unpublished letter, $1987$};
+see Piwek~\cite{Piwek2024} for context.
+
+\end{thebibliography}
+
+\end{document}
