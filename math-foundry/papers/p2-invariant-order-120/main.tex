@@ -6,6 +6,7 @@
 \usepackage{hyperref}
 \usepackage{enumitem}
 \usepackage{booktabs}
+\usepackage{longtable}
 
 \hypersetup{
   colorlinks=true,
@@ -134,39 +135,41 @@ The two distributions differ in exactly two orders: order $2$ (where $S_5$ has $
 
 \subsection{The full $P_2$ value table}
 
-\begin{table}[hbtp]
-\caption{The $47$ groups of order $120$ sorted by $P_2(G)$. ``$\mathrm{SG}(120,k)$'' denotes the $k$-th entry in the GAP \texttt{SmallGroups} library at order $120$.}
-\label{tab:p2-values}
-\begin{tabular}{rlr@{$\,/\,$}l}
+\begin{longtable}{rlr@{$\,/\,$}l}
+\caption{All $47$ groups of order $120$ sorted by $P_2(G)$ ascending. ``$k$'' is the index in the GAP \texttt{SmallGroups} library at order $120$.}\label{tab:p2-values}\\
 \toprule
 $k$ & Structure & \multicolumn{2}{c}{$P_2$} \\
 \midrule
-17 & $C_{12} \times D_{10}$ & 181 & 1440 \\
-4 & $C_{120}$ & 187 & 1440 \\
-20 & $C_3 \times ((C_{10} \times C_2) \rtimes C_2)$ & 43 & 288 \\
-% (further rows abbreviated in this draft; full 47 rows in reproducibility output)
+\endfirsthead
+\toprule
+$k$ & Structure & \multicolumn{2}{c}{$P_2$} \\
 \midrule
-5 & $\mathrm{SL}(2,5)$ & 1427 & 7200 \\
-34 & $S_5$ & 1451 & 7200 \\
-35 & $C_2 \times A_5$ & 1457 & 7200 \\
-% ...
+\endhead
+\midrule
+\multicolumn{4}{r}{\textit{(continued on next page)}}\\
+\endfoot
 \bottomrule
-\end{tabular}
-\end{table}
+\endlastfoot
+\input{table1_body.tex}
+\end{longtable}
 
-\begin{table}[hbtp]
-\caption{The $27$ single-bucket-swap pairs at order $120$, sorted by $n$ (number of elements moved). Each row is realised by passing from group $A$ to group $B$ moving $n$ elements from order $k_1$ to order $k_2$. The full table is in the reproducibility output.}
-\label{tab:swap-pairs}
-\begin{tabular}{rrrrrl@{$\,/\,$}l}
+\begin{longtable}{rrrrrr@{$\,/\,$}l}
+\caption{All $27$ single-bucket-swap pairs at order $120$, sorted first by $n$ (number of elements moved) and then by denominator of the $P_2$ gap. Each row records that passing from group $A$ to group $B$ moves $n$ elements from order $k_1$ to order $k_2$.}\label{tab:swap-pairs}\\
 \toprule
 $A$ & $B$ & $n$ & $k_1$ & $k_2$ & \multicolumn{2}{c}{$|P_2(A) - P_2(B)|$} \\
 \midrule
-5 & 34 & 24 & 10 & 2 & 1 & 300 \\
-5 & 35 & 30 & 4 & 2 & 1 & 240 \\
-% ...
+\endfirsthead
+\toprule
+$A$ & $B$ & $n$ & $k_1$ & $k_2$ & \multicolumn{2}{c}{$|P_2(A) - P_2(B)|$} \\
+\midrule
+\endhead
+\midrule
+\multicolumn{7}{r}{\textit{(continued on next page)}}\\
+\endfoot
 \bottomrule
-\end{tabular}
-\end{table}
+\endlastfoot
+\input{table2_body.tex}
+\end{longtable}
 
 \section{Discussion}
 
