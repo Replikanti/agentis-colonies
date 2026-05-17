@@ -398,6 +398,13 @@ def upstream_recall(key):
 
 source_run_id = os.path.basename(upstream_dir) or "unknown"
 
+# The ledger row's `pid` is the novelty daemon's pid (it emitted the
+# verdict event), not the formulator's. Formulator/explorer write memo
+# keys under their own daemon pids, so we look those up once from the
+# upstream's self-registered replay keys.
+upstream_formulator_pid = upstream_recall("replay:current_formulator_pid")
+upstream_explorer_pid = upstream_recall("replay:current_explorer_pid")
+
 for idx in range(total_ticks):
     if idx >= len(candidates):
         with open(log_path, "a") as log:
@@ -409,17 +416,20 @@ for idx in range(total_ticks):
         continue
     row = candidates[idx]
     source_tick = row.get("tick", 0)
+    # source_pid here is the novelty daemon pid recorded in the ledger
+    # row; we still pass it through to the searchers as
+    # `claim:source_pid` for audit-trail purposes.
     source_pid = str(row.get("pid", ""))
 
     problem_text = upstream_recall(
-        "formulator:" + source_pid + ":problem_text:tick-" + str(source_tick)
-    )
+        "formulator:" + upstream_formulator_pid + ":problem_text:tick-" + str(source_tick)
+    ) if upstream_formulator_pid else ""
     answer = upstream_recall(
-        "formulator:" + source_pid + ":answer:tick-" + str(source_tick)
-    )
+        "formulator:" + upstream_formulator_pid + ":answer:tick-" + str(source_tick)
+    ) if upstream_formulator_pid else ""
     novelty_claim = upstream_recall(
-        "formulator:" + source_pid + ":novelty_claim:tick-" + str(source_tick)
-    )
+        "formulator:" + upstream_formulator_pid + ":novelty_claim:tick-" + str(source_tick)
+    ) if upstream_formulator_pid else ""
     # Fallback: if the upstream memo is unreachable, hand the .ag
     # agents the row JSON so they at least know which verdict
     # triggered the audit. The .ag's early-exit on empty
