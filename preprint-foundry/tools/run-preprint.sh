@@ -322,14 +322,21 @@ write_bootstrap() {
         printf 'for c in introducer theorist computer editor submitter; do\n'
         printf '    (cd /run-root && agentis memo set $c:confidence 0.7 >/dev/null 2>&1 || true)\n'
         printf 'done\n'
-        printf 'PREPRINT_TICK_INTERVAL_MS=%s\n' "$((TICK_INTERVAL_S * 1000))"
-        # Editor needs a longer cadence (latexmk is slow); submitter is
-        # mostly idle (waiting for human flip). Mirrors claim-auditor's
-        # auditor=90s / searchers=120s split.
-        printf 'EDITOR_TICK_INTERVAL_MS=%s\n' "$(( (TICK_INTERVAL_S + 60) * 1000 ))"
-        printf 'SUBMITTER_TICK_INTERVAL_MS=%s\n' "60000"
+        # Daemon tick intervals are intentionally much shorter than the
+        # orchestrator's tick (= the rate at which replay:current_tick
+        # advances). If daemon tick == orchestrator tick, daemons race
+        # the orchestrator and consistently miss state changes — they
+        # poll right before the orchestrator writes the new
+        # current_tick and then sleep for the full interval, so the
+        # first useful read is one cycle late or more. Daemons polling
+        # at 30s catch any orchestrator advance within 30s.
+        # The submitter polls fast anyway (waits for the
+        # human-approval memo flip; #596 §HITL).
+        printf 'DAEMON_TICK_INTERVAL_MS=30000\n'
+        printf 'EDITOR_TICK_INTERVAL_MS=30000\n'
+        printf 'SUBMITTER_TICK_INTERVAL_MS=30000\n'
         printf 'for c in introducer theorist computer; do\n'
-        printf '    DAEMON_ID=1 COLONY_NAME=$c DISCOVERY_LEDGER=/run-root/preprint-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis PREPRINT_OUTPUT_ROOT=/run-root/preprints PREPRINT_AUTHOR_CONFIG=/run-root/config/authors.toml PREPRINT_LATEXMK_MAX_PASSES=%s agentis daemon /run-root/$c/agents/$c.ag --colony $c --enable-exec --enable-messaging --tick-interval "$PREPRINT_TICK_INTERVAL_MS" > /run-root/.agentis/logs/$c-1.log 2>&1 &\n' "$LATEXMK_MAX_PASSES"
+        printf '    DAEMON_ID=1 COLONY_NAME=$c DISCOVERY_LEDGER=/run-root/preprint-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis PREPRINT_OUTPUT_ROOT=/run-root/preprints PREPRINT_AUTHOR_CONFIG=/run-root/config/authors.toml PREPRINT_LATEXMK_MAX_PASSES=%s agentis daemon /run-root/$c/agents/$c.ag --colony $c --enable-exec --enable-messaging --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/$c-1.log 2>&1 &\n' "$LATEXMK_MAX_PASSES"
         printf 'done\n'
         printf 'DAEMON_ID=1 COLONY_NAME=editor DISCOVERY_LEDGER=/run-root/preprint-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis PREPRINT_OUTPUT_ROOT=/run-root/preprints PREPRINT_AUTHOR_CONFIG=/run-root/config/authors.toml PREPRINT_LATEXMK_MAX_PASSES=%s agentis daemon /run-root/editor/agents/editor.ag --colony editor --enable-exec --enable-messaging --tick-interval "$EDITOR_TICK_INTERVAL_MS" > /run-root/.agentis/logs/editor-1.log 2>&1 &\n' "$LATEXMK_MAX_PASSES"
         printf 'DAEMON_ID=1 COLONY_NAME=submitter DISCOVERY_LEDGER=/run-root/preprint-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis PREPRINT_OUTPUT_ROOT=/run-root/preprints PREPRINT_AUTHOR_CONFIG=/run-root/config/authors.toml PREPRINT_ARXIV_GATEWAY=%s PREPRINT_ARXIV_FROM=%s PREPRINT_SMTP_HOST=%s PREPRINT_SMTP_PORT=%s agentis daemon /run-root/submitter/agents/submitter.ag --colony submitter --enable-exec --enable-messaging --tick-interval "$SUBMITTER_TICK_INTERVAL_MS" > /run-root/.agentis/logs/submitter-1.log 2>&1 &\n' \
