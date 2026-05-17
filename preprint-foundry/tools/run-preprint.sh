@@ -472,6 +472,17 @@ audit_run_id = os.path.basename(auditor_upstream_dir) or "unknown"
 
 for idx in range(total_ticks):
     if idx >= len(candidates):
+        # Idle tick: no new candidate to seed, but we still bump
+        # replay:current_tick so already-seeded claims keep
+        # progressing through the phased pipeline (introducer/theorist/
+        # computer read tick-1, editor reads tick-2, submitter reads
+        # tick-3 — each needs the orchestrator to keep advancing the
+        # current_tick value even when no new claim is queued).
+        subprocess.run(
+            ["podman", "exec", "preprint-foundry-laptop",
+             "agentis", "memo", "set", "replay:current_tick", str(idx)],
+            check=False,
+        )
         with open(log_path, "a") as log:
             log.write(
                 "# tick " + str(idx) + "/" + str(total_ticks)
