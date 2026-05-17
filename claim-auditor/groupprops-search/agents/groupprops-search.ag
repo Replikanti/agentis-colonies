@@ -55,11 +55,11 @@ fn colony_name() -> string {
 }
 
 fn _extract_prompt() -> string {
-    return "Detect group-theoretic context in the math claim below. The user-supplied input carries the PROBLEM, the stated ANSWER, and the NOVELTY CLAIM. If the claim is NOT group-theoretic, output an empty array. Otherwise, output up to 5 short groupprops.subwiki.org search terms (named groups like 'symmetric group of degree 5', 'SL(2,5)', 'alternating group A5'; or order-based phrases like 'groups of order 120'). Output ONLY valid JSON: {\"queries_json\": \"[\\\"q1\\\", \\\"q2\\\"]\", \"rationale\": \"why these queries\"}. The queries_json field MUST be a JSON-encoded string of an array of search terms.";
+    return "Detect group-theoretic context in the math claim below. The user-supplied input carries the PROBLEM, the stated ANSWER, and the NOVELTY CLAIM. If the claim is NOT group-theoretic, output an empty array. Otherwise, output up to 5 short groupprops.subwiki.org search terms (named groups like 'symmetric group of degree 5', 'SL(2,5)', 'alternating group A5'; or order-based phrases like 'groups of order 120'). Output ONLY valid JSON: {\"queries_json\": \"[\\\"q1\\\", \\\"q2\\\"]\", \"rationale\": \"why these queries\"}. The queries_json field MUST be a JSON-encoded string of an array of search terms. Do NOT wrap output in markdown code fences (no triple backticks); return raw JSON only.";
 }
 
 fn _relevance_prompt() -> string {
-    return "Given the PROBLEM, ANSWER, NOVELTY CLAIM, and the raw groupprops opensearch JSON responses below (one per query), pick up to 5 entries that look most relevant. Output ONLY valid JSON: {\"matches_found\": <int>, \"top_matches\": [{\"url\":\"...\",\"title\":\"...\",\"relevance\":\"direct|partial|none\",\"reason\":\"...\"}], \"summary\":\"one-line\"}. Use 'direct' only when the page covers the exact claim; 'partial' for related results; 'none' otherwise.";
+    return "Given the PROBLEM, ANSWER, NOVELTY CLAIM, and the raw groupprops opensearch JSON responses below (one per query), pick up to 5 entries that look most relevant. Output ONLY valid JSON: {\"matches_found\": <int>, \"top_matches\": [{\"url\":\"...\",\"title\":\"...\",\"relevance\":\"direct|partial|none\",\"reason\":\"...\"}], \"summary\":\"one-line\"}. Use 'direct' only when the page covers the exact claim; 'partial' for related results; 'none' otherwise. Do NOT wrap output in markdown code fences (no triple backticks); return raw JSON only.";
 }
 
 fn tick(reason: string) -> void {

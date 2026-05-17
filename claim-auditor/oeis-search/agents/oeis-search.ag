@@ -55,11 +55,11 @@ fn colony_name() -> string {
 }
 
 fn _extract_prompt() -> string {
-    return "Extract integer sequences mentioned in the math claim below. The user-supplied input carries the PROBLEM, the stated ANSWER, and the NOVELTY CLAIM. Look for explicit comma-separated integer runs (e.g. '1, 2, 2, 4, 6, 6, 6, 10, 12') and for sequences implied by the problem (e.g. orders of permutations of length n). Output ONLY valid JSON: {\"sequences_json\": \"[\\\"1,2,3,5,7,11\\\", \\\"1,1,2,3,5,8\\\"]\", \"rationale\": \"why these sequences\"}. The sequences_json field MUST be a JSON-encoded string of an array of comma-separated integer-sequence strings. Output an empty array if no sequences are extractable.";
+    return "Extract integer sequences mentioned in the math claim below. The user-supplied input carries the PROBLEM, the stated ANSWER, and the NOVELTY CLAIM. Look for explicit comma-separated integer runs (e.g. '1, 2, 2, 4, 6, 6, 6, 10, 12') and for sequences implied by the problem (e.g. orders of permutations of length n). Output ONLY valid JSON: {\"sequences_json\": \"[\\\"1,2,3,5,7,11\\\", \\\"1,1,2,3,5,8\\\"]\", \"rationale\": \"why these sequences\"}. The sequences_json field MUST be a JSON-encoded string of an array of comma-separated integer-sequence strings. Output an empty array if no sequences are extractable. Do NOT wrap output in markdown code fences (no triple backticks); return raw JSON only.";
 }
 
 fn _relevance_prompt() -> string {
-    return "Given the PROBLEM, ANSWER, NOVELTY CLAIM, and the raw OEIS text-search responses below (each query's response concatenated), pick up to 5 A-numbers that look most relevant. Output ONLY valid JSON: {\"matches_found\": <int>, \"top_matches\": [{\"a_number\":\"A123456\",\"name\":\"...\",\"relevance\":\"direct|partial|none\",\"reason\":\"...\"}], \"summary\":\"one-line\"}. Use 'direct' only when the A-number is the same sequence; 'partial' if it overlaps but differs in offset or initial terms; 'none' otherwise.";
+    return "Given the PROBLEM, ANSWER, NOVELTY CLAIM, and the raw OEIS text-search responses below (each query's response concatenated), pick up to 5 A-numbers that look most relevant. Output ONLY valid JSON: {\"matches_found\": <int>, \"top_matches\": [{\"a_number\":\"A123456\",\"name\":\"...\",\"relevance\":\"direct|partial|none\",\"reason\":\"...\"}], \"summary\":\"one-line\"}. Use 'direct' only when the A-number is the same sequence; 'partial' if it overlaps but differs in offset or initial terms; 'none' otherwise. Do NOT wrap output in markdown code fences (no triple backticks); return raw JSON only.";
 }
 
 fn tick(reason: string) -> void {

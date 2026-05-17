@@ -58,11 +58,11 @@ fn colony_name() -> string {
 }
 
 fn _query_prompt() -> string {
-    return "You are constructing arXiv search queries to find prior work for a math claim. The user-supplied input below carries the PROBLEM, the stated ANSWER, and the NOVELTY CLAIM. Output 3 to 5 short arXiv search-API query strings (each <= 80 chars, terms joined by '+'). Favour exact key phrases (named theorems, group names, sequence labels, the specific numeric value) over generic words. Output ONLY valid JSON: {\"queries_json\": \"[\\\"q1\\\", \\\"q2\\\", \\\"q3\\\"]\", \"rationale\": \"why these queries\"}. The queries_json field MUST be a JSON-encoded string of an array of query strings.";
+    return "You are constructing arXiv search queries to find prior work for a math claim. The user-supplied input below carries the PROBLEM, the stated ANSWER, and the NOVELTY CLAIM. Output 3 to 5 short arXiv search-API query strings (each <= 80 chars, terms joined by '+'). Favour exact key phrases (named theorems, group names, sequence labels, the specific numeric value) over generic words. Output ONLY valid JSON: {\"queries_json\": \"[\\\"q1\\\", \\\"q2\\\", \\\"q3\\\"]\", \"rationale\": \"why these queries\"}. The queries_json field MUST be a JSON-encoded string of an array of query strings. Do NOT wrap output in markdown code fences (no triple backticks); return raw JSON only.";
 }
 
 fn _relevance_prompt() -> string {
-    return "Given the PROBLEM, ANSWER, NOVELTY CLAIM, and a block of concatenated arXiv ATOM entries (multiple queries appended), pick up to 10 entries that look most relevant. Output ONLY valid JSON: {\"matches_found\": <int>, \"top_matches\": [{\"arxiv_id\":\"...\",\"title\":\"...\",\"relevance\":\"direct|partial|none\",\"reason\":\"...\"}], \"summary\":\"one-line\"}. Use 'direct' only when an abstract proves or states the same result; 'partial' for overlapping setup or weaker form; 'none' otherwise.";
+    return "Given the PROBLEM, ANSWER, NOVELTY CLAIM, and a block of concatenated arXiv ATOM entries (multiple queries appended), pick up to 10 entries that look most relevant. Output ONLY valid JSON: {\"matches_found\": <int>, \"top_matches\": [{\"arxiv_id\":\"...\",\"title\":\"...\",\"relevance\":\"direct|partial|none\",\"reason\":\"...\"}], \"summary\":\"one-line\"}. Use 'direct' only when an abstract proves or states the same result; 'partial' for overlapping setup or weaker form; 'none' otherwise. Do NOT wrap output in markdown code fences (no triple backticks); return raw JSON only.";
 }
 
 fn tick(reason: string) -> void {
