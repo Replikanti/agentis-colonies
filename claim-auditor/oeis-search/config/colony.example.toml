@@ -1,0 +1,30 @@
+# OEIS Search Colony Configuration
+#
+# Part of the Claim Auditor federation. Phase-1 single-agent colony
+# that hits the public oeis.org/search?fmt=text endpoint to find
+# prior sequence matches for the upstream math-foundry novelty claim
+# seeded into memo by tools/run-auditor.sh.
+#
+# Copy to colony.toml and edit for your environment.
+
+[colony]
+name = "oeis-search"
+tick_interval_ms = 120000
+
+# Non-forge federation (#373, ADR-0003).
+[forge]
+type = "none"
+
+[llm]
+# tools/run-auditor.sh overlays the real llm.command / llm.args block
+# in the container bootstrap when AUDITOR_LLM_BACKEND=claude.
+backend = "cli"
+
+[oeis_search]
+max_sequences = 5
+
+[[agents]]
+name = "oeis-search"
+source = "agents/oeis-search.ag"
+cb_budget = 2000
+tick_interval_ms = 120000

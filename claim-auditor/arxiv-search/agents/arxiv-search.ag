@@ -1,0 +1,161 @@
+// arxiv-search.ag -- Claim Auditor arxiv searcher: reads the
+// triggering claim row from memo (seeded by run-auditor.sh from the
+// upstream math-foundry discovery-ledger row), asks the LLM for 3-5
+// arxiv API query strings derived from problem_text + novelty_claim,
+// fans the queries out through a Python helper (urllib fetch loop --
+// the .ag DSL has no for/while, so multi-curl iteration lives in
+// Python instead), and runs a single LLM judgement pass over the
+// concatenated abstracts. The structured report is persisted to memo
+// for the auditor colony to synthesize.
+//
+// Per-tick behaviour:
+//   1. Read claim seed memo (problem_text / answer / novelty_claim).
+//   2. Build the QUERY_PROMPT and call prompt() -> Queries JSON.
+//   3. Hand queries JSON to a Python helper that fetches each one and
+//      concatenates the atom-XML responses.
+//   4. LLM judges relevance over the combined feed and emits a Report.
+//   5. Persist the report to memo
+//      (`arxiv_search:<pid>:report:tick-N`) and emit
+//      "arxiv-search:report_ready" so the auditor can pick up.
+//
+// Run as daemon: agentis daemon agents/arxiv-search.ag --colony arxiv-search
+// Requires: exec capability (curl + python3), messaging capability.
+
+cb 2000;
+
+type Queries {
+    queries_json: string,
+    rationale: string
+}
+
+type RelevanceJudgement {
+    arxiv_id: string,
+    title: string,
+    relevance: string,
+    reason: string
+}
+
+type Report {
+    matches_found: int,
+    top_matches: list<RelevanceJudgement>,
+    summary: string
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("arxiv_search:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    };
+    return 0.0;
+}
+
+fn colony_name() -> string {
+    let _cn = try { exec sh "printenv COLONY_NAME"; } catch e { ""; };
+    if len(_cn) > 0 {
+        return _cn;
+    };
+    return "arxiv-search";
+}
+
+fn _query_prompt() -> string {
+    return "You are constructing arXiv search queries to find prior work for a math claim. The user-supplied input below carries the PROBLEM, the stated ANSWER, and the NOVELTY CLAIM. Output 3 to 5 short arXiv search-API query strings (each <= 80 chars, terms joined by '+'). Favour exact key phrases (named theorems, group names, sequence labels, the specific numeric value) over generic words. Output ONLY valid JSON: {\"queries_json\": \"[\\\"q1\\\", \\\"q2\\\", \\\"q3\\\"]\", \"rationale\": \"why these queries\"}. The queries_json field MUST be a JSON-encoded string of an array of query strings.";
+}
+
+fn _relevance_prompt() -> string {
+    return "Given the PROBLEM, ANSWER, NOVELTY CLAIM, and a block of concatenated arXiv ATOM entries (multiple queries appended), pick up to 10 entries that look most relevant. Output ONLY valid JSON: {\"matches_found\": <int>, \"top_matches\": [{\"arxiv_id\":\"...\",\"title\":\"...\",\"relevance\":\"direct|partial|none\",\"reason\":\"...\"}], \"summary\":\"one-line\"}. Use 'direct' only when an abstract proves or states the same result; 'partial' for overlapping setup or weaker form; 'none' otherwise.";
+}
+
+fn tick(reason: string) -> void {
+    let _ = reason;
+    let _colony_name = colony_name();
+    let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
+    let conf = get_confidence();
+    print("[arxiv-search] tick conf=", conf);
+
+    let tick_idx_str = recall_latest("replay:current_tick");
+    let tick_idx = if len(tick_idx_str) > 0 { parse_int(tick_idx_str); } else { -1; };
+    if tick_idx < 0 {
+        print("[arxiv-search] no auditor tick yet");
+        return;
+    };
+    let upstream_tick = tick_idx - 1;
+    if upstream_tick < 0 {
+        print("[arxiv-search] waiting for first seed, current=", tick_idx);
+        return;
+    };
+
+    let problem_text = recall_latest("claim:problem_text:tick-" + to_string(upstream_tick));
+    let stated_answer = recall_latest("claim:answer:tick-" + to_string(upstream_tick));
+    let novelty_claim = recall_latest("claim:novelty_claim:tick-" + to_string(upstream_tick));
+    if len(problem_text) == 0 {
+        print("[arxiv-search] no claim seed for tick=", upstream_tick);
+        return;
+    };
+
+    let ctx = "PROBLEM: " + problem_text + "\n"
+            + "ANSWER: " + stated_answer + "\n"
+            + "NOVELTY CLAIM: " + novelty_claim + "\n";
+
+    let queries = prompt(_query_prompt(), ctx) -> Queries;
+
+    let my_tier = tier("arxiv_search");
+    if my_tier == "autonomous" {
+        learn("arxiv-search", "tick " + to_string(tick_idx), queries.rationale, "partial", ["acted", "claim-auditor"]);
+    } else {
+        if my_tier == "review-gated" {
+            learn("arxiv-search", "tick " + to_string(tick_idx), queries.rationale, "partial", ["review-gated", "claim-auditor"]);
+        } else {
+            if my_tier == "propose" {
+                // Iteration over queries lives in Python because the .ag
+                // DSL has no for/while loop (precedent: tail-recursion
+                // pattern in dev-apprenticeship/triage/agents/router.ag
+                // tick_at). The helper accepts the queries JSON via
+                // QJSON env and prints the concatenated atom feed.
+                let queries_json = queries.queries_json;
+                let max_results_raw = try { exec sh "printenv ARXIV_MAX_QUERY_RESULTS"; } catch e { "10"; };
+                let max_results = if len(max_results_raw) > 0 { parse_int(max_results_raw); } else { 10; };
+                // colony-lint: safe-exec-concat
+                let fetch_cmd = "QJSON=" + shell_escape(queries_json) + " MAXR=" + to_string(max_results)
+                    + " python3 -c 'import os, json, urllib.parse, urllib.request, sys\n"
+                    + "try:\n  qs=json.loads(os.environ[\"QJSON\"])\nexcept Exception:\n  qs=[]\n"
+                    + "if not isinstance(qs, list): qs=[]\n"
+                    + "mx=int(os.environ.get(\"MAXR\",\"10\"))\n"
+                    + "out=[]\n"
+                    + "for q in qs[:5]:\n"
+                    + "  url=\"http://export.arxiv.org/api/query?search_query=all:\"+urllib.parse.quote_plus(str(q))+\"&start=0&max_results=\"+str(mx)\n"
+                    + "  try:\n"
+                    + "    r=urllib.request.urlopen(url,timeout=30).read().decode(\"utf-8\",\"replace\")\n"
+                    + "  except Exception as e:\n"
+                    + "    r=\"<error>\"+str(e)+\"</error>\"\n"
+                    + "  out.append(\"--- query: \"+str(q)+\" ---\\n\"+r)\n"
+                    + "sys.stdout.write(\"\\n\".join(out))'";
+                let combined_raw = try { exec sh fetch_cmd; } catch e { ""; };
+
+                let judge_ctx = "PROBLEM: " + problem_text + "\n"
+                              + "ANSWER: " + stated_answer + "\n"
+                              + "NOVELTY CLAIM: " + novelty_claim + "\n"
+                              + "ARXIV FEEDS:\n" + combined_raw + "\n";
+                let report = prompt(_relevance_prompt(), judge_ctx) -> Report;
+
+                let report_json = "{\"matches_found\":" + to_string(report.matches_found)
+                                + ",\"summary\":\"" + report.summary
+                                + "\",\"top_match_count\":" + to_string(len(report.top_matches)) + "}";
+                memo_write("arxiv_search:" + _self_pid + ":report:tick-" + to_string(upstream_tick), report_json);
+                memo_write("arxiv_search:" + _self_pid + ":matches_found:tick-" + to_string(upstream_tick), to_string(report.matches_found));
+                memo_write("arxiv_search:" + _self_pid + ":summary:tick-" + to_string(upstream_tick), report.summary);
+                memo_write("replay:current_arxiv_search_pid", _self_pid);
+                emit("arxiv-search:report_ready", report);
+
+                learn("arxiv-search", "tick " + to_string(tick_idx), "matches=" + to_string(report.matches_found), "success", ["emitted", "claim-auditor"]);
+            } else {
+                print("[arxiv-search] observing (tier:", my_tier, ") rationale=", queries.rationale);
+                learn("arxiv-search", "tick " + to_string(tick_idx), queries.rationale, "partial", ["observed", "claim-auditor"]);
+            };
+        };
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("arxiv_search:last_check", now);
+    };
+}

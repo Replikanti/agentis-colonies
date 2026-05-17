@@ -1,0 +1,30 @@
+# Groupprops Search Colony Configuration
+#
+# Part of the Claim Auditor federation. Phase-1 single-agent colony
+# that hits the groupprops.subwiki.org MediaWiki opensearch API for
+# group-theoretic claims. Skips early when the upstream claim is not
+# group-theoretic (empty queries list from the extract prompt).
+#
+# Copy to colony.toml and edit for your environment.
+
+[colony]
+name = "groupprops-search"
+tick_interval_ms = 120000
+
+# Non-forge federation (#373, ADR-0003).
+[forge]
+type = "none"
+
+[llm]
+# tools/run-auditor.sh overlays the real llm.command / llm.args block
+# in the container bootstrap when AUDITOR_LLM_BACKEND=claude.
+backend = "cli"
+
+[groupprops_search]
+max_queries = 5
+
+[[agents]]
+name = "groupprops-search"
+source = "agents/groupprops-search.ag"
+cb_budget = 2000
+tick_interval_ms = 120000

@@ -1,0 +1,150 @@
+// groupprops-search.ag -- Claim Auditor groupprops searcher: detects
+// group-theoretic context in the claim (named groups, group orders),
+// asks groupprops.subwiki.org for related pages via the MediaWiki
+// opensearch API, then asks the LLM to judge each hit's relevance to
+// the claim. The structured report is persisted to memo for the
+// auditor to synthesize.
+//
+// Per-tick behaviour:
+//   1. Read claim seed memo (problem_text / answer / novelty_claim).
+//   2. Build the EXTRACT_PROMPT and call prompt() -> Queries JSON.
+//   3. For each query, exec curl against the MediaWiki opensearch
+//      endpoint (iteration in Python helper -- no for/while in DSL).
+//   4. LLM judges relevance per result; emit a Report.
+//   5. Persist to memo (`groupprops_search:<pid>:report:tick-N`)
+//      and emit "groupprops-search:report_ready".
+//
+// Run as daemon:
+//   agentis daemon agents/groupprops-search.ag --colony groupprops-search
+// Requires: exec capability (curl + python3), messaging capability.
+
+cb 2000;
+
+type Queries {
+    queries_json: string,
+    rationale: string
+}
+
+type GroupHit {
+    url: string,
+    title: string,
+    relevance: string,
+    reason: string
+}
+
+type Report {
+    matches_found: int,
+    top_matches: list<GroupHit>,
+    summary: string
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("groupprops_search:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    };
+    return 0.0;
+}
+
+fn colony_name() -> string {
+    let _cn = try { exec sh "printenv COLONY_NAME"; } catch e { ""; };
+    if len(_cn) > 0 {
+        return _cn;
+    };
+    return "groupprops-search";
+}
+
+fn _extract_prompt() -> string {
+    return "Detect group-theoretic context in the math claim below. The user-supplied input carries the PROBLEM, the stated ANSWER, and the NOVELTY CLAIM. If the claim is NOT group-theoretic, output an empty array. Otherwise, output up to 5 short groupprops.subwiki.org search terms (named groups like 'symmetric group of degree 5', 'SL(2,5)', 'alternating group A5'; or order-based phrases like 'groups of order 120'). Output ONLY valid JSON: {\"queries_json\": \"[\\\"q1\\\", \\\"q2\\\"]\", \"rationale\": \"why these queries\"}. The queries_json field MUST be a JSON-encoded string of an array of search terms.";
+}
+
+fn _relevance_prompt() -> string {
+    return "Given the PROBLEM, ANSWER, NOVELTY CLAIM, and the raw groupprops opensearch JSON responses below (one per query), pick up to 5 entries that look most relevant. Output ONLY valid JSON: {\"matches_found\": <int>, \"top_matches\": [{\"url\":\"...\",\"title\":\"...\",\"relevance\":\"direct|partial|none\",\"reason\":\"...\"}], \"summary\":\"one-line\"}. Use 'direct' only when the page covers the exact claim; 'partial' for related results; 'none' otherwise.";
+}
+
+fn tick(reason: string) -> void {
+    let _ = reason;
+    let _colony_name = colony_name();
+    let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
+    let conf = get_confidence();
+    print("[groupprops-search] tick conf=", conf);
+
+    let tick_idx_str = recall_latest("replay:current_tick");
+    let tick_idx = if len(tick_idx_str) > 0 { parse_int(tick_idx_str); } else { -1; };
+    if tick_idx < 0 {
+        print("[groupprops-search] no auditor tick yet");
+        return;
+    };
+    let upstream_tick = tick_idx - 1;
+    if upstream_tick < 0 {
+        print("[groupprops-search] waiting for first seed, current=", tick_idx);
+        return;
+    };
+
+    let problem_text = recall_latest("claim:problem_text:tick-" + to_string(upstream_tick));
+    let stated_answer = recall_latest("claim:answer:tick-" + to_string(upstream_tick));
+    let novelty_claim = recall_latest("claim:novelty_claim:tick-" + to_string(upstream_tick));
+    if len(problem_text) == 0 {
+        print("[groupprops-search] no claim seed for tick=", upstream_tick);
+        return;
+    };
+
+    let ctx = "PROBLEM: " + problem_text + "\n"
+            + "ANSWER: " + stated_answer + "\n"
+            + "NOVELTY CLAIM: " + novelty_claim + "\n";
+
+    let queries = prompt(_extract_prompt(), ctx) -> Queries;
+
+    let my_tier = tier("groupprops_search");
+    if my_tier == "autonomous" {
+        learn("groupprops-search", "tick " + to_string(tick_idx), queries.rationale, "partial", ["acted", "claim-auditor"]);
+    } else {
+        if my_tier == "review-gated" {
+            learn("groupprops-search", "tick " + to_string(tick_idx), queries.rationale, "partial", ["review-gated", "claim-auditor"]);
+        } else {
+            if my_tier == "propose" {
+                let queries_json = queries.queries_json;
+                // colony-lint: safe-exec-concat
+                let fetch_cmd = "QJSON=" + shell_escape(queries_json)
+                    + " python3 -c 'import os, json, urllib.parse, urllib.request, sys\n"
+                    + "try:\n  qs=json.loads(os.environ[\"QJSON\"])\nexcept Exception:\n  qs=[]\n"
+                    + "if not isinstance(qs, list): qs=[]\n"
+                    + "out=[]\n"
+                    + "for q in qs[:5]:\n"
+                    + "  url=\"https://groupprops.subwiki.org/w/api.php?action=opensearch&format=json&limit=10&search=\"+urllib.parse.quote_plus(str(q))\n"
+                    + "  try:\n"
+                    + "    r=urllib.request.urlopen(url,timeout=30).read().decode(\"utf-8\",\"replace\")\n"
+                    + "  except Exception as e:\n"
+                    + "    r=\"<error>\"+str(e)+\"</error>\"\n"
+                    + "  out.append(\"--- query: \"+str(q)+\" ---\\n\"+r)\n"
+                    + "sys.stdout.write(\"\\n\".join(out))'";
+                let combined_raw = try { exec sh fetch_cmd; } catch e { ""; };
+
+                let judge_ctx = "PROBLEM: " + problem_text + "\n"
+                              + "ANSWER: " + stated_answer + "\n"
+                              + "NOVELTY CLAIM: " + novelty_claim + "\n"
+                              + "GROUPPROPS FEEDS:\n" + combined_raw + "\n";
+                let report = prompt(_relevance_prompt(), judge_ctx) -> Report;
+
+                let report_json = "{\"matches_found\":" + to_string(report.matches_found)
+                                + ",\"summary\":\"" + report.summary
+                                + "\",\"top_match_count\":" + to_string(len(report.top_matches)) + "}";
+                memo_write("groupprops_search:" + _self_pid + ":report:tick-" + to_string(upstream_tick), report_json);
+                memo_write("groupprops_search:" + _self_pid + ":matches_found:tick-" + to_string(upstream_tick), to_string(report.matches_found));
+                memo_write("groupprops_search:" + _self_pid + ":summary:tick-" + to_string(upstream_tick), report.summary);
+                memo_write("replay:current_groupprops_search_pid", _self_pid);
+                emit("groupprops-search:report_ready", report);
+
+                learn("groupprops-search", "tick " + to_string(tick_idx), "matches=" + to_string(report.matches_found), "success", ["emitted", "claim-auditor"]);
+            } else {
+                print("[groupprops-search] observing (tier:", my_tier, ") rationale=", queries.rationale);
+                learn("groupprops-search", "tick " + to_string(tick_idx), queries.rationale, "partial", ["observed", "claim-auditor"]);
+            };
+        };
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("groupprops_search:last_check", now);
+    };
+}
