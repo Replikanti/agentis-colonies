@@ -1,0 +1,37 @@
+{
+  "topic": "abstract_algebra",
+  "description": "Groups, rings, fields, Galois theory, representation theory.",
+  "compute_hints": "sympy.polys (Poly, GF, factor, ...), sympy.combinatorics (PermutationGroup, ...).",
+  "papers": [
+    {
+      "id": "2605.15169",
+      "title": "Modal group theory: homomorphisms",
+      "abstract": "I investigate modal group theory for arbitrary homomorphisms. Possibility is interpreted by the existence of a group homomorphism out of the given group, so the semantics is governed by the possibility of collapse: elements may be identified, parameters may be killed, and new relations may hold in the target. I show that the modal language nevertheless expresses cyclic subgroup membership, subgroup generation by a fixed finite tuple, cyclicity, finite generation by a fixed number of elements, and torsion. I use these definability results to interpret arithmetic, and prove that, as sets of Goedel numbers, the homomorphic modal theory of finitely presented groups is computably isomorphic to true arithmetic. I also analyze propositional modal validities: sentential validities are exactly S5, the trivial group has exact parameter-validities S5, and uniformly prime-indivisible groups have exact parameter-validities S4.2."
+    },
+    {
+      "id": "2605.15075",
+      "title": "Non-crystallographic systems of integers over composition algebras",
+      "abstract": "In this work we revisit classical systems of integers inside the real normed division algebras from the point of view of finite norm shells and root systems. Building on the icosian framework of Moody--Patera and on the integral root-system viewpoint of Chen--Moody--Patera and of Johnson, we isolate the precise axiomatic ingredients of the non-crystallographic analogue: an order over the golden ring \\(\\Zphi\\) together with a distinguished finite root shell whose Cartan coefficients lie in \\(\\Zphi\\). We show that the usual Gaussian, Eisenstein, Hamilton, Hurwitz and Coxeter--Dickson examples are recovered by separating the order, its units, and its distinguished finite shells; once the lattice requirement is replaced by a finite root-shell requirement, the golden integer ring becomes the natural coefficient ring for the non-crystallographic cases \\(H_2\\) and \\(H_4\\). We then construct a weak golden octonion order by Cayley--Dickson doubling of the icosian ring; the resulting free rank-\\(8\\) \\(\\Zphi\\)-order has a \\(240\\)-element finite shell of type \\(H_4\\oplus H_4\\) and its multiplication is genuinely octonionic. Finally, we prove (i) that this weak double is self-dual with respect to the polar norm pairing, hence has no strict norm-integral overorder, and (ii) that the first trace-integral discriminant tower over it contains no octonion-stable nonzero isotropic gluing."
+    },
+    {
+      "id": "2605.15063",
+      "title": "The R\u00e9nyi entropy of the order of a random permutation",
+      "abstract": "We study the distribution of the order of a random permutation of $[n]$ through the lens of R\u00e9nyi entropy. In particular, we obtain an asymptotic for the R\u00e9nyi $q$-entropy of the order in the full range $1 \\leq q \\leq \\infty$. For $q > 1$, our results are quantitatively optimal and reveal a tight connection between the asymptotic behaviour of the R\u00e9nyi $q$-entropy and arithmetic properties of $n$. Of particular interest are the cases $q = \\infty$ and $q = 2$, which correspond to the maximum probability of achieving a particular order and the probability that two independent random permutations have equal orders, respectively. In the former case, we show that the probability in question is asymptotic to $1/n$ and additionally characterise the maximiser for sufficiently large $n$. In the latter case, we determine a minimal and maximal order for the probability as a function of $n$, of respective forms $c/n^2$ and $\\log^*n/n^2$. Our results provide an essentially complete answer to a set of questions raised by Acan, Burnette, Eberhard, Schmutz and Thomas, some of which go back to work of Erd\u0151s and Tur\u00e1n from the 1960s."
+    },
+    {
+      "id": "2605.14862",
+      "title": "Commutative decomposition of infinite symmetric groups and transformation monoids",
+      "abstract": "The commutative subgroup width of a group $G$ is the smallest $k$ such that there are abelian subgroups $A_0,A_1,\\ldots,A_{k-1}\\leq G$ with $G=A_0A_1\\cdots A_{k-1}$. Commutative (inverse) submonoid width is defined analogously. In 2002, Ab\u00e9rt showed, rather surprisingly, that the commutative subgroup width of the symmetric group on an infinite set is always finite. It was later shown by Seress that it is always bounded above by $14$. We answer a question of Seress and show that in fact the commutative subgroup width of $\\operatorname{Sym}(\\mathbb{N})$ is at most $9$. We improve the best known lower bound to $4$. We also study standard monoid analogues of the symmetric group; showing that the commutative submonoid widths of the full transformation monoid $\\mathbb{N}^\\mathbb{N}$, the partial transformation monoid $P_\\mathbb{N}$ and the symmetric inverse monoid $I_\\mathbb{N}$ are exactly $3$. We conclude by showing that the commutative inverse submonoid width of any infinite symmetric inverse monoid is always infinite."
+    },
+    {
+      "id": "2605.14803",
+      "title": "Frobenius--Witt cotangent complexes",
+      "abstract": "We introduce the notion of the Frobenius--Witt cotangent complex, which can be considered as a derived variant of the module of Frobenius--Witt differentials defined by T. Saito. This new object also can be seen as an arithmetic variant of the notion of cotangent complex. We explain the suitability of these two viewpoints through a series of propositions. Furthermore, we establish a relationship between Frobenius--Witt cotangent complexes and the regularity of noetherian local rings, which might be considered as a derived variant of Saito's regularity criterion. This proof relies heavily on computations of Frobenius--Witt cotangent complexes in the case of perfectoid rings."
+    },
+    {
+      "id": "2605.14775",
+      "title": "On Numerical Semigroups with Fixed Quotient",
+      "abstract": "Let $\u0394$ be a numerical semigroup and let $d\\ge 2$ be an integer. We study the fiber of the quotient map \\(S\\mapsto S/d\\) over $\u0394$. We describe its elements as semigroups of the form $\\langle X\\rangle+d\u0394$, for suitable finite sets $X\\subseteq\u0394$, and then analyze explicit and computable regions of this fiber. In particular, we introduce a family $\u0394_d(a)$ of multiples with prescribed quotient and compute its generators, classical invariants, Ap\u00e9ry sets, and presentations. We also show that this construction preserves Wilf's inequality and controls the depth. Finally, we introduce the $\\mathcal{M}_d(\u0394)$-rank, determine its maximal value in the fiber, relate it to the ordinary embedding dimension, characterize the rank-one elements, and give closed formulas for their Frobenius-type invariants and pseudo-Frobenius numbers."
+    }
+  ]
+}

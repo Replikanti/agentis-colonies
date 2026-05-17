@@ -1,0 +1,37 @@
+{
+  "topic": "combinatorics",
+  "description": "Enumeration, generating functions, partitions, Ramsey theory, additive combinatorics.",
+  "compute_hints": "sympy (binomial, partition, fibonacci), itertools, fractions.Fraction.",
+  "papers": [
+    {
+      "id": "2605.15147",
+      "title": "Improved Ramsey bounds for generalized Schur equations",
+      "abstract": "We show that for $m, r \\in \\mathbb{N}$ and $N > (2m+1)^r (r!)^{1/m}$, every $r$-coloring of the integers in the interval $[N]$ contains a monochromatic solution to the equation   \\[   x_1 + \\dots + \\dots x_{m+1} = y_1 + \\dots + y_m.   \\]   This generalizes and improves recent results of Ko\u015bcuiszko. We also show that if $N \\geq 2^{r}$, then every $r$-coloring of the integers in $[N]$ must always determine a monochromatic solution to the above equation for some $m \\geq 1$. The latter estimate is optimal."
+    },
+    {
+      "id": "2605.15136",
+      "title": "New Bounds for Integer Flows and Verma Modules, via Denormalized Lorentzian Laurent Series",
+      "abstract": "The theory of log concave polynomials has recently been developed to study objects and problems in combinatorics and other subfields in mathematics. Particular classes of log concave polynomials called Lorentzian polynomials and denormalized and dually Lorentzian polynomials have been used to prove log concavity statements for various combinatorial sequences. This includes the strongest form of Mason's log concavity conjecture on the independent sets of matroids and the log concavity of sequences of Kostka numbers.   In this paper, we develop an analogous class of power series called denormalized Lorentzian (DL) Laurent series. This class is the natural generalization of DL polynomials to homogeneous power series with the benefit of capturing a number of combinatorial generating series including the Kostant partition function for integer flows of directed graphs. We then analyze specific DL Laurent series to obtain new bounds for integral flows on general directed acyclic graphs and new bounds for the dimensions of weight spaces of parabolic $\\mathfrak{sl}_{n+1}(\\mathbb{C})$ Verma modules."
+    },
+    {
+      "id": "2605.15125",
+      "title": "An excluded minor theorem for the 6-wheel",
+      "abstract": "For each integer $n \\geq 3$, the wheel graph $W_n$ is defined as the graph obtained by connecting a single vertex to all vertices of a cycle of length $n$. In particular, $W_6$ can be uniquely obtained from the Petersen graph by contracting three edges incident to a common vertex. Gubser provided a characterization of all 3-connected planar $W_6$-minor-free graphs. In this paper, we complete the characterization of $W_6$-minor-free graphs by determining the 3-connected nonplanar cases."
+    },
+    {
+      "id": "2605.15105",
+      "title": "Uniform Tur\u00e1n densities of $k$-uniform hypergraphs",
+      "abstract": "For $k\\ge 3$, the $(k-2)$-uniform Tur\u00e1n density $\u03c0_{k-2}(F)$ of a $k$-graph $F$ is the supremum of $d$ for which there are arbitrarily large $F$-free $k$-graphs that are uniformly $d$-dense with respect to the $k$-vertex cliques of every $(k-2)$-graph on the same vertex set. We develop a \\emph{palette framework} for this density. For every family $\\mathcal F$ of $k$-graphs, we prove that $\u03c0_{k-2}(\\mathcal F)$ equals the corresponding palette Tur\u00e1n density. We further establish palette classification tools for the existence of $k$-graphs satisfying prescribed palette colorability constraints. Those together allow us to reduce exact density computations to a palette-homomorphism framework without relying on the hypergraph regularity method.   As applications, for all $k\\ge 3$ and $r\\ge 2$, we establish the following values \\[ \\frac{r-1}{r},\\quad \\frac{(r-1)^2}{r^2},\\quad \\frac{r-1}{2r},\\quad \\frac{(k-1)^k}{k^k},\\quad \\frac{4(k-2)^{k-2}}{k^k},\\quad \\frac{4(k-2)^{k-2}}{3k^k} \\] as $(k-2)$-uniform Tur\u00e1n densities of single $k$-graphs. Finally, for every $k\\ge3$, we show that there exist $k$-graphs $F_1,F_2$ such that \\[ \u03c0_{k-2}(\\{F_1,F_2\\})< \\min\\{\u03c0_{k-2}(F_1),\u03c0_{k-2}(F_2)\\}, \\] which provides the first examples of \\emph{non-principal} families for this density."
+    },
+    {
+      "id": "2605.15066",
+      "title": "The critical activation density in graph bootstrap percolation",
+      "abstract": "In graph bootstrap percolation, edges of an Erd\u0151s-R\u00e9nyi random graph ${\\mathcal G}_{n,p}$ are initially active. Activation spreads to other edges of the complete graph $K_n$ by an iterative process governed by a fixed graph $H$, whereby an edge becomes active whenever it is the only inactive edge in a copy of $H$. If all edges of $K_n$ are eventually activated, we say the process $H$-percolates. The case $H=K_3$ corresponds to the classical sharp threshold for connectivity in ${\\mathcal G}_{n,p}$. When $H=K_4$, there are close connections with $2$-neighbor bootstrap percolation from statistical physics. Varying $H$ produces a wide range of behaviors.   In this work, for every graph $H$, we locate the critical $H$-percolation threshold $p_c(n,H)$, answering a question of Balogh, Bollob\u00e1s, and Morris. Our general methods recover and improve several previous results. The location of $p_c(n,H)$ is related to a critical limiting density $\u03c1(H)$ of graphs that most efficiently activate a given edge. Introducing the parameter $\u03c1(H)$ raises several questions. For instance, it remains open whether $\u03c1(H)$ is computable in general, and its expression appears to indicate when the $H$-percolation threshold is sharp."
+    },
+    {
+      "id": "2605.15063",
+      "title": "The R\u00e9nyi entropy of the order of a random permutation",
+      "abstract": "We study the distribution of the order of a random permutation of $[n]$ through the lens of R\u00e9nyi entropy. In particular, we obtain an asymptotic for the R\u00e9nyi $q$-entropy of the order in the full range $1 \\leq q \\leq \\infty$. For $q > 1$, our results are quantitatively optimal and reveal a tight connection between the asymptotic behaviour of the R\u00e9nyi $q$-entropy and arithmetic properties of $n$. Of particular interest are the cases $q = \\infty$ and $q = 2$, which correspond to the maximum probability of achieving a particular order and the probability that two independent random permutations have equal orders, respectively. In the former case, we show that the probability in question is asymptotic to $1/n$ and additionally characterise the maximiser for sufficiently large $n$. In the latter case, we determine a minimal and maximal order for the probability as a function of $n$, of respective forms $c/n^2$ and $\\log^*n/n^2$. Our results provide an essentially complete answer to a set of questions raised by Acan, Burnette, Eberhard, Schmutz and Thomas, some of which go back to work of Erd\u0151s and Tur\u00e1n from the 1960s."
+    }
+  ]
+}

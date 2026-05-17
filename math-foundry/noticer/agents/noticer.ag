@@ -59,19 +59,22 @@ fn tick(reason: string) -> void {
         print("[noticer] no foundry tick yet");
         return;
     };
-
-    // Read the explorer's latest output from memo. The orchestrator
-    // exposes the producing explorer pid via `replay:current_explorer_pid`.
-    let explorer_pid = recall_latest("replay:current_explorer_pid");
-    if len(explorer_pid) == 0 {
-        print("[noticer] no explorer pid for tick=", tick_idx);
+    let upstream_tick = tick_idx - 1;
+    if upstream_tick < 0 {
+        print("[noticer] waiting for first explorer tick, current=", tick_idx);
         return;
     };
-    let code = recall_latest("explorer:" + explorer_pid + ":code:tick-" + to_string(tick_idx));
-    let output = recall_latest("explorer:" + explorer_pid + ":output:tick-" + to_string(tick_idx));
-    let expl_goal = recall_latest("explorer:" + explorer_pid + ":goal:tick-" + to_string(tick_idx));
+
+    let explorer_pid = recall_latest("replay:current_explorer_pid");
+    if len(explorer_pid) == 0 {
+        print("[noticer] no explorer pid for tick=", upstream_tick);
+        return;
+    };
+    let code = recall_latest("explorer:" + explorer_pid + ":code:tick-" + to_string(upstream_tick));
+    let output = recall_latest("explorer:" + explorer_pid + ":output:tick-" + to_string(upstream_tick));
+    let expl_goal = recall_latest("explorer:" + explorer_pid + ":goal:tick-" + to_string(upstream_tick));
     if len(output) == 0 {
-        print("[noticer] no explorer output for tick=", tick_idx);
+        print("[noticer] no explorer output for tick=", upstream_tick);
         return;
     };
 
@@ -95,8 +98,8 @@ fn tick(reason: string) -> void {
                                   + "\",\"specific_value\":\"" + surprise.specific_value
                                   + "\",\"why_surprising\":\"" + surprise.why_surprising
                                   + "\",\"confidence_in_surprise\":" + conf_str + "}";
-                memo_write("noticer:" + _self_pid + ":surprise:tick-" + to_string(tick_idx), surprise_json);
-                memo_write("noticer:" + _self_pid + ":surprise_found:tick-" + to_string(tick_idx), surprise_found_str);
+                memo_write("noticer:" + _self_pid + ":surprise:tick-" + to_string(upstream_tick), surprise_json);
+                memo_write("noticer:" + _self_pid + ":surprise_found:tick-" + to_string(upstream_tick), surprise_found_str);
                 memo_write("replay:current_noticer_pid", _self_pid);
                 emit("math-foundry:notice_done", surprise);
 

@@ -65,27 +65,32 @@ fn tick(reason: string) -> void {
         print("[formulator] no foundry tick yet");
         return;
     };
+    let upstream_tick = tick_idx - 2;
+    if upstream_tick < 0 {
+        print("[formulator] waiting for noticer pipeline, current=", tick_idx);
+        return;
+    };
 
     let noticer_pid = recall_latest("replay:current_noticer_pid");
     if len(noticer_pid) == 0 {
-        print("[formulator] no noticer pid for tick=", tick_idx);
+        print("[formulator] no noticer pid for tick=", upstream_tick);
         return;
     };
-    let surprise_found = recall_latest("noticer:" + noticer_pid + ":surprise_found:tick-" + to_string(tick_idx));
+    let surprise_found = recall_latest("noticer:" + noticer_pid + ":surprise_found:tick-" + to_string(upstream_tick));
     if surprise_found != "true" {
-        print("[formulator] surprise not found (or noticer unset) for tick=", tick_idx);
+        print("[formulator] surprise not found (or noticer unset) for tick=", upstream_tick);
         return;
     };
-    let surprise_json = recall_latest("noticer:" + noticer_pid + ":surprise:tick-" + to_string(tick_idx));
+    let surprise_json = recall_latest("noticer:" + noticer_pid + ":surprise:tick-" + to_string(upstream_tick));
     if len(surprise_json) == 0 {
-        print("[formulator] no surprise json for tick=", tick_idx);
+        print("[formulator] no surprise json for tick=", upstream_tick);
         return;
     };
     let surprise_description = to_string(json_get(surprise_json, "surprise_description"));
     let specific_value = to_string(json_get(surprise_json, "specific_value"));
     let why_surprising = to_string(json_get(surprise_json, "why_surprising"));
     let explorer_pid = recall_latest("replay:current_explorer_pid");
-    let topic_label = recall_latest("explorer:" + explorer_pid + ":topic:tick-" + to_string(tick_idx));
+    let topic_label = recall_latest("explorer:" + explorer_pid + ":topic:tick-" + to_string(upstream_tick));
 
     let ctx = "TOPIC: " + topic_label + "\n"
             + "DISCOVERY: " + surprise_description + "\n"
@@ -108,10 +113,10 @@ fn tick(reason: string) -> void {
                                  + "\",\"solution_full\":\"" + problem.solution_full
                                  + "\",\"novelty_claim\":\"" + problem.novelty_claim
                                  + "\",\"self_check_confidence\":" + self_conf_str + "}";
-                memo_write("formulator:" + _self_pid + ":problem:tick-" + to_string(tick_idx), problem_json);
-                memo_write("formulator:" + _self_pid + ":problem_text:tick-" + to_string(tick_idx), problem.problem);
-                memo_write("formulator:" + _self_pid + ":answer:tick-" + to_string(tick_idx), problem.answer);
-                memo_write("formulator:" + _self_pid + ":novelty_claim:tick-" + to_string(tick_idx), problem.novelty_claim);
+                memo_write("formulator:" + _self_pid + ":problem:tick-" + to_string(upstream_tick), problem_json);
+                memo_write("formulator:" + _self_pid + ":problem_text:tick-" + to_string(upstream_tick), problem.problem);
+                memo_write("formulator:" + _self_pid + ":answer:tick-" + to_string(upstream_tick), problem.answer);
+                memo_write("formulator:" + _self_pid + ":novelty_claim:tick-" + to_string(upstream_tick), problem.novelty_claim);
                 memo_write("replay:current_formulator_pid", _self_pid);
                 emit("math-foundry:problem_ready", problem);
 

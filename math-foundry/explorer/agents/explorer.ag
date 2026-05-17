@@ -272,6 +272,9 @@ fn tick(reason: string) -> void {
     let _tick_now_ms = now_ms_via_shell();
     let _colony_name = colony_name();
     let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
+    if len(_self_pid) > 0 {
+        memo_write("replay:current_explorer_pid", _self_pid);
+    };
     let _variant = recall_latest("explorer:prompt_variant");
     let conf = get_confidence();
     print("[explorer] tick conf=", conf);
