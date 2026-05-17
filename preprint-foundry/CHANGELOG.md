@@ -16,6 +16,12 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- `tools/substitute-author.py` helper that rewrites `AUTHOR-PLACEHOLDER`
+  in the editor colony's `main.tex` from `config/authors.toml` before
+  the latexmk compile pass, so the compiled PDF reflects the real
+  author byline + ORCID rather than just the `.tex` inside the
+  submission tarball (#616).
+
 ### Changed
 
 ### Deprecated
@@ -23,6 +29,12 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ### Removed
 
 ### Fixed
+
+- Editor colony now invokes `substitute-author.py` after both the
+  initial LLM write and the repair-pass rewrite, closing #616 where
+  `main.tex` and `main.pdf` shipped with the literal token
+  `AUTHOR-PLACEHOLDER` even when `config/authors.toml` carried a real
+  author.
 
 ### Security
 

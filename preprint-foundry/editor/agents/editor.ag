@@ -145,6 +145,16 @@ fn tick(reason: string) -> void {
                 let write_bib_cmd = "printf '%s' " + shell_escape(edit.refs_bib) + " > " + shell_escape(claim_dir + "/refs.bib");
                 let _wb = try { exec sh write_bib_cmd; } catch e { ""; };
 
+                // Substitute AUTHOR-PLACEHOLDER from authors.toml (#616).
+                // Idempotent helper exits 0 when TOML is missing /
+                // unparseable / empty, or when the .tex has no
+                // placeholder, so it is safe to run unconditionally.
+                let author_cfg_path = try { exec sh "printenv PREPRINT_AUTHOR_CONFIG"; } catch e { ""; };
+                let author_cfg_eff = if len(author_cfg_path) > 0 { author_cfg_path; } else { "/run-root/config/authors.toml"; };
+                // colony-lint: safe-exec-concat
+                let subst_cmd = "python3 /run-root/tools/substitute-author.py " + shell_escape(author_cfg_eff) + " " + shell_escape(claim_dir + "/main.tex");
+                let _subst = try { exec sh subst_cmd; } catch e { ""; };
+
                 // First compile pass.
                 // colony-lint: safe-exec-concat
                 let compile_cmd = "cd " + shell_escape(claim_dir) + " && latexmk -pdf -interaction=nonstopmode -halt-on-error main.tex 2>&1 | tail -80";
@@ -167,6 +177,11 @@ fn tick(reason: string) -> void {
                         // colony-lint: safe-exec-concat
                         let rewrite_cmd = "printf '%s' " + shell_escape(repair.full_tex) + " > " + shell_escape(claim_dir + "/main.tex");
                         let _rw = try { exec sh rewrite_cmd; } catch e { ""; };
+                        // Re-substitute AUTHOR-PLACEHOLDER in case the
+                        // repair pass put it back (#616).
+                        // colony-lint: safe-exec-concat
+                        let subst_cmd_r = "python3 /run-root/tools/substitute-author.py " + shell_escape(author_cfg_eff) + " " + shell_escape(claim_dir + "/main.tex");
+                        let _subst_r = try { exec sh subst_cmd_r; } catch e { ""; };
                         // colony-lint: safe-exec-concat
                         let recompile_cmd = "cd " + shell_escape(claim_dir) + " && latexmk -pdf -interaction=nonstopmode -halt-on-error main.tex 2>&1 | tail -80";
                         let _recompile_log = try { exec sh recompile_cmd; } catch e { ""; };

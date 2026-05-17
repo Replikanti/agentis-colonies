@@ -2,6 +2,7 @@ preprint-foundry/
 preprint-foundry/tools/run-preprint.sh
 preprint-foundry/tools/Containerfile.preprint
 preprint-foundry/tools/review-cli.sh
+preprint-foundry/tools/substitute-author.py
 preprint-foundry/config/authors.toml.example
 preprint-foundry/introducer/
 preprint-foundry/theorist/
