@@ -1,0 +1,30 @@
+# Scholar Search Colony Configuration
+#
+# Part of the Claim Auditor federation. Phase-1 single-agent colony
+# that hits the Semantic Scholar paper-search endpoint (cleaner than
+# scraping Google Scholar). Falls back to status='unavailable' on 429
+# / error so the auditor weighs the remaining three searchers.
+#
+# Copy to colony.toml and edit for your environment.
+
+[colony]
+name = "scholar-search"
+tick_interval_ms = 120000
+
+# Non-forge federation (#373, ADR-0003).
+[forge]
+type = "none"
+
+[llm]
+# tools/run-auditor.sh overlays the real llm.command / llm.args block
+# in the container bootstrap when AUDITOR_LLM_BACKEND=claude.
+backend = "cli"
+
+[scholar_search]
+max_queries = 3
+
+[[agents]]
+name = "scholar-search"
+source = "agents/scholar-search.ag"
+cb_budget = 2000
+tick_interval_ms = 120000

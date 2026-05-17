@@ -1,0 +1,159 @@
+// auditor.ag -- Claim Auditor synthesis agent: reads the four
+// searcher reports via memo (arxiv / oeis / groupprops / scholar),
+// runs a single Opus-class LLM call that classifies the claim as
+// VERIFIED_NEW / KNOWN_PRIOR / NEEDS_HUMAN with cited evidence and
+// confidence, and writes the verdict to audit-ledger.jsonl.
+//
+// Per-tick behaviour:
+//   1. Read four searcher reports for upstream_tick = tick_idx - 2.
+//   2. Build the SYNTHESIZE_PROMPT and call prompt() -> Verdict JSON.
+//   3. Persist verdict to memo (`auditor:<pid>:verdict:tick-N`) and
+//      append a row to $DISCOVERY_LEDGER (audit-ledger.jsonl).
+//   4. Emit "auditor:verdict_ready".
+//
+// Run as daemon: agentis daemon agents/auditor.ag --colony auditor
+// Requires: exec capability, messaging capability, DISCOVERY_LEDGER env.
+
+cb 2000;
+
+type Verdict {
+    audit_verdict: string,
+    reasoning: string,
+    confidence: float,
+    evidence_arxiv: string,
+    evidence_oeis: string,
+    evidence_groupprops: string,
+    evidence_scholar: string,
+    problem_summary: string
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("auditor:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    };
+    return 0.0;
+}
+
+fn colony_name() -> string {
+    let _cn = try { exec sh "printenv COLONY_NAME"; } catch e { ""; };
+    if len(_cn) > 0 {
+        return _cn;
+    };
+    return "auditor";
+}
+
+fn now_ms_via_shell() -> int {
+    let s = try { exec sh "date +%s%3N"; } catch e { "0"; };
+    return parse_int(s);
+}
+
+fn _seed_prompt() -> string {
+    return "You are a strict claim auditor. The user-supplied input below carries the original PROBLEM, the stated ANSWER, the NOVELTY CLAIM, and four search reports (ARXIV, OEIS, GROUPPROPS, SCHOLAR). Classify the claim. Use 'KNOWN_PRIOR' only when at least one searcher reports a 'direct' relevance match for the same result; 'VERIFIED_NEW' when no searcher reports a direct match and the claim is well-supported; 'NEEDS_HUMAN' when reports conflict, are partial, or scholar is unavailable AND the other three are inconclusive. Output ONLY valid JSON: {\"audit_verdict\":\"VERIFIED_NEW|KNOWN_PRIOR|NEEDS_HUMAN\", \"reasoning\":\"...\", \"confidence\":0.0-1.0, \"evidence_arxiv\":\"semicolon-separated arxiv ids or empty\", \"evidence_oeis\":\"semicolon-separated A-numbers or empty\", \"evidence_groupprops\":\"semicolon-separated urls or empty\", \"evidence_scholar\":\"semicolon-separated paper ids or empty\", \"problem_summary\":\"one-line\"}.";
+}
+
+fn tick(reason: string) -> void {
+    let _ = reason;
+    let _tick_now_ms = now_ms_via_shell();
+    let _colony_name = colony_name();
+    let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
+    let conf = get_confidence();
+    print("[auditor] tick conf=", conf);
+
+    let tick_idx_str = recall_latest("replay:current_tick");
+    let tick_idx = if len(tick_idx_str) > 0 { parse_int(tick_idx_str); } else { -1; };
+    if tick_idx < 0 {
+        print("[auditor] no auditor tick yet");
+        return;
+    };
+    let upstream_tick = tick_idx - 2;
+    if upstream_tick < 0 {
+        print("[auditor] waiting for searcher pipeline, current=", tick_idx);
+        return;
+    };
+
+    let arxiv_pid = recall_latest("replay:current_arxiv_search_pid");
+    let oeis_pid = recall_latest("replay:current_oeis_search_pid");
+    let groupprops_pid = recall_latest("replay:current_groupprops_search_pid");
+    let scholar_pid = recall_latest("replay:current_scholar_search_pid");
+
+    let arxiv_report = if len(arxiv_pid) > 0 { recall_latest("arxiv_search:" + arxiv_pid + ":report:tick-" + to_string(upstream_tick)); } else { ""; };
+    let oeis_report = if len(oeis_pid) > 0 { recall_latest("oeis_search:" + oeis_pid + ":report:tick-" + to_string(upstream_tick)); } else { ""; };
+    let groupprops_report = if len(groupprops_pid) > 0 { recall_latest("groupprops_search:" + groupprops_pid + ":report:tick-" + to_string(upstream_tick)); } else { ""; };
+    let scholar_report = if len(scholar_pid) > 0 { recall_latest("scholar_search:" + scholar_pid + ":report:tick-" + to_string(upstream_tick)); } else { ""; };
+
+    let any_report = if len(arxiv_report) > 0 { true; } else { if len(oeis_report) > 0 { true; } else { if len(groupprops_report) > 0 { true; } else { len(scholar_report) > 0; }; }; };
+    if !any_report {
+        print("[auditor] no searcher reports for tick=", upstream_tick);
+        return;
+    };
+
+    let problem_text = recall_latest("claim:problem_text:tick-" + to_string(upstream_tick));
+    let stated_answer = recall_latest("claim:answer:tick-" + to_string(upstream_tick));
+    let novelty_claim = recall_latest("claim:novelty_claim:tick-" + to_string(upstream_tick));
+    let source_run = recall_latest("claim:source_run:tick-" + to_string(upstream_tick));
+    let source_tick_raw = recall_latest("claim:source_tick:tick-" + to_string(upstream_tick));
+    let source_tick = if len(source_tick_raw) > 0 { to_string(parse_int(source_tick_raw)); } else { "0"; };
+    let source_pid = recall_latest("claim:source_pid:tick-" + to_string(upstream_tick));
+
+    let ctx = "PROBLEM: " + problem_text + "\n"
+            + "ANSWER: " + stated_answer + "\n"
+            + "NOVELTY CLAIM: " + novelty_claim + "\n"
+            + "ARXIV REPORT: " + arxiv_report + "\n"
+            + "OEIS REPORT: " + oeis_report + "\n"
+            + "GROUPPROPS REPORT: " + groupprops_report + "\n"
+            + "SCHOLAR REPORT: " + scholar_report + "\n";
+
+    let verdict = prompt(_seed_prompt(), ctx) -> Verdict;
+
+    let my_tier = tier("auditor");
+    if my_tier == "autonomous" {
+        learn("audit", "tick " + to_string(tick_idx) + " " + verdict.audit_verdict, verdict.reasoning, "partial", ["acted", "claim-auditor"]);
+    } else {
+        if my_tier == "review-gated" {
+            learn("audit", "tick " + to_string(tick_idx) + " " + verdict.audit_verdict, verdict.reasoning, "partial", ["review-gated", "claim-auditor"]);
+        } else {
+            if my_tier == "propose" {
+                let conf_str = to_string(verdict.confidence);
+                let verdict_json = "{\"audit_verdict\":\"" + verdict.audit_verdict
+                                 + "\",\"reasoning\":\"" + verdict.reasoning
+                                 + "\",\"confidence\":" + conf_str
+                                 + ",\"problem_summary\":\"" + verdict.problem_summary + "\"}";
+                memo_write("auditor:" + _self_pid + ":verdict:tick-" + to_string(upstream_tick), verdict_json);
+                memo_write("auditor:" + _self_pid + ":verdict_label:tick-" + to_string(upstream_tick), verdict.audit_verdict);
+                memo_write("replay:current_auditor_pid", _self_pid);
+
+                // Append to per-run audit ledger.
+                let ledger_path = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
+                if len(ledger_path) > 0 {
+                    let ledger_row = "{\"ts\":" + to_string(_tick_now_ms)
+                                   + ",\"source_run\":\"" + source_run
+                                   + "\",\"source_tick\":" + source_tick
+                                   + ",\"source_pid\":\"" + source_pid
+                                   + "\",\"problem_summary\":\"" + verdict.problem_summary
+                                   + "\",\"audit_verdict\":\"" + verdict.audit_verdict
+                                   + "\",\"evidence\":{\"arxiv\":\"" + verdict.evidence_arxiv
+                                   + "\",\"oeis\":\"" + verdict.evidence_oeis
+                                   + "\",\"groupprops\":\"" + verdict.evidence_groupprops
+                                   + "\",\"scholar\":\"" + verdict.evidence_scholar
+                                   + "\"},\"reasoning\":\"" + verdict.reasoning
+                                   + "\",\"confidence\":" + conf_str + "}";
+                    // colony-lint: safe-exec-concat
+                    let append_cmd = "printf '%s\n' " + shell_escape(ledger_row) + " >> " + shell_escape(ledger_path);
+                    let _ = try { exec sh append_cmd; } catch e { ""; };
+                };
+
+                emit("auditor:verdict_ready", verdict);
+                learn("audit", "tick " + to_string(tick_idx) + " " + verdict.audit_verdict, verdict.reasoning, "success", ["emitted", "claim-auditor"]);
+            } else {
+                print("[auditor] observing (tier:", my_tier, ") verdict=", verdict.audit_verdict);
+                learn("audit", "tick " + to_string(tick_idx) + " " + verdict.audit_verdict, verdict.reasoning, "partial", ["observed", "claim-auditor"]);
+            };
+        };
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("auditor:last_check", now);
+    };
+}

@@ -1,0 +1,8 @@
+claim-auditor/
+claim-auditor/tools/run-auditor.sh
+claim-auditor/tools/Containerfile.auditor
+claim-auditor/arxiv-search/
+claim-auditor/oeis-search/
+claim-auditor/groupprops-search/
+claim-auditor/scholar-search/
+claim-auditor/auditor/

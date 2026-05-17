@@ -1,0 +1,32 @@
+# Auditor Colony Configuration
+#
+# Part of the Claim Auditor federation. Reads the four searcher
+# reports from memo, runs a single Opus-class LLM call to synthesize
+# a VERIFIED_NEW / KNOWN_PRIOR / NEEDS_HUMAN verdict, and writes the
+# row to audit-ledger.jsonl. Does not touch any external API.
+#
+# Copy to colony.toml and edit for your environment.
+
+[colony]
+name = "auditor"
+tick_interval_ms = 90000
+
+# Non-forge federation (#373, ADR-0003). The auditor writes only to a
+# local JSONL ledger via DISCOVERY_LEDGER env, not to any forge.
+[forge]
+type = "none"
+
+[llm]
+# tools/run-auditor.sh overlays the real llm.command / llm.args block
+# in the container bootstrap. By default the auditor runs on Opus
+# (AUDITOR_CLAUDE_MODEL=opus) while the four searchers run on Sonnet.
+backend = "cli"
+
+[auditor]
+confidence_floor = 0.7
+
+[[agents]]
+name = "auditor"
+source = "agents/auditor.ag"
+cb_budget = 2000
+tick_interval_ms = 90000
