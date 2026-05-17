@@ -59,11 +59,11 @@ fn colony_name() -> string {
 }
 
 fn _extract_prompt() -> string {
-    return "Construct 2-3 short Semantic Scholar / Google Scholar search queries to find prior work for the math claim below. The user-supplied input carries the PROBLEM, the stated ANSWER, and the NOVELTY CLAIM. Favour exact key phrases (named theorems, sequence labels, named groups, the specific numeric value). Output ONLY valid JSON: {\"queries_json\": \"[\\\"q1\\\", \\\"q2\\\"]\", \"rationale\": \"why these queries\"}. The queries_json field MUST be a JSON-encoded string of an array of query strings.";
+    return "Construct 2-3 short Semantic Scholar / Google Scholar search queries to find prior work for the math claim below. The user-supplied input carries the PROBLEM, the stated ANSWER, and the NOVELTY CLAIM. Favour exact key phrases (named theorems, sequence labels, named groups, the specific numeric value). Output ONLY valid JSON: {\"queries_json\": \"[\\\"q1\\\", \\\"q2\\\"]\", \"rationale\": \"why these queries\"}. The queries_json field MUST be a JSON-encoded string of an array of query strings. Do NOT wrap output in markdown code fences (no triple backticks); return raw JSON only.";
 }
 
 fn _relevance_prompt() -> string {
-    return "Given the PROBLEM, ANSWER, NOVELTY CLAIM, and the raw Semantic Scholar JSON responses below (one per query, may contain 'unavailable' markers when the API rate-limited or errored), pick up to 5 papers that look most relevant. Output ONLY valid JSON: {\"status\": \"ok|unavailable|partial\", \"matches_found\": <int>, \"top_matches\": [{\"paper_id\":\"...\",\"title\":\"...\",\"relevance\":\"direct|partial|none\",\"reason\":\"...\"}], \"summary\":\"one-line\"}. status='unavailable' if every query failed; 'partial' if some failed; 'ok' otherwise.";
+    return "Given the PROBLEM, ANSWER, NOVELTY CLAIM, and the raw Semantic Scholar JSON responses below (one per query, may contain 'unavailable' markers when the API rate-limited or errored), pick up to 5 papers that look most relevant. Output ONLY valid JSON: {\"status\": \"ok|unavailable|partial\", \"matches_found\": <int>, \"top_matches\": [{\"paper_id\":\"...\",\"title\":\"...\",\"relevance\":\"direct|partial|none\",\"reason\":\"...\"}], \"summary\":\"one-line\"}. status='unavailable' if every query failed; 'partial' if some failed; 'ok' otherwise. Do NOT wrap output in markdown code fences (no triple backticks); return raw JSON only.";
 }
 
 fn tick(reason: string) -> void {
