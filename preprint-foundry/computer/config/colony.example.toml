@@ -1,0 +1,32 @@
+# Computer Colony Configuration
+#
+# Part of the Preprint Foundry federation. Single-agent colony that
+# generates a standalone reproducibility script (Python/SymPy/GAP)
+# that re-derives the central claim from scratch, runs it inside the
+# container, and captures the canonical stdout.
+#
+# Copy to colony.toml; the runtime knobs that actually drive a run
+# live in env vars consumed by tools/run-preprint.sh.
+
+[colony]
+name = "computer"
+tick_interval_ms = 180000
+
+[forge]
+type = "none"
+
+[llm]
+backend = "cli"
+
+[computer]
+# Sanity-check: the agent verifies the reproducibility script's stdout
+# contains the LLM-declared `expected_substring` (typically the answer
+# value). On miss the agent still persists the script but marks
+# `runs_ok=false` in memo so the editor / submitter can flag it.
+expected_substring_required = true
+
+[[agents]]
+name = "computer"
+source = "agents/computer.ag"
+cb_budget = 2000
+tick_interval_ms = 180000

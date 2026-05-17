@@ -1,0 +1,10 @@
+preprint-foundry/
+preprint-foundry/tools/run-preprint.sh
+preprint-foundry/tools/Containerfile.preprint
+preprint-foundry/tools/review-cli.sh
+preprint-foundry/config/authors.toml.example
+preprint-foundry/introducer/
+preprint-foundry/theorist/
+preprint-foundry/computer/
+preprint-foundry/editor/
+preprint-foundry/submitter/

@@ -1,0 +1,33 @@
+# Introducer Colony Configuration
+#
+# Part of the Preprint Foundry federation. Single-agent colony that
+# drafts the abstract + LaTeX Section 1 Introduction of a math
+# preprint from the seeded claim context.
+#
+# Copy to colony.toml; the runtime knobs that actually drive a run
+# live in env vars consumed by tools/run-preprint.sh.
+
+[colony]
+name = "introducer"
+tick_interval_ms = 180000
+
+# Non-forge federation (#373, ADR-0003). The introducer reads memo
+# keys seeded by tools/run-preprint.sh; it does not call any forge.
+[forge]
+type = "none"
+
+[llm]
+# tools/run-preprint.sh overlays the real llm.command / llm.args block
+# in the container bootstrap (PREPRINT_CLAUDE_MODEL default: opus).
+backend = "cli"
+
+[introducer]
+# Abstract target length (LLM is asked for 100-180 words; this knob
+# is documentation-only in Phase 1).
+abstract_target_words = 150
+
+[[agents]]
+name = "introducer"
+source = "agents/introducer.ag"
+cb_budget = 2000
+tick_interval_ms = 180000
