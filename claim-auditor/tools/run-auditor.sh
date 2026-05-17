@@ -370,7 +370,18 @@ log_path = os.path.join(run_dir, "orchestrator.log")
 # whatever the row itself carries.
 upstream_dir = os.path.dirname(source_ledger)
 upstream_agentis = os.path.join(upstream_dir, ".agentis")
-have_upstream_memo = os.path.isdir(upstream_agentis)
+upstream_laptop_agentis = os.path.join(upstream_dir, "laptop-node", ".agentis")
+# math-foundry writes its memo under <run-dir>/laptop-node/.agentis/, but
+# `os.path.dirname(source_ledger)` lands on <run-dir>. Probe both shapes
+# and pick whichever exists. Fall back to None when neither does so
+# subsequent recalls cleanly return empty.
+if os.path.isdir(upstream_agentis):
+    upstream_recall_cwd = upstream_dir
+elif os.path.isdir(upstream_laptop_agentis):
+    upstream_recall_cwd = os.path.join(upstream_dir, "laptop-node")
+else:
+    upstream_recall_cwd = None
+have_upstream_memo = upstream_recall_cwd is not None
 
 def upstream_recall(key):
     if not have_upstream_memo:
@@ -378,7 +389,7 @@ def upstream_recall(key):
     try:
         out = subprocess.check_output(
             ["agentis", "memo", "get", key],
-            cwd=upstream_dir,
+            cwd=upstream_recall_cwd,
             stderr=subprocess.DEVNULL,
         )
         return out.decode("utf-8", "replace").strip()
