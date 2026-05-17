@@ -1,0 +1,33 @@
+# Editor Colony Configuration
+#
+# Part of the Preprint Foundry federation. Single-agent colony that
+# synthesises the introducer + theorist + computer outputs into a
+# single LaTeX main.tex, runs `latexmk -pdf -interaction=nonstopmode`,
+# and (on first-pass compile failure) makes one LLM-driven repair
+# pass before giving up.
+#
+# Copy to colony.toml; the runtime knobs that actually drive a run
+# live in env vars consumed by tools/run-preprint.sh.
+
+[colony]
+name = "editor"
+tick_interval_ms = 240000
+
+[forge]
+type = "none"
+
+[llm]
+backend = "cli"
+
+[editor]
+# Maximum number of latexmk attempts (initial + N-1 repair passes).
+# Default 3 = initial + two repairs. Overridable via
+# PREPRINT_LATEXMK_MAX_PASSES env var; the .ag agent reads it via
+# printenv.
+latexmk_max_passes = 3
+
+[[agents]]
+name = "editor"
+source = "agents/editor.ag"
+cb_budget = 2000
+tick_interval_ms = 240000

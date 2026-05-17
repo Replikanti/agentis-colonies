@@ -1,0 +1,31 @@
+# Theorist Colony Configuration
+#
+# Part of the Preprint Foundry federation. Single-agent colony that
+# produces LaTeX Section 2 (Preliminaries) and Section 3 (Main Result)
+# from the seeded claim context + the upstream explorer's code/output.
+#
+# Copy to colony.toml; the runtime knobs that actually drive a run
+# live in env vars consumed by tools/run-preprint.sh.
+
+[colony]
+name = "theorist"
+tick_interval_ms = 180000
+
+[forge]
+type = "none"
+
+[llm]
+backend = "cli"
+
+[theorist]
+# When the upstream classification is computational, theorist.ag hedges
+# with "computational evidence suggests" instead of "we prove". This
+# knob is documentation-only in Phase 1 (the .ag agent reads the
+# hedge_required flag from its own LLM response).
+hedge_on_computational = true
+
+[[agents]]
+name = "theorist"
+source = "agents/theorist.ag"
+cb_budget = 2000
+tick_interval_ms = 180000

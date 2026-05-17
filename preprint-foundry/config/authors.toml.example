@@ -1,0 +1,42 @@
+# authors.toml.example -- author metadata for the preprint-foundry
+# federation (#596).
+#
+# Copy this file to `authors.toml` and fill in real values BEFORE
+# running tools/run-preprint.sh. The submitter colony reads it to
+# populate the `authors` field of arxiv-metadata.json. arXiv policy
+# requires at least one verifiable human author per preprint -- AI
+# is NOT a permitted author. Submitting without filling this file
+# yields placeholder `AUTHOR-PLACEHOLDER` in the metadata and the
+# submission will be rejected (or, worse, accepted with a junk
+# author line that damages your reputation).
+#
+# arXiv endorsement: first submission per arXiv account in a given
+# primary category needs an endorsement from an already-published
+# author in the same category. `arxiv_endorser_for` lists categories
+# this author is endorsed in. Empty list = not yet endorsed; the
+# first submission to any category-X will need a manual endorsement
+# step (see README §arXiv endorsement workflow).
+
+[[authors]]
+# Full name as it should appear in the byline (UTF-8 ok).
+name = "Martin Holy"
+# Contact email. arXiv uses this to confirm authorship.
+email = "ylohnitram@gmail.com"
+# ORCID iD (16-digit, dashed). Optional but strongly recommended;
+# arXiv links the submission to ORCID's author page when present.
+arxiv_orcid = "0009-0001-0459-5158"
+# List of arXiv categories this author is endorsed in. Empty until
+# the first preprint clears moderation; thereafter append the
+# accepted category (e.g. "math.GR") so subsequent submissions to
+# the same category skip the endorsement step.
+arxiv_endorser_for = []
+
+# Add additional human co-authors here. arXiv accepts multiple
+# authors; the submitter colony joins them with "; " in
+# arxiv-metadata.json's `authors` field.
+#
+# [[authors]]
+# name = "Co Author"
+# email = "co.author@example.org"
+# arxiv_orcid = ""
+# arxiv_endorser_for = ["math.CO"]

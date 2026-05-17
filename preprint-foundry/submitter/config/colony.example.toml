@@ -1,0 +1,41 @@
+# Submitter Colony Configuration
+#
+# Part of the Preprint Foundry federation. Single-agent colony that
+# builds arxiv-metadata.json + submission.tar.gz from the editor's
+# main.tex + the reproducibility artefacts, drafts a cover letter
+# with AI disclosure, and writes a `status: DRAFTED` row to
+# preprint-ledger.jsonl. The submitter then idles until a human flips
+# `submitter:claim-<id>:human_status` to `approved` (or `rejected`).
+#
+# CRITICAL: the submitter MUST NOT auto-send to arXiv. arXiv 2024+
+# policy on AI-assisted content makes the HITL gate mandatory; the
+# .ag agent enforces this by reading `human_status` before any SMTP
+# call.
+#
+# Copy to colony.toml; the runtime knobs that actually drive a run
+# live in env vars consumed by tools/run-preprint.sh.
+
+[colony]
+name = "submitter"
+tick_interval_ms = 60000
+
+[forge]
+type = "none"
+
+[llm]
+backend = "cli"
+
+[submitter]
+# HITL gate is mandatory: the submitter will refuse to send the
+# tarball unless `submitter:claim-<id>:human_status == "approved"`.
+# Setting this to false is unsupported (#596 §Human-in-loop).
+hitl_required = true
+# Default arXiv submission gateway. The agent reads
+# $PREPRINT_ARXIV_GATEWAY at runtime; this value is documentation-only.
+arxiv_gateway = "submit@arxiv.org"
+
+[[agents]]
+name = "submitter"
+source = "agents/submitter.ag"
+cb_budget = 2000
+tick_interval_ms = 60000

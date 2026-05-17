@@ -1,0 +1,210 @@
+// editor.ag -- Preprint Foundry editor: reads the introducer's
+// abstract + intro, the theorist's definitions + main, and the
+// computer's reproducibility script + canonical output, then
+// synthesises a single `main.tex` (amsart class), runs `latexmk -pdf
+// -interaction=nonstopmode` inside the container, captures the
+// compile log, and (on first-pass compile failure) makes a single
+// repair pass before giving up. Hallucination check: every numeric or
+// symbolic claim in main.tex must be supported by the reproducibility
+// output (the editor is asked to flag mismatches in its rationale).
+//
+// Per-tick behaviour:
+//   1. Read upstream sections from memo at upstream_tick = tick - 2
+//      (waits one extra tick for introducer/theorist/computer to
+//      publish their per-pid memo keys).
+//   2. Build EDIT_PROMPT and produce {full_tex, fingerprints,
+//      hallucinations_found}.
+//   3. Write main.tex to the per-claim output dir, run latexmk; on
+//      LaTeX error build a REPAIR_PROMPT seeded with the compile log
+//      and retry once.
+//   4. Persist final tex + compile log + ok flag to memo.
+//   5. Emit "editor:final_tex_ready" and "editor:compile_log_ready".
+//
+// Run as daemon: agentis daemon agents/editor.ag --colony editor
+// Requires: exec capability (latexmk + pdflatex), messaging.
+
+cb 2000;
+
+type Edit {
+    full_tex: string,
+    refs_bib: string,
+    fingerprint_csv: string,
+    hallucinations_found: bool,
+    rationale: string
+}
+
+type Repair {
+    full_tex: string,
+    rationale: string
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("editor:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    };
+    return 0.0;
+}
+
+fn colony_name() -> string {
+    let _cn = try { exec sh "printenv COLONY_NAME"; } catch e { ""; };
+    if len(_cn) > 0 {
+        return _cn;
+    };
+    return "editor";
+}
+
+fn now_ms_via_shell() -> int {
+    let s = try { exec sh "date +%s%3N"; } catch e { "0"; };
+    return parse_int(s);
+}
+
+fn _edit_prompt() -> string {
+    return "You are the editor of a math preprint. You receive (a) an abstract + introduction draft, (b) preliminaries + main result draft, (c) a reproducibility script + its captured stdout, and (d) the prior-work search reports. Synthesise a SINGLE LaTeX document using the `amsart` class. Required structure: \\documentclass{amsart}, \\usepackage{amsmath, amssymb, amsthm}, theorem/definition declarations, \\title{...}, \\author{...} placeholder `\\author{AUTHOR-PLACEHOLDER}`, \\date{\\today}, \\begin{abstract}...\\end{abstract}, \\maketitle, sections 1-4 (Introduction, Preliminaries, Main Result, Reproducibility), \\bibliographystyle{plain}, \\bibliography{refs}. Style enforcement: NO 'obviously' / 'clearly' / 'trivially'; abstract is third-person (no 'we'); notation consistent across sections. Hallucination check: for every numeric / symbolic claim in the main result that is supported by the reproducibility output's stdout, KEEP IT; for any claim NOT supported by the output, REMOVE IT or HEDGE IT (mark with `% HEDGED:`). Set hallucinations_found=true when you removed/hedged anything. Generate a minimal refs.bib that defines the `\\cite{...}` keys you actually used (use the prior-work search reports as references; placeholder DOIs/URLs are acceptable). Output ONLY valid JSON: {\"full_tex\":\"...complete .tex content...\",\"refs_bib\":\"...complete .bib content...\",\"fingerprint_csv\":\"hash1,hash2\",\"hallucinations_found\":false,\"rationale\":\"one-line\"}.";
+}
+
+fn _repair_prompt() -> string {
+    return "The previous LaTeX compile failed. The user-supplied input below carries the FAILING TEX and the latexmk LOG (last 80 lines). Produce a corrected `full_tex` that compiles with `latexmk -pdf -interaction=nonstopmode`. Common fixes: missing `\\usepackage{...}`, mis-matched `\\begin{...}` / `\\end{...}`, undefined `\\cite{...}` (replace with `\\cite{TBD}` and add a stub entry to refs.bib), runaway argument (close the brace), missing `$` for inline math. Do NOT change the scientific content -- only fix the compile error. Output ONLY valid JSON: {\"full_tex\":\"...corrected .tex...\",\"rationale\":\"what was fixed\"}.";
+}
+
+fn tick(reason: string) -> void {
+    let _ = reason;
+    let _tick_now_ms = now_ms_via_shell();
+    let _colony_name = colony_name();
+    let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
+    let conf = get_confidence();
+    print("[editor] tick conf=", conf);
+
+    let tick_idx_str = recall_latest("replay:current_tick");
+    let tick_idx = if len(tick_idx_str) > 0 { parse_int(tick_idx_str); } else { -1; };
+    if tick_idx < 0 {
+        print("[editor] no preprint tick yet");
+        return;
+    };
+    let upstream_tick = tick_idx - 2;
+    if upstream_tick < 0 {
+        print("[editor] waiting for writer pipeline, current=", tick_idx);
+        return;
+    };
+
+    let introducer_pid = recall_latest("replay:current_introducer_pid");
+    let theorist_pid = recall_latest("replay:current_theorist_pid");
+    let computer_pid = recall_latest("replay:current_computer_pid");
+
+    let abstract_tex = if len(introducer_pid) > 0 { recall_latest("introducer:" + introducer_pid + ":abstract:tick-" + to_string(upstream_tick)); } else { ""; };
+    let intro_tex = if len(introducer_pid) > 0 { recall_latest("introducer:" + introducer_pid + ":intro:tick-" + to_string(upstream_tick)); } else { ""; };
+    let title = if len(introducer_pid) > 0 { recall_latest("introducer:" + introducer_pid + ":title:tick-" + to_string(upstream_tick)); } else { ""; };
+    let definitions_tex = if len(theorist_pid) > 0 { recall_latest("theorist:" + theorist_pid + ":definitions:tick-" + to_string(upstream_tick)); } else { ""; };
+    let main_tex = if len(theorist_pid) > 0 { recall_latest("theorist:" + theorist_pid + ":main:tick-" + to_string(upstream_tick)); } else { ""; };
+    let proof_kind = if len(theorist_pid) > 0 { recall_latest("theorist:" + theorist_pid + ":proof_kind:tick-" + to_string(upstream_tick)); } else { ""; };
+    let repro_script = if len(computer_pid) > 0 { recall_latest("computer:" + computer_pid + ":script:tick-" + to_string(upstream_tick)); } else { ""; };
+    let repro_output = if len(computer_pid) > 0 { recall_latest("computer:" + computer_pid + ":output:tick-" + to_string(upstream_tick)); } else { ""; };
+    let repro_lang = if len(computer_pid) > 0 { recall_latest("computer:" + computer_pid + ":language:tick-" + to_string(upstream_tick)); } else { "python"; };
+
+    let any_section = if len(abstract_tex) > 0 { true; } else { if len(main_tex) > 0 { true; } else { len(repro_script) > 0; }; };
+    if !any_section {
+        print("[editor] no upstream sections for tick=", upstream_tick);
+        return;
+    };
+
+    let ctx = "TITLE: " + title + "\n"
+            + "ABSTRACT DRAFT:\n" + abstract_tex + "\n"
+            + "INTRO DRAFT:\n" + intro_tex + "\n"
+            + "PRELIMINARIES DRAFT:\n" + definitions_tex + "\n"
+            + "MAIN DRAFT (proof_kind=" + proof_kind + "):\n" + main_tex + "\n"
+            + "REPRODUCIBILITY SCRIPT (" + repro_lang + "):\n" + repro_script + "\n"
+            + "REPRODUCIBILITY STDOUT:\n" + repro_output + "\n";
+
+    let edit = prompt(_edit_prompt(), ctx) -> Edit;
+
+    let my_tier = tier("editor");
+    if my_tier == "autonomous" {
+        learn("edit", "tick " + to_string(tick_idx), edit.rationale, "partial", ["acted", "preprint-foundry"]);
+    } else {
+        if my_tier == "review-gated" {
+            learn("edit", "tick " + to_string(tick_idx), edit.rationale, "partial", ["review-gated", "preprint-foundry"]);
+        } else {
+            if my_tier == "propose" {
+                let claim_id = recall_latest("claim:claim_id:tick-" + to_string(upstream_tick));
+                let claim_id_eff = if len(claim_id) > 0 { claim_id; } else { "claim-" + to_string(upstream_tick); };
+                let out_root = try { exec sh "printenv PREPRINT_OUTPUT_ROOT"; } catch e { ""; };
+                let out_root_eff = if len(out_root) > 0 { out_root; } else { "/run-root/preprints"; };
+                let claim_dir = out_root_eff + "/" + claim_id_eff;
+
+                let max_passes_env = try { exec sh "printenv PREPRINT_LATEXMK_MAX_PASSES"; } catch e { ""; };
+                let max_passes = if len(max_passes_env) > 0 { parse_int(max_passes_env); } else { 3; };
+                let max_passes_eff = if max_passes <= 0 { 1; } else { max_passes; };
+
+                // colony-lint: safe-exec-concat
+                let mkdir_cmd = "mkdir -p " + shell_escape(claim_dir);
+                let _mk = try { exec sh mkdir_cmd; } catch e { ""; };
+                // colony-lint: safe-exec-concat
+                let write_tex_cmd = "printf '%s' " + shell_escape(edit.full_tex) + " > " + shell_escape(claim_dir + "/main.tex");
+                let _wt = try { exec sh write_tex_cmd; } catch e { ""; };
+                // colony-lint: safe-exec-concat
+                let write_bib_cmd = "printf '%s' " + shell_escape(edit.refs_bib) + " > " + shell_escape(claim_dir + "/refs.bib");
+                let _wb = try { exec sh write_bib_cmd; } catch e { ""; };
+
+                // First compile pass.
+                // colony-lint: safe-exec-concat
+                let compile_cmd = "cd " + shell_escape(claim_dir) + " && latexmk -pdf -interaction=nonstopmode -halt-on-error main.tex 2>&1 | tail -80";
+                let compile_log = try { exec sh compile_cmd; } catch e { ""; };
+                // colony-lint: safe-exec-concat
+                let pdf_check_cmd = "test -f " + shell_escape(claim_dir + "/main.pdf") + " && printf yes || printf no";
+                let pdf_ok_raw = try { exec sh pdf_check_cmd; } catch e { "no"; };
+                let compile_ok_initial = pdf_ok_raw == "yes";
+
+                let compile_ok_final = if compile_ok_initial {
+                    true;
+                } else {
+                    if max_passes_eff < 2 {
+                        false;
+                    } else {
+                        // One repair pass.
+                        let repair_ctx = "FAILING TEX:\n" + edit.full_tex + "\n"
+                                       + "LATEXMK LOG (last 80 lines):\n" + compile_log + "\n";
+                        let repair = prompt(_repair_prompt(), repair_ctx) -> Repair;
+                        // colony-lint: safe-exec-concat
+                        let rewrite_cmd = "printf '%s' " + shell_escape(repair.full_tex) + " > " + shell_escape(claim_dir + "/main.tex");
+                        let _rw = try { exec sh rewrite_cmd; } catch e { ""; };
+                        // colony-lint: safe-exec-concat
+                        let recompile_cmd = "cd " + shell_escape(claim_dir) + " && latexmk -pdf -interaction=nonstopmode -halt-on-error main.tex 2>&1 | tail -80";
+                        let _recompile_log = try { exec sh recompile_cmd; } catch e { ""; };
+                        // colony-lint: safe-exec-concat
+                        let recheck_cmd = "test -f " + shell_escape(claim_dir + "/main.pdf") + " && printf yes || printf no";
+                        let recheck = try { exec sh recheck_cmd; } catch e { "no"; };
+                        recheck == "yes";
+                    };
+                };
+
+                let final_tex_path = claim_dir + "/main.tex";
+                // colony-lint: safe-exec-concat
+                let read_tex_cmd = "cat " + shell_escape(final_tex_path);
+                let final_tex_body = try { exec sh read_tex_cmd; } catch e { edit.full_tex; };
+
+                memo_write("editor:" + _self_pid + ":final_tex:tick-" + to_string(upstream_tick), final_tex_body);
+                memo_write("editor:" + _self_pid + ":compile_log:tick-" + to_string(upstream_tick), compile_log);
+                memo_write("editor:" + _self_pid + ":refs_bib:tick-" + to_string(upstream_tick), edit.refs_bib);
+                memo_write("editor:" + _self_pid + ":claim_dir:tick-" + to_string(upstream_tick), claim_dir);
+                let compile_ok_str = if compile_ok_final { "true"; } else { "false"; };
+                memo_write("editor:" + _self_pid + ":compile_ok:tick-" + to_string(upstream_tick), compile_ok_str);
+                let halluc_str = if edit.hallucinations_found { "true"; } else { "false"; };
+                memo_write("editor:" + _self_pid + ":hallucinations_found:tick-" + to_string(upstream_tick), halluc_str);
+                memo_write("replay:current_editor_pid", _self_pid);
+
+                emit("editor:final_tex_ready", edit);
+                emit("editor:compile_log_ready", edit);
+
+                learn("edit", "tick " + to_string(tick_idx), "compile_ok=" + compile_ok_str + " halluc=" + halluc_str, "success", ["emitted", "preprint-foundry"]);
+            } else {
+                print("[editor] observing (tier:", my_tier, ") rationale=", edit.rationale);
+                learn("edit", "tick " + to_string(tick_idx), edit.rationale, "partial", ["observed", "preprint-foundry"]);
+            };
+        };
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("editor:last_check", now);
+    };
+}

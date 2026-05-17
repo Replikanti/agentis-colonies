@@ -1,0 +1,141 @@
+// introducer.ag -- Preprint Foundry introducer: reads the audited
+// claim context (problem_text + answer + novelty_claim + audit
+// reasoning) plus the four searcher reports from the upstream
+// claim-auditor run, drafts an arXiv-style abstract (~150 words) and
+// Section 1 Introduction (~400-800 words) of a LaTeX preprint, and
+// writes both sections to memo for the editor colony to assemble.
+//
+// Per-tick behaviour:
+//   1. Read preprint tick state seeded by run-preprint.sh
+//      (`replay:current_tick`, `claim:problem_text:tick-N`,
+//      `claim:answer:tick-N`, `claim:novelty_claim:tick-N`,
+//      `claim:audit_reasoning:tick-N`, `claim:audit_evidence_*:tick-N`,
+//      `claim:source_*` for cross-run provenance).
+//   2. Build DRAFT_PROMPT (one LLM call) and produce {abstract, intro}.
+//   3. Persist abstract + intro to memo
+//      (`introducer:<self_pid>:abstract:tick-N`,
+//       `introducer:<self_pid>:intro:tick-N`).
+//   4. Emit "introducer:abstract_ready" and "introducer:intro_ready".
+//
+// Run as daemon: agentis daemon agents/introducer.ag --colony introducer
+// Requires: exec capability, messaging capability.
+
+cb 2000;
+
+type Draft {
+    abstract_tex: string,
+    intro_tex: string,
+    msc_codes_csv: string,
+    arxiv_category: string,
+    title: string,
+    rationale: string
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("introducer:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    };
+    return 0.0;
+}
+
+fn colony_name() -> string {
+    let _cn = try { exec sh "printenv COLONY_NAME"; } catch e { ""; };
+    if len(_cn) > 0 {
+        return _cn;
+    };
+    return "introducer";
+}
+
+fn now_ms_via_shell() -> int {
+    let s = try { exec sh "date +%s%3N"; } catch e { "0"; };
+    return parse_int(s);
+}
+
+fn _draft_prompt() -> string {
+    return "You are an academic mathematician drafting a LaTeX preprint for arXiv. The user-supplied context carries the PROBLEM, the verified ANSWER, the NOVELTY CLAIM, the auditor REASONING, and four PRIOR-WORK SEARCH REPORTS (arxiv / oeis / groupprops / scholar). Produce: (1) a 100-180 word abstract in LaTeX (no math environments other than inline $...$), (2) a 400-800 word Section 1 Introduction in LaTeX with at least one citation placeholder `[CITATION-NEEDED: <topic>]` when no exact citation exists in the search reports, (3) 1-3 MSC2020 codes, (4) a single primary arXiv category (e.g. math.GR, math.CO, math.NT), (5) a paper title under 200 chars. Cite known prior work from the search reports inline using `\\cite{key}` with keys you invent (the bibliography is generated later). Do NOT claim a proof of an open conjecture; hedge with 'computational evidence' / 'we observe' when the upstream classification is COMPUTATIONAL. Output ONLY valid JSON: {\"abstract_tex\":\"...\",\"intro_tex\":\"...\",\"msc_codes_csv\":\"20D60,20E45\",\"arxiv_category\":\"math.GR\",\"title\":\"...\",\"rationale\":\"one-line\"}.";
+}
+
+fn tick(reason: string) -> void {
+    let _ = reason;
+    let _tick_now_ms = now_ms_via_shell();
+    let _colony_name = colony_name();
+    let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
+    let conf = get_confidence();
+    print("[introducer] tick conf=", conf);
+
+    let tick_idx_str = recall_latest("replay:current_tick");
+    let tick_idx = if len(tick_idx_str) > 0 { parse_int(tick_idx_str); } else { -1; };
+    if tick_idx < 0 {
+        print("[introducer] no preprint tick yet");
+        return;
+    };
+    let upstream_tick = tick_idx - 1;
+    if upstream_tick < 0 {
+        print("[introducer] waiting for first seed, current=", tick_idx);
+        return;
+    };
+
+    let problem_text = recall_latest("claim:problem_text:tick-" + to_string(upstream_tick));
+    let stated_answer = recall_latest("claim:answer:tick-" + to_string(upstream_tick));
+    let novelty_claim = recall_latest("claim:novelty_claim:tick-" + to_string(upstream_tick));
+    let audit_reasoning = recall_latest("claim:audit_reasoning:tick-" + to_string(upstream_tick));
+    let ev_arxiv = recall_latest("claim:audit_evidence_arxiv:tick-" + to_string(upstream_tick));
+    let ev_oeis = recall_latest("claim:audit_evidence_oeis:tick-" + to_string(upstream_tick));
+    let ev_groupprops = recall_latest("claim:audit_evidence_groupprops:tick-" + to_string(upstream_tick));
+    let ev_scholar = recall_latest("claim:audit_evidence_scholar:tick-" + to_string(upstream_tick));
+    let report_arxiv = recall_latest("claim:report_arxiv:tick-" + to_string(upstream_tick));
+    let report_oeis = recall_latest("claim:report_oeis:tick-" + to_string(upstream_tick));
+    let report_groupprops = recall_latest("claim:report_groupprops:tick-" + to_string(upstream_tick));
+    let report_scholar = recall_latest("claim:report_scholar:tick-" + to_string(upstream_tick));
+    if len(problem_text) == 0 {
+        print("[introducer] no claim seed for tick=", upstream_tick);
+        return;
+    };
+
+    let ctx = "PROBLEM: " + problem_text + "\n"
+            + "ANSWER: " + stated_answer + "\n"
+            + "NOVELTY CLAIM: " + novelty_claim + "\n"
+            + "AUDITOR REASONING: " + audit_reasoning + "\n"
+            + "ARXIV EVIDENCE IDS: " + ev_arxiv + "\n"
+            + "OEIS EVIDENCE A-NUMBERS: " + ev_oeis + "\n"
+            + "GROUPPROPS EVIDENCE URLS: " + ev_groupprops + "\n"
+            + "SCHOLAR EVIDENCE IDS: " + ev_scholar + "\n"
+            + "ARXIV REPORT: " + report_arxiv + "\n"
+            + "OEIS REPORT: " + report_oeis + "\n"
+            + "GROUPPROPS REPORT: " + report_groupprops + "\n"
+            + "SCHOLAR REPORT: " + report_scholar + "\n";
+
+    let draft = prompt(_draft_prompt(), ctx) -> Draft;
+
+    let my_tier = tier("introducer");
+    if my_tier == "autonomous" {
+        learn("introduce", "tick " + to_string(tick_idx), draft.rationale, "partial", ["acted", "preprint-foundry"]);
+    } else {
+        if my_tier == "review-gated" {
+            learn("introduce", "tick " + to_string(tick_idx), draft.rationale, "partial", ["review-gated", "preprint-foundry"]);
+        } else {
+            if my_tier == "propose" {
+                memo_write("introducer:" + _self_pid + ":abstract:tick-" + to_string(upstream_tick), draft.abstract_tex);
+                memo_write("introducer:" + _self_pid + ":intro:tick-" + to_string(upstream_tick), draft.intro_tex);
+                memo_write("introducer:" + _self_pid + ":title:tick-" + to_string(upstream_tick), draft.title);
+                memo_write("introducer:" + _self_pid + ":msc_codes:tick-" + to_string(upstream_tick), draft.msc_codes_csv);
+                memo_write("introducer:" + _self_pid + ":arxiv_category:tick-" + to_string(upstream_tick), draft.arxiv_category);
+                memo_write("replay:current_introducer_pid", _self_pid);
+
+                emit("introducer:abstract_ready", draft);
+                emit("introducer:intro_ready", draft);
+
+                learn("introduce", "tick " + to_string(tick_idx), "abstract+intro emitted", "success", ["emitted", "preprint-foundry"]);
+            } else {
+                print("[introducer] observing (tier:", my_tier, ") rationale=", draft.rationale);
+                learn("introduce", "tick " + to_string(tick_idx), draft.rationale, "partial", ["observed", "preprint-foundry"]);
+            };
+        };
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("introducer:last_check", now);
+    };
+}
