@@ -616,7 +616,7 @@ signal_shutdown() {
 write_run_meta() {
     emit_step "writing run-meta.json"
     started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    emit_cmd "python3 -c 'import json; json.dump({\"started_at\":\"$started_at\",\"source_audit_ledger\":\"$SOURCE_AUDIT_LEDGER\",\"source_foundry_dir\":\"$SOURCE_FOUNDRY_DIR\",\"total_ticks\":$TOTAL_TICKS,\"tick_interval_s\":$TICK_INTERVAL_S,\"llm_backend\":\"$LLM_BACKEND\",\"claude_model\":\"$CLAUDE_MODEL\",\"confidence_floor\":$CONFIDENCE_FLOOR,\"latexmk_max_passes\":$LATEXMK_MAX_PASSES,\"image_tag\":\"$IMAGE_TAG\",\"arxiv_gateway\":\"$ARXIV_GATEWAY\",\"hitl_required\":true}, open(\"$RUN_META\",\"w\"), indent=2)'"
+    emit_cmd "python3 -c 'import json; json.dump({\"started_at\":\"$started_at\",\"source_audit_ledger\":\"$SOURCE_AUDIT_LEDGER\",\"source_foundry_dir\":\"$SOURCE_FOUNDRY_DIR\",\"total_ticks\":$TOTAL_TICKS,\"tick_interval_s\":$TICK_INTERVAL_S,\"llm_backend\":\"$LLM_BACKEND\",\"claude_model\":\"$CLAUDE_MODEL\",\"confidence_floor\":$CONFIDENCE_FLOOR,\"latexmk_max_passes\":$LATEXMK_MAX_PASSES,\"image_tag\":\"$IMAGE_TAG\",\"arxiv_gateway\":\"$ARXIV_GATEWAY\",\"hitl_required\":True}, open(\"$RUN_META\",\"w\"), indent=2)'"
 }
 
 # --- Orchestration body ---
