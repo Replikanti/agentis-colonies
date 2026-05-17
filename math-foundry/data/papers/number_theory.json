@@ -1,0 +1,37 @@
+{
+  "topic": "number_theory",
+  "description": "Distribution of primes, additive combinatorics, Diophantine equations, modular forms, L-functions.",
+  "compute_hints": "sympy (isprime, factorint, nextprime, gcd, totient), math.gcd, fractions.Fraction.",
+  "papers": [
+    {
+      "id": "2605.15147",
+      "title": "Improved Ramsey bounds for generalized Schur equations",
+      "abstract": "We show that for $m, r \\in \\mathbb{N}$ and $N > (2m+1)^r (r!)^{1/m}$, every $r$-coloring of the integers in the interval $[N]$ contains a monochromatic solution to the equation   \\[   x_1 + \\dots + \\dots x_{m+1} = y_1 + \\dots + y_m.   \\]   This generalizes and improves recent results of Ko\u015bcuiszko. We also show that if $N \\geq 2^{r}$, then every $r$-coloring of the integers in $[N]$ must always determine a monochromatic solution to the above equation for some $m \\geq 1$. The latter estimate is optimal."
+    },
+    {
+      "id": "2605.15117",
+      "title": "Real geometric transcendence for the Gamma function",
+      "abstract": "We show that the $x$-axis is the only real algebraic curve in $\\mathbb R^2$ whose image via the Gamma function is contained in an algebraic curve. Our proof employs an elegant base-change argument due to Tamiozzo (2023) to deduce the result from the corresponding complex geometric transcendence result of Eterovi\u0107, Padgett and Zhao (2025). As an application, we use the complex and real geometric transcendence results to study analogues of the Manin--Mumford conjecture for the Gamma function."
+    },
+    {
+      "id": "2605.15107",
+      "title": "Solutions for Hecke Sum Questions of Banerjee and Bringmann",
+      "abstract": "The present authors introduced a two-color partition series $S(q)$ and conjectured a Hecke-type formula for the even part of $(q^4;q^4)_\\infty S(q)$. Banerjee and Bringmann proved the conjecture by using indefinite theta functions, modular completions, and Sturm's theorem. They also asked whether a direct proof, for instance one based on Bailey-type ideas, could be found, and they suggested that the odd residue classes may be worth studying. We prove a two-variable refinement with an additional parameter $a$.   Our proof relies entirely on $q$-series combined with the Bailey pairs The original even identity and the odd identity then follow as corollaries by letting $a=1$. We also record parameter symmetries and cyclotomic companions, including a vanishing result at $a=i$."
+    },
+    {
+      "id": "2605.15067",
+      "title": "On Vu's restricted box estimate in Waring's problem",
+      "abstract": "In 2000, Vu proved that the number of solutions of $x_1^k + \\cdots + x_s^k = N$ in an arbitrary box satisfies the expected Hardy--Littlewood upper bound with a power-saving error term, for $s \\geq O(8^k k^3)$. We show that one may take $s\\geq k^2 - k + O(\\sqrt{k})$."
+    },
+    {
+      "id": "2605.15063",
+      "title": "The R\u00e9nyi entropy of the order of a random permutation",
+      "abstract": "We study the distribution of the order of a random permutation of $[n]$ through the lens of R\u00e9nyi entropy. In particular, we obtain an asymptotic for the R\u00e9nyi $q$-entropy of the order in the full range $1 \\leq q \\leq \\infty$. For $q > 1$, our results are quantitatively optimal and reveal a tight connection between the asymptotic behaviour of the R\u00e9nyi $q$-entropy and arithmetic properties of $n$. Of particular interest are the cases $q = \\infty$ and $q = 2$, which correspond to the maximum probability of achieving a particular order and the probability that two independent random permutations have equal orders, respectively. In the former case, we show that the probability in question is asymptotic to $1/n$ and additionally characterise the maximiser for sufficiently large $n$. In the latter case, we determine a minimal and maximal order for the probability as a function of $n$, of respective forms $c/n^2$ and $\\log^*n/n^2$. Our results provide an essentially complete answer to a set of questions raised by Acan, Burnette, Eberhard, Schmutz and Thomas, some of which go back to work of Erd\u0151s and Tur\u00e1n from the 1960s."
+    },
+    {
+      "id": "2605.15046",
+      "title": "Sophie Germain, math\u00e9maticienne extraordinaire: A story stranger than fiction",
+      "abstract": "Sophie Germain (1776-1831) was the first woman we know who did important original research in mathematics, specifically in elasticity theory and number theory. Celebrating her semiquincentennial year, we outline Germain's recently unearthed number theory results on Fermat's Last Theorem, in the context of her life, work, and interactions with Lagrange, Legendre, and Gauss. For two centuries her accomplishment on Fermat's Last Theorem was thought to consist of a single theorem attributed to her in a publication by Legendre, the first general result towards proving Fermat's Last Theorem. But recent discoveries in her handwritten manuscripts and correspondence with Legendre and Gauss show that she accomplished much more, albeit forgotten. In particular, she had a grand plan for proving Fermat's Last Theorem in its entirety, and carried this plan a long way, using then new tools, e.g., congruence, modular primitive roots, and permutations."
+    }
+  ]
+}

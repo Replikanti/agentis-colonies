@@ -145,6 +145,9 @@ OPENAI_ENDPOINT="${FOUNDRY_OPENAI_ENDPOINT:-https://openrouter.ai/api/v1/chat/co
 OPENAI_MODEL="${FOUNDRY_OPENAI_MODEL:-qwen/qwen3-coder-30b-a3b-instruct}"
 OPENAI_KEY_ENV="${FOUNDRY_OPENAI_KEY_ENV:-OPENROUTER_API_KEY}"
 OPENAI_TIMEOUT_MS="${FOUNDRY_OPENAI_TIMEOUT_MS:-180000}"
+CLAUDE_MODEL="${FOUNDRY_CLAUDE_MODEL:-opus}"
+CLAUDE_EFFORT="${FOUNDRY_CLAUDE_EFFORT:-medium}"
+HOST_CLAUDE_DIR="${FOUNDRY_HOST_CLAUDE_DIR:-$HOME/.claude}"
 DAEMON_CB_PER_TICK="${FOUNDRY_DAEMON_CB_PER_TICK:-2000}"
 DAEMON_HEARTBEAT_MS="${FOUNDRY_DAEMON_HEARTBEAT_MS:-1800000}"
 IMAGE_TAG="${FOUNDRY_IMAGE_TAG:-math-foundry:latest}"
@@ -320,6 +323,13 @@ write_bootstrap() {
             printf '  printf "llm.openai.model = %s\\n"\n' "$OPENAI_MODEL"
             printf '  printf "llm.openai.api_key_env = %s\\n"\n' "$OPENAI_KEY_ENV"
             printf '  printf "llm.openai.timeout_ms = %s\\n"\n' "$OPENAI_TIMEOUT_MS"
+        elif [ "$LLM_BACKEND" = "claude" ]; then
+            # Phase 1 stopgap: route all 5 colonies through claude CLI flat-rate
+            # (Max 20x subscription). Per-colony backend mix (Qwen for explorer,
+            # Sonnet for noticer/formulator, Opus for verifier/novelty) is
+            # Phase 2 enhancement requiring per-colony AGENTIS_ROOT.
+            printf '  printf "llm.command = claude\\n"\n'
+            printf '  printf "llm.args = -p --output-format json --model %s --tools \\"\\" --system-prompt \\"You are a research mathematician. Output only valid JSON.\\" --effort %s\\n"\n' "$CLAUDE_MODEL" "$CLAUDE_EFFORT"
         fi
         printf '} >> .agentis/config\n'
         printf 'for c in explorer noticer formulator verifier novelty; do\n'
@@ -361,7 +371,17 @@ write_bootstrap() {
 # --- 3) Spawn the container ---
 spawn_container() {
     emit_step "spawning math-foundry container (image=$IMAGE_TAG)"
-    emit_cmd "podman run -d --replace --name math-foundry-laptop -e $OPENAI_KEY_ENV=\"\${$OPENAI_KEY_ENV:-}\" -v $REPO_ROOT:/repo:ro -v $LAPTOP_DIR:/run-root:rw $IMAGE_TAG /run-root/bootstrap.sh"
+    if [ "$LLM_BACKEND" = "claude" ]; then
+        # Bind-mount host's ~/.claude into container so claude CLI can read
+        # OAuth session tokens for flat-rate (Max 20x) access. Mirrors
+        # tribes-bench STAGE3_HOST_CLAUDE_DIR pattern (#535).
+        # ':z' SELinux relabel required on SELinux-enforcing hosts (Fedora,
+        # RHEL); without it container sees Permission denied on every file
+        # in the mount. Mirrors tribes-bench fix (#540).
+        emit_cmd "podman run -d --replace --name math-foundry-laptop -v $REPO_ROOT:/repo:ro -v $LAPTOP_DIR:/run-root:rw -v $HOST_CLAUDE_DIR:/root/.claude:rw,z $IMAGE_TAG /run-root/bootstrap.sh"
+    else
+        emit_cmd "podman run -d --replace --name math-foundry-laptop -e $OPENAI_KEY_ENV=\"\${$OPENAI_KEY_ENV:-}\" -v $REPO_ROOT:/repo:ro -v $LAPTOP_DIR:/run-root:rw $IMAGE_TAG /run-root/bootstrap.sh"
+    fi
 }
 
 # --- 4) Cleanup trap ---

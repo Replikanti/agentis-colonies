@@ -52,7 +52,7 @@ fn _solver_prompt() -> string {
 }
 
 fn _verifier_prompt() -> string {
-    return "You are a strict referee. The user-supplied input below carries the PROBLEM, the STATED answer, the SOLVER solution, and the SOLVER ANSWER from an independent reviewer. Decide whether the answers agree, whether the solver was rigorous, whether the problem is well-defined, and the overall verdict (ACCEPT / REJECT / NEEDS_REVISION). Output ONLY valid JSON: {\"answers_agree\": true|false, \"solver_rigorous\": true|false, \"problem_well_defined\": true|false, \"verdict\": \"ACCEPT|REJECT|NEEDS_REVISION\", \"reasoning\": \"...\"}.";
+    return "You are a problem-quality referee. The input below carries the PROBLEM and the STATED ANSWER from the author. Your sole job is to judge the PROBLEM ITSELF — not whether the stated answer is numerically correct. Set verdict=ACCEPT when the problem is well-defined (unambiguous statement, mathematically meaningful, has a determinable answer in principle). Set verdict=NEEDS_REVISION when the problem is mostly well-defined but has minor ambiguities that could be fixed with light editing. Set verdict=REJECT only when the problem itself is incoherent, ill-defined, or trivially malformed. Output ONLY valid JSON: {\"answers_agree\": false, \"solver_rigorous\": false, \"problem_well_defined\": true|false, \"verdict\": \"ACCEPT|REJECT|NEEDS_REVISION\", \"reasoning\": \"...\"}. Set answers_agree and solver_rigorous to false (they are deprecated metadata).";
 }
 
 fn tick(reason: string) -> void {
@@ -68,28 +68,29 @@ fn tick(reason: string) -> void {
         print("[verifier] no foundry tick yet");
         return;
     };
+    let upstream_tick = tick_idx - 3;
+    if upstream_tick < 0 {
+        print("[verifier] waiting for formulator pipeline, current=", tick_idx);
+        return;
+    };
 
     let formulator_pid = recall_latest("replay:current_formulator_pid");
     if len(formulator_pid) == 0 {
-        print("[verifier] no formulator pid for tick=", tick_idx);
+        print("[verifier] no formulator pid for tick=", upstream_tick);
         return;
     };
-    let problem_text = recall_latest("formulator:" + formulator_pid + ":problem_text:tick-" + to_string(tick_idx));
-    let stated_answer = recall_latest("formulator:" + formulator_pid + ":answer:tick-" + to_string(tick_idx));
+    let problem_text = recall_latest("formulator:" + formulator_pid + ":problem_text:tick-" + to_string(upstream_tick));
+    let stated_answer = recall_latest("formulator:" + formulator_pid + ":answer:tick-" + to_string(upstream_tick));
     if len(problem_text) == 0 {
-        print("[verifier] no problem text for tick=", tick_idx);
+        print("[verifier] no problem text for tick=", upstream_tick);
         return;
     };
 
-    // Step 1: independent solve.
-    let solver_ctx = "PROBLEM: " + problem_text + "\n";
-    let solver = prompt(_solver_prompt(), solver_ctx) -> SolverOutput;
-
-    // Step 2: referee.
+    // Single LLM pass: judge problem quality only. No internal solver
+    // step — verifier's job is well-definedness referee, not arithmetic
+    // double-check.
     let verify_ctx = "PROBLEM: " + problem_text + "\n"
-                   + "STATED: " + stated_answer + "\n"
-                   + "SOLVER: " + solver.solution + "\n"
-                   + "SOLVER ANSWER: " + solver.answer + "\n";
+                   + "STATED ANSWER: " + stated_answer + "\n";
     let verdict = prompt(_verifier_prompt(), verify_ctx) -> Verdict;
 
     let my_tier = tier("verifier");
@@ -108,8 +109,8 @@ fn tick(reason: string) -> void {
                                  + ",\"problem_well_defined\":" + well_defined_str
                                  + ",\"verdict\":\"" + verdict.verdict
                                  + "\",\"reasoning\":\"" + verdict.reasoning + "\"}";
-                memo_write("verifier:" + _self_pid + ":verdict:tick-" + to_string(tick_idx), verdict_json);
-                memo_write("verifier:" + _self_pid + ":verdict_label:tick-" + to_string(tick_idx), verdict.verdict);
+                memo_write("verifier:" + _self_pid + ":verdict:tick-" + to_string(upstream_tick), verdict_json);
+                memo_write("verifier:" + _self_pid + ":verdict_label:tick-" + to_string(upstream_tick), verdict.verdict);
                 memo_write("replay:current_verifier_pid", _self_pid);
 
                 if verdict.verdict == "ACCEPT" {

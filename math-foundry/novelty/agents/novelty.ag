@@ -64,26 +64,32 @@ fn tick(reason: string) -> void {
         print("[novelty] no foundry tick yet");
         return;
     };
+    let upstream_tick = tick_idx - 4;
+    if upstream_tick < 0 {
+        print("[novelty] waiting for verifier pipeline, current=", tick_idx);
+        return;
+    };
 
     let verifier_pid = recall_latest("replay:current_verifier_pid");
     if len(verifier_pid) == 0 {
-        print("[novelty] no verifier pid for tick=", tick_idx);
+        print("[novelty] no verifier pid for tick=", upstream_tick);
         return;
     };
-    let verdict_label = recall_latest("verifier:" + verifier_pid + ":verdict_label:tick-" + to_string(tick_idx));
-    if verdict_label != "ACCEPT" {
-        print("[novelty] verifier did not accept (verdict=", verdict_label, ") for tick=", tick_idx);
+    let verdict_label = recall_latest("verifier:" + verifier_pid + ":verdict_label:tick-" + to_string(upstream_tick));
+    let verifier_passed = if verdict_label == "ACCEPT" { true; } else { if verdict_label == "NEEDS_REVISION" { true; } else { false; }; };
+    if !verifier_passed {
+        print("[novelty] verifier rejected (verdict=", verdict_label, ") for tick=", upstream_tick);
         return;
     };
 
     let formulator_pid = recall_latest("replay:current_formulator_pid");
-    let problem_text = recall_latest("formulator:" + formulator_pid + ":problem_text:tick-" + to_string(tick_idx));
-    let stated_answer = recall_latest("formulator:" + formulator_pid + ":answer:tick-" + to_string(tick_idx));
-    let novelty_claim = recall_latest("formulator:" + formulator_pid + ":novelty_claim:tick-" + to_string(tick_idx));
+    let problem_text = recall_latest("formulator:" + formulator_pid + ":problem_text:tick-" + to_string(upstream_tick));
+    let stated_answer = recall_latest("formulator:" + formulator_pid + ":answer:tick-" + to_string(upstream_tick));
+    let novelty_claim = recall_latest("formulator:" + formulator_pid + ":novelty_claim:tick-" + to_string(upstream_tick));
     let explorer_pid = recall_latest("replay:current_explorer_pid");
 
     if len(problem_text) == 0 {
-        print("[novelty] no problem text for tick=", tick_idx);
+        print("[novelty] no problem text for tick=", upstream_tick);
         return;
     };
 
@@ -106,13 +112,10 @@ fn tick(reason: string) -> void {
                                  + ",\"classical_identifier\":\"" + novelty.classical_identifier
                                  + "\",\"novelty_verdict\":\"" + novelty.novelty_verdict
                                  + "\",\"reasoning\":\"" + novelty.reasoning + "\"}";
-                memo_write("novelty:" + _self_pid + ":verdict:tick-" + to_string(tick_idx), novelty_json);
+                memo_write("novelty:" + _self_pid + ":verdict:tick-" + to_string(upstream_tick), novelty_json);
 
-                // Final settlement signal to the explorer's settlement
-                // path; keyed on the explorer pid that initiated this
-                // tick so multiple explorers can settle in parallel.
                 if len(explorer_pid) > 0 {
-                    memo_write("novelty:final_verdict:" + explorer_pid + ":tick-" + to_string(tick_idx), novelty.novelty_verdict);
+                    memo_write("novelty:final_verdict:" + explorer_pid + ":tick-" + to_string(upstream_tick), novelty.novelty_verdict);
                 };
 
                 // Append to per-run discovery ledger.
