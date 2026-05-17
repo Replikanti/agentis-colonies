@@ -484,18 +484,27 @@ for idx in range(total_ticks):
     claim_id = "claim-" + str(audit_source_pid or "x") + "-t" + str(audit_source_tick)
 
     # math-foundry: formulator + explorer keys.
+    # audit_source_pid in the audit-ledger row is the novelty daemon
+    # pid (the agent that emitted the verdict event), NOT the
+    # formulator's. Formulator writes its memos under its own pid;
+    # recover it from upstream's self-registered replay key
+    # (same lesson as claim-auditor PR #604).
+    foundry_formulator_pid = upstream_recall(
+        foundry_recall_cwd, "replay:current_formulator_pid"
+    )
+    fpid = foundry_formulator_pid or audit_source_pid
     problem_text = upstream_recall(
         foundry_recall_cwd,
-        "formulator:" + audit_source_pid + ":problem_text:tick-" + str(audit_source_tick),
-    )
+        "formulator:" + fpid + ":problem_text:tick-" + str(audit_source_tick),
+    ) if fpid else ""
     answer = upstream_recall(
         foundry_recall_cwd,
-        "formulator:" + audit_source_pid + ":answer:tick-" + str(audit_source_tick),
-    )
+        "formulator:" + fpid + ":answer:tick-" + str(audit_source_tick),
+    ) if fpid else ""
     novelty_claim = upstream_recall(
         foundry_recall_cwd,
-        "formulator:" + audit_source_pid + ":novelty_claim:tick-" + str(audit_source_tick),
-    )
+        "formulator:" + fpid + ":novelty_claim:tick-" + str(audit_source_tick),
+    ) if fpid else ""
     # math-foundry explorer pid is not necessarily the same as formulator
     # pid; the formulator memo `formulator:<pid>:explorer_pid:tick-N` would
     # ideally carry it but is not guaranteed. As a robust fallback we
