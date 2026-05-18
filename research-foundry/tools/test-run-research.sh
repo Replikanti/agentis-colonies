@@ -15,7 +15,7 @@
 #   8. Invalid RESEARCH_TOTAL_TICKS=0 rejected with exit 2
 #   9. Empty RESEARCH_TOPICS rejected with exit 2
 #  10. Bootstrap-script generation step is emitted in dry-run output,
-#      and names all 15 colonies.
+#      and names all 16 colonies.
 #  11. Container spawn command is emitted in dry-run output using the
 #      `research-foundry-laptop` name (single sidecar block).
 #  12. Run-meta.json write step is emitted in dry-run output
@@ -128,12 +128,12 @@ assert_contains "9b. empty-topics stderr names the variable" "$EMPTY_OUT" \
     "RESEARCH_TOPICS must be a non-empty comma-separated list"
 
 # ---------------------------------------------------------------------------
-# 10. Bootstrap-script generation names all 15 colonies.
+# 10. Bootstrap-script generation names all 16 colonies.
 # ---------------------------------------------------------------------------
 assert_contains "10a. bootstrap-script generation step emitted" "$OUT" \
     "generating bootstrap script"
 assert_contains "10b. bootstrap names explorer/noticer/.../submitter" "$OUT" \
-    "colonies=explorer,noticer,formulator,verifier,novelty,arxiv-search,oeis-search,groupprops-search,scholar-search,auditor,introducer,theorist,computer,editor,submitter"
+    "colonies=explorer,noticer,skeptic,formulator,verifier,novelty,arxiv-search,oeis-search,groupprops-search,scholar-search,auditor,introducer,theorist,computer,editor,submitter"
 
 # ---------------------------------------------------------------------------
 # 11. Spawn command uses research-foundry-laptop name (single).

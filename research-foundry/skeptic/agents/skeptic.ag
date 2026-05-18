@@ -1,0 +1,168 @@
+// skeptic.ag -- Math Foundry skeptic: reads the noticer's surprise
+// record and runs a strict SKEPTIC_PROMPT that defaults to dismissing
+// the surprise unless it cannot be matched to a classical result. The
+// skeptic gates the formulator: when the verdict is `dismissed`, the
+// formulator skips the tick (Phase 4 PR-A #625).
+//
+// Per-tick behaviour:
+//   1. listen("math-foundry:notice_done") triggers the agent; the
+//      payload carries the noticer's Surprise record (the agent also
+//      reads the latest surprise from memo for robustness).
+//   2. Build the SKEPTIC_PROMPT and call prompt() -> SkepticVerdict
+//      JSON.
+//   3. Persist the verdict to memo
+//      (`skeptic:<pid>:verdict:tick-N` + `:verdict_label:tick-N` +
+//      `skeptic:upheld:<noticer_pid>:tick-N`) and emit
+//      "math-foundry:skeptic_done".
+//
+// Run as daemon: agentis daemon agents/skeptic.ag --colony skeptic
+// Requires: exec capability, messaging capability.
+
+cb 200000000;
+
+type Surprise {
+    surprise_found: bool,
+    surprise_description: string,
+    specific_value: string,
+    why_surprising: string,
+    confidence_in_surprise: float
+}
+
+type SkepticVerdict {
+    verdict: string,
+    reasoning: string,
+    classical_reference: string,
+    confidence: float
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("skeptic:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    };
+    return 0.0;
+}
+
+fn colony_name() -> string {
+    let _cn = try { exec sh "printenv COLONY_NAME"; } catch e { ""; };
+    if len(_cn) > 0 {
+        return _cn;
+    };
+    return "skeptic";
+}
+
+fn _seed_prompt() -> string {
+    return "You are a strict skeptic. DEFAULT to dismissing the surprise. The user-supplied input below carries the noticer's SURPRISE DESCRIPTION, the SPECIFIC VALUE, and the WHY SURPRISING reasoning. Match the surprise against classical results: Basel-style sums, Gauss sums, named constants (pi, e, Euler-Mascheroni), classical generating functions, well-known group invariants, OEIS-famous sequences. Set verdict=\"dismissed\" when the surprise is plausibly a re-derivation of a classical identity (include the classical reference). Set verdict=\"upheld\" only when the surprise resists matching to any classical result you can identify. Set verdict=\"unsure\" when the surprise is non-trivial but you cannot rule out a classical match. Output ONLY valid JSON: {\"verdict\": \"dismissed|upheld|unsure\", \"reasoning\": \"...\", \"classical_reference\": \"...\", \"confidence\": 0.0-1.0}.";
+}
+
+// _dump_ctx_to_memo -- write the assembled prompt context to a per-
+// tick memo key so #623-style validation (and any future audit) can
+// inspect what the LLM actually saw. Stable shape:
+// `<agent>:<pid>:ctx:tick-N`. Duplicated verbatim from formulator
+// because the .ag DSL has no shared-include mechanism (#642 pattern).
+fn _dump_ctx_to_memo(agent_name: string, pid: string, tick_idx: int, ctx: string) -> void {
+    if len(agent_name) == 0 { return; };
+    if len(pid) == 0 { return; };
+    memo_write(agent_name + ":" + pid + ":ctx:tick-" + to_string(tick_idx), ctx);
+}
+
+// _publish_skeptic -- memo + emit. Skeptic writes no ledger row today,
+// so final_write is retained for symmetry but currently a no-op.
+// Non-terminal agent collapses autonomous -> review-gated per ADR-0001
+// (#622 PR-2 #632 pattern).
+fn _publish_skeptic(
+    final_write: bool,
+    verdict: SkepticVerdict,
+    self_pid: string,
+    noticer_pid: string,
+    upstream_tick: int,
+    tick_idx: int
+) -> void {
+    let _ = final_write;
+    let conf_str = to_string(verdict.confidence);
+    let verdict_json = "{\"verdict\":\"" + verdict.verdict
+                     + "\",\"reasoning\":\"" + verdict.reasoning
+                     + "\",\"classical_reference\":\"" + verdict.classical_reference
+                     + "\",\"confidence\":" + conf_str + "}";
+    memo_write("skeptic:" + self_pid + ":verdict:tick-" + to_string(upstream_tick), verdict_json);
+    memo_write("skeptic:" + self_pid + ":verdict_label:tick-" + to_string(upstream_tick), verdict.verdict);
+    let upheld_str = if verdict.verdict == "dismissed" { "false"; } else { "true"; };
+    if len(noticer_pid) > 0 {
+        memo_write("skeptic:upheld:" + noticer_pid + ":tick-" + to_string(upstream_tick), upheld_str);
+    };
+    memo_write("replay:current_skeptic_pid", self_pid);
+    emit("math-foundry:skeptic_done", verdict);
+}
+
+fn tick(reason: string) -> void {
+    let _ = reason;
+    let _colony_name = colony_name();
+    let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
+    let conf = get_confidence();
+    print("[skeptic] tick conf=", conf);
+
+    let tick_idx_str = recall_latest("replay:current_tick");
+    let tick_idx = if len(tick_idx_str) > 0 { parse_int(tick_idx_str); } else { -1; };
+    if tick_idx < 0 {
+        print("[skeptic] no foundry tick yet");
+        return;
+    };
+    let upstream_tick = tick_idx - 2;
+    if upstream_tick < 0 {
+        print("[skeptic] waiting for noticer pipeline, current=", tick_idx);
+        return;
+    };
+
+    let noticer_pid = recall_latest("replay:current_noticer_pid");
+    if len(noticer_pid) == 0 {
+        print("[skeptic] no noticer pid for tick=", upstream_tick);
+        return;
+    };
+    let surprise_found = recall_latest("noticer:" + noticer_pid + ":surprise_found:tick-" + to_string(upstream_tick));
+    if surprise_found != "true" {
+        print("[skeptic] surprise not found (or noticer unset) for tick=", upstream_tick);
+        return;
+    };
+    let surprise_json = recall_latest("noticer:" + noticer_pid + ":surprise:tick-" + to_string(upstream_tick));
+    if len(surprise_json) == 0 {
+        print("[skeptic] no surprise json for tick=", upstream_tick);
+        return;
+    };
+    let surprise_description = to_string(json_get(surprise_json, "surprise_description"));
+    let specific_value = to_string(json_get(surprise_json, "specific_value"));
+    let why_surprising = to_string(json_get(surprise_json, "why_surprising"));
+
+    let ctx = "SURPRISE DESCRIPTION: " + surprise_description + "\n"
+            + "SPECIFIC VALUE: " + specific_value + "\n"
+            + "WHY SURPRISING: " + why_surprising + "\n";
+
+    _dump_ctx_to_memo("skeptic", _self_pid, tick_idx, ctx);
+    let verdict = prompt(_seed_prompt(), ctx) -> SkepticVerdict;
+
+    let my_tier = tier("skeptic");
+    if my_tier == "autonomous" {
+        // reason: tier N/A here; non-terminal agent -- collapses to review-gated.
+        memo_write("skeptic:" + _self_pid + ":review_gated", "true");
+        learn("skeptic_dismiss", "tick " + to_string(tick_idx) + " " + verdict.verdict, verdict.reasoning, "partial", ["acted", "math-foundry"]);
+        _publish_skeptic(true, verdict, _self_pid, noticer_pid, upstream_tick, tick_idx);
+    } else {
+        if my_tier == "review-gated" {
+            memo_write("skeptic:" + _self_pid + ":review_gated", "true");
+            learn("skeptic_dismiss", "tick " + to_string(tick_idx) + " " + verdict.verdict, verdict.reasoning, "partial", ["review-gated", "math-foundry"]);
+            _publish_skeptic(true, verdict, _self_pid, noticer_pid, upstream_tick, tick_idx);
+        } else {
+            if my_tier == "propose" {
+                learn("skeptic_dismiss", "tick " + to_string(tick_idx) + " " + verdict.verdict, verdict.reasoning, "success", ["emitted", "math-foundry"]);
+                _publish_skeptic(false, verdict, _self_pid, noticer_pid, upstream_tick, tick_idx);
+            } else {
+                print("[skeptic] observing (tier:", my_tier, ") verdict=", verdict.verdict);
+                learn("skeptic_dismiss", "tick " + to_string(tick_idx) + " " + verdict.verdict, verdict.reasoning, "partial", ["observed", "math-foundry"]);
+            };
+        };
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("skeptic:last_check", now);
+    };
+}

@@ -342,14 +342,14 @@ build_image() {
 }
 
 # --- 2) Per-node bootstrap script generator ---
-# Single bootstrap that spawns all 15 daemons under one .agentis/.
+# Single bootstrap that spawns all 16 daemons under one .agentis/.
 # Three pipeline groups:
-#   math      = explorer, noticer, formulator, verifier, novelty
+#   math      = explorer, noticer, skeptic, formulator, verifier, novelty
 #   searchers = arxiv-search, oeis-search, groupprops-search, scholar-search, auditor
 #   preprint  = introducer, theorist, computer, editor, submitter
 # Explorer keeps --enable-replication --allow-replica-replication so
 # the M2-Malthusian replicate gate inside explorer.ag can grow its
-# population. The remaining 14 colonies run with standard
+# population. The remaining 15 colonies run with standard
 # --enable-exec --enable-messaging flags. Per-daemon tick interval is
 # fixed at 30s (decoupled from the orchestrator's TICK_INTERVAL_S
 # `replay:current_tick` advance rate); same reason as the retired
@@ -357,10 +357,10 @@ build_image() {
 # the orchestrator tick to avoid missing state changes).
 write_bootstrap() {
     bootstrap_path="$LAPTOP_DIR/bootstrap.sh"
-    emit_step "generating bootstrap script at $bootstrap_path (colonies=15 daemons_per_colony=$DAEMONS_PER_COLONY)"
+    emit_step "generating bootstrap script at $bootstrap_path (colonies=16 daemons_per_colony=$DAEMONS_PER_COLONY)"
 
     if [ "$DRY_RUN" = "1" ]; then
-        emit_cmd "write-bootstrap path=$bootstrap_path colonies=explorer,noticer,formulator,verifier,novelty,arxiv-search,oeis-search,groupprops-search,scholar-search,auditor,introducer,theorist,computer,editor,submitter"
+        emit_cmd "write-bootstrap path=$bootstrap_path colonies=explorer,noticer,skeptic,formulator,verifier,novelty,arxiv-search,oeis-search,groupprops-search,scholar-search,auditor,introducer,theorist,computer,editor,submitter"
         return
     fi
 
@@ -401,7 +401,7 @@ write_bootstrap() {
         printf '} >> .agentis/config\n'
         # Stage all 15 colonies + tools/ + config/ + data/ from the
         # read-only /repo bind-mount.
-        printf 'for c in explorer noticer formulator verifier novelty arxiv-search oeis-search groupprops-search scholar-search auditor introducer theorist computer editor submitter; do\n'
+        printf 'for c in explorer noticer skeptic formulator verifier novelty arxiv-search oeis-search groupprops-search scholar-search auditor introducer theorist computer editor submitter; do\n'
         printf '    cp -r /repo/research-foundry/$c /run-root/$c\n'
         printf 'done\n'
         printf 'cp -r /repo/research-foundry/tools /run-root/tools\n'
@@ -416,7 +416,7 @@ write_bootstrap() {
         # claim-auditor / preprint-foundry searcher keys use underscored
         # forms (arxiv_search, oeis_search, etc.) because the .ag agents
         # call them that way internally; mirrors retired run-auditor.sh.
-        printf 'for c in explorer noticer formulator verifier novelty arxiv_search oeis_search groupprops_search scholar_search auditor introducer theorist computer editor submitter; do\n'
+        printf 'for c in explorer noticer skeptic formulator verifier novelty arxiv_search oeis_search groupprops_search scholar_search auditor introducer theorist computer editor submitter; do\n'
         printf '    (cd /run-root && agentis memo set $c:confidence 0.7 >/dev/null 2>&1 || true)\n'
         printf 'done\n'
         # Per-daemon tick interval is 30s (decoupled from orchestrator
@@ -488,6 +488,11 @@ write_bootstrap() {
         printf '        DAEMON_ID=$i COLONY_NAME=$c DISCOVERY_LEDGER=/run-root/discovery-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/$c/agents/$c.ag --colony $c --enable-exec --enable-messaging --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/$c-$i.log 2>&1 &\n'
         printf '    done\n'
         printf 'done\n'
+        # Phase 4 PR-A (#625): skeptic colony gates the formulator on
+        # noticer surprises. Single daemon mirroring noticer's env +
+        # flags; pass-through default in formulator.ag so empty skeptic
+        # memo does not block.
+        printf 'DAEMON_ID=1 COLONY_NAME=skeptic DISCOVERY_LEDGER=/run-root/discovery-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/skeptic/agents/skeptic.ag --colony skeptic --enable-exec --enable-messaging --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/skeptic-1.log 2>&1 &\n'
         # claim-auditor: four searchers + auditor. Audit-trail goes to
         # audit-ledger.jsonl.
         printf 'for c in arxiv-search oeis-search groupprops-search scholar-search; do\n'

@@ -142,7 +142,7 @@ fn tick(reason: string) -> void {
         print("[formulator] no foundry tick yet");
         return;
     };
-    let upstream_tick = tick_idx - 2;
+    let upstream_tick = tick_idx - 3;
     if upstream_tick < 0 {
         print("[formulator] waiting for noticer pipeline, current=", tick_idx);
         return;
@@ -156,6 +156,15 @@ fn tick(reason: string) -> void {
     let surprise_found = recall_latest("noticer:" + noticer_pid + ":surprise_found:tick-" + to_string(upstream_tick));
     if surprise_found != "true" {
         print("[formulator] surprise not found (or noticer unset) for tick=", upstream_tick);
+        return;
+    };
+    // #625 Phase 4 PR-A: skeptic gate. Pass-through default -- empty
+    // skeptic memo does not block. Only an explicit `dismissed` label
+    // skips the tick.
+    let skeptic_pid = recall_latest("replay:current_skeptic_pid");
+    let skeptic_label = if len(skeptic_pid) > 0 { recall_latest("skeptic:" + skeptic_pid + ":verdict_label:tick-" + to_string(upstream_tick)); } else { ""; };
+    if skeptic_label == "dismissed" {
+        print("[formulator] skeptic dismissed surprise for tick=", upstream_tick);
         return;
     };
     let surprise_json = recall_latest("noticer:" + noticer_pid + ":surprise:tick-" + to_string(upstream_tick));

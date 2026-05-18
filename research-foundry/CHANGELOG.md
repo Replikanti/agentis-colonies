@@ -18,6 +18,17 @@ History of the three retired federations consolidated into this one
 
 ## [Unreleased]
 
+### Added
+
+- `skeptic/` colony (Phase 4 PR-A of #625). Reads the noticer's
+  surprise record and runs a strict skeptic prompt that defaults to
+  dismissing the surprise unless it cannot be matched to a classical
+  result. Verdict label gates the formulator (pass-through default --
+  empty skeptic memo does not block). Formulator/verifier/novelty
+  `upstream_tick` offsets bumped by one to absorb the new pipeline
+  stage. New `(topic, outcome)` pairs in `tools/check-learn-tags.sh`
+  for `skeptic_dismiss:partial` and `skeptic_dismiss:success`.
+
 ## [0.1.0] — 2026-05-18
 
 **Requires:** agentis >= 1.7.12

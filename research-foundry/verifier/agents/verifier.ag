@@ -99,7 +99,7 @@ fn tick(reason: string) -> void {
         print("[verifier] no foundry tick yet");
         return;
     };
-    let upstream_tick = tick_idx - 3;
+    let upstream_tick = tick_idx - 4;
     if upstream_tick < 0 {
         print("[verifier] waiting for formulator pipeline, current=", tick_idx);
         return;

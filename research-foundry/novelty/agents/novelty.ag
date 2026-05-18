@@ -145,7 +145,7 @@ fn tick(reason: string) -> void {
         print("[novelty] no foundry tick yet");
         return;
     };
-    let upstream_tick = tick_idx - 4;
+    let upstream_tick = tick_idx - 5;
     if upstream_tick < 0 {
         print("[novelty] waiting for verifier pipeline, current=", tick_idx);
         return;
