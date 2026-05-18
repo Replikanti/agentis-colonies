@@ -175,11 +175,59 @@ fn _submitter_draft_phase(
     learn("submit", "tick " + to_string(tick_idx) + " DRAFTED " + claim_id_eff, meta.rationale, "success", ["emitted", "preprint-foundry", "hitl-gated"]);
 }
 
+// _classify_hitl_reason -- classify a free-form HITL rejection reason
+// into one of six tags via regex (MVP). The HITL_CLASSIFIER_BACKEND
+// env knob exists so an LLM-based classifier can be opted in later
+// without touching the write path: backend=regex (default, also when
+// unset) -> regex; backend=llm -> TODO LLM call, falls back to regex
+// for now. Tags:
+//   math_wrong, writing_bad, topic_boring, scope_off, style_violation,
+//   other.
+fn _classify_hitl_reason(reason_raw: string) -> string {
+    if len(reason_raw) == 0 { return "other"; };
+    let backend = try { exec sh "printenv HITL_CLASSIFIER_BACKEND"; } catch e { ""; };
+    let backend_eff = if len(backend) > 0 { backend; } else { "regex"; };
+    if backend_eff == "llm" {
+        // TODO: replace with prompt(...) call once LLM-classifier
+        // policy is decided (cost / latency budget). For now fall
+        // through to the regex path so the write contract stays
+        // stable.
+        let _ = backend_eff;
+    };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,re\ns=sys.argv[1].lower()\nif re.search(r\"wrong|incorrect|error|proof.*fail\", s): print(\"math_wrong\")\nelif re.search(r\"unreadable|typo|grammar|prose\", s): print(\"writing_bad\")\nelif re.search(r\"uninteresting|trivial|not.*novel\", s): print(\"topic_boring\")\nelif re.search(r\"off.?topic|scope|wrong.*category\", s): print(\"scope_off\")\nelif re.search(r\"obviously|clearly|trivially|hedge|style\", s): print(\"style_violation\")\nelse: print(\"other\")' " + shell_escape(reason_raw);
+    let out = try { exec sh cmd; } catch e { "other"; };
+    return out;
+}
+
+// _push_hitl_reject -- append a HITL-reject entry to the rolling
+// buffer `feedback:hitl_rejects` that upstream agents (auditor +
+// formulator) read for bias. Window env HITL_REJECT_WINDOW (default
+// 20).
+fn _push_hitl_reject(
+    claim_id: string,
+    classification: string,
+    reason_excerpt: string,
+    tick_idx: int
+) -> void {
+    let buf_key = "feedback:hitl_rejects";
+    let buf_raw = recall_latest(buf_key);
+    let win_env = try { exec sh "printenv HITL_REJECT_WINDOW"; } catch e { ""; };
+    let win = if len(win_env) > 0 { parse_int(win_env); } else { 20; };
+    let win_eff = if win <= 0 { 20; } else { win; };
+    let excerpt_eff = if len(reason_excerpt) > 200 { substring(reason_excerpt, 0, 200); } else { reason_excerpt; };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,json\nraw=sys.argv[1]\ncid=sys.argv[2]\nc=sys.argv[3]\nex=sys.argv[4]\nt=int(sys.argv[5])\nk=int(sys.argv[6])\ntry:\n arr=json.loads(raw) if raw else []\n if not isinstance(arr,list): arr=[]\nexcept Exception:\n arr=[]\narr.append({\"ts\":t,\"claim_id\":cid,\"class\":c,\"reason_excerpt\":ex})\nif len(arr)>k: arr=arr[-k:]\nprint(json.dumps(arr,separators=(\",\",\":\")))' " + shell_escape(buf_raw) + " " + shell_escape(claim_id) + " " + shell_escape(classification) + " " + shell_escape(excerpt_eff) + " " + shell_escape(to_string(tick_idx)) + " " + shell_escape(to_string(win_eff));
+    let new_buf = try { exec sh cmd; } catch e { "[]"; };
+    memo_write(buf_key, new_buf);
+}
+
 // _handle_hitl_reject -- shared rejected-branch body lifted out of the
 // review-gated and propose tiers (their pre-existing implementations
 // were byte-identical). Appends a HUMAN_REJECTED row to the ledger,
-// stamps the per-claim rejection memos, emits the status event, and
-// records the learn() row.
+// stamps the per-claim rejection memos, emits the status event,
+// records the learn() row, AND (per #623 C) writes the feedback:hitl_*
+// memos upstream agents read.
 fn _handle_hitl_reject(
     self_pid: string,
     upstream_tick: int,
@@ -187,9 +235,9 @@ fn _handle_hitl_reject(
     tick_now_ms: int,
     claim_id_eff: string
 ) -> void {
+    let reason_raw = recall_latest("submitter:" + claim_id_eff + ":human_reject_reason");
     let ledger_path3 = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
     if len(ledger_path3) > 0 {
-        let reason_raw = recall_latest("submitter:" + claim_id_eff + ":human_reject_reason");
         let row = "{\"ts\":" + to_string(tick_now_ms)
                 + ",\"source_claim_id\":\"" + claim_id_eff
                 + "\",\"status\":\"HUMAN_REJECTED\""
@@ -200,6 +248,15 @@ fn _handle_hitl_reject(
     };
     memo_write("submitter:" + claim_id_eff + ":rejected", to_string(tick_now_ms));
     memo_write("submitter:" + self_pid + ":status:tick-" + to_string(upstream_tick), "HUMAN_REJECTED");
+
+    // #623 C: HITL -> upstream feedback. Write the per-claim verbatim
+    // reason + classification, then append to the rolling buffer the
+    // auditor + formulator read on their next tick.
+    let classification = _classify_hitl_reason(reason_raw);
+    memo_write("feedback:hitl_reject_reason:claim-" + claim_id_eff, reason_raw);
+    memo_write("feedback:hitl_reject_class:claim-" + claim_id_eff, classification);
+    _push_hitl_reject(claim_id_eff, classification, reason_raw, tick_idx);
+
     emit("submitter:status_ready", "HUMAN_REJECTED");
     learn("submit", "tick " + to_string(tick_idx) + " HUMAN_REJECTED " + claim_id_eff, "human declined", "partial", ["emitted", "preprint-foundry", "hitl-gated"]);
 }

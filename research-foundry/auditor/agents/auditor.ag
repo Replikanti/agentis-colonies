@@ -49,7 +49,18 @@ fn now_ms_via_shell() -> int {
 }
 
 fn _seed_prompt() -> string {
-    return "You are a strict claim auditor. The user-supplied input below carries the original PROBLEM, the stated ANSWER, the NOVELTY CLAIM, and four search reports (ARXIV, OEIS, GROUPPROPS, SCHOLAR). Classify the claim. Use 'KNOWN_PRIOR' only when at least one searcher reports a 'direct' relevance match for the same result; 'VERIFIED_NEW' when no searcher reports a direct match and the claim is well-supported; 'NEEDS_HUMAN' when reports conflict, are partial, or scholar is unavailable AND the other three are inconclusive. Output ONLY valid JSON: {\"audit_verdict\":\"VERIFIED_NEW|KNOWN_PRIOR|NEEDS_HUMAN\", \"reasoning\":\"...\", \"confidence\":0.0-1.0, \"evidence_arxiv\":\"semicolon-separated arxiv ids or empty\", \"evidence_oeis\":\"semicolon-separated A-numbers or empty\", \"evidence_groupprops\":\"semicolon-separated urls or empty\", \"evidence_scholar\":\"semicolon-separated paper ids or empty\", \"problem_summary\":\"one-line\"}. Do NOT wrap output in markdown code fences (no triple backticks); return raw JSON only.";
+    return "You are a strict claim auditor. The user-supplied input below carries the original PROBLEM, the stated ANSWER, the NOVELTY CLAIM, and four search reports (ARXIV, OEIS, GROUPPROPS, SCHOLAR). It may also carry RECENT HITL REJECTS (recent human-in-the-loop rejection classes and excerpts from submitted preprints) -- use that signal to flag failure modes the human reviewer has already pushed back on. Classify the claim. Use 'KNOWN_PRIOR' only when at least one searcher reports a 'direct' relevance match for the same result; 'VERIFIED_NEW' when no searcher reports a direct match and the claim is well-supported; 'NEEDS_HUMAN' when reports conflict, are partial, or scholar is unavailable AND the other three are inconclusive. Output ONLY valid JSON: {\"audit_verdict\":\"VERIFIED_NEW|KNOWN_PRIOR|NEEDS_HUMAN\", \"reasoning\":\"...\", \"confidence\":0.0-1.0, \"evidence_arxiv\":\"semicolon-separated arxiv ids or empty\", \"evidence_oeis\":\"semicolon-separated A-numbers or empty\", \"evidence_groupprops\":\"semicolon-separated urls or empty\", \"evidence_scholar\":\"semicolon-separated paper ids or empty\", \"problem_summary\":\"one-line\"}. Do NOT wrap output in markdown code fences (no triple backticks); return raw JSON only.";
+}
+
+// _summarise_hitl_buf -- collapse the rolling feedback:hitl_rejects
+// buffer to a tag-frequency table plus the last few raw excerpts.
+// Auditor and formulator both call this with the same buffer.
+fn _summarise_hitl_buf(buf_raw: string, k: int) -> string {
+    if len(buf_raw) == 0 { return ""; };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,json\ntry: a=json.loads(sys.argv[1])\nexcept Exception: a=[]\nif not isinstance(a,list): a=[]\nk=int(sys.argv[2])\nif k>0 and len(a)>k: a=a[-k:]\nfreq={}\nfor r in a:\n if not isinstance(r,dict): continue\n c=str(r.get(\"class\",\"other\")) or \"other\"\n freq[c]=freq.get(c,0)+1\nitems=sorted(freq.items(), key=lambda kv:(-kv[1],kv[0]))\nfreq_s=\", \".join(\"%s:%d\" % (k,v) for k,v in items)\nlast=[]\nfor r in a[-3:]:\n if not isinstance(r,dict): continue\n ex=str(r.get(\"reason_excerpt\",\"\")).strip()\n if len(ex)>80: ex=ex[:80]\n if ex: last.append(ex)\nout=freq_s\nif last: out += \" | recent: \" + \" ;; \".join(last)\nprint(out)' " + shell_escape(buf_raw) + " " + shell_escape(to_string(k));
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
 }
 
 // _push_topic_feedback -- append a topic-verdict entry to the rolling
@@ -221,13 +232,19 @@ fn tick(reason: string) -> void {
     let source_tick = if len(source_tick_raw) > 0 { to_string(parse_int(source_tick_raw)); } else { "0"; };
     let source_pid = recall_latest("claim:source_pid:tick-" + to_string(upstream_tick));
 
+    // #623 C: recall the rolling HITL-reject buffer the submitter
+    // writes after a human rejection and inject the summary as ctx.
+    let hitl_buf = recall_latest("feedback:hitl_rejects");
+    let hitl_summary = _summarise_hitl_buf(hitl_buf, 10);
+
     let ctx = "PROBLEM: " + problem_text + "\n"
             + "ANSWER: " + stated_answer + "\n"
             + "NOVELTY CLAIM: " + novelty_claim + "\n"
             + "ARXIV REPORT: " + arxiv_report + "\n"
             + "OEIS REPORT: " + oeis_report + "\n"
             + "GROUPPROPS REPORT: " + groupprops_report + "\n"
-            + "SCHOLAR REPORT: " + scholar_report + "\n";
+            + "SCHOLAR REPORT: " + scholar_report + "\n"
+            + "RECENT HITL REJECTS: " + hitl_summary + "\n";
 
     let verdict = prompt(_seed_prompt(), ctx) -> Verdict;
 

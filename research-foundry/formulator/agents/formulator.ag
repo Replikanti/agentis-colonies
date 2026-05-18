@@ -48,7 +48,7 @@ fn now_ms_via_shell() -> int {
 }
 
 fn _seed_prompt() -> string {
-    return "You discovered a surprising result through computation. Craft a competition-style problem whose answer IS this discovery. The user-supplied input below carries the TOPIC, the DISCOVERY description, the SPECIFIC VALUE, and the WHY SURPRISING reasoning. It may also carry RECENT KNOWN-PRIOR TOPICS (recent topics the auditor classified as already known -- AVOID re-framing the discovery as one of those) and RECENT VERIFIED-NEW TOPICS (recent topics the auditor accepted as novel -- prefer framings closer to those when faithful to the discovery). Craft a self-contained problem (no code, just math). The stated answer must be the specific value. Output ONLY valid JSON: {\"problem\": \"...\", \"answer\": \"...\", \"solution_full\": \"...\", \"novelty_claim\": \"...\", \"self_check_confidence\": 0.0-1.0}.";
+    return "You discovered a surprising result through computation. Craft a competition-style problem whose answer IS this discovery. The user-supplied input below carries the TOPIC, the DISCOVERY description, the SPECIFIC VALUE, and the WHY SURPRISING reasoning. It may also carry RECENT KNOWN-PRIOR TOPICS (recent topics the auditor classified as already known -- AVOID re-framing the discovery as one of those), RECENT VERIFIED-NEW TOPICS (recent topics the auditor accepted as novel -- prefer framings closer to those when faithful to the discovery), and RECENT HITL REJECTS (frequency table of recent human-in-the-loop rejection classes -- avoid problem framings that match those failure modes). Craft a self-contained problem (no code, just math). The stated answer must be the specific value. Output ONLY valid JSON: {\"problem\": \"...\", \"answer\": \"...\", \"solution_full\": \"...\", \"novelty_claim\": \"...\", \"self_check_confidence\": 0.0-1.0}.";
 }
 
 // _summarise_topic_buf -- collapse the last K entries of a topic-
@@ -60,6 +60,19 @@ fn _summarise_topic_buf(buf_raw: string, k: int) -> string {
     if len(buf_raw) == 0 { return ""; };
     // colony-lint: safe-exec-concat
     let cmd = "python3 -c 'import sys,json\ntry: a=json.loads(sys.argv[1])\nexcept Exception: a=[]\nif not isinstance(a,list): a=[]\nk=int(sys.argv[2])\nif k>0 and len(a)>k: a=a[-k:]\nparts=[]\nfor r in a:\n if not isinstance(r,dict): continue\n t=str(r.get(\"topic\",\"\")).strip()\n p=str(r.get(\"problem_summary\",\"\")).strip()\n if len(p)>60: p=p[:60]\n if t or p: parts.append(t+\":\"+p)\nprint(\", \".join(parts))' " + shell_escape(buf_raw) + " " + shell_escape(to_string(k));
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+// _summarise_hitl_buf -- collapse the rolling feedback:hitl_rejects
+// buffer to a tag-frequency table plus the last few raw excerpts.
+// Duplicated verbatim from auditor.ag because the .ag DSL has no
+// shared-include mechanism; both sides read the same buffer key
+// `feedback:hitl_rejects` (#623 C).
+fn _summarise_hitl_buf(buf_raw: string, k: int) -> string {
+    if len(buf_raw) == 0 { return ""; };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,json\ntry: a=json.loads(sys.argv[1])\nexcept Exception: a=[]\nif not isinstance(a,list): a=[]\nk=int(sys.argv[2])\nif k>0 and len(a)>k: a=a[-k:]\nfreq={}\nfor r in a:\n if not isinstance(r,dict): continue\n c=str(r.get(\"class\",\"other\")) or \"other\"\n freq[c]=freq.get(c,0)+1\nitems=sorted(freq.items(), key=lambda kv:(-kv[1],kv[0]))\nfreq_s=\", \".join(\"%s:%d\" % (k,v) for k,v in items)\nlast=[]\nfor r in a[-3:]:\n if not isinstance(r,dict): continue\n ex=str(r.get(\"reason_excerpt\",\"\")).strip()\n if len(ex)>80: ex=ex[:80]\n if ex: last.append(ex)\nout=freq_s\nif last: out += \" | recent: \" + \" ;; \".join(last)\nprint(out)' " + shell_escape(buf_raw) + " " + shell_escape(to_string(k));
     let out = try { exec sh cmd; } catch e { ""; };
     return out;
 }
@@ -152,12 +165,17 @@ fn tick(reason: string) -> void {
     let known_summary = _summarise_topic_buf(known_buf, 10);
     let success_summary = _summarise_topic_buf(success_buf, 10);
 
+    // #623 C: read the submitter-written HITL-reject rolling buffer.
+    let hitl_buf = recall_latest("feedback:hitl_rejects");
+    let hitl_summary = _summarise_hitl_buf(hitl_buf, 10);
+
     let ctx = "TOPIC: " + topic_label + "\n"
             + "DISCOVERY: " + surprise_description + "\n"
             + "SPECIFIC VALUE: " + specific_value + "\n"
             + "WHY SURPRISING: " + why_surprising + "\n"
             + "RECENT KNOWN-PRIOR TOPICS (AVOID): " + known_summary + "\n"
-            + "RECENT VERIFIED-NEW TOPICS (REPLICATE): " + success_summary + "\n";
+            + "RECENT VERIFIED-NEW TOPICS (REPLICATE): " + success_summary + "\n"
+            + "RECENT HITL REJECTS: " + hitl_summary + "\n";
 
     let problem = prompt(_seed_prompt(), ctx) -> Problem;
 
