@@ -24,6 +24,15 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- `tools/substitute-author.py` now rewrites the first `\author{...}`
+  macro found in `main.tex` (matched via a balanced-brace counter)
+  rather than the literal token `AUTHOR-PLACEHOLDER`. The upstream
+  LLM editor prompt asks for the placeholder but real-world output
+  is also `\author{Anonymous}`, `\author{}`, or any other LLM-invented
+  byline; the helper must work regardless of what the LLM emits.
+  Idempotency is preserved by short-circuiting when the existing
+  byline already matches the rendered block (#618).
+
 ### Deprecated
 
 ### Removed
