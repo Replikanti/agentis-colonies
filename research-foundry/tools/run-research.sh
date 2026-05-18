@@ -100,6 +100,24 @@
 #   RESEARCH_AUTO_PROMOTE_INTERVAL_S
 #                                Seconds between sidecar ticks.
 #                                Default 300.
+#   RESEARCH_EXPLORER_REPLICAS
+#                                Initial explorer replica count seeded by
+#                                the bootstrap script. Each replica claims
+#                                a distinct mathematical specialty from a
+#                                fixed pool. Default 5.
+#   RESEARCH_EXPLORER_MAX_REPLICAS
+#                                Hard cap on the explorer colony size used
+#                                by the M2-Malthusian replicate gate
+#                                (colony-explorer:max_replicas). Default 8.
+#   RESEARCH_EXPLORER_POOL
+#                                Initial colony-explorer:pool seeded for
+#                                the M2-Malthusian replicate gate.
+#                                Default 5000.
+#   RESEARCH_EXPLORER_REPRODUCTIVE_FITNESS_THRESHOLD
+#                                Per-pid fitness threshold above which the
+#                                replicate gate fires (memo key
+#                                explorer:reproductive_fitness_threshold).
+#                                Default 10.
 #
 # Flags:
 #   --dry-run    Same as RESEARCH_DRY_RUN=1.
@@ -110,6 +128,8 @@
 #   discovery-ledger.jsonl        math pipeline rows (novelty.ag)
 #   audit-ledger.jsonl            claim-auditor rows (auditor.ag)
 #   preprint-ledger.jsonl         preprint pipeline rows (submitter.ag)
+#   replication-ledger.jsonl      explorer M2-Malthusian audit trail
+#                                 (spawn / replicate rows)
 #   laptop-node/
 #     bootstrap.sh                container bootstrap (real run only)
 #     .agentis/
@@ -187,6 +207,12 @@ SMTP_PORT="${RESEARCH_SMTP_PORT:-25}"
 : "${RESEARCH_FITNESS_REWARD_NOVEL_PER_TICK:=2}"
 : "${RESEARCH_FITNESS_PENALTY_NOT_NOVEL_PER_TICK:=1}"
 
+# Phase 3 PR 1 (#624): explorer specialty pool + M2-Malthusian replicate gate seeds.
+: "${RESEARCH_EXPLORER_REPLICAS:=5}"
+: "${RESEARCH_EXPLORER_MAX_REPLICAS:=8}"
+: "${RESEARCH_EXPLORER_POOL:=5000}"
+: "${RESEARCH_EXPLORER_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+
 # --- Validation ---
 if [ -z "$TOPICS_RAW" ]; then
     echo "run-research: RESEARCH_TOPICS must be a non-empty comma-separated list" >&2
@@ -194,7 +220,7 @@ if [ -z "$TOPICS_RAW" ]; then
 fi
 
 val=""
-for var_name in TICK_INTERVAL_S TOTAL_TICKS DAEMONS_PER_COLONY HOLD_PERIOD OPENAI_TIMEOUT_MS LATEXMK_MAX_PASSES SMTP_PORT; do
+for var_name in TICK_INTERVAL_S TOTAL_TICKS DAEMONS_PER_COLONY HOLD_PERIOD OPENAI_TIMEOUT_MS LATEXMK_MAX_PASSES SMTP_PORT RESEARCH_EXPLORER_REPLICAS RESEARCH_EXPLORER_MAX_REPLICAS RESEARCH_EXPLORER_POOL RESEARCH_EXPLORER_REPRODUCTIVE_FITNESS_THRESHOLD; do
     eval "val=\${$var_name}"
     case "$val" in
         ''|*[!0-9]*)
@@ -236,6 +262,7 @@ LAPTOP_DIR="$RUN_DIR/laptop-node"
 DISCOVERY_LEDGER="$RUN_DIR/discovery-ledger.jsonl"
 AUDIT_LEDGER="$RUN_DIR/audit-ledger.jsonl"
 PREPRINT_LEDGER="$RUN_DIR/preprint-ledger.jsonl"
+REPLICATION_LEDGER="$RUN_DIR/replication-ledger.jsonl"
 
 # --- Dry-run / real-run dispatch helpers ---
 emit_cmd() {
@@ -277,6 +304,7 @@ if [ "$DRY_RUN" = "0" ]; then
     : >"$DISCOVERY_LEDGER"
     : >"$AUDIT_LEDGER"
     : >"$PREPRINT_LEDGER"
+    : >"$REPLICATION_LEDGER"
 fi
 
 emit_step "run-research: starting (dry_run=$DRY_RUN)"
@@ -332,7 +360,7 @@ write_bootstrap() {
         printf 'agentis init >/dev/null 2>&1 || true\n'
         printf '{\n'
         # Union of three retired feds' env_passthrough lists.
-        printf '  printf "exec.env_passthrough = DAEMON_ID,COLONY_NAME,HOLD_PERIOD,DISCOVERY_LEDGER,AUDIT_LEDGER,PREPRINT_LEDGER,AGENTIS_ROOT,ARXIV_MAX_QUERY_RESULTS,PREPRINT_OUTPUT_ROOT,PREPRINT_AUTHOR_CONFIG,PREPRINT_LATEXMK_MAX_PASSES,PREPRINT_ARXIV_GATEWAY,PREPRINT_ARXIV_FROM,PREPRINT_SMTP_HOST,PREPRINT_SMTP_PORT,EXPLORER_PROMPT_EVOLUTION_THRESHOLD,EXPLORER_PROMPT_GEN_CAP,EXPLORER_PROMPT_MAX_BYTES,EXPLORER_PROMPT_LEVENSHTEIN_FLOOR,FOUNDRY_FITNESS_REWARD_NOVEL_PER_TICK,FOUNDRY_FITNESS_PENALTY_NOT_NOVEL_PER_TICK\\n"\n'
+        printf '  printf "exec.env_passthrough = DAEMON_ID,COLONY_NAME,HOLD_PERIOD,DISCOVERY_LEDGER,AUDIT_LEDGER,PREPRINT_LEDGER,REPLICATION_LEDGER,EXPLORER_GENERATION,AGENTIS_ROOT,ARXIV_MAX_QUERY_RESULTS,PREPRINT_OUTPUT_ROOT,PREPRINT_AUTHOR_CONFIG,PREPRINT_LATEXMK_MAX_PASSES,PREPRINT_ARXIV_GATEWAY,PREPRINT_ARXIV_FROM,PREPRINT_SMTP_HOST,PREPRINT_SMTP_PORT,EXPLORER_PROMPT_EVOLUTION_THRESHOLD,EXPLORER_PROMPT_GEN_CAP,EXPLORER_PROMPT_MAX_BYTES,EXPLORER_PROMPT_LEVENSHTEIN_FLOOR,FOUNDRY_FITNESS_REWARD_NOVEL_PER_TICK,FOUNDRY_FITNESS_PENALTY_NOT_NOVEL_PER_TICK\\n"\n'
         printf '  printf "experience.enabled = true\\n"\n'
         printf '  printf "telemetry.enabled = true\\n"\n'
         printf '  printf "llm.backend = %s\\n"\n' "$LLM_BACKEND"
@@ -371,6 +399,7 @@ write_bootstrap() {
         printf ': > /run-root/discovery-ledger.jsonl\n'
         printf ': > /run-root/audit-ledger.jsonl\n'
         printf ': > /run-root/preprint-ledger.jsonl\n'
+        printf ': > /run-root/replication-ledger.jsonl\n'
         # Seed propose-tier confidence for each colony. Note the
         # claim-auditor / preprint-foundry searcher keys use underscored
         # forms (arxiv_search, oeis_search, etc.) because the .ag agents
@@ -382,9 +411,42 @@ write_bootstrap() {
         # tick); same lesson as the retired preprint-foundry bootstrap.
         printf 'DAEMON_TICK_INTERVAL_MS=30000\n'
         printf 'EXPLORER_TICK_INTERVAL_MS=30000\n'
+        # Phase 3 PR 1 (#624): seed the explorer specialty pool. Five
+        # mathematical specialties keyed by DAEMON_ID. The .ag agent's
+        # first-tick logic copies pool:specialty:<DAEMON_ID> ->
+        # <pid>:specialty and pool:specialty_overlay:<DAEMON_ID> ->
+        # <pid>:specialty_overlay, so each replica reads a distinct
+        # overlay appended to its prompt() body.
+        printf '(cd /run-root && agentis memo set explorer:pool:specialty:1 group_theory >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set explorer:pool:specialty_overlay:1 "Focus on finite group invariants: conjugacy classes, character tables, subgroup lattices, automorphism groups. Compute representations and quotients explicitly. Look for coincidences in character degrees, order divisibility, sporadic-vs-classical group behaviour." >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set explorer:pool:specialty:2 combinatorics >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set explorer:pool:specialty_overlay:2 "Focus on enumerative combinatorics: generating functions, bijective proofs, lattice paths, partition identities. Compute small-case counts and look for OEIS matches. Compare known sequences against derived ones for unexpected coincidence." >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set explorer:pool:specialty:3 number_theory >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set explorer:pool:specialty_overlay:3 "Focus on arithmetic functions and sieves: prime counting, Möbius, totient, divisor sums. Compute over small ranges, examine mod-p behaviour, look for unexpected density / equidistribution / sign-change patterns." >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set explorer:pool:specialty:4 probability >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set explorer:pool:specialty_overlay:4 "Focus on random structures: Erdős-Rényi graphs, random matrices, percolation thresholds, asymptotic distributions. Run small Monte Carlo and compare against predicted limits. Look for deviations from the expected scaling." >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set explorer:pool:specialty:5 algebra >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set explorer:pool:specialty_overlay:5 "Focus on representation theory + Lie algebras: irreducible representations, weight diagrams, Casimir invariants, Cartan classification. Compute decomposition of tensor products, dimensions, branching rules. Look for unexpected multiplicities or symmetries." >/dev/null 2>&1 || true)\n'
+        # Phase 3 PR 1 (#624): seed the M2-Malthusian replicate gate memos
+        # so the dormant logic in explorer.ag fires. colony-explorer:size
+        # tracks live population; max_replicas caps growth; pool funds
+        # replicate costs; replication_base_cost + replication_k drive the
+        # cost formula `base + base*n/k`. reproductive_fitness_threshold
+        # gates per-pid fitness above which a replica may spawn.
+        printf '(cd /run-root && agentis memo set colony-explorer:size %s >/dev/null 2>&1 || true)\n' "$RESEARCH_EXPLORER_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-explorer:max_replicas %s >/dev/null 2>&1 || true)\n' "$RESEARCH_EXPLORER_MAX_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-explorer:pool %s >/dev/null 2>&1 || true)\n' "$RESEARCH_EXPLORER_POOL"
+        printf '(cd /run-root && agentis memo set colony-explorer:replication_base_cost 100 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set colony-explorer:replication_k 3 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set explorer:reproductive_fitness_threshold %s >/dev/null 2>&1 || true)\n' "$RESEARCH_EXPLORER_REPRODUCTIVE_FITNESS_THRESHOLD"
         # math pipeline: explorer (with replication) + noticer/formulator/verifier/novelty.
-        printf 'for i in $(seq 1 %s); do\n' "$DAEMONS_PER_COLONY"
-        printf '    DAEMON_ID=$i COLONY_NAME=explorer HOLD_PERIOD=%s DISCOVERY_LEDGER=/run-root/discovery-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis EXPLORER_PROMPT_EVOLUTION_THRESHOLD=%s EXPLORER_PROMPT_GEN_CAP=%s EXPLORER_PROMPT_MAX_BYTES=%s EXPLORER_PROMPT_LEVENSHTEIN_FLOOR=%s FOUNDRY_FITNESS_REWARD_NOVEL_PER_TICK=%s FOUNDRY_FITNESS_PENALTY_NOT_NOVEL_PER_TICK=%s agentis daemon /run-root/explorer/agents/explorer.ag --colony explorer --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval "$EXPLORER_TICK_INTERVAL_MS" > /run-root/.agentis/logs/explorer-$i.log 2>&1 &\n' \
+        # Phase 3 PR 1 (#624): spawn RESEARCH_EXPLORER_REPLICAS explorers
+        # (default 5) each carrying a distinct DAEMON_ID used by the .ag
+        # first-tick logic to claim a specialty from the pool. Generation 0
+        # for the initial cohort; child replicates increment generation
+        # in the replicate-success branch.
+        printf 'for i in $(seq 1 %s); do\n' "$RESEARCH_EXPLORER_REPLICAS"
+        printf '    DAEMON_ID=$i COLONY_NAME=explorer EXPLORER_GENERATION=0 HOLD_PERIOD=%s DISCOVERY_LEDGER=/run-root/discovery-ledger.jsonl REPLICATION_LEDGER=/run-root/replication-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis EXPLORER_PROMPT_EVOLUTION_THRESHOLD=%s EXPLORER_PROMPT_GEN_CAP=%s EXPLORER_PROMPT_MAX_BYTES=%s EXPLORER_PROMPT_LEVENSHTEIN_FLOOR=%s FOUNDRY_FITNESS_REWARD_NOVEL_PER_TICK=%s FOUNDRY_FITNESS_PENALTY_NOT_NOVEL_PER_TICK=%s agentis daemon /run-root/explorer/agents/explorer.ag --colony explorer --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval "$EXPLORER_TICK_INTERVAL_MS" > /run-root/.agentis/logs/explorer-$i.log 2>&1 &\n' \
             "$HOLD_PERIOD" \
             "$RESEARCH_EXPLORER_PROMPT_EVOLUTION_THRESHOLD" \
             "$RESEARCH_EXPLORER_PROMPT_GEN_CAP" \
@@ -392,6 +454,22 @@ write_bootstrap() {
             "$RESEARCH_EXPLORER_PROMPT_LEVENSHTEIN_FLOOR" \
             "$RESEARCH_FITNESS_REWARD_NOVEL_PER_TICK" \
             "$RESEARCH_FITNESS_PENALTY_NOT_NOVEL_PER_TICK"
+        printf 'done\n'
+        # Phase 3 PR 1 (#624): emit one `spawn` row per initial explorer
+        # into the replication ledger. The bootstrap already knows the
+        # loop iteration and the specialty assignment, so emit here
+        # rather than racing the .ag's first-tick claim path.
+        printf 'for i in $(seq 1 %s); do\n' "$RESEARCH_EXPLORER_REPLICAS"
+        printf '    case $i in\n'
+        printf '        1) sp=group_theory ;;\n'
+        printf '        2) sp=combinatorics ;;\n'
+        printf '        3) sp=number_theory ;;\n'
+        printf '        4) sp=probability ;;\n'
+        printf '        5) sp=algebra ;;\n'
+        printf '        *) sp=unassigned ;;\n'
+        printf '    esac\n'
+        printf '    ts_ms=$(date +%%s%%3N)\n'
+        printf '    python3 -c '"'"'import json,sys; sys.stdout.write(json.dumps({"ts":int(sys.argv[1]),"event":"spawn","daemon_id":int(sys.argv[2]),"specialty":sys.argv[3],"generation":0,"reason":"initial"})+"\\n")'"'"' "$ts_ms" "$i" "$sp" >> /run-root/replication-ledger.jsonl\n'
         printf 'done\n'
         printf 'for c in noticer formulator verifier novelty; do\n'
         printf '    for i in $(seq 1 %s); do\n' "$DAEMONS_PER_COLONY"
