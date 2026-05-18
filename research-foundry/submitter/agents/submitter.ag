@@ -175,6 +175,35 @@ fn _submitter_draft_phase(
     learn("submit", "tick " + to_string(tick_idx) + " DRAFTED " + claim_id_eff, meta.rationale, "success", ["emitted", "preprint-foundry", "hitl-gated"]);
 }
 
+// _handle_hitl_reject -- shared rejected-branch body lifted out of the
+// review-gated and propose tiers (their pre-existing implementations
+// were byte-identical). Appends a HUMAN_REJECTED row to the ledger,
+// stamps the per-claim rejection memos, emits the status event, and
+// records the learn() row.
+fn _handle_hitl_reject(
+    self_pid: string,
+    upstream_tick: int,
+    tick_idx: int,
+    tick_now_ms: int,
+    claim_id_eff: string
+) -> void {
+    let ledger_path3 = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
+    if len(ledger_path3) > 0 {
+        let reason_raw = recall_latest("submitter:" + claim_id_eff + ":human_reject_reason");
+        let row = "{\"ts\":" + to_string(tick_now_ms)
+                + ",\"source_claim_id\":\"" + claim_id_eff
+                + "\",\"status\":\"HUMAN_REJECTED\""
+                + ",\"reason\":\"" + reason_raw + "\"}";
+        // colony-lint: safe-exec-concat
+        let append3 = "printf '%s\n' " + shell_escape(row) + " >> " + shell_escape(ledger_path3);
+        let _a3 = try { exec sh append3; } catch e { ""; };
+    };
+    memo_write("submitter:" + claim_id_eff + ":rejected", to_string(tick_now_ms));
+    memo_write("submitter:" + self_pid + ":status:tick-" + to_string(upstream_tick), "HUMAN_REJECTED");
+    emit("submitter:status_ready", "HUMAN_REJECTED");
+    learn("submit", "tick " + to_string(tick_idx) + " HUMAN_REJECTED " + claim_id_eff, "human declined", "partial", ["emitted", "preprint-foundry", "hitl-gated"]);
+}
+
 // _submitter_send_phase -- terminal SMTP send. Mails the tarball via
 // $PREPRINT_ARXIV_GATEWAY and writes the SUBMITTED row to the ledger.
 // Used by autonomous (unconditional, no HITL gate) and by the
@@ -310,21 +339,7 @@ fn tick(reason: string) -> void {
                     };
                 } else {
                     if human_status == "rejected" {
-                        let ledger_path3 = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
-                        if len(ledger_path3) > 0 {
-                            let reason_raw = recall_latest("submitter:" + claim_id_eff + ":human_reject_reason");
-                            let row = "{\"ts\":" + to_string(_tick_now_ms)
-                                    + ",\"source_claim_id\":\"" + claim_id_eff
-                                    + "\",\"status\":\"HUMAN_REJECTED\""
-                                    + ",\"reason\":\"" + reason_raw + "\"}";
-                            // colony-lint: safe-exec-concat
-                            let append3 = "printf '%s\n' " + shell_escape(row) + " >> " + shell_escape(ledger_path3);
-                            let _a3 = try { exec sh append3; } catch e { ""; };
-                        };
-                        memo_write("submitter:" + claim_id_eff + ":rejected", to_string(_tick_now_ms));
-                        memo_write("submitter:" + _self_pid + ":status:tick-" + to_string(upstream_tick), "HUMAN_REJECTED");
-                        emit("submitter:status_ready", "HUMAN_REJECTED");
-                        learn("submit", "tick " + to_string(tick_idx) + " HUMAN_REJECTED " + claim_id_eff, "human declined", "partial", ["emitted", "preprint-foundry", "hitl-gated"]);
+                        _handle_hitl_reject(_self_pid, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff);
                     } else {
                         // No human decision yet -- idle.
                         print("[submitter] DRAFTED awaiting human approval claim=", claim_id_eff);
@@ -349,21 +364,7 @@ fn tick(reason: string) -> void {
                         };
                     } else {
                         if human_status == "rejected" {
-                            let ledger_path3 = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
-                            if len(ledger_path3) > 0 {
-                                let reason_raw = recall_latest("submitter:" + claim_id_eff + ":human_reject_reason");
-                                let row = "{\"ts\":" + to_string(_tick_now_ms)
-                                        + ",\"source_claim_id\":\"" + claim_id_eff
-                                        + "\",\"status\":\"HUMAN_REJECTED\""
-                                        + ",\"reason\":\"" + reason_raw + "\"}";
-                                // colony-lint: safe-exec-concat
-                                let append3 = "printf '%s\n' " + shell_escape(row) + " >> " + shell_escape(ledger_path3);
-                                let _a3 = try { exec sh append3; } catch e { ""; };
-                            };
-                            memo_write("submitter:" + claim_id_eff + ":rejected", to_string(_tick_now_ms));
-                            memo_write("submitter:" + _self_pid + ":status:tick-" + to_string(upstream_tick), "HUMAN_REJECTED");
-                            emit("submitter:status_ready", "HUMAN_REJECTED");
-                            learn("submit", "tick " + to_string(tick_idx) + " HUMAN_REJECTED " + claim_id_eff, "human declined", "partial", ["emitted", "preprint-foundry", "hitl-gated"]);
+                            _handle_hitl_reject(_self_pid, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff);
                         } else {
                             // No human decision yet -- idle.
                             print("[submitter] DRAFTED awaiting human approval claim=", claim_id_eff);
