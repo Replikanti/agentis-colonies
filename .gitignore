@@ -20,3 +20,11 @@ __pycache__/
 # Sidecar lock files (created next to the script via fcntl.flock; #245 / #318)
 tools/.auto-promote.lock
 tools/.cost-cap.lock
+
+# Cross-fed memo host-dir content (#629 Phase 8 PR-1). The bridge sidecar
+# regenerates everything under /cross-fed-memo/ on every tick from each
+# federation's `.agentis/memo/cross-fed:*` keys -- only the .gitkeep + README
+# are tracked.
+/cross-fed-memo/*
+!/cross-fed-memo/.gitkeep
+!/cross-fed-memo/README.md
