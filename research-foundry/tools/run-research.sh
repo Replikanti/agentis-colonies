@@ -118,6 +118,18 @@
 #                                replicate gate fires (memo key
 #                                explorer:reproductive_fitness_threshold).
 #                                Default 10.
+#   RESEARCH_CULL_ENABLED        1 enable Phase 3 PR 3 cull cycle, 0
+#                                disable (default 0; opt-in for long-run
+#                                experiments).
+#   RESEARCH_CULL_INTERVAL_TICKS Sidecar ticks between cull invocations.
+#                                Default 20.
+#   RESEARCH_CULL_BOTTOM_PCT     Fraction of explorers culled per cycle.
+#                                Default 0.2 (bottom 20% by fitness).
+#   RESEARCH_CULL_MIN_EXPLORERS  Skip cull entirely when total explorer
+#                                count falls below this floor. Default 3.
+#   RESEARCH_CULL_MIN_ACTING     Skip per-row cull when explorer's
+#                                entries_acting is below this floor.
+#                                Default 10 (insufficient data).
 #
 # Flags:
 #   --dry-run    Same as RESEARCH_DRY_RUN=1.
@@ -534,6 +546,17 @@ install_cleanup_trap() {
 start_auto_promote_sidecar() {
     AP_ENABLED="${RESEARCH_AUTO_PROMOTE:-1}"
     AP_INTERVAL="${RESEARCH_AUTO_PROMOTE_INTERVAL_S:-300}"
+    # Phase 3 PR 3 (#624): optional cull cycle layered on top of the
+    # auto-promote sidecar tick. Defaults off so weekend long-runs opt in
+    # explicitly; the cull cycle kills the bottom-N explorer daemons by
+    # fitness_score and respawns replacements with demand-weighted
+    # specialty.
+    CULL_ENABLED="${RESEARCH_CULL_ENABLED:-0}"
+    CULL_INTERVAL_TICKS="${RESEARCH_CULL_INTERVAL_TICKS:-20}"
+    CULL_BOTTOM_PCT="${RESEARCH_CULL_BOTTOM_PCT:-0.2}"
+    CULL_MIN_EXPLORERS="${RESEARCH_CULL_MIN_EXPLORERS:-3}"
+    CULL_MIN_ACTING="${RESEARCH_CULL_MIN_ACTING:-10}"
+    CULL_SCRIPT="$REPO_ROOT/tools/cull-explorers.sh"
     if [ "$AP_ENABLED" != "1" ]; then
         emit_step "auto-promote sidecar: disabled via RESEARCH_AUTO_PROMOTE=$AP_ENABLED"
         return 0
@@ -552,14 +575,23 @@ start_auto_promote_sidecar() {
         return 0
     fi
     emit_step "starting auto-promote sidecar (interval=${AP_INTERVAL}s, log=$AP_LOG)"
+    if [ "$CULL_ENABLED" = "1" ]; then
+        emit_step "cull-explorers cycle: enabled (every $CULL_INTERVAL_TICKS sidecar ticks; bottom_pct=$CULL_BOTTOM_PCT, min_explorers=$CULL_MIN_EXPLORERS, min_acting=$CULL_MIN_ACTING)"
+    else
+        emit_step "cull-explorers cycle: disabled (RESEARCH_CULL_ENABLED=$CULL_ENABLED)"
+    fi
     if [ "$DRY_RUN" = "1" ]; then
         emit_cmd "auto-promote-sidecar placeholder: cwd=$LAPTOP_DIR config=$AP_CONFIG interval=${AP_INTERVAL}s"
+        if [ "$CULL_ENABLED" = "1" ]; then
+            emit_cmd "cull-explorers placeholder: script=$CULL_SCRIPT every=${CULL_INTERVAL_TICKS} ticks bottom_pct=$CULL_BOTTOM_PCT min_explorers=$CULL_MIN_EXPLORERS min_acting=$CULL_MIN_ACTING"
+        fi
         return 0
     fi
     mkdir -p "$AP_LOG_DIR"
     date +%s > "$AP_STAMP"
     (
         cd "$LAPTOP_DIR"
+        tick_count=0
         while :; do
             if ! agentis daemon list --json 2>/dev/null | grep -Fq '"state":"running"'; then
                 printf '=== %s: no running daemons; sidecar exiting ===\n' \
@@ -571,6 +603,18 @@ start_auto_promote_sidecar() {
                 "$AP_SCRIPT" "$LAPTOP_DIR" --containerized --config "$AP_CONFIG" 2>&1 \
                     || printf '[sidecar] auto-promote.sh exited %s\n' "$?"
             } >> "$AP_LOG"
+            tick_count=$((tick_count + 1))
+            if [ "$CULL_ENABLED" = "1" ] && [ -x "$CULL_SCRIPT" ] \
+                    && [ $((tick_count % CULL_INTERVAL_TICKS)) -eq 0 ]; then
+                {
+                    printf '=== %s: cull tick (#%d) ===\n' "$(date -Iseconds)" "$tick_count"
+                    "$CULL_SCRIPT" "$LAPTOP_DIR" \
+                        --bottom-pct "$CULL_BOTTOM_PCT" \
+                        --min-explorers "$CULL_MIN_EXPLORERS" \
+                        --min-acting "$CULL_MIN_ACTING" 2>&1 \
+                        || printf '[sidecar] cull-explorers.sh exited %s\n' "$?"
+                } >> "$AP_LOG"
+            fi
             sleep "$AP_INTERVAL"
         done
     ) &
