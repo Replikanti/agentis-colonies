@@ -1,0 +1,30 @@
+# Reviewer Colony Configuration
+#
+# Part of the Preprint Foundry federation. Single-agent colony that
+# extracts every numerical / symbolic claim from the editor's final
+# main.tex, cross-checks each claim against the computer's
+# reproducibility stdout, and writes a block-by-default approval gate
+# (`reviewer:<claim>:approved`) the submitter reads before drafting
+# the arXiv preprint package (Phase 4 PR-C of #625).
+#
+# Copy to colony.toml; the runtime knobs that actually drive a run
+# live in env vars consumed by tools/run-research.sh.
+
+[colony]
+name = "reviewer"
+tick_interval_ms = 60000
+
+# Non-forge federation (#373, ADR-0003). The reviewer writes only to
+# memo (no JSONL ledger row today); no agent in this colony calls
+# forge-api.sh.
+[forge]
+type = "none"
+
+[llm]
+backend = "cli"
+
+[[agents]]
+name = "reviewer"
+source = "agents/reviewer.ag"
+cb_budget = 2000
+tick_interval_ms = 60000

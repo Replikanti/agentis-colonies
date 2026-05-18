@@ -318,7 +318,7 @@ fn tick(reason: string) -> void {
         print("[submitter] no preprint tick yet");
         return;
     };
-    let upstream_tick = tick_idx - 3;
+    let upstream_tick = tick_idx - 4;
     if upstream_tick < 0 {
         print("[submitter] waiting for editor pipeline, current=", tick_idx);
         return;
@@ -351,6 +351,17 @@ fn tick(reason: string) -> void {
     };
     if len(claim_dir) == 0 {
         print("[submitter] no claim_dir for tick=", upstream_tick);
+        return;
+    };
+
+    // Phase 4 #625 PR-C: reviewer is the highest-stakes critic; block-by-default.
+    // Operator can override by `agentis memo set reviewer:<claim>:approved true`.
+    let reviewer_ok = recall_latest("reviewer:" + claim_id_eff + ":approved");
+    if reviewer_ok != "true" {
+        print("[submitter] reviewer gate not satisfied for claim=", claim_id_eff, " (key=reviewer:<claim>:approved)");
+        learn("submit", "tick " + to_string(tick_idx) + " gated " + claim_id_eff, "reviewer not approved", "partial", ["observed", "preprint-foundry", "hitl-gated"]);
+        let now0 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now0) > 0 { memo_write("submitter:last_check", now0); };
         return;
     };
 

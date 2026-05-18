@@ -1,0 +1,186 @@
+// reviewer.ag -- Preprint Foundry reviewer: reads the editor's final
+// main.tex and the computer's reproducibility stdout, extracts every
+// numerical or symbolic claim in the .tex, and verifies each claim
+// against the reproducibility output. Emits an approved/rejected
+// verdict and writes the per-claim approval memo gate the submitter
+// reads BEFORE writing the DRAFTED row to preprint-ledger.jsonl. The
+// gate is block-by-default: an empty / missing reviewer memo blocks
+// the submitter; only an explicit `reviewer:<claim>:approved == "true"`
+// unblocks the DRAFTED write. Operators can override by setting the
+// memo manually (`agentis memo set reviewer:<claim>:approved true`).
+//
+// Per-tick behaviour:
+//   1. Read upstream artefacts at upstream_tick = tick_idx - 3:
+//      editor final_tex + claim_dir (via replay:current_editor_pid),
+//      computer reproducibility output (via replay:current_computer_pid),
+//      claim id (already seeded by novelty.ag -- Phase 1.5).
+//   2. Build REVIEW_CTX and produce a Verdict.
+//   3. Persist verdict + report to memo. On approved verdict, write
+//      `reviewer:<claim>:approved = "true"` (the gate the submitter
+//      reads). On rejected verdict, write
+//      `reviewer:<claim>:hallucinated_payload` for a future
+//      editor-repair cycle (memo channel reserved; repair loop is
+//      out of scope here). Emit "preprint-foundry:review_done".
+//
+// Run as daemon: agentis daemon agents/reviewer.ag --colony reviewer
+// Requires: exec capability, messaging capability.
+
+cb 2000;
+
+type Verdict {
+    verdict: string,
+    hallucinated_claims: string,
+    supported_claims_count: int,
+    total_claims_count: int,
+    reasoning: string
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("reviewer:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    };
+    return 0.0;
+}
+
+fn colony_name() -> string {
+    let _cn = try { exec sh "printenv COLONY_NAME"; } catch e { ""; };
+    if len(_cn) > 0 {
+        return _cn;
+    };
+    return "reviewer";
+}
+
+fn _seed_prompt() -> string {
+    return "You are a strict reproducibility reviewer. Extract every numerical or symbolic claim in the .tex (numbers, equations, specific values). For each claim, find the corresponding entry in the reproducibility stdout that supports it. Flag every claim WITHOUT direct stdout support. Output JSON: `{verdict: 'approved'|'rejected', hallucinated_claims: [{claim_text, line_or_section, why_unsupported}], supported_claims_count: int, total_claims_count: int, reasoning: string}`. Do NOT wrap output in markdown code fences.";
+}
+
+// _dump_ctx_to_memo -- write the assembled prompt context to a per-
+// tick memo key so #623-style validation (and any future audit) can
+// inspect what the LLM actually saw. Stable shape:
+// `<agent>:<pid>:ctx:tick-N`. Duplicated verbatim from editor because
+// the .ag DSL has no shared-include mechanism (Phase 2 #642 pattern).
+fn _dump_ctx_to_memo(agent_name: string, pid: string, tick_idx: int, ctx: string) -> void {
+    if len(agent_name) == 0 { return; };
+    if len(pid) == 0 { return; };
+    memo_write(agent_name + ":" + pid + ":ctx:tick-" + to_string(tick_idx), ctx);
+}
+
+// _publish_reviewer -- memo + emit. Non-terminal agent collapses
+// autonomous -> review-gated per ADR-0001 (#622 PR-2 #632 pattern).
+// reviewer writes no ledger row today; final_write retained for
+// symmetry with the other Phase 4 critic colonies (skeptic / prior_advocate).
+//
+// Block-by-default semantics: reviewer:<claim>:approved is written
+// ONLY when verdict == "approved". The submitter reads this key and
+// refuses to write the DRAFTED row when the value is not "true" (an
+// empty / missing memo blocks the submission, matching the highest-
+// stakes critic in the Phase 4 pipeline). On rejected verdict, also
+// stamp reviewer:<claim>:hallucinated_payload so a future editor-
+// repair cycle can consume it (the repair loop itself is out of scope
+// for PR-C).
+fn _publish_reviewer(
+    final_write: bool,
+    verdict: Verdict,
+    claim_id_eff: string,
+    self_pid: string,
+    upstream_tick: int,
+    tick_idx: int
+) -> void {
+    let _ = final_write;
+    let supported_str = to_string(verdict.supported_claims_count);
+    let total_str = to_string(verdict.total_claims_count);
+    let verdict_json = "{\"verdict\":\"" + verdict.verdict
+                     + "\",\"hallucinated_claims\":\"" + verdict.hallucinated_claims
+                     + "\",\"supported_claims_count\":" + supported_str
+                     + ",\"total_claims_count\":" + total_str
+                     + ",\"reasoning\":\"" + verdict.reasoning + "\"}";
+    memo_write("reviewer:" + self_pid + ":report:tick-" + to_string(upstream_tick), verdict_json);
+    memo_write("reviewer:" + self_pid + ":verdict:tick-" + to_string(upstream_tick), verdict.verdict);
+    memo_write("replay:current_reviewer_pid", self_pid);
+
+    if verdict.verdict == "approved" {
+        memo_write("reviewer:" + claim_id_eff + ":approved", "true");
+    } else {
+        let payload = "{\"verdict\":\"" + verdict.verdict
+                    + "\",\"hallucinated_claims\":\"" + verdict.hallucinated_claims
+                    + "\",\"reasoning\":\"" + verdict.reasoning + "\"}";
+        memo_write("reviewer:" + claim_id_eff + ":hallucinated_payload", payload);
+    };
+
+    emit("preprint-foundry:review_done", verdict);
+}
+
+fn tick(reason: string) -> void {
+    let _ = reason;
+    let _colony_name = colony_name();
+    let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
+    let conf = get_confidence();
+    print("[reviewer] tick conf=", conf);
+
+    let tick_idx_str = recall_latest("replay:current_tick");
+    let tick_idx = if len(tick_idx_str) > 0 { parse_int(tick_idx_str); } else { -1; };
+    if tick_idx < 0 {
+        print("[reviewer] no preprint tick yet");
+        return;
+    };
+    let upstream_tick = tick_idx - 3;
+    if upstream_tick < 0 {
+        print("[reviewer] waiting for editor pipeline, current=", tick_idx);
+        return;
+    };
+
+    let editor_pid = recall_latest("replay:current_editor_pid");
+    let computer_pid = recall_latest("replay:current_computer_pid");
+
+    let final_tex = if len(editor_pid) > 0 { recall_latest("editor:" + editor_pid + ":final_tex:tick-" + to_string(upstream_tick)); } else { ""; };
+    let claim_dir = if len(editor_pid) > 0 { recall_latest("editor:" + editor_pid + ":claim_dir:tick-" + to_string(upstream_tick)); } else { ""; };
+    let repro_output = if len(computer_pid) > 0 { recall_latest("computer:" + computer_pid + ":output:tick-" + to_string(upstream_tick)); } else { ""; };
+
+    let claim_id = recall_latest("claim:claim_id:tick-" + to_string(upstream_tick));
+    let claim_id_eff = if len(claim_id) > 0 { claim_id; } else { "claim-" + to_string(upstream_tick); };
+
+    if len(final_tex) == 0 {
+        print("[reviewer] no editor output for tick=", upstream_tick);
+        return;
+    };
+
+    let ctx = "CLAIM ID: " + claim_id_eff + "\n"
+            + "CLAIM DIR: " + claim_dir + "\n"
+            + "FINAL TEX:\n" + final_tex + "\n"
+            + "REPRODUCIBILITY STDOUT:\n" + repro_output + "\n";
+
+    _dump_ctx_to_memo("reviewer", _self_pid, tick_idx, ctx);
+    let verdict = prompt(_seed_prompt(), ctx) -> Verdict;
+
+    let my_tier = tier("reviewer");
+    if my_tier == "autonomous" {
+        // reason: tier N/A here; non-terminal agent -- collapses to review-gated.
+        memo_write("reviewer:" + _self_pid + ":review_gated", "true");
+        learn("review", "tick " + to_string(tick_idx), verdict.reasoning, "partial", ["acted", "preprint-foundry"]);
+        _publish_reviewer(true, verdict, claim_id_eff, _self_pid, upstream_tick, tick_idx);
+    } else {
+        if my_tier == "review-gated" {
+            memo_write("reviewer:" + _self_pid + ":review_gated", "true");
+            learn("review", "tick " + to_string(tick_idx), verdict.reasoning, "partial", ["review-gated", "preprint-foundry"]);
+            _publish_reviewer(true, verdict, claim_id_eff, _self_pid, upstream_tick, tick_idx);
+        } else {
+            if my_tier == "propose" {
+                if verdict.verdict == "approved" {
+                    learn("review", "tick " + to_string(tick_idx) + " approved " + claim_id_eff, verdict.reasoning, "success", ["emitted", "preprint-foundry"]);
+                } else {
+                    learn("review", "tick " + to_string(tick_idx) + " rejected " + claim_id_eff, verdict.reasoning, "failure", ["emitted", "preprint-foundry"]);
+                };
+                _publish_reviewer(false, verdict, claim_id_eff, _self_pid, upstream_tick, tick_idx);
+            } else {
+                print("[reviewer] observing (tier:", my_tier, ") verdict=", verdict.verdict);
+                learn("review", "tick " + to_string(tick_idx), verdict.reasoning, "partial", ["observed", "preprint-foundry"]);
+            };
+        };
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("reviewer:last_check", now);
+    };
+}

@@ -42,6 +42,21 @@ History of the three retired federations consolidated into this one
   `prior_match:success`. The auditor persists
   `claim:report_prior_advocate:tick-N` alongside the four searcher
   reports on VERIFIED_NEW.
+- `reviewer/` colony (Phase 4 PR-C of #625). Reads the editor's final
+  main.tex and the computer's reproducibility stdout, extracts every
+  numerical / symbolic claim from the .tex, and flags every claim
+  that lacks direct support in the reproducibility output. The
+  structured Verdict (`approved` / `rejected`) is persisted to memo
+  and -- on `approved` verdicts only -- the per-claim gate
+  `reviewer:<claim>:approved` is set to `"true"`. Reviewer enforces
+  block-by-default semantics -- submitter requires
+  `reviewer:<claim>:approved == "true"` before writing DRAFTED.
+  Operator override via
+  `agentis memo set reviewer:<claim>:approved true`. The submitter's
+  `upstream_tick` offset bumps from `tick_idx - 3` to `tick_idx - 4`
+  to absorb the new pipeline stage. New `(topic, outcome)` pairs in
+  `tools/check-learn-tags.sh` for `review:partial`, `review:success`,
+  and `review:failure`.
 
 ## [0.1.0] — 2026-05-18
 
