@@ -60,11 +60,56 @@ fn now_ms_via_shell() -> int {
 }
 
 fn _edit_prompt() -> string {
-    return "You are the editor of a math preprint. You receive (a) an abstract + introduction draft, (b) preliminaries + main result draft, (c) a reproducibility script + its captured stdout, and (d) the prior-work search reports. Synthesise a SINGLE LaTeX document using the `amsart` class. Required structure: \\documentclass{amsart}, \\usepackage{amsmath, amssymb, amsthm}, theorem/definition declarations, \\title{...}, \\author{...} placeholder `\\author{AUTHOR-PLACEHOLDER}`, \\date{\\today}, \\begin{abstract}...\\end{abstract}, \\maketitle, sections 1-4 (Introduction, Preliminaries, Main Result, Reproducibility), \\bibliographystyle{plain}, \\bibliography{refs}. Style enforcement: NO 'obviously' / 'clearly' / 'trivially'; abstract is third-person (no 'we'); notation consistent across sections. Hallucination check: for every numeric / symbolic claim in the main result that is supported by the reproducibility output's stdout, KEEP IT; for any claim NOT supported by the output, REMOVE IT or HEDGE IT (mark with `% HEDGED:`). Set hallucinations_found=true when you removed/hedged anything. Generate a minimal refs.bib that defines the `\\cite{...}` keys you actually used (use the prior-work search reports as references; placeholder DOIs/URLs are acceptable). Output ONLY valid JSON: {\"full_tex\":\"...complete .tex content...\",\"refs_bib\":\"...complete .bib content...\",\"fingerprint_csv\":\"hash1,hash2\",\"hallucinations_found\":false,\"rationale\":\"one-line\"}.";
+    return "You are the editor of a math preprint. You receive (a) an abstract + introduction draft, (b) preliminaries + main result draft, (c) a reproducibility script + its captured stdout, and (d) the prior-work search reports. The user-supplied input below may also carry RECENT PITFALLS (frequency-sorted tags from recent compile failures across previous claims) -- use them to pre-empt the same mistakes in this draft. Synthesise a SINGLE LaTeX document using the `amsart` class. Required structure: \\documentclass{amsart}, \\usepackage{amsmath, amssymb, amsthm}, theorem/definition declarations, \\title{...}, \\author{...} placeholder `\\author{AUTHOR-PLACEHOLDER}`, \\date{\\today}, \\begin{abstract}...\\end{abstract}, \\maketitle, sections 1-4 (Introduction, Preliminaries, Main Result, Reproducibility), \\bibliographystyle{plain}, \\bibliography{refs}. Style enforcement: NO 'obviously' / 'clearly' / 'trivially'; abstract is third-person (no 'we'); notation consistent across sections. Hallucination check: for every numeric / symbolic claim in the main result that is supported by the reproducibility output's stdout, KEEP IT; for any claim NOT supported by the output, REMOVE IT or HEDGE IT (mark with `% HEDGED:`). Set hallucinations_found=true when you removed/hedged anything. Generate a minimal refs.bib that defines the `\\cite{...}` keys you actually used (use the prior-work search reports as references; placeholder DOIs/URLs are acceptable). Output ONLY valid JSON: {\"full_tex\":\"...complete .tex content...\",\"refs_bib\":\"...complete .bib content...\",\"fingerprint_csv\":\"hash1,hash2\",\"hallucinations_found\":false,\"rationale\":\"one-line\"}.";
 }
 
 fn _repair_prompt() -> string {
-    return "The previous LaTeX compile failed. The user-supplied input below carries the FAILING TEX and the latexmk LOG (last 80 lines). Produce a corrected `full_tex` that compiles with `latexmk -pdf -interaction=nonstopmode`. Common fixes: missing `\\usepackage{...}`, mis-matched `\\begin{...}` / `\\end{...}`, undefined `\\cite{...}` (replace with `\\cite{TBD}` and add a stub entry to refs.bib), runaway argument (close the brace), missing `$` for inline math. Do NOT change the scientific content -- only fix the compile error. Output ONLY valid JSON: {\"full_tex\":\"...corrected .tex...\",\"rationale\":\"what was fixed\"}.";
+    return "The previous LaTeX compile failed. The user-supplied input below carries the FAILING TEX and the latexmk LOG (last 80 lines). It may also carry RECENT PITFALLS (frequency-sorted tags from recent compile failures across previous claims) -- consult those before patching. Produce a corrected `full_tex` that compiles with `latexmk -pdf -interaction=nonstopmode`. Common fixes: missing `\\usepackage{...}`, mis-matched `\\begin{...}` / `\\end{...}`, undefined `\\cite{...}` (replace with `\\cite{TBD}` and add a stub entry to refs.bib), runaway argument (close the brace), missing `$` for inline math. Do NOT change the scientific content -- only fix the compile error. Output ONLY valid JSON: {\"full_tex\":\"...corrected .tex...\",\"rationale\":\"what was fixed\"}.";
+}
+
+// _classify_compile_log -- run a python3 regex pass over the last 80
+// lines of the latexmk log and return a space-separated string of
+// pitfall tags. Tags cover the canonical amsart failure modes,
+// including the `nested-thanks` regression class from #620.
+fn _classify_compile_log(log_body: string) -> string {
+    if len(log_body) == 0 { return ""; };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,re\nL=sys.argv[1]\ntail=\"\\n\".join(L.splitlines()[-80:])\ntags=[]\ndef add(t):\n if t not in tags: tags.append(t)\nif re.search(r\"Undefined control sequence\", tail): add(\"undefined-cs\")\nif re.search(r\"! LaTeX Error: Citation .* undefined\", tail): add(\"unresolved-citation\")\nif re.search(r\"Runaway argument\", tail): add(\"runaway-argument\")\nif re.search(r\"! Missing \\$ inserted\", tail): add(\"missing-math-delim\")\nif re.search(r\"Paragraph ended before .* was complete\", tail): add(\"unclosed-env\")\nif re.search(r\"! LaTeX Error: \\\\begin\\{.*\\} on input line .* ended by .*\", tail): add(\"mismatched-env\")\nif re.search(r\"\\\\thanks\\{[^}]*\\\\thanks\", tail) or re.search(r\"thanks.*nested\", tail, re.IGNORECASE): add(\"nested-thanks\")\nif not tags and re.search(r\"! LaTeX Error:\", tail): add(\"latex-error-other\")\nprint(\" \".join(tags))' " + shell_escape(log_body);
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+// _push_pitfall -- append a compile-pitfall entry to the editor
+// rolling buffer. Window env EDITOR_PITFALL_WINDOW (default 20).
+// Modelled on explorer.ag::_push_settled_exploration.
+fn _push_pitfall(
+    tick_idx: int,
+    claim_id: string,
+    pass_label: string,
+    tags: string,
+    log_excerpt: string
+) -> void {
+    if len(tags) == 0 { return; };
+    let buf_key = "editor:learned_pitfalls";
+    let buf_raw = recall_latest(buf_key);
+    let win_env = try { exec sh "printenv EDITOR_PITFALL_WINDOW"; } catch e { ""; };
+    let win = if len(win_env) > 0 { parse_int(win_env); } else { 20; };
+    let win_eff = if win <= 0 { 20; } else { win; };
+    let excerpt_eff = if len(log_excerpt) > 200 { substring(log_excerpt, 0, 200); } else { log_excerpt; };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,json\nraw=sys.argv[1]\nt=int(sys.argv[2])\ncid=sys.argv[3]\np=sys.argv[4]\ntags=sys.argv[5]\nex=sys.argv[6]\nk=int(sys.argv[7])\ntry:\n arr=json.loads(raw) if raw else []\n if not isinstance(arr,list): arr=[]\nexcept Exception:\n arr=[]\narr.append({\"tick\":t,\"claim_id\":cid,\"pass\":p,\"tags\":tags,\"excerpt\":ex})\nif len(arr)>k: arr=arr[-k:]\nprint(json.dumps(arr,separators=(\",\",\":\")))' " + shell_escape(buf_raw) + " " + shell_escape(to_string(tick_idx)) + " " + shell_escape(claim_id) + " " + shell_escape(pass_label) + " " + shell_escape(tags) + " " + shell_escape(excerpt_eff) + " " + shell_escape(to_string(win_eff));
+    let new_buf = try { exec sh cmd; } catch e { "[]"; };
+    memo_write(buf_key, new_buf);
+}
+
+// _summarise_pitfall_buf -- collapse the last K entries to a
+// newline-separated `tag:count` frequency table.
+fn _summarise_pitfall_buf(buf_raw: string, k: int) -> string {
+    if len(buf_raw) == 0 { return ""; };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,json\ntry: a=json.loads(sys.argv[1])\nexcept Exception: a=[]\nif not isinstance(a,list): a=[]\nk=int(sys.argv[2])\nif k>0 and len(a)>k: a=a[-k:]\nfreq={}\nfor r in a:\n if not isinstance(r,dict): continue\n tags=str(r.get(\"tags\",\"\")).split()\n for t in tags:\n  if not t: continue\n  freq[t]=freq.get(t,0)+1\nitems=sorted(freq.items(), key=lambda kv:(-kv[1],kv[0]))\nprint(\"\\n\".join(\"%s:%d\" % (k,v) for k,v in items))' " + shell_escape(buf_raw) + " " + shell_escape(to_string(k));
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
 }
 
 // _publish_editor -- write main.tex/refs.bib + latexmk + (optional repair) +
@@ -117,15 +162,28 @@ fn _publish_editor(
     let pdf_ok_raw = try { exec sh pdf_check_cmd; } catch e { "no"; };
     let compile_ok_initial = pdf_ok_raw == "yes";
 
+    // #623 B: classify the initial-compile log on failure and push the
+    // tags into editor:learned_pitfalls. Successful compiles append
+    // nothing.
+    if !compile_ok_initial {
+        let initial_tags = _classify_compile_log(compile_log);
+        _push_pitfall(tick_idx, claim_id_eff, "initial", initial_tags, compile_log);
+    };
+
     let compile_ok_final = if compile_ok_initial {
         true;
     } else {
         if max_passes_eff < 2 {
             false;
         } else {
-            // One repair pass.
+            // One repair pass. #623 B: read the rolling pitfall buffer
+            // and inject a RECENT PITFALLS frequency table into the
+            // repair ctx so the LLM avoids the same failure shape.
+            let pitfall_buf = recall_latest("editor:learned_pitfalls");
+            let pitfall_summary = _summarise_pitfall_buf(pitfall_buf, 10);
             let repair_ctx = "FAILING TEX:\n" + edit.full_tex + "\n"
-                           + "LATEXMK LOG (last 80 lines):\n" + compile_log + "\n";
+                           + "LATEXMK LOG (last 80 lines):\n" + compile_log + "\n"
+                           + "RECENT PITFALLS:\n" + pitfall_summary + "\n";
             let repair = prompt(_repair_prompt(), repair_ctx) -> Repair;
             // colony-lint: safe-exec-concat
             let rewrite_cmd = "printf '%s' " + shell_escape(repair.full_tex) + " > " + shell_escape(claim_dir + "/main.tex");
@@ -137,11 +195,18 @@ fn _publish_editor(
             let _subst_r = try { exec sh subst_cmd_r; } catch e { ""; };
             // colony-lint: safe-exec-concat
             let recompile_cmd = "cd " + shell_escape(claim_dir) + " && latexmk -pdf -interaction=nonstopmode -halt-on-error main.tex 2>&1 | tail -80";
-            let _recompile_log = try { exec sh recompile_cmd; } catch e { ""; };
+            let recompile_log = try { exec sh recompile_cmd; } catch e { ""; };
             // colony-lint: safe-exec-concat
             let recheck_cmd = "test -f " + shell_escape(claim_dir + "/main.pdf") + " && printf yes || printf no";
             let recheck = try { exec sh recheck_cmd; } catch e { "no"; };
-            recheck == "yes";
+            let repair_ok = recheck == "yes";
+            // #623 B: push the repair-pass failure as well so the
+            // buffer reflects both passes when the pitfall recurs.
+            if !repair_ok {
+                let repair_tags = _classify_compile_log(recompile_log);
+                _push_pitfall(tick_idx, claim_id_eff, "repair", repair_tags, recompile_log);
+            };
+            repair_ok;
         };
     };
 
@@ -206,13 +271,20 @@ fn tick(reason: string) -> void {
         return;
     };
 
+    // #623 B: read the rolling pitfall buffer and inject the
+    // frequency-sorted tag table so the initial edit pre-empts the
+    // same compile failures.
+    let pitfall_buf_initial = recall_latest("editor:learned_pitfalls");
+    let pitfall_summary_initial = _summarise_pitfall_buf(pitfall_buf_initial, 10);
+
     let ctx = "TITLE: " + title + "\n"
             + "ABSTRACT DRAFT:\n" + abstract_tex + "\n"
             + "INTRO DRAFT:\n" + intro_tex + "\n"
             + "PRELIMINARIES DRAFT:\n" + definitions_tex + "\n"
             + "MAIN DRAFT (proof_kind=" + proof_kind + "):\n" + main_tex + "\n"
             + "REPRODUCIBILITY SCRIPT (" + repro_lang + "):\n" + repro_script + "\n"
-            + "REPRODUCIBILITY STDOUT:\n" + repro_output + "\n";
+            + "REPRODUCIBILITY STDOUT:\n" + repro_output + "\n"
+            + "RECENT PITFALLS:\n" + pitfall_summary_initial + "\n";
 
     let edit = prompt(_edit_prompt(), ctx) -> Edit;
 
