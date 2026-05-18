@@ -20,6 +20,34 @@ History of the three retired federations consolidated into this one
 
 ### Added
 
+- LLM-driven `.ag` mutator + real A/B harness in dry-run mode for
+  Phase 7 (PR-B of #628). New `tools/auto-evolve-mutate.py` reads the
+  parent `.ag` plus the last K experience rows, computes a failure-
+  mode summary by tag, and asks the configured LLM
+  (`RESEARCH_LLM_BACKEND`, default `claude` + `RESEARCH_CLAUDE_MODEL`,
+  default `opus`) to propose ONE focused mutation. Hard constraints
+  on the prompt: complete `.ag` output, preserve `tier()` /
+  `learn()` / `recommend()` / `cb <N>;` / `fn tick(...)`, no new I/O
+  primitives, no markdown fences. A shape validator rejects empty /
+  fenced / cb-missing / fn-tick-missing / tier-literal-missing
+  responses with exit 2 + `mutation_invalid_shape`.
+  `MUTATE_LLM_STUB=<path>` env bypasses the LLM call and returns the
+  fixture verbatim for hermetic CI.
+  `tools/auto-evolve-ab.sh` now invokes the mutator in step 2 (was a
+  cosmetic-comment stub in PR-A) and runs a real two-daemon A/B in
+  step 4: spawns the candidate under a synthetic agent_id
+  `<agent>-cand-gen-<N>` via `podman exec <container> bash -c
+  "agentis daemon ... &"`, waits `K * tick_interval_ms` bounded by
+  the new `evolve.ab.absolute_max_wait_s` knob (default 1800), and
+  scores both daemons via the
+  `(acting_count - reject_count) / max(acting_count, 1)` proxy
+  before comparing with `ab.min_delta`. Verdict surfaces as
+  `evolve_cycle` (winner candidate / canonical) or `ab_inconclusive`
+  on the evolution ledger. `evolve.dry_run: true` (PR-B default)
+  keeps the harness in observation mode: ledger captures everything,
+  no `.ag` file rename, no archive, no daemon respawn -- those are
+  PR-C's job. 4 new smoke-test assertions in
+  `tools/test-auto-evolve-ab.sh` (total 15/15).
 - `skeptic/` colony (Phase 4 PR-A of #625). Reads the noticer's
   surprise record and runs a strict skeptic prompt that defaults to
   dismissing the surprise unless it cannot be matched to a classical

@@ -420,10 +420,25 @@ for d in daemons:
                 # behaviour.
                 if [ "${CFG_EVOLVE_MUTATION_ENABLED:-false}" = "true" ]; then
                     log "  Routing to auto-evolve-ab.sh (mutation.enabled=true)"
-                    EVOLVE_OUTPUT=$("$SCRIPT_DIR/auto-evolve-ab.sh" \
-                        "$FED_DIR" "$agent" "$colony" "$AGENT_AG_FILE" \
-                        --ticks "$CFG_EVOLVE_AB_TICKS" \
-                        --config "$CONFIG_FILE" 2>&1) || true
+                    # PR-B (#628): pass --containerized through so the
+                    # A/B harness uses `podman exec` for the candidate
+                    # daemon spawn (research-foundry path). Non-
+                    # containerized federations stay on the legacy
+                    # `agentis evolve` path because mutation.enabled
+                    # defaults to false there. Plain positional args
+                    # avoid bash arrays (macOS 3.2 portability).
+                    if [ "$CONTAINERIZED" = "true" ]; then
+                        EVOLVE_OUTPUT=$("$SCRIPT_DIR/auto-evolve-ab.sh" \
+                            "$FED_DIR" "$agent" "$colony" "$AGENT_AG_FILE" \
+                            --ticks "$CFG_EVOLVE_AB_TICKS" \
+                            --config "$CONFIG_FILE" \
+                            --containerized 2>&1) || true
+                    else
+                        EVOLVE_OUTPUT=$("$SCRIPT_DIR/auto-evolve-ab.sh" \
+                            "$FED_DIR" "$agent" "$colony" "$AGENT_AG_FILE" \
+                            --ticks "$CFG_EVOLVE_AB_TICKS" \
+                            --config "$CONFIG_FILE" 2>&1) || true
+                    fi
                     log "  Auto-evolve-ab output: $EVOLVE_OUTPUT"
 
                     journal_append "$agent" "evolve" \

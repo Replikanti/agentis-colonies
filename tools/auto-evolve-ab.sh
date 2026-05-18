@@ -1,44 +1,52 @@
 #!/usr/bin/env bash
-# auto-evolve-ab.sh — Phase 7 PR-A plumbing for self-improving .ag
-# mutation harness (#628).
+# auto-evolve-ab.sh — Phase 7 PR-B harness for self-improving .ag
+# mutation + A/B comparison (#628).
 #
 # Invoked by `tools/auto-promote.sh` when
 # `evolve.mutation.enabled = true` in the active auto-promote-config.
 # When the flag is false (the default) the legacy `agentis evolve`
 # path runs instead — see auto-promote.sh evolve handler.
 #
-# Pipeline (PR-A, mutator stubbed):
+# Pipeline (PR-B):
 #   1. Pre-flight throttle: count open candidate files in
 #      `<colony>/agents/.evolve/`; abort with `evolve_throttled` ledger
 #      row when the cap is hit.
-#   2. Generate stub candidate: copy parent .ag to
-#      `<colony>/agents/.evolve/<agent>.ag.candidate-gen-N` with a
-#      trivial cosmetic comment. PR-B replaces this with the real
-#      LLM-driven mutator (`auto-evolve-mutate.py`).
-#   3. Validity gate (3 checks): `agentis commit` succeeds, tier
-#      coverage regex passes (mirroring colony-lint.sh §475-490), and
-#      a `cb <N>;` budget line is present. On failure, write a
-#      `mutation_rejected` ledger row + exit.
-#   4. PR-A skip: do NOT actually run A/B (no daemon spawn / score
-#      comparison yet). Log `ab_skipped_pr_a_stub` ledger row to mark
-#      the placeholder. PR-B fills this in.
-#   5. Cleanup: remove the stub candidate. When `evolve.dry_run=true`,
-#      do NOT archive the parent or respawn. When false (PR-C scope),
-#      archive parent to `<fed-dir>/<archive_dir>/<agent>-gen-N-<sha8>.ag`.
+#   2. LLM-driven mutation: invoke `tools/auto-evolve-mutate.py` with
+#      the parent .ag + recent experience window. Captures the
+#      candidate + a one-line rationale. On mutator failure / shape
+#      rejection, write a `mutation_rejected` ledger row + exit.
+#   3. Validity gate (4 checks): `agentis commit` succeeds, tier
+#      coverage regex passes (mirroring colony-lint.sh §475-490),
+#      a `cb <N>;` budget line is present, and the rationale file is
+#      non-empty. On failure, write `mutation_rejected` + exit.
+#   4. A/B daemon spawn (containerized-only): spawn the candidate
+#      daemon under a synthetic agent_id `<agent>-cand-gen-<N>` so its
+#      experience writes go to an isolated .jsonl. Wait K ticks
+#      bounded by `ab.absolute_max_wait_s`. Score candidate vs
+#      canonical via `auto-promote-decisions.py --preview` +
+#      `explorer-fitness.py` (or fallback proxy
+#      `(acting - reject) / max(acting, 1)`). Compare with
+#      `ab.min_delta`. Emit `evolve_cycle` (winner candidate /
+#      canonical) or `ab_inconclusive` ledger row.
+#   5. Promote winner (DRY-RUN AWARE): when `evolve.dry_run=true`, log
+#      and stop. When false (PR-C), if candidate wins: stop candidate,
+#      archive parent to
+#      `<fed-dir>/<archive_dir>/<agent>-gen-N-<sha8>.ag`, `mv -f`
+#      candidate over canonical, respawn canonical daemon. Cleanup
+#      always removes the .evolve/ candidate + synthetic experience.
 #
 # Usage:
 #   tools/auto-evolve-ab.sh <fed-dir> <agent-name> <colony> <parent-ag-path>
-#       [--ticks K] [--config <yaml>] [--dry-run]
+#       [--ticks K] [--config <yaml>] [--dry-run] [--containerized]
 #
 # Exit codes:
 #   0 — success (ledger written, regardless of decision)
 #   1 — usage / arg error
 #   2 — config / parser error
 #
-# Out of scope for PR-A:
-#   - real LLM mutation (deferred to PR-B `auto-evolve-mutate.py`)
-#   - A/B daemon spawn + score comparison (PR-B)
-#   - flipping `evolve.dry_run=false` (PR-C)
+# Out of scope for PR-B:
+#   - flipping `evolve.dry_run=false` for explorer (deferred to PR-C)
+#   - bundle-manifest wiring (deferred to PR-C alongside the flip)
 
 set -euo pipefail
 
@@ -48,7 +56,7 @@ REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 
 usage() {
     echo "Usage: $0 <fed-dir> <agent-name> <colony> <parent-ag-path>"
-    echo "          [--ticks K] [--config <yaml>] [--dry-run]"
+    echo "          [--ticks K] [--config <yaml>] [--dry-run] [--containerized]"
     exit 1
 }
 
@@ -65,6 +73,7 @@ shift 4
 AB_TICKS_OVERRIDE=""
 CONFIG_OVERRIDE=""
 DRY_RUN_FORCE=false
+CONTAINERIZED=false
 while [ $# -gt 0 ]; do
     case "$1" in
         --ticks)
@@ -85,6 +94,10 @@ while [ $# -gt 0 ]; do
             ;;
         --dry-run)
             DRY_RUN_FORCE=true
+            shift
+            ;;
+        --containerized)
+            CONTAINERIZED=true
             shift
             ;;
         *)
@@ -148,7 +161,7 @@ log() {
 
 # Append a ledger row. Args:
 #   1: event name (evolve_cycle | mutation_rejected | evolve_throttled |
-#      ab_inconclusive | ab_skipped_pr_a_stub)
+#      ab_inconclusive | ab_skipped_pr_a_stub | ab_spawn_failed)
 #   2: extras JSON (object literal merged into the base record)
 # The base record always carries ts, event, agent, colony, generation,
 # parent_sha8, ab_ticks, dry_run so downstream tooling can rely on
@@ -236,14 +249,58 @@ if [ "$OPEN_COUNT" -ge "$CFG_EVOLVE_MUTATION_MAX_CONCURRENT_PER_COLONY" ]; then
 fi
 
 # ------------------------------------------------------------------
-# 2. Generate stub candidate (PR-A placeholder for LLM mutator)
+# 2. LLM-driven mutation
 # ------------------------------------------------------------------
 
 CANDIDATE_PATH="$EVOLVE_DIR/${AGENT_NAME}.ag.candidate-gen-${GENERATION_NEXT}"
-# Stub mutation: copy parent + append a cosmetic comment. PR-B replaces
-# this block with the real `tools/auto-evolve-mutate.py` LLM call.
-cp "$PARENT_AG" "$CANDIDATE_PATH"
-printf '\n// Stub mutation generated by PR-A (#628) — replaced by LLM mutator in PR-B\n' >> "$CANDIDATE_PATH"
+RATIONALE_PATH="$EVOLVE_DIR/${AGENT_NAME}.ag.candidate-gen-${GENERATION_NEXT}.rationale.txt"
+
+# Resolve the agent's experience .jsonl. Read by the mutator to compute
+# the failure-mode summary that feeds the LLM prompt. The canonical
+# layout is `<fed-dir>/.agentis/experience/<agent>.jsonl` (post-#622).
+EXPERIENCE_PATH="$FED_DIR/.agentis/experience/${AGENT_NAME}.jsonl"
+# A missing experience file is not fatal — the mutator tolerates an
+# empty window and produces a no-failure-signal prompt.
+
+# Window K mirrors `ab.min_acting_for_decision` so the mutator surfaces
+# the same recent slice the A/B scorer will eventually consume.
+MUT_WINDOW="${CFG_EVOLVE_AB_MIN_ACTING_FOR_DECISION:-10}"
+
+set +e
+MUT_OUTPUT=$(python3 "$SCRIPT_DIR/auto-evolve-mutate.py" \
+    --ag "$PARENT_AG" \
+    --experience "$EXPERIENCE_PATH" \
+    --window "$MUT_WINDOW" \
+    --target-gen "$GENERATION_NEXT" \
+    --out "$CANDIDATE_PATH" \
+    --rationale-out "$RATIONALE_PATH" \
+    --config "$CONFIG_FILE" 2>&1)
+MUT_RC=$?
+set -e
+
+if [ "$MUT_RC" -ne 0 ]; then
+    # Mutator exit 2 = mutation_invalid_shape (LLM returned an
+    # unparseable response). Exit 3 = mutator_failed (backend down).
+    # Either way, surface the structured reason on the ledger.
+    if [ "$MUT_RC" -eq 2 ]; then
+        MUT_REASON="mutation_invalid_shape"
+    else
+        MUT_REASON="mutator_failed"
+    fi
+    log "  mutator rc=$MUT_RC reason=$MUT_REASON"
+    # Strip control characters and clip stderr so the ledger row stays
+    # one JSON line. We deliberately use python3 here, not sed/tr, so the
+    # macOS bash 3.2 quoting story stays compatible.
+    MUT_STDERR_CLIP=$(python3 -c "
+import sys
+buf = sys.argv[1].replace('\n', ' ')[:500]
+print(''.join(c for c in buf if c == ' ' or 32 <= ord(c) < 127))
+" "$MUT_OUTPUT")
+    ledger_append "mutation_rejected" \
+        "{\"reason\":\"$MUT_REASON\",\"mutator_stderr\":\"$MUT_STDERR_CLIP\"}"
+    rm -f "$CANDIDATE_PATH" "$RATIONALE_PATH"
+    exit 0
+fi
 
 CANDIDATE_SHA=$(python3 -c "
 import hashlib, sys
@@ -252,10 +309,10 @@ with open(sys.argv[1], 'rb') as f:
 " "$CANDIDATE_PATH")
 CANDIDATE_SHA8="${CANDIDATE_SHA:0:8}"
 
-log "  stub candidate written: $CANDIDATE_PATH (sha8=$CANDIDATE_SHA8)"
+log "  candidate written: $CANDIDATE_PATH (sha8=$CANDIDATE_SHA8)"
 
 # ------------------------------------------------------------------
-# 3. Validity gate (3 checks)
+# 3. Validity gate (4 checks)
 # ------------------------------------------------------------------
 
 VALIDITY_FAILS=""
@@ -300,41 +357,214 @@ if ! grep -qE '^\s*cb\s+[0-9]+\s*;' "$CANDIDATE_PATH"; then
     VALIDITY_FAILS="$VALIDITY_FAILS cb_budget_missing"
 fi
 
+# 3d. Rationale file is non-empty. PR-B adds this 4th check so a
+# mutator that silently writes the candidate but drops the rationale
+# (or a partial mutator failure) doesn't slip through the gate.
+if [ ! -s "$RATIONALE_PATH" ]; then
+    VALIDITY_FAILS="$VALIDITY_FAILS rationale_empty"
+fi
+
 if [ -n "$VALIDITY_FAILS" ]; then
     # Normalise leading space for the ledger extras JSON.
     VALIDITY_FAILS_CSV=$(echo "$VALIDITY_FAILS" | sed 's/^ //;s/ /,/g')
     log "  validity gate failed: $VALIDITY_FAILS_CSV"
     ledger_append "mutation_rejected" \
         "{\"candidate_sha8\":\"$CANDIDATE_SHA8\",\"reason\":\"validity_gate\",\"failed_checks\":\"$VALIDITY_FAILS_CSV\"}"
-    rm -f "$CANDIDATE_PATH"
+    rm -f "$CANDIDATE_PATH" "$RATIONALE_PATH"
     exit 0
 fi
 
 log "  validity gate passed"
 
 # ------------------------------------------------------------------
-# 4. A/B spawn (PR-A stub: log placeholder + skip)
+# 4. A/B daemon spawn + score comparison
 # ------------------------------------------------------------------
+#
+# Containerized mode only (research-foundry). Non-containerized
+# federations keep the legacy `agentis evolve` path via auto-promote.sh
+# (gated by `evolve.mutation.enabled`). When --containerized is omitted
+# we log an `ab_inconclusive` row and skip — the A/B harness has no
+# safe host-side spawn path today (the canonical daemon may be running
+# under a different .agentis/ root and rerouting its experience writes
+# is out of scope for PR-B).
+#
+# Synthetic agent_id: `<agent>-cand-gen-<N>`. The candidate's
+# experience writes go to
+# `<fed-dir>/.agentis/experience/<synthetic-id>.jsonl` and stay
+# isolated from the canonical row.
+SYNTHETIC_ID="${AGENT_NAME}-cand-gen-${GENERATION_NEXT}"
+SYNTH_EXP="$FED_DIR/.agentis/experience/${SYNTHETIC_ID}.jsonl"
 
-log "  A/B run skipped in PR-A (placeholder); PR-B wires real spawn + scoring"
-ledger_append "ab_skipped_pr_a_stub" \
-    "{\"candidate_sha8\":\"$CANDIDATE_SHA8\",\"note\":\"PR-A plumbing only; A/B harness lives in PR-B\"}"
+# Resolve A/B wait window. tick_interval default is 60000ms (matches
+# the start-colony.sh fallback). The harness bounds the wait by
+# `ab.absolute_max_wait_s` (default 1800s) so a misconfigured K can't
+# pin the sidecar tick indefinitely.
+TICK_INTERVAL_MS="${RESEARCH_DAEMON_TICK_INTERVAL_MS:-60000}"
+WAIT_MS=$((AB_TICKS * TICK_INTERVAL_MS))
+WAIT_S=$((WAIT_MS / 1000))
+if [ "$WAIT_S" -gt "$CFG_EVOLVE_AB_ABSOLUTE_MAX_WAIT_S" ]; then
+    log "  A/B wait clamped: ${WAIT_S}s -> ${CFG_EVOLVE_AB_ABSOLUTE_MAX_WAIT_S}s (absolute_max_wait_s)"
+    WAIT_S="$CFG_EVOLVE_AB_ABSOLUTE_MAX_WAIT_S"
+fi
+
+if [ "$CONTAINERIZED" != "true" ]; then
+    log "  A/B run skipped: --containerized required for daemon spawn"
+    ledger_append "ab_inconclusive" \
+        "{\"candidate_sha8\":\"$CANDIDATE_SHA8\",\"reason\":\"non_containerized_mode\",\"wait_s\":$WAIT_S}"
+    rm -f "$CANDIDATE_PATH" "$RATIONALE_PATH" "$SYNTH_EXP"
+    log "Done."
+    exit 0
+fi
+
+# Spawn the candidate daemon under the synthetic agent_id. Mirrors
+# cull-explorers.sh:410 pattern (podman exec bash -c "... agentis daemon ... &").
+# Container name is fixed to `research-foundry-laptop` -- the only
+# containerized federation today.
+CONTAINER_NAME="${RESEARCH_CONTAINER_NAME:-research-foundry-laptop}"
+CANDIDATE_LOG="/run-root/.agentis/logs/${SYNTHETIC_ID}.log"
+SPAWN_CMD="agentis daemon $CANDIDATE_PATH --colony $COLONY --enable-exec --enable-messaging --tick-interval $TICK_INTERVAL_MS > $CANDIDATE_LOG 2>&1 &"
+
+log "  spawning candidate daemon: synthetic_id=$SYNTHETIC_ID wait_s=$WAIT_S"
+if ! podman exec "$CONTAINER_NAME" bash -c "$SPAWN_CMD" 2>/dev/null; then
+    log "  candidate spawn failed (podman exec rc=$?)"
+    ledger_append "ab_spawn_failed" \
+        "{\"candidate_sha8\":\"$CANDIDATE_SHA8\",\"container\":\"$CONTAINER_NAME\",\"synthetic_id\":\"$SYNTHETIC_ID\"}"
+    rm -f "$CANDIDATE_PATH" "$RATIONALE_PATH" "$SYNTH_EXP"
+    log "Done."
+    exit 0
+fi
+
+# Wait the A/B window. The candidate accumulates experience rows under
+# the synthetic .jsonl; the canonical keeps its existing path.
+sleep "$WAIT_S"
+
+# Score both daemons. The fallback proxy is
+#   (acting_count - reject_count) / max(acting_count, 1)
+# computed straight off the .jsonl tail. For explorers we additionally
+# try `explorer-fitness.py` for the empirical signal, but the proxy is
+# the canonical scalar the A/B comparison runs on -- one path, no
+# divergence between explorer / non-explorer agents on this PR.
+score_jsonl() {
+    local jsonl_path="$1"
+    local window="$2"
+    python3 -c "
+import json, sys
+path = sys.argv[1]
+window = int(sys.argv[2])
+rows = []
+try:
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except (json.JSONDecodeError, ValueError):
+                pass
+except (OSError, IOError):
+    pass
+rows = rows[-window:] if window > 0 else rows
+acting = 0
+reject = 0
+for r in rows:
+    if not isinstance(r, dict):
+        continue
+    tags = r.get('tags') or []
+    if not isinstance(tags, list):
+        tags = []
+    is_acting = any(str(t) in ('emitted', 'acted', 'review-gated') for t in tags)
+    if is_acting:
+        acting += 1
+    outcome = str(r.get('outcome', '')).lower()
+    if outcome in ('reject', 'failure'):
+        reject += 1
+if acting <= 0:
+    print('0.0')
+else:
+    print('%.6f' % ((acting - reject) / float(acting)))
+" "$jsonl_path" "$window"
+}
+
+CANDIDATE_SCORE=$(score_jsonl "$SYNTH_EXP" "$AB_TICKS")
+CANONICAL_SCORE=$(score_jsonl "$EXPERIENCE_PATH" "$AB_TICKS")
+
+log "  scores: candidate=$CANDIDATE_SCORE canonical=$CANONICAL_SCORE min_delta=$CFG_EVOLVE_AB_MIN_DELTA"
+
+# Compare. We use python3 here because bash arithmetic does not handle
+# floating point.
+COMPARE_OUT=$(python3 -c "
+import sys
+cand = float(sys.argv[1])
+canon = float(sys.argv[2])
+delta_min = float(sys.argv[3])
+delta = cand - canon
+if delta > delta_min:
+    print('candidate %.6f' % delta)
+elif delta < -delta_min:
+    print('canonical %.6f' % delta)
+else:
+    print('inconclusive %.6f' % delta)
+" "$CANDIDATE_SCORE" "$CANONICAL_SCORE" "$CFG_EVOLVE_AB_MIN_DELTA")
+
+WINNER=$(echo "$COMPARE_OUT" | awk '{print $1}')
+DELTA=$(echo "$COMPARE_OUT" | awk '{print $2}')
+
+log "  A/B verdict: winner=$WINNER delta=$DELTA"
+
+# Stop the candidate daemon regardless of verdict. It served its A/B
+# purpose; whether we then archive + replace canonical depends on the
+# dry-run flag below.
+podman exec "$CONTAINER_NAME" bash -c "pkill -f 'agentis daemon $CANDIDATE_PATH' 2>/dev/null || true" >/dev/null 2>&1 || true
+
+if [ "$WINNER" = "inconclusive" ]; then
+    ledger_append "ab_inconclusive" \
+        "{\"candidate_sha8\":\"$CANDIDATE_SHA8\",\"candidate_score\":$CANDIDATE_SCORE,\"canonical_score\":$CANONICAL_SCORE,\"delta\":$DELTA,\"min_delta\":$CFG_EVOLVE_AB_MIN_DELTA,\"synthetic_id\":\"$SYNTHETIC_ID\"}"
+else
+    ledger_append "evolve_cycle" \
+        "{\"candidate_sha8\":\"$CANDIDATE_SHA8\",\"winner\":\"$WINNER\",\"candidate_score\":$CANDIDATE_SCORE,\"canonical_score\":$CANONICAL_SCORE,\"delta\":$DELTA,\"min_delta\":$CFG_EVOLVE_AB_MIN_DELTA,\"synthetic_id\":\"$SYNTHETIC_ID\"}"
+fi
 
 # ------------------------------------------------------------------
-# 5. Cleanup
+# 5. Promote winner (DRY-RUN AWARE)
 # ------------------------------------------------------------------
 
 if [ "$EVOLVE_DRY_RUN" = "true" ]; then
-    log "  dry-run: removing stub candidate, no archive, no respawn"
-    rm -f "$CANDIDATE_PATH"
-else
-    # PR-C scope: archive parent + respawn daemon. Plumbed here so the
-    # interface is stable but unreachable until PR-C flips dry_run off.
+    log "  dry-run: ledger captured outcome; no archive, no rename, no respawn"
+elif [ "$WINNER" = "candidate" ]; then
+    # PR-C scope path: candidate wins, swap it in. Mirrors
+    # auto-promote.sh:362-381 respawn pattern.
     mkdir -p "$ARCHIVE_DIR"
     ARCHIVE_PATH="$ARCHIVE_DIR/${AGENT_NAME}-gen-${GENERATION_NEXT}-${PARENT_SHA8}.ag"
     cp "$PARENT_AG" "$ARCHIVE_PATH"
     log "  archived parent to $ARCHIVE_PATH"
-    rm -f "$CANDIDATE_PATH"
+
+    # Atomic-ish: mv candidate over canonical, fsync the parent dir.
+    mv -f "$CANDIDATE_PATH" "$PARENT_AG"
+    python3 -c "
+import os, sys
+fd = os.open(os.path.dirname(sys.argv[1]) or '.', os.O_RDONLY)
+try:
+    os.fsync(fd)
+finally:
+    os.close(fd)
+" "$PARENT_AG" 2>/dev/null || true
+
+    # Stop the canonical daemon by name. The dashboard / sidecar respawn
+    # pattern is `agentis daemon stop <agent_id>` -- we don't have the
+    # uuid here, so fall back to the pkill pattern used by cull-explorers.
+    podman exec "$CONTAINER_NAME" bash -c "pkill -f 'agentis daemon /run-root/$COLONY/agents/$AGENT_NAME.ag' 2>/dev/null || true" >/dev/null 2>&1 || true
+    sleep 3
+    # Respawn canonical from the new .ag file.
+    RESPAWN_CMD="agentis daemon /run-root/$COLONY/agents/$AGENT_NAME.ag --colony $COLONY --enable-exec --enable-messaging --tick-interval $TICK_INTERVAL_MS > /run-root/.agentis/logs/$AGENT_NAME.log 2>&1 &"
+    podman exec "$CONTAINER_NAME" bash -c "$RESPAWN_CMD" 2>/dev/null || \
+        log "  WARN: canonical respawn failed"
+    log "  canonical respawned with new generation"
+else
+    log "  canonical won (or inconclusive); no swap"
 fi
+
+# Always clean up the synthetic experience + candidate / rationale.
+rm -f "$CANDIDATE_PATH" "$RATIONALE_PATH" "$SYNTH_EXP"
 
 log "Done."

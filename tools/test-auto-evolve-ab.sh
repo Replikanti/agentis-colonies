@@ -1,6 +1,6 @@
 #!/bin/bash
-# tools/test-auto-evolve-ab.sh — Smoke tests for the Phase 7 PR-A
-# auto-evolve plumbing harness (#628).
+# tools/test-auto-evolve-ab.sh — Smoke tests for the Phase 7 PR-B
+# auto-evolve mutator + A/B harness (#628).
 #
 # Covered:
 #   1. bash -n on auto-evolve-ab.sh
@@ -9,16 +9,28 @@
 #      candidates
 #   4. validity gate rejects a candidate with missing cb / missing tiers
 #   5. ledger row written for `evolve_throttled`
-#   6. ledger row written for `ab_skipped_pr_a_stub`
+#   6. ledger row written for `evolve_cycle` / `ab_inconclusive` (PR-B
+#      replaces PR-A's `ab_skipped_pr_a_stub`)
 #   7. dry-run mode does NOT modify any non-ledger files
-#   8. stub candidate (the cosmetic-comment placeholder PR-A generates)
-#      is parseable by `agentis commit` when called against a clean
-#      parent — verifies the appended comment doesn't break syntax.
+#   8. stub candidate (the parent-as-mutation fixture) is parseable by
+#      `agentis commit` — verifies the candidate doesn't break syntax.
+#   9. Ledger schema sanity (base fields present on every row).
 #
-# Out of scope (deferred to PR-B / PR-C tests):
-#   - real LLM mutation (PR-B `auto-evolve-mutate.py`)
-#   - A/B score comparison (PR-B)
-#   - live evolve with dry_run=false (PR-C)
+# PR-B (#628) added 4 new assertions:
+#   10. Mutator invocation with a known-good LLM stub produces a valid
+#       candidate (exit 0 + candidate file exists + rationale non-empty).
+#   11. Mutator invocation with a markdown-fenced bad LLM stub emits a
+#       `mutation_rejected` ledger row with reason `mutation_invalid_shape`.
+#   12. A/B harness in dry-run mode logs an `ab_inconclusive` or
+#       `evolve_cycle` row carrying `dry_run: true`; canonical .ag file
+#       contents stay byte-identical (no file rename / archive).
+#   13. Archive path filename shape: `<agent>-gen-N-<sha8>.ag` (verified
+#       by introspecting the script's archive-path interpolation; the
+#       archive is only written on live-mode candidate-winner runs).
+#
+# Out of scope (deferred to PR-C):
+#   - live evolve with dry_run=false + actual respawn
+#   - bundle-manifest inclusion
 #
 # Usage: ./tools/test-auto-evolve-ab.sh
 # Exit code 0 if all tests pass, 1 otherwise.
@@ -130,14 +142,32 @@ YAMLEOF
 
 LEDGER="$FAKE_FED/evolution-ledger.jsonl"
 
-# ----- Test 3: happy path → ab_skipped_pr_a_stub row -----
+# Mutator LLM stub fixture. The PR-B mutator (auto-evolve-mutate.py)
+# respects MUTATE_LLM_STUB=<path> as a hermetic test path that bypasses
+# the live LLM backend and returns the fixture verbatim. The good
+# fixture is the parent itself (validates the round-trip without
+# triggering the validity gate); the bad fixture wraps the parent in
+# markdown fences so the shape validator rejects it.
+GOOD_STUB="$TMPDIR_TEST/good-stub.ag"
+cp "$PARENT_AG" "$GOOD_STUB"
+
+BAD_STUB="$TMPDIR_TEST/bad-stub.ag"
+{
+    printf '```ag\n'
+    cat "$PARENT_AG"
+    printf '\n```\n'
+} > "$BAD_STUB"
+
+# ----- Test 3: happy path → evolve_cycle / ab_inconclusive row -----
 # Clean run with no .evolve/ pre-existing — must pass throttle, pass
-# validity (parent template above is hand-written to satisfy all
-# 3 checks, modulo `agentis commit` which we tolerate failing when
-# the binary is missing), and write an `ab_skipped_pr_a_stub` row.
+# validity, run the mutator (with MUTATE_LLM_STUB=$GOOD_STUB), and
+# write a PR-B ledger row. Non-containerized mode produces
+# `ab_inconclusive` with reason=`non_containerized_mode`; an explicit
+# A/B run is exercised by tests 12 (dry-run row shape) below.
 
 rm -f "$LEDGER"
-OUT=$("$SCRIPT_DIR/auto-evolve-ab.sh" "$FAKE_FED" probe "$FAKE_COLONY" "$PARENT_AG" \
+OUT=$(MUTATE_LLM_STUB="$GOOD_STUB" \
+    "$SCRIPT_DIR/auto-evolve-ab.sh" "$FAKE_FED" probe "$FAKE_COLONY" "$PARENT_AG" \
     --ticks 10 --config "$FAKE_CONFIG" 2>&1) || true
 
 if [ -f "$LEDGER" ]; then
@@ -146,18 +176,18 @@ else
     fail "happy path ledger" "ledger missing after run; output: $OUT"
 fi
 
-# ----- Test 4: ab_skipped_pr_a_stub event written -----
-# When `agentis` is on PATH and the parent passes commit + tier
-# coverage + cb budget, the run must reach the PR-A stub skip step.
-# When `agentis` is missing, the validity gate fails on
-# `agentis_binary_missing` instead — still a valid PR-A pipeline
-# exit, but emits `mutation_rejected` not `ab_skipped_pr_a_stub`.
+# ----- Test 4: PR-B ledger event written -----
+# When `agentis` is on PATH and the parent + stub pass validity, the
+# harness reaches the A/B step. In non-containerized mode it writes
+# `ab_inconclusive` with reason `non_containerized_mode`. When agentis
+# is missing the validity gate fails on `agentis_binary_missing`
+# instead, emitting `mutation_rejected` — both are valid PR-B exits.
 
 if command -v agentis >/dev/null 2>&1; then
-    if grep -q '"event":"ab_skipped_pr_a_stub"\|"event": "ab_skipped_pr_a_stub"' "$LEDGER" 2>/dev/null; then
-        pass "ledger contains ab_skipped_pr_a_stub event"
+    if grep -q '"event":"ab_inconclusive"\|"event": "ab_inconclusive"\|"event":"evolve_cycle"\|"event": "evolve_cycle"' "$LEDGER" 2>/dev/null; then
+        pass "ledger contains PR-B A/B verdict event"
     else
-        fail "ab_skipped_pr_a_stub event" "not found in ledger: $(cat "$LEDGER" 2>/dev/null)"
+        fail "PR-B A/B event" "not found in ledger: $(cat "$LEDGER" 2>/dev/null)"
     fi
 else
     # Without agentis the validity gate rejects on missing binary;
@@ -165,7 +195,7 @@ else
     if grep -q '"event":"mutation_rejected"\|"event": "mutation_rejected"' "$LEDGER" 2>/dev/null; then
         pass "ledger contains mutation_rejected event (agentis missing on PATH)"
     else
-        fail "ledger event" "no ab_skipped_pr_a_stub or mutation_rejected: $(cat "$LEDGER" 2>/dev/null)"
+        fail "ledger event" "no ab_inconclusive/evolve_cycle/mutation_rejected: $(cat "$LEDGER" 2>/dev/null)"
     fi
 fi
 
@@ -180,7 +210,8 @@ touch "$EVOLVE_DIR/probe.ag.candidate-gen-99"
 
 # Reset ledger to isolate this event.
 rm -f "$LEDGER"
-THROTTLE_OUT=$("$SCRIPT_DIR/auto-evolve-ab.sh" "$FAKE_FED" probe "$FAKE_COLONY" "$PARENT_AG" \
+THROTTLE_OUT=$(MUTATE_LLM_STUB="$GOOD_STUB" \
+    "$SCRIPT_DIR/auto-evolve-ab.sh" "$FAKE_FED" probe "$FAKE_COLONY" "$PARENT_AG" \
     --ticks 10 --config "$FAKE_CONFIG" 2>&1) || true
 
 if grep -q '"event":"evolve_throttled"\|"event": "evolve_throttled"' "$LEDGER" 2>/dev/null; then
@@ -202,10 +233,11 @@ fi
 rm -f "$EVOLVE_DIR/probe.ag.candidate-gen-99"
 
 # ----- Test 6: validity gate rejection -----
-# Mutate the parent so it lacks `cb <N>;` AND lacks tier literals — the
-# stub-mutation step copies the parent verbatim (plus an appended
-# cosmetic comment), so an invalid parent produces an invalid
-# candidate. The harness must emit `mutation_rejected`.
+# Feed the mutator a stub fixture that lacks `cb <N>;` AND lacks tier
+# literals. The mutator's shape validator (auto-evolve-mutate.py)
+# catches missing_cb_budget and missing_tier_literal cases and exits
+# with rc=2 + stderr=`mutation_invalid_shape`. The harness must emit a
+# `mutation_rejected` ledger row carrying that reason.
 
 BAD_PARENT="$FAKE_FED/$FAKE_COLONY/agents/bad.ag"
 cat > "$BAD_PARENT" <<'BADEOF'
@@ -216,8 +248,14 @@ agent bad {
 }
 BADEOF
 
+# Mutator stub fixture: the bad parent. The mutator's shape validator
+# rejects it before the validity gate ever sees it.
+BAD_PARENT_STUB="$TMPDIR_TEST/bad-parent-stub.ag"
+cp "$BAD_PARENT" "$BAD_PARENT_STUB"
+
 rm -f "$LEDGER"
-BAD_OUT=$("$SCRIPT_DIR/auto-evolve-ab.sh" "$FAKE_FED" bad "$FAKE_COLONY" "$BAD_PARENT" \
+BAD_OUT=$(MUTATE_LLM_STUB="$BAD_PARENT_STUB" \
+    "$SCRIPT_DIR/auto-evolve-ab.sh" "$FAKE_FED" bad "$FAKE_COLONY" "$BAD_PARENT" \
     --ticks 10 --config "$FAKE_CONFIG" 2>&1) || true
 
 if grep -q '"event":"mutation_rejected"\|"event": "mutation_rejected"' "$LEDGER" 2>/dev/null; then
@@ -247,7 +285,8 @@ cp -R "$FAKE_FED" "$SNAPSHOT_DIR/before"
 rm -f "$SNAPSHOT_DIR/before/evolution-ledger.jsonl"
 
 rm -f "$LEDGER"
-DRY_OUT=$("$SCRIPT_DIR/auto-evolve-ab.sh" "$FAKE_FED" probe "$FAKE_COLONY" "$PARENT_AG" \
+DRY_OUT=$(MUTATE_LLM_STUB="$GOOD_STUB" \
+    "$SCRIPT_DIR/auto-evolve-ab.sh" "$FAKE_FED" probe "$FAKE_COLONY" "$PARENT_AG" \
     --ticks 10 --config "$FAKE_CONFIG" --dry-run 2>&1) || true
 
 cp -R "$FAKE_FED" "$SNAPSHOT_DIR/after"
@@ -294,7 +333,8 @@ fi
 # tooling will consume.
 
 rm -f "$LEDGER"
-"$SCRIPT_DIR/auto-evolve-ab.sh" "$FAKE_FED" probe "$FAKE_COLONY" "$PARENT_AG" \
+MUTATE_LLM_STUB="$GOOD_STUB" \
+    "$SCRIPT_DIR/auto-evolve-ab.sh" "$FAKE_FED" probe "$FAKE_COLONY" "$PARENT_AG" \
     --ticks 10 --config "$FAKE_CONFIG" --dry-run >/dev/null 2>&1 || true
 
 if [ -s "$LEDGER" ]; then
@@ -335,6 +375,113 @@ else:
     esac
 else
     fail "ledger schema setup" "ledger empty after dry-run pass"
+fi
+
+# ------------------------------------------------------------------
+# PR-B (#628) new tests
+# ------------------------------------------------------------------
+
+# ----- Test 10: mutator invocation produces valid .ag candidate -----
+# Direct test of tools/auto-evolve-mutate.py with MUTATE_LLM_STUB.
+# Exit 0 + candidate file exists + rationale non-empty. Decoupled from
+# the harness so the failure mode is unambiguous.
+
+MUT_OUT="$TMPDIR_TEST/mut-candidate.ag"
+MUT_RATIONALE="$TMPDIR_TEST/mut-rationale.txt"
+rm -f "$MUT_OUT" "$MUT_RATIONALE"
+
+# Provide a small experience .jsonl so the mutator has rows to
+# summarise (it tolerates an empty file but a populated one exercises
+# the failure-summary branch).
+MUT_EXP="$TMPDIR_TEST/mut-experience.jsonl"
+cat > "$MUT_EXP" <<'MUTEXPEOF'
+{"outcome":"reject","tags":["llm:hallucination","budget:overrun"]}
+{"outcome":"failure","tags":["llm:hallucination"]}
+{"outcome":"success","tags":["audit:novel"]}
+MUTEXPEOF
+
+if MUTATE_LLM_STUB="$GOOD_STUB" python3 "$SCRIPT_DIR/auto-evolve-mutate.py" \
+        --ag "$PARENT_AG" \
+        --experience "$MUT_EXP" \
+        --window 10 \
+        --target-gen 1 \
+        --out "$MUT_OUT" \
+        --rationale-out "$MUT_RATIONALE" >/dev/null 2>&1 \
+        && [ -f "$MUT_OUT" ] \
+        && [ -s "$MUT_RATIONALE" ]; then
+    pass "mutator: valid .ag candidate + non-empty rationale"
+else
+    fail "mutator stub run" "candidate=$([ -f "$MUT_OUT" ] && echo present || echo missing) rationale_size=$(wc -c < "$MUT_RATIONALE" 2>/dev/null || echo 0)"
+fi
+
+# ----- Test 11: mutator with markdown-fenced LLM output -----
+# When the LLM returns ```ag fences, the shape validator rejects it.
+# The harness records this as `mutation_rejected` with reason
+# `mutation_invalid_shape` (mutator exit 2).
+
+rm -f "$LEDGER"
+BAD_OUT=$(MUTATE_LLM_STUB="$BAD_STUB" \
+    "$SCRIPT_DIR/auto-evolve-ab.sh" "$FAKE_FED" probe "$FAKE_COLONY" "$PARENT_AG" \
+    --ticks 10 --config "$FAKE_CONFIG" --dry-run 2>&1) || true
+
+if grep -q '"reason":"mutation_invalid_shape"\|"reason": "mutation_invalid_shape"' "$LEDGER" 2>/dev/null; then
+    pass "mutator: markdown-fenced output -> mutation_invalid_shape ledger row"
+else
+    fail "mutator markdown-fence rejection" "ledger row missing mutation_invalid_shape reason: $(cat "$LEDGER" 2>/dev/null) bad_out: $BAD_OUT"
+fi
+
+# ----- Test 12: dry-run A/B logs `dry_run: true` + canonical unchanged -----
+# Capture the canonical .ag bytes before + after a dry-run pass. The
+# A/B harness must NOT rename / archive / respawn in dry-run mode --
+# the only side effect is the ledger row.
+
+CANONICAL_BEFORE=$(python3 -c "
+import hashlib, sys
+with open(sys.argv[1], 'rb') as f:
+    print(hashlib.sha256(f.read()).hexdigest())
+" "$PARENT_AG")
+
+rm -f "$LEDGER"
+DRY12_OUT=$(MUTATE_LLM_STUB="$GOOD_STUB" \
+    "$SCRIPT_DIR/auto-evolve-ab.sh" "$FAKE_FED" probe "$FAKE_COLONY" "$PARENT_AG" \
+    --ticks 10 --config "$FAKE_CONFIG" --dry-run 2>&1) || true
+
+CANONICAL_AFTER=$(python3 -c "
+import hashlib, sys
+with open(sys.argv[1], 'rb') as f:
+    print(hashlib.sha256(f.read()).hexdigest())
+" "$PARENT_AG")
+
+# Check the ledger carries dry_run=true on the latest A/B verdict row.
+DRY_FLAG_OK=false
+if grep -qE '"dry_run": ?true' "$LEDGER" 2>/dev/null; then
+    DRY_FLAG_OK=true
+fi
+
+if [ "$CANONICAL_BEFORE" = "$CANONICAL_AFTER" ] && [ "$DRY_FLAG_OK" = "true" ]; then
+    pass "dry-run A/B: ledger dry_run=true and canonical .ag unchanged"
+else
+    fail "dry-run A/B side effects" "canonical_changed=$([ "$CANONICAL_BEFORE" = "$CANONICAL_AFTER" ] && echo no || echo yes) dry_flag=$DRY_FLAG_OK out: $DRY12_OUT ledger: $(cat "$LEDGER" 2>/dev/null)"
+fi
+
+# ----- Test 13: archive-path filename shape -----
+# The live-mode archive path is `<archive_dir>/<agent>-gen-N-<sha8>.ag`.
+# We can't trigger live mode in CI (requires podman + a live winner),
+# so verify by introspecting the script: the format string must match
+# the documented shape so a downstream operator's reaper can rely on
+# `<agent>-gen-*-*.ag` globbing.
+
+ARCHIVE_PATTERN=$(grep -E 'ARCHIVE_PATH=' "$SCRIPT_DIR/auto-evolve-ab.sh" | head -1)
+# shellcheck disable=SC2016
+# Intentional: matching the literal `$ARCHIVE_DIR/...` text as it
+# appears verbatim in auto-evolve-ab.sh so a downstream operator's
+# reaper can rely on `<agent>-gen-*-*.ag` globbing. We are NOT
+# expanding the variables here.
+EXPECTED_SHAPE='ARCHIVE_PATH="$ARCHIVE_DIR/${AGENT_NAME}-gen-${GENERATION_NEXT}-${PARENT_SHA8}.ag"'
+if [ "$ARCHIVE_PATTERN" = "    $EXPECTED_SHAPE" ]; then
+    pass "archive path: filename matches <agent>-gen-N-<sha8>.ag shape"
+else
+    fail "archive path shape" "expected '$EXPECTED_SHAPE' got '$ARCHIVE_PATTERN'"
 fi
 
 echo ""

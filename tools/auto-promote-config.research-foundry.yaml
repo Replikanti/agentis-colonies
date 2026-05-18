@@ -55,6 +55,7 @@ evolve:
     min_acting_for_decision: 10
     min_delta: 0.05                      # candidate must beat parent by this fraction
     fast_mode_ticks: 10                  # for smoke tests
+    absolute_max_wait_s: 1800            # PR-B (#628): hard cap on A/B wait
   archive_dir: "evolution-archive"
   ledger_path: "evolution-ledger.jsonl"
   dry_run: true                          # PR-A + PR-B ship dry-run; PR-C flips

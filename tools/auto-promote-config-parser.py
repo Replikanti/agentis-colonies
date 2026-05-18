@@ -209,6 +209,11 @@ def main():
           % ab.get('min_acting_for_decision', 10))
     print('CFG_EVOLVE_AB_MIN_DELTA=%s' % ab.get('min_delta', 0.05))
     print('CFG_EVOLVE_AB_FAST_MODE_TICKS=%s' % ab.get('fast_mode_ticks', 10))
+    # Phase 7 PR-B (#628): hard cap on the A/B wait window. Bounds
+    # ticks * tick_interval_ms so a misconfigured tick_interval (or a
+    # K too large) can't pin the auto-evolve-ab harness indefinitely.
+    print('CFG_EVOLVE_AB_ABSOLUTE_MAX_WAIT_S=%s'
+          % ab.get('absolute_max_wait_s', 1800))
 
     archive_dir = cfg.get('evolve', {}).get('archive_dir', 'evolution-archive')
     print("CFG_EVOLVE_ARCHIVE_DIR='%s'" % archive_dir)
