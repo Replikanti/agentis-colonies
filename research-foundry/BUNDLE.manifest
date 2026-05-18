@@ -10,6 +10,7 @@ research-foundry/config/authors.toml.example
 research-foundry/data/
 research-foundry/explorer/
 research-foundry/noticer/
+research-foundry/skeptic/
 research-foundry/formulator/
 research-foundry/verifier/
 research-foundry/novelty/

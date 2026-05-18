@@ -356,6 +356,30 @@ observed
 math-foundry"
             PAIR_KNOWN=1
             ;;
+        "skeptic_dismiss:partial")
+            # Phase 4 PR-A (#625): skeptic gates the formulator on the
+            # noticer's surprise. `partial` outcome covers `upheld` and
+            # `unsure` verdicts (noticer's surprise resists or cannot
+            # be ruled out as a classical match).
+            ALLOWED_LITERALS="acted
+review-gated
+emitted
+observed
+math-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "skeptic_dismiss:success")
+            # Phase 4 PR-A (#625): skeptic gates the formulator on the
+            # noticer's surprise. `success` outcome covers the
+            # `dismissed` verdict (skeptic matched the surprise to a
+            # classical result, blocking the formulator).
+            ALLOWED_LITERALS="acted
+review-gated
+emitted
+observed
+math-foundry"
+            PAIR_KNOWN=1
+            ;;
 
         # ----------------------------------------------------------------
         # claim-auditor research federation (#622 PR-3)

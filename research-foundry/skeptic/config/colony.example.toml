@@ -1,0 +1,24 @@
+# Skeptic Colony Configuration
+#
+# Part of the Math Foundry federation. The skeptic colony consumes the
+# noticer's surprise record and runs a strict prompt that defaults to
+# dismissing the surprise unless it cannot be matched to a classical
+# result. The formulator gates on the skeptic's verdict label. Copy to
+# colony.toml and edit for your environment.
+
+[colony]
+name = "skeptic"
+tick_interval_ms = 60000
+
+# math-foundry is a non-forge federation (ADR-0003).
+[forge]
+type = "none"
+
+[llm]
+backend = "cli"
+
+[[agents]]
+name = "skeptic"
+source = "agents/skeptic.ag"
+cb_budget = 200000000
+tick_interval_ms = 60000
