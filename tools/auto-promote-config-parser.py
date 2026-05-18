@@ -177,11 +177,50 @@ def main():
     e = cfg.get('evolve', {}).get('trigger', {})
     print('CFG_EVOLVE_SLOPE_NEG_FOR=%s' % e.get('delta_slope_negative_for', 1000))
     print('CFG_EVOLVE_REJECT_ABOVE=%s' % e.get('reject_rate_above', 0.20))
+    both_required = e.get('both_signals_required', False)
+    print('CFG_EVOLVE_BOTH_SIGNALS_REQUIRED=%s'
+          % ('true' if both_required else 'false'))
 
     ec = cfg.get('evolve', {}).get('config', {})
     print('CFG_EVOLVE_GENERATIONS=%s' % ec.get('generations', 3))
     print('CFG_EVOLVE_POPULATION=%s' % ec.get('population', 4))
     print("CFG_EVOLVE_WEIGHTS='%s'" % ec.get('weights', 'cb,val,exp'))
+
+    # Phase 7 PR-A (#628): mutation + A/B + archive + ledger plumbing.
+    # All fields default to legacy-compat values so dev-apprenticeship
+    # configs (which omit them) keep the pre-#628 `agentis evolve` path.
+    em = cfg.get('evolve', {}).get('mutation', {})
+    mutation_enabled = em.get('enabled', False)
+    print('CFG_EVOLVE_MUTATION_ENABLED=%s'
+          % ('true' if mutation_enabled else 'false'))
+    print('CFG_EVOLVE_MUTATION_MAX_CONCURRENT_PER_COLONY=%s'
+          % em.get('max_concurrent_per_colony', 1))
+    print('CFG_EVOLVE_MUTATION_MAX_GENERATIONS=%s'
+          % em.get('max_generations', 10))
+    skip_tiers = em.get('skip_tiers', ['autonomous'])
+    if not isinstance(skip_tiers, list):
+        skip_tiers = [skip_tiers]
+    skip_tiers_csv = ','.join(str(t) for t in skip_tiers)
+    print("CFG_EVOLVE_MUTATION_SKIP_TIERS='%s'" % skip_tiers_csv)
+
+    ab = cfg.get('evolve', {}).get('ab', {})
+    print('CFG_EVOLVE_AB_TICKS=%s' % ab.get('ticks', 50))
+    print('CFG_EVOLVE_AB_MIN_ACTING_FOR_DECISION=%s'
+          % ab.get('min_acting_for_decision', 10))
+    print('CFG_EVOLVE_AB_MIN_DELTA=%s' % ab.get('min_delta', 0.05))
+    print('CFG_EVOLVE_AB_FAST_MODE_TICKS=%s' % ab.get('fast_mode_ticks', 10))
+
+    archive_dir = cfg.get('evolve', {}).get('archive_dir', 'evolution-archive')
+    print("CFG_EVOLVE_ARCHIVE_DIR='%s'" % archive_dir)
+    ledger_path = cfg.get('evolve', {}).get('ledger_path', 'evolution-ledger.jsonl')
+    print("CFG_EVOLVE_LEDGER_PATH='%s'" % ledger_path)
+
+    # Per-block `evolve.dry_run` controls whether auto-evolve-ab.sh
+    # mutates files. Defaults to true so PR-A and PR-B never touch any
+    # .ag file even after `mutation.enabled` is later flipped on. PR-C
+    # is the only PR that toggles this to false.
+    evolve_dry_run = cfg.get('evolve', {}).get('dry_run', True)
+    print('CFG_EVOLVE_DRY_RUN=%s' % ('true' if evolve_dry_run else 'false'))
 
     dr = cfg.get('dry_run', True)
     print('CFG_DRY_RUN=%s' % ('true' if dr else 'false'))

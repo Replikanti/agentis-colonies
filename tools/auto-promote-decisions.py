@@ -37,6 +37,7 @@
 #
 # Contract is frozen by doc/auto-promote.md and test-auto-promote.sh.
 
+import hashlib
 import json
 import math
 import os
@@ -255,6 +256,75 @@ def main():
             score = 0.0
         breakdown = payload.get('breakdown')
         return (score, breakdown if isinstance(breakdown, dict) else None)
+
+    # Phase 7 PR-A (#628): cache `<colony>/agents/<agent>.ag` sha256
+    # per agent inside this loop so the same hash is reused across the
+    # evolve decision and the ledger row writer downstream. Returns ''
+    # when the .ag file is unreachable so the caller can omit the field
+    # cleanly.
+    _parent_sha_cache = {}
+
+    def _resolve_parent_sha(_fed_dir, _colony, _agent_name):
+        cache_key = (_colony, _agent_name)
+        if cache_key in _parent_sha_cache:
+            return _parent_sha_cache[cache_key]
+        candidate = os.path.join(_fed_dir, _colony, 'agents', _agent_name + '.ag')
+        result = ''
+        try:
+            with open(candidate, 'rb') as fh:
+                result = hashlib.sha256(fh.read()).hexdigest()
+        except OSError:
+            result = ''
+        _parent_sha_cache[cache_key] = result
+        return result
+
+    # Phase 7 PR-A (#628): scan `<fed_dir>/evolution-ledger.jsonl` for
+    # the max recorded generation matching the resolved parent_sha for
+    # this agent. Returns 0 when the ledger is absent or no row matches.
+    # The ledger path is the auto-evolve-ab.sh default — overridable via
+    # `evolve.ledger_path` config but auto-promote-decisions.py reads the
+    # default location for legacy-mode positional invocation parity.
+    _ledger_rows_cache = None
+
+    def _load_ledger_rows(_fed_dir):
+        nonlocal _ledger_rows_cache
+        if _ledger_rows_cache is not None:
+            return _ledger_rows_cache
+        ledger_path = os.path.join(_fed_dir, 'evolution-ledger.jsonl')
+        rows = []
+        try:
+            with open(ledger_path) as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rows.append(json.loads(line))
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+        except OSError:
+            pass
+        _ledger_rows_cache = rows
+        return rows
+
+    def _resolve_generation_current(_fed_dir, _parent_sha):
+        if not _parent_sha:
+            return 0
+        sha8 = _parent_sha[:8]
+        max_gen = 0
+        for row in _load_ledger_rows(_fed_dir):
+            if not isinstance(row, dict):
+                continue
+            if row.get('parent_sha8') != sha8 and row.get('parent_sha') != _parent_sha:
+                continue
+            gen = row.get('generation')
+            try:
+                gen_int = int(gen) if gen is not None else 0
+            except (ValueError, TypeError):
+                gen_int = 0
+            if gen_int > max_gen:
+                max_gen = gen_int
+        return max_gen
 
     for d in daemons:
         source = d.get('source', '')
@@ -489,19 +559,33 @@ def main():
         # Evolve signals are computed from acting rows only: observe-step rows
         # carry a structural "success" outcome and zero delta, so including
         # them would mask degradation on the tier-gated acting path.
-        evolve_triggered = False
-        if len(acting_entries_list) >= evolve_slope_neg_for and evolve_slope < 0:
-            evolve_triggered = True
-        if acting_count > 0 and reject_rate_acting > evolve_reject_above:
-            evolve_triggered = True
+        slope_signal = (
+            len(acting_entries_list) >= evolve_slope_neg_for
+            and evolve_slope < 0
+        )
+        reject_signal = (
+            acting_count > 0 and reject_rate_acting > evolve_reject_above
+        )
+        evolve_triggered = slope_signal or reject_signal
 
         if evolve_triggered:
+            # Phase 7 PR-A (#628): emit `evolve_window_stagnant`,
+            # `parent_sha`, and `generation_current` on every evolve
+            # decision so the downstream auto-evolve-ab.sh harness has
+            # the full context to write its ledger row without having
+            # to recompute the same values.
+            evolve_window_stagnant = slope_signal and reject_signal
+            parent_sha = _resolve_parent_sha(fed_dir, colony, agent_name)
+            generation_current = _resolve_generation_current(fed_dir, parent_sha)
             decisions.append(_attach_explorer_evidence({
                 'agent': agent_name,
                 'colony': colony,
                 'decision': 'evolve',
                 'reason': f'evolve triggered (slope={evolve_slope:.6f}, reject_rate_acting={reject_rate_acting:.4f})',
                 'evidence': evidence,
+                'evolve_window_stagnant': evolve_window_stagnant,
+                'parent_sha': parent_sha,
+                'generation_current': generation_current,
             }))
             continue
 
