@@ -235,6 +235,32 @@ if [ "$GENERATION_NEXT" -gt "$CFG_EVOLVE_MUTATION_MAX_GENERATIONS" ]; then
 fi
 
 # ------------------------------------------------------------------
+# 0b. Per-agent allowlist gate (PR-C, #628)
+# ------------------------------------------------------------------
+#
+# `evolve.mutation.allowed_agents` is a comma-separated list emitted by
+# the config parser. `*` is the legacy-compat sentinel meaning "all
+# agents allowed" -- dev-apprenticeship + tribes-bench configs that
+# omit the key fall through to that path. research-foundry pins it to
+# `explorer` only; every other agent invocation short-circuits here.
+ALLOWED_AGENTS_CSV="${CFG_EVOLVE_MUTATION_ALLOWED_AGENTS:-*}"
+if [ "$ALLOWED_AGENTS_CSV" != "*" ]; then
+    AGENT_ALLOWED=$(python3 -c "
+import sys
+csv = sys.argv[1]
+agent = sys.argv[2]
+items = [s.strip() for s in csv.split(',') if s.strip()]
+print('true' if (agent in items or '*' in items) else 'false')
+" "$ALLOWED_AGENTS_CSV" "$AGENT_NAME")
+    if [ "$AGENT_ALLOWED" != "true" ]; then
+        log "  agent not in allowlist: $AGENT_NAME (allowed=$ALLOWED_AGENTS_CSV)"
+        ledger_append "evolve_skipped_not_in_allowlist" \
+            "{\"reason\":\"agent_not_in_allowlist\",\"allowed_agents\":\"$ALLOWED_AGENTS_CSV\"}"
+        exit 0
+    fi
+fi
+
+# ------------------------------------------------------------------
 # 1. Pre-flight throttle: count open candidate files
 # ------------------------------------------------------------------
 
