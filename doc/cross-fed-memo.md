@@ -265,6 +265,65 @@ preserving timestamp order. The central ledger is the audit trail
 the operator scans to see which federation published which method
 when.
 
+## Threat model
+
+The `cross-fed:*` namespace is a *trusted-host, untrusted-fed* surface.
+All federations on the same host share `<repo-root>/cross-fed-memo/`
+through the bridge sidecar; any federation can read every other
+federation's exported method record + body + fitness scalar.
+
+Assumed threats:
+
+1. **Malicious cross-fed write.** A compromised federation A writes a
+   method record claiming a fitness score of `999.0` so the operator
+   prioritises adopting it into federation B. *Mitigation:* the operator
+   curates `cross-fed:applicable-to:<method-id>` before any adoption.
+   The bridge does not authorise on fitness alone; the export-fitness
+   threshold is a pre-filter, not a trust signal. PR-2/3 will add
+   `cross-fed:export-suppress:<source-fed>:<method-id>` (operator-only
+   write) for explicit blocklisting.
+
+2. **External tampering of `<repo-root>/cross-fed-memo/`.** A process
+   outside any federation rewrites a method body file between two
+   sidecar ticks. *Mitigation:* sha256-by-content dedupe causes the
+   bridge to overwrite the federation's `.agentis/memo/cross-fed:*` on
+   the next tick if the host file changes, but the federation's own
+   memo store treats the new content as just another remote method.
+   The operator-curated `applicable-to` gate is the last line of
+   defence. This is the same trust model as any
+   `<fed_dir>/.agentis/memo/*` file, since both are operator-writable.
+
+3. **Out-of-band federation that bypasses the bridge.** Any process
+   with write access to a federation's `.agentis/memo/cross-fed:*` keys
+   can plant a method without going through `pollination-ledger.jsonl`.
+   *Mitigation:* the central ledger only captures bridge-mediated
+   activity; out-of-band entries are visible in per-fed memo dumps but
+   not in the audit trail. Recommend operator audits by `diff`ing
+   `<host_dir>/methods/*` against per-fed memo dumps when paranoid.
+
+4. **Export-fitness threshold spoofing.** A method's
+   `cross-fed:fitness:<source-fed>:<method-id>` is written by the
+   federation that owns it; nothing cryptographically binds the score
+   to actual measured fitness. *Mitigation:* the operator sees the
+   source federation in the key. Future hardening (out of Phase 8
+   scope) could anchor scores to a signed `replication-ledger.jsonl`
+   entry.
+
+Not threats:
+
+- **Method body executes during import.** Import is operator-mediated;
+  no automatic execution path. The `.ag` file lands in the target
+  federation's colony only after the operator approves.
+- **Cross-fed write storms.** Bridge holds a flock on
+  `<host_dir>/.lock`; only one sidecar tick runs at a time across
+  *all* federations.
+
+Out of Phase 8 scope (track separately):
+
+- Cryptographic signing of method bodies + fitness scores.
+- Operator audit log of `applicable-to` curation decisions.
+- Per-fed network segmentation (cross-fed is single-host only).
+
 ## Related
 
 - [#629](https://github.com/Replikanti/agentis-colonies/issues/629) —
