@@ -281,7 +281,7 @@ fn _publish_explorer(
     do_replicate: bool,
     exploration: Exploration,
     self_pid: string,
-    colony_name_str: string,
+    _colony_name: string,
     tick_idx: int,
     tick_now_ms: int,
     topic_label: string,
@@ -311,7 +311,7 @@ fn _publish_explorer(
         // Append to per-run discovery ledger.
         let ledger_path = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
         if len(ledger_path) > 0 {
-            let ledger_row = "{\"ts\":" + to_string(tick_now_ms) + ",\"colony\":\"" + colony_name_str + "\",\"pid\":\"" + self_pid + "\",\"tick\":" + to_string(tick_idx) + ",\"topic\":\"" + topic_label + "\",\"event\":\"exploration_done\"}";
+            let ledger_row = "{\"ts\":" + to_string(tick_now_ms) + ",\"colony\":\"" + _colony_name + "\",\"pid\":\"" + self_pid + "\",\"tick\":" + to_string(tick_idx) + ",\"topic\":\"" + topic_label + "\",\"event\":\"exploration_done\"}";
             // colony-lint: safe-exec-concat
             let append_cmd = "printf '%s\n' " + shell_escape(ledger_row) + " >> " + shell_escape(ledger_path);
             let _l = try { exec sh append_cmd; } catch e { ""; };
@@ -326,7 +326,7 @@ fn _publish_explorer(
             let verdict_raw = recall_latest("novelty:final_verdict:" + self_pid + ":tick-" + to_string(settle_tick));
             if len(verdict_raw) > 0 {
                 print("[explorer] settled tick=", settle_tick, " verdict=", verdict_raw);
-                learn("settle", "tick " + to_string(settle_tick) + " " + verdict_raw, "novelty=" + verdict_raw, "success", ["acted", "math-foundry", colony_name_str, "verdict:" + verdict_raw]);
+                learn("settle", "tick " + to_string(settle_tick) + " " + verdict_raw, "novelty=" + verdict_raw, "success", ["acted", "math-foundry", _colony_name, "verdict:" + verdict_raw]);
 
                 // Fitness update: +2 NOVEL, +0.5 (mapped int 1)
                 // BORDERLINE, -1 NOT_NOVEL, -0.5 (mapped int 1)
@@ -369,12 +369,12 @@ fn _publish_explorer(
                     if repr_thr > 0 {
                         let my_fit_r = parse_int(recall_latest("explorer:" + self_pid + ":fitness"));
                         if my_fit_r > repr_thr {
-                            let n_r = parse_int(recall_latest("colony-" + colony_name_str + ":size"));
-                            let max_repl_r = parse_int(recall_latest("colony-" + colony_name_str + ":max_replicas"));
+                            let n_r = parse_int(recall_latest("colony-" + _colony_name + ":size"));
+                            let max_repl_r = parse_int(recall_latest("colony-" + _colony_name + ":max_replicas"));
                             if n_r < max_repl_r {
-                                let pool_r = parse_int(recall_latest("colony-" + colony_name_str + ":pool"));
-                                let base_r = parse_int(recall_latest("colony-" + colony_name_str + ":replication_base_cost"));
-                                let raw_k_r = parse_int(recall_latest("colony-" + colony_name_str + ":replication_k"));
+                                let pool_r = parse_int(recall_latest("colony-" + _colony_name + ":pool"));
+                                let base_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_base_cost"));
+                                let raw_k_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_k"));
                                 let k_r = if raw_k_r <= 0 { 3; } else { raw_k_r; };
                                 let cost_r = base_r + (base_r * n_r) / k_r;
                                 if pool_r >= cost_r {
@@ -386,11 +386,11 @@ fn _publish_explorer(
                                         let replica_id = try { replicate(target_r, my_fit_r, variant_wrapped); } catch e { "__replicate_error__"; };
                                         if replica_id != "__replicate_error__" {
                                             if len(replica_id) > 0 {
-                                                memo_write("colony-" + colony_name_str + ":pool", to_string(pool_r - cost_r));
-                                                memo_write("colony-" + colony_name_str + ":size", to_string(n_r + 1));
-                                                learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "success", ["replicated", "math-foundry", colony_name_str]);
+                                                memo_write("colony-" + _colony_name + ":pool", to_string(pool_r - cost_r));
+                                                memo_write("colony-" + _colony_name + ":size", to_string(n_r + 1));
+                                                learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "success", ["replicated", "math-foundry", _colony_name]);
                                             } else {
-                                                learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "failure", ["replicate-nak", "math-foundry", colony_name_str]);
+                                                learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "failure", ["replicate-nak", "math-foundry", _colony_name]);
                                             };
                                         };
                                     };
