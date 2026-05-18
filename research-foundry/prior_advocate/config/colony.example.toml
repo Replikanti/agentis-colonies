@@ -1,0 +1,30 @@
+# Prior Advocate Colony Configuration
+#
+# Part of the Claim Auditor federation. The prior advocate colony
+# reads the triggering claim row from memo (problem_text / answer /
+# novelty_claim, same seed the four web searchers consume) and runs
+# an adversarial-reviewer LLM call that argues the claim is already
+# known. The Verdict is persisted to memo for the auditor to fold
+# into its synthesis ctx as an additional KNOWN_PRIOR signal
+# alongside the four search reports. Does not touch any external API.
+#
+# Copy to colony.toml and edit for your environment.
+
+[colony]
+name = "prior_advocate"
+tick_interval_ms = 60000
+
+# Non-forge federation (#373, ADR-0003). The prior advocate writes
+# only to memo (no JSONL ledger row today); no agent in this colony
+# calls forge-api.sh.
+[forge]
+type = "none"
+
+[llm]
+backend = "cli"
+
+[[agents]]
+name = "prior_advocate"
+source = "agents/prior_advocate.ag"
+cb_budget = 2000
+tick_interval_ms = 60000
