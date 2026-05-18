@@ -288,13 +288,15 @@ if [ "$MUT_RC" -ne 0 ]; then
         MUT_REASON="mutator_failed"
     fi
     log "  mutator rc=$MUT_RC reason=$MUT_REASON"
-    # Strip control characters and clip stderr so the ledger row stays
-    # one JSON line. We deliberately use python3 here, not sed/tr, so the
-    # macOS bash 3.2 quoting story stays compatible.
+    # Strip control characters, drop the double-quote byte (34) so the
+    # JSON ledger row doesn't fracture mid-string (#661), and clip stderr
+    # to 500 chars so the row stays single-line. We deliberately use
+    # python3 here, not sed/tr, so the macOS bash 3.2 quoting story stays
+    # compatible.
     MUT_STDERR_CLIP=$(python3 -c "
 import sys
 buf = sys.argv[1].replace('\n', ' ')[:500]
-print(''.join(c for c in buf if c == ' ' or 32 <= ord(c) < 127))
+print(''.join(c for c in buf if c == ' ' or (32 <= ord(c) < 127 and ord(c) != 34)))
 " "$MUT_OUTPUT")
     ledger_append "mutation_rejected" \
         "{\"reason\":\"$MUT_REASON\",\"mutator_stderr\":\"$MUT_STDERR_CLIP\"}"
