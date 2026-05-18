@@ -20,6 +20,27 @@ History of the three retired federations consolidated into this one
 
 ### Changed
 
+- Replica-safe handoff via winner-by-confidence picker across 9
+  downstream `.ag` files (Phase 9 PR-A of #663, pre-blocker for the
+  entire phase). Every `recall_latest("replay:current_<role>_pid")` +
+  pid-keyed memo read is replaced with
+  `_pick_upstream_by_confidence(role, output_key, tick)` — the picker
+  enumerates `<role>:*:<decision_key>:tick-<N>` memos via `agentis
+  memo list`, ranks by the embedded confidence field
+  (`confidence_in_surprise` / `confidence` / `self_check_confidence`
+  depending on role), and returns the value of the picked output_key.
+  With N=1 the picker collapses to a single match identical to the v1
+  LWW behaviour; with N>1 it stops the last-writer-wins stomp that
+  blocked replicating any role beyond explorer. Files touched:
+  noticer, skeptic, formulator, verifier, novelty, auditor, editor,
+  reviewer, submitter. New colony-lint check
+  `tools/check-no-replay-current-pid.sh` fails any future regression
+  to the `replay:current_<role>_pid` consumer pattern. The two
+  pre-existing replica-safe sites (`reviewer:<claim>:approved` claim-
+  keyed, auditor's `claim:audit_*:tick-N` tick-keyed writes) are
+  preserved. PR-B (tooling generalisation) and PR-C (per-`.ag`
+  replicate machinery) ride on this wire change.
+
 - Flipped `evolve.dry_run` and `evolve.mutation.enabled` for
   research-foundry (Phase 7 PR-C of #628). The explorer agent now
   runs in live evolve mode: the LLM mutator proposes candidates, the

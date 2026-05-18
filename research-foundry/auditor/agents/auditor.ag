@@ -107,6 +107,37 @@ fn _push_topic_feedback(
     memo_write(buf_key, new_buf);
 }
 
+// _pick_upstream_pid_by_key -- Phase 9 PR-A (#663) replica-safe pick.
+// Enumerates `<role>:*:<decision_key>:tick-<N>` memo keys via
+// `agentis memo list`, ranks by an embedded confidence field when one
+// is known for the role, and returns the picked PID (empty string when
+// no match). For known roles the meta map below selects the canonical
+// decision_key + confidence_field regardless of `fallback_key`; for
+// unknown roles `fallback_key` is used as the discovery suffix and the
+// picker falls back to alphabetical-first PID (deterministic for N=1,
+// undefined ordering for N>1 -- PR-B/PR-C tightens that).
+fn _pick_upstream_pid_by_key(role: string, fallback_key: string, tick: int) -> string {
+    let tick_s = to_string(tick);
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,subprocess,json\nrole=sys.argv[1]\nout_key=sys.argv[2]\ntick=sys.argv[3]\nmeta={\"noticer\":(\"surprise\",\"confidence_in_surprise\"),\"skeptic\":(\"verdict\",\"confidence\"),\"formulator\":(\"problem\",\"self_check_confidence\"),\"verifier\":(\"verdict\",\"confidence\"),\"auditor\":(\"verdict\",\"confidence\"),\"reviewer\":(\"report\",\"confidence\"),\"prior_advocate\":(\"report\",\"confidence\")}\ndk,cf=meta.get(role,(out_key,\"\"))\nsuf=\":\"+dk+\":tick-\"+tick\npre=role+\":\"\ntry: out=subprocess.run([\"agentis\",\"memo\",\"list\"],capture_output=True,text=True,check=False).stdout\nexcept Exception: out=\"\"\nbest_pid=\"\"\nbest_conf=-1.0\npids=[]\nfor line in out.splitlines():\n line=line.strip()\n if not line or not line.startswith(pre): continue\n key=line.split()[0]\n if not key.endswith(suf): continue\n mid=key[len(pre):-len(suf)]\n if \":\" in mid or not mid: continue\n pids.append(mid)\nif not cf:\n pids.sort()\n if pids: best_pid=pids[0]\nelse:\n for mid in pids:\n  try: v=subprocess.run([\"agentis\",\"memo\",\"get\",pre+mid+suf],capture_output=True,text=True,check=False).stdout\n  except Exception: v=\"\"\n  try: obj=json.loads(v)\n  except Exception: obj=None\n  if not isinstance(obj,dict): continue\n  try: conf=float(obj.get(cf,0.0))\n  except Exception: conf=0.0\n  if conf>best_conf:\n   best_conf=conf\n   best_pid=mid\nprint(best_pid)' " + shell_escape(role) + " " + shell_escape(fallback_key) + " " + shell_escape(tick_s);
+    let pid = try { exec sh cmd; } catch e { ""; };
+    return pid;
+}
+
+// _pick_upstream_by_confidence -- Phase 9 PR-A (#663) value-returning
+// wrapper around `_pick_upstream_pid_by_key`. Returns the value of
+// `<role>:<picked_pid>:<output_key>:tick-<N>` (empty when no upstream
+// row matches). For N=1 this collapses to a single match identical to
+// the v1 `recall_latest("replay:current_<role>_pid")` + per-key read.
+// Duplicated verbatim across the 9 downstream .ag files because the
+// .ag DSL has no shared-include mechanism (matches the #623 E pattern
+// for _dump_ctx_to_memo / _summarise_*_buf).
+fn _pick_upstream_by_confidence(role: string, output_key: string, tick: int) -> string {
+    let pid = _pick_upstream_pid_by_key(role, output_key, tick);
+    if len(pid) == 0 { return ""; };
+    return recall_latest(role + ":" + pid + ":" + output_key + ":tick-" + to_string(tick));
+}
+
 // _publish_auditor -- TERMINAL agent (Class 1). memo + emit (+ ledger
 // row when final_write=true). Autonomous and review-gated both emit
 // the ledger row; only propose skips it (#622 ADR-0001). The ledger row
@@ -190,8 +221,10 @@ fn _publish_auditor(
         // -> replay:current_topic -> verdict.problem_summary.
         let feedback_eligible = if verdict.audit_verdict == "KNOWN_PRIOR" { true; } else { verdict.audit_verdict == "VERIFIED_NEW"; };
         if feedback_eligible {
-            let explorer_pid_fb = recall_latest("replay:current_explorer_pid");
-            let topic_fb_a = if len(explorer_pid_fb) > 0 { recall_latest("explorer:" + explorer_pid_fb + ":topic:tick-" + to_string(upstream_tick)); } else { ""; };
+            // Phase 9 PR-A (#663): tick-keyed fan-in picker replaces the
+            // replica-unsafe `recall_latest("replay:current_explorer_pid")`
+            // LWW fallback for the topic descriptor lookup.
+            let topic_fb_a = _pick_upstream_by_confidence("explorer", "topic", upstream_tick);
             let topic_fb_b = if len(topic_fb_a) > 0 { topic_fb_a; } else { recall_latest("replay:current_topic"); };
             let topic_fb = if len(topic_fb_b) > 0 { topic_fb_b; } else { verdict.problem_summary; };
             _push_topic_feedback(verdict.audit_verdict, topic_fb, verdict.problem_summary, tick_idx);
@@ -222,23 +255,20 @@ fn tick(reason: string) -> void {
         return;
     };
 
-    let arxiv_pid = recall_latest("replay:current_arxiv_search_pid");
-    let oeis_pid = recall_latest("replay:current_oeis_search_pid");
-    let groupprops_pid = recall_latest("replay:current_groupprops_search_pid");
-    let scholar_pid = recall_latest("replay:current_scholar_search_pid");
-
-    let arxiv_report = if len(arxiv_pid) > 0 { recall_latest("arxiv_search:" + arxiv_pid + ":report:tick-" + to_string(upstream_tick)); } else { ""; };
-    let oeis_report = if len(oeis_pid) > 0 { recall_latest("oeis_search:" + oeis_pid + ":report:tick-" + to_string(upstream_tick)); } else { ""; };
-    let groupprops_report = if len(groupprops_pid) > 0 { recall_latest("groupprops_search:" + groupprops_pid + ":report:tick-" + to_string(upstream_tick)); } else { ""; };
-    let scholar_report = if len(scholar_pid) > 0 { recall_latest("scholar_search:" + scholar_pid + ":report:tick-" + to_string(upstream_tick)); } else { ""; };
+    // Phase 9 PR-A (#663): tick-keyed fan-in picker replaces the five
+    // replica-unsafe `recall_latest("replay:current_<role>_pid")` LWW
+    // handoffs. With N=1 each call collapses to a single match.
+    let arxiv_report = _pick_upstream_by_confidence("arxiv_search", "report", upstream_tick);
+    let oeis_report = _pick_upstream_by_confidence("oeis_search", "report", upstream_tick);
+    let groupprops_report = _pick_upstream_by_confidence("groupprops_search", "report", upstream_tick);
+    let scholar_report = _pick_upstream_by_confidence("scholar_search", "report", upstream_tick);
 
     // Phase 4 PR-B (#625): prior_advocate is an additional adversarial-
     // reviewer signal alongside the four web searchers. Pass-through
     // default -- empty prior_advocate memo does not block the auditor;
     // any_report still gates on the four searchers OR prior_advocate.
-    let prior_advocate_pid = recall_latest("replay:current_prior_advocate_pid");
-    let prior_advocate_report = if len(prior_advocate_pid) > 0 { recall_latest("prior_advocate:" + prior_advocate_pid + ":report:tick-" + to_string(upstream_tick)); } else { ""; };
-    let prior_advocate_is_prior = if len(prior_advocate_pid) > 0 { recall_latest("prior_advocate:" + prior_advocate_pid + ":is_prior:tick-" + to_string(upstream_tick)); } else { ""; };
+    let prior_advocate_report = _pick_upstream_by_confidence("prior_advocate", "report", upstream_tick);
+    let prior_advocate_is_prior = _pick_upstream_by_confidence("prior_advocate", "is_prior", upstream_tick);
 
     let any_report = if len(arxiv_report) > 0 { true; } else { if len(oeis_report) > 0 { true; } else { if len(groupprops_report) > 0 { true; } else { if len(scholar_report) > 0 { true; } else { len(prior_advocate_report) > 0; }; }; }; };
     if !any_report {

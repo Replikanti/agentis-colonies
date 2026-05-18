@@ -31,9 +31,14 @@ while IFS= read -r -d '' ag_file; do
     # are out of scope for PR-A and left in place so any external probes
     # the orchestrator might keep continue to work; PR-B/PR-C may retire
     # them once the broader replica machinery lands.
-    if grep -nE 'recall_latest\("replay:current_[a-z_]+_pid"\)' "$ag_file" >/dev/null 2>&1; then
+    #
+    # The leading-`//` strip excludes comment lines that document the
+    # historical pattern (this PR's own changelog-style comments mention
+    # the literal). Scan operates on uncommented source only.
+    cleaned="$(sed -e 's|^[[:space:]]*//.*||' "$ag_file")"
+    if printf '%s\n' "$cleaned" | grep -nE 'recall_latest\("replay:current_[a-z_]+_pid"\)' >/dev/null 2>&1; then
         echo "[FAIL] $ag_file reads replay:current_<role>_pid (Phase 9 PR-A regression)"
-        grep -nE 'recall_latest\("replay:current_[a-z_]+_pid"\)' "$ag_file"
+        printf '%s\n' "$cleaned" | grep -nE 'recall_latest\("replay:current_[a-z_]+_pid"\)'
         violations=$((violations + 1))
     fi
 done < <(find "$TARGET_DIR" -type f -name "*.ag" -print0 2>/dev/null)

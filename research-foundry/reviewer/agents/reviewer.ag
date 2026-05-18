@@ -66,6 +66,37 @@ fn _dump_ctx_to_memo(agent_name: string, pid: string, tick_idx: int, ctx: string
     memo_write(agent_name + ":" + pid + ":ctx:tick-" + to_string(tick_idx), ctx);
 }
 
+// _pick_upstream_pid_by_key -- Phase 9 PR-A (#663) replica-safe pick.
+// Enumerates `<role>:*:<decision_key>:tick-<N>` memo keys via
+// `agentis memo list`, ranks by an embedded confidence field when one
+// is known for the role, and returns the picked PID (empty string when
+// no match). For known roles the meta map below selects the canonical
+// decision_key + confidence_field regardless of `fallback_key`; for
+// unknown roles `fallback_key` is used as the discovery suffix and the
+// picker falls back to alphabetical-first PID (deterministic for N=1,
+// undefined ordering for N>1 -- PR-B/PR-C tightens that).
+fn _pick_upstream_pid_by_key(role: string, fallback_key: string, tick: int) -> string {
+    let tick_s = to_string(tick);
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,subprocess,json\nrole=sys.argv[1]\nout_key=sys.argv[2]\ntick=sys.argv[3]\nmeta={\"noticer\":(\"surprise\",\"confidence_in_surprise\"),\"skeptic\":(\"verdict\",\"confidence\"),\"formulator\":(\"problem\",\"self_check_confidence\"),\"verifier\":(\"verdict\",\"confidence\"),\"auditor\":(\"verdict\",\"confidence\"),\"reviewer\":(\"report\",\"confidence\"),\"prior_advocate\":(\"report\",\"confidence\")}\ndk,cf=meta.get(role,(out_key,\"\"))\nsuf=\":\"+dk+\":tick-\"+tick\npre=role+\":\"\ntry: out=subprocess.run([\"agentis\",\"memo\",\"list\"],capture_output=True,text=True,check=False).stdout\nexcept Exception: out=\"\"\nbest_pid=\"\"\nbest_conf=-1.0\npids=[]\nfor line in out.splitlines():\n line=line.strip()\n if not line or not line.startswith(pre): continue\n key=line.split()[0]\n if not key.endswith(suf): continue\n mid=key[len(pre):-len(suf)]\n if \":\" in mid or not mid: continue\n pids.append(mid)\nif not cf:\n pids.sort()\n if pids: best_pid=pids[0]\nelse:\n for mid in pids:\n  try: v=subprocess.run([\"agentis\",\"memo\",\"get\",pre+mid+suf],capture_output=True,text=True,check=False).stdout\n  except Exception: v=\"\"\n  try: obj=json.loads(v)\n  except Exception: obj=None\n  if not isinstance(obj,dict): continue\n  try: conf=float(obj.get(cf,0.0))\n  except Exception: conf=0.0\n  if conf>best_conf:\n   best_conf=conf\n   best_pid=mid\nprint(best_pid)' " + shell_escape(role) + " " + shell_escape(fallback_key) + " " + shell_escape(tick_s);
+    let pid = try { exec sh cmd; } catch e { ""; };
+    return pid;
+}
+
+// _pick_upstream_by_confidence -- Phase 9 PR-A (#663) value-returning
+// wrapper around `_pick_upstream_pid_by_key`. Returns the value of
+// `<role>:<picked_pid>:<output_key>:tick-<N>` (empty when no upstream
+// row matches). For N=1 this collapses to a single match identical to
+// the v1 `recall_latest("replay:current_<role>_pid")` + per-key read.
+// Duplicated verbatim across the 9 downstream .ag files because the
+// .ag DSL has no shared-include mechanism (matches the #623 E pattern
+// for _dump_ctx_to_memo / _summarise_*_buf).
+fn _pick_upstream_by_confidence(role: string, output_key: string, tick: int) -> string {
+    let pid = _pick_upstream_pid_by_key(role, output_key, tick);
+    if len(pid) == 0 { return ""; };
+    return recall_latest(role + ":" + pid + ":" + output_key + ":tick-" + to_string(tick));
+}
+
 // _publish_reviewer -- memo + emit. Non-terminal agent collapses
 // autonomous -> review-gated per ADR-0001 (#622 PR-2 #632 pattern).
 // reviewer writes no ledger row today; final_write retained for
@@ -130,12 +161,14 @@ fn tick(reason: string) -> void {
         return;
     };
 
-    let editor_pid = recall_latest("replay:current_editor_pid");
-    let computer_pid = recall_latest("replay:current_computer_pid");
-
-    let final_tex = if len(editor_pid) > 0 { recall_latest("editor:" + editor_pid + ":final_tex:tick-" + to_string(upstream_tick)); } else { ""; };
-    let claim_dir = if len(editor_pid) > 0 { recall_latest("editor:" + editor_pid + ":claim_dir:tick-" + to_string(upstream_tick)); } else { ""; };
-    let repro_output = if len(computer_pid) > 0 { recall_latest("computer:" + computer_pid + ":output:tick-" + to_string(upstream_tick)); } else { ""; };
+    // Phase 9 PR-A (#663): tick-keyed fan-in picker replaces two
+    // replica-unsafe `recall_latest("replay:current_<role>_pid")` LWW
+    // handoffs. editor/computer have no JSON-confidence memo so the
+    // picker falls back to alphabetical-first PID; with N=1 (today)
+    // this collapses to a single match identical to v1.
+    let final_tex = _pick_upstream_by_confidence("editor", "final_tex", upstream_tick);
+    let claim_dir = _pick_upstream_by_confidence("editor", "claim_dir", upstream_tick);
+    let repro_output = _pick_upstream_by_confidence("computer", "output", upstream_tick);
 
     let claim_id = recall_latest("claim:claim_id:tick-" + to_string(upstream_tick));
     let claim_id_eff = if len(claim_id) > 0 { claim_id; } else { "claim-" + to_string(upstream_tick); };

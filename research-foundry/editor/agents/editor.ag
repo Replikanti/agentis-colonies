@@ -128,6 +128,37 @@ fn _summarise_pitfall_buf(buf_raw: string, k: int) -> string {
 // _publish_editor -- write main.tex/refs.bib + latexmk + (optional repair) +
 // memo + emit. editor writes no ledger row today; final_write retained for
 // symmetry (#622 ADR-0001).
+// _pick_upstream_pid_by_key -- Phase 9 PR-A (#663) replica-safe pick.
+// Enumerates `<role>:*:<decision_key>:tick-<N>` memo keys via
+// `agentis memo list`, ranks by an embedded confidence field when one
+// is known for the role, and returns the picked PID (empty string when
+// no match). For known roles the meta map below selects the canonical
+// decision_key + confidence_field regardless of `fallback_key`; for
+// unknown roles `fallback_key` is used as the discovery suffix and the
+// picker falls back to alphabetical-first PID (deterministic for N=1,
+// undefined ordering for N>1 -- PR-B/PR-C tightens that).
+fn _pick_upstream_pid_by_key(role: string, fallback_key: string, tick: int) -> string {
+    let tick_s = to_string(tick);
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,subprocess,json\nrole=sys.argv[1]\nout_key=sys.argv[2]\ntick=sys.argv[3]\nmeta={\"noticer\":(\"surprise\",\"confidence_in_surprise\"),\"skeptic\":(\"verdict\",\"confidence\"),\"formulator\":(\"problem\",\"self_check_confidence\"),\"verifier\":(\"verdict\",\"confidence\"),\"auditor\":(\"verdict\",\"confidence\"),\"reviewer\":(\"report\",\"confidence\"),\"prior_advocate\":(\"report\",\"confidence\")}\ndk,cf=meta.get(role,(out_key,\"\"))\nsuf=\":\"+dk+\":tick-\"+tick\npre=role+\":\"\ntry: out=subprocess.run([\"agentis\",\"memo\",\"list\"],capture_output=True,text=True,check=False).stdout\nexcept Exception: out=\"\"\nbest_pid=\"\"\nbest_conf=-1.0\npids=[]\nfor line in out.splitlines():\n line=line.strip()\n if not line or not line.startswith(pre): continue\n key=line.split()[0]\n if not key.endswith(suf): continue\n mid=key[len(pre):-len(suf)]\n if \":\" in mid or not mid: continue\n pids.append(mid)\nif not cf:\n pids.sort()\n if pids: best_pid=pids[0]\nelse:\n for mid in pids:\n  try: v=subprocess.run([\"agentis\",\"memo\",\"get\",pre+mid+suf],capture_output=True,text=True,check=False).stdout\n  except Exception: v=\"\"\n  try: obj=json.loads(v)\n  except Exception: obj=None\n  if not isinstance(obj,dict): continue\n  try: conf=float(obj.get(cf,0.0))\n  except Exception: conf=0.0\n  if conf>best_conf:\n   best_conf=conf\n   best_pid=mid\nprint(best_pid)' " + shell_escape(role) + " " + shell_escape(fallback_key) + " " + shell_escape(tick_s);
+    let pid = try { exec sh cmd; } catch e { ""; };
+    return pid;
+}
+
+// _pick_upstream_by_confidence -- Phase 9 PR-A (#663) value-returning
+// wrapper around `_pick_upstream_pid_by_key`. Returns the value of
+// `<role>:<picked_pid>:<output_key>:tick-<N>` (empty when no upstream
+// row matches). For N=1 this collapses to a single match identical to
+// the v1 `recall_latest("replay:current_<role>_pid")` + per-key read.
+// Duplicated verbatim across the 9 downstream .ag files because the
+// .ag DSL has no shared-include mechanism (matches the #623 E pattern
+// for _dump_ctx_to_memo / _summarise_*_buf).
+fn _pick_upstream_by_confidence(role: string, output_key: string, tick: int) -> string {
+    let pid = _pick_upstream_pid_by_key(role, output_key, tick);
+    if len(pid) == 0 { return ""; };
+    return recall_latest(role + ":" + pid + ":" + output_key + ":tick-" + to_string(tick));
+}
+
 fn _publish_editor(
     final_write: bool,
     edit: Edit,
@@ -265,19 +296,21 @@ fn tick(reason: string) -> void {
         return;
     };
 
-    let introducer_pid = recall_latest("replay:current_introducer_pid");
-    let theorist_pid = recall_latest("replay:current_theorist_pid");
-    let computer_pid = recall_latest("replay:current_computer_pid");
-
-    let abstract_tex = if len(introducer_pid) > 0 { recall_latest("introducer:" + introducer_pid + ":abstract:tick-" + to_string(upstream_tick)); } else { ""; };
-    let intro_tex = if len(introducer_pid) > 0 { recall_latest("introducer:" + introducer_pid + ":intro:tick-" + to_string(upstream_tick)); } else { ""; };
-    let title = if len(introducer_pid) > 0 { recall_latest("introducer:" + introducer_pid + ":title:tick-" + to_string(upstream_tick)); } else { ""; };
-    let definitions_tex = if len(theorist_pid) > 0 { recall_latest("theorist:" + theorist_pid + ":definitions:tick-" + to_string(upstream_tick)); } else { ""; };
-    let main_tex = if len(theorist_pid) > 0 { recall_latest("theorist:" + theorist_pid + ":main:tick-" + to_string(upstream_tick)); } else { ""; };
-    let proof_kind = if len(theorist_pid) > 0 { recall_latest("theorist:" + theorist_pid + ":proof_kind:tick-" + to_string(upstream_tick)); } else { ""; };
-    let repro_script = if len(computer_pid) > 0 { recall_latest("computer:" + computer_pid + ":script:tick-" + to_string(upstream_tick)); } else { ""; };
-    let repro_output = if len(computer_pid) > 0 { recall_latest("computer:" + computer_pid + ":output:tick-" + to_string(upstream_tick)); } else { ""; };
-    let repro_lang = if len(computer_pid) > 0 { recall_latest("computer:" + computer_pid + ":language:tick-" + to_string(upstream_tick)); } else { "python"; };
+    // Phase 9 PR-A (#663): tick-keyed fan-in picker replaces three
+    // replica-unsafe `recall_latest("replay:current_<role>_pid")` LWW
+    // handoffs. introducer/theorist/computer have no JSON-confidence
+    // memo so the picker falls back to alphabetical-first PID; with
+    // N=1 (today) this collapses to a single match identical to v1.
+    let abstract_tex = _pick_upstream_by_confidence("introducer", "abstract", upstream_tick);
+    let intro_tex = _pick_upstream_by_confidence("introducer", "intro", upstream_tick);
+    let title = _pick_upstream_by_confidence("introducer", "title", upstream_tick);
+    let definitions_tex = _pick_upstream_by_confidence("theorist", "definitions", upstream_tick);
+    let main_tex = _pick_upstream_by_confidence("theorist", "main", upstream_tick);
+    let proof_kind = _pick_upstream_by_confidence("theorist", "proof_kind", upstream_tick);
+    let repro_script = _pick_upstream_by_confidence("computer", "script", upstream_tick);
+    let repro_output = _pick_upstream_by_confidence("computer", "output", upstream_tick);
+    let repro_lang_raw = _pick_upstream_by_confidence("computer", "language", upstream_tick);
+    let repro_lang = if len(repro_lang_raw) > 0 { repro_lang_raw; } else { "python"; };
 
     let any_section = if len(abstract_tex) > 0 { true; } else { if len(main_tex) > 0 { true; } else { len(repro_script) > 0; }; };
     if !any_section {
