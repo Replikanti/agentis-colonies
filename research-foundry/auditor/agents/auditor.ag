@@ -66,7 +66,11 @@ fn _publish_auditor(
     tick_now_ms: int,
     source_run: string,
     source_tick: string,
-    source_pid: string
+    source_pid: string,
+    arxiv_report: string,
+    oeis_report: string,
+    groupprops_report: string,
+    scholar_report: string
 ) -> void {
     let conf_str = to_string(verdict.confidence);
     let verdict_json = "{\"audit_verdict\":\"" + verdict.audit_verdict
@@ -98,6 +102,28 @@ fn _publish_auditor(
             // colony-lint: safe-exec-concat
             let append_cmd = "printf '%s\n' " + shell_escape(ledger_row) + " >> " + shell_escape(ledger_path);
             let _ = try { exec sh append_cmd; } catch e { ""; };
+        };
+
+        // Seed `claim:audit_*:tick-N` + `claim:report_*:tick-N` keys
+        // for the preprint pipeline (introducer / theorist / computer
+        // / editor / submitter) so they read them at the NEXT tick
+        // (in-container, shared `.agentis/` memo). Replaces the
+        // cross-fed memo recall the retired run-preprint.sh did by
+        // probing claim-auditor's run dir (#638). tick_idx is the
+        // current orchestrator tick where the auditor fires; the
+        // preprint colonies consume `claim:*:tick-N` with N = their
+        // own current_tick at the next advance.
+        if verdict.audit_verdict == "VERIFIED_NEW" {
+            let tick_s = to_string(tick_idx);
+            memo_write("claim:audit_reasoning:tick-" + tick_s, verdict.reasoning);
+            memo_write("claim:audit_evidence_arxiv:tick-" + tick_s, verdict.evidence_arxiv);
+            memo_write("claim:audit_evidence_oeis:tick-" + tick_s, verdict.evidence_oeis);
+            memo_write("claim:audit_evidence_groupprops:tick-" + tick_s, verdict.evidence_groupprops);
+            memo_write("claim:audit_evidence_scholar:tick-" + tick_s, verdict.evidence_scholar);
+            memo_write("claim:report_arxiv:tick-" + tick_s, arxiv_report);
+            memo_write("claim:report_oeis:tick-" + tick_s, oeis_report);
+            memo_write("claim:report_groupprops:tick-" + tick_s, groupprops_report);
+            memo_write("claim:report_scholar:tick-" + tick_s, scholar_report);
         };
     };
 
@@ -167,14 +193,14 @@ fn tick(reason: string) -> void {
         // `autonomous_decision=true` for downstream observers (#622).
         memo_write("auditor:" + _self_pid + ":autonomous_decision", "true");
         learn("audit", "tick " + to_string(tick_idx) + " " + verdict.audit_verdict, verdict.reasoning, "partial", ["acted", "claim-auditor"]);
-        _publish_auditor(true, true, verdict, _self_pid, upstream_tick, tick_idx, _tick_now_ms, source_run, source_tick, source_pid);
+        _publish_auditor(true, true, verdict, _self_pid, upstream_tick, tick_idx, _tick_now_ms, source_run, source_tick, source_pid, arxiv_report, oeis_report, groupprops_report, scholar_report);
     } else {
         if my_tier == "review-gated" {
             learn("audit", "tick " + to_string(tick_idx) + " " + verdict.audit_verdict, verdict.reasoning, "partial", ["review-gated", "claim-auditor"]);
-            _publish_auditor(true, false, verdict, _self_pid, upstream_tick, tick_idx, _tick_now_ms, source_run, source_tick, source_pid);
+            _publish_auditor(true, false, verdict, _self_pid, upstream_tick, tick_idx, _tick_now_ms, source_run, source_tick, source_pid, arxiv_report, oeis_report, groupprops_report, scholar_report);
         } else {
             if my_tier == "propose" {
-                _publish_auditor(false, false, verdict, _self_pid, upstream_tick, tick_idx, _tick_now_ms, source_run, source_tick, source_pid);
+                _publish_auditor(false, false, verdict, _self_pid, upstream_tick, tick_idx, _tick_now_ms, source_run, source_tick, source_pid, arxiv_report, oeis_report, groupprops_report, scholar_report);
             } else {
                 print("[auditor] observing (tier:", my_tier, ") verdict=", verdict.audit_verdict);
                 learn("audit", "tick " + to_string(tick_idx) + " " + verdict.audit_verdict, verdict.reasoning, "partial", ["observed", "claim-auditor"]);
