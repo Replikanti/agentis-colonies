@@ -3,7 +3,7 @@
 # federation (#596).
 #
 # Lists DRAFTED rows in the latest preprint-ledger.jsonl under
-# preprint-foundry/runs/, optionally renders the per-claim main.pdf via
+# research-foundry/runs/, optionally renders the per-claim main.pdf via
 # `xdg-open`, and writes the per-claim HITL approval memo key that the
 # submitter colony reads on its next tick.
 #

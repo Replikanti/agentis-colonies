@@ -50,8 +50,8 @@ with the same corpus is deterministic.
 Once, from a host that can reach arxiv:
 
 ```bash
-python3 math-foundry/tools/fetch-papers.py \
-    --output math-foundry/data/papers \
+python3 research-foundry/tools/fetch-papers.py \
+    --output research-foundry/data/papers \
     --topics number_theory combinatorics abstract_algebra graph_theory \
     --per-topic 25
 ```

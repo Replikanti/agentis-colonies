@@ -3,7 +3,7 @@
 > Part of the [Preprint Foundry](../) federation.
 
 Builds `arxiv-metadata.json` (title / abstract / MSC / categories /
-authors from `preprint-foundry/config/authors.toml`), packages
+authors from `research-foundry/config/authors.toml`), packages
 `submission.tar.gz` per arXiv submission format, drafts a cover letter
 with explicit AI-assistance disclosure (arXiv 2024+ policy), and
 writes a `status: DRAFTED` row to `preprint-ledger.jsonl`.
@@ -31,7 +31,7 @@ review helper.
    cp config/colony.example.toml config/colony.toml
    ```
 
-2. Edit `preprint-foundry/config/authors.toml` with real author
+2. Edit `research-foundry/config/authors.toml` with real author
    metadata (name, email, ORCID, endorsed categories) BEFORE the first
    real run. The submitter joins all `[[authors]]` entries with "; "
    into the metadata `authors` field; arXiv rejects submissions
@@ -44,12 +44,10 @@ review helper.
    `submit@arxiv.org`. The submitter picks up `$PREPRINT_SMTP_HOST` /
    `$PREPRINT_SMTP_PORT` from env (default: `localhost:25`).
 
-5. Start the colony as part of the federation:
-   ```bash
-   bash ../tools/run-preprint.sh \
-       --source-audit-run /path/to/claim-auditor/runs/<id> \
-       --source-foundry-run /path/to/math-foundry/runs/<id>
-   ```
+5. Start the colony as part of the federation. Cross-colony handoff is
+   now direct via the shared memo store; no `--source-*` flags. See
+   `research-foundry/tools/run-research.sh --help` for the current
+   invocation.
 
 6. Review DRAFTED rows and approve / reject:
    ```bash
