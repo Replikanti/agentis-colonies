@@ -56,6 +56,29 @@ fn _draft_prompt() -> string {
     return "You are an academic mathematician drafting a LaTeX preprint for arXiv. The user-supplied context carries the PROBLEM, the verified ANSWER, the NOVELTY CLAIM, the auditor REASONING, and four PRIOR-WORK SEARCH REPORTS (arxiv / oeis / groupprops / scholar). Produce: (1) a 100-180 word abstract in LaTeX (no math environments other than inline $...$), (2) a 400-800 word Section 1 Introduction in LaTeX with at least one citation placeholder `[CITATION-NEEDED: <topic>]` when no exact citation exists in the search reports, (3) 1-3 MSC2020 codes, (4) a single primary arXiv category (e.g. math.GR, math.CO, math.NT), (5) a paper title under 200 chars. Cite known prior work from the search reports inline using `\\cite{key}` with keys you invent (the bibliography is generated later). Do NOT claim a proof of an open conjecture; hedge with 'computational evidence' / 'we observe' when the upstream classification is COMPUTATIONAL. Output ONLY valid JSON: {\"abstract_tex\":\"...\",\"intro_tex\":\"...\",\"msc_codes_csv\":\"20D60,20E45\",\"arxiv_category\":\"math.GR\",\"title\":\"...\",\"rationale\":\"one-line\"}.";
 }
 
+// _publish_introducer -- memo + emit. introducer writes no ledger row
+// today; final_write retained for symmetry (#622 ADR-0001).
+fn _publish_introducer(
+    final_write: bool,
+    draft: Draft,
+    self_pid: string,
+    upstream_tick: int,
+    tick_idx: int
+) -> void {
+    let _ = final_write;
+    memo_write("introducer:" + self_pid + ":abstract:tick-" + to_string(upstream_tick), draft.abstract_tex);
+    memo_write("introducer:" + self_pid + ":intro:tick-" + to_string(upstream_tick), draft.intro_tex);
+    memo_write("introducer:" + self_pid + ":title:tick-" + to_string(upstream_tick), draft.title);
+    memo_write("introducer:" + self_pid + ":msc_codes:tick-" + to_string(upstream_tick), draft.msc_codes_csv);
+    memo_write("introducer:" + self_pid + ":arxiv_category:tick-" + to_string(upstream_tick), draft.arxiv_category);
+    memo_write("replay:current_introducer_pid", self_pid);
+
+    emit("introducer:abstract_ready", draft);
+    emit("introducer:intro_ready", draft);
+
+    learn("introduce", "tick " + to_string(tick_idx), "abstract+intro emitted", "success", ["emitted", "preprint-foundry"]);
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let _tick_now_ms = now_ms_via_shell();
@@ -110,23 +133,18 @@ fn tick(reason: string) -> void {
 
     let my_tier = tier("introducer");
     if my_tier == "autonomous" {
+        // reason: tier N/A here; non-terminal agent -- collapses to review-gated.
+        memo_write("introducer:" + _self_pid + ":review_gated", "true");
         learn("introduce", "tick " + to_string(tick_idx), draft.rationale, "partial", ["acted", "preprint-foundry"]);
+        _publish_introducer(true, draft, _self_pid, upstream_tick, tick_idx);
     } else {
         if my_tier == "review-gated" {
+            memo_write("introducer:" + _self_pid + ":review_gated", "true");
             learn("introduce", "tick " + to_string(tick_idx), draft.rationale, "partial", ["review-gated", "preprint-foundry"]);
+            _publish_introducer(true, draft, _self_pid, upstream_tick, tick_idx);
         } else {
             if my_tier == "propose" {
-                memo_write("introducer:" + _self_pid + ":abstract:tick-" + to_string(upstream_tick), draft.abstract_tex);
-                memo_write("introducer:" + _self_pid + ":intro:tick-" + to_string(upstream_tick), draft.intro_tex);
-                memo_write("introducer:" + _self_pid + ":title:tick-" + to_string(upstream_tick), draft.title);
-                memo_write("introducer:" + _self_pid + ":msc_codes:tick-" + to_string(upstream_tick), draft.msc_codes_csv);
-                memo_write("introducer:" + _self_pid + ":arxiv_category:tick-" + to_string(upstream_tick), draft.arxiv_category);
-                memo_write("replay:current_introducer_pid", _self_pid);
-
-                emit("introducer:abstract_ready", draft);
-                emit("introducer:intro_ready", draft);
-
-                learn("introduce", "tick " + to_string(tick_idx), "abstract+intro emitted", "success", ["emitted", "preprint-foundry"]);
+                _publish_introducer(false, draft, _self_pid, upstream_tick, tick_idx);
             } else {
                 print("[introducer] observing (tier:", my_tier, ") rationale=", draft.rationale);
                 learn("introduce", "tick " + to_string(tick_idx), draft.rationale, "partial", ["observed", "preprint-foundry"]);

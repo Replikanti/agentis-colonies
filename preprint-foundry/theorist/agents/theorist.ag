@@ -51,6 +51,28 @@ fn _draft_prompt() -> string {
     return "You are a research mathematician drafting the body of a preprint. The user-supplied context carries PROBLEM, ANSWER, NOVELTY CLAIM, the upstream EXPLORER CODE and OUTPUT that produced the observation, and the AUDITOR REASONING. Produce: (1) Section 2 in LaTeX with `\\section{Preliminaries}` containing the definitions and notation needed to state the result precisely (use `amsthm` definition environment `\\begin{definition}...\\end{definition}` where appropriate). (2) Section 3 in LaTeX with `\\section{Main Result}` containing the precise statement inside `\\begin{theorem}...\\end{theorem}` or `\\begin{proposition}...\\end{proposition}` for observational claims, followed by either a `\\begin{proof}...\\end{proof}` block (proof_kind=\"sketch\" or \"full\") OR a description of the computational experiment (proof_kind=\"computational\"). Set hedge_required=true when the upstream evidence is purely computational and no analytic proof is being offered. Set proof_kind=\"computational\" in that case and use phrases like 'computational evidence suggests' rather than 'we prove'. Do NOT invent values not present in the explorer output. Output ONLY valid JSON: {\"definitions_tex\":\"...\",\"main_tex\":\"...\",\"proof_kind\":\"computational|sketch|full\",\"hedge_required\":true,\"rationale\":\"one-line\"}.";
 }
 
+// _publish_theorist -- memo + emit. theorist writes no ledger row today;
+// final_write retained for symmetry (#622 ADR-0001).
+fn _publish_theorist(
+    final_write: bool,
+    draft: Draft,
+    self_pid: string,
+    upstream_tick: int,
+    tick_idx: int
+) -> void {
+    let _ = final_write;
+    memo_write("theorist:" + self_pid + ":definitions:tick-" + to_string(upstream_tick), draft.definitions_tex);
+    memo_write("theorist:" + self_pid + ":main:tick-" + to_string(upstream_tick), draft.main_tex);
+    memo_write("theorist:" + self_pid + ":proof_kind:tick-" + to_string(upstream_tick), draft.proof_kind);
+    let hedge_str = if draft.hedge_required { "true"; } else { "false"; };
+    memo_write("theorist:" + self_pid + ":hedge_required:tick-" + to_string(upstream_tick), hedge_str);
+    memo_write("replay:current_theorist_pid", self_pid);
+
+    emit("theorist:main_ready", draft);
+
+    learn("theorise", "tick " + to_string(tick_idx), "proof_kind=" + draft.proof_kind, "success", ["emitted", "preprint-foundry"]);
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let _tick_now_ms = now_ms_via_shell();
@@ -95,22 +117,18 @@ fn tick(reason: string) -> void {
 
     let my_tier = tier("theorist");
     if my_tier == "autonomous" {
+        // reason: tier N/A here; non-terminal agent -- collapses to review-gated.
+        memo_write("theorist:" + _self_pid + ":review_gated", "true");
         learn("theorise", "tick " + to_string(tick_idx), draft.rationale, "partial", ["acted", "preprint-foundry"]);
+        _publish_theorist(true, draft, _self_pid, upstream_tick, tick_idx);
     } else {
         if my_tier == "review-gated" {
+            memo_write("theorist:" + _self_pid + ":review_gated", "true");
             learn("theorise", "tick " + to_string(tick_idx), draft.rationale, "partial", ["review-gated", "preprint-foundry"]);
+            _publish_theorist(true, draft, _self_pid, upstream_tick, tick_idx);
         } else {
             if my_tier == "propose" {
-                memo_write("theorist:" + _self_pid + ":definitions:tick-" + to_string(upstream_tick), draft.definitions_tex);
-                memo_write("theorist:" + _self_pid + ":main:tick-" + to_string(upstream_tick), draft.main_tex);
-                memo_write("theorist:" + _self_pid + ":proof_kind:tick-" + to_string(upstream_tick), draft.proof_kind);
-                let hedge_str = if draft.hedge_required { "true"; } else { "false"; };
-                memo_write("theorist:" + _self_pid + ":hedge_required:tick-" + to_string(upstream_tick), hedge_str);
-                memo_write("replay:current_theorist_pid", _self_pid);
-
-                emit("theorist:main_ready", draft);
-
-                learn("theorise", "tick " + to_string(tick_idx), "proof_kind=" + draft.proof_kind, "success", ["emitted", "preprint-foundry"]);
+                _publish_theorist(false, draft, _self_pid, upstream_tick, tick_idx);
             } else {
                 print("[theorist] observing (tier:", my_tier, ") rationale=", draft.rationale);
                 learn("theorise", "tick " + to_string(tick_idx), draft.rationale, "partial", ["observed", "preprint-foundry"]);

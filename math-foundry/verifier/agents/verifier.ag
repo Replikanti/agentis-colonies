@@ -55,6 +55,37 @@ fn _verifier_prompt() -> string {
     return "You are a problem-quality referee. The input below carries the PROBLEM and the STATED ANSWER from the author. Your sole job is to judge the PROBLEM ITSELF — not whether the stated answer is numerically correct. Set verdict=ACCEPT when the problem is well-defined (unambiguous statement, mathematically meaningful, has a determinable answer in principle). Set verdict=NEEDS_REVISION when the problem is mostly well-defined but has minor ambiguities that could be fixed with light editing. Set verdict=REJECT only when the problem itself is incoherent, ill-defined, or trivially malformed. Output ONLY valid JSON: {\"answers_agree\": false, \"solver_rigorous\": false, \"problem_well_defined\": true|false, \"verdict\": \"ACCEPT|REJECT|NEEDS_REVISION\", \"reasoning\": \"...\"}. Set answers_agree and solver_rigorous to false (they are deprecated metadata).";
 }
 
+// _publish_verifier -- memo + emit. Verifier writes no ledger row today,
+// so final_write is retained for symmetry but currently a no-op (#622 ADR-0001).
+fn _publish_verifier(
+    final_write: bool,
+    verdict: Verdict,
+    self_pid: string,
+    upstream_tick: int,
+    tick_idx: int
+) -> void {
+    let _ = final_write;
+    let agree_str = if verdict.answers_agree { "true"; } else { "false"; };
+    let rigorous_str = if verdict.solver_rigorous { "true"; } else { "false"; };
+    let well_defined_str = if verdict.problem_well_defined { "true"; } else { "false"; };
+    let verdict_json = "{\"answers_agree\":" + agree_str
+                     + ",\"solver_rigorous\":" + rigorous_str
+                     + ",\"problem_well_defined\":" + well_defined_str
+                     + ",\"verdict\":\"" + verdict.verdict
+                     + "\",\"reasoning\":\"" + verdict.reasoning + "\"}";
+    memo_write("verifier:" + self_pid + ":verdict:tick-" + to_string(upstream_tick), verdict_json);
+    memo_write("verifier:" + self_pid + ":verdict_label:tick-" + to_string(upstream_tick), verdict.verdict);
+    memo_write("replay:current_verifier_pid", self_pid);
+
+    if verdict.verdict == "ACCEPT" {
+        emit("math-foundry:verified", verdict);
+        learn("verify", "tick " + to_string(tick_idx) + " ACCEPT", verdict.reasoning, "success", ["emitted", "math-foundry"]);
+    } else {
+        emit("math-foundry:verifier_rejected", verdict);
+        learn("verify", "tick " + to_string(tick_idx) + " " + verdict.verdict, verdict.reasoning, "failure", ["emitted", "math-foundry"]);
+    };
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let _colony_name = colony_name();
@@ -95,31 +126,18 @@ fn tick(reason: string) -> void {
 
     let my_tier = tier("verifier");
     if my_tier == "autonomous" {
+        // reason: tier N/A here; non-terminal agent -- collapses to review-gated.
+        memo_write("verifier:" + _self_pid + ":review_gated", "true");
         learn("verify", "tick " + to_string(tick_idx) + " " + verdict.verdict, verdict.reasoning, "partial", ["acted", "math-foundry"]);
+        _publish_verifier(true, verdict, _self_pid, upstream_tick, tick_idx);
     } else {
         if my_tier == "review-gated" {
+            memo_write("verifier:" + _self_pid + ":review_gated", "true");
             learn("verify", "tick " + to_string(tick_idx) + " " + verdict.verdict, verdict.reasoning, "partial", ["review-gated", "math-foundry"]);
+            _publish_verifier(true, verdict, _self_pid, upstream_tick, tick_idx);
         } else {
             if my_tier == "propose" {
-                let agree_str = if verdict.answers_agree { "true"; } else { "false"; };
-                let rigorous_str = if verdict.solver_rigorous { "true"; } else { "false"; };
-                let well_defined_str = if verdict.problem_well_defined { "true"; } else { "false"; };
-                let verdict_json = "{\"answers_agree\":" + agree_str
-                                 + ",\"solver_rigorous\":" + rigorous_str
-                                 + ",\"problem_well_defined\":" + well_defined_str
-                                 + ",\"verdict\":\"" + verdict.verdict
-                                 + "\",\"reasoning\":\"" + verdict.reasoning + "\"}";
-                memo_write("verifier:" + _self_pid + ":verdict:tick-" + to_string(upstream_tick), verdict_json);
-                memo_write("verifier:" + _self_pid + ":verdict_label:tick-" + to_string(upstream_tick), verdict.verdict);
-                memo_write("replay:current_verifier_pid", _self_pid);
-
-                if verdict.verdict == "ACCEPT" {
-                    emit("math-foundry:verified", verdict);
-                    learn("verify", "tick " + to_string(tick_idx) + " ACCEPT", verdict.reasoning, "success", ["emitted", "math-foundry"]);
-                } else {
-                    emit("math-foundry:verifier_rejected", verdict);
-                    learn("verify", "tick " + to_string(tick_idx) + " " + verdict.verdict, verdict.reasoning, "failure", ["emitted", "math-foundry"]);
-                };
+                _publish_verifier(false, verdict, _self_pid, upstream_tick, tick_idx);
             } else {
                 print("[verifier] observing (tier:", my_tier, ") verdict=", verdict.verdict);
                 learn("verify", "tick " + to_string(tick_idx) + " " + verdict.verdict, verdict.reasoning, "partial", ["observed", "math-foundry"]);

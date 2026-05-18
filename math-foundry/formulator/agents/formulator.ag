@@ -51,6 +51,46 @@ fn _seed_prompt() -> string {
     return "You discovered a surprising result through computation. Craft a competition-style problem whose answer IS this discovery. The user-supplied input below carries the TOPIC, the DISCOVERY description, the SPECIFIC VALUE, and the WHY SURPRISING reasoning. Craft a self-contained problem (no code, just math). The stated answer must be the specific value. Output ONLY valid JSON: {\"problem\": \"...\", \"answer\": \"...\", \"solution_full\": \"...\", \"novelty_claim\": \"...\", \"self_check_confidence\": 0.0-1.0}.";
 }
 
+// _publish_formulator -- emit + memo (+ ledger when final_write=true).
+// final_write=true: review-gated / autonomous, append ledger row.
+// final_write=false: propose, emit-only, skip ledger append (#622 ADR-0001).
+fn _publish_formulator(
+    final_write: bool,
+    problem: Problem,
+    self_pid: string,
+    colony_name_str: string,
+    upstream_tick: int,
+    tick_idx: int,
+    tick_now_ms: int,
+    topic_label: string
+) -> void {
+    let self_conf_str = to_string(problem.self_check_confidence);
+    let problem_json = "{\"problem\":\"" + problem.problem
+                     + "\",\"answer\":\"" + problem.answer
+                     + "\",\"solution_full\":\"" + problem.solution_full
+                     + "\",\"novelty_claim\":\"" + problem.novelty_claim
+                     + "\",\"self_check_confidence\":" + self_conf_str + "}";
+    memo_write("formulator:" + self_pid + ":problem:tick-" + to_string(upstream_tick), problem_json);
+    memo_write("formulator:" + self_pid + ":problem_text:tick-" + to_string(upstream_tick), problem.problem);
+    memo_write("formulator:" + self_pid + ":answer:tick-" + to_string(upstream_tick), problem.answer);
+    memo_write("formulator:" + self_pid + ":novelty_claim:tick-" + to_string(upstream_tick), problem.novelty_claim);
+    memo_write("replay:current_formulator_pid", self_pid);
+    emit("math-foundry:problem_ready", problem);
+
+    if final_write {
+        // Append to per-run discovery ledger.
+        let ledger_path = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
+        if len(ledger_path) > 0 {
+            let ledger_row = "{\"ts\":" + to_string(tick_now_ms) + ",\"colony\":\"" + colony_name_str + "\",\"pid\":\"" + self_pid + "\",\"tick\":" + to_string(tick_idx) + ",\"topic\":\"" + topic_label + "\",\"event\":\"problem_ready\",\"answer\":\"" + problem.answer + "\"}";
+            // colony-lint: safe-exec-concat
+            let append_cmd = "printf '%s\n' " + shell_escape(ledger_row) + " >> " + shell_escape(ledger_path);
+            let _ = try { exec sh append_cmd; } catch e { ""; };
+        };
+    };
+
+    learn("formulate", "tick " + to_string(tick_idx) + " " + topic_label, "answer=" + problem.answer, "success", ["emitted", "math-foundry"]);
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let _tick_now_ms = now_ms_via_shell();
@@ -101,35 +141,18 @@ fn tick(reason: string) -> void {
 
     let my_tier = tier("formulator");
     if my_tier == "autonomous" {
+        // reason: tier N/A here; non-terminal agent -- collapses to review-gated.
+        memo_write("formulator:" + _self_pid + ":review_gated", "true");
         learn("formulate", "tick " + to_string(tick_idx) + " " + topic_label, problem.novelty_claim, "partial", ["acted", "math-foundry"]);
+        _publish_formulator(true, problem, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, topic_label);
     } else {
         if my_tier == "review-gated" {
+            memo_write("formulator:" + _self_pid + ":review_gated", "true");
             learn("formulate", "tick " + to_string(tick_idx) + " " + topic_label, problem.novelty_claim, "partial", ["review-gated", "math-foundry"]);
+            _publish_formulator(true, problem, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, topic_label);
         } else {
             if my_tier == "propose" {
-                let self_conf_str = to_string(problem.self_check_confidence);
-                let problem_json = "{\"problem\":\"" + problem.problem
-                                 + "\",\"answer\":\"" + problem.answer
-                                 + "\",\"solution_full\":\"" + problem.solution_full
-                                 + "\",\"novelty_claim\":\"" + problem.novelty_claim
-                                 + "\",\"self_check_confidence\":" + self_conf_str + "}";
-                memo_write("formulator:" + _self_pid + ":problem:tick-" + to_string(upstream_tick), problem_json);
-                memo_write("formulator:" + _self_pid + ":problem_text:tick-" + to_string(upstream_tick), problem.problem);
-                memo_write("formulator:" + _self_pid + ":answer:tick-" + to_string(upstream_tick), problem.answer);
-                memo_write("formulator:" + _self_pid + ":novelty_claim:tick-" + to_string(upstream_tick), problem.novelty_claim);
-                memo_write("replay:current_formulator_pid", _self_pid);
-                emit("math-foundry:problem_ready", problem);
-
-                // Append to per-run discovery ledger.
-                let ledger_path = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
-                if len(ledger_path) > 0 {
-                    let ledger_row = "{\"ts\":" + to_string(_tick_now_ms) + ",\"colony\":\"" + _colony_name + "\",\"pid\":\"" + _self_pid + "\",\"tick\":" + to_string(tick_idx) + ",\"topic\":\"" + topic_label + "\",\"event\":\"problem_ready\",\"answer\":\"" + problem.answer + "\"}";
-                    // colony-lint: safe-exec-concat
-                    let append_cmd = "printf '%s\n' " + shell_escape(ledger_row) + " >> " + shell_escape(ledger_path);
-                    let _ = try { exec sh append_cmd; } catch e { ""; };
-                };
-
-                learn("formulate", "tick " + to_string(tick_idx) + " " + topic_label, "answer=" + problem.answer, "success", ["emitted", "math-foundry"]);
+                _publish_formulator(false, problem, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, topic_label);
             } else {
                 print("[formulator] observing (tier:", my_tier, ") novelty_claim=", problem.novelty_claim);
                 learn("formulate", "tick " + to_string(tick_idx) + " " + topic_label, problem.novelty_claim, "partial", ["observed", "math-foundry"]);

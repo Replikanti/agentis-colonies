@@ -46,6 +46,38 @@ fn _seed_prompt() -> string {
     return "You ran a computational exploration. The user-supplied input below carries the exploration GOAL, the Python CODE that was run, and the OUTPUT printed to stdout. What is SURPRISING or NON-OBVIOUS? Look for specific small numbers that don't match closed form, pattern breaks, numerical coincidences. If the output just confirms a classical formula, mark boring (surprise_found=false). Output ONLY valid JSON: {\"surprise_found\": true|false, \"surprise_description\": \"...\", \"specific_value\": \"...\", \"why_surprising\": \"...\", \"confidence_in_surprise\": 0.0-1.0}.";
 }
 
+// _publish_noticer -- memo + emit + fitness (no ledger row today).
+// final_write parameter retained for symmetry with other non-terminal agents (#622 ADR-0001).
+fn _publish_noticer(
+    final_write: bool,
+    surprise: Surprise,
+    self_pid: string,
+    upstream_tick: int,
+    tick_idx: int
+) -> void {
+    let _ = final_write;
+    let conf_str = to_string(surprise.confidence_in_surprise);
+    let surprise_found_str = if surprise.surprise_found { "true"; } else { "false"; };
+    let surprise_json = "{\"surprise_found\":" + surprise_found_str
+                      + ",\"surprise_description\":\"" + surprise.surprise_description
+                      + "\",\"specific_value\":\"" + surprise.specific_value
+                      + "\",\"why_surprising\":\"" + surprise.why_surprising
+                      + "\",\"confidence_in_surprise\":" + conf_str + "}";
+    memo_write("noticer:" + self_pid + ":surprise:tick-" + to_string(upstream_tick), surprise_json);
+    memo_write("noticer:" + self_pid + ":surprise_found:tick-" + to_string(upstream_tick), surprise_found_str);
+    memo_write("replay:current_noticer_pid", self_pid);
+    emit("math-foundry:notice_done", surprise);
+
+    // Light fitness tracking: +1 if surprise found, 0 otherwise.
+    if len(self_pid) > 0 {
+        let fit_pre = parse_int(recall_latest("noticer:" + self_pid + ":fitness"));
+        let fit_delta = if surprise.surprise_found { 1; } else { 0; };
+        memo_write("noticer:" + self_pid + ":fitness", to_string(fit_pre + fit_delta));
+    };
+
+    learn("notice", "tick " + to_string(tick_idx), "surprise_found=" + surprise_found_str, "success", ["emitted", "math-foundry"]);
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let _colony_name = colony_name();
@@ -84,33 +116,18 @@ fn tick(reason: string) -> void {
 
     let my_tier = tier("noticer");
     if my_tier == "autonomous" {
+        // reason: tier N/A here; non-terminal agent -- collapses to review-gated.
+        memo_write("noticer:" + _self_pid + ":review_gated", "true");
         learn("notice", "tick " + to_string(tick_idx), surprise.surprise_description, "partial", ["acted", "math-foundry"]);
+        _publish_noticer(true, surprise, _self_pid, upstream_tick, tick_idx);
     } else {
         if my_tier == "review-gated" {
+            memo_write("noticer:" + _self_pid + ":review_gated", "true");
             learn("notice", "tick " + to_string(tick_idx), surprise.surprise_description, "partial", ["review-gated", "math-foundry"]);
+            _publish_noticer(true, surprise, _self_pid, upstream_tick, tick_idx);
         } else {
             if my_tier == "propose" {
-                // Persist surprise verdict + downstream pointers.
-                let conf_str = to_string(surprise.confidence_in_surprise);
-                let surprise_found_str = if surprise.surprise_found { "true"; } else { "false"; };
-                let surprise_json = "{\"surprise_found\":" + surprise_found_str
-                                  + ",\"surprise_description\":\"" + surprise.surprise_description
-                                  + "\",\"specific_value\":\"" + surprise.specific_value
-                                  + "\",\"why_surprising\":\"" + surprise.why_surprising
-                                  + "\",\"confidence_in_surprise\":" + conf_str + "}";
-                memo_write("noticer:" + _self_pid + ":surprise:tick-" + to_string(upstream_tick), surprise_json);
-                memo_write("noticer:" + _self_pid + ":surprise_found:tick-" + to_string(upstream_tick), surprise_found_str);
-                memo_write("replay:current_noticer_pid", _self_pid);
-                emit("math-foundry:notice_done", surprise);
-
-                // Light fitness tracking: +1 if surprise found, 0 otherwise.
-                if len(_self_pid) > 0 {
-                    let fit_pre = parse_int(recall_latest("noticer:" + _self_pid + ":fitness"));
-                    let fit_delta = if surprise.surprise_found { 1; } else { 0; };
-                    memo_write("noticer:" + _self_pid + ":fitness", to_string(fit_pre + fit_delta));
-                };
-
-                learn("notice", "tick " + to_string(tick_idx), "surprise_found=" + surprise_found_str, "success", ["emitted", "math-foundry"]);
+                _publish_noticer(false, surprise, _self_pid, upstream_tick, tick_idx);
             } else {
                 print("[noticer] observing (tier:", my_tier, ") surprise_found=", surprise.surprise_found);
                 learn("notice", "tick " + to_string(tick_idx), surprise.surprise_description, "partial", ["observed", "math-foundry"]);

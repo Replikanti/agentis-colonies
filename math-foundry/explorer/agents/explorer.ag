@@ -267,6 +267,143 @@ fn select_replication_target() -> string {
     return self_node_addr();
 }
 
+// _publish_explorer -- emit + exec + memo + (ledger + settlement + fitness
+// when final_write=true) + (replicate when do_replicate=true). Tier mapping
+// for explorer (Class 3 special case per #622 ADR-0001):
+//   * propose:     final_write=true,  do_replicate=false (keep settlement + fitness;
+//                                                         lose replicate vs today)
+//   * autonomous:  final_write=true,  do_replicate=true  (full body incl. replicate)
+//   * review-gated: handled inline as memo-only (no exec, no ledger, no
+//                  settlement, no fitness, no replicate). Does not call
+//                  this helper.
+fn _publish_explorer(
+    final_write: bool,
+    do_replicate: bool,
+    exploration: Exploration,
+    self_pid: string,
+    _colony_name: string,
+    tick_idx: int,
+    tick_now_ms: int,
+    topic_label: string,
+    prompt_text: string
+) -> void {
+    emit("math-foundry:exploration_done", exploration);
+
+    // Execute the Python code in the sandbox via a temp file +
+    // python3 invocation. Pure compute only -- no file I/O,
+    // network, subprocess (enforced by prompt body, not by
+    // sandbox today).
+    let sandbox_dir = try { exec sh "printenv AGENTIS_ROOT"; } catch e { ""; };
+    let sandbox_eff = if len(sandbox_dir) > 0 { sandbox_dir + "/sandbox"; } else { "/run-root/.agentis/sandbox"; };
+    // colony-lint: safe-exec-concat
+    let write_cmd = "mkdir -p " + shell_escape(sandbox_eff) + " && printf '%s' " + shell_escape(exploration.code) + " > " + shell_escape(sandbox_eff + "/explore-" + self_pid + "-tick-" + to_string(tick_idx) + ".py");
+    let _ = try { exec sh write_cmd; } catch e { ""; };
+    // colony-lint: safe-exec-concat
+    let run_cmd = "python3 " + shell_escape(sandbox_eff + "/explore-" + self_pid + "-tick-" + to_string(tick_idx) + ".py") + " 2>&1";
+    let output = try { exec sh run_cmd; } catch e { ""; };
+
+    memo_write("explorer:" + self_pid + ":code:tick-" + to_string(tick_idx), exploration.code);
+    memo_write("explorer:" + self_pid + ":output:tick-" + to_string(tick_idx), output);
+    memo_write("explorer:" + self_pid + ":goal:tick-" + to_string(tick_idx), exploration.exploration_goal);
+    memo_write("explorer:" + self_pid + ":topic:tick-" + to_string(tick_idx), topic_label);
+
+    if final_write {
+        // Append to per-run discovery ledger.
+        let ledger_path = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
+        if len(ledger_path) > 0 {
+            let ledger_row = "{\"ts\":" + to_string(tick_now_ms) + ",\"colony\":\"" + _colony_name + "\",\"pid\":\"" + self_pid + "\",\"tick\":" + to_string(tick_idx) + ",\"topic\":\"" + topic_label + "\",\"event\":\"exploration_done\"}";
+            // colony-lint: safe-exec-concat
+            let append_cmd = "printf '%s\n' " + shell_escape(ledger_row) + " >> " + shell_escape(ledger_path);
+            let _l = try { exec sh append_cmd; } catch e { ""; };
+        };
+
+        // Settlement: read the novelty verdict for tick - HOLD_PERIOD.
+        let hold_env = try { exec sh "printenv HOLD_PERIOD"; } catch e { ""; };
+        let hold = if len(hold_env) > 0 { parse_int(hold_env); } else { 4; };
+        let hold_eff = if hold <= 0 { 4; } else { hold; };
+        let settle_tick = tick_idx - hold_eff;
+        if settle_tick >= 0 {
+            let verdict_raw = recall_latest("novelty:final_verdict:" + self_pid + ":tick-" + to_string(settle_tick));
+            if len(verdict_raw) > 0 {
+                print("[explorer] settled tick=", settle_tick, " verdict=", verdict_raw);
+                learn("settle", "tick " + to_string(settle_tick) + " " + verdict_raw, "novelty=" + verdict_raw, "success", ["acted", "math-foundry", _colony_name, "verdict:" + verdict_raw]);
+
+                // Fitness update: +2 NOVEL, +0.5 (mapped int 1)
+                // BORDERLINE, -1 NOT_NOVEL, -0.5 (mapped int 1)
+                // REJECT. Knob env vars are integer-scaled per-tick.
+                if len(self_pid) > 0 {
+                    let reward_novel_env = try { exec sh "printenv FOUNDRY_FITNESS_REWARD_NOVEL_PER_TICK"; } catch e { ""; };
+                    let reward_novel = if len(reward_novel_env) > 0 { parse_int(reward_novel_env); } else { 2; };
+                    let penalty_not_novel_env = try { exec sh "printenv FOUNDRY_FITNESS_PENALTY_NOT_NOVEL_PER_TICK"; } catch e { ""; };
+                    let penalty_not_novel = if len(penalty_not_novel_env) > 0 { parse_int(penalty_not_novel_env); } else { 1; };
+                    let fit_pre = parse_int(recall_latest("explorer:" + self_pid + ":fitness"));
+                    let fit_delta = if verdict_raw == "NOVEL" {
+                        reward_novel;
+                    } else { if verdict_raw == "BORDERLINE" {
+                        1;
+                    } else { if verdict_raw == "NOT_NOVEL" {
+                        0 - penalty_not_novel;
+                    } else { if verdict_raw == "REJECT" {
+                        0 - 1;
+                    } else {
+                        0;
+                    }; }; }; };
+                    memo_write("explorer:" + self_pid + ":fitness", to_string(fit_pre + fit_delta));
+                };
+
+                // M98 v3 evolution trigger.
+                if len(self_pid) > 0 {
+                    let _buf_len = _push_settled_exploration(self_pid, verdict_raw);
+                    let _thr_env = try { exec sh "printenv EXPLORER_PROMPT_EVOLUTION_THRESHOLD"; } catch e { ""; };
+                    let _thr = if len(_thr_env) > 0 { parse_int(_thr_env); } else { 3; };
+                    let _thr_eff = if _thr <= 0 { 3; } else { _thr; };
+                    let _not_novel = _count_not_novel(self_pid);
+                    if _not_novel >= _thr_eff {
+                        let _ = _evolve_exploration_prompt(self_pid, prompt_text);
+                    };
+                };
+
+                // M2-Malthusian replicate gate -- autonomous tier only (#622).
+                if do_replicate {
+                    let repr_thr = parse_int(recall_latest("explorer:reproductive_fitness_threshold"));
+                    if repr_thr > 0 {
+                        let my_fit_r = parse_int(recall_latest("explorer:" + self_pid + ":fitness"));
+                        if my_fit_r > repr_thr {
+                            let n_r = parse_int(recall_latest("colony-" + _colony_name + ":size"));
+                            let max_repl_r = parse_int(recall_latest("colony-" + _colony_name + ":max_replicas"));
+                            if n_r < max_repl_r {
+                                let pool_r = parse_int(recall_latest("colony-" + _colony_name + ":pool"));
+                                let base_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_base_cost"));
+                                let raw_k_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_k"));
+                                let k_r = if raw_k_r <= 0 { 3; } else { raw_k_r; };
+                                let cost_r = base_r + (base_r * n_r) / k_r;
+                                if pool_r >= cost_r {
+                                    let variant_pick = pick_variant(n_r);
+                                    memo_write("explorer:prompt_variant", variant_pick);
+                                    let target_r = select_replication_target();
+                                    if len(target_r) > 0 {
+                                        let variant_wrapped = _publish_prompt_body_and_wrap_variant(self_pid, variant_pick);
+                                        let replica_id = try { replicate(target_r, my_fit_r, variant_wrapped); } catch e { "__replicate_error__"; };
+                                        if replica_id != "__replicate_error__" {
+                                            if len(replica_id) > 0 {
+                                                memo_write("colony-" + _colony_name + ":pool", to_string(pool_r - cost_r));
+                                                memo_write("colony-" + _colony_name + ":size", to_string(n_r + 1));
+                                                learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "success", ["replicated", "math-foundry", _colony_name]);
+                                            } else {
+                                                learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "failure", ["replicate-nak", "math-foundry", _colony_name]);
+                                            };
+                                        };
+                                    };
+                                };
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let _tick_now_ms = now_ms_via_shell();
@@ -352,123 +489,28 @@ fn tick(reason: string) -> void {
 
     let my_tier = tier("explorer");
     if my_tier == "autonomous" {
+        // Class 3 special case (#622): autonomous adds the replicate gate
+        // on top of today's propose body (memo + exec + ledger + settlement
+        // + fitness). Same settlement/fitness as propose, plus replicate.
+        memo_write("explorer:" + _self_pid + ":review_gated", "true");
         learn("explore", "tick " + to_string(tick_idx) + " " + topic_label, exploration.exploration_goal, "partial", ["acted", "math-foundry"]);
+        _publish_explorer(true, true, exploration, _self_pid, _colony_name, tick_idx, _tick_now_ms, topic_label, prompt_text);
     } else {
         if my_tier == "review-gated" {
+            // Class 3 special case (#622): review-gated is memo-only --
+            // record the exploration intent without executing the Python,
+            // appending to the ledger, settling fitness, or replicating.
+            memo_write("explorer:" + _self_pid + ":review_gated", "true");
+            memo_write("explorer:" + _self_pid + ":code:tick-" + to_string(tick_idx), exploration.code);
+            memo_write("explorer:" + _self_pid + ":goal:tick-" + to_string(tick_idx), exploration.exploration_goal);
+            memo_write("explorer:" + _self_pid + ":topic:tick-" + to_string(tick_idx), topic_label);
             learn("explore", "tick " + to_string(tick_idx) + " " + topic_label, exploration.exploration_goal, "partial", ["review-gated", "math-foundry"]);
         } else {
             if my_tier == "propose" {
-                emit("math-foundry:exploration_done", exploration);
-
-                // Execute the Python code in the sandbox via a temp file +
-                // python3 invocation. Pure compute only -- no file I/O,
-                // network, subprocess (enforced by prompt body, not by
-                // sandbox today).
-                let sandbox_dir = try { exec sh "printenv AGENTIS_ROOT"; } catch e { ""; };
-                let sandbox_eff = if len(sandbox_dir) > 0 { sandbox_dir + "/sandbox"; } else { "/run-root/.agentis/sandbox"; };
-                // colony-lint: safe-exec-concat
-                let write_cmd = "mkdir -p " + shell_escape(sandbox_eff) + " && printf '%s' " + shell_escape(exploration.code) + " > " + shell_escape(sandbox_eff + "/explore-" + _self_pid + "-tick-" + to_string(tick_idx) + ".py");
-                let _ = try { exec sh write_cmd; } catch e { ""; };
-                // colony-lint: safe-exec-concat
-                let run_cmd = "python3 " + shell_escape(sandbox_eff + "/explore-" + _self_pid + "-tick-" + to_string(tick_idx) + ".py") + " 2>&1";
-                let output = try { exec sh run_cmd; } catch e { ""; };
-
-                memo_write("explorer:" + _self_pid + ":code:tick-" + to_string(tick_idx), exploration.code);
-                memo_write("explorer:" + _self_pid + ":output:tick-" + to_string(tick_idx), output);
-                memo_write("explorer:" + _self_pid + ":goal:tick-" + to_string(tick_idx), exploration.exploration_goal);
-                memo_write("explorer:" + _self_pid + ":topic:tick-" + to_string(tick_idx), topic_label);
-
-                // Append to per-run discovery ledger.
-                let ledger_path = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
-                if len(ledger_path) > 0 {
-                    let ledger_row = "{\"ts\":" + to_string(_tick_now_ms) + ",\"colony\":\"" + _colony_name + "\",\"pid\":\"" + _self_pid + "\",\"tick\":" + to_string(tick_idx) + ",\"topic\":\"" + topic_label + "\",\"event\":\"exploration_done\"}";
-                    // colony-lint: safe-exec-concat
-                    let append_cmd = "printf '%s\n' " + shell_escape(ledger_row) + " >> " + shell_escape(ledger_path);
-                    let _ = try { exec sh append_cmd; } catch e { ""; };
-                };
-
-                // Settlement: read the novelty verdict for tick - HOLD_PERIOD.
-                let hold_env = try { exec sh "printenv HOLD_PERIOD"; } catch e { ""; };
-                let hold = if len(hold_env) > 0 { parse_int(hold_env); } else { 4; };
-                let hold_eff = if hold <= 0 { 4; } else { hold; };
-                let settle_tick = tick_idx - hold_eff;
-                if settle_tick >= 0 {
-                    let verdict_raw = recall_latest("novelty:final_verdict:" + _self_pid + ":tick-" + to_string(settle_tick));
-                    if len(verdict_raw) > 0 {
-                        print("[explorer] settled tick=", settle_tick, " verdict=", verdict_raw);
-                        learn("settle", "tick " + to_string(settle_tick) + " " + verdict_raw, "novelty=" + verdict_raw, "success", ["acted", "math-foundry", _colony_name, "verdict:" + verdict_raw]);
-
-                        // Fitness update: +2 NOVEL, +0.5 (mapped int 1)
-                        // BORDERLINE, -1 NOT_NOVEL, -0.5 (mapped int 1)
-                        // REJECT. Knob env vars are integer-scaled per-tick.
-                        if len(_self_pid) > 0 {
-                            let reward_novel_env = try { exec sh "printenv FOUNDRY_FITNESS_REWARD_NOVEL_PER_TICK"; } catch e { ""; };
-                            let reward_novel = if len(reward_novel_env) > 0 { parse_int(reward_novel_env); } else { 2; };
-                            let penalty_not_novel_env = try { exec sh "printenv FOUNDRY_FITNESS_PENALTY_NOT_NOVEL_PER_TICK"; } catch e { ""; };
-                            let penalty_not_novel = if len(penalty_not_novel_env) > 0 { parse_int(penalty_not_novel_env); } else { 1; };
-                            let fit_pre = parse_int(recall_latest("explorer:" + _self_pid + ":fitness"));
-                            let fit_delta = if verdict_raw == "NOVEL" {
-                                reward_novel;
-                            } else { if verdict_raw == "BORDERLINE" {
-                                1;
-                            } else { if verdict_raw == "NOT_NOVEL" {
-                                0 - penalty_not_novel;
-                            } else { if verdict_raw == "REJECT" {
-                                0 - 1;
-                            } else {
-                                0;
-                            }; }; }; };
-                            memo_write("explorer:" + _self_pid + ":fitness", to_string(fit_pre + fit_delta));
-                        };
-
-                        // M98 v3 evolution trigger.
-                        if len(_self_pid) > 0 {
-                            let _buf_len = _push_settled_exploration(_self_pid, verdict_raw);
-                            let _thr_env = try { exec sh "printenv EXPLORER_PROMPT_EVOLUTION_THRESHOLD"; } catch e { ""; };
-                            let _thr = if len(_thr_env) > 0 { parse_int(_thr_env); } else { 3; };
-                            let _thr_eff = if _thr <= 0 { 3; } else { _thr; };
-                            let _not_novel = _count_not_novel(_self_pid);
-                            if _not_novel >= _thr_eff {
-                                let _ = _evolve_exploration_prompt(_self_pid, prompt_text);
-                            };
-                        };
-
-                        // M2-Malthusian replicate gate.
-                        let repr_thr = parse_int(recall_latest("explorer:reproductive_fitness_threshold"));
-                        if repr_thr > 0 {
-                            let my_fit_r = parse_int(recall_latest("explorer:" + _self_pid + ":fitness"));
-                            if my_fit_r > repr_thr {
-                                let n_r = parse_int(recall_latest("colony-" + _colony_name + ":size"));
-                                let max_repl_r = parse_int(recall_latest("colony-" + _colony_name + ":max_replicas"));
-                                if n_r < max_repl_r {
-                                    let pool_r = parse_int(recall_latest("colony-" + _colony_name + ":pool"));
-                                    let base_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_base_cost"));
-                                    let raw_k_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_k"));
-                                    let k_r = if raw_k_r <= 0 { 3; } else { raw_k_r; };
-                                    let cost_r = base_r + (base_r * n_r) / k_r;
-                                    if pool_r >= cost_r {
-                                        let variant_pick = pick_variant(n_r);
-                                        memo_write("explorer:prompt_variant", variant_pick);
-                                        let target_r = select_replication_target();
-                                        if len(target_r) > 0 {
-                                            let variant_wrapped = _publish_prompt_body_and_wrap_variant(_self_pid, variant_pick);
-                                            let replica_id = try { replicate(target_r, my_fit_r, variant_wrapped); } catch e { "__replicate_error__"; };
-                                            if replica_id != "__replicate_error__" {
-                                                if len(replica_id) > 0 {
-                                                    memo_write("colony-" + _colony_name + ":pool", to_string(pool_r - cost_r));
-                                                    memo_write("colony-" + _colony_name + ":size", to_string(n_r + 1));
-                                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "success", ["replicated", "math-foundry", _colony_name]);
-                                                } else {
-                                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "failure", ["replicate-nak", "math-foundry", _colony_name]);
-                                                };
-                                            };
-                                        };
-                                    };
-                                };
-                            };
-                        };
-                    };
-                };
+                // Class 3 special case (#622): propose keeps settlement +
+                // fitness from today's body but loses the replicate gate
+                // (autonomous-only now).
+                _publish_explorer(true, false, exploration, _self_pid, _colony_name, tick_idx, _tick_now_ms, topic_label, prompt_text);
             } else {
                 // shadow / dormant: observe-only.
                 print("[explorer] observing (tier:", my_tier, ") goal=", exploration.exploration_goal);

@@ -66,6 +66,56 @@ fn _relevance_prompt() -> string {
     return "Given the PROBLEM, ANSWER, NOVELTY CLAIM, and the raw Semantic Scholar JSON responses below (one per query, may contain 'unavailable' markers when the API rate-limited or errored), pick up to 5 papers that look most relevant. Output ONLY valid JSON: {\"status\": \"ok|unavailable|partial\", \"matches_found\": <int>, \"top_matches\": [{\"paper_id\":\"...\",\"title\":\"...\",\"relevance\":\"direct|partial|none\",\"reason\":\"...\"}], \"summary\":\"one-line\"}. status='unavailable' if every query failed; 'partial' if some failed; 'ok' otherwise. Do NOT wrap output in markdown code fences (no triple backticks); return raw JSON only.";
 }
 
+// _publish_scholar_search -- fetch + judge + memo + emit. No ledger row
+// today; final_write retained for symmetry (#622 ADR-0001).
+fn _publish_scholar_search(
+    final_write: bool,
+    queries: Queries,
+    self_pid: string,
+    upstream_tick: int,
+    tick_idx: int,
+    problem_text: string,
+    stated_answer: string,
+    novelty_claim: string
+) -> void {
+    let _ = final_write;
+    let queries_json = queries.queries_json;
+    // colony-lint: safe-exec-concat
+    let fetch_cmd = "QJSON=" + shell_escape(queries_json)
+        + " python3 -c 'import os, json, urllib.parse, urllib.request, sys\n"
+        + "try:\n  qs=json.loads(os.environ[\"QJSON\"])\nexcept Exception:\n  qs=[]\n"
+        + "if not isinstance(qs, list): qs=[]\n"
+        + "out=[]\n"
+        + "for q in qs[:3]:\n"
+        + "  url=\"https://api.semanticscholar.org/graph/v1/paper/search?limit=10&fields=title,abstract,year,authors&query=\"+urllib.parse.quote_plus(str(q))\n"
+        + "  try:\n"
+        + "    r=urllib.request.urlopen(url,timeout=30).read().decode(\"utf-8\",\"replace\")\n"
+        + "  except Exception as e:\n"
+        + "    r=\"<unavailable>\"+str(e)+\"</unavailable>\"\n"
+        + "  out.append(\"--- query: \"+str(q)+\" ---\\n\"+r)\n"
+        + "sys.stdout.write(\"\\n\".join(out))'";
+    let combined_raw = try { exec sh fetch_cmd; } catch e { ""; };
+
+    let judge_ctx = "PROBLEM: " + problem_text + "\n"
+                  + "ANSWER: " + stated_answer + "\n"
+                  + "NOVELTY CLAIM: " + novelty_claim + "\n"
+                  + "SEMANTIC SCHOLAR FEEDS:\n" + combined_raw + "\n";
+    let report = prompt(_relevance_prompt(), judge_ctx) -> Report;
+
+    let report_json = "{\"status\":\"" + report.status
+                    + "\",\"matches_found\":" + to_string(report.matches_found)
+                    + ",\"summary\":\"" + report.summary
+                    + "\",\"top_match_count\":" + to_string(len(report.top_matches)) + "}";
+    memo_write("scholar_search:" + self_pid + ":report:tick-" + to_string(upstream_tick), report_json);
+    memo_write("scholar_search:" + self_pid + ":status:tick-" + to_string(upstream_tick), report.status);
+    memo_write("scholar_search:" + self_pid + ":matches_found:tick-" + to_string(upstream_tick), to_string(report.matches_found));
+    memo_write("scholar_search:" + self_pid + ":summary:tick-" + to_string(upstream_tick), report.summary);
+    memo_write("replay:current_scholar_search_pid", self_pid);
+    emit("scholar-search:report_ready", report);
+
+    learn("scholar-search", "tick " + to_string(tick_idx), "status=" + report.status + " matches=" + to_string(report.matches_found), "success", ["emitted", "claim-auditor"]);
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let _colony_name = colony_name();
@@ -101,47 +151,18 @@ fn tick(reason: string) -> void {
 
     let my_tier = tier("scholar_search");
     if my_tier == "autonomous" {
+        // reason: tier N/A here; non-terminal agent -- collapses to review-gated.
+        memo_write("scholar_search:" + _self_pid + ":review_gated", "true");
         learn("scholar-search", "tick " + to_string(tick_idx), queries.rationale, "partial", ["acted", "claim-auditor"]);
+        _publish_scholar_search(true, queries, _self_pid, upstream_tick, tick_idx, problem_text, stated_answer, novelty_claim);
     } else {
         if my_tier == "review-gated" {
+            memo_write("scholar_search:" + _self_pid + ":review_gated", "true");
             learn("scholar-search", "tick " + to_string(tick_idx), queries.rationale, "partial", ["review-gated", "claim-auditor"]);
+            _publish_scholar_search(true, queries, _self_pid, upstream_tick, tick_idx, problem_text, stated_answer, novelty_claim);
         } else {
             if my_tier == "propose" {
-                let queries_json = queries.queries_json;
-                // colony-lint: safe-exec-concat
-                let fetch_cmd = "QJSON=" + shell_escape(queries_json)
-                    + " python3 -c 'import os, json, urllib.parse, urllib.request, sys\n"
-                    + "try:\n  qs=json.loads(os.environ[\"QJSON\"])\nexcept Exception:\n  qs=[]\n"
-                    + "if not isinstance(qs, list): qs=[]\n"
-                    + "out=[]\n"
-                    + "for q in qs[:3]:\n"
-                    + "  url=\"https://api.semanticscholar.org/graph/v1/paper/search?limit=10&fields=title,abstract,year,authors&query=\"+urllib.parse.quote_plus(str(q))\n"
-                    + "  try:\n"
-                    + "    r=urllib.request.urlopen(url,timeout=30).read().decode(\"utf-8\",\"replace\")\n"
-                    + "  except Exception as e:\n"
-                    + "    r=\"<unavailable>\"+str(e)+\"</unavailable>\"\n"
-                    + "  out.append(\"--- query: \"+str(q)+\" ---\\n\"+r)\n"
-                    + "sys.stdout.write(\"\\n\".join(out))'";
-                let combined_raw = try { exec sh fetch_cmd; } catch e { ""; };
-
-                let judge_ctx = "PROBLEM: " + problem_text + "\n"
-                              + "ANSWER: " + stated_answer + "\n"
-                              + "NOVELTY CLAIM: " + novelty_claim + "\n"
-                              + "SEMANTIC SCHOLAR FEEDS:\n" + combined_raw + "\n";
-                let report = prompt(_relevance_prompt(), judge_ctx) -> Report;
-
-                let report_json = "{\"status\":\"" + report.status
-                                + "\",\"matches_found\":" + to_string(report.matches_found)
-                                + ",\"summary\":\"" + report.summary
-                                + "\",\"top_match_count\":" + to_string(len(report.top_matches)) + "}";
-                memo_write("scholar_search:" + _self_pid + ":report:tick-" + to_string(upstream_tick), report_json);
-                memo_write("scholar_search:" + _self_pid + ":status:tick-" + to_string(upstream_tick), report.status);
-                memo_write("scholar_search:" + _self_pid + ":matches_found:tick-" + to_string(upstream_tick), to_string(report.matches_found));
-                memo_write("scholar_search:" + _self_pid + ":summary:tick-" + to_string(upstream_tick), report.summary);
-                memo_write("replay:current_scholar_search_pid", _self_pid);
-                emit("scholar-search:report_ready", report);
-
-                learn("scholar-search", "tick " + to_string(tick_idx), "status=" + report.status + " matches=" + to_string(report.matches_found), "success", ["emitted", "claim-auditor"]);
+                _publish_scholar_search(false, queries, _self_pid, upstream_tick, tick_idx, problem_text, stated_answer, novelty_claim);
             } else {
                 print("[scholar-search] observing (tier:", my_tier, ") rationale=", queries.rationale);
                 learn("scholar-search", "tick " + to_string(tick_idx), queries.rationale, "partial", ["observed", "claim-auditor"]);

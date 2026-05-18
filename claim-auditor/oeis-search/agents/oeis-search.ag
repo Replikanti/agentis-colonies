@@ -62,6 +62,54 @@ fn _relevance_prompt() -> string {
     return "Given the PROBLEM, ANSWER, NOVELTY CLAIM, and the raw OEIS text-search responses below (each query's response concatenated), pick up to 5 A-numbers that look most relevant. Output ONLY valid JSON: {\"matches_found\": <int>, \"top_matches\": [{\"a_number\":\"A123456\",\"name\":\"...\",\"relevance\":\"direct|partial|none\",\"reason\":\"...\"}], \"summary\":\"one-line\"}. Use 'direct' only when the A-number is the same sequence; 'partial' if it overlaps but differs in offset or initial terms; 'none' otherwise. Do NOT wrap output in markdown code fences (no triple backticks); return raw JSON only.";
 }
 
+// _publish_oeis_search -- fetch + judge + memo + emit. oeis-search writes
+// no ledger row today; final_write retained for symmetry (#622 ADR-0001).
+fn _publish_oeis_search(
+    final_write: bool,
+    sequences: Sequences,
+    self_pid: string,
+    upstream_tick: int,
+    tick_idx: int,
+    problem_text: string,
+    stated_answer: string,
+    novelty_claim: string
+) -> void {
+    let _ = final_write;
+    let sequences_json = sequences.sequences_json;
+    // colony-lint: safe-exec-concat
+    let fetch_cmd = "SJSON=" + shell_escape(sequences_json)
+        + " python3 -c 'import os, json, urllib.parse, urllib.request, sys\n"
+        + "try:\n  seqs=json.loads(os.environ[\"SJSON\"])\nexcept Exception:\n  seqs=[]\n"
+        + "if not isinstance(seqs, list): seqs=[]\n"
+        + "out=[]\n"
+        + "for s in seqs[:5]:\n"
+        + "  url=\"https://oeis.org/search?fmt=text&q=\"+urllib.parse.quote_plus(str(s))\n"
+        + "  try:\n"
+        + "    r=urllib.request.urlopen(url,timeout=30).read().decode(\"utf-8\",\"replace\")\n"
+        + "  except Exception as e:\n"
+        + "    r=\"<error>\"+str(e)+\"</error>\"\n"
+        + "  out.append(\"--- seq: \"+str(s)+\" ---\\n\"+r)\n"
+        + "sys.stdout.write(\"\\n\".join(out))'";
+    let combined_raw = try { exec sh fetch_cmd; } catch e { ""; };
+
+    let judge_ctx = "PROBLEM: " + problem_text + "\n"
+                  + "ANSWER: " + stated_answer + "\n"
+                  + "NOVELTY CLAIM: " + novelty_claim + "\n"
+                  + "OEIS FEEDS:\n" + combined_raw + "\n";
+    let report = prompt(_relevance_prompt(), judge_ctx) -> Report;
+
+    let report_json = "{\"matches_found\":" + to_string(report.matches_found)
+                    + ",\"summary\":\"" + report.summary
+                    + "\",\"top_match_count\":" + to_string(len(report.top_matches)) + "}";
+    memo_write("oeis_search:" + self_pid + ":report:tick-" + to_string(upstream_tick), report_json);
+    memo_write("oeis_search:" + self_pid + ":matches_found:tick-" + to_string(upstream_tick), to_string(report.matches_found));
+    memo_write("oeis_search:" + self_pid + ":summary:tick-" + to_string(upstream_tick), report.summary);
+    memo_write("replay:current_oeis_search_pid", self_pid);
+    emit("oeis-search:report_ready", report);
+
+    learn("oeis-search", "tick " + to_string(tick_idx), "matches=" + to_string(report.matches_found), "success", ["emitted", "claim-auditor"]);
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let _colony_name = colony_name();
@@ -97,45 +145,18 @@ fn tick(reason: string) -> void {
 
     let my_tier = tier("oeis_search");
     if my_tier == "autonomous" {
+        // reason: tier N/A here; non-terminal agent -- collapses to review-gated.
+        memo_write("oeis_search:" + _self_pid + ":review_gated", "true");
         learn("oeis-search", "tick " + to_string(tick_idx), sequences.rationale, "partial", ["acted", "claim-auditor"]);
+        _publish_oeis_search(true, sequences, _self_pid, upstream_tick, tick_idx, problem_text, stated_answer, novelty_claim);
     } else {
         if my_tier == "review-gated" {
+            memo_write("oeis_search:" + _self_pid + ":review_gated", "true");
             learn("oeis-search", "tick " + to_string(tick_idx), sequences.rationale, "partial", ["review-gated", "claim-auditor"]);
+            _publish_oeis_search(true, sequences, _self_pid, upstream_tick, tick_idx, problem_text, stated_answer, novelty_claim);
         } else {
             if my_tier == "propose" {
-                let sequences_json = sequences.sequences_json;
-                // colony-lint: safe-exec-concat
-                let fetch_cmd = "SJSON=" + shell_escape(sequences_json)
-                    + " python3 -c 'import os, json, urllib.parse, urllib.request, sys\n"
-                    + "try:\n  seqs=json.loads(os.environ[\"SJSON\"])\nexcept Exception:\n  seqs=[]\n"
-                    + "if not isinstance(seqs, list): seqs=[]\n"
-                    + "out=[]\n"
-                    + "for s in seqs[:5]:\n"
-                    + "  url=\"https://oeis.org/search?fmt=text&q=\"+urllib.parse.quote_plus(str(s))\n"
-                    + "  try:\n"
-                    + "    r=urllib.request.urlopen(url,timeout=30).read().decode(\"utf-8\",\"replace\")\n"
-                    + "  except Exception as e:\n"
-                    + "    r=\"<error>\"+str(e)+\"</error>\"\n"
-                    + "  out.append(\"--- seq: \"+str(s)+\" ---\\n\"+r)\n"
-                    + "sys.stdout.write(\"\\n\".join(out))'";
-                let combined_raw = try { exec sh fetch_cmd; } catch e { ""; };
-
-                let judge_ctx = "PROBLEM: " + problem_text + "\n"
-                              + "ANSWER: " + stated_answer + "\n"
-                              + "NOVELTY CLAIM: " + novelty_claim + "\n"
-                              + "OEIS FEEDS:\n" + combined_raw + "\n";
-                let report = prompt(_relevance_prompt(), judge_ctx) -> Report;
-
-                let report_json = "{\"matches_found\":" + to_string(report.matches_found)
-                                + ",\"summary\":\"" + report.summary
-                                + "\",\"top_match_count\":" + to_string(len(report.top_matches)) + "}";
-                memo_write("oeis_search:" + _self_pid + ":report:tick-" + to_string(upstream_tick), report_json);
-                memo_write("oeis_search:" + _self_pid + ":matches_found:tick-" + to_string(upstream_tick), to_string(report.matches_found));
-                memo_write("oeis_search:" + _self_pid + ":summary:tick-" + to_string(upstream_tick), report.summary);
-                memo_write("replay:current_oeis_search_pid", _self_pid);
-                emit("oeis-search:report_ready", report);
-
-                learn("oeis-search", "tick " + to_string(tick_idx), "matches=" + to_string(report.matches_found), "success", ["emitted", "claim-auditor"]);
+                _publish_oeis_search(false, sequences, _self_pid, upstream_tick, tick_idx, problem_text, stated_answer, novelty_claim);
             } else {
                 print("[oeis-search] observing (tier:", my_tier, ") rationale=", sequences.rationale);
                 learn("oeis-search", "tick " + to_string(tick_idx), sequences.rationale, "partial", ["observed", "claim-auditor"]);
