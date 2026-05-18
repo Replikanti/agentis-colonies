@@ -153,7 +153,7 @@ def main():
     # Tags that mark a row as exercising a tier-gated acting branch (not observe).
     # See doc/auto-promote.md#classification — must match the tag strings emitted
     # by .ag agents per the canonical pattern in CLAUDE.md.
-    ACTING_TAGS = {"acted", "review-gated", "emitted"}
+    ACTING_TAGS = {"acted", "review-gated", "emitted", "replicated"}
     OBSERVE_TAGS = {"observed"}
 
     def classify_entry(entry):

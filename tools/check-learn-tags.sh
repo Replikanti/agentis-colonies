@@ -88,17 +88,27 @@ tribes-bench"
             PAIR_KNOWN=1
             ;;
         "replicate:success")
+            # Shared between tribes-bench hunters and math-foundry
+            # explorer M2-Malthusian replicate (#622 PR-3). The
+            # federation-name literals (`tribes-bench` / `math-foundry`)
+            # disambiguate the call site at lint time.
             ALLOWED_LITERALS="replicated
 tribes-bench
-<tn>"
+math-foundry
+<tn>
+<cn>"
             PAIR_KNOWN=1
             ;;
         "replicate:failure")
+            # Shared between tribes-bench hunters and math-foundry
+            # explorer M2-Malthusian replicate (#622 PR-3).
             ALLOWED_LITERALS="replicate-skip
 replicate-error
 replicate-nak
 tribes-bench
-<tn>"
+math-foundry
+<tn>
+<cn>"
             PAIR_KNOWN=1
             ;;
         "reproductive_replicate:success")
@@ -207,6 +217,308 @@ miss
 tribes-bench"
             PAIR_KNOWN=1
             ;;
+
+        # ----------------------------------------------------------------
+        # math-foundry research federation (#622 PR-3)
+        # ----------------------------------------------------------------
+        # `<cn>` placeholder: math-foundry colony-name (literal one of
+        # explorer|formulator|noticer|novelty|verifier) or the bareword
+        # `_colony_name` variable reference. `verdict:<verdict>` allows
+        # the four ACCEPT-side verdict_raw literals (NOVEL, BORDERLINE,
+        # NOT_NOVEL, REJECT) and the parametric `verdict:` + bareword
+        # shape used at the call site.
+        "explore:partial")
+            ALLOWED_LITERALS="acted
+review-gated
+emitted
+observed
+math-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "settle:success")
+            ALLOWED_LITERALS="acted
+math-foundry
+<cn>"
+            ALLOWED_PARAMS="verdict:<verdict>"
+            PAIR_KNOWN=1
+            ;;
+        # NOTE: `replicate:success` and `replicate:failure` are shared
+        # between tribes-bench hunters and math-foundry explorer; see
+        # the tribes-bench entries above (case statement merges both).
+        "explorer_prompt_evolve:partial")
+            # Mirrors tribes-bench hunter_prompt_evolve:partial.
+            ALLOWED_LITERALS="prompt-evolution
+no-op
+lineage-reset
+math-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "explorer_prompt_evolve:failure")
+            # Mirrors tribes-bench hunter_prompt_evolve:failure.
+            ALLOWED_LITERALS="prompt-evolution
+schema-revert
+math-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "explorer_prompt_evolve:success")
+            # Mirrors tribes-bench hunter_prompt_evolve:success.
+            ALLOWED_LITERALS="prompt-evolution
+rewritten
+math-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "explorer_prompt_inherit:success")
+            # Mirrors tribes-bench hunter_prompt_inherit:success.
+            ALLOWED_LITERALS="prompt-inheritance
+adopted
+math-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "explorer_prompt_inherit:failure")
+            # Mirrors tribes-bench hunter_prompt_inherit:failure.
+            ALLOWED_LITERALS="prompt-inheritance
+miss
+math-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "explorer_prompt_inherit:partial")
+            # Reserved for future parity with tribes-bench
+            # hunter_prompt_inherit:partial (no current emit site).
+            ALLOWED_LITERALS="prompt-inheritance
+math-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "formulate:partial")
+            ALLOWED_LITERALS="acted
+review-gated
+observed
+math-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "formulate:success")
+            ALLOWED_LITERALS="acted
+review-gated
+emitted
+observed
+math-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "notice:partial")
+            ALLOWED_LITERALS="acted
+review-gated
+observed
+math-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "notice:success")
+            ALLOWED_LITERALS="acted
+review-gated
+emitted
+observed
+math-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "novelty:partial")
+            ALLOWED_LITERALS="acted
+review-gated
+observed
+math-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "novelty:success")
+            ALLOWED_LITERALS="acted
+review-gated
+emitted
+observed
+math-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "verify:partial")
+            ALLOWED_LITERALS="acted
+review-gated
+observed
+math-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "verify:success")
+            ALLOWED_LITERALS="acted
+review-gated
+emitted
+observed
+math-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "verify:failure")
+            ALLOWED_LITERALS="acted
+review-gated
+emitted
+observed
+math-foundry"
+            PAIR_KNOWN=1
+            ;;
+
+        # ----------------------------------------------------------------
+        # claim-auditor research federation (#622 PR-3)
+        # ----------------------------------------------------------------
+        "arxiv-search:partial")
+            ALLOWED_LITERALS="acted
+review-gated
+observed
+claim-auditor"
+            PAIR_KNOWN=1
+            ;;
+        "arxiv-search:success")
+            ALLOWED_LITERALS="acted
+review-gated
+emitted
+observed
+claim-auditor"
+            PAIR_KNOWN=1
+            ;;
+        "oeis-search:partial")
+            ALLOWED_LITERALS="acted
+review-gated
+observed
+claim-auditor"
+            PAIR_KNOWN=1
+            ;;
+        "oeis-search:success")
+            ALLOWED_LITERALS="acted
+review-gated
+emitted
+observed
+claim-auditor"
+            PAIR_KNOWN=1
+            ;;
+        "groupprops-search:partial")
+            ALLOWED_LITERALS="acted
+review-gated
+observed
+claim-auditor"
+            PAIR_KNOWN=1
+            ;;
+        "groupprops-search:success")
+            ALLOWED_LITERALS="acted
+review-gated
+emitted
+observed
+claim-auditor"
+            PAIR_KNOWN=1
+            ;;
+        "scholar-search:partial")
+            ALLOWED_LITERALS="acted
+review-gated
+observed
+claim-auditor"
+            PAIR_KNOWN=1
+            ;;
+        "scholar-search:success")
+            ALLOWED_LITERALS="acted
+review-gated
+emitted
+observed
+claim-auditor"
+            PAIR_KNOWN=1
+            ;;
+        "audit:partial")
+            ALLOWED_LITERALS="acted
+review-gated
+observed
+claim-auditor"
+            PAIR_KNOWN=1
+            ;;
+        "audit:success")
+            ALLOWED_LITERALS="acted
+review-gated
+emitted
+observed
+claim-auditor"
+            PAIR_KNOWN=1
+            ;;
+
+        # ----------------------------------------------------------------
+        # preprint-foundry research federation (#622 PR-3)
+        # ----------------------------------------------------------------
+        # `submit` is HITL-gated end-to-end; `hitl-gated` is a literal
+        # marker tag emitted by the HITL branches in submitter.ag.
+        "introduce:partial")
+            ALLOWED_LITERALS="acted
+review-gated
+observed
+preprint-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "introduce:success")
+            ALLOWED_LITERALS="acted
+review-gated
+emitted
+observed
+preprint-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "theorise:partial")
+            ALLOWED_LITERALS="acted
+review-gated
+observed
+preprint-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "theorise:success")
+            ALLOWED_LITERALS="acted
+review-gated
+emitted
+observed
+preprint-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "compute:partial")
+            ALLOWED_LITERALS="acted
+review-gated
+observed
+preprint-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "compute:success")
+            ALLOWED_LITERALS="acted
+review-gated
+emitted
+observed
+preprint-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "edit:partial")
+            ALLOWED_LITERALS="acted
+review-gated
+observed
+preprint-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "edit:success")
+            ALLOWED_LITERALS="acted
+review-gated
+emitted
+observed
+preprint-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "submit:partial")
+            ALLOWED_LITERALS="acted
+review-gated
+emitted
+observed
+preprint-foundry
+hitl-gated"
+            PAIR_KNOWN=1
+            ;;
+        "submit:success")
+            ALLOWED_LITERALS="acted
+review-gated
+emitted
+observed
+preprint-foundry
+hitl-gated"
+            PAIR_KNOWN=1
+            ;;
     esac
 }
 
@@ -227,6 +539,16 @@ EOF
             # `<tn>` is only allowed when the schema explicitly lists it.
             case "$ALLOWED_LITERALS" in
                 *"<tn>"*) return 0 ;;
+            esac
+            ;;
+    esac
+    # Colony-name placeholder: math-foundry colony literals or the
+    # bareword `_colony_name` variable reference (#622 PR-3).
+    case "$tok" in
+        explorer|formulator|noticer|novelty|verifier|_colony_name)
+            # `<cn>` is only allowed when the schema explicitly lists it.
+            case "$ALLOWED_LITERALS" in
+                *"<cn>"*) return 0 ;;
             esac
             ;;
     esac
@@ -260,6 +582,23 @@ EOF
                 ;;
             "reason:unverifiable")
                 [ "$tok" = "reason:unverifiable" ] && return 0
+                ;;
+            "verdict:<verdict>")
+                # math-foundry explorer settle path emits
+                # `"verdict:" + verdict_raw`. Allowed verdicts at lint
+                # time: the four ACCEPT-side literals, the bareword
+                # variable reference `_verdict_raw`, and the literal
+                # placeholder `<verdict>` that `extract_token`
+                # collapses any `"verdict:" + <bareword>` shape to
+                # (#622 PR-3).
+                case "$tok" in
+                    verdict:NOVEL|verdict:BORDERLINE|verdict:NOT_NOVEL|verdict:REJECT)
+                        return 0
+                        ;;
+                    verdict:_verdict_raw|verdict:verdict_raw|verdict:_verdict|verdict:verdict|verdict:'<verdict>')
+                        return 0
+                        ;;
+                esac
                 ;;
         esac
     done <<EOF
@@ -353,6 +692,32 @@ extract_token() {
                             to_string\(*)
                                 echo "reward=0"
                                 return 0
+                                ;;
+                        esac
+                        ;;
+                    "verdict:")
+                        # math-foundry explorer emits
+                        # `"verdict:" + verdict_raw`. Collapse any
+                        # bareword tail to the parametric placeholder
+                        # so `token_allowed` matches via
+                        # `verdict:<verdict>` (#622 PR-3).
+                        case "$tail" in
+                            [a-zA-Z_]*)
+                                local tclean=1
+                                local tc
+                                local ti=0
+                                while [ "$ti" -lt "${#tail}" ]; do
+                                    tc="${tail:$ti:1}"
+                                    case "$tc" in
+                                        [a-zA-Z0-9_]) ;;
+                                        *) tclean=0; break ;;
+                                    esac
+                                    ti=$((ti + 1))
+                                done
+                                if [ "$tclean" = "1" ]; then
+                                    echo "verdict:$tail"
+                                    return 0
+                                fi
                                 ;;
                         esac
                         ;;
@@ -611,9 +976,11 @@ EOF
     done < "$ag_file"
 }
 
-# Main: walk tribes-bench/tribe-*/agents/*.ag (hunter agents today; the
-# glob is intentionally one level broader so a future scout.ag /
-# verifier.ag picks up coverage automatically). Skip `runs/` snapshots.
+# Main: walk per-federation agent trees and skip per-run snapshots.
+# Covers tribes-bench (hunter today; glob is one level broader so a
+# future scout.ag / verifier.ag picks up coverage automatically) plus
+# the three research federations math-foundry / claim-auditor /
+# preprint-foundry added in #622 PR-3.
 if [ -f "$SCAN_ROOT" ]; then
     check_file "$SCAN_ROOT"
 else
@@ -622,7 +989,12 @@ else
             */runs/*) continue ;;
         esac
         check_file "$f"
-    done < <(find "$SCAN_ROOT" -type f -path '*/tribes-bench/tribe-*/agents/*.ag' -print0)
+    done < <(find "$SCAN_ROOT" -type f \( \
+        -path '*/tribes-bench/tribe-*/agents/*.ag' -o \
+        -path '*/math-foundry/*/agents/*.ag' -o \
+        -path '*/claim-auditor/*/agents/*.ag' -o \
+        -path '*/preprint-foundry/*/agents/*.ag' \
+        \) -print0)
 fi
 
 if [ "$FAIL" -gt 0 ]; then

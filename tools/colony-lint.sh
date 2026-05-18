@@ -593,9 +593,26 @@ fi
 if [ -x "$REPO_ROOT/tools/check-learn-tags.sh" ]; then
     check_out="$("$REPO_ROOT/tools/check-learn-tags.sh" "$REPO_ROOT" 2>&1)" && check_rc=0 || check_rc=$?
     if [ "$check_rc" -eq 0 ]; then
-        pass "check-learn-tags: tribes-bench learn() tag streams match per-call-site schema (#492)"
+        pass "check-learn-tags: tribes-bench + research-fed learn() tag streams match per-call-site schema (#492, #622)"
     else
-        fail "check-learn-tags: schema violation in tribes-bench learn() tag stream (#492)"
+        fail "check-learn-tags: schema violation in learn() tag stream (#492, #622)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
+# --- learn() / recommend() topic-match guard (#622 PR-3) ---
+# `recommend("<topic>", ...)` topics in a `.ag` file must be a subset
+# of the `learn("<topic>", ...)` topics in the same file; otherwise
+# the recommend has no scored history and confidence drift is silent.
+# Scoped to tribes-bench + the three research feds (same per-call-site
+# set as check-learn-tags); dev-apprenticeship is excluded until its
+# pre-existing topic-split is migrated.
+if [ -x "$REPO_ROOT/tools/check-learn-recommend-topic-match.sh" ]; then
+    check_out="$("$REPO_ROOT/tools/check-learn-recommend-topic-match.sh" "$REPO_ROOT" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "check-learn-recommend-topic-match: recommend() topics are a subset of learn() topics per agent (#622)"
+    else
+        fail "check-learn-recommend-topic-match: recommend()/learn() topic mismatch (#622)"
         printf '%s\n' "$check_out"
     fi
 fi
