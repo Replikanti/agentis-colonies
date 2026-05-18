@@ -24,6 +24,7 @@ research-foundry/introducer/
 research-foundry/theorist/
 research-foundry/computer/
 research-foundry/editor/
+research-foundry/reviewer/
 research-foundry/submitter/
 
 # Auto-promote sidecar dependencies (#622, #638). run-research.sh
