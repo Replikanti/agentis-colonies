@@ -420,9 +420,17 @@ fi
 # cull-explorers.sh:410 pattern (podman exec bash -c "... agentis daemon ... &").
 # Container name is fixed to `research-foundry-laptop` -- the only
 # containerized federation today.
+#
+# Path translation (fixes #660): $CANDIDATE_PATH is host-side
+# `<fed-dir>/<colony>/agents/.evolve/<agent>.ag.candidate-gen-N`. The
+# container mounts the federation root at `/run-root/`, so strip the
+# host fed-dir prefix and prepend `/run-root/` before handing the path
+# to the daemon. Mirrors the respawn block below + cull-explorers.sh:410
+# pattern (`/run-root/<colony>/agents/<agent>.ag`).
 CONTAINER_NAME="${RESEARCH_CONTAINER_NAME:-research-foundry-laptop}"
+CANDIDATE_CONTAINER_PATH="/run-root/${COLONY}/agents/.evolve/${AGENT_NAME}.ag.candidate-gen-${GENERATION_NEXT}"
 CANDIDATE_LOG="/run-root/.agentis/logs/${SYNTHETIC_ID}.log"
-SPAWN_CMD="agentis daemon $CANDIDATE_PATH --colony $COLONY --enable-exec --enable-messaging --tick-interval $TICK_INTERVAL_MS > $CANDIDATE_LOG 2>&1 &"
+SPAWN_CMD="agentis daemon $CANDIDATE_CONTAINER_PATH --colony $COLONY --enable-exec --enable-messaging --tick-interval $TICK_INTERVAL_MS > $CANDIDATE_LOG 2>&1 &"
 
 log "  spawning candidate daemon: synthetic_id=$SYNTHETIC_ID wait_s=$WAIT_S"
 if ! podman exec "$CONTAINER_NAME" bash -c "$SPAWN_CMD" 2>/dev/null; then
@@ -514,8 +522,9 @@ log "  A/B verdict: winner=$WINNER delta=$DELTA"
 
 # Stop the candidate daemon regardless of verdict. It served its A/B
 # purpose; whether we then archive + replace canonical depends on the
-# dry-run flag below.
-podman exec "$CONTAINER_NAME" bash -c "pkill -f 'agentis daemon $CANDIDATE_PATH' 2>/dev/null || true" >/dev/null 2>&1 || true
+# dry-run flag below. Uses the container-side path (#660) so pkill -f
+# matches the daemon's actual argv.
+podman exec "$CONTAINER_NAME" bash -c "pkill -f 'agentis daemon $CANDIDATE_CONTAINER_PATH' 2>/dev/null || true" >/dev/null 2>&1 || true
 
 if [ "$WINNER" = "inconclusive" ]; then
     ledger_append "ab_inconclusive" \
