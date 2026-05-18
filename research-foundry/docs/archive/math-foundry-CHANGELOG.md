@@ -12,6 +12,10 @@ in this repo can release independently without collision.
 
 Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
+## [0.1.1] — 2026-05-18
+
+Merged into `research-foundry/`. See `research-foundry/CHANGELOG.md` (#638).
+
 ## [Unreleased]
 
 ### Added
