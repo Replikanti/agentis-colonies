@@ -622,6 +622,20 @@ if [ -x "$REPO_ROOT/tools/check-learn-recommend-topic-match.sh" ]; then
     fi
 fi
 
+# --- replay:current_<role>_pid regression guard (#663 Phase 9 PR-A) ---
+# Phase 9 PR-A replaced the replica-unsafe `replay:current_<role>_pid`
+# LWW handoff with `_pick_upstream_by_confidence(role, output_key, tick)`.
+# Downstream `.ag` files must NOT regress to the LWW pattern.
+if [ -x "$REPO_ROOT/tools/check-no-replay-current-pid.sh" ]; then
+    check_out="$("$REPO_ROOT/tools/check-no-replay-current-pid.sh" "$REPO_ROOT" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "check-no-replay-current-pid: no replay:current_<role>_pid references in research-foundry/ (#663)"
+    else
+        fail "check-no-replay-current-pid: replay:current_<role>_pid regression (#663 Phase 9 PR-A)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- Plaintext token detection (#321) ---
 # Walks `[forge.*]` sections in every colony.toml / colony.example.toml
 # under the repo and flags `token` / `*api_key*` / `*secret*` values
