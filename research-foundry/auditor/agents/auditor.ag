@@ -52,6 +52,17 @@ fn _seed_prompt() -> string {
     return "You are a strict claim auditor. The user-supplied input below carries the original PROBLEM, the stated ANSWER, the NOVELTY CLAIM, and four search reports (ARXIV, OEIS, GROUPPROPS, SCHOLAR). It may also carry RECENT HITL REJECTS (recent human-in-the-loop rejection classes and excerpts from submitted preprints) -- use that signal to flag failure modes the human reviewer has already pushed back on. Classify the claim. Use 'KNOWN_PRIOR' only when at least one searcher reports a 'direct' relevance match for the same result; 'VERIFIED_NEW' when no searcher reports a direct match and the claim is well-supported; 'NEEDS_HUMAN' when reports conflict, are partial, or scholar is unavailable AND the other three are inconclusive. Output ONLY valid JSON: {\"audit_verdict\":\"VERIFIED_NEW|KNOWN_PRIOR|NEEDS_HUMAN\", \"reasoning\":\"...\", \"confidence\":0.0-1.0, \"evidence_arxiv\":\"semicolon-separated arxiv ids or empty\", \"evidence_oeis\":\"semicolon-separated A-numbers or empty\", \"evidence_groupprops\":\"semicolon-separated urls or empty\", \"evidence_scholar\":\"semicolon-separated paper ids or empty\", \"problem_summary\":\"one-line\"}. Do NOT wrap output in markdown code fences (no triple backticks); return raw JSON only.";
 }
 
+// _dump_ctx_to_memo -- write the assembled prompt context to a per-
+// tick memo key so #623 validation (and any future audit) can inspect
+// what the LLM actually saw. Stable shape: `<agent>:<pid>:ctx:tick-N`.
+// Duplicated verbatim across formulator/auditor/editor because the
+// .ag DSL has no shared-include mechanism (#623 E).
+fn _dump_ctx_to_memo(agent_name: string, pid: string, tick_idx: int, ctx: string) -> void {
+    if len(agent_name) == 0 { return; };
+    if len(pid) == 0 { return; };
+    memo_write(agent_name + ":" + pid + ":ctx:tick-" + to_string(tick_idx), ctx);
+}
+
 // _summarise_hitl_buf -- collapse the rolling feedback:hitl_rejects
 // buffer to a tag-frequency table plus the last few raw excerpts.
 // Auditor and formulator both call this with the same buffer.
@@ -246,6 +257,7 @@ fn tick(reason: string) -> void {
             + "SCHOLAR REPORT: " + scholar_report + "\n"
             + "RECENT HITL REJECTS: " + hitl_summary + "\n";
 
+    _dump_ctx_to_memo("auditor", _self_pid, tick_idx, ctx);
     let verdict = prompt(_seed_prompt(), ctx) -> Verdict;
 
     let my_tier = tier("auditor");

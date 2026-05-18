@@ -51,6 +51,17 @@ fn _seed_prompt() -> string {
     return "You discovered a surprising result through computation. Craft a competition-style problem whose answer IS this discovery. The user-supplied input below carries the TOPIC, the DISCOVERY description, the SPECIFIC VALUE, and the WHY SURPRISING reasoning. It may also carry RECENT KNOWN-PRIOR TOPICS (recent topics the auditor classified as already known -- AVOID re-framing the discovery as one of those), RECENT VERIFIED-NEW TOPICS (recent topics the auditor accepted as novel -- prefer framings closer to those when faithful to the discovery), and RECENT HITL REJECTS (frequency table of recent human-in-the-loop rejection classes -- avoid problem framings that match those failure modes). Craft a self-contained problem (no code, just math). The stated answer must be the specific value. Output ONLY valid JSON: {\"problem\": \"...\", \"answer\": \"...\", \"solution_full\": \"...\", \"novelty_claim\": \"...\", \"self_check_confidence\": 0.0-1.0}.";
 }
 
+// _dump_ctx_to_memo -- write the assembled prompt context to a per-
+// tick memo key so #623 validation (and any future audit) can inspect
+// what the LLM actually saw. Stable shape: `<agent>:<pid>:ctx:tick-N`.
+// Duplicated verbatim across formulator/auditor/editor because the
+// .ag DSL has no shared-include mechanism (#623 E).
+fn _dump_ctx_to_memo(agent_name: string, pid: string, tick_idx: int, ctx: string) -> void {
+    if len(agent_name) == 0 { return; };
+    if len(pid) == 0 { return; };
+    memo_write(agent_name + ":" + pid + ":ctx:tick-" + to_string(tick_idx), ctx);
+}
+
 // _summarise_topic_buf -- collapse the last K entries of a topic-
 // feedback rolling buffer (auditor-written) into a single comma-
 // separated `<topic>:<problem_summary[:60]>` string the formulator
@@ -177,6 +188,7 @@ fn tick(reason: string) -> void {
             + "RECENT VERIFIED-NEW TOPICS (REPLICATE): " + success_summary + "\n"
             + "RECENT HITL REJECTS: " + hitl_summary + "\n";
 
+    _dump_ctx_to_memo("formulator", _self_pid, tick_idx, ctx);
     let problem = prompt(_seed_prompt(), ctx) -> Problem;
 
     let my_tier = tier("formulator");

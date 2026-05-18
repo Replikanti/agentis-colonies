@@ -67,6 +67,19 @@ fn _repair_prompt() -> string {
     return "The previous LaTeX compile failed. The user-supplied input below carries the FAILING TEX and the latexmk LOG (last 80 lines). It may also carry RECENT PITFALLS (frequency-sorted tags from recent compile failures across previous claims) -- consult those before patching. Produce a corrected `full_tex` that compiles with `latexmk -pdf -interaction=nonstopmode`. Common fixes: missing `\\usepackage{...}`, mis-matched `\\begin{...}` / `\\end{...}`, undefined `\\cite{...}` (replace with `\\cite{TBD}` and add a stub entry to refs.bib), runaway argument (close the brace), missing `$` for inline math. Do NOT change the scientific content -- only fix the compile error. Output ONLY valid JSON: {\"full_tex\":\"...corrected .tex...\",\"rationale\":\"what was fixed\"}.";
 }
 
+// _dump_ctx_to_memo -- write the assembled prompt context to a per-
+// tick memo key so #623 validation (and any future audit) can inspect
+// what the LLM actually saw. Stable shape: `<agent>:<pid>:ctx:tick-N`.
+// The editor emits two ctx blobs per tick (initial edit + optional
+// repair); the repair dump is suffixed `:repair`. Duplicated verbatim
+// across formulator/auditor/editor because the .ag DSL has no
+// shared-include mechanism (#623 E).
+fn _dump_ctx_to_memo(agent_name: string, pid: string, tick_idx: int, ctx: string) -> void {
+    if len(agent_name) == 0 { return; };
+    if len(pid) == 0 { return; };
+    memo_write(agent_name + ":" + pid + ":ctx:tick-" + to_string(tick_idx), ctx);
+}
+
 // _classify_compile_log -- run a python3 regex pass over the last 80
 // lines of the latexmk log and return a space-separated string of
 // pitfall tags. Tags cover the canonical amsart failure modes,
@@ -184,6 +197,7 @@ fn _publish_editor(
             let repair_ctx = "FAILING TEX:\n" + edit.full_tex + "\n"
                            + "LATEXMK LOG (last 80 lines):\n" + compile_log + "\n"
                            + "RECENT PITFALLS:\n" + pitfall_summary + "\n";
+            memo_write("editor:" + self_pid + ":ctx:tick-" + to_string(tick_idx) + ":repair", repair_ctx);
             let repair = prompt(_repair_prompt(), repair_ctx) -> Repair;
             // colony-lint: safe-exec-concat
             let rewrite_cmd = "printf '%s' " + shell_escape(repair.full_tex) + " > " + shell_escape(claim_dir + "/main.tex");
@@ -286,6 +300,7 @@ fn tick(reason: string) -> void {
             + "REPRODUCIBILITY STDOUT:\n" + repro_output + "\n"
             + "RECENT PITFALLS:\n" + pitfall_summary_initial + "\n";
 
+    _dump_ctx_to_memo("editor", _self_pid, tick_idx, ctx);
     let edit = prompt(_edit_prompt(), ctx) -> Edit;
 
     let my_tier = tier("editor");
