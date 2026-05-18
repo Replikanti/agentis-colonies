@@ -152,6 +152,16 @@ Releasing: bump `federation-dashboard/VERSION`, move `[Unreleased]` into a dated
 
 `tools/new-federation.sh <federation-name> [<starter-colony-name>]` generates a directory shape that conforms to [ADR-0003](./doc/adr/ADR-0003-federation-portability-contract.md) and passes `colony-lint.sh` clean. Output: `<fed>/VERSION` (`0.1.0`), `<fed>/CHANGELOG.md` (Keep-a-Changelog with empty `[Unreleased]` + dated `[0.1.0]`), `<fed>/BUNDLE.manifest`, `<fed>/README.md`, `<fed>/install.sh`, plus one starter colony with an ADR-0003-conformant `start-colony.sh` (supports `--restart-agent` and `--rate-limit-status`). Colony name defaults to `core`. After scaffolding: add the federation to the `COMPONENTS` array in `tools/check-changelog.sh` and add a row to the top-level `README.md` Federations table. See also [`doc/federation-patterns.md`](./doc/federation-patterns.md) for non-coder federation sketches and [`tools/new-colony.sh`](./tools/new-colony.sh) for adding additional colonies to an existing federation.
 
+## Cross-federation memo (`cross-fed:*`)
+
+A shared memo namespace readable + writable by all federations on the same host. Methods that prove productive in one federation can cross-pollinate to others via this channel.
+
+- Conventions documented in `doc/cross-fed-memo.md`.
+- Storage: `<repo-root>/cross-fed-memo/` host dir, file-per-key. Mirrored to each fed's `.agentis/memo/cross-fed:*` by `tools/cross-fed-bridge.sh sidecar`.
+- Export from a fed happens at `_publish_<role>` autonomous-tier paths when a method clears both replicate threshold AND export-fitness threshold.
+- Import into a fed happens at bootstrap via `cross-fed:adopt-queue:<target-fed>` memo seed.
+- Operator curates `cross-fed:applicable-to:<method-id>` to control which feds adopt which methods.
+
 # dev-apprenticeship specifics
 
 Everything below this line is true for the `dev-apprenticeship/` federation only. Other federations choose their own colony decomposition, bus events, confidence keys, and operator scripts.
