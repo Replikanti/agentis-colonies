@@ -40,6 +40,7 @@
 import json
 import math
 import os
+import subprocess
 import sys
 import time
 
@@ -182,6 +183,79 @@ def main():
     now = time.time()
     decisions = []
 
+    # Phase 3 PR 2 of #624: per-pid explorer enrichment. When the daemon
+    # under inspection runs explorer.ag, decorate the top-level decision
+    # record with {pid, agent_id, specialty, fitness_score} so the
+    # dashboard Promote Candidates panel can key by pid (instead of
+    # collapsing the 5 specialties to a single "explorer" row) and
+    # render specialty + generation in the label. The fitness scalar is
+    # computed by the sibling tools/explorer-fitness.py helper which
+    # does the cross-agent join (explorer NOVEL settles x auditor
+    # confidences x HITL accept ratio). Memo reads are filesystem-direct
+    # so this works in both legacy mode and the containerized mode the
+    # dashboard uses (#622 PR-1), since the .agentis/ dir is the same
+    # host-side bind mount in both cases.
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    fitness_script = os.path.join(script_dir, 'explorer-fitness.py')
+
+    def _explorer_memo_read(_fed_dir, key):
+        """Read latest value from <fed_dir>/.agentis/memo/<key>.jsonl
+        (and the parent-level fallback that mirrors the experience-file
+        resolver above). Returns '' on any error."""
+        candidates = [
+            os.path.join(_fed_dir, '.agentis', 'memo', key + '.jsonl'),
+            os.path.normpath(os.path.join(_fed_dir, '..', '.agentis', 'memo', key + '.jsonl')),
+        ]
+        for path in candidates:
+            try:
+                with open(path) as f:
+                    last_val = ''
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            row = json.loads(line)
+                        except (json.JSONDecodeError, ValueError):
+                            continue
+                        if isinstance(row, dict):
+                            v = row.get('value')
+                            if v is not None:
+                                last_val = v
+                    if last_val != '':
+                        return last_val
+            except (OSError, IOError):
+                continue
+        return ''
+
+    def _explorer_fitness(_fed_dir, _pid, _agent_id):
+        """Invoke explorer-fitness.py and parse its JSON output. Returns
+        (fitness_score, breakdown) tuple; on any failure returns
+        (0.0, None) so the caller can omit the field cleanly."""
+        try:
+            proc = subprocess.run(
+                ['python3', fitness_script, _fed_dir, str(_pid), str(_agent_id)],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return (0.0, None)
+        if proc.returncode != 0:
+            return (0.0, None)
+        try:
+            payload = json.loads(proc.stdout)
+        except (json.JSONDecodeError, ValueError):
+            return (0.0, None)
+        if not isinstance(payload, dict):
+            return (0.0, None)
+        try:
+            score = float(payload.get('fitness_score', 0.0))
+        except (ValueError, TypeError):
+            score = 0.0
+        breakdown = payload.get('breakdown')
+        return (score, breakdown if isinstance(breakdown, dict) else None)
+
     for d in daemons:
         source = d.get('source', '')
         if not source:
@@ -197,16 +271,62 @@ def main():
         started_at = d.get('started_at', 0)
         confidence = d.get('confidence')
 
+        # Phase 3 PR 2 of #624: compute explorer-only enrichment up
+        # front. Fields are merged into every decisions.append() below
+        # via `**explorer_extra` so the early-return skip paths (dead
+        # pid, unseeded confidence) still surface pid + specialty + the
+        # fitness score the dashboard needs to render per-pid rows. For
+        # non-explorer agents `explorer_extra` is empty and the existing
+        # decision shape is preserved byte-for-byte (test 12 / test 14
+        # contract).
+        explorer_extra = {}
+        explorer_fitness_evidence = None
+        if agent_name == 'explorer':
+            specialty = _explorer_memo_read(fed_dir, 'explorer:' + str(pid) + ':specialty')
+            generation_raw = _explorer_memo_read(fed_dir, 'explorer:' + str(pid) + ':generation')
+            try:
+                generation = int(generation_raw) if generation_raw else 0
+            except (ValueError, TypeError):
+                generation = 0
+            fitness_score, fitness_breakdown = _explorer_fitness(fed_dir, pid, agent_id)
+            explorer_extra = {
+                'pid': pid,
+                'agent_id': agent_id,
+                'specialty': specialty,
+                'fitness_score': fitness_score,
+            }
+            explorer_fitness_evidence = {
+                'specialty': specialty,
+                'generation': generation,
+                'fitness_score': fitness_score,
+            }
+            if fitness_breakdown is not None:
+                explorer_fitness_evidence['breakdown'] = fitness_breakdown
+
+        def _attach_explorer_evidence(record):
+            """Merge Phase 3 PR 2 explorer enrichment into a decision
+            record. No-op for non-explorer agents (explorer_extra is
+            empty). For explorer rows, adds the top-level fields and
+            stamps explorer_fitness into record['evidence'] when an
+            evidence dict already exists."""
+            if explorer_extra:
+                record.update(explorer_extra)
+                if explorer_fitness_evidence is not None:
+                    ev = record.get('evidence')
+                    if isinstance(ev, dict):
+                        ev['explorer_fitness'] = explorer_fitness_evidence
+            return record
+
         # Safety guard 3: Per-agent confidence existence check
         # If confidence is None, agent has never been seeded — skip
         if confidence is None:
-            decisions.append({
+            decisions.append(_attach_explorer_evidence({
                 'agent': agent_name,
                 'colony': colony,
                 'decision': 'skip',
                 'reason': 'confidence not seeded (recall_latest returned null)',
                 'pid': pid,
-            })
+            }))
             continue
 
         # Safety guard 4: liveness check
@@ -221,36 +341,36 @@ def main():
         if containerized:
             effective_state = d.get('effective_state') or state
             if effective_state != 'running':
-                decisions.append({
+                decisions.append(_attach_explorer_evidence({
                     'agent': agent_name,
                     'colony': colony,
                     'decision': 'skip',
                     'reason': f'effective_state={effective_state!r} not running',
                     'pid': pid,
                     'confidence': confidence,
-                })
+                }))
                 continue
         else:
             if not pid or pid <= 0:
-                decisions.append({
+                decisions.append(_attach_explorer_evidence({
                     'agent': agent_name,
                     'colony': colony,
                     'decision': 'skip',
                     'reason': 'no pid reported by daemon list',
                     'confidence': confidence,
-                })
+                }))
                 continue
             try:
                 os.kill(pid, 0)
             except OSError:
-                decisions.append({
+                decisions.append(_attach_explorer_evidence({
                     'agent': agent_name,
                     'colony': colony,
                     'decision': 'skip',
                     'reason': f'pid {pid} not alive',
                     'pid': pid,
                     'confidence': confidence,
-                })
+                }))
                 continue
 
         # Compute runtime hours
@@ -376,13 +496,13 @@ def main():
             evolve_triggered = True
 
         if evolve_triggered:
-            decisions.append({
+            decisions.append(_attach_explorer_evidence({
                 'agent': agent_name,
                 'colony': colony,
                 'decision': 'evolve',
                 'reason': f'evolve triggered (slope={evolve_slope:.6f}, reject_rate_acting={reject_rate_acting:.4f})',
                 'evidence': evidence,
-            })
+            }))
             continue
 
         # --- Promote check ---
@@ -398,13 +518,13 @@ def main():
                 break
 
         if target_step is None:
-            decisions.append({
+            decisions.append(_attach_explorer_evidence({
                 'agent': agent_name,
                 'colony': colony,
                 'decision': 'skip',
                 'reason': f'no applicable promote step for confidence={confidence}',
                 'evidence': evidence,
-            })
+            }))
             continue
 
         step_from, step_to, step_override = target_step
@@ -462,24 +582,24 @@ def main():
         evidence['prereqs'] = prereqs
 
         if fails:
-            decisions.append({
+            decisions.append(_attach_explorer_evidence({
                 'agent': agent_name,
                 'colony': colony,
                 'decision': 'skip',
                 'reason': 'prerequisites not met: ' + '; '.join(fails),
                 'evidence': evidence,
-            })
+            }))
             continue
 
         # All prerequisites passed — promote
-        decisions.append({
+        decisions.append(_attach_explorer_evidence({
             'agent': agent_name,
             'colony': colony,
             'decision': 'promote',
             'from': step_from,
             'to': step_to,
             'evidence': evidence,
-        })
+        }))
 
     print(json.dumps(decisions))
 
