@@ -50,6 +50,45 @@ fn _seed_prompt() -> string {
     return "You are a strict novelty referee. DEFAULT to NOT_NOVEL. The user-supplied input below carries the PROBLEM, the stated ANSWER, and the author's NOVELTY CLAIM. Mark NOT_NOVEL if the problem reduces to: Basel problem, Gauss sums, Galois group of x^n - 2, Milnor fiber formula, complete intersection Euler characteristic via Chern classes, classical Fourier or Mellin transform, or any other named famous result. Mark NOVEL only if the specific answer requires computation and is not a famous constant, and the reasoning requires genuine insight. Mark BORDERLINE if the problem is non-obvious but a known classical identifier is suspected. Output ONLY valid JSON: {\"is_classical_result\": true|false, \"classical_identifier\": \"...\", \"novelty_verdict\": \"NOVEL|BORDERLINE|NOT_NOVEL\", \"reasoning\": \"...\"}.";
 }
 
+// _publish_novelty -- TERMINAL agent (Class 1). memo + final_verdict +
+// emit (+ ledger row when final_write=true). Both autonomous and
+// review-gated emit the ledger row; only propose skips it (#622 ADR-0001).
+fn _publish_novelty(
+    final_write: bool,
+    novelty: NoveltyVerdict,
+    self_pid: string,
+    colony_name_str: string,
+    explorer_pid: string,
+    upstream_tick: int,
+    tick_idx: int,
+    tick_now_ms: int
+) -> void {
+    let classical_str = if novelty.is_classical_result { "true"; } else { "false"; };
+    let novelty_json = "{\"is_classical_result\":" + classical_str
+                     + ",\"classical_identifier\":\"" + novelty.classical_identifier
+                     + "\",\"novelty_verdict\":\"" + novelty.novelty_verdict
+                     + "\",\"reasoning\":\"" + novelty.reasoning + "\"}";
+    memo_write("novelty:" + self_pid + ":verdict:tick-" + to_string(upstream_tick), novelty_json);
+
+    if len(explorer_pid) > 0 {
+        memo_write("novelty:final_verdict:" + explorer_pid + ":tick-" + to_string(upstream_tick), novelty.novelty_verdict);
+    };
+
+    if final_write {
+        // Append to per-run discovery ledger.
+        let ledger_path = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
+        if len(ledger_path) > 0 {
+            let ledger_row = "{\"ts\":" + to_string(tick_now_ms) + ",\"colony\":\"" + colony_name_str + "\",\"pid\":\"" + self_pid + "\",\"tick\":" + to_string(tick_idx) + ",\"event\":\"novelty_verdict\",\"verdict\":\"" + novelty.novelty_verdict + "\"}";
+            // colony-lint: safe-exec-concat
+            let append_cmd = "printf '%s\n' " + shell_escape(ledger_row) + " >> " + shell_escape(ledger_path);
+            let _ = try { exec sh append_cmd; } catch e { ""; };
+        };
+    };
+
+    emit("math-foundry:novelty_done", novelty);
+    learn("novelty", "tick " + to_string(tick_idx) + " " + novelty.novelty_verdict, novelty.reasoning, "success", ["emitted", "math-foundry"]);
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let _tick_now_ms = now_ms_via_shell();
@@ -101,34 +140,19 @@ fn tick(reason: string) -> void {
 
     let my_tier = tier("novelty");
     if my_tier == "autonomous" {
+        // Terminal agent: autonomous emits the final verdict + ledger row
+        // unconditionally (no confidence floor) and stamps an
+        // `autonomous_decision=true` flag for downstream auditors (#622).
+        memo_write("novelty:" + _self_pid + ":autonomous_decision", "true");
         learn("novelty", "tick " + to_string(tick_idx) + " " + novelty.novelty_verdict, novelty.reasoning, "partial", ["acted", "math-foundry"]);
+        _publish_novelty(true, novelty, _self_pid, _colony_name, explorer_pid, upstream_tick, tick_idx, _tick_now_ms);
     } else {
         if my_tier == "review-gated" {
             learn("novelty", "tick " + to_string(tick_idx) + " " + novelty.novelty_verdict, novelty.reasoning, "partial", ["review-gated", "math-foundry"]);
+            _publish_novelty(true, novelty, _self_pid, _colony_name, explorer_pid, upstream_tick, tick_idx, _tick_now_ms);
         } else {
             if my_tier == "propose" {
-                let classical_str = if novelty.is_classical_result { "true"; } else { "false"; };
-                let novelty_json = "{\"is_classical_result\":" + classical_str
-                                 + ",\"classical_identifier\":\"" + novelty.classical_identifier
-                                 + "\",\"novelty_verdict\":\"" + novelty.novelty_verdict
-                                 + "\",\"reasoning\":\"" + novelty.reasoning + "\"}";
-                memo_write("novelty:" + _self_pid + ":verdict:tick-" + to_string(upstream_tick), novelty_json);
-
-                if len(explorer_pid) > 0 {
-                    memo_write("novelty:final_verdict:" + explorer_pid + ":tick-" + to_string(upstream_tick), novelty.novelty_verdict);
-                };
-
-                // Append to per-run discovery ledger.
-                let ledger_path = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
-                if len(ledger_path) > 0 {
-                    let ledger_row = "{\"ts\":" + to_string(_tick_now_ms) + ",\"colony\":\"" + _colony_name + "\",\"pid\":\"" + _self_pid + "\",\"tick\":" + to_string(tick_idx) + ",\"event\":\"novelty_verdict\",\"verdict\":\"" + novelty.novelty_verdict + "\"}";
-                    // colony-lint: safe-exec-concat
-                    let append_cmd = "printf '%s\n' " + shell_escape(ledger_row) + " >> " + shell_escape(ledger_path);
-                    let _ = try { exec sh append_cmd; } catch e { ""; };
-                };
-
-                emit("math-foundry:novelty_done", novelty);
-                learn("novelty", "tick " + to_string(tick_idx) + " " + novelty.novelty_verdict, novelty.reasoning, "success", ["emitted", "math-foundry"]);
+                _publish_novelty(false, novelty, _self_pid, _colony_name, explorer_pid, upstream_tick, tick_idx, _tick_now_ms);
             } else {
                 print("[novelty] observing (tier:", my_tier, ") verdict=", novelty.novelty_verdict);
                 learn("novelty", "tick " + to_string(tick_idx) + " " + novelty.novelty_verdict, novelty.reasoning, "partial", ["observed", "math-foundry"]);

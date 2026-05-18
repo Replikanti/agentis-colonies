@@ -52,6 +52,59 @@ fn _seed_prompt() -> string {
     return "You are a strict claim auditor. The user-supplied input below carries the original PROBLEM, the stated ANSWER, the NOVELTY CLAIM, and four search reports (ARXIV, OEIS, GROUPPROPS, SCHOLAR). Classify the claim. Use 'KNOWN_PRIOR' only when at least one searcher reports a 'direct' relevance match for the same result; 'VERIFIED_NEW' when no searcher reports a direct match and the claim is well-supported; 'NEEDS_HUMAN' when reports conflict, are partial, or scholar is unavailable AND the other three are inconclusive. Output ONLY valid JSON: {\"audit_verdict\":\"VERIFIED_NEW|KNOWN_PRIOR|NEEDS_HUMAN\", \"reasoning\":\"...\", \"confidence\":0.0-1.0, \"evidence_arxiv\":\"semicolon-separated arxiv ids or empty\", \"evidence_oeis\":\"semicolon-separated A-numbers or empty\", \"evidence_groupprops\":\"semicolon-separated urls or empty\", \"evidence_scholar\":\"semicolon-separated paper ids or empty\", \"problem_summary\":\"one-line\"}. Do NOT wrap output in markdown code fences (no triple backticks); return raw JSON only.";
 }
 
+// _publish_auditor -- TERMINAL agent (Class 1). memo + emit (+ ledger
+// row when final_write=true). Autonomous and review-gated both emit
+// the ledger row; only propose skips it (#622 ADR-0001). The ledger row
+// carries `terminal=true` when terminal=true (autonomous decision path).
+fn _publish_auditor(
+    final_write: bool,
+    terminal: bool,
+    verdict: Verdict,
+    self_pid: string,
+    upstream_tick: int,
+    tick_idx: int,
+    tick_now_ms: int,
+    source_run: string,
+    source_tick: string,
+    source_pid: string
+) -> void {
+    let conf_str = to_string(verdict.confidence);
+    let verdict_json = "{\"audit_verdict\":\"" + verdict.audit_verdict
+                     + "\",\"reasoning\":\"" + verdict.reasoning
+                     + "\",\"confidence\":" + conf_str
+                     + ",\"problem_summary\":\"" + verdict.problem_summary + "\"}";
+    memo_write("auditor:" + self_pid + ":verdict:tick-" + to_string(upstream_tick), verdict_json);
+    memo_write("auditor:" + self_pid + ":verdict_label:tick-" + to_string(upstream_tick), verdict.audit_verdict);
+    memo_write("replay:current_auditor_pid", self_pid);
+
+    if final_write {
+        // Append to per-run audit ledger.
+        let ledger_path = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
+        if len(ledger_path) > 0 {
+            let terminal_str = if terminal { "true"; } else { "false"; };
+            let ledger_row = "{\"ts\":" + to_string(tick_now_ms)
+                           + ",\"source_run\":\"" + source_run
+                           + "\",\"source_tick\":" + source_tick
+                           + ",\"source_pid\":\"" + source_pid
+                           + "\",\"problem_summary\":\"" + verdict.problem_summary
+                           + "\",\"audit_verdict\":\"" + verdict.audit_verdict
+                           + "\",\"evidence\":{\"arxiv\":\"" + verdict.evidence_arxiv
+                           + "\",\"oeis\":\"" + verdict.evidence_oeis
+                           + "\",\"groupprops\":\"" + verdict.evidence_groupprops
+                           + "\",\"scholar\":\"" + verdict.evidence_scholar
+                           + "\"},\"reasoning\":\"" + verdict.reasoning
+                           + "\",\"confidence\":" + conf_str
+                           + ",\"terminal\":" + terminal_str + "}";
+            // colony-lint: safe-exec-concat
+            let append_cmd = "printf '%s\n' " + shell_escape(ledger_row) + " >> " + shell_escape(ledger_path);
+            let _ = try { exec sh append_cmd; } catch e { ""; };
+        };
+    };
+
+    emit("auditor:verdict_ready", verdict);
+    learn("audit", "tick " + to_string(tick_idx) + " " + verdict.audit_verdict, verdict.reasoning, "success", ["emitted", "claim-auditor"]);
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let _tick_now_ms = now_ms_via_shell();
@@ -108,43 +161,20 @@ fn tick(reason: string) -> void {
 
     let my_tier = tier("auditor");
     if my_tier == "autonomous" {
+        // Terminal agent: autonomous emits the audit ledger row with
+        // terminal=true (no confidence floor; emit even when verdict.confidence
+        // would otherwise be below an internal floor) and stamps
+        // `autonomous_decision=true` for downstream observers (#622).
+        memo_write("auditor:" + _self_pid + ":autonomous_decision", "true");
         learn("audit", "tick " + to_string(tick_idx) + " " + verdict.audit_verdict, verdict.reasoning, "partial", ["acted", "claim-auditor"]);
+        _publish_auditor(true, true, verdict, _self_pid, upstream_tick, tick_idx, _tick_now_ms, source_run, source_tick, source_pid);
     } else {
         if my_tier == "review-gated" {
             learn("audit", "tick " + to_string(tick_idx) + " " + verdict.audit_verdict, verdict.reasoning, "partial", ["review-gated", "claim-auditor"]);
+            _publish_auditor(true, false, verdict, _self_pid, upstream_tick, tick_idx, _tick_now_ms, source_run, source_tick, source_pid);
         } else {
             if my_tier == "propose" {
-                let conf_str = to_string(verdict.confidence);
-                let verdict_json = "{\"audit_verdict\":\"" + verdict.audit_verdict
-                                 + "\",\"reasoning\":\"" + verdict.reasoning
-                                 + "\",\"confidence\":" + conf_str
-                                 + ",\"problem_summary\":\"" + verdict.problem_summary + "\"}";
-                memo_write("auditor:" + _self_pid + ":verdict:tick-" + to_string(upstream_tick), verdict_json);
-                memo_write("auditor:" + _self_pid + ":verdict_label:tick-" + to_string(upstream_tick), verdict.audit_verdict);
-                memo_write("replay:current_auditor_pid", _self_pid);
-
-                // Append to per-run audit ledger.
-                let ledger_path = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
-                if len(ledger_path) > 0 {
-                    let ledger_row = "{\"ts\":" + to_string(_tick_now_ms)
-                                   + ",\"source_run\":\"" + source_run
-                                   + "\",\"source_tick\":" + source_tick
-                                   + ",\"source_pid\":\"" + source_pid
-                                   + "\",\"problem_summary\":\"" + verdict.problem_summary
-                                   + "\",\"audit_verdict\":\"" + verdict.audit_verdict
-                                   + "\",\"evidence\":{\"arxiv\":\"" + verdict.evidence_arxiv
-                                   + "\",\"oeis\":\"" + verdict.evidence_oeis
-                                   + "\",\"groupprops\":\"" + verdict.evidence_groupprops
-                                   + "\",\"scholar\":\"" + verdict.evidence_scholar
-                                   + "\"},\"reasoning\":\"" + verdict.reasoning
-                                   + "\",\"confidence\":" + conf_str + "}";
-                    // colony-lint: safe-exec-concat
-                    let append_cmd = "printf '%s\n' " + shell_escape(ledger_row) + " >> " + shell_escape(ledger_path);
-                    let _ = try { exec sh append_cmd; } catch e { ""; };
-                };
-
-                emit("auditor:verdict_ready", verdict);
-                learn("audit", "tick " + to_string(tick_idx) + " " + verdict.audit_verdict, verdict.reasoning, "success", ["emitted", "claim-auditor"]);
+                _publish_auditor(false, false, verdict, _self_pid, upstream_tick, tick_idx, _tick_now_ms, source_run, source_tick, source_pid);
             } else {
                 print("[auditor] observing (tier:", my_tier, ") verdict=", verdict.audit_verdict);
                 learn("audit", "tick " + to_string(tick_idx) + " " + verdict.audit_verdict, verdict.reasoning, "partial", ["observed", "claim-auditor"]);

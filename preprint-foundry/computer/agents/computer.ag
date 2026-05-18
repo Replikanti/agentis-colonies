@@ -50,6 +50,57 @@ fn _script_prompt() -> string {
     return "You are writing a STANDALONE reproducibility script for a math preprint. The user-supplied context carries the PROBLEM, the verified ANSWER, the upstream EXPLORER CODE + OUTPUT that originally produced the observation, and the AUDITOR REASONING. Produce a self-contained script (NOT importing the explorer's code, NOT reading any external file) that re-derives the central claim by independent computation and prints the result with a clear label. Choose language=\"python\" (sympy/numpy/networkx/itertools/fractions are available) for arithmetic / combinatorial / sequence claims, language=\"gap\" for finite group theory claims (the container has the GAP interpreter on PATH). Use ONLY the standard library and listed third-party packages. NO file I/O, network, subprocess. Output ONLY valid JSON: {\"language\":\"python|gap\",\"script\":\"...full script body...\",\"expected_substring\":\"a substring that MUST appear in stdout when the script runs correctly (use the answer value)\",\"rationale\":\"one-line\"}.";
 }
 
+// _publish_computer -- sandbox write + run + memo + emit. computer writes
+// no ledger row today; final_write retained for symmetry (#622 ADR-0001).
+fn _publish_computer(
+    final_write: bool,
+    script: Script,
+    self_pid: string,
+    upstream_tick: int,
+    tick_idx: int
+) -> void {
+    let _ = final_write;
+    let sandbox_dir = try { exec sh "printenv AGENTIS_ROOT"; } catch e { ""; };
+    let sandbox_eff = if len(sandbox_dir) > 0 { sandbox_dir + "/sandbox"; } else { "/run-root/.agentis/sandbox"; };
+    let lang = script.language;
+    let ext = if lang == "gap" { ".g"; } else { ".py"; };
+    let script_path = sandbox_eff + "/repro-" + self_pid + "-tick-" + to_string(upstream_tick) + ext;
+    // colony-lint: safe-exec-concat
+    let write_cmd = "mkdir -p " + shell_escape(sandbox_eff) + " && printf '%s' " + shell_escape(script.script) + " > " + shell_escape(script_path);
+    let _wrote = try { exec sh write_cmd; } catch e { ""; };
+
+    let run_cmd = if lang == "gap" {
+        // colony-lint: safe-exec-concat
+        "gap -q -b --norepl " + shell_escape(script_path) + " 2>&1";
+    } else {
+        // colony-lint: safe-exec-concat
+        "python3 " + shell_escape(script_path) + " 2>&1";
+    };
+    let output = try { exec sh run_cmd; } catch e { ""; };
+
+    let runs_ok = if len(script.expected_substring) > 0 {
+        // colony-lint: safe-exec-concat
+        let check_cmd = "printf '%s' " + shell_escape(output) + " | grep -F " + shell_escape(script.expected_substring) + " >/dev/null 2>&1 && printf yes || printf no";
+        let g = try { exec sh check_cmd; } catch e { "no"; };
+        g == "yes";
+    } else {
+        len(output) > 0;
+    };
+
+    memo_write("computer:" + self_pid + ":script:tick-" + to_string(upstream_tick), script.script);
+    memo_write("computer:" + self_pid + ":output:tick-" + to_string(upstream_tick), output);
+    memo_write("computer:" + self_pid + ":language:tick-" + to_string(upstream_tick), lang);
+    memo_write("computer:" + self_pid + ":expected_substring:tick-" + to_string(upstream_tick), script.expected_substring);
+    let runs_ok_str = if runs_ok { "true"; } else { "false"; };
+    memo_write("computer:" + self_pid + ":runs_ok:tick-" + to_string(upstream_tick), runs_ok_str);
+    memo_write("replay:current_computer_pid", self_pid);
+
+    emit("computer:script_ready", script);
+    emit("computer:output_ready", script);
+
+    learn("compute", "tick " + to_string(tick_idx), "runs_ok=" + runs_ok_str + " lang=" + lang, "success", ["emitted", "preprint-foundry"]);
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let _tick_now_ms = now_ms_via_shell();
@@ -92,51 +143,18 @@ fn tick(reason: string) -> void {
 
     let my_tier = tier("computer");
     if my_tier == "autonomous" {
+        // reason: tier N/A here; non-terminal agent -- collapses to review-gated.
+        memo_write("computer:" + _self_pid + ":review_gated", "true");
         learn("compute", "tick " + to_string(tick_idx), script.rationale, "partial", ["acted", "preprint-foundry"]);
+        _publish_computer(true, script, _self_pid, upstream_tick, tick_idx);
     } else {
         if my_tier == "review-gated" {
+            memo_write("computer:" + _self_pid + ":review_gated", "true");
             learn("compute", "tick " + to_string(tick_idx), script.rationale, "partial", ["review-gated", "preprint-foundry"]);
+            _publish_computer(true, script, _self_pid, upstream_tick, tick_idx);
         } else {
             if my_tier == "propose" {
-                let sandbox_dir = try { exec sh "printenv AGENTIS_ROOT"; } catch e { ""; };
-                let sandbox_eff = if len(sandbox_dir) > 0 { sandbox_dir + "/sandbox"; } else { "/run-root/.agentis/sandbox"; };
-                let lang = script.language;
-                let ext = if lang == "gap" { ".g"; } else { ".py"; };
-                let script_path = sandbox_eff + "/repro-" + _self_pid + "-tick-" + to_string(upstream_tick) + ext;
-                // colony-lint: safe-exec-concat
-                let write_cmd = "mkdir -p " + shell_escape(sandbox_eff) + " && printf '%s' " + shell_escape(script.script) + " > " + shell_escape(script_path);
-                let _wrote = try { exec sh write_cmd; } catch e { ""; };
-
-                let run_cmd = if lang == "gap" {
-                    // colony-lint: safe-exec-concat
-                    "gap -q -b --norepl " + shell_escape(script_path) + " 2>&1";
-                } else {
-                    // colony-lint: safe-exec-concat
-                    "python3 " + shell_escape(script_path) + " 2>&1";
-                };
-                let output = try { exec sh run_cmd; } catch e { ""; };
-
-                let runs_ok = if len(script.expected_substring) > 0 {
-                    // colony-lint: safe-exec-concat
-                    let check_cmd = "printf '%s' " + shell_escape(output) + " | grep -F " + shell_escape(script.expected_substring) + " >/dev/null 2>&1 && printf yes || printf no";
-                    let g = try { exec sh check_cmd; } catch e { "no"; };
-                    g == "yes";
-                } else {
-                    len(output) > 0;
-                };
-
-                memo_write("computer:" + _self_pid + ":script:tick-" + to_string(upstream_tick), script.script);
-                memo_write("computer:" + _self_pid + ":output:tick-" + to_string(upstream_tick), output);
-                memo_write("computer:" + _self_pid + ":language:tick-" + to_string(upstream_tick), lang);
-                memo_write("computer:" + _self_pid + ":expected_substring:tick-" + to_string(upstream_tick), script.expected_substring);
-                let runs_ok_str = if runs_ok { "true"; } else { "false"; };
-                memo_write("computer:" + _self_pid + ":runs_ok:tick-" + to_string(upstream_tick), runs_ok_str);
-                memo_write("replay:current_computer_pid", _self_pid);
-
-                emit("computer:script_ready", script);
-                emit("computer:output_ready", script);
-
-                learn("compute", "tick " + to_string(tick_idx), "runs_ok=" + runs_ok_str + " lang=" + lang, "success", ["emitted", "preprint-foundry"]);
+                _publish_computer(false, script, _self_pid, upstream_tick, tick_idx);
             } else {
                 print("[computer] observing (tier:", my_tier, ") rationale=", script.rationale);
                 learn("compute", "tick " + to_string(tick_idx), script.rationale, "partial", ["observed", "preprint-foundry"]);

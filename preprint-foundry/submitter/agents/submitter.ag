@@ -67,6 +67,157 @@ fn _metadata_prompt() -> string {
     return "You are preparing an arXiv submission package for a math preprint. The user-supplied input below carries the FINAL TEX, the COMPILE LOG, the REPRODUCIBILITY SCRIPT and OUTPUT, and a candidate ARXIV_CATEGORY + MSC_CODES from the introducer. Produce: (1) the paper title (under 200 chars), (2) a clean ASCII abstract (under 1920 chars, no LaTeX environments, no `\\\\cite`, no `$...$` -- plain prose for the arXiv submission form), (3) MSC2020 codes (comma-separated), (4) the primary arXiv category (e.g. math.GR), (5) cross-list categories (comma-separated, may be empty), (6) a short cover letter (200-400 words) addressed to arXiv moderation that names the human author, summarises the contribution, notes that the proof is computational (when the reproducibility script is the evidence) and explicitly discloses AI assistance with drafting, (7) a single-paragraph AI disclosure that must be appended verbatim to the cover letter (arXiv 2024+ policy). Output ONLY valid JSON: {\"title\":\"...\",\"abstract_clean\":\"...\",\"msc_codes_csv\":\"...\",\"arxiv_category\":\"...\",\"cross_list_csv\":\"...\",\"cover_letter\":\"...\",\"ai_disclosure\":\"...\",\"rationale\":\"one-line\"}.";
 }
 
+// _submitter_draft_phase -- Phase A. Build arxiv-metadata.json + tarball
+// + cover letter, write DRAFTED row to ledger, persist memo. Used by
+// propose / review-gated / autonomous (Class 1 terminal, #622 ADR-0001).
+// When mark_awaiting=true (review-gated), also stamps an
+// `awaiting_approval` memo flag for the dashboard.
+fn _submitter_draft_phase(
+    mark_awaiting: bool,
+    self_pid: string,
+    upstream_tick: int,
+    tick_idx: int,
+    tick_now_ms: int,
+    claim_id_eff: string,
+    claim_dir: string,
+    compile_ok: string,
+    source_audit_run: string,
+    final_tex: string,
+    compile_log: string,
+    title_seed: string,
+    msc_seed: string,
+    cat_seed: string,
+    repro_script: string,
+    repro_output: string,
+    repro_lang: string
+) -> void {
+    let ctx = "FINAL TEX:\n" + final_tex + "\n"
+            + "COMPILE LOG:\n" + compile_log + "\n"
+            + "TITLE SEED: " + title_seed + "\n"
+            + "MSC SEED: " + msc_seed + "\n"
+            + "ARXIV CATEGORY SEED: " + cat_seed + "\n"
+            + "REPRO SCRIPT (" + repro_lang + "):\n" + repro_script + "\n"
+            + "REPRO OUTPUT:\n" + repro_output + "\n";
+    let meta = prompt(_metadata_prompt(), ctx) -> Metadata;
+
+    // Load authors.toml from $PREPRINT_AUTHOR_CONFIG (path threaded
+    // through by run-preprint.sh). The file is parsed by a Python
+    // helper rather than the .ag DSL (no TOML in DSL).
+    let author_cfg_path = try { exec sh "printenv PREPRINT_AUTHOR_CONFIG"; } catch e { ""; };
+    let author_cfg_eff = if len(author_cfg_path) > 0 { author_cfg_path; } else { "/run-root/config/authors.toml"; };
+    // colony-lint: safe-exec-concat
+    let authors_cmd = "python3 -c 'import sys\ntry:\n import tomllib\nexcept Exception:\n import tomli as tomllib\ntry:\n with open(sys.argv[1],\"rb\") as f: d=tomllib.load(f)\nexcept Exception:\n print(\"AUTHOR-PLACEHOLDER <author@example.org>\"); sys.exit(0)\nauthors=d.get(\"authors\") or []\nout=[]\nfor a in authors:\n name=a.get(\"name\",\"AUTHOR-PLACEHOLDER\"); email=a.get(\"email\",\"\")\n if email: out.append(name+\" <\"+email+\">\")\n else: out.append(name)\nprint(\"; \".join(out) if out else \"AUTHOR-PLACEHOLDER\")' " + shell_escape(author_cfg_eff);
+    let authors_line = try { exec sh authors_cmd; } catch e { "AUTHOR-PLACEHOLDER"; };
+
+    // Build arxiv-metadata.json into the claim dir.
+    let cover_full = meta.cover_letter + "\n\n--- AI assistance disclosure ---\n" + meta.ai_disclosure + "\n";
+    // colony-lint: safe-exec-concat
+    let meta_cmd = "python3 -c 'import sys,json\nm={\"title\":sys.argv[1],\"abstract\":sys.argv[2],\"authors\":sys.argv[3],\"primary_category\":sys.argv[4],\"cross_list\":[s for s in sys.argv[5].split(\",\") if s],\"msc_codes\":[s for s in sys.argv[6].split(\",\") if s],\"cover_letter\":sys.argv[7]}\nwith open(sys.argv[8],\"w\") as f: json.dump(m,f,indent=2)\nprint(\"ok\")' "
+        + shell_escape(meta.title) + " "
+        + shell_escape(meta.abstract_clean) + " "
+        + shell_escape(authors_line) + " "
+        + shell_escape(meta.arxiv_category) + " "
+        + shell_escape(meta.cross_list_csv) + " "
+        + shell_escape(meta.msc_codes_csv) + " "
+        + shell_escape(cover_full) + " "
+        + shell_escape(claim_dir + "/arxiv-metadata.json");
+    let _meta_write = try { exec sh meta_cmd; } catch e { ""; };
+
+    // Stage reproducibility artefacts into the claim dir.
+    let ext = if repro_lang == "gap" { ".g"; } else { ".py"; };
+    // colony-lint: safe-exec-concat
+    let stage_script = "printf '%s' " + shell_escape(repro_script) + " > " + shell_escape(claim_dir + "/reproducibility" + ext);
+    let _ss = try { exec sh stage_script; } catch e { ""; };
+    // colony-lint: safe-exec-concat
+    let stage_output = "printf '%s' " + shell_escape(repro_output) + " > " + shell_escape(claim_dir + "/reproducibility-output.txt");
+    let _so = try { exec sh stage_output; } catch e { ""; };
+
+    // Package submission tarball.
+    // colony-lint: safe-exec-concat
+    let tar_cmd = "cd " + shell_escape(claim_dir) + " && tar -czf submission.tar.gz main.tex refs.bib reproducibility" + ext + " reproducibility-output.txt arxiv-metadata.json 2>&1 || true";
+    let _tar = try { exec sh tar_cmd; } catch e { ""; };
+
+    // Write DRAFTED row to preprint-ledger.jsonl.
+    let ledger_path = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
+    if len(ledger_path) > 0 {
+        let ledger_row = "{\"ts\":" + to_string(tick_now_ms)
+                       + ",\"source_audit_run\":\"" + source_audit_run
+                       + "\",\"source_claim_id\":\"" + claim_id_eff
+                       + "\",\"preprint_path\":\"" + claim_dir
+                       + "\",\"title\":\"" + meta.title
+                       + "\",\"abstract\":\"" + meta.abstract_clean
+                       + "\",\"arxiv_category\":\"" + meta.arxiv_category
+                       + "\",\"msc_codes_csv\":\"" + meta.msc_codes_csv
+                       + "\",\"status\":\"DRAFTED\""
+                       + ",\"latex_compile_ok\":" + compile_ok
+                       + ",\"arxiv_id\":null"
+                       + ",\"submission_ts\":null}";
+        // colony-lint: safe-exec-concat
+        let append_cmd = "printf '%s\n' " + shell_escape(ledger_row) + " >> " + shell_escape(ledger_path);
+        let _ap = try { exec sh append_cmd; } catch e { ""; };
+    };
+
+    memo_write("submitter:" + self_pid + ":metadata:tick-" + to_string(upstream_tick), meta.title);
+    memo_write("submitter:" + self_pid + ":status:tick-" + to_string(upstream_tick), "DRAFTED");
+    memo_write("submitter:" + claim_id_eff + ":drafted", to_string(tick_now_ms));
+    memo_write("submitter:" + claim_id_eff + ":title", meta.title);
+    memo_write("submitter:" + claim_id_eff + ":arxiv_category", meta.arxiv_category);
+    memo_write("submitter:" + claim_id_eff + ":claim_dir", claim_dir);
+    memo_write("replay:current_submitter_pid", self_pid);
+
+    if mark_awaiting {
+        memo_write("submitter:" + claim_id_eff + ":awaiting_approval", "true");
+    };
+
+    emit("submitter:metadata_ready", meta);
+    emit("submitter:status_ready", meta);
+
+    learn("submit", "tick " + to_string(tick_idx) + " DRAFTED " + claim_id_eff, meta.rationale, "success", ["emitted", "preprint-foundry", "hitl-gated"]);
+}
+
+// _submitter_send_phase -- terminal SMTP send. Mails the tarball via
+// $PREPRINT_ARXIV_GATEWAY and writes the SUBMITTED row to the ledger.
+// Used by autonomous (unconditional, no HITL gate) and by the
+// human-approved branch of propose/review-gated.
+fn _submitter_send_phase(
+    self_pid: string,
+    upstream_tick: int,
+    tick_idx: int,
+    tick_now_ms: int,
+    claim_id_eff: string,
+    claim_dir: string
+) -> void {
+    let gateway = try { exec sh "printenv PREPRINT_ARXIV_GATEWAY"; } catch e { ""; };
+    let from_addr = try { exec sh "printenv PREPRINT_ARXIV_FROM"; } catch e { ""; };
+    let gateway_eff = if len(gateway) > 0 { gateway; } else { "submit@arxiv.org"; };
+    let from_eff = if len(from_addr) > 0 { from_addr; } else { "AUTHOR-PLACEHOLDER@example.org"; };
+    // colony-lint: safe-exec-concat
+    let send_cmd = "python3 -c 'import smtplib, ssl, sys, email.message, os\nm=email.message.EmailMessage()\nm[\"Subject\"]=\"arXiv submission: \"+sys.argv[1]\nm[\"From\"]=sys.argv[2]\nm[\"To\"]=sys.argv[3]\nwith open(sys.argv[4],\"r\") as f: cover=f.read()\nm.set_content(cover)\nwith open(sys.argv[5],\"rb\") as f: data=f.read()\nm.add_attachment(data, maintype=\"application\", subtype=\"gzip\", filename=\"submission.tar.gz\")\nhost=os.environ.get(\"PREPRINT_SMTP_HOST\",\"localhost\")\nport=int(os.environ.get(\"PREPRINT_SMTP_PORT\",\"25\"))\ntry:\n s=smtplib.SMTP(host,port,timeout=30); s.send_message(m); s.quit(); print(\"sent\")\nexcept Exception as e:\n print(\"smtp-error:\"+str(e))' "
+            + shell_escape(claim_id_eff) + " "
+            + shell_escape(from_eff) + " "
+            + shell_escape(gateway_eff) + " "
+            + shell_escape(claim_dir + "/arxiv-metadata.json") + " "
+            + shell_escape(claim_dir + "/submission.tar.gz");
+    let send_out = try { exec sh send_cmd; } catch e { "smtp-error:exec-failed"; };
+
+    let ledger_path2 = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
+    if len(ledger_path2) > 0 {
+        let status_row = "{\"ts\":" + to_string(tick_now_ms)
+                       + ",\"source_claim_id\":\"" + claim_id_eff
+                       + "\",\"status\":\"SUBMITTED\""
+                       + ",\"submission_ts\":" + to_string(tick_now_ms)
+                       + ",\"smtp_result\":\"" + send_out + "\"}";
+        // colony-lint: safe-exec-concat
+        let append2 = "printf '%s\n' " + shell_escape(status_row) + " >> " + shell_escape(ledger_path2);
+        let _a2 = try { exec sh append2; } catch e { ""; };
+    };
+
+    memo_write("submitter:" + claim_id_eff + ":submitted", to_string(tick_now_ms));
+    memo_write("submitter:" + self_pid + ":status:tick-" + to_string(upstream_tick), "SUBMITTED");
+    emit("submitter:status_ready", send_out);
+    learn("submit", "tick " + to_string(tick_idx) + " SUBMITTED " + claim_id_eff, send_out, "success", ["emitted", "preprint-foundry", "hitl-gated"]);
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let _tick_now_ms = now_ms_via_shell();
@@ -123,92 +274,69 @@ fn tick(reason: string) -> void {
     let already_submitted = recall_latest("submitter:" + claim_id_eff + ":submitted");
 
     if my_tier == "autonomous" {
+        // Terminal agent (Class 1, #622 ADR-0001): autonomous skips the
+        // HITL gate. Phase A drafts if not already drafted; then we
+        // unconditionally enter the SMTP send path (the human_status
+        // check collapses to true). Records `autonomous_decision=true`
+        // for downstream observers.
+        memo_write("submitter:" + claim_id_eff + ":autonomous_decision", "true");
         learn("submit", "tick " + to_string(tick_idx), "tier=autonomous", "partial", ["acted", "preprint-foundry"]);
+        if len(already_drafted) == 0 {
+            _submitter_draft_phase(false, _self_pid, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir, compile_ok, source_audit_run, final_tex, compile_log, title_seed, msc_seed, cat_seed, repro_script, repro_output, repro_lang);
+        };
+        if len(already_submitted) > 0 {
+            print("[submitter] already submitted claim=", claim_id_eff);
+            learn("submit", "tick " + to_string(tick_idx) + " noop " + claim_id_eff, "already submitted", "partial", ["observed", "preprint-foundry", "hitl-gated"]);
+        } else {
+            _submitter_send_phase(_self_pid, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir);
+        };
     } else {
         if my_tier == "review-gated" {
+            // Today's propose body, plus the `awaiting_approval` memo flag
+            // stamped during Phase A so the dashboard can surface that the
+            // submission is waiting on a human decision (#622).
             learn("submit", "tick " + to_string(tick_idx), "tier=review-gated", "partial", ["review-gated", "preprint-foundry"]);
+            if len(already_drafted) == 0 {
+                _submitter_draft_phase(true, _self_pid, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir, compile_ok, source_audit_run, final_tex, compile_log, title_seed, msc_seed, cat_seed, repro_script, repro_output, repro_lang);
+            } else {
+                // Phase B: DRAFTED already exists -- observe HITL flag and act
+                // only on explicit human approval. NEVER auto-submit.
+                if human_status == "approved" {
+                    if len(already_submitted) > 0 {
+                        print("[submitter] already submitted claim=", claim_id_eff);
+                        learn("submit", "tick " + to_string(tick_idx) + " noop " + claim_id_eff, "already submitted", "partial", ["observed", "preprint-foundry", "hitl-gated"]);
+                    } else {
+                        _submitter_send_phase(_self_pid, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir);
+                    };
+                } else {
+                    if human_status == "rejected" {
+                        let ledger_path3 = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
+                        if len(ledger_path3) > 0 {
+                            let reason_raw = recall_latest("submitter:" + claim_id_eff + ":human_reject_reason");
+                            let row = "{\"ts\":" + to_string(_tick_now_ms)
+                                    + ",\"source_claim_id\":\"" + claim_id_eff
+                                    + "\",\"status\":\"HUMAN_REJECTED\""
+                                    + ",\"reason\":\"" + reason_raw + "\"}";
+                            // colony-lint: safe-exec-concat
+                            let append3 = "printf '%s\n' " + shell_escape(row) + " >> " + shell_escape(ledger_path3);
+                            let _a3 = try { exec sh append3; } catch e { ""; };
+                        };
+                        memo_write("submitter:" + claim_id_eff + ":rejected", to_string(_tick_now_ms));
+                        memo_write("submitter:" + _self_pid + ":status:tick-" + to_string(upstream_tick), "HUMAN_REJECTED");
+                        emit("submitter:status_ready", "HUMAN_REJECTED");
+                        learn("submit", "tick " + to_string(tick_idx) + " HUMAN_REJECTED " + claim_id_eff, "human declined", "partial", ["emitted", "preprint-foundry", "hitl-gated"]);
+                    } else {
+                        // No human decision yet -- idle.
+                        print("[submitter] DRAFTED awaiting human approval claim=", claim_id_eff);
+                        learn("submit", "tick " + to_string(tick_idx) + " awaiting " + claim_id_eff, "human_status=" + human_status, "partial", ["observed", "preprint-foundry", "hitl-gated"]);
+                    };
+                };
+            };
         } else {
             if my_tier == "propose" {
                 // Phase A: produce DRAFTED row (idempotent: skip when already drafted).
                 if len(already_drafted) == 0 {
-                    let ctx = "FINAL TEX:\n" + final_tex + "\n"
-                            + "COMPILE LOG:\n" + compile_log + "\n"
-                            + "TITLE SEED: " + title_seed + "\n"
-                            + "MSC SEED: " + msc_seed + "\n"
-                            + "ARXIV CATEGORY SEED: " + cat_seed + "\n"
-                            + "REPRO SCRIPT (" + repro_lang + "):\n" + repro_script + "\n"
-                            + "REPRO OUTPUT:\n" + repro_output + "\n";
-                    let meta = prompt(_metadata_prompt(), ctx) -> Metadata;
-
-                    // Load authors.toml from $PREPRINT_AUTHOR_CONFIG (path threaded
-                    // through by run-preprint.sh). The file is parsed by a Python
-                    // helper rather than the .ag DSL (no TOML in DSL).
-                    let author_cfg_path = try { exec sh "printenv PREPRINT_AUTHOR_CONFIG"; } catch e { ""; };
-                    let author_cfg_eff = if len(author_cfg_path) > 0 { author_cfg_path; } else { "/run-root/config/authors.toml"; };
-                    // colony-lint: safe-exec-concat
-                    let authors_cmd = "python3 -c 'import sys\ntry:\n import tomllib\nexcept Exception:\n import tomli as tomllib\ntry:\n with open(sys.argv[1],\"rb\") as f: d=tomllib.load(f)\nexcept Exception:\n print(\"AUTHOR-PLACEHOLDER <author@example.org>\"); sys.exit(0)\nauthors=d.get(\"authors\") or []\nout=[]\nfor a in authors:\n name=a.get(\"name\",\"AUTHOR-PLACEHOLDER\"); email=a.get(\"email\",\"\")\n if email: out.append(name+\" <\"+email+\">\")\n else: out.append(name)\nprint(\"; \".join(out) if out else \"AUTHOR-PLACEHOLDER\")' " + shell_escape(author_cfg_eff);
-                    let authors_line = try { exec sh authors_cmd; } catch e { "AUTHOR-PLACEHOLDER"; };
-
-                    // Build arxiv-metadata.json into the claim dir.
-                    let cover_full = meta.cover_letter + "\n\n--- AI assistance disclosure ---\n" + meta.ai_disclosure + "\n";
-                    // colony-lint: safe-exec-concat
-                    let meta_cmd = "python3 -c 'import sys,json\nm={\"title\":sys.argv[1],\"abstract\":sys.argv[2],\"authors\":sys.argv[3],\"primary_category\":sys.argv[4],\"cross_list\":[s for s in sys.argv[5].split(\",\") if s],\"msc_codes\":[s for s in sys.argv[6].split(\",\") if s],\"cover_letter\":sys.argv[7]}\nwith open(sys.argv[8],\"w\") as f: json.dump(m,f,indent=2)\nprint(\"ok\")' "
-                        + shell_escape(meta.title) + " "
-                        + shell_escape(meta.abstract_clean) + " "
-                        + shell_escape(authors_line) + " "
-                        + shell_escape(meta.arxiv_category) + " "
-                        + shell_escape(meta.cross_list_csv) + " "
-                        + shell_escape(meta.msc_codes_csv) + " "
-                        + shell_escape(cover_full) + " "
-                        + shell_escape(claim_dir + "/arxiv-metadata.json");
-                    let _meta_write = try { exec sh meta_cmd; } catch e { ""; };
-
-                    // Stage reproducibility artefacts into the claim dir.
-                    let ext = if repro_lang == "gap" { ".g"; } else { ".py"; };
-                    // colony-lint: safe-exec-concat
-                    let stage_script = "printf '%s' " + shell_escape(repro_script) + " > " + shell_escape(claim_dir + "/reproducibility" + ext);
-                    let _ss = try { exec sh stage_script; } catch e { ""; };
-                    // colony-lint: safe-exec-concat
-                    let stage_output = "printf '%s' " + shell_escape(repro_output) + " > " + shell_escape(claim_dir + "/reproducibility-output.txt");
-                    let _so = try { exec sh stage_output; } catch e { ""; };
-
-                    // Package submission tarball.
-                    // colony-lint: safe-exec-concat
-                    let tar_cmd = "cd " + shell_escape(claim_dir) + " && tar -czf submission.tar.gz main.tex refs.bib reproducibility" + ext + " reproducibility-output.txt arxiv-metadata.json 2>&1 || true";
-                    let _tar = try { exec sh tar_cmd; } catch e { ""; };
-
-                    // Write DRAFTED row to preprint-ledger.jsonl.
-                    let ledger_path = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
-                    if len(ledger_path) > 0 {
-                        let ledger_row = "{\"ts\":" + to_string(_tick_now_ms)
-                                       + ",\"source_audit_run\":\"" + source_audit_run
-                                       + "\",\"source_claim_id\":\"" + claim_id_eff
-                                       + "\",\"preprint_path\":\"" + claim_dir
-                                       + "\",\"title\":\"" + meta.title
-                                       + "\",\"abstract\":\"" + meta.abstract_clean
-                                       + "\",\"arxiv_category\":\"" + meta.arxiv_category
-                                       + "\",\"msc_codes_csv\":\"" + meta.msc_codes_csv
-                                       + "\",\"status\":\"DRAFTED\""
-                                       + ",\"latex_compile_ok\":" + compile_ok
-                                       + ",\"arxiv_id\":null"
-                                       + ",\"submission_ts\":null}";
-                        // colony-lint: safe-exec-concat
-                        let append_cmd = "printf '%s\n' " + shell_escape(ledger_row) + " >> " + shell_escape(ledger_path);
-                        let _ap = try { exec sh append_cmd; } catch e { ""; };
-                    };
-
-                    memo_write("submitter:" + _self_pid + ":metadata:tick-" + to_string(upstream_tick), meta.title);
-                    memo_write("submitter:" + _self_pid + ":status:tick-" + to_string(upstream_tick), "DRAFTED");
-                    memo_write("submitter:" + claim_id_eff + ":drafted", to_string(_tick_now_ms));
-                    memo_write("submitter:" + claim_id_eff + ":title", meta.title);
-                    memo_write("submitter:" + claim_id_eff + ":arxiv_category", meta.arxiv_category);
-                    memo_write("submitter:" + claim_id_eff + ":claim_dir", claim_dir);
-                    memo_write("replay:current_submitter_pid", _self_pid);
-
-                    emit("submitter:metadata_ready", meta);
-                    emit("submitter:status_ready", meta);
-
-                    learn("submit", "tick " + to_string(tick_idx) + " DRAFTED " + claim_id_eff, meta.rationale, "success", ["emitted", "preprint-foundry", "hitl-gated"]);
+                    _submitter_draft_phase(false, _self_pid, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir, compile_ok, source_audit_run, final_tex, compile_log, title_seed, msc_seed, cat_seed, repro_script, repro_output, repro_lang);
                 } else {
                     // Phase B: DRAFTED already exists -- observe HITL flag and act
                     // only on explicit human approval. NEVER auto-submit.
@@ -217,35 +345,7 @@ fn tick(reason: string) -> void {
                             print("[submitter] already submitted claim=", claim_id_eff);
                             learn("submit", "tick " + to_string(tick_idx) + " noop " + claim_id_eff, "already submitted", "partial", ["observed", "preprint-foundry", "hitl-gated"]);
                         } else {
-                            let gateway = try { exec sh "printenv PREPRINT_ARXIV_GATEWAY"; } catch e { ""; };
-                            let from_addr = try { exec sh "printenv PREPRINT_ARXIV_FROM"; } catch e { ""; };
-                            let gateway_eff = if len(gateway) > 0 { gateway; } else { "submit@arxiv.org"; };
-                            let from_eff = if len(from_addr) > 0 { from_addr; } else { "AUTHOR-PLACEHOLDER@example.org"; };
-                            // colony-lint: safe-exec-concat
-                            let send_cmd = "python3 -c 'import smtplib, ssl, sys, email.message, os\nm=email.message.EmailMessage()\nm[\"Subject\"]=\"arXiv submission: \"+sys.argv[1]\nm[\"From\"]=sys.argv[2]\nm[\"To\"]=sys.argv[3]\nwith open(sys.argv[4],\"r\") as f: cover=f.read()\nm.set_content(cover)\nwith open(sys.argv[5],\"rb\") as f: data=f.read()\nm.add_attachment(data, maintype=\"application\", subtype=\"gzip\", filename=\"submission.tar.gz\")\nhost=os.environ.get(\"PREPRINT_SMTP_HOST\",\"localhost\")\nport=int(os.environ.get(\"PREPRINT_SMTP_PORT\",\"25\"))\ntry:\n s=smtplib.SMTP(host,port,timeout=30); s.send_message(m); s.quit(); print(\"sent\")\nexcept Exception as e:\n print(\"smtp-error:\"+str(e))' "
-                                + shell_escape(claim_id_eff) + " "
-                                + shell_escape(from_eff) + " "
-                                + shell_escape(gateway_eff) + " "
-                                + shell_escape(claim_dir + "/arxiv-metadata.json") + " "
-                                + shell_escape(claim_dir + "/submission.tar.gz");
-                            let send_out = try { exec sh send_cmd; } catch e { "smtp-error:exec-failed"; };
-
-                            let ledger_path2 = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
-                            if len(ledger_path2) > 0 {
-                                let status_row = "{\"ts\":" + to_string(_tick_now_ms)
-                                               + ",\"source_claim_id\":\"" + claim_id_eff
-                                               + "\",\"status\":\"SUBMITTED\""
-                                               + ",\"submission_ts\":" + to_string(_tick_now_ms)
-                                               + ",\"smtp_result\":\"" + send_out + "\"}";
-                                // colony-lint: safe-exec-concat
-                                let append2 = "printf '%s\n' " + shell_escape(status_row) + " >> " + shell_escape(ledger_path2);
-                                let _a2 = try { exec sh append2; } catch e { ""; };
-                            };
-
-                            memo_write("submitter:" + claim_id_eff + ":submitted", to_string(_tick_now_ms));
-                            memo_write("submitter:" + _self_pid + ":status:tick-" + to_string(upstream_tick), "SUBMITTED");
-                            emit("submitter:status_ready", send_out);
-                            learn("submit", "tick " + to_string(tick_idx) + " SUBMITTED " + claim_id_eff, send_out, "success", ["emitted", "preprint-foundry", "hitl-gated"]);
+                            _submitter_send_phase(_self_pid, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir);
                         };
                     } else {
                         if human_status == "rejected" {

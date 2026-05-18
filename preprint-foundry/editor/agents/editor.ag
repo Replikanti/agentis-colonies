@@ -67,6 +67,105 @@ fn _repair_prompt() -> string {
     return "The previous LaTeX compile failed. The user-supplied input below carries the FAILING TEX and the latexmk LOG (last 80 lines). Produce a corrected `full_tex` that compiles with `latexmk -pdf -interaction=nonstopmode`. Common fixes: missing `\\usepackage{...}`, mis-matched `\\begin{...}` / `\\end{...}`, undefined `\\cite{...}` (replace with `\\cite{TBD}` and add a stub entry to refs.bib), runaway argument (close the brace), missing `$` for inline math. Do NOT change the scientific content -- only fix the compile error. Output ONLY valid JSON: {\"full_tex\":\"...corrected .tex...\",\"rationale\":\"what was fixed\"}.";
 }
 
+// _publish_editor -- write main.tex/refs.bib + latexmk + (optional repair) +
+// memo + emit. editor writes no ledger row today; final_write retained for
+// symmetry (#622 ADR-0001).
+fn _publish_editor(
+    final_write: bool,
+    edit: Edit,
+    self_pid: string,
+    upstream_tick: int,
+    tick_idx: int
+) -> void {
+    let _ = final_write;
+    let claim_id = recall_latest("claim:claim_id:tick-" + to_string(upstream_tick));
+    let claim_id_eff = if len(claim_id) > 0 { claim_id; } else { "claim-" + to_string(upstream_tick); };
+    let out_root = try { exec sh "printenv PREPRINT_OUTPUT_ROOT"; } catch e { ""; };
+    let out_root_eff = if len(out_root) > 0 { out_root; } else { "/run-root/preprints"; };
+    let claim_dir = out_root_eff + "/" + claim_id_eff;
+
+    let max_passes_env = try { exec sh "printenv PREPRINT_LATEXMK_MAX_PASSES"; } catch e { ""; };
+    let max_passes = if len(max_passes_env) > 0 { parse_int(max_passes_env); } else { 3; };
+    let max_passes_eff = if max_passes <= 0 { 1; } else { max_passes; };
+
+    // colony-lint: safe-exec-concat
+    let mkdir_cmd = "mkdir -p " + shell_escape(claim_dir);
+    let _mk = try { exec sh mkdir_cmd; } catch e { ""; };
+    // colony-lint: safe-exec-concat
+    let write_tex_cmd = "printf '%s' " + shell_escape(edit.full_tex) + " > " + shell_escape(claim_dir + "/main.tex");
+    let _wt = try { exec sh write_tex_cmd; } catch e { ""; };
+    // colony-lint: safe-exec-concat
+    let write_bib_cmd = "printf '%s' " + shell_escape(edit.refs_bib) + " > " + shell_escape(claim_dir + "/refs.bib");
+    let _wb = try { exec sh write_bib_cmd; } catch e { ""; };
+
+    // Substitute AUTHOR-PLACEHOLDER from authors.toml (#616).
+    // Idempotent helper exits 0 when TOML is missing /
+    // unparseable / empty, or when the .tex has no
+    // placeholder, so it is safe to run unconditionally.
+    let author_cfg_path = try { exec sh "printenv PREPRINT_AUTHOR_CONFIG"; } catch e { ""; };
+    let author_cfg_eff = if len(author_cfg_path) > 0 { author_cfg_path; } else { "/run-root/config/authors.toml"; };
+    // colony-lint: safe-exec-concat
+    let subst_cmd = "python3 /run-root/tools/substitute-author.py " + shell_escape(author_cfg_eff) + " " + shell_escape(claim_dir + "/main.tex");
+    let _subst = try { exec sh subst_cmd; } catch e { ""; };
+
+    // First compile pass.
+    // colony-lint: safe-exec-concat
+    let compile_cmd = "cd " + shell_escape(claim_dir) + " && latexmk -pdf -interaction=nonstopmode -halt-on-error main.tex 2>&1 | tail -80";
+    let compile_log = try { exec sh compile_cmd; } catch e { ""; };
+    // colony-lint: safe-exec-concat
+    let pdf_check_cmd = "test -f " + shell_escape(claim_dir + "/main.pdf") + " && printf yes || printf no";
+    let pdf_ok_raw = try { exec sh pdf_check_cmd; } catch e { "no"; };
+    let compile_ok_initial = pdf_ok_raw == "yes";
+
+    let compile_ok_final = if compile_ok_initial {
+        true;
+    } else {
+        if max_passes_eff < 2 {
+            false;
+        } else {
+            // One repair pass.
+            let repair_ctx = "FAILING TEX:\n" + edit.full_tex + "\n"
+                           + "LATEXMK LOG (last 80 lines):\n" + compile_log + "\n";
+            let repair = prompt(_repair_prompt(), repair_ctx) -> Repair;
+            // colony-lint: safe-exec-concat
+            let rewrite_cmd = "printf '%s' " + shell_escape(repair.full_tex) + " > " + shell_escape(claim_dir + "/main.tex");
+            let _rw = try { exec sh rewrite_cmd; } catch e { ""; };
+            // Re-substitute AUTHOR-PLACEHOLDER in case the
+            // repair pass put it back (#616).
+            // colony-lint: safe-exec-concat
+            let subst_cmd_r = "python3 /run-root/tools/substitute-author.py " + shell_escape(author_cfg_eff) + " " + shell_escape(claim_dir + "/main.tex");
+            let _subst_r = try { exec sh subst_cmd_r; } catch e { ""; };
+            // colony-lint: safe-exec-concat
+            let recompile_cmd = "cd " + shell_escape(claim_dir) + " && latexmk -pdf -interaction=nonstopmode -halt-on-error main.tex 2>&1 | tail -80";
+            let _recompile_log = try { exec sh recompile_cmd; } catch e { ""; };
+            // colony-lint: safe-exec-concat
+            let recheck_cmd = "test -f " + shell_escape(claim_dir + "/main.pdf") + " && printf yes || printf no";
+            let recheck = try { exec sh recheck_cmd; } catch e { "no"; };
+            recheck == "yes";
+        };
+    };
+
+    let final_tex_path = claim_dir + "/main.tex";
+    // colony-lint: safe-exec-concat
+    let read_tex_cmd = "cat " + shell_escape(final_tex_path);
+    let final_tex_body = try { exec sh read_tex_cmd; } catch e { edit.full_tex; };
+
+    memo_write("editor:" + self_pid + ":final_tex:tick-" + to_string(upstream_tick), final_tex_body);
+    memo_write("editor:" + self_pid + ":compile_log:tick-" + to_string(upstream_tick), compile_log);
+    memo_write("editor:" + self_pid + ":refs_bib:tick-" + to_string(upstream_tick), edit.refs_bib);
+    memo_write("editor:" + self_pid + ":claim_dir:tick-" + to_string(upstream_tick), claim_dir);
+    let compile_ok_str = if compile_ok_final { "true"; } else { "false"; };
+    memo_write("editor:" + self_pid + ":compile_ok:tick-" + to_string(upstream_tick), compile_ok_str);
+    let halluc_str = if edit.hallucinations_found { "true"; } else { "false"; };
+    memo_write("editor:" + self_pid + ":hallucinations_found:tick-" + to_string(upstream_tick), halluc_str);
+    memo_write("replay:current_editor_pid", self_pid);
+
+    emit("editor:final_tex_ready", edit);
+    emit("editor:compile_log_ready", edit);
+
+    learn("edit", "tick " + to_string(tick_idx), "compile_ok=" + compile_ok_str + " halluc=" + halluc_str, "success", ["emitted", "preprint-foundry"]);
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let _tick_now_ms = now_ms_via_shell();
@@ -119,98 +218,18 @@ fn tick(reason: string) -> void {
 
     let my_tier = tier("editor");
     if my_tier == "autonomous" {
+        // reason: tier N/A here; non-terminal agent -- collapses to review-gated.
+        memo_write("editor:" + _self_pid + ":review_gated", "true");
         learn("edit", "tick " + to_string(tick_idx), edit.rationale, "partial", ["acted", "preprint-foundry"]);
+        _publish_editor(true, edit, _self_pid, upstream_tick, tick_idx);
     } else {
         if my_tier == "review-gated" {
+            memo_write("editor:" + _self_pid + ":review_gated", "true");
             learn("edit", "tick " + to_string(tick_idx), edit.rationale, "partial", ["review-gated", "preprint-foundry"]);
+            _publish_editor(true, edit, _self_pid, upstream_tick, tick_idx);
         } else {
             if my_tier == "propose" {
-                let claim_id = recall_latest("claim:claim_id:tick-" + to_string(upstream_tick));
-                let claim_id_eff = if len(claim_id) > 0 { claim_id; } else { "claim-" + to_string(upstream_tick); };
-                let out_root = try { exec sh "printenv PREPRINT_OUTPUT_ROOT"; } catch e { ""; };
-                let out_root_eff = if len(out_root) > 0 { out_root; } else { "/run-root/preprints"; };
-                let claim_dir = out_root_eff + "/" + claim_id_eff;
-
-                let max_passes_env = try { exec sh "printenv PREPRINT_LATEXMK_MAX_PASSES"; } catch e { ""; };
-                let max_passes = if len(max_passes_env) > 0 { parse_int(max_passes_env); } else { 3; };
-                let max_passes_eff = if max_passes <= 0 { 1; } else { max_passes; };
-
-                // colony-lint: safe-exec-concat
-                let mkdir_cmd = "mkdir -p " + shell_escape(claim_dir);
-                let _mk = try { exec sh mkdir_cmd; } catch e { ""; };
-                // colony-lint: safe-exec-concat
-                let write_tex_cmd = "printf '%s' " + shell_escape(edit.full_tex) + " > " + shell_escape(claim_dir + "/main.tex");
-                let _wt = try { exec sh write_tex_cmd; } catch e { ""; };
-                // colony-lint: safe-exec-concat
-                let write_bib_cmd = "printf '%s' " + shell_escape(edit.refs_bib) + " > " + shell_escape(claim_dir + "/refs.bib");
-                let _wb = try { exec sh write_bib_cmd; } catch e { ""; };
-
-                // Substitute AUTHOR-PLACEHOLDER from authors.toml (#616).
-                // Idempotent helper exits 0 when TOML is missing /
-                // unparseable / empty, or when the .tex has no
-                // placeholder, so it is safe to run unconditionally.
-                let author_cfg_path = try { exec sh "printenv PREPRINT_AUTHOR_CONFIG"; } catch e { ""; };
-                let author_cfg_eff = if len(author_cfg_path) > 0 { author_cfg_path; } else { "/run-root/config/authors.toml"; };
-                // colony-lint: safe-exec-concat
-                let subst_cmd = "python3 /run-root/tools/substitute-author.py " + shell_escape(author_cfg_eff) + " " + shell_escape(claim_dir + "/main.tex");
-                let _subst = try { exec sh subst_cmd; } catch e { ""; };
-
-                // First compile pass.
-                // colony-lint: safe-exec-concat
-                let compile_cmd = "cd " + shell_escape(claim_dir) + " && latexmk -pdf -interaction=nonstopmode -halt-on-error main.tex 2>&1 | tail -80";
-                let compile_log = try { exec sh compile_cmd; } catch e { ""; };
-                // colony-lint: safe-exec-concat
-                let pdf_check_cmd = "test -f " + shell_escape(claim_dir + "/main.pdf") + " && printf yes || printf no";
-                let pdf_ok_raw = try { exec sh pdf_check_cmd; } catch e { "no"; };
-                let compile_ok_initial = pdf_ok_raw == "yes";
-
-                let compile_ok_final = if compile_ok_initial {
-                    true;
-                } else {
-                    if max_passes_eff < 2 {
-                        false;
-                    } else {
-                        // One repair pass.
-                        let repair_ctx = "FAILING TEX:\n" + edit.full_tex + "\n"
-                                       + "LATEXMK LOG (last 80 lines):\n" + compile_log + "\n";
-                        let repair = prompt(_repair_prompt(), repair_ctx) -> Repair;
-                        // colony-lint: safe-exec-concat
-                        let rewrite_cmd = "printf '%s' " + shell_escape(repair.full_tex) + " > " + shell_escape(claim_dir + "/main.tex");
-                        let _rw = try { exec sh rewrite_cmd; } catch e { ""; };
-                        // Re-substitute AUTHOR-PLACEHOLDER in case the
-                        // repair pass put it back (#616).
-                        // colony-lint: safe-exec-concat
-                        let subst_cmd_r = "python3 /run-root/tools/substitute-author.py " + shell_escape(author_cfg_eff) + " " + shell_escape(claim_dir + "/main.tex");
-                        let _subst_r = try { exec sh subst_cmd_r; } catch e { ""; };
-                        // colony-lint: safe-exec-concat
-                        let recompile_cmd = "cd " + shell_escape(claim_dir) + " && latexmk -pdf -interaction=nonstopmode -halt-on-error main.tex 2>&1 | tail -80";
-                        let _recompile_log = try { exec sh recompile_cmd; } catch e { ""; };
-                        // colony-lint: safe-exec-concat
-                        let recheck_cmd = "test -f " + shell_escape(claim_dir + "/main.pdf") + " && printf yes || printf no";
-                        let recheck = try { exec sh recheck_cmd; } catch e { "no"; };
-                        recheck == "yes";
-                    };
-                };
-
-                let final_tex_path = claim_dir + "/main.tex";
-                // colony-lint: safe-exec-concat
-                let read_tex_cmd = "cat " + shell_escape(final_tex_path);
-                let final_tex_body = try { exec sh read_tex_cmd; } catch e { edit.full_tex; };
-
-                memo_write("editor:" + _self_pid + ":final_tex:tick-" + to_string(upstream_tick), final_tex_body);
-                memo_write("editor:" + _self_pid + ":compile_log:tick-" + to_string(upstream_tick), compile_log);
-                memo_write("editor:" + _self_pid + ":refs_bib:tick-" + to_string(upstream_tick), edit.refs_bib);
-                memo_write("editor:" + _self_pid + ":claim_dir:tick-" + to_string(upstream_tick), claim_dir);
-                let compile_ok_str = if compile_ok_final { "true"; } else { "false"; };
-                memo_write("editor:" + _self_pid + ":compile_ok:tick-" + to_string(upstream_tick), compile_ok_str);
-                let halluc_str = if edit.hallucinations_found { "true"; } else { "false"; };
-                memo_write("editor:" + _self_pid + ":hallucinations_found:tick-" + to_string(upstream_tick), halluc_str);
-                memo_write("replay:current_editor_pid", _self_pid);
-
-                emit("editor:final_tex_ready", edit);
-                emit("editor:compile_log_ready", edit);
-
-                learn("edit", "tick " + to_string(tick_idx), "compile_ok=" + compile_ok_str + " halluc=" + halluc_str, "success", ["emitted", "preprint-foundry"]);
+                _publish_editor(false, edit, _self_pid, upstream_tick, tick_idx);
             } else {
                 print("[editor] observing (tier:", my_tier, ") rationale=", edit.rationale);
                 learn("edit", "tick " + to_string(tick_idx), edit.rationale, "partial", ["observed", "preprint-foundry"]);
