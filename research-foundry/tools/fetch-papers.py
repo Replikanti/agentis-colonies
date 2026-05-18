@@ -4,7 +4,7 @@ arxiv paper corpus consumed by `tools/run-foundry.sh` (#592).
 
 Live arxiv calls are rate-limited and would add latency to every
 foundry tick, so the orchestrator never hits arxiv at runtime. This
-script populates `math-foundry/data/papers/<topic>.json` once; the
+script populates `research-foundry/data/papers/<topic>.json` once; the
 orchestrator then serves from disk.
 
 The script uses the `arxiv` Python package (install via pip). If the

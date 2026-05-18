@@ -1,7 +1,7 @@
 // submitter.ag -- Preprint Foundry submitter: reads the editor's
 // final main.tex + compile log + reproducibility artefacts, builds
 // `arxiv-metadata.json` (title / abstract / MSC / categories / authors
-// from preprint-foundry/config/authors.toml), packages
+// from research-foundry/config/authors.toml), packages
 // `submission.tar.gz` per arXiv format, drafts the cover letter with
 // AI-disclosure, and writes a `status: DRAFTED` row to
 // `preprint-ledger.jsonl`.

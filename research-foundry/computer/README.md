@@ -32,9 +32,7 @@ not present in stdout), the agent persists the artefacts but marks
    Host-side `gap` is optional but lets `tools/review-cli.sh --show`
    re-run the reproducibility script during human review.
 
-4. Start the colony as part of the federation:
-   ```bash
-   bash ../tools/run-preprint.sh \
-       --source-audit-run /path/to/claim-auditor/runs/<id> \
-       --source-foundry-run /path/to/math-foundry/runs/<id>
-   ```
+4. Start the colony as part of the federation. Cross-colony handoff is
+   now direct via the shared memo store; no `--source-*` flags. See
+   `research-foundry/tools/run-research.sh --help` for the current
+   invocation.

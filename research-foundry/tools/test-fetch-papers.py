@@ -6,7 +6,7 @@ Validates the JSON output structure with synthetic arxiv responses
 injected via a fake arxiv module placed on sys.modules. No network,
 no `arxiv` install required.
 
-Run: python3 math-foundry/tools/test-fetch-papers.py
+Run: python3 research-foundry/tools/test-fetch-papers.py
 """
 
 import json
