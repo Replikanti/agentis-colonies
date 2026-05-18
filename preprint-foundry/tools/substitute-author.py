@@ -3,14 +3,22 @@
 
 Usage: substitute-author.py <authors.toml> <main.tex>
 
-Reads authors.toml, builds a LaTeX author block ("<name>\\thanks{ORCID
-iD: <id>}", multi-author joined with " \\and "), and rewrites the first
-`\\author{...}` macro in main.tex to that block.
+Reads authors.toml and rewrites the first `\\author{...}` macro in
+main.tex to an amsart-compatible author block:
 
-The match handles nested braces correctly via a depth counter, so
-running the helper twice on the same file is a byte-identical no-op
-even though the rendered block itself contains `\\thanks{...}` and
-therefore `{` `}` pairs inside the `\\author{...}` body.
+    \\author{Martin Holy}\\thanks{ORCID iD: 0009-0001-0459-5158}
+
+amsart requires `\\thanks{...}` to be a separate macro from
+`\\author{...}` — embedding `\\thanks` inside `\\author{...}` raises
+`Class amsart Error: \\thanks should be given separately, not inside
+author name.` and the compile aborts (#620). Multi-author is rendered
+as concatenated `\\author{}\\thanks{}` pairs (no separator); amsart
+treats any number of `\\author{}` macros as multiple authors.
+
+The first-`\\author{}` match uses a balanced-brace depth counter so
+the rendered block's own `\\thanks{...}` braces do not confuse a
+second pass; running the helper twice in succession is a
+byte-identical no-op (#618).
 
 The choice to match `\\author{...}` rather than a literal token (e.g.
 `AUTHOR-PLACEHOLDER`) is deliberate: the upstream LLM editor prompt
@@ -80,22 +88,21 @@ def main() -> int:
         return 0
 
     authors = data.get("authors") or []
-    parts = []
+    blocks = []
     for a in authors:
         name = (a.get("name") or "").strip()
         if not name:
             continue
         orcid = (a.get("arxiv_orcid") or "").strip()
+        author_block = "\\author{" + name + "}"
         if orcid:
-            parts.append(name + "\\thanks{ORCID iD: " + orcid + "}")
-        else:
-            parts.append(name)
+            author_block += "\\thanks{ORCID iD: " + orcid + "}"
+        blocks.append(author_block)
 
-    if not parts:
+    if not blocks:
         return 0
 
-    block = " \\and ".join(parts)
-    replacement = "\\author{" + block + "}"
+    replacement = "".join(blocks)
 
     try:
         with open(tex_path, "r", encoding="utf-8") as f:
@@ -108,7 +115,14 @@ def main() -> int:
         return 0
 
     start, end = match
-    if tex[start:end] == replacement:
+    # Idempotency check: compare the rendered block against the bytes
+    # starting at the first \\author{} we just found, NOT just the
+    # matched single-macro range — after a previous rewrite, the
+    # multi-pair replacement extends past the first \\author{}'s
+    # closing brace (`\\thanks{...}` and subsequent \\author{}\\thanks{}
+    # for multi-author). Without the longer slice the helper would
+    # duplicate `\\thanks{...}` on every re-run.
+    if tex[start:start + len(replacement)] == replacement:
         return 0
 
     new_tex = tex[:start] + replacement + tex[end:]

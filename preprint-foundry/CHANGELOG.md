@@ -32,6 +32,15 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   byline; the helper must work regardless of what the LLM emits.
   Idempotency is preserved by short-circuiting when the existing
   byline already matches the rendered block (#618).
+- `tools/substitute-author.py` rendering now emits amsart-compatible
+  separated `\author{Name}\thanks{ORCID iD: id}` pairs instead of
+  nested `\author{Name\thanks{...}}`. The previous nested form was
+  valid in `article` class but raised `Class amsart Error: \thanks
+  should be given separately, not inside author name.` and aborted
+  the latexmk compile. Multi-author is concatenated as multiple
+  `\author{}\thanks{}` blocks, joined without a separator; amsart
+  treats any number of `\author{}` macros as multiple authors
+  (#620).
 
 ### Deprecated
 
