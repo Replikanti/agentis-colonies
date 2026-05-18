@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
-# auto-evolve-ab.sh — Phase 7 PR-B harness for self-improving .ag
-# mutation + A/B comparison (#628).
+# auto-evolve-ab.sh — Phase 7 harness for self-improving .ag mutation
+# + A/B comparison (#628).
 #
 # Invoked by `tools/auto-promote.sh` when
 # `evolve.mutation.enabled = true` in the active auto-promote-config.
 # When the flag is false (the default) the legacy `agentis evolve`
 # path runs instead — see auto-promote.sh evolve handler.
 #
-# Pipeline (PR-B):
+# Pipeline:
+#   0a. Generation cap check: abort with `evolve_throttled` when
+#       `generation_next > evolve.mutation.max_generations`.
+#   0b. Per-agent allowlist gate (PR-C): when
+#       `evolve.mutation.allowed_agents` is set and does not contain
+#       the agent name (or `*`), emit `evolve_skipped_not_in_allowlist`
+#       and exit 0. The default `*` (or missing key) preserves the
+#       legacy behaviour for dev-apprenticeship / tribes-bench configs.
 #   1. Pre-flight throttle: count open candidate files in
 #      `<colony>/agents/.evolve/`; abort with `evolve_throttled` ledger
 #      row when the cap is hit.
@@ -23,14 +30,18 @@
 #      daemon under a synthetic agent_id `<agent>-cand-gen-<N>` so its
 #      experience writes go to an isolated .jsonl. Wait K ticks
 #      bounded by `ab.absolute_max_wait_s`. Score candidate vs
-#      canonical via `auto-promote-decisions.py --preview` +
-#      `explorer-fitness.py` (or fallback proxy
-#      `(acting - reject) / max(acting, 1)`). Compare with
-#      `ab.min_delta`. Emit `evolve_cycle` (winner candidate /
-#      canonical) or `ab_inconclusive` ledger row.
+#      canonical:
+#        - explorer agents go through `tools/explorer-fitness.py`
+#          (PR-C wires it in; PR 2 of #624 added the helper);
+#        - non-explorer agents use the inline proxy
+#          `(acting - reject) / max(acting, 1)`;
+#        - both paths fall back to the proxy if their preferred
+#          signal returns empty / errors.
+#      Compare with `ab.min_delta`. Emit `evolve_cycle` (winner
+#      candidate / canonical) or `ab_inconclusive` ledger row.
 #   5. Promote winner (DRY-RUN AWARE): when `evolve.dry_run=true`, log
-#      and stop. When false (PR-C), if candidate wins: stop candidate,
-#      archive parent to
+#      and stop. When false (PR-C, research-foundry only), if
+#      candidate wins: stop candidate, archive parent to
 #      `<fed-dir>/<archive_dir>/<agent>-gen-N-<sha8>.ag`, `mv -f`
 #      candidate over canonical, respawn canonical daemon. Cleanup
 #      always removes the .evolve/ candidate + synthetic experience.
@@ -43,10 +54,6 @@
 #   0 — success (ledger written, regardless of decision)
 #   1 — usage / arg error
 #   2 — config / parser error
-#
-# Out of scope for PR-B:
-#   - flipping `evolve.dry_run=false` for explorer (deferred to PR-C)
-#   - bundle-manifest wiring (deferred to PR-C alongside the flip)
 
 set -euo pipefail
 
@@ -235,6 +242,32 @@ if [ "$GENERATION_NEXT" -gt "$CFG_EVOLVE_MUTATION_MAX_GENERATIONS" ]; then
 fi
 
 # ------------------------------------------------------------------
+# 0b. Per-agent allowlist gate (PR-C, #628)
+# ------------------------------------------------------------------
+#
+# `evolve.mutation.allowed_agents` is a comma-separated list emitted by
+# the config parser. `*` is the legacy-compat sentinel meaning "all
+# agents allowed" -- dev-apprenticeship + tribes-bench configs that
+# omit the key fall through to that path. research-foundry pins it to
+# `explorer` only; every other agent invocation short-circuits here.
+ALLOWED_AGENTS_CSV="${CFG_EVOLVE_MUTATION_ALLOWED_AGENTS:-*}"
+if [ "$ALLOWED_AGENTS_CSV" != "*" ]; then
+    AGENT_ALLOWED=$(python3 -c "
+import sys
+csv = sys.argv[1]
+agent = sys.argv[2]
+items = [s.strip() for s in csv.split(',') if s.strip()]
+print('true' if (agent in items or '*' in items) else 'false')
+" "$ALLOWED_AGENTS_CSV" "$AGENT_NAME")
+    if [ "$AGENT_ALLOWED" != "true" ]; then
+        log "  agent not in allowlist: $AGENT_NAME (allowed=$ALLOWED_AGENTS_CSV)"
+        ledger_append "evolve_skipped_not_in_allowlist" \
+            "{\"reason\":\"agent_not_in_allowlist\",\"allowed_agents\":\"$ALLOWED_AGENTS_CSV\"}"
+        exit 0
+    fi
+fi
+
+# ------------------------------------------------------------------
 # 1. Pre-flight throttle: count open candidate files
 # ------------------------------------------------------------------
 
@@ -288,13 +321,15 @@ if [ "$MUT_RC" -ne 0 ]; then
         MUT_REASON="mutator_failed"
     fi
     log "  mutator rc=$MUT_RC reason=$MUT_REASON"
-    # Strip control characters and clip stderr so the ledger row stays
-    # one JSON line. We deliberately use python3 here, not sed/tr, so the
-    # macOS bash 3.2 quoting story stays compatible.
+    # Strip control characters, drop the double-quote byte (34) so the
+    # JSON ledger row doesn't fracture mid-string (#661), and clip stderr
+    # to 500 chars so the row stays single-line. We deliberately use
+    # python3 here, not sed/tr, so the macOS bash 3.2 quoting story stays
+    # compatible.
     MUT_STDERR_CLIP=$(python3 -c "
 import sys
 buf = sys.argv[1].replace('\n', ' ')[:500]
-print(''.join(c for c in buf if c == ' ' or 32 <= ord(c) < 127))
+print(''.join(c for c in buf if c == ' ' or (32 <= ord(c) < 127 and ord(c) != 34)))
 " "$MUT_OUTPUT")
     ledger_append "mutation_rejected" \
         "{\"reason\":\"$MUT_REASON\",\"mutator_stderr\":\"$MUT_STDERR_CLIP\"}"
@@ -420,9 +455,17 @@ fi
 # cull-explorers.sh:410 pattern (podman exec bash -c "... agentis daemon ... &").
 # Container name is fixed to `research-foundry-laptop` -- the only
 # containerized federation today.
+#
+# Path translation (fixes #660): $CANDIDATE_PATH is host-side
+# `<fed-dir>/<colony>/agents/.evolve/<agent>.ag.candidate-gen-N`. The
+# container mounts the federation root at `/run-root/`, so strip the
+# host fed-dir prefix and prepend `/run-root/` before handing the path
+# to the daemon. Mirrors the respawn block below + cull-explorers.sh:410
+# pattern (`/run-root/<colony>/agents/<agent>.ag`).
 CONTAINER_NAME="${RESEARCH_CONTAINER_NAME:-research-foundry-laptop}"
+CANDIDATE_CONTAINER_PATH="/run-root/${COLONY}/agents/.evolve/${AGENT_NAME}.ag.candidate-gen-${GENERATION_NEXT}"
 CANDIDATE_LOG="/run-root/.agentis/logs/${SYNTHETIC_ID}.log"
-SPAWN_CMD="agentis daemon $CANDIDATE_PATH --colony $COLONY --enable-exec --enable-messaging --tick-interval $TICK_INTERVAL_MS > $CANDIDATE_LOG 2>&1 &"
+SPAWN_CMD="agentis daemon $CANDIDATE_CONTAINER_PATH --colony $COLONY --enable-exec --enable-messaging --tick-interval $TICK_INTERVAL_MS > $CANDIDATE_LOG 2>&1 &"
 
 log "  spawning candidate daemon: synthetic_id=$SYNTHETIC_ID wait_s=$WAIT_S"
 if ! podman exec "$CONTAINER_NAME" bash -c "$SPAWN_CMD" 2>/dev/null; then
@@ -438,12 +481,17 @@ fi
 # the synthetic .jsonl; the canonical keeps its existing path.
 sleep "$WAIT_S"
 
-# Score both daemons. The fallback proxy is
-#   (acting_count - reject_count) / max(acting_count, 1)
-# computed straight off the .jsonl tail. For explorers we additionally
-# try `explorer-fitness.py` for the empirical signal, but the proxy is
-# the canonical scalar the A/B comparison runs on -- one path, no
-# divergence between explorer / non-explorer agents on this PR.
+# Score both daemons. Two paths:
+#   - Explorer agents go through `tools/explorer-fitness.py`, which
+#     blends NOVEL count, auditor confidence, and HITL accept ratio
+#     into a single scalar (Phase 3 PR 2 of #624). PR-C (#628) wires
+#     it in for the live evolve flip.
+#   - Non-explorer agents (when the allowlist gate is eventually
+#     widened) use the inline proxy:
+#       (acting_count - reject_count) / max(acting_count, 1)
+#     computed straight off the .jsonl tail.
+# Both paths fall back to the proxy if their preferred signal returns
+# empty / errors -- the A/B comparison always has a defined scalar.
 score_jsonl() {
     local jsonl_path="$1"
     local window="$2"
@@ -486,8 +534,38 @@ else:
 " "$jsonl_path" "$window"
 }
 
-CANDIDATE_SCORE=$(score_jsonl "$SYNTH_EXP" "$AB_TICKS")
-CANONICAL_SCORE=$(score_jsonl "$EXPERIENCE_PATH" "$AB_TICKS")
+# Pull the explorer fitness scalar via the helper. Empty pid is OK --
+# explorer-fitness.py only uses it as a heuristic for HITL reject
+# attribution and falls back to a window-clamped global count when the
+# pid is unmatched. Returns "" on any error so the caller can fall
+# through to the proxy.
+score_explorer() {
+    local agent_id="$1"
+    local pid="$2"
+    python3 "$REPO_ROOT/tools/explorer-fitness.py" \
+        "$FED_DIR" "$pid" "$agent_id" 2>/dev/null \
+        | python3 -c "
+import json, sys
+try:
+    obj = json.loads(sys.stdin.read())
+    print('%.6f' % float(obj.get('fitness_score', 0.0)))
+except (json.JSONDecodeError, ValueError, TypeError):
+    print('')
+"
+}
+
+if [ "$AGENT_NAME" = "explorer" ]; then
+    CANDIDATE_SCORE=$(score_explorer "$SYNTHETIC_ID" "")
+    CANONICAL_SCORE=$(score_explorer "$AGENT_NAME" "")
+    if [ -z "$CANDIDATE_SCORE" ] || [ -z "$CANONICAL_SCORE" ]; then
+        log "  explorer-fitness returned empty; falling back to proxy"
+        CANDIDATE_SCORE=$(score_jsonl "$SYNTH_EXP" "$AB_TICKS")
+        CANONICAL_SCORE=$(score_jsonl "$EXPERIENCE_PATH" "$AB_TICKS")
+    fi
+else
+    CANDIDATE_SCORE=$(score_jsonl "$SYNTH_EXP" "$AB_TICKS")
+    CANONICAL_SCORE=$(score_jsonl "$EXPERIENCE_PATH" "$AB_TICKS")
+fi
 
 log "  scores: candidate=$CANDIDATE_SCORE canonical=$CANONICAL_SCORE min_delta=$CFG_EVOLVE_AB_MIN_DELTA"
 
@@ -514,8 +592,9 @@ log "  A/B verdict: winner=$WINNER delta=$DELTA"
 
 # Stop the candidate daemon regardless of verdict. It served its A/B
 # purpose; whether we then archive + replace canonical depends on the
-# dry-run flag below.
-podman exec "$CONTAINER_NAME" bash -c "pkill -f 'agentis daemon $CANDIDATE_PATH' 2>/dev/null || true" >/dev/null 2>&1 || true
+# dry-run flag below. Uses the container-side path (#660) so pkill -f
+# matches the daemon's actual argv.
+podman exec "$CONTAINER_NAME" bash -c "pkill -f 'agentis daemon $CANDIDATE_CONTAINER_PATH' 2>/dev/null || true" >/dev/null 2>&1 || true
 
 if [ "$WINNER" = "inconclusive" ]; then
     ledger_append "ab_inconclusive" \

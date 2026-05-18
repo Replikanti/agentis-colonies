@@ -202,6 +202,16 @@ def main():
         skip_tiers = [skip_tiers]
     skip_tiers_csv = ','.join(str(t) for t in skip_tiers)
     print("CFG_EVOLVE_MUTATION_SKIP_TIERS='%s'" % skip_tiers_csv)
+    # Phase 7 PR-C (#628): per-agent allowlist for the live evolve path.
+    # When the key is absent, default to the legacy-compat sentinel `*`
+    # so dev-apprenticeship + tribes-bench configs that flip
+    # `mutation.enabled` later don't trip the new gate. PR-C ships
+    # research-foundry with `["explorer"]` only.
+    allowed_agents = em.get('allowed_agents', ['*'])
+    if not isinstance(allowed_agents, list):
+        allowed_agents = [allowed_agents]
+    allowed_agents_csv = ','.join(str(a) for a in allowed_agents)
+    print("CFG_EVOLVE_MUTATION_ALLOWED_AGENTS='%s'" % allowed_agents_csv)
 
     ab = cfg.get('evolve', {}).get('ab', {})
     print('CFG_EVOLVE_AB_TICKS=%s' % ab.get('ticks', 50))

@@ -18,6 +18,28 @@ History of the three retired federations consolidated into this one
 
 ## [Unreleased]
 
+### Changed
+
+- Flipped `evolve.dry_run` and `evolve.mutation.enabled` for
+  research-foundry (Phase 7 PR-C of #628). The explorer agent now
+  runs in live evolve mode: the LLM mutator proposes candidates, the
+  A/B harness spawns a sibling daemon under a synthetic agent_id,
+  scoring goes through `tools/explorer-fitness.py` (PR 2 of #624),
+  and a winning candidate atomically replaces the parent `.ag` with
+  a respawn of the canonical daemon. The other 14 agents stay in
+  observe-only mode behind a new `evolve.mutation.allowed_agents`
+  list (`["explorer"]`). Configs that omit the key (dev-apprenticeship,
+  tribes-bench) keep the legacy `*` fallback so flipping
+  `mutation.enabled` later does not trip the gate. Fixes two PR-B
+  blockers along the way: the candidate daemon SPAWN_CMD now uses
+  the container-side `/run-root/...` path instead of the host fed-dir
+  prefix (#660), and the mutator-stderr clipper strips the
+  double-quote byte so `mutation_rejected` rows always have a
+  parseable JSON `reason` field (#661). Header docs on
+  `tools/auto-evolve-ab.sh` updated to match the implementation; 3
+  new smoke-test assertions in `tools/test-auto-evolve-ab.sh`
+  (total 18/18).
+
 ### Added
 
 - LLM-driven `.ag` mutator + real A/B harness in dry-run mode for

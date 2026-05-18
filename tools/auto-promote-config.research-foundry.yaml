@@ -15,8 +15,12 @@
 # exchange for a single sidecar pass. Per-colony prereq variation is
 # deferred as a Phase 2 chore.
 #
-# `dry_run: true` is preserved — flip in a follow-up PR once the
-# journal shows the sidecar making sensible decisions on a real run.
+# Phase 7 PR-C (#628) flips `evolve.dry_run` and
+# `evolve.mutation.enabled` for the explorer agent only -- the
+# `evolve.mutation.allowed_agents: ["explorer"]` gate keeps the other
+# 14 agents in observe-only mode through the legacy `agentis evolve`
+# path. The top-level `dry_run: true` remains a safety belt for the
+# promotion ladder; evolve has its own per-block toggle now.
 
 promote:
   prerequisites:
@@ -46,7 +50,8 @@ evolve:
     population: 4
     weights: "cb,val,exp"
   mutation:
-    enabled: false                       # PR-A default OFF — PR-C flips for explorer
+    enabled: true                        # PR-C flips ON — gated per agent below
+    allowed_agents: ["explorer"]         # PR-C: explorer is the only agent in live evolve mode
     max_concurrent_per_colony: 1         # throttle: max open candidates per colony
     max_generations: 10                  # 10-gen cap per #628 acceptance
     skip_tiers: ["autonomous"]           # do not evolve autonomous-tier agents
@@ -58,6 +63,6 @@ evolve:
     absolute_max_wait_s: 1800            # PR-B (#628): hard cap on A/B wait
   archive_dir: "evolution-archive"
   ledger_path: "evolution-ledger.jsonl"
-  dry_run: true                          # PR-A + PR-B ship dry-run; PR-C flips
+  dry_run: false                         # PR-C flips live for explorer (#628)
 
 dry_run: true
