@@ -1,0 +1,86 @@
+# Containerfile.research -- merged base image for the research-foundry
+# federation (#638). Single image hosting all 15 colonies (math
+# pipeline + claim-auditor searchers + preprint pipeline) under one
+# `.agentis/` state dir. Replaces the three retired Containerfiles
+# (Containerfile.foundry, Containerfile.auditor, Containerfile.preprint).
+#
+# Toolchain (superset of the three retired images):
+#   - Debian/Ubuntu + Python scientific stack (sympy / numpy / networkx)
+#     for the math pipeline and preprint computer colony.
+#   - TeX Live (texlive-latex-extra / fonts-recommended / science /
+#     latexmk) for `latexmk -pdf` invoked by the editor colony.
+#   - GAP (`gap-core`) so the computer colony can run group-theory
+#     reproducibility scripts.
+#   - `curl` for arxiv / OEIS / groupprops / scholar HTTPS fetches and
+#     for the agentis-runtime release download below.
+#   - ssmtp so the submitter colony can mail submission.tar.gz to the
+#     arXiv email gateway when a human flips the HITL approval flag.
+#   - claude CLI for the (default) claude llm backend.
+#
+# The orchestrator does NOT pass `--network none`; rootless podman's
+# default slirp4netns egress is used.
+#
+# WARNING: this image deliberately bakes ONLY the agentis runtime, the
+# Python / LaTeX / GAP toolchains, and the claude CLI. The 15 colonies
+# and the per-run hermetic .agentis/ state are mounted at run time via
+# `-v $REPO_ROOT:/repo:ro` and `-v $RUN_DIR/<node>:/run-root:rw`. Do
+# NOT `COPY` any colony source into the image.
+#
+# WARNING: Claude Code session credentials
+# (`~/.claude/.credentials.json`) MUST NOT be baked in. The orchestrator
+# bind-mounts the host operator's `$HOME/.claude` at run time via
+# `-v $HOST_CLAUDE_DIR:/root/.claude:rw,z`; never `COPY` the directory
+# into the image.
+
+FROM ubuntu:24.04
+
+ARG AGENTIS_VERSION=v1.7.12
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        python3 \
+        python3-pip \
+        python3-requests \
+        jq \
+        git \
+        curl \
+        ca-certificates \
+        texlive-latex-base \
+        texlive-latex-recommended \
+        texlive-latex-extra \
+        texlive-fonts-recommended \
+        texlive-science \
+        latexmk \
+        gap-core \
+        ssmtp \
+ && rm -rf /var/lib/apt/lists/*
+
+# Compute stack matching the retired math-foundry / preprint-foundry
+# images. The explorer / formulator / computer colonies' Python
+# reproducibility scripts may use any of these.
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+        sympy \
+        numpy \
+        networkx
+
+RUN cd /tmp \
+ && curl -fsSL -o agentis-linux-x86_64 \
+        "https://github.com/Replikanti/agentis/releases/download/${AGENTIS_VERSION}/agentis-linux-x86_64" \
+ && curl -fsSL -o agentis-linux-x86_64.sha256 \
+        "https://github.com/Replikanti/agentis/releases/download/${AGENTIS_VERSION}/agentis-linux-x86_64.sha256" \
+ && sha256sum -c agentis-linux-x86_64.sha256 \
+ && install -m 0755 agentis-linux-x86_64 /usr/local/bin/agentis \
+ && rm /tmp/agentis-linux-x86_64 /tmp/agentis-linux-x86_64.sha256
+
+# Install Claude Code CLI for the default claude-backend support. A
+# future Phase 2 cut may split per-colony backends (Sonnet for the
+# four searchers, Opus for the auditor / introducer / theorist /
+# editor) via per-colony AGENTIS_ROOT.
+RUN curl -fsSL https://claude.ai/install.sh | bash \
+ && ln -s /root/.local/bin/claude /usr/local/bin/claude
+
+WORKDIR /run-root
+
+ENTRYPOINT ["/bin/bash"]

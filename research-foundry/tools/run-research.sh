@@ -1,0 +1,625 @@
+#!/bin/bash
+# run-research.sh -- end-to-end research orchestrator for the
+# research-foundry federation (#638).
+#
+# Consolidates the three retired orchestrators (run-foundry.sh,
+# run-auditor.sh, run-preprint.sh) into a single script that drives
+# all 15 colonies in one container. Cross-federation memo recall is
+# eliminated -- the 9-10-tick cascade through the 14 downstream
+# daemons happens inside the merged container because all daemons
+# share `.agentis/`. Novelty + auditor agents write `claim:*:tick-N`
+# keys directly on positive verdict, so each downstream consumer
+# reads its upstream colleague's memo at the next tick without any
+# cross-fed JSONL reconstruction.
+#
+# Architectural shape mirrors the three retired orchestrators
+# (emit_step helper, run dir under research-foundry/runs/<ts>/,
+# `podman run --replace` idiom, hermetic .agentis/config). The
+# tick-stream payload only seeds the `explorer` daemon; the
+# downstream cascade proceeds without orchestrator participation.
+#
+# Env vars (all optional; defaults shown):
+#   RESEARCH_TOPICS              Comma-separated topic labels rotated
+#                                across explorer ticks.
+#                                Default: number_theory,combinatorics,abstract_algebra,graph_theory
+#   RESEARCH_PAPER_CORPUS        Path to cached per-topic JSON corpora.
+#                                Default: research-foundry/data/papers
+#   RESEARCH_TICK_INTERVAL_S     Seconds between orchestrator ticks.
+#                                Default 120 (median of the three
+#                                retired feds' 60/120/180s defaults).
+#   RESEARCH_TOTAL_TICKS         Number of ticks to drive. Default 30.
+#   RESEARCH_DAEMONS_PER_COLONY  Per-colony daemon count for the math
+#                                pipeline (explorer/noticer/formulator/
+#                                verifier/novelty). Phase 1 = 1.
+#   RESEARCH_HOLD_PERIOD         Ticks before explorer settles a verdict.
+#                                Default 4
+#   RESEARCH_LLM_BACKEND         llm.backend value injected into hermetic
+#                                config. Default: claude
+#   RESEARCH_OPENAI_ENDPOINT     Chat-completions URL.
+#                                Default: https://openrouter.ai/api/v1/chat/completions
+#   RESEARCH_OPENAI_MODEL        Model id when backend=openai.
+#                                Default: qwen/qwen3-coder-30b-a3b-instruct
+#   RESEARCH_OPENAI_KEY_ENV      Env var carrying the LLM API key.
+#                                Default: OPENROUTER_API_KEY
+#   RESEARCH_OPENAI_TIMEOUT_MS   Per-request timeout (ms). Default: 180000
+#   RESEARCH_CLAUDE_MODEL        Default model for claude backend.
+#                                Default: opus
+#   RESEARCH_CLAUDE_EFFORT       Default effort. Default: medium
+#   RESEARCH_HOST_CLAUDE_DIR     Host path bind-mounted to /root/.claude.
+#                                Default: $HOME/.claude
+#   RESEARCH_AUDITOR_CONFIDENCE_FLOOR
+#                                Quality-gate floor for auditor verdicts
+#                                surfaced in run-meta. Default 0.7
+#   RESEARCH_AUTHOR_CONFIG       Path to authors.toml (for submitter
+#                                colony's arxiv-metadata.json).
+#                                Default: <fed>/config/authors.toml
+#   RESEARCH_DAEMON_CB_PER_TICK  Per-tick CB replenishment (hermetic
+#                                .agentis/config daemon.cb_per_tick).
+#                                Default 2000 (mirrors trading-binance
+#                                #579). Hermetic memo cap also bumped
+#                                from 500 to 50000 (mirrors #587).
+#   RESEARCH_DAEMON_HEARTBEAT_MS Watchdog heartbeat (ms). Default
+#                                1800000 (mirrors trading-binance #583).
+#   RESEARCH_LATEXMK_MAX_PASSES  Max latexmk attempts inside editor.ag.
+#                                Default 3
+#   RESEARCH_DRY_RUN             1 = emit_step the plan, skip podman.
+#                                Default: "" (real run).
+#   RESEARCH_RUN_DIR             Output dir override. Default: auto-
+#                                timestamped under research-foundry/runs/
+#   RESEARCH_IMAGE_TAG           Container image tag built from
+#                                Containerfile.research.
+#                                Default: research-foundry:latest
+#   RESEARCH_ARXIV_GATEWAY       arXiv submission email. Default:
+#                                submit@arxiv.org
+#   RESEARCH_ARXIV_FROM          From: header for SMTP. Default: empty
+#                                (read from authors.toml inside
+#                                submitter.ag).
+#   RESEARCH_SMTP_HOST           SMTP relay host. Default: localhost
+#   RESEARCH_SMTP_PORT           SMTP relay port. Default: 25
+#   RESEARCH_FITNESS_REWARD_NOVEL_PER_TICK
+#                                Per-tick fitness reward when novelty
+#                                referee returns NOVEL. Default: 2
+#   RESEARCH_FITNESS_PENALTY_NOT_NOVEL_PER_TICK
+#                                Per-tick fitness penalty when novelty
+#                                referee returns NOT_NOVEL. Default: 1
+#   RESEARCH_EXPLORER_PROMPT_EVOLUTION_THRESHOLD
+#                                NOT_NOVEL streak required before
+#                                explorer.ag rewrites its prompt body
+#                                (M98 v3). Default: 3
+#   RESEARCH_EXPLORER_PROMPT_GEN_CAP
+#                                Per-lineage generation cap before reset.
+#                                Default: 10
+#   RESEARCH_EXPLORER_PROMPT_MAX_BYTES
+#                                Hard byte cap on rewritten prompt bodies.
+#                                Default: 8192
+#   RESEARCH_EXPLORER_PROMPT_LEVENSHTEIN_FLOOR
+#                                Minimum dissimilarity percent for a
+#                                rewrite to be accepted. Default: 20
+#   RESEARCH_AUTO_PROMOTE        1 enable auto-promote sidecar
+#                                (default), 0 disable.
+#   RESEARCH_AUTO_PROMOTE_INTERVAL_S
+#                                Seconds between sidecar ticks.
+#                                Default 300.
+#
+# Flags:
+#   --dry-run    Same as RESEARCH_DRY_RUN=1.
+#
+# Output layout (under research-foundry/runs/<YYYYMMDDTHHMMSSZ>/):
+#   orchestrator.log              orchestrator's own log
+#   run-meta.json                 config dump
+#   discovery-ledger.jsonl        math pipeline rows (novelty.ag)
+#   audit-ledger.jsonl            claim-auditor rows (auditor.ag)
+#   preprint-ledger.jsonl         preprint pipeline rows (submitter.ag)
+#   laptop-node/
+#     bootstrap.sh                container bootstrap (real run only)
+#     .agentis/
+#       sandbox/                  per-daemon scratch
+#       logs/
+#       spend/
+#     preprints/<claim-id>/       per-claim main.tex / main.pdf /
+#                                 reproducibility.* / arxiv-metadata.json /
+#                                 submission.tar.gz
+#
+# Exit codes:
+#   0   research run completed (or dry-run plan emitted)
+#   1   prerequisite missing (podman, python3 outside dry-run)
+#   2   invalid env (e.g. empty topic list)
+#   3   paper corpus loading failed
+#   4   container spawn failed
+
+set -euo pipefail
+
+SCRIPT_PATH="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$0")"
+TOOLS_DIR="$(dirname "$SCRIPT_PATH")"
+FED_DIR="$(dirname "$TOOLS_DIR")"
+REPO_ROOT="$(dirname "$FED_DIR")"
+
+# --- Argument parsing ---
+DRY_RUN="${RESEARCH_DRY_RUN:-0}"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dry-run)
+            DRY_RUN=1
+            shift
+            ;;
+        -h|--help)
+            awk 'NR==1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "$SCRIPT_PATH"
+            exit 0
+            ;;
+        *)
+            echo "run-research: unknown argument: $1" >&2
+            exit 2
+            ;;
+    esac
+done
+
+# --- Env-var defaults ---
+TOPICS_RAW="${RESEARCH_TOPICS-number_theory,combinatorics,abstract_algebra,graph_theory}"
+PAPER_CORPUS_RAW="${RESEARCH_PAPER_CORPUS:-$FED_DIR/data/papers}"
+TICK_INTERVAL_S="${RESEARCH_TICK_INTERVAL_S:-120}"
+TOTAL_TICKS="${RESEARCH_TOTAL_TICKS:-30}"
+DAEMONS_PER_COLONY="${RESEARCH_DAEMONS_PER_COLONY:-1}"
+HOLD_PERIOD="${RESEARCH_HOLD_PERIOD:-4}"
+LLM_BACKEND="${RESEARCH_LLM_BACKEND:-claude}"
+OPENAI_ENDPOINT="${RESEARCH_OPENAI_ENDPOINT:-https://openrouter.ai/api/v1/chat/completions}"
+OPENAI_MODEL="${RESEARCH_OPENAI_MODEL:-qwen/qwen3-coder-30b-a3b-instruct}"
+OPENAI_KEY_ENV="${RESEARCH_OPENAI_KEY_ENV:-OPENROUTER_API_KEY}"
+OPENAI_TIMEOUT_MS="${RESEARCH_OPENAI_TIMEOUT_MS:-180000}"
+CLAUDE_MODEL="${RESEARCH_CLAUDE_MODEL:-opus}"
+CLAUDE_EFFORT="${RESEARCH_CLAUDE_EFFORT:-medium}"
+HOST_CLAUDE_DIR="${RESEARCH_HOST_CLAUDE_DIR:-$HOME/.claude}"
+CONFIDENCE_FLOOR="${RESEARCH_AUDITOR_CONFIDENCE_FLOOR:-0.7}"
+AUTHOR_CONFIG="${RESEARCH_AUTHOR_CONFIG:-$FED_DIR/config/authors.toml}"
+DAEMON_CB_PER_TICK="${RESEARCH_DAEMON_CB_PER_TICK:-2000}"
+DAEMON_HEARTBEAT_MS="${RESEARCH_DAEMON_HEARTBEAT_MS:-1800000}"
+LATEXMK_MAX_PASSES="${RESEARCH_LATEXMK_MAX_PASSES:-3}"
+IMAGE_TAG="${RESEARCH_IMAGE_TAG:-research-foundry:latest}"
+ARXIV_GATEWAY="${RESEARCH_ARXIV_GATEWAY:-submit@arxiv.org}"
+ARXIV_FROM="${RESEARCH_ARXIV_FROM:-}"
+SMTP_HOST="${RESEARCH_SMTP_HOST:-localhost}"
+SMTP_PORT="${RESEARCH_SMTP_PORT:-25}"
+
+# Explorer M98 v3 prompt-evolution + fitness knobs.
+: "${RESEARCH_EXPLORER_PROMPT_EVOLUTION_THRESHOLD:=3}"
+: "${RESEARCH_EXPLORER_PROMPT_GEN_CAP:=10}"
+: "${RESEARCH_EXPLORER_PROMPT_MAX_BYTES:=8192}"
+: "${RESEARCH_EXPLORER_PROMPT_LEVENSHTEIN_FLOOR:=20}"
+: "${RESEARCH_FITNESS_REWARD_NOVEL_PER_TICK:=2}"
+: "${RESEARCH_FITNESS_PENALTY_NOT_NOVEL_PER_TICK:=1}"
+
+# --- Validation ---
+if [ -z "$TOPICS_RAW" ]; then
+    echo "run-research: RESEARCH_TOPICS must be a non-empty comma-separated list" >&2
+    exit 2
+fi
+
+val=""
+for var_name in TICK_INTERVAL_S TOTAL_TICKS DAEMONS_PER_COLONY HOLD_PERIOD OPENAI_TIMEOUT_MS LATEXMK_MAX_PASSES SMTP_PORT; do
+    eval "val=\${$var_name}"
+    case "$val" in
+        ''|*[!0-9]*)
+            echo "run-research: $var_name must be a positive integer (got: $val)" >&2
+            exit 2
+            ;;
+    esac
+done
+unset val
+
+if [ "$TICK_INTERVAL_S" -lt 1 ]; then
+    echo "run-research: RESEARCH_TICK_INTERVAL_S must be >= 1 (got: $TICK_INTERVAL_S)" >&2
+    exit 2
+fi
+if [ "$TOTAL_TICKS" -lt 1 ]; then
+    echo "run-research: RESEARCH_TOTAL_TICKS must be >= 1 (got: $TOTAL_TICKS)" >&2
+    exit 2
+fi
+if [ "$DAEMONS_PER_COLONY" -lt 1 ]; then
+    echo "run-research: RESEARCH_DAEMONS_PER_COLONY must be >= 1 (got: $DAEMONS_PER_COLONY)" >&2
+    exit 2
+fi
+
+# Resolve PAPER_CORPUS to absolute path when present so we can pass it
+# into containers / helpers safely regardless of where the orchestrator
+# is launched from.
+if [ -d "$PAPER_CORPUS_RAW" ]; then
+    PAPER_CORPUS="$(cd "$PAPER_CORPUS_RAW" && pwd)"
+else
+    PAPER_CORPUS="$PAPER_CORPUS_RAW"
+fi
+
+# --- Per-run hermetic dir ---
+TS="$(date -u +%Y%m%dT%H%M%SZ)"
+RUN_DIR="${RESEARCH_RUN_DIR:-$FED_DIR/runs/$TS}"
+ORCH_LOG="$RUN_DIR/orchestrator.log"
+RUN_META="$RUN_DIR/run-meta.json"
+LAPTOP_DIR="$RUN_DIR/laptop-node"
+DISCOVERY_LEDGER="$RUN_DIR/discovery-ledger.jsonl"
+AUDIT_LEDGER="$RUN_DIR/audit-ledger.jsonl"
+PREPRINT_LEDGER="$RUN_DIR/preprint-ledger.jsonl"
+
+# --- Dry-run / real-run dispatch helpers ---
+emit_cmd() {
+    if [ "$DRY_RUN" = "1" ]; then
+        printf '+ %s\n' "$*"
+    else
+        printf '+ %s\n' "$*" >>"$ORCH_LOG"
+        # shellcheck disable=SC2294
+        eval "$@"
+    fi
+}
+
+emit_step() {
+    if [ "$DRY_RUN" = "1" ]; then
+        printf '# %s\n' "$*"
+    else
+        printf '# %s\n' "$*" >>"$ORCH_LOG"
+    fi
+}
+
+# --- Prerequisite checks (skipped in dry-run for portability) ---
+if [ "$DRY_RUN" = "0" ]; then
+    for bin in podman python3; do
+        if ! command -v "$bin" >/dev/null 2>&1; then
+            echo "run-research: $bin not found on PATH" >&2
+            exit 1
+        fi
+    done
+    if [ "$LLM_BACKEND" = "openai" ]; then
+        eval "openai_key_value=\${$OPENAI_KEY_ENV:-}"
+        if [ -z "${openai_key_value:-}" ]; then
+            echo "run-research: \$$OPENAI_KEY_ENV is empty (required for llm.backend=openai)" >&2
+            exit 1
+        fi
+        unset openai_key_value
+    fi
+    mkdir -p "$RUN_DIR" "$LAPTOP_DIR" "$LAPTOP_DIR/.agentis/sandbox" "$LAPTOP_DIR/.agentis/logs" "$LAPTOP_DIR/.agentis/spend" "$LAPTOP_DIR/preprints"
+    : >"$ORCH_LOG"
+    : >"$DISCOVERY_LEDGER"
+    : >"$AUDIT_LEDGER"
+    : >"$PREPRINT_LEDGER"
+fi
+
+emit_step "run-research: starting (dry_run=$DRY_RUN)"
+emit_step "run dir: $RUN_DIR"
+emit_step "topics: $TOPICS_RAW"
+emit_step "paper corpus: $PAPER_CORPUS"
+emit_step "tick interval: ${TICK_INTERVAL_S}s"
+emit_step "total ticks: $TOTAL_TICKS"
+emit_step "daemons per colony: $DAEMONS_PER_COLONY"
+emit_step "hold period: $HOLD_PERIOD"
+emit_step "llm backend: $LLM_BACKEND"
+emit_step "claude model: $CLAUDE_MODEL"
+emit_step "confidence floor: $CONFIDENCE_FLOOR"
+emit_step "latexmk max passes: $LATEXMK_MAX_PASSES"
+emit_step "image tag: $IMAGE_TAG"
+emit_step "arxiv gateway: $ARXIV_GATEWAY (HITL-gated; never auto-sent)"
+emit_step "author config: $AUTHOR_CONFIG"
+
+# --- 1) Build (or reuse) the container image ---
+build_image() {
+    emit_step "checking for existing image $IMAGE_TAG (build if missing)"
+    emit_cmd "podman image exists $IMAGE_TAG || podman build -t $IMAGE_TAG -f $TOOLS_DIR/Containerfile.research $FED_DIR"
+}
+
+# --- 2) Per-node bootstrap script generator ---
+# Single bootstrap that spawns all 15 daemons under one .agentis/.
+# Three pipeline groups:
+#   math      = explorer, noticer, formulator, verifier, novelty
+#   searchers = arxiv-search, oeis-search, groupprops-search, scholar-search, auditor
+#   preprint  = introducer, theorist, computer, editor, submitter
+# Explorer keeps --enable-replication --allow-replica-replication so
+# the M2-Malthusian replicate gate inside explorer.ag can grow its
+# population. The remaining 14 colonies run with standard
+# --enable-exec --enable-messaging flags. Per-daemon tick interval is
+# fixed at 30s (decoupled from the orchestrator's TICK_INTERVAL_S
+# `replay:current_tick` advance rate); same reason as the retired
+# preprint-foundry bootstrap (daemon polls must be much shorter than
+# the orchestrator tick to avoid missing state changes).
+write_bootstrap() {
+    bootstrap_path="$LAPTOP_DIR/bootstrap.sh"
+    emit_step "generating bootstrap script at $bootstrap_path (colonies=15 daemons_per_colony=$DAEMONS_PER_COLONY)"
+
+    if [ "$DRY_RUN" = "1" ]; then
+        emit_cmd "write-bootstrap path=$bootstrap_path colonies=explorer,noticer,formulator,verifier,novelty,arxiv-search,oeis-search,groupprops-search,scholar-search,auditor,introducer,theorist,computer,editor,submitter"
+        return
+    fi
+
+    {
+        printf '#!/bin/bash\n'
+        printf '# Auto-generated by run-research.sh -- runs inside the container.\n'
+        printf 'set -euo pipefail\n'
+        printf 'cd /run-root\n'
+        printf 'agentis init >/dev/null 2>&1 || true\n'
+        printf '{\n'
+        # Union of three retired feds' env_passthrough lists.
+        printf '  printf "exec.env_passthrough = DAEMON_ID,COLONY_NAME,HOLD_PERIOD,DISCOVERY_LEDGER,AUDIT_LEDGER,PREPRINT_LEDGER,AGENTIS_ROOT,ARXIV_MAX_QUERY_RESULTS,PREPRINT_OUTPUT_ROOT,PREPRINT_AUTHOR_CONFIG,PREPRINT_LATEXMK_MAX_PASSES,PREPRINT_ARXIV_GATEWAY,PREPRINT_ARXIV_FROM,PREPRINT_SMTP_HOST,PREPRINT_SMTP_PORT,EXPLORER_PROMPT_EVOLUTION_THRESHOLD,EXPLORER_PROMPT_GEN_CAP,EXPLORER_PROMPT_MAX_BYTES,EXPLORER_PROMPT_LEVENSHTEIN_FLOOR,FOUNDRY_FITNESS_REWARD_NOVEL_PER_TICK,FOUNDRY_FITNESS_PENALTY_NOT_NOVEL_PER_TICK\\n"\n'
+        printf '  printf "experience.enabled = true\\n"\n'
+        printf '  printf "telemetry.enabled = true\\n"\n'
+        printf '  printf "llm.backend = %s\\n"\n' "$LLM_BACKEND"
+        printf '  printf "daemon.cb_per_tick = %s\\n"\n' "$DAEMON_CB_PER_TICK"
+        printf '  printf "daemon.heartbeat_interval_ms = %s\\n"\n' "$DAEMON_HEARTBEAT_MS"
+        # PII allow: arxiv abstracts, OEIS A-numbers, LaTeX bodies, GAP
+        # output all contain long numeric runs that the agentis-core
+        # heuristic flags. Mirrors trading-binance fix (#581).
+        printf '  printf "pii_transmit = allow\\n"\n'
+        # Memo cap bump: 15 colonies x 30 ticks x per-pid keys + per-claim
+        # status keys fills the default 500 fast. Mirrors #587.
+        printf '  printf "memo.max_keys = 50000\\n"\n'
+        if [ "$LLM_BACKEND" = "openai" ]; then
+            printf '  printf "llm.openai.endpoint = %s\\n"\n' "$OPENAI_ENDPOINT"
+            printf '  printf "llm.openai.model = %s\\n"\n' "$OPENAI_MODEL"
+            printf '  printf "llm.openai.api_key_env = %s\\n"\n' "$OPENAI_KEY_ENV"
+            printf '  printf "llm.openai.timeout_ms = %s\\n"\n' "$OPENAI_TIMEOUT_MS"
+        elif [ "$LLM_BACKEND" = "claude" ]; then
+            # Phase 1: single backend block applies to all 15 colonies.
+            # Per-colony model split (e.g. Sonnet for searchers, Opus for
+            # auditor/introducer/theorist/editor) is a Phase 2
+            # enhancement requiring per-colony AGENTIS_ROOT.
+            printf '  printf "llm.command = claude\\n"\n'
+            printf '  printf "llm.args = -p --output-format json --model %s --tools \\"\\" --system-prompt \\"You are a research mathematician drafting an arXiv preprint. Output only valid JSON.\\" --effort %s\\n"\n' "$CLAUDE_MODEL" "$CLAUDE_EFFORT"
+        fi
+        printf '} >> .agentis/config\n'
+        # Stage all 15 colonies + tools/ + config/ + data/ from the
+        # read-only /repo bind-mount.
+        printf 'for c in explorer noticer formulator verifier novelty arxiv-search oeis-search groupprops-search scholar-search auditor introducer theorist computer editor submitter; do\n'
+        printf '    cp -r /repo/research-foundry/$c /run-root/$c\n'
+        printf 'done\n'
+        printf 'cp -r /repo/research-foundry/tools /run-root/tools\n'
+        printf 'mkdir -p /run-root/.agentis/sandbox /run-root/.agentis/logs /run-root/config /run-root/preprints /run-root/data\n'
+        printf 'if [ -d /repo/research-foundry/data/papers ]; then cp -r /repo/research-foundry/data/papers /run-root/data/papers; fi\n'
+        printf 'if [ -f /repo/research-foundry/config/authors.toml ]; then cp /repo/research-foundry/config/authors.toml /run-root/config/authors.toml; fi\n'
+        printf ': > /run-root/discovery-ledger.jsonl\n'
+        printf ': > /run-root/audit-ledger.jsonl\n'
+        printf ': > /run-root/preprint-ledger.jsonl\n'
+        # Seed propose-tier confidence for each colony. Note the
+        # claim-auditor / preprint-foundry searcher keys use underscored
+        # forms (arxiv_search, oeis_search, etc.) because the .ag agents
+        # call them that way internally; mirrors retired run-auditor.sh.
+        printf 'for c in explorer noticer formulator verifier novelty arxiv_search oeis_search groupprops_search scholar_search auditor introducer theorist computer editor submitter; do\n'
+        printf '    (cd /run-root && agentis memo set $c:confidence 0.7 >/dev/null 2>&1 || true)\n'
+        printf 'done\n'
+        # Per-daemon tick interval is 30s (decoupled from orchestrator
+        # tick); same lesson as the retired preprint-foundry bootstrap.
+        printf 'DAEMON_TICK_INTERVAL_MS=30000\n'
+        printf 'EXPLORER_TICK_INTERVAL_MS=30000\n'
+        # math pipeline: explorer (with replication) + noticer/formulator/verifier/novelty.
+        printf 'for i in $(seq 1 %s); do\n' "$DAEMONS_PER_COLONY"
+        printf '    DAEMON_ID=$i COLONY_NAME=explorer HOLD_PERIOD=%s DISCOVERY_LEDGER=/run-root/discovery-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis EXPLORER_PROMPT_EVOLUTION_THRESHOLD=%s EXPLORER_PROMPT_GEN_CAP=%s EXPLORER_PROMPT_MAX_BYTES=%s EXPLORER_PROMPT_LEVENSHTEIN_FLOOR=%s FOUNDRY_FITNESS_REWARD_NOVEL_PER_TICK=%s FOUNDRY_FITNESS_PENALTY_NOT_NOVEL_PER_TICK=%s agentis daemon /run-root/explorer/agents/explorer.ag --colony explorer --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval "$EXPLORER_TICK_INTERVAL_MS" > /run-root/.agentis/logs/explorer-$i.log 2>&1 &\n' \
+            "$HOLD_PERIOD" \
+            "$RESEARCH_EXPLORER_PROMPT_EVOLUTION_THRESHOLD" \
+            "$RESEARCH_EXPLORER_PROMPT_GEN_CAP" \
+            "$RESEARCH_EXPLORER_PROMPT_MAX_BYTES" \
+            "$RESEARCH_EXPLORER_PROMPT_LEVENSHTEIN_FLOOR" \
+            "$RESEARCH_FITNESS_REWARD_NOVEL_PER_TICK" \
+            "$RESEARCH_FITNESS_PENALTY_NOT_NOVEL_PER_TICK"
+        printf 'done\n'
+        printf 'for c in noticer formulator verifier novelty; do\n'
+        printf '    for i in $(seq 1 %s); do\n' "$DAEMONS_PER_COLONY"
+        printf '        DAEMON_ID=$i COLONY_NAME=$c DISCOVERY_LEDGER=/run-root/discovery-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/$c/agents/$c.ag --colony $c --enable-exec --enable-messaging --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/$c-$i.log 2>&1 &\n'
+        printf '    done\n'
+        printf 'done\n'
+        # claim-auditor: four searchers + auditor. Audit-trail goes to
+        # audit-ledger.jsonl.
+        printf 'for c in arxiv-search oeis-search groupprops-search scholar-search; do\n'
+        printf '    DAEMON_ID=1 COLONY_NAME=$c DISCOVERY_LEDGER=/run-root/audit-ledger.jsonl ARXIV_MAX_QUERY_RESULTS=10 AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/$c/agents/$c.ag --colony $c --enable-exec --enable-messaging --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/$c-1.log 2>&1 &\n'
+        printf 'done\n'
+        printf 'DAEMON_ID=1 COLONY_NAME=auditor DISCOVERY_LEDGER=/run-root/audit-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/auditor/agents/auditor.ag --colony auditor --enable-exec --enable-messaging --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/auditor-1.log 2>&1 &\n'
+        # preprint-foundry: introducer / theorist / computer / editor / submitter.
+        # Audit-trail goes to preprint-ledger.jsonl.
+        printf 'for c in introducer theorist computer; do\n'
+        printf '    DAEMON_ID=1 COLONY_NAME=$c DISCOVERY_LEDGER=/run-root/preprint-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis PREPRINT_OUTPUT_ROOT=/run-root/preprints PREPRINT_AUTHOR_CONFIG=/run-root/config/authors.toml PREPRINT_LATEXMK_MAX_PASSES=%s agentis daemon /run-root/$c/agents/$c.ag --colony $c --enable-exec --enable-messaging --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/$c-1.log 2>&1 &\n' "$LATEXMK_MAX_PASSES"
+        printf 'done\n'
+        printf 'DAEMON_ID=1 COLONY_NAME=editor DISCOVERY_LEDGER=/run-root/preprint-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis PREPRINT_OUTPUT_ROOT=/run-root/preprints PREPRINT_AUTHOR_CONFIG=/run-root/config/authors.toml PREPRINT_LATEXMK_MAX_PASSES=%s agentis daemon /run-root/editor/agents/editor.ag --colony editor --enable-exec --enable-messaging --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/editor-1.log 2>&1 &\n' "$LATEXMK_MAX_PASSES"
+        printf 'DAEMON_ID=1 COLONY_NAME=submitter DISCOVERY_LEDGER=/run-root/preprint-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis PREPRINT_OUTPUT_ROOT=/run-root/preprints PREPRINT_AUTHOR_CONFIG=/run-root/config/authors.toml PREPRINT_ARXIV_GATEWAY=%s PREPRINT_ARXIV_FROM=%s PREPRINT_SMTP_HOST=%s PREPRINT_SMTP_PORT=%s agentis daemon /run-root/submitter/agents/submitter.ag --colony submitter --enable-exec --enable-messaging --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/submitter-1.log 2>&1 &\n' \
+            "$ARXIV_GATEWAY" "$ARXIV_FROM" "$SMTP_HOST" "$SMTP_PORT"
+        printf 'while [ ! -e /run-root/.shutdown ]; do sleep 5; done\n'
+        printf 'exit 0\n'
+    } >"$bootstrap_path"
+    chmod +x "$bootstrap_path"
+}
+
+# --- 3) Spawn the container ---
+spawn_container() {
+    emit_step "spawning research-foundry container (image=$IMAGE_TAG)"
+    if [ "$LLM_BACKEND" = "claude" ]; then
+        # Bind-mount host's ~/.claude into container so claude CLI can
+        # read OAuth session tokens (Max 20x flat-rate). ':z' SELinux
+        # relabel required on Fedora / RHEL. Mirrors tribes-bench
+        # (#535, #540).
+        emit_cmd "podman run -d --replace --name research-foundry-laptop -v $REPO_ROOT:/repo:ro -v $LAPTOP_DIR:/run-root:rw -v $HOST_CLAUDE_DIR:/root/.claude:rw,z $IMAGE_TAG /run-root/bootstrap.sh"
+    else
+        emit_cmd "podman run -d --replace --name research-foundry-laptop -e $OPENAI_KEY_ENV=\"\${$OPENAI_KEY_ENV:-}\" -v $REPO_ROOT:/repo:ro -v $LAPTOP_DIR:/run-root:rw $IMAGE_TAG /run-root/bootstrap.sh"
+    fi
+}
+
+# --- 4) Cleanup trap ---
+AUTO_PROMOTE_PID=""
+install_cleanup_trap() {
+    emit_step "installing cleanup trap (stop + rm container; kill sidecars)"
+    # shellcheck disable=SC2064  # Expand $AUTO_PROMOTE_PID at trigger time.
+    emit_cmd "trap '[ -n \"\${AUTO_PROMOTE_PID:-}\" ] && kill \"\$AUTO_PROMOTE_PID\" 2>/dev/null; podman stop --time 5 research-foundry-laptop 2>/dev/null || true; podman rm -f research-foundry-laptop 2>/dev/null || true' EXIT INT TERM"
+}
+
+# --- 4.5) Auto-promote sidecar (#622, consolidated #638) ---
+# Spawns a background loop that invokes tools/auto-promote.sh in
+# --containerized mode every AP_INTERVAL seconds. Cwd is the host-side
+# bind-mount root ($LAPTOP_DIR == <run-dir>/laptop-node/) where the
+# container's .agentis/ state materialises. Self-terminates when no
+# daemons report `state="running"` (e.g. after signal_shutdown drained
+# the container). The cleanup trap installed above kills it on
+# orchestrator EXIT/INT/TERM.
+#
+# Env knobs:
+#   RESEARCH_AUTO_PROMOTE             1 enable (default), 0 disable
+#   RESEARCH_AUTO_PROMOTE_INTERVAL_S  seconds between sidecar ticks
+#                                     (default 300)
+start_auto_promote_sidecar() {
+    AP_ENABLED="${RESEARCH_AUTO_PROMOTE:-1}"
+    AP_INTERVAL="${RESEARCH_AUTO_PROMOTE_INTERVAL_S:-300}"
+    if [ "$AP_ENABLED" != "1" ]; then
+        emit_step "auto-promote sidecar: disabled via RESEARCH_AUTO_PROMOTE=$AP_ENABLED"
+        return 0
+    fi
+    AP_SCRIPT="$REPO_ROOT/tools/auto-promote.sh"
+    AP_CONFIG="$REPO_ROOT/tools/auto-promote-config.research-foundry.yaml"
+    AP_LOG_DIR="$LAPTOP_DIR/.agentis/logs"
+    AP_LOG="$AP_LOG_DIR/auto-promote.log"
+    AP_STAMP="$AP_LOG_DIR/auto-promote.sidecar_started_at"
+    if [ ! -x "$AP_SCRIPT" ]; then
+        emit_step "auto-promote sidecar: $AP_SCRIPT not executable, skipping"
+        return 0
+    fi
+    if [ ! -f "$AP_CONFIG" ]; then
+        emit_step "auto-promote sidecar: $AP_CONFIG missing, skipping"
+        return 0
+    fi
+    emit_step "starting auto-promote sidecar (interval=${AP_INTERVAL}s, log=$AP_LOG)"
+    if [ "$DRY_RUN" = "1" ]; then
+        emit_cmd "auto-promote-sidecar placeholder: cwd=$LAPTOP_DIR config=$AP_CONFIG interval=${AP_INTERVAL}s"
+        return 0
+    fi
+    mkdir -p "$AP_LOG_DIR"
+    date +%s > "$AP_STAMP"
+    (
+        cd "$LAPTOP_DIR"
+        while :; do
+            if ! agentis daemon list --json 2>/dev/null | grep -Fq '"state":"running"'; then
+                printf '=== %s: no running daemons; sidecar exiting ===\n' \
+                    "$(date -Iseconds)" >> "$AP_LOG"
+                exit 0
+            fi
+            {
+                printf '=== %s: sidecar tick ===\n' "$(date -Iseconds)"
+                "$AP_SCRIPT" "$LAPTOP_DIR" --containerized --config "$AP_CONFIG" 2>&1 \
+                    || printf '[sidecar] auto-promote.sh exited %s\n' "$?"
+            } >> "$AP_LOG"
+            sleep "$AP_INTERVAL"
+        done
+    ) &
+    AUTO_PROMOTE_PID=$!
+    emit_step "auto-promote sidecar PID=$AUTO_PROMOTE_PID"
+}
+
+# --- 5) Tick stream (main research loop) ---
+# For each tick:
+#   1. Pick the next topic (round-robin over RESEARCH_TOPICS).
+#   2. Sample two distinct papers from the topic's cached corpus.
+#   3. Seed `replay:current_*` memo keys read by explorer.ag.
+#   4. Sleep RESEARCH_TICK_INTERVAL_S seconds.
+# The 9-10-tick cascade through 14 downstream daemons (noticer -->
+# formulator --> verifier --> novelty --> 4 searchers --> auditor -->
+# introducer + theorist + computer --> editor --> submitter) happens
+# inside the merged container because all daemons share /run-root/
+# .agentis/. Each agent reads its upstream colleague's memo directly --
+# no cross-fed JSONL reconstruction.
+tick_stream() {
+    emit_step "starting tick stream (interval=${TICK_INTERVAL_S}s total=${TOTAL_TICKS})"
+    if [ "$DRY_RUN" = "1" ]; then
+        emit_cmd "python3 -c 'research-loop placeholder: topics=$TOPICS_RAW total_ticks=$TOTAL_TICKS interval=$TICK_INTERVAL_S' # tick loop runs in real mode"
+        return
+    fi
+    python3 - "$TOPICS_RAW" "$PAPER_CORPUS" "$TOTAL_TICKS" "$TICK_INTERVAL_S" "$RUN_DIR" <<'PYRESEARCH'
+import json
+import os
+import random
+import subprocess
+import sys
+import time
+
+topics_raw, paper_corpus, total_ticks, interval, run_dir = (
+    sys.argv[1], sys.argv[2], int(sys.argv[3]),
+    int(sys.argv[4]), sys.argv[5],
+)
+topics = [t.strip() for t in topics_raw.split(",") if t.strip()]
+if not topics:
+    sys.stderr.write("research-loop: no topics\n")
+    sys.exit(2)
+
+corpora = {}
+for topic in topics:
+    path = os.path.join(paper_corpus, topic + ".json")
+    if not os.path.isfile(path):
+        sys.stderr.write(
+            "research-loop: missing corpus for topic '" + topic + "' at " + path + "\n"
+        )
+        sys.exit(3)
+    with open(path) as f:
+        try:
+            data = json.load(f)
+        except Exception as e:
+            sys.stderr.write("research-loop: " + path + " not valid JSON: " + str(e) + "\n")
+            sys.exit(3)
+    papers = data.get("papers") or []
+    if len(papers) < 2:
+        sys.stderr.write(
+            "research-loop: corpus '" + topic + "' needs at least 2 papers (has "
+            + str(len(papers)) + ")\n"
+        )
+        sys.exit(3)
+    corpora[topic] = data
+
+log_path = os.path.join(run_dir, "orchestrator.log")
+rng = random.Random(0xF0FF)
+for idx in range(total_ticks):
+    topic = topics[idx % len(topics)]
+    data = corpora[topic]
+    papers = data["papers"]
+    a, b = rng.sample(papers, 2)
+    memo_pairs = [
+        ("replay:current_tick", str(idx)),
+        ("replay:current_topic", topic),
+        ("replay:current_topic_desc", data.get("description", "")),
+        ("replay:current_compute_hints", data.get("compute_hints", "sympy, numpy, networkx")),
+        ("replay:current_paper_a_id", str(a.get("id", ""))),
+        ("replay:current_paper_a_title", str(a.get("title", ""))),
+        ("replay:current_paper_a_abstract", str(a.get("abstract", ""))),
+        ("replay:current_paper_b_id", str(b.get("id", ""))),
+        ("replay:current_paper_b_title", str(b.get("title", ""))),
+        ("replay:current_paper_b_abstract", str(b.get("abstract", ""))),
+    ]
+    for key, value in memo_pairs:
+        subprocess.run(
+            ["podman", "exec", "research-foundry-laptop", "agentis", "memo", "set", key, value],
+            check=False,
+        )
+    with open(log_path, "a") as log:
+        log.write(
+            "# tick " + str(idx) + "/" + str(total_ticks)
+            + " topic=" + topic + " papers=" + str(a.get("id"))
+            + "," + str(b.get("id")) + "\n"
+        )
+    time.sleep(interval)
+PYRESEARCH
+}
+
+# --- 6) Shutdown signal ---
+signal_shutdown() {
+    emit_step "signalling shutdown (touch /run-root/.shutdown)"
+    emit_cmd "podman exec research-foundry-laptop touch /run-root/.shutdown 2>/dev/null || true"
+}
+
+# --- 7) run-meta.json ---
+write_run_meta() {
+    emit_step "writing run-meta.json"
+    started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    emit_cmd "python3 -c 'import json; json.dump({\"started_at\":\"$started_at\",\"topics\":\"$TOPICS_RAW\",\"total_ticks\":$TOTAL_TICKS,\"tick_interval_s\":$TICK_INTERVAL_S,\"daemons_per_colony\":$DAEMONS_PER_COLONY,\"hold_period\":$HOLD_PERIOD,\"llm_backend\":\"$LLM_BACKEND\",\"claude_model\":\"$CLAUDE_MODEL\",\"confidence_floor\":$CONFIDENCE_FLOOR,\"latexmk_max_passes\":$LATEXMK_MAX_PASSES,\"image_tag\":\"$IMAGE_TAG\",\"arxiv_gateway\":\"$ARXIV_GATEWAY\",\"hitl_required\":True}, open(\"$RUN_META\",\"w\"), indent=2)'"
+}
+
+# --- Orchestration body ---
+install_cleanup_trap
+build_image
+write_bootstrap
+write_run_meta
+spawn_container
+start_auto_promote_sidecar
+tick_stream
+
+if [ "$DRY_RUN" = "1" ]; then
+    emit_step "dry-run complete; no container spawned"
+    exit 0
+fi
+
+signal_shutdown
+
+emit_step "run-research: done"
+echo "[run-research] run dir: $RUN_DIR"
