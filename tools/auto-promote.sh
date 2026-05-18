@@ -31,13 +31,13 @@
 #        ./tools/auto-promote.sh dev-apprenticeship
 #        ./tools/auto-promote.sh dev-apprenticeship --live   # override dry_run
 #        ./tools/auto-promote.sh /run-root/laptop-node --containerized \
-#            --config tools/auto-promote-config.math-foundry.yaml
+#            --config tools/auto-promote-config.research-foundry.yaml
 #
 # --containerized opts out of the dev-apprenticeship-specific
-# `[gitlab]`-in-colony.toml respawn path; forge-less research federations
-# (math-foundry / claim-auditor / preprint-foundry) need this because
-# their colonies have `forge.type = "none"` and the daemon must be
-# respawned without GITLAB_* env composition (#622).
+# `[gitlab]`-in-colony.toml respawn path; the forge-less
+# `research-foundry/` federation needs this because its 15 colonies
+# have `forge.type = "none"` and the daemon must be respawned without
+# GITLAB_* env composition (#622, #638).
 #
 # --config overrides the default tools/auto-promote-config.yaml path.
 #
@@ -56,7 +56,7 @@ REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 if [ $# -lt 1 ]; then
     echo "Usage: $0 <federation-dir> [--live] [--containerized] [--config <path>]"
     echo "Example: $0 dev-apprenticeship"
-    echo "Example: $0 /path/to/run/laptop-node --containerized --config tools/auto-promote-config.math-foundry.yaml"
+    echo "Example: $0 /path/to/run/laptop-node --containerized --config tools/auto-promote-config.research-foundry.yaml"
     exit 1
 fi
 
@@ -104,7 +104,7 @@ done
 
 if [ -n "$CONFIG_OVERRIDE" ]; then
     # Resolve --config against $REPO_ROOT first (so callers may pass a
-    # repo-relative path like `tools/auto-promote-config.math-foundry.yaml`),
+    # repo-relative path like `tools/auto-promote-config.research-foundry.yaml`),
     # then fall back to treating it as an absolute/relative path verbatim.
     if [ -f "$REPO_ROOT/$CONFIG_OVERRIDE" ]; then
         CONFIG_FILE="$REPO_ROOT/$CONFIG_OVERRIDE"
