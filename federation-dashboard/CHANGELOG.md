@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **dashboard**: Promote Candidates panel now renders one row per explorer pid instead of collapsing the 5 specialties spawned by `research-foundry`'s Phase 3 PR 1 ([#644](https://github.com/Replikanti/agentis-colonies/pull/644)) bootstrap into a single `explorer` row. When a decision record carries `{pid, specialty}` (emitted by `tools/auto-promote-decisions.py` for daemons whose source is `explorer.ag`), the bar label becomes `explorer · <specialty> · gen<generation>` and the tooltip carries `fitness=<score>` alongside the existing prereq checklist. Generation comes from the `explorer:<pid>:generation` memo seeded by `tools/run-research.sh` and the replicate path in `explorer.ag` (Phase 3 PR 1). The per-pid fitness scalar is computed by the new `tools/explorer-fitness.py` helper as `novel_count × audit_conf_avg × hitl_accept` over a rolling K=20 window. Phase 3 PR 2 of [#624](https://github.com/Replikanti/agentis-colonies/issues/624).
+
 ## [0.9.1] — 2026-05-04
 
 ### Fixed

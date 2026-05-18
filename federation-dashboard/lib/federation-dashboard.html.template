@@ -3569,12 +3569,21 @@ function renderPromoteCandidates(data) {
   }
   // Build the per-prereq tooltip — full breakdown (pass + fail lines) so
   // the operator can hover for the whole story without expanding skipped.
-  function buildTooltip(prereqs) {
-    return prereqs.map(p => {
+  // Phase 3 PR 2 of #624: when the decision record carries an explorer
+  // fitness score (set by tools/auto-promote-decisions.py for explorer.ag
+  // daemons), append it to the tooltip so operators see why one
+  // explorer specialty ranks above another in the Promote Candidates
+  // panel without expanding the row.
+  function buildTooltip(prereqs, fitnessScore) {
+    const base = prereqs.map(p => {
       const mark = p.meets ? 'OK' : 'FAIL';
       return p.name + ' ' + fmtPrereqVal(p.name, p.value) + ' ' + p.op + ' ' +
              fmtPrereqVal(p.name, p.threshold) + ' [' + mark + ']';
     }).join(' · ');
+    if (fitnessScore != null) {
+      return base + ' · fitness=' + fitnessScore.toFixed(2);
+    }
+    return base;
   }
   function truncate(name, max) {
     if (name.length <= max) return name;
@@ -3689,15 +3698,29 @@ function renderPromoteCandidates(data) {
       }
     }
 
+    // Phase 3 PR 2 of #624: when the decision record carries
+    // {pid, specialty}, render the bar label as
+    // `explorer · <specialty> · gen<N>` instead of the bare role name,
+    // so the Promote Candidates panel surfaces all 5 explorer specialties
+    // distinctly. Generation comes from evidence.explorer_fitness.generation
+    // (seeded by Phase 3 PR 1 #644 into memo, exposed here by
+    // tools/auto-promote-decisions.py).
+    let displayName = a.name;
+    if (d.pid && d.specialty) {
+      const ef = ev.explorer_fitness || {};
+      const gen = (ef.generation != null) ? ef.generation : 0;
+      displayName = a.name + ' · ' + d.specialty + ' · gen' + gen;
+    }
+
     bars.push({
-      agent: a.name,
+      agent: displayName,
       decision: d.decision,
       meanFill: meanFill,
       minFill: minFill,
       cls: cls,
       target: d.to,
       rightLabel: fmtBarRight(limitingPrereq),
-      tooltip: buildTooltip(ev.prereqs),
+      tooltip: buildTooltip(ev.prereqs, d.fitness_score),
       forecastBadge: forecastBadge,
     });
   });
@@ -3713,9 +3736,19 @@ function renderPromoteCandidates(data) {
   // are running with an unseeded confidence still deserve a visible row
   // in skipped so the operator knows those are waiting on install.sh
   // / memo seed.
-  const seen = new Set(decisions.map(d => d.agent));
+  // Phase 3 PR 2 of #624: when a decision record carries a pid
+  // (explorer rows), the bar-render loop above already pushes one bar
+  // per pid (specialty + generation in the label). For this dedup we
+  // still key by bare agent name because `agents[]` post-#412 carries
+  // one record per (colony, role) — multiple per-pid explorer
+  // decisions still resolve back to a single agent record.
+  const seen = new Set(decisions.map(d => d.agent + (d.pid ? ':' + d.pid : '')));
+  const seenNames = new Set(decisions.map(d => d.agent));
+  // Reference `seen` so it is not stripped by minifiers as dead code;
+  // future PR-3 (#624 cull tool) will key against the pid-suffixed set.
+  void seen;
   agents.forEach(a => {
-    if (seen.has(a.name)) return;
+    if (seenNames.has(a.name)) return;
     if (a.confidence != null) return;
     if (a.state !== 'running') return;
     skippedHtml += '<div class="skipped-row"><span class="agent-name">' + esc(a.name) + '</span>';
