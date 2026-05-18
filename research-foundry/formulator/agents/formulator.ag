@@ -48,7 +48,20 @@ fn now_ms_via_shell() -> int {
 }
 
 fn _seed_prompt() -> string {
-    return "You discovered a surprising result through computation. Craft a competition-style problem whose answer IS this discovery. The user-supplied input below carries the TOPIC, the DISCOVERY description, the SPECIFIC VALUE, and the WHY SURPRISING reasoning. Craft a self-contained problem (no code, just math). The stated answer must be the specific value. Output ONLY valid JSON: {\"problem\": \"...\", \"answer\": \"...\", \"solution_full\": \"...\", \"novelty_claim\": \"...\", \"self_check_confidence\": 0.0-1.0}.";
+    return "You discovered a surprising result through computation. Craft a competition-style problem whose answer IS this discovery. The user-supplied input below carries the TOPIC, the DISCOVERY description, the SPECIFIC VALUE, and the WHY SURPRISING reasoning. It may also carry RECENT KNOWN-PRIOR TOPICS (recent topics the auditor classified as already known -- AVOID re-framing the discovery as one of those) and RECENT VERIFIED-NEW TOPICS (recent topics the auditor accepted as novel -- prefer framings closer to those when faithful to the discovery). Craft a self-contained problem (no code, just math). The stated answer must be the specific value. Output ONLY valid JSON: {\"problem\": \"...\", \"answer\": \"...\", \"solution_full\": \"...\", \"novelty_claim\": \"...\", \"self_check_confidence\": 0.0-1.0}.";
+}
+
+// _summarise_topic_buf -- collapse the last K entries of a topic-
+// feedback rolling buffer (auditor-written) into a single comma-
+// separated `<topic>:<problem_summary[:60]>` string the formulator
+// injects into the ctx. Same idiom as auditor::_push_topic_feedback
+// reader counterpart in spirit; matches explorer.ag::_count_not_novel.
+fn _summarise_topic_buf(buf_raw: string, k: int) -> string {
+    if len(buf_raw) == 0 { return ""; };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,json\ntry: a=json.loads(sys.argv[1])\nexcept Exception: a=[]\nif not isinstance(a,list): a=[]\nk=int(sys.argv[2])\nif k>0 and len(a)>k: a=a[-k:]\nparts=[]\nfor r in a:\n if not isinstance(r,dict): continue\n t=str(r.get(\"topic\",\"\")).strip()\n p=str(r.get(\"problem_summary\",\"\")).strip()\n if len(p)>60: p=p[:60]\n if t or p: parts.append(t+\":\"+p)\nprint(\", \".join(parts))' " + shell_escape(buf_raw) + " " + shell_escape(to_string(k));
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
 }
 
 // _publish_formulator -- emit + memo (+ ledger when final_write=true).
@@ -132,10 +145,19 @@ fn tick(reason: string) -> void {
     let explorer_pid = recall_latest("replay:current_explorer_pid");
     let topic_label = recall_latest("explorer:" + explorer_pid + ":topic:tick-" + to_string(upstream_tick));
 
+    // #623 A: read the auditor-written rolling buffers and inject the
+    // recent verdict context. Stable keys, no :pid, no :tick.
+    let known_buf = recall_latest("formulator:learned_known_topics");
+    let success_buf = recall_latest("formulator:learned_successful_topics");
+    let known_summary = _summarise_topic_buf(known_buf, 10);
+    let success_summary = _summarise_topic_buf(success_buf, 10);
+
     let ctx = "TOPIC: " + topic_label + "\n"
             + "DISCOVERY: " + surprise_description + "\n"
             + "SPECIFIC VALUE: " + specific_value + "\n"
-            + "WHY SURPRISING: " + why_surprising + "\n";
+            + "WHY SURPRISING: " + why_surprising + "\n"
+            + "RECENT KNOWN-PRIOR TOPICS (AVOID): " + known_summary + "\n"
+            + "RECENT VERIFIED-NEW TOPICS (REPLICATE): " + success_summary + "\n";
 
     let problem = prompt(_seed_prompt(), ctx) -> Problem;
 
