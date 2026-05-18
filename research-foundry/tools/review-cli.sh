@@ -128,7 +128,7 @@ if [ ! -f "$LEDGER" ]; then
 fi
 
 LAPTOP_DIR="$RUN_DIR/laptop-node"
-CONTAINER_NAME="preprint-foundry-laptop"
+CONTAINER_NAME="research-foundry-laptop"
 
 # Helper: write a memo key. Prefer the running container; fall back to
 # direct agentis-cli against the laptop-node dir.

@@ -58,7 +58,11 @@ fn _publish_novelty(
     novelty: NoveltyVerdict,
     self_pid: string,
     colony_name_str: string,
+    formulator_pid: string,
     explorer_pid: string,
+    problem_text: string,
+    stated_answer: string,
+    novelty_claim: string,
     upstream_tick: int,
     tick_idx: int,
     tick_now_ms: int
@@ -82,6 +86,44 @@ fn _publish_novelty(
             // colony-lint: safe-exec-concat
             let append_cmd = "printf '%s\n' " + shell_escape(ledger_row) + " >> " + shell_escape(ledger_path);
             let _ = try { exec sh append_cmd; } catch e { ""; };
+        };
+
+        // Seed `claim:*:tick-N` keys for the 4 searcher colonies +
+        // auditor so the downstream pipeline reads them at the NEXT
+        // tick (in-container, shared `.agentis/` memo). Replaces the
+        // cross-fed memo recall that the retired run-auditor.sh did
+        // by probing math-foundry's run dir (#638). tick_idx is the
+        // current orchestrator tick (where novelty fired); searchers
+        // read `claim:*:tick-N` with N = their own current_tick at
+        // the next tick advance.
+        if novelty.novelty_verdict == "NOVEL" {
+            let tick_s = to_string(tick_idx);
+            memo_write("claim:problem_text:tick-" + tick_s, problem_text);
+            memo_write("claim:answer:tick-" + tick_s, stated_answer);
+            memo_write("claim:novelty_claim:tick-" + tick_s, novelty_claim);
+            if len(explorer_pid) > 0 {
+                let explorer_code = recall_latest("explorer:" + explorer_pid + ":code:tick-" + to_string(upstream_tick));
+                let explorer_output = recall_latest("explorer:" + explorer_pid + ":output:tick-" + to_string(upstream_tick));
+                let explorer_goal = recall_latest("explorer:" + explorer_pid + ":goal:tick-" + to_string(upstream_tick));
+                memo_write("claim:explorer_code:tick-" + tick_s, explorer_code);
+                memo_write("claim:explorer_output:tick-" + tick_s, explorer_output);
+                memo_write("claim:explorer_goal:tick-" + tick_s, explorer_goal);
+            };
+        } else {
+            if novelty.novelty_verdict == "BORDERLINE" {
+                let tick_s = to_string(tick_idx);
+                memo_write("claim:problem_text:tick-" + tick_s, problem_text);
+                memo_write("claim:answer:tick-" + tick_s, stated_answer);
+                memo_write("claim:novelty_claim:tick-" + tick_s, novelty_claim);
+                if len(explorer_pid) > 0 {
+                    let explorer_code = recall_latest("explorer:" + explorer_pid + ":code:tick-" + to_string(upstream_tick));
+                    let explorer_output = recall_latest("explorer:" + explorer_pid + ":output:tick-" + to_string(upstream_tick));
+                    let explorer_goal = recall_latest("explorer:" + explorer_pid + ":goal:tick-" + to_string(upstream_tick));
+                    memo_write("claim:explorer_code:tick-" + tick_s, explorer_code);
+                    memo_write("claim:explorer_output:tick-" + tick_s, explorer_output);
+                    memo_write("claim:explorer_goal:tick-" + tick_s, explorer_goal);
+                };
+            };
         };
     };
 
@@ -145,14 +187,14 @@ fn tick(reason: string) -> void {
         // `autonomous_decision=true` flag for downstream auditors (#622).
         memo_write("novelty:" + _self_pid + ":autonomous_decision", "true");
         learn("novelty", "tick " + to_string(tick_idx) + " " + novelty.novelty_verdict, novelty.reasoning, "partial", ["acted", "math-foundry"]);
-        _publish_novelty(true, novelty, _self_pid, _colony_name, explorer_pid, upstream_tick, tick_idx, _tick_now_ms);
+        _publish_novelty(true, novelty, _self_pid, _colony_name, formulator_pid, explorer_pid, problem_text, stated_answer, novelty_claim, upstream_tick, tick_idx, _tick_now_ms);
     } else {
         if my_tier == "review-gated" {
             learn("novelty", "tick " + to_string(tick_idx) + " " + novelty.novelty_verdict, novelty.reasoning, "partial", ["review-gated", "math-foundry"]);
-            _publish_novelty(true, novelty, _self_pid, _colony_name, explorer_pid, upstream_tick, tick_idx, _tick_now_ms);
+            _publish_novelty(true, novelty, _self_pid, _colony_name, formulator_pid, explorer_pid, problem_text, stated_answer, novelty_claim, upstream_tick, tick_idx, _tick_now_ms);
         } else {
             if my_tier == "propose" {
-                _publish_novelty(false, novelty, _self_pid, _colony_name, explorer_pid, upstream_tick, tick_idx, _tick_now_ms);
+                _publish_novelty(false, novelty, _self_pid, _colony_name, formulator_pid, explorer_pid, problem_text, stated_answer, novelty_claim, upstream_tick, tick_idx, _tick_now_ms);
             } else {
                 print("[novelty] observing (tier:", my_tier, ") verdict=", novelty.novelty_verdict);
                 learn("novelty", "tick " + to_string(tick_idx) + " " + novelty.novelty_verdict, novelty.reasoning, "partial", ["observed", "math-foundry"]);

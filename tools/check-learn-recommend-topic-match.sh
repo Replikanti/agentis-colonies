@@ -194,9 +194,7 @@ else
         check_file "$f"
     done < <(find "$SCAN_ROOT" -type f \( \
         -path '*/tribes-bench/tribe-*/agents/*.ag' -o \
-        -path '*/math-foundry/*/agents/*.ag' -o \
-        -path '*/claim-auditor/*/agents/*.ag' -o \
-        -path '*/preprint-foundry/*/agents/*.ag' \
+        -path '*/research-foundry/*/agents/*.ag' \
         \) -print0)
 fi
 

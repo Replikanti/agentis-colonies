@@ -1,0 +1,35 @@
+research-foundry/
+research-foundry/tools/run-research.sh
+research-foundry/tools/Containerfile.research
+research-foundry/tools/test-run-research.sh
+research-foundry/tools/fetch-papers.py
+research-foundry/tools/test-fetch-papers.py
+research-foundry/tools/review-cli.sh
+research-foundry/tools/substitute-author.py
+research-foundry/config/authors.toml.example
+research-foundry/data/
+research-foundry/explorer/
+research-foundry/noticer/
+research-foundry/formulator/
+research-foundry/verifier/
+research-foundry/novelty/
+research-foundry/arxiv-search/
+research-foundry/oeis-search/
+research-foundry/groupprops-search/
+research-foundry/scholar-search/
+research-foundry/auditor/
+research-foundry/introducer/
+research-foundry/theorist/
+research-foundry/computer/
+research-foundry/editor/
+research-foundry/submitter/
+
+# Auto-promote sidecar dependencies (#622, #638). run-research.sh
+# `start_auto_promote_sidecar` shells out to tools/auto-promote.sh in
+# --containerized mode using the consolidated research-foundry config.
+tools/auto-promote.sh
+tools/auto-promote-config.research-foundry.yaml
+tools/auto-promote-config-parser.py
+tools/auto-promote-decisions.py
+tools/auto-promote-lock.py
+tools/parse-toml.sh
