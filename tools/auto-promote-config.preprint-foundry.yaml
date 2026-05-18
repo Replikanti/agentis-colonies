@@ -1,0 +1,38 @@
+# auto-promote-config.preprint-foundry.yaml — Decision rules for the
+# preprint-foundry research federation (#622).
+#
+# Mirrors tools/auto-promote-config.math-foundry.yaml. Preprint-foundry
+# ticks more slowly (full preprint assembly: introducer + theorist +
+# computer + editor + submitter, with latexmk loops) and the submitter's
+# HITL gate at autonomous tier emits fewer acting rows than the
+# computational colonies upstream. Floor at 10 acting rows + 1.5h
+# runtime accordingly.
+
+promote:
+  prerequisites:
+    min_entries: 30
+    min_acting_entries: 10
+    min_runtime_hours: 1.5
+    reject_rate_threshold: 0.10
+    delta_slope_window: 20
+    delta_slope_min: 0
+  steps:
+    - from: 0.4
+      to: 0.6
+      min_acting_entries_override: 0
+    - from: 0.6
+      to: 0.8
+    - from: 0.8
+      to: 0.95
+      min_acting_entries_override: 30
+
+evolve:
+  trigger:
+    delta_slope_negative_for: 1000
+    reject_rate_above: 0.20
+  config:
+    generations: 3
+    population: 4
+    weights: "cb,val,exp"
+
+dry_run: true

@@ -1,0 +1,54 @@
+# auto-promote-config.math-foundry.yaml — Decision rules for the
+# math-foundry research federation (#622).
+#
+# Mirrors the shape of tools/auto-promote-config.yaml (dev-apprenticeship
+# defaults) and inherits the same `promote.steps` ladder + `evolve` block,
+# but tunes prerequisite thresholds to the math-foundry tick cadence and
+# experience-row volume:
+#
+#   - min_entries: 30 — math-foundry ticks at 60s; a 30-min run accrues
+#     ~30 rows even with the observe-step gating, so 30 is enough to
+#     unblock the first promote evaluation without waiting hours.
+#   - min_acting_entries: 15 — explorer/formulator/noticer/verifier/novelty
+#     produce ~1 acting row per tick once propose tier is reached; 15
+#     gives roughly 15-30 min of acting-tier activity before the gate
+#     opens.
+#   - min_runtime_hours: 0.5 — research runs are short (30-90 min);
+#     48h dev-apprenticeship floor would never fire.
+#   - delta_slope_window: 20 — smaller window than the 100-row default
+#     because acting-row volume is correspondingly smaller.
+#   - reject_rate_threshold: 0.10 — math discovery is exploratory; 5%
+#     is too aggressive for early-tier behaviour where the verifier
+#     legitimately rejects half the proposals.
+#
+# `dry_run: true` is preserved — flip in a follow-up PR once the journal
+# shows the sidecar making sensible decisions on a real run.
+
+promote:
+  prerequisites:
+    min_entries: 30
+    min_acting_entries: 15
+    min_runtime_hours: 0.5
+    reject_rate_threshold: 0.10
+    delta_slope_window: 20
+    delta_slope_min: 0
+  steps:
+    - from: 0.4
+      to: 0.6
+      min_acting_entries_override: 0
+    - from: 0.6
+      to: 0.8
+    - from: 0.8
+      to: 0.95
+      min_acting_entries_override: 30
+
+evolve:
+  trigger:
+    delta_slope_negative_for: 1000
+    reject_rate_above: 0.20
+  config:
+    generations: 3
+    population: 4
+    weights: "cb,val,exp"
+
+dry_run: true

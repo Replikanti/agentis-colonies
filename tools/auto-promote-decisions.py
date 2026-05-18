@@ -8,7 +8,7 @@
 #
 # Two invocation modes:
 #
-# Legacy (auto-promote.sh sidecar) — 11 positional args:
+# Legacy (auto-promote.sh sidecar) — 11 or 12 positional args:
 #   1  daemons JSON     (`agentis daemon list --json` output)
 #   2  fed_dir          federation directory (for .agentis/experience/ lookup)
 #   3  min_entries
@@ -20,9 +20,15 @@
 #   9  promote_steps    space-separated "from:to:override" triples
 #   10 evolve_slope_neg_for
 #   11 evolve_reject_above
+#   12 containerized    optional "true"/"false" (default false; #622).
+#                       When "true", the PID liveness probe falls back to
+#                       `effective_state == "running"` from the daemon-list
+#                       JSON because container PIDs are not visible from
+#                       the host PID namespace.
 #
 # Preview (dashboard, #248) — read-only, loads config itself:
-#   --preview --config <auto-promote-config.yaml> <daemons_json> <fed_dir>
+#   --preview --config <auto-promote-config.yaml> [--containerized] \
+#       <daemons_json> <fed_dir>
 #
 # Output: JSON array of decision records on stdout. Each record has at least
 # {agent, colony, decision} where decision is one of {promote, evolve, skip}.
@@ -93,25 +99,43 @@ def _load_config(path):
 def main():
     argv = sys.argv[1:]
 
+    containerized = False
     if argv and argv[0] == '--preview':
         # Preview mode: read-only call from federation-dashboard-collector.
-        # Syntax: --preview --config <yaml> <daemons_json> <fed_dir>
-        if len(argv) != 5 or argv[1] != '--config':
+        # Syntax:
+        #   --preview --config <yaml> [--containerized] <daemons_json> <fed_dir>
+        rest = argv[1:]
+        if not rest or rest[0] != '--config' or len(rest) < 2:
             sys.stderr.write(
-                'Usage: %s --preview --config <yaml> <daemons_json> <fed_dir>\n'
+                'Usage: %s --preview --config <yaml> '
+                '[--containerized] <daemons_json> <fed_dir>\n'
                 % os.path.basename(sys.argv[0])
             )
             return 2
-        config_path = argv[2]
-        daemons = json.loads(argv[3])
-        fed_dir = argv[4]
+        config_path = rest[1]
+        rest = rest[2:]
+        # Optional --containerized flag (#622).
+        if rest and rest[0] == '--containerized':
+            containerized = True
+            rest = rest[1:]
+        if len(rest) != 2:
+            sys.stderr.write(
+                'Usage: %s --preview --config <yaml> '
+                '[--containerized] <daemons_json> <fed_dir>\n'
+                % os.path.basename(sys.argv[0])
+            )
+            return 2
+        daemons = json.loads(rest[0])
+        fed_dir = rest[1]
         (min_entries, min_acting_entries, min_runtime_hours,
          reject_rate_threshold, delta_slope_window, delta_slope_min,
          promote_steps_raw, evolve_slope_neg_for,
          evolve_reject_above) = _load_config(config_path)
     else:
         # Legacy positional mode used by auto-promote.sh sidecar. Keep byte-
-        # identical contract — test-auto-promote.sh asserts it.
+        # identical contract — test-auto-promote.sh asserts it. The 12th arg
+        # ('true'/'false') is optional and toggles containerized liveness
+        # (#622); absence keeps the pre-#622 behaviour.
         daemons = json.loads(sys.argv[1])
         fed_dir = sys.argv[2]
         min_entries = int(sys.argv[3])
@@ -123,6 +147,8 @@ def main():
         promote_steps_raw = sys.argv[9]
         evolve_slope_neg_for = int(sys.argv[10])
         evolve_reject_above = float(sys.argv[11])
+        if len(sys.argv) >= 13:
+            containerized = (sys.argv[12].lower() == 'true')
 
     # Tags that mark a row as exercising a tier-gated acting branch (not observe).
     # See doc/auto-promote.md#classification — must match the tag strings emitted
@@ -183,30 +209,49 @@ def main():
             })
             continue
 
-        # Safety guard 4: PID liveness check
+        # Safety guard 4: liveness check
         # If pid is missing (0) or dead, skip — we can't verify the daemon
         # is actually running, so acting on it is unsafe.
-        if not pid or pid <= 0:
-            decisions.append({
-                'agent': agent_name,
-                'colony': colony,
-                'decision': 'skip',
-                'reason': 'no pid reported by daemon list',
-                'confidence': confidence,
-            })
-            continue
-        try:
-            os.kill(pid, 0)
-        except OSError:
-            decisions.append({
-                'agent': agent_name,
-                'colony': colony,
-                'decision': 'skip',
-                'reason': f'pid {pid} not alive',
-                'pid': pid,
-                'confidence': confidence,
-            })
-            continue
+        #
+        # In containerized mode (#622) the host PID namespace can't see
+        # container PIDs, so os.kill(pid, 0) is a false-negative every
+        # tick. Fall back to `effective_state == "running"` from the
+        # daemon-list JSON (also valid for legacy mode; the runtime
+        # tracks zombie/running/etc. with a stale-heartbeat probe).
+        if containerized:
+            effective_state = d.get('effective_state') or state
+            if effective_state != 'running':
+                decisions.append({
+                    'agent': agent_name,
+                    'colony': colony,
+                    'decision': 'skip',
+                    'reason': f'effective_state={effective_state!r} not running',
+                    'pid': pid,
+                    'confidence': confidence,
+                })
+                continue
+        else:
+            if not pid or pid <= 0:
+                decisions.append({
+                    'agent': agent_name,
+                    'colony': colony,
+                    'decision': 'skip',
+                    'reason': 'no pid reported by daemon list',
+                    'confidence': confidence,
+                })
+                continue
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                decisions.append({
+                    'agent': agent_name,
+                    'colony': colony,
+                    'decision': 'skip',
+                    'reason': f'pid {pid} not alive',
+                    'pid': pid,
+                    'confidence': confidence,
+                })
+                continue
 
         # Compute runtime hours
         runtime_hours = (now - started_at) / 3600 if started_at else 0

@@ -26,9 +26,20 @@
 # See doc/auto-promote.md for the full DMN decision table and formula
 # derivation.
 #
-# Usage: ./tools/auto-promote.sh <federation-dir>
+# Usage: ./tools/auto-promote.sh <federation-dir> [--live]
+#        ./tools/auto-promote.sh <federation-dir> [--containerized] [--config <path>]
 #        ./tools/auto-promote.sh dev-apprenticeship
 #        ./tools/auto-promote.sh dev-apprenticeship --live   # override dry_run
+#        ./tools/auto-promote.sh /run-root/laptop-node --containerized \
+#            --config tools/auto-promote-config.math-foundry.yaml
+#
+# --containerized opts out of the dev-apprenticeship-specific
+# `[gitlab]`-in-colony.toml respawn path; forge-less research federations
+# (math-foundry / claim-auditor / preprint-foundry) need this because
+# their colonies have `forge.type = "none"` and the daemon must be
+# respawned without GITLAB_* env composition (#622).
+#
+# --config overrides the default tools/auto-promote-config.yaml path.
 #
 # Prerequisites: agentis, python3 (with PyYAML or a fallback parser)
 #
@@ -43,26 +54,66 @@ SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 <federation-dir> [--live]"
+    echo "Usage: $0 <federation-dir> [--live] [--containerized] [--config <path>]"
     echo "Example: $0 dev-apprenticeship"
+    echo "Example: $0 /path/to/run/laptop-node --containerized --config tools/auto-promote-config.math-foundry.yaml"
     exit 1
 fi
 
-FED_DIR="$REPO_ROOT/$1"
+# First positional arg is always the federation dir (or run-dir/laptop-node in
+# containerized mode). Remaining args are parsed as flags below.
+FED_ARG="$1"
+shift
+
+FED_DIR="$REPO_ROOT/$FED_ARG"
 if [ ! -d "$FED_DIR" ]; then
-    FED_DIR="$1"  # try as absolute/relative path
+    FED_DIR="$FED_ARG"  # try as absolute/relative path
 fi
 if [ ! -d "$FED_DIR" ]; then
-    echo "Federation directory not found: $1"
+    echo "Federation directory not found: $FED_ARG"
     exit 1
 fi
 
 LIVE_OVERRIDE=false
-if [ "${2:-}" = "--live" ]; then
-    LIVE_OVERRIDE=true
-fi
+CONTAINERIZED=false
+CONFIG_OVERRIDE=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --live)
+            LIVE_OVERRIDE=true
+            shift
+            ;;
+        --containerized)
+            CONTAINERIZED=true
+            shift
+            ;;
+        --config)
+            if [ $# -lt 2 ]; then
+                echo "auto-promote: --config requires a path argument" >&2
+                exit 1
+            fi
+            CONFIG_OVERRIDE="$2"
+            shift 2
+            ;;
+        *)
+            echo "auto-promote: unknown argument: $1" >&2
+            exit 1
+            ;;
+    esac
+done
 
-CONFIG_FILE="$SCRIPT_DIR/auto-promote-config.yaml"
+if [ -n "$CONFIG_OVERRIDE" ]; then
+    # Resolve --config against $REPO_ROOT first (so callers may pass a
+    # repo-relative path like `tools/auto-promote-config.math-foundry.yaml`),
+    # then fall back to treating it as an absolute/relative path verbatim.
+    if [ -f "$REPO_ROOT/$CONFIG_OVERRIDE" ]; then
+        CONFIG_FILE="$REPO_ROOT/$CONFIG_OVERRIDE"
+    else
+        CONFIG_FILE="$CONFIG_OVERRIDE"
+    fi
+else
+    CONFIG_FILE="$SCRIPT_DIR/auto-promote-config.yaml"
+fi
 JOURNAL_FILE="$SCRIPT_DIR/auto-promote-journal.jsonl"
 LOCK_FILE="$SCRIPT_DIR/.auto-promote.lock"
 
@@ -162,11 +213,17 @@ log "Found $DAEMON_COUNT daemon(s) running"
 # For each running daemon, collect: agent name, colony, pid, confidence,
 # experience entry count, reject rate, delta slope.
 
+if [ "$CONTAINERIZED" = "true" ]; then
+    CONTAINERIZED_ARG="true"
+else
+    CONTAINERIZED_ARG="false"
+fi
 DECISIONS_JSON=$(python3 "$SCRIPT_DIR/auto-promote-decisions.py" \
     "$DAEMONS_JSON" "$FED_DIR" \
     "$CFG_MIN_ENTRIES" "$CFG_MIN_ACTING_ENTRIES" "$CFG_MIN_RUNTIME_HOURS" \
     "$CFG_REJECT_RATE_THRESHOLD" "$CFG_DELTA_SLOPE_WINDOW" "$CFG_DELTA_SLOPE_MIN" \
-    "$CFG_PROMOTE_STEPS" "$CFG_EVOLVE_SLOPE_NEG_FOR" "$CFG_EVOLVE_REJECT_ABOVE")
+    "$CFG_PROMOTE_STEPS" "$CFG_EVOLVE_SLOPE_NEG_FOR" "$CFG_EVOLVE_REJECT_ABOVE" \
+    "$CONTAINERIZED_ARG")
 
 # --- Execute decisions ---
 
@@ -231,9 +288,15 @@ while IFS='|' read -r decision agent colony step_from step_to reason evidence_js
                     continue
                 fi
 
-                # Read gitlab config from colony.toml (mirrors dashboard restart_daemon)
-                COLONY_TOML="${AGENT_COLONY_DIR}config/colony.toml"
-                SPAWN_ENV=$(python3 -c "
+                # Read gitlab config from colony.toml (mirrors dashboard restart_daemon).
+                # Skipped in --containerized mode: research federations use
+                # `forge.type = "none"` and the daemon respawns without
+                # GITLAB_* env composition (#622).
+                if [ "$CONTAINERIZED" = "true" ]; then
+                    SPAWN_ENV="export COLONY_DIR=$(python3 -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$AGENT_COLONY_DIR")"
+                else
+                    COLONY_TOML="${AGENT_COLONY_DIR}config/colony.toml"
+                    SPAWN_ENV=$(python3 -c "
 import sys, os
 toml_path = sys.argv[1]
 colony_dir = sys.argv[2]
@@ -274,12 +337,13 @@ else:
     print(f'export COLONY_DIR={shlex.quote(colony_dir)}')
 " "$COLONY_TOML" "$AGENT_COLONY_DIR" 2>/dev/null)
 
-                if [ "$SPAWN_ENV" = "__INCOMPLETE__" ] || [ -z "$SPAWN_ENV" ]; then
-                    log "  WARNING: incomplete [gitlab] in $COLONY_TOML, skipping restart"
-                    journal_append "$agent" "promote-partial" \
-                        "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['action']='memo-only'; e['warning']='incomplete_colony_toml'; print(json.dumps(e))" "$evidence_json")" \
-                        "$step_from" "$step_to"
-                    continue
+                    if [ "$SPAWN_ENV" = "__INCOMPLETE__" ] || [ -z "$SPAWN_ENV" ]; then
+                        log "  WARNING: incomplete [gitlab] in $COLONY_TOML, skipping restart"
+                        journal_append "$agent" "promote-partial" \
+                            "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['action']='memo-only'; e['warning']='incomplete_colony_toml'; print(json.dumps(e))" "$evidence_json")" \
+                            "$step_from" "$step_to"
+                        continue
+                    fi
                 fi
 
                 # Find agent_id from daemon list
