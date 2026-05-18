@@ -28,6 +28,20 @@ History of the three retired federations consolidated into this one
   `upstream_tick` offsets bumped by one to absorb the new pipeline
   stage. New `(topic, outcome)` pairs in `tools/check-learn-tags.sh`
   for `skeptic_dismiss:partial` and `skeptic_dismiss:success`.
+- `prior_advocate/` colony (Phase 4 PR-B of #625). Reads the same
+  claim seed the four web searchers consume and runs an adversarial-
+  reviewer prompt that argues the claim is already known (cites the
+  closest theorem / lemma / identity). Verdict is folded into the
+  auditor's synthesis ctx as an additional KNOWN_PRIOR signal
+  alongside the four web-search reports; the auditor's seed prompt
+  is updated to count a strong prior_advocate match as a KNOWN_PRIOR
+  signal and the Verdict struct gains an `evidence_prior_advocate`
+  field. Pass-through default -- empty prior_advocate memo does not
+  block the auditor. New `(topic, outcome)` pairs in
+  `tools/check-learn-tags.sh` for `prior_match:partial` and
+  `prior_match:success`. The auditor persists
+  `claim:report_prior_advocate:tick-N` alongside the four searcher
+  reports on VERIFIED_NEW.
 
 ## [0.1.0] — 2026-05-18
 

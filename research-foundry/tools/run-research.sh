@@ -342,14 +342,14 @@ build_image() {
 }
 
 # --- 2) Per-node bootstrap script generator ---
-# Single bootstrap that spawns all 16 daemons under one .agentis/.
+# Single bootstrap that spawns all 17 daemons under one .agentis/.
 # Three pipeline groups:
 #   math      = explorer, noticer, skeptic, formulator, verifier, novelty
-#   searchers = arxiv-search, oeis-search, groupprops-search, scholar-search, auditor
+#   searchers = arxiv-search, oeis-search, groupprops-search, scholar-search, prior_advocate, auditor
 #   preprint  = introducer, theorist, computer, editor, submitter
 # Explorer keeps --enable-replication --allow-replica-replication so
 # the M2-Malthusian replicate gate inside explorer.ag can grow its
-# population. The remaining 15 colonies run with standard
+# population. The remaining 16 colonies run with standard
 # --enable-exec --enable-messaging flags. Per-daemon tick interval is
 # fixed at 30s (decoupled from the orchestrator's TICK_INTERVAL_S
 # `replay:current_tick` advance rate); same reason as the retired
@@ -357,10 +357,10 @@ build_image() {
 # the orchestrator tick to avoid missing state changes).
 write_bootstrap() {
     bootstrap_path="$LAPTOP_DIR/bootstrap.sh"
-    emit_step "generating bootstrap script at $bootstrap_path (colonies=16 daemons_per_colony=$DAEMONS_PER_COLONY)"
+    emit_step "generating bootstrap script at $bootstrap_path (colonies=17 daemons_per_colony=$DAEMONS_PER_COLONY)"
 
     if [ "$DRY_RUN" = "1" ]; then
-        emit_cmd "write-bootstrap path=$bootstrap_path colonies=explorer,noticer,skeptic,formulator,verifier,novelty,arxiv-search,oeis-search,groupprops-search,scholar-search,auditor,introducer,theorist,computer,editor,submitter"
+        emit_cmd "write-bootstrap path=$bootstrap_path colonies=explorer,noticer,skeptic,formulator,verifier,novelty,arxiv-search,oeis-search,groupprops-search,scholar-search,prior_advocate,auditor,introducer,theorist,computer,editor,submitter"
         return
     fi
 
@@ -399,9 +399,9 @@ write_bootstrap() {
             printf '  printf "llm.args = -p --output-format json --model %s --tools \\"\\" --system-prompt \\"You are a research mathematician drafting an arXiv preprint. Output only valid JSON.\\" --effort %s\\n"\n' "$CLAUDE_MODEL" "$CLAUDE_EFFORT"
         fi
         printf '} >> .agentis/config\n'
-        # Stage all 15 colonies + tools/ + config/ + data/ from the
+        # Stage all 17 colonies + tools/ + config/ + data/ from the
         # read-only /repo bind-mount.
-        printf 'for c in explorer noticer skeptic formulator verifier novelty arxiv-search oeis-search groupprops-search scholar-search auditor introducer theorist computer editor submitter; do\n'
+        printf 'for c in explorer noticer skeptic formulator verifier novelty arxiv-search oeis-search groupprops-search scholar-search prior_advocate auditor introducer theorist computer editor submitter; do\n'
         printf '    cp -r /repo/research-foundry/$c /run-root/$c\n'
         printf 'done\n'
         printf 'cp -r /repo/research-foundry/tools /run-root/tools\n'
@@ -416,7 +416,7 @@ write_bootstrap() {
         # claim-auditor / preprint-foundry searcher keys use underscored
         # forms (arxiv_search, oeis_search, etc.) because the .ag agents
         # call them that way internally; mirrors retired run-auditor.sh.
-        printf 'for c in explorer noticer skeptic formulator verifier novelty arxiv_search oeis_search groupprops_search scholar_search auditor introducer theorist computer editor submitter; do\n'
+        printf 'for c in explorer noticer skeptic formulator verifier novelty arxiv_search oeis_search groupprops_search scholar_search prior_advocate auditor introducer theorist computer editor submitter; do\n'
         printf '    (cd /run-root && agentis memo set $c:confidence 0.7 >/dev/null 2>&1 || true)\n'
         printf 'done\n'
         # Per-daemon tick interval is 30s (decoupled from orchestrator
@@ -498,6 +498,11 @@ write_bootstrap() {
         printf 'for c in arxiv-search oeis-search groupprops-search scholar-search; do\n'
         printf '    DAEMON_ID=1 COLONY_NAME=$c DISCOVERY_LEDGER=/run-root/audit-ledger.jsonl ARXIV_MAX_QUERY_RESULTS=10 AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/$c/agents/$c.ag --colony $c --enable-exec --enable-messaging --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/$c-1.log 2>&1 &\n'
         printf 'done\n'
+        # Phase 4 PR-B (#625): prior_advocate colony runs the adversarial
+        # reviewer prompt that argues the claim is already known. Single
+        # daemon mirroring the searchers' env shape; auditor.ag pass-
+        # through default so empty prior_advocate memo does not block.
+        printf 'DAEMON_ID=1 COLONY_NAME=prior_advocate DISCOVERY_LEDGER=/run-root/audit-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/prior_advocate/agents/prior_advocate.ag --colony prior_advocate --enable-exec --enable-messaging --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/prior_advocate-1.log 2>&1 &\n'
         printf 'DAEMON_ID=1 COLONY_NAME=auditor DISCOVERY_LEDGER=/run-root/audit-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/auditor/agents/auditor.ag --colony auditor --enable-exec --enable-messaging --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/auditor-1.log 2>&1 &\n'
         # preprint-foundry: introducer / theorist / computer / editor / submitter.
         # Audit-trail goes to preprint-ledger.jsonl.

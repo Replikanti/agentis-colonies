@@ -459,6 +459,28 @@ observed
 claim-auditor"
             PAIR_KNOWN=1
             ;;
+        "prior_match:partial")
+            # Phase 4 PR-B (#625): prior_advocate runs an adversarial-
+            # reviewer prompt that argues the claim is already known.
+            # `partial` outcome covers acted / review-gated / observed
+            # branches.
+            ALLOWED_LITERALS="acted
+review-gated
+emitted
+observed
+claim-auditor"
+            PAIR_KNOWN=1
+            ;;
+        "prior_match:success")
+            # Phase 4 PR-B (#625): prior_advocate `success` outcome
+            # covers the propose-tier emitted branch.
+            ALLOWED_LITERALS="acted
+review-gated
+emitted
+observed
+claim-auditor"
+            PAIR_KNOWN=1
+            ;;
 
         # ----------------------------------------------------------------
         # preprint-foundry research federation (#622 PR-3)
