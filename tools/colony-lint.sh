@@ -420,9 +420,14 @@ if command -v agentis &>/dev/null; then
             [ -d "$dir/config" ] || continue
             colony="$(basename "$dir")"
             ag_files=()
+            # Phase 7 PR-A (#628): exclude `<colony>/agents/.evolve/`
+            # candidate-gen-N files from the per-agent .ag glob. The
+            # auto-evolve-ab.sh harness lifecycle owns those files;
+            # treating them as production agents here would fail the
+            # tier-coverage lint mid-mutation.
             while IFS= read -r -d '' f; do
                 ag_files+=("$f")
-            done < <(find "$dir/agents" -name "*.ag" -print0 2>/dev/null)
+            done < <(find "$dir/agents" -maxdepth 1 -name "*.ag" -print0 2>/dev/null)
 
             if [ ${#ag_files[@]} -gt 0 ]; then
                 for ag in "${ag_files[@]}"; do
