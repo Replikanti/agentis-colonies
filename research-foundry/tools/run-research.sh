@@ -357,10 +357,10 @@ build_image() {
 # the orchestrator tick to avoid missing state changes).
 write_bootstrap() {
     bootstrap_path="$LAPTOP_DIR/bootstrap.sh"
-    emit_step "generating bootstrap script at $bootstrap_path (colonies=17 daemons_per_colony=$DAEMONS_PER_COLONY)"
+    emit_step "generating bootstrap script at $bootstrap_path (colonies=18 daemons_per_colony=$DAEMONS_PER_COLONY)"
 
     if [ "$DRY_RUN" = "1" ]; then
-        emit_cmd "write-bootstrap path=$bootstrap_path colonies=explorer,noticer,skeptic,formulator,verifier,novelty,arxiv-search,oeis-search,groupprops-search,scholar-search,prior_advocate,auditor,introducer,theorist,computer,editor,submitter"
+        emit_cmd "write-bootstrap path=$bootstrap_path colonies=explorer,noticer,skeptic,formulator,verifier,novelty,arxiv-search,oeis-search,groupprops-search,scholar-search,prior_advocate,auditor,introducer,theorist,computer,editor,reviewer,submitter"
         return
     fi
 
@@ -399,9 +399,9 @@ write_bootstrap() {
             printf '  printf "llm.args = -p --output-format json --model %s --tools \\"\\" --system-prompt \\"You are a research mathematician drafting an arXiv preprint. Output only valid JSON.\\" --effort %s\\n"\n' "$CLAUDE_MODEL" "$CLAUDE_EFFORT"
         fi
         printf '} >> .agentis/config\n'
-        # Stage all 17 colonies + tools/ + config/ + data/ from the
+        # Stage all 18 colonies + tools/ + config/ + data/ from the
         # read-only /repo bind-mount.
-        printf 'for c in explorer noticer skeptic formulator verifier novelty arxiv-search oeis-search groupprops-search scholar-search prior_advocate auditor introducer theorist computer editor submitter; do\n'
+        printf 'for c in explorer noticer skeptic formulator verifier novelty arxiv-search oeis-search groupprops-search scholar-search prior_advocate auditor introducer theorist computer editor reviewer submitter; do\n'
         printf '    cp -r /repo/research-foundry/$c /run-root/$c\n'
         printf 'done\n'
         printf 'cp -r /repo/research-foundry/tools /run-root/tools\n'
@@ -416,7 +416,7 @@ write_bootstrap() {
         # claim-auditor / preprint-foundry searcher keys use underscored
         # forms (arxiv_search, oeis_search, etc.) because the .ag agents
         # call them that way internally; mirrors retired run-auditor.sh.
-        printf 'for c in explorer noticer skeptic formulator verifier novelty arxiv_search oeis_search groupprops_search scholar_search prior_advocate auditor introducer theorist computer editor submitter; do\n'
+        printf 'for c in explorer noticer skeptic formulator verifier novelty arxiv_search oeis_search groupprops_search scholar_search prior_advocate auditor introducer theorist computer editor reviewer submitter; do\n'
         printf '    (cd /run-root && agentis memo set $c:confidence 0.7 >/dev/null 2>&1 || true)\n'
         printf 'done\n'
         # Per-daemon tick interval is 30s (decoupled from orchestrator
@@ -510,6 +510,14 @@ write_bootstrap() {
         printf '    DAEMON_ID=1 COLONY_NAME=$c DISCOVERY_LEDGER=/run-root/preprint-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis PREPRINT_OUTPUT_ROOT=/run-root/preprints PREPRINT_AUTHOR_CONFIG=/run-root/config/authors.toml PREPRINT_LATEXMK_MAX_PASSES=%s agentis daemon /run-root/$c/agents/$c.ag --colony $c --enable-exec --enable-messaging --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/$c-1.log 2>&1 &\n' "$LATEXMK_MAX_PASSES"
         printf 'done\n'
         printf 'DAEMON_ID=1 COLONY_NAME=editor DISCOVERY_LEDGER=/run-root/preprint-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis PREPRINT_OUTPUT_ROOT=/run-root/preprints PREPRINT_AUTHOR_CONFIG=/run-root/config/authors.toml PREPRINT_LATEXMK_MAX_PASSES=%s agentis daemon /run-root/editor/agents/editor.ag --colony editor --enable-exec --enable-messaging --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/editor-1.log 2>&1 &\n' "$LATEXMK_MAX_PASSES"
+        # Phase 4 PR-C (#625): reviewer colony enforces a block-by-default
+        # gate before the submitter can write the DRAFTED row. Reads
+        # editor:<pid>:final_tex and computer:<pid>:output at
+        # upstream_tick = tick_idx - 3, extracts every numerical / symbolic
+        # claim in the .tex, flags unsupported claims, writes
+        # reviewer:<claim>:approved = "true" ONLY when verdict == approved.
+        # Operator override: `agentis memo set reviewer:<claim>:approved true`.
+        printf 'DAEMON_ID=1 COLONY_NAME=reviewer DISCOVERY_LEDGER=/run-root/preprint-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/reviewer/agents/reviewer.ag --colony reviewer --enable-exec --enable-messaging --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/reviewer-1.log 2>&1 &\n'
         printf 'DAEMON_ID=1 COLONY_NAME=submitter DISCOVERY_LEDGER=/run-root/preprint-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis PREPRINT_OUTPUT_ROOT=/run-root/preprints PREPRINT_AUTHOR_CONFIG=/run-root/config/authors.toml PREPRINT_ARXIV_GATEWAY=%s PREPRINT_ARXIV_FROM=%s PREPRINT_SMTP_HOST=%s PREPRINT_SMTP_PORT=%s agentis daemon /run-root/submitter/agents/submitter.ag --colony submitter --enable-exec --enable-messaging --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/submitter-1.log 2>&1 &\n' \
             "$ARXIV_GATEWAY" "$ARXIV_FROM" "$SMTP_HOST" "$SMTP_PORT"
         printf 'while [ ! -e /run-root/.shutdown ]; do sleep 5; done\n'

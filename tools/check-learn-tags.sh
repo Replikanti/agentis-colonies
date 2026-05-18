@@ -547,6 +547,41 @@ observed
 preprint-foundry"
             PAIR_KNOWN=1
             ;;
+        "review:partial")
+            # Phase 4 PR-C (#625): reviewer cross-checks every numerical /
+            # symbolic claim in the editor's final main.tex against the
+            # computer's reproducibility stdout. `partial` outcome covers
+            # acted / review-gated / observed branches.
+            ALLOWED_LITERALS="acted
+review-gated
+emitted
+observed
+preprint-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "review:success")
+            # Phase 4 PR-C (#625): reviewer `success` outcome covers the
+            # propose-tier approved branch (verdict == approved; writes
+            # reviewer:<claim>:approved = "true").
+            ALLOWED_LITERALS="acted
+review-gated
+emitted
+observed
+preprint-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "review:failure")
+            # Phase 4 PR-C (#625): reviewer `failure` outcome covers the
+            # propose-tier rejected branch (verdict != approved; writes
+            # reviewer:<claim>:hallucinated_payload for a future
+            # editor-repair cycle).
+            ALLOWED_LITERALS="acted
+review-gated
+emitted
+observed
+preprint-foundry"
+            PAIR_KNOWN=1
+            ;;
         "submit:partial")
             ALLOWED_LITERALS="acted
 review-gated
