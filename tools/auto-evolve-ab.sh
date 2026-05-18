@@ -158,7 +158,7 @@ ledger_append() {
     local extras_json="$2"
     mkdir -p "$(dirname "$LEDGER_PATH")"
     python3 "$SCRIPT_DIR/auto-evolve-ab-ledger.py" \
-        "$LEDGER_PATH" "$event" \
+        "$event" \
         "$AGENT_NAME" "$COLONY" \
         "$GENERATION_NEXT" "$PARENT_SHA" \
         "$AB_TICKS" "$EVOLVE_DRY_RUN" \

@@ -9,7 +9,7 @@
 # test-auto-promote.sh test 10.
 #
 # Usage:
-#   auto-evolve-ab-ledger.py <ledger_path> <event> <agent> <colony>
+#   auto-evolve-ab-ledger.py <event> <agent> <colony>
 #       <generation> <parent_sha> <ab_ticks> <dry_run> <extras_json>
 #
 # All positional args are strings (the calling shell already has them
@@ -17,8 +17,10 @@
 # keys are merged into the row; pass `{}` for "no extras".
 #
 # Output: a single JSON line on stdout. The caller redirects it into
-# the ledger file with `>>`. We don't open the ledger here so the
-# shell retains full control over file open / lock semantics.
+# the ledger file with `>>`. We deliberately do NOT take the ledger
+# path as an argument so shellcheck SC2094 ("read and write same file
+# in same pipeline") doesn't fire on the caller — the shell is the
+# sole owner of file open + redirect semantics.
 
 import json
 import os
@@ -27,29 +29,28 @@ import time
 
 
 def main():
-    if len(sys.argv) != 10:
+    if len(sys.argv) != 9:
         sys.stderr.write(
-            'Usage: %s <ledger_path> <event> <agent> <colony> '
+            'Usage: %s <event> <agent> <colony> '
             '<generation> <parent_sha> <ab_ticks> <dry_run> <extras_json>\n'
             % os.path.basename(sys.argv[0])
         )
         return 2
 
-    _ledger_path = sys.argv[1]  # consumed by caller for the redirect target
-    event = sys.argv[2]
-    agent = sys.argv[3]
-    colony = sys.argv[4]
+    event = sys.argv[1]
+    agent = sys.argv[2]
+    colony = sys.argv[3]
     try:
-        generation = int(sys.argv[5])
+        generation = int(sys.argv[4])
     except (ValueError, TypeError):
         generation = 0
-    parent_sha = sys.argv[6]
+    parent_sha = sys.argv[5]
     try:
-        ab_ticks = int(sys.argv[7])
+        ab_ticks = int(sys.argv[6])
     except (ValueError, TypeError):
         ab_ticks = 0
-    dry_run = sys.argv[8].lower() == 'true'
-    extras_raw = sys.argv[9]
+    dry_run = sys.argv[7].lower() == 'true'
+    extras_raw = sys.argv[8]
 
     try:
         extras = json.loads(extras_raw) if extras_raw else {}

@@ -411,15 +411,34 @@ for d in daemons:
                     continue
                 fi
 
-                log "  Running: agentis evolve $AGENT_AG_FILE"
-                EVOLVE_OUTPUT=$(cd "$FED_DIR" && agentis evolve "$AGENT_AG_FILE" \
-                    --generations "$CFG_EVOLVE_GENERATIONS" \
-                    --population "$CFG_EVOLVE_POPULATION" \
-                    --weights "$CFG_EVOLVE_WEIGHTS" 2>&1) || true
-                log "  Evolve output: $EVOLVE_OUTPUT"
+                # Phase 7 PR-A (#628): when `evolve.mutation.enabled=true`
+                # in the active config, route to the new auto-evolve-ab
+                # harness (mutator + validity gate + A/B + ledger). The
+                # legacy `agentis evolve` path is preserved unchanged
+                # when the flag is false (default), so dev-apprenticeship
+                # and every pre-#628 federation keeps its existing
+                # behaviour.
+                if [ "${CFG_EVOLVE_MUTATION_ENABLED:-false}" = "true" ]; then
+                    log "  Routing to auto-evolve-ab.sh (mutation.enabled=true)"
+                    EVOLVE_OUTPUT=$("$SCRIPT_DIR/auto-evolve-ab.sh" \
+                        "$FED_DIR" "$agent" "$colony" "$AGENT_AG_FILE" \
+                        --ticks "$CFG_EVOLVE_AB_TICKS" \
+                        --config "$CONFIG_FILE" 2>&1) || true
+                    log "  Auto-evolve-ab output: $EVOLVE_OUTPUT"
 
-                journal_append "$agent" "evolve" \
-                    "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['action']='executed'; e['evolve_output']=sys.argv[2][:500]; print(json.dumps(e))" "$evidence_json" "$EVOLVE_OUTPUT")"
+                    journal_append "$agent" "evolve" \
+                        "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['action']='auto-evolve-ab'; e['evolve_output']=sys.argv[2][:500]; print(json.dumps(e))" "$evidence_json" "$EVOLVE_OUTPUT")"
+                else
+                    log "  Running: agentis evolve $AGENT_AG_FILE"
+                    EVOLVE_OUTPUT=$(cd "$FED_DIR" && agentis evolve "$AGENT_AG_FILE" \
+                        --generations "$CFG_EVOLVE_GENERATIONS" \
+                        --population "$CFG_EVOLVE_POPULATION" \
+                        --weights "$CFG_EVOLVE_WEIGHTS" 2>&1) || true
+                    log "  Evolve output: $EVOLVE_OUTPUT"
+
+                    journal_append "$agent" "evolve" \
+                        "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['action']='executed'; e['evolve_output']=sys.argv[2][:500]; print(json.dumps(e))" "$evidence_json" "$EVOLVE_OUTPUT")"
+                fi
             fi
             EVOLVE_COUNT=$((EVOLVE_COUNT + 1))
             ;;
