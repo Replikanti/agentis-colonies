@@ -295,9 +295,70 @@ spawn_container() {
 }
 
 # --- 4) Cleanup trap ---
+AUTO_PROMOTE_PID=""
 install_cleanup_trap() {
-    emit_step "installing cleanup trap (stop + rm container)"
-    emit_cmd "trap 'podman stop --time 5 claim-auditor-laptop 2>/dev/null || true; podman rm -f claim-auditor-laptop 2>/dev/null || true' EXIT INT TERM"
+    emit_step "installing cleanup trap (stop + rm container; kill sidecars)"
+    # shellcheck disable=SC2064  # Expand $AUTO_PROMOTE_PID at trigger time.
+    emit_cmd "trap '[ -n \"\${AUTO_PROMOTE_PID:-}\" ] && kill \"\$AUTO_PROMOTE_PID\" 2>/dev/null; podman stop --time 5 claim-auditor-laptop 2>/dev/null || true; podman rm -f claim-auditor-laptop 2>/dev/null || true' EXIT INT TERM"
+}
+
+# --- 4.5) Auto-promote sidecar (#622) ---
+# Spawns a background loop that invokes tools/auto-promote.sh in
+# --containerized mode every AP_INTERVAL seconds. Cwd is the host-side
+# bind-mount root ($LAPTOP_DIR == <run-dir>/laptop-node/) where the
+# container's .agentis/ state materialises. Self-terminates when no
+# daemons report `state="running"`. The cleanup trap installed above
+# kills it on orchestrator EXIT/INT/TERM.
+#
+# Env knobs:
+#   AUDITOR_AUTO_PROMOTE             1 enable (default), 0 disable
+#   AUDITOR_AUTO_PROMOTE_INTERVAL_S  seconds between sidecar ticks
+#                                    (default 300)
+start_auto_promote_sidecar() {
+    AP_ENABLED="${AUDITOR_AUTO_PROMOTE:-1}"
+    AP_INTERVAL="${AUDITOR_AUTO_PROMOTE_INTERVAL_S:-300}"
+    if [ "$AP_ENABLED" != "1" ]; then
+        emit_step "auto-promote sidecar: disabled via AUDITOR_AUTO_PROMOTE=$AP_ENABLED"
+        return 0
+    fi
+    AP_SCRIPT="$REPO_ROOT/tools/auto-promote.sh"
+    AP_CONFIG="$REPO_ROOT/tools/auto-promote-config.claim-auditor.yaml"
+    AP_LOG_DIR="$LAPTOP_DIR/.agentis/logs"
+    AP_LOG="$AP_LOG_DIR/auto-promote.log"
+    AP_STAMP="$AP_LOG_DIR/auto-promote.sidecar_started_at"
+    if [ ! -x "$AP_SCRIPT" ]; then
+        emit_step "auto-promote sidecar: $AP_SCRIPT not executable, skipping"
+        return 0
+    fi
+    if [ ! -f "$AP_CONFIG" ]; then
+        emit_step "auto-promote sidecar: $AP_CONFIG missing, skipping"
+        return 0
+    fi
+    emit_step "starting auto-promote sidecar (interval=${AP_INTERVAL}s, log=$AP_LOG)"
+    if [ "$DRY_RUN" = "1" ]; then
+        emit_cmd "auto-promote-sidecar placeholder: cwd=$LAPTOP_DIR config=$AP_CONFIG interval=${AP_INTERVAL}s"
+        return 0
+    fi
+    mkdir -p "$AP_LOG_DIR"
+    date +%s > "$AP_STAMP"
+    (
+        cd "$LAPTOP_DIR"
+        while :; do
+            if ! agentis daemon list --json 2>/dev/null | grep -Fq '"state":"running"'; then
+                printf '=== %s: no running daemons; sidecar exiting ===\n' \
+                    "$(date -Iseconds)" >> "$AP_LOG"
+                exit 0
+            fi
+            {
+                printf '=== %s: sidecar tick ===\n' "$(date -Iseconds)"
+                "$AP_SCRIPT" "$LAPTOP_DIR" --containerized --config "$AP_CONFIG" 2>&1 \
+                    || printf '[sidecar] auto-promote.sh exited %s\n' "$?"
+            } >> "$AP_LOG"
+            sleep "$AP_INTERVAL"
+        done
+    ) &
+    AUTO_PROMOTE_PID=$!
+    emit_step "auto-promote sidecar PID=$AUTO_PROMOTE_PID"
 }
 
 # --- 5) Tick stream (main audit loop) ---
@@ -482,6 +543,7 @@ build_image
 write_bootstrap
 write_run_meta
 spawn_container
+start_auto_promote_sidecar
 tick_stream
 
 if [ "$DRY_RUN" = "1" ]; then

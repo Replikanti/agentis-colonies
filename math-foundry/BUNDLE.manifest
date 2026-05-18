@@ -10,3 +10,13 @@ math-foundry/noticer/
 math-foundry/formulator/
 math-foundry/verifier/
 math-foundry/novelty/
+
+# Auto-promote sidecar dependencies (#622). run-foundry.sh
+# `start_auto_promote_sidecar` shells out to tools/auto-promote.sh in
+# --containerized mode using the math-foundry-tuned config.
+tools/auto-promote.sh
+tools/auto-promote-config.math-foundry.yaml
+tools/auto-promote-config-parser.py
+tools/auto-promote-decisions.py
+tools/auto-promote-lock.py
+tools/parse-toml.sh
