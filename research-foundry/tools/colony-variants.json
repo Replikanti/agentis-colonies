@@ -1,0 +1,222 @@
+{
+  "schema_version": 1,
+  "_comment": "Source-of-truth variant + overlay table for the 18 research-foundry colonies. Phase 9 PR-B of #663 introduces this file so tools/cull-replicas.sh and the run-research.sh bootstrap loop can seed per-colony specialty pools without hardcoded tables. PR-C will use the same overlays for replica spawn loops in non-explorer colonies. Overlay texts for non-explorer colonies are 1-line stubs at PR-B; PR-C will refine them as it lights up per-role replication.",
+  "colonies": {
+    "explorer": {
+      "side": "discovery",
+      "axis": "mathematical-area focus",
+      "variants": ["group_theory", "combinatorics", "number_theory", "probability", "algebra"],
+      "overlays": {
+        "group_theory": "Focus on finite group invariants: conjugacy classes, character tables, subgroup lattices, automorphism groups. Compute representations and quotients explicitly. Look for coincidences in character degrees, order divisibility, sporadic-vs-classical group behaviour.",
+        "combinatorics": "Focus on enumerative combinatorics: generating functions, bijective proofs, lattice paths, partition identities. Compute small-case counts and look for OEIS matches. Compare known sequences against derived ones for unexpected coincidence.",
+        "number_theory": "Focus on arithmetic functions and sieves: prime counting, Mobius, totient, divisor sums. Compute over small ranges, examine mod-p behaviour, look for unexpected density / equidistribution / sign-change patterns.",
+        "probability": "Focus on random structures: Erdos-Renyi graphs, random matrices, percolation thresholds, asymptotic distributions. Run small Monte Carlo and compare against predicted limits. Look for deviations from the expected scaling.",
+        "algebra": "Focus on representation theory + Lie algebras: irreducible representations, weight diagrams, Casimir invariants, Cartan classification. Compute decomposition of tensor products, dimensions, branching rules. Look for unexpected multiplicities or symmetries."
+      }
+    },
+    "noticer": {
+      "side": "discovery",
+      "axis": "surprise-type bias",
+      "variants": ["subtle", "dramatic", "coincidence", "pattern", "symmetry"],
+      "overlays": {
+        "subtle": "Bias toward subtle surprises: small deviations from expected, off-by-one mismatches, low-magnitude regularities that classical results do not predict.",
+        "dramatic": "Bias toward dramatic surprises: large numerical anomalies, order-of-magnitude collapses, qualitative regime changes.",
+        "coincidence": "Bias toward coincidence surprises: two quantities computed via independent paths agreeing far more than chance would predict.",
+        "pattern": "Bias toward pattern surprises: structural repetitions, fixed sub-sequences, modular regularities, recursive nesting.",
+        "symmetry": "Bias toward symmetry surprises: unexpected group actions, hidden involutions, dual descriptions of the same object."
+      }
+    },
+    "skeptic": {
+      "side": "discovery",
+      "axis": "dismissal strictness",
+      "variants": ["strict", "lenient", "evidence", "classical", "compute"],
+      "overlays": {
+        "strict": "Dismiss any surprise that can be plausibly explained by a single classical result; require clear novelty before passing through.",
+        "lenient": "Pass surprises through unless they are clearly explained by a textbook identity; favour false positives over false negatives.",
+        "evidence": "Anchor dismissals on cited evidence: require a specific theorem / identity / lemma reference before dismissing.",
+        "classical": "Anchor dismissals on classical-mathematics base rates: dismiss surprises consistent with well-known asymptotics.",
+        "compute": "Anchor dismissals on compute-time check: dismiss only when a quick re-computation reproduces the predicted classical value."
+      }
+    },
+    "formulator": {
+      "side": "discovery",
+      "axis": "prose style",
+      "variants": ["terse", "expansive", "rigorous", "operational", "historical"],
+      "overlays": {
+        "terse": "Formulate claims in terse mathematical prose: minimal words, maximal symbols, no narrative.",
+        "expansive": "Formulate claims with full narrative motivation: explain why the surprise matters, what classical result it deviates from, what corollaries it suggests.",
+        "rigorous": "Formulate claims in strict theorem/proof shape: hypothesis, claim, sketch of supporting evidence, explicit quantifiers.",
+        "operational": "Formulate claims as operational recipes: how to reproduce the surprise from raw data, what input range matters, what observable to read.",
+        "historical": "Formulate claims with historical anchoring: which classical theorem the surprise complements / refines, who originally posed the related question."
+      }
+    },
+    "verifier": {
+      "side": "discovery",
+      "axis": "verification depth",
+      "variants": ["lightweight", "exhaustive", "edge_case", "small_n", "asymptotic"],
+      "overlays": {
+        "lightweight": "Verify the claim only on the original sample input: cheap re-computation, no exploration of neighbouring inputs.",
+        "exhaustive": "Verify the claim across the full feasible parameter range: scan every input the budget allows.",
+        "edge_case": "Verify the claim with adversarial edge cases: boundary inputs, degenerate cases, known counter-example shapes.",
+        "small_n": "Verify the claim by brute-forcing the smallest n values: hand-checkable computation for sanity.",
+        "asymptotic": "Verify the claim by extrapolating to large n: confirm the regularity persists past the bootstrap sample range."
+      }
+    },
+    "novelty": {
+      "side": "discovery",
+      "axis": "novelty-threshold harshness",
+      "variants": ["strict", "lenient", "literature", "construct", "domain"],
+      "overlays": {
+        "strict": "Set the NOVEL bar high: only claims with no plausible classical counterpart pass through.",
+        "lenient": "Set the NOVEL bar low: anything beyond direct restatement of a known identity is a candidate.",
+        "literature": "Anchor novelty on literature absence: a claim is NOVEL only if no paper / textbook excerpt found matches it.",
+        "construct": "Anchor novelty on the construction: same identity expressed in a new form / domain still counts as NOVEL.",
+        "domain": "Anchor novelty on cross-domain transfer: identities re-derivable in a different mathematical area still count as NOVEL."
+      }
+    },
+    "arxiv-search": {
+      "side": "audit",
+      "axis": "query strategy",
+      "variants": ["narrow", "broad", "recent", "classical", "cross_field"],
+      "overlays": {
+        "narrow": "Query arXiv with narrow exact-phrase searches: prefer precision over recall.",
+        "broad": "Query arXiv with broad keyword unions: prefer recall over precision; deduplicate downstream.",
+        "recent": "Restrict arXiv queries to recent submissions (last 5 years) when scoring overlap with claim.",
+        "classical": "Restrict arXiv queries to classical references (>10 years old) when scoring overlap with claim.",
+        "cross_field": "Query arXiv across adjacent fields (e.g. math.CO and math.NT both for combinatorial number theory claims)."
+      }
+    },
+    "oeis-search": {
+      "side": "audit",
+      "axis": "sequence-match strictness",
+      "variants": ["exact", "prefix", "shifted", "transformed", "partial"],
+      "overlays": {
+        "exact": "Match OEIS sequences only on full prefix equality of the first N terms.",
+        "prefix": "Match OEIS sequences on the longest common prefix shared with the claim's terms.",
+        "shifted": "Match OEIS sequences allowing for index shifts (a(n+k) vs a(n)) before scoring overlap.",
+        "transformed": "Match OEIS sequences after applying common transforms (differences, partial sums, ratios).",
+        "partial": "Match OEIS sequences on partial sub-sequences appearing inside the candidate sequence."
+      }
+    },
+    "groupprops-search": {
+      "side": "audit",
+      "axis": "page-traversal depth",
+      "variants": ["surface", "deep", "subgroup", "automorphism", "representation"],
+      "overlays": {
+        "surface": "Match groupprops pages only on the landing-page summary: name, order, classification.",
+        "deep": "Match groupprops pages after walking subgroup-lattice and quotient pages for related coincidences.",
+        "subgroup": "Focus the groupprops lookup on the subgroup-lattice page for each candidate group.",
+        "automorphism": "Focus the groupprops lookup on the automorphism-group page for each candidate group.",
+        "representation": "Focus the groupprops lookup on the linear-representation page for each candidate group."
+      }
+    },
+    "scholar-search": {
+      "side": "audit",
+      "axis": "citation-window scope",
+      "variants": ["recent", "classical", "cited_by", "review", "preprint"],
+      "overlays": {
+        "recent": "Restrict Scholar queries to articles published in the last 5 years.",
+        "classical": "Restrict Scholar queries to articles published >10 years ago, weight by citation count.",
+        "cited_by": "Walk Scholar `cited-by` graphs outward from the top-1 hit before scoring overlap.",
+        "review": "Prefer Scholar review / survey articles when scoring overlap with claim.",
+        "preprint": "Prefer Scholar preprints (arXiv mirror, SSRN, bioRxiv math feeds) over journal articles."
+      }
+    },
+    "auditor": {
+      "side": "audit",
+      "axis": "synthesis weighting",
+      "variants": ["consensus", "outlier", "weighted", "skeptical", "advocate"],
+      "overlays": {
+        "consensus": "Weight searcher / prior_advocate reports by how many of them agree; majority drives the verdict.",
+        "outlier": "Weight searcher / prior_advocate reports by which one disagrees with the rest; outlier drives the verdict when its evidence is strong.",
+        "weighted": "Weight each searcher's report by its declared confidence before summing into the verdict.",
+        "skeptical": "Bias toward NOT_NOVEL: require strong, multi-source evidence to vote NOVEL.",
+        "advocate": "Bias toward NOVEL: require a single source of strong prior evidence to vote NOT_NOVEL."
+      }
+    },
+    "prior_advocate": {
+      "side": "audit",
+      "axis": "adversarial register",
+      "variants": ["textbook", "research_paper", "lecture_notes", "qa_thread", "blog"],
+      "overlays": {
+        "textbook": "Cite the closest textbook chapter / exercise as prior evidence for the claim.",
+        "research_paper": "Cite the closest peer-reviewed research paper as prior evidence for the claim.",
+        "lecture_notes": "Cite the closest publicly-archived lecture notes / course handout as prior evidence.",
+        "qa_thread": "Cite the closest mathoverflow / stackexchange thread as prior evidence.",
+        "blog": "Cite the closest expert blog post / personal page as prior evidence."
+      }
+    },
+    "introducer": {
+      "side": "preprint",
+      "axis": "audience tuning",
+      "variants": ["specialist", "broad_math", "applied", "undergrad", "popularizer"],
+      "overlays": {
+        "specialist": "Write the introduction for a specialist audience inside the claim's subfield: minimal background, dense notation.",
+        "broad_math": "Write the introduction for a broad-math audience: bridge from related subfields, define every term used.",
+        "applied": "Write the introduction for an applied-math audience: motivate via downstream applications of the claim.",
+        "undergrad": "Write the introduction for a strong-undergraduate audience: friendly motivation, explicit examples before the abstract statement.",
+        "popularizer": "Write the introduction for an interested-non-specialist audience: history, intuition, why the claim is surprising."
+      }
+    },
+    "theorist": {
+      "side": "preprint",
+      "axis": "proof-style preference",
+      "variants": ["constructive", "non_constructive", "computational", "structural", "asymptotic"],
+      "overlays": {
+        "constructive": "Prefer constructive proofs: build the witnessing object explicitly, avoid choice / contradiction.",
+        "non_constructive": "Allow non-constructive proofs: extremal principles, fixed-point arguments, contradiction allowed.",
+        "computational": "Prefer computational proofs: reduce the claim to a finite check the computer colony can run.",
+        "structural": "Prefer structural proofs: lean on algebraic / categorical decompositions over case analysis.",
+        "asymptotic": "Prefer asymptotic proofs: derive the claim from limit statements; finitary cases follow as corollaries."
+      }
+    },
+    "computer": {
+      "side": "preprint",
+      "axis": "compute backend",
+      "variants": ["sympy", "numpy", "gap", "sage_like", "bruteforce"],
+      "overlays": {
+        "sympy": "Run the reproducibility check using sympy (symbolic). Cite the script verbatim in the appendix.",
+        "numpy": "Run the reproducibility check using numpy (numerical). Report both float and rationalised values.",
+        "gap": "Run the reproducibility check using GAP (group theory). Cite the script verbatim in the appendix.",
+        "sage_like": "Run the reproducibility check using a sage-like superset (sympy + networkx + custom). Cite the script verbatim.",
+        "bruteforce": "Run the reproducibility check via direct enumeration in pure Python. Cite the script verbatim."
+      }
+    },
+    "editor": {
+      "side": "preprint",
+      "axis": "polish stage",
+      "variants": ["copyedit", "typesetting", "structural", "citation_audit", "abstract_polish"],
+      "overlays": {
+        "copyedit": "Focus editorial passes on copyediting: grammar, consistency, terminology unification.",
+        "typesetting": "Focus editorial passes on typesetting: equation labels, cross-references, figure placement, latexmk hygiene.",
+        "structural": "Focus editorial passes on structural rewrites: reorder sections, collapse redundant remarks, sharpen the abstract.",
+        "citation_audit": "Focus editorial passes on citation audit: every numerical claim cites its searcher report, every cite verified.",
+        "abstract_polish": "Focus editorial passes on abstract / first-paragraph polish: the part most readers actually read."
+      }
+    },
+    "reviewer": {
+      "side": "preprint",
+      "axis": "verdict threshold",
+      "variants": ["strict", "lenient", "claim_centric", "evidence_centric", "structural"],
+      "overlays": {
+        "strict": "Set the approval bar high: every numerical claim in the .tex must have direct support in the reproducibility output.",
+        "lenient": "Set the approval bar lower: allow numerical claims supported only by adjacent computer-output values when the gap is explained.",
+        "claim_centric": "Anchor the verdict on the claim list: enumerate, flag, approve only when every claim is supported.",
+        "evidence_centric": "Anchor the verdict on the reproducibility output: every produced value must appear (or be derivable) somewhere in the .tex.",
+        "structural": "Anchor the verdict on structural completeness: introduction / theorem / proof / reproducibility / references all present."
+      }
+    },
+    "submitter": {
+      "side": "preprint",
+      "axis": "submission posture",
+      "variants": ["staged", "fast_track", "hold", "metadata_first", "validate_only"],
+      "overlays": {
+        "staged": "Stage the arxiv-metadata.json + submission.tar.gz for HITL review before requesting SMTP send.",
+        "fast_track": "Stage the submission and immediately request HITL review; surface the package on the dashboard.",
+        "hold": "Stage the submission but defer the HITL ping until the operator explicitly toggles the colony.",
+        "metadata_first": "Stage arxiv-metadata.json first and request HITL review of metadata before assembling submission.tar.gz.",
+        "validate_only": "Stage the submission package and run validation passes (latexmk dry, sanity grep on .tex) before HITL ping."
+      }
+    }
+  }
+}
