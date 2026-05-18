@@ -33,3 +33,8 @@ tools/auto-promote-config-parser.py
 tools/auto-promote-decisions.py
 tools/auto-promote-lock.py
 tools/parse-toml.sh
+
+# Phase 3 PR 3 (#624). Cull cycle wired into the auto-promote sidecar
+# under RESEARCH_CULL_ENABLED=1; reads the same --preview output as the
+# dashboard does and shares the explorer-fitness.py join.
+tools/cull-explorers.sh
