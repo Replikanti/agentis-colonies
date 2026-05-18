@@ -149,7 +149,7 @@ if grep -Fq "lock held by other process" "$WORK_DIR/sidecar-b.log"; then
     pass "4. second sidecar logs lock-held and exits 0"
 else
     fail "4. second sidecar logs lock-held and exits 0" \
-        "$(cat "$WORK_DIR/sidecar-b.log" 2>/dev/null | head -5)"
+        "$(head -5 "$WORK_DIR/sidecar-b.log" 2>/dev/null)"
 fi
 
 # --- Test 5: empty host dir -> no-op ---
