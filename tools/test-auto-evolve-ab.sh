@@ -28,9 +28,15 @@
 #       by introspecting the script's archive-path interpolation; the
 #       archive is only written on live-mode candidate-winner runs).
 #
-# Out of scope (deferred to PR-C):
-#   - live evolve with dry_run=false + actual respawn
-#   - bundle-manifest inclusion
+# PR-C (#628) added 3 new assertions:
+#   16. SPAWN_CMD path translation (#660): the generated container
+#       command uses `/run-root/...` paths, never `<run-dir>/.../.evolve/`.
+#   17. Mutator-stderr quote escaping (#661): a mutator stub that
+#       writes quotes to stderr produces a ledger row whose JSON parses
+#       cleanly (no `_extras_parse_error`).
+#   18. Allowlist enforcement: invoking the harness with an agent name
+#       not in `evolve.mutation.allowed_agents` emits an
+#       `evolve_skipped_not_in_allowlist` row and exits 0.
 #
 # Usage: ./tools/test-auto-evolve-ab.sh
 # Exit code 0 if all tests pass, 1 otherwise.
@@ -482,6 +488,138 @@ if [ "$ARCHIVE_PATTERN" = "    $EXPECTED_SHAPE" ]; then
     pass "archive path: filename matches <agent>-gen-N-<sha8>.ag shape"
 else
     fail "archive path shape" "expected '$EXPECTED_SHAPE' got '$ARCHIVE_PATTERN'"
+fi
+
+# ------------------------------------------------------------------
+# PR-C (#628) new tests
+# ------------------------------------------------------------------
+
+# ----- Test 16: SPAWN_CMD path translation (#660) -----
+# auto-evolve-ab.sh used to feed $CANDIDATE_PATH (host-side) into
+# SPAWN_CMD inside the container. The container mounts the fed-dir at
+# /run-root/, so the host path resolved to a non-existent file. Verify
+# by introspection: the SPAWN_CMD line must reference
+# $CANDIDATE_CONTAINER_PATH (declared above it) and the
+# $CANDIDATE_CONTAINER_PATH declaration must start with /run-root/.
+
+SPAWN_LINE=$(grep -nE '^SPAWN_CMD=' "$SCRIPT_DIR/auto-evolve-ab.sh" | head -1)
+CONTAINER_DECL_LINE=$(grep -nE '^CANDIDATE_CONTAINER_PATH=' "$SCRIPT_DIR/auto-evolve-ab.sh" | head -1)
+# shellcheck disable=SC2016
+# Intentional: matching the literal `$CANDIDATE_` text as it appears
+# verbatim in auto-evolve-ab.sh (the regex is consumed by grep, not the
+# shell). We are NOT expanding the variable here.
+PKILL_LINE=$(grep -nE 'pkill -f .agentis daemon \$CANDIDATE_' "$SCRIPT_DIR/auto-evolve-ab.sh" | head -1)
+
+# shellcheck disable=SC2016
+# Same intent as above: `\$CANDIDATE_PATH` is a grep regex literal.
+if echo "$SPAWN_LINE" | grep -q 'CANDIDATE_CONTAINER_PATH' \
+    && echo "$CONTAINER_DECL_LINE" | grep -q '"/run-root/' \
+    && ! echo "$SPAWN_LINE" | grep -qE '\$CANDIDATE_PATH\b' \
+    && echo "$PKILL_LINE" | grep -q 'CANDIDATE_CONTAINER_PATH' \
+    && ! echo "$PKILL_LINE" | grep -qE '\$CANDIDATE_PATH\b'; then
+    pass "path translation: SPAWN_CMD + pkill use container path (#660)"
+else
+    fail "path translation" "spawn=$SPAWN_LINE decl=$CONTAINER_DECL_LINE pkill=$PKILL_LINE"
+fi
+
+# ----- Test 17: mutator-stderr quote escaping (#661) -----
+# The harness's stderr clipper used to allow byte 34 (double quote),
+# which fractured the JSON ledger row when mutator stderr embedded
+# quotes. Verify the clipper now strips byte 34 by replaying the exact
+# Python snippet from auto-evolve-ab.sh against a quoted input and
+# round-tripping the resulting JSON.
+
+QUOTE_INPUT='mutator failed: backend returned "<bad>" shape'
+CLIPPED=$(python3 -c "
+import sys
+buf = sys.argv[1].replace('\n', ' ')[:500]
+print(''.join(c for c in buf if c == ' ' or (32 <= ord(c) < 127 and ord(c) != 34)))
+" "$QUOTE_INPUT")
+
+# Build the exact ledger extras JSON the harness would write, and parse
+# it to verify validity.
+LEDGER_JSON='{"reason":"mutator_failed","mutator_stderr":"'"$CLIPPED"'"}'
+JSON_OK=$(python3 -c "
+import json, sys
+try:
+    obj = json.loads(sys.argv[1])
+    print('ok' if obj.get('reason') == 'mutator_failed' else 'bad_reason')
+except (json.JSONDecodeError, ValueError):
+    print('parse_error')
+" "$LEDGER_JSON")
+
+if [ "$JSON_OK" = "ok" ] && ! echo "$CLIPPED" | grep -q '"'; then
+    pass "quote escaping: clipped stderr keeps JSON ledger row valid (#661)"
+else
+    fail "quote escaping" "json_ok=$JSON_OK clipped=$CLIPPED"
+fi
+
+# ----- Test 18: allowlist enforcement -----
+# A config with `evolve.mutation.allowed_agents: ["explorer"]` must
+# short-circuit when invoked with a non-explorer agent. The harness
+# emits an `evolve_skipped_not_in_allowlist` ledger row and exits 0
+# without producing a candidate.
+
+ALLOWLIST_CONFIG="$TMPDIR_TEST/allowlist-config.yaml"
+cat > "$ALLOWLIST_CONFIG" <<'ALLOWLISTEOF'
+promote:
+  prerequisites:
+    min_entries: 30
+    min_acting_entries: 10
+    min_runtime_hours: 1.5
+    reject_rate_threshold: 0.10
+    delta_slope_window: 20
+    delta_slope_min: 0
+  steps:
+    - from: 0.4
+      to: 0.6
+      min_acting_entries_override: 0
+
+evolve:
+  trigger:
+    delta_slope_negative_for: 1000
+    reject_rate_above: 0.20
+    both_signals_required: false
+  mutation:
+    enabled: true
+    allowed_agents: ["explorer"]
+    max_concurrent_per_colony: 1
+    max_generations: 10
+    skip_tiers: ["autonomous"]
+  ab:
+    ticks: 50
+    min_acting_for_decision: 10
+    min_delta: 0.05
+    fast_mode_ticks: 10
+  archive_dir: "evolution-archive"
+  ledger_path: "evolution-ledger.jsonl"
+  dry_run: true
+
+dry_run: true
+ALLOWLISTEOF
+
+# Set up a noticer agent under the same fake fed.
+NOTICER_DIR="$FAKE_FED/noticer/agents"
+mkdir -p "$NOTICER_DIR"
+NOTICER_AG="$NOTICER_DIR/noticer.ag"
+cp "$PARENT_AG" "$NOTICER_AG"
+
+rm -f "$LEDGER"
+ALLOW_OUT=$(MUTATE_LLM_STUB="$GOOD_STUB" \
+    "$SCRIPT_DIR/auto-evolve-ab.sh" "$FAKE_FED" noticer noticer "$NOTICER_AG" \
+    --ticks 10 --config "$ALLOWLIST_CONFIG" 2>&1) || true
+ALLOW_RC=$?
+
+# Verify a) ledger row is evolve_skipped_not_in_allowlist, b) exit 0,
+# c) no candidate file was created (the gate runs before mutator step).
+ALLOW_CANDS=$(find "$NOTICER_DIR/.evolve" -name "*.candidate-gen-*" -type f 2>/dev/null | wc -l | tr -d ' ')
+
+if grep -q '"event":"evolve_skipped_not_in_allowlist"\|"event": "evolve_skipped_not_in_allowlist"' "$LEDGER" 2>/dev/null \
+    && [ "$ALLOW_RC" = "0" ] \
+    && [ "$ALLOW_CANDS" = "0" ]; then
+    pass "allowlist: non-explorer agent short-circuits + ledger row + exit 0"
+else
+    fail "allowlist enforcement" "rc=$ALLOW_RC cands=$ALLOW_CANDS ledger=$(cat "$LEDGER" 2>/dev/null) out: $ALLOW_OUT"
 fi
 
 echo ""

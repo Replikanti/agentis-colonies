@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
-# auto-evolve-ab.sh — Phase 7 PR-B harness for self-improving .ag
-# mutation + A/B comparison (#628).
+# auto-evolve-ab.sh — Phase 7 harness for self-improving .ag mutation
+# + A/B comparison (#628).
 #
 # Invoked by `tools/auto-promote.sh` when
 # `evolve.mutation.enabled = true` in the active auto-promote-config.
 # When the flag is false (the default) the legacy `agentis evolve`
 # path runs instead — see auto-promote.sh evolve handler.
 #
-# Pipeline (PR-B):
+# Pipeline:
+#   0a. Generation cap check: abort with `evolve_throttled` when
+#       `generation_next > evolve.mutation.max_generations`.
+#   0b. Per-agent allowlist gate (PR-C): when
+#       `evolve.mutation.allowed_agents` is set and does not contain
+#       the agent name (or `*`), emit `evolve_skipped_not_in_allowlist`
+#       and exit 0. The default `*` (or missing key) preserves the
+#       legacy behaviour for dev-apprenticeship / tribes-bench configs.
 #   1. Pre-flight throttle: count open candidate files in
 #      `<colony>/agents/.evolve/`; abort with `evolve_throttled` ledger
 #      row when the cap is hit.
@@ -23,14 +30,18 @@
 #      daemon under a synthetic agent_id `<agent>-cand-gen-<N>` so its
 #      experience writes go to an isolated .jsonl. Wait K ticks
 #      bounded by `ab.absolute_max_wait_s`. Score candidate vs
-#      canonical via `auto-promote-decisions.py --preview` +
-#      `explorer-fitness.py` (or fallback proxy
-#      `(acting - reject) / max(acting, 1)`). Compare with
-#      `ab.min_delta`. Emit `evolve_cycle` (winner candidate /
-#      canonical) or `ab_inconclusive` ledger row.
+#      canonical:
+#        - explorer agents go through `tools/explorer-fitness.py`
+#          (PR-C wires it in; PR 2 of #624 added the helper);
+#        - non-explorer agents use the inline proxy
+#          `(acting - reject) / max(acting, 1)`;
+#        - both paths fall back to the proxy if their preferred
+#          signal returns empty / errors.
+#      Compare with `ab.min_delta`. Emit `evolve_cycle` (winner
+#      candidate / canonical) or `ab_inconclusive` ledger row.
 #   5. Promote winner (DRY-RUN AWARE): when `evolve.dry_run=true`, log
-#      and stop. When false (PR-C), if candidate wins: stop candidate,
-#      archive parent to
+#      and stop. When false (PR-C, research-foundry only), if
+#      candidate wins: stop candidate, archive parent to
 #      `<fed-dir>/<archive_dir>/<agent>-gen-N-<sha8>.ag`, `mv -f`
 #      candidate over canonical, respawn canonical daemon. Cleanup
 #      always removes the .evolve/ candidate + synthetic experience.
@@ -43,10 +54,6 @@
 #   0 — success (ledger written, regardless of decision)
 #   1 — usage / arg error
 #   2 — config / parser error
-#
-# Out of scope for PR-B:
-#   - flipping `evolve.dry_run=false` for explorer (deferred to PR-C)
-#   - bundle-manifest wiring (deferred to PR-C alongside the flip)
 
 set -euo pipefail
 
@@ -474,12 +481,17 @@ fi
 # the synthetic .jsonl; the canonical keeps its existing path.
 sleep "$WAIT_S"
 
-# Score both daemons. The fallback proxy is
-#   (acting_count - reject_count) / max(acting_count, 1)
-# computed straight off the .jsonl tail. For explorers we additionally
-# try `explorer-fitness.py` for the empirical signal, but the proxy is
-# the canonical scalar the A/B comparison runs on -- one path, no
-# divergence between explorer / non-explorer agents on this PR.
+# Score both daemons. Two paths:
+#   - Explorer agents go through `tools/explorer-fitness.py`, which
+#     blends NOVEL count, auditor confidence, and HITL accept ratio
+#     into a single scalar (Phase 3 PR 2 of #624). PR-C (#628) wires
+#     it in for the live evolve flip.
+#   - Non-explorer agents (when the allowlist gate is eventually
+#     widened) use the inline proxy:
+#       (acting_count - reject_count) / max(acting_count, 1)
+#     computed straight off the .jsonl tail.
+# Both paths fall back to the proxy if their preferred signal returns
+# empty / errors -- the A/B comparison always has a defined scalar.
 score_jsonl() {
     local jsonl_path="$1"
     local window="$2"
@@ -522,8 +534,38 @@ else:
 " "$jsonl_path" "$window"
 }
 
-CANDIDATE_SCORE=$(score_jsonl "$SYNTH_EXP" "$AB_TICKS")
-CANONICAL_SCORE=$(score_jsonl "$EXPERIENCE_PATH" "$AB_TICKS")
+# Pull the explorer fitness scalar via the helper. Empty pid is OK --
+# explorer-fitness.py only uses it as a heuristic for HITL reject
+# attribution and falls back to a window-clamped global count when the
+# pid is unmatched. Returns "" on any error so the caller can fall
+# through to the proxy.
+score_explorer() {
+    local agent_id="$1"
+    local pid="$2"
+    python3 "$REPO_ROOT/tools/explorer-fitness.py" \
+        "$FED_DIR" "$pid" "$agent_id" 2>/dev/null \
+        | python3 -c "
+import json, sys
+try:
+    obj = json.loads(sys.stdin.read())
+    print('%.6f' % float(obj.get('fitness_score', 0.0)))
+except (json.JSONDecodeError, ValueError, TypeError):
+    print('')
+"
+}
+
+if [ "$AGENT_NAME" = "explorer" ]; then
+    CANDIDATE_SCORE=$(score_explorer "$SYNTHETIC_ID" "")
+    CANONICAL_SCORE=$(score_explorer "$AGENT_NAME" "")
+    if [ -z "$CANDIDATE_SCORE" ] || [ -z "$CANONICAL_SCORE" ]; then
+        log "  explorer-fitness returned empty; falling back to proxy"
+        CANDIDATE_SCORE=$(score_jsonl "$SYNTH_EXP" "$AB_TICKS")
+        CANONICAL_SCORE=$(score_jsonl "$EXPERIENCE_PATH" "$AB_TICKS")
+    fi
+else
+    CANDIDATE_SCORE=$(score_jsonl "$SYNTH_EXP" "$AB_TICKS")
+    CANONICAL_SCORE=$(score_jsonl "$EXPERIENCE_PATH" "$AB_TICKS")
+fi
 
 log "  scores: candidate=$CANDIDATE_SCORE canonical=$CANONICAL_SCORE min_delta=$CFG_EVOLVE_AB_MIN_DELTA"
 
