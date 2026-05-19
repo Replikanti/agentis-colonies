@@ -30,6 +30,17 @@
 
 import sys, os, json, time, re, datetime, subprocess
 
+# #683: number of `tick_interval` periods of `<agent>:last_check` staleness
+# tolerated before a daemon's `pid_alive` flips to false. Replaces the PID-
+# based `os.kill(pid, 0)` liveness probe, which produced false DEGRADED
+# bannering on containerized federations (`research-foundry`,
+# `tribes-bench`) where the dashboard runs outside the container's PID
+# namespace and cannot see the agent PIDs at all. Memo freshness is
+# namespace-independent: every tick writes `<agent>:last_check`, so
+# `now - last_check < STALENESS_TICKS * tick_interval` is a reliable
+# liveness predicate on every deployment topology.
+STALENESS_TICKS = 3
+
 def _read(arg):
     """Resolve `@<path>` argv prefix to file contents; otherwise pass through."""
     if arg.startswith('@'):
@@ -51,6 +62,65 @@ all_agents     = sys.argv[10:]
 def safe_json(s, default):
     try: return json.loads(s or '[]')
     except (json.JSONDecodeError, TypeError, ValueError): return default
+
+# #683: helpers for memo-freshness liveness. `_read_memo_raw` shells out to
+# `agentis memo get <key>` (same idiom used for the per-repo confidence
+# overlay around lines 380-404) so the dashboard does not need to know
+# about the on-disk memo store layout. `_parse_last_check_epoch`
+# converts the canonical ISO-8601 UTC string the `.ag` agents write
+# (`exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"`) into epoch seconds; any
+# unexpected shape collapses to `None` so the caller treats the agent as
+# stale rather than crashing the whole collector regen.
+def _read_memo_raw(fed_dir, key):
+    try:
+        proc = subprocess.run(
+            ['agentis', 'memo', 'get', key],
+            cwd=fed_dir, capture_output=True, text=True, timeout=2,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    raw = (proc.stdout or '').strip()
+    return raw or None
+
+def _parse_last_check_epoch(raw):
+    if not raw:
+        return None
+    try:
+        dt = datetime.datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ")
+        return dt.replace(tzinfo=datetime.timezone.utc).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+# Cache resolved tick intervals per (agent, colony) so the helper is not
+# re-spawned on every record when the same agent appears across multiple
+# repos (rare today, but cheap insurance against future fan-out).
+_tick_interval_cache = {}
+
+def _resolve_tick_interval_ms(agent, colony):
+    cache_key = (agent, colony)
+    if cache_key in _tick_interval_cache:
+        return _tick_interval_cache[cache_key]
+    interval = 60000
+    if fed_tools_dir and colony:
+        helper = os.path.join(fed_tools_dir, 'resolve-tick-interval.py')
+        colony_dir = os.path.join(fed_dir, colony)
+        if os.path.isfile(helper) and os.path.isdir(colony_dir):
+            try:
+                proc = subprocess.run(
+                    ['python3', helper, agent, colony_dir],
+                    capture_output=True, text=True, timeout=2,
+                )
+                if proc.returncode == 0:
+                    try:
+                        interval = int((proc.stdout or '').strip())
+                    except (TypeError, ValueError):
+                        interval = 60000
+            except (subprocess.SubprocessError, OSError):
+                interval = 60000
+    _tick_interval_cache[cache_key] = interval
+    return interval
 
 daemons    = safe_json(daemons_json, [])
 agent_map  = safe_json(agent_map_json, [])
@@ -224,13 +294,45 @@ for colony, agent in agent_pairs:
         rec['source'] = daemon.get('source') or ''
         rec['tick_ok'] = daemon.get('tick_ok') or daemon.get('ticks_ok') or 0
         rec['tick_err'] = daemon.get('tick_err') or daemon.get('ticks_err') or 0
-        pid = rec['pid']
-        if pid and pid > 0:
-            try:
-                os.kill(pid, 0)
-                rec['pid_alive'] = True
-            except OSError:
-                rec['pid_alive'] = False
+        # #683: replace PID-based liveness (`os.kill(pid, 0)`) with a
+        # memo-freshness check on `<agent>:last_check`. The old probe
+        # required the dashboard to share a PID namespace with the
+        # daemons, which is false on containerized federations
+        # (`research-foundry`, `tribes-bench`) — every PID looked dead
+        # from the host and the banner flipped to DEGRADED even when the
+        # agents were ticking happily inside the container. Memo
+        # freshness is namespace-independent and uses the canonical
+        # `memo_write("<agent>:last_check", now)` that every `.ag` agent
+        # already writes at the end of every tick (e.g.
+        # `research-foundry/formulator/agents/formulator.ag:448`,
+        # `tribes-bench/tribe-alpha/agents/hunter.ag:1438`). Per-repo
+        # fallback (`<owner>__<repo>:<agent>:last_check`) mirrors the
+        # confidence overlay fan-out for multi-repo colonies that scope
+        # memos per repo; the freshest record across the per-repo set
+        # wins. Bare key first, per-repo only when bare missing AND the
+        # colony actually has repos. Field name `pid_alive` preserved so
+        # the template + `is_running` derivation stay byte-identical.
+        last_check_epoch = None
+        bare_raw = _read_memo_raw(fed_dir, agent + ':last_check')
+        last_check_epoch = _parse_last_check_epoch(bare_raw)
+        if last_check_epoch is None:
+            repos = repos_for_colony.get(colony, [])
+            if repos:
+                per_repo_max = None
+                for owner, repo in repos:
+                    pr_key = '%s__%s:%s:last_check' % (owner, repo, agent)
+                    pr_raw = _read_memo_raw(fed_dir, pr_key)
+                    pr_epoch = _parse_last_check_epoch(pr_raw)
+                    if pr_epoch is not None:
+                        if per_repo_max is None or pr_epoch > per_repo_max:
+                            per_repo_max = pr_epoch
+                last_check_epoch = per_repo_max
+        if last_check_epoch is not None:
+            tick_interval_ms = _resolve_tick_interval_ms(agent, colony)
+            window_seconds = STALENESS_TICKS * (tick_interval_ms / 1000.0)
+            rec['pid_alive'] = (epoch - last_check_epoch) < window_seconds
+        else:
+            rec['pid_alive'] = False
 
     # #300: derived "actually running" predicate. Registry state alone is
     # not enough — a daemon's registry row stays state=running even after
@@ -385,7 +487,7 @@ for colony, agent in agent_pairs:
             conf_value = None
             try:
                 memo_proc = subprocess.run(
-                    ['agentis', 'memo', 'get', memo_key, '--raw'],
+                    ['agentis', 'memo', 'get', memo_key],
                     cwd=fed_dir, capture_output=True, text=True, timeout=2,
                 )
                 if memo_proc.returncode == 0:
