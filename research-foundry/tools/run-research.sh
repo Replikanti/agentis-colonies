@@ -132,18 +132,18 @@
 #                                Default 10 (insufficient data).
 #   RESEARCH_CULL_COLONIES       Comma-separated list of colony names
 #                                the cull cycle iterates over per
-#                                tick. Default `explorer` keeps the
-#                                pre-PR-B behaviour. PR-C operators
-#                                widen this to e.g.
-#                                `explorer,noticer,formulator` after
-#                                flipping the per-colony replica
-#                                counts to >=3.
+#                                tick. Phase 9 PR-C (#663) expands the
+#                                default to all 18 colonies now that
+#                                every non-explorer colony has its
+#                                replicate gate wired up.
 #   RESEARCH_<COLONY>_REPLICAS   Initial replica count for each of the
 #                                17 non-explorer colonies (Phase 9
-#                                PR-B of #663). Defaults to 1, which
-#                                preserves today's daemon shape. PR-C
-#                                flips these for replication-eligible
-#                                colonies.
+#                                PR-B of #663). Phase 9 PR-C flips
+#                                defaults to 3 across the board so the
+#                                M2-Malthusian replicate gate inside
+#                                each .ag can fire. Container shape:
+#                                17 colonies x 3 + 5 explorers = 56
+#                                daemons total.
 #   RESEARCH_<COLONY>_MAX_REPLICAS / _POOL / _REPRODUCTIVE_FITNESS_THRESHOLD
 #                                Per-colony M2-Malthusian replicate
 #                                gate seeds; defaults mirror the
@@ -249,97 +249,95 @@ SMTP_PORT="${RESEARCH_SMTP_PORT:-25}"
 # cycle still only fires for explorer unless RESEARCH_CULL_COLONIES is
 # changed). PR-C will flip these to N>=3 where it lights up
 # replication per colony.
-: "${RESEARCH_NOTICER_REPLICAS:=1}"
+: "${RESEARCH_NOTICER_REPLICAS:=3}"
 : "${RESEARCH_NOTICER_MAX_REPLICAS:=8}"
 : "${RESEARCH_NOTICER_POOL:=5000}"
 : "${RESEARCH_NOTICER_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
 
-: "${RESEARCH_SKEPTIC_REPLICAS:=1}"
+: "${RESEARCH_SKEPTIC_REPLICAS:=3}"
 : "${RESEARCH_SKEPTIC_MAX_REPLICAS:=8}"
 : "${RESEARCH_SKEPTIC_POOL:=5000}"
 : "${RESEARCH_SKEPTIC_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
 
-: "${RESEARCH_FORMULATOR_REPLICAS:=1}"
+: "${RESEARCH_FORMULATOR_REPLICAS:=3}"
 : "${RESEARCH_FORMULATOR_MAX_REPLICAS:=8}"
 : "${RESEARCH_FORMULATOR_POOL:=5000}"
 : "${RESEARCH_FORMULATOR_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
 
-: "${RESEARCH_VERIFIER_REPLICAS:=1}"
+: "${RESEARCH_VERIFIER_REPLICAS:=3}"
 : "${RESEARCH_VERIFIER_MAX_REPLICAS:=8}"
 : "${RESEARCH_VERIFIER_POOL:=5000}"
 : "${RESEARCH_VERIFIER_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
 
-: "${RESEARCH_NOVELTY_REPLICAS:=1}"
+: "${RESEARCH_NOVELTY_REPLICAS:=3}"
 : "${RESEARCH_NOVELTY_MAX_REPLICAS:=8}"
 : "${RESEARCH_NOVELTY_POOL:=5000}"
 : "${RESEARCH_NOVELTY_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
 
-: "${RESEARCH_ARXIV_SEARCH_REPLICAS:=1}"
+: "${RESEARCH_ARXIV_SEARCH_REPLICAS:=3}"
 : "${RESEARCH_ARXIV_SEARCH_MAX_REPLICAS:=8}"
 : "${RESEARCH_ARXIV_SEARCH_POOL:=5000}"
 : "${RESEARCH_ARXIV_SEARCH_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
 
-: "${RESEARCH_OEIS_SEARCH_REPLICAS:=1}"
+: "${RESEARCH_OEIS_SEARCH_REPLICAS:=3}"
 : "${RESEARCH_OEIS_SEARCH_MAX_REPLICAS:=8}"
 : "${RESEARCH_OEIS_SEARCH_POOL:=5000}"
 : "${RESEARCH_OEIS_SEARCH_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
 
-: "${RESEARCH_GROUPPROPS_SEARCH_REPLICAS:=1}"
+: "${RESEARCH_GROUPPROPS_SEARCH_REPLICAS:=3}"
 : "${RESEARCH_GROUPPROPS_SEARCH_MAX_REPLICAS:=8}"
 : "${RESEARCH_GROUPPROPS_SEARCH_POOL:=5000}"
 : "${RESEARCH_GROUPPROPS_SEARCH_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
 
-: "${RESEARCH_SCHOLAR_SEARCH_REPLICAS:=1}"
+: "${RESEARCH_SCHOLAR_SEARCH_REPLICAS:=3}"
 : "${RESEARCH_SCHOLAR_SEARCH_MAX_REPLICAS:=8}"
 : "${RESEARCH_SCHOLAR_SEARCH_POOL:=5000}"
 : "${RESEARCH_SCHOLAR_SEARCH_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
 
-: "${RESEARCH_AUDITOR_REPLICAS:=1}"
+: "${RESEARCH_AUDITOR_REPLICAS:=3}"
 : "${RESEARCH_AUDITOR_MAX_REPLICAS:=8}"
 : "${RESEARCH_AUDITOR_POOL:=5000}"
 : "${RESEARCH_AUDITOR_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
 
-: "${RESEARCH_PRIOR_ADVOCATE_REPLICAS:=1}"
+: "${RESEARCH_PRIOR_ADVOCATE_REPLICAS:=3}"
 : "${RESEARCH_PRIOR_ADVOCATE_MAX_REPLICAS:=8}"
 : "${RESEARCH_PRIOR_ADVOCATE_POOL:=5000}"
 : "${RESEARCH_PRIOR_ADVOCATE_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
 
-: "${RESEARCH_INTRODUCER_REPLICAS:=1}"
+: "${RESEARCH_INTRODUCER_REPLICAS:=3}"
 : "${RESEARCH_INTRODUCER_MAX_REPLICAS:=8}"
 : "${RESEARCH_INTRODUCER_POOL:=5000}"
 : "${RESEARCH_INTRODUCER_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
 
-: "${RESEARCH_THEORIST_REPLICAS:=1}"
+: "${RESEARCH_THEORIST_REPLICAS:=3}"
 : "${RESEARCH_THEORIST_MAX_REPLICAS:=8}"
 : "${RESEARCH_THEORIST_POOL:=5000}"
 : "${RESEARCH_THEORIST_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
 
-: "${RESEARCH_COMPUTER_REPLICAS:=1}"
+: "${RESEARCH_COMPUTER_REPLICAS:=3}"
 : "${RESEARCH_COMPUTER_MAX_REPLICAS:=8}"
 : "${RESEARCH_COMPUTER_POOL:=5000}"
 : "${RESEARCH_COMPUTER_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
 
-: "${RESEARCH_EDITOR_REPLICAS:=1}"
+: "${RESEARCH_EDITOR_REPLICAS:=3}"
 : "${RESEARCH_EDITOR_MAX_REPLICAS:=8}"
 : "${RESEARCH_EDITOR_POOL:=5000}"
 : "${RESEARCH_EDITOR_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
 
-: "${RESEARCH_REVIEWER_REPLICAS:=1}"
+: "${RESEARCH_REVIEWER_REPLICAS:=3}"
 : "${RESEARCH_REVIEWER_MAX_REPLICAS:=8}"
 : "${RESEARCH_REVIEWER_POOL:=5000}"
 : "${RESEARCH_REVIEWER_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
 
-: "${RESEARCH_SUBMITTER_REPLICAS:=1}"
+: "${RESEARCH_SUBMITTER_REPLICAS:=3}"
 : "${RESEARCH_SUBMITTER_MAX_REPLICAS:=8}"
 : "${RESEARCH_SUBMITTER_POOL:=5000}"
 : "${RESEARCH_SUBMITTER_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
 
 # Phase 9 PR-B (#663): comma-separated list of colony names eligible
-# for the cull cycle. Default `explorer` preserves the pre-PR-B
-# behaviour (still only one colony culls). PR-C operators may flip
-# this to e.g. `explorer,noticer,formulator` when those colonies
-# light up replication.
-: "${RESEARCH_CULL_COLONIES:=explorer}"
+# for the cull cycle. PR-C expands the default to all 18 colonies
+# now that every non-explorer colony has its replicate gate wired up.
+: "${RESEARCH_CULL_COLONIES:=explorer,noticer,formulator,verifier,novelty,skeptic,arxiv-search,oeis-search,groupprops-search,scholar-search,prior_advocate,auditor,introducer,theorist,computer,editor,reviewer,submitter}"
 
 # --- Validation ---
 if [ -z "$TOPICS_RAW" ]; then
@@ -715,33 +713,69 @@ write_bootstrap() {
         printf '    ts_ms=$(date +%%s%%3N)\n'
         printf '    python3 -c '"'"'import json,sys; sys.stdout.write(json.dumps({"ts":int(sys.argv[1]),"event":"spawn","daemon_id":int(sys.argv[2]),"specialty":sys.argv[3],"generation":0,"reason":"initial"})+"\\n")'"'"' "$ts_ms" "$i" "$sp" >> /run-root/replication-ledger.jsonl\n'
         printf 'done\n'
-        printf 'for c in noticer formulator verifier novelty; do\n'
-        printf '    for i in $(seq 1 %s); do\n' "$DAEMONS_PER_COLONY"
-        printf '        DAEMON_ID=$i COLONY_NAME=$c DISCOVERY_LEDGER=/run-root/discovery-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/$c/agents/$c.ag --colony $c --enable-exec --enable-messaging --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/$c-$i.log 2>&1 &\n'
-        printf '    done\n'
+        # Phase 9 PR-C (#663): each of the 4 math downstream colonies
+        # spawns RESEARCH_<COLONY>_REPLICAS daemons (default 3 per the
+        # PR-C env flip below). Each spawn line carries
+        # --enable-replication --allow-replica-replication and a
+        # <COLONY>_GENERATION=0 env var so the .ag first-tick claim
+        # block reads the seeded specialty pool.
+        printf 'for i in $(seq 1 %s); do\n' "$RESEARCH_NOTICER_REPLICAS"
+        printf '    DAEMON_ID=$i COLONY_NAME=noticer NOTICER_GENERATION=0 DISCOVERY_LEDGER=/run-root/discovery-ledger.jsonl REPLICATION_LEDGER=/run-root/replication-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/noticer/agents/noticer.ag --colony noticer --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/noticer-$i.log 2>&1 &\n'
+        printf 'done\n'
+        printf 'for i in $(seq 1 %s); do\n' "$RESEARCH_FORMULATOR_REPLICAS"
+        printf '    DAEMON_ID=$i COLONY_NAME=formulator FORMULATOR_GENERATION=0 DISCOVERY_LEDGER=/run-root/discovery-ledger.jsonl REPLICATION_LEDGER=/run-root/replication-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/formulator/agents/formulator.ag --colony formulator --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/formulator-$i.log 2>&1 &\n'
+        printf 'done\n'
+        printf 'for i in $(seq 1 %s); do\n' "$RESEARCH_VERIFIER_REPLICAS"
+        printf '    DAEMON_ID=$i COLONY_NAME=verifier VERIFIER_GENERATION=0 DISCOVERY_LEDGER=/run-root/discovery-ledger.jsonl REPLICATION_LEDGER=/run-root/replication-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/verifier/agents/verifier.ag --colony verifier --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/verifier-$i.log 2>&1 &\n'
+        printf 'done\n'
+        printf 'for i in $(seq 1 %s); do\n' "$RESEARCH_NOVELTY_REPLICAS"
+        printf '    DAEMON_ID=$i COLONY_NAME=novelty NOVELTY_GENERATION=0 DISCOVERY_LEDGER=/run-root/discovery-ledger.jsonl REPLICATION_LEDGER=/run-root/replication-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/novelty/agents/novelty.ag --colony novelty --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/novelty-$i.log 2>&1 &\n'
         printf 'done\n'
         # Phase 4 PR-A (#625): skeptic colony gates the formulator on
-        # noticer surprises. Single daemon mirroring noticer's env +
-        # flags; pass-through default in formulator.ag so empty skeptic
-        # memo does not block.
-        printf 'DAEMON_ID=1 COLONY_NAME=skeptic DISCOVERY_LEDGER=/run-root/discovery-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/skeptic/agents/skeptic.ag --colony skeptic --enable-exec --enable-messaging --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/skeptic-1.log 2>&1 &\n'
+        # noticer surprises. Phase 9 PR-C (#663) lights up replication.
+        printf 'for i in $(seq 1 %s); do\n' "$RESEARCH_SKEPTIC_REPLICAS"
+        printf '    DAEMON_ID=$i COLONY_NAME=skeptic SKEPTIC_GENERATION=0 DISCOVERY_LEDGER=/run-root/discovery-ledger.jsonl REPLICATION_LEDGER=/run-root/replication-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/skeptic/agents/skeptic.ag --colony skeptic --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/skeptic-$i.log 2>&1 &\n'
+        printf 'done\n'
         # claim-auditor: four searchers + auditor. Audit-trail goes to
-        # audit-ledger.jsonl.
-        printf 'for c in arxiv-search oeis-search groupprops-search scholar-search; do\n'
-        printf '    DAEMON_ID=1 COLONY_NAME=$c DISCOVERY_LEDGER=/run-root/audit-ledger.jsonl ARXIV_MAX_QUERY_RESULTS=10 AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/$c/agents/$c.ag --colony $c --enable-exec --enable-messaging --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/$c-1.log 2>&1 &\n'
+        # audit-ledger.jsonl. Phase 9 PR-C (#663) lights up replication
+        # per searcher; each gets its own replica-count env knob.
+        printf 'for i in $(seq 1 %s); do\n' "$RESEARCH_ARXIV_SEARCH_REPLICAS"
+        printf '    DAEMON_ID=$i COLONY_NAME=arxiv-search ARXIV_SEARCH_GENERATION=0 DISCOVERY_LEDGER=/run-root/audit-ledger.jsonl REPLICATION_LEDGER=/run-root/replication-ledger.jsonl ARXIV_MAX_QUERY_RESULTS=10 AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/arxiv-search/agents/arxiv-search.ag --colony arxiv-search --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/arxiv-search-$i.log 2>&1 &\n'
+        printf 'done\n'
+        printf 'for i in $(seq 1 %s); do\n' "$RESEARCH_OEIS_SEARCH_REPLICAS"
+        printf '    DAEMON_ID=$i COLONY_NAME=oeis-search OEIS_SEARCH_GENERATION=0 DISCOVERY_LEDGER=/run-root/audit-ledger.jsonl REPLICATION_LEDGER=/run-root/replication-ledger.jsonl ARXIV_MAX_QUERY_RESULTS=10 AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/oeis-search/agents/oeis-search.ag --colony oeis-search --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/oeis-search-$i.log 2>&1 &\n'
+        printf 'done\n'
+        printf 'for i in $(seq 1 %s); do\n' "$RESEARCH_GROUPPROPS_SEARCH_REPLICAS"
+        printf '    DAEMON_ID=$i COLONY_NAME=groupprops-search GROUPPROPS_SEARCH_GENERATION=0 DISCOVERY_LEDGER=/run-root/audit-ledger.jsonl REPLICATION_LEDGER=/run-root/replication-ledger.jsonl ARXIV_MAX_QUERY_RESULTS=10 AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/groupprops-search/agents/groupprops-search.ag --colony groupprops-search --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/groupprops-search-$i.log 2>&1 &\n'
+        printf 'done\n'
+        printf 'for i in $(seq 1 %s); do\n' "$RESEARCH_SCHOLAR_SEARCH_REPLICAS"
+        printf '    DAEMON_ID=$i COLONY_NAME=scholar-search SCHOLAR_SEARCH_GENERATION=0 DISCOVERY_LEDGER=/run-root/audit-ledger.jsonl REPLICATION_LEDGER=/run-root/replication-ledger.jsonl ARXIV_MAX_QUERY_RESULTS=10 AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/scholar-search/agents/scholar-search.ag --colony scholar-search --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/scholar-search-$i.log 2>&1 &\n'
         printf 'done\n'
         # Phase 4 PR-B (#625): prior_advocate colony runs the adversarial
-        # reviewer prompt that argues the claim is already known. Single
-        # daemon mirroring the searchers' env shape; auditor.ag pass-
-        # through default so empty prior_advocate memo does not block.
-        printf 'DAEMON_ID=1 COLONY_NAME=prior_advocate DISCOVERY_LEDGER=/run-root/audit-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/prior_advocate/agents/prior_advocate.ag --colony prior_advocate --enable-exec --enable-messaging --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/prior_advocate-1.log 2>&1 &\n'
-        printf 'DAEMON_ID=1 COLONY_NAME=auditor DISCOVERY_LEDGER=/run-root/audit-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/auditor/agents/auditor.ag --colony auditor --enable-exec --enable-messaging --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/auditor-1.log 2>&1 &\n'
-        # preprint-foundry: introducer / theorist / computer / editor / submitter.
-        # Audit-trail goes to preprint-ledger.jsonl.
-        printf 'for c in introducer theorist computer; do\n'
-        printf '    DAEMON_ID=1 COLONY_NAME=$c DISCOVERY_LEDGER=/run-root/preprint-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis PREPRINT_OUTPUT_ROOT=/run-root/preprints PREPRINT_AUTHOR_CONFIG=/run-root/config/authors.toml PREPRINT_LATEXMK_MAX_PASSES=%s agentis daemon /run-root/$c/agents/$c.ag --colony $c --enable-exec --enable-messaging --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/$c-1.log 2>&1 &\n' "$LATEXMK_MAX_PASSES"
+        # reviewer prompt that argues the claim is already known.
+        # Phase 9 PR-C (#663) lights up replication.
+        printf 'for i in $(seq 1 %s); do\n' "$RESEARCH_PRIOR_ADVOCATE_REPLICAS"
+        printf '    DAEMON_ID=$i COLONY_NAME=prior_advocate PRIOR_ADVOCATE_GENERATION=0 DISCOVERY_LEDGER=/run-root/audit-ledger.jsonl REPLICATION_LEDGER=/run-root/replication-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/prior_advocate/agents/prior_advocate.ag --colony prior_advocate --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/prior_advocate-$i.log 2>&1 &\n'
         printf 'done\n'
-        printf 'DAEMON_ID=1 COLONY_NAME=editor DISCOVERY_LEDGER=/run-root/preprint-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis PREPRINT_OUTPUT_ROOT=/run-root/preprints PREPRINT_AUTHOR_CONFIG=/run-root/config/authors.toml PREPRINT_LATEXMK_MAX_PASSES=%s agentis daemon /run-root/editor/agents/editor.ag --colony editor --enable-exec --enable-messaging --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/editor-1.log 2>&1 &\n' "$LATEXMK_MAX_PASSES"
+        printf 'for i in $(seq 1 %s); do\n' "$RESEARCH_AUDITOR_REPLICAS"
+        printf '    DAEMON_ID=$i COLONY_NAME=auditor AUDITOR_GENERATION=0 DISCOVERY_LEDGER=/run-root/audit-ledger.jsonl REPLICATION_LEDGER=/run-root/replication-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/auditor/agents/auditor.ag --colony auditor --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/auditor-$i.log 2>&1 &\n'
+        printf 'done\n'
+        # preprint-foundry: introducer / theorist / computer / editor / submitter.
+        # Audit-trail goes to preprint-ledger.jsonl. Phase 9 PR-C (#663)
+        # lights up replication across the six preprint colonies; the
+        # editor + submitter spawn loops carry the LATEXMK / ARXIV envs.
+        printf 'for i in $(seq 1 %s); do\n' "$RESEARCH_INTRODUCER_REPLICAS"
+        printf '    DAEMON_ID=$i COLONY_NAME=introducer INTRODUCER_GENERATION=0 DISCOVERY_LEDGER=/run-root/preprint-ledger.jsonl REPLICATION_LEDGER=/run-root/replication-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis PREPRINT_OUTPUT_ROOT=/run-root/preprints PREPRINT_AUTHOR_CONFIG=/run-root/config/authors.toml PREPRINT_LATEXMK_MAX_PASSES=%s agentis daemon /run-root/introducer/agents/introducer.ag --colony introducer --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/introducer-$i.log 2>&1 &\n' "$LATEXMK_MAX_PASSES"
+        printf 'done\n'
+        printf 'for i in $(seq 1 %s); do\n' "$RESEARCH_THEORIST_REPLICAS"
+        printf '    DAEMON_ID=$i COLONY_NAME=theorist THEORIST_GENERATION=0 DISCOVERY_LEDGER=/run-root/preprint-ledger.jsonl REPLICATION_LEDGER=/run-root/replication-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis PREPRINT_OUTPUT_ROOT=/run-root/preprints PREPRINT_AUTHOR_CONFIG=/run-root/config/authors.toml PREPRINT_LATEXMK_MAX_PASSES=%s agentis daemon /run-root/theorist/agents/theorist.ag --colony theorist --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/theorist-$i.log 2>&1 &\n' "$LATEXMK_MAX_PASSES"
+        printf 'done\n'
+        printf 'for i in $(seq 1 %s); do\n' "$RESEARCH_COMPUTER_REPLICAS"
+        printf '    DAEMON_ID=$i COLONY_NAME=computer COMPUTER_GENERATION=0 DISCOVERY_LEDGER=/run-root/preprint-ledger.jsonl REPLICATION_LEDGER=/run-root/replication-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis PREPRINT_OUTPUT_ROOT=/run-root/preprints PREPRINT_AUTHOR_CONFIG=/run-root/config/authors.toml PREPRINT_LATEXMK_MAX_PASSES=%s agentis daemon /run-root/computer/agents/computer.ag --colony computer --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/computer-$i.log 2>&1 &\n' "$LATEXMK_MAX_PASSES"
+        printf 'done\n'
+        printf 'for i in $(seq 1 %s); do\n' "$RESEARCH_EDITOR_REPLICAS"
+        printf '    DAEMON_ID=$i COLONY_NAME=editor EDITOR_GENERATION=0 DISCOVERY_LEDGER=/run-root/preprint-ledger.jsonl REPLICATION_LEDGER=/run-root/replication-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis PREPRINT_OUTPUT_ROOT=/run-root/preprints PREPRINT_AUTHOR_CONFIG=/run-root/config/authors.toml PREPRINT_LATEXMK_MAX_PASSES=%s agentis daemon /run-root/editor/agents/editor.ag --colony editor --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/editor-$i.log 2>&1 &\n' "$LATEXMK_MAX_PASSES"
+        printf 'done\n'
         # Phase 4 PR-C (#625): reviewer colony enforces a block-by-default
         # gate before the submitter can write the DRAFTED row. Reads
         # editor:<pid>:final_tex and computer:<pid>:output at
@@ -749,9 +783,13 @@ write_bootstrap() {
         # claim in the .tex, flags unsupported claims, writes
         # reviewer:<claim>:approved = "true" ONLY when verdict == approved.
         # Operator override: `agentis memo set reviewer:<claim>:approved true`.
-        printf 'DAEMON_ID=1 COLONY_NAME=reviewer DISCOVERY_LEDGER=/run-root/preprint-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/reviewer/agents/reviewer.ag --colony reviewer --enable-exec --enable-messaging --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/reviewer-1.log 2>&1 &\n'
-        printf 'DAEMON_ID=1 COLONY_NAME=submitter DISCOVERY_LEDGER=/run-root/preprint-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis PREPRINT_OUTPUT_ROOT=/run-root/preprints PREPRINT_AUTHOR_CONFIG=/run-root/config/authors.toml PREPRINT_ARXIV_GATEWAY=%s PREPRINT_ARXIV_FROM=%s PREPRINT_SMTP_HOST=%s PREPRINT_SMTP_PORT=%s agentis daemon /run-root/submitter/agents/submitter.ag --colony submitter --enable-exec --enable-messaging --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/submitter-1.log 2>&1 &\n' \
+        printf 'for i in $(seq 1 %s); do\n' "$RESEARCH_REVIEWER_REPLICAS"
+        printf '    DAEMON_ID=$i COLONY_NAME=reviewer REVIEWER_GENERATION=0 DISCOVERY_LEDGER=/run-root/preprint-ledger.jsonl REPLICATION_LEDGER=/run-root/replication-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/reviewer/agents/reviewer.ag --colony reviewer --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/reviewer-$i.log 2>&1 &\n'
+        printf 'done\n'
+        printf 'for i in $(seq 1 %s); do\n' "$RESEARCH_SUBMITTER_REPLICAS"
+        printf '    DAEMON_ID=$i COLONY_NAME=submitter SUBMITTER_GENERATION=0 DISCOVERY_LEDGER=/run-root/preprint-ledger.jsonl REPLICATION_LEDGER=/run-root/replication-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis PREPRINT_OUTPUT_ROOT=/run-root/preprints PREPRINT_AUTHOR_CONFIG=/run-root/config/authors.toml PREPRINT_ARXIV_GATEWAY=%s PREPRINT_ARXIV_FROM=%s PREPRINT_SMTP_HOST=%s PREPRINT_SMTP_PORT=%s agentis daemon /run-root/submitter/agents/submitter.ag --colony submitter --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval "$DAEMON_TICK_INTERVAL_MS" > /run-root/.agentis/logs/submitter-$i.log 2>&1 &\n' \
             "$ARXIV_GATEWAY" "$ARXIV_FROM" "$SMTP_HOST" "$SMTP_PORT"
+        printf 'done\n'
         printf 'while [ ! -e /run-root/.shutdown ]; do sleep 5; done\n'
         printf 'exit 0\n'
     } >"$bootstrap_path"

@@ -186,6 +186,55 @@ assert_not_contains "16b. --source-audit-run flag removed" "$SRC" "--source-audi
 assert_not_contains "16c. --source-foundry-run flag removed" "$SRC" "--source-foundry-run"
 assert_not_contains "16d. SOURCE_* env validation removed" "$SRC" "RESEARCH_SOURCE_RUN"
 
+# ---------------------------------------------------------------------------
+# 17. Phase 9 PR-C (#663): per-colony RESEARCH_<COLONY>_REPLICAS env
+# defaults exist for all 17 non-explorer colonies, defaulting to 3.
+# ---------------------------------------------------------------------------
+for c in NOTICER FORMULATOR VERIFIER NOVELTY SKEPTIC \
+         ARXIV_SEARCH OEIS_SEARCH GROUPPROPS_SEARCH SCHOLAR_SEARCH \
+         PRIOR_ADVOCATE AUDITOR \
+         INTRODUCER THEORIST COMPUTER EDITOR REVIEWER SUBMITTER; do
+    assert_contains "17. RESEARCH_${c}_REPLICAS defaults to 3" "$SRC" \
+        "\"\${RESEARCH_${c}_REPLICAS:=3}\""
+done
+
+# ---------------------------------------------------------------------------
+# 18. Phase 9 PR-C (#663): spawn loops use seq 1 $RESEARCH_<COLONY>_REPLICAS
+# for every non-explorer colony.
+# ---------------------------------------------------------------------------
+for c in NOTICER FORMULATOR VERIFIER NOVELTY SKEPTIC \
+         ARXIV_SEARCH OEIS_SEARCH GROUPPROPS_SEARCH SCHOLAR_SEARCH \
+         PRIOR_ADVOCATE AUDITOR \
+         INTRODUCER THEORIST COMPUTER EDITOR REVIEWER SUBMITTER; do
+    assert_contains "18. spawn loop uses RESEARCH_${c}_REPLICAS" "$SRC" \
+        "\$RESEARCH_${c}_REPLICAS"
+done
+
+# ---------------------------------------------------------------------------
+# 19. Phase 9 PR-C (#663): every spawn line in the 18 daemon blocks
+# carries `--enable-replication --allow-replica-replication`. Count
+# the substring across the bootstrap heredoc; explorer + 17 others = 18.
+# ---------------------------------------------------------------------------
+REPL_COUNT="$(printf '%s\n' "$SRC" | grep -cF -- "--enable-replication --allow-replica-replication" || true)"
+if [ "$REPL_COUNT" -ge 18 ]; then
+    echo "[PASS] 19. >=18 spawn lines carry --enable-replication --allow-replica-replication (count=$REPL_COUNT)"
+    PASS=$((PASS + 1))
+else
+    echo "[FAIL] 19. >=18 spawn lines carry --enable-replication --allow-replica-replication: got $REPL_COUNT"
+    FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# 20. Phase 9 PR-C (#663): RESEARCH_CULL_COLONIES default now covers all
+# 18 colonies (was `explorer` only in PR-B).
+# ---------------------------------------------------------------------------
+assert_contains "20a. RESEARCH_CULL_COLONIES default includes explorer" "$SRC" \
+    "RESEARCH_CULL_COLONIES:=explorer,"
+assert_contains "20b. RESEARCH_CULL_COLONIES includes noticer" "$SRC" \
+    "explorer,noticer,"
+assert_contains "20c. RESEARCH_CULL_COLONIES includes submitter" "$SRC" \
+    ",submitter}"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

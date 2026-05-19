@@ -88,25 +88,33 @@ tribes-bench"
             PAIR_KNOWN=1
             ;;
         "replicate:success")
-            # Shared between tribes-bench hunters and math-foundry
-            # explorer M2-Malthusian replicate (#622 PR-3). The
-            # federation-name literals (`tribes-bench` / `math-foundry`)
-            # disambiguate the call site at lint time.
+            # Shared between tribes-bench hunters, math-foundry
+            # explorer (#622 PR-3), and Phase 9 PR-C (#663) where the
+            # remaining 17 research-foundry colonies light up the same
+            # M2-Malthusian replicate path. The federation-name
+            # literals (`tribes-bench` / `math-foundry` /
+            # `claim-auditor` / `preprint-foundry`) disambiguate the
+            # call site at lint time.
             ALLOWED_LITERALS="replicated
 tribes-bench
 math-foundry
+claim-auditor
+preprint-foundry
 <tn>
 <cn>"
             PAIR_KNOWN=1
             ;;
         "replicate:failure")
-            # Shared between tribes-bench hunters and math-foundry
-            # explorer M2-Malthusian replicate (#622 PR-3).
+            # Shared between tribes-bench hunters, math-foundry
+            # explorer (#622 PR-3), and Phase 9 PR-C (#663) audit /
+            # preprint colonies.
             ALLOWED_LITERALS="replicate-skip
 replicate-error
 replicate-nak
 tribes-bench
 math-foundry
+claim-auditor
+preprint-foundry
 <tn>
 <cn>"
             PAIR_KNOWN=1
@@ -623,10 +631,15 @@ EOF
             esac
             ;;
     esac
-    # Colony-name placeholder: math-foundry colony literals or the
-    # bareword `_colony_name` variable reference (#622 PR-3).
+    # Colony-name placeholder: math-foundry colony literals, the 17
+    # research-foundry non-explorer colony literals lit up in Phase 9
+    # PR-C (#663), or one of the bareword variable references the .ag
+    # files actually use today.
     case "$tok" in
-        explorer|formulator|noticer|novelty|verifier|_colony_name)
+        explorer|formulator|noticer|novelty|verifier|skeptic|\
+arxiv-search|oeis-search|groupprops-search|scholar-search|prior_advocate|auditor|\
+introducer|theorist|computer|editor|reviewer|submitter|\
+_colony_name|colony_name_str)
             # `<cn>` is only allowed when the schema explicitly lists it.
             case "$ALLOWED_LITERALS" in
                 *"<cn>"*) return 0 ;;
