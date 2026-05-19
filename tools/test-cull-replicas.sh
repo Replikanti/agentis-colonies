@@ -235,6 +235,67 @@ else
     fail "7. cull-explorers.sh wrapper forwards to cull-replicas explorer (PR-B)" "$WRAPPER_OUT"
 fi
 
+# --- Test 8 (#650): DAEMON_ID gap allocation -- when surviving replicas
+# carry daemon_id=1,2,4 the respawn must claim max(existing)+1 = 5, not
+# colliding with the surviving daemon_id=4 nor reusing the daemon_id=3
+# gap (the orchestrator reserves max+1 so pool slots never collide).
+GAP_JSON="$(python3 -c "
+import json
+daemons = []
+for did, pid_off in [(1, 1), (2, 2), (4, 4)]:
+    daemons.append({
+        'source': '/run-root/explorer/agents/explorer.ag',
+        'agent_id': 'agent-explorer-%d' % did,
+        'pid': 1000 + pid_off,
+        'daemon_id': did,
+        'state': 'running',
+        'effective_state': 'running',
+        'colony': 'explorer',
+        'started_at': 0,
+        'confidence': 0.7,
+    })
+print(json.dumps(daemons))
+")"
+
+GAP_OUT="$(CULL_DAEMONS_JSON_OVERRIDE="$GAP_JSON" \
+    CULL_SPECIALTY_COUNTS_OVERRIDE='{"group_theory":1,"combinatorics":1,"number_theory":1}' \
+    CULL_NOW_MS_OVERRIDE=0 \
+    bash "$CULL" "$WORK_DIR" explorer --dry-run --bottom-pct 0.34 --min-explorers 3 --min-acting 0 2>&1 || true)"
+
+if printf '%s' "$GAP_OUT" | grep -Fq 'next daemon_id=5'; then
+    pass "8. DAEMON_ID gap allocation -- alive=1,2,4 -> respawn=5 (#650)"
+else
+    fail "8. DAEMON_ID gap allocation -- alive=1,2,4 -> respawn=5 (#650)" "$GAP_OUT"
+fi
+
+# --- Test 9 (#651): all-below-min-acting batch is a no-op.
+# Inject decisions where every row has entries_acting below --min-acting
+# (here driven by --min-acting=10 with the synthetic fixture's implicit
+# zero acting count). Assert zero cull/respawn ledger rows are emitted
+# even outside dry-run. The script writes to <fed_dir>/replication-
+# ledger.jsonl so we truncate that canonical path first to isolate from
+# prior tests, then assert it stays empty after the invocation.
+NOOP_LEDGER_PATH="$WORK_DIR/replication-ledger.jsonl"
+: > "$NOOP_LEDGER_PATH"
+
+CULL_DAEMONS_JSON_OVERRIDE="$SYNTH_JSON" \
+    CULL_SPECIALTY_COUNTS_OVERRIDE='{"group_theory":1,"combinatorics":1,"number_theory":1,"probability":1,"algebra":1}' \
+    CULL_NOW_MS_OVERRIDE=0 \
+    bash "$CULL" "$WORK_DIR" explorer --bottom-pct 0.4 --min-explorers 3 --min-acting 10 \
+    > "$WORK_DIR/noop.stdout" 2>&1 || true
+
+CULL_ROWS="$(grep -c '"event": "cull"' "$NOOP_LEDGER_PATH" 2>/dev/null | head -n 1 || true)"
+RESPAWN_ROWS="$(grep -c '"event": "respawn"' "$NOOP_LEDGER_PATH" 2>/dev/null | head -n 1 || true)"
+CULL_ROWS="${CULL_ROWS:-0}"
+RESPAWN_ROWS="${RESPAWN_ROWS:-0}"
+
+if [ "$CULL_ROWS" -eq 0 ] && [ "$RESPAWN_ROWS" -eq 0 ]; then
+    pass "9. all-below-min-acting -> no cull/respawn rows emitted (#651)"
+else
+    fail "9. all-below-min-acting -> no cull/respawn rows emitted (#651)" \
+        "cull=$CULL_ROWS respawn=$RESPAWN_ROWS ledger=$(cat "$NOOP_LEDGER_PATH" 2>/dev/null)"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

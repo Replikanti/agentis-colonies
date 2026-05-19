@@ -293,6 +293,14 @@ for d in daemons:
     pid = d.get('pid', 0)
     if not pid:
         continue
+    # Prefer a daemon_id carried in the JSON itself (used by the test
+    # harness via CULL_DAEMONS_JSON_OVERRIDE to exercise the gap-
+    # allocation path without a live memo store, per issue #650).
+    raw = d.get('daemon_id')
+    if isinstance(raw, int) and raw > 0:
+        max_id = max(max_id, raw)
+    elif isinstance(raw, str) and raw.isdigit():
+        max_id = max(max_id, int(raw))
     # Read the DAEMON_ID memo if the agent published one. Fall back to
     # scanning the pool:specialty:<N> slot assignments for occupied ids.
     try:
