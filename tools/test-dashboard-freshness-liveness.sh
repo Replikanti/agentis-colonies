@@ -55,16 +55,15 @@ if [ ! -r "$COLLECTOR" ]; then
     exit 1
 fi
 
-# Probe whether the installed `agentis memo get` supports `--raw`. The
-# collector relies on it; older binaries reject the flag with exit 1.
+# Probe whether the installed `agentis memo get` returns a clean value
+# (no decorations) — required by the collector's freshness path.
 PROBE_DIR="$TMPDIR_TEST/probe"
 mkdir -p "$PROBE_DIR"
 (cd "$PROBE_DIR" && agentis memo set probe:key "probe-value" >/dev/null 2>&1) || true
-PROBE_OUT="$(cd "$PROBE_DIR" && agentis memo get probe:key --raw 2>/dev/null || true)"
-PROBE_RC="$(cd "$PROBE_DIR" && agentis memo get probe:key --raw >/dev/null 2>&1; echo $?)"
-if [ "$PROBE_RC" != "0" ] || [ "$PROBE_OUT" != "probe-value" ]; then
-    echo "[SKIP] installed agentis ($(agentis --version 2>&1)) does not support 'memo get --raw'; collector freshness path requires it"
-    echo "Results: 0 passed, 0 failed (skipped — agentis lacks --raw on memo get)"
+PROBE_OUT="$(cd "$PROBE_DIR" && agentis memo get probe:key 2>/dev/null | tr -d '\r\n ' || true)"
+if [ "$PROBE_OUT" != "probe-value" ]; then
+    echo "[SKIP] installed agentis ($(agentis --version 2>&1)) memo get does not return a clean scalar value"
+    echo "Results: 0 passed, 0 failed (skipped — agentis memo get output unexpected)"
     exit 0
 fi
 

@@ -74,7 +74,7 @@ def safe_json(s, default):
 def _read_memo_raw(fed_dir, key):
     try:
         proc = subprocess.run(
-            ['agentis', 'memo', 'get', key, '--raw'],
+            ['agentis', 'memo', 'get', key],
             cwd=fed_dir, capture_output=True, text=True, timeout=2,
         )
     except (subprocess.SubprocessError, OSError):
@@ -487,7 +487,7 @@ for colony, agent in agent_pairs:
             conf_value = None
             try:
                 memo_proc = subprocess.run(
-                    ['agentis', 'memo', 'get', memo_key, '--raw'],
+                    ['agentis', 'memo', 'get', memo_key],
                     cwd=fed_dir, capture_output=True, text=True, timeout=2,
                 )
                 if memo_proc.returncode == 0:
