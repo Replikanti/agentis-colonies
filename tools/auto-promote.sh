@@ -35,7 +35,7 @@
 #
 # --containerized opts out of the dev-apprenticeship-specific
 # `[gitlab]`-in-colony.toml respawn path; the forge-less
-# `research-foundry/` federation needs this because its 15 colonies
+# `research-foundry/` federation needs this because its 18 colonies
 # have `forge.type = "none"` and the daemon must be respawned without
 # GITLAB_* env composition (#622, #638).
 #

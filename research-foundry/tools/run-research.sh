@@ -4,8 +4,8 @@
 #
 # Consolidates the three retired orchestrators (run-foundry.sh,
 # run-auditor.sh, run-preprint.sh) into a single script that drives
-# all 15 colonies in one container. Cross-federation memo recall is
-# eliminated -- the 9-10-tick cascade through the 14 downstream
+# all 18 colonies in one container. Cross-federation memo recall is
+# eliminated -- the 9-10-tick cascade through the 17 downstream
 # daemons happens inside the merged container because all daemons
 # share `.agentis/`. Novelty + auditor agents write `claim:*:tick-N`
 # keys directly on positive verdict, so each downstream consumer
@@ -456,14 +456,14 @@ build_image() {
 }
 
 # --- 2) Per-node bootstrap script generator ---
-# Single bootstrap that spawns all 17 daemons under one .agentis/.
+# Single bootstrap that spawns all 18 colonies under one .agentis/.
 # Three pipeline groups:
 #   math      = explorer, noticer, skeptic, formulator, verifier, novelty
 #   searchers = arxiv-search, oeis-search, groupprops-search, scholar-search, prior_advocate, auditor
 #   preprint  = introducer, theorist, computer, editor, submitter
 # Explorer keeps --enable-replication --allow-replica-replication so
 # the M2-Malthusian replicate gate inside explorer.ag can grow its
-# population. The remaining 16 colonies run with standard
+# population. The remaining 17 colonies run with standard
 # --enable-exec --enable-messaging flags. Per-daemon tick interval is
 # fixed at 30s (decoupled from the orchestrator's TICK_INTERVAL_S
 # `replay:current_tick` advance rate); same reason as the retired
@@ -496,7 +496,7 @@ write_bootstrap() {
         # output all contain long numeric runs that the agentis-core
         # heuristic flags. Mirrors trading-binance fix (#581).
         printf '  printf "pii_transmit = allow\\n"\n'
-        # Memo cap bump: 15 colonies x 30 ticks x per-pid keys + per-claim
+        # Memo cap bump: 18 colonies x 30 ticks x per-pid keys + per-claim
         # status keys fills the default 500 fast. Mirrors #587.
         printf '  printf "memo.max_keys = 50000\\n"\n'
         if [ "$LLM_BACKEND" = "openai" ]; then
@@ -505,7 +505,7 @@ write_bootstrap() {
             printf '  printf "llm.openai.api_key_env = %s\\n"\n' "$OPENAI_KEY_ENV"
             printf '  printf "llm.openai.timeout_ms = %s\\n"\n' "$OPENAI_TIMEOUT_MS"
         elif [ "$LLM_BACKEND" = "claude" ]; then
-            # Phase 1: single backend block applies to all 15 colonies.
+            # Phase 1: single backend block applies to all 18 colonies.
             # Per-colony model split (e.g. Sonnet for searchers, Opus for
             # auditor/introducer/theorist/editor) is a Phase 2
             # enhancement requiring per-colony AGENTIS_ROOT.

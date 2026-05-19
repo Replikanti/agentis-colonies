@@ -110,7 +110,7 @@ fi
 
 # --- Per-colony config copy ---
 echo ""
-echo "Copying colony.example.toml -> colony.toml for 15 colonies ..."
+echo "Copying colony.example.toml -> colony.toml for 18 colonies ..."
 
 for colony in "${COLONIES[@]}"; do
     src="$SCRIPT_DIR/$colony/config/colony.example.toml"
@@ -155,7 +155,7 @@ info "  2. (One-time) populate data/papers/ with cached arXiv corpora:"
 info "       python3 $SCRIPT_DIR/tools/fetch-papers.py --help"
 info "  3. Dry-run:"
 info "       bash $SCRIPT_DIR/tools/run-research.sh --dry-run"
-info "  4. Real run (spawns 15 colonies in podman):"
+info "  4. Real run (spawns 18 colonies in podman):"
 info "       bash $SCRIPT_DIR/tools/run-research.sh"
 info "  5. Review DRAFTED preprints and approve/reject via:"
 info "       bash $SCRIPT_DIR/tools/review-cli.sh"
