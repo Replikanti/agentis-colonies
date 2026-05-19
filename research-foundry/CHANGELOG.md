@@ -20,6 +20,47 @@ History of the three retired federations consolidated into this one
 
 ### Changed
 
+- Generalised Phase 3 explorer-specific tooling to per-colony shape
+  across the 18 research-foundry colonies (Phase 9 PR-B of #663).
+  Renames + back-compat wrappers preserve every existing callsite
+  byte-identically; behaviour is unchanged in this PR (still 5
+  explorers + 13 singletons, cull cycle still fires for the explorer
+  colony only). PR-C uses the new machinery to flip per-colony
+  replica counts.
+  - `tools/cull-explorers.sh` -> `tools/cull-replicas.sh` with a new
+    positional `<colony_name>` argument and runtime variant lookup
+    against `research-foundry/tools/colony-variants.json`. Legacy
+    `tools/cull-explorers.sh` wrapper forwards with
+    `colony=explorer`.
+  - `tools/explorer-fitness.py` -> `tools/colony-fitness.py` with a
+    `--colony <name>` flag dispatching to discovery / audit /
+    preprint side formulas. Legacy `tools/explorer-fitness.py` shim
+    forwards with `--colony explorer`.
+  - `tools/auto-promote-decisions.py` decorates every recognised
+    colony's decision record with top-level
+    `pid + agent_id + specialty + fitness_score` and
+    `evidence.colony_fitness` (PR-C populates the per-pid memo keys
+    for non-explorer roles). `evidence.explorer_fitness` is kept as
+    a back-compat alias for the explorer row so the dashboard's
+    pre-PR-B Promote Candidates renderer keeps working without
+    changes. Test 12 (legacy vs preview byte-identity) and test 14
+    (prereq structure) stay green.
+  - New `research-foundry/tools/colony-variants.json` source-of-truth
+    table: 18 colonies x 5 variants x 5 overlays. Explorer overlays
+    preserved byte-identically from the Phase 3 hardcoded text; the
+    other 13 colonies get 1-line stubs PR-C will refine.
+  - `research-foundry/tools/run-research.sh` bootstrap loop reads
+    the variants table to seed every colony's specialty pool
+    instead of hardcoding the 5 explorer entries. Adds per-colony
+    `RESEARCH_<COLONY>_REPLICAS` / `_MAX_REPLICAS` / `_POOL` /
+    `_REPRODUCTIVE_FITNESS_THRESHOLD` env knobs (all default to 1 /
+    8 / 5000 / 10) and seeds the M2-Malthusian replicate gate memos
+    for all 18 colonies. New `RESEARCH_CULL_COLONIES` env knob
+    (default `explorer`) lets the auto-promote sidecar iterate the
+    cull cycle over multiple colonies once PR-C lights up
+    replication. The spawn loops are NOT touched in PR-B; daemon
+    counts stay at today's 5 explorers + 13 singletons.
+
 - Replica-safe handoff via winner-by-confidence picker across 9
   downstream `.ag` files (Phase 9 PR-A of #663, pre-blocker for the
   entire phase). Every `recall_latest("replay:current_<role>_pid")` +

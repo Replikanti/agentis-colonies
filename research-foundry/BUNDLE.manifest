@@ -6,6 +6,9 @@ research-foundry/tools/fetch-papers.py
 research-foundry/tools/test-fetch-papers.py
 research-foundry/tools/review-cli.sh
 research-foundry/tools/substitute-author.py
+# Phase 9 PR-B (#663). Source-of-truth variant + overlay table read
+# by tools/cull-replicas.sh and the run-research.sh bootstrap loop.
+research-foundry/tools/colony-variants.json
 research-foundry/config/authors.toml.example
 research-foundry/data/
 research-foundry/explorer/
@@ -39,5 +42,15 @@ tools/parse-toml.sh
 
 # Phase 3 PR 3 (#624). Cull cycle wired into the auto-promote sidecar
 # under RESEARCH_CULL_ENABLED=1; reads the same --preview output as the
-# dashboard does and shares the explorer-fitness.py join.
+# dashboard does and shares the colony-fitness.py join.
+#
+# Phase 9 PR-B (#663) renamed the explorer-only tool to cull-replicas.sh
+# and added a positional <colony_name> argument. The legacy
+# cull-explorers.sh wrapper forwards to cull-replicas.sh with
+# colony=explorer for back-compat. Both are bundled. The new
+# colony-fitness.py / explorer-fitness.py shim pair replaces the old
+# explorer-fitness.py.
 tools/cull-explorers.sh
+tools/cull-replicas.sh
+tools/colony-fitness.py
+tools/explorer-fitness.py
