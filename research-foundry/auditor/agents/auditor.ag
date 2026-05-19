@@ -242,7 +242,8 @@ fn _publish_auditor(
     oeis_report: string,
     groupprops_report: string,
     scholar_report: string,
-    prior_advocate_report: string
+    prior_advocate_report: string,
+    my_tier: string
 ) -> void {
     let conf_str = to_string(verdict.confidence);
     let verdict_json = "{\"audit_verdict\":\"" + verdict.audit_verdict
@@ -317,7 +318,9 @@ fn _publish_auditor(
     };
 
     emit("auditor:verdict_ready", verdict);
-    learn("audit", "tick " + to_string(tick_idx) + " " + verdict.audit_verdict, verdict.reasoning, "success", ["emitted", "claim-auditor"]);
+    if my_tier == "propose" {
+        learn("audit", "tick " + to_string(tick_idx) + " " + verdict.audit_verdict, verdict.reasoning, "success", ["emitted", "claim-auditor"]);
+    };
 
     // Phase 9 PR-C (#663): per-pid fitness tracking. +1 on decisive
     // verdict (VERIFIED_NEW or KNOWN_PRIOR), 0 on NEEDS_HUMAN.
@@ -481,14 +484,14 @@ fn tick(reason: string) -> void {
         // `autonomous_decision=true` for downstream observers (#622).
         memo_write("auditor:" + _self_pid + ":autonomous_decision", "true");
         learn("audit", "tick " + to_string(tick_idx) + " " + verdict.audit_verdict, verdict.reasoning, "partial", ["acted", "claim-auditor"]);
-        _publish_auditor(true, true, true, verdict, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, source_run, source_tick, source_pid, arxiv_report, oeis_report, groupprops_report, scholar_report, prior_advocate_report);
+        _publish_auditor(true, true, true, verdict, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, source_run, source_tick, source_pid, arxiv_report, oeis_report, groupprops_report, scholar_report, prior_advocate_report, my_tier);
     } else {
         if my_tier == "review-gated" {
             learn("audit", "tick " + to_string(tick_idx) + " " + verdict.audit_verdict, verdict.reasoning, "partial", ["review-gated", "claim-auditor"]);
-            _publish_auditor(true, false, false, verdict, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, source_run, source_tick, source_pid, arxiv_report, oeis_report, groupprops_report, scholar_report, prior_advocate_report);
+            _publish_auditor(true, false, false, verdict, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, source_run, source_tick, source_pid, arxiv_report, oeis_report, groupprops_report, scholar_report, prior_advocate_report, my_tier);
         } else {
             if my_tier == "propose" {
-                _publish_auditor(false, false, false, verdict, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, source_run, source_tick, source_pid, arxiv_report, oeis_report, groupprops_report, scholar_report, prior_advocate_report);
+                _publish_auditor(false, false, false, verdict, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, source_run, source_tick, source_pid, arxiv_report, oeis_report, groupprops_report, scholar_report, prior_advocate_report, my_tier);
             } else {
                 print("[auditor] observing (tier:", my_tier, ") verdict=", verdict.audit_verdict);
                 learn("audit", "tick " + to_string(tick_idx) + " " + verdict.audit_verdict, verdict.reasoning, "partial", ["observed", "claim-auditor"]);

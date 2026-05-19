@@ -248,7 +248,8 @@ fn _publish_editor(
     _colony_name: string,
     upstream_tick: int,
     tick_idx: int,
-    tick_now_ms: int
+    tick_now_ms: int,
+    my_tier: string
 ) -> void {
     let _ = final_write;
     let claim_id = recall_latest("claim:claim_id:tick-" + to_string(upstream_tick));
@@ -357,7 +358,9 @@ fn _publish_editor(
     emit("editor:final_tex_ready", edit);
     emit("editor:compile_log_ready", edit);
 
-    learn("edit", "tick " + to_string(tick_idx), "compile_ok=" + compile_ok_str + " halluc=" + halluc_str, "success", ["emitted", "preprint-foundry"]);
+    if my_tier == "propose" {
+        learn("edit", "tick " + to_string(tick_idx), "compile_ok=" + compile_ok_str + " halluc=" + halluc_str, "success", ["emitted", "preprint-foundry"]);
+    };
 
     // Phase 9 PR-C (#663): per-pid fitness tracking. +1 on
     // compile_ok_final=true, 0 otherwise (matches the preprint-side
@@ -511,15 +514,15 @@ fn tick(reason: string) -> void {
     if my_tier == "autonomous" {
         memo_write("editor:" + _self_pid + ":review_gated", "true");
         learn("edit", "tick " + to_string(tick_idx), edit.rationale, "partial", ["acted", "preprint-foundry"]);
-        _publish_editor(true, true, edit, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms);
+        _publish_editor(true, true, edit, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
     } else {
         if my_tier == "review-gated" {
             memo_write("editor:" + _self_pid + ":review_gated", "true");
             learn("edit", "tick " + to_string(tick_idx), edit.rationale, "partial", ["review-gated", "preprint-foundry"]);
-            _publish_editor(true, false, edit, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms);
+            _publish_editor(true, false, edit, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
         } else {
             if my_tier == "propose" {
-                _publish_editor(false, false, edit, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms);
+                _publish_editor(false, false, edit, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
             } else {
                 print("[editor] observing (tier:", my_tier, ") rationale=", edit.rationale);
                 learn("edit", "tick " + to_string(tick_idx), edit.rationale, "partial", ["observed", "preprint-foundry"]);

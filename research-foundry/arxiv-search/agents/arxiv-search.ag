@@ -174,7 +174,8 @@ fn _publish_arxiv_search(
     tick_now_ms: int,
     problem_text: string,
     stated_answer: string,
-    novelty_claim: string
+    novelty_claim: string,
+    my_tier: string
 ) -> void {
     let _ = final_write;
     // Iteration over queries lives in Python because the .ag
@@ -217,7 +218,9 @@ fn _publish_arxiv_search(
     memo_write("replay:current_arxiv_search_pid", self_pid);
     emit("arxiv-search:report_ready", report);
 
-    learn("arxiv-search", "tick " + to_string(tick_idx), "matches=" + to_string(report.matches_found), "success", ["emitted", "claim-auditor"]);
+    if my_tier == "propose" {
+        learn("arxiv-search", "tick " + to_string(tick_idx), "matches=" + to_string(report.matches_found), "success", ["emitted", "claim-auditor"]);
+    };
 
     // Phase 9 PR-C (#663): per-pid fitness tracking. +1 when the
     // search returned hits, 0 otherwise. PR-D may refine.
@@ -345,15 +348,15 @@ fn tick(reason: string) -> void {
     if my_tier == "autonomous" {
         memo_write("arxiv_search:" + _self_pid + ":review_gated", "true");
         learn("arxiv-search", "tick " + to_string(tick_idx), queries.rationale, "partial", ["acted", "claim-auditor"]);
-        _publish_arxiv_search(true, true, queries, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim);
+        _publish_arxiv_search(true, true, queries, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim, my_tier);
     } else {
         if my_tier == "review-gated" {
             memo_write("arxiv_search:" + _self_pid + ":review_gated", "true");
             learn("arxiv-search", "tick " + to_string(tick_idx), queries.rationale, "partial", ["review-gated", "claim-auditor"]);
-            _publish_arxiv_search(true, false, queries, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim);
+            _publish_arxiv_search(true, false, queries, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim, my_tier);
         } else {
             if my_tier == "propose" {
-                _publish_arxiv_search(false, false, queries, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim);
+                _publish_arxiv_search(false, false, queries, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim, my_tier);
             } else {
                 print("[arxiv-search] observing (tier:", my_tier, ") rationale=", queries.rationale);
                 learn("arxiv-search", "tick " + to_string(tick_idx), queries.rationale, "partial", ["observed", "claim-auditor"]);

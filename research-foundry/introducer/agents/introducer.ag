@@ -151,7 +151,8 @@ fn _publish_introducer(
     _colony_name: string,
     upstream_tick: int,
     tick_idx: int,
-    tick_now_ms: int
+    tick_now_ms: int,
+    my_tier: string
 ) -> void {
     let _ = final_write;
     memo_write("introducer:" + self_pid + ":abstract:tick-" + to_string(upstream_tick), draft.abstract_tex);
@@ -164,7 +165,9 @@ fn _publish_introducer(
     emit("introducer:abstract_ready", draft);
     emit("introducer:intro_ready", draft);
 
-    learn("introduce", "tick " + to_string(tick_idx), "abstract+intro emitted", "success", ["emitted", "preprint-foundry"]);
+    if my_tier == "propose" {
+        learn("introduce", "tick " + to_string(tick_idx), "abstract+intro emitted", "success", ["emitted", "preprint-foundry"]);
+    };
 
     if len(self_pid) > 0 {
         let fit_pre = parse_int(recall_latest("introducer:" + self_pid + ":fitness"));
@@ -304,15 +307,15 @@ fn tick(reason: string) -> void {
     if my_tier == "autonomous" {
         memo_write("introducer:" + _self_pid + ":review_gated", "true");
         learn("introduce", "tick " + to_string(tick_idx), draft.rationale, "partial", ["acted", "preprint-foundry"]);
-        _publish_introducer(true, true, draft, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms);
+        _publish_introducer(true, true, draft, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
     } else {
         if my_tier == "review-gated" {
             memo_write("introducer:" + _self_pid + ":review_gated", "true");
             learn("introduce", "tick " + to_string(tick_idx), draft.rationale, "partial", ["review-gated", "preprint-foundry"]);
-            _publish_introducer(true, false, draft, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms);
+            _publish_introducer(true, false, draft, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
         } else {
             if my_tier == "propose" {
-                _publish_introducer(false, false, draft, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms);
+                _publish_introducer(false, false, draft, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
             } else {
                 print("[introducer] observing (tier:", my_tier, ") rationale=", draft.rationale);
                 learn("introduce", "tick " + to_string(tick_idx), draft.rationale, "partial", ["observed", "preprint-foundry"]);

@@ -169,7 +169,8 @@ fn _publish_oeis_search(
     tick_now_ms: int,
     problem_text: string,
     stated_answer: string,
-    novelty_claim: string
+    novelty_claim: string,
+    my_tier: string
 ) -> void {
     let _ = final_write;
     let sequences_json = sequences.sequences_json;
@@ -204,7 +205,9 @@ fn _publish_oeis_search(
     memo_write("replay:current_oeis_search_pid", self_pid);
     emit("oeis-search:report_ready", report);
 
-    learn("oeis-search", "tick " + to_string(tick_idx), "matches=" + to_string(report.matches_found), "success", ["emitted", "claim-auditor"]);
+    if my_tier == "propose" {
+        learn("oeis-search", "tick " + to_string(tick_idx), "matches=" + to_string(report.matches_found), "success", ["emitted", "claim-auditor"]);
+    };
 
     // Phase 9 PR-C (#663): per-pid fitness tracking.
     if len(self_pid) > 0 {
@@ -330,15 +333,15 @@ fn tick(reason: string) -> void {
     if my_tier == "autonomous" {
         memo_write("oeis_search:" + _self_pid + ":review_gated", "true");
         learn("oeis-search", "tick " + to_string(tick_idx), sequences.rationale, "partial", ["acted", "claim-auditor"]);
-        _publish_oeis_search(true, true, sequences, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim);
+        _publish_oeis_search(true, true, sequences, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim, my_tier);
     } else {
         if my_tier == "review-gated" {
             memo_write("oeis_search:" + _self_pid + ":review_gated", "true");
             learn("oeis-search", "tick " + to_string(tick_idx), sequences.rationale, "partial", ["review-gated", "claim-auditor"]);
-            _publish_oeis_search(true, false, sequences, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim);
+            _publish_oeis_search(true, false, sequences, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim, my_tier);
         } else {
             if my_tier == "propose" {
-                _publish_oeis_search(false, false, sequences, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim);
+                _publish_oeis_search(false, false, sequences, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim, my_tier);
             } else {
                 print("[oeis-search] observing (tier:", my_tier, ") rationale=", sequences.rationale);
                 learn("oeis-search", "tick " + to_string(tick_idx), sequences.rationale, "partial", ["observed", "claim-auditor"]);
