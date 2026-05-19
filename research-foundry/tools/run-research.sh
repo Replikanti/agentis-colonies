@@ -4,8 +4,8 @@
 #
 # Consolidates the three retired orchestrators (run-foundry.sh,
 # run-auditor.sh, run-preprint.sh) into a single script that drives
-# all 15 colonies in one container. Cross-federation memo recall is
-# eliminated -- the 9-10-tick cascade through the 14 downstream
+# all 18 colonies in one container. Cross-federation memo recall is
+# eliminated -- the 9-10-tick cascade through the 17 downstream
 # daemons happens inside the merged container because all daemons
 # share `.agentis/`. Novelty + auditor agents write `claim:*:tick-N`
 # keys directly on positive verdict, so each downstream consumer
@@ -339,6 +339,14 @@ SMTP_PORT="${RESEARCH_SMTP_PORT:-25}"
 # now that every non-explorer colony has its replicate gate wired up.
 : "${RESEARCH_CULL_COLONIES:=explorer,noticer,formulator,verifier,novelty,skeptic,arxiv-search,oeis-search,groupprops-search,scholar-search,prior_advocate,auditor,introducer,theorist,computer,editor,reviewer,submitter}"
 
+# Cull-cycle sidecar tick interval. Validated below alongside the other
+# numeric knobs (#648 follow-up): a zero / negative / non-integer value
+# would crash the auto-promote sidecar via `$((tick_count % 0))` because
+# `set -euo pipefail` (line 162) propagates the division-by-zero up
+# through the backgrounded subshell, killing both auto-promote AND cull
+# for the remainder of the run.
+: "${RESEARCH_CULL_INTERVAL_TICKS:=20}"
+
 # --- Validation ---
 if [ -z "$TOPICS_RAW" ]; then
     echo "run-research: RESEARCH_TOPICS must be a non-empty comma-separated list" >&2
@@ -346,7 +354,7 @@ if [ -z "$TOPICS_RAW" ]; then
 fi
 
 val=""
-for var_name in TICK_INTERVAL_S TOTAL_TICKS DAEMONS_PER_COLONY HOLD_PERIOD OPENAI_TIMEOUT_MS LATEXMK_MAX_PASSES SMTP_PORT RESEARCH_EXPLORER_REPLICAS RESEARCH_EXPLORER_MAX_REPLICAS RESEARCH_EXPLORER_POOL RESEARCH_EXPLORER_REPRODUCTIVE_FITNESS_THRESHOLD; do
+for var_name in TICK_INTERVAL_S TOTAL_TICKS DAEMONS_PER_COLONY HOLD_PERIOD OPENAI_TIMEOUT_MS LATEXMK_MAX_PASSES SMTP_PORT RESEARCH_EXPLORER_REPLICAS RESEARCH_EXPLORER_MAX_REPLICAS RESEARCH_EXPLORER_POOL RESEARCH_EXPLORER_REPRODUCTIVE_FITNESS_THRESHOLD RESEARCH_CULL_INTERVAL_TICKS; do
     eval "val=\${$var_name}"
     case "$val" in
         ''|*[!0-9]*)
@@ -367,6 +375,10 @@ if [ "$TOTAL_TICKS" -lt 1 ]; then
 fi
 if [ "$DAEMONS_PER_COLONY" -lt 1 ]; then
     echo "run-research: RESEARCH_DAEMONS_PER_COLONY must be >= 1 (got: $DAEMONS_PER_COLONY)" >&2
+    exit 2
+fi
+if [ "$RESEARCH_CULL_INTERVAL_TICKS" -lt 1 ]; then
+    echo "run-research: RESEARCH_CULL_INTERVAL_TICKS must be >= 1 (got: $RESEARCH_CULL_INTERVAL_TICKS)" >&2
     exit 2
 fi
 
@@ -456,14 +468,14 @@ build_image() {
 }
 
 # --- 2) Per-node bootstrap script generator ---
-# Single bootstrap that spawns all 17 daemons under one .agentis/.
+# Single bootstrap that spawns all 18 colonies under one .agentis/.
 # Three pipeline groups:
 #   math      = explorer, noticer, skeptic, formulator, verifier, novelty
 #   searchers = arxiv-search, oeis-search, groupprops-search, scholar-search, prior_advocate, auditor
 #   preprint  = introducer, theorist, computer, editor, submitter
 # Explorer keeps --enable-replication --allow-replica-replication so
 # the M2-Malthusian replicate gate inside explorer.ag can grow its
-# population. The remaining 16 colonies run with standard
+# population. The remaining 17 colonies run with standard
 # --enable-exec --enable-messaging flags. Per-daemon tick interval is
 # fixed at 30s (decoupled from the orchestrator's TICK_INTERVAL_S
 # `replay:current_tick` advance rate); same reason as the retired
@@ -496,7 +508,7 @@ write_bootstrap() {
         # output all contain long numeric runs that the agentis-core
         # heuristic flags. Mirrors trading-binance fix (#581).
         printf '  printf "pii_transmit = allow\\n"\n'
-        # Memo cap bump: 15 colonies x 30 ticks x per-pid keys + per-claim
+        # Memo cap bump: 18 colonies x 30 ticks x per-pid keys + per-claim
         # status keys fills the default 500 fast. Mirrors #587.
         printf '  printf "memo.max_keys = 50000\\n"\n'
         if [ "$LLM_BACKEND" = "openai" ]; then
@@ -505,7 +517,7 @@ write_bootstrap() {
             printf '  printf "llm.openai.api_key_env = %s\\n"\n' "$OPENAI_KEY_ENV"
             printf '  printf "llm.openai.timeout_ms = %s\\n"\n' "$OPENAI_TIMEOUT_MS"
         elif [ "$LLM_BACKEND" = "claude" ]; then
-            # Phase 1: single backend block applies to all 15 colonies.
+            # Phase 1: single backend block applies to all 18 colonies.
             # Per-colony model split (e.g. Sonnet for searchers, Opus for
             # auditor/introducer/theorist/editor) is a Phase 2
             # enhancement requiring per-colony AGENTIS_ROOT.

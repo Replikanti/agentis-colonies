@@ -4,7 +4,7 @@
 
 **Version:** `0.1.0` · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.7.12`
 
-Consolidated research federation (#638): 15 colonies cooperate to
+Consolidated research federation (#638): 18 colonies cooperate to
 take a topic + paper pair from a cached arXiv corpus and drive an
 end-to-end pipeline through compute-first novelty discovery,
 literature audit, and arXiv preprint generation. The final dispatch
@@ -124,7 +124,7 @@ preprint in about 18-20 minutes.
 python3 tools/fetch-papers.py --help          # one-time arXiv corpus bootstrap
 cp config/authors.toml.example config/authors.toml && $EDITOR config/authors.toml
 bash tools/run-research.sh --dry-run          # orchestrator dry-run
-bash tools/run-research.sh                    # real run -- spawns 15 colonies in podman
+bash tools/run-research.sh                    # real run -- spawns 18 colonies in podman
 ```
 
 Output: `research-foundry/runs/<ts>/` containing
@@ -153,7 +153,7 @@ confidence ladder defined in
   threshold, but Phase 1 ships with a single seed per colony. Phase 2
   will scale the seed count + tune replication economics per the
   discovery ledger from Phase 1 demo runs.
-- **Single auto-promote config across all 15 colonies.** Today the
+- **Single auto-promote config across all 18 colonies.** Today the
   consolidated config adopts preprint-foundry's most-lenient
   prerequisites (`min_acting_entries: 10`, `min_runtime_hours: 1.5`).
   The fastest-producing math colonies (explorer / formulator) that

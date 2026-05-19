@@ -30,15 +30,16 @@
 #      daemon under a synthetic agent_id `<agent>-cand-gen-<N>` so its
 #      experience writes go to an isolated .jsonl. Wait K ticks
 #      bounded by `ab.absolute_max_wait_s`. Score candidate vs
-#      canonical:
-#        - explorer agents go through `tools/explorer-fitness.py`
-#          (PR-C wires it in; PR 2 of #624 added the helper);
-#        - non-explorer agents use the inline proxy
-#          `(acting - reject) / max(acting, 1)`;
-#        - both paths fall back to the proxy if their preferred
-#          signal returns empty / errors.
-#      Compare with `ab.min_delta`. Emit `evolve_cycle` (winner
-#      candidate / canonical) or `ab_inconclusive` ledger row.
+#      canonical via the inline proxy
+#      `(acting - reject) / max(acting, 1)` computed straight off the
+#      candidate / canonical experience .jsonl tails. Explorer agents
+#      additionally probe `tools/explorer-fitness.py` (a back-compat
+#      shim that forwards to `tools/colony-fitness.py --colony
+#      explorer`, the generalised per-colony fitness helper introduced
+#      in Phase 9 PR-B of #663); on empty / error the score path falls
+#      back to the inline proxy so the A/B comparison always has a
+#      defined scalar. Compare with `ab.min_delta`. Emit `evolve_cycle`
+#      (winner candidate / canonical) or `ab_inconclusive` ledger row.
 #   5. Promote winner (DRY-RUN AWARE): when `evolve.dry_run=true`, log
 #      and stop. When false (PR-C, research-foundry only), if
 #      candidate wins: stop candidate, archive parent to
@@ -482,10 +483,11 @@ fi
 sleep "$WAIT_S"
 
 # Score both daemons. Two paths:
-#   - Explorer agents go through `tools/explorer-fitness.py`, which
-#     blends NOVEL count, auditor confidence, and HITL accept ratio
-#     into a single scalar (Phase 3 PR 2 of #624). PR-C (#628) wires
-#     it in for the live evolve flip.
+#   - Explorer agents probe `tools/explorer-fitness.py` (a
+#     back-compat shim that forwards to `tools/colony-fitness.py
+#     --colony explorer`, the generalised per-colony helper introduced
+#     in Phase 9 PR-B of #663). It blends NOVEL count, auditor
+#     confidence, and HITL accept ratio into a single scalar.
 #   - Non-explorer agents (when the allowlist gate is eventually
 #     widened) use the inline proxy:
 #       (acting_count - reject_count) / max(acting_count, 1)

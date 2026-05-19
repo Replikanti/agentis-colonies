@@ -39,7 +39,7 @@ degrading (see _Evolve trigger_ below).
 | Input | Source | Meaning |
 |---|---|---|
 | `entries_total` | count of rows in `.agentis/experience/<agent>.jsonl` | total experience rows, any tag |
-| `entries_acting` | count where row `tags` contain `acted`, `review-gated`, or `emitted` | rows from tier-gated acting branches |
+| `entries_acting` | count where row `tags` contain `acted`, `review-gated`, `emitted`, or `replicated` | rows from tier-gated acting branches |
 | `runtime_hours` | `now - daemon.started_at` | daemon age |
 | `reject_rate_acting` | acting rows with `verdict == reject` or `outcome == reject` or `rejected == true` / `entries_acting` | reject rate on acting rows only |
 | `delta_slope_acting` | linear-regression slope of `delta` over the last `delta_slope_window` acting rows | short-window delta trend on acting rows |
@@ -80,9 +80,18 @@ The scheduler classifies each row into one of three tag buckets:
 
 | Bucket | Match | Example tag set |
 |---|---|---|
-| **acting** | contains `acted` OR `review-gated` OR `emitted` | `["acted", "triage"]`, `["emitted", "triage"]`, `["review-gated", "code-review"]` |
+| **acting** | contains `acted` OR `review-gated` OR `emitted` OR `replicated` | `["acted", "triage"]`, `["emitted", "triage"]`, `["review-gated", "code-review"]`, `["replicated", "math-foundry"]` |
 | **observe** | contains `observed` (and no acting tag) | `["observed", "triage"]` |
 | **legacy** | neither (or no `tags` field) | `[]`, missing field |
+
+Acting-tag breakdown:
+
+| Tag | Tier | Meaning |
+|---|---|---|
+| `emitted` | propose | emit on bus + draft external writes |
+| `review-gated` | review-gated | direct external writes (non-terminal) |
+| `acted` | review-gated / autonomous | tier-gated acting branch fired |
+| `replicated` | autonomous | acted by autonomous-tier daemon (replicate fired) — emitted by tribes-bench hunters + math-foundry / research-foundry explorer + Phase 9 PR-C colonies on a successful M2-Malthusian replicate. Replicate-failure tags (`replicate-skip`, `replicate-error`, `replicate-nak`) stay in the `legacy` bucket so failed-replicate rows do not pad `entries_acting`. |
 
 Rationale: observe-step `learn()` calls are hardcoded to `outcome:
 "success"` by the canonical pattern. Including them in fitness stats

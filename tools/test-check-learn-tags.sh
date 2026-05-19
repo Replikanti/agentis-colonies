@@ -251,6 +251,130 @@ else
     fail "inline-marker-no-bleed" "rc=$rc out=$out"
 fi
 
+# --- #634 follow-up: synthetic fixtures for research-fed schema additions ---
+# The 0.1.0+ research-foundry schemas (math-foundry + claim-auditor +
+# preprint-foundry) were previously exercised only via the in-tree .ag
+# files. Tests 15-22 add per-pair synthetic fixtures so future schema
+# regressions land via tight unit tests rather than the CI-on-real-file
+# path.
+
+# --- Test 15: math-foundry explore:partial accepts the propose-tier tag set ---
+f="$(write_fixture "ok-explore-partial" '
+fn tick() -> void {
+    learn("explore", "k", "v", "partial", ["acted", "review-gated", "emitted", "observed", "math-foundry"]);
+}
+')"
+run_checker "$f"
+if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
+    pass "ok-explore-partial: math-foundry explore/partial tag set accepted"
+else
+    fail "ok-explore-partial" "rc=$rc out=$out"
+fi
+
+# --- Test 16: math-foundry settle:success accepts verdict:<bareword> parametric ---
+f="$(write_fixture "ok-settle-success-verdict" '
+fn tick() -> void {
+    learn("settle", "k", "v", "success", ["acted", "math-foundry", _colony_name, "verdict:" + verdict_raw]);
+}
+')"
+run_checker "$f"
+if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
+    pass "ok-settle-success-verdict: math-foundry settle/success accepts verdict:<bareword>"
+else
+    fail "ok-settle-success-verdict" "rc=$rc out=$out"
+fi
+
+# --- Test 17: math-foundry verify:failure rejects unknown tag ---
+f="$(write_fixture "violation-verify-failure-bad" '
+fn tick() -> void {
+    learn("verify", "k", "v", "failure", ["acted", "math-foundry", "bogus-tag"]);
+}
+')"
+run_checker "$f"
+if [ "$rc" -eq 2 ] && (printf '%s' "$out" | grep -q "VIOLATION: topic=verify outcome=failure unexpected tag bogus-tag"); then
+    pass "violation-verify-failure-bad: math-foundry verify/failure rejects bogus-tag"
+else
+    fail "violation-verify-failure-bad" "rc=$rc out=$out"
+fi
+
+# --- Test 18: claim-auditor arxiv-search:partial accepts propose tag set ---
+f="$(write_fixture "ok-arxiv-search-partial" '
+fn tick() -> void {
+    learn("arxiv-search", "k", "v", "partial", ["acted", "review-gated", "observed", "claim-auditor"]);
+}
+')"
+run_checker "$f"
+if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
+    pass "ok-arxiv-search-partial: claim-auditor arxiv-search/partial tag set accepted"
+else
+    fail "ok-arxiv-search-partial" "rc=$rc out=$out"
+fi
+
+# --- Test 19: claim-auditor audit:success accepts propose-tier emit ---
+f="$(write_fixture "ok-audit-success" '
+fn tick() -> void {
+    learn("audit", "k", "v", "success", ["acted", "review-gated", "emitted", "observed", "claim-auditor"]);
+}
+')"
+run_checker "$f"
+if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
+    pass "ok-audit-success: claim-auditor audit/success tag set accepted"
+else
+    fail "ok-audit-success" "rc=$rc out=$out"
+fi
+
+# --- Test 20: claim-auditor scholar-search:success rejects tribes-bench tag ---
+f="$(write_fixture "violation-scholar-search-wrong-fed" '
+fn tick() -> void {
+    learn("scholar-search", "k", "v", "success", ["acted", "tribes-bench"]);
+}
+')"
+run_checker "$f"
+if [ "$rc" -eq 2 ] && (printf '%s' "$out" | grep -q "VIOLATION: topic=scholar-search outcome=success unexpected tag tribes-bench"); then
+    pass "violation-scholar-search-wrong-fed: claim-auditor scholar-search/success rejects tribes-bench tag"
+else
+    fail "violation-scholar-search-wrong-fed" "rc=$rc out=$out"
+fi
+
+# --- Test 21: preprint-foundry submit:success accepts hitl-gated literal ---
+f="$(write_fixture "ok-submit-hitl-gated" '
+fn tick() -> void {
+    learn("submit", "k", "v", "success", ["acted", "review-gated", "emitted", "observed", "preprint-foundry", "hitl-gated"]);
+}
+')"
+run_checker "$f"
+if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
+    pass "ok-submit-hitl-gated: preprint-foundry submit/success accepts hitl-gated literal"
+else
+    fail "ok-submit-hitl-gated" "rc=$rc out=$out"
+fi
+
+# --- Test 22: preprint-foundry edit:partial rejects hitl-gated where disallowed ---
+f="$(write_fixture "violation-edit-partial-hitl-gated" '
+fn tick() -> void {
+    learn("edit", "k", "v", "partial", ["acted", "preprint-foundry", "hitl-gated"]);
+}
+')"
+run_checker "$f"
+if [ "$rc" -eq 2 ] && (printf '%s' "$out" | grep -q "VIOLATION: topic=edit outcome=partial unexpected tag hitl-gated"); then
+    pass "violation-edit-partial-hitl-gated: preprint-foundry edit/partial rejects hitl-gated (only submit allows it)"
+else
+    fail "violation-edit-partial-hitl-gated" "rc=$rc out=$out"
+fi
+
+# --- Test 23: math-foundry replicate:success accepts math-foundry + <cn> ---
+f="$(write_fixture "ok-replicate-success-math-foundry" '
+fn tick() -> void {
+    learn("replicate", "n=1", "cost=2", "success", ["replicated", "math-foundry", _colony_name]);
+}
+')"
+run_checker "$f"
+if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
+    pass "ok-replicate-success-math-foundry: replicate/success accepts math-foundry + _colony_name (<cn>)"
+else
+    fail "ok-replicate-success-math-foundry" "rc=$rc out=$out"
+fi
+
 # --- Summary ---
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
