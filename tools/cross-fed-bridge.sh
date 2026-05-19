@@ -129,8 +129,17 @@ log() {
 
 if [ "$MODE" = "sync" ]; then
     # One-shot bidirectional pass. The Python helper acquires the lock
-    # itself and exits 0 if another process holds it.
-    exec python3 "$PY_HELPER" sync "$FED_DIR" "$HOST_DIR" --lock-mode nonblocking
+    # itself and exits 0 if another process holds it. We do NOT `exec`
+    # here because we want to also run merge-ledgers in the same one-
+    # shot invocation so cron-style callers get the same end state as a
+    # sidecar tick.
+    if ! python3 "$PY_HELPER" sync "$FED_DIR" "$HOST_DIR" --lock-mode nonblocking; then
+        exit 1
+    fi
+    if ! python3 "$PY_HELPER" merge-ledgers "$HOST_DIR"; then
+        log "merge-ledgers pass failed; continuing"
+    fi
+    exit 0
 fi
 
 # --- Sidecar loop ---
@@ -162,5 +171,6 @@ while true; do
     if ! python3 "$PY_HELPER" sync "$FED_DIR" "$HOST_DIR" --lock-mode release >>"$LOG_FILE" 2>&1; then
         log "sync pass failed; continuing"
     fi
+    python3 "$PY_HELPER" merge-ledgers "$HOST_DIR" >>"$LOG_FILE" 2>&1 || log "merge-ledgers pass failed; continuing"
     sleep "$INTERVAL"
 done

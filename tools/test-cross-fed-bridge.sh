@@ -267,6 +267,95 @@ print(','.join(rows))
     fi
 fi
 
+# --- Test 8: KIND_TO_DIR / KIND_TO_EXT completeness ---
+# Phase 8 PR-2 prerequisites (#666): the helper must recognise the full
+# 8-kind set so operator-curated keys (export-suppress, opt-out) and the
+# adopt-queue seed can round-trip through the bridge without being
+# silently dropped by `_split_key`.
+KIND_OUT="$(python3 -c "
+import importlib.util
+spec = importlib.util.spec_from_file_location('cfb', '$BRIDGE_PY')
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+expected = {'method','method-body','fitness','applicable-to','import-log','export-suppress','opt-out','adopt-queue'}
+got_dir = set(mod.KIND_TO_DIR)
+got_ext = set(mod.KIND_TO_EXT)
+miss_dir = expected - got_dir
+miss_ext = expected - got_ext
+extra_dir = got_dir - expected
+extra_ext = got_ext - expected
+mismatched_keys = got_dir.symmetric_difference(got_ext)
+print('miss_dir=%s miss_ext=%s extra_dir=%s extra_ext=%s sym=%s' % (
+    sorted(miss_dir), sorted(miss_ext), sorted(extra_dir), sorted(extra_ext), sorted(mismatched_keys),
+))
+" 2>&1)"
+if [ "$KIND_OUT" = "miss_dir=[] miss_ext=[] extra_dir=[] extra_ext=[] sym=[]" ]; then
+    pass "8. KIND_TO_DIR / KIND_TO_EXT cover the full 8-kind set"
+else
+    fail "8. KIND_TO_DIR / KIND_TO_EXT cover the full 8-kind set" \
+        "$KIND_OUT"
+fi
+
+# --- Test 9: sidecar invokes merge-ledgers each tick ---
+# Stage a per-fed pollination ledger, launch the sidecar with a 1s
+# interval, wait long enough for one full tick, then assert the central
+# ledger materialised under the host dir.
+MERGE_SIDECAR_HOST="$WORK_DIR/merge-sidecar-host"
+MERGE_SIDECAR_FED="$WORK_DIR/merge-sidecar-fed"
+mkdir -p "$MERGE_SIDECAR_HOST"
+mkdir -p "$MERGE_SIDECAR_FED/.agentis/memo"
+mkdir -p "$MERGE_SIDECAR_FED/.agentis"
+cat > "$MERGE_SIDECAR_FED/.agentis/pollination-ledger.jsonl" <<'EOF'
+{"ts": 1500, "event": "export", "fed": "merge-sidecar-fed", "method_id": "epsilon"}
+EOF
+
+CROSS_FED_HOST_DIR="$MERGE_SIDECAR_HOST" "$BRIDGE_SH" sidecar "$MERGE_SIDECAR_FED" --interval 1 \
+    >"$WORK_DIR/sidecar-merge.log" 2>&1 &
+PID_MERGE=$!
+
+# Give the loop enough time to complete a sync + merge-ledgers pass.
+sleep 3
+
+kill "$PID_MERGE" 2>/dev/null || true
+wait "$PID_MERGE" 2>/dev/null || true
+
+MERGE_CENTRAL="$MERGE_SIDECAR_HOST/pollination-ledger.jsonl"
+if [ -f "$MERGE_CENTRAL" ] && [ -s "$MERGE_CENTRAL" ] && grep -Fq 'epsilon' "$MERGE_CENTRAL"; then
+    pass "9. sidecar invokes merge-ledgers each tick"
+else
+    fail "9. sidecar invokes merge-ledgers each tick" \
+        "central=$(ls -la "$MERGE_CENTRAL" 2>&1) log=$(tail -5 "$WORK_DIR/sidecar-merge.log" 2>/dev/null)"
+fi
+
+# --- Test 10: round-trip for a new kind (opt-out) ---
+# Stage an opt-out memo on the fed side, sync to host, assert it lands
+# at <host>/opt-out/<fed>.json -- proves the new KIND_TO_DIR entries
+# survive _split_key + _memo_key_to_host_path.
+OPTOUT_FED="$WORK_DIR/optout-fed"
+OPTOUT_HOST="$WORK_DIR/optout-host"
+mkdir -p "$OPTOUT_FED/.agentis/memo" "$OPTOUT_HOST"
+echo '{"value":{"fed":"optout-fed","reason":"operator suppressed"}}' \
+    > "$OPTOUT_FED/.agentis/memo/cross-fed:opt-out:optout-fed.jsonl"
+
+python3 -c "
+import sys
+sys.path.insert(0, '$SCRIPT_DIR')
+import importlib.util
+spec = importlib.util.spec_from_file_location('cfb', '$BRIDGE_PY')
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+from pathlib import Path
+mod.sync_memo_to_host(Path('$OPTOUT_FED'), Path('$OPTOUT_HOST'))
+" >/dev/null 2>&1
+
+OPTOUT_FILE="$OPTOUT_HOST/opt-out/optout-fed.json"
+if [ -f "$OPTOUT_FILE" ] && grep -q 'operator suppressed' "$OPTOUT_FILE"; then
+    pass "10. round-trip for new kind (opt-out) lands at host/opt-out/<fed>.json"
+else
+    fail "10. round-trip for new kind (opt-out) lands at host/opt-out/<fed>.json" \
+        "expected $OPTOUT_FILE; got=$(cat "$OPTOUT_FILE" 2>/dev/null || echo MISSING)"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

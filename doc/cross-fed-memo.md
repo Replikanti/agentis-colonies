@@ -224,6 +224,26 @@ Both thresholds live in the source federation's
 auto-promote / auto-evolve config (PR-2 wires the exporter; PR-1 only
 specifies that the relationship MUST hold).
 
+## Write-conflict policy
+
+**Shared-key writes** — `cross-fed:applicable-to:<method-id>`,
+`cross-fed:export-suppress:<method-id>`, and any future operator-curated
+key that is not scoped to a single federation: **Last-Writer-Wins by
+mtime**. The bridge already runs sha256-by-content dedupe on each pass;
+when two federations write divergent content for the same shared key,
+the most recent host-side mtime wins on the next memo-to-memo
+round-trip. Operators reconciling intentional divergence must serialise
+edits — the bridge does not arbitrate semantic conflicts.
+
+**Per-fed-owned keys** — `cross-fed:method:<source-fed>:…`,
+`cross-fed:method-body:<source-fed>:…`,
+`cross-fed:fitness:<source-fed>:…`,
+`cross-fed:import-log:<target-fed>:…`: no conflict by design. The path
+embeds `<source-fed>` or `<target-fed>`, so no two federations ever
+target the same host file. A federation that writes outside its own
+namespace is misbehaving and the operator should treat such writes as a
+trust violation per the threat-model section below.
+
 ## Host dir layout
 
 The shared dir lives at `<repo-root>/cross-fed-memo/`. The bridge
@@ -264,6 +284,15 @@ per-fed ledger into the central `<host_dir>/pollination-ledger.jsonl`,
 preserving timestamp order. The central ledger is the audit trail
 the operator scans to see which federation published which method
 when.
+
+`pollination_ledger_merge` preserves every row from every source
+verbatim, sorted by `ts` then read-order. Two federations appending
+identical-timestamp rows produce two adjacent rows — this is
+intentional: the ledger is an audit log, not a set. Operators wanting a
+deduplicated view should post-process with
+`jq -s 'unique_by(.ts,.fed,.method_id)'` (or an equivalent
+projection); the bridge does not collapse rows on the operator's
+behalf because the choice of dedup key is policy-dependent.
 
 ## Threat model
 
