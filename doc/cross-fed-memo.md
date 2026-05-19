@@ -244,6 +244,14 @@ target the same host file. A federation that writes outside its own
 namespace is misbehaving and the operator should treat such writes as a
 trust violation per the threat-model section below.
 
+The remaining cross-fed kinds also fall under the per-fed-owned rule —
+`cross-fed:opt-out:<fed>` (each federation opts itself out; the `<fed>`
+segment scopes ownership) and
+`cross-fed:adopt-queue:<target-fed>:<method-id>` (queued at the target
+federation's bootstrap; the `<target-fed>` segment scopes ownership).
+Both are per-fed by construction, so no two federations target the same
+host file and no conflict-policy arbitration is required.
+
 ## Host dir layout
 
 The shared dir lives at `<repo-root>/cross-fed-memo/`. The bridge
@@ -309,8 +317,10 @@ Assumed threats:
    curates `cross-fed:applicable-to:<method-id>` before any adoption.
    The bridge does not authorise on fitness alone; the export-fitness
    threshold is a pre-filter, not a trust signal. PR-2/3 will add
-   `cross-fed:export-suppress:<source-fed>:<method-id>` (operator-only
-   write) for explicit blocklisting.
+   `cross-fed:export-suppress:<method-id>` as an operator-only,
+   federation-agnostic blocklist entry. Last-Writer-Wins by mtime per
+   the conflict-policy section; operators reconciling intentional
+   divergence must serialise edits.
 
 2. **External tampering of `<repo-root>/cross-fed-memo/`.** A process
    outside any federation rewrites a method body file between two
