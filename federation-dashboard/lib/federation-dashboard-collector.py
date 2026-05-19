@@ -64,9 +64,9 @@ def safe_json(s, default):
     except (json.JSONDecodeError, TypeError, ValueError): return default
 
 # #683: helpers for memo-freshness liveness. `_read_memo_raw` shells out to
-# `agentis memo get <key> --raw` (same idiom used for the per-repo
-# confidence overlay around lines 380-404) so the dashboard does not need
-# to know about the on-disk memo store layout. `_parse_last_check_epoch`
+# `agentis memo get <key>` (same idiom used for the per-repo confidence
+# overlay around lines 380-404) so the dashboard does not need to know
+# about the on-disk memo store layout. `_parse_last_check_epoch`
 # converts the canonical ISO-8601 UTC string the `.ag` agents write
 # (`exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"`) into epoch seconds; any
 # unexpected shape collapses to `None` so the caller treats the agent as
