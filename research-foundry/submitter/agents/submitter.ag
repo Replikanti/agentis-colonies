@@ -589,6 +589,15 @@ fn tick(reason: string) -> void {
         // check collapses to true). Records `autonomous_decision=true`
         // for downstream observers.
         memo_write("submitter:" + claim_id_eff + ":autonomous_decision", "true");
+        // #637: clear any stale `awaiting_approval=true` left over from
+        // a review-gated draft that auto-promoted to autonomous
+        // mid-flight (the sidecar bumped confidence past 0.95 between
+        // the draft tick and this send tick). Idempotent: a no-op when
+        // the claim was always-autonomous since the autonomous draft
+        // call below passes `mark_awaiting=false`. Must run BEFORE
+        // `_submitter_send_phase` so the dashboard never observes a
+        // sent+still-awaiting state during the SMTP gap.
+        memo_write("submitter:" + claim_id_eff + ":awaiting_approval", "false");
         learn("submit", "tick " + to_string(tick_idx), "tier=autonomous", "partial", ["acted", "preprint-foundry"]);
         if len(already_drafted) == 0 {
             _submitter_draft_phase(false, true, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir, compile_ok, source_audit_run, final_tex, compile_log, title_seed, msc_seed, cat_seed, repro_script, repro_output, repro_lang);
