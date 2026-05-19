@@ -46,6 +46,17 @@ fn now_ms_via_shell() -> int {
     return parse_int(s);
 }
 
+// Per-tick jitter (0-5s) to spread API requests across the 56-daemon
+// research-foundry container and stay under Claude's ~100 req/min ceiling
+// (#670). Bypassable via RESEARCH_JITTER_DISABLED=1 for tests and
+// deterministic replays.
+fn _jitter_sleep() -> int {
+    let disabled = try { exec sh "printenv RESEARCH_JITTER_DISABLED"; } catch e { ""; };
+    if disabled == "1" { return 0; };
+    let _ = try { exec sh "sleep $(awk 'BEGIN{srand();print rand()*5}')"; } catch e { ""; };
+    return 0;
+}
+
 fn _script_prompt() -> string {
     return "You are writing a STANDALONE reproducibility script for a math preprint. The user-supplied context carries the PROBLEM, the verified ANSWER, the upstream EXPLORER CODE + OUTPUT that originally produced the observation, and the AUDITOR REASONING. Produce a self-contained script (NOT importing the explorer's code, NOT reading any external file) that re-derives the central claim by independent computation and prints the result with a clear label. Choose language=\"python\" (sympy/numpy/networkx/itertools/fractions are available) for arithmetic / combinatorial / sequence claims, language=\"gap\" for finite group theory claims (the container has the GAP interpreter on PATH). Use ONLY the standard library and listed third-party packages. NO file I/O, network, subprocess. Output ONLY valid JSON: {\"language\":\"python|gap\",\"script\":\"...full script body...\",\"expected_substring\":\"a substring that MUST appear in stdout when the script runs correctly (use the answer value)\",\"rationale\":\"one-line\"}.";
 }
@@ -260,6 +271,7 @@ fn _publish_computer(
 
 fn tick(reason: string) -> void {
     let _ = reason;
+    let _ = _jitter_sleep();
     let _tick_now_ms = now_ms_via_shell();
     let _colony_name = colony_name();
     let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };

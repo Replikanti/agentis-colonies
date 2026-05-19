@@ -52,6 +52,17 @@ fn now_ms_via_shell() -> int {
     return parse_int(s);
 }
 
+// Per-tick jitter (0-5s) to spread API requests across the 56-daemon
+// research-foundry container and stay under Claude's ~100 req/min ceiling
+// (#670). Bypassable via RESEARCH_JITTER_DISABLED=1 for tests and
+// deterministic replays.
+fn _jitter_sleep() -> int {
+    let disabled = try { exec sh "printenv RESEARCH_JITTER_DISABLED"; } catch e { ""; };
+    if disabled == "1" { return 0; };
+    let _ = try { exec sh "sleep $(awk 'BEGIN{srand();print rand()*5}')"; } catch e { ""; };
+    return 0;
+}
+
 fn _draft_prompt() -> string {
     return "You are an academic mathematician drafting a LaTeX preprint for arXiv. The user-supplied context carries the PROBLEM, the verified ANSWER, the NOVELTY CLAIM, the auditor REASONING, and four PRIOR-WORK SEARCH REPORTS (arxiv / oeis / groupprops / scholar). Produce: (1) a 100-180 word abstract in LaTeX (no math environments other than inline $...$), (2) a 400-800 word Section 1 Introduction in LaTeX with at least one citation placeholder `[CITATION-NEEDED: <topic>]` when no exact citation exists in the search reports, (3) 1-3 MSC2020 codes, (4) a single primary arXiv category (e.g. math.GR, math.CO, math.NT), (5) a paper title under 200 chars. Cite known prior work from the search reports inline using `\\cite{key}` with keys you invent (the bibliography is generated later). Do NOT claim a proof of an open conjecture; hedge with 'computational evidence' / 'we observe' when the upstream classification is COMPUTATIONAL. Output ONLY valid JSON: {\"abstract_tex\":\"...\",\"intro_tex\":\"...\",\"msc_codes_csv\":\"20D60,20E45\",\"arxiv_category\":\"math.GR\",\"title\":\"...\",\"rationale\":\"one-line\"}.";
 }
@@ -240,6 +251,7 @@ fn _publish_introducer(
 
 fn tick(reason: string) -> void {
     let _ = reason;
+    let _ = _jitter_sleep();
     let _tick_now_ms = now_ms_via_shell();
     let _colony_name = colony_name();
     let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
