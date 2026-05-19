@@ -20,6 +20,32 @@ History of the three retired federations consolidated into this one
 
 ### Changed
 
+- Lifecycle (birth + death + respawn) is now **on by default** in the
+  30-tick `run-research.sh --dry-run`/live invocation (#679). Four knobs
+  in `research-foundry/tools/run-research.sh` were flipped so the
+  M2-Malthusian replicate gate fires and the Phase 3 PR-3 cull cycle
+  engages without operator opt-in:
+  - `RESEARCH_CULL_ENABLED` default `0 -> 1` (cull cycle on).
+  - `RESEARCH_CULL_INTERVAL_TICKS` default `20 -> 5` (a 30-tick default
+    run now sees ~6 cull cycles instead of 1).
+  - `RESEARCH_<COLONY>_REPRODUCTIVE_FITNESS_THRESHOLD` default `10 -> 3`
+    across all 18 colonies (`explorer`, `noticer`, `skeptic`,
+    `formulator`, `verifier`, `novelty`, `arxiv-search`, `oeis-search`,
+    `groupprops-search`, `scholar-search`, `auditor`, `prior_advocate`,
+    `introducer`, `theorist`, `computer`, `editor`, `reviewer`,
+    `submitter`) so the per-pid fitness gate fires within a short run.
+  - `RESEARCH_CULL_MIN_ACTING` default `10 -> 3` so short default runs
+    accumulate enough acting rows to be eligible for cull.
+
+  `RESEARCH_CULL_MIN_EXPLORERS=3` (floor protection so the cull cycle
+  never empties the explorer pool) is unchanged. `MAX_REPLICAS`, `POOL`,
+  `TICK_INTERVAL_S`, and the per-colony fitness-scoring `.ag` formulas
+  are also unchanged — this PR is purely defaults. Operators who want
+  the previous opt-in behaviour can still set
+  `RESEARCH_CULL_ENABLED=0` and the previous thresholds via env.
+  Coverage added in `research-foundry/tools/test-run-research.sh`
+  (test 22a-22f); existing replicate-gate and jitter tests remain green.
+
 - Per-tick jitter + lowered replica default to keep
   research-foundry under the Claude API ~100 req/min ceiling (#670
   follow-up to Phase 9 PR-C of #663). Each of the 18 colony `.ag`
