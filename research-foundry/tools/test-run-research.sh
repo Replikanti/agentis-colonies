@@ -187,15 +187,17 @@ assert_not_contains "16c. --source-foundry-run flag removed" "$SRC" "--source-fo
 assert_not_contains "16d. SOURCE_* env validation removed" "$SRC" "RESEARCH_SOURCE_RUN"
 
 # ---------------------------------------------------------------------------
-# 17. Phase 9 PR-C (#663): per-colony RESEARCH_<COLONY>_REPLICAS env
-# defaults exist for all 17 non-explorer colonies, defaulting to 3.
+# 17. Phase 9 PR-C (#663) + #670 follow-up: per-colony
+# RESEARCH_<COLONY>_REPLICAS env defaults exist for all 17 non-explorer
+# colonies, defaulting to 2 (lowered from 3 to stay under the Claude API
+# ~100 req/min ceiling: 5 + 17*2 = 39 daemons * 2 ticks/min = 78 req/min).
 # ---------------------------------------------------------------------------
 for c in NOTICER FORMULATOR VERIFIER NOVELTY SKEPTIC \
          ARXIV_SEARCH OEIS_SEARCH GROUPPROPS_SEARCH SCHOLAR_SEARCH \
          PRIOR_ADVOCATE AUDITOR \
          INTRODUCER THEORIST COMPUTER EDITOR REVIEWER SUBMITTER; do
-    assert_contains "17. RESEARCH_${c}_REPLICAS defaults to 3" "$SRC" \
-        "\"\${RESEARCH_${c}_REPLICAS:=3}\""
+    assert_contains "17. RESEARCH_${c}_REPLICAS defaults to 2" "$SRC" \
+        "\"\${RESEARCH_${c}_REPLICAS:=2}\""
 done
 
 # ---------------------------------------------------------------------------
@@ -234,6 +236,14 @@ assert_contains "20b. RESEARCH_CULL_COLONIES includes noticer" "$SRC" \
     "explorer,noticer,"
 assert_contains "20c. RESEARCH_CULL_COLONIES includes submitter" "$SRC" \
     ",submitter}"
+
+# ---------------------------------------------------------------------------
+# 21. #670 follow-up: RESEARCH_JITTER_DISABLED is on the exec.env_passthrough
+# allowlist so the per-tick `_jitter_sleep()` helper inside each .ag can read
+# the disable flag via `printenv`.
+# ---------------------------------------------------------------------------
+assert_contains "21. RESEARCH_JITTER_DISABLED in exec.env_passthrough" "$SRC" \
+    "RESEARCH_JITTER_DISABLED"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

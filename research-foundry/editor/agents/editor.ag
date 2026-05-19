@@ -59,6 +59,17 @@ fn now_ms_via_shell() -> int {
     return parse_int(s);
 }
 
+// Per-tick jitter (0-5s) to spread API requests across the 56-daemon
+// research-foundry container and stay under Claude's ~100 req/min ceiling
+// (#670). Bypassable via RESEARCH_JITTER_DISABLED=1 for tests and
+// deterministic replays.
+fn _jitter_sleep() -> int {
+    let disabled = try { exec sh "printenv RESEARCH_JITTER_DISABLED"; } catch e { ""; };
+    if disabled == "1" { return 0; };
+    let _ = try { exec sh "sleep $(awk 'BEGIN{srand();print rand()*5}')"; } catch e { ""; };
+    return 0;
+}
+
 fn _edit_prompt() -> string {
     return "You are the editor of a math preprint. You receive (a) an abstract + introduction draft, (b) preliminaries + main result draft, (c) a reproducibility script + its captured stdout, and (d) the prior-work search reports. The user-supplied input below may also carry RECENT PITFALLS (frequency-sorted tags from recent compile failures across previous claims) -- use them to pre-empt the same mistakes in this draft. Synthesise a SINGLE LaTeX document using the `amsart` class. Required structure: \\documentclass{amsart}, \\usepackage{amsmath, amssymb, amsthm}, theorem/definition declarations, \\title{...}, \\author{...} placeholder `\\author{AUTHOR-PLACEHOLDER}`, \\date{\\today}, \\begin{abstract}...\\end{abstract}, \\maketitle, sections 1-4 (Introduction, Preliminaries, Main Result, Reproducibility), \\bibliographystyle{plain}, \\bibliography{refs}. Style enforcement: NO 'obviously' / 'clearly' / 'trivially'; abstract is third-person (no 'we'); notation consistent across sections. Hallucination check: for every numeric / symbolic claim in the main result that is supported by the reproducibility output's stdout, KEEP IT; for any claim NOT supported by the output, REMOVE IT or HEDGE IT (mark with `% HEDGED:`). Set hallucinations_found=true when you removed/hedged anything. Generate a minimal refs.bib that defines the `\\cite{...}` keys you actually used (use the prior-work search reports as references; placeholder DOIs/URLs are acceptable). Output ONLY valid JSON: {\"full_tex\":\"...complete .tex content...\",\"refs_bib\":\"...complete .bib content...\",\"fingerprint_csv\":\"hash1,hash2\",\"hallucinations_found\":false,\"rationale\":\"one-line\"}.";
 }
@@ -439,6 +450,7 @@ fn _publish_editor(
 
 fn tick(reason: string) -> void {
     let _ = reason;
+    let _ = _jitter_sleep();
     let _tick_now_ms = now_ms_via_shell();
     let _colony_name = colony_name();
     let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };

@@ -47,6 +47,17 @@ fn now_ms_via_shell() -> int {
     return parse_int(s);
 }
 
+// Per-tick jitter (0-5s) to spread API requests across the 56-daemon
+// research-foundry container and stay under Claude's ~100 req/min ceiling
+// (#670). Bypassable via RESEARCH_JITTER_DISABLED=1 for tests and
+// deterministic replays.
+fn _jitter_sleep() -> int {
+    let disabled = try { exec sh "printenv RESEARCH_JITTER_DISABLED"; } catch e { ""; };
+    if disabled == "1" { return 0; };
+    let _ = try { exec sh "sleep $(awk 'BEGIN{srand();print rand()*5}')"; } catch e { ""; };
+    return 0;
+}
+
 fn _seed_prompt() -> string {
     return "You discovered a surprising result through computation. Craft a competition-style problem whose answer IS this discovery. The user-supplied input below carries the TOPIC, the DISCOVERY description, the SPECIFIC VALUE, and the WHY SURPRISING reasoning. It may also carry RECENT KNOWN-PRIOR TOPICS (recent topics the auditor classified as already known -- AVOID re-framing the discovery as one of those), RECENT VERIFIED-NEW TOPICS (recent topics the auditor accepted as novel -- prefer framings closer to those when faithful to the discovery), and RECENT HITL REJECTS (frequency table of recent human-in-the-loop rejection classes -- avoid problem framings that match those failure modes). Craft a self-contained problem (no code, just math). The stated answer must be the specific value. Output ONLY valid JSON: {\"problem\": \"...\", \"answer\": \"...\", \"solution_full\": \"...\", \"novelty_claim\": \"...\", \"self_check_confidence\": 0.0-1.0}.";
 }
@@ -318,6 +329,7 @@ fn _publish_formulator(
 
 fn tick(reason: string) -> void {
     let _ = reason;
+    let _ = _jitter_sleep();
     let _tick_now_ms = now_ms_via_shell();
     let _colony_name = colony_name();
     let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };

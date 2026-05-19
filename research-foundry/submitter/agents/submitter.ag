@@ -63,6 +63,17 @@ fn now_ms_via_shell() -> int {
     return parse_int(s);
 }
 
+// Per-tick jitter (0-5s) to spread API requests across the 56-daemon
+// research-foundry container and stay under Claude's ~100 req/min ceiling
+// (#670). Bypassable via RESEARCH_JITTER_DISABLED=1 for tests and
+// deterministic replays.
+fn _jitter_sleep() -> int {
+    let disabled = try { exec sh "printenv RESEARCH_JITTER_DISABLED"; } catch e { ""; };
+    if disabled == "1" { return 0; };
+    let _ = try { exec sh "sleep $(awk 'BEGIN{srand();print rand()*5}')"; } catch e { ""; };
+    return 0;
+}
+
 fn _metadata_prompt() -> string {
     return "You are preparing an arXiv submission package for a math preprint. The user-supplied input below carries the FINAL TEX, the COMPILE LOG, the REPRODUCIBILITY SCRIPT and OUTPUT, and a candidate ARXIV_CATEGORY + MSC_CODES from the introducer. Produce: (1) the paper title (under 200 chars), (2) a clean ASCII abstract (under 1920 chars, no LaTeX environments, no `\\\\cite`, no `$...$` -- plain prose for the arXiv submission form), (3) MSC2020 codes (comma-separated), (4) the primary arXiv category (e.g. math.GR), (5) cross-list categories (comma-separated, may be empty), (6) a short cover letter (200-400 words) addressed to arXiv moderation that names the human author, summarises the contribution, notes that the proof is computational (when the reproducibility script is the evidence) and explicitly discloses AI assistance with drafting, (7) a single-paragraph AI disclosure that must be appended verbatim to the cover letter (arXiv 2024+ policy). Output ONLY valid JSON: {\"title\":\"...\",\"abstract_clean\":\"...\",\"msc_codes_csv\":\"...\",\"arxiv_category\":\"...\",\"cross_list_csv\":\"...\",\"cover_letter\":\"...\",\"ai_disclosure\":\"...\",\"rationale\":\"one-line\"}.";
 }
@@ -554,6 +565,7 @@ fn _submitter_send_phase(
 
 fn tick(reason: string) -> void {
     let _ = reason;
+    let _ = _jitter_sleep();
     let _tick_now_ms = now_ms_via_shell();
     let _colony_name = colony_name();
     let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };

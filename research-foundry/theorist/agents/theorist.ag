@@ -47,6 +47,17 @@ fn now_ms_via_shell() -> int {
     return parse_int(s);
 }
 
+// Per-tick jitter (0-5s) to spread API requests across the 56-daemon
+// research-foundry container and stay under Claude's ~100 req/min ceiling
+// (#670). Bypassable via RESEARCH_JITTER_DISABLED=1 for tests and
+// deterministic replays.
+fn _jitter_sleep() -> int {
+    let disabled = try { exec sh "printenv RESEARCH_JITTER_DISABLED"; } catch e { ""; };
+    if disabled == "1" { return 0; };
+    let _ = try { exec sh "sleep $(awk 'BEGIN{srand();print rand()*5}')"; } catch e { ""; };
+    return 0;
+}
+
 fn _draft_prompt() -> string {
     return "You are a research mathematician drafting the body of a preprint. The user-supplied context carries PROBLEM, ANSWER, NOVELTY CLAIM, the upstream EXPLORER CODE and OUTPUT that produced the observation, and the AUDITOR REASONING. Produce: (1) Section 2 in LaTeX with `\\section{Preliminaries}` containing the definitions and notation needed to state the result precisely (use `amsthm` definition environment `\\begin{definition}...\\end{definition}` where appropriate). (2) Section 3 in LaTeX with `\\section{Main Result}` containing the precise statement inside `\\begin{theorem}...\\end{theorem}` or `\\begin{proposition}...\\end{proposition}` for observational claims, followed by either a `\\begin{proof}...\\end{proof}` block (proof_kind=\"sketch\" or \"full\") OR a description of the computational experiment (proof_kind=\"computational\"). Set hedge_required=true when the upstream evidence is purely computational and no analytic proof is being offered. Set proof_kind=\"computational\" in that case and use phrases like 'computational evidence suggests' rather than 'we prove'. Do NOT invent values not present in the explorer output. Output ONLY valid JSON: {\"definitions_tex\":\"...\",\"main_tex\":\"...\",\"proof_kind\":\"computational|sketch|full\",\"hedge_required\":true,\"rationale\":\"one-line\"}.";
 }
@@ -231,6 +242,7 @@ fn _publish_theorist(
 
 fn tick(reason: string) -> void {
     let _ = reason;
+    let _ = _jitter_sleep();
     let _tick_now_ms = now_ms_via_shell();
     let _colony_name = colony_name();
     let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };

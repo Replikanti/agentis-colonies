@@ -49,6 +49,17 @@ fn now_ms_via_shell() -> int {
     return parse_int(s);
 }
 
+// Per-tick jitter (0-5s) to spread API requests across the 56-daemon
+// research-foundry container and stay under Claude's ~100 req/min ceiling
+// (#670). Bypassable via RESEARCH_JITTER_DISABLED=1 for tests and
+// deterministic replays.
+fn _jitter_sleep() -> int {
+    let disabled = try { exec sh "printenv RESEARCH_JITTER_DISABLED"; } catch e { ""; };
+    if disabled == "1" { return 0; };
+    let _ = try { exec sh "sleep $(awk 'BEGIN{srand();print rand()*5}')"; } catch e { ""; };
+    return 0;
+}
+
 fn _seed_prompt() -> string {
     return "You are a strict claim auditor. The user-supplied input below carries the original PROBLEM, the stated ANSWER, the NOVELTY CLAIM, and four search reports (ARXIV, OEIS, GROUPPROPS, SCHOLAR). It may also carry RECENT HITL REJECTS (recent human-in-the-loop rejection classes and excerpts from submitted preprints) -- use that signal to flag failure modes the human reviewer has already pushed back on. It may also carry a PRIOR ADVOCATE REPORT, an adversarial-reviewer pass that argues the claim is already known and cites the closest theorem/lemma/identity; count a strong prior_advocate match (is_prior=true with high confidence and a credible classical_anchor) as an additional KNOWN_PRIOR signal alongside the four web-search reports. Classify the claim. Use 'KNOWN_PRIOR' only when at least one searcher reports a 'direct' relevance match for the same result; 'VERIFIED_NEW' when no searcher reports a direct match and the claim is well-supported; 'NEEDS_HUMAN' when reports conflict, are partial, or scholar is unavailable AND the other three are inconclusive. Output ONLY valid JSON: {\"audit_verdict\":\"VERIFIED_NEW|KNOWN_PRIOR|NEEDS_HUMAN\", \"reasoning\":\"...\", \"confidence\":0.0-1.0, \"evidence_arxiv\":\"semicolon-separated arxiv ids or empty\", \"evidence_oeis\":\"semicolon-separated A-numbers or empty\", \"evidence_groupprops\":\"semicolon-separated urls or empty\", \"evidence_scholar\":\"semicolon-separated paper ids or empty\", \"evidence_prior_advocate\":\"classical_anchor from prior_advocate or empty\", \"problem_summary\":\"one-line\"}. Do NOT wrap output in markdown code fences (no triple backticks); return raw JSON only.";
 }
@@ -386,6 +397,7 @@ fn _publish_auditor(
 
 fn tick(reason: string) -> void {
     let _ = reason;
+    let _ = _jitter_sleep();
     let _tick_now_ms = now_ms_via_shell();
     let _colony_name = colony_name();
     let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };

@@ -20,6 +20,25 @@ History of the three retired federations consolidated into this one
 
 ### Changed
 
+- Per-tick jitter + lowered replica default to keep
+  research-foundry under the Claude API ~100 req/min ceiling (#670
+  follow-up to Phase 9 PR-C of #663). Each of the 18 colony `.ag`
+  files now defines a `_jitter_sleep()` helper called once at the top
+  of `fn tick(...)`; the helper sleeps for `awk
+  'BEGIN{srand();print rand()*5}'` seconds (uniform on [0, 5)) and is
+  bypassable via `RESEARCH_JITTER_DISABLED=1` for tests and
+  deterministic replays. The disable flag is on the
+  `exec.env_passthrough` allowlist that `tools/run-research.sh` emits
+  into the hermetic config. Default
+  `RESEARCH_<COLONY>_REPLICAS` is lowered from 3 to 2 for the 17
+  non-explorer colonies, leaving the explorer count at 5 untouched.
+  New shape: `5 + 17*2 = 39 daemons * 2 ticks/min = 78 req/min`,
+  22% headroom under the 100 req/min ceiling. New
+  `research-foundry/tools/test-jitter.sh` enforces helper definition
+  + disable check + awk-srand pattern + per-`tick()` call site in
+  all 18 `.ag` files; `tools/test-run-research.sh` asserts the
+  flipped default + the `RESEARCH_JITTER_DISABLED` allowlist entry.
+
 - preprint-foundry: `preprint-ledger.jsonl` schema + audit-trail
   provenance + JSON-escape polish (#600 QA follow-up from #599). Every
   ledger and replicate-ledger row in the 6 preprint colonies is now
