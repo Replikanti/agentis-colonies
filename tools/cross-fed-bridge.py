@@ -64,6 +64,9 @@ KIND_TO_DIR = {
     "fitness": "fitness",
     "applicable-to": "applicable-to",
     "import-log": "import-log",
+    "export-suppress": "export-suppress",
+    "opt-out": "opt-out",
+    "adopt-queue": "adopt-queue",
 }
 
 # File extension on the host side. `method-body` carries raw prompt
@@ -74,6 +77,9 @@ KIND_TO_EXT = {
     "fitness": ".json",
     "applicable-to": ".json",
     "import-log": ".json",
+    "export-suppress": ".json",
+    "opt-out": ".json",
+    "adopt-queue": ".json",
 }
 
 # Filenames written under <host_dir>/ that are NOT mirrored memo keys.
