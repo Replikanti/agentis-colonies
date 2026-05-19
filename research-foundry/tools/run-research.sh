@@ -130,6 +130,24 @@
 #   RESEARCH_CULL_MIN_ACTING     Skip per-row cull when explorer's
 #                                entries_acting is below this floor.
 #                                Default 10 (insufficient data).
+#   RESEARCH_CULL_COLONIES       Comma-separated list of colony names
+#                                the cull cycle iterates over per
+#                                tick. Default `explorer` keeps the
+#                                pre-PR-B behaviour. PR-C operators
+#                                widen this to e.g.
+#                                `explorer,noticer,formulator` after
+#                                flipping the per-colony replica
+#                                counts to >=3.
+#   RESEARCH_<COLONY>_REPLICAS   Initial replica count for each of the
+#                                17 non-explorer colonies (Phase 9
+#                                PR-B of #663). Defaults to 1, which
+#                                preserves today's daemon shape. PR-C
+#                                flips these for replication-eligible
+#                                colonies.
+#   RESEARCH_<COLONY>_MAX_REPLICAS / _POOL / _REPRODUCTIVE_FITNESS_THRESHOLD
+#                                Per-colony M2-Malthusian replicate
+#                                gate seeds; defaults mirror the
+#                                explorer values.
 #
 # Flags:
 #   --dry-run    Same as RESEARCH_DRY_RUN=1.
@@ -224,6 +242,104 @@ SMTP_PORT="${RESEARCH_SMTP_PORT:-25}"
 : "${RESEARCH_EXPLORER_MAX_REPLICAS:=8}"
 : "${RESEARCH_EXPLORER_POOL:=5000}"
 : "${RESEARCH_EXPLORER_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+
+# Phase 9 PR-B (#663): per-colony replica + pool seeds for the 17
+# non-explorer colonies. All default to 1 so PR-B does NOT change the
+# observable daemon count (still 5 explorers + 13 singletons; cull
+# cycle still only fires for explorer unless RESEARCH_CULL_COLONIES is
+# changed). PR-C will flip these to N>=3 where it lights up
+# replication per colony.
+: "${RESEARCH_NOTICER_REPLICAS:=1}"
+: "${RESEARCH_NOTICER_MAX_REPLICAS:=8}"
+: "${RESEARCH_NOTICER_POOL:=5000}"
+: "${RESEARCH_NOTICER_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+
+: "${RESEARCH_SKEPTIC_REPLICAS:=1}"
+: "${RESEARCH_SKEPTIC_MAX_REPLICAS:=8}"
+: "${RESEARCH_SKEPTIC_POOL:=5000}"
+: "${RESEARCH_SKEPTIC_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+
+: "${RESEARCH_FORMULATOR_REPLICAS:=1}"
+: "${RESEARCH_FORMULATOR_MAX_REPLICAS:=8}"
+: "${RESEARCH_FORMULATOR_POOL:=5000}"
+: "${RESEARCH_FORMULATOR_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+
+: "${RESEARCH_VERIFIER_REPLICAS:=1}"
+: "${RESEARCH_VERIFIER_MAX_REPLICAS:=8}"
+: "${RESEARCH_VERIFIER_POOL:=5000}"
+: "${RESEARCH_VERIFIER_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+
+: "${RESEARCH_NOVELTY_REPLICAS:=1}"
+: "${RESEARCH_NOVELTY_MAX_REPLICAS:=8}"
+: "${RESEARCH_NOVELTY_POOL:=5000}"
+: "${RESEARCH_NOVELTY_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+
+: "${RESEARCH_ARXIV_SEARCH_REPLICAS:=1}"
+: "${RESEARCH_ARXIV_SEARCH_MAX_REPLICAS:=8}"
+: "${RESEARCH_ARXIV_SEARCH_POOL:=5000}"
+: "${RESEARCH_ARXIV_SEARCH_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+
+: "${RESEARCH_OEIS_SEARCH_REPLICAS:=1}"
+: "${RESEARCH_OEIS_SEARCH_MAX_REPLICAS:=8}"
+: "${RESEARCH_OEIS_SEARCH_POOL:=5000}"
+: "${RESEARCH_OEIS_SEARCH_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+
+: "${RESEARCH_GROUPPROPS_SEARCH_REPLICAS:=1}"
+: "${RESEARCH_GROUPPROPS_SEARCH_MAX_REPLICAS:=8}"
+: "${RESEARCH_GROUPPROPS_SEARCH_POOL:=5000}"
+: "${RESEARCH_GROUPPROPS_SEARCH_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+
+: "${RESEARCH_SCHOLAR_SEARCH_REPLICAS:=1}"
+: "${RESEARCH_SCHOLAR_SEARCH_MAX_REPLICAS:=8}"
+: "${RESEARCH_SCHOLAR_SEARCH_POOL:=5000}"
+: "${RESEARCH_SCHOLAR_SEARCH_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+
+: "${RESEARCH_AUDITOR_REPLICAS:=1}"
+: "${RESEARCH_AUDITOR_MAX_REPLICAS:=8}"
+: "${RESEARCH_AUDITOR_POOL:=5000}"
+: "${RESEARCH_AUDITOR_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+
+: "${RESEARCH_PRIOR_ADVOCATE_REPLICAS:=1}"
+: "${RESEARCH_PRIOR_ADVOCATE_MAX_REPLICAS:=8}"
+: "${RESEARCH_PRIOR_ADVOCATE_POOL:=5000}"
+: "${RESEARCH_PRIOR_ADVOCATE_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+
+: "${RESEARCH_INTRODUCER_REPLICAS:=1}"
+: "${RESEARCH_INTRODUCER_MAX_REPLICAS:=8}"
+: "${RESEARCH_INTRODUCER_POOL:=5000}"
+: "${RESEARCH_INTRODUCER_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+
+: "${RESEARCH_THEORIST_REPLICAS:=1}"
+: "${RESEARCH_THEORIST_MAX_REPLICAS:=8}"
+: "${RESEARCH_THEORIST_POOL:=5000}"
+: "${RESEARCH_THEORIST_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+
+: "${RESEARCH_COMPUTER_REPLICAS:=1}"
+: "${RESEARCH_COMPUTER_MAX_REPLICAS:=8}"
+: "${RESEARCH_COMPUTER_POOL:=5000}"
+: "${RESEARCH_COMPUTER_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+
+: "${RESEARCH_EDITOR_REPLICAS:=1}"
+: "${RESEARCH_EDITOR_MAX_REPLICAS:=8}"
+: "${RESEARCH_EDITOR_POOL:=5000}"
+: "${RESEARCH_EDITOR_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+
+: "${RESEARCH_REVIEWER_REPLICAS:=1}"
+: "${RESEARCH_REVIEWER_MAX_REPLICAS:=8}"
+: "${RESEARCH_REVIEWER_POOL:=5000}"
+: "${RESEARCH_REVIEWER_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+
+: "${RESEARCH_SUBMITTER_REPLICAS:=1}"
+: "${RESEARCH_SUBMITTER_MAX_REPLICAS:=8}"
+: "${RESEARCH_SUBMITTER_POOL:=5000}"
+: "${RESEARCH_SUBMITTER_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+
+# Phase 9 PR-B (#663): comma-separated list of colony names eligible
+# for the cull cycle. Default `explorer` preserves the pre-PR-B
+# behaviour (still only one colony culls). PR-C operators may flip
+# this to e.g. `explorer,noticer,formulator` when those colonies
+# light up replication.
+: "${RESEARCH_CULL_COLONIES:=explorer}"
 
 # --- Validation ---
 if [ -z "$TOPICS_RAW" ]; then
@@ -423,34 +539,150 @@ write_bootstrap() {
         # tick); same lesson as the retired preprint-foundry bootstrap.
         printf 'DAEMON_TICK_INTERVAL_MS=30000\n'
         printf 'EXPLORER_TICK_INTERVAL_MS=30000\n'
-        # Phase 3 PR 1 (#624): seed the explorer specialty pool. Five
-        # mathematical specialties keyed by DAEMON_ID. The .ag agent's
-        # first-tick logic copies pool:specialty:<DAEMON_ID> ->
-        # <pid>:specialty and pool:specialty_overlay:<DAEMON_ID> ->
-        # <pid>:specialty_overlay, so each replica reads a distinct
-        # overlay appended to its prompt() body.
-        printf '(cd /run-root && agentis memo set explorer:pool:specialty:1 group_theory >/dev/null 2>&1 || true)\n'
-        printf '(cd /run-root && agentis memo set explorer:pool:specialty_overlay:1 "Focus on finite group invariants: conjugacy classes, character tables, subgroup lattices, automorphism groups. Compute representations and quotients explicitly. Look for coincidences in character degrees, order divisibility, sporadic-vs-classical group behaviour." >/dev/null 2>&1 || true)\n'
-        printf '(cd /run-root && agentis memo set explorer:pool:specialty:2 combinatorics >/dev/null 2>&1 || true)\n'
-        printf '(cd /run-root && agentis memo set explorer:pool:specialty_overlay:2 "Focus on enumerative combinatorics: generating functions, bijective proofs, lattice paths, partition identities. Compute small-case counts and look for OEIS matches. Compare known sequences against derived ones for unexpected coincidence." >/dev/null 2>&1 || true)\n'
-        printf '(cd /run-root && agentis memo set explorer:pool:specialty:3 number_theory >/dev/null 2>&1 || true)\n'
-        printf '(cd /run-root && agentis memo set explorer:pool:specialty_overlay:3 "Focus on arithmetic functions and sieves: prime counting, Möbius, totient, divisor sums. Compute over small ranges, examine mod-p behaviour, look for unexpected density / equidistribution / sign-change patterns." >/dev/null 2>&1 || true)\n'
-        printf '(cd /run-root && agentis memo set explorer:pool:specialty:4 probability >/dev/null 2>&1 || true)\n'
-        printf '(cd /run-root && agentis memo set explorer:pool:specialty_overlay:4 "Focus on random structures: Erdős-Rényi graphs, random matrices, percolation thresholds, asymptotic distributions. Run small Monte Carlo and compare against predicted limits. Look for deviations from the expected scaling." >/dev/null 2>&1 || true)\n'
-        printf '(cd /run-root && agentis memo set explorer:pool:specialty:5 algebra >/dev/null 2>&1 || true)\n'
-        printf '(cd /run-root && agentis memo set explorer:pool:specialty_overlay:5 "Focus on representation theory + Lie algebras: irreducible representations, weight diagrams, Casimir invariants, Cartan classification. Compute decomposition of tensor products, dimensions, branching rules. Look for unexpected multiplicities or symmetries." >/dev/null 2>&1 || true)\n'
-        # Phase 3 PR 1 (#624): seed the M2-Malthusian replicate gate memos
-        # so the dormant logic in explorer.ag fires. colony-explorer:size
-        # tracks live population; max_replicas caps growth; pool funds
-        # replicate costs; replication_base_cost + replication_k drive the
-        # cost formula `base + base*n/k`. reproductive_fitness_threshold
-        # gates per-pid fitness above which a replica may spawn.
+        # Phase 9 PR-B (#663): seed every colony's specialty pool +
+        # overlays from the source-of-truth table in
+        # research-foundry/tools/colony-variants.json. The bind-mounted
+        # /repo gives the in-container bootstrap access to that table;
+        # a Python one-liner enumerates 18 colonies x 5 variants and
+        # `agentis memo set <colony>:pool:specialty:<N>` /
+        # `<colony>:pool:specialty_overlay:<N>` for each. With PR-B's
+        # N=1 default for non-explorer colonies the .ag first-tick
+        # claim logic uses slot=1 only; PR-C will turn this into the
+        # full per-colony specialty pool. The legacy hardcoded
+        # 5-specialty explorer seed is preserved byte-for-byte by the
+        # colony-variants.json `explorer` entry.
+        printf 'python3 - <<'"'"'PY'"'"'\n'
+        printf 'import json, subprocess\n'
+        printf 'with open("/repo/research-foundry/tools/colony-variants.json") as f:\n'
+        printf '    data = json.load(f)\n'
+        printf 'for colony, entry in (data.get("colonies") or {}).items():\n'
+        printf '    variants = entry.get("variants") or []\n'
+        printf '    overlays = entry.get("overlays") or {}\n'
+        printf '    for n, sp in enumerate(variants, start=1):\n'
+        printf '        subprocess.run(["agentis","memo","set","%%s:pool:specialty:%%d" %% (colony,n), sp], cwd="/run-root", check=False)\n'
+        printf '        overlay = overlays.get(sp, "")\n'
+        printf '        if overlay:\n'
+        printf '            subprocess.run(["agentis","memo","set","%%s:pool:specialty_overlay:%%d" %% (colony,n), overlay], cwd="/run-root", check=False)\n'
+        printf 'PY\n'
+        # Phase 9 PR-B (#663): seed the M2-Malthusian replicate gate
+        # memos for every colony, not just explorer. The non-explorer
+        # rows default to RESEARCH_<COLONY>_REPLICAS=1 so the observable
+        # daemon count is preserved (5 explorer + 13 singletons). PR-C
+        # will flip these env knobs to >=3 where it lights up
+        # replication; the cull cycle still only fires for the
+        # explorer until RESEARCH_CULL_COLONIES is widened.
         printf '(cd /run-root && agentis memo set colony-explorer:size %s >/dev/null 2>&1 || true)\n' "$RESEARCH_EXPLORER_REPLICAS"
         printf '(cd /run-root && agentis memo set colony-explorer:max_replicas %s >/dev/null 2>&1 || true)\n' "$RESEARCH_EXPLORER_MAX_REPLICAS"
         printf '(cd /run-root && agentis memo set colony-explorer:pool %s >/dev/null 2>&1 || true)\n' "$RESEARCH_EXPLORER_POOL"
         printf '(cd /run-root && agentis memo set colony-explorer:replication_base_cost 100 >/dev/null 2>&1 || true)\n'
         printf '(cd /run-root && agentis memo set colony-explorer:replication_k 3 >/dev/null 2>&1 || true)\n'
         printf '(cd /run-root && agentis memo set explorer:reproductive_fitness_threshold %s >/dev/null 2>&1 || true)\n' "$RESEARCH_EXPLORER_REPRODUCTIVE_FITNESS_THRESHOLD"
+        # Per-colony M2-Malthusian seeds for the 17 non-explorer
+        # research-foundry colonies. PR-B keeps RESEARCH_<COLONY>_REPLICAS
+        # at 1 by default so daemon spawn loops below are unaffected; PR-C
+        # will flip the env knobs.
+        printf '(cd /run-root && agentis memo set colony-noticer:size %s >/dev/null 2>&1 || true)\n' "$RESEARCH_NOTICER_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-noticer:max_replicas %s >/dev/null 2>&1 || true)\n' "$RESEARCH_NOTICER_MAX_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-noticer:pool %s >/dev/null 2>&1 || true)\n' "$RESEARCH_NOTICER_POOL"
+        printf '(cd /run-root && agentis memo set colony-noticer:replication_base_cost 100 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set colony-noticer:replication_k 3 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set noticer:reproductive_fitness_threshold %s >/dev/null 2>&1 || true)\n' "$RESEARCH_NOTICER_REPRODUCTIVE_FITNESS_THRESHOLD"
+        printf '(cd /run-root && agentis memo set colony-skeptic:size %s >/dev/null 2>&1 || true)\n' "$RESEARCH_SKEPTIC_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-skeptic:max_replicas %s >/dev/null 2>&1 || true)\n' "$RESEARCH_SKEPTIC_MAX_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-skeptic:pool %s >/dev/null 2>&1 || true)\n' "$RESEARCH_SKEPTIC_POOL"
+        printf '(cd /run-root && agentis memo set colony-skeptic:replication_base_cost 100 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set colony-skeptic:replication_k 3 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set skeptic:reproductive_fitness_threshold %s >/dev/null 2>&1 || true)\n' "$RESEARCH_SKEPTIC_REPRODUCTIVE_FITNESS_THRESHOLD"
+        printf '(cd /run-root && agentis memo set colony-formulator:size %s >/dev/null 2>&1 || true)\n' "$RESEARCH_FORMULATOR_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-formulator:max_replicas %s >/dev/null 2>&1 || true)\n' "$RESEARCH_FORMULATOR_MAX_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-formulator:pool %s >/dev/null 2>&1 || true)\n' "$RESEARCH_FORMULATOR_POOL"
+        printf '(cd /run-root && agentis memo set colony-formulator:replication_base_cost 100 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set colony-formulator:replication_k 3 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set formulator:reproductive_fitness_threshold %s >/dev/null 2>&1 || true)\n' "$RESEARCH_FORMULATOR_REPRODUCTIVE_FITNESS_THRESHOLD"
+        printf '(cd /run-root && agentis memo set colony-verifier:size %s >/dev/null 2>&1 || true)\n' "$RESEARCH_VERIFIER_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-verifier:max_replicas %s >/dev/null 2>&1 || true)\n' "$RESEARCH_VERIFIER_MAX_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-verifier:pool %s >/dev/null 2>&1 || true)\n' "$RESEARCH_VERIFIER_POOL"
+        printf '(cd /run-root && agentis memo set colony-verifier:replication_base_cost 100 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set colony-verifier:replication_k 3 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set verifier:reproductive_fitness_threshold %s >/dev/null 2>&1 || true)\n' "$RESEARCH_VERIFIER_REPRODUCTIVE_FITNESS_THRESHOLD"
+        printf '(cd /run-root && agentis memo set colony-novelty:size %s >/dev/null 2>&1 || true)\n' "$RESEARCH_NOVELTY_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-novelty:max_replicas %s >/dev/null 2>&1 || true)\n' "$RESEARCH_NOVELTY_MAX_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-novelty:pool %s >/dev/null 2>&1 || true)\n' "$RESEARCH_NOVELTY_POOL"
+        printf '(cd /run-root && agentis memo set colony-novelty:replication_base_cost 100 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set colony-novelty:replication_k 3 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set novelty:reproductive_fitness_threshold %s >/dev/null 2>&1 || true)\n' "$RESEARCH_NOVELTY_REPRODUCTIVE_FITNESS_THRESHOLD"
+        printf '(cd /run-root && agentis memo set colony-arxiv-search:size %s >/dev/null 2>&1 || true)\n' "$RESEARCH_ARXIV_SEARCH_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-arxiv-search:max_replicas %s >/dev/null 2>&1 || true)\n' "$RESEARCH_ARXIV_SEARCH_MAX_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-arxiv-search:pool %s >/dev/null 2>&1 || true)\n' "$RESEARCH_ARXIV_SEARCH_POOL"
+        printf '(cd /run-root && agentis memo set colony-arxiv-search:replication_base_cost 100 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set colony-arxiv-search:replication_k 3 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set arxiv-search:reproductive_fitness_threshold %s >/dev/null 2>&1 || true)\n' "$RESEARCH_ARXIV_SEARCH_REPRODUCTIVE_FITNESS_THRESHOLD"
+        printf '(cd /run-root && agentis memo set colony-oeis-search:size %s >/dev/null 2>&1 || true)\n' "$RESEARCH_OEIS_SEARCH_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-oeis-search:max_replicas %s >/dev/null 2>&1 || true)\n' "$RESEARCH_OEIS_SEARCH_MAX_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-oeis-search:pool %s >/dev/null 2>&1 || true)\n' "$RESEARCH_OEIS_SEARCH_POOL"
+        printf '(cd /run-root && agentis memo set colony-oeis-search:replication_base_cost 100 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set colony-oeis-search:replication_k 3 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set oeis-search:reproductive_fitness_threshold %s >/dev/null 2>&1 || true)\n' "$RESEARCH_OEIS_SEARCH_REPRODUCTIVE_FITNESS_THRESHOLD"
+        printf '(cd /run-root && agentis memo set colony-groupprops-search:size %s >/dev/null 2>&1 || true)\n' "$RESEARCH_GROUPPROPS_SEARCH_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-groupprops-search:max_replicas %s >/dev/null 2>&1 || true)\n' "$RESEARCH_GROUPPROPS_SEARCH_MAX_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-groupprops-search:pool %s >/dev/null 2>&1 || true)\n' "$RESEARCH_GROUPPROPS_SEARCH_POOL"
+        printf '(cd /run-root && agentis memo set colony-groupprops-search:replication_base_cost 100 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set colony-groupprops-search:replication_k 3 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set groupprops-search:reproductive_fitness_threshold %s >/dev/null 2>&1 || true)\n' "$RESEARCH_GROUPPROPS_SEARCH_REPRODUCTIVE_FITNESS_THRESHOLD"
+        printf '(cd /run-root && agentis memo set colony-scholar-search:size %s >/dev/null 2>&1 || true)\n' "$RESEARCH_SCHOLAR_SEARCH_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-scholar-search:max_replicas %s >/dev/null 2>&1 || true)\n' "$RESEARCH_SCHOLAR_SEARCH_MAX_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-scholar-search:pool %s >/dev/null 2>&1 || true)\n' "$RESEARCH_SCHOLAR_SEARCH_POOL"
+        printf '(cd /run-root && agentis memo set colony-scholar-search:replication_base_cost 100 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set colony-scholar-search:replication_k 3 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set scholar-search:reproductive_fitness_threshold %s >/dev/null 2>&1 || true)\n' "$RESEARCH_SCHOLAR_SEARCH_REPRODUCTIVE_FITNESS_THRESHOLD"
+        printf '(cd /run-root && agentis memo set colony-auditor:size %s >/dev/null 2>&1 || true)\n' "$RESEARCH_AUDITOR_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-auditor:max_replicas %s >/dev/null 2>&1 || true)\n' "$RESEARCH_AUDITOR_MAX_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-auditor:pool %s >/dev/null 2>&1 || true)\n' "$RESEARCH_AUDITOR_POOL"
+        printf '(cd /run-root && agentis memo set colony-auditor:replication_base_cost 100 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set colony-auditor:replication_k 3 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set auditor:reproductive_fitness_threshold %s >/dev/null 2>&1 || true)\n' "$RESEARCH_AUDITOR_REPRODUCTIVE_FITNESS_THRESHOLD"
+        printf '(cd /run-root && agentis memo set colony-prior_advocate:size %s >/dev/null 2>&1 || true)\n' "$RESEARCH_PRIOR_ADVOCATE_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-prior_advocate:max_replicas %s >/dev/null 2>&1 || true)\n' "$RESEARCH_PRIOR_ADVOCATE_MAX_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-prior_advocate:pool %s >/dev/null 2>&1 || true)\n' "$RESEARCH_PRIOR_ADVOCATE_POOL"
+        printf '(cd /run-root && agentis memo set colony-prior_advocate:replication_base_cost 100 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set colony-prior_advocate:replication_k 3 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set prior_advocate:reproductive_fitness_threshold %s >/dev/null 2>&1 || true)\n' "$RESEARCH_PRIOR_ADVOCATE_REPRODUCTIVE_FITNESS_THRESHOLD"
+        printf '(cd /run-root && agentis memo set colony-introducer:size %s >/dev/null 2>&1 || true)\n' "$RESEARCH_INTRODUCER_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-introducer:max_replicas %s >/dev/null 2>&1 || true)\n' "$RESEARCH_INTRODUCER_MAX_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-introducer:pool %s >/dev/null 2>&1 || true)\n' "$RESEARCH_INTRODUCER_POOL"
+        printf '(cd /run-root && agentis memo set colony-introducer:replication_base_cost 100 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set colony-introducer:replication_k 3 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set introducer:reproductive_fitness_threshold %s >/dev/null 2>&1 || true)\n' "$RESEARCH_INTRODUCER_REPRODUCTIVE_FITNESS_THRESHOLD"
+        printf '(cd /run-root && agentis memo set colony-theorist:size %s >/dev/null 2>&1 || true)\n' "$RESEARCH_THEORIST_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-theorist:max_replicas %s >/dev/null 2>&1 || true)\n' "$RESEARCH_THEORIST_MAX_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-theorist:pool %s >/dev/null 2>&1 || true)\n' "$RESEARCH_THEORIST_POOL"
+        printf '(cd /run-root && agentis memo set colony-theorist:replication_base_cost 100 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set colony-theorist:replication_k 3 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set theorist:reproductive_fitness_threshold %s >/dev/null 2>&1 || true)\n' "$RESEARCH_THEORIST_REPRODUCTIVE_FITNESS_THRESHOLD"
+        printf '(cd /run-root && agentis memo set colony-computer:size %s >/dev/null 2>&1 || true)\n' "$RESEARCH_COMPUTER_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-computer:max_replicas %s >/dev/null 2>&1 || true)\n' "$RESEARCH_COMPUTER_MAX_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-computer:pool %s >/dev/null 2>&1 || true)\n' "$RESEARCH_COMPUTER_POOL"
+        printf '(cd /run-root && agentis memo set colony-computer:replication_base_cost 100 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set colony-computer:replication_k 3 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set computer:reproductive_fitness_threshold %s >/dev/null 2>&1 || true)\n' "$RESEARCH_COMPUTER_REPRODUCTIVE_FITNESS_THRESHOLD"
+        printf '(cd /run-root && agentis memo set colony-editor:size %s >/dev/null 2>&1 || true)\n' "$RESEARCH_EDITOR_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-editor:max_replicas %s >/dev/null 2>&1 || true)\n' "$RESEARCH_EDITOR_MAX_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-editor:pool %s >/dev/null 2>&1 || true)\n' "$RESEARCH_EDITOR_POOL"
+        printf '(cd /run-root && agentis memo set colony-editor:replication_base_cost 100 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set colony-editor:replication_k 3 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set editor:reproductive_fitness_threshold %s >/dev/null 2>&1 || true)\n' "$RESEARCH_EDITOR_REPRODUCTIVE_FITNESS_THRESHOLD"
+        printf '(cd /run-root && agentis memo set colony-reviewer:size %s >/dev/null 2>&1 || true)\n' "$RESEARCH_REVIEWER_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-reviewer:max_replicas %s >/dev/null 2>&1 || true)\n' "$RESEARCH_REVIEWER_MAX_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-reviewer:pool %s >/dev/null 2>&1 || true)\n' "$RESEARCH_REVIEWER_POOL"
+        printf '(cd /run-root && agentis memo set colony-reviewer:replication_base_cost 100 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set colony-reviewer:replication_k 3 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set reviewer:reproductive_fitness_threshold %s >/dev/null 2>&1 || true)\n' "$RESEARCH_REVIEWER_REPRODUCTIVE_FITNESS_THRESHOLD"
+        printf '(cd /run-root && agentis memo set colony-submitter:size %s >/dev/null 2>&1 || true)\n' "$RESEARCH_SUBMITTER_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-submitter:max_replicas %s >/dev/null 2>&1 || true)\n' "$RESEARCH_SUBMITTER_MAX_REPLICAS"
+        printf '(cd /run-root && agentis memo set colony-submitter:pool %s >/dev/null 2>&1 || true)\n' "$RESEARCH_SUBMITTER_POOL"
+        printf '(cd /run-root && agentis memo set colony-submitter:replication_base_cost 100 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set colony-submitter:replication_k 3 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set submitter:reproductive_fitness_threshold %s >/dev/null 2>&1 || true)\n' "$RESEARCH_SUBMITTER_REPRODUCTIVE_FITNESS_THRESHOLD"
         # math pipeline: explorer (with replication) + noticer/formulator/verifier/novelty.
         # Phase 3 PR 1 (#624): spawn RESEARCH_EXPLORER_REPLICAS explorers
         # (default 5) each carrying a distinct DAEMON_ID used by the .ag
@@ -574,7 +806,13 @@ start_auto_promote_sidecar() {
     CULL_BOTTOM_PCT="${RESEARCH_CULL_BOTTOM_PCT:-0.2}"
     CULL_MIN_EXPLORERS="${RESEARCH_CULL_MIN_EXPLORERS:-3}"
     CULL_MIN_ACTING="${RESEARCH_CULL_MIN_ACTING:-10}"
-    CULL_SCRIPT="$REPO_ROOT/tools/cull-explorers.sh"
+    # Phase 9 PR-B (#663): the generalised cull script supersedes the
+    # legacy cull-explorers.sh wrapper; we drive it once per colony in
+    # $RESEARCH_CULL_COLONIES (comma-separated, default `explorer`).
+    # The wrapper still exists for older operators but PR-B prefers
+    # the colony-parametric path so we can iterate.
+    CULL_SCRIPT="$REPO_ROOT/tools/cull-replicas.sh"
+    CULL_COLONIES="${RESEARCH_CULL_COLONIES:-explorer}"
     if [ "$AP_ENABLED" != "1" ]; then
         emit_step "auto-promote sidecar: disabled via RESEARCH_AUTO_PROMOTE=$AP_ENABLED"
         return 0
@@ -594,14 +832,14 @@ start_auto_promote_sidecar() {
     fi
     emit_step "starting auto-promote sidecar (interval=${AP_INTERVAL}s, log=$AP_LOG)"
     if [ "$CULL_ENABLED" = "1" ]; then
-        emit_step "cull-explorers cycle: enabled (every $CULL_INTERVAL_TICKS sidecar ticks; bottom_pct=$CULL_BOTTOM_PCT, min_explorers=$CULL_MIN_EXPLORERS, min_acting=$CULL_MIN_ACTING)"
+        emit_step "cull-replicas cycle: enabled (colonies=$CULL_COLONIES every $CULL_INTERVAL_TICKS sidecar ticks; bottom_pct=$CULL_BOTTOM_PCT, min_explorers=$CULL_MIN_EXPLORERS, min_acting=$CULL_MIN_ACTING)"
     else
-        emit_step "cull-explorers cycle: disabled (RESEARCH_CULL_ENABLED=$CULL_ENABLED)"
+        emit_step "cull-replicas cycle: disabled (RESEARCH_CULL_ENABLED=$CULL_ENABLED)"
     fi
     if [ "$DRY_RUN" = "1" ]; then
         emit_cmd "auto-promote-sidecar placeholder: cwd=$LAPTOP_DIR config=$AP_CONFIG interval=${AP_INTERVAL}s"
         if [ "$CULL_ENABLED" = "1" ]; then
-            emit_cmd "cull-explorers placeholder: script=$CULL_SCRIPT every=${CULL_INTERVAL_TICKS} ticks bottom_pct=$CULL_BOTTOM_PCT min_explorers=$CULL_MIN_EXPLORERS min_acting=$CULL_MIN_ACTING"
+            emit_cmd "cull-replicas placeholder: script=$CULL_SCRIPT colonies=$CULL_COLONIES every=${CULL_INTERVAL_TICKS} ticks bottom_pct=$CULL_BOTTOM_PCT min_explorers=$CULL_MIN_EXPLORERS min_acting=$CULL_MIN_ACTING"
         fi
         return 0
     fi
@@ -624,13 +862,23 @@ start_auto_promote_sidecar() {
             tick_count=$((tick_count + 1))
             if [ "$CULL_ENABLED" = "1" ] && [ -x "$CULL_SCRIPT" ] \
                     && [ $((tick_count % CULL_INTERVAL_TICKS)) -eq 0 ]; then
+                # Phase 9 PR-B (#663): iterate every colony in
+                # $CULL_COLONIES so the cull cycle can target each role
+                # independently. Default `explorer` preserves the
+                # pre-PR-B behaviour.
+                IFS=',' read -ra cull_colony_arr <<< "$CULL_COLONIES"
                 {
                     printf '=== %s: cull tick (#%d) ===\n' "$(date -Iseconds)" "$tick_count"
-                    "$CULL_SCRIPT" "$LAPTOP_DIR" \
-                        --bottom-pct "$CULL_BOTTOM_PCT" \
-                        --min-explorers "$CULL_MIN_EXPLORERS" \
-                        --min-acting "$CULL_MIN_ACTING" 2>&1 \
-                        || printf '[sidecar] cull-explorers.sh exited %s\n' "$?"
+                    for cull_colony in "${cull_colony_arr[@]}"; do
+                        cull_colony="$(printf '%s' "$cull_colony" | tr -d '[:space:]')"
+                        [ -z "$cull_colony" ] && continue
+                        printf '--- cull colony=%s ---\n' "$cull_colony"
+                        "$CULL_SCRIPT" "$LAPTOP_DIR" "$cull_colony" \
+                            --bottom-pct "$CULL_BOTTOM_PCT" \
+                            --min-explorers "$CULL_MIN_EXPLORERS" \
+                            --min-acting "$CULL_MIN_ACTING" 2>&1 \
+                            || printf '[sidecar] cull-replicas.sh exited %s for colony=%s\n' "$?" "$cull_colony"
+                    done
                 } >> "$AP_LOG"
             fi
             sleep "$AP_INTERVAL"

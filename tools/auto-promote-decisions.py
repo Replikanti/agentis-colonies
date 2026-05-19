@@ -184,25 +184,59 @@ def main():
     now = time.time()
     decisions = []
 
-    # Phase 3 PR 2 of #624: per-pid explorer enrichment. When the daemon
-    # under inspection runs explorer.ag, decorate the top-level decision
-    # record with {pid, agent_id, specialty, fitness_score} so the
-    # dashboard Promote Candidates panel can key by pid (instead of
-    # collapsing the 5 specialties to a single "explorer" row) and
-    # render specialty + generation in the label. The fitness scalar is
-    # computed by the sibling tools/explorer-fitness.py helper which
-    # does the cross-agent join (explorer NOVEL settles x auditor
-    # confidences x HITL accept ratio). Memo reads are filesystem-direct
-    # so this works in both legacy mode and the containerized mode the
-    # dashboard uses (#622 PR-1), since the .agentis/ dir is the same
-    # host-side bind mount in both cases.
+    # Phase 9 PR-B (#663): generalised per-pid enrichment. Phase 3 PR 2
+    # of #624 introduced explorer-only fields (`pid`, `agent_id`,
+    # `specialty`, `fitness_score`) at the top level of every decision
+    # record so the dashboard could render one row per explorer pid
+    # instead of collapsing the 5 specialties into one. PR-B widens
+    # that path to all 18 research-foundry colonies via SIDE_BY_COLONY
+    # below: each known colony triggers a colony-fitness.py invocation
+    # (with the appropriate --colony flag) plus a memo read for the
+    # per-pid specialty + generation. Agents not listed in
+    # SIDE_BY_COLONY (e.g. dev-apprenticeship colonies, ad-hoc
+    # fixtures in tests) keep the pre-PR-B contract: no top-level
+    # decoration, no `colony_fitness` evidence key. That keeps
+    # test-auto-promote.sh test 12 (legacy/preview byte-identity on a
+    # /fake/x.ag fixture) green. PR-C will populate the per-pid memos
+    # for non-explorer colonies; this PR's keys default to empty/None
+    # so the dashboard's existing per-pid renderer keeps working.
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    fitness_script = os.path.join(script_dir, 'explorer-fitness.py')
+    fitness_script = os.path.join(script_dir, 'colony-fitness.py')
 
-    def _explorer_memo_read(_fed_dir, key):
+    # Mirror of tools/colony-fitness.py SIDE_BY_COLONY. Hardcoded
+    # locally so this module stays import-free (the sibling file has a
+    # hyphen and is not a legal Python identifier; importlib would
+    # work but adds a hot-path syscall the sidecar pays every tick).
+    SIDE_BY_COLONY = {
+        'explorer': 'discovery',
+        'noticer': 'discovery',
+        'skeptic': 'discovery',
+        'formulator': 'discovery',
+        'verifier': 'discovery',
+        'novelty': 'discovery',
+        'arxiv-search': 'audit',
+        'oeis-search': 'audit',
+        'groupprops-search': 'audit',
+        'scholar-search': 'audit',
+        'prior_advocate': 'audit',
+        'auditor': 'audit',
+        'introducer': 'preprint',
+        'theorist': 'preprint',
+        'computer': 'preprint',
+        'editor': 'preprint',
+        'reviewer': 'preprint',
+        'submitter': 'preprint',
+    }
+
+    def _colony_memo_read(_fed_dir, key):
         """Read latest value from <fed_dir>/.agentis/memo/<key>.jsonl
         (and the parent-level fallback that mirrors the experience-file
-        resolver above). Returns '' on any error."""
+        resolver above). Returns '' on any error.
+
+        Phase 9 PR-B (#663): renamed from `_explorer_memo_read`; same
+        contract, takes any memo key. PR-C will populate
+        `<colony>:<pid>:specialty` + `:generation` for non-explorer
+        colonies; PR-B reads return empty strings for those keys."""
         candidates = [
             os.path.join(_fed_dir, '.agentis', 'memo', key + '.jsonl'),
             os.path.normpath(os.path.join(_fed_dir, '..', '.agentis', 'memo', key + '.jsonl')),
@@ -229,13 +263,19 @@ def main():
                 continue
         return ''
 
-    def _explorer_fitness(_fed_dir, _pid, _agent_id):
-        """Invoke explorer-fitness.py and parse its JSON output. Returns
+    def _colony_fitness(_fed_dir, _pid, _agent_id, _colony_name):
+        """Invoke colony-fitness.py and parse its JSON output. Returns
         (fitness_score, breakdown) tuple; on any failure returns
-        (0.0, None) so the caller can omit the field cleanly."""
+        (0.0, None) so the caller can omit the field cleanly.
+
+        Phase 9 PR-B (#663): renamed from `_explorer_fitness`; takes
+        the colony name and forwards it via `--colony <name>` so the
+        sibling helper picks the discovery/audit/preprint formula."""
         try:
             proc = subprocess.run(
-                ['python3', fitness_script, _fed_dir, str(_pid), str(_agent_id)],
+                ['python3', fitness_script,
+                 _fed_dir, str(_pid), str(_agent_id),
+                 '--colony', str(_colony_name)],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -341,49 +381,73 @@ def main():
         started_at = d.get('started_at', 0)
         confidence = d.get('confidence')
 
-        # Phase 3 PR 2 of #624: compute explorer-only enrichment up
-        # front. Fields are merged into every decisions.append() below
-        # via `**explorer_extra` so the early-return skip paths (dead
-        # pid, unseeded confidence) still surface pid + specialty + the
-        # fitness score the dashboard needs to render per-pid rows. For
-        # non-explorer agents `explorer_extra` is empty and the existing
-        # decision shape is preserved byte-for-byte (test 12 / test 14
-        # contract).
-        explorer_extra = {}
+        # Phase 9 PR-B (#663): generalised per-pid enrichment for the
+        # 18 research-foundry colonies (Phase 3 PR 2 of #624 was
+        # explorer-only). Fields are merged into every decisions.append()
+        # below via `**colony_extra` so the early-return skip paths
+        # (dead pid, unseeded confidence) still surface pid + specialty
+        # + the fitness score the dashboard needs to render per-pid
+        # rows. Agents not listed in SIDE_BY_COLONY (e.g. test fixtures
+        # like /fake/x.ag, dev-apprenticeship colonies) keep
+        # `colony_extra` empty and the pre-PR-B decision shape — that
+        # is the test 12 / test 14 byte-identity contract.
+        colony_extra = {}
+        colony_fitness_evidence = None
         explorer_fitness_evidence = None
-        if agent_name == 'explorer':
-            specialty = _explorer_memo_read(fed_dir, 'explorer:' + str(pid) + ':specialty')
-            generation_raw = _explorer_memo_read(fed_dir, 'explorer:' + str(pid) + ':generation')
+        if agent_name in SIDE_BY_COLONY:
+            specialty = _colony_memo_read(fed_dir, agent_name + ':' + str(pid) + ':specialty')
+            generation_raw = _colony_memo_read(fed_dir, agent_name + ':' + str(pid) + ':generation')
             try:
                 generation = int(generation_raw) if generation_raw else 0
             except (ValueError, TypeError):
                 generation = 0
-            fitness_score, fitness_breakdown = _explorer_fitness(fed_dir, pid, agent_id)
-            explorer_extra = {
+            fitness_score, fitness_breakdown = _colony_fitness(fed_dir, pid, agent_id, agent_name)
+            colony_extra = {
                 'pid': pid,
                 'agent_id': agent_id,
                 'specialty': specialty,
                 'fitness_score': fitness_score,
             }
-            explorer_fitness_evidence = {
+            colony_fitness_evidence = {
+                'colony': agent_name,
+                'side': SIDE_BY_COLONY.get(agent_name, ''),
                 'specialty': specialty,
                 'generation': generation,
                 'fitness_score': fitness_score,
             }
             if fitness_breakdown is not None:
-                explorer_fitness_evidence['breakdown'] = fitness_breakdown
+                colony_fitness_evidence['breakdown'] = fitness_breakdown
+            # Phase 9 PR-B back-compat alias: the dashboard's pre-PR-B
+            # Promote Candidates renderer reads `evidence.explorer_fitness`
+            # to label per-pid rows. Mirror the colony_fitness payload
+            # under that key for the explorer colony so the existing
+            # template keeps working without changes. PR-C-aware
+            # dashboards should prefer `evidence.colony_fitness`.
+            if agent_name == 'explorer':
+                explorer_fitness_evidence = {
+                    'specialty': specialty,
+                    'generation': generation,
+                    'fitness_score': fitness_score,
+                }
+                if fitness_breakdown is not None:
+                    explorer_fitness_evidence['breakdown'] = fitness_breakdown
 
         def _attach_explorer_evidence(record):
-            """Merge Phase 3 PR 2 explorer enrichment into a decision
-            record. No-op for non-explorer agents (explorer_extra is
-            empty). For explorer rows, adds the top-level fields and
-            stamps explorer_fitness into record['evidence'] when an
-            evidence dict already exists."""
-            if explorer_extra:
-                record.update(explorer_extra)
-                if explorer_fitness_evidence is not None:
-                    ev = record.get('evidence')
-                    if isinstance(ev, dict):
+            """Merge per-colony enrichment into a decision record.
+            No-op for agents not listed in SIDE_BY_COLONY (test
+            fixtures, dev-apprenticeship daemons). For listed colonies
+            adds the top-level pid/agent_id/specialty/fitness_score
+            fields and stamps `colony_fitness` into record['evidence']
+            when an evidence dict already exists. For the explorer
+            colony also stamps `explorer_fitness` as a back-compat
+            alias so pre-PR-B dashboard templates keep rendering."""
+            if colony_extra:
+                record.update(colony_extra)
+                ev = record.get('evidence')
+                if isinstance(ev, dict):
+                    if colony_fitness_evidence is not None:
+                        ev['colony_fitness'] = colony_fitness_evidence
+                    if explorer_fitness_evidence is not None:
                         ev['explorer_fitness'] = explorer_fitness_evidence
             return record
 
