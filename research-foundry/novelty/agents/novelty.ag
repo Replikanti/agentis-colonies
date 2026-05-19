@@ -50,6 +50,92 @@ fn _seed_prompt() -> string {
     return "You are a strict novelty referee. DEFAULT to NOT_NOVEL. The user-supplied input below carries the PROBLEM, the stated ANSWER, and the author's NOVELTY CLAIM. Mark NOT_NOVEL if the problem reduces to: Basel problem, Gauss sums, Galois group of x^n - 2, Milnor fiber formula, complete intersection Euler characteristic via Chern classes, classical Fourier or Mellin transform, or any other named famous result. Mark NOVEL only if the specific answer requires computation and is not a famous constant, and the reasoning requires genuine insight. Mark BORDERLINE if the problem is non-obvious but a known classical identifier is suspected. Output ONLY valid JSON: {\"is_classical_result\": true|false, \"classical_identifier\": \"...\", \"novelty_verdict\": \"NOVEL|BORDERLINE|NOT_NOVEL\", \"reasoning\": \"...\"}.";
 }
 
+// Phase 9 PR-C (#663): variant + specialty overlays appended to the
+// base prompt body.
+fn _variant_overlay_suffix() -> string {
+    let variant = recall_latest("novelty:prompt_variant");
+    if len(variant) > 0 {
+        return "\n\n[Replica focus: prompt variant '" + variant + "' -- lean into that interpretation when reading the upstream context below.]";
+    };
+    return "";
+}
+
+fn _specialty_overlay_suffix(self_pid: string) -> string {
+    if len(self_pid) == 0 {
+        return "";
+    };
+    let overlay = recall_latest("novelty:" + self_pid + ":specialty_overlay");
+    if len(overlay) > 0 {
+        let specialty = recall_latest("novelty:" + self_pid + ":specialty");
+        let label = if len(specialty) > 0 { specialty; } else { "unassigned"; };
+        return "\n\n[Specialty focus (" + label + "): " + overlay + "]";
+    };
+    return "";
+}
+
+// Phase 9 PR-C (#663): hash-pointer extraction over the M106 wire.
+fn _extract_pp_hash(variant_tag: string) -> string {
+    if len(variant_tag) < 67 { return ""; };
+    if substring(variant_tag, 0, 3) != "pp:" { return ""; };
+    let hex = substring(variant_tag, 3, 67);
+    // colony-lint: safe-exec-concat
+    let cmd = "printf '%s' " + shell_escape(hex) + " | tr -d '0-9a-f' | wc -c";
+    let leftover = try { exec sh cmd; } catch e { "1"; };
+    if parse_int(leftover) != 0 { return ""; };
+    return hex;
+}
+
+// Parent pre-replicate hash-pointer wrap.
+fn _publish_prompt_body_and_wrap_variant(self_pid: string, variant_tag: string) -> string {
+    if len(self_pid) == 0 { return variant_tag; };
+    let body = recall_latest("novelty:" + self_pid + ":prompt_body");
+    if len(body) == 0 { return variant_tag; };
+    // colony-lint: safe-exec-concat
+    let sha_cmd = "python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.argv[1].encode(\"utf-8\")).hexdigest())' " + shell_escape(body);
+    let h = try { exec sh sha_cmd; } catch e { ""; };
+    if len(h) != 64 { return variant_tag; };
+    let body_key = "novelty:prompt_body:" + h;
+    let existing = recall_latest(body_key);
+    if len(existing) == 0 { memo_write(body_key, body); };
+    return "pp:" + h + "|" + variant_tag;
+}
+
+// Phase 9 PR-C (#663): per-colony variant picker from the
+// colony-variants.json `novelty` row.
+fn pick_variant(n: int) -> string {
+    let idx = n - ((n / 5) * 5);
+    if idx == 0 { return "strict"; };
+    if idx == 1 { return "lenient"; };
+    if idx == 2 { return "literature"; };
+    if idx == 3 { return "construct"; };
+    return "domain";
+}
+
+fn self_node_addr() -> string {
+    let addr = recall_latest("math-foundry:worker_addr");
+    if len(addr) > 0 {
+        return addr;
+    };
+    return "127.0.0.1:9100";
+}
+
+fn select_replication_target() -> string {
+    let cnt_str = recall_latest("math-foundry:peer_worker_count");
+    let cnt = if len(cnt_str) > 0 { parse_int(cnt_str); } else { 0; };
+    if cnt <= 0 {
+        return self_node_addr();
+    };
+    let rr_str = recall_latest("novelty:replicate_rr_counter");
+    let rr = if len(rr_str) > 0 { parse_int(rr_str); } else { 0; };
+    let idx = rr - ((rr / cnt) * cnt);
+    memo_write("novelty:replicate_rr_counter", to_string(rr + 1));
+    let addr = recall_latest("math-foundry:peer_worker_addr:" + to_string(idx));
+    if len(addr) > 0 {
+        return addr;
+    };
+    return self_node_addr();
+}
+
 // _pick_upstream_pid_by_key -- Phase 9 PR-A (#663) replica-safe pick.
 // Enumerates `<role>:*:<decision_key>:tick-<N>` memo keys via
 // `agentis memo list`, ranks by an embedded confidence field when one
@@ -82,10 +168,14 @@ fn _pick_upstream_by_confidence(role: string, output_key: string, tick: int) -> 
 }
 
 // _publish_novelty -- TERMINAL agent (Class 1). memo + final_verdict +
-// emit (+ ledger row when final_write=true). Both autonomous and
-// review-gated emit the ledger row; only propose skips it (#622 ADR-0001).
+// emit (+ ledger row when final_write=true, + replicate when
+// do_replicate=true). Both autonomous and review-gated emit the ledger
+// row; only propose skips it (#622 ADR-0001). Phase 9 PR-C (#663) added
+// the M2-Malthusian replicate path. Fitness signal: +2 NOVEL,
+// +1 BORDERLINE, -1 NOT_NOVEL (terminal verdict).
 fn _publish_novelty(
     final_write: bool,
+    do_replicate: bool,
     novelty: NoveltyVerdict,
     self_pid: string,
     colony_name_str: string,
@@ -160,6 +250,75 @@ fn _publish_novelty(
 
     emit("math-foundry:novelty_done", novelty);
     learn("novelty", "tick " + to_string(tick_idx) + " " + novelty.novelty_verdict, novelty.reasoning, "success", ["emitted", "math-foundry"]);
+
+    // Phase 9 PR-C (#663): per-pid fitness tracking. +2 NOVEL,
+    // +1 BORDERLINE, -1 NOT_NOVEL.
+    if len(self_pid) > 0 {
+        let fit_pre = parse_int(recall_latest("novelty:" + self_pid + ":fitness"));
+        let fit_delta = if novelty.novelty_verdict == "NOVEL" {
+            2;
+        } else { if novelty.novelty_verdict == "BORDERLINE" {
+            1;
+        } else { if novelty.novelty_verdict == "NOT_NOVEL" {
+            0 - 1;
+        } else {
+            0;
+        }; }; };
+        memo_write("novelty:" + self_pid + ":fitness", to_string(fit_pre + fit_delta));
+    };
+
+    // Phase 9 PR-C (#663): M2-Malthusian replicate gate -- autonomous tier only.
+    if do_replicate {
+        let repr_thr = parse_int(recall_latest("novelty:reproductive_fitness_threshold"));
+        if repr_thr > 0 {
+            let my_fit_r = parse_int(recall_latest("novelty:" + self_pid + ":fitness"));
+            if my_fit_r > repr_thr {
+                let n_r = parse_int(recall_latest("colony-" + colony_name_str + ":size"));
+                let max_repl_r = parse_int(recall_latest("colony-" + colony_name_str + ":max_replicas"));
+                if n_r < max_repl_r {
+                    let pool_r = parse_int(recall_latest("colony-" + colony_name_str + ":pool"));
+                    let base_r = parse_int(recall_latest("colony-" + colony_name_str + ":replication_base_cost"));
+                    let raw_k_r = parse_int(recall_latest("colony-" + colony_name_str + ":replication_k"));
+                    let k_r = if raw_k_r <= 0 { 3; } else { raw_k_r; };
+                    let cost_r = base_r + (base_r * n_r) / k_r;
+                    if pool_r >= cost_r {
+                        let variant_pick = pick_variant(n_r);
+                        memo_write("novelty:prompt_variant", variant_pick);
+                        let target_r = select_replication_target();
+                        if len(target_r) > 0 {
+                            let variant_wrapped = _publish_prompt_body_and_wrap_variant(self_pid, variant_pick);
+                            let replica_id = try { replicate(target_r, my_fit_r, variant_wrapped); } catch e { "__replicate_error__"; };
+                            if replica_id != "__replicate_error__" {
+                                if len(replica_id) > 0 {
+                                    memo_write("colony-" + colony_name_str + ":pool", to_string(pool_r - cost_r));
+                                    memo_write("colony-" + colony_name_str + ":size", to_string(n_r + 1));
+                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "success", ["replicated", "math-foundry", colony_name_str]);
+
+                                    let lin_str = recall_latest("novelty:" + self_pid + ":generation");
+                                    let lin = if len(lin_str) > 0 { parse_int(lin_str); } else { 0; };
+                                    let ledger_path_r = try { exec sh "printenv REPLICATION_LEDGER"; } catch e { ""; };
+                                    if len(ledger_path_r) > 0 {
+                                        let parent_specialty = recall_latest("novelty:" + self_pid + ":specialty");
+                                        let child_gen = lin + 1;
+                                        let row = "{\"ts\":" + to_string(tick_now_ms) + ",\"event\":\"replicate\",\"colony\":\"" + colony_name_str + "\",\"side\":\"discovery\",\"parent_pid\":\"" + self_pid + "\",\"child_replica_id\":\"" + replica_id + "\",\"specialty\":\"" + parent_specialty + "\",\"generation\":" + to_string(child_gen) + ",\"parent_fitness\":" + to_string(my_fit_r) + "}";
+                                        // colony-lint: safe-exec-concat
+                                        let append_r = "printf '%s\n' " + shell_escape(row) + " >> " + shell_escape(ledger_path_r);
+                                        let _lr = try { exec sh append_r; } catch e { ""; };
+                                        memo_write("novelty:" + replica_id + ":generation", to_string(child_gen));
+                                        if len(parent_specialty) > 0 {
+                                            memo_write("novelty:" + replica_id + ":specialty", parent_specialty);
+                                        };
+                                    };
+                                } else {
+                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "failure", ["replicate-nak", "math-foundry", colony_name_str]);
+                                };
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
 }
 
 fn tick(reason: string) -> void {
@@ -167,6 +326,31 @@ fn tick(reason: string) -> void {
     let _tick_now_ms = now_ms_via_shell();
     let _colony_name = colony_name();
     let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
+
+    // Phase 9 PR-C (#663): first-tick claim of a specialty from the
+    // bootstrap-seeded pool.
+    if len(_self_pid) > 0 {
+        let _existing_specialty = recall_latest("novelty:" + _self_pid + ":specialty");
+        if len(_existing_specialty) == 0 {
+            let _daemon_id = try { exec sh "printenv DAEMON_ID"; } catch e { ""; };
+            if len(_daemon_id) > 0 {
+                let _pool_specialty = recall_latest("novelty:pool:specialty:" + _daemon_id);
+                if len(_pool_specialty) > 0 {
+                    memo_write("novelty:" + _self_pid + ":specialty", _pool_specialty);
+                    let _pool_overlay = recall_latest("novelty:pool:specialty_overlay:" + _daemon_id);
+                    if len(_pool_overlay) > 0 {
+                        memo_write("novelty:" + _self_pid + ":specialty_overlay", _pool_overlay);
+                    };
+                    let _gen_env = try { exec sh "printenv NOVELTY_GENERATION"; } catch e { "0"; };
+                    let _gen_seed = if len(_gen_env) > 0 { _gen_env; } else { "0"; };
+                    memo_write("novelty:" + _self_pid + ":generation", _gen_seed);
+                    // colony-lint: learn-tags-ok
+                    learn("novelty_specialty_claim", "daemon_id=" + _daemon_id, "specialty=" + _pool_specialty, "success", ["specialty-claim", "math-foundry"]);
+                };
+            };
+        };
+    };
+
     let conf = get_confidence();
     print("[novelty] tick conf=", conf);
 
@@ -217,7 +401,7 @@ fn tick(reason: string) -> void {
             + "ANSWER: " + stated_answer + "\n"
             + "NOVELTY CLAIM: " + novelty_claim + "\n";
 
-    let novelty = prompt(_seed_prompt(), ctx) -> NoveltyVerdict;
+    let novelty = prompt(_seed_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(_self_pid), ctx) -> NoveltyVerdict;
 
     let my_tier = tier("novelty");
     if my_tier == "autonomous" {
@@ -226,14 +410,14 @@ fn tick(reason: string) -> void {
         // `autonomous_decision=true` flag for downstream auditors (#622).
         memo_write("novelty:" + _self_pid + ":autonomous_decision", "true");
         learn("novelty", "tick " + to_string(tick_idx) + " " + novelty.novelty_verdict, novelty.reasoning, "partial", ["acted", "math-foundry"]);
-        _publish_novelty(true, novelty, _self_pid, _colony_name, formulator_pid, explorer_pid, problem_text, stated_answer, novelty_claim, upstream_tick, tick_idx, _tick_now_ms);
+        _publish_novelty(true, true, novelty, _self_pid, _colony_name, formulator_pid, explorer_pid, problem_text, stated_answer, novelty_claim, upstream_tick, tick_idx, _tick_now_ms);
     } else {
         if my_tier == "review-gated" {
             learn("novelty", "tick " + to_string(tick_idx) + " " + novelty.novelty_verdict, novelty.reasoning, "partial", ["review-gated", "math-foundry"]);
-            _publish_novelty(true, novelty, _self_pid, _colony_name, formulator_pid, explorer_pid, problem_text, stated_answer, novelty_claim, upstream_tick, tick_idx, _tick_now_ms);
+            _publish_novelty(true, false, novelty, _self_pid, _colony_name, formulator_pid, explorer_pid, problem_text, stated_answer, novelty_claim, upstream_tick, tick_idx, _tick_now_ms);
         } else {
             if my_tier == "propose" {
-                _publish_novelty(false, novelty, _self_pid, _colony_name, formulator_pid, explorer_pid, problem_text, stated_answer, novelty_claim, upstream_tick, tick_idx, _tick_now_ms);
+                _publish_novelty(false, false, novelty, _self_pid, _colony_name, formulator_pid, explorer_pid, problem_text, stated_answer, novelty_claim, upstream_tick, tick_idx, _tick_now_ms);
             } else {
                 print("[novelty] observing (tier:", my_tier, ") verdict=", novelty.novelty_verdict);
                 learn("novelty", "tick " + to_string(tick_idx) + " " + novelty.novelty_verdict, novelty.reasoning, "partial", ["observed", "math-foundry"]);

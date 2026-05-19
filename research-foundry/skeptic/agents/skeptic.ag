@@ -55,6 +55,99 @@ fn _seed_prompt() -> string {
     return "You are a strict skeptic. DEFAULT to dismissing the surprise. The user-supplied input below carries the noticer's SURPRISE DESCRIPTION, the SPECIFIC VALUE, and the WHY SURPRISING reasoning. Match the surprise against classical results: Basel-style sums, Gauss sums, named constants (pi, e, Euler-Mascheroni), classical generating functions, well-known group invariants, OEIS-famous sequences. Set verdict=\"dismissed\" when the surprise is plausibly a re-derivation of a classical identity (include the classical reference). Set verdict=\"upheld\" only when the surprise resists matching to any classical result you can identify. Set verdict=\"unsure\" when the surprise is non-trivial but you cannot rule out a classical match. Output ONLY valid JSON: {\"verdict\": \"dismissed|upheld|unsure\", \"reasoning\": \"...\", \"classical_reference\": \"...\", \"confidence\": 0.0-1.0}.";
 }
 
+fn now_ms_via_shell() -> int {
+    let s = try { exec sh "date +%s%3N"; } catch e { "0"; };
+    return parse_int(s);
+}
+
+// Phase 9 PR-C (#663): variant + specialty overlays appended to the
+// base prompt body. Variant is set by the parent's replicate gate
+// (pick_variant(n)) and read from the per-colony memo. Specialty is
+// claimed at first-tick from the bootstrap-seeded pool by DAEMON_ID.
+fn _variant_overlay_suffix() -> string {
+    let variant = recall_latest("skeptic:prompt_variant");
+    if len(variant) > 0 {
+        return "\n\n[Replica focus: prompt variant '" + variant + "' -- lean into that interpretation when reading the upstream context below.]";
+    };
+    return "";
+}
+
+fn _specialty_overlay_suffix(self_pid: string) -> string {
+    if len(self_pid) == 0 {
+        return "";
+    };
+    let overlay = recall_latest("skeptic:" + self_pid + ":specialty_overlay");
+    if len(overlay) > 0 {
+        let specialty = recall_latest("skeptic:" + self_pid + ":specialty");
+        let label = if len(specialty) > 0 { specialty; } else { "unassigned"; };
+        return "\n\n[Specialty focus (" + label + "): " + overlay + "]";
+    };
+    return "";
+}
+
+// Phase 9 PR-C (#663): hash-pointer extraction over the M106 wire.
+fn _extract_pp_hash(variant_tag: string) -> string {
+    if len(variant_tag) < 67 { return ""; };
+    if substring(variant_tag, 0, 3) != "pp:" { return ""; };
+    let hex = substring(variant_tag, 3, 67);
+    // colony-lint: safe-exec-concat
+    let cmd = "printf '%s' " + shell_escape(hex) + " | tr -d '0-9a-f' | wc -c";
+    let leftover = try { exec sh cmd; } catch e { "1"; };
+    if parse_int(leftover) != 0 { return ""; };
+    return hex;
+}
+
+// Parent pre-replicate hash-pointer wrap. Same shape as explorer.ag.
+fn _publish_prompt_body_and_wrap_variant(self_pid: string, variant_tag: string) -> string {
+    if len(self_pid) == 0 { return variant_tag; };
+    let body = recall_latest("skeptic:" + self_pid + ":prompt_body");
+    if len(body) == 0 { return variant_tag; };
+    // colony-lint: safe-exec-concat
+    let sha_cmd = "python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.argv[1].encode(\"utf-8\")).hexdigest())' " + shell_escape(body);
+    let h = try { exec sh sha_cmd; } catch e { ""; };
+    if len(h) != 64 { return variant_tag; };
+    let body_key = "skeptic:prompt_body:" + h;
+    let existing = recall_latest(body_key);
+    if len(existing) == 0 { memo_write(body_key, body); };
+    return "pp:" + h + "|" + variant_tag;
+}
+
+// Phase 9 PR-C (#663): per-colony variant picker from the
+// colony-variants.json `skeptic` row.
+fn pick_variant(n: int) -> string {
+    let idx = n - ((n / 5) * 5);
+    if idx == 0 { return "strict"; };
+    if idx == 1 { return "lenient"; };
+    if idx == 2 { return "evidence"; };
+    if idx == 3 { return "classical"; };
+    return "compute";
+}
+
+fn self_node_addr() -> string {
+    let addr = recall_latest("math-foundry:worker_addr");
+    if len(addr) > 0 {
+        return addr;
+    };
+    return "127.0.0.1:9100";
+}
+
+fn select_replication_target() -> string {
+    let cnt_str = recall_latest("math-foundry:peer_worker_count");
+    let cnt = if len(cnt_str) > 0 { parse_int(cnt_str); } else { 0; };
+    if cnt <= 0 {
+        return self_node_addr();
+    };
+    let rr_str = recall_latest("skeptic:replicate_rr_counter");
+    let rr = if len(rr_str) > 0 { parse_int(rr_str); } else { 0; };
+    let idx = rr - ((rr / cnt) * cnt);
+    memo_write("skeptic:replicate_rr_counter", to_string(rr + 1));
+    let addr = recall_latest("math-foundry:peer_worker_addr:" + to_string(idx));
+    if len(addr) > 0 {
+        return addr;
+    };
+    return self_node_addr();
+}
+
 // _dump_ctx_to_memo -- write the assembled prompt context to a per-
 // tick memo key so #623-style validation (and any future audit) can
 // inspect what the LLM actually saw. Stable shape:
@@ -97,19 +190,24 @@ fn _pick_upstream_by_confidence(role: string, output_key: string, tick: int) -> 
     return recall_latest(role + ":" + pid + ":" + output_key + ":tick-" + to_string(tick));
 }
 
-// _publish_skeptic -- memo + emit. Skeptic writes no ledger row today,
-// so final_write is retained for symmetry but currently a no-op.
-// Non-terminal agent collapses autonomous -> review-gated per ADR-0001
-// (#622 PR-2 #632 pattern).
+// _publish_skeptic -- memo + emit (+ replicate gate when do_replicate=true).
+// Skeptic writes no ledger row today, so final_write is retained for
+// symmetry but currently a no-op for the publish path. Phase 9 PR-C
+// (#663) added the M2-Malthusian replicate path. The fitness signal
+// is the +1/0 verdict-upheld approximation, deferred to PR-D.
 fn _publish_skeptic(
     final_write: bool,
+    do_replicate: bool,
     verdict: SkepticVerdict,
     self_pid: string,
+    _colony_name: string,
     noticer_pid: string,
     upstream_tick: int,
-    tick_idx: int
+    tick_idx: int,
+    tick_now_ms: int
 ) -> void {
     let _ = final_write;
+    let _ = tick_idx;
     let conf_str = to_string(verdict.confidence);
     let verdict_json = "{\"verdict\":\"" + verdict.verdict
                      + "\",\"reasoning\":\"" + verdict.reasoning
@@ -123,12 +221,100 @@ fn _publish_skeptic(
     };
     memo_write("replay:current_skeptic_pid", self_pid);
     emit("math-foundry:skeptic_done", verdict);
+
+    // Phase 9 PR-C (#663): per-pid fitness tracking. +1 if verdict is
+    // upheld or unsure (skeptic actually engaged), 0 if dismissed
+    // (low-value verdict).
+    if len(self_pid) > 0 {
+        let fit_pre = parse_int(recall_latest("skeptic:" + self_pid + ":fitness"));
+        let fit_delta = if verdict.verdict == "dismissed" { 0; } else { 1; };
+        memo_write("skeptic:" + self_pid + ":fitness", to_string(fit_pre + fit_delta));
+    };
+
+    // Phase 9 PR-C (#663): M2-Malthusian replicate gate -- autonomous tier only.
+    if do_replicate {
+        let repr_thr = parse_int(recall_latest("skeptic:reproductive_fitness_threshold"));
+        if repr_thr > 0 {
+            let my_fit_r = parse_int(recall_latest("skeptic:" + self_pid + ":fitness"));
+            if my_fit_r > repr_thr {
+                let n_r = parse_int(recall_latest("colony-" + _colony_name + ":size"));
+                let max_repl_r = parse_int(recall_latest("colony-" + _colony_name + ":max_replicas"));
+                if n_r < max_repl_r {
+                    let pool_r = parse_int(recall_latest("colony-" + _colony_name + ":pool"));
+                    let base_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_base_cost"));
+                    let raw_k_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_k"));
+                    let k_r = if raw_k_r <= 0 { 3; } else { raw_k_r; };
+                    let cost_r = base_r + (base_r * n_r) / k_r;
+                    if pool_r >= cost_r {
+                        let variant_pick = pick_variant(n_r);
+                        memo_write("skeptic:prompt_variant", variant_pick);
+                        let target_r = select_replication_target();
+                        if len(target_r) > 0 {
+                            let variant_wrapped = _publish_prompt_body_and_wrap_variant(self_pid, variant_pick);
+                            let replica_id = try { replicate(target_r, my_fit_r, variant_wrapped); } catch e { "__replicate_error__"; };
+                            if replica_id != "__replicate_error__" {
+                                if len(replica_id) > 0 {
+                                    memo_write("colony-" + _colony_name + ":pool", to_string(pool_r - cost_r));
+                                    memo_write("colony-" + _colony_name + ":size", to_string(n_r + 1));
+                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "success", ["replicated", "math-foundry", _colony_name]);
+
+                                    let lin_str = recall_latest("skeptic:" + self_pid + ":generation");
+                                    let lin = if len(lin_str) > 0 { parse_int(lin_str); } else { 0; };
+                                    let ledger_path_r = try { exec sh "printenv REPLICATION_LEDGER"; } catch e { ""; };
+                                    if len(ledger_path_r) > 0 {
+                                        let parent_specialty = recall_latest("skeptic:" + self_pid + ":specialty");
+                                        let child_gen = lin + 1;
+                                        let row = "{\"ts\":" + to_string(tick_now_ms) + ",\"event\":\"replicate\",\"colony\":\"" + _colony_name + "\",\"side\":\"discovery\",\"parent_pid\":\"" + self_pid + "\",\"child_replica_id\":\"" + replica_id + "\",\"specialty\":\"" + parent_specialty + "\",\"generation\":" + to_string(child_gen) + ",\"parent_fitness\":" + to_string(my_fit_r) + "}";
+                                        // colony-lint: safe-exec-concat
+                                        let append_r = "printf '%s\n' " + shell_escape(row) + " >> " + shell_escape(ledger_path_r);
+                                        let _lr = try { exec sh append_r; } catch e { ""; };
+                                        memo_write("skeptic:" + replica_id + ":generation", to_string(child_gen));
+                                        if len(parent_specialty) > 0 {
+                                            memo_write("skeptic:" + replica_id + ":specialty", parent_specialty);
+                                        };
+                                    };
+                                } else {
+                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "failure", ["replicate-nak", "math-foundry", _colony_name]);
+                                };
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
 }
 
 fn tick(reason: string) -> void {
     let _ = reason;
+    let _tick_now_ms = now_ms_via_shell();
     let _colony_name = colony_name();
     let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
+
+    // Phase 9 PR-C (#663): first-tick claim of a specialty from the
+    // bootstrap-seeded pool. Idempotent on subsequent ticks.
+    if len(_self_pid) > 0 {
+        let _existing_specialty = recall_latest("skeptic:" + _self_pid + ":specialty");
+        if len(_existing_specialty) == 0 {
+            let _daemon_id = try { exec sh "printenv DAEMON_ID"; } catch e { ""; };
+            if len(_daemon_id) > 0 {
+                let _pool_specialty = recall_latest("skeptic:pool:specialty:" + _daemon_id);
+                if len(_pool_specialty) > 0 {
+                    memo_write("skeptic:" + _self_pid + ":specialty", _pool_specialty);
+                    let _pool_overlay = recall_latest("skeptic:pool:specialty_overlay:" + _daemon_id);
+                    if len(_pool_overlay) > 0 {
+                        memo_write("skeptic:" + _self_pid + ":specialty_overlay", _pool_overlay);
+                    };
+                    let _gen_env = try { exec sh "printenv SKEPTIC_GENERATION"; } catch e { "0"; };
+                    let _gen_seed = if len(_gen_env) > 0 { _gen_env; } else { "0"; };
+                    memo_write("skeptic:" + _self_pid + ":generation", _gen_seed);
+                    // colony-lint: learn-tags-ok
+                    learn("skeptic_specialty_claim", "daemon_id=" + _daemon_id, "specialty=" + _pool_specialty, "success", ["specialty-claim", "math-foundry"]);
+                };
+            };
+        };
+    };
+
     let conf = get_confidence();
     print("[skeptic] tick conf=", conf);
 
@@ -172,23 +358,22 @@ fn tick(reason: string) -> void {
             + "WHY SURPRISING: " + why_surprising + "\n";
 
     _dump_ctx_to_memo("skeptic", _self_pid, tick_idx, ctx);
-    let verdict = prompt(_seed_prompt(), ctx) -> SkepticVerdict;
+    let verdict = prompt(_seed_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(_self_pid), ctx) -> SkepticVerdict;
 
     let my_tier = tier("skeptic");
     if my_tier == "autonomous" {
-        // reason: tier N/A here; non-terminal agent -- collapses to review-gated.
         memo_write("skeptic:" + _self_pid + ":review_gated", "true");
         learn("skeptic_dismiss", "tick " + to_string(tick_idx) + " " + verdict.verdict, verdict.reasoning, "partial", ["acted", "math-foundry"]);
-        _publish_skeptic(true, verdict, _self_pid, noticer_pid, upstream_tick, tick_idx);
+        _publish_skeptic(true, true, verdict, _self_pid, _colony_name, noticer_pid, upstream_tick, tick_idx, _tick_now_ms);
     } else {
         if my_tier == "review-gated" {
             memo_write("skeptic:" + _self_pid + ":review_gated", "true");
             learn("skeptic_dismiss", "tick " + to_string(tick_idx) + " " + verdict.verdict, verdict.reasoning, "partial", ["review-gated", "math-foundry"]);
-            _publish_skeptic(true, verdict, _self_pid, noticer_pid, upstream_tick, tick_idx);
+            _publish_skeptic(true, false, verdict, _self_pid, _colony_name, noticer_pid, upstream_tick, tick_idx, _tick_now_ms);
         } else {
             if my_tier == "propose" {
                 learn("skeptic_dismiss", "tick " + to_string(tick_idx) + " " + verdict.verdict, verdict.reasoning, "success", ["emitted", "math-foundry"]);
-                _publish_skeptic(false, verdict, _self_pid, noticer_pid, upstream_tick, tick_idx);
+                _publish_skeptic(false, false, verdict, _self_pid, _colony_name, noticer_pid, upstream_tick, tick_idx, _tick_now_ms);
             } else {
                 print("[skeptic] observing (tier:", my_tier, ") verdict=", verdict.verdict);
                 learn("skeptic_dismiss", "tick " + to_string(tick_idx) + " " + verdict.verdict, verdict.reasoning, "partial", ["observed", "math-foundry"]);

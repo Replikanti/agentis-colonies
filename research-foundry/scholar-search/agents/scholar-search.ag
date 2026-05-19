@@ -66,14 +66,104 @@ fn _relevance_prompt() -> string {
     return "Given the PROBLEM, ANSWER, NOVELTY CLAIM, and the raw Semantic Scholar JSON responses below (one per query, may contain 'unavailable' markers when the API rate-limited or errored), pick up to 5 papers that look most relevant. Output ONLY valid JSON: {\"status\": \"ok|unavailable|partial\", \"matches_found\": <int>, \"top_matches\": [{\"paper_id\":\"...\",\"title\":\"...\",\"relevance\":\"direct|partial|none\",\"reason\":\"...\"}], \"summary\":\"one-line\"}. status='unavailable' if every query failed; 'partial' if some failed; 'ok' otherwise. Do NOT wrap output in markdown code fences (no triple backticks); return raw JSON only.";
 }
 
-// _publish_scholar_search -- fetch + judge + memo + emit. No ledger row
-// today; final_write retained for symmetry (#622 ADR-0001).
+fn now_ms_via_shell() -> int {
+    let s = try { exec sh "date +%s%3N"; } catch e { "0"; };
+    return parse_int(s);
+}
+
+// Phase 9 PR-C (#663): variant + specialty overlays.
+fn _variant_overlay_suffix() -> string {
+    let variant = recall_latest("scholar-search:prompt_variant");
+    if len(variant) > 0 {
+        return "\n\n[Replica focus: prompt variant '" + variant + "' -- lean into that interpretation when reading the upstream claim context below.]";
+    };
+    return "";
+}
+
+fn _specialty_overlay_suffix(self_pid: string) -> string {
+    if len(self_pid) == 0 {
+        return "";
+    };
+    let overlay = recall_latest("scholar-search:" + self_pid + ":specialty_overlay");
+    if len(overlay) > 0 {
+        let specialty = recall_latest("scholar-search:" + self_pid + ":specialty");
+        let label = if len(specialty) > 0 { specialty; } else { "unassigned"; };
+        return "\n\n[Specialty focus (" + label + "): " + overlay + "]";
+    };
+    return "";
+}
+
+fn _extract_pp_hash(variant_tag: string) -> string {
+    if len(variant_tag) < 67 { return ""; };
+    if substring(variant_tag, 0, 3) != "pp:" { return ""; };
+    let hex = substring(variant_tag, 3, 67);
+    // colony-lint: safe-exec-concat
+    let cmd = "printf '%s' " + shell_escape(hex) + " | tr -d '0-9a-f' | wc -c";
+    let leftover = try { exec sh cmd; } catch e { "1"; };
+    if parse_int(leftover) != 0 { return ""; };
+    return hex;
+}
+
+fn _publish_prompt_body_and_wrap_variant(self_pid: string, variant_tag: string) -> string {
+    if len(self_pid) == 0 { return variant_tag; };
+    let body = recall_latest("scholar-search:" + self_pid + ":prompt_body");
+    if len(body) == 0 { return variant_tag; };
+    // colony-lint: safe-exec-concat
+    let sha_cmd = "python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.argv[1].encode(\"utf-8\")).hexdigest())' " + shell_escape(body);
+    let h = try { exec sh sha_cmd; } catch e { ""; };
+    if len(h) != 64 { return variant_tag; };
+    let body_key = "scholar-search:prompt_body:" + h;
+    let existing = recall_latest(body_key);
+    if len(existing) == 0 { memo_write(body_key, body); };
+    return "pp:" + h + "|" + variant_tag;
+}
+
+fn pick_variant(n: int) -> string {
+    let idx = n - ((n / 5) * 5);
+    if idx == 0 { return "recent"; };
+    if idx == 1 { return "classical"; };
+    if idx == 2 { return "cited_by"; };
+    if idx == 3 { return "review"; };
+    return "preprint";
+}
+
+fn self_node_addr() -> string {
+    let addr = recall_latest("math-foundry:worker_addr");
+    if len(addr) > 0 {
+        return addr;
+    };
+    return "127.0.0.1:9100";
+}
+
+fn select_replication_target() -> string {
+    let cnt_str = recall_latest("math-foundry:peer_worker_count");
+    let cnt = if len(cnt_str) > 0 { parse_int(cnt_str); } else { 0; };
+    if cnt <= 0 {
+        return self_node_addr();
+    };
+    let rr_str = recall_latest("scholar-search:replicate_rr_counter");
+    let rr = if len(rr_str) > 0 { parse_int(rr_str); } else { 0; };
+    let idx = rr - ((rr / cnt) * cnt);
+    memo_write("scholar-search:replicate_rr_counter", to_string(rr + 1));
+    let addr = recall_latest("math-foundry:peer_worker_addr:" + to_string(idx));
+    if len(addr) > 0 {
+        return addr;
+    };
+    return self_node_addr();
+}
+
+// _publish_scholar_search -- fetch + judge + memo + emit (+ replicate
+// when do_replicate=true). Phase 9 PR-C (#663) added the M2-Malthusian
+// replicate path; +1/0 matches-based fitness approximation.
 fn _publish_scholar_search(
     final_write: bool,
+    do_replicate: bool,
     queries: Queries,
     self_pid: string,
+    _colony_name: string,
     upstream_tick: int,
     tick_idx: int,
+    tick_now_ms: int,
     problem_text: string,
     stated_answer: string,
     novelty_claim: string
@@ -100,7 +190,7 @@ fn _publish_scholar_search(
                   + "ANSWER: " + stated_answer + "\n"
                   + "NOVELTY CLAIM: " + novelty_claim + "\n"
                   + "SEMANTIC SCHOLAR FEEDS:\n" + combined_raw + "\n";
-    let report = prompt(_relevance_prompt(), judge_ctx) -> Report;
+    let report = prompt(_relevance_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(self_pid), judge_ctx) -> Report;
 
     let report_json = "{\"status\":\"" + report.status
                     + "\",\"matches_found\":" + to_string(report.matches_found)
@@ -114,12 +204,96 @@ fn _publish_scholar_search(
     emit("scholar-search:report_ready", report);
 
     learn("scholar-search", "tick " + to_string(tick_idx), "status=" + report.status + " matches=" + to_string(report.matches_found), "success", ["emitted", "claim-auditor"]);
+
+    if len(self_pid) > 0 {
+        let fit_pre = parse_int(recall_latest("scholar-search:" + self_pid + ":fitness"));
+        let fit_delta = if report.matches_found > 0 { 1; } else { 0; };
+        memo_write("scholar-search:" + self_pid + ":fitness", to_string(fit_pre + fit_delta));
+    };
+
+    if do_replicate {
+        let repr_thr = parse_int(recall_latest("scholar-search:reproductive_fitness_threshold"));
+        if repr_thr > 0 {
+            let my_fit_r = parse_int(recall_latest("scholar-search:" + self_pid + ":fitness"));
+            if my_fit_r > repr_thr {
+                let n_r = parse_int(recall_latest("colony-" + _colony_name + ":size"));
+                let max_repl_r = parse_int(recall_latest("colony-" + _colony_name + ":max_replicas"));
+                if n_r < max_repl_r {
+                    let pool_r = parse_int(recall_latest("colony-" + _colony_name + ":pool"));
+                    let base_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_base_cost"));
+                    let raw_k_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_k"));
+                    let k_r = if raw_k_r <= 0 { 3; } else { raw_k_r; };
+                    let cost_r = base_r + (base_r * n_r) / k_r;
+                    if pool_r >= cost_r {
+                        let variant_pick = pick_variant(n_r);
+                        memo_write("scholar-search:prompt_variant", variant_pick);
+                        let target_r = select_replication_target();
+                        if len(target_r) > 0 {
+                            let variant_wrapped = _publish_prompt_body_and_wrap_variant(self_pid, variant_pick);
+                            let replica_id = try { replicate(target_r, my_fit_r, variant_wrapped); } catch e { "__replicate_error__"; };
+                            if replica_id != "__replicate_error__" {
+                                if len(replica_id) > 0 {
+                                    memo_write("colony-" + _colony_name + ":pool", to_string(pool_r - cost_r));
+                                    memo_write("colony-" + _colony_name + ":size", to_string(n_r + 1));
+                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "success", ["replicated", "claim-auditor", _colony_name]);
+
+                                    let lin_str = recall_latest("scholar-search:" + self_pid + ":generation");
+                                    let lin = if len(lin_str) > 0 { parse_int(lin_str); } else { 0; };
+                                    let ledger_path_r = try { exec sh "printenv REPLICATION_LEDGER"; } catch e { ""; };
+                                    if len(ledger_path_r) > 0 {
+                                        let parent_specialty = recall_latest("scholar-search:" + self_pid + ":specialty");
+                                        let child_gen = lin + 1;
+                                        let row = "{\"ts\":" + to_string(tick_now_ms) + ",\"event\":\"replicate\",\"colony\":\"" + _colony_name + "\",\"side\":\"audit\",\"parent_pid\":\"" + self_pid + "\",\"child_replica_id\":\"" + replica_id + "\",\"specialty\":\"" + parent_specialty + "\",\"generation\":" + to_string(child_gen) + ",\"parent_fitness\":" + to_string(my_fit_r) + "}";
+                                        // colony-lint: safe-exec-concat
+                                        let append_r = "printf '%s\n' " + shell_escape(row) + " >> " + shell_escape(ledger_path_r);
+                                        let _lr = try { exec sh append_r; } catch e { ""; };
+                                        memo_write("scholar-search:" + replica_id + ":generation", to_string(child_gen));
+                                        if len(parent_specialty) > 0 {
+                                            memo_write("scholar-search:" + replica_id + ":specialty", parent_specialty);
+                                        };
+                                    };
+                                } else {
+                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "failure", ["replicate-nak", "claim-auditor", _colony_name]);
+                                };
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
 }
 
 fn tick(reason: string) -> void {
     let _ = reason;
+    let _tick_now_ms = now_ms_via_shell();
     let _colony_name = colony_name();
     let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
+
+    // Phase 9 PR-C (#663): first-tick claim of a specialty from the
+    // bootstrap-seeded pool.
+    if len(_self_pid) > 0 {
+        let _existing_specialty = recall_latest("scholar-search:" + _self_pid + ":specialty");
+        if len(_existing_specialty) == 0 {
+            let _daemon_id = try { exec sh "printenv DAEMON_ID"; } catch e { ""; };
+            if len(_daemon_id) > 0 {
+                let _pool_specialty = recall_latest("scholar-search:pool:specialty:" + _daemon_id);
+                if len(_pool_specialty) > 0 {
+                    memo_write("scholar-search:" + _self_pid + ":specialty", _pool_specialty);
+                    let _pool_overlay = recall_latest("scholar-search:pool:specialty_overlay:" + _daemon_id);
+                    if len(_pool_overlay) > 0 {
+                        memo_write("scholar-search:" + _self_pid + ":specialty_overlay", _pool_overlay);
+                    };
+                    let _gen_env = try { exec sh "printenv SCHOLAR_SEARCH_GENERATION"; } catch e { "0"; };
+                    let _gen_seed = if len(_gen_env) > 0 { _gen_env; } else { "0"; };
+                    memo_write("scholar-search:" + _self_pid + ":generation", _gen_seed);
+                    // colony-lint: learn-tags-ok
+                    learn("scholar_search_specialty_claim", "daemon_id=" + _daemon_id, "specialty=" + _pool_specialty, "success", ["specialty-claim", "claim-auditor"]);
+                };
+            };
+        };
+    };
+
     let conf = get_confidence();
     print("[scholar-search] tick conf=", conf);
 
@@ -147,22 +321,21 @@ fn tick(reason: string) -> void {
             + "ANSWER: " + stated_answer + "\n"
             + "NOVELTY CLAIM: " + novelty_claim + "\n";
 
-    let queries = prompt(_extract_prompt(), ctx) -> Queries;
+    let queries = prompt(_extract_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(_self_pid), ctx) -> Queries;
 
     let my_tier = tier("scholar_search");
     if my_tier == "autonomous" {
-        // reason: tier N/A here; non-terminal agent -- collapses to review-gated.
         memo_write("scholar_search:" + _self_pid + ":review_gated", "true");
         learn("scholar-search", "tick " + to_string(tick_idx), queries.rationale, "partial", ["acted", "claim-auditor"]);
-        _publish_scholar_search(true, queries, _self_pid, upstream_tick, tick_idx, problem_text, stated_answer, novelty_claim);
+        _publish_scholar_search(true, true, queries, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim);
     } else {
         if my_tier == "review-gated" {
             memo_write("scholar_search:" + _self_pid + ":review_gated", "true");
             learn("scholar-search", "tick " + to_string(tick_idx), queries.rationale, "partial", ["review-gated", "claim-auditor"]);
-            _publish_scholar_search(true, queries, _self_pid, upstream_tick, tick_idx, problem_text, stated_answer, novelty_claim);
+            _publish_scholar_search(true, false, queries, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim);
         } else {
             if my_tier == "propose" {
-                _publish_scholar_search(false, queries, _self_pid, upstream_tick, tick_idx, problem_text, stated_answer, novelty_claim);
+                _publish_scholar_search(false, false, queries, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim);
             } else {
                 print("[scholar-search] observing (tier:", my_tier, ") rationale=", queries.rationale);
                 learn("scholar-search", "tick " + to_string(tick_idx), queries.rationale, "partial", ["observed", "claim-auditor"]);

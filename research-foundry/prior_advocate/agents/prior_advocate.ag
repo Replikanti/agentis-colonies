@@ -49,6 +49,92 @@ fn _seed_prompt() -> string {
     return "You are an adversarial reviewer arguing this claim is already known. Construct the strongest possible case that the claim is a corollary of, or restatement of, an existing result. Cite the closest theorem/lemma/identity you can think of. Output JSON: `{is_prior: bool, classical_anchor: string, indirect_derivation: string, confidence: float, reasoning: string}`. Do NOT wrap output in markdown code fences.";
 }
 
+fn now_ms_via_shell() -> int {
+    let s = try { exec sh "date +%s%3N"; } catch e { "0"; };
+    return parse_int(s);
+}
+
+// Phase 9 PR-C (#663): variant + specialty overlays.
+fn _variant_overlay_suffix() -> string {
+    let variant = recall_latest("prior_advocate:prompt_variant");
+    if len(variant) > 0 {
+        return "\n\n[Replica focus: prompt variant '" + variant + "' -- lean into that interpretation when reading the upstream claim context below.]";
+    };
+    return "";
+}
+
+fn _specialty_overlay_suffix(self_pid: string) -> string {
+    if len(self_pid) == 0 {
+        return "";
+    };
+    let overlay = recall_latest("prior_advocate:" + self_pid + ":specialty_overlay");
+    if len(overlay) > 0 {
+        let specialty = recall_latest("prior_advocate:" + self_pid + ":specialty");
+        let label = if len(specialty) > 0 { specialty; } else { "unassigned"; };
+        return "\n\n[Specialty focus (" + label + "): " + overlay + "]";
+    };
+    return "";
+}
+
+fn _extract_pp_hash(variant_tag: string) -> string {
+    if len(variant_tag) < 67 { return ""; };
+    if substring(variant_tag, 0, 3) != "pp:" { return ""; };
+    let hex = substring(variant_tag, 3, 67);
+    // colony-lint: safe-exec-concat
+    let cmd = "printf '%s' " + shell_escape(hex) + " | tr -d '0-9a-f' | wc -c";
+    let leftover = try { exec sh cmd; } catch e { "1"; };
+    if parse_int(leftover) != 0 { return ""; };
+    return hex;
+}
+
+fn _publish_prompt_body_and_wrap_variant(self_pid: string, variant_tag: string) -> string {
+    if len(self_pid) == 0 { return variant_tag; };
+    let body = recall_latest("prior_advocate:" + self_pid + ":prompt_body");
+    if len(body) == 0 { return variant_tag; };
+    // colony-lint: safe-exec-concat
+    let sha_cmd = "python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.argv[1].encode(\"utf-8\")).hexdigest())' " + shell_escape(body);
+    let h = try { exec sh sha_cmd; } catch e { ""; };
+    if len(h) != 64 { return variant_tag; };
+    let body_key = "prior_advocate:prompt_body:" + h;
+    let existing = recall_latest(body_key);
+    if len(existing) == 0 { memo_write(body_key, body); };
+    return "pp:" + h + "|" + variant_tag;
+}
+
+fn pick_variant(n: int) -> string {
+    let idx = n - ((n / 5) * 5);
+    if idx == 0 { return "textbook"; };
+    if idx == 1 { return "research_paper"; };
+    if idx == 2 { return "lecture_notes"; };
+    if idx == 3 { return "qa_thread"; };
+    return "blog";
+}
+
+fn self_node_addr() -> string {
+    let addr = recall_latest("math-foundry:worker_addr");
+    if len(addr) > 0 {
+        return addr;
+    };
+    return "127.0.0.1:9100";
+}
+
+fn select_replication_target() -> string {
+    let cnt_str = recall_latest("math-foundry:peer_worker_count");
+    let cnt = if len(cnt_str) > 0 { parse_int(cnt_str); } else { 0; };
+    if cnt <= 0 {
+        return self_node_addr();
+    };
+    let rr_str = recall_latest("prior_advocate:replicate_rr_counter");
+    let rr = if len(rr_str) > 0 { parse_int(rr_str); } else { 0; };
+    let idx = rr - ((rr / cnt) * cnt);
+    memo_write("prior_advocate:replicate_rr_counter", to_string(rr + 1));
+    let addr = recall_latest("math-foundry:peer_worker_addr:" + to_string(idx));
+    if len(addr) > 0 {
+        return addr;
+    };
+    return self_node_addr();
+}
+
 // _dump_ctx_to_memo -- write the assembled prompt context to a per-
 // tick memo key so #623-style validation (and any future audit) can
 // inspect what the LLM actually saw. Stable shape:
@@ -60,18 +146,25 @@ fn _dump_ctx_to_memo(agent_name: string, pid: string, tick_idx: int, ctx: string
     memo_write(agent_name + ":" + pid + ":ctx:tick-" + to_string(tick_idx), ctx);
 }
 
-// _publish_prior_advocate -- memo + emit. Non-terminal agent collapses
-// autonomous -> review-gated per ADR-0001 (#622 PR-2 #632 pattern).
-// prior_advocate writes no ledger row today; final_write retained for
-// symmetry with the searchers.
+// _publish_prior_advocate -- memo + emit (+ replicate when do_replicate=true).
+// Non-terminal agent collapses autonomous -> review-gated per ADR-0001
+// (#622 PR-2 #632 pattern). prior_advocate writes no ledger row today;
+// final_write retained for symmetry with the searchers. Phase 9 PR-C
+// (#663) added the M2-Malthusian replicate path. Fitness signal is
+// +1 on `is_prior=true` (the advocate found a plausible prior), 0
+// otherwise.
 fn _publish_prior_advocate(
     final_write: bool,
+    do_replicate: bool,
     verdict: Verdict,
     self_pid: string,
+    _colony_name: string,
     upstream_tick: int,
-    tick_idx: int
+    tick_idx: int,
+    tick_now_ms: int
 ) -> void {
     let _ = final_write;
+    let _ = tick_idx;
     let conf_str = to_string(verdict.confidence);
     let is_prior_str = if verdict.is_prior { "true"; } else { "false"; };
     let verdict_json = "{\"is_prior\":" + is_prior_str
@@ -83,12 +176,95 @@ fn _publish_prior_advocate(
     memo_write("prior_advocate:" + self_pid + ":is_prior:tick-" + to_string(upstream_tick), is_prior_str);
     memo_write("replay:current_prior_advocate_pid", self_pid);
     emit("claim-auditor:prior_advocate_done", verdict);
+
+    if len(self_pid) > 0 {
+        let fit_pre = parse_int(recall_latest("prior_advocate:" + self_pid + ":fitness"));
+        let fit_delta = if verdict.is_prior { 1; } else { 0; };
+        memo_write("prior_advocate:" + self_pid + ":fitness", to_string(fit_pre + fit_delta));
+    };
+
+    if do_replicate {
+        let repr_thr = parse_int(recall_latest("prior_advocate:reproductive_fitness_threshold"));
+        if repr_thr > 0 {
+            let my_fit_r = parse_int(recall_latest("prior_advocate:" + self_pid + ":fitness"));
+            if my_fit_r > repr_thr {
+                let n_r = parse_int(recall_latest("colony-" + _colony_name + ":size"));
+                let max_repl_r = parse_int(recall_latest("colony-" + _colony_name + ":max_replicas"));
+                if n_r < max_repl_r {
+                    let pool_r = parse_int(recall_latest("colony-" + _colony_name + ":pool"));
+                    let base_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_base_cost"));
+                    let raw_k_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_k"));
+                    let k_r = if raw_k_r <= 0 { 3; } else { raw_k_r; };
+                    let cost_r = base_r + (base_r * n_r) / k_r;
+                    if pool_r >= cost_r {
+                        let variant_pick = pick_variant(n_r);
+                        memo_write("prior_advocate:prompt_variant", variant_pick);
+                        let target_r = select_replication_target();
+                        if len(target_r) > 0 {
+                            let variant_wrapped = _publish_prompt_body_and_wrap_variant(self_pid, variant_pick);
+                            let replica_id = try { replicate(target_r, my_fit_r, variant_wrapped); } catch e { "__replicate_error__"; };
+                            if replica_id != "__replicate_error__" {
+                                if len(replica_id) > 0 {
+                                    memo_write("colony-" + _colony_name + ":pool", to_string(pool_r - cost_r));
+                                    memo_write("colony-" + _colony_name + ":size", to_string(n_r + 1));
+                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "success", ["replicated", "claim-auditor", _colony_name]);
+
+                                    let lin_str = recall_latest("prior_advocate:" + self_pid + ":generation");
+                                    let lin = if len(lin_str) > 0 { parse_int(lin_str); } else { 0; };
+                                    let ledger_path_r = try { exec sh "printenv REPLICATION_LEDGER"; } catch e { ""; };
+                                    if len(ledger_path_r) > 0 {
+                                        let parent_specialty = recall_latest("prior_advocate:" + self_pid + ":specialty");
+                                        let child_gen = lin + 1;
+                                        let row = "{\"ts\":" + to_string(tick_now_ms) + ",\"event\":\"replicate\",\"colony\":\"" + _colony_name + "\",\"side\":\"audit\",\"parent_pid\":\"" + self_pid + "\",\"child_replica_id\":\"" + replica_id + "\",\"specialty\":\"" + parent_specialty + "\",\"generation\":" + to_string(child_gen) + ",\"parent_fitness\":" + to_string(my_fit_r) + "}";
+                                        // colony-lint: safe-exec-concat
+                                        let append_r = "printf '%s\n' " + shell_escape(row) + " >> " + shell_escape(ledger_path_r);
+                                        let _lr = try { exec sh append_r; } catch e { ""; };
+                                        memo_write("prior_advocate:" + replica_id + ":generation", to_string(child_gen));
+                                        if len(parent_specialty) > 0 {
+                                            memo_write("prior_advocate:" + replica_id + ":specialty", parent_specialty);
+                                        };
+                                    };
+                                } else {
+                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "failure", ["replicate-nak", "claim-auditor", _colony_name]);
+                                };
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
 }
 
 fn tick(reason: string) -> void {
     let _ = reason;
+    let _tick_now_ms = now_ms_via_shell();
     let _colony_name = colony_name();
     let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
+
+    // Phase 9 PR-C (#663): first-tick claim of a specialty.
+    if len(_self_pid) > 0 {
+        let _existing_specialty = recall_latest("prior_advocate:" + _self_pid + ":specialty");
+        if len(_existing_specialty) == 0 {
+            let _daemon_id = try { exec sh "printenv DAEMON_ID"; } catch e { ""; };
+            if len(_daemon_id) > 0 {
+                let _pool_specialty = recall_latest("prior_advocate:pool:specialty:" + _daemon_id);
+                if len(_pool_specialty) > 0 {
+                    memo_write("prior_advocate:" + _self_pid + ":specialty", _pool_specialty);
+                    let _pool_overlay = recall_latest("prior_advocate:pool:specialty_overlay:" + _daemon_id);
+                    if len(_pool_overlay) > 0 {
+                        memo_write("prior_advocate:" + _self_pid + ":specialty_overlay", _pool_overlay);
+                    };
+                    let _gen_env = try { exec sh "printenv PRIOR_ADVOCATE_GENERATION"; } catch e { "0"; };
+                    let _gen_seed = if len(_gen_env) > 0 { _gen_env; } else { "0"; };
+                    memo_write("prior_advocate:" + _self_pid + ":generation", _gen_seed);
+                    // colony-lint: learn-tags-ok
+                    learn("prior_advocate_specialty_claim", "daemon_id=" + _daemon_id, "specialty=" + _pool_specialty, "success", ["specialty-claim", "claim-auditor"]);
+                };
+            };
+        };
+    };
+
     let conf = get_confidence();
     print("[prior_advocate] tick conf=", conf);
 
@@ -117,23 +293,22 @@ fn tick(reason: string) -> void {
             + "NOVELTY CLAIM: " + novelty_claim + "\n";
 
     _dump_ctx_to_memo("prior_advocate", _self_pid, tick_idx, ctx);
-    let verdict = prompt(_seed_prompt(), ctx) -> Verdict;
+    let verdict = prompt(_seed_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(_self_pid), ctx) -> Verdict;
 
     let my_tier = tier("prior_advocate");
     if my_tier == "autonomous" {
-        // reason: tier N/A here; non-terminal agent -- collapses to review-gated.
         memo_write("prior_advocate:" + _self_pid + ":review_gated", "true");
         learn("prior_match", "tick " + to_string(tick_idx), verdict.reasoning, "partial", ["acted", "claim-auditor"]);
-        _publish_prior_advocate(true, verdict, _self_pid, upstream_tick, tick_idx);
+        _publish_prior_advocate(true, true, verdict, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms);
     } else {
         if my_tier == "review-gated" {
             memo_write("prior_advocate:" + _self_pid + ":review_gated", "true");
             learn("prior_match", "tick " + to_string(tick_idx), verdict.reasoning, "partial", ["review-gated", "claim-auditor"]);
-            _publish_prior_advocate(true, verdict, _self_pid, upstream_tick, tick_idx);
+            _publish_prior_advocate(true, false, verdict, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms);
         } else {
             if my_tier == "propose" {
                 learn("prior_match", "tick " + to_string(tick_idx), verdict.reasoning, "success", ["emitted", "claim-auditor"]);
-                _publish_prior_advocate(false, verdict, _self_pid, upstream_tick, tick_idx);
+                _publish_prior_advocate(false, false, verdict, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms);
             } else {
                 print("[prior_advocate] observing (tier:", my_tier, ") is_prior=", verdict.is_prior);
                 learn("prior_match", "tick " + to_string(tick_idx), verdict.reasoning, "partial", ["observed", "claim-auditor"]);

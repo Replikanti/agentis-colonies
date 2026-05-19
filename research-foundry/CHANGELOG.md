@@ -20,6 +20,32 @@ History of the three retired federations consolidated into this one
 
 ### Changed
 
+- Wired M2-Malthusian replicate gates into all 17 non-explorer
+  colonies and flipped the per-colony spawn loops in
+  `tools/run-research.sh` from singletons to N=3 across the board
+  (Phase 9 PR-C of #663). Container shape goes from `5 explorers + 13
+  singletons = 18 daemons` to `5 explorers + 17 colonies * 3 = 56
+  daemons`. Each non-explorer `.ag` gains the same helper set as
+  `explorer.ag` -- `_variant_overlay_suffix()`,
+  `_specialty_overlay_suffix(self_pid)`, `_extract_pp_hash`,
+  `_publish_prompt_body_and_wrap_variant`, per-colony `pick_variant(n)`
+  sourced from `colony-variants.json`, a first-tick specialty-claim
+  block keyed off `$DAEMON_ID`, and the M2-Malthusian replicate path
+  inside `_publish_<role>`. The replicate ledger row gains a `side`
+  field (`discovery|audit|preprint`) sourced from `colony-variants.json`,
+  emitted by both the .ag replicate path and the cull / respawn rows
+  in `tools/cull-replicas.sh`. `RESEARCH_CULL_COLONIES` expands its
+  default to all 18 colonies. Per-pid fitness in each `.ag` ships a
+  minimal +1/-1 approximation tied to the role-appropriate decisive
+  outcome (matches found, decisive verdict, compile OK, etc.); PR-D
+  (cross-run fitness aggregation) tunes the formulas via
+  `tools/colony-fitness.py`. New
+  `research-foundry/tools/test-replicate-gates.sh` enforces helper
+  presence + the replicate call site for the 17 non-explorer colonies.
+  Extended `research-foundry/tools/test-run-research.sh` asserts the
+  new env defaults + per-colony spawn loops + replication flags.
+  Explorer paths (PR-A picker, PR-B fitness/cull rename) are untouched.
+
 - Generalised Phase 3 explorer-specific tooling to per-colony shape
   across the 18 research-foundry colonies (Phase 9 PR-B of #663).
   Renames + back-compat wrappers preserve every existing callsite

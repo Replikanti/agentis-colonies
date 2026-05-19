@@ -422,12 +422,26 @@ print('gone')
     fi
 
     # Append a cull row to the replication ledger from host context.
+    # Phase 9 PR-C (#663): include the `side` field
+    # (discovery|audit|preprint) sourced from colony-variants.json so
+    # ledger consumers can aggregate by pipeline arm.
     python3 -c "
-import json, sys, time
+import json, os, sys, time
+colony = sys.argv[5]
+variants_path = sys.argv[6]
+side = ''
+try:
+    with open(variants_path) as f:
+        data = json.load(f)
+    entry = (data.get('colonies') or {}).get(colony) or {}
+    side = str(entry.get('side', '') or '')
+except (OSError, IOError, ValueError):
+    side = ''
 row = {
     'ts': int(time.time() * 1000),
     'event': 'cull',
-    'colony': sys.argv[5],
+    'colony': colony,
+    'side': side,
     'pid': sys.argv[1],
     'agent_id': sys.argv[2],
     'specialty': sys.argv[3],
@@ -435,7 +449,7 @@ row = {
     'reason': 'fitness_bottom_pct',
 }
 sys.stdout.write(json.dumps(row) + '\n')
-" "$pid" "$agent_id" "$specialty" "$fitness" "$COLONY_NAME" >> "$REPLICATION_LEDGER"
+" "$pid" "$agent_id" "$specialty" "$fitness" "$COLONY_NAME" "$VARIANTS_FILE" >> "$REPLICATION_LEDGER"
 
     # Best-effort memo cleanup. Some agentis builds don't support
     # pattern delete; tolerate failure silently.
@@ -487,13 +501,25 @@ print(overlay)
     # promptly.
     podman exec "$CONTAINER" bash -c "DAEMON_ID=$NEW_ID COLONY_NAME=$COLONY_NAME EXPLORER_GENERATION=0 HOLD_PERIOD=\${HOLD_PERIOD:-4} DISCOVERY_LEDGER=/run-root/discovery-ledger.jsonl REPLICATION_LEDGER=/run-root/replication-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/$COLONY_NAME/agents/$COLONY_NAME.ag --colony $COLONY_NAME --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval 30000 > /run-root/.agentis/logs/$COLONY_NAME-$NEW_ID.log 2>&1 &" 2>/dev/null || true
 
-    # Append the respawn row.
+    # Append the respawn row. Phase 9 PR-C (#663): include the `side`
+    # field sourced from colony-variants.json.
     python3 -c "
 import json, sys, time
+colony = sys.argv[4]
+variants_path = sys.argv[5]
+side = ''
+try:
+    with open(variants_path) as f:
+        data = json.load(f)
+    entry = (data.get('colonies') or {}).get(colony) or {}
+    side = str(entry.get('side', '') or '')
+except (OSError, IOError, ValueError):
+    side = ''
 row = {
     'ts': int(time.time() * 1000),
     'event': 'respawn',
-    'colony': sys.argv[4],
+    'colony': colony,
+    'side': side,
     'daemon_id': int(sys.argv[1]),
     'specialty': sys.argv[2],
     'generation': 0,
@@ -501,7 +527,7 @@ row = {
     'replaced_pid': sys.argv[3],
 }
 sys.stdout.write(json.dumps(row) + '\n')
-" "$NEW_ID" "$NEXT_SPECIALTY" "$pid" "$COLONY_NAME" >> "$REPLICATION_LEDGER"
+" "$NEW_ID" "$NEXT_SPECIALTY" "$pid" "$COLONY_NAME" "$VARIANTS_FILE" >> "$REPLICATION_LEDGER"
 
     log "respawned $COLONY_NAME daemon_id=$NEW_ID specialty=$NEXT_SPECIALTY (replaced pid=$pid)"
 done
