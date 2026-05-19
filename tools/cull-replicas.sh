@@ -106,6 +106,23 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# Validate --bottom-pct is a float in [0.0, 1.0]. Without this, a
+# misconfigured RESEARCH_CULL_BOTTOM_PCT > 1.0 mass-culls every replica
+# (the respawn phase is bounded by M2-Malthusian but the kill phase is
+# not). See issue #649.
+if ! python3 -c "
+import sys
+try:
+    v = float(sys.argv[1])
+except (ValueError, TypeError):
+    sys.exit(1)
+if not (0.0 <= v <= 1.0):
+    sys.exit(1)
+" "$BOTTOM_PCT" 2>/dev/null; then
+    echo "cull-replicas: --bottom-pct must be a float in [0.0, 1.0], got: $BOTTOM_PCT" >&2
+    exit 2
+fi
+
 if [ ! -d "$FED_DIR" ]; then
     echo "cull-replicas: fed_dir not found: $FED_DIR" >&2
     exit 2
@@ -276,6 +293,14 @@ for d in daemons:
     pid = d.get('pid', 0)
     if not pid:
         continue
+    # Prefer a daemon_id carried in the JSON itself (used by the test
+    # harness via CULL_DAEMONS_JSON_OVERRIDE to exercise the gap-
+    # allocation path without a live memo store, per issue #650).
+    raw = d.get('daemon_id')
+    if isinstance(raw, int) and raw > 0:
+        max_id = max(max_id, raw)
+    elif isinstance(raw, str) and raw.isdigit():
+        max_id = max(max_id, int(raw))
     # Read the DAEMON_ID memo if the agent published one. Fall back to
     # scanning the pool:specialty:<N> slot assignments for occupied ids.
     try:
@@ -318,11 +343,13 @@ if max_id == 0:
 print(max_id)
 " "$COLONY_DAEMONS_JSON" "$COLONY_NAME" 2>/dev/null || echo "$COLONY_COUNT")"
 
-# Compute the demand-weighted specialty pick once for this cull batch.
-# The pool + overlay table are looked up from colony-variants.json. For
-# the explorer colony in feds that ship no variants file (back-compat),
-# we fall back to the hardcoded 5-specialty pool the Phase 3 tool used.
-NEXT_SPECIALTY="$(python3 -c "
+# Helper: demand-weighted specialty pick from colony-variants.json.
+# Invoked once per respawn so the picker re-evaluates after each prior
+# respawn has bumped its variant's count (issue #647). For the explorer
+# colony in feds that ship no variants file (back-compat), we fall back
+# to the hardcoded 5-specialty pool the Phase 3 tool used.
+pick_next_specialty() {
+    python3 -c "
 import json, os, sys
 variants_path = sys.argv[1]
 colony = sys.argv[2]
@@ -360,17 +387,23 @@ for s in pool:
     elif c == min_count:
         mins.append(s)
 print(mins[now_ms % len(mins)])
-" "$VARIANTS_FILE" "$COLONY_NAME" "$SPECIALTY_COUNTS_JSON" "$NOW_MS")"
+" "$VARIANTS_FILE" "$COLONY_NAME" "$1" "$NOW_MS"
+}
 
-if [ -z "$NEXT_SPECIALTY" ]; then
+# Probe once up-front so we can early-exit when no variant pool is
+# defined for this colony. The actual per-respawn pick happens inside
+# the loop below.
+PROBE_SPECIALTY="$(pick_next_specialty "$SPECIALTY_COUNTS_JSON")"
+if [ -z "$PROBE_SPECIALTY" ]; then
     log "no variant pool resolved for colony=$COLONY_NAME (missing colony-variants.json entry)"
     exit 0
 fi
 
-log "picked $PICKED_COUNT cull candidate(s); respawn specialty=$NEXT_SPECIALTY (next daemon_id=$((MAX_DAEMON_ID + 1)))"
+log "picked $PICKED_COUNT cull candidate(s); first respawn specialty=$PROBE_SPECIALTY (next daemon_id=$((MAX_DAEMON_ID + 1)))"
 
 # Iterate picks. Each pick produces (cull, respawn) ledger rows.
 NEXT_ID="$MAX_DAEMON_ID"
+LIVE_COUNTS_JSON="$SPECIALTY_COUNTS_JSON"
 
 python3 -c "
 import json, sys
@@ -392,9 +425,25 @@ print('\n'.join(
         log "skip pid=$pid: $skip_reason"
         continue
     fi
+
+    # Re-evaluate the demand-weighted picker every respawn so multi-pick
+    # batches do not collide on the same specialty (issue #647). The
+    # LIVE_COUNTS_JSON map is bumped at the end of each iteration to
+    # reflect the just-respawned variant.
+    NEXT_SPECIALTY="$(pick_next_specialty "$LIVE_COUNTS_JSON")"
+
     if [ "$DRY_RUN" = "1" ]; then
         log "[dry-run] would cull pid=$pid agent_id=$agent_id specialty=$specialty fitness=$fitness"
         log "[dry-run] would respawn $COLONY_NAME with specialty=$NEXT_SPECIALTY daemon_id=$((NEXT_ID + 1))"
+        # Bump live counts so the next dry-run iteration's picker re-
+        # evaluates against the post-respawn distribution.
+        LIVE_COUNTS_JSON="$(python3 -c "
+import json, sys
+counts = json.loads(sys.argv[1])
+sp = sys.argv[2]
+counts[sp] = counts.get(sp, 0) + 1
+print(json.dumps(counts))
+" "$LIVE_COUNTS_JSON" "$NEXT_SPECIALTY")"
         continue
     fi
 
@@ -530,6 +579,16 @@ sys.stdout.write(json.dumps(row) + '\n')
 " "$NEW_ID" "$NEXT_SPECIALTY" "$pid" "$COLONY_NAME" "$VARIANTS_FILE" >> "$REPLICATION_LEDGER"
 
     log "respawned $COLONY_NAME daemon_id=$NEW_ID specialty=$NEXT_SPECIALTY (replaced pid=$pid)"
+
+    # Bump live counts so the next iteration's picker re-evaluates
+    # against the post-respawn distribution (issue #647).
+    LIVE_COUNTS_JSON="$(python3 -c "
+import json, sys
+counts = json.loads(sys.argv[1])
+sp = sys.argv[2]
+counts[sp] = counts.get(sp, 0) + 1
+print(json.dumps(counts))
+" "$LIVE_COUNTS_JSON" "$NEXT_SPECIALTY")"
 done
 
 log "done"
