@@ -166,7 +166,8 @@ fn _publish_scholar_search(
     tick_now_ms: int,
     problem_text: string,
     stated_answer: string,
-    novelty_claim: string
+    novelty_claim: string,
+    my_tier: string
 ) -> void {
     let _ = final_write;
     let queries_json = queries.queries_json;
@@ -203,7 +204,9 @@ fn _publish_scholar_search(
     memo_write("replay:current_scholar_search_pid", self_pid);
     emit("scholar-search:report_ready", report);
 
-    learn("scholar-search", "tick " + to_string(tick_idx), "status=" + report.status + " matches=" + to_string(report.matches_found), "success", ["emitted", "claim-auditor"]);
+    if my_tier == "propose" {
+        learn("scholar-search", "tick " + to_string(tick_idx), "status=" + report.status + " matches=" + to_string(report.matches_found), "success", ["emitted", "claim-auditor"]);
+    };
 
     if len(self_pid) > 0 {
         let fit_pre = parse_int(recall_latest("scholar-search:" + self_pid + ":fitness"));
@@ -327,15 +330,15 @@ fn tick(reason: string) -> void {
     if my_tier == "autonomous" {
         memo_write("scholar_search:" + _self_pid + ":review_gated", "true");
         learn("scholar-search", "tick " + to_string(tick_idx), queries.rationale, "partial", ["acted", "claim-auditor"]);
-        _publish_scholar_search(true, true, queries, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim);
+        _publish_scholar_search(true, true, queries, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim, my_tier);
     } else {
         if my_tier == "review-gated" {
             memo_write("scholar_search:" + _self_pid + ":review_gated", "true");
             learn("scholar-search", "tick " + to_string(tick_idx), queries.rationale, "partial", ["review-gated", "claim-auditor"]);
-            _publish_scholar_search(true, false, queries, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim);
+            _publish_scholar_search(true, false, queries, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim, my_tier);
         } else {
             if my_tier == "propose" {
-                _publish_scholar_search(false, false, queries, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim);
+                _publish_scholar_search(false, false, queries, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim, my_tier);
             } else {
                 print("[scholar-search] observing (tier:", my_tier, ") rationale=", queries.rationale);
                 learn("scholar-search", "tick " + to_string(tick_idx), queries.rationale, "partial", ["observed", "claim-auditor"]);

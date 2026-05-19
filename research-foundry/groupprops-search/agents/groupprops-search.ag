@@ -162,7 +162,8 @@ fn _publish_groupprops_search(
     tick_now_ms: int,
     problem_text: string,
     stated_answer: string,
-    novelty_claim: string
+    novelty_claim: string,
+    my_tier: string
 ) -> void {
     let _ = final_write;
     let queries_json = queries.queries_json;
@@ -197,7 +198,9 @@ fn _publish_groupprops_search(
     memo_write("replay:current_groupprops_search_pid", self_pid);
     emit("groupprops-search:report_ready", report);
 
-    learn("groupprops-search", "tick " + to_string(tick_idx), "matches=" + to_string(report.matches_found), "success", ["emitted", "claim-auditor"]);
+    if my_tier == "propose" {
+        learn("groupprops-search", "tick " + to_string(tick_idx), "matches=" + to_string(report.matches_found), "success", ["emitted", "claim-auditor"]);
+    };
 
     if len(self_pid) > 0 {
         let fit_pre = parse_int(recall_latest("groupprops-search:" + self_pid + ":fitness"));
@@ -321,15 +324,15 @@ fn tick(reason: string) -> void {
     if my_tier == "autonomous" {
         memo_write("groupprops_search:" + _self_pid + ":review_gated", "true");
         learn("groupprops-search", "tick " + to_string(tick_idx), queries.rationale, "partial", ["acted", "claim-auditor"]);
-        _publish_groupprops_search(true, true, queries, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim);
+        _publish_groupprops_search(true, true, queries, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim, my_tier);
     } else {
         if my_tier == "review-gated" {
             memo_write("groupprops_search:" + _self_pid + ":review_gated", "true");
             learn("groupprops-search", "tick " + to_string(tick_idx), queries.rationale, "partial", ["review-gated", "claim-auditor"]);
-            _publish_groupprops_search(true, false, queries, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim);
+            _publish_groupprops_search(true, false, queries, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim, my_tier);
         } else {
             if my_tier == "propose" {
-                _publish_groupprops_search(false, false, queries, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim);
+                _publish_groupprops_search(false, false, queries, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim, my_tier);
             } else {
                 print("[groupprops-search] observing (tier:", my_tier, ") rationale=", queries.rationale);
                 learn("groupprops-search", "tick " + to_string(tick_idx), queries.rationale, "partial", ["observed", "claim-auditor"]);
