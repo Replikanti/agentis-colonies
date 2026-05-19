@@ -433,8 +433,9 @@ print('\n'.join(
     NEXT_SPECIALTY="$(pick_next_specialty "$LIVE_COUNTS_JSON")"
 
     if [ "$DRY_RUN" = "1" ]; then
+        NEW_ID=$((NEXT_ID + 1))
         log "[dry-run] would cull pid=$pid agent_id=$agent_id specialty=$specialty fitness=$fitness"
-        log "[dry-run] would respawn $COLONY_NAME with specialty=$NEXT_SPECIALTY daemon_id=$((NEXT_ID + 1))"
+        log "[dry-run] would respawn $COLONY_NAME with specialty=$NEXT_SPECIALTY daemon_id=$NEW_ID"
         # Bump live counts so the next dry-run iteration's picker re-
         # evaluates against the post-respawn distribution.
         LIVE_COUNTS_JSON="$(python3 -c "
@@ -444,6 +445,10 @@ sp = sys.argv[2]
 counts[sp] = counts.get(sp, 0) + 1
 print(json.dumps(counts))
 " "$LIVE_COUNTS_JSON" "$NEXT_SPECIALTY")"
+        # Bump NEXT_ID so multi-pick dry-run batches allocate distinct
+        # daemon_ids — mirrors the live-path increment at lines below
+        # which is unreachable from the dry-run branch (#675).
+        NEXT_ID="$NEW_ID"
         continue
     fi
 

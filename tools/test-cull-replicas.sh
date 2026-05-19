@@ -296,6 +296,29 @@ else
         "cull=$CULL_ROWS respawn=$RESPAWN_ROWS ledger=$(cat "$NOOP_LEDGER_PATH" 2>/dev/null)"
 fi
 
+# --- Test 10 (#675): NEXT_ID must increment per dry-run respawn so a
+# multi-pick batch produces distinct daemon_ids. Reuses the alive=1,2,4
+# gap fixture from Test 8 but with --bottom-pct 0.67 to force the picker
+# to take all 3 surviving replicas (ceil(3 * 0.67) = 3). The expected
+# respawn allocation is daemon_id=5, 6, 7 on distinct dry-run lines.
+# Pre-fix, every line read daemon_id=5 because NEXT_ID was set once and
+# the dry-run branch never bumped it.
+MULTI_OUT="$(CULL_DAEMONS_JSON_OVERRIDE="$GAP_JSON" \
+    CULL_SPECIALTY_COUNTS_OVERRIDE='{"group_theory":1,"combinatorics":1,"number_theory":1}' \
+    CULL_NOW_MS_OVERRIDE=0 \
+    bash "$CULL" "$WORK_DIR" explorer --dry-run --bottom-pct 0.67 --min-explorers 3 --min-acting 0 2>&1 || true)"
+
+MULTI_ID5="$(printf '%s\n' "$MULTI_OUT" | grep -cF 'daemon_id=5' || true)"
+MULTI_ID6="$(printf '%s\n' "$MULTI_OUT" | grep -cF 'daemon_id=6' || true)"
+MULTI_ID7="$(printf '%s\n' "$MULTI_OUT" | grep -cF 'daemon_id=7' || true)"
+
+if [ "$MULTI_ID5" -ge 1 ] && [ "$MULTI_ID6" -ge 1 ] && [ "$MULTI_ID7" -ge 1 ]; then
+    pass "10. dry-run NEXT_ID bumps per respawn -> daemon_id=5,6,7 distinct (#675)"
+else
+    fail "10. dry-run NEXT_ID bumps per respawn -> daemon_id=5,6,7 distinct (#675)" \
+        "id5=$MULTI_ID5 id6=$MULTI_ID6 id7=$MULTI_ID7 out=$MULTI_OUT"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
