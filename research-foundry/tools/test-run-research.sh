@@ -245,6 +245,35 @@ assert_contains "20c. RESEARCH_CULL_COLONIES includes submitter" "$SRC" \
 assert_contains "21. RESEARCH_JITTER_DISABLED in exec.env_passthrough" "$SRC" \
     "RESEARCH_JITTER_DISABLED"
 
+# ---------------------------------------------------------------------------
+# 22. #679: lifecycle-on-default. Birth/death/respawn must engage in the
+# default 30-tick run-research.sh run without operator opt-in. Four knobs
+# were flipped:
+#   - RESEARCH_CULL_ENABLED       :  0 -> 1   (function-scoped fallback)
+#   - RESEARCH_CULL_INTERVAL_TICKS: 20 -> 5   (both :=5 default + :-5 fallback)
+#   - RESEARCH_<COLONY>_REPRODUCTIVE_FITNESS_THRESHOLD: 10 -> 3 (all 18 colonies)
+#   - RESEARCH_CULL_MIN_ACTING    : 10 -> 3   (function-scoped fallback)
+# Explorer-specific RESEARCH_CULL_MIN_EXPLORERS=3 stays untouched as
+# floor protection.
+# ---------------------------------------------------------------------------
+assert_contains "22a. RESEARCH_CULL_ENABLED defaults to 1" "$SRC" \
+    "CULL_ENABLED=\"\${RESEARCH_CULL_ENABLED:-1}\""
+assert_contains "22b. RESEARCH_CULL_INTERVAL_TICKS top-level default is 5" "$SRC" \
+    ": \"\${RESEARCH_CULL_INTERVAL_TICKS:=5}\""
+assert_contains "22c. RESEARCH_CULL_INTERVAL_TICKS function-scoped fallback is 5" "$SRC" \
+    "CULL_INTERVAL_TICKS=\"\${RESEARCH_CULL_INTERVAL_TICKS:-5}\""
+assert_contains "22d. RESEARCH_CULL_MIN_ACTING defaults to 3" "$SRC" \
+    "CULL_MIN_ACTING=\"\${RESEARCH_CULL_MIN_ACTING:-3}\""
+assert_contains "22e. CULL_MIN_EXPLORERS floor protection unchanged at 3" "$SRC" \
+    "CULL_MIN_EXPLORERS=\"\${RESEARCH_CULL_MIN_EXPLORERS:-3}\""
+for c in EXPLORER NOTICER SKEPTIC FORMULATOR VERIFIER NOVELTY \
+         ARXIV_SEARCH OEIS_SEARCH GROUPPROPS_SEARCH SCHOLAR_SEARCH \
+         AUDITOR PRIOR_ADVOCATE INTRODUCER THEORIST COMPUTER \
+         EDITOR REVIEWER SUBMITTER; do
+    assert_contains "22f. RESEARCH_${c}_REPRODUCTIVE_FITNESS_THRESHOLD defaults to 3" "$SRC" \
+        "\"\${RESEARCH_${c}_REPRODUCTIVE_FITNESS_THRESHOLD:=3}\""
+done
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

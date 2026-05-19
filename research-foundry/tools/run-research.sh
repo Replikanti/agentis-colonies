@@ -117,19 +117,27 @@
 #                                Per-pid fitness threshold above which the
 #                                replicate gate fires (memo key
 #                                explorer:reproductive_fitness_threshold).
-#                                Default 10.
+#                                Default 3 (#679: lowered from 10 so the
+#                                gate fires within the default 30-tick
+#                                run, engaging birth/death lifecycle
+#                                without operator opt-in).
 #   RESEARCH_CULL_ENABLED        1 enable Phase 3 PR 3 cull cycle, 0
-#                                disable (default 0; opt-in for long-run
-#                                experiments).
+#                                disable. Default 1 (#679: lifecycle on
+#                                by default so the 30-tick default run
+#                                produces at least one cull event).
 #   RESEARCH_CULL_INTERVAL_TICKS Sidecar ticks between cull invocations.
-#                                Default 20.
+#                                Default 5 (#679: lowered from 20 so a
+#                                30-tick default run sees ~6 cull
+#                                cycles instead of 1).
 #   RESEARCH_CULL_BOTTOM_PCT     Fraction of explorers culled per cycle.
 #                                Default 0.2 (bottom 20% by fitness).
 #   RESEARCH_CULL_MIN_EXPLORERS  Skip cull entirely when total explorer
 #                                count falls below this floor. Default 3.
 #   RESEARCH_CULL_MIN_ACTING     Skip per-row cull when explorer's
 #                                entries_acting is below this floor.
-#                                Default 10 (insufficient data).
+#                                Default 3 (#679: lowered from 10 so
+#                                short default runs accumulate enough
+#                                acting rows to be eligible for cull).
 #   RESEARCH_CULL_COLONIES       Comma-separated list of colony names
 #                                the cull cycle iterates over per
 #                                tick. Phase 9 PR-C (#663) expands the
@@ -241,7 +249,7 @@ SMTP_PORT="${RESEARCH_SMTP_PORT:-25}"
 : "${RESEARCH_EXPLORER_REPLICAS:=5}"
 : "${RESEARCH_EXPLORER_MAX_REPLICAS:=8}"
 : "${RESEARCH_EXPLORER_POOL:=5000}"
-: "${RESEARCH_EXPLORER_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+: "${RESEARCH_EXPLORER_REPRODUCTIVE_FITNESS_THRESHOLD:=3}"
 
 # Phase 9 PR-B (#663): per-colony replica + pool seeds for the 17
 # non-explorer colonies. All default to 1 so PR-B does NOT change the
@@ -252,87 +260,87 @@ SMTP_PORT="${RESEARCH_SMTP_PORT:-25}"
 : "${RESEARCH_NOTICER_REPLICAS:=2}"
 : "${RESEARCH_NOTICER_MAX_REPLICAS:=8}"
 : "${RESEARCH_NOTICER_POOL:=5000}"
-: "${RESEARCH_NOTICER_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+: "${RESEARCH_NOTICER_REPRODUCTIVE_FITNESS_THRESHOLD:=3}"
 
 : "${RESEARCH_SKEPTIC_REPLICAS:=2}"
 : "${RESEARCH_SKEPTIC_MAX_REPLICAS:=8}"
 : "${RESEARCH_SKEPTIC_POOL:=5000}"
-: "${RESEARCH_SKEPTIC_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+: "${RESEARCH_SKEPTIC_REPRODUCTIVE_FITNESS_THRESHOLD:=3}"
 
 : "${RESEARCH_FORMULATOR_REPLICAS:=2}"
 : "${RESEARCH_FORMULATOR_MAX_REPLICAS:=8}"
 : "${RESEARCH_FORMULATOR_POOL:=5000}"
-: "${RESEARCH_FORMULATOR_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+: "${RESEARCH_FORMULATOR_REPRODUCTIVE_FITNESS_THRESHOLD:=3}"
 
 : "${RESEARCH_VERIFIER_REPLICAS:=2}"
 : "${RESEARCH_VERIFIER_MAX_REPLICAS:=8}"
 : "${RESEARCH_VERIFIER_POOL:=5000}"
-: "${RESEARCH_VERIFIER_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+: "${RESEARCH_VERIFIER_REPRODUCTIVE_FITNESS_THRESHOLD:=3}"
 
 : "${RESEARCH_NOVELTY_REPLICAS:=2}"
 : "${RESEARCH_NOVELTY_MAX_REPLICAS:=8}"
 : "${RESEARCH_NOVELTY_POOL:=5000}"
-: "${RESEARCH_NOVELTY_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+: "${RESEARCH_NOVELTY_REPRODUCTIVE_FITNESS_THRESHOLD:=3}"
 
 : "${RESEARCH_ARXIV_SEARCH_REPLICAS:=2}"
 : "${RESEARCH_ARXIV_SEARCH_MAX_REPLICAS:=8}"
 : "${RESEARCH_ARXIV_SEARCH_POOL:=5000}"
-: "${RESEARCH_ARXIV_SEARCH_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+: "${RESEARCH_ARXIV_SEARCH_REPRODUCTIVE_FITNESS_THRESHOLD:=3}"
 
 : "${RESEARCH_OEIS_SEARCH_REPLICAS:=2}"
 : "${RESEARCH_OEIS_SEARCH_MAX_REPLICAS:=8}"
 : "${RESEARCH_OEIS_SEARCH_POOL:=5000}"
-: "${RESEARCH_OEIS_SEARCH_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+: "${RESEARCH_OEIS_SEARCH_REPRODUCTIVE_FITNESS_THRESHOLD:=3}"
 
 : "${RESEARCH_GROUPPROPS_SEARCH_REPLICAS:=2}"
 : "${RESEARCH_GROUPPROPS_SEARCH_MAX_REPLICAS:=8}"
 : "${RESEARCH_GROUPPROPS_SEARCH_POOL:=5000}"
-: "${RESEARCH_GROUPPROPS_SEARCH_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+: "${RESEARCH_GROUPPROPS_SEARCH_REPRODUCTIVE_FITNESS_THRESHOLD:=3}"
 
 : "${RESEARCH_SCHOLAR_SEARCH_REPLICAS:=2}"
 : "${RESEARCH_SCHOLAR_SEARCH_MAX_REPLICAS:=8}"
 : "${RESEARCH_SCHOLAR_SEARCH_POOL:=5000}"
-: "${RESEARCH_SCHOLAR_SEARCH_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+: "${RESEARCH_SCHOLAR_SEARCH_REPRODUCTIVE_FITNESS_THRESHOLD:=3}"
 
 : "${RESEARCH_AUDITOR_REPLICAS:=2}"
 : "${RESEARCH_AUDITOR_MAX_REPLICAS:=8}"
 : "${RESEARCH_AUDITOR_POOL:=5000}"
-: "${RESEARCH_AUDITOR_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+: "${RESEARCH_AUDITOR_REPRODUCTIVE_FITNESS_THRESHOLD:=3}"
 
 : "${RESEARCH_PRIOR_ADVOCATE_REPLICAS:=2}"
 : "${RESEARCH_PRIOR_ADVOCATE_MAX_REPLICAS:=8}"
 : "${RESEARCH_PRIOR_ADVOCATE_POOL:=5000}"
-: "${RESEARCH_PRIOR_ADVOCATE_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+: "${RESEARCH_PRIOR_ADVOCATE_REPRODUCTIVE_FITNESS_THRESHOLD:=3}"
 
 : "${RESEARCH_INTRODUCER_REPLICAS:=2}"
 : "${RESEARCH_INTRODUCER_MAX_REPLICAS:=8}"
 : "${RESEARCH_INTRODUCER_POOL:=5000}"
-: "${RESEARCH_INTRODUCER_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+: "${RESEARCH_INTRODUCER_REPRODUCTIVE_FITNESS_THRESHOLD:=3}"
 
 : "${RESEARCH_THEORIST_REPLICAS:=2}"
 : "${RESEARCH_THEORIST_MAX_REPLICAS:=8}"
 : "${RESEARCH_THEORIST_POOL:=5000}"
-: "${RESEARCH_THEORIST_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+: "${RESEARCH_THEORIST_REPRODUCTIVE_FITNESS_THRESHOLD:=3}"
 
 : "${RESEARCH_COMPUTER_REPLICAS:=2}"
 : "${RESEARCH_COMPUTER_MAX_REPLICAS:=8}"
 : "${RESEARCH_COMPUTER_POOL:=5000}"
-: "${RESEARCH_COMPUTER_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+: "${RESEARCH_COMPUTER_REPRODUCTIVE_FITNESS_THRESHOLD:=3}"
 
 : "${RESEARCH_EDITOR_REPLICAS:=2}"
 : "${RESEARCH_EDITOR_MAX_REPLICAS:=8}"
 : "${RESEARCH_EDITOR_POOL:=5000}"
-: "${RESEARCH_EDITOR_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+: "${RESEARCH_EDITOR_REPRODUCTIVE_FITNESS_THRESHOLD:=3}"
 
 : "${RESEARCH_REVIEWER_REPLICAS:=2}"
 : "${RESEARCH_REVIEWER_MAX_REPLICAS:=8}"
 : "${RESEARCH_REVIEWER_POOL:=5000}"
-: "${RESEARCH_REVIEWER_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+: "${RESEARCH_REVIEWER_REPRODUCTIVE_FITNESS_THRESHOLD:=3}"
 
 : "${RESEARCH_SUBMITTER_REPLICAS:=2}"
 : "${RESEARCH_SUBMITTER_MAX_REPLICAS:=8}"
 : "${RESEARCH_SUBMITTER_POOL:=5000}"
-: "${RESEARCH_SUBMITTER_REPRODUCTIVE_FITNESS_THRESHOLD:=10}"
+: "${RESEARCH_SUBMITTER_REPRODUCTIVE_FITNESS_THRESHOLD:=3}"
 
 # Phase 9 PR-B (#663): comma-separated list of colony names eligible
 # for the cull cycle. PR-C expands the default to all 18 colonies
@@ -345,7 +353,7 @@ SMTP_PORT="${RESEARCH_SMTP_PORT:-25}"
 # `set -euo pipefail` (line 162) propagates the division-by-zero up
 # through the backgrounded subshell, killing both auto-promote AND cull
 # for the remainder of the run.
-: "${RESEARCH_CULL_INTERVAL_TICKS:=20}"
+: "${RESEARCH_CULL_INTERVAL_TICKS:=5}"
 
 # --- Validation ---
 if [ -z "$TOPICS_RAW" ]; then
@@ -847,15 +855,17 @@ start_auto_promote_sidecar() {
     AP_ENABLED="${RESEARCH_AUTO_PROMOTE:-1}"
     AP_INTERVAL="${RESEARCH_AUTO_PROMOTE_INTERVAL_S:-300}"
     # Phase 3 PR 3 (#624): optional cull cycle layered on top of the
-    # auto-promote sidecar tick. Defaults off so weekend long-runs opt in
-    # explicitly; the cull cycle kills the bottom-N explorer daemons by
-    # fitness_score and respawns replacements with demand-weighted
-    # specialty.
-    CULL_ENABLED="${RESEARCH_CULL_ENABLED:-0}"
-    CULL_INTERVAL_TICKS="${RESEARCH_CULL_INTERVAL_TICKS:-20}"
+    # auto-promote sidecar tick. Phase 10 (#679) flipped the defaults so
+    # birth/death engages in the default 30-tick run-research.sh
+    # invocation without operator opt-in: ENABLED=1, INTERVAL_TICKS=5,
+    # MIN_ACTING=3. The cull cycle kills the bottom-N explorer daemons
+    # by fitness_score and respawns replacements with demand-weighted
+    # specialty. CULL_MIN_EXPLORERS stays at 3 as a floor protection.
+    CULL_ENABLED="${RESEARCH_CULL_ENABLED:-1}"
+    CULL_INTERVAL_TICKS="${RESEARCH_CULL_INTERVAL_TICKS:-5}"
     CULL_BOTTOM_PCT="${RESEARCH_CULL_BOTTOM_PCT:-0.2}"
     CULL_MIN_EXPLORERS="${RESEARCH_CULL_MIN_EXPLORERS:-3}"
-    CULL_MIN_ACTING="${RESEARCH_CULL_MIN_ACTING:-10}"
+    CULL_MIN_ACTING="${RESEARCH_CULL_MIN_ACTING:-3}"
     # Phase 9 PR-B (#663): the generalised cull script supersedes the
     # legacy cull-explorers.sh wrapper; we drive it once per colony in
     # $RESEARCH_CULL_COLONIES (comma-separated, default `explorer`).
