@@ -60,7 +60,7 @@ fi
 PROBE_DIR="$TMPDIR_TEST/probe"
 mkdir -p "$PROBE_DIR"
 (cd "$PROBE_DIR" && agentis memo set probe:key "probe-value" >/dev/null 2>&1) || true
-PROBE_OUT="$(cd "$PROBE_DIR" && agentis memo get probe:key 2>/dev/null | tr -d '\r\n ' || true)"
+PROBE_OUT="$(cd "$PROBE_DIR" && agentis memo get probe:key 2>/dev/null | tr -d '\r\n ')" || PROBE_OUT=""
 if [ "$PROBE_OUT" != "probe-value" ]; then
     echo "[SKIP] installed agentis ($(agentis --version 2>&1)) memo get does not return a clean scalar value"
     echo "Results: 0 passed, 0 failed (skipped — agentis memo get output unexpected)"
