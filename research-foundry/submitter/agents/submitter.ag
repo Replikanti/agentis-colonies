@@ -205,7 +205,8 @@ fn _submitter_draft_phase(
     cat_seed: string,
     repro_script: string,
     repro_output: string,
-    repro_lang: string
+    repro_lang: string,
+    my_tier: string
 ) -> void {
     let ctx = "FINAL TEX:\n" + final_tex + "\n"
             + "COMPILE LOG:\n" + compile_log + "\n"
@@ -288,7 +289,9 @@ fn _submitter_draft_phase(
     emit("submitter:metadata_ready", meta);
     emit("submitter:status_ready", meta);
 
-    learn("submit", "tick " + to_string(tick_idx) + " DRAFTED " + claim_id_eff, meta.rationale, "success", ["emitted", "preprint-foundry", "hitl-gated"]);
+    if my_tier == "propose" {
+        learn("submit", "tick " + to_string(tick_idx) + " DRAFTED " + claim_id_eff, meta.rationale, "success", ["emitted", "preprint-foundry", "hitl-gated"]);
+    };
 
     // Phase 9 PR-C (#663): per-pid fitness tracking. +1 per DRAFTED
     // row (PR-D folds in the eventual HITL accept signal).
@@ -409,7 +412,8 @@ fn _handle_hitl_reject(
     upstream_tick: int,
     tick_idx: int,
     tick_now_ms: int,
-    claim_id_eff: string
+    claim_id_eff: string,
+    my_tier: string
 ) -> void {
     let reason_raw = recall_latest("submitter:" + claim_id_eff + ":human_reject_reason");
     let ledger_path3 = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
@@ -434,7 +438,9 @@ fn _handle_hitl_reject(
     _push_hitl_reject(claim_id_eff, classification, reason_raw, tick_idx);
 
     emit("submitter:status_ready", "HUMAN_REJECTED");
-    learn("submit", "tick " + to_string(tick_idx) + " HUMAN_REJECTED " + claim_id_eff, "human declined", "partial", ["emitted", "preprint-foundry", "hitl-gated"]);
+    if my_tier == "propose" {
+        learn("submit", "tick " + to_string(tick_idx) + " HUMAN_REJECTED " + claim_id_eff, "human declined", "partial", ["emitted", "preprint-foundry", "hitl-gated"]);
+    };
 }
 
 // _submitter_send_phase -- terminal SMTP send. Mails the tarball via
@@ -447,7 +453,8 @@ fn _submitter_send_phase(
     tick_idx: int,
     tick_now_ms: int,
     claim_id_eff: string,
-    claim_dir: string
+    claim_dir: string,
+    my_tier: string
 ) -> void {
     let gateway = try { exec sh "printenv PREPRINT_ARXIV_GATEWAY"; } catch e { ""; };
     let from_addr = try { exec sh "printenv PREPRINT_ARXIV_FROM"; } catch e { ""; };
@@ -477,7 +484,9 @@ fn _submitter_send_phase(
     memo_write("submitter:" + claim_id_eff + ":submitted", to_string(tick_now_ms));
     memo_write("submitter:" + self_pid + ":status:tick-" + to_string(upstream_tick), "SUBMITTED");
     emit("submitter:status_ready", send_out);
-    learn("submit", "tick " + to_string(tick_idx) + " SUBMITTED " + claim_id_eff, send_out, "success", ["emitted", "preprint-foundry", "hitl-gated"]);
+    if my_tier == "propose" {
+        learn("submit", "tick " + to_string(tick_idx) + " SUBMITTED " + claim_id_eff, send_out, "success", ["emitted", "preprint-foundry", "hitl-gated"]);
+    };
 }
 
 fn tick(reason: string) -> void {
@@ -585,13 +594,13 @@ fn tick(reason: string) -> void {
         memo_write("submitter:" + claim_id_eff + ":autonomous_decision", "true");
         learn("submit", "tick " + to_string(tick_idx), "tier=autonomous", "partial", ["acted", "preprint-foundry"]);
         if len(already_drafted) == 0 {
-            _submitter_draft_phase(false, true, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir, compile_ok, source_audit_run, final_tex, compile_log, title_seed, msc_seed, cat_seed, repro_script, repro_output, repro_lang);
+            _submitter_draft_phase(false, true, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir, compile_ok, source_audit_run, final_tex, compile_log, title_seed, msc_seed, cat_seed, repro_script, repro_output, repro_lang, my_tier);
         };
         if len(already_submitted) > 0 {
             print("[submitter] already submitted claim=", claim_id_eff);
             learn("submit", "tick " + to_string(tick_idx) + " noop " + claim_id_eff, "already submitted", "partial", ["observed", "preprint-foundry", "hitl-gated"]);
         } else {
-            _submitter_send_phase(_self_pid, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir);
+            _submitter_send_phase(_self_pid, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir, my_tier);
         };
     } else {
         if my_tier == "review-gated" {
@@ -600,7 +609,7 @@ fn tick(reason: string) -> void {
             // submission is waiting on a human decision (#622).
             learn("submit", "tick " + to_string(tick_idx), "tier=review-gated", "partial", ["review-gated", "preprint-foundry"]);
             if len(already_drafted) == 0 {
-                _submitter_draft_phase(true, false, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir, compile_ok, source_audit_run, final_tex, compile_log, title_seed, msc_seed, cat_seed, repro_script, repro_output, repro_lang);
+                _submitter_draft_phase(true, false, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir, compile_ok, source_audit_run, final_tex, compile_log, title_seed, msc_seed, cat_seed, repro_script, repro_output, repro_lang, my_tier);
             } else {
                 // Phase B: DRAFTED already exists -- observe HITL flag and act
                 // only on explicit human approval. NEVER auto-submit.
@@ -609,11 +618,11 @@ fn tick(reason: string) -> void {
                         print("[submitter] already submitted claim=", claim_id_eff);
                         learn("submit", "tick " + to_string(tick_idx) + " noop " + claim_id_eff, "already submitted", "partial", ["observed", "preprint-foundry", "hitl-gated"]);
                     } else {
-                        _submitter_send_phase(_self_pid, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir);
+                        _submitter_send_phase(_self_pid, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir, my_tier);
                     };
                 } else {
                     if human_status == "rejected" {
-                        _handle_hitl_reject(_self_pid, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff);
+                        _handle_hitl_reject(_self_pid, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, my_tier);
                     } else {
                         // No human decision yet -- idle.
                         print("[submitter] DRAFTED awaiting human approval claim=", claim_id_eff);
@@ -625,7 +634,7 @@ fn tick(reason: string) -> void {
             if my_tier == "propose" {
                 // Phase A: produce DRAFTED row (idempotent: skip when already drafted).
                 if len(already_drafted) == 0 {
-                    _submitter_draft_phase(false, false, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir, compile_ok, source_audit_run, final_tex, compile_log, title_seed, msc_seed, cat_seed, repro_script, repro_output, repro_lang);
+                    _submitter_draft_phase(false, false, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir, compile_ok, source_audit_run, final_tex, compile_log, title_seed, msc_seed, cat_seed, repro_script, repro_output, repro_lang, my_tier);
                 } else {
                     // Phase B: DRAFTED already exists -- observe HITL flag and act
                     // only on explicit human approval. NEVER auto-submit.
@@ -634,11 +643,11 @@ fn tick(reason: string) -> void {
                             print("[submitter] already submitted claim=", claim_id_eff);
                             learn("submit", "tick " + to_string(tick_idx) + " noop " + claim_id_eff, "already submitted", "partial", ["observed", "preprint-foundry", "hitl-gated"]);
                         } else {
-                            _submitter_send_phase(_self_pid, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir);
+                            _submitter_send_phase(_self_pid, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir, my_tier);
                         };
                     } else {
                         if human_status == "rejected" {
-                            _handle_hitl_reject(_self_pid, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff);
+                            _handle_hitl_reject(_self_pid, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, my_tier);
                         } else {
                             // No human decision yet -- idle.
                             print("[submitter] DRAFTED awaiting human approval claim=", claim_id_eff);

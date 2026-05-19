@@ -142,7 +142,8 @@ fn _publish_computer(
     _colony_name: string,
     upstream_tick: int,
     tick_idx: int,
-    tick_now_ms: int
+    tick_now_ms: int,
+    my_tier: string
 ) -> void {
     let _ = final_write;
     let sandbox_dir = try { exec sh "printenv AGENTIS_ROOT"; } catch e { ""; };
@@ -183,7 +184,9 @@ fn _publish_computer(
     emit("computer:script_ready", script);
     emit("computer:output_ready", script);
 
-    learn("compute", "tick " + to_string(tick_idx), "runs_ok=" + runs_ok_str + " lang=" + lang, "success", ["emitted", "preprint-foundry"]);
+    if my_tier == "propose" {
+        learn("compute", "tick " + to_string(tick_idx), "runs_ok=" + runs_ok_str + " lang=" + lang, "success", ["emitted", "preprint-foundry"]);
+    };
 
     if len(self_pid) > 0 {
         let fit_pre = parse_int(recall_latest("computer:" + self_pid + ":fitness"));
@@ -312,15 +315,15 @@ fn tick(reason: string) -> void {
     if my_tier == "autonomous" {
         memo_write("computer:" + _self_pid + ":review_gated", "true");
         learn("compute", "tick " + to_string(tick_idx), script.rationale, "partial", ["acted", "preprint-foundry"]);
-        _publish_computer(true, true, script, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms);
+        _publish_computer(true, true, script, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
     } else {
         if my_tier == "review-gated" {
             memo_write("computer:" + _self_pid + ":review_gated", "true");
             learn("compute", "tick " + to_string(tick_idx), script.rationale, "partial", ["review-gated", "preprint-foundry"]);
-            _publish_computer(true, false, script, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms);
+            _publish_computer(true, false, script, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
         } else {
             if my_tier == "propose" {
-                _publish_computer(false, false, script, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms);
+                _publish_computer(false, false, script, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
             } else {
                 print("[computer] observing (tier:", my_tier, ") rationale=", script.rationale);
                 learn("compute", "tick " + to_string(tick_idx), script.rationale, "partial", ["observed", "preprint-foundry"]);

@@ -143,7 +143,8 @@ fn _publish_theorist(
     _colony_name: string,
     upstream_tick: int,
     tick_idx: int,
-    tick_now_ms: int
+    tick_now_ms: int,
+    my_tier: string
 ) -> void {
     let _ = final_write;
     memo_write("theorist:" + self_pid + ":definitions:tick-" + to_string(upstream_tick), draft.definitions_tex);
@@ -155,7 +156,9 @@ fn _publish_theorist(
 
     emit("theorist:main_ready", draft);
 
-    learn("theorise", "tick " + to_string(tick_idx), "proof_kind=" + draft.proof_kind, "success", ["emitted", "preprint-foundry"]);
+    if my_tier == "propose" {
+        learn("theorise", "tick " + to_string(tick_idx), "proof_kind=" + draft.proof_kind, "success", ["emitted", "preprint-foundry"]);
+    };
 
     if len(self_pid) > 0 {
         let fit_pre = parse_int(recall_latest("theorist:" + self_pid + ":fitness"));
@@ -285,15 +288,15 @@ fn tick(reason: string) -> void {
     if my_tier == "autonomous" {
         memo_write("theorist:" + _self_pid + ":review_gated", "true");
         learn("theorise", "tick " + to_string(tick_idx), draft.rationale, "partial", ["acted", "preprint-foundry"]);
-        _publish_theorist(true, true, draft, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms);
+        _publish_theorist(true, true, draft, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
     } else {
         if my_tier == "review-gated" {
             memo_write("theorist:" + _self_pid + ":review_gated", "true");
             learn("theorise", "tick " + to_string(tick_idx), draft.rationale, "partial", ["review-gated", "preprint-foundry"]);
-            _publish_theorist(true, false, draft, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms);
+            _publish_theorist(true, false, draft, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
         } else {
             if my_tier == "propose" {
-                _publish_theorist(false, false, draft, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms);
+                _publish_theorist(false, false, draft, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
             } else {
                 print("[theorist] observing (tier:", my_tier, ") rationale=", draft.rationale);
                 learn("theorise", "tick " + to_string(tick_idx), draft.rationale, "partial", ["observed", "preprint-foundry"]);
