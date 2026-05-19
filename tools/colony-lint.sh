@@ -636,6 +636,23 @@ if [ -x "$REPO_ROOT/tools/check-no-replay-current-pid.sh" ]; then
     fi
 fi
 
+# --- tier-branch double learn() guard (#636) ---
+# Every `_publish_<role>(...)` / `_submitter_<phase>(...)` helper in
+# research-foundry/ must gate its top-level `learn(..., ["emitted", ...])`
+# row on `if my_tier == "propose"`. At autonomous / review-gated tiers
+# the inline tier branch already emits an acted / review-gated row; an
+# unconditional helper-level emitted row inflates the ACTING_TAGS row
+# count 2x per tick once auto-promote starts firing.
+if [ -x "$REPO_ROOT/tools/check-no-duplicate-learn.sh" ]; then
+    check_out="$("$REPO_ROOT/tools/check-no-duplicate-learn.sh" "$REPO_ROOT" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "check-no-duplicate-learn: research-foundry helpers gate emitted learn() on propose tier (#636)"
+    else
+        fail "check-no-duplicate-learn: helper emits unconditional emitted learn() (#636)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- Plaintext token detection (#321) ---
 # Walks `[forge.*]` sections in every colony.toml / colony.example.toml
 # under the repo and flags `token` / `*api_key*` / `*secret*` values

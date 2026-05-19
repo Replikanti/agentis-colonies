@@ -186,7 +186,8 @@ fn _publish_novelty(
     novelty_claim: string,
     upstream_tick: int,
     tick_idx: int,
-    tick_now_ms: int
+    tick_now_ms: int,
+    my_tier: string
 ) -> void {
     let classical_str = if novelty.is_classical_result { "true"; } else { "false"; };
     let novelty_json = "{\"is_classical_result\":" + classical_str
@@ -249,7 +250,9 @@ fn _publish_novelty(
     };
 
     emit("math-foundry:novelty_done", novelty);
-    learn("novelty", "tick " + to_string(tick_idx) + " " + novelty.novelty_verdict, novelty.reasoning, "success", ["emitted", "math-foundry"]);
+    if my_tier == "propose" {
+        learn("novelty", "tick " + to_string(tick_idx) + " " + novelty.novelty_verdict, novelty.reasoning, "success", ["emitted", "math-foundry"]);
+    };
 
     // Phase 9 PR-C (#663): per-pid fitness tracking. +2 NOVEL,
     // +1 BORDERLINE, -1 NOT_NOVEL.
@@ -410,14 +413,14 @@ fn tick(reason: string) -> void {
         // `autonomous_decision=true` flag for downstream auditors (#622).
         memo_write("novelty:" + _self_pid + ":autonomous_decision", "true");
         learn("novelty", "tick " + to_string(tick_idx) + " " + novelty.novelty_verdict, novelty.reasoning, "partial", ["acted", "math-foundry"]);
-        _publish_novelty(true, true, novelty, _self_pid, _colony_name, formulator_pid, explorer_pid, problem_text, stated_answer, novelty_claim, upstream_tick, tick_idx, _tick_now_ms);
+        _publish_novelty(true, true, novelty, _self_pid, _colony_name, formulator_pid, explorer_pid, problem_text, stated_answer, novelty_claim, upstream_tick, tick_idx, _tick_now_ms, my_tier);
     } else {
         if my_tier == "review-gated" {
             learn("novelty", "tick " + to_string(tick_idx) + " " + novelty.novelty_verdict, novelty.reasoning, "partial", ["review-gated", "math-foundry"]);
-            _publish_novelty(true, false, novelty, _self_pid, _colony_name, formulator_pid, explorer_pid, problem_text, stated_answer, novelty_claim, upstream_tick, tick_idx, _tick_now_ms);
+            _publish_novelty(true, false, novelty, _self_pid, _colony_name, formulator_pid, explorer_pid, problem_text, stated_answer, novelty_claim, upstream_tick, tick_idx, _tick_now_ms, my_tier);
         } else {
             if my_tier == "propose" {
-                _publish_novelty(false, false, novelty, _self_pid, _colony_name, formulator_pid, explorer_pid, problem_text, stated_answer, novelty_claim, upstream_tick, tick_idx, _tick_now_ms);
+                _publish_novelty(false, false, novelty, _self_pid, _colony_name, formulator_pid, explorer_pid, problem_text, stated_answer, novelty_claim, upstream_tick, tick_idx, _tick_now_ms, my_tier);
             } else {
                 print("[novelty] observing (tier:", my_tier, ") verdict=", novelty.novelty_verdict);
                 learn("novelty", "tick " + to_string(tick_idx) + " " + novelty.novelty_verdict, novelty.reasoning, "partial", ["observed", "math-foundry"]);

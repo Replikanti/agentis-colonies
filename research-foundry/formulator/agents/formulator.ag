@@ -222,7 +222,8 @@ fn _publish_formulator(
     upstream_tick: int,
     tick_idx: int,
     tick_now_ms: int,
-    topic_label: string
+    topic_label: string,
+    my_tier: string
 ) -> void {
     let self_conf_str = to_string(problem.self_check_confidence);
     let problem_json = "{\"problem\":\"" + problem.problem
@@ -248,7 +249,9 @@ fn _publish_formulator(
         };
     };
 
-    learn("formulate", "tick " + to_string(tick_idx) + " " + topic_label, "answer=" + problem.answer, "success", ["emitted", "math-foundry"]);
+    if my_tier == "propose" {
+        learn("formulate", "tick " + to_string(tick_idx) + " " + topic_label, "answer=" + problem.answer, "success", ["emitted", "math-foundry"]);
+    };
 
     // Phase 9 PR-C (#663): per-pid fitness tracking. +1 when the
     // self_check_confidence is above 0.5 (formulator believed in the
@@ -412,15 +415,15 @@ fn tick(reason: string) -> void {
     if my_tier == "autonomous" {
         memo_write("formulator:" + _self_pid + ":review_gated", "true");
         learn("formulate", "tick " + to_string(tick_idx) + " " + topic_label, problem.novelty_claim, "partial", ["acted", "math-foundry"]);
-        _publish_formulator(true, true, problem, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, topic_label);
+        _publish_formulator(true, true, problem, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, topic_label, my_tier);
     } else {
         if my_tier == "review-gated" {
             memo_write("formulator:" + _self_pid + ":review_gated", "true");
             learn("formulate", "tick " + to_string(tick_idx) + " " + topic_label, problem.novelty_claim, "partial", ["review-gated", "math-foundry"]);
-            _publish_formulator(true, false, problem, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, topic_label);
+            _publish_formulator(true, false, problem, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, topic_label, my_tier);
         } else {
             if my_tier == "propose" {
-                _publish_formulator(false, false, problem, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, topic_label);
+                _publish_formulator(false, false, problem, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, topic_label, my_tier);
             } else {
                 print("[formulator] observing (tier:", my_tier, ") novelty_claim=", problem.novelty_claim);
                 learn("formulate", "tick " + to_string(tick_idx) + " " + topic_label, problem.novelty_claim, "partial", ["observed", "math-foundry"]);
