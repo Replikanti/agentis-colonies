@@ -339,6 +339,14 @@ SMTP_PORT="${RESEARCH_SMTP_PORT:-25}"
 # now that every non-explorer colony has its replicate gate wired up.
 : "${RESEARCH_CULL_COLONIES:=explorer,noticer,formulator,verifier,novelty,skeptic,arxiv-search,oeis-search,groupprops-search,scholar-search,prior_advocate,auditor,introducer,theorist,computer,editor,reviewer,submitter}"
 
+# Cull-cycle sidecar tick interval. Validated below alongside the other
+# numeric knobs (#648 follow-up): a zero / negative / non-integer value
+# would crash the auto-promote sidecar via `$((tick_count % 0))` because
+# `set -euo pipefail` (line 162) propagates the division-by-zero up
+# through the backgrounded subshell, killing both auto-promote AND cull
+# for the remainder of the run.
+: "${RESEARCH_CULL_INTERVAL_TICKS:=20}"
+
 # --- Validation ---
 if [ -z "$TOPICS_RAW" ]; then
     echo "run-research: RESEARCH_TOPICS must be a non-empty comma-separated list" >&2
@@ -346,7 +354,7 @@ if [ -z "$TOPICS_RAW" ]; then
 fi
 
 val=""
-for var_name in TICK_INTERVAL_S TOTAL_TICKS DAEMONS_PER_COLONY HOLD_PERIOD OPENAI_TIMEOUT_MS LATEXMK_MAX_PASSES SMTP_PORT RESEARCH_EXPLORER_REPLICAS RESEARCH_EXPLORER_MAX_REPLICAS RESEARCH_EXPLORER_POOL RESEARCH_EXPLORER_REPRODUCTIVE_FITNESS_THRESHOLD; do
+for var_name in TICK_INTERVAL_S TOTAL_TICKS DAEMONS_PER_COLONY HOLD_PERIOD OPENAI_TIMEOUT_MS LATEXMK_MAX_PASSES SMTP_PORT RESEARCH_EXPLORER_REPLICAS RESEARCH_EXPLORER_MAX_REPLICAS RESEARCH_EXPLORER_POOL RESEARCH_EXPLORER_REPRODUCTIVE_FITNESS_THRESHOLD RESEARCH_CULL_INTERVAL_TICKS; do
     eval "val=\${$var_name}"
     case "$val" in
         ''|*[!0-9]*)
@@ -367,6 +375,10 @@ if [ "$TOTAL_TICKS" -lt 1 ]; then
 fi
 if [ "$DAEMONS_PER_COLONY" -lt 1 ]; then
     echo "run-research: RESEARCH_DAEMONS_PER_COLONY must be >= 1 (got: $DAEMONS_PER_COLONY)" >&2
+    exit 2
+fi
+if [ "$RESEARCH_CULL_INTERVAL_TICKS" -lt 1 ]; then
+    echo "run-research: RESEARCH_CULL_INTERVAL_TICKS must be >= 1 (got: $RESEARCH_CULL_INTERVAL_TICKS)" >&2
     exit 2
 fi
 
