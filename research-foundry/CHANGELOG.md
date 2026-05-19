@@ -20,6 +20,24 @@ History of the three retired federations consolidated into this one
 
 ### Changed
 
+- preprint-foundry: `preprint-ledger.jsonl` schema + audit-trail
+  provenance + JSON-escape polish (#600 QA follow-up from #599). Every
+  ledger and replicate-ledger row in the 6 preprint colonies is now
+  constructed via `python3 -c 'import json; ...'` (same pattern as
+  `gitlab-api.sh`); quotes / newlines / control characters in
+  LLM-emitted titles, abstracts, cover letters, SMTP error messages,
+  and operator-supplied HITL rejection reasons can no longer corrupt
+  the line. DRAFTED rows now emit `msc_codes` as a JSON array
+  alongside the back-compat `msc_codes_csv` string (#596 spec
+  alignment) and carry `reproducibility_runs_ok` sourced from
+  `computer:<pid>:runs_ok:tick-<N>`. DRAFTED, SUBMITTED, and
+  HUMAN_REJECTED rows now also carry a `provenance` block
+  (`editor_pid`, `computer_pid`, `introducer_pid`, `tick`) so a
+  SUBMITTED row can be traced back to the exact editor / computer /
+  introducer chain that produced it. Schema contract documented in
+  `research-foundry/submitter/README.md`; regression coverage in
+  `research-foundry/tools/test-preprint-ledger-schema.sh`.
+
 - Wired M2-Malthusian replicate gates into all 17 non-explorer
   colonies and flipped the per-colony spawn loops in
   `tools/run-research.sh` from singletons to N=3 across the board
