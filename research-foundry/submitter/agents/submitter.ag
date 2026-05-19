@@ -371,7 +371,13 @@ fn _classify_hitl_reason(reason_raw: string) -> string {
         let _ = backend_eff;
     };
     // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,re\ns=sys.argv[1].lower()\nif re.search(r\"wrong|incorrect|error|proof.*fail\", s): print(\"math_wrong\")\nelif re.search(r\"unreadable|typo|grammar|prose\", s): print(\"writing_bad\")\nelif re.search(r\"uninteresting|trivial|not.*novel\", s): print(\"topic_boring\")\nelif re.search(r\"off.?topic|scope|wrong.*category\", s): print(\"scope_off\")\nelif re.search(r\"obviously|clearly|trivially|hedge|style\", s): print(\"style_violation\")\nelse: print(\"other\")' " + shell_escape(reason_raw);
+    // #643: word-boundary anchors on `trivial` (and friends) so the
+    // `topic_boring` regex does NOT shadow the word `trivially` --
+    // the latter is canonical math-style violation vocabulary that
+    // the editor's seed prompt explicitly forbids, so misclassifying
+    // it into `topic_boring` would pollute the rolling buffer the
+    // formulator + auditor read on their next tick.
+    let cmd = "python3 -c 'import sys,re\ns=sys.argv[1].lower()\nif re.search(r\"\\bwrong\\b|\\bincorrect\\b|\\berror\\b|proof.*fail\", s): print(\"math_wrong\")\nelif re.search(r\"\\bunreadable\\b|\\btypo\\b|\\bgrammar\\b|\\bprose\\b\", s): print(\"writing_bad\")\nelif re.search(r\"\\buninteresting\\b|\\btrivial\\b|not.*novel\", s): print(\"topic_boring\")\nelif re.search(r\"off.?topic|\\bscope\\b|wrong.*category\", s): print(\"scope_off\")\nelif re.search(r\"\\bobviously\\b|\\bclearly\\b|\\btrivially\\b|\\bhedge\\b|\\bstyle\\b\", s): print(\"style_violation\")\nelse: print(\"other\")' " + shell_escape(reason_raw);
     let out = try { exec sh cmd; } catch e { "other"; };
     return out;
 }
@@ -583,6 +589,15 @@ fn tick(reason: string) -> void {
         // check collapses to true). Records `autonomous_decision=true`
         // for downstream observers.
         memo_write("submitter:" + claim_id_eff + ":autonomous_decision", "true");
+        // #637: clear any stale `awaiting_approval=true` left over from
+        // a review-gated draft that auto-promoted to autonomous
+        // mid-flight (the sidecar bumped confidence past 0.95 between
+        // the draft tick and this send tick). Idempotent: a no-op when
+        // the claim was always-autonomous since the autonomous draft
+        // call below passes `mark_awaiting=false`. Must run BEFORE
+        // `_submitter_send_phase` so the dashboard never observes a
+        // sent+still-awaiting state during the SMTP gap.
+        memo_write("submitter:" + claim_id_eff + ":awaiting_approval", "false");
         learn("submit", "tick " + to_string(tick_idx), "tier=autonomous", "partial", ["acted", "preprint-foundry"]);
         if len(already_drafted) == 0 {
             _submitter_draft_phase(false, true, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir, compile_ok, source_audit_run, final_tex, compile_log, title_seed, msc_seed, cat_seed, repro_script, repro_output, repro_lang);
