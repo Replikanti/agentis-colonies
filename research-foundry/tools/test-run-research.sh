@@ -24,6 +24,11 @@
 #  15. Header doc names every documented RESEARCH_* env var
 #  16. Source-run / --source-* flags are gone (regression guard for
 #      cross-fed recall removal).
+#  18a-d. Sidecar `.auto-promote-install.toml` is written at
+#      $LAPTOP_DIR (enabled = true on the default path, enabled =
+#      false when RESEARCH_AUTO_PROMOTE=0) and removed by the cleanup
+#      trap — so the dashboard's sidecar liveness probe (#248 / #378)
+#      reports installed=true instead of `orphan` (#699).
 #
 # Standard library only -- no pytest, no requests, no live LLM, no
 # podman.
@@ -273,6 +278,28 @@ for c in EXPLORER NOTICER SKEPTIC FORMULATOR VERIFIER NOVELTY \
     assert_contains "22f. RESEARCH_${c}_REPRODUCTIVE_FITNESS_THRESHOLD defaults to 3" "$SRC" \
         "\"\${RESEARCH_${c}_REPRODUCTIVE_FITNESS_THRESHOLD:=3}\""
 done
+
+# ---------------------------------------------------------------------------
+# 18a-d (#699): start_auto_promote_sidecar writes .auto-promote-install.toml
+# at $LAPTOP_DIR so the dashboard's sidecar liveness probe (#248 / #378)
+# reports installed=true, status="ok" instead of running_orphan=true,
+# status="orphan". Schema must byte-match dev-apprenticeship/install.sh
+# (federation-dashboard-collector.py:906 parses [auto_promote] with
+# underscore). Cleanup trap removes the file on EXIT/INT/TERM.
+# ---------------------------------------------------------------------------
+assert_contains "18a. dry-run emits .auto-promote-install.toml write" "$OUT" \
+    "> $WORK_DIR/run-default/laptop-node/.auto-promote-install.toml"
+assert_contains "18b. emitted file content carries the [auto_promote] section header" "$OUT" \
+    '[auto_promote]\nenabled = true\ninterval_s = 300\n'
+
+DISABLED_OUT="$(RESEARCH_DRY_RUN=1 RESEARCH_AUTO_PROMOTE=0 \
+                RESEARCH_RUN_DIR="$WORK_DIR/run-disabled" \
+                bash "$ORCH" 2>&1)"
+assert_contains "18c. RESEARCH_AUTO_PROMOTE=0 emits enabled = false write" "$DISABLED_OUT" \
+    '[auto_promote]\nenabled = false\n'
+
+assert_contains "18d. cleanup trap removes .auto-promote-install.toml on EXIT/INT/TERM" "$OUT" \
+    "rm -f \"$WORK_DIR/run-default/laptop-node/.auto-promote-install.toml\""
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
