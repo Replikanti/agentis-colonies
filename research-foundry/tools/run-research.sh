@@ -908,9 +908,9 @@ spawn_container() {
 # --- 4) Cleanup trap ---
 AUTO_PROMOTE_PID=""
 install_cleanup_trap() {
-    emit_step "installing cleanup trap (stop + rm container; kill sidecars)"
+    emit_step "installing cleanup trap (stop + rm container; kill sidecars; rm sidecar install file)"
     # shellcheck disable=SC2064  # Expand $AUTO_PROMOTE_PID at trigger time.
-    emit_cmd "trap '[ -n \"\${AUTO_PROMOTE_PID:-}\" ] && kill \"\$AUTO_PROMOTE_PID\" 2>/dev/null; podman stop --time 5 research-foundry-laptop 2>/dev/null || true; podman rm -f research-foundry-laptop 2>/dev/null || true' EXIT INT TERM"
+    emit_cmd "trap '[ -n \"\${AUTO_PROMOTE_PID:-}\" ] && kill \"\$AUTO_PROMOTE_PID\" 2>/dev/null; rm -f \"$LAPTOP_DIR/.auto-promote-install.toml\" 2>/dev/null; podman stop --time 5 research-foundry-laptop 2>/dev/null || true; podman rm -f research-foundry-laptop 2>/dev/null || true' EXIT INT TERM"
 }
 
 # --- 4.5) Auto-promote sidecar (#622, consolidated #638) ---
@@ -950,6 +950,13 @@ start_auto_promote_sidecar() {
     CULL_COLONIES="${RESEARCH_CULL_COLONIES:-explorer}"
     if [ "$AP_ENABLED" != "1" ]; then
         emit_step "auto-promote sidecar: disabled via RESEARCH_AUTO_PROMOTE=$AP_ENABLED"
+        # Write .auto-promote-install.toml so the dashboard's sidecar
+        # liveness probe (#248 / #378 / #699) sees installed=true,
+        # enabled=false instead of treating a healthy disable as orphan
+        # state. Schema matches dev-apprenticeship/install.sh:864-899
+        # for parser compatibility (federation-dashboard-collector.py
+        # parses [auto_promote] with underscore).
+        emit_cmd "printf '# Auto-promote scheduler settings (#148 / #216 / #699).\n#\n# Written by research-foundry/tools/run-research.sh at sidecar spawn.\n# Read by federation-dashboard to derive HEALTHY / DEGRADED banner.\n[auto_promote]\nenabled = false\ninterval_s = $AP_INTERVAL\n' > $LAPTOP_DIR/.auto-promote-install.toml"
         return 0
     fi
     AP_SCRIPT="$REPO_ROOT/tools/auto-promote.sh"
@@ -971,6 +978,16 @@ start_auto_promote_sidecar() {
     else
         emit_step "cull-replicas cycle: disabled (RESEARCH_CULL_ENABLED=$CULL_ENABLED)"
     fi
+    # Write .auto-promote-install.toml so the dashboard's sidecar
+    # liveness probe (#248 / #378 / #699) sees installed=true and the
+    # configured interval instead of reporting running_orphan=true /
+    # status="orphan". Schema matches dev-apprenticeship/install.sh:864-899
+    # for parser compatibility (federation-dashboard-collector.py parses
+    # [auto_promote] with underscore at line 906). Emitted via emit_cmd
+    # so the write surfaces in both the dry-run transcript and the real
+    # orchestrator log; the cleanup trap installed above removes the
+    # file on EXIT/INT/TERM.
+    emit_cmd "printf '# Auto-promote scheduler settings (#148 / #216 / #699).\n#\n# Written by research-foundry/tools/run-research.sh at sidecar spawn.\n# Read by federation-dashboard to derive HEALTHY / DEGRADED banner.\n[auto_promote]\nenabled = true\ninterval_s = $AP_INTERVAL\n' > $LAPTOP_DIR/.auto-promote-install.toml"
     if [ "$DRY_RUN" = "1" ]; then
         emit_cmd "auto-promote-sidecar placeholder: cwd=$LAPTOP_DIR config=$AP_CONFIG interval=${AP_INTERVAL}s"
         if [ "$CULL_ENABLED" = "1" ]; then
