@@ -636,6 +636,21 @@ if [ -x "$REPO_ROOT/tools/check-no-replay-current-pid.sh" ]; then
     fi
 fi
 
+# --- Top-of-tick last_check heartbeat (#697) ---
+# All 18 research-foundry .ag agents must write `<colony>:last_check`
+# at the top of `fn tick(...)` (after `_jitter_sleep()`) so the
+# dashboard's #686 memo-freshness liveness probe reflects daemon-alive
+# even when early-return gates skip the bottom-of-tick refresh.
+if [ -x "$REPO_ROOT/research-foundry/tools/test-last-check-early.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/research-foundry/tools/test-last-check-early.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "test-last-check-early: all 18 research-foundry .ag agents write last_check at top of fn tick (#697)"
+    else
+        fail "test-last-check-early: top-of-tick last_check write missing/misplaced in research-foundry/ (#697)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- tier-branch double learn() guard (#636) ---
 # Every `_publish_<role>(...)` / `_submitter_<phase>(...)` helper in
 # research-foundry/ must gate its top-level `learn(..., ["emitted", ...])`
