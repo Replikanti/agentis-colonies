@@ -15,6 +15,11 @@
 #   4. Containerized fixture (PID > kernel.pid_max, fresh memo)
 #      → is_running=True (the #683 bug repro: PID-kill would return
 #      False here, the new freshness check returns True).
+#   5. (#700) Same stale_agent fixture (memo at now - 6000s) but with
+#      FEDERATION_DASHBOARD_STALENESS_TICKS=120 exported → window
+#      becomes 120 × 60s = 7200s > 6000s, so pid_alive=true again.
+#      Proves the env knob widens the freshness window for listen-driven
+#      federations without code change.
 #
 # Strategy: drive federation-dashboard-collector.py directly with a
 # synthetic daemons JSON, seed `<agent>:last_check` memos with the real
@@ -244,6 +249,50 @@ if [ "$CONTAINER_PID_ALIVE" = "true" ] && [ "$CONTAINER_IS_RUNNING" = "true" ]; 
     pass "4: containerized fixture (pid=$CONTAINER_PID, fresh memo) → pid_alive=true, is_running=true (#683 fixed)"
 else
     fail "4: containerized fixture wrong — pid=$CONTAINER_PID pid_alive=$CONTAINER_PID_ALIVE is_running=$CONTAINER_IS_RUNNING (want true/true; #683 regression)"
+fi
+
+# --- Test 5 (#700): same stale_agent fixture, widened window via env knob ---
+# stale_agent memo is at NOW-6000s. With STALENESS_TICKS=120 the window
+# becomes 120 × 60s = 7200s > 6000s, so the same row that fails Test 2
+# (pid_alive=false at default 3 ticks) must now flip back to true.
+COLLECTOR_OUT_WIDE="$TMPDIR_TEST/collector-wide.json"
+FEDERATION_DASHBOARD_STALENESS_TICKS=120 python3 "$COLLECTOR" \
+    "@$DAEMONS_JSON_FILE" \
+    "$(cat "$AGENT_MAP_FILE")" \
+    "$FED_DIR" \
+    "$EPOCH" \
+    "$FED_DIR/.agentis/experience" \
+    "$FED_DIR/.agentis/logs" \
+    "$FED_DIR/.dashboard" \
+    '["stub-colony"]' \
+    "$REPO_ROOT/tools" \
+    fresh_agent stale_agent missing_agent container_agent \
+    > "$COLLECTOR_OUT_WIDE" 2>"$TMPDIR_TEST/collector-wide.err"
+
+extract_wide() {
+    python3 - "$COLLECTOR_OUT_WIDE" "$1" "$2" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    blob = json.load(f)
+name, field = sys.argv[2], sys.argv[3]
+for a in blob.get("agents", []):
+    if a.get("name") == name:
+        v = a.get(field)
+        if isinstance(v, bool):
+            print("true" if v else "false")
+        else:
+            print(v)
+        sys.exit(0)
+print("MISSING")
+PY
+}
+
+STALE_WIDE_PID_ALIVE="$(extract_wide stale_agent pid_alive)"
+STALE_WIDE_IS_RUNNING="$(extract_wide stale_agent is_running)"
+if [ "$STALE_WIDE_PID_ALIVE" = "true" ] && [ "$STALE_WIDE_IS_RUNNING" = "true" ]; then
+    pass "5: stale memo (now - 6000s) with FEDERATION_DASHBOARD_STALENESS_TICKS=120 → pid_alive=true, is_running=true (#700 env knob widens window)"
+else
+    fail "5: env-widened window wrong — pid_alive=$STALE_WIDE_PID_ALIVE is_running=$STALE_WIDE_IS_RUNNING (want true/true; #700 regression)"
 fi
 
 echo ""

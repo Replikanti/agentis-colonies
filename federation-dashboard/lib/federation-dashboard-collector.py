@@ -39,7 +39,18 @@ import sys, os, json, time, re, datetime, subprocess
 # namespace-independent: every tick writes `<agent>:last_check`, so
 # `now - last_check < STALENESS_TICKS * tick_interval` is a reliable
 # liveness predicate on every deployment topology.
-STALENESS_TICKS = 3
+#
+# #700: env-configurable so listen-driven federations (e.g.
+# `research-foundry`'s long-poll `listen()` cadence, where ticks can
+# legitimately go quiet for minutes between events) can widen the window
+# without code change. Default 3 stays correct for active tick-driven
+# federations like `dev-apprenticeship`; `research-foundry`'s launcher
+# exports `FEDERATION_DASHBOARD_STALENESS_TICKS=10`. Clamped to >= 1 so a
+# misconfigured `0` cannot turn every agent permanently stale.
+try:
+    STALENESS_TICKS = max(1, int(os.environ.get("FEDERATION_DASHBOARD_STALENESS_TICKS", "3")))
+except (TypeError, ValueError):
+    STALENESS_TICKS = 3
 
 def _read(arg):
     """Resolve `@<path>` argv prefix to file contents; otherwise pass through."""
