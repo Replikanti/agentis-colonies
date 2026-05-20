@@ -18,6 +18,10 @@ History of the three retired federations consolidated into this one
 
 ## [Unreleased]
 
+### Fixed
+
+- 4 search colonies (`arxiv-search`, `oeis-search`, `groupprops-search`, `scholar-search`) now use the canonical dashed `<basename>:confidence` memo key — matches on-disk basename per [CLAUDE.md Agent conventions](../CLAUDE.md) and is consistent with the [#688](https://github.com/Replikanti/agentis-colonies/issues/688) `last_check` rename. The bootstrap-loop colony list in `tools/run-research.sh` (3 occurrences) and the `recall_latest` call in each of the 4 `.ag` files were renamed in lockstep so the seeded confidence is now actually consumed by the agents (pre-fix the writers and the readers AGREED on the underscored form internally but Phase 5 PR-A's snapshot writer used the dashed form, so cross-run persistence silently dropped searcher confidence). `prior_advocate` already used its canonical form (matches `prior_advocate/` dir on disk). ([#694](https://github.com/Replikanti/agentis-colonies/issues/694))
+
 ### Added
 
 - Phase 5 PR-C: cross-run fitness aggregation. New `--cross-run --window N`
