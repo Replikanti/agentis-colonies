@@ -39,8 +39,14 @@
 #
 # This script only runs inside the host context that drives the
 # research-foundry container; it talks to the container exclusively via
-# `podman exec research-foundry-laptop ...`. The ledger path is the
-# host-side bind-mount root (<fed_dir>/replication-ledger.jsonl).
+# `podman exec "$CONTAINER" ...`, where $CONTAINER defaults to
+# `research-foundry-laptop` and can be overridden by exporting
+# `CULL_CONTAINER_NAME=<name>`. Test harnesses set this to a sentinel
+# value (`cull-test-noop`) so every `podman exec` fails fast and the
+# script's try/except blocks fall through to fixture-provided values
+# instead of leaking into a live federation's memo store (issue #685).
+# The ledger path is the host-side bind-mount root
+# (<fed_dir>/replication-ledger.jsonl).
 #
 # Net-zero on daemon count: kill 1, spawn 1. The M2-Malthusian
 # max_replicas cap from PR 1 still enforces the upper bound.
@@ -131,7 +137,7 @@ fi
 CONFIG_FILE="$REPO_ROOT/tools/auto-promote-config.research-foundry.yaml"
 DECISIONS_SCRIPT="$REPO_ROOT/tools/auto-promote-decisions.py"
 REPLICATION_LEDGER="$FED_DIR/replication-ledger.jsonl"
-CONTAINER="research-foundry-laptop"
+CONTAINER="${CULL_CONTAINER_NAME:-research-foundry-laptop}"
 VARIANTS_FILE="$REPO_ROOT/research-foundry/tools/colony-variants.json"
 
 log() {
@@ -251,6 +257,7 @@ read_specialty_counts() {
 import json, subprocess, sys
 daemons = json.loads(sys.argv[1])
 colony = sys.argv[2]
+container = sys.argv[3]
 counts = {}
 for d in daemons:
     pid = d.get('pid', 0)
@@ -258,7 +265,7 @@ for d in daemons:
         continue
     try:
         out = subprocess.run(
-            ['podman', 'exec', 'research-foundry-laptop',
+            ['podman', 'exec', container,
              'agentis', 'memo', 'get', '%s:%s:specialty' % (colony, pid)],
             capture_output=True, text=True, timeout=5,
         )
@@ -269,7 +276,7 @@ for d in daemons:
         continue
     counts[val] = counts.get(val, 0) + 1
 print(json.dumps(counts))
-" "$COLONY_DAEMONS_JSON" "$COLONY_NAME"
+" "$COLONY_DAEMONS_JSON" "$COLONY_NAME" "$CONTAINER"
 }
 
 SPECIALTY_COUNTS_JSON="$(read_specialty_counts)"
@@ -288,6 +295,7 @@ MAX_DAEMON_ID="$(python3 -c "
 import json, subprocess, sys
 daemons = json.loads(sys.argv[1])
 colony = sys.argv[2]
+container = sys.argv[3]
 max_id = 0
 for d in daemons:
     pid = d.get('pid', 0)
@@ -305,7 +313,7 @@ for d in daemons:
     # scanning the pool:specialty:<N> slot assignments for occupied ids.
     try:
         out = subprocess.run(
-            ['podman', 'exec', 'research-foundry-laptop',
+            ['podman', 'exec', container,
              'agentis', 'memo', 'get', '%s:%s:daemon_id' % (colony, pid)],
             capture_output=True, text=True, timeout=5,
         )
@@ -319,7 +327,7 @@ for d in daemons:
 # below.
 try:
     out = subprocess.run(
-        ['podman', 'exec', 'research-foundry-laptop',
+        ['podman', 'exec', container,
          'agentis', 'memo', 'list'],
         capture_output=True, text=True, timeout=5,
     )
@@ -341,7 +349,7 @@ except (OSError, subprocess.SubprocessError):
 if max_id == 0:
     max_id = len(daemons)
 print(max_id)
-" "$COLONY_DAEMONS_JSON" "$COLONY_NAME" 2>/dev/null || echo "$COLONY_COUNT")"
+" "$COLONY_DAEMONS_JSON" "$COLONY_NAME" "$CONTAINER" 2>/dev/null || echo "$COLONY_COUNT")"
 
 # Helper: demand-weighted specialty pick from colony-variants.json.
 # Invoked once per respawn so the picker re-evaluates after each prior
