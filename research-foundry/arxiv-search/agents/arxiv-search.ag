@@ -378,6 +378,6 @@ fn tick(reason: string) -> void {
 
     let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
     if len(now) > 0 {
-        memo_write("arxiv_search:last_check", now);
+        memo_write("arxiv-search:last_check", now);
     };
 }
