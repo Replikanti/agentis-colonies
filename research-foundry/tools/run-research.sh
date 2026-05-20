@@ -571,10 +571,10 @@ write_bootstrap() {
         printf ': > /run-root/audit-ledger.jsonl\n'
         printf ': > /run-root/preprint-ledger.jsonl\n'
         printf ': > /run-root/replication-ledger.jsonl\n'
-        # Seed propose-tier confidence for each colony. Note the
-        # claim-auditor / preprint-foundry searcher keys use underscored
-        # forms (arxiv_search, oeis_search, etc.) because the .ag agents
-        # call them that way internally; mirrors retired run-auditor.sh.
+        # Seed propose-tier confidence for each colony. All keys use the
+        # canonical dashed `<basename>:confidence` form per CLAUDE.md Agent
+        # conventions; `prior_advocate` remains underscored because its disk
+        # basename is `prior_advocate` (the underscore IS its canonical form).
         #
         # Phase 5 PR-B (#626): hot-start restore. If
         # `<persistent-dir>/memo-snapshot.json` (written by PR-A at the
