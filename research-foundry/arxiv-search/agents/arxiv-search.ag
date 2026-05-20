@@ -298,6 +298,8 @@ fn _publish_arxiv_search(
 fn tick(reason: string) -> void {
     let _ = reason;
     let _ = _jitter_sleep();
+    let _last_check_now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(_last_check_now) > 0 { memo_write("arxiv-search:last_check", _last_check_now); };
     let _tick_now_ms = now_ms_via_shell();
     let _colony_name = colony_name();
     let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
