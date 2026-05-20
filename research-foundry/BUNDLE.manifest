@@ -10,6 +10,12 @@ research-foundry/tools/substitute-author.py
 # <fed-dir>/persistent/memo-snapshot.json. PR-B will consume the snapshot
 # at bootstrap; PR-C will aggregate cross-run fitness.
 research-foundry/tools/persistent-snapshot.py
+# Phase 5 PR-B (#626). Bootstrap-side reader for the persistent dir.
+# `load-confidence` restores per-colony confidence from PR-A's snapshot;
+# `weighted-specialty-slots` biases explorer spawn slots from PR-C's
+# (NOT yet populated) fittest_specialties.json. Falls back to legacy
+# behaviour when files are missing.
+research-foundry/tools/persistent-load.py
 # Phase 9 PR-B (#663). Source-of-truth variant + overlay table read
 # by tools/cull-replicas.sh and the run-research.sh bootstrap loop.
 research-foundry/tools/colony-variants.json
