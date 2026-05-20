@@ -30,6 +30,19 @@
 
 set -eu
 
+# Isolate this test harness from any live research-foundry container on
+# the host (#685). cull-replicas.sh resolves $CONTAINER from
+# CULL_CONTAINER_NAME (default research-foundry-laptop); pointing it at
+# a sentinel name that will never match a real podman container makes
+# every `podman exec` invocation fail fast, so the script's try/except
+# blocks fall through to the fixture-provided values
+# (CULL_DAEMONS_JSON_OVERRIDE, CULL_SPECIALTY_COUNTS_OVERRIDE) rather
+# than reading the live federation's memo store. Without this, tests 8
+# and 10 (which assert specific daemon_id allocations) fail whenever a
+# running research-foundry-laptop container has pool:specialty:<N>
+# slots claimed beyond the synthetic fixture's range.
+export CULL_CONTAINER_NAME=cull-test-noop
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CULL="$SCRIPT_DIR/cull-replicas.sh"
 WRAPPER="$SCRIPT_DIR/cull-explorers.sh"
