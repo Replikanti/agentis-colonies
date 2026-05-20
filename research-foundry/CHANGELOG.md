@@ -18,6 +18,19 @@ History of the three retired federations consolidated into this one
 
 ## [Unreleased]
 
+### Fixed
+
+- Four `research-foundry` search colonies (`arxiv-search`, `oeis-search`,
+  `scholar-search`, `groupprops-search`) wrote their per-tick liveness memo
+  to the underscored key `<agent>_search:last_check` instead of the
+  canonical dashed `<agent>-search:last_check`. The
+  `federation-dashboard` freshness probe and any operator tooling that
+  follows the `<basename>:last_check` convention (CLAUDE.md "Agent
+  conventions") therefore reported these four agents as stale or missing
+  even when they ticked normally. Rename is mechanical (one `memo_write`
+  call per file) and matches the basename of each `.ag` file. No reader
+  of the underscored form existed in-tree (#688).
+
 ### Changed
 
 - Lifecycle (birth + death + respawn) is now **on by default** in the
