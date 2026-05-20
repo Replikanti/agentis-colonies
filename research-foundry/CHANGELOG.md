@@ -20,6 +20,21 @@ History of the three retired federations consolidated into this one
 
 ### Added
 
+- Phase 5 PR-B: hot-start consumers wired into `tools/run-research.sh`.
+  At run start the bootstrap reads `persistent/memo-snapshot.json` to
+  restore per-colony `<colony>:confidence` (was hardcoded 0.7), and
+  reads `persistent/fittest_specialties.json` to bias the 5-explorer
+  specialty distribution (top 60% by `avg_fitness` get 4 slots
+  round-robin; 1 slot is forced mutation from non-top variants).
+  Missing files (or `RESEARCH_PERSISTENT_DISABLED=1`) -> byte-identical
+  to pre-PR-B behaviour. New helper `tools/persistent-load.py` with
+  two subcommands (`load-confidence`, `weighted-specialty-slots`),
+  mirroring the heredoc-free / argv-driven pattern of
+  `persistent-snapshot.py`. New `tools/test-hot-start.sh` covers
+  round-robin fallback, biased distribution, snapshot-restore, missing-
+  key fallback, and bootstrap byte-identity for the no-persistent
+  path. PR-C will populate `fittest_specialties.json` from cross-run
+  fitness aggregation. Reference: [#626](https://github.com/Replikanti/agentis-colonies/issues/626).
 - Phase 5 PR-A: `research-foundry/persistent/` directory scaffolding
   with `SCHEMA_VERSION=1`. At run end the orchestrator snapshots curated
   memo namespaces (`formulator:learned_*`, `editor:learned_pitfalls`,

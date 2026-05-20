@@ -67,12 +67,20 @@
 #   RESEARCH_RUN_DIR             Output dir override. Default: auto-
 #                                timestamped under research-foundry/runs/
 #   RESEARCH_PERSISTENT_DIR      Per-federation persistent dir written at
-#                                run-end (Phase 5 PR-A of #626). Default:
-#                                <fed-dir>/persistent. PR-B will read
-#                                memo-snapshot.json from here at bootstrap;
-#                                PR-C will aggregate cross-run fitness.
-#   RESEARCH_PERSISTENT_DISABLED 1 = skip the run-end memo snapshot.
-#                                Default 0 (snapshot is on by default).
+#                                run-end (Phase 5 PR-A of #626) and read
+#                                at bootstrap (Phase 5 PR-B of #626).
+#                                Default: <fed-dir>/persistent. PR-B
+#                                restores `<colony>:confidence` from
+#                                `memo-snapshot.json` (falls back to
+#                                0.7 if missing) and biases the 5
+#                                explorer specialty slots from
+#                                `fittest_specialties.json` if present
+#                                (falls back to round-robin if missing).
+#                                PR-C will aggregate cross-run fitness
+#                                and write `fittest_specialties.json`.
+#   RESEARCH_PERSISTENT_DISABLED 1 = skip both the run-end memo snapshot
+#                                AND the bootstrap hot-start restore.
+#                                Default 0 (both on by default).
 #   RESEARCH_IMAGE_TAG           Container image tag built from
 #                                Containerfile.research.
 #                                Default: research-foundry:latest
@@ -559,9 +567,32 @@ write_bootstrap() {
         # claim-auditor / preprint-foundry searcher keys use underscored
         # forms (arxiv_search, oeis_search, etc.) because the .ag agents
         # call them that way internally; mirrors retired run-auditor.sh.
-        printf 'for c in explorer noticer skeptic formulator verifier novelty arxiv_search oeis_search groupprops_search scholar_search prior_advocate auditor introducer theorist computer editor reviewer submitter; do\n'
-        printf '    (cd /run-root && agentis memo set $c:confidence 0.7 >/dev/null 2>&1 || true)\n'
-        printf 'done\n'
+        #
+        # Phase 5 PR-B (#626): hot-start restore. If
+        # `<persistent-dir>/memo-snapshot.json` (written by PR-A at the
+        # last run end) carries a `<colony>:confidence` value, seed the
+        # in-container memo with it instead of the legacy 0.7 floor.
+        # When the persistent dir / snapshot is missing OR
+        # RESEARCH_PERSISTENT_DISABLED=1, the loop emits the
+        # byte-identical legacy form so a virgin federation behaves
+        # exactly as before.
+        prb_snapshot_path="$PERSISTENT_DIR/memo-snapshot.json"
+        if [ "$PERSISTENT_DISABLED" != "1" ] && [ -f "$prb_snapshot_path" ]; then
+            for prb_c in explorer noticer skeptic formulator verifier novelty arxiv_search oeis_search groupprops_search scholar_search prior_advocate auditor introducer theorist computer editor reviewer submitter; do
+                prb_val="$(python3 "$TOOLS_DIR/persistent-load.py" load-confidence "$PERSISTENT_DIR" "$prb_c" 2>/dev/null || true)"
+                if [ -n "$prb_val" ]; then
+                    printf '(cd /run-root && agentis memo set %s:confidence %s >/dev/null 2>&1 || true)\n' "$prb_c" "$prb_val"
+                else
+                    printf '(cd /run-root && agentis memo set %s:confidence 0.7 >/dev/null 2>&1 || true)\n' "$prb_c"
+                fi
+            done
+            unset prb_c prb_val
+        else
+            printf 'for c in explorer noticer skeptic formulator verifier novelty arxiv_search oeis_search groupprops_search scholar_search prior_advocate auditor introducer theorist computer editor reviewer submitter; do\n'
+            printf '    (cd /run-root && agentis memo set $c:confidence 0.7 >/dev/null 2>&1 || true)\n'
+            printf 'done\n'
+        fi
+        unset prb_snapshot_path
         # Per-daemon tick interval is 30s (decoupled from orchestrator
         # tick); same lesson as the retired preprint-foundry bootstrap.
         printf 'DAEMON_TICK_INTERVAL_MS=30000\n'
@@ -730,18 +761,45 @@ write_bootstrap() {
         # into the replication ledger. The bootstrap already knows the
         # loop iteration and the specialty assignment, so emit here
         # rather than racing the .ag's first-tick claim path.
+        #
+        # Phase 5 PR-B (#626): if `<persistent-dir>/fittest_specialties.json`
+        # exists (written by PR-C, NOT yet by anything in-tree at PR-B
+        # -- the test suite seeds a synthetic fixture), bias the 5
+        # explorer slots so the top 60% of specialties by avg_fitness
+        # claim floor(N * 0.8) round-robin slots and the remaining
+        # ceil(N * 0.2) slots are forced mutation drawn from non-top
+        # variants. When the file is missing OR
+        # RESEARCH_PERSISTENT_DISABLED=1, the case statement emits the
+        # byte-identical legacy 5-way round-robin so a virgin
+        # federation behaves exactly as before.
+        prb_fittest_path="$PERSISTENT_DIR/fittest_specialties.json"
         printf 'for i in $(seq 1 %s); do\n' "$RESEARCH_EXPLORER_REPLICAS"
         printf '    case $i in\n'
-        printf '        1) sp=group_theory ;;\n'
-        printf '        2) sp=combinatorics ;;\n'
-        printf '        3) sp=number_theory ;;\n'
-        printf '        4) sp=probability ;;\n'
-        printf '        5) sp=algebra ;;\n'
+        if [ "$PERSISTENT_DISABLED" != "1" ] && [ -f "$prb_fittest_path" ]; then
+            prb_slot_idx=1
+            python3 "$TOOLS_DIR/persistent-load.py" weighted-specialty-slots \
+                "$PERSISTENT_DIR" \
+                "$TOOLS_DIR/colony-variants.json" \
+                "$RESEARCH_EXPLORER_REPLICAS" 2>/dev/null | while IFS= read -r prb_slot_sp; do
+                if [ -n "$prb_slot_sp" ]; then
+                    printf '        %s) sp=%s ;;\n' "$prb_slot_idx" "$prb_slot_sp"
+                fi
+                prb_slot_idx=$((prb_slot_idx + 1))
+            done
+            unset prb_slot_idx prb_slot_sp
+        else
+            printf '        1) sp=group_theory ;;\n'
+            printf '        2) sp=combinatorics ;;\n'
+            printf '        3) sp=number_theory ;;\n'
+            printf '        4) sp=probability ;;\n'
+            printf '        5) sp=algebra ;;\n'
+        fi
         printf '        *) sp=unassigned ;;\n'
         printf '    esac\n'
         printf '    ts_ms=$(date +%%s%%3N)\n'
         printf '    python3 -c '"'"'import json,sys; sys.stdout.write(json.dumps({"ts":int(sys.argv[1]),"event":"spawn","daemon_id":int(sys.argv[2]),"specialty":sys.argv[3],"generation":0,"reason":"initial"})+"\\n")'"'"' "$ts_ms" "$i" "$sp" >> /run-root/replication-ledger.jsonl\n'
         printf 'done\n'
+        unset prb_fittest_path
         # Phase 9 PR-C (#663): each of the 4 math downstream colonies
         # spawns RESEARCH_<COLONY>_REPLICAS daemons (default 3 per the
         # PR-C env flip below). Each spawn line carries
