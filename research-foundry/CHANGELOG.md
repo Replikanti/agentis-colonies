@@ -20,6 +20,22 @@ History of the three retired federations consolidated into this one
 
 ### Added
 
+- Phase 5 PR-C: cross-run fitness aggregation. New `--cross-run --window N`
+  opt-in flag in `tools/auto-promote-decisions.py` appends a per-run
+  record to `persistent/run-history.jsonl` (aggregating per-pid
+  `evidence.colony_fitness` rows by specialty) and derives
+  `persistent/fittest_specialties.json` from the last N runs using
+  exponential decay (factor 0.7; oldest run in window gets weight
+  0.7^(N-1), most recent gets 1.0). PR-B's hot-start specialty bias now
+  has a populated `fittest_specialties.json` to consume after the first
+  successful run. The orchestrator (`tools/run-research.sh`) invokes
+  the aggregator once at run-end (after the PR-A memo snapshot, before
+  the run-research: done emit_step) via `auto-promote-decisions.py
+  --preview --containerized --cross-run --window N --persistent-dir
+  <dir>`. New env knob `RESEARCH_CROSS_RUN_WINDOW` (default 5).
+  Byte-identity preserved for legacy `--preview` callers (test 12 of
+  `test-auto-promote.sh` enforces; new `tools/test-cross-run-fitness.sh`
+  pins the PR-C math + 8 edge cases). Closes Phase 5 of [#626](https://github.com/Replikanti/agentis-colonies/issues/626).
 - Phase 5 PR-B: hot-start consumers wired into `tools/run-research.sh`.
   At run start the bootstrap reads `persistent/memo-snapshot.json` to
   restore per-colony `<colony>:confidence` (was hardcoded 0.7), and

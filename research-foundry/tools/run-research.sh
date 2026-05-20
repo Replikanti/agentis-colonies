@@ -81,6 +81,13 @@
 #   RESEARCH_PERSISTENT_DISABLED 1 = skip both the run-end memo snapshot
 #                                AND the bootstrap hot-start restore.
 #                                Default 0 (both on by default).
+#   RESEARCH_CROSS_RUN_WINDOW    Number of past run-history.jsonl records
+#                                the cross-run aggregator (Phase 5 PR-C of
+#                                #626) weights when deriving
+#                                fittest_specialties.json. Default 5.
+#                                Exponential decay factor is fixed at 0.7
+#                                (oldest run in window gets weight
+#                                0.7^(N-1); most recent gets 1.0).
 #   RESEARCH_IMAGE_TAG           Container image tag built from
 #                                Containerfile.research.
 #                                Default: research-foundry:latest
@@ -249,6 +256,7 @@ LATEXMK_MAX_PASSES="${RESEARCH_LATEXMK_MAX_PASSES:-3}"
 IMAGE_TAG="${RESEARCH_IMAGE_TAG:-research-foundry:latest}"
 PERSISTENT_DIR="${RESEARCH_PERSISTENT_DIR:-$FED_DIR/persistent}"
 PERSISTENT_DISABLED="${RESEARCH_PERSISTENT_DISABLED:-0}"
+CROSS_RUN_WINDOW="${RESEARCH_CROSS_RUN_WINDOW:-5}"
 ARXIV_GATEWAY="${RESEARCH_ARXIV_GATEWAY:-submit@arxiv.org}"
 ARXIV_FROM="${RESEARCH_ARXIV_FROM:-}"
 SMTP_HOST="${RESEARCH_SMTP_HOST:-localhost}"
@@ -1147,6 +1155,38 @@ if [ "$PERSISTENT_DISABLED" != "1" ]; then
             --container research-foundry-laptop \
             --output-dir "$PERSISTENT_DIR" >>"$ORCH_LOG" 2>&1; then
         emit_step "persistent snapshot failed (non-fatal); continuing shutdown"
+    fi
+fi
+
+# Phase 5 PR-C (#626): cross-run fitness aggregation. Runs the same
+# per-pid decision pipeline as the auto-promote sidecar -- including
+# the PR-B `evidence.colony_fitness.{specialty, fitness_score}`
+# enrichment -- against the still-running container, then appends one
+# record to `persistent/run-history.jsonl` and re-derives
+# `persistent/fittest_specialties.json` from the last
+# RESEARCH_CROSS_RUN_WINDOW records (default 5) with exponential decay
+# (factor 0.7). Treated as non-fatal -- if the helper fails the run
+# still completes cleanly. The decisions JSON the helper prints to
+# stdout is silently discarded here; the side-effect on the
+# persistent dir is the only thing we want at run-end.
+if [ "$PERSISTENT_DISABLED" != "1" ]; then
+    emit_step "aggregating cross-run fitness to $PERSISTENT_DIR (window=$CROSS_RUN_WINDOW)"
+    PRC_AP_CONFIG="$REPO_ROOT/tools/auto-promote-config.research-foundry.yaml"
+    if [ ! -f "$PRC_AP_CONFIG" ]; then
+        emit_step "cross-run aggregation: $PRC_AP_CONFIG missing, skipping"
+    else
+        PRC_DAEMONS_JSON=$(podman exec research-foundry-laptop \
+            agentis daemon list --json 2>/dev/null || echo "[]")
+        if ! python3 "$REPO_ROOT/tools/auto-promote-decisions.py" \
+                --preview --config "$PRC_AP_CONFIG" --containerized \
+                --cross-run \
+                --window "$CROSS_RUN_WINDOW" \
+                --persistent-dir "$PERSISTENT_DIR" \
+                "$PRC_DAEMONS_JSON" "$LAPTOP_DIR" \
+                >>"$ORCH_LOG" 2>&1; then
+            emit_step "cross-run aggregation failed (non-fatal); continuing"
+        fi
+        unset PRC_AP_CONFIG PRC_DAEMONS_JSON
     fi
 fi
 

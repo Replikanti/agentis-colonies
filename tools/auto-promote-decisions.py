@@ -30,6 +30,17 @@
 #   --preview --config <auto-promote-config.yaml> [--containerized] \
 #       <daemons_json> <fed_dir>
 #
+# Cross-run aggregation (Phase 5 PR-C of #626) — opt-in side-effect mode:
+#   --cross-run --window <N> --persistent-dir <dir> \
+#       <daemons_json> <fed_dir> <... legacy positional args ...>
+# Runs the same per-agent decision loop, then APPENDS a per-run record to
+# `<persistent-dir>/run-history.jsonl` (aggregating `evidence.colony_fitness`
+# rows by specialty) and DERIVES `<persistent-dir>/fittest_specialties.json`
+# from the last N records using exponential decay (weight = 0.7^(N-1-i)).
+# The decisions JSON array on stdout is UNCHANGED (no extra rows, no
+# reordering) so `auto-promote.sh`'s `while IFS='|' read` loop is
+# byte-identity safe vs legacy callers.
+#
 # Output: JSON array of decision records on stdout. Each record has at least
 # {agent, colony, decision} where decision is one of {promote, evolve, skip}.
 # Consumed by the `while IFS='|' read ...` loop downstream in auto-promote.sh
@@ -101,6 +112,50 @@ def _load_config(path):
 def main():
     argv = sys.argv[1:]
 
+    # Phase 5 PR-C (#626): opt-in cross-run aggregation flag. Parsed
+    # before --preview / legacy dispatch so the flag can ride alongside
+    # either invocation form. When set, after the decisions loop builds
+    # the JSON array, an additional side-effect writes
+    # <persistent_dir>/run-history.jsonl + fittest_specialties.json. The
+    # stdout JSON array is byte-identical to the legacy form (test 12 of
+    # test-auto-promote.sh enforces; the new --cross-run path is opt-in).
+    cross_run_enabled = False
+    cross_run_window = 5
+    persistent_dir = None
+    filtered = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == '--cross-run':
+            cross_run_enabled = True
+            i += 1
+            continue
+        if a == '--window':
+            if i + 1 >= len(argv):
+                sys.stderr.write('Usage: --window <N> requires a value\n')
+                return 2
+            try:
+                cross_run_window = int(argv[i + 1])
+            except (ValueError, TypeError):
+                sys.stderr.write('Usage: --window <N> requires an integer\n')
+                return 2
+            i += 2
+            continue
+        if a == '--persistent-dir':
+            if i + 1 >= len(argv):
+                sys.stderr.write('Usage: --persistent-dir <dir> requires a value\n')
+                return 2
+            persistent_dir = argv[i + 1]
+            i += 2
+            continue
+        filtered.append(a)
+        i += 1
+    argv = filtered
+
+    if cross_run_enabled and not persistent_dir:
+        sys.stderr.write('--cross-run requires --persistent-dir <dir>\n')
+        return 2
+
     containerized = False
     if argv and argv[0] == '--preview':
         # Preview mode: read-only call from federation-dashboard-collector.
@@ -138,19 +193,19 @@ def main():
         # identical contract — test-auto-promote.sh asserts it. The 12th arg
         # ('true'/'false') is optional and toggles containerized liveness
         # (#622); absence keeps the pre-#622 behaviour.
-        daemons = json.loads(sys.argv[1])
-        fed_dir = sys.argv[2]
-        min_entries = int(sys.argv[3])
-        min_acting_entries = int(sys.argv[4])
-        min_runtime_hours = float(sys.argv[5])
-        reject_rate_threshold = float(sys.argv[6])
-        delta_slope_window = int(sys.argv[7])
-        delta_slope_min = float(sys.argv[8])
-        promote_steps_raw = sys.argv[9]
-        evolve_slope_neg_for = int(sys.argv[10])
-        evolve_reject_above = float(sys.argv[11])
-        if len(sys.argv) >= 13:
-            containerized = (sys.argv[12].lower() == 'true')
+        daemons = json.loads(argv[0])
+        fed_dir = argv[1]
+        min_entries = int(argv[2])
+        min_acting_entries = int(argv[3])
+        min_runtime_hours = float(argv[4])
+        reject_rate_threshold = float(argv[5])
+        delta_slope_window = int(argv[6])
+        delta_slope_min = float(argv[7])
+        promote_steps_raw = argv[8]
+        evolve_slope_neg_for = int(argv[9])
+        evolve_reject_above = float(argv[10])
+        if len(argv) >= 12:
+            containerized = (argv[11].lower() == 'true')
 
     # Tags that mark a row as exercising a tier-gated acting branch (not observe).
     # See doc/auto-promote.md#classification — must match the tag strings emitted
@@ -750,6 +805,159 @@ def main():
         }))
 
     print(json.dumps(decisions))
+
+    # Phase 5 PR-C (#626): cross-run fitness aggregation. Side-effect
+    # only — stdout is unchanged so legacy callers (auto-promote.sh's
+    # `while IFS='|' read` loop, federation-dashboard-collector via
+    # --preview) see the same JSON they always did. Aggregates the
+    # current run's per-pid `evidence.colony_fitness.fitness_score` by
+    # specialty, appends one record to run-history.jsonl, then re-derives
+    # fittest_specialties.json from the last N records using exponential
+    # decay (weight = 0.7^(N-1-i)).
+    if cross_run_enabled and persistent_dir:
+        try:
+            _aggregate_cross_run(decisions, persistent_dir, cross_run_window)
+        except (OSError, ValueError) as e:
+            sys.stderr.write(
+                'auto-promote-decisions: cross-run aggregation failed '
+                '(non-fatal): ' + str(e) + '\n'
+            )
+
+
+# Phase 5 PR-C (#626): cross-run aggregation helpers. Kept module-level
+# (not nested) so tests can drive them directly with synthetic decision
+# arrays without going through the full main() entrypoint.
+
+CROSS_RUN_SCHEMA_VERSION = 1
+CROSS_RUN_DECAY_FACTOR = 0.7
+
+
+def _aggregate_cross_run(decisions, persistent_dir, window):
+    """Append this run's per-specialty fitness to run-history.jsonl and
+    re-derive fittest_specialties.json from the last `window` records.
+
+    Side-effect only; never raises into the stdout path. Caller wraps
+    in try/except so an IO failure remains non-fatal."""
+    os.makedirs(persistent_dir, exist_ok=True)
+    history_path = os.path.join(persistent_dir, 'run-history.jsonl')
+    fittest_path = os.path.join(persistent_dir, 'fittest_specialties.json')
+
+    # Aggregate the current run's decisions by specialty. Use
+    # evidence.colony_fitness.{specialty, fitness_score} since PR-B
+    # ensures it is attached to every research-foundry colony's decision
+    # record (explorer-only in PR-A, all 18 in PR-B). Test fixtures
+    # outside SIDE_BY_COLONY contribute nothing here, which is fine.
+    by_specialty = {}
+    for d in decisions:
+        if not isinstance(d, dict):
+            continue
+        ev = d.get('evidence')
+        if not isinstance(ev, dict):
+            continue
+        cf = ev.get('colony_fitness')
+        if not isinstance(cf, dict):
+            continue
+        sp = cf.get('specialty')
+        if not isinstance(sp, str) or not sp:
+            continue
+        try:
+            score = float(cf.get('fitness_score', 0.0))
+        except (TypeError, ValueError):
+            continue
+        agg = by_specialty.setdefault(sp, {'sum_fitness': 0.0, 'count': 0})
+        agg['sum_fitness'] += score
+        agg['count'] += 1
+    for sp, agg in by_specialty.items():
+        if agg['count'] > 0:
+            agg['avg_fitness'] = agg['sum_fitness'] / agg['count']
+        else:
+            agg['avg_fitness'] = 0.0
+
+    run_record = {
+        'schema': CROSS_RUN_SCHEMA_VERSION,
+        'run_id': time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()),
+        'run_end_ts': int(time.time()),
+        'by_specialty': by_specialty,
+    }
+    with open(history_path, 'a') as fh:
+        fh.write(json.dumps(run_record))
+        fh.write('\n')
+
+    # Re-derive fittest_specialties.json from the last N records.
+    records = []
+    try:
+        with open(history_path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                if row.get('schema') != CROSS_RUN_SCHEMA_VERSION:
+                    sys.stderr.write(
+                        'auto-promote-decisions: skipping run-history.jsonl '
+                        'record with schema=' + str(row.get('schema'))
+                        + ' (expected ' + str(CROSS_RUN_SCHEMA_VERSION) + ')\n'
+                    )
+                    continue
+                records.append(row)
+    except OSError:
+        records = []
+
+    if not records:
+        return
+
+    if window > 0:
+        records = records[-window:]
+    n = len(records)
+
+    weighted_sum = {}
+    total_weight = {}
+    runs_seen = {}
+    for i, rec in enumerate(records):
+        weight = CROSS_RUN_DECAY_FACTOR ** (n - 1 - i)
+        bs = rec.get('by_specialty') or {}
+        if not isinstance(bs, dict):
+            continue
+        for sp, agg in bs.items():
+            if not isinstance(agg, dict):
+                continue
+            try:
+                avg = float(agg.get('avg_fitness', 0.0))
+            except (TypeError, ValueError):
+                continue
+            weighted_sum[sp] = weighted_sum.get(sp, 0.0) + weight * avg
+            total_weight[sp] = total_weight.get(sp, 0.0) + weight
+            runs_seen[sp] = runs_seen.get(sp, 0) + 1
+
+    ranked = []
+    for sp in weighted_sum:
+        tw = total_weight.get(sp, 0.0)
+        if tw <= 0:
+            continue
+        ranked.append({
+            'specialty': sp,
+            'avg_fitness': weighted_sum[sp] / tw,
+            'runs_seen': runs_seen.get(sp, 0),
+        })
+    ranked.sort(key=lambda r: r['avg_fitness'], reverse=True)
+
+    payload = {
+        'schema': CROSS_RUN_SCHEMA_VERSION,
+        'generated_at': int(time.time()),
+        'window_size': window,
+        'decay_factor': CROSS_RUN_DECAY_FACTOR,
+        'ranked': ranked,
+    }
+    tmp_path = fittest_path + '.tmp'
+    with open(tmp_path, 'w') as fh:
+        json.dump(payload, fh, indent=2, sort_keys=True)
+        fh.write('\n')
+    os.replace(tmp_path, fittest_path)
 
 
 if __name__ == '__main__':
