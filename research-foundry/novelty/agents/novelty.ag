@@ -211,25 +211,32 @@ fn _publish_novelty(
         memo_write("novelty:final_verdict:" + explorer_pid + ":tick-" + to_string(upstream_tick), novelty.novelty_verdict);
     };
 
-    if final_write {
-        // Append to per-run discovery ledger.
-        let ledger_path = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
-        if len(ledger_path) > 0 {
-            let ledger_row = "{\"ts\":" + to_string(tick_now_ms) + ",\"colony\":\"" + colony_name_str + "\",\"pid\":\"" + self_pid + "\",\"tick\":" + to_string(tick_idx) + ",\"event\":\"novelty_verdict\",\"verdict\":\"" + novelty.novelty_verdict + "\"}";
-            // colony-lint: safe-exec-concat
-            let append_cmd = "printf '%s\n' " + shell_escape(ledger_row) + " >> " + shell_escape(ledger_path);
-            let _ = try { exec sh append_cmd; } catch e { ""; };
+    // Seed `claim:*:tick-N` keys for the 4 searcher colonies +
+    // auditor so the downstream pipeline reads them at the NEXT
+    // tick (in-container, shared `.agentis/` memo). Replaces the
+    // cross-fed memo recall that the retired run-auditor.sh did
+    // by probing math-foundry's run dir (#638). tick_idx is the
+    // current orchestrator tick (where novelty fired); searchers
+    // read `claim:*:tick-N` with N = their own current_tick at
+    // the next tick advance. These are inter-colony handoff
+    // signals, not final-write side-effects: they fire on every
+    // NOVEL/BORDERLINE verdict regardless of tier so the audit +
+    // preprint pipeline unblocks in the default propose tier (#687).
+    if novelty.novelty_verdict == "NOVEL" {
+        let tick_s = to_string(tick_idx);
+        memo_write("claim:problem_text:tick-" + tick_s, problem_text);
+        memo_write("claim:answer:tick-" + tick_s, stated_answer);
+        memo_write("claim:novelty_claim:tick-" + tick_s, novelty_claim);
+        if len(explorer_pid) > 0 {
+            let explorer_code = recall_latest("explorer:" + explorer_pid + ":code:tick-" + to_string(upstream_tick));
+            let explorer_output = recall_latest("explorer:" + explorer_pid + ":output:tick-" + to_string(upstream_tick));
+            let explorer_goal = recall_latest("explorer:" + explorer_pid + ":goal:tick-" + to_string(upstream_tick));
+            memo_write("claim:explorer_code:tick-" + tick_s, explorer_code);
+            memo_write("claim:explorer_output:tick-" + tick_s, explorer_output);
+            memo_write("claim:explorer_goal:tick-" + tick_s, explorer_goal);
         };
-
-        // Seed `claim:*:tick-N` keys for the 4 searcher colonies +
-        // auditor so the downstream pipeline reads them at the NEXT
-        // tick (in-container, shared `.agentis/` memo). Replaces the
-        // cross-fed memo recall that the retired run-auditor.sh did
-        // by probing math-foundry's run dir (#638). tick_idx is the
-        // current orchestrator tick (where novelty fired); searchers
-        // read `claim:*:tick-N` with N = their own current_tick at
-        // the next tick advance.
-        if novelty.novelty_verdict == "NOVEL" {
+    } else {
+        if novelty.novelty_verdict == "BORDERLINE" {
             let tick_s = to_string(tick_idx);
             memo_write("claim:problem_text:tick-" + tick_s, problem_text);
             memo_write("claim:answer:tick-" + tick_s, stated_answer);
@@ -242,21 +249,21 @@ fn _publish_novelty(
                 memo_write("claim:explorer_output:tick-" + tick_s, explorer_output);
                 memo_write("claim:explorer_goal:tick-" + tick_s, explorer_goal);
             };
-        } else {
-            if novelty.novelty_verdict == "BORDERLINE" {
-                let tick_s = to_string(tick_idx);
-                memo_write("claim:problem_text:tick-" + tick_s, problem_text);
-                memo_write("claim:answer:tick-" + tick_s, stated_answer);
-                memo_write("claim:novelty_claim:tick-" + tick_s, novelty_claim);
-                if len(explorer_pid) > 0 {
-                    let explorer_code = recall_latest("explorer:" + explorer_pid + ":code:tick-" + to_string(upstream_tick));
-                    let explorer_output = recall_latest("explorer:" + explorer_pid + ":output:tick-" + to_string(upstream_tick));
-                    let explorer_goal = recall_latest("explorer:" + explorer_pid + ":goal:tick-" + to_string(upstream_tick));
-                    memo_write("claim:explorer_code:tick-" + tick_s, explorer_code);
-                    memo_write("claim:explorer_output:tick-" + tick_s, explorer_output);
-                    memo_write("claim:explorer_goal:tick-" + tick_s, explorer_goal);
-                };
-            };
+        };
+    };
+
+    if final_write {
+        // Append to per-run discovery ledger. This is the only
+        // remaining final_write-gated side effect: the on-disk
+        // discovery-ledger.jsonl row should reflect tier policy
+        // (autonomous + review-gated emit; propose skips per
+        // #622 ADR-0001).
+        let ledger_path = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
+        if len(ledger_path) > 0 {
+            let ledger_row = "{\"ts\":" + to_string(tick_now_ms) + ",\"colony\":\"" + colony_name_str + "\",\"pid\":\"" + self_pid + "\",\"tick\":" + to_string(tick_idx) + ",\"event\":\"novelty_verdict\",\"verdict\":\"" + novelty.novelty_verdict + "\"}";
+            // colony-lint: safe-exec-concat
+            let append_cmd = "printf '%s\n' " + shell_escape(ledger_row) + " >> " + shell_escape(ledger_path);
+            let _ = try { exec sh append_cmd; } catch e { ""; };
         };
     };
 

@@ -191,6 +191,27 @@ History of the three retired federations consolidated into this one
   new smoke-test assertions in `tools/test-auto-evolve-ab.sh`
   (total 18/18).
 
+### Fixed
+
+- `novelty/agents/novelty.ag` seeded the `claim:problem_text` /
+  `claim:answer` / `claim:novelty_claim` / `claim:explorer_*`
+  `:tick-N` memos only when `_publish_novelty` was called with
+  `final_write=true`. Tier dispatch passes `final_write=true` only
+  on the `autonomous` branch — `review-gated` and `propose` both
+  passed `false` — so in the default `propose` tier the claim
+  handoff keys were never written, and the downstream audit +
+  preprint pipeline (4 searcher colonies + `auditor` reading
+  `claim:*:tick-N` at their next tick advance) never started. Fix
+  hoists the NOVEL / BORDERLINE `claim:*:tick-N` writes out of the
+  `final_write` gate so they fire on every NOVEL / BORDERLINE
+  verdict regardless of tier. The on-disk discovery-ledger.jsonl
+  append (the actual final-write side effect) stays inside the
+  `final_write` gate, matching ADR-0001 tier policy (autonomous +
+  review-gated emit ledger rows; propose skips). No tier semantics
+  changed; no fitness or replicate logic changed. Coverage:
+  existing `tools/test-replicate-gates.sh` stays 29/29,
+  `tools/test-jitter.sh` stays 72/72. (#687)
+
 ### Added
 
 - LLM-driven `.ag` mutator + real A/B harness in dry-run mode for
