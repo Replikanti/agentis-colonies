@@ -18,6 +18,20 @@ History of the three retired federations consolidated into this one
 
 ## [Unreleased]
 
+### Added
+
+- Phase 5 PR-A: `research-foundry/persistent/` directory scaffolding
+  with `SCHEMA_VERSION=1`. At run end the orchestrator snapshots curated
+  memo namespaces (`formulator:learned_*`, `editor:learned_pitfalls`,
+  `feedback:hitl_*`, `<colony>:confidence` for all 18 colonies) into
+  `persistent/memo-snapshot.json` via a new
+  `research-foundry/tools/persistent-snapshot.py` helper. Atomic write
+  (tmpfile + rename). No consumers yet -- PR-B will read the snapshot
+  at bootstrap to bias new replicas toward fit specialties, PR-C adds
+  cross-run fitness aggregation. New env knobs:
+  `RESEARCH_PERSISTENT_DIR` (default `<fed-dir>/persistent`),
+  `RESEARCH_PERSISTENT_DISABLED=1` opt-out. Reference: [#626](https://github.com/Replikanti/agentis-colonies/issues/626).
+
 ### Fixed
 
 - Four `research-foundry` search colonies (`arxiv-search`, `oeis-search`,

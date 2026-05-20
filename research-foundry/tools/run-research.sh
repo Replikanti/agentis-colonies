@@ -66,6 +66,13 @@
 #                                Default: "" (real run).
 #   RESEARCH_RUN_DIR             Output dir override. Default: auto-
 #                                timestamped under research-foundry/runs/
+#   RESEARCH_PERSISTENT_DIR      Per-federation persistent dir written at
+#                                run-end (Phase 5 PR-A of #626). Default:
+#                                <fed-dir>/persistent. PR-B will read
+#                                memo-snapshot.json from here at bootstrap;
+#                                PR-C will aggregate cross-run fitness.
+#   RESEARCH_PERSISTENT_DISABLED 1 = skip the run-end memo snapshot.
+#                                Default 0 (snapshot is on by default).
 #   RESEARCH_IMAGE_TAG           Container image tag built from
 #                                Containerfile.research.
 #                                Default: research-foundry:latest
@@ -232,6 +239,8 @@ DAEMON_CB_PER_TICK="${RESEARCH_DAEMON_CB_PER_TICK:-2000}"
 DAEMON_HEARTBEAT_MS="${RESEARCH_DAEMON_HEARTBEAT_MS:-1800000}"
 LATEXMK_MAX_PASSES="${RESEARCH_LATEXMK_MAX_PASSES:-3}"
 IMAGE_TAG="${RESEARCH_IMAGE_TAG:-research-foundry:latest}"
+PERSISTENT_DIR="${RESEARCH_PERSISTENT_DIR:-$FED_DIR/persistent}"
+PERSISTENT_DISABLED="${RESEARCH_PERSISTENT_DISABLED:-0}"
 ARXIV_GATEWAY="${RESEARCH_ARXIV_GATEWAY:-submit@arxiv.org}"
 ARXIV_FROM="${RESEARCH_ARXIV_FROM:-}"
 SMTP_HOST="${RESEARCH_SMTP_HOST:-localhost}"
@@ -1068,6 +1077,20 @@ if [ "$DRY_RUN" = "1" ]; then
 fi
 
 signal_shutdown
+
+# Phase 5 PR-A (#626): snapshot curated memo namespaces into the
+# per-federation persistent dir so PR-B can read fittest-specialty +
+# learned-pitfall state at the next bootstrap. PR-C will aggregate
+# cross-run fitness across snapshots. Treated as non-fatal -- a failed
+# snapshot must not break the shutdown path.
+if [ "$PERSISTENT_DISABLED" != "1" ]; then
+    emit_step "snapshotting persistent memo to $PERSISTENT_DIR"
+    if ! python3 "$TOOLS_DIR/persistent-snapshot.py" \
+            --container research-foundry-laptop \
+            --output-dir "$PERSISTENT_DIR" >>"$ORCH_LOG" 2>&1; then
+        emit_step "persistent snapshot failed (non-fatal); continuing shutdown"
+    fi
+fi
 
 emit_step "run-research: done"
 echo "[run-research] run dir: $RUN_DIR"

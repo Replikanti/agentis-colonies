@@ -6,6 +6,10 @@ research-foundry/tools/fetch-papers.py
 research-foundry/tools/test-fetch-papers.py
 research-foundry/tools/review-cli.sh
 research-foundry/tools/substitute-author.py
+# Phase 5 PR-A (#626). Run-end snapshot of curated memo namespaces into
+# <fed-dir>/persistent/memo-snapshot.json. PR-B will consume the snapshot
+# at bootstrap; PR-C will aggregate cross-run fitness.
+research-foundry/tools/persistent-snapshot.py
 # Phase 9 PR-B (#663). Source-of-truth variant + overlay table read
 # by tools/cull-replicas.sh and the run-research.sh bootstrap loop.
 research-foundry/tools/colony-variants.json
