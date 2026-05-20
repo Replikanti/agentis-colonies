@@ -42,7 +42,7 @@ type Report {
 }
 
 fn get_confidence() -> float {
-    let raw = recall_latest("arxiv_search:confidence");
+    let raw = recall_latest("arxiv-search:confidence");
     if len(raw) > 0 {
         return parse_float(raw);
     };

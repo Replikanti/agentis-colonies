@@ -586,7 +586,7 @@ write_bootstrap() {
         # exactly as before.
         prb_snapshot_path="$PERSISTENT_DIR/memo-snapshot.json"
         if [ "$PERSISTENT_DISABLED" != "1" ] && [ -f "$prb_snapshot_path" ]; then
-            for prb_c in explorer noticer skeptic formulator verifier novelty arxiv_search oeis_search groupprops_search scholar_search prior_advocate auditor introducer theorist computer editor reviewer submitter; do
+            for prb_c in explorer noticer skeptic formulator verifier novelty arxiv-search oeis-search groupprops-search scholar-search prior_advocate auditor introducer theorist computer editor reviewer submitter; do
                 prb_val="$(python3 "$TOOLS_DIR/persistent-load.py" load-confidence "$PERSISTENT_DIR" "$prb_c" 2>/dev/null || true)"
                 if [ -n "$prb_val" ]; then
                     printf '(cd /run-root && agentis memo set %s:confidence %s >/dev/null 2>&1 || true)\n' "$prb_c" "$prb_val"
@@ -596,7 +596,7 @@ write_bootstrap() {
             done
             unset prb_c prb_val
         else
-            printf 'for c in explorer noticer skeptic formulator verifier novelty arxiv_search oeis_search groupprops_search scholar_search prior_advocate auditor introducer theorist computer editor reviewer submitter; do\n'
+            printf 'for c in explorer noticer skeptic formulator verifier novelty arxiv-search oeis-search groupprops-search scholar-search prior_advocate auditor introducer theorist computer editor reviewer submitter; do\n'
             printf '    (cd /run-root && agentis memo set $c:confidence 0.7 >/dev/null 2>&1 || true)\n'
             printf 'done\n'
         fi
