@@ -326,7 +326,7 @@ T6_WARN="$(grep -q 'skipping' "$WORK/t6.err" && echo yes || echo no)"
 if [ "$T6_OK" = "ok" ] && [ "$T6_WARN" = "yes" ]; then
     pass "(6) schema mismatch: schema=99 record skipped with warning"
 else
-    fail "(6) schema versioning" "ok=$T6_OK warn=$T6_WARN err=$(cat "$WORK/t6.err" 2>/dev/null | head -3)"
+    fail "(6) schema versioning" "ok=$T6_OK warn=$T6_WARN err=$(head -3 "$WORK/t6.err" 2>/dev/null)"
 fi
 
 # --- (7) Byte-identity for legacy --preview (no --cross-run) ---
