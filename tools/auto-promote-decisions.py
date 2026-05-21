@@ -48,6 +48,7 @@
 #
 # Contract is frozen by doc/auto-promote.md and test-auto-promote.sh.
 
+import datetime
 import hashlib
 import json
 import math
@@ -55,6 +56,71 @@ import os
 import subprocess
 import sys
 import time
+
+
+# Mirrored from federation-dashboard-collector.py:85-134; keep in sync with
+# #683/#697/#700/#705. #706 ports the same memo-freshness liveness predicate
+# from the dashboard to this sidecar so the containerized branch below no
+# longer trusts the daemon registry's stale `effective_state` field (the
+# in-process tick loop continues to write `<agent>:last_check` even when
+# the registry record is mis-flagged as `zombie` after sleep/reboot).
+try:
+    STALENESS_TICKS = max(1, int(os.environ.get("FEDERATION_DASHBOARD_STALENESS_TICKS", "3")))
+except (TypeError, ValueError):
+    STALENESS_TICKS = 3
+
+
+def _read_memo_raw(fed_dir, key):
+    try:
+        proc = subprocess.run(
+            ['agentis', 'memo', 'get', key],
+            cwd=fed_dir, capture_output=True, text=True, timeout=2,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    raw = (proc.stdout or '').strip()
+    return raw or None
+
+
+def _parse_last_check_epoch(raw):
+    if not raw:
+        return None
+    try:
+        dt = datetime.datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ")
+        return dt.replace(tzinfo=datetime.timezone.utc).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+_tick_interval_cache = {}
+
+
+def _resolve_tick_interval_ms(agent, colony, fed_dir):
+    cache_key = (agent, colony)
+    if cache_key in _tick_interval_cache:
+        return _tick_interval_cache[cache_key]
+    interval = 60000
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    helper = os.path.join(script_dir, 'resolve-tick-interval.py')
+    if colony:
+        colony_dir = os.path.join(fed_dir, colony)
+        if os.path.isfile(helper) and os.path.isdir(colony_dir):
+            try:
+                proc = subprocess.run(
+                    ['python3', helper, agent, colony_dir],
+                    capture_output=True, text=True, timeout=2,
+                )
+                if proc.returncode == 0:
+                    try:
+                        interval = int((proc.stdout or '').strip())
+                    except (TypeError, ValueError):
+                        interval = 60000
+            except (subprocess.SubprocessError, OSError):
+                interval = 60000
+    _tick_interval_cache[cache_key] = interval
+    return interval
 
 
 def _load_config(path):
@@ -524,17 +590,26 @@ def main():
         #
         # In containerized mode (#622) the host PID namespace can't see
         # container PIDs, so os.kill(pid, 0) is a false-negative every
-        # tick. Fall back to `effective_state == "running"` from the
-        # daemon-list JSON (also valid for legacy mode; the runtime
-        # tracks zombie/running/etc. with a stale-heartbeat probe).
+        # tick. #706: trust memo freshness (`<agent>:last_check` within
+        # STALENESS_TICKS * tick_interval) over `effective_state`, since
+        # the daemon registry's state field stays stale across sleep/reboot
+        # cycles even when the in-process tick loop keeps writing the memo.
+        # `effective_state == "running"` remains a valid fall-through for
+        # legacy callers; the memo path simply unblocks daemons whose
+        # registry record lies.
         if containerized:
+            last_check_epoch = _parse_last_check_epoch(_read_memo_raw(fed_dir, agent_name + ':last_check'))
+            fresh = False
+            if last_check_epoch is not None:
+                tick_ms = _resolve_tick_interval_ms(agent_name, colony, fed_dir)
+                fresh = (time.time() - last_check_epoch) < STALENESS_TICKS * (tick_ms / 1000.0)
             effective_state = d.get('effective_state') or state
-            if effective_state != 'running':
+            if not fresh and effective_state != 'running':
                 decisions.append(_attach_explorer_evidence({
                     'agent': agent_name,
                     'colony': colony,
                     'decision': 'skip',
-                    'reason': f'effective_state={effective_state!r} not running',
+                    'reason': f'memo last_check stale and effective_state={effective_state!r} not running',
                     'pid': pid,
                     'confidence': confidence,
                 }))
