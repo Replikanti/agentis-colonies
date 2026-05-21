@@ -70,68 +70,28 @@ colony_list_json = sys.argv[8]
 fed_tools_dir  = sys.argv[9]
 all_agents     = sys.argv[10:]
 
+# #709: memo-freshness helpers (read_memo_raw / parse_last_check_epoch /
+# resolve_tick_interval_ms / STALENESS_TICKS) live in the shared
+# tools/agentis_memo_freshness.py module so this collector and
+# tools/auto-promote-decisions.py consume the single source of truth
+# instead of mirroring the implementation (former drift documented in
+# #683/#697/#700/#705/#706/#708). The federation's shared-tools dir is
+# already passed as argv[9] -- we route the import via that path. If the
+# helper module is missing (older federation install), `freshness` stays
+# None and every daemon collapses to `pid_alive=false`, matching the
+# pre-existing missing-helper safe-default contract.
+if fed_tools_dir and fed_tools_dir not in sys.path:
+    sys.path.insert(0, fed_tools_dir)
+try:
+    import agentis_memo_freshness as freshness
+    STALENESS_TICKS = freshness.STALENESS_TICKS
+except ImportError:
+    freshness = None
+    STALENESS_TICKS = 3
+
 def safe_json(s, default):
     try: return json.loads(s or '[]')
     except (json.JSONDecodeError, TypeError, ValueError): return default
-
-# #683: helpers for memo-freshness liveness. `_read_memo_raw` shells out to
-# `agentis memo get <key>` (same idiom used for the per-repo confidence
-# overlay around lines 380-404) so the dashboard does not need to know
-# about the on-disk memo store layout. `_parse_last_check_epoch`
-# converts the canonical ISO-8601 UTC string the `.ag` agents write
-# (`exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"`) into epoch seconds; any
-# unexpected shape collapses to `None` so the caller treats the agent as
-# stale rather than crashing the whole collector regen.
-def _read_memo_raw(fed_dir, key):
-    try:
-        proc = subprocess.run(
-            ['agentis', 'memo', 'get', key],
-            cwd=fed_dir, capture_output=True, text=True, timeout=2,
-        )
-    except (subprocess.SubprocessError, OSError):
-        return None
-    if proc.returncode != 0:
-        return None
-    raw = (proc.stdout or '').strip()
-    return raw or None
-
-def _parse_last_check_epoch(raw):
-    if not raw:
-        return None
-    try:
-        dt = datetime.datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ")
-        return dt.replace(tzinfo=datetime.timezone.utc).timestamp()
-    except (TypeError, ValueError):
-        return None
-
-# Cache resolved tick intervals per (agent, colony) so the helper is not
-# re-spawned on every record when the same agent appears across multiple
-# repos (rare today, but cheap insurance against future fan-out).
-_tick_interval_cache = {}
-
-def _resolve_tick_interval_ms(agent, colony):
-    cache_key = (agent, colony)
-    if cache_key in _tick_interval_cache:
-        return _tick_interval_cache[cache_key]
-    interval = 60000
-    if fed_tools_dir and colony:
-        helper = os.path.join(fed_tools_dir, 'resolve-tick-interval.py')
-        colony_dir = os.path.join(fed_dir, colony)
-        if os.path.isfile(helper) and os.path.isdir(colony_dir):
-            try:
-                proc = subprocess.run(
-                    ['python3', helper, agent, colony_dir],
-                    capture_output=True, text=True, timeout=2,
-                )
-                if proc.returncode == 0:
-                    try:
-                        interval = int((proc.stdout or '').strip())
-                    except (TypeError, ValueError):
-                        interval = 60000
-            except (subprocess.SubprocessError, OSError):
-                interval = 60000
-    _tick_interval_cache[cache_key] = interval
-    return interval
 
 daemons    = safe_json(daemons_json, [])
 agent_map  = safe_json(agent_map_json, [])
@@ -324,22 +284,22 @@ for colony, agent in agent_pairs:
         # colony actually has repos. Field name `pid_alive` preserved so
         # the template + `is_running` derivation stay byte-identical.
         last_check_epoch = None
-        bare_raw = _read_memo_raw(fed_dir, agent + ':last_check')
-        last_check_epoch = _parse_last_check_epoch(bare_raw)
+        bare_raw = freshness.read_memo_raw(fed_dir, agent + ':last_check') if freshness else None
+        last_check_epoch = freshness.parse_last_check_epoch(bare_raw) if freshness else None
         if last_check_epoch is None:
             repos = repos_for_colony.get(colony, [])
             if repos:
                 per_repo_max = None
                 for owner, repo in repos:
                     pr_key = '%s__%s:%s:last_check' % (owner, repo, agent)
-                    pr_raw = _read_memo_raw(fed_dir, pr_key)
-                    pr_epoch = _parse_last_check_epoch(pr_raw)
+                    pr_raw = freshness.read_memo_raw(fed_dir, pr_key) if freshness else None
+                    pr_epoch = freshness.parse_last_check_epoch(pr_raw) if freshness else None
                     if pr_epoch is not None:
                         if per_repo_max is None or pr_epoch > per_repo_max:
                             per_repo_max = pr_epoch
                 last_check_epoch = per_repo_max
         if last_check_epoch is not None:
-            tick_interval_ms = _resolve_tick_interval_ms(agent, colony)
+            tick_interval_ms = freshness.resolve_tick_interval_ms(agent, colony, fed_dir=fed_dir, fed_tools_dir=fed_tools_dir) if freshness else 60000
             window_seconds = STALENESS_TICKS * (tick_interval_ms / 1000.0)
             rec['pid_alive'] = (epoch - last_check_epoch) < window_seconds
         else:

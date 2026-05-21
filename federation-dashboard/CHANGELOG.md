@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **dashboard**: memo-freshness helpers (`read_memo_raw`, `parse_last_check_epoch`, `resolve_tick_interval_ms`, `STALENESS_TICKS`) extracted from `federation-dashboard/lib/federation-dashboard-collector.py` into shared `tools/agentis_memo_freshness.py` so the dashboard and `tools/auto-promote-decisions.py` (#706) no longer keep a mirrored copy in sync via comment banners. Collector imports via the already-argv-routed `fed_tools_dir`. Graceful degradation preserved: missing helper module → all daemons `pid_alive=false`, matching the pre-existing missing-helper contract. ([#709](https://github.com/Replikanti/agentis-colonies/issues/709))
+
 ### Fixed
 
 - **dashboard**: auto-regen now runs as a Python daemon thread inside the server PID instead of an orphan-prone bash subshell. Pre-fix, `SIGKILL` on the wrapper left the bash regen subshell reparented to init, still writing `snapshot.json` with the pre-restart `STALENESS_TICKS` env value. Multiple operator restarts compounded — each spawned a fresh subshell on top of orphaned predecessors, racing on `snapshot.json` and flashing the dashboard banner between DEGRADED and HEALTHY. New design ties the regen loop to the server PID via a `threading.Thread(daemon=True)` whose env recipe is byte-identical to the existing `/refresh` POST handler. New env knob `FEDERATION_DASHBOARD_REGEN_S` (default 60, floor 10) for future tuning. ([#705](https://github.com/Replikanti/agentis-colonies/issues/705))

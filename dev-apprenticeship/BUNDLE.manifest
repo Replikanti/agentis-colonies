@@ -34,6 +34,10 @@ tools/auto-promote-config.yaml
 tools/auto-promote-config-parser.py
 tools/auto-promote-lock.py
 tools/auto-promote-decisions.py
+# #709: shared memo-freshness helpers (STALENESS_TICKS / read_memo_raw /
+# parse_last_check_epoch / resolve_tick_interval_ms) consumed by both
+# tools/auto-promote-decisions.py and federation-dashboard's collector.
+tools/agentis_memo_freshness.py
 tools/resolve-tick-interval.py
 tools/cost-cap.sh
 tools/cost-cap-sum.py
