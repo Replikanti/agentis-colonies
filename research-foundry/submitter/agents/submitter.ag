@@ -160,18 +160,20 @@ fn select_replication_target() -> string {
 }
 
 // _pick_upstream_pid_by_key -- Phase 9 PR-A (#663) replica-safe pick.
-// Enumerates `<role>:*:<decision_key>:tick-<N>` memo keys via
-// `agentis memo list`, ranks by an embedded confidence field when one
-// is known for the role, and returns the picked PID (empty string when
-// no match). For known roles the meta map below selects the canonical
-// decision_key + confidence_field regardless of `fallback_key`; for
-// unknown roles `fallback_key` is used as the discovery suffix and the
-// picker falls back to alphabetical-first PID (deterministic for N=1,
-// undefined ordering for N>1 -- PR-B/PR-C tightens that).
-fn _pick_upstream_pid_by_key(role: string, fallback_key: string, tick: int) -> string {
+// Enumerates `<role>:*:<ranking_key>:tick-<N>` memo keys via
+// `agentis memo list`, ranks candidates by `confidence_field` when
+// non-empty, and returns the picked PID (empty string when no match).
+// When `confidence_field` is empty, ranks alphabetically (deterministic
+// for N=1, alpha-first for N>1). #712 fix: dropped the hardcoded meta
+// map -- callers now declare the canonical ranking_key explicitly so
+// roles with multiple output keys (e.g. formulator's problem /
+// problem_text / answer / novelty_claim) do not collapse to one suffix.
+// Single-replica fast path: if exactly 1 candidate PID is found, it is
+// returned without reading + parsing the ranking_key JSON.
+fn _pick_upstream_pid_by_key(role: string, ranking_key: string, confidence_field: string, tick: int) -> string {
     let tick_s = to_string(tick);
     // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,subprocess,json\nrole=sys.argv[1]\nout_key=sys.argv[2]\ntick=sys.argv[3]\nmeta={\"noticer\":(\"surprise\",\"confidence_in_surprise\"),\"skeptic\":(\"verdict\",\"confidence\"),\"formulator\":(\"problem\",\"self_check_confidence\"),\"verifier\":(\"verdict\",\"confidence\"),\"auditor\":(\"verdict\",\"confidence\"),\"reviewer\":(\"report\",\"confidence\"),\"prior_advocate\":(\"report\",\"confidence\")}\ndk,cf=meta.get(role,(out_key,\"\"))\nsuf=\":\"+dk+\":tick-\"+tick\npre=role+\":\"\ntry: out=subprocess.run([\"agentis\",\"memo\",\"list\"],capture_output=True,text=True,check=False).stdout\nexcept Exception: out=\"\"\nbest_pid=\"\"\nbest_conf=-1.0\npids=[]\nfor line in out.splitlines():\n line=line.strip()\n if not line or not line.startswith(pre): continue\n key=line.split()[0]\n if not key.endswith(suf): continue\n mid=key[len(pre):-len(suf)]\n if \":\" in mid or not mid: continue\n pids.append(mid)\nif not cf:\n pids.sort()\n if pids: best_pid=pids[0]\nelse:\n for mid in pids:\n  try: v=subprocess.run([\"agentis\",\"memo\",\"get\",pre+mid+suf],capture_output=True,text=True,check=False).stdout\n  except Exception: v=\"\"\n  try: obj=json.loads(v)\n  except Exception: obj=None\n  if not isinstance(obj,dict): continue\n  try: conf=float(obj.get(cf,0.0))\n  except Exception: conf=0.0\n  if conf>best_conf:\n   best_conf=conf\n   best_pid=mid\nprint(best_pid)' " + shell_escape(role) + " " + shell_escape(fallback_key) + " " + shell_escape(tick_s);
+    let cmd = "python3 -c 'import sys,subprocess,json\nrole=sys.argv[1]\nrk=sys.argv[2]\ncf=sys.argv[3]\ntick=sys.argv[4]\nsuf=\":\"+rk+\":tick-\"+tick\npre=role+\":\"\ntry: out=subprocess.run([\"agentis\",\"memo\",\"list\"],capture_output=True,text=True,check=False).stdout\nexcept Exception: out=\"\"\npids=[]\nfor line in out.splitlines():\n line=line.strip()\n if not line or not line.startswith(pre): continue\n key=line.split()[0]\n if not key.endswith(suf): continue\n mid=key[len(pre):-len(suf)]\n if \":\" in mid or not mid: continue\n pids.append(mid)\nbest_pid=\"\"\nif len(pids)==1:\n best_pid=pids[0]\nelif len(pids)>1:\n if not cf:\n  pids.sort()\n  best_pid=pids[0]\n else:\n  best_conf=-1.0\n  for mid in sorted(pids):\n   try: v=subprocess.run([\"agentis\",\"memo\",\"get\",pre+mid+suf],capture_output=True,text=True,check=False).stdout\n   except Exception: v=\"\"\n   try: obj=json.loads(v)\n   except Exception: obj=None\n   if not isinstance(obj,dict): continue\n   try: conf=float(obj.get(cf,0.0))\n   except Exception: conf=0.0\n   if conf>best_conf:\n    best_conf=conf\n    best_pid=mid\n  if not best_pid:\n   best_pid=sorted(pids)[0]\nprint(best_pid)' " + shell_escape(role) + " " + shell_escape(ranking_key) + " " + shell_escape(confidence_field) + " " + shell_escape(tick_s);
     let pid = try { exec sh cmd; } catch e { ""; };
     return pid;
 }
@@ -183,11 +185,18 @@ fn _pick_upstream_pid_by_key(role: string, fallback_key: string, tick: int) -> s
 // the v1 `recall_latest("replay:current_<role>_pid")` + per-key read.
 // Duplicated verbatim across the 9 downstream .ag files because the
 // .ag DSL has no shared-include mechanism (matches the #623 E pattern
-// for _dump_ctx_to_memo / _summarise_*_buf).
-fn _pick_upstream_by_confidence(role: string, output_key: string, tick: int) -> string {
-    let pid = _pick_upstream_pid_by_key(role, output_key, tick);
-    if len(pid) == 0 { return ""; };
-    return recall_latest(role + ":" + pid + ":" + output_key + ":tick-" + to_string(tick));
+// for _dump_ctx_to_memo / _summarise_*_buf). #712 fix: caller declares
+// `ranking_key` (enumeration suffix) AND `output_key` (value suffix)
+// independently. Prints an observability line on empty-pid path so
+// regressions are loud in agent logs.
+fn _pick_upstream_by_confidence(role: string, ranking_key: string, output_key: string, confidence_field: string, tick: int) -> string {
+    let pid = _pick_upstream_pid_by_key(role, ranking_key, confidence_field, tick);
+    let ts = to_string(tick);
+    if len(pid) == 0 {
+        print("[" + role + "] picker empty rank=" + ranking_key + " tick=" + ts);
+        return "";
+    };
+    return recall_latest(role + ":" + pid + ":" + output_key + ":tick-" + ts);
 }
 
 // _submitter_draft_phase -- Phase A. Build arxiv-metadata.json + tarball
@@ -621,24 +630,24 @@ fn tick(reason: string) -> void {
     // #600 sub-issue 2: also resolve the upstream PIDs explicitly so we
     // can stamp `provenance.{editor_pid,computer_pid,introducer_pid}`
     // on each ledger row downstream.
-    let editor_pid = _pick_upstream_pid_by_key("editor", "final_tex", upstream_tick);
-    let computer_pid = _pick_upstream_pid_by_key("computer", "script", upstream_tick);
-    let introducer_pid = _pick_upstream_pid_by_key("introducer", "title", upstream_tick);
+    let editor_pid = _pick_upstream_pid_by_key("editor", "final_tex", "", upstream_tick);
+    let computer_pid = _pick_upstream_pid_by_key("computer", "script", "", upstream_tick);
+    let introducer_pid = _pick_upstream_pid_by_key("introducer", "title", "", upstream_tick);
 
-    let final_tex = _pick_upstream_by_confidence("editor", "final_tex", upstream_tick);
-    let compile_log = _pick_upstream_by_confidence("editor", "compile_log", upstream_tick);
-    let refs_bib = _pick_upstream_by_confidence("editor", "refs_bib", upstream_tick);
-    let claim_dir = _pick_upstream_by_confidence("editor", "claim_dir", upstream_tick);
-    let compile_ok_raw = _pick_upstream_by_confidence("editor", "compile_ok", upstream_tick);
+    let final_tex = _pick_upstream_by_confidence("editor", "final_tex", "final_tex", "", upstream_tick);
+    let compile_log = _pick_upstream_by_confidence("editor", "compile_log", "compile_log", "", upstream_tick);
+    let refs_bib = _pick_upstream_by_confidence("editor", "refs_bib", "refs_bib", "", upstream_tick);
+    let claim_dir = _pick_upstream_by_confidence("editor", "claim_dir", "claim_dir", "", upstream_tick);
+    let compile_ok_raw = _pick_upstream_by_confidence("editor", "compile_ok", "compile_ok", "", upstream_tick);
     let compile_ok = if len(compile_ok_raw) > 0 { compile_ok_raw; } else { "false"; };
 
-    let title_seed = _pick_upstream_by_confidence("introducer", "title", upstream_tick);
-    let msc_seed = _pick_upstream_by_confidence("introducer", "msc_codes", upstream_tick);
-    let cat_seed = _pick_upstream_by_confidence("introducer", "arxiv_category", upstream_tick);
+    let title_seed = _pick_upstream_by_confidence("introducer", "title", "title", "", upstream_tick);
+    let msc_seed = _pick_upstream_by_confidence("introducer", "msc_codes", "msc_codes", "", upstream_tick);
+    let cat_seed = _pick_upstream_by_confidence("introducer", "arxiv_category", "arxiv_category", "", upstream_tick);
 
-    let repro_script = _pick_upstream_by_confidence("computer", "script", upstream_tick);
-    let repro_output = _pick_upstream_by_confidence("computer", "output", upstream_tick);
-    let repro_lang_raw = _pick_upstream_by_confidence("computer", "language", upstream_tick);
+    let repro_script = _pick_upstream_by_confidence("computer", "script", "script", "", upstream_tick);
+    let repro_output = _pick_upstream_by_confidence("computer", "output", "output", "", upstream_tick);
+    let repro_lang_raw = _pick_upstream_by_confidence("computer", "language", "language", "", upstream_tick);
     let repro_lang = if len(repro_lang_raw) > 0 { repro_lang_raw; } else { "python"; };
 
     let source_audit_run = recall_latest("claim:source_audit_run:tick-" + to_string(upstream_tick));
