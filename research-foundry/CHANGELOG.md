@@ -18,6 +18,11 @@ History of the three retired federations consolidated into this one
 
 ## [Unreleased]
 
+### Changed
+
+- Bumped `AGENTIS_VERSION` in `tools/Containerfile.research` from `v1.7.12` to `v1.7.13` so the federation container ships with the memo unlimited-by-default + LRU eviction fix from [agentis-core #647](https://github.com/Replikanti/agentis-core/pull/647). Resolves the silent-write-failure cascade that bit research-foundry runs hitting the 500-key memo cap mid-run ([#703](https://github.com/Replikanti/agentis-colonies/issues/703)). The cleanup-sidecar workaround documented in #703 is no longer needed and can be retired.
+
+
 ### Fixed
 
 - Orchestrator (`tools/run-research.sh start_auto_promote_sidecar`) now writes `<fed-dir>/.auto-promote-install.toml` (TOML schema matching dev-apprenticeship's `install.sh:864-899` for parser compatibility) so the dashboard's sidecar liveness probe reports `installed=true, status="ok"` instead of `running_orphan=true, status="orphan"`. Cleanup trap removes the file on EXIT/INT/TERM to prevent stale install state confusing the dashboard between runs. ([#699](https://github.com/Replikanti/agentis-colonies/issues/699))
