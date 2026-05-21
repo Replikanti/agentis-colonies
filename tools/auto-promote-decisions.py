@@ -58,69 +58,15 @@ import sys
 import time
 
 
-# Mirrored from federation-dashboard-collector.py:85-134; keep in sync with
-# #683/#697/#700/#705. #706 ports the same memo-freshness liveness predicate
-# from the dashboard to this sidecar so the containerized branch below no
-# longer trusts the daemon registry's stale `effective_state` field (the
-# in-process tick loop continues to write `<agent>:last_check` even when
-# the registry record is mis-flagged as `zombie` after sleep/reboot).
-try:
-    STALENESS_TICKS = max(1, int(os.environ.get("FEDERATION_DASHBOARD_STALENESS_TICKS", "3")))
-except (TypeError, ValueError):
-    STALENESS_TICKS = 3
-
-
-def _read_memo_raw(fed_dir, key):
-    try:
-        proc = subprocess.run(
-            ['agentis', 'memo', 'get', key],
-            cwd=fed_dir, capture_output=True, text=True, timeout=2,
-        )
-    except (subprocess.SubprocessError, OSError):
-        return None
-    if proc.returncode != 0:
-        return None
-    raw = (proc.stdout or '').strip()
-    return raw or None
-
-
-def _parse_last_check_epoch(raw):
-    if not raw:
-        return None
-    try:
-        dt = datetime.datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ")
-        return dt.replace(tzinfo=datetime.timezone.utc).timestamp()
-    except (TypeError, ValueError):
-        return None
-
-
-_tick_interval_cache = {}
-
-
-def _resolve_tick_interval_ms(agent, colony, fed_dir):
-    cache_key = (agent, colony)
-    if cache_key in _tick_interval_cache:
-        return _tick_interval_cache[cache_key]
-    interval = 60000
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    helper = os.path.join(script_dir, 'resolve-tick-interval.py')
-    if colony:
-        colony_dir = os.path.join(fed_dir, colony)
-        if os.path.isfile(helper) and os.path.isdir(colony_dir):
-            try:
-                proc = subprocess.run(
-                    ['python3', helper, agent, colony_dir],
-                    capture_output=True, text=True, timeout=2,
-                )
-                if proc.returncode == 0:
-                    try:
-                        interval = int((proc.stdout or '').strip())
-                    except (TypeError, ValueError):
-                        interval = 60000
-            except (subprocess.SubprocessError, OSError):
-                interval = 60000
-    _tick_interval_cache[cache_key] = interval
-    return interval
+# #709: memo-freshness helpers (read_memo_raw / parse_last_check_epoch /
+# resolve_tick_interval_ms / STALENESS_TICKS) extracted into the shared
+# tools/agentis_memo_freshness.py module so this sidecar and the dashboard
+# collector consume the single source of truth instead of mirroring the
+# implementation (former drift documented in #683/#697/#700/#705/#706/#708).
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _THIS_DIR not in sys.path:
+    sys.path.insert(0, _THIS_DIR)
+import agentis_memo_freshness as freshness  # noqa: E402
 
 
 def _load_config(path):
@@ -598,11 +544,11 @@ def main():
         # legacy callers; the memo path simply unblocks daemons whose
         # registry record lies.
         if containerized:
-            last_check_epoch = _parse_last_check_epoch(_read_memo_raw(fed_dir, agent_name + ':last_check'))
+            last_check_epoch = freshness.parse_last_check_epoch(freshness.read_memo_raw(fed_dir, agent_name + ':last_check'))
             fresh = False
             if last_check_epoch is not None:
-                tick_ms = _resolve_tick_interval_ms(agent_name, colony, fed_dir)
-                fresh = (time.time() - last_check_epoch) < STALENESS_TICKS * (tick_ms / 1000.0)
+                tick_ms = freshness.resolve_tick_interval_ms(agent_name, colony, fed_dir)
+                fresh = (time.time() - last_check_epoch) < freshness.STALENESS_TICKS * (tick_ms / 1000.0)
             effective_state = d.get('effective_state') or state
             if not fresh and effective_state != 'running':
                 decisions.append(_attach_explorer_evidence({

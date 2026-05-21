@@ -47,6 +47,9 @@ tools/auto-promote.sh
 tools/auto-promote-config.research-foundry.yaml
 tools/auto-promote-config-parser.py
 tools/auto-promote-decisions.py
+# #709: shared memo-freshness helpers consumed by auto-promote-decisions.py
+# (and federation-dashboard's collector in environments that bundle it).
+tools/agentis_memo_freshness.py
 tools/auto-promote-lock.py
 tools/parse-toml.sh
 
