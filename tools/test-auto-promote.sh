@@ -644,6 +644,81 @@ else
     fail "fed-local priority" "expected entries_total=5, got <$ENTRIES_B> from <$OUT_B>"
 fi
 
+# --- Test 18: containerized liveness — fresh memo overrides stale registry (#706) ---
+# Reproduces the lifecycle-blocked-after-reboot bug: the daemon registry's
+# `effective_state` stays at "zombie" across sleep/reboot cycles, but the in-
+# process tick loop keeps writing `<agent>:last_check`. Pre-#706 the
+# containerized branch trusted `effective_state` and skipped every such agent
+# with "effective_state='zombie' not running" — promotions, evolves, and
+# (downstream) cull-replicas inputs all stalled. Post-#706 a fresh memo
+# (within STALENESS_TICKS * tick_interval) carries the agent past the
+# containerized gate so the rest of the prereq pipeline runs normally.
+FED_LIVE="$TMPDIR_TEST/fed-live"
+mkdir -p "$FED_LIVE"
+ISO_NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+(cd "$FED_LIVE" && agentis memo set "explorer:last_check" "$ISO_NOW" >/dev/null 2>&1)
+
+DAEMONS_LIVE='[{"pid":12345,"agent_id":"explorer-1","source":"explorer.ag","state":"zombie","effective_state":"zombie","colony":"discovery","confidence":0.4,"started_at":1}]'
+
+OUT_LIVE=$(python3 "$SCRIPT_DIR/auto-promote-decisions.py" \
+    --preview --config "$SCRIPT_DIR/auto-promote-config.yaml" --containerized \
+    "$DAEMONS_LIVE" "$FED_LIVE")
+
+LIVE_CHECK=$(python3 -c "
+import json, re, sys
+arr = json.loads(sys.argv[1])
+if len(arr) != 1:
+    print('arity:' + str(len(arr))); sys.exit(0)
+d = arr[0]
+reason = d.get('reason', '')
+if re.search(r\"effective_state=.*not running\", reason):
+    print('regression: got <' + reason + '>')
+else:
+    print('ok')
+" "$OUT_LIVE" 2>&1 || true)
+
+if [ "$LIVE_CHECK" = "ok" ]; then
+    pass "containerized liveness: fresh memo overrides stale registry (#706)"
+else
+    fail "fresh-memo liveness" "$LIVE_CHECK from <$OUT_LIVE>"
+fi
+
+# --- Test 19: containerized liveness — no memo + stale registry skips (#706) ---
+# Counterpart to test 18: with NO `<agent>:last_check` memo present and the
+# registry's `effective_state` still "zombie", the sidecar must skip with
+# the new memo-aware reason string. This guards against the inverse
+# regression — relaxing the gate too far would let truly dead daemons get
+# promoted.
+FED_DEAD="$TMPDIR_TEST/fed-dead"
+mkdir -p "$FED_DEAD"
+
+DAEMONS_DEAD='[{"pid":12345,"agent_id":"explorer-1","source":"explorer.ag","state":"zombie","effective_state":"zombie","colony":"discovery","confidence":0.4,"started_at":1}]'
+
+OUT_DEAD=$(python3 "$SCRIPT_DIR/auto-promote-decisions.py" \
+    --preview --config "$SCRIPT_DIR/auto-promote-config.yaml" --containerized \
+    "$DAEMONS_DEAD" "$FED_DEAD")
+
+DEAD_CHECK=$(python3 -c "
+import json, re, sys
+arr = json.loads(sys.argv[1])
+if len(arr) != 1:
+    print('arity:' + str(len(arr))); sys.exit(0)
+d = arr[0]
+if d.get('decision') != 'skip':
+    print('decision:' + d.get('decision', '')); sys.exit(0)
+reason = d.get('reason', '')
+if re.search(r\"memo last_check stale and effective_state='zombie' not running\", reason):
+    print('ok')
+else:
+    print('reason:' + reason)
+" "$OUT_DEAD" 2>&1 || true)
+
+if [ "$DEAD_CHECK" = "ok" ]; then
+    pass "containerized liveness: no memo + stale registry skips with new reason (#706)"
+else
+    fail "no-memo liveness" "$DEAD_CHECK from <$OUT_DEAD>"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
