@@ -192,17 +192,18 @@ assert_not_contains "16c. --source-foundry-run flag removed" "$SRC" "--source-fo
 assert_not_contains "16d. SOURCE_* env validation removed" "$SRC" "RESEARCH_SOURCE_RUN"
 
 # ---------------------------------------------------------------------------
-# 17. Phase 9 PR-C (#663) + #670 follow-up: per-colony
+# 17. Phase 9 PR-C (#663) + #670 + #711 follow-up: per-colony
 # RESEARCH_<COLONY>_REPLICAS env defaults exist for all 17 non-explorer
-# colonies, defaulting to 2 (lowered from 3 to stay under the Claude API
-# ~100 req/min ceiling: 5 + 17*2 = 39 daemons * 2 ticks/min = 78 req/min).
+# colonies, defaulting to 1 (lowered from 2 in #711 to drop the federation
+# peak request rate from ~78 -> ~44 calls/min and clear the 9-stage
+# cascade within the 60-min default run window).
 # ---------------------------------------------------------------------------
 for c in NOTICER FORMULATOR VERIFIER NOVELTY SKEPTIC \
          ARXIV_SEARCH OEIS_SEARCH GROUPPROPS_SEARCH SCHOLAR_SEARCH \
          PRIOR_ADVOCATE AUDITOR \
          INTRODUCER THEORIST COMPUTER EDITOR REVIEWER SUBMITTER; do
-    assert_contains "17. RESEARCH_${c}_REPLICAS defaults to 2" "$SRC" \
-        "\"\${RESEARCH_${c}_REPLICAS:=2}\""
+    assert_contains "17. RESEARCH_${c}_REPLICAS defaults to 1" "$SRC" \
+        "\"\${RESEARCH_${c}_REPLICAS:=1}\""
 done
 
 # ---------------------------------------------------------------------------
@@ -300,6 +301,57 @@ assert_contains "18c. RESEARCH_AUTO_PROMOTE=0 emits enabled = false write" "$DIS
 
 assert_contains "18d. cleanup trap removes .auto-promote-install.toml on EXIT/INT/TERM" "$OUT" \
     "rm -f \"$WORK_DIR/run-default/laptop-node/.auto-promote-install.toml\""
+
+# ---------------------------------------------------------------------------
+# 23. #711: per-colony RESEARCH_<COLONY>_CLAUDE_MODEL env defaults. 8
+# colonies stay opus (quality-critical: math creativity, correctness,
+# decisive verdicts); 10 colonies downgrade to sonnet (mechanical /
+# parsing / scripted output).
+# ---------------------------------------------------------------------------
+for c in EXPLORER FORMULATOR VERIFIER NOVELTY \
+         PRIOR_ADVOCATE AUDITOR THEORIST EDITOR; do
+    assert_contains "23. RESEARCH_${c}_CLAUDE_MODEL defaults to opus" "$SRC" \
+        "\"\${RESEARCH_${c}_CLAUDE_MODEL:=opus}\""
+done
+for c in NOTICER SKEPTIC \
+         ARXIV_SEARCH OEIS_SEARCH GROUPPROPS_SEARCH SCHOLAR_SEARCH \
+         INTRODUCER COMPUTER REVIEWER SUBMITTER; do
+    assert_contains "23. RESEARCH_${c}_CLAUDE_MODEL defaults to sonnet" "$SRC" \
+        "\"\${RESEARCH_${c}_CLAUDE_MODEL:=sonnet}\""
+done
+
+# ---------------------------------------------------------------------------
+# 24. #711: each of the 18 daemon spawn lines in the bootstrap heredoc
+# carries `ANTHROPIC_MODEL=$RESEARCH_<COLONY>_CLAUDE_MODEL` so the claude
+# CLI honors the per-colony model split natively.
+# ---------------------------------------------------------------------------
+for c in EXPLORER NOTICER SKEPTIC FORMULATOR VERIFIER NOVELTY \
+         ARXIV_SEARCH OEIS_SEARCH GROUPPROPS_SEARCH SCHOLAR_SEARCH \
+         PRIOR_ADVOCATE AUDITOR \
+         INTRODUCER THEORIST COMPUTER EDITOR REVIEWER SUBMITTER; do
+    assert_contains "24. spawn line references RESEARCH_${c}_CLAUDE_MODEL" "$SRC" \
+        "\$RESEARCH_${c}_CLAUDE_MODEL"
+done
+ANTHROPIC_COUNT="$(printf '%s\n' "$SRC" | grep -cF -- "ANTHROPIC_MODEL=%s" || true)"
+if [ "$ANTHROPIC_COUNT" -ge 18 ]; then
+    echo "[PASS] 24. >=18 spawn lines prefix ANTHROPIC_MODEL=%s (count=$ANTHROPIC_COUNT)"
+    PASS=$((PASS + 1))
+else
+    echo "[FAIL] 24. >=18 spawn lines prefix ANTHROPIC_MODEL=%s: got $ANTHROPIC_COUNT"
+    FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# 25. #711: the shared `llm.args` printf line drops the `--model %s` slot
+# (model now comes from ANTHROPIC_MODEL env on each spawn) but keeps the
+# `--effort %s` slot (effort is orthogonal to the model split).
+# ---------------------------------------------------------------------------
+assert_not_contains "25a. llm.args printf no longer carries --model %s" "$SRC" \
+    "llm.args = -p --output-format json --model %s"
+assert_contains "25b. llm.args printf still carries --effort %s" "$SRC" \
+    "--effort %s"
+assert_contains "25c. ANTHROPIC_MODEL added to exec.env_passthrough allowlist" "$SRC" \
+    "RESEARCH_JITTER_DISABLED,ANTHROPIC_MODEL"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

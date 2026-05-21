@@ -20,6 +20,7 @@ History of the three retired federations consolidated into this one
 
 ### Changed
 
+- Lower default `RESEARCH_<COLONY>_REPLICAS` from 2 to 1 for all 17 non-explorer colonies, and split the claude model per colony (8 opus quality-critical: explorer, formulator, verifier, novelty, prior_advocate, auditor, theorist, editor; 10 sonnet mechanical: noticer, skeptic, 4 searchers, computer, introducer, reviewer, submitter). New per-colony env knob `RESEARCH_<COLONY>_CLAUDE_MODEL`. Wired via `ANTHROPIC_MODEL=` on each daemon spawn line (the claude CLI honors it natively); the shared `llm.args` config drops the `--model` slot. Drops federation peak request rate from ~78 -> ~44 calls/min and shifts ~55% of calls onto sonnet (~5x faster) so the 9-stage cascade clears within the 60-min default run window. Unblocks the zero-preprint stall observed in Run #9-12. ([#711](https://github.com/Replikanti/agentis-colonies/issues/711))
 - Bumped `AGENTIS_VERSION` in `tools/Containerfile.research` from `v1.7.12` to `v1.7.13` so the federation container ships with the memo unlimited-by-default + LRU eviction fix from [agentis-core #647](https://github.com/Replikanti/agentis-core/pull/647). Resolves the silent-write-failure cascade that bit research-foundry runs hitting the 500-key memo cap mid-run ([#703](https://github.com/Replikanti/agentis-colonies/issues/703)). The cleanup-sidecar workaround documented in #703 is no longer needed and can be retired.
 
 
