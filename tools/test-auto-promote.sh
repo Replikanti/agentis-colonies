@@ -653,6 +653,9 @@ fi
 # (downstream) cull-replicas inputs all stalled. Post-#706 a fresh memo
 # (within STALENESS_TICKS * tick_interval) carries the agent past the
 # containerized gate so the rest of the prereq pipeline runs normally.
+if ! command -v agentis >/dev/null 2>&1; then
+    echo "[SKIP] Test 18 + 19: agentis binary not available — memo seeding would be a no-op and the new memo-aware reason would false-fail the assertion (#706)"
+else
 FED_LIVE="$TMPDIR_TEST/fed-live"
 mkdir -p "$FED_LIVE"
 ISO_NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -718,6 +721,8 @@ if [ "$DEAD_CHECK" = "ok" ]; then
 else
     fail "no-memo liveness" "$DEAD_CHECK from <$OUT_DEAD>"
 fi
+
+fi  # end agentis-available guard for Test 18 + 19
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
