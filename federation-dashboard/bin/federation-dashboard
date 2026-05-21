@@ -312,15 +312,6 @@ echo ""
 
 generate
 
-# Background: regenerate every 60 seconds
-(
-    while true; do
-        sleep 60
-        generate 2>/dev/null
-    done
-) &
-REGEN_PID=$!
-
 # Serve with all endpoints. SCRIPT_PATH and FED_DIR are passed through so
 # POST /refresh can re-exec this script in regen-only mode. ALL_AGENTS_CSV
 # is the allowlist for POST /confidence — operator-supplied agent names must
@@ -330,12 +321,14 @@ REGEN_PID=$!
 #
 # The server runs in the background so this shell can `wait` on it; that
 # way SIGTERM/SIGINT delivered to the wrapper PID alone (e.g. by a service
-# manager that doesn't signal the whole pgid) still tears down both the
-# regen loop and the python child via the trap below — without it, a
-# foreground `python3 ...` would block bash from running the trap until
-# python had already exited on its own.
+# manager that doesn't signal the whole pgid) still tears down the python
+# child via the trap below — without it, a foreground `python3 ...` would
+# block bash from running the trap until python had already exited on its
+# own. Auto-regen runs as a daemon thread inside the server PID (#705); no
+# separate bash subshell is needed, which removes the orphan-on-SIGKILL
+# class entirely.
 ALL_AGENTS_CSV="$(IFS=,; echo "${ALL_AGENTS[*]}")"
 python3 "$LIB_DIR/federation-dashboard-server.py" "$DASH_DIR" "$PORT" "$SCRIPT_PATH" "$FED_DIR" "$ALL_AGENTS_CSV" "$AGENT_COLONY_MAP" "$FED_TOOLS_DIR" &
 SERVER_PID=$!
-trap 'kill "$REGEN_PID" "$SERVER_PID" 2>/dev/null; wait "$SERVER_PID" 2>/dev/null; exit 0' INT TERM
+trap 'kill "$SERVER_PID" 2>/dev/null; wait "$SERVER_PID" 2>/dev/null; exit 0' INT TERM
 wait "$SERVER_PID"

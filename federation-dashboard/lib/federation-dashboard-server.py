@@ -110,6 +110,34 @@ def _snapshot_watcher():
 
 threading.Thread(target=_snapshot_watcher, daemon=True).start()
 
+
+# --- Auto-regen loop (#705) ---
+# Pre-fix, the wrapper spawned a `( while true; do sleep 60; generate; done ) &`
+# bash subshell next to the server. SIGKILL on the wrapper left that subshell
+# reparented to init, still writing snapshot.json with the pre-restart
+# environment. Multiple operator restarts compounded — each spawned a fresh
+# subshell on top of orphaned predecessors, racing on snapshot.json and
+# flashing the banner between HEALTHY and DEGRADED. Moving the loop into a
+# Python daemon thread inside the server PID ties its lifetime to the server:
+# when the server process dies (SIGKILL or otherwise) the daemon thread dies
+# with it, no orphan possible. Env recipe is byte-identical to the /refresh
+# POST handler below so the auto-regen path sees the same STALENESS_TICKS /
+# REGEN_S knobs the operator exported when launching the dashboard.
+def _auto_regen():
+    interval = max(10, int(os.environ.get('FEDERATION_DASHBOARD_REGEN_S', '60')))
+    while True:
+        time.sleep(interval)
+        try:
+            env = dict(os.environ)
+            env['DASHBOARD_REGEN_ONLY'] = '1'
+            subprocess.run(['bash', script_path, fed_dir_arg],
+                           capture_output=True, env=env, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+
+threading.Thread(target=_auto_regen, daemon=True).start()
+
 # #252: kill-federation.sh lives in the federation's shared tools dir, not
 # next to this script (the dashboard is a separately-versioned standalone
 # component). The entry script resolves <fed-dir>/tools/ then

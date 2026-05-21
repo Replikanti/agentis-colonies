@@ -295,6 +295,167 @@ else
     fail "5: env-widened window wrong — pid_alive=$STALE_WIDE_PID_ALIVE is_running=$STALE_WIDE_IS_RUNNING (want true/true; #700 regression)"
 fi
 
+# --- Test 6 (#705): auto-regen runs as Python daemon thread inside server
+# PID, not an orphan-prone bash subshell. Optional (default OFF) — set
+# RUN_AUTO_REGEN_TEST=1 to enable. Adds ~90-100s to the sweep because it
+# waits one full auto-regen cycle at the production-realistic 60s interval.
+#
+# What this test proves:
+#   - The wrapper no longer spawns a `( while true; do sleep 60; ... ) &`
+#     bash subshell (pgrep assertion at the end).
+#   - The server's daemon thread regenerates snapshot.json on the configured
+#     interval (mtime assertion).
+#   - STALENESS_TICKS env propagates to the auto-regen path, not just the
+#     /refresh POST handler. We pick STALENESS_TICKS=100 (window = 6000s)
+#     against a seed at now-4000s so the same memo that would read stale
+#     at the default 3 × 60s window flips fresh — proves the env reached
+#     the collector subprocess spawned from the daemon thread.
+#   - SIGKILL on the wrapper leaves no orphan regen subshell behind.
+#
+# Strategy: launch a real agentis daemon (so `agentis daemon list --json`
+# returns one row), launch the wrapper, wait one regen cycle, assert,
+# SIGKILL the wrapper.
+
+if [ "${RUN_AUTO_REGEN_TEST:-0}" = "1" ]; then
+    WRAPPER="$REPO_ROOT/federation-dashboard/bin/federation-dashboard"
+    if [ ! -x "$WRAPPER" ]; then
+        fail "6: federation-dashboard wrapper not executable" "$WRAPPER"
+    else
+        T6_DIR="$TMPDIR_TEST/t6"
+        mkdir -p "$T6_DIR/regen-colony/agents" \
+                 "$T6_DIR/regen-colony/config" \
+                 "$T6_DIR/regen-colony/scripts" \
+                 "$T6_DIR/.agentis/logs" \
+                 "$T6_DIR/.agentis/experience"
+        cat > "$T6_DIR/regen-colony/config/colony.toml" <<'TOML'
+[colony]
+name = "regen-colony"
+TOML
+        cat > "$T6_DIR/regen-colony/scripts/start-colony.sh" <<'SH'
+#!/bin/bash
+tick_interval_for() { echo 60000; }
+SH
+        chmod +x "$T6_DIR/regen-colony/scripts/start-colony.sh"
+        # Long tick so the daemon does not refresh last_check while we sleep.
+        cat > "$T6_DIR/regen-colony/agents/regen_agent.ag" <<'AG'
+cb 100;
+fn tick() -> void {
+    return Void;
+}
+AG
+
+        # Seed last_check at now - 4000s. With STALENESS_TICKS=100 the
+        # window is 100 × 60s = 6000s > 4000s → fresh. Default
+        # STALENESS_TICKS=3 (window 180s) → stale.
+        T6_NOW="$(date '+%s')"
+        T6_STALE_EPOCH=$((T6_NOW - 4000))
+        T6_STALE_ISO="$(date -u -d "@$T6_STALE_EPOCH" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || \
+                       python3 -c "import datetime,sys;print(datetime.datetime.utcfromtimestamp(int(sys.argv[1])).strftime('%Y-%m-%dT%H:%M:%SZ'))" "$T6_STALE_EPOCH")"
+        (cd "$T6_DIR" && agentis memo set "regen_agent:last_check" "$T6_STALE_ISO" >/dev/null 2>&1) || true
+
+        # Launch the actual agent daemon with a huge tick interval so it
+        # does not overwrite our seeded last_check during the test window.
+        # 86_400_000ms = 24h between ticks. The daemon process is a
+        # long-running supervisor (watchdog + inner), so we MUST background
+        # it and disconnect stdin — bare `agentis daemon` is foreground
+        # and would deadlock the test. </dev/null shields it from any
+        # parent-shell job-control surprise.
+        DAEMON_OUT="$T6_DIR/daemon.start.out"
+        ( cd "$T6_DIR" && agentis daemon \
+             "regen-colony/agents/regen_agent.ag" \
+             --colony regen-colony \
+             --tick-interval 86400000 \
+             </dev/null > "$DAEMON_OUT" 2>&1 & )
+        sleep 2
+
+        # Pick an unused port for the wrapper. Python helper avoids the
+        # `ss`/`netstat` portability problem.
+        T6_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+
+        WRAPPER_LOG="$T6_DIR/wrapper.log"
+        T6_START="$(date '+%s')"
+        # Subshell wrapper around the launch so the parent bash does not
+        # print "Killed" / "Terminated" job-control noise when we SIGKILL
+        # the wrapper at the end of the test.
+        ( FEDERATION_DASHBOARD_STALENESS_TICKS=100 \
+              bash "$WRAPPER" "$T6_DIR" "$T6_PORT" \
+              > "$WRAPPER_LOG" 2>&1 ) &
+        WRAPPER_PID=$!
+
+        # Wait for one auto-regen cycle at the default 60s interval, plus
+        # 10s grace for the wrapper boot + the regen subprocess to settle.
+        # First generate() runs synchronously at startup → snapshot.json
+        # mtime ≈ T6_START. Auto-regen fires at T6_START + 60s. We assert
+        # the snapshot.json mtime is > T6_START + 30s, which is unambiguous.
+        sleep 70
+
+        SNAPSHOT="$T6_DIR/.dashboard/snapshot.json"
+        if [ ! -f "$SNAPSHOT" ]; then
+            fail "6a: snapshot.json never created at $SNAPSHOT"
+        else
+            SNAP_MTIME="$(stat -c '%Y' "$SNAPSHOT" 2>/dev/null || stat -f '%m' "$SNAPSHOT" 2>/dev/null || echo 0)"
+            REGEN_CUTOFF=$((T6_START + 30))
+            if [ "$SNAP_MTIME" -gt "$REGEN_CUTOFF" ]; then
+                pass "6a: snapshot.json regenerated after T+30s (mtime=$SNAP_MTIME, cutoff=$REGEN_CUTOFF) — daemon thread is regenerating"
+            else
+                fail "6a: snapshot.json mtime ($SNAP_MTIME) not past cutoff ($REGEN_CUTOFF) — auto-regen did not fire"
+            fi
+
+            # Assert STALENESS_TICKS=100 reached the regen subprocess:
+            # with the env propagated the seeded last_check (4000s old) is
+            # still inside the 6000s window → pid_alive=true. Without env
+            # propagation the regen would have used the default 3-tick
+            # window (180s) → pid_alive=false.
+            T6_PID_ALIVE="$(python3 - "$SNAPSHOT" <<'PY' 2>/dev/null || echo ERR
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    blob = json.load(f)
+for a in blob.get("agents", []):
+    if a.get("name") == "regen_agent":
+        v = a.get("pid_alive")
+        print("true" if v else "false")
+        sys.exit(0)
+print("MISSING")
+PY
+)"
+            if [ "$T6_PID_ALIVE" = "true" ]; then
+                pass "6b: regen-thread snapshot has pid_alive=true (STALENESS_TICKS=100 env propagated to auto-regen subprocess)"
+            else
+                fail "6b: regen-thread snapshot pid_alive=$T6_PID_ALIVE (want true; STALENESS_TICKS env did not reach auto-regen path)"
+            fi
+        fi
+
+        # SIGKILL the wrapper to verify no orphan bash subshell survives.
+        # Pre-#705 there was a `( while true; do sleep 60; generate; done ) &`
+        # subshell that would reparent to init on SIGKILL and keep ticking.
+        kill -9 "$WRAPPER_PID" 2>/dev/null || true
+        sleep 2
+
+        # The orphan-detection grep targets the bash subshell shape removed
+        # in #705. We're conservative: only flag processes that match BOTH
+        # the regen loop signature and reference our specific fed dir, to
+        # avoid false positives from concurrent test runs.
+        ORPHAN_HITS="$(pgrep -af 'while true; do sleep' 2>/dev/null | grep -F "$T6_DIR" || true)"
+        if [ -z "$ORPHAN_HITS" ]; then
+            pass "6c: no orphan 'while true; do sleep ...' bash subshell survived SIGKILL on wrapper"
+        else
+            fail "6c: orphan bash subshell survived SIGKILL: $ORPHAN_HITS"
+        fi
+
+        # Clean up: SIGKILL on the wrapper bypassed its trap, so the python
+        # server child orphans to init. That is the documented behaviour
+        # of bash on uncatchable signals; out of scope for #705 (the bug
+        # was the SECOND orphan — the regen bash subshell — which is now
+        # gone). We clean up the orphan python server here so this test
+        # does not leak processes across reruns. Scope to our specific
+        # fed dir to avoid touching unrelated dashboards.
+        pkill -f "federation-dashboard-server.py.*$T6_DIR" 2>/dev/null || true
+        (cd "$T6_DIR" && agentis daemon stop --all >/dev/null 2>&1) || true
+    fi
+else
+    echo "[SKIP] 6: auto-regen daemon-thread test (set RUN_AUTO_REGEN_TEST=1 to enable; adds ~70-90s)"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
