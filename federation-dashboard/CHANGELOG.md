@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **dashboard**: auto-regen now runs as a Python daemon thread inside the server PID instead of an orphan-prone bash subshell. Pre-fix, `SIGKILL` on the wrapper left the bash regen subshell reparented to init, still writing `snapshot.json` with the pre-restart `STALENESS_TICKS` env value. Multiple operator restarts compounded — each spawned a fresh subshell on top of orphaned predecessors, racing on `snapshot.json` and flashing the dashboard banner between DEGRADED and HEALTHY. New design ties the regen loop to the server PID via a `threading.Thread(daemon=True)` whose env recipe is byte-identical to the existing `/refresh` POST handler. New env knob `FEDERATION_DASHBOARD_REGEN_S` (default 60, floor 10) for future tuning. ([#705](https://github.com/Replikanti/agentis-colonies/issues/705))
+
 ### Changed
 
 - **dashboard**: `STALENESS_TICKS` (the multiplier in the `now - last_check_epoch < STALENESS_TICKS × tick_interval` freshness window introduced by [#683](https://github.com/Replikanti/agentis-colonies/issues/683)) is now overridable via the `FEDERATION_DASHBOARD_STALENESS_TICKS` env var, clamped to `max(1, int(...))` with a `try/except` fallback to the default `3` on malformed input. Default `3` stays correct for active tick-driven federations like `dev-apprenticeship` (5 colonies, 21 agents writing `<agent>:last_check` every tick). Recommended `10` for listen-driven federations like `research-foundry`, where agents long-poll on `listen()` and the gap between two ticks can legitimately stretch past `3 × tick_interval` while the agent is healthy — at default 3 every quiet listener flipped to `pid_alive=false` and the HEALTHY / DEGRADED banner pinned to DEGRADED. The window formula at the call site is byte-identical; only the constant's source changed. ([#700](https://github.com/Replikanti/agentis-colonies/issues/700))
