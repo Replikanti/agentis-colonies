@@ -1101,20 +1101,55 @@ start_auto_promote_sidecar() {
 #   1. Pick the next topic (round-robin over RESEARCH_TOPICS).
 #   2. Sample two distinct papers from the topic's cached corpus.
 #   3. Seed `replay:current_*` memo keys read by explorer.ag.
-#   4. Sleep RESEARCH_TICK_INTERVAL_S seconds.
+#   4. For each explorer daemon_id 1..N, look up its specialty in the
+#      bootstrap-seeded `explorer:pool:specialty:<N>` memo, map specialty
+#      to topic via `_explorer_topic_for_specialty`, sample 2 papers
+#      from that topic's corpus, and write per-daemon memos:
+#        `replay:explorer_topic:daemon:<N>`
+#        `replay:explorer_topic_desc:daemon:<N>`
+#        `replay:explorer_compute_hints:daemon:<N>`
+#        `replay:explorer_paper_{a,b}_{id,title,abstract}:daemon:<N>`
+#      Explorer reads its per-daemon memo first (keyed by `$DAEMON_ID`),
+#      falls back to the global `replay:current_*` keys when empty.
+#   5. Sleep RESEARCH_TICK_INTERVAL_S seconds.
 # The 9-10-tick cascade through 14 downstream daemons (noticer -->
 # formulator --> verifier --> novelty --> 4 searchers --> auditor -->
 # introducer + theorist + computer --> editor --> submitter) happens
 # inside the merged container because all daemons share /run-root/
 # .agentis/. Each agent reads its upstream colleague's memo directly --
 # no cross-fed JSONL reconstruction.
+#
+# Per-explorer specialty -> topic mapping table (#719).
+# Aligns the 5 seeded explorer specialties with the 4 default
+# research topics; `algebra` intentionally overlaps with
+# `group_theory` (both abstract_algebra). Probability routes to
+# graph_theory rather than combinatorics so 4 distinct topics
+# are covered across 5 explorers per tick.
+#     group_theory   -> abstract_algebra
+#     combinatorics  -> combinatorics
+#     number_theory  -> number_theory
+#     probability    -> graph_theory
+#     algebra        -> abstract_algebra
+# Unmapped specialties (evolved variants with novel labels)
+# return empty -- per-daemon memo write is skipped and the
+# explorer falls back to the global `replay:current_topic`.
+_explorer_topic_for_specialty() {
+    case "$1" in
+        group_theory)   echo "abstract_algebra" ;;
+        combinatorics)  echo "combinatorics" ;;
+        number_theory)  echo "number_theory" ;;
+        probability)    echo "graph_theory" ;;
+        algebra)        echo "abstract_algebra" ;;
+        *)              echo "" ;;
+    esac
+}
 tick_stream() {
     emit_step "starting tick stream (interval=${TICK_INTERVAL_S}s total=${TOTAL_TICKS})"
     if [ "$DRY_RUN" = "1" ]; then
         emit_cmd "python3 -c 'research-loop placeholder: topics=$TOPICS_RAW total_ticks=$TOTAL_TICKS interval=$TICK_INTERVAL_S' # tick loop runs in real mode"
         return
     fi
-    python3 - "$TOPICS_RAW" "$PAPER_CORPUS" "$TOTAL_TICKS" "$TICK_INTERVAL_S" "$RUN_DIR" <<'PYRESEARCH'
+    python3 - "$TOPICS_RAW" "$PAPER_CORPUS" "$TOTAL_TICKS" "$TICK_INTERVAL_S" "$RUN_DIR" "$RESEARCH_EXPLORER_REPLICAS" <<'PYRESEARCH'
 import json
 import os
 import random
@@ -1122,14 +1157,26 @@ import subprocess
 import sys
 import time
 
-topics_raw, paper_corpus, total_ticks, interval, run_dir = (
+topics_raw, paper_corpus, total_ticks, interval, run_dir, explorer_replicas = (
     sys.argv[1], sys.argv[2], int(sys.argv[3]),
-    int(sys.argv[4]), sys.argv[5],
+    int(sys.argv[4]), sys.argv[5], int(sys.argv[6]),
 )
 topics = [t.strip() for t in topics_raw.split(",") if t.strip()]
 if not topics:
     sys.stderr.write("research-loop: no topics\n")
     sys.exit(2)
+
+# Per-explorer specialty -> topic mapping (#719). Keep in sync with
+# `_explorer_topic_for_specialty` (above) and the variants in
+# `tools/colony-variants.json`. Empty result -> per-daemon memo write
+# skipped; explorer falls back to global `replay:current_topic`.
+SPECIALTY_TOPIC_MAP = {
+    "group_theory": "abstract_algebra",
+    "combinatorics": "combinatorics",
+    "number_theory": "number_theory",
+    "probability": "graph_theory",
+    "algebra": "abstract_algebra",
+}
 
 corpora = {}
 for topic in topics:
@@ -1154,8 +1201,32 @@ for topic in topics:
         sys.exit(3)
     corpora[topic] = data
 
+
+def _memo_set(key, value):
+    subprocess.run(
+        ["podman", "exec", "research-foundry-laptop", "agentis", "memo", "set", key, value],
+        check=False,
+    )
+
+
+def _memo_get(key):
+    proc = subprocess.run(
+        ["podman", "exec", "research-foundry-laptop", "agentis", "memo", "get", key],
+        check=False, capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        return ""
+    out = (proc.stdout or "").strip()
+    # `agentis memo get` returns `<error>` style sentinel on miss in some builds.
+    if not out or out.startswith("<"):
+        return ""
+    return out
+
+
 log_path = os.path.join(run_dir, "orchestrator.log")
 rng = random.Random(0xF0FF)
+# Per-daemon paper-pair sampling uses a derived RNG so a given (tick,
+# daemon_id) draws a deterministic pair from its mapped topic.
 for idx in range(total_ticks):
     topic = topics[idx % len(topics)]
     data = corpora[topic]
@@ -1174,16 +1245,57 @@ for idx in range(total_ticks):
         ("replay:current_paper_b_abstract", str(b.get("abstract", ""))),
     ]
     for key, value in memo_pairs:
-        subprocess.run(
-            ["podman", "exec", "research-foundry-laptop", "agentis", "memo", "set", key, value],
-            check=False,
+        _memo_set(key, value)
+
+    # Per-explorer (per-DAEMON_ID) topic pinning (#719). Map each
+    # explorer's bootstrap-seeded specialty to a topic, sample 2 papers
+    # from that topic's corpus, and seed per-daemon memo keys. Explorers
+    # whose specialty has no mapping (evolved variants with novel
+    # labels) get no per-daemon write -- they fall back to the global
+    # `replay:current_*` keys above.
+    per_daemon_log = []
+    for daemon_id in range(1, max(0, explorer_replicas) + 1):
+        specialty = _memo_get("explorer:pool:specialty:" + str(daemon_id))
+        mapped_topic = SPECIALTY_TOPIC_MAP.get(specialty, "")
+        if not mapped_topic or mapped_topic not in corpora:
+            per_daemon_log.append(
+                "daemon=" + str(daemon_id) + " specialty=" + (specialty or "?") + " topic=<fallback>"
+            )
+            continue
+        topic_data = corpora[mapped_topic]
+        topic_papers = topic_data["papers"]
+        d_rng = random.Random(0xF0FF ^ (idx * 1009 + daemon_id))
+        if len(topic_papers) >= 2:
+            pa, pb = d_rng.sample(topic_papers, 2)
+        else:
+            pa = pb = topic_papers[0]
+        suffix = ":daemon:" + str(daemon_id)
+        per_daemon_pairs = [
+            ("replay:explorer_topic" + suffix, mapped_topic),
+            ("replay:explorer_topic_desc" + suffix, topic_data.get("description", "")),
+            ("replay:explorer_compute_hints" + suffix,
+             topic_data.get("compute_hints", "sympy, numpy, networkx")),
+            ("replay:explorer_paper_a_id" + suffix, str(pa.get("id", ""))),
+            ("replay:explorer_paper_a_title" + suffix, str(pa.get("title", ""))),
+            ("replay:explorer_paper_a_abstract" + suffix, str(pa.get("abstract", ""))),
+            ("replay:explorer_paper_b_id" + suffix, str(pb.get("id", ""))),
+            ("replay:explorer_paper_b_title" + suffix, str(pb.get("title", ""))),
+            ("replay:explorer_paper_b_abstract" + suffix, str(pb.get("abstract", ""))),
+        ]
+        for key, value in per_daemon_pairs:
+            _memo_set(key, value)
+        per_daemon_log.append(
+            "daemon=" + str(daemon_id) + " specialty=" + specialty + " topic=" + mapped_topic
         )
+
     with open(log_path, "a") as log:
         log.write(
             "# tick " + str(idx) + "/" + str(total_ticks)
             + " topic=" + topic + " papers=" + str(a.get("id"))
             + "," + str(b.get("id")) + "\n"
         )
+        if per_daemon_log:
+            log.write("#   per-explorer: " + "; ".join(per_daemon_log) + "\n")
     time.sleep(interval)
 PYRESEARCH
 }

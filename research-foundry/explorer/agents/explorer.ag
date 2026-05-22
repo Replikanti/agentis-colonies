@@ -509,18 +509,51 @@ fn tick(reason: string) -> void {
     print("[explorer] tick conf=", conf);
 
     // Read foundry tick state seeded by the orchestrator
-    // (`tools/run-foundry.sh`) before each tick.
+    // (`tools/run-foundry.sh`) before each tick. #719: prefer per-daemon
+    // memos (`replay:explorer_*:daemon:<DAEMON_ID>`) seeded by the
+    // orchestrator from the specialty->topic mapping table; fall back
+    // to the global `replay:current_*` keys when the per-daemon memo
+    // is empty (unmapped specialty, missing DAEMON_ID env, or
+    // backward compat with pre-#719 orchestrators).
     let tick_idx_str = recall_latest("replay:current_tick");
     let tick_idx = if len(tick_idx_str) > 0 { parse_int(tick_idx_str); } else { -1; };
-    let topic_label = recall_latest("replay:current_topic");
-    let topic_desc = recall_latest("replay:current_topic_desc");
-    let compute_hints = recall_latest("replay:current_compute_hints");
-    let paper_a_id = recall_latest("replay:current_paper_a_id");
-    let paper_a_title = recall_latest("replay:current_paper_a_title");
-    let paper_a_abstract = recall_latest("replay:current_paper_a_abstract");
-    let paper_b_id = recall_latest("replay:current_paper_b_id");
-    let paper_b_title = recall_latest("replay:current_paper_b_title");
-    let paper_b_abstract = recall_latest("replay:current_paper_b_abstract");
+    let _daemon_id_topic = try { exec sh "printenv DAEMON_ID"; } catch e { ""; };
+    let _per_topic = if len(_daemon_id_topic) > 0 {
+        recall_latest("replay:explorer_topic:daemon:" + _daemon_id_topic);
+    } else { ""; };
+    let topic_label = if len(_per_topic) > 0 { _per_topic; } else { recall_latest("replay:current_topic"); };
+    let topic_desc = if len(_daemon_id_topic) > 0 {
+        let _td = recall_latest("replay:explorer_topic_desc:daemon:" + _daemon_id_topic);
+        if len(_td) > 0 { _td; } else { recall_latest("replay:current_topic_desc"); };
+    } else { recall_latest("replay:current_topic_desc"); };
+    let compute_hints = if len(_daemon_id_topic) > 0 {
+        let _ch = recall_latest("replay:explorer_compute_hints:daemon:" + _daemon_id_topic);
+        if len(_ch) > 0 { _ch; } else { recall_latest("replay:current_compute_hints"); };
+    } else { recall_latest("replay:current_compute_hints"); };
+    let paper_a_id = if len(_daemon_id_topic) > 0 {
+        let _v = recall_latest("replay:explorer_paper_a_id:daemon:" + _daemon_id_topic);
+        if len(_v) > 0 { _v; } else { recall_latest("replay:current_paper_a_id"); };
+    } else { recall_latest("replay:current_paper_a_id"); };
+    let paper_a_title = if len(_daemon_id_topic) > 0 {
+        let _v = recall_latest("replay:explorer_paper_a_title:daemon:" + _daemon_id_topic);
+        if len(_v) > 0 { _v; } else { recall_latest("replay:current_paper_a_title"); };
+    } else { recall_latest("replay:current_paper_a_title"); };
+    let paper_a_abstract = if len(_daemon_id_topic) > 0 {
+        let _v = recall_latest("replay:explorer_paper_a_abstract:daemon:" + _daemon_id_topic);
+        if len(_v) > 0 { _v; } else { recall_latest("replay:current_paper_a_abstract"); };
+    } else { recall_latest("replay:current_paper_a_abstract"); };
+    let paper_b_id = if len(_daemon_id_topic) > 0 {
+        let _v = recall_latest("replay:explorer_paper_b_id:daemon:" + _daemon_id_topic);
+        if len(_v) > 0 { _v; } else { recall_latest("replay:current_paper_b_id"); };
+    } else { recall_latest("replay:current_paper_b_id"); };
+    let paper_b_title = if len(_daemon_id_topic) > 0 {
+        let _v = recall_latest("replay:explorer_paper_b_title:daemon:" + _daemon_id_topic);
+        if len(_v) > 0 { _v; } else { recall_latest("replay:current_paper_b_title"); };
+    } else { recall_latest("replay:current_paper_b_title"); };
+    let paper_b_abstract = if len(_daemon_id_topic) > 0 {
+        let _v = recall_latest("replay:explorer_paper_b_abstract:daemon:" + _daemon_id_topic);
+        if len(_v) > 0 { _v; } else { recall_latest("replay:current_paper_b_abstract"); };
+    } else { recall_latest("replay:current_paper_b_abstract"); };
     if tick_idx < 0 {
         print("[explorer] no foundry tick yet");
         return;
