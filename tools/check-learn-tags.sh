@@ -243,6 +243,23 @@ observed
 math-foundry"
             PAIR_KNOWN=1
             ;;
+        # #740: AdaptiveEngine activation in research-foundry/explorer.
+        # The explorer emits `learn("topic_selection", topic_label, ...,
+        # outcome, [tier, "math-foundry"])` alongside the existing
+        # `explore:*` rows so the AdaptiveEngine can rank topics by
+        # the `novelty` fitness signal.
+        "topic_selection:success")
+            ALLOWED_LITERALS="acted
+math-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "topic_selection:partial")
+            ALLOWED_LITERALS="review-gated
+emitted
+observed
+math-foundry"
+            PAIR_KNOWN=1
+            ;;
         "settle:success")
             ALLOWED_LITERALS="acted
 math-foundry
@@ -525,6 +542,24 @@ observed
 preprint-foundry"
             PAIR_KNOWN=1
             ;;
+        # #740: AdaptiveEngine activation in research-foundry/theorist.
+        # The theorist emits `learn("proof_approach", draft.proof_kind,
+        # ..., outcome, [tier, "preprint-foundry"])` alongside the
+        # existing `theorise:*` rows so the AdaptiveEngine can rank
+        # proof styles (sketch / full / computational) by the
+        # `accuracy` fitness signal.
+        "proof_approach:success")
+            ALLOWED_LITERALS="acted
+preprint-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "proof_approach:partial")
+            ALLOWED_LITERALS="review-gated
+emitted
+observed
+preprint-foundry"
+            PAIR_KNOWN=1
+            ;;
         "compute:partial")
             ALLOWED_LITERALS="acted
 review-gated
@@ -604,6 +639,21 @@ hitl-gated"
 review-gated
 emitted
 observed
+preprint-foundry
+hitl-gated"
+            PAIR_KNOWN=1
+            ;;
+        # #740: AdaptiveEngine activation in research-foundry/submitter.
+        # The submitter emits `learn("submission_decision",
+        # meta.arxiv_category, ..., "success", ["emitted",
+        # "preprint-foundry", "hitl-gated"])` alongside the existing
+        # `submit:*` rows so the AdaptiveEngine can rank
+        # metadata-quality choices by the `accuracy` fitness signal.
+        # NOTE: this is a metadata-classification helper -- the
+        # terminal arXiv-send decision still belongs to the #596 HITL
+        # gate downstream.
+        "submission_decision:success")
+            ALLOWED_LITERALS="emitted
 preprint-foundry
 hitl-gated"
             PAIR_KNOWN=1
