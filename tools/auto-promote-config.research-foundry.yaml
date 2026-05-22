@@ -41,7 +41,14 @@ promote:
   prerequisites:
     min_entries: 30
     min_acting_entries: 10
-    min_runtime_hours: 1.5
+    # min_runtime_hours relaxed from 1.5 to 1.0 (#718): the binding
+    # constraint is min_entries=30, which at the auditor's empirical
+    # 12 acting-rows/h needs 2.5h to clear. Paired with the
+    # RESEARCH_TOTAL_TICKS default bump from 30 to 75 (also #718), the
+    # default run now provides a 2.5h budget, so 1.0h is sufficient
+    # as a sanity guard against premature promotion without becoming
+    # the binding gate itself.
+    min_runtime_hours: 1.0
     reject_rate_threshold: 0.10
     delta_slope_window: 20
     delta_slope_min: 0
