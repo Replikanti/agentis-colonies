@@ -2,7 +2,7 @@
 # research-foundry/tools/test-persistent-snapshot.sh -- regression test
 # for the Phase 5 PR-A (#626) persistent-snapshot.py helper.
 #
-# Four synthetic-fixture cases (no live container required):
+# Five synthetic-fixture cases (no live container required):
 #   (1) Happy path: stubbed `podman` emits canned `agentis memo get`
 #       output. Assert `memo-snapshot.json` contains the expected keys +
 #       values, schema=1, snapshot_ts present.
@@ -15,6 +15,11 @@
 #       Subsequent invocations with same version succeed. After
 #       manually editing the file to `99`, helper warns + refuses to
 #       overwrite (non-zero exit, memo-snapshot.json unchanged).
+#   (5) Explorer evolved-prompt round-trip (#739): the `explorer:`
+#       prefix glob carries `:exploration_prompt`, `:exploration_generation`,
+#       `:lineage_id`, and `:specialty` suffixes across runs while
+#       suppressing per-tick noise like `:code:tick-N` / `:output:tick-N`
+#       that would otherwise bloat the snapshot.
 #
 # Standard library only -- no pytest, no live federation.
 #
@@ -118,6 +123,22 @@ case "${1:-}" in
             feedback:hitl_reject_class:claim-42)
                 echo "factual"
                 ;;
+            explorer:476:exploration_prompt)
+                echo "Refined exploration prompt v3 -- compute coincidences in group orders."
+                ;;
+            explorer:476:exploration_generation)
+                echo "3"
+                ;;
+            explorer:476:lineage_id)
+                echo "1"
+                ;;
+            explorer:476:specialty)
+                echo "group_theory"
+                ;;
+            explorer:476:code:tick-7|explorer:476:output:tick-7)
+                # Noisy per-tick keys -- must NOT appear in the snapshot.
+                echo "noise"
+                ;;
             *:confidence)
                 echo "0.7"
                 ;;
@@ -138,11 +159,19 @@ case "${1:-}" in
         esac
         ;;
     list)
-        # Two synthetic prefix-glob expansions plus a noise key.
+        # Two synthetic prefix-glob expansions plus a noise key, and
+        # four explorer:<pid>:<suffix> keys for the #739 round-trip
+        # test plus two per-tick noise keys that must be filtered out.
         printf '%s\n' \
             'formulator:learned_known_topics' \
             'feedback:hitl_reject_reason:claim-42' \
             'feedback:hitl_reject_class:claim-42' \
+            'explorer:476:exploration_prompt' \
+            'explorer:476:exploration_generation' \
+            'explorer:476:lineage_id' \
+            'explorer:476:specialty' \
+            'explorer:476:code:tick-7' \
+            'explorer:476:output:tick-7' \
             'unrelated:key'
         ;;
     *)
@@ -278,6 +307,46 @@ if [ "$T4C_RC" -ne 0 ] && [ "$SNAPSHOT_BEFORE_MTIME" = "$SNAPSHOT_AFTER_MTIME" ]
 else
     fail "(4c) SCHEMA_VERSION: mismatch warns + refuses to overwrite" \
          "rc=$T4C_RC; mtime-before=$SNAPSHOT_BEFORE_MTIME mtime-after=$SNAPSHOT_AFTER_MTIME; log: $(cat "$WORK/t4c.log")"
+fi
+
+# --- (5) Explorer evolved-prompt round-trip (#739) ---
+# The four `explorer:<pid>:{exploration_prompt,exploration_generation,
+# lineage_id,specialty}` suffixes must round-trip through snapshot so
+# the M98 v3 variant pool survives cross-run bootstrap. The two
+# `:code:tick-N` / `:output:tick-N` noise keys must be filtered out.
+T5_DIR="$WORK/t5-persistent"
+T5_RC=0
+PODMAN_MODE=ok python3 "$HELPER" --container research-foundry-laptop \
+    --output-dir "$T5_DIR" >"$WORK/t5.log" 2>&1 || T5_RC=$?
+
+if [ "$T5_RC" -ne 0 ]; then
+    fail "(5) explorer-prompt round-trip: helper exits 0" "rc=$T5_RC; log: $(cat "$WORK/t5.log")"
+elif [ ! -f "$T5_DIR/memo-snapshot.json" ]; then
+    fail "(5) explorer-prompt round-trip: writes memo-snapshot.json" "file missing"
+else
+    T5_SNAPSHOT="$(cat "$T5_DIR/memo-snapshot.json")"
+    if printf '%s' "$T5_SNAPSHOT" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+keys = data["keys"]
+expected = {
+    "explorer:476:exploration_prompt":
+        "Refined exploration prompt v3 -- compute coincidences in group orders.",
+    "explorer:476:exploration_generation": "3",
+    "explorer:476:lineage_id": "1",
+    "explorer:476:specialty": "group_theory",
+}
+for k, v in expected.items():
+    assert k in keys, "missing key " + k
+    assert keys[k] == v, "key " + k + " = " + repr(keys[k]) + " not " + repr(v)
+# Per-tick noise keys must be filtered out (snapshot bloat guard).
+for noise in ("explorer:476:code:tick-7", "explorer:476:output:tick-7"):
+    assert noise not in keys, "noise key leaked into snapshot: " + noise
+' >/dev/null 2>"$WORK/t5.assert.log"; then
+        pass "(5) explorer-prompt round-trip: four suffixes carry, noise filtered"
+    else
+        fail "(5) explorer-prompt round-trip: four suffixes carry, noise filtered" "$(cat "$WORK/t5.assert.log")"
+    fi
 fi
 
 echo ""

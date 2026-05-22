@@ -6,6 +6,26 @@
 // stdout, and writes the resulting (code, output) pair to memo for the
 // downstream noticer / formulator / verifier / novelty chain.
 //
+// M98 v3 prompt evolution (#739): the `_evolve_exploration_prompt`
+// helper below mirrors `tribes-bench/<tribe>/agents/hunter.ag`'s
+// `_evolve_hunting_prompt` pattern (Levenshtein floor, schema sanity,
+// gen-cap lineage reset, settled-explorations buffer, M106 hash-pointer
+// wrap for replicate-with-variant). There is no `evolve_self()`
+// runtime builtin -- the keyword `evolve_self` appears only in the
+// agentis-core grammar reservation; the actual evolution is hand-rolled
+// here via `prompt(meta, "")` + `memo_write`. The v1.7.10 agentis-core
+// `PromptExpr` non-literal relaxation (#638) was the enabler that let
+// this loop ship in research-foundry.
+//
+// Evolved-prompt memo key: `explorer:<pid>:exploration_prompt` (matches
+// the hunter's `hunting_prompt` convention, NOT the `evolved_prompt`
+// label some earlier specs used). Companion keys carried for the same
+// reason: `:exploration_generation`, `:lineage_id`, `:specialty`.
+// Cross-run persistence is provided by
+// `research-foundry/tools/persistent-snapshot.py` which snapshots
+// these four `explorer:*` suffixes at run end so the M98 v3 variant
+// pool survives container relaunch (added in #739).
+//
 // Per-tick behaviour:
 //   1. Read foundry tick state (`replay:current_tick`,
 //      `replay:current_topic`, `replay:current_paper_a/b`) seeded by
