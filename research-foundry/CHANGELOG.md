@@ -18,6 +18,10 @@ History of the three retired federations consolidated into this one
 
 ## [Unreleased]
 
+### Fixed
+
+- `tools/persistent-snapshot.py` now carries the M98 v3 evolved-prompt state across runs by adding an `explorer:` prefix glob (filtered to four cross-run suffixes: `:exploration_prompt`, `:exploration_generation`, `:lineage_id`, `:specialty`). The `_evolve_exploration_prompt` loop in `research-foundry/explorer/agents/explorer.ag` (lines 204-263, mirroring `tribes-bench/*/agents/hunter.ag::_evolve_hunting_prompt`) was already shipped, but the evolved-prompt memo key `explorer:<pid>:exploration_prompt` was not in the snapshot writer's allowlist, so every container relaunch dropped the variant pool back to the `_seed_prompt()` baseline. Per-tick noise keys (`explorer:<pid>:code:tick-N`, `:output:tick-N`) are filtered out by an explicit suffix allowlist to bound snapshot size. New test (5) in `tools/test-persistent-snapshot.sh` pins the round-trip + noise-filter contract. The forensic correction (no `evolve_self()` runtime builtin -- it is a language keyword, M98 v3 is hand-rolled via `prompt(meta, "")`) is documented in the `explorer.ag` header. ([#739](https://github.com/Replikanti/agentis-colonies/issues/739))
+
 ### Changed
 
 - Lower default `RESEARCH_<COLONY>_REPLICAS` from 2 to 1 for all 17 non-explorer colonies, and split the claude model per colony (8 opus quality-critical: explorer, formulator, verifier, novelty, prior_advocate, auditor, theorist, editor; 10 sonnet mechanical: noticer, skeptic, 4 searchers, computer, introducer, reviewer, submitter). New per-colony env knob `RESEARCH_<COLONY>_CLAUDE_MODEL`. Wired via `ANTHROPIC_MODEL=` on each daemon spawn line (the claude CLI honors it natively); the shared `llm.args` config drops the `--model` slot. Drops federation peak request rate from ~78 -> ~44 calls/min and shifts ~55% of calls onto sonnet (~5x faster) so the 9-stage cascade clears within the 60-min default run window. Unblocks the zero-preprint stall observed in Run #9-12. ([#711](https://github.com/Replikanti/agentis-colonies/issues/711))

@@ -65,7 +65,28 @@ EXACT_KEYS = [
 PREFIX_GLOBS = [
     "feedback:hitl_reject_reason:claim-",
     "feedback:hitl_reject_class:claim-",
+    # M98 v3 evolved-prompt state per explorer pid (#739). The
+    # _evolve_exploration_prompt loop in research-foundry/explorer/agents/
+    # explorer.ag writes `:exploration_prompt` (current variant body),
+    # `:exploration_generation` (lineage step within the gen-cap window),
+    # `:lineage_id` (bumped on gen-cap reset), and `:specialty` (claimed
+    # at first tick from the bootstrap-seeded pool). Carrying these four
+    # across runs lets the next bootstrap restore the variant pool so
+    # M98 v3 fitness pressure compounds run-over-run instead of
+    # restarting from the seed each container relaunch.
+    "explorer:",
 ]
+
+# Suffix filter for the `explorer:` prefix glob. The glob would otherwise
+# catch per-tick noise like `explorer:<pid>:code:tick-N` /
+# `explorer:<pid>:output:tick-N` (cb-budget bloat). Snapshot only the
+# specific suffixes that make up the cross-run evolved-prompt state.
+EXPLORER_PERSISTENT_SUFFIXES = (
+    ":exploration_prompt",
+    ":exploration_generation",
+    ":lineage_id",
+    ":specialty",
+)
 
 CONFIDENCE_COLONIES = [
     "explorer",
@@ -302,8 +323,15 @@ def snapshot_keys(container, output_dir):
         listed = _memo_list_keys(container)
         for prefix in PREFIX_GLOBS:
             for k in listed:
-                if k.startswith(prefix):
-                    keys_to_snapshot.append(k)
+                if not k.startswith(prefix):
+                    continue
+                # The `explorer:` prefix would otherwise catch noisy
+                # per-tick keys (e.g. `explorer:<pid>:code:tick-N`).
+                # Restrict it to the cross-run evolved-prompt state
+                # suffixes only (#739).
+                if prefix == "explorer:" and not k.endswith(EXPLORER_PERSISTENT_SUFFIXES):
+                    continue
+                keys_to_snapshot.append(k)
 
     seen = set()
     deduped = []
