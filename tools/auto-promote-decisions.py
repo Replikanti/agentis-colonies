@@ -542,13 +542,16 @@ def main():
         # cycles even when the in-process tick loop keeps writing the memo.
         # `effective_state == "running"` remains a valid fall-through for
         # legacy callers; the memo path simply unblocks daemons whose
-        # registry record lies.
+        # registry record lies. #736: per-role staleness window via
+        # staleness_ticks_for() -- tick-driven roles (5), listen-driven
+        # research-foundry roles (60), dev-apprenticeship roles (30),
+        # unknown roles fall back to the global STALENESS_TICKS (15).
         if containerized:
             last_check_epoch = freshness.parse_last_check_epoch(freshness.read_memo_raw(fed_dir, agent_name + ':last_check'))
             fresh = False
             if last_check_epoch is not None:
                 tick_ms = freshness.resolve_tick_interval_ms(agent_name, colony, fed_dir)
-                fresh = (time.time() - last_check_epoch) < freshness.STALENESS_TICKS * (tick_ms / 1000.0)
+                fresh = (time.time() - last_check_epoch) < freshness.staleness_ticks_for(agent_name) * (tick_ms / 1000.0)
             effective_state = d.get('effective_state') or state
             if not fresh and effective_state != 'running':
                 decisions.append(_attach_explorer_evidence({

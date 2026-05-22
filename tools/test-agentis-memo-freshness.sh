@@ -15,6 +15,10 @@
 #      PATH, mirroring test-dashboard-freshness-liveness.sh).
 #   8. resolve_tick_interval_ms with explicit fed_tools_dir + cache-hit on
 #      the 2nd call returns the same value without re-spawning the helper.
+#   9. staleness_ticks_for(role) returns the per-role table value for
+#      known roles (#736).
+#  10. staleness_ticks_for(role) falls back to the global STALENESS_TICKS
+#      for unknown roles (#736).
 #
 # Usage: ./tools/test-agentis-memo-freshness.sh
 # Exit 0 on full pass, 1 otherwise.
@@ -163,6 +167,31 @@ if [ "$ACTUAL" = "90000|12345|True" ]; then
     pass "8: resolve_tick_interval_ms returns 90000 on first call and hits cache on second"
 else
     fail "8: resolve_tick_interval_ms + cache" "expected '90000|12345|True', got '$ACTUAL'"
+fi
+
+# --- Test 9: staleness_ticks_for(role) returns table value for known roles (#736) ---
+ACTUAL="$(unset FEDERATION_DASHBOARD_STALENESS_TICKS; python3 -c "$PYPATH_PRELUDE
+import agentis_memo_freshness as f
+# auditor is listen-driven (60), explorer is tick-driven (5), router is
+# dev-apprenticeship (30). Three rows cover the three distinct table tiers.
+print('%d|%d|%d' % (f.staleness_ticks_for('auditor'), f.staleness_ticks_for('explorer'), f.staleness_ticks_for('router')))
+")"
+if [ "$ACTUAL" = "60|5|30" ]; then
+    pass "9: staleness_ticks_for(known role) returns table value (auditor=60, explorer=5, router=30)"
+else
+    fail "9: staleness_ticks_for known roles" "expected '60|5|30', got '$ACTUAL'"
+fi
+
+# --- Test 10: staleness_ticks_for(unknown role) falls back to global STALENESS_TICKS (#736) ---
+ACTUAL="$(unset FEDERATION_DASHBOARD_STALENESS_TICKS; python3 -c "$PYPATH_PRELUDE
+import agentis_memo_freshness as f
+# Unknown role (evolved variant / test fixture) falls back to STALENESS_TICKS.
+print(f.staleness_ticks_for('xyz_evolve_variant_does_not_exist'))
+")"
+if [ "$ACTUAL" = "15" ]; then
+    pass "10: staleness_ticks_for(unknown role) falls back to global STALENESS_TICKS=15"
+else
+    fail "10: staleness_ticks_for unknown fallback" "expected 15, got $ACTUAL"
 fi
 
 echo ""
