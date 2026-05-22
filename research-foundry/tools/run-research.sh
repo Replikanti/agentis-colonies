@@ -1085,6 +1085,11 @@ start_auto_promote_sidecar() {
     mkdir -p "$AP_LOG_DIR"
     date +%s > "$AP_STAMP"
     (
+        # Disable set -e/pipefail inherited from parent — supervisor loop must
+        # survive transient child SIGTERM (e.g. operator-side agentis upgrade
+        # pkill cascade, #728 Layer 1).
+        set +e
+        set +o pipefail
         cd "$LAPTOP_DIR"
         tick_count=0
         while :; do
