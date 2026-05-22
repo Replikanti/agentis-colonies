@@ -420,7 +420,7 @@ STALE_EXIT=$?
 # After the steal, the file must carry OUR PID (the helper's), not the
 # fake one. The helper ran in a subshell so its PID is gone; what we can
 # assert is that the file no longer holds 2147483647.
-STALE_AFTER=$(cat "$STALE_LOCK_FILE" 2>/dev/null | tr -d '[:space:]')
+STALE_AFTER=$(tr -d '[:space:]' < "$STALE_LOCK_FILE" 2>/dev/null)
 
 if [ "$STALE_EXIT" -eq 0 ] && [ "$STALE_AFTER" != "2147483647" ] && [ -n "$STALE_AFTER" ]; then
     pass "lock helper: dead PID in lock file triggers steal (#728)"
@@ -461,7 +461,7 @@ if [ -r "/proc/1/cmdline" ]; then
                 python3 "$SCRIPT_DIR/auto-promote-lock.py" 200 "$RECYCLED_LOCK_FILE" 2>&1
             )
             RECYCLED_EXIT=$?
-            RECYCLED_AFTER=$(cat "$RECYCLED_LOCK_FILE" 2>/dev/null | tr -d '[:space:]')
+            RECYCLED_AFTER=$(tr -d '[:space:]' < "$RECYCLED_LOCK_FILE" 2>/dev/null)
             if [ "$RECYCLED_EXIT" -eq 0 ] && [ "$RECYCLED_AFTER" != "1" ] && [ -n "$RECYCLED_AFTER" ]; then
                 pass "lock helper: recycled PID (live but unrelated cmdline) triggers steal (#728)"
             else
