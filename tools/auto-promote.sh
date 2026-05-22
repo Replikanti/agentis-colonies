@@ -130,7 +130,7 @@ LOCK_FILE="$SCRIPT_DIR/.auto-promote.lock"
 # every supported install path.
 
 exec 200>"$LOCK_FILE"
-if ! python3 "$SCRIPT_DIR/auto-promote-lock.py" 200 2>/dev/null; then
+if ! python3 "$SCRIPT_DIR/auto-promote-lock.py" 200 "$LOCK_FILE" 2>/dev/null; then
     echo "Another auto-promote instance is running. Exiting."
     exit 0
 fi
@@ -196,7 +196,7 @@ log "Starting (dry_run=$DRY_RUN, fed=$FED_DIR)"
 # All agentis CLI commands must run from $FED_DIR so the CLI finds
 # .agentis/ (daemon registry, memo store, experience). Matches the
 # cwd=fed_dir pattern in federation-dashboard.sh.
-DAEMONS_JSON=$(cd "$FED_DIR" && agentis daemon list --json 2>/dev/null || echo "[]")
+DAEMONS_JSON=$(cd "$FED_DIR" && agentis daemon list --json 2>/dev/null 200>&- || echo "[]")
 DAEMON_COUNT=$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(len(d))" "$DAEMONS_JSON")
 
 if [ "$DAEMON_COUNT" -eq 0 ]; then
@@ -360,7 +360,7 @@ for d in daemons:
 
                 # Stop the daemon (cwd=FED_DIR for .agentis/ resolution)
                 if [ -n "$AGENT_ID" ]; then
-                    (cd "$FED_DIR" && agentis daemon stop "$AGENT_ID") 2>&1 || true
+                    (cd "$FED_DIR" && agentis daemon stop "$AGENT_ID" 200>&-) 2>&1 || true
                     sleep 3
                 fi
 
@@ -376,7 +376,7 @@ for d in daemons:
                         --colony "$colony" \
                         --enable-exec \
                         --enable-messaging \
-                        --tick-interval "$TICK_INTERVAL" &
+                        --tick-interval "$TICK_INTERVAL" 200>&- &
                 )
                 log "  Daemon respawned for $agent"
 
