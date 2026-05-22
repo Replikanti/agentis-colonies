@@ -6,10 +6,21 @@ agentis daemon list state field (which lies for containerized
 federations -- see #683 / #686 / #697 / #700 / #705 / #706).
 
 Public API:
-  STALENESS_TICKS -- int (env-clamped, default 3)
+  STALENESS_TICKS -- int (env-clamped, default 15)
   read_memo_raw(fed_dir, key) -> Optional[str]
   parse_last_check_epoch(raw) -> Optional[float]
   resolve_tick_interval_ms(agent, colony, fed_dir, fed_tools_dir=None) -> int
+
+Default rationale (#716): listen-driven roles (long-poll `listen()` cadence,
+e.g. `research-foundry` explorers) can legitimately go quiet for the
+documented ~10-minute window between events while healthy. At the prior
+default of 3, every quiet listener flipped to `pid_alive=false` and the
+promote-tier cascade SKIPped the affected roles. `15` covers the
+10-minute quiet window on both the 60s dev-apprenticeship tick (15 min)
+and the 120s research-foundry tick (30 min) while still flagging genuinely
+dead daemons within one operator pulse. Tick-driven federations that want
+tighter classification keep the `FEDERATION_DASHBOARD_STALENESS_TICKS` env
+override (clamped to >= 1).
 
 The fed_tools_dir kwarg of resolve_tick_interval_ms defaults to the
 directory containing this module (preserves the __file__-relative
@@ -26,9 +37,9 @@ from typing import Optional
 
 
 try:
-    STALENESS_TICKS = max(1, int(os.environ.get("FEDERATION_DASHBOARD_STALENESS_TICKS", "3")))
+    STALENESS_TICKS = max(1, int(os.environ.get("FEDERATION_DASHBOARD_STALENESS_TICKS", "15")))
 except (TypeError, ValueError):
-    STALENESS_TICKS = 3
+    STALENESS_TICKS = 15
 
 
 # Cache resolved tick intervals per (agent, colony) so the helper is not

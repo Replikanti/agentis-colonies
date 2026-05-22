@@ -4,10 +4,10 @@
 # federation-dashboard/lib/federation-dashboard-collector.py and
 # tools/auto-promote-decisions.py. Covers:
 #
-#   1. STALENESS_TICKS default (no env) = 3.
+#   1. STALENESS_TICKS default (no env) = 15.
 #   2. STALENESS_TICKS env=10 -> 10.
 #   3. STALENESS_TICKS env=0 clamps to 1.
-#   4. STALENESS_TICKS env=abc -> 3 (try/except fallback).
+#   4. STALENESS_TICKS env=abc -> 15 (try/except fallback).
 #   5. parse_last_check_epoch("2026-05-19T12:34:56Z") matches the expected
 #      epoch derived from `date -d` / python fallback.
 #   6. parse_last_check_epoch(None) + bad-shape -> None.
@@ -35,15 +35,15 @@ fail() { echo "[FAIL] $1${2:+: $2}"; FAIL=$((FAIL + 1)); }
 # module loads under its real filename (hyphen-free).
 PYPATH_PRELUDE="import sys; sys.path.insert(0, '$SCRIPT_DIR')"
 
-# --- Test 1: default STALENESS_TICKS = 3 ---
+# --- Test 1: default STALENESS_TICKS = 15 (#716) ---
 ACTUAL="$(unset FEDERATION_DASHBOARD_STALENESS_TICKS; python3 -c "$PYPATH_PRELUDE
 import agentis_memo_freshness as f
 print(f.STALENESS_TICKS)
 ")"
-if [ "$ACTUAL" = "3" ]; then
-    pass "1: STALENESS_TICKS default = 3"
+if [ "$ACTUAL" = "15" ]; then
+    pass "1: STALENESS_TICKS default = 15"
 else
-    fail "1: STALENESS_TICKS default" "expected 3, got $ACTUAL"
+    fail "1: STALENESS_TICKS default" "expected 15, got $ACTUAL"
 fi
 
 # --- Test 2: env=10 -> 10 ---
@@ -68,15 +68,15 @@ else
     fail "3: STALENESS_TICKS env=0 clamp" "expected 1, got $ACTUAL"
 fi
 
-# --- Test 4: env=abc -> 3 (fallback) ---
+# --- Test 4: env=abc -> 15 (fallback, #716) ---
 ACTUAL="$(FEDERATION_DASHBOARD_STALENESS_TICKS=abc python3 -c "$PYPATH_PRELUDE
 import agentis_memo_freshness as f
 print(f.STALENESS_TICKS)
 ")"
-if [ "$ACTUAL" = "3" ]; then
-    pass "4: STALENESS_TICKS env=abc -> 3 fallback"
+if [ "$ACTUAL" = "15" ]; then
+    pass "4: STALENESS_TICKS env=abc -> 15 fallback"
 else
-    fail "4: STALENESS_TICKS env=abc fallback" "expected 3, got $ACTUAL"
+    fail "4: STALENESS_TICKS env=abc fallback" "expected 15, got $ACTUAL"
 fi
 
 # --- Test 5: parse_last_check_epoch on a real ISO-8601 UTC string ---

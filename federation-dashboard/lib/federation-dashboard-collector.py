@@ -43,14 +43,17 @@ import sys, os, json, time, re, datetime, subprocess
 # #700: env-configurable so listen-driven federations (e.g.
 # `research-foundry`'s long-poll `listen()` cadence, where ticks can
 # legitimately go quiet for minutes between events) can widen the window
-# without code change. Default 3 stays correct for active tick-driven
-# federations like `dev-apprenticeship`; `research-foundry`'s launcher
-# exports `FEDERATION_DASHBOARD_STALENESS_TICKS=10`. Clamped to >= 1 so a
-# misconfigured `0` cannot turn every agent permanently stale.
+# without code change. #716: default raised from `3` to `15` after the
+# Run #14 forensic showed listen-driven explorers hitting the promote-tier
+# cascade SKIP path during legitimate quiet windows. `15` covers the
+# documented ~10-minute quiet window on both 60s and 120s ticks; operators
+# wanting tighter classification keep the env override.
+# Clamped to >= 1 so a misconfigured `0` cannot turn every agent
+# permanently stale.
 try:
-    STALENESS_TICKS = max(1, int(os.environ.get("FEDERATION_DASHBOARD_STALENESS_TICKS", "3")))
+    STALENESS_TICKS = max(1, int(os.environ.get("FEDERATION_DASHBOARD_STALENESS_TICKS", "15")))
 except (TypeError, ValueError):
-    STALENESS_TICKS = 3
+    STALENESS_TICKS = 15
 
 def _read(arg):
     """Resolve `@<path>` argv prefix to file contents; otherwise pass through."""
@@ -87,7 +90,7 @@ try:
     STALENESS_TICKS = freshness.STALENESS_TICKS
 except ImportError:
     freshness = None
-    STALENESS_TICKS = 3
+    STALENESS_TICKS = 15
 
 def safe_json(s, default):
     try: return json.loads(s or '[]')
