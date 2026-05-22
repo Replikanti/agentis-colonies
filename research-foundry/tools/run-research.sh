@@ -1150,9 +1150,11 @@ tick_stream() {
         return
     fi
     python3 - "$TOPICS_RAW" "$PAPER_CORPUS" "$TOTAL_TICKS" "$TICK_INTERVAL_S" "$RUN_DIR" "$RESEARCH_EXPLORER_REPLICAS" <<'PYRESEARCH'
+import glob
 import json
 import os
 import random
+import re
 import subprocess
 import sys
 import time
@@ -1247,14 +1249,30 @@ for idx in range(total_ticks):
     for key, value in memo_pairs:
         _memo_set(key, value)
 
-    # Per-explorer (per-DAEMON_ID) topic pinning (#719). Map each
+    # Per-explorer (per-DAEMON_ID) topic pinning (#719, #724). Map each
     # explorer's bootstrap-seeded specialty to a topic, sample 2 papers
     # from that topic's corpus, and seed per-daemon memo keys. Explorers
     # whose specialty has no mapping (evolved variants with novel
     # labels) get no per-daemon write -- they fall back to the global
     # `replay:current_*` keys above.
+    #
+    # #724: enumerate live daemon ids from the specialty-memo glob
+    # instead of a hardcoded range. `cull-replicas.sh` writes specialty
+    # memos for post-cull replica explorers (daemon_id > initial
+    # explorer_replicas), so the orchestrator must read whoever is
+    # actually present on disk. The regex filters out the sibling
+    # `explorer:pool:specialty_overlay:*.jsonl` files (decoys with a
+    # non-numeric suffix after the colon).
+    _memo_dir = os.path.join(run_dir, "laptop-node", ".agentis", "memo")
+    _spec_re = re.compile(r"^explorer:pool:specialty:(\d+)\.jsonl$")
+    daemon_ids = []
+    for _path in glob.glob(os.path.join(_memo_dir, "explorer:pool:specialty:*.jsonl")):
+        m = _spec_re.match(os.path.basename(_path))
+        if m:
+            daemon_ids.append(int(m.group(1)))
+    daemon_ids.sort()
     per_daemon_log = []
-    for daemon_id in range(1, max(0, explorer_replicas) + 1):
+    for daemon_id in daemon_ids:
         specialty = _memo_get("explorer:pool:specialty:" + str(daemon_id))
         mapped_topic = SPECIALTY_TOPIC_MAP.get(specialty, "")
         if not mapped_topic or mapped_topic not in corpora:

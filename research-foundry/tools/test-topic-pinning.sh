@@ -62,6 +62,36 @@ assert_topic ""             ""
 assert_topic unknown_spec   ""
 assert_topic evolved_x      ""
 
+# Live-registry discovery test (#724). Mirrors the glob+regex block in
+# the orchestrator's `research_loop` Python heredoc. Fixture: an initial
+# explorer (daemon_id=1) plus a post-cull replica (daemon_id=7), with a
+# decoy `specialty_overlay` sibling file that must be rejected.
+tmp_memo_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_memo_dir"' EXIT
+: > "$tmp_memo_dir/explorer:pool:specialty:1.jsonl"
+: > "$tmp_memo_dir/explorer:pool:specialty:7.jsonl"
+: > "$tmp_memo_dir/explorer:pool:specialty_overlay:1.jsonl"
+
+discovered_ids="$(python3 - "$tmp_memo_dir" <<'PYDISCOVER'
+import glob, os, re, sys
+memo_dir = sys.argv[1]
+spec_re = re.compile(r"^explorer:pool:specialty:(\d+)\.jsonl$")
+ids = []
+for path in glob.glob(os.path.join(memo_dir, "explorer:pool:specialty:*.jsonl")):
+    m = spec_re.match(os.path.basename(path))
+    if m:
+        ids.append(int(m.group(1)))
+ids.sort()
+print(",".join(str(i) for i in ids))
+PYDISCOVER
+)"
+
+if [ "$discovered_ids" = "1,7" ]; then
+    pass "live-registry discovery: ids=[1,7], overlay rejected"
+else
+    fail "live-registry discovery" "expected '1,7', got '$discovered_ids'"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
