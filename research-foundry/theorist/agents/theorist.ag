@@ -299,13 +299,24 @@ fn tick(reason: string) -> void {
         return;
     };
 
+    // #740: AdaptiveEngine recommendation for proof-style selection.
+    // The engine ranks past proof_kind outcomes (sketch / full /
+    // computational) by `accuracy` fitness and folds the recommendation
+    // into the prompt context as a free-form hint to nudge the LLM
+    // toward the historically successful style for the upstream
+    // evidence. Empty KB on first tick returns Map() whose to_string is
+    // harmless. Pattern mirrors dev-apprenticeship/code-review/agents/
+    // style_reviewer.ag:209.
+    let rec = recommend("proof_approach", ["accuracy"]);
+
     let ctx = "PROBLEM: " + problem_text + "\n"
             + "ANSWER: " + stated_answer + "\n"
             + "NOVELTY CLAIM: " + novelty_claim + "\n"
             + "AUDITOR REASONING: " + audit_reasoning + "\n"
             + "EXPLORER GOAL: " + explorer_goal + "\n"
             + "EXPLORER CODE:\n" + explorer_code + "\n"
-            + "EXPLORER OUTPUT:\n" + explorer_output + "\n";
+            + "EXPLORER OUTPUT:\n" + explorer_output + "\n"
+            + "LEARNED PROOF-STYLE PREFERENCES: " + to_string(rec) + "\n";
 
     let draft = prompt(_draft_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(_self_pid), ctx) -> Draft;
 
@@ -313,18 +324,26 @@ fn tick(reason: string) -> void {
     if my_tier == "autonomous" {
         memo_write("theorist:" + _self_pid + ":review_gated", "true");
         learn("theorise", "tick " + to_string(tick_idx), draft.rationale, "partial", ["acted", "preprint-foundry"]);
+        // #740: feed the AdaptiveEngine the chosen proof_kind on the same tier path.
+        learn("proof_approach", draft.proof_kind, "tick " + to_string(tick_idx), "success", ["acted", "preprint-foundry"]);
         _publish_theorist(true, true, draft, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
     } else {
         if my_tier == "review-gated" {
             memo_write("theorist:" + _self_pid + ":review_gated", "true");
             learn("theorise", "tick " + to_string(tick_idx), draft.rationale, "partial", ["review-gated", "preprint-foundry"]);
+            // #740: feed the AdaptiveEngine the chosen proof_kind on the same tier path.
+            learn("proof_approach", draft.proof_kind, "tick " + to_string(tick_idx), "partial", ["review-gated", "preprint-foundry"]);
             _publish_theorist(true, false, draft, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
         } else {
             if my_tier == "propose" {
+                // #740: feed the AdaptiveEngine the chosen proof_kind on the same tier path.
+                learn("proof_approach", draft.proof_kind, "tick " + to_string(tick_idx), "partial", ["emitted", "preprint-foundry"]);
                 _publish_theorist(false, false, draft, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
             } else {
                 print("[theorist] observing (tier:", my_tier, ") rationale=", draft.rationale);
                 learn("theorise", "tick " + to_string(tick_idx), draft.rationale, "partial", ["observed", "preprint-foundry"]);
+                // #740: feed the AdaptiveEngine the chosen proof_kind on the same tier path.
+                learn("proof_approach", draft.proof_kind, "tick " + to_string(tick_idx), "partial", ["observed", "preprint-foundry"]);
             };
         };
     };

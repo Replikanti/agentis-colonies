@@ -231,13 +231,25 @@ fn _submitter_draft_phase(
     introducer_pid: string,
     my_tier: string
 ) -> void {
+    // #740: AdaptiveEngine recommendation for submission-decision
+    // metadata classification. Lands at the metadata-staging step --
+    // NOT a substitute for the #596 HITL gate (terminal arXiv send
+    // still requires reviewer-approved memo + autonomous tier; see
+    // tier dispatcher below). The engine ranks past metadata-quality
+    // outcomes (arxiv_category / msc_codes accuracy) and folds the
+    // recommendation into the prompt context. Empty KB on first tick
+    // returns Map() whose to_string is harmless. Pattern mirrors
+    // dev-apprenticeship/code-review/agents/style_reviewer.ag:209.
+    let rec = recommend("submission_decision", ["accuracy"]);
+
     let ctx = "FINAL TEX:\n" + final_tex + "\n"
             + "COMPILE LOG:\n" + compile_log + "\n"
             + "TITLE SEED: " + title_seed + "\n"
             + "MSC SEED: " + msc_seed + "\n"
             + "ARXIV CATEGORY SEED: " + cat_seed + "\n"
             + "REPRO SCRIPT (" + repro_lang + "):\n" + repro_script + "\n"
-            + "REPRO OUTPUT:\n" + repro_output + "\n";
+            + "REPRO OUTPUT:\n" + repro_output + "\n"
+            + "LEARNED METADATA-QUALITY PREFERENCES: " + to_string(rec) + "\n";
     let meta = prompt(_metadata_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(self_pid), ctx) -> Metadata;
 
     // Load authors.toml from $PREPRINT_AUTHOR_CONFIG (path threaded
@@ -333,6 +345,12 @@ fn _submitter_draft_phase(
     if my_tier == "propose" {
         learn("submit", "tick " + to_string(tick_idx) + " DRAFTED " + claim_id_eff, meta.rationale, "success", ["emitted", "preprint-foundry", "hitl-gated"]);
     };
+    // #740: feed the AdaptiveEngine the metadata-quality outcome
+    // (arxiv_category as the choice signal) on every tier path the
+    // draft phase touches. The terminal-send decision still belongs
+    // to the #596 HITL gate downstream. Tier semantics are already
+    // captured by the surrounding `submit:*` learn() rows.
+    learn("submission_decision", meta.arxiv_category, "tick " + to_string(tick_idx) + " DRAFTED " + claim_id_eff, "success", ["emitted", "preprint-foundry", "hitl-gated"]);
 
     // Phase 9 PR-C (#663): per-pid fitness tracking. +1 per DRAFTED
     // row (PR-D folds in the eventual HITL accept signal).

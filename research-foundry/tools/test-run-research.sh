@@ -353,6 +353,15 @@ assert_contains "25b. llm.args printf still carries --effort %s" "$SRC" \
 assert_contains "25c. ANTHROPIC_MODEL added to exec.env_passthrough allowlist" "$SRC" \
     "RESEARCH_JITTER_DISABLED,ANTHROPIC_MODEL"
 
+# ---------------------------------------------------------------------------
+# 26. #740: AdaptiveEngine activation. The hermetic .agentis/config block
+# in run-research.sh must write `learning.enabled = true` so the
+# recommend() / adapt() / score_options() builtins are live. Mirrors
+# dev-apprenticeship/install.sh L707.
+# ---------------------------------------------------------------------------
+assert_contains "26. run-research.sh writes learning.enabled = true" "$SRC" \
+    'printf "learning.enabled = true\\n"'
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -619,13 +619,22 @@ fn tick(reason: string) -> void {
         prompt_text_raw;
     };
 
+    // #740: AdaptiveEngine recommendation for topic selection. The
+    // engine ranks past topic_label outcomes by `novelty` fitness and
+    // folds the recommendation into the prompt context as a free-form
+    // hint. Empty KB on first tick returns Map() whose to_string is
+    // harmless. Pattern mirrors dev-apprenticeship/code-review/agents/
+    // style_reviewer.ag:209.
+    let rec = recommend("topic_selection", ["novelty"]);
+
     // Build the topic + paper-pair context string.
     let ctx = "TOPIC: " + topic_label + " (" + topic_desc + ")\n"
             + "TOOLS AVAILABLE: " + compute_hints + "\n"
             + "PAPER A (" + paper_a_id + "): " + paper_a_title + "\n"
             + "ABSTRACT: " + paper_a_abstract + "\n"
             + "PAPER B (" + paper_b_id + "): " + paper_b_title + "\n"
-            + "ABSTRACT: " + paper_b_abstract + "\n";
+            + "ABSTRACT: " + paper_b_abstract + "\n"
+            + "LEARNED TOPIC PREFERENCES: " + to_string(rec) + "\n";
 
     let exploration = prompt(
         prompt_text + _variant_overlay_suffix() + _specialty_overlay_suffix(_self_pid),
@@ -639,6 +648,8 @@ fn tick(reason: string) -> void {
         // + fitness). Same settlement/fitness as propose, plus replicate.
         memo_write("explorer:" + _self_pid + ":review_gated", "true");
         learn("explore", "tick " + to_string(tick_idx) + " " + topic_label, exploration.exploration_goal, "partial", ["acted", "math-foundry"]);
+        // #740: feed the AdaptiveEngine the topic outcome on the same tier path.
+        learn("topic_selection", topic_label, "tick " + to_string(tick_idx), "success", ["acted", "math-foundry"]);
         _publish_explorer(true, true, exploration, _self_pid, _colony_name, tick_idx, _tick_now_ms, topic_label, prompt_text);
     } else {
         if my_tier == "review-gated" {
@@ -650,16 +661,22 @@ fn tick(reason: string) -> void {
             memo_write("explorer:" + _self_pid + ":goal:tick-" + to_string(tick_idx), exploration.exploration_goal);
             memo_write("explorer:" + _self_pid + ":topic:tick-" + to_string(tick_idx), topic_label);
             learn("explore", "tick " + to_string(tick_idx) + " " + topic_label, exploration.exploration_goal, "partial", ["review-gated", "math-foundry"]);
+            // #740: feed the AdaptiveEngine the topic outcome on the same tier path.
+            learn("topic_selection", topic_label, "tick " + to_string(tick_idx), "partial", ["review-gated", "math-foundry"]);
         } else {
             if my_tier == "propose" {
                 // Class 3 special case (#622): propose keeps settlement +
                 // fitness from today's body but loses the replicate gate
                 // (autonomous-only now).
+                // #740: feed the AdaptiveEngine the topic outcome on the same tier path.
+                learn("topic_selection", topic_label, "tick " + to_string(tick_idx), "partial", ["emitted", "math-foundry"]);
                 _publish_explorer(true, false, exploration, _self_pid, _colony_name, tick_idx, _tick_now_ms, topic_label, prompt_text);
             } else {
                 // shadow / dormant: observe-only.
                 print("[explorer] observing (tier:", my_tier, ") goal=", exploration.exploration_goal);
                 learn("explore", "tick " + to_string(tick_idx) + " " + topic_label, exploration.exploration_goal, "partial", ["observed", "math-foundry"]);
+                // #740: feed the AdaptiveEngine the topic outcome on the same tier path.
+                learn("topic_selection", topic_label, "tick " + to_string(tick_idx), "partial", ["observed", "math-foundry"]);
             };
         };
     };
