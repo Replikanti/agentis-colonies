@@ -50,6 +50,12 @@ import sys, os, json, time, re, datetime, subprocess
 # wanting tighter classification keep the env override.
 # Clamped to >= 1 so a misconfigured `0` cannot turn every agent
 # permanently stale.
+#
+# #736: per-role staleness window now lives in the shared
+# tools/agentis_memo_freshness.py module (STALENESS_TICKS_BY_ROLE +
+# staleness_ticks_for()). The global STALENESS_TICKS below is retained
+# only as a safe-default fallback for the missing-helper case (older
+# federation install without the shared module).
 try:
     STALENESS_TICKS = max(1, int(os.environ.get("FEDERATION_DASHBOARD_STALENESS_TICKS", "15")))
 except (TypeError, ValueError):
@@ -87,10 +93,8 @@ if fed_tools_dir and fed_tools_dir not in sys.path:
     sys.path.insert(0, fed_tools_dir)
 try:
     import agentis_memo_freshness as freshness
-    STALENESS_TICKS = freshness.STALENESS_TICKS
 except ImportError:
     freshness = None
-    STALENESS_TICKS = 15
 
 def safe_json(s, default):
     try: return json.loads(s or '[]')
@@ -303,7 +307,11 @@ for colony, agent in agent_pairs:
                 last_check_epoch = per_repo_max
         if last_check_epoch is not None:
             tick_interval_ms = freshness.resolve_tick_interval_ms(agent, colony, fed_dir=fed_dir, fed_tools_dir=fed_tools_dir) if freshness else 60000
-            window_seconds = STALENESS_TICKS * (tick_interval_ms / 1000.0)
+            # #736: per-role staleness window (tick-driven 5, listen-driven 60,
+            # dev-apprenticeship 30, unknown roles fall back to global 15).
+            # Missing-helper fallback keeps the global STALENESS_TICKS=15.
+            role_ticks = freshness.staleness_ticks_for(agent) if freshness else STALENESS_TICKS
+            window_seconds = role_ticks * (tick_interval_ms / 1000.0)
             rec['pid_alive'] = (epoch - last_check_epoch) < window_seconds
         else:
             rec['pid_alive'] = False
