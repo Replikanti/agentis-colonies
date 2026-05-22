@@ -27,7 +27,20 @@
 #   RESEARCH_TICK_INTERVAL_S     Seconds between orchestrator ticks.
 #                                Default 120 (median of the three
 #                                retired feds' 60/120/180s defaults).
-#   RESEARCH_TOTAL_TICKS         Number of ticks to drive. Default 30.
+#   RESEARCH_TOTAL_TICKS         Number of ticks to drive. Default 75
+#                                (#718: bumped from 30 so the default
+#                                run is long enough to clear the
+#                                auto-promote prereq gate). At the
+#                                default 120s tick interval that
+#                                yields a 2.5h budget. Auditor's
+#                                empirical 12 acting-rows/h rate in
+#                                Run #14 lands exactly at the
+#                                min_entries=30 threshold; verifier's
+#                                20/h clears it with margin. Editor's
+#                                9/h still falls short at 2.5h, which
+#                                is acceptable -- editor sits
+#                                downstream of theorist and promotes
+#                                on a slower cycle anyway.
 #   RESEARCH_DAEMONS_PER_COLONY  Per-colony daemon count for the math
 #                                pipeline (explorer/noticer/formulator/
 #                                verifier/novelty). Phase 1 = 1.
@@ -237,7 +250,7 @@ done
 TOPICS_RAW="${RESEARCH_TOPICS-number_theory,combinatorics,abstract_algebra,graph_theory}"
 PAPER_CORPUS_RAW="${RESEARCH_PAPER_CORPUS:-$FED_DIR/data/papers}"
 TICK_INTERVAL_S="${RESEARCH_TICK_INTERVAL_S:-120}"
-TOTAL_TICKS="${RESEARCH_TOTAL_TICKS:-30}"
+TOTAL_TICKS="${RESEARCH_TOTAL_TICKS:-75}"
 DAEMONS_PER_COLONY="${RESEARCH_DAEMONS_PER_COLONY:-1}"
 HOLD_PERIOD="${RESEARCH_HOLD_PERIOD:-4}"
 LLM_BACKEND="${RESEARCH_LLM_BACKEND:-claude}"
