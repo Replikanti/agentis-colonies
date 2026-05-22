@@ -34,18 +34,49 @@
 #            --config tools/auto-promote-config.research-foundry.yaml
 #
 # --containerized opts out of the dev-apprenticeship-specific
-# `[gitlab]`-in-colony.toml respawn path; the forge-less
+# `[gitlab]`-in-colony.toml resolution path; the forge-less
 # `research-foundry/` federation needs this because its 18 colonies
-# have `forge.type = "none"` and the daemon must be respawned without
-# GITLAB_* env composition (#622, #638).
+# have `forge.type = "none"` (#622, #638). Note that since #733 the
+# promote path no longer respawns the daemon at all — it calls
+# `agentis daemon reload <id>` instead — so neither mode has to
+# reconstruct the GITLAB_* env at promote time.
 #
 # --config overrides the default tools/auto-promote-config.yaml path.
 #
-# Prerequisites: agentis, python3 (with PyYAML or a fallback parser)
+# Prerequisites: agentis-core >= 1.7.16 (daemon reload primitive, #733 /
+# agentis-core #655), python3 (with PyYAML or a fallback parser).
 #
 # Layer 1 of the auto-governance roadmap (#148). See README for layers 2+3.
 
 set -euo pipefail
+
+# --- Runtime floor: agentis-core >= 1.7.16 ---
+# Promote path uses `agentis daemon reload <id>` (agentis-core #655, shipped
+# in v1.7.16), not the legacy `agentis daemon stop` + `agentis daemon <file>`
+# respawn pattern. Hard cutover: older binaries lack the reload subcommand
+# and would fail silently mid-promote, which is exactly the cascade-disruption
+# class of bug #733 (agentis-colonies) set out to eliminate. Fail loudly and
+# early instead of degrading.
+AGENTIS_VERSION_OUTPUT="$(agentis --version 2>/dev/null || true)"
+if [ -z "$AGENTIS_VERSION_OUTPUT" ] || ! printf '%s\n' "$AGENTIS_VERSION_OUTPUT" | awk '
+    NR == 1 {
+        if (NF < 2) exit 1;
+        v = $2;
+        sub(/^v/, "", v);
+        split(v, parts, ".");
+        major = parts[1] + 0;
+        minor = parts[2] + 0;
+        patch = parts[3] + 0;
+        # Require >= 1.7.16
+        if (major < 1) exit 1;
+        if (major == 1 && minor < 7) exit 1;
+        if (major == 1 && minor == 7 && patch < 16) exit 1;
+        exit 0;
+    }
+'; then
+    echo "ERROR: auto-promote.sh requires agentis-core v1.7.16+ for the daemon reload primitive (issue #733 / agentis-core #655). Detected: ${AGENTIS_VERSION_OUTPUT:-<empty>}" >&2
+    exit 1
+fi
 
 # --- Path resolution ---
 
@@ -247,7 +278,7 @@ while IFS='|' read -r decision agent colony step_from step_to reason evidence_js
             log "PROMOTE $agent ($colony): $step_from -> $step_to"
             if [ "$DRY_RUN" = "true" ]; then
                 log "  [dry-run] Would run: agentis memo set ${agent}:confidence $step_to"
-                log "  [dry-run] Would restart daemon for $agent"
+                log "  [dry-run] Would reload daemon for $agent (agentis daemon reload, #733)"
                 journal_append "$agent" "promote" \
                     "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['action']='dry-run'; print(json.dumps(e))" "$evidence_json")" \
                     "$step_from" "$step_to"
@@ -264,89 +295,35 @@ while IFS='|' read -r decision agent colony step_from step_to reason evidence_js
                     continue
                 fi
 
-                # Restart the daemon so it picks up the new confidence.
-                # Use the same stop+respawn pattern as the dashboard (#137).
-                # The respawn must export GITLAB_* env vars from colony.toml
-                # (the scheduler's environment won't have them).
-                log "  Restarting daemon for $agent..."
-                AGENT_AG_FILE=""
-                AGENT_COLONY_DIR=""
-                for cdir in "$FED_DIR"/*/; do
-                    candidate="${cdir}agents/${agent}.ag"
-                    if [ -f "$candidate" ]; then
-                        AGENT_AG_FILE="$candidate"
-                        AGENT_COLONY_DIR="$cdir"
-                        break
-                    fi
-                done
-
-                if [ -z "$AGENT_AG_FILE" ]; then
-                    log "  WARNING: could not find .ag file for $agent, skipping restart"
-                    journal_append "$agent" "promote-partial" \
-                        "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['action']='memo-only'; e['warning']='ag_file_not_found'; print(json.dumps(e))" "$evidence_json")" \
-                        "$step_from" "$step_to"
-                    continue
-                fi
-
-                # Read gitlab config from colony.toml (mirrors dashboard restart_daemon).
-                # Skipped in --containerized mode: research federations use
-                # `forge.type = "none"` and the daemon respawns without
-                # GITLAB_* env composition (#622).
-                if [ "$CONTAINERIZED" = "true" ]; then
-                    SPAWN_ENV="export COLONY_DIR=$(python3 -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$AGENT_COLONY_DIR")"
-                else
-                    COLONY_TOML="${AGENT_COLONY_DIR}config/colony.toml"
-                    SPAWN_ENV=$(python3 -c "
-import sys, os
-toml_path = sys.argv[1]
-colony_dir = sys.argv[2]
-# Minimal TOML [gitlab] section reader (same approach as federation-dashboard.sh)
-vals = {}
-in_section = False
-try:
-    with open(toml_path) as f:
-        for raw in f:
-            line = raw.strip()
-            if not line or line.startswith('#'):
-                continue
-            if line.startswith('[') and line.endswith(']'):
-                in_section = (line[1:-1].strip() == 'gitlab')
-                continue
-            if not in_section or '=' not in line:
-                continue
-            k, _, v = line.partition('=')
-            k = k.strip()
-            v = v.strip().strip('\"').strip(\"'\")
-            vals[k] = v
-except OSError:
-    pass
-url = vals.get('url', '')
-token = vals.get('token', '')
-project_raw = vals.get('project', '')
-me = vals.get('me', '')
-if not url or not token or not project_raw:
-    print('__INCOMPLETE__')
-else:
-    project = project_raw.replace('/', '%2F')
-    # Shell-safe export statements
-    import shlex
-    print(f'export GITLAB_URL={shlex.quote(url)}')
-    print(f'export GITLAB_TOKEN={shlex.quote(token)}')
-    print(f'export GITLAB_PROJECT={shlex.quote(project)}')
-    print(f'export GITLAB_ME={shlex.quote(me)}')
-    print(f'export COLONY_DIR={shlex.quote(colony_dir)}')
-" "$COLONY_TOML" "$AGENT_COLONY_DIR" 2>/dev/null)
-
-                    if [ "$SPAWN_ENV" = "__INCOMPLETE__" ] || [ -z "$SPAWN_ENV" ]; then
-                        log "  WARNING: incomplete [gitlab] in $COLONY_TOML, skipping restart"
-                        journal_append "$agent" "promote-partial" \
-                            "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['action']='memo-only'; e['warning']='incomplete_colony_toml'; print(json.dumps(e))" "$evidence_json")" \
-                            "$step_from" "$step_to"
-                        continue
-                    fi
-                fi
-
-                # Find agent_id from daemon list
+                # Reload the daemon so it re-resolves its <agent>:confidence
+                # memo without dying and respawning. Switched from the legacy
+                # `agentis daemon stop` + `agentis daemon <file>` pattern to
+                # the new `agentis daemon reload <id>` primitive shipped in
+                # agentis-core v1.7.16 (#656, closes agentis-core #655).
+                #
+                # Why: the legacy stop+respawn killed the daemon process
+                # outright and dropped a fresh instance in its place, which
+                # breaks pipeline-cascade continuity in long-cascade
+                # federations like research-foundry (10-tick explorer → ... →
+                # submitter chain). Run #16 forensic showed 2 noticer
+                # promote events caused 295 discovery claims to collapse to
+                # 1 PDF, versus Run #14's 136 claims → 6 PDFs (no promotes,
+                # no respawns). See issue #733.
+                #
+                # `agentis daemon reload <id>` signals the running daemon to
+                # re-resolve `<agent>:confidence` (default --memo-keys),
+                # keeping the in-process experience store, CB pool, in-flight
+                # LLM cache, and listen() subscriptions intact. Lifecycle
+                # event `agent.tier_reloaded` provides the audit trail the
+                # old `agent.respawned` event used to carry. The runtime's
+                # `tier()` builtin re-reads memo on every call anyway (no
+                # cache), so the reload signal exists primarily for the
+                # lifecycle event — but it draws a clean architectural
+                # boundary between "promote = signal" and the old
+                # "promote = kill + respawn".
+                #
+                # Find agent_id from daemon list — reload takes the daemon
+                # registry id, same shape the legacy stop path used.
                 AGENT_ID=$(python3 -c "
 import json, sys, os
 daemons = json.loads(sys.argv[1])
@@ -358,31 +335,26 @@ for d in daemons:
         break
 " "$DAEMONS_JSON" "$agent")
 
-                # Stop the daemon (cwd=FED_DIR for .agentis/ resolution)
-                if [ -n "$AGENT_ID" ]; then
-                    (cd "$FED_DIR" && agentis daemon stop "$AGENT_ID" 200>&-) 2>&1 || true
-                    sleep 3
+                if [ -z "$AGENT_ID" ]; then
+                    log "  WARNING: could not find agent_id for $agent in daemon list, skipping reload"
+                    journal_append "$agent" "promote-partial" \
+                        "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['action']='memo-only'; e['warning']='agent_id_not_found'; print(json.dumps(e))" "$evidence_json")" \
+                        "$step_from" "$step_to"
+                    continue
                 fi
 
-                # Resolve per-agent tick interval from start-colony.sh (#155)
-                TICK_INTERVAL=$(python3 "$SCRIPT_DIR/resolve-tick-interval.py" "$agent" "$AGENT_COLONY_DIR" 2>/dev/null) || true
-                TICK_INTERVAL="${TICK_INTERVAL:-60000}"
-
-                # Respawn with GITLAB_* env vars from colony.toml
-                (
-                    eval "$SPAWN_ENV"
-                    cd "$AGENT_COLONY_DIR"
-                    agentis daemon "$AGENT_AG_FILE" \
-                        --colony "$colony" \
-                        --enable-exec \
-                        --enable-messaging \
-                        --tick-interval "$TICK_INTERVAL" 200>&- &
-                )
-                log "  Daemon respawned for $agent"
-
-                journal_append "$agent" "promote" \
-                    "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['action']='executed'; print(json.dumps(e))" "$evidence_json")" \
-                    "$step_from" "$step_to"
+                log "  Reloading daemon for $agent (agent_id=$AGENT_ID)..."
+                if (cd "$FED_DIR" && agentis daemon reload "$AGENT_ID" 200>&-) 2>&1; then
+                    log "  Daemon reloaded for $agent (in-process tier refresh)"
+                    journal_append "$agent" "promote" \
+                        "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['action']='executed'; e['mechanism']='reload'; print(json.dumps(e))" "$evidence_json")" \
+                        "$step_from" "$step_to"
+                else
+                    log "  WARNING: agentis daemon reload failed for $agent (agent_id=$AGENT_ID) — memo was written, but daemon will not emit agent.tier_reloaded until next reload or restart"
+                    journal_append "$agent" "promote-partial" \
+                        "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['action']='memo-only'; e['warning']='reload_failed'; print(json.dumps(e))" "$evidence_json")" \
+                        "$step_from" "$step_to"
+                fi
             fi
             PROMOTE_COUNT=$((PROMOTE_COUNT + 1))
             ;;
