@@ -18,17 +18,32 @@
 # tick-stream payload only seeds the `explorer` daemon; the
 # downstream cascade proceeds without orchestrator participation.
 #
-# Per-role model split + idle-skip flags (#726):
-#   The 18 colonies run a deliberate two-tier mix: 3 opus deciders
-#   whose verdicts gate downstream cascades (auditor / theorist /
-#   verifier), plus 15 sonnet workers for generation, aggregation,
-#   adversarial review, LaTeX assembly, and mechanical / parsing
-#   output. Sonnet bulk-cost runs ~5x cheaper per call than opus, so
-#   keeping opus only where decision quality is load-bearing trims
-#   per-tick LLM spend by 30-40% at equal cascade depth. Every per-
-#   role pick is env-overridable via RESEARCH_<ROLE>_CLAUDE_MODEL so
-#   any one role can be flipped back to opus at runtime without a
-#   code change.
+# Per-role model split + idle-skip flags (#726, #729):
+#   The 18 colonies run a deliberate two-tier mix: 8 opus colonies
+#   (explorer, formulator, novelty, prior_advocate, verifier,
+#   auditor, theorist, editor) plus 10 sonnet colonies (noticer,
+#   skeptic, 4x search adapters, introducer, computer, reviewer,
+#   submitter). The opus tier covers every role whose prompt either
+#   gates a downstream cascade verdict or carries the ~200KB
+#   research context (paper abstracts + cross-references + verifier
+#   reports + prior_advocate output); the sonnet tier covers the
+#   mechanical / parsing / scripted roles where output quality is
+#   adequate at ~5x lower per-call cost. Every per-role pick is
+#   env-overridable via RESEARCH_<ROLE>_CLAUDE_MODEL so any one role
+#   can be flipped at runtime without a code change.
+#
+#   This split matches the Run #14 baseline. #726 originally flipped
+#   5 of the opus colonies (explorer, formulator, novelty,
+#   prior_advocate, editor) to sonnet for cost; #729 reverts that
+#   after Run #15 forensic showed a structural regression -- prompt
+#   round-trip on the heavy-context loop exceeded the v1.7.14 120s
+#   prompt timeout, ~50% of explorer ticks timed out before writing
+#   a claim, and the cascade died before editor reached PDF compile
+#   (discovery claims 136 -> 44, PDF preprints 6 -> 0). Operator
+#   rule "Na sonnet nedegraduj -- quality nesmi trpet" empirically
+#   validated. The right long-term substrate for cost-aware routing
+#   is agentis-core's per-tier LLM override (#652, v1.7.15) which
+#   routes by confidence tier rather than static per-role pin.
 #
 #   Every daemon spawn carries --skip-prompt-after-idle and
 #   --skip-prompt-without-input. The former elides prompt() on two
@@ -37,7 +52,10 @@
 #   reviewer that idle between upstream events). The latter is a
 #   forward-compat no-op today -- no research-foundry .ag declares
 #   has_input() yet -- but ships so any future has_input() addition
-#   activates the skip path without re-spawning.
+#   activates the skip path without re-spawning. #729 keeps both
+#   flags untouched: Run #15 heartbeat counters showed they never
+#   fired (no has_input() declarations yet) so they carried no
+#   measurable downside.
 #
 # Env vars (all optional; defaults shown):
 #   RESEARCH_TOPICS              Comma-separated topic labels rotated
@@ -304,37 +322,58 @@ SMTP_PORT="${RESEARCH_SMTP_PORT:-25}"
 : "${RESEARCH_FITNESS_REWARD_NOVEL_PER_TICK:=2}"
 : "${RESEARCH_FITNESS_PENALTY_NOT_NOVEL_PER_TICK:=1}"
 
-# Per-colony Claude model selection (#711, #726). Three colonies stay
-# opus (decision-quality roles whose verdicts gate downstream
-# cascades: auditor's final claim verdict, theorist's proof
-# scaffolding, verifier's symbolic-math gating). The remaining 15
-# colonies run on sonnet (generators, aggregators, mechanical /
-# parsing / scripted output, LaTeX assembly, adversarial review).
-# Wired via ANTHROPIC_MODEL=<resolved> on each spawn line (the
-# claude CLI honors ANTHROPIC_MODEL natively).
+# Per-colony Claude model selection (#711, #726, reverted in part by #729).
+# Eight colonies run opus (decision-quality roles whose output gates a
+# downstream cascade or whose prompt round-trip carries the full
+# ~200KB research context: explorer's claim emission, formulator's
+# claim structuring, novelty's dedup verdict, prior_advocate's
+# counter-argument synthesis, verifier's symbolic-math gating,
+# auditor's final claim verdict, theorist's proof scaffolding,
+# editor's LaTeX assembly). The remaining 10 colonies run on sonnet
+# (noticer, skeptic, 4x search adapters, introducer, computer,
+# reviewer, submitter -- mechanical / parsing / scripted output that
+# does not feed the heavy-context loop). Wired via
+# ANTHROPIC_MODEL=<resolved> on each spawn line (the claude CLI
+# honors ANTHROPIC_MODEL natively).
 #
-# #726 flipped explorer, formulator, novelty, prior_advocate, and
-# editor from opus to sonnet for Run #15: each role is dominated by
-# bulk generation / aggregation work where sonnet output quality is
-# adequate at ~5x lower per-call cost. Per-role overrides via
-# RESEARCH_<ROLE>_CLAUDE_MODEL=opus at runtime preserve full
-# flexibility without a code change.
-: "${RESEARCH_EXPLORER_CLAUDE_MODEL:=sonnet}"
+# Final split: 8 opus + 10 sonnet, matching the Run #14 baseline.
+#
+# #726 originally flipped explorer, formulator, novelty,
+# prior_advocate, and editor from opus to sonnet for Run #15 as a
+# cost optimization. #729 reverts those five back to opus after Run
+# #15 forensic showed a structural regression: discovery claims
+# dropped 136 -> 44 (-68%), PDF preprints 6 -> 0, daemon tick success
+# ~90%+ -> ~50%. Root cause was prompt timeout cascade -- the
+# research-foundry pipeline ships ~200KB context per prompt (paper
+# abstracts + cross-references + verifier reports + prior_advocate
+# output), sonnet's per-token speed advantage is overwhelmed by total
+# round-trip exceeding the v1.7.14 prompt timeout (120s), so ~50% of
+# explorer ticks time out before writing a claim and the upstream
+# cascade dies before editor reaches PDF compile. Operator rule "Na
+# sonnet nedegraduj -- quality nesmi trpet" empirically validated.
+#
+# Per-role overrides via RESEARCH_<ROLE>_CLAUDE_MODEL=<model> at
+# runtime preserve full flexibility without a code change. The
+# proper long-term substrate for cost-aware routing is agentis-core's
+# per-tier LLM override (#652, v1.7.15) which routes by confidence
+# tier rather than static per-role pin -- research-foundry will
+# adopt that once the federation actually reaches autonomous tier.
+: "${RESEARCH_EXPLORER_CLAUDE_MODEL:=opus}"
 : "${RESEARCH_NOTICER_CLAUDE_MODEL:=sonnet}"
 : "${RESEARCH_SKEPTIC_CLAUDE_MODEL:=sonnet}"
-: "${RESEARCH_FORMULATOR_CLAUDE_MODEL:=sonnet}"
+: "${RESEARCH_FORMULATOR_CLAUDE_MODEL:=opus}"
 : "${RESEARCH_VERIFIER_CLAUDE_MODEL:=opus}"
-: "${RESEARCH_NOVELTY_CLAUDE_MODEL:=sonnet}"
+: "${RESEARCH_NOVELTY_CLAUDE_MODEL:=opus}"
 : "${RESEARCH_ARXIV_SEARCH_CLAUDE_MODEL:=sonnet}"
 : "${RESEARCH_OEIS_SEARCH_CLAUDE_MODEL:=sonnet}"
 : "${RESEARCH_GROUPPROPS_SEARCH_CLAUDE_MODEL:=sonnet}"
 : "${RESEARCH_SCHOLAR_SEARCH_CLAUDE_MODEL:=sonnet}"
-: "${RESEARCH_PRIOR_ADVOCATE_CLAUDE_MODEL:=sonnet}"
+: "${RESEARCH_PRIOR_ADVOCATE_CLAUDE_MODEL:=opus}"
 : "${RESEARCH_AUDITOR_CLAUDE_MODEL:=opus}"
 : "${RESEARCH_INTRODUCER_CLAUDE_MODEL:=sonnet}"
 : "${RESEARCH_THEORIST_CLAUDE_MODEL:=opus}"
 : "${RESEARCH_COMPUTER_CLAUDE_MODEL:=sonnet}"
-: "${RESEARCH_EDITOR_CLAUDE_MODEL:=sonnet}"
+: "${RESEARCH_EDITOR_CLAUDE_MODEL:=opus}"
 : "${RESEARCH_REVIEWER_CLAUDE_MODEL:=sonnet}"
 : "${RESEARCH_SUBMITTER_CLAUDE_MODEL:=sonnet}"
 
