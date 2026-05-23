@@ -706,7 +706,7 @@ assert_contains "36b. novelty.ag defines _novelty_score helper" "$NOV_AG_SRC" \
 assert_contains "36c. novelty.ag defines _topic_history_check helper" "$NOV_AG_SRC" \
     "fn _topic_history_check"
 assert_contains "36d. novelty.ag wires _apply_loss_shaping before tier dispatch" "$NOV_AG_SRC" \
-    "_apply_loss_shaping(novelty_raw"
+    "let shaped_label = _apply_loss_shaping(novelty"
 assert_contains "36e. novelty.ag gates shaping behind NOVELTY_LOSS_SHAPING_ENABLED" "$NOV_AG_SRC" \
     "NOVELTY_LOSS_SHAPING_ENABLED"
 assert_contains "36f. explorer.ag reads novelty:exploration_hint memo" "$EXP_AG_SRC" \
