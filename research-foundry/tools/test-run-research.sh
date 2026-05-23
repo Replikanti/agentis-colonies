@@ -419,10 +419,10 @@ assert_contains "28e. chmod 600 on identity private key emitted" "$SRC" \
 #     enum to include VERIFIED_BY_LEAN
 # ---------------------------------------------------------------------------
 CFILE_PATH="$(cd "$SCRIPT_DIR" && pwd)/Containerfile.research"
-THE_AG_PATH="$(cd "$SCRIPT_DIR/.." && pwd)/theorist/agents/theorist.ag"
+LEAN_THE_AG_PATH="$(cd "$SCRIPT_DIR/.." && pwd)/theorist/agents/theorist.ag"
 AUD_AG_PATH="$(cd "$SCRIPT_DIR/.." && pwd)/auditor/agents/auditor.ag"
 CFILE_SRC="$(cat "$CFILE_PATH")"
-THE_AG_SRC="$(cat "$THE_AG_PATH")"
+LEAN_THE_AG_SRC="$(cat "$LEAN_THE_AG_PATH")"
 AUD_AG_SRC="$(cat "$AUD_AG_PATH")"
 
 assert_contains "29a. Containerfile.research declares LEAN_TOOLCHAIN ARG" "$CFILE_SRC" \
@@ -434,23 +434,23 @@ assert_contains "29c. Containerfile.research exports /root/.elan/bin in PATH" "$
 assert_contains "29d. Containerfile.research runs lean --version smoke test" "$CFILE_SRC" \
     "RUN lean --version"
 
-assert_contains "29e. theorist.ag declares LeanDraft type" "$THE_AG_SRC" \
+assert_contains "29e. theorist.ag declares LeanDraft type" "$LEAN_THE_AG_SRC" \
     "type LeanDraft"
-assert_contains "29f. theorist.ag has _lean_prompt helper" "$THE_AG_SRC" \
+assert_contains "29f. theorist.ag has _lean_prompt helper" "$LEAN_THE_AG_SRC" \
     "fn _lean_prompt() -> string"
-assert_contains "29g. theorist.ag has _run_lean_check helper" "$THE_AG_SRC" \
+assert_contains "29g. theorist.ag has _run_lean_check helper" "$LEAN_THE_AG_SRC" \
     "fn _run_lean_check"
-assert_contains "29h. theorist.ag invokes lean binary via exec sh" "$THE_AG_SRC" \
+assert_contains "29h. theorist.ag invokes lean binary via exec sh" "$LEAN_THE_AG_SRC" \
     '"timeout " + shell_escape(timeout_s) + " lean "'
-assert_contains "29i. theorist.ag writes lean_verdict memo key" "$THE_AG_SRC" \
+assert_contains "29i. theorist.ag writes lean_verdict memo key" "$LEAN_THE_AG_SRC" \
     '":lean_verdict:tick-"'
-assert_contains "29j. theorist.ag writes lean_source memo key" "$THE_AG_SRC" \
+assert_contains "29j. theorist.ag writes lean_source memo key" "$LEAN_THE_AG_SRC" \
     '":lean_source:tick-"'
-assert_contains "29k. theorist.ag emits learn(lean_check, ...)" "$THE_AG_SRC" \
+assert_contains "29k. theorist.ag emits learn(lean_check, ...)" "$LEAN_THE_AG_SRC" \
     'learn("lean_check"'
-assert_contains "29l. theorist.ag honors THEORIST_LEAN_DISABLED bypass" "$THE_AG_SRC" \
+assert_contains "29l. theorist.ag honors THEORIST_LEAN_DISABLED bypass" "$LEAN_THE_AG_SRC" \
     "THEORIST_LEAN_DISABLED"
-assert_contains "29m. theorist.ag honors THEORIST_LEAN_TIMEOUT_SEC override" "$THE_AG_SRC" \
+assert_contains "29m. theorist.ag honors THEORIST_LEAN_TIMEOUT_SEC override" "$LEAN_THE_AG_SRC" \
     "THEORIST_LEAN_TIMEOUT_SEC"
 
 assert_contains "29n. auditor.ag _seed_prompt names VERIFIED_BY_LEAN" "$AUD_AG_SRC" \
@@ -471,6 +471,61 @@ assert_contains "30b. check-learn-tags.sh schema covers lean_check:incomplete" "
     '"lean_check:incomplete")'
 assert_contains "30c. check-learn-tags.sh schema covers lean_check:failed" "$LEARN_TAGS_SRC" \
     '"lean_check:failed")'
+
+# ---------------------------------------------------------------------------
+# 31. #742: TaskBoard cognitive-market delegation. Without
+# `economy.enabled = true` in `.agentis/config`, the offer / accept /
+# complete builtins raise an economy-not-enabled error per the
+# agentis-core CB-escrow contract. With it open + the optional
+# `market.task_timeout_s` and `market.max_open_tasks` keys, the
+# substrate is ready for the first federation consumer. explorer.ag
+# offers compute-heavy claims (compute_partition_orbits) on the
+# `research-foundry:compute` channel; computer.ag accepts + completes;
+# theorist.ag accepts on `research-foundry:theory`. Result readback is
+# memo-mediated via `taskboard:result:<task_id>` because TaskBoard's
+# `get_task_result` is not yet an evaluator builtin (filed as
+# agentis-core follow-up).
+# ---------------------------------------------------------------------------
+assert_contains "31a. run-research.sh writes economy.enabled = true" "$SRC" \
+    'printf "economy.enabled = true\\n"'
+assert_contains "31b. run-research.sh sets market.task_timeout_s" "$SRC" \
+    'printf "market.task_timeout_s = 600\\n"'
+assert_contains "31c. run-research.sh sets market.max_open_tasks" "$SRC" \
+    'printf "market.max_open_tasks = 5000\\n"'
+
+CMP_AG_PATH="$(cd "$SCRIPT_DIR/.." && pwd)/computer/agents/computer.ag"
+TB_THE_AG_PATH="$(cd "$SCRIPT_DIR/.." && pwd)/theorist/agents/theorist.ag"
+CMP_AG_SRC="$(cat "$CMP_AG_PATH")"
+TB_THE_AG_SRC="$(cat "$TB_THE_AG_PATH")"
+
+assert_contains "31d. explorer.ag calls offer() on research-foundry:compute channel" "$EXP_AG_SRC" \
+    'offer("research-foundry:compute"'
+assert_contains "31e. explorer.ag emits learn(\"taskboard\", ..., \"success\") for offered tag" "$EXP_AG_SRC" \
+    'learn("taskboard", "offer compute_partition_orbits"'
+assert_contains "31f. explorer.ag emits learn(\"taskboard\", ..., \"success\") for completed tag (readback)" "$EXP_AG_SRC" \
+    'learn("taskboard", "readback result"'
+
+assert_contains "31g. computer.ag calls accept() on research-foundry:compute channel" "$CMP_AG_SRC" \
+    'accept("research-foundry:compute")'
+assert_contains "31h. computer.ag calls complete() to settle escrow" "$CMP_AG_SRC" \
+    'complete(task_id_int, result_clamped)'
+assert_contains "31i. computer.ag writes taskboard:result:<task_id> memo for offerer readback" "$CMP_AG_SRC" \
+    'memo_write("taskboard:result:" + task_id'
+assert_contains "31j. computer.ag emits learn(\"taskboard\", ..., \"success\") for accepted tag" "$CMP_AG_SRC" \
+    'learn("taskboard", "accept compute_partition_orbits"'
+assert_contains "31k. computer.ag emits learn(\"taskboard\", ..., \"success\") for completed tag" "$CMP_AG_SRC" \
+    'learn("taskboard", "complete compute_partition_orbits"'
+
+assert_contains "31l. theorist.ag calls accept() on research-foundry:theory channel" "$TB_THE_AG_SRC" \
+    'accept("research-foundry:theory")'
+assert_contains "31m. theorist.ag calls complete() to settle escrow" "$TB_THE_AG_SRC" \
+    'complete(task_id_int, result_clamped)'
+assert_contains "31n. theorist.ag writes taskboard:result:<task_id> memo for offerer readback" "$TB_THE_AG_SRC" \
+    'memo_write("taskboard:result:" + task_id'
+assert_contains "31o. theorist.ag emits learn(\"taskboard\", ..., \"success\") for accepted tag" "$TB_THE_AG_SRC" \
+    'learn("taskboard", "accept prove_modular_identity"'
+assert_contains "31p. theorist.ag emits learn(\"taskboard\", ..., \"success\") for completed tag" "$TB_THE_AG_SRC" \
+    'learn("taskboard", "complete prove_modular_identity"'
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

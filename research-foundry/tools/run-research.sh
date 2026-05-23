@@ -671,6 +671,24 @@ write_bootstrap() {
         # this config — chmod 600 + restrict to forensic readers.
         printf '  printf "audit.persist_actions = true\\n"\n'
         printf '  printf "audit.signing_key_path = .agentis/identity/private.key\\n"\n'
+        # #742: TaskBoard cognitive-market activation. Without
+        # `economy.enabled = true`, the offer/accept/complete builtins
+        # raise `economy not enabled` per cli/run.rs:319 (the CB pool
+        # and TaskBoard handles are wired only when this gate is open).
+        # The TaskBoard substrate has shipped in agentis-core since the
+        # cognitive market work but no federation has consumed it;
+        # research-foundry is the first — explorer offers compute-heavy
+        # claims, computer/theorist accept and complete on dedicated
+        # channels (research-foundry:compute, research-foundry:theory).
+        # `market.task_timeout_s` raises the per-task timeout from the
+        # 300 s default so a 600 s tick window (claim → compute →
+        # complete) is not preempted by escrow expiry. `market.max_open_tasks`
+        # is raised from the 1000 default so an 18-colony × 75-tick run
+        # with parallel offers across explorer instances cannot starve
+        # on the open-task cap.
+        printf '  printf "economy.enabled = true\\n"\n'
+        printf '  printf "market.task_timeout_s = 600\\n"\n'
+        printf '  printf "market.max_open_tasks = 5000\\n"\n'
         printf '  printf "llm.backend = %s\\n"\n' "$LLM_BACKEND"
         printf '  printf "daemon.cb_per_tick = %s\\n"\n' "$DAEMON_CB_PER_TICK"
         printf '  printf "daemon.heartbeat_interval_ms = %s\\n"\n' "$DAEMON_HEARTBEAT_MS"

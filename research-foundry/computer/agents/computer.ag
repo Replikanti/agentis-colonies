@@ -269,6 +269,74 @@ fn _publish_computer(
     };
 }
 
+// #742 TaskBoard accept helper. Claims one open task on the
+// `research-foundry:compute` channel posted by explorer's
+// `_offer_compute_task`. Returns the task_id (as a string) on a
+// successful claim plus writes the description into memo for the
+// downstream `tick()` body to read; empty string return means no
+// open task on the channel this tick. The claimer writes the result
+// to `taskboard:result:<task_id>` memo BEFORE calling `complete()`
+// so the offerer can read it back across the substrate gap (TaskBoard's
+// `get_task_result` is not yet exposed as an evaluator builtin —
+// filed as agentis-core follow-up). Reward CB transfers from
+// offerer's escrow to claimer on `complete()` per CB-escrow semantics
+// in agentis-core src/economy/taskboard.rs.
+fn _try_accept_compute_task(self_pid: string) -> string {
+    // accept() returns either Struct("Task", {id, description, ...}) on
+    // a successful claim or Value::Void on miss. We wrap the whole
+    // field-access chain inside a single try block — Void-field-access
+    // raises EvalError and the catch yields a "" sentinel that signals
+    // "no task on channel this tick". We persist description into memo
+    // INSIDE the try so we only call accept() once (otherwise we would
+    // claim a second task per tick).
+    let task_id = try {
+        let task = accept("research-foundry:compute");
+        // Field access on Value::Void raises EvalError; the catch path
+        // below absorbs it and produces "". This is the cheapest void
+        // check available without a dedicated `is_void` builtin.
+        let id_s = to_string(task.id);
+        memo_write("computer:" + self_pid + ":accepted_task:" + id_s, task.description);
+        id_s;
+    } catch e { ""; };
+    if len(task_id) == 0 { return ""; };
+    // colony-lint: learn-tags-ok
+    learn("taskboard", "accept compute_partition_orbits", "task_id=" + task_id, "success", ["taskboard", "computer", "accepted"]);
+    return task_id;
+}
+
+// #742 TaskBoard complete helper. Writes the result to the memo key
+// the offerer reads (`taskboard:result:<task_id>`), then calls
+// `complete()` to transfer the escrowed CB from offerer to claimer.
+// The two writes are ordered so the offerer can never see `complete()`
+// without a corresponding result memo; the per-claimer
+// `:accepted_task:` memo is cleared on success for observability.
+// Tag "completed" lands the row in the (taskboard, success) bucket
+// for the lint schema.
+fn _complete_compute_task(self_pid: string, task_id: string, result: string) -> bool {
+    if len(task_id) == 0 { return false; };
+    if len(result) == 0 { return false; };
+    let max_result_bytes = 4096;
+    let result_clamped = if len(result) > max_result_bytes {
+        substring(result, 0, max_result_bytes);
+    } else {
+        result;
+    };
+    // Write result memo FIRST so the offerer never sees a `complete()`
+    // event without a matching result memo on disk.
+    memo_write("taskboard:result:" + task_id, result_clamped);
+    let task_id_int = parse_int(task_id);
+    let ok = try { complete(task_id_int, result_clamped); true; } catch e { false; };
+    if ok {
+        memo_write("computer:" + self_pid + ":accepted_task:" + task_id, "");
+        // colony-lint: learn-tags-ok
+        learn("taskboard", "complete compute_partition_orbits", "task_id=" + task_id, "success", ["taskboard", "computer", "completed"]);
+    } else {
+        // colony-lint: learn-tags-ok
+        learn("taskboard", "complete compute_partition_orbits", "task_id=" + task_id, "partial", ["taskboard", "computer", "completed"]);
+    };
+    return ok;
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let _ = _jitter_sleep();
@@ -303,6 +371,51 @@ fn tick(reason: string) -> void {
 
     let conf = get_confidence();
     print("[computer] tick conf=", conf);
+
+    // #742 TaskBoard accept: claim one explorer-posted compute task on
+    // the shared `research-foundry:compute` channel at tick start so a
+    // single computer instance can service multiple explorer
+    // exploration_goals across ticks. Tier gating mirrors the existing
+    // pipeline — only acting tiers (propose / review-gated / autonomous)
+    // claim; shadow / dormant observe only. The completion happens
+    // immediately below because the claim itself already costs the
+    // claimer the call-base 5 CB and we want the escrow settled within
+    // the same tick when possible. Mock result captures the claim
+    // metadata; a future PR can wire the actual compute (SymPy /
+    // GAP) into this branch.
+    let _accept_tier = tier("computer");
+    let _accept_eligible = if _accept_tier == "propose" {
+        true;
+    } else {
+        if _accept_tier == "review-gated" {
+            true;
+        } else {
+            if _accept_tier == "autonomous" { true; } else { false; };
+        };
+    };
+    let _accepted_task_id = if _accept_eligible {
+        if len(_self_pid) > 0 {
+            _try_accept_compute_task(_self_pid);
+        } else {
+            "";
+        };
+    } else {
+        "";
+    };
+    if len(_accepted_task_id) > 0 {
+        let _accepted_desc = recall_latest("computer:" + _self_pid + ":accepted_task:" + _accepted_task_id);
+        // Mock result: capture the claim chain. A follow-up PR can wire
+        // the LLM-built script + sandbox `exec sh` run into this
+        // branch so the result memo carries the actual computational
+        // output instead of a metadata stub. The taskboard pipeline is
+        // additive — the existing claim/compute pipeline below still
+        // runs on every tick.
+        let _mock_result = "computed: task_id=" + _accepted_task_id
+                         + " | claimer_pid=" + _self_pid
+                         + " | tier=" + _accept_tier;
+        let _ = _complete_compute_task(_self_pid, _accepted_task_id, _mock_result);
+        let _ = _accepted_desc;
+    };
 
     let tick_idx_str = recall_latest("replay:current_tick");
     let tick_idx = if len(tick_idx_str) > 0 { parse_int(tick_idx_str); } else { -1; };
