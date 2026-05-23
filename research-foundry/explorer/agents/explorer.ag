@@ -627,6 +627,31 @@ fn tick(reason: string) -> void {
     // style_reviewer.ag:209.
     let rec = recommend("topic_selection", ["novelty"]);
 
+    // Knowledge market (#741): buy any prior federation knowledge for
+    // this topic. novelty.ag sells `permutation_order_facts:<topic>` on
+    // NOVEL/BORDERLINE verdicts, so a cache hit here means the
+    // federation has already investigated this topic. Fold the bought
+    // string into the prompt ctx as a PRIOR_FEDERATION_KNOWLEDGE hint
+    // -- the LLM still decides the exploration goal; we just steer
+    // away from already-discovered subtopics. Mirrors
+    // tribes-bench/tribe-alpha/agents/hunter.ag::L930 per-finding shape:
+    // emit learn() only on `cache_hit` (bought non-empty + cognitive
+    // cache hit) or `rejected` (cognitive consumer-side reject); the
+    // succeeded / fallback no-ops live in the lifecycle event stream.
+    let buy_topic = "permutation_order_facts:" + topic_label;
+    let bought = knowledge_buy(buy_topic, 5);
+    let kind_buy = recall_latest("agent:lifecycle:cognitive:last_event_kind");
+    if len(bought) > 0 {
+        if kind_buy == "cognitive.cache_hit" {
+            learn("market", buy_topic, "", "cache_hit", ["math-foundry", "buyer:explorer", "topic_kind:permutation_order_facts"]);
+        };
+    } else {
+        if kind_buy == "cognitive.rejected" {
+            learn("market", buy_topic, "", "rejected", ["math-foundry", "buyer:explorer", "topic_kind:permutation_order_facts"]);
+        };
+    };
+    let prior_knowledge_line = if len(bought) > 0 { "PRIOR FEDERATION KNOWLEDGE: " + bought + "\n"; } else { ""; };
+
     // Build the topic + paper-pair context string.
     let ctx = "TOPIC: " + topic_label + " (" + topic_desc + ")\n"
             + "TOOLS AVAILABLE: " + compute_hints + "\n"
@@ -634,7 +659,8 @@ fn tick(reason: string) -> void {
             + "ABSTRACT: " + paper_a_abstract + "\n"
             + "PAPER B (" + paper_b_id + "): " + paper_b_title + "\n"
             + "ABSTRACT: " + paper_b_abstract + "\n"
-            + "LEARNED TOPIC PREFERENCES: " + to_string(rec) + "\n";
+            + "LEARNED TOPIC PREFERENCES: " + to_string(rec) + "\n"
+            + prior_knowledge_line;
 
     let exploration = prompt(
         prompt_text + _variant_overlay_suffix() + _specialty_overlay_suffix(_self_pid),

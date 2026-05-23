@@ -302,7 +302,36 @@ fn tick(reason: string) -> void {
         return;
     };
 
-    let ctx = "PROBLEM: " + problem_text + "\n"
+    // Knowledge market (#741): buy any prior federation knowledge for
+    // this topic. novelty.ag sells `known_priors:<topic>` on NOT_NOVEL
+    // verdicts with a non-empty classical_identifier, so a cache hit
+    // here means a sibling has already filed this away as a known
+    // result. Fold the bought string into the prompt ctx as a
+    // CACHED_PRIOR_HIT hint -- the adversarial-reviewer LLM still
+    // produces its own structured verdict, but it gets the prior
+    // citation surface to draw from. Mirrors
+    // tribes-bench/tribe-alpha/agents/hunter.ag::L930 per-finding shape:
+    // emit learn() only on `cache_hit` (bought non-empty + cognitive
+    // cache hit) or `rejected` (cognitive consumer-side reject); the
+    // succeeded / fallback no-ops live in the lifecycle event stream.
+    let topic_hint_a = recall_latest("replay:current_topic");
+    let topic_hint = if len(topic_hint_a) > 0 { topic_hint_a; } else { "unknown"; };
+    let buy_topic_pa = "known_priors:" + topic_hint;
+    let bought_pa = knowledge_buy(buy_topic_pa, 2);
+    let kind_buy_pa = recall_latest("agent:lifecycle:cognitive:last_event_kind");
+    if len(bought_pa) > 0 {
+        if kind_buy_pa == "cognitive.cache_hit" {
+            learn("market", buy_topic_pa, "", "cache_hit", ["claim-auditor", "buyer:prior_advocate", "topic_kind:known_priors"]);
+        };
+    } else {
+        if kind_buy_pa == "cognitive.rejected" {
+            learn("market", buy_topic_pa, "", "rejected", ["claim-auditor", "buyer:prior_advocate", "topic_kind:known_priors"]);
+        };
+    };
+    let cached_prior_line = if len(bought_pa) > 0 { "CACHED PRIOR HIT: " + bought_pa + "\n"; } else { ""; };
+
+    let ctx = cached_prior_line
+            + "PROBLEM: " + problem_text + "\n"
             + "ANSWER: " + stated_answer + "\n"
             + "NOVELTY CLAIM: " + novelty_claim + "\n";
 

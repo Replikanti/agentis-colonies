@@ -204,6 +204,7 @@ fn _publish_novelty(
     problem_text: string,
     stated_answer: string,
     novelty_claim: string,
+    topic_label: string,
     upstream_tick: int,
     tick_idx: int,
     tick_now_ms: int,
@@ -279,6 +280,54 @@ fn _publish_novelty(
     emit("math-foundry:novelty_done", novelty);
     if my_tier == "propose" {
         learn("novelty", "tick " + to_string(tick_idx) + " " + novelty.novelty_verdict, novelty.reasoning, "success", ["emitted", "math-foundry"]);
+    };
+
+    // Knowledge market (#741): sell distilled findings so the federation
+    // accumulates them across ticks + runs. Two topics:
+    //   * permutation_order_facts:<topic_label> -- NOVEL/BORDERLINE
+    //     verdicts publish the verifier-passed (problem, answer,
+    //     novelty_claim) summary so the explorer can pivot away from
+    //     already-investigated subtopics next tick.
+    //   * known_priors:<topic_label> -- NOT_NOVEL verdicts with a
+    //     non-empty classical_identifier publish the identifier so the
+    //     prior_advocate can short-circuit external literature lookup
+    //     next tick.
+    // Gated on `final_write` to mirror the ledger / cross-handoff
+    // semantics: propose tier never sells (no terminal side-effects per
+    // ADR-0001); review-gated and autonomous both sell. Mirrors
+    // tribes-bench/tribe-alpha/agents/hunter.ag::L1327 per-finding
+    // shape; the bundle / espionage branches do not apply here because
+    // research-foundry has no sibling concept. Per the tribes-bench
+    // convention, only sell-failure emits a learn() row (topic =
+    // `knowledge_sell`, outcome = `failure`); sell-success is implicit
+    // and lives in the agent:lifecycle:cognitive:* event stream.
+    if final_write {
+        if len(topic_label) > 0 {
+            if novelty.novelty_verdict == "NOVEL" {
+                let sell_topic = "permutation_order_facts:" + topic_label;
+                let summary = "problem=" + problem_text + " answer=" + stated_answer + " novelty_claim=" + novelty_claim;
+                let sold = knowledge_sell(sell_topic, summary, 3);
+                if sold == false {
+                    learn("knowledge_sell", sell_topic, "", "failure", ["sell-failed", "math-foundry"]);
+                };
+            } else { if novelty.novelty_verdict == "BORDERLINE" {
+                let sell_topic = "permutation_order_facts:" + topic_label;
+                let summary = "problem=" + problem_text + " answer=" + stated_answer + " novelty_claim=" + novelty_claim;
+                let sold = knowledge_sell(sell_topic, summary, 3);
+                if sold == false {
+                    learn("knowledge_sell", sell_topic, "", "failure", ["sell-failed", "math-foundry"]);
+                };
+            } else { if novelty.novelty_verdict == "NOT_NOVEL" {
+                if len(novelty.classical_identifier) > 0 {
+                    let sell_topic = "known_priors:" + topic_label;
+                    let citations = novelty.classical_identifier;
+                    let sold = knowledge_sell(sell_topic, citations, 2);
+                    if sold == false {
+                        learn("knowledge_sell", sell_topic, "", "failure", ["sell-failed", "math-foundry"]);
+                    };
+                };
+            }; }; };
+        };
     };
 
     // Phase 9 PR-C (#663): per-pid fitness tracking. +2 NOVEL,
@@ -424,6 +473,11 @@ fn tick(reason: string) -> void {
     let stated_answer = _pick_upstream_by_confidence("formulator", "problem", "answer", "self_check_confidence", upstream_tick);
     let novelty_claim = _pick_upstream_by_confidence("formulator", "problem", "novelty_claim", "self_check_confidence", upstream_tick);
     let explorer_pid = _pick_upstream_pid_by_key("explorer", "code", "", upstream_tick);
+    // Knowledge market (#741): resolve topic_label via the explorer's
+    // tick memo (same fallback chain as auditor.ag::_publish_auditor
+    // for the topic-feedback rolling buffer).
+    let topic_label_a = _pick_upstream_by_confidence("explorer", "topic", "topic", "", upstream_tick);
+    let topic_label = if len(topic_label_a) > 0 { topic_label_a; } else { recall_latest("replay:current_topic"); };
 
     if len(problem_text) == 0 {
         print("[novelty] no problem text for tick=", upstream_tick);
@@ -443,14 +497,14 @@ fn tick(reason: string) -> void {
         // `autonomous_decision=true` flag for downstream auditors (#622).
         memo_write("novelty:" + _self_pid + ":autonomous_decision", "true");
         learn("novelty", "tick " + to_string(tick_idx) + " " + novelty.novelty_verdict, novelty.reasoning, "partial", ["acted", "math-foundry"]);
-        _publish_novelty(true, true, novelty, _self_pid, _colony_name, formulator_pid, explorer_pid, problem_text, stated_answer, novelty_claim, upstream_tick, tick_idx, _tick_now_ms, my_tier);
+        _publish_novelty(true, true, novelty, _self_pid, _colony_name, formulator_pid, explorer_pid, problem_text, stated_answer, novelty_claim, topic_label, upstream_tick, tick_idx, _tick_now_ms, my_tier);
     } else {
         if my_tier == "review-gated" {
             learn("novelty", "tick " + to_string(tick_idx) + " " + novelty.novelty_verdict, novelty.reasoning, "partial", ["review-gated", "math-foundry"]);
-            _publish_novelty(true, false, novelty, _self_pid, _colony_name, formulator_pid, explorer_pid, problem_text, stated_answer, novelty_claim, upstream_tick, tick_idx, _tick_now_ms, my_tier);
+            _publish_novelty(true, false, novelty, _self_pid, _colony_name, formulator_pid, explorer_pid, problem_text, stated_answer, novelty_claim, topic_label, upstream_tick, tick_idx, _tick_now_ms, my_tier);
         } else {
             if my_tier == "propose" {
-                _publish_novelty(false, false, novelty, _self_pid, _colony_name, formulator_pid, explorer_pid, problem_text, stated_answer, novelty_claim, upstream_tick, tick_idx, _tick_now_ms, my_tier);
+                _publish_novelty(false, false, novelty, _self_pid, _colony_name, formulator_pid, explorer_pid, problem_text, stated_answer, novelty_claim, topic_label, upstream_tick, tick_idx, _tick_now_ms, my_tier);
             } else {
                 print("[novelty] observing (tier:", my_tier, ") verdict=", novelty.novelty_verdict);
                 learn("novelty", "tick " + to_string(tick_idx) + " " + novelty.novelty_verdict, novelty.reasoning, "partial", ["observed", "math-foundry"]);
