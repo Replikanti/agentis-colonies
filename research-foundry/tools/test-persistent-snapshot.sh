@@ -113,8 +113,11 @@ case "${1:-}" in
                     echo "fake-podman: simulated KB export failure" >&2
                     exit 1
                 fi
-                # Canned KB dump: two items, deterministic JSON shape.
-                printf '{"schema":1,"items":[{"id":"k1","topic":"permutation_order_facts:sym5","value":"order=120"},{"id":"k2","topic":"known_priors:claim-42","value":"prior=resolved"}]}\n'
+                # Canned KB dump: bare top-level JSON array (matches
+                # the real `agentis knowledge export` output in v1.7.16
+                # — `import` accepts a bare array; QA #756 caught the
+                # invented {"schema":1,"items":[...]} shape).
+                printf '[{"id":"k1","topic":"permutation_order_facts:sym5","value":"order=120"},{"id":"k2","topic":"known_priors:claim-42","value":"prior=resolved"}]\n'
                 exit 0
                 ;;
             *)
@@ -396,9 +399,8 @@ else
     if python3 -c '
 import json, sys
 with open(sys.argv[1]) as f:
-    data = json.load(f)
-assert data["schema"] == 1, "schema not 1"
-items = data["items"]
+    items = json.load(f)
+assert isinstance(items, list), "top-level must be array"
 ids = sorted(it["id"] for it in items)
 assert ids == ["k1", "k2"], "ids = " + repr(ids)
 topics = sorted(it["topic"] for it in items)

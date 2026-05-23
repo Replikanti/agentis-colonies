@@ -817,13 +817,16 @@ write_bootstrap() {
         # Host-side persistent-snapshot.py dumped the previous run's KB
         # to $PERSISTENT_DIR/knowledge-snapshot.json via `agentis knowledge
         # export`; the host bind-mounts that dir read-only at /persistent
-        # below. Replay it via `agentis knowledge import --merge` so the
-        # KB is hot before daemons spawn. Failure-isolated with `|| true`
-        # — a missing or corrupt snapshot must not block a fresh run.
-        # RESEARCH_PERSISTENT_DISABLED=1 opts out for rollback.
+        # below. Replay it via `agentis knowledge import <file>` (default
+        # merge semantics in agentis-core v1.7.16 — `--replace` would
+        # wipe; bare invocation merges) so the KB is hot before daemons
+        # spawn. Failure-isolated with `|| true` — a missing or corrupt
+        # snapshot must not block a fresh run. Stderr is captured to
+        # /run-root/.agentis/log/knowledge-import.log so operators see
+        # what happened.  RESEARCH_PERSISTENT_DISABLED=1 opts out.
         if [ "$PERSISTENT_DISABLED" != "1" ]; then
             printf 'if [ -f /persistent/knowledge-snapshot.json ]; then\n'
-            printf '    (cd /run-root && cat /persistent/knowledge-snapshot.json | agentis knowledge import --merge >/dev/null 2>&1) || true\n'
+            printf '    (cd /run-root && agentis knowledge import /persistent/knowledge-snapshot.json) >>/run-root/.agentis/log/knowledge-import.log 2>&1 || true\n'
             printf 'fi\n'
         fi
         # Per-daemon tick interval is 30s (decoupled from orchestrator
@@ -1157,7 +1160,7 @@ write_bootstrap() {
 spawn_container() {
     emit_step "spawning research-foundry container (image=$IMAGE_TAG)"
     # #750: bind-mount $PERSISTENT_DIR read-only at /persistent so the
-    # bootstrap's `agentis knowledge import --merge` can find the
+    # bootstrap's `agentis knowledge import <file>` can find the
     # previous run's knowledge-snapshot.json. The dir is host-managed
     # (persistent-snapshot.py writes it at run-end); read-only mount is
     # sufficient because re-export goes through `podman exec` on the
