@@ -389,6 +389,28 @@ assert_contains "27f. prior_advocate.ag binds known_priors buy topic" "$PRI_AG_S
 assert_contains "27g. prior_advocate.ag calls knowledge_buy" "$PRI_AG_SRC" \
     'knowledge_buy(buy_topic_pa, 2)'
 
+# ---------------------------------------------------------------------------
+# 28. #743: Action audit chain activation with ed25519 signing. The
+# hermetic .agentis/config block must enable `audit.persist_actions =
+# true` (otherwise rows never flush to <root>/audit/actions.jsonl) and
+# pin `audit.signing_key_path` to an explicit path under .agentis/
+# identity/. The bootstrap script must also create both .agentis/audit/
+# and .agentis/identity/ dirs (agentis init does not), bootstrap the
+# ed25519 keypair, and chmod 600 it. Together these wire the M2
+# tamper-evident chain (seq + prev_hash + signer_pubkey + signature)
+# verifiable via `agentis audit verify-actions`.
+# ---------------------------------------------------------------------------
+assert_contains "28a. run-research.sh writes audit.persist_actions = true" "$SRC" \
+    'printf "audit.persist_actions = true\\n"'
+assert_contains "28b. run-research.sh pins audit.signing_key_path" "$SRC" \
+    'printf "audit.signing_key_path = .agentis/identity/private.key\\n"'
+assert_contains "28c. bootstrap mkdir extends to .agentis/audit + .agentis/identity" "$SRC" \
+    '/run-root/.agentis/audit /run-root/.agentis/identity'
+assert_contains "28d. ed25519 identity key bootstrap line emitted" "$SRC" \
+    'openssl genpkey -algorithm ed25519 -out /run-root/.agentis/identity/private.key'
+assert_contains "28e. chmod 600 on identity private key emitted" "$SRC" \
+    'chmod 600 /run-root/.agentis/identity/private.key'
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
