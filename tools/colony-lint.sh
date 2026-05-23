@@ -19,6 +19,21 @@ set -euo pipefail
 # ceiling). Tests can read this var to detect the nested run.
 export AGENTIS_COLONY_LINT_NESTED="${AGENTIS_COLONY_LINT_NESTED:-0}"
 
+# --- Flag parsing ---
+# `--boot-smoke` opts the operator in to tools/test-boot-smoke.sh (#760).
+# That test spawns a real ~45s research-foundry container, so it is NOT
+# part of the default discovery loop -- only invoked when the flag is set.
+# Everything else stays a positional REPO_ROOT for backward compat.
+BOOT_SMOKE=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --boot-smoke) BOOT_SMOKE=1; shift ;;
+        --) shift; break ;;
+        -*) echo "colony-lint: unknown flag: $1" >&2; exit 2 ;;
+        *) break ;;
+    esac
+done
+
 REPO_ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 PASS=0
 FAIL=0
@@ -888,6 +903,29 @@ for t in "${test_scripts[@]}"; do
             ;;
     esac
 done
+
+# --- Boot-level smoke (#760, opt-in via --boot-smoke) ---
+# tools/test-boot-smoke.sh spawns a real research-foundry container and
+# wall-clocks ~45s. Skipped by default so the lint stays fast and runnable
+# on CI workers without podman. Operators MUST set the flag before merging
+# any PR that touches research-foundry/tools/ or research-foundry/*/agents/*.ag
+# (the substrate-touching paths #758 lived in).
+if [ "$BOOT_SMOKE" = "1" ]; then
+    bs="$REPO_ROOT/tools/test-boot-smoke.sh"
+    if [ ! -f "$bs" ]; then
+        fail "tools: test-boot-smoke.sh missing at $bs (--boot-smoke requested)"
+    else
+        echo ""
+        echo "--- Boot-smoke (--boot-smoke set; real container, ~45s) ---"
+        bs_out="$(AGENTIS_COLONY_LINT_NESTED=1 bash "$bs" 2>&1)" && bs_rc=0 || bs_rc=$?
+        printf '%s\n' "$bs_out"
+        if [ "$bs_rc" -eq 0 ]; then
+            pass "tools: test-boot-smoke.sh"
+        else
+            fail "tools: test-boot-smoke.sh (exit $bs_rc)"
+        fi
+    fi
+fi
 
 # --- Summary ---
 echo ""
