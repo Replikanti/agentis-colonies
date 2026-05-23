@@ -655,6 +655,22 @@ write_bootstrap() {
         # immediately. Cross-run KB persistence requires a separate
         # persistent-snapshot.py extension (filed as follow-up).
         printf '  printf "knowledge.enabled = true\\n"\n'
+        # #743: ed25519-signed Action audit chain. Without
+        # `audit.persist_actions = true`, agentis-core treats the audit
+        # ledger as in-memory only and never flushes rows to
+        # <root>/audit/actions.jsonl. Without an explicit
+        # `audit.signing_key_path`, the runtime falls back to
+        # <root>/identity/private.key — but `agentis init` does not
+        # create that key, so signing degrades to unsigned chain rows.
+        # We bootstrap the ed25519 keypair explicitly below (mkdir +
+        # openssl/agentis identity init + chmod 600) so every Action
+        # row gets {seq, prev_hash, signer_pubkey, signature} and
+        # `agentis audit verify-actions` reports chained=N (N valid,
+        # 0 unsigned). Operator security note: <root>/audit/ and
+        # <root>/identity/ become credential-grade artifacts under
+        # this config — chmod 600 + restrict to forensic readers.
+        printf '  printf "audit.persist_actions = true\\n"\n'
+        printf '  printf "audit.signing_key_path = .agentis/identity/private.key\\n"\n'
         printf '  printf "llm.backend = %s\\n"\n' "$LLM_BACKEND"
         printf '  printf "daemon.cb_per_tick = %s\\n"\n' "$DAEMON_CB_PER_TICK"
         printf '  printf "daemon.heartbeat_interval_ms = %s\\n"\n' "$DAEMON_HEARTBEAT_MS"
@@ -687,7 +703,24 @@ write_bootstrap() {
         printf '    cp -r /repo/research-foundry/$c /run-root/$c\n'
         printf 'done\n'
         printf 'cp -r /repo/research-foundry/tools /run-root/tools\n'
-        printf 'mkdir -p /run-root/.agentis/sandbox /run-root/.agentis/logs /run-root/config /run-root/preprints /run-root/data\n'
+        # #743: extend mkdir with .agentis/audit and .agentis/identity.
+        # `agentis init` (L638 above) creates config/daemon/experience/
+        # logs/memo/objects/sandbox/spend/suspend but NOT audit/ or
+        # identity/, so audit.persist_actions would otherwise fail
+        # silently on first ledger flush. Identity dir holds the
+        # ed25519 private key bootstrapped immediately below.
+        printf 'mkdir -p /run-root/.agentis/sandbox /run-root/.agentis/logs /run-root/.agentis/audit /run-root/.agentis/identity /run-root/config /run-root/preprints /run-root/data\n'
+        # #743: bootstrap ed25519 keypair for audit-chain signing.
+        # Prefer `agentis identity init` when the pinned runtime ships
+        # it; fall back to `openssl genpkey -algorithm ed25519` (always
+        # available in the research container per Containerfile.research).
+        # chmod 600 because agentis-core #584 M2 release note flags the
+        # private key as credential-grade. The `|| true` after chmod is
+        # defensive in case `agentis identity init` writes to a
+        # different filename — the audit chain will simply fall back to
+        # unsigned rows in that case and the verify step will surface it.
+        printf 'if command -v agentis >/dev/null 2>&1 && agentis identity init >/dev/null 2>&1; then :; else openssl genpkey -algorithm ed25519 -out /run-root/.agentis/identity/private.key 2>/dev/null || true; fi\n'
+        printf 'chmod 600 /run-root/.agentis/identity/private.key 2>/dev/null || true\n'
         printf 'if [ -d /repo/research-foundry/data/papers ]; then cp -r /repo/research-foundry/data/papers /run-root/data/papers; fi\n'
         printf 'if [ -f /repo/research-foundry/config/authors.toml ]; then cp /repo/research-foundry/config/authors.toml /run-root/config/authors.toml; fi\n'
         printf ': > /run-root/discovery-ledger.jsonl\n'
