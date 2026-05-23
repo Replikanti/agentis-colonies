@@ -181,11 +181,56 @@ log "found $COLONY_COUNT $COLONY_NAME daemon(s), evaluating cull candidates"
 # auto-promote.sh sees in --containerized mode.
 DECISIONS_JSON="$(python3 "$DECISIONS_SCRIPT" --preview --config "$CONFIG_FILE" --containerized "$COLONY_DAEMONS_JSON" "$FED_DIR" 2>/dev/null || echo '[]')"
 
+# Issue #767: aging cull requests scan. Each .ag publishes
+# `colony:cull_self_request:<pid>` = "aging" when its `age_ticks` memo
+# crosses `env:RESEARCH_AGING_THRESHOLD`. The sidecar reads those keys
+# and, when the per-pid fitness sits below
+# `env:RESEARCH_AGING_FITNESS_FLOOR`, merges the daemon into the picked
+# list with `reason=aging` so the same stop+respawn loop handles both
+# fitness-bottom-pct and aging culls. Default
+# `env:RESEARCH_AGING_ENABLED=0` keeps the scan empty so the cull
+# pipeline behaves byte-identically to pre-#767.
+if [ -n "${CULL_AGING_REQUESTS_OVERRIDE:-}" ]; then
+    # Test fixture: comma-separated pid list (e.g. "1001,1002").
+    AGING_REQUESTS_RAW="$CULL_AGING_REQUESTS_OVERRIDE"
+else
+    AGING_REQUESTS_RAW="$(podman exec "$CONTAINER" agentis memo list 2>/dev/null | python3 -c "
+import sys
+prefix = 'colony:cull_self_request:'
+pids = []
+for line in sys.stdin:
+    line = line.strip()
+    if not line.startswith(prefix):
+        continue
+    # Key shape: 'colony:cull_self_request:<pid>[ = value]' -- take the pid.
+    rest = line[len(prefix):]
+    pid = rest.split()[0].split('=')[0].strip()
+    if pid:
+        pids.append(pid)
+print(','.join(pids))
+" 2>/dev/null || echo '')"
+fi
+
+# Read aging fitness floor (string -- Python does the float compare).
+AGING_FITNESS_FLOOR="${CULL_AGING_FITNESS_FLOOR_OVERRIDE:-}"
+if [ -z "$AGING_FITNESS_FLOOR" ]; then
+    AGING_FITNESS_FLOOR="$(podman exec "$CONTAINER" agentis memo get env:RESEARCH_AGING_FITNESS_FLOOR 2>/dev/null || true)"
+fi
+if [ -z "$AGING_FITNESS_FLOOR" ]; then
+    AGING_FITNESS_FLOOR="0.3"
+fi
+
 # Filter decisions to <colony_name> rows (preview emits a record per
 # daemon), then pick the bottom N by fitness_score ascending. We respect
 # the --min-acting gate by skipping candidates whose
 # evidence.entries_acting is below the floor (per-row guard against
 # acting on noisy bootstraps).
+#
+# Issue #767: aging requests are merged in BEFORE bottom-pct picks.
+# A daemon present in both lists keeps reason=aging (load-bearing for
+# the ledger event) and bypasses the min-acting gate -- an aged-out
+# daemon with low fitness should not be kept alive just because the
+# acting-row sample size is small.
 PICKED_JSON="$(python3 -c "
 import json, math, sys
 decisions = json.loads(sys.argv[1])
@@ -193,10 +238,22 @@ bottom_pct = float(sys.argv[2])
 min_acting = int(sys.argv[3])
 total = int(sys.argv[4])
 colony = sys.argv[5]
+aging_pids_raw = sys.argv[6]
+try:
+    aging_floor = float(sys.argv[7]) if sys.argv[7] else 0.3
+except (ValueError, TypeError):
+    aging_floor = 0.3
+
+aging_pids = set()
+for p in aging_pids_raw.split(','):
+    p = p.strip()
+    if p:
+        aging_pids.add(p)
 
 # Sort decisions by fitness_score ascending. Missing scores treated as 0
 # (worst).
 rows = []
+aging_rows = []
 for d in decisions:
     if d.get('agent') != colony:
         continue
@@ -220,24 +277,44 @@ for d in decisions:
         entries_acting = int(entries_acting)
     except (ValueError, TypeError):
         entries_acting = 0
-    rows.append({
+    row = {
         'pid': pid,
         'agent_id': d.get('agent_id', ''),
         'specialty': d.get('specialty', ''),
         'fitness_score': score,
         'entries_acting': entries_acting,
-    })
+        'reason': 'fitness_bottom_pct',
+    }
+    rows.append(row)
+    # Issue 767 aging-out gate. A daemon whose .ag flagged itself via
+    # the colony cull-self-request memo is picked iff its fitness is
+    # below the aging floor. This drops the bottom-pct rate-limit so
+    # all aged-out unfit daemons get culled in one cycle, subject to
+    # the kill plus respawn budget downstream.
+    if str(pid) in aging_pids and score < aging_floor:
+        aging_row = dict(row)
+        aging_row['reason'] = 'aging'
+        aging_rows.append(aging_row)
 
 rows.sort(key=lambda r: r['fitness_score'])
 n = max(1, math.ceil(total * bottom_pct))
-picked = []
+picked_by_pid = {}
+# Aging-out picks have priority on the reason field but share the kill
+# plus respawn slot so net daemon count is unchanged.
+for r in aging_rows:
+    picked_by_pid[str(r['pid'])] = r
 for r in rows[:n]:
+    key = str(r['pid'])
+    if key in picked_by_pid:
+        # Already picked via aging; keep reason=aging but propagate the
+        # bottom-pct min-acting guard as fitness_bottom_pct rows would.
+        continue
     if r['entries_acting'] < min_acting:
         # Skip per-row when insufficient data; record so caller can log.
         r['skip_reason'] = 'entries_acting=%d < %d' % (r['entries_acting'], min_acting)
-    picked.append(r)
-print(json.dumps(picked))
-" "$DECISIONS_JSON" "$BOTTOM_PCT" "$MIN_ACTING" "$COLONY_COUNT" "$COLONY_NAME")"
+    picked_by_pid[key] = r
+print(json.dumps(list(picked_by_pid.values())))
+" "$DECISIONS_JSON" "$BOTTOM_PCT" "$MIN_ACTING" "$COLONY_COUNT" "$COLONY_NAME" "$AGING_REQUESTS_RAW" "$AGING_FITNESS_FLOOR")"
 
 PICKED_COUNT="$(python3 -c "import json,sys; print(len(json.loads(sys.argv[1])))" "$PICKED_JSON")"
 if [ "$PICKED_COUNT" -eq 0 ]; then
@@ -416,16 +493,17 @@ LIVE_COUNTS_JSON="$SPECIALTY_COUNTS_JSON"
 python3 -c "
 import json, sys
 print('\n'.join(
-    '%s|%s|%s|%s|%s' % (
+    '%s|%s|%s|%s|%s|%s' % (
         r.get('pid', ''),
         r.get('agent_id', ''),
         r.get('specialty', ''),
         r.get('fitness_score', 0),
         r.get('skip_reason', ''),
+        r.get('reason', 'fitness_bottom_pct'),
     )
     for r in json.loads(sys.argv[1])
 ))
-" "$PICKED_JSON" | while IFS='|' read -r pid agent_id specialty fitness skip_reason; do
+" "$PICKED_JSON" | while IFS='|' read -r pid agent_id specialty fitness skip_reason reason; do
     if [ -z "$pid" ]; then
         continue
     fi
@@ -442,7 +520,7 @@ print('\n'.join(
 
     if [ "$DRY_RUN" = "1" ]; then
         NEW_ID=$((NEXT_ID + 1))
-        log "[dry-run] would cull pid=$pid agent_id=$agent_id specialty=$specialty fitness=$fitness"
+        log "[dry-run] would cull pid=$pid agent_id=$agent_id specialty=$specialty fitness=$fitness reason=$reason"
         log "[dry-run] would respawn $COLONY_NAME with specialty=$NEXT_SPECIALTY daemon_id=$NEW_ID"
         # Bump live counts so the next dry-run iteration's picker re-
         # evaluates against the post-respawn distribution.
@@ -460,11 +538,45 @@ print(json.dumps(counts))
         continue
     fi
 
-    log "cull pid=$pid agent_id=$agent_id specialty=$specialty fitness=$fitness"
+    log "cull pid=$pid agent_id=$agent_id specialty=$specialty fitness=$fitness reason=$reason"
 
     # Stop the daemon via agentis daemon stop. The agent_id maps to the
     # daemon registry uuid inside the container.
     podman exec "$CONTAINER" agentis daemon stop "$agent_id" 2>/dev/null || true
+
+    # Issue #767 bug fix (load-bearing, NOT gated): decrement
+    # `colony-<colony>:size` after the daemon stop succeeds. Before
+    # this patch the cull pipeline killed daemons and respawned them
+    # net-zero but never moved the size counter, so every cull cycle
+    # the M2-Malthusian `size >= max_replicas` gate inched closer to
+    # being permanently shut. The respawn block below re-increments
+    # the same counter so the net-zero invariant on daemon count is
+    # preserved (size_post == size_pre). When the daemon-stop call
+    # itself fails the decrement still fires -- the SIGTERM fallback
+    # above is best-effort and the kill+respawn loop continues
+    # regardless. CULL_SIZE_DECREMENT_DISABLED=1 disables this leg
+    # for the test harness's net-zero invariant check (#767 test 14).
+    if [ "${CULL_SIZE_DECREMENT_DISABLED:-0}" != "1" ]; then
+        CURR_SIZE="$(podman exec "$CONTAINER" agentis memo get "colony-$COLONY_NAME:size" 2>/dev/null || echo 0)"
+        case "$CURR_SIZE" in
+            ''|*[!0-9]*) CURR_SIZE=0 ;;
+        esac
+        if [ "$CURR_SIZE" -gt 0 ]; then
+            NEW_SIZE=$((CURR_SIZE - 1))
+            podman exec "$CONTAINER" agentis memo set "colony-$COLONY_NAME:size" "$NEW_SIZE" 2>/dev/null || true
+            log "size-decrement colony-$COLONY_NAME:size $CURR_SIZE -> $NEW_SIZE (after cull pid=$pid)"
+        else
+            log "size-decrement colony-$COLONY_NAME:size already 0 (skipped, pid=$pid)"
+        fi
+    fi
+
+    # Issue #767: clear the aging cull-self-request marker so a
+    # surviving daemon does not re-publish on the next sidecar tick.
+    # The .ag's `_age_tick_and_check` is idempotent on the request key,
+    # so a stale request would race the respawn picker. Best-effort
+    # delete -- some agentis builds expose only the bare `memo del`
+    # subcommand; failures are silent.
+    podman exec "$CONTAINER" agentis memo del "colony:cull_self_request:$pid" 2>/dev/null || true
 
     # Verify shutdown by re-polling after a short delay. If the daemon
     # is still alive, fall back to SIGTERM on the container-local pid.
@@ -486,11 +598,14 @@ print('gone')
     # Append a cull row to the replication ledger from host context.
     # Phase 9 PR-C (#663): include the `side` field
     # (discovery|audit|preprint) sourced from colony-variants.json so
-    # ledger consumers can aggregate by pipeline arm.
+    # ledger consumers can aggregate by pipeline arm. Issue #767:
+    # `reason` is now plumbed from the picker so aging-out culls land
+    # with `reason=aging` instead of the bottom-pct default.
     python3 -c "
 import json, os, sys, time
 colony = sys.argv[5]
 variants_path = sys.argv[6]
+reason = sys.argv[7] if len(sys.argv) > 7 and sys.argv[7] else 'fitness_bottom_pct'
 side = ''
 try:
     with open(variants_path) as f:
@@ -508,10 +623,10 @@ row = {
     'agent_id': sys.argv[2],
     'specialty': sys.argv[3],
     'fitness_score': float(sys.argv[4]) if sys.argv[4] else 0.0,
-    'reason': 'fitness_bottom_pct',
+    'reason': reason,
 }
 sys.stdout.write(json.dumps(row) + '\n')
-" "$pid" "$agent_id" "$specialty" "$fitness" "$COLONY_NAME" "$VARIANTS_FILE" >> "$REPLICATION_LEDGER"
+" "$pid" "$agent_id" "$specialty" "$fitness" "$COLONY_NAME" "$VARIANTS_FILE" "$reason" >> "$REPLICATION_LEDGER"
 
     # Best-effort memo cleanup. Some agentis builds don't support
     # pattern delete; tolerate failure silently.
@@ -563,12 +678,33 @@ print(overlay)
     # promptly.
     podman exec "$CONTAINER" bash -c "DAEMON_ID=$NEW_ID COLONY_NAME=$COLONY_NAME EXPLORER_GENERATION=0 HOLD_PERIOD=\${HOLD_PERIOD:-4} DISCOVERY_LEDGER=/run-root/discovery-ledger.jsonl REPLICATION_LEDGER=/run-root/replication-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/$COLONY_NAME/agents/$COLONY_NAME.ag --colony $COLONY_NAME --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval 30000 > /run-root/.agentis/logs/$COLONY_NAME-$NEW_ID.log 2>&1 &" 2>/dev/null || true
 
+    # Issue #767 bug fix (load-bearing, NOT gated): re-increment
+    # `colony-<colony>:size` to balance the post-stop decrement above
+    # so the net daemon count stays unchanged (kill 1 + spawn 1). The
+    # M2-Malthusian `size >= max_replicas` gate consumes this counter
+    # at every replicate-success path, so a decrement without a paired
+    # increment would freeze the cap permanently after the first cull
+    # cycle. CULL_SIZE_DECREMENT_DISABLED=1 toggles both legs so the
+    # tests can exercise the pre-#767 baseline.
+    if [ "${CULL_SIZE_DECREMENT_DISABLED:-0}" != "1" ]; then
+        CURR_SIZE_POST="$(podman exec "$CONTAINER" agentis memo get "colony-$COLONY_NAME:size" 2>/dev/null || echo 0)"
+        case "$CURR_SIZE_POST" in
+            ''|*[!0-9]*) CURR_SIZE_POST=0 ;;
+        esac
+        NEW_SIZE_POST=$((CURR_SIZE_POST + 1))
+        podman exec "$CONTAINER" agentis memo set "colony-$COLONY_NAME:size" "$NEW_SIZE_POST" 2>/dev/null || true
+        log "size-increment colony-$COLONY_NAME:size $CURR_SIZE_POST -> $NEW_SIZE_POST (after respawn daemon_id=$NEW_ID)"
+    fi
+
     # Append the respawn row. Phase 9 PR-C (#663): include the `side`
-    # field sourced from colony-variants.json.
+    # field sourced from colony-variants.json. Issue #767: respawn rows
+    # carry `kill_reason` so ledger readers can correlate the kill cause
+    # (aging vs fitness_bottom_pct) with the replacement.
     python3 -c "
 import json, sys, time
 colony = sys.argv[4]
 variants_path = sys.argv[5]
+kill_reason = sys.argv[6] if len(sys.argv) > 6 and sys.argv[6] else 'fitness_bottom_pct'
 side = ''
 try:
     with open(variants_path) as f:
@@ -586,12 +722,13 @@ row = {
     'specialty': sys.argv[2],
     'generation': 0,
     'reason': 'cull_replacement',
+    'kill_reason': kill_reason,
     'replaced_pid': sys.argv[3],
 }
 sys.stdout.write(json.dumps(row) + '\n')
-" "$NEW_ID" "$NEXT_SPECIALTY" "$pid" "$COLONY_NAME" "$VARIANTS_FILE" >> "$REPLICATION_LEDGER"
+" "$NEW_ID" "$NEXT_SPECIALTY" "$pid" "$COLONY_NAME" "$VARIANTS_FILE" "$reason" >> "$REPLICATION_LEDGER"
 
-    log "respawned $COLONY_NAME daemon_id=$NEW_ID specialty=$NEXT_SPECIALTY (replaced pid=$pid)"
+    log "respawned $COLONY_NAME daemon_id=$NEW_ID specialty=$NEXT_SPECIALTY reason=$reason (replaced pid=$pid)"
 
     # Bump live counts so the next iteration's picker re-evaluates
     # against the post-respawn distribution (issue #647).

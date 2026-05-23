@@ -469,6 +469,33 @@ fn _publish_auditor(
     };
 }
 
+// Issue #767: aging-out gate (death pressure). Two-phase: this .ag
+// publishes `colony:cull_self_request:<pid>` when age_ticks crosses
+// `env:RESEARCH_AGING_THRESHOLD`; the cull-replicas.sh sidecar reads
+// the request, checks per-pid fitness against
+// `env:RESEARCH_AGING_FITNESS_FLOOR`, and acts via `agentis daemon stop`
+// (.ag cannot self-terminate from inside the container). Gated by
+// `env:RESEARCH_AGING_ENABLED` so the default federation is
+// byte-identical to pre-#767 behaviour.
+fn _age_tick_and_check(colony: string, self_pid: string) -> int {
+    if len(self_pid) == 0 { return 0; };
+    if len(colony) == 0 { return 0; };
+    let age_key = colony + ":" + self_pid + ":age_ticks";
+    let age_str = recall_latest(age_key);
+    let age = if len(age_str) > 0 { parse_int(age_str); } else { 0; };
+    let next_age = age + 1;
+    memo_write(age_key, to_string(next_age));
+    let enabled = recall_latest("env:RESEARCH_AGING_ENABLED");
+    if enabled != "1" { return next_age; };
+    let thr_str = recall_latest("env:RESEARCH_AGING_THRESHOLD");
+    let thr = if len(thr_str) > 0 { parse_int(thr_str); } else { 100; };
+    if thr <= 0 { return next_age; };
+    if next_age >= thr {
+        memo_write("colony:cull_self_request:" + self_pid, "aging");
+    };
+    return next_age;
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let _ = _jitter_sleep();
@@ -477,6 +504,8 @@ fn tick(reason: string) -> void {
     let _tick_now_ms = now_ms_via_shell();
     let _colony_name = colony_name();
     let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
+    // Issue #767: aging tick + cull-self-request gate.
+    let _ = _age_tick_and_check(_colony_name, _self_pid);
 
     // Phase 9 PR-C (#663): first-tick claim of a specialty from the
     // bootstrap-seeded pool.
