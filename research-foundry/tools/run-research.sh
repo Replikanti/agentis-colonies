@@ -647,6 +647,14 @@ write_bootstrap() {
         # land in the experience ledger but cannot feed back into
         # strategy selection. Mirrors dev-apprenticeship/install.sh L707.
         printf '  printf "learning.enabled = true\\n"\n'
+        # #741: KnowledgeBase activation. Without this flag knowledge_buy()
+        # returns "" and knowledge_sell() returns false silently per
+        # agentis-core cli/run.rs:554. Required for the knowledge market
+        # wired in novelty/explorer/prior_advocate (#741). KB lives at
+        # <root>/knowledge/ per cli/run.rs:561; intra-run sharing works
+        # immediately. Cross-run KB persistence requires a separate
+        # persistent-snapshot.py extension (filed as follow-up).
+        printf '  printf "knowledge.enabled = true\\n"\n'
         printf '  printf "llm.backend = %s\\n"\n' "$LLM_BACKEND"
         printf '  printf "daemon.cb_per_tick = %s\\n"\n' "$DAEMON_CB_PER_TICK"
         printf '  printf "daemon.heartbeat_interval_ms = %s\\n"\n' "$DAEMON_HEARTBEAT_MS"
