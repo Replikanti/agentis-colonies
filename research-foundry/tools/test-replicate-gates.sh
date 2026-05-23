@@ -130,6 +130,38 @@ for c in "${NON_EXPLORER[@]}"; do
     fi
 done
 
+# (f) #744: run-research.sh wires the in-container agentis worker +
+# math-foundry:worker_addr memo seed so the M2-Malthusian replicate()
+# call site has a valid MSG_REPLICATE target. Without this wiring,
+# select_replication_target() falls back to the unreachable
+# self_node_addr() (127.0.0.1:9100 with no listener), every replicate()
+# call NAKs (returns ""), and the M106 variant inheritance feature
+# never engages -- so the .ag-level replicate path tested by (b/e)
+# above is dead code in production. Guard the orchestrator wiring
+# here so the .ag and orchestrator assertions evolve together.
+RUN_RESEARCH_SH="$FED_DIR/tools/run-research.sh"
+if [ ! -f "$RUN_RESEARCH_SH" ]; then
+    fail "(f) run-research.sh wires worker_addr memo for replicate() targets" \
+         "$RUN_RESEARCH_SH not found"
+else
+    RUN_RESEARCH_SRC="$(cat "$RUN_RESEARCH_SH")"
+    missing=""
+    printf '%s' "$RUN_RESEARCH_SRC" | grep -Fq -- "setsid agentis worker 127.0.0.1:9100" || \
+        missing="$missing worker-launch"
+    printf '%s' "$RUN_RESEARCH_SRC" | grep -Fq -- "agentis memo set math-foundry:worker_addr 127.0.0.1:9100" || \
+        missing="$missing worker_addr-memo-seed"
+    printf '%s' "$RUN_RESEARCH_SRC" | grep -Fq -- "agentis memo set math-foundry:peer_worker_count 1" || \
+        missing="$missing peer_worker_count-memo-seed"
+    if [ -z "$missing" ]; then
+        pass "(f) run-research.sh wires worker_addr memo for replicate() targets"
+    else
+        fail "(f) run-research.sh wires worker_addr memo for replicate() targets" \
+             "missing:$missing"
+    fi
+    unset RUN_RESEARCH_SRC missing
+fi
+unset RUN_RESEARCH_SH
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
 [ "$FAIL" -eq 0 ]
