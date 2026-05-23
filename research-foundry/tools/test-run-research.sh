@@ -411,6 +411,67 @@ assert_contains "28d. ed25519 identity key bootstrap line emitted" "$SRC" \
 assert_contains "28e. chmod 600 on identity private key emitted" "$SRC" \
     'chmod 600 /run-root/.agentis/identity/private.key'
 
+# ---------------------------------------------------------------------------
+# 29. #745: Lean 4 verifier integration.
+#   - Containerfile.research installs Lean via elan + pinned toolchain
+#   - theorist.ag emits .lean source and runs `lean` per tick
+#   - auditor.ag fans in lean_verdict and extends its verdict-label
+#     enum to include VERIFIED_BY_LEAN
+# ---------------------------------------------------------------------------
+CFILE_PATH="$(cd "$SCRIPT_DIR" && pwd)/Containerfile.research"
+THE_AG_PATH="$(cd "$SCRIPT_DIR/.." && pwd)/theorist/agents/theorist.ag"
+AUD_AG_PATH="$(cd "$SCRIPT_DIR/.." && pwd)/auditor/agents/auditor.ag"
+CFILE_SRC="$(cat "$CFILE_PATH")"
+THE_AG_SRC="$(cat "$THE_AG_PATH")"
+AUD_AG_SRC="$(cat "$AUD_AG_PATH")"
+
+assert_contains "29a. Containerfile.research declares LEAN_TOOLCHAIN ARG" "$CFILE_SRC" \
+    "ARG LEAN_TOOLCHAIN=leanprover/lean4:"
+assert_contains "29b. Containerfile.research installs elan via elan-init.sh" "$CFILE_SRC" \
+    "elan/master/elan-init.sh"
+assert_contains "29c. Containerfile.research exports /root/.elan/bin in PATH" "$CFILE_SRC" \
+    'ENV PATH="/root/.elan/bin:${PATH}"'
+assert_contains "29d. Containerfile.research runs lean --version smoke test" "$CFILE_SRC" \
+    "RUN lean --version"
+
+assert_contains "29e. theorist.ag declares LeanDraft type" "$THE_AG_SRC" \
+    "type LeanDraft"
+assert_contains "29f. theorist.ag has _lean_prompt helper" "$THE_AG_SRC" \
+    "fn _lean_prompt() -> string"
+assert_contains "29g. theorist.ag has _run_lean_check helper" "$THE_AG_SRC" \
+    "fn _run_lean_check"
+assert_contains "29h. theorist.ag invokes lean binary via exec sh" "$THE_AG_SRC" \
+    '"timeout " + shell_escape(timeout_s) + " lean "'
+assert_contains "29i. theorist.ag writes lean_verdict memo key" "$THE_AG_SRC" \
+    '":lean_verdict:tick-"'
+assert_contains "29j. theorist.ag writes lean_source memo key" "$THE_AG_SRC" \
+    '":lean_source:tick-"'
+assert_contains "29k. theorist.ag emits learn(lean_check, ...)" "$THE_AG_SRC" \
+    'learn("lean_check"'
+assert_contains "29l. theorist.ag honors THEORIST_LEAN_DISABLED bypass" "$THE_AG_SRC" \
+    "THEORIST_LEAN_DISABLED"
+assert_contains "29m. theorist.ag honors THEORIST_LEAN_TIMEOUT_SEC override" "$THE_AG_SRC" \
+    "THEORIST_LEAN_TIMEOUT_SEC"
+
+assert_contains "29n. auditor.ag _seed_prompt names VERIFIED_BY_LEAN" "$AUD_AG_SRC" \
+    "VERIFIED_BY_LEAN"
+assert_contains "29o. auditor.ag fans in theorist lean_verdict via picker" "$AUD_AG_SRC" \
+    '_pick_upstream_by_confidence("theorist", "lean_verdict", "lean_verdict", ""'
+assert_contains "29p. auditor.ag ctx names THEORIST LEAN VERDICT" "$AUD_AG_SRC" \
+    "THEORIST LEAN VERDICT:"
+
+# ---------------------------------------------------------------------------
+# 30. #745: check-learn-tags.sh schema extension for lean_check topic.
+# ---------------------------------------------------------------------------
+LEARN_TAGS_PATH="$(cd "$SCRIPT_DIR/../.." && pwd)/tools/check-learn-tags.sh"
+LEARN_TAGS_SRC="$(cat "$LEARN_TAGS_PATH")"
+assert_contains "30a. check-learn-tags.sh schema covers lean_check:verified" "$LEARN_TAGS_SRC" \
+    '"lean_check:verified")'
+assert_contains "30b. check-learn-tags.sh schema covers lean_check:incomplete" "$LEARN_TAGS_SRC" \
+    '"lean_check:incomplete")'
+assert_contains "30c. check-learn-tags.sh schema covers lean_check:failed" "$LEARN_TAGS_SRC" \
+    '"lean_check:failed")'
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

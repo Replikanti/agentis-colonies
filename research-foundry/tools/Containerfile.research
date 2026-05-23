@@ -81,6 +81,19 @@ RUN cd /tmp \
 RUN curl -fsSL https://claude.ai/install.sh | bash \
  && ln -s /root/.local/bin/claude /usr/local/bin/claude
 
+# Lean 4 toolchain for first-class proof verification in theorist.ag
+# (#745). Uses elan (Lean version manager) with a pinned toolchain so
+# the image is reproducible across rebuilds. Image bloat: ~1.5 GB per
+# the #745 forensic. Most LLM-generated proofs will FAIL the formal
+# check — that is the desired signal; verified / failed / incomplete
+# are all informative. theorist.ag treats the check as non-terminal
+# and still emits the LaTeX body regardless of outcome.
+ARG LEAN_TOOLCHAIN=leanprover/lean4:v4.13.0
+RUN curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+        | sh -s -- -y --default-toolchain "${LEAN_TOOLCHAIN}"
+ENV PATH="/root/.elan/bin:${PATH}"
+RUN lean --version
+
 WORKDIR /run-root
 
 ENTRYPOINT ["/bin/bash"]
