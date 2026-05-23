@@ -441,8 +441,8 @@ assert_contains "28b. run-research.sh pins audit.signing_key_path" "$SRC" \
     'printf "audit.signing_key_path = .agentis/identity/private.key\\n"'
 assert_contains "28c. bootstrap mkdir extends to .agentis/audit + .agentis/identity" "$SRC" \
     '/run-root/.agentis/audit /run-root/.agentis/identity'
-assert_contains "28d. ed25519 identity key bootstrap line emits DER + tail -c 32" "$SRC" \
-    'openssl genpkey -algorithm ed25519 -outform DER 2>/dev/null | tail -c 32 > /run-root/.agentis/identity/private.key'
+assert_contains "28d. ed25519 identity key bootstrap reads 32 bytes from /dev/urandom" "$SRC" \
+    'dd if=/dev/urandom of=/run-root/.agentis/identity/private.key bs=32 count=1'
 assert_contains "28e. chmod 600 on identity private key emitted" "$SRC" \
     'chmod 600 /run-root/.agentis/identity/private.key'
 

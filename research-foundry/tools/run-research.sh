@@ -762,19 +762,24 @@ write_bootstrap() {
         printf 'mkdir -p /run-root/.agentis/sandbox /run-root/.agentis/logs /run-root/.agentis/audit /run-root/.agentis/identity /run-root/config /run-root/preprints /run-root/data\n'
         # #743: bootstrap ed25519 keypair for audit-chain signing.
         # agentis-core expects a RAW 32-byte ed25519 seed at
-        # audit.signing_key_path. The original #743 wiring shelled out
-        # to `openssl genpkey -algorithm ed25519 -out <file>` which
-        # writes PEM-encoded PKCS8 (~119 bytes) — agentis-core rejects
-        # it with "expected 32 bytes, got 119" and every daemon crashes
-        # on boot (caught in smoke run #757 step 3).
+        # audit.signing_key_path. Ed25519 spec: private key = 32 random
+        # bytes (seed); scalar + public key are derived from SHA-512 of
+        # the seed, no extra crypto material needed.
         #
-        # Fix: use `-outform DER` and `tail -c 32` to extract the raw
-        # seed. PKCS8 DER for ed25519 is a fixed 48-byte structure
-        # (16-byte header + 32-byte private key), so the last 32 bytes
-        # are exactly the raw seed the runtime needs.
-        # chmod 600 because agentis-core #584 M2 release note flags the
-        # private key as credential-grade.
-        printf 'openssl genpkey -algorithm ed25519 -outform DER 2>/dev/null | tail -c 32 > /run-root/.agentis/identity/private.key 2>/dev/null || true\n'
+        # Prior wiring used openssl (`genpkey -out` wrote PEM PKCS8
+        # 119 bytes — boot crash; then `genpkey -outform DER | tail -c
+        # 32` extracted the raw seed via PKCS8 layout assumption).
+        # Both depend on openssl + on the PKCS8 DER byte layout staying
+        # stable, which is fragile.
+        #
+        # Cleaner: read 32 bytes from /dev/urandom. POSIX, no external
+        # tool, no agentis-version or openssl-version coupling, no
+        # PKCS8 layout assumptions — that's exactly what
+        # `secrets.token_bytes(32)` and `openssl rand 32` do internally
+        # (pull from the kernel CSPRNG). chmod 600 because agentis-core
+        # #584 M2 release note flags the private key as
+        # credential-grade.
+        printf 'dd if=/dev/urandom of=/run-root/.agentis/identity/private.key bs=32 count=1 status=none 2>/dev/null || true\n'
         printf 'chmod 600 /run-root/.agentis/identity/private.key 2>/dev/null || true\n'
         printf 'if [ -d /repo/research-foundry/data/papers ]; then cp -r /repo/research-foundry/data/papers /run-root/data/papers; fi\n'
         printf 'if [ -f /repo/research-foundry/config/authors.toml ]; then cp /repo/research-foundry/config/authors.toml /run-root/config/authors.toml; fi\n'
