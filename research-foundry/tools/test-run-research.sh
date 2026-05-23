@@ -278,7 +278,9 @@ assert_contains "22d. RESEARCH_CULL_MIN_ACTING defaults to 3" "$SRC" \
     "CULL_MIN_ACTING=\"\${RESEARCH_CULL_MIN_ACTING:-3}\""
 assert_contains "22e. CULL_MIN_EXPLORERS floor protection unchanged at 3" "$SRC" \
     "CULL_MIN_EXPLORERS=\"\${RESEARCH_CULL_MIN_EXPLORERS:-3}\""
-for c in EXPLORER NOTICER SKEPTIC FORMULATOR VERIFIER NOVELTY \
+# #744: EXPLORER threshold default lowered 3 -> 2 (asserted by 32f below).
+# The remaining 17 colonies keep default 3 until follow-up tuning lowers them.
+for c in NOTICER SKEPTIC FORMULATOR VERIFIER NOVELTY \
          ARXIV_SEARCH OEIS_SEARCH GROUPPROPS_SEARCH SCHOLAR_SEARCH \
          AUDITOR PRIOR_ADVOCATE INTRODUCER THEORIST COMPUTER \
          EDITOR REVIEWER SUBMITTER; do
@@ -559,6 +561,33 @@ assert_contains "31o. theorist.ag emits learn(\"taskboard\", ..., \"success\") f
     'learn("taskboard", "accept prove_modular_identity"'
 assert_contains "31p. theorist.ag emits learn(\"taskboard\", ..., \"success\") for completed tag" "$TB_THE_AG_SRC" \
     'learn("taskboard", "complete prove_modular_identity"'
+
+# ---------------------------------------------------------------------------
+# 32. #744: in-container agentis worker wiring for M106 replicate() targets.
+#
+# explorer.ag (and 17 other colonies with the M2-Malthusian replicate gate)
+# already call replicate(target_r, my_fit_r, variant_wrapped) on every
+# autonomous-tier tick that clears the fitness + colony-size + pool gates.
+# But before this patch landed, every call NAK'd because run-research.sh
+# never launched an `agentis worker` listener and never seeded
+# math-foundry:worker_addr -- select_replication_target() fell back to the
+# unreachable self_node_addr() (127.0.0.1:9100 with no listener), so the
+# M106 variant inheritance feature never engaged. These four assertions
+# guard the wiring (emit_step at the orchestrator layer + the printf lines
+# that emit the worker launch + memo seeds into the bootstrap script).
+# ---------------------------------------------------------------------------
+assert_contains "32a. emit_step names worker launch on 127.0.0.1:9100" "$OUT" \
+    "launching agentis worker on 127.0.0.1:9100 for in-container replication"
+assert_contains "32b. emit_step names worker_addr + peer_worker_count memo seed" "$OUT" \
+    "seeding math-foundry:worker_addr + peer_worker_count for replicate() targets"
+assert_contains "32c. bootstrap emits setsid agentis worker launch" "$SRC" \
+    "setsid agentis worker 127.0.0.1:9100"
+assert_contains "32d. bootstrap emits math-foundry:worker_addr memo seed" "$SRC" \
+    "agentis memo set math-foundry:worker_addr 127.0.0.1:9100"
+assert_contains "32e. bootstrap emits math-foundry:peer_worker_count memo seed" "$SRC" \
+    "agentis memo set math-foundry:peer_worker_count 1"
+assert_contains "32f. RESEARCH_EXPLORER_REPRODUCTIVE_FITNESS_THRESHOLD default lowered 3 -> 2" "$SRC" \
+    ': "${RESEARCH_EXPLORER_REPRODUCTIVE_FITNESS_THRESHOLD:=2}"'
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

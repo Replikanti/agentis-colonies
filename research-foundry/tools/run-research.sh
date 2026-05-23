@@ -190,10 +190,11 @@
 #                                Per-pid fitness threshold above which the
 #                                replicate gate fires (memo key
 #                                explorer:reproductive_fitness_threshold).
-#                                Default 3 (#679: lowered from 10 so the
-#                                gate fires within the default 30-tick
-#                                run, engaging birth/death lifecycle
-#                                without operator opt-in).
+#                                Default 2 (#744: lowered from 3 so the
+#                                autonomous-tier gate is reachable in the
+#                                75-tick research run; #679 had already
+#                                lowered it from 10 so the gate fires
+#                                within the default tick budget).
 #   RESEARCH_CULL_ENABLED        1 enable Phase 3 PR 3 cull cycle, 0
 #                                disable. Default 1 (#679: lifecycle on
 #                                by default so the 30-tick default run
@@ -381,7 +382,7 @@ unset _role _var _val
 : "${RESEARCH_EXPLORER_REPLICAS:=5}"
 : "${RESEARCH_EXPLORER_MAX_REPLICAS:=8}"
 : "${RESEARCH_EXPLORER_POOL:=5000}"
-: "${RESEARCH_EXPLORER_REPRODUCTIVE_FITNESS_THRESHOLD:=3}"
+: "${RESEARCH_EXPLORER_REPRODUCTIVE_FITNESS_THRESHOLD:=2}"
 
 # Phase 9 PR-B (#663): per-colony replica + pool seeds for the 17
 # non-explorer colonies. All default to 1 so PR-B does NOT change the
@@ -600,6 +601,16 @@ emit_step "latexmk max passes: $LATEXMK_MAX_PASSES"
 emit_step "image tag: $IMAGE_TAG"
 emit_step "arxiv gateway: $ARXIV_GATEWAY (HITL-gated; never auto-sent)"
 emit_step "author config: $AUTHOR_CONFIG"
+# Phase 9 M106 (#744): the in-container agentis worker is the MSG_REPLICATE
+# target for replicate(target_r, my_fit_r, variant_wrapped). Without a
+# listener on 127.0.0.1:9100 every replicate() call NAKs (returns ""), the
+# replication ledger stays empty, and the M106 variant inheritance feature
+# never engages. The worker launches inside bootstrap.sh after `agentis init`
+# and before the daemons spawn; math-foundry:worker_addr +
+# math-foundry:peer_worker_count are seeded so select_replication_target()
+# resolves instead of falling back to the unreachable self_node_addr().
+emit_step "launching agentis worker on 127.0.0.1:9100 for in-container replication"
+emit_step "seeding math-foundry:worker_addr + peer_worker_count for replicate() targets"
 
 # --- 1) Build (or reuse) the container image ---
 build_image() {
@@ -944,6 +955,33 @@ write_bootstrap() {
         printf '(cd /run-root && agentis memo set colony-submitter:replication_base_cost 100 >/dev/null 2>&1 || true)\n'
         printf '(cd /run-root && agentis memo set colony-submitter:replication_k 3 >/dev/null 2>&1 || true)\n'
         printf '(cd /run-root && agentis memo set submitter:reproductive_fitness_threshold %s >/dev/null 2>&1 || true)\n' "$RESEARCH_SUBMITTER_REPRODUCTIVE_FITNESS_THRESHOLD"
+        # Phase 9 M106 (#744): launch the in-container agentis worker and
+        # seed math-foundry:worker_addr + peer_worker_count so the
+        # M2-Malthusian replicate() target pointer resolves. Before this
+        # block landed, explorer.ag (and the 17 other colonies with the
+        # M2-Malthusian replicate gate) called
+        # replicate(target_r, my_fit_r, variant_wrapped) on every
+        # autonomous-tier tick that cleared the fitness + colony-size +
+        # pool gates -- but the call returned "" because
+        # select_replication_target() resolved to the unreachable
+        # self_node_addr() (127.0.0.1:9100 with no listener), so every
+        # call NAK'd and the M106 variant inheritance feature never
+        # engaged. Pattern mirrors tribes-bench/start-federation.sh
+        # L65-94 (setsid + readiness probe + memo seeds). The container
+        # tears down the worker via `podman stop` (the orchestrator
+        # cleanup trap), so no separate kill is needed.
+        printf '# --- agentis worker (in-container MSG_REPLICATE target) ---\n'
+        printf 'mkdir -p /run-root/.agentis/log\n'
+        printf 'setsid agentis worker 127.0.0.1:9100 --max-concurrent 8 > /run-root/.agentis/log/worker.log 2>&1 &\n'
+        printf 'WORKER_PID=$!\n'
+        printf 'for i in 1 2 3 4 5 6 7 8 9 10; do\n'
+        printf '    if (echo > /dev/tcp/127.0.0.1/9100) 2>/dev/null; then break; fi\n'
+        printf '    sleep 0.5\n'
+        printf 'done\n'
+        printf 'echo "agentis worker pid=$WORKER_PID listening on 127.0.0.1:9100"\n'
+        printf '(cd /run-root && agentis memo set math-foundry:worker_addr 127.0.0.1:9100 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set math-foundry:peer_worker_count 1 >/dev/null 2>&1 || true)\n'
+        printf '(cd /run-root && agentis memo set math-foundry:peer_worker_addr:0 127.0.0.1:9100 >/dev/null 2>&1 || true)\n'
         # math pipeline: explorer (with replication) + noticer/formulator/verifier/novelty.
         # Phase 3 PR 1 (#624): spawn RESEARCH_EXPLORER_REPLICAS explorers
         # (default 5) each carrying a distinct DAEMON_ID used by the .ag
@@ -1085,6 +1123,12 @@ write_bootstrap() {
             "$ARXIV_GATEWAY" "$ARXIV_FROM" "$SMTP_HOST" "$SMTP_PORT"
         printf 'done\n'
         printf 'while [ ! -e /run-root/.shutdown ]; do sleep 5; done\n'
+        # M106 (#744): kill the in-container agentis worker so the
+        # container exits cleanly. `podman stop --time 5` from the host
+        # trap covers the SIGKILL fallback, but a clean SIGTERM ordering
+        # avoids racing pending MSG_REPLICATE handshakes against a
+        # half-shutdown daemon set.
+        printf 'if [ -n "${WORKER_PID:-}" ]; then kill "$WORKER_PID" 2>/dev/null || true; fi\n'
         printf 'exit 0\n'
     } >"$bootstrap_path"
     chmod +x "$bootstrap_path"
