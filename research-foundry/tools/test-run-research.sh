@@ -29,6 +29,12 @@
 #      false when RESEARCH_AUTO_PROMOTE=0) and removed by the cleanup
 #      trap — so the dashboard's sidecar liveness probe (#248 / #378)
 #      reports installed=true instead of `orphan` (#699).
+#  23-25. Per-tier LLM routing (#746) replaces #711's per-role
+#      ANTHROPIC_MODEL=<resolved> spawn-prefix routing with five
+#      llm.tier.<tier>.cli_command_args lines in the claude-backend
+#      block of .agentis/config. The 18 per-role env knobs survive
+#      as deprecated shims with a one-time stderr warning on
+#      operator override.
 #
 # Standard library only -- no pytest, no requests, no live LLM, no
 # podman.
@@ -303,10 +309,12 @@ assert_contains "18d. cleanup trap removes .auto-promote-install.toml on EXIT/IN
     "rm -f \"$WORK_DIR/run-default/laptop-node/.auto-promote-install.toml\""
 
 # ---------------------------------------------------------------------------
-# 23. #711: per-colony RESEARCH_<COLONY>_CLAUDE_MODEL env defaults. 8
-# colonies stay opus (quality-critical: math creativity, correctness,
-# decisive verdicts); 10 colonies downgrade to sonnet (mechanical /
-# parsing / scripted output).
+# 23. #711 / #746: per-colony RESEARCH_<COLONY>_CLAUDE_MODEL env defaults
+# remain as backward-compat shims after #746 migrated routing to the
+# per-tier substrate. 8 colonies default opus, 10 default sonnet. The
+# values are no longer load-bearing -- the spawn-prefix path was dropped
+# in #746 -- but the env knobs survive one minor-release deprecation
+# window so cost-experiment tooling does not silently break.
 # ---------------------------------------------------------------------------
 for c in EXPLORER FORMULATOR VERIFIER NOVELTY \
          PRIOR_ADVOCATE AUDITOR THEORIST EDITOR; do
@@ -321,37 +329,62 @@ for c in NOTICER SKEPTIC \
 done
 
 # ---------------------------------------------------------------------------
-# 24. #711: each of the 18 daemon spawn lines in the bootstrap heredoc
-# carries `ANTHROPIC_MODEL=$RESEARCH_<COLONY>_CLAUDE_MODEL` so the claude
-# CLI honors the per-colony model split natively.
+# 24. #746: per-tier LLM routing via llm.tier.<tier>.cli_command_args.
+# Autonomous-tier decisions get opus, propose + review-gated get sonnet,
+# shadow + dormant get haiku. Substrate is agentis-core v1.7.15 #652;
+# agentis-core resolves the backend per-prompt by re-reading the calling
+# agent's <agent>:confidence memo via tier(). Five tiers => five printf
+# lines in the claude-backend block of the hermetic .agentis/config.
 # ---------------------------------------------------------------------------
-for c in EXPLORER NOTICER SKEPTIC FORMULATOR VERIFIER NOVELTY \
-         ARXIV_SEARCH OEIS_SEARCH GROUPPROPS_SEARCH SCHOLAR_SEARCH \
-         PRIOR_ADVOCATE AUDITOR \
-         INTRODUCER THEORIST COMPUTER EDITOR REVIEWER SUBMITTER; do
-    assert_contains "24. spawn line references RESEARCH_${c}_CLAUDE_MODEL" "$SRC" \
-        "\$RESEARCH_${c}_CLAUDE_MODEL"
-done
-ANTHROPIC_COUNT="$(printf '%s\n' "$SRC" | grep -cF -- "ANTHROPIC_MODEL=%s" || true)"
-if [ "$ANTHROPIC_COUNT" -ge 18 ]; then
-    echo "[PASS] 24. >=18 spawn lines prefix ANTHROPIC_MODEL=%s (count=$ANTHROPIC_COUNT)"
-    PASS=$((PASS + 1))
-else
-    echo "[FAIL] 24. >=18 spawn lines prefix ANTHROPIC_MODEL=%s: got $ANTHROPIC_COUNT"
-    FAIL=$((FAIL + 1))
-fi
+assert_contains "24a. llm.tier.dormant.cli_command_args = --model claude-haiku-4-5" "$SRC" \
+    'printf "llm.tier.dormant.cli_command_args = --model claude-haiku-4-5\\n"'
+assert_contains "24b. llm.tier.shadow.cli_command_args = --model claude-haiku-4-5" "$SRC" \
+    'printf "llm.tier.shadow.cli_command_args = --model claude-haiku-4-5\\n"'
+assert_contains "24c. llm.tier.propose.cli_command_args = --model claude-sonnet-4-6" "$SRC" \
+    'printf "llm.tier.propose.cli_command_args = --model claude-sonnet-4-6\\n"'
+assert_contains "24d. llm.tier.review-gated.cli_command_args = --model claude-sonnet-4-6" "$SRC" \
+    'printf "llm.tier.review-gated.cli_command_args = --model claude-sonnet-4-6\\n"'
+assert_contains "24e. llm.tier.autonomous.cli_command_args = --model claude-opus-4-7" "$SRC" \
+    'printf "llm.tier.autonomous.cli_command_args = --model claude-opus-4-7\\n"'
 
 # ---------------------------------------------------------------------------
-# 25. #711: the shared `llm.args` printf line drops the `--model %s` slot
-# (model now comes from ANTHROPIC_MODEL env on each spawn) but keeps the
-# `--effort %s` slot (effort is orthogonal to the model split).
+# 25. #746: ANTHROPIC_MODEL=%s spawn-prefix routing (#711) is gone --
+# replaced by per-tier substrate above. The 18 daemon spawn lines drop
+# the env prefix + matching printf arg, and ANTHROPIC_MODEL is removed
+# from the exec.env_passthrough allowlist. The shared `llm.args` printf
+# line continues to drop the `--model %s` slot (substrate writes
+# per-tier --model) and keeps `--effort %s` (orthogonal to model
+# selection).
 # ---------------------------------------------------------------------------
 assert_not_contains "25a. llm.args printf no longer carries --model %s" "$SRC" \
     "llm.args = -p --output-format json --model %s"
 assert_contains "25b. llm.args printf still carries --effort %s" "$SRC" \
     "--effort %s"
-assert_contains "25c. ANTHROPIC_MODEL added to exec.env_passthrough allowlist" "$SRC" \
+assert_not_contains "25c. ANTHROPIC_MODEL removed from exec.env_passthrough allowlist" "$SRC" \
     "RESEARCH_JITTER_DISABLED,ANTHROPIC_MODEL"
+ANTHROPIC_COUNT="$(printf '%s\n' "$SRC" | grep -cF -- "ANTHROPIC_MODEL=%s" || true)"
+if [ "$ANTHROPIC_COUNT" -eq 0 ]; then
+    echo "[PASS] 25d. zero spawn lines prefix ANTHROPIC_MODEL=%s (count=$ANTHROPIC_COUNT)"
+    PASS=$((PASS + 1))
+else
+    echo "[FAIL] 25d. zero spawn lines prefix ANTHROPIC_MODEL=%s: got $ANTHROPIC_COUNT"
+    FAIL=$((FAIL + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# 25e. #746: deprecation shim fires a [WARN] line to stderr when the
+# operator exports any RESEARCH_<ROLE>_CLAUDE_MODEL. The substrate
+# routes by tier, not by per-role env, so the operator gets a heads-up
+# that their override is no longer load-bearing.
+# ---------------------------------------------------------------------------
+DEPR_RC=0
+DEPR_OUT="$(RESEARCH_DRY_RUN=1 \
+            RESEARCH_EXPLORER_CLAUDE_MODEL=foo \
+            RESEARCH_RUN_DIR="$WORK_DIR/run-depr" \
+            bash "$ORCH" 2>&1)" || DEPR_RC=$?
+assert_eq "25e. dry-run with deprecated env knob still exits 0" "0" "$DEPR_RC"
+assert_contains "25f. deprecation [WARN] line fires for RESEARCH_EXPLORER_CLAUDE_MODEL" "$DEPR_OUT" \
+    "RESEARCH_EXPLORER_CLAUDE_MODEL is deprecated (#746)"
 
 # ---------------------------------------------------------------------------
 # 26. #740: AdaptiveEngine activation. The hermetic .agentis/config block
