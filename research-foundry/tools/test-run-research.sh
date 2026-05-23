@@ -622,6 +622,43 @@ assert_contains "32a. KB import logs to knowledge-import.log (not /dev/null)" "$
 assert_contains "32b. KB import has || true tail (non-fatal on missing/corrupt)" "$SRC" \
     '|| true'
 
+# ---------------------------------------------------------------------------
+# 34. #761: decide() audit-guard in auditor.ag. After the rich-struct
+# `prompt() -> Verdict` returns its label, the autonomous-tier branch
+# runs a second `decide()` call over the same four-label set and emits
+# `auditor:verdict_disagreement` on mismatch. The guard is tier-gated
+# (autonomous only, CB=50/call) so propose/review-gated/shadow ticks
+# stay on their existing budget. `decide()` auto-writes a signed MC3
+# row to `.agentis/decisions/chain.jsonl` for every autonomous-tier
+# verdict, extending #743's audit-chain coverage to the verdict step.
+# ---------------------------------------------------------------------------
+DECIDE_COUNT="$(printf '%s\n' "$AUD_AG_SRC" | grep -cF -- 'decide(' || true)"
+if [ "$DECIDE_COUNT" -ge 1 ]; then
+    echo "[PASS] 34a. auditor.ag invokes decide() at least once (count=$DECIDE_COUNT)"
+    PASS=$((PASS + 1))
+else
+    echo "[FAIL] 34a. auditor.ag invokes decide() at least once: got $DECIDE_COUNT"
+    FAIL=$((FAIL + 1))
+fi
+assert_contains "34b. auditor.ag defines _decide_verdict_guard helper" "$AUD_AG_SRC" \
+    "fn _decide_verdict_guard"
+assert_contains "34c. auditor.ag emits auditor:verdict_disagreement bus event" "$AUD_AG_SRC" \
+    'emit("auditor:verdict_disagreement"'
+assert_contains "34d. _decide_verdict_guard tier-gates on autonomous (CB=50 budget)" "$AUD_AG_SRC" \
+    'if my_tier != "autonomous"'
+assert_contains "34e. autonomous-tier branch wires _decide_verdict_guard before _publish_auditor" "$AUD_AG_SRC" \
+    "_decide_verdict_guard(verdict.audit_verdict"
+assert_contains "34f. disagreement path downgrades auditor:confidence by 0.05" "$AUD_AG_SRC" \
+    "curr - 0.05"
+assert_contains "34g. disagreement-path confidence downgrade floored at 0.4" "$AUD_AG_SRC" \
+    "if lowered < 0.4 { 0.4; }"
+assert_contains "34h. check-learn-tags.sh schema extends audit:partial with decide-guard tag" "$LEARN_TAGS_SRC" \
+    'decide-guard'
+assert_contains "34i. check-learn-tags.sh schema covers disagreement literal" "$LEARN_TAGS_SRC" \
+    'disagreement'
+assert_contains "34j. check-learn-tags.sh schema covers agreement literal" "$LEARN_TAGS_SRC" \
+    'agreement'
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
