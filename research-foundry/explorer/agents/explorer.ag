@@ -481,6 +481,80 @@ fn _publish_explorer(
     };
 }
 
+// #742 TaskBoard offer helper. Posts a compute-heavy task on the
+// shared `research-foundry:compute` channel so the computer colony can
+// accept it and run the work on its own CB budget. Heuristic gate: the
+// explorer offers when the LLM-built exploration_goal mentions
+// partition / enumerate / count — phrases that historically translate
+// into heavy SymPy / GAP loops the explorer would otherwise run inline
+// via `exec sh`. The escrow cost is intentionally low (reward_cb = 10)
+// so a long line of expired offers cannot drain the explorer's CB
+// pool; `market.task_timeout_s = 600` (run-research.sh #742) recycles
+// the escrow if no computer claims the task within the tick window.
+//
+// Returns the task_id as a string ("" on offer failure or empty
+// payload). Caller writes a `taskboard:offered:<task_id>` memo so
+// downstream telemetry can correlate offer → accept → complete events
+// across the three colonies. Result readback is via the
+// `taskboard:result:<task_id>` memo because TaskBoard's
+// `get_task_result` is not yet exposed as an evaluator builtin (filed
+// as agentis-core follow-up).
+fn _offer_compute_task(self_pid: string, exploration_goal: string, tick_idx: int, colony: string) -> string {
+    if len(exploration_goal) == 0 { return ""; };
+    // Heuristic gate: only offer for compute-heavy goals. Agentis
+    // grammar has no `&&`/`||` operators, so the predicate is
+    // composed via nested `if` ladders.
+    let lc_goal = exploration_goal;
+    let has_partition = index_of(lc_goal, "partition") >= 0;
+    let has_enumerate = index_of(lc_goal, "enumerate") >= 0;
+    let has_count = index_of(lc_goal, "count") >= 0;
+    let any_match = if has_partition {
+        true;
+    } else {
+        if has_enumerate {
+            true;
+        } else {
+            if has_count { true; } else { false; };
+        };
+    };
+    if !any_match { return ""; };
+    let max_goal_bytes = 1024;
+    let goal_clamped = if len(exploration_goal) > max_goal_bytes {
+        substring(exploration_goal, 0, max_goal_bytes);
+    } else {
+        exploration_goal;
+    };
+    let description = "compute_partition_orbits | colony=" + colony
+                    + " | explorer_pid=" + self_pid
+                    + " | tick=" + to_string(tick_idx)
+                    + " | goal=" + goal_clamped;
+    let task_id_int = try { offer("research-foundry:compute", description, 10); } catch e { -1; };
+    if task_id_int < 0 { return ""; };
+    let task_id = to_string(task_id_int);
+    memo_write("taskboard:offered:" + task_id, description);
+    memo_write("explorer:" + self_pid + ":awaiting_task_result:" + task_id, "1");
+    // colony-lint: learn-tags-ok
+    learn("taskboard", "offer compute_partition_orbits", "task_id=" + task_id, "success", ["taskboard", "explorer", "offered"]);
+    return task_id;
+}
+
+// #742 TaskBoard result readback. Reads `taskboard:result:<task_id>`
+// (written by the claimer's tick body) and clears the per-pid
+// `:awaiting_task_result:<task_id>` memo when the result lands. Empty
+// string return means the result has not been written yet (task still
+// open or claimed but not completed); the offerer can retry on a
+// subsequent tick within the `market.task_timeout_s` window.
+fn _readback_task_result(self_pid: string, task_id: string) -> string {
+    if len(task_id) == 0 { return ""; };
+    let result = recall_latest("taskboard:result:" + task_id);
+    if len(result) == 0 { return ""; };
+    // Result landed — clear the awaiting flag.
+    memo_write("explorer:" + self_pid + ":awaiting_task_result:" + task_id, "0");
+    // colony-lint: learn-tags-ok
+    learn("taskboard", "readback result", "task_id=" + task_id, "success", ["taskboard", "explorer", "completed"]);
+    return result;
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let _ = _jitter_sleep();
@@ -668,6 +742,33 @@ fn tick(reason: string) -> void {
     ) -> Exploration;
 
     let my_tier = tier("explorer");
+    // #742 TaskBoard offer: delegate compute-heavy claims to the
+    // computer colony so the explorer can move on to the next topic
+    // instead of blocking on a heavy SymPy/GAP loop in its own
+    // `exec sh`. Only tiers that already act (propose/review-gated/
+    // autonomous) offer — shadow/dormant stay observe-only per
+    // ADR-0001. The offer is best-effort: a "" return means the goal
+    // did not match the heuristic, the offer call raised, or the
+    // economy gate is closed (run-research.sh #742 opens it). The
+    // existing exploration code+output pipeline still runs alongside
+    // (out of scope: replacing the pipeline). The result memo will
+    // be available on a subsequent tick via _readback_task_result.
+    let _offer_eligible = if my_tier == "propose" {
+        true;
+    } else {
+        if my_tier == "review-gated" {
+            true;
+        } else {
+            if my_tier == "autonomous" { true; } else { false; };
+        };
+    };
+    let _offered_task_id = if _offer_eligible {
+        _offer_compute_task(_self_pid, exploration.exploration_goal, tick_idx, _colony_name);
+    } else {
+        "";
+    };
+    let _ = _offered_task_id;
+
     if my_tier == "autonomous" {
         // Class 3 special case (#622): autonomous adds the replicate gate
         // on top of today's propose body (memo + exec + ledger + settlement

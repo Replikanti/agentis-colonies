@@ -320,6 +320,59 @@ fn _publish_theorist(
     };
 }
 
+// #742 TaskBoard accept helper. Same shape as computer.ag's
+// `_try_accept_compute_task` but on the `research-foundry:theory`
+// channel. Theorist accepts proof-style tasks (currently a placeholder
+// for `prove_modular_identity`-class work; explorer does not yet
+// post on this channel — wired here so the substrate is ready for the
+// follow-up that adds theory offers in formulator/skeptic). Returns
+// the task_id (as a string) on a successful claim; empty string when
+// no open task on the channel this tick.
+fn _try_accept_theory_task(self_pid: string) -> string {
+    // Same void-detection idiom as computer.ag's
+    // `_try_accept_compute_task`: wrap the whole field-access chain
+    // inside one try block so Void-field-access on a miss raises into
+    // the catch and yields "" as the no-task sentinel.
+    let task_id = try {
+        let task = accept("research-foundry:theory");
+        let id_s = to_string(task.id);
+        memo_write("theorist:" + self_pid + ":accepted_task:" + id_s, task.description);
+        id_s;
+    } catch e { ""; };
+    if len(task_id) == 0 { return ""; };
+    // colony-lint: learn-tags-ok
+    learn("taskboard", "accept prove_modular_identity", "task_id=" + task_id, "success", ["taskboard", "theorist", "accepted"]);
+    return task_id;
+}
+
+// #742 TaskBoard complete helper for theorist. Same memo-write-then-
+// complete ordering as computer.ag's `_complete_compute_task` so the
+// offerer never sees `complete()` without a matching result memo. The
+// `taskboard:result:<task_id>` memo is the substrate-gap workaround
+// for `get_task_result` not being an evaluator builtin yet.
+fn _complete_theory_task(self_pid: string, task_id: string, result: string) -> bool {
+    if len(task_id) == 0 { return false; };
+    if len(result) == 0 { return false; };
+    let max_result_bytes = 4096;
+    let result_clamped = if len(result) > max_result_bytes {
+        substring(result, 0, max_result_bytes);
+    } else {
+        result;
+    };
+    memo_write("taskboard:result:" + task_id, result_clamped);
+    let task_id_int = parse_int(task_id);
+    let ok = try { complete(task_id_int, result_clamped); true; } catch e { false; };
+    if ok {
+        memo_write("theorist:" + self_pid + ":accepted_task:" + task_id, "");
+        // colony-lint: learn-tags-ok
+        learn("taskboard", "complete prove_modular_identity", "task_id=" + task_id, "success", ["taskboard", "theorist", "completed"]);
+    } else {
+        // colony-lint: learn-tags-ok
+        learn("taskboard", "complete prove_modular_identity", "task_id=" + task_id, "partial", ["taskboard", "theorist", "completed"]);
+    };
+    return ok;
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let _ = _jitter_sleep();
@@ -354,6 +407,43 @@ fn tick(reason: string) -> void {
 
     let conf = get_confidence();
     print("[theorist] tick conf=", conf);
+
+    // #742 TaskBoard accept: claim one proof-style task on the
+    // `research-foundry:theory` channel at tick start. Tier gating
+    // mirrors computer.ag — only acting tiers claim. The channel is
+    // currently dormant (no producer yet posts on `research-foundry:theory`;
+    // the explorer offers on `:compute`). Wired here so the substrate
+    // accepts theory offers as soon as a producer ships (formulator /
+    // skeptic in a follow-up PR).
+    let _accept_tier_t = tier("theorist");
+    let _accept_eligible_t = if _accept_tier_t == "propose" {
+        true;
+    } else {
+        if _accept_tier_t == "review-gated" {
+            true;
+        } else {
+            if _accept_tier_t == "autonomous" { true; } else { false; };
+        };
+    };
+    let _accepted_task_id_t = if _accept_eligible_t {
+        if len(_self_pid) > 0 {
+            _try_accept_theory_task(_self_pid);
+        } else {
+            "";
+        };
+    } else {
+        "";
+    };
+    if len(_accepted_task_id_t) > 0 {
+        let _accepted_desc_t = recall_latest("theorist:" + _self_pid + ":accepted_task:" + _accepted_task_id_t);
+        // Mock result captures the claim chain; a follow-up PR can
+        // wire the LLM-built proof sketch into this branch.
+        let _mock_result_t = "proved: task_id=" + _accepted_task_id_t
+                           + " | claimer_pid=" + _self_pid
+                           + " | tier=" + _accept_tier_t;
+        let _ = _complete_theory_task(_self_pid, _accepted_task_id_t, _mock_result_t);
+        let _ = _accepted_desc_t;
+    };
 
     let tick_idx_str = recall_latest("replay:current_tick");
     let tick_idx = if len(tick_idx_str) > 0 { parse_int(tick_idx_str); } else { -1; };

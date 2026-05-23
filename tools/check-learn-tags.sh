@@ -711,6 +711,42 @@ preprint-foundry
 hitl-gated"
             PAIR_KNOWN=1
             ;;
+        # #742: TaskBoard cognitive-market delegation in research-foundry.
+        # explorer.ag offers compute-heavy claims on
+        # `research-foundry:compute`; computer.ag accepts + completes
+        # those offers. theorist.ag accepts on `research-foundry:theory`
+        # (currently dormant — substrate ready for a follow-up that
+        # adds theory producers). Each colony emits three (topic, outcome)
+        # combinations:
+        #   - explorer: ("taskboard", "success") with "offered" tag
+        #     on `_offer_compute_task` success and "completed" tag on
+        #     `_readback_task_result` success.
+        #   - computer: ("taskboard", "success") with "accepted" tag on
+        #     `_try_accept_compute_task` success and "completed" tag on
+        #     `_complete_compute_task` success.
+        #   - theorist: same shape as computer but on the theory channel.
+        # Partial outcome captures the agentis-core `complete()` failure
+        # path (escrow returned, claim still recorded for forensics).
+        "taskboard:success")
+            ALLOWED_LITERALS="taskboard
+explorer
+computer
+theorist
+offered
+accepted
+completed"
+            PAIR_KNOWN=1
+            ;;
+        "taskboard:partial")
+            ALLOWED_LITERALS="taskboard
+explorer
+computer
+theorist
+offered
+accepted
+completed"
+            PAIR_KNOWN=1
+            ;;
     esac
 }
 
