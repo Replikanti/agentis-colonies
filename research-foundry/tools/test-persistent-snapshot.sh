@@ -20,6 +20,11 @@
 #       `:lineage_id`, and `:specialty` suffixes across runs while
 #       suppressing per-tick noise like `:code:tick-N` / `:output:tick-N`
 #       that would otherwise bloat the snapshot.
+#   (6) KB export round-trip (#750): fake `agentis knowledge export`
+#       replies with canned JSON; assert `knowledge-snapshot.json`
+#       materializes alongside memo-snapshot.json with byte-identical
+#       payload. Failure of the KB export must not flip the memo-only
+#       happy-path exit code.
 #
 # Standard library only -- no pytest, no live federation.
 #
@@ -95,8 +100,31 @@ case "${1:-}" in
     memo)
         shift
         ;;
+    knowledge)
+        shift
+        # #750: KB export/import surface. The helper invokes
+        # `agentis knowledge export` and captures stdout to
+        # knowledge-snapshot.json. Mode `kb-fail` simulates an
+        # always-failing export so case (6) can assert that a KB
+        # failure does not flip the memo-only happy-path exit code.
+        case "${1:-}" in
+            export)
+                if [ "$mode" = "kb-fail" ]; then
+                    echo "fake-podman: simulated KB export failure" >&2
+                    exit 1
+                fi
+                # Canned KB dump: two items, deterministic JSON shape.
+                printf '{"schema":1,"items":[{"id":"k1","topic":"permutation_order_facts:sym5","value":"order=120"},{"id":"k2","topic":"known_priors:claim-42","value":"prior=resolved"}]}\n'
+                exit 0
+                ;;
+            *)
+                echo "fake-podman: not knowledge subcmd: $*" >&2
+                exit 2
+                ;;
+        esac
+        ;;
     *)
-        echo "fake-podman: not memo subcmd: $*" >&2
+        echo "fake-podman: not memo/knowledge subcmd: $*" >&2
         exit 2
         ;;
 esac
@@ -347,6 +375,62 @@ for noise in ("explorer:476:code:tick-7", "explorer:476:output:tick-7"):
     else
         fail "(5) explorer-prompt round-trip: four suffixes carry, noise filtered" "$(cat "$WORK/t5.assert.log")"
     fi
+fi
+
+# --- (6) KB export round-trip (#750) ---
+# Fake `agentis knowledge export` returns canned JSON; assert
+# knowledge-snapshot.json materializes alongside memo-snapshot.json with
+# the exact bytes from the export stdout.
+T6_DIR="$WORK/t6-persistent"
+T6_RC=0
+PODMAN_MODE=ok python3 "$HELPER" --container research-foundry-laptop \
+    --output-dir "$T6_DIR" >"$WORK/t6.log" 2>&1 || T6_RC=$?
+
+if [ "$T6_RC" -ne 0 ]; then
+    fail "(6) kb-export: helper exits 0" "rc=$T6_RC; log: $(cat "$WORK/t6.log")"
+elif [ ! -f "$T6_DIR/memo-snapshot.json" ]; then
+    fail "(6) kb-export: memo-snapshot.json written" "file missing"
+elif [ ! -f "$T6_DIR/knowledge-snapshot.json" ]; then
+    fail "(6) kb-export: knowledge-snapshot.json written" "file missing"
+else
+    if python3 -c '
+import json, sys
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+assert data["schema"] == 1, "schema not 1"
+items = data["items"]
+ids = sorted(it["id"] for it in items)
+assert ids == ["k1", "k2"], "ids = " + repr(ids)
+topics = sorted(it["topic"] for it in items)
+assert topics == ["known_priors:claim-42", "permutation_order_facts:sym5"], \
+    "topics = " + repr(topics)
+' "$T6_DIR/knowledge-snapshot.json" >/dev/null 2>"$WORK/t6.assert.log"; then
+        pass "(6) kb-export: knowledge-snapshot.json carries canned KB payload"
+    else
+        fail "(6) kb-export: knowledge-snapshot.json carries canned KB payload" "$(cat "$WORK/t6.assert.log")"
+    fi
+fi
+
+# --- (7) KB export failure is non-fatal ---
+# Memo snapshot must still succeed when `agentis knowledge export` fails;
+# knowledge-snapshot.json must not be written, but the helper still
+# exits 0 because the memo half of the snapshot landed cleanly.
+T7_DIR="$WORK/t7-persistent"
+T7_RC=0
+PODMAN_MODE=kb-fail python3 "$HELPER" --container research-foundry-laptop \
+    --output-dir "$T7_DIR" >"$WORK/t7.log" 2>&1 || T7_RC=$?
+
+if [ "$T7_RC" -ne 0 ]; then
+    fail "(7) kb-failure-isolated: helper exits 0 despite KB failure" \
+         "rc=$T7_RC; log: $(cat "$WORK/t7.log")"
+elif [ ! -f "$T7_DIR/memo-snapshot.json" ]; then
+    fail "(7) kb-failure-isolated: memo-snapshot.json still written" \
+         "memo-snapshot.json missing"
+elif [ -f "$T7_DIR/knowledge-snapshot.json" ]; then
+    fail "(7) kb-failure-isolated: no half-formed knowledge-snapshot.json" \
+         "knowledge-snapshot.json was written"
+else
+    pass "(7) kb-failure-isolated: memo lands, KB skipped, exit 0"
 fi
 
 echo ""

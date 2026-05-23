@@ -807,6 +807,25 @@ write_bootstrap() {
             printf 'done\n'
         fi
         unset prb_snapshot_path
+        # KB cross-run persistence (#750). After #741 wired the knowledge
+        # market (novelty sells, explorer/prior_advocate buy) and #749
+        # flipped `knowledge.enabled = true`, the KB lives at
+        # /run-root/.agentis/knowledge/ as one JSON-per-item. Without
+        # restore, every fresh container starts with an empty KB so
+        # `knowledge_buy()` always hits cold shelves.
+        #
+        # Host-side persistent-snapshot.py dumped the previous run's KB
+        # to $PERSISTENT_DIR/knowledge-snapshot.json via `agentis knowledge
+        # export`; the host bind-mounts that dir read-only at /persistent
+        # below. Replay it via `agentis knowledge import --merge` so the
+        # KB is hot before daemons spawn. Failure-isolated with `|| true`
+        # — a missing or corrupt snapshot must not block a fresh run.
+        # RESEARCH_PERSISTENT_DISABLED=1 opts out for rollback.
+        if [ "$PERSISTENT_DISABLED" != "1" ]; then
+            printf 'if [ -f /persistent/knowledge-snapshot.json ]; then\n'
+            printf '    (cd /run-root && cat /persistent/knowledge-snapshot.json | agentis knowledge import --merge >/dev/null 2>&1) || true\n'
+            printf 'fi\n'
+        fi
         # Per-daemon tick interval is 30s (decoupled from orchestrator
         # tick); same lesson as the retired preprint-foundry bootstrap.
         printf 'DAEMON_TICK_INTERVAL_MS=30000\n'
@@ -1137,15 +1156,30 @@ write_bootstrap() {
 # --- 3) Spawn the container ---
 spawn_container() {
     emit_step "spawning research-foundry container (image=$IMAGE_TAG)"
+    # #750: bind-mount $PERSISTENT_DIR read-only at /persistent so the
+    # bootstrap's `agentis knowledge import --merge` can find the
+    # previous run's knowledge-snapshot.json. The dir is host-managed
+    # (persistent-snapshot.py writes it at run-end); read-only mount is
+    # sufficient because re-export goes through `podman exec` on the
+    # host, not through this mount.
+    persistent_mount=""
+    if [ "$PERSISTENT_DISABLED" != "1" ]; then
+        # Ensure the host dir exists so podman binds an actual directory
+        # (not auto-created via Linux convention) and persistent-snapshot.py
+        # at run-end can land knowledge-snapshot.json in a stable path.
+        mkdir -p "$PERSISTENT_DIR" 2>/dev/null || true
+        persistent_mount=" -v $PERSISTENT_DIR:/persistent:ro"
+    fi
     if [ "$LLM_BACKEND" = "claude" ]; then
         # Bind-mount host's ~/.claude into container so claude CLI can
         # read OAuth session tokens (Max 20x flat-rate). ':z' SELinux
         # relabel required on Fedora / RHEL. Mirrors tribes-bench
         # (#535, #540).
-        emit_cmd "podman run -d --replace --name research-foundry-laptop -v $REPO_ROOT:/repo:ro -v $LAPTOP_DIR:/run-root:rw -v $HOST_CLAUDE_DIR:/root/.claude:rw,z $IMAGE_TAG /run-root/bootstrap.sh"
+        emit_cmd "podman run -d --replace --name research-foundry-laptop -v $REPO_ROOT:/repo:ro -v $LAPTOP_DIR:/run-root:rw -v $HOST_CLAUDE_DIR:/root/.claude:rw,z$persistent_mount $IMAGE_TAG /run-root/bootstrap.sh"
     else
-        emit_cmd "podman run -d --replace --name research-foundry-laptop -e $OPENAI_KEY_ENV=\"\${$OPENAI_KEY_ENV:-}\" -v $REPO_ROOT:/repo:ro -v $LAPTOP_DIR:/run-root:rw $IMAGE_TAG /run-root/bootstrap.sh"
+        emit_cmd "podman run -d --replace --name research-foundry-laptop -e $OPENAI_KEY_ENV=\"\${$OPENAI_KEY_ENV:-}\" -v $REPO_ROOT:/repo:ro -v $LAPTOP_DIR:/run-root:rw$persistent_mount $IMAGE_TAG /run-root/bootstrap.sh"
     fi
+    unset persistent_mount
 }
 
 # --- 4) Cleanup trap ---

@@ -589,6 +589,39 @@ assert_contains "32e. bootstrap emits math-foundry:peer_worker_count memo seed" 
 assert_contains "32f. RESEARCH_EXPLORER_REPRODUCTIVE_FITNESS_THRESHOLD default lowered 3 -> 2" "$SRC" \
     ': "${RESEARCH_EXPLORER_REPRODUCTIVE_FITNESS_THRESHOLD:=2}"'
 
+# ---------------------------------------------------------------------------
+# 33. #750: KB cross-run persistence. The bootstrap script (emitted in
+# write_bootstrap) must:
+#   - reference /persistent/knowledge-snapshot.json
+#   - invoke `agentis knowledge import <file>` (default merge in v1.7.16;
+#     `--replace` would wipe existing entries, `--merge` is NOT a valid
+#     flag and would be parsed as the filename — silent KB-empty bug
+#     caught in QA #756)
+#   - guard both behind RESEARCH_PERSISTENT_DISABLED via PERSISTENT_DISABLED
+# The spawn line must bind-mount $PERSISTENT_DIR at /persistent:ro when
+# PERSISTENT_DISABLED != "1" so the import can find the snapshot.
+# ---------------------------------------------------------------------------
+assert_contains "33a. bootstrap references /persistent/knowledge-snapshot.json" "$SRC" \
+    '/persistent/knowledge-snapshot.json'
+assert_contains "33b. bootstrap invokes agentis knowledge import with file arg" "$SRC" \
+    'agentis knowledge import /persistent/knowledge-snapshot.json'
+assert_contains "33c. KB import guarded by PERSISTENT_DISABLED" "$SRC" \
+    '"$PERSISTENT_DISABLED" != "1"'
+assert_contains "33d. spawn binds host PERSISTENT_DIR to /persistent:ro" "$SRC" \
+    '$PERSISTENT_DIR:/persistent:ro'
+
+# ---------------------------------------------------------------------------
+# 34. #750: KB import error visibility. Stderr+stdout MUST land in a log
+# file (knowledge-import.log) instead of being silently dropped via
+# `>/dev/null 2>&1`, so operators see if the import actually loaded entries
+# or quietly errored. The bare `agentis knowledge import` returns rc=0
+# even on argument-parse errors in v1.7.16, so a log is the only signal.
+# ---------------------------------------------------------------------------
+assert_contains "34a. KB import logs to knowledge-import.log (not /dev/null)" "$SRC" \
+    'knowledge-import.log'
+assert_contains "34b. KB import has || true tail (non-fatal on missing/corrupt)" "$SRC" \
+    '|| true'
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

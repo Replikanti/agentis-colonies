@@ -13,6 +13,14 @@ snapshot at bootstrap to bias new replicas toward fit specialties; PR-C
 will aggregate cross-run fitness across snapshots. Nothing in-tree reads
 the snapshot yet.
 
+KB cross-run persistence (#750): in addition to the memo snapshot, the
+helper also dumps the on-disk KnowledgeBase via `agentis knowledge export`
+to `<output_dir>/knowledge-snapshot.json`. The KB lives at
+`<root>/.agentis/knowledge/` as one JSON-per-item (out of band of the memo
+store), so the existing memo-only snapshot would otherwise leak it across
+runs. Failure of the KB export is non-fatal: the file is dropped, the
+memo snapshot still lands, and run-research.sh proceeds.
+
 Schema:
     {
       "schema": 1,
@@ -283,6 +291,64 @@ def _atomic_write_json(output_path, payload):
         pass
 
 
+def _knowledge_export(container, output_dir):
+    """Dump the on-disk KnowledgeBase via `agentis knowledge export` (#750).
+
+    Writes raw stdout to `<output_dir>/knowledge-snapshot.json` atomically
+    (tmpfile + rename). Failure is non-fatal: stderr a note and return
+    False so the orchestrator's memo-snapshot exit code is unaffected.
+    """
+    output_path = os.path.join(output_dir, "knowledge-snapshot.json")
+    tmp_path = output_path + ".tmp"
+    last_rc = None
+    for attempt in range(RETRY_ATTEMPTS):
+        result = _podman_exec(container, ["agentis", "knowledge", "export"])
+        if result is None:
+            sys.stderr.write(
+                "persistent-snapshot: 'podman' binary not on PATH while "
+                + "exporting KB; skipping knowledge-snapshot.json.\n"
+            )
+            return False
+        if result.returncode == 0:
+            try:
+                with open(tmp_path, "wb") as f:
+                    f.write(result.stdout)
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except OSError:
+                        pass
+                os.replace(tmp_path, output_path)
+            except OSError as e:
+                sys.stderr.write(
+                    "persistent-snapshot: cannot write " + output_path
+                    + ": " + str(e) + " (KB snapshot dropped, non-fatal)\n"
+                )
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                return False
+            sys.stdout.write(
+                "persistent-snapshot: wrote " + output_path
+                + " (" + str(len(result.stdout)) + " bytes)\n"
+            )
+            return True
+        last_rc = result.returncode
+        if attempt < RETRY_ATTEMPTS - 1:
+            time.sleep(RETRY_SLEEP_S)
+    sys.stderr.write(
+        "persistent-snapshot: 'agentis knowledge export' failed after "
+        + str(RETRY_ATTEMPTS) + " attempts (last rc=" + str(last_rc)
+        + "); KB snapshot dropped (non-fatal).\n"
+    )
+    try:
+        os.unlink(tmp_path)
+    except OSError:
+        pass
+    return False
+
+
 def snapshot_keys(container, output_dir):
     """Snapshot the curated memo keys into <output_dir>/memo-snapshot.json.
 
@@ -362,6 +428,13 @@ def snapshot_keys(container, output_dir):
         return 6
 
     sys.stdout.write("persistent-snapshot: wrote " + output_path + " (" + str(len(snapshot)) + " keys)\n")
+
+    # KB cross-run persistence (#750). Dump the on-disk KnowledgeBase to
+    # knowledge-snapshot.json so run-research.sh's bootstrap can import
+    # it back before colony daemons spawn. Failure-isolated: a missing or
+    # corrupt KB export must not flip the memo-snapshot return code.
+    _knowledge_export(container, output_dir)
+
     return 0
 
 
