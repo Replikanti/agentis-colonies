@@ -499,18 +499,30 @@ claim-auditor"
             PAIR_KNOWN=1
             ;;
         "audit:partial")
+            # #761: decide-guard tags ("decide-guard", "disagreement")
+            # join the existing tier-flag literals so the autonomous-
+            # tier `_decide_verdict_guard` disagreement path can emit
+            # a partial-outcome row alongside the verdict.
             ALLOWED_LITERALS="acted
 review-gated
 observed
-claim-auditor"
+claim-auditor
+decide-guard
+disagreement"
             PAIR_KNOWN=1
             ;;
         "audit:success")
+            # #761: decide-guard agreement tags ("decide-guard",
+            # "agreement") share the success outcome with the existing
+            # propose-tier emitted path. AdaptiveEngine can correlate
+            # decide() match rate with downstream HItL accept rate.
             ALLOWED_LITERALS="acted
 review-gated
 emitted
 observed
-claim-auditor"
+claim-auditor
+decide-guard
+agreement"
             PAIR_KNOWN=1
             ;;
         "prior_match:partial")

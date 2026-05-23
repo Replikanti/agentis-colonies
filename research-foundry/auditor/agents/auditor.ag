@@ -246,6 +246,48 @@ fn _pick_upstream_by_confidence(role: string, ranking_key: string, output_key: s
     return recall_latest(role + ":" + pid + ":" + output_key + ":tick-" + ts);
 }
 
+// _decide_verdict_guard -- #761 audit-guard. After the rich-struct
+// `prompt() -> Verdict` returns its `audit_verdict` label, run a
+// second, signed `decide()` call over the same four-label set and
+// flag disagreement on the bus. Autonomous tier only (CB=50 per call;
+// would double the per-tick LLM cost if propose/review-gated/shadow
+// engaged it too -- those tiers do not emit a final ledger row anyway
+// so the second-opinion signal is wasted budget). `decide()`
+// auto-writes a signed MC3 row to `.agentis/decisions/chain.jsonl`,
+// giving every autonomous-tier verdict a tamper-evident audit trail
+// alongside the existing `audit/actions.jsonl` chain seeded by #743.
+// On disagreement: emit `auditor:verdict_disagreement`, downgrade the
+// per-pid confidence memo by 0.05 (floor 0.4 to stay above shadow),
+// and tag the experience row "disagreement". On agreement: tag the
+// row "agreement" so the AdaptiveEngine can correlate decide() match
+// rate with downstream HItL accept rate over time.
+fn _decide_verdict_guard(verdict_label: string, claim_text: string, ctx_str: string) -> void {
+    let my_tier = tier("auditor");
+    if my_tier != "autonomous" {
+        return;
+    };
+    let options = ["VERIFIED_NEW", "VERIFIED_BY_LEAN", "KNOWN_PRIOR", "NEEDS_HUMAN"];
+    let context = "Auditor verdict for claim: " + claim_text + " | context: " + ctx_str;
+    let decide_label = try { decide(options, context); } catch e { ""; };
+    if len(decide_label) == 0 {
+        return;
+    };
+    if verdict_label != decide_label {
+        emit("auditor:verdict_disagreement",
+             "prompt=" + verdict_label + " decide=" + decide_label);
+        let curr_raw = recall_latest("auditor:confidence");
+        if len(curr_raw) > 0 {
+            let curr = parse_float(curr_raw);
+            let lowered = curr - 0.05;
+            let floored = if lowered < 0.4 { 0.4; } else { lowered; };
+            memo_write("auditor:confidence", to_string(floored));
+        };
+        learn("audit", "verdict_disagreement", "prompt=" + verdict_label + " decide=" + decide_label, "partial", ["decide-guard", "disagreement", "claim-auditor"]);
+    } else {
+        learn("audit", "verdict_agreement", "prompt=" + verdict_label + " decide=" + decide_label, "success", ["decide-guard", "agreement", "claim-auditor"]);
+    };
+}
+
 // _publish_auditor -- TERMINAL agent (Class 1). memo + emit (+ ledger
 // row when final_write=true, + replicate when do_replicate=true).
 // Autonomous and review-gated both emit the ledger row; only propose
@@ -534,6 +576,16 @@ fn tick(reason: string) -> void {
 
     let my_tier = tier("auditor");
     if my_tier == "autonomous" {
+        // #761: audit-guard. Run decide() over the same four-label set
+        // before the terminal ledger write; on disagreement emit
+        // `auditor:verdict_disagreement`, downgrade auditor:confidence
+        // by 0.05 (floor 0.4), and tag the learn() row "disagreement".
+        // Side-effect: decide() writes a signed MC3 row to
+        // .agentis/decisions/chain.jsonl for every autonomous-tier
+        // verdict (whether agreement or disagreement), adding a
+        // tamper-evident audit trail alongside #743's actions chain.
+        let claim_for_guard = if len(novelty_claim) > 0 { novelty_claim; } else { problem_text; };
+        _decide_verdict_guard(verdict.audit_verdict, claim_for_guard, ctx);
         // Terminal agent: autonomous emits the audit ledger row with
         // terminal=true (no confidence floor; emit even when verdict.confidence
         // would otherwise be below an internal floor) and stamps
