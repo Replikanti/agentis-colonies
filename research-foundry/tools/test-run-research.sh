@@ -680,6 +680,48 @@ else
         "$BS_SRC" "#!/usr/bin/env bash"
 fi
 
+# ---------------------------------------------------------------------------
+# 36. #765: novelty loss-function shaping. Three components bundled behind
+# `NOVELTY_LOSS_SHAPING_ENABLED=1`:
+#   (a) novelty.ag defines the three sidecar helpers (_classify_bucket,
+#       _novelty_score, _topic_history_check) for bucket coarsening,
+#       Jaccard-distance scoring, and saturated-bucket detection.
+#   (b) explorer.ag reads the per-bucket exploration hint from the
+#       `novelty:exploration_hint:<bucket>` memo so the meta-prompt can
+#       steer toward under-represented buckets next tick.
+#   (c) tools/run-research.sh adds NOVELTY_LOSS_SHAPING_ENABLED to the
+#       exec.env_passthrough allowlist so the in-container .ag files can
+#       read it via `printenv`.
+#   (d) tools/persistent-snapshot.py extends its key list with
+#       `novelty:topic_history` (FIFO buffer) so the rolling history
+#       carries cross-run.
+# Default (env unset / "0") is byte-identical to pre-#765.
+# ---------------------------------------------------------------------------
+SNAP_PATH="$(cd "$SCRIPT_DIR" && pwd)/persistent-snapshot.py"
+SNAP_SRC="$(cat "$SNAP_PATH")"
+assert_contains "36a. novelty.ag defines _classify_bucket helper" "$NOV_AG_SRC" \
+    "fn _classify_bucket"
+assert_contains "36b. novelty.ag defines _novelty_score helper" "$NOV_AG_SRC" \
+    "fn _novelty_score"
+assert_contains "36c. novelty.ag defines _topic_history_check helper" "$NOV_AG_SRC" \
+    "fn _topic_history_check"
+assert_contains "36d. novelty.ag wires _apply_loss_shaping before tier dispatch" "$NOV_AG_SRC" \
+    "_apply_loss_shaping(novelty_raw"
+assert_contains "36e. novelty.ag gates shaping behind NOVELTY_LOSS_SHAPING_ENABLED" "$NOV_AG_SRC" \
+    "NOVELTY_LOSS_SHAPING_ENABLED"
+assert_contains "36f. explorer.ag reads novelty:exploration_hint memo" "$EXP_AG_SRC" \
+    'recall_latest("novelty:exploration_hint:"'
+assert_contains "36g. explorer.ag gates hint read behind NOVELTY_LOSS_SHAPING_ENABLED" "$EXP_AG_SRC" \
+    "NOVELTY_LOSS_SHAPING_ENABLED"
+assert_contains "36h. run-research.sh adds NOVELTY_LOSS_SHAPING_ENABLED to env_passthrough" "$SRC" \
+    "RESEARCH_JITTER_DISABLED,NOVELTY_LOSS_SHAPING_ENABLED"
+assert_contains "36i. persistent-snapshot.py carries novelty:topic_history" "$SNAP_SRC" \
+    '"novelty:topic_history"'
+assert_contains "36j. persistent-snapshot.py carries novelty:fitness: prefix" "$SNAP_SRC" \
+    '"novelty:fitness:"'
+assert_contains "36k. persistent-snapshot.py carries novelty:exploration_hint: prefix" "$SNAP_SRC" \
+    '"novelty:exploration_hint:"'
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

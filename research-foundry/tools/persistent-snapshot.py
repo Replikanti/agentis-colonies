@@ -68,6 +68,10 @@ EXACT_KEYS = [
     "formulator:learned_successful_topics",
     "editor:learned_pitfalls",
     "feedback:hitl_rejects",
+    # #765 novelty loss-function shaping: the rolling FIFO bucket
+    # history (cap 50). Single memo key with a JSON-array value -- not a
+    # prefix glob -- so list it under EXACT_KEYS.
+    "novelty:topic_history",
 ]
 
 PREFIX_GLOBS = [
@@ -83,6 +87,14 @@ PREFIX_GLOBS = [
     # M98 v3 fitness pressure compounds run-over-run instead of
     # restarting from the seed each container relaunch.
     "explorer:",
+    # #765 novelty loss-function shaping. `novelty:fitness:<claim_id>`
+    # carries the per-claim distance-to-KB score (computed in
+    # `_apply_loss_shaping`); `novelty:exploration_hint:<bucket>` carries
+    # the per-bucket explorer steering hint. Carrying both across runs
+    # lets the loss pressure compound run-over-run without restarting
+    # from a blank KB-distance baseline.
+    "novelty:fitness:",
+    "novelty:exploration_hint:",
 ]
 
 # Suffix filter for the `explorer:` prefix glob. The glob would otherwise

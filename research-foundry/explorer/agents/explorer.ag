@@ -481,6 +481,46 @@ fn _publish_explorer(
     };
 }
 
+// #765 novelty loss-function shaping: read the per-bucket exploration
+// hint published by novelty.ag (`novelty:exploration_hint:<bucket>`) and
+// return a line to fold into the meta-prompt / ctx. Bucket key is the
+// explorer's own specialty when set; otherwise the per-tick topic_label
+// is run through the same 5-keyword classifier novelty.ag uses. Returns
+// "" when:
+//   - NOVELTY_LOSS_SHAPING_ENABLED is unset / "0"
+//   - the explorer has no specialty + topic_label does not match a bucket
+//   - the hint memo is empty (novelty.ag has not published one yet)
+// Default behaviour with the env unset is byte-identical to pre-#765.
+fn _loss_shaping_enabled_explorer() -> bool {
+    let flag = try { exec sh "printenv NOVELTY_LOSS_SHAPING_ENABLED"; } catch e { ""; };
+    if len(flag) == 0 { return false; };
+    if flag == "1" { return true; };
+    return false;
+}
+
+fn _classify_bucket_explorer(s: string) -> string {
+    if len(s) == 0 { return ""; };
+    if index_of(s, "group_theory") >= 0 { return "group_theory"; };
+    if index_of(s, "combinatorics") >= 0 { return "combinatorics"; };
+    if index_of(s, "number_theory") >= 0 { return "number_theory"; };
+    if index_of(s, "probability") >= 0 { return "probability"; };
+    if index_of(s, "algebra") >= 0 { return "algebra"; };
+    return "";
+}
+
+fn _loss_shaping_hint(self_pid: string, topic_label: string) -> string {
+    if _loss_shaping_enabled_explorer() == false { return ""; };
+    let specialty = if len(self_pid) > 0 {
+        recall_latest("explorer:" + self_pid + ":specialty");
+    } else { ""; };
+    let bucket_a = _classify_bucket_explorer(specialty);
+    let bucket = if len(bucket_a) > 0 { bucket_a; } else { _classify_bucket_explorer(topic_label); };
+    if len(bucket) == 0 { return ""; };
+    let hint = recall_latest("novelty:exploration_hint:" + bucket);
+    if len(hint) == 0 { return ""; };
+    return "EXPLORATION HINT (loss-shaped #765): " + hint + "\n";
+}
+
 // #742 TaskBoard offer helper. Posts a compute-heavy task on the
 // shared `research-foundry:compute` channel so the computer colony can
 // accept it and run the work on its own CB budget. Heuristic gate: the
@@ -726,6 +766,13 @@ fn tick(reason: string) -> void {
     };
     let prior_knowledge_line = if len(bought) > 0 { "PRIOR FEDERATION KNOWLEDGE: " + bought + "\n"; } else { ""; };
 
+    // #765 novelty loss-function shaping: fold in the per-bucket
+    // exploration hint published by novelty.ag's
+    // `novelty:exploration_hint:<bucket>` memo. Empty string (the common
+    // case while env-gated off OR no hint published yet) preserves
+    // pre-#765 ctx shape byte-identically.
+    let loss_shaping_hint_line = _loss_shaping_hint(_self_pid, topic_label);
+
     // Build the topic + paper-pair context string.
     let ctx = "TOPIC: " + topic_label + " (" + topic_desc + ")\n"
             + "TOOLS AVAILABLE: " + compute_hints + "\n"
@@ -734,7 +781,8 @@ fn tick(reason: string) -> void {
             + "PAPER B (" + paper_b_id + "): " + paper_b_title + "\n"
             + "ABSTRACT: " + paper_b_abstract + "\n"
             + "LEARNED TOPIC PREFERENCES: " + to_string(rec) + "\n"
-            + prior_knowledge_line;
+            + prior_knowledge_line
+            + loss_shaping_hint_line;
 
     let exploration = prompt(
         prompt_text + _variant_overlay_suffix() + _specialty_overlay_suffix(_self_pid),

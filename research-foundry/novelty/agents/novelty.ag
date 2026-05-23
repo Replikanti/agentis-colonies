@@ -400,6 +400,151 @@ fn _publish_novelty(
     };
 }
 
+// #765 novelty loss-function shaping (env-gated): three companions that
+// nudge the novelty referee away from saturated buckets and reward the
+// referee for verdicts that sit far from the cached KB.
+//
+// All three helpers are pure read-only when `NOVELTY_LOSS_SHAPING_ENABLED`
+// is unset / "0"; the tick-body wrapper `_apply_loss_shaping` short-circuits
+// on the env check so default behaviour is byte-identical to pre-#765.
+//
+// Bucket vocabulary mirrors tools/colony-variants.json explorer specialties:
+//   group_theory, combinatorics, number_theory, probability, algebra.
+fn _loss_shaping_enabled() -> bool {
+    let flag = try { exec sh "printenv NOVELTY_LOSS_SHAPING_ENABLED"; } catch e { ""; };
+    if len(flag) == 0 { return false; };
+    if flag == "1" { return true; };
+    return false;
+}
+
+// _classify_bucket -- coarse mathematical-area family from a free-text
+// `condition` field. The KB stores `permutation_order_facts:<topic_label>`
+// in `condition` (see novelty.ag::L307 sell-path), but tick_idx callers
+// can also pass the raw topic_label here -- both shapes match against
+// the same 5 explorer specialties. Returns "" when no keyword matches
+// (caller treats empty as "unknown bucket, skip shaping").
+fn _classify_bucket(condition: string) -> string {
+    if len(condition) == 0 { return ""; };
+    if index_of(condition, "group_theory") >= 0 { return "group_theory"; };
+    if index_of(condition, "combinatorics") >= 0 { return "combinatorics"; };
+    if index_of(condition, "number_theory") >= 0 { return "number_theory"; };
+    if index_of(condition, "probability") >= 0 { return "probability"; };
+    if index_of(condition, "algebra") >= 0 { return "algebra"; };
+    return "";
+}
+
+// _novelty_score -- bag-of-words Jaccard distance from the incoming claim
+// topic to the K=5 nearest KB entries. Returns 0.0..1.0; higher = farther
+// = more novel (1 - avg(jaccard)). KB shape: `agentis knowledge export`
+// returns a JSON array with `condition` fields like
+// `permutation_order_facts:<topic_label>` (see #741 wiring). The sidecar
+// tokenises `condition` on non-alphanumeric chars and computes Jaccard
+// against the claim topic's tokens. Failure modes: empty KB / parse error
+// / exec failure all return 1.0 (treat as maximally novel -- the absence
+// of prior knowledge is itself a novelty signal).
+fn _novelty_score(claim_topic: string) -> float {
+    if len(claim_topic) == 0 { return 0.0; };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,subprocess,json,re\nclaim=sys.argv[1].lower()\ntry: out=subprocess.run([\"agentis\",\"knowledge\",\"export\"],capture_output=True,text=True,check=False).stdout\nexcept Exception: out=\"\"\nrows=[]\ntry: rows=json.loads(out) if out else []\nexcept Exception: rows=[]\nif not isinstance(rows,list) or not rows:\n print(\"1.0\"); sys.exit(0)\ndef toks(s):\n return set(t for t in re.split(r\"[^a-z0-9]+\",s.lower()) if t)\nc=toks(claim)\nif not c:\n print(\"1.0\"); sys.exit(0)\njacs=[]\nfor row in rows:\n if not isinstance(row,dict): continue\n cond=row.get(\"condition\",\"\")\n if not isinstance(cond,str) or not cond: continue\n k=toks(cond)\n if not k: continue\n u=c|k; i=c&k\n j=(len(i)/len(u)) if u else 0.0\n jacs.append(j)\nif not jacs:\n print(\"1.0\"); sys.exit(0)\njacs.sort(reverse=True)\nK=5\ntop=jacs[:K]\navg=sum(top)/len(top)\nprint(round(1.0-avg,4))' " + shell_escape(claim_topic);
+    let out = try { exec sh cmd; } catch e { "1.0"; };
+    return parse_float(out);
+}
+
+// _topic_history_check -- saturation probe over the rolling
+// `novelty:topic_history` FIFO buffer (N=50). Returns true when `bucket`
+// occupies more than 40% of the buffer (anti-attractor: downgrade the
+// verdict one step to push the federation toward under-represented
+// buckets). Buffer shape: JSON array of bucket strings. Empty / parse
+// failure returns false (no shaping).
+fn _topic_history_check(bucket: string) -> bool {
+    if len(bucket) == 0 { return false; };
+    let raw = recall_latest("novelty:topic_history");
+    if len(raw) == 0 { return false; };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,json\nraw=sys.argv[1]\nbk=sys.argv[2]\ntry: arr=json.loads(raw) if raw else []\nexcept Exception: arr=[]\nif not isinstance(arr,list) or not arr:\n print(\"0\"); sys.exit(0)\nhits=sum(1 for x in arr if isinstance(x,str) and x==bk)\nshare=hits/len(arr)\nprint(\"1\" if share>0.4 else \"0\")' " + shell_escape(raw) + " " + shell_escape(bucket);
+    let out = try { exec sh cmd; } catch e { "0"; };
+    if out == "1" { return true; };
+    return false;
+}
+
+// _push_topic_history -- append `bucket` to `novelty:topic_history` and
+// trim to the last 50 entries. Mirrors the
+// `_push_settled_exploration` FIFO pattern in explorer.ag::L181.
+fn _push_topic_history(bucket: string) -> int {
+    if len(bucket) == 0 { return 0; };
+    let raw = recall_latest("novelty:topic_history");
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,json\nraw=sys.argv[1]\nbk=sys.argv[2]\ntry: arr=json.loads(raw) if raw else []\nexcept Exception: arr=[]\nif not isinstance(arr,list): arr=[]\narr.append(bk)\nif len(arr)>50: arr=arr[-50:]\nprint(json.dumps(arr,separators=(\",\",\":\")))' " + shell_escape(raw) + " " + shell_escape(bucket);
+    let new_buf = try { exec sh cmd; } catch e { "[]"; };
+    memo_write("novelty:topic_history", new_buf);
+    return len(new_buf);
+}
+
+// _sparsest_bucket -- pick the bucket with the lowest share in the FIFO
+// buffer over the 5-bucket vocabulary. Used to publish
+// `novelty:exploration_hint:<bucket>` after every shaping pass so the
+// explorer can read it on the next tick and steer toward the
+// under-represented area. Empty / parse failure returns "" (caller
+// skips the hint write).
+fn _sparsest_bucket() -> string {
+    let raw = recall_latest("novelty:topic_history");
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,json\nraw=sys.argv[1]\ntry: arr=json.loads(raw) if raw else []\nexcept Exception: arr=[]\nif not isinstance(arr,list): arr=[]\nbuckets=[\"group_theory\",\"combinatorics\",\"number_theory\",\"probability\",\"algebra\"]\ncounts={b:0 for b in buckets}\nfor x in arr:\n if isinstance(x,str) and x in counts: counts[x]+=1\n# Pick deterministically: lowest count, alpha-first on tie.\nmn=min(counts.values()) if counts else 0\ncands=sorted(b for b,c in counts.items() if c==mn)\nprint(cands[0] if cands else \"\")' " + shell_escape(raw);
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+// _downgrade_verdict -- one-step verdict downgrade per #765 anti-attractor
+// rule: NOVEL -> BORDERLINE, BORDERLINE -> NOT_NOVEL, NOT_NOVEL stays put.
+fn _downgrade_verdict(v: string) -> string {
+    if v == "NOVEL" { return "BORDERLINE"; };
+    if v == "BORDERLINE" { return "NOT_NOVEL"; };
+    return v;
+}
+
+// _apply_loss_shaping -- the load-bearing wrapper called from `tick()`
+// before `_publish_novelty`. Reads the env flag, computes the novelty
+// score, writes `novelty:fitness:<claim_id>` memo, checks bucket
+// saturation, and returns a (possibly-downgraded) NoveltyVerdict. Also
+// updates the rolling topic_history buffer and writes
+// `novelty:exploration_hint:<sparsest_bucket>` so the explorer can read
+// it on the next tick.
+//
+// claim_id = self_pid + ":tick-" + upstream_tick for grouping
+// fitness writes per claim (matches the verdict memo key shape at
+// novelty.ag::L218). topic_label flows through `_classify_bucket` so the
+// shaping is bucket-aware even when the KB's `condition` carries a
+// `permutation_order_facts:<topic>` prefix.
+fn _apply_loss_shaping(verdict: NoveltyVerdict, self_pid: string, topic_label: string, upstream_tick: int) -> NoveltyVerdict {
+    if _loss_shaping_enabled() == false { return verdict; };
+    let bucket = _classify_bucket(topic_label);
+    let claim_id = self_pid + ":tick-" + to_string(upstream_tick);
+    let score = _novelty_score(topic_label);
+    memo_write("novelty:fitness:" + claim_id, to_string(score));
+    let _hist_len = _push_topic_history(bucket);
+    let saturated = _topic_history_check(bucket);
+    let shaped_verdict_label = if saturated {
+        _downgrade_verdict(verdict.novelty_verdict);
+    } else {
+        verdict.novelty_verdict;
+    };
+    let sparsest = _sparsest_bucket();
+    if len(sparsest) > 0 {
+        memo_write("novelty:exploration_hint:" + sparsest, "bias toward under-represented bucket: " + sparsest);
+    };
+    if saturated {
+        learn("novelty_loss_shaping", "saturated bucket=" + bucket, "downgrade " + verdict.novelty_verdict + " -> " + shaped_verdict_label, "partial", ["loss-shaping", "saturated", "math-foundry"]);
+    } else {
+        learn("novelty_loss_shaping", "bucket=" + bucket, "score=" + to_string(score), "partial", ["loss-shaping", "math-foundry"]);
+    };
+    return NoveltyVerdict {
+        is_classical_result: verdict.is_classical_result,
+        classical_identifier: verdict.classical_identifier,
+        novelty_verdict: shaped_verdict_label,
+        reasoning: verdict.reasoning
+    };
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let _ = _jitter_sleep();
@@ -488,7 +633,14 @@ fn tick(reason: string) -> void {
             + "ANSWER: " + stated_answer + "\n"
             + "NOVELTY CLAIM: " + novelty_claim + "\n";
 
-    let novelty = prompt(_seed_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(_self_pid), ctx) -> NoveltyVerdict;
+    let novelty_raw = prompt(_seed_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(_self_pid), ctx) -> NoveltyVerdict;
+
+    // #765 novelty loss-function shaping (env-gated). On
+    // NOVELTY_LOSS_SHAPING_ENABLED=1, fold in distance-to-KB scoring,
+    // saturated-bucket anti-attractor, and exploration-hint emission
+    // before the verdict reaches `_publish_novelty`. Default (env unset
+    // or "0") returns the raw verdict unchanged.
+    let novelty = _apply_loss_shaping(novelty_raw, _self_pid, topic_label, upstream_tick);
 
     let my_tier = tier("novelty");
     if my_tier == "autonomous" {
