@@ -659,6 +659,27 @@ assert_contains "34i. check-learn-tags.sh schema covers disagreement literal" "$
 assert_contains "34j. check-learn-tags.sh schema covers agreement literal" "$LEARN_TAGS_SRC" \
     'agreement'
 
+# ---------------------------------------------------------------------------
+# 35. #760: tools/test-boot-smoke.sh wiring guard. The boot-smoke script
+# lives at the repo's tools/ root (not inside research-foundry/), but it
+# runs run-research.sh end-to-end as its only purpose -- so if someone
+# deletes or renames it the source-grep tests here would never notice.
+# Cheap guard: assert the file exists with the expected shebang and that
+# it references the 5 assertions in its header doc (the script's own
+# contract). The boot-smoke run itself is gated on `--boot-smoke` in
+# tools/colony-lint.sh and is NOT invoked from here -- it spawns a real
+# container.
+# ---------------------------------------------------------------------------
+BS_PATH="$(cd "$SCRIPT_DIR/../.." && pwd)/tools/test-boot-smoke.sh"
+if [ ! -f "$BS_PATH" ]; then
+    echo "[FAIL] 35. tools/test-boot-smoke.sh missing at $BS_PATH"
+    FAIL=$((FAIL + 1))
+else
+    BS_SRC="$(cat "$BS_PATH")"
+    assert_contains "35. tools/test-boot-smoke.sh has bash shebang + 5-assertion contract" \
+        "$BS_SRC" "#!/usr/bin/env bash"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
