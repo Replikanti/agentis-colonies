@@ -890,6 +890,93 @@ assert_contains "38t. cull-replicas.sh clears colony:cull_self_request memo afte
 assert_contains "38u. orchestrator emit_step names death-pressure aging-out enablement" "$OUT" \
     "death-pressure aging-out"
 
+# ---------------------------------------------------------------------------
+# 39. #768 PR-2: _classify_bucket keyword-vocab expansion. The single-
+# substring-on-bucket-name heuristic (29.2% match on the 24-paper corpus)
+# is replaced by a per-bucket keyword list (~18 lemmas per bucket) drawn
+# from arxiv abstracts. Parity contract spans four sites:
+#   (a) novelty.ag::_classify_bucket
+#   (b) explorer.ag::_classify_bucket_explorer
+#   (c) tools/corpus-inventory.py::classify_bucket
+#   (d) novelty.ag::_sparsest_bucket inline buckets=[...] (5-name list,
+#       unchanged this PR -- guarded so future bucket additions diverge
+#       from a single audit point).
+# Plus the new `_classify_buckets_all` sibling + observational
+# `novelty:bucket_tags:<claim_id>` memo write (single-bucket primary
+# stays the load-bearing path; CSV tags are telemetry-only this PR).
+# Acceptance: corpus-inventory --json reports unclassified < 30% on the
+# unchanged 24-paper corpus (was 70.8% pre-PR).
+# ---------------------------------------------------------------------------
+NOV_PATH="$(cd "$SCRIPT_DIR/.." && pwd)/novelty/agents/novelty.ag"
+EXP_PATH="$(cd "$SCRIPT_DIR/.." && pwd)/explorer/agents/explorer.ag"
+INV_PATH="$SCRIPT_DIR/corpus-inventory.py"
+
+# Sample keywords picked from each bucket vocabulary -- presence
+# everywhere proves the four parity sites agree on the post-PR-2 list.
+# Each (bucket-name, sample-keyword) pair is grepped across the three
+# active sites (novelty.ag, explorer.ag, corpus-inventory.py); the
+# _sparsest_bucket guard (39o) covers site (d).
+for site_label_path in "novelty.ag:$NOV_PATH" "explorer.ag:$EXP_PATH" "corpus-inventory.py:$INV_PATH"; do
+    site_label="${site_label_path%%:*}"
+    site_path="${site_label_path#*:}"
+    SITE_SRC="$(cat "$site_path")"
+    # Substring (not quoted) -- .ag stores keywords as escaped \"foo\"
+    # inside the python shell-out, the .py file stores them as bare "foo"
+    # entries in a dict literal. Bare substring matches both.
+    assert_contains "39a/$site_label has group_theory bucket"   "$SITE_SRC" 'group_theory'
+    assert_contains "39b/$site_label has combinatorics bucket"  "$SITE_SRC" 'combinatorics'
+    assert_contains "39c/$site_label has number_theory bucket"  "$SITE_SRC" 'number_theory'
+    assert_contains "39d/$site_label has probability bucket"    "$SITE_SRC" 'probability'
+    assert_contains "39e/$site_label has algebra bucket"        "$SITE_SRC" 'algebra'
+    assert_contains "39f/$site_label has group_theory keyword sylow"      "$SITE_SRC" 'sylow'
+    assert_contains "39g/$site_label has combinatorics keyword hypergraph" "$SITE_SRC" 'hypergraph'
+    assert_contains "39h/$site_label has number_theory keyword hecke"      "$SITE_SRC" 'hecke'
+    assert_contains "39i/$site_label has probability keyword martingale"   "$SITE_SRC" 'martingale'
+    assert_contains "39j/$site_label has algebra keyword cohomology"       "$SITE_SRC" 'cohomology'
+done
+
+NOV_SRC_39="$(cat "$NOV_PATH")"
+assert_contains "39k. novelty.ag defines _classify_buckets_all" "$NOV_SRC_39" \
+    "fn _classify_buckets_all"
+assert_contains "39l. novelty.ag writes novelty:bucket_tags memo" "$NOV_SRC_39" \
+    'memo_write("novelty:bucket_tags:"'
+assert_contains "39m. novelty.ag calls _classify_buckets_all from loss shaping" "$NOV_SRC_39" \
+    '_classify_buckets_all(topic_label)'
+assert_contains "39n. _classify_bucket lowercases haystack (case-insensitive)" "$NOV_SRC_39" \
+    'argv[1].lower()'
+assert_contains "39o. _sparsest_bucket still pins the 5 canonical buckets" "$NOV_SRC_39" \
+    'buckets=[\"group_theory\",\"combinatorics\",\"number_theory\",\"probability\",\"algebra\"]'
+
+# Live acceptance: run the inventory and verify unclassified < 30% on
+# the current 24-paper corpus. Skips if python3 is missing (also covered
+# by the inventory tool's own header check).
+if command -v python3 >/dev/null 2>&1; then
+    PAPERS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)/data/papers"
+    if [ -d "$PAPERS_DIR" ]; then
+        UNCL_PCT="$(python3 "$INV_PATH" --json 2>/dev/null \
+            | python3 -c 'import json,sys
+try:
+    d=json.loads(sys.stdin.read())
+    t=d.get("total") or 0
+    u=d.get("unclassified") or 0
+    print(100.0*u/t if t else 100.0)
+except Exception:
+    print(100.0)')"
+        UNCL_INT="$(printf '%.0f' "$UNCL_PCT" 2>/dev/null || echo 100)"
+        if [ "$UNCL_INT" -lt 30 ]; then
+            echo "[PASS] 39p. corpus-inventory unclassified < 30% (got ${UNCL_PCT}%)"
+            PASS=$((PASS + 1))
+        else
+            echo "[FAIL] 39p. corpus-inventory unclassified >= 30% (got ${UNCL_PCT}%)"
+            FAIL=$((FAIL + 1))
+        fi
+    else
+        echo "[SKIP] 39p. corpus-inventory live check (papers dir missing)"
+    fi
+else
+    echo "[SKIP] 39p. corpus-inventory live check (python3 missing)"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

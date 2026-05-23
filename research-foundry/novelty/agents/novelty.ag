@@ -433,14 +433,36 @@ fn _loss_shaping_enabled() -> bool {
 // can also pass the raw topic_label here -- both shapes match against
 // the same 5 explorer specialties. Returns "" when no keyword matches
 // (caller treats empty as "unknown bucket, skip shaping").
+//
+// #768 PR-2: substring-match expanded from the literal bucket name to a
+// per-bucket keyword vocabulary derived from arxiv abstracts in
+// `data/papers/`. The original-name strings stay first in each bucket's
+// list so any pre-#768 caller passing a `condition` like
+// `"permutation_order_facts:group_theory"` keeps matching. New keywords
+// are case-insensitive (the haystack is lowercased once at function
+// entry, the keyword list is already lowercase). Priority order across
+// buckets is preserved (`group_theory > combinatorics > number_theory >
+// probability > algebra`) so saturation downgrades remain stable.
 fn _classify_bucket(condition: string) -> string {
     if len(condition) == 0 { return ""; };
-    if index_of(condition, "group_theory") >= 0 { return "group_theory"; };
-    if index_of(condition, "combinatorics") >= 0 { return "combinatorics"; };
-    if index_of(condition, "number_theory") >= 0 { return "number_theory"; };
-    if index_of(condition, "probability") >= 0 { return "probability"; };
-    if index_of(condition, "algebra") >= 0 { return "algebra"; };
-    return "";
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys\ntxt=sys.argv[1].lower()\nbuckets=[(\"group_theory\",[\"group_theory\",\"sylow\",\"cayley\",\"monoid\",\"semigroup\",\"permutation\",\"symmetric_group\",\"sym_n\",\"schur\",\"lattice\",\"coset\",\"conjugacy\",\"abelian\",\"nilpotent\",\"solvable\",\"simple group\",\"presentation\",\"free group\"]),(\"combinatorics\",[\"combinatorics\",\"hamiltonicity\",\"hamilton cycle\",\"latin square\",\"hypergraph\",\"catalan\",\"partition\",\"generating function\",\"matroid\",\"turan\",\"ramsey\",\"enumeration\",\"bijection\",\"set system\",\"design theory\"]),(\"number_theory\",[\"number_theory\",\"hecke\",\"l-function\",\"zeta\",\"modular form\",\"diophantine\",\"frobenius\",\"p-adic\",\"elliptic curve\",\"galois\",\"class field\",\"automorphic\",\"prime\",\"sieve\",\"riemann\"]),(\"probability\",[\"probability\",\"martingale\",\"random walk\",\"mixing time\",\"stationary distribution\",\"markov chain\",\"percolation\",\"branching process\",\"brownian\",\"stochastic\",\"renyi\",\"entropy\"]),(\"algebra\",[\"algebra\",\"cohomology\",\"sheaf\",\"ring spectrum\",\"module\",\"derived category\",\"witt\",\"lie algebra\",\"hopf\",\"tensor\",\"homotopy\",\"scheme\",\"variety\",\"ideal\",\"polynomial ring\"])]\nfor name,kws in buckets:\n for kw in kws:\n  if kw in txt:\n   print(name); sys.exit(0)\nprint(\"\")' " + shell_escape(condition);
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+// _classify_buckets_all -- like `_classify_bucket` but returns a CSV of
+// EVERY bucket that has at least one keyword match in the haystack, in
+// priority order. Observational tag stream (#768 PR-2): callers write the
+// result to `novelty:bucket_tags:<claim_id>` so downstream telemetry can
+// see secondary classifications without changing the load-bearing
+// single-bucket dispatch. Returns "" on empty input or zero matches.
+fn _classify_buckets_all(condition: string) -> string {
+    if len(condition) == 0 { return ""; };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys\ntxt=sys.argv[1].lower()\nbuckets=[(\"group_theory\",[\"group_theory\",\"sylow\",\"cayley\",\"monoid\",\"semigroup\",\"permutation\",\"symmetric_group\",\"sym_n\",\"schur\",\"lattice\",\"coset\",\"conjugacy\",\"abelian\",\"nilpotent\",\"solvable\",\"simple group\",\"presentation\",\"free group\"]),(\"combinatorics\",[\"combinatorics\",\"hamiltonicity\",\"hamilton cycle\",\"latin square\",\"hypergraph\",\"catalan\",\"partition\",\"generating function\",\"matroid\",\"turan\",\"ramsey\",\"enumeration\",\"bijection\",\"set system\",\"design theory\"]),(\"number_theory\",[\"number_theory\",\"hecke\",\"l-function\",\"zeta\",\"modular form\",\"diophantine\",\"frobenius\",\"p-adic\",\"elliptic curve\",\"galois\",\"class field\",\"automorphic\",\"prime\",\"sieve\",\"riemann\"]),(\"probability\",[\"probability\",\"martingale\",\"random walk\",\"mixing time\",\"stationary distribution\",\"markov chain\",\"percolation\",\"branching process\",\"brownian\",\"stochastic\",\"renyi\",\"entropy\"]),(\"algebra\",[\"algebra\",\"cohomology\",\"sheaf\",\"ring spectrum\",\"module\",\"derived category\",\"witt\",\"lie algebra\",\"hopf\",\"tensor\",\"homotopy\",\"scheme\",\"variety\",\"ideal\",\"polynomial ring\"])]\nhits=[]\nfor name,kws in buckets:\n for kw in kws:\n  if kw in txt:\n   hits.append(name); break\nprint(\",\".join(hits))' " + shell_escape(condition);
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
 }
 
 // _novelty_score -- bag-of-words Jaccard distance from the incoming claim
@@ -549,6 +571,15 @@ fn _apply_loss_shaping(verdict: NoveltyVerdict, self_pid: string, topic_label: s
     let claim_id = self_pid + ":tick-" + to_string(upstream_tick);
     let score = _novelty_score(topic_label);
     memo_write("novelty:fitness:" + claim_id, to_string(score));
+    // #768 PR-2: observational multi-bucket tag write. The primary
+    // `bucket` above still drives saturation / sparsest / shaping
+    // dispatch (single-string, backward compat). The tag CSV is for
+    // downstream telemetry only this PR -- not consumed by the loss
+    // shaper or the explorer hint path yet.
+    let bucket_tags = _classify_buckets_all(topic_label);
+    if len(bucket_tags) > 0 {
+        memo_write("novelty:bucket_tags:" + claim_id, bucket_tags);
+    };
     let _hist_len = _push_topic_history(bucket);
     let saturated = _topic_history_check(bucket);
     let shaped_verdict_label = if saturated {
