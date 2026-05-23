@@ -362,6 +362,33 @@ assert_contains "25c. ANTHROPIC_MODEL added to exec.env_passthrough allowlist" "
 assert_contains "26. run-research.sh writes learning.enabled = true" "$SRC" \
     'printf "learning.enabled = true\\n"'
 
+# ---------------------------------------------------------------------------
+# 27. #741: knowledge market wiring. novelty.ag sells findings;
+# explorer.ag and prior_advocate.ag buy them. learning.enabled = true
+# (asserted above) is the prerequisite so the calls do not silently
+# fail.
+# ---------------------------------------------------------------------------
+NOV_AG_PATH="$(cd "$SCRIPT_DIR/.." && pwd)/novelty/agents/novelty.ag"
+EXP_AG_PATH="$(cd "$SCRIPT_DIR/.." && pwd)/explorer/agents/explorer.ag"
+PRI_AG_PATH="$(cd "$SCRIPT_DIR/.." && pwd)/prior_advocate/agents/prior_advocate.ag"
+NOV_AG_SRC="$(cat "$NOV_AG_PATH")"
+EXP_AG_SRC="$(cat "$EXP_AG_PATH")"
+PRI_AG_SRC="$(cat "$PRI_AG_PATH")"
+assert_contains "27a. novelty.ag binds permutation_order_facts sell topic" "$NOV_AG_SRC" \
+    'let sell_topic = "permutation_order_facts:"'
+assert_contains "27b. novelty.ag binds known_priors sell topic" "$NOV_AG_SRC" \
+    'let sell_topic = "known_priors:"'
+assert_contains "27c. novelty.ag calls knowledge_sell" "$NOV_AG_SRC" \
+    'knowledge_sell(sell_topic,'
+assert_contains "27d. explorer.ag binds permutation_order_facts buy topic" "$EXP_AG_SRC" \
+    'let buy_topic = "permutation_order_facts:"'
+assert_contains "27e. explorer.ag calls knowledge_buy" "$EXP_AG_SRC" \
+    'knowledge_buy(buy_topic, 5)'
+assert_contains "27f. prior_advocate.ag binds known_priors buy topic" "$PRI_AG_SRC" \
+    'let buy_topic_pa = "known_priors:"'
+assert_contains "27g. prior_advocate.ag calls knowledge_buy" "$PRI_AG_SRC" \
+    'knowledge_buy(buy_topic_pa, 2)'
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

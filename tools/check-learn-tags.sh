@@ -147,15 +147,33 @@ tribes-bench
             PAIR_KNOWN=1
             ;;
         "knowledge_sell:failure")
+            # Shared between tribes-bench hunters and research-foundry
+            # novelty (#741). novelty.ag's knowledge market sells two
+            # topic kinds (`permutation_order_facts:<topic>` on
+            # NOVEL/BORDERLINE, `known_priors:<topic>` on NOT_NOVEL with
+            # non-empty classical_identifier) and emits this learn() row
+            # only on sell failure, mirroring hunter.ag::L1335.
             ALLOWED_LITERALS="sell-failed
-tribes-bench"
+tribes-bench
+math-foundry"
             PAIR_KNOWN=1
             ;;
         "market:cache_hit")
-            ALLOWED_LITERALS="tribes-bench"
+            # Shared between tribes-bench hunters and research-foundry
+            # buyers (#741). explorer.ag buys
+            # `permutation_order_facts:<topic>` (cb=5) and
+            # prior_advocate.ag buys `known_priors:<topic>` (cb=2);
+            # both emit this learn() row on cognitive.cache_hit.
+            ALLOWED_LITERALS="tribes-bench
+math-foundry
+claim-auditor"
             ALLOWED_PARAMS="buyer:<tn>
+buyer:explorer
+buyer:prior_advocate
 topic_kind:finding
-topic_kind:bundle"
+topic_kind:bundle
+topic_kind:permutation_order_facts
+topic_kind:known_priors"
             PAIR_KNOWN=1
             ;;
         "market:rejected")
@@ -164,10 +182,21 @@ topic_kind:bundle"
             # verifier-stamped bug-ledger.jsonl. Emits this learn() with
             # reason:unverifiable so downstream telemetry can distinguish
             # rejections from cache hits.
-            ALLOWED_LITERALS="tribes-bench"
+            #
+            # research-foundry (#741): explorer.ag + prior_advocate.ag
+            # emit on `cognitive.rejected` from the knowledge_buy
+            # lifecycle stream. Federation literal disambiguates the
+            # call site at lint time.
+            ALLOWED_LITERALS="tribes-bench
+math-foundry
+claim-auditor"
             ALLOWED_PARAMS="buyer:<tn>
+buyer:explorer
+buyer:prior_advocate
 topic_kind:finding
 topic_kind:bundle
+topic_kind:permutation_order_facts
+topic_kind:known_priors
 reason:unverifiable"
             PAIR_KNOWN=1
             ;;
@@ -718,11 +747,23 @@ _colony_name|colony_name_str)
                         ;;
                 esac
                 ;;
+            "buyer:explorer")
+                [ "$tok" = "buyer:explorer" ] && return 0
+                ;;
+            "buyer:prior_advocate")
+                [ "$tok" = "buyer:prior_advocate" ] && return 0
+                ;;
             "topic_kind:finding")
                 [ "$tok" = "topic_kind:finding" ] && return 0
                 ;;
             "topic_kind:bundle")
                 [ "$tok" = "topic_kind:bundle" ] && return 0
+                ;;
+            "topic_kind:permutation_order_facts")
+                [ "$tok" = "topic_kind:permutation_order_facts" ] && return 0
+                ;;
+            "topic_kind:known_priors")
+                [ "$tok" = "topic_kind:known_priors" ] && return 0
                 ;;
             "reason:unverifiable")
                 [ "$tok" = "reason:unverifiable" ] && return 0
