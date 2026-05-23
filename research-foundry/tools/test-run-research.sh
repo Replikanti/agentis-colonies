@@ -722,6 +722,41 @@ assert_contains "36j. persistent-snapshot.py carries novelty:fitness: prefix" "$
 assert_contains "36k. persistent-snapshot.py carries novelty:exploration_hint: prefix" "$SNAP_SRC" \
     '"novelty:exploration_hint:"'
 
+# ---------------------------------------------------------------------------
+# 37. #768 PR-1: corpus inventory tool. corpus-inventory.py classifies
+# every paper in data/papers/ through the same 5-bucket heuristic used
+# by novelty.ag::_classify_bucket. check-corpus-balance.sh wraps it for
+# CI consumption (--json mode) and reports any classified bucket >50%
+# as a failure. These two files are a wiring-level pair -- the shell
+# script invokes the python tool -- so guard them together.
+# ---------------------------------------------------------------------------
+INV_PATH="$SCRIPT_DIR/corpus-inventory.py"
+BAL_PATH="$SCRIPT_DIR/check-corpus-balance.sh"
+if [ ! -f "$INV_PATH" ]; then
+    echo "[FAIL] 37a. research-foundry/tools/corpus-inventory.py missing at $INV_PATH"
+    FAIL=$((FAIL + 1))
+else
+    INV_SRC="$(cat "$INV_PATH")"
+    assert_contains "37a. corpus-inventory.py has python3 shebang" "$INV_SRC" \
+        "#!/usr/bin/env python3"
+    assert_contains "37b. corpus-inventory.py exposes --json flag" "$INV_SRC" \
+        '"--json"'
+    assert_contains "37c. corpus-inventory.py mirrors the 5 novelty.ag buckets" "$INV_SRC" \
+        '"group_theory"'
+fi
+if [ ! -f "$BAL_PATH" ]; then
+    echo "[FAIL] 37d. research-foundry/tools/check-corpus-balance.sh missing at $BAL_PATH"
+    FAIL=$((FAIL + 1))
+else
+    BAL_SRC="$(cat "$BAL_PATH")"
+    assert_contains "37d. check-corpus-balance.sh has bash shebang" "$BAL_SRC" \
+        "#!/usr/bin/env bash"
+    assert_contains "37e. check-corpus-balance.sh invokes corpus-inventory.py" "$BAL_SRC" \
+        'corpus-inventory.py'
+    assert_contains "37f. check-corpus-balance.sh consumes JSON mode" "$BAL_SRC" \
+        '--json'
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
