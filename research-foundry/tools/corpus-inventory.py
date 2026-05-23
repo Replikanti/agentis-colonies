@@ -46,15 +46,76 @@ BUCKETS = [
     "algebra",
 ]
 
+# Per-bucket keyword vocabulary (#768 PR-2). The literal bucket name is
+# the first entry so any pre-PR-2 substring match still wins. Vocabulary
+# is case-insensitive (haystack is lowercased once at classify time); all
+# keywords are already lowercase. Must stay byte-for-byte synchronised
+# with novelty.ag::_classify_bucket and explorer.ag::_classify_bucket_explorer
+# -- test-run-research.sh block 39 cross-greps each (bucket, sample keyword)
+# pair across all three sites.
+BUCKET_KEYWORDS = {
+    "group_theory": [
+        "group_theory", "sylow", "cayley", "monoid", "semigroup",
+        "permutation", "symmetric_group", "sym_n", "schur", "lattice",
+        "coset", "conjugacy", "abelian", "nilpotent", "solvable",
+        "simple group", "presentation", "free group",
+    ],
+    "combinatorics": [
+        "combinatorics", "hamiltonicity", "hamilton cycle", "latin square",
+        "hypergraph", "catalan", "partition", "generating function",
+        "matroid", "turan", "ramsey", "enumeration", "bijection",
+        "set system", "design theory",
+    ],
+    "number_theory": [
+        "number_theory", "hecke", "l-function", "zeta", "modular form",
+        "diophantine", "frobenius", "p-adic", "elliptic curve", "galois",
+        "class field", "automorphic", "prime", "sieve", "riemann",
+    ],
+    "probability": [
+        "probability", "martingale", "random walk", "mixing time",
+        "stationary distribution", "markov chain", "percolation",
+        "branching process", "brownian", "stochastic", "renyi", "entropy",
+    ],
+    "algebra": [
+        "algebra", "cohomology", "sheaf", "ring spectrum", "module",
+        "derived category", "witt", "lie algebra", "hopf", "tensor",
+        "homotopy", "scheme", "variety", "ideal", "polynomial ring",
+    ],
+}
+
 
 def classify_bucket(text):
-    """Return the first bucket whose label appears in ``text``, or ``""``."""
+    """Return the first bucket with a keyword hit in ``text``, or ``""``.
+
+    Priority order follows ``BUCKETS``. Case-insensitive: the haystack is
+    lowercased once before scanning, and ``BUCKET_KEYWORDS`` is already
+    lowercase. Mirrors novelty.ag::_classify_bucket post-#768 PR-2.
+    """
     if not text:
         return ""
+    haystack = text.lower()
     for bucket in BUCKETS:
-        if bucket in text:
-            return bucket
+        for kw in BUCKET_KEYWORDS[bucket]:
+            if kw in haystack:
+                return bucket
     return ""
+
+
+def classify_buckets_all(text):
+    """Return a list of every bucket with at least one keyword hit, in
+    priority order. Mirrors novelty.ag::_classify_buckets_all post-#768
+    PR-2 (observational multi-bucket tag stream, not consumed by the
+    inventory itself but used by sibling tooling)."""
+    if not text:
+        return []
+    haystack = text.lower()
+    hits = []
+    for bucket in BUCKETS:
+        for kw in BUCKET_KEYWORDS[bucket]:
+            if kw in haystack:
+                hits.append(bucket)
+                break
+    return hits
 
 
 def load_corpus(papers_dir):
@@ -129,16 +190,15 @@ def render_text(papers_dir, report):
     lines.append("")
     if total > 0:
         match_pct = 100.0 * classified_total / total
+        unclassified_pct = 100.0 * report["unclassified"] / total
         lines.append(
-            "WARNING: classifier matches {0}/{1} papers ({2:.1f}%). The"
-            " remaining \"unclassified\" rows".format(
-                classified_total, total, match_pct))
-        lines.append(
-            "suggest the keyword heuristic is blind to field-jargon"
-            " abstracts -- runtime sym_n bias")
-        lines.append(
-            "likely originates from the LLM prior rather than corpus"
-            " skew.")
+            "Classifier matches {0}/{1} papers ({2:.1f}%); {3} unclassified ({4:.1f}%).".format(
+                classified_total, total, match_pct,
+                report["unclassified"], unclassified_pct))
+        if unclassified_pct >= 30.0:
+            lines.append(
+                "WARNING: unclassified >= 30% -- expand bucket keyword"
+                " vocabulary or hand-tag via --token-set.")
     return "\n".join(lines)
 
 
