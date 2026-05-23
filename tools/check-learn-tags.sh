@@ -589,6 +589,30 @@ observed
 preprint-foundry"
             PAIR_KNOWN=1
             ;;
+        # #745: Lean 4 verifier activation in research-foundry/theorist.
+        # The theorist runs `lean <file>` against an LLM-rendered Lean
+        # source body and emits one of three learn() rows per tick:
+        #   verified  : closed proof accepted by lean, no `sorry`
+        #   incomplete: lean accepted file but body contained `sorry`
+        #   failed    : lean rejected file (timeout or `error:`)
+        # The outcome doubles as the fitness signal for the
+        # AdaptiveEngine + downstream auditor's VERIFIED_BY_LEAN
+        # verdict label.
+        "lean_check:verified")
+            ALLOWED_LITERALS="lean
+verification"
+            PAIR_KNOWN=1
+            ;;
+        "lean_check:incomplete")
+            ALLOWED_LITERALS="lean
+verification"
+            PAIR_KNOWN=1
+            ;;
+        "lean_check:failed")
+            ALLOWED_LITERALS="lean
+verification"
+            PAIR_KNOWN=1
+            ;;
         "compute:partial")
             ALLOWED_LITERALS="acted
 review-gated

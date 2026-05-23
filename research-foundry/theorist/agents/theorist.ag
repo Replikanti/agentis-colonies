@@ -26,6 +26,16 @@ type Draft {
     rationale: string
 }
 
+// #745: Lean4 proof source emitted alongside main_tex. The LLM is
+// asked to render the same theorem in Lean 4 syntax; an empty body
+// (e.g. `:= by sorry`) is acceptable -- the checker reports
+// `incomplete` rather than `failed` so downstream auditors can
+// distinguish "no proof attempted" from "proof rejected by lean".
+type LeanDraft {
+    lean_source: string,
+    rationale: string
+}
+
 fn get_confidence() -> float {
     let raw = recall_latest("theorist:confidence");
     if len(raw) > 0 {
@@ -60,6 +70,66 @@ fn _jitter_sleep() -> int {
 
 fn _draft_prompt() -> string {
     return "You are a research mathematician drafting the body of a preprint. The user-supplied context carries PROBLEM, ANSWER, NOVELTY CLAIM, the upstream EXPLORER CODE and OUTPUT that produced the observation, and the AUDITOR REASONING. Produce: (1) Section 2 in LaTeX with `\\section{Preliminaries}` containing the definitions and notation needed to state the result precisely (use `amsthm` definition environment `\\begin{definition}...\\end{definition}` where appropriate). (2) Section 3 in LaTeX with `\\section{Main Result}` containing the precise statement inside `\\begin{theorem}...\\end{theorem}` or `\\begin{proposition}...\\end{proposition}` for observational claims, followed by either a `\\begin{proof}...\\end{proof}` block (proof_kind=\"sketch\" or \"full\") OR a description of the computational experiment (proof_kind=\"computational\"). Set hedge_required=true when the upstream evidence is purely computational and no analytic proof is being offered. Set proof_kind=\"computational\" in that case and use phrases like 'computational evidence suggests' rather than 'we prove'. Do NOT invent values not present in the explorer output. Output ONLY valid JSON: {\"definitions_tex\":\"...\",\"main_tex\":\"...\",\"proof_kind\":\"computational|sketch|full\",\"hedge_required\":true,\"rationale\":\"one-line\"}.";
+}
+
+// #745: Lean 4 verifier wiring. The theorist asks the LLM to translate
+// the LaTeX theorem statement (and proof body when proof_kind != "computational")
+// into Lean 4 source. The container's `lean` binary (installed via
+// elan in Containerfile.research) then runs the file. Output classes:
+//   - "verified"  : lean exited clean, no `sorry`, no `error:`
+//   - "incomplete": lean exited clean but body contained `sorry`
+//   - "failed"    : lean reported `error:` or timed out
+// Most LLM-generated proofs will land in "failed" -- that is the
+// desired signal; even a "failed" result is informative for auditor +
+// adaptive engine. The verifier is NEVER terminal -- theorist still
+// emits LaTeX even on lean failure.
+fn _lean_prompt() -> string {
+    return "You are translating a LaTeX theorem statement (and its proof body when an analytic proof is offered) into Lean 4 source. Produce a single self-contained Lean 4 file: import nothing beyond the core library (NO `import Mathlib`; the container ships stock Lean 4 without mathlib for image-size reasons). State the theorem with `theorem T : <prop> := <proof>` or `theorem T : <prop> := by <tactic_block>`. If the upstream proof body is a sketch / computational and you cannot produce a closed tactic proof from it, leave the body as `:= by sorry` -- that is acceptable and informative (it surfaces as `lean_verdict=incomplete`). Do NOT invent definitions; if the theorem references an undefined symbol, fall back to a Prop placeholder (`theorem T : True := trivial`). Output ONLY valid JSON: {\"lean_source\":\"<entire .lean file contents>\",\"rationale\":\"one-line description of what you translated\"}. Do NOT wrap output in markdown code fences.";
+}
+
+// _run_lean_check -- writes lean_source to a per-tick file under
+// $AGENTIS_ROOT/sandbox (mirrors computer.ag::_publish_computer
+// sandbox convention) and runs `lean` against it. Returns the
+// stringified verdict {verified, incomplete, failed}. 30s wall clock
+// cap via `timeout` keeps a runaway elaborator from blocking the tick.
+// Bypassable for tests via THEORIST_LEAN_DISABLED=1.
+fn _run_lean_check(self_pid: string, upstream_tick: int, lean_source: string) -> string {
+    let disabled = try { exec sh "printenv THEORIST_LEAN_DISABLED"; } catch e { ""; };
+    if disabled == "1" { return "failed"; };
+    if len(lean_source) == 0 { return "failed"; };
+
+    let sandbox_dir = try { exec sh "printenv AGENTIS_ROOT"; } catch e { ""; };
+    let sandbox_eff = if len(sandbox_dir) > 0 { sandbox_dir + "/sandbox"; } else { "/run-root/.agentis/sandbox"; };
+    let lean_path = sandbox_eff + "/theorist-" + self_pid + "-tick-" + to_string(upstream_tick) + ".lean";
+
+    // colony-lint: safe-exec-concat
+    let write_cmd = "mkdir -p " + shell_escape(sandbox_eff) + " && printf '%s' " + shell_escape(lean_source) + " > " + shell_escape(lean_path);
+    let _wrote = try { exec sh write_cmd; } catch e { ""; };
+
+    let timeout_env = try { exec sh "printenv THEORIST_LEAN_TIMEOUT_SEC"; } catch e { ""; };
+    let timeout_s = if len(timeout_env) > 0 { timeout_env; } else { "30"; };
+
+    // colony-lint: safe-exec-concat
+    let run_cmd = "timeout " + shell_escape(timeout_s) + " lean " + shell_escape(lean_path) + " 2>&1; echo \"__lean_exit=$?__\"";
+    let run_output = try { exec sh run_cmd; } catch e { "__lean_exit=124__"; };
+
+    // colony-lint: safe-exec-concat
+    let has_error_cmd = "printf '%s' " + shell_escape(run_output) + " | grep -F 'error:' >/dev/null 2>&1 && printf yes || printf no";
+    let has_error = try { exec sh has_error_cmd; } catch e { "yes"; };
+
+    // colony-lint: safe-exec-concat
+    let timed_out_cmd = "printf '%s' " + shell_escape(run_output) + " | grep -F '__lean_exit=124__' >/dev/null 2>&1 && printf yes || printf no";
+    let timed_out = try { exec sh timed_out_cmd; } catch e { "no"; };
+
+    if has_error == "yes" { return "failed"; };
+    if timed_out == "yes" { return "failed"; };
+
+    // colony-lint: safe-exec-concat
+    let has_sorry_cmd = "printf '%s' " + shell_escape(lean_source) + " | grep -F 'sorry' >/dev/null 2>&1 && printf yes || printf no";
+    let has_sorry = try { exec sh has_sorry_cmd; } catch e { "yes"; };
+
+    if has_sorry == "yes" { return "incomplete"; };
+    return "verified";
 }
 
 // Phase 9 PR-C (#663): variant + specialty overlays.
@@ -145,11 +215,15 @@ fn select_replication_target() -> string {
 
 // _publish_theorist -- memo + emit (+ replicate when do_replicate=true).
 // Phase 9 PR-C (#663) added the M2-Malthusian replicate path; +1
-// fitness per successful draft (PR-D will refine).
+// fitness per successful draft (PR-D will refine). #745 added the
+// lean_verdict + lean_source memo writes alongside the existing
+// LaTeX outputs.
 fn _publish_theorist(
     final_write: bool,
     do_replicate: bool,
     draft: Draft,
+    lean_source: string,
+    lean_verdict: string,
     self_pid: string,
     _colony_name: string,
     upstream_tick: int,
@@ -163,6 +237,12 @@ fn _publish_theorist(
     memo_write("theorist:" + self_pid + ":proof_kind:tick-" + to_string(upstream_tick), draft.proof_kind);
     let hedge_str = if draft.hedge_required { "true"; } else { "false"; };
     memo_write("theorist:" + self_pid + ":hedge_required:tick-" + to_string(upstream_tick), hedge_str);
+    // #745: per-tick Lean verifier outcome fan-in keys consumed by
+    // auditor's _pick_upstream_by_confidence("theorist", "lean_verdict",
+    // ...). lean_source is persisted alongside for replay / debugging;
+    // never the terminal artefact (latexmk still consumes main_tex).
+    memo_write("theorist:" + self_pid + ":lean_source:tick-" + to_string(upstream_tick), lean_source);
+    memo_write("theorist:" + self_pid + ":lean_verdict:tick-" + to_string(upstream_tick), lean_verdict);
     memo_write("replay:current_theorist_pid", self_pid);
 
     emit("theorist:main_ready", draft);
@@ -320,25 +400,52 @@ fn tick(reason: string) -> void {
 
     let draft = prompt(_draft_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(_self_pid), ctx) -> Draft;
 
+    // #745: Lean 4 formal verification. The LLM is asked to render the
+    // theorem (and proof body for sketch/full kinds) in Lean 4; the
+    // container's lean binary then checks it. Non-terminal: even on
+    // failure the LaTeX body is still published below. Outcome
+    // {verified, incomplete, failed} is memo'd for the auditor's
+    // fan-in picker and is folded into the experience ledger via
+    // learn("lean_check", ...).
+    let lean_ctx = "PROOF KIND: " + draft.proof_kind + "\n"
+                 + "DEFINITIONS LATEX:\n" + draft.definitions_tex + "\n"
+                 + "MAIN LATEX:\n" + draft.main_tex + "\n";
+    let lean_draft = prompt(_lean_prompt(), lean_ctx) -> LeanDraft;
+    let lean_verdict = _run_lean_check(_self_pid, upstream_tick, lean_draft.lean_source);
+    print("[theorist] lean_verdict=", lean_verdict, " proof_kind=", draft.proof_kind);
+    // Branch on lean_verdict so check-learn-tags.sh sees a static
+    // outcome literal at each call site (lean_check:verified /
+    // lean_check:incomplete / lean_check:failed). One row per tick
+    // regardless of branch.
+    if lean_verdict == "verified" {
+        learn("lean_check", "tick " + to_string(tick_idx), "verified", "verified", ["lean", "verification"]);
+    } else {
+        if lean_verdict == "incomplete" {
+            learn("lean_check", "tick " + to_string(tick_idx), "incomplete", "incomplete", ["lean", "verification"]);
+        } else {
+            learn("lean_check", "tick " + to_string(tick_idx), "failed", "failed", ["lean", "verification"]);
+        };
+    };
+
     let my_tier = tier("theorist");
     if my_tier == "autonomous" {
         memo_write("theorist:" + _self_pid + ":review_gated", "true");
         learn("theorise", "tick " + to_string(tick_idx), draft.rationale, "partial", ["acted", "preprint-foundry"]);
         // #740: feed the AdaptiveEngine the chosen proof_kind on the same tier path.
         learn("proof_approach", draft.proof_kind, "tick " + to_string(tick_idx), "success", ["acted", "preprint-foundry"]);
-        _publish_theorist(true, true, draft, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
+        _publish_theorist(true, true, draft, lean_draft.lean_source, lean_verdict, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
     } else {
         if my_tier == "review-gated" {
             memo_write("theorist:" + _self_pid + ":review_gated", "true");
             learn("theorise", "tick " + to_string(tick_idx), draft.rationale, "partial", ["review-gated", "preprint-foundry"]);
             // #740: feed the AdaptiveEngine the chosen proof_kind on the same tier path.
             learn("proof_approach", draft.proof_kind, "tick " + to_string(tick_idx), "partial", ["review-gated", "preprint-foundry"]);
-            _publish_theorist(true, false, draft, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
+            _publish_theorist(true, false, draft, lean_draft.lean_source, lean_verdict, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
         } else {
             if my_tier == "propose" {
                 // #740: feed the AdaptiveEngine the chosen proof_kind on the same tier path.
                 learn("proof_approach", draft.proof_kind, "tick " + to_string(tick_idx), "partial", ["emitted", "preprint-foundry"]);
-                _publish_theorist(false, false, draft, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
+                _publish_theorist(false, false, draft, lean_draft.lean_source, lean_verdict, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
             } else {
                 print("[theorist] observing (tier:", my_tier, ") rationale=", draft.rationale);
                 learn("theorise", "tick " + to_string(tick_idx), draft.rationale, "partial", ["observed", "preprint-foundry"]);
