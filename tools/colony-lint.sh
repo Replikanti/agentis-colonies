@@ -893,6 +893,15 @@ for t in "${test_scripts[@]}"; do
                 skip "tools: $(basename "$t") (destructive — set AGENTIS_RUN_KILL_TESTS=1 to run)"
             fi
             ;;
+        test-boot-smoke.sh)
+            # #760: spawns a real ~45s research-foundry container. Opt-in
+            # only via `--boot-smoke` (handled in the dedicated block
+            # below). Default discovery loop MUST NOT run it -- otherwise
+            # CI workers without podman or without the image fail or
+            # block on container teardown. The opt-in block below
+            # invokes the script with its full output captured.
+            skip "tools: $(basename "$t") (boot-level smoke — use --boot-smoke to opt in)"
+            ;;
         *)
             if AGENTIS_COLONY_LINT_NESTED=1 bash "$t" &>/dev/null; then
                 pass "tools: $(basename "$t") unit tests"
