@@ -279,8 +279,8 @@ fn _publish_computer(
 // so the offerer can read it back across the substrate gap (TaskBoard's
 // `get_task_result` is not yet exposed as an evaluator builtin —
 // filed as agentis-core follow-up). Reward CB transfers from
-// offerer's escrow to claimer on `complete()` per CB-escrow semantics
-// in agentis-core src/economy/taskboard.rs.
+// offerer's escrow to claimer on `complete()` per the agentis-core
+// CB-escrow contract.
 fn _try_accept_compute_task(self_pid: string) -> string {
     // accept() returns either Struct("Task", {id, description, ...}) on
     // a successful claim or Value::Void on miss. We wrap the whole

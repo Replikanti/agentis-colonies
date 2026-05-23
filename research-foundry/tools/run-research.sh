@@ -673,8 +673,9 @@ write_bootstrap() {
         printf '  printf "audit.signing_key_path = .agentis/identity/private.key\\n"\n'
         # #742: TaskBoard cognitive-market activation. Without
         # `economy.enabled = true`, the offer/accept/complete builtins
-        # raise `economy not enabled` per cli/run.rs:319 (the CB pool
-        # and TaskBoard handles are wired only when this gate is open).
+        # raise `economy not enabled` at agentis-core boot (the CB
+        # pool and TaskBoard handles are wired only when this gate is
+        # open).
         # The TaskBoard substrate has shipped in agentis-core since the
         # cognitive market work but no federation has consumed it;
         # research-foundry is the first — explorer offers compute-heavy
