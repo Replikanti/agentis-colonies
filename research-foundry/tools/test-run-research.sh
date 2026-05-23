@@ -757,6 +757,139 @@ else
         '--json'
 fi
 
+
+# 38. #767: Malthusian death pressure -- aging-out + size-decrement bug fix.
+#
+# Per-colony `.ag` files publish `colony:cull_self_request:<pid>` when
+# their `age_ticks` counter crosses RESEARCH_AGING_THRESHOLD; the
+# cull-replicas.sh sidecar reads those requests, applies the
+# RESEARCH_AGING_FITNESS_FLOOR check in Python, and emits a ledger row
+# with `reason=aging`. Independently, the cull pipeline now decrements
+# `colony-<name>:size` after `agentis daemon stop` and re-increments it
+# after the respawn -- a load-bearing bug fix that lets the
+# M2-Malthusian `size >= max_replicas` gate keep firing across cull
+# cycles. The aging behaviour is opt-in via RESEARCH_AGING_ENABLED=1;
+# the size-decrement bug fix is unconditional.
+# ---------------------------------------------------------------------------
+CULL_REPLICAS_PATH="$(cd "$SCRIPT_DIR/../.." && pwd)/tools/cull-replicas.sh"
+CULL_REPLICAS_SRC="$(cat "$CULL_REPLICAS_PATH")"
+
+assert_contains "38a. run-research.sh defaults RESEARCH_AGING_ENABLED to 0 (opt-in)" "$SRC" \
+    ': "${RESEARCH_AGING_ENABLED:=0}"'
+assert_contains "38b. run-research.sh defaults RESEARCH_AGING_THRESHOLD to 100" "$SRC" \
+    ': "${RESEARCH_AGING_THRESHOLD:=100}"'
+assert_contains "38c. run-research.sh defaults RESEARCH_AGING_FITNESS_FLOOR to 0.3" "$SRC" \
+    ': "${RESEARCH_AGING_FITNESS_FLOOR:=0.3}"'
+assert_contains "38d. env_passthrough names RESEARCH_AGING_ENABLED" "$SRC" \
+    "RESEARCH_AGING_ENABLED"
+assert_contains "38e. env_passthrough names RESEARCH_AGING_THRESHOLD" "$SRC" \
+    "RESEARCH_AGING_THRESHOLD"
+assert_contains "38f. env_passthrough names RESEARCH_AGING_FITNESS_FLOOR" "$SRC" \
+    "RESEARCH_AGING_FITNESS_FLOOR"
+assert_contains "38g. bootstrap seeds env:RESEARCH_AGING_ENABLED memo" "$SRC" \
+    'agentis memo set env:RESEARCH_AGING_ENABLED'
+assert_contains "38h. bootstrap seeds env:RESEARCH_AGING_THRESHOLD memo" "$SRC" \
+    'agentis memo set env:RESEARCH_AGING_THRESHOLD'
+assert_contains "38i. bootstrap seeds env:RESEARCH_AGING_FITNESS_FLOOR memo" "$SRC" \
+    'agentis memo set env:RESEARCH_AGING_FITNESS_FLOOR'
+
+# 38j-l. Every research-foundry .ag exposes the _age_tick_and_check
+# helper AND calls it at tick() entry. 18 colonies total -- explorer,
+# noticer, formulator, verifier, novelty, skeptic, arxiv-search, oeis-
+# search, groupprops-search, scholar-search, prior_advocate, auditor,
+# introducer, theorist, computer, editor, reviewer, submitter.
+RF_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+AG_FILES_FOUND=0
+AG_HELPER_OK=0
+AG_CALL_OK=0
+for ag_path in \
+    "$RF_ROOT/explorer/agents/explorer.ag" \
+    "$RF_ROOT/noticer/agents/noticer.ag" \
+    "$RF_ROOT/formulator/agents/formulator.ag" \
+    "$RF_ROOT/verifier/agents/verifier.ag" \
+    "$RF_ROOT/novelty/agents/novelty.ag" \
+    "$RF_ROOT/skeptic/agents/skeptic.ag" \
+    "$RF_ROOT/arxiv-search/agents/arxiv-search.ag" \
+    "$RF_ROOT/oeis-search/agents/oeis-search.ag" \
+    "$RF_ROOT/groupprops-search/agents/groupprops-search.ag" \
+    "$RF_ROOT/scholar-search/agents/scholar-search.ag" \
+    "$RF_ROOT/prior_advocate/agents/prior_advocate.ag" \
+    "$RF_ROOT/auditor/agents/auditor.ag" \
+    "$RF_ROOT/introducer/agents/introducer.ag" \
+    "$RF_ROOT/theorist/agents/theorist.ag" \
+    "$RF_ROOT/computer/agents/computer.ag" \
+    "$RF_ROOT/editor/agents/editor.ag" \
+    "$RF_ROOT/reviewer/agents/reviewer.ag" \
+    "$RF_ROOT/submitter/agents/submitter.ag" \
+; do
+    if [ ! -f "$ag_path" ]; then
+        continue
+    fi
+    AG_FILES_FOUND=$((AG_FILES_FOUND + 1))
+    if grep -Fq "fn _age_tick_and_check(colony: string, self_pid: string) -> int" "$ag_path"; then
+        AG_HELPER_OK=$((AG_HELPER_OK + 1))
+    fi
+    if grep -Fq "_age_tick_and_check(_colony_name, _self_pid)" "$ag_path"; then
+        AG_CALL_OK=$((AG_CALL_OK + 1))
+    fi
+done
+
+if [ "$AG_FILES_FOUND" -eq 18 ]; then
+    echo "[PASS] 37j. enumerated all 18 research-foundry .ag files"
+    PASS=$((PASS + 1))
+else
+    echo "[FAIL] 37j. enumerated all 18 research-foundry .ag files (got $AG_FILES_FOUND)"
+    FAIL=$((FAIL + 1))
+fi
+
+if [ "$AG_HELPER_OK" -eq 18 ]; then
+    echo "[PASS] 37k. all 18 .ag files define _age_tick_and_check helper"
+    PASS=$((PASS + 1))
+else
+    echo "[FAIL] 37k. _age_tick_and_check helper missing in $((18 - AG_HELPER_OK)) of 18 .ag files"
+    FAIL=$((FAIL + 1))
+fi
+
+if [ "$AG_CALL_OK" -eq 18 ]; then
+    echo "[PASS] 37l. all 18 .ag tick() functions invoke _age_tick_and_check"
+    PASS=$((PASS + 1))
+else
+    echo "[FAIL] 37l. _age_tick_and_check call site missing in $((18 - AG_CALL_OK)) of 18 .ag tick() bodies"
+    FAIL=$((FAIL + 1))
+fi
+
+# Spot-check one .ag for the request key the sidecar reads.
+assert_contains "38m. explorer.ag publishes colony:cull_self_request:<pid> memo" \
+    "$(cat "$RF_ROOT/explorer/agents/explorer.ag")" \
+    'memo_write("colony:cull_self_request:"'
+
+# 38n-t. cull-replicas.sh bug fix + aging scan.
+assert_contains "38n. cull-replicas.sh decrements colony-<colony>:size after agentis daemon stop" \
+    "$CULL_REPLICAS_SRC" \
+    'agentis memo set "colony-$COLONY_NAME:size" "$NEW_SIZE"'
+assert_contains "38o. cull-replicas.sh re-increments colony-<colony>:size after respawn (net-zero)" \
+    "$CULL_REPLICAS_SRC" \
+    'agentis memo set "colony-$COLONY_NAME:size" "$NEW_SIZE_POST"'
+assert_contains "38p. cull-replicas.sh scans colony:cull_self_request:<pid> requests" \
+    "$CULL_REPLICAS_SRC" \
+    'colony:cull_self_request:'
+assert_contains "38q. cull-replicas.sh reads env:RESEARCH_AGING_FITNESS_FLOOR memo" \
+    "$CULL_REPLICAS_SRC" \
+    'env:RESEARCH_AGING_FITNESS_FLOOR'
+assert_contains "38r. cull-replicas.sh emits cull row with dynamic reason (aging vs fitness_bottom_pct)" \
+    "$CULL_REPLICAS_SRC" \
+    "reason = sys.argv[7] if len(sys.argv) > 7 and sys.argv[7] else 'fitness_bottom_pct'"
+assert_contains "38s. cull-replicas.sh respawn row carries kill_reason" \
+    "$CULL_REPLICAS_SRC" \
+    "'kill_reason': kill_reason"
+assert_contains "38t. cull-replicas.sh clears colony:cull_self_request memo after acting" \
+    "$CULL_REPLICAS_SRC" \
+    'memo del "colony:cull_self_request:$pid"'
+
+# 38u. emit_step surfaces aging-out enablement in the orchestrator log.
+assert_contains "38u. orchestrator emit_step names death-pressure aging-out enablement" "$OUT" \
+    "death-pressure aging-out"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

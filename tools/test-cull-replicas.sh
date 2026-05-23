@@ -332,6 +332,80 @@ else
         "id5=$MULTI_ID5 id6=$MULTI_ID6 id7=$MULTI_ID7 out=$MULTI_OUT"
 fi
 
+# --- Test 11 (#767): aging cull request override fires reason=aging.
+# When CULL_AGING_REQUESTS_OVERRIDE names a pid that exists in the
+# daemons fixture AND its fitness is below CULL_AGING_FITNESS_FLOOR
+# (every fitness here collapses to 0.0 because the experience dir is
+# empty), the picker must include that pid with reason=aging so the
+# dry-run log mentions it explicitly.
+AGING_OUT="$(CULL_DAEMONS_JSON_OVERRIDE="$SYNTH_JSON" \
+    CULL_SPECIALTY_COUNTS_OVERRIDE='{"group_theory":1,"combinatorics":1,"number_theory":1,"probability":1,"algebra":1}' \
+    CULL_NOW_MS_OVERRIDE=0 \
+    CULL_AGING_REQUESTS_OVERRIDE='1001,1002' \
+    CULL_AGING_FITNESS_FLOOR_OVERRIDE='0.3' \
+    bash "$CULL" "$WORK_DIR" explorer --dry-run --bottom-pct 0.2 --min-explorers 3 --min-acting 0 2>&1 || true)"
+
+if printf '%s' "$AGING_OUT" | grep -Fq 'reason=aging'; then
+    pass "11. aging request override -> dry-run log carries reason=aging (#767)"
+else
+    fail "11. aging request override -> dry-run log carries reason=aging (#767)" "$AGING_OUT"
+fi
+
+# --- Test 12 (#767): aging request below the fitness floor IS picked even
+# when the pid is outside the bottom-pct slice (--bottom-pct 0.0 forces
+# the bottom-pct picker empty; the aging request must still flow
+# through). Pre-#767 there is no aging path -- this test exists only to
+# exercise the new code path.
+AGING_OUT_FORCED="$(CULL_DAEMONS_JSON_OVERRIDE="$SYNTH_JSON" \
+    CULL_SPECIALTY_COUNTS_OVERRIDE='{"group_theory":1,"combinatorics":1,"number_theory":1,"probability":1,"algebra":1}' \
+    CULL_NOW_MS_OVERRIDE=0 \
+    CULL_AGING_REQUESTS_OVERRIDE='1003' \
+    CULL_AGING_FITNESS_FLOOR_OVERRIDE='0.3' \
+    bash "$CULL" "$WORK_DIR" explorer --dry-run --bottom-pct 0.01 --min-explorers 3 --min-acting 0 2>&1 || true)"
+
+if printf '%s' "$AGING_OUT_FORCED" | grep -Fq 'pid=1003' \
+        && printf '%s' "$AGING_OUT_FORCED" | grep -Fq 'reason=aging'; then
+    pass "12. aging request bypasses bottom-pct slice + min-acting gate (#767)"
+else
+    fail "12. aging request bypasses bottom-pct slice + min-acting gate (#767)" "$AGING_OUT_FORCED"
+fi
+
+# --- Test 13 (#767): aging request whose fitness is at-or-above the
+# floor is NOT culled. The CULL_AGING_FITNESS_FLOOR_OVERRIDE='-1.0' value
+# forces every (>=0.0) fitness to fail the `score < floor` check, so the
+# aging path collapses even though the request memo names a live pid.
+# The output must NOT carry reason=aging for any row.
+AGING_OUT_GATED="$(CULL_DAEMONS_JSON_OVERRIDE="$SYNTH_JSON" \
+    CULL_SPECIALTY_COUNTS_OVERRIDE='{"group_theory":1,"combinatorics":1,"number_theory":1,"probability":1,"algebra":1}' \
+    CULL_NOW_MS_OVERRIDE=0 \
+    CULL_AGING_REQUESTS_OVERRIDE='1001' \
+    CULL_AGING_FITNESS_FLOOR_OVERRIDE='-1.0' \
+    bash "$CULL" "$WORK_DIR" explorer --dry-run --bottom-pct 0.01 --min-explorers 3 --min-acting 0 2>&1 || true)"
+
+if printf '%s' "$AGING_OUT_GATED" | grep -Fq 'reason=aging'; then
+    fail "13. aging-out request above fitness floor must NOT pick reason=aging (#767)" "$AGING_OUT_GATED"
+else
+    pass "13. aging-out request above fitness floor stays out of cull picks (#767)"
+fi
+
+# --- Test 14 (#767): size-decrement bug fix is opt-out via
+# CULL_SIZE_DECREMENT_DISABLED=1. Sanity check that the script tolerates
+# the flag and still emits a working dry-run banner -- the live path
+# (memo writes) cannot fire here because podman exec always fails fast
+# under cull-test-noop, but the env knob must short-circuit the
+# size-decrement leg without aborting the loop.
+SIZE_DEC_DISABLED_OUT="$(CULL_DAEMONS_JSON_OVERRIDE="$SYNTH_JSON" \
+    CULL_SPECIALTY_COUNTS_OVERRIDE='{"group_theory":1,"combinatorics":1,"number_theory":1,"probability":1,"algebra":1}' \
+    CULL_NOW_MS_OVERRIDE=0 \
+    CULL_SIZE_DECREMENT_DISABLED=1 \
+    bash "$CULL" "$WORK_DIR" explorer --dry-run --bottom-pct 0.2 --min-explorers 3 --min-acting 0 2>&1 || true)"
+
+if printf '%s' "$SIZE_DEC_DISABLED_OUT" | grep -Fq '[dry-run] would cull pid='; then
+    pass "14. CULL_SIZE_DECREMENT_DISABLED=1 toggle does not break dry-run (#767)"
+else
+    fail "14. CULL_SIZE_DECREMENT_DISABLED=1 toggle does not break dry-run (#767)" "$SIZE_DEC_DISABLED_OUT"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

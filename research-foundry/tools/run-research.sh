@@ -218,6 +218,39 @@
 #                                default to all 18 colonies now that
 #                                every non-explorer colony has its
 #                                replicate gate wired up.
+#   RESEARCH_AGING_ENABLED       Issue #767 aging-out gate (death
+#                                pressure). When `1`, every .ag's
+#                                `_age_tick_and_check` helper increments
+#                                a per-pid `age_ticks` counter and
+#                                publishes `colony:cull_self_request:
+#                                <pid>` once the counter crosses
+#                                RESEARCH_AGING_THRESHOLD; the cull-
+#                                replicas sidecar reads those keys
+#                                and culls daemons whose fitness sits
+#                                below RESEARCH_AGING_FITNESS_FLOOR.
+#                                Default `0` (opt-in, byte-identical
+#                                to pre-#767 when off). Seeded into
+#                                the container's memo store as
+#                                `env:RESEARCH_AGING_ENABLED` so the
+#                                .ag helper can read it via
+#                                `recall_latest`.
+#   RESEARCH_AGING_THRESHOLD     Per-pid tick count above which the
+#                                .ag publishes the cull-self-request
+#                                memo. Default 100 (75-tick research
+#                                runs won't fire unless the operator
+#                                lowers this knob for validation,
+#                                e.g. `RESEARCH_AGING_THRESHOLD=50`
+#                                per the issue #767 acceptance plan).
+#   RESEARCH_AGING_FITNESS_FLOOR Per-pid fitness threshold below which
+#                                the aging cull picks the daemon. The
+#                                cull-replicas sidecar reads this via
+#                                `env:RESEARCH_AGING_FITNESS_FLOOR`
+#                                memo and parses it as a float in
+#                                Python (the .ag helper does NOT
+#                                compare against this floor -- it
+#                                only publishes the request, and the
+#                                sidecar applies the floor before
+#                                acting). Default "0.3".
 #   RESEARCH_<COLONY>_REPLICAS   Initial replica count for each of the
 #                                17 non-explorer colonies (Phase 9
 #                                PR-B of #663). Phase 9 PR-C flips
@@ -488,6 +521,15 @@ unset _role _var _val
 # for the remainder of the run.
 : "${RESEARCH_CULL_INTERVAL_TICKS:=5}"
 
+# Issue #767: aging-out (death pressure) defaults. Off by default so
+# pre-#767 federations stay byte-identical; the operator opts in by
+# exporting RESEARCH_AGING_ENABLED=1 ahead of the run (typically with
+# RESEARCH_AGING_THRESHOLD lowered to fit the 75-tick budget per the
+# acceptance plan). See the header doc above for the knob semantics.
+: "${RESEARCH_AGING_ENABLED:=0}"
+: "${RESEARCH_AGING_THRESHOLD:=100}"
+: "${RESEARCH_AGING_FITNESS_FLOOR:=0.3}"
+
 # --- Validation ---
 if [ -z "$TOPICS_RAW" ]; then
     echo "run-research: RESEARCH_TOPICS must be a non-empty comma-separated list" >&2
@@ -653,7 +695,7 @@ write_bootstrap() {
         # model selection via llm.tier.<tier>.cli_command_args, not via
         # per-spawn env vars. The shim defaults in the per-role section
         # above are no longer load-bearing.
-        printf '  printf "exec.env_passthrough = DAEMON_ID,COLONY_NAME,HOLD_PERIOD,DISCOVERY_LEDGER,AUDIT_LEDGER,PREPRINT_LEDGER,REPLICATION_LEDGER,EXPLORER_GENERATION,AGENTIS_ROOT,ARXIV_MAX_QUERY_RESULTS,PREPRINT_OUTPUT_ROOT,PREPRINT_AUTHOR_CONFIG,PREPRINT_LATEXMK_MAX_PASSES,PREPRINT_ARXIV_GATEWAY,PREPRINT_ARXIV_FROM,PREPRINT_SMTP_HOST,PREPRINT_SMTP_PORT,EXPLORER_PROMPT_EVOLUTION_THRESHOLD,EXPLORER_PROMPT_GEN_CAP,EXPLORER_PROMPT_MAX_BYTES,EXPLORER_PROMPT_LEVENSHTEIN_FLOOR,FOUNDRY_FITNESS_REWARD_NOVEL_PER_TICK,FOUNDRY_FITNESS_PENALTY_NOT_NOVEL_PER_TICK,RESEARCH_JITTER_DISABLED,NOVELTY_LOSS_SHAPING_ENABLED\\n"\n'
+        printf '  printf "exec.env_passthrough = DAEMON_ID,COLONY_NAME,HOLD_PERIOD,DISCOVERY_LEDGER,AUDIT_LEDGER,PREPRINT_LEDGER,REPLICATION_LEDGER,EXPLORER_GENERATION,AGENTIS_ROOT,ARXIV_MAX_QUERY_RESULTS,PREPRINT_OUTPUT_ROOT,PREPRINT_AUTHOR_CONFIG,PREPRINT_LATEXMK_MAX_PASSES,PREPRINT_ARXIV_GATEWAY,PREPRINT_ARXIV_FROM,PREPRINT_SMTP_HOST,PREPRINT_SMTP_PORT,EXPLORER_PROMPT_EVOLUTION_THRESHOLD,EXPLORER_PROMPT_GEN_CAP,EXPLORER_PROMPT_MAX_BYTES,EXPLORER_PROMPT_LEVENSHTEIN_FLOOR,FOUNDRY_FITNESS_REWARD_NOVEL_PER_TICK,FOUNDRY_FITNESS_PENALTY_NOT_NOVEL_PER_TICK,RESEARCH_JITTER_DISABLED,NOVELTY_LOSS_SHAPING_ENABLED,RESEARCH_AGING_ENABLED,RESEARCH_AGING_THRESHOLD,RESEARCH_AGING_FITNESS_FLOOR\\n"\n'
         printf '  printf "experience.enabled = true\\n"\n'
         printf '  printf "telemetry.enabled = true\\n"\n'
         # #740: AdaptiveEngine activation. Without this flag the
@@ -987,6 +1029,16 @@ write_bootstrap() {
         printf '(cd /run-root && agentis memo set colony-submitter:replication_base_cost 100 >/dev/null 2>&1 || true)\n'
         printf '(cd /run-root && agentis memo set colony-submitter:replication_k 3 >/dev/null 2>&1 || true)\n'
         printf '(cd /run-root && agentis memo set submitter:reproductive_fitness_threshold %s >/dev/null 2>&1 || true)\n' "$RESEARCH_SUBMITTER_REPRODUCTIVE_FITNESS_THRESHOLD"
+        # Issue #767: seed `env:RESEARCH_AGING_*` memos so the per-tick
+        # `_age_tick_and_check` helper baked into every .ag can read
+        # the aging knobs via `recall_latest("env:...")`. Reads happen
+        # on every tick; the memo store is the only cross-daemon
+        # propagation channel we have (the env vars themselves are
+        # in env_passthrough but `recall_latest` is cheaper than
+        # spawning `printenv` via `exec sh` 18 times per tick).
+        printf '(cd /run-root && agentis memo set env:RESEARCH_AGING_ENABLED %s >/dev/null 2>&1 || true)\n' "$RESEARCH_AGING_ENABLED"
+        printf '(cd /run-root && agentis memo set env:RESEARCH_AGING_THRESHOLD %s >/dev/null 2>&1 || true)\n' "$RESEARCH_AGING_THRESHOLD"
+        printf '(cd /run-root && agentis memo set env:RESEARCH_AGING_FITNESS_FLOOR %s >/dev/null 2>&1 || true)\n' "$RESEARCH_AGING_FITNESS_FLOOR"
         # Phase 9 M106 (#744): launch the in-container agentis worker and
         # seed math-foundry:worker_addr + peer_worker_count so the
         # M2-Malthusian replicate() target pointer resolves. Before this
@@ -1265,6 +1317,11 @@ start_auto_promote_sidecar() {
     emit_step "starting auto-promote sidecar (interval=${AP_INTERVAL}s, log=$AP_LOG)"
     if [ "$CULL_ENABLED" = "1" ]; then
         emit_step "cull-replicas cycle: enabled (colonies=$CULL_COLONIES every $CULL_INTERVAL_TICKS sidecar ticks; bottom_pct=$CULL_BOTTOM_PCT, min_explorers=$CULL_MIN_EXPLORERS, min_acting=$CULL_MIN_ACTING)"
+        if [ "$RESEARCH_AGING_ENABLED" = "1" ]; then
+            emit_step "death-pressure aging-out: enabled (threshold=$RESEARCH_AGING_THRESHOLD ticks, fitness_floor=$RESEARCH_AGING_FITNESS_FLOOR)"
+        else
+            emit_step "death-pressure aging-out: disabled (RESEARCH_AGING_ENABLED=$RESEARCH_AGING_ENABLED)"
+        fi
     else
         emit_step "cull-replicas cycle: disabled (RESEARCH_CULL_ENABLED=$CULL_ENABLED)"
     fi
