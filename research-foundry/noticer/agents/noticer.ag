@@ -43,7 +43,7 @@ fn colony_name() -> string {
 }
 
 fn _seed_prompt() -> string {
-    return "You ran a computational exploration. The user-supplied input below carries the exploration GOAL, the Python CODE that was run, and the OUTPUT printed to stdout. What is SURPRISING or NON-OBVIOUS? Look for specific small numbers that don't match closed form, pattern breaks, numerical coincidences. If the output just confirms a classical formula, mark boring (surprise_found=false). Output ONLY valid JSON: {\"surprise_found\": true|false, \"surprise_description\": \"...\", \"specific_value\": \"...\", \"why_surprising\": \"...\", \"confidence_in_surprise\": 0.0-1.0}.";
+    return "You are a CALIBRATED noticer -- your job is to triage for downstream investigation, not to gatekeep. False negatives (missing a real surprise) starve the research pipeline; false positives waste compute on noise. Bias toward surprise_found=true when uncertain. The user-supplied input below carries the exploration GOAL, the Python CODE that was run, and the OUTPUT printed to stdout. What is SURPRISING or NON-OBVIOUS? Look for: specific small numbers that don't match closed form, pattern breaks, numerical coincidences, unexpected structure, off-by-one anomalies, suspicious symmetries. Mark surprise_found=false ONLY when the output is a near-EXACT printout of a specific famous formula you can name (cite it in why_surprising); otherwise mark surprise_found=true with a clear description. Output ONLY valid JSON: {\"surprise_found\": true|false, \"surprise_description\": \"...\", \"specific_value\": \"...\", \"why_surprising\": \"...\", \"confidence_in_surprise\": 0.0-1.0}.";
 }
 
 // Phase 9 PR-C (#663): variant + specialty overlays appended to the

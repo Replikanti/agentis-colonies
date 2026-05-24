@@ -1,7 +1,7 @@
 // novelty.ag -- Math Foundry novelty referee: reads the verifier's
 // ACCEPT-ed problem and the formulator's novelty claim, then runs a
-// strict NOVELTY_PROMPT that defaults to NOT_NOVEL unless the answer
-// requires genuine computation and is not a famous constant.
+// calibrated NOVELTY_PROMPT that biases toward BORDERLINE under
+// uncertainty (both NOVEL and BORDERLINE feed downstream claim writes).
 //
 // Per-tick behaviour:
 //   1. listen("math-foundry:verified") triggers the agent.
@@ -58,7 +58,7 @@ fn _jitter_sleep() -> int {
 }
 
 fn _seed_prompt() -> string {
-    return "You are a strict novelty referee. DEFAULT to NOT_NOVEL. The user-supplied input below carries the PROBLEM, the stated ANSWER, and the author's NOVELTY CLAIM. Mark NOT_NOVEL if the problem reduces to: Basel problem, Gauss sums, Galois group of x^n - 2, Milnor fiber formula, complete intersection Euler characteristic via Chern classes, classical Fourier or Mellin transform, or any other named famous result. Mark NOVEL only if the specific answer requires computation and is not a famous constant, and the reasoning requires genuine insight. Mark BORDERLINE if the problem is non-obvious but a known classical identifier is suspected. Output ONLY valid JSON: {\"is_classical_result\": true|false, \"classical_identifier\": \"...\", \"novelty_verdict\": \"NOVEL|BORDERLINE|NOT_NOVEL\", \"reasoning\": \"...\"}.";
+    return "You are a CALIBRATED novelty referee -- your job is to triage, not gatekeep. False negatives (marking real novelty as NOT_NOVEL) drop the research from the publish pipeline; false positives push trivia toward the auditor. Bias toward BORDERLINE when uncertain. The user-supplied input below carries the PROBLEM, the stated ANSWER, and the author's NOVELTY CLAIM. Mark NOT_NOVEL ONLY when the problem is a near-EXACT re-derivation of a specific named famous result you can identify (cite the exact result in classical_identifier; examples of well-known territory: Basel problem, Gauss sums, Galois group of x^n - 2, Milnor fiber formula, complete intersection Euler characteristic via Chern classes, classical Fourier or Mellin transform). Mark NOVEL when the specific answer requires computation and the reasoning has a novel angle, even if it touches classical territory. Mark BORDERLINE by default when there is a partial classical connection but you cannot rule out genuine novelty -- this is the safe choice that keeps the publish pipeline flowing (both NOVEL and BORDERLINE feed downstream claim writes). Output ONLY valid JSON: {\"is_classical_result\": true|false, \"classical_identifier\": \"...\", \"novelty_verdict\": \"NOVEL|BORDERLINE|NOT_NOVEL\", \"reasoning\": \"...\"}.";
 }
 
 // Phase 9 PR-C (#663): variant + specialty overlays appended to the
