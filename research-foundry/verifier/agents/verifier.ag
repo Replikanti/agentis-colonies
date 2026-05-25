@@ -4,6 +4,18 @@
 // the independent solution to the stated answer and emits ACCEPT /
 // REJECT / NEEDS_REVISION.
 //
+// `verdict.verdict` vocabulary:
+//   - `ACCEPT`             -- LLM judged the problem well-defined.
+//   - `REJECT`             -- LLM judged the problem incoherent.
+//   - `NEEDS_REVISION`     -- LLM judged the problem mostly OK but ambiguous.
+//   - `FALSIFIED_LAGRANGE` -- pre-LLM mechanical Lagrange-class gate
+//                              tripped (#776 wave-1); short-circuits
+//                              the `prompt()` call and treats the
+//                              claim as hard-reject downstream.
+//   - `FALSIFIED_RANGE`    -- reserved for wave-2 numerical-range
+//                              sanity gates (e.g. OEIS bounded
+//                              claims); not emitted yet.
+//
 // Per-tick behaviour:
 //   1. listen("math-foundry:problem_ready") triggers the agent.
 //   2. Read the problem text from memo.
@@ -155,6 +167,91 @@ fn select_replication_target() -> string {
         return addr;
     };
     return self_node_addr();
+}
+
+// Issue #776 wave-1: mechanical Lagrange-class sanity gates that run
+// BEFORE the LLM `prompt()` call so a claim that mechanically falsifies
+// short-circuits to `verdict=FALSIFIED_LAGRANGE` without burning a
+// verifier round-trip. Two detectors:
+//
+//   1. Symmetric group: `S_n` or `symmetric group on n` -- a numeric
+//      stated_answer that does NOT divide n! is a Lagrange-theorem
+//      falsification.
+//   2. Cyclic / dihedral: `C_n`, `D_n`, `Z/nZ` -- any numeric subgroup
+//      order claim must divide the cited group order (|D_n| = 2n).
+//
+// Both detectors are pre-LLM ground truth: a broadly-trained LLM
+// verifier sometimes agrees with the producer's bad output, so the
+// mechanical check overrides the prompt(). The .ag DSL has no regex
+// builtin so we wrap the parse in a small python3 invocation passed
+// args via `shell_escape()` (matches the `_pick_upstream_pid_by_key`
+// and `_extract_pp_hash` patterns above).
+//
+// Return contract: empty string when the check is inconclusive (no
+// group cited, non-numeric stated_answer, parse failure) -- caller
+// falls through to the regular `prompt()` gate. Returns the literal
+// `"FALSIFIED_LAGRANGE"` when BOTH the group order AND the numeric
+// stated_answer can be cleanly parsed AND the divisibility check
+// fails.
+fn _lagrange_check_symmetric(problem_text: string, stated_answer: string) -> string {
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,re,math\nproblem=sys.argv[1]\nans_raw=sys.argv[2]\nm=re.search(r\"\\bS_(\\d+)\\b\",problem)\nif not m:\n m=re.search(r\"\\bsymmetric group\\b[^\\d]{0,40}(\\d+)\",problem,re.IGNORECASE)\nif not m:\n sys.exit(0)\ntry: n=int(m.group(1))\nexcept Exception: sys.exit(0)\nif n<=0 or n>20:\n sys.exit(0)\nans_s=ans_raw.strip()\nif not re.fullmatch(r\"-?\\d+\",ans_s):\n sys.exit(0)\ntry: ans=int(ans_s)\nexcept Exception: sys.exit(0)\nif ans<=0:\n sys.exit(0)\norder=math.factorial(n)\nif order%ans!=0:\n sys.stdout.write(\"FALSIFIED_LAGRANGE\")' " + shell_escape(problem_text) + " " + shell_escape(stated_answer);
+    let result = try { exec sh cmd; } catch e { ""; };
+    return result;
+}
+
+fn _lagrange_check_cyclic_dihedral(problem_text: string, stated_answer: string) -> string {
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,re\nproblem=sys.argv[1]\nans_raw=sys.argv[2]\norder=None\nm=re.search(r\"\\bC_(\\d+)\\b\",problem)\nif m:\n try: order=int(m.group(1))\n except Exception: order=None\nif order is None:\n m=re.search(r\"\\bZ/(\\d+)Z\\b\",problem)\n if m:\n  try: order=int(m.group(1))\n  except Exception: order=None\nif order is None:\n m=re.search(r\"\\bD_(\\d+)\\b\",problem)\n if m:\n  try: order=2*int(m.group(1))\n  except Exception: order=None\nif order is None:\n sys.exit(0)\nif order<=0 or order>10000:\n sys.exit(0)\nans_s=ans_raw.strip()\nif not re.fullmatch(r\"-?\\d+\",ans_s):\n sys.exit(0)\ntry: ans=int(ans_s)\nexcept Exception: sys.exit(0)\nif ans<=0:\n sys.exit(0)\nif order%ans!=0:\n sys.stdout.write(\"FALSIFIED_LAGRANGE\")' " + shell_escape(problem_text) + " " + shell_escape(stated_answer);
+    let result = try { exec sh cmd; } catch e { ""; };
+    return result;
+}
+
+// _publish_falsified_verdict -- write a synthetic mechanical-falsification
+// verdict to memo + record fitness as REJECT-equivalent. Implementation
+// note: returns void and writes JSON directly (no Verdict struct literal)
+// because agentis grammar disallows struct-literal expressions outside of
+// `prompt(...) -> Type`. Downstream consumers (novelty, auditor) gate on
+// the `verdict_label` memo key, which is what they actually read; the
+// `math-foundry:verifier_rejected` emit is bus-only signalling and is
+// skipped on this path. Issue #776 wave-1.
+fn _publish_falsified_verdict(label: string, self_pid: string, _colony_name: string, upstream_tick: int, tick_idx: int) -> void {
+    let _reason = "Mechanical Lagrange-class sanity gate (#776) detected a stated-answer / group-order divisibility violation pre-LLM; verifier short-circuited without invoking prompt().";
+    let verdict_json = "{\"answers_agree\":false,\"solver_rigorous\":false,\"problem_well_defined\":false,\"verdict\":\""
+                     + label + "\",\"reasoning\":\"" + _reason + "\"}";
+    memo_write("verifier:" + self_pid + ":verdict:tick-" + to_string(upstream_tick), verdict_json);
+    memo_write("verifier:" + self_pid + ":verdict_label:tick-" + to_string(upstream_tick), label);
+    memo_write("replay:current_verifier_pid", self_pid);
+
+    // Treat mechanical falsification as REJECT-equivalent for fitness
+    // bookkeeping (delta = -1). Aligns with _publish_verifier's REJECT
+    // branch so a misbehaving variant that trips the gate often is
+    // penalised in replication selection.
+    if len(self_pid) > 0 {
+        let fit_pre = parse_int(recall_latest("verifier:" + self_pid + ":fitness"));
+        memo_write("verifier:" + self_pid + ":fitness", to_string(fit_pre - 1));
+    };
+
+    // FALSIFIED_LAGRANGE is REJECT-equivalent -> outcome="failure" to match
+    // the existing _publish_verifier REJECT-path schema (check-learn-tags
+    // accepts {acted, review-gated, emitted, observed, math-foundry} for
+    // verify:failure but not for verify:partial).
+    let my_tier = tier("verifier");
+    if my_tier == "autonomous" {
+        memo_write("verifier:" + self_pid + ":review_gated", "true");
+        learn("verify", "tick " + to_string(tick_idx) + " " + label, _reason, "failure", ["acted", "math-foundry"]);
+    } else {
+        if my_tier == "review-gated" {
+            memo_write("verifier:" + self_pid + ":review_gated", "true");
+            learn("verify", "tick " + to_string(tick_idx) + " " + label, _reason, "failure", ["review-gated", "math-foundry"]);
+        } else {
+            if my_tier == "propose" {
+                learn("verify", "tick " + to_string(tick_idx) + " " + label, _reason, "failure", ["emitted", "math-foundry"]);
+            } else {
+                learn("verify", "tick " + to_string(tick_idx) + " " + label, _reason, "failure", ["observed", "math-foundry"]);
+            };
+        };
+    };
 }
 
 // _pick_upstream_pid_by_key -- Phase 9 PR-A (#663) replica-safe pick.
@@ -395,6 +492,30 @@ fn tick(reason: string) -> void {
     let stated_answer = _pick_upstream_by_confidence("formulator", "problem", "answer", "self_check_confidence", upstream_tick);
     if len(problem_text) == 0 {
         print("[verifier] no problem text for tick=", upstream_tick);
+        return;
+    };
+
+    // Issue #776 wave-1: mechanical Lagrange-class sanity gates run
+    // BEFORE the LLM `prompt()` so a claim that mechanically falsifies
+    // short-circuits to `verdict=FALSIFIED_LAGRANGE` without burning a
+    // verifier round-trip. Detectors are inconclusive (empty return)
+    // when no recognised group is cited or stated_answer is non-numeric
+    // (typical for LaTeX-bearing claims) -- we fall through to the
+    // regular LLM gate in that case.
+    let _sym_falsify = _lagrange_check_symmetric(problem_text, stated_answer);
+    let _cyc_falsify = if len(_sym_falsify) == 0 {
+        _lagrange_check_cyclic_dihedral(problem_text, stated_answer);
+    } else {
+        "";
+    };
+    let _mech_falsify = if len(_sym_falsify) > 0 { _sym_falsify; } else { _cyc_falsify; };
+    if len(_mech_falsify) > 0 {
+        print("[verifier] mechanical falsification verdict=", _mech_falsify, " tick=", upstream_tick);
+        _publish_falsified_verdict(_mech_falsify, _self_pid, _colony_name, upstream_tick, tick_idx);
+        let now_mech = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_mech) > 0 {
+            memo_write("verifier:last_check", now_mech);
+        };
         return;
     };
 
