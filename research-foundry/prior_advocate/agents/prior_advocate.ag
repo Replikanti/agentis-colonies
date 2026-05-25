@@ -348,13 +348,18 @@ fn tick(reason: string) -> void {
     let buy_topic_pa = "known_priors:" + topic_hint;
     let bought_pa = knowledge_buy(buy_topic_pa, 2);
     let kind_buy_pa = recall_latest("agent:lifecycle:cognitive:last_event_kind");
+    // Runtime outcome enum {success, failure, partial, timeout,
+    // error}; map cache_hit -> success, rejected -> failure. Pre-#794
+    // the lifecycle strings were passed as outcome directly and the
+    // runtime emitted [tick:error] invalid outcome; cache_hit /
+    // rejected stay in the recommendation slot for readability.
     if len(bought_pa) > 0 {
         if kind_buy_pa == "cognitive.cache_hit" {
-            learn("market", buy_topic_pa, "", "cache_hit", ["claim-auditor", "buyer:prior_advocate", "topic_kind:known_priors"]);
+            learn("market", buy_topic_pa, "cache_hit", "success", ["claim-auditor", "buyer:prior_advocate", "topic_kind:known_priors"]);
         };
     } else {
         if kind_buy_pa == "cognitive.rejected" {
-            learn("market", buy_topic_pa, "", "rejected", ["claim-auditor", "buyer:prior_advocate", "topic_kind:known_priors"]);
+            learn("market", buy_topic_pa, "rejected", "failure", ["claim-auditor", "buyer:prior_advocate", "topic_kind:known_priors"]);
         };
     };
     let cached_prior_line = if len(bought_pa) > 0 { "CACHED PRIOR HIT: " + bought_pa + "\n"; } else { ""; };

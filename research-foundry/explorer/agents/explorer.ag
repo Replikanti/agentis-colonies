@@ -788,13 +788,19 @@ fn tick(reason: string) -> void {
     let buy_topic = "permutation_order_facts:" + topic_label;
     let bought = knowledge_buy(buy_topic, 5);
     let kind_buy = recall_latest("agent:lifecycle:cognitive:last_event_kind");
+    // Runtime outcome enum is {success, failure, partial, timeout,
+    // error}; the market lifecycle vocabulary {cache_hit, rejected}
+    // maps to {success, failure}. Pre-#794 the lifecycle strings were
+    // passed through directly which the runtime rejected with
+    // [tick:error] invalid outcome; cache_hit / rejected stay in the
+    // recommendation slot for check-learn-tags.sh / log readability.
     if len(bought) > 0 {
         if kind_buy == "cognitive.cache_hit" {
-            learn("market", buy_topic, "", "cache_hit", ["math-foundry", "buyer:explorer", "topic_kind:permutation_order_facts"]);
+            learn("market", buy_topic, "cache_hit", "success", ["math-foundry", "buyer:explorer", "topic_kind:permutation_order_facts"]);
         };
     } else {
         if kind_buy == "cognitive.rejected" {
-            learn("market", buy_topic, "", "rejected", ["math-foundry", "buyer:explorer", "topic_kind:permutation_order_facts"]);
+            learn("market", buy_topic, "rejected", "failure", ["math-foundry", "buyer:explorer", "topic_kind:permutation_order_facts"]);
         };
     };
     let prior_knowledge_line = if len(bought) > 0 { "PRIOR FEDERATION KNOWLEDGE: " + bought + "\n"; } else { ""; };

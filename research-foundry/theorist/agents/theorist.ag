@@ -533,16 +533,21 @@ fn tick(reason: string) -> void {
     let lean_verdict = _run_lean_check(_self_pid, upstream_tick, lean_draft.lean_source);
     print("[theorist] lean_verdict=", lean_verdict, " proof_kind=", draft.proof_kind);
     // Branch on lean_verdict so check-learn-tags.sh sees a static
-    // outcome literal at each call site (lean_check:verified /
-    // lean_check:incomplete / lean_check:failed). One row per tick
-    // regardless of branch.
+    // outcome literal at each call site. The runtime outcome enum is
+    // {success, failure, partial, timeout, error}; the lean-verdict
+    // vocabulary {verified, incomplete, failed} maps to {success,
+    // partial, failure}. Pre-#794 the lean-vocabulary strings were
+    // passed through directly and the runtime emitted [tick:error]
+    // invalid outcome per call (PR #752 regression), pinning the
+    // theorist daemon at ~20% success rate in `agentis daemon list`.
+    // One row per tick regardless of branch.
     if lean_verdict == "verified" {
-        learn("lean_check", "tick " + to_string(tick_idx), "verified", "verified", ["lean", "verification"]);
+        learn("lean_check", "tick " + to_string(tick_idx), "verified", "success", ["lean", "verification"]);
     } else {
         if lean_verdict == "incomplete" {
-            learn("lean_check", "tick " + to_string(tick_idx), "incomplete", "incomplete", ["lean", "verification"]);
+            learn("lean_check", "tick " + to_string(tick_idx), "incomplete", "partial", ["lean", "verification"]);
         } else {
-            learn("lean_check", "tick " + to_string(tick_idx), "failed", "failed", ["lean", "verification"]);
+            learn("lean_check", "tick " + to_string(tick_idx), "failed", "failure", ["lean", "verification"]);
         };
     };
 
