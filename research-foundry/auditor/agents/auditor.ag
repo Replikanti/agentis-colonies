@@ -14,7 +14,7 @@
 // Run as daemon: agentis daemon agents/auditor.ag --colony auditor
 // Requires: exec capability, messaging capability, DISCOVERY_LEDGER env.
 
-cb 2000;
+cb 200000000;
 
 type Verdict {
     audit_verdict: string,
