@@ -16,7 +16,7 @@
 // Run as daemon: agentis daemon agents/computer.ag --colony computer
 // Requires: exec capability (python3 / gap), messaging capability.
 
-cb 2000;
+cb 200000000;
 
 type Script {
     language: string,
