@@ -1351,6 +1351,26 @@ start_auto_promote_sidecar() {
         set +e
         set +o pipefail
         cd "$LAPTOP_DIR"
+        # Cold-start race fix (#781): container daemons take 5-15s to bootstrap
+        # after `podman run`; the supervisor must NOT use exit-on-empty as its
+        # first liveness check, otherwise the sidecar dies before its first
+        # real tick. Bounded retry: wait up to 60s for the first daemon to
+        # report state=running, then enter the steady-state supervisor loop.
+        # The exit-on-empty inside the steady-state loop below stays — that's
+        # the graceful-drain shutdown path.
+        retry=0
+        while [ "$retry" -lt 30 ]; do
+            if agentis daemon list --json 2>/dev/null | grep -Fq '"state":"running"'; then
+                break
+            fi
+            sleep 2
+            retry=$((retry + 1))
+        done
+        if [ "$retry" -eq 30 ]; then
+            printf '=== %s: no daemons after 60s; sidecar exiting ===\n' \
+                "$(date -Iseconds)" >> "$AP_LOG"
+            exit 0
+        fi
         tick_count=0
         while :; do
             if ! agentis daemon list --json 2>/dev/null | grep -Fq '"state":"running"'; then
