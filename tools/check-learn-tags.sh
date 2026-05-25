@@ -158,12 +158,20 @@ tribes-bench
 math-foundry"
             PAIR_KNOWN=1
             ;;
-        "market:cache_hit")
+        "market:success" | "market:cache_hit")
+            # Two forms during the runtime outcome-enum cleanup
+            # transition: `success` (post-#794, runtime-valid) and
+            # `cache_hit` (pre-#794 legacy, still emitted by
+            # tribes-bench/tribe-*/agents/hunter.ag pending a separate
+            # cleanup PR). Both pairs carry the same allowlist.
+            #
             # Shared between tribes-bench hunters and research-foundry
             # buyers (#741). explorer.ag buys
             # `permutation_order_facts:<topic>` (cb=5) and
             # prior_advocate.ag buys `known_priors:<topic>` (cb=2);
-            # both emit this learn() row on cognitive.cache_hit.
+            # both emit this learn() row on cognitive.cache_hit
+            # (recommendation slot now carries the literal "cache_hit"
+            # for log readability; the outcome slot is enum `success`).
             ALLOWED_LITERALS="tribes-bench
 math-foundry
 claim-auditor"
@@ -176,12 +184,20 @@ topic_kind:permutation_order_facts
 topic_kind:known_priors"
             PAIR_KNOWN=1
             ;;
-        "market:rejected")
-            # #493 Loose category (c): consumer-side knowledge_sell validation
-            # rejects answers whose claimed bug_id is not in the seller's
-            # verifier-stamped bug-ledger.jsonl. Emits this learn() with
-            # reason:unverifiable so downstream telemetry can distinguish
-            # rejections from cache hits.
+        "market:failure" | "market:rejected")
+            # Two forms during the runtime outcome-enum cleanup
+            # transition: `failure` (post-#794, runtime-valid) and
+            # `rejected` (pre-#794 legacy, still emitted by
+            # tribes-bench/tribe-*/agents/hunter.ag pending a separate
+            # cleanup PR). Both pairs carry the same allowlist.
+            #
+            # #493 Loose category (c): consumer-side knowledge_sell
+            # validation rejects answers whose claimed bug_id is not
+            # in the seller's verifier-stamped bug-ledger.jsonl. Emits
+            # this learn() with reason:unverifiable so downstream
+            # telemetry can distinguish rejections from cache hits.
+            # Recommendation slot now carries the literal "rejected"
+            # for log readability; the outcome slot is enum `failure`.
             #
             # research-foundry (#741): explorer.ag + prior_advocate.ag
             # emit on `cognitive.rejected` from the knowledge_buy
@@ -603,24 +619,29 @@ preprint-foundry"
             ;;
         # #745: Lean 4 verifier activation in research-foundry/theorist.
         # The theorist runs `lean <file>` against an LLM-rendered Lean
-        # source body and emits one of three learn() rows per tick:
-        #   verified  : closed proof accepted by lean, no `sorry`
-        #   incomplete: lean accepted file but body contained `sorry`
-        #   failed    : lean rejected file (timeout or `error:`)
+        # source body and emits one of three learn() rows per tick.
+        # The lean-vocabulary {verified, incomplete, failed} lives in
+        # the recommendation slot for log readability and is mapped to
+        # the runtime outcome enum {success, partial, failure}:
+        #   recommendation=verified   outcome=success : closed proof, no `sorry`
+        #   recommendation=incomplete outcome=partial : lean accepted but body has `sorry`
+        #   recommendation=failed     outcome=failure : lean rejected (timeout or `error:`)
         # The outcome doubles as the fitness signal for the
         # AdaptiveEngine + downstream auditor's VERIFIED_BY_LEAN
-        # verdict label.
-        "lean_check:verified")
+        # verdict label. Pre-#794 the lean-vocabulary strings were
+        # passed as outcome directly, which the runtime rejected with
+        # [tick:error] invalid outcome per call (PR #752 regression).
+        "lean_check:success")
             ALLOWED_LITERALS="lean
 verification"
             PAIR_KNOWN=1
             ;;
-        "lean_check:incomplete")
+        "lean_check:partial")
             ALLOWED_LITERALS="lean
 verification"
             PAIR_KNOWN=1
             ;;
-        "lean_check:failed")
+        "lean_check:failure")
             ALLOWED_LITERALS="lean
 verification"
             PAIR_KNOWN=1
