@@ -308,42 +308,43 @@ fn _publish_novelty(
     //     non-empty classical_identifier publish the identifier so the
     //     prior_advocate can short-circuit external literature lookup
     //     next tick.
-    // Gated on `final_write` to mirror the ledger / cross-handoff
-    // semantics: propose tier never sells (no terminal side-effects per
-    // ADR-0001); review-gated and autonomous both sell. Mirrors
-    // tribes-bench/tribe-alpha/agents/hunter.ag::L1327 per-finding
+    // Knowledge market participation runs at propose tier too (#792):
+    // previously gated on `final_write` (autonomous-only), which meant
+    // the market never fired in default 75-tick runs because no daemon
+    // reaches autonomous confidence within that window. Existing buyers
+    // (explorer + prior_advocate `knowledge_buy`) are already ungated,
+    // so before this fix the buy side always got cache-miss / rejected.
+    // Mirrors tribes-bench/tribe-alpha/agents/hunter.ag::L1327 per-finding
     // shape; the bundle / espionage branches do not apply here because
     // research-foundry has no sibling concept. Per the tribes-bench
     // convention, only sell-failure emits a learn() row (topic =
     // `knowledge_sell`, outcome = `failure`); sell-success is implicit
     // and lives in the agent:lifecycle:cognitive:* event stream.
-    if final_write {
-        if len(topic_label) > 0 {
-            if effective_label == "NOVEL" {
-                let sell_topic = "permutation_order_facts:" + topic_label;
-                let summary = "problem=" + problem_text + " answer=" + stated_answer + " novelty_claim=" + novelty_claim;
-                let sold = knowledge_sell(sell_topic, summary, 3);
+    if len(topic_label) > 0 {
+        if effective_label == "NOVEL" {
+            let sell_topic = "permutation_order_facts:" + topic_label;
+            let summary = "problem=" + problem_text + " answer=" + stated_answer + " novelty_claim=" + novelty_claim;
+            let sold = knowledge_sell(sell_topic, summary, 3);
+            if sold == false {
+                learn("knowledge_sell", sell_topic, "", "failure", ["sell-failed", "math-foundry"]);
+            };
+        } else { if effective_label == "BORDERLINE" {
+            let sell_topic = "permutation_order_facts:" + topic_label;
+            let summary = "problem=" + problem_text + " answer=" + stated_answer + " novelty_claim=" + novelty_claim;
+            let sold = knowledge_sell(sell_topic, summary, 3);
+            if sold == false {
+                learn("knowledge_sell", sell_topic, "", "failure", ["sell-failed", "math-foundry"]);
+            };
+        } else { if effective_label == "NOT_NOVEL" {
+            if len(novelty.classical_identifier) > 0 {
+                let sell_topic = "known_priors:" + topic_label;
+                let citations = novelty.classical_identifier;
+                let sold = knowledge_sell(sell_topic, citations, 2);
                 if sold == false {
                     learn("knowledge_sell", sell_topic, "", "failure", ["sell-failed", "math-foundry"]);
                 };
-            } else { if effective_label == "BORDERLINE" {
-                let sell_topic = "permutation_order_facts:" + topic_label;
-                let summary = "problem=" + problem_text + " answer=" + stated_answer + " novelty_claim=" + novelty_claim;
-                let sold = knowledge_sell(sell_topic, summary, 3);
-                if sold == false {
-                    learn("knowledge_sell", sell_topic, "", "failure", ["sell-failed", "math-foundry"]);
-                };
-            } else { if effective_label == "NOT_NOVEL" {
-                if len(novelty.classical_identifier) > 0 {
-                    let sell_topic = "known_priors:" + topic_label;
-                    let citations = novelty.classical_identifier;
-                    let sold = knowledge_sell(sell_topic, citations, 2);
-                    if sold == false {
-                        learn("knowledge_sell", sell_topic, "", "failure", ["sell-failed", "math-foundry"]);
-                    };
-                };
-            }; }; };
-        };
+            };
+        }; }; };
     };
 
     // Phase 9 PR-C (#663): per-pid fitness tracking. +2 NOVEL,
