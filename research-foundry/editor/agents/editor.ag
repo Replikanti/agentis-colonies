@@ -251,13 +251,19 @@ fn _pick_upstream_pid_by_key(role: string, ranking_key: string, confidence_field
 // independently. Prints an observability line on empty-pid path so
 // regressions are loud in agent logs.
 fn _pick_upstream_by_confidence(role: string, ranking_key: string, output_key: string, confidence_field: string, tick: int) -> string {
-    let pid = _pick_upstream_pid_by_key(role, ranking_key, confidence_field, tick);
     let ts = to_string(tick);
-    if len(pid) == 0 {
+    // Backward-scan: accept the latest upstream tick <= target where data
+    // exists. Tolerates upstream tick gaps (e.g., verifier skipped tick=27
+    // but has output at tick=5) instead of strict exact-tick match. Single
+    // python invocation does pid selection by confidence_field + value
+    // read at the actual found tick.
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,subprocess,json\nrole,rk,ok,cf=sys.argv[1],sys.argv[2],sys.argv[3],sys.argv[4]\nt=int(sys.argv[5])\npre=role+\":\"\nsuf_prefix=\":\"+rk+\":tick-\"\ntry: out=subprocess.run([\"agentis\",\"memo\",\"list\"],capture_output=True,text=True,check=False).stdout\nexcept Exception: out=\"\"\nby_t={}\nfor ln in out.splitlines():\n ln=ln.strip()\n if not ln: continue\n k=ln.split()[0]\n if not k.startswith(pre): continue\n rest=k[len(pre):]\n idx=rest.find(suf_prefix)\n if idx<0: continue\n pid=rest[:idx]\n if \":\" in pid or not pid: continue\n num_s=rest[idx+len(suf_prefix):]\n try: tk=int(num_s)\n except: continue\n if tk>t: continue\n by_t.setdefault(tk,[]).append(pid)\nif not by_t:\n print(\"\")\n sys.exit(0)\nat=max(by_t.keys())\npids=sorted(set(by_t[at]))\nif len(pids)==1 or not cf:\n bp=pids[0]\nelse:\n bp=pids[0]\n bc=-1.0\n for pid in pids:\n  try: v=subprocess.run([\"agentis\",\"memo\",\"get\",pre+pid+\":\"+rk+\":tick-\"+str(at)],capture_output=True,text=True,check=False).stdout.strip()\n  except Exception: v=\"\"\n  if not v or v.startswith(\"<\"): continue\n  try: obj=json.loads(v)\n  except Exception: continue\n  if not isinstance(obj,dict): continue\n  try: c=float(obj.get(cf,0.0))\n  except Exception: c=0.0\n  if c>bc:\n   bc=c\n   bp=pid\ntry: val=subprocess.run([\"agentis\",\"memo\",\"get\",pre+bp+\":\"+ok+\":tick-\"+str(at)],capture_output=True,text=True,check=False).stdout.strip()\nexcept Exception: val=\"\"\nif not val or val.startswith(\"<\"):\n print(\"\")\nelse:\n print(val)' " + shell_escape(role) + " " + shell_escape(ranking_key) + " " + shell_escape(output_key) + " " + shell_escape(confidence_field) + " " + shell_escape(ts);
+    let val = try { exec sh cmd; } catch e { ""; };
+    if len(val) == 0 {
         print("[" + role + "] picker empty rank=" + ranking_key + " tick=" + ts);
-        return "";
     };
-    return recall_latest(role + ":" + pid + ":" + output_key + ":tick-" + ts);
+    return val;
 }
 
 fn _publish_editor(
