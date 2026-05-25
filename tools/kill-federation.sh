@@ -59,6 +59,15 @@ DASHBOARD_MATCH='federation-dashboard|dashboard\.sh'
 # Dashboard Python server pattern: the `python3 -m http.server` child of
 # the dashboard wrapper. Overridable for the same reason as above.
 DASH_PY_MATCH='Python.*dashboard|Python.*\.dashboard'
+# Research-foundry orchestrator python pattern (#783): the tick-stream
+# heredoc child of `run-research.sh` that gets orphaned when the operator
+# kills the bash wrapper but the python child (PPID=1) keeps writing to
+# `replay:current_tick.jsonl` via `podman exec`. The heredoc always passes
+# the four research-foundry topics as a CSV positional arg, so that token
+# is a reliable signature that doesn't collide with federation-dashboard
+# python (different argv), dev-apprenticeship (no python heredoc), or
+# tribes-bench (no python heredoc).
+ORCHESTRATOR_PY_MATCH='python.*number_theory,combinatorics,abstract_algebra,graph_theory'
 
 usage() {
     cat <<'EOF'
@@ -233,6 +242,7 @@ step "Collecting target PIDs"
 AGENTIS_PIDS_NL="$(pgrep -f "$DAEMON_MATCH" 2>/dev/null | sort -u || true)"
 DASHBOARD_PIDS_NL="$(pgrep -f "$DASHBOARD_MATCH" 2>/dev/null | sort -u || true)"
 DASH_PY_PIDS_NL="$(pgrep -f "$DASH_PY_MATCH" 2>/dev/null | sort -u || true)"
+ORCHESTRATOR_PY_PIDS_NL="$(pgrep -f "$ORCHESTRATOR_PY_MATCH" 2>/dev/null | sort -u || true)"
 
 # Port-based fallback discovery (colonies #188): anything listening on the
 # dashboard's bound port is a dashboard by definition, even if its argv
@@ -355,6 +365,11 @@ if [ -d /proc ] && command -v readlink >/dev/null 2>&1; then
         }
         DASHBOARD_PIDS_NL="$(printf '%s\n' "$DASHBOARD_PIDS_NL" | _filter_by_fed_dir || true)"
         DASH_PY_PIDS_NL="$(printf '%s\n' "$DASH_PY_PIDS_NL"   | _filter_by_fed_dir || true)"
+        # Orchestrator-python orphans (#783): PPID=1 children whose argv
+        # references this federation's research-foundry run dir count as
+        # ours. Orphans whose argv points at a different research-foundry
+        # checkout (e.g. parallel session) survive — different fed-dir.
+        ORCHESTRATOR_PY_PIDS_NL="$(printf '%s\n' "$ORCHESTRATOR_PY_PIDS_NL" | _filter_by_fed_dir || true)"
     fi
 fi
 
@@ -383,7 +398,8 @@ _is_kill_target() {
     if [ -n "$cmd" ]; then
         if printf '%s\n' "$cmd" | grep -Eq -- "$DAEMON_MATCH" \
         || printf '%s\n' "$cmd" | grep -Eq -- "$DASHBOARD_MATCH" \
-        || printf '%s\n' "$cmd" | grep -Eq -- "$DASH_PY_MATCH"; then
+        || printf '%s\n' "$cmd" | grep -Eq -- "$DASH_PY_MATCH" \
+        || printf '%s\n' "$cmd" | grep -Eq -- "$ORCHESTRATOR_PY_MATCH"; then
             return 0
         fi
     fi
@@ -466,6 +482,7 @@ filter_self() {
 AGENTIS_PIDS_NL="$(filter_self "$AGENTIS_PIDS_NL")"
 DASHBOARD_PIDS_NL="$(filter_self "$DASHBOARD_PIDS_NL")"
 DASH_PY_PIDS_NL="$(filter_self "$DASH_PY_PIDS_NL")"
+ORCHESTRATOR_PY_PIDS_NL="$(filter_self "$ORCHESTRATOR_PY_PIDS_NL")"
 
 # Safe alternative to `pkill -SIG -f PATTERN`: pgrep matches, filter
 # self/ancestors, then send the signal manually. Used by the sweep step
@@ -485,6 +502,7 @@ safe_killall() {
 AGENTIS_PIDS="$(printf '%s' "$AGENTIS_PIDS_NL" | tr '\n' ' ')"
 DASHBOARD_PIDS="$(printf '%s' "$DASHBOARD_PIDS_NL" | tr '\n' ' ')"
 DASH_PY_PIDS="$(printf '%s' "$DASH_PY_PIDS_NL" | tr '\n' ' ')"
+ORCHESTRATOR_PY_PIDS="$(printf '%s' "$ORCHESTRATOR_PY_PIDS_NL" | tr '\n' ' ')"
 
 count_pids() {
     [ -z "$1" ] && { echo 0; return; }
@@ -493,12 +511,14 @@ count_pids() {
 AGENTIS_COUNT=$(count_pids "$AGENTIS_PIDS_NL")
 DASHBOARD_COUNT=$(count_pids "$DASHBOARD_PIDS_NL")
 DASH_PY_COUNT=$(count_pids "$DASH_PY_PIDS_NL")
+ORCHESTRATOR_PY_COUNT=$(count_pids "$ORCHESTRATOR_PY_PIDS_NL")
 
 echo "  agentis daemon PIDs ($AGENTIS_COUNT): ${AGENTIS_PIDS:-(none)}" >&2
 echo "  dashboard PIDs      ($DASHBOARD_COUNT): ${DASHBOARD_PIDS:-(none)}" >&2
 echo "  dashboard python    ($DASH_PY_COUNT): ${DASH_PY_PIDS:-(none)}" >&2
+echo "  orchestrator py     ($ORCHESTRATOR_PY_COUNT): ${ORCHESTRATOR_PY_PIDS:-(none)}" >&2
 
-ALL_PIDS_NL="$(printf '%s\n%s\n%s\n' "$AGENTIS_PIDS_NL" "$DASHBOARD_PIDS_NL" "$DASH_PY_PIDS_NL" | grep -v '^$' | sort -u || true)"
+ALL_PIDS_NL="$(printf '%s\n%s\n%s\n%s\n' "$AGENTIS_PIDS_NL" "$DASHBOARD_PIDS_NL" "$DASH_PY_PIDS_NL" "$ORCHESTRATOR_PY_PIDS_NL" | grep -v '^$' | sort -u || true)"
 ALL_PIDS="$(printf '%s' "$ALL_PIDS_NL" | tr '\n' ' ')"
 ALL_COUNT=$(count_pids "$ALL_PIDS_NL")
 
@@ -518,8 +538,8 @@ if [ "$DRY_RUN" -eq 1 ]; then
     REG_COUNT=$(printf '%s' "$REG_FILES_LIST" | grep -c . || true)
     ok "dry-run complete: $ALL_COUNT process(es), $REG_COUNT registry file(s) would be touched"
     if [ "$JSON_MODE" -eq 1 ]; then
-        printf '{"dry_run":true,"agentis":%d,"dashboard":%d,"dashboard_python":%d,"total_processes":%d,"registry_files":%d,"backup":null,"exit":0}\n' \
-            "$AGENTIS_COUNT" "$DASHBOARD_COUNT" "$DASH_PY_COUNT" "$ALL_COUNT" "$REG_COUNT"
+        printf '{"dry_run":true,"agentis":%d,"dashboard":%d,"dashboard_python":%d,"orchestrator_python":%d,"total_processes":%d,"registry_files":%d,"backup":null,"exit":0}\n' \
+            "$AGENTIS_COUNT" "$DASHBOARD_COUNT" "$DASH_PY_COUNT" "$ORCHESTRATOR_PY_COUNT" "$ALL_COUNT" "$REG_COUNT"
     fi
     exit 0
 fi
@@ -589,6 +609,26 @@ if [ "$REMAINING" -gt 0 ]; then
 fi
 [ "$REMAINING" -eq 0 ] && ok "no processes matching '$DAEMON_MATCH' alive"
 
+# Sweep research-foundry orchestrator python orphans (#783). Same
+# safe_killall pattern as DAEMON_MATCH — pgrep + filter_self + signal,
+# so the dashboard's federation-dashboard python (different argv) and
+# the test harness wrappers (which don't carry the topics CSV) survive.
+step "Sweep research-foundry orchestrator python orphans"
+safe_killall TERM "$ORCHESTRATOR_PY_MATCH"
+sleep 1
+safe_killall KILL "$ORCHESTRATOR_PY_MATCH"
+sleep 1
+ORPHAN_REMAINING_NL="$(filter_self "$(pgrep -f "$ORCHESTRATOR_PY_MATCH" 2>/dev/null | sort -u || true)")"
+ORPHAN_REMAINING=$(count_pids "$ORPHAN_REMAINING_NL")
+if [ "$ORPHAN_REMAINING" -gt 0 ]; then
+    fail "$ORPHAN_REMAINING orchestrator python process(es) still alive after KILL"
+    while IFS= read -r p; do
+        [ -z "$p" ] && continue
+        ps -o pid=,command= -p "$p" >&2 2>/dev/null || true
+    done <<< "$ORPHAN_REMAINING_NL"
+fi
+[ "$ORPHAN_REMAINING" -eq 0 ] && ok "no orchestrator python orphans alive"
+
 # --- Registry cleanup ---
 step "Cleaning stale registry"
 
@@ -651,8 +691,10 @@ step "Verification"
 FINAL_AGENTIS_NL="$(filter_self "$(pgrep -f "$DAEMON_MATCH" 2>/dev/null | sort -u || true)")"
 FINAL_DASH_NL="$(filter_self "$(pgrep -f "$DASHBOARD_MATCH" 2>/dev/null | sort -u || true)")"
 FINAL_DASH_PY_NL="$(filter_self "$(pgrep -f "$DASH_PY_MATCH" 2>/dev/null | sort -u || true)")"
+FINAL_ORCHESTRATOR_PY_NL="$(filter_self "$(pgrep -f "$ORCHESTRATOR_PY_MATCH" 2>/dev/null | sort -u || true)")"
 FINAL_AGENTIS=$(count_pids "$FINAL_AGENTIS_NL")
 FINAL_DASH=$(count_pids "$FINAL_DASH_NL")
+FINAL_ORCHESTRATOR_PY=$(count_pids "$FINAL_ORCHESTRATOR_PY_NL")
 
 # lsof is not installed everywhere (minimal containers, busybox). Try
 # `ss` (iproute2, universal on Linux including Alpine) before falling
@@ -677,8 +719,8 @@ fi
 
 # Union all four survivor sources so the JSON caller (dashboard kill
 # button) has the complete list of PIDs still blocking a clean state.
-SURVIVING_PIDS_NL="$(printf '%s\n%s\n%s\n%s\n' \
-    "$FINAL_AGENTIS_NL" "$FINAL_DASH_NL" "$FINAL_DASH_PY_NL" "$FINAL_PORT_PIDS_NL" \
+SURVIVING_PIDS_NL="$(printf '%s\n%s\n%s\n%s\n%s\n' \
+    "$FINAL_AGENTIS_NL" "$FINAL_DASH_NL" "$FINAL_DASH_PY_NL" "$FINAL_ORCHESTRATOR_PY_NL" "$FINAL_PORT_PIDS_NL" \
     | grep -v '^$' | sort -u || true)"
 
 REGISTRY_REMAINING=0
@@ -733,8 +775,8 @@ if [ "$JSON_MODE" -eq 1 ]; then
     else
         SURVIVING_JSON="[$(printf '%s' "$SURVIVING_PIDS_NL" | tr '\n' ',' | sed 's/,$//')]"
     fi
-    printf '{"dry_run":false,"agentis":%d,"dashboard":%d,"port_8420":%s,"registry_remaining":%d,"backup":%s,"surviving_pids":%s,"exit":%d}\n' \
-        "$FINAL_AGENTIS" "$FINAL_DASH" "$PORT_JSON" "$REGISTRY_REMAINING" "$BACKUP_JSON" "$SURVIVING_JSON" "$EXIT_CODE"
+    printf '{"dry_run":false,"agentis":%d,"dashboard":%d,"orchestrator_python":%d,"port_8420":%s,"registry_remaining":%d,"backup":%s,"surviving_pids":%s,"exit":%d}\n' \
+        "$FINAL_AGENTIS" "$FINAL_DASH" "$FINAL_ORCHESTRATOR_PY" "$PORT_JSON" "$REGISTRY_REMAINING" "$BACKUP_JSON" "$SURVIVING_JSON" "$EXIT_CODE"
 fi
 
 exit "$EXIT_CODE"
