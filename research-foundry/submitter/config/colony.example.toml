@@ -37,5 +37,5 @@ arxiv_gateway = "submit@arxiv.org"
 [[agents]]
 name = "submitter"
 source = "agents/submitter.ag"
-cb_budget = 2000
+cb_budget = 200000000
 tick_interval_ms = 60000

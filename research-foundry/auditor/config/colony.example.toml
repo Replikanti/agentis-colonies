@@ -28,5 +28,5 @@ confidence_floor = 0.7
 [[agents]]
 name = "auditor"
 source = "agents/auditor.ag"
-cb_budget = 2000
+cb_budget = 200000000
 tick_interval_ms = 90000
