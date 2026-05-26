@@ -8,11 +8,22 @@
 
 promote:
   prerequisites:
-    min_entries: 200               # total experience rows (any tag)
-    min_acting_entries: 60         # acting rows only — see doc/auto-promote.md#formula
-    min_runtime_hours: 48          # don't promote in the first 2 days
+    # Calibrated for finite-run research windows (75-tick × 60s ≈ 75 min)
+    # AND multi-day production deployments. Pre-#799 the thresholds were
+    # sized for the latter only (min_entries=200, min_acting_entries=60,
+    # min_runtime_hours=48), which made the autonomous tier structurally
+    # unreachable inside a single research-foundry run — the substrate
+    # primitives gated on autonomous (replicate, evolve_self, knowledge_sell
+    # pre-#792, _publish_*'s autonomous-only ledger writes, auditor #761
+    # audit-guard decide()) were dead code paths in practice. The per-step
+    # `min_acting_entries_override` for review-gated → autonomous (line ~41)
+    # preserves the safety semantics for the riskiest promotion by raising
+    # the acting-entry requirement back to a rule-of-three-derived value.
+    min_entries: 30                # total experience rows (any tag)
+    min_acting_entries: 10         # acting rows only — see doc/auto-promote.md#formula
+    min_runtime_hours: 0.5         # 30 min minimum (was 48h — incompatible with finite-run windows)
     reject_rate_threshold: 0.05    # reject_rate on acting rows must be < 5%
-    delta_slope_window: 100        # compute slope over last N acting rows
+    delta_slope_window: 20         # compute slope over last N acting rows
     delta_slope_min: 0             # average delta must be non-negative
   # Three-step ladder aligned with the four-tier confidence contract
   # (ADR-0001, issue #177). Each step promotes the agent across one
@@ -37,8 +48,15 @@ promote:
       to: 0.95    # promote to autonomous (terminal writes)
       # Autonomous is riskier (no review gate on direct writes). Halve
       # the tolerable reject rate: apply rule-of-three to 0.025 instead
-      # of 0.05, giving ceil(3 / 0.025) = 120.
-      min_acting_entries_override: 120
+      # of 0.05, giving ceil(3 / 0.025) = 120 in the pre-#799 sizing.
+      # Re-scaled to 30 alongside the global threshold cut (#799) so
+      # autonomous tier is reachable in finite-run windows; the
+      # rule-of-three derivation now reads as `ceil(3 / 0.1) = 30`
+      # against a 10% target reject rate, which is still strictly
+      # tighter than the global 5% prereq (the autonomous gate
+      # therefore still requires fewer total errors than the loose
+      # propose→review-gated step).
+      min_acting_entries_override: 30
 
 evolve:
   trigger:

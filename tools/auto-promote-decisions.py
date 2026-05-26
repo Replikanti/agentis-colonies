@@ -546,19 +546,48 @@ def main():
         # staleness_ticks_for() -- tick-driven roles (5), listen-driven
         # research-foundry roles (60), dev-apprenticeship roles (30),
         # unknown roles fall back to the global STALENESS_TICKS (15).
+        # #799: the `<agent>:last_check` memo write convention is
+        # unreliable -- many .ag tick bodies short-circuit before reaching
+        # the memo_write call (missing-upstream picker-empty paths, tier
+        # branches that bail out early, exec sh failures on the
+        # `date -u +%Y-...` helper). Concrete reproducer: noticer.ag wrote
+        # 20 last_check entries across 118 actual ticks (~17% coverage)
+        # during the post-#798 claude run, because the noticer-without-
+        # upstream-output path returns before either of its two write
+        # sites. Result was the auto-promote sidecar skipping all 18
+        # research-foundry colonies with reason 'memo last_check stale'
+        # while the runtime was clearly ticking them (118 'tick conf' log
+        # lines per heartbeat). Fall back to the runtime-maintained
+        # heartbeat file at `<fed_dir>/.agentis/daemon/<agent_id>.heartbeat`
+        # (line 1 = ms-since-epoch of the last completed tick, written by
+        # `write_heartbeat_ext` in `src/daemon/runner.rs` every tick
+        # regardless of `.ag` branch taken). Apply the same staleness
+        # window as last_check so the safety semantics are preserved.
         if containerized:
             last_check_epoch = freshness.parse_last_check_epoch(freshness.read_memo_raw(fed_dir, agent_name + ':last_check'))
             fresh = False
             if last_check_epoch is not None:
                 tick_ms = freshness.resolve_tick_interval_ms(agent_name, colony, fed_dir)
                 fresh = (time.time() - last_check_epoch) < freshness.staleness_ticks_for(agent_name) * (tick_ms / 1000.0)
+            # #799: heartbeat-file fallback -- runtime-maintained, branch-agnostic.
+            if not fresh and agent_id:
+                heartbeat_path = os.path.join(fed_dir, '.agentis', 'daemon', str(agent_id) + '.heartbeat')
+                try:
+                    with open(heartbeat_path) as _hbf:
+                        line1 = _hbf.readline().strip()
+                        if line1.isdigit():
+                            hb_epoch = int(line1) / 1000.0
+                            tick_ms = freshness.resolve_tick_interval_ms(agent_name, colony, fed_dir)
+                            fresh = (time.time() - hb_epoch) < freshness.staleness_ticks_for(agent_name) * (tick_ms / 1000.0)
+                except (OSError, IOError, ValueError):
+                    pass
             effective_state = d.get('effective_state') or state
             if not fresh and effective_state != 'running':
                 decisions.append(_attach_explorer_evidence({
                     'agent': agent_name,
                     'colony': colony,
                     'decision': 'skip',
-                    'reason': f'memo last_check stale and effective_state={effective_state!r} not running',
+                    'reason': f'memo last_check stale, heartbeat file stale or missing, and effective_state={effective_state!r} not running',
                     'pid': pid,
                     'confidence': confidence,
                 }))
