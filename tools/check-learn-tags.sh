@@ -647,9 +647,14 @@ verification"
             PAIR_KNOWN=1
             ;;
         "compute:partial")
+            # `ctx-clamped` rows are emitted by computer.ag when the
+            # upstream explorer code/output memo fields exceed
+            # MAX_CTX_FIELD_BYTES and get truncated before the prompt
+            # ctx assembly (#802).
             ALLOWED_LITERALS="acted
 review-gated
 observed
+ctx-clamped
 preprint-foundry"
             PAIR_KNOWN=1
             ;;

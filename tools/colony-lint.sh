@@ -666,6 +666,23 @@ if [ -x "$REPO_ROOT/research-foundry/tools/test-last-check-early.sh" ]; then
     fi
 fi
 
+# --- Per-daemon --prompt-timeout-s flag (#802) ---
+# Every `agentis daemon /run-root/.../agents/<colony>.ag` spawn line in
+# `research-foundry/tools/run-research.sh` must carry `--prompt-timeout-s
+# "$DAEMON_PROMPT_TIMEOUT_S"` so a stuck upstream `prompt()` returns as a
+# tick-level error within the wall-clock cap rather than holding the
+# entire watchdog heartbeat budget (1800s default) and inviting a
+# SIGKILL on the daemon.
+if [ -x "$REPO_ROOT/research-foundry/tools/test-prompt-timeout-flag.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/research-foundry/tools/test-prompt-timeout-flag.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "test-prompt-timeout-flag: every research-foundry daemon spawn line carries --prompt-timeout-s (#802)"
+    else
+        fail "test-prompt-timeout-flag: daemon spawn line missing --prompt-timeout-s in research-foundry/ (#802)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- tier-branch double learn() guard (#636) ---
 # Every `_publish_<role>(...)` / `_submitter_<phase>(...)` helper in
 # research-foundry/ must gate its top-level `learn(..., ["emitted", ...])`
