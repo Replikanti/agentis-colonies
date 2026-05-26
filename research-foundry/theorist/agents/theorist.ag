@@ -522,6 +522,14 @@ fn tick(reason: string) -> void {
     // style_reviewer.ag:209.
     let rec = recommend("proof_approach", ["accuracy"]);
 
+    // #804: clamp the AdaptiveEngine projection. KB has no inherent upper
+    // bound on how many entries it returns; the clamp defends the
+    // per-tick string heap against future KB growth. Mirrors computer.ag:
+    // 318-320 (max_result_bytes=4096).
+    let max_rec_bytes = 4096;
+    let rec_str = to_string(rec);
+    let rec_str_clamped = if len(rec_str) > max_rec_bytes { substring(rec_str, 0, max_rec_bytes); } else { rec_str; };
+
     let ctx = "PROBLEM: " + problem_text + "\n"
             + "ANSWER: " + stated_answer + "\n"
             + "NOVELTY CLAIM: " + novelty_claim + "\n"
@@ -529,7 +537,7 @@ fn tick(reason: string) -> void {
             + "EXPLORER GOAL: " + explorer_goal + "\n"
             + "EXPLORER CODE:\n" + explorer_code + "\n"
             + "EXPLORER OUTPUT:\n" + explorer_output + "\n"
-            + "LEARNED PROOF-STYLE PREFERENCES: " + to_string(rec) + "\n";
+            + "LEARNED PROOF-STYLE PREFERENCES: " + rec_str_clamped + "\n";
 
     let draft = prompt(_draft_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(_self_pid), ctx) -> Draft;
 
