@@ -297,19 +297,19 @@ CFG_STEPS=$(python3 "$SCRIPT_DIR/auto-promote-config-parser.py" \
     | grep '^CFG_PROMOTE_STEPS=' \
     | sed "s/CFG_PROMOTE_STEPS='\\(.*\\)'/\\1/")
 
-if [ "$CFG_STEPS" = "0.4:0.6:0 0.6:0.8: 0.8:0.95:120" ]; then
-    pass "config parser: triples match ADR-0001 ladder"
+if [ "$CFG_STEPS" = "0.4:0.6:0 0.6:0.8: 0.8:0.95:30" ]; then
+    pass "config parser: triples match ADR-0001 ladder (#799 rescaled)"
 else
-    fail "config parser" "expected <0.4:0.6:0 0.6:0.8: 0.8:0.95:120>, got <$CFG_STEPS>"
+    fail "config parser" "expected <0.4:0.6:0 0.6:0.8: 0.8:0.95:30>, got <$CFG_STEPS>"
 fi
 
 # Verify output is shell-eval-able and sets every CFG_* the script needs.
 CFG_EVAL=$(bash -c "eval \"\$(python3 '$SCRIPT_DIR/auto-promote-config-parser.py' '$SCRIPT_DIR/auto-promote-config.yaml')\" && echo \"\$CFG_MIN_ENTRIES|\$CFG_DRY_RUN|\$CFG_REJECT_RATE_THRESHOLD\"")
 
-if [ "$CFG_EVAL" = "200|true|0.05" ]; then
-    pass "config parser: output shell-eval-able, CFG_* populated"
+if [ "$CFG_EVAL" = "30|true|0.05" ]; then
+    pass "config parser: output shell-eval-able, CFG_* populated (#799 rescaled)"
 else
-    fail "config parser eval" "expected <200|true|0.05>, got <$CFG_EVAL>"
+    fail "config parser eval" "expected <30|true|0.05>, got <$CFG_EVAL>"
 fi
 
 # --- Test 9: config has canonical tier boundaries ---
@@ -821,7 +821,7 @@ d = arr[0]
 if d.get('decision') != 'skip':
     print('decision:' + d.get('decision', '')); sys.exit(0)
 reason = d.get('reason', '')
-if re.search(r\"memo last_check stale and effective_state='zombie' not running\", reason):
+if re.search(r\"memo last_check stale, heartbeat file stale or missing, and effective_state='zombie' not running\", reason):
     print('ok')
 else:
     print('reason:' + reason)
