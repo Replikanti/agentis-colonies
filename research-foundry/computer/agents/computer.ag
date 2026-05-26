@@ -462,11 +462,47 @@ fn tick(reason: string) -> void {
     let stated_answer = recall_latest("claim:answer:tick-" + to_string(upstream_tick));
     let novelty_claim = recall_latest("claim:novelty_claim:tick-" + to_string(upstream_tick));
     let audit_reasoning = recall_latest("claim:audit_reasoning:tick-" + to_string(upstream_tick));
-    let explorer_code = recall_latest("claim:explorer_code:tick-" + to_string(upstream_tick));
-    let explorer_output = recall_latest("claim:explorer_output:tick-" + to_string(upstream_tick));
+    let explorer_code_raw = recall_latest("claim:explorer_code:tick-" + to_string(upstream_tick));
+    let explorer_output_raw = recall_latest("claim:explorer_output:tick-" + to_string(upstream_tick));
     if len(problem_text) == 0 {
         print("[computer] no claim seed for tick=", upstream_tick);
         return;
+    };
+
+    // #802: clamp the two unbounded upstream-explorer memo fields before
+    // they enter the prompt ctx. Without the cap a pathological explorer
+    // memo (200KB+ on the 56-daemon shape) hands the LLM a context that
+    // routinely stalls past the 1800s heartbeat budget, triggering a
+    // watchdog SIGKILL on the computer daemon. 16384 bytes per field is
+    // enough for any real reproducibility check (mirrors the
+    // max_result_bytes=4096 clamp used in _complete_compute_task) while
+    // staying well under typical LLM ctx ceilings. The plain-text
+    // fields (problem_text / stated_answer / novelty_claim /
+    // audit_reasoning) are bounded upstream by the producing colonies'
+    // prompts, so the cap is targeted to the two unbounded recall_latest
+    // payloads.
+    let MAX_CTX_FIELD_BYTES = 16384;
+    let explorer_code = if len(explorer_code_raw) > MAX_CTX_FIELD_BYTES {
+        substring(explorer_code_raw, 0, MAX_CTX_FIELD_BYTES);
+    } else {
+        explorer_code_raw;
+    };
+    let explorer_output = if len(explorer_output_raw) > MAX_CTX_FIELD_BYTES {
+        substring(explorer_output_raw, 0, MAX_CTX_FIELD_BYTES);
+    } else {
+        explorer_output_raw;
+    };
+    let ctx_clamped = if len(explorer_code_raw) > MAX_CTX_FIELD_BYTES {
+        true;
+    } else {
+        if len(explorer_output_raw) > MAX_CTX_FIELD_BYTES {
+            true;
+        } else {
+            false;
+        };
+    };
+    if ctx_clamped {
+        learn("compute", "tick " + to_string(tick_idx), "ctx_field_bytes_cap=" + to_string(MAX_CTX_FIELD_BYTES), "partial", ["ctx-clamped", "preprint-foundry"]);
     };
 
     let ctx = "PROBLEM: " + problem_text + "\n"
