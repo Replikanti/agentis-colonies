@@ -812,6 +812,14 @@ fn tick(reason: string) -> void {
     // pre-#765 ctx shape byte-identically.
     let loss_shaping_hint_line = _loss_shaping_hint(_self_pid, topic_label);
 
+    // #804: clamp the AdaptiveEngine projection. KB has no inherent upper
+    // bound on how many entries it returns; the clamp defends the
+    // per-tick string heap against future KB growth. Mirrors computer.ag:
+    // 318-320 (max_result_bytes=4096).
+    let max_rec_bytes = 4096;
+    let rec_str = to_string(rec);
+    let rec_str_clamped = if len(rec_str) > max_rec_bytes { substring(rec_str, 0, max_rec_bytes); } else { rec_str; };
+
     // Build the topic + paper-pair context string.
     let ctx = "TOPIC: " + topic_label + " (" + topic_desc + ")\n"
             + "TOOLS AVAILABLE: " + compute_hints + "\n"
@@ -819,7 +827,7 @@ fn tick(reason: string) -> void {
             + "ABSTRACT: " + paper_a_abstract + "\n"
             + "PAPER B (" + paper_b_id + "): " + paper_b_title + "\n"
             + "ABSTRACT: " + paper_b_abstract + "\n"
-            + "LEARNED TOPIC PREFERENCES: " + to_string(rec) + "\n"
+            + "LEARNED TOPIC PREFERENCES: " + rec_str_clamped + "\n"
             + prior_knowledge_line
             + loss_shaping_hint_line;
 

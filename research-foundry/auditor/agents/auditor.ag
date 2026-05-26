@@ -605,17 +605,32 @@ fn tick(reason: string) -> void {
     let hitl_buf = recall_latest("feedback:hitl_rejects");
     let hitl_summary = _summarise_hitl_buf(hitl_buf, 10);
 
+    // #804: per-component byte clamps defend the per-tick string heap.
+    // Mirrors computer.ag:318-320 (max_result_bytes=4096) and explorer.ag:
+    // 166-170 (EXPLORER_PROMPT_MAX_BYTES). Worst-case ctx ~60 KB, two
+    // orders of magnitude under the 16 MB heap limit. The clamp preserves
+    // the head of each component (the LLM-relevant prefix).
+    let max_bytes = 4096;
+    let arxiv_report_clamped = if len(arxiv_report) > max_bytes { substring(arxiv_report, 0, max_bytes); } else { arxiv_report; };
+    let oeis_report_clamped = if len(oeis_report) > max_bytes { substring(oeis_report, 0, max_bytes); } else { oeis_report; };
+    let groupprops_report_clamped = if len(groupprops_report) > max_bytes { substring(groupprops_report, 0, max_bytes); } else { groupprops_report; };
+    let scholar_report_clamped = if len(scholar_report) > max_bytes { substring(scholar_report, 0, max_bytes); } else { scholar_report; };
+    let prior_advocate_report_clamped = if len(prior_advocate_report) > max_bytes { substring(prior_advocate_report, 0, max_bytes); } else { prior_advocate_report; };
+    let theorist_lean_verdict_clamped = if len(theorist_lean_verdict) > max_bytes { substring(theorist_lean_verdict, 0, max_bytes); } else { theorist_lean_verdict; };
+    let theorist_proof_kind_clamped = if len(theorist_proof_kind) > max_bytes { substring(theorist_proof_kind, 0, max_bytes); } else { theorist_proof_kind; };
+    let hitl_summary_clamped = if len(hitl_summary) > max_bytes { substring(hitl_summary, 0, max_bytes); } else { hitl_summary; };
+
     let ctx = "PROBLEM: " + problem_text + "\n"
             + "ANSWER: " + stated_answer + "\n"
             + "NOVELTY CLAIM: " + novelty_claim + "\n"
-            + "ARXIV REPORT: " + arxiv_report + "\n"
-            + "OEIS REPORT: " + oeis_report + "\n"
-            + "GROUPPROPS REPORT: " + groupprops_report + "\n"
-            + "SCHOLAR REPORT: " + scholar_report + "\n"
-            + "PRIOR ADVOCATE REPORT (is_prior=" + prior_advocate_is_prior + "): " + prior_advocate_report + "\n"
-            + "THEORIST LEAN VERDICT: " + theorist_lean_verdict + "\n"
-            + "THEORIST PROOF KIND: " + theorist_proof_kind + "\n"
-            + "RECENT HITL REJECTS: " + hitl_summary + "\n";
+            + "ARXIV REPORT: " + arxiv_report_clamped + "\n"
+            + "OEIS REPORT: " + oeis_report_clamped + "\n"
+            + "GROUPPROPS REPORT: " + groupprops_report_clamped + "\n"
+            + "SCHOLAR REPORT: " + scholar_report_clamped + "\n"
+            + "PRIOR ADVOCATE REPORT (is_prior=" + prior_advocate_is_prior + "): " + prior_advocate_report_clamped + "\n"
+            + "THEORIST LEAN VERDICT: " + theorist_lean_verdict_clamped + "\n"
+            + "THEORIST PROOF KIND: " + theorist_proof_kind_clamped + "\n"
+            + "RECENT HITL REJECTS: " + hitl_summary_clamped + "\n";
 
     _dump_ctx_to_memo("auditor", _self_pid, tick_idx, ctx);
     let verdict = prompt(_seed_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(_self_pid), ctx) -> Verdict;

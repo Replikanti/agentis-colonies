@@ -248,14 +248,27 @@ fn _submitter_draft_phase(
     // dev-apprenticeship/code-review/agents/style_reviewer.ag:209.
     let rec = recommend("submission_decision", ["accuracy"]);
 
-    let ctx = "FINAL TEX:\n" + final_tex + "\n"
-            + "COMPILE LOG:\n" + compile_log + "\n"
+    // #804: per-component byte clamps defend the per-tick string heap.
+    // Mirrors computer.ag:318-320 (max_result_bytes=4096) and explorer.ag:
+    // 166-170 (EXPLORER_PROMPT_MAX_BYTES). Worst-case ctx ~40 KB, two
+    // orders of magnitude under the 16 MB heap limit. The clamp preserves
+    // the head of each component (the LLM-relevant prefix).
+    let max_bytes = 4096;
+    let final_tex_clamped = if len(final_tex) > max_bytes { substring(final_tex, 0, max_bytes); } else { final_tex; };
+    let compile_log_clamped = if len(compile_log) > max_bytes { substring(compile_log, 0, max_bytes); } else { compile_log; };
+    let repro_script_clamped = if len(repro_script) > max_bytes { substring(repro_script, 0, max_bytes); } else { repro_script; };
+    let repro_output_clamped = if len(repro_output) > max_bytes { substring(repro_output, 0, max_bytes); } else { repro_output; };
+    let rec_str = to_string(rec);
+    let rec_str_clamped = if len(rec_str) > max_bytes { substring(rec_str, 0, max_bytes); } else { rec_str; };
+
+    let ctx = "FINAL TEX:\n" + final_tex_clamped + "\n"
+            + "COMPILE LOG:\n" + compile_log_clamped + "\n"
             + "TITLE SEED: " + title_seed + "\n"
             + "MSC SEED: " + msc_seed + "\n"
             + "ARXIV CATEGORY SEED: " + cat_seed + "\n"
-            + "REPRO SCRIPT (" + repro_lang + "):\n" + repro_script + "\n"
-            + "REPRO OUTPUT:\n" + repro_output + "\n"
-            + "LEARNED METADATA-QUALITY PREFERENCES: " + to_string(rec) + "\n";
+            + "REPRO SCRIPT (" + repro_lang + "):\n" + repro_script_clamped + "\n"
+            + "REPRO OUTPUT:\n" + repro_output_clamped + "\n"
+            + "LEARNED METADATA-QUALITY PREFERENCES: " + rec_str_clamped + "\n";
     let meta = prompt(_metadata_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(self_pid), ctx) -> Metadata;
 
     // Load authors.toml from $PREPRINT_AUTHOR_CONFIG (path threaded
