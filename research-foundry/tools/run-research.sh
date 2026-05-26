@@ -622,10 +622,18 @@ if [ "$DRY_RUN" = "0" ]; then
     fi
     mkdir -p "$RUN_DIR" "$LAPTOP_DIR" "$LAPTOP_DIR/.agentis/sandbox" "$LAPTOP_DIR/.agentis/logs" "$LAPTOP_DIR/.agentis/spend" "$LAPTOP_DIR/preprints"
     : >"$ORCH_LOG"
-    : >"$DISCOVERY_LEDGER"
-    : >"$AUDIT_LEDGER"
-    : >"$PREPRINT_LEDGER"
-    : >"$REPLICATION_LEDGER"
+    # Surface the actual ledger files (written by daemons inside the
+    # container, where /run-root is bind-mounted to $LAPTOP_DIR on the
+    # host) via symlinks at the run-root. Operator + dashboard code reads
+    # `<run-dir>/<name>-ledger.jsonl` and would otherwise see empty
+    # files; the symlinks resolve through to the populated targets in
+    # `laptop-node/`. `ln -sf` with relative targets keeps the run dir
+    # relocatable. The container bootstrap at lines below truncates the
+    # actual files inside /run-root, which is the symlink target.
+    ln -sf laptop-node/discovery-ledger.jsonl "$DISCOVERY_LEDGER"
+    ln -sf laptop-node/audit-ledger.jsonl "$AUDIT_LEDGER"
+    ln -sf laptop-node/preprint-ledger.jsonl "$PREPRINT_LEDGER"
+    ln -sf laptop-node/replication-ledger.jsonl "$REPLICATION_LEDGER"
 fi
 
 emit_step "run-research: starting (dry_run=$DRY_RUN)"
