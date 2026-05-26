@@ -315,6 +315,40 @@ for colony, agent in agent_pairs:
             rec['pid_alive'] = (epoch - last_check_epoch) < window_seconds
         else:
             rec['pid_alive'] = False
+        # Heartbeat-file fallback for containerized federations. Mirrors the
+        # auto-promote sidecar fix (PR #799). The `.ag` convention
+        # `memo_write("<agent>:last_check", now)` at end-of-tick is
+        # unreliable -- many tick bodies short-circuit before reaching the
+        # write site (missing-upstream picker-empty paths, tier branches
+        # that bail early, `exec sh` failures on the `date -u +%Y-...`
+        # helper). Concrete reproducer: noticer.ag wrote 20 last_check
+        # entries across 118 actual ticks (~17% coverage) during the
+        # post-#798 claude run, while the runtime's per-tick heartbeat
+        # file kept perfect coverage. The dashboard was therefore showing
+        # "18 daemons with dead PID" while every daemon was alive and
+        # ticking inside the container -- false-negative every refresh.
+        # Fall back to `<fed_dir>/.agentis/daemon/<agent_id>.heartbeat`
+        # line 1 (ms-since-epoch of the last completed tick, written by
+        # `write_heartbeat_ext` in `src/daemon/runner.rs` every tick
+        # regardless of `.ag` branch taken). Same staleness window as
+        # last_check so the safety semantics are byte-identical for
+        # daemons that DO write last_check reliably (host-mode
+        # dev-apprenticeship agents) -- only containerized federations
+        # see a behaviour change, and the change is strictly more lenient
+        # in the fresh direction (no false-positive zombie detection).
+        if not rec['pid_alive'] and rec.get('agent_id'):
+            heartbeat_path = os.path.join(fed_dir, '.agentis', 'daemon', str(rec['agent_id']) + '.heartbeat')
+            try:
+                with open(heartbeat_path) as _hbf:
+                    line1 = _hbf.readline().strip()
+                    if line1.isdigit():
+                        hb_epoch = int(line1) / 1000.0
+                        tick_interval_ms = freshness.resolve_tick_interval_ms(agent, colony, fed_dir=fed_dir, fed_tools_dir=fed_tools_dir) if freshness else 60000
+                        role_ticks = freshness.staleness_ticks_for(agent) if freshness else STALENESS_TICKS
+                        window_seconds = role_ticks * (tick_interval_ms / 1000.0)
+                        rec['pid_alive'] = (epoch - hb_epoch) < window_seconds
+            except (OSError, IOError, ValueError):
+                pass
 
     # #300: derived "actually running" predicate. Registry state alone is
     # not enough — a daemon's registry row stays state=running even after
