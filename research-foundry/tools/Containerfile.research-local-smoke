@@ -1,0 +1,111 @@
+# Containerfile.research-local-smoke -- DEV variant of Containerfile.research
+# that builds `agentis` from a bind-mounted source tree instead of pulling
+# the official release binary from GitHub (#816). Intended ONLY for
+# pre-release smoke testing of an unreleased `agentis` build that has not
+# yet shipped a tagged release.
+#
+# DO NOT use this Containerfile for production research runs. The production
+# path is `Containerfile.research`, which pins `ARG AGENTIS_VERSION=vX.Y.Z`
+# and verifies the downloaded binary's SHA256 against the published sidecar.
+# A locally-built binary carries no published checksum and is unreproducible
+# across hosts.
+#
+# Two-stage build:
+#   stage 1 (builder): rust toolchain image, copies the bind-mounted
+#                      agentis-core source into /agentis-core-source and
+#                      runs `cargo build --release` to produce
+#                      /agentis-core-source/target/release/agentis.
+#   stage 2 (runtime): byte-identical to Containerfile.research minus the
+#                      `curl ... agentis-linux-x86_64` block. The agentis
+#                      binary is copied from stage 1 instead.
+#
+# Operator usage (driven by tools/run-research-smoke-local.sh):
+#   AGENTIS_CORE_SOURCE=/path/to/agentis-core-checkout \
+#   podman build \
+#       --build-arg AGENTIS_CORE_SOURCE_REL=. \
+#       -v "${AGENTIS_CORE_SOURCE}:/agentis-core-source:ro,Z" \
+#       -f research-foundry/tools/Containerfile.research-local-smoke \
+#       -t research-foundry:smoke-local \
+#       research-foundry/
+#
+# The wrapper script handles the env-var resolution + smoke-scale tick
+# override; see `tools/run-research-smoke-local.sh` for the canonical
+# invocation.
+
+# ---------- Stage 1: build agentis from source ----------
+FROM docker.io/library/rust:1.83-bookworm AS agentis-builder
+
+# The bind mount is supplied at build time via `podman build -v <src>:/agentis-core-source:ro,Z`.
+# We copy the source out of the bind mount into a writable layer so cargo
+# can produce its target/ tree without touching the operator's checkout.
+WORKDIR /build
+RUN --mount=type=bind,source=/agentis-core-source,target=/agentis-core-source,readonly \
+        cp -a /agentis-core-source/. /build/
+
+RUN cargo build --release
+
+# ---------- Stage 2: runtime image ----------
+# Byte-identical to Containerfile.research except for the agentis install
+# step, which copies from stage 1 instead of curling the release tarball.
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        python3 \
+        python3-pip \
+        python3-requests \
+        jq \
+        git \
+        curl \
+        ca-certificates \
+        texlive-latex-base \
+        texlive-latex-recommended \
+        texlive-latex-extra \
+        texlive-fonts-recommended \
+        texlive-science \
+        latexmk \
+        gap-core \
+        ssmtp \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+        sympy \
+        numpy \
+        networkx
+
+# Install the locally-built agentis binary from stage 1.
+# NOTE: no SHA256 verification because a local build has no published
+# checksum sidecar. This is the security trade-off that motivates the
+# "DEV / pre-release smoke only" disclaimer at the top of this file.
+COPY --from=agentis-builder /build/target/release/agentis /usr/local/bin/agentis
+RUN chmod 0755 /usr/local/bin/agentis \
+ && /usr/local/bin/agentis --version || true
+
+# Claude Code CLI for the claude-backend default.
+RUN curl -fsSL https://claude.ai/install.sh | bash \
+ && ln -s /root/.local/bin/claude /usr/local/bin/claude
+
+# Lean 4 toolchain (mirrors Containerfile.research).
+ARG LEAN_TOOLCHAIN=leanprover/lean4:v4.13.0
+RUN curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+        | sh -s -- -y --default-toolchain "${LEAN_TOOLCHAIN}"
+ENV PATH="/root/.elan/bin:${PATH}"
+RUN lean --version
+
+# Mathlib 4 precompiled shell (mirrors Containerfile.research).
+ARG MATHLIB_REV=v4.13.0
+RUN mkdir -p /opt/mathlib-shell \
+ && cd /opt/mathlib-shell \
+ && printf 'leanprover/lean4:v4.13.0\n' > lean-toolchain \
+ && printf 'import Lake\nopen Lake DSL\n\npackage «mathlib-shell» where\n\nrequire mathlib from git "https://github.com/leanprover-community/mathlib4.git" @ "%s"\n' "${MATHLIB_REV}" > lakefile.lean \
+ && lake update \
+ && (lake exe cache get || echo "cache get failed -- proceeding; first lean import may compile from source") \
+ && lake build plausible \
+ && echo "Mathlib shell ready"
+ENV MATHLIB_SHELL=/opt/mathlib-shell
+
+WORKDIR /run-root
+
+ENTRYPOINT ["/bin/bash"]

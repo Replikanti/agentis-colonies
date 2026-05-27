@@ -563,6 +563,49 @@ observed
 claim-auditor"
             PAIR_KNOWN=1
             ;;
+        "prior_advocate_anchor:success")
+            # #816: prior_advocate distillation pilot. The Stage 1
+            # rule-hit path emits a `distilled`/`rule-hit` row; the
+            # Stage 2 LLM fallback emits an `emitted` row from the
+            # propose tier; the auditor demotion hook emits a
+            # `rule-reinforced` row on KNOWN_PRIOR agreement.
+            ALLOWED_LITERALS="distilled
+rule-hit
+rule-reinforced
+auditor-agreement
+llm-driven
+acted
+review-gated
+emitted
+observed
+claim-auditor"
+            PAIR_KNOWN=1
+            ;;
+        "prior_advocate_anchor:partial")
+            # #816: prior_advocate Stage 2 LLM fallback `partial`
+            # outcomes for autonomous / review-gated / observed
+            # branches (mirrors the legacy `prior_match:partial`
+            # schema; topic rename is the load-bearing change so
+            # the crystallizer can distill per-topic).
+            ALLOWED_LITERALS="llm-driven
+acted
+review-gated
+emitted
+observed
+claim-auditor"
+            PAIR_KNOWN=1
+            ;;
+        "prior_advocate_anchor:failure")
+            # #816: auditor demotion hook emits a `failure` row
+            # tagged `rule-demoted`/`auditor-override` when its own
+            # verdict disagrees with a prior_advocate Stage 1 rule
+            # hit (VERIFIED_NEW / VERIFIED_BY_LEAN). Drives
+            # crystallizer_record_use(rule_id, false, -0.15).
+            ALLOWED_LITERALS="rule-demoted
+auditor-override
+claim-auditor"
+            PAIR_KNOWN=1
+            ;;
 
         # ----------------------------------------------------------------
         # preprint-foundry research federation (#622 PR-3)

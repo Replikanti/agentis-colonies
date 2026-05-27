@@ -10,6 +10,10 @@
 //   3. Persist verdict to memo (`auditor:<pid>:verdict:tick-N`) and
 //      append a row to $DISCOVERY_LEDGER (audit-ledger.jsonl).
 //   4. Emit "auditor:verdict_ready".
+//   5. #816 demotion hook: if prior_advocate's Stage 1 fired a rule
+//      hit, reinforce or demote that rule via crystallizer_record_use
+//      based on whether this auditor verdict agrees (KNOWN_PRIOR ->
+//      +0.05) or disagrees (VERIFIED_NEW / VERIFIED_BY_LEAN -> -0.15).
 //
 // Run as daemon: agentis daemon agents/auditor.ag --colony auditor
 // Requires: exec capability, messaging capability, DISCOVERY_LEDGER env.
@@ -664,6 +668,42 @@ fn tick(reason: string) -> void {
             } else {
                 print("[auditor] observing (tier:", my_tier, ") verdict=", verdict.audit_verdict);
                 learn("audit", "tick " + to_string(tick_idx) + " " + verdict.audit_verdict, verdict.reasoning, "partial", ["observed", "claim-auditor"]);
+            };
+        };
+    };
+
+    // #816 demotion hook: close the feedback loop on prior_advocate's
+    // distilled rules. When prior_advocate's Stage 1 fired (rule hit),
+    // it wrote `prior_advocate:<pa_pid>:rule_id:tick-<upstream_tick>`
+    // alongside its `is_prior=true` verdict. The auditor is the Class 1
+    // terminal agent that decides KNOWN_PRIOR vs the other three
+    // labels, so it reads the rule_id memo and calls
+    // crystallizer_record_use(rule_id, agree?, +/- delta) to reinforce
+    // or demote the rule per its own verdict. Disagreement
+    // (VERIFIED_NEW / VERIFIED_BY_LEAN) demotes by -0.15; agreement
+    // (KNOWN_PRIOR) reinforces by +0.05. NEEDS_HUMAN is treated as no
+    // signal -- the auditor is itself uncertain. Phase 9 PR-A picker
+    // (#663) is used to resolve the replica-safe pa_pid rather than
+    // the legacy `replay:current_prior_advocate_pid` LWW key.
+    let pa_pid = _pick_upstream_pid_by_key("prior_advocate", "report", "confidence", upstream_tick);
+    if len(pa_pid) > 0 {
+        let pa_rule_id = recall_latest("prior_advocate:" + pa_pid + ":rule_id:tick-" + to_string(upstream_tick));
+        if len(pa_rule_id) > 0 {
+            let pa_disagrees = if verdict.audit_verdict == "VERIFIED_NEW" {
+                true;
+            } else {
+                verdict.audit_verdict == "VERIFIED_BY_LEAN";
+            };
+            if pa_disagrees {
+                crystallizer_record_use(pa_rule_id, false, 0.0 - 0.15);
+                // colony-lint: learn-tags-ok
+                learn("prior_advocate_anchor", "rule_demotion", "auditor=" + verdict.audit_verdict + " rule_id=" + pa_rule_id, "failure", ["rule-demoted", "auditor-override", "claim-auditor"]);
+            } else {
+                if verdict.audit_verdict == "KNOWN_PRIOR" {
+                    crystallizer_record_use(pa_rule_id, true, 0.05);
+                    // colony-lint: learn-tags-ok
+                    learn("prior_advocate_anchor", "rule_reinforce", "auditor=KNOWN_PRIOR rule_id=" + pa_rule_id, "success", ["rule-reinforced", "auditor-agreement", "claim-auditor"]);
+                };
             };
         };
     };
