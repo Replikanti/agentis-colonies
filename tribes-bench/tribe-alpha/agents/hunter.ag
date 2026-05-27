@@ -955,11 +955,11 @@ fn tick(reason: string) -> void {
                     if len(bought) > 0 {
                         if validated_buy {
                             if outcome_buy == "cache_hit" {
-                                learn("market", buy_topic, "", "cache_hit", ["tribes-bench", "buyer:" + _tribe_name, "topic_kind:finding"]);
+                                learn("market", buy_topic, "cache_hit", "success", ["tribes-bench", "buyer:" + _tribe_name, "topic_kind:finding"]);
                             };
                             memo_write("hunter:bought_context", bought);
                         } else {
-                            learn("market", buy_topic, "", "rejected", ["tribes-bench", "buyer:" + _tribe_name, "topic_kind:finding", "reason:unverifiable"]);
+                            learn("market", buy_topic, "rejected", "failure", ["tribes-bench", "buyer:" + _tribe_name, "topic_kind:finding", "reason:unverifiable"]);
                         };
                     };
                     emit_market_csv(_tick_now_ms, "buy", buy_topic, "finding", "", to_string(max_cb_buy), "", cache_buy_s, outcome_buy);
@@ -1008,11 +1008,11 @@ fn tick(reason: string) -> void {
                     if len(bought_b) > 0 {
                         if validated_eb {
                             if outcome_eb == "cache_hit" {
-                                learn("market", espionage_topic, "", "cache_hit", ["tribes-bench", "buyer:" + _tribe_name, "topic_kind:bundle"]);
+                                learn("market", espionage_topic, "cache_hit", "success", ["tribes-bench", "buyer:" + _tribe_name, "topic_kind:bundle"]);
                             };
                             memo_write("hunter:bought_context", bought_b);
                         } else {
-                            learn("market", espionage_topic, "", "rejected", ["tribes-bench", "buyer:" + _tribe_name, "topic_kind:bundle", "reason:unverifiable"]);
+                            learn("market", espionage_topic, "rejected", "failure", ["tribes-bench", "buyer:" + _tribe_name, "topic_kind:bundle", "reason:unverifiable"]);
                         };
                     };
                     emit_market_csv(_tick_now_ms, "buy", espionage_topic, "bundle", "", to_string(prem_max_cb), "", cache_eb_s, outcome_eb);
