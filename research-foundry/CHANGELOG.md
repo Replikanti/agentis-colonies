@@ -18,6 +18,12 @@ History of the three retired federations consolidated into this one
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-05-28
+
+**Requires:** agentis >= `1.8.0`
+
+First versioned release since the federation's initial `0.1.0` scaffold. Accumulated platform work — Mathlib bundling, AI-disclosure footnote, three runtime bumps culminating in agentis v1.8.0, auto-promote rescaling, heartbeat-fallback liveness check, Lean placeholder ban, CB budget normalization, ledger symlink fix, prompt-timeout watchdog defense, outcome-enum tag normalization, ctx-component clamps, and the daemon-aging gate fix — lands as one bundled milestone. The noticer-pilot distillation refactor lands in a follow-up release once the empirical lifecycle is validated end-to-end via a 75-tick run.
+
 ### Changed
 
 - `research-foundry/tools/Containerfile.research` `ARG AGENTIS_VERSION` bumped `v1.7.18` → `v1.8.0` to pull in the runtime fix for the process-lifetime monotonic `string_heap` odometer (agentis-core #663) plus the new `KnowledgeCrystallizer` `.ag` builtins (agentis-core #662). Pre-fix the heap counter never decremented — any LLM workload accumulated bytes for the lifetime of the daemon process and tripped `ResourceExhausted: string_heap limit 16777216 exceeded` after ~30-60 min, surfacing as cascading `_pick_upstream_*` errors. v1.8.0 splits the counter into `transient_string_heap_bytes` (per-tick, reset at tick boundary, hard limit applies) + `retained_string_heap_bytes` (lifetime odometer kept only for `introspect.memory_used` observability). v1.8.0 also adds `crystallizer_lookup`, `crystallizer_lookup_with_confidence`, and `crystallizer_record_use` evaluator builtins so `.ag` agents can consult crystallized rules at tick time and skip `prompt()` calls when a high-confidence rule matches (closes the distillation loop intended since the earliest evolve_self design). The post-bump 25-tick smoke run against a locally-built v1.8.0 confirmed zero string_heap errors across the federation; the full 75-tick verification of the distillation loop lands once the noticer-pilot refactor (separate PR) merges.
