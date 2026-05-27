@@ -439,6 +439,37 @@ fn tick(reason: string) -> void {
         };
     };
 
+    // #819 demotion hook: close the feedback loop on noticer's
+    // distilled rules. When noticer's Stage 1 fired (rule hit), it
+    // wrote `noticer:<noticer_pid>:rule_id:tick-<upstream_tick>`
+    // alongside its surprise_found=true verdict. The skeptic is the
+    // Class 1 terminal triage agent that decides upheld / dismissed /
+    // unsure on noticer's surprise, so it reads the rule_id memo and
+    // calls crystallizer_record_use(rule_id, agree?, ±delta) per its
+    // own verdict. Disagreement (dismissed) demotes by -0.15;
+    // agreement (upheld) reinforces by +0.05. `unsure` is treated as
+    // no signal -- the skeptic is itself uncertain.  noticer_pid is
+    // already resolved above via the Phase 9 PR-A picker
+    // (`_pick_upstream_pid_by_key`). The hook is a no-op when the
+    // rule_id memo is empty (noticer's Stage 1 missed and the tick
+    // took the LLM path).
+    if len(noticer_pid) > 0 {
+        let noticer_rule_id = recall_latest("noticer:" + noticer_pid + ":rule_id:tick-" + to_string(upstream_tick));
+        if len(noticer_rule_id) > 0 {
+            if verdict.verdict == "dismissed" {
+                crystallizer_record_use(noticer_rule_id, false, 0.0 - 0.15);
+                // colony-lint: learn-tags-ok
+                learn("noticer_surprise", "rule_demotion", "skeptic=dismissed rule_id=" + noticer_rule_id, "failure", ["rule-demoted", "skeptic-override", "math-foundry"]);
+            } else {
+                if verdict.verdict == "upheld" {
+                    crystallizer_record_use(noticer_rule_id, true, 0.05);
+                    // colony-lint: learn-tags-ok
+                    learn("noticer_surprise", "rule_reinforce", "skeptic=upheld rule_id=" + noticer_rule_id, "success", ["rule-reinforced", "skeptic-agreement", "math-foundry"]);
+                };
+            };
+        };
+    };
+
     let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
     if len(now) > 0 {
         memo_write("skeptic:last_check", now);

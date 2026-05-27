@@ -388,6 +388,34 @@ observed
 math-foundry"
             PAIR_KNOWN=1
             ;;
+        # #819: noticer distillation pilot. The noticer agent's two-stage
+        # tick body emits one of three learn() row shapes per tick under
+        # this topic:
+        #   - Stage 1 rule-hit:  tags=[distilled, rule-hit, math-foundry]
+        #     condition=canonical_ctx, recommendation=rule_action.
+        #   - Stage 2 LLM path:  tags=[llm-driven, math-foundry]
+        #     condition=canonical_ctx, recommendation="<bool>|<desc>".
+        #   - Skeptic demotion:  tags=[rule-demoted, skeptic-override,
+        #     math-foundry]  condition="rule_demotion",
+        #     recommendation="skeptic=dismissed rule_id=<id>".
+        #   - Skeptic reinforce: tags=[rule-reinforced, skeptic-agreement,
+        #     math-foundry]  condition="rule_reinforce",
+        #     recommendation="skeptic=upheld rule_id=<id>".
+        "noticer_surprise:success")
+            ALLOWED_LITERALS="distilled
+rule-hit
+rule-reinforced
+skeptic-agreement
+llm-driven
+math-foundry"
+            PAIR_KNOWN=1
+            ;;
+        "noticer_surprise:failure")
+            ALLOWED_LITERALS="rule-demoted
+skeptic-override
+math-foundry"
+            PAIR_KNOWN=1
+            ;;
         "novelty:partial")
             ALLOWED_LITERALS="acted
 review-gated
