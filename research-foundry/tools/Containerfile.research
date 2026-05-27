@@ -94,6 +94,35 @@ RUN curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init
 ENV PATH="/root/.elan/bin:${PATH}"
 RUN lean --version
 
+# Mathlib 4 — pre-fetched precompiled cache so theorist.ag can produce
+# verified proofs of real mathematical claims, not just structural
+# `variable (P : Prop)` axiom-shells (pre-this-change Containerfile
+# explicitly forbade `import Mathlib` in the theorist's seed prompt
+# because there was no mathlib in the image). The setup pattern is the
+# canonical Lake-based one: a tiny shell project at /opt/mathlib-shell
+# whose only purpose is to expose `LEAN_PATH` (via `lake env`) so any
+# `.lean` file outside the project can still `import Mathlib`. Mathlib
+# is fetched as a Lake dependency and its precompiled .olean files come
+# from the Mathlib build cache (`lake exe cache get`) — that takes ~10
+# minutes and ~3 GB of disk vs. ~3 hours of CPU for a from-scratch
+# `lake build`. Pinned to the Mathlib release tag matching
+# leanprover/lean4:v4.13.0 above.
+#
+# Theorist's _run_lean_check invokes `lake env --dir=/opt/mathlib-shell
+# lean <abs_path>` (see theorist.ag) so the lean process inherits the
+# correct LEAN_PATH; lean otherwise refuses `import Mathlib` with
+# "unknown module Mathlib".
+ARG MATHLIB_REV=v4.13.0
+RUN mkdir -p /opt/mathlib-shell \
+ && cd /opt/mathlib-shell \
+ && printf 'leanprover/lean4:v4.13.0\n' > lean-toolchain \
+ && printf 'import Lake\nopen Lake DSL\n\npackage «mathlib-shell» where\n\nrequire mathlib from git "https://github.com/leanprover-community/mathlib4.git" @ "%s"\n' "${MATHLIB_REV}" > lakefile.lean \
+ && lake update \
+ && (lake exe cache get || echo "cache get failed — proceeding; first lean import may compile from source") \
+ && lake build plausible \
+ && echo "Mathlib shell ready"
+ENV MATHLIB_SHELL=/opt/mathlib-shell
+
 WORKDIR /run-root
 
 ENTRYPOINT ["/bin/bash"]

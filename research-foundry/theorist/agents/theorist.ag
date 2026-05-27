@@ -84,7 +84,7 @@ fn _draft_prompt() -> string {
 // adaptive engine. The verifier is NEVER terminal -- theorist still
 // emits LaTeX even on lean failure.
 fn _lean_prompt() -> string {
-    return "You are translating a LaTeX theorem statement (and its proof body when an analytic proof is offered) into Lean 4 source. Produce a single self-contained Lean 4 file: import nothing beyond the core library (NO `import Mathlib`; the container ships stock Lean 4 without mathlib for image-size reasons). State the theorem with `theorem T : <prop> := <proof>` or `theorem T : <prop> := by <tactic_block>`. The `<prop>` MUST be the upstream mathematical claim (or a faithful translation of it); the proposition MUST NOT be `True` or any other trivially-inhabited placeholder type. If the upstream proof body is a sketch / computational and you cannot produce a closed tactic proof from it, leave the body as `:= by sorry` -- that is acceptable and informative (it surfaces as `lean_verdict=incomplete`). If the theorem references an undefined symbol that you cannot meaningfully translate without mathlib, STILL state the proposition with the symbol declared as a `Prop` axiom (e.g., `variable (P : Prop)` then `theorem T : P -> P := fun h => h`) -- this captures the structural shape of the claim and is verifiable; do NOT collapse to `theorem T : True := trivial` or other vacuous placeholders, which were previously permitted as a cascade-keeping fallback but are now rejected (the publish path downgrades any `: True :=` source to `incomplete`). Output ONLY valid JSON: {\"lean_source\":\"<entire .lean file contents>\",\"rationale\":\"one-line description of what you translated\"}. Do NOT wrap output in markdown code fences.";
+    return "You are translating a LaTeX theorem statement (and its proof body when an analytic proof is offered) into Lean 4 source. Produce a single self-contained Lean 4 file. The container ships Lean 4 v4.13.0 with the full Mathlib pinned at v4.13.0 -- use `import Mathlib` as the first line of your file when you want the entire library, OR import specific Mathlib namespaces (`import Mathlib.Analysis.SpecialFunctions.Pow.Real`, `import Mathlib.NumberTheory.Cyclotomic.Basic`, `import Mathlib.Combinatorics.SimpleGraph.Basic`, `import Mathlib.Probability.Distributions.Uniform`, etc.) when you know the relevant module path. State the theorem with `theorem T : <prop> := <proof>` or `theorem T : <prop> := by <tactic_block>`. The `<prop>` MUST be the upstream mathematical claim (or a faithful Mathlib-typed translation of it); the proposition MUST NOT be `True` or any other trivially-inhabited placeholder type. Prefer real Mathlib types (`Real`, `Complex`, `ZMod n`, `Polynomial`, `Matrix`, `SimpleGraph`, `Finset.card`, `Permutations`, `Fin n`, etc.) over reinventing them in core Lean. If the upstream proof body is a sketch / computational and you cannot produce a closed tactic proof from it, leave the body as `:= by sorry` -- that is acceptable and informative (it surfaces as `lean_verdict=incomplete`). Do NOT collapse to `theorem T : True := trivial` or other vacuous placeholders -- the publish path downgrades any `: True :=` source to `incomplete`. Output ONLY valid JSON: {\"lean_source\":\"<entire .lean file contents>\",\"rationale\":\"one-line description of what you translated\"}. Do NOT wrap output in markdown code fences.";
 }
 
 // _run_lean_check -- writes lean_source to a per-tick file under
@@ -109,8 +109,21 @@ fn _run_lean_check(self_pid: string, upstream_tick: int, lean_source: string) ->
     let timeout_env = try { exec sh "printenv THEORIST_LEAN_TIMEOUT_SEC"; } catch e { ""; };
     let timeout_s = if len(timeout_env) > 0 { timeout_env; } else { "30"; };
 
+    // Mathlib-aware lean invocation. The Containerfile prepares a Lake
+    // shell project at /opt/mathlib-shell whose only purpose is to
+    // expose LEAN_PATH so any .lean file (in or out of the project
+    // tree) can `import Mathlib`. `lake env --dir=<shell> <cmd>`
+    // resolves the project's deps and runs <cmd> with the right env.
+    // The fallback `lean <file>` path (when MATHLIB_SHELL is unset)
+    // matches the pre-mathlib container's contract so the agent still
+    // works under stock Lean 4 if an operator strips the mathlib layer.
+    let mathlib_shell = try { exec sh "printenv MATHLIB_SHELL"; } catch e { ""; };
     // colony-lint: safe-exec-concat
-    let run_cmd = "timeout " + shell_escape(timeout_s) + " lean " + shell_escape(lean_path) + " 2>&1; echo \"__lean_exit=$?__\"";
+    let run_cmd = if len(mathlib_shell) > 0 {
+        "timeout " + shell_escape(timeout_s) + " lake env --dir=" + shell_escape(mathlib_shell) + " lean " + shell_escape(lean_path) + " 2>&1; echo \"__lean_exit=$?__\"";
+    } else {
+        "timeout " + shell_escape(timeout_s) + " lean " + shell_escape(lean_path) + " 2>&1; echo \"__lean_exit=$?__\"";
+    };
     let run_output = try { exec sh run_cmd; } catch e { "__lean_exit=124__"; };
 
     // colony-lint: safe-exec-concat

@@ -185,9 +185,12 @@ for novelty production is now content design (explorer prompts, topic
 seeds), not infrastructure. Claude with the current prior_advocate +
 auditor pair produces 0 % `VERIFIED_NEW` on the default mathematical
 topics — every claim resolves to a classical anchor under
-prior_advocate's encyclopedic math reach. Mathlib in the container
-(separate roadmap item) is the next unlock for non-degenerate
-`VERIFIED_BY_LEAN` certificates on real theorems.
+prior_advocate's encyclopedic math reach. As of #813, Mathlib 4
+(pinned `v4.13.0`) is bundled in the container so `theorist` can
+formalize real theorems against real Mathlib types (`Real`, `Complex`,
+`ZMod`, `Polynomial`, `SimpleGraph`, `Permutations`, ...) — the
+`VERIFIED_BY_LEAN` certificate can now be earned by a genuine
+non-trivial proof, not just a structural `Prop` axiom-shell.
 
 ## Known limitations
 
@@ -201,13 +204,15 @@ prior_advocate's encyclopedic math reach. Mathlib in the container
   with per-colony override blocks). Current thresholds are calibrated
   for finite-run research windows (#799: `min_acting_entries: 10`,
   `min_runtime_hours: 0.5`, autonomous override `min_acting: 30`).
-- **Stock Lean (no mathlib) in the container.** Theorist's translator
-  cannot formalize claims that reference symbols beyond Lean's core
-  library; surfaces as `lean_verdict='failed'` or `'incomplete'` for
-  most real math claims. The `True := trivial` placeholder fallback
-  (#795) is now rejected at the publish path so the `VERIFIED_BY_LEAN`
-  certificate cannot be earned trivially. Baking mathlib into
-  `Containerfile.research` (~3 GB image bump) is the next unlock.
+- **Mathlib `v4.13.0` is bundled in the container** (#813). Theorist's
+  `_run_lean_check` invokes `lake env --dir=$MATHLIB_SHELL lean
+  <file>` so any LLM-generated `.lean` source can `import Mathlib`
+  (whole library) or targeted namespaces. The `True := trivial`
+  placeholder fallback (#795) is still rejected at the publish path
+  so the `VERIFIED_BY_LEAN` certificate cannot be earned by a trivial
+  Prop. Stock-Lean fallback path is preserved for operators who strip
+  the mathlib layer (set `MATHLIB_SHELL=` empty); the container is
+  ~3 GB larger with mathlib than without.
 - **Legacy `learn()` tag-string literals.** The 15 agents still emit
   `"math-foundry"` / `"claim-auditor"` / `"preprint-foundry"` from
   their `learn()` calls (preserved per #638's scope). A future PR
