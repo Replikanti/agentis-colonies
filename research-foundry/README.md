@@ -2,7 +2,7 @@
 
 ![Version: 0.1.0](https://img.shields.io/badge/version-0.1.0-blue) ![Status: Experimental](https://img.shields.io/badge/status-experimental-red)
 
-**Version:** `0.1.0` · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.7.12`
+**Version:** `0.1.0` · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.7.18`
 
 Consolidated research federation (#638): 18 colonies cooperate to
 take a topic + paper pair from a cached arXiv corpus and drive an
@@ -21,11 +21,12 @@ orchestrators with one orchestrator + one container.
 
 | Colony | Description | Agents |
 |--------|-------------|--------|
-| [explorer](./explorer/) | Compute-first: LLM emits Python, `exec sh` runs it, agent captures stdout | 1 |
-| [noticer](./noticer/) | Reads (code, stdout) and flags surprises (small specific numbers, pattern breaks) | 1 |
+| [explorer](./explorer/) | Compute-first: LLM emits Python, `exec sh` runs it, agent captures stdout. `knowledge_market` buyer (#741) at all tiers from propose upward | 1 |
+| [noticer](./noticer/) | Calibrated triage (#775): reads (code, stdout) and flags surprises (small specific numbers, pattern breaks); biases toward `surprise_found=true` when uncertain | 1 |
+| [skeptic](./skeptic/) | Calibrated counter-argument (#773): challenges noticer's surprise claims; biases against premature dismissal | 1 |
 | [formulator](./formulator/) | Crafts a competition-style problem whose answer IS the surprise | 1 |
-| [verifier](./verifier/) | Independently solves the problem and ACCEPT / REJECT / NEEDS_REVISION | 1 |
-| [novelty](./novelty/) | Strict referee: defaults to NOT_NOVEL unless the answer cannot be reduced to a named classical result | 1 |
+| [verifier](./verifier/) | Independently solves the problem and ACCEPT / NEEDS_REVISION / REJECT / FALSIFIED_LAGRANGE (mechanical divisibility sanity gate, #784) | 1 |
+| [novelty](./novelty/) | Calibrated triage referee (#775, #777): biases toward BORDERLINE when uncertain, marks NOT_NOVEL only on near-EXACT re-derivation of a named classical result; participates in `knowledge_market` (#792) at propose tier upward | 1 |
 
 ### Claim audit (literature verification)
 
@@ -35,16 +36,18 @@ orchestrators with one orchestrator + one container.
 | [oeis-search](./oeis-search/) | Looks up integer-sequence A-numbers in the OEIS | 1 |
 | [groupprops-search](./groupprops-search/) | Queries the Groupprops wiki for group-theory matches | 1 |
 | [scholar-search](./scholar-search/) | Searches Google Scholar / semantic-scholar for prior art | 1 |
-| [auditor](./auditor/) | Synthesises the four search reports into VERIFIED_NEW / KNOWN_PRIOR / NEEDS_HUMAN | 1 |
+| [auditor](./auditor/) | Synthesises the four search reports + theorist Lean verdict (#745) + prior_advocate report into VERIFIED_NEW / VERIFIED_BY_LEAN / KNOWN_PRIOR / NEEDS_HUMAN. VERIFIED_BY_LEAN requires both `lean_verdict='verified'` AND `proof_kind='full'` (#795 + #797) | 1 |
+| [prior_advocate](./prior_advocate/) | Adversarial-reviewer agent: argues every claim is already known, cites the closest classical anchor; participates in `knowledge_market` (#741) at propose tier upward | 1 |
 
 ### Preprint pipeline (LaTeX + reproducibility + arXiv submission)
 
 | Colony | Description | Agents |
 |--------|-------------|--------|
 | [introducer](./introducer/) | Drafts the abstract + LaTeX Section 1 Introduction from the audited claim + 4 search reports | 1 |
-| [theorist](./theorist/) | Produces LaTeX Section 2 (Preliminaries) + Section 3 (Main Result) with proof sketch or computational-experiment description | 1 |
+| [theorist](./theorist/) | Produces LaTeX Section 2 (Preliminaries) + Section 3 (Main Result) with proof sketch or computational-experiment description; also translates the theorem statement to Lean 4 and runs `lean` against it (#745, #795) for formal verification of the claim | 1 |
 | [computer](./computer/) | Generates a standalone reproducibility script (Python/SymPy/GAP) + runs it inside the container for sanity | 1 |
 | [editor](./editor/) | Synthesises a single `main.tex` (amsart), runs `latexmk -pdf`, repair-retries on compile fail, hallucination-checks against reproducibility output | 1 |
+| [reviewer](./reviewer/) | Calibrated reproducibility reviewer (#777): extracts every numerical / symbolic claim from `main.tex` and verifies each against the reproducibility stdout; emits approved / rejected verdict. Gates the submitter via the `reviewer:<claim>:approved` memo | 1 |
 | [submitter](./submitter/) | Builds `arxiv-metadata.json` + `submission.tar.gz`, drafts cover letter with AI disclosure, writes `status: DRAFTED` ledger row, sends only on HITL approval | 1 |
 
 ## Pipeline
@@ -103,13 +106,21 @@ graph LR
 
 Each tick the orchestrator picks a topic (round-robin over
 `RESEARCH_TOPICS`) and samples two distinct papers from the cached
-arXiv corpus. Only the explorer is seeded -- the remaining 14 daemons
+arXiv corpus. Only the explorer is seeded -- the remaining 17 daemons
 form the downstream cascade inside the same container, reading each
 other's memo keys directly via the shared `.agentis/` store. The
 novelty agent seeds `claim:*:tick-N` keys for the four searchers when
 its verdict is NOVEL or BORDERLINE; the auditor agent seeds
 `claim:audit_*:tick-M` + `claim:report_*:tick-M` keys for the five
 preprint colonies when its verdict is VERIFIED_NEW.
+
+Cross-tick learning between agents happens via the `knowledge_market`
+substrate primitive (#741, #792): novelty `knowledge_sell`s its claims
+keyed on `permutation_order_facts:<topic>` / `known_priors:<topic>`,
+and explorer + prior_advocate `knowledge_buy` against the same topic
+on subsequent ticks. Empirical: a 75-tick claude run produces ~40 live
+market entries with `samples > 1` confirming buyers find sellers
+in-run.
 
 ## Phased pipeline
 
@@ -129,11 +140,15 @@ bash tools/run-research.sh                    # real run -- spawns 18 colonies i
 
 Output: `research-foundry/runs/<ts>/` containing
 `discovery-ledger.jsonl`, `audit-ledger.jsonl`,
-`preprint-ledger.jsonl` (forensic audit trails only; not consumed by
-the pipeline) plus per-claim sub-directories
-(`laptop-node/preprints/<claim-id>/`) with `main.tex`, `main.pdf`,
-`reproducibility.{py,g}`, `reproducibility-output.txt`,
-`arxiv-metadata.json`, `submission.tar.gz`.
+`preprint-ledger.jsonl`, and `replication-ledger.jsonl` (#801: these
+are symlinks at the run-root that resolve into `laptop-node/`, the
+container's `/run-root` bind-mount target where the daemons actually
+write). The ledgers are forensic audit trails; downstream colonies
+read each other via the shared memo store, not via the ledger files.
+Per-claim sub-directories live at `laptop-node/preprints/<claim-id>/`
+with `main.tex`, `main.pdf`, `reproducibility.{py,g}`,
+`reproducibility-output.txt`, `arxiv-metadata.json`,
+`submission.tar.gz`.
 
 ## Tier contract
 
@@ -146,21 +161,54 @@ confidence ladder defined in
 - `review-gated` -- direct external writes (non-terminal)
 - `autonomous` -- terminal external writes (publish, ack alert, post reply, ...)
 
-## Known limitations (Phase 1)
+## Empirical reality (post-substrate-exercise unlock)
 
-- **One daemon per colony.** The M2-Malthusian replicate gate inside
-  `explorer.ag` will grow the explorer population once fitness >
-  threshold, but Phase 1 ships with a single seed per colony. Phase 2
-  will scale the seed count + tune replication economics per the
-  discovery ledger from Phase 1 demo runs.
-- **Single auto-promote config across all 18 colonies.** Today the
-  consolidated config adopts preprint-foundry's most-lenient
-  prerequisites (`min_acting_entries: 10`, `min_runtime_hours: 1.5`).
-  The fastest-producing math colonies (explorer / formulator) that
-  today auto-promoted at 0.5h are gated at 1.5h here. Per-colony
-  prereq variation is deferred as a Phase 2 chore (extend
-  `auto-promote-decisions.py` with per-colony override blocks).
+A 75-tick claude flat-tariff run on main HEAD post-#799/#806-#809
+exercises the full cascade end-to-end:
+
+- **24 promote events** fire (vs 0 pre-#799 when auto-promote thresholds
+  were sized for multi-day deployments only).
+- **8 / 18 daemons reach autonomous tier** (conf ≥ 0.95) within the
+  75-tick window. The substrate primitives gated on autonomous —
+  `replicate()`, audit-guard `decide()` (#761), `_publish_*`'s terminal
+  ledger writes — therefore exercise on real workload.
+- **40 PDFs published** end-to-end (editor → submitter draft path).
+- **111 reviewer verdicts** (72 approved + 39 rejected = 65% approval).
+- **22 audit-ledger rows + 186 discovery-ledger rows + 19
+  preprint-ledger rows + 5 replication-ledger rows** confirm all four
+  autonomous-tier ledger sinks are firing.
+- **~40 `knowledge_market` entries** with `samples > 1` confirm
+  cross-tick learning between agents.
+
+The federation amplifies the underlying LLM faithfully; the bottleneck
+for novelty production is now content design (explorer prompts, topic
+seeds), not infrastructure. Claude with the current prior_advocate +
+auditor pair produces 0 % `VERIFIED_NEW` on the default mathematical
+topics — every claim resolves to a classical anchor under
+prior_advocate's encyclopedic math reach. Mathlib in the container
+(separate roadmap item) is the next unlock for non-degenerate
+`VERIFIED_BY_LEAN` certificates on real theorems.
+
+## Known limitations
+
+- **DAEMONS_PER_COLONY defaults to 1.** The M2-Malthusian replicate
+  gate inside `explorer.ag` and other LLM-heavy colonies will grow
+  populations once fitness > threshold; the operator can force a
+  bootstrap higher with `RESEARCH_DAEMONS_PER_COLONY=N`. Empirical
+  validation runs in 2026-05 used `2`.
+- **Single auto-promote config across all 18 colonies.** Per-colony
+  prereq variation is deferred (extend `auto-promote-decisions.py`
+  with per-colony override blocks). Current thresholds are calibrated
+  for finite-run research windows (#799: `min_acting_entries: 10`,
+  `min_runtime_hours: 0.5`, autonomous override `min_acting: 30`).
+- **Stock Lean (no mathlib) in the container.** Theorist's translator
+  cannot formalize claims that reference symbols beyond Lean's core
+  library; surfaces as `lean_verdict='failed'` or `'incomplete'` for
+  most real math claims. The `True := trivial` placeholder fallback
+  (#795) is now rejected at the publish path so the `VERIFIED_BY_LEAN`
+  certificate cannot be earned trivially. Baking mathlib into
+  `Containerfile.research` (~3 GB image bump) is the next unlock.
 - **Legacy `learn()` tag-string literals.** The 15 agents still emit
   `"math-foundry"` / `"claim-auditor"` / `"preprint-foundry"` from
-  their `learn()` calls (preserved per #638's scope). Phase 2 will
-  migrate these to a single `"research-foundry"` tag.
+  their `learn()` calls (preserved per #638's scope). A future PR
+  will migrate these to a single `"research-foundry"` tag.
