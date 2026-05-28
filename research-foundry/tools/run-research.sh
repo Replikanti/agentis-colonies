@@ -816,6 +816,53 @@ write_bootstrap() {
             printf '  printf "llm.tier.propose.cli_command_args = --model claude-sonnet-4-6\\n"\n'
             printf '  printf "llm.tier.review-gated.cli_command_args = --model claude-sonnet-4-6\\n"\n'
             printf '  printf "llm.tier.autonomous.cli_command_args = --model claude-opus-4-7\\n"\n'
+            # #825: per-tier LLM BACKEND selection (additive over #746's
+            # per-tier model selection above). Routes each `prompt()` call
+            # to a different backend per the calling agent's confidence
+            # tier so the highest-volume / lowest-stakes work (shadow) runs
+            # against a cheap OpenRouter-hosted Qwen model while terminal
+            # decisions (autonomous) stay on claude-opus. agentis-core
+            # v1.7.15+ resolves `llm.tier.<tier>.backend` per-prompt by
+            # re-reading the calling agent's <agent>:confidence memo via
+            # tier(). The `llm.openai.*` namespace below is already wired
+            # at L780-783 for the top-level openai backend; per-tier
+            # routing inherits those keys when `llm.tier.shadow.backend =
+            # openai` fires.
+            #
+            # Tier-to-backend assignment (cost rank low -> high):
+            #   shadow       -> openrouter qwen3-coder-30b (~500x cheaper)
+            #   propose      -> claude haiku-4-5
+            #   review-gated -> claude sonnet-4-6
+            #   autonomous   -> claude opus-4-7 (terminal writes)
+            #
+            # autonomous=mock is a follow-up after the noticer-pilot
+            # distillation lifecycle (#819) is empirically validated.
+            printf '  printf "llm.tier.shadow.backend = openai\\n"\n'
+            printf '  printf "llm.tier.shadow.openai.endpoint = %s\\n"\n' "$OPENAI_ENDPOINT"
+            printf '  printf "llm.tier.shadow.openai.model = %s\\n"\n' "$OPENAI_MODEL"
+            printf '  printf "llm.tier.shadow.openai.api_key_env = %s\\n"\n' "$OPENAI_KEY_ENV"
+            printf '  printf "llm.tier.shadow.openai.timeout_ms = %s\\n"\n' "$OPENAI_TIMEOUT_MS"
+            printf '  printf "llm.tier.propose.backend = claude\\n"\n'
+            printf '  printf "llm.tier.review-gated.backend = claude\\n"\n'
+            printf '  printf "llm.tier.autonomous.backend = claude\\n"\n'
+            # #825: per-agent overrides for the three highest-stake
+            # terminal-writers. agentis-core's config resolution order is
+            # per-agent override -> per-tier override -> top-level default
+            # (Config::scoped().flatten()), so these pin the model for
+            # auditor / theorist / submitter regardless of which tier
+            # their evolving confidence memo lands in.
+            #
+            #   auditor   -> verdict label is terminal in audit-ledger
+            #                regardless of tier; pin to opus.
+            #   theorist  -> Lean proof attempts need reasoning depth.
+            #   submitter -> arXiv submission is terminal (cannot redo);
+            #                pin to opus.
+            printf '  printf "agents.auditor.llm.backend = claude\\n"\n'
+            printf '  printf "agents.auditor.llm.cli_command_args = --model claude-opus-4-7\\n"\n'
+            printf '  printf "agents.theorist.llm.backend = claude\\n"\n'
+            printf '  printf "agents.theorist.llm.cli_command_args = --model claude-opus-4-7\\n"\n'
+            printf '  printf "agents.submitter.llm.backend = claude\\n"\n'
+            printf '  printf "agents.submitter.llm.cli_command_args = --model claude-opus-4-7\\n"\n'
         fi
         printf '} >> .agentis/config\n'
         # Stage all 18 colonies + tools/ + config/ + data/ from the

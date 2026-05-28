@@ -977,6 +977,44 @@ else
     echo "[SKIP] 39p. corpus-inventory live check (python3 missing)"
 fi
 
+# ---------------------------------------------------------------------------
+# 40. #825: per-tier LLM backend routing. Additive over #746's per-tier
+# `cli_command_args` lines: each tier also gets a `backend = <name>`
+# line so the highest-volume / lowest-stakes work (shadow) routes to a
+# cheap OpenRouter-hosted Qwen model while terminal decisions
+# (autonomous) stay on claude-opus. Plus per-agent overrides for the
+# three highest-stake terminal-writers (auditor, theorist, submitter)
+# that pin claude-opus-4-7 regardless of tier. agentis-core's
+# Config::scoped().flatten() resolves per-agent -> per-tier -> top-level
+# at each prompt() call.
+# ---------------------------------------------------------------------------
+assert_contains "40a. llm.tier.shadow.backend = openai" "$SRC" \
+    'printf "llm.tier.shadow.backend = openai\\n"'
+assert_contains "40b. llm.tier.propose.backend = claude" "$SRC" \
+    'printf "llm.tier.propose.backend = claude\\n"'
+assert_contains "40c. llm.tier.review-gated.backend = claude" "$SRC" \
+    'printf "llm.tier.review-gated.backend = claude\\n"'
+assert_contains "40d. llm.tier.autonomous.backend = claude" "$SRC" \
+    'printf "llm.tier.autonomous.backend = claude\\n"'
+assert_contains "40e. shadow-tier openai endpoint emitted" "$SRC" \
+    'printf "llm.tier.shadow.openai.endpoint = %s\\n"'
+assert_contains "40f. shadow-tier openai model emitted" "$SRC" \
+    'printf "llm.tier.shadow.openai.model = %s\\n"'
+assert_contains "40g. shadow-tier openai api_key_env emitted" "$SRC" \
+    'printf "llm.tier.shadow.openai.api_key_env = %s\\n"'
+assert_contains "40h. agents.auditor.llm.backend = claude" "$SRC" \
+    'printf "agents.auditor.llm.backend = claude\\n"'
+assert_contains "40i. agents.auditor.llm pins claude-opus-4-7" "$SRC" \
+    'printf "agents.auditor.llm.cli_command_args = --model claude-opus-4-7\\n"'
+assert_contains "40j. agents.theorist.llm.backend = claude" "$SRC" \
+    'printf "agents.theorist.llm.backend = claude\\n"'
+assert_contains "40k. agents.theorist.llm pins claude-opus-4-7" "$SRC" \
+    'printf "agents.theorist.llm.cli_command_args = --model claude-opus-4-7\\n"'
+assert_contains "40l. agents.submitter.llm.backend = claude" "$SRC" \
+    'printf "agents.submitter.llm.backend = claude\\n"'
+assert_contains "40m. agents.submitter.llm pins claude-opus-4-7" "$SRC" \
+    'printf "agents.submitter.llm.cli_command_args = --model claude-opus-4-7\\n"'
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
