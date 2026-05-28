@@ -943,6 +943,19 @@ fi
 # promoted.
 FED_DEAD="$TMPDIR_TEST/fed-dead"
 mkdir -p "$FED_DEAD"
+# #826: seed an explicit STALE `<agent>:last_check` memo into the fixture so
+# the test is hermetic. Without a fed-local memo, `read_memo_raw` shells
+# `agentis memo get` (cwd=FED_DEAD), which falls back to the host operator's
+# GLOBAL memo store (~/.config/agentis) when the fed-local key is absent — and
+# that store carries a real, possibly-fresh `explorer:last_check` from any
+# actual federation run on the host. That made Test 19's outcome depend on
+# host state: a recent real run left a fresh memo → the containerized-liveness
+# gate fell through → the dead daemon was NOT skipped (promoted or prereq-
+# skipped instead), false-failing the assertion. A fed-local stale memo
+# shadows the global one (fed-local keys win, verified), so `fresh` is
+# deterministically False and the no-heartbeat + zombie-registry liveness gate
+# fires as intended. Mirrors Test 18's fresh-memo seeding (the live counterpart).
+(cd "$FED_DEAD" && agentis memo set "explorer:last_check" "2020-01-01T00:00:00Z" >/dev/null 2>&1)
 
 DAEMONS_DEAD='[{"pid":12345,"agent_id":"explorer-1","source":"explorer.ag","state":"zombie","effective_state":"zombie","colony":"discovery","confidence":0.4,"started_at":1}]'
 
