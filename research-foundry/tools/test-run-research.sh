@@ -1015,6 +1015,99 @@ assert_contains "40l. agents.submitter.llm.backend = claude" "$SRC" \
 assert_contains "40m. agents.submitter.llm pins claude-opus-4-7" "$SRC" \
     'printf "agents.submitter.llm.cli_command_args = --model claude-opus-4-7\\n"'
 
+# ---------------------------------------------------------------------------
+# 40n-o. #825 follow-up: RESEARCH_PER_TIER_ROUTING=0 opt-out toggle. When
+# set, the per-tier backend block + per-agent overrides must be skipped
+# (the bootstrap then falls back to top-level llm.* defaults plus
+# #746's per-tier cli_command_args lines -- byte-identical to pre-#825).
+# The opt-out works by gating the entire per-tier block in run-research.sh
+# at the bootstrap-emit site. Dry-run mode short-circuits write_bootstrap
+# before emitting the heredoc, so the runtime-behaviour assertions
+# extract the relevant block from the source via awk to verify the gate
+# wraps both the per-tier backend lines and the per-agent overrides.
+# ---------------------------------------------------------------------------
+assert_contains "40n. RESEARCH_PER_TIER_ROUTING gate present in source" "$SRC" \
+    '"${RESEARCH_PER_TIER_ROUTING:-1}" = "1"'
+assert_contains "40o. RESEARCH_PER_TIER_ROUTING documented in header" "$SRC" \
+    "RESEARCH_PER_TIER_ROUTING"
+
+# Extract the lines between the bootstrap-emit gate-open `if [
+# "${RESEARCH_PER_TIER_ROUTING:-1}" = "1" ]; then` (the SECOND
+# occurrence in run-research.sh; the first is the pre-flight warning
+# check ABOVE the emit_step block, which has different scope) and the
+# corresponding closing `fi`. Then assert the extracted block contains
+# the representative per-tier + per-agent lines.
+GATED_BLOCK="$(awk '
+    /"\$\{RESEARCH_PER_TIER_ROUTING:-1\}" = "1"/ {
+        seen++
+        if (seen == 2) { in_block=1 }
+        next
+    }
+    in_block && /^[[:space:]]*fi[[:space:]]*$/ { exit }
+    in_block { print }
+' "$ORCH")"
+assert_contains "40p. opt-out gate wraps llm.tier.shadow.backend line" "$GATED_BLOCK" \
+    'printf "llm.tier.shadow.backend = openai\\n"'
+assert_contains "40q. opt-out gate wraps agents.auditor.llm.backend line" "$GATED_BLOCK" \
+    'printf "agents.auditor.llm.backend = claude\\n"'
+assert_contains "40r. opt-out gate wraps agents.submitter.llm.cli_command_args" "$GATED_BLOCK" \
+    'printf "agents.submitter.llm.cli_command_args = --model claude-opus-4-7\\n"'
+# Sanity check: #746's per-tier cli_command_args lines live OUTSIDE the
+# gated block (they come from the older #746 block above the #825 gate).
+# Their absence inside GATED_BLOCK proves the gate scope is correct.
+assert_not_contains "40s. #746 llm.tier.autonomous.cli_command_args lives outside the #825 gate" \
+    "$GATED_BLOCK" 'printf "llm.tier.autonomous.cli_command_args = --model claude-opus-4-7\\n"'
+
+# ---------------------------------------------------------------------------
+# 40t-v. #825 follow-up: when OPENROUTER_API_KEY env is set, the
+# default LLM_BACKEND=claude podman invocation must thread it into the
+# container so shadow-tier prompt() can read it. When unset, the spawn
+# command stays unchanged (operator may have opted out via
+# RESEARCH_PER_TIER_ROUTING=0 or just doesn't use per-tier routing). The
+# pre-flight check at validate_env_or_die surfaces a warning (not a hard
+# fail) under LLM_BACKEND=claude + RESEARCH_PER_TIER_ROUTING=1 + missing
+# key, so operators get an early signal instead of an opaque shadow-tier
+# 401 once an agent's confidence dips into shadow.
+# ---------------------------------------------------------------------------
+assert_contains "40t. claude-branch podman spawn threads OPENROUTER_API_KEY conditionally" "$SRC" \
+    'openai_key_env_flag=" -e $OPENAI_KEY_ENV='
+assert_contains "40u. pre-flight warning string present in source" "$SRC" \
+    "per-tier shadow routing won't work"
+assert_contains "40v. pre-flight check covers LLM_BACKEND=claude + RESEARCH_PER_TIER_ROUTING=1" "$SRC" \
+    'if [ "$LLM_BACKEND" = "claude" ] && [ "${RESEARCH_PER_TIER_ROUTING:-1}" = "1" ]'
+
+# Live snapshot: when OPENROUTER_API_KEY is set in the env, the emitted
+# claude-backend spawn line carries `-e OPENROUTER_API_KEY=...`.
+WITH_KEY_OUT="$(RESEARCH_DRY_RUN=1 \
+                OPENROUTER_API_KEY=test-or-key-xxxxxxxxxxxx \
+                RESEARCH_TOPICS=number_theory,combinatorics \
+                RESEARCH_PAPER_CORPUS=/tmp/research-corpus \
+                RESEARCH_TICK_INTERVAL_S=30 \
+                RESEARCH_TOTAL_TICKS=12 \
+                RESEARCH_DAEMONS_PER_COLONY=2 \
+                RESEARCH_HOLD_PERIOD=5 \
+                RESEARCH_RUN_DIR="$WORK_DIR/run-with-key" \
+                bash "$ORCH" 2>&1)" || true
+assert_contains "40w. OPENROUTER_API_KEY=set => -e OPENROUTER_API_KEY in spawn" "$WITH_KEY_OUT" \
+    'podman run -d --replace --name research-foundry-laptop -e OPENROUTER_API_KEY='
+
+# Live snapshot: when OPENROUTER_API_KEY is unset, the pre-flight warning
+# fires and the spawn line does NOT carry `-e OPENROUTER_API_KEY=`.
+WITHOUT_KEY_OUT="$(env -u OPENROUTER_API_KEY \
+                   RESEARCH_DRY_RUN=1 \
+                   RESEARCH_TOPICS=number_theory,combinatorics \
+                   RESEARCH_PAPER_CORPUS=/tmp/research-corpus \
+                   RESEARCH_TICK_INTERVAL_S=30 \
+                   RESEARCH_TOTAL_TICKS=12 \
+                   RESEARCH_DAEMONS_PER_COLONY=2 \
+                   RESEARCH_HOLD_PERIOD=5 \
+                   RESEARCH_RUN_DIR="$WORK_DIR/run-without-key" \
+                   bash "$ORCH" 2>&1)" || true
+assert_contains "40x. unset OPENROUTER_API_KEY surfaces pre-flight warning" "$WITHOUT_KEY_OUT" \
+    "per-tier shadow routing won't work"
+assert_not_contains "40y. unset OPENROUTER_API_KEY => no -e flag in spawn" "$WITHOUT_KEY_OUT" \
+    '-e OPENROUTER_API_KEY='
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

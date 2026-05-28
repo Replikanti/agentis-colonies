@@ -180,6 +180,14 @@
 #                                rewrite to be accepted. Default: 20
 #   RESEARCH_AUTO_PROMOTE        1 enable auto-promote sidecar
 #                                (default), 0 disable.
+#   RESEARCH_PER_TIER_ROUTING    1 enable per-tier LLM backend routing
+#                                (#825, default), 0 disable. When 0, the
+#                                bootstrap config emits only the
+#                                top-level llm.* defaults plus #746's
+#                                per-tier cli_command_args lines, which
+#                                is byte-identical to pre-#825 behaviour
+#                                (no shadow=openai routing, no per-agent
+#                                terminal-writer overrides).
 #   RESEARCH_AUTO_PROMOTE_INTERVAL_S
 #                                Seconds between sidecar ticks.
 #                                Default 300.
@@ -657,6 +665,23 @@ if [ "$DRY_RUN" = "0" ]; then
     ln -sf laptop-node/replication-ledger.jsonl "$REPLICATION_LEDGER"
 fi
 
+# #825 follow-up: under default LLM_BACKEND=claude with per-tier routing
+# enabled, the bootstrap writes `llm.tier.shadow.backend = openai` with
+# `api_key_env = $OPENAI_KEY_ENV` (typically OPENROUTER_API_KEY).
+# Shadow-tier prompt() fires only once an agent's confidence memo lands
+# in [0.4, 0.6); warn but do not hard-fail when the key is unset
+# because operators may legitimately want to disable per-tier routing
+# via RESEARCH_PER_TIER_ROUTING=0 without re-running with the env var
+# set. Emitted in both dry-run and live modes so operators get an
+# early signal during plan inspection.
+if [ "$LLM_BACKEND" = "claude" ] && [ "${RESEARCH_PER_TIER_ROUTING:-1}" = "1" ]; then
+    eval "openai_key_value=\${$OPENAI_KEY_ENV:-}"
+    if [ -z "${openai_key_value:-}" ]; then
+        echo "run-research: warning -- \$$OPENAI_KEY_ENV is unset; per-tier shadow routing won't work without it (set RESEARCH_PER_TIER_ROUTING=0 to opt out)" >&2
+    fi
+    unset openai_key_value
+fi
+
 emit_step "run-research: starting (dry_run=$DRY_RUN)"
 emit_step "run dir: $RUN_DIR"
 emit_step "topics: $TOPICS_RAW"
@@ -837,32 +862,41 @@ write_bootstrap() {
             #
             # autonomous=mock is a follow-up after the noticer-pilot
             # distillation lifecycle (#819) is empirically validated.
-            printf '  printf "llm.tier.shadow.backend = openai\\n"\n'
-            printf '  printf "llm.tier.shadow.openai.endpoint = %s\\n"\n' "$OPENAI_ENDPOINT"
-            printf '  printf "llm.tier.shadow.openai.model = %s\\n"\n' "$OPENAI_MODEL"
-            printf '  printf "llm.tier.shadow.openai.api_key_env = %s\\n"\n' "$OPENAI_KEY_ENV"
-            printf '  printf "llm.tier.shadow.openai.timeout_ms = %s\\n"\n' "$OPENAI_TIMEOUT_MS"
-            printf '  printf "llm.tier.propose.backend = claude\\n"\n'
-            printf '  printf "llm.tier.review-gated.backend = claude\\n"\n'
-            printf '  printf "llm.tier.autonomous.backend = claude\\n"\n'
-            # #825: per-agent overrides for the three highest-stake
-            # terminal-writers. agentis-core's config resolution order is
-            # per-agent override -> per-tier override -> top-level default
-            # (Config::scoped().flatten()), so these pin the model for
-            # auditor / theorist / submitter regardless of which tier
-            # their evolving confidence memo lands in.
             #
-            #   auditor   -> verdict label is terminal in audit-ledger
-            #                regardless of tier; pin to opus.
-            #   theorist  -> Lean proof attempts need reasoning depth.
-            #   submitter -> arXiv submission is terminal (cannot redo);
-            #                pin to opus.
-            printf '  printf "agents.auditor.llm.backend = claude\\n"\n'
-            printf '  printf "agents.auditor.llm.cli_command_args = --model claude-opus-4-7\\n"\n'
-            printf '  printf "agents.theorist.llm.backend = claude\\n"\n'
-            printf '  printf "agents.theorist.llm.cli_command_args = --model claude-opus-4-7\\n"\n'
-            printf '  printf "agents.submitter.llm.backend = claude\\n"\n'
-            printf '  printf "agents.submitter.llm.cli_command_args = --model claude-opus-4-7\\n"\n'
+            # Operators can opt out of the entire per-tier block (and the
+            # per-agent override block below) by setting
+            # RESEARCH_PER_TIER_ROUTING=0. When opted out, the resolved
+            # config falls back to the top-level llm.* defaults plus the
+            # #746 per-tier cli_command_args lines above, which is
+            # byte-identical to pre-#825 behaviour.
+            if [ "${RESEARCH_PER_TIER_ROUTING:-1}" = "1" ]; then
+                printf '  printf "llm.tier.shadow.backend = openai\\n"\n'
+                printf '  printf "llm.tier.shadow.openai.endpoint = %s\\n"\n' "$OPENAI_ENDPOINT"
+                printf '  printf "llm.tier.shadow.openai.model = %s\\n"\n' "$OPENAI_MODEL"
+                printf '  printf "llm.tier.shadow.openai.api_key_env = %s\\n"\n' "$OPENAI_KEY_ENV"
+                printf '  printf "llm.tier.shadow.openai.timeout_ms = %s\\n"\n' "$OPENAI_TIMEOUT_MS"
+                printf '  printf "llm.tier.propose.backend = claude\\n"\n'
+                printf '  printf "llm.tier.review-gated.backend = claude\\n"\n'
+                printf '  printf "llm.tier.autonomous.backend = claude\\n"\n'
+                # #825: per-agent overrides for the three highest-stake
+                # terminal-writers. agentis-core's config resolution order is
+                # per-agent override -> per-tier override -> top-level default
+                # (Config::scoped().flatten()), so these pin the model for
+                # auditor / theorist / submitter regardless of which tier
+                # their evolving confidence memo lands in.
+                #
+                #   auditor   -> verdict label is terminal in audit-ledger
+                #                regardless of tier; pin to opus.
+                #   theorist  -> Lean proof attempts need reasoning depth.
+                #   submitter -> arXiv submission is terminal (cannot redo);
+                #                pin to opus.
+                printf '  printf "agents.auditor.llm.backend = claude\\n"\n'
+                printf '  printf "agents.auditor.llm.cli_command_args = --model claude-opus-4-7\\n"\n'
+                printf '  printf "agents.theorist.llm.backend = claude\\n"\n'
+                printf '  printf "agents.theorist.llm.cli_command_args = --model claude-opus-4-7\\n"\n'
+                printf '  printf "agents.submitter.llm.backend = claude\\n"\n'
+                printf '  printf "agents.submitter.llm.cli_command_args = --model claude-opus-4-7\\n"\n'
+            fi
         fi
         printf '} >> .agentis/config\n'
         # Stage all 18 colonies + tools/ + config/ + data/ from the
@@ -1322,7 +1356,21 @@ spawn_container() {
         # read OAuth session tokens (Max 20x flat-rate). ':z' SELinux
         # relabel required on Fedora / RHEL. Mirrors tribes-bench
         # (#535, #540).
-        emit_cmd "podman run -d --replace --name research-foundry-laptop -v $REPO_ROOT:/repo:ro -v $LAPTOP_DIR:/run-root:rw -v $HOST_CLAUDE_DIR:/root/.claude:rw,z$persistent_mount $IMAGE_TAG /run-root/bootstrap.sh"
+        #
+        # #825 follow-up: when per-tier routing is enabled (default) the
+        # shadow-tier prompt() resolves to the openai backend which
+        # needs $OPENAI_KEY_ENV (typically OPENROUTER_API_KEY) inside
+        # the container. Thread it through conditionally so operators
+        # who haven't set the env (or set RESEARCH_PER_TIER_ROUTING=0)
+        # still get the unchanged spawn command.
+        eval "openai_key_value=\${$OPENAI_KEY_ENV:-}"
+        openai_key_env_flag=""
+        if [ -n "${openai_key_value:-}" ]; then
+            openai_key_env_flag=" -e $OPENAI_KEY_ENV=\"\${$OPENAI_KEY_ENV:-}\""
+        fi
+        unset openai_key_value
+        emit_cmd "podman run -d --replace --name research-foundry-laptop$openai_key_env_flag -v $REPO_ROOT:/repo:ro -v $LAPTOP_DIR:/run-root:rw -v $HOST_CLAUDE_DIR:/root/.claude:rw,z$persistent_mount $IMAGE_TAG /run-root/bootstrap.sh"
+        unset openai_key_env_flag
     else
         emit_cmd "podman run -d --replace --name research-foundry-laptop -e $OPENAI_KEY_ENV=\"\${$OPENAI_KEY_ENV:-}\" -v $REPO_ROOT:/repo:ro -v $LAPTOP_DIR:/run-root:rw$persistent_mount $IMAGE_TAG /run-root/bootstrap.sh"
     fi
