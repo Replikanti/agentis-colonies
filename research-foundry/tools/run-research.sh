@@ -429,17 +429,27 @@ unset _role _var _val
 : "${RESEARCH_EXPLORER_REPRODUCTIVE_FITNESS_THRESHOLD:=2}"
 
 # Phase 9 PR-B (#663): per-colony replica + pool seeds for the 17
-# non-explorer colonies. All default to 1 so PR-B does NOT change the
-# observable daemon count (still 5 explorers + 13 singletons; cull
-# cycle still only fires for explorer unless RESEARCH_CULL_COLONIES is
-# changed). PR-C will flip these to N>=3 where it lights up
-# replication per colony.
-: "${RESEARCH_NOTICER_REPLICAS:=1}"
+# non-explorer colonies.
+#
+# Default replica counts (#824): the four triage-role colonies (noticer,
+# skeptic, novelty, prior_advocate) ship at 3 replicas each so the
+# M2-Malthusian replicate gate and the knowledge_market `samples>1`
+# density both have non-trivial cross-replica selection pressure on a
+# default run. Explorer stays at 5 (already tuned). The sequential
+# preprint pipeline (formulator/verifier/introducer/theorist/computer/
+# editor/reviewer/submitter) and the rate-limited searchers
+# (arxiv/oeis/groupprops/scholar) stay at 1 because multiple replicas
+# would either race on single-writer roles or burn shared rate budget;
+# auditor stays at 1 because multiple replicas race on
+# `audit-ledger.jsonl`. Effective default daemon count is 30 across 18
+# colonies (was 18). Operator overrides via the same env-var family
+# (`RESEARCH_<COLONY>_REPLICAS`) are unchanged.
+: "${RESEARCH_NOTICER_REPLICAS:=3}"
 : "${RESEARCH_NOTICER_MAX_REPLICAS:=8}"
 : "${RESEARCH_NOTICER_POOL:=5000}"
 : "${RESEARCH_NOTICER_REPRODUCTIVE_FITNESS_THRESHOLD:=3}"
 
-: "${RESEARCH_SKEPTIC_REPLICAS:=1}"
+: "${RESEARCH_SKEPTIC_REPLICAS:=3}"
 : "${RESEARCH_SKEPTIC_MAX_REPLICAS:=8}"
 : "${RESEARCH_SKEPTIC_POOL:=5000}"
 : "${RESEARCH_SKEPTIC_REPRODUCTIVE_FITNESS_THRESHOLD:=3}"
@@ -454,7 +464,7 @@ unset _role _var _val
 : "${RESEARCH_VERIFIER_POOL:=5000}"
 : "${RESEARCH_VERIFIER_REPRODUCTIVE_FITNESS_THRESHOLD:=3}"
 
-: "${RESEARCH_NOVELTY_REPLICAS:=1}"
+: "${RESEARCH_NOVELTY_REPLICAS:=3}"
 : "${RESEARCH_NOVELTY_MAX_REPLICAS:=8}"
 : "${RESEARCH_NOVELTY_POOL:=5000}"
 : "${RESEARCH_NOVELTY_REPRODUCTIVE_FITNESS_THRESHOLD:=3}"
@@ -484,7 +494,7 @@ unset _role _var _val
 : "${RESEARCH_AUDITOR_POOL:=5000}"
 : "${RESEARCH_AUDITOR_REPRODUCTIVE_FITNESS_THRESHOLD:=3}"
 
-: "${RESEARCH_PRIOR_ADVOCATE_REPLICAS:=1}"
+: "${RESEARCH_PRIOR_ADVOCATE_REPLICAS:=3}"
 : "${RESEARCH_PRIOR_ADVOCATE_MAX_REPLICAS:=8}"
 : "${RESEARCH_PRIOR_ADVOCATE_POOL:=5000}"
 : "${RESEARCH_PRIOR_ADVOCATE_REPRODUCTIVE_FITNESS_THRESHOLD:=3}"

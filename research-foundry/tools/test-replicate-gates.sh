@@ -162,6 +162,31 @@ else
 fi
 unset RUN_RESEARCH_SH
 
+# (g) #824: run-research.sh ships per-colony replica defaults of 3 for
+# the four triage-role colonies (noticer, skeptic, novelty,
+# prior_advocate) so the M2-Malthusian replicate gate has non-trivial
+# selection pressure on a default run and knowledge_market samples
+# accumulate cross-replica density. Explorer stays at 5 (already tuned);
+# sequential pipeline / rate-limited searchers / auditor stay at 1
+# (architectural reasons documented in the env-knob comment block).
+RUN_RESEARCH_SH="$FED_DIR/tools/run-research.sh"
+if [ ! -f "$RUN_RESEARCH_SH" ]; then
+    fail "(g) run-research.sh ships #824 triage-colony replica defaults" \
+         "$RUN_RESEARCH_SH not found"
+else
+    TRIAGE_3=("NOTICER" "SKEPTIC" "NOVELTY" "PRIOR_ADVOCATE")
+    for tc in "${TRIAGE_3[@]}"; do
+        if grep -qE "^: \"\\\$\\{RESEARCH_${tc}_REPLICAS:=3\\}\"$" "$RUN_RESEARCH_SH"; then
+            pass "(g) RESEARCH_${tc}_REPLICAS default is 3"
+        else
+            fail "(g) RESEARCH_${tc}_REPLICAS default is 3" \
+                 "expected ': \"\${RESEARCH_${tc}_REPLICAS:=3}\"' line in $RUN_RESEARCH_SH"
+        fi
+    done
+    unset TRIAGE_3
+fi
+unset RUN_RESEARCH_SH
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
 [ "$FAIL" -eq 0 ]
