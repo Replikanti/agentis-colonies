@@ -18,6 +18,10 @@ History of the three retired federations consolidated into this one
 
 ## [Unreleased]
 
+### Changed
+
+- `research-foundry/tools/Containerfile.research` `ARG AGENTIS_VERSION` bumped `v1.9.0` → `v1.10.0` to pull in three additive crystallizer extensions: rule compaction primitive ([agentis-core#668](https://github.com/Replikanti/agentis-core/pull/673)), M106 wire-format trailer carrying parent crystallizer rule index ([agentis-core#669](https://github.com/Replikanti/agentis-core/pull/674)), and cross-daemon `crystallizer_fetch_rule` auto-resolution via bus ([agentis-core#670](https://github.com/Replikanti/agentis-core/pull/677)). Together with the existing DAG-persistence from v1.9.0, this completes the breeding-loop substrate end-to-end: rules persist across daemon restart (gap a), inherit on M106 replicate (gap b), discover across daemons via peer-fetch (gap c), and accumulate vs compact under the new selection pressure that auto-promote's rule-hit bonus already weights (gap d, agentis-colonies #829). Empirically observable on the next 75-tick `claude-mathlib` run.
+
 ## [0.3.0] — 2026-05-28
 
 **Requires:** agentis >= `1.9.0`
