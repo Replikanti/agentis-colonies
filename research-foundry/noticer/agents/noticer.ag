@@ -417,6 +417,28 @@ fn _parse_rule_action_desc(action: string) -> string {
     return out;
 }
 
+// #841: _canonical_stable_desc derives a DETERMINISTIC description from
+// canonical_ctx so the rule action recorded on the Stage-2 LLM path is
+// identical across repeat observations of the same context. The
+// KnowledgeEntry id is hashed from (category, action, condition,
+// recommendation); if the recommendation carried free-form LLM prose
+// (surprise.surprise_description) every tick minted a fresh entry and
+// empirical_validations could never accumulate. Here we template only
+// the two stable, coarsest canonical_ctx fields -- topic + output_kind
+// -- so the same context class maps to one entry the crystallizer can
+// validate toward crystallize_min_validations. The bucket/seq/lines
+// fields are intentionally excluded because they jitter tick-to-tick
+// within one context class. Total on missing fields ("na"). ASCII-only,
+// single line.
+fn _canonical_stable_desc(canonical_ctx: string) -> string {
+    if len(canonical_ctx) == 0 { return "surprise-class topic=na output_kind=na"; };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,re\ns=sys.argv[1]\ndef g(k):\n m=re.search(r\"(?:^| )\"+k+r\"=(\\S+)\", s)\n return m.group(1) if m else \"na\"\nprint(\"surprise-class topic=\"+g(\"topic\")+\" output_kind=\"+g(\"output_kind\"))' " + shell_escape(canonical_ctx);
+    let out = try { exec sh cmd; } catch e { "surprise-class topic=na output_kind=na"; };
+    if len(out) == 0 { return "surprise-class topic=na output_kind=na"; };
+    return out;
+}
+
 // _publish_noticer_rule_hit -- mirror of _publish_noticer but takes
 // primitive fields because the .ag grammar disallows inline Surprise
 // struct literals. The skeptic downstream still reads the JSON
@@ -666,9 +688,43 @@ fn tick(reason: string) -> void {
     // legacy "notice" learn() rows below stay in place for per-tier
     // observability (auto-promote consumes them).
     let surprise_found_str = if surprise.surprise_found { "true"; } else { "false"; };
-    let rule_action = surprise_found_str + "|" + surprise.surprise_description;
+    // #841: the recorded rule action MUST be stable per context so the
+    // distilled KnowledgeEntry id is identical across repeat ticks and
+    // empirical_validations can accumulate toward crystallization. The
+    // <desc> half is derived deterministically from canonical_ctx (NOT
+    // surprise.surprise_description, which is free-form LLM prose). Still
+    // pipe-delimited so _parse_rule_action_bool / _parse_rule_action_desc
+    // keep decoding it on the Stage 1 rule-hit path.
+    let canonical_action = surprise_found_str + "|" + _canonical_stable_desc(canonical_ctx);
+    // #841: the distilled entry's CONDITION must be a coarse, literal
+    // prefix of canonical_ctx (the leading topic= + output_kind= fields,
+    // dropping the tick-jittering bucket=/seq=/lines= tail). Two reasons:
+    // (1) the KnowledgeEntry id is hashed from (category, action,
+    // condition, recommendation) -- a stable coarse condition means repeat
+    // observations of the same context CLASS map to one entry, so
+    // empirical_validations accumulates toward crystallize_min_validations
+    // instead of minting a fresh entry every tick; (2) CrystallizedRule
+    // matches_context is `context.starts_with(condition)`, so a coarse
+    // condition still matches the FULL canonical_ctx the Stage-1 lookup
+    // passes. canonical_ctx is "topic=.. output_kind=.. bucket=.. ..", so
+    // the prefix ends just before " bucket=".
+    let _bucket_at = index_of(canonical_ctx, " bucket=");
+    let coarse_ctx = if _bucket_at > 0 { substring(canonical_ctx, 0, _bucket_at); } else { canonical_ctx; };
     // colony-lint: learn-tags-ok
-    learn("noticer_surprise", canonical_ctx, rule_action, "success", ["llm-driven", "math-foundry"]);
+    learn("noticer_surprise", canonical_ctx, canonical_action, "success", ["llm-driven", "math-foundry"]);
+
+    // #841: complete the distillation loop. learn() above only writes the
+    // ExperienceStore; distill() promotes >=3 successful noticer_surprise
+    // records into a KnowledgeEntry the crystallizer reads, and
+    // knowledge_validate() is the only runtime call that bumps
+    // empirical_validations toward crystallize_min_validations. distill()
+    // raises until there are >=3 successful records, so guard it; once the
+    // entry crystallizes the Stage 1 rule-first lookup starts hitting and
+    // this miss path stops running for that context.
+    let distilled_id = try { distill("noticer_surprise", coarse_ctx, canonical_action, "heuristic"); } catch e { ""; };
+    if len(distilled_id) > 0 {
+        knowledge_validate(distilled_id);
+    };
 
     if my_tier == "autonomous" {
         memo_write("noticer:" + _self_pid + ":review_gated", "true");
