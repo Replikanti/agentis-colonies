@@ -6,6 +6,19 @@
 # All thresholds are per-agent: the script evaluates each running agent
 # independently against these rules.
 
+weights:
+  # Maximum additive contribution to the per-colony fitness scalar at
+  # 100% rule-hit ratio (#823). The sidecar computes
+  # `fitness_score_total = colony_fitness_score + (rule_hit_ratio * efficiency_bonus)`
+  # where rule_hit_ratio is acting-tick rule-hits / acting-tick total,
+  # gated by the `min_rule_hit_acting_ticks` floor below. Selection
+  # pressure favors LLM-efficient agents (rule-driven decisions) over
+  # LLM-heavy agents producing the same outcome quality. Bonus is
+  # additive on a 0..1 colony-fitness scalar so 0.15 is roughly a 15%
+  # boost at saturation. Promote prereq gates are NOT extended by this
+  # value — efficiency_bonus is a ranking signal only.
+  efficiency_bonus: 0.15
+
 promote:
   prerequisites:
     # Calibrated for finite-run research windows (75-tick × 60s ≈ 75 min)
@@ -25,6 +38,13 @@ promote:
     reject_rate_threshold: 0.05    # reject_rate on acting rows must be < 5%
     delta_slope_window: 20         # compute slope over last N acting rows
     delta_slope_min: 0             # average delta must be non-negative
+    # #823: floor on acting-tick count below which the rule-hit
+    # efficiency bonus collapses to zero. With 4 or fewer acting ticks
+    # `rule_hit_ratio` is one of {0/n, 1/n, ..., n/n} which is too coarse
+    # — a single rule-hit at n=2 reads as 50% rule-driven on near-zero
+    # evidence. Floor of 5 derives from rule-of-three at a 60% target
+    # rule-hit ratio: ceil(3 / 0.6) = 5.
+    min_rule_hit_acting_ticks: 5
   # Three-step ladder aligned with the four-tier confidence contract
   # (ADR-0001, issue #177). Each step promotes the agent across one
   # behavioural tier boundary: shadow -> propose -> review-gated ->
@@ -57,6 +77,16 @@ promote:
       # therefore still requires fewer total errors than the loose
       # propose→review-gated step).
       min_acting_entries_override: 30
+
+  # #823: tags in `learn()` rows that count as a rule-hit acting tick
+  # when computing the efficiency bonus. Canonical literals match the
+  # noticer distillation pilot schema (#820): `distilled` for the first
+  # rule-hit on a freshly distilled rule, `rule-hit` for subsequent hits
+  # against an already-cached rule. Operators can extend (e.g. add
+  # `rule-reinforced` from skeptic-agreement rows) without code change.
+  rule_hit_tag_allowlist:
+    - distilled
+    - rule-hit
 
 evolve:
   trigger:

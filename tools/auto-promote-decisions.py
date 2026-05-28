@@ -71,10 +71,12 @@ import agentis_memo_freshness as freshness  # noqa: E402
 
 def _load_config(path):
     """Load auto-promote-config.yaml into the same CFG_* shape the sh sidecar
-    receives via auto-promote-config-parser.py. Returns the 9 threshold values
-    as a tuple: (min_entries, min_acting_entries, min_runtime_hours,
+    receives via auto-promote-config-parser.py. Returns the 9 base threshold
+    values plus the 3 #823 efficiency-bonus params as a 12-tuple:
+    (min_entries, min_acting_entries, min_runtime_hours,
     reject_rate_threshold, delta_slope_window, delta_slope_min,
-    promote_steps_raw, evolve_slope_neg_for, evolve_reject_above)."""
+    promote_steps_raw, evolve_slope_neg_for, evolve_reject_above,
+    w_efficiency, min_rule_hit_acting_ticks, rule_hit_tag_allowlist)."""
     # Import the simple parser from the sibling helper so both entrypoints
     # share one YAML reader. PyYAML if available, fallback otherwise. The
     # sibling file has a hyphen in its name (not a legal Python identifier),
@@ -108,6 +110,15 @@ def _load_config(path):
     promote_steps_raw = ' '.join(t for t in (_fmt_step(s) for s in steps) if t is not None)
     e = cfg.get('evolve', {}).get('trigger', {})
 
+    # #823: rule-hit efficiency-bonus params. Additive to the per-colony
+    # fitness scalar, not a hard promote gate (selection-pressure signal).
+    # Defaults match the YAML so federations that omit the keys are
+    # behaviourally identical to those that paste in the defaults.
+    w_efficiency = float(cfg.get('weights', {}).get('efficiency_bonus', 0.15))
+    min_rule_hit_acting_ticks = int(p.get('min_rule_hit_acting_ticks', 5))
+    rule_hit_tag_allowlist = list(cfg.get('promote', {}).get(
+        'rule_hit_tag_allowlist', ['distilled', 'rule-hit']))
+
     return (
         int(p.get('min_entries', 200)),
         int(p.get('min_acting_entries', default_acting)),
@@ -118,6 +129,9 @@ def _load_config(path):
         promote_steps_raw,
         int(e.get('delta_slope_negative_for', 1000)),
         float(e.get('reject_rate_above', 0.20)),
+        w_efficiency,
+        min_rule_hit_acting_ticks,
+        rule_hit_tag_allowlist,
     )
 
 
@@ -199,7 +213,9 @@ def main():
         (min_entries, min_acting_entries, min_runtime_hours,
          reject_rate_threshold, delta_slope_window, delta_slope_min,
          promote_steps_raw, evolve_slope_neg_for,
-         evolve_reject_above) = _load_config(config_path)
+         evolve_reject_above, w_efficiency,
+         min_rule_hit_acting_ticks,
+         rule_hit_tag_allowlist) = _load_config(config_path)
     else:
         # Legacy positional mode used by auto-promote.sh sidecar. Keep byte-
         # identical contract — test-auto-promote.sh asserts it. The 12th arg
@@ -218,6 +234,15 @@ def main():
         evolve_reject_above = float(argv[10])
         if len(argv) >= 12:
             containerized = (argv[11].lower() == 'true')
+        # #823: legacy positional invocation (auto-promote.sh sidecar) does
+        # not pass the efficiency-bonus knobs — auto-promote-config-parser.py
+        # has not been extended for this PR. Fall back to the same defaults
+        # _load_config does, so a federation whose .ag agents emit zero
+        # rule-hit tags sees efficiency_bonus = 0 on every agent and the
+        # legacy → preview byte-identity contract (test 12) holds.
+        w_efficiency = 0.15
+        min_rule_hit_acting_ticks = 5
+        rule_hit_tag_allowlist = ['distilled', 'rule-hit']
 
     # Tags that mark a row as exercising a tier-gated acting branch (not observe).
     # See doc/auto-promote.md#classification — must match the tag strings emitted
@@ -236,6 +261,27 @@ def main():
         if tag_set & OBSERVE_TAGS:
             return 'observe'
         return 'legacy'
+
+    def _count_rule_hit_ticks(entries, allowlist):
+        """Count rows whose `tags` field contains any allowlisted rule-hit
+        tag (#823). Callers pass the already-classified acting-entries list,
+        so the result is a strict subset of acting_count and the ratio
+        rule_hit_ticks / acting_count is well-defined on [0, 1].
+
+        Canonical allowlist literals come from auto-promote-config.yaml and
+        match the noticer distillation pilot tag schema (#820): `distilled`
+        for the first rule-hit on a rule, `rule-hit` for subsequent hits.
+        Operators can extend the allowlist (e.g. with `rule-reinforced`)
+        without code change."""
+        allow = {str(t) for t in allowlist}
+        n = 0
+        for e in entries:
+            tags = e.get('tags') or []
+            if not isinstance(tags, list):
+                continue
+            if {str(t) for t in tags} & allow:
+                n += 1
+        return n
 
     # Parse promote steps ("from:to:override" triples; empty override = use global).
     promote_steps = []
@@ -668,6 +714,39 @@ def main():
                 legacy_count += 1
         acting_count = len(acting_entries_list)
 
+        # #823: rule-hit efficiency bonus. Additive selection-pressure
+        # signal layered on top of the per-colony fitness scalar so two
+        # agents producing identical outcome quality can still be ranked
+        # by how much LLM use the rule cache saved. Gated below the acting
+        # floor to suppress sub-statistical-sample noise (one rule-hit at
+        # n=2 reads as 50% rule-driven on near-zero evidence). The bonus
+        # is purely a ranking signal here; promote prereq gates downstream
+        # are unchanged so the binary promote/skip outcome is identical
+        # for federations whose .ag agents emit zero rule-hit tags
+        # (backward-compat — see #820 for the canonical tag schema).
+        rule_hit_ticks = _count_rule_hit_ticks(acting_entries_list, rule_hit_tag_allowlist)
+        efficiency_floor_met = acting_count >= min_rule_hit_acting_ticks
+        if efficiency_floor_met and acting_count > 0:
+            rule_hit_ratio = rule_hit_ticks / acting_count
+            efficiency_bonus = rule_hit_ratio * w_efficiency
+        else:
+            rule_hit_ratio = 0.0
+            efficiency_bonus = 0.0
+
+        # Enrich the per-colony fitness payload (if attached) with the new
+        # bonus so the dashboard and cross-run aggregator see one combined
+        # `fitness_score_total` = colony scalar + (rule_hit_ratio * w_efficiency).
+        # `colony_fitness_evidence` was populated earlier in this loop for
+        # agents in SIDE_BY_COLONY only; mutating in place propagates via
+        # the by-reference attach in _attach_explorer_evidence below.
+        if colony_fitness_evidence is not None:
+            base_score = float(colony_fitness_evidence.get('fitness_score', 0.0))
+            colony_fitness_evidence['rule_hit_ticks'] = rule_hit_ticks
+            colony_fitness_evidence['rule_hit_ratio'] = round(rule_hit_ratio, 6)
+            colony_fitness_evidence['efficiency_bonus'] = round(efficiency_bonus, 6)
+            colony_fitness_evidence['efficiency_floor_met'] = efficiency_floor_met
+            colony_fitness_evidence['fitness_score_total'] = round(base_score + efficiency_bonus, 6)
+
         def _linreg_slope(values):
             if len(values) < 2:
                 return 0.0
@@ -725,6 +804,15 @@ def main():
             'evolve_slope': round(evolve_slope, 6),
             'confidence': confidence,
             'pid': pid,
+            # #823: rule-hit efficiency-bonus fields. Surfaced on every
+            # decision record that builds an evidence dict so the dashboard
+            # can render the bonus alongside the other prereq stats. For
+            # agents whose .ag emits no `distilled` / `rule-hit` learn rows
+            # all four fields read as zero / false (backward compatible).
+            'rule_hit_ticks': rule_hit_ticks,
+            'rule_hit_ratio': round(rule_hit_ratio, 6),
+            'efficiency_bonus': round(efficiency_bonus, 6),
+            'efficiency_floor_met': efficiency_floor_met,
         }
 
         # --- Evolve check (takes priority if agent is degrading) ---
