@@ -635,9 +635,14 @@ fn tick(reason: string) -> void {
             // downstream demotion hook reads the rule_id memo and calls
             // crystallizer_record_use(rule_id, agree?, ±delta) per its
             // own verdict.
-            let rule_id = to_string(json_get(rule, "rule_id"));
-            let rule_action = to_string(json_get(rule, "action"));
-            let rule_conf_str = to_string(json_get(rule, "confidence"));
+            // #843: crystallizer_lookup_with_confidence returns map<string,string>
+            // (Value::Map). Read fields with get() (the map accessor); json_get()
+            // expects a JSON string and raises "expected string, got map" on a map
+            // -- which crashed every rule-hit tick once #841 made crystallization
+            // fire and this branch was finally reached.
+            let rule_id = to_string(get(rule, "rule_id"));
+            let rule_action = to_string(get(rule, "action"));
+            let rule_conf_str = to_string(get(rule, "confidence"));
             let rule_conf = if len(rule_conf_str) > 0 { parse_float(rule_conf_str); } else { min_conf; };
             let rule_surprise_found = _parse_rule_action_bool(rule_action);
             let rule_description = _parse_rule_action_desc(rule_action);
