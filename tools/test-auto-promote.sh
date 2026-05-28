@@ -755,6 +755,144 @@ else
     fail "fed-local priority" "expected entries_total=5, got <$ENTRIES_B> from <$OUT_B>"
 fi
 
+# --- Test 20: rule-hit efficiency bonus applies above acting floor (#823) ---
+# Plan body: `fitness_score_total = colony_fitness_score + (rule_hit_ratio
+# * w_efficiency)` where rule_hit_ratio = rule_hit_ticks / entries_acting,
+# gated by `entries_acting >= min_rule_hit_acting_ticks` (default 5). With
+# w_efficiency=0.15 (the YAML default) and a 6/10 fixture, expect
+# rule_hit_ratio=0.6 and efficiency_bonus=0.09.
+FED_EFF_A="$TMPDIR_TEST/fed-eff-a"
+mkdir -p "$FED_EFF_A/.agentis/experience"
+python3 -c "
+import json
+path = '$FED_EFF_A/.agentis/experience/eff-aaaa.jsonl'
+with open(path, 'w') as f:
+    # 6 acting rule-hit rows + 4 acting LLM-driven rows = 10 acting, 6 rule-hits
+    for _ in range(6):
+        f.write(json.dumps({'tags': ['acted', 'distilled', 'rule-hit', 'math-foundry'], 'outcome': 'success', 'delta': 0.05}) + '\n')
+    for _ in range(4):
+        f.write(json.dumps({'tags': ['acted', 'llm-driven', 'math-foundry'], 'outcome': 'success', 'delta': 0.05}) + '\n')
+"
+
+DAEMONS_EFF_A='[{"source":"/fake/eff-a.ag","pid":'"$$"',"agent_id":"eff-aaaa","colony":"c","started_at":'"$(date +%s)"',"confidence":0.4,"state":"running"}]'
+
+OUT_EFF_A=$(python3 "$SCRIPT_DIR/auto-promote-decisions.py" \
+    --preview --config "$SCRIPT_DIR/auto-promote-config.yaml" \
+    "$DAEMONS_EFF_A" "$FED_EFF_A")
+
+EFF_A_CHECK=$(python3 -c "
+import json, sys
+arr = json.loads(sys.argv[1])
+if len(arr) != 1:
+    print('arity:' + str(len(arr))); sys.exit(0)
+ev = arr[0].get('evidence') or {}
+hits = ev.get('rule_hit_ticks')
+ratio = ev.get('rule_hit_ratio')
+bonus = ev.get('efficiency_bonus')
+floor = ev.get('efficiency_floor_met')
+if hits != 6: print('rule_hit_ticks=' + str(hits) + ' (expected 6)'); sys.exit(0)
+if abs((ratio or 0) - 0.6) > 1e-9: print('rule_hit_ratio=' + str(ratio) + ' (expected 0.6)'); sys.exit(0)
+if abs((bonus or 0) - 0.09) > 1e-9: print('efficiency_bonus=' + str(bonus) + ' (expected 0.09)'); sys.exit(0)
+if floor is not True: print('efficiency_floor_met=' + str(floor) + ' (expected True)'); sys.exit(0)
+print('ok')
+" "$OUT_EFF_A" 2>&1 || true)
+
+if [ "$EFF_A_CHECK" = "ok" ]; then
+    pass "efficiency bonus: applies when acting floor met (#823)"
+else
+    fail "efficiency bonus above floor" "$EFF_A_CHECK from <$OUT_EFF_A>"
+fi
+
+# --- Test 21: rule-hit efficiency bonus is zero below acting floor (#823) ---
+# Floor justification (plan §4): at n=4 a single rule-hit reads as 25% on
+# near-zero evidence, biasing fitness on under-sampled agents. The bonus
+# must collapse to zero while rule_hit_ticks stays visible for operator
+# observability ("we counted the hits but suppressed the bonus").
+FED_EFF_B="$TMPDIR_TEST/fed-eff-b"
+mkdir -p "$FED_EFF_B/.agentis/experience"
+python3 -c "
+import json
+path = '$FED_EFF_B/.agentis/experience/eff-bbbb.jsonl'
+with open(path, 'w') as f:
+    # 4 acting rule-hit rows -- below min_rule_hit_acting_ticks=5
+    for _ in range(4):
+        f.write(json.dumps({'tags': ['acted', 'distilled', 'rule-hit', 'math-foundry'], 'outcome': 'success', 'delta': 0.05}) + '\n')
+"
+
+DAEMONS_EFF_B='[{"source":"/fake/eff-b.ag","pid":'"$$"',"agent_id":"eff-bbbb","colony":"c","started_at":'"$(date +%s)"',"confidence":0.4,"state":"running"}]'
+
+OUT_EFF_B=$(python3 "$SCRIPT_DIR/auto-promote-decisions.py" \
+    --preview --config "$SCRIPT_DIR/auto-promote-config.yaml" \
+    "$DAEMONS_EFF_B" "$FED_EFF_B")
+
+EFF_B_CHECK=$(python3 -c "
+import json, sys
+arr = json.loads(sys.argv[1])
+if len(arr) != 1:
+    print('arity:' + str(len(arr))); sys.exit(0)
+ev = arr[0].get('evidence') or {}
+hits = ev.get('rule_hit_ticks')
+ratio = ev.get('rule_hit_ratio')
+bonus = ev.get('efficiency_bonus')
+floor = ev.get('efficiency_floor_met')
+if hits != 4: print('rule_hit_ticks=' + str(hits) + ' (expected 4 -- still visible)'); sys.exit(0)
+if (ratio or 0) != 0.0: print('rule_hit_ratio=' + str(ratio) + ' (expected 0.0 below floor)'); sys.exit(0)
+if (bonus or 0) != 0.0: print('efficiency_bonus=' + str(bonus) + ' (expected 0.0 below floor)'); sys.exit(0)
+if floor is not False: print('efficiency_floor_met=' + str(floor) + ' (expected False)'); sys.exit(0)
+print('ok')
+" "$OUT_EFF_B" 2>&1 || true)
+
+if [ "$EFF_B_CHECK" = "ok" ]; then
+    pass "efficiency bonus: zero when below acting floor (#823)"
+else
+    fail "efficiency bonus below floor" "$EFF_B_CHECK from <$OUT_EFF_B>"
+fi
+
+# --- Test 22: efficiency bonus caps at w_efficiency on 100% rule-hit (#823) ---
+# Guards against accidental double-counting or denominator drift: at full
+# saturation rule_hit_ratio must equal exactly 1.0 (not >1.0) and
+# efficiency_bonus must equal w_efficiency exactly (the YAML default
+# 0.15).
+FED_EFF_C="$TMPDIR_TEST/fed-eff-c"
+mkdir -p "$FED_EFF_C/.agentis/experience"
+python3 -c "
+import json
+path = '$FED_EFF_C/.agentis/experience/eff-cccc.jsonl'
+with open(path, 'w') as f:
+    # 20 acting rule-hit rows, all carry both 'acted' and 'distilled'+'rule-hit'
+    for _ in range(20):
+        f.write(json.dumps({'tags': ['acted', 'distilled', 'rule-hit', 'math-foundry'], 'outcome': 'success', 'delta': 0.05}) + '\n')
+"
+
+DAEMONS_EFF_C='[{"source":"/fake/eff-c.ag","pid":'"$$"',"agent_id":"eff-cccc","colony":"c","started_at":'"$(date +%s)"',"confidence":0.4,"state":"running"}]'
+
+OUT_EFF_C=$(python3 "$SCRIPT_DIR/auto-promote-decisions.py" \
+    --preview --config "$SCRIPT_DIR/auto-promote-config.yaml" \
+    "$DAEMONS_EFF_C" "$FED_EFF_C")
+
+EFF_C_CHECK=$(python3 -c "
+import json, sys
+arr = json.loads(sys.argv[1])
+if len(arr) != 1:
+    print('arity:' + str(len(arr))); sys.exit(0)
+ev = arr[0].get('evidence') or {}
+hits = ev.get('rule_hit_ticks')
+ratio = ev.get('rule_hit_ratio')
+bonus = ev.get('efficiency_bonus')
+floor = ev.get('efficiency_floor_met')
+if hits != 20: print('rule_hit_ticks=' + str(hits) + ' (expected 20)'); sys.exit(0)
+if abs((ratio or 0) - 1.0) > 1e-9: print('rule_hit_ratio=' + str(ratio) + ' (expected 1.0)'); sys.exit(0)
+if abs((bonus or 0) - 0.15) > 1e-9: print('efficiency_bonus=' + str(bonus) + ' (expected 0.15 = w_efficiency)'); sys.exit(0)
+if floor is not True: print('efficiency_floor_met=' + str(floor) + ' (expected True)'); sys.exit(0)
+print('ok')
+" "$OUT_EFF_C" 2>&1 || true)
+
+if [ "$EFF_C_CHECK" = "ok" ]; then
+    pass "efficiency bonus: caps at w_efficiency on 100% rule-hit (#823)"
+else
+    fail "efficiency bonus saturation" "$EFF_C_CHECK from <$OUT_EFF_C>"
+fi
+
 # --- Test 18: containerized liveness — fresh memo overrides stale registry (#706) ---
 # Reproduces the lifecycle-blocked-after-reboot bug: the daemon registry's
 # `effective_state` stays at "zombie" across sleep/reboot cycles, but the in-
