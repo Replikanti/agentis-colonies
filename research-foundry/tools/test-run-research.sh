@@ -35,6 +35,13 @@
 #      block of .agentis/config. The 18 per-role env knobs survive
 #      as deprecated shims with a one-time stderr warning on
 #      operator override.
+#  41a-j. #835 env-driven crystallizer verification knobs. Four
+#      RESEARCH_CRYSTALLIZE_* env vars default to an empty sentinel
+#      and emit their evolution.crystallize_* key only when set
+#      (emit-only-when-overridden). 41i pins the conditional guard;
+#      41j is a regression sentinel against an unconditional
+#      emit-with-default that would break the byte-identical
+#      production-config guarantee.
 #
 # Standard library only -- no pytest, no requests, no live LLM, no
 # podman.
@@ -1116,6 +1123,41 @@ assert_contains "40x. unset OPENROUTER_API_KEY surfaces pre-flight warning" "$WI
     "per-tier shadow routing won't work"
 assert_not_contains "40y. unset OPENROUTER_API_KEY => no -e flag in spawn" "$WITHOUT_KEY_OUT" \
     '-e OPENROUTER_API_KEY='
+
+# 41. #835: env-driven crystallizer verification config knobs. The four
+# RESEARCH_CRYSTALLIZE_* knobs default to an empty sentinel and emit their
+# evolution.crystallize_* key into the container .agentis/config ONLY when
+# set (emit-only-when-overridden), so an unset production run emits none of
+# them and the generated config stays byte-identical to today. Source-level
+# assertions are the right shape: the bootstrap printf lines run inside the
+# container-side generated script and never reach dry-run stdout (same
+# precedent as test 40g's conditional shadow-tier key). Tests 41i/41j pin
+# the conditional emit strategy so a future implementer cannot silently flip
+# to emit-always-with-default and break the byte-identical guarantee.
+assert_contains "41a. emits evolution.crystallize_interval printf" "$SRC" \
+    'printf "evolution.crystallize_interval = %s\\n"'
+assert_contains "41b. emits evolution.crystallize_compact_interval printf" "$SRC" \
+    'printf "evolution.crystallize_compact_interval = %s\\n"'
+assert_contains "41c. emits evolution.crystallize_peer_fetch_enabled printf" "$SRC" \
+    'printf "evolution.crystallize_peer_fetch_enabled = true\\n"'
+assert_contains "41d. emits evolution.crystallize_allow_cross_daemon printf" "$SRC" \
+    'printf "evolution.crystallize_allow_cross_daemon = true\\n"'
+assert_contains "41e. CRYSTALLIZE_INTERVAL defaults to empty sentinel" "$SRC" \
+    'CRYSTALLIZE_INTERVAL="${RESEARCH_CRYSTALLIZE_INTERVAL:-}"'
+assert_contains "41f. CRYSTALLIZE_COMPACT_INTERVAL defaults to empty sentinel" "$SRC" \
+    'CRYSTALLIZE_COMPACT_INTERVAL="${RESEARCH_CRYSTALLIZE_COMPACT_INTERVAL:-}"'
+assert_contains "41g. CRYSTALLIZE_PEER_FETCH defaults to empty sentinel" "$SRC" \
+    'CRYSTALLIZE_PEER_FETCH="${RESEARCH_CRYSTALLIZE_PEER_FETCH:-}"'
+assert_contains "41h. CRYSTALLIZE_ALLOW_CROSS_DAEMON defaults to empty sentinel" "$SRC" \
+    'CRYSTALLIZE_ALLOW_CROSS_DAEMON="${RESEARCH_CRYSTALLIZE_ALLOW_CROSS_DAEMON:-}"'
+# 41i: the interval emit is conditional, not always-on (guard co-located).
+assert_contains "41i. crystallize_interval emit is wrapped in a non-empty guard" "$SRC" \
+    'if [ -n "$CRYSTALLIZE_INTERVAL" ]; then'
+# 41j: regression sentinel -- no unconditional emit-with-default line. If
+# this ever appears, the production .agentis/config is no longer byte-
+# identical to a pre-#835 run.
+assert_not_contains "41j. no unconditional crystallize_interval = 100 emit" "$SRC" \
+    'printf "evolution.crystallize_interval = 100\\n"'
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
