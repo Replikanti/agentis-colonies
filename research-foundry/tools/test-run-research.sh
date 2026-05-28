@@ -198,15 +198,24 @@ assert_not_contains "16c. --source-foundry-run flag removed" "$SRC" "--source-fo
 assert_not_contains "16d. SOURCE_* env validation removed" "$SRC" "RESEARCH_SOURCE_RUN"
 
 # ---------------------------------------------------------------------------
-# 17. Phase 9 PR-C (#663) + #670 + #711 follow-up: per-colony
+# 17. Phase 9 PR-C (#663) + #670 + #711 + #828 follow-up: per-colony
 # RESEARCH_<COLONY>_REPLICAS env defaults exist for all 17 non-explorer
-# colonies, defaulting to 1 (lowered from 2 in #711 to drop the federation
-# peak request rate from ~78 -> ~44 calls/min and clear the 9-stage
-# cascade within the 60-min default run window).
+# colonies. #711 lowered the baseline from 2 to 1 to drop the federation
+# peak request rate and clear the 9-stage cascade within the run window.
+# #828 then bumped the four triage-tier colonies (NOTICER, NOVELTY, SKEPTIC,
+# PRIOR_ADVOCATE) back to 3 so the M2-Malthusian replicate gate and the
+# knowledge_market samples>1 density get non-trivial cross-replica selection
+# pressure; the sequential preprint pipeline, the rate-limited searchers, and
+# the single-writer AUDITOR stay at 1. (EXPLORER defaults to 5, checked
+# separately.)
 # ---------------------------------------------------------------------------
-for c in NOTICER FORMULATOR VERIFIER NOVELTY SKEPTIC \
+for c in NOTICER NOVELTY SKEPTIC PRIOR_ADVOCATE; do
+    assert_contains "17. RESEARCH_${c}_REPLICAS defaults to 3 (#828)" "$SRC" \
+        "\"\${RESEARCH_${c}_REPLICAS:=3}\""
+done
+for c in FORMULATOR VERIFIER \
          ARXIV_SEARCH OEIS_SEARCH GROUPPROPS_SEARCH SCHOLAR_SEARCH \
-         PRIOR_ADVOCATE AUDITOR \
+         AUDITOR \
          INTRODUCER THEORIST COMPUTER EDITOR REVIEWER SUBMITTER; do
     assert_contains "17. RESEARCH_${c}_REPLICAS defaults to 1" "$SRC" \
         "\"\${RESEARCH_${c}_REPLICAS:=1}\""
@@ -500,12 +509,12 @@ assert_contains "29p. auditor.ag ctx names THEORIST LEAN VERDICT" "$AUD_AG_SRC" 
 # ---------------------------------------------------------------------------
 LEARN_TAGS_PATH="$(cd "$SCRIPT_DIR/../.." && pwd)/tools/check-learn-tags.sh"
 LEARN_TAGS_SRC="$(cat "$LEARN_TAGS_PATH")"
-assert_contains "30a. check-learn-tags.sh schema covers lean_check:verified" "$LEARN_TAGS_SRC" \
-    '"lean_check:verified")'
-assert_contains "30b. check-learn-tags.sh schema covers lean_check:incomplete" "$LEARN_TAGS_SRC" \
-    '"lean_check:incomplete")'
-assert_contains "30c. check-learn-tags.sh schema covers lean_check:failed" "$LEARN_TAGS_SRC" \
-    '"lean_check:failed")'
+assert_contains "30a. check-learn-tags.sh schema covers lean_check:success" "$LEARN_TAGS_SRC" \
+    '"lean_check:success")'
+assert_contains "30b. check-learn-tags.sh schema covers lean_check:partial" "$LEARN_TAGS_SRC" \
+    '"lean_check:partial")'
+assert_contains "30c. check-learn-tags.sh schema covers lean_check:failure" "$LEARN_TAGS_SRC" \
+    '"lean_check:failure")'
 
 # ---------------------------------------------------------------------------
 # 31. #742: TaskBoard cognitive-market delegation. Without
