@@ -1,7 +1,8 @@
 name: Release
 
 # Tag-triggered bundle + asset upload for per-federation releases (#220).
-# Fires on pushes of tags shaped like `<federation>-v<X.Y.Z>`.
+# Fires on pushes of tags shaped like `<federation>-v<X.Y.Z>` for every
+# federation listed in the trigger pattern below.
 #
 # The workflow:
 #   1. Checks out the tagged commit (full history so the awk on CHANGELOG has
@@ -17,11 +18,25 @@ name: Release
 #   git tag <federation>-v<X.Y.Z> <merge-sha> -m "..."
 #   git push origin <federation>-v<X.Y.Z>
 # No manual `gh release create` / `gh release upload` needed.
+#
+# The trigger pattern lists every federation that ships from this repo.
+# Adding a new federation: append one line to the `tags:` list below AND
+# register the federation directory in `tools/check-changelog.sh`'s
+# `COMPONENTS` array (which is what governs the `[Unreleased]` CHANGELOG
+# soft-check on PRs).
+#
+# `federation-dashboard-v*` is deliberately NOT here -- the dashboard is a
+# federation-agnostic standalone component with a separate bundle builder
+# (`tools/make-dashboard-bundle.sh`) and its own workflow
+# (`.github/workflows/release-dashboard.yml`).
 
 on:
   push:
     tags:
       - 'dev-apprenticeship-v*'
+      - 'research-foundry-v*'
+      - 'tribes-bench-v*'
+      - 'trading-binance-v*'
 
 permissions:
   contents: write
