@@ -18,6 +18,10 @@ History of the three retired federations consolidated into this one
 
 ## [Unreleased]
 
+### Changed
+
+- `research-foundry/tools/run-research.sh` default `RESEARCH_<COLONY>_REPLICAS` for the four triage-role colonies (`noticer`, `skeptic`, `novelty`, `prior_advocate`) bumped `1` → `3` so the M2-Malthusian replicate gate and the `knowledge_market` `samples>1` density both have non-trivial cross-replica selection pressure on a default run ([#824](https://github.com/Replikanti/agentis-colonies/issues/824)). Pre-bump 17 of 18 colonies defaulted to 1 replica (only explorer ran at 5), so cross-replica diversity in the triage tier was empirically negligible despite the per-colony replicate-gate boilerplate shipped in [#663](https://github.com/Replikanti/agentis-colonies/pull/663). Explorer stays at 5 (already tuned). Sequential preprint pipeline (`formulator`, `verifier`, `introducer`, `theorist`, `computer`, `editor`, `reviewer`, `submitter`), rate-limited searchers (`arxiv-search`, `oeis-search`, `groupprops-search`, `scholar-search`), and the `auditor` stay at 1: extra replicas would either race on single-writer roles, burn shared API rate budget, or contend on `audit-ledger.jsonl`. Effective default daemon count is now 30 across 18 colonies (was 18). Operator override via the same `RESEARCH_<COLONY>_REPLICAS` env-var family is unchanged. `research-foundry/tools/test-replicate-gates.sh` extended with four new assertions (one per diversified colony) so the defaults cannot regress silently.
+
 ## [0.2.0] — 2026-05-28
 
 **Requires:** agentis >= `1.8.0`
