@@ -121,6 +121,31 @@
 #                                budget and getting the daemon SIGKILL'd
 #                                by the watchdog. Default 600 (3x safety
 #                                margin under the 1800s heartbeat).
+#   RESEARCH_CRYSTALLIZE_INTERVAL
+#                                Crystallize-pass cadence in ticks (#835),
+#                                hermetic .agentis/config
+#                                evolution.crystallize_interval. Unset ->
+#                                key omitted -> agentis default 100. Set to
+#                                e.g. 10 so rules crystallize within a
+#                                75-tick verification window (#833).
+#   RESEARCH_CRYSTALLIZE_COMPACT_INTERVAL
+#                                Rule-compaction cadence in ticks (#835/#668),
+#                                evolution.crystallize_compact_interval.
+#                                Unset -> key omitted -> agentis default 500.
+#   RESEARCH_CRYSTALLIZE_PEER_FETCH
+#                                Cross-daemon peer-fetch on lookup miss
+#                                (#835/#670), evolution.crystallize_peer_
+#                                fetch_enabled. Emits `= true` only when set
+#                                to `true`; otherwise omitted -> agentis
+#                                default false.
+#   RESEARCH_CRYSTALLIZE_ALLOW_CROSS_DAEMON
+#                                Gate for the explicit crystallizer_publish_
+#                                rule / crystallizer_fetch_rule builtins
+#                                (#835), evolution.crystallize_allow_cross_
+#                                daemon. Emits `= true` only when set to
+#                                `true`; otherwise omitted -> agentis default
+#                                false. NOT required for the #670 auto peer-
+#                                fetch path (that gates on PEER_FETCH alone).
 #   RESEARCH_LATEXMK_MAX_PASSES  Max latexmk attempts inside editor.ag.
 #                                Default 3
 #   RESEARCH_DRY_RUN             1 = emit_step the plan, skip podman.
@@ -356,6 +381,16 @@ AUTHOR_CONFIG="${RESEARCH_AUTHOR_CONFIG:-$FED_DIR/config/authors.toml}"
 DAEMON_CB_PER_TICK="${RESEARCH_DAEMON_CB_PER_TICK:-100000}"
 DAEMON_HEARTBEAT_MS="${RESEARCH_DAEMON_HEARTBEAT_MS:-1800000}"
 DAEMON_PROMPT_TIMEOUT_S="${RESEARCH_DAEMON_PROMPT_TIMEOUT_S:-600}"
+# #835 crystallizer verification knobs. Empty sentinel default ->
+# emit-only-when-overridden (see bootstrap config-emit block): an unset
+# run emits zero `evolution.crystallize_*` keys, so agentis applies its
+# own compiled defaults (interval 100, compact 500, peer-fetch false,
+# cross-daemon false) and the generated .agentis/config is byte-identical
+# to a production run.
+CRYSTALLIZE_INTERVAL="${RESEARCH_CRYSTALLIZE_INTERVAL:-}"
+CRYSTALLIZE_COMPACT_INTERVAL="${RESEARCH_CRYSTALLIZE_COMPACT_INTERVAL:-}"
+CRYSTALLIZE_PEER_FETCH="${RESEARCH_CRYSTALLIZE_PEER_FETCH:-}"
+CRYSTALLIZE_ALLOW_CROSS_DAEMON="${RESEARCH_CRYSTALLIZE_ALLOW_CROSS_DAEMON:-}"
 LATEXMK_MAX_PASSES="${RESEARCH_LATEXMK_MAX_PASSES:-3}"
 IMAGE_TAG="${RESEARCH_IMAGE_TAG:-research-foundry:latest}"
 PERSISTENT_DIR="${RESEARCH_PERSISTENT_DIR:-$FED_DIR/persistent}"
@@ -804,6 +839,28 @@ write_bootstrap() {
         printf '  printf "llm.backend = %s\\n"\n' "$LLM_BACKEND"
         printf '  printf "daemon.cb_per_tick = %s\\n"\n' "$DAEMON_CB_PER_TICK"
         printf '  printf "daemon.heartbeat_interval_ms = %s\\n"\n' "$DAEMON_HEARTBEAT_MS"
+        # #835: crystallizer verification knobs, emit-only-when-overridden.
+        # Each key is written into the container .agentis/config ONLY when
+        # its env knob is non-empty -- an unset run emits none of them, so
+        # agentis applies its compiled defaults and the file stays byte-
+        # identical to production. interval/compact_interval pass through
+        # any value; the two boolean gates branch on `= "true"` so a stray
+        # `=0` does not emit a noise key (agentis reads not-"true" as false
+        # anyway). Auto peer-fetch (#670) gates on crystallize_peer_fetch_
+        # enabled ALONE; crystallize_allow_cross_daemon fences only the
+        # explicit publish/fetch builtins (agentis v1.10.0).
+        if [ -n "$CRYSTALLIZE_INTERVAL" ]; then
+            printf '  printf "evolution.crystallize_interval = %s\\n"\n' "$CRYSTALLIZE_INTERVAL"
+        fi
+        if [ -n "$CRYSTALLIZE_COMPACT_INTERVAL" ]; then
+            printf '  printf "evolution.crystallize_compact_interval = %s\\n"\n' "$CRYSTALLIZE_COMPACT_INTERVAL"
+        fi
+        if [ "$CRYSTALLIZE_PEER_FETCH" = "true" ]; then
+            printf '  printf "evolution.crystallize_peer_fetch_enabled = true\\n"\n'
+        fi
+        if [ "$CRYSTALLIZE_ALLOW_CROSS_DAEMON" = "true" ]; then
+            printf '  printf "evolution.crystallize_allow_cross_daemon = true\\n"\n'
+        fi
         # PII allow: arxiv abstracts, OEIS A-numbers, LaTeX bodies, GAP
         # output all contain long numeric runs that the agentis-core
         # heuristic flags. Mirrors trading-binance fix (#581).
