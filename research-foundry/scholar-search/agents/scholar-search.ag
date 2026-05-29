@@ -278,6 +278,128 @@ fn _publish_scholar_search(
     };
 }
 
+// _publish_scholar_search_rule_hit -- mirror of _publish_scholar_search
+// but takes the reconstructed `queries_json` as a primitive string because
+// the .ag grammar disallows inline Queries struct literals (confirmed
+// across the skeptic / theorist ports: "expected Semicolon, got LBrace").
+// The downstream still runs the SAME external Semantic Scholar fetch on
+// the reconstructed queries, the SAME relevance judge, and writes the SAME
+// report memo keys / emit payload / fitness signal, so the search +
+// publish path is identical to the LLM path; only the source of the
+// queries differs (rule vs prompt). The fitness + replicate-gate block is
+// copied verbatim from _publish_scholar_search so rule-hit ticks
+// contribute to replication fitness the same as LLM-driven ticks.
+fn _publish_scholar_search_rule_hit(
+    final_write: bool,
+    do_replicate: bool,
+    queries_json: string,
+    self_pid: string,
+    _colony_name: string,
+    upstream_tick: int,
+    tick_idx: int,
+    tick_now_ms: int,
+    problem_text: string,
+    stated_answer: string,
+    novelty_claim: string,
+    my_tier: string
+) -> void {
+    let _ = final_write;
+    // colony-lint: safe-exec-concat
+    let fetch_cmd = "QJSON=" + shell_escape(queries_json)
+        + " python3 -c 'import os, json, urllib.parse, urllib.request, sys\n"
+        + "try:\n  qs=json.loads(os.environ[\"QJSON\"])\nexcept Exception:\n  qs=[]\n"
+        + "if not isinstance(qs, list): qs=[]\n"
+        + "out=[]\n"
+        + "for q in qs[:3]:\n"
+        + "  url=\"https://api.semanticscholar.org/graph/v1/paper/search?limit=10&fields=title,abstract,year,authors&query=\"+urllib.parse.quote_plus(str(q))\n"
+        + "  try:\n"
+        + "    r=urllib.request.urlopen(url,timeout=30).read().decode(\"utf-8\",\"replace\")\n"
+        + "  except Exception as e:\n"
+        + "    r=\"<unavailable>\"+str(e)+\"</unavailable>\"\n"
+        + "  out.append(\"--- query: \"+str(q)+\" ---\\n\"+r)\n"
+        + "sys.stdout.write(\"\\n\".join(out))'";
+    let combined_raw = try { exec sh fetch_cmd; } catch e { ""; };
+
+    let judge_ctx = "PROBLEM: " + problem_text + "\n"
+                  + "ANSWER: " + stated_answer + "\n"
+                  + "NOVELTY CLAIM: " + novelty_claim + "\n"
+                  + "SEMANTIC SCHOLAR FEEDS:\n" + combined_raw + "\n";
+    let report = prompt(_relevance_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(self_pid), judge_ctx) -> Report;
+
+    let report_json = "{\"status\":\"" + report.status
+                    + "\",\"matches_found\":" + to_string(report.matches_found)
+                    + ",\"summary\":\"" + report.summary
+                    + "\",\"top_match_count\":" + to_string(len(report.top_matches)) + "}";
+    memo_write("scholar_search:" + self_pid + ":report:tick-" + to_string(upstream_tick), report_json);
+    memo_write("scholar_search:" + self_pid + ":status:tick-" + to_string(upstream_tick), report.status);
+    memo_write("scholar_search:" + self_pid + ":matches_found:tick-" + to_string(upstream_tick), to_string(report.matches_found));
+    memo_write("scholar_search:" + self_pid + ":summary:tick-" + to_string(upstream_tick), report.summary);
+    memo_write("replay:current_scholar_search_pid", self_pid);
+    emit("scholar-search:report_ready", report);
+
+    if my_tier == "propose" {
+        learn("scholar-search", "tick " + to_string(tick_idx), "status=" + report.status + " matches=" + to_string(report.matches_found), "success", ["emitted", "claim-auditor"]);
+    };
+
+    if len(self_pid) > 0 {
+        let fit_pre = parse_int(recall_latest("scholar-search:" + self_pid + ":fitness"));
+        let fit_delta = if report.matches_found > 0 { 1; } else { 0; };
+        memo_write("scholar-search:" + self_pid + ":fitness", to_string(fit_pre + fit_delta));
+    };
+
+    if do_replicate {
+        let repr_thr = parse_int(recall_latest("scholar-search:reproductive_fitness_threshold"));
+        if repr_thr > 0 {
+            let my_fit_r = parse_int(recall_latest("scholar-search:" + self_pid + ":fitness"));
+            if my_fit_r > repr_thr {
+                let n_r = parse_int(recall_latest("colony-" + _colony_name + ":size"));
+                let max_repl_r = parse_int(recall_latest("colony-" + _colony_name + ":max_replicas"));
+                if n_r < max_repl_r {
+                    let pool_r = parse_int(recall_latest("colony-" + _colony_name + ":pool"));
+                    let base_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_base_cost"));
+                    let raw_k_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_k"));
+                    let k_r = if raw_k_r <= 0 { 3; } else { raw_k_r; };
+                    let cost_r = base_r + (base_r * n_r) / k_r;
+                    if pool_r >= cost_r {
+                        let variant_pick = pick_variant(n_r);
+                        memo_write("scholar-search:prompt_variant", variant_pick);
+                        let target_r = select_replication_target();
+                        if len(target_r) > 0 {
+                            let variant_wrapped = _publish_prompt_body_and_wrap_variant(self_pid, variant_pick);
+                            let replica_id = try { replicate(target_r, my_fit_r, variant_wrapped); } catch e { "__replicate_error__"; };
+                            if replica_id != "__replicate_error__" {
+                                if len(replica_id) > 0 {
+                                    memo_write("colony-" + _colony_name + ":pool", to_string(pool_r - cost_r));
+                                    memo_write("colony-" + _colony_name + ":size", to_string(n_r + 1));
+                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "success", ["replicated", "claim-auditor", _colony_name]);
+
+                                    let lin_str = recall_latest("scholar-search:" + self_pid + ":generation");
+                                    let lin = if len(lin_str) > 0 { parse_int(lin_str); } else { 0; };
+                                    let ledger_path_r = try { exec sh "printenv REPLICATION_LEDGER"; } catch e { ""; };
+                                    if len(ledger_path_r) > 0 {
+                                        let parent_specialty = recall_latest("scholar-search:" + self_pid + ":specialty");
+                                        let child_gen = lin + 1;
+                                        let row = "{\"ts\":" + to_string(tick_now_ms) + ",\"event\":\"replicate\",\"colony\":\"" + _colony_name + "\",\"side\":\"audit\",\"parent_pid\":\"" + self_pid + "\",\"child_replica_id\":\"" + replica_id + "\",\"specialty\":\"" + parent_specialty + "\",\"generation\":" + to_string(child_gen) + ",\"parent_fitness\":" + to_string(my_fit_r) + "}";
+                                        // colony-lint: safe-exec-concat
+                                        let append_r = "printf '%s\n' " + shell_escape(row) + " >> " + shell_escape(ledger_path_r);
+                                        let _lr = try { exec sh append_r; } catch e { ""; };
+                                        memo_write("scholar-search:" + replica_id + ":generation", to_string(child_gen));
+                                        if len(parent_specialty) > 0 {
+                                            memo_write("scholar-search:" + replica_id + ":specialty", parent_specialty);
+                                        };
+                                    };
+                                } else {
+                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "failure", ["replicate-nak", "claim-auditor", _colony_name]);
+                                };
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
+}
+
 // Issue #767: aging-out gate (death pressure). Two-phase: this .ag
 // publishes `colony:cull_self_request:<pid>` when age_ticks crosses
 // `env:RESEARCH_AGING_THRESHOLD`; the cull-replicas.sh sidecar reads
@@ -303,6 +425,59 @@ fn _age_tick_and_check(colony: string, self_pid: string) -> int {
         memo_write("colony:cull_self_request:" + self_pid, "aging");
     };
     return next_age;
+}
+
+// #845: rule-first / distillation scaffolding (faithful full-output
+// pattern, ported from theorist #845). The distillable decision here is
+// the scholar-search primary query-generation output -- the full
+// `Queries` struct (queries_json + rationale). Per the #845 reframe,
+// the colony gets the capability uniformly and the crystallizer's
+// confidence + validation gating decides at runtime whether a rule
+// actually forms: identical upstream claim input that recurs >=
+// crystallize_min_validations times producing the identical queries
+// self-distils, while diverse query generation never aggregates (each
+// tick mints a distinct action under a distinct fine context hash and no
+// entry reaches the validation floor -- self-stay-LLM). The full Queries
+// output is encoded faithfully (BOTH fields -> JSON action string), NOT
+// a lossy summary (the #841 mistake). The external Semantic Scholar
+// fetch still runs on the reconstructed queries on the rule-hit path.
+
+// _scholar_search_canonical_ctx -- the rule key. scholar-search's
+// upstream producer (the auditor claim seed) writes no stable
+// canonical_ctx memo, so we synthesize a FINE key: topic plus a sha256
+// of the exact assembled query-gen input (the PROBLEM + ANSWER + NOVELTY
+// CLAIM ctx the prompt sees). The hash makes identical inputs share a key
+// and any input difference mint a distinct key, so diverse generation
+// self-no-ops (no rule forms) and only genuine input repeats crystallize.
+// Uses the existing python3 hashlib exec idiom (see
+// _publish_prompt_body_and_wrap_variant). Field order is
+// most-discriminating-first to match the crystallizer's prefix matcher.
+fn _scholar_search_canonical_ctx(topic_label: string, input_blob: string) -> string {
+    let topic = if len(topic_label) > 0 { topic_label; } else { "na"; };
+    // colony-lint: safe-exec-concat
+    let sha_cmd = "python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.argv[1].encode(\"utf-8\")).hexdigest())' " + shell_escape(input_blob);
+    let h = try { exec sh sha_cmd; } catch e { ""; };
+    let hash = if len(h) == 64 { h; } else { "na"; };
+    return "topic=" + topic + " input_hash=" + hash;
+}
+
+// _encode_queries_action -- faithful full serialization of the
+// scholar-search primary output (the Queries struct) into a single JSON
+// string used as the crystallized rule action. BOTH output fields are
+// preserved (queries_json + rationale) so a rule hit reconstructs the
+// byte-identical Queries without prompt(). Built via python3 json.dumps
+// because queries_json is itself a JSON-encoded string carrying quotes
+// and brackets that inline string concat cannot safely escape. The action
+// is a plain JSON STRING (decoded on the rule-hit path with json_get, NOT
+// get -- get is only for the lookup Map). Total on exec failure
+// (returns "").
+fn _encode_queries_action(queries: Queries) -> string {
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,json\no={\"queries_json\":sys.argv[1],\"rationale\":sys.argv[2]}\nsys.stdout.write(json.dumps(o,separators=(\",\",\":\")))' "
+            + shell_escape(queries.queries_json) + " "
+            + shell_escape(queries.rationale);
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
 }
 
 fn tick(reason: string) -> void {
@@ -367,9 +542,113 @@ fn tick(reason: string) -> void {
             + "ANSWER: " + stated_answer + "\n"
             + "NOVELTY CLAIM: " + novelty_claim + "\n";
 
+    let my_tier = tier("scholar_search");
+
+    // ===== Stage 1: rule-first lookup (#845, faithful full-output) =====
+    // The canonical context is a FINE self-built key (topic + sha256 of the
+    // exact query-gen input ctx). On a crystallized scholar_search_output
+    // rule hit, reconstruct the FULL Queries (both queries_json + rationale)
+    // from the rule's action slot (a faithful JSON serialization) and skip
+    // the query-gen prompt(). Because the key is fine, this Stage-1 hit only
+    // ever fires when the identical upstream claim input recurred enough
+    // times to crystallize -- i.e. scholar-search self-decided (via
+    // emergence) that its queries for this input are stable. The external
+    // Semantic Scholar fetch STILL runs on the reconstructed queries inside
+    // _publish_scholar_search_rule_hit. Rollback knob:
+    // SCHOLAR_SEARCH_RULE_FIRST=0 short-circuits Stage 1 to the LLM path.
+    let _topic_label = recall_latest("replay:current_topic");
+    let canonical_ctx = _scholar_search_canonical_ctx(_topic_label, ctx);
+
+    let rule_first_flag = try { exec sh "printenv SCHOLAR_SEARCH_RULE_FIRST"; } catch e { ""; };
+    let rule_first_enabled = rule_first_flag != "0";
+
+    let min_conf_str = try { exec sh "printenv SCHOLAR_SEARCH_RULE_CONFIDENCE"; } catch e { ""; };
+    let min_conf = if len(min_conf_str) > 0 { parse_float(min_conf_str); } else { 0.85; };
+
+    if rule_first_enabled {
+        let rule = crystallizer_lookup_with_confidence("scholar_search_output", canonical_ctx, min_conf);
+        if len(rule) > 0 {
+            // Rule hit -- reconstruct the FULL Queries from the rule's
+            // action field without prompt(). #843:
+            // crystallizer_lookup_with_confidence returns map<string,string>
+            // (Value::Map). Read the map fields with get() (the map
+            // accessor); json_get() expects a JSON string and raises
+            // "expected string, got map" on a Map. The action ITSELF is a
+            // JSON string (the faithful Queries serialization), so its fields
+            // ARE read with json_get() -- get() is only for the outer Map.
+            let rule_id = to_string(get(rule, "rule_id"));
+            let rule_action = to_string(get(rule, "action"));
+            let rule_conf_str = to_string(get(rule, "confidence"));
+            let rule_conf = if len(rule_conf_str) > 0 { parse_float(rule_conf_str); } else { min_conf; };
+
+            let r_queries_json = to_string(json_get(rule_action, "queries_json"));
+            let r_rationale = to_string(json_get(rule_action, "rationale"));
+
+            let rule_rationale = "rule-first: matched crystallized scholar_search_output rule at confidence " + to_string(rule_conf) + ". Context: " + canonical_ctx;
+
+            // colony-lint: learn-tags-ok
+            learn("scholar_search_output", canonical_ctx, rule_action, "success", ["distilled", "rule-hit", "math-foundry"]);
+            crystallizer_record_use(rule_id, true, 0.1);
+
+            // Tier branch -- mirrors the LLM path below. The rule-hit
+            // publisher takes the reconstructed queries_json as a primitive
+            // string because the .ag grammar disallows inline Queries struct
+            // literals. The scholar-search observability rows stay
+            // byte-identical to the LLM path so auto-promote sees the same
+            // tag stream. The external fetch + relevance judge + report
+            // memo/emit all run inside _publish_scholar_search_rule_hit.
+            if my_tier == "autonomous" {
+                memo_write("scholar_search:" + _self_pid + ":review_gated", "true");
+                learn("scholar-search", "tick " + to_string(tick_idx), r_rationale, "partial", ["acted", "claim-auditor"]);
+                _publish_scholar_search_rule_hit(true, true, r_queries_json, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim, my_tier);
+            } else {
+                if my_tier == "review-gated" {
+                    memo_write("scholar_search:" + _self_pid + ":review_gated", "true");
+                    learn("scholar-search", "tick " + to_string(tick_idx), r_rationale, "partial", ["review-gated", "claim-auditor"]);
+                    _publish_scholar_search_rule_hit(true, false, r_queries_json, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim, my_tier);
+                } else {
+                    if my_tier == "propose" {
+                        _publish_scholar_search_rule_hit(false, false, r_queries_json, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim, my_tier);
+                    } else {
+                        print("[scholar-search] observing rule-hit (tier:", my_tier, ") rationale=", r_rationale);
+                        learn("scholar-search", "tick " + to_string(tick_idx), r_rationale, "partial", ["observed", "claim-auditor"]);
+                    };
+                };
+            };
+
+            let _ = rule_rationale;
+            let now_s1 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+            if len(now_s1) > 0 { memo_write("scholar-search:last_check", now_s1); };
+            return;
+        };
+    };
+
+    // ===== Stage 2: LLM fallback (historical path) =====
     let queries = prompt(_extract_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(_self_pid), ctx) -> Queries;
 
-    let my_tier = tier("scholar_search");
+    // #845: distillation row. The rule action is the FULL, FAITHFUL
+    // serialization of the scholar-search primary output (both Queries
+    // fields) -- a generative colony must encode its whole output, NOT a
+    // lossy summary/bucket (the #841 mistake). The CONDITION is the SAME
+    // fine canonical_ctx the Stage-1 lookup passes (topic + sha256 of the
+    // upstream query-gen input), so a rule only forms when the IDENTICAL
+    // input recurs >= crystallize_min_validations times producing the
+    // identical queries (self-distill). Diverse generation never aggregates
+    // (each tick mints a distinct action under a distinct context hash and
+    // no entry reaches the validation floor -- self-stay-LLM). distill()
+    // raises until there are >=3 successful scholar_search_output records,
+    // so guard it; once the entry crystallizes the Stage-1 lookup starts
+    // hitting and this miss path stops running for that context.
+    let canonical_action = _encode_queries_action(queries);
+    if len(canonical_action) > 0 {
+        // colony-lint: learn-tags-ok
+        learn("scholar_search_output", canonical_ctx, canonical_action, "success", ["distilled", "math-foundry"]);
+        let distilled_id = try { distill("scholar_search_output", canonical_ctx, canonical_action, "heuristic"); } catch e { ""; };
+        if len(distilled_id) > 0 {
+            knowledge_validate(distilled_id);
+        };
+    };
+
     if my_tier == "autonomous" {
         memo_write("scholar_search:" + _self_pid + ":review_gated", "true");
         learn("scholar-search", "tick " + to_string(tick_idx), queries.rationale, "partial", ["acted", "claim-auditor"]);
