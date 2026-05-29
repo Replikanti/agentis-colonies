@@ -490,6 +490,240 @@ fn _age_tick_and_check(colony: string, self_pid: string) -> int {
     return next_age;
 }
 
+// #845 uniform rollout: rule-first / distillation scaffolding ported
+// from the skeptic (#846) but adapted to a GENERATIVE colony. The
+// editor's primary output is a full LaTeX document (Edit.full_tex +
+// refs_bib + ...), not a discrete verdict, so the rule action encodes
+// the FULL Edit faithfully (a JSON serialization, NOT a lossy bucket --
+// caching a coarse class would wrongly cache creativity, the #841
+// mistake). The rule key is a FINE-GRAINED hash of the exact upstream
+// ctx so identical inputs share a key and diverse inputs never
+// aggregate. The crystallizer's confidence+validation gating decides at
+// runtime whether a rule ever forms: identical input -> output repeats
+// crystallize + replay (self-distill); diverse output never aggregates
+// (self-stay-LLM). The self-no-op for diverse output is correct.
+
+// _editor_canonical_ctx -- the rule key. Fine-grained: the sha256 of
+// the exact upstream ctx the LLM saw (TITLE + abstract + intro + defs +
+// main + repro script/stdout + pitfalls). Identical upstream -> same
+// 64-hex key; any drift -> a fresh key, so creative divergence never
+// collapses onto one rule. Field order keeps a stable, parseable shape
+// "editorctx=<64hex>" the crystallizer prefix-matcher keys off. Total on
+// empty / hash failure ("editorctx=na").
+fn _editor_canonical_ctx(ctx: string) -> string {
+    if len(ctx) == 0 { return "editorctx=na"; };
+    // colony-lint: safe-exec-concat
+    let sha_cmd = "python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.argv[1].encode(\"utf-8\")).hexdigest())' " + shell_escape(ctx);
+    let h = try { exec sh sha_cmd; } catch e { ""; };
+    if len(h) != 64 { return "editorctx=na"; };
+    return "editorctx=" + h;
+}
+
+// _edit_to_action_json -- faithful full-output serializer. Routes the
+// four Edit string/bool fields through python3 json.dumps so embedded
+// `"` / `\n` / `\\` in full_tex / refs_bib cannot corrupt the rule
+// action (same hardening as the replicate-ledger row at #600). The
+// produced JSON is what learn()/distill() store as the rule action and
+// what the Stage-1 rule-hit path decodes back into Edit primitives via
+// json_get. Total on failure (returns an empty-Edit JSON).
+fn _edit_to_action_json(edit: Edit) -> string {
+    let halluc_str = if edit.hallucinations_found { "true"; } else { "false"; };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,json\nobj={\"full_tex\":sys.argv[1],\"refs_bib\":sys.argv[2],\"fingerprint_csv\":sys.argv[3],\"hallucinations_found\":(sys.argv[4]==\"true\"),\"rationale\":sys.argv[5]}\nprint(json.dumps(obj,separators=(\",\",\":\")))' " + shell_escape(edit.full_tex) + " " + shell_escape(edit.refs_bib) + " " + shell_escape(edit.fingerprint_csv) + " " + shell_escape(halluc_str) + " " + shell_escape(edit.rationale);
+    let out = try { exec sh cmd; } catch e { ""; };
+    if len(out) == 0 {
+        return "{\"full_tex\":\"\",\"refs_bib\":\"\",\"fingerprint_csv\":\"\",\"hallucinations_found\":false,\"rationale\":\"\"}";
+    };
+    return out;
+}
+
+// _publish_editor_rule_hit -- mirror of _publish_editor but takes the
+// Edit fields as primitives because the .ag grammar disallows inline
+// Edit struct literals (matches the skeptic's _publish_skeptic_rule_hit
+// precedent). The body is copied verbatim from _publish_editor: it
+// writes main.tex / refs.bib, substitutes the author, runs latexmk with
+// the same single-repair-pass logic, persists the identical memo keys,
+// emits the two events, tracks fitness, and runs the M2-Malthusian
+// replicate gate -- so a rule-hit tick is byte-indistinguishable
+// downstream from an LLM-driven tick except the Edit came from a
+// crystallized rule rather than prompt(). The repair pass still calls
+// prompt() (a compile failure means the cached tex itself is broken --
+// repairing it is the correct LLM fallback, not a distillable step).
+fn _publish_editor_rule_hit(
+    final_write: bool,
+    do_replicate: bool,
+    full_tex: string,
+    refs_bib: string,
+    hallucinations_found: bool,
+    self_pid: string,
+    _colony_name: string,
+    upstream_tick: int,
+    tick_idx: int,
+    tick_now_ms: int,
+    my_tier: string
+) -> void {
+    let _ = final_write;
+    let claim_id = recall_latest("claim:claim_id:tick-" + to_string(upstream_tick));
+    let claim_id_eff = if len(claim_id) > 0 { claim_id; } else { "claim-" + to_string(upstream_tick); };
+    let out_root = try { exec sh "printenv PREPRINT_OUTPUT_ROOT"; } catch e { ""; };
+    let out_root_eff = if len(out_root) > 0 { out_root; } else { "/run-root/preprints"; };
+    let claim_dir = out_root_eff + "/" + claim_id_eff;
+
+    let max_passes_env = try { exec sh "printenv PREPRINT_LATEXMK_MAX_PASSES"; } catch e { ""; };
+    let max_passes = if len(max_passes_env) > 0 { parse_int(max_passes_env); } else { 3; };
+    let max_passes_eff = if max_passes <= 0 { 1; } else { max_passes; };
+
+    // colony-lint: safe-exec-concat
+    let mkdir_cmd = "mkdir -p " + shell_escape(claim_dir);
+    let _mk = try { exec sh mkdir_cmd; } catch e { ""; };
+    // colony-lint: safe-exec-concat
+    let write_tex_cmd = "printf '%s' " + shell_escape(full_tex) + " > " + shell_escape(claim_dir + "/main.tex");
+    let _wt = try { exec sh write_tex_cmd; } catch e { ""; };
+    // colony-lint: safe-exec-concat
+    let write_bib_cmd = "printf '%s' " + shell_escape(refs_bib) + " > " + shell_escape(claim_dir + "/refs.bib");
+    let _wb = try { exec sh write_bib_cmd; } catch e { ""; };
+
+    let author_cfg_path = try { exec sh "printenv PREPRINT_AUTHOR_CONFIG"; } catch e { ""; };
+    let author_cfg_eff = if len(author_cfg_path) > 0 { author_cfg_path; } else { "/run-root/config/authors.toml"; };
+    // colony-lint: safe-exec-concat
+    let subst_cmd = "python3 /run-root/tools/substitute-author.py " + shell_escape(author_cfg_eff) + " " + shell_escape(claim_dir + "/main.tex");
+    let _subst = try { exec sh subst_cmd; } catch e { ""; };
+
+    // colony-lint: safe-exec-concat
+    let compile_cmd = "cd " + shell_escape(claim_dir) + " && latexmk -pdf -interaction=nonstopmode -halt-on-error main.tex 2>&1 | tail -80";
+    let compile_log = try { exec sh compile_cmd; } catch e { ""; };
+    // colony-lint: safe-exec-concat
+    let pdf_check_cmd = "test -f " + shell_escape(claim_dir + "/main.pdf") + " && printf yes || printf no";
+    let pdf_ok_raw = try { exec sh pdf_check_cmd; } catch e { "no"; };
+    let compile_ok_initial = pdf_ok_raw == "yes";
+
+    if !compile_ok_initial {
+        let initial_tags = _classify_compile_log(compile_log);
+        _push_pitfall(tick_idx, claim_id_eff, "initial", initial_tags, compile_log);
+    };
+
+    let compile_ok_final = if compile_ok_initial {
+        true;
+    } else {
+        if max_passes_eff < 2 {
+            false;
+        } else {
+            let pitfall_buf = recall_latest("editor:learned_pitfalls");
+            let pitfall_summary = _summarise_pitfall_buf(pitfall_buf, 10);
+            let repair_ctx = "FAILING TEX:\n" + full_tex + "\n"
+                           + "LATEXMK LOG (last 80 lines):\n" + compile_log + "\n"
+                           + "RECENT PITFALLS:\n" + pitfall_summary + "\n";
+            memo_write("editor:" + self_pid + ":ctx:tick-" + to_string(tick_idx) + ":repair", repair_ctx);
+            let repair = prompt(_repair_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(self_pid), repair_ctx) -> Repair;
+            // colony-lint: safe-exec-concat
+            let rewrite_cmd = "printf '%s' " + shell_escape(repair.full_tex) + " > " + shell_escape(claim_dir + "/main.tex");
+            let _rw = try { exec sh rewrite_cmd; } catch e { ""; };
+            // colony-lint: safe-exec-concat
+            let subst_cmd_r = "python3 /run-root/tools/substitute-author.py " + shell_escape(author_cfg_eff) + " " + shell_escape(claim_dir + "/main.tex");
+            let _subst_r = try { exec sh subst_cmd_r; } catch e { ""; };
+            // colony-lint: safe-exec-concat
+            let recompile_cmd = "cd " + shell_escape(claim_dir) + " && latexmk -pdf -interaction=nonstopmode -halt-on-error main.tex 2>&1 | tail -80";
+            let recompile_log = try { exec sh recompile_cmd; } catch e { ""; };
+            // colony-lint: safe-exec-concat
+            let recheck_cmd = "test -f " + shell_escape(claim_dir + "/main.pdf") + " && printf yes || printf no";
+            let recheck = try { exec sh recheck_cmd; } catch e { "no"; };
+            let repair_ok = recheck == "yes";
+            if !repair_ok {
+                let repair_tags = _classify_compile_log(recompile_log);
+                _push_pitfall(tick_idx, claim_id_eff, "repair", repair_tags, recompile_log);
+            };
+            repair_ok;
+        };
+    };
+
+    let final_tex_path = claim_dir + "/main.tex";
+    // colony-lint: safe-exec-concat
+    let read_tex_cmd = "cat " + shell_escape(final_tex_path);
+    let final_tex_body = try { exec sh read_tex_cmd; } catch e { full_tex; };
+
+    memo_write("editor:" + self_pid + ":final_tex:tick-" + to_string(upstream_tick), final_tex_body);
+    memo_write("editor:" + self_pid + ":compile_log:tick-" + to_string(upstream_tick), compile_log);
+    memo_write("editor:" + self_pid + ":refs_bib:tick-" + to_string(upstream_tick), refs_bib);
+    memo_write("editor:" + self_pid + ":claim_dir:tick-" + to_string(upstream_tick), claim_dir);
+    let compile_ok_str = if compile_ok_final { "true"; } else { "false"; };
+    memo_write("editor:" + self_pid + ":compile_ok:tick-" + to_string(upstream_tick), compile_ok_str);
+    let halluc_str = if hallucinations_found { "true"; } else { "false"; };
+    memo_write("editor:" + self_pid + ":hallucinations_found:tick-" + to_string(upstream_tick), halluc_str);
+    memo_write("replay:current_editor_pid", self_pid);
+
+    emit("editor:final_tex_ready", final_tex_body);
+    emit("editor:compile_log_ready", compile_log);
+
+    if my_tier == "propose" {
+        learn("edit", "tick " + to_string(tick_idx), "compile_ok=" + compile_ok_str + " halluc=" + halluc_str, "success", ["emitted", "preprint-foundry"]);
+    };
+
+    if len(self_pid) > 0 {
+        let fit_pre = parse_int(recall_latest("editor:" + self_pid + ":fitness"));
+        let fit_delta = if compile_ok_final { 1; } else { 0; };
+        memo_write("editor:" + self_pid + ":fitness", to_string(fit_pre + fit_delta));
+    };
+
+    if do_replicate {
+        let repr_thr = parse_int(recall_latest("editor:reproductive_fitness_threshold"));
+        if repr_thr > 0 {
+            let my_fit_r = parse_int(recall_latest("editor:" + self_pid + ":fitness"));
+            if my_fit_r > repr_thr {
+                let n_r = parse_int(recall_latest("colony-" + _colony_name + ":size"));
+                let max_repl_r = parse_int(recall_latest("colony-" + _colony_name + ":max_replicas"));
+                if n_r < max_repl_r {
+                    let pool_r = parse_int(recall_latest("colony-" + _colony_name + ":pool"));
+                    let base_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_base_cost"));
+                    let raw_k_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_k"));
+                    let k_r = if raw_k_r <= 0 { 3; } else { raw_k_r; };
+                    let cost_r = base_r + (base_r * n_r) / k_r;
+                    if pool_r >= cost_r {
+                        let variant_pick = pick_variant(n_r);
+                        memo_write("editor:prompt_variant", variant_pick);
+                        let target_r = select_replication_target();
+                        if len(target_r) > 0 {
+                            let variant_wrapped = _publish_prompt_body_and_wrap_variant(self_pid, variant_pick);
+                            let replica_id = try { replicate(target_r, my_fit_r, variant_wrapped); } catch e { "__replicate_error__"; };
+                            if replica_id != "__replicate_error__" {
+                                if len(replica_id) > 0 {
+                                    memo_write("colony-" + _colony_name + ":pool", to_string(pool_r - cost_r));
+                                    memo_write("colony-" + _colony_name + ":size", to_string(n_r + 1));
+                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "success", ["replicated", "preprint-foundry", _colony_name]);
+
+                                    let lin_str = recall_latest("editor:" + self_pid + ":generation");
+                                    let lin = if len(lin_str) > 0 { parse_int(lin_str); } else { 0; };
+                                    let ledger_path_r = try { exec sh "printenv REPLICATION_LEDGER"; } catch e { ""; };
+                                    if len(ledger_path_r) > 0 {
+                                        let parent_specialty = recall_latest("editor:" + self_pid + ":specialty");
+                                        let child_gen = lin + 1;
+                                        // colony-lint: safe-exec-concat
+                                        let row_cmd = "python3 -c 'import sys,json\nts=int(sys.argv[1])\nrow={\"ts\":ts,\"event\":\"replicate\",\"colony\":sys.argv[2],\"side\":\"preprint\",\"parent_pid\":sys.argv[3],\"child_replica_id\":sys.argv[4],\"specialty\":sys.argv[5],\"generation\":int(sys.argv[6]),\"parent_fitness\":int(sys.argv[7])}\nwith open(sys.argv[8],\"a\") as f: f.write(json.dumps(row,separators=(\",\",\":\"))+\"\\n\")\nprint(\"ok\")' "
+                                            + shell_escape(to_string(tick_now_ms)) + " "
+                                            + shell_escape(_colony_name) + " "
+                                            + shell_escape(self_pid) + " "
+                                            + shell_escape(replica_id) + " "
+                                            + shell_escape(parent_specialty) + " "
+                                            + shell_escape(to_string(child_gen)) + " "
+                                            + shell_escape(to_string(my_fit_r)) + " "
+                                            + shell_escape(ledger_path_r);
+                                        let _lr = try { exec sh row_cmd; } catch e { ""; };
+                                        memo_write("editor:" + replica_id + ":generation", to_string(child_gen));
+                                        if len(parent_specialty) > 0 {
+                                            memo_write("editor:" + replica_id + ":specialty", parent_specialty);
+                                        };
+                                    };
+                                } else {
+                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "failure", ["replicate-nak", "preprint-foundry", _colony_name]);
+                                };
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let _ = _jitter_sleep();
@@ -577,9 +811,107 @@ fn tick(reason: string) -> void {
             + "RECENT PITFALLS:\n" + pitfall_summary_initial + "\n";
 
     _dump_ctx_to_memo("editor", _self_pid, tick_idx, ctx);
-    let edit = prompt(_edit_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(_self_pid), ctx) -> Edit;
 
     let my_tier = tier("editor");
+
+    // ===== Stage 1: rule-first lookup (#845 uniform rollout) =====
+    // The canonical context is a fine-grained hash of the exact upstream
+    // ctx, so a crystallized editor_output rule only ever fires when the
+    // identical upstream content recurs. On a hit, the rule's action slot
+    // carries the FULL Edit JSON (full_tex / refs_bib / fingerprint_csv /
+    // hallucinations_found / rationale); we decode it with json_get and
+    // run the SAME tier branch + publisher + observability rows as the
+    // prompt path, skipping prompt(). Rollback knob: EDITOR_RULE_FIRST=0
+    // short-circuits Stage 1 to the LLM path.
+    let canonical_ctx = _editor_canonical_ctx(ctx);
+
+    let rule_first_flag = try { exec sh "printenv EDITOR_RULE_FIRST"; } catch e { ""; };
+    let rule_first_enabled = rule_first_flag != "0";
+
+    let min_conf_str = try { exec sh "printenv EDITOR_RULE_CONFIDENCE"; } catch e { ""; };
+    let min_conf = if len(min_conf_str) > 0 { parse_float(min_conf_str); } else { 0.85; };
+
+    if rule_first_enabled {
+        let rule = crystallizer_lookup_with_confidence("editor_output", canonical_ctx, min_conf);
+        if len(rule) > 0 {
+            // Rule hit -- reconstruct the Edit from the rule's action
+            // field without prompt(). #843: the lookup returns
+            // map<string,string> (Value::Map). Read fields with get()
+            // (the map accessor); json_get() expects a JSON string and
+            // raises "expected string, got map" on a map. The action
+            // value IS a JSON string, so json_get() is correct on it.
+            let rule_id = to_string(get(rule, "rule_id"));
+            let rule_action = to_string(get(rule, "action"));
+            let rule_conf_str = to_string(get(rule, "confidence"));
+            let rule_conf = if len(rule_conf_str) > 0 { parse_float(rule_conf_str); } else { min_conf; };
+            let r_full_tex = to_string(json_get(rule_action, "full_tex"));
+            let r_refs_bib = to_string(json_get(rule_action, "refs_bib"));
+            let r_halluc_str = to_string(json_get(rule_action, "hallucinations_found"));
+            let r_halluc = r_halluc_str == "true";
+            let r_rationale_raw = to_string(json_get(rule_action, "rationale"));
+            let r_rationale = if len(r_rationale_raw) > 0 {
+                r_rationale_raw;
+            } else {
+                "rule-first: matched crystallized editor_output rule at confidence " + to_string(rule_conf);
+            };
+            // colony-lint: learn-tags-ok
+            learn("editor_output", canonical_ctx, rule_action, "success", ["distilled", "rule-hit", "preprint-foundry"]);
+            crystallizer_record_use(rule_id, true, 0.1);
+
+            if my_tier == "autonomous" {
+                memo_write("editor:" + _self_pid + ":review_gated", "true");
+                learn("edit", "tick " + to_string(tick_idx), r_rationale, "partial", ["acted", "preprint-foundry"]);
+                _publish_editor_rule_hit(true, true, r_full_tex, r_refs_bib, r_halluc, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
+            } else {
+                if my_tier == "review-gated" {
+                    memo_write("editor:" + _self_pid + ":review_gated", "true");
+                    learn("edit", "tick " + to_string(tick_idx), r_rationale, "partial", ["review-gated", "preprint-foundry"]);
+                    _publish_editor_rule_hit(true, false, r_full_tex, r_refs_bib, r_halluc, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
+                } else {
+                    if my_tier == "propose" {
+                        _publish_editor_rule_hit(false, false, r_full_tex, r_refs_bib, r_halluc, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
+                    } else {
+                        print("[editor] observing rule-hit (tier:", my_tier, ") rationale=", r_rationale);
+                        learn("edit", "tick " + to_string(tick_idx), r_rationale, "partial", ["observed", "preprint-foundry"]);
+                    };
+                };
+            };
+
+            let now_s1 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+            if len(now_s1) > 0 { memo_write("editor:last_check", now_s1); };
+            return;
+        };
+    };
+
+    // ===== Stage 2: LLM fallback (historical path) =====
+    let edit = prompt(_edit_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(_self_pid), ctx) -> Edit;
+
+    // #845 distillation row. The rule action is the FULL Edit serialized
+    // faithfully (NOT a coarse bucket -- caching a coarse class would
+    // wrongly cache creativity). Keyed on the SAME fine canonical_ctx so
+    // identical upstream input -> identical action -> the distilled
+    // KnowledgeEntry id is stable and empirical_validations accumulate;
+    // diverse upstream input -> a fresh hash -> no aggregation -> no rule
+    // (the colony self-decides to stay LLM-driven).
+    let canonical_action = _edit_to_action_json(edit);
+    // colony-lint: learn-tags-ok
+    learn("editor_output", canonical_ctx, canonical_action, "success", ["distilled", "preprint-foundry"]);
+
+    // Complete the distillation loop: learn() above only writes the
+    // ExperienceStore; distill() promotes >=3 successful editor_output
+    // records over the same fine canonical_ctx into a KnowledgeEntry, and
+    // knowledge_validate() bumps empirical_validations toward
+    // crystallize_min_validations. distill() raises until there are >=3
+    // successful records, so guard it; once the entry crystallizes the
+    // Stage-1 lookup starts hitting and this miss path stops running for
+    // that context. The distill CONDITION is the SAME fine canonical_ctx
+    // (a generative colony must not coarsen the key, or distinct drafts
+    // would collide onto one rule).
+    let distilled_id = try { distill("editor_output", canonical_ctx, canonical_action, "heuristic"); } catch e { ""; };
+    if len(distilled_id) > 0 {
+        knowledge_validate(distilled_id);
+    };
+
     if my_tier == "autonomous" {
         memo_write("editor:" + _self_pid + ":review_gated", "true");
         learn("edit", "tick " + to_string(tick_idx), edit.rationale, "partial", ["acted", "preprint-foundry"]);
