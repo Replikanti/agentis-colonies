@@ -1469,12 +1469,12 @@
      Default first paint is `status`. Persisted via localStorage
      `agentis:dashboard:active-tab`. Keyboard shortcuts: digits 1-5. -->
 <div class="tabs" id="tabs" role="tablist">
-  <button class="tab-btn" role="tab" data-tab="status"  ><span class="tab-key">1</span>Status</button>
-  <button class="tab-btn" role="tab" data-tab="cost"    ><span class="tab-key">2</span>Cost</button>
-  <button class="tab-btn" role="tab" data-tab="recovery"><span class="tab-key">3</span>Recovery</button>
-  <button class="tab-btn" role="tab" data-tab="logs"    ><span class="tab-key">4</span>Logs &amp; Events</button>
-  <button class="tab-btn" role="tab" data-tab="config"  ><span class="tab-key">5</span>Config</button>
-  <button class="tab-btn" role="tab" data-tab="analytics"><span class="tab-key">6</span>Analytics</button>
+  <button class="tab-btn" role="tab" data-tab="status"   ><span class="tab-key">1</span>Status</button>
+  <button class="tab-btn" role="tab" data-tab="analytics"><span class="tab-key">2</span>Analytics</button>
+  <button class="tab-btn" role="tab" data-tab="cost"     ><span class="tab-key">3</span>Cost</button>
+  <button class="tab-btn" role="tab" data-tab="recovery" ><span class="tab-key">4</span>Recovery</button>
+  <button class="tab-btn" role="tab" data-tab="logs"     ><span class="tab-key">5</span>Logs &amp; Events</button>
+  <button class="tab-btn" role="tab" data-tab="config"   ><span class="tab-key">6</span>Config</button>
 </div>
 
 <!-- TAB: Status — single-glance verdict + per-agent compact table + 5-tile
@@ -1503,6 +1503,24 @@
         <div id="phase-readiness-host"></div>
         <div id="promote-candidates-host"></div>
       </details>
+    </div>
+  </div>
+</section>
+
+<!-- TAB: Analytics — distillation effectiveness view (#865). Card 1
+     answers "which colony is taking how much load off the LLM via
+     crystallized rules?"; Card 2 answers "which rules are degrading
+     and approaching auto-retire?" — thresholds mirror agentis-core
+     v1.10.0 compaction defaults (success_rate<0.5 AND uses>=20). -->
+<section data-tab="analytics">
+  <div class="grid">
+    <div class="card full">
+      <h2>Per-colony LLM vs rule-hits</h2>
+      <div id="analytics-per-colony"></div>
+    </div>
+    <div class="card full">
+      <h2>Rule fitness watch (top 30 by severity)</h2>
+      <div id="analytics-rules"></div>
     </div>
   </div>
 </section>
@@ -1611,23 +1629,6 @@
   </div>
 </section>
 
-<!-- TAB: Analytics — distillation effectiveness view (#865). Card 1
-     answers "which colony is taking how much load off the LLM via
-     crystallized rules?"; Card 2 answers "which rules are degrading
-     and approaching auto-retire?" — thresholds mirror agentis-core
-     v1.10.0 compaction defaults (success_rate<0.5 AND uses>=20). -->
-<section data-tab="analytics">
-  <div class="grid">
-    <div class="card full">
-      <h2>Per-colony LLM vs rule-hits</h2>
-      <div id="analytics-per-colony"></div>
-    </div>
-    <div class="card full">
-      <h2>Rule fitness watch (top 30 by severity)</h2>
-      <div id="analytics-rules"></div>
-    </div>
-  </div>
-</section>
 
 <!-- Detail Modal (per-agent dossier expand surface) -->
 <div class="modal-overlay" id="detail-modal">
@@ -1858,8 +1859,8 @@ document.addEventListener('keydown', (e) => {
   if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && !e.repeat) {
     const tag = (e.target && e.target.tagName) || '';
     if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
-    const TAB_KEY_ORDER = ['status', 'cost', 'recovery', 'logs', 'config'];
-    const idx = '12345'.indexOf(e.key);
+    const TAB_KEY_ORDER = ['status', 'analytics', 'cost', 'recovery', 'logs', 'config'];
+    const idx = '123456'.indexOf(e.key);
     if (idx >= 0 && idx < TAB_KEY_ORDER.length) {
       e.preventDefault();
       activateTab(TAB_KEY_ORDER[idx]);
@@ -1879,7 +1880,7 @@ document.addEventListener('keydown', (e) => {
 // post-upgrade — `learning` lands on the new Logs & Events tab where the
 // Event Timeline now lives.
 const ACTIVE_TAB_KEY = 'agentis:dashboard:active-tab';
-const TAB_NAMES = ['status', 'cost', 'recovery', 'logs', 'config'];
+const TAB_NAMES = ['status', 'analytics', 'cost', 'recovery', 'logs', 'config'];
 const LEGACY_TAB_MIGRATION = {
   'overview':   'status',
   'agents':     'status',
