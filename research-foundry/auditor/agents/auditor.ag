@@ -6,10 +6,18 @@
 //
 // Per-tick behaviour:
 //   1. Read four searcher reports for upstream_tick = tick_idx - 2.
-//   2. Build the SYNTHESIZE_PROMPT and call prompt() -> Verdict JSON.
-//   3. Persist verdict to memo (`auditor:<pid>:verdict:tick-N`) and
+//   2. Stage 1 (#845): rule-first lookup
+//      `crystallizer_lookup_with_confidence("audit_verdict",
+//      canonical_ctx, AUDITOR_RULE_CONFIDENCE)`. On hit, synthesize the
+//      verdict from the crystallized rule's action slot and skip the
+//      LLM call.
+//   3. Stage 2 (miss): build the SYNTHESIZE_PROMPT and call
+//      prompt() -> Verdict JSON, then `learn("audit_verdict",
+//      canonical_ctx, "<verdict>|<desc>", ...)` + guarded
+//      distill() / knowledge_validate() so repeat verdicts crystallize.
+//   4. Persist verdict to memo (`auditor:<pid>:verdict:tick-N`) and
 //      append a row to $DISCOVERY_LEDGER (audit-ledger.jsonl).
-//   4. Emit "auditor:verdict_ready".
+//   5. Emit "auditor:verdict_ready".
 //
 // Run as daemon: agentis daemon agents/auditor.ag --colony auditor
 // Requires: exec capability, messaging capability, DISCOVERY_LEDGER env.
@@ -502,6 +510,242 @@ fn _age_tick_and_check(colony: string, self_pid: string) -> int {
     return next_age;
 }
 
+// #845: rule-first / distillation scaffolding ported from the skeptic
+// (#819/#841/#843, Phase 1) adapted to the audit Verdict. The
+// distillable decision here is the discrete Verdict.audit_verdict enum
+// ("VERIFIED_NEW|VERIFIED_BY_LEAN|KNOWN_PRIOR|NEEDS_HUMAN"); reasoning,
+// evidence_*, and problem_summary are free-form LLM prose / data and are
+// NOT encoded into the rule action (that was the #841 mistake). The
+// crystallizer distils repeat verdicts over the same canonical context
+// into a rule the next tick's Stage-1 lookup consumes without prompt().
+//
+// CAUTION (#845): the auditor is the pipeline's TERMINAL verdict, so a
+// wrong cached KNOWN_PRIOR / NEEDS_HUMAN suppresses a real discovery.
+// Two guards make over-caching unlikely: (1) AUDITOR_RULE_CONFIDENCE
+// defaults to 0.9 (higher than the other colonies' 0.85); (2) the
+// canonical context is FINE -- it keys not just on the claim topic but
+// on the discrete upstream evidence signals that drive the verdict
+// (prior_advocate is_prior, theorist lean_verdict, theorist proof_kind).
+// Genuinely different claims (different evidence profiles) therefore
+// land in different rule classes and cannot share a cached verdict.
+
+// _auditor_canonical_ctx -- the rule key. The auditor has no upstream
+// stable canonical_ctx memo (only the noticer writes one, and the
+// auditor is downstream of novelty/searchers, not the noticer), so it
+// builds its own from the claim topic plus the three discrete evidence
+// signals that actually drive the audit_verdict. Shape:
+//   "topic=<topic> is_prior=<b> lean=<v> proof_kind=<k>"
+// Topic source: explorer:<pid>:topic:tick-<upstream> (already used by
+// _push_topic_feedback) -> replay:current_topic -> "na". is_prior /
+// lean / proof_kind are the upstream prior_advocate + theorist signals
+// the LLM path already reads. Keeping them in the key keeps the
+// granularity fine enough that distinct claims do not collapse into one
+// rule class (the #845 over-suppression guard).
+fn _auditor_canonical_ctx(
+    upstream_tick: int,
+    prior_advocate_is_prior: string,
+    theorist_lean_verdict: string,
+    theorist_proof_kind: string
+) -> string {
+    let topic_a = _pick_upstream_by_confidence("explorer", "topic", "topic", "", upstream_tick);
+    let topic_b = if len(topic_a) > 0 { topic_a; } else { recall_latest("replay:current_topic"); };
+    let topic = if len(topic_b) > 0 { topic_b; } else { "na"; };
+    let isp = if len(prior_advocate_is_prior) > 0 { prior_advocate_is_prior; } else { "na"; };
+    let lean = if len(theorist_lean_verdict) > 0 { theorist_lean_verdict; } else { "empty"; };
+    let pk = if len(theorist_proof_kind) > 0 { theorist_proof_kind; } else { "empty"; };
+    return "topic=" + topic + " is_prior=" + isp + " lean=" + lean + " proof_kind=" + pk;
+}
+
+// _canonical_stable_desc -- deterministic detail string derived from
+// canonical_ctx (port of the skeptic helper). Templates the four stable
+// signal fields (topic + is_prior + lean + proof_kind) so the rule
+// action is identical across repeat observations of the same context
+// class and the distilled KnowledgeEntry id stays stable. Total on
+// missing fields ("na"). ASCII-only, single line.
+fn _canonical_stable_desc(canonical_ctx: string) -> string {
+    if len(canonical_ctx) == 0 { return "auditor-class topic=na is_prior=na lean=na proof_kind=na"; };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,re\ns=sys.argv[1]\ndef g(k):\n m=re.search(r\"(?:^| )\"+k+r\"=(\\S+)\", s)\n return m.group(1) if m else \"na\"\nprint(\"auditor-class topic=\"+g(\"topic\")+\" is_prior=\"+g(\"is_prior\")+\" lean=\"+g(\"lean\")+\" proof_kind=\"+g(\"proof_kind\"))' " + shell_escape(canonical_ctx);
+    let out = try { exec sh cmd; } catch e { "auditor-class topic=na is_prior=na lean=na proof_kind=na"; };
+    if len(out) == 0 { return "auditor-class topic=na is_prior=na lean=na proof_kind=na"; };
+    return out;
+}
+
+// _parse_rule_action_verdict -- decoder for the pipe-delimited
+// `<audit_verdict>|<canonical_detail>` encoding the LLM path writes into
+// learn("audit_verdict", ...). The discrete decision is the enum string
+// (the audit_verdict) so it returns the portion before the first "|".
+// Total on missing pipe (returns the whole trimmed string).
+fn _parse_rule_action_verdict(action: string) -> string {
+    if len(action) == 0 { return ""; };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys; print(sys.argv[1].split(\"|\",1)[0].strip())' " + shell_escape(action);
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+// _publish_auditor_rule_hit -- mirror of _publish_auditor but takes
+// primitive fields because the .ag grammar disallows inline Verdict
+// struct literals ("expected Semicolon, got LBrace"). The downstream
+// still reads the same verdict JSON / memo keys / emit / ledger row /
+// claim-seed / formulator-feedback, so the encoding is identical to the
+// LLM path; only the source differs (rule vs prompt). evidence_* are
+// reconstructed empty (the rule action encodes only the discrete
+// audit_verdict, never the free-form evidence prose). The fitness +
+// replicate-gate block is copied verbatim from _publish_auditor so
+// rule-hit ticks contribute to replication fitness the same as
+// LLM-driven ticks.
+fn _publish_auditor_rule_hit(
+    final_write: bool,
+    do_replicate: bool,
+    terminal: bool,
+    audit_verdict: string,
+    reasoning: string,
+    confidence: float,
+    problem_summary: string,
+    self_pid: string,
+    _colony_name: string,
+    upstream_tick: int,
+    tick_idx: int,
+    tick_now_ms: int,
+    source_run: string,
+    source_tick: string,
+    source_pid: string,
+    arxiv_report: string,
+    oeis_report: string,
+    groupprops_report: string,
+    scholar_report: string,
+    prior_advocate_report: string,
+    my_tier: string
+) -> void {
+    let conf_str = to_string(confidence);
+    let verdict_json = "{\"audit_verdict\":\"" + audit_verdict
+                     + "\",\"reasoning\":\"" + reasoning
+                     + "\",\"confidence\":" + conf_str
+                     + ",\"problem_summary\":\"" + problem_summary + "\"}";
+    memo_write("auditor:" + self_pid + ":verdict:tick-" + to_string(upstream_tick), verdict_json);
+    memo_write("auditor:" + self_pid + ":verdict_label:tick-" + to_string(upstream_tick), audit_verdict);
+    memo_write("replay:current_auditor_pid", self_pid);
+
+    if final_write {
+        let ledger_path = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
+        if len(ledger_path) > 0 {
+            let terminal_str = if terminal { "true"; } else { "false"; };
+            let ledger_row = "{\"ts\":" + to_string(tick_now_ms)
+                           + ",\"source_run\":\"" + source_run
+                           + "\",\"source_tick\":" + source_tick
+                           + ",\"source_pid\":\"" + source_pid
+                           + "\",\"problem_summary\":\"" + problem_summary
+                           + "\",\"audit_verdict\":\"" + audit_verdict
+                           + "\",\"evidence\":{\"arxiv\":\"\",\"oeis\":\"\",\"groupprops\":\"\",\"scholar\":\"\"}"
+                           + ",\"reasoning\":\"" + reasoning
+                           + "\",\"confidence\":" + conf_str
+                           + ",\"terminal\":" + terminal_str + "}";
+            // colony-lint: safe-exec-concat
+            let append_cmd = "printf '%s\n' " + shell_escape(ledger_row) + " >> " + shell_escape(ledger_path);
+            let _ = try { exec sh append_cmd; } catch e { ""; };
+        };
+
+        let claim_seed_eligible = if audit_verdict == "VERIFIED_NEW" {
+            true;
+        } else {
+            audit_verdict == "VERIFIED_BY_LEAN";
+        };
+        if claim_seed_eligible {
+            let tick_s = to_string(tick_idx);
+            memo_write("claim:audit_reasoning:tick-" + tick_s, reasoning);
+            memo_write("claim:audit_evidence_arxiv:tick-" + tick_s, "");
+            memo_write("claim:audit_evidence_oeis:tick-" + tick_s, "");
+            memo_write("claim:audit_evidence_groupprops:tick-" + tick_s, "");
+            memo_write("claim:audit_evidence_scholar:tick-" + tick_s, "");
+            memo_write("claim:report_arxiv:tick-" + tick_s, arxiv_report);
+            memo_write("claim:report_oeis:tick-" + tick_s, oeis_report);
+            memo_write("claim:report_groupprops:tick-" + tick_s, groupprops_report);
+            memo_write("claim:report_scholar:tick-" + tick_s, scholar_report);
+            memo_write("claim:report_prior_advocate:tick-" + tick_s, prior_advocate_report);
+        };
+
+        let feedback_eligible = if audit_verdict == "KNOWN_PRIOR" {
+            true;
+        } else {
+            if audit_verdict == "VERIFIED_NEW" {
+                true;
+            } else {
+                audit_verdict == "VERIFIED_BY_LEAN";
+            };
+        };
+        if feedback_eligible {
+            let topic_fb_a = _pick_upstream_by_confidence("explorer", "topic", "topic", "", upstream_tick);
+            let topic_fb_b = if len(topic_fb_a) > 0 { topic_fb_a; } else { recall_latest("replay:current_topic"); };
+            let topic_fb = if len(topic_fb_b) > 0 { topic_fb_b; } else { problem_summary; };
+            _push_topic_feedback(audit_verdict, topic_fb, problem_summary, tick_idx);
+        };
+    };
+
+    emit("auditor:verdict_ready", verdict_json);
+    if my_tier == "propose" {
+        learn("audit", "tick " + to_string(tick_idx) + " " + audit_verdict, reasoning, "success", ["emitted", "claim-auditor"]);
+    };
+
+    if len(self_pid) > 0 {
+        let fit_pre = parse_int(recall_latest("auditor:" + self_pid + ":fitness"));
+        let fit_delta = if audit_verdict == "NEEDS_HUMAN" { 0; } else { 1; };
+        memo_write("auditor:" + self_pid + ":fitness", to_string(fit_pre + fit_delta));
+    };
+
+    if do_replicate {
+        let repr_thr = parse_int(recall_latest("auditor:reproductive_fitness_threshold"));
+        if repr_thr > 0 {
+            let my_fit_r = parse_int(recall_latest("auditor:" + self_pid + ":fitness"));
+            if my_fit_r > repr_thr {
+                let n_r = parse_int(recall_latest("colony-" + _colony_name + ":size"));
+                let max_repl_r = parse_int(recall_latest("colony-" + _colony_name + ":max_replicas"));
+                if n_r < max_repl_r {
+                    let pool_r = parse_int(recall_latest("colony-" + _colony_name + ":pool"));
+                    let base_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_base_cost"));
+                    let raw_k_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_k"));
+                    let k_r = if raw_k_r <= 0 { 3; } else { raw_k_r; };
+                    let cost_r = base_r + (base_r * n_r) / k_r;
+                    if pool_r >= cost_r {
+                        let variant_pick = pick_variant(n_r);
+                        memo_write("auditor:prompt_variant", variant_pick);
+                        let target_r = select_replication_target();
+                        if len(target_r) > 0 {
+                            let variant_wrapped = _publish_prompt_body_and_wrap_variant(self_pid, variant_pick);
+                            let replica_id = try { replicate(target_r, my_fit_r, variant_wrapped); } catch e { "__replicate_error__"; };
+                            if replica_id != "__replicate_error__" {
+                                if len(replica_id) > 0 {
+                                    memo_write("colony-" + _colony_name + ":pool", to_string(pool_r - cost_r));
+                                    memo_write("colony-" + _colony_name + ":size", to_string(n_r + 1));
+                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "success", ["replicated", "claim-auditor", _colony_name]);
+
+                                    let lin_str = recall_latest("auditor:" + self_pid + ":generation");
+                                    let lin = if len(lin_str) > 0 { parse_int(lin_str); } else { 0; };
+                                    let ledger_path_r = try { exec sh "printenv REPLICATION_LEDGER"; } catch e { ""; };
+                                    if len(ledger_path_r) > 0 {
+                                        let parent_specialty = recall_latest("auditor:" + self_pid + ":specialty");
+                                        let child_gen = lin + 1;
+                                        let row = "{\"ts\":" + to_string(tick_now_ms) + ",\"event\":\"replicate\",\"colony\":\"" + _colony_name + "\",\"side\":\"audit\",\"parent_pid\":\"" + self_pid + "\",\"child_replica_id\":\"" + replica_id + "\",\"specialty\":\"" + parent_specialty + "\",\"generation\":" + to_string(child_gen) + ",\"parent_fitness\":" + to_string(my_fit_r) + "}";
+                                        // colony-lint: safe-exec-concat
+                                        let append_r = "printf '%s\n' " + shell_escape(row) + " >> " + shell_escape(ledger_path_r);
+                                        let _lr = try { exec sh append_r; } catch e { ""; };
+                                        memo_write("auditor:" + replica_id + ":generation", to_string(child_gen));
+                                        if len(parent_specialty) > 0 {
+                                            memo_write("auditor:" + replica_id + ":specialty", parent_specialty);
+                                        };
+                                    };
+                                } else {
+                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "failure", ["replicate-nak", "claim-auditor", _colony_name]);
+                                };
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let _ = _jitter_sleep();
@@ -633,9 +877,119 @@ fn tick(reason: string) -> void {
             + "RECENT HITL REJECTS: " + hitl_summary_clamped + "\n";
 
     _dump_ctx_to_memo("auditor", _self_pid, tick_idx, ctx);
-    let verdict = prompt(_seed_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(_self_pid), ctx) -> Verdict;
 
     let my_tier = tier("auditor");
+
+    // ===== Stage 1: rule-first lookup (#845, mirrors skeptic #819) =====
+    // The canonical context is a FINE self-built key (topic plus the
+    // discrete prior_advocate is_prior + theorist lean_verdict +
+    // proof_kind signals) so genuinely different claims cannot share a
+    // cached verdict -- the #845 over-suppression guard for the terminal
+    // colony. On a crystallized audit_verdict rule hit, reconstruct a
+    // Verdict-equivalent from the rule's action slot and skip prompt().
+    // Rollback knob: AUDITOR_RULE_FIRST=0 short-circuits Stage 1 to the
+    // LLM path. AUDITOR_RULE_CONFIDENCE defaults to 0.9 (deliberately
+    // higher than the other colonies' 0.85 because the auditor is the
+    // pipeline's terminal verdict).
+    let canonical_ctx = _auditor_canonical_ctx(upstream_tick, prior_advocate_is_prior, theorist_lean_verdict, theorist_proof_kind);
+
+    let rule_first_flag = try { exec sh "printenv AUDITOR_RULE_FIRST"; } catch e { ""; };
+    let rule_first_enabled = rule_first_flag != "0";
+
+    let min_conf_str = try { exec sh "printenv AUDITOR_RULE_CONFIDENCE"; } catch e { ""; };
+    let min_conf = if len(min_conf_str) > 0 { parse_float(min_conf_str); } else { 0.9; };
+
+    if rule_first_enabled {
+        let rule = crystallizer_lookup_with_confidence("audit_verdict", canonical_ctx, min_conf);
+        if len(rule) > 0 {
+            // Rule hit -- synthesize an audit Verdict from the rule's
+            // action field without prompt(). The action slot carries
+            // "<audit_verdict>|<canonical_detail>" (see Stage 2 learn()
+            // row). #843: crystallizer_lookup_with_confidence returns
+            // map<string,string> (Value::Map). Read fields with get()
+            // (the map accessor); json_get() expects a JSON string and
+            // raises "expected string, got map" on a map.
+            let rule_id = to_string(get(rule, "rule_id"));
+            let rule_action = to_string(get(rule, "action"));
+            let rule_conf_str = to_string(get(rule, "confidence"));
+            let rule_conf = if len(rule_conf_str) > 0 { parse_float(rule_conf_str); } else { min_conf; };
+            let rule_verdict_label = _parse_rule_action_verdict(rule_action);
+            let rule_reasoning = "rule-first: matched crystallized audit_verdict rule at confidence " + to_string(rule_conf) + ". Context: " + canonical_ctx;
+            let rule_problem_summary = if len(problem_text) > 0 { problem_text; } else { novelty_claim; };
+            // colony-lint: learn-tags-ok
+            learn("audit_verdict", canonical_ctx, rule_action, "success", ["distilled", "rule-hit", "claim-auditor"]);
+            crystallizer_record_use(rule_id, true, 0.1);
+
+            // Tier branch -- mirrors the LLM path below. The rule-hit
+            // publisher takes primitive fields because the .ag grammar
+            // disallows inline Verdict struct literals. The `audit`
+            // observability rows stay byte-identical to the LLM path so
+            // auto-promote sees the same tag stream. The autonomous-tier
+            // decide-guard runs on the rule-hit path too (#761) so the
+            // signed second-opinion audit trail is identical.
+            if my_tier == "autonomous" {
+                let claim_for_guard = if len(novelty_claim) > 0 { novelty_claim; } else { problem_text; };
+                _decide_verdict_guard(rule_verdict_label, claim_for_guard, ctx);
+                memo_write("auditor:" + _self_pid + ":autonomous_decision", "true");
+                learn("audit", "tick " + to_string(tick_idx) + " " + rule_verdict_label, rule_reasoning, "partial", ["acted", "claim-auditor"]);
+                _publish_auditor_rule_hit(true, true, true, rule_verdict_label, rule_reasoning, rule_conf, rule_problem_summary, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, source_run, source_tick, source_pid, arxiv_report, oeis_report, groupprops_report, scholar_report, prior_advocate_report, my_tier);
+            } else {
+                if my_tier == "review-gated" {
+                    learn("audit", "tick " + to_string(tick_idx) + " " + rule_verdict_label, rule_reasoning, "partial", ["review-gated", "claim-auditor"]);
+                    _publish_auditor_rule_hit(true, false, false, rule_verdict_label, rule_reasoning, rule_conf, rule_problem_summary, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, source_run, source_tick, source_pid, arxiv_report, oeis_report, groupprops_report, scholar_report, prior_advocate_report, my_tier);
+                } else {
+                    if my_tier == "propose" {
+                        _publish_auditor_rule_hit(false, false, false, rule_verdict_label, rule_reasoning, rule_conf, rule_problem_summary, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, source_run, source_tick, source_pid, arxiv_report, oeis_report, groupprops_report, scholar_report, prior_advocate_report, my_tier);
+                    } else {
+                        print("[auditor] observing rule-hit (tier:", my_tier, ") verdict=", rule_verdict_label);
+                        learn("audit", "tick " + to_string(tick_idx) + " " + rule_verdict_label, rule_reasoning, "partial", ["observed", "claim-auditor"]);
+                    };
+                };
+            };
+
+            let now_s1 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+            if len(now_s1) > 0 { memo_write("auditor:last_check", now_s1); };
+            return;
+        };
+    };
+
+    // ===== Stage 2: LLM fallback (historical path) =====
+    let verdict = prompt(_seed_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(_self_pid), ctx) -> Verdict;
+
+    // #845: distillation row. The rule action MUST be stable per context
+    // so the distilled KnowledgeEntry id is identical across repeat ticks
+    // and empirical_validations can accumulate. The action is
+    // "<audit_verdict>|<canonical_detail>" -- the discrete verdict plus a
+    // deterministic detail derived from canonical_ctx (NOT the free-form
+    // reasoning / evidence_* prose, which would mint a fresh entry every
+    // tick -- the #841 mistake).
+    let canonical_action = verdict.audit_verdict + "|" + _canonical_stable_desc(canonical_ctx);
+    // The distilled entry's CONDITION is a coarse, literal prefix of
+    // canonical_ctx (the leading topic= field, before " is_prior=").
+    // CrystallizedRule matches_context is context.starts_with(condition),
+    // so the coarse condition still prefix-matches the FULL canonical_ctx
+    // the Stage-1 lookup passes, and repeat observations of the same
+    // context CLASS map to one entry. The Stage-1 lookup keys on the FULL
+    // fine ctx, so a coarse-condition rule only fires when the upstream
+    // evidence signals match the distilled class -- the granularity stays
+    // fine at lookup time even though the stored condition is coarse.
+    let _isprior_at = index_of(canonical_ctx, " is_prior=");
+    let coarse_ctx = if _isprior_at > 0 { substring(canonical_ctx, 0, _isprior_at); } else { canonical_ctx; };
+    // colony-lint: learn-tags-ok
+    learn("audit_verdict", canonical_ctx, canonical_action, "success", ["distilled", "claim-auditor"]);
+
+    // Complete the distillation loop: learn() above only writes the
+    // ExperienceStore; distill() promotes >=3 successful audit_verdict
+    // records into a KnowledgeEntry, and knowledge_validate() bumps
+    // empirical_validations toward crystallize_min_validations. distill()
+    // raises until there are >=3 successful records, so guard it; once the
+    // entry crystallizes the Stage-1 lookup starts hitting and this miss
+    // path stops running for that context.
+    let distilled_id = try { distill("audit_verdict", coarse_ctx, canonical_action, "heuristic"); } catch e { ""; };
+    if len(distilled_id) > 0 {
+        knowledge_validate(distilled_id);
+    };
+
     if my_tier == "autonomous" {
         // #761: audit-guard. Run decide() over the same four-label set
         // before the terminal ledger write; on disagreement emit
