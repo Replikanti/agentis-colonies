@@ -1474,6 +1474,7 @@
   <button class="tab-btn" role="tab" data-tab="recovery"><span class="tab-key">3</span>Recovery</button>
   <button class="tab-btn" role="tab" data-tab="logs"    ><span class="tab-key">4</span>Logs &amp; Events</button>
   <button class="tab-btn" role="tab" data-tab="config"  ><span class="tab-key">5</span>Config</button>
+  <button class="tab-btn" role="tab" data-tab="analytics"><span class="tab-key">6</span>Analytics</button>
 </div>
 
 <!-- TAB: Status — single-glance verdict + per-agent compact table + 5-tile
@@ -1606,6 +1607,24 @@
     <div class="card full">
       <h2>Cross-Colony Matrix</h2>
       <div id="config-matrix"></div>
+    </div>
+  </div>
+</section>
+
+<!-- TAB: Analytics — distillation effectiveness view (#865). Card 1
+     answers "which colony is taking how much load off the LLM via
+     crystallized rules?"; Card 2 answers "which rules are degrading
+     and approaching auto-retire?" — thresholds mirror agentis-core
+     v1.10.0 compaction defaults (success_rate<0.5 AND uses>=20). -->
+<section data-tab="analytics">
+  <div class="grid">
+    <div class="card full">
+      <h2>Per-colony LLM vs rule-hits</h2>
+      <div id="analytics-per-colony"></div>
+    </div>
+    <div class="card full">
+      <h2>Rule fitness watch (top 30 by severity)</h2>
+      <div id="analytics-rules"></div>
     </div>
   </div>
 </section>
@@ -5870,6 +5889,96 @@ function _ssePulse() {
 //     any renderer; openDetail() reads `agents` lazily so a re-bind to
 //     the same agent picks up the fresh row when the operator clicks
 //     a button. (Closing the modal mid-update would surprise the user.)
+// #865: Analytics tab renderers. Read from
+// `data.analytics_per_colony` (list of per-colony breakdown rows) and
+// `data.analytics_rules` (top 30 rules by degradation severity).
+function renderAnalyticsPerColony(data) {
+  const el = document.getElementById('analytics-per-colony');
+  if (!el) return;
+  const rows = (data && data.analytics_per_colony) || [];
+  if (rows.length === 0) {
+    el.innerHTML = '<div class="cost-stale">no daemons yet</div>';
+    return;
+  }
+  const statusPill = s => {
+    if (s === 'crystallizing') return '<span class="pill" style="background:#1f3a1f;color:#9dd49d">crystallizing</span>';
+    if (s === 'generative')    return '<span class="pill" style="background:#3a2a1f;color:#d4b89d">generative</span>';
+    return '<span class="pill" style="background:#1f2a3a;color:#9db4d4">active</span>';
+  };
+  let html = '<table style="width:100%;border-collapse:collapse;font-size:12px;">';
+  html += '<thead><tr style="text-align:left;border-bottom:1px solid var(--border);">';
+  html += '<th style="padding:6px 8px;">Colony</th>';
+  html += '<th style="padding:6px 8px;text-align:right;">Daemons</th>';
+  html += '<th style="padding:6px 8px;text-align:right;">LLM calls</th>';
+  html += '<th style="padding:6px 8px;text-align:right;">Rule-hits</th>';
+  html += '<th style="padding:6px 8px;text-align:right;">LLM-skip %</th>';
+  html += '<th style="padding:6px 8px;text-align:right;">Avg success</th>';
+  html += '<th style="padding:6px 8px;">Status</th>';
+  html += '</tr></thead><tbody>';
+  rows.forEach(r => {
+    const succ = (r.avg_success_rate === null || r.avg_success_rate === undefined)
+                   ? '<span class="muted">—</span>' : esc(r.avg_success_rate.toFixed(3));
+    html += '<tr style="border-bottom:1px solid var(--border);">';
+    html += '<td style="padding:6px 8px;">' + esc(r.colony) + '</td>';
+    html += '<td style="padding:6px 8px;text-align:right;">' + esc(r.daemons) + '</td>';
+    html += '<td style="padding:6px 8px;text-align:right;">' + esc(r.llm_calls) + '</td>';
+    html += '<td style="padding:6px 8px;text-align:right;">' + esc(r.rule_hits) + '</td>';
+    html += '<td style="padding:6px 8px;text-align:right;">' + esc(r.skip_pct.toFixed(1)) + '%</td>';
+    html += '<td style="padding:6px 8px;text-align:right;">' + succ + '</td>';
+    html += '<td style="padding:6px 8px;">' + statusPill(r.status) + '</td>';
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+function renderAnalyticsRules(data) {
+  const el = document.getElementById('analytics-rules');
+  if (!el) return;
+  const rules = (data && data.analytics_rules) || [];
+  if (rules.length === 0) {
+    el.innerHTML = '<div class="cost-stale">no crystallized rules yet</div>';
+    return;
+  }
+  const statusPill = s => {
+    if (s === 'retiring')  return '<span class="pill" style="background:#3a1f1f;color:#e89d9d">❌ retiring</span>';
+    if (s === 'degrading') return '<span class="pill" style="background:#3a3a1f;color:#e8e89d">⚠ degrading</span>';
+    return '<span class="pill" style="background:#1f3a1f;color:#9dd49d">✓ healthy</span>';
+  };
+  const fmtAgo = ms => {
+    if (!ms) return '<span class="muted">—</span>';
+    const secAgo = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+    if (secAgo < 60) return secAgo + 's ago';
+    if (secAgo < 3600) return Math.floor(secAgo / 60) + 'm ago';
+    if (secAgo < 86400) return Math.floor(secAgo / 3600) + 'h ago';
+    return Math.floor(secAgo / 86400) + 'd ago';
+  };
+  let html = '<table style="width:100%;border-collapse:collapse;font-size:12px;">';
+  html += '<thead><tr style="text-align:left;border-bottom:1px solid var(--border);">';
+  html += '<th style="padding:6px 8px;">Rule</th>';
+  html += '<th style="padding:6px 8px;">Action class</th>';
+  html += '<th style="padding:6px 8px;">Colony</th>';
+  html += '<th style="padding:6px 8px;text-align:right;">Uses</th>';
+  html += '<th style="padding:6px 8px;text-align:right;">Succ rate</th>';
+  html += '<th style="padding:6px 8px;">Last used</th>';
+  html += '<th style="padding:6px 8px;">Status</th>';
+  html += '</tr></thead><tbody>';
+  rules.forEach(r => {
+    html += '<tr style="border-bottom:1px solid var(--border);">';
+    html += '<td style="padding:6px 8px;font-family:monospace;font-size:11px;">' + esc(r.rule_id_short) + '…</td>';
+    html += '<td style="padding:6px 8px;">' + esc(r.action_type) + '</td>';
+    html += '<td style="padding:6px 8px;">' + esc(r.colony || '—') + '</td>';
+    html += '<td style="padding:6px 8px;text-align:right;">' + esc(r.use_count) + '</td>';
+    html += '<td style="padding:6px 8px;text-align:right;">' + esc(r.success_rate.toFixed(3)) + '</td>';
+    html += '<td style="padding:6px 8px;">' + fmtAgo(r.last_used_ms) + '</td>';
+    html += '<td style="padding:6px 8px;">' + statusPill(r.status) + '</td>';
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+  html += '<div class="muted" style="font-size:11px;margin-top:8px;">';
+  html += 'Auto-retire when <code>success_rate &lt; 0.5</code> AND <code>use_count &gt;= 20</code> (agentis-core v1.10.0 compaction defaults).';
+  html += '</div>';
+  el.innerHTML = html;
+}
 function rerender(snap) {
   if (!snap || typeof snap !== 'object') return;
   extractRefs(snap);
@@ -5894,6 +6003,9 @@ function rerender(snap) {
   renderSidecarStatus(snap);
   renderBulkActions(snap);
   renderConfigEditor(snap);
+  // #865: Analytics tab.
+  renderAnalyticsPerColony(snap);
+  renderAnalyticsRules(snap);
   renderEventTimeline(snap);
   renderExperienceTrend(snap);
   // #359: new tab-driven renderers.

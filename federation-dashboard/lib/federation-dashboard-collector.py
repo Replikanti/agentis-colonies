@@ -2127,9 +2127,325 @@ cost.update({
 
 watchdog_kills = collect_watchdog_kills(lifecycle_path, id_to_role, max_rows=10)
 
+# #865: Analytics tab — per-colony LLM/rule-hit breakdown + degrading rules
+# watch. Reads `.agentis/experience/*.jsonl` for the rule-hit tag, the
+# `_crystallizer_index/*.jsonl` topic index for rule_id↔action_type pairs,
+# and the `_crystallizer_telemetry/<rule_id>.jsonl` sidecars for per-rule
+# use_count + success_count. Compaction thresholds (status pills) mirror
+# agentis-core v1.10.0 `evolution.crystallize_compact_min_success_rate`
+# (default 0.5) and `min_uses` (default 20) so an operator sees a rule
+# flip to `❌ retiring` exactly when the next compaction pass would
+# remove it. The `⚠ degrading` band (success<0.6 AND uses>10) is the
+# operator-actionable early warning before auto-retire.
+
+_GENERATIVE_COLONIES = frozenset({
+    'arxiv-search', 'oeis-search', 'groupprops-search', 'scholar-search',
+    'theorist', 'editor', 'reviewer', 'submitter', 'introducer',
+    'computer', 'explorer', 'formulator',
+})
+
+
+def _count_telemetry(tel_path):
+    """Return (use_count, success_count) for one rule's telemetry sidecar.
+
+    Each row is `{"fitness_delta":..,"rule_id":..,"success":bool,"ts_ms":..}`
+    (agentis-core v1.9.0+ append-only). Malformed rows skipped silently
+    (mirror existing collector tolerance).
+    """
+    uses = 0
+    successes = 0
+    last_ms = 0
+    try:
+        with open(tel_path) as f:
+            for raw in f:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    row = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                uses += 1
+                if row.get('success') is True:
+                    successes += 1
+                ts = row.get('ts_ms')
+                if isinstance(ts, (int, float)) and ts > last_ms:
+                    last_ms = int(ts)
+    except OSError:
+        return (0, 0, 0)
+    return (uses, successes, last_ms)
+
+
+def _infer_colony_from_action_type(action_type, known_colonies):
+    """Map e.g. `noticer_surprise` → `noticer` (colony name).
+
+    action_type uses underscores; colony names may use hyphens
+    (`arxiv-search` → action `arxiv_search_output`). We try both the
+    underscore-prefix and the hyphen-prefix match.
+    """
+    for sep_idx in range(len(action_type), 0, -1):
+        prefix = action_type[:sep_idx]
+        # try direct match
+        if prefix in known_colonies:
+            return prefix
+        # try hyphenated variant (`arxiv_search` → `arxiv-search`)
+        hyphenated = prefix.replace('_', '-')
+        if hyphenated in known_colonies:
+            return hyphenated
+    return ''
+
+
+def collect_per_colony_analytics(experience_dir, knowledge_dir, spend_dir,
+                                   id_to_colony):
+    """Build per-colony breakdown rows for the Analytics tab Card 1.
+
+    Returns list of dicts (one per colony with at least one daemon):
+      {colony, daemons, llm_calls, rule_hits, skip_pct,
+       avg_success_rate, status}
+    Sorted by colony name.
+    """
+    # Daemons per colony.
+    daemons_per_colony = {}
+    for aid, c in id_to_colony.items():
+        if c:
+            daemons_per_colony[c] = daemons_per_colony.get(c, 0) + 1
+
+    # LLM call count = spend log row count per colony. Cheap re-walk
+    # rather than threading a count through collect_spend_log's return
+    # shape.
+    llm_per_colony = {c: 0 for c in daemons_per_colony}
+    if os.path.isdir(spend_dir):
+        try:
+            spend_files = sorted(os.listdir(spend_dir))
+        except OSError:
+            spend_files = []
+        for fn in spend_files:
+            if not fn.endswith('.jsonl'):
+                continue
+            aid = fn[:-6]
+            colony = id_to_colony.get(aid, '')
+            if not colony:
+                continue
+            try:
+                with open(os.path.join(spend_dir, fn)) as f:
+                    for raw in f:
+                        if raw.strip():
+                            llm_per_colony[colony] = llm_per_colony.get(colony, 0) + 1
+            except OSError:
+                continue
+
+    # Rule-hits per colony from experience JSONL `rule-hit` (legacy) or
+    # `rule_hit` tag. Lightweight substring match — accurate enough since
+    # the tag appears in the tags-array JSON serialization.
+    hits_per_colony = {c: 0 for c in daemons_per_colony}
+    if os.path.isdir(experience_dir):
+        try:
+            exp_files = sorted(os.listdir(experience_dir))
+        except OSError:
+            exp_files = []
+        for fn in exp_files:
+            if not fn.endswith('.jsonl'):
+                continue
+            aid = fn[:-6]
+            colony = id_to_colony.get(aid, '')
+            if not colony:
+                continue
+            try:
+                with open(os.path.join(experience_dir, fn)) as f:
+                    for line in f:
+                        if 'rule-hit' in line or 'rule_hit' in line:
+                            hits_per_colony[colony] = hits_per_colony.get(colony, 0) + 1
+            except OSError:
+                continue
+
+    # Per-colony aggregate success rate across that colony's crystallized
+    # action_types (`success_count / use_count` summed over rules).
+    success_per_colony = {}  # colony -> [successes, uses]
+    index_dir = os.path.join(knowledge_dir, '_crystallizer_index')
+    tel_dir = os.path.join(knowledge_dir, '_crystallizer_telemetry')
+    known_colonies = set(daemons_per_colony.keys())
+    if os.path.isdir(index_dir):
+        try:
+            idx_files = sorted(os.listdir(index_dir))
+        except OSError:
+            idx_files = []
+        for fn in idx_files:
+            if not fn.endswith('.jsonl'):
+                continue
+            action_type = fn[:-6]
+            colony = _infer_colony_from_action_type(action_type, known_colonies)
+            if not colony:
+                continue
+            # Dedup by rule_id: an index file accumulates one row per
+            # persistence event, so a rule re-persisted (e.g. compaction
+            # rewrote it with merged telemetry) shows up multiple times.
+            # Count telemetry once per unique rule_id.
+            seen_rule_ids = set()
+            try:
+                with open(os.path.join(index_dir, fn)) as f:
+                    for raw in f:
+                        raw = raw.strip()
+                        if not raw:
+                            continue
+                        try:
+                            row = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        rule_id = row.get('rule_id', '')
+                        if not rule_id or rule_id in seen_rule_ids:
+                            continue
+                        seen_rule_ids.add(rule_id)
+                        uses, succ, _ = _count_telemetry(
+                            os.path.join(tel_dir, rule_id + '.jsonl'))
+                        if uses > 0:
+                            acc = success_per_colony.setdefault(colony, [0, 0])
+                            acc[0] += succ
+                            acc[1] += uses
+            except OSError:
+                continue
+
+    # Assemble rows.
+    rows = []
+    for colony in sorted(daemons_per_colony.keys()):
+        llm = llm_per_colony.get(colony, 0)
+        hits = hits_per_colony.get(colony, 0)
+        total = llm + hits
+        skip_pct = round(hits * 100.0 / total, 1) if total > 0 else 0.0
+        acc = success_per_colony.get(colony)
+        avg_succ = round(acc[0] / acc[1], 3) if acc and acc[1] > 0 else None
+        if colony in success_per_colony:
+            status = 'crystallizing'
+        elif colony in _GENERATIVE_COLONIES:
+            status = 'generative'
+        else:
+            status = 'active'
+        rows.append({
+            'colony': colony,
+            'daemons': daemons_per_colony.get(colony, 0),
+            'llm_calls': llm,
+            'rule_hits': hits,
+            'skip_pct': skip_pct,
+            'avg_success_rate': avg_succ,
+            'status': status,
+        })
+    return rows
+
+
+def collect_crystallizer_rule_analysis(knowledge_dir, id_to_colony,
+                                         max_rows=30,
+                                         compact_min_success_rate=0.5,
+                                         compact_min_uses=20):
+    """Build per-rule analysis for the Analytics tab Card 2.
+
+    Reads `_crystallizer_index/<action_type>.jsonl` for the rule_id list,
+    `_crystallizer_telemetry/<rule_id>.jsonl` for use_count + success_count.
+    Status thresholds mirror agentis-core v1.10.0 compaction defaults:
+      - ❌ `retiring` — `success_rate < compact_min_success_rate AND use_count >= compact_min_uses`
+      - ⚠ `degrading` — `success_rate < 0.6 AND use_count > 10` (early-warning before auto-retire)
+      - ✓ `healthy` — otherwise
+
+    Returns the worst `max_rows` rules sorted by severity then by use_count
+    descending (so operators see actionable rules first).
+    """
+    rows = []
+    index_dir = os.path.join(knowledge_dir, '_crystallizer_index')
+    tel_dir = os.path.join(knowledge_dir, '_crystallizer_telemetry')
+    if not os.path.isdir(index_dir):
+        return rows
+    known_colonies = set(c for c in id_to_colony.values() if c)
+    try:
+        idx_files = sorted(os.listdir(index_dir))
+    except OSError:
+        idx_files = []
+    for fn in idx_files:
+        if not fn.endswith('.jsonl'):
+            continue
+        action_type = fn[:-6]
+        colony = _infer_colony_from_action_type(action_type, known_colonies)
+        # Dedup by rule_id (see note in collect_per_colony_analytics).
+        seen_rule_ids = set()
+        try:
+            with open(os.path.join(index_dir, fn)) as f:
+                for raw in f:
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        idxrow = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    rule_id = idxrow.get('rule_id', '')
+                    if not rule_id or rule_id in seen_rule_ids:
+                        continue
+                    seen_rule_ids.add(rule_id)
+                    uses, succ, last_used_ms = _count_telemetry(
+                        os.path.join(tel_dir, rule_id + '.jsonl'))
+                    if uses == 0:
+                        # Brand new rule — no telemetry yet; skip
+                        # (avoids cluttering the table with cold-start rules).
+                        continue
+                    rate = succ / uses
+                    if rate < compact_min_success_rate and uses >= compact_min_uses:
+                        status = 'retiring'
+                        severity = 0
+                    elif rate < 0.6 and uses > 10:
+                        status = 'degrading'
+                        severity = 1
+                    else:
+                        status = 'healthy'
+                        severity = 2
+                    rows.append({
+                        'rule_id': rule_id,
+                        'rule_id_short': rule_id[:8],
+                        'action_type': action_type,
+                        'colony': colony,
+                        'use_count': uses,
+                        'success_count': succ,
+                        'success_rate': round(rate, 3),
+                        'last_used_ms': last_used_ms,
+                        'status': status,
+                        '_severity': severity,
+                    })
+        except OSError:
+            continue
+    # Sort by severity ascending (retiring first) then use_count descending.
+    rows.sort(key=lambda r: (r['_severity'], -r['use_count']))
+    # Drop the sort key from output.
+    for r in rows:
+        r.pop('_severity', None)
+    return rows[:max_rows]
+
+
+# Build the Analytics tab data block.
+_agentis_dir = os.path.join(fed_dir, '.agentis')
+_experience_dir = os.path.join(_agentis_dir, 'experience')
+_knowledge_dir = os.path.join(_agentis_dir, 'knowledge')
+_spend_dir = os.path.join(_agentis_dir, 'spend')
+# Merge `id_to_colony` (from daemons JSON) with the agents `result` list
+# as a fallback. When the dashboard runs outside the federation's PID
+# namespace (containerized federations like research-foundry), the
+# `agentis daemon list --json` argv is empty so `id_to_colony` is empty —
+# but the agents `result` carries `agent_id` + `colony` resolved via
+# `agent_map_json` (argv[2]). Merging preserves both paths.
+_id_to_colony_for_analytics = dict(id_to_colony)
+for _a in result:
+    _aid = _a.get('agent_id')
+    _col = _a.get('colony')
+    if _aid and _col and _aid not in _id_to_colony_for_analytics:
+        _id_to_colony_for_analytics[_aid] = _col
+analytics_per_colony = collect_per_colony_analytics(
+    _experience_dir, _knowledge_dir, _spend_dir, _id_to_colony_for_analytics)
+analytics_rules = collect_crystallizer_rule_analysis(
+    _knowledge_dir, _id_to_colony_for_analytics, max_rows=30)
+
 output = {
     'agents': result,
     'experience_counts': colony_exp,
+    # #865: Analytics tab — per-colony LLM/rule-hit breakdown +
+    # degrading rules watch (uses agentis-core v1.10.0 compaction
+    # thresholds as the auto-retire boundary).
+    'analytics_per_colony': analytics_per_colony,
+    'analytics_rules': analytics_rules,
     'events': events,
     'confidence_changes': conf_changes,
     'decisions': decisions,
