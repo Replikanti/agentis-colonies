@@ -357,6 +357,193 @@ fn _age_tick_and_check(colony: string, self_pid: string) -> int {
     return next_age;
 }
 
+// #845 (uniform rollout): rule-first / distillation scaffolding ported
+// from the skeptic / auditor / verifier verdict colonies, but adapted to
+// the reviewer's GENERATIVE output. The reviewer's primary output is the
+// full multi-field Verdict (verdict + hallucinated_claims +
+// supported_claims_count + total_claims_count + reasoning) -- every field
+// is consumed downstream (the submitter gate reads the approval AND the
+// hallucinated_payload), so the rule action faithfully encodes the WHOLE
+// Verdict (NOT the lossy discrete-enum encoding the verdict colonies use).
+// The canonical context is a FINE sha256 over the actual input
+// (claim_id + final_tex + repro_output), so identical input -> identical
+// output recurs and crystallizes (self-distill), while diverse input
+// mints a fresh fine-keyed entry every tick that never aggregates to
+// crystallize_min_validations (self-stay-LLM). The crystallizer's
+// confidence + validation gating decides at runtime; nothing here
+// pre-judges whether the reviewer is "cacheable".
+
+// _reviewer_canonical_ctx -- the rule key. Fine-grained: a sha256 over the
+// claim id + the editor's final .tex + the computer's reproducibility
+// stdout (the three inputs that fully determine the verdict). Identical
+// inputs hash to an identical key so repeat ticks over the same artefacts
+// share one rule class; any change to the .tex / stdout / claim mints a
+// fresh key and cannot reuse a cached verdict. Shape:
+//   "claim=<claim_id> in=<sha256>"
+// Total on hash failure (falls back to a coarse claim-only key).
+fn _reviewer_canonical_ctx(claim_id_eff: string, final_tex: string, repro_output: string) -> string {
+    let joined = "claim=" + claim_id_eff + "||REVIEWER_SEP||tex=" + final_tex + "||REVIEWER_SEP||stdout=" + repro_output;
+    // colony-lint: safe-exec-concat
+    let sha_cmd = "python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.argv[1].encode(\"utf-8\")).hexdigest())' " + shell_escape(joined);
+    let h = try { exec sh sha_cmd; } catch e { ""; };
+    if len(h) != 64 { return "claim=" + claim_id_eff + " in=na"; };
+    return "claim=" + claim_id_eff + " in=" + h;
+}
+
+// _encode_verdict_action -- faithful serializer for the full Verdict into
+// a single opaque rule-action token. base64(JSON) over all five fields so
+// arbitrary reasoning / hallucinated_claims prose (newlines, quotes, the
+// "|" the verdict colonies use as a delimiter) round-trips losslessly and
+// stays a single shell-safe token. The crystallizer stores this verbatim
+// as the rule action; _decode_verdict_field reads it back on a hit.
+fn _encode_verdict_action(
+    verdict_label: string,
+    hallucinated_claims: string,
+    supported_count: int,
+    total_count: int,
+    reasoning: string
+) -> string {
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,json,base64\nd={\"verdict\":sys.argv[1],\"hallucinated_claims\":sys.argv[2],\"supported_claims_count\":int(sys.argv[3]),\"total_claims_count\":int(sys.argv[4]),\"reasoning\":sys.argv[5]}\nsys.stdout.write(base64.b64encode(json.dumps(d,separators=(\",\",\":\")).encode(\"utf-8\")).decode(\"ascii\"))' "
+        + shell_escape(verdict_label) + " "
+        + shell_escape(hallucinated_claims) + " "
+        + shell_escape(to_string(supported_count)) + " "
+        + shell_escape(to_string(total_count)) + " "
+        + shell_escape(reasoning);
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+// _decode_verdict_field -- read one field back out of the base64(JSON)
+// rule action _encode_verdict_action wrote. `field` is one of
+// verdict / hallucinated_claims / supported_claims_count /
+// total_claims_count / reasoning. Total on any decode failure (empty
+// string), so a corrupt action degrades to an empty-field verdict rather
+// than crashing the rule-hit path.
+fn _decode_verdict_field(action: string, field: string) -> string {
+    if len(action) == 0 { return ""; };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,json,base64\ntry:\n d=json.loads(base64.b64decode(sys.argv[1].encode(\"ascii\")).decode(\"utf-8\"))\nexcept Exception:\n d={}\nif not isinstance(d,dict): d={}\nv=d.get(sys.argv[2],\"\")\nsys.stdout.write(str(v))' "
+        + shell_escape(action) + " " + shell_escape(field);
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+// _publish_reviewer_rule_hit -- mirror of _publish_reviewer but takes
+// primitive fields because the .ag grammar disallows inline Verdict struct
+// literals ("expected Semicolon, got LBrace"). Because the reviewer
+// encodes the FULL Verdict faithfully (#845 reframe), every memo key /
+// emit payload / submitter gate write is byte-identical to the LLM path --
+// the supported/total counts, hallucinated_claims, and reasoning are all
+// reconstructed from the rule action, not pinned empty. Only the source
+// differs (rule vs prompt). The fitness + replicate-gate block is copied
+// verbatim from _publish_reviewer so rule-hit ticks contribute to
+// replication fitness the same as LLM-driven ticks.
+fn _publish_reviewer_rule_hit(
+    final_write: bool,
+    do_replicate: bool,
+    verdict_label: string,
+    hallucinated_claims: string,
+    supported_count: int,
+    total_count: int,
+    reasoning: string,
+    claim_id_eff: string,
+    self_pid: string,
+    _colony_name: string,
+    upstream_tick: int,
+    tick_idx: int,
+    tick_now_ms: int
+) -> void {
+    let _ = final_write;
+    let _ = tick_idx;
+    let supported_str = to_string(supported_count);
+    let total_str = to_string(total_count);
+    let verdict_json = "{\"verdict\":\"" + verdict_label
+                     + "\",\"hallucinated_claims\":\"" + hallucinated_claims
+                     + "\",\"supported_claims_count\":" + supported_str
+                     + ",\"total_claims_count\":" + total_str
+                     + ",\"reasoning\":\"" + reasoning + "\"}";
+    memo_write("reviewer:" + self_pid + ":report:tick-" + to_string(upstream_tick), verdict_json);
+    memo_write("reviewer:" + self_pid + ":verdict:tick-" + to_string(upstream_tick), verdict_label);
+    memo_write("replay:current_reviewer_pid", self_pid);
+
+    if verdict_label == "approved" {
+        memo_write("reviewer:" + claim_id_eff + ":approved", "true");
+    } else {
+        let payload = "{\"verdict\":\"" + verdict_label
+                    + "\",\"hallucinated_claims\":\"" + hallucinated_claims
+                    + "\",\"reasoning\":\"" + reasoning + "\"}";
+        memo_write("reviewer:" + claim_id_eff + ":hallucinated_payload", payload);
+    };
+
+    emit("preprint-foundry:review_done", verdict_json);
+
+    if len(self_pid) > 0 {
+        let fit_pre = parse_int(recall_latest("reviewer:" + self_pid + ":fitness"));
+        let fit_delta = if verdict_label == "approved" { 1; } else { 0; };
+        memo_write("reviewer:" + self_pid + ":fitness", to_string(fit_pre + fit_delta));
+    };
+
+    if do_replicate {
+        let repr_thr = parse_int(recall_latest("reviewer:reproductive_fitness_threshold"));
+        if repr_thr > 0 {
+            let my_fit_r = parse_int(recall_latest("reviewer:" + self_pid + ":fitness"));
+            if my_fit_r > repr_thr {
+                let n_r = parse_int(recall_latest("colony-" + _colony_name + ":size"));
+                let max_repl_r = parse_int(recall_latest("colony-" + _colony_name + ":max_replicas"));
+                if n_r < max_repl_r {
+                    let pool_r = parse_int(recall_latest("colony-" + _colony_name + ":pool"));
+                    let base_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_base_cost"));
+                    let raw_k_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_k"));
+                    let k_r = if raw_k_r <= 0 { 3; } else { raw_k_r; };
+                    let cost_r = base_r + (base_r * n_r) / k_r;
+                    if pool_r >= cost_r {
+                        let variant_pick = pick_variant(n_r);
+                        memo_write("reviewer:prompt_variant", variant_pick);
+                        let target_r = select_replication_target();
+                        if len(target_r) > 0 {
+                            let variant_wrapped = _publish_prompt_body_and_wrap_variant(self_pid, variant_pick);
+                            let replica_id = try { replicate(target_r, my_fit_r, variant_wrapped); } catch e { "__replicate_error__"; };
+                            if replica_id != "__replicate_error__" {
+                                if len(replica_id) > 0 {
+                                    memo_write("colony-" + _colony_name + ":pool", to_string(pool_r - cost_r));
+                                    memo_write("colony-" + _colony_name + ":size", to_string(n_r + 1));
+                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "success", ["replicated", "preprint-foundry", _colony_name]);
+
+                                    let lin_str = recall_latest("reviewer:" + self_pid + ":generation");
+                                    let lin = if len(lin_str) > 0 { parse_int(lin_str); } else { 0; };
+                                    let ledger_path_r = try { exec sh "printenv REPLICATION_LEDGER"; } catch e { ""; };
+                                    if len(ledger_path_r) > 0 {
+                                        let parent_specialty = recall_latest("reviewer:" + self_pid + ":specialty");
+                                        let child_gen = lin + 1;
+                                        // colony-lint: safe-exec-concat
+                                        let row_cmd = "python3 -c 'import sys,json\nts=int(sys.argv[1])\nrow={\"ts\":ts,\"event\":\"replicate\",\"colony\":sys.argv[2],\"side\":\"preprint\",\"parent_pid\":sys.argv[3],\"child_replica_id\":sys.argv[4],\"specialty\":sys.argv[5],\"generation\":int(sys.argv[6]),\"parent_fitness\":int(sys.argv[7])}\nwith open(sys.argv[8],\"a\") as f: f.write(json.dumps(row,separators=(\",\",\":\"))+\"\\n\")\nprint(\"ok\")' "
+                                            + shell_escape(to_string(tick_now_ms)) + " "
+                                            + shell_escape(_colony_name) + " "
+                                            + shell_escape(self_pid) + " "
+                                            + shell_escape(replica_id) + " "
+                                            + shell_escape(parent_specialty) + " "
+                                            + shell_escape(to_string(child_gen)) + " "
+                                            + shell_escape(to_string(my_fit_r)) + " "
+                                            + shell_escape(ledger_path_r);
+                                        let _lr = try { exec sh row_cmd; } catch e { ""; };
+                                        memo_write("reviewer:" + replica_id + ":generation", to_string(child_gen));
+                                        if len(parent_specialty) > 0 {
+                                            memo_write("reviewer:" + replica_id + ":specialty", parent_specialty);
+                                        };
+                                    };
+                                } else {
+                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "failure", ["replicate-nak", "preprint-foundry", _colony_name]);
+                                };
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let _ = _jitter_sleep();
@@ -429,9 +616,114 @@ fn tick(reason: string) -> void {
             + "REPRODUCIBILITY STDOUT:\n" + repro_output + "\n";
 
     _dump_ctx_to_memo("reviewer", _self_pid, tick_idx, ctx);
-    let verdict = prompt(_seed_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(_self_pid), ctx) -> Verdict;
 
     let my_tier = tier("reviewer");
+
+    // ===== Stage 1: rule-first lookup (#845, uniform rollout) =====
+    // The canonical context is a FINE sha256 over the actual input
+    // (claim_id + final_tex + repro_output). On a crystallized
+    // reviewer_output rule hit, reconstruct the FULL Verdict faithfully
+    // from the rule's base64(JSON) action slot and skip prompt(). Rollback
+    // knob: REVIEWER_RULE_FIRST=0 short-circuits Stage 1 to the LLM path.
+    // REVIEWER_RULE_CONFIDENCE defaults to 0.85.
+    let canonical_ctx = _reviewer_canonical_ctx(claim_id_eff, final_tex, repro_output);
+
+    let rule_first_flag = try { exec sh "printenv REVIEWER_RULE_FIRST"; } catch e { ""; };
+    let rule_first_enabled = rule_first_flag != "0";
+
+    let min_conf_str = try { exec sh "printenv REVIEWER_RULE_CONFIDENCE"; } catch e { ""; };
+    let min_conf = if len(min_conf_str) > 0 { parse_float(min_conf_str); } else { 0.85; };
+
+    if rule_first_enabled {
+        let rule = crystallizer_lookup_with_confidence("reviewer_output", canonical_ctx, min_conf);
+        if len(rule) > 0 {
+            // Rule hit -- reconstruct the FULL Verdict from the rule's
+            // action field without prompt(). The action slot carries a
+            // base64(JSON) faithful encoding of all five Verdict fields
+            // (see Stage 2 learn() row). #843:
+            // crystallizer_lookup_with_confidence returns map<string,string>
+            // (Value::Map). Read fields with get() (the map accessor);
+            // json_get() expects a JSON string and raises "expected string,
+            // got map" on a map.
+            let rule_id = to_string(get(rule, "rule_id"));
+            let rule_action = to_string(get(rule, "action"));
+            let rule_conf_str = to_string(get(rule, "confidence"));
+            let rule_conf = if len(rule_conf_str) > 0 { parse_float(rule_conf_str); } else { min_conf; };
+            let r_verdict = _decode_verdict_field(rule_action, "verdict");
+            let r_halluc = _decode_verdict_field(rule_action, "hallucinated_claims");
+            let r_supported = parse_int(_decode_verdict_field(rule_action, "supported_claims_count"));
+            let r_total = parse_int(_decode_verdict_field(rule_action, "total_claims_count"));
+            let r_reasoning = _decode_verdict_field(rule_action, "reasoning");
+            // colony-lint: learn-tags-ok
+            learn("reviewer_output", canonical_ctx, rule_action, "success", ["distilled", "rule-hit", "preprint-foundry"]);
+            crystallizer_record_use(rule_id, true, 0.1);
+
+            // Tier branch -- mirrors the LLM path below. The rule-hit
+            // publisher takes primitive fields because the .ag grammar
+            // disallows inline Verdict struct literals. The `review`
+            // observability rows stay byte-identical to the LLM path so
+            // auto-promote sees the same tag stream.
+            if my_tier == "autonomous" {
+                memo_write("reviewer:" + _self_pid + ":review_gated", "true");
+                learn("review", "tick " + to_string(tick_idx), r_reasoning, "partial", ["acted", "preprint-foundry"]);
+                _publish_reviewer_rule_hit(true, true, r_verdict, r_halluc, r_supported, r_total, r_reasoning, claim_id_eff, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms);
+            } else {
+                if my_tier == "review-gated" {
+                    memo_write("reviewer:" + _self_pid + ":review_gated", "true");
+                    learn("review", "tick " + to_string(tick_idx), r_reasoning, "partial", ["review-gated", "preprint-foundry"]);
+                    _publish_reviewer_rule_hit(true, false, r_verdict, r_halluc, r_supported, r_total, r_reasoning, claim_id_eff, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms);
+                } else {
+                    if my_tier == "propose" {
+                        if r_verdict == "approved" {
+                            learn("review", "tick " + to_string(tick_idx) + " approved " + claim_id_eff, r_reasoning, "success", ["emitted", "preprint-foundry"]);
+                        } else {
+                            learn("review", "tick " + to_string(tick_idx) + " rejected " + claim_id_eff, r_reasoning, "failure", ["emitted", "preprint-foundry"]);
+                        };
+                        _publish_reviewer_rule_hit(false, false, r_verdict, r_halluc, r_supported, r_total, r_reasoning, claim_id_eff, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms);
+                    } else {
+                        print("[reviewer] observing rule-hit (tier:", my_tier, ") verdict=", r_verdict);
+                        learn("review", "tick " + to_string(tick_idx), r_reasoning, "partial", ["observed", "preprint-foundry"]);
+                    };
+                };
+            };
+
+            let now_s1 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+            if len(now_s1) > 0 { memo_write("reviewer:last_check", now_s1); };
+            return;
+        };
+    };
+
+    // ===== Stage 2: LLM fallback (historical path) =====
+    let verdict = prompt(_seed_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(_self_pid), ctx) -> Verdict;
+
+    // #845: distillation row. The reviewer's output is GENERATIVE, so the
+    // rule action faithfully encodes the WHOLE Verdict (base64(JSON) over
+    // all five fields), keyed on the FINE canonical_ctx (sha256 of the
+    // actual input). Identical input -> identical output recurs and the
+    // distilled KnowledgeEntry's empirical_validations accumulate toward
+    // crystallize_min_validations; diverse input mints a fresh fine-keyed
+    // entry that never aggregates, so a diverse reviewer simply stays
+    // LLM-driven (the self-deciding intent -- NO lossy canonicalization of
+    // a creative payload, which was the #841 mistake).
+    let canonical_action = _encode_verdict_action(verdict.verdict, verdict.hallucinated_claims, verdict.supported_claims_count, verdict.total_claims_count, verdict.reasoning);
+    // colony-lint: learn-tags-ok
+    learn("reviewer_output", canonical_ctx, canonical_action, "success", ["distilled", "preprint-foundry"]);
+
+    // Complete the distillation loop: learn() above only writes the
+    // ExperienceStore; distill() promotes >=3 successful reviewer_output
+    // records over the SAME fine canonical_ctx into a KnowledgeEntry, and
+    // knowledge_validate() bumps empirical_validations toward
+    // crystallize_min_validations. distill() raises until there are >=3
+    // successful records, so guard it; once the entry crystallizes the
+    // Stage-1 lookup starts hitting and this miss path stops running for
+    // that exact input. The distill CONDITION is the SAME fine
+    // canonical_ctx (not a coarsened prefix) -- the reviewer must only
+    // replay a cached verdict for byte-identical input.
+    let distilled_id = try { distill("reviewer_output", canonical_ctx, canonical_action, "heuristic"); } catch e { ""; };
+    if len(distilled_id) > 0 {
+        knowledge_validate(distilled_id);
+    };
+
     if my_tier == "autonomous" {
         memo_write("reviewer:" + _self_pid + ":review_gated", "true");
         learn("review", "tick " + to_string(tick_idx), verdict.reasoning, "partial", ["acted", "preprint-foundry"]);
