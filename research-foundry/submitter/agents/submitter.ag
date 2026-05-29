@@ -205,14 +205,18 @@ fn _pick_upstream_by_confidence(role: string, ranking_key: string, output_key: s
     return val;
 }
 
-// _submitter_draft_phase -- Phase A. Build arxiv-metadata.json + tarball
-// + cover letter, write DRAFTED row to ledger, persist memo. Used by
-// propose / review-gated / autonomous (Class 1 terminal, #622 ADR-0001).
-// When mark_awaiting=true (review-gated), also stamps an
-// `awaiting_approval` memo flag for the dashboard. Phase 9 PR-C (#663)
-// added the M2-Malthusian replicate gate; fitness is +1 per successful
-// DRAFTED row.
-fn _submitter_draft_phase(
+// _submitter_stage_and_publish -- the post-prompt staging + publish body,
+// lifted out of _submitter_draft_phase so the Stage-1 rule-hit path
+// (#845) and the Stage-2 LLM path run it byte-identically. Takes the
+// eight Metadata fields as primitives (the .ag grammar disallows inline
+// Metadata struct literals, confirmed by the skeptic / verifier ports:
+// "expected Semicolon, got LBrace"); both callers pass the same fields,
+// so the staged metadata JSON / tarball / ledger row / memo keys / emit
+// payloads / fitness + replicate gate are identical regardless of source
+// (rule vs prompt). emit() takes the metadata JSON string on this path
+// rather than the Metadata struct (same observable downstream contract,
+// since consumers read the memo keys).
+fn _submitter_stage_and_publish(
     mark_awaiting: bool,
     do_replicate: bool,
     self_pid: string,
@@ -224,53 +228,22 @@ fn _submitter_draft_phase(
     claim_dir: string,
     compile_ok: string,
     source_audit_run: string,
-    final_tex: string,
-    compile_log: string,
-    title_seed: string,
-    msc_seed: string,
-    cat_seed: string,
     repro_script: string,
     repro_output: string,
     repro_lang: string,
     editor_pid: string,
     computer_pid: string,
     introducer_pid: string,
-    my_tier: string
+    my_tier: string,
+    m_title: string,
+    m_abstract_clean: string,
+    m_msc_codes_csv: string,
+    m_arxiv_category: string,
+    m_cross_list_csv: string,
+    m_cover_letter: string,
+    m_ai_disclosure: string,
+    m_rationale: string
 ) -> void {
-    // #740: AdaptiveEngine recommendation for submission-decision
-    // metadata classification. Lands at the metadata-staging step --
-    // NOT a substitute for the #596 HITL gate (terminal arXiv send
-    // still requires reviewer-approved memo + autonomous tier; see
-    // tier dispatcher below). The engine ranks past metadata-quality
-    // outcomes (arxiv_category / msc_codes accuracy) and folds the
-    // recommendation into the prompt context. Empty KB on first tick
-    // returns Map() whose to_string is harmless. Pattern mirrors
-    // dev-apprenticeship/code-review/agents/style_reviewer.ag:209.
-    let rec = recommend("submission_decision", ["accuracy"]);
-
-    // #804: per-component byte clamps defend the per-tick string heap.
-    // Mirrors computer.ag:318-320 (max_result_bytes=4096) and explorer.ag:
-    // 166-170 (EXPLORER_PROMPT_MAX_BYTES). Worst-case ctx ~40 KB, two
-    // orders of magnitude under the 16 MB heap limit. The clamp preserves
-    // the head of each component (the LLM-relevant prefix).
-    let max_bytes = 4096;
-    let final_tex_clamped = if len(final_tex) > max_bytes { substring(final_tex, 0, max_bytes); } else { final_tex; };
-    let compile_log_clamped = if len(compile_log) > max_bytes { substring(compile_log, 0, max_bytes); } else { compile_log; };
-    let repro_script_clamped = if len(repro_script) > max_bytes { substring(repro_script, 0, max_bytes); } else { repro_script; };
-    let repro_output_clamped = if len(repro_output) > max_bytes { substring(repro_output, 0, max_bytes); } else { repro_output; };
-    let rec_str = to_string(rec);
-    let rec_str_clamped = if len(rec_str) > max_bytes { substring(rec_str, 0, max_bytes); } else { rec_str; };
-
-    let ctx = "FINAL TEX:\n" + final_tex_clamped + "\n"
-            + "COMPILE LOG:\n" + compile_log_clamped + "\n"
-            + "TITLE SEED: " + title_seed + "\n"
-            + "MSC SEED: " + msc_seed + "\n"
-            + "ARXIV CATEGORY SEED: " + cat_seed + "\n"
-            + "REPRO SCRIPT (" + repro_lang + "):\n" + repro_script_clamped + "\n"
-            + "REPRO OUTPUT:\n" + repro_output_clamped + "\n"
-            + "LEARNED METADATA-QUALITY PREFERENCES: " + rec_str_clamped + "\n";
-    let meta = prompt(_metadata_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(self_pid), ctx) -> Metadata;
-
     // Load authors.toml from $PREPRINT_AUTHOR_CONFIG (path threaded
     // through by run-preprint.sh). The file is parsed by a Python
     // helper rather than the .ag DSL (no TOML in DSL).
@@ -281,15 +254,15 @@ fn _submitter_draft_phase(
     let authors_line = try { exec sh authors_cmd; } catch e { "AUTHOR-PLACEHOLDER"; };
 
     // Build arxiv-metadata.json into the claim dir.
-    let cover_full = meta.cover_letter + "\n\n--- AI assistance disclosure ---\n" + meta.ai_disclosure + "\n";
+    let cover_full = m_cover_letter + "\n\n--- AI assistance disclosure ---\n" + m_ai_disclosure + "\n";
     // colony-lint: safe-exec-concat
     let meta_cmd = "python3 -c 'import sys,json\nm={\"title\":sys.argv[1],\"abstract\":sys.argv[2],\"authors\":sys.argv[3],\"primary_category\":sys.argv[4],\"cross_list\":[s for s in sys.argv[5].split(\",\") if s],\"msc_codes\":[s for s in sys.argv[6].split(\",\") if s],\"cover_letter\":sys.argv[7]}\nwith open(sys.argv[8],\"w\") as f: json.dump(m,f,indent=2)\nprint(\"ok\")' "
-        + shell_escape(meta.title) + " "
-        + shell_escape(meta.abstract_clean) + " "
+        + shell_escape(m_title) + " "
+        + shell_escape(m_abstract_clean) + " "
         + shell_escape(authors_line) + " "
-        + shell_escape(meta.arxiv_category) + " "
-        + shell_escape(meta.cross_list_csv) + " "
-        + shell_escape(meta.msc_codes_csv) + " "
+        + shell_escape(m_arxiv_category) + " "
+        + shell_escape(m_cross_list_csv) + " "
+        + shell_escape(m_msc_codes_csv) + " "
         + shell_escape(cover_full) + " "
         + shell_escape(claim_dir + "/arxiv-metadata.json");
     let _meta_write = try { exec sh meta_cmd; } catch e { ""; };
@@ -332,10 +305,10 @@ fn _submitter_draft_phase(
             + shell_escape(source_audit_run) + " "
             + shell_escape(claim_id_eff) + " "
             + shell_escape(claim_dir) + " "
-            + shell_escape(meta.title) + " "
-            + shell_escape(meta.abstract_clean) + " "
-            + shell_escape(meta.arxiv_category) + " "
-            + shell_escape(meta.msc_codes_csv) + " "
+            + shell_escape(m_title) + " "
+            + shell_escape(m_abstract_clean) + " "
+            + shell_escape(m_arxiv_category) + " "
+            + shell_escape(m_msc_codes_csv) + " "
             + shell_escape(compile_ok) + " "
             + shell_escape(repro_runs_ok_eff) + " "
             + shell_escape(editor_pid) + " "
@@ -346,11 +319,11 @@ fn _submitter_draft_phase(
         let _ap = try { exec sh row_cmd; } catch e { ""; };
     };
 
-    memo_write("submitter:" + self_pid + ":metadata:tick-" + to_string(upstream_tick), meta.title);
+    memo_write("submitter:" + self_pid + ":metadata:tick-" + to_string(upstream_tick), m_title);
     memo_write("submitter:" + self_pid + ":status:tick-" + to_string(upstream_tick), "DRAFTED");
     memo_write("submitter:" + claim_id_eff + ":drafted", to_string(tick_now_ms));
-    memo_write("submitter:" + claim_id_eff + ":title", meta.title);
-    memo_write("submitter:" + claim_id_eff + ":arxiv_category", meta.arxiv_category);
+    memo_write("submitter:" + claim_id_eff + ":title", m_title);
+    memo_write("submitter:" + claim_id_eff + ":arxiv_category", m_arxiv_category);
     memo_write("submitter:" + claim_id_eff + ":claim_dir", claim_dir);
     memo_write("replay:current_submitter_pid", self_pid);
 
@@ -358,18 +331,24 @@ fn _submitter_draft_phase(
         memo_write("submitter:" + claim_id_eff + ":awaiting_approval", "true");
     };
 
-    emit("submitter:metadata_ready", meta);
-    emit("submitter:status_ready", meta);
+    // emit() takes the faithful metadata JSON string (rather than a
+    // Metadata struct) so both the rule-hit and LLM callers share this
+    // body without an inline struct literal. Downstream consumers read
+    // the `submitter:*` memo keys, so the bus payload shape change is
+    // observably inert.
+    let meta_json = _encode_metadata_action(m_title, m_abstract_clean, m_msc_codes_csv, m_arxiv_category, m_cross_list_csv, m_cover_letter, m_ai_disclosure, m_rationale);
+    emit("submitter:metadata_ready", meta_json);
+    emit("submitter:status_ready", meta_json);
 
     if my_tier == "propose" {
-        learn("submit", "tick " + to_string(tick_idx) + " DRAFTED " + claim_id_eff, meta.rationale, "success", ["emitted", "preprint-foundry", "hitl-gated"]);
+        learn("submit", "tick " + to_string(tick_idx) + " DRAFTED " + claim_id_eff, m_rationale, "success", ["emitted", "preprint-foundry", "hitl-gated"]);
     };
     // #740: feed the AdaptiveEngine the metadata-quality outcome
     // (arxiv_category as the choice signal) on every tier path the
     // draft phase touches. The terminal-send decision still belongs
     // to the #596 HITL gate downstream. Tier semantics are already
     // captured by the surrounding `submit:*` learn() rows.
-    learn("submission_decision", meta.arxiv_category, "tick " + to_string(tick_idx) + " DRAFTED " + claim_id_eff, "success", ["emitted", "preprint-foundry", "hitl-gated"]);
+    learn("submission_decision", m_arxiv_category, "tick " + to_string(tick_idx) + " DRAFTED " + claim_id_eff, "success", ["emitted", "preprint-foundry", "hitl-gated"]);
 
     // Phase 9 PR-C (#663): per-pid fitness tracking. +1 per DRAFTED
     // row (PR-D folds in the eventual HITL accept signal).
@@ -442,6 +421,152 @@ fn _submitter_draft_phase(
             };
         };
     };
+}
+
+// _submitter_draft_phase -- Phase A. Build arxiv-metadata.json + tarball
+// + cover letter, write DRAFTED row to ledger, persist memo. Used by
+// propose / review-gated / autonomous (Class 1 terminal, #622 ADR-0001).
+// When mark_awaiting=true (review-gated), also stamps an
+// `awaiting_approval` memo flag for the dashboard. Phase 9 PR-C (#663)
+// added the M2-Malthusian replicate gate; fitness is +1 per successful
+// DRAFTED row.
+//
+// #845 Stage 2 (LLM-miss path): this is the historical LLM body. It now
+// runs the prompt(), faithfully encodes the FULL Metadata output into the
+// rule action via _encode_metadata_action, writes the distillation
+// learn("submitter_output", ...) row + guarded distill() /
+// knowledge_validate() so identical inputs that recur crystallize, then
+// delegates the staging + publish to the shared body so the LLM path and
+// the Stage-1 rule-hit path are byte-identical downstream.
+fn _submitter_draft_phase(
+    mark_awaiting: bool,
+    do_replicate: bool,
+    self_pid: string,
+    _colony_name: string,
+    upstream_tick: int,
+    tick_idx: int,
+    tick_now_ms: int,
+    claim_id_eff: string,
+    claim_dir: string,
+    compile_ok: string,
+    source_audit_run: string,
+    final_tex: string,
+    compile_log: string,
+    title_seed: string,
+    msc_seed: string,
+    cat_seed: string,
+    repro_script: string,
+    repro_output: string,
+    repro_lang: string,
+    editor_pid: string,
+    computer_pid: string,
+    introducer_pid: string,
+    my_tier: string,
+    canonical_ctx: string
+) -> void {
+    // #740: AdaptiveEngine recommendation for submission-decision
+    // metadata classification. Lands at the metadata-staging step --
+    // NOT a substitute for the #596 HITL gate (terminal arXiv send
+    // still requires reviewer-approved memo + autonomous tier; see
+    // tier dispatcher below). The engine ranks past metadata-quality
+    // outcomes (arxiv_category / msc_codes accuracy) and folds the
+    // recommendation into the prompt context. Empty KB on first tick
+    // returns Map() whose to_string is harmless. Pattern mirrors
+    // dev-apprenticeship/code-review/agents/style_reviewer.ag:209.
+    let rec = recommend("submission_decision", ["accuracy"]);
+
+    // #804: per-component byte clamps defend the per-tick string heap.
+    // Mirrors computer.ag:318-320 (max_result_bytes=4096) and explorer.ag:
+    // 166-170 (EXPLORER_PROMPT_MAX_BYTES). Worst-case ctx ~40 KB, two
+    // orders of magnitude under the 16 MB heap limit. The clamp preserves
+    // the head of each component (the LLM-relevant prefix).
+    let max_bytes = 4096;
+    let final_tex_clamped = if len(final_tex) > max_bytes { substring(final_tex, 0, max_bytes); } else { final_tex; };
+    let compile_log_clamped = if len(compile_log) > max_bytes { substring(compile_log, 0, max_bytes); } else { compile_log; };
+    let repro_script_clamped = if len(repro_script) > max_bytes { substring(repro_script, 0, max_bytes); } else { repro_script; };
+    let repro_output_clamped = if len(repro_output) > max_bytes { substring(repro_output, 0, max_bytes); } else { repro_output; };
+    let rec_str = to_string(rec);
+    let rec_str_clamped = if len(rec_str) > max_bytes { substring(rec_str, 0, max_bytes); } else { rec_str; };
+
+    let ctx = "FINAL TEX:\n" + final_tex_clamped + "\n"
+            + "COMPILE LOG:\n" + compile_log_clamped + "\n"
+            + "TITLE SEED: " + title_seed + "\n"
+            + "MSC SEED: " + msc_seed + "\n"
+            + "ARXIV CATEGORY SEED: " + cat_seed + "\n"
+            + "REPRO SCRIPT (" + repro_lang + "):\n" + repro_script_clamped + "\n"
+            + "REPRO OUTPUT:\n" + repro_output_clamped + "\n"
+            + "LEARNED METADATA-QUALITY PREFERENCES: " + rec_str_clamped + "\n";
+    let meta = prompt(_metadata_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(self_pid), ctx) -> Metadata;
+
+    // #845: faithful distillation row. The submitter is generative, so the
+    // rule action carries the WHOLE Metadata output (all eight fields) as a
+    // byte-faithful JSON object -- NOT a lossy bucket. The action is stable
+    // per canonical_ctx ONLY when the LLM produces identical metadata for
+    // the same input: identical input -> identical action -> one
+    // KnowledgeEntry that accumulates empirical_validations and
+    // crystallizes; diverse metadata -> a fresh action every tick that
+    // never aggregates and stays LLM-driven (the correct self-no-op for a
+    // generative colony). distill() raises until there are >= 3 successful
+    // records, so guard it; once the entry crystallizes the Stage-1 lookup
+    // starts hitting and this miss path stops running for that context.
+    let canonical_action = _encode_metadata_action(meta.title, meta.abstract_clean, meta.msc_codes_csv, meta.arxiv_category, meta.cross_list_csv, meta.cover_letter, meta.ai_disclosure, meta.rationale);
+    // The distill CONDITION is the FULL fine canonical_ctx (claim= + in_sha=
+    // + cat_seed=), not a coarse prefix: the submitter is generative, so
+    // collapsing distinct inputs into one rule class would be the very
+    // creativity-caching mistake #845 warns against. Keeping the condition
+    // fine means a `submitter_output` rule only fires when the next tick's
+    // Stage-1 lookup passes a byte-identical input context. The
+    // crystallizer's matches_context (context.starts_with(condition)) still
+    // matches the same fine ctx on replay.
+    // colony-lint: learn-tags-ok
+    learn("submitter_output", canonical_ctx, canonical_action, "success", ["distilled", "preprint-foundry"]);
+    let distilled_id = try { distill("submitter_output", canonical_ctx, canonical_action, "heuristic"); } catch e { ""; };
+    if len(distilled_id) > 0 {
+        knowledge_validate(distilled_id);
+    };
+
+    _submitter_stage_and_publish(mark_awaiting, do_replicate, self_pid, _colony_name, upstream_tick, tick_idx, tick_now_ms, claim_id_eff, claim_dir, compile_ok, source_audit_run, repro_script, repro_output, repro_lang, editor_pid, computer_pid, introducer_pid, my_tier, meta.title, meta.abstract_clean, meta.msc_codes_csv, meta.arxiv_category, meta.cross_list_csv, meta.cover_letter, meta.ai_disclosure, meta.rationale);
+}
+
+// _submitter_draft_phase_rule_hit -- #845 Stage 1. Decode the faithful
+// Metadata action JSON crystallized into the `submitter_output` rule and
+// stage + publish WITHOUT calling prompt(). Decodes via _decode_action_field
+// (json_get on the action JSON STRING -- distinct from the
+// crystallizer_lookup map, which tick() reads with get() per #843), then
+// delegates to the same shared body the LLM path uses. The
+// learn("submitter_output", ...) reinforcement row + crystallizer_record_use
+// are recorded by tick() before this call so the rule's confidence keeps
+// climbing on replay.
+fn _submitter_draft_phase_rule_hit(
+    mark_awaiting: bool,
+    do_replicate: bool,
+    self_pid: string,
+    _colony_name: string,
+    upstream_tick: int,
+    tick_idx: int,
+    tick_now_ms: int,
+    claim_id_eff: string,
+    claim_dir: string,
+    compile_ok: string,
+    source_audit_run: string,
+    repro_script: string,
+    repro_output: string,
+    repro_lang: string,
+    editor_pid: string,
+    computer_pid: string,
+    introducer_pid: string,
+    my_tier: string,
+    rule_action: string
+) -> void {
+    let m_title = _decode_action_field(rule_action, "title");
+    let m_abstract_clean = _decode_action_field(rule_action, "abstract_clean");
+    let m_msc_codes_csv = _decode_action_field(rule_action, "msc_codes_csv");
+    let m_arxiv_category = _decode_action_field(rule_action, "arxiv_category");
+    let m_cross_list_csv = _decode_action_field(rule_action, "cross_list_csv");
+    let m_cover_letter = _decode_action_field(rule_action, "cover_letter");
+    let m_ai_disclosure = _decode_action_field(rule_action, "ai_disclosure");
+    let m_rationale = _decode_action_field(rule_action, "rationale");
+    _submitter_stage_and_publish(mark_awaiting, do_replicate, self_pid, _colony_name, upstream_tick, tick_idx, tick_now_ms, claim_id_eff, claim_dir, compile_ok, source_audit_run, repro_script, repro_output, repro_lang, editor_pid, computer_pid, introducer_pid, my_tier, m_title, m_abstract_clean, m_msc_codes_csv, m_arxiv_category, m_cross_list_csv, m_cover_letter, m_ai_disclosure, m_rationale);
 }
 
 // _classify_hitl_reason -- classify a free-form HITL rejection reason
@@ -636,6 +761,107 @@ fn _age_tick_and_check(colony: string, self_pid: string) -> int {
     return next_age;
 }
 
+// #845: rule-first / distillation scaffolding ported from the skeptic
+// (#846) / verifier (#850). The submitter is the FIRST generative colony
+// in the uniform rollout: unlike the verdict colonies, its primary
+// output is the full Metadata struct (title / abstract / MSC /
+// categories / cover letter / disclosure), NOT a discrete enum. The
+// faithful-encoding rule of #845 says a struct-returning colony serialises
+// its WHOLE primary output into the rule action (a byte-faithful Metadata
+// JSON), keyed on a FINE-grained context derived from its input. Then an
+// identical input that recurs >= crystallize_min_validations crystallizes
+// (self-distill), while diverse metadata mints a fresh action every tick
+// and never aggregates (self-stay-LLM). The crystallizer's confidence +
+// validation gating -- NOT a human pre-classification -- decides at runtime
+// whether a rule actually forms. Self-no-op for diverse output is correct
+// and intended.
+
+// _submitter_canonical_ctx -- the rule key. The submitter has no upstream
+// stable canonical_ctx memo (only the noticer writes one, and the
+// submitter is downstream of editor/introducer/computer, not the noticer),
+// so it builds its own FINE-grained key from the claim id plus a sha256
+// digest of the exact upstream content that feeds the prompt (final_tex +
+// the three introducer seeds + the computer repro). Two distinct claims
+// hash differently, so they never collapse into one rule class -- the
+// faithful-encoding granularity guard. Shape:
+//   "claim=<id> in_sha=<first16> cat_seed=<cat>"
+// The leading claim= field is the coarse, stable distill condition; in_sha
+// narrows within the class and is the tiebreaker the Stage-1 full-ctx
+// lookup prefix-matches. The sha256 uses the same `python3 hashlib`
+// exec idiom as _publish_prompt_body_and_wrap_variant above; total on a
+// hash failure (collapses to "na"). ASCII-only, single line.
+fn _submitter_canonical_ctx(
+    claim_id_eff: string,
+    final_tex: string,
+    title_seed: string,
+    msc_seed: string,
+    cat_seed: string,
+    repro_script: string,
+    repro_output: string
+) -> string {
+    let claim = if len(claim_id_eff) > 0 { claim_id_eff; } else { "na"; };
+    // Field separator is a multi-char literal sentinel (unlikely to occur
+    // verbatim in TeX / seed / repro content) so distinct field boundaries
+    // hash distinctly; the blob is only sha256'd, never parsed back.
+    let sep = "|@SUBMITTER_FIELD@|";
+    let blob = final_tex + sep + title_seed + sep + msc_seed + sep
+             + cat_seed + sep + repro_script + sep + repro_output;
+    // colony-lint: safe-exec-concat
+    let sha_cmd = "python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.argv[1].encode(\"utf-8\")).hexdigest())' " + shell_escape(blob);
+    let h = try { exec sh sha_cmd; } catch e { ""; };
+    let in_sha = if len(h) >= 16 { substring(h, 0, 16); } else { "na"; };
+    let cat = if len(cat_seed) > 0 { cat_seed; } else { "na"; };
+    return "claim=" + claim + " in_sha=" + in_sha + " cat_seed=" + cat;
+}
+
+// _encode_metadata_action -- faithful serializer for the FULL Metadata
+// output into the rule action slot. Unlike the verdict colonies (which
+// pipe-encode only a discrete field), the submitter is generative, so the
+// rule action carries ALL eight Metadata fields as a JSON object the
+// Stage-1 path can losslessly reconstruct. Routed through python3
+// json.dumps so quotes / newlines / control characters in the LLM-emitted
+// title / abstract / cover letter cannot corrupt the action string. Total
+// on a serialize failure (returns "{}").
+fn _encode_metadata_action(
+    title: string,
+    abstract_clean: string,
+    msc_codes_csv: string,
+    arxiv_category: string,
+    cross_list_csv: string,
+    cover_letter: string,
+    ai_disclosure: string,
+    rationale: string
+) -> string {
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,json\nm={\"title\":sys.argv[1],\"abstract_clean\":sys.argv[2],\"msc_codes_csv\":sys.argv[3],\"arxiv_category\":sys.argv[4],\"cross_list_csv\":sys.argv[5],\"cover_letter\":sys.argv[6],\"ai_disclosure\":sys.argv[7],\"rationale\":sys.argv[8]}\nsys.stdout.write(json.dumps(m,separators=(\",\",\":\")))' "
+        + shell_escape(title) + " "
+        + shell_escape(abstract_clean) + " "
+        + shell_escape(msc_codes_csv) + " "
+        + shell_escape(arxiv_category) + " "
+        + shell_escape(cross_list_csv) + " "
+        + shell_escape(cover_letter) + " "
+        + shell_escape(ai_disclosure) + " "
+        + shell_escape(rationale);
+    let out = try { exec sh cmd; } catch e { "{}"; };
+    if len(out) == 0 { return "{}"; };
+    return out;
+}
+
+// _decode_action_field -- read one field out of the faithful Metadata
+// action JSON (the Stage-1 rule-hit decoder). The action is a JSON STRING
+// (written by _encode_metadata_action), so json_get() is correct here.
+// CRITICAL (#843): json_get() is for JSON strings; the
+// crystallizer_lookup_with_confidence RESULT is a Value::Map and must be
+// read with get() instead (see the Stage-1 block in tick()). Total on a
+// missing key (json_get returns Void -> to_string -> "void"); the caller
+// guards empties before staging.
+fn _decode_action_field(action: string, key: string) -> string {
+    if len(action) == 0 { return ""; };
+    let v = to_string(json_get(action, key));
+    if v == "void" { return ""; };
+    return v;
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let _ = _jitter_sleep();
@@ -745,6 +971,54 @@ fn tick(reason: string) -> void {
     let human_status = recall_latest("submitter:" + claim_id_eff + ":human_status");
     let already_submitted = recall_latest("submitter:" + claim_id_eff + ":submitted");
 
+    // ===== Stage 1: rule-first lookup (#845, mirrors skeptic / verifier) =====
+    // The submitter is the FIRST generative colony in the uniform rollout:
+    // the rule action is the WHOLE crystallized Metadata output, keyed on a
+    // FINE canonical context (claim id + sha256 of the exact upstream
+    // content + category seed). On a `submitter_output` rule hit, the draft
+    // step (the agent's only prompt() call) is served from the rule WITHOUT
+    // an LLM round-trip and reconstructed byte-faithfully; the downstream
+    // staging / ledger / memo / emit / fitness / replicate body, the HITL
+    // send phase, and the Phase-B human-decision logic all run identically.
+    // The lookup is computed unconditionally here so the same canonical_ctx
+    // threads into the Stage-2 distill row; it only changes behaviour on the
+    // not-yet-drafted path (a DRAFTED claim is in HITL Phase B, where no
+    // metadata is produced). Rollback knob: SUBMITTER_RULE_FIRST=0
+    // short-circuits Stage 1 to the LLM path. Default confidence 0.85,
+    // overridable via SUBMITTER_RULE_CONFIDENCE.
+    let canonical_ctx = _submitter_canonical_ctx(claim_id_eff, final_tex, title_seed, msc_seed, cat_seed, repro_script, repro_output);
+
+    let rule_first_flag = try { exec sh "printenv SUBMITTER_RULE_FIRST"; } catch e { ""; };
+    let rule_first_enabled = rule_first_flag != "0";
+
+    let min_conf_str = try { exec sh "printenv SUBMITTER_RULE_CONFIDENCE"; } catch e { ""; };
+    let min_conf = if len(min_conf_str) > 0 { parse_float(min_conf_str); } else { 0.85; };
+
+    let rule_action = if rule_first_enabled {
+        let rule = crystallizer_lookup_with_confidence("submitter_output", canonical_ctx, min_conf);
+        if len(rule) > 0 {
+            // #843: crystallizer_lookup_with_confidence returns
+            // map<string,string> (Value::Map). Read fields with get() (the
+            // map accessor); json_get() expects a JSON string and raises
+            // "expected string, got map" on a map. The action SLOT (read
+            // with get()) is itself a JSON string -- _decode_action_field
+            // uses json_get() on THAT string downstream, which is correct.
+            let rule_id = to_string(get(rule, "rule_id"));
+            let rule_conf_str = to_string(get(rule, "confidence"));
+            let rule_conf = if len(rule_conf_str) > 0 { parse_float(rule_conf_str); } else { min_conf; };
+            let action = to_string(get(rule, "action"));
+            // colony-lint: learn-tags-ok
+            learn("submitter_output", canonical_ctx, action, "success", ["distilled", "rule-hit", "preprint-foundry"]);
+            crystallizer_record_use(rule_id, true, 0.1);
+            print("[submitter] rule-first hit conf=", rule_conf, " claim=", claim_id_eff);
+            action;
+        } else {
+            "";
+        };
+    } else {
+        "";
+    };
+
     if my_tier == "autonomous" {
         // Terminal agent (Class 1, #622 ADR-0001): autonomous skips the
         // HITL gate. Phase A drafts if not already drafted; then we
@@ -763,7 +1037,11 @@ fn tick(reason: string) -> void {
         memo_write("submitter:" + claim_id_eff + ":awaiting_approval", "false");
         learn("submit", "tick " + to_string(tick_idx), "tier=autonomous", "partial", ["acted", "preprint-foundry"]);
         if len(already_drafted) == 0 {
-            _submitter_draft_phase(false, true, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir, compile_ok, source_audit_run, final_tex, compile_log, title_seed, msc_seed, cat_seed, repro_script, repro_output, repro_lang, editor_pid, computer_pid, introducer_pid, my_tier);
+            if len(rule_action) > 0 {
+                _submitter_draft_phase_rule_hit(false, true, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir, compile_ok, source_audit_run, repro_script, repro_output, repro_lang, editor_pid, computer_pid, introducer_pid, my_tier, rule_action);
+            } else {
+                _submitter_draft_phase(false, true, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir, compile_ok, source_audit_run, final_tex, compile_log, title_seed, msc_seed, cat_seed, repro_script, repro_output, repro_lang, editor_pid, computer_pid, introducer_pid, my_tier, canonical_ctx);
+            };
         };
         if len(already_submitted) > 0 {
             print("[submitter] already submitted claim=", claim_id_eff);
@@ -778,7 +1056,11 @@ fn tick(reason: string) -> void {
             // submission is waiting on a human decision (#622).
             learn("submit", "tick " + to_string(tick_idx), "tier=review-gated", "partial", ["review-gated", "preprint-foundry"]);
             if len(already_drafted) == 0 {
-                _submitter_draft_phase(true, false, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir, compile_ok, source_audit_run, final_tex, compile_log, title_seed, msc_seed, cat_seed, repro_script, repro_output, repro_lang, editor_pid, computer_pid, introducer_pid, my_tier);
+                if len(rule_action) > 0 {
+                    _submitter_draft_phase_rule_hit(true, false, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir, compile_ok, source_audit_run, repro_script, repro_output, repro_lang, editor_pid, computer_pid, introducer_pid, my_tier, rule_action);
+                } else {
+                    _submitter_draft_phase(true, false, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir, compile_ok, source_audit_run, final_tex, compile_log, title_seed, msc_seed, cat_seed, repro_script, repro_output, repro_lang, editor_pid, computer_pid, introducer_pid, my_tier, canonical_ctx);
+                };
             } else {
                 // Phase B: DRAFTED already exists -- observe HITL flag and act
                 // only on explicit human approval. NEVER auto-submit.
@@ -803,7 +1085,11 @@ fn tick(reason: string) -> void {
             if my_tier == "propose" {
                 // Phase A: produce DRAFTED row (idempotent: skip when already drafted).
                 if len(already_drafted) == 0 {
-                    _submitter_draft_phase(false, false, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir, compile_ok, source_audit_run, final_tex, compile_log, title_seed, msc_seed, cat_seed, repro_script, repro_output, repro_lang, editor_pid, computer_pid, introducer_pid, my_tier);
+                    if len(rule_action) > 0 {
+                        _submitter_draft_phase_rule_hit(false, false, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir, compile_ok, source_audit_run, repro_script, repro_output, repro_lang, editor_pid, computer_pid, introducer_pid, my_tier, rule_action);
+                    } else {
+                        _submitter_draft_phase(false, false, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, claim_id_eff, claim_dir, compile_ok, source_audit_run, final_tex, compile_log, title_seed, msc_seed, cat_seed, repro_script, repro_output, repro_lang, editor_pid, computer_pid, introducer_pid, my_tier, canonical_ctx);
+                    };
                 } else {
                     // Phase B: DRAFTED already exists -- observe HITL flag and act
                     // only on explicit human approval. NEVER auto-submit.
