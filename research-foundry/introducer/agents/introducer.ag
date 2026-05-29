@@ -249,6 +249,167 @@ fn _publish_introducer(
     };
 }
 
+// #845: rule-first / distillation scaffolding ported from the skeptic
+// (#846) / verifier (#850). The introducer is a GENERATIVE colony, so
+// unlike the verdict colonies (which distil a single discrete field and
+// drop the free prose), the introducer encodes its FULL primary output
+// faithfully: the entire Draft struct serialized to a JSON action string
+// keyed on a FINE canonical context (sha256 of the exact upstream input).
+// Identical input -> identical Draft that recurs self-distills; diverse
+// input mints a fresh sha256 key, forms no rule, and stays LLM-driven
+// (self-no-op -- the correct, expected outcome for a creative colony).
+
+// _introducer_canonical_ctx -- the rule key. The introducer's primary
+// input is the full assembled `ctx` string the prompt() sees (problem +
+// answer + novelty + audit reasoning + the four search reports). The key
+// is the sha256 of that exact input (+ the upstream claim_id when present
+// for provenance disambiguation), via the same `python3 hashlib` idiom
+// already used by _publish_prompt_body_and_wrap_variant. Fine by design:
+// any byte change in the upstream claim -> a different key -> no false
+// cache hit on a creative payload. Falls back to a literal prefix of the
+// input when hashing is unavailable so the loop degrades gracefully.
+fn _introducer_canonical_ctx(input_ctx: string, claim_id: string) -> string {
+    if len(input_ctx) == 0 { return "introducer-class empty"; };
+    let keyed = if len(claim_id) > 0 { "claim_id=" + claim_id + "\n" + input_ctx; } else { input_ctx; };
+    // colony-lint: safe-exec-concat
+    let sha_cmd = "python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.argv[1].encode(\"utf-8\")).hexdigest())' " + shell_escape(keyed);
+    let h = try { exec sh sha_cmd; } catch e { ""; };
+    if len(h) != 64 {
+        let fallback = substring(input_ctx, 0, 64);
+        return "introducer-sha-na " + fallback;
+    };
+    return "introducer-ctx sha256=" + h;
+}
+
+// _encode_draft_action -- faithful serialize of the full Draft struct
+// into a single JSON action string (the rule action slot). Routed through
+// python3 json.dumps so the LaTeX abstract/intro bodies (which carry `"`,
+// `\`, and newlines) cannot corrupt the action; the produced string is a
+// valid JSON object the Stage-1 path decodes with json_get (on the STRING,
+// never on the lookup map -- #843). Faithful: every Draft field round-trips
+// byte-for-byte, so a rule-hit reconstruction is identical to the LLM draft.
+fn _encode_draft_action(draft: Draft) -> string {
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,json\nobj={\"abstract_tex\":sys.argv[1],\"intro_tex\":sys.argv[2],\"msc_codes_csv\":sys.argv[3],\"arxiv_category\":sys.argv[4],\"title\":sys.argv[5],\"rationale\":sys.argv[6]}\nsys.stdout.write(json.dumps(obj,separators=(\",\",\":\")))' "
+        + shell_escape(draft.abstract_tex) + " "
+        + shell_escape(draft.intro_tex) + " "
+        + shell_escape(draft.msc_codes_csv) + " "
+        + shell_escape(draft.arxiv_category) + " "
+        + shell_escape(draft.title) + " "
+        + shell_escape(draft.rationale);
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+// _publish_introducer_rule_hit -- mirror of _publish_introducer but takes
+// primitive Draft fields because the .ag grammar disallows inline Draft
+// struct literals (same constraint the skeptic hit: "expected Semicolon,
+// got LBrace"). The downstream still writes the same memo keys / emit
+// payload, so the encoding is identical to the LLM path; only the source
+// differs (rule vs prompt). The emit() payload is the faithful JSON action
+// string (a string, not a Draft) -- editor's _pick_upstream_by_confidence
+// reads the per-key memo values, not the emit struct, so byte-faithful
+// memo writes preserve the contract. Fitness + replicate-gate block copied
+// verbatim from _publish_introducer so rule-hit ticks contribute to
+// replication fitness identically to LLM-driven ticks.
+fn _publish_introducer_rule_hit(
+    final_write: bool,
+    do_replicate: bool,
+    abstract_tex: string,
+    intro_tex: string,
+    msc_codes_csv: string,
+    arxiv_category: string,
+    title: string,
+    rationale: string,
+    action_json: string,
+    self_pid: string,
+    _colony_name: string,
+    upstream_tick: int,
+    tick_idx: int,
+    tick_now_ms: int,
+    my_tier: string
+) -> void {
+    let _ = final_write;
+    let _ = rationale;
+    memo_write("introducer:" + self_pid + ":abstract:tick-" + to_string(upstream_tick), abstract_tex);
+    memo_write("introducer:" + self_pid + ":intro:tick-" + to_string(upstream_tick), intro_tex);
+    memo_write("introducer:" + self_pid + ":title:tick-" + to_string(upstream_tick), title);
+    memo_write("introducer:" + self_pid + ":msc_codes:tick-" + to_string(upstream_tick), msc_codes_csv);
+    memo_write("introducer:" + self_pid + ":arxiv_category:tick-" + to_string(upstream_tick), arxiv_category);
+    memo_write("replay:current_introducer_pid", self_pid);
+
+    emit("introducer:abstract_ready", action_json);
+    emit("introducer:intro_ready", action_json);
+
+    if my_tier == "propose" {
+        learn("introduce", "tick " + to_string(tick_idx), "abstract+intro emitted", "success", ["emitted", "preprint-foundry"]);
+    };
+
+    if len(self_pid) > 0 {
+        let fit_pre = parse_int(recall_latest("introducer:" + self_pid + ":fitness"));
+        memo_write("introducer:" + self_pid + ":fitness", to_string(fit_pre + 1));
+    };
+
+    if do_replicate {
+        let repr_thr = parse_int(recall_latest("introducer:reproductive_fitness_threshold"));
+        if repr_thr > 0 {
+            let my_fit_r = parse_int(recall_latest("introducer:" + self_pid + ":fitness"));
+            if my_fit_r > repr_thr {
+                let n_r = parse_int(recall_latest("colony-" + _colony_name + ":size"));
+                let max_repl_r = parse_int(recall_latest("colony-" + _colony_name + ":max_replicas"));
+                if n_r < max_repl_r {
+                    let pool_r = parse_int(recall_latest("colony-" + _colony_name + ":pool"));
+                    let base_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_base_cost"));
+                    let raw_k_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_k"));
+                    let k_r = if raw_k_r <= 0 { 3; } else { raw_k_r; };
+                    let cost_r = base_r + (base_r * n_r) / k_r;
+                    if pool_r >= cost_r {
+                        let variant_pick = pick_variant(n_r);
+                        memo_write("introducer:prompt_variant", variant_pick);
+                        let target_r = select_replication_target();
+                        if len(target_r) > 0 {
+                            let variant_wrapped = _publish_prompt_body_and_wrap_variant(self_pid, variant_pick);
+                            let replica_id = try { replicate(target_r, my_fit_r, variant_wrapped); } catch e { "__replicate_error__"; };
+                            if replica_id != "__replicate_error__" {
+                                if len(replica_id) > 0 {
+                                    memo_write("colony-" + _colony_name + ":pool", to_string(pool_r - cost_r));
+                                    memo_write("colony-" + _colony_name + ":size", to_string(n_r + 1));
+                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "success", ["replicated", "preprint-foundry", _colony_name]);
+
+                                    let lin_str = recall_latest("introducer:" + self_pid + ":generation");
+                                    let lin = if len(lin_str) > 0 { parse_int(lin_str); } else { 0; };
+                                    let ledger_path_r = try { exec sh "printenv REPLICATION_LEDGER"; } catch e { ""; };
+                                    if len(ledger_path_r) > 0 {
+                                        let parent_specialty = recall_latest("introducer:" + self_pid + ":specialty");
+                                        let child_gen = lin + 1;
+                                        // colony-lint: safe-exec-concat
+                                        let row_cmd = "python3 -c 'import sys,json\nts=int(sys.argv[1])\nrow={\"ts\":ts,\"event\":\"replicate\",\"colony\":sys.argv[2],\"side\":\"preprint\",\"parent_pid\":sys.argv[3],\"child_replica_id\":sys.argv[4],\"specialty\":sys.argv[5],\"generation\":int(sys.argv[6]),\"parent_fitness\":int(sys.argv[7])}\nwith open(sys.argv[8],\"a\") as f: f.write(json.dumps(row,separators=(\",\",\":\"))+\"\\n\")\nprint(\"ok\")' "
+                                            + shell_escape(to_string(tick_now_ms)) + " "
+                                            + shell_escape(_colony_name) + " "
+                                            + shell_escape(self_pid) + " "
+                                            + shell_escape(replica_id) + " "
+                                            + shell_escape(parent_specialty) + " "
+                                            + shell_escape(to_string(child_gen)) + " "
+                                            + shell_escape(to_string(my_fit_r)) + " "
+                                            + shell_escape(ledger_path_r);
+                                        let _lr = try { exec sh row_cmd; } catch e { ""; };
+                                        memo_write("introducer:" + replica_id + ":generation", to_string(child_gen));
+                                        if len(parent_specialty) > 0 {
+                                            memo_write("introducer:" + replica_id + ":specialty", parent_specialty);
+                                        };
+                                    };
+                                } else {
+                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "failure", ["replicate-nak", "preprint-foundry", _colony_name]);
+                                };
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
+}
+
 // Issue #767: aging-out gate (death pressure). Two-phase: this .ag
 // publishes `colony:cull_self_request:<pid>` when age_ticks crosses
 // `env:RESEARCH_AGING_THRESHOLD`; the cull-replicas.sh sidecar reads
@@ -355,9 +516,101 @@ fn tick(reason: string) -> void {
             + "GROUPPROPS REPORT: " + report_groupprops + "\n"
             + "SCHOLAR REPORT: " + report_scholar + "\n";
 
+    let my_tier = tier("introducer");
+
+    // ===== Stage 1: rule-first lookup (#845, faithful full-output) =====
+    // The canonical context is the FINE sha256 of the exact upstream input
+    // (+ claim_id). On a crystallized introducer_output rule hit, decode
+    // the FULL Draft from the rule's JSON action slot via json_get (on the
+    // action STRING -- #843: never json_get the lookup map) and skip
+    // prompt(). Diverse input -> a fresh sha256 -> no hit -> the LLM path.
+    // Rollback knob: INTRODUCER_RULE_FIRST=0 short-circuits Stage 1.
+    let claim_id = recall_latest("claim:claim_id:tick-" + to_string(upstream_tick));
+    let canonical_ctx = _introducer_canonical_ctx(ctx, claim_id);
+
+    let rule_first_flag = try { exec sh "printenv INTRODUCER_RULE_FIRST"; } catch e { ""; };
+    let rule_first_enabled = rule_first_flag != "0";
+
+    let min_conf_str = try { exec sh "printenv INTRODUCER_RULE_CONFIDENCE"; } catch e { ""; };
+    let min_conf = if len(min_conf_str) > 0 { parse_float(min_conf_str); } else { 0.85; };
+
+    if rule_first_enabled {
+        let rule = crystallizer_lookup_with_confidence("introducer_output", canonical_ctx, min_conf);
+        if len(rule) > 0 {
+            // Rule hit -- reconstruct the full Draft from the rule's action
+            // slot without prompt(). #843: the lookup result is a
+            // map<string,string> (Value::Map); read its fields with get()
+            // (the map accessor), NEVER json_get() (raises "expected
+            // string, got map"). The `action` field IS a JSON string (the
+            // faithful Draft serialization from Stage 2), so json_get() on
+            // THAT string is correct -- it is a string, not a map.
+            let rule_id = to_string(get(rule, "rule_id"));
+            let rule_action = to_string(get(rule, "action"));
+            let rule_conf_str = to_string(get(rule, "confidence"));
+            let rule_conf = if len(rule_conf_str) > 0 { parse_float(rule_conf_str); } else { min_conf; };
+            let r_abstract = to_string(json_get(rule_action, "abstract_tex"));
+            let r_intro = to_string(json_get(rule_action, "intro_tex"));
+            let r_msc = to_string(json_get(rule_action, "msc_codes_csv"));
+            let r_arxiv = to_string(json_get(rule_action, "arxiv_category"));
+            let r_title = to_string(json_get(rule_action, "title"));
+            let r_rationale = to_string(json_get(rule_action, "rationale"));
+            // colony-lint: learn-tags-ok
+            learn("introducer_output", canonical_ctx, rule_action, "success", ["distilled", "rule-hit", "preprint-foundry"]);
+            crystallizer_record_use(rule_id, true, 0.1);
+
+            if my_tier == "autonomous" {
+                memo_write("introducer:" + _self_pid + ":review_gated", "true");
+                learn("introduce", "tick " + to_string(tick_idx), r_rationale, "partial", ["acted", "preprint-foundry"]);
+                _publish_introducer_rule_hit(true, true, r_abstract, r_intro, r_msc, r_arxiv, r_title, r_rationale, rule_action, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
+            } else {
+                if my_tier == "review-gated" {
+                    memo_write("introducer:" + _self_pid + ":review_gated", "true");
+                    learn("introduce", "tick " + to_string(tick_idx), r_rationale, "partial", ["review-gated", "preprint-foundry"]);
+                    _publish_introducer_rule_hit(true, false, r_abstract, r_intro, r_msc, r_arxiv, r_title, r_rationale, rule_action, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
+                } else {
+                    if my_tier == "propose" {
+                        _publish_introducer_rule_hit(false, false, r_abstract, r_intro, r_msc, r_arxiv, r_title, r_rationale, rule_action, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
+                    } else {
+                        print("[introducer] observing rule-hit (tier:", my_tier, ") rationale=", r_rationale);
+                        learn("introduce", "tick " + to_string(tick_idx), r_rationale, "partial", ["observed", "preprint-foundry"]);
+                    };
+                };
+            };
+
+            let now_s1 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+            if len(now_s1) > 0 { memo_write("introducer:last_check", now_s1); };
+            return;
+        };
+    };
+
+    // ===== Stage 2: LLM fallback (historical path) =====
     let draft = prompt(_draft_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(_self_pid), ctx) -> Draft;
 
-    let my_tier = tier("introducer");
+    // #845: distillation row. The rule action is the FAITHFUL full Draft
+    // serialized to JSON (every field round-trips), keyed on the SAME fine
+    // canonical_ctx the Stage-1 lookup passes. Identical upstream input ->
+    // identical action -> the distilled KnowledgeEntry id stays stable and
+    // empirical_validations accumulate; diverse input -> a fresh sha256 key
+    // -> no aggregation (the creative payload is never coarse-cached).
+    let canonical_action = _encode_draft_action(draft);
+    if len(canonical_action) > 0 {
+        // colony-lint: learn-tags-ok
+        learn("introducer_output", canonical_ctx, canonical_action, "success", ["distilled", "preprint-foundry"]);
+        // Complete the distillation loop: learn() above only writes the
+        // ExperienceStore; distill() promotes >=N successful
+        // introducer_output records into a KnowledgeEntry, and
+        // knowledge_validate() bumps empirical_validations toward
+        // crystallize_min_validations. distill() raises until there are
+        // enough successful records, so guard it; once the entry
+        // crystallizes the Stage-1 lookup starts hitting and this miss path
+        // stops running for that context. SAME fine canonical_ctx as the
+        // learn() row + the Stage-1 lookup so the keys align.
+        let distilled_id = try { distill("introducer_output", canonical_ctx, canonical_action, "heuristic"); } catch e { ""; };
+        if len(distilled_id) > 0 {
+            knowledge_validate(distilled_id);
+        };
+    };
+
     if my_tier == "autonomous" {
         memo_write("introducer:" + _self_pid + ":review_gated", "true");
         learn("introduce", "tick " + to_string(tick_idx), draft.rationale, "partial", ["acted", "preprint-foundry"]);
