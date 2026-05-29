@@ -24,8 +24,10 @@
 #   agentis-core v1.7.15's per-tier LLM substrate (#652). The
 #   hermetic .agentis/config now carries five
 #   llm.tier.<tier>.cli_command_args lines: dormant + shadow get
-#   claude-haiku-4-5, propose + review-gated get claude-sonnet-4-6,
-#   autonomous gets claude-opus-4-7. agentis-core resolves the
+#   claude-haiku-4-5, propose + review-gated + autonomous get
+#   claude-sonnet-4-6. The three terminal-writer agents (auditor,
+#   theorist, submitter) override their tier with claude-opus-4-8
+#   via per-agent agents.<name>.llm.cli_command_args. agentis-core resolves the
 #   backend per-prompt by re-reading the calling agent's
 #   <agent>:confidence memo via tier() -- when an agent's confidence
 #   bumps it onto the next tier, the next prompt() routes to a
@@ -886,8 +888,10 @@ write_bootstrap() {
             # orthogonal to model selection.
             printf '  printf "llm.command = claude\\n"\n'
             printf '  printf "llm.args = -p --output-format json --tools \\"\\" --system-prompt \\"You are a research mathematician drafting an arXiv preprint. Output only valid JSON.\\" --effort %s\\n"\n' "$CLAUDE_EFFORT"
-            # #746: per-tier LLM routing -- autonomous gets opus, propose
-            # and review-gated get sonnet, shadow and dormant get haiku.
+            # #746: per-tier LLM routing -- shadow and dormant get
+            # haiku, propose + review-gated + autonomous get sonnet.
+            # Terminal-writer agents (auditor/theorist/submitter) pin
+            # claude-opus-4-8 via per-agent override below.
             # Substrate is agentis-core v1.7.15 #652 llm.tier.<tier>.*
             # namespace, resolved per-prompt by re-reading the calling
             # agent's <agent>:confidence memo via tier(). Replaces the
@@ -897,13 +901,15 @@ write_bootstrap() {
             printf '  printf "llm.tier.shadow.cli_command_args = --model claude-haiku-4-5\\n"\n'
             printf '  printf "llm.tier.propose.cli_command_args = --model claude-sonnet-4-6\\n"\n'
             printf '  printf "llm.tier.review-gated.cli_command_args = --model claude-sonnet-4-6\\n"\n'
-            printf '  printf "llm.tier.autonomous.cli_command_args = --model claude-opus-4-7\\n"\n'
+            printf '  printf "llm.tier.autonomous.cli_command_args = --model claude-sonnet-4-6\\n"\n'
             # #825: per-tier LLM BACKEND selection (additive over #746's
             # per-tier model selection above). Routes each `prompt()` call
             # to a different backend per the calling agent's confidence
             # tier so the highest-volume / lowest-stakes work (shadow) runs
             # against a cheap OpenRouter-hosted Qwen model while terminal
-            # decisions (autonomous) stay on claude-opus. agentis-core
+            # decisions (autonomous) stay on the claude backend (model
+            # claude-sonnet-4-6, with auditor/theorist/submitter pinning
+            # claude-opus-4-8 via per-agent override below). agentis-core
             # v1.7.15+ resolves `llm.tier.<tier>.backend` per-prompt by
             # re-reading the calling agent's <agent>:confidence memo via
             # tier(). The `llm.openai.*` namespace below is already wired
@@ -948,11 +954,11 @@ write_bootstrap() {
                 #   submitter -> arXiv submission is terminal (cannot redo);
                 #                pin to opus.
                 printf '  printf "agents.auditor.llm.backend = claude\\n"\n'
-                printf '  printf "agents.auditor.llm.cli_command_args = --model claude-opus-4-7\\n"\n'
+                printf '  printf "agents.auditor.llm.cli_command_args = --model claude-opus-4-8\\n"\n'
                 printf '  printf "agents.theorist.llm.backend = claude\\n"\n'
-                printf '  printf "agents.theorist.llm.cli_command_args = --model claude-opus-4-7\\n"\n'
+                printf '  printf "agents.theorist.llm.cli_command_args = --model claude-opus-4-8\\n"\n'
                 printf '  printf "agents.submitter.llm.backend = claude\\n"\n'
-                printf '  printf "agents.submitter.llm.cli_command_args = --model claude-opus-4-7\\n"\n'
+                printf '  printf "agents.submitter.llm.cli_command_args = --model claude-opus-4-8\\n"\n'
             fi
         fi
         printf '} >> .agentis/config\n'

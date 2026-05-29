@@ -362,8 +362,8 @@ assert_contains "24c. llm.tier.propose.cli_command_args = --model claude-sonnet-
     'printf "llm.tier.propose.cli_command_args = --model claude-sonnet-4-6\\n"'
 assert_contains "24d. llm.tier.review-gated.cli_command_args = --model claude-sonnet-4-6" "$SRC" \
     'printf "llm.tier.review-gated.cli_command_args = --model claude-sonnet-4-6\\n"'
-assert_contains "24e. llm.tier.autonomous.cli_command_args = --model claude-opus-4-7" "$SRC" \
-    'printf "llm.tier.autonomous.cli_command_args = --model claude-opus-4-7\\n"'
+assert_contains "24e. llm.tier.autonomous.cli_command_args = --model claude-sonnet-4-6" "$SRC" \
+    'printf "llm.tier.autonomous.cli_command_args = --model claude-sonnet-4-6\\n"'
 
 # ---------------------------------------------------------------------------
 # 25. #746: ANTHROPIC_MODEL=%s spawn-prefix routing (#711) is gone --
@@ -998,9 +998,10 @@ fi
 # `cli_command_args` lines: each tier also gets a `backend = <name>`
 # line so the highest-volume / lowest-stakes work (shadow) routes to a
 # cheap OpenRouter-hosted Qwen model while terminal decisions
-# (autonomous) stay on claude-opus. Plus per-agent overrides for the
+# (autonomous) stay on the claude backend (model claude-sonnet-4-6).
+# Plus per-agent overrides for the
 # three highest-stake terminal-writers (auditor, theorist, submitter)
-# that pin claude-opus-4-7 regardless of tier. agentis-core's
+# that pin claude-opus-4-8 regardless of tier. agentis-core's
 # Config::scoped().flatten() resolves per-agent -> per-tier -> top-level
 # at each prompt() call.
 # ---------------------------------------------------------------------------
@@ -1020,16 +1021,16 @@ assert_contains "40g. shadow-tier openai api_key_env emitted" "$SRC" \
     'printf "llm.tier.shadow.openai.api_key_env = %s\\n"'
 assert_contains "40h. agents.auditor.llm.backend = claude" "$SRC" \
     'printf "agents.auditor.llm.backend = claude\\n"'
-assert_contains "40i. agents.auditor.llm pins claude-opus-4-7" "$SRC" \
-    'printf "agents.auditor.llm.cli_command_args = --model claude-opus-4-7\\n"'
+assert_contains "40i. agents.auditor.llm pins claude-opus-4-8" "$SRC" \
+    'printf "agents.auditor.llm.cli_command_args = --model claude-opus-4-8\\n"'
 assert_contains "40j. agents.theorist.llm.backend = claude" "$SRC" \
     'printf "agents.theorist.llm.backend = claude\\n"'
-assert_contains "40k. agents.theorist.llm pins claude-opus-4-7" "$SRC" \
-    'printf "agents.theorist.llm.cli_command_args = --model claude-opus-4-7\\n"'
+assert_contains "40k. agents.theorist.llm pins claude-opus-4-8" "$SRC" \
+    'printf "agents.theorist.llm.cli_command_args = --model claude-opus-4-8\\n"'
 assert_contains "40l. agents.submitter.llm.backend = claude" "$SRC" \
     'printf "agents.submitter.llm.backend = claude\\n"'
-assert_contains "40m. agents.submitter.llm pins claude-opus-4-7" "$SRC" \
-    'printf "agents.submitter.llm.cli_command_args = --model claude-opus-4-7\\n"'
+assert_contains "40m. agents.submitter.llm pins claude-opus-4-8" "$SRC" \
+    'printf "agents.submitter.llm.cli_command_args = --model claude-opus-4-8\\n"'
 
 # ---------------------------------------------------------------------------
 # 40n-o. #825 follow-up: RESEARCH_PER_TIER_ROUTING=0 opt-out toggle. When
@@ -1067,12 +1068,12 @@ assert_contains "40p. opt-out gate wraps llm.tier.shadow.backend line" "$GATED_B
 assert_contains "40q. opt-out gate wraps agents.auditor.llm.backend line" "$GATED_BLOCK" \
     'printf "agents.auditor.llm.backend = claude\\n"'
 assert_contains "40r. opt-out gate wraps agents.submitter.llm.cli_command_args" "$GATED_BLOCK" \
-    'printf "agents.submitter.llm.cli_command_args = --model claude-opus-4-7\\n"'
+    'printf "agents.submitter.llm.cli_command_args = --model claude-opus-4-8\\n"'
 # Sanity check: #746's per-tier cli_command_args lines live OUTSIDE the
 # gated block (they come from the older #746 block above the #825 gate).
 # Their absence inside GATED_BLOCK proves the gate scope is correct.
 assert_not_contains "40s. #746 llm.tier.autonomous.cli_command_args lives outside the #825 gate" \
-    "$GATED_BLOCK" 'printf "llm.tier.autonomous.cli_command_args = --model claude-opus-4-7\\n"'
+    "$GATED_BLOCK" 'printf "llm.tier.autonomous.cli_command_args = --model claude-sonnet-4-6\\n"'
 
 # ---------------------------------------------------------------------------
 # 40t-v. #825 follow-up: when OPENROUTER_API_KEY env is set, the
