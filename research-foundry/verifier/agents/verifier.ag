@@ -408,6 +408,191 @@ fn _publish_verifier(
     };
 }
 
+// #845 (Phase 5): rule-first / distillation scaffolding ported from the
+// skeptic (#846) / novelty (#847). The distillable decision here is the
+// discrete referee `Verdict.verdict` field ("ACCEPT|REJECT|
+// NEEDS_REVISION"); reasoning is free-form LLM prose and is NOT encoded
+// into the rule action (that was the #841 mistake). answers_agree and
+// solver_rigorous are deprecated metadata (always false) and are not
+// distilled either. The crystallizer distils repeat verdicts over the
+// same canonical context into a rule the next tick's Stage-1 lookup
+// consumes without prompt(). NOTE: this scaffolding wraps ONLY the LLM
+// referee `prompt(_verifier_prompt()...) -> Verdict` call -- the
+// generative SOLVER and the mechanical-falsification short-circuit
+// (#776) are left untouched.
+
+// _classify_answer_kind -- deterministic classifier for the stated
+// answer's shape (port of novelty's helper). Feeds the canonical_ctx
+// output_kind field. ASCII-only, single token; total on empty.
+fn _classify_answer_kind(answer: string) -> string {
+    if len(answer) == 0 { return "empty"; };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,re\ntxt=sys.argv[1]\ns=txt.strip()\nif not s:\n print(\"empty\"); sys.exit(0)\nif s.startswith(\"[[\") or re.search(r\"\\[\\[[^]]+\\]\\]\", s):\n print(\"matrix\"); sys.exit(0)\nif re.search(r\"[A-Za-z]\\s*\\^\\s*\\d+\", s) or \"Poly(\" in s:\n print(\"polynomial\"); sys.exit(0)\nints=re.findall(r\"-?\\d+\", s)\nif len(ints)>=3:\n print(\"sequence\"); sys.exit(0)\nif re.search(r\"-?\\d+\\.\\d+\", s):\n print(\"float\"); sys.exit(0)\nif len(ints)==1:\n print(\"scalar\"); sys.exit(0)\nprint(\"symbolic\")' " + shell_escape(answer);
+    let out = try { exec sh cmd; } catch e { "scalar"; };
+    if len(out) == 0 { return "scalar"; };
+    return out;
+}
+
+// _verifier_canonical_ctx -- the rule key. The verifier referee's
+// upstream producer (formulator) does NOT write a stable canonical_ctx
+// memo the way the noticer does for the skeptic, so we build a coarse
+// self-key from the resolved topic plus a deterministic classification
+// of the stated answer's shape (mirrors novelty's _novelty_canonical_ctx
+// since both are downstream of the formulator). Field order is
+// most-discriminating-first to match the crystallizer's prefix matcher:
+// "topic=<topic> output_kind=<kind> bucket=<size_bucket>". topic +
+// output_kind are the coarse, stable fields the distill condition keys
+// off; bucket jitters within a context class and is the tiebreaker the
+// Stage-1 full-ctx lookup prefix-matches against. Missing / empty fields
+// collapse to "na"; ASCII-only, single line.
+fn _verifier_canonical_ctx(topic_label: string, stated_answer: string) -> string {
+    let topic = if len(topic_label) > 0 { topic_label; } else { "na"; };
+    let kind = _classify_answer_kind(stated_answer);
+    let n = len(stated_answer);
+    let bucket = if n < 100 { "small"; } else { if n < 10000 { "medium"; } else { "large"; }; };
+    return "topic=" + topic + " output_kind=" + kind + " bucket=" + bucket;
+}
+
+// _canonical_stable_desc -- deterministic detail string derived from
+// canonical_ctx (port of the noticer / skeptic / novelty helper).
+// Templates only the two coarsest, stable fields (topic + output_kind)
+// so the rule action is identical across repeat observations of the same
+// context class and the distilled KnowledgeEntry id stays stable; bucket
+// jitters tick-to-tick and is intentionally excluded. Total on missing
+// fields ("na"). ASCII-only, single line.
+fn _canonical_stable_desc(canonical_ctx: string) -> string {
+    if len(canonical_ctx) == 0 { return "verifier-class topic=na output_kind=na"; };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,re\ns=sys.argv[1]\ndef g(k):\n m=re.search(r\"(?:^| )\"+k+r\"=(\\S+)\", s)\n return m.group(1) if m else \"na\"\nprint(\"verifier-class topic=\"+g(\"topic\")+\" output_kind=\"+g(\"output_kind\"))' " + shell_escape(canonical_ctx);
+    let out = try { exec sh cmd; } catch e { "verifier-class topic=na output_kind=na"; };
+    if len(out) == 0 { return "verifier-class topic=na output_kind=na"; };
+    return out;
+}
+
+// _parse_rule_action_verdict -- decoder for the pipe-delimited
+// `<verdict>|<canonical_detail>` encoding the LLM path writes into
+// learn("verifier_verdict", ...). The discrete decision is a string
+// (the referee verdict) so it returns the portion before the first "|".
+// Total on missing pipe (returns the whole trimmed string).
+fn _parse_rule_action_verdict(action: string) -> string {
+    if len(action) == 0 { return ""; };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys; print(sys.argv[1].split(\"|\",1)[0].strip())' " + shell_escape(action);
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+// _publish_verifier_rule_hit -- mirror of _publish_verifier but takes
+// primitive fields because the .ag grammar disallows inline Verdict
+// struct literals (confirmed by the skeptic / novelty ports: "expected
+// Semicolon, got LBrace"). The downstream still reads the same verdict
+// JSON / memo keys / emit payload / fitness signal, so the encoding is
+// identical to the LLM path; only the source differs (rule vs prompt).
+// answers_agree / solver_rigorous are pinned false (deprecated metadata).
+// problem_well_defined is derived from the verdict label. The fitness +
+// replicate-gate block is copied verbatim from _publish_verifier so
+// rule-hit ticks contribute to replication fitness the same as
+// LLM-driven ticks.
+fn _publish_verifier_rule_hit(
+    final_write: bool,
+    do_replicate: bool,
+    verdict_label: string,
+    reasoning: string,
+    self_pid: string,
+    _colony_name: string,
+    upstream_tick: int,
+    tick_idx: int,
+    tick_now_ms: int,
+    my_tier: string
+) -> void {
+    let _ = final_write;
+    let well_defined_str = if verdict_label == "REJECT" { "false"; } else { "true"; };
+    let verdict_json = "{\"answers_agree\":false"
+                     + ",\"solver_rigorous\":false"
+                     + ",\"problem_well_defined\":" + well_defined_str
+                     + ",\"verdict\":\"" + verdict_label
+                     + "\",\"reasoning\":\"" + reasoning + "\"}";
+    memo_write("verifier:" + self_pid + ":verdict:tick-" + to_string(upstream_tick), verdict_json);
+    memo_write("verifier:" + self_pid + ":verdict_label:tick-" + to_string(upstream_tick), verdict_label);
+    memo_write("replay:current_verifier_pid", self_pid);
+
+    if verdict_label == "ACCEPT" {
+        emit("math-foundry:verified", verdict_json);
+        if my_tier == "propose" {
+            learn("verify", "tick " + to_string(tick_idx) + " ACCEPT", reasoning, "success", ["emitted", "math-foundry"]);
+        };
+    } else {
+        emit("math-foundry:verifier_rejected", verdict_json);
+        if my_tier == "propose" {
+            learn("verify", "tick " + to_string(tick_idx) + " " + verdict_label, reasoning, "failure", ["emitted", "math-foundry"]);
+        };
+    };
+
+    if len(self_pid) > 0 {
+        let fit_pre = parse_int(recall_latest("verifier:" + self_pid + ":fitness"));
+        let fit_delta = if verdict_label == "ACCEPT" {
+            1;
+        } else { if verdict_label == "REJECT" {
+            0 - 1;
+        } else {
+            0;
+        }; };
+        memo_write("verifier:" + self_pid + ":fitness", to_string(fit_pre + fit_delta));
+    };
+
+    if do_replicate {
+        let repr_thr = parse_int(recall_latest("verifier:reproductive_fitness_threshold"));
+        if repr_thr > 0 {
+            let my_fit_r = parse_int(recall_latest("verifier:" + self_pid + ":fitness"));
+            if my_fit_r > repr_thr {
+                let n_r = parse_int(recall_latest("colony-" + _colony_name + ":size"));
+                let max_repl_r = parse_int(recall_latest("colony-" + _colony_name + ":max_replicas"));
+                if n_r < max_repl_r {
+                    let pool_r = parse_int(recall_latest("colony-" + _colony_name + ":pool"));
+                    let base_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_base_cost"));
+                    let raw_k_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_k"));
+                    let k_r = if raw_k_r <= 0 { 3; } else { raw_k_r; };
+                    let cost_r = base_r + (base_r * n_r) / k_r;
+                    if pool_r >= cost_r {
+                        let variant_pick = pick_variant(n_r);
+                        memo_write("verifier:prompt_variant", variant_pick);
+                        let target_r = select_replication_target();
+                        if len(target_r) > 0 {
+                            let variant_wrapped = _publish_prompt_body_and_wrap_variant(self_pid, variant_pick);
+                            let replica_id = try { replicate(target_r, my_fit_r, variant_wrapped); } catch e { "__replicate_error__"; };
+                            if replica_id != "__replicate_error__" {
+                                if len(replica_id) > 0 {
+                                    memo_write("colony-" + _colony_name + ":pool", to_string(pool_r - cost_r));
+                                    memo_write("colony-" + _colony_name + ":size", to_string(n_r + 1));
+                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "success", ["replicated", "math-foundry", _colony_name]);
+
+                                    let lin_str = recall_latest("verifier:" + self_pid + ":generation");
+                                    let lin = if len(lin_str) > 0 { parse_int(lin_str); } else { 0; };
+                                    let ledger_path_r = try { exec sh "printenv REPLICATION_LEDGER"; } catch e { ""; };
+                                    if len(ledger_path_r) > 0 {
+                                        let parent_specialty = recall_latest("verifier:" + self_pid + ":specialty");
+                                        let child_gen = lin + 1;
+                                        let row = "{\"ts\":" + to_string(tick_now_ms) + ",\"event\":\"replicate\",\"colony\":\"" + _colony_name + "\",\"side\":\"discovery\",\"parent_pid\":\"" + self_pid + "\",\"child_replica_id\":\"" + replica_id + "\",\"specialty\":\"" + parent_specialty + "\",\"generation\":" + to_string(child_gen) + ",\"parent_fitness\":" + to_string(my_fit_r) + "}";
+                                        // colony-lint: safe-exec-concat
+                                        let append_r = "printf '%s\n' " + shell_escape(row) + " >> " + shell_escape(ledger_path_r);
+                                        let _lr = try { exec sh append_r; } catch e { ""; };
+                                        memo_write("verifier:" + replica_id + ":generation", to_string(child_gen));
+                                        if len(parent_specialty) > 0 {
+                                            memo_write("verifier:" + replica_id + ":specialty", parent_specialty);
+                                        };
+                                    };
+                                } else {
+                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "failure", ["replicate-nak", "math-foundry", _colony_name]);
+                                };
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
+}
+
 // Issue #767: aging-out gate (death pressure). Two-phase: this .ag
 // publishes `colony:cull_self_request:<pid>` when age_ticks crosses
 // `env:RESEARCH_AGING_THRESHOLD`; the cull-replicas.sh sidecar reads
@@ -524,9 +709,114 @@ fn tick(reason: string) -> void {
     // double-check.
     let verify_ctx = "PROBLEM: " + problem_text + "\n"
                    + "STATED ANSWER: " + stated_answer + "\n";
-    let verdict = prompt(_verifier_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(_self_pid), verify_ctx) -> Verdict;
 
     let my_tier = tier("verifier");
+
+    // ===== Stage 1: rule-first lookup (#845, mirrors skeptic / novelty) =====
+    // The canonical context is a coarse self-built key (topic +
+    // output_kind + size bucket); the verifier's formulator upstream
+    // writes no stable canonical_ctx memo, so we synthesize one
+    // deterministically (same shape as novelty, the other formulator-
+    // downstream colony). On a crystallized verifier_verdict rule hit,
+    // reconstruct a Verdict from the rule's action slot and skip
+    // prompt(). Rollback knob: VERIFIER_RULE_FIRST=0 short-circuits
+    // Stage 1 to the LLM referee path. This wraps ONLY the referee LLM
+    // call -- the mechanical-falsification short-circuit above keeps its
+    // own pre-LLM fast path untouched.
+    let topic_label_a = _pick_upstream_by_confidence("explorer", "topic", "topic", "", upstream_tick);
+    let topic_label = if len(topic_label_a) > 0 { topic_label_a; } else { recall_latest("replay:current_topic"); };
+    let canonical_ctx = _verifier_canonical_ctx(topic_label, stated_answer);
+
+    let rule_first_flag = try { exec sh "printenv VERIFIER_RULE_FIRST"; } catch e { ""; };
+    let rule_first_enabled = rule_first_flag != "0";
+
+    let min_conf_str = try { exec sh "printenv VERIFIER_RULE_CONFIDENCE"; } catch e { ""; };
+    let min_conf = if len(min_conf_str) > 0 { parse_float(min_conf_str); } else { 0.85; };
+
+    if rule_first_enabled {
+        let rule = crystallizer_lookup_with_confidence("verifier_verdict", canonical_ctx, min_conf);
+        if len(rule) > 0 {
+            // Rule hit -- synthesize a Verdict from the rule's action
+            // field without prompt(). The action slot carries
+            // "<verdict>|<canonical_detail>" (see Stage 2 learn() row).
+            // #843: crystallizer_lookup_with_confidence returns
+            // map<string,string> (Value::Map). Read fields with get()
+            // (the map accessor); json_get() expects a JSON string and
+            // raises "expected string, got map" on a map.
+            let rule_id = to_string(get(rule, "rule_id"));
+            let rule_action = to_string(get(rule, "action"));
+            let rule_conf_str = to_string(get(rule, "confidence"));
+            let rule_conf = if len(rule_conf_str) > 0 { parse_float(rule_conf_str); } else { min_conf; };
+            let rule_verdict_label = _parse_rule_action_verdict(rule_action);
+            let rule_reasoning = "rule-first: matched crystallized verifier_verdict rule at confidence " + to_string(rule_conf) + ". Context: " + canonical_ctx;
+            // colony-lint: learn-tags-ok
+            learn("verifier_verdict", canonical_ctx, rule_action, "success", ["distilled", "rule-hit", "math-foundry"]);
+            crystallizer_record_use(rule_id, true, 0.1);
+
+            // Tier branch -- mirrors the LLM referee path below. The
+            // rule-hit publisher takes primitive fields because the .ag
+            // grammar disallows inline Verdict struct literals. The
+            // verify observability rows stay byte-identical to the LLM
+            // path so auto-promote sees the same tag stream.
+            if my_tier == "autonomous" {
+                memo_write("verifier:" + _self_pid + ":review_gated", "true");
+                learn("verify", "tick " + to_string(tick_idx) + " " + rule_verdict_label, rule_reasoning, "partial", ["acted", "math-foundry"]);
+                _publish_verifier_rule_hit(true, true, rule_verdict_label, rule_reasoning, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
+            } else {
+                if my_tier == "review-gated" {
+                    memo_write("verifier:" + _self_pid + ":review_gated", "true");
+                    learn("verify", "tick " + to_string(tick_idx) + " " + rule_verdict_label, rule_reasoning, "partial", ["review-gated", "math-foundry"]);
+                    _publish_verifier_rule_hit(true, false, rule_verdict_label, rule_reasoning, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
+                } else {
+                    if my_tier == "propose" {
+                        _publish_verifier_rule_hit(false, false, rule_verdict_label, rule_reasoning, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
+                    } else {
+                        print("[verifier] observing rule-hit (tier:", my_tier, ") verdict=", rule_verdict_label);
+                        learn("verify", "tick " + to_string(tick_idx) + " " + rule_verdict_label, rule_reasoning, "partial", ["observed", "math-foundry"]);
+                    };
+                };
+            };
+
+            let now_s1 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+            if len(now_s1) > 0 { memo_write("verifier:last_check", now_s1); };
+            return;
+        };
+    };
+
+    // ===== Stage 2: LLM referee fallback (historical path) =====
+    let verdict = prompt(_verifier_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(_self_pid), verify_ctx) -> Verdict;
+
+    // #845: distillation row. The rule action MUST be stable per context
+    // so the distilled KnowledgeEntry id is identical across repeat ticks
+    // and empirical_validations can accumulate. The action is
+    // "<verdict>|<canonical_detail>" -- the discrete referee verdict plus
+    // a deterministic detail derived from canonical_ctx (NOT the
+    // free-form reasoning prose, which would mint a fresh entry every
+    // tick -- the #841 mistake).
+    let canonical_action = verdict.verdict + "|" + _canonical_stable_desc(canonical_ctx);
+    // The distilled entry's CONDITION is a coarse, literal prefix of
+    // canonical_ctx (the leading topic= + output_kind= fields, before
+    // " bucket="). CrystallizedRule matches_context is
+    // context.starts_with(condition), so the coarse condition still
+    // prefix-matches the FULL canonical_ctx the Stage-1 lookup passes,
+    // and repeat observations of the same context CLASS map to one entry.
+    let _bucket_at = index_of(canonical_ctx, " bucket=");
+    let coarse_ctx = if _bucket_at > 0 { substring(canonical_ctx, 0, _bucket_at); } else { canonical_ctx; };
+    // colony-lint: learn-tags-ok
+    learn("verifier_verdict", canonical_ctx, canonical_action, "success", ["distilled", "math-foundry"]);
+
+    // Complete the distillation loop: learn() above only writes the
+    // ExperienceStore; distill() promotes >=3 successful verifier_verdict
+    // records into a KnowledgeEntry, and knowledge_validate() bumps
+    // empirical_validations toward crystallize_min_validations. distill()
+    // raises until there are >=3 successful records, so guard it; once the
+    // entry crystallizes the Stage-1 lookup starts hitting and this miss
+    // path stops running for that context.
+    let distilled_id = try { distill("verifier_verdict", coarse_ctx, canonical_action, "heuristic"); } catch e { ""; };
+    if len(distilled_id) > 0 {
+        knowledge_validate(distilled_id);
+    };
+
     if my_tier == "autonomous" {
         memo_write("verifier:" + _self_pid + ":review_gated", "true");
         learn("verify", "tick " + to_string(tick_idx) + " " + verdict.verdict, verdict.reasoning, "partial", ["acted", "math-foundry"]);
