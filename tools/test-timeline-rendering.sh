@@ -513,15 +513,16 @@ else
     fail "21: SLOPE_FLAT_THRESHOLD missing, wrong value, orphaned, or 1e-6 guard survived (#163)"
 fi
 
-# --- #362 iter5 + #865 test 22: 6-tab cut — exactly 6 <section data-tab="...">
-#     blocks in the order status / cost / recovery / logs / config /
-#     analytics. iter4 was 4-tab (no Logs); iter5 resurrects Event Timeline
-#     as its own tab; #865 adds Analytics as the 6th. ---
+# --- #362 iter5 + #865 + #869 test 22: 6-tab cut — exactly 6 <section data-tab="...">
+#     blocks in the order status / analytics / cost / recovery / logs /
+#     config. iter4 was 4-tab (no Logs); iter5 resurrects Event Timeline
+#     as its own tab; #865 added Analytics; #869 promoted Analytics to
+#     position 2 (right after Status) so it isn't tucked after Config. ---
 if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
 import sys, re
 with open(sys.argv[1]) as f:
     src = f.read()
-expected = ['status', 'cost', 'recovery', 'logs', 'config', 'analytics']
+expected = ['status', 'analytics', 'cost', 'recovery', 'logs', 'config']
 found = [m for m in re.findall(r'<section\s+data-tab="([^"]+)"', src) if m != '...']
 if found != expected:
     sys.stderr.write('section data-tab order/contents wrong: %r vs expected %r\n' % (found, expected))
@@ -533,19 +534,19 @@ if '<section data-tab="progress"' in src:
 sys.exit(0)
 PY
 then
-    pass "22: 6-tab cut — exactly 6 <section data-tab=\"...\"> blocks (status / cost / recovery / logs / config / analytics) (#362 iter5 + #865)"
+    pass "22: 6-tab cut — exactly 6 <section data-tab=\"...\"> blocks (status / analytics / cost / recovery / logs / config) (#362 iter5 + #865 + #869)"
 else
-    fail "22: 6-tab section count or order wrong (#362 iter5 + #865 expect status / cost / recovery / logs / config / analytics)"
+    fail "22: 6-tab section count or order wrong (#362 iter5 + #865 + #869 expect status / analytics / cost / recovery / logs / config)"
 fi
 
-# --- #362 iter5 + #865 test 23: 6-tab bar emits exactly 6 buttons; no
-#     data-tab="progress". Logs & Events button is in 4th position;
-#     Analytics is in 6th (#865). ---
+# --- #362 iter5 + #865 + #869 test 23: 6-tab bar emits exactly 6 buttons;
+#     no data-tab="progress". Analytics is in 2nd position (#869), Logs
+#     & Events is in 5th. ---
 if python3 - "$TEMPLATE_HTML" <<'PY' 2>/dev/null
 import sys, re
 with open(sys.argv[1]) as f:
     src = f.read()
-expected = ['status', 'cost', 'recovery', 'logs', 'config', 'analytics']
+expected = ['status', 'analytics', 'cost', 'recovery', 'logs', 'config']
 buttons = re.findall(r'<button\s+class="tab-btn"\s+role="tab"\s+data-tab="([^"]+)"', src)
 if buttons != expected:
     sys.stderr.write('tab-btn data-tab order wrong: %r vs expected %r\n' % (buttons, expected))
@@ -557,9 +558,9 @@ if 'data-tab="progress"' in src:
 sys.exit(0)
 PY
 then
-    pass "23: 6-tab bar emits exactly 6 buttons; no data-tab=\"progress\" (#362 iter5 + #865)"
+    pass "23: 6-tab bar emits exactly 6 buttons; no data-tab=\"progress\" (#362 iter5 + #865 + #869)"
 else
-    fail "23: tab bar buttons missing or out of order (#362 iter5 + #865 expect 6: status / cost / recovery / logs / config / analytics)"
+    fail "23: tab bar buttons missing or out of order (#362 iter5 + #865 + #869 expect 6: status / analytics / cost / recovery / logs / config)"
 fi
 
 # --- #257: federation-agnostic vocabulary regression guard. ---
