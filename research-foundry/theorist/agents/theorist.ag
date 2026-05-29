@@ -427,6 +427,173 @@ fn _age_tick_and_check(colony: string, self_pid: string) -> int {
     return next_age;
 }
 
+// #845 (uniform rollout): rule-first / distillation scaffolding ported
+// from the skeptic (#846) / verifier (#850). theorist is a GENERATIVE
+// colony -- its primary output is the LaTeX Draft (plus the Lean draft),
+// not a discrete verdict -- so the rule action is the FULL, FAITHFUL
+// serialization of the output (Draft fields + lean_source + lean_verdict),
+// NOT a lossy summary/bucket (the #841 mistake). Keyed on a FINE context
+// (topic + sha256 of the entire upstream input) so identical input ->
+// identical output crystallizes (self-distill) while diverse generation
+// never aggregates (self-stay-LLM). The crystallizer's confidence +
+// validation gating decides at runtime whether a rule actually forms;
+// the .ag does not pre-classify theorist as "should/should-not distill".
+
+// _theorist_canonical_ctx -- the rule key. theorist's upstream producer
+// (formulator/explorer claim seed) writes no stable canonical_ctx memo,
+// so we synthesize a FINE key: topic plus a sha256 of the entire
+// assembled input (problem + answer + novelty + audit + explorer
+// code/output/goal). The hash makes identical inputs share a key and any
+// input difference mint a distinct key, so diverse generation self-no-ops
+// (no rule forms) and only genuine input repeats crystallize. Uses the
+// existing python3 hashlib exec idiom (see
+// _publish_prompt_body_and_wrap_variant). Field order is
+// most-discriminating-first to match the crystallizer's prefix matcher.
+fn _theorist_canonical_ctx(topic_label: string, input_blob: string) -> string {
+    let topic = if len(topic_label) > 0 { topic_label; } else { "na"; };
+    // colony-lint: safe-exec-concat
+    let sha_cmd = "python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.argv[1].encode(\"utf-8\")).hexdigest())' " + shell_escape(input_blob);
+    let h = try { exec sh sha_cmd; } catch e { ""; };
+    let hash = if len(h) == 64 { h; } else { "na"; };
+    return "topic=" + topic + " input_hash=" + hash;
+}
+
+// _encode_draft_action -- faithful full serialization of the theorist's
+// primary output into a single JSON string used as the crystallized rule
+// action. ALL output fields are preserved (definitions_tex, main_tex,
+// proof_kind, hedge_required, rationale, lean_source, lean_verdict) so a
+// rule hit reconstructs the byte-identical output without prompt(). Built
+// via python3 json.dumps because the LaTeX / Lean payloads carry
+// backslashes, quotes and newlines that inline string concat cannot
+// safely escape. The action is a plain JSON STRING (decoded on the
+// rule-hit path with json_get, NOT get -- get is only for the lookup
+// Map). Total on exec failure (returns "").
+fn _encode_draft_action(draft: Draft, lean_source: string, lean_verdict: string) -> string {
+    let hedge_str = if draft.hedge_required { "true"; } else { "false"; };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,json\no={\"definitions_tex\":sys.argv[1],\"main_tex\":sys.argv[2],\"proof_kind\":sys.argv[3],\"hedge_required\":(sys.argv[4]==\"true\"),\"rationale\":sys.argv[5],\"lean_source\":sys.argv[6],\"lean_verdict\":sys.argv[7]}\nsys.stdout.write(json.dumps(o,separators=(\",\",\":\")))' "
+            + shell_escape(draft.definitions_tex) + " "
+            + shell_escape(draft.main_tex) + " "
+            + shell_escape(draft.proof_kind) + " "
+            + shell_escape(hedge_str) + " "
+            + shell_escape(draft.rationale) + " "
+            + shell_escape(lean_source) + " "
+            + shell_escape(lean_verdict);
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+// _publish_theorist_rule_hit -- mirror of _publish_theorist but takes
+// primitive fields because the .ag grammar disallows inline Draft struct
+// literals (confirmed across the skeptic / verifier ports: "expected
+// Semicolon, got LBrace"). The downstream still reads the same memo keys /
+// emit payload / fitness signal, so the encoding is identical to the LLM
+// path; only the source differs (rule vs prompt). The fitness +
+// replicate-gate block is copied verbatim from _publish_theorist so
+// rule-hit ticks contribute to replication fitness the same as LLM-driven
+// ticks. emit() carries the reconstructed Draft JSON string (the LLM path
+// emits a Draft struct; downstream consumers read the field memos either
+// way).
+fn _publish_theorist_rule_hit(
+    final_write: bool,
+    do_replicate: bool,
+    definitions_tex: string,
+    main_tex: string,
+    proof_kind: string,
+    hedge_required: bool,
+    rationale: string,
+    lean_source: string,
+    lean_verdict: string,
+    self_pid: string,
+    _colony_name: string,
+    upstream_tick: int,
+    tick_idx: int,
+    tick_now_ms: int,
+    my_tier: string
+) -> void {
+    let _ = final_write;
+    let _ = rationale;
+    memo_write("theorist:" + self_pid + ":definitions:tick-" + to_string(upstream_tick), definitions_tex);
+    memo_write("theorist:" + self_pid + ":main:tick-" + to_string(upstream_tick), main_tex);
+    memo_write("theorist:" + self_pid + ":proof_kind:tick-" + to_string(upstream_tick), proof_kind);
+    let hedge_str = if hedge_required { "true"; } else { "false"; };
+    memo_write("theorist:" + self_pid + ":hedge_required:tick-" + to_string(upstream_tick), hedge_str);
+    memo_write("theorist:" + self_pid + ":lean_source:tick-" + to_string(upstream_tick), lean_source);
+    memo_write("theorist:" + self_pid + ":lean_verdict:tick-" + to_string(upstream_tick), lean_verdict);
+    memo_write("replay:current_theorist_pid", self_pid);
+
+    let main_ready_json = "{\"proof_kind\":\"" + proof_kind + "\",\"hedge_required\":" + hedge_str + "}";
+    emit("theorist:main_ready", main_ready_json);
+
+    if my_tier == "propose" {
+        learn("theorise", "tick " + to_string(tick_idx), "proof_kind=" + proof_kind, "success", ["emitted", "preprint-foundry"]);
+    };
+
+    if len(self_pid) > 0 {
+        let fit_pre = parse_int(recall_latest("theorist:" + self_pid + ":fitness"));
+        memo_write("theorist:" + self_pid + ":fitness", to_string(fit_pre + 1));
+    };
+
+    if do_replicate {
+        let repr_thr = parse_int(recall_latest("theorist:reproductive_fitness_threshold"));
+        if repr_thr > 0 {
+            let my_fit_r = parse_int(recall_latest("theorist:" + self_pid + ":fitness"));
+            if my_fit_r > repr_thr {
+                let n_r = parse_int(recall_latest("colony-" + _colony_name + ":size"));
+                let max_repl_r = parse_int(recall_latest("colony-" + _colony_name + ":max_replicas"));
+                if n_r < max_repl_r {
+                    let pool_r = parse_int(recall_latest("colony-" + _colony_name + ":pool"));
+                    let base_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_base_cost"));
+                    let raw_k_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_k"));
+                    let k_r = if raw_k_r <= 0 { 3; } else { raw_k_r; };
+                    let cost_r = base_r + (base_r * n_r) / k_r;
+                    if pool_r >= cost_r {
+                        let variant_pick = pick_variant(n_r);
+                        memo_write("theorist:prompt_variant", variant_pick);
+                        let target_r = select_replication_target();
+                        if len(target_r) > 0 {
+                            let variant_wrapped = _publish_prompt_body_and_wrap_variant(self_pid, variant_pick);
+                            let replica_id = try { replicate(target_r, my_fit_r, variant_wrapped); } catch e { "__replicate_error__"; };
+                            if replica_id != "__replicate_error__" {
+                                if len(replica_id) > 0 {
+                                    memo_write("colony-" + _colony_name + ":pool", to_string(pool_r - cost_r));
+                                    memo_write("colony-" + _colony_name + ":size", to_string(n_r + 1));
+                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "success", ["replicated", "preprint-foundry", _colony_name]);
+
+                                    let lin_str = recall_latest("theorist:" + self_pid + ":generation");
+                                    let lin = if len(lin_str) > 0 { parse_int(lin_str); } else { 0; };
+                                    let ledger_path_r = try { exec sh "printenv REPLICATION_LEDGER"; } catch e { ""; };
+                                    if len(ledger_path_r) > 0 {
+                                        let parent_specialty = recall_latest("theorist:" + self_pid + ":specialty");
+                                        let child_gen = lin + 1;
+                                        // colony-lint: safe-exec-concat
+                                        let row_cmd = "python3 -c 'import sys,json\nts=int(sys.argv[1])\nrow={\"ts\":ts,\"event\":\"replicate\",\"colony\":sys.argv[2],\"side\":\"preprint\",\"parent_pid\":sys.argv[3],\"child_replica_id\":sys.argv[4],\"specialty\":sys.argv[5],\"generation\":int(sys.argv[6]),\"parent_fitness\":int(sys.argv[7])}\nwith open(sys.argv[8],\"a\") as f: f.write(json.dumps(row,separators=(\",\",\":\"))+\"\\n\")\nprint(\"ok\")' "
+                                            + shell_escape(to_string(tick_now_ms)) + " "
+                                            + shell_escape(_colony_name) + " "
+                                            + shell_escape(self_pid) + " "
+                                            + shell_escape(replica_id) + " "
+                                            + shell_escape(parent_specialty) + " "
+                                            + shell_escape(to_string(child_gen)) + " "
+                                            + shell_escape(to_string(my_fit_r)) + " "
+                                            + shell_escape(ledger_path_r);
+                                        let _lr = try { exec sh row_cmd; } catch e { ""; };
+                                        memo_write("theorist:" + replica_id + ":generation", to_string(child_gen));
+                                        if len(parent_specialty) > 0 {
+                                            memo_write("theorist:" + replica_id + ":specialty", parent_specialty);
+                                        };
+                                    };
+                                } else {
+                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "failure", ["replicate-nak", "preprint-foundry", _colony_name]);
+                                };
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let _ = _jitter_sleep();
@@ -552,6 +719,115 @@ fn tick(reason: string) -> void {
             + "EXPLORER OUTPUT:\n" + explorer_output + "\n"
             + "LEARNED PROOF-STYLE PREFERENCES: " + rec_str_clamped + "\n";
 
+    let my_tier = tier("theorist");
+
+    // ===== Stage 1: rule-first lookup (#845, mirrors skeptic / verifier) =====
+    // The canonical context is a FINE self-built key (topic + sha256 of the
+    // full upstream input -- the claim seed, NOT the rec_str hint, which
+    // jitters with the AdaptiveEngine KB). On a crystallized theorist_output
+    // rule hit, reconstruct the full Draft + Lean outputs from the rule's
+    // action slot (a faithful JSON serialization) and skip BOTH prompt()
+    // calls (Draft + Lean). Because the key is fine, this Stage-1 hit only
+    // ever fires when the identical input recurred enough times to
+    // crystallize -- i.e. theorist self-decided (via emergence) that its
+    // output for this input is stable. Rollback knob: THEORIST_RULE_FIRST=0
+    // short-circuits Stage 1 to the LLM path.
+    let _input_blob = "PROBLEM: " + problem_text + "\n"
+                    + "ANSWER: " + stated_answer + "\n"
+                    + "NOVELTY CLAIM: " + novelty_claim + "\n"
+                    + "AUDITOR REASONING: " + audit_reasoning + "\n"
+                    + "EXPLORER GOAL: " + explorer_goal + "\n"
+                    + "EXPLORER CODE:\n" + explorer_code + "\n"
+                    + "EXPLORER OUTPUT:\n" + explorer_output + "\n";
+    let _topic_label = recall_latest("replay:current_topic");
+    let canonical_ctx = _theorist_canonical_ctx(_topic_label, _input_blob);
+
+    let rule_first_flag = try { exec sh "printenv THEORIST_RULE_FIRST"; } catch e { ""; };
+    let rule_first_enabled = rule_first_flag != "0";
+
+    let min_conf_str = try { exec sh "printenv THEORIST_RULE_CONFIDENCE"; } catch e { ""; };
+    let min_conf = if len(min_conf_str) > 0 { parse_float(min_conf_str); } else { 0.85; };
+
+    if rule_first_enabled {
+        let rule = crystallizer_lookup_with_confidence("theorist_output", canonical_ctx, min_conf);
+        if len(rule) > 0 {
+            // Rule hit -- reconstruct the FULL Draft + Lean outputs from the
+            // rule's action field without prompt(). #843:
+            // crystallizer_lookup_with_confidence returns map<string,string>
+            // (Value::Map). Read the map fields with get() (the map
+            // accessor); json_get() expects a JSON string and raises
+            // "expected string, got map" on a Map. The action ITSELF is a
+            // JSON string (the faithful Draft serialization), so its fields
+            // ARE read with json_get() -- get() is only for the outer Map.
+            let rule_id = to_string(get(rule, "rule_id"));
+            let rule_action = to_string(get(rule, "action"));
+            let rule_conf_str = to_string(get(rule, "confidence"));
+            let rule_conf = if len(rule_conf_str) > 0 { parse_float(rule_conf_str); } else { min_conf; };
+
+            let r_definitions = to_string(json_get(rule_action, "definitions_tex"));
+            let r_main = to_string(json_get(rule_action, "main_tex"));
+            let r_proof_kind = to_string(json_get(rule_action, "proof_kind"));
+            let r_hedge_raw = to_string(json_get(rule_action, "hedge_required"));
+            let r_hedge = r_hedge_raw == "true";
+            let r_rationale = to_string(json_get(rule_action, "rationale"));
+            let r_lean_source = to_string(json_get(rule_action, "lean_source"));
+            let r_lean_verdict_raw = to_string(json_get(rule_action, "lean_verdict"));
+            let r_lean_verdict = if len(r_lean_verdict_raw) > 0 { r_lean_verdict_raw; } else { "failed"; };
+
+            let rule_rationale = "rule-first: matched crystallized theorist_output rule at confidence " + to_string(rule_conf) + ". Context: " + canonical_ctx;
+
+            // colony-lint: learn-tags-ok
+            learn("theorist_output", canonical_ctx, rule_action, "success", ["distilled", "rule-hit", "math-foundry"]);
+            crystallizer_record_use(rule_id, true, 0.1);
+
+            // Mirror the LLM path's lean_check observability row so the
+            // experience ledger / auto-promote see the same tag stream.
+            if r_lean_verdict == "verified" {
+                learn("lean_check", "tick " + to_string(tick_idx), "verified", "success", ["lean", "verification"]);
+            } else {
+                if r_lean_verdict == "incomplete" {
+                    learn("lean_check", "tick " + to_string(tick_idx), "incomplete", "partial", ["lean", "verification"]);
+                } else {
+                    learn("lean_check", "tick " + to_string(tick_idx), "failed", "failure", ["lean", "verification"]);
+                };
+            };
+
+            // Tier branch -- mirrors the LLM path below. The rule-hit
+            // publisher takes primitive fields because the .ag grammar
+            // disallows inline Draft struct literals. The theorise /
+            // proof_approach observability rows stay byte-identical to the
+            // LLM path so auto-promote sees the same tag stream.
+            if my_tier == "autonomous" {
+                memo_write("theorist:" + _self_pid + ":review_gated", "true");
+                learn("theorise", "tick " + to_string(tick_idx), r_rationale, "partial", ["acted", "preprint-foundry"]);
+                learn("proof_approach", r_proof_kind, "tick " + to_string(tick_idx), "success", ["acted", "preprint-foundry"]);
+                _publish_theorist_rule_hit(true, true, r_definitions, r_main, r_proof_kind, r_hedge, r_rationale, r_lean_source, r_lean_verdict, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
+            } else {
+                if my_tier == "review-gated" {
+                    memo_write("theorist:" + _self_pid + ":review_gated", "true");
+                    learn("theorise", "tick " + to_string(tick_idx), r_rationale, "partial", ["review-gated", "preprint-foundry"]);
+                    learn("proof_approach", r_proof_kind, "tick " + to_string(tick_idx), "partial", ["review-gated", "preprint-foundry"]);
+                    _publish_theorist_rule_hit(true, false, r_definitions, r_main, r_proof_kind, r_hedge, r_rationale, r_lean_source, r_lean_verdict, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
+                } else {
+                    if my_tier == "propose" {
+                        learn("proof_approach", r_proof_kind, "tick " + to_string(tick_idx), "partial", ["emitted", "preprint-foundry"]);
+                        _publish_theorist_rule_hit(false, false, r_definitions, r_main, r_proof_kind, r_hedge, r_rationale, r_lean_source, r_lean_verdict, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, my_tier);
+                    } else {
+                        print("[theorist] observing rule-hit (tier:", my_tier, ") proof_kind=", r_proof_kind);
+                        learn("theorise", "tick " + to_string(tick_idx), r_rationale, "partial", ["observed", "preprint-foundry"]);
+                        learn("proof_approach", r_proof_kind, "tick " + to_string(tick_idx), "partial", ["observed", "preprint-foundry"]);
+                    };
+                };
+            };
+
+            let _ = rule_rationale;
+            let now_s1 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+            if len(now_s1) > 0 { memo_write("theorist:last_check", now_s1); };
+            return;
+        };
+    };
+
+    // ===== Stage 2: LLM fallback (historical path) =====
     let draft = prompt(_draft_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(_self_pid), ctx) -> Draft;
 
     // #745: Lean 4 formal verification. The LLM is asked to render the
@@ -586,7 +862,29 @@ fn tick(reason: string) -> void {
         };
     };
 
-    let my_tier = tier("theorist");
+    // #845: distillation row. The rule action is the FULL, FAITHFUL
+    // serialization of the theorist's output (all Draft fields + the Lean
+    // source + Lean verdict) -- a generative colony must encode its whole
+    // output, NOT a lossy summary/bucket (the #841 mistake). The CONDITION
+    // is the SAME fine canonical_ctx the Stage-1 lookup passes (topic +
+    // sha256 of the upstream input), so a rule only forms when the IDENTICAL
+    // input recurs >= crystallize_min_validations times producing the
+    // identical output (self-distill). Diverse generation never aggregates
+    // (each tick mints a distinct action under a distinct context hash and
+    // no entry reaches the validation floor -- self-stay-LLM). distill()
+    // raises until there are >=3 successful theorist_output records, so
+    // guard it; once the entry crystallizes the Stage-1 lookup starts
+    // hitting and this miss path stops running for that context.
+    let canonical_action = _encode_draft_action(draft, lean_draft.lean_source, lean_verdict);
+    if len(canonical_action) > 0 {
+        // colony-lint: learn-tags-ok
+        learn("theorist_output", canonical_ctx, canonical_action, "success", ["distilled", "math-foundry"]);
+        let distilled_id = try { distill("theorist_output", canonical_ctx, canonical_action, "heuristic"); } catch e { ""; };
+        if len(distilled_id) > 0 {
+            knowledge_validate(distilled_id);
+        };
+    };
+
     if my_tier == "autonomous" {
         memo_write("theorist:" + _self_pid + ":review_gated", "true");
         learn("theorise", "tick " + to_string(tick_idx), draft.rationale, "partial", ["acted", "preprint-foundry"]);
