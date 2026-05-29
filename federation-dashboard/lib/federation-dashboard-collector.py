@@ -2054,6 +2054,27 @@ config_scopes = [
 for col in colonies:
     p = os.path.join(fed_dir, col, 'config', 'colony.toml')
     rec = _read_toml_scope(p)
+    # #870: hermetic federations (research-foundry, tribes-bench) don't
+    # have operator-edited `colony.toml` files — the runtime config lives
+    # in the container's hermetic `.agentis/config` and the per-colony
+    # toml is vestigial. Fall back to `colony.example.toml` so the Config
+    # tab shows the effective config instead of 18 empty scopes. The
+    # `from_example: true` marker lets the renderer (now or later) draw
+    # a small "example" badge so an operator can tell at a glance which
+    # scopes are operator overrides and which are reading the template.
+    rec['from_example'] = False
+    if not rec['exists']:
+        ex_p = os.path.join(fed_dir, col, 'config', 'colony.example.toml')
+        if os.path.isfile(ex_p):
+            rec = _read_toml_scope(ex_p)
+            rec['from_example'] = True
+            # Keep the original path the operator would write to, so
+            # /config/apply still targets `colony.toml`. The renderer's
+            # mtime drift-check still works because `exists` reflects
+            # whether the live colony.toml exists (now true via the
+            # fallback read), and the renderer uses `from_example` for
+            # the cosmetic "example" badge only.
+            rec['path'] = p  # operator-facing target stays colony.toml
     rec['scope'] = col
     rec['label'] = col + ' override'
     config_scopes.append(rec)
