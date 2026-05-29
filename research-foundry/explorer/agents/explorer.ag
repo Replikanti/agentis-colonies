@@ -626,6 +626,228 @@ fn _age_tick_and_check(colony: string, self_pid: string) -> int {
     return next_age;
 }
 
+// #845: rule-first / distillation scaffolding. UNLIKE the verdict
+// colonies (skeptic/novelty/prior_advocate/auditor), which distil a
+// single discrete enum field, the explorer is the federation's
+// GENERATIVE SOURCE -- it produces the exploration ideas that drive
+// everything downstream. So this colony uses FAITHFUL FULL-OUTPUT
+// encoding (the complete Exploration{exploration_goal, code,
+// expected_output_format} serialized to JSON as the rule action) keyed
+// on a VERY FINE context (sha256 of the exact upstream input). A rule
+// therefore forms ONLY when the identical input produced the identical
+// exploration repeatedly -- which for a creative generator essentially
+// never happens, so the explorer self-no-ops and stays LLM-driven. That
+// self-no-op is the CORRECT outcome: over-caching here would replay the
+// same explorations and starve the pipeline (the run #16 diversity
+// collapse). The fine context + faithful (NOT lossy/bucketed) encoding
+// are the mechanical safeguard against that -- do not coarsen the
+// context or lossy-encode the output to force caching.
+
+// _explorer_canonical_ctx -- the rule key. Very-fine: a sha256 over the
+// EXACT upstream input the LLM saw (topic label + topic description +
+// compute hints + paper A id/title/abstract + paper B id/title/abstract
+// + the per-pid specialty seed). Joined by NUL so field boundaries can
+// never collide. Because the digest covers the full input verbatim, two
+// genuinely different topic / paper-pair contexts produce different
+// digests -> different rule keys -> no cross-context cache. Total on
+// exec failure (returns "" so the caller skips Stage 1 and falls to the
+// LLM path). The python3 hashlib idiom mirrors
+// _publish_prompt_body_and_wrap_variant above.
+fn _explorer_canonical_ctx(
+    self_pid: string,
+    topic_label: string,
+    topic_desc: string,
+    compute_hints: string,
+    paper_a_id: string,
+    paper_a_title: string,
+    paper_a_abstract: string,
+    paper_b_id: string,
+    paper_b_title: string,
+    paper_b_abstract: string
+) -> string {
+    let seed = if len(self_pid) > 0 { recall_latest("explorer:" + self_pid + ":specialty"); } else { ""; };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,hashlib\nh=hashlib.sha256()\nh.update((\"\\x00\".join(sys.argv[1:])).encode(\"utf-8\"))\nsys.stdout.write(h.hexdigest())' "
+            + shell_escape(topic_label) + " "
+            + shell_escape(topic_desc) + " "
+            + shell_escape(compute_hints) + " "
+            + shell_escape(paper_a_id) + " "
+            + shell_escape(paper_a_title) + " "
+            + shell_escape(paper_a_abstract) + " "
+            + shell_escape(paper_b_id) + " "
+            + shell_escape(paper_b_title) + " "
+            + shell_escape(paper_b_abstract) + " "
+            + shell_escape(seed);
+    let h = try { exec sh cmd; } catch e { ""; };
+    if len(h) != 64 { return ""; };
+    return "explore:" + h;
+}
+
+// _build_faithful_exploration_action -- FAITHFUL serialization of the
+// full Exploration into a JSON string used as the crystallizer rule
+// action. ALL THREE fields are preserved verbatim (NOT a lossy
+// class/bucket) so a rule hit can reconstruct the byte-identical
+// Exploration the LLM would have produced. python3 json.dumps handles
+// escaping the code field (newlines, quotes, backslashes) so json_get
+// can decode each field back on the Stage-1 path. Total on exec failure
+// (returns ""). Compact separators keep the entry id stable across ticks
+// for identical input.
+fn _build_faithful_exploration_action(exploration_goal: string, code: string, expected_output_format: string) -> string {
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,json\nprint(json.dumps({\"exploration_goal\":sys.argv[1],\"code\":sys.argv[2],\"expected_output_format\":sys.argv[3]},separators=(\",\",\":\")))' "
+            + shell_escape(exploration_goal) + " "
+            + shell_escape(code) + " "
+            + shell_escape(expected_output_format);
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+// _publish_explorer_rule_hit -- mirror of _publish_explorer but takes
+// primitive fields (the three faithful Exploration fields) because the
+// .ag grammar disallows inline Exploration{ ... } struct literals
+// ("expected Semicolon, got LBrace"). The downstream still gets the same
+// emit payload (a JSON Exploration string), the same exec of the
+// reconstructed code, the same memo keys, ledger row, settlement,
+// fitness update, M98 evolution trigger, and M2-Malthusian replicate
+// gate, so a rule-hit tick is byte-equivalent to the LLM tick except the
+// source (rule vs prompt). The body is copied from _publish_explorer.
+fn _publish_explorer_rule_hit(
+    final_write: bool,
+    do_replicate: bool,
+    exploration_goal: string,
+    code: string,
+    expected_output_format: string,
+    self_pid: string,
+    _colony_name: string,
+    tick_idx: int,
+    tick_now_ms: int,
+    topic_label: string,
+    prompt_text: string
+) -> void {
+    let _ = expected_output_format;
+    let exploration_json = _build_faithful_exploration_action(exploration_goal, code, expected_output_format);
+    emit("math-foundry:exploration_done", exploration_json);
+
+    let sandbox_dir = try { exec sh "printenv AGENTIS_ROOT"; } catch e { ""; };
+    let sandbox_eff = if len(sandbox_dir) > 0 { sandbox_dir + "/sandbox"; } else { "/run-root/.agentis/sandbox"; };
+    // colony-lint: safe-exec-concat
+    let write_cmd = "mkdir -p " + shell_escape(sandbox_eff) + " && printf '%s' " + shell_escape(code) + " > " + shell_escape(sandbox_eff + "/explore-" + self_pid + "-tick-" + to_string(tick_idx) + ".py");
+    let _ = try { exec sh write_cmd; } catch e { ""; };
+    // colony-lint: safe-exec-concat
+    let run_cmd = "python3 " + shell_escape(sandbox_eff + "/explore-" + self_pid + "-tick-" + to_string(tick_idx) + ".py") + " 2>&1";
+    let output = try { exec sh run_cmd; } catch e { ""; };
+
+    memo_write("explorer:" + self_pid + ":code:tick-" + to_string(tick_idx), code);
+    memo_write("explorer:" + self_pid + ":output:tick-" + to_string(tick_idx), output);
+    memo_write("explorer:" + self_pid + ":goal:tick-" + to_string(tick_idx), exploration_goal);
+    memo_write("explorer:" + self_pid + ":topic:tick-" + to_string(tick_idx), topic_label);
+
+    if final_write {
+        let ledger_path = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
+        if len(ledger_path) > 0 {
+            let ledger_row = "{\"ts\":" + to_string(tick_now_ms) + ",\"colony\":\"" + _colony_name + "\",\"pid\":\"" + self_pid + "\",\"tick\":" + to_string(tick_idx) + ",\"topic\":\"" + topic_label + "\",\"event\":\"exploration_done\"}";
+            // colony-lint: safe-exec-concat
+            let append_cmd = "printf '%s\n' " + shell_escape(ledger_row) + " >> " + shell_escape(ledger_path);
+            let _l = try { exec sh append_cmd; } catch e { ""; };
+        };
+
+        let hold_env = try { exec sh "printenv HOLD_PERIOD"; } catch e { ""; };
+        let hold = if len(hold_env) > 0 { parse_int(hold_env); } else { 4; };
+        let hold_eff = if hold <= 0 { 4; } else { hold; };
+        let settle_tick = tick_idx - hold_eff;
+        if settle_tick >= 0 {
+            let verdict_raw = recall_latest("novelty:final_verdict:" + self_pid + ":tick-" + to_string(settle_tick));
+            if len(verdict_raw) > 0 {
+                print("[explorer] settled tick=", settle_tick, " verdict=", verdict_raw);
+                learn("settle", "tick " + to_string(settle_tick) + " " + verdict_raw, "novelty=" + verdict_raw, "success", ["acted", "math-foundry", _colony_name, "verdict:" + verdict_raw]);
+
+                if len(self_pid) > 0 {
+                    let reward_novel_env = try { exec sh "printenv FOUNDRY_FITNESS_REWARD_NOVEL_PER_TICK"; } catch e { ""; };
+                    let reward_novel = if len(reward_novel_env) > 0 { parse_int(reward_novel_env); } else { 2; };
+                    let penalty_not_novel_env = try { exec sh "printenv FOUNDRY_FITNESS_PENALTY_NOT_NOVEL_PER_TICK"; } catch e { ""; };
+                    let penalty_not_novel = if len(penalty_not_novel_env) > 0 { parse_int(penalty_not_novel_env); } else { 1; };
+                    let fit_pre = parse_int(recall_latest("explorer:" + self_pid + ":fitness"));
+                    let fit_delta = if verdict_raw == "NOVEL" {
+                        reward_novel;
+                    } else { if verdict_raw == "BORDERLINE" {
+                        1;
+                    } else { if verdict_raw == "NOT_NOVEL" {
+                        0 - penalty_not_novel;
+                    } else { if verdict_raw == "REJECT" {
+                        0 - 1;
+                    } else {
+                        0;
+                    }; }; }; };
+                    memo_write("explorer:" + self_pid + ":fitness", to_string(fit_pre + fit_delta));
+                };
+
+                if len(self_pid) > 0 {
+                    let _buf_len = _push_settled_exploration(self_pid, verdict_raw);
+                    let _thr_env = try { exec sh "printenv EXPLORER_PROMPT_EVOLUTION_THRESHOLD"; } catch e { ""; };
+                    let _thr = if len(_thr_env) > 0 { parse_int(_thr_env); } else { 3; };
+                    let _thr_eff = if _thr <= 0 { 3; } else { _thr; };
+                    let _not_novel = _count_not_novel(self_pid);
+                    if _not_novel >= _thr_eff {
+                        let _ = _evolve_exploration_prompt(self_pid, prompt_text);
+                    };
+                };
+
+                if do_replicate {
+                    let repr_thr = parse_int(recall_latest("explorer:reproductive_fitness_threshold"));
+                    if repr_thr > 0 {
+                        let my_fit_r = parse_int(recall_latest("explorer:" + self_pid + ":fitness"));
+                        if my_fit_r > repr_thr {
+                            let n_r = parse_int(recall_latest("colony-" + _colony_name + ":size"));
+                            let max_repl_r = parse_int(recall_latest("colony-" + _colony_name + ":max_replicas"));
+                            if n_r < max_repl_r {
+                                let pool_r = parse_int(recall_latest("colony-" + _colony_name + ":pool"));
+                                let base_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_base_cost"));
+                                let raw_k_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_k"));
+                                let k_r = if raw_k_r <= 0 { 3; } else { raw_k_r; };
+                                let cost_r = base_r + (base_r * n_r) / k_r;
+                                if pool_r >= cost_r {
+                                    let variant_pick = pick_variant(n_r);
+                                    memo_write("explorer:prompt_variant", variant_pick);
+                                    let target_r = select_replication_target();
+                                    if len(target_r) > 0 {
+                                        let variant_wrapped = _publish_prompt_body_and_wrap_variant(self_pid, variant_pick);
+                                        let replica_id = try { replicate(target_r, my_fit_r, variant_wrapped); } catch e { "__replicate_error__"; };
+                                        if replica_id != "__replicate_error__" {
+                                            if len(replica_id) > 0 {
+                                                memo_write("colony-" + _colony_name + ":pool", to_string(pool_r - cost_r));
+                                                memo_write("colony-" + _colony_name + ":size", to_string(n_r + 1));
+                                                learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "success", ["replicated", "math-foundry", _colony_name]);
+
+                                                let lin_str = recall_latest("explorer:" + self_pid + ":generation");
+                                                let lin = if len(lin_str) > 0 { parse_int(lin_str); } else { 0; };
+                                                let ledger_path_r = try { exec sh "printenv REPLICATION_LEDGER"; } catch e { ""; };
+                                                if len(ledger_path_r) > 0 {
+                                                    let parent_specialty = recall_latest("explorer:" + self_pid + ":specialty");
+                                                    let child_gen = lin + 1;
+                                                    let row = "{\"ts\":" + to_string(tick_now_ms) + ",\"event\":\"replicate\",\"parent_pid\":\"" + self_pid + "\",\"child_replica_id\":\"" + replica_id + "\",\"specialty\":\"" + parent_specialty + "\",\"generation\":" + to_string(child_gen) + ",\"parent_fitness\":" + to_string(my_fit_r) + "}";
+                                                    // colony-lint: safe-exec-concat
+                                                    let append_r = "printf '%s\n' " + shell_escape(row) + " >> " + shell_escape(ledger_path_r);
+                                                    let _lr = try { exec sh append_r; } catch e { ""; };
+                                                    memo_write("explorer:" + replica_id + ":generation", to_string(child_gen));
+                                                    if len(parent_specialty) > 0 {
+                                                        memo_write("explorer:" + replica_id + ":specialty", parent_specialty);
+                                                    };
+                                                };
+                                            } else {
+                                                learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "failure", ["replicate-nak", "math-foundry", _colony_name]);
+                                            };
+                                        };
+                                    };
+                                };
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let _ = _jitter_sleep();
@@ -831,12 +1053,141 @@ fn tick(reason: string) -> void {
             + prior_knowledge_line
             + loss_shaping_hint_line;
 
+    let my_tier = tier("explorer");
+
+    // ===== Stage 1: rule-first lookup (#845, faithful full-output) =====
+    // The canonical context is a VERY FINE sha256 of the exact upstream
+    // input (topic + paper-pair ids/titles/abstracts + specialty seed).
+    // On a crystallized explorer_output rule hit, reconstruct the FULL
+    // Exploration (all three fields) faithfully from the rule's action
+    // slot via json_get and skip prompt(). Because the context is the
+    // hash of the whole input and the action is the whole output, a rule
+    // forms only when the identical input produced the identical
+    // exploration repeatedly -- for a creative generator that essentially
+    // never happens, so the explorer self-no-ops and stays LLM-driven.
+    // Rollback knob: EXPLORER_RULE_FIRST=0 short-circuits Stage 1 to the
+    // LLM path.
+    let canonical_ctx = _explorer_canonical_ctx(_self_pid, topic_label, topic_desc, compute_hints, paper_a_id, paper_a_title, paper_a_abstract, paper_b_id, paper_b_title, paper_b_abstract);
+
+    let rule_first_flag = try { exec sh "printenv EXPLORER_RULE_FIRST"; } catch e { ""; };
+    let rule_first_enabled = rule_first_flag != "0";
+
+    let min_conf_str = try { exec sh "printenv EXPLORER_RULE_CONFIDENCE"; } catch e { ""; };
+    let min_conf = if len(min_conf_str) > 0 { parse_float(min_conf_str); } else { 0.85; };
+
+    if rule_first_enabled {
+        if len(canonical_ctx) > 0 {
+            let rule = crystallizer_lookup_with_confidence("explorer_output", canonical_ctx, min_conf);
+            if len(rule) > 0 {
+                // Rule hit -- reconstruct the FULL Exploration faithfully
+                // from the rule's action field without prompt(). The action
+                // slot carries the complete JSON-serialized Exploration (see
+                // Stage 2 learn() row). #843: crystallizer_lookup_with_confidence
+                // returns map<string,string> (Value::Map). Read the map
+                // fields with get() (the map accessor); json_get() expects a
+                // JSON string and raises "expected string, got map" on a map.
+                // The action VALUE read out via get() IS a JSON string, so we
+                // json_get() THAT string to pull the three Exploration fields.
+                let rule_id = to_string(get(rule, "rule_id"));
+                let rule_action = to_string(get(rule, "action"));
+                let r_goal = to_string(json_get(rule_action, "exploration_goal"));
+                let r_code = to_string(json_get(rule_action, "code"));
+                let r_fmt = to_string(json_get(rule_action, "expected_output_format"));
+                // colony-lint: learn-tags-ok
+                learn("explorer_output", canonical_ctx, rule_action, "success", ["distilled", "rule-hit", "math-foundry"]);
+                crystallizer_record_use(rule_id, true, 0.1);
+
+                // #742 TaskBoard offer on the rule-hit path too -- mirrors
+                // the LLM path so the compute delegation behaviour stays
+                // identical between sources.
+                let _offer_eligible_s1 = if my_tier == "propose" {
+                    true;
+                } else {
+                    if my_tier == "review-gated" {
+                        true;
+                    } else {
+                        if my_tier == "autonomous" { true; } else { false; };
+                    };
+                };
+                let _offered_task_id_s1 = if _offer_eligible_s1 {
+                    _offer_compute_task(_self_pid, r_goal, tick_idx, _colony_name);
+                } else {
+                    "";
+                };
+                let _ = _offered_task_id_s1;
+
+                // Tier branch -- mirrors the LLM path below. The rule-hit
+                // publisher takes primitive fields because the .ag grammar
+                // disallows inline Exploration struct literals. The explore /
+                // topic_selection observability rows stay byte-identical to
+                // the LLM path so auto-promote sees the same tag stream.
+                if my_tier == "autonomous" {
+                    memo_write("explorer:" + _self_pid + ":review_gated", "true");
+                    learn("explore", "tick " + to_string(tick_idx) + " " + topic_label, r_goal, "partial", ["acted", "math-foundry"]);
+                    learn("topic_selection", topic_label, "tick " + to_string(tick_idx), "success", ["acted", "math-foundry"]);
+                    _publish_explorer_rule_hit(true, true, r_goal, r_code, r_fmt, _self_pid, _colony_name, tick_idx, _tick_now_ms, topic_label, prompt_text);
+                } else {
+                    if my_tier == "review-gated" {
+                        memo_write("explorer:" + _self_pid + ":review_gated", "true");
+                        memo_write("explorer:" + _self_pid + ":code:tick-" + to_string(tick_idx), r_code);
+                        memo_write("explorer:" + _self_pid + ":goal:tick-" + to_string(tick_idx), r_goal);
+                        memo_write("explorer:" + _self_pid + ":topic:tick-" + to_string(tick_idx), topic_label);
+                        learn("explore", "tick " + to_string(tick_idx) + " " + topic_label, r_goal, "partial", ["review-gated", "math-foundry"]);
+                        learn("topic_selection", topic_label, "tick " + to_string(tick_idx), "partial", ["review-gated", "math-foundry"]);
+                    } else {
+                        if my_tier == "propose" {
+                            learn("topic_selection", topic_label, "tick " + to_string(tick_idx), "partial", ["emitted", "math-foundry"]);
+                            _publish_explorer_rule_hit(true, false, r_goal, r_code, r_fmt, _self_pid, _colony_name, tick_idx, _tick_now_ms, topic_label, prompt_text);
+                        } else {
+                            print("[explorer] observing rule-hit (tier:", my_tier, ") goal=", r_goal);
+                            learn("explore", "tick " + to_string(tick_idx) + " " + topic_label, r_goal, "partial", ["observed", "math-foundry"]);
+                            learn("topic_selection", topic_label, "tick " + to_string(tick_idx), "partial", ["observed", "math-foundry"]);
+                        };
+                    };
+                };
+
+                let now_s1 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+                if len(now_s1) > 0 { memo_write("explorer:last_check", now_s1); };
+                return;
+            };
+        };
+    };
+
+    // ===== Stage 2: LLM fallback (historical path) =====
     let exploration = prompt(
         prompt_text + _variant_overlay_suffix() + _specialty_overlay_suffix(_self_pid),
         ctx
     ) -> Exploration;
 
-    let my_tier = tier("explorer");
+    // #845: distillation row. UNLIKE the verdict colonies, the rule
+    // action is the FAITHFUL full Exploration (all three fields) serialized
+    // to JSON, keyed on the VERY FINE canonical_ctx (sha256 of the exact
+    // input). Identical input->identical output that recurs >= min_validations
+    // crystallizes (self-distill); diverse output (the normal case for a
+    // creative generator) never aggregates because the input hash differs
+    // every tick (self-stay-LLM). The condition slot is the same very-fine
+    // canonical_ctx -- NOT coarsened -- so a rule fires only for a
+    // byte-identical input recurrence, the run #16 over-suppression guard.
+    let faithful_action = _build_faithful_exploration_action(exploration.exploration_goal, exploration.code, exploration.expected_output_format);
+    if len(canonical_ctx) > 0 {
+        if len(faithful_action) > 0 {
+            // colony-lint: learn-tags-ok
+            learn("explorer_output", canonical_ctx, faithful_action, "success", ["distilled", "math-foundry"]);
+            // Complete the distillation loop: learn() above only writes the
+            // ExperienceStore; distill() promotes >=3 successful
+            // explorer_output records into a KnowledgeEntry, and
+            // knowledge_validate() bumps empirical_validations toward
+            // crystallize_min_validations. distill() raises until there are
+            // >=3 successful records over the SAME fine ctx, so guard it;
+            // for diverse input that threshold is never reached and no rule
+            // forms.
+            let distilled_id = try { distill("explorer_output", canonical_ctx, faithful_action, "heuristic"); } catch e { ""; };
+            if len(distilled_id) > 0 {
+                knowledge_validate(distilled_id);
+            };
+        };
+    };
+
     // #742 TaskBoard offer: delegate compute-heavy claims to the
     // computer colony so the explorer can move on to the next topic
     // instead of blocking on a heavy SymPy/GAP loop in its own
