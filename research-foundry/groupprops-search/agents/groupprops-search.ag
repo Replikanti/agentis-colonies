@@ -299,6 +299,177 @@ fn _age_tick_and_check(colony: string, self_pid: string) -> int {
     return next_age;
 }
 
+// #845 uniform rollout: rule-first / distillation scaffolding ported
+// from the skeptic (#846) but adapted to a GENERATIVE colony like the
+// editor (#845). The groupprops-search primary output is a query set
+// (Queries.queries_json + rationale), not a discrete verdict, so the
+// rule action encodes the FULL Queries faithfully (a JSON serialization,
+// NOT a lossy bucket -- caching a coarse class would wrongly cache
+// creativity, the #841 mistake). The rule key is a FINE-GRAINED hash of
+// the exact upstream claim ctx (PROBLEM + ANSWER + NOVELTY CLAIM) so
+// identical inputs share a key and diverse inputs never aggregate. The
+// crystallizer's confidence+validation gating decides at runtime whether
+// a rule ever forms: identical input -> queries repeat -> crystallize +
+// replay (self-distill); diverse input -> a fresh hash -> no aggregation
+// (self-stay-LLM). The external opensearch fetch + relevance-judge prompt
+// still run on the reconstructed queries on the rule-hit path.
+
+// _groupprops_search_canonical_ctx -- the rule key. Fine-grained: the
+// sha256 of the exact upstream claim ctx the query-gen prompt saw
+// (PROBLEM + ANSWER + NOVELTY CLAIM), salted with the upstream_tick so
+// the same claim at distinct ticks does not collide. Identical upstream
+// -> same 64-hex key; any drift -> a fresh key, so creative divergence
+// never collapses onto one rule. Field order keeps a stable, parseable
+// shape "gpsctx=<64hex>" the crystallizer prefix-matcher keys off. Total
+// on empty / hash failure ("gpsctx=na").
+fn _groupprops_search_canonical_ctx(ctx: string, upstream_tick: int) -> string {
+    if len(ctx) == 0 { return "gpsctx=na"; };
+    let salted = "tick=" + to_string(upstream_tick) + "\n" + ctx;
+    // colony-lint: safe-exec-concat
+    let sha_cmd = "python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.argv[1].encode(\"utf-8\")).hexdigest())' " + shell_escape(salted);
+    let h = try { exec sh sha_cmd; } catch e { ""; };
+    if len(h) != 64 { return "gpsctx=na"; };
+    return "gpsctx=" + h;
+}
+
+// _queries_to_action_json -- faithful full-output serializer. Routes the
+// two Queries string fields through python3 json.dumps so embedded `"` /
+// `\n` / `\\` in queries_json / rationale cannot corrupt the rule action
+// (same hardening as the replicate-ledger row at #600). The produced JSON
+// is what learn()/distill() store as the rule action and what the Stage-1
+// rule-hit path decodes back into Queries primitives via json_get. Total
+// on failure (returns an empty-Queries JSON).
+fn _queries_to_action_json(queries: Queries) -> string {
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,json\nobj={\"queries_json\":sys.argv[1],\"rationale\":sys.argv[2]}\nprint(json.dumps(obj,separators=(\",\",\":\")))' " + shell_escape(queries.queries_json) + " " + shell_escape(queries.rationale);
+    let out = try { exec sh cmd; } catch e { ""; };
+    if len(out) == 0 {
+        return "{\"queries_json\":\"\",\"rationale\":\"\"}";
+    };
+    return out;
+}
+
+// _publish_groupprops_search_rule_hit -- mirror of _publish_groupprops_search
+// but takes the Queries fields as primitives because the .ag grammar
+// disallows inline Queries struct literals (matches the editor's
+// _publish_editor_rule_hit / skeptic's _publish_skeptic_rule_hit
+// precedent). The body is copied verbatim from _publish_groupprops_search
+// with `queries.queries_json` -> the `queries_json` parameter, so a
+// rule-hit tick is byte-indistinguishable downstream from an LLM-driven
+// tick except the queries came from a crystallized rule rather than
+// prompt(). CRITICAL: the external opensearch fetch + the relevance-judge
+// prompt still run here on the reconstructed queries -- only the
+// query-generation prompt is skipped on a rule hit.
+fn _publish_groupprops_search_rule_hit(
+    final_write: bool,
+    do_replicate: bool,
+    queries_json_arg: string,
+    self_pid: string,
+    _colony_name: string,
+    upstream_tick: int,
+    tick_idx: int,
+    tick_now_ms: int,
+    problem_text: string,
+    stated_answer: string,
+    novelty_claim: string,
+    my_tier: string
+) -> void {
+    let _ = final_write;
+    let queries_json = queries_json_arg;
+    // colony-lint: safe-exec-concat
+    let fetch_cmd = "QJSON=" + shell_escape(queries_json)
+        + " python3 -c 'import os, json, urllib.parse, urllib.request, sys\n"
+        + "try:\n  qs=json.loads(os.environ[\"QJSON\"])\nexcept Exception:\n  qs=[]\n"
+        + "if not isinstance(qs, list): qs=[]\n"
+        + "out=[]\n"
+        + "for q in qs[:5]:\n"
+        + "  url=\"https://groupprops.subwiki.org/w/api.php?action=opensearch&format=json&limit=10&search=\"+urllib.parse.quote_plus(str(q))\n"
+        + "  try:\n"
+        + "    r=urllib.request.urlopen(url,timeout=30).read().decode(\"utf-8\",\"replace\")\n"
+        + "  except Exception as e:\n"
+        + "    r=\"<error>\"+str(e)+\"</error>\"\n"
+        + "  out.append(\"--- query: \"+str(q)+\" ---\\n\"+r)\n"
+        + "sys.stdout.write(\"\\n\".join(out))'";
+    let combined_raw = try { exec sh fetch_cmd; } catch e { ""; };
+
+    let judge_ctx = "PROBLEM: " + problem_text + "\n"
+                  + "ANSWER: " + stated_answer + "\n"
+                  + "NOVELTY CLAIM: " + novelty_claim + "\n"
+                  + "GROUPPROPS FEEDS:\n" + combined_raw + "\n";
+    let report = prompt(_relevance_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(self_pid), judge_ctx) -> Report;
+
+    let report_json = "{\"matches_found\":" + to_string(report.matches_found)
+                    + ",\"summary\":\"" + report.summary
+                    + "\",\"top_match_count\":" + to_string(len(report.top_matches)) + "}";
+    memo_write("groupprops_search:" + self_pid + ":report:tick-" + to_string(upstream_tick), report_json);
+    memo_write("groupprops_search:" + self_pid + ":matches_found:tick-" + to_string(upstream_tick), to_string(report.matches_found));
+    memo_write("groupprops_search:" + self_pid + ":summary:tick-" + to_string(upstream_tick), report.summary);
+    memo_write("replay:current_groupprops_search_pid", self_pid);
+    emit("groupprops-search:report_ready", report);
+
+    if my_tier == "propose" {
+        learn("groupprops-search", "tick " + to_string(tick_idx), "matches=" + to_string(report.matches_found), "success", ["emitted", "claim-auditor"]);
+    };
+
+    if len(self_pid) > 0 {
+        let fit_pre = parse_int(recall_latest("groupprops-search:" + self_pid + ":fitness"));
+        let fit_delta = if report.matches_found > 0 { 1; } else { 0; };
+        memo_write("groupprops-search:" + self_pid + ":fitness", to_string(fit_pre + fit_delta));
+    };
+
+    if do_replicate {
+        let repr_thr = parse_int(recall_latest("groupprops-search:reproductive_fitness_threshold"));
+        if repr_thr > 0 {
+            let my_fit_r = parse_int(recall_latest("groupprops-search:" + self_pid + ":fitness"));
+            if my_fit_r > repr_thr {
+                let n_r = parse_int(recall_latest("colony-" + _colony_name + ":size"));
+                let max_repl_r = parse_int(recall_latest("colony-" + _colony_name + ":max_replicas"));
+                if n_r < max_repl_r {
+                    let pool_r = parse_int(recall_latest("colony-" + _colony_name + ":pool"));
+                    let base_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_base_cost"));
+                    let raw_k_r = parse_int(recall_latest("colony-" + _colony_name + ":replication_k"));
+                    let k_r = if raw_k_r <= 0 { 3; } else { raw_k_r; };
+                    let cost_r = base_r + (base_r * n_r) / k_r;
+                    if pool_r >= cost_r {
+                        let variant_pick = pick_variant(n_r);
+                        memo_write("groupprops-search:prompt_variant", variant_pick);
+                        let target_r = select_replication_target();
+                        if len(target_r) > 0 {
+                            let variant_wrapped = _publish_prompt_body_and_wrap_variant(self_pid, variant_pick);
+                            let replica_id = try { replicate(target_r, my_fit_r, variant_wrapped); } catch e { "__replicate_error__"; };
+                            if replica_id != "__replicate_error__" {
+                                if len(replica_id) > 0 {
+                                    memo_write("colony-" + _colony_name + ":pool", to_string(pool_r - cost_r));
+                                    memo_write("colony-" + _colony_name + ":size", to_string(n_r + 1));
+                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "success", ["replicated", "claim-auditor", _colony_name]);
+
+                                    let lin_str = recall_latest("groupprops-search:" + self_pid + ":generation");
+                                    let lin = if len(lin_str) > 0 { parse_int(lin_str); } else { 0; };
+                                    let ledger_path_r = try { exec sh "printenv REPLICATION_LEDGER"; } catch e { ""; };
+                                    if len(ledger_path_r) > 0 {
+                                        let parent_specialty = recall_latest("groupprops-search:" + self_pid + ":specialty");
+                                        let child_gen = lin + 1;
+                                        let row = "{\"ts\":" + to_string(tick_now_ms) + ",\"event\":\"replicate\",\"colony\":\"" + _colony_name + "\",\"side\":\"audit\",\"parent_pid\":\"" + self_pid + "\",\"child_replica_id\":\"" + replica_id + "\",\"specialty\":\"" + parent_specialty + "\",\"generation\":" + to_string(child_gen) + ",\"parent_fitness\":" + to_string(my_fit_r) + "}";
+                                        // colony-lint: safe-exec-concat
+                                        let append_r = "printf '%s\n' " + shell_escape(row) + " >> " + shell_escape(ledger_path_r);
+                                        let _lr = try { exec sh append_r; } catch e { ""; };
+                                        memo_write("groupprops-search:" + replica_id + ":generation", to_string(child_gen));
+                                        if len(parent_specialty) > 0 {
+                                            memo_write("groupprops-search:" + replica_id + ":specialty", parent_specialty);
+                                        };
+                                    };
+                                } else {
+                                    learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "failure", ["replicate-nak", "claim-auditor", _colony_name]);
+                                };
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
+}
+
 fn tick(reason: string) -> void {
     let _ = reason;
     let _ = _jitter_sleep();
@@ -361,9 +532,105 @@ fn tick(reason: string) -> void {
             + "ANSWER: " + stated_answer + "\n"
             + "NOVELTY CLAIM: " + novelty_claim + "\n";
 
+    let my_tier = tier("groupprops_search");
+
+    // ===== Stage 1: rule-first lookup (#845 uniform rollout) =====
+    // The canonical context is a fine-grained hash of the exact upstream
+    // claim ctx, so a crystallized groupprops_search_output rule only ever
+    // fires when the identical claim recurs at the same tick. On a hit, the
+    // rule's action slot carries the FULL Queries JSON (queries_json +
+    // rationale); we decode it with json_get and run the SAME tier branch +
+    // publisher + observability rows as the prompt path, skipping the
+    // query-generation prompt(). The external opensearch fetch + the
+    // relevance-judge prompt still run inside the publisher on the
+    // reconstructed queries. Rollback knob: GROUPPROPS_SEARCH_RULE_FIRST=0
+    // short-circuits Stage 1 to the LLM path.
+    let canonical_ctx = _groupprops_search_canonical_ctx(ctx, upstream_tick);
+
+    let rule_first_flag = try { exec sh "printenv GROUPPROPS_SEARCH_RULE_FIRST"; } catch e { ""; };
+    let rule_first_enabled = rule_first_flag != "0";
+
+    let min_conf_str = try { exec sh "printenv GROUPPROPS_SEARCH_RULE_CONFIDENCE"; } catch e { ""; };
+    let min_conf = if len(min_conf_str) > 0 { parse_float(min_conf_str); } else { 0.85; };
+
+    if rule_first_enabled {
+        let rule = crystallizer_lookup_with_confidence("groupprops_search_output", canonical_ctx, min_conf);
+        if len(rule) > 0 {
+            // Rule hit -- reconstruct the Queries from the rule's action
+            // field without the query-generation prompt(). #843: the lookup
+            // returns map<string,string> (Value::Map). Read map fields with
+            // get() (the map accessor); json_get() expects a JSON string and
+            // raises "expected string, got map" on a map. The action value
+            // IS a JSON string, so json_get() is correct on it.
+            let rule_id = to_string(get(rule, "rule_id"));
+            let rule_action = to_string(get(rule, "action"));
+            let rule_conf_str = to_string(get(rule, "confidence"));
+            let rule_conf = if len(rule_conf_str) > 0 { parse_float(rule_conf_str); } else { min_conf; };
+            let r_queries_json = to_string(json_get(rule_action, "queries_json"));
+            let r_rationale_raw = to_string(json_get(rule_action, "rationale"));
+            let r_rationale = if len(r_rationale_raw) > 0 {
+                r_rationale_raw;
+            } else {
+                "rule-first: matched crystallized groupprops_search_output rule at confidence " + to_string(rule_conf);
+            };
+            // colony-lint: learn-tags-ok
+            learn("groupprops_search_output", canonical_ctx, rule_action, "success", ["distilled", "rule-hit", "math-foundry"]);
+            crystallizer_record_use(rule_id, true, 0.1);
+
+            if my_tier == "autonomous" {
+                memo_write("groupprops_search:" + _self_pid + ":review_gated", "true");
+                learn("groupprops-search", "tick " + to_string(tick_idx), r_rationale, "partial", ["acted", "claim-auditor"]);
+                _publish_groupprops_search_rule_hit(true, true, r_queries_json, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim, my_tier);
+            } else {
+                if my_tier == "review-gated" {
+                    memo_write("groupprops_search:" + _self_pid + ":review_gated", "true");
+                    learn("groupprops-search", "tick " + to_string(tick_idx), r_rationale, "partial", ["review-gated", "claim-auditor"]);
+                    _publish_groupprops_search_rule_hit(true, false, r_queries_json, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim, my_tier);
+                } else {
+                    if my_tier == "propose" {
+                        _publish_groupprops_search_rule_hit(false, false, r_queries_json, _self_pid, _colony_name, upstream_tick, tick_idx, _tick_now_ms, problem_text, stated_answer, novelty_claim, my_tier);
+                    } else {
+                        print("[groupprops-search] observing rule-hit (tier:", my_tier, ") rationale=", r_rationale);
+                        learn("groupprops-search", "tick " + to_string(tick_idx), r_rationale, "partial", ["observed", "claim-auditor"]);
+                    };
+                };
+            };
+
+            let now_s1 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+            if len(now_s1) > 0 { memo_write("groupprops-search:last_check", now_s1); };
+            return;
+        };
+    };
+
+    // ===== Stage 2: LLM fallback (historical path) =====
     let queries = prompt(_extract_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(_self_pid), ctx) -> Queries;
 
-    let my_tier = tier("groupprops_search");
+    // #845 distillation row. The rule action is the FULL Queries serialized
+    // faithfully (NOT a coarse bucket -- caching a coarse class would
+    // wrongly cache the query-generation creativity). Keyed on the SAME
+    // fine canonical_ctx so identical upstream claim -> identical action ->
+    // the distilled KnowledgeEntry id is stable and empirical_validations
+    // accumulate; diverse upstream claim -> a fresh hash -> no aggregation
+    // -> no rule (the colony self-decides to stay LLM-driven).
+    let canonical_action = _queries_to_action_json(queries);
+    // colony-lint: learn-tags-ok
+    learn("groupprops_search_output", canonical_ctx, canonical_action, "success", ["distilled", "math-foundry"]);
+
+    // Complete the distillation loop: learn() above only writes the
+    // ExperienceStore; distill() promotes >=3 successful
+    // groupprops_search_output records over the same fine canonical_ctx into
+    // a KnowledgeEntry, and knowledge_validate() bumps empirical_validations
+    // toward crystallize_min_validations. distill() raises until there are
+    // >=3 successful records, so guard it; once the entry crystallizes the
+    // Stage-1 lookup starts hitting and this miss path stops running for
+    // that context. The distill CONDITION is the SAME fine canonical_ctx (a
+    // generative colony must not coarsen the key, or distinct query sets
+    // would collide onto one rule).
+    let distilled_id = try { distill("groupprops_search_output", canonical_ctx, canonical_action, "heuristic"); } catch e { ""; };
+    if len(distilled_id) > 0 {
+        knowledge_validate(distilled_id);
+    };
+
     if my_tier == "autonomous" {
         memo_write("groupprops_search:" + _self_pid + ":review_gated", "true");
         learn("groupprops-search", "tick " + to_string(tick_idx), queries.rationale, "partial", ["acted", "claim-auditor"]);
