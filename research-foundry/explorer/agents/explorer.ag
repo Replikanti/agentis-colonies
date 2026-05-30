@@ -344,11 +344,29 @@ fn _publish_explorer(
     // sandbox today).
     let sandbox_dir = try { exec sh "printenv AGENTIS_ROOT"; } catch e { ""; };
     let sandbox_eff = if len(sandbox_dir) > 0 { sandbox_dir + "/sandbox"; } else { "/run-root/.agentis/sandbox"; };
+    // #867: kill any leftover compute scripts from PRIOR ticks of THIS
+    // replica before launching a new one. Without this, runaway scripts
+    // accumulate -- seen in the #833 verification run when 7 stale
+    // scripts from ticks 2/4/12/14 were still spinning at tick 38,
+    // holding ~27 GB host RAM between them. The `[k]` regex class
+    // matches `k` against compute argv but pkill's own argv has the
+    // literal `[k]`, which doesn't satisfy the class, so pkill cannot
+    // self-match (process-list self-match avoidance trick).
+    // colony-lint: safe-exec-concat
+    let cleanup_cmd = "pkill -9 -f " + shell_escape("explore-" + self_pid + "-tic[k]-") + " 2>/dev/null; true";
+    let _c = try { exec sh cleanup_cmd; } catch e { ""; };
     // colony-lint: safe-exec-concat
     let write_cmd = "mkdir -p " + shell_escape(sandbox_eff) + " && printf '%s' " + shell_escape(exploration.code) + " > " + shell_escape(sandbox_eff + "/explore-" + self_pid + "-tick-" + to_string(tick_idx) + ".py");
     let _ = try { exec sh write_cmd; } catch e { ""; };
+    // #867: hard wall-clock cap. `timeout 300s` so a single runaway
+    // compute can't hold CPU/RAM indefinitely; SIGTERM at 300 s, then
+    // SIGKILL after the kernel's grace. The agent picks up an empty
+    // stdout for that tick (which the prompt and downstream cascade
+    // already tolerate as a null exploration). 300 s is generous for
+    // the polynomial / sequence-search work the explorer typically
+    // emits.
     // colony-lint: safe-exec-concat
-    let run_cmd = "python3 " + shell_escape(sandbox_eff + "/explore-" + self_pid + "-tick-" + to_string(tick_idx) + ".py") + " 2>&1";
+    let run_cmd = "timeout 300s python3 " + shell_escape(sandbox_eff + "/explore-" + self_pid + "-tick-" + to_string(tick_idx) + ".py") + " 2>&1";
     let output = try { exec sh run_cmd; } catch e { ""; };
 
     memo_write("explorer:" + self_pid + ":code:tick-" + to_string(tick_idx), exploration.code);
