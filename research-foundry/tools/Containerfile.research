@@ -55,6 +55,7 @@ RUN apt-get update \
         latexmk \
         gap-core \
         ssmtp \
+        time \
  && rm -rf /var/lib/apt/lists/*
 
 # Compute stack matching the retired math-foundry / preprint-foundry
