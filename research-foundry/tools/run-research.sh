@@ -397,6 +397,32 @@ LATEXMK_MAX_PASSES="${RESEARCH_LATEXMK_MAX_PASSES:-3}"
 IMAGE_TAG="${RESEARCH_IMAGE_TAG:-research-foundry:latest}"
 PERSISTENT_DIR="${RESEARCH_PERSISTENT_DIR:-$FED_DIR/persistent}"
 PERSISTENT_DISABLED="${RESEARCH_PERSISTENT_DISABLED:-0}"
+# #872: cross-run carry-over of crystallized rules. Two independent knobs:
+#   PERSISTENT_OBJECTS  shares <persistent>/objects/ as the run's DAG object
+#                       store so rules crystallized in a prior run are visible
+#                       in the new run by hash. Implemented as a host-side
+#                       symlink `<run-dir>/.agentis/objects -> /persistent/objects`
+#                       set up BEFORE the container starts; the bind mount on
+#                       /persistent is flipped to :rw so the symlink target is
+#                       writable inside the container.
+#   PERSISTENT_TELEMETRY shares <persistent>/knowledge/ which holds the
+#                       _crystallizer_index/ + _crystallizer_telemetry/
+#                       subtrees. Same symlink mechanism. When shared, the
+#                       per-rule success_rate signal ratchets across runs
+#                       ("same experiment, multiple sessions"). When per-run
+#                       (telemetry off), the rule pool carries over but each
+#                       run measures fresh.
+# Default-on when the persistent dir already has the corresponding subtree
+# (= prior run already wrote there); default-off on a fresh box (cold-start
+# parity with pre-#872 behaviour). Explicit env wins either way.
+PERSISTENT_OBJECTS="${RESEARCH_PERSISTENT_OBJECTS:-}"
+if [ -z "$PERSISTENT_OBJECTS" ]; then
+    [ -d "$PERSISTENT_DIR/objects" ] && PERSISTENT_OBJECTS=1 || PERSISTENT_OBJECTS=0
+fi
+PERSISTENT_TELEMETRY="${RESEARCH_PERSISTENT_TELEMETRY:-}"
+if [ -z "$PERSISTENT_TELEMETRY" ]; then
+    [ -d "$PERSISTENT_DIR/knowledge" ] && PERSISTENT_TELEMETRY=1 || PERSISTENT_TELEMETRY=0
+fi
 CROSS_RUN_WINDOW="${RESEARCH_CROSS_RUN_WINDOW:-5}"
 ARXIV_GATEWAY="${RESEARCH_ARXIV_GATEWAY:-submit@arxiv.org}"
 ARXIV_FROM="${RESEARCH_ARXIV_FROM:-}"
@@ -1412,7 +1438,30 @@ spawn_container() {
         # (not auto-created via Linux convention) and persistent-snapshot.py
         # at run-end can land knowledge-snapshot.json in a stable path.
         mkdir -p "$PERSISTENT_DIR" 2>/dev/null || true
-        persistent_mount=" -v $PERSISTENT_DIR:/persistent:ro"
+        # #872: when objects or telemetry carry-over is enabled, the mount
+        # must be writable so daemon-side writes to the symlinked .agentis
+        # subdirs land in the persistent dir. Default :ro otherwise so
+        # pre-#872 behaviour is byte-identical for cold-start runs.
+        if [ "$PERSISTENT_OBJECTS" = "1" ] || [ "$PERSISTENT_TELEMETRY" = "1" ]; then
+            persistent_mount=" -v $PERSISTENT_DIR:/persistent:rw"
+        else
+            persistent_mount=" -v $PERSISTENT_DIR:/persistent:ro"
+        fi
+        # #872: pre-bootstrap symlink setup. The container sees the symlinks
+        # via /run-root (= $LAPTOP_DIR bind mount) and they resolve to
+        # /persistent (= $PERSISTENT_DIR bind mount). Host views the symlinks
+        # as dangling (no /persistent on host) — harmless, cosmetic only.
+        if [ "$PERSISTENT_OBJECTS" = "1" ]; then
+            mkdir -p "$PERSISTENT_DIR/objects" 2>/dev/null || true
+            mkdir -p "$LAPTOP_DIR/.agentis" 2>/dev/null || true
+            ln -snf /persistent/objects "$LAPTOP_DIR/.agentis/objects"
+        fi
+        if [ "$PERSISTENT_TELEMETRY" = "1" ]; then
+            mkdir -p "$PERSISTENT_DIR/knowledge/_crystallizer_index" 2>/dev/null || true
+            mkdir -p "$PERSISTENT_DIR/knowledge/_crystallizer_telemetry" 2>/dev/null || true
+            mkdir -p "$LAPTOP_DIR/.agentis" 2>/dev/null || true
+            ln -snf /persistent/knowledge "$LAPTOP_DIR/.agentis/knowledge"
+        fi
     fi
     if [ "$LLM_BACKEND" = "claude" ]; then
         # Bind-mount host's ~/.claude into container so claude CLI can
