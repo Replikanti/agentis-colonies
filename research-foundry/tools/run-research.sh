@@ -152,6 +152,13 @@
 #                                Default 3
 #   RESEARCH_DRY_RUN             1 = emit_step the plan, skip podman.
 #                                Default: "" (real run).
+#   RESEARCH_FORCE_REBUILD       1 = skip the agentis-version probe and
+#                                force `podman rmi -f $IMAGE_TAG`
+#                                followed by a fresh build. Use when
+#                                Containerfile.research changed and the
+#                                cached image must go regardless of the
+#                                baked agentis version. Default: ""
+#                                (probe-and-decide, #840).
 #   RESEARCH_RUN_DIR             Output dir override. Default: auto-
 #                                timestamped under research-foundry/runs/
 #   RESEARCH_PERSISTENT_DIR      Per-federation persistent dir written at
@@ -401,6 +408,7 @@ IMAGE_TAG="${RESEARCH_IMAGE_TAG:-research-foundry:latest}"
 # IMAGE_TAG) so the same value drives both the cached-image probe and the
 # --build-arg AGENTIS_VERSION=... flag passed to every build invocation.
 PINNED_AGENTIS_VERSION="$(awk -F= '/^ARG AGENTIS_VERSION=/{print $2; exit}' "$TOOLS_DIR/Containerfile.research")"
+: "${PINNED_AGENTIS_VERSION:?Containerfile.research is missing the 'ARG AGENTIS_VERSION=...' line; cannot derive pinned agentis version (#840).}"
 PERSISTENT_DIR="${RESEARCH_PERSISTENT_DIR:-$FED_DIR/persistent}"
 PERSISTENT_DISABLED="${RESEARCH_PERSISTENT_DISABLED:-0}"
 # #872: cross-run carry-over of crystallized rules. Two independent knobs:
