@@ -5904,6 +5904,7 @@ function renderAnalyticsPerColony(data) {
   const statusPill = s => {
     if (s === 'crystallizing') return '<span class="pill" style="background:#1f3a1f;color:#9dd49d">crystallizing</span>';
     if (s === 'generative')    return '<span class="pill" style="background:#3a2a1f;color:#d4b89d">generative</span>';
+    if (s === 'compute-only')  return '<span class="pill" style="background:#2a1f3a;color:#c89dd4">compute-only</span>';
     return '<span class="pill" style="background:#1f2a3a;color:#9db4d4">active</span>';
   };
   let html = '<table style="width:100%;border-collapse:collapse;font-size:12px;">';
@@ -5913,18 +5914,38 @@ function renderAnalyticsPerColony(data) {
   html += '<th style="padding:6px 8px;text-align:right;">LLM calls</th>';
   html += '<th style="padding:6px 8px;text-align:right;">Rule-hits</th>';
   html += '<th style="padding:6px 8px;text-align:right;">LLM-skip %</th>';
+  // #868 L2: substrate-bypass compute spend columns. Compute calls =
+  // python3 invocations the colony actually ran (LLM-proposed +
+  // rule-hit replays). Wall-clock seconds = sum across all those
+  // invocations. Timeouts = exit 124 (`timeout 300s` fired) — a
+  // non-zero count flags runaway compute that #867 contained.
+  html += '<th style="padding:6px 8px;text-align:right;">Compute calls</th>';
+  html += '<th style="padding:6px 8px;text-align:right;">Wall-clock&nbsp;s</th>';
   html += '<th style="padding:6px 8px;text-align:right;">Avg success</th>';
   html += '<th style="padding:6px 8px;">Status</th>';
   html += '</tr></thead><tbody>';
   rows.forEach(r => {
     const succ = (r.avg_success_rate === null || r.avg_success_rate === undefined)
                    ? '<span class="muted">—</span>' : esc(r.avg_success_rate.toFixed(3));
+    const computeCalls = r.compute_calls || 0;
+    const wallClock = (typeof r.compute_wall_clock_s === 'number') ? r.compute_wall_clock_s : 0;
+    const timeouts = r.compute_timeouts || 0;
+    const computeCallsCell = computeCalls === 0
+      ? '<span class="muted">—</span>'
+      : (timeouts > 0
+          ? esc(computeCalls) + ' <span class="pill" style="background:#3a1f1f;color:#e89d9d;font-size:10px;padding:1px 4px;">' + esc(timeouts) + ' to</span>'
+          : esc(computeCalls));
+    const wallClockCell = computeCalls === 0
+      ? '<span class="muted">—</span>'
+      : esc(wallClock.toFixed(1));
     html += '<tr style="border-bottom:1px solid var(--border);">';
     html += '<td style="padding:6px 8px;">' + esc(r.colony) + '</td>';
     html += '<td style="padding:6px 8px;text-align:right;">' + esc(r.daemons) + '</td>';
     html += '<td style="padding:6px 8px;text-align:right;">' + esc(r.llm_calls) + '</td>';
     html += '<td style="padding:6px 8px;text-align:right;">' + esc(r.rule_hits) + '</td>';
     html += '<td style="padding:6px 8px;text-align:right;">' + esc(r.skip_pct.toFixed(1)) + '%</td>';
+    html += '<td style="padding:6px 8px;text-align:right;">' + computeCallsCell + '</td>';
+    html += '<td style="padding:6px 8px;text-align:right;">' + wallClockCell + '</td>';
     html += '<td style="padding:6px 8px;text-align:right;">' + succ + '</td>';
     html += '<td style="padding:6px 8px;">' + statusPill(r.status) + '</td>';
     html += '</tr>';

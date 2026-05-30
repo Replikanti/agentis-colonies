@@ -365,9 +365,31 @@ fn _publish_explorer(
     // already tolerate as a null exploration). 300 s is generous for
     // the polynomial / sequence-search work the explorer typically
     // emits.
+    // #868 L2: faithful tracking of substrate-bypass compute. Wrap
+    // `python3` in `/usr/bin/time -f '%e,%x'` and write the sidecar
+    // stats to a sibling file, then parse the wall-clock seconds and
+    // exit code and append one JSONL row to
+    // `<agentis-root>/compute/<self_pid>.jsonl`. Dashboard Analytics
+    // tab aggregates these alongside LLM call counts so the user can
+    // see substrate-bypass compute spend per colony (not just LLM
+    // cost). Exit 124 = `timeout` fired (stale-killed).
+    let script_path = sandbox_eff + "/explore-" + self_pid + "-tick-" + to_string(tick_idx) + ".py";
+    let time_file = sandbox_eff + "/.time-" + self_pid + "-tick-" + to_string(tick_idx);
     // colony-lint: safe-exec-concat
-    let run_cmd = "timeout 300s python3 " + shell_escape(sandbox_eff + "/explore-" + self_pid + "-tick-" + to_string(tick_idx) + ".py") + " 2>&1";
+    let run_cmd = "/usr/bin/time -f '%e,%x' -o " + shell_escape(time_file) + " timeout 300s python3 " + shell_escape(script_path) + " 2>&1";
     let output = try { exec sh run_cmd; } catch e { ""; };
+    // colony-lint: safe-exec-concat
+    let stats_cmd = "tail -1 " + shell_escape(time_file) + " 2>/dev/null";
+    let stats = try { exec sh stats_cmd; } catch e { ""; };
+    let comma_idx = index_of(stats, ",");
+    let wall_clock_str = if comma_idx > 0 { substring(stats, 0, comma_idx); } else { "0"; };
+    let exit_code_str = if comma_idx > 0 { substring(stats, comma_idx + 1, len(stats)); } else { "0"; };
+    let compute_dir = sandbox_dir + "/compute";
+    let compute_path = compute_dir + "/" + self_pid + ".jsonl";
+    let compute_row = "{\"ts_ms\":" + to_string(tick_now_ms) + ",\"agent\":\"" + self_pid + "\",\"colony\":\"" + _colony_name + "\",\"tick\":" + to_string(tick_idx) + ",\"script\":\"explore-" + self_pid + "-tick-" + to_string(tick_idx) + ".py\",\"wall_clock_s\":" + wall_clock_str + ",\"exit_code\":" + exit_code_str + ",\"source\":\"llm\"}";
+    // colony-lint: safe-exec-concat
+    let append_cmd = "mkdir -p " + shell_escape(compute_dir) + " && printf '%s\n' " + shell_escape(compute_row) + " >> " + shell_escape(compute_path);
+    let _t = try { exec sh append_cmd; } catch e { ""; };
 
     memo_write("explorer:" + self_pid + ":code:tick-" + to_string(tick_idx), exploration.code);
     memo_write("explorer:" + self_pid + ":output:tick-" + to_string(tick_idx), output);
@@ -751,9 +773,29 @@ fn _publish_explorer_rule_hit(
     // colony-lint: safe-exec-concat
     let write_cmd = "mkdir -p " + shell_escape(sandbox_eff) + " && printf '%s' " + shell_escape(code) + " > " + shell_escape(sandbox_eff + "/explore-" + self_pid + "-tick-" + to_string(tick_idx) + ".py");
     let _ = try { exec sh write_cmd; } catch e { ""; };
+    // #868 L2: same `/usr/bin/time` wrapper + JSONL emit as the
+    // LLM-driven path above. Rule-hit replays are *also* substrate-
+    // bypass compute and must show up in the dashboard so a colony
+    // with a high rule-hit rate isn't accidentally invisible to the
+    // compute-spend column. `timeout 300s` mirrors the LLM path
+    // (#867) for symmetric containment of a runaway cached rule.
+    let script_path = sandbox_eff + "/explore-" + self_pid + "-tick-" + to_string(tick_idx) + ".py";
+    let time_file = sandbox_eff + "/.time-" + self_pid + "-tick-" + to_string(tick_idx);
     // colony-lint: safe-exec-concat
-    let run_cmd = "python3 " + shell_escape(sandbox_eff + "/explore-" + self_pid + "-tick-" + to_string(tick_idx) + ".py") + " 2>&1";
+    let run_cmd = "/usr/bin/time -f '%e,%x' -o " + shell_escape(time_file) + " timeout 300s python3 " + shell_escape(script_path) + " 2>&1";
     let output = try { exec sh run_cmd; } catch e { ""; };
+    // colony-lint: safe-exec-concat
+    let stats_cmd = "tail -1 " + shell_escape(time_file) + " 2>/dev/null";
+    let stats = try { exec sh stats_cmd; } catch e { ""; };
+    let comma_idx = index_of(stats, ",");
+    let wall_clock_str = if comma_idx > 0 { substring(stats, 0, comma_idx); } else { "0"; };
+    let exit_code_str = if comma_idx > 0 { substring(stats, comma_idx + 1, len(stats)); } else { "0"; };
+    let compute_dir = sandbox_dir + "/compute";
+    let compute_path = compute_dir + "/" + self_pid + ".jsonl";
+    let compute_row = "{\"ts_ms\":" + to_string(tick_now_ms) + ",\"agent\":\"" + self_pid + "\",\"colony\":\"" + _colony_name + "\",\"tick\":" + to_string(tick_idx) + ",\"script\":\"explore-" + self_pid + "-tick-" + to_string(tick_idx) + ".py\",\"wall_clock_s\":" + wall_clock_str + ",\"exit_code\":" + exit_code_str + ",\"source\":\"rule-hit\"}";
+    // colony-lint: safe-exec-concat
+    let append_cmd = "mkdir -p " + shell_escape(compute_dir) + " && printf '%s\n' " + shell_escape(compute_row) + " >> " + shell_escape(compute_path);
+    let _t = try { exec sh append_cmd; } catch e { ""; };
 
     memo_write("explorer:" + self_pid + ":code:tick-" + to_string(tick_idx), code);
     memo_write("explorer:" + self_pid + ":output:tick-" + to_string(tick_idx), output);
