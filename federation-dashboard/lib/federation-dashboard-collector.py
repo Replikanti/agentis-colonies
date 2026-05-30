@@ -2437,11 +2437,96 @@ def collect_crystallizer_rule_analysis(knowledge_dir, id_to_colony,
     return rows[:max_rows]
 
 
+def collect_compute_spend(compute_dir, id_to_colony):
+    """Aggregate substrate-bypass compute spend per colony.
+
+    #868 L2: explorer.ag (and any future colony that does sandbox-exec
+    work) wraps its `python3` invocation in `/usr/bin/time` and appends
+    one JSONL row per invocation to `<agentis-root>/compute/<aid>.jsonl`:
+        {ts_ms, agent, colony, tick, script, wall_clock_s, exit_code, source}
+    `source` is `"llm"` for the LLM-proposed exploration path and
+    `"rule-hit"` for the cached/replayed cascade path. We sum wall_clock
+    seconds + count invocations per colony, broken down by source, so the
+    Analytics tab can show compute spend alongside LLM call spend (which
+    is otherwise the only colored bar in the cost picture).
+
+    Returns dict keyed by colony name:
+        {colony: {calls, wall_clock_s, llm_calls, rule_hit_calls,
+                  llm_wall_clock_s, rule_hit_wall_clock_s, timeouts}}
+    Missing dir / unreadable files → empty dict (safe no-op for
+    federations that don't emit compute rows).
+    """
+    out = {}
+    if not os.path.isdir(compute_dir):
+        return out
+    try:
+        files = sorted(os.listdir(compute_dir))
+    except OSError:
+        return out
+    for fn in files:
+        if not fn.endswith('.jsonl'):
+            continue
+        aid = fn[:-6]
+        # Prefer the explicit `colony` field in each row (set by the
+        # writer); fall back to id_to_colony if the row omits it.
+        fallback_colony = id_to_colony.get(aid, '')
+        try:
+            with open(os.path.join(compute_dir, fn)) as f:
+                for raw in f:
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        row = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    colony = row.get('colony') or fallback_colony
+                    if not colony:
+                        continue
+                    acc = out.setdefault(colony, {
+                        'calls': 0,
+                        'wall_clock_s': 0.0,
+                        'llm_calls': 0,
+                        'rule_hit_calls': 0,
+                        'llm_wall_clock_s': 0.0,
+                        'rule_hit_wall_clock_s': 0.0,
+                        'timeouts': 0,
+                    })
+                    try:
+                        wc = float(row.get('wall_clock_s', 0) or 0)
+                    except (TypeError, ValueError):
+                        wc = 0.0
+                    try:
+                        ec = int(row.get('exit_code', 0) or 0)
+                    except (TypeError, ValueError):
+                        ec = 0
+                    src = row.get('source', 'llm')
+                    acc['calls'] += 1
+                    acc['wall_clock_s'] += wc
+                    if src == 'rule-hit':
+                        acc['rule_hit_calls'] += 1
+                        acc['rule_hit_wall_clock_s'] += wc
+                    else:
+                        acc['llm_calls'] += 1
+                        acc['llm_wall_clock_s'] += wc
+                    if ec == 124:
+                        acc['timeouts'] += 1
+        except OSError:
+            continue
+    # Round wall-clock to 3 decimals for transport.
+    for colony, acc in out.items():
+        acc['wall_clock_s'] = round(acc['wall_clock_s'], 3)
+        acc['llm_wall_clock_s'] = round(acc['llm_wall_clock_s'], 3)
+        acc['rule_hit_wall_clock_s'] = round(acc['rule_hit_wall_clock_s'], 3)
+    return out
+
+
 # Build the Analytics tab data block.
 _agentis_dir = os.path.join(fed_dir, '.agentis')
 _experience_dir = os.path.join(_agentis_dir, 'experience')
 _knowledge_dir = os.path.join(_agentis_dir, 'knowledge')
 _spend_dir = os.path.join(_agentis_dir, 'spend')
+_compute_dir = os.path.join(_agentis_dir, 'compute')
 # Merge `id_to_colony` (from daemons JSON) with the agents `result` list
 # as a fallback. When the dashboard runs outside the federation's PID
 # namespace (containerized federations like research-foundry), the
@@ -2458,6 +2543,36 @@ analytics_per_colony = collect_per_colony_analytics(
     _experience_dir, _knowledge_dir, _spend_dir, _id_to_colony_for_analytics)
 analytics_rules = collect_crystallizer_rule_analysis(
     _knowledge_dir, _id_to_colony_for_analytics, max_rows=30)
+# #868 L2: merge substrate-bypass compute into per-colony rows so the
+# Analytics tab can render "Compute calls" / "Wall-clock seconds"
+# alongside LLM call count.
+_compute_by_colony = collect_compute_spend(_compute_dir,
+                                            _id_to_colony_for_analytics)
+for _row in analytics_per_colony:
+    _acc = _compute_by_colony.get(_row['colony'], {})
+    _row['compute_calls'] = _acc.get('calls', 0)
+    _row['compute_wall_clock_s'] = _acc.get('wall_clock_s', 0.0)
+    _row['compute_timeouts'] = _acc.get('timeouts', 0)
+# Surface colonies with compute rows but no daemons in id_to_colony
+# (e.g. dashboard ran before the daemons resolved their colony mapping)
+# so they still show up.
+_seen_colonies = {r['colony'] for r in analytics_per_colony}
+for _col, _acc in _compute_by_colony.items():
+    if _col in _seen_colonies:
+        continue
+    analytics_per_colony.append({
+        'colony': _col,
+        'daemons': 0,
+        'llm_calls': 0,
+        'rule_hits': 0,
+        'skip_pct': 0.0,
+        'avg_success_rate': None,
+        'status': 'compute-only',
+        'compute_calls': _acc.get('calls', 0),
+        'compute_wall_clock_s': _acc.get('wall_clock_s', 0.0),
+        'compute_timeouts': _acc.get('timeouts', 0),
+    })
+analytics_per_colony.sort(key=lambda r: r['colony'])
 
 output = {
     'agents': result,
