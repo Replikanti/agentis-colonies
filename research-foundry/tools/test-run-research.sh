@@ -1160,6 +1160,29 @@ assert_contains "41i. crystallize_interval emit is wrapped in a non-empty guard"
 assert_not_contains "41j. no unconditional crystallize_interval = 100 emit" "$SRC" \
     'printf "evolution.crystallize_interval = 100\\n"'
 
+# ---------------------------------------------------------------------------
+# 42. #840: cache-coherence gate inside build_image(). The cached-image
+# reuse path must still print the `podman image exists` gate (so operators
+# see what is being checked). Any build invocation -- cache miss, forced
+# rebuild via RESEARCH_FORCE_REBUILD=1, or live version-mismatch rebuild
+# in the non-dry-run path -- must pin `--build-arg AGENTIS_VERSION=` so
+# the rebuild is reproducible. The RESEARCH_FORCE_REBUILD=1 dry-run
+# variant must surface both `podman rmi -f` and the pinned build command
+# in the transcript.
+# ---------------------------------------------------------------------------
+assert_contains "42a. build_image dry-run keeps the podman image exists gate" "$OUT" \
+    "podman image exists research-foundry:latest"
+assert_contains "42b. dry-run build invocation pins --build-arg AGENTIS_VERSION=" "$OUT" \
+    "--build-arg AGENTIS_VERSION="
+
+FORCE_REBUILD_OUT="$(RESEARCH_DRY_RUN=1 RESEARCH_FORCE_REBUILD=1 \
+                     RESEARCH_RUN_DIR="$WORK_DIR/run-force-rebuild" \
+                     bash "$ORCH" 2>&1)"
+assert_contains "42c. RESEARCH_FORCE_REBUILD=1 dry-run emits podman rmi -f" "$FORCE_REBUILD_OUT" \
+    "podman rmi -f research-foundry:latest"
+assert_contains "42d. RESEARCH_FORCE_REBUILD=1 dry-run emits pinned build command" "$FORCE_REBUILD_OUT" \
+    "podman build --build-arg AGENTIS_VERSION="
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
