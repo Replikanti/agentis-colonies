@@ -152,6 +152,13 @@
 #                                Default 3
 #   RESEARCH_DRY_RUN             1 = emit_step the plan, skip podman.
 #                                Default: "" (real run).
+#   RESEARCH_FORCE_REBUILD       1 = skip the agentis-version probe and
+#                                force `podman rmi -f $IMAGE_TAG`
+#                                followed by a fresh build. Use when
+#                                Containerfile.research changed and the
+#                                cached image must go regardless of the
+#                                baked agentis version. Default: ""
+#                                (probe-and-decide, #840).
 #   RESEARCH_RUN_DIR             Output dir override. Default: auto-
 #                                timestamped under research-foundry/runs/
 #   RESEARCH_PERSISTENT_DIR      Per-federation persistent dir written at
@@ -395,6 +402,13 @@ CRYSTALLIZE_PEER_FETCH="${RESEARCH_CRYSTALLIZE_PEER_FETCH:-}"
 CRYSTALLIZE_ALLOW_CROSS_DAEMON="${RESEARCH_CRYSTALLIZE_ALLOW_CROSS_DAEMON:-}"
 LATEXMK_MAX_PASSES="${RESEARCH_LATEXMK_MAX_PASSES:-3}"
 IMAGE_TAG="${RESEARCH_IMAGE_TAG:-research-foundry:latest}"
+# #840: extract the pinned agentis version from Containerfile.research so
+# build_image() can detect cached images whose embedded agentis binary no
+# longer matches the pin and force a rebuild. Hoisted here (alongside
+# IMAGE_TAG) so the same value drives both the cached-image probe and the
+# --build-arg AGENTIS_VERSION=... flag passed to every build invocation.
+PINNED_AGENTIS_VERSION="$(awk -F= '/^ARG AGENTIS_VERSION=/{print $2; exit}' "$TOOLS_DIR/Containerfile.research")"
+: "${PINNED_AGENTIS_VERSION:?Containerfile.research is missing the 'ARG AGENTIS_VERSION=...' line; cannot derive pinned agentis version (#840).}"
 PERSISTENT_DIR="${RESEARCH_PERSISTENT_DIR:-$FED_DIR/persistent}"
 PERSISTENT_DISABLED="${RESEARCH_PERSISTENT_DISABLED:-0}"
 # #872: cross-run carry-over of crystallized rules. Two independent knobs:
@@ -774,7 +788,40 @@ emit_step "seeding math-foundry:worker_addr + peer_worker_count for replicate() 
 # --- 1) Build (or reuse) the container image ---
 build_image() {
     emit_step "checking for existing image $IMAGE_TAG (build if missing)"
-    emit_cmd "podman image exists $IMAGE_TAG || podman build -t $IMAGE_TAG -f $TOOLS_DIR/Containerfile.research $FED_DIR"
+    # #840: RESEARCH_FORCE_REBUILD=1 escape hatch -- skip the probe entirely
+    # and force `rmi -f` + build. Operators use this when the probe is
+    # known-unreliable (e.g. broken image with a working binary that
+    # nonetheless reports a stale version) or when they want a clean
+    # rebuild without inspecting the cache.
+    if [ "${RESEARCH_FORCE_REBUILD:-0}" = "1" ]; then
+        emit_step "RESEARCH_FORCE_REBUILD=1 set; forcing rebuild of $IMAGE_TAG"
+        emit_cmd "podman rmi -f $IMAGE_TAG"
+        emit_cmd "podman build --build-arg AGENTIS_VERSION=$PINNED_AGENTIS_VERSION -t $IMAGE_TAG -f $TOOLS_DIR/Containerfile.research $FED_DIR"
+        return
+    fi
+    # Dry-run transcript path: emit the gate + the would-be build invocation
+    # as strings (pinning AGENTIS_VERSION) without touching live podman.
+    # The live version-mismatch probe only runs in a real invocation.
+    if [ "$DRY_RUN" = "1" ]; then
+        emit_cmd "podman image exists $IMAGE_TAG || podman build --build-arg AGENTIS_VERSION=$PINNED_AGENTIS_VERSION -t $IMAGE_TAG -f $TOOLS_DIR/Containerfile.research $FED_DIR"
+        return
+    fi
+    if podman image exists "$IMAGE_TAG"; then
+        # Probe the cached image's embedded agentis binary. `|| true` after
+        # the pipe so `set -euo pipefail` doesn't kill the orchestrator when
+        # the probe fails (broken image, missing binary, podman run error).
+        img_ver="$(podman run --rm --entrypoint /usr/local/bin/agentis "$IMAGE_TAG" --version 2>/dev/null \
+                   | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+        if [ -n "$img_ver" ] && [ "$img_ver" != "$PINNED_AGENTIS_VERSION" ]; then
+            emit_step "image $IMAGE_TAG carries agentis $img_ver but Containerfile pins $PINNED_AGENTIS_VERSION -- forcing rebuild"
+            emit_cmd "podman rmi -f $IMAGE_TAG"
+            emit_cmd "podman build --build-arg AGENTIS_VERSION=$PINNED_AGENTIS_VERSION -t $IMAGE_TAG -f $TOOLS_DIR/Containerfile.research $FED_DIR"
+        elif [ -z "$img_ver" ]; then
+            emit_step "could not probe agentis version in $IMAGE_TAG; reusing cached image (set RESEARCH_FORCE_REBUILD=1 to override)"
+        fi
+    else
+        emit_cmd "podman build --build-arg AGENTIS_VERSION=$PINNED_AGENTIS_VERSION -t $IMAGE_TAG -f $TOOLS_DIR/Containerfile.research $FED_DIR"
+    fi
 }
 
 # --- 2) Per-node bootstrap script generator ---
