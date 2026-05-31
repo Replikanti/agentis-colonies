@@ -1,10 +1,18 @@
 // explorer.ag -- Math Foundry explorer: drives compute-first novelty
-// discovery by emitting Python code that runs in the hermetic sandbox
-// via `exec sh`. The agent picks two papers from a cached arxiv corpus
-// plus a math topic, has the LLM craft a Python exploration script,
-// executes the script through `exec sh "python3 -c '<code>'"`, captures
-// stdout, and writes the resulting (code, output) pair to memo for the
+// discovery by emitting `.ag` source code that the substrate compiles
+// and runs in-process via `eval_ag(source) -> any` (agentis-core
+// v1.10.2, CapKind::EvalAg gated by --enable-eval-ag). The agent picks
+// two papers from a cached arxiv corpus plus a math topic, has the LLM
+// craft an `.ag` exploration snippet, prepends the AG_PRELUDE stdlib
+// (gcd / isqrt / modexp / is_prime / factor / binomial), evaluates the
+// combined source through the substrate, captures the returned value as
+// a string, and writes the resulting (code, output) pair to memo for the
 // downstream noticer / formulator / verifier / novelty chain.
+//
+// #877 SPIKE (LLM-proposed exploration path only): the rule-hit replay
+// path lower in this file and the two computer.ag sites still use
+// `exec sh "python3 ..."`; they are gated on this spike's smoke
+// verification outcome.
 //
 // M98 v3 prompt evolution (#739): the `_evolve_exploration_prompt`
 // helper below mirrors `tribes-bench/<tribe>/agents/hunter.ag`'s
@@ -62,6 +70,101 @@ type Exploration {
     expected_output_format: string
 }
 
+// #877 spike: substrate-native compute stdlib prepended to every LLM-
+// proposed `.ag` exploration snippet before `eval_ag(combined_source)`.
+// Constraints encoded here mirror the agentis-core DSL surface:
+//   * integer-only (i64), no floats (rejected at compile in v1.10.2)
+//   * no `while` / `for` loops -- recursion is the only iteration primitive
+//   * no `%` operator -- use `_mod(a, b)`
+//   * no `&&` / `||` -- nested `if` ladders
+//   * no host ops (memo_write / prompt / exec) inside eval_ag body
+// Overflow envelope: every multiply in `_modexp` / `_mr_witness_round`
+// is preceded by a `_mod` reduction of both factors, so products of two
+// values < m fit in i64 when m <= 2^31. The prompt documents this as
+// the LLM-facing modulus budget. `_bin_iter` multiplies before dividing,
+// so binomial(n, k) is exact but document max n <= 60.
+fn _ag_prelude() -> string {
+    return "fn _mod(a: int, b: int) -> int { return a - ((a / b) * b); }\n"
+         + "fn gcd(a: int, b: int) -> int {\n"
+         + "    if b == 0 { return a; };\n"
+         + "    return gcd(b, _mod(a, b));\n"
+         + "}\n"
+         + "fn _isqrt_iter(n: int, x: int, prev: int) -> int {\n"
+         + "    if x == prev { return x; };\n"
+         + "    if x * x <= n { return x; };\n"
+         + "    let next = (x + n / x) / 2;\n"
+         + "    return _isqrt_iter(n, next, x);\n"
+         + "}\n"
+         + "fn isqrt(n: int) -> int {\n"
+         + "    if n == 0 { return 0; };\n"
+         + "    if n == 1 { return 1; };\n"
+         + "    return _isqrt_iter(n, n, 0);\n"
+         + "}\n"
+         + "fn _modexp(a: int, b: int, m: int, acc: int) -> int {\n"
+         + "    if b == 0 { return acc; };\n"
+         + "    let bit = _mod(b, 2);\n"
+         + "    let new_acc = if bit == 1 { _mod(acc * a, m); } else { acc; };\n"
+         + "    return _modexp(_mod(a * a, m), b / 2, m, new_acc);\n"
+         + "}\n"
+         + "fn modexp(a: int, b: int, m: int) -> int {\n"
+         + "    if m == 1 { return 0; };\n"
+         + "    return _modexp(_mod(a, m), b, m, 1);\n"
+         + "}\n"
+         + "fn _mr_witness_round(x: int, n: int, r: int) -> bool {\n"
+         + "    if r == 0 { return true; };\n"
+         + "    let y = _mod(x * x, n);\n"
+         + "    if y == n - 1 { return false; };\n"
+         + "    return _mr_witness_round(y, n, r - 1);\n"
+         + "}\n"
+         + "fn _mr_witness(a: int, d: int, n: int, s: int) -> bool {\n"
+         + "    let x = modexp(a, d, n);\n"
+         + "    if x == 1 { return false; };\n"
+         + "    if x == n - 1 { return false; };\n"
+         + "    return _mr_witness_round(x, n, s - 1);\n"
+         + "}\n"
+         + "fn _split_n_minus_1(d: int, s: int) -> int {\n"
+         + "    if _mod(d, 2) == 1 { return s * 10000000000 + d; };\n"
+         + "    return _split_n_minus_1(d / 2, s + 1);\n"
+         + "}\n"
+         + "fn _mr_check_witnesses(n: int, d: int, s: int, witnesses: list<int>, i: int) -> bool {\n"
+         + "    if i >= len(witnesses) { return true; };\n"
+         + "    let a = witnesses[i];\n"
+         + "    if a >= n { return _mr_check_witnesses(n, d, s, witnesses, i + 1); };\n"
+         + "    if _mr_witness(a, d, n, s) { return false; };\n"
+         + "    return _mr_check_witnesses(n, d, s, witnesses, i + 1);\n"
+         + "}\n"
+         + "fn is_prime(n: int) -> bool {\n"
+         + "    if n < 2 { return false; };\n"
+         + "    if n == 2 { return true; };\n"
+         + "    if n == 3 { return true; };\n"
+         + "    if _mod(n, 2) == 0 { return false; };\n"
+         + "    let packed = _split_n_minus_1(n - 1, 0);\n"
+         + "    let s = packed / 10000000000;\n"
+         + "    let d = packed - (s * 10000000000);\n"
+         + "    let witnesses = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37];\n"
+         + "    return _mr_check_witnesses(n, d, s, witnesses, 0);\n"
+         + "}\n"
+         + "fn _trial_div(n: int, p: int, lim: int, acc: list<int>) -> list<int> {\n"
+         + "    if p > lim { if n > 1 { push(acc, n); }; return acc; };\n"
+         + "    if _mod(n, p) == 0 { push(acc, p); return _trial_div(n / p, p, isqrt(n / p), acc); };\n"
+         + "    return _trial_div(n, p + 1, lim, acc);\n"
+         + "}\n"
+         + "fn factor(n: int) -> list<int> {\n"
+         + "    if n < 2 { return []; };\n"
+         + "    return _trial_div(n, 2, isqrt(n), []);\n"
+         + "}\n"
+         + "fn _bin_iter(n: int, k: int, i: int, acc: int) -> int {\n"
+         + "    if i > k { return acc; };\n"
+         + "    return _bin_iter(n, k, i + 1, (acc * (n - i + 1)) / i);\n"
+         + "}\n"
+         + "fn binomial(n: int, k: int) -> int {\n"
+         + "    if k < 0 { return 0; };\n"
+         + "    if k > n { return 0; };\n"
+         + "    let kk = if k > n - k { n - k; } else { k; };\n"
+         + "    return _bin_iter(n, kk, 1, 1);\n"
+         + "}\n";
+}
+
 fn get_confidence() -> float {
     let raw = recall_latest("explorer:confidence");
     if len(raw) > 0 {
@@ -96,10 +199,13 @@ fn _jitter_sleep() -> int {
 
 // Seed exploration prompt. Mirrors strategist.ag _seed_prompt_for_setup
 // shape; the LLM gets the topic + two arxiv abstracts and must emit a
-// Python script. M98 v3 rewrites this body once K NOT_NOVEL outcomes
-// accumulate.
+// `.ag` snippet (substrate-native). M98 v3 rewrites this body once K
+// NOT_NOVEL outcomes accumulate. #877 spike: switched from Python to
+// .ag emission -- the AG_PRELUDE stdlib (gcd / isqrt / modexp /
+// is_prime / factor / binomial) is prepended to the `code` field
+// before `eval_ag` runs it inside the CB-metered substrate.
 fn _seed_prompt() -> string {
-    return "You are a research mathematician doing COMPUTATIONAL EXPLORATION. The user-supplied input below carries the topic label, topic description, compute hints, and two arxiv paper abstracts (Paper A and Paper B). Your task: write a Python script that EXPLORES this topic computationally. Define mathematical objects, COMPUTE specific properties for several cases, PRINT results with clear labels. The goal is to DISCOVER something -- coincidence, unexpected value, pattern break. Available stdlib: math, itertools, fractions, functools, collections, random. Available third-party: sympy, numpy, networkx. DO NOT use file I/O, network, subprocess. Pure computation only. Output ONLY valid JSON: {\"exploration_goal\": \"...\", \"code\": \"...\", \"expected_output_format\": \"...\"}.";
+    return "You are a research mathematician doing COMPUTATIONAL EXPLORATION. Emit `.ag` source (the agentis substrate language). A stdlib prelude is already prepended to your `code` field -- you may call `gcd`, `isqrt`, `modexp`, `is_prime`, `factor`, `binomial`. The top-level expression statement is the return value; the runtime returns that value to the explorer. Constraints: integer-only (i64), no floats (rejected at compile), no recursion deeper than ~1000 calls, no external libs, no I/O. Moduli for `is_prime` / `modexp` must satisfy m < 2^31 (overflow safety). No `while` / `for` -- use recursion (helper fns + tail-recursive accumulators). No `%` -- use `_mod(a, b)`. No `&&` / `||` -- nested `if`. The user-supplied input below carries the topic label, topic description, compute hints, and two arxiv paper abstracts (Paper A and Paper B). Define helper fns, COMPUTE specific properties for several cases, and return either an integer, a list of integers, or a short string. The goal is to DISCOVER something -- coincidence, unexpected value, pattern break. Example 1: `fn _bin_sum(n: int, i: int, acc: int) -> int { if i > n { return acc; }; return _bin_sum(n, i + 1, acc + binomial(n, i)); }\\nlet total = _bin_sum(10, 0, 0); total;` (returns Int). Example 2: `fn _collect(p: int, lim: int, acc: list<int>) -> list<int> { if p > lim { return acc; }; if is_prime(p) { push(acc, p); }; return _collect(p + 1, lim, acc); }\\nlet primes = _collect(2, 100, []); primes;` (returns List<Int>). Output ONLY valid JSON: {\"exploration_goal\": \"...\", \"code\": \"let result = ...; result;\", \"expected_output_format\": \"int|list|string\"}. The `code` field must end with a top-level expression statement whose value is the exploration result.";
 }
 
 fn _variant_overlay_suffix() -> string {
@@ -338,58 +444,27 @@ fn _publish_explorer(
 ) -> void {
     emit("math-foundry:exploration_done", exploration);
 
-    // Execute the Python code in the sandbox via a temp file +
-    // python3 invocation. Pure compute only -- no file I/O,
-    // network, subprocess (enforced by prompt body, not by
-    // sandbox today).
-    let sandbox_dir = try { exec sh "printenv AGENTIS_ROOT"; } catch e { ""; };
-    let sandbox_eff = if len(sandbox_dir) > 0 { sandbox_dir + "/sandbox"; } else { "/run-root/.agentis/sandbox"; };
-    // #867: kill any leftover compute scripts from PRIOR ticks of THIS
-    // replica before launching a new one. Without this, runaway scripts
-    // accumulate -- seen in the #833 verification run when 7 stale
-    // scripts from ticks 2/4/12/14 were still spinning at tick 38,
-    // holding ~27 GB host RAM between them. The `[k]` regex class
-    // matches `k` against compute argv but pkill's own argv has the
-    // literal `[k]`, which doesn't satisfy the class, so pkill cannot
-    // self-match (process-list self-match avoidance trick).
-    // colony-lint: safe-exec-concat
-    let cleanup_cmd = "pkill -9 -f " + shell_escape("explore-" + self_pid + "-tic[k]-") + " 2>/dev/null; true";
-    let _c = try { exec sh cleanup_cmd; } catch e { ""; };
-    // colony-lint: safe-exec-concat
-    let write_cmd = "mkdir -p " + shell_escape(sandbox_eff) + " && printf '%s' " + shell_escape(exploration.code) + " > " + shell_escape(sandbox_eff + "/explore-" + self_pid + "-tick-" + to_string(tick_idx) + ".py");
-    let _ = try { exec sh write_cmd; } catch e { ""; };
-    // #867: hard wall-clock cap. `timeout 300s` so a single runaway
-    // compute can't hold CPU/RAM indefinitely; SIGTERM at 300 s, then
-    // SIGKILL after the kernel's grace. The agent picks up an empty
-    // stdout for that tick (which the prompt and downstream cascade
-    // already tolerate as a null exploration). 300 s is generous for
-    // the polynomial / sequence-search work the explorer typically
-    // emits.
-    // #868 L2: faithful tracking of substrate-bypass compute. Wrap
-    // `python3` in `/usr/bin/time -f '%e,%x'` and write the sidecar
-    // stats to a sibling file, then parse the wall-clock seconds and
-    // exit code and append one JSONL row to
-    // `<agentis-root>/compute/<self_pid>.jsonl`. Dashboard Analytics
-    // tab aggregates these alongside LLM call counts so the user can
-    // see substrate-bypass compute spend per colony (not just LLM
-    // cost). Exit 124 = `timeout` fired (stale-killed).
-    let script_path = sandbox_eff + "/explore-" + self_pid + "-tick-" + to_string(tick_idx) + ".py";
-    let time_file = sandbox_eff + "/.time-" + self_pid + "-tick-" + to_string(tick_idx);
-    // colony-lint: safe-exec-concat
-    let run_cmd = "/usr/bin/time -f '%e,%x' -o " + shell_escape(time_file) + " timeout 300s python3 " + shell_escape(script_path) + " 2>&1";
-    let output = try { exec sh run_cmd; } catch e { ""; };
-    // colony-lint: safe-exec-concat
-    let stats_cmd = "tail -1 " + shell_escape(time_file) + " 2>/dev/null";
-    let stats = try { exec sh stats_cmd; } catch e { ""; };
-    let comma_idx = index_of(stats, ",");
-    let wall_clock_str = if comma_idx > 0 { substring(stats, 0, comma_idx); } else { "0"; };
-    let exit_code_str = if comma_idx > 0 { substring(stats, comma_idx + 1, len(stats)); } else { "0"; };
-    let compute_dir = sandbox_dir + "/compute";
-    let compute_path = compute_dir + "/" + self_pid + ".jsonl";
-    let compute_row = "{\"ts_ms\":" + to_string(tick_now_ms) + ",\"agent\":\"" + self_pid + "\",\"colony\":\"" + _colony_name + "\",\"tick\":" + to_string(tick_idx) + ",\"script\":\"explore-" + self_pid + "-tick-" + to_string(tick_idx) + ".py\",\"wall_clock_s\":" + wall_clock_str + ",\"exit_code\":" + exit_code_str + ",\"source\":\"llm\"}";
-    // colony-lint: safe-exec-concat
-    let append_cmd = "mkdir -p " + shell_escape(compute_dir) + " && printf '%s\n' " + shell_escape(compute_row) + " >> " + shell_escape(compute_path);
-    let _t = try { exec sh append_cmd; } catch e { ""; };
+    // #877 spike: substrate-native compute via eval_ag. The AG_PRELUDE
+    // stdlib (gcd / isqrt / modexp / is_prime / factor / binomial,
+    // defined at the top of this file) is prepended to the LLM's `.ag`
+    // snippet so the LLM can call those helpers without redefining
+    // them. eval_ag parses + compiles + runs the combined source in
+    // the CB-metered substrate interpreter; the top-level expression
+    // statement's value is returned as `any` and stringified via
+    // `to_string`. Defense-in-depth: any of (parse error, compile
+    // error, runtime trap, CB exhaustion) is caught and collapsed to
+    // empty output; the explorer treats this as a null tick and the
+    // downstream noticer sees the gap. No silent crash.
+    //
+    // Replaces the prior `exec sh "python3 ..."` sandbox-write +
+    // `/usr/bin/time` + timeout wrapper + jsonl compute-row append.
+    // The `<sandbox>/compute/<pid>.jsonl` writer goes dark for this
+    // site; Dashboard Card 1 Compute column drops to 0 on explorer
+    // rows (expected; the column retires once the other 3 substrate-
+    // bypass sites migrate too).
+    let combined_source = _ag_prelude() + "\n" + exploration.code;
+    let output_val = try { eval_ag(combined_source); } catch e { ""; };
+    let output = to_string(output_val);
 
     memo_write("explorer:" + self_pid + ":code:tick-" + to_string(tick_idx), exploration.code);
     memo_write("explorer:" + self_pid + ":output:tick-" + to_string(tick_idx), output);

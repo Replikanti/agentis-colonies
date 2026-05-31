@@ -1325,7 +1325,14 @@ write_bootstrap() {
         # for the initial cohort; child replicates increment generation
         # in the replicate-success branch.
         printf 'for i in $(seq 1 %s); do\n' "$RESEARCH_EXPLORER_REPLICAS"
-        printf '    DAEMON_ID=$i COLONY_NAME=explorer EXPLORER_GENERATION=0 HOLD_PERIOD=%s DISCOVERY_LEDGER=/run-root/discovery-ledger.jsonl REPLICATION_LEDGER=/run-root/replication-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis EXPLORER_PROMPT_EVOLUTION_THRESHOLD=%s EXPLORER_PROMPT_GEN_CAP=%s EXPLORER_PROMPT_MAX_BYTES=%s EXPLORER_PROMPT_LEVENSHTEIN_FLOOR=%s FOUNDRY_FITNESS_REWARD_NOVEL_PER_TICK=%s FOUNDRY_FITNESS_PENALTY_NOT_NOVEL_PER_TICK=%s agentis daemon /run-root/explorer/agents/explorer.ag --colony explorer --enable-exec --enable-messaging --enable-replication --allow-replica-replication --skip-prompt-after-idle --skip-prompt-without-input --prompt-timeout-s "$DAEMON_PROMPT_TIMEOUT_S" --tick-interval "$EXPLORER_TICK_INTERVAL_MS" > /run-root/.agentis/logs/explorer-$i.log 2>&1 &\n' \
+        # #877 spike: explorer carries `--enable-eval-ag` so the
+        # CapKind::EvalAg gate (agentis-core v1.10.2, daemon.rs:44 +
+        # 1095-1097) is granted. The LLM-proposed exploration path in
+        # `_publish_explorer` now compiles + runs `.ag` source via the
+        # substrate's CB-metered interpreter instead of writing a
+        # Python script and shelling out to `python3`. Other 17 colonies
+        # do not yet exercise eval_ag and stay on the prior flag set.
+        printf '    DAEMON_ID=$i COLONY_NAME=explorer EXPLORER_GENERATION=0 HOLD_PERIOD=%s DISCOVERY_LEDGER=/run-root/discovery-ledger.jsonl REPLICATION_LEDGER=/run-root/replication-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis EXPLORER_PROMPT_EVOLUTION_THRESHOLD=%s EXPLORER_PROMPT_GEN_CAP=%s EXPLORER_PROMPT_MAX_BYTES=%s EXPLORER_PROMPT_LEVENSHTEIN_FLOOR=%s FOUNDRY_FITNESS_REWARD_NOVEL_PER_TICK=%s FOUNDRY_FITNESS_PENALTY_NOT_NOVEL_PER_TICK=%s agentis daemon /run-root/explorer/agents/explorer.ag --colony explorer --enable-exec --enable-messaging --enable-replication --allow-replica-replication --enable-eval-ag --skip-prompt-after-idle --skip-prompt-without-input --prompt-timeout-s "$DAEMON_PROMPT_TIMEOUT_S" --tick-interval "$EXPLORER_TICK_INTERVAL_MS" > /run-root/.agentis/logs/explorer-$i.log 2>&1 &\n' \
             "$HOLD_PERIOD" \
             "$RESEARCH_EXPLORER_PROMPT_EVOLUTION_THRESHOLD" \
             "$RESEARCH_EXPLORER_PROMPT_GEN_CAP" \
