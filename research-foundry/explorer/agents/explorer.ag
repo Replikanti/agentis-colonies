@@ -128,7 +128,7 @@ fn _ag_prelude() -> string {
          + "}\n"
          + "fn _mr_check_witnesses(n: int, d: int, s: int, witnesses: list<int>, i: int) -> bool {\n"
          + "    if i >= len(witnesses) { return true; };\n"
-         + "    let a = witnesses[i];\n"
+         + "    let a = get(witnesses, i);\n"
          + "    if a >= n { return _mr_check_witnesses(n, d, s, witnesses, i + 1); };\n"
          + "    if _mr_witness(a, d, n, s) { return false; };\n"
          + "    return _mr_check_witnesses(n, d, s, witnesses, i + 1);\n"
