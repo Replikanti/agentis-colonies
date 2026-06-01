@@ -3,9 +3,11 @@
 // and runs in-process via `eval_ag(source) -> any` (agentis-core
 // v1.10.2, CapKind::EvalAg gated by --enable-eval-ag). The agent picks
 // two papers from a cached arxiv corpus plus a math topic, has the LLM
-// craft an `.ag` exploration snippet, prepends the AG_PRELUDE stdlib
-// (gcd / isqrt / modexp / is_prime / factor / binomial), evaluates the
-// combined source through the substrate, captures the returned value as
+// craft an `.ag` exploration snippet that may call the agentis-core
+// math stdlib (mod / gcd / isqrt / modexp / is_prime / factor /
+// pow_int / binomial / min_int / max_int / abs_int — all native
+// builtins as of v1.11.0, zero compile overhead), evaluates the
+// source through the substrate, captures the returned value as
 // a string, and writes the resulting (code, output) pair to memo for the
 // downstream noticer / formulator / verifier / novelty chain.
 //
@@ -70,82 +72,6 @@ type Exploration {
     expected_output_format: string
 }
 
-// #877 spike: substrate-native compute stdlib prepended to every LLM-
-// proposed `.ag` exploration snippet before `eval_ag(combined_source)`.
-// Constraints encoded here mirror the agentis-core DSL surface:
-//   * integer-only (i64), no floats (rejected at compile in v1.10.2)
-//   * no `while` / `for` loops -- recursion is the only iteration primitive
-//   * no `%` operator -- use `_mod(a, b)`
-//   * no `&&` / `||` -- nested `if` ladders
-//   * no host ops (memo_write / prompt / exec) inside eval_ag body
-// Overflow envelope: every multiply in `_modexp` / `_mr_witness_round`
-// is preceded by a `_mod` reduction of both factors, so products of two
-// values < m fit in i64 when m <= 2^31. The prompt documents this as
-// the LLM-facing modulus budget. `_bin_iter` multiplies before dividing,
-// so binomial(n, k) is exact but document max n <= 60.
-fn _ag_prelude() -> string {
-    return "fn _mod(a: int, b: int) -> int { return a - ((a / b) * b); }\n"
-         + "fn gcd(a: int, b: int) -> int {\n"
-         + "    if b == 0 { return a; };\n"
-         + "    return gcd(b, _mod(a, b));\n"
-         + "}\n"
-         + "fn _isqrt_iter(n: int, x: int, prev: int) -> int {\n"
-         + "    if x == prev { return x; };\n"
-         + "    if x * x <= n { return x; };\n"
-         + "    let next = (x + n / x) / 2;\n"
-         + "    return _isqrt_iter(n, next, x);\n"
-         + "}\n"
-         + "fn isqrt(n: int) -> int {\n"
-         + "    if n == 0 { return 0; };\n"
-         + "    if n == 1 { return 1; };\n"
-         + "    return _isqrt_iter(n, n, 0);\n"
-         + "}\n"
-         + "fn _modexp(a: int, b: int, m: int, acc: int) -> int {\n"
-         + "    if b == 0 { return acc; };\n"
-         + "    let bit = _mod(b, 2);\n"
-         + "    let new_acc = if bit == 1 { _mod(acc * a, m); } else { acc; };\n"
-         + "    return _modexp(_mod(a * a, m), b / 2, m, new_acc);\n"
-         + "}\n"
-         + "fn modexp(a: int, b: int, m: int) -> int {\n"
-         + "    if m == 1 { return 0; };\n"
-         + "    return _modexp(_mod(a, m), b, m, 1);\n"
-         + "}\n"
-         + "fn _mr_witness_round(x: int, n: int, r: int) -> bool {\n"
-         + "    if r == 0 { return true; };\n"
-         + "    let y = _mod(x * x, n);\n"
-         + "    if y == n - 1 { return false; };\n"
-         + "    return _mr_witness_round(y, n, r - 1);\n"
-         + "}\n"
-         + "fn _mr_witness(a: int, d: int, n: int, s: int) -> bool {\n"
-         + "    let x = modexp(a, d, n);\n"
-         + "    if x == 1 { return false; };\n"
-         + "    if x == n - 1 { return false; };\n"
-         + "    return _mr_witness_round(x, n, s - 1);\n"
-         + "}\n"
-         + "fn _split_n_minus_1(d: int, s: int) -> int {\n"
-         + "    if _mod(d, 2) == 1 { return s * 10000000000 + d; };\n"
-         + "    return _split_n_minus_1(d / 2, s + 1);\n"
-         + "}\n"
-         + "fn _mr_check_witnesses(n: int, d: int, s: int, witnesses: list<int>, i: int) -> bool {\n"
-         + "    if i >= len(witnesses) { return true; };\n"
-         + "    let a = get(witnesses, i);\n"
-         + "    if a >= n { return _mr_check_witnesses(n, d, s, witnesses, i + 1); };\n"
-         + "    if _mr_witness(a, d, n, s) { return false; };\n"
-         + "    return _mr_check_witnesses(n, d, s, witnesses, i + 1);\n"
-         + "}\n"
-         + "fn is_prime(n: int) -> bool {\n"
-         + "    if n < 2 { return false; };\n"
-         + "    if n == 2 { return true; };\n"
-         + "    if n == 3 { return true; };\n"
-         + "    if _mod(n, 2) == 0 { return false; };\n"
-         + "    let packed = _split_n_minus_1(n - 1, 0);\n"
-         + "    let s = packed / 10000000000;\n"
-         + "    let d = packed - (s * 10000000000);\n"
-         + "    let witnesses = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37];\n"
-         + "    return _mr_check_witnesses(n, d, s, witnesses, 0);\n"
-         + "}\n";
-}
-
 fn get_confidence() -> float {
     let raw = recall_latest("explorer:confidence");
     if len(raw) > 0 {
@@ -182,11 +108,11 @@ fn _jitter_sleep() -> int {
 // shape; the LLM gets the topic + two arxiv abstracts and must emit a
 // `.ag` snippet (substrate-native). M98 v3 rewrites this body once K
 // NOT_NOVEL outcomes accumulate. #877 spike: switched from Python to
-// .ag emission -- the AG_PRELUDE stdlib (gcd / isqrt / modexp /
-// is_prime / factor / binomial) is prepended to the `code` field
-// before `eval_ag` runs it inside the CB-metered substrate.
+// .ag emission -- math primitives are NATIVE agentis-core v1.11.0
+// builtins (no prelude string anymore), so the LLM can call them
+// directly with zero compile overhead.
 fn _seed_prompt() -> string {
-    return "You are a research mathematician doing COMPUTATIONAL EXPLORATION. Emit `.ag` source (the agentis substrate language). A stdlib prelude is already prepended to your `code` field -- you may call `gcd`, `isqrt`, `modexp`, `is_prime`. The top-level expression statement is the return value; the runtime returns that value to the explorer. Constraints: integer-only (i64), no floats (rejected at compile), no recursion deeper than ~1000 calls, no external libs, no I/O. Moduli for `is_prime` / `modexp` must satisfy m < 2^31 (overflow safety). No `while` / `for` -- use recursion (helper fns + tail-recursive accumulators). No `%` -- use `_mod(a, b)`. No `&&` / `||` -- nested `if`. CB budget is tight -- keep inner programs small, prefer iteration limits N <= 100 over N >= 1000, avoid heavy nested recursion. The user-supplied input below carries the topic label, topic description, compute hints, and two arxiv paper abstracts (Paper A and Paper B). Define helper fns, COMPUTE specific properties for several cases, and return either an integer, a list of integers, or a short string. The goal is to DISCOVER something -- coincidence, unexpected value, pattern break. Example 1: `fn _gcd_sum(a: int, b: int, n: int, acc: int) -> int { if a > n { return acc; }; return _gcd_sum(a + 1, b, n, acc + gcd(a, b)); }\\nlet total = _gcd_sum(1, 30, 50, 0); total;` (returns Int -- sum of gcd(a, 30) for a in 1..50). Example 2: `fn _collect(p: int, lim: int, acc: list<int>) -> list<int> { if p > lim { return acc; }; if is_prime(p) { push(acc, p); }; return _collect(p + 1, lim, acc); }\\nlet primes = _collect(2, 100, []); primes;` (returns List<Int>). Output ONLY valid JSON: {\"exploration_goal\": \"...\", \"code\": \"let result = ...; result;\", \"expected_output_format\": \"int|list|string\"}. The `code` field must end with a top-level expression statement whose value is the exploration result.";
+    return "You are a research mathematician doing COMPUTATIONAL EXPLORATION. Emit `.ag` source (the agentis substrate language). The agentis runtime provides native math builtins -- you may call `mod`, `gcd`, `isqrt`, `modexp`, `is_prime`, `factor`, `pow_int`, `binomial`, `min_int`, `max_int`, `abs_int` directly. The top-level expression statement is the return value; the runtime returns that value to the explorer. Constraints: integer-only (i64), no floats (rejected at compile), no recursion deeper than ~1000 calls, no external libs, no I/O. Moduli for `is_prime` / `modexp` must satisfy m < 2^31 (overflow safety). No `while` / `for` -- use recursion (helper fns + tail-recursive accumulators). Use `mod(a, b)` instead of `%`. No `&&` / `||` -- nested `if`. CB budget is tight -- keep inner programs small, prefer iteration limits N <= 100 over N >= 1000, avoid heavy nested recursion. The user-supplied input below carries the topic label, topic description, compute hints, and two arxiv paper abstracts (Paper A and Paper B). Define helper fns, COMPUTE specific properties for several cases, and return either an integer, a list of integers, or a short string. The goal is to DISCOVER something -- coincidence, unexpected value, pattern break. Example 1: `fn _gcd_sum(a: int, b: int, n: int, acc: int) -> int { if a > n { return acc; }; return _gcd_sum(a + 1, b, n, acc + gcd(a, b)); }\\nlet total = _gcd_sum(1, 30, 50, 0); total;` (returns Int -- sum of gcd(a, 30) for a in 1..50). Example 2: `fn _collect(p: int, lim: int, acc: list<int>) -> list<int> { if p > lim { return acc; }; if is_prime(p) { push(acc, p); }; return _collect(p + 1, lim, acc); }\\nlet primes = _collect(2, 100, []); primes;` (returns List<Int>). Output ONLY valid JSON: {\"exploration_goal\": \"...\", \"code\": \"let result = ...; result;\", \"expected_output_format\": \"int|list|string\"}. The `code` field must end with a top-level expression statement whose value is the exploration result.";
 }
 
 fn _variant_overlay_suffix() -> string {
@@ -425,17 +351,19 @@ fn _publish_explorer(
 ) -> void {
     emit("math-foundry:exploration_done", exploration);
 
-    // #877 spike: substrate-native compute via eval_ag. The AG_PRELUDE
-    // stdlib (gcd / isqrt / modexp / is_prime / factor / binomial,
-    // defined at the top of this file) is prepended to the LLM's `.ag`
-    // snippet so the LLM can call those helpers without redefining
-    // them. eval_ag parses + compiles + runs the combined source in
-    // the CB-metered substrate interpreter; the top-level expression
-    // statement's value is returned as `any` and stringified via
-    // `to_string`. Defense-in-depth: any of (parse error, compile
-    // error, runtime trap, CB exhaustion) is caught and collapsed to
-    // empty output; the explorer treats this as a null tick and the
-    // downstream noticer sees the gap. No silent crash.
+    // #877 spike: substrate-native compute via eval_ag. The LLM's
+    // `.ag` snippet calls agentis-core's native math builtins (mod /
+    // gcd / isqrt / modexp / is_prime / factor / pow_int / binomial /
+    // min_int / max_int / abs_int, all in v1.11.0). No prelude
+    // prepending — the prior 11-fn AG_PRELUDE string was retired
+    // when math moved into the substrate. eval_ag parses + compiles
+    // + runs the source in the CB-metered substrate interpreter;
+    // the top-level expression statement's value is returned as `any`
+    // and stringified via `to_string`. Defense-in-depth: any of
+    // (parse error, compile error, runtime trap, CB exhaustion) is
+    // caught and collapsed to empty output; the explorer treats this
+    // as a null tick and the downstream noticer sees the gap. No
+    // silent crash.
     //
     // Replaces the prior `exec sh "python3 ..."` sandbox-write +
     // `/usr/bin/time` + timeout wrapper + jsonl compute-row append.
@@ -443,8 +371,7 @@ fn _publish_explorer(
     // site; Dashboard Card 1 Compute column drops to 0 on explorer
     // rows (expected; the column retires once the other 3 substrate-
     // bypass sites migrate too).
-    let combined_source = _ag_prelude() + "\n" + exploration.code;
-    let output_val = try { eval_ag(combined_source); } catch e { ""; };
+    let output_val = try { eval_ag(exploration.code); } catch e { ""; };
     let output = to_string(output_val);
 
     memo_write("explorer:" + self_pid + ":code:tick-" + to_string(tick_idx), exploration.code);
