@@ -143,25 +143,6 @@ fn _ag_prelude() -> string {
          + "    let d = packed - (s * 10000000000);\n"
          + "    let witnesses = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37];\n"
          + "    return _mr_check_witnesses(n, d, s, witnesses, 0);\n"
-         + "}\n"
-         + "fn _trial_div(n: int, p: int, lim: int, acc: list<int>) -> list<int> {\n"
-         + "    if p > lim { if n > 1 { push(acc, n); }; return acc; };\n"
-         + "    if _mod(n, p) == 0 { push(acc, p); return _trial_div(n / p, p, isqrt(n / p), acc); };\n"
-         + "    return _trial_div(n, p + 1, lim, acc);\n"
-         + "}\n"
-         + "fn factor(n: int) -> list<int> {\n"
-         + "    if n < 2 { return []; };\n"
-         + "    return _trial_div(n, 2, isqrt(n), []);\n"
-         + "}\n"
-         + "fn _bin_iter(n: int, k: int, i: int, acc: int) -> int {\n"
-         + "    if i > k { return acc; };\n"
-         + "    return _bin_iter(n, k, i + 1, (acc * (n - i + 1)) / i);\n"
-         + "}\n"
-         + "fn binomial(n: int, k: int) -> int {\n"
-         + "    if k < 0 { return 0; };\n"
-         + "    if k > n { return 0; };\n"
-         + "    let kk = if k > n - k { n - k; } else { k; };\n"
-         + "    return _bin_iter(n, kk, 1, 1);\n"
          + "}\n";
 }
 
@@ -205,7 +186,7 @@ fn _jitter_sleep() -> int {
 // is_prime / factor / binomial) is prepended to the `code` field
 // before `eval_ag` runs it inside the CB-metered substrate.
 fn _seed_prompt() -> string {
-    return "You are a research mathematician doing COMPUTATIONAL EXPLORATION. Emit `.ag` source (the agentis substrate language). A stdlib prelude is already prepended to your `code` field -- you may call `gcd`, `isqrt`, `modexp`, `is_prime`, `factor`, `binomial`. The top-level expression statement is the return value; the runtime returns that value to the explorer. Constraints: integer-only (i64), no floats (rejected at compile), no recursion deeper than ~1000 calls, no external libs, no I/O. Moduli for `is_prime` / `modexp` must satisfy m < 2^31 (overflow safety). No `while` / `for` -- use recursion (helper fns + tail-recursive accumulators). No `%` -- use `_mod(a, b)`. No `&&` / `||` -- nested `if`. The user-supplied input below carries the topic label, topic description, compute hints, and two arxiv paper abstracts (Paper A and Paper B). Define helper fns, COMPUTE specific properties for several cases, and return either an integer, a list of integers, or a short string. The goal is to DISCOVER something -- coincidence, unexpected value, pattern break. Example 1: `fn _bin_sum(n: int, i: int, acc: int) -> int { if i > n { return acc; }; return _bin_sum(n, i + 1, acc + binomial(n, i)); }\\nlet total = _bin_sum(10, 0, 0); total;` (returns Int). Example 2: `fn _collect(p: int, lim: int, acc: list<int>) -> list<int> { if p > lim { return acc; }; if is_prime(p) { push(acc, p); }; return _collect(p + 1, lim, acc); }\\nlet primes = _collect(2, 100, []); primes;` (returns List<Int>). Output ONLY valid JSON: {\"exploration_goal\": \"...\", \"code\": \"let result = ...; result;\", \"expected_output_format\": \"int|list|string\"}. The `code` field must end with a top-level expression statement whose value is the exploration result.";
+    return "You are a research mathematician doing COMPUTATIONAL EXPLORATION. Emit `.ag` source (the agentis substrate language). A stdlib prelude is already prepended to your `code` field -- you may call `gcd`, `isqrt`, `modexp`, `is_prime`. The top-level expression statement is the return value; the runtime returns that value to the explorer. Constraints: integer-only (i64), no floats (rejected at compile), no recursion deeper than ~1000 calls, no external libs, no I/O. Moduli for `is_prime` / `modexp` must satisfy m < 2^31 (overflow safety). No `while` / `for` -- use recursion (helper fns + tail-recursive accumulators). No `%` -- use `_mod(a, b)`. No `&&` / `||` -- nested `if`. CB budget is tight -- keep inner programs small, prefer iteration limits N <= 100 over N >= 1000, avoid heavy nested recursion. The user-supplied input below carries the topic label, topic description, compute hints, and two arxiv paper abstracts (Paper A and Paper B). Define helper fns, COMPUTE specific properties for several cases, and return either an integer, a list of integers, or a short string. The goal is to DISCOVER something -- coincidence, unexpected value, pattern break. Example 1: `fn _gcd_sum(a: int, b: int, n: int, acc: int) -> int { if a > n { return acc; }; return _gcd_sum(a + 1, b, n, acc + gcd(a, b)); }\\nlet total = _gcd_sum(1, 30, 50, 0); total;` (returns Int -- sum of gcd(a, 30) for a in 1..50). Example 2: `fn _collect(p: int, lim: int, acc: list<int>) -> list<int> { if p > lim { return acc; }; if is_prime(p) { push(acc, p); }; return _collect(p + 1, lim, acc); }\\nlet primes = _collect(2, 100, []); primes;` (returns List<Int>). Output ONLY valid JSON: {\"exploration_goal\": \"...\", \"code\": \"let result = ...; result;\", \"expected_output_format\": \"int|list|string\"}. The `code` field must end with a top-level expression statement whose value is the exploration result.";
 }
 
 fn _variant_overlay_suffix() -> string {
