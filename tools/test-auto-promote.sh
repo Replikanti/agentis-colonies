@@ -1106,6 +1106,99 @@ else
     fail "demote arm floor" "$DEMOTE_FLOOR_CHECK from <$OUT_DEMOTE_FLOOR>"
 fi
 
+# --- Test 23-24: podman exec routing (#900) ---
+# Cover the host-vs-container routing for the two agentis sidecar
+# operations (`memo set` + `daemon reload`). Pre-#900 the auto-promote
+# sidecar called `agentis memo set` from the HOST with cwd=FED_DIR.
+# That triggered agentis-core's `find_agentis_root_from` walk-up, which
+# (in research-foundry's containerized setup) skipped FED's broken
+# container-local `.agentis/objects` symlink and landed on the host's
+# stale `research-foundry/.agentis` symlink. Net effect: memo writes
+# silently sank into an OLD May 29 run dir, in-container daemons never
+# saw the update, the DEMOTE arm shipped in #899 was operationally
+# invisible to the federation. See smoke #19 forensic in #900.
+#
+# Strategy: define the helper functions in a sourceable harness, stub
+# `podman` and `agentis` in PATH so we capture invocations, drive the
+# helper with CONTAINERIZED=true vs false, and assert the stubs saw
+# the expected command shape.
+DEMOTE_PODMAN_TMPDIR="$TMPDIR_TEST/podman-routing-$$"
+mkdir -p "$DEMOTE_PODMAN_TMPDIR/bin"
+cat > "$DEMOTE_PODMAN_TMPDIR/bin/podman" <<'PODMAN_STUB'
+#!/bin/sh
+echo "podman $*" > "${STUB_RECORD:-/dev/null}"
+PODMAN_STUB
+cat > "$DEMOTE_PODMAN_TMPDIR/bin/agentis" <<'AGENTIS_STUB'
+#!/bin/sh
+echo "agentis $*" > "${STUB_RECORD:-/dev/null}"
+AGENTIS_STUB
+chmod +x "$DEMOTE_PODMAN_TMPDIR/bin/podman" "$DEMOTE_PODMAN_TMPDIR/bin/agentis"
+
+# Test 23: containerized routing — CONTAINERIZED=true must route through
+# `podman exec <container> agentis memo set ...`. Container name comes
+# from RESEARCH_FOUNDRY_CONTAINER (default research-foundry-laptop).
+STUB_RECORD="$DEMOTE_PODMAN_TMPDIR/podman.out"
+# shellcheck disable=SC2016 # bash -c body intentionally single-quoted; $-refs evaluated in inner shell
+env PATH="$DEMOTE_PODMAN_TMPDIR/bin:$PATH" \
+    CONTAINERIZED=true \
+    RESEARCH_FOUNDRY_CONTAINER=research-foundry-laptop \
+    FED_DIR=/tmp/unused \
+    STUB_RECORD="$STUB_RECORD" \
+    bash -c '
+        # Inline helper definition mirroring tools/auto-promote.sh #900.
+        RESEARCH_FOUNDRY_CONTAINER="${RESEARCH_FOUNDRY_CONTAINER:-research-foundry-laptop}"
+        agentis_memo_set_routed() {
+            local key="$1" value="$2"
+            if [ "$CONTAINERIZED" = "true" ]; then
+                podman exec "$RESEARCH_FOUNDRY_CONTAINER" agentis memo set "$key" "$value"
+            else
+                (cd "$FED_DIR" && agentis memo set "$key" "$value")
+            fi
+        }
+        agentis_memo_set_routed "explorer:confidence" "0.6"
+    ' >/dev/null 2>&1 || true
+ROUTED_RECORD=$(cat "$STUB_RECORD" 2>/dev/null || echo "<empty>")
+case "$ROUTED_RECORD" in
+    "podman exec research-foundry-laptop agentis memo set explorer:confidence 0.6")
+        pass "podman exec routes memo set through container when CONTAINERIZED=true (#900)"
+        ;;
+    *)
+        fail "podman routing CONTAINERIZED=true" "expected 'podman exec research-foundry-laptop agentis memo set explorer:confidence 0.6', got '$ROUTED_RECORD'"
+        ;;
+esac
+
+# Test 24: host routing — CONTAINERIZED=false (or unset) must fall back
+# to legacy direct `agentis memo set` invocation with cwd=FED_DIR. The
+# existing dev-apprenticeship federation runs uncontainerized; it must
+# see byte-identical behaviour vs pre-#900.
+STUB_RECORD="$DEMOTE_PODMAN_TMPDIR/host.out"
+# shellcheck disable=SC2016 # bash -c body intentionally single-quoted; $-refs evaluated in inner shell
+env PATH="$DEMOTE_PODMAN_TMPDIR/bin:$PATH" \
+    CONTAINERIZED=false \
+    FED_DIR="$DEMOTE_PODMAN_TMPDIR" \
+    STUB_RECORD="$STUB_RECORD" \
+    bash -c '
+        RESEARCH_FOUNDRY_CONTAINER="${RESEARCH_FOUNDRY_CONTAINER:-research-foundry-laptop}"
+        agentis_memo_set_routed() {
+            local key="$1" value="$2"
+            if [ "$CONTAINERIZED" = "true" ]; then
+                podman exec "$RESEARCH_FOUNDRY_CONTAINER" agentis memo set "$key" "$value"
+            else
+                (cd "$FED_DIR" && agentis memo set "$key" "$value")
+            fi
+        }
+        agentis_memo_set_routed "explorer:confidence" "0.6"
+    ' >/dev/null 2>&1 || true
+HOST_RECORD=$(cat "$STUB_RECORD" 2>/dev/null || echo "<empty>")
+case "$HOST_RECORD" in
+    "agentis memo set explorer:confidence 0.6")
+        pass "host invocation persists when CONTAINERIZED=false (#900)"
+        ;;
+    *)
+        fail "podman routing CONTAINERIZED=false" "expected 'agentis memo set explorer:confidence 0.6', got '$HOST_RECORD'"
+        ;;
+esac
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

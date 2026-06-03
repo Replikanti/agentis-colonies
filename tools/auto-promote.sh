@@ -199,6 +199,49 @@ print(json.dumps(entry))
 " "$agent" "$decision" "$DRY_RUN" "$evidence_json" "$step_from" "$step_to" >> "$JOURNAL_FILE"
 }
 
+# --- agentis helpers (host-vs-container routing) ---
+#
+# #900: when CONTAINERIZED=true, route `agentis memo set` and `agentis
+# daemon reload` through `podman exec <container>` so the writes land in
+# the IN-CONTAINER `.agentis/` instead of silently sinking into a
+# host-side stale-symlinked `<federation>/.agentis/` directory.
+#
+# The trap (research-foundry smoke #19 forensic): the host-side agentis
+# binary walks ancestors of `cwd=$FED_DIR` looking for the first dir
+# where `<dir>/.agentis/objects` `is_dir()`. The current FED's
+# `<FED>/.agentis/objects` is a container-local symlink pointing at
+# `/persistent/objects` — broken on the host. Walk continues up until it
+# hits `<repo>/research-foundry/.agentis/` (a stale symlink left over
+# from an old run) and writes there. In-container daemons read from
+# the CURRENT FED's `/run-root/.agentis/memo/` and never see the update.
+#
+# Inside the container, WORKDIR=/run-root (per Containerfile.research),
+# so `/run-root/.agentis/objects` resolves correctly and the walk-up
+# stops at the right root. `podman exec` runs commands from WORKDIR so
+# no explicit cd is needed.
+#
+# `RESEARCH_FOUNDRY_CONTAINER` overrides the container name (default
+# `research-foundry-laptop` per run-research.sh:1547).
+RESEARCH_FOUNDRY_CONTAINER="${RESEARCH_FOUNDRY_CONTAINER:-research-foundry-laptop}"
+
+agentis_memo_set_routed() {
+    local key="$1" value="$2"
+    if [ "$CONTAINERIZED" = "true" ]; then
+        podman exec "$RESEARCH_FOUNDRY_CONTAINER" agentis memo set "$key" "$value"
+    else
+        (cd "$FED_DIR" && agentis memo set "$key" "$value")
+    fi
+}
+
+agentis_daemon_reload_routed() {
+    local agent_id="$1"
+    if [ "$CONTAINERIZED" = "true" ]; then
+        podman exec "$RESEARCH_FOUNDRY_CONTAINER" agentis daemon reload "$agent_id"
+    else
+        (cd "$FED_DIR" && agentis daemon reload "$agent_id" 200>&-)
+    fi
+}
+
 # --- Parse config ---
 
 if [ ! -f "$CONFIG_FILE" ]; then
@@ -286,9 +329,13 @@ while IFS='|' read -r decision agent colony step_from step_to reason evidence_js
                     "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['action']='dry-run'; print(json.dumps(e))" "$evidence_json")" \
                     "$step_from" "$step_to"
             else
-                # Write new confidence to memo (cwd=FED_DIR for .agentis/ resolution)
+                # Write new confidence to memo. Routed through podman exec
+                # when CONTAINERIZED=true so the write hits the in-container
+                # `/run-root/.agentis/memo/` instead of the host's
+                # stale-symlinked target — see #900 for the smoke #19
+                # forensic that surfaced the silent-sink bug.
                 log "  Writing confidence: agentis memo set ${agent}:confidence $step_to"
-                if (cd "$FED_DIR" && agentis memo set "${agent}:confidence" "$step_to") 2>&1; then
+                if agentis_memo_set_routed "${agent}:confidence" "$step_to" 2>&1; then
                     log "  Memo written successfully"
                 else
                     log "  WARNING: memo set failed for $agent"
@@ -347,7 +394,7 @@ for d in daemons:
                 fi
 
                 log "  Reloading daemon for $agent (agent_id=$AGENT_ID)..."
-                if (cd "$FED_DIR" && agentis daemon reload "$AGENT_ID" 200>&-) 2>&1; then
+                if agentis_daemon_reload_routed "$AGENT_ID" 2>&1; then
                     log "  Daemon reloaded for $agent (in-process tier refresh)"
                     journal_append "$agent" "promote" \
                         "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['action']='executed'; e['mechanism']='reload'; print(json.dumps(e))" "$evidence_json")" \
@@ -378,7 +425,7 @@ for d in daemons:
                     "$step_from" "$step_to"
             else
                 log "  Writing confidence: agentis memo set ${agent}:confidence $step_to"
-                if (cd "$FED_DIR" && agentis memo set "${agent}:confidence" "$step_to") 2>&1; then
+                if agentis_memo_set_routed "${agent}:confidence" "$step_to" 2>&1; then
                     log "  Memo written successfully"
                 else
                     log "  WARNING: memo set failed for $agent"
@@ -410,7 +457,7 @@ for d in daemons:
                 fi
 
                 log "  Reloading daemon for $agent (agent_id=$AGENT_ID)..."
-                if (cd "$FED_DIR" && agentis daemon reload "$AGENT_ID" 200>&-) 2>&1; then
+                if agentis_daemon_reload_routed "$AGENT_ID" 2>&1; then
                     log "  Daemon reloaded for $agent (in-process tier refresh)"
                     journal_append "$agent" "demote" \
                         "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['action']='executed'; e['mechanism']='reload'; print(json.dumps(e))" "$evidence_json")" \
