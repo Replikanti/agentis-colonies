@@ -97,9 +97,7 @@ fn _run_lean_check(self_pid: string, upstream_tick: int, lean_source: string) ->
     let sandbox_eff = if len(sandbox_dir) > 0 { sandbox_dir + "/sandbox"; } else { "/run-root/.agentis/sandbox"; };
     let lean_path = sandbox_eff + "/theorist-" + self_pid + "-tick-" + to_string(upstream_tick) + ".lean";
 
-    // colony-lint: safe-exec-concat
-    let write_cmd = "mkdir -p " + shell_escape(sandbox_eff) + " && printf '%s' " + shell_escape(lean_source) + " > " + shell_escape(lean_path);
-    let _wrote = try { exec sh write_cmd; } catch e { ""; };
+    file_write(lean_path, lean_source);
 
     let timeout_env = getenv("THEORIST_LEAN_TIMEOUT_SEC");
     let timeout_s = if len(timeout_env) > 0 { timeout_env; } else { "30"; };

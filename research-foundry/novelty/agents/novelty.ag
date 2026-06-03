@@ -280,9 +280,7 @@ fn _publish_novelty(
         let ledger_path = getenv("DISCOVERY_LEDGER");
         if len(ledger_path) > 0 {
             let ledger_row = "{\"ts\":" + to_string(tick_now_ms) + ",\"colony\":\"" + colony_name_str + "\",\"pid\":\"" + self_pid + "\",\"tick\":" + to_string(tick_idx) + ",\"event\":\"novelty_verdict\",\"verdict\":\"" + effective_label + "\"}";
-            // colony-lint: safe-exec-concat
-            let append_cmd = "printf '%s\n' " + shell_escape(ledger_row) + " >> " + shell_escape(ledger_path);
-            let _ = try { exec sh append_cmd; } catch e { ""; };
+            file_append(ledger_path, ledger_row + "\n");
         };
     };
 
@@ -775,9 +773,7 @@ fn _publish_novelty_rule_hit(
         let ledger_path = getenv("DISCOVERY_LEDGER");
         if len(ledger_path) > 0 {
             let ledger_row = "{\"ts\":" + to_string(tick_now_ms) + ",\"colony\":\"" + colony_name_str + "\",\"pid\":\"" + self_pid + "\",\"tick\":" + to_string(tick_idx) + ",\"event\":\"novelty_verdict\",\"verdict\":\"" + effective_label + "\"}";
-            // colony-lint: safe-exec-concat
-            let append_cmd = "printf '%s\n' " + shell_escape(ledger_row) + " >> " + shell_escape(ledger_path);
-            let _ = try { exec sh append_cmd; } catch e { ""; };
+            file_append(ledger_path, ledger_row + "\n");
         };
     };
 

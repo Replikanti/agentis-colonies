@@ -155,9 +155,8 @@ fn _publish_computer(
     let lang = script.language;
     let ext = if lang == "gap" { ".g"; } else { ".py"; };
     let script_path = sandbox_eff + "/repro-" + self_pid + "-tick-" + to_string(upstream_tick) + ext;
-    // colony-lint: safe-exec-concat
-    let write_cmd = "mkdir -p " + shell_escape(sandbox_eff) + " && printf '%s' " + shell_escape(script.script) + " > " + shell_escape(script_path);
-    let _wrote = try { exec sh write_cmd; } catch e { ""; };
+    // Wave 5 #911: file_write auto-creates parent dirs (sandbox-resolved).
+    file_write(script_path, script.script);
 
     let run_cmd = if lang == "gap" {
         // colony-lint: safe-exec-concat
@@ -298,9 +297,7 @@ fn _publish_computer_rule_hit(
     let lang = lang_in;
     let ext = if lang == "gap" { ".g"; } else { ".py"; };
     let script_path = sandbox_eff + "/repro-" + self_pid + "-tick-" + to_string(upstream_tick) + ext;
-    // colony-lint: safe-exec-concat
-    let write_cmd = "mkdir -p " + shell_escape(sandbox_eff) + " && printf '%s' " + shell_escape(script_body) + " > " + shell_escape(script_path);
-    let _wrote = try { exec sh write_cmd; } catch e { ""; };
+    file_write(script_path, script_body);
 
     let run_cmd = if lang == "gap" {
         // colony-lint: safe-exec-concat
