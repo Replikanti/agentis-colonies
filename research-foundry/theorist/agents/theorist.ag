@@ -45,7 +45,7 @@ fn get_confidence() -> float {
 }
 
 fn colony_name() -> string {
-    let _cn = try { exec sh "printenv COLONY_NAME"; } catch e { ""; };
+    let _cn = getenv("COLONY_NAME");
     if len(_cn) > 0 {
         return _cn;
     };
@@ -62,7 +62,7 @@ fn now_ms_via_shell() -> int {
 // (#670). Bypassable via RESEARCH_JITTER_DISABLED=1 for tests and
 // deterministic replays.
 fn _jitter_sleep() -> int {
-    let disabled = try { exec sh "printenv RESEARCH_JITTER_DISABLED"; } catch e { ""; };
+    let disabled = getenv("RESEARCH_JITTER_DISABLED");
     if disabled == "1" { return 0; };
     let _ = try { exec sh "sleep $(awk 'BEGIN{srand();print rand()*5}')"; } catch e { ""; };
     return 0;
@@ -94,11 +94,11 @@ fn _lean_prompt() -> string {
 // cap via `timeout` keeps a runaway elaborator from blocking the tick.
 // Bypassable for tests via THEORIST_LEAN_DISABLED=1.
 fn _run_lean_check(self_pid: string, upstream_tick: int, lean_source: string) -> string {
-    let disabled = try { exec sh "printenv THEORIST_LEAN_DISABLED"; } catch e { ""; };
+    let disabled = getenv("THEORIST_LEAN_DISABLED");
     if disabled == "1" { return "failed"; };
     if len(lean_source) == 0 { return "failed"; };
 
-    let sandbox_dir = try { exec sh "printenv AGENTIS_ROOT"; } catch e { ""; };
+    let sandbox_dir = getenv("AGENTIS_ROOT");
     let sandbox_eff = if len(sandbox_dir) > 0 { sandbox_dir + "/sandbox"; } else { "/run-root/.agentis/sandbox"; };
     let lean_path = sandbox_eff + "/theorist-" + self_pid + "-tick-" + to_string(upstream_tick) + ".lean";
 
@@ -106,7 +106,7 @@ fn _run_lean_check(self_pid: string, upstream_tick: int, lean_source: string) ->
     let write_cmd = "mkdir -p " + shell_escape(sandbox_eff) + " && printf '%s' " + shell_escape(lean_source) + " > " + shell_escape(lean_path);
     let _wrote = try { exec sh write_cmd; } catch e { ""; };
 
-    let timeout_env = try { exec sh "printenv THEORIST_LEAN_TIMEOUT_SEC"; } catch e { ""; };
+    let timeout_env = getenv("THEORIST_LEAN_TIMEOUT_SEC");
     let timeout_s = if len(timeout_env) > 0 { timeout_env; } else { "30"; };
 
     // Mathlib-aware lean invocation. The Containerfile prepares a Lake
@@ -117,7 +117,7 @@ fn _run_lean_check(self_pid: string, upstream_tick: int, lean_source: string) ->
     // The fallback `lean <file>` path (when MATHLIB_SHELL is unset)
     // matches the pre-mathlib container's contract so the agent still
     // works under stock Lean 4 if an operator strips the mathlib layer.
-    let mathlib_shell = try { exec sh "printenv MATHLIB_SHELL"; } catch e { ""; };
+    let mathlib_shell = getenv("MATHLIB_SHELL");
     // colony-lint: safe-exec-concat
     let run_cmd = if len(mathlib_shell) > 0 {
         "timeout " + shell_escape(timeout_s) + " lake env --dir=" + shell_escape(mathlib_shell) + " lean " + shell_escape(lean_path) + " 2>&1; echo \"__lean_exit=$?__\"";
@@ -311,7 +311,7 @@ fn _publish_theorist(
 
                                     let lin_str = recall_latest("theorist:" + self_pid + ":generation");
                                     let lin = if len(lin_str) > 0 { parse_int(lin_str); } else { 0; };
-                                    let ledger_path_r = try { exec sh "printenv REPLICATION_LEDGER"; } catch e { ""; };
+                                    let ledger_path_r = getenv("REPLICATION_LEDGER");
                                     if len(ledger_path_r) > 0 {
                                         let parent_specialty = recall_latest("theorist:" + self_pid + ":specialty");
                                         let child_gen = lin + 1;
@@ -562,7 +562,7 @@ fn _publish_theorist_rule_hit(
 
                                     let lin_str = recall_latest("theorist:" + self_pid + ":generation");
                                     let lin = if len(lin_str) > 0 { parse_int(lin_str); } else { 0; };
-                                    let ledger_path_r = try { exec sh "printenv REPLICATION_LEDGER"; } catch e { ""; };
+                                    let ledger_path_r = getenv("REPLICATION_LEDGER");
                                     if len(ledger_path_r) > 0 {
                                         let parent_specialty = recall_latest("theorist:" + self_pid + ":specialty");
                                         let child_gen = lin + 1;
@@ -609,7 +609,7 @@ fn tick(reason: string) -> void {
     if len(_self_pid) > 0 {
         let _existing_specialty = recall_latest("theorist:" + _self_pid + ":specialty");
         if len(_existing_specialty) == 0 {
-            let _daemon_id = try { exec sh "printenv DAEMON_ID"; } catch e { ""; };
+            let _daemon_id = getenv("DAEMON_ID");
             if len(_daemon_id) > 0 {
                 let _pool_specialty = recall_latest("theorist:pool:specialty:" + _daemon_id);
                 if len(_pool_specialty) > 0 {
@@ -618,7 +618,7 @@ fn tick(reason: string) -> void {
                     if len(_pool_overlay) > 0 {
                         memo_write("theorist:" + _self_pid + ":specialty_overlay", _pool_overlay);
                     };
-                    let _gen_env = try { exec sh "printenv THEORIST_GENERATION"; } catch e { "0"; };
+                    let _gen_env = getenv("THEORIST_GENERATION");
                     let _gen_seed = if len(_gen_env) > 0 { _gen_env; } else { "0"; };
                     memo_write("theorist:" + _self_pid + ":generation", _gen_seed);
                     // colony-lint: learn-tags-ok
@@ -742,10 +742,10 @@ fn tick(reason: string) -> void {
     let _topic_label = recall_latest("replay:current_topic");
     let canonical_ctx = _theorist_canonical_ctx(_topic_label, _input_blob);
 
-    let rule_first_flag = try { exec sh "printenv THEORIST_RULE_FIRST"; } catch e { ""; };
+    let rule_first_flag = getenv("THEORIST_RULE_FIRST");
     let rule_first_enabled = rule_first_flag != "0";
 
-    let min_conf_str = try { exec sh "printenv THEORIST_RULE_CONFIDENCE"; } catch e { ""; };
+    let min_conf_str = getenv("THEORIST_RULE_CONFIDENCE");
     let min_conf = if len(min_conf_str) > 0 { parse_float(min_conf_str); } else { 0.85; };
 
     if rule_first_enabled {

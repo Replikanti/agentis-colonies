@@ -40,7 +40,7 @@ fn get_confidence() -> float {
 }
 
 fn colony_name() -> string {
-    let _cn = try { exec sh "printenv COLONY_NAME"; } catch e { ""; };
+    let _cn = getenv("COLONY_NAME");
     if len(_cn) > 0 {
         return _cn;
     };
@@ -57,7 +57,7 @@ fn now_ms_via_shell() -> int {
 // (#670). Bypassable via RESEARCH_JITTER_DISABLED=1 for tests and
 // deterministic replays.
 fn _jitter_sleep() -> int {
-    let disabled = try { exec sh "printenv RESEARCH_JITTER_DISABLED"; } catch e { ""; };
+    let disabled = getenv("RESEARCH_JITTER_DISABLED");
     if disabled == "1" { return 0; };
     let _ = try { exec sh "sleep $(awk 'BEGIN{srand();print rand()*5}')"; } catch e { ""; };
     return 0;
@@ -213,7 +213,7 @@ fn _publish_introducer(
 
                                     let lin_str = recall_latest("introducer:" + self_pid + ":generation");
                                     let lin = if len(lin_str) > 0 { parse_int(lin_str); } else { 0; };
-                                    let ledger_path_r = try { exec sh "printenv REPLICATION_LEDGER"; } catch e { ""; };
+                                    let ledger_path_r = getenv("REPLICATION_LEDGER");
                                     if len(ledger_path_r) > 0 {
                                         let parent_specialty = recall_latest("introducer:" + self_pid + ":specialty");
                                         let child_gen = lin + 1;
@@ -378,7 +378,7 @@ fn _publish_introducer_rule_hit(
 
                                     let lin_str = recall_latest("introducer:" + self_pid + ":generation");
                                     let lin = if len(lin_str) > 0 { parse_int(lin_str); } else { 0; };
-                                    let ledger_path_r = try { exec sh "printenv REPLICATION_LEDGER"; } catch e { ""; };
+                                    let ledger_path_r = getenv("REPLICATION_LEDGER");
                                     if len(ledger_path_r) > 0 {
                                         let parent_specialty = recall_latest("introducer:" + self_pid + ":specialty");
                                         let child_gen = lin + 1;
@@ -452,7 +452,7 @@ fn tick(reason: string) -> void {
     if len(_self_pid) > 0 {
         let _existing_specialty = recall_latest("introducer:" + _self_pid + ":specialty");
         if len(_existing_specialty) == 0 {
-            let _daemon_id = try { exec sh "printenv DAEMON_ID"; } catch e { ""; };
+            let _daemon_id = getenv("DAEMON_ID");
             if len(_daemon_id) > 0 {
                 let _pool_specialty = recall_latest("introducer:pool:specialty:" + _daemon_id);
                 if len(_pool_specialty) > 0 {
@@ -461,7 +461,7 @@ fn tick(reason: string) -> void {
                     if len(_pool_overlay) > 0 {
                         memo_write("introducer:" + _self_pid + ":specialty_overlay", _pool_overlay);
                     };
-                    let _gen_env = try { exec sh "printenv INTRODUCER_GENERATION"; } catch e { "0"; };
+                    let _gen_env = getenv("INTRODUCER_GENERATION");
                     let _gen_seed = if len(_gen_env) > 0 { _gen_env; } else { "0"; };
                     memo_write("introducer:" + _self_pid + ":generation", _gen_seed);
                     // colony-lint: learn-tags-ok
@@ -528,10 +528,10 @@ fn tick(reason: string) -> void {
     let claim_id = recall_latest("claim:claim_id:tick-" + to_string(upstream_tick));
     let canonical_ctx = _introducer_canonical_ctx(ctx, claim_id);
 
-    let rule_first_flag = try { exec sh "printenv INTRODUCER_RULE_FIRST"; } catch e { ""; };
+    let rule_first_flag = getenv("INTRODUCER_RULE_FIRST");
     let rule_first_enabled = rule_first_flag != "0";
 
-    let min_conf_str = try { exec sh "printenv INTRODUCER_RULE_CONFIDENCE"; } catch e { ""; };
+    let min_conf_str = getenv("INTRODUCER_RULE_CONFIDENCE");
     let min_conf = if len(min_conf_str) > 0 { parse_float(min_conf_str); } else { 0.85; };
 
     if rule_first_enabled {

@@ -34,7 +34,7 @@ fn get_confidence() -> float {
 }
 
 fn colony_name() -> string {
-    let _cn = try { exec sh "printenv COLONY_NAME"; } catch e { ""; };
+    let _cn = getenv("COLONY_NAME");
     if len(_cn) > 0 {
         return _cn;
     };
@@ -51,7 +51,7 @@ fn now_ms_via_shell() -> int {
 // (#670). Bypassable via RESEARCH_JITTER_DISABLED=1 for tests and
 // deterministic replays.
 fn _jitter_sleep() -> int {
-    let disabled = try { exec sh "printenv RESEARCH_JITTER_DISABLED"; } catch e { ""; };
+    let disabled = getenv("RESEARCH_JITTER_DISABLED");
     if disabled == "1" { return 0; };
     let _ = try { exec sh "sleep $(awk 'BEGIN{srand();print rand()*5}')"; } catch e { ""; };
     return 0;
@@ -284,7 +284,7 @@ fn _publish_novelty(
         // discovery-ledger.jsonl row should reflect tier policy
         // (autonomous + review-gated emit; propose skips per
         // #622 ADR-0001).
-        let ledger_path = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
+        let ledger_path = getenv("DISCOVERY_LEDGER");
         if len(ledger_path) > 0 {
             let ledger_row = "{\"ts\":" + to_string(tick_now_ms) + ",\"colony\":\"" + colony_name_str + "\",\"pid\":\"" + self_pid + "\",\"tick\":" + to_string(tick_idx) + ",\"event\":\"novelty_verdict\",\"verdict\":\"" + effective_label + "\"}";
             // colony-lint: safe-exec-concat
@@ -392,7 +392,7 @@ fn _publish_novelty(
 
                                     let lin_str = recall_latest("novelty:" + self_pid + ":generation");
                                     let lin = if len(lin_str) > 0 { parse_int(lin_str); } else { 0; };
-                                    let ledger_path_r = try { exec sh "printenv REPLICATION_LEDGER"; } catch e { ""; };
+                                    let ledger_path_r = getenv("REPLICATION_LEDGER");
                                     if len(ledger_path_r) > 0 {
                                         let parent_specialty = recall_latest("novelty:" + self_pid + ":specialty");
                                         let child_gen = lin + 1;
@@ -428,7 +428,7 @@ fn _publish_novelty(
 // Bucket vocabulary mirrors tools/colony-variants.json explorer specialties:
 //   group_theory, combinatorics, number_theory, probability, algebra.
 fn _loss_shaping_enabled() -> bool {
-    let flag = try { exec sh "printenv NOVELTY_LOSS_SHAPING_ENABLED"; } catch e { ""; };
+    let flag = getenv("NOVELTY_LOSS_SHAPING_ENABLED");
     if len(flag) == 0 { return false; };
     if flag == "1" { return true; };
     return false;
@@ -779,7 +779,7 @@ fn _publish_novelty_rule_hit(
     };
 
     if final_write {
-        let ledger_path = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
+        let ledger_path = getenv("DISCOVERY_LEDGER");
         if len(ledger_path) > 0 {
             let ledger_row = "{\"ts\":" + to_string(tick_now_ms) + ",\"colony\":\"" + colony_name_str + "\",\"pid\":\"" + self_pid + "\",\"tick\":" + to_string(tick_idx) + ",\"event\":\"novelty_verdict\",\"verdict\":\"" + effective_label + "\"}";
             // colony-lint: safe-exec-concat
@@ -862,7 +862,7 @@ fn _publish_novelty_rule_hit(
 
                                     let lin_str = recall_latest("novelty:" + self_pid + ":generation");
                                     let lin = if len(lin_str) > 0 { parse_int(lin_str); } else { 0; };
-                                    let ledger_path_r = try { exec sh "printenv REPLICATION_LEDGER"; } catch e { ""; };
+                                    let ledger_path_r = getenv("REPLICATION_LEDGER");
                                     if len(ledger_path_r) > 0 {
                                         let parent_specialty = recall_latest("novelty:" + self_pid + ":specialty");
                                         let child_gen = lin + 1;
@@ -903,7 +903,7 @@ fn tick(reason: string) -> void {
     if len(_self_pid) > 0 {
         let _existing_specialty = recall_latest("novelty:" + _self_pid + ":specialty");
         if len(_existing_specialty) == 0 {
-            let _daemon_id = try { exec sh "printenv DAEMON_ID"; } catch e { ""; };
+            let _daemon_id = getenv("DAEMON_ID");
             if len(_daemon_id) > 0 {
                 let _pool_specialty = recall_latest("novelty:pool:specialty:" + _daemon_id);
                 if len(_pool_specialty) > 0 {
@@ -912,7 +912,7 @@ fn tick(reason: string) -> void {
                     if len(_pool_overlay) > 0 {
                         memo_write("novelty:" + _self_pid + ":specialty_overlay", _pool_overlay);
                     };
-                    let _gen_env = try { exec sh "printenv NOVELTY_GENERATION"; } catch e { "0"; };
+                    let _gen_env = getenv("NOVELTY_GENERATION");
                     let _gen_seed = if len(_gen_env) > 0 { _gen_env; } else { "0"; };
                     memo_write("novelty:" + _self_pid + ":generation", _gen_seed);
                     // colony-lint: learn-tags-ok
@@ -988,10 +988,10 @@ fn tick(reason: string) -> void {
     // NOVELTY_RULE_FIRST=0 short-circuits Stage 1 to the LLM path.
     let canonical_ctx = _novelty_canonical_ctx(topic_label, stated_answer);
 
-    let rule_first_flag = try { exec sh "printenv NOVELTY_RULE_FIRST"; } catch e { ""; };
+    let rule_first_flag = getenv("NOVELTY_RULE_FIRST");
     let rule_first_enabled = rule_first_flag != "0";
 
-    let min_conf_str = try { exec sh "printenv NOVELTY_RULE_CONFIDENCE"; } catch e { ""; };
+    let min_conf_str = getenv("NOVELTY_RULE_CONFIDENCE");
     let min_conf = if len(min_conf_str) > 0 { parse_float(min_conf_str); } else { 0.85; };
 
     if rule_first_enabled {

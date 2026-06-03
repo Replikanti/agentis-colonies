@@ -51,7 +51,7 @@ fn get_confidence() -> float {
 }
 
 fn colony_name() -> string {
-    let _cn = try { exec sh "printenv COLONY_NAME"; } catch e { ""; };
+    let _cn = getenv("COLONY_NAME");
     if len(_cn) > 0 {
         return _cn;
     };
@@ -68,7 +68,7 @@ fn now_ms_via_shell() -> int {
 // (#670). Bypassable via RESEARCH_JITTER_DISABLED=1 for tests and
 // deterministic replays.
 fn _jitter_sleep() -> int {
-    let disabled = try { exec sh "printenv RESEARCH_JITTER_DISABLED"; } catch e { ""; };
+    let disabled = getenv("RESEARCH_JITTER_DISABLED");
     if disabled == "1" { return 0; };
     let _ = try { exec sh "sleep $(awk 'BEGIN{srand();print rand()*5}')"; } catch e { ""; };
     return 0;
@@ -247,7 +247,7 @@ fn _submitter_stage_and_publish(
     // Load authors.toml from $PREPRINT_AUTHOR_CONFIG (path threaded
     // through by run-preprint.sh). The file is parsed by a Python
     // helper rather than the .ag DSL (no TOML in DSL).
-    let author_cfg_path = try { exec sh "printenv PREPRINT_AUTHOR_CONFIG"; } catch e { ""; };
+    let author_cfg_path = getenv("PREPRINT_AUTHOR_CONFIG");
     let author_cfg_eff = if len(author_cfg_path) > 0 { author_cfg_path; } else { "/run-root/config/authors.toml"; };
     // colony-lint: safe-exec-concat
     let authors_cmd = "python3 -c 'import sys\ntry:\n import tomllib\nexcept Exception:\n import tomli as tomllib\ntry:\n with open(sys.argv[1],\"rb\") as f: d=tomllib.load(f)\nexcept Exception:\n print(\"AUTHOR-PLACEHOLDER <author@example.org>\"); sys.exit(0)\nauthors=d.get(\"authors\") or []\nout=[]\nfor a in authors:\n name=a.get(\"name\",\"AUTHOR-PLACEHOLDER\"); email=a.get(\"email\",\"\")\n if email: out.append(name+\" <\"+email+\">\")\n else: out.append(name)\nprint(\"; \".join(out) if out else \"AUTHOR-PLACEHOLDER\")' " + shell_escape(author_cfg_eff);
@@ -291,7 +291,7 @@ fn _submitter_stage_and_publish(
     // computer's per-tick `runs_ok` memo (#596 spec, #600 sub-issue 1).
     // Provenance fields surface the editor / computer / introducer pid +
     // upstream_tick that produced this row (#600 sub-issue 2).
-    let ledger_path = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
+    let ledger_path = getenv("DISCOVERY_LEDGER");
     if len(ledger_path) > 0 {
         let repro_runs_ok = if len(computer_pid) > 0 {
             recall_latest("computer:" + computer_pid + ":runs_ok:tick-" + to_string(upstream_tick));
@@ -386,7 +386,7 @@ fn _submitter_stage_and_publish(
 
                                     let lin_str = recall_latest("submitter:" + self_pid + ":generation");
                                     let lin = if len(lin_str) > 0 { parse_int(lin_str); } else { 0; };
-                                    let ledger_path_r = try { exec sh "printenv REPLICATION_LEDGER"; } catch e { ""; };
+                                    let ledger_path_r = getenv("REPLICATION_LEDGER");
                                     if len(ledger_path_r) > 0 {
                                         let parent_specialty = recall_latest("submitter:" + self_pid + ":specialty");
                                         let child_gen = lin + 1;
@@ -579,7 +579,7 @@ fn _submitter_draft_phase_rule_hit(
 //   other.
 fn _classify_hitl_reason(reason_raw: string) -> string {
     if len(reason_raw) == 0 { return "other"; };
-    let backend = try { exec sh "printenv HITL_CLASSIFIER_BACKEND"; } catch e { ""; };
+    let backend = getenv("HITL_CLASSIFIER_BACKEND");
     let backend_eff = if len(backend) > 0 { backend; } else { "regex"; };
     if backend_eff == "llm" {
         // TODO: replace with prompt(...) call once LLM-classifier
@@ -612,7 +612,7 @@ fn _push_hitl_reject(
 ) -> void {
     let buf_key = "feedback:hitl_rejects";
     let buf_raw = recall_latest(buf_key);
-    let win_env = try { exec sh "printenv HITL_REJECT_WINDOW"; } catch e { ""; };
+    let win_env = getenv("HITL_REJECT_WINDOW");
     let win = if len(win_env) > 0 { parse_int(win_env); } else { 20; };
     let win_eff = if win <= 0 { 20; } else { win; };
     let excerpt_eff = if len(reason_excerpt) > 200 { substring(reason_excerpt, 0, 200); } else { reason_excerpt; };
@@ -640,7 +640,7 @@ fn _handle_hitl_reject(
     my_tier: string
 ) -> void {
     let reason_raw = recall_latest("submitter:" + claim_id_eff + ":human_reject_reason");
-    let ledger_path3 = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
+    let ledger_path3 = getenv("DISCOVERY_LEDGER");
     if len(ledger_path3) > 0 {
         // Route HUMAN_REJECTED row through python3 json.dumps so the
         // operator-supplied free-form rejection reason cannot break the
@@ -691,8 +691,8 @@ fn _submitter_send_phase(
     introducer_pid: string,
     my_tier: string
 ) -> void {
-    let gateway = try { exec sh "printenv PREPRINT_ARXIV_GATEWAY"; } catch e { ""; };
-    let from_addr = try { exec sh "printenv PREPRINT_ARXIV_FROM"; } catch e { ""; };
+    let gateway = getenv("PREPRINT_ARXIV_GATEWAY");
+    let from_addr = getenv("PREPRINT_ARXIV_FROM");
     let gateway_eff = if len(gateway) > 0 { gateway; } else { "submit@arxiv.org"; };
     let from_eff = if len(from_addr) > 0 { from_addr; } else { "AUTHOR-PLACEHOLDER@example.org"; };
     // colony-lint: safe-exec-concat
@@ -704,7 +704,7 @@ fn _submitter_send_phase(
             + shell_escape(claim_dir + "/submission.tar.gz");
     let send_out = try { exec sh send_cmd; } catch e { "smtp-error:exec-failed"; };
 
-    let ledger_path2 = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
+    let ledger_path2 = getenv("DISCOVERY_LEDGER");
     if len(ledger_path2) > 0 {
         // Route SUBMITTED row through python3 json.dumps so the SMTP
         // result text (which may contain quotes / colons / newlines on
@@ -877,7 +877,7 @@ fn tick(reason: string) -> void {
     if len(_self_pid) > 0 {
         let _existing_specialty = recall_latest("submitter:" + _self_pid + ":specialty");
         if len(_existing_specialty) == 0 {
-            let _daemon_id = try { exec sh "printenv DAEMON_ID"; } catch e { ""; };
+            let _daemon_id = getenv("DAEMON_ID");
             if len(_daemon_id) > 0 {
                 let _pool_specialty = recall_latest("submitter:pool:specialty:" + _daemon_id);
                 if len(_pool_specialty) > 0 {
@@ -886,7 +886,7 @@ fn tick(reason: string) -> void {
                     if len(_pool_overlay) > 0 {
                         memo_write("submitter:" + _self_pid + ":specialty_overlay", _pool_overlay);
                     };
-                    let _gen_env = try { exec sh "printenv SUBMITTER_GENERATION"; } catch e { "0"; };
+                    let _gen_env = getenv("SUBMITTER_GENERATION");
                     let _gen_seed = if len(_gen_env) > 0 { _gen_env; } else { "0"; };
                     memo_write("submitter:" + _self_pid + ":generation", _gen_seed);
                     // colony-lint: learn-tags-ok
@@ -988,10 +988,10 @@ fn tick(reason: string) -> void {
     // overridable via SUBMITTER_RULE_CONFIDENCE.
     let canonical_ctx = _submitter_canonical_ctx(claim_id_eff, final_tex, title_seed, msc_seed, cat_seed, repro_script, repro_output);
 
-    let rule_first_flag = try { exec sh "printenv SUBMITTER_RULE_FIRST"; } catch e { ""; };
+    let rule_first_flag = getenv("SUBMITTER_RULE_FIRST");
     let rule_first_enabled = rule_first_flag != "0";
 
-    let min_conf_str = try { exec sh "printenv SUBMITTER_RULE_CONFIDENCE"; } catch e { ""; };
+    let min_conf_str = getenv("SUBMITTER_RULE_CONFIDENCE");
     let min_conf = if len(min_conf_str) > 0 { parse_float(min_conf_str); } else { 0.85; };
 
     let rule_action = if rule_first_enabled {

@@ -81,7 +81,7 @@ fn get_confidence() -> float {
 }
 
 fn colony_name() -> string {
-    let _cn = try { exec sh "printenv COLONY_NAME"; } catch e { ""; };
+    let _cn = getenv("COLONY_NAME");
     if len(_cn) > 0 {
         return _cn;
     };
@@ -98,7 +98,7 @@ fn now_ms_via_shell() -> int {
 // (#670). Bypassable via RESEARCH_JITTER_DISABLED=1 for tests and
 // deterministic replays.
 fn _jitter_sleep() -> int {
-    let disabled = try { exec sh "printenv RESEARCH_JITTER_DISABLED"; } catch e { ""; };
+    let disabled = getenv("RESEARCH_JITTER_DISABLED");
     if disabled == "1" { return 0; };
     let _ = try { exec sh "sleep $(awk 'BEGIN{srand();print rand()*5}')"; } catch e { ""; };
     return 0;
@@ -181,7 +181,7 @@ fn _levenshtein_ratio_pct(a: string, b: string) -> int {
     };
     if len(b) == 0 { return 0; };
     if a == b { return 100; };
-    let max_bytes_env = try { exec sh "printenv EXPLORER_PROMPT_MAX_BYTES"; } catch e { ""; };
+    let max_bytes_env = getenv("EXPLORER_PROMPT_MAX_BYTES");
     let max_bytes = if len(max_bytes_env) > 0 { parse_int(max_bytes_env); } else { 4096; };
     let max_bytes_eff = if max_bytes <= 0 { 4096; } else { max_bytes; };
     let a_clamped = if len(a) > max_bytes_eff { substring(a, 0, max_bytes_eff); } else { a; };
@@ -199,7 +199,7 @@ fn _levenshtein_ratio_pct(a: string, b: string) -> int {
 fn _push_settled_exploration(self_pid: string, verdict: string) -> int {
     let buf_key = "explorer:" + self_pid + ":settled_explorations";
     let buf_raw = recall_latest(buf_key);
-    let thr_env = try { exec sh "printenv EXPLORER_PROMPT_EVOLUTION_THRESHOLD"; } catch e { ""; };
+    let thr_env = getenv("EXPLORER_PROMPT_EVOLUTION_THRESHOLD");
     let thr = if len(thr_env) > 0 { parse_int(thr_env); } else { 3; };
     let thr_eff = if thr <= 0 { 3; } else { thr; };
     // colony-lint: safe-exec-concat
@@ -245,13 +245,13 @@ fn _evolve_exploration_prompt(self_pid: string, prompt_text: string) -> string {
     let gen_key = "explorer:" + self_pid + ":exploration_generation";
     let gen_str = recall_latest(gen_key);
     let gen = if len(gen_str) > 0 { parse_int(gen_str); } else { 0; };
-    let gen_cap_env = try { exec sh "printenv EXPLORER_PROMPT_GEN_CAP"; } catch e { ""; };
+    let gen_cap_env = getenv("EXPLORER_PROMPT_GEN_CAP");
     let gen_cap = if len(gen_cap_env) > 0 { parse_int(gen_cap_env); } else { 10; };
     let gen_cap_eff = if gen_cap <= 0 { 10; } else { gen_cap; };
-    let max_bytes_env = try { exec sh "printenv EXPLORER_PROMPT_MAX_BYTES"; } catch e { ""; };
+    let max_bytes_env = getenv("EXPLORER_PROMPT_MAX_BYTES");
     let max_bytes = if len(max_bytes_env) > 0 { parse_int(max_bytes_env); } else { 4096; };
     let max_bytes_eff = if max_bytes <= 0 { 4096; } else { max_bytes; };
-    let lev_floor_env = try { exec sh "printenv EXPLORER_PROMPT_LEVENSHTEIN_FLOOR"; } catch e { ""; };
+    let lev_floor_env = getenv("EXPLORER_PROMPT_LEVENSHTEIN_FLOOR");
     let lev_floor = if len(lev_floor_env) > 0 { parse_int(lev_floor_env); } else { 5; };
     let lev_floor_eff = if lev_floor < 0 { 5; } else { lev_floor; };
     let prompt_key = "explorer:" + self_pid + ":exploration_prompt";
@@ -424,7 +424,7 @@ fn _publish_explorer(
 
     if final_write {
         // Append to per-run discovery ledger.
-        let ledger_path = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
+        let ledger_path = getenv("DISCOVERY_LEDGER");
         if len(ledger_path) > 0 {
             let ledger_row = "{\"ts\":" + to_string(tick_now_ms) + ",\"colony\":\"" + _colony_name + "\",\"pid\":\"" + self_pid + "\",\"tick\":" + to_string(tick_idx) + ",\"topic\":\"" + topic_label + "\",\"event\":\"exploration_done\"}";
             // colony-lint: safe-exec-concat
@@ -433,7 +433,7 @@ fn _publish_explorer(
         };
 
         // Settlement: read the novelty verdict for tick - HOLD_PERIOD.
-        let hold_env = try { exec sh "printenv HOLD_PERIOD"; } catch e { ""; };
+        let hold_env = getenv("HOLD_PERIOD");
         let hold = if len(hold_env) > 0 { parse_int(hold_env); } else { 4; };
         let hold_eff = if hold <= 0 { 4; } else { hold; };
         let settle_tick = tick_idx - hold_eff;
@@ -447,9 +447,9 @@ fn _publish_explorer(
                 // BORDERLINE, -1 NOT_NOVEL, -0.5 (mapped int 1)
                 // REJECT. Knob env vars are integer-scaled per-tick.
                 if len(self_pid) > 0 {
-                    let reward_novel_env = try { exec sh "printenv FOUNDRY_FITNESS_REWARD_NOVEL_PER_TICK"; } catch e { ""; };
+                    let reward_novel_env = getenv("FOUNDRY_FITNESS_REWARD_NOVEL_PER_TICK");
                     let reward_novel = if len(reward_novel_env) > 0 { parse_int(reward_novel_env); } else { 2; };
-                    let penalty_not_novel_env = try { exec sh "printenv FOUNDRY_FITNESS_PENALTY_NOT_NOVEL_PER_TICK"; } catch e { ""; };
+                    let penalty_not_novel_env = getenv("FOUNDRY_FITNESS_PENALTY_NOT_NOVEL_PER_TICK");
                     let penalty_not_novel = if len(penalty_not_novel_env) > 0 { parse_int(penalty_not_novel_env); } else { 1; };
                     let fit_pre = parse_int(recall_latest("explorer:" + self_pid + ":fitness"));
                     let fit_delta = if verdict_raw == "NOVEL" {
@@ -469,7 +469,7 @@ fn _publish_explorer(
                 // M98 v3 evolution trigger.
                 if len(self_pid) > 0 {
                     let _buf_len = _push_settled_exploration(self_pid, verdict_raw);
-                    let _thr_env = try { exec sh "printenv EXPLORER_PROMPT_EVOLUTION_THRESHOLD"; } catch e { ""; };
+                    let _thr_env = getenv("EXPLORER_PROMPT_EVOLUTION_THRESHOLD");
                     let _thr = if len(_thr_env) > 0 { parse_int(_thr_env); } else { 3; };
                     let _thr_eff = if _thr <= 0 { 3; } else { _thr; };
                     let _not_novel = _count_not_novel(self_pid);
@@ -512,7 +512,7 @@ fn _publish_explorer(
                                                 // by specialty stay coherent on lineage chains.
                                                 let lin_str = recall_latest("explorer:" + self_pid + ":generation");
                                                 let lin = if len(lin_str) > 0 { parse_int(lin_str); } else { 0; };
-                                                let ledger_path_r = try { exec sh "printenv REPLICATION_LEDGER"; } catch e { ""; };
+                                                let ledger_path_r = getenv("REPLICATION_LEDGER");
                                                 if len(ledger_path_r) > 0 {
                                                     let parent_specialty = recall_latest("explorer:" + self_pid + ":specialty");
                                                     let child_gen = lin + 1;
@@ -558,7 +558,7 @@ fn _publish_explorer(
 //   - the hint memo is empty (novelty.ag has not published one yet)
 // Default behaviour with the env unset is byte-identical to pre-#765.
 fn _loss_shaping_enabled_explorer() -> bool {
-    let flag = try { exec sh "printenv NOVELTY_LOSS_SHAPING_ENABLED"; } catch e { ""; };
+    let flag = getenv("NOVELTY_LOSS_SHAPING_ENABLED");
     if len(flag) == 0 { return false; };
     if flag == "1" { return true; };
     return false;
@@ -794,7 +794,7 @@ fn _publish_explorer_rule_hit(
     let exploration_json = _build_faithful_exploration_action(exploration_goal, code, expected_output_format);
     emit("math-foundry:exploration_done", exploration_json);
 
-    let sandbox_dir = try { exec sh "printenv AGENTIS_ROOT"; } catch e { ""; };
+    let sandbox_dir = getenv("AGENTIS_ROOT");
     let sandbox_eff = if len(sandbox_dir) > 0 { sandbox_dir + "/sandbox"; } else { "/run-root/.agentis/sandbox"; };
     // colony-lint: safe-exec-concat
     let write_cmd = "mkdir -p " + shell_escape(sandbox_eff) + " && printf '%s' " + shell_escape(code) + " > " + shell_escape(sandbox_eff + "/explore-" + self_pid + "-tick-" + to_string(tick_idx) + ".py");
@@ -829,7 +829,7 @@ fn _publish_explorer_rule_hit(
     memo_write("explorer:" + self_pid + ":topic:tick-" + to_string(tick_idx), topic_label);
 
     if final_write {
-        let ledger_path = try { exec sh "printenv DISCOVERY_LEDGER"; } catch e { ""; };
+        let ledger_path = getenv("DISCOVERY_LEDGER");
         if len(ledger_path) > 0 {
             let ledger_row = "{\"ts\":" + to_string(tick_now_ms) + ",\"colony\":\"" + _colony_name + "\",\"pid\":\"" + self_pid + "\",\"tick\":" + to_string(tick_idx) + ",\"topic\":\"" + topic_label + "\",\"event\":\"exploration_done\"}";
             // colony-lint: safe-exec-concat
@@ -837,7 +837,7 @@ fn _publish_explorer_rule_hit(
             let _l = try { exec sh append_cmd; } catch e { ""; };
         };
 
-        let hold_env = try { exec sh "printenv HOLD_PERIOD"; } catch e { ""; };
+        let hold_env = getenv("HOLD_PERIOD");
         let hold = if len(hold_env) > 0 { parse_int(hold_env); } else { 4; };
         let hold_eff = if hold <= 0 { 4; } else { hold; };
         let settle_tick = tick_idx - hold_eff;
@@ -848,9 +848,9 @@ fn _publish_explorer_rule_hit(
                 learn("settle", "tick " + to_string(settle_tick) + " " + verdict_raw, "novelty=" + verdict_raw, "success", ["acted", "math-foundry", _colony_name, "verdict:" + verdict_raw]);
 
                 if len(self_pid) > 0 {
-                    let reward_novel_env = try { exec sh "printenv FOUNDRY_FITNESS_REWARD_NOVEL_PER_TICK"; } catch e { ""; };
+                    let reward_novel_env = getenv("FOUNDRY_FITNESS_REWARD_NOVEL_PER_TICK");
                     let reward_novel = if len(reward_novel_env) > 0 { parse_int(reward_novel_env); } else { 2; };
-                    let penalty_not_novel_env = try { exec sh "printenv FOUNDRY_FITNESS_PENALTY_NOT_NOVEL_PER_TICK"; } catch e { ""; };
+                    let penalty_not_novel_env = getenv("FOUNDRY_FITNESS_PENALTY_NOT_NOVEL_PER_TICK");
                     let penalty_not_novel = if len(penalty_not_novel_env) > 0 { parse_int(penalty_not_novel_env); } else { 1; };
                     let fit_pre = parse_int(recall_latest("explorer:" + self_pid + ":fitness"));
                     let fit_delta = if verdict_raw == "NOVEL" {
@@ -869,7 +869,7 @@ fn _publish_explorer_rule_hit(
 
                 if len(self_pid) > 0 {
                     let _buf_len = _push_settled_exploration(self_pid, verdict_raw);
-                    let _thr_env = try { exec sh "printenv EXPLORER_PROMPT_EVOLUTION_THRESHOLD"; } catch e { ""; };
+                    let _thr_env = getenv("EXPLORER_PROMPT_EVOLUTION_THRESHOLD");
                     let _thr = if len(_thr_env) > 0 { parse_int(_thr_env); } else { 3; };
                     let _thr_eff = if _thr <= 0 { 3; } else { _thr; };
                     let _not_novel = _count_not_novel(self_pid);
@@ -906,7 +906,7 @@ fn _publish_explorer_rule_hit(
 
                                                 let lin_str = recall_latest("explorer:" + self_pid + ":generation");
                                                 let lin = if len(lin_str) > 0 { parse_int(lin_str); } else { 0; };
-                                                let ledger_path_r = try { exec sh "printenv REPLICATION_LEDGER"; } catch e { ""; };
+                                                let ledger_path_r = getenv("REPLICATION_LEDGER");
                                                 if len(ledger_path_r) > 0 {
                                                     let parent_specialty = recall_latest("explorer:" + self_pid + ":specialty");
                                                     let child_gen = lin + 1;
@@ -956,7 +956,7 @@ fn tick(reason: string) -> void {
     if len(_self_pid) > 0 {
         let _existing_specialty = recall_latest("explorer:" + _self_pid + ":specialty");
         if len(_existing_specialty) == 0 {
-            let _daemon_id = try { exec sh "printenv DAEMON_ID"; } catch e { ""; };
+            let _daemon_id = getenv("DAEMON_ID");
             if len(_daemon_id) > 0 {
                 let _pool_specialty = recall_latest("explorer:pool:specialty:" + _daemon_id);
                 if len(_pool_specialty) > 0 {
@@ -969,7 +969,7 @@ fn tick(reason: string) -> void {
                     // replicate-success path's parent.generation+1 lineage
                     // walk produces correct depths instead of always 1.
                     // Initial cohort: EXPLORER_GENERATION env (default 0).
-                    let _gen_env = try { exec sh "printenv EXPLORER_GENERATION"; } catch e { "0"; };
+                    let _gen_env = getenv("EXPLORER_GENERATION");
                     let _gen_seed = if len(_gen_env) > 0 { _gen_env; } else { "0"; };
                     memo_write("explorer:" + _self_pid + ":generation", _gen_seed);
                     // colony-lint: learn-tags-ok
@@ -992,7 +992,7 @@ fn tick(reason: string) -> void {
     // backward compat with pre-#719 orchestrators).
     let tick_idx_str = recall_latest("replay:current_tick");
     let tick_idx = if len(tick_idx_str) > 0 { parse_int(tick_idx_str); } else { -1; };
-    let _daemon_id_topic = try { exec sh "printenv DAEMON_ID"; } catch e { ""; };
+    let _daemon_id_topic = getenv("DAEMON_ID");
     let _per_topic = if len(_daemon_id_topic) > 0 {
         recall_latest("replay:explorer_topic:daemon:" + _daemon_id_topic);
     } else { ""; };
@@ -1043,7 +1043,7 @@ fn tick(reason: string) -> void {
     // body via the M106 hash-pointer wire when _variant starts with `pp:`.
     let prompt_text_raw = recall_latest("explorer:" + _self_pid + ":exploration_prompt");
     let prompt_text = if len(prompt_text_raw) == 0 {
-        let max_bytes_env = try { exec sh "printenv EXPLORER_PROMPT_MAX_BYTES"; } catch e { ""; };
+        let max_bytes_env = getenv("EXPLORER_PROMPT_MAX_BYTES");
         let max_bytes = if len(max_bytes_env) > 0 { parse_int(max_bytes_env); } else { 4096; };
         let max_bytes_eff = if max_bytes <= 0 { 4096; } else { max_bytes; };
         let pp_hash = _extract_pp_hash(_variant);
@@ -1155,10 +1155,10 @@ fn tick(reason: string) -> void {
     // LLM path.
     let canonical_ctx = _explorer_canonical_ctx(_self_pid, topic_label, topic_desc, compute_hints, paper_a_id, paper_a_title, paper_a_abstract, paper_b_id, paper_b_title, paper_b_abstract);
 
-    let rule_first_flag = try { exec sh "printenv EXPLORER_RULE_FIRST"; } catch e { ""; };
+    let rule_first_flag = getenv("EXPLORER_RULE_FIRST");
     let rule_first_enabled = rule_first_flag != "0";
 
-    let min_conf_str = try { exec sh "printenv EXPLORER_RULE_CONFIDENCE"; } catch e { ""; };
+    let min_conf_str = getenv("EXPLORER_RULE_CONFIDENCE");
     let min_conf = if len(min_conf_str) > 0 { parse_float(min_conf_str); } else { 0.85; };
 
     if rule_first_enabled {
