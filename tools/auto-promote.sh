@@ -254,11 +254,14 @@ DECISIONS_JSON=$(python3 "$SCRIPT_DIR/auto-promote-decisions.py" \
     "$CFG_MIN_ENTRIES" "$CFG_MIN_ACTING_ENTRIES" "$CFG_MIN_RUNTIME_HOURS" \
     "$CFG_REJECT_RATE_THRESHOLD" "$CFG_DELTA_SLOPE_WINDOW" "$CFG_DELTA_SLOPE_MIN" \
     "$CFG_PROMOTE_STEPS" "$CFG_EVOLVE_SLOPE_NEG_FOR" "$CFG_EVOLVE_REJECT_ABOVE" \
-    "$CONTAINERIZED_ARG")
+    "$CONTAINERIZED_ARG" \
+    "$CFG_DEMOTE_ENABLED" "$CFG_DEMOTE_SLOPE_THRESHOLD" \
+    "$CFG_DEMOTE_MIN_ENTRIES" "$CFG_DEMOTE_HARD_FLOOR")
 
 # --- Execute decisions ---
 
 PROMOTE_COUNT=0
+DEMOTE_COUNT=0
 EVOLVE_COUNT=0
 SKIP_COUNT=0
 
@@ -359,6 +362,69 @@ for d in daemons:
             PROMOTE_COUNT=$((PROMOTE_COUNT + 1))
             ;;
 
+        demote)
+            # #898: demote arm. Mirror of promote's memo-write + daemon
+            # reload, but stepping confidence DOWN. Closes the federation
+            # feedback loop the v1.18.0 eval_ag_with_outcome substrate
+            # exposure opened (research-foundry smoke #18 forensic showed
+            # explorer at -5.25 aggregate fitness still stuck at
+            # confidence=0.95 because auto-promote had no DEMOTE arm).
+            log "DEMOTE $agent ($colony): $step_from -> $step_to ($reason)"
+            if [ "$DRY_RUN" = "true" ]; then
+                log "  [dry-run] Would run: agentis memo set ${agent}:confidence $step_to"
+                log "  [dry-run] Would reload daemon for $agent (agentis daemon reload, #733)"
+                journal_append "$agent" "demote" \
+                    "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['action']='dry-run'; print(json.dumps(e))" "$evidence_json")" \
+                    "$step_from" "$step_to"
+            else
+                log "  Writing confidence: agentis memo set ${agent}:confidence $step_to"
+                if (cd "$FED_DIR" && agentis memo set "${agent}:confidence" "$step_to") 2>&1; then
+                    log "  Memo written successfully"
+                else
+                    log "  WARNING: memo set failed for $agent"
+                    journal_append "$agent" "demote-failed" \
+                        "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['error']='memo_set_failed'; print(json.dumps(e))" "$evidence_json")" \
+                        "$step_from" "$step_to"
+                    continue
+                fi
+
+                # Reload via the v1.7.16 #656 primitive (same as promote
+                # arm — see promote's comment block for rationale).
+                AGENT_ID=$(python3 -c "
+import json, sys, os
+daemons = json.loads(sys.argv[1])
+agent = sys.argv[2]
+for d in daemons:
+    src = d.get('source', '')
+    if os.path.basename(src) == agent + '.ag':
+        print(d.get('agent_id', ''))
+        break
+" "$DAEMONS_JSON" "$agent")
+
+                if [ -z "$AGENT_ID" ]; then
+                    log "  WARNING: could not find agent_id for $agent in daemon list, skipping reload"
+                    journal_append "$agent" "demote-partial" \
+                        "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['action']='memo-only'; e['warning']='agent_id_not_found'; print(json.dumps(e))" "$evidence_json")" \
+                        "$step_from" "$step_to"
+                    continue
+                fi
+
+                log "  Reloading daemon for $agent (agent_id=$AGENT_ID)..."
+                if (cd "$FED_DIR" && agentis daemon reload "$AGENT_ID" 200>&-) 2>&1; then
+                    log "  Daemon reloaded for $agent (in-process tier refresh)"
+                    journal_append "$agent" "demote" \
+                        "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['action']='executed'; e['mechanism']='reload'; print(json.dumps(e))" "$evidence_json")" \
+                        "$step_from" "$step_to"
+                else
+                    log "  WARNING: agentis daemon reload failed for $agent (agent_id=$AGENT_ID) — memo was written, but daemon will not emit agent.tier_reloaded until next reload or restart"
+                    journal_append "$agent" "demote-partial" \
+                        "$(python3 -c "import json,sys; e=json.loads(sys.argv[1]); e['action']='memo-only'; e['warning']='reload_failed'; print(json.dumps(e))" "$evidence_json")" \
+                        "$step_from" "$step_to"
+                fi
+            fi
+            DEMOTE_COUNT=$((DEMOTE_COUNT + 1))
+            ;;
+
         evolve)
             log "EVOLVE $agent ($colony): $reason"
             if [ "$DRY_RUN" = "true" ]; then
@@ -444,4 +510,4 @@ for d in decisions:
     print(f'{decision}|{agent}|{colony}|{step_from}|{step_to}|{reason}|{evidence}')
 " "$DECISIONS_JSON")
 
-log "Done. Promotes=$PROMOTE_COUNT, Evolves=$EVOLVE_COUNT, Skips=$SKIP_COUNT"
+log "Done. Promotes=$PROMOTE_COUNT, Demotes=$DEMOTE_COUNT, Evolves=$EVOLVE_COUNT, Skips=$SKIP_COUNT"

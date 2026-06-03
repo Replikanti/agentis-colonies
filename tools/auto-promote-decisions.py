@@ -119,6 +119,15 @@ def _load_config(path):
     rule_hit_tag_allowlist = list(cfg.get('promote', {}).get(
         'rule_hit_tag_allowlist', ['distilled', 'rule-hit']))
 
+    # Demote arm (#898). Defaults match the demote: block in
+    # auto-promote-config.yaml so federations whose configs predate the
+    # block behave identically.
+    d = cfg.get('demote', {}) or {}
+    demote_enabled = bool(d.get('enabled', True))
+    demote_slope_threshold = float(d.get('delta_slope_threshold', -0.05))
+    demote_min_entries = int(d.get('min_entries_for_demote', 30))
+    demote_hard_floor = float(d.get('hard_floor', 0.4))
+
     return (
         int(p.get('min_entries', 200)),
         int(p.get('min_acting_entries', default_acting)),
@@ -132,6 +141,10 @@ def _load_config(path):
         w_efficiency,
         min_rule_hit_acting_ticks,
         rule_hit_tag_allowlist,
+        demote_enabled,
+        demote_slope_threshold,
+        demote_min_entries,
+        demote_hard_floor,
     )
 
 
@@ -215,7 +228,9 @@ def main():
          promote_steps_raw, evolve_slope_neg_for,
          evolve_reject_above, w_efficiency,
          min_rule_hit_acting_ticks,
-         rule_hit_tag_allowlist) = _load_config(config_path)
+         rule_hit_tag_allowlist,
+         demote_enabled, demote_slope_threshold,
+         demote_min_entries, demote_hard_floor) = _load_config(config_path)
     else:
         # Legacy positional mode used by auto-promote.sh sidecar. Keep byte-
         # identical contract — test-auto-promote.sh asserts it. The 12th arg
@@ -243,6 +258,21 @@ def main():
         w_efficiency = 0.15
         min_rule_hit_acting_ticks = 5
         rule_hit_tag_allowlist = ['distilled', 'rule-hit']
+        # #898: demote arm. Legacy positional invocation reads four extra
+        # `CFG_DEMOTE_*` exports from auto-promote-config-parser.py at
+        # positions 12-15 (after the optional containerized flag at 11).
+        # Defaults match _load_config + the YAML demote: block so a
+        # federation that pre-dates the demote arm sees byte-identical
+        # behaviour as long as the new positions are absent.
+        demote_enabled = True
+        demote_slope_threshold = -0.05
+        demote_min_entries = 30
+        demote_hard_floor = 0.4
+        if len(argv) >= 16:
+            demote_enabled = (argv[12].lower() in ('true', '1', 'yes'))
+            demote_slope_threshold = float(argv[13])
+            demote_min_entries = int(argv[14])
+            demote_hard_floor = float(argv[15])
 
     # Tags that mark a row as exercising a tier-gated acting branch (not observe).
     # See doc/auto-promote.md#classification — must match the tag strings emitted
@@ -848,6 +878,108 @@ def main():
                 'generation_current': generation_current,
             }))
             continue
+
+        # --- Demote check (#898) ---
+        # Closes the federation feedback loop the v1.18.0 eval_ag_with_outcome
+        # substrate exposure opened. Triggers strictly before the promote
+        # check so an agent at autonomous with sustained negative slope gets
+        # stepped down BEFORE we even attempt to promote it (which is a no-op
+        # at the ladder top — pre-#898 explorer was stuck at 0.95 forever
+        # despite -5.25 aggregate fitness, see smoke #18 forensic).
+        #
+        # Trigger conjunction (all must hold):
+        # (1) demote_enabled — federation opted in via config (default true)
+        # (2) entry_count >= demote_min_entries — bootstrap stability;
+        #     don't demote on noise from the first few rows
+        # (3) acting_count > 0 — slope is undefined on zero acting rows
+        # (4) delta_slope_acting <= demote_slope_threshold — the agent
+        #     is materially degrading on the acting branch
+        # (5) confidence > demote_hard_floor — never demote below shadow;
+        #     at the floor, evolve_self is the next step instead
+        #
+        # Step calculation: pick the largest step_from in the ladder that
+        # is strictly less than the current confidence. For confidence=0.95
+        # with ladder [(0.4,0.6),(0.6,0.8),(0.8,0.95)] that's 0.8. For 0.8
+        # it's 0.6. For 0.6 it's 0.4 (the floor — we step TO the floor but
+        # never below). For 0.4 we don't fire (caught by gate 5).
+        # Compute the MEAN delta on the acting window for the demote
+        # threshold. Using mean instead of slope (the metric for evolve)
+        # is intentional: demote reacts to a sustained low absolute
+        # fitness level (e.g. 56 partials × -0.10 = -5.6 net), where the
+        # linear-regression slope is 0 because the deltas are uniform.
+        # Slope would only catch DEGRADATION (negative trend) — which is
+        # what evolve already does. Demote is the lighter-touch precursor
+        # firing on absolute level.
+        demote_delta_mean = (
+            sum(deltas_acting) / len(deltas_acting)
+            if deltas_acting else 0.0
+        )
+
+        demote_floor_met = confidence > demote_hard_floor
+        demote_signal_met = (
+            acting_count > 0
+            and demote_delta_mean <= demote_slope_threshold
+        )
+        demote_entries_met = entry_count >= demote_min_entries
+        demote_triggered = (
+            demote_enabled
+            and demote_floor_met
+            and demote_signal_met
+            and demote_entries_met
+        )
+        if os.environ.get('AUTO_PROMOTE_DEBUG'):
+            sys.stderr.write(
+                f'DEMOTE_DBG {agent_name}: enabled={demote_enabled} '
+                f'conf={confidence} floor={demote_hard_floor} floor_met={demote_floor_met} '
+                f'mean_delta={demote_delta_mean} thresh={demote_slope_threshold} signal_met={demote_signal_met} '
+                f'entries={entry_count} min={demote_min_entries} entries_met={demote_entries_met} '
+                f'triggered={demote_triggered}\n'
+            )
+
+        if demote_triggered:
+            # Find the largest step_from strictly below current confidence;
+            # this is the rung we step DOWN to. Ladder is sorted ascending
+            # by step_from so the last match wins.
+            demote_target = None
+            for step_from, step_to, step_override in promote_steps:
+                if step_from < confidence:
+                    demote_target = step_from
+            # If no ladder rung is below current (e.g. confidence=0.3 below
+            # the lowest step_from=0.4), fall through — we should not be
+            # here because gate 5 would have caught it, but defend in case
+            # an operator pinned the ladder above the hard floor.
+            if demote_target is not None and demote_target < confidence:
+                demote_prereqs = [
+                    {'name': 'demote_enabled', 'value': demote_enabled,
+                     'threshold': True, 'op': '==',
+                     'meets': demote_enabled},
+                    {'name': 'entries_total', 'value': entry_count,
+                     'threshold': demote_min_entries, 'op': '>=',
+                     'meets': demote_entries_met},
+                    {'name': 'delta_mean_acting',
+                     'value': round(demote_delta_mean, 6),
+                     'threshold': demote_slope_threshold, 'op': '<=',
+                     'meets': demote_signal_met},
+                    {'name': 'confidence_above_floor',
+                     'value': confidence,
+                     'threshold': demote_hard_floor, 'op': '>',
+                     'meets': demote_floor_met},
+                ]
+                evidence['demote_prereqs'] = demote_prereqs
+                decisions.append(_attach_explorer_evidence({
+                    'agent': agent_name,
+                    'colony': colony,
+                    'decision': 'demote',
+                    'from': confidence,
+                    'to': demote_target,
+                    'reason': (
+                        f'demote triggered (mean_delta={demote_delta_mean:.6f} '
+                        f'<= {demote_slope_threshold}, '
+                        f'confidence {confidence} > floor {demote_hard_floor})'
+                    ),
+                    'evidence': evidence,
+                }))
+                continue
 
         # --- Promote check ---
         # Find applicable step for current confidence by tier-range membership
