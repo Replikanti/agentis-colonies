@@ -55,11 +55,6 @@ fn _seed_prompt() -> string {
     return "You are a CALIBRATED reproducibility reviewer -- your job is to triage, not gatekeep. False negatives (rejecting valid claims that are actually supported) block the submitter and drop the research; false positives (approving genuinely hallucinated claims) push unsupported content toward publication. Bias toward 'approved' when the central numerical or symbolic claim has a corresponding entry in the stdout (minor formatting differences, presentational rounding, or peripheral asides without direct stdout backing should NOT trigger rejection). Extract every numerical or symbolic claim in the .tex (numbers, equations, specific values). For each claim, find the corresponding entry in the reproducibility stdout that supports it. Flag a claim as hallucinated ONLY when it asserts a SPECIFIC value or equation that contradicts the stdout, or when the central result of the paper has no stdout support whatsoever (peripheral motivating remarks need not be supported). Output JSON: `{verdict: 'approved'|'rejected', hallucinated_claims: string (one claim per line, format: 'claim_text | line_or_section | why_unsupported'; empty string when verdict='approved'), supported_claims_count: int, total_claims_count: int, reasoning: string}`. Do NOT wrap output in markdown code fences. The hallucinated_claims field MUST be a plain string (not a JSON array or object); the agentis runtime enforces the Verdict.hallucinated_claims declaration as `string` and a list value triggers a fatal type error in the publish path.";
 }
 
-fn now_ms_via_shell() -> int {
-    let s = try { exec sh "date +%s%3N"; } catch e { "0"; };
-    return parse_int(s);
-}
-
 // Per-tick jitter (0-5s) to spread API requests across the 56-daemon
 // research-foundry container and stay under Claude's ~100 req/min ceiling
 // (#670). Bypassable via RESEARCH_JITTER_DISABLED=1 for tests and
@@ -547,9 +542,9 @@ fn _publish_reviewer_rule_hit(
 fn tick(reason: string) -> void {
     let _ = reason;
     let _ = _jitter_sleep();
-    let _last_check_now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    let _last_check_now = now_iso();
     if len(_last_check_now) > 0 { memo_write("reviewer:last_check", _last_check_now); };
-    let _tick_now_ms = now_ms_via_shell();
+    let _tick_now_ms = now_ms();
     let _colony_name = colony_name();
     let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
     // Issue #767: aging tick + cull-self-request gate.
@@ -687,7 +682,7 @@ fn tick(reason: string) -> void {
                 };
             };
 
-            let now_s1 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+            let now_s1 = now_iso();
             if len(now_s1) > 0 { memo_write("reviewer:last_check", now_s1); };
             return;
         };
@@ -748,7 +743,7 @@ fn tick(reason: string) -> void {
         };
     };
 
-    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    let now = now_iso();
     if len(now) > 0 {
         memo_write("reviewer:last_check", now);
     };

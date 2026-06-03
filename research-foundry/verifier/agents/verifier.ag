@@ -67,11 +67,6 @@ fn _verifier_prompt() -> string {
     return "You are a problem-quality referee. The input below carries the PROBLEM and the STATED ANSWER from the author. Your sole job is to judge the PROBLEM ITSELF — not whether the stated answer is numerically correct. Set verdict=ACCEPT when the problem is well-defined (unambiguous statement, mathematically meaningful, has a determinable answer in principle). Set verdict=NEEDS_REVISION when the problem is mostly well-defined but has minor ambiguities that could be fixed with light editing. Set verdict=REJECT only when the problem itself is incoherent, ill-defined, or trivially malformed. Output ONLY valid JSON: {\"answers_agree\": false, \"solver_rigorous\": false, \"problem_well_defined\": true|false, \"verdict\": \"ACCEPT|REJECT|NEEDS_REVISION\", \"reasoning\": \"...\"}. Set answers_agree and solver_rigorous to false (they are deprecated metadata).";
 }
 
-fn now_ms_via_shell() -> int {
-    let s = try { exec sh "date +%s%3N"; } catch e { "0"; };
-    return parse_int(s);
-}
-
 // Per-tick jitter (0-5s) to spread API requests across the 56-daemon
 // research-foundry container and stay under Claude's ~100 req/min ceiling
 // (#670). Bypassable via RESEARCH_JITTER_DISABLED=1 for tests and
@@ -623,9 +618,9 @@ fn _age_tick_and_check(colony: string, self_pid: string) -> int {
 fn tick(reason: string) -> void {
     let _ = reason;
     let _ = _jitter_sleep();
-    let _last_check_now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    let _last_check_now = now_iso();
     if len(_last_check_now) > 0 { memo_write("verifier:last_check", _last_check_now); };
-    let _tick_now_ms = now_ms_via_shell();
+    let _tick_now_ms = now_ms();
     let _colony_name = colony_name();
     let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
     // Issue #767: aging tick + cull-self-request gate.
@@ -697,7 +692,7 @@ fn tick(reason: string) -> void {
     if len(_mech_falsify) > 0 {
         print("[verifier] mechanical falsification verdict=", _mech_falsify, " tick=", upstream_tick);
         _publish_falsified_verdict(_mech_falsify, _self_pid, _colony_name, upstream_tick, tick_idx);
-        let now_mech = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        let now_mech = now_iso();
         if len(now_mech) > 0 {
             memo_write("verifier:last_check", now_mech);
         };
@@ -777,7 +772,7 @@ fn tick(reason: string) -> void {
                 };
             };
 
-            let now_s1 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+            let now_s1 = now_iso();
             if len(now_s1) > 0 { memo_write("verifier:last_check", now_s1); };
             return;
         };
@@ -836,7 +831,7 @@ fn tick(reason: string) -> void {
         };
     };
 
-    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    let now = now_iso();
     if len(now) > 0 {
         memo_write("verifier:last_check", now);
     };

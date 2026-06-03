@@ -39,7 +39,7 @@ fail() { echo "[FAIL] $1: $2"; FAIL=$((FAIL + 1)); }
 
 COLONIES="explorer noticer skeptic formulator verifier novelty arxiv-search oeis-search groupprops-search scholar-search prior_advocate auditor introducer theorist computer editor reviewer submitter"
 
-HEARTBEAT='let _last_check_now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };'
+HEARTBEAT='let _last_check_now = now_iso();'
 
 for c in $COLONIES; do
     ag_file="$FED_DIR/$c/agents/$c.ag"
