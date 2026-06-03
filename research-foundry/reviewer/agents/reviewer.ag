@@ -103,9 +103,7 @@ fn _publish_prompt_body_and_wrap_variant(self_pid: string, variant_tag: string) 
     if len(self_pid) == 0 { return variant_tag; };
     let body = recall_latest("reviewer:" + self_pid + ":prompt_body");
     if len(body) == 0 { return variant_tag; };
-    // colony-lint: safe-exec-concat
-    let sha_cmd = "python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.argv[1].encode(\"utf-8\")).hexdigest())' " + shell_escape(body);
-    let h = try { exec sh sha_cmd; } catch e { ""; };
+    let h = sha256_hex(body);
     if len(h) != 64 { return variant_tag; };
     let body_key = "reviewer:prompt_body:" + h;
     let existing = recall_latest(body_key);
@@ -378,9 +376,7 @@ fn _age_tick_and_check(colony: string, self_pid: string) -> int {
 // Total on hash failure (falls back to a coarse claim-only key).
 fn _reviewer_canonical_ctx(claim_id_eff: string, final_tex: string, repro_output: string) -> string {
     let joined = "claim=" + claim_id_eff + "||REVIEWER_SEP||tex=" + final_tex + "||REVIEWER_SEP||stdout=" + repro_output;
-    // colony-lint: safe-exec-concat
-    let sha_cmd = "python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.argv[1].encode(\"utf-8\")).hexdigest())' " + shell_escape(joined);
-    let h = try { exec sh sha_cmd; } catch e { ""; };
+    let h = sha256_hex(joined);
     if len(h) != 64 { return "claim=" + claim_id_eff + " in=na"; };
     return "claim=" + claim_id_eff + " in=" + h;
 }

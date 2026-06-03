@@ -191,9 +191,7 @@ fn _publish_prompt_body_and_wrap_variant(self_pid: string, variant_tag: string) 
     if len(self_pid) == 0 { return variant_tag; };
     let body = recall_latest("theorist:" + self_pid + ":prompt_body");
     if len(body) == 0 { return variant_tag; };
-    // colony-lint: safe-exec-concat
-    let sha_cmd = "python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.argv[1].encode(\"utf-8\")).hexdigest())' " + shell_escape(body);
-    let h = try { exec sh sha_cmd; } catch e { ""; };
+    let h = sha256_hex(body);
     if len(h) != 64 { return variant_tag; };
     let body_key = "theorist:prompt_body:" + h;
     let existing = recall_latest(body_key);
@@ -446,9 +444,7 @@ fn _age_tick_and_check(colony: string, self_pid: string) -> int {
 // most-discriminating-first to match the crystallizer's prefix matcher.
 fn _theorist_canonical_ctx(topic_label: string, input_blob: string) -> string {
     let topic = if len(topic_label) > 0 { topic_label; } else { "na"; };
-    // colony-lint: safe-exec-concat
-    let sha_cmd = "python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.argv[1].encode(\"utf-8\")).hexdigest())' " + shell_escape(input_blob);
-    let h = try { exec sh sha_cmd; } catch e { ""; };
+    let h = sha256_hex(input_blob);
     let hash = if len(h) == 64 { h; } else { "na"; };
     return "topic=" + topic + " input_hash=" + hash;
 }
