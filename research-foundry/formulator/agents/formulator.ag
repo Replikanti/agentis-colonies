@@ -99,9 +99,7 @@ fn _publish_prompt_body_and_wrap_variant(self_pid: string, variant_tag: string) 
     if len(self_pid) == 0 { return variant_tag; };
     let body = recall_latest("formulator:" + self_pid + ":prompt_body");
     if len(body) == 0 { return variant_tag; };
-    // colony-lint: safe-exec-concat
-    let sha_cmd = "python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.argv[1].encode(\"utf-8\")).hexdigest())' " + shell_escape(body);
-    let h = try { exec sh sha_cmd; } catch e { ""; };
+    let h = sha256_hex(body);
     if len(h) != 64 { return variant_tag; };
     let body_key = "formulator:prompt_body:" + h;
     let existing = recall_latest(body_key);
@@ -387,9 +385,14 @@ fn _age_tick_and_check(colony: string, self_pid: string) -> int {
 // aggregates. Falls back to a topic-only marker when hashing fails.
 fn _formulator_canonical_ctx(ctx: string, topic_label: string) -> string {
     let topic = if len(topic_label) > 0 { topic_label; } else { "na"; };
-    // colony-lint: safe-exec-concat
-    let sha_cmd = "python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256((sys.argv[1]+\"\\x1f\"+sys.argv[2]).encode(\"utf-8\")).hexdigest())' " + shell_escape(ctx) + " " + shell_escape(topic);
-    let h = try { exec sh sha_cmd; } catch e { ""; };
+    // Wave 3 substrate migration (#907): replaced exec sh "python3 hashlib"
+    // with sha256_hex(). Previously joined ctx + 0x1f + topic via Python
+    // string concat; agentis substrate is single-arg so we use a printable
+    // separator instead. The hash is only used as an internal cache-key
+    // marker rendered into a metadata string ("input_sha=..."); not used
+    // cryptographically or compared against externally-computed digests,
+    // so changing the separator is semantically equivalent for the call site.
+    let h = sha256_hex(ctx + "\n--\n" + topic);
     if len(h) != 64 { return "topic=" + topic + " input_sha=na"; };
     return "topic=" + topic + " input_sha=" + h;
 }

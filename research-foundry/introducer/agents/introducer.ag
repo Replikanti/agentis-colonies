@@ -99,9 +99,7 @@ fn _publish_prompt_body_and_wrap_variant(self_pid: string, variant_tag: string) 
     if len(self_pid) == 0 { return variant_tag; };
     let body = recall_latest("introducer:" + self_pid + ":prompt_body");
     if len(body) == 0 { return variant_tag; };
-    // colony-lint: safe-exec-concat
-    let sha_cmd = "python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.argv[1].encode(\"utf-8\")).hexdigest())' " + shell_escape(body);
-    let h = try { exec sh sha_cmd; } catch e { ""; };
+    let h = sha256_hex(body);
     if len(h) != 64 { return variant_tag; };
     let body_key = "introducer:prompt_body:" + h;
     let existing = recall_latest(body_key);
@@ -266,9 +264,7 @@ fn _publish_introducer(
 fn _introducer_canonical_ctx(input_ctx: string, claim_id: string) -> string {
     if len(input_ctx) == 0 { return "introducer-class empty"; };
     let keyed = if len(claim_id) > 0 { "claim_id=" + claim_id + "\n" + input_ctx; } else { input_ctx; };
-    // colony-lint: safe-exec-concat
-    let sha_cmd = "python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.argv[1].encode(\"utf-8\")).hexdigest())' " + shell_escape(keyed);
-    let h = try { exec sh sha_cmd; } catch e { ""; };
+    let h = sha256_hex(keyed);
     if len(h) != 64 {
         let fallback = substring(input_ctx, 0, 64);
         return "introducer-sha-na " + fallback;

@@ -93,9 +93,7 @@ fn _publish_prompt_body_and_wrap_variant(self_pid: string, variant_tag: string) 
     if len(self_pid) == 0 { return variant_tag; };
     let body = recall_latest("computer:" + self_pid + ":prompt_body");
     if len(body) == 0 { return variant_tag; };
-    // colony-lint: safe-exec-concat
-    let sha_cmd = "python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.argv[1].encode(\"utf-8\")).hexdigest())' " + shell_escape(body);
-    let h = try { exec sh sha_cmd; } catch e { ""; };
+    let h = sha256_hex(body);
     if len(h) != 64 { return variant_tag; };
     let body_key = "computer:prompt_body:" + h;
     let existing = recall_latest(body_key);
@@ -427,9 +425,7 @@ fn _publish_computer_rule_hit(
 fn _computer_canonical_ctx(prompt_ctx: string, upstream_tick: int) -> string {
     let topic_a = recall_latest("replay:current_topic");
     let topic = if len(topic_a) > 0 { topic_a; } else { "na"; };
-    // colony-lint: safe-exec-concat
-    let sha_cmd = "python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.argv[1].encode(\"utf-8\")).hexdigest())' " + shell_escape(prompt_ctx);
-    let h = try { exec sh sha_cmd; } catch e { ""; };
+    let h = sha256_hex(prompt_ctx);
     if len(h) != 64 {
         return "topic=" + topic + " tick=" + to_string(upstream_tick) + " sha256=na";
     };

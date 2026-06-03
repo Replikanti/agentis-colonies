@@ -110,9 +110,7 @@ fn _publish_prompt_body_and_wrap_variant(self_pid: string, variant_tag: string) 
     if len(self_pid) == 0 { return variant_tag; };
     let body = recall_latest("groupprops-search:" + self_pid + ":prompt_body");
     if len(body) == 0 { return variant_tag; };
-    // colony-lint: safe-exec-concat
-    let sha_cmd = "python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.argv[1].encode(\"utf-8\")).hexdigest())' " + shell_escape(body);
-    let h = try { exec sh sha_cmd; } catch e { ""; };
+    let h = sha256_hex(body);
     if len(h) != 64 { return variant_tag; };
     let body_key = "groupprops-search:prompt_body:" + h;
     let existing = recall_latest(body_key);
@@ -320,9 +318,7 @@ fn _age_tick_and_check(colony: string, self_pid: string) -> int {
 fn _groupprops_search_canonical_ctx(ctx: string, upstream_tick: int) -> string {
     if len(ctx) == 0 { return "gpsctx=na"; };
     let salted = "tick=" + to_string(upstream_tick) + "\n" + ctx;
-    // colony-lint: safe-exec-concat
-    let sha_cmd = "python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.argv[1].encode(\"utf-8\")).hexdigest())' " + shell_escape(salted);
-    let h = try { exec sh sha_cmd; } catch e { ""; };
+    let h = sha256_hex(salted);
     if len(h) != 64 { return "gpsctx=na"; };
     return "gpsctx=" + h;
 }
