@@ -348,9 +348,7 @@ fn _publish_auditor(
                            + "\"},\"reasoning\":\"" + verdict.reasoning
                            + "\",\"confidence\":" + conf_str
                            + ",\"terminal\":" + terminal_str + "}";
-            // colony-lint: safe-exec-concat
-            let append_cmd = "printf '%s\n' " + shell_escape(ledger_row) + " >> " + shell_escape(ledger_path);
-            let _ = try { exec sh append_cmd; } catch e { ""; };
+            file_append(ledger_path, ledger_row + "\n");
         };
 
         // Seed `claim:audit_*:tick-N` + `claim:report_*:tick-N` keys
@@ -634,9 +632,7 @@ fn _publish_auditor_rule_hit(
                            + ",\"reasoning\":\"" + reasoning
                            + "\",\"confidence\":" + conf_str
                            + ",\"terminal\":" + terminal_str + "}";
-            // colony-lint: safe-exec-concat
-            let append_cmd = "printf '%s\n' " + shell_escape(ledger_row) + " >> " + shell_escape(ledger_path);
-            let _ = try { exec sh append_cmd; } catch e { ""; };
+            file_append(ledger_path, ledger_row + "\n");
         };
 
         let claim_seed_eligible = if audit_verdict == "VERIFIED_NEW" {
