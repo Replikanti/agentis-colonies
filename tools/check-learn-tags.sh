@@ -312,6 +312,20 @@ math-foundry
             ALLOWED_PARAMS="verdict:<verdict>"
             PAIR_KNOWN=1
             ;;
+        # #738 (agentis-core v1.18.0): explorer.ag rewires eval_ag ->
+        # eval_ag_with_outcome and feeds learn() with an Outcome derived
+        # from the substrate's outcome bucket. Success path = full result,
+        # partial = Mechanism A graceful CB exhaustion (with
+        # experience.outcome_partial_delta = -0.10 tuned in the hermetic
+        # config), failure = parse_error / compile_error / runtime_error /
+        # cap_denied / estimated_too_expensive / etc.
+        "eval_ag:success"|"eval_ag:partial"|"eval_ag:failure")
+            ALLOWED_LITERALS="eval_ag
+math-foundry
+<cn>"
+            ALLOWED_PARAMS="outcome:<outcome>"
+            PAIR_KNOWN=1
+            ;;
         # NOTE: `replicate:success` and `replicate:failure` are shared
         # between tribes-bench hunters and math-foundry explorer; see
         # the tribes-bench entries above (case statement merges both).
