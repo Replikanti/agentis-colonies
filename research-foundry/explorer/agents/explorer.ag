@@ -376,13 +376,51 @@ fn _publish_explorer(
     // site; Dashboard Card 1 Compute column drops to 0 on explorer
     // rows (expected; the column retires once the other 3 substrate-
     // bypass sites migrate too).
-    let output_val = try { eval_ag(exploration.code); } catch e { ""; };
+    // Per agentis-core #738 / v1.18.0: eval_ag_with_outcome returns
+    // {value, outcome, partial, cb_spent} so we can branch on outcome
+    // and feed the experience system with the right Outcome — closing
+    // the federation-layer feedback loop the smoke #9-#17 sequence
+    // showed substrate compensation cannot. The try/catch wrapper is
+    // belt-and-suspenders (the new builtin never propagates EvalError)
+    // but kept so an unforeseen typechecker / dispatch failure does not
+    // crash the tick.
+    let result_map = try {
+        eval_ag_with_outcome(exploration.code);
+    } catch e {
+        map_new();
+    };
+    let output_val = try { get(result_map, "value"); } catch e { ""; };
+    let outcome_str = to_string(try { get(result_map, "outcome"); } catch e { "exception"; });
+    let partial_raw = try { get(result_map, "partial"); } catch e { false; };
     let output = to_string(output_val);
 
     memo_write("explorer:" + self_pid + ":code:tick-" + to_string(tick_idx), exploration.code);
     memo_write("explorer:" + self_pid + ":output:tick-" + to_string(tick_idx), output);
+    memo_write("explorer:" + self_pid + ":outcome:tick-" + to_string(tick_idx), outcome_str);
     memo_write("explorer:" + self_pid + ":goal:tick-" + to_string(tick_idx), exploration.exploration_goal);
     memo_write("explorer:" + self_pid + ":topic:tick-" + to_string(tick_idx), topic_label);
+
+    // Feedback loop: feed the experience system with an Outcome derived
+    // from the substrate's outcome bucket. Success path -> Success,
+    // graceful Mechanism A partial -> Partial (carries the v1.4.1
+    // experience.outcome_partial_delta penalty operators tuned in the
+    // hermetic config), every other error bucket -> Failure. Fitness
+    // drift drives <agent>:confidence drop -> tier() drop -> per-tier
+    // LLM routing per agentis-core v1.7.15 -> eventually evolve_self.
+    // check-learn-tags wants literal outcome strings per call site, so
+    // branch the learn() into three explicit arms rather than passing a
+    // variable. Each arm uses the same topic/observation/tags shape;
+    // only the outcome literal differs. Schema entry: eval_ag:success /
+    // :partial / :failure (extended in tools/check-learn-tags.sh).
+    if outcome_str == "success" {
+        learn("eval_ag", "outcome=" + outcome_str + " topic=" + topic_label, "result=success", "success", ["eval_ag", "math-foundry", _colony_name, "outcome:" + outcome_str]);
+    } else {
+        if partial_raw == true {
+            learn("eval_ag", "outcome=" + outcome_str + " topic=" + topic_label, "result=partial", "partial", ["eval_ag", "math-foundry", _colony_name, "outcome:" + outcome_str]);
+        } else {
+            learn("eval_ag", "outcome=" + outcome_str + " topic=" + topic_label, "result=failure", "failure", ["eval_ag", "math-foundry", _colony_name, "outcome:" + outcome_str]);
+        };
+    };
 
     if final_write {
         // Append to per-run discovery ledger.

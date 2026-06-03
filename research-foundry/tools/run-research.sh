@@ -861,6 +861,15 @@ write_bootstrap() {
         # above are no longer load-bearing.
         printf '  printf "exec.env_passthrough = DAEMON_ID,COLONY_NAME,HOLD_PERIOD,DISCOVERY_LEDGER,AUDIT_LEDGER,PREPRINT_LEDGER,REPLICATION_LEDGER,EXPLORER_GENERATION,AGENTIS_ROOT,ARXIV_MAX_QUERY_RESULTS,PREPRINT_OUTPUT_ROOT,PREPRINT_AUTHOR_CONFIG,PREPRINT_LATEXMK_MAX_PASSES,PREPRINT_ARXIV_GATEWAY,PREPRINT_ARXIV_FROM,PREPRINT_SMTP_HOST,PREPRINT_SMTP_PORT,EXPLORER_PROMPT_EVOLUTION_THRESHOLD,EXPLORER_PROMPT_GEN_CAP,EXPLORER_PROMPT_MAX_BYTES,EXPLORER_PROMPT_LEVENSHTEIN_FLOOR,FOUNDRY_FITNESS_REWARD_NOVEL_PER_TICK,FOUNDRY_FITNESS_PENALTY_NOT_NOVEL_PER_TICK,RESEARCH_JITTER_DISABLED,NOVELTY_LOSS_SHAPING_ENABLED,RESEARCH_AGING_ENABLED,RESEARCH_AGING_THRESHOLD,RESEARCH_AGING_FITNESS_FLOOR\\n"\n'
         printf '  printf "experience.enabled = true\\n"\n'
+        # agentis-core #738 / v1.18.0 feedback loop: explorer.ag uses
+        # eval_ag_with_outcome and feeds learn() with Partial when the
+        # substrate returns a Mechanism A graceful partial. Default
+        # outcome_partial_delta is +0.02 — barely a signal. We tune
+        # to -0.10 so a partial ("the program did something but
+        # materially failed") drives meaningful fitness drift on
+        # agents emitting algorithmically unboundable code. See
+        # agentis-core v1.4.1 / #542 for the outcome_*_delta knob set.
+        printf '  printf "experience.outcome_partial_delta = -0.10\\n"\n'
         printf '  printf "telemetry.enabled = true\\n"\n'
         # #740: AdaptiveEngine activation. Without this flag the
         # recommend() / adapt() / score_options() builtins silently
