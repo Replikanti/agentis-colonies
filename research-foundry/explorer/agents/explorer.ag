@@ -95,7 +95,7 @@ fn colony_name() -> string {
 fn _jitter_sleep() -> int {
     let disabled = getenv("RESEARCH_JITTER_DISABLED");
     if disabled == "1" { return 0; };
-    let _ = try { exec sh "sleep $(awk 'BEGIN{srand();print rand()*5}')"; } catch e { ""; };
+    jitter_ms(5000);
     return 0;
 }
 
@@ -934,7 +934,7 @@ fn tick(reason: string) -> void {
     if len(_last_check_now) > 0 { memo_write("explorer:last_check", _last_check_now); };
     let _tick_now_ms = now_ms();
     let _colony_name = colony_name();
-    let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
+    let _self_pid = to_string(getpid());
     // Issue #767: aging tick + cull-self-request gate.
     let _ = _age_tick_and_check(_colony_name, _self_pid);
     if len(_self_pid) > 0 {
