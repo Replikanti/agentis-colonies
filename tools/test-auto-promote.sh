@@ -986,6 +986,126 @@ fi
 
 fi  # end agentis-available guard for Test 18 + 19
 
+# --- Test 20-22: demote arm (#898) ---
+# Cover the three boundary cases for the new demote decision arm that
+# closes the federation feedback loop the v1.18.0 eval_ag_with_outcome
+# substrate exposure opened. Pre-#898 auto-promote-decisions.py had no
+# demote logic — sustained negative fitness from .ag agents calling
+# learn() with Outcome::Partial / Failure could not push confidence DOWN,
+# so research-foundry smoke #18 forensic showed explorer at -5.25
+# aggregate fitness still stuck at confidence=0.95.
+
+# Helper: build a hermetic fed_dir with N synthetic acting rows at given
+# delta, fresh memo + heartbeat. Echoes the fed_dir path on stdout.
+make_demote_fixture() {
+    local agent_id="$1" colony="$2" n_rows="$3" delta="$4"
+    local fed_dir="$TMPDIR_TEST/demote-${agent_id}-$$"
+    mkdir -p "$fed_dir/.agentis/experience" "$fed_dir/.agentis/memo" "$fed_dir/.agentis/daemon"
+    python3 -c "
+import json, time, sys
+agent_id, colony, n_rows, delta = sys.argv[1], sys.argv[2], int(sys.argv[3]), float(sys.argv[4])
+fed_dir = sys.argv[5]
+ts_ms = int(time.time() * 1000)
+with open(f'{fed_dir}/.agentis/experience/{agent_id}.jsonl', 'w') as f:
+    for i in range(n_rows):
+        f.write(json.dumps({
+            'action': 'eval_ag', 'agent': 'main', 'tags': ['acted', 'eval_ag', 'math-foundry'],
+            'outcome': 'partial', 'delta': delta,
+            'ts': ts_ms + i, 'in': 'x', 'out': 'y', 'cb': 0,
+        }) + '\n')
+with open(f'{fed_dir}/.agentis/memo/{colony}:last_check.jsonl', 'w') as f:
+    f.write(json.dumps({'value': str(ts_ms)}) + '\n')
+with open(f'{fed_dir}/.agentis/daemon/{agent_id}.heartbeat', 'w') as f:
+    f.write(f'{ts_ms}\n3000000\nhealthy\n100000\nfalse\n')
+" "$agent_id" "$colony" "$n_rows" "$delta" "$fed_dir"
+    echo "$fed_dir"
+}
+
+# Test 20: positive case — explorer at autonomous tier (0.95) with
+# sustained negative mean delta (-0.10 across 40 acting rows) MUST
+# trigger a single-step demote to review-gated (0.8).
+FED_DEMOTE_FIRE=$(make_demote_fixture "demote-fire-1" "explorer" 40 "-0.10")
+DAEMONS_DEMOTE_FIRE="[{\"pid\":$$,\"agent_id\":\"demote-fire-1\",\"source\":\"explorer.ag\",\"state\":\"running\",\"effective_state\":\"running\",\"colony\":\"explorer\",\"confidence\":0.95,\"started_at\":1}]"
+
+OUT_DEMOTE_FIRE=$(python3 "$SCRIPT_DIR/auto-promote-decisions.py" \
+    --preview --config "$SCRIPT_DIR/auto-promote-config.yaml" \
+    "$DAEMONS_DEMOTE_FIRE" "$FED_DEMOTE_FIRE")
+
+DEMOTE_FIRE_CHECK=$(python3 -c "
+import json, sys
+arr = json.loads(sys.argv[1])
+if len(arr) != 1:
+    print('arity:' + str(len(arr))); sys.exit(0)
+d = arr[0]
+if d.get('decision') != 'demote':
+    print('decision:' + str(d.get('decision'))); sys.exit(0)
+if abs(float(d.get('from', 0)) - 0.95) > 0.001:
+    print('from:' + str(d.get('from'))); sys.exit(0)
+if abs(float(d.get('to', 0)) - 0.8) > 0.001:
+    print('to:' + str(d.get('to'))); sys.exit(0)
+print('ok')
+" "$OUT_DEMOTE_FIRE" 2>&1 || true)
+
+if [ "$DEMOTE_FIRE_CHECK" = "ok" ]; then
+    pass "demote arm fires on sustained negative delta at autonomous tier (#898)"
+else
+    fail "demote arm fire" "$DEMOTE_FIRE_CHECK from <$OUT_DEMOTE_FIRE>"
+fi
+
+# Test 21: negative case — mean delta above threshold (-0.04) MUST NOT
+# trigger demote. Guards against false positives that would punish
+# barely-negative agents (noise) and degrade healthy federations.
+FED_DEMOTE_NO=$(make_demote_fixture "demote-no-1" "explorer" 40 "-0.04")
+DAEMONS_DEMOTE_NO="[{\"pid\":$$,\"agent_id\":\"demote-no-1\",\"source\":\"explorer.ag\",\"state\":\"running\",\"effective_state\":\"running\",\"colony\":\"explorer\",\"confidence\":0.95,\"started_at\":1}]"
+
+OUT_DEMOTE_NO=$(python3 "$SCRIPT_DIR/auto-promote-decisions.py" \
+    --preview --config "$SCRIPT_DIR/auto-promote-config.yaml" \
+    "$DAEMONS_DEMOTE_NO" "$FED_DEMOTE_NO")
+
+DEMOTE_NO_CHECK=$(python3 -c "
+import json, sys
+arr = json.loads(sys.argv[1])
+if len(arr) != 1:
+    print('arity:' + str(len(arr))); sys.exit(0)
+d = arr[0]
+if d.get('decision') == 'demote':
+    print('false positive: demoted at mean_delta=-0.04'); sys.exit(0)
+print('ok')
+" "$OUT_DEMOTE_NO" 2>&1 || true)
+
+if [ "$DEMOTE_NO_CHECK" = "ok" ]; then
+    pass "demote arm does NOT fire on borderline-negative delta (#898)"
+else
+    fail "demote arm borderline" "$DEMOTE_NO_CHECK from <$OUT_DEMOTE_NO>"
+fi
+
+# Test 22: hard-floor case — agent at shadow tier (0.4) with sustained
+# negative delta MUST NOT demote below shadow. At the floor, evolve_self
+# is the next step instead.
+FED_DEMOTE_FLOOR=$(make_demote_fixture "demote-floor-1" "explorer" 40 "-0.20")
+DAEMONS_DEMOTE_FLOOR="[{\"pid\":$$,\"agent_id\":\"demote-floor-1\",\"source\":\"explorer.ag\",\"state\":\"running\",\"effective_state\":\"running\",\"colony\":\"explorer\",\"confidence\":0.4,\"started_at\":1}]"
+
+OUT_DEMOTE_FLOOR=$(python3 "$SCRIPT_DIR/auto-promote-decisions.py" \
+    --preview --config "$SCRIPT_DIR/auto-promote-config.yaml" \
+    "$DAEMONS_DEMOTE_FLOOR" "$FED_DEMOTE_FLOOR")
+
+DEMOTE_FLOOR_CHECK=$(python3 -c "
+import json, sys
+arr = json.loads(sys.argv[1])
+if len(arr) != 1:
+    print('arity:' + str(len(arr))); sys.exit(0)
+d = arr[0]
+if d.get('decision') == 'demote':
+    print('hard floor breach: demoted below shadow'); sys.exit(0)
+print('ok')
+" "$OUT_DEMOTE_FLOOR" 2>&1 || true)
+
+if [ "$DEMOTE_FLOOR_CHECK" = "ok" ]; then
+    pass "demote arm respects hard floor at shadow tier (#898)"
+else
+    fail "demote arm floor" "$DEMOTE_FLOOR_CHECK from <$OUT_DEMOTE_FLOOR>"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

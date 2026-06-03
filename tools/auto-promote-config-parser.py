@@ -181,6 +181,16 @@ def main():
     print('CFG_EVOLVE_BOTH_SIGNALS_REQUIRED=%s'
           % ('true' if both_required else 'false'))
 
+    # Demote arm (#898). Defaults match auto-promote-config.yaml's demote:
+    # block AND _load_config in auto-promote-decisions.py so federations
+    # whose configs predate the block behave identically.
+    d = cfg.get('demote', {}) or {}
+    demote_enabled = d.get('enabled', True)
+    print('CFG_DEMOTE_ENABLED=%s' % ('true' if demote_enabled else 'false'))
+    print('CFG_DEMOTE_SLOPE_THRESHOLD=%s' % d.get('delta_slope_threshold', -0.05))
+    print('CFG_DEMOTE_MIN_ENTRIES=%s' % d.get('min_entries_for_demote', 30))
+    print('CFG_DEMOTE_HARD_FLOOR=%s' % d.get('hard_floor', 0.4))
+
     ec = cfg.get('evolve', {}).get('config', {})
     print('CFG_EVOLVE_GENERATIONS=%s' % ec.get('generations', 3))
     print('CFG_EVOLVE_POPULATION=%s' % ec.get('population', 4))

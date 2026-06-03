@@ -97,6 +97,26 @@ evolve:
     population: 4
     weights: "cb,val,exp"
 
+# Demote arm (#898). Closes the federation feedback loop the v1.18.0
+# eval_ag_with_outcome substrate exposure opened. When an agent's
+# delta_slope on acting rows is sufficiently negative AND it has enough
+# entries to trust the signal AND it's above the shadow floor, step
+# confidence DOWN one rung on the promote ladder (0.95 -> 0.8, 0.8 ->
+# 0.6, 0.6 -> 0.4). At the shadow floor (0.4) the demote arm yields to
+# the evolve arm — there's no lower tier to step into.
+#
+# Why demote precedes evolve: demote is the lighter-touch precursor.
+# An agent at autonomous (0.95) with sustained negative slope first
+# gets a single step-down (immediate cost pressure via per-tier LLM
+# routing dropping to a cheaper backend), then if signal persists,
+# another step-down, etc. Only after hitting shadow does evolve kick
+# in and mutate the prompt.
+demote:
+  enabled: true
+  delta_slope_threshold: -0.05      # average delta on acting rows must be at most this to demote
+  min_entries_for_demote: 30        # same bootstrap stability floor as promote prereq
+  hard_floor: 0.4                   # never demote below shadow tier
+
 # dry_run: true means all actions are logged but not executed.
 # Default is true — flip to false only after reviewing the journal.
 dry_run: true
