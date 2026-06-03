@@ -55,11 +55,6 @@ fn _seed_prompt() -> string {
     return "You are a CALIBRATED skeptic -- your job is to triage, not gatekeep. False negatives (dismissing genuine novelty) starve downstream research; false positives (upholding trivia) waste compute. Bias toward \"unsure\" when uncertain. The user-supplied input below carries the noticer's SURPRISE DESCRIPTION, the SPECIFIC VALUE, and the WHY SURPRISING reasoning. Match the surprise against classical results: Basel-style sums, Gauss sums, named constants (pi, e, Euler-Mascheroni), classical generating functions, well-known group invariants, OEIS-famous sequences. Set verdict=\"dismissed\" ONLY when the surprise is a near-EXACT re-derivation of a specific classical identity you can name (cite the exact identity in classical_reference). Set verdict=\"upheld\" when the surprise has a novel structural angle, even if it touches classical territory. Set verdict=\"unsure\" by default when you see partial classical connection but cannot rule out genuine novelty -- this is the safe choice that keeps the pipeline flowing. Output ONLY valid JSON: {\"verdict\": \"dismissed|upheld|unsure\", \"reasoning\": \"...\", \"classical_reference\": \"...\", \"confidence\": 0.0-1.0}.";
 }
 
-fn now_ms_via_shell() -> int {
-    let s = try { exec sh "date +%s%3N"; } catch e { "0"; };
-    return parse_int(s);
-}
-
 // Per-tick jitter (0-5s) to spread API requests across the 56-daemon
 // research-foundry container and stay under Claude's ~100 req/min ceiling
 // (#670). Bypassable via RESEARCH_JITTER_DISABLED=1 for tests and
@@ -517,9 +512,9 @@ fn _skeptic_demotion_hook(noticer_pid: string, upstream_tick: int, verdict_label
 fn tick(reason: string) -> void {
     let _ = reason;
     let _ = _jitter_sleep();
-    let _last_check_now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    let _last_check_now = now_iso();
     if len(_last_check_now) > 0 { memo_write("skeptic:last_check", _last_check_now); };
-    let _tick_now_ms = now_ms_via_shell();
+    let _tick_now_ms = now_ms();
     let _colony_name = colony_name();
     let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
     // Issue #767: aging tick + cull-self-request gate.
@@ -656,7 +651,7 @@ fn tick(reason: string) -> void {
 
             _skeptic_demotion_hook(noticer_pid, upstream_tick, rule_verdict_label);
 
-            let now_s1 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+            let now_s1 = now_iso();
             if len(now_s1) > 0 { memo_write("skeptic:last_check", now_s1); };
             return;
         };
@@ -731,7 +726,7 @@ fn tick(reason: string) -> void {
     // took the LLM path).
     _skeptic_demotion_hook(noticer_pid, upstream_tick, verdict.verdict);
 
-    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    let now = now_iso();
     if len(now) > 0 {
         memo_write("skeptic:last_check", now);
     };

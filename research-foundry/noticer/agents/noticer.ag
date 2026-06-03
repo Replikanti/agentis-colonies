@@ -285,11 +285,6 @@ fn _publish_noticer(
     };
 }
 
-fn now_ms_via_shell() -> int {
-    let s = try { exec sh "date +%s%3N"; } catch e { "0"; };
-    return parse_int(s);
-}
-
 // Per-tick jitter (0-5s) to spread API requests across the 56-daemon
 // research-foundry container and stay under Claude's ~100 req/min ceiling
 // (#670). Bypassable via RESEARCH_JITTER_DISABLED=1 for tests and
@@ -548,9 +543,9 @@ fn _publish_noticer_rule_hit(
 fn tick(reason: string) -> void {
     let _ = reason;
     let _ = _jitter_sleep();
-    let _last_check_now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    let _last_check_now = now_iso();
     if len(_last_check_now) > 0 { memo_write("noticer:last_check", _last_check_now); };
-    let _tick_now_ms = now_ms_via_shell();
+    let _tick_now_ms = now_ms();
     let _colony_name = colony_name();
     let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
     // Issue #767: aging tick + cull-self-request gate.
@@ -671,7 +666,7 @@ fn tick(reason: string) -> void {
                 };
             };
 
-            let now_s1 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+            let now_s1 = now_iso();
             if len(now_s1) > 0 { memo_write("noticer:last_check", now_s1); };
             return;
         };
@@ -750,7 +745,7 @@ fn tick(reason: string) -> void {
         };
     };
 
-    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    let now = now_iso();
     if len(now) > 0 {
         memo_write("noticer:last_check", now);
     };
