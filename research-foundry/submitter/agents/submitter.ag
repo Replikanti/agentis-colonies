@@ -58,6 +58,55 @@ fn colony_name() -> string {
     return "submitter";
 }
 
+// Wave 5b #911: helper to convert a comma-separated value list into a
+// JSON array string (e.g. "11A05,20G15" -> ["11A05","20G15"]).
+// Empties between commas are dropped (matches the Python
+// `[s for s in csv.split(",") if s]` semantics the DRAFTED row used
+// to delegate to). Each element is escaped via json_escape_string so
+// quotes / backslashes / control chars cannot break the ledger line.
+// Tail-recursive walk (the .ag DSL has no for/while loop; precedent:
+// tick_at in dev-apprenticeship/triage/agents/router.ag).
+fn _csv_to_json_array_step(csv: string, pos: int, n: int, acc: string, first: bool) -> string {
+    if pos >= n {
+        return acc + "]";
+    };
+    let rest = substring(csv, pos, n);
+    let rel = index_of(rest, ",");
+    let end = if rel < 0 { n; } else { pos + rel; };
+    let piece = substring(csv, pos, end);
+    let next_acc = if len(piece) > 0 {
+        if first {
+            acc + "\"" + json_escape_string(piece) + "\"";
+        } else {
+            acc + ",\"" + json_escape_string(piece) + "\"";
+        };
+    } else {
+        acc;
+    };
+    let next_first = if len(piece) > 0 { false; } else { first; };
+    if rel < 0 {
+        return next_acc + "]";
+    };
+    return _csv_to_json_array_step(csv, end + 1, n, next_acc, next_first);
+}
+
+fn _csv_to_json_array(csv: string) -> string {
+    if len(csv) == 0 {
+        return "[]";
+    };
+    return _csv_to_json_array_step(csv, 0, len(csv), "[", true);
+}
+
+// Wave 5b #911: map "true"/"false" strings into JSON-literal booleans.
+// Any other value (including empty) collapses to `false` -- matches
+// the Python `(argv == "true")` predicate the DRAFTED row used.
+fn _bool_literal(s: string) -> string {
+    if s == "true" {
+        return "true";
+    };
+    return "false";
+}
+
 // Per-tick jitter (0-5s) to spread API requests across the 56-daemon
 // research-foundry container and stay under Claude's ~100 req/min ceiling
 // (#670). Bypassable via RESEARCH_JITTER_DISABLED=1 for tests and
@@ -292,24 +341,36 @@ fn _submitter_stage_and_publish(
             "";
         };
         let repro_runs_ok_eff = if len(repro_runs_ok) > 0 { repro_runs_ok; } else { "false"; };
-        // colony-lint: safe-exec-concat
-        let row_cmd = "python3 -c 'import sys,json\nts=int(sys.argv[1])\nrow={\"ts\":ts,\"source_audit_run\":sys.argv[2],\"source_claim_id\":sys.argv[3],\"preprint_path\":sys.argv[4],\"title\":sys.argv[5],\"abstract\":sys.argv[6],\"arxiv_category\":sys.argv[7],\"msc_codes\":[s for s in sys.argv[8].split(\",\") if s],\"msc_codes_csv\":sys.argv[8],\"status\":\"DRAFTED\",\"latex_compile_ok\":(sys.argv[9]==\"true\"),\"reproducibility_runs_ok\":(sys.argv[10]==\"true\"),\"arxiv_id\":None,\"submission_ts\":None,\"provenance\":{\"editor_pid\":sys.argv[11],\"computer_pid\":sys.argv[12],\"introducer_pid\":sys.argv[13],\"tick\":int(sys.argv[14])}}\nwith open(sys.argv[15],\"a\") as f: f.write(json.dumps(row,separators=(\",\",\":\"))+\"\\n\")\nprint(\"ok\")' "
-            + shell_escape(to_string(tick_now_ms)) + " "
-            + shell_escape(source_audit_run) + " "
-            + shell_escape(claim_id_eff) + " "
-            + shell_escape(claim_dir) + " "
-            + shell_escape(m_title) + " "
-            + shell_escape(m_abstract_clean) + " "
-            + shell_escape(m_arxiv_category) + " "
-            + shell_escape(m_msc_codes_csv) + " "
-            + shell_escape(compile_ok) + " "
-            + shell_escape(repro_runs_ok_eff) + " "
-            + shell_escape(editor_pid) + " "
-            + shell_escape(computer_pid) + " "
-            + shell_escape(introducer_pid) + " "
-            + shell_escape(to_string(upstream_tick)) + " "
-            + shell_escape(ledger_path);
-        let _ap = try { exec sh row_cmd; } catch e { ""; };
+        // Wave 5b #911: replace python3 json.dumps shell-out with
+        // manual JSON build + file_append. json_escape_string handles
+        // user-string fields (title / abstract / cover-letter-shaped),
+        // _csv_to_json_array maps the comma-separated msc list into a
+        // JSON array, _bool_literal maps "true"/"false" strings into
+        // JSON booleans, and arxiv_id / submission_ts stay JSON null
+        // until the SUBMITTED row overwrites them.
+        let row = "{"
+            + "\"ts\":" + to_string(tick_now_ms) + ","
+            + "\"source_audit_run\":\"" + json_escape_string(source_audit_run) + "\","
+            + "\"source_claim_id\":\"" + json_escape_string(claim_id_eff) + "\","
+            + "\"preprint_path\":\"" + json_escape_string(claim_dir) + "\","
+            + "\"title\":\"" + json_escape_string(m_title) + "\","
+            + "\"abstract\":\"" + json_escape_string(m_abstract_clean) + "\","
+            + "\"arxiv_category\":\"" + json_escape_string(m_arxiv_category) + "\","
+            + "\"msc_codes\":" + _csv_to_json_array(m_msc_codes_csv) + ","
+            + "\"msc_codes_csv\":\"" + json_escape_string(m_msc_codes_csv) + "\","
+            + "\"status\":\"DRAFTED\","
+            + "\"latex_compile_ok\":" + _bool_literal(compile_ok) + ","
+            + "\"reproducibility_runs_ok\":" + _bool_literal(repro_runs_ok_eff) + ","
+            + "\"arxiv_id\":null,"
+            + "\"submission_ts\":null,"
+            + "\"provenance\":{"
+                + "\"editor_pid\":\"" + json_escape_string(editor_pid) + "\","
+                + "\"computer_pid\":\"" + json_escape_string(computer_pid) + "\","
+                + "\"introducer_pid\":\"" + json_escape_string(introducer_pid) + "\","
+                + "\"tick\":" + to_string(upstream_tick)
+            + "}"
+            + "}";
+        file_append(ledger_path, row + "\n");
     };
 
     memo_write("submitter:" + self_pid + ":metadata:tick-" + to_string(upstream_tick), m_title);
@@ -383,22 +444,22 @@ fn _submitter_stage_and_publish(
                                     if len(ledger_path_r) > 0 {
                                         let parent_specialty = recall_latest("submitter:" + self_pid + ":specialty");
                                         let child_gen = lin + 1;
-                                        // Route replicate-ledger row
-                                        // through python3 json.dumps
-                                        // so specialty / pid strings
-                                        // cannot corrupt the line on
-                                        // a `"` / `\n` (#600 sub-issue 3).
-                                        // colony-lint: safe-exec-concat
-                                        let row_cmd = "python3 -c 'import sys,json\nts=int(sys.argv[1])\nrow={\"ts\":ts,\"event\":\"replicate\",\"colony\":sys.argv[2],\"side\":\"preprint\",\"parent_pid\":sys.argv[3],\"child_replica_id\":sys.argv[4],\"specialty\":sys.argv[5],\"generation\":int(sys.argv[6]),\"parent_fitness\":int(sys.argv[7])}\nwith open(sys.argv[8],\"a\") as f: f.write(json.dumps(row,separators=(\",\",\":\"))+\"\\n\")\nprint(\"ok\")' "
-                                            + shell_escape(to_string(tick_now_ms)) + " "
-                                            + shell_escape(_colony_name) + " "
-                                            + shell_escape(self_pid) + " "
-                                            + shell_escape(replica_id) + " "
-                                            + shell_escape(parent_specialty) + " "
-                                            + shell_escape(to_string(child_gen)) + " "
-                                            + shell_escape(to_string(my_fit_r)) + " "
-                                            + shell_escape(ledger_path_r);
-                                        let _lr = try { exec sh row_cmd; } catch e { ""; };
+                                        // Wave 5b #911: replace python3 json.dumps shell-out
+                                        // with manual JSON build + file_append.
+                                        // json_escape_string handles user-string fields;
+                                        // int fields go in as raw to_string.
+                                        let row = "{"
+                                            + "\"ts\":" + to_string(tick_now_ms) + ","
+                                            + "\"event\":\"replicate\","
+                                            + "\"colony\":\"" + json_escape_string(_colony_name) + "\","
+                                            + "\"side\":\"preprint\","
+                                            + "\"parent_pid\":\"" + json_escape_string(self_pid) + "\","
+                                            + "\"child_replica_id\":\"" + json_escape_string(replica_id) + "\","
+                                            + "\"specialty\":\"" + json_escape_string(parent_specialty) + "\","
+                                            + "\"generation\":" + to_string(child_gen) + ","
+                                            + "\"parent_fitness\":" + to_string(my_fit_r)
+                                            + "}";
+                                        file_append(ledger_path_r, row + "\n");
                                         memo_write("submitter:" + replica_id + ":generation", to_string(child_gen));
                                         if len(parent_specialty) > 0 {
                                             memo_write("submitter:" + replica_id + ":specialty", parent_specialty);
@@ -635,21 +696,25 @@ fn _handle_hitl_reject(
     let reason_raw = recall_latest("submitter:" + claim_id_eff + ":human_reject_reason");
     let ledger_path3 = getenv("DISCOVERY_LEDGER");
     if len(ledger_path3) > 0 {
-        // Route HUMAN_REJECTED row through python3 json.dumps so the
-        // operator-supplied free-form rejection reason cannot break the
-        // ledger line on a `"` / `\n` (#600 sub-issue 3). Provenance
-        // fields (#600 sub-issue 2) mirror the DRAFTED row schema.
-        // colony-lint: safe-exec-concat
-        let row_cmd = "python3 -c 'import sys,json\nts=int(sys.argv[1])\nrow={\"ts\":ts,\"source_claim_id\":sys.argv[2],\"status\":\"HUMAN_REJECTED\",\"reason\":sys.argv[3],\"provenance\":{\"editor_pid\":sys.argv[4],\"computer_pid\":sys.argv[5],\"introducer_pid\":sys.argv[6],\"tick\":int(sys.argv[7])}}\nwith open(sys.argv[8],\"a\") as f: f.write(json.dumps(row,separators=(\",\",\":\"))+\"\\n\")\nprint(\"ok\")' "
-            + shell_escape(to_string(tick_now_ms)) + " "
-            + shell_escape(claim_id_eff) + " "
-            + shell_escape(reason_raw) + " "
-            + shell_escape(editor_pid) + " "
-            + shell_escape(computer_pid) + " "
-            + shell_escape(introducer_pid) + " "
-            + shell_escape(to_string(upstream_tick)) + " "
-            + shell_escape(ledger_path3);
-        let _a3 = try { exec sh row_cmd; } catch e { ""; };
+        // Wave 5b #911: replace python3 json.dumps shell-out with
+        // manual JSON build + file_append. json_escape_string is
+        // critical here -- the operator-supplied free-form rejection
+        // reason can contain `"` / `\n` (#600 sub-issue 3).
+        // Provenance fields (#600 sub-issue 2) mirror the DRAFTED row
+        // schema.
+        let row = "{"
+            + "\"ts\":" + to_string(tick_now_ms) + ","
+            + "\"source_claim_id\":\"" + json_escape_string(claim_id_eff) + "\","
+            + "\"status\":\"HUMAN_REJECTED\","
+            + "\"reason\":\"" + json_escape_string(reason_raw) + "\","
+            + "\"provenance\":{"
+                + "\"editor_pid\":\"" + json_escape_string(editor_pid) + "\","
+                + "\"computer_pid\":\"" + json_escape_string(computer_pid) + "\","
+                + "\"introducer_pid\":\"" + json_escape_string(introducer_pid) + "\","
+                + "\"tick\":" + to_string(upstream_tick)
+            + "}"
+            + "}";
+        file_append(ledger_path3, row + "\n");
     };
     memo_write("submitter:" + claim_id_eff + ":rejected", to_string(tick_now_ms));
     memo_write("submitter:" + self_pid + ":status:tick-" + to_string(upstream_tick), "HUMAN_REJECTED");
@@ -699,24 +764,28 @@ fn _submitter_send_phase(
 
     let ledger_path2 = getenv("DISCOVERY_LEDGER");
     if len(ledger_path2) > 0 {
-        // Route SUBMITTED row through python3 json.dumps so the SMTP
-        // result text (which may contain quotes / colons / newlines on
-        // failure) cannot corrupt the ledger line (#600 sub-issue 3).
-        // Provenance fields (#600 sub-issue 2) record which editor /
-        // computer / introducer pid + upstream_tick produced the row,
-        // so consumers can trace a SUBMITTED claim back to its upstream
-        // chain.
-        // colony-lint: safe-exec-concat
-        let row_cmd = "python3 -c 'import sys,json\nts=int(sys.argv[1])\nrow={\"ts\":ts,\"source_claim_id\":sys.argv[2],\"status\":\"SUBMITTED\",\"submission_ts\":ts,\"smtp_result\":sys.argv[3],\"provenance\":{\"editor_pid\":sys.argv[4],\"computer_pid\":sys.argv[5],\"introducer_pid\":sys.argv[6],\"tick\":int(sys.argv[7])}}\nwith open(sys.argv[8],\"a\") as f: f.write(json.dumps(row,separators=(\",\",\":\"))+\"\\n\")\nprint(\"ok\")' "
-            + shell_escape(to_string(tick_now_ms)) + " "
-            + shell_escape(claim_id_eff) + " "
-            + shell_escape(send_out) + " "
-            + shell_escape(editor_pid) + " "
-            + shell_escape(computer_pid) + " "
-            + shell_escape(introducer_pid) + " "
-            + shell_escape(to_string(upstream_tick)) + " "
-            + shell_escape(ledger_path2);
-        let _a2 = try { exec sh row_cmd; } catch e { ""; };
+        // Wave 5b #911: replace python3 json.dumps shell-out with
+        // manual JSON build + file_append. json_escape_string is
+        // critical here -- the SMTP result text can carry quotes /
+        // colons / newlines on failure (#600 sub-issue 3). Provenance
+        // fields (#600 sub-issue 2) record which editor / computer /
+        // introducer pid + upstream_tick produced the row, so consumers
+        // can trace a SUBMITTED claim back to its upstream chain.
+        // submission_ts mirrors ts (was `ts` in the legacy Python).
+        let row = "{"
+            + "\"ts\":" + to_string(tick_now_ms) + ","
+            + "\"source_claim_id\":\"" + json_escape_string(claim_id_eff) + "\","
+            + "\"status\":\"SUBMITTED\","
+            + "\"submission_ts\":" + to_string(tick_now_ms) + ","
+            + "\"smtp_result\":\"" + json_escape_string(send_out) + "\","
+            + "\"provenance\":{"
+                + "\"editor_pid\":\"" + json_escape_string(editor_pid) + "\","
+                + "\"computer_pid\":\"" + json_escape_string(computer_pid) + "\","
+                + "\"introducer_pid\":\"" + json_escape_string(introducer_pid) + "\","
+                + "\"tick\":" + to_string(upstream_tick)
+            + "}"
+            + "}";
+        file_append(ledger_path2, row + "\n");
     };
 
     memo_write("submitter:" + claim_id_eff + ":submitted", to_string(tick_now_ms));

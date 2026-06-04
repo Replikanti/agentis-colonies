@@ -229,21 +229,22 @@ fn _publish_computer(
                                     if len(ledger_path_r) > 0 {
                                         let parent_specialty = recall_latest("computer:" + self_pid + ":specialty");
                                         let child_gen = lin + 1;
-                                        // Route replicate-ledger row through
-                                        // python3 json.dumps so specialty / pid
-                                        // strings cannot corrupt the line on a
-                                        // `"` / `\n` (#600 sub-issue 3).
-                                        // colony-lint: safe-exec-concat
-                                        let row_cmd = "python3 -c 'import sys,json\nts=int(sys.argv[1])\nrow={\"ts\":ts,\"event\":\"replicate\",\"colony\":sys.argv[2],\"side\":\"preprint\",\"parent_pid\":sys.argv[3],\"child_replica_id\":sys.argv[4],\"specialty\":sys.argv[5],\"generation\":int(sys.argv[6]),\"parent_fitness\":int(sys.argv[7])}\nwith open(sys.argv[8],\"a\") as f: f.write(json.dumps(row,separators=(\",\",\":\"))+\"\\n\")\nprint(\"ok\")' "
-                                            + shell_escape(to_string(tick_now_ms)) + " "
-                                            + shell_escape(_colony_name) + " "
-                                            + shell_escape(self_pid) + " "
-                                            + shell_escape(replica_id) + " "
-                                            + shell_escape(parent_specialty) + " "
-                                            + shell_escape(to_string(child_gen)) + " "
-                                            + shell_escape(to_string(my_fit_r)) + " "
-                                            + shell_escape(ledger_path_r);
-                                        let _lr = try { exec sh row_cmd; } catch e { ""; };
+                                        // Wave 5b #911: replace python3 json.dumps shell-out
+                                        // with manual JSON build + file_append.
+                                        // json_escape_string handles user-string fields;
+                                        // int fields go in as raw to_string.
+                                        let row = "{"
+                                            + "\"ts\":" + to_string(tick_now_ms) + ","
+                                            + "\"event\":\"replicate\","
+                                            + "\"colony\":\"" + json_escape_string(_colony_name) + "\","
+                                            + "\"side\":\"preprint\","
+                                            + "\"parent_pid\":\"" + json_escape_string(self_pid) + "\","
+                                            + "\"child_replica_id\":\"" + json_escape_string(replica_id) + "\","
+                                            + "\"specialty\":\"" + json_escape_string(parent_specialty) + "\","
+                                            + "\"generation\":" + to_string(child_gen) + ","
+                                            + "\"parent_fitness\":" + to_string(my_fit_r)
+                                            + "}";
+                                        file_append(ledger_path_r, row + "\n");
                                         memo_write("computer:" + replica_id + ":generation", to_string(child_gen));
                                         if len(parent_specialty) > 0 {
                                             memo_write("computer:" + replica_id + ":specialty", parent_specialty);
@@ -370,17 +371,22 @@ fn _publish_computer_rule_hit(
                                     if len(ledger_path_r) > 0 {
                                         let parent_specialty = recall_latest("computer:" + self_pid + ":specialty");
                                         let child_gen = lin + 1;
-                                        // colony-lint: safe-exec-concat
-                                        let row_cmd = "python3 -c 'import sys,json\nts=int(sys.argv[1])\nrow={\"ts\":ts,\"event\":\"replicate\",\"colony\":sys.argv[2],\"side\":\"preprint\",\"parent_pid\":sys.argv[3],\"child_replica_id\":sys.argv[4],\"specialty\":sys.argv[5],\"generation\":int(sys.argv[6]),\"parent_fitness\":int(sys.argv[7])}\nwith open(sys.argv[8],\"a\") as f: f.write(json.dumps(row,separators=(\",\",\":\"))+\"\\n\")\nprint(\"ok\")' "
-                                            + shell_escape(to_string(tick_now_ms)) + " "
-                                            + shell_escape(_colony_name) + " "
-                                            + shell_escape(self_pid) + " "
-                                            + shell_escape(replica_id) + " "
-                                            + shell_escape(parent_specialty) + " "
-                                            + shell_escape(to_string(child_gen)) + " "
-                                            + shell_escape(to_string(my_fit_r)) + " "
-                                            + shell_escape(ledger_path_r);
-                                        let _lr = try { exec sh row_cmd; } catch e { ""; };
+                                        // Wave 5b #911: replace python3 json.dumps shell-out
+                                        // with manual JSON build + file_append.
+                                        // json_escape_string handles user-string fields;
+                                        // int fields go in as raw to_string.
+                                        let row = "{"
+                                            + "\"ts\":" + to_string(tick_now_ms) + ","
+                                            + "\"event\":\"replicate\","
+                                            + "\"colony\":\"" + json_escape_string(_colony_name) + "\","
+                                            + "\"side\":\"preprint\","
+                                            + "\"parent_pid\":\"" + json_escape_string(self_pid) + "\","
+                                            + "\"child_replica_id\":\"" + json_escape_string(replica_id) + "\","
+                                            + "\"specialty\":\"" + json_escape_string(parent_specialty) + "\","
+                                            + "\"generation\":" + to_string(child_gen) + ","
+                                            + "\"parent_fitness\":" + to_string(my_fit_r)
+                                            + "}";
+                                        file_append(ledger_path_r, row + "\n");
                                         memo_write("computer:" + replica_id + ":generation", to_string(child_gen));
                                         if len(parent_specialty) > 0 {
                                             memo_write("computer:" + replica_id + ":specialty", parent_specialty);
