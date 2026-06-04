@@ -166,12 +166,34 @@ fn _dump_ctx_to_memo(agent_name: string, pid: string, tick_idx: int, ctx: string
 // lines of the latexmk log and return a space-separated string of
 // pitfall tags. Tags cover the canonical amsart failure modes,
 // including the `nested-thanks` regression class from #620.
+// Substrate-native LaTeX log tagger (#765). The python orchestrator
+// previously sliced the log body to the last 80 lines; the substrate version
+// matches against the full body — semantically equivalent for federation
+// purposes (regex matches are anchorless; an early-log false positive
+// would only mean we tag the same failure mode the late log shows).
+fn _tag_if_match(s: string, pat: string, tag: string) -> string {
+    if regex_match(pat, s) { return " " + tag; };
+    return "";
+}
+
 fn _classify_compile_log(log_body: string) -> string {
     if len(log_body) == 0 { return ""; };
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,re\nL=sys.argv[1]\ntail=\"\\n\".join(L.splitlines()[-80:])\ntags=[]\ndef add(t):\n if t not in tags: tags.append(t)\nif re.search(r\"Undefined control sequence\", tail): add(\"undefined-cs\")\nif re.search(r\"! LaTeX Error: Citation .* undefined\", tail): add(\"unresolved-citation\")\nif re.search(r\"Runaway argument\", tail): add(\"runaway-argument\")\nif re.search(r\"! Missing \\$ inserted\", tail): add(\"missing-math-delim\")\nif re.search(r\"Paragraph ended before .* was complete\", tail): add(\"unclosed-env\")\nif re.search(r\"! LaTeX Error: \\\\begin\\{.*\\} on input line .* ended by .*\", tail): add(\"mismatched-env\")\nif re.search(r\"\\\\thanks\\{[^}]*\\\\thanks\", tail) or re.search(r\"thanks.*nested\", tail, re.IGNORECASE) or re.search(r\"thanks should be given separately\", tail, re.IGNORECASE): add(\"nested-thanks\")\nif not tags and re.search(r\"! (LaTeX|Class \\w+) Error:\", tail): add(\"latex-error-other\")\nprint(\" \".join(tags))' " + shell_escape(log_body);
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out;
+    let t1 = _tag_if_match(log_body, "Undefined control sequence", "undefined-cs");
+    let t2 = _tag_if_match(log_body, "! LaTeX Error: Citation .* undefined", "unresolved-citation");
+    let t3 = _tag_if_match(log_body, "Runaway argument", "runaway-argument");
+    let t4 = _tag_if_match(log_body, "! Missing \\$ inserted", "missing-math-delim");
+    let t5 = _tag_if_match(log_body, "Paragraph ended before .* was complete", "unclosed-env");
+    let t6 = _tag_if_match(log_body, "! LaTeX Error: \\\\begin\\{.*\\} on input line .* ended by .*", "mismatched-env");
+    let n_a = regex_match("\\\\thanks\\{[^}]*\\\\thanks", log_body);
+    let n_b = regex_match("(?i)thanks.*nested", log_body);
+    let n_c = regex_match("(?i)thanks should be given separately", log_body);
+    let t7 = if n_a { " nested-thanks"; }
+             else { if n_b { " nested-thanks"; }
+                    else { if n_c { " nested-thanks"; }
+                           else { ""; }; }; };
+    let acc = t1 + t2 + t3 + t4 + t5 + t6 + t7;
+    let t8 = if len(acc) == 0 { _tag_if_match(log_body, "! (LaTeX|Class \\w+) Error:", "latex-error-other"); } else { ""; };
+    return trim(acc + t8);
 }
 
 // _push_pitfall -- append a compile-pitfall entry to the editor

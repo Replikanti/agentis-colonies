@@ -549,13 +549,19 @@ fn _skeptic_canonical_ctx(noticer_pid: string, upstream_tick: int) -> string {
 // the distilled KnowledgeEntry id stays stable; bucket/seq/lines jitter
 // tick-to-tick and are intentionally excluded. Total on missing fields
 // ("na"). ASCII-only, single line.
+// Substrate-native field extractor (#765). Returns the value of
+// "<key>=<value>" in `s`, or "na" if not present. Matches python
+// `re.search(r"(?:^| )"+k+r"=(\\S+)", s).group(1) if m else "na"`.
+fn _picker_field(s: string, key: string) -> string {
+    let v = regex_capture("(?:^| )" + key + "=(\\S+)", s, 1);
+    if len(v) == 0 { return "na"; };
+    return v;
+}
+
 fn _canonical_stable_desc(canonical_ctx: string) -> string {
     if len(canonical_ctx) == 0 { return "skeptic-class topic=na output_kind=na"; };
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,re\ns=sys.argv[1]\ndef g(k):\n m=re.search(r\"(?:^| )\"+k+r\"=(\\S+)\", s)\n return m.group(1) if m else \"na\"\nprint(\"skeptic-class topic=\"+g(\"topic\")+\" output_kind=\"+g(\"output_kind\"))' " + shell_escape(canonical_ctx);
-    let out = try { exec sh cmd; } catch e { "skeptic-class topic=na output_kind=na"; };
-    if len(out) == 0 { return "skeptic-class topic=na output_kind=na"; };
-    return out;
+    return "skeptic-class topic=" + _picker_field(canonical_ctx, "topic")
+         + " output_kind=" + _picker_field(canonical_ctx, "output_kind");
 }
 
 // _parse_rule_action_verdict -- decoder for the pipe-delimited
