@@ -485,10 +485,9 @@ fn _count_lines(stdout: string) -> string {
 // total on missing pipe (returns false / empty).
 fn _parse_rule_action_bool(action: string) -> bool {
     if len(action) == 0 { return false; };
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys; print(\"1\" if sys.argv[1].split(\"|\",1)[0].strip().lower()==\"true\" else \"0\")' " + shell_escape(action);
-    let out = try { exec sh cmd; } catch e { "0"; };
-    return out == "1";
+    let head_idx = index_of(action, "|");
+    let head = if head_idx < 0 { action; } else { substring(action, 0, head_idx); };
+    return to_lower(trim(head)) == "true";
 }
 
 fn _parse_rule_action_desc(action: string) -> string {
