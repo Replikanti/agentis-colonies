@@ -561,12 +561,141 @@ fn _classify_buckets_all(condition: string) -> string {
 // against the claim topic's tokens. Failure modes: empty KB / parse error
 // / exec failure all return 1.0 (treat as maximally novel -- the absence
 // of prior knowledge is itself a novelty signal).
+// --- Substrate-native Jaccard helpers (#771 Wave 7e2). The python
+// orchestrator above was retired in favour of substrate primitives:
+// tokens via regex_split + to_lower, set ops via tail-recursive
+// dedup/intersect, knowledge_export() for the KB, simple insertion-
+// sort for the top-K cut. Empty KB / empty tokens / parse failure
+// all surface as score=1.0 (treat as maximally novel — matches the
+// python contract).
+fn _filter_nonempty(parts: list<string>, idx: int, acc: list<string>) -> list<string> {
+    if idx >= len(parts) { return acc; };
+    if idx >= 256 { return acc; };
+    let p = get(parts, idx);
+    let next = if len(p) > 0 { push(acc, p); } else { acc; };
+    return _filter_nonempty(parts, idx + 1, next);
+}
+
+fn _toks_alphanum_lower(s: string) -> list<string> {
+    let lower = to_lower(s);
+    let parts = regex_split("[^a-z0-9]+", lower);
+    return _filter_nonempty(parts, 0, []);
+}
+
+fn _contains_str(xs: list<string>, needle: string, idx: int) -> bool {
+    if idx >= len(xs) { return false; };
+    if idx >= 256 { return false; };
+    if get(xs, idx) == needle { return true; };
+    return _contains_str(xs, needle, idx + 1);
+}
+
+fn _dedup_strs(xs: list<string>, idx: int, acc: list<string>) -> list<string> {
+    if idx >= len(xs) { return acc; };
+    if idx >= 256 { return acc; };
+    let item = get(xs, idx);
+    let next = if _contains_str(acc, item, 0) { acc; } else { push(acc, item); };
+    return _dedup_strs(xs, idx + 1, next);
+}
+
+fn _intersect_count(a_uniq: list<string>, b_uniq: list<string>, idx: int, acc: int) -> int {
+    if idx >= len(a_uniq) { return acc; };
+    if idx >= 256 { return acc; };
+    let item = get(a_uniq, idx);
+    let next = if _contains_str(b_uniq, item, 0) { acc + 1; } else { acc; };
+    return _intersect_count(a_uniq, b_uniq, idx + 1, next);
+}
+
+fn _jaccard(a: list<string>, b: list<string>) -> float {
+    if len(a) == 0 { return 0.0; };
+    if len(b) == 0 { return 0.0; };
+    let a_uniq = _dedup_strs(a, 0, []);
+    let b_uniq = _dedup_strs(b, 0, []);
+    let inter = _intersect_count(a_uniq, b_uniq, 0, 0);
+    let union_n = len(a_uniq) + len(b_uniq) - inter;
+    if union_n <= 0 { return 0.0; };
+    return parse_float(to_string(inter)) / parse_float(to_string(union_n));
+}
+
+// Insertion-sort cap: keep the descending-sorted top-K floats. Each
+// call walks the existing acc and inserts j at the right slot, then
+// truncates to K elements. K is bounded (5 in production) so worst
+// case is K^2 work per entry.
+fn _topk_insert_recurse(acc: list<float>, j: float, k: int, idx: int, out: list<float>, inserted: bool) -> list<float> {
+    if idx >= len(acc) {
+        let appended = if !inserted { push(out, j); } else { out; };
+        return appended;
+    };
+    let cur = get(acc, idx);
+    let new_out = if !inserted {
+        if j > cur {
+            push(push(out, j), cur);
+        } else {
+            push(out, cur);
+        };
+    } else { push(out, cur); };
+    let now_inserted = if !inserted {
+        if j > cur { true; } else { false; };
+    } else { true; };
+    return _topk_insert_recurse(acc, j, k, idx + 1, new_out, now_inserted);
+}
+
+fn _topk_truncate(xs: list<float>, k: int, idx: int, acc: list<float>) -> list<float> {
+    if idx >= k { return acc; };
+    if idx >= len(xs) { return acc; };
+    return _topk_truncate(xs, k, idx + 1, push(acc, get(xs, idx)));
+}
+
+fn _topk_insert(acc: list<float>, j: float, k: int) -> list<float> {
+    let inserted = _topk_insert_recurse(acc, j, k, 0, [], false);
+    return _topk_truncate(inserted, k, 0, []);
+}
+
+fn _sum_floats(xs: list<float>, idx: int, acc: float) -> float {
+    if idx >= len(xs) { return acc; };
+    return _sum_floats(xs, idx + 1, acc + get(xs, idx));
+}
+
+// Tail-recursive scan over the KB JSON array. Parses each entry's
+// `condition` field via json_get, computes Jaccard against `claim_toks`,
+// accumulates into the running top-K list.
+fn _novelty_scan_kb(kb_json: string, claim_toks: list<string>, k: int, idx: int, n_entries: int, top: list<float>) -> list<float> {
+    if idx >= n_entries { return top; };
+    if idx >= 4096 { return top; };
+    let entry_path = "[" + to_string(idx) + "].condition";
+    let cond = to_string(json_get(kb_json, entry_path));
+    let new_top = if len(cond) > 0 {
+        let cond_toks = _toks_alphanum_lower(cond);
+        if len(cond_toks) == 0 { top; }
+        else {
+            let j = _jaccard(claim_toks, cond_toks);
+            _topk_insert(top, j, k);
+        };
+    } else { top; };
+    return _novelty_scan_kb(kb_json, claim_toks, k, idx + 1, n_entries, new_top);
+}
+
+fn _count_kb_entries(kb_json: string) -> int {
+    // Round-trip via json_array_to_strings on a projection wouldn't help
+    // because entries are objects, not strings. Use regex_find_all of
+    // top-level `"condition"` occurrences as a robust upper bound on
+    // entry count (KnowledgeBase serialization always emits `"condition"`
+    // exactly once per entry; counting them is byte-identical to len(rows)).
+    let hits = regex_find_all("\"condition\"\\s*:", kb_json);
+    return len(hits);
+}
+
 fn _novelty_score(claim_topic: string) -> float {
     if len(claim_topic) == 0 { return 0.0; };
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,subprocess,json,re\nclaim=sys.argv[1].lower()\ntry: out=subprocess.run([\"agentis\",\"knowledge\",\"export\"],capture_output=True,text=True,check=False).stdout\nexcept Exception: out=\"\"\nrows=[]\ntry: rows=json.loads(out) if out else []\nexcept Exception: rows=[]\nif not isinstance(rows,list) or not rows:\n print(\"1.0\"); sys.exit(0)\ndef toks(s):\n return set(t for t in re.split(r\"[^a-z0-9]+\",s.lower()) if t)\nc=toks(claim)\nif not c:\n print(\"1.0\"); sys.exit(0)\njacs=[]\nfor row in rows:\n if not isinstance(row,dict): continue\n cond=row.get(\"condition\",\"\")\n if not isinstance(cond,str) or not cond: continue\n k=toks(cond)\n if not k: continue\n u=c|k; i=c&k\n j=(len(i)/len(u)) if u else 0.0\n jacs.append(j)\nif not jacs:\n print(\"1.0\"); sys.exit(0)\njacs.sort(reverse=True)\nK=5\ntop=jacs[:K]\navg=sum(top)/len(top)\nprint(round(1.0-avg,4))' " + shell_escape(claim_topic);
-    let out = try { exec sh cmd; } catch e { "1.0"; };
-    return parse_float(out);
+    let claim_toks = _toks_alphanum_lower(claim_topic);
+    if len(claim_toks) == 0 { return 1.0; };
+    let kb_json = knowledge_export();
+    if len(kb_json) <= 2 { return 1.0; };
+    let n_entries = _count_kb_entries(kb_json);
+    if n_entries == 0 { return 1.0; };
+    let top = _novelty_scan_kb(kb_json, claim_toks, 5, 0, n_entries, []);
+    if len(top) == 0 { return 1.0; };
+    let avg = _sum_floats(top, 0, 0.0) / parse_float(to_string(len(top)));
+    return 1.0 - avg;
 }
 
 // _topic_history_check -- saturation probe over the rolling

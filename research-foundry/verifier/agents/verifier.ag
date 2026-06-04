@@ -184,17 +184,41 @@ fn select_replication_target() -> string {
 // stated_answer can be cleanly parsed AND the divisibility check
 // fails.
 fn _lagrange_check_symmetric(problem_text: string, stated_answer: string) -> string {
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,re,math\nproblem=sys.argv[1]\nans_raw=sys.argv[2]\nm=re.search(r\"\\bS_(\\d+)\\b\",problem)\nif not m:\n m=re.search(r\"\\bsymmetric group\\b[^\\d]{0,40}(\\d+)\",problem,re.IGNORECASE)\nif not m:\n sys.exit(0)\ntry: n=int(m.group(1))\nexcept Exception: sys.exit(0)\nif n<=0 or n>20:\n sys.exit(0)\nans_s=ans_raw.strip()\nif not re.fullmatch(r\"-?\\d+\",ans_s):\n sys.exit(0)\ntry: ans=int(ans_s)\nexcept Exception: sys.exit(0)\nif ans<=0:\n sys.exit(0)\norder=math.factorial(n)\nif order%ans!=0:\n sys.stdout.write(\"FALSIFIED_LAGRANGE\")' " + shell_escape(problem_text) + " " + shell_escape(stated_answer);
-    let result = try { exec sh cmd; } catch e { ""; };
-    return result;
+    // Try `S_n` first, fall back to `symmetric group N` with case-insensitive
+    // 40-char proximity window. Empty capture -> inconclusive (return "").
+    let s_n = regex_capture("\\bS_(\\d+)\\b", problem_text, 1);
+    let n_str = if len(s_n) > 0 { s_n; } else { regex_capture("(?i)\\bsymmetric group\\b[^\\d]{0,40}(\\d+)", problem_text, 1); };
+    if len(n_str) == 0 { return ""; };
+    let n = parse_int(n_str);
+    if n <= 0 { return ""; };
+    if n > 20 { return ""; };
+    let ans_s = trim(stated_answer);
+    if !regex_match("^-?\\d+$", ans_s) { return ""; };
+    let ans = parse_int(ans_s);
+    if ans <= 0 { return ""; };
+    let order = factorial(n);
+    if mod(order, ans) != 0 { return "FALSIFIED_LAGRANGE"; };
+    return "";
 }
 
 fn _lagrange_check_cyclic_dihedral(problem_text: string, stated_answer: string) -> string {
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,re\nproblem=sys.argv[1]\nans_raw=sys.argv[2]\norder=None\nm=re.search(r\"\\bC_(\\d+)\\b\",problem)\nif m:\n try: order=int(m.group(1))\n except Exception: order=None\nif order is None:\n m=re.search(r\"\\bZ/(\\d+)Z\\b\",problem)\n if m:\n  try: order=int(m.group(1))\n  except Exception: order=None\nif order is None:\n m=re.search(r\"\\bD_(\\d+)\\b\",problem)\n if m:\n  try: order=2*int(m.group(1))\n  except Exception: order=None\nif order is None:\n sys.exit(0)\nif order<=0 or order>10000:\n sys.exit(0)\nans_s=ans_raw.strip()\nif not re.fullmatch(r\"-?\\d+\",ans_s):\n sys.exit(0)\ntry: ans=int(ans_s)\nexcept Exception: sys.exit(0)\nif ans<=0:\n sys.exit(0)\nif order%ans!=0:\n sys.stdout.write(\"FALSIFIED_LAGRANGE\")' " + shell_escape(problem_text) + " " + shell_escape(stated_answer);
-    let result = try { exec sh cmd; } catch e { ""; };
-    return result;
+    // C_n  -> order = n
+    // Z/nZ -> order = n
+    // D_n  -> order = 2n
+    let c_n = regex_capture("\\bC_(\\d+)\\b", problem_text, 1);
+    let z_n = if len(c_n) > 0 { ""; } else { regex_capture("\\bZ/(\\d+)Z\\b", problem_text, 1); };
+    let d_n = if len(c_n) > 0 { ""; } else { if len(z_n) > 0 { ""; } else { regex_capture("\\bD_(\\d+)\\b", problem_text, 1); }; };
+    let order = if len(c_n) > 0 { parse_int(c_n); }
+                else { if len(z_n) > 0 { parse_int(z_n); }
+                       else { if len(d_n) > 0 { 2 * parse_int(d_n); } else { 0; }; }; };
+    if order <= 0 { return ""; };
+    if order > 10000 { return ""; };
+    let ans_s = trim(stated_answer);
+    if !regex_match("^-?\\d+$", ans_s) { return ""; };
+    let ans = parse_int(ans_s);
+    if ans <= 0 { return ""; };
+    if mod(order, ans) != 0 { return "FALSIFIED_LAGRANGE"; };
+    return "";
 }
 
 // _publish_falsified_verdict -- write a synthetic mechanical-falsification
