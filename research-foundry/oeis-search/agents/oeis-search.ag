@@ -121,6 +121,32 @@ fn _publish_prompt_body_and_wrap_variant(self_pid: string, variant_tag: string) 
     return "pp:" + h + "|" + variant_tag;
 }
 
+// Wave 6 #913: substrate http_get + url_encode_component helpers
+// replacing the python3 urllib orchestrator. _oeis_fetch_and_join
+// iterates the sequences list via tail-recursion (the DSL has no
+// for/while loop; precedent: tick_at in
+// dev-apprenticeship/triage/agents/router.ag) and caps at 5 sequences
+// per call to match the python orchestrator's `for s in seqs[:5]:`
+// slice. The "--- seq: X ---\n" separator and the
+// "<error>...</error>" wrapping are preserved verbatim so the
+// downstream relevance-judgement prompt sees a byte-identical
+// concatenated feed. OEIS has no max_results equivalent (`&fmt=text`
+// returns a fixed page), so the helper omits the max_results parameter.
+fn _oeis_fetch_and_join(sequences: list<string>) -> string {
+    return _oeis_fetch_recurse(sequences, 0, "");
+}
+
+fn _oeis_fetch_recurse(sequences: list<string>, idx: int, acc: string) -> string {
+    if idx >= len(sequences) { return acc; };
+    if idx >= 5 { return acc; };
+    let s = get(sequences, idx);
+    let url = "https://oeis.org/search?fmt=text&q=" + url_encode_component(s);
+    let body = try { http_get(url); } catch e { "<error>" + e + "</error>"; };
+    let sep = if idx == 0 { ""; } else { "\n"; };
+    let chunk = sep + "--- seq: " + s + " ---\n" + body;
+    return _oeis_fetch_recurse(sequences, idx + 1, acc + chunk);
+}
+
 // Phase 9 PR-C (#663): per-colony variant picker from the
 // colony-variants.json `oeis-search` row.
 fn pick_variant(n: int) -> string {
@@ -178,21 +204,13 @@ fn _publish_oeis_search(
 ) -> void {
     let _ = final_write;
     let sequences_json = sequences.sequences_json;
-    // colony-lint: safe-exec-concat
-    let fetch_cmd = "SJSON=" + shell_escape(sequences_json)
-        + " python3 -c 'import os, json, urllib.parse, urllib.request, sys\n"
-        + "try:\n  seqs=json.loads(os.environ[\"SJSON\"])\nexcept Exception:\n  seqs=[]\n"
-        + "if not isinstance(seqs, list): seqs=[]\n"
-        + "out=[]\n"
-        + "for s in seqs[:5]:\n"
-        + "  url=\"https://oeis.org/search?fmt=text&q=\"+urllib.parse.quote_plus(str(s))\n"
-        + "  try:\n"
-        + "    r=urllib.request.urlopen(url,timeout=30).read().decode(\"utf-8\",\"replace\")\n"
-        + "  except Exception as e:\n"
-        + "    r=\"<error>\"+str(e)+\"</error>\"\n"
-        + "  out.append(\"--- seq: \"+str(s)+\" ---\\n\"+r)\n"
-        + "sys.stdout.write(\"\\n\".join(out))'";
-    let combined_raw = try { exec sh fetch_cmd; } catch e { ""; };
+    // Wave 6 #913: substrate http_get + url_encode_component replace
+    // the python3 urllib orchestrator. json_array_to_strings parses the
+    // sequences list; _oeis_fetch_and_join iterates via tail-recursion
+    // and concatenates the OEIS text-search responses with the same
+    // separator format the relevance-judgement prompt expects.
+    let sequences_list = json_array_to_strings(sequences_json);
+    let combined_raw = _oeis_fetch_and_join(sequences_list);
 
     let judge_ctx = "PROBLEM: " + problem_text + "\n"
                   + "ANSWER: " + stated_answer + "\n"
@@ -305,21 +323,10 @@ fn _publish_oeis_search_rule_hit(
     let _ = rationale;
     // External OEIS fetch on the reconstructed queries (NOT cached by the
     // rule -- the rule replaced only LLM extraction).
-    // colony-lint: safe-exec-concat
-    let fetch_cmd = "SJSON=" + shell_escape(sequences_json)
-        + " python3 -c 'import os, json, urllib.parse, urllib.request, sys\n"
-        + "try:\n  seqs=json.loads(os.environ[\"SJSON\"])\nexcept Exception:\n  seqs=[]\n"
-        + "if not isinstance(seqs, list): seqs=[]\n"
-        + "out=[]\n"
-        + "for s in seqs[:5]:\n"
-        + "  url=\"https://oeis.org/search?fmt=text&q=\"+urllib.parse.quote_plus(str(s))\n"
-        + "  try:\n"
-        + "    r=urllib.request.urlopen(url,timeout=30).read().decode(\"utf-8\",\"replace\")\n"
-        + "  except Exception as e:\n"
-        + "    r=\"<error>\"+str(e)+\"</error>\"\n"
-        + "  out.append(\"--- seq: \"+str(s)+\" ---\\n\"+r)\n"
-        + "sys.stdout.write(\"\\n\".join(out))'";
-    let combined_raw = try { exec sh fetch_cmd; } catch e { ""; };
+    // Wave 6 #913: substrate http_get + url_encode_component (rule-hit
+    // path mirror of the LLM path above).
+    let sequences_list = json_array_to_strings(sequences_json);
+    let combined_raw = _oeis_fetch_and_join(sequences_list);
 
     let judge_ctx = "PROBLEM: " + problem_text + "\n"
                   + "ANSWER: " + stated_answer + "\n"
