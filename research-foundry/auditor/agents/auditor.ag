@@ -198,9 +198,10 @@ fn _push_topic_feedback(
     let win_env = getenv("AUDITOR_FEEDBACK_WINDOW");
     let win = if len(win_env) > 0 { parse_int(win_env); } else { 50; };
     let win_eff = if win <= 0 { 50; } else { win; };
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,json\nraw=sys.argv[1]\ntopic=sys.argv[2]\nps=sys.argv[3]\nt=int(sys.argv[4])\nk=int(sys.argv[5])\ntry:\n arr=json.loads(raw) if raw else []\n if not isinstance(arr,list): arr=[]\nexcept Exception:\n arr=[]\narr.append({\"topic\":topic,\"problem_summary\":ps,\"tick\":t})\nif len(arr)>k: arr=arr[-k:]\nprint(json.dumps(arr,separators=(\",\",\":\")))' " + shell_escape(buf_raw) + " " + shell_escape(topic) + " " + shell_escape(problem_summary) + " " + shell_escape(to_string(tick_idx)) + " " + shell_escape(to_string(win_eff));
-    let new_buf = try { exec sh cmd; } catch e { "[]"; };
+    let entry = "{\"topic\":\"" + json_escape_string(topic) + "\""
+              + ",\"problem_summary\":\"" + json_escape_string(problem_summary) + "\""
+              + ",\"tick\":" + to_string(tick_idx) + "}";
+    let new_buf = json_array_append_truncate(buf_raw, entry, win_eff);
     memo_write(buf_key, new_buf);
 }
 

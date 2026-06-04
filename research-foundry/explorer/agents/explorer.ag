@@ -192,13 +192,13 @@ fn _push_settled_exploration(self_pid: string, verdict: string) -> int {
     let thr_env = getenv("EXPLORER_PROMPT_EVOLUTION_THRESHOLD");
     let thr = if len(thr_env) > 0 { parse_int(thr_env); } else { 3; };
     let thr_eff = if thr <= 0 { 3; } else { thr; };
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,json\nraw=sys.argv[1]\nv=sys.argv[2]\nk=int(sys.argv[3])\ntry:\n arr=json.loads(raw) if raw else []\n if not isinstance(arr,list): arr=[]\nexcept Exception:\n arr=[]\narr.append({\"verdict\":v})\nif len(arr)>k: arr=arr[-k:]\nprint(json.dumps(arr,separators=(\",\",\":\")))' " + shell_escape(buf_raw) + " " + shell_escape(verdict) + " " + shell_escape(to_string(thr_eff));
-    let new_buf = try { exec sh cmd; } catch e { "[]"; };
+    let entry = "{\"verdict\":\"" + json_escape_string(verdict) + "\"}";
+    let new_buf = json_array_append_truncate(buf_raw, entry, thr_eff);
     memo_write(buf_key, new_buf);
-    // colony-lint: safe-exec-concat
-    let count_cmd = "python3 -c 'import sys,json\ntry: a=json.loads(sys.argv[1])\nexcept Exception: a=[]\nprint(len(a) if isinstance(a,list) else 0)' " + shell_escape(new_buf);
-    let n = try { exec sh count_cmd; } catch e { "0"; };
+    // Substrate-native entry count: parse via json_array_to_strings of
+    // verdicts (we just stored objects, but the count is what matters,
+    // so we use regex_find_all on the same "verdict" key marker).
+    let n = to_string(len(regex_find_all("\"verdict\"\\s*:", new_buf)));
     return parse_int(n);
 }
 
@@ -558,10 +558,13 @@ fn _loss_shaping_enabled_explorer() -> bool {
 // on a bucket label.
 fn _classify_bucket_explorer(s: string) -> string {
     if len(s) == 0 { return ""; };
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys\ntxt=sys.argv[1].lower()\nbuckets=[(\"group_theory\",[\"group_theory\",\"sylow\",\"cayley\",\"monoid\",\"semigroup\",\"permutation\",\"symmetric_group\",\"sym_n\",\"schur\",\"lattice\",\"coset\",\"conjugacy\",\"abelian\",\"nilpotent\",\"solvable\",\"simple group\",\"presentation\",\"free group\"]),(\"combinatorics\",[\"combinatorics\",\"hamiltonicity\",\"hamilton cycle\",\"latin square\",\"hypergraph\",\"catalan\",\"partition\",\"generating function\",\"matroid\",\"turan\",\"ramsey\",\"enumeration\",\"bijection\",\"set system\",\"design theory\"]),(\"number_theory\",[\"number_theory\",\"hecke\",\"l-function\",\"zeta\",\"modular form\",\"diophantine\",\"frobenius\",\"p-adic\",\"elliptic curve\",\"galois\",\"class field\",\"automorphic\",\"prime\",\"sieve\",\"riemann\"]),(\"probability\",[\"probability\",\"martingale\",\"random walk\",\"mixing time\",\"stationary distribution\",\"markov chain\",\"percolation\",\"branching process\",\"brownian\",\"stochastic\",\"renyi\",\"entropy\"]),(\"algebra\",[\"algebra\",\"cohomology\",\"sheaf\",\"ring spectrum\",\"module\",\"derived category\",\"witt\",\"lie algebra\",\"hopf\",\"tensor\",\"homotopy\",\"scheme\",\"variety\",\"ideal\",\"polynomial ring\"])]\nfor name,kws in buckets:\n for kw in kws:\n  if kw in txt:\n   print(name); sys.exit(0)\nprint(\"\")' " + shell_escape(s);
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out;
+    let txt = to_lower(s);
+    if regex_match("group_theory|sylow|cayley|monoid|semigroup|permutation|symmetric_group|sym_n|schur|lattice|coset|conjugacy|abelian|nilpotent|solvable|simple group|presentation|free group", txt) { return "group_theory"; };
+    if regex_match("combinatorics|hamiltonicity|hamilton cycle|latin square|hypergraph|catalan|partition|generating function|matroid|turan|ramsey|enumeration|bijection|set system|design theory", txt) { return "combinatorics"; };
+    if regex_match("number_theory|hecke|l-function|zeta|modular form|diophantine|frobenius|p-adic|elliptic curve|galois|class field|automorphic|prime|sieve|riemann", txt) { return "number_theory"; };
+    if regex_match("probability|martingale|random walk|mixing time|stationary distribution|markov chain|percolation|branching process|brownian|stochastic|renyi|entropy", txt) { return "probability"; };
+    if regex_match("algebra|cohomology|sheaf|ring spectrum|module|derived category|witt|lie algebra|hopf|tensor|homotopy|scheme|variety|ideal|polynomial ring", txt) { return "algebra"; };
+    return "";
 }
 
 fn _loss_shaping_hint(self_pid: string, topic_label: string) -> string {
