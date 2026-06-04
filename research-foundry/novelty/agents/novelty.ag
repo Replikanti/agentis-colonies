@@ -84,10 +84,7 @@ fn _extract_pp_hash(variant_tag: string) -> string {
     if len(variant_tag) < 67 { return ""; };
     if substring(variant_tag, 0, 3) != "pp:" { return ""; };
     let hex = substring(variant_tag, 3, 67);
-    // colony-lint: safe-exec-concat
-    let cmd = "printf '%s' " + shell_escape(hex) + " | tr -d '0-9a-f' | wc -c";
-    let leftover = try { exec sh cmd; } catch e { "1"; };
-    if parse_int(leftover) != 0 { return ""; };
+    if !is_hex_lower(hex) { return ""; };
     return hex;
 }
 
