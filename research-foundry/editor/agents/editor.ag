@@ -394,9 +394,7 @@ fn _publish_editor(
     let max_passes = if len(max_passes_env) > 0 { parse_int(max_passes_env); } else { 3; };
     let max_passes_eff = if max_passes <= 0 { 1; } else { max_passes; };
 
-    // colony-lint: safe-exec-concat
-    let mkdir_cmd = "mkdir -p " + shell_escape(claim_dir);
-    let _mk = try { exec sh mkdir_cmd; } catch e { ""; };
+    let _mk = try { mkdir(claim_dir); "ok"; } catch e { ""; };
     file_write(claim_dir + "/main.tex", edit.full_tex);
     file_write(claim_dir + "/refs.bib", edit.refs_bib);
 
@@ -411,13 +409,9 @@ fn _publish_editor(
     let _subst = try { exec sh subst_cmd; } catch e { ""; };
 
     // First compile pass.
-    // colony-lint: safe-exec-concat
-    let compile_cmd = "cd " + shell_escape(claim_dir) + " && latexmk -pdf -interaction=nonstopmode -halt-on-error main.tex 2>&1 | tail -80";
-    let compile_log = try { exec sh compile_cmd; } catch e { ""; };
-    // colony-lint: safe-exec-concat
-    let pdf_check_cmd = "test -f " + shell_escape(claim_dir + "/main.pdf") + " && printf yes || printf no";
-    let pdf_ok_raw = try { exec sh pdf_check_cmd; } catch e { "no"; };
-    let compile_ok_initial = pdf_ok_raw == "yes";
+    let _compile_r = try { compile_latex(claim_dir, 300000); } catch e { map_of("log_tail", ""); };
+    let compile_log = to_string(get(_compile_r, "log_tail"));
+    let compile_ok_initial = file_exists(claim_dir + "/main.pdf");
 
     // #623 B: classify the initial-compile log on failure and push the
     // tags into editor:learned_pitfalls. Successful compiles append
@@ -443,21 +437,15 @@ fn _publish_editor(
                            + "RECENT PITFALLS:\n" + pitfall_summary + "\n";
             memo_write("editor:" + self_pid + ":ctx:tick-" + to_string(tick_idx) + ":repair", repair_ctx);
             let repair = prompt(_repair_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(self_pid), repair_ctx) -> Repair;
-            // colony-lint: safe-exec-concat
-            let rewrite_cmd = "printf '%s' " + shell_escape(repair.full_tex) + " > " + shell_escape(claim_dir + "/main.tex");
-            let _rw = try { exec sh rewrite_cmd; } catch e { ""; };
+            let _rw = try { file_write(claim_dir + "/main.tex", repair.full_tex); "ok"; } catch e { ""; };
             // Re-substitute AUTHOR-PLACEHOLDER in case the
             // repair pass put it back (#616).
             // colony-lint: safe-exec-concat
             let subst_cmd_r = "python3 /run-root/tools/substitute-author.py " + shell_escape(author_cfg_eff) + " " + shell_escape(claim_dir + "/main.tex");
             let _subst_r = try { exec sh subst_cmd_r; } catch e { ""; };
-            // colony-lint: safe-exec-concat
-            let recompile_cmd = "cd " + shell_escape(claim_dir) + " && latexmk -pdf -interaction=nonstopmode -halt-on-error main.tex 2>&1 | tail -80";
-            let recompile_log = try { exec sh recompile_cmd; } catch e { ""; };
-            // colony-lint: safe-exec-concat
-            let recheck_cmd = "test -f " + shell_escape(claim_dir + "/main.pdf") + " && printf yes || printf no";
-            let recheck = try { exec sh recheck_cmd; } catch e { "no"; };
-            let repair_ok = recheck == "yes";
+            let _recompile_r = try { compile_latex(claim_dir, 300000); } catch e { map_of("log_tail", ""); };
+            let recompile_log = to_string(get(_recompile_r, "log_tail"));
+            let repair_ok = file_exists(claim_dir + "/main.pdf");
             // #623 B: push the repair-pass failure as well so the
             // buffer reflects both passes when the pitfall recurs.
             if !repair_ok {
@@ -469,9 +457,7 @@ fn _publish_editor(
     };
 
     let final_tex_path = claim_dir + "/main.tex";
-    // colony-lint: safe-exec-concat
-    let read_tex_cmd = "cat " + shell_escape(final_tex_path);
-    let final_tex_body = try { exec sh read_tex_cmd; } catch e { edit.full_tex; };
+    let final_tex_body = try { file_read(final_tex_path); } catch e { edit.full_tex; };
 
     memo_write("editor:" + self_pid + ":final_tex:tick-" + to_string(upstream_tick), final_tex_body);
     memo_write("editor:" + self_pid + ":compile_log:tick-" + to_string(upstream_tick), compile_log);
@@ -674,9 +660,7 @@ fn _publish_editor_rule_hit(
     let max_passes = if len(max_passes_env) > 0 { parse_int(max_passes_env); } else { 3; };
     let max_passes_eff = if max_passes <= 0 { 1; } else { max_passes; };
 
-    // colony-lint: safe-exec-concat
-    let mkdir_cmd = "mkdir -p " + shell_escape(claim_dir);
-    let _mk = try { exec sh mkdir_cmd; } catch e { ""; };
+    let _mk = try { mkdir(claim_dir); "ok"; } catch e { ""; };
     file_write(claim_dir + "/main.tex", full_tex);
     file_write(claim_dir + "/refs.bib", refs_bib);
 
@@ -686,13 +670,9 @@ fn _publish_editor_rule_hit(
     let subst_cmd = "python3 /run-root/tools/substitute-author.py " + shell_escape(author_cfg_eff) + " " + shell_escape(claim_dir + "/main.tex");
     let _subst = try { exec sh subst_cmd; } catch e { ""; };
 
-    // colony-lint: safe-exec-concat
-    let compile_cmd = "cd " + shell_escape(claim_dir) + " && latexmk -pdf -interaction=nonstopmode -halt-on-error main.tex 2>&1 | tail -80";
-    let compile_log = try { exec sh compile_cmd; } catch e { ""; };
-    // colony-lint: safe-exec-concat
-    let pdf_check_cmd = "test -f " + shell_escape(claim_dir + "/main.pdf") + " && printf yes || printf no";
-    let pdf_ok_raw = try { exec sh pdf_check_cmd; } catch e { "no"; };
-    let compile_ok_initial = pdf_ok_raw == "yes";
+    let _compile_r = try { compile_latex(claim_dir, 300000); } catch e { map_of("log_tail", ""); };
+    let compile_log = to_string(get(_compile_r, "log_tail"));
+    let compile_ok_initial = file_exists(claim_dir + "/main.pdf");
 
     if !compile_ok_initial {
         let initial_tags = _classify_compile_log(compile_log);
@@ -712,19 +692,13 @@ fn _publish_editor_rule_hit(
                            + "RECENT PITFALLS:\n" + pitfall_summary + "\n";
             memo_write("editor:" + self_pid + ":ctx:tick-" + to_string(tick_idx) + ":repair", repair_ctx);
             let repair = prompt(_repair_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(self_pid), repair_ctx) -> Repair;
-            // colony-lint: safe-exec-concat
-            let rewrite_cmd = "printf '%s' " + shell_escape(repair.full_tex) + " > " + shell_escape(claim_dir + "/main.tex");
-            let _rw = try { exec sh rewrite_cmd; } catch e { ""; };
+            let _rw = try { file_write(claim_dir + "/main.tex", repair.full_tex); "ok"; } catch e { ""; };
             // colony-lint: safe-exec-concat
             let subst_cmd_r = "python3 /run-root/tools/substitute-author.py " + shell_escape(author_cfg_eff) + " " + shell_escape(claim_dir + "/main.tex");
             let _subst_r = try { exec sh subst_cmd_r; } catch e { ""; };
-            // colony-lint: safe-exec-concat
-            let recompile_cmd = "cd " + shell_escape(claim_dir) + " && latexmk -pdf -interaction=nonstopmode -halt-on-error main.tex 2>&1 | tail -80";
-            let recompile_log = try { exec sh recompile_cmd; } catch e { ""; };
-            // colony-lint: safe-exec-concat
-            let recheck_cmd = "test -f " + shell_escape(claim_dir + "/main.pdf") + " && printf yes || printf no";
-            let recheck = try { exec sh recheck_cmd; } catch e { "no"; };
-            let repair_ok = recheck == "yes";
+            let _recompile_r = try { compile_latex(claim_dir, 300000); } catch e { map_of("log_tail", ""); };
+            let recompile_log = to_string(get(_recompile_r, "log_tail"));
+            let repair_ok = file_exists(claim_dir + "/main.pdf");
             if !repair_ok {
                 let repair_tags = _classify_compile_log(recompile_log);
                 _push_pitfall(tick_idx, claim_id_eff, "repair", repair_tags, recompile_log);
@@ -734,9 +708,7 @@ fn _publish_editor_rule_hit(
     };
 
     let final_tex_path = claim_dir + "/main.tex";
-    // colony-lint: safe-exec-concat
-    let read_tex_cmd = "cat " + shell_escape(final_tex_path);
-    let final_tex_body = try { exec sh read_tex_cmd; } catch e { full_tex; };
+    let final_tex_body = try { file_read(final_tex_path); } catch e { full_tex; };
 
     memo_write("editor:" + self_pid + ":final_tex:tick-" + to_string(upstream_tick), final_tex_body);
     memo_write("editor:" + self_pid + ":compile_log:tick-" + to_string(upstream_tick), compile_log);
