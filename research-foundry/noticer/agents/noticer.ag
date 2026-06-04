@@ -490,13 +490,11 @@ fn _bucket_output_size(stdout: string) -> string {
 }
 
 // _count_lines -- newline-count tiebreaker for the canonical context.
+// Substrate-native: regex_find_all over "\n" markers + 1 for the
+// trailing line (matches python `str.count("\n") + 1`).
 fn _count_lines(stdout: string) -> string {
     if len(stdout) == 0 { return "0"; };
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys; sys.stdout.write(str(sys.argv[1].count(chr(10))+1))' " + shell_escape(stdout);
-    let out = try { exec sh cmd; } catch e { "0"; };
-    if len(out) == 0 { return "0"; };
-    return out;
+    return to_string(len(regex_find_all("\\n", stdout)) + 1);
 }
 
 // _parse_rule_action_bool / _parse_rule_action_desc -- decoders for
@@ -515,10 +513,9 @@ fn _parse_rule_action_bool(action: string) -> bool {
 
 fn _parse_rule_action_desc(action: string) -> string {
     if len(action) == 0 { return ""; };
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys; s=sys.argv[1]; print(s.split(\"|\",1)[1] if \"|\" in s else \"\")' " + shell_escape(action);
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out;
+    let idx = index_of(action, "|");
+    if idx < 0 { return ""; };
+    return substring(action, idx + 1, len(action));
 }
 
 // #841: _canonical_stable_desc derives a DETERMINISTIC description from
