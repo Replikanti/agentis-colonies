@@ -642,13 +642,21 @@ fn _auditor_canonical_ctx(
 // action is identical across repeat observations of the same context
 // class and the distilled KnowledgeEntry id stays stable. Total on
 // missing fields ("na"). ASCII-only, single line.
+// Substrate-native field extractor (#765). Returns the value of
+// "<key>=<value>" in `s`, or "na" if not present. Matches python
+// `re.search(r"(?:^| )"+k+r"=(\\S+)", s).group(1) if m else "na"`.
+fn _picker_field(s: string, key: string) -> string {
+    let v = regex_capture("(?:^| )" + key + "=(\\S+)", s, 1);
+    if len(v) == 0 { return "na"; };
+    return v;
+}
+
 fn _canonical_stable_desc(canonical_ctx: string) -> string {
     if len(canonical_ctx) == 0 { return "auditor-class topic=na is_prior=na lean=na proof_kind=na"; };
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,re\ns=sys.argv[1]\ndef g(k):\n m=re.search(r\"(?:^| )\"+k+r\"=(\\S+)\", s)\n return m.group(1) if m else \"na\"\nprint(\"auditor-class topic=\"+g(\"topic\")+\" is_prior=\"+g(\"is_prior\")+\" lean=\"+g(\"lean\")+\" proof_kind=\"+g(\"proof_kind\"))' " + shell_escape(canonical_ctx);
-    let out = try { exec sh cmd; } catch e { "auditor-class topic=na is_prior=na lean=na proof_kind=na"; };
-    if len(out) == 0 { return "auditor-class topic=na is_prior=na lean=na proof_kind=na"; };
-    return out;
+    return "auditor-class topic=" + _picker_field(canonical_ctx, "topic")
+         + " is_prior=" + _picker_field(canonical_ctx, "is_prior")
+         + " lean=" + _picker_field(canonical_ctx, "lean")
+         + " proof_kind=" + _picker_field(canonical_ctx, "proof_kind");
 }
 
 // _parse_rule_action_verdict -- decoder for the pipe-delimited
