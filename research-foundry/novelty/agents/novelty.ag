@@ -730,7 +730,7 @@ fn _age_tick_and_check(colony: string, self_pid: string) -> int {
 // formulator's stated ANSWER (the discrete, structural part of the
 // claim) so the canonical context is deterministic across repeat ticks
 // of the same context class. Total on every malformed input (falls
-// back to "scalar"). ASCII-only, single token.
+// back to "symbolic"). ASCII-only, single token.
 fn _classify_answer_kind(answer: string) -> string {
     if len(answer) == 0 { return "empty"; };
     let s = trim(answer);

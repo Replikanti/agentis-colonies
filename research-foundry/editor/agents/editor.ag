@@ -167,7 +167,7 @@ fn _dump_ctx_to_memo(agent_name: string, pid: string, tick_idx: int, ctx: string
 // pitfall tags. Tags cover the canonical amsart failure modes,
 // including the `nested-thanks` regression class from #620.
 // Substrate-native LaTeX log tagger (#765). The python orchestrator
-// previously slicedhe log body to the last 80 lines; the substrate version
+// previously sliced the log body to the last 80 lines; the substrate version
 // matches against the full body — semantically equivalent for federation
 // purposes (regex matches are anchorless; an early-log false positive
 // would only mean we tag the same failure mode the late log shows).
