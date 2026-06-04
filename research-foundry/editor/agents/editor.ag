@@ -617,14 +617,12 @@ fn _editor_canonical_ctx(ctx: string) -> string {
 // what the Stage-1 rule-hit path decodes back into Edit primitives via
 // json_get. Total on failure (returns an empty-Edit JSON).
 fn _edit_to_action_json(edit: Edit) -> string {
-    let halluc_str = if edit.hallucinations_found { "true"; } else { "false"; };
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,json\nobj={\"full_tex\":sys.argv[1],\"refs_bib\":sys.argv[2],\"fingerprint_csv\":sys.argv[3],\"hallucinations_found\":(sys.argv[4]==\"true\"),\"rationale\":sys.argv[5]}\nprint(json.dumps(obj,separators=(\",\",\":\")))' " + shell_escape(edit.full_tex) + " " + shell_escape(edit.refs_bib) + " " + shell_escape(edit.fingerprint_csv) + " " + shell_escape(halluc_str) + " " + shell_escape(edit.rationale);
-    let out = try { exec sh cmd; } catch e { ""; };
-    if len(out) == 0 {
-        return "{\"full_tex\":\"\",\"refs_bib\":\"\",\"fingerprint_csv\":\"\",\"hallucinations_found\":false,\"rationale\":\"\"}";
-    };
-    return out;
+    let halluc_lit = if edit.hallucinations_found { "true"; } else { "false"; };
+    return "{\"full_tex\":\"" + json_escape_string(edit.full_tex)
+         + "\",\"refs_bib\":\"" + json_escape_string(edit.refs_bib)
+         + "\",\"fingerprint_csv\":\"" + json_escape_string(edit.fingerprint_csv)
+         + "\",\"hallucinations_found\":" + halluc_lit
+         + ",\"rationale\":\"" + json_escape_string(edit.rationale) + "\"}";
 }
 
 // _publish_editor_rule_hit -- mirror of _publish_editor but takes the

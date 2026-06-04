@@ -278,16 +278,12 @@ fn _introducer_canonical_ctx(input_ctx: string, claim_id: string) -> string {
 // never on the lookup map -- #843). Faithful: every Draft field round-trips
 // byte-for-byte, so a rule-hit reconstruction is identical to the LLM draft.
 fn _encode_draft_action(draft: Draft) -> string {
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,json\nobj={\"abstract_tex\":sys.argv[1],\"intro_tex\":sys.argv[2],\"msc_codes_csv\":sys.argv[3],\"arxiv_category\":sys.argv[4],\"title\":sys.argv[5],\"rationale\":sys.argv[6]}\nsys.stdout.write(json.dumps(obj,separators=(\",\",\":\")))' "
-        + shell_escape(draft.abstract_tex) + " "
-        + shell_escape(draft.intro_tex) + " "
-        + shell_escape(draft.msc_codes_csv) + " "
-        + shell_escape(draft.arxiv_category) + " "
-        + shell_escape(draft.title) + " "
-        + shell_escape(draft.rationale);
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out;
+    return "{\"abstract_tex\":\"" + json_escape_string(draft.abstract_tex)
+         + "\",\"intro_tex\":\"" + json_escape_string(draft.intro_tex)
+         + "\",\"msc_codes_csv\":\"" + json_escape_string(draft.msc_codes_csv)
+         + "\",\"arxiv_category\":\"" + json_escape_string(draft.arxiv_category)
+         + "\",\"title\":\"" + json_escape_string(draft.title)
+         + "\",\"rationale\":\"" + json_escape_string(draft.rationale) + "\"}";
 }
 
 // _publish_introducer_rule_hit -- mirror of _publish_introducer but takes
