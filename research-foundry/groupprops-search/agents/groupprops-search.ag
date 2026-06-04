@@ -127,6 +127,33 @@ fn pick_variant(n: int) -> string {
     return "representation";
 }
 
+// Wave 6 #913: substrate http_get + url_encode_component helpers
+// replacing the python3 urllib orchestrator. _groupprops_fetch_and_join
+// iterates the queries list via tail-recursion (the DSL has no
+// for/while loop; precedent: tick_at in
+// dev-apprenticeship/triage/agents/router.ag) and caps at 5 queries
+// per call to match the python orchestrator's `for q in qs[:5]:`
+// slice. The "--- query: X ---\n" separator and the
+// "<error>...</error>" wrapping are preserved verbatim so the
+// downstream relevance-judgement prompt sees a byte-identical
+// concatenated feed. Groupprops wiki has no max_results equivalent
+// (`&limit=10` is baked into the URL), so the helper omits the
+// max_results parameter.
+fn _groupprops_fetch_and_join(queries: list<string>) -> string {
+    return _groupprops_fetch_recurse(queries, 0, "");
+}
+
+fn _groupprops_fetch_recurse(queries: list<string>, idx: int, acc: string) -> string {
+    if idx >= len(queries) { return acc; };
+    if idx >= 5 { return acc; };
+    let q = get(queries, idx);
+    let url = "https://groupprops.subwiki.org/w/api.php?action=opensearch&format=json&limit=10&search=" + url_encode_component(q);
+    let body = try { http_get(url); } catch e { "<error>" + e + "</error>"; };
+    let sep = if idx == 0 { ""; } else { "\n"; };
+    let chunk = sep + "--- query: " + q + " ---\n" + body;
+    return _groupprops_fetch_recurse(queries, idx + 1, acc + chunk);
+}
+
 fn self_node_addr() -> string {
     let addr = recall_latest("math-foundry:worker_addr");
     if len(addr) > 0 {
@@ -171,21 +198,14 @@ fn _publish_groupprops_search(
 ) -> void {
     let _ = final_write;
     let queries_json = queries.queries_json;
-    // colony-lint: safe-exec-concat
-    let fetch_cmd = "QJSON=" + shell_escape(queries_json)
-        + " python3 -c 'import os, json, urllib.parse, urllib.request, sys\n"
-        + "try:\n  qs=json.loads(os.environ[\"QJSON\"])\nexcept Exception:\n  qs=[]\n"
-        + "if not isinstance(qs, list): qs=[]\n"
-        + "out=[]\n"
-        + "for q in qs[:5]:\n"
-        + "  url=\"https://groupprops.subwiki.org/w/api.php?action=opensearch&format=json&limit=10&search=\"+urllib.parse.quote_plus(str(q))\n"
-        + "  try:\n"
-        + "    r=urllib.request.urlopen(url,timeout=30).read().decode(\"utf-8\",\"replace\")\n"
-        + "  except Exception as e:\n"
-        + "    r=\"<error>\"+str(e)+\"</error>\"\n"
-        + "  out.append(\"--- query: \"+str(q)+\" ---\\n\"+r)\n"
-        + "sys.stdout.write(\"\\n\".join(out))'";
-    let combined_raw = try { exec sh fetch_cmd; } catch e { ""; };
+    // Wave 6 #913: substrate http_get + url_encode_component replace
+    // the python3 urllib orchestrator. json_array_to_strings parses the
+    // queries list; _groupprops_fetch_and_join iterates via
+    // tail-recursion and concatenates the opensearch JSON responses
+    // with the same separator format the relevance-judgement prompt
+    // expects.
+    let queries_list = json_array_to_strings(queries_json);
+    let combined_raw = _groupprops_fetch_and_join(queries_list);
 
     let judge_ctx = "PROBLEM: " + problem_text + "\n"
                   + "ANSWER: " + stated_answer + "\n"
@@ -367,21 +387,10 @@ fn _publish_groupprops_search_rule_hit(
 ) -> void {
     let _ = final_write;
     let queries_json = queries_json_arg;
-    // colony-lint: safe-exec-concat
-    let fetch_cmd = "QJSON=" + shell_escape(queries_json)
-        + " python3 -c 'import os, json, urllib.parse, urllib.request, sys\n"
-        + "try:\n  qs=json.loads(os.environ[\"QJSON\"])\nexcept Exception:\n  qs=[]\n"
-        + "if not isinstance(qs, list): qs=[]\n"
-        + "out=[]\n"
-        + "for q in qs[:5]:\n"
-        + "  url=\"https://groupprops.subwiki.org/w/api.php?action=opensearch&format=json&limit=10&search=\"+urllib.parse.quote_plus(str(q))\n"
-        + "  try:\n"
-        + "    r=urllib.request.urlopen(url,timeout=30).read().decode(\"utf-8\",\"replace\")\n"
-        + "  except Exception as e:\n"
-        + "    r=\"<error>\"+str(e)+\"</error>\"\n"
-        + "  out.append(\"--- query: \"+str(q)+\" ---\\n\"+r)\n"
-        + "sys.stdout.write(\"\\n\".join(out))'";
-    let combined_raw = try { exec sh fetch_cmd; } catch e { ""; };
+    // Wave 6 #913: substrate http_get + url_encode_component (rule-hit
+    // path mirror of the LLM path above).
+    let queries_list = json_array_to_strings(queries_json);
+    let combined_raw = _groupprops_fetch_and_join(queries_list);
 
     let judge_ctx = "PROBLEM: " + problem_text + "\n"
                   + "ANSWER: " + stated_answer + "\n"

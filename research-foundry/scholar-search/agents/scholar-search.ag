@@ -131,6 +131,33 @@ fn pick_variant(n: int) -> string {
     return "preprint";
 }
 
+// Wave 6 #913: substrate http_get + url_encode_component helpers
+// replacing the python3 urllib orchestrator. _scholar_fetch_and_join
+// iterates the queries list via tail-recursion (the DSL has no
+// for/while loop; precedent: tick_at in
+// dev-apprenticeship/triage/agents/router.ag) and caps at 3 queries
+// per call to match the python orchestrator's `for q in qs[:3]:`
+// slice (Semantic Scholar's stricter rate limit). The
+// "--- query: X ---\n" separator and the "<unavailable>...</unavailable>"
+// wrapping are preserved verbatim so the downstream relevance-judgement
+// prompt sees a byte-identical concatenated feed. Semantic Scholar has
+// no max_results parameter on this endpoint (`&limit=10` baked into the
+// URL), so the helper omits the max_results parameter.
+fn _scholar_fetch_and_join(queries: list<string>) -> string {
+    return _scholar_fetch_recurse(queries, 0, "");
+}
+
+fn _scholar_fetch_recurse(queries: list<string>, idx: int, acc: string) -> string {
+    if idx >= len(queries) { return acc; };
+    if idx >= 3 { return acc; };
+    let q = get(queries, idx);
+    let url = "https://api.semanticscholar.org/graph/v1/paper/search?limit=10&fields=title,abstract,year,authors&query=" + url_encode_component(q);
+    let body = try { http_get(url); } catch e { "<unavailable>" + e + "</unavailable>"; };
+    let sep = if idx == 0 { ""; } else { "\n"; };
+    let chunk = sep + "--- query: " + q + " ---\n" + body;
+    return _scholar_fetch_recurse(queries, idx + 1, acc + chunk);
+}
+
 fn self_node_addr() -> string {
     let addr = recall_latest("math-foundry:worker_addr");
     if len(addr) > 0 {
@@ -175,21 +202,13 @@ fn _publish_scholar_search(
 ) -> void {
     let _ = final_write;
     let queries_json = queries.queries_json;
-    // colony-lint: safe-exec-concat
-    let fetch_cmd = "QJSON=" + shell_escape(queries_json)
-        + " python3 -c 'import os, json, urllib.parse, urllib.request, sys\n"
-        + "try:\n  qs=json.loads(os.environ[\"QJSON\"])\nexcept Exception:\n  qs=[]\n"
-        + "if not isinstance(qs, list): qs=[]\n"
-        + "out=[]\n"
-        + "for q in qs[:3]:\n"
-        + "  url=\"https://api.semanticscholar.org/graph/v1/paper/search?limit=10&fields=title,abstract,year,authors&query=\"+urllib.parse.quote_plus(str(q))\n"
-        + "  try:\n"
-        + "    r=urllib.request.urlopen(url,timeout=30).read().decode(\"utf-8\",\"replace\")\n"
-        + "  except Exception as e:\n"
-        + "    r=\"<unavailable>\"+str(e)+\"</unavailable>\"\n"
-        + "  out.append(\"--- query: \"+str(q)+\" ---\\n\"+r)\n"
-        + "sys.stdout.write(\"\\n\".join(out))'";
-    let combined_raw = try { exec sh fetch_cmd; } catch e { ""; };
+    // Wave 6 #913: substrate http_get + url_encode_component replace
+    // the python3 urllib orchestrator. json_array_to_strings parses the
+    // queries list; _scholar_fetch_and_join iterates via tail-recursion
+    // and concatenates the Semantic Scholar JSON responses with the
+    // same separator format the relevance-judgement prompt expects.
+    let queries_list = json_array_to_strings(queries_json);
+    let combined_raw = _scholar_fetch_and_join(queries_list);
 
     let judge_ctx = "PROBLEM: " + problem_text + "\n"
                   + "ANSWER: " + stated_answer + "\n"
@@ -297,21 +316,10 @@ fn _publish_scholar_search_rule_hit(
     my_tier: string
 ) -> void {
     let _ = final_write;
-    // colony-lint: safe-exec-concat
-    let fetch_cmd = "QJSON=" + shell_escape(queries_json)
-        + " python3 -c 'import os, json, urllib.parse, urllib.request, sys\n"
-        + "try:\n  qs=json.loads(os.environ[\"QJSON\"])\nexcept Exception:\n  qs=[]\n"
-        + "if not isinstance(qs, list): qs=[]\n"
-        + "out=[]\n"
-        + "for q in qs[:3]:\n"
-        + "  url=\"https://api.semanticscholar.org/graph/v1/paper/search?limit=10&fields=title,abstract,year,authors&query=\"+urllib.parse.quote_plus(str(q))\n"
-        + "  try:\n"
-        + "    r=urllib.request.urlopen(url,timeout=30).read().decode(\"utf-8\",\"replace\")\n"
-        + "  except Exception as e:\n"
-        + "    r=\"<unavailable>\"+str(e)+\"</unavailable>\"\n"
-        + "  out.append(\"--- query: \"+str(q)+\" ---\\n\"+r)\n"
-        + "sys.stdout.write(\"\\n\".join(out))'";
-    let combined_raw = try { exec sh fetch_cmd; } catch e { ""; };
+    // Wave 6 #913: substrate http_get + url_encode_component (rule-hit
+    // path mirror of the LLM path above).
+    let queries_list = json_array_to_strings(queries_json);
+    let combined_raw = _scholar_fetch_and_join(queries_list);
 
     let judge_ctx = "PROBLEM: " + problem_text + "\n"
                   + "ANSWER: " + stated_answer + "\n"

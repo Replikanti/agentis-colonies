@@ -125,6 +125,31 @@ fn _publish_prompt_body_and_wrap_variant(self_pid: string, variant_tag: string) 
     return "pp:" + h + "|" + variant_tag;
 }
 
+// Wave 6 #913: substrate http_get + url_encode_component helpers
+// replacing the python3 urllib orchestrator. _arxiv_fetch_and_join
+// iterates the queries list via tail-recursion (the DSL has no
+// for/while loop; precedent: tick_at in
+// dev-apprenticeship/triage/agents/router.ag) and caps at 5 queries
+// per call to match the python orchestrator's `for q in qs[:5]:`
+// slice. The "--- query: X ---\n" separator and the
+// "<error>...</error>" wrapping are preserved verbatim so the
+// downstream relevance-judgement prompt sees a byte-identical
+// concatenated feed.
+fn _arxiv_fetch_and_join(queries: list<string>, max_results: int) -> string {
+    return _arxiv_fetch_recurse(queries, max_results, 0, "");
+}
+
+fn _arxiv_fetch_recurse(queries: list<string>, max_results: int, idx: int, acc: string) -> string {
+    if idx >= len(queries) { return acc; };
+    if idx >= 5 { return acc; };
+    let q = get(queries, idx);
+    let url = "http://export.arxiv.org/api/query?search_query=all:" + url_encode_component(q) + "&start=0&max_results=" + to_string(max_results);
+    let body = try { http_get(url); } catch e { "<error>" + e + "</error>"; };
+    let sep = if idx == 0 { ""; } else { "\n"; };
+    let chunk = sep + "--- query: " + q + " ---\n" + body;
+    return _arxiv_fetch_recurse(queries, max_results, idx + 1, acc + chunk);
+}
+
 // Phase 9 PR-C (#663): per-colony variant picker from the
 // colony-variants.json `arxiv-search` row.
 fn pick_variant(n: int) -> string {
@@ -190,22 +215,13 @@ fn _publish_arxiv_search(
     let queries_json = queries.queries_json;
     let max_results_raw = getenv("ARXIV_MAX_QUERY_RESULTS");
     let max_results = if len(max_results_raw) > 0 { parse_int(max_results_raw); } else { 10; };
-    // colony-lint: safe-exec-concat
-    let fetch_cmd = "QJSON=" + shell_escape(queries_json) + " MAXR=" + to_string(max_results)
-        + " python3 -c 'import os, json, urllib.parse, urllib.request, sys\n"
-        + "try:\n  qs=json.loads(os.environ[\"QJSON\"])\nexcept Exception:\n  qs=[]\n"
-        + "if not isinstance(qs, list): qs=[]\n"
-        + "mx=int(os.environ.get(\"MAXR\",\"10\"))\n"
-        + "out=[]\n"
-        + "for q in qs[:5]:\n"
-        + "  url=\"http://export.arxiv.org/api/query?search_query=all:\"+urllib.parse.quote_plus(str(q))+\"&start=0&max_results=\"+str(mx)\n"
-        + "  try:\n"
-        + "    r=urllib.request.urlopen(url,timeout=30).read().decode(\"utf-8\",\"replace\")\n"
-        + "  except Exception as e:\n"
-        + "    r=\"<error>\"+str(e)+\"</error>\"\n"
-        + "  out.append(\"--- query: \"+str(q)+\" ---\\n\"+r)\n"
-        + "sys.stdout.write(\"\\n\".join(out))'";
-    let combined_raw = try { exec sh fetch_cmd; } catch e { ""; };
+    // Wave 6 #913: substrate http_get + url_encode_component replace
+    // the python3 urllib orchestrator. json_array_to_strings parses the
+    // queries list; _arxiv_fetch_and_join iterates via tail-recursion
+    // and concatenates the atom-XML responses with the same separator
+    // format the relevance-judgement prompt expects.
+    let queries_list = json_array_to_strings(queries_json);
+    let combined_raw = _arxiv_fetch_and_join(queries_list, max_results);
 
     let judge_ctx = "PROBLEM: " + problem_text + "\n"
                   + "ANSWER: " + stated_answer + "\n"
@@ -389,22 +405,10 @@ fn _publish_arxiv_search_rule_hit(
     let _ = final_write;
     let max_results_raw = getenv("ARXIV_MAX_QUERY_RESULTS");
     let max_results = if len(max_results_raw) > 0 { parse_int(max_results_raw); } else { 10; };
-    // colony-lint: safe-exec-concat
-    let fetch_cmd = "QJSON=" + shell_escape(queries_json) + " MAXR=" + to_string(max_results)
-        + " python3 -c 'import os, json, urllib.parse, urllib.request, sys\n"
-        + "try:\n  qs=json.loads(os.environ[\"QJSON\"])\nexcept Exception:\n  qs=[]\n"
-        + "if not isinstance(qs, list): qs=[]\n"
-        + "mx=int(os.environ.get(\"MAXR\",\"10\"))\n"
-        + "out=[]\n"
-        + "for q in qs[:5]:\n"
-        + "  url=\"http://export.arxiv.org/api/query?search_query=all:\"+urllib.parse.quote_plus(str(q))+\"&start=0&max_results=\"+str(mx)\n"
-        + "  try:\n"
-        + "    r=urllib.request.urlopen(url,timeout=30).read().decode(\"utf-8\",\"replace\")\n"
-        + "  except Exception as e:\n"
-        + "    r=\"<error>\"+str(e)+\"</error>\"\n"
-        + "  out.append(\"--- query: \"+str(q)+\" ---\\n\"+r)\n"
-        + "sys.stdout.write(\"\\n\".join(out))'";
-    let combined_raw = try { exec sh fetch_cmd; } catch e { ""; };
+    // Wave 6 #913: substrate http_get + url_encode_component (rule-hit path
+    // mirror of the LLM path above).
+    let queries_list = json_array_to_strings(queries_json);
+    let combined_raw = _arxiv_fetch_and_join(queries_list, max_results);
 
     let judge_ctx = "PROBLEM: " + problem_text + "\n"
                   + "ANSWER: " + stated_answer + "\n"
