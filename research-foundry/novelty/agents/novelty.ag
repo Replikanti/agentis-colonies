@@ -532,10 +532,13 @@ fn _loss_shaping_enabled() -> bool {
 // probability > algebra`) so saturation downgrades remain stable.
 fn _classify_bucket(condition: string) -> string {
     if len(condition) == 0 { return ""; };
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys\ntxt=sys.argv[1].lower()\nbuckets=[(\"group_theory\",[\"group_theory\",\"sylow\",\"cayley\",\"monoid\",\"semigroup\",\"permutation\",\"symmetric_group\",\"sym_n\",\"schur\",\"lattice\",\"coset\",\"conjugacy\",\"abelian\",\"nilpotent\",\"solvable\",\"simple group\",\"presentation\",\"free group\"]),(\"combinatorics\",[\"combinatorics\",\"hamiltonicity\",\"hamilton cycle\",\"latin square\",\"hypergraph\",\"catalan\",\"partition\",\"generating function\",\"matroid\",\"turan\",\"ramsey\",\"enumeration\",\"bijection\",\"set system\",\"design theory\"]),(\"number_theory\",[\"number_theory\",\"hecke\",\"l-function\",\"zeta\",\"modular form\",\"diophantine\",\"frobenius\",\"p-adic\",\"elliptic curve\",\"galois\",\"class field\",\"automorphic\",\"prime\",\"sieve\",\"riemann\"]),(\"probability\",[\"probability\",\"martingale\",\"random walk\",\"mixing time\",\"stationary distribution\",\"markov chain\",\"percolation\",\"branching process\",\"brownian\",\"stochastic\",\"renyi\",\"entropy\"]),(\"algebra\",[\"algebra\",\"cohomology\",\"sheaf\",\"ring spectrum\",\"module\",\"derived category\",\"witt\",\"lie algebra\",\"hopf\",\"tensor\",\"homotopy\",\"scheme\",\"variety\",\"ideal\",\"polynomial ring\"])]\nfor name,kws in buckets:\n for kw in kws:\n  if kw in txt:\n   print(name); sys.exit(0)\nprint(\"\")' " + shell_escape(condition);
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out;
+    let txt = to_lower(condition);
+    if regex_match("group_theory|sylow|cayley|monoid|semigroup|permutation|symmetric_group|sym_n|schur|lattice|coset|conjugacy|abelian|nilpotent|solvable|simple group|presentation|free group", txt) { return "group_theory"; };
+    if regex_match("combinatorics|hamiltonicity|hamilton cycle|latin square|hypergraph|catalan|partition|generating function|matroid|turan|ramsey|enumeration|bijection|set system|design theory", txt) { return "combinatorics"; };
+    if regex_match("number_theory|hecke|l-function|zeta|modular form|diophantine|frobenius|p-adic|elliptic curve|galois|class field|automorphic|prime|sieve|riemann", txt) { return "number_theory"; };
+    if regex_match("probability|martingale|random walk|mixing time|stationary distribution|markov chain|percolation|branching process|brownian|stochastic|renyi|entropy", txt) { return "probability"; };
+    if regex_match("algebra|cohomology|sheaf|ring spectrum|module|derived category|witt|lie algebra|hopf|tensor|homotopy|scheme|variety|ideal|polynomial ring", txt) { return "algebra"; };
+    return "";
 }
 
 // _classify_buckets_all -- like `_classify_bucket` but returns a CSV of
@@ -546,10 +549,18 @@ fn _classify_bucket(condition: string) -> string {
 // single-bucket dispatch. Returns "" on empty input or zero matches.
 fn _classify_buckets_all(condition: string) -> string {
     if len(condition) == 0 { return ""; };
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys\ntxt=sys.argv[1].lower()\nbuckets=[(\"group_theory\",[\"group_theory\",\"sylow\",\"cayley\",\"monoid\",\"semigroup\",\"permutation\",\"symmetric_group\",\"sym_n\",\"schur\",\"lattice\",\"coset\",\"conjugacy\",\"abelian\",\"nilpotent\",\"solvable\",\"simple group\",\"presentation\",\"free group\"]),(\"combinatorics\",[\"combinatorics\",\"hamiltonicity\",\"hamilton cycle\",\"latin square\",\"hypergraph\",\"catalan\",\"partition\",\"generating function\",\"matroid\",\"turan\",\"ramsey\",\"enumeration\",\"bijection\",\"set system\",\"design theory\"]),(\"number_theory\",[\"number_theory\",\"hecke\",\"l-function\",\"zeta\",\"modular form\",\"diophantine\",\"frobenius\",\"p-adic\",\"elliptic curve\",\"galois\",\"class field\",\"automorphic\",\"prime\",\"sieve\",\"riemann\"]),(\"probability\",[\"probability\",\"martingale\",\"random walk\",\"mixing time\",\"stationary distribution\",\"markov chain\",\"percolation\",\"branching process\",\"brownian\",\"stochastic\",\"renyi\",\"entropy\"]),(\"algebra\",[\"algebra\",\"cohomology\",\"sheaf\",\"ring spectrum\",\"module\",\"derived category\",\"witt\",\"lie algebra\",\"hopf\",\"tensor\",\"homotopy\",\"scheme\",\"variety\",\"ideal\",\"polynomial ring\"])]\nhits=[]\nfor name,kws in buckets:\n for kw in kws:\n  if kw in txt:\n   hits.append(name); break\nprint(\",\".join(hits))' " + shell_escape(condition);
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out;
+    let txt = to_lower(condition);
+    let h1 = if regex_match("group_theory|sylow|cayley|monoid|semigroup|permutation|symmetric_group|sym_n|schur|lattice|coset|conjugacy|abelian|nilpotent|solvable|simple group|presentation|free group", txt) { "group_theory"; } else { ""; };
+    let h2 = if regex_match("combinatorics|hamiltonicity|hamilton cycle|latin square|hypergraph|catalan|partition|generating function|matroid|turan|ramsey|enumeration|bijection|set system|design theory", txt) { "combinatorics"; } else { ""; };
+    let h3 = if regex_match("number_theory|hecke|l-function|zeta|modular form|diophantine|frobenius|p-adic|elliptic curve|galois|class field|automorphic|prime|sieve|riemann", txt) { "number_theory"; } else { ""; };
+    let h4 = if regex_match("probability|martingale|random walk|mixing time|stationary distribution|markov chain|percolation|branching process|brownian|stochastic|renyi|entropy", txt) { "probability"; } else { ""; };
+    let h5 = if regex_match("algebra|cohomology|sheaf|ring spectrum|module|derived category|witt|lie algebra|hopf|tensor|homotopy|scheme|variety|ideal|polynomial ring", txt) { "algebra"; } else { ""; };
+    let c1 = h1;
+    let c2 = if len(c1) == 0 { h2; } else { if len(h2) == 0 { c1; } else { c1 + "," + h2; }; };
+    let c3 = if len(c2) == 0 { h3; } else { if len(h3) == 0 { c2; } else { c2 + "," + h3; }; };
+    let c4 = if len(c3) == 0 { h4; } else { if len(h4) == 0 { c3; } else { c3 + "," + h4; }; };
+    let c5 = if len(c4) == 0 { h5; } else { if len(h5) == 0 { c4; } else { c4 + "," + h5; }; };
+    return c5;
 }
 
 // _novelty_score -- bag-of-words Jaccard distance from the incoming claim
@@ -721,9 +732,8 @@ fn _topic_history_check(bucket: string) -> bool {
 fn _push_topic_history(bucket: string) -> int {
     if len(bucket) == 0 { return 0; };
     let raw = recall_latest("novelty:topic_history");
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,json\nraw=sys.argv[1]\nbk=sys.argv[2]\ntry: arr=json.loads(raw) if raw else []\nexcept Exception: arr=[]\nif not isinstance(arr,list): arr=[]\narr.append(bk)\nif len(arr)>50: arr=arr[-50:]\nprint(json.dumps(arr,separators=(\",\",\":\")))' " + shell_escape(raw) + " " + shell_escape(bucket);
-    let new_buf = try { exec sh cmd; } catch e { "[]"; };
+    let entry = "\"" + json_escape_string(bucket) + "\"";
+    let new_buf = json_array_append_truncate(raw, entry, 50);
     memo_write("novelty:topic_history", new_buf);
     return len(new_buf);
 }
