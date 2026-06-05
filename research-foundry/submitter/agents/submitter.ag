@@ -995,10 +995,10 @@ fn _submitter_canonical_ctx(
 // output into the rule action slot. Unlike the verdict colonies (which
 // pipe-encode only a discrete field), the submitter is generative, so the
 // rule action carries ALL eight Metadata fields as a JSON object the
-// Stage-1 path can losslessly reconstruct. Routed through python3
-// json.dumps so quotes / newlines / control characters in the LLM-emitted
-// title / abstract / cover letter cannot corrupt the action string. Total
-// on a serialize failure (returns "{}").
+// Stage-1 path can losslessly reconstruct. Built inline via
+// json_escape_string + concat so quotes / newlines / control characters
+// in the LLM-emitted title / abstract / cover letter cannot corrupt the
+// action string. Total on every input (json_escape_string is total).
 fn _encode_metadata_action(
     title: string,
     abstract_clean: string,
