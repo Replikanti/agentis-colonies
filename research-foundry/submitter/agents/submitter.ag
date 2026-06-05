@@ -383,7 +383,7 @@ fn _submitter_stage_and_publish(
     let author_cfg_path = getenv("PREPRINT_AUTHOR_CONFIG");
     let author_cfg_eff = if len(author_cfg_path) > 0 { author_cfg_path; } else { "/run-root/config/authors.toml"; };
     let authors_result = compute_python_args("/run-root/tools/parse-authors.py", [author_cfg_eff], 30000);
-    let authors_line = to_string(get(authors_result, "output"));
+    let authors_line = trim(to_string(get(authors_result, "output")));
 
     // Build arxiv-metadata.json into the claim dir.
     let cover_full = m_cover_letter + "\n\n--- AI assistance disclosure ---\n" + m_ai_disclosure + "\n";
@@ -871,7 +871,7 @@ fn _submitter_send_phase(
         [claim_id_eff, from_eff, gateway_eff,
          claim_dir + "/arxiv-metadata.json",
          claim_dir + "/submission.tar.gz"], 60000);
-    let send_out = to_string(get(send_result, "output"));
+    let send_out = trim(to_string(get(send_result, "output")));
 
     let ledger_path2 = getenv("DISCOVERY_LEDGER");
     if len(ledger_path2) > 0 {
