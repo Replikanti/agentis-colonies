@@ -467,12 +467,8 @@ fn _oeis_canonical_ctx(topic_label: string, input_blob: string) -> string {
 // is a plain JSON STRING (decoded on the rule-hit path with json_get, NOT
 // get -- get is only for the lookup Map). Total on exec failure ("").
 fn _encode_sequences_action(sequences: Sequences) -> string {
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,json\no={\"sequences_json\":sys.argv[1],\"rationale\":sys.argv[2]}\nsys.stdout.write(json.dumps(o,separators=(\",\",\":\")))' "
-            + shell_escape(sequences.sequences_json) + " "
-            + shell_escape(sequences.rationale);
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out;
+    return "{\"sequences_json\":\"" + json_escape_string(sequences.sequences_json)
+         + "\",\"rationale\":\"" + json_escape_string(sequences.rationale) + "\"}";
 }
 
 fn tick(reason: string) -> void {

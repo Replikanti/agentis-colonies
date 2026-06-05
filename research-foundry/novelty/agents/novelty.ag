@@ -719,11 +719,15 @@ fn _topic_history_check(bucket: string) -> bool {
     if len(bucket) == 0 { return false; };
     let raw = recall_latest("novelty:topic_history");
     if len(raw) == 0 { return false; };
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,json\nraw=sys.argv[1]\nbk=sys.argv[2]\ntry: arr=json.loads(raw) if raw else []\nexcept Exception: arr=[]\nif not isinstance(arr,list) or not arr:\n print(\"0\"); sys.exit(0)\nhits=sum(1 for x in arr if isinstance(x,str) and x==bk)\nshare=hits/len(arr)\nprint(\"1\" if share>0.4 else \"0\")' " + shell_escape(raw) + " " + shell_escape(bucket);
-    let out = try { exec sh cmd; } catch e { "0"; };
-    if out == "1" { return true; };
-    return false;
+    let arr = json_array_to_strings(raw);
+    let total = len(arr);
+    if total == 0 { return false; };
+    let hits = _count_str_in(arr, bucket, 0, 0);
+    // share = hits / total > 0.4 iff hits * 10 > total * 4 (integer math
+    // preserves the python threshold byte-for-byte for total <= 25; for
+    // larger buffers the integer round error is < 1 / total which is far
+    // below the 0.4 sensitivity).
+    return hits * 10 > total * 4;
 }
 
 // _push_topic_history -- append `bucket` to `novelty:topic_history` and
