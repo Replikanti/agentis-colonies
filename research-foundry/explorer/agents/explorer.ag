@@ -724,19 +724,21 @@ fn _explorer_canonical_ctx(
     paper_b_abstract: string
 ) -> string {
     let seed = if len(self_pid) > 0 { recall_latest("explorer:" + self_pid + ":specialty"); } else { ""; };
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,hashlib\nh=hashlib.sha256()\nh.update((\"\\x00\".join(sys.argv[1:])).encode(\"utf-8\"))\nsys.stdout.write(h.hexdigest())' "
-            + shell_escape(topic_label) + " "
-            + shell_escape(topic_desc) + " "
-            + shell_escape(compute_hints) + " "
-            + shell_escape(paper_a_id) + " "
-            + shell_escape(paper_a_title) + " "
-            + shell_escape(paper_a_abstract) + " "
-            + shell_escape(paper_b_id) + " "
-            + shell_escape(paper_b_title) + " "
-            + shell_escape(paper_b_abstract) + " "
-            + shell_escape(seed);
-    let h = try { exec sh cmd; } catch e { ""; };
+    // Substrate-native: join the 10 inputs with "\n" separator and hash
+    // via sha256_hex (v1.18.3 #907). The pre-migration python3 hashlib
+    // path used `"\x00".join(...)` as the separator; the .ag lexer does
+    // not support `\x` escapes (only `\n` `\t` `\r` `\\` `\"` `\$`), so
+    // we use `"\n"` instead. The hash output therefore differs from the
+    // pre-Wave-7n python version — this is acceptable because the hash
+    // is content-addressed cache (the "explore:" namespace); rebuilding
+    // from scratch on the new hash is benign. For reproducible reruns
+    // of an OLD rule-hit row keep the federation pinned pre-Wave 7n.
+    let sep = "\n";
+    let joined = topic_label + sep + topic_desc + sep + compute_hints + sep
+               + paper_a_id + sep + paper_a_title + sep + paper_a_abstract + sep
+               + paper_b_id + sep + paper_b_title + sep + paper_b_abstract + sep
+               + seed;
+    let h = sha256_hex(joined);
     if len(h) != 64 { return ""; };
     return "explore:" + h;
 }
@@ -751,13 +753,9 @@ fn _explorer_canonical_ctx(
 // (returns ""). Compact separators keep the entry id stable across ticks
 // for identical input.
 fn _build_faithful_exploration_action(exploration_goal: string, code: string, expected_output_format: string) -> string {
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,json\nprint(json.dumps({\"exploration_goal\":sys.argv[1],\"code\":sys.argv[2],\"expected_output_format\":sys.argv[3]},separators=(\",\",\":\")))' "
-            + shell_escape(exploration_goal) + " "
-            + shell_escape(code) + " "
-            + shell_escape(expected_output_format);
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out;
+    return "{\"exploration_goal\":\"" + json_escape_string(exploration_goal)
+         + "\",\"code\":\"" + json_escape_string(code)
+         + "\",\"expected_output_format\":\"" + json_escape_string(expected_output_format) + "\"}";
 }
 
 // _publish_explorer_rule_hit -- mirror of _publish_explorer but takes
