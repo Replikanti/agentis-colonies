@@ -388,26 +388,21 @@ fn _submitter_stage_and_publish(
 
     // Build arxiv-metadata.json into the claim dir.
     let cover_full = m_cover_letter + "\n\n--- AI assistance disclosure ---\n" + m_ai_disclosure + "\n";
-    // colony-lint: safe-exec-concat
-    let meta_cmd = "python3 -c 'import sys,json\nm={\"title\":sys.argv[1],\"abstract\":sys.argv[2],\"authors\":sys.argv[3],\"primary_category\":sys.argv[4],\"cross_list\":[s for s in sys.argv[5].split(\",\") if s],\"msc_codes\":[s for s in sys.argv[6].split(\",\") if s],\"cover_letter\":sys.argv[7]}\nwith open(sys.argv[8],\"w\") as f: json.dump(m,f,indent=2)\nprint(\"ok\")' "
-        + shell_escape(m_title) + " "
-        + shell_escape(m_abstract_clean) + " "
-        + shell_escape(authors_line) + " "
-        + shell_escape(m_arxiv_category) + " "
-        + shell_escape(m_cross_list_csv) + " "
-        + shell_escape(m_msc_codes_csv) + " "
-        + shell_escape(cover_full) + " "
-        + shell_escape(claim_dir + "/arxiv-metadata.json");
-    let _meta_write = try { exec sh meta_cmd; } catch e { ""; };
+    let cross_list_json = _csv_to_json_array(m_cross_list_csv);
+    let msc_codes_json = _csv_to_json_array(m_msc_codes_csv);
+    let meta_json = "{\n  \"title\": \"" + json_escape_string(m_title) + "\",\n"
+                  + "  \"abstract\": \"" + json_escape_string(m_abstract_clean) + "\",\n"
+                  + "  \"authors\": \"" + json_escape_string(authors_line) + "\",\n"
+                  + "  \"primary_category\": \"" + json_escape_string(m_arxiv_category) + "\",\n"
+                  + "  \"cross_list\": " + cross_list_json + ",\n"
+                  + "  \"msc_codes\": " + msc_codes_json + ",\n"
+                  + "  \"cover_letter\": \"" + json_escape_string(cover_full) + "\"\n}";
+    let _meta_write = try { file_write(claim_dir + "/arxiv-metadata.json", meta_json); "ok"; } catch e { ""; };
 
     // Stage reproducibility artefacts into the claim dir.
     let ext = if repro_lang == "gap" { ".g"; } else { ".py"; };
-    // colony-lint: safe-exec-concat
-    let stage_script = "printf '%s' " + shell_escape(repro_script) + " > " + shell_escape(claim_dir + "/reproducibility" + ext);
-    let _ss = try { exec sh stage_script; } catch e { ""; };
-    // colony-lint: safe-exec-concat
-    let stage_output = "printf '%s' " + shell_escape(repro_output) + " > " + shell_escape(claim_dir + "/reproducibility-output.txt");
-    let _so = try { exec sh stage_output; } catch e { ""; };
+    let _ss = try { file_write(claim_dir + "/reproducibility" + ext, repro_script); "ok"; } catch e { ""; };
+    let _so = try { file_write(claim_dir + "/reproducibility-output.txt", repro_output); "ok"; } catch e { ""; };
 
     // Package submission tarball.
     // colony-lint: safe-exec-concat
@@ -722,6 +717,32 @@ fn _submitter_draft_phase_rule_hit(
 // for now. Tags:
 //   math_wrong, writing_bad, topic_boring, scope_off, style_violation,
 //   other.
+
+// Tail-recursive helper: build a JSON array literal of strings from a
+// CSV string. Empty parts are filtered out (matches the python
+// `[s for s in csv.split(",") if s]` shape). Hard cap at 256 parts.
+fn _join_json_quoted_recurse(parts: list<string>, idx: int, acc: string) -> string {
+    if idx >= len(parts) { return "[" + acc + "]"; };
+    if idx >= 256 { return "[" + acc + "]"; };
+    let p = trim(get(parts, idx));
+    let next = if len(p) == 0 {
+        acc;
+    } else {
+        if len(acc) == 0 {
+            "\"" + json_escape_string(p) + "\"";
+        } else {
+            acc + ",\"" + json_escape_string(p) + "\"";
+        };
+    };
+    return _join_json_quoted_recurse(parts, idx + 1, next);
+}
+
+fn _csv_to_json_array(csv: string) -> string {
+    if len(csv) == 0 { return "[]"; };
+    let parts = regex_split(",", csv);
+    return _join_json_quoted_recurse(parts, 0, "");
+}
+
 fn _classify_hitl_reason(reason_raw: string) -> string {
     if len(reason_raw) == 0 { return "other"; };
     let backend = getenv("HITL_CLASSIFIER_BACKEND");
