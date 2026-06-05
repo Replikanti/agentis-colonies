@@ -222,14 +222,62 @@ fn _push_pitfall(
     memo_write(buf_key, new_buf);
 }
 
+// Tail-recursive helper: take the last `k` items of a list of strings
+// (mirrors the Wave 7j helper added to auditor/formulator; duplicated
+// per .ag's no-import model).
+fn _take_last_str_e(items: list<string>, k: int, idx: int, acc: list<string>) -> list<string> {
+    if idx >= len(items) { return acc; };
+    if idx >= 256 { return acc; };
+    let start = if k <= 0 { 0; } else { if len(items) <= k { 0; } else { len(items) - k; }; };
+    let next = if idx >= start { push(acc, get(items, idx)); } else { acc; };
+    return _take_last_str_e(items, k, idx + 1, next);
+}
+
+fn _append_nonempty(items: list<string>, idx: int, acc: list<string>) -> list<string> {
+    if idx >= len(items) { return acc; };
+    if idx >= 256 { return acc; };
+    let item = get(items, idx);
+    let next = if len(item) == 0 { acc; } else { push(acc, item); };
+    return _append_nonempty(items, idx + 1, next);
+}
+
+// Tail-recursive helper: flatten a list of whitespace-separated strings
+// into a flat list of tokens (mirrors python `tags.split()` per entry +
+// chain), dropping empties.
+fn _flatten_ws_tokens(per_entry: list<string>, idx: int, acc: list<string>) -> list<string> {
+    if idx >= len(per_entry) { return acc; };
+    if idx >= 256 { return acc; };
+    let tokens = regex_split("\\s+", get(per_entry, idx));
+    return _flatten_ws_tokens(per_entry, idx + 1, _append_nonempty(tokens, 0, acc));
+}
+
+// Tail-recursive helper: join list with separator, skipping empty parts.
+fn _join_sep(parts: list<string>, sep: string, idx: int, acc: string) -> string {
+    if idx >= len(parts) { return acc; };
+    if idx >= 256 { return acc; };
+    let p = get(parts, idx);
+    let next = if len(p) == 0 {
+        acc;
+    } else {
+        if len(acc) == 0 { p; } else { acc + sep + p; };
+    };
+    return _join_sep(parts, sep, idx + 1, next);
+}
+
 // _summarise_pitfall_buf -- collapse the last K entries to a
 // newline-separated `tag:count` frequency table.
 fn _summarise_pitfall_buf(buf_raw: string, k: int) -> string {
     if len(buf_raw) == 0 { return ""; };
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,json\ntry: a=json.loads(sys.argv[1])\nexcept Exception: a=[]\nif not isinstance(a,list): a=[]\nk=int(sys.argv[2])\nif k>0 and len(a)>k: a=a[-k:]\nfreq={}\nfor r in a:\n if not isinstance(r,dict): continue\n tags=str(r.get(\"tags\",\"\")).split()\n for t in tags:\n  if not t: continue\n  freq[t]=freq.get(t,0)+1\nitems=sorted(freq.items(), key=lambda kv:(-kv[1],kv[0]))\nprint(\"\\n\".join(\"%s:%d\" % (k,v) for k,v in items))' " + shell_escape(buf_raw) + " " + shell_escape(to_string(k));
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out;
+    let tags_per_entry = json_array_object_field_values(buf_raw, "tags");
+    let tags_capped = _take_last_str_e(tags_per_entry, k, 0, []);
+    let all_tokens = _flatten_ws_tokens(tags_capped, 0, []);
+    if len(all_tokens) == 0 { return ""; };
+    let csv = string_list_freq_csv(all_tokens, 0);
+    // string_list_freq_csv uses ", " separator; convert to "\n" via
+    // regex_split + _join_sep so the downstream LLM ctx-injector sees
+    // the same newline-table the python orchestrator produced.
+    let parts = regex_split(", ", csv);
+    return _join_sep(parts, "\n", 0, "");
 }
 
 // _publish_editor -- write main.tex/refs.bib + latexmk + (optional repair) +
