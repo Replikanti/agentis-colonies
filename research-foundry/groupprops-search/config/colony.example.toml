@@ -26,5 +26,5 @@ max_queries = 5
 [[agents]]
 name = "groupprops-search"
 source = "agents/groupprops-search.ag"
-cb_budget = 2000
+cb_budget = 200000000
 tick_interval_ms = 120000

@@ -16,7 +16,7 @@
 // Run as daemon: agentis daemon agents/theorist.ag --colony theorist
 // Requires: exec capability, messaging capability.
 
-cb 2000;
+cb 200000000;
 
 type Draft {
     definitions_tex: string,

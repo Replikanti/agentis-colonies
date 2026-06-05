@@ -20,7 +20,7 @@
 // Run as daemon: agentis daemon agents/introducer.ag --colony introducer
 // Requires: exec capability, messaging capability.
 
-cb 2000;
+cb 200000000;
 
 type Draft {
     abstract_tex: string,

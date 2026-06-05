@@ -27,5 +27,5 @@ hedge_on_computational = true
 [[agents]]
 name = "theorist"
 source = "agents/theorist.ag"
-cb_budget = 2000
+cb_budget = 200000000
 tick_interval_ms = 180000

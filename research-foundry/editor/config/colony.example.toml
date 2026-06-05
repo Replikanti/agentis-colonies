@@ -29,5 +29,5 @@ latexmk_max_passes = 3
 [[agents]]
 name = "editor"
 source = "agents/editor.ag"
-cb_budget = 2000
+cb_budget = 200000000
 tick_interval_ms = 240000

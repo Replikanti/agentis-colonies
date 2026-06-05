@@ -34,7 +34,7 @@
 // Run as daemon: agentis daemon agents/prior_advocate.ag --colony prior_advocate
 // Requires: exec capability, messaging capability.
 
-cb 2000;
+cb 200000000;
 
 type Verdict {
     is_prior: bool,
