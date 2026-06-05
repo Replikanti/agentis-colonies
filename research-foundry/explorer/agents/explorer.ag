@@ -797,7 +797,11 @@ fn _publish_explorer_rule_hit(
     let t1_ms = now_ms();
     let output = to_string(get(compute_result, "output"));
     let exit_code_str = to_string(get(compute_result, "exit_code"));
-    let wall_clock_str = to_string((t1_ms - t0_ms) / 1000);
+    let wall_clock_ms = t1_ms - t0_ms;
+    let wall_clock_int = wall_clock_ms / 1000;
+    let wall_clock_frac = mod(wall_clock_ms, 1000) / 10;
+    let wall_clock_frac_pad = if wall_clock_frac < 10 { "0" + to_string(wall_clock_frac); } else { to_string(wall_clock_frac); };
+    let wall_clock_str = to_string(wall_clock_int) + "." + wall_clock_frac_pad;
     let compute_dir = sandbox_dir + "/compute";
     let compute_path = compute_dir + "/" + self_pid + ".jsonl";
     let compute_row = "{\"ts_ms\":" + to_string(tick_now_ms) + ",\"agent\":\"" + self_pid + "\",\"colony\":\"" + _colony_name + "\",\"tick\":" + to_string(tick_idx) + ",\"script\":\"explore-" + self_pid + "-tick-" + to_string(tick_idx) + ".py\",\"wall_clock_s\":" + wall_clock_str + ",\"exit_code\":" + exit_code_str + ",\"source\":\"rule-hit\"}";
