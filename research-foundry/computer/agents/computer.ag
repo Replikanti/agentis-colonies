@@ -156,12 +156,7 @@ fn _publish_computer(
     file_write(script_path, script.script);
 
     let output = if lang == "gap" {
-        // GAP compute path retained — Wave 7L will ship a parallel
-        // `compute_gap` substrate primitive. The python3 branch was
-        // migrated to substrate in Wave 7k (#786).
-        // colony-lint: safe-exec-concat
-        let gap_cmd = "gap -q -b --norepl " + shell_escape(script_path) + " 2>&1";
-        try { exec sh gap_cmd; } catch e { ""; };
+        to_string(get(compute_gap(script_path, 300000), "output"));
     } else {
         to_string(get(compute_python(script_path, 300000), "output"));
     };
@@ -298,12 +293,7 @@ fn _publish_computer_rule_hit(
     file_write(script_path, script_body);
 
     let output = if lang == "gap" {
-        // GAP compute path retained — Wave 7L will ship a parallel
-        // `compute_gap` substrate primitive. The python3 branch was
-        // migrated to substrate in Wave 7k (#786).
-        // colony-lint: safe-exec-concat
-        let gap_cmd = "gap -q -b --norepl " + shell_escape(script_path) + " 2>&1";
-        try { exec sh gap_cmd; } catch e { ""; };
+        to_string(get(compute_gap(script_path, 300000), "output"));
     } else {
         to_string(get(compute_python(script_path, 300000), "output"));
     };
