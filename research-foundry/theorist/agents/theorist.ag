@@ -101,26 +101,26 @@ fn _run_lean_check(self_pid: string, upstream_tick: int, lean_source: string) ->
 
     let timeout_env = getenv("THEORIST_LEAN_TIMEOUT_SEC");
     let timeout_s = if len(timeout_env) > 0 { timeout_env; } else { "30"; };
+    let timeout_ms = parse_int(timeout_s) * 1000;
 
     // Mathlib-aware lean invocation. The Containerfile prepares a Lake
     // shell project at /opt/mathlib-shell whose only purpose is to
     // expose LEAN_PATH so any .lean file (in or out of the project
-    // tree) can `import Mathlib`. `lake env --dir=<shell> <cmd>`
-    // resolves the project's deps and runs <cmd> with the right env.
-    // The fallback `lean <file>` path (when MATHLIB_SHELL is unset)
-    // matches the pre-mathlib container's contract so the agent still
-    // works under stock Lean 4 if an operator strips the mathlib layer.
+    // tree) can `import Mathlib`. `compute_lean(path, dir, ms)` uses
+    // `lake env --dir=<dir> lean <path>` when dir is non-empty and
+    // bare `lean <path>` otherwise — matching the pre-mathlib
+    // container's contract so the agent still works under stock
+    // Lean 4 if an operator strips the mathlib layer. Timeout is
+    // enforced by the substrate (try_wait + 100 ms poll), so the
+    // legacy `timeout` shell wrapper + `__lean_exit=$?__` sentinel
+    // collapse to a direct exit_code field read.
     let mathlib_shell = getenv("MATHLIB_SHELL");
-    // colony-lint: safe-exec-concat
-    let run_cmd = if len(mathlib_shell) > 0 {
-        "timeout " + shell_escape(timeout_s) + " lake env --dir=" + shell_escape(mathlib_shell) + " lean " + shell_escape(lean_path) + " 2>&1; echo \"__lean_exit=$?__\"";
-    } else {
-        "timeout " + shell_escape(timeout_s) + " lean " + shell_escape(lean_path) + " 2>&1; echo \"__lean_exit=$?__\"";
-    };
-    let run_output = try { exec sh run_cmd; } catch e { "__lean_exit=124__"; };
+    let lean_result = compute_lean(lean_path, mathlib_shell, timeout_ms);
+    let run_output = to_string(get(lean_result, "output"));
+    let lean_exit = to_string(get(lean_result, "exit_code"));
 
     let has_error = if index_of(run_output, "error:") >= 0 { "yes"; } else { "no"; };
-    let timed_out = if index_of(run_output, "__lean_exit=124__") >= 0 { "yes"; } else { "no"; };
+    let timed_out = if lean_exit == "124" { "yes"; } else { "no"; };
 
     if has_error == "yes" { return "failed"; };
     if timed_out == "yes" { return "failed"; };
