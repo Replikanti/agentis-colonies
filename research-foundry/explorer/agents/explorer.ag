@@ -199,14 +199,20 @@ fn _push_settled_exploration(self_pid: string, verdict: string) -> int {
     return parse_int(n);
 }
 
+// Tail-recursive helper: count occurrences of `needle` in a list.
+fn _count_eq(items: list<string>, needle: string, idx: int, acc: int) -> int {
+    if idx >= len(items) { return acc; };
+    if idx >= 256 { return acc; };
+    let next = if get(items, idx) == needle { acc + 1; } else { acc; };
+    return _count_eq(items, needle, idx + 1, next);
+}
+
 // Count NOT_NOVEL entries in the buffer.
 fn _count_not_novel(self_pid: string) -> int {
     let buf_key = "explorer:" + self_pid + ":settled_explorations";
     let buf_raw = recall_latest(buf_key);
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,json\ntry: a=json.loads(sys.argv[1])\nexcept Exception: a=[]\nprint(sum(1 for r in a if isinstance(r,dict) and r.get(\"verdict\")==\"NOT_NOVEL\"))' " + shell_escape(buf_raw);
-    let n = try { exec sh cmd; } catch e { "0"; };
-    return parse_int(n);
+    let verdicts = json_array_object_field_values(buf_raw, "verdict");
+    return _count_eq(verdicts, "NOT_NOVEL", 0, 0);
 }
 
 // Schema-sanity ping: dry-run the candidate prompt against a tiny
