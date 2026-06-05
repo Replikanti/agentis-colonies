@@ -491,8 +491,8 @@ assert_contains "29f. theorist.ag has _lean_prompt helper" "$LEAN_THE_AG_SRC" \
     "fn _lean_prompt() -> string"
 assert_contains "29g. theorist.ag has _run_lean_check helper" "$LEAN_THE_AG_SRC" \
     "fn _run_lean_check"
-assert_contains "29h. theorist.ag invokes lean binary via exec sh" "$LEAN_THE_AG_SRC" \
-    '"timeout " + shell_escape(timeout_s) + " lean "'
+assert_contains "29h. theorist.ag invokes lean via compute_lean substrate" "$LEAN_THE_AG_SRC" \
+    'compute_lean(lean_path, mathlib_shell, timeout_ms)'
 assert_contains "29i. theorist.ag writes lean_verdict memo key" "$LEAN_THE_AG_SRC" \
     '":lean_verdict:tick-"'
 assert_contains "29j. theorist.ag writes lean_source memo key" "$LEAN_THE_AG_SRC" \
