@@ -958,10 +958,10 @@ assert_contains "39l. novelty.ag writes novelty:bucket_tags memo" "$NOV_SRC_39" 
     'memo_write("novelty:bucket_tags:"'
 assert_contains "39m. novelty.ag calls _classify_buckets_all from loss shaping" "$NOV_SRC_39" \
     '_classify_buckets_all(topic_label)'
-assert_contains "39n. _classify_bucket lowercases haystack (case-insensitive)" "$NOV_SRC_39" \
-    'argv[1].lower()'
-assert_contains "39o. _sparsest_bucket still pins the 5 canonical buckets" "$NOV_SRC_39" \
-    'buckets=[\"group_theory\",\"combinatorics\",\"number_theory\",\"probability\",\"algebra\"]'
+assert_contains "39n. _classify_bucket lowercases haystack (case-insensitive via to_lower)" "$NOV_SRC_39" \
+    'to_lower(condition)'
+assert_contains "39o. _sparsest_bucket counts the 5 canonical buckets" "$NOV_SRC_39" \
+    '_count_str_in(arr, "algebra"'
 
 # Live acceptance: run the inventory and verify unclassified < 30% on
 # the current 24-paper corpus. Skips if python3 is missing (also covered
