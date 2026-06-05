@@ -442,17 +442,10 @@ fn _computer_canonical_ctx(prompt_ctx: string, upstream_tick: int) -> string {
 // path. Total on failure (returns a minimal stub so distill() still
 // gets a non-empty action).
 fn _script_action_json(language: string, script_body: string, expected_substring: string, rationale: string) -> string {
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,json; print(json.dumps({\"language\":sys.argv[1],\"script\":sys.argv[2],\"expected_substring\":sys.argv[3],\"rationale\":sys.argv[4]},separators=(\",\",\":\")))' "
-            + shell_escape(language) + " "
-            + shell_escape(script_body) + " "
-            + shell_escape(expected_substring) + " "
-            + shell_escape(rationale);
-    let out = try { exec sh cmd; } catch e { ""; };
-    if len(out) == 0 {
-        return "{\"language\":\"python\",\"script\":\"\",\"expected_substring\":\"\",\"rationale\":\"\"}";
-    };
-    return out;
+    return "{\"language\":\"" + json_escape_string(language)
+         + "\",\"script\":\"" + json_escape_string(script_body)
+         + "\",\"expected_substring\":\"" + json_escape_string(expected_substring)
+         + "\",\"rationale\":\"" + json_escape_string(rationale) + "\"}";
 }
 
 // #742 TaskBoard accept helper. Claims one open task on the
