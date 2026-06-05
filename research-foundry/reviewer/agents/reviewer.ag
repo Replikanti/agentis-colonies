@@ -486,15 +486,12 @@ fn _encode_verdict_action(
     total_count: int,
     reasoning: string
 ) -> string {
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,json,base64\nd={\"verdict\":sys.argv[1],\"hallucinated_claims\":sys.argv[2],\"supported_claims_count\":int(sys.argv[3]),\"total_claims_count\":int(sys.argv[4]),\"reasoning\":sys.argv[5]}\nsys.stdout.write(base64.b64encode(json.dumps(d,separators=(\",\",\":\")).encode(\"utf-8\")).decode(\"ascii\"))' "
-        + shell_escape(verdict_label) + " "
-        + shell_escape(hallucinated_claims) + " "
-        + shell_escape(to_string(supported_count)) + " "
-        + shell_escape(to_string(total_count)) + " "
-        + shell_escape(reasoning);
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out;
+    let json_d = "{\"verdict\":\"" + json_escape_string(verdict_label)
+               + "\",\"hallucinated_claims\":\"" + json_escape_string(hallucinated_claims)
+               + "\",\"supported_claims_count\":" + to_string(supported_count)
+               + ",\"total_claims_count\":" + to_string(total_count)
+               + ",\"reasoning\":\"" + json_escape_string(reasoning) + "\"}";
+    return base64_encode(json_d);
 }
 
 // _decode_verdict_field -- read one field back out of the base64(JSON)
@@ -505,11 +502,15 @@ fn _encode_verdict_action(
 // than crashing the rule-hit path.
 fn _decode_verdict_field(action: string, field: string) -> string {
     if len(action) == 0 { return ""; };
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,json,base64\ntry:\n d=json.loads(base64.b64decode(sys.argv[1].encode(\"ascii\")).decode(\"utf-8\"))\nexcept Exception:\n d={}\nif not isinstance(d,dict): d={}\nv=d.get(sys.argv[2],\"\")\nsys.stdout.write(str(v))' "
-        + shell_escape(action) + " " + shell_escape(field);
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out;
+    let json_d = base64_decode(action);
+    if len(json_d) == 0 { return ""; };
+    // json_get returns Void on missing field or non-dict; to_string(Void)
+    // stringifies to the 4-char literal "void", but the python contract
+    // this replaces was dict.get(field, "") which returns "". Map "void"
+    // back to "" so consumers see the same empty-field-on-miss behaviour.
+    let raw = to_string(json_get(json_d, field));
+    if raw == "void" { return ""; };
+    return raw;
 }
 
 // _publish_reviewer_rule_hit -- mirror of _publish_reviewer but takes
