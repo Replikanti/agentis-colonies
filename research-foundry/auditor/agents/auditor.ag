@@ -256,21 +256,21 @@ fn _push_topic_feedback(
 // LLM-tainted concat to harden. Hard-capped at 256 keys / 64 candidate
 // mids per call to keep CB bounded.
 fn _pick_parse_tick(rest: string, marker: string, marker_len: int) -> int {
-    let idx = index_of(rest, marker);
-    if idx < 0 { return 0 - 1; };
-    let mid = substring(rest, 0, idx);
+    let pos = index_of(rest, marker);
+    if pos < 0 { return 0 - 1; };
+    let mid = substring(rest, 0, pos);
     if len(mid) == 0 { return 0 - 1; };
     if index_of(mid, ":") >= 0 { return 0 - 1; };
-    let tick_str = substring(rest, idx + marker_len, len(rest));
+    let tick_str = substring(rest, pos + marker_len, len(rest));
     let tk = parse_int(tick_str);
     if to_string(tk) != tick_str { return 0 - 1; };
     return tk;
 }
 
 fn _pick_parse_mid(rest: string, marker: string) -> string {
-    let idx = index_of(rest, marker);
-    if idx < 0 { return ""; };
-    let mid = substring(rest, 0, idx);
+    let pos = index_of(rest, marker);
+    if pos < 0 { return ""; };
+    let mid = substring(rest, 0, pos);
     if len(mid) == 0 { return ""; };
     if index_of(mid, ":") >= 0 { return ""; };
     return mid;
