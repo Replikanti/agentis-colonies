@@ -464,12 +464,8 @@ fn _scholar_search_canonical_ctx(topic_label: string, input_blob: string) -> str
 // get -- get is only for the lookup Map). Total on exec failure
 // (returns "").
 fn _encode_queries_action(queries: Queries) -> string {
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,json\no={\"queries_json\":sys.argv[1],\"rationale\":sys.argv[2]}\nsys.stdout.write(json.dumps(o,separators=(\",\",\":\")))' "
-            + shell_escape(queries.queries_json) + " "
-            + shell_escape(queries.rationale);
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out;
+    return "{\"queries_json\":\"" + json_escape_string(queries.queries_json)
+         + "\",\"rationale\":\"" + json_escape_string(queries.rationale) + "\"}";
 }
 
 fn tick(reason: string) -> void {
