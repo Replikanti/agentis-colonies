@@ -155,19 +155,19 @@ fn _publish_computer(
     // Wave 5 #911: file_write auto-creates parent dirs (sandbox-resolved).
     file_write(script_path, script.script);
 
-    let run_cmd = if lang == "gap" {
+    let output = if lang == "gap" {
+        // GAP compute path retained — Wave 7L will ship a parallel
+        // `compute_gap` substrate primitive. The python3 branch was
+        // migrated to substrate in Wave 7k (#786).
         // colony-lint: safe-exec-concat
-        "gap -q -b --norepl " + shell_escape(script_path) + " 2>&1";
+        let gap_cmd = "gap -q -b --norepl " + shell_escape(script_path) + " 2>&1";
+        try { exec sh gap_cmd; } catch e { ""; };
     } else {
-        // colony-lint: safe-exec-concat
-        "python3 " + shell_escape(script_path) + " 2>&1";
+        to_string(get(compute_python(script_path, 300000), "output"));
     };
-    let output = try { exec sh run_cmd; } catch e { ""; };
 
     let runs_ok = if len(script.expected_substring) > 0 {
-        // colony-lint: safe-exec-concat
-        let check_cmd = "printf '%s' " + shell_escape(output) + " | grep -F " + shell_escape(script.expected_substring) + " >/dev/null 2>&1 && printf yes || printf no";
-        let g = try { exec sh check_cmd; } catch e { "no"; };
+        let g = if index_of(output, script.expected_substring) >= 0 { "yes"; } else { "no"; };
         g == "yes";
     } else {
         len(output) > 0;
@@ -297,19 +297,19 @@ fn _publish_computer_rule_hit(
     let script_path = sandbox_eff + "/repro-" + self_pid + "-tick-" + to_string(upstream_tick) + ext;
     file_write(script_path, script_body);
 
-    let run_cmd = if lang == "gap" {
+    let output = if lang == "gap" {
+        // GAP compute path retained — Wave 7L will ship a parallel
+        // `compute_gap` substrate primitive. The python3 branch was
+        // migrated to substrate in Wave 7k (#786).
         // colony-lint: safe-exec-concat
-        "gap -q -b --norepl " + shell_escape(script_path) + " 2>&1";
+        let gap_cmd = "gap -q -b --norepl " + shell_escape(script_path) + " 2>&1";
+        try { exec sh gap_cmd; } catch e { ""; };
     } else {
-        // colony-lint: safe-exec-concat
-        "python3 " + shell_escape(script_path) + " 2>&1";
+        to_string(get(compute_python(script_path, 300000), "output"));
     };
-    let output = try { exec sh run_cmd; } catch e { ""; };
 
     let runs_ok = if len(expected_substring) > 0 {
-        // colony-lint: safe-exec-concat
-        let check_cmd = "printf '%s' " + shell_escape(output) + " | grep -F " + shell_escape(expected_substring) + " >/dev/null 2>&1 && printf yes || printf no";
-        let g = try { exec sh check_cmd; } catch e { "no"; };
+        let g = if index_of(output, expected_substring) >= 0 { "yes"; } else { "no"; };
         g == "yes";
     } else {
         len(output) > 0;

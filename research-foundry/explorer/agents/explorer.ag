@@ -792,16 +792,16 @@ fn _publish_explorer_rule_hit(
     // compute-spend column. `timeout 300s` mirrors the LLM path
     // (#867) for symmetric containment of a runaway cached rule.
     let script_path = sandbox_eff + "/explore-" + self_pid + "-tick-" + to_string(tick_idx) + ".py";
-    let time_file = sandbox_eff + "/.time-" + self_pid + "-tick-" + to_string(tick_idx);
-    // colony-lint: safe-exec-concat
-    let run_cmd = "/usr/bin/time -f '%e,%x' -o " + shell_escape(time_file) + " timeout 300s python3 " + shell_escape(script_path) + " 2>&1";
-    let output = try { exec sh run_cmd; } catch e { ""; };
-    // colony-lint: safe-exec-concat
-    let stats_cmd = "tail -1 " + shell_escape(time_file) + " 2>/dev/null";
-    let stats = try { exec sh stats_cmd; } catch e { ""; };
-    let comma_idx = index_of(stats, ",");
-    let wall_clock_str = if comma_idx > 0 { substring(stats, 0, comma_idx); } else { "0"; };
-    let exit_code_str = if comma_idx > 0 { substring(stats, comma_idx + 1, len(stats)); } else { "0"; };
+    let t0_ms = now_ms();
+    let compute_result = compute_python(script_path, 300000);
+    let t1_ms = now_ms();
+    let output = to_string(get(compute_result, "output"));
+    let exit_code_str = to_string(get(compute_result, "exit_code"));
+    let wall_clock_ms = t1_ms - t0_ms;
+    let wall_clock_int = wall_clock_ms / 1000;
+    let wall_clock_frac = mod(wall_clock_ms, 1000) / 10;
+    let wall_clock_frac_pad = if wall_clock_frac < 10 { "0" + to_string(wall_clock_frac); } else { to_string(wall_clock_frac); };
+    let wall_clock_str = to_string(wall_clock_int) + "." + wall_clock_frac_pad;
     let compute_dir = sandbox_dir + "/compute";
     let compute_path = compute_dir + "/" + self_pid + ".jsonl";
     let compute_row = "{\"ts_ms\":" + to_string(tick_now_ms) + ",\"agent\":\"" + self_pid + "\",\"colony\":\"" + _colony_name + "\",\"tick\":" + to_string(tick_idx) + ",\"script\":\"explore-" + self_pid + "-tick-" + to_string(tick_idx) + ".py\",\"wall_clock_s\":" + wall_clock_str + ",\"exit_code\":" + exit_code_str + ",\"source\":\"rule-hit\"}";
