@@ -744,12 +744,31 @@ fn _push_topic_history(bucket: string) -> int {
 // explorer can read it on the next tick and steer toward the
 // under-represented area. Empty / parse failure returns "" (caller
 // skips the hint write).
+// Tail-recursive helper: count occurrences of `needle` in `arr`.
+fn _count_str_in(arr: list<string>, needle: string, idx: int, acc: int) -> int {
+    if idx >= len(arr) { return acc; };
+    if idx >= 256 { return acc; };
+    let next = if get(arr, idx) == needle { acc + 1; } else { acc; };
+    return _count_str_in(arr, needle, idx + 1, next);
+}
+
 fn _sparsest_bucket() -> string {
     let raw = recall_latest("novelty:topic_history");
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,json\nraw=sys.argv[1]\ntry: arr=json.loads(raw) if raw else []\nexcept Exception: arr=[]\nif not isinstance(arr,list): arr=[]\nbuckets=[\"group_theory\",\"combinatorics\",\"number_theory\",\"probability\",\"algebra\"]\ncounts={b:0 for b in buckets}\nfor x in arr:\n if isinstance(x,str) and x in counts: counts[x]+=1\n# Pick deterministically: lowest count, alpha-first on tie.\nmn=min(counts.values()) if counts else 0\ncands=sorted(b for b,c in counts.items() if c==mn)\nprint(cands[0] if cands else \"\")' " + shell_escape(raw);
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out;
+    let arr = json_array_to_strings(raw);
+    // Count the 5 known buckets in alpha-first order so the tie-break
+    // picks the earliest bucket name (matches python `sorted(b for ...)`
+    // contract byte-for-byte).
+    let c_algebra        = _count_str_in(arr, "algebra", 0, 0);
+    let c_combinatorics  = _count_str_in(arr, "combinatorics", 0, 0);
+    let c_group_theory   = _count_str_in(arr, "group_theory", 0, 0);
+    let c_number_theory  = _count_str_in(arr, "number_theory", 0, 0);
+    let c_probability    = _count_str_in(arr, "probability", 0, 0);
+    let m = min_int(min_int(min_int(min_int(c_algebra, c_combinatorics), c_group_theory), c_number_theory), c_probability);
+    if c_algebra == m { return "algebra"; };
+    if c_combinatorics == m { return "combinatorics"; };
+    if c_group_theory == m { return "group_theory"; };
+    if c_number_theory == m { return "number_theory"; };
+    return "probability";
 }
 
 // _downgrade_verdict -- one-step verdict downgrade per #765 anti-attractor

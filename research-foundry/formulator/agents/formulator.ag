@@ -156,12 +156,59 @@ fn _dump_ctx_to_memo(agent_name: string, pid: string, tick_idx: int, ctx: string
 // separated `<topic>:<problem_summary[:60]>` string the formulator
 // injects into the ctx. Same idiom as auditor::_push_topic_feedback
 // reader counterpart in spirit; matches explorer.ag::_count_not_novel.
+// Tail-recursive helper: take the last `k` items of a list of strings.
+fn _take_last_str(items: list<string>, k: int, idx: int, acc: list<string>) -> list<string> {
+    if idx >= len(items) { return acc; };
+    if idx >= 256 { return acc; };
+    let start = if k <= 0 { 0; } else { if len(items) <= k { 0; } else { len(items) - k; }; };
+    let next = if idx >= start { push(acc, get(items, idx)); } else { acc; };
+    return _take_last_str(items, k, idx + 1, next);
+}
+
+// Tail-recursive helper: append non-empty trimmed-and-truncated entries
+// from `items[idx..]` joined with " ;; ".
+fn _join_excerpts(items: list<string>, idx: int, max_len: int, acc: string) -> string {
+    if idx >= len(items) { return acc; };
+    if idx >= 256 { return acc; };
+    let raw = get(items, idx);
+    let trimmed = trim(raw);
+    let capped = if len(trimmed) > max_len { substring(trimmed, 0, max_len); } else { trimmed; };
+    let next = if len(capped) == 0 {
+        acc;
+    } else {
+        if len(acc) == 0 { capped; } else { acc + " ;; " + capped; };
+    };
+    return _join_excerpts(items, idx + 1, max_len, next);
+}
+
+// Tail-recursive helper: pair topic and problem_summary by index, trim
+// problem_summary, truncate to 60 chars, drop empty pairs, join with ", ".
+fn _join_topic_pairs(topics: list<string>, problems: list<string>, idx: int, acc: string) -> string {
+    if idx >= len(topics) { return acc; };
+    if idx >= 256 { return acc; };
+    let t = trim(get(topics, idx));
+    let p_raw = if idx < len(problems) { trim(get(problems, idx)); } else { ""; };
+    let p = if len(p_raw) > 60 { substring(p_raw, 0, 60); } else { p_raw; };
+    let pair = if len(t) > 0 {
+        t + ":" + p;
+    } else {
+        if len(p) > 0 { ":" + p; } else { ""; };
+    };
+    let next = if len(pair) == 0 {
+        acc;
+    } else {
+        if len(acc) == 0 { pair; } else { acc + ", " + pair; };
+    };
+    return _join_topic_pairs(topics, problems, idx + 1, next);
+}
+
 fn _summarise_topic_buf(buf_raw: string, k: int) -> string {
     if len(buf_raw) == 0 { return ""; };
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,json\ntry: a=json.loads(sys.argv[1])\nexcept Exception: a=[]\nif not isinstance(a,list): a=[]\nk=int(sys.argv[2])\nif k>0 and len(a)>k: a=a[-k:]\nparts=[]\nfor r in a:\n if not isinstance(r,dict): continue\n t=str(r.get(\"topic\",\"\")).strip()\n p=str(r.get(\"problem_summary\",\"\")).strip()\n if len(p)>60: p=p[:60]\n if t or p: parts.append(t+\":\"+p)\nprint(\", \".join(parts))' " + shell_escape(buf_raw) + " " + shell_escape(to_string(k));
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out;
+    let all_topics = json_array_object_field_values(buf_raw, "topic");
+    let all_problems = json_array_object_field_values(buf_raw, "problem_summary");
+    let topics = _take_last_str(all_topics, k, 0, []);
+    let problems = _take_last_str(all_problems, k, 0, []);
+    return _join_topic_pairs(topics, problems, 0, "");
 }
 
 // _summarise_hitl_buf -- collapse the rolling feedback:hitl_rejects
@@ -171,10 +218,14 @@ fn _summarise_topic_buf(buf_raw: string, k: int) -> string {
 // `feedback:hitl_rejects` (#623 C).
 fn _summarise_hitl_buf(buf_raw: string, k: int) -> string {
     if len(buf_raw) == 0 { return ""; };
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,json\ntry: a=json.loads(sys.argv[1])\nexcept Exception: a=[]\nif not isinstance(a,list): a=[]\nk=int(sys.argv[2])\nif k>0 and len(a)>k: a=a[-k:]\nfreq={}\nfor r in a:\n if not isinstance(r,dict): continue\n c=str(r.get(\"class\",\"other\")) or \"other\"\n freq[c]=freq.get(c,0)+1\nitems=sorted(freq.items(), key=lambda kv:(-kv[1],kv[0]))\nfreq_s=\", \".join(\"%s:%d\" % (k,v) for k,v in items)\nlast=[]\nfor r in a[-3:]:\n if not isinstance(r,dict): continue\n ex=str(r.get(\"reason_excerpt\",\"\")).strip()\n if len(ex)>80: ex=ex[:80]\n if ex: last.append(ex)\nout=freq_s\nif last: out += \" | recent: \" + \" ;; \".join(last)\nprint(out)' " + shell_escape(buf_raw) + " " + shell_escape(to_string(k));
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out;
+    let all_classes = json_array_object_field_values(buf_raw, "class");
+    let classes = _take_last_str(all_classes, k, 0, []);
+    let freq_s = string_list_freq_csv(classes, 0);
+    let all_excerpts = json_array_object_field_values(buf_raw, "reason_excerpt");
+    let recent_excerpts = _take_last_str(all_excerpts, 3, 0, []);
+    let recent_s = _join_excerpts(recent_excerpts, 0, 80, "");
+    if len(recent_s) == 0 { return freq_s; };
+    return freq_s + " | recent: " + recent_s;
 }
 
 // _pick_upstream_pid_by_key -- Phase 9 PR-A (#663) replica-safe pick.
