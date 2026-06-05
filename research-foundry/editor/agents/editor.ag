@@ -455,9 +455,7 @@ fn _publish_editor(
     // placeholder, so it is safe to run unconditionally.
     let author_cfg_path = getenv("PREPRINT_AUTHOR_CONFIG");
     let author_cfg_eff = if len(author_cfg_path) > 0 { author_cfg_path; } else { "/run-root/config/authors.toml"; };
-    // colony-lint: safe-exec-concat
-    let subst_cmd = "python3 /run-root/tools/substitute-author.py " + shell_escape(author_cfg_eff) + " " + shell_escape(claim_dir + "/main.tex");
-    let _subst = try { exec sh subst_cmd; } catch e { ""; };
+    let _subst = compute_python_args("/run-root/tools/substitute-author.py", [author_cfg_eff, claim_dir + "/main.tex"], 60000);
 
     // First compile pass.
     let _compile_r = try { compile_latex(claim_dir, 300000); } catch e { map_of("log_tail", ""); };
@@ -491,9 +489,7 @@ fn _publish_editor(
             let _rw = try { file_write(claim_dir + "/main.tex", repair.full_tex); "ok"; } catch e { ""; };
             // Re-substitute AUTHOR-PLACEHOLDER in case the
             // repair pass put it back (#616).
-            // colony-lint: safe-exec-concat
-            let subst_cmd_r = "python3 /run-root/tools/substitute-author.py " + shell_escape(author_cfg_eff) + " " + shell_escape(claim_dir + "/main.tex");
-            let _subst_r = try { exec sh subst_cmd_r; } catch e { ""; };
+            let _subst_r = compute_python_args("/run-root/tools/substitute-author.py", [author_cfg_eff, claim_dir + "/main.tex"], 60000);
             let _recompile_r = try { compile_latex(claim_dir, 300000); } catch e { map_of("log_tail", ""); };
             let recompile_log = to_string(get(_recompile_r, "log_tail"));
             let repair_ok = file_exists(claim_dir + "/main.pdf");
@@ -715,9 +711,7 @@ fn _publish_editor_rule_hit(
 
     let author_cfg_path = getenv("PREPRINT_AUTHOR_CONFIG");
     let author_cfg_eff = if len(author_cfg_path) > 0 { author_cfg_path; } else { "/run-root/config/authors.toml"; };
-    // colony-lint: safe-exec-concat
-    let subst_cmd = "python3 /run-root/tools/substitute-author.py " + shell_escape(author_cfg_eff) + " " + shell_escape(claim_dir + "/main.tex");
-    let _subst = try { exec sh subst_cmd; } catch e { ""; };
+    let _subst = compute_python_args("/run-root/tools/substitute-author.py", [author_cfg_eff, claim_dir + "/main.tex"], 60000);
 
     let _compile_r = try { compile_latex(claim_dir, 300000); } catch e { map_of("log_tail", ""); };
     let compile_log = to_string(get(_compile_r, "log_tail"));
@@ -742,9 +736,7 @@ fn _publish_editor_rule_hit(
             memo_write("editor:" + self_pid + ":ctx:tick-" + to_string(tick_idx) + ":repair", repair_ctx);
             let repair = prompt(_repair_prompt() + _variant_overlay_suffix() + _specialty_overlay_suffix(self_pid), repair_ctx) -> Repair;
             let _rw = try { file_write(claim_dir + "/main.tex", repair.full_tex); "ok"; } catch e { ""; };
-            // colony-lint: safe-exec-concat
-            let subst_cmd_r = "python3 /run-root/tools/substitute-author.py " + shell_escape(author_cfg_eff) + " " + shell_escape(claim_dir + "/main.tex");
-            let _subst_r = try { exec sh subst_cmd_r; } catch e { ""; };
+            let _subst_r = compute_python_args("/run-root/tools/substitute-author.py", [author_cfg_eff, claim_dir + "/main.tex"], 60000);
             let _recompile_r = try { compile_latex(claim_dir, 300000); } catch e { map_of("log_tail", ""); };
             let recompile_log = to_string(get(_recompile_r, "log_tail"));
             let repair_ok = file_exists(claim_dir + "/main.pdf");
