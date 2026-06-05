@@ -29,5 +29,5 @@ abstract_target_words = 150
 [[agents]]
 name = "introducer"
 source = "agents/introducer.ag"
-cb_budget = 2000
+cb_budget = 200000000
 tick_interval_ms = 180000

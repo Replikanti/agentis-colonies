@@ -18,7 +18,7 @@
 // Run as daemon: agentis daemon agents/oeis-search.ag --colony oeis-search
 // Requires: exec capability (curl + python3), messaging capability.
 
-cb 2000;
+cb 200000000;
 
 type Sequences {
     sequences_json: string,
