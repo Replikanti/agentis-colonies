@@ -504,7 +504,13 @@ fn _decode_verdict_field(action: string, field: string) -> string {
     if len(action) == 0 { return ""; };
     let json_d = base64_decode(action);
     if len(json_d) == 0 { return ""; };
-    return to_string(json_get(json_d, field));
+    // json_get returns Void on missing field or non-dict; to_string(Void)
+    // stringifies to the 4-char literal "void", but the python contract
+    // this replaces was dict.get(field, "") which returns "". Map "void"
+    // back to "" so consumers see the same empty-field-on-miss behaviour.
+    let raw = to_string(json_get(json_d, field));
+    if raw == "void" { return ""; };
+    return raw;
 }
 
 // _publish_reviewer_rule_hit -- mirror of _publish_reviewer but takes
