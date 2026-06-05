@@ -1009,19 +1009,14 @@ fn _encode_metadata_action(
     ai_disclosure: string,
     rationale: string
 ) -> string {
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,json\nm={\"title\":sys.argv[1],\"abstract_clean\":sys.argv[2],\"msc_codes_csv\":sys.argv[3],\"arxiv_category\":sys.argv[4],\"cross_list_csv\":sys.argv[5],\"cover_letter\":sys.argv[6],\"ai_disclosure\":sys.argv[7],\"rationale\":sys.argv[8]}\nsys.stdout.write(json.dumps(m,separators=(\",\",\":\")))' "
-        + shell_escape(title) + " "
-        + shell_escape(abstract_clean) + " "
-        + shell_escape(msc_codes_csv) + " "
-        + shell_escape(arxiv_category) + " "
-        + shell_escape(cross_list_csv) + " "
-        + shell_escape(cover_letter) + " "
-        + shell_escape(ai_disclosure) + " "
-        + shell_escape(rationale);
-    let out = try { exec sh cmd; } catch e { "{}"; };
-    if len(out) == 0 { return "{}"; };
-    return out;
+    return "{\"title\":\"" + json_escape_string(title)
+         + "\",\"abstract_clean\":\"" + json_escape_string(abstract_clean)
+         + "\",\"msc_codes_csv\":\"" + json_escape_string(msc_codes_csv)
+         + "\",\"arxiv_category\":\"" + json_escape_string(arxiv_category)
+         + "\",\"cross_list_csv\":\"" + json_escape_string(cross_list_csv)
+         + "\",\"cover_letter\":\"" + json_escape_string(cover_letter)
+         + "\",\"ai_disclosure\":\"" + json_escape_string(ai_disclosure)
+         + "\",\"rationale\":\"" + json_escape_string(rationale) + "\"}";
 }
 
 // _decode_action_field -- read one field out of the faithful Metadata
