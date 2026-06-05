@@ -346,13 +346,8 @@ fn _groupprops_search_canonical_ctx(ctx: string, upstream_tick: int) -> string {
 // rule-hit path decodes back into Queries primitives via json_get. Total
 // on failure (returns an empty-Queries JSON).
 fn _queries_to_action_json(queries: Queries) -> string {
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,json\nobj={\"queries_json\":sys.argv[1],\"rationale\":sys.argv[2]}\nprint(json.dumps(obj,separators=(\",\",\":\")))' " + shell_escape(queries.queries_json) + " " + shell_escape(queries.rationale);
-    let out = try { exec sh cmd; } catch e { ""; };
-    if len(out) == 0 {
-        return "{\"queries_json\":\"\",\"rationale\":\"\"}";
-    };
-    return out;
+    return "{\"queries_json\":\"" + json_escape_string(queries.queries_json)
+         + "\",\"rationale\":\"" + json_escape_string(queries.rationale) + "\"}";
 }
 
 // _publish_groupprops_search_rule_hit -- mirror of _publish_groupprops_search
