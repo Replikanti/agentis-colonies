@@ -448,17 +448,13 @@ fn _theorist_canonical_ctx(topic_label: string, input_blob: string) -> string {
 // Map). Total on exec failure (returns "").
 fn _encode_draft_action(draft: Draft, lean_source: string, lean_verdict: string) -> string {
     let hedge_str = if draft.hedge_required { "true"; } else { "false"; };
-    // colony-lint: safe-exec-concat
-    let cmd = "python3 -c 'import sys,json\no={\"definitions_tex\":sys.argv[1],\"main_tex\":sys.argv[2],\"proof_kind\":sys.argv[3],\"hedge_required\":(sys.argv[4]==\"true\"),\"rationale\":sys.argv[5],\"lean_source\":sys.argv[6],\"lean_verdict\":sys.argv[7]}\nsys.stdout.write(json.dumps(o,separators=(\",\",\":\")))' "
-            + shell_escape(draft.definitions_tex) + " "
-            + shell_escape(draft.main_tex) + " "
-            + shell_escape(draft.proof_kind) + " "
-            + shell_escape(hedge_str) + " "
-            + shell_escape(draft.rationale) + " "
-            + shell_escape(lean_source) + " "
-            + shell_escape(lean_verdict);
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out;
+    return "{\"definitions_tex\":\"" + json_escape_string(draft.definitions_tex)
+         + "\",\"main_tex\":\"" + json_escape_string(draft.main_tex)
+         + "\",\"proof_kind\":\"" + json_escape_string(draft.proof_kind)
+         + "\",\"hedge_required\":" + hedge_str
+         + ",\"rationale\":\"" + json_escape_string(draft.rationale)
+         + "\",\"lean_source\":\"" + json_escape_string(lean_source)
+         + "\",\"lean_verdict\":\"" + json_escape_string(lean_verdict) + "\"}";
 }
 
 // _publish_theorist_rule_hit -- mirror of _publish_theorist but takes
