@@ -513,9 +513,9 @@ fn _parse_rule_action_bool(action: string) -> bool {
 
 fn _parse_rule_action_desc(action: string) -> string {
     if len(action) == 0 { return ""; };
-    let idx = index_of(action, "|");
-    if idx < 0 { return ""; };
-    return substring(action, idx + 1, len(action));
+    let pos = index_of(action, "|");
+    if pos < 0 { return ""; };
+    return substring(action, pos + 1, len(action));
 }
 
 // #841: _canonical_stable_desc derives a DETERMINISTIC description from
