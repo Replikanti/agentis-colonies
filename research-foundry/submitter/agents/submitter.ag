@@ -382,9 +382,8 @@ fn _submitter_stage_and_publish(
     // helper rather than the .ag DSL (no TOML in DSL).
     let author_cfg_path = getenv("PREPRINT_AUTHOR_CONFIG");
     let author_cfg_eff = if len(author_cfg_path) > 0 { author_cfg_path; } else { "/run-root/config/authors.toml"; };
-    // colony-lint: safe-exec-concat
-    let authors_cmd = "python3 -c 'import sys\ntry:\n import tomllib\nexcept Exception:\n import tomli as tomllib\ntry:\n with open(sys.argv[1],\"rb\") as f: d=tomllib.load(f)\nexcept Exception:\n print(\"AUTHOR-PLACEHOLDER <author@example.org>\"); sys.exit(0)\nauthors=d.get(\"authors\") or []\nout=[]\nfor a in authors:\n name=a.get(\"name\",\"AUTHOR-PLACEHOLDER\"); email=a.get(\"email\",\"\")\n if email: out.append(name+\" <\"+email+\">\")\n else: out.append(name)\nprint(\"; \".join(out) if out else \"AUTHOR-PLACEHOLDER\")' " + shell_escape(author_cfg_eff);
-    let authors_line = try { exec sh authors_cmd; } catch e { "AUTHOR-PLACEHOLDER"; };
+    let authors_result = compute_python_args("/run-root/tools/parse-authors.py", [author_cfg_eff], 30000);
+    let authors_line = trim(to_string(get(authors_result, "output")));
 
     // Build arxiv-metadata.json into the claim dir.
     let cover_full = m_cover_letter + "\n\n--- AI assistance disclosure ---\n" + m_ai_disclosure + "\n";
@@ -405,9 +404,7 @@ fn _submitter_stage_and_publish(
     let _so = try { file_write(claim_dir + "/reproducibility-output.txt", repro_output); "ok"; } catch e { ""; };
 
     // Package submission tarball.
-    // colony-lint: safe-exec-concat
-    let tar_cmd = "cd " + shell_escape(claim_dir) + " && tar -czf submission.tar.gz main.tex refs.bib reproducibility" + ext + " reproducibility-output.txt arxiv-metadata.json 2>&1 || true";
-    let _tar = try { exec sh tar_cmd; } catch e { ""; };
+    let _tar = compute_python_args("/run-root/tools/make-submission-tarball.py", [claim_dir, ext], 30000);
 
     // Write DRAFTED row to preprint-ledger.jsonl. Row construction is
     // routed through python3 json.dumps so quotes / newlines / control
@@ -870,14 +867,11 @@ fn _submitter_send_phase(
     let from_addr = getenv("PREPRINT_ARXIV_FROM");
     let gateway_eff = if len(gateway) > 0 { gateway; } else { "submit@arxiv.org"; };
     let from_eff = if len(from_addr) > 0 { from_addr; } else { "AUTHOR-PLACEHOLDER@example.org"; };
-    // colony-lint: safe-exec-concat
-    let send_cmd = "python3 -c 'import smtplib, ssl, sys, email.message, os\nm=email.message.EmailMessage()\nm[\"Subject\"]=\"arXiv submission: \"+sys.argv[1]\nm[\"From\"]=sys.argv[2]\nm[\"To\"]=sys.argv[3]\nwith open(sys.argv[4],\"r\") as f: cover=f.read()\nm.set_content(cover)\nwith open(sys.argv[5],\"rb\") as f: data=f.read()\nm.add_attachment(data, maintype=\"application\", subtype=\"gzip\", filename=\"submission.tar.gz\")\nhost=os.environ.get(\"PREPRINT_SMTP_HOST\",\"localhost\")\nport=int(os.environ.get(\"PREPRINT_SMTP_PORT\",\"25\"))\ntry:\n s=smtplib.SMTP(host,port,timeout=30); s.send_message(m); s.quit(); print(\"sent\")\nexcept Exception as e:\n print(\"smtp-error:\"+str(e))' "
-            + shell_escape(claim_id_eff) + " "
-            + shell_escape(from_eff) + " "
-            + shell_escape(gateway_eff) + " "
-            + shell_escape(claim_dir + "/arxiv-metadata.json") + " "
-            + shell_escape(claim_dir + "/submission.tar.gz");
-    let send_out = try { exec sh send_cmd; } catch e { "smtp-error:exec-failed"; };
+    let send_result = compute_python_args("/run-root/tools/send-arxiv-email.py",
+        [claim_id_eff, from_eff, gateway_eff,
+         claim_dir + "/arxiv-metadata.json",
+         claim_dir + "/submission.tar.gz"], 60000);
+    let send_out = trim(to_string(get(send_result, "output")));
 
     let ledger_path2 = getenv("DISCOVERY_LEDGER");
     if len(ledger_path2) > 0 {
