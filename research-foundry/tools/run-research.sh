@@ -736,10 +736,10 @@ if [ "$DRY_RUN" = "0" ]; then
     # `laptop-node/`. `ln -sf` with relative targets keeps the run dir
     # relocatable. The container bootstrap at lines below truncates the
     # actual files inside /run-root, which is the symlink target.
-    ln -sf laptop-node/discovery-ledger.jsonl "$DISCOVERY_LEDGER"
-    ln -sf laptop-node/audit-ledger.jsonl "$AUDIT_LEDGER"
-    ln -sf laptop-node/preprint-ledger.jsonl "$PREPRINT_LEDGER"
-    ln -sf laptop-node/replication-ledger.jsonl "$REPLICATION_LEDGER"
+    ln -sf laptop-node/.agentis/sandbox/discovery-ledger.jsonl "$DISCOVERY_LEDGER"
+    ln -sf laptop-node/.agentis/sandbox/audit-ledger.jsonl "$AUDIT_LEDGER"
+    ln -sf laptop-node/.agentis/sandbox/preprint-ledger.jsonl "$PREPRINT_LEDGER"
+    ln -sf laptop-node/.agentis/sandbox/replication-ledger.jsonl "$REPLICATION_LEDGER"
 fi
 
 # #825 follow-up: under default LLM_BACKEND=claude with per-tier routing
@@ -1080,10 +1080,10 @@ write_bootstrap() {
         printf 'chmod 600 /run-root/.agentis/identity/private.key 2>/dev/null || true\n'
         printf 'if [ -d /repo/research-foundry/data/papers ]; then cp -r /repo/research-foundry/data/papers /run-root/data/papers; fi\n'
         printf 'if [ -f /repo/research-foundry/config/authors.toml ]; then cp /repo/research-foundry/config/authors.toml /run-root/config/authors.toml; fi\n'
-        printf ': > /run-root/discovery-ledger.jsonl\n'
-        printf ': > /run-root/audit-ledger.jsonl\n'
-        printf ': > /run-root/preprint-ledger.jsonl\n'
-        printf ': > /run-root/replication-ledger.jsonl\n'
+        printf ': > /run-root/.agentis/sandbox/discovery-ledger.jsonl\n'
+        printf ': > /run-root/.agentis/sandbox/audit-ledger.jsonl\n'
+        printf ': > /run-root/.agentis/sandbox/preprint-ledger.jsonl\n'
+        printf ': > /run-root/.agentis/sandbox/replication-ledger.jsonl\n'
         # Seed propose-tier confidence for each colony. All keys use the
         # canonical dashed `<basename>:confidence` form per CLAUDE.md Agent
         # conventions; `prior_advocate` remains underscored because its disk
@@ -1390,7 +1390,7 @@ write_bootstrap() {
         printf '        *) sp=unassigned ;;\n'
         printf '    esac\n'
         printf '    ts_ms=$(date +%%s%%3N)\n'
-        printf '    python3 -c '"'"'import json,sys; sys.stdout.write(json.dumps({"ts":int(sys.argv[1]),"event":"spawn","daemon_id":int(sys.argv[2]),"specialty":sys.argv[3],"generation":0,"reason":"initial"})+"\\n")'"'"' "$ts_ms" "$i" "$sp" >> /run-root/replication-ledger.jsonl\n'
+        printf '    python3 -c '"'"'import json,sys; sys.stdout.write(json.dumps({"ts":int(sys.argv[1]),"event":"spawn","daemon_id":int(sys.argv[2]),"specialty":sys.argv[3],"generation":0,"reason":"initial"})+"\\n")'"'"' "$ts_ms" "$i" "$sp" >> /run-root/.agentis/sandbox/replication-ledger.jsonl\n'
         printf 'done\n'
         unset prb_fittest_path
         # Phase 9 PR-C (#663): each of the 4 math downstream colonies

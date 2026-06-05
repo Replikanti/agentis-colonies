@@ -676,7 +676,7 @@ print(overlay)
     # run-research.sh (DAEMON_ID + replication knobs read by <colony>.ag's
     # first-tick claim path). Background it so the cull tool can return
     # promptly.
-    podman exec "$CONTAINER" bash -c "DAEMON_ID=$NEW_ID COLONY_NAME=$COLONY_NAME EXPLORER_GENERATION=0 HOLD_PERIOD=\${HOLD_PERIOD:-4} DISCOVERY_LEDGER=/run-root/discovery-ledger.jsonl REPLICATION_LEDGER=/run-root/replication-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/$COLONY_NAME/agents/$COLONY_NAME.ag --colony $COLONY_NAME --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval 30000 > /run-root/.agentis/logs/$COLONY_NAME-$NEW_ID.log 2>&1 &" 2>/dev/null || true
+    podman exec "$CONTAINER" bash -c "DAEMON_ID=$NEW_ID COLONY_NAME=$COLONY_NAME EXPLORER_GENERATION=0 HOLD_PERIOD=\${HOLD_PERIOD:-4} DISCOVERY_LEDGER=discovery-ledger.jsonl REPLICATION_LEDGER=replication-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis agentis daemon /run-root/$COLONY_NAME/agents/$COLONY_NAME.ag --colony $COLONY_NAME --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval 30000 > /run-root/.agentis/logs/$COLONY_NAME-$NEW_ID.log 2>&1 &" 2>/dev/null || true
 
     # Issue #767 bug fix (load-bearing, NOT gated): re-increment
     # `colony-<colony>:size` to balance the post-stop decrement above
