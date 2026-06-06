@@ -599,6 +599,26 @@ if [ -x "$REPO_ROOT/tools/check-prompt-gate.sh" ]; then
     fi
 fi
 
+# --- Check LLM prompt strings for bare push() examples (#943) ---
+# `push(list, x)` in agentis is PURE — it returns a new list and does
+# NOT mutate the input. Several research-foundry agents embed `.ag`
+# source as example code inside their LLM prompt strings; an example
+# that uses `push(acc, x);` without capturing the return value teaches
+# the LLM to discard the new list. The empirical failure mode (#943):
+# 48 of 50 explorer codes used bare `push(acc, x);` -> 0 preprints over
+# multiple federation runs. This lint blocks the pattern at edit time.
+# Authors can suppress an intentional cold-path example with
+# `// colony-lint: prompt-push-ok`.
+if [ -x "$REPO_ROOT/tools/check-llm-prompt-list-ops.sh" ]; then
+    check_out="$("$REPO_ROOT/tools/check-llm-prompt-list-ops.sh" "$REPO_ROOT" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "check-llm-prompt-list-ops: no bare push() examples in research-foundry LLM prompts (#943)"
+    else
+        fail "check-llm-prompt-list-ops: bare push() example inside LLM prompt string"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- Check learn() tag schema in tribes-bench hunters (#492) ---
 # `tribes-bench/` fitness aggregation reads free-form `learn()` tags as
 # authoritative — auto-promote / selection-fitness classifies experience
