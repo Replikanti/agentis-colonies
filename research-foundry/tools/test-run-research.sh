@@ -306,14 +306,19 @@ done
 
 # ---------------------------------------------------------------------------
 # 18a-d (#699): start_auto_promote_sidecar writes .auto-promote-install.toml
-# at $LAPTOP_DIR so the dashboard's sidecar liveness probe (#248 / #378)
+# at $FED_DIR so the dashboard's sidecar liveness probe (#248 / #378)
 # reports installed=true, status="ok" instead of running_orphan=true,
-# status="orphan". Schema must byte-match dev-apprenticeship/install.sh
+# status="orphan". Path was LAPTOP_DIR pre-fix but the dashboard reads
+# FED_DIR/.auto-promote-install.toml -- writing it under LAPTOP_DIR made
+# the file invisible to the collector and surfaced as
+# "sidecar running but install file missing" in the banner.
+# Schema must byte-match dev-apprenticeship/install.sh
 # (federation-dashboard-collector.py:906 parses [auto_promote] with
 # underscore). Cleanup trap removes the file on EXIT/INT/TERM.
 # ---------------------------------------------------------------------------
-assert_contains "18a. dry-run emits .auto-promote-install.toml write" "$OUT" \
-    "> $WORK_DIR/run-default/laptop-node/.auto-promote-install.toml"
+FED_DIR_DERIVED="$(dirname "$SCRIPT_DIR")"
+assert_contains "18a. dry-run emits .auto-promote-install.toml write at FED_DIR" "$OUT" \
+    "> $FED_DIR_DERIVED/.auto-promote-install.toml"
 assert_contains "18b. emitted file content carries the [auto_promote] section header" "$OUT" \
     '[auto_promote]\nenabled = true\ninterval_s = 300\n'
 
@@ -324,7 +329,31 @@ assert_contains "18c. RESEARCH_AUTO_PROMOTE=0 emits enabled = false write" "$DIS
     '[auto_promote]\nenabled = false\n'
 
 assert_contains "18d. cleanup trap removes .auto-promote-install.toml on EXIT/INT/TERM" "$OUT" \
-    "rm -f \"$WORK_DIR/run-default/laptop-node/.auto-promote-install.toml\""
+    "rm -f \"$FED_DIR_DERIVED/.auto-promote-install.toml\""
+
+# ---------------------------------------------------------------------------
+# 18e-i (this PR): setup_dashboard_view materialises $FED_DIR/.agentis as a
+# real directory with an empty objects/ subdir + per-subdir symlinks into
+# $LAPTOP_DIR/.agentis. Pre-fix the dashboard saw a missing or stale
+# .agentis at FED_DIR and `agentis daemon list --json` returned [],
+# surfacing as "Federation is stopped" in the banner. The fix satisfies
+# agentis-core's find_agentis_root_from() marker test
+# (.agentis/objects/.is_dir()) which the container-only `/persistent/objects`
+# symlink target cannot. Cleanup trap removes $FED_DIR/.agentis on
+# EXIT/INT/TERM so a re-run starts from a clean slate.
+# ---------------------------------------------------------------------------
+assert_contains "18e. setup_dashboard_view step emitted" "$OUT" \
+    "setting up dashboard view at $FED_DIR_DERIVED/.agentis"
+assert_contains "18f. removes stale FED_DIR/.agentis symlink before mkdir" "$OUT" \
+    "rm -f $FED_DIR_DERIVED/.agentis 2>/dev/null"
+assert_contains "18g. removes stale FED_DIR/.agentis directory before mkdir" "$OUT" \
+    "rm -rf $FED_DIR_DERIVED/.agentis 2>/dev/null"
+assert_contains "18h. creates real FED_DIR/.agentis/objects dir" "$OUT" \
+    "mkdir -p $FED_DIR_DERIVED/.agentis/objects"
+assert_contains "18i. emits per-subdir symlink loop into LAPTOP_DIR/.agentis" "$OUT" \
+    "for sub in audit config daemon experience identity log logs memo sandbox spend; do [ -e \"$WORK_DIR/run-default/laptop-node/.agentis/\$sub\" ] && ln -sfn \"$WORK_DIR/run-default/laptop-node/.agentis/\$sub\" \"$FED_DIR_DERIVED/.agentis/\$sub\"; done"
+assert_contains "18j. cleanup trap removes FED_DIR/.agentis on EXIT/INT/TERM" "$OUT" \
+    "rm -rf \"$FED_DIR_DERIVED/.agentis\""
 
 # ---------------------------------------------------------------------------
 # 23. #711 / #746: per-colony RESEARCH_<COLONY>_CLAUDE_MODEL env defaults
