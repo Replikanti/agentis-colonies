@@ -1230,6 +1230,63 @@ fn tick(reason: string) -> void {
 
     let my_tier = tier("novelty");
 
+    // ===== Stage 0: OEIS-first short-circuit (#946) =====
+    // The oeis-search colony already queries the live OEIS database for
+    // every verifier-accepted claim and writes a structured report to
+    // memo (`oeis_search:<pid>:matches_found:tick-<N>` +
+    // `oeis_search:<pid>:summary:tick-<N>`, see
+    // research-foundry/oeis-search/agents/oeis-search.ag::L218-L224).
+    // When OEIS returns >= 1 match for the SAME upstream_tick, the
+    // explorer's output sequence/scalar is already a known integer
+    // sequence and the claim is by definition NOT_NOVEL — no need to
+    // burn an LLM call (or a crystallized rule lookup) on rule-first
+    // classification of the surface form. This short-circuit runs
+    // unconditionally (no env gate); when the OEIS daemon hasn't
+    // reported yet or finds zero matches the existing rule-first /
+    // LLM-fallback path runs unchanged.
+    //
+    // Replica-safe PID resolution via the same tick-keyed fan-in picker
+    // used for verifier / formulator / explorer above (Phase 9 PR-A,
+    // #663). The oeis-search memo namespace uses the `oeis_search:`
+    // (underscore) prefix for per-tick writes, so the picker enumerates
+    // `oeis_search:*:matches_found:tick-<N>` and returns the producing
+    // PID. No `confidence_field` (single-replica fast path collapses to
+    // the lone PID; multi-replica picks alpha-first deterministically).
+    let _oeis_pid = _pick_upstream_pid_by_key("oeis_search", "matches_found", "", upstream_tick);
+    let _oeis_matches = if len(_oeis_pid) > 0 {
+        let _mf_str = recall_latest("oeis_search:" + _oeis_pid + ":matches_found:tick-" + to_string(upstream_tick));
+        if len(_mf_str) > 0 { parse_int(_mf_str); } else { 0; };
+    } else { 0; };
+    let _oeis_summary = if _oeis_matches > 0 {
+        recall_latest("oeis_search:" + _oeis_pid + ":summary:tick-" + to_string(upstream_tick));
+    } else { ""; };
+    if _oeis_matches > 0 {
+        // Content-based NOT_NOVEL: the output is in OEIS, by definition
+        // not novel. Reuse the rule-hit publisher to keep memo / emit /
+        // ledger / claim-handoff / knowledge_sell / fitness semantics
+        // byte-identical to the rule-first NOT_NOVEL path.
+        let _oeis_reasoning = "OEIS match (matches_found=" + to_string(_oeis_matches) + "): " + json_escape_string(_oeis_summary);
+        // colony-lint: learn-tags-ok
+        learn("novelty", "tick " + to_string(tick_idx) + " NOT_NOVEL", _oeis_reasoning, "success", ["emitted", "oeis-matched", "math-foundry"]);
+        if my_tier == "autonomous" {
+            memo_write("novelty:" + _self_pid + ":autonomous_decision", "true");
+            _publish_novelty_rule_hit(true, true, true, "OEIS", "NOT_NOVEL", _oeis_reasoning, _self_pid, _colony_name, explorer_pid, problem_text, stated_answer, novelty_claim, topic_label, upstream_tick, tick_idx, _tick_now_ms, my_tier);
+        } else {
+            if my_tier == "review-gated" {
+                _publish_novelty_rule_hit(true, false, true, "OEIS", "NOT_NOVEL", _oeis_reasoning, _self_pid, _colony_name, explorer_pid, problem_text, stated_answer, novelty_claim, topic_label, upstream_tick, tick_idx, _tick_now_ms, my_tier);
+            } else {
+                if my_tier == "propose" {
+                    _publish_novelty_rule_hit(false, false, true, "OEIS", "NOT_NOVEL", _oeis_reasoning, _self_pid, _colony_name, explorer_pid, problem_text, stated_answer, novelty_claim, topic_label, upstream_tick, tick_idx, _tick_now_ms, my_tier);
+                } else {
+                    print("[novelty] observing OEIS-matched short-circuit (tier:", my_tier, ") matches=", _oeis_matches);
+                };
+            };
+        };
+        let _now_s0 = now_iso();
+        if len(_now_s0) > 0 { memo_write("novelty:last_check", _now_s0); };
+        return;
+    };
+
     // ===== Stage 1: rule-first lookup (#845, mirrors skeptic #819) =====
     // The canonical context is a coarse self-built key (topic +
     // output_kind + size bucket); novelty's upstreams write no stable

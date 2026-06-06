@@ -442,6 +442,7 @@ math-foundry"
 review-gated
 emitted
 observed
+oeis-matched
 math-foundry"
             PAIR_KNOWN=1
             ;;
