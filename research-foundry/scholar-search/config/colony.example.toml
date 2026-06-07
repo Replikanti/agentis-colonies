@@ -26,5 +26,5 @@ max_queries = 3
 [[agents]]
 name = "scholar-search"
 source = "agents/scholar-search.ag"
-cb_budget = 200000000
+cb_budget = 2000000000
 tick_interval_ms = 120000

@@ -64,7 +64,7 @@
 // HOLD_PERIOD + DISCOVERY_LEDGER env (set by tools/run-foundry.sh
 // bootstrap).
 
-cb 200000000;
+cb 2000000000;
 
 type Exploration {
     exploration_goal: string,

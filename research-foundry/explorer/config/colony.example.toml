@@ -30,7 +30,7 @@ backend = "cli"
 [[agents]]
 name = "explorer"
 source = "agents/explorer.ag"
-cb_budget = 200000000
+cb_budget = 2000000000
 tick_interval_ms = 60000
 
 # Economy knobs. Operator override path: edit env vars before launching

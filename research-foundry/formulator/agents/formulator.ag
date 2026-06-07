@@ -16,7 +16,7 @@
 // Run as daemon: agentis daemon agents/formulator.ag --colony formulator
 // Requires: exec capability, messaging capability, DISCOVERY_LEDGER env.
 
-cb 200000000;
+cb 2000000000;
 
 type Problem {
     problem: string,
