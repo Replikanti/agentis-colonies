@@ -19,6 +19,11 @@ research-foundry/tools/persistent-load.py
 # Phase 9 PR-B (#663). Source-of-truth variant + overlay table read
 # by tools/cull-replicas.sh and the run-research.sh bootstrap loop.
 research-foundry/tools/colony-variants.json
+# #955: Mathlib fuzzy-novelty cross-check helper invoked by
+# theorist.ag::_run_lean_check after `lean` reports `verified` to split
+# the verdict into verified_novel vs verified_duplicate. The companion
+# test is dev-only (not bundled).
+research-foundry/tools/mathlib-novelty-check.sh
 research-foundry/config/authors.toml.example
 research-foundry/data/
 research-foundry/explorer/

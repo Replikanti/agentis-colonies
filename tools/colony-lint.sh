@@ -703,6 +703,22 @@ if [ -x "$REPO_ROOT/research-foundry/tools/test-prompt-timeout-flag.sh" ]; then
     fi
 fi
 
+# --- Mathlib novelty check helper (#955) ---
+# The research-foundry theorist runs `mathlib-novelty-check.sh` after
+# Lean reports `verified` to split the verdict into verified_novel vs
+# verified_duplicate. The helper must extract the last theorem block,
+# fuzzy-match against a Mathlib source tree, and degrade gracefully on
+# empty input / missing Mathlib root.
+if [ -x "$REPO_ROOT/research-foundry/tools/test-mathlib-novelty-check.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/research-foundry/tools/test-mathlib-novelty-check.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "test-mathlib-novelty-check: theorist mathlib novelty cross-check helper + theorist.ag wiring (#955)"
+    else
+        fail "test-mathlib-novelty-check: theorist mathlib novelty helper / theorist.ag wiring drifted (#955)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- tier-branch double learn() guard (#636) ---
 # Every `_publish_<role>(...)` / `_submitter_<phase>(...)` helper in
 # research-foundry/ must gate its top-level `learn(..., ["emitted", ...])`
