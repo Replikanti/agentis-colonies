@@ -140,7 +140,28 @@ fn _run_lean_check(self_pid: string, upstream_tick: int, lean_source: string) ->
     let is_trivial_prop = if regex_match(": *True *:=", lean_source) { "yes"; } else { "no"; };
     if is_trivial_prop == "yes" { return "incomplete"; };
 
-    return "verified";
+    // #955: Mathlib novelty cross-check. `verified` from `lean --check`
+    // only proves type-checking; with the container's pinned Mathlib at
+    // ~150k declarations, most LLM-emitted "verified" theorems are
+    // re-derivations of textbook results (Nat.add_comm and friends).
+    // The helper fuzzy-matches the theorem signature against Mathlib
+    // source (Jaccard token similarity >= 0.7) and emits one line:
+    //   MATCH:<file>:<line>:<decl>   when a similar Mathlib decl exists
+    //   NOVEL                         otherwise (or any defensive fallback)
+    // The helper always exits 0 -- the verdict is on stdout. Both args
+    // (helper path + lean_path) are shell_escape()'d so check-exec-sh
+    // accepts the concatenation without an annotation.
+    let novelty_helper = "/run-root/tools/mathlib-novelty-check.sh";
+    let novelty_cmd = shell_escape(novelty_helper) + " " + shell_escape(lean_path);
+    let helper_out = try { exec sh novelty_cmd; } catch e { "NOVEL"; };
+    let helper_first6 = if len(helper_out) >= 6 { substring(helper_out, 0, 6); } else { ""; };
+    let match_key = "theorist:" + self_pid + ":mathlib_match:tick-" + to_string(upstream_tick);
+    if helper_first6 == "MATCH:" {
+        memo_write(match_key, helper_out);
+        return "verified_duplicate";
+    };
+    memo_write(match_key, "");
+    return "verified_novel";
 }
 
 // Phase 9 PR-C (#663): variant + specialty overlays.
@@ -752,6 +773,14 @@ fn tick(reason: string) -> void {
             let r_lean_source = to_string(json_get(rule_action, "lean_source"));
             let r_lean_verdict_raw = to_string(json_get(rule_action, "lean_verdict"));
             let r_lean_verdict = if len(r_lean_verdict_raw) > 0 { r_lean_verdict_raw; } else { "failed"; };
+            // #955: crystallized rules pre-#955 carry only the legacy
+            // {verified, incomplete, failed} vocabulary. Rule-hit replays
+            // do not re-run the Mathlib novelty cross-check, so the
+            // extended verdict on a hit is the rule's stored legacy
+            // value -- still informative (the rule is replaying a past
+            // type-check outcome), just not novelty-classified.
+            memo_write("theorist:" + _self_pid + ":lean_verdict_extended:tick-" + to_string(upstream_tick), r_lean_verdict);
+            memo_write("theorist:" + _self_pid + ":mathlib_match:tick-" + to_string(upstream_tick), "");
 
             let rule_rationale = "rule-first: matched crystallized theorist_output rule at confidence " + to_string(rule_conf) + ". Context: " + canonical_ctx;
 
@@ -820,17 +849,39 @@ fn tick(reason: string) -> void {
                  + "DEFINITIONS LATEX:\n" + draft.definitions_tex + "\n"
                  + "MAIN LATEX:\n" + draft.main_tex + "\n";
     let lean_draft = prompt(_lean_prompt(), lean_ctx) -> LeanDraft;
-    let lean_verdict = _run_lean_check(_self_pid, upstream_tick, lean_draft.lean_source);
-    print("[theorist] lean_verdict=", lean_verdict, " proof_kind=", draft.proof_kind);
-    // Branch on lean_verdict so check-learn-tags.sh sees a static
-    // outcome literal at each call site. The runtime outcome enum is
-    // {success, failure, partial, timeout, error}; the lean-verdict
-    // vocabulary {verified, incomplete, failed} maps to {success,
-    // partial, failure}. Pre-#794 the lean-vocabulary strings were
-    // passed through directly and the runtime emitted [tick:error]
-    // invalid outcome per call (PR #752 regression), pinning the
-    // theorist daemon at ~20% success rate in `agentis daemon list`.
-    // One row per tick regardless of branch.
+    // #955: `_run_lean_check` now returns the EXTENDED verdict vocabulary
+    // {verified_novel, verified_duplicate, incomplete, failed}: the
+    // `verified` legacy bucket is split by a Mathlib novelty cross-check
+    // run after the proof type-checks. The auditor's lean_verdict memo
+    // reader (#745) still expects the legacy vocabulary, so we map down
+    // to {verified, incomplete, failed} for the `lean_verdict` memo +
+    // experience-ledger row and write the extended value to its own
+    // `lean_verdict_extended` memo for downstream inspection (a future
+    // submitter follow-up will prioritise verified_novel for preprint).
+    let lean_verdict_extended = _run_lean_check(_self_pid, upstream_tick, lean_draft.lean_source);
+    let lean_verdict = if lean_verdict_extended == "verified_novel" {
+        "verified";
+    } else {
+        if lean_verdict_extended == "verified_duplicate" {
+            "verified";
+        } else {
+            lean_verdict_extended;
+        };
+    };
+    // #955: persist the four-way extended verdict on its own key so
+    // downstream consumers (submitter prioritisation, dashboard
+    // surfacing) can distinguish novel proofs from Mathlib duplicates.
+    memo_write("theorist:" + _self_pid + ":lean_verdict_extended:tick-" + to_string(upstream_tick), lean_verdict_extended);
+    print("[theorist] lean_verdict=", lean_verdict, " extended=", lean_verdict_extended, " proof_kind=", draft.proof_kind);
+    // Branch on lean_verdict (legacy) so check-learn-tags.sh sees a
+    // static outcome literal at each call site. The runtime outcome
+    // enum is {success, failure, partial, timeout, error}; the
+    // lean-verdict vocabulary {verified, incomplete, failed} maps to
+    // {success, partial, failure}. Pre-#794 the lean-vocabulary
+    // strings were passed through directly and the runtime emitted
+    // [tick:error] invalid outcome per call (PR #752 regression),
+    // pinning the theorist daemon at ~20% success rate in
+    // `agentis daemon list`. One row per tick regardless of branch.
     if lean_verdict == "verified" {
         learn("lean_check", "tick " + to_string(tick_idx), "verified", "success", ["lean", "verification"]);
     } else {
