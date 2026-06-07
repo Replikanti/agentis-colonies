@@ -87,4 +87,19 @@ evolve:
   ledger_path: "evolution-ledger.jsonl"
   dry_run: false                         # PR-C flips live for explorer (#628)
 
+# Demote arm (#898) — pre-#948 this block was absent and the sidecar fell
+# back to the defaults baked into auto-promote-decisions.py. With #948
+# adding `min_runtime_hours`, surface all five fields explicitly so the
+# research-foundry config remains the single source of truth for the
+# consolidated federation's auto-promote behaviour. The 6h40m run on
+# 2026-06-06 demoted explorer 0.6 -> 0.4 and verifier 0.95 -> 0.8 at
+# 0.3h runtime on noisy short-window mean_delta; the runtime gate fixes
+# that by mirroring the promote arm's 1.0h floor.
+demote:
+  enabled: true
+  delta_slope_threshold: -0.05
+  min_entries_for_demote: 30
+  hard_floor: 0.4
+  min_runtime_hours: 1.0
+
 dry_run: false

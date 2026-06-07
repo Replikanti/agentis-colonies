@@ -116,6 +116,10 @@ demote:
   delta_slope_threshold: -0.05      # average delta on acting rows must be at most this to demote
   min_entries_for_demote: 30        # same bootstrap stability floor as promote prereq
   hard_floor: 0.4                   # never demote below shadow tier
+  # min_runtime_hours: bootstrap protection — don't demote on noisy
+  # short-window data (matches promote arm's gate). 1.0h matches
+  # promote so demote can never fire when promote couldn't even check.
+  min_runtime_hours: 1.0
 
 # dry_run: true means all actions are logged but not executed.
 # Default is true — flip to false only after reviewing the journal.

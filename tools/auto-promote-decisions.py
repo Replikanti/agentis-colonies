@@ -127,6 +127,10 @@ def _load_config(path):
     demote_slope_threshold = float(d.get('delta_slope_threshold', -0.05))
     demote_min_entries = int(d.get('min_entries_for_demote', 30))
     demote_hard_floor = float(d.get('hard_floor', 0.4))
+    # #948: bootstrap-runtime gate mirrors the promote arm. Without it the
+    # sidecar could demote on a noisy short-window mean_delta computed
+    # before the agent had any chance to amortise the first few partials.
+    demote_min_runtime_hours = float(d.get('min_runtime_hours', 1.0))
 
     return (
         int(p.get('min_entries', 200)),
@@ -145,6 +149,7 @@ def _load_config(path):
         demote_slope_threshold,
         demote_min_entries,
         demote_hard_floor,
+        demote_min_runtime_hours,
     )
 
 
@@ -230,7 +235,8 @@ def main():
          min_rule_hit_acting_ticks,
          rule_hit_tag_allowlist,
          demote_enabled, demote_slope_threshold,
-         demote_min_entries, demote_hard_floor) = _load_config(config_path)
+         demote_min_entries, demote_hard_floor,
+         demote_min_runtime_hours) = _load_config(config_path)
     else:
         # Legacy positional mode used by auto-promote.sh sidecar. Keep byte-
         # identical contract — test-auto-promote.sh asserts it. The 12th arg
@@ -268,11 +274,17 @@ def main():
         demote_slope_threshold = -0.05
         demote_min_entries = 30
         demote_hard_floor = 0.4
+        # #948: bootstrap-runtime gate for the demote arm. Default 1.0h
+        # matches the promote arm's `min_runtime_hours` so demote can
+        # never fire in a regime where promote couldn't even check.
+        demote_min_runtime_hours = 1.0
         if len(argv) >= 16:
             demote_enabled = (argv[12].lower() in ('true', '1', 'yes'))
             demote_slope_threshold = float(argv[13])
             demote_min_entries = int(argv[14])
             demote_hard_floor = float(argv[15])
+        if len(argv) >= 17:
+            demote_min_runtime_hours = float(argv[16])
 
     # Tags that mark a row as exercising a tier-gated acting branch (not observe).
     # See doc/auto-promote.md#classification — must match the tag strings emitted
@@ -921,11 +933,17 @@ def main():
             and demote_delta_mean <= demote_slope_threshold
         )
         demote_entries_met = entry_count >= demote_min_entries
+        # #948: bootstrap-runtime gate. Mirrors the promote arm's runtime
+        # prereq so an agent whose short-window mean_delta looks bad in
+        # the first few minutes (noise) is not punished before the
+        # confidence-fitness signal has time to stabilise.
+        demote_runtime_met = runtime_hours >= demote_min_runtime_hours
         demote_triggered = (
             demote_enabled
             and demote_floor_met
             and demote_signal_met
             and demote_entries_met
+            and demote_runtime_met
         )
         if os.environ.get('AUTO_PROMOTE_DEBUG'):
             sys.stderr.write(
@@ -933,6 +951,7 @@ def main():
                 f'conf={confidence} floor={demote_hard_floor} floor_met={demote_floor_met} '
                 f'mean_delta={demote_delta_mean} thresh={demote_slope_threshold} signal_met={demote_signal_met} '
                 f'entries={entry_count} min={demote_min_entries} entries_met={demote_entries_met} '
+                f'runtime={runtime_hours:.2f} min_runtime={demote_min_runtime_hours} runtime_met={demote_runtime_met} '
                 f'triggered={demote_triggered}\n'
             )
 
@@ -964,6 +983,13 @@ def main():
                      'value': confidence,
                      'threshold': demote_hard_floor, 'op': '>',
                      'meets': demote_floor_met},
+                    # #948: bootstrap-runtime gate row. Dashboard renders
+                    # this alongside the other four as a per-criterion
+                    # checklist when a demote skip surfaces in the journal.
+                    {'name': 'runtime_hours',
+                     'value': round(runtime_hours, 2),
+                     'threshold': demote_min_runtime_hours, 'op': '>=',
+                     'meets': demote_runtime_met},
                 ]
                 evidence['demote_prereqs'] = demote_prereqs
                 decisions.append(_attach_explorer_evidence({
