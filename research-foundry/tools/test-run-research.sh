@@ -183,6 +183,34 @@ SIDECAR_COUNT=$((SIDECAR_PLACEHOLDER + SIDECAR_SKIP))
 assert_eq "14. single auto-promote sidecar block emitted" "1" "$SIDECAR_COUNT"
 
 # ---------------------------------------------------------------------------
+# 14a-d (#950): wait_for_daemons is called before start_auto_promote_sidecar
+# so the sidecar's 60s grace period doesn't expire before the 18-agent
+# bootstrap cascade registers any daemons. Pre-fix, slow podman cold-starts
+# blew past the 60s grace and the sidecar died permanently with
+# "no daemons after 60s; sidecar exiting" -- no auto-promotion for the
+# remaining run. The new helper polls `agentis daemon list --json` every
+# 5s up to 300s and proceeds once at least target=1 daemon is registered.
+# ---------------------------------------------------------------------------
+assert_contains "14a. dry-run emits wait_for_daemons placeholder with target=1" "$OUT" \
+    "wait_for_daemons placeholder: target=1"
+assert_contains "14b. dry-run names the daemon registry dir + ceiling" "$OUT" \
+    "waiting for >=1 daemons in $WORK_DIR/run-default/laptop-node/.agentis/daemon/ (ceiling 300s)"
+WAIT_LINE="$(printf '%s\n' "$OUT" | grep -nF 'wait_for_daemons placeholder:' | head -1 | cut -d: -f1)"
+SIDECAR_LINE="$(printf '%s\n' "$OUT" | grep -nF 'auto-promote-sidecar placeholder:' | head -1 | cut -d: -f1)"
+if [ -n "$WAIT_LINE" ] && [ -n "$SIDECAR_LINE" ] && [ "$WAIT_LINE" -lt "$SIDECAR_LINE" ]; then
+    echo "[PASS] 14c. wait_for_daemons placeholder precedes auto-promote-sidecar placeholder"
+    PASS=$((PASS + 1))
+else
+    echo "[FAIL] 14c. wait_for_daemons placeholder precedes auto-promote-sidecar placeholder"
+    echo "       wait line: ${WAIT_LINE:-<missing>}; sidecar line: ${SIDECAR_LINE:-<missing>}"
+    FAIL=$((FAIL + 1))
+fi
+assert_contains "14d. orchestration body calls wait_for_daemons 1 before start_auto_promote_sidecar" \
+    "$(cat "$ORCH")" \
+    'wait_for_daemons 1
+start_auto_promote_sidecar'
+
+# ---------------------------------------------------------------------------
 # 15. Header-doc sanity (env vars documented).
 # ---------------------------------------------------------------------------
 SRC="$(cat "$ORCH")"
