@@ -2122,9 +2122,13 @@ signal_shutdown
 # snapshot must not break the shutdown path.
 if [ "$PERSISTENT_DISABLED" != "1" ]; then
     emit_step "snapshotting persistent memo to $PERSISTENT_DIR"
+    # #958: --laptop-dir wires the host-side memo file fallback so a
+    # daemon whose worker exited before the snapshot ran still
+    # contributes its on-disk JSONL value instead of "".
     if ! python3 "$TOOLS_DIR/persistent-snapshot.py" \
             --container research-foundry-laptop \
-            --output-dir "$PERSISTENT_DIR" >>"$ORCH_LOG" 2>&1; then
+            --output-dir "$PERSISTENT_DIR" \
+            --laptop-dir "$LAPTOP_DIR" >>"$ORCH_LOG" 2>&1; then
         emit_step "persistent snapshot failed (non-fatal); continuing shutdown"
     fi
 fi
