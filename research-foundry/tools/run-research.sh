@@ -225,6 +225,15 @@
 #   RESEARCH_AUTO_PROMOTE_INTERVAL_S
 #                                Seconds between sidecar ticks.
 #                                Default 300.
+#   RESEARCH_PID_RESYNC          1 enable pid-resync sidecar (default),
+#                                0 disable. Rewrites
+#                                $LAPTOP_DIR/.agentis/daemon/*.pid so
+#                                the host dashboard's pid_alive check
+#                                sees host PIDs instead of stale
+#                                container-internal PIDs (#951).
+#   RESEARCH_PID_RESYNC_INTERVAL_S
+#                                Seconds between pid-resync polls.
+#                                Default 30.
 #   RESEARCH_EXPLORER_REPLICAS
 #                                Initial explorer replica count seeded by
 #                                the bootstrap script. Each replica claims
@@ -1580,10 +1589,11 @@ setup_dashboard_view() {
 
 # --- 4) Cleanup trap ---
 AUTO_PROMOTE_PID=""
+PID_RESYNC_PID=""
 install_cleanup_trap() {
     emit_step "installing cleanup trap (stop + rm container; kill sidecars; rm sidecar install file + dashboard view)"
-    # shellcheck disable=SC2064  # Expand $AUTO_PROMOTE_PID at trigger time.
-    emit_cmd "trap '[ -n \"\${AUTO_PROMOTE_PID:-}\" ] && kill \"\$AUTO_PROMOTE_PID\" 2>/dev/null; rm -f \"$FED_DIR/.auto-promote-install.toml\" 2>/dev/null; rm -rf \"$FED_DIR/.agentis\" 2>/dev/null; podman stop --time 5 research-foundry-laptop 2>/dev/null || true; podman rm -f research-foundry-laptop 2>/dev/null || true' EXIT INT TERM"
+    # shellcheck disable=SC2064  # Expand $AUTO_PROMOTE_PID + $PID_RESYNC_PID at trigger time.
+    emit_cmd "trap '[ -n \"\${AUTO_PROMOTE_PID:-}\" ] && kill \"\$AUTO_PROMOTE_PID\" 2>/dev/null; [ -n \"\${PID_RESYNC_PID:-}\" ] && kill \"\$PID_RESYNC_PID\" 2>/dev/null; rm -f \"$FED_DIR/.auto-promote-install.toml\" 2>/dev/null; rm -rf \"$FED_DIR/.agentis\" 2>/dev/null; podman stop --time 5 research-foundry-laptop 2>/dev/null || true; podman rm -f research-foundry-laptop 2>/dev/null || true' EXIT INT TERM"
 }
 
 # --- 4.5) Auto-promote sidecar (#622, consolidated #638) ---
@@ -1747,6 +1757,75 @@ start_auto_promote_sidecar() {
     ) &
     AUTO_PROMOTE_PID=$!
     emit_step "auto-promote sidecar PID=$AUTO_PROMOTE_PID"
+}
+
+# --- 4.6) PID-resync sidecar (#951) ---
+# Resync .pid files inside $LAPTOP_DIR/.agentis/daemon/ so the host's
+# federation-dashboard and `agentis daemon list` see live host PIDs.
+# The daemons run INSIDE podman and write their container-internal PID
+# to .pid (small 3-digit numbers in a fresh container PID namespace).
+# On the host those PIDs are dead -- pgrep'd host PIDs are 1.3M-range
+# with no overlap. Without this resync the dashboard's pid_alive check
+# (cross-namespace /proc/<pid>) flips every daemon to "dead PID" /
+# "zombie" within seconds (#951).
+#
+# Loop walks every <agent>.pid (skips .watchdog.pid), reads line 3
+# (the .ag source path), looks up the host PID for that .ag via
+# pgrep + awk shape-match, rewrites line 1 in-place preserving
+# started_at + source. Polls every 30s. Self-terminates when the
+# container is gone (same pattern as auto-promote sidecar).
+# Multi-replica agents are handled by a per-.ag queue: host PIDs
+# round-robin across .pid files matching the same .ag path.
+#
+# Env knobs:
+#   RESEARCH_PID_RESYNC               1 enable (default), 0 disable
+#   RESEARCH_PID_RESYNC_INTERVAL_S    seconds between resyncs (default 30)
+start_pid_resync_sidecar() {
+    PID_RESYNC_ENABLED="${RESEARCH_PID_RESYNC:-1}"
+    PID_RESYNC_INTERVAL="${RESEARCH_PID_RESYNC_INTERVAL_S:-30}"
+    if [ "$PID_RESYNC_ENABLED" != "1" ]; then
+        emit_step "pid-resync sidecar: disabled via RESEARCH_PID_RESYNC=$PID_RESYNC_ENABLED"
+        return 0
+    fi
+    emit_step "starting pid-resync sidecar (interval=${PID_RESYNC_INTERVAL}s, rewrites ${LAPTOP_DIR}/.agentis/daemon/*.pid to host PIDs)"
+    if [ "$DRY_RUN" = "1" ]; then
+        emit_cmd "pid-resync-sidecar placeholder: cwd=$LAPTOP_DIR interval=${PID_RESYNC_INTERVAL}s"
+        return 0
+    fi
+    (
+        # Disable set -e/pipefail inherited from parent -- supervisor
+        # loop must survive transient pgrep/sed errors.
+        set +e
+        set +o pipefail
+        cd "$LAPTOP_DIR"
+        while podman ps --format "{{.Names}}" 2>/dev/null | grep -q "research-foundry-laptop"; do
+            declare -A _Q
+            while read -r pid path; do
+                _Q[$path]+="$pid "
+            done < <(pgrep -af 'agentis daemon-inner.*run-root' 2>/dev/null | awk '{
+                pid=$1
+                for (i=1; i<=NF; i++) if ($i ~ /^\/run-root\/.*\.ag$/) { print pid, $i; break }
+            }')
+            for pidfile in "$LAPTOP_DIR"/.agentis/daemon/*.pid; do
+                case "$pidfile" in *.watchdog.pid) continue ;; esac
+                [ -e "$pidfile" ] || continue
+                agpath=$(sed -n '3p' "$pidfile" 2>/dev/null)
+                [ -z "$agpath" ] && continue
+                q="${_Q[$agpath]}"
+                [ -z "$q" ] && continue
+                hostpid=${q%% *}
+                rest=${q#* }
+                _Q[$agpath]="$rest"
+                tail -n +2 "$pidfile" 2>/dev/null > "${pidfile}.tmp"
+                ( echo "$hostpid"; cat "${pidfile}.tmp" ) > "$pidfile"
+                rm -f "${pidfile}.tmp"
+            done
+            unset _Q
+            sleep "$PID_RESYNC_INTERVAL"
+        done
+    ) &
+    PID_RESYNC_PID=$!
+    emit_step "pid-resync sidecar PID=$PID_RESYNC_PID"
 }
 
 # --- 5) Tick stream (main research loop) ---
@@ -1992,6 +2071,7 @@ write_run_meta
 setup_dashboard_view
 spawn_container
 start_auto_promote_sidecar
+start_pid_resync_sidecar
 tick_stream
 
 if [ "$DRY_RUN" = "1" ]; then

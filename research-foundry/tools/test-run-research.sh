@@ -356,6 +356,21 @@ assert_contains "18j. cleanup trap removes FED_DIR/.agentis on EXIT/INT/TERM" "$
     "rm -rf \"$FED_DIR_DERIVED/.agentis\""
 
 # ---------------------------------------------------------------------------
+# 18k-m (#951): start_pid_resync_sidecar runs alongside the auto-promote
+# sidecar to rewrite container-internal PIDs in $LAPTOP_DIR/.agentis/
+# daemon/*.pid into host PIDs. Without this resync the dashboard's
+# pid_alive check (cross-namespace /proc/<pid>) flips every daemon to
+# "dead PID" / "zombie" within seconds. The cleanup trap kills its
+# background PID alongside AUTO_PROMOTE_PID.
+# ---------------------------------------------------------------------------
+assert_contains "18k. pid-resync sidecar emit_step appears in dry-run transcript" "$OUT" \
+    "starting pid-resync sidecar (interval=30s, rewrites $WORK_DIR/run-default/laptop-node/.agentis/daemon/*.pid to host PIDs)"
+assert_contains "18l. dry-run emits pid-resync-sidecar placeholder line" "$OUT" \
+    "pid-resync-sidecar placeholder: cwd=$WORK_DIR/run-default/laptop-node interval=30s"
+assert_contains "18m. cleanup trap kills PID_RESYNC_PID alongside AUTO_PROMOTE_PID" "$OUT" \
+    "[ -n \"\${PID_RESYNC_PID:-}\" ] && kill \"\$PID_RESYNC_PID\" 2>/dev/null"
+
+# ---------------------------------------------------------------------------
 # 23. #711 / #746: per-colony RESEARCH_<COLONY>_CLAUDE_MODEL env defaults
 # remain as backward-compat shims after #746 migrated routing to the
 # per-tier substrate. 8 colonies default opus, 10 default sonnet. The
