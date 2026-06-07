@@ -25,7 +25,7 @@
 // Run as daemon: agentis daemon agents/reviewer.ag --colony reviewer
 // Requires: exec capability, messaging capability.
 
-cb 200000000;
+cb 2000000000;
 
 type Verdict {
     verdict: string,

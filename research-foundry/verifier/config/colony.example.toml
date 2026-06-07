@@ -19,5 +19,5 @@ backend = "cli"
 [[agents]]
 name = "verifier"
 source = "agents/verifier.ag"
-cb_budget = 200000000
+cb_budget = 2000000000
 tick_interval_ms = 60000

@@ -29,7 +29,7 @@
 // Run as daemon: agentis daemon agents/submitter.ag --colony submitter
 // Requires: exec capability (tar / curl / sendmail), messaging.
 
-cb 200000000;
+cb 2000000000;
 
 type Metadata {
     title: string,

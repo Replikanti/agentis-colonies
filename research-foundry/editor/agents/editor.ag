@@ -23,7 +23,7 @@
 // Run as daemon: agentis daemon agents/editor.ag --colony editor
 // Requires: exec capability (latexmk + pdflatex), messaging.
 
-cb 200000000;
+cb 2000000000;
 
 type Edit {
     full_tex: string,

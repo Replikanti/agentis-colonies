@@ -18,7 +18,7 @@
 //   agentis daemon agents/groupprops-search.ag --colony groupprops-search
 // Requires: exec capability (curl + python3), messaging capability.
 
-cb 200000000;
+cb 2000000000;
 
 type Queries {
     queries_json: string,

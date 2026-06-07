@@ -20,5 +20,5 @@ backend = "cli"
 [[agents]]
 name = "skeptic"
 source = "agents/skeptic.ag"
-cb_budget = 200000000
+cb_budget = 2000000000
 tick_interval_ms = 60000

@@ -30,5 +30,5 @@ max_query_results = 10
 [[agents]]
 name = "arxiv-search"
 source = "agents/arxiv-search.ag"
-cb_budget = 200000000
+cb_budget = 2000000000
 tick_interval_ms = 120000
