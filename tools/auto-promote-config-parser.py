@@ -190,6 +190,10 @@ def main():
     print('CFG_DEMOTE_SLOPE_THRESHOLD=%s' % d.get('delta_slope_threshold', -0.05))
     print('CFG_DEMOTE_MIN_ENTRIES=%s' % d.get('min_entries_for_demote', 30))
     print('CFG_DEMOTE_HARD_FLOOR=%s' % d.get('hard_floor', 0.4))
+    # #948: bootstrap protection for the demote arm — mirrors the
+    # promote arm's `min_runtime_hours` so demote can never fire on the
+    # short-window noise the promote arm refuses to even evaluate.
+    print('CFG_DEMOTE_MIN_RUNTIME_HOURS=%s' % d.get('min_runtime_hours', 1.0))
 
     ec = cfg.get('evolve', {}).get('config', {})
     print('CFG_EVOLVE_GENERATIONS=%s' % ec.get('generations', 3))

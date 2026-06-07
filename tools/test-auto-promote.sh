@@ -1106,6 +1106,50 @@ else
     fail "demote arm floor" "$DEMOTE_FLOOR_CHECK from <$OUT_DEMOTE_FLOOR>"
 fi
 
+# Test 22.5: runtime-bootstrap case (#948) — explorer at propose tier
+# (0.6) with sustained negative mean delta (-0.20) but only 0.5h of
+# runtime MUST NOT demote. Mirrors the promote arm's `min_runtime_hours`
+# gate so demote cannot fire when promote could not even check
+# prerequisites. Pre-#948 the sidecar demoted explorer 0.6 -> 0.4 and
+# verifier 0.95 -> 0.8 at 0.3h runtime on noisy short-window mean_delta
+# during the 6h40m research-foundry run on 2026-06-06. Confidence=0.6
+# matches the explorer half of that bug AND keeps a valid promote step
+# in scope so the fall-through promote-check builds the `prereqs`
+# evidence list the assertion below walks.
+FED_DEMOTE_RUNTIME=$(make_demote_fixture "demote-runtime-1" "explorer" 40 "-0.20")
+STARTED_AT_RECENT=$(($(date +%s) - 1080))  # 18 minutes ago -> 0.3h < 1.0h
+DAEMONS_DEMOTE_RUNTIME="[{\"pid\":$$,\"agent_id\":\"demote-runtime-1\",\"source\":\"explorer.ag\",\"state\":\"running\",\"effective_state\":\"running\",\"colony\":\"explorer\",\"confidence\":0.6,\"started_at\":$STARTED_AT_RECENT}]"
+
+OUT_DEMOTE_RUNTIME=$(python3 "$SCRIPT_DIR/auto-promote-decisions.py" \
+    --preview --config "$SCRIPT_DIR/auto-promote-config.yaml" \
+    "$DAEMONS_DEMOTE_RUNTIME" "$FED_DEMOTE_RUNTIME")
+
+DEMOTE_RUNTIME_CHECK=$(python3 -c "
+import json, sys
+arr = json.loads(sys.argv[1])
+if len(arr) != 1:
+    print('arity:' + str(len(arr))); sys.exit(0)
+d = arr[0]
+if d.get('decision') == 'demote':
+    print('false positive: demoted at runtime=0.5h'); sys.exit(0)
+if d.get('decision') != 'skip':
+    print('decision:' + str(d.get('decision'))); sys.exit(0)
+ev = d.get('evidence') or {}
+prereqs = ev.get('prereqs') or []
+runtime_rows = [p for p in prereqs if p.get('name') == 'runtime_hours']
+if not runtime_rows:
+    print('no runtime_hours prereq row in evidence'); sys.exit(0)
+if runtime_rows[0].get('meets') is not False:
+    print('runtime_hours.meets is not False: ' + str(runtime_rows[0])); sys.exit(0)
+print('ok')
+" "$OUT_DEMOTE_RUNTIME" 2>&1 || true)
+
+if [ "$DEMOTE_RUNTIME_CHECK" = "ok" ]; then
+    pass "demote arm respects min_runtime_hours bootstrap gate (#948)"
+else
+    fail "demote arm runtime gate" "$DEMOTE_RUNTIME_CHECK from <$OUT_DEMOTE_RUNTIME>"
+fi
+
 # --- Test 23-24: podman exec routing (#900) ---
 # Cover the host-vs-container routing for the two agentis sidecar
 # operations (`memo set` + `daemon reload`). Pre-#900 the auto-promote
