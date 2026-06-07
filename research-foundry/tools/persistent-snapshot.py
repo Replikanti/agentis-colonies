@@ -43,6 +43,13 @@ Per-call resilience:
 - A completely failed run (e.g. `podman` not on PATH or container
   unreachable) exits non-zero before any tmp/final file is created so
   the orchestrator never sees a half-formed JSON.
+- Host-side memo file fallback (#958): when `--laptop-dir <path>` is
+  supplied and `agentis memo get` returns empty for a key, the helper
+  reads `<laptop-dir>/.agentis/memo/<key>.jsonl` directly from the
+  bind-mount source and recovers the value (last line wins). This
+  guards against the common case where a daemon's worker exited before
+  the snapshot ran -- `podman exec` retries silently fail, but the
+  on-disk JSONL still carries the latest value.
 
 Pattern: this is a heredoc-free Python helper following the precedent
 of `tools/auto-promote-config-parser.py` and `tools/auto-promote-decisions.py`
@@ -51,6 +58,7 @@ parser bug).
 
 Usage:
     persistent-snapshot.py --container <name> --output-dir <dir>
+                           [--laptop-dir <path>]
     persistent-snapshot.py --help
 """
 import datetime
@@ -142,6 +150,7 @@ def _print_help_and_exit():
 def _parse_args(argv):
     container = None
     output_dir = None
+    laptop_dir = None
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -161,6 +170,15 @@ def _parse_args(argv):
             output_dir = argv[i + 1]
             i += 2
             continue
+        elif a == "--laptop-dir":
+            # #958 host-side memo file fallback. Optional; older callers
+            # without the flag still work but lose the fallback.
+            if i + 1 >= len(argv):
+                sys.stderr.write("persistent-snapshot: --laptop-dir requires a value\n")
+                sys.exit(2)
+            laptop_dir = argv[i + 1]
+            i += 2
+            continue
         else:
             sys.stderr.write("persistent-snapshot: unknown argument: " + a + "\n")
             sys.exit(2)
@@ -170,7 +188,7 @@ def _parse_args(argv):
     if output_dir is None:
         sys.stderr.write("persistent-snapshot: --output-dir is required\n")
         sys.exit(2)
-    return container, output_dir
+    return container, output_dir, laptop_dir
 
 
 def _podman_exec(container, args):
@@ -361,27 +379,107 @@ def _knowledge_export(container, output_dir):
     return False
 
 
-def snapshot_keys(container, output_dir):
+def _list_memo_keys_on_host(laptop_dir):
+    """List `.jsonl` memo keys under `<laptop_dir>/.agentis/memo/` (#958).
+
+    Used as a fallback for `agentis memo list` when the container is
+    unreachable. Returns the set of bare key names (filename minus the
+    `.jsonl` suffix). Empty on any I/O failure or missing dir -- the
+    caller still emits the exact-key entries so a missing memo dir does
+    not blank the whole snapshot.
+    """
+    if not laptop_dir:
+        return []
+    memo_dir = os.path.join(laptop_dir, ".agentis", "memo")
+    if not os.path.isdir(memo_dir):
+        return []
+    try:
+        names = os.listdir(memo_dir)
+    except OSError:
+        return []
+    keys = []
+    for name in names:
+        if name.endswith(".jsonl"):
+            keys.append(name[: -len(".jsonl")])
+    return keys
+
+
+def _read_memo_from_host(laptop_dir, key):
+    """Read the latest value of `key` from the host-side memo file (#958).
+
+    Memo store layout: `<laptop_dir>/.agentis/memo/<key>.jsonl`, one JSON
+    line per write, last line wins. Returns the `.value` field as a string.
+    Returns "" on any failure (missing dir, missing file, malformed JSON,
+    missing field).
+
+    Used by the snapshot loop as a fallback when `podman exec agentis memo
+    get` returns empty -- typically because the daemon's worker already
+    exited and the in-container memo store is unreachable, even though the
+    JSONL file under the bind-mount source still carries the latest value.
+    """
+    if not laptop_dir:
+        return ""
+    path = os.path.join(laptop_dir, ".agentis", "memo", key + ".jsonl")
+    if not os.path.isfile(path):
+        return ""
+    try:
+        with open(path) as f:
+            last_line = ""
+            for line in f:
+                line = line.strip()
+                if line:
+                    last_line = line
+            if not last_line:
+                return ""
+            obj = json.loads(last_line)
+            v = obj.get("value", "")
+            return str(v) if v is not None else ""
+    except (OSError, ValueError):
+        # ValueError covers json.JSONDecodeError (subclass) on every
+        # supported Python without an explicit import.
+        return ""
+
+
+def snapshot_keys(container, output_dir, laptop_dir=None):
     """Snapshot the curated memo keys into <output_dir>/memo-snapshot.json.
 
     Pre-flight: ensure `podman exec <container> true` succeeds. Aborts
     before writing anything if podman is missing OR if the container is
     unreachable; that way the orchestrator never sees a half-formed
     JSON file.
+
+    When `laptop_dir` is supplied (#958), any key whose
+    `agentis memo get` returns empty is retried by reading the on-disk
+    `<laptop_dir>/.agentis/memo/<key>.jsonl` file directly. This
+    recovers values written by daemons whose workers exited before
+    the snapshot ran.
     """
     probe = _podman_exec(container, ["true"])
-    if probe is None:
+    container_live = probe is not None and probe.returncode == 0
+    if probe is None and not laptop_dir:
         sys.stderr.write(
             "persistent-snapshot: 'podman' binary not on PATH; aborting "
             + "(no snapshot written).\n"
         )
         return 3
-    if probe.returncode != 0:
+    if probe is not None and probe.returncode != 0 and not laptop_dir:
         sys.stderr.write(
             "persistent-snapshot: 'podman exec " + container + " true' failed "
             + "(rc=" + str(probe.returncode) + "); aborting (no snapshot written).\n"
         )
         return 3
+    if not container_live:
+        # #958: container is gone but --laptop-dir was supplied. Continue
+        # in host-only mode -- every per-key fetch will short-circuit to
+        # `_read_memo_from_host` because `_memo_get` returns "" on a
+        # dead container, and the host fallback recovers the on-disk
+        # value. This is the failure mode reported in #958 where the
+        # 6h40m run snapshotted empty values even though the underlying
+        # JSONL files had valid 0.7 entries.
+        sys.stderr.write(
+            "persistent-snapshot: container unreachable, falling back to "
+            + "host-only memo read from " + str(laptop_dir) + " (#958).\n"
+        )
 
     try:
         os.makedirs(output_dir, exist_ok=True)
@@ -398,7 +496,11 @@ def snapshot_keys(container, output_dir):
     keys_to_snapshot.extend(c + ":confidence" for c in CONFIDENCE_COLONIES)
 
     if PREFIX_GLOBS:
-        listed = _memo_list_keys(container)
+        if container_live:
+            listed = _memo_list_keys(container)
+        else:
+            # #958 host-only mode: enumerate from the bind-mount source.
+            listed = _list_memo_keys_on_host(laptop_dir)
         for prefix in PREFIX_GLOBS:
             for k in listed:
                 if not k.startswith(prefix):
@@ -421,7 +523,32 @@ def snapshot_keys(container, output_dir):
 
     snapshot = {}
     for key in deduped:
-        snapshot[key] = _memo_get(container, key)
+        if container_live:
+            value = _memo_get(container, key)
+        else:
+            # #958 host-only mode: skip the (always-failing) podman exec
+            # to keep shutdown latency bounded -- 100+ keys * 3s retry =
+            # 5+ minutes of dead waits otherwise.
+            value = ""
+        if not value and laptop_dir:
+            # #958 host-side fallback for the common case where the
+            # daemon's worker exited before the snapshot ran. Read the
+            # JSONL file directly from the bind-mount source.
+            host_value = _read_memo_from_host(laptop_dir, key)
+            if host_value:
+                if container_live:
+                    sys.stderr.write(
+                        "persistent-snapshot: " + key
+                        + " empty via container; host fallback recovered "
+                        + host_value + "\n"
+                    )
+                value = host_value
+            elif container_live:
+                sys.stderr.write(
+                    "persistent-snapshot: " + key
+                    + " missing on host AND container\n"
+                )
+        snapshot[key] = value
 
     payload = {
         "schema": SCHEMA_VERSION,
@@ -445,14 +572,18 @@ def snapshot_keys(container, output_dir):
     # knowledge-snapshot.json so run-research.sh's bootstrap can import
     # it back before colony daemons spawn. Failure-isolated: a missing or
     # corrupt KB export must not flip the memo-snapshot return code.
-    _knowledge_export(container, output_dir)
+    # Skip in host-only mode (#958) -- there is no live container to
+    # invoke `agentis knowledge export` against and the host-side KB
+    # rehydration path is out of scope for this fix.
+    if container_live:
+        _knowledge_export(container, output_dir)
 
     return 0
 
 
 def main(argv):
-    container, output_dir = _parse_args(argv)
-    return snapshot_keys(container, output_dir)
+    container, output_dir, laptop_dir = _parse_args(argv)
+    return snapshot_keys(container, output_dir, laptop_dir=laptop_dir)
 
 
 if __name__ == "__main__":

@@ -25,6 +25,10 @@
 #       materializes alongside memo-snapshot.json with byte-identical
 #       payload. Failure of the KB export must not flip the memo-only
 #       happy-path exit code.
+#   (8) Host-side memo file fallback (#958): with `--laptop-dir <fake>`
+#       and a dead container, assert the snapshot still writes
+#       memo-snapshot.json AND recovers `.value` fields from the
+#       on-disk `<laptop>/.agentis/memo/<key>.jsonl` files.
 #
 # Standard library only -- no pytest, no live federation.
 #
@@ -433,6 +437,75 @@ elif [ -f "$T7_DIR/knowledge-snapshot.json" ]; then
          "knowledge-snapshot.json was written"
 else
     pass "(7) kb-failure-isolated: memo lands, KB skipped, exit 0"
+fi
+
+# --- (8) Host-side memo file fallback (#958) ---
+# With --laptop-dir <fake> and a dead container (PODMAN_MODE=fail-all),
+# the helper must still write memo-snapshot.json AND populate
+# explorer:confidence from the on-disk JSONL file. Per-tick noise keys
+# under the bind-mount source must NOT bleed into the snapshot.
+T8_DIR="$WORK/t8-persistent"
+T8_LAPTOP="$WORK/t8-laptop"
+mkdir -p "$T8_LAPTOP/.agentis/memo"
+
+# Synthetic JSONL files: one valid confidence value, one exact-key, one
+# prefix-glob entry, one explorer:<pid>:specialty entry, plus a noise
+# per-tick key that the suffix filter must drop.
+printf '%s\n' \
+    '{"generation":0,"timestamp":1780778500,"value":"0.6"}' \
+    '{"generation":0,"timestamp":1780778527,"value":"0.7"}' \
+    >"$T8_LAPTOP/.agentis/memo/explorer:confidence.jsonl"
+printf '%s\n' \
+    '{"generation":0,"timestamp":1780778600,"value":"number_theory,combinatorics"}' \
+    >"$T8_LAPTOP/.agentis/memo/formulator:learned_known_topics.jsonl"
+printf '%s\n' \
+    '{"generation":0,"timestamp":1780778700,"value":"wrong-citation"}' \
+    >"$T8_LAPTOP/.agentis/memo/feedback:hitl_reject_reason:claim-99.jsonl"
+printf '%s\n' \
+    '{"generation":0,"timestamp":1780778800,"value":"group_theory"}' \
+    >"$T8_LAPTOP/.agentis/memo/explorer:912:specialty.jsonl"
+printf '%s\n' \
+    '{"generation":0,"timestamp":1780778900,"value":"tick-noise"}' \
+    >"$T8_LAPTOP/.agentis/memo/explorer:912:code:tick-3.jsonl"
+
+T8_RC=0
+PODMAN_MODE=fail-all python3 "$HELPER" \
+    --container research-foundry-laptop-DEAD \
+    --output-dir "$T8_DIR" \
+    --laptop-dir "$T8_LAPTOP" >"$WORK/t8.log" 2>&1 || T8_RC=$?
+
+if [ "$T8_RC" -ne 0 ]; then
+    fail "(8) host-fallback: helper exits 0 with dead container + --laptop-dir" \
+         "rc=$T8_RC; log: $(cat "$WORK/t8.log")"
+elif [ ! -f "$T8_DIR/memo-snapshot.json" ]; then
+    fail "(8) host-fallback: writes memo-snapshot.json" "file missing"
+else
+    if python3 -c '
+import json, sys
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+keys = data["keys"]
+assert keys.get("explorer:confidence") == "0.7", \
+    "explorer:confidence = " + repr(keys.get("explorer:confidence"))
+assert keys.get("formulator:learned_known_topics") == "number_theory,combinatorics", \
+    "formulator:learned_known_topics = " + repr(keys.get("formulator:learned_known_topics"))
+assert keys.get("feedback:hitl_reject_reason:claim-99") == "wrong-citation", \
+    "feedback:hitl_reject_reason:claim-99 = " + repr(keys.get("feedback:hitl_reject_reason:claim-99"))
+assert keys.get("explorer:912:specialty") == "group_theory", \
+    "explorer:912:specialty = " + repr(keys.get("explorer:912:specialty"))
+# Suffix-filter must drop per-tick noise even via the host enumerator.
+assert "explorer:912:code:tick-3" not in keys, \
+    "tick noise leaked into snapshot"
+# Confidence colonies that have no JSONL file on disk must still be
+# present as empty strings (curated list semantics preserved).
+assert keys.get("noticer:confidence", None) == "", \
+    "noticer:confidence = " + repr(keys.get("noticer:confidence", None))
+' "$T8_DIR/memo-snapshot.json" >/dev/null 2>"$WORK/t8.assert.log"; then
+        pass "(8) host-fallback: dead container + --laptop-dir recovers on-disk values"
+    else
+        fail "(8) host-fallback: dead container + --laptop-dir recovers on-disk values" \
+             "$(cat "$WORK/t8.assert.log")"
+    fi
 fi
 
 echo ""
