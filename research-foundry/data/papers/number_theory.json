@@ -4,34 +4,254 @@
   "compute_hints": "sympy (isprime, factorint, nextprime, gcd, totient), math.gcd, fractions.Fraction.",
   "papers": [
     {
-      "id": "2605.15147",
-      "title": "Improved Ramsey bounds for generalized Schur equations",
-      "abstract": "We show that for $m, r \\in \\mathbb{N}$ and $N > (2m+1)^r (r!)^{1/m}$, every $r$-coloring of the integers in the interval $[N]$ contains a monochromatic solution to the equation   \\[   x_1 + \\dots + \\dots x_{m+1} = y_1 + \\dots + y_m.   \\]   This generalizes and improves recent results of Ko\u015bcuiszko. We also show that if $N \\geq 2^{r}$, then every $r$-coloring of the integers in $[N]$ must always determine a monochromatic solution to the above equation for some $m \\geq 1$. The latter estimate is optimal."
+      "id": "2606.06327",
+      "title": "Arithmetic statistics of isogeny Selmer groups associated to hyperelliptic curves",
+      "abstract": "We determine asymptotic results for the average size of Selmer groups arising from certain isogenies related to Jacobians of hyperelliptic curves of genus $g\\geq 2$. We do so by combining Bhargava's geometry-of-numbers methods with new parametrisations coming from Vinberg theory, arising from representations related to the Dynkin diagrams of type $B$ and $C$. We additionally prove some lower bounds on the average size of these isogeny Selmer groups by using a formula of Greenberg--Wiles."
     },
     {
-      "id": "2605.15117",
-      "title": "Real geometric transcendence for the Gamma function",
-      "abstract": "We show that the $x$-axis is the only real algebraic curve in $\\mathbb R^2$ whose image via the Gamma function is contained in an algebraic curve. Our proof employs an elegant base-change argument due to Tamiozzo (2023) to deduce the result from the corresponding complex geometric transcendence result of Eterovi\u0107, Padgett and Zhao (2025). As an application, we use the complex and real geometric transcendence results to study analogues of the Manin--Mumford conjecture for the Gamma function."
+      "id": "2606.06243",
+      "title": "Stability of the smooth Casselman-Jacquet functor",
+      "abstract": "We establish and prove several results for the smooth Casselman-Jacquet submodule and quotient functors for real reductive groups. Other than exactness, surjectivity and globalization results, we establish a stability on the intersection of Jacquet subspaces. As an application, we establish a full version of the real Bernstein-Zelevinsky filtrations for smooth Fr\u00e9chet representations of moderate growth rate."
     },
     {
-      "id": "2605.15107",
-      "title": "Solutions for Hecke Sum Questions of Banerjee and Bringmann",
-      "abstract": "The present authors introduced a two-color partition series $S(q)$ and conjectured a Hecke-type formula for the even part of $(q^4;q^4)_\\infty S(q)$. Banerjee and Bringmann proved the conjecture by using indefinite theta functions, modular completions, and Sturm's theorem. They also asked whether a direct proof, for instance one based on Bailey-type ideas, could be found, and they suggested that the odd residue classes may be worth studying. We prove a two-variable refinement with an additional parameter $a$.   Our proof relies entirely on $q$-series combined with the Bailey pairs The original even identity and the odd identity then follow as corollaries by letting $a=1$. We also record parameter symmetries and cyclotomic companions, including a vanishing result at $a=i$."
+      "id": "2606.06241",
+      "title": "Decomposition Theorem for Perfectoid Rings along General Ideals",
+      "abstract": "Using Andr\u00e9's lemma and the excision square for perfectoidization coming from $p$-complete arc descent, we prove new structural results about perfectoid rings and perfectoidization. The main result is a tameness theorem for torsion in perfectoid rings: if $R$ is a perfectoid ring and $I\\subset R$ is an ideal, then the $I$-torsion in $R$ is $I_{\\mathrm{perfd}}$-almost zero. This yields an excision-type decomposition of $R$ along its $I$-torsion part. We also study (semi)perfectoid rings and perfectoid ideals and take the opportunity to make some structural remarks about them."
     },
     {
-      "id": "2605.15067",
-      "title": "On Vu's restricted box estimate in Waring's problem",
-      "abstract": "In 2000, Vu proved that the number of solutions of $x_1^k + \\cdots + x_s^k = N$ in an arbitrary box satisfies the expected Hardy--Littlewood upper bound with a power-saving error term, for $s \\geq O(8^k k^3)$. We show that one may take $s\\geq k^2 - k + O(\\sqrt{k})$."
+      "id": "2606.06222",
+      "title": "No three algebraic conjugates of degree sixteen sum to zero",
+      "abstract": "Let $d$ be the smallest positive integer, not divisible by $3$, for which there exists an algebraic number over $\\mathbb{Q}$ of degree $d$ whose some three algebraic conjugates sum to zero. Employing the classification of vertex-transitive graphs on 16 vertices of degree 6, we prove that $d\\neq 16$. This, combined with results obtained by Dubickas, Smyth and Stong \\cite{DubickasSmyth2006}, Dubickas and Jankauskas \\cite{DubickasJankauskas2015} and Virbalas \\cite{Virbalas2025a}, implies that $d=20$."
     },
     {
-      "id": "2605.15063",
-      "title": "The R\u00e9nyi entropy of the order of a random permutation",
-      "abstract": "We study the distribution of the order of a random permutation of $[n]$ through the lens of R\u00e9nyi entropy. In particular, we obtain an asymptotic for the R\u00e9nyi $q$-entropy of the order in the full range $1 \\leq q \\leq \\infty$. For $q > 1$, our results are quantitatively optimal and reveal a tight connection between the asymptotic behaviour of the R\u00e9nyi $q$-entropy and arithmetic properties of $n$. Of particular interest are the cases $q = \\infty$ and $q = 2$, which correspond to the maximum probability of achieving a particular order and the probability that two independent random permutations have equal orders, respectively. In the former case, we show that the probability in question is asymptotic to $1/n$ and additionally characterise the maximiser for sufficiently large $n$. In the latter case, we determine a minimal and maximal order for the probability as a function of $n$, of respective forms $c/n^2$ and $\\log^*n/n^2$. Our results provide an essentially complete answer to a set of questions raised by Acan, Burnette, Eberhard, Schmutz and Thomas, some of which go back to work of Erd\u0151s and Tur\u00e1n from the 1960s."
+      "id": "2606.06118",
+      "title": "On a conjecture on Romanoff type sumsets",
+      "abstract": "In this note, we generalize a 1950 result of P. Erd\\H os on upper bounds of $k$-th moment of Romanoff type representation functions. As an application, we give a conditional proof of a recent conjecture of Y.-G. Chen on Romanoff type sumsets under the assumption of the Hardy-Littlewood conjecture."
     },
     {
-      "id": "2605.15046",
-      "title": "Sophie Germain, math\u00e9maticienne extraordinaire: A story stranger than fiction",
-      "abstract": "Sophie Germain (1776-1831) was the first woman we know who did important original research in mathematics, specifically in elasticity theory and number theory. Celebrating her semiquincentennial year, we outline Germain's recently unearthed number theory results on Fermat's Last Theorem, in the context of her life, work, and interactions with Lagrange, Legendre, and Gauss. For two centuries her accomplishment on Fermat's Last Theorem was thought to consist of a single theorem attributed to her in a publication by Legendre, the first general result towards proving Fermat's Last Theorem. But recent discoveries in her handwritten manuscripts and correspondence with Legendre and Gauss show that she accomplished much more, albeit forgotten. In particular, she had a grand plan for proving Fermat's Last Theorem in its entirety, and carried this plan a long way, using then new tools, e.g., congruence, modular primitive roots, and permutations."
+      "id": "2606.06097",
+      "title": "Two notes on valued fields",
+      "abstract": "This paper studies two questions on valued fields: the metric dimension induced by an absolute value, and the uniform openness of multiplication. For nontrivial non-archimedean absolute values, we prove that the metric dimension equals the density character. In the archimedean case, it is 2 for subfields of $\\mathbb{R}$, while for non-real subfields of $\\mathbb{C}$ it is either 2 or 3, depending on invariance under complex conjugation. We also show that multiplication is uniformly open on every valued field. Finally, we prove that this property is genuinely metric, not purely topological, even on $\\mathbb{R}$ with a suitable compatible choice of metric."
+    },
+    {
+      "id": "2606.06092",
+      "title": "Higgs bundles on the Fargues-Fontaine curve",
+      "abstract": "In this paper, we introduce a notion of Higgs bundles on the Fargues-Fontaine curve. We establish a version of the BNR correspondence, which relates Higgs bundles to line bundles on suitable curves. We then describe an action of a Picard stack on the moduli stack of Higgs bundles and show that, modulo this action, there is a natural injective map of \u00e9tale-stacks from the product of $B_{dR}^+$-affine Springer fibers to the Hitchin fiber that induces an equivalence of categories on every geometric point. Finally, we discuss connections with number-theoretic objects."
+    },
+    {
+      "id": "2606.06086",
+      "title": "A Generalization of the Amdeberhan-Andrews-Ballantine Conjecture",
+      "abstract": "In this paper, we prove a generalization of a conjecture of Amdeberhan, Andrews, and Ballantine on double Lambert series. Motivated by a question raised by Cui, Kumar, and Singh concerning the existence of a generalization of this conjecture, we establish an identity in which the coefficients are given by the generalized divisor function $\u03c3_k(n)$. As a special case, our result includes the original conjecture."
+    },
+    {
+      "id": "2606.06068",
+      "title": "An Elementary Analysis of the Prime Partition Function",
+      "abstract": "Let $pp (n)$ denote the number of ways to write $n$ as a sum of primes. In this paper, we show that $$ \\log pp (n) \\sim 2\u03c0\\sqrt{\\frac{n}{3\\log n}}\\;. $$ While sharper estimates are already known, they rely on highly involved and lengthy proofs. In sharp contrast, our approach uses a short, elementary recipe that easily adapts to yield similar asymptotic estimates for several related, extensively studied problems."
+    },
+    {
+      "id": "2606.06024",
+      "title": "Recent Progress around Cohen-Lenstra Heuristics",
+      "abstract": "In 1983, Henri Cohen and Hendrik Lenstra proposed a conjecture about the distribution of the N-torsion of the class group of a random quadratic field, supported by what was at the time a large amount of computational evidence. The Cohen-Lenstra heuristics, which are still almost entirely unproven, have become one of the central foundational problems in arithmetic statistics. Recent years have seen a rapidly accelerated pace of development in Cohen-Lenstra problems. I will give a tour of these developments, including the work of Wood and her collaborators developing a fully fleshed out roster of generalized Cohen-Lenstra conjectures, with support from topology; Smith's theorems proving the Cohen--Lenstra conjectures for the 2-primary part of the class group, as part of more general theorems about Selmer groups in quadratic twists, leading to a resolution of the minimalist conjecture for elliptic curves; and recent work by Koymans and Pagano in the ell-primary case, expanding on Smith's work and proving Stevenhagen's conjecture on the negative Pell equation."
+    },
+    {
+      "id": "2606.06008",
+      "title": "Arithmetic Wu Formulas and the Generalized Hecke Theorem",
+      "abstract": "We construct canonical Steenrod square operations on the Geisser--Schmidt/Milne modified compactly supported \u00e9tale cohomology of separated finite-type schemes over rings of $S$-integers in which $2$ is invertible. This lets us extend Feng's notion of the absolute \u00e9tale Wu class from the finite-field setting to arithmetic bases away from $2$. A key technical input is a modified compactly supported relative Wu formula, extending Benoist's relative Wu formula to the arithmetic compact-support setting. Using this, we prove an absolute Wu formula for regular projective flat schemes over either finite fields of odd characteristic or rings of $S$-integers away from $2$: if $f\\colon X\\to B$ is such a scheme, then the absolute Wu class of $X$ is the product of the relative Wu class $\\operatorname{Sq}^{-1}(w_{\\mathrm{et}}(\u03c4_f))$ and the pullback of the absolute Wu class of the base. In the $S$-integer case, the base contribution is $1+\u03b2_B$, where $\u03b2_B$ is the Bockstein, equivalently the Kummer class of $-1$. As an application, we obtain an infinite family of universal mod-$2$ congruences among the Chern classes of regular projective flat schemes over such bases, governed by an arithmetic deformation of Hirzebruch's $2$-Todd series; this is the generalized Hecke theorem. In low dimensions these congruences recover Hecke's theorem on the different away from $2$, Serre's Riemann--Hurwitz theorem for spin bundles, Atiyah's theorem on theta characteristics over finite fields, and the smooth $3$-manifold branched-cover analogue of the Shusterman--Sawin theorem, while yielding new higher-dimensional congruences over both finite and arithmetic bases."
+    },
+    {
+      "id": "2606.05820",
+      "title": "Drinfeld modules in rank 2 with CM and S-unit j-invariants",
+      "abstract": "We prove the finiteness of the set of $j$-invariants of Drinfeld modules of rank 2 over $\\mathbb{F}_q[T]$ which are CM and $S$-units, for $S$ the infinite set of primes with even degrees. The proof is based on the study of ordinary reduction and supersingular reduction of Drinfeld modules, and on the splitting behaviour of primes dividing the difference of two Drinfeld singular moduli. We also provide an algorithm to compute a polynomial with coefficients in $\\mathbb{F}_q[T]$ and roots the $j$-invariants having CM by a given order, and use it to compute some explicit examples, providing for instance counterexamples to a conjecture of Dorman. For a maximal order $\\mathcal{O}$, we prove by a universality argument that our algorithm computes the Hilbert modular polynomial $H_\\mathcal{O}$."
+    },
+    {
+      "id": "2606.05771",
+      "title": "Exotic and inverted Kloosterman sums over semisimple algebras",
+      "abstract": "We introduce exotic Kloosterman sums and exotic inverted Kloosterman sums attached to non-commutative finite-dimensional semisimple algebras over a finite field $\\mathbf{F}_q$, and prove their reduction formulae to exotic Kloosterman and exotic inverted Kloosterman sums over commutative \u00e9tale $\\mathbf{F}_q$ algebras. We then obtain square-root estimates for these sums; for inverted sums an explicit correction term may appear."
+    },
+    {
+      "id": "2606.05549",
+      "title": "On explicit Fourier expansions of theta lifts to ${\\rm SO}(3,n+1)$ arising from elliptic newforms of level one",
+      "abstract": "Using degenerate Whittaker functions and explicit computations of Eisenstein series, we obtain explicit formulas for the Fourier expansions of theta lifts to the special orthogonal group $G={\\rm SO}(3,n+1)$ over $\\mathbb{Q}$, where $n\\ge 3$ and $G$ splits at all finite places. The theta lifts in question are Hecke eigen, non-cuspidal, square-integrable automorphic forms of weight $l$ ($l\\ge n+2$, even), arising from elliptic newforms for $\\SL_2(\\Z)$ of weight $l-\\frac{n-2}{2}$ when $n$ is even and $2l-n+1$ when $n$ is odd."
+    },
+    {
+      "id": "2606.05547",
+      "title": "Arithmetic Kashiwara Regularity and Orbit Classification for Filtered Strongly Equivariant $\\mathcal{D}^{\\dagger}$-Modules",
+      "abstract": "We prove an arithmetic analogue of Kashiwara regularity for filtered strongly equivariant Berthelot arithmetic $\\mathscr D^\\dagger$-modules on formal flag varieties. Let $\\mathcal G$ be a split connected reductive group scheme over a complete discrete valuation ring of mixed characteristic, let $\\mathfrak X=\\widehat{\\mathcal G/\\mathcal B}$ be the formal flag variety, and let $\\mathcal K\\subseteq\\mathcal G$ be a smooth closed subgroup whose special fiber acts on $X_s$ with finitely many separable orbits. We introduce a filtered strong equivariance condition requiring infinitesimal equivariance to be realized on good finite-level models. This condition allows the principal symbols of the fundamental vector fields to be controlled at the level where Berthelot characteristic varieties are defined. We prove that the characteristic variety of every filtered strongly equivariant coherent $\\mathscr D^\\dagger_{\\mathfrak X,\\mathbb Q}$-module is contained in the union of conormal bundles to the $\\mathcal K_s$-orbits; hence such modules are holonomic. In the Frobenius range, Caro's stability theorem for $F$-holonomicity over smooth projective formal schemes upgrades this to geometric overholonomicity. As a consequence, simple Frobenius filtered strongly equivariant coherent arithmetic $\\mathscr D^\\dagger$-modules are classified by pairs $(O,E)$, where $O$ is a $\\mathcal K_s$-orbit and $E$ is an irreducible $\\mathcal K$-equivariant overconvergent $F$-isocrystal on $(O,\\overline O)$ whose intermediate extension satisfies the filtered strong condition. The result is a regularity theorem under a finite-level equivariance hypothesis, rather than an existence theorem for that hypothesis."
+    },
+    {
+      "id": "2606.05340",
+      "title": "Hasse-Weil Zeta Functions Modulo a Prime",
+      "abstract": "Let $\\mathbb{F}_q$ be a finite field of characteristic $p$ and $\u03c0\\colon Y\\to X$ be a finite $\\mathbb{F}_q$-morphism of separated $\\mathbb{F}_q$-schemes of finite type. Suppose $\u03c0$ is generically Galois with group $G$ of prime order $r\\neq p$. We determine the mod-$r$ reduction of the zeta function of $Y$ in terms of the zeta function of $X$ and the branch locus $Z\\subset X$ of $\u03c0$. We give applications to curves and to numerators of hyperelliptic/superelliptic curves."
+    },
+    {
+      "id": "2606.05105",
+      "title": "Stochastically evolving ellipsoids with symmetries",
+      "abstract": "We prove that there is a universal constant $c > 0$ such that, along an infinite sequence of dimensions $N$, there are lattice sphere packings in $\\mathbb{R}^N$ of density at least $c N^2 \\log\\log N \\, 2^{-N}$, improving the previous best bound due to Klartag by a $\\log\\log N$ factor. The proof follows Klartag's stochastic ellipsoid evolution process, subject to the cyclotomic symmetries introduced by Venkatesh."
+    },
+    {
+      "id": "2606.05096",
+      "title": "Khintchine's Theorem for Symmetric matrices via Flows on the Space of Symplectic Lattices",
+      "abstract": "We establish Diophantine approximation results for real symmetric matrices by collections of linearly independent integer vectors. For $X \\in \\mathrm{Sym}_d(\\mathbb{R})$, we prove a Dirichlet-type theorem guaranteeing the existence of integral Lagrangian frames $(Q, P) \\in \\mathrm{Mat}_{d \\times 2d}(\\mathbb{Z})$ that satisfy $\\lVert QX + P \\rVert_{\\mathrm{op}} \\leq c_d/N$ and $\\lVert Q \\rVert_{\\mathrm{op}} \\leq N$ for any $N \\geq 1$. Furthermore, we establish a Khintchine-type zero-one law, demonstrating that the size of the set of $\u03c8$-approximable symmetric matrices is determined by the convergence or divergence of the series $\\sum_{q \\geq 1} q^{\u03c2- 1}\u03c8(q)^\u03c2$, where $\u03c2= d(d+1)/2$. The proofs rely on the reduction theory of the Siegel upper half-space, dynamical formulation over the space of symplectic lattices, and an analysis of the Siegel transform adapted to count Lagrangian frames instead of single lattice points."
+    },
+    {
+      "id": "2606.04983",
+      "title": "The leading constant in Malle's conjecture",
+      "abstract": "We give an overview of a recent conjecture of the authors on the leading constant in Malle's conjecture on number fields of bounded discriminant. This comes from applying the philosophy from Manin's conjecture on rational points of bounded height on Fano varieties to classifying stacks. To make these ideas more accessible we assume no background in algebraic geometry, which requires some new perspectives and alternative approaches to the theory. We also give some new conjectures on multi-heights and Bhargava's heuristics on counting with local conditions imposed."
+    },
+    {
+      "id": "2606.05251",
+      "title": "The Case of the Second Smallest Modulus: or why we cannot be arbitrarily careless?",
+      "abstract": "We present a concise, elementary proof that the second smallest modulus of a covering system must be bounded, simplifying the known results through a maximality argument."
+    },
+    {
+      "id": "2606.04858",
+      "title": "Integer points close to a transcendental curve: an algorithmic approach",
+      "abstract": "In this article, we propose an algorithmic approach to determine the integer points located near a transcendental curve. This approach is closely related to a celebrated work by Bombieri and Pila and to the so-called Coppersmith's method. We establish the underlying theoretical foundations, prove the algorithms, study their complexity and present practical experiments; we also compare our approach with previously existing ones. From a practical point of view, we focus on an instance of our general problem, called the Table Maker's Dilemma, whose solving makes it possible to evaluate a given function with correct rounding. Our experiments show a significant speedup. In particular, our results show that the development of a correctly rounded mathematical library for the binary128 format is now possible at a much smaller cost than with previously existing approaches."
+    },
+    {
+      "id": "2606.04760",
+      "title": "Correspondence of discrete series representations of $\\mathrm{GSp}_{2n}$ and its inner form",
+      "abstract": "We construct a correspondence with a character equation of discrete series representations of $\\mathrm{GSp}_{2n}$ over a $p$-adic field and its inner form for $p>2$ and $n\\geq 2$. This is a generalization of the works by Chan and Gan and the local Jacquet-Langlands correspondence. Moreover, our results partially reveal what the local Langlands correspondence of $\\mathrm{GSp}_{2n}$ and its inner form over $p$-adic fields should be."
+    },
+    {
+      "id": "2606.04744",
+      "title": "Representations of positive integers by three almost-prime squares",
+      "abstract": "Let $P_r$ denote an integer with at most $r$ prime factors, counted with multiplicity. It is known that every sufficiently large integer $N$ satisfying $N \\equiv 3 \\pmod{24}$ and $5 \\nmid N$, can be written in the form $N= x_1^2+x_2^2+x_3^2$ where $x_1,x_2,x_3$ are integers. In this paper, we prove that the above representation in the following two different forms (i) $x_1x_2x_3$ is a $P_{67}$-number; (ii) each $x_i$ is a $P_{27}$-number.   This result improves on the previous result of Waibel\\cite{Wa}, in which $P_{72}$ was obtained in place of $P_{67}$. The proofs combine the higher-dimensional sieve, a Richert-type weighted sieve method introduced by Cai \\cite{Cai} with a Bombieri-Vinogradov type result given by Waibel\\cite{Wa}. Applying the same method in a one dimensional sieve setting, we also show that every sufficiently large $N$ not of the form $4^k(8l+7)$ can be written in the form \\[ N = x^{2} + y^{2} + (2^{a} z)^{2}, \\] where $x,y,a,z$ are non-negative integers and $z$ is a $P_{18}$-number. This improves upon a result of Banerjee \\cite{Ban} who obtained $P_{118}$ in place of $P_{18}$."
+    },
+    {
+      "id": "2606.04677",
+      "title": "An Explicit Surjectivity Threshold for Digit Sums of Primes",
+      "abstract": "Let $s(n)=s_{10}(n)$ be the decimal sum-of-digits map. Building on the circle-method framework of Drmota-Mauduit-Rivat for digital restrictions on primes, we make the constants explicit at the points needed to obtain an effective surjectivity statement for digit sums of primes. We exhibit an explicit integer $M < 1.78 \\times 10^{32}$ such that every integer $m \\ge M$ with gcd$(m,9)=1$ occurs as $s(p)$ for at least one prime $p$. We also prove an explicit lower bound $A_m(10^{2m/9}) \\ge C_q(m) 10^{2m/9}/m^{3/2}$, where $C_q(m)$ is explicit, positive above the sufficient threshold, and bounded away from $0$ along each admissible residue class.   Existence of a non-numerical threshold follows from the DMR asymptotic theory and was noted by Harman; to the best of our knowledge, this is the first published explicit numerical threshold for this surjectivity statement. The proof combines explicit major-arc estimates, a fully explicit replacement for DMR's implicit prime exponential-sum input, and constant-tracked Type-II minor-arc estimates.   As an application, we prove the infinitude of OEIS A070027, the primes whose iterated digit-sum chain remains prime until reaching a one-digit prime. We also record related effective consequences for additive primes and digit-sum additive decompositions."
+    },
+    {
+      "id": "2606.04649",
+      "title": "Local-global conjugacy questions for affine extensions",
+      "abstract": "Boston and Jones constructed a probabilistic model, called the Markov model, in order to predict the cycle structures of elements in Galois groups $G_n(f)$ associated to the $n$-th iterate of a quadratic postcritically finite polynomial $f$ over a number field. Goksel refined this model, introducing the 'even' Markov groups $M_n(f)$. These groups conjecturally contain a copy of $G_n(f)$, leading to questions about local-global conjugacies within the larger automorphism group $\\operatorname{Aut}(T_n)$ of the first $n$ levels of the binary rooted tree coming from arboreal representations of the Galois groups. While the conjugacy results found by Goksel were restricted to the study of these automorphism groups, we generalise the findings to affine extensions of groups by permutation representations, using a cohomological argument. Furthermore, we provide a counterexample to the main conjecture proposed by Goksel, demonstrating that more work is required to resolve the underlying questions regarding Markov models."
+    },
+    {
+      "id": "2606.04512",
+      "title": "Digit frequencies and class numbers",
+      "abstract": "Let $p>3$ be a prime and $b\\ge 2$ an integer such that $p$ does not divide $b$. Then $1/p$ has a periodic digit expansion with respect to the basis $b$. The length $m$ of the period is the (multiplicative) order of $b$ mod $p$. In the case $m=(p-1)/2$, the frequency of each digit $k\\in\\{0,1,\\ldots, b-1\\}$ can be expressed in terms of generalized (first order) Bernoulli numbers. In some cases only Bernoulli numbers belonging to quadratic characters occur. This means that the frequencies can be written in terms of class numbers of imaginary quadratic number fields (the so-called class number case). In the present paper we classify the numbers $p$ and $b$ falling under the class number case. We also highlight one of the simplest examples not falling under this case ($p\\equiv 1$ mod $4$, $b=10$) and the most complex example of the class number case. Moreover, we show that knowing the frequency of each $k$ is equivalent to knowing the respective Bernoulli numbers."
+    },
+    {
+      "id": "2606.04508",
+      "title": "Weighted Recursions for Hurwitz Class Numbers",
+      "abstract": "We establish new recursions for Hurwitz class numbers with polynomial weights. In contrast to previous recursions, our results decouple class numbers of even and odd discriminants. Our main tool is the vector-valued holomorphic projection operator applied to mock modular forms. We invoke representation theory to connect the relevant spaces of vector-valued modular forms to spaces of classical new and old forms. We thereby leverage the vanishing of spaces of vector-valued cusp forms not available in the scalar case."
+    },
+    {
+      "id": "2606.04371",
+      "title": "Primitive inhomogeneous approximation for fixed non-singular frequencies",
+      "abstract": "We prove a high-dimensional primitive inhomogeneous Diophantine approximation result for fixed non-singular simultaneous frequencies. The frequency class is explicit and has full Lebesgue measure."
+    },
+    {
+      "id": "2606.04344",
+      "title": "A Note on Jacobians with Prescribed Factors",
+      "abstract": "Over an infinite field, we prove a refinement of Matsusaka's theorem in which the complementary isogeny factor can be made absolutely simple of arbitrarily large dimension. We also discuss related questions around relative simplicity and the isogeny Schottky problem."
+    },
+    {
+      "id": "2606.04336",
+      "title": "Voronoi-Hankel Transforms",
+      "abstract": "We prove that the $\u03c0$-Fourier transform introduced by Jiang--Luo and the Voronoi--Hankel transform for $\u03c0$ introduced by the last author are essentially the same one. We give a systematical study of the relevant kernel function in the non-archimedean case, including the asymptotic behavior at $0$ and $\\infty$ and some simple integral representation based on the local Langlands correspondences for the essentially tame supercuspidals. As an application, we give an effective version of the stability theorem for the local gamma factors."
+    },
+    {
+      "id": "2606.04203",
+      "title": "Enumeration of modular forms for $\u0393_1(N)$",
+      "abstract": "This paper considers holomorphic modular forms for $\u0393_1(N)$ of integral weight of the form $$f^{(N)}_{\\mathbf a}(\u03c4) =q^{s} (q^{N};q^{N})_{\\infty}^{a_0}\\prod_{j=1}^{\\lfloor N/2 \\rfloor}(q^j,q^{N-j};q^N)_\\infty^{a_j}, \\quad \\mathbf a = (a_1, \\ldots, a_{\\lfloor N/2 \\rfloor}),$$ for fixed $a_0=2k \\in 2 \\Bbb Z_{\\ge 0}$. We show that the number of relevant exponent vectors $\\mathbf a$ is finite and characterize them in terms of the $\\mathbb{Q}$-rational cuspidal divisor class group of $X_{1}(N)$. Effective procedures are given for counting the admissible exponents by enumerating the corresponding polytopes. This leads to formulas for the number of exponent vectors in terms of quasipolynomials in $k$."
+    },
+    {
+      "id": "2606.03970",
+      "title": "Some new results on determinants and permanents",
+      "abstract": "In this paper we confirm several conjectures on determinants and permanents. For example, we prove that for any prime $p\\equiv3\\pmod 4$ the number $2\\det[a_{jk}]_{0\\le j,k\\le (p-1)/2}$ is congruent to a square modulo $p$, where $a_{jk}=(\\frac{j+k}{p})+(\\frac{j^2+k^2}{p})$ with $(\\frac{\\cdot}{p})$ the Legendre symbol. We also prove that ${\\rm per}[j^{k-1}]_{1\\leq j,k\\leq n-1}\\equiv0\\pmod n$ for any integer $n>1$ with $n\\not\\equiv2\\pmod 4$."
+    },
+    {
+      "id": "2606.03902",
+      "title": "The Abel--Jacobi map over the twistor-$\\mathbb{P}^1$ and real local class field theory",
+      "abstract": "We study the Abel--Jacobi map over the twistor-$\\mathbb{P}^1$ in the context of Scholze's geometrisation of the real local Langlands correspondence. In a similar spirit to a result of Fargues over the Fargues--Fontaine curve, we prove that pullback along the Abel--Jacobi map induces an equivalence on Picard groupoids and use this to recover local class field theory for archimedean local fields."
+    },
+    {
+      "id": "2606.03896",
+      "title": "A $q$-Analogue of a Supercongruence Related to Van Hamme's (B.2) Supercongruence",
+      "abstract": "Motivated by the recent work of Li and Wang on parametric generalizations of Van Hamme's $(C.2)$ supercongruence in the $q$-setting, we establish $q$-analogues of a supercongruence related to Van Hamme's $(B.2)$ supercongruence, recently obtained by the authors. In particular, we derive parametric extensions of these $q$-supercongruences by constructing suitable pairs of hypergeometric functions through the $q$-WZ method."
+    },
+    {
+      "id": "2606.03791",
+      "title": "Half of finite abelian groups are unit groups",
+      "abstract": "A group is called realizable if it is the group of units in a ring with identity. The classification of realizable groups is a difficult open problem -- originally posed by L\u00e1szl\u00f3 Fuchs -- and is an active area of research. Realizable groups seem rare, but their proportion within a fixed class of groups (cyclic, dihedral, finite abelian, etc.) varies. To quantify this proportion, we introduce the realizable density of a class of finite groups as an analog of natural density for subsets of the natural numbers. The realizable finite cyclic groups and the realizable finite abelian $p$-groups for $p$ odd have been classified; we prove that their realizable densities are 1/4 and 0, respectively. The realizable finite abelian 2-groups -- and more generally the realizable finite abelian groups -- have not been fully classified, and these special cases appear quite difficult. Nonetheless, we prove that the realizable density of finite abelian 2-groups is 1 and the realizable density of finite abelian groups is 1/2. Our work combines existing classification theorems for realizable groups with tools from analytic number theory."
+    },
+    {
+      "id": "2606.03781",
+      "title": "Pair correlation of $\u03b1n^\u03b8$ for random $\u03b8$",
+      "abstract": "For fixed $\u03b1>0$, we show that the sequence $\\{\u03b1n^\u03b8\\}$ has Poissonian pair correlation for Lebesgue-almost all $\u03b8\\in (0,\\frac{3}{5})\\cup(3,\\infty)$. This improves a result of Technau and Yesha, who proved the same for almost all $\u03b8>7$. The approach of Technau and Yesha was based on a repulsion principle, which roughly allows one to estimate the variance of the pair correlation function using the fourth derivative of the phase. In our approach, we split the $\u03b8$-integration in the variance into many short intervals and show that most of the integrals can be estimated using the first derivative. The problem is then reduced to several counting estimates, which we prove using moments of the Riemann zeta function and exponent pairs."
+    },
+    {
+      "id": "2606.03779",
+      "title": "Complete Families of Curves in the Moduli Space of Genus g Curves",
+      "abstract": "Let $\\mathcal{M}_g$ be the moduli space of smooth curves of genus $g$. The image of a non-constant morphism from a curve $T$ to $\\mathcal{M}_g$ is a curve in $\\mathcal{M}_g$. By work of Gonz\u00e1lez D\u00edez and Harvey, for every integer $g \\geq 3$, there exists a complete curve in $\\mathcal{M}_g$. Here we generalize the construction to produce new complete curves in $\\mathcal{M}_g$. We also find a formula for the genus of each curve $T$ using Galois theory for function fields."
+    },
+    {
+      "id": "2606.03778",
+      "title": "The Fontaine operator at cusps of modular curves at infinite level",
+      "abstract": "We explicitly calculate Pan's geometric intertwining operator and the Fontaine operator on modular curves at infinite level via $q$-expansions, using Heuer's theory of cusps at infinite level. We prove that these two operators coincide on such expansions up to an explicit constant. As an application, we combine this result with $q$-expansion principles to provide a new proof of Pan's theorem that these operators are equal on the locally analytic vectors of completed cohomology of modular curves."
+    },
+    {
+      "id": "2606.03627",
+      "title": "On the prime field spherical restriction conjecture in four dimensions: breaking the Stein-Tomas exponent and applications",
+      "abstract": "We introduce a method based on horizontal slicing and a plane-then-line stopping-time decomposition for the prime field spherical restriction problem in four dimensions. The method is designed to overcome the Kloosterman obstruction in the spherical Bochner--Riesz kernel by decomposing each critical horizontal slice into rich-plane, rich-line-and-poor-plane, and poor-line-and-poor-plane components, which are then treated by distinct affine-geometric mechanisms. As a quantitative consequence of this structural method, we prove that \\[   R_{S_j}^*(2\\to r)\\lesssim 1 \\] for every nonzero sphere $S_j\\subset\\mathbb{F}^4$ and every $r>23/7$. As an application, we obtain the first improvement over the twenty-year-old $(d+1)/2$ threshold in the four-dimensional prime field Erd\u0151s-Falconer distance problem."
+    },
+    {
+      "id": "2606.03579",
+      "title": "An Iwasawa-type asymptotic formula for multiple $\\mathbb{Z}_p$-coverings of graphs",
+      "abstract": "For a possibly ramified $\\mathbb{Z}_p^d$-covering of connected graphs, we establish an Iwasawa-type asymptotic formula for the growth of the $p$-adic valuations of the complexities. The formula is expressed as a polynomial in $n$ and $p^n$ with explicit leading coefficients $\u03bb$ and $\u03bc$; in particular, we eliminate the error term of the form $O(p^{(d-1)n})$ appearing in earlier work. We then establish a Kida-type formula describing the behavior of $\u03bb$ under a $p$-covering between $\\mathbb{Z}_p^d$-coverings, assuming $\u03bc= 0$. Finally, for any fixed $p$ and integer $d \\geq 2$, we construct an unramified $\\mathbb{Z}_p^d$-covering of a bouquet with prescribed $\u03bb$- and $\u03bc$-invariants."
+    },
+    {
+      "id": "2606.03482",
+      "title": "Majorization and Gaussian-Mass Maximality for Construction-A Lattices from Binary Self-Dual Codes",
+      "abstract": "Regev and Stephens-Davidowitz conjectured that the integer lattice maximizes Gaussian mass among integral lattices of a given rank. We prove this, including the equality case, for all unimodular Construction-A lattices arising from binary self-dual codes. The proof reduces the theta-series inequality to a sharp majorization statement for codes: if $C$ is a binary self-dual $[2k,k]$ code, then the half-weight distribution of $C$ is dominated in convex order by $\\operatorname{Bin}(k,1/2)$, which is the corresponding distribution for the repetition-code model of $\\mathbb{Z}^{2k}$. Indeed, after putting $C$ in systematic form $[I\\mid A]$, self-duality gives $AA^T=I$ over $\\mathbb{F}_2$, so for a uniformly random message $a$ the two weights $\\operatorname{wt}(a)$ and $\\operatorname{wt}(aA)$ have the same binomial law. The half-weight of the resulting codeword is their average, and Jensen's inequality then gives convex-order domination. Applied to the convex test functions that build the theta series, this yields a sum-of-squares formula for the Gaussian-mass gap; applied to hinge functions, it gives coefficientwise nonnegativity of the reduced gap polynomial."
+    },
+    {
+      "id": "2606.03472",
+      "title": "Planes in quadratic 4-space and associated shapes of lattices",
+      "abstract": "Let $Q=-x_1^1-x_2^2-x_3^2+x_4^2$ be the standard signature $(1,3)$ quadratic form. To each non-degenerate rational plane $L$ in the four-dimensional quadratic space $(\\mathbb{Q}^4,Q)$ we can naturally attach a periodic geodesic on the Bianchi orbifold $\\mathrm{SL}_2(\\mathbb{Z}[i])\\backslash \\mathbb{H}^3$ which records the position of $L$ in the Grassmannian up to integer rotations. Moreover, each such plane $L$ defines a CM point and a periodic geodesic on the modular curve through restriction of $Q$ to $L$ and its orthogonal complement. Lastly, the local isomorphism between $\\mathrm{SO}_{1,3}(\\mathbb{R})$ and $\\mathrm{SL}_2(\\mathbb{C})$ gives rise to a further periodic geodesic on the Bianchi orbifold.   In this article, we exhibit a natural coupling of all the above objects and prove simultaneous equidistribution under a Linnik-type splitting condition. The main ingredient is the classification of joinings of higher-rank diagonalizable actions on homogeneous spaces due to Einsiedler and Lindenstrauss."
+    },
+    {
+      "id": "2606.03228",
+      "title": "Cassini's identity for k-bonacci numbers",
+      "abstract": "Efforts have been made to extend Cassini's identity (also known as Simson's identity) to the k-step or k-bonacci numbers for decades. These efforts have lacked both completeness of result and simplicity of proof, and this question remains open and relevant. In this note, we offer a definitive solution as well as the generalization of both Catalan's and Vajda's identities."
+    },
+    {
+      "id": "2606.03062",
+      "title": "On $\\mathbb J$-strata with Parahoric Stabilizers in Affine Deligne-Lusztig Varieties",
+      "abstract": "In this paper, we study the $\\mathbb J$-stratification of basic affine Deligne-Lusztig varieties for a minuscule cocharacter $\u03bc$. This stratification was introduced by Chen-Viehmann and has been expected to serve as an interesting tool for studying basic loci in Shimura varieties. We parametrize the $\\mathbb J$-strata whose stabilizers in the Frobenius-twisted centralizer group are parahoric by constructing a natural bijection to combinatorial invariants called small cocharacters. We further prove that the cardinality of these sets is equal to that of a certain subset of the Weyl group orbit of $\u03bc$. A relationship with the weakly fully Hodge-Newton decomposability of Chen-Tong is also discussed."
+    },
+    {
+      "id": "2606.03009",
+      "title": "A conjecture of Glasby, Praeger, and Unger on permutations of $S_n$",
+      "abstract": "We prove a conjecture of Glasby, Praeger, and Unger concerning the symmetric group $S_{n}$. Let $\u03c0_{n}$ denote the proportion of elements of $S_{n}$ that are pre-$p$-cycles for some prime $p\\in[2, n-3]$. We prove that $\u03c0_{n} > 1/3$ for all $n\\geq 8$."
+    },
+    {
+      "id": "2606.02975",
+      "title": "Diagonal Condition in Multiplication Table of $\\displaystyle {\\, \\mathbb{Z} [i] / (\u03b1) }$",
+      "abstract": "Multiplication table of a ring with identity 1 is said to have the diagonal condition if 1s occur only on the main diagonal. In this paper, we study the diagonal condition in the ring of Gaussian integers $\\mathbb{Z}[i]$. Furthermore, we also find the Gaussian integers $\u03b1$ so that the rings of Gaussian integers modulo $\u03b1$ satisfy the diagonal condition."
+    },
+    {
+      "id": "2606.02904",
+      "title": "On the Argument of the Lerch, Chowla--Selberg Formula and CM Values of $\u03b7(\u03c4)$",
+      "abstract": "We give a completely explicit Lerch, Chowla--Selberg formula without   absolute values of the Dedekind eta function, and give some applications,   in particular to the argument of individual CM values of the eta function.   We also give precise conjectures on these CM values and a large table   supporting them."
+    },
+    {
+      "id": "2606.02870",
+      "title": "On maximal Dynkin friezes",
+      "abstract": "The maximal entries of Dynkin friezes over the positive integers have recently been determined for all finite Dynkin types except $B_n$ and $D_n$. In this note, we explicitly construct large positive integral points on affine cluster varieties of type $B_n$ (resp. $D_n$), giving rise to friezes of types $B_n$ (resp. $D_n$) over the positive integers with largest entries $F_{n+1} F_{n+2} - 1$ (resp. $F_n F_{n+1} - 1$) where $F_k$ is the $k$-th Fibonacci number. We conjecture that these are the maximal possible entries for their respective Dynkin types."
+    },
+    {
+      "id": "2606.02799",
+      "title": "On the Schematic and Analytic Constructions of the Local Langlands Category",
+      "abstract": "We prove a folklore conjecture identifying two categorical enhancements of the automorphic side of the local Langlands correspondence. Concretely, we construct an equivalence for torsion coefficients between the category considered by Zhu and the one considered by Fargues-Scholze. To achieve this, we revisit Scholze's analytification functor and apply the first author's theory of kimberlites. We discuss unconditional applications to the splitting of the semi-orthogonal decomposition on BunG, and the compatibility with Eisenstein functors. Finally, we formulate a linearity conjecture for our functor with which we can show new vanishing statements for the cohomology of local Shimura varieties, and perverse exactness statements for Hecke operators."
+    },
+    {
+      "id": "2606.02792",
+      "title": "Explicit generators of the space of modular forms",
+      "abstract": "Let $S_\u03ba$ be the space of cusp forms of weight $\u03ba$ and level one, and let $S_\u03ba^{\\ast}$ denote its dual space. In this paper, we find explicit spanning subsets of $S_\u03ba$ consisting of Rankin-Cohen brackets of Eisenstein series and explicit subsets of periods that span $S_\u03ba^{\\ast}$."
     }
   ]
 }

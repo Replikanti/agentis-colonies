@@ -102,14 +102,24 @@ def load_overrides(path):
 
 
 def fetch_one_topic(topic, query, per_topic):
+    # Try `arxiv` package first (faster, retries, rate-limit aware). Fall back
+    # to stdlib urllib + ElementTree if not installed — operator may not have
+    # pip available (#956). Both paths return the same paper dicts.
     try:
-        import arxiv  # type: ignore[import-not-found]
+        results = _fetch_via_arxiv_pkg(query, per_topic)
     except ImportError:
+        results = _fetch_via_stdlib(topic, query, per_topic)
+    if not results:
         sys.stderr.write(
-            "fetch-papers: `arxiv` Python package not installed; "
-            "run `pip install arxiv` first.\n"
+            "fetch-papers: no papers returned for topic '" + topic
+            + "' (query='" + query + "')\n"
         )
-        sys.exit(3)
+        sys.exit(4)
+    return results
+
+
+def _fetch_via_arxiv_pkg(query, per_topic):
+    import arxiv  # type: ignore[import-not-found]
 
     search = arxiv.Search(
         query=query,
@@ -131,12 +141,47 @@ def fetch_one_topic(topic, query, per_topic):
             "title": (result.title or "").strip().replace("\n", " "),
             "abstract": (result.summary or "").strip().replace("\n", " "),
         })
-    if not results:
-        sys.stderr.write(
-            "fetch-papers: no papers returned for topic '" + topic
-            + "' (query='" + query + "')\n"
-        )
-        sys.exit(4)
+    return results
+
+
+def _fetch_via_stdlib(topic, query, per_topic):
+    # Stdlib-only fallback: hit the arxiv export API directly + parse atom XML.
+    # Mirrors the `arxiv` package's default sort (SubmittedDate, descending)
+    # so the returned set is the same most-recent papers per topic.
+    import urllib.parse
+    import urllib.request
+    import xml.etree.ElementTree as ET
+
+    base = "http://export.arxiv.org/api/query"
+    params = urllib.parse.urlencode({
+        "search_query": query,
+        "max_results": per_topic,
+        "sortBy": "submittedDate",
+        "sortOrder": "descending",
+    })
+    url = base + "?" + params
+    req = urllib.request.Request(url, headers={"User-Agent": "research-foundry/fetch-papers (stdlib)"})
+    # arxiv asks for >=3s spacing; we're firing per-topic sequentially with
+    # a top-level sleep between topics, so a single request per topic stays
+    # well under the rate limit.
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        body = resp.read()
+
+    # arxiv atom feed namespaces
+    ns = {"atom": "http://www.w3.org/2005/Atom"}
+    root = ET.fromstring(body)
+    results = []
+    for entry in root.findall("atom:entry", ns):
+        id_el = entry.find("atom:id", ns)
+        title_el = entry.find("atom:title", ns)
+        summary_el = entry.find("atom:summary", ns)
+        raw_id = (id_el.text or "").strip() if id_el is not None else ""
+        # http://arxiv.org/abs/2401.12345v2 -> 2401.12345
+        paper_id = raw_id.rsplit("/", 1)[-1].split("v")[0] if raw_id else ""
+        title = (title_el.text or "").strip().replace("\n", " ") if title_el is not None else ""
+        abstract = (summary_el.text or "").strip().replace("\n", " ") if summary_el is not None else ""
+        if paper_id:
+            results.append({"id": paper_id, "title": title, "abstract": abstract})
     return results
 
 

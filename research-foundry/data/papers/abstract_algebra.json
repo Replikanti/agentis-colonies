@@ -4,34 +4,254 @@
   "compute_hints": "sympy.polys (Poly, GF, factor, ...), sympy.combinatorics (PermutationGroup, ...).",
   "papers": [
     {
-      "id": "2605.15169",
-      "title": "Modal group theory: homomorphisms",
-      "abstract": "I investigate modal group theory for arbitrary homomorphisms. Possibility is interpreted by the existence of a group homomorphism out of the given group, so the semantics is governed by the possibility of collapse: elements may be identified, parameters may be killed, and new relations may hold in the target. I show that the modal language nevertheless expresses cyclic subgroup membership, subgroup generation by a fixed finite tuple, cyclicity, finite generation by a fixed number of elements, and torsion. I use these definability results to interpret arithmetic, and prove that, as sets of Goedel numbers, the homomorphic modal theory of finitely presented groups is computably isomorphic to true arithmetic. I also analyze propositional modal validities: sentential validities are exactly S5, the trivial group has exact parameter-validities S5, and uniformly prime-indivisible groups have exact parameter-validities S4.2."
+      "id": "2606.06422",
+      "title": "Free Reductive Lie Algebra Pairs of Lie-Yamaguti algebras",
+      "abstract": "The goal of this article is to show the categorical links between on the one hand the category of reductive Lie algebra pairs $\\mathcal{RLP}$ and on the other hand the category of Lie-Yamaguti algebras $\\mathcal{LY}$. The fact that the well-known construction of an enveloping algebra associating to a Lie-Yamaguti algebra a reductive Lie algebra pair is not functorial leads us to the main construction of the article, namely a left adjoint to the natural restriction functor $G:\\mathcal{RLP}\\to\\mathcal{LY}$. As a final result we observe that the construction of the enveloping algebra becomes functorial when one restricts the morphisms of the categories $\\mathcal{RLP}$ and $\\mathcal{LY}$ to the surjective ones. Then it becomes a right adjoint to the restriction functor."
     },
     {
-      "id": "2605.15075",
-      "title": "Non-crystallographic systems of integers over composition algebras",
-      "abstract": "In this work we revisit classical systems of integers inside the real normed division algebras from the point of view of finite norm shells and root systems. Building on the icosian framework of Moody--Patera and on the integral root-system viewpoint of Chen--Moody--Patera and of Johnson, we isolate the precise axiomatic ingredients of the non-crystallographic analogue: an order over the golden ring \\(\\Zphi\\) together with a distinguished finite root shell whose Cartan coefficients lie in \\(\\Zphi\\). We show that the usual Gaussian, Eisenstein, Hamilton, Hurwitz and Coxeter--Dickson examples are recovered by separating the order, its units, and its distinguished finite shells; once the lattice requirement is replaced by a finite root-shell requirement, the golden integer ring becomes the natural coefficient ring for the non-crystallographic cases \\(H_2\\) and \\(H_4\\). We then construct a weak golden octonion order by Cayley--Dickson doubling of the icosian ring; the resulting free rank-\\(8\\) \\(\\Zphi\\)-order has a \\(240\\)-element finite shell of type \\(H_4\\oplus H_4\\) and its multiplication is genuinely octonionic. Finally, we prove (i) that this weak double is self-dual with respect to the polar norm pairing, hence has no strict norm-integral overorder, and (ii) that the first trace-integral discriminant tower over it contains no octonion-stable nonzero isotropic gluing."
+      "id": "2606.06241",
+      "title": "Decomposition Theorem for Perfectoid Rings along General Ideals",
+      "abstract": "Using Andr\u00e9's lemma and the excision square for perfectoidization coming from $p$-complete arc descent, we prove new structural results about perfectoid rings and perfectoidization. The main result is a tameness theorem for torsion in perfectoid rings: if $R$ is a perfectoid ring and $I\\subset R$ is an ideal, then the $I$-torsion in $R$ is $I_{\\mathrm{perfd}}$-almost zero. This yields an excision-type decomposition of $R$ along its $I$-torsion part. We also study (semi)perfectoid rings and perfectoid ideals and take the opportunity to make some structural remarks about them."
     },
     {
-      "id": "2605.15063",
-      "title": "The R\u00e9nyi entropy of the order of a random permutation",
-      "abstract": "We study the distribution of the order of a random permutation of $[n]$ through the lens of R\u00e9nyi entropy. In particular, we obtain an asymptotic for the R\u00e9nyi $q$-entropy of the order in the full range $1 \\leq q \\leq \\infty$. For $q > 1$, our results are quantitatively optimal and reveal a tight connection between the asymptotic behaviour of the R\u00e9nyi $q$-entropy and arithmetic properties of $n$. Of particular interest are the cases $q = \\infty$ and $q = 2$, which correspond to the maximum probability of achieving a particular order and the probability that two independent random permutations have equal orders, respectively. In the former case, we show that the probability in question is asymptotic to $1/n$ and additionally characterise the maximiser for sufficiently large $n$. In the latter case, we determine a minimal and maximal order for the probability as a function of $n$, of respective forms $c/n^2$ and $\\log^*n/n^2$. Our results provide an essentially complete answer to a set of questions raised by Acan, Burnette, Eberhard, Schmutz and Thomas, some of which go back to work of Erd\u0151s and Tur\u00e1n from the 1960s."
+      "id": "2606.06122",
+      "title": "The stable Andrews-Curtis conjecture and thickenable presentations of the trivial group",
+      "abstract": "We establish an explicit upper bound on the number of stable Andrews-Curtis moves that convert thickenable balanced presentations of the trivial group to the standard one-generator presentation. We also present a proof that thickenable balanced presentations of the trivial group satisfy the (unstable) Andrews-Curtis conjecture."
     },
     {
-      "id": "2605.14862",
-      "title": "Commutative decomposition of infinite symmetric groups and transformation monoids",
-      "abstract": "The commutative subgroup width of a group $G$ is the smallest $k$ such that there are abelian subgroups $A_0,A_1,\\ldots,A_{k-1}\\leq G$ with $G=A_0A_1\\cdots A_{k-1}$. Commutative (inverse) submonoid width is defined analogously. In 2002, Ab\u00e9rt showed, rather surprisingly, that the commutative subgroup width of the symmetric group on an infinite set is always finite. It was later shown by Seress that it is always bounded above by $14$. We answer a question of Seress and show that in fact the commutative subgroup width of $\\operatorname{Sym}(\\mathbb{N})$ is at most $9$. We improve the best known lower bound to $4$. We also study standard monoid analogues of the symmetric group; showing that the commutative submonoid widths of the full transformation monoid $\\mathbb{N}^\\mathbb{N}$, the partial transformation monoid $P_\\mathbb{N}$ and the symmetric inverse monoid $I_\\mathbb{N}$ are exactly $3$. We conclude by showing that the commutative inverse submonoid width of any infinite symmetric inverse monoid is always infinite."
+      "id": "2606.06095",
+      "title": "Forbidden relations in universal virtual braid groups",
+      "abstract": "We study natural automorphisms of the universal virtual braid group $UV_n(k)$. These automorphisms induce commuting involutions in the outer automorphism group and generate a subgroup isomorphic to $\\mathbb{Z}_2^k\\times\\mathbb{Z}_2$. We then show that the two one-forbidden quotients of $UV_n(k)$ are isomorphic. Furthermore, we introduce the universal unrestricted virtual braid group $UUV_n(k)$ obtained by imposing simultaneously the two forbidden relations, and derive several structural properties inherited from the universal setting. Since the multi-virtual braid group $M_kVB_n$ is a quotient of $UV_n(k)$, the corresponding results for $M_kVB_n$ follow as consequences. In particular, for $k=1$ we prove that the quotients of $VB_n$ by the two forbidden relations are isomorphic and obtain structural properties for the unrestricted virtual braid group."
     },
     {
-      "id": "2605.14803",
-      "title": "Frobenius--Witt cotangent complexes",
-      "abstract": "We introduce the notion of the Frobenius--Witt cotangent complex, which can be considered as a derived variant of the module of Frobenius--Witt differentials defined by T. Saito. This new object also can be seen as an arithmetic variant of the notion of cotangent complex. We explain the suitability of these two viewpoints through a series of propositions. Furthermore, we establish a relationship between Frobenius--Witt cotangent complexes and the regularity of noetherian local rings, which might be considered as a derived variant of Saito's regularity criterion. This proof relies heavily on computations of Frobenius--Witt cotangent complexes in the case of perfectoid rings."
+      "id": "2606.06000",
+      "title": "Another ambitable group",
+      "abstract": "It is an open question whether every topological group is precompact or ambitable. This note presents a topological group that is ambitable but does not satisfy previously known sufficient conditions for being so."
     },
     {
-      "id": "2605.14775",
-      "title": "On Numerical Semigroups with Fixed Quotient",
-      "abstract": "Let $\u0394$ be a numerical semigroup and let $d\\ge 2$ be an integer. We study the fiber of the quotient map \\(S\\mapsto S/d\\) over $\u0394$. We describe its elements as semigroups of the form $\\langle X\\rangle+d\u0394$, for suitable finite sets $X\\subseteq\u0394$, and then analyze explicit and computable regions of this fiber. In particular, we introduce a family $\u0394_d(a)$ of multiples with prescribed quotient and compute its generators, classical invariants, Ap\u00e9ry sets, and presentations. We also show that this construction preserves Wilf's inequality and controls the depth. Finally, we introduce the $\\mathcal{M}_d(\u0394)$-rank, determine its maximal value in the fiber, relate it to the ordinary embedding dimension, characterize the rank-one elements, and give closed formulas for their Frobenius-type invariants and pseudo-Frobenius numbers."
+      "id": "2606.05520",
+      "title": "Cohomology of Trivial Linear Cycle Sets",
+      "abstract": "We provide a complete classification of extensions of a trivial linear cycle set H by an abelian group I, under the assumption that both H and I are finite cyclic p-groups with p odd, or p = 2 and H has at most four elements. This yields an explicit parametrization of all possible extensions, offering a classification that is both comprehensive and computable. We also compute the socle and the center of all the linear cycle sets obtained."
+    },
+    {
+      "id": "2606.05500",
+      "title": "The spectrum of the bosonic ambitwistor string revisited",
+      "abstract": "We revisit the calculation of the spectrum of the bosonic ambitwistor string, understood as the BRST cohomology or, equivalently, as the semi-infinite cohomology of the $\\mathrm{BMS}_3$ Lie algebra relative to the centre with values in a particular module. We work in momentum space, which allows us to work algebraically and interpret the BRST cohomology as inducing representations of the Poincar\u00e9 group. In agreement with the existing literature, we find that all the cohomology resides in the massless sector, but a careful representation-theoretic analysis of the spectrum reveals, in addition to the usual massless sector of the closed bosonic string (dilaton, metric and Kalb--Ramond field), also a massless vector. We devote a large part of the paper to describing the cohomology at a massless momentum $p$ as a module over the stabiliser $H$ of $p$ in the Lorentz group, a task which is made difficult due to $H$ not acting reducibly when $p\\neq 0$. This allows us to conclude that the spectrum is not unitary, forbidding the interpretation of the extra massless vector as a Maxwell field."
+    },
+    {
+      "id": "2606.05338",
+      "title": "Frobenius--Perron dimension and tensor products of algebras",
+      "abstract": "In this paper, we study how the Frobenius--Perron dimension of finite-dimensional algebras behaves under tensor products and related constructions. We prove that Frobenius--Perron dimension is super-additive under tensor products and is additive whenever one tensor factor is local. In particular every non-negative integer occurs as a Frobenius--Perron dimension. We further show that the invariant equals $1$ for every representation-infinite cycle-finite algebra, such as a tame concealed or tubular algebra, and we determine it on the grids $\\mathsf{k} A_m\\otimes_{\\mathsf{k}}\\mathsf{k} A_n$, where it is $0$, $1$, or $\\infty$ according to representation type. Finally we treat skew group algebras of local algebras, for which a McKay quiver computation gives a lower bound and shows that the dimension can jump from finite to infinite."
+    },
+    {
+      "id": "2606.05331",
+      "title": "On prime character degree graphs occurring within a family of graphs (iii)",
+      "abstract": "We conclude the classification work done in the two previous papers of the same name. Here we add flexibility to the construction, thereby viewing the graphs in full generality. Our goal, as ever, is to determine which graphs do or do not occur as the prime character degree graph of a solvable group."
+    },
+    {
+      "id": "2606.05313",
+      "title": "Convergence of cataclysm deformations on Anosov representations and applications",
+      "abstract": "A cataclysm deformation, that shears and twists a given Anosov representation according to data known as a twisted transverse cocycle, is an intuitive and powerful tool for studying Anosov representations. We show that if a sequence of twisted transverse cocycles converges weakly, the sequence of corresponding cataclysm deformations on the space of Anosov representations converges uniformly on compact sets. This result leads to two applications. First, we obtain an extension of the Goldman product formula. Second, we consider strongly dense representations, introduced by Breuillard--Green--Guralnick--Tao and Long--Reid. Using cataclysm deformations, we show that, for a split real form $\\mathsf{G}$ whose Weyl group contains $-1$, the set of strongly dense $\\mathsf{G}$-Hitchin representations is not open in the $\\mathsf{G}$-Hitchin component."
+    },
+    {
+      "id": "2606.05137",
+      "title": "The Azumification of orders",
+      "abstract": "We construct a stacky resolution of singularities for certain noncommutative spaces which can be viewed as `finite noncommutative extensions' of schemes. More precisely, we show that any order over a reduced separated finite type scheme over a field of characteristic zero can be resolved by an Azumaya algebra over a smooth Deligne--Mumford stack by a sequence of stacky blow-ups."
+    },
+    {
+      "id": "2606.05091",
+      "title": "Improved algebraic fibrations of high-dimensional hyperbolic groups",
+      "abstract": "For every $d \\geq 3$, we construct infinitely many quasi-isometry classes of hyperbolic groups $G$ of cohomological dimension $d$ that algebraically fibre with finitely presented kernel. All our groups arise as finite-index subgroups of right-angled Coxeter groups. In many cases, the $L^2$-Betti numbers of the groups $G$ provide obstructions to higher finiteness properties of the kernel. Our groups therefore expand the list of subgroups of hyperbolic groups with exotic finiteness properties."
+    },
+    {
+      "id": "2606.05089",
+      "title": "Quasi-isometric rigidity for random subsets in products of trees",
+      "abstract": "In this article, we prove a rigidity result for quasi-isometric embeddings from a random subset $D$ of the product $\\mathbb{X}$ of two regular trees into $\\mathbb{X}$ itself. This can be seen as an extension of Eskin's quasi-isometric rigidity of higher-rank nonuniform lattices to random subsets. As a consequence, we give a description of the self-quasi-isometric embeddings of a random sample. We also show that two independent samples are almost surely non-quasi-isometric, confirming that such a phenomenon occurs in the higher-rank setting, as suggested by Ab\u00e9rt. This result contrasts with the result on quasi-isometric equivalence between random sequences by Basu and Sly."
+    },
+    {
+      "id": "2606.05077",
+      "title": "Polynomial maps on the monoid of words",
+      "abstract": "We study the space $\\mathcal{P}(S,\\mathbb{C})$ of polynomial maps $f:S\\to \\mathbb{C}$, where $S=\\mathcal{A}^*$ is the monoid of words based on a finite alphabet $\\mathcal{A}$ under concatenation. To motivate the study of this space, we first briefly visit the theory of polynomial and semipolynomial maps defined on an arbitrary monoid, with range a commutative group. Our results are motivated by previous work of Shulman."
+    },
+    {
+      "id": "2606.05260",
+      "title": "A Counterexample to Bhatt-Lurie's Cohomological Dimension Conjecture",
+      "abstract": "We exhibit a counterexample to a conjecture of Bhatt--Lurie on the cohomological dimension of the Hodge--Tate locus for regular local rings. The example arises from a non-excellent discrete valuation ring constructed by Datta--Smith. We also explain how the same mechanism yields broader families of counterexamples, while the expected bound is recovered under an excellence hypothesis."
+    },
+    {
+      "id": "2606.04917",
+      "title": "Coactions of cocommutative Hopf algebras on skew polynomial rings",
+      "abstract": "We classify the cocommutative Hopf algebras which coact inner-faithfully on (one-parameter) skew polynomial rings $A_q(n) = \\Bbbk \\langle x_1,\\dots,x_n \\rangle/(x_j x_i - q x_i x_j \\mid i < j)$ for $n = 2$ and $3$. As a direct corollary, we obtain a classification of group gradings on two- and three-variable skew polynomial rings, recovering a result of Crawford in the two-variable case. Our results are achieved via Manin's universal coacting Hopf algebra construction, often denoted $\\underline{\\operatorname{aut}}(A_q(n))$, by classifying all its cocommutative quotients. We therefore also give an explicit presentation of $\\underline{\\operatorname{aut}}(A_q(n))$ for arbitrary $q \\in \\Bbbk^*$ and $n \\in \\mathbb{N}$."
+    },
+    {
+      "id": "2606.04789",
+      "title": "Combinatorial and analytic aspects of independence polynomials of zero divisor graphs",
+      "abstract": "The independence polynomial of a graph encapsulates all independent sets of differing sizes, a task classified as NP-hard in theoretical computer science. This article examines the independence polynomial of zero divisor graphs in commutative rings. We demonstrate that the independent sets, represented as a sequence of coefficients of the independence polynomial, exhibit unimodality and log-concavity. Therefore, for the independence polynomial of some zero divisor graphs, the unimodal conjecture is true. Additionally, the characteristics of the zeros of the independence polynomial are delineated, along with their corresponding annular regions on the plane."
+    },
+    {
+      "id": "2606.04747",
+      "title": "Extensions of Centrally Essential Rings",
+      "abstract": "A non-zero unital ring $R$ is said to be centrally essential if for every nonzero element $a$ of $R$, there exist non-zero central elements $x$ and $y$ with $ax = y$. In the paper, almost fully prime centrally essential rings are described in terms of ideal extensions, centrally essential Dorroh extensions, and trivial extensions."
+    },
+    {
+      "id": "2606.04726",
+      "title": "On Centrally Essential Subrings of Formal Triangular Matrix Rings",
+      "abstract": "A ring $R$ with a non-zero identity element is said to be centrally essential if for any non-zero element $a\\in R$, there exist non-zero central elements $x,y\\in R$ such that $ax = y$. We describe centrally essential rings in a large subclass of formal triangular matrix rings and in a subclass of the matrix ring $M_3(R)$ over the ring $R$."
+    },
+    {
+      "id": "2606.04696",
+      "title": "The No-Core Principle for Stationary Actions and Ends of Stationary Random Subgroups",
+      "abstract": "We prove a No-Core Principle for stationary actions of countable groups. Namely, if a Borel set intersects almost every orbit in finitely many points and has positive measure, then it is supported, modulo null sets, on the finite-orbit part of the action. This extends to stationary actions a basic regularity phenomenon known for measure-preserving actions.   We apply this principle to the geometry of Stationary Random Subgroups. For a finitely generated group, we prove that the Schreier graph of a stationary random subgroup has almost surely 0,1,2, or infinitely many ends. Finally, we contrast this probabilistic regularity with the topological notion of Boomerang subgroups: for every $k\\geq 3$, including $k=\\aleph_0$, we construct a Boomerang subgroup of $\\mathbb{F}_3$ whose Schreier graph has exactly $k$ ends."
+    },
+    {
+      "id": "2606.04649",
+      "title": "Local-global conjugacy questions for affine extensions",
+      "abstract": "Boston and Jones constructed a probabilistic model, called the Markov model, in order to predict the cycle structures of elements in Galois groups $G_n(f)$ associated to the $n$-th iterate of a quadratic postcritically finite polynomial $f$ over a number field. Goksel refined this model, introducing the 'even' Markov groups $M_n(f)$. These groups conjecturally contain a copy of $G_n(f)$, leading to questions about local-global conjugacies within the larger automorphism group $\\operatorname{Aut}(T_n)$ of the first $n$ levels of the binary rooted tree coming from arboreal representations of the Galois groups. While the conjugacy results found by Goksel were restricted to the study of these automorphism groups, we generalise the findings to affine extensions of groups by permutation representations, using a cohomological argument. Furthermore, we provide a counterexample to the main conjecture proposed by Goksel, demonstrating that more work is required to resolve the underlying questions regarding Markov models."
+    },
+    {
+      "id": "2606.04642",
+      "title": "Products of involutons in symplectic groups II",
+      "abstract": "We show that the symplectic groups Sp(2n, K) over a field $K$ are 5-reflectional if $2n \\ge 4$. If $n$ is even and $(2n, K) \\ne (4, {\\rm GF}(3))$ they are even 4-reflectional."
+    },
+    {
+      "id": "2606.04577",
+      "title": "Finite groups and rings generating varieties with rapid growth",
+      "abstract": "Let $A$ be a finite universal algebra. Then the orders of the $n$-generated free algebras $F_n$ in the variety (equational class) generated by $A$ satisfy G. Birkhoff's inequality: $|F_n|\\le |A|^{|A|^n}$ for $n=1,2,\\dots$ It follows that $\\limsup_{n\\to\\infty}\\sqrt[n]{\\log |F_n|}\\le |A|$. When $A$ is a finite group or a finite nonassociative algebra, we obtain a criterion for equality in this estimate; equivalently, a criterion for maximal growth of the sequence $\\{|F_n|\\}_{n=1}^{\\infty}$."
+    },
+    {
+      "id": "2606.04526",
+      "title": "The subnormaliser conjecture and unipotent characters",
+      "abstract": "We prove instances of the subnormaliser conjecture on character bijections for finite groups by deriving generic versions of such bijections for unipotent characters of nearly simple groups of Lie type. For this, we formulate an extension of $d$-Harish-Chandra theory to what we call \\emph{generic subnormalisers}, which are certain, usually disconnected, reductive subgroups of a simple algebraic group. For very good primes the generic bijections give rise to bijections to certain subgroups that should contain subnormalisers and thus be suitable for an eventual inductive approach. If the group in question has abelian Sylow $\\ell$-subgroups for some prime~$\\ell$ then our bijections satisfy the properties predicted by the subnormaliser conjecture, and moreover preserve character values up to sign, Brauer $\\ell$-blocks, and are Galois equivariant."
+    },
+    {
+      "id": "2606.04346",
+      "title": "Hilbert-Kunz multiplicity of quadrics decreases",
+      "abstract": "In this paper we prove that the Green ring of $\\mathbb{Z}/p^e\\mathbb{Z}$ is the $e$-fold tensor product of the Green ring of $\\mathbb{Z}/p\\mathbb{Z}$, and this isomorphism is given by $p$-adic expansions of integers. As an application of this isomorphism, we compute the Hilbert-Kunz function and Hilbert-Kunz multiplicity of Fermat quadrics. Then we use Gelfand transform of the Green ring to give an analytical expression of this Hilbert-Kunz multiplicity, and prove that it decreases with its characteristic, thus giving a positive answer to a conjecture of Yoshida."
+    },
+    {
+      "id": "2606.03930",
+      "title": "Primitive Positive Constructions Among Finite Permutation Groups",
+      "abstract": "Primitive positive constructions of first order structures have been shown to be a very useful tool in universal algebra for the study of constraint satisfaction problems. However, they seemed to be very rarely studied in classical algebra such as group theory. This paper fills in this gaps by looking at structures and obstructions based on permutation groups and giving a full classification in this sub-area. This special case is also very important for the generalization to all first order structures as every permutation group describes an easy-to-check necessary condition for the existence of primitive positive constructions, also between structures that are not at all linked to permutation groups."
+    },
+    {
+      "id": "2606.03801",
+      "title": "Cayley graphs of quasirandom groups",
+      "abstract": "A finite group $G$ is $\\varepsilon$-quasirandom if all its nontrivial irreducible complex representations have degree at least $|G|^\\varepsilon$. Building on recent work of Golsefidy-Srinivas, we prove that expansion in a quasirandom group is controlled by expansion in its simple quotients. As a consequence, we remove the product theorem from the hypotheses of the Bourgain-Gamburd expansion machine. Moreover, we combine this result with crown theory to deduce that $1 + \\lfloor \\varepsilon^{-1} \\rfloor$ random elements give an expander Cayley graph with high probability. Finally, generalizing results of Breuillard-Green-Tao and Pyber-Szab\u00f3, we prove that the diameter of any connected Cayley graph of a quasirandom group is polylogarithmic."
+    },
+    {
+      "id": "2606.03791",
+      "title": "Half of finite abelian groups are unit groups",
+      "abstract": "A group is called realizable if it is the group of units in a ring with identity. The classification of realizable groups is a difficult open problem -- originally posed by L\u00e1szl\u00f3 Fuchs -- and is an active area of research. Realizable groups seem rare, but their proportion within a fixed class of groups (cyclic, dihedral, finite abelian, etc.) varies. To quantify this proportion, we introduce the realizable density of a class of finite groups as an analog of natural density for subsets of the natural numbers. The realizable finite cyclic groups and the realizable finite abelian $p$-groups for $p$ odd have been classified; we prove that their realizable densities are 1/4 and 0, respectively. The realizable finite abelian 2-groups -- and more generally the realizable finite abelian groups -- have not been fully classified, and these special cases appear quite difficult. Nonetheless, we prove that the realizable density of finite abelian 2-groups is 1 and the realizable density of finite abelian groups is 1/2. Our work combines existing classification theorems for realizable groups with tools from analytic number theory."
+    },
+    {
+      "id": "2606.03616",
+      "title": "Fractal anti-tori",
+      "abstract": "Let $\u0393$ be a group acting properly and cocompactly on the product of two trees $T_1$ and $T_2$. An anti-torus is a non-periodic flat plane in $T_1 \\times T_2$ that is the convex hull of two secant periodic lines. That notion was introduced by Dani Wise as a tool to show that $\u0393$ is irreducible. We establish a new criterion ensuring the existence of anti-tori, and use it to prove that if $\u0393$ is an $S$-arithmetic lattice in a product of simple algebraic groups of rank one, then $T_1\\times T_2$ contains anti-tori. We also introduce a new class of irreducible lattices acting regularly on the vertex set of a product of trees, containing anti-tori that are fractal aperiodic tilings of the plane. This establishes a connection between lattices in products of trees and substitution tilings."
+    },
+    {
+      "id": "2606.03573",
+      "title": "A Complete Classification of 2-Linear Neighborhood Complexes",
+      "abstract": "The neighborhood complex $N(G)$ and the dominance complex $D(G)$ are fundamental simplicial complexes associated with a graph $G$. We characterize precisely when the Stanley-Reisner ring $k[N(G)]$ admits a $2$-linear resolution, thereby answering an open question posed by Fr\u00f6berg. We prove that this occurs if and only if $G$ is neighborhood conformal and its common neighbor graph is chordal. Equivalently, $G$ is a bipartite graph whose only induced cycles are $4$-cycles. As a consequence, we show that Katzman's lower bound becomes an equality for this class, yielding $\\operatorname{reg}(S/I(G))=\\operatorname{im}(G)$. Using recent results on glued clique complexes, we derive explicit combinatorial formulas for the exact graded Betti numbers of these neighborhood complexes. Finally, utilizing combinatorial Alexander duality, we obtain a corresponding classification of Cohen-Macaulay dominance complexes, and prove that the dominance complex of a graph without isolated vertices admits a $2$-linear resolution if and only if the graph is a star graph."
+    },
+    {
+      "id": "2606.03526",
+      "title": "On Quasi-Nil Clean Rings",
+      "abstract": "In this paper, we introduce a new type of ring, called quasi-nil clean ring, where each element of the ring is the sum of a quasi-idempotent and a nilpotent element. We also investigate a particular class of ring, called strongly quasi-nil clean ring whose each element is the sum of a quasi-idempotent and a nilpotent element, where they commute. Our primary objective is to study the structural properties of these new class of rings, explore their relationships with existing classes of rings and establish some key characterizations. In the commutative setting, we provide a complete characterization in terms of quasi-Boolean quotients. Moreover we discuss about quasi-cleanness of amalgamated algebra and group ring."
+    },
+    {
+      "id": "2606.03501",
+      "title": "Weakly uniserial dimension of modules",
+      "abstract": "Recall that a module is called weakly uniserial if its submodules are comparable regarding embedding. Weakly uniserial modules are a nontrivial generalization of uniserial modules. In this paper we define and study a new dimension, which measure how far a module deviates from being weakly uniserial. We call this dimension, weakly uniserial dimension. Also, we define and study monoartinian (mononoetherian) modules. We say that an $R$-module $M$ is monoartinian (mononoetherian) if in every descending (ascending) chain of submodules of $M$, except probably a finite number, each module in chain embedded in the next (previous) one. We show that a module has weakly uniserial dimension if and only if it is monoartonian."
+    },
+    {
+      "id": "2606.03454",
+      "title": "Automatic additivity for injective Jordan semi-triple maps on structural matrix rings over division rings",
+      "abstract": "Let $\\mathbb D$ be a division ring, and let $\\mathcal{R}\\subseteq M_n(\\mathbb{D})$ be a structural matrix ring over $\\mathbb{D}$, that is, the subring of $M_n(\\mathbb{D})$ supported on the ordered pairs of a preorder on $\\{1,\\ldots,n\\}$. We study injective Jordan semi-triple maps $\u03c6:\\mathcal{R}\\to M_n(\\mathbb{D})$, namely injective maps satisfying \\[   \u03c6(XYX)=\u03c6(X)\u03c6(Y)\u03c6(X), \\qquad \\text{for all } X,Y\\in\\mathcal{R}. \\] Assuming that the centre of $\\mathbb{D}$ has more than two elements, we give a criterion for automatic additivity and show that there are exactly two obstructions. The first one is scalar: it occurs precisely when $\\mathcal{R}$ has a direct ring summand isomorphic to $\\mathbb{D}$ and $\\mathbb{D}$ is isomorphic to neither $\\mathbb{F}_3$ nor $\\mathbb{F}_4$. The second one is order-theoretic: it occurs when a nonsymmetric comparable pair $i\\preceq j$, $j\\not\\preceq i$, admits no third index $k\\notin\\{i,j\\}$ comparable with both $i$ and $j$. If neither obstruction occurs, all injective Jordan semi-triple maps are additive. The centre-size hypothesis is sharp: for $n\\ge3$, the upper-triangular ring $T_n(\\mathbb{F}_2)$ has neither obstruction but nevertheless admits nonadditive injective Jordan semi-triple maps. Finally, in the additive case, we describe the maps componentwise, in terms of endomorphisms, anti-endomorphisms, and transitive multipliers."
+    },
+    {
+      "id": "2606.03449",
+      "title": "A complete description of solvable symplectic Lie algebras",
+      "abstract": "In this paper, we present a complete characterization of solvable symplectic Lie algebras via a symplectic double extension process. We demonstrate that any such algebra is either symplectically irreducible or can be constructed through a finite sequence of symplectic double extensions by a line or a plane, starting from symplectically irreducible Lie algebras. Furthermore, we show that if a symplectic Lie algebra has a nondegenerate derived ideal, then it is necessarily unimodular and, in particular, solvable. Finally, we present a novel algebraic proof of a classical structural theorem on symplectically irreducible symplectic Lie algebras and classify all Lie algebras of dimension up to $6$ that admit such structures."
+    },
+    {
+      "id": "2606.03425",
+      "title": "Complexity, curvature and homological dimension of modules under linkage",
+      "abstract": "In this article, we analyze how (projective and injective) complexity, curvature, and complete intersection dimension behave under linkage of modules and ideals. Let $R$ be a Gorenstein local ring. Consider a Gorenstein perfect ideal $\\mathfrak{a}$ (e.g., $\\mathfrak{a}$ is generated by an $R$-regular sequence). Let $M$ and $N$ be two Cohen-Macaulay $R$-modules linked by $\\mathfrak{a}$. We prove that $\\mathrm{cx}_R(M)= \\mathrm{inj\\,cx}_R(N)$ and $\\mathrm{curv}_R(M)= \\mathrm{inj\\,curv}_R(N)$. In particular, when $R$ is complete intersection, $\\mathrm{cx}_R(M)= \\mathrm{cx}_R(N)$ and $\\mathrm{curv}_R(M)= \\mathrm{curv}_R(N)$. Furthermore, we show that $\\mathrm{pd}_R(M)= \\mathrm{pd}_R(N)$ and $\\operatorname{CI-dim}_R(M)= \\operatorname{CI-dim}_R(N)$. If any of these dimensions is finite, it is equal to $\\mathrm{ht}(\\mathfrak{a})$. Similar results are obtained for linkage of ideals. All these results highly extend a classical result of Peskine and Szpiro in many directions. We construct several examples that complement our results. These also show how properties like `integrally closed', `$\\mathfrak{m}$-full' and `Burch' behave under linkage of ideals."
+    },
+    {
+      "id": "2606.03389",
+      "title": "Spectral duality for some modal and residuated groupoid expansions of De Morgan algebras",
+      "abstract": "Stone demonstrated that the category $\\mathbf{DLATT_{0,1}}$ of bounded distributive lattices is dually equivalent to the category $\\mathbf{Spec}$ of spectral spaces and Priestley showed that $\\mathbf{DLatt_{0,1}}$ is dually equivalent to the category $\\mathbf{Priest}$ of Priestley spaces so that $\\mathbf{Spec}$ is equivalent $\\mathbf{Priest}$. Cornish strengthened this by showing that $\\mathbf{Spec}$ and $\\mathbf{Priest}$ are in fact isomorphic. In this study, we investigate the duality theory of various lattice expansions of certain bounded distributive lattice-ordered algebras, known as De Morgan algebras. In particular we obtain spectral duality results for the category $\\mathbf{S4DM}$ of De Morgan algebras equipped with a closure operator, which we call S4 De Morgan algebras, as well as for the category $\\mathbf{DMGrp}$ of De Morgan groupoids. This is achieved by an appropriate adaptation of Bimb\u00f3's Priestley-style duality for general De Morgan algebras together with Urquhart's Priestley-style duality for relevance algebras under the isomorphism between $\\mathbf{Priest}$ and $\\mathbf{Spec}$."
+    },
+    {
+      "id": "2606.03320",
+      "title": "Subgroup bounds for abelian $p$-groups with applications",
+      "abstract": "We prove an upper bound for the number of subgroups of an abelian $p$-group, with constants that are sharp on homocyclic blocks. If $A_\u03bb$ has type $\u03bb$, the main exponent is $\u03b7(\u03bb)=\\sum_i\\lfloor(\u03bb'_i)^2/4\\rfloor$, where the parts of $\u03bb'$ are the column heights of the Ferrers diagram of $\u03bb$. The leading coefficient is the number of central choices in the blocks of columns of odd height. The proof starts from Delsarte's formula, separates the blocks by column height, and estimates each homocyclic block by successive Durfee squares. We also give three applications: a comparison theorem for $p$-groups of nilpotency class less than $p$, diagonal summatory estimates with the shape fixed, and formulae for leading terms at fixed rank for finite abelian $p$-groups."
+    },
+    {
+      "id": "2606.03101",
+      "title": "Betti numbers of split graphs",
+      "abstract": "A split graph is a graph where the vertices are a disjoint union of a complete part $C=\\{x_i,\\ldots,x_n\\}$ and a stable part $S=\\{y_1,\\ldots,y_m\\}$. We will determine the Betti numbers of the edge ring of all split graphs, in particular show that the only nonzero Betti numbers are $\u03b2_{0,0}$ and $\u03b2_{i,i+1}$, $i>0$. The Betti numbers only depend on the multiset of the number of neighbors in $S$ the $x_i$'s have. Singh and Verma have earlier determined the Betti numbers for complete split graphs (where all $y_i$ are neighbors to all $x_j$), and for \"nearly complete\" split graphs (where all $y_i$ are neighbors to all $x_j$, except that $y_i$ is not a neighbor to $x_i$ for $i=1,\\ldots,\\min\\{m,n\\}$). We also determine which split graphs that have Cohen-Macaulay edge ring."
+    },
+    {
+      "id": "2606.03006",
+      "title": "Logarithmic regularity of spectral measures on infinite graphs",
+      "abstract": "We study the regularity of spectral measures of self-adjoint operators on infinite weighted graphs in the unimodular setting. This framework encompasses operators in the group algebra of a finitely generated group, random operators whose distribution is quasi-invariant under a group action, and Benjamini--Schramm limits of operators on finite graphs. Under a natural geometric condition on the underlying graph, we prove that the expected spectral measure satisfies a logarithmic H\u00f6lder regularity estimate. The proof relies on a strengthened version of the monotone labelling method previously introduced with Sen and Vir\u00e1g to control the pure point part of the spectal measure. Applications include operators in group algebras of indicable groups, Anderson-type models with arbitrary compactly supported potentials on Cayley graphs, anisotropic percolation operators, and operators on quasi-transitive graphs. In particular, our results extend the classical Craig--Simon theorem beyond the Euclidean lattice."
+    },
+    {
+      "id": "2606.02978",
+      "title": "On the BNSR invariants of link groups",
+      "abstract": "For a finitely generated group $G$, the Bieri-Neumann-Strebel-Renz (BNSR) invariants are subsets of the character sphere of $G$ that govern the finiteness properties of normal subgroups containing the commutator subgroup. We investigate the BNSR invariants of link groups and $2$-knot groups. In particular, for a link $L$ with at least two components, we prove that the commutator subgroup of the link group is finitely generated if and only if $L$ is a Hopf link. Moreover, we show that there exists a ribbon $2$-knot whose knot group has a non-symmetric BNS invariant."
+    },
+    {
+      "id": "2606.02975",
+      "title": "Diagonal Condition in Multiplication Table of $\\displaystyle {\\, \\mathbb{Z} [i] / (\u03b1) }$",
+      "abstract": "Multiplication table of a ring with identity 1 is said to have the diagonal condition if 1s occur only on the main diagonal. In this paper, we study the diagonal condition in the ring of Gaussian integers $\\mathbb{Z}[i]$. Furthermore, we also find the Gaussian integers $\u03b1$ so that the rings of Gaussian integers modulo $\u03b1$ satisfy the diagonal condition."
+    },
+    {
+      "id": "2606.02921",
+      "title": "Syzygies of Isotropic Kalman Varieties",
+      "abstract": "Let $L$ be a subspace of a complex vector space $V$ and fix $s \\leq \\dim{L}$. The (type A) Kalman variety consists of all endomorphisms of $V$ that have an $s$-dimensional invariant subspace in $L$. We introduce a generalization where $V$ and $L$ are symplectic vector spaces. We fix an isotropic subspace $W \\subseteq V$ satisfying $W^\\perp = W \\oplus L$. The isotropic (type C) Kalman variety consists of symplectic morphisms of $V$ that have an invariant coisotropic subspace of a prescribed dimension inside $W^\\perp$. We are mainly interested in studying the Lagrangian case. In type C, we prove analogues of results known for type A Kalman varieties; in particular, we determine the defining equations, compute geometric invariants, and analyze their singularities. We conjecture the existence of a long exact sequence relating the structure sheaves. Based on the results in the symplectic case, we describe Kalman variety analogues with respect to endomorphisms of odd orthogonal (type B) and even orthogonal (type D) vector spaces."
+    },
+    {
+      "id": "2606.02898",
+      "title": "Canonical reconstruction and forcing absoluteness of standard structures",
+      "abstract": "We isolate a simple preservation principle governing when it is absolute, between transitive models of set theory, that a given algebraic or topological-algebraic structure has a standard form $F(X)$ indexed by a set $X$. The principle is: if the index $X$ (or a proxy for it) can be recovered from $F(X)$ by a uniform definable construction, then the class of structures isomorphic to some~$F(X)$ is downward absolute from forcing extensions. Answering a question raised by Noah Schweber, we deduce in particular that no group that fails to be a full symmetric group in the ground model can become one after forcing; the result holds already in ZF. The same mechanism applies to full transformation monoids, powerset Boolean algebras, full relation algebras, full clones, full partition lattices, products $R^X$ of finitely generated centrally indecomposable rings, the commutative $C^*$-algebras $\\ell_\\infty(X)$ and $c_0(X)$, full endomorphism rings, the operator algebras $\\mathcal{B}(H)$ and $\\mathcal{K}(H)$, and $\\ell_1(X)$ as a real Banach lattice. In the motivating symmetric-group case, the same reconstruction gives more than descent: it yields a uniform $\u03a0^1_1$ definition of fullness over transitive ZF-models. We then exhibit clean torsor obstructions, in the standard symmetric-model situation: finite covers $Y \\times n$ already separate ZF-failure from ZFC-descent without any completeness caveat, and the finite-support normed space $c_{00}(I)$ provides the analogous Banach example. Bare-Banach-space isomorphism with $\\ell_1(\u0393)$ exhibits a genuine ZFC-descent. We conclude with the corresponding, relative, obstructions to $\u03a0^1_1$-definability of standardness over transitive ZF-models."
+    },
+    {
+      "id": "2606.02865",
+      "title": "On a conjecture concerning totally extremal ideal Perron similarities",
+      "abstract": "Identifying ideal Perron similarities is a problem of central interest in the longstanding nonnegative inverse eigenvalue problem (NIEP). A normalized ideal Perron similarity is called totally extremal if every entry has modulus one. Recently, Gershnik et al. [J. Algebra 694 (2026), 782--800] proved that the character table of a finite Abelian group is totally extremal and conjectured the converse.   In this paper, we settle this conjecture in the affirmative by first showing that the rows of a totally extremal normalized ideal Perron similarity form a group under the Hadamard product. Then, it is shown that the rows of a nonsingular matrix form a group under the Hadamard product if and only if it is the character table of a finite Abelian group, and we further show that this group is isomorphic to the underlying group. These results extend the classical theorem due to Romanovsky and Karpelevi\u010d on the unimodular eigenvalues of stochastic matrices in the complex unit disk to the setting of spectratopes in the unit ball of complex Euclidean space."
+    },
+    {
+      "id": "2606.02850",
+      "title": "Amplitude inequalities for local (co)homology",
+      "abstract": "Peskine and Szpiro's Intersection Theorem for finitely generated modules was generalized by Foxby to all modules and bounded complexes of such. We strengthen Foxby's result and prove a dual result, which for complexes with finitely generated homology recovers Iversen's Amplitude Inequality but also applies to derived complete complexes."
+    },
+    {
+      "id": "2606.02558",
+      "title": "Conjugacy Problem for Dehn Twists of Free Products of Free Abelian Groups",
+      "abstract": "We show solubility of the conjugacy problem for Dehn twist automorphisms of finitely generated free products of free abelian groups."
+    },
+    {
+      "id": "2606.02415",
+      "title": "On rational representations and rational group algebra of $\\operatorname{GL}_2(q)$",
+      "abstract": "In this article, we study rational representations of $G=\\operatorname{GL}_2(q)$, where $q$ is a prime power. Let $\u03c1$ be an irreducible representation of $G$ over $\\mathbb{Q}$. Then $\u03c1$ affords the character \\[ \u03a9(\u03c7)=m_{\\mathbb{Q}}(\u03c7)\\sum_{\u03c3\\in\\operatorname{Gal}(\\mathbb{Q}(\u03c7)/\\mathbb{Q})}\u03c7^\u03c3, \\] for some irreducible complex character $\u03c7$ of $G$, where $m_{\\mathbb{Q}}(\u03c7)$ denotes the Schur index of $\u03c7$ over $\\mathbb{Q}$, with the converse also holding. We obtain a combinatorial description for the counting of inequivalent irreducible $\\mathbb{Q}$-representations of $G$ of distinct degrees. Furthermore, we present a method to construct an irreducible rational matrix representation $\u03c1$ of $G$ affording the character $\u03a9(\u03c7)$, where $\u03c7$ is an irreducible complex character of $G$ arising from parabolic induction. Finally, using the results from the rational representations of $G$, we derive an explicit combinatorial formula, depending only on $q$, for the Wedderburn decomposition of $\\mathbb{Q}G$."
+    },
+    {
+      "id": "2606.02377",
+      "title": "Localizing subcategories for algebraic stacks",
+      "abstract": "We establish a descent principle for $\\otimes$-localizing subcategories along smooth presentations using a notion of descendability due to Balmer and Mathew. This allows us to classify $\\otimes$-localizing subcategories of the derived category of complexes with quasi-coherent cohomology on suitable algebraic stacks in terms of subsets of its underlying topology."
+    },
+    {
+      "id": "2606.02284",
+      "title": "Coarse median property of virtually nilpotent groups",
+      "abstract": "We show that virtually nilpotent groups are coarse median if and only if they are virtually abelian. The main idea is that the sub-Riemannian geometry of the asymptotic cone obstructs the existence of a locally convex Lipschitz median of finite rank. As an application, we deduce that non-compact lattices in the isometry group of a rank 1 symmetric space of non-compact type other than real hyperbolic space are not coarse median. This establishes the remaining case in the classification of lattices with the coarse median property initiated by Haettel. The same approach applies more generally to complete finite-volume non-compact Riemannian manifolds $M$ of pinched negative sectional curvature: if at least one cusp cross-section does not admit a flat metric, then $\u03c0_1(M)$ is not coarse median."
+    },
+    {
+      "id": "2606.02225",
+      "title": "On prime endomorphisms of the free group of rank two",
+      "abstract": "We study prime endomorphisms of the free group $F_2$. The main results provide lower and upper bounds for the logarithmic density $\u03b4_{\\mathrm{np}}$ of non-prime endomorphisms: $$ \\frac34 \\leq \u03b4_{\\mathrm{np}}\\leq \\frac{27}{28}. $$ Equivalently, we prove corresponding lower and upper bounds for the exponential decay of the probability that a random endomorphism is non-prime, aligning with a heuristic argument of Ian Agol."
     }
   ]
 }
