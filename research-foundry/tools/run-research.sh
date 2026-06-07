@@ -1586,6 +1586,39 @@ install_cleanup_trap() {
     emit_cmd "trap '[ -n \"\${AUTO_PROMOTE_PID:-}\" ] && kill \"\$AUTO_PROMOTE_PID\" 2>/dev/null; rm -f \"$FED_DIR/.auto-promote-install.toml\" 2>/dev/null; rm -rf \"$FED_DIR/.agentis\" 2>/dev/null; podman stop --time 5 research-foundry-laptop 2>/dev/null || true; podman rm -f research-foundry-laptop 2>/dev/null || true' EXIT INT TERM"
 }
 
+# --- 4.4) Wait for bootstrap-spawned daemons to register (#950) ---
+# Wait until the bootstrap-spawned daemons are registered in
+# $LAPTOP_DIR/.agentis/daemon/ so the auto-promote sidecar's
+# 60s grace period doesn't hit "no daemons after 60s; sidecar
+# exiting" (#950). Poll `agentis daemon list --json` every
+# WAIT_INTERVAL seconds up to WAIT_MAX_S. Default target = 1
+# (any daemon is enough to keep the sidecar alive), but the
+# orchestrator could pass a tighter target (e.g. 18 for
+# research-foundry's full cascade).
+wait_for_daemons() {
+    local target="${1:-1}"
+    local max_s="${RESEARCH_WAIT_FOR_DAEMONS_S:-300}"
+    local interval_s="${RESEARCH_WAIT_FOR_DAEMONS_INTERVAL_S:-5}"
+    emit_step "waiting for >=${target} daemons in ${LAPTOP_DIR}/.agentis/daemon/ (ceiling ${max_s}s)"
+    if [ "$DRY_RUN" = "1" ]; then
+        emit_cmd "wait_for_daemons placeholder: target=${target} max_s=${max_s} interval_s=${interval_s} cwd=$LAPTOP_DIR"
+        return 0
+    fi
+    local elapsed=0
+    local count=0
+    while [ "$elapsed" -lt "$max_s" ]; do
+        count=$(cd "$LAPTOP_DIR" && agentis daemon list --json 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
+        if [ "$count" -ge "$target" ] 2>/dev/null; then
+            emit_step "wait_for_daemons: ${count} daemons registered after ${elapsed}s"
+            return 0
+        fi
+        sleep "$interval_s"
+        elapsed=$((elapsed + interval_s))
+    done
+    emit_step "wait_for_daemons: ceiling ${max_s}s hit, only ${count:-0} daemons registered (proceeding anyway)"
+    return 0
+}
+
 # --- 4.5) Auto-promote sidecar (#622, consolidated #638) ---
 # Spawns a background loop that invokes tools/auto-promote.sh in
 # --containerized mode every AP_INTERVAL seconds. Cwd is the host-side
@@ -1991,6 +2024,7 @@ write_bootstrap
 write_run_meta
 setup_dashboard_view
 spawn_container
+wait_for_daemons 1
 start_auto_promote_sidecar
 tick_stream
 
