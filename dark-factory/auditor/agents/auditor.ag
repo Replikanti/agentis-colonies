@@ -49,6 +49,12 @@ fn ingest_target() -> string {
         if len(src) > 0 {
             return src;
         }
+        // BOUNTY_TARGET was requested but is unreadable. NEVER silently fall back to the
+        // embedded demo (a vulnerable vault) — that would audit a program the operator never
+        // supplied and could stage a false finding on an in-scope-safe target. Return empty
+        // so detection finds nothing (-> SAFE, no synthesis, no false-VERIFIED), and say so.
+        print("ingest: ERROR — BOUNTY_TARGET set but unreadable (", path, ") — auditing nothing; supply a readable absolute path. No embedded fallback when a target is requested.");
+        return "";
     }
     return embedded_target();
 }

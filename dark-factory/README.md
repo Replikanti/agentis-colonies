@@ -87,19 +87,49 @@ The report and PoC artifacts land under `<rundir>/.agentis/sandbox/`. See the
 [auditor colony README](./auditor/README.md) for the
 `SOLANA_HARNESS_DIR` / `BOUNTY_TARGET` / `BOUNTY_POC` env contract.
 
+## Run an audit (`run-audit.sh`)
+
+`run-audit.sh` is the operator entrypoint: it runs the full pipeline against a scope **you
+choose** and, on a VERIFIED finding, stages a **human-gated** submission package. Pass
+**absolute** paths (the colony runs in its own working dir).
+
+```bash
+# native solana-program target
+dark-factory/run-audit.sh --target "$PWD/path/to/program.rs" \
+    --harness "$PWD/dark-factory/solana-harness" --backend claude
+
+# Anchor target (+ optional frozen on-chain snapshot for state replay)
+dark-factory/run-audit.sh --target "$PWD/path/to/lib.rs" \
+    --anchor-harness "$PWD/dark-factory/solana-harness-anchor" \
+    --snapshot "$PWD/snap.txt" --backend claude --out "$PWD/audit-out"
+```
+
+On `Verdict: VERIFIED` the package lands at `<out>/submission/`: `report.md` (Immunefi-format,
+embeds the PoC), `poc.rs`, `target.rs`, `snapshot.txt` (if used), and `MANIFEST.txt` marked
+**PENDING HUMAN REVIEW — NOT SUBMITTED**. The colony never posts to a platform — submission is
+a manual human action. `run-audit.sh` requires `--target` and never auto-picks a scope.
+`--backend mock` runs offline-deterministically (structural heuristic, no LLM). Produce a
+frozen snapshot with `snapshot-rpc.sh --rpc <url> --out snap.txt <pubkey>`.
+
 ## Layout
 
 ```
 dark-factory/
   README.md                     # this file
   VERSION  CHANGELOG.md  BUNDLE.manifest  install.sh
+  run-audit.sh                  # operator entrypoint: run an audit -> human-gated package
   setup-solana-toolchain.sh     # one-time offline toolchain build (network ON)
+  snapshot-rpc.sh               # host RPC getAccountInfo -> frozen on-chain snapshot (V4)
+  calibrate-sealevel.sh         # detection+validation scorecard over the sealevel corpus (V6)
+  sealevel-scorecard.md         # calibration results (3/3 true-positive, 0 false-VERIFIED)
   auditor/                      # the single colony
     agents/auditor.ag           # the audit pipeline (reconn → guard → tracker → synthesis)
     config/colony.example.toml  # forge.type = "none"; cb_budget
     scripts/start-colony.sh     # thin `agentis go` launcher
     README.md
-  solana-harness/               # offline solana-program-test crate (real SVM)
+  solana-harness/               # offline solana-program-test crate (real SVM, native)
+  solana-harness-anchor/        # offline anchor-lang 0.31 harness (real SVM, Anchor) (V6)
+  sealevel/                     # modernized coral-xyz/sealevel-attacks lessons (corpus) (V6)
   fixtures/                     # detection fixtures (vuln + safe + rigged-harness cases)
 ```
 

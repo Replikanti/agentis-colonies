@@ -26,18 +26,19 @@ AGENTIS="agentis"
 TARGET="" ; HARNESS="" ; ANCHOR_HARNESS="" ; SNAPSHOT="" ; POC=""
 BACKEND="claude" ; SANDBOX="hardened" ; OUT="$PWD/audit-out"
 
+need() { [ "$1" -ge 2 ] || { echo "run-audit.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
   case "$1" in
-    --target) TARGET="$2"; shift 2 ;;
-    --harness) HARNESS="$2"; shift 2 ;;
-    --anchor-harness) ANCHOR_HARNESS="$2"; shift 2 ;;
-    --snapshot) SNAPSHOT="$2"; shift 2 ;;
-    --poc) POC="$2"; shift 2 ;;
-    --backend) BACKEND="$2"; shift 2 ;;
-    --sandbox) SANDBOX="$2"; shift 2 ;;
-    --out) OUT="$2"; shift 2 ;;
-    --agentis) AGENTIS="$2"; shift 2 ;;
-    --help|-h) sed -n '2,28p' "$0"; exit 0 ;;
+    --target) need "$#"; TARGET="$2"; shift 2 ;;
+    --harness) need "$#"; HARNESS="$2"; shift 2 ;;
+    --anchor-harness) need "$#"; ANCHOR_HARNESS="$2"; shift 2 ;;
+    --snapshot) need "$#"; SNAPSHOT="$2"; shift 2 ;;
+    --poc) need "$#"; POC="$2"; shift 2 ;;
+    --backend) need "$#"; BACKEND="$2"; shift 2 ;;
+    --sandbox) need "$#"; SANDBOX="$2"; shift 2 ;;
+    --out) need "$#"; OUT="$2"; shift 2 ;;
+    --agentis) need "$#"; AGENTIS="$2"; shift 2 ;;
+    --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-audit.sh: unknown flag $1" >&2; exit 2 ;;
   esac
 done
@@ -46,10 +47,19 @@ done
 [ -f "$TARGET" ] || { echo "run-audit.sh: target not found: $TARGET" >&2; exit 2; }
 command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ] || { echo "run-audit.sh: agentis binary not found ($AGENTIS)" >&2; exit 3; }
 
+# Resolve operator paths to ABSOLUTE — the colony runs with a different cwd, so a relative
+# path would silently miss; an unreadable BOUNTY_TARGET must NEVER fall back to a built-in
+# program (ingest_target() hard-fails on that, and we belt-and-suspenders it here).
+TARGET="$(cd "$(dirname "$TARGET")" && pwd)/$(basename "$TARGET")"
+if [ -n "$SNAPSHOT" ]; then [ -f "$SNAPSHOT" ] || { echo "run-audit.sh: snapshot not found: $SNAPSHOT" >&2; exit 2; }; SNAPSHOT="$(cd "$(dirname "$SNAPSHOT")" && pwd)/$(basename "$SNAPSHOT")"; fi
+if [ -n "$POC" ]; then [ -f "$POC" ] || { echo "run-audit.sh: poc not found: $POC" >&2; exit 2; }; POC="$(cd "$(dirname "$POC")" && pwd)/$(basename "$POC")"; fi
+if [ -n "$HARNESS" ]; then [ -d "$HARNESS" ] || { echo "run-audit.sh: harness dir not found: $HARNESS" >&2; exit 2; }; HARNESS="$(cd "$HARNESS" && pwd)"; fi
+if [ -n "$ANCHOR_HARNESS" ]; then [ -d "$ANCHOR_HARNESS" ] || { echo "run-audit.sh: anchor-harness dir not found: $ANCHOR_HARNESS" >&2; exit 2; }; ANCHOR_HARNESS="$(cd "$ANCHOR_HARNESS" && pwd)"; fi
+
 COLONY="$HERE/auditor/agents/auditor.ag"
 [ -f "$COLONY" ] || { echo "run-audit.sh: colony not found at $COLONY" >&2; exit 3; }
 
-mkdir -p "$OUT"
+mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
 RUN="$OUT/run"
 rm -rf "$RUN"; mkdir -p "$RUN"
 cp "$COLONY" "$RUN/auditor.ag"
