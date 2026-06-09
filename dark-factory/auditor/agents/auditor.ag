@@ -280,7 +280,7 @@ fn compile_run(poc: string, target_src: string) -> string {
             return exec sh "set -e; cp h_target.rs ${hd}/src/target.rs; cp h_poc.rs ${hd}/src/bin/poc.rs; cd ${hd}; set +e; export PATH=$HOME/.cargo/bin:$PATH; CARGO_NET_OFFLINE=1 cargo build --quiet --bin poc --offline > build.out 2>&1; BRC=$?; if [ $BRC -ne 0 ]; then cat build.out; echo __rc=$BRC; else RAYON_NUM_THREADS=4 ./target/debug/poc 2>&1; echo __rc=$?; fi";
         }
         // colony-lint: safe-exec-concat
-        return exec sh "set -e; cp h_target.rs ${hd}/src/target.rs; cd ${hd}; set +e; export PATH=$HOME/.cargo/bin:$PATH; CARGO_NET_OFFLINE=1 cargo build --quiet --bin poc --offline > build.out 2>&1; BRC=$?; if [ $BRC -ne 0 ]; then cat build.out; echo __rc=$BRC; else RAYON_NUM_THREADS=4 ./target/debug/poc 2>&1; echo __rc=$?; fi";
+        return exec sh "set -e; cp h_target.rs ${hd}/src/target.rs; cd ${hd}; cp src/bin/poc.rs.tmpl src/bin/poc.rs; set +e; export PATH=$HOME/.cargo/bin:$PATH; CARGO_NET_OFFLINE=1 cargo build --quiet --bin poc --offline > build.out 2>&1; BRC=$?; if [ $BRC -ne 0 ]; then cat build.out; echo __rc=$BRC; else RAYON_NUM_THREADS=4 ./target/debug/poc 2>&1; echo __rc=$?; fi";
     }
     file_write("exploit.rs", poc);
     return exec sh "rm -f poc; rustc --edition 2021 exploit.rs -o poc 2>&1; ./poc 2>&1; echo __rc=$?";
@@ -635,29 +635,41 @@ agent synthesis() -> void {
                 memo_write("bounty:verdict:" + th, "MissingSignerCheck");
                 memo_write("bounty:blacklist:" + th, "MissingSignerCheck");
                 knowledge_sell("bounty:vuln:" + th, "MissingSignerCheck:Critical", 1);
-                // standalone-PoC re-verification: inline the target into a single-file
-                // standalone PoC (drop the include) and re-verify it offline, so the report
-                // ships a self-contained, reproducible PoC — not one that depends on a
-                // sibling target.rs.
-                let std_run = exec sh "( cat target.rs; grep -v 'include!' exploit.rs ) > poc_standalone.rs; rm -f poc_std; rustc --edition 2021 poc_standalone.rs -o poc_std 2>&1; ./poc_std 2>&1; echo __rc=$?";
-                let poc_src = exec sh "cat poc_standalone.rs 2>/dev/null || true";
-                let std_ok = yn(assess(std_run) == "verified");
                 let node = first_fn_name(target);
-                // frozen-snapshot replay: freeze the on-chain state and replay the exploit
-                // against it offline (zero network in the sandbox; the PoC reads snapshot.txt).
-                let snap = snapshot_state();
-                file_write("snapshot.txt", snap);
-                file_write("poc_snapshot.rs", synth_snapshot_exploit());
-                let snap_run = exec sh "rm -f poc_snap; rustc --edition 2021 poc_snapshot.rs -o poc_snap 2>&1; ./poc_snap 2>&1; echo __rc=$?";
-                let snap_ok = yn(assess(snap_run) == "verified");
                 let gate = submission_gate(th);
-                file_write("report.md", submission_report("MissingSignerCheck", th, node, trace, poc_src, std_ok, std_run, snapshot_section(snap, snap_run, snap_ok)));
-                print("synthesis: VERIFIED — cached verdict + blacklisted sub-graph");
-                print("synthesis: standalone PoC re-verified:", std_ok);
-                print("snapshot: replayed frozen on-chain state offline — re-verified:", snap_ok);
-                print("report: wrote standardized Immunefi report.md  (sub-graph", substring(th, 0, 12), ")");
-                print("submission:", gate, "— human-gated, never auto-posted");
-                print("Verdict: VERIFIED");
+                let hd = getenv("SOLANA_HARNESS_DIR");
+                if len(hd) > 0 {
+                    // Harness mode: the PoC was already verified through the REAL Solana SVM
+                    // (solana-program-test + BanksClient) by synth_via_prompt. The std-only
+                    // standalone re-compile + frozen-snapshot replay assume a std-stub target
+                    // and do not apply to a native program, so the report ships the real-SVM
+                    // PoC + its actual run output instead of a std-only rustc re-verify.
+                    // colony-lint: safe-exec-concat
+                    let poc_src = exec sh "cat ${hd}/src/bin/poc.rs 2>/dev/null || true";
+                    let snap_sec = snapshot_section("", "n/a — verified through the real Solana SVM; replay against a real on-chain RPC dump is a separate capability", "n/a");
+                    file_write("report.md", submission_report("MissingSignerCheck", th, node, trace, poc_src, "yes (real Solana SVM)", run_out, snap_sec));
+                    print("synthesis: VERIFIED — real-SVM two-sided PoC (solana-program-test + BanksClient)");
+                    print("report: wrote standardized Immunefi report.md  (sub-graph", substring(th, 0, 12), ")");
+                    print("submission:", gate, "— human-gated, never auto-posted");
+                    print("Verdict: VERIFIED");
+                } else {
+                    // std-only path: single-file standalone re-verify + frozen-snapshot replay.
+                    let std_run = exec sh "( cat target.rs; grep -v 'include!' exploit.rs ) > poc_standalone.rs; rm -f poc_std; rustc --edition 2021 poc_standalone.rs -o poc_std 2>&1; ./poc_std 2>&1; echo __rc=$?";
+                    let poc_src = exec sh "cat poc_standalone.rs 2>/dev/null || true";
+                    let std_ok = yn(assess(std_run) == "verified");
+                    let snap = snapshot_state();
+                    file_write("snapshot.txt", snap);
+                    file_write("poc_snapshot.rs", synth_snapshot_exploit());
+                    let snap_run = exec sh "rm -f poc_snap; rustc --edition 2021 poc_snapshot.rs -o poc_snap 2>&1; ./poc_snap 2>&1; echo __rc=$?";
+                    let snap_ok = yn(assess(snap_run) == "verified");
+                    file_write("report.md", submission_report("MissingSignerCheck", th, node, trace, poc_src, std_ok, std_run, snapshot_section(snap, snap_run, snap_ok)));
+                    print("synthesis: VERIFIED — cached verdict + blacklisted sub-graph");
+                    print("synthesis: standalone PoC re-verified:", std_ok);
+                    print("snapshot: replayed frozen on-chain state offline — re-verified:", snap_ok);
+                    print("report: wrote standardized Immunefi report.md  (sub-graph", substring(th, 0, 12), ")");
+                    print("submission:", gate, "— human-gated, never auto-posted");
+                    print("Verdict: VERIFIED");
+                }
             } else {
                 print("synthesis: Inconclusive — " + verdict);
                 print("Verdict: INCONCLUSIVE (" + verdict + ")");
