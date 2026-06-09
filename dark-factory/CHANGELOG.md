@@ -16,6 +16,29 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Program-specific invariant library (V5): each detected vulnerability class now
+  drives synthesis through a class-specific invariant (`invariant_for(class)`)
+  instead of a single hardcoded signer-drain story. The PoC-generation prompt
+  (`poc_instruction(class)`) embeds the right control/exploit invariant per class —
+  ownership substitution for `MissingOwnerCheck`, identity mismatch for
+  `AccountDataMatching`, program-id redirection for `ArbitraryCPI`, arithmetic wrap
+  for `IntegerOverflow`, non-signer authority for `MissingSignerCheck` — and the
+  standardized report's severity / summary / impact / remediation are class-aware
+  (`severity_for` / `summary_for` / `impact_for` / `remediation_for`). Detection now
+  routes every recognised class to synthesis (previously only `MissingSignerCheck`
+  was synthesized and `IntegerOverflow` stopped at a "DETECTED" stub). The built-in
+  deterministic template is signer-shaped, so a non-`MissingSignerCheck` class with
+  no usable LLM-generated PoC resolves to `inconclusive` — never a false-VERIFIED.
+  The two-sided gate (`CONTROL OK:` + `INVARIANT VIOLATED:`) is unchanged and still
+  blocks rigged/always-fire harnesses for every class.
+
+### Changed
+
+- Detection verdict for `IntegerOverflow` in offline / `mock` mode is now
+  `inconclusive` (routed through synthesis with the overflow invariant) rather than
+  the previous non-committal `DETECTED`, since no deterministic overflow template
+  exists; a real LLM backend generates the two-sided overflow PoC.
+
 - Generalised detection (V3): an LLM-driven classifier (`classify_llm`) reads the
   program source and returns a vulnerability class (`MissingSignerCheck` /
   `MissingOwnerCheck` / `AccountDataMatching` / `ArbitraryCPI` / `IntegerOverflow`

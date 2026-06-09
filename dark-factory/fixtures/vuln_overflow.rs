@@ -4,8 +4,11 @@
 // The deposit handler IS signer-guarded (so MissingSignerCheck must NOT fire),
 // but it adds to the balance with an unchecked `+=` — a u64 overflow wraps the
 // balance, so a large `amount` can corrupt accounting. The detector must fire
-// IntegerOverflow (Medium) here and MissingSignerCheck nowhere. PoC synthesis for
-// this class is deferred to the prompt-driven path; detection only proves it is DETECTED.
+// IntegerOverflow (Medium) here and MissingSignerCheck nowhere. As of V5 (#843) this
+// class ROUTES to prompt-driven synthesis with the IntegerOverflow-specific invariant
+// (value-carrying arithmetic must not wrap); offline/mock has no deterministic overflow
+// template (the built-in template is signer-shaped), so the run is `inconclusive` rather
+// than falsely VERIFIED — only a real LLM-generated two-sided PoC can drive it to VERIFIED.
 
 pub struct AccountInfo {
     pub key: u64,

@@ -263,39 +263,79 @@ fn assess(run_out: string) -> string {
     return "verified";
 }
 
+// V5 (#843): is `cls` one of the synthesizable vuln classes (any class the LLM
+// detector emits, except "Safe"/"none"/"")? Routes detection -> synthesis. SHALLOW
+// leaf (string compares only) — safe at any agent depth.
+fn is_vuln_class(cls: string) -> bool {
+    if cls == "MissingSignerCheck" { return true; }
+    if cls == "MissingOwnerCheck" { return true; }
+    if cls == "AccountDataMatching" { return true; }
+    if cls == "ArbitraryCPI" { return true; }
+    if cls == "IntegerOverflow" { return true; }
+    return false;
+}
+
+// V5 (#843): the program-specific invariant the PoC must assert for the detected class.
+// This is the heart of V5 — it tells the synthesis prompt WHAT to prove (control = the
+// legitimate case that must be accepted; exploit = the attacker case that, if it
+// succeeds, violates the named invariant), so the generated PoC asserts the RIGHT
+// property per class instead of a generic signer drain. The generic default covers any
+// unrecognised token (e.g. AccountConfusion / type-cosplay, a sibling of
+// AccountDataMatching). SHALLOW leaf — safe at any agent depth.
+fn invariant_for(cls: string) -> string {
+    if cls == "MissingSignerCheck" {
+        return "PROVE THIS INVARIANT (MissingSignerCheck): a privileged state change (moving funds / mutating an account the authority owns) MUST require the authority account to have signed. CONTROL: the authorized caller WITH a valid signature performs the action and is accepted. EXPLOIT: an attacker passes the SAME authority account but does NOT sign it (is_signer = false / a non-signer AccountMeta); if the action still succeeds and state mutates, the invariant is violated.";
+    }
+    if cls == "MissingOwnerCheck" {
+        return "PROVE THIS INVARIANT (MissingOwnerCheck): the handler MUST verify a passed account is owned by the expected program before trusting its data. CONTROL: an account correctly owned by the program is accepted. EXPLOIT: an attacker substitutes an account THEY own (owner = a different program) carrying forged data; if the handler trusts it and the privileged action succeeds, the invariant is violated.";
+    }
+    if cls == "AccountDataMatching" {
+        return "PROVE THIS INVARIANT (AccountDataMatching): the handler MUST check the passed account's identity matches the privileged identity stored in state (e.g. account.key == state.authority). CONTROL: the account whose key matches the stored authority is accepted. EXPLOIT: an attacker passes a DIFFERENT account whose key does NOT match the stored authority; if the privileged action still succeeds, the invariant is violated.";
+    }
+    if cls == "ArbitraryCPI" {
+        return "PROVE THIS INVARIANT (ArbitraryCPI): a cross-program invocation MUST target the expected, hard-checked program id. CONTROL: the CPI against the legitimate program id behaves correctly. EXPLOIT: an attacker supplies a DIFFERENT program id for the invoked program; if the handler performs the CPI against the attacker-controlled program without rejecting it, the invariant is violated.";
+    }
+    if cls == "IntegerOverflow" {
+        return "PROVE THIS INVARIANT (IntegerOverflow): value-carrying arithmetic (balances, supply, amounts) MUST NOT wrap or underflow. CONTROL: an in-range operation produces the correct arithmetic result and is accepted. EXPLOIT: an attacker supplies an amount that makes the unchecked arithmetic wrap (e.g. subtract more than the balance to underflow to a huge value, or add past the max); if the resulting state reflects the wrapped value, the conservation invariant is violated.";
+    }
+    return "PROVE THIS INVARIANT (generic access-control): a privileged action MUST be reachable only by the authorized party. CONTROL: the legitimate authorized caller is accepted. EXPLOIT: an unauthorized caller performs the same action; if it succeeds against the safety invariant, the invariant is violated.";
+}
+
 // PoC generation instruction for the prompt-driven synthesis (two-sided).
 // When the real Solana toolchain is enabled (SOLANA_HARNESS_DIR set) the
 // instruction asks for a solana-program-test + BanksClient PoC that runs through the
 // REAL solana-runtime SVM; otherwise the std-only include!("target.rs") harness.
-fn poc_instruction() -> string {
+// V5 (#843): class-aware. `invariant_for(cls)` selects the SPECIFIC invariant the PoC
+// must assert; the rest of the instruction is the mechanical two-sided scaffolding. The
+// #820 marker contract (CONTROL OK: + INVARIANT VIOLATED: + exit 101) is unchanged, so
+// the two-sided gate still blocks rigged/always-fire harnesses regardless of class.
+fn poc_instruction(cls: string) -> string {
+    let inv = invariant_for(cls);
     if len(getenv("SOLANA_HARNESS_DIR")) > 0 {
         return "You are given a Solana program — the contents of the harness crate's src/target.rs, which " +
             "exposes `pub fn process_instruction(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) " +
             "-> ProgramResult`. Write the FULL contents of src/bin/poc.rs: a `#[tokio::main] async fn main()` " +
             "that drives this program through solana-program-test + BanksClient as a TWO-SIDED proof against " +
-            "the REAL SVM. Imports: `use solana_harness::target; use solana_program_test::{processor, " +
+            "the REAL SVM. " + inv + " Imports: `use solana_harness::target; use solana_program_test::{processor, " +
             "ProgramTest}; use solana_sdk::{account::Account, instruction::{AccountMeta, Instruction}, " +
             "pubkey::Pubkey, signature::{Keypair, Signer}, transaction::Transaction};`. For EACH side build a " +
             "fresh `ProgramTest::new(\"solana_harness\", program_id, processor!(target::process_instruction))`, " +
             "seed program-owned accounts via `pt.add_account(pk, Account { lamports, data: vec![], owner: " +
             "program_id, executable: false, rent_epoch: 0 })`, then `let (mut banks, payer, recent) = " +
             "pt.start().await;`, build the instruction with correct AccountMeta signer flags, sign with " +
-            "`tx.sign(&[&payer, ...], recent)`, and `banks.process_transaction(tx).await`. CONTROL: the " +
-            "authorized/signed caller — if accepted print exactly `CONTROL OK: <detail>`. EXPLOIT: an " +
-            "UNAUTHORIZED non-signer caller — if it succeeds against the safety invariant (funds move / state " +
-            "mutates without authorization) print exactly `INVARIANT VIOLATED: <detail>` to stderr and call " +
+            "`tx.sign(&[&payer, ...], recent)`, and `banks.process_transaction(tx).await`. For the CONTROL " +
+            "side, if accepted print exactly `CONTROL OK: <detail>`. For the EXPLOIT side, if it succeeds " +
+            "against the invariant above print exactly `INVARIANT VIOLATED: <detail>` to stderr and call " +
             "std::process::exit(101); otherwise print `invariant held`. Both markers REQUIRED. Output only the " +
             "Rust source of src/bin/poc.rs.";
     }
     return "You are given a Rust program as input. Write a self-contained Rust `fn main()` that begins " +
-        "with include!(\"target.rs\") and proves the program's most likely access-control / " +
-        "signer-authorization vulnerability with a TWO-SIDED harness, using the EXACT type and function " +
-        "names defined in the input. CONTROL: construct the LEGITIMATE (authorized / signed) caller and " +
-        "invoke the in-scope entry point; if the legitimate call is accepted print exactly " +
-        "`CONTROL OK: <detail>`. EXPLOIT: construct an UNAUTHORIZED caller (no signature / wrong authority) " +
-        "and invoke the same entry point; if it succeeds against the safety invariant (funds move or state " +
-        "mutates without authorization) print exactly `INVARIANT VIOLATED: <detail>` to stderr and call " +
-        "std::process::exit(101); otherwise print `invariant held`. Both `CONTROL OK:` and " +
+        "with include!(\"target.rs\") and proves the following vulnerability with a TWO-SIDED harness, using " +
+        "the EXACT type and function names defined in the input. " + inv + " CONTROL: construct the legitimate " +
+        "case described above and invoke the in-scope entry point; if it is accepted print exactly " +
+        "`CONTROL OK: <detail>`. EXPLOIT: construct the attacker case described above and invoke the same " +
+        "entry point; if it succeeds against the invariant print exactly `INVARIANT VIOLATED: <detail>` to " +
+        "stderr and call std::process::exit(101); otherwise print `invariant held`. Both `CONTROL OK:` and " +
         "`INVARIANT VIOLATED:` markers are REQUIRED. Output only the Rust source.";
 }
 
@@ -327,7 +367,7 @@ fn compile_run(poc: string, target_src: string) -> string {
 //   3. the deterministic two-sided class template (offline determinism: mock -> "mock").
 // Every candidate is gated by the two-sided check (INVARIANT VIOLATED + CONTROL OK),
 // inlined in the retry lambda to keep the native call stack shallow.
-fn synth_via_prompt(target: string) -> string {
+fn synth_via_prompt(cls: string, target: string) -> string {
     let pocpath = getenv("BOUNTY_POC");
     if len(pocpath) > 0 {
         // colony-lint: safe-exec-concat
@@ -340,7 +380,7 @@ fn synth_via_prompt(target: string) -> string {
     }
     let llm_out = try {
         retry(5, || -> string {
-            let poc = prompt(poc_instruction(), target) -> string;
+            let poc = prompt(poc_instruction(cls), target) -> string;
             if index_of(poc, "fn main") < 0 {
                 print("synthesis: prompt candidate rejected — no usable Rust (no fn main)");
                 throw("prompt produced no usable Rust");
@@ -369,6 +409,14 @@ fn synth_via_prompt(target: string) -> string {
         print("synthesis: prompt-generated PoC verified (two-sided)");
         return llm_out;
     }
+    // V5: the deterministic fallback (built-in template / harness default PoC) is
+    // signer-shaped, correct ONLY for MissingSignerCheck. For the other V3 classes the
+    // LLM is the only generator — with no usable candidate the run is inconclusive
+    // (never a false-VERIFIED; the #820 two-sided gate stays the source of truth).
+    if cls != "MissingSignerCheck" {
+        print("synthesis: prompt path exhausted; no deterministic template for " + cls + " — inconclusive");
+        return llm_out;
+    }
     if len(getenv("SOLANA_HARNESS_DIR")) > 0 {
         print("synthesis: prompt path exhausted — running the harness default two-sided PoC");
         return compile_run("", target);
@@ -379,11 +427,65 @@ fn synth_via_prompt(target: string) -> string {
 
 // ---- standardized report + human submission gate -----------------------------
 
-// Immunefi severity scale for a verified finding class.
+// Immunefi severity scale for a verified finding class (V5: per-class).
 fn severity_for(cls: string) -> string {
     if cls == "MissingSignerCheck" { return "Critical"; }
+    if cls == "MissingOwnerCheck" { return "Critical"; }
+    if cls == "ArbitraryCPI" { return "Critical"; }
+    if cls == "AccountDataMatching" { return "High"; }
     if cls == "IntegerOverflow" { return "Medium"; }
     return "Informational";
+}
+
+// V5 (#843): per-class report narrative. Each is a SHALLOW leaf (string compares +
+// concat only) so the report stays accurate to the detected class instead of carrying a
+// hardcoded signer-drain story. Generic default covers any unrecognised token.
+fn summary_for(cls: string, node: string) -> string {
+    if cls == "MissingSignerCheck" {
+        return "The `" + node + "` handler authorizes a state-mutating action without verifying that the authority account signed the transaction, so any caller can perform it without the owner's signature.";
+    }
+    if cls == "MissingOwnerCheck" {
+        return "The `" + node + "` handler trusts a passed account without verifying it is owned by the expected program, so an attacker can substitute an account they control carrying forged data.";
+    }
+    if cls == "AccountDataMatching" {
+        return "The `" + node + "` handler never checks that the passed account's identity matches the privileged identity stored in state, so an attacker can pass a different account and bypass the access-control check.";
+    }
+    if cls == "ArbitraryCPI" {
+        return "The `" + node + "` handler performs a cross-program invocation against an unverified, caller-supplied program id, so an attacker can redirect the CPI to a malicious program.";
+    }
+    if cls == "IntegerOverflow" {
+        return "The `" + node + "` handler performs unchecked arithmetic on caller-influenced amounts, so a crafted amount can wrap or underflow and corrupt the conserved value (balance / supply).";
+    }
+    return "The `" + node + "` handler exposes a privileged action to an unauthorized caller, breaking its access-control invariant.";
+}
+
+fn impact_for(cls: string) -> string {
+    if cls == "IntegerOverflow" {
+        return "Value corruption: a wrapped balance / supply lets an attacker mint or withdraw value that should not exist, breaking conservation of funds.";
+    }
+    if cls == "ArbitraryCPI" {
+        return "An attacker redirects a trusted cross-program call to a malicious program, enabling arbitrary effects executed under the victim program's authority.";
+    }
+    return "Unauthorized control over a privileged action: an attacker performs it without the required authorization, typically draining funds or seizing state.";
+}
+
+fn remediation_for(cls: string) -> string {
+    if cls == "MissingSignerCheck" {
+        return "Require the authority to sign: type the field as `Signer` (Anchor) or assert `authority.is_signer` (native) before any state mutation.";
+    }
+    if cls == "MissingOwnerCheck" {
+        return "Verify account ownership before trusting data: constrain `owner = <program>` (Anchor) or assert `account.owner == program_id` (native).";
+    }
+    if cls == "AccountDataMatching" {
+        return "Compare the passed account against the identity stored in state (e.g. `has_one = authority` / `require_keys_eq!(account.key, state.authority)`) before the privileged action.";
+    }
+    if cls == "ArbitraryCPI" {
+        return "Verify the invoked program id equals the expected, hard-coded program before the CPI (e.g. `require_keys_eq!(program.key, expected_program_id)`).";
+    }
+    if cls == "IntegerOverflow" {
+        return "Use checked arithmetic (`checked_add` / `checked_sub` / `checked_mul`) and reject on overflow, or saturating ops where a clamp is the intended behaviour.";
+    }
+    return "Add the missing access-control check so only the authorized party can perform the privileged action.";
 }
 
 // Best-effort implicated-node extraction: the handler fn name from the target (structural detection).
@@ -413,14 +515,14 @@ fn submission_report(cls: string, th: string, node: string, trace: string, poc_s
         "| Affected function | `" + node + "` |\n" +
         "| Sub-graph hash | " + th + " |\n" +
         "| Standalone PoC re-verified | " + std_ok + " |\n\n" +
-        "## Summary\n\nThe `" + node + "` handler authorizes a state-mutating withdrawal without verifying that the authority account signed the transaction (and matches the stored vault authority), so any caller can drain the vault.\n\n" +
+        "## Summary\n\n" + summary_for(cls, node) + "\n\n" +
         "## Vulnerability details (implicated nodes)\n\n" + trace + "\n\n" +
         "## Proof of Concept (standalone, reproducible)\n\nSingle-file Rust PoC — no external deps, compiles + runs offline:\n\n```rust\n" + poc_src + "```\n\n" +
         "Reproduce:\n\n```\nrustc --edition 2021 poc_standalone.rs -o poc && ./poc\n```\n\n" +
         "Observed:\n\n```\n" + observed + "```\n\n" +
         snap_section +
-        "## Impact\n\nComplete loss of vault funds: an unauthorized caller drains the entire balance in a single call.\n\n" +
-        "## Remediation\n\nReject the instruction unless the authority signed the transaction and its key matches the stored vault authority, before any state mutation.\n\n" +
+        "## Impact\n\n" + impact_for(cls) + "\n\n" +
+        "## Remediation\n\n" + remediation_for(cls) + "\n\n" +
         "## Submission — HUMAN-GATED (NOT SUBMITTED)\n\n" +
         "**STATUS: PENDING HUMAN APPROVAL — NOT SUBMITTED.** This colony NEVER posts to a bounty platform (anti-bot / dedup → bans). Submission to Immunefi / Code4rena / Sherlock is a SEPARATE, explicit human action: a reviewer reads this report and submits it manually.\n\n" +
         "---\n_Generated by the auditor.ag colony federation on the agentis substrate._\n";
@@ -628,14 +730,10 @@ agent guard() -> void {
         let heuristic = classify(strip_comments(target));
         let llm = classify_llm(target);
         let cls = resolve_cls(llm, heuristic);
-        if cls == "MissingSignerCheck" {
-            print("guard: MissingSignerCheck fired [Critical]");
+        if is_vuln_class(cls) {
+            print("guard: " + cls + " fired [" + severity_for(cls) + "]");
         } else {
-            if cls == "IntegerOverflow" {
-                print("guard: IntegerOverflow fired [Medium]");
-            } else {
-                print("guard: no rule fired — target looks safe");
-            }
+            print("guard: no rule fired — target looks safe");
         }
         emit("synth:hit", "miss");
         emit("synth:class", cls);
@@ -652,12 +750,12 @@ agent synthesis() -> void {
     let th = listen("synth:th");
     let hit = listen("synth:hit");
     let trace = listen("synth:trace");
-    if cls == "MissingSignerCheck" {
+    if is_vuln_class(cls) {
         if hit == "hit" {
             print("synthesis: reusing cached VERIFIED verdict (audit-once) — skipping PoC re-compile");
             let node = first_fn_name(target);
             let gate = submission_gate(th);
-            file_write("report.md", submission_report("MissingSignerCheck", th, node, trace,
+            file_write("report.md", submission_report(cls, th, node, trace,
                 "// PoC reused from the original audit — fetch the standalone PoC from the\n// content-addressed DAG cache for this sub-graph (audit-once dedup).\n",
                 "cached",
                 "(reused from the DAG verdict-cache — no re-compile this run)",
@@ -667,14 +765,14 @@ agent synthesis() -> void {
             print("Verdict: VERIFIED");
         } else {
             file_write("target.rs", target);
-            print("synthesis: generating PoC (prompt 5-retry + deterministic fallback)");
-            let run_out = synth_via_prompt(target);
+            print("synthesis: generating " + cls + " PoC (prompt 5-retry + class-specific invariant)");
+            let run_out = synth_via_prompt(cls, target);
             let verdict = assess(run_out);
             if verdict == "verified" {
                 memo_write("bounty:verified", th);
-                memo_write("bounty:verdict:" + th, "MissingSignerCheck");
-                memo_write("bounty:blacklist:" + th, "MissingSignerCheck");
-                knowledge_sell("bounty:vuln:" + th, "MissingSignerCheck:Critical", 1);
+                memo_write("bounty:verdict:" + th, cls);
+                memo_write("bounty:blacklist:" + th, cls);
+                knowledge_sell("bounty:vuln:" + th, cls + ":" + severity_for(cls), 1);
                 let node = first_fn_name(target);
                 let gate = submission_gate(th);
                 let hd = getenv("SOLANA_HARNESS_DIR");
@@ -687,7 +785,7 @@ agent synthesis() -> void {
                     // colony-lint: safe-exec-concat
                     let poc_src = exec sh "cat ${hd}/src/bin/poc.rs 2>/dev/null || true";
                     let snap_sec = snapshot_section("", "n/a — verified through the real Solana SVM; replay against a real on-chain RPC dump is a separate capability", "n/a");
-                    file_write("report.md", submission_report("MissingSignerCheck", th, node, trace, poc_src, "yes (real Solana SVM)", run_out, snap_sec));
+                    file_write("report.md", submission_report(cls, th, node, trace, poc_src, "yes (real Solana SVM)", run_out, snap_sec));
                     print("synthesis: VERIFIED — real-SVM two-sided PoC (solana-program-test + BanksClient)");
                     print("report: wrote standardized Immunefi report.md  (sub-graph", substring(th, 0, 12), ")");
                     print("submission:", gate, "— human-gated, never auto-posted");
@@ -702,7 +800,7 @@ agent synthesis() -> void {
                     file_write("poc_snapshot.rs", synth_snapshot_exploit());
                     let snap_run = exec sh "rm -f poc_snap; rustc --edition 2021 poc_snapshot.rs -o poc_snap 2>&1; ./poc_snap 2>&1; echo __rc=$?";
                     let snap_ok = yn(assess(snap_run) == "verified");
-                    file_write("report.md", submission_report("MissingSignerCheck", th, node, trace, poc_src, std_ok, std_run, snapshot_section(snap, snap_run, snap_ok)));
+                    file_write("report.md", submission_report(cls, th, node, trace, poc_src, std_ok, std_run, snapshot_section(snap, snap_run, snap_ok)));
                     print("synthesis: VERIFIED — cached verdict + blacklisted sub-graph");
                     print("synthesis: standalone PoC re-verified:", std_ok);
                     print("snapshot: replayed frozen on-chain state offline — re-verified:", snap_ok);
@@ -716,13 +814,8 @@ agent synthesis() -> void {
             }
         }
     } else {
-        if cls == "IntegerOverflow" {
-            print("synthesis: IntegerOverflow detected [Medium] — PoC synthesis deferred to prompt-driven path");
-            print("Verdict: DETECTED");
-        } else {
-            print("synthesis: no finding to synthesize");
-            print("Verdict: SAFE");
-        }
+        print("synthesis: no finding to synthesize");
+        print("Verdict: SAFE");
     }
 }
 
