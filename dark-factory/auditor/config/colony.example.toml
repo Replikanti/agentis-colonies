@@ -45,7 +45,10 @@ tick_interval_ms = 60000
 #                       embedded vulnerable vault).
 #   BOUNTY_POC          path to a human-supplied PoC candidate (gated by the
 #                       same two-sided check as a generated one).
-#   BOUNTY_SNAPSHOT     path to a host-side RPC account dump, replayed offline.
+#   BOUNTY_SNAPSHOT     path to a frozen on-chain account dump (produce one with
+#                       `snapshot-rpc.sh --rpc <url> --out snap.txt <pubkey>...`),
+#                       replayed through the real SVM offline (V4) when the native
+#                       solana-harness is active.
 #
 # When SOLANA_HARNESS_DIR is set, also raise the sandboxed-exec timeout in
 # .agentis/config — a cargo build/link of the ~700-crate solana-program-test

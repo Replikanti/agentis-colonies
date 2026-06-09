@@ -27,3 +27,8 @@ borsh = "1"
 [[bin]]
 name = "poc"
 path = "src/bin/poc.rs"
+
+# V4 (#842): replays a frozen on-chain account snapshot (snapshot.txt) through the SVM.
+[[bin]]
+name = "poc_snapshot"
+path = "src/bin/poc_snapshot.rs"
