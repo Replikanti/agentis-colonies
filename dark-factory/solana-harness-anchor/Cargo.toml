@@ -1,0 +1,32 @@
+# Offline Anchor-capable PoC harness (V6 / #844). Compiles a modernized Anchor program
+# (the audited target in src/lib.rs) and drives it through the REAL solana-runtime SVM
+# via solana-program-test, fully offline, with stable rustc and NO SBF platform-tools.
+#
+# `tokio` is the async driver for solana-program-test's BanksClient (`start().await`,
+# `process_transaction(tx).await`). It is unavoidable for a real SVM — the Solana runtime
+# crates (solana-program-runtime / solana-bpf-loader-program) pull tokio transitively
+# regardless of the test entry point (litesvm pulls it too). Keeping it direct + minimal
+# is what lets us run the program NATIVELY (processor!) without the SBF toolchain.
+[package]
+name = "solana-harness-anchor"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["lib"]
+
+[[bin]]
+name = "poc"
+path = "src/bin/poc.rs"
+
+[dependencies]
+anchor-lang = "0.31"
+solana-program = "2"
+solana-program-test = "2"
+solana-sdk = "2"
+spl-token = { version = "7", default-features = false, features = ["no-entrypoint"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[features]
+default = []
+no-entrypoint = []

@@ -16,6 +16,25 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Calibration on real `coral-xyz/sealevel-attacks` lessons (V6): an offline,
+  Anchor-capable PoC harness (`solana-harness-anchor/` — `anchor-lang` 0.31 +
+  `solana-program-test` 2.x + `spl-token`, committed `Cargo.lock`, stable rustc, no SBF
+  platform-tools) compiles a real Anchor program and drives it through the real
+  `solana-runtime` SVM. The corpus (`sealevel/`) holds three lessons modernized verbatim
+  to anchor 0.31 — signer-authorization (`MissingSignerCheck`), account-data-matching
+  (`AccountDataMatching`), owner-checks (`MissingOwnerCheck`) — each with insecure + secure
+  variants and a verified two-sided exploit PoC. The colony routes to the Anchor harness
+  via `SOLANA_ANCHOR_HARNESS_DIR` (a `harness_dir()` helper + anchor branches in
+  `poc_instruction` / `compile_run`); detection and the two-sided `assess()` gate are
+  unchanged. `calibrate-sealevel.sh` runs the full detect → validate pipeline over the
+  corpus and writes `sealevel-scorecard.md`. Demonstrated: the auditor runs end-to-end on a
+  real lesson **fully offline inside the hardened sandbox** (host-side only the LLM call;
+  the LLM-generated PoC compiles + runs offline through real `solana-program-test`, with a
+  human-gated report), with ≥3 true-positive VERIFIED on the insecure lessons and **zero
+  false-VERIFIED** on the secure variants — holding even when detection over-flags a secure
+  variant, because the two-sided gate (the secure program rejects the exploit) is the source
+  of truth, not the detector.
+
 - Program-specific invariant library (V5): each detected vulnerability class now
   drives synthesis through a class-specific invariant (`invariant_for(class)`)
   instead of a single hardcoded signer-drain story. The PoC-generation prompt
