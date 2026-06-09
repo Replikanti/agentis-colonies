@@ -1,0 +1,9 @@
+# Offline build contract for the Dark Factory PoC harness.
+# Every build resolves crates from the local ~/.cargo cache only (populated once
+# by setup-solana-toolchain.sh) and links the system OpenSSL instead of building
+# it from vendored C source (which needs perl-FindBin). No network, no SBF toolchain.
+[net]
+offline = true
+
+[env]
+OPENSSL_NO_VENDOR = "1"

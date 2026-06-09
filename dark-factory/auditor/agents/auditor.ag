@@ -1,0 +1,686 @@
+// auditor.ag — Dark Factory bounty-audit colony federation
+// (skeleton, agents, structural detection, DAG distillation / dedup cache).
+//
+// FOUR cooperating .ag agents wired by the substrate emit/listen bus, closing the
+// full audit loop ON the agentis substrate, fully offline, substrate-only — no Rust
+// in core. An audit target flows over the bus with no polling:
+//
+//   orchestrator --emit audit:target--> reconn
+//   reconn (recon + distill) --emit guard:target/guard:th/guard:cached, tracker:target-->
+//   guard        --emit synth:class / synth:target / synth:th / synth:hit--> synthesis
+//   tracker      --emit synth:trace--> synthesis
+//   synthesis    --> compile+run PoC in the hardened sandbox --> validate --> report
+//
+// Run (from an initialised dir; run twice in the SAME dir to see the dedup HIT):
+//   agentis go colonies/bounty/auditor.ag --enable-exec --enable-messaging --sandbox-profile hardened
+//   The report + PoC artefacts land under <rundir>/.agentis/sandbox/ (file_write is sandbox-resolved).
+//   (optional) BOUNTY_TARGET=<path> with exec.env_passthrough = BOUNTY_TARGET in config;
+//   (optional) learning/experience/knowledge.enabled = true to publish to the knowledge_market.
+//
+// Killer feature (content-addressed DAG) realized as the colony's dedup cache:
+//   * reconn dag_puts each handler sub-graph -> same sub-graph across targets/repos has the
+//     same content hash, stored once (structural dedup); the canonical target hash `th` keys
+//     a memo verdict-cache + a federation blacklist;
+//   * on a cache HIT the verdict is reused and synthesis SKIPS the rustc re-compile
+//     (the DAG is the cumulative dedup cache + knowledge graph, NOT the detector).
+
+cb 2000000;
+
+// ---- helpers: ingest ----------------------------------------------------------
+
+// Embedded default target (vulnerable; mirrors colonies/bounty/vuln_missing_signer.rs).
+fn embedded_target() -> string {
+    return "pub struct AccountInfo { pub key: u64, pub is_signer: bool }\n" +
+        "pub struct Vault { pub authority: u64, pub balance: u64 }\n" +
+        "pub struct WithdrawCtx<'a> { pub vault: &'a mut Vault, pub authority: &'a AccountInfo }\n" +
+        "pub fn withdraw(ctx: WithdrawCtx, amount: u64) -> Result<(), String> {\n" +
+        "    if ctx.vault.balance < amount { return Err(\"insufficient funds\".to_string()); }\n" +
+        "    ctx.vault.balance -= amount;\n" +
+        "    Ok(())\n" +
+        "}\n";
+}
+
+// Read the target: BOUNTY_TARGET path (cat in the sandbox) if set, else embedded.
+fn ingest_target() -> string {
+    let path = getenv("BOUNTY_TARGET");
+    if len(path) > 0 {
+        // colony-lint: safe-exec-concat
+        let src = exec sh "cat ${path} 2>/dev/null || true";
+        if len(src) > 0 {
+            return src;
+        }
+    }
+    return embedded_target();
+}
+
+// ---- helpers: structural detection -------------------------------------------
+
+// Strip `//` line comments so they can neither forge nor mask a guard.
+fn strip_comments(src: string) -> string {
+    let lines = regex_split("\n", src);
+    return reduce(lines, |acc: string, l: string| -> string {
+        let c = index_of(l, "//");
+        if c >= 0 {
+            acc + substring(l, 0, c) + "\n";
+        } else {
+            acc + l + "\n";
+        }
+    }, "");
+}
+
+// min of two index_of results, ignoring -1 (absent).
+fn min_present(a: int, b: int) -> int {
+    if a < 0 {
+        return b;
+    }
+    if b < 0 {
+        return a;
+    }
+    if a < b {
+        return a;
+    }
+    return b;
+}
+
+// Earliest state-mutation sink (`balance -=` / `balance +=`), or -1 if none.
+fn sink_pos(code: string) -> int {
+    return min_present(index_of(code, "balance -="), index_of(code, "balance +="));
+}
+
+// Earliest signer/authority guard construct, or -1 if none.
+fn guard_pos(code: string) -> int {
+    let g1 = index_of(code, ".is_signer");
+    let g2 = index_of(code, "require!");
+    let g3 = index_of(code, "assert!");
+    let g4 = index_of(code, "has_one");
+    return min_present(min_present(g1, g2), min_present(g3, g4));
+}
+
+// MissingSignerCheck (Critical): a state mutation with no DOMINATING signer guard.
+// Inlined (only leaf builtins beneath it) so the per-function reduce/lambda below
+// stays shallow on the native stack inside the agent block.
+fn detect_missing_signer(code: string) -> bool {
+    let sink = min_present(index_of(code, "balance -="), index_of(code, "balance +="));
+    if sink < 0 {
+        return false;
+    }
+    let g = min_present(min_present(index_of(code, ".is_signer"), index_of(code, "require!")), min_present(index_of(code, "assert!"), index_of(code, "has_one")));
+    if g < 0 {
+        return true;
+    }
+    if g > sink {
+        return true;
+    }
+    return false;
+}
+
+// IntegerOverflow (Medium): unchecked `balance +=` with no checked_/saturating_.
+fn detect_integer_overflow(code: string) -> bool {
+    let add = index_of(code, "balance +=");
+    if add < 0 {
+        return false;
+    }
+    if index_of(code, "checked_") >= 0 {
+        return false;
+    }
+    if index_of(code, "saturating_") >= 0 {
+        return false;
+    }
+    return true;
+}
+
+// Per-function scoping: run each detector WITHIN a single function body (split on the
+// `fn ` boundary) so a guard / checked_ in one handler cannot mask a vuln in another.
+// A class fires if ANY handler chunk is vulnerable. The reduce lambda calls a single
+// self-contained detector (only leaf builtins beneath it) to keep the native call
+// stack shallow inside the agent block.
+fn classify(code: string) -> string {
+    let chunks = regex_split("fn ", code);
+    let ms = reduce(chunks, |acc: bool, c: string| -> bool {
+        if acc {
+            return true;
+        }
+        return detect_missing_signer(c);
+    }, false);
+    if ms {
+        return "MissingSignerCheck";
+    }
+    let ov = reduce(chunks, |acc: bool, c: string| -> bool {
+        if acc {
+            return true;
+        }
+        return detect_integer_overflow(c);
+    }, false);
+    if ov {
+        return "IntegerOverflow";
+    }
+    return "none";
+}
+
+// ---- helpers: DAG distillation -----------------------------------------------
+
+// Store each handler sub-graph in the content-addressed DAG (the dedup cache):
+// same sub-graph across targets/repos -> same content hash -> stored once. Returns
+// the count distilled. dag_put is a leaf builtin (kept shallow on the call stack).
+fn distill_subgraphs(code: string) -> int {
+    return reduce(regex_split("fn ", code), |acc: int, c: string| -> int {
+        if len(c) > 0 {
+            dag_put("fn " + c);
+        }
+        return acc + 1;
+    }, 0);
+}
+
+// Pick the prior verdict for a sub-graph: federation blacklist wins, else own cache.
+fn pick_prior(cached: string, black: string) -> string {
+    if len(black) > 0 {
+        return black;
+    }
+    return cached;
+}
+
+// ---- helpers: synthesis -------------------------------------------------------
+
+// PoC template for MissingSignerCheck (two-sided invariant harness). main()
+// runs BOTH a control (authorized signer must be accepted -> prints `CONTROL OK:`)
+// and the exploit (unauthorized caller must be rejected; a drain breaks the invariant
+// -> prints `INVARIANT VIOLATED:`). The control proves the harness is discriminating
+// (it accepts the legit case), so assess() can reject a rigged always-fire harness
+// that screams the sentinel without ever exercising the target.
+fn synth_exploit() -> string {
+    return "include!(\"target.rs\");\n" +
+        "fn main() {\n" +
+        "    // control: an AUTHORIZED signer must be accepted (invariant holds).\n" +
+        "    let mut cvault = Vault { authority: 1, balance: 1000 };\n" +
+        "    let signer = AccountInfo { key: 1, is_signer: true };\n" +
+        "    let cpre = cvault.balance;\n" +
+        "    let cres = withdraw(WithdrawCtx { vault: &mut cvault, authority: &signer }, cpre);\n" +
+        "    if cres.is_ok() {\n" +
+        "        println!(\"CONTROL OK: authorized withdrawal accepted {} -> {}\", cpre, cvault.balance);\n" +
+        "    } else {\n" +
+        "        println!(\"control anomaly: authorized withdrawal rejected\");\n" +
+        "    }\n" +
+        "    // exploit: an UNAUTHORIZED caller must be rejected; a drain breaks the invariant.\n" +
+        "    let mut vault = Vault { authority: 1, balance: 1000 };\n" +
+        "    let attacker = AccountInfo { key: 2, is_signer: false };\n" +
+        "    let pre = vault.balance;\n" +
+        "    let res = withdraw(WithdrawCtx { vault: &mut vault, authority: &attacker }, pre);\n" +
+        "    let invariant_held = res.is_err() && vault.balance == pre;\n" +
+        "    if invariant_held {\n" +
+        "        println!(\"invariant held: unauthorized withdrawal rejected\");\n" +
+        "    } else {\n" +
+        "        eprintln!(\"INVARIANT VIOLATED: unauthorized caller drained vault {} -> {}\", pre, vault.balance);\n" +
+        "        std::process::exit(101);\n" +
+        "    }\n" +
+        "}\n";
+}
+
+// Two-sided validation gate. A PoC run is `verified` ONLY when all three hold: (a) the
+// compile produced no rustc error, (b) the exploit sentinel `INVARIANT VIOLATED:` is
+// present, AND (c) the control marker `CONTROL OK:` is present (the harness is
+// discriminating, not a rigged always-fire bug). Otherwise `inconclusive:<reason>`.
+// Clause (c) is what makes panic != verified structural — the sentinel alone is not
+// enough. Leaf function (only index_of) so the native call stack stays shallow.
+fn assess(run_out: string) -> string {
+    if index_of(run_out, "error[E") >= 0 { return "inconclusive:compile-error"; }
+    if index_of(run_out, "INVARIANT VIOLATED:") < 0 { return "inconclusive:no-violation"; }
+    if index_of(run_out, "CONTROL OK:") < 0 { return "inconclusive:no-control"; }
+    return "verified";
+}
+
+// PoC generation instruction for the prompt-driven synthesis (two-sided).
+// When the real Solana toolchain is enabled (SOLANA_HARNESS_DIR set) the
+// instruction asks for a solana-program-test + BanksClient PoC that runs through the
+// REAL solana-runtime SVM; otherwise the std-only include!("target.rs") harness.
+fn poc_instruction() -> string {
+    if len(getenv("SOLANA_HARNESS_DIR")) > 0 {
+        return "You are given a Solana program — the contents of the harness crate's src/target.rs, which " +
+            "exposes `pub fn process_instruction(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) " +
+            "-> ProgramResult`. Write the FULL contents of src/bin/poc.rs: a `#[tokio::main] async fn main()` " +
+            "that drives this program through solana-program-test + BanksClient as a TWO-SIDED proof against " +
+            "the REAL SVM. Imports: `use solana_harness::target; use solana_program_test::{processor, " +
+            "ProgramTest}; use solana_sdk::{account::Account, instruction::{AccountMeta, Instruction}, " +
+            "pubkey::Pubkey, signature::{Keypair, Signer}, transaction::Transaction};`. For EACH side build a " +
+            "fresh `ProgramTest::new(\"solana_harness\", program_id, processor!(target::process_instruction))`, " +
+            "seed program-owned accounts via `pt.add_account(pk, Account { lamports, data: vec![], owner: " +
+            "program_id, executable: false, rent_epoch: 0 })`, then `let (mut banks, payer, recent) = " +
+            "pt.start().await;`, build the instruction with correct AccountMeta signer flags, sign with " +
+            "`tx.sign(&[&payer, ...], recent)`, and `banks.process_transaction(tx).await`. CONTROL: the " +
+            "authorized/signed caller — if accepted print exactly `CONTROL OK: <detail>`. EXPLOIT: an " +
+            "UNAUTHORIZED non-signer caller — if it succeeds against the safety invariant (funds move / state " +
+            "mutates without authorization) print exactly `INVARIANT VIOLATED: <detail>` to stderr and call " +
+            "std::process::exit(101); otherwise print `invariant held`. Both markers REQUIRED. Output only the " +
+            "Rust source of src/bin/poc.rs.";
+    }
+    return "You are given a Rust program as input. Write a self-contained Rust `fn main()` that begins " +
+        "with include!(\"target.rs\") and proves the program's most likely access-control / " +
+        "signer-authorization vulnerability with a TWO-SIDED harness, using the EXACT type and function " +
+        "names defined in the input. CONTROL: construct the LEGITIMATE (authorized / signed) caller and " +
+        "invoke the in-scope entry point; if the legitimate call is accepted print exactly " +
+        "`CONTROL OK: <detail>`. EXPLOIT: construct an UNAUTHORIZED caller (no signature / wrong authority) " +
+        "and invoke the same entry point; if it succeeds against the safety invariant (funds move or state " +
+        "mutates without authorization) print exactly `INVARIANT VIOLATED: <detail>` to stderr and call " +
+        "std::process::exit(101); otherwise print `invariant held`. Both `CONTROL OK:` and " +
+        "`INVARIANT VIOLATED:` markers are REQUIRED. Output only the Rust source.";
+}
+
+// Compile + run a PoC candidate, routing to the real Solana toolchain when
+// SOLANA_HARNESS_DIR is set (solana-program-test + BanksClient through the real SVM,
+// fully offline), else the std-only `rustc` path (offline-deterministic, V1 behaviour).
+// In harness mode an empty `poc` keeps the harness's committed default src/bin/poc.rs
+// (the deterministic template-fallback). `target_src` is written to src/target.rs so the
+// PoC links against the in-scope program. All leaf calls — the native call stack stays shallow.
+fn compile_run(poc: string, target_src: string) -> string {
+    let hd = getenv("SOLANA_HARNESS_DIR");
+    if len(hd) > 0 {
+        file_write("h_target.rs", target_src);
+        if len(poc) > 0 {
+            file_write("h_poc.rs", poc);
+            // colony-lint: safe-exec-concat
+            return exec sh "set -e; cp h_target.rs ${hd}/src/target.rs; cp h_poc.rs ${hd}/src/bin/poc.rs; cd ${hd}; set +e; export PATH=$HOME/.cargo/bin:$PATH; CARGO_NET_OFFLINE=1 cargo build --quiet --bin poc --offline > build.out 2>&1; BRC=$?; if [ $BRC -ne 0 ]; then cat build.out; echo __rc=$BRC; else RAYON_NUM_THREADS=4 ./target/debug/poc 2>&1; echo __rc=$?; fi";
+        }
+        // colony-lint: safe-exec-concat
+        return exec sh "set -e; cp h_target.rs ${hd}/src/target.rs; cd ${hd}; set +e; export PATH=$HOME/.cargo/bin:$PATH; CARGO_NET_OFFLINE=1 cargo build --quiet --bin poc --offline > build.out 2>&1; BRC=$?; if [ $BRC -ne 0 ]; then cat build.out; echo __rc=$BRC; else RAYON_NUM_THREADS=4 ./target/debug/poc 2>&1; echo __rc=$?; fi";
+    }
+    file_write("exploit.rs", poc);
+    return exec sh "rm -f poc; rustc --edition 2021 exploit.rs -o poc 2>&1; ./poc 2>&1; echo __rc=$?";
+}
+
+// Generate the PoC and run it in the hardened sandbox. Resolution order:
+//   1. BOUNTY_POC=<path> override — a human-supplied (or negative-test) candidate;
+//   2. the 5-retry prompt loop (the real LLM path);
+//   3. the deterministic two-sided class template (offline determinism: mock -> "mock").
+// Every candidate is gated by the two-sided check (INVARIANT VIOLATED + CONTROL OK),
+// inlined in the retry lambda to keep the native call stack shallow.
+fn synth_via_prompt(target: string) -> string {
+    let pocpath = getenv("BOUNTY_POC");
+    if len(pocpath) > 0 {
+        // colony-lint: safe-exec-concat
+        let supplied = exec sh "cat ${pocpath} 2>/dev/null || true";
+        if index_of(supplied, "fn main") >= 0 {
+            print("synthesis: using BOUNTY_POC candidate (gated by assess)");
+            return compile_run(supplied, target);
+        }
+        print("synthesis: BOUNTY_POC unreadable — falling back to generation");
+    }
+    let llm_out = try {
+        retry(5, || -> string {
+            let poc = prompt(poc_instruction(), target) -> string;
+            if index_of(poc, "fn main") < 0 {
+                print("synthesis: prompt candidate rejected — no usable Rust (no fn main)");
+                throw("prompt produced no usable Rust");
+            }
+            // observability: persist the LLM candidate + its compile/run output so a real-target
+            // run that does not verify still leaves a forensic artifact (last_candidate.rs / .out).
+            file_write("last_candidate.rs", poc);
+            let out = compile_run(poc, target);
+            file_write("last_candidate.out", out);
+            if index_of(out, "INVARIANT VIOLATED:") >= 0 {
+                if index_of(out, "CONTROL OK:") >= 0 {
+                    out;
+                } else {
+                    print("synthesis: prompt candidate rejected — fired the sentinel without a passing control");
+                    throw("candidate fired the sentinel without a passing control");
+                }
+            } else {
+                print("synthesis: prompt candidate rejected — no invariant violation / compile error");
+                throw("candidate did not violate the invariant");
+            }
+        });
+    } catch e {
+        "";
+    };
+    if assess(llm_out) == "verified" {
+        print("synthesis: prompt-generated PoC verified (two-sided)");
+        return llm_out;
+    }
+    if len(getenv("SOLANA_HARNESS_DIR")) > 0 {
+        print("synthesis: prompt path exhausted — running the harness default two-sided PoC");
+        return compile_run("", target);
+    }
+    print("synthesis: prompt path exhausted — using the deterministic MissingSignerCheck template");
+    return compile_run(synth_exploit(), target);
+}
+
+// ---- standardized report + human submission gate -----------------------------
+
+// Immunefi severity scale for a verified finding class.
+fn severity_for(cls: string) -> string {
+    if cls == "MissingSignerCheck" { return "Critical"; }
+    if cls == "IntegerOverflow" { return "Medium"; }
+    return "Informational";
+}
+
+// Best-effort implicated-node extraction: the handler fn name from the target (structural detection).
+fn first_fn_name(src: string) -> string {
+    let p = index_of(src, "fn ");
+    if p < 0 { return "(handler)"; }
+    let rest = substring(src, p + 3, len(src));
+    let paren = index_of(rest, "(");
+    if paren < 0 { return "(handler)"; }
+    return substring(rest, 0, paren);
+}
+
+// bool -> "yes"/"no" (no mutable reassignment in .ag, so compute inline via a leaf).
+fn yn(cond: bool) -> string {
+    if cond { return "yes"; }
+    return "no";
+}
+
+// Standardized Immunefi-shaped finding. HUMAN-GATED: the colony writes the finding to
+// disk and marks it PENDING; submission to a bounty platform is a SEPARATE, explicit
+// human action. The colony NEVER contacts a platform (no http_post anywhere).
+fn submission_report(cls: string, th: string, node: string, trace: string, poc_src: string, std_ok: string, observed: string, snap_section: string) -> string {
+    return "# Bounty finding — " + cls + "\n\n" +
+        "| Field | Value |\n|---|---|\n" +
+        "| Severity (Immunefi) | " + severity_for(cls) + " |\n" +
+        "| Rule | " + cls + " |\n" +
+        "| Affected function | `" + node + "` |\n" +
+        "| Sub-graph hash | " + th + " |\n" +
+        "| Standalone PoC re-verified | " + std_ok + " |\n\n" +
+        "## Summary\n\nThe `" + node + "` handler authorizes a state-mutating withdrawal without verifying that the authority account signed the transaction (and matches the stored vault authority), so any caller can drain the vault.\n\n" +
+        "## Vulnerability details (implicated nodes)\n\n" + trace + "\n\n" +
+        "## Proof of Concept (standalone, reproducible)\n\nSingle-file Rust PoC — no external deps, compiles + runs offline:\n\n```rust\n" + poc_src + "```\n\n" +
+        "Reproduce:\n\n```\nrustc --edition 2021 poc_standalone.rs -o poc && ./poc\n```\n\n" +
+        "Observed:\n\n```\n" + observed + "```\n\n" +
+        snap_section +
+        "## Impact\n\nComplete loss of vault funds: an unauthorized caller drains the entire balance in a single call.\n\n" +
+        "## Remediation\n\nReject the instruction unless the authority signed the transaction and its key matches the stored vault authority, before any state mutation.\n\n" +
+        "## Submission — HUMAN-GATED (NOT SUBMITTED)\n\n" +
+        "**STATUS: PENDING HUMAN APPROVAL — NOT SUBMITTED.** This colony NEVER posts to a bounty platform (anti-bot / dedup → bans). Submission to Immunefi / Code4rena / Sherlock is a SEPARATE, explicit human action: a reviewer reads this report and submits it manually.\n\n" +
+        "---\n_Generated by the auditor.ag colony federation on the agentis substrate._\n";
+}
+
+// Tier-gated submission marker (ADR-0001). The colony NEVER auto-posts to a bounty
+// platform — submission stays a separate, explicit human action. This gate decides
+// only whether a verified finding is STAGED for human review: at `review-gated` /
+// `autonomous` tier the colony writes the `pending_human_review` submission marker and
+// emits `submission:pending` (a reviewer is expected to act on it); at `propose` /
+// `shadow` / `dormant` it writes the report alone and stays silent on the submission
+// bus. Returns "staged" / "report-only" for the synthesis log line. One tier() call
+// per run; the report itself is always written by the caller regardless of tier.
+fn submission_gate(th: string) -> string {
+    let my_tier = tier("auditor");
+    if my_tier == "review-gated" {
+        memo_write("bounty:submission:" + th, "pending_human_review");
+        emit("submission:pending", th);
+        return "staged";
+    } else {
+        if my_tier == "autonomous" {
+            memo_write("bounty:submission:" + th, "pending_human_review");
+            emit("submission:pending", th);
+            return "staged";
+        } else {
+            return "report-only";
+        }
+    }
+}
+
+// ---- on-chain state snapshot replay ------------------------------------------
+
+// The frozen account snapshot a host-side RPC dump would produce. If BOUNTY_SNAPSHOT
+// names a readable file (a real host RPC dump, mounted RO into the sandbox), use it;
+// else the embedded default frozen state. Flat key=value so a std-only PoC parses it.
+fn snapshot_state() -> string {
+    let p = getenv("BOUNTY_SNAPSHOT");
+    if len(p) > 0 {
+        // colony-lint: safe-exec-concat
+        let dump = exec sh "cat ${p} 2>/dev/null || true";
+        if index_of(dump, "vault.balance") >= 0 {
+            print("snapshot: using host-supplied RPC dump (BOUNTY_SNAPSHOT)");
+            return dump;
+        }
+        print("snapshot: BOUNTY_SNAPSHOT unreadable — using embedded frozen state");
+    }
+    return "vault.authority=1\nvault.balance=1000\n";
+}
+
+// A PoC that REPLAYS the exploit against a FROZEN snapshot read from disk — zero
+// network inside the sandbox (std::fs only, no std::net). Two-sided: the
+// control accepts the authorized signer, the exploit drains the snapshotted vault.
+fn synth_snapshot_exploit() -> string {
+    return "include!(\"target.rs\");\n" +
+        "use std::fs;\n" +
+        "fn field(s: &str, key: &str) -> u64 {\n" +
+        "    for line in s.lines() {\n" +
+        "        if let Some(rest) = line.strip_prefix(key) {\n" +
+        "            if let Some(v) = rest.strip_prefix(\"=\") { return v.trim().parse().unwrap_or(0); }\n" +
+        "        }\n" +
+        "    }\n" +
+        "    0\n" +
+        "}\n" +
+        "fn main() {\n" +
+        "    // frozen on-chain snapshot (host RPC dump), replayed offline — no network.\n" +
+        "    let snap = fs::read_to_string(\"snapshot.txt\").unwrap_or_default();\n" +
+        "    let authority = field(&snap, \"vault.authority\");\n" +
+        "    let balance = field(&snap, \"vault.balance\");\n" +
+        "    // control: an AUTHORIZED signer from the snapshot must be accepted.\n" +
+        "    let mut cvault = Vault { authority: authority, balance: balance };\n" +
+        "    let signer = AccountInfo { key: authority, is_signer: true };\n" +
+        "    let cpre = cvault.balance;\n" +
+        "    let cres = withdraw(WithdrawCtx { vault: &mut cvault, authority: &signer }, cpre);\n" +
+        "    if cres.is_ok() { println!(\"CONTROL OK: authorized withdrawal accepted {} -> {}\", cpre, cvault.balance); }\n" +
+        "    else { println!(\"control anomaly: authorized withdrawal rejected\"); }\n" +
+        "    // exploit: an UNAUTHORIZED caller drains the snapshotted vault.\n" +
+        "    let mut vault = Vault { authority: authority, balance: balance };\n" +
+        "    let attacker = AccountInfo { key: authority + 1, is_signer: false };\n" +
+        "    let pre = vault.balance;\n" +
+        "    let res = withdraw(WithdrawCtx { vault: &mut vault, authority: &attacker }, pre);\n" +
+        "    let invariant_held = res.is_err() && vault.balance == pre;\n" +
+        "    if invariant_held { println!(\"invariant held: unauthorized withdrawal rejected\"); }\n" +
+        "    else {\n" +
+        "        eprintln!(\"INVARIANT VIOLATED: unauthorized caller drained snapshotted vault {} -> {}\", pre, vault.balance);\n" +
+        "        std::process::exit(101);\n" +
+        "    }\n" +
+        "}\n";
+}
+
+// Report section documenting the frozen-snapshot replay.
+fn snapshot_section(snap: string, snap_run: string, snap_ok: string) -> string {
+    return "## On-chain state snapshot replay\n\n" +
+        "The exploit is replayed against a FROZEN account snapshot (a host-side RPC dump, mounted read-only into the sandbox) with ZERO network inside the sandbox — deterministic offline reproduction.\n\n" +
+        "Frozen snapshot (`snapshot.txt`):\n\n```\n" + snap + "```\n\n" +
+        "Replay (`poc_snapshot.rs` reads the snapshot via std::fs, no network):\n\n```\n" + snap_run + "```\n\n" +
+        "Snapshot replay re-verified: " + snap_ok + "\n\n";
+}
+
+// ---- agents -------------------------------------------------------------------
+
+// reconn: dependency recon via `cargo tree` + DAG distillation + verdict-cache lookup.
+// reference node-extractor: a std-only Rust parser (compiles offline, zero crate
+// deps) that scans an Anchor/CosmWasm Rust target for fn / struct / impl items and emits
+// the canonical JSON node stream. Real engagements swap in tree-sitter/semgrep — no core
+// change. This keeps parsing in the colony layer; core stays zero-dep (no parse builtin).
+fn node_extractor() -> string {
+    return "use std::fs;\n" +
+        "fn ident_after(s: &str, kw: &str) -> String {\n" +
+        "    match s.find(kw) {\n" +
+        "        Some(i) => s[i + kw.len()..].chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect(),\n" +
+        "        None => String::new(),\n" +
+        "    }\n" +
+        "}\n" +
+        "fn main() {\n" +
+        "    let src = fs::read_to_string(\"target_src.rs\").unwrap_or_default();\n" +
+        "    let mut nodes: Vec<String> = Vec::new();\n" +
+        "    for line in src.lines() {\n" +
+        "        let t = line.trim_start();\n" +
+        "        let (kind, kw) = if t.starts_with(\"pub fn \") || t.starts_with(\"fn \") { (\"fn\", \"fn \") }\n" +
+        "            else if t.starts_with(\"pub struct \") || t.starts_with(\"struct \") { (\"struct\", \"struct \") }\n" +
+        "            else if t.starts_with(\"impl \") { (\"impl\", \"impl \") }\n" +
+        "            else { continue };\n" +
+        "        let name = ident_after(t, kw);\n" +
+        "        if !name.is_empty() {\n" +
+        "            nodes.push(format!(\"{{\\\"kind\\\":\\\"{}\\\",\\\"name\\\":\\\"{}\\\"}}\", kind, name));\n" +
+        "        }\n" +
+        "    }\n" +
+        "    println!(\"[{}]\", nodes.join(\",\"));\n" +
+        "}\n";
+}
+
+// node-stream ingestion: exec the reference parser in the hardened sandbox, consume its JSON
+// node stream. Graceful — a compile/run failure degrades to "[]" and never breaks the
+// audit (structural detection is unaffected; it uses the in-.ag per-fn view).
+fn ingest_nodes(target: string) -> string {
+    file_write("target_src.rs", target);
+    file_write("extract_nodes.rs", node_extractor());
+    return exec sh "rm -f extract; rustc --edition 2021 extract_nodes.rs -o extract 2>/dev/null && ./extract 2>/dev/null || echo '[]'";
+}
+
+agent reconn() -> void {
+    let target = listen("audit:target");
+    file_write("Cargo.toml", "[package]\nname = \"bounty-target\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\n");
+    file_write("src/lib.rs", target);
+    let tree = exec sh "cargo tree --offline 2>&1; echo __rc=$?";
+    print("reconn: cargo tree ->", substring(tree, 0, 36));
+    // exec-driven canonical node-stream ingestion (core stays zero-dep) -> DAG.
+    let nodes = ingest_nodes(target);
+    let nh = dag_put(nodes);
+    let ncount = len(regex_find_all("\"name\"", nodes));
+    print("ingest: canonical node stream (exec-driven parse):", ncount, "node(s) -> dag", substring(nh, 0, 12));
+    // distill: store handler sub-graphs in the content-addressed DAG (dedup cache).
+    let code = strip_comments(target);
+    let n = distill_subgraphs(code);
+    let th = dag_put(code);
+    print("reconn: distilled", n, "sub-graph(s); target hash", substring(th, 0, 12));
+    // audit-once: reuse a prior verdict / federation blacklist for this exact sub-graph.
+    let prior = pick_prior(recall_latest("bounty:verdict:" + th), recall_latest("bounty:blacklist:" + th));
+    emit("guard:target", target);
+    emit("guard:th", th);
+    emit("guard:cached", prior);
+    emit("tracker:target", target);
+}
+
+// tracker: dataflow trace — does a guard dominate the sink (untrusted input -> mutation)?
+agent tracker() -> void {
+    let target = listen("tracker:target");
+    let code = strip_comments(target);
+    let sink = sink_pos(code);
+    if sink < 0 {
+        emit("synth:trace", "no state mutation sink reached");
+    } else {
+        let g = guard_pos(code);
+        if g >= 0 {
+            if g < sink {
+                emit("synth:trace", "sink reachable but a signer/authority guard DOMINATES it (guarded path)");
+            } else {
+                emit("synth:trace", "sink reachable; guard present but does NOT dominate (post-mutation check, ineffective)");
+            }
+        } else {
+            emit("synth:trace", "untrusted input reaches the state-mutation sink with NO dominating guard");
+        }
+    }
+    print("tracker: dataflow trace emitted");
+}
+
+// guard: reuse the cached verdict on a DAG hit (audit-once), else structural detection.
+agent guard() -> void {
+    let target = listen("guard:target");
+    let th = listen("guard:th");
+    let cached = listen("guard:cached");
+    emit("synth:target", target);
+    emit("synth:th", th);
+    if len(cached) > 0 {
+        // Cache HIT: reuse the cached verdict directly (audit-once, no re-detection).
+        print("guard: cache HIT — reusing verdict", cached, "for sub-graph", substring(th, 0, 12), "(audit-once, no re-detection)");
+        emit("synth:hit", "hit");
+        emit("synth:class", cached);
+    } else {
+        // MISS: detect afresh. classify() is called directly (no wrapper frame) to keep
+        // the native call stack shallow inside the agent block.
+        let cls = classify(strip_comments(target));
+        if cls == "MissingSignerCheck" {
+            print("guard: MissingSignerCheck fired [Critical]");
+        } else {
+            if cls == "IntegerOverflow" {
+                print("guard: IntegerOverflow fired [Medium]");
+            } else {
+                print("guard: no rule fired — target looks safe");
+            }
+        }
+        emit("synth:hit", "miss");
+        emit("synth:class", cls);
+    }
+}
+
+// synthesis: per-class disposition. On a cache HIT, reuse the verified verdict and
+// skip the rustc re-compile (dedup). On a MISS, build+run the PoC in the hardened
+// sandbox, two-sided validate (control accepted + exploit broke the invariant),
+// then CACHE the verdict + blacklist.
+agent synthesis() -> void {
+    let cls = listen("synth:class");
+    let target = listen("synth:target");
+    let th = listen("synth:th");
+    let hit = listen("synth:hit");
+    let trace = listen("synth:trace");
+    if cls == "MissingSignerCheck" {
+        if hit == "hit" {
+            print("synthesis: reusing cached VERIFIED verdict (audit-once) — skipping PoC re-compile");
+            let node = first_fn_name(target);
+            let gate = submission_gate(th);
+            file_write("report.md", submission_report("MissingSignerCheck", th, node, trace,
+                "// PoC reused from the original audit — fetch the standalone PoC from the\n// content-addressed DAG cache for this sub-graph (audit-once dedup).\n",
+                "cached",
+                "(reused from the DAG verdict-cache — no re-compile this run)",
+                ""));
+            print("report: wrote standardized Immunefi report.md  (reused, sub-graph", substring(th, 0, 12), ")");
+            print("submission:", gate, "— human-gated, never auto-posted");
+            print("Verdict: VERIFIED");
+        } else {
+            file_write("target.rs", target);
+            print("synthesis: generating PoC (prompt 5-retry + deterministic fallback)");
+            let run_out = synth_via_prompt(target);
+            let verdict = assess(run_out);
+            if verdict == "verified" {
+                memo_write("bounty:verified", th);
+                memo_write("bounty:verdict:" + th, "MissingSignerCheck");
+                memo_write("bounty:blacklist:" + th, "MissingSignerCheck");
+                knowledge_sell("bounty:vuln:" + th, "MissingSignerCheck:Critical", 1);
+                // standalone-PoC re-verification: inline the target into a single-file
+                // standalone PoC (drop the include) and re-verify it offline, so the report
+                // ships a self-contained, reproducible PoC — not one that depends on a
+                // sibling target.rs.
+                let std_run = exec sh "( cat target.rs; grep -v 'include!' exploit.rs ) > poc_standalone.rs; rm -f poc_std; rustc --edition 2021 poc_standalone.rs -o poc_std 2>&1; ./poc_std 2>&1; echo __rc=$?";
+                let poc_src = exec sh "cat poc_standalone.rs 2>/dev/null || true";
+                let std_ok = yn(assess(std_run) == "verified");
+                let node = first_fn_name(target);
+                // frozen-snapshot replay: freeze the on-chain state and replay the exploit
+                // against it offline (zero network in the sandbox; the PoC reads snapshot.txt).
+                let snap = snapshot_state();
+                file_write("snapshot.txt", snap);
+                file_write("poc_snapshot.rs", synth_snapshot_exploit());
+                let snap_run = exec sh "rm -f poc_snap; rustc --edition 2021 poc_snapshot.rs -o poc_snap 2>&1; ./poc_snap 2>&1; echo __rc=$?";
+                let snap_ok = yn(assess(snap_run) == "verified");
+                let gate = submission_gate(th);
+                file_write("report.md", submission_report("MissingSignerCheck", th, node, trace, poc_src, std_ok, std_run, snapshot_section(snap, snap_run, snap_ok)));
+                print("synthesis: VERIFIED — cached verdict + blacklisted sub-graph");
+                print("synthesis: standalone PoC re-verified:", std_ok);
+                print("snapshot: replayed frozen on-chain state offline — re-verified:", snap_ok);
+                print("report: wrote standardized Immunefi report.md  (sub-graph", substring(th, 0, 12), ")");
+                print("submission:", gate, "— human-gated, never auto-posted");
+                print("Verdict: VERIFIED");
+            } else {
+                print("synthesis: Inconclusive — " + verdict);
+                print("Verdict: INCONCLUSIVE (" + verdict + ")");
+            }
+        }
+    } else {
+        if cls == "IntegerOverflow" {
+            print("synthesis: IntegerOverflow detected [Medium] — PoC synthesis deferred to prompt-driven path");
+            print("Verdict: DETECTED");
+        } else {
+            print("synthesis: no finding to synthesize");
+            print("Verdict: SAFE");
+        }
+    }
+}
+
+// --- orchestrator: seed the bus, then run the event chain (no polling) ---
+print("auditor: federation start");
+emit("audit:target", ingest_target());
+reconn();
+guard();
+tracker();
+synthesis();
+// last_check heartbeat: a freshness memo the dashboard reads to confirm the colony ran.
+memo_write("auditor:last_check", now_iso());
+print("auditor: federation done");

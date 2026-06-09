@@ -1,0 +1,58 @@
+# Auditor Colony Configuration
+#
+# Part of the Dark Factory federation.
+# Copy to colony.toml and edit for your environment.
+
+[colony]
+name = "auditor"
+tick_interval_ms = 60000
+
+# dark-factory is a non-forge federation (ADR-0003). The auditor ingests a
+# Solana/Anchor program (from BOUNTY_TARGET, or an embedded default) and proves
+# a finding through the real Solana SVM offline; no agent calls a GitLab/GitHub
+# forge API. `forge.type = "none"` is the explicit non-forge marker recognised
+# by colony-lint — no [forge.gitlab] / [forge.github] sub-block is required.
+# See ADR-0002 for the forge-bound contract this opts out of.
+[forge]
+type = "none"
+
+[llm]
+# Only "backend" is read today. "cli" uses the agentis daemon default CLI
+# adapter; the auditor expects the Claude Code CLI on $PATH for the
+# prompt-driven synthesis path (the deterministic template fallback runs
+# without it).
+backend = "cli"
+
+# Agent definitions. The auditor is a one-shot `agentis go` pipeline: a single
+# .ag file wires four cooperating agents (reconn / guard / tracker / synthesis)
+# over the substrate emit/listen bus. cb_budget MUST match the `cb <N>;` decl
+# at the top of agents/auditor.ag.
+[[agents]]
+name = "auditor"
+source = "agents/auditor.ag"
+cb_budget = 2000000
+tick_interval_ms = 60000
+
+# Audit environment contract (consumed by agents/auditor.ag via getenv; all
+# optional). Operators export these before launching, and add them to
+# exec.env_passthrough in .agentis/config so the sandboxed `exec sh` sees them.
+#
+#   SOLANA_HARNESS_DIR  path to the warm offline solana-program-test harness
+#                       (staged by setup-solana-toolchain.sh). When set, PoCs
+#                       run through the real Solana SVM; otherwise a std-only
+#                       rustc harness is used.
+#   BOUNTY_TARGET       path to the in-scope program to audit (default: an
+#                       embedded vulnerable vault).
+#   BOUNTY_POC          path to a human-supplied PoC candidate (gated by the
+#                       same two-sided check as a generated one).
+#   BOUNTY_SNAPSHOT     path to a host-side RPC account dump, replayed offline.
+#
+# When SOLANA_HARNESS_DIR is set, also raise the sandboxed-exec timeout in
+# .agentis/config — a cargo build/link of the ~700-crate solana-program-test
+# harness exceeds the 10s default and would abort the PoC compile:
+#   exec.default_timeout_ms = 180000
+[audit]
+solana_harness_dir = ""
+bounty_target = ""
+bounty_poc = ""
+bounty_snapshot = ""

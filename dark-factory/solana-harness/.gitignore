@@ -1,0 +1,3 @@
+# The warm dependency build (~3 GB) is produced by setup-solana-toolchain.sh,
+# never committed. Cargo.lock IS committed (pins the offline-resolved graph).
+/target

@@ -1,0 +1,39 @@
+# BUNDLE.manifest — dark-factory experimental federation
+#
+# dark-factory is an experimental research scaffold. This manifest exists for
+# ADR-0003 compliance and to scope what a release tarball would contain: only
+# the file-set that defines the federation in the source repo. It deliberately
+# excludes operator-edited configs (`colony.toml`) and runtime artifacts
+# (`.agentis/`, the warm `solana-harness/target/`, `.solana-harness/`) — the
+# bundler uses `cp -pR`, which does NOT honour `.gitignore`, so an unscoped
+# `dark-factory/` line would leak those into a release tarball if anyone ran
+# the federation locally before bundling.
+
+# ----- Federation-level files -----
+dark-factory/VERSION
+dark-factory/CHANGELOG.md
+dark-factory/BUNDLE.manifest
+dark-factory/README.md
+dark-factory/install.sh
+dark-factory/setup-solana-toolchain.sh
+
+# ----- Shared assets -----
+# The offline Solana PoC harness skeleton (Cargo.toml/.lock, .cargo/config.toml,
+# src/) and the detection fixtures. The warm `solana-harness/target/` and any
+# staged `.solana-harness/` are produced by setup-solana-toolchain.sh and are
+# NOT shipped.
+dark-factory/solana-harness/Cargo.toml
+dark-factory/solana-harness/Cargo.lock
+dark-factory/solana-harness/.cargo/config.toml
+dark-factory/solana-harness/.gitignore
+dark-factory/solana-harness/README.md
+dark-factory/solana-harness/src/
+dark-factory/fixtures/
+
+# ----- auditor colony surface -----
+# Explicitly excludes `config/colony.toml` (operator-edited) — only the
+# `colony.example.toml` template is shipped.
+dark-factory/auditor/README.md
+dark-factory/auditor/agents/
+dark-factory/auditor/config/colony.example.toml
+dark-factory/auditor/scripts/
