@@ -157,6 +157,41 @@ fn classify(code: string) -> string {
     return "none";
 }
 
+// V3 (#841): LLM-driven classification over the program source. Returns a canonical
+// vuln-class token, "Safe", or "" when the backend gives no usable answer (mock returns
+// the literal "mock", which matches no token) so the caller falls back to the structural
+// heuristic. prompt() is host-side (the one allowed egress), so this runs before the
+// network-closed sandbox compile. Generalises to real Anchor shapes the textual heuristic
+// cannot see (e.g. an `authority: AccountInfo` field that should be `Signer`).
+fn classify_llm(src: string) -> string {
+    let out = to_lower(prompt("You are a Solana/Anchor security auditor. Identify the SINGLE most likely access-control vulnerability in the program below and reply with EXACTLY ONE token, nothing else: MissingSignerCheck | MissingOwnerCheck | AccountDataMatching | ArbitraryCPI | IntegerOverflow | Safe. MissingSignerCheck = an account used as an authority is not required to sign (e.g. an Anchor field typed AccountInfo/UncheckedAccount instead of Signer, or a native handler that moves funds / mutates state without checking is_signer). Reply Safe when the authority is a Signer or the required access-control check is present.", src) -> string);
+    if index_of(out, "missingsignercheck") >= 0 { return "MissingSignerCheck"; }
+    if index_of(out, "missingownercheck") >= 0 { return "MissingOwnerCheck"; }
+    if index_of(out, "accountdatamatching") >= 0 { return "AccountDataMatching"; }
+    if index_of(out, "arbitrarycpi") >= 0 { return "ArbitraryCPI"; }
+    if index_of(out, "integeroverflow") >= 0 { return "IntegerOverflow"; }
+    if index_of(out, "safe") >= 0 { return "Safe"; }
+    return "";
+}
+
+// Resolve the final class from the V3 LLM verdict + the structural-heuristic verdict.
+// The LLM class wins when present (generalises to real Anchor/native programs); "Safe"
+// -> "none"; an empty LLM verdict (mock / no usable answer) falls back to the heuristic.
+// This is a SHALLOW string-only helper — it must NOT call classify() itself: the guard
+// runs classify() directly at its own depth (calling the deep structural fold through an
+// extra wrapper frame overflows the native stack the colony is tuned shallow for). A
+// mis-classification only ROUTES to synthesis; the #820 two-sided + real-SVM gate is the
+// truth, so a wrong class yields `inconclusive`, never a false-VERIFIED.
+fn resolve_cls(llm: string, heuristic: string) -> string {
+    if len(llm) > 0 {
+        if llm == "Safe" {
+            return "none";
+        }
+        return llm;
+    }
+    return heuristic;
+}
+
 // ---- helpers: DAG distillation -----------------------------------------------
 
 // Store each handler sub-graph in the content-addressed DAG (the dedup cache):
@@ -585,9 +620,14 @@ agent guard() -> void {
         emit("synth:hit", "hit");
         emit("synth:class", cached);
     } else {
-        // MISS: detect afresh. classify() is called directly (no wrapper frame) to keep
-        // the native call stack shallow inside the agent block.
-        let cls = classify(strip_comments(target));
+        // MISS: detect afresh. Run the structural detector at the agent's OWN depth
+        // (classify()'s fold overflows the native stack if called through an extra wrapper
+        // frame — the colony is tuned shallow). Then the V3 LLM classifier, then a shallow
+        // resolve: the LLM class wins (generalises to real Anchor), "Safe" -> none, an
+        // empty LLM verdict (mock / offline) falls back to the heuristic.
+        let heuristic = classify(strip_comments(target));
+        let llm = classify_llm(target);
+        let cls = resolve_cls(llm, heuristic);
         if cls == "MissingSignerCheck" {
             print("guard: MissingSignerCheck fired [Critical]");
         } else {
