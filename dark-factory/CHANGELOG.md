@@ -16,6 +16,17 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Operator entrypoint + human-gated submission package (V7): `run-audit.sh` runs the auditor
+  end-to-end against an operator-chosen scope (`--target` program, optional `--harness` /
+  `--anchor-harness`, optional `--snapshot`, `--backend`, `--sandbox`) and, on a VERIFIED
+  finding, assembles a submission package on disk (`submission/`: the Immunefi-format
+  `report.md` embedding the PoC, the PoC source, the target, the snapshot, + a `MANIFEST.txt`
+  marked `PENDING HUMAN REVIEW — NOT SUBMITTED`). It NEVER contacts a bounty platform, NEVER
+  auto-submits, and NEVER auto-picks a scope — the operator supplies the target, and
+  submission is a separate, explicit human action. The colony has zero platform-egress
+  builtins (only host-side `prompt()` + sandboxed `exec`). Validated: a VERIFIED run stages a
+  complete human-gated package; a non-VERIFIED run stages nothing.
+
 - Real on-chain state snapshot (V4): `snapshot-rpc.sh` fetches accounts from a Solana RPC
   (`getAccountInfo`, base64) host-side and freezes them to a **content-addressed** snapshot
   (real `owner` / `lamports` / `data` — not a hand-written stub). The native vault harness
