@@ -309,8 +309,44 @@ fn invariant_for(cls: string) -> string {
 // must assert; the rest of the instruction is the mechanical two-sided scaffolding. The
 // #820 marker contract (CONTROL OK: + INVARIANT VIOLATED: + exit 101) is unchanged, so
 // the two-sided gate still blocks rigged/always-fire harnesses regardless of class.
+// V6 (#844): the active real-SVM harness dir — the Anchor harness when
+// SOLANA_ANCHOR_HARNESS_DIR is set, else the native harness (SOLANA_HARNESS_DIR).
+// Leaf (getenv only) — safe at any agent depth.
+fn harness_dir() -> string {
+    let a = getenv("SOLANA_ANCHOR_HARNESS_DIR");
+    if len(a) > 0 {
+        return a;
+    }
+    return getenv("SOLANA_HARNESS_DIR");
+}
+
 fn poc_instruction(cls: string) -> string {
     let inv = invariant_for(cls);
+    if len(getenv("SOLANA_ANCHOR_HARNESS_DIR")) > 0 {
+        return "You are given an ANCHOR Solana program — the contents of the harness crate " +
+            "`solana_harness_anchor`'s src/lib.rs (an `#[program]` module with `declare_id!`). Write the FULL " +
+            "contents of src/bin/poc.rs: a `#[tokio::main] async fn main()` driving it through " +
+            "solana-program-test as a TWO-SIDED proof against the REAL SVM. " + inv + " Imports: `use " +
+            "anchor_lang::InstructionData; use solana_harness_anchor::instruction as ix; use " +
+            "solana_program::{account_info::AccountInfo, entrypoint::ProgramResult, pubkey::Pubkey}; use " +
+            "solana_program_test::{processor, ProgramTest}; use solana_sdk::{account::Account, " +
+            "instruction::{AccountMeta, Instruction}, signature::{Keypair, Signer}, system_program, " +
+            "transaction::Transaction};`. Bridge anchor's entry to ProcessInstruction EXACTLY: `fn " +
+            "process_instruction(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult " +
+            "{ let tied: &[AccountInfo] = unsafe { core::mem::transmute(accounts) }; " +
+            "solana_harness_anchor::entry(program_id, tied, data) }` (anchor ties the accounts/AccountInfo " +
+            "lifetimes; the bridge is sound — the runner's accounts outlive the call). Use `let program_id = " +
+            "solana_harness_anchor::ID;` and `ProgramTest::new(\"solana_harness_anchor\", program_id, " +
+            "processor!(process_instruction))`. Seed every account the handler reads with `pt.add_account(pk, " +
+            "Account { lamports: 1000000, data: <bytes>, owner: <owner>, executable: false, rent_epoch: 0 })`. " +
+            "Build instruction data with anchor: `ix::Handler { ..fields }.data()` where Handler is the " +
+            "PascalCase of the handler `pub fn` name (no fields if it takes none). Order AccountMeta to match " +
+            "the program's #[derive(Accounts)] struct with correct is_signer flags. CONTROL: the legitimate " +
+            "caller — if accepted print exactly `CONTROL OK: <detail>`. EXPLOIT: the attacker case from the " +
+            "invariant — if it succeeds print exactly `INVARIANT VIOLATED: <detail>` to stderr and call " +
+            "std::process::exit(101); otherwise print `invariant held`. Both markers REQUIRED. Output only the " +
+            "Rust source of src/bin/poc.rs.";
+    }
     if len(getenv("SOLANA_HARNESS_DIR")) > 0 {
         return "You are given a Solana program — the contents of the harness crate's src/target.rs, which " +
             "exposes `pub fn process_instruction(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) " +
@@ -346,6 +382,18 @@ fn poc_instruction(cls: string) -> string {
 // (the deterministic template-fallback). `target_src` is written to src/target.rs so the
 // PoC links against the in-scope program. All leaf calls — the native call stack stays shallow.
 fn compile_run(poc: string, target_src: string) -> string {
+    let ad = getenv("SOLANA_ANCHOR_HARNESS_DIR");
+    if len(ad) > 0 {
+        // Anchor harness: the target IS the whole crate src/lib.rs (an #[program] module).
+        file_write("h_lib.rs", target_src);
+        if len(poc) > 0 {
+            file_write("h_poc.rs", poc);
+            // colony-lint: safe-exec-concat
+            return exec sh "set -e; cp h_lib.rs ${ad}/src/lib.rs; cp h_poc.rs ${ad}/src/bin/poc.rs; cd ${ad}; set +e; export PATH=$HOME/.cargo/bin:$PATH; CARGO_NET_OFFLINE=1 cargo build --quiet --bin poc --offline > build.out 2>&1; BRC=$?; if [ $BRC -ne 0 ]; then cat build.out; echo __rc=$BRC; else RAYON_NUM_THREADS=4 ./target/debug/poc 2>&1; echo __rc=$?; fi";
+        }
+        // colony-lint: safe-exec-concat
+        return exec sh "set -e; cp h_lib.rs ${ad}/src/lib.rs; cd ${ad}; cp src/bin/poc.rs.tmpl src/bin/poc.rs; set +e; export PATH=$HOME/.cargo/bin:$PATH; CARGO_NET_OFFLINE=1 cargo build --quiet --bin poc --offline > build.out 2>&1; BRC=$?; if [ $BRC -ne 0 ]; then cat build.out; echo __rc=$BRC; else RAYON_NUM_THREADS=4 ./target/debug/poc 2>&1; echo __rc=$?; fi";
+    }
     let hd = getenv("SOLANA_HARNESS_DIR");
     if len(hd) > 0 {
         file_write("h_target.rs", target_src);
@@ -417,7 +465,7 @@ fn synth_via_prompt(cls: string, target: string) -> string {
         print("synthesis: prompt path exhausted; no deterministic template for " + cls + " — inconclusive");
         return llm_out;
     }
-    if len(getenv("SOLANA_HARNESS_DIR")) > 0 {
+    if len(harness_dir()) > 0 {
         print("synthesis: prompt path exhausted — running the harness default two-sided PoC");
         return compile_run("", target);
     }
@@ -775,7 +823,7 @@ agent synthesis() -> void {
                 knowledge_sell("bounty:vuln:" + th, cls + ":" + severity_for(cls), 1);
                 let node = first_fn_name(target);
                 let gate = submission_gate(th);
-                let hd = getenv("SOLANA_HARNESS_DIR");
+                let hd = harness_dir();
                 if len(hd) > 0 {
                     // Harness mode: the PoC was already verified through the REAL Solana SVM
                     // (solana-program-test + BanksClient) by synth_via_prompt. The std-only

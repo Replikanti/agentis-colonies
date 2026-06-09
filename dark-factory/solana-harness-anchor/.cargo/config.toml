@@ -1,0 +1,10 @@
+# Offline + system-OpenSSL build config for the Anchor PoC harness.
+# net.offline pins the build to the committed Cargo.lock with zero network (the colony
+# runs `cargo build --offline` inside the hardened sandbox). OPENSSL_NO_VENDOR links the
+# system OpenSSL instead of building the vendored copy (no perl/FindBin at build time).
+# The one-time dependency warm (cargo fetch) is host-side, done by setup-solana-toolchain.sh.
+[net]
+offline = true
+
+[env]
+OPENSSL_NO_VENDOR = "1"
