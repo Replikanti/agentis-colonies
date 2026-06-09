@@ -16,6 +16,14 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Operator runbook (V8): `docs/RUNBOOK.md` — a one-page guide an operator follows to run a
+  real audit from scratch: prerequisites + one-time offline-toolchain warm, pointing at a
+  scope (target, native/anchor harness, optional frozen snapshot, backend), the exact
+  `run-audit.sh` command, reading the verdict (VERIFIED / INCONCLUSIVE / SAFE), where the
+  report + PoC land, the manual human-gated submission step, the calibration scorecard, and
+  known limitations (vuln classes, chains/shapes, the snapshot owner-rebind, the
+  operator-supplied-PoC trust boundary).
+
 - Operator entrypoint + human-gated submission package (V7): `run-audit.sh` runs the auditor
   end-to-end against an operator-chosen scope (`--target` program, optional `--harness` /
   `--anchor-harness`, optional `--snapshot`, `--backend`, `--sandbox`) and, on a VERIFIED
