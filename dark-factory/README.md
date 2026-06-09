@@ -89,6 +89,9 @@ The report and PoC artifacts land under `<rundir>/.agentis/sandbox/`. See the
 
 ## Run an audit (`run-audit.sh`)
 
+**Full operator runbook: [`docs/RUNBOOK.md`](./docs/RUNBOOK.md)** — prerequisites, scope,
+verdicts, where artifacts land, and the manual submission step, in one page.
+
 `run-audit.sh` is the operator entrypoint: it runs the full pipeline against a scope **you
 choose** and, on a VERIFIED finding, stages a **human-gated** submission package. Pass
 **absolute** paths (the colony runs in its own working dir).
