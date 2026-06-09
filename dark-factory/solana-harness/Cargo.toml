@@ -1,0 +1,29 @@
+[package]
+name = "solana_harness"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Offline PoC harness for the Dark Factory bounty-audit colony.
+#
+# The colony overwrites two files per audit:
+#   src/target.rs    — the in-scope program under audit (a native Solana processor)
+#   src/bin/poc.rs   — the LLM-generated two-sided proof-of-concept
+# then builds + runs `cargo run --bin poc --offline`, which drives the program
+# through the REAL solana-runtime SVM via solana-program-test + BanksClient
+# (real account model, signer/owner checks, lamport conservation) — not std-only rustc.
+#
+# All builds are offline (see .cargo/config.toml: net.offline + OPENSSL_NO_VENDOR).
+# Run colonies/bounty/setup-solana-toolchain.sh ONCE (host-side, network on) to
+# populate ~/.cargo and warm the target dir; every audit run afterward is offline.
+
+[dependencies]
+solana-program = "2"
+solana-program-test = "2"
+solana-sdk = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+borsh = "1"
+
+[[bin]]
+name = "poc"
+path = "src/bin/poc.rs"
