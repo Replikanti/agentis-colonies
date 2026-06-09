@@ -611,13 +611,17 @@ fn snapshot_state() -> string {
     if len(p) > 0 {
         // colony-lint: safe-exec-concat
         let dump = exec sh "cat ${p} 2>/dev/null || true";
+        if index_of(dump, "account.lamports") >= 0 {
+            print("snapshot: using host-supplied RPC dump (BOUNTY_SNAPSHOT, real account format)");
+            return dump;
+        }
         if index_of(dump, "vault.balance") >= 0 {
             print("snapshot: using host-supplied RPC dump (BOUNTY_SNAPSHOT)");
             return dump;
         }
         print("snapshot: BOUNTY_SNAPSHOT unreadable — using embedded frozen state");
     }
-    return "vault.authority=1\nvault.balance=1000\n";
+    return "vault.authority=1\nvault.balance=1000\naccount.lamports=1000000000\naccount.data_first8_le=1000\n";
 }
 
 // A PoC that REPLAYS the exploit against a FROZEN snapshot read from disk — zero
@@ -667,6 +671,32 @@ fn snapshot_section(snap: string, snap_run: string, snap_ok: string) -> string {
         "Frozen snapshot (`snapshot.txt`):\n\n```\n" + snap + "```\n\n" +
         "Replay (`poc_snapshot.rs` reads the snapshot via std::fs, no network):\n\n```\n" + snap_run + "```\n\n" +
         "Snapshot replay re-verified: " + snap_ok + "\n\n";
+}
+
+// V4 (#842): replay a frozen on-chain snapshot through the REAL SVM in the native vault
+// harness — write snapshot.txt into the harness, build + run the `poc_snapshot` bin offline
+// (zero network in-sandbox). Leaf calls only (file_write + one exec) — stack stays shallow.
+fn run_snapshot_replay(snap: string) -> string {
+    let hd = getenv("SOLANA_HARNESS_DIR");
+    file_write("snap_in.txt", snap);
+    // colony-lint: safe-exec-concat
+    return exec sh "cp snap_in.txt ${hd}/snapshot.txt; cd ${hd}; export PATH=$HOME/.cargo/bin:$PATH; CARGO_NET_OFFLINE=1 cargo build --quiet --bin poc_snapshot --offline > snap_build.out 2>&1; BRC=$?; if [ $BRC -ne 0 ]; then cat snap_build.out; echo __rc=$BRC; else RAYON_NUM_THREADS=4 ./target/debug/poc_snapshot 2>&1; echo __rc=$?; fi";
+}
+
+// V4: the report's on-chain snapshot section. In native-harness mode with a frozen snapshot
+// supplied (BOUNTY_SNAPSHOT, a real host RPC dump), replay it through the real SVM offline
+// and document the result; otherwise (anchor target, or no snapshot supplied) the snapshot
+// replay does not apply -> n/a. The two-sided gate still governs (a snapshot whose state
+// does not drain stays inconclusive — no false-VERIFIED from a foreign/empty snapshot).
+fn harness_snap_section() -> string {
+    if len(getenv("SOLANA_HARNESS_DIR")) > 0 {
+        if len(getenv("BOUNTY_SNAPSHOT")) > 0 {
+            let snap = snapshot_state();
+            let snap_run = run_snapshot_replay(snap);
+            return snapshot_section(snap, snap_run, yn(assess(snap_run) == "verified"));
+        }
+    }
+    return snapshot_section("", "n/a — verified through the real Solana SVM; supply BOUNTY_SNAPSHOT (a host RPC dump) to also replay a frozen on-chain account offline", "n/a");
 }
 
 // ---- agents -------------------------------------------------------------------
@@ -832,7 +862,7 @@ agent synthesis() -> void {
                     // PoC + its actual run output instead of a std-only rustc re-verify.
                     // colony-lint: safe-exec-concat
                     let poc_src = exec sh "cat ${hd}/src/bin/poc.rs 2>/dev/null || true";
-                    let snap_sec = snapshot_section("", "n/a — verified through the real Solana SVM; replay against a real on-chain RPC dump is a separate capability", "n/a");
+                    let snap_sec = harness_snap_section();
                     file_write("report.md", submission_report(cls, th, node, trace, poc_src, "yes (real Solana SVM)", run_out, snap_sec));
                     print("synthesis: VERIFIED — real-SVM two-sided PoC (solana-program-test + BanksClient)");
                     print("report: wrote standardized Immunefi report.md  (sub-graph", substring(th, 0, 12), ")");

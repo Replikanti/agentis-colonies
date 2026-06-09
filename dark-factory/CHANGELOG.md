@@ -16,6 +16,19 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Real on-chain state snapshot (V4): `snapshot-rpc.sh` fetches accounts from a Solana RPC
+  (`getAccountInfo`, base64) host-side and freezes them to a **content-addressed** snapshot
+  (real `owner` / `lamports` / `data` — not a hand-written stub). The native vault harness
+  gains a `poc_snapshot` bin that seeds the vault account from a frozen snapshot's real
+  `lamports` + data bytes and replays the MissingSignerCheck invariant through the real SVM
+  **fully offline** (zero network in-sandbox). The colony wires it in: `snapshot_state()`
+  recognises the real account format, and when the native harness is active with
+  `BOUNTY_SNAPSHOT` set the report's snapshot section is produced by a real offline SVM
+  replay (`run_snapshot_replay` / `harness_snap_section`) instead of a std-only stub.
+  Validated against a real mainnet account (the USDC mint): the frozen snapshot's real data
+  drives a `CONTROL OK` + `INVARIANT VIOLATED` two-sided replay offline. A zero-value /
+  foreign snapshot stays inconclusive (no false-VERIFIED).
+
 - Calibration on real `coral-xyz/sealevel-attacks` lessons (V6): an offline,
   Anchor-capable PoC harness (`solana-harness-anchor/` — `anchor-lang` 0.31 +
   `solana-program-test` 2.x + `spl-token`, committed `Cargo.lock`, stable rustc, no SBF
