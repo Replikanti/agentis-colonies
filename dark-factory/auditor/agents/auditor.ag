@@ -411,8 +411,67 @@ fn compile_run(poc: string, target_src: string) -> string {
         // colony-lint: safe-exec-concat
         return exec sh "set -e; cp h_target.rs ${hd}/src/target.rs; cd ${hd}; cp src/bin/poc.rs.tmpl src/bin/poc.rs; set +e; export PATH=$HOME/.cargo/bin:$PATH; CARGO_NET_OFFLINE=1 cargo build --quiet --bin poc --offline > build.out 2>&1; BRC=$?; if [ $BRC -ne 0 ]; then cat build.out; echo __rc=$BRC; else RAYON_NUM_THREADS=4 ./target/debug/poc 2>&1; echo __rc=$?; fi";
     }
+    // std-only path: the PoC is `include!("target.rs")`, so write the (possibly
+    // challenge-augmented) target alongside it — keeps compile_run consistent with the
+    // harness branches and lets the #852 linkage challenge const resolve via the include.
+    file_write("target.rs", target_src);
     file_write("exploit.rs", poc);
     return exec sh "rm -f poc; rustc --edition 2021 exploit.rs -o poc 2>&1; ./poc 2>&1; echo __rc=$?";
+}
+
+// #852: a supplied BOUNTY_POC must demonstrably EXERCISE the in-scope target — a
+// target-agnostic PoC that merely prints the two markers (the documented forgery) must
+// not mint VERIFIED. This is the STRUCTURAL half of the gate: for the active harness mode
+// the PoC must reference the in-scope target/harness, exactly as the real PoCs do. Mode
+// detection mirrors harness_dir()/poc_instruction()/challenge_ref(). SHALLOW leaf
+// (getenv + index_of only) — safe at any agent depth.
+fn poc_exercises_target(poc: string) -> bool {
+    if len(getenv("SOLANA_ANCHOR_HARNESS_DIR")) > 0 {
+        if index_of(poc, "solana_harness_anchor") < 0 { return false; }
+        if index_of(poc, "processor!") >= 0 { return true; }
+        if index_of(poc, "entry(") >= 0 { return true; }
+        if index_of(poc, "::instruction") >= 0 { return true; }
+        return false;
+    }
+    if len(getenv("SOLANA_HARNESS_DIR")) > 0 {
+        if index_of(poc, "solana_harness") < 0 { return false; }
+        if index_of(poc, "process_instruction") >= 0 { return true; }
+        if index_of(poc, "processor!") >= 0 { return true; }
+        return false;
+    }
+    return index_of(poc, "target.rs") >= 0;
+}
+
+// #852: the Rust path to the per-run challenge const by harness mode. The const is
+// appended to the target the PoC is compiled against, so reading it back proves the PoC
+// linked THIS run's target (not a stale / target-free binary). SHALLOW leaf (getenv).
+fn challenge_ref() -> string {
+    if len(getenv("SOLANA_ANCHOR_HARNESS_DIR")) > 0 { return "solana_harness_anchor::POC_CHALLENGE"; }
+    if len(getenv("SOLANA_HARNESS_DIR")) > 0 { return "solana_harness::target::POC_CHALLENGE"; }
+    return "POC_CHALLENGE";
+}
+
+// #852: wrap a supplied PoC so it echoes the per-run challenge BEFORE its own main runs
+// (the user main may std::process::exit(101) on the violation path). Renames the first
+// `fn main(` to `__poc_user_main` and prepends a new `fn main` that prints
+// `POC_CHALLENGE=<nonce>` read from the target-linked const, then calls the user main. A
+// PoC that does not link the in-scope target cannot resolve the const → fails to compile
+// (std) or never surfaces the nonce, and is rejected. If no `fn main(` is present the PoC
+// is returned unchanged (the structural gate still applies). SHALLOW leaf (string surgery).
+fn wrap_with_challenge(poc: string, cref: string) -> string {
+    let p = index_of(poc, "fn main(");
+    if p < 0 { return poc; }
+    // Build with shallow (<=1 `+`) sequential concats: the colony's native call stack is
+    // tuned razor-thin (#820), and a long `((a+b)+c)+d` chain recurses one frame per `+`
+    // — enough, at this depth, to overflow. Sequential lets keep each expression shallow.
+    let head = substring(poc, 0, p);
+    let tail = substring(poc, p + 8, len(poc));
+    let renamed = head + "fn __poc_user_main(";
+    let body = renamed + tail;
+    let mhead = "\nfn main() { eprintln!(\"POC_CHALLENGE={}\", ";
+    let mmid = mhead + cref;
+    let mfn = mmid + "); __poc_user_main(); }\n";
+    return body + mfn;
 }
 
 // Generate the PoC and run it in the hardened sandbox. Resolution order:
@@ -427,8 +486,34 @@ fn synth_via_prompt(cls: string, target: string) -> string {
         // colony-lint: safe-exec-concat
         let supplied = exec sh "cat ${pocpath} 2>/dev/null || true";
         if index_of(supplied, "fn main") >= 0 {
-            print("synthesis: using BOUNTY_POC candidate (gated by assess)");
-            return compile_run(supplied, target);
+            // #852: do NOT trust a supplied PoC's markers blindly. (1) structural gate: it
+            // must reference the in-scope target/harness; (2) per-run target-linkage
+            // challenge (run_challenged_poc): a nonce const appended to the target, echoed
+            // by the wrapped PoC, proves it compiled against THIS run's target. Only then
+            // does the caller's two-sided assess() decide. Closes the target-agnostic
+            // marker-printer forgery; a sophisticated link-but-never-invoke PoC remains an
+            // operator-trust residual (indistinguishable from captured stdout) — the
+            // autonomous LLM/template path is unaffected.
+            if poc_exercises_target(supplied) {
+                // Inline (NOT a helper call — an extra frame here overflows the shallow
+                // native stack, #820) with shallow sequential concats. compile_run stays
+                // at this function's depth, exactly as the origin BOUNTY_POC path.
+                let nonce = substring(sha256_hex(target + now_iso()), 0, 16);
+                let cdef = "\npub const POC_CHALLENGE: &str = \"" + nonce;
+                let challenged = target + cdef + "\";\n";
+                let cref = challenge_ref();
+                let wrapped = wrap_with_challenge(supplied, cref);
+                let out = compile_run(wrapped, challenged);
+                let needle = "POC_CHALLENGE=" + nonce;
+                if index_of(out, needle) >= 0 {
+                    print("synthesis: BOUNTY_POC linked the in-scope target (challenge ok) — gating by two-sided assess");
+                    return out;
+                }
+                print("synthesis: REJECTED BOUNTY_POC — failed the per-run target-linkage challenge (did not link the in-scope target); not trusting it");
+                return "inconclusive: supplied BOUNTY_POC failed the target-linkage challenge";
+            }
+            print("synthesis: REJECTED BOUNTY_POC — it does not exercise the in-scope target (no target/harness reference); not trusting it");
+            return "inconclusive: supplied BOUNTY_POC does not exercise the in-scope target";
         }
         print("synthesis: BOUNTY_POC unreadable — falling back to generation");
     }

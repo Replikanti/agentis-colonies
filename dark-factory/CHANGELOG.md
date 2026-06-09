@@ -14,6 +14,23 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Security
+
+- Harden the supplied-`BOUNTY_POC` path so a target-agnostic forged PoC cannot mint a false
+  `VERIFIED` (agentis-core#852). The `assess()` two-sided gate is byte-for-byte unchanged; the
+  fix lives entirely in the `BOUNTY_POC` branch of `synth_via_prompt()`. A human-supplied PoC
+  must now (1) structurally reference the in-scope target/harness for the active mode
+  (`poc_exercises_target`) and (2) pass a per-run target-linkage challenge: a fresh nonce const
+  is appended to the target the PoC compiles against, the PoC is wrapped to echo it before its
+  own `main` runs, and the run output must surface the nonce — a PoC that never links this run's
+  target cannot. The documented "simply prints both markers without exercising the target"
+  forgery is now rejected (new negative-test fixture `fixtures/forged_marker_printer.rs`). The
+  autonomous LLM/template path is untouched, and `calibrate-sealevel.sh` (3/3 true-positive,
+  0 false-VERIFIED) still passes because the committed `sealevel/*/poc.rs` link the target and
+  surface the nonce. Residual (documented): a sophisticated operator-supplied PoC that links the
+  target but never invokes the vulnerable path cannot be distinguished from captured stdout — an
+  operator-trust assumption on the explicit override, not an autonomous gap.
+
 ### Added
 
 - Operator runbook (V8): `docs/RUNBOOK.md` — a one-page guide an operator follows to run a
