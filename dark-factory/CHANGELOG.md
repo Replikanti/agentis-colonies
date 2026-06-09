@@ -14,6 +14,19 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+
+- Generalised detection (V3): an LLM-driven classifier (`classify_llm`) reads the
+  program source and returns a vulnerability class (`MissingSignerCheck` /
+  `MissingOwnerCheck` / `AccountDataMatching` / `ArbitraryCPI` / `IntegerOverflow`
+  / `Safe`), generalising past the structural heuristic to real Anchor shapes it
+  cannot see (e.g. an `authority: AccountInfo` field that should be a `Signer`).
+  It is primary when a real LLM backend is configured; the structural heuristic
+  remains the offline / `mock`-deterministic fallback (the mock backend yields no
+  class token, so detection falls through unchanged). A mis-classification only
+  routes to synthesis — the two-sided real-SVM gate stays the source of truth, so
+  it can never cause a false-VERIFIED.
+
 ## [0.1.0] — 2026-06-09
 
 **Requires:** agentis >= `1.18.0`
