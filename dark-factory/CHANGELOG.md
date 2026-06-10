@@ -16,6 +16,17 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- EVM/Solidity auditing — M2 + M3 (agentis-core#858). **M2**: real Solidity reconn ingest
+  (`evm-harness/ast.js`, solc AST → the canonical `{kind,name}` node stream → DAG), replacing
+  M1's `.sol` bypass so EVM targets get the full reconn→guard→tracker pipeline (target hash
+  unchanged → verdict cache + two-sided gate intact). **M3**: the full EVM class set —
+  `classify_evm_llm` returns Reentrancy | AccessControl | UncheckedCall | OracleManipulation |
+  IntegerOverflow | Safe, each with a per-class CONTROL/EXPLOIT invariant (`evm_invariant_for`)
+  fed to the revm-PoC synthesis, plus the EVM peer of the #852 anti-forgery gate
+  (`pocChallenge_<nonce>` injected into the target; a supplied `--poc` must surface the nonce or
+  is rejected — fail-safe). Validated end-to-end on the live runtime: AccessControl vuln →
+  `VERIFIED` (Critical) + human-gated package, the guarded variant → `SAFE`; reentrancy unchanged.
+
 - EVM/Solidity auditing in the colony — M1 (agentis-core#858). `auditor.ag` now dispatches on
   `EVM_HARNESS_DIR` / a `.sol` target: the LLM writes a self-contained `revm` PoC, the target +
   a generic reentrancy attacker are solc-compiled host-side (`evm-harness/compile.js`, solc 0.8.26
