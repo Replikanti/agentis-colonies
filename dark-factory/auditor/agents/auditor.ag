@@ -285,6 +285,18 @@ fn distill_subgraphs(code: string) -> int {
     }, 0);
 }
 
+// M2 (#858): EVM peer of distill_subgraphs — split a Solidity target on the `function `
+// handler boundary so the same handler sub-graph across .sol targets/repos gets the same
+// content hash (structural dedup). dag_put is a leaf builtin (kept shallow on the stack).
+fn distill_subgraphs_evm(code: string) -> int {
+    return reduce(regex_split("function ", code), |acc: int, c: string| -> int {
+        if len(c) > 0 {
+            dag_put("function " + c);
+        }
+        return acc + 1;
+    }, 0);
+}
+
 // Pick the prior verdict for a sub-graph: federation blacklist wins, else own cache.
 fn pick_prior(cached: string, black: string) -> string {
     if len(black) > 0 {
@@ -983,19 +995,46 @@ fn ingest_nodes(target: string) -> string {
     return exec sh "rm -f extract; rustc --edition 2021 extract_nodes.rs -o extract 2>/dev/null && ./extract 2>/dev/null || echo '[]'";
 }
 
+// M2 (#858): EVM/Solidity node-stream ingestion — the EVM peer of ingest_nodes(). Execs the
+// host-side `ast.js` (pinned solc 0.8.26) in the EVM harness dir, where ast.js + node_modules/solc
+// live, mirroring how compile_run runs `node compile.js` there. solc parses the target to its AST;
+// ast.js walks it and emits the SAME canonical {"kind","name"} node stream the Rust extractor
+// produces (function / external-call / storage-write-sink nodes). Host-side parse, exactly like the
+// Rust exec-driven parse. Graceful — a solc fatal / missing ast.js degrades to "[]" and never breaks
+// the audit (the in-.ag structural reentrancy view is unaffected). `target` is written into the
+// harness scratch (h_ingest.sol, gitignored) so the parse never touches the committed contracts.
+fn ingest_evm_nodes(target: string) -> string {
+    let ed = getenv("EVM_HARNESS_DIR");
+    if len(ed) == 0 {
+        return "[]";
+    }
+    file_write("h_ingest.sol", target);
+    // colony-lint: safe-exec-concat
+    return exec sh "cp h_ingest.sol ${ed}/contracts/Ingest.sol 2>/dev/null; cd ${ed}; node ast.js contracts/Ingest.sol 2>/dev/null || echo '[]'";
+}
+
 agent reconn() -> void {
     let target = listen("audit:target");
-    // M1 (#858): EVM/Solidity targets BYPASS the Rust-shaped ingest. `cargo tree` needs a
-    // Cargo crate and the reference node-extractor parses Rust `fn`/`struct`/`impl`, neither of
-    // which applies to a `.sol`. Skip both and emit a trivial DAG node so the pipeline still
-    // flows to guard/synthesis/verify; the content-addressed target hash (verdict cache + dedup)
-    // is taken over the source text, which is language-agnostic. Full Solidity ingest (solc AST
-    // -> function/call/sink node stream) is M2.
+    // M2 (#858): EVM/Solidity targets get the FULL reconn->guard->tracker DAG pipeline (the
+    // M1 trivial-node bypass is gone). The Rust path's `cargo tree` + Rust fn/struct/impl
+    // node-extractor do not apply to a `.sol`, so reconn runs the EVM peer: a host-side solc
+    // AST parse (ast.js, pinned solc 0.8.26) -> the SAME canonical {"kind","name"} node stream
+    // (function / external-call / storage-write-sink nodes), dag_put as a sub-graph exactly like
+    // the Rust node stream. The content-addressed target hash (verdict cache + federation
+    // blacklist + dedup) stays `dag_put(strip_comments(target))`, byte-identical to M1, so a
+    // cached EVM verdict from before M2 still hits. Downstream (guard fires Reentrancy, the
+    // two-sided real-EVM synthesis gate) is unchanged — M2 only changes how reconn builds the DAG.
     if is_evm_target(target) {
+        let enodes = ingest_evm_nodes(target);
+        let enh = dag_put(enodes);
+        let encount = len(regex_find_all("\"name\"", enodes));
+        print("reconn: EVM/Solidity ingest ->", encount, "node(s) -> dag", substring(enh, 0, 12));
+        // distill: store each Solidity handler sub-graph in the content-addressed DAG (dedup cache).
         let ecode = strip_comments(target);
+        let en = distill_subgraphs_evm(ecode);
         let eth = dag_put(ecode);
-        let enode = dag_put("{\"kind\":\"solidity-target\",\"lang\":\"evm\"}");
-        print("reconn: EVM/Solidity target — Rust ingest bypassed (M1); target hash", substring(eth, 0, 12), "node", substring(enode, 0, 12));
+        print("reconn: distilled", en, "sub-graph(s); target hash", substring(eth, 0, 12));
+        // audit-once: reuse a prior verdict / federation blacklist for this exact sub-graph.
         let eprior = pick_prior(recall_latest("bounty:verdict:" + eth), recall_latest("bounty:blacklist:" + eth));
         emit("guard:target", target);
         emit("guard:th", eth);
