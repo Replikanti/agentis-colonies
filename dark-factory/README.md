@@ -132,6 +132,7 @@ dark-factory/
     README.md
   solana-harness/               # offline solana-program-test crate (real SVM, native)
   solana-harness-anchor/        # offline anchor-lang 0.31 harness (real SVM, Anchor) (V6)
+  evm-harness/                  # offline revm crate: two-sided EVM PoC (real EVM, Solidity)
   sealevel/                     # modernized coral-xyz/sealevel-attacks lessons (corpus) (V6)
   fixtures/                     # detection fixtures (vuln + safe + rigged-harness cases)
 ```
