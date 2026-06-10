@@ -1,2 +1,10 @@
 target/
 node_modules/
+
+# colony runtime scratch — compile_run writes the in-scope target + build logs here per run;
+# the committed contracts/bin/{ReentrancyVault*,Attacker}.bin are the calibration artifacts.
+build.out
+solc.out
+contracts/Target.sol
+contracts/bin/Target.bin
+contracts/bin/IVault.bin

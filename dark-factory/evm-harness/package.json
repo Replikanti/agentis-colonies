@@ -1,0 +1,8 @@
+{
+  "name": "evm-harness-solc",
+  "private": true,
+  "description": "Host-side solc pin for the Dark Factory EVM PoC harness (compile.js).",
+  "dependencies": {
+    "solc": "0.8.26"
+  }
+}
