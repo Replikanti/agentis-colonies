@@ -242,22 +242,28 @@ fn detect_reentrancy(src: string) -> bool {
     return false;
 }
 
-// V3-style LLM classification for an EVM/Solidity target (M1: reentrancy vs safe). Returns
-// "Reentrancy", "Safe", or "" when the backend gives no usable answer (mock -> "mock", which
-// matches no token) so the caller falls back to the structural heuristic. prompt() is host-side
-// (the one allowed egress) and runs before the network-closed sandbox build. M3 broadens this to
-// the full EVM class set (access-control, unchecked-call, oracle, overflow).
+// V3-style LLM classification for an EVM/Solidity target. M3 (#858): a MULTI-CLASS classifier
+// over the full EVM class set. Returns EXACTLY ONE canonical token — Reentrancy | AccessControl |
+// UncheckedCall | OracleManipulation | IntegerOverflow | Safe — or "" when the backend gives no
+// usable answer (mock -> "mock", which matches no token) so the caller falls back to the
+// structural reentrancy heuristic. Each class carries a precise detection cue in the prompt.
+// prompt() is host-side (the one allowed egress) and runs before the network-closed sandbox build.
 fn classify_evm_llm(src: string) -> string {
-    let out = to_lower(prompt("You are an EVM/Solidity security auditor. Decide whether the contract below is exploitable by REENTRANCY (a checks-effects-interactions violation: an external value-bearing call such as `msg.sender.call{value: ...}` is made BEFORE the caller's recorded balance is zeroed, so a malicious receiver can re-enter and drain funds). Reply with EXACTLY ONE token, nothing else: Reentrancy | Safe. Reply Reentrancy only when the external call precedes the state update (the funds can be re-entered); reply Safe when the balance is zeroed before the external call, or there is no reentrancy.", src) -> string);
+    let out = to_lower(prompt("You are an EVM/Solidity security auditor. Identify the SINGLE most likely exploitable vulnerability in the contract below and reply with EXACTLY ONE token, nothing else: Reentrancy | AccessControl | UncheckedCall | OracleManipulation | IntegerOverflow | Safe. Reentrancy = a checks-effects-interactions violation: an external value-bearing call (e.g. `msg.sender.call{value: ...}`) is made BEFORE the caller's recorded balance/state is updated, so a malicious receiver can re-enter and drain funds. AccessControl = a privileged state-changing function (e.g. setOwner / withdraw / mint / pause) lacks an owner/role check (no `onlyOwner`, no `require(msg.sender == owner)`), so any caller can invoke it. UncheckedCall = an external call's success/return value is ignored (a low-level `.call`/`.send` whose returned bool is not checked), or the call target / `delegatecall` is attacker-influenced, so a failed or hijacked call is silently trusted. OracleManipulation = a price/value is read from a manipulable spot source (a single DEX pair reserve / `getReserves` / spot `balanceOf`) WITHOUT a TWAP or sanity bound, so an attacker who moves the source moves the contract's view. IntegerOverflow = value-carrying arithmetic wraps or underflows (pre-0.8 arithmetic, or an explicit `unchecked { ... }` block on balances/supply/amounts). Reply Safe when the required check / guard is present and no class applies.", src) -> string);
     if index_of(out, "reentrancy") >= 0 { return "Reentrancy"; }
+    if index_of(out, "accesscontrol") >= 0 { return "AccessControl"; }
+    if index_of(out, "uncheckedcall") >= 0 { return "UncheckedCall"; }
+    if index_of(out, "oraclemanipulation") >= 0 { return "OracleManipulation"; }
+    if index_of(out, "integeroverflow") >= 0 { return "IntegerOverflow"; }
     if index_of(out, "safe") >= 0 { return "Safe"; }
     return "";
 }
 
 // Resolve the EVM class from the LLM verdict + the structural reentrancy heuristic. The LLM
-// wins when present ("Safe" -> "none"); an empty verdict falls back to the heuristic. SHALLOW
-// leaf — a mis-route only reaches synthesis, where the two-sided real-EVM gate is the truth
-// (a wrong route yields `inconclusive`, never a false-VERIFIED).
+// wins when present ("Safe" -> "none"); an empty verdict (mock / offline) falls back to the
+// structural reentrancy heuristic (the only EVM class with a textual fallback). SHALLOW leaf —
+// a mis-route only reaches synthesis, where the two-sided real-EVM gate is the truth (a wrong
+// route yields `inconclusive`, never a false-VERIFIED).
 fn resolve_evm_cls(llm: string, heuristic: bool) -> string {
     if len(llm) > 0 {
         if llm == "Safe" {
@@ -364,6 +370,9 @@ fn is_vuln_class(cls: string) -> bool {
     if cls == "ArbitraryCPI" { return true; }
     if cls == "IntegerOverflow" { return true; }
     if cls == "Reentrancy" { return true; }
+    if cls == "AccessControl" { return true; }
+    if cls == "UncheckedCall" { return true; }
+    if cls == "OracleManipulation" { return true; }
     return false;
 }
 
@@ -393,6 +402,31 @@ fn invariant_for(cls: string) -> string {
     return "PROVE THIS INVARIANT (generic access-control): a privileged action MUST be reachable only by the authorized party. CONTROL: the legitimate authorized caller is accepted. EXPLOIT: an unauthorized caller performs the same action; if it succeeds against the safety invariant, the invariant is violated.";
 }
 
+// M3 (#858): the EVM peer of invariant_for() — the program-specific invariant the revm PoC must
+// assert for the detected EVM class. EVM-flavored (msg.sender / external calls / ETH balances)
+// and kept SEPARATE from the Solana invariant_for() because IntegerOverflow is a token shared by
+// both chains and the EVM phrasing differs. Same shape: CONTROL = the legit flow that must be
+// accepted, EXPLOIT = the attacker action that breaks the invariant. The #820 marker contract
+// (CONTROL OK: + INVARIANT VIOLATED: + exit 101) is unchanged. SHALLOW leaf — safe at any depth.
+fn evm_invariant_for(cls: string) -> string {
+    if cls == "Reentrancy" {
+        return "PROVE THIS INVARIANT (Reentrancy): a withdraw/payout that sends ETH MUST update the caller's recorded balance BEFORE the external call (checks-effects-interactions). CONTROL: an honest account deposits then withdraws and the flow conserves (the user is restored and the vault returns to its prior holdings). EXPLOIT: an attacker contract deposits a small stake, calls withdraw(), and re-enters withdraw() from its receive()/fallback while the target still credits its un-zeroed balance; if the attacker ends holding MORE ETH than it staked (the pooled TVL is drained), the conservation invariant is violated.";
+    }
+    if cls == "AccessControl" {
+        return "PROVE THIS INVARIANT (AccessControl): a privileged state-changing function (e.g. setOwner / withdraw / mint / pause) MUST be reachable only by the authorized owner/role. CONTROL: the legitimate owner (the deployer / the address recorded as owner) calls the privileged function and it is accepted and mutates state. EXPLOIT: a NON-owner address calls the SAME privileged function; if it still succeeds and the state mutates (ownership transferred, funds withdrawn, supply minted), the access-control invariant is violated.";
+    }
+    if cls == "UncheckedCall" {
+        return "PROVE THIS INVARIANT (UncheckedCall): an external call's success MUST be checked, and the call target / delegatecall MUST NOT be attacker-influenced. CONTROL: the legitimate call path completes and the contract's accounting matches the actual transfer outcome. EXPLOIT: an attacker forces the external call to FAIL (or supplies an attacker-controlled target/delegatecall); if the contract ignores the unchecked return and proceeds as if it succeeded — crediting value never transferred, or executing attacker code under its own context — the invariant is violated.";
+    }
+    if cls == "OracleManipulation" {
+        return "PROVE THIS INVARIANT (OracleManipulation): a price/value the contract acts on MUST NOT be readable straight from a manipulable spot source without a TWAP or sanity bound. CONTROL: under normal reserves the contract reads a fair price and the dependent action (swap / borrow / liquidation) is correct. EXPLOIT: an attacker moves the spot source within the same transaction (e.g. a large swap that skews the pair reserves, or a direct token transfer that inflates a spot balanceOf); if the contract trusts the manipulated price and lets the attacker extract value, the invariant is violated.";
+    }
+    if cls == "IntegerOverflow" {
+        return "PROVE THIS INVARIANT (IntegerOverflow): value-carrying arithmetic (balances, supply, amounts) MUST NOT wrap or underflow. CONTROL: an in-range operation produces the correct arithmetic result and is accepted. EXPLOIT: an attacker supplies an amount that makes the unchecked arithmetic (a pre-0.8 op or an `unchecked { ... }` block) wrap — e.g. subtract more than the balance to underflow to a huge value, or add past the uint max; if the resulting on-chain state reflects the wrapped value, the conservation invariant is violated.";
+    }
+    return "PROVE THIS INVARIANT (generic EVM safety): a privileged or value-bearing action MUST be reachable only under its intended precondition. CONTROL: the legitimate flow is accepted and the contract's accounting is correct. EXPLOIT: an attacker performs the same action outside its precondition; if it succeeds against the safety/conservation invariant, the invariant is violated.";
+}
+
 // PoC generation instruction for the prompt-driven synthesis (two-sided).
 // When the real Solana toolchain is enabled (SOLANA_HARNESS_DIR set) the
 // instruction asks for a solana-program-test + BanksClient PoC that runs through the
@@ -419,6 +453,14 @@ fn harness_dir() -> string {
 fn poc_instruction(cls: string) -> string {
     let inv = invariant_for(cls);
     if len(getenv("EVM_HARNESS_DIR")) > 0 {
+        // M3 (#858): class-aware. evm_invariant_for(cls) selects the SPECIFIC EVM invariant the
+        // revm PoC must prove (reentrancy / access-control / unchecked-call / oracle / overflow);
+        // the rest is the mechanical revm two-sided scaffolding. argv[2] is a provided reentrancy
+        // attacker (.bin) — used for the Reentrancy class; for the other classes the PoC drives
+        // the target directly (attacker bytecode optional). The #820 marker contract (CONTROL OK:
+        // + INVARIANT VIOLATED: + exit 101) is unchanged, so the two-sided gate still blocks
+        // rigged/always-fire harnesses regardless of class.
+        let einv = evm_invariant_for(cls);
         return "You are given a Solidity smart contract (the in-scope target). Write the FULL contents of " +
             "src/bin/poc.rs: a self-contained `fn main()` that drives the target through the REAL EVM (the " +
             "`revm` crate, version 14) as a TWO-SIDED proof. Do NOT link or import the target as Rust — the " +
@@ -427,9 +469,9 @@ fn poc_instruction(cls: string) -> string {
             "bytecode (.bin, a hex string), argv[2] = a provided attacker contract's creation-bytecode (.bin) " +
             "exposing `attack()` payable (it deposits msg.value into the target then calls the target's " +
             "withdraw(), and re-enters withdraw() from its receive() while the target still holds funds); its " +
-            "constructor takes the target address. PROVE THIS INVARIANT " +
-            "(conservation of funds): an attacker MUST NOT be able to end holding more ETH than it staked, and " +
-            "the honest flow MUST conserve. Imports (revm 14): `use revm::db::{CacheDB, EmptyDB}; use " +
+            "constructor takes the target address. Use the attacker for the reentrancy class; for other classes " +
+            "you may drive the target directly (deploy it and send the relevant txs yourself) and ignore argv[2]. " +
+            einv + " Imports (revm 14): `use revm::db::{CacheDB, EmptyDB}; use " +
             "revm::primitives::{keccak256, AccountInfo, Address, Bytes, ExecutionResult, Output, TxKind, " +
             "U256}; use revm::Evm; use std::process::exit;`. Build the EVM with `let mut evm = " +
             "Evm::builder().with_db(CacheDB::new(EmptyDB::default())).build();`. Fund an account via " +
@@ -438,22 +480,25 @@ fn poc_instruction(cls: string) -> string {
             "Send a tx by setting `tx.caller / tx.transact_to (TxKind::Create or TxKind::Call(addr)) / tx.value " +
             "/ tx.data = Bytes::from(bytes) / tx.gas_limit = 30_000_000 / tx.gas_price = U256::ZERO / tx.nonce = " +
             "None` on `evm.tx_mut()`, then `evm.transact_commit()`. A successful CREATE returns " +
-            "`ExecutionResult::Success { output: Output::Create(_, Some(addr)), .. }`. Compute a function " +
+            "`ExecutionResult::Success { output: Output::Create(_, Some(addr)), .. }`. Read the returned data of " +
+            "a Call via `ExecutionResult::Success { output: Output::Call(bytes), .. }`. Compute a function " +
             "selector with `keccak256(sig.as_bytes())[..4].to_vec()` (e.g. \"deposit()\", \"withdraw()\", " +
-            "\"attack()\"). Load a .bin with `hex::decode(std::fs::read_to_string(path).unwrap().trim()).unwrap()`. " +
+            "\"attack()\", \"owner()\", \"setOwner(address)\"). ABI-encode a single address arg as 32 bytes " +
+            "(12 zero bytes + the 20 address bytes) appended to the selector. Load a .bin with " +
+            "`hex::decode(std::fs::read_to_string(path).unwrap().trim()).unwrap()`. " +
             "For a constructor(address) argument, append the 32-byte left-padded address (12 zero bytes + the " +
             "20 address bytes) to the attacker creation-bytecode before deploying. STEPS: (1) read argv[1] " +
-            "(target bytecode) and argv[2] (attacker bytecode); (2) CONTROL — deploy a FRESH target, have an " +
-            "honest account deposit then withdraw, and assert the honest flow conserves (the user is restored " +
-            "and the vault returns to 0); if it conserves print exactly `CONTROL OK: <detail>`; if the honest " +
-            "flow does NOT conserve, print a HARNESS ERROR to stderr and `exit(2)` (NOT a verdict). (3) EXPLOIT " +
-            "— deploy a FRESH target, seed honest TVL (e.g. another account deposits 5 ETH), deploy the " +
-            "attacker with the target address as its constructor arg, call the attacker's `attack()` with some " +
-            "stake (e.g. 1 ETH), then read the attacker's final balance; if the attacker holds MORE than it " +
-            "staked print exactly `INVARIANT VIOLATED: <detail>` to stderr and call `std::process::exit(101)`; " +
-            "otherwise print `invariant held: <detail>`. Both `CONTROL OK:` and `INVARIANT VIOLATED:` markers " +
-            "are REQUIRED on a vulnerable target. Reserve exit code 101 EXCLUSIVELY for a genuine INVARIANT " +
-            "VIOLATED. Output only the Rust source of src/bin/poc.rs.";
+            "(target bytecode) and (when the class needs it) argv[2] (attacker bytecode); (2) CONTROL — deploy a " +
+            "FRESH target and exercise the LEGITIMATE flow from the invariant above; assert it is accepted / " +
+            "conserves; if so print exactly `CONTROL OK: <detail>`; if the legitimate flow does NOT hold, print " +
+            "a HARNESS ERROR to stderr and `exit(2)` (NOT a verdict). (3) EXPLOIT — deploy a FRESH target, set " +
+            "up the attacker action from the invariant above (for reentrancy: seed honest TVL, deploy the " +
+            "attacker with the target address as its constructor arg, call `attack()` with a stake; for the " +
+            "other classes: have a non-owner / attacker account send the offending tx directly), then check the " +
+            "invariant; if it is VIOLATED print exactly `INVARIANT VIOLATED: <detail>` to stderr and call " +
+            "`std::process::exit(101)`; otherwise print `invariant held: <detail>`. Both `CONTROL OK:` and " +
+            "`INVARIANT VIOLATED:` markers are REQUIRED on a vulnerable target. Reserve exit code 101 " +
+            "EXCLUSIVELY for a genuine INVARIANT VIOLATED. Output only the Rust source of src/bin/poc.rs.";
     }
     if len(getenv("SOLANA_ANCHOR_HARNESS_DIR")) > 0 {
         return "You are given an ANCHOR Solana program — the contents of the harness crate " +
@@ -569,6 +614,18 @@ fn compile_run(poc: string, target_src: string) -> string {
 // detection mirrors harness_dir()/poc_instruction()/challenge_ref(). SHALLOW leaf
 // (getenv + index_of only) — safe at any agent depth.
 fn poc_exercises_target(poc: string) -> bool {
+    if len(getenv("EVM_HARNESS_DIR")) > 0 {
+        // M3 (#858): EVM peer. A real revm PoC drives the in-scope target through the EVM —
+        // it must use the `revm` crate AND load the target's creation-bytecode handed to it on
+        // argv (it deploys it as a CREATE tx). A target-agnostic marker-printer that uses neither
+        // is rejected here (the structural half), before the per-run target-linkage challenge.
+        if index_of(poc, "revm") < 0 { return false; }
+        if index_of(poc, "TxKind::Create") < 0 { return false; }
+        if index_of(poc, "args") >= 0 { return true; }
+        if index_of(poc, "argv") >= 0 { return true; }
+        if index_of(poc, "read_to_string") >= 0 { return true; }
+        return false;
+    }
     if len(getenv("SOLANA_ANCHOR_HARNESS_DIR")) > 0 {
         if index_of(poc, "solana_harness_anchor") < 0 { return false; }
         if index_of(poc, "processor!") >= 0 { return true; }
@@ -588,7 +645,12 @@ fn poc_exercises_target(poc: string) -> bool {
 // #852: the Rust path to the per-run challenge const by harness mode. The const is
 // appended to the target the PoC is compiled against, so reading it back proves the PoC
 // linked THIS run's target (not a stale / target-free binary). SHALLOW leaf (getenv).
+// M3 (#858): EVM has no Rust-linked const (the target is a .sol the PoC never imports as
+// Rust); its per-run challenge is a uniquely-named Solidity view fn injected into the target
+// and called through the EVM by the wrapped PoC (see inject_evm_challenge / wrap_with_challenge_evm),
+// so for EVM this returns the challenge fn base name token (the nonce-specific selector is built inline).
 fn challenge_ref() -> string {
+    if len(getenv("EVM_HARNESS_DIR")) > 0 { return "pocChallenge"; }
     if len(getenv("SOLANA_ANCHOR_HARNESS_DIR")) > 0 { return "solana_harness_anchor::POC_CHALLENGE"; }
     if len(getenv("SOLANA_HARNESS_DIR")) > 0 { return "solana_harness::target::POC_CHALLENGE"; }
     return "POC_CHALLENGE";
@@ -617,6 +679,86 @@ fn wrap_with_challenge(poc: string, cref: string) -> string {
     return body + mfn;
 }
 
+// M3 (#858): EVM peer of the #852 challenge const — a uniquely-named Solidity view fn carrying
+// the per-run nonce, injected into the in-scope target the PoC is run against. The nonce is the
+// low 6 bytes of a uint256 returned by `pocChallenge_<nonce>()`; a PoC that deploys THIS run's
+// target (the challenged bytecode handed to it on argv[1]) can call this fn and surface the nonce.
+// SHALLOW leaf (string concat). `nonce` is a 12-hex-char fragment.
+fn evm_challenge_fn(nonce: string) -> string {
+    let sig = "\n    function pocChallenge_" + nonce;
+    let body = sig + "() external pure returns (uint256) { return 0x";
+    let lit = body + nonce;
+    return lit + "; }\n";
+}
+
+// Inject the per-run Solidity challenge fn into the target's FIRST contract body (right after its
+// opening `{`), so the compiled creation-bytecode the PoC deploys carries it. If the target has no
+// `contract ` (interface/library only) the fn is appended at the end — the PoC then cannot resolve
+// it on the deployed primary and the challenge fails (fail-safe rejection). SHALLOW leaf (string
+// surgery: index_of + substring + concat only).
+fn inject_evm_challenge(target: string, nonce: string) -> string {
+    let fnsrc = evm_challenge_fn(nonce);
+    let c = index_of(target, "contract ");
+    if c < 0 {
+        return target + fnsrc;
+    }
+    let after = substring(target, c, len(target));
+    let rel = index_of(after, "{");
+    if rel < 0 {
+        return target + fnsrc;
+    }
+    let cut = c + rel + 1;
+    let head = substring(target, 0, cut);
+    let withfn = head + fnsrc;
+    let tail = substring(target, cut, len(target));
+    return withfn + tail;
+}
+
+// M3 (#858): EVM peer of wrap_with_challenge — renames the supplied PoC's first `fn main(` to
+// `__poc_user_main` and prepends a `fn main` that, BEFORE the user main runs (it may exit 101 on
+// the violation path), deploys argv[1] (the challenged target bytecode) through the EVM, calls
+// `pocChallenge_<nonce>()`, and prints `POC_CHALLENGE=<nonce>` ONLY if the deployed target returns
+// the matching low-6-byte value — proving the PoC was run against THIS run's target. Self-contained
+// via fully-qualified `revm::`/`hex::` paths (no `use`, so it never conflicts with the PoC's own
+// imports). A PoC run against a different / no target never surfaces the nonce -> rejected. If there
+// is no `fn main(` the PoC is returned unchanged (the structural gate still applies). SHALLOW leaf.
+fn wrap_with_challenge_evm(poc: string, nonce: string) -> string {
+    let p = index_of(poc, "fn main(");
+    if p < 0 { return poc; }
+    let head = substring(poc, 0, p);
+    let tail = substring(poc, p + 8, len(poc));
+    let renamed = head + "fn __poc_user_main(";
+    let body = renamed + tail;
+    // Sequential single-`+` concats (the #820 razor-thin native stack overflows on long `+` chains).
+    let e1 = "\nfn __poc_challenge_echo() {\n";
+    let e2 = e1 + "    let __a: Vec<String> = std::env::args().collect();\n";
+    let e3 = e2 + "    if __a.len() < 2 { return; }\n";
+    let e4 = e3 + "    let __code = match std::fs::read_to_string(&__a[1]) { Ok(s) => s, Err(_) => return };\n";
+    let e5 = e4 + "    let __bytes = match hex::decode(__code.trim()) { Ok(b) => b, Err(_) => return };\n";
+    let e6 = e5 + "    let mut __evm = revm::Evm::builder().with_db(revm::db::CacheDB::new(revm::db::EmptyDB::default())).build();\n";
+    let e7 = e6 + "    let __dep = revm::primitives::Address::from([0x55u8; 20]);\n";
+    let e8 = e7 + "    __evm.db_mut().insert_account_info(__dep, revm::primitives::AccountInfo { balance: revm::primitives::U256::from(1u64), ..Default::default() });\n";
+    let e9 = e8 + "    { let __tx = __evm.tx_mut(); __tx.caller = __dep; __tx.transact_to = revm::primitives::TxKind::Create; __tx.value = revm::primitives::U256::ZERO; __tx.data = revm::primitives::Bytes::from(__bytes); __tx.gas_limit = 30_000_000; __tx.gas_price = revm::primitives::U256::ZERO; __tx.nonce = None; }\n";
+    let e10 = e9 + "    let __cr = match __evm.transact_commit() { Ok(r) => r, Err(_) => return };\n";
+    let e11 = e10 + "    let __addr = match __cr { revm::primitives::ExecutionResult::Success { output: revm::primitives::Output::Create(_, Some(a)), .. } => a, _ => return };\n";
+    let s1 = "    let __sel = revm::primitives::keccak256(\"pocChallenge_";
+    let s2 = s1 + nonce;
+    let s3 = s2 + "()\".as_bytes())[..4].to_vec();\n";
+    let e12 = e11 + s3;
+    let e13 = e12 + "    { let __tx = __evm.tx_mut(); __tx.caller = __dep; __tx.transact_to = revm::primitives::TxKind::Call(__addr); __tx.value = revm::primitives::U256::ZERO; __tx.data = revm::primitives::Bytes::from(__sel); __tx.gas_limit = 30_000_000; __tx.gas_price = revm::primitives::U256::ZERO; __tx.nonce = None; }\n";
+    let e14 = e13 + "    let __rr = match __evm.transact_commit() { Ok(r) => r, Err(_) => return };\n";
+    let e15 = e14 + "    if let revm::primitives::ExecutionResult::Success { output: revm::primitives::Output::Call(__ret), .. } = __rr {\n";
+    let n1 = "        if __ret.len() == 32 { if hex::encode(&__ret[26..32]) == \"";
+    let n2 = n1 + nonce;
+    let n3 = n2 + "\" { eprintln!(\"POC_CHALLENGE=";
+    let n4 = n3 + nonce;
+    let n5 = n4 + "\"); } }\n";
+    let e16 = e15 + n5;
+    let e17 = e16 + "    }\n}\n";
+    let e18 = e17 + "fn main() { __poc_challenge_echo(); __poc_user_main(); }\n";
+    return body + e18;
+}
+
 // Generate the PoC and run it in the hardened sandbox. Resolution order:
 //   1. BOUNTY_POC=<path> override — a human-supplied (or negative-test) candidate;
 //   2. the 5-retry prompt loop (the real LLM path);
@@ -641,6 +783,26 @@ fn synth_via_prompt(cls: string, target: string) -> string {
                 // Inline (NOT a helper call — an extra frame here overflows the shallow
                 // native stack, #820) with shallow sequential concats. compile_run stays
                 // at this function's depth, exactly as the origin BOUNTY_POC path.
+                if is_evm_target(target) {
+                    // M3 (#858): EVM peer of the linkage challenge. The target is a .sol the PoC
+                    // never imports as Rust, so the nonce rides a uniquely-named Solidity view fn
+                    // injected into the target's bytecode (inject_evm_challenge); the wrapped PoC
+                    // deploys argv[1] (the challenged target) through the EVM and echoes the nonce
+                    // only if that exact bytecode returns it (wrap_with_challenge_evm). 12 hex
+                    // chars = low 6 bytes of the returned uint256. Same fail-safe contract: no
+                    // surfaced nonce -> the supplied PoC is rejected, never a false-VERIFIED.
+                    let enonce = substring(sha256_hex(target + now_iso()), 0, 12);
+                    let echallenged = inject_evm_challenge(target, enonce);
+                    let ewrapped = wrap_with_challenge_evm(supplied, enonce);
+                    let eout = compile_run(ewrapped, echallenged);
+                    let eneedle = "POC_CHALLENGE=" + enonce;
+                    if index_of(eout, eneedle) >= 0 {
+                        print("synthesis: BOUNTY_POC exercised the in-scope target (EVM challenge ok) — gating by two-sided assess");
+                        return eout;
+                    }
+                    print("synthesis: REJECTED BOUNTY_POC — failed the per-run EVM target-linkage challenge (did not run against the in-scope target); not trusting it");
+                    return "inconclusive: supplied BOUNTY_POC failed the target-linkage challenge";
+                }
                 let nonce = substring(sha256_hex(target + now_iso()), 0, 16);
                 let cdef = "\npub const POC_CHALLENGE: &str = \"" + nonce;
                 let challenged = target + cdef + "\";\n";
@@ -714,8 +876,11 @@ fn severity_for(cls: string) -> string {
     if cls == "MissingSignerCheck" { return "Critical"; }
     if cls == "MissingOwnerCheck" { return "Critical"; }
     if cls == "ArbitraryCPI" { return "Critical"; }
+    if cls == "AccessControl" { return "Critical"; }
     if cls == "AccountDataMatching" { return "High"; }
     if cls == "Reentrancy" { return "High"; }
+    if cls == "OracleManipulation" { return "High"; }
+    if cls == "UncheckedCall" { return "Medium"; }
     if cls == "IntegerOverflow" { return "Medium"; }
     return "Informational";
 }
@@ -742,6 +907,15 @@ fn summary_for(cls: string, node: string) -> string {
     if cls == "Reentrancy" {
         return "The `" + node + "` function makes an external value-bearing call before zeroing the caller's recorded balance (a checks-effects-interactions violation), so a malicious receiver can re-enter and withdraw repeatedly, draining funds far beyond its own deposit.";
     }
+    if cls == "AccessControl" {
+        return "The `" + node + "` function performs a privileged state change without an owner/role check (no `onlyOwner` / `require(msg.sender == owner)`), so any caller can invoke it and seize control or funds the contract was meant to restrict to its owner.";
+    }
+    if cls == "UncheckedCall" {
+        return "The `" + node + "` function ignores the success/return value of an external call (or invokes an attacker-influenced target/delegatecall), so a failed or hijacked call is silently trusted and the contract's accounting diverges from what actually transferred.";
+    }
+    if cls == "OracleManipulation" {
+        return "The `" + node + "` function reads a price/value from a manipulable spot source without a TWAP or sanity bound, so an attacker who moves that source within a transaction skews the contract's view and extracts value at the manipulated rate.";
+    }
     return "The `" + node + "` handler exposes a privileged action to an unauthorized caller, breaking its access-control invariant.";
 }
 
@@ -754,6 +928,15 @@ fn impact_for(cls: string) -> string {
     }
     if cls == "Reentrancy" {
         return "Direct theft of funds: an attacker re-enters the vulnerable function during its external call and withdraws repeatedly, draining the entire pooled balance (every depositor's funds), not just its own.";
+    }
+    if cls == "AccessControl" {
+        return "Privileged takeover: any caller invokes an owner-only function — transferring ownership, withdrawing the contract's funds, minting supply, or pausing it — seizing control or value the contract was meant to gate.";
+    }
+    if cls == "UncheckedCall" {
+        return "Accounting divergence or arbitrary execution: a silently-failed transfer credits value that never moved, or an attacker-controlled call target / delegatecall executes attacker code under the contract's own context and storage.";
+    }
+    if cls == "OracleManipulation" {
+        return "Economic drain: an attacker manipulates the spot price the contract trusts (a flash-loan-skewed pair reserve or inflated spot balance) and borrows / swaps / liquidates at the false rate, extracting value from the protocol.";
     }
     return "Unauthorized control over a privileged action: an attacker performs it without the required authorization, typically draining funds or seizing state.";
 }
@@ -776,6 +959,15 @@ fn remediation_for(cls: string) -> string {
     }
     if cls == "Reentrancy" {
         return "Apply checks-effects-interactions: update state (zero the caller's balance) BEFORE the external call, and/or guard the function with a reentrancy lock (e.g. OpenZeppelin `nonReentrant`).";
+    }
+    if cls == "AccessControl" {
+        return "Gate the privileged function with an access-control check: an `onlyOwner` / role modifier (e.g. OpenZeppelin `Ownable` / `AccessControl`) or an explicit `require(msg.sender == owner)` before the state change.";
+    }
+    if cls == "UncheckedCall" {
+        return "Check the returned success of every external call (`(bool ok, ) = ...; require(ok)`), prefer `transfer`/`SafeERC20` where appropriate, and never `delegatecall` / call a target an attacker can influence.";
+    }
+    if cls == "OracleManipulation" {
+        return "Read prices from a manipulation-resistant source: a time-weighted average price (TWAP) or a vetted oracle (e.g. Chainlink) with staleness + deviation bounds, never a single-block spot reserve / spot balanceOf.";
     }
     return "Add the missing access-control check so only the authorized party can perform the privileged action.";
 }
