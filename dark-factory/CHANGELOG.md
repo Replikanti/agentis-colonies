@@ -16,6 +16,15 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- EVM/Solidity auditing — M4 (agentis-core#858). The EVM calibration corpus + harness, the peer of
+  the Solana `calibrate-sealevel.sh` / `sealevel-scorecard.md`. A five-class vuln+safe corpus in
+  `evm-harness/contracts/` (Reentrancy + AccessControl reused from M1–M3, plus new UncheckedCall,
+  OracleManipulation, and IntegerOverflow pairs — each vuln written to be unambiguously its own
+  class, all solc-0.8.26-compileable with committed `contracts/bin/*.bin`), `calibrate-evm.sh`
+  (runs `run-audit.sh` over the five class pairs, tallies true-positive / false-VERIFIED /
+  non-SAFE, parameterized by `BACKEND`/`AGENTIS`/`EVM_HARNESS_DIR`), and `evm-scorecard.md` (the
+  scorecard doc with the corpus table, methodology, and an operator-fillable RESULTS template).
+
 - EVM/Solidity auditing — M2 + M3 (agentis-core#858). **M2**: real Solidity reconn ingest
   (`evm-harness/ast.js`, solc AST → the canonical `{kind,name}` node stream → DAG), replacing
   M1's `.sol` bypass so EVM targets get the full reconn→guard→tracker pipeline (target hash
