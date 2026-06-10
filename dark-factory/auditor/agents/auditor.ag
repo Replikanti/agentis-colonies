@@ -198,6 +198,79 @@ fn resolve_cls(llm: string, heuristic: string) -> string {
     return heuristic;
 }
 
+// ---- helpers: EVM/Solidity detection (M1: reentrancy) ------------------------
+
+// Is the active audit an EVM/Solidity one? True when the operator selected the EVM harness
+// (EVM_HARNESS_DIR), or the source is clearly Solidity. The harness flag is authoritative;
+// the source sniff covers a Solidity target supplied without the flag. SHALLOW leaf
+// (getenv + index_of). M1 scopes EVM detection to reentrancy; M3 broadens the class set.
+fn is_evm_target(src: string) -> bool {
+    if len(getenv("EVM_HARNESS_DIR")) > 0 {
+        return true;
+    }
+    if index_of(src, "pragma solidity") >= 0 {
+        return true;
+    }
+    if index_of(src, "function ") >= 0 {
+        if index_of(src, "msg.sender") >= 0 {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Structural reentrancy heuristic (checks-effects-interactions violation): an external
+// value-bearing call (`.call{value:`) that is NOT dominated by zeroing the caller's recorded
+// balance (`balanceOf[...] = 0` / a `-=` effect). Insecure = the external call precedes the
+// effect (interaction-before-effect); secure = the effect precedes the call. -1 sentinels mean
+// the construct is absent. SHALLOW leaf (index_of only). This is the structural fallback when
+// the LLM classifier gives no usable answer (mock / offline).
+fn detect_reentrancy(src: string) -> bool {
+    let call = index_of(src, ".call{value:");
+    if call < 0 {
+        return false;
+    }
+    let zero = index_of(src, "] = 0");
+    let dec = index_of(src, "] -=");
+    let effect = min_present(zero, dec);
+    if effect < 0 {
+        return true;
+    }
+    if call < effect {
+        return true;
+    }
+    return false;
+}
+
+// V3-style LLM classification for an EVM/Solidity target (M1: reentrancy vs safe). Returns
+// "Reentrancy", "Safe", or "" when the backend gives no usable answer (mock -> "mock", which
+// matches no token) so the caller falls back to the structural heuristic. prompt() is host-side
+// (the one allowed egress) and runs before the network-closed sandbox build. M3 broadens this to
+// the full EVM class set (access-control, unchecked-call, oracle, overflow).
+fn classify_evm_llm(src: string) -> string {
+    let out = to_lower(prompt("You are an EVM/Solidity security auditor. Decide whether the contract below is exploitable by REENTRANCY (a checks-effects-interactions violation: an external value-bearing call such as `msg.sender.call{value: ...}` is made BEFORE the caller's recorded balance is zeroed, so a malicious receiver can re-enter and drain funds). Reply with EXACTLY ONE token, nothing else: Reentrancy | Safe. Reply Reentrancy only when the external call precedes the state update (the funds can be re-entered); reply Safe when the balance is zeroed before the external call, or there is no reentrancy.", src) -> string);
+    if index_of(out, "reentrancy") >= 0 { return "Reentrancy"; }
+    if index_of(out, "safe") >= 0 { return "Safe"; }
+    return "";
+}
+
+// Resolve the EVM class from the LLM verdict + the structural reentrancy heuristic. The LLM
+// wins when present ("Safe" -> "none"); an empty verdict falls back to the heuristic. SHALLOW
+// leaf — a mis-route only reaches synthesis, where the two-sided real-EVM gate is the truth
+// (a wrong route yields `inconclusive`, never a false-VERIFIED).
+fn resolve_evm_cls(llm: string, heuristic: bool) -> string {
+    if len(llm) > 0 {
+        if llm == "Safe" {
+            return "none";
+        }
+        return llm;
+    }
+    if heuristic {
+        return "Reentrancy";
+    }
+    return "none";
+}
+
 // ---- helpers: DAG distillation -----------------------------------------------
 
 // Store each handler sub-graph in the content-addressed DAG (the dedup cache):
@@ -278,6 +351,7 @@ fn is_vuln_class(cls: string) -> bool {
     if cls == "AccountDataMatching" { return true; }
     if cls == "ArbitraryCPI" { return true; }
     if cls == "IntegerOverflow" { return true; }
+    if cls == "Reentrancy" { return true; }
     return false;
 }
 
@@ -319,6 +393,10 @@ fn invariant_for(cls: string) -> string {
 // SOLANA_ANCHOR_HARNESS_DIR is set, else the native harness (SOLANA_HARNESS_DIR).
 // Leaf (getenv only) — safe at any agent depth.
 fn harness_dir() -> string {
+    let e = getenv("EVM_HARNESS_DIR");
+    if len(e) > 0 {
+        return e;
+    }
     let a = getenv("SOLANA_ANCHOR_HARNESS_DIR");
     if len(a) > 0 {
         return a;
@@ -328,6 +406,43 @@ fn harness_dir() -> string {
 
 fn poc_instruction(cls: string) -> string {
     let inv = invariant_for(cls);
+    if len(getenv("EVM_HARNESS_DIR")) > 0 {
+        return "You are given a Solidity smart contract (the in-scope target). Write the FULL contents of " +
+            "src/bin/poc.rs: a self-contained `fn main()` that drives the target through the REAL EVM (the " +
+            "`revm` crate, version 14) as a TWO-SIDED proof. Do NOT link or import the target as Rust — the " +
+            "target (and a provided generic reentrancy attacker) are compiled to EVM creation-bytecode " +
+            "HOST-SIDE and passed to your binary as file paths on argv: argv[1] = the target's creation-" +
+            "bytecode (.bin, a hex string), argv[2] = a provided attacker contract's creation-bytecode (.bin) " +
+            "exposing `attack()` payable (it deposits msg.value into the target then calls the target's " +
+            "withdraw(), and re-enters withdraw() from its receive() while the target still holds funds); its " +
+            "constructor takes the target address. PROVE THIS INVARIANT " +
+            "(conservation of funds): an attacker MUST NOT be able to end holding more ETH than it staked, and " +
+            "the honest flow MUST conserve. Imports (revm 14): `use revm::db::{CacheDB, EmptyDB}; use " +
+            "revm::primitives::{keccak256, AccountInfo, Address, Bytes, ExecutionResult, Output, TxKind, " +
+            "U256}; use revm::Evm; use std::process::exit;`. Build the EVM with `let mut evm = " +
+            "Evm::builder().with_db(CacheDB::new(EmptyDB::default())).build();`. Fund an account via " +
+            "`evm.db_mut().insert_account_info(addr, AccountInfo { balance: wei, ..Default::default() });`. " +
+            "Read a balance via `evm.db_mut().accounts.get(&addr).map(|a| a.info.balance).unwrap_or(U256::ZERO)`. " +
+            "Send a tx by setting `tx.caller / tx.transact_to (TxKind::Create or TxKind::Call(addr)) / tx.value " +
+            "/ tx.data = Bytes::from(bytes) / tx.gas_limit = 30_000_000 / tx.gas_price = U256::ZERO / tx.nonce = " +
+            "None` on `evm.tx_mut()`, then `evm.transact_commit()`. A successful CREATE returns " +
+            "`ExecutionResult::Success { output: Output::Create(_, Some(addr)), .. }`. Compute a function " +
+            "selector with `keccak256(sig.as_bytes())[..4].to_vec()` (e.g. \"deposit()\", \"withdraw()\", " +
+            "\"attack()\"). Load a .bin with `hex::decode(std::fs::read_to_string(path).unwrap().trim()).unwrap()`. " +
+            "For a constructor(address) argument, append the 32-byte left-padded address (12 zero bytes + the " +
+            "20 address bytes) to the attacker creation-bytecode before deploying. STEPS: (1) read argv[1] " +
+            "(target bytecode) and argv[2] (attacker bytecode); (2) CONTROL — deploy a FRESH target, have an " +
+            "honest account deposit then withdraw, and assert the honest flow conserves (the user is restored " +
+            "and the vault returns to 0); if it conserves print exactly `CONTROL OK: <detail>`; if the honest " +
+            "flow does NOT conserve, print a HARNESS ERROR to stderr and `exit(2)` (NOT a verdict). (3) EXPLOIT " +
+            "— deploy a FRESH target, seed honest TVL (e.g. another account deposits 5 ETH), deploy the " +
+            "attacker with the target address as its constructor arg, call the attacker's `attack()` with some " +
+            "stake (e.g. 1 ETH), then read the attacker's final balance; if the attacker holds MORE than it " +
+            "staked print exactly `INVARIANT VIOLATED: <detail>` to stderr and call `std::process::exit(101)`; " +
+            "otherwise print `invariant held: <detail>`. Both `CONTROL OK:` and `INVARIANT VIOLATED:` markers " +
+            "are REQUIRED on a vulnerable target. Reserve exit code 101 EXCLUSIVELY for a genuine INVARIANT " +
+            "VIOLATED. Output only the Rust source of src/bin/poc.rs.";
+    }
     if len(getenv("SOLANA_ANCHOR_HARNESS_DIR")) > 0 {
         return "You are given an ANCHOR Solana program — the contents of the harness crate " +
             "`solana_harness_anchor`'s src/lib.rs (an `#[program]` module with `declare_id!`). Write the FULL " +
@@ -388,6 +503,22 @@ fn poc_instruction(cls: string) -> string {
 // (the deterministic template-fallback). `target_src` is written to src/target.rs so the
 // PoC links against the in-scope program. All leaf calls — the native call stack stays shallow.
 fn compile_run(poc: string, target_src: string) -> string {
+    let ed = getenv("EVM_HARNESS_DIR");
+    if len(ed) > 0 {
+        // EVM harness: the target is a Solidity .sol. It does NOT link the PoC — solc compiles
+        // the target + the committed generic reentrancy Attacker host-side (node compile.js), the
+        // revm poc.rs loads the creation-bytecode at runtime via argv. The in-sandbox build stays
+        // offline (cargo + revm only); solc/node runs host-side. revm is slow in debug, so build +
+        // run --release (the warmed profile). An empty poc keeps the harness's committed poc.rs.
+        file_write("h_target.sol", target_src);
+        if len(poc) > 0 {
+            file_write("h_poc.rs", poc);
+            // colony-lint: safe-exec-concat
+            return exec sh "set -e; cp h_target.sol ${ed}/contracts/Target.sol; cp h_poc.rs ${ed}/src/bin/poc.rs; cd ${ed}; set +e; node compile.js > solc.out 2>&1; SRC=$?; if [ $SRC -ne 0 ]; then cat solc.out; echo __rc=$SRC; else export PATH=$HOME/.cargo/bin:$PATH; CARGO_NET_OFFLINE=1 cargo build --quiet --release --bin poc --offline > build.out 2>&1; BRC=$?; if [ $BRC -ne 0 ]; then cat build.out; echo __rc=$BRC; else RAYON_NUM_THREADS=4 ./target/release/poc contracts/bin/Target.bin contracts/bin/Attacker.bin 2>&1; echo __rc=$?; fi; fi";
+        }
+        // colony-lint: safe-exec-concat
+        return exec sh "set -e; cp h_target.sol ${ed}/contracts/Target.sol; cd ${ed}; set +e; node compile.js > solc.out 2>&1; SRC=$?; if [ $SRC -ne 0 ]; then cat solc.out; echo __rc=$SRC; else export PATH=$HOME/.cargo/bin:$PATH; CARGO_NET_OFFLINE=1 cargo build --quiet --release --bin poc --offline > build.out 2>&1; BRC=$?; if [ $BRC -ne 0 ]; then cat build.out; echo __rc=$BRC; else RAYON_NUM_THREADS=4 ./target/release/poc contracts/bin/Target.bin contracts/bin/Attacker.bin 2>&1; echo __rc=$?; fi; fi";
+    }
     let ad = getenv("SOLANA_ANCHOR_HARNESS_DIR");
     if len(ad) > 0 {
         // Anchor harness: the target IS the whole crate src/lib.rs (an #[program] module).
@@ -572,6 +703,7 @@ fn severity_for(cls: string) -> string {
     if cls == "MissingOwnerCheck" { return "Critical"; }
     if cls == "ArbitraryCPI" { return "Critical"; }
     if cls == "AccountDataMatching" { return "High"; }
+    if cls == "Reentrancy" { return "High"; }
     if cls == "IntegerOverflow" { return "Medium"; }
     return "Informational";
 }
@@ -595,6 +727,9 @@ fn summary_for(cls: string, node: string) -> string {
     if cls == "IntegerOverflow" {
         return "The `" + node + "` handler performs unchecked arithmetic on caller-influenced amounts, so a crafted amount can wrap or underflow and corrupt the conserved value (balance / supply).";
     }
+    if cls == "Reentrancy" {
+        return "The `" + node + "` function makes an external value-bearing call before zeroing the caller's recorded balance (a checks-effects-interactions violation), so a malicious receiver can re-enter and withdraw repeatedly, draining funds far beyond its own deposit.";
+    }
     return "The `" + node + "` handler exposes a privileged action to an unauthorized caller, breaking its access-control invariant.";
 }
 
@@ -604,6 +739,9 @@ fn impact_for(cls: string) -> string {
     }
     if cls == "ArbitraryCPI" {
         return "An attacker redirects a trusted cross-program call to a malicious program, enabling arbitrary effects executed under the victim program's authority.";
+    }
+    if cls == "Reentrancy" {
+        return "Direct theft of funds: an attacker re-enters the vulnerable function during its external call and withdraws repeatedly, draining the entire pooled balance (every depositor's funds), not just its own.";
     }
     return "Unauthorized control over a privileged action: an attacker performs it without the required authorization, typically draining funds or seizing state.";
 }
@@ -624,13 +762,26 @@ fn remediation_for(cls: string) -> string {
     if cls == "IntegerOverflow" {
         return "Use checked arithmetic (`checked_add` / `checked_sub` / `checked_mul`) and reject on overflow, or saturating ops where a clamp is the intended behaviour.";
     }
+    if cls == "Reentrancy" {
+        return "Apply checks-effects-interactions: update state (zero the caller's balance) BEFORE the external call, and/or guard the function with a reentrancy lock (e.g. OpenZeppelin `nonReentrant`).";
+    }
     return "Add the missing access-control check so only the authorized party can perform the privileged action.";
 }
 
-// Best-effort implicated-node extraction: the handler fn name from the target (structural detection).
+// Best-effort implicated-node extraction: the handler fn name from the target (structural
+// detection). Handles both Rust (`fn `) and Solidity (`function `) targets; for a Solidity
+// reentrancy target the vulnerable function is `withdraw`, so prefer it when present.
 fn first_fn_name(src: string) -> string {
     let p = index_of(src, "fn ");
-    if p < 0 { return "(handler)"; }
+    if p < 0 {
+        if index_of(src, "function withdraw") >= 0 { return "withdraw"; }
+        let fp = index_of(src, "function ");
+        if fp < 0 { return "(handler)"; }
+        let frest = substring(src, fp + 9, len(src));
+        let fparen = index_of(frest, "(");
+        if fparen < 0 { return "(handler)"; }
+        return substring(frest, 0, fparen);
+    }
     let rest = substring(src, p + 3, len(src));
     let paren = index_of(rest, "(");
     if paren < 0 { return "(handler)"; }
@@ -834,6 +985,24 @@ fn ingest_nodes(target: string) -> string {
 
 agent reconn() -> void {
     let target = listen("audit:target");
+    // M1 (#858): EVM/Solidity targets BYPASS the Rust-shaped ingest. `cargo tree` needs a
+    // Cargo crate and the reference node-extractor parses Rust `fn`/`struct`/`impl`, neither of
+    // which applies to a `.sol`. Skip both and emit a trivial DAG node so the pipeline still
+    // flows to guard/synthesis/verify; the content-addressed target hash (verdict cache + dedup)
+    // is taken over the source text, which is language-agnostic. Full Solidity ingest (solc AST
+    // -> function/call/sink node stream) is M2.
+    if is_evm_target(target) {
+        let ecode = strip_comments(target);
+        let eth = dag_put(ecode);
+        let enode = dag_put("{\"kind\":\"solidity-target\",\"lang\":\"evm\"}");
+        print("reconn: EVM/Solidity target — Rust ingest bypassed (M1); target hash", substring(eth, 0, 12), "node", substring(enode, 0, 12));
+        let eprior = pick_prior(recall_latest("bounty:verdict:" + eth), recall_latest("bounty:blacklist:" + eth));
+        emit("guard:target", target);
+        emit("guard:th", eth);
+        emit("guard:cached", eprior);
+        emit("tracker:target", target);
+        return;
+    }
     file_write("Cargo.toml", "[package]\nname = \"bounty-target\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\n");
     file_write("src/lib.rs", target);
     let tree = exec sh "cargo tree --offline 2>&1; echo __rc=$?";
@@ -891,21 +1060,39 @@ agent guard() -> void {
         emit("synth:hit", "hit");
         emit("synth:class", cached);
     } else {
-        // MISS: detect afresh. Run the structural detector at the agent's OWN depth
-        // (classify()'s fold overflows the native stack if called through an extra wrapper
-        // frame — the colony is tuned shallow). Then the V3 LLM classifier, then a shallow
-        // resolve: the LLM class wins (generalises to real Anchor), "Safe" -> none, an
-        // empty LLM verdict (mock / offline) falls back to the heuristic.
-        let heuristic = classify(strip_comments(target));
-        let llm = classify_llm(target);
-        let cls = resolve_cls(llm, heuristic);
-        if is_vuln_class(cls) {
-            print("guard: " + cls + " fired [" + severity_for(cls) + "]");
+        if is_evm_target(target) {
+            // M1 (#858): EVM/Solidity detection. The Rust heuristic + Solana-token LLM classifier
+            // do not apply, so route through the EVM pair: the structural reentrancy heuristic
+            // (CEI violation) + an EVM LLM classifier (Reentrancy vs Safe). The LLM wins when
+            // present, "Safe" -> none, an empty verdict falls back to the heuristic. M3 broadens
+            // this to the full EVM class set; the two-sided real-EVM gate stays the source of truth.
+            let evm_heur = detect_reentrancy(strip_comments(target));
+            let evm_llm = classify_evm_llm(target);
+            let evm_cls = resolve_evm_cls(evm_llm, evm_heur);
+            if is_vuln_class(evm_cls) {
+                print("guard: " + evm_cls + " fired [" + severity_for(evm_cls) + "] (EVM)");
+            } else {
+                print("guard: no EVM rule fired — target looks safe");
+            }
+            emit("synth:hit", "miss");
+            emit("synth:class", evm_cls);
         } else {
-            print("guard: no rule fired — target looks safe");
+            // MISS: detect afresh. Run the structural detector at the agent's OWN depth
+            // (classify()'s fold overflows the native stack if called through an extra wrapper
+            // frame — the colony is tuned shallow). Then the V3 LLM classifier, then a shallow
+            // resolve: the LLM class wins (generalises to real Anchor), "Safe" -> none, an
+            // empty LLM verdict (mock / offline) falls back to the heuristic.
+            let heuristic = classify(strip_comments(target));
+            let llm = classify_llm(target);
+            let cls = resolve_cls(llm, heuristic);
+            if is_vuln_class(cls) {
+                print("guard: " + cls + " fired [" + severity_for(cls) + "]");
+            } else {
+                print("guard: no rule fired — target looks safe");
+            }
+            emit("synth:hit", "miss");
+            emit("synth:class", cls);
         }
-        emit("synth:hit", "miss");
-        emit("synth:class", cls);
     }
 }
 
@@ -945,7 +1132,20 @@ agent synthesis() -> void {
                 let node = first_fn_name(target);
                 let gate = submission_gate(th);
                 let hd = harness_dir();
-                if len(hd) > 0 {
+                if is_evm_target(target) {
+                    // M1 (#858): EVM harness mode. The PoC was verified through the REAL EVM
+                    // (revm) by synth_via_prompt — solc compiled the target host-side, the revm
+                    // poc.rs loaded the creation-bytecode and ran the two-sided gate. Ship the
+                    // revm PoC + its actual run output. The Solana frozen-snapshot replay does
+                    // not apply to an EVM target.
+                    // colony-lint: safe-exec-concat
+                    let epoc_src = exec sh "cat ${hd}/src/bin/poc.rs 2>/dev/null || true";
+                    file_write("report.md", submission_report(cls, th, node, trace, epoc_src, "yes (real EVM via revm)", run_out, "## On-chain state snapshot replay\n\nn/a — verified through the real EVM (revm): solc compiles the in-scope target to creation bytecode host-side, the revm PoC deploys it and runs the two-sided gate. The honest CONTROL flow conserves on this exact target and the EXPLOIT breaks the conservation invariant.\n\n"));
+                    print("synthesis: VERIFIED — real-EVM two-sided PoC (revm)");
+                    print("report: wrote standardized Immunefi report.md  (sub-graph", substring(th, 0, 12), ")");
+                    print("submission:", gate, "— human-gated, never auto-posted");
+                    print("Verdict: VERIFIED");
+                } else { if len(hd) > 0 {
                     // Harness mode: the PoC was already verified through the REAL Solana SVM
                     // (solana-program-test + BanksClient) by synth_via_prompt. The std-only
                     // standalone re-compile + frozen-snapshot replay assume a std-stub target
@@ -976,6 +1176,7 @@ agent synthesis() -> void {
                     print("report: wrote standardized Immunefi report.md  (sub-graph", substring(th, 0, 12), ")");
                     print("submission:", gate, "— human-gated, never auto-posted");
                     print("Verdict: VERIFIED");
+                }
                 }
             } else {
                 print("synthesis: Inconclusive — " + verdict);

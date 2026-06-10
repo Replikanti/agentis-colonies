@@ -8,11 +8,12 @@
 # explicit human action: a reviewer reads the package and submits it manually.
 #
 # Usage:
-#   run-audit.sh --target <program.rs> [options]
+#   run-audit.sh --target <program.rs|target.sol> [options]
 # Options:
-#   --target <file>          REQUIRED. The in-scope program source to audit.
+#   --target <file>          REQUIRED. The in-scope program source to audit (.rs or .sol).
 #   --harness <dir>          Native solana-program-test harness dir (SOLANA_HARNESS_DIR).
 #   --anchor-harness <dir>   Anchor harness dir (SOLANA_ANCHOR_HARNESS_DIR).
+#   --evm-harness <dir>      EVM revm harness dir (EVM_HARNESS_DIR) for a Solidity target.
 #   --snapshot <file>        Frozen on-chain account dump (BOUNTY_SNAPSHOT; see snapshot-rpc.sh).
 #   --poc <file>             Operator-supplied PoC candidate (BOUNTY_POC; still gated).
 #   --backend <mock|claude>  LLM backend (default: claude). mock = offline-deterministic.
@@ -23,7 +24,7 @@ set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
-TARGET="" ; HARNESS="" ; ANCHOR_HARNESS="" ; SNAPSHOT="" ; POC=""
+TARGET="" ; HARNESS="" ; ANCHOR_HARNESS="" ; EVM_HARNESS="" ; SNAPSHOT="" ; POC=""
 BACKEND="claude" ; SANDBOX="hardened" ; OUT="$PWD/audit-out"
 
 need() { [ "$1" -ge 2 ] || { echo "run-audit.sh: missing value for the preceding flag" >&2; exit 2; }; }
@@ -32,6 +33,7 @@ while [ $# -gt 0 ]; do
     --target) need "$#"; TARGET="$2"; shift 2 ;;
     --harness) need "$#"; HARNESS="$2"; shift 2 ;;
     --anchor-harness) need "$#"; ANCHOR_HARNESS="$2"; shift 2 ;;
+    --evm-harness) need "$#"; EVM_HARNESS="$2"; shift 2 ;;
     --snapshot) need "$#"; SNAPSHOT="$2"; shift 2 ;;
     --poc) need "$#"; POC="$2"; shift 2 ;;
     --backend) need "$#"; BACKEND="$2"; shift 2 ;;
@@ -43,7 +45,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -n "$TARGET" ] || { echo "run-audit.sh: --target <program.rs> is required (the operator picks the in-scope program; this tool never auto-picks a scope)" >&2; exit 2; }
+[ -n "$TARGET" ] || { echo "run-audit.sh: --target <program.rs|target.sol> is required (the operator picks the in-scope program; this tool never auto-picks a scope)" >&2; exit 2; }
 [ -f "$TARGET" ] || { echo "run-audit.sh: target not found: $TARGET" >&2; exit 2; }
 command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ] || { echo "run-audit.sh: agentis binary not found ($AGENTIS)" >&2; exit 3; }
 
@@ -55,6 +57,7 @@ if [ -n "$SNAPSHOT" ]; then [ -f "$SNAPSHOT" ] || { echo "run-audit.sh: snapshot
 if [ -n "$POC" ]; then [ -f "$POC" ] || { echo "run-audit.sh: poc not found: $POC" >&2; exit 2; }; POC="$(cd "$(dirname "$POC")" && pwd)/$(basename "$POC")"; fi
 if [ -n "$HARNESS" ]; then [ -d "$HARNESS" ] || { echo "run-audit.sh: harness dir not found: $HARNESS" >&2; exit 2; }; HARNESS="$(cd "$HARNESS" && pwd)"; fi
 if [ -n "$ANCHOR_HARNESS" ]; then [ -d "$ANCHOR_HARNESS" ] || { echo "run-audit.sh: anchor-harness dir not found: $ANCHOR_HARNESS" >&2; exit 2; }; ANCHOR_HARNESS="$(cd "$ANCHOR_HARNESS" && pwd)"; fi
+if [ -n "$EVM_HARNESS" ]; then [ -d "$EVM_HARNESS" ] || { echo "run-audit.sh: evm-harness dir not found: $EVM_HARNESS" >&2; exit 2; }; EVM_HARNESS="$(cd "$EVM_HARNESS" && pwd)"; fi
 
 COLONY="$HERE/auditor/agents/auditor.ag"
 [ -f "$COLONY" ] || { echo "run-audit.sh: colony not found at $COLONY" >&2; exit 3; }
@@ -70,7 +73,7 @@ cp "$COLONY" "$RUN/auditor.ag"
   echo "llm.backend = $BACKEND"
   [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p"; echo "llm.cli_timeout_ms = 180000"; }
   echo "trace.level = normal"
-  echo "exec.env_passthrough = BOUNTY_TARGET,BOUNTY_POC,SOLANA_HARNESS_DIR,SOLANA_ANCHOR_HARNESS_DIR,BOUNTY_SNAPSHOT"
+  echo "exec.env_passthrough = BOUNTY_TARGET,BOUNTY_POC,SOLANA_HARNESS_DIR,SOLANA_ANCHOR_HARNESS_DIR,EVM_HARNESS_DIR,BOUNTY_SNAPSHOT"
   echo "exec.default_timeout_ms = 180000"
 } > "$RUN/.agentis/config"
 
@@ -78,6 +81,7 @@ cp "$COLONY" "$RUN/auditor.ag"
 ENV=(BOUNTY_TARGET="$TARGET")
 [ -n "$HARNESS" ]        && ENV+=(SOLANA_HARNESS_DIR="$HARNESS")
 [ -n "$ANCHOR_HARNESS" ] && ENV+=(SOLANA_ANCHOR_HARNESS_DIR="$ANCHOR_HARNESS")
+[ -n "$EVM_HARNESS" ]    && ENV+=(EVM_HARNESS_DIR="$EVM_HARNESS")
 [ -n "$SNAPSHOT" ]       && ENV+=(BOUNTY_SNAPSHOT="$SNAPSHOT")
 [ -n "$POC" ]            && ENV+=(BOUNTY_POC="$POC")
 
@@ -97,19 +101,27 @@ case "$VERDICT" in
   VERIFIED)
     PKG="$OUT/submission"
     rm -rf "$PKG"; mkdir -p "$PKG"
-    cp "$TARGET" "$PKG/target.rs" 2>/dev/null || true
+    # Preserve the target's extension in the package (.sol for an EVM target, .rs otherwise).
+    case "$TARGET" in *.sol) TGT_NAME="target.sol" ;; *) TGT_NAME="target.rs" ;; esac
+    cp "$TARGET" "$PKG/$TGT_NAME" 2>/dev/null || true
     [ -f "$SANDBOX_DIR/report.md" ] && cp "$SANDBOX_DIR/report.md" "$PKG/report.md"
     # the harness-generated PoC (anchor or native) or the std-only standalone PoC
     for p in "$SANDBOX_DIR/poc_standalone.rs"; do [ -f "$p" ] && cp "$p" "$PKG/poc.rs"; done
     [ -n "$ANCHOR_HARNESS" ] && [ -f "$ANCHOR_HARNESS/src/bin/poc.rs" ] && cp "$ANCHOR_HARNESS/src/bin/poc.rs" "$PKG/poc.rs"
     [ -z "$ANCHOR_HARNESS" ] && [ -n "$HARNESS" ] && [ -f "$HARNESS/src/bin/poc.rs" ] && cp "$HARNESS/src/bin/poc.rs" "$PKG/poc.rs"
+    # EVM: the revm PoC the LLM wrote + the generic reentrancy attacker it was compiled against,
+    # so the package reproduces against the in-scope target's bytecode.
+    if [ -n "$EVM_HARNESS" ]; then
+      [ -f "$EVM_HARNESS/src/bin/poc.rs" ] && cp "$EVM_HARNESS/src/bin/poc.rs" "$PKG/poc.rs"
+      [ -f "$EVM_HARNESS/contracts/Attacker.sol" ] && cp "$EVM_HARNESS/contracts/Attacker.sol" "$PKG/Attacker.sol"
+    fi
     [ -n "$SNAPSHOT" ] && [ -f "$SNAPSHOT" ] && cp "$SNAPSHOT" "$PKG/snapshot.txt"
     {
       echo "Dark Factory submission package"
       echo "verdict: VERIFIED"
       echo "target: $(basename "$TARGET")"
       echo "backend: $BACKEND   sandbox: $SANDBOX"
-      echo "files: report.md (Immunefi-format finding, embeds the PoC), poc.rs, target.rs$( [ -n "$SNAPSHOT" ] && echo ", snapshot.txt")"
+      echo "files: report.md (Immunefi-format finding, embeds the PoC), poc.rs, $TGT_NAME$( [ -n "$EVM_HARNESS" ] && echo ", Attacker.sol")$( [ -n "$SNAPSHOT" ] && echo ", snapshot.txt")"
       echo
       echo "STATUS: PENDING HUMAN REVIEW — NOT SUBMITTED."
       echo "This colony NEVER posts to a bounty platform. Submission to Immunefi /"
