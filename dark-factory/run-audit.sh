@@ -45,7 +45,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -n "$TARGET" ] || { echo "run-audit.sh: --target <program.rs> is required (the operator picks the in-scope program; this tool never auto-picks a scope)" >&2; exit 2; }
+[ -n "$TARGET" ] || { echo "run-audit.sh: --target <program.rs|target.sol> is required (the operator picks the in-scope program; this tool never auto-picks a scope)" >&2; exit 2; }
 [ -f "$TARGET" ] || { echo "run-audit.sh: target not found: $TARGET" >&2; exit 2; }
 command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ] || { echo "run-audit.sh: agentis binary not found ($AGENTIS)" >&2; exit 3; }
 

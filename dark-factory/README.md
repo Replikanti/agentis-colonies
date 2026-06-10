@@ -105,6 +105,11 @@ dark-factory/run-audit.sh --target "$PWD/path/to/program.rs" \
 dark-factory/run-audit.sh --target "$PWD/path/to/lib.rs" \
     --anchor-harness "$PWD/dark-factory/solana-harness-anchor" \
     --snapshot "$PWD/snap.txt" --backend claude --out "$PWD/audit-out"
+
+# EVM/Solidity target (M1: Reentrancy) — verified through the real EVM (revm).
+# One-time host-side: (cd dark-factory/evm-harness && npm i solc)   # pins solc 0.8.26 for compile.js
+dark-factory/run-audit.sh --target "$PWD/path/to/Contract.sol" \
+    --evm-harness "$PWD/dark-factory/evm-harness" --backend claude --out "$PWD/audit-out"
 ```
 
 On `Verdict: VERIFIED` the package lands at `<out>/submission/`: `report.md` (Immunefi-format,
@@ -139,7 +144,8 @@ dark-factory/
 
 ## Status
 
-Experimental, research scaffold. The detection set is intentionally narrow
-(MissingSignerCheck / IntegerOverflow) and the real-SVM path requires the
-one-time toolchain build. Submission to Immunefi / Code4rena / Sherlock is
-always a separate, explicit human action — the colony never auto-posts.
+Experimental, research scaffold. The Solana detection set is intentionally narrow
+(MissingSignerCheck / IntegerOverflow) and the real-SVM path requires the one-time
+toolchain build; an EVM/Solidity path (M1: Reentrancy, agentis-core#858) audits `.sol`
+targets through the real EVM (revm) via `--evm-harness`. Submission to Immunefi /
+Code4rena / Sherlock is always a separate, explicit human action — the colony never auto-posts.
