@@ -477,6 +477,15 @@ fn poc_instruction(cls: string) -> string {
             "Evm::builder().with_db(CacheDB::new(EmptyDB::default())).build();`. Fund an account via " +
             "`evm.db_mut().insert_account_info(addr, AccountInfo { balance: wei, ..Default::default() });`. " +
             "Read a balance via `evm.db_mut().accounts.get(&addr).map(|a| a.info.balance).unwrap_or(U256::ZERO)`. " +
+            "To OBSERVE a state change with NO public getter (a private variable, or a getter gated by access " +
+            "control) read its RAW STORAGE SLOT directly: add `use revm::Database;` and call " +
+            "`evm.db_mut().storage(addr, U256::from(slot)).unwrap_or(U256::ZERO)` (returns the slot's U256 value). " +
+            "State variables occupy storage slots in DECLARATION ORDER from slot 0 (value types may pack into one " +
+            "slot; a string/bytes/array/mapping takes its own slot — for a short string the slot itself holds the " +
+            "data+length, so a CHANGED slot value proves the variable was written). Prove the invariant by comparing " +
+            "a slot BEFORE and AFTER the action: an unauthorized actor changing a slot it must not change = INVARIANT " +
+            "VIOLATED. Prefer a public getter when one exists; fall back to the raw storage slot when the mutated " +
+            "state is otherwise unobservable (e.g. a private variable like a stored password/owner/config). " +
             "Send a tx by setting `tx.caller / tx.transact_to (TxKind::Create or TxKind::Call(addr)) / tx.value " +
             "/ tx.data = Bytes::from(bytes) / tx.gas_limit = 30_000_000 / tx.gas_price = U256::ZERO / tx.nonce = " +
             "None` on `evm.tx_mut()`, then `evm.transact_commit()`. A successful CREATE returns " +
