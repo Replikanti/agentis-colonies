@@ -1,0 +1,5 @@
+# Offline build pin for the EVM PoC harness. After a one-time host-side `cargo fetch`
+# (network ON), every audit run builds + executes the PoC fully offline in the sandbox,
+# mirroring solana-harness-anchor. The revm dependency graph is ~150 crates.
+[net]
+offline = true

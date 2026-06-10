@@ -1,0 +1,12 @@
+[package]
+name = "evm-harness"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "poc"
+path = "src/bin/poc.rs"
+
+[dependencies]
+revm = "14"
+hex = "0.4"
