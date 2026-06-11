@@ -562,6 +562,82 @@ fn poc_instruction(cls: string) -> string {
         "`INVARIANT VIOLATED:` markers are REQUIRED. Output only the Rust source.";
 }
 
+// #982: DECOMPOSED EVM synthesis. The one-shot poc_instruction asks for the WHOLE poc.rs
+// (~200 lines) in a single prompt — a big OUTPUT that stalls `claude -p` on a non-trivial
+// contract (proven: a complex target's one-shot never returned at 600s, while a small-output
+// fragment prompt returns in ~40s). So for EVM we keep all the revm boilerplate in a FIXED
+// skeleton (evm-harness/poc-skeleton.rs) and ask the LLM only for two SMALL slots — the CONTROL
+// block and the EXPLOIT block (~12-18 lines each) — then splice them in (assemble-poc.js). Each
+// generation is small + fast; the two-sided gate (CONTROL OK: + INVARIANT VIOLATED: + exit 101)
+// is unchanged. The slot prompts describe the skeleton's helpers/vars so the fills compile against it.
+fn control_instruction(cls: string) -> string {
+    let einv = evm_invariant_for(cls);
+    return "You are filling ONLY the CONTROL block of a revm-14 Rust PoC against the Solidity contract " +
+        "given as input. A fixed skeleton already provides these helpers + vars — USE them, do NOT " +
+        "redefine, import, or write any `fn`/`use`/`main`: deploy(&mut evm, deployer, &target_code, " +
+        "&ctor_args) -> Address (deploys a FRESH target; append abi-encoded constructor args or pass " +
+        "&[]); call(&mut evm, from, to, data) -> Vec<u8> (NON-payable, 4 args, DIES on revert); " +
+        "call_value(&mut evm, from, to, value, data) -> Vec<u8> (payable, sends ETH); try_call(&mut evm, " +
+        "from, to, data) -> Option<Vec<u8>> (non-payable, None on revert); try_call_value(&mut evm, from, " +
+        "to, value, data) -> Option<Vec<u8>> (payable); selector(\"f(uint256)\") -> Vec<u8>; " +
+        "abi_addr(addr) -> Vec<u8>; abi_u256(amount) -> Vec<u8> (accepts a U256 or a u128/u64 integer); " +
+        "eth_balance(&mut evm, addr) -> U256; " +
+        "storage(&mut evm, addr, slot_u64) -> U256; u256(&bytes) -> U256; die(msg: String) -> !. Vars in " +
+        "scope: evm, target_code: Vec<u8>, attacker_code: Vec<u8> (argv[2], may be empty), " +
+        "deployer/attacker/user: Address (each funded 100 ETH). U256, TxKind, Address are imported. " +
+        "EXAMPLE of a read: `let mut d = selector(\"balanceOf(address)\"); d.extend(abi_addr(user)); " +
+        "let bal = u256(&call(&mut evm, user, t, d));`. The invariant under test: " + einv +
+        " Write ONLY the CONTROL block: deploy a fresh target and " +
+        "exercise the LEGITIMATE flow the invariant assumes; if it holds print exactly " +
+        "`CONTROL OK: <short detail>`. If the legitimate flow itself fails, call die(\"...\".into()) (a " +
+        "setup failure, NOT a verdict). Output ONLY Rust statements (~12 lines) — no code fences, no " +
+        "prose, no fn/use/main.";
+}
+
+fn exploit_instruction(cls: string) -> string {
+    let einv = evm_invariant_for(cls);
+    return "You are filling ONLY the EXPLOIT block of a revm-14 Rust PoC against the Solidity contract " +
+        "given as input. The SAME fixed skeleton/helpers/vars as the CONTROL block are available " +
+        "(deploy; call(&mut evm,from,to,data) NON-payable 4 args; call_value(&mut evm,from,to,value,data) " +
+        "payable; try_call / try_call_value; selector / abi_addr / abi_u256 / eth_balance / storage / u256 " +
+        "/ die; evm, target_code, attacker_code, deployer/attacker/user: Address; U256/TxKind/Address " +
+        "imported; exit() in scope). Do NOT redefine, import, or write any fn/use/main. The invariant " +
+        "under test: " + einv + " Write ONLY the EXPLOIT block: deploy a FRESH target via deploy(...), " +
+        "perform the attack the invariant describes — a non-owner/attacker account sends the offending tx; " +
+        "for a reentrancy class deploy the attacker with `deploy(&mut evm, attacker, &attacker_code, " +
+        "&abi_addr(t))` (target address as its constructor arg) and call its attack() with a stake via " +
+        "call_value(&mut evm, attacker, atk, U256::from(1_000_000_000_000_000_000u128), selector(\"attack()\")) " +
+        "— then read the relevant state (a public " +
+        "getter via call(), or storage(&mut evm, t, slot) for a private variable; slots are in declaration " +
+        "order from 0) and check the invariant. If it is VIOLATED, print exactly " +
+        "`INVARIANT VIOLATED: <short detail>` to stderr with eprintln! and call exit(101). Otherwise do " +
+        "nothing (the skeleton reports invariant-held). Output ONLY Rust statements (~18 lines) — no code " +
+        "fences, no prose, no fn/use/main.";
+}
+
+// Generate the EVM poc.rs by filling the skeleton's two slots from two small prompts, then splicing
+// via assemble-poc.js (runs from the colony cwd where the fills are written; reads the skeleton +
+// assembler by absolute path in the harness dir). Returns the assembled poc.rs on stdout.
+fn synth_evm_poc_decomposed(cls: string, target: string) -> string {
+    let ed = getenv("EVM_HARNESS_DIR");
+    let control = prompt(control_instruction(cls), target) -> string;
+    let exploit = prompt(exploit_instruction(cls), target) -> string;
+    file_write("h_control.rs", control);
+    file_write("h_exploit.rs", exploit);
+    // colony-lint: safe-exec-concat
+    return exec sh "node ${ed}/assemble-poc.js ${ed}/poc-skeleton.rs h_control.rs h_exploit.rs 2>/dev/null";
+}
+
+// Build a PoC candidate: decomposed skeleton-fill for EVM (#982), the single one-shot prompt for
+// Solana / std targets (their PoCs are smaller + the harness mechanics differ).
+fn gen_poc(cls: string, target: string) -> string {
+    if is_evm_target(target) {
+        return synth_evm_poc_decomposed(cls, target);
+    }
+    let p = prompt(poc_instruction(cls), target) -> string;
+    return p;
+}
+
 // Compile + run a PoC candidate, routing to the real Solana toolchain when
 // SOLANA_HARNESS_DIR is set (solana-program-test + BanksClient through the real SVM,
 // fully offline), else the std-only `rustc` path (offline-deterministic, V1 behaviour).
@@ -849,7 +925,7 @@ fn synth_via_prompt(cls: string, target: string) -> string {
     }
     let llm_out = try {
         retry(5, || -> string {
-            let poc = prompt(poc_instruction(cls), target) -> string;
+            let poc = gen_poc(cls, target);
             if index_of(poc, "fn main") < 0 {
                 print("synthesis: prompt candidate rejected — no usable Rust (no fn main)");
                 throw("prompt produced no usable Rust");
