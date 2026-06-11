@@ -11,17 +11,18 @@ cb 200000;
 
 // #861 M1+: a normalized structural sig is worth seeding only if it carries a shape signal —
 // an external-call kind or a storage-index write. Without one it is a trivial getter/setter whose
-// sig would match half the codebase (gate-safe, but a waste of synthesis cycles). Tokens are
-// space-joined by struct-sig.js, so a `.call` member is the lone token ` call `, etc.
+// sig would match half the codebase (gate-safe, but a waste of synthesis cycles). struct-sig.js
+// space-joins EVERY token, so `.call` is the lone token ` call ` and a compound assign `-=` is the
+// two tokens `- =` — the index-write needles must match the SPLIT form (`] - = `, not `] -= `).
 fn struct_has_signal(sig: string) -> bool {
     if index_of(sig, " call ") >= 0 { return true; }
     if index_of(sig, " delegatecall ") >= 0 { return true; }
     if index_of(sig, " staticcall ") >= 0 { return true; }
     if index_of(sig, " transfer ") >= 0 { return true; }
     if index_of(sig, " send ") >= 0 { return true; }
-    if index_of(sig, "] -= ") >= 0 { return true; }
-    if index_of(sig, "] += ") >= 0 { return true; }
-    if index_of(sig, "] = ") >= 0 { return true; }
+    if index_of(sig, "] - = ") >= 0 { return true; }   // x[i] -= y  (debit; tokenized as `] - = `)
+    if index_of(sig, "] + = ") >= 0 { return true; }   // x[i] += y  (credit)
+    if index_of(sig, "] = ") >= 0 { return true; }     // x[i]  = y  (store; also trips on `==`, gate-safe)
     return false;
 }
 
