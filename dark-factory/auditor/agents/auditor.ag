@@ -577,6 +577,22 @@ fn compile_run(poc: string, target_src: string) -> string {
         // offline (cargo + revm only); solc/node runs host-side. revm is slow in debug, so build +
         // run --release (the warmed profile). An empty poc keeps the harness's committed poc.rs.
         file_write("h_target.sol", target_src);
+        // #859: a REAL multi-file repo target. The in-scope source (challenge-augmented) compiles
+        // WITH its deps via compile-project.js (remappings + lib/ + node_modules, project solc,
+        // offline from the host-warmed .solc-cache). compile.js still builds the committed generic
+        // Attacker (self-contained). No contracts/Target.sol is written — that would break compile.js's
+        // import-less batch (#820 regression) — Target.bin comes from the project compile, content-
+        // overridden by h_inscope.sol so the per-run challenge fn rides in the bytecode without
+        // mutating the operator's repo. $BOUNTY_* are shell-expanded from the passed-through env.
+        if len(getenv("BOUNTY_REPO")) > 0 {
+            if len(poc) > 0 {
+                file_write("h_poc.rs", poc);
+                // colony-lint: safe-exec-concat
+                return exec sh "set -e; cp h_poc.rs ${ed}/src/bin/poc.rs; cp h_target.sol ${ed}/h_inscope.sol; rm -f ${ed}/contracts/Target.sol ${ed}/contracts/bin/Target.bin; cd ${ed}; set +e; node compile.js > solc.out 2>&1; SRC=$?; if [ $SRC -ne 0 ]; then cat solc.out; echo __rc=$SRC; else node compile-project.js \"$BOUNTY_REPO\" \"$BOUNTY_IN_SCOPE\" contracts/bin/Target.bin \"$BOUNTY_CONTRACT\" h_inscope.sol > proj.out 2>&1; PRC=$?; if [ $PRC -ne 0 ]; then cat proj.out; echo __rc=$PRC; else export PATH=$HOME/.cargo/bin:$PATH; CARGO_NET_OFFLINE=1 cargo build --quiet --release --bin poc --offline > build.out 2>&1; BRC=$?; if [ $BRC -ne 0 ]; then cat build.out; echo __rc=$BRC; else RAYON_NUM_THREADS=4 ./target/release/poc contracts/bin/Target.bin contracts/bin/Attacker.bin 2>&1; echo __rc=$?; fi; fi; fi";
+            }
+            // colony-lint: safe-exec-concat
+            return exec sh "set -e; cp h_target.sol ${ed}/h_inscope.sol; rm -f ${ed}/contracts/Target.sol ${ed}/contracts/bin/Target.bin; cd ${ed}; set +e; node compile.js > solc.out 2>&1; SRC=$?; if [ $SRC -ne 0 ]; then cat solc.out; echo __rc=$SRC; else node compile-project.js \"$BOUNTY_REPO\" \"$BOUNTY_IN_SCOPE\" contracts/bin/Target.bin \"$BOUNTY_CONTRACT\" h_inscope.sol > proj.out 2>&1; PRC=$?; if [ $PRC -ne 0 ]; then cat proj.out; echo __rc=$PRC; else export PATH=$HOME/.cargo/bin:$PATH; CARGO_NET_OFFLINE=1 cargo build --quiet --release --bin poc --offline > build.out 2>&1; BRC=$?; if [ $BRC -ne 0 ]; then cat build.out; echo __rc=$BRC; else RAYON_NUM_THREADS=4 ./target/release/poc contracts/bin/Target.bin contracts/bin/Attacker.bin 2>&1; echo __rc=$?; fi; fi; fi";
+        }
         if len(poc) > 0 {
             file_write("h_poc.rs", poc);
             // colony-lint: safe-exec-concat
@@ -1208,6 +1224,14 @@ fn ingest_evm_nodes(target: string) -> string {
     let ed = getenv("EVM_HARNESS_DIR");
     if len(ed) == 0 {
         return "[]";
+    }
+    // #859: a repo target's in-scope file imports deps — point ast.js at the file IN the repo
+    // plus the repo ROOT so its imports resolve (remappings + lib/ + node_modules) and the node
+    // stream is non-empty instead of degrading to "[]" on the first unresolved import. BOUNTY_TARGET
+    // is the in-scope file's absolute path; ast.js keys it project-relative for correct import normalization.
+    if len(getenv("BOUNTY_REPO")) > 0 {
+        // colony-lint: safe-exec-concat
+        return exec sh "cd ${ed}; node ast.js \"$BOUNTY_TARGET\" \"$BOUNTY_REPO\" 2>/dev/null || echo '[]'";
     }
     file_write("h_ingest.sol", target);
     // colony-lint: safe-exec-concat

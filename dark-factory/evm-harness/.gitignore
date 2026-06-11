@@ -5,6 +5,9 @@ node_modules/
 # the committed contracts/bin/{ReentrancyVault*,Attacker}.bin are the calibration artifacts.
 build.out
 solc.out
+proj.out
+.solc-cache/
+h_inscope.sol
 contracts/Target.sol
 contracts/Ingest.sol
 contracts/bin/Target.bin

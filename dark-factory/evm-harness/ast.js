@@ -4,7 +4,12 @@
 // (auditor.ag::node_extractor): it walks the parsed program and emits a single-line JSON
 // array of {"kind","name"} nodes, the EVM peer of the Rust fn/struct/impl node stream.
 //
-// Usage:   node ast.js <target.sol>
+// Usage:   node ast.js <target.sol> [project-root]
+//   With a [project-root] the target's imports are resolved (remappings + lib/ + node_modules,
+//   via the shared solc-resolve) and the project's solc version is selected — so a REAL
+//   multi-file repo target yields a non-empty node stream instead of degrading to "[]" on the
+//   first unresolved import (phases 1+3 of agentis-core#859). Without it, the legacy
+//   single-self-contained-file behaviour is unchanged.
 // Output:  one line, a JSON array on stdout, e.g.
 //   [{"kind":"function","name":"ReentrancyVaultInsecure.withdraw"},
 //    {"kind":"call","name":"ReentrancyVaultInsecure.withdraw.call"},
@@ -26,6 +31,7 @@
 
 const solc = require('solc');
 const fs = require('fs');
+const path = require('path');
 
 function emit(nodes) {
   process.stdout.write('[' + nodes.join(',') + ']\n');
@@ -97,8 +103,9 @@ function walkBody(n, scope, nodes) {
   }
 }
 
-function main() {
+async function main() {
   const file = process.argv[2];
+  const root = process.argv[3]; // optional project root -> resolve imports + pick the project solc
   if (!file) {
     emit([]);
     return;
@@ -111,15 +118,36 @@ function main() {
     return;
   }
 
+  // Repo target: key the source by its project-relative path (so relative imports normalize
+  // correctly), resolve imports via the shared callback, and use the project's solc version.
+  // Single-file (no root): the legacy `target.sol` / pinned-solc path.
+  let compiler = solc;
+  let srcKey = 'target.sol';
+  let importCb;
+  if (root) {
+    try {
+      const R = require('./solc-resolve');
+      const maps = R.readRemappings(root);
+      srcKey = path.relative(root, path.resolve(file)) || path.basename(file);
+      importCb = { import: R.makeResolver(root, maps) };
+      compiler = await R.getSolc(R.detectVersion(root, file)); // disk-cached / pinned; offline in-sandbox
+    } catch (e) {
+      // fall back to the pinned single-file path (still graceful -> may degrade to "[]")
+      srcKey = 'target.sol';
+      importCb = undefined;
+      compiler = solc;
+    }
+  }
+
   const input = {
     language: 'Solidity',
-    sources: { 'target.sol': { content: src } },
+    sources: { [srcKey]: { content: src } },
     settings: { outputSelection: { '*': { '': ['ast'] } } },
   };
 
   let out;
   try {
-    out = JSON.parse(solc.compile(JSON.stringify(input)));
+    out = JSON.parse(compiler.compile(JSON.stringify(input), importCb));
   } catch (e) {
     emit([]);
     return;
@@ -135,7 +163,7 @@ function main() {
     }
   }
 
-  const srcUnit = out.sources && out.sources['target.sol'] && out.sources['target.sol'].ast;
+  const srcUnit = out.sources && out.sources[srcKey] && out.sources[srcKey].ast;
   if (!srcUnit || !Array.isArray(srcUnit.nodes)) {
     emit([]);
     return;
@@ -158,4 +186,4 @@ function main() {
   emit(nodes);
 }
 
-main();
+main().catch(() => emit([]));
