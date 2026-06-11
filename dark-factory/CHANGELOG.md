@@ -16,6 +16,22 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- M4 evolution — the matcher granularity tunes itself by fitness (#861). The fuzzy matcher's
+  granularity (shingle-Jaccard threshold × shingle width `k`) is the knob no human can hand-tune:
+  too loose floods synthesis, too tight misses forks, and the sweet spot is unknown a priori — a
+  search problem, and the fork-pair recall harness IS the fitness function. `auditor/agents/
+  pattern-evolver.ag` + `evolve-matcher.sh` search the genome against a held-out fork-pair oracle
+  (forkpair-recall.js), record EACH candidate as substrate experience via `learn()`, select the
+  F-beta-max config (beta>1 = recall-leaning, since the two-sided gate absorbs false matches), and
+  write `evolved:fuzzy_threshold` / `evolved:fuzzy_k`. `run-audit.sh --use-evolved <dir>` adopts that
+  config (also `--fuzzy-threshold` / `--fuzzy-k` to set them directly); `fuzzy-match.js` /
+  `forkpair-recall.js` gained a `k` arg, and reconn/recall-match pass `FUZZY_K`.
+  - **Proven end-to-end on Compound→Venus**: the hand-set default (th=0.35, k=4) scores F-beta 0.549
+    (recall 54%); the evolver searched 15 genome points and picked **th=0.25, k=4 → F-beta 0.674
+    (recall 85%)** — a config no human chose — then `run-audit --use-evolved` adopted it
+    (`adopted evolved matcher granularity threshold=0.25 k=4`) and fuzzy-matched a real fork. The
+    granularity is now fitness-driven, not hand-guessed; `--beta` tunes the recall/precision trade.
+
 - M3 held-out recall harness + knowledge-market sharing (#861). Measures whether the seeded DAG
   catches a finding's FORK it did not see seeded, and shares the corpus across the federation:
   - `recall.sh` + `auditor/agents/recall-match.ag` seed with the real `seed-patterns.ag` (zero

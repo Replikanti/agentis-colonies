@@ -18,7 +18,7 @@
 const fs = require('fs');
 const { extractFunctions, normalize, stripComments } = require('./struct-sig.js');
 
-const K = 4;
+let K = 4;
 function shingles(sig) {
   const t = sig.split(' ').filter(Boolean);
   const s = new Set();
@@ -42,7 +42,8 @@ function main() {
   const base = process.argv[2];
   const fork = process.argv[3];
   const th = process.argv[4] ? parseFloat(process.argv[4]) : 0.35;
-  if (!base || !fork) { console.error('usage: forkpair-recall.js <base.sol> <fork.sol> [threshold]'); process.exit(2); }
+  if (process.argv[5]) { const kv = parseInt(process.argv[5], 10); if (kv >= 1) K = kv; }
+  if (!base || !fork) { console.error('usage: forkpair-recall.js <base.sol> <fork.sol> [threshold] [shingle-k]'); process.exit(2); }
   const B = sigMap(base);
   const F = sigMap(fork);
   const SB = {}; for (const k of Object.keys(B)) SB[k] = shingles(B[k]);
@@ -60,15 +61,20 @@ function main() {
     if (a === b || SB[a].size < 2 || SF[b].size < 2) continue;
     if (jaccard(SB[a], SF[b]) >= th) fp++;
   }
-  const prec = fuzzy + fp > 0 ? Math.round((100 * fuzzy) / (fuzzy + fp)) : 0;
+  const prec = fuzzy + fp > 0 ? fuzzy / (fuzzy + fp) : 0;
+  const recall = shared.length ? fuzzy / shared.length : 0;
+  const exrec = shared.length ? exact / shared.length : 0;
   const p = (n) => shared.length ? Math.round((100 * n) / shared.length) + '%' : 'n/a';
-  console.log('fork-pair recall  (threshold ' + th + ')');
+  console.log('fork-pair recall  (threshold ' + th + ', shingle-k ' + K + ')');
   console.log('  base: ' + base);
   console.log('  fork: ' + fork);
   console.log('  shared functions: ' + shared.length);
   console.log('  exact-signature recall: ' + exact + '/' + shared.length + ' (' + p(exact) + ')');
   console.log('  fuzzy (shingle-Jaccard) recall: ' + fuzzy + '/' + shared.length + ' (' + p(fuzzy) + ')');
-  console.log('  fuzzy precision (vs different-name pairs): ' + prec + '% (' + fp + ' false-matches)');
+  console.log('  fuzzy precision (vs different-name pairs): ' + Math.round(100 * prec) + '% (' + fp + ' false-matches)');
+  // machine-readable line for the pattern-evolver (M4 fitness oracle): all 0..1 decimals.
+  console.log('EVAL|threshold=' + th + '|k=' + K + '|recall=' + recall.toFixed(4) +
+    '|precision=' + prec.toFixed(4) + '|exact=' + exrec.toFixed(4) + '|shared=' + shared.length);
 }
 
 main();

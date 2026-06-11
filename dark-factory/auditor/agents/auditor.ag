@@ -372,8 +372,9 @@ fn match_seeded_fuzzy_evm(target: string) -> string {
     if len(seeds) == 0 { return ""; }
     file_write("h_fuzzy.sol", target);
     let th = getenv("FUZZY_THRESHOLD");
+    let k = getenv("FUZZY_K");
     // colony-lint: safe-exec-concat
-    let out = exec sh "node ${ed}/fuzzy-match.js h_fuzzy.sol ${seeds} ${th} 2>/dev/null || true";
+    let out = exec sh "node ${ed}/fuzzy-match.js h_fuzzy.sol ${seeds} ${th} ${k} 2>/dev/null || true";
     return reduce(regex_split("\n", out), |acc: string, line: string| -> string {
         if is_vuln_class(acc) { return acc; }
         if is_vuln_class(line) { return line; }
