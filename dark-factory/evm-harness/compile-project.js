@@ -53,7 +53,13 @@ async function main() {
     return;
   }
 
-  const content = overrideFile ? fs.readFileSync(overrideFile, 'utf8') : fs.readFileSync(srcAbs, 'utf8');
+  let content;
+  try {
+    content = overrideFile ? fs.readFileSync(overrideFile, 'utf8') : fs.readFileSync(srcAbs, 'utf8');
+  } catch (e) {
+    console.error('in-scope source not readable: ' + (overrideFile || srcAbs) + ' (' + (e.code || e.message) + ')');
+    process.exit(1);
+  }
   const input = {
     language: 'Solidity',
     sources: { [srcKey]: { content } },
@@ -67,14 +73,19 @@ async function main() {
     process.exit(1);
   }
   const file = out.contracts[srcKey];
-  const c = file && (file[contractName] || file[Object.keys(file).find((k) => file[k].evm && file[k].evm.bytecode.object)]);
+  // Use the requested contract when present, else the first deployable contract in the file
+  // (Foundry is one-contract-per-file). Track which key actually built so the log never claims
+  // success for a name that wasn't compiled (a typo'd --contract must be visible, not masked).
+  const builtKey = file && (file[contractName] ? contractName : Object.keys(file).find((k) => file[k].evm && file[k].evm.bytecode.object));
+  const c = builtKey && file[builtKey];
   if (!c || !c.evm.bytecode.object) {
     console.error('no deployable bytecode for ' + contractName + ' in ' + srcKey + ' (contracts: ' + Object.keys(file || {}).join(', ') + ')');
     process.exit(1);
   }
   fs.mkdirSync(path.dirname(outBin), { recursive: true });
   fs.writeFileSync(outBin, c.evm.bytecode.object);
-  console.log('OK: ' + contractName + ' -> ' + c.evm.bytecode.object.length / 2 + ' bytes (solc ' + (solc.version().split('+')[0]) + ', ' + maps.length + ' remappings) -> ' + outBin);
+  const label = builtKey === contractName ? contractName : builtKey + ' (requested ' + contractName + ' not found; used first deployable)';
+  console.log('OK: ' + label + ' -> ' + c.evm.bytecode.object.length / 2 + ' bytes (solc ' + (solc.version().split('+')[0]) + ', ' + maps.length + ' remappings) -> ' + outBin);
 }
 
 main().catch((e) => { console.error('compile-project failed: ' + e.stack); process.exit(1); });

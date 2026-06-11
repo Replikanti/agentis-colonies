@@ -16,6 +16,17 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Real multi-file Foundry/Hardhat target support (#980). The EVM colony can now compile + run on
+  real multi-file projects (OpenZeppelin/lib imports, inheritance, a project-pinned solc), not just
+  self-contained single-file contracts. A project-aware compiler (`evm-harness/compile-project.js`
+  + shared `evm-harness/solc-resolve.js`) resolves a target contract's imports via the project's
+  remappings + layout (lib/ submodules, node_modules) and selects/loads the project's solc version
+  (offline from an on-disk soljson cache, host-side `--warm` pre-download); a dep-fetch helper
+  (`fetch-target.sh`) clones a target repo with its submodules/deps; `run-audit.sh` gains
+  `--repo` / `--in-scope` / `--contract`; and the `auditor.ag` `compile_run` + reconn (`ast.js`)
+  paths dispatch to the project compiler when a repo target is set. The colony detects + verifies
+  the single-contract bug classes on real code via the unchanged two-sided real-EVM gate; complex
+  multi-contract protocol-exploit verification remains the later frontier.
 - EVM/Solidity auditing — M4 (agentis-core#858). The EVM calibration corpus + harness, the peer of
   the Solana `calibrate-sealevel.sh` / `sealevel-scorecard.md`. A five-class vuln+safe corpus in
   `evm-harness/contracts/` (Reentrancy + AccessControl reused from M1–M3, plus new UncheckedCall,
