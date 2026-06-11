@@ -33,6 +33,17 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- DAG bug-pattern matching — seed the federation's content-addressed DAG with real findings so the
+  colony recognizes recurring patterns (N-day forks) on real targets (#861). `seed-patterns.ag` +
+  `run-audit.sh --seed-manifest` record a finished-contest finding's vulnerable-function sub-graph as
+  `bugpat:exact:<hash> = class`; reconn's new `match_seeded_evm` looks up each target sub-graph against
+  the seed (mirroring `distill_subgraphs_evm`'s hashing) and guard fires the matched class **directly**,
+  beating the LLM classifier's conservative SAFE on real audited code (which returned SAFE on 13/13 real
+  contracts in testing). The two-sided real-EVM gate still verifies, so a stale/over-broad seed can never
+  mint a false VERIFIED — worst case one inconclusive synthesis. Proven end-to-end: seed VulnToken's
+  `mint` (AccessControl) → a fork (renamed contract, identical `mint`) matches → guard fires via the seed
+  (no LLM) → synthesis VERIFIED. Exact-hash match catches byte-identical N-day forks; structural-variant
+  matching + a harvest of real findings are the next steps.
 - Decomposed EVM PoC synthesis (#982). The synthesis agent no longer asks the LLM for the WHOLE
   `poc.rs` in one prompt — a large OUTPUT that stalls `claude -p` on a non-trivial contract (a real
   target's one-shot never returned at a 600s timeout; a small-output fragment prompt returns in

@@ -1,0 +1,46 @@
+cb 200000;
+// #861: seed ONE known-bug pattern from a finished-contest finding into the bugpat:exact DAG memo.
+// Env: SEED_SRC (path to the .sol containing the vulnerable code), SEED_CLASS (the finding's class —
+// Reentrancy|AccessControl|UncheckedCall|OracleManipulation|IntegerOverflow), SEED_FUNC (a substring
+// identifying the vulnerable function, e.g. its name). For each "function " sub-graph whose text
+// contains SEED_FUNC, it dag_puts the sub-graph EXACTLY as reconn does (strip_comments -> split on
+// "function " -> dag_put("function "+c)) and memo_writes bugpat:exact:<hash> = SEED_CLASS. A target
+// that FORKS that finding (byte-identical sub-graph after strip_comments) then matches in reconn and
+// guard fires the class directly — beating the LLM classifier's conservative SAFE on real code.
+// run-audit.sh runs this (per manifest line) after `agentis init`, before the audit, in the same store.
+
+// Mirror of auditor.ag::strip_comments — the seed must canonicalize IDENTICALLY to reconn or the
+// content hashes won't match.
+fn strip_comments(src: string) -> string {
+    let lines = regex_split("\n", src);
+    return reduce(lines, |acc: string, l: string| -> string {
+        let c = index_of(l, "//");
+        if c >= 0 {
+            acc + substring(l, 0, c) + "\n";
+        } else {
+            acc + l + "\n";
+        }
+    }, "");
+}
+
+let path = getenv("SEED_SRC");
+let cls = getenv("SEED_CLASS");
+let marker = getenv("SEED_FUNC");
+// colony-lint: safe-exec-concat
+let src = exec sh "cat ${path} 2>/dev/null || true";
+if len(src) == 0 {
+    print("seed-patterns: ERROR — SEED_SRC unreadable (", path, ")");
+} else {
+    let code = strip_comments(src);
+    let n = reduce(regex_split("function ", code), |acc: int, c: string| -> int {
+        if len(c) > 0 {
+            if index_of(c, marker) >= 0 {
+                let h = dag_put("function " + c);
+                memo_write("bugpat:exact:" + h, cls);
+                print("seed-patterns: seeded bugpat:exact:", substring(h, 0, 16), "=", cls, "(fn ~", marker, ")");
+            }
+        }
+        return acc + 1;
+    }, 0);
+    print("seed-patterns: scanned", n, "sub-graph(s) in", path);
+}

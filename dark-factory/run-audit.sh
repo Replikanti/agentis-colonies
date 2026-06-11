@@ -31,7 +31,7 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
 TARGET="" ; HARNESS="" ; ANCHOR_HARNESS="" ; EVM_HARNESS="" ; SNAPSHOT="" ; POC=""
-REPO="" ; IN_SCOPE="" ; CONTRACT=""
+REPO="" ; IN_SCOPE="" ; CONTRACT="" ; SEED_MANIFEST=""
 BACKEND="claude" ; SANDBOX="hardened" ; OUT="$PWD/audit-out"
 
 need() { [ "$1" -ge 2 ] || { echo "run-audit.sh: missing value for the preceding flag" >&2; exit 2; }; }
@@ -41,6 +41,7 @@ while [ $# -gt 0 ]; do
     --repo) need "$#"; REPO="$2"; shift 2 ;;
     --in-scope) need "$#"; IN_SCOPE="$2"; shift 2 ;;
     --contract) need "$#"; CONTRACT="$2"; shift 2 ;;
+    --seed-manifest) need "$#"; SEED_MANIFEST="$2"; shift 2 ;;
     --harness) need "$#"; HARNESS="$2"; shift 2 ;;
     --anchor-harness) need "$#"; ANCHOR_HARNESS="$2"; shift 2 ;;
     --evm-harness) need "$#"; EVM_HARNESS="$2"; shift 2 ;;
@@ -109,9 +110,22 @@ cp "$COLONY" "$RUN/auditor.ag"
   echo "llm.backend = $BACKEND"
   [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p"; echo "llm.cli_timeout_ms = 180000"; }
   echo "trace.level = normal"
-  echo "exec.env_passthrough = BOUNTY_TARGET,BOUNTY_POC,SOLANA_HARNESS_DIR,SOLANA_ANCHOR_HARNESS_DIR,EVM_HARNESS_DIR,BOUNTY_SNAPSHOT,BOUNTY_REPO,BOUNTY_IN_SCOPE,BOUNTY_CONTRACT"
+  echo "exec.env_passthrough = BOUNTY_TARGET,BOUNTY_POC,SOLANA_HARNESS_DIR,SOLANA_ANCHOR_HARNESS_DIR,EVM_HARNESS_DIR,BOUNTY_SNAPSHOT,BOUNTY_REPO,BOUNTY_IN_SCOPE,BOUNTY_CONTRACT,SEED_SRC,SEED_CLASS,SEED_FUNC"
   echo "exec.default_timeout_ms = 180000"
 } > "$RUN/.agentis/config"
+
+# #861: seed known-bug patterns into the DAG (bugpat:exact memos) BEFORE the audit, in the same
+# store, so reconn matches a forked target's sub-graph and guard fires the class directly. Manifest
+# lines: `Class|abs-src-path|func-marker` (e.g. `AccessControl|/.../VulnToken.sol|mint`); `#` = comment.
+if [ -n "$SEED_MANIFEST" ]; then
+  [ -f "$SEED_MANIFEST" ] || { echo "run-audit.sh: --seed-manifest not found: $SEED_MANIFEST" >&2; exit 2; }
+  cp "$HERE/auditor/agents/seed-patterns.ag" "$RUN/seed-patterns.ag"
+  echo "run-audit.sh: seeding known-bug patterns from $(basename "$SEED_MANIFEST")" >&2
+  while IFS='|' read -r SCLASS SSRC SMARK || [ -n "$SCLASS" ]; do
+    case "$SCLASS" in ''|\#*) continue ;; esac
+    ( cd "$RUN" && env SEED_CLASS="$SCLASS" SEED_SRC="$SSRC" SEED_FUNC="$SMARK" "$AGENTIS" go seed-patterns.ag --enable-exec ) 2>&1 | grep -i 'seed' >&2
+  done < "$SEED_MANIFEST"
+fi
 
 # scope env — only what the operator supplied reaches the (env_clear'd) sandbox.
 ENV=(BOUNTY_TARGET="$TARGET")
