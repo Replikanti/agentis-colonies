@@ -74,6 +74,16 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Fixed
 
+- Real FULL-contract auditing — `strip_comments` no longer overflows the string heap (#861). The
+  in-`.ag` `strip_comments` builds its result with `reduce(lines, |acc,l| acc + ...)`, which is
+  O(n²) string allocation and overflowed the 16 MiB per-tick string heap on a full ~1500-line real
+  contract — so reconn/guard died before ever matching, and the colony could only audit extracted
+  single functions. agentis has no `join`/`regex_replace` builtin for an in-`.ag` O(n) rewrite, so
+  the EVM path now offloads to `evm-harness/strip-comments.js` (O(n), reuses struct-sig.js's
+  stripComments); the Rust path keeps the in-`.ag` stripper. Seed + match both offload, so exact
+  hashes stay aligned. Proven: the full 84 KB Venus `VToken.sol` (65 functions) now audits
+  end-to-end — `distilled 65 sub-graph(s)` → `SEEDED FUZZY MATCH -> Reentrancy` → guard fired
+  `[High]`, where before it died in `strip_comments` with `string_heap limit exceeded`.
 - Decomposed-synthesis EXPLOIT slot now uses `try_call`/`try_call_value` (revert-tolerant) for the
   attack step instead of `call`/`call_value` (which `die` on a revert). On a secure target the attack
   reverts — which means the invariant HELD — but a plain `call` turned that into a false

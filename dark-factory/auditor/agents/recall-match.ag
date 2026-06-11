@@ -9,6 +9,14 @@ cb 200000;
 
 // Mirror of auditor.ag::strip_comments — must canonicalize IDENTICALLY to the exact-match path.
 fn strip_comments(src: string) -> string {
+    // Offload to strip-comments.js (O(n)) — match the EVM exact-match strip in reconn + seed-patterns
+    // exactly. The in-.ag reduce (O(n^2)) is the no-harness fallback.
+    let ed = getenv("EVM_HARNESS_DIR");
+    if len(ed) > 0 {
+        file_write("h_strip.sol", src);
+        // colony-lint: safe-exec-concat
+        return exec sh "node ${ed}/strip-comments.js h_strip.sol 2>/dev/null || true";
+    }
     let lines = regex_split("\n", src);
     return reduce(lines, |acc: string, l: string| -> string {
         let c = index_of(l, "//");
