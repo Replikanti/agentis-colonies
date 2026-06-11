@@ -9,6 +9,23 @@ cb 200000;
 // guard fires the class directly — beating the LLM classifier's conservative SAFE on real code.
 // run-audit.sh runs this (per manifest line) after `agentis init`, before the audit, in the same store.
 
+// #861 M1+: a normalized structural sig is worth seeding only if it carries a shape signal —
+// an external-call kind or a storage-index write. Without one it is a trivial getter/setter whose
+// sig would match half the codebase (gate-safe, but a waste of synthesis cycles). struct-sig.js
+// space-joins EVERY token, so `.call` is the lone token ` call ` and a compound assign `-=` is the
+// two tokens `- =` — the index-write needles must match the SPLIT form (`] - = `, not `] -= `).
+fn struct_has_signal(sig: string) -> bool {
+    if index_of(sig, " call ") >= 0 { return true; }
+    if index_of(sig, " delegatecall ") >= 0 { return true; }
+    if index_of(sig, " staticcall ") >= 0 { return true; }
+    if index_of(sig, " transfer ") >= 0 { return true; }
+    if index_of(sig, " send ") >= 0 { return true; }
+    if index_of(sig, "] - = ") >= 0 { return true; }   // x[i] -= y  (debit; tokenized as `] - = `)
+    if index_of(sig, "] + = ") >= 0 { return true; }   // x[i] += y  (credit)
+    if index_of(sig, "] = ") >= 0 { return true; }     // x[i]  = y  (store; also trips on `==`, gate-safe)
+    return false;
+}
+
 // Mirror of auditor.ag::strip_comments — the seed must canonicalize IDENTICALLY to reconn or the
 // content hashes won't match.
 fn strip_comments(src: string) -> string {
@@ -43,4 +60,30 @@ if len(src) == 0 {
         return acc + 1;
     }, 0);
     print("seed-patterns: scanned", n, "sub-graph(s) in", path);
+
+    // #861 M1+: also seed the STRUCTURAL signature so a RENAMED / REFORMATTED / RE-LITTERED fork
+    // (not only a byte-identical one) matches. struct-sig.js emits `<fnName>:::<normalized-sig>`
+    // per function (identifier names -> `_`, literals -> `0`, keeping keywords/types/call-kinds);
+    // it is pure text (no solc) so it runs on a bare harvested fragment too. Seed the marker
+    // function's sig under bugpat:struct:<hash> = class, mirroring reconn's match_seeded_struct_evm.
+    let ed = getenv("EVM_HARNESS_DIR");
+    if len(ed) > 0 {
+        // colony-lint: safe-exec-concat
+        let sigs = exec sh "node ${ed}/struct-sig.js ${path} 2>/dev/null || true";
+        let sm = reduce(regex_split("\n", sigs), |acc: int, line: string| -> int {
+            let sep = index_of(line, ":::");
+            if sep > 0 {
+                let fname = substring(line, 0, sep);
+                let sig = substring(line, sep + 3, len(line));
+                if index_of(fname, marker) >= 0 {
+                    if struct_has_signal(sig) {
+                        let h2 = dag_put(sig);
+                        memo_write("bugpat:struct:" + h2, cls);
+                        print("seed-patterns: seeded bugpat:struct:", substring(h2, 0, 16), "=", cls, "(fn", fname, "— variant match)");
+                    }
+                }
+            }
+            return acc + 1;
+        }, 0);
+    }
 }

@@ -123,7 +123,9 @@ if [ -n "$SEED_MANIFEST" ]; then
   echo "run-audit.sh: seeding known-bug patterns from $(basename "$SEED_MANIFEST")" >&2
   while IFS='|' read -r SCLASS SSRC SMARK || [ -n "$SCLASS" ]; do
     case "$SCLASS" in ''|\#*) continue ;; esac
-    ( cd "$RUN" && env SEED_CLASS="$SCLASS" SEED_SRC="$SSRC" SEED_FUNC="$SMARK" "$AGENTIS" go seed-patterns.ag --enable-exec ) 2>&1 | grep -i 'seed' >&2
+    # EVM_HARNESS_DIR lets seed-patterns.ag also seed the STRUCTURAL signature (variant match) via
+    # struct-sig.js; empty for non-EVM seeds, where the struct pass self-skips (len(ed)==0).
+    ( cd "$RUN" && env SEED_CLASS="$SCLASS" SEED_SRC="$SSRC" SEED_FUNC="$SMARK" EVM_HARNESS_DIR="$EVM_HARNESS" "$AGENTIS" go seed-patterns.ag --enable-exec ) 2>&1 | grep -i 'seed' >&2
   done < "$SEED_MANIFEST"
 fi
 
