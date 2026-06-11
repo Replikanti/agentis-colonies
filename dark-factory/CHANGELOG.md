@@ -16,6 +16,12 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Fixed
 
+- Decomposed-synthesis EXPLOIT slot now uses `try_call`/`try_call_value` (revert-tolerant) for the
+  attack step instead of `call`/`call_value` (which `die` on a revert). On a secure target the attack
+  reverts — which means the invariant HELD — but a plain `call` turned that into a false
+  `HARNESS ERROR` (exit 2) that masked the verdict and burned `retry(5)` rounds. Surfaced running the
+  colony on a real complex target (Cyfrin Puppy Raffle): the decomposed synthesis produced
+  sophisticated correct exploit code and CONTROL passed, but the exploit's `call` reverted → exit 2.
 - Real-repo compile robustness in `evm-harness/solc-resolve.js`: (1) handle caret/range pragmas
   (`^0.7.6`, `~0.8.4`, `>=0.7.0 <0.8.0`) by selecting the floor solc version when its minor differs
   from the local pinned build (real repos overwhelmingly use caret pragmas; an exact-pin-only match
