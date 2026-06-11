@@ -14,6 +14,24 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+
+- M1+ structural-variant bug-pattern matching (#861) — `evm-harness/struct-sig.js` + a new reconn
+  fallback. Exact-hash seed matching (the prior M1) catches only a byte-identical N-day fork of a
+  recorded finding; this also catches a RENAMED / REFORMATTED / RE-LITTERED fork. `struct-sig.js`
+  normalizes each Solidity function to a parser-free structural signature (identifier names → `_`,
+  literals → `0`, keeping Solidity keywords / types / external-call kinds), so a variant collapses to
+  the same content hash as the seed — no solc, so it works on a bare harvested fragment too.
+  `seed-patterns.ag` now seeds `bugpat:struct:<hash> = class` alongside the exact one (guarded to sigs
+  that carry a call-kind or storage-write, so a trivial getter is never seeded), and reconn
+  (`match_seeded_any_evm`) tries the exact match first, then the structural fallback. Proven end-to-end
+  through the colony: a Reentrancy seed matched a renamed/reformatted variant (`SEEDED STRUCTURAL
+  MATCH -> Reentrancy`, guard fired `[High]`) where exact-match returned nothing, while a CEI-reordered
+  SAFE version correctly did NOT match. A structurally-edited variant (reordered statements / changed
+  expression shape) is out of scope for v1 — that needs an AST/semantic signal. An over-broad match can
+  never mint a false finding: it only sets the candidate class; the two-sided synthesis gate stays the
+  only source of truth.
+
 ### Fixed
 
 - Decomposed-synthesis EXPLOIT slot now uses `try_call`/`try_call_value` (revert-tolerant) for the

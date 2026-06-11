@@ -320,6 +320,48 @@ fn match_seeded_evm(code: string) -> string {
     }, "");
 }
 
+// #861 M1+: STRUCTURAL variant match. Where match_seeded_evm needs a byte-identical fork, this
+// catches a RENAMED / REFORMATTED / RE-LITTERED fork: struct-sig.js normalizes each target
+// function (identifier names -> `_`, literals -> `0`, keeping Solidity keywords/types/call-kinds)
+// and we look the content hash up in the seeded `bugpat:struct:<hash>` memo. struct-sig.js is pure
+// text (no solc, no node_modules) so it runs anywhere and degrades to no output (no match) on any
+// error — never breaking the audit. Returns the first matched class, or "". A structurally-edited
+// variant (reordered statements, changed expression shape) is NOT caught — by design (v1 shape match).
+fn match_seeded_struct_evm(target: string) -> string {
+    let ed = getenv("EVM_HARNESS_DIR");
+    if len(ed) == 0 { return ""; }
+    file_write("h_struct.sol", target);
+    // colony-lint: safe-exec-concat
+    let sigs = exec sh "node ${ed}/struct-sig.js h_struct.sol 2>/dev/null || true";
+    return reduce(regex_split("\n", sigs), |acc: string, line: string| -> string {
+        if len(acc) > 0 { return acc; }
+        let sep = index_of(line, ":::");
+        if sep > 0 {
+            let sig = substring(line, sep + 3, len(line));
+            let h = dag_put(sig);
+            let cls = recall_latest("bugpat:struct:" + h);
+            if is_vuln_class(cls) { return cls; }
+        }
+        return acc;
+    }, "");
+}
+
+// #861: try the seeded known-bug DAG against the target — exact byte-identical fork first (cheaper,
+// most precise), then the structural-variant fallback. Returns the matched vuln class, or "".
+fn match_seeded_any_evm(ecode: string, target: string) -> string {
+    let ex = match_seeded_evm(ecode);
+    if is_vuln_class(ex) {
+        print("reconn: SEEDED PATTERN MATCH ->", ex, "(known-bug DAG; exact byte-identical fork of a recorded finding)");
+        return ex;
+    }
+    let st = match_seeded_struct_evm(target);
+    if is_vuln_class(st) {
+        print("reconn: SEEDED STRUCTURAL MATCH ->", st, "(known-bug DAG; a variant of a recorded finding — names/literals differ, shape matches)");
+        return st;
+    }
+    return "";
+}
+
 // Pick the prior verdict for a sub-graph: federation blacklist wins, else own cache.
 fn pick_prior(cached: string, black: string) -> string {
     if len(black) > 0 {
@@ -1358,12 +1400,11 @@ agent reconn() -> void {
         print("reconn: distilled", en, "sub-graph(s); target hash", substring(eth, 0, 12));
         // audit-once: reuse a prior verdict / federation blacklist for this exact sub-graph.
         let eprior = pick_prior(recall_latest("bounty:verdict:" + eth), recall_latest("bounty:blacklist:" + eth));
-        // #861: match each sub-graph against the seeded known-bug DAG (N-day forks). A hit is a
-        // high-confidence class signal that beats the LLM classifier's conservative SAFE on real code.
-        let patcls = match_seeded_evm(ecode);
-        if is_vuln_class(patcls) {
-            print("reconn: SEEDED PATTERN MATCH ->", patcls, "(known-bug DAG; a target sub-graph forks a recorded finding)");
-        }
+        // #861: match the target against the seeded known-bug DAG — exact byte-identical fork
+        // (N-day) first, then a structural-variant fallback (renamed/reformatted/re-littered fork).
+        // A hit is a high-confidence class signal that beats the LLM classifier's conservative
+        // SAFE on real code; the two-sided synthesis gate still has to verify it before any finding.
+        let patcls = match_seeded_any_evm(ecode, target);
         emit("guard:target", target);
         emit("guard:th", eth);
         emit("guard:cached", eprior);
