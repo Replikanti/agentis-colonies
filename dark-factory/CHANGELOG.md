@@ -27,6 +27,16 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Decomposed EVM PoC synthesis (#982). The synthesis agent no longer asks the LLM for the WHOLE
+  `poc.rs` in one prompt — a large OUTPUT that stalls `claude -p` on a non-trivial contract (a real
+  target's one-shot never returned at a 600s timeout; a small-output fragment prompt returns in
+  ~40s). Instead a fixed skeleton (`evm-harness/poc-skeleton.rs`) carries all the revm-14 boilerplate
+  + helpers, and the LLM fills only two small slots — the CONTROL block and the EXPLOIT block (~15
+  lines each) — which `evm-harness/assemble-poc.js` splices in. Each generation is small + fast and
+  the LLM writes far less error-prone code (the helpers handle the fiddly revm API). The two-sided
+  gate (`CONTROL OK:` + `INVARIANT VIOLATED:` + exit 101) is unchanged. Validated end-to-end through
+  the live colony: a real OpenZeppelin Foundry target reaches VERIFIED in ~48s on the first attempt.
+  Solana / std-only targets keep the single one-shot prompt (their PoCs are smaller).
 - Real multi-file Foundry/Hardhat target support (#980). The EVM colony can now compile + run on
   real multi-file projects (OpenZeppelin/lib imports, inheritance, a project-pinned solc), not just
   self-contained single-file contracts. A project-aware compiler (`evm-harness/compile-project.js`
