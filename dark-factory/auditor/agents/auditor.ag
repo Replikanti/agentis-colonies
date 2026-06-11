@@ -603,8 +603,12 @@ fn exploit_instruction(cls: string) -> string {
         "/ die; evm, target_code, attacker_code, deployer/attacker/user: Address; U256/TxKind/Address " +
         "imported; exit() in scope). Do NOT redefine, import, or write any fn/use/main. The invariant " +
         "under test: " + einv + " Write ONLY the EXPLOIT block: deploy a FRESH target via deploy(...), " +
-        "perform the attack the invariant describes — a non-owner/attacker account sends the offending tx; " +
-        "for a reentrancy class deploy the attacker with `deploy(&mut evm, attacker, &attacker_code, " +
+        "perform the attack the invariant describes — a non-owner/attacker account sends the offending tx. " +
+        "CRITICAL: use try_call / try_call_value (NOT call / call_value) for the ATTACK call itself — on a " +
+        "secure target the attack reverts, which means the invariant HELD; a revert must NOT crash the PoC. " +
+        "Plain call/call_value DIE on a revert and report a FALSE `HARNESS ERROR` (exit 2). Use plain " +
+        "call/call_value only for setup steps you expect to succeed, and reads. " +
+        "For a reentrancy class deploy the attacker with `deploy(&mut evm, attacker, &attacker_code, " +
         "&abi_addr(t))` (target address as its constructor arg) and call its attack() with a stake via " +
         "call_value(&mut evm, attacker, atk, U256::from(1_000_000_000_000_000_000u128), selector(\"attack()\")) " +
         "— then read the relevant state (a public " +
