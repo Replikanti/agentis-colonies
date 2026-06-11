@@ -22,6 +22,10 @@
 #                            With --repo this defaults to the bundled ./evm-harness when omitted.
 #   --snapshot <file>        Frozen on-chain account dump (BOUNTY_SNAPSHOT; see snapshot-rpc.sh).
 #   --poc <file>             Operator-supplied PoC candidate (BOUNTY_POC; still gated).
+#   --seed-manifest <file>   Seed known-bug patterns from finished contests (#861): manifest lines
+#                            `Class|abs-src-path|func-marker` (harvest-sherlock.js output).
+#   --share-patterns         After seeding, publish each pattern to the knowledge market so other
+#                            federation members can buy it (knowledge_sell; requires --seed-manifest).
 #   --backend <mock|claude>  LLM backend (default: claude). mock = offline-deterministic.
 #   --sandbox <hardened|none> Sandbox profile (default: hardened).
 #   --out <dir>              Output dir for the run + submission package (default: ./audit-out).
@@ -31,7 +35,7 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
 TARGET="" ; HARNESS="" ; ANCHOR_HARNESS="" ; EVM_HARNESS="" ; SNAPSHOT="" ; POC=""
-REPO="" ; IN_SCOPE="" ; CONTRACT="" ; SEED_MANIFEST=""
+REPO="" ; IN_SCOPE="" ; CONTRACT="" ; SEED_MANIFEST="" ; SHARE_PATTERNS=""
 BACKEND="claude" ; SANDBOX="hardened" ; OUT="$PWD/audit-out"
 
 need() { [ "$1" -ge 2 ] || { echo "run-audit.sh: missing value for the preceding flag" >&2; exit 2; }; }
@@ -42,6 +46,7 @@ while [ $# -gt 0 ]; do
     --in-scope) need "$#"; IN_SCOPE="$2"; shift 2 ;;
     --contract) need "$#"; CONTRACT="$2"; shift 2 ;;
     --seed-manifest) need "$#"; SEED_MANIFEST="$2"; shift 2 ;;
+    --share-patterns) SHARE_PATTERNS=1; shift ;;
     --harness) need "$#"; HARNESS="$2"; shift 2 ;;
     --anchor-harness) need "$#"; ANCHOR_HARNESS="$2"; shift 2 ;;
     --evm-harness) need "$#"; EVM_HARNESS="$2"; shift 2 ;;
@@ -112,6 +117,9 @@ cp "$COLONY" "$RUN/auditor.ag"
   echo "trace.level = normal"
   echo "exec.env_passthrough = BOUNTY_TARGET,BOUNTY_POC,SOLANA_HARNESS_DIR,SOLANA_ANCHOR_HARNESS_DIR,EVM_HARNESS_DIR,BOUNTY_SNAPSHOT,BOUNTY_REPO,BOUNTY_IN_SCOPE,BOUNTY_CONTRACT,SEED_SRC,SEED_CLASS,SEED_FUNC"
   echo "exec.default_timeout_ms = 180000"
+  # --share-patterns lists each seeded pattern on the knowledge market (knowledge_sell), so other
+  # federation members can buy it. The market is gated on the learning/knowledge subsystem.
+  [ -n "$SHARE_PATTERNS" ] && { echo "learning.enabled = true"; echo "experience.enabled = true"; echo "knowledge.enabled = true"; }
 } > "$RUN/.agentis/config"
 
 # #861: seed known-bug patterns into the DAG (bugpat:exact memos) BEFORE the audit, in the same
@@ -127,6 +135,13 @@ if [ -n "$SEED_MANIFEST" ]; then
     # struct-sig.js; empty for non-EVM seeds, where the struct pass self-skips (len(ed)==0).
     ( cd "$RUN" && env SEED_CLASS="$SCLASS" SEED_SRC="$SSRC" SEED_FUNC="$SMARK" EVM_HARNESS_DIR="$EVM_HARNESS" "$AGENTIS" go seed-patterns.ag --enable-exec ) 2>&1 | grep -i 'seed' >&2
   done < "$SEED_MANIFEST"
+
+  # #861: optionally publish every seeded pattern to the knowledge market ("DAG sdílej přes
+  # knowledge market") so other federation members can buy it via knowledge_buy.
+  if [ -n "$SHARE_PATTERNS" ]; then
+    cp "$HERE/auditor/agents/share-patterns.ag" "$RUN/share-patterns.ag"
+    ( cd "$RUN" && "$AGENTIS" go share-patterns.ag ) 2>&1 | grep -i 'share:' >&2
+  fi
 fi
 
 # scope env — only what the operator supplied reaches the (env_clear'd) sandbox.

@@ -16,6 +16,27 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- M3 held-out recall harness + knowledge-market sharing (#861). Measures whether the seeded DAG
+  catches a finding's FORK it did not see seeded, and shares the corpus across the federation:
+  - `recall.sh` + `auditor/agents/recall-match.ag` seed with the real `seed-patterns.ag` (zero
+    seed-side drift) and match each held-out target with a mirror of reconn's exact + structural
+    matchers, then tally exact-only vs structural recall per class + precision on negatives.
+  - `evm-harness/make-variants.js` generates realistic fork variants of a seeded function (rename /
+    reformat / re-literal = what a real N-day fork is) plus structural negatives (call-kind swap,
+    injected guard) that MUST NOT match. Reuses `struct-sig.js`'s exported KEEP set so a renamed
+    fork keeps the same signature; `struct-sig.js` now `module.exports` its token rules.
+  - `harvest-sherlock.js` handles BOTH Sherlock judging layouts — the old `NNN-H`/`NNN-M` folders
+    and the new flat `NNN.md` files (severity inside the file).
+  - **Measured result** on 41 real shape-based findings from 4 Sherlock contests (164 held-out
+    forks): exact-only recall **6%**, structural recall **94%** (per class: AccessControl /
+    UncheckedCall / IntegerOverflow 100%, Reentrancy 90%, Oracle 88%); structural false-match on
+    negatives 7% (gate-safe — a match only sets the candidate class, the two-sided gate verifies).
+  - `auditor/agents/share-patterns.ag` + `run-audit.sh --share-patterns` publish each seeded
+    `bugpat:exact:<hash>` / `bugpat:struct:<hash>` to the knowledge market (`knowledge_sell`, keyed
+    by content hash) so other federation members can `knowledge_buy` it — "share the DAG via the
+    knowledge market". The buy side is a real economic exchange (the buyer escrows the ask price
+    from its CB pool), so importing a shared pattern requires a funded consumer.
+
 - M1+ structural-variant bug-pattern matching (#861) — `evm-harness/struct-sig.js` + a new reconn
   fallback. Exact-hash seed matching (the prior M1) catches only a byte-identical N-day fork of a
   recorded finding; this also catches a RENAMED / REFORMATTED / RE-LITTERED fork. `struct-sig.js`

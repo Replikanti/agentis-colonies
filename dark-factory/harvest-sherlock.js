@@ -63,6 +63,24 @@ function canonicalFinding(dir) {
   return mds.find((f) => /best/i.test(f)) || mds[0];
 }
 
+// Sherlock has shipped two judging-repo layouts. Old (e.g. 2024-04): one `NNN-H` / `NNN-M` folder
+// per valid finding, severity in the folder name, the report markdown(s) inside. New (2025+): one
+// flat `NNN.md` per valid finding at the top level (severity on line ~3), invalid findings under
+// `invalid/`. Return a uniform list of {id, file} for whichever layout this repo uses.
+function findingDocs(repo, entries) {
+  const folders = entries.filter((d) => /^\d+-[HM]$/.test(d) && fs.statSync(path.join(repo, d)).isDirectory());
+  if (folders.length) {
+    return folders.sort().map((f) => {
+      const md = canonicalFinding(path.join(repo, f));
+      return md ? { id: f, file: path.join(repo, f, md) } : null;
+    }).filter(Boolean);
+  }
+  return entries
+    .filter((f) => /^\d+\.md$/.test(f) && fs.statSync(path.join(repo, f)).isFile())
+    .sort()
+    .map((f) => ({ id: f.replace(/\.md$/, ''), file: path.join(repo, f) }));
+}
+
 function main() {
   const repo = process.argv[2];
   const out = process.argv[3];
@@ -75,14 +93,11 @@ function main() {
     process.exit(2);
   }
   fs.mkdirSync(out, { recursive: true });
-  const folders = entries.filter((d) => /^\d+-[HM]$/.test(d) && fs.statSync(path.join(repo, d)).isDirectory());
+  const docs = findingDocs(repo, entries);
   const manifest = [];
   let seeded = 0, skipped = 0;
-  for (const folder of folders.sort()) {
-    const dir = path.join(repo, folder);
-    const mdName = canonicalFinding(dir);
-    if (!mdName) { skipped++; continue; }
-    const md = fs.readFileSync(path.join(dir, mdName), 'utf8');
+  for (const doc of docs) {
+    const md = fs.readFileSync(doc.file, 'utf8');
     const titleM = md.match(/^#\s+(.+)$/m);
     const title = titleM ? titleM[1].trim() : '';
     const cls = classify(title) || classify(md.slice(0, 1200)); // title first, then the lead
@@ -90,7 +105,7 @@ function main() {
     if (!cls || !code) { skipped++; continue; }
     const fn = firstFunctionName(code);
     if (!fn) { skipped++; continue; }
-    const id = folder;
+    const id = doc.id;
     const solPath = path.join(out, id + '.sol');
     fs.writeFileSync(solPath, code.replace(/\s+$/, '') + '\n');
     manifest.push(cls + '|' + path.resolve(solPath) + '|' + fn);

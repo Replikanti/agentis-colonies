@@ -139,4 +139,9 @@ function main() {
   if (lines.length) process.stdout.write(lines.join('\n') + '\n');
 }
 
-main();
+// Exported so the M3 recall harness's variant generator (make-variants.js) renames EXACTLY the
+// identifiers this normalizer drops — keeping a generated fork's signature identical to its seed.
+// Only run as a script when invoked directly (so `require()` doesn't trigger main()).
+module.exports = { KEEP, sizedType, normalize, extractFunctions, stripComments, TOK };
+
+if (require.main === module) main();
