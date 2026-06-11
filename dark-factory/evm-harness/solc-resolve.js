@@ -42,7 +42,11 @@ function makeResolver(root, maps) {
     const tries = [];
     for (const [pre, tgt] of maps) {
       if (importPath.startsWith(pre)) {
-        tries.push(path.resolve(root, tgt, importPath.slice(pre.length)));
+        // path.JOIN (not resolve): a remapping without a trailing slash (`@oz/contracts=lib/…/contracts`,
+        // the Foundry default) leaves the remainder starting with `/` (`/token/ERC20.sol`). path.resolve
+        // would treat that as ABSOLUTE and discard the root+tgt prefix; path.join folds the leading slash
+        // into a separator, so both `@oz/contracts/=…/contracts/` and `@oz/contracts=…/contracts` resolve.
+        tries.push(path.join(root, tgt, importPath.slice(pre.length)));
       }
     }
     // common dependency roots + project-relative (solcjs normalizes relative imports
@@ -65,10 +69,21 @@ function detectVersion(root, srcPath) {
     const m = fs.readFileSync(ft, 'utf8').match(/solc(?:_version)?\s*=\s*["']([0-9]+\.[0-9]+\.[0-9]+)["']/);
     if (m) return m[1];
   }
-  // exact-pinned pragma (e.g. `pragma solidity 0.8.18;`) — a caret/range pragma returns null (use local)
   const src = fs.readFileSync(srcPath, 'utf8');
-  const m = src.match(/pragma\s+solidity\s+(?:=\s*)?([0-9]+\.[0-9]+\.[0-9]+)\s*;/);
+  // exact-pinned pragma — `pragma solidity 0.8.18;` or `pragma solidity =0.8.18;`
+  let m = src.match(/pragma\s+solidity\s+=?\s*([0-9]+\.[0-9]+\.[0-9]+)\s*;/);
   if (m) return m[1];
+  // caret / range pragma — `^0.7.6`, `~0.8.4`, `>=0.7.0 <0.8.0`. Real repos overwhelmingly use these.
+  // Pick the FLOOR version (the release the code was written against) when its minor differs from the
+  // local pinned solc (e.g. a 0.7.x repo while local is 0.8.x — local can't compile it). When the minor
+  // MATCHES local, return null so the local pinned build (the latest in-range patch) compiles it — that
+  // avoids downgrading a `^0.8.x` repo to 0.8.0 and losing later-0.8 features the code may use.
+  m = src.match(/pragma\s+solidity\s+[~^>=<\s]*([0-9]+\.[0-9]+)\.([0-9]+)/);
+  if (m) {
+    const localMinor = solcMod.version().split('.').slice(0, 2).join('.'); // e.g. "0.8"
+    if (m[1] === localMinor) return null;
+    return m[1] + '.' + m[2];
+  }
   return null;
 }
 

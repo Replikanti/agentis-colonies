@@ -14,6 +14,17 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+
+- Real-repo compile robustness in `evm-harness/solc-resolve.js`: (1) handle caret/range pragmas
+  (`^0.7.6`, `~0.8.4`, `>=0.7.0 <0.8.0`) by selecting the floor solc version when its minor differs
+  from the local pinned build (real repos overwhelmingly use caret pragmas; an exact-pin-only match
+  fell through to the local solc and failed with "requires different compiler version"); (2) resolve
+  Foundry-default remappings written WITHOUT a trailing slash (`@openzeppelin/contracts=lib/…/contracts`)
+  via `path.join` instead of `path.resolve` (the no-trailing-slash remainder starts with `/`, which
+  `path.resolve` treated as absolute and discarded the project prefix → "import not found"). Surfaced
+  by running the colony on a real OpenZeppelin-based Foundry target (compiles 0.7.6 + resolves OZ imports).
+
 ### Added
 
 - Real multi-file Foundry/Hardhat target support (#980). The EVM colony can now compile + run on
