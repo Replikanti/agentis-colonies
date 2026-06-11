@@ -303,6 +303,23 @@ fn distill_subgraphs_evm(code: string) -> int {
     }, 0);
 }
 
+// #861: match the target's function sub-graphs against the SEEDED known-bug DAG. For each
+// "function " sub-graph, look up its content hash in the seeded exact-pattern memo
+// (`bugpat:exact:<hash>` = class, populated from finished-contest findings by seed-patterns.ag).
+// Returns the first matched vuln class, or "" when nothing matches. Mirrors distill_subgraphs_evm's
+// hashing EXACTLY so a FORK with a byte-identical vulnerable function hits (N-day). Leaf calls only
+// (dag_put + recall_latest), so the native call stack stays shallow like distill_subgraphs_evm.
+fn match_seeded_evm(code: string) -> string {
+    return reduce(regex_split("function ", code), |acc: string, c: string| -> string {
+        if len(acc) > 0 { return acc; }
+        if len(c) == 0 { return acc; }
+        let h = dag_put("function " + c);
+        let cls = recall_latest("bugpat:exact:" + h);
+        if is_vuln_class(cls) { return cls; }
+        return acc;
+    }, "");
+}
+
 // Pick the prior verdict for a sub-graph: federation blacklist wins, else own cache.
 fn pick_prior(cached: string, black: string) -> string {
     if len(black) > 0 {
@@ -1341,9 +1358,16 @@ agent reconn() -> void {
         print("reconn: distilled", en, "sub-graph(s); target hash", substring(eth, 0, 12));
         // audit-once: reuse a prior verdict / federation blacklist for this exact sub-graph.
         let eprior = pick_prior(recall_latest("bounty:verdict:" + eth), recall_latest("bounty:blacklist:" + eth));
+        // #861: match each sub-graph against the seeded known-bug DAG (N-day forks). A hit is a
+        // high-confidence class signal that beats the LLM classifier's conservative SAFE on real code.
+        let patcls = match_seeded_evm(ecode);
+        if is_vuln_class(patcls) {
+            print("reconn: SEEDED PATTERN MATCH ->", patcls, "(known-bug DAG; a target sub-graph forks a recorded finding)");
+        }
         emit("guard:target", target);
         emit("guard:th", eth);
         emit("guard:cached", eprior);
+        emit("guard:patmatch", patcls);
         emit("tracker:target", target);
         return;
     }
@@ -1366,6 +1390,7 @@ agent reconn() -> void {
     emit("guard:target", target);
     emit("guard:th", th);
     emit("guard:cached", prior);
+    emit("guard:patmatch", "");
     emit("tracker:target", target);
 }
 
@@ -1396,6 +1421,7 @@ agent guard() -> void {
     let target = listen("guard:target");
     let th = listen("guard:th");
     let cached = listen("guard:cached");
+    let patmatch = listen("guard:patmatch");
     emit("synth:target", target);
     emit("synth:th", th);
     if len(cached) > 0 {
@@ -1405,21 +1431,30 @@ agent guard() -> void {
         emit("synth:class", cached);
     } else {
         if is_evm_target(target) {
-            // M1 (#858): EVM/Solidity detection. The Rust heuristic + Solana-token LLM classifier
-            // do not apply, so route through the EVM pair: the structural reentrancy heuristic
-            // (CEI violation) + an EVM LLM classifier (Reentrancy vs Safe). The LLM wins when
-            // present, "Safe" -> none, an empty verdict falls back to the heuristic. M3 broadens
-            // this to the full EVM class set; the two-sided real-EVM gate stays the source of truth.
-            let evm_heur = detect_reentrancy(strip_comments(target));
-            let evm_llm = classify_evm_llm(target);
-            let evm_cls = resolve_evm_cls(evm_llm, evm_heur);
-            if is_vuln_class(evm_cls) {
-                print("guard: " + evm_cls + " fired [" + severity_for(evm_cls) + "] (EVM)");
+            // #861: a SEEDED known-bug pattern (a target sub-graph forks a recorded finding) is the
+            // strongest signal — fire it directly, beating the LLM classifier's conservative SAFE on
+            // real audited code (proven: single-pass + ensemble both returned SAFE on 13/13 real
+            // contracts). The two-sided real-EVM gate still verifies, so a stale/over-broad seed can
+            // never mint a false VERIFIED — at worst it costs one inconclusive synthesis.
+            if is_vuln_class(patmatch) {
+                print("guard: " + patmatch + " fired [" + severity_for(patmatch) + "] (seeded known-bug pattern match — DAG)");
+                emit("synth:hit", "miss");
+                emit("synth:class", patmatch);
             } else {
-                print("guard: no EVM rule fired — target looks safe");
+                // M1 (#858): no seeded pattern — fall back to EVM detection: the structural reentrancy
+                // heuristic (CEI violation) + the EVM LLM classifier. The LLM wins when present,
+                // "Safe" -> none, an empty verdict falls back to the heuristic. The two-sided gate stays truth.
+                let evm_heur = detect_reentrancy(strip_comments(target));
+                let evm_llm = classify_evm_llm(target);
+                let evm_cls = resolve_evm_cls(evm_llm, evm_heur);
+                if is_vuln_class(evm_cls) {
+                    print("guard: " + evm_cls + " fired [" + severity_for(evm_cls) + "] (EVM)");
+                } else {
+                    print("guard: no EVM rule fired — target looks safe");
+                }
+                emit("synth:hit", "miss");
+                emit("synth:class", evm_cls);
             }
-            emit("synth:hit", "miss");
-            emit("synth:class", evm_cls);
         } else {
             // MISS: detect afresh. Run the structural detector at the agent's OWN depth
             // (classify()'s fold overflows the native stack if called through an extra wrapper
