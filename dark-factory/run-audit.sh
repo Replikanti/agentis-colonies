@@ -9,11 +9,17 @@
 #
 # Usage:
 #   run-audit.sh --target <program.rs|target.sol> [options]
+#   run-audit.sh --repo <dir> --in-scope <path-within-repo> [options]   # real multi-file EVM target
 # Options:
-#   --target <file>          REQUIRED. The in-scope program source to audit (.rs or .sol).
+#   --target <file>          The in-scope program source to audit (.rs or .sol). REQUIRED unless --repo.
+#   --repo <dir>             A real multi-file Foundry/Hardhat repo (clone with fetch-target.sh).
+#                            The colony compiles the in-scope contract WITH its deps (#859 phases 1-4).
+#   --in-scope <path>        Required with --repo: the in-scope contract, relative to <repo>.
+#   --contract <Name>        With --repo: the contract name to extract (default: in-scope file basename).
 #   --harness <dir>          Native solana-program-test harness dir (SOLANA_HARNESS_DIR).
 #   --anchor-harness <dir>   Anchor harness dir (SOLANA_ANCHOR_HARNESS_DIR).
 #   --evm-harness <dir>      EVM revm harness dir (EVM_HARNESS_DIR) for a Solidity target.
+#                            With --repo this defaults to the bundled ./evm-harness when omitted.
 #   --snapshot <file>        Frozen on-chain account dump (BOUNTY_SNAPSHOT; see snapshot-rpc.sh).
 #   --poc <file>             Operator-supplied PoC candidate (BOUNTY_POC; still gated).
 #   --backend <mock|claude>  LLM backend (default: claude). mock = offline-deterministic.
@@ -25,12 +31,16 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
 TARGET="" ; HARNESS="" ; ANCHOR_HARNESS="" ; EVM_HARNESS="" ; SNAPSHOT="" ; POC=""
+REPO="" ; IN_SCOPE="" ; CONTRACT=""
 BACKEND="claude" ; SANDBOX="hardened" ; OUT="$PWD/audit-out"
 
 need() { [ "$1" -ge 2 ] || { echo "run-audit.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --target) need "$#"; TARGET="$2"; shift 2 ;;
+    --repo) need "$#"; REPO="$2"; shift 2 ;;
+    --in-scope) need "$#"; IN_SCOPE="$2"; shift 2 ;;
+    --contract) need "$#"; CONTRACT="$2"; shift 2 ;;
     --harness) need "$#"; HARNESS="$2"; shift 2 ;;
     --anchor-harness) need "$#"; ANCHOR_HARNESS="$2"; shift 2 ;;
     --evm-harness) need "$#"; EVM_HARNESS="$2"; shift 2 ;;
@@ -45,7 +55,22 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ -n "$TARGET" ] || { echo "run-audit.sh: --target <program.rs|target.sol> is required (the operator picks the in-scope program; this tool never auto-picks a scope)" >&2; exit 2; }
+# --repo mode (#859 phases 1-4): a REAL multi-file Foundry/Hardhat target. The operator points
+# at the repo + the in-scope contract within it; the colony compiles that contract WITH its deps
+# (remappings + lib/ submodules + node_modules) at the project's solc version. The in-scope file
+# becomes the BOUNTY_TARGET (so ingest/reconn work unchanged); BOUNTY_REPO/BOUNTY_IN_SCOPE drive
+# compile_run's project-compile path. --repo is EVM-only and defaults --evm-harness to the bundle.
+if [ -n "$REPO" ]; then
+  [ -d "$REPO" ] || { echo "run-audit.sh: --repo dir not found: $REPO (clone it first with fetch-target.sh)" >&2; exit 2; }
+  REPO="$(cd "$REPO" && pwd)"
+  [ -n "$IN_SCOPE" ] || { echo "run-audit.sh: --repo requires --in-scope <path-within-repo> (the operator picks the in-scope contract; this tool never auto-picks a scope)" >&2; exit 2; }
+  [ -f "$REPO/$IN_SCOPE" ] || { echo "run-audit.sh: in-scope contract not found in repo: $REPO/$IN_SCOPE" >&2; exit 2; }
+  [ -n "$TARGET" ] && { echo "run-audit.sh: pass either --target OR --repo/--in-scope, not both" >&2; exit 2; }
+  TARGET="$REPO/$IN_SCOPE"            # the in-scope file IS the audit target (ingest/reconn read it)
+  [ -n "$EVM_HARNESS" ] || EVM_HARNESS="$HERE/evm-harness"   # --repo is EVM; default to the bundled harness
+fi
+
+[ -n "$TARGET" ] || { echo "run-audit.sh: --target <program.rs|target.sol> (or --repo + --in-scope) is required (the operator picks the in-scope program; this tool never auto-picks a scope)" >&2; exit 2; }
 [ -f "$TARGET" ] || { echo "run-audit.sh: target not found: $TARGET" >&2; exit 2; }
 command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ] || { echo "run-audit.sh: agentis binary not found ($AGENTIS)" >&2; exit 3; }
 
@@ -58,6 +83,17 @@ if [ -n "$POC" ]; then [ -f "$POC" ] || { echo "run-audit.sh: poc not found: $PO
 if [ -n "$HARNESS" ]; then [ -d "$HARNESS" ] || { echo "run-audit.sh: harness dir not found: $HARNESS" >&2; exit 2; }; HARNESS="$(cd "$HARNESS" && pwd)"; fi
 if [ -n "$ANCHOR_HARNESS" ]; then [ -d "$ANCHOR_HARNESS" ] || { echo "run-audit.sh: anchor-harness dir not found: $ANCHOR_HARNESS" >&2; exit 2; }; ANCHOR_HARNESS="$(cd "$ANCHOR_HARNESS" && pwd)"; fi
 if [ -n "$EVM_HARNESS" ]; then [ -d "$EVM_HARNESS" ] || { echo "run-audit.sh: evm-harness dir not found: $EVM_HARNESS" >&2; exit 2; }; EVM_HARNESS="$(cd "$EVM_HARNESS" && pwd)"; fi
+
+# --repo: pre-compile the in-scope contract HOST-SIDE (this is the operator's one allowed network
+# step, like snapshot-rpc.sh). It (1) fails fast if the imports/remappings/solc version are wrong
+# — before the slow sandboxed run — and (2) warms .solc-cache with any non-pinned solc so the
+# in-sandbox per-run compile (which re-runs with the anti-forgery challenge injected) stays offline.
+if [ -n "$REPO" ]; then
+  command -v node >/dev/null 2>&1 || { echo "run-audit.sh: node is required for --repo (the EVM project compiler runs on it)" >&2; exit 3; }
+  echo "run-audit.sh: pre-compiling $IN_SCOPE against $REPO host-side (validates imports + warms solc)..." >&2
+  node "$EVM_HARNESS/compile-project.js" "$REPO" "$IN_SCOPE" "$EVM_HARNESS/contracts/bin/Target.bin" "$CONTRACT" >&2 \
+    || { echo "run-audit.sh: host-side compile of $IN_SCOPE failed — check --repo, --in-scope, remappings, and the solc version. Aborting before the sandboxed run." >&2; exit 4; }
+fi
 
 COLONY="$HERE/auditor/agents/auditor.ag"
 [ -f "$COLONY" ] || { echo "run-audit.sh: colony not found at $COLONY" >&2; exit 3; }
@@ -73,7 +109,7 @@ cp "$COLONY" "$RUN/auditor.ag"
   echo "llm.backend = $BACKEND"
   [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p"; echo "llm.cli_timeout_ms = 180000"; }
   echo "trace.level = normal"
-  echo "exec.env_passthrough = BOUNTY_TARGET,BOUNTY_POC,SOLANA_HARNESS_DIR,SOLANA_ANCHOR_HARNESS_DIR,EVM_HARNESS_DIR,BOUNTY_SNAPSHOT"
+  echo "exec.env_passthrough = BOUNTY_TARGET,BOUNTY_POC,SOLANA_HARNESS_DIR,SOLANA_ANCHOR_HARNESS_DIR,EVM_HARNESS_DIR,BOUNTY_SNAPSHOT,BOUNTY_REPO,BOUNTY_IN_SCOPE,BOUNTY_CONTRACT"
   echo "exec.default_timeout_ms = 180000"
 } > "$RUN/.agentis/config"
 
@@ -84,6 +120,7 @@ ENV=(BOUNTY_TARGET="$TARGET")
 [ -n "$EVM_HARNESS" ]    && ENV+=(EVM_HARNESS_DIR="$EVM_HARNESS")
 [ -n "$SNAPSHOT" ]       && ENV+=(BOUNTY_SNAPSHOT="$SNAPSHOT")
 [ -n "$POC" ]            && ENV+=(BOUNTY_POC="$POC")
+[ -n "$REPO" ]           && ENV+=(BOUNTY_REPO="$REPO" BOUNTY_IN_SCOPE="$IN_SCOPE" BOUNTY_CONTRACT="$CONTRACT")
 
 GO=(go auditor.ag --enable-exec --enable-messaging)
 [ "$SANDBOX" = "hardened" ] && GO+=(--sandbox-profile hardened)
