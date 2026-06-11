@@ -1,0 +1,28 @@
+cb 200000;
+// #861: publish every locally-seeded bug-pattern to the knowledge market so OTHER federation
+// members can buy it — "DAG sdílej přes knowledge market". The harvest+seed pipeline records each
+// finished-contest finding as a `bugpat:exact:<hash>` / `bugpat:struct:<hash>` memo (class as the
+// value); this lists each on the market via knowledge_sell(topic, class, ask_price), keyed by the
+// content hash so a buyer that matches the SAME sub-graph/signature can look it up by that hash.
+//
+// The consume side is knowledge_buy("bugpat:<kind>:<hash>", max_cb): a real economic exchange —
+// the buyer escrows ask_price from its CB pool and pays the seller, so importing a shared pattern
+// requires a funded consumer (colony/daemon economy), which is why this agent only owns the SELL
+// half. Requires learning.enabled + knowledge.enabled in .agentis/config. ask_price is nominal (1).
+//
+// Run in the SAME store the seeder populated (after seed-patterns.ag), e.g. via
+// run-audit.sh --share-patterns or recall.sh --share.
+
+let keys = memo_list("bugpat:");
+let n = reduce(keys, |acc: int, k: string| -> int {
+    let cls = recall_latest(k);
+    if len(cls) > 0 {
+        let ok = knowledge_sell(k, cls, 1);
+        if ok {
+            print("share: published", k, "=", cls);
+            return acc + 1;
+        }
+    }
+    return acc;
+}, 0);
+print("share: published", n, "pattern(s) to the knowledge market");

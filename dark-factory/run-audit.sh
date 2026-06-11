@@ -22,6 +22,10 @@
 #                            With --repo this defaults to the bundled ./evm-harness when omitted.
 #   --snapshot <file>        Frozen on-chain account dump (BOUNTY_SNAPSHOT; see snapshot-rpc.sh).
 #   --poc <file>             Operator-supplied PoC candidate (BOUNTY_POC; still gated).
+#   --seed-manifest <file>   Seed known-bug patterns from finished contests (#861): manifest lines
+#                            `Class|abs-src-path|func-marker` (harvest-sherlock.js output).
+#   --share-patterns         After seeding, publish each pattern to the knowledge market so other
+#                            federation members can buy it (knowledge_sell; requires --seed-manifest).
 #   --backend <mock|claude>  LLM backend (default: claude). mock = offline-deterministic.
 #   --sandbox <hardened|none> Sandbox profile (default: hardened).
 #   --out <dir>              Output dir for the run + submission package (default: ./audit-out).
@@ -31,8 +35,8 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
 TARGET="" ; HARNESS="" ; ANCHOR_HARNESS="" ; EVM_HARNESS="" ; SNAPSHOT="" ; POC=""
-REPO="" ; IN_SCOPE="" ; CONTRACT="" ; SEED_MANIFEST=""
-BACKEND="claude" ; SANDBOX="hardened" ; OUT="$PWD/audit-out"
+REPO="" ; IN_SCOPE="" ; CONTRACT="" ; SEED_MANIFEST="" ; SHARE_PATTERNS=""
+BACKEND="claude" ; SANDBOX="hardened" ; OUT="$PWD/audit-out" ; FUZZY_THRESHOLD="0.35"
 
 need() { [ "$1" -ge 2 ] || { echo "run-audit.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -42,6 +46,7 @@ while [ $# -gt 0 ]; do
     --in-scope) need "$#"; IN_SCOPE="$2"; shift 2 ;;
     --contract) need "$#"; CONTRACT="$2"; shift 2 ;;
     --seed-manifest) need "$#"; SEED_MANIFEST="$2"; shift 2 ;;
+    --share-patterns) SHARE_PATTERNS=1; shift ;;
     --harness) need "$#"; HARNESS="$2"; shift 2 ;;
     --anchor-harness) need "$#"; ANCHOR_HARNESS="$2"; shift 2 ;;
     --evm-harness) need "$#"; EVM_HARNESS="$2"; shift 2 ;;
@@ -110,8 +115,11 @@ cp "$COLONY" "$RUN/auditor.ag"
   echo "llm.backend = $BACKEND"
   [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p"; echo "llm.cli_timeout_ms = 180000"; }
   echo "trace.level = normal"
-  echo "exec.env_passthrough = BOUNTY_TARGET,BOUNTY_POC,SOLANA_HARNESS_DIR,SOLANA_ANCHOR_HARNESS_DIR,EVM_HARNESS_DIR,BOUNTY_SNAPSHOT,BOUNTY_REPO,BOUNTY_IN_SCOPE,BOUNTY_CONTRACT,SEED_SRC,SEED_CLASS,SEED_FUNC"
+  echo "exec.env_passthrough = BOUNTY_TARGET,BOUNTY_POC,SOLANA_HARNESS_DIR,SOLANA_ANCHOR_HARNESS_DIR,EVM_HARNESS_DIR,BOUNTY_SNAPSHOT,BOUNTY_REPO,BOUNTY_IN_SCOPE,BOUNTY_CONTRACT,SEED_SRC,SEED_CLASS,SEED_FUNC,FUZZY_SEEDS,FUZZY_THRESHOLD"
   echo "exec.default_timeout_ms = 180000"
+  # --share-patterns lists each seeded pattern on the knowledge market (knowledge_sell), so other
+  # federation members can buy it. The market is gated on the learning/knowledge subsystem.
+  [ -n "$SHARE_PATTERNS" ] && { echo "learning.enabled = true"; echo "experience.enabled = true"; echo "knowledge.enabled = true"; }
 } > "$RUN/.agentis/config"
 
 # #861: seed known-bug patterns into the DAG (bugpat:exact memos) BEFORE the audit, in the same
@@ -125,8 +133,26 @@ if [ -n "$SEED_MANIFEST" ]; then
     case "$SCLASS" in ''|\#*) continue ;; esac
     # EVM_HARNESS_DIR lets seed-patterns.ag also seed the STRUCTURAL signature (variant match) via
     # struct-sig.js; empty for non-EVM seeds, where the struct pass self-skips (len(ed)==0).
-    ( cd "$RUN" && env SEED_CLASS="$SCLASS" SEED_SRC="$SSRC" SEED_FUNC="$SMARK" EVM_HARNESS_DIR="$EVM_HARNESS" "$AGENTIS" go seed-patterns.ag --enable-exec ) 2>&1 | grep -i 'seed' >&2
+    ( cd "$RUN" && env SEED_CLASS="$SCLASS" SEED_SRC="$SSRC" SEED_FUNC="$SMARK" EVM_HARNESS_DIR="$EVM_HARNESS" "$AGENTIS" go seed-patterns.ag --enable-exec ) 2>&1 | grep -i 'seed' >&2 || true
   done < "$SEED_MANIFEST"
+
+  # #861 M3+: build the fuzzy-match seed corpus (one `Class:::<normalized-sig>` per seed) so reconn's
+  # fuzzy fallback can catch a RESTRUCTURED fork the exact + structural matchers miss. EVM-only.
+  if [ -n "$EVM_HARNESS" ]; then
+    : > "$RUN/fuzzy-seeds.tsv"
+    while IFS='|' read -r SCLASS SSRC SMARK || [ -n "$SCLASS" ]; do
+      case "$SCLASS" in ''|\#*) continue ;; esac
+      sig=$(node "$EVM_HARNESS/struct-sig.js" "$SSRC" 2>/dev/null | grep "^${SMARK}:::" | head -1 | sed 's/^[^:]*::://')
+      [ -n "$sig" ] && printf '%s:::%s\n' "$SCLASS" "$sig" >> "$RUN/fuzzy-seeds.tsv"
+    done < "$SEED_MANIFEST"
+  fi
+
+  # #861: optionally publish every seeded pattern to the knowledge market ("DAG sdílej přes
+  # knowledge market") so other federation members can buy it via knowledge_buy.
+  if [ -n "$SHARE_PATTERNS" ]; then
+    cp "$HERE/auditor/agents/share-patterns.ag" "$RUN/share-patterns.ag"
+    ( cd "$RUN" && "$AGENTIS" go share-patterns.ag ) 2>&1 | grep -i 'share:' >&2
+  fi
 fi
 
 # scope env — only what the operator supplied reaches the (env_clear'd) sandbox.
@@ -134,6 +160,7 @@ ENV=(BOUNTY_TARGET="$TARGET")
 [ -n "$HARNESS" ]        && ENV+=(SOLANA_HARNESS_DIR="$HARNESS")
 [ -n "$ANCHOR_HARNESS" ] && ENV+=(SOLANA_ANCHOR_HARNESS_DIR="$ANCHOR_HARNESS")
 [ -n "$EVM_HARNESS" ]    && ENV+=(EVM_HARNESS_DIR="$EVM_HARNESS")
+[ -f "$RUN/fuzzy-seeds.tsv" ] && ENV+=(FUZZY_SEEDS="$RUN/fuzzy-seeds.tsv" FUZZY_THRESHOLD="$FUZZY_THRESHOLD")
 [ -n "$SNAPSHOT" ]       && ENV+=(BOUNTY_SNAPSHOT="$SNAPSHOT")
 [ -n "$POC" ]            && ENV+=(BOUNTY_POC="$POC")
 [ -n "$REPO" ]           && ENV+=(BOUNTY_REPO="$REPO" BOUNTY_IN_SCOPE="$IN_SCOPE" BOUNTY_CONTRACT="$CONTRACT")

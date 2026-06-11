@@ -16,6 +16,46 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- M3 held-out recall harness + knowledge-market sharing (#861). Measures whether the seeded DAG
+  catches a finding's FORK it did not see seeded, and shares the corpus across the federation:
+  - `recall.sh` + `auditor/agents/recall-match.ag` seed with the real `seed-patterns.ag` (zero
+    seed-side drift) and match each held-out target with a mirror of reconn's exact + structural
+    matchers, then tally exact-only vs structural recall per class + precision on negatives.
+  - `evm-harness/make-variants.js` generates realistic fork variants of a seeded function (rename /
+    reformat / re-literal = what a real N-day fork is) plus structural negatives (call-kind swap,
+    injected guard) that MUST NOT match. Reuses `struct-sig.js`'s exported KEEP set so a renamed
+    fork keeps the same signature; `struct-sig.js` now `module.exports` its token rules.
+  - `harvest-sherlock.js` handles BOTH Sherlock judging layouts — the old `NNN-H`/`NNN-M` folders
+    and the new flat `NNN.md` files (severity inside the file).
+  - **Synthetic result** on 41 real shape-based findings from 4 Sherlock contests (164 held-out
+    forks): exact-only recall 6%, structural recall 94%. But these forks are GENERATED
+    (rename/reformat/re-literal) — exactly the transforms struct-sig was built to be invariant to —
+    so 94% is an **upper bound on near-verbatim forks**, not a real-world hit-rate.
+  - **Real fork-pair result** (`evm-harness/forkpair-recall.js`, the honest measurement): seed a
+    function from one protocol and match the SAME function as actually deployed in a protocol that
+    forked it — Compound `CToken.sol` vs its Venus `VToken.sol` fork, 48 shared functions. Exact
+    signature recall is **17%** (only the simple getters; the vuln-bearing functions like
+    `redeemFresh`/`accrueInterest` are ~2x rewritten in the fork and never hit). Two struct-sig
+    fixes surfaced by this (modifier-order canonicalization + `uint`/`uint256` aliasing) lifted it
+    from 0% to 17%.
+  - **Fuzzy matcher** (`evm-harness/fuzzy-match.js`) — the recall lift for REAL forks. Matches on
+    shingle-Jaccard SIMILARITY instead of signature equality, so a restructured fork still hits:
+    Compound->Venus fuzzy recall **69% @ 0.30 / 54% @ 0.35 / 46% @ 0.40** (incl. the vuln functions),
+    at ~52-67% precision (structurally-similar-but-different functions also match — gate-safe, a
+    false candidate costs one inconclusive synthesis, never a finding). Wired into reconn
+    (`match_seeded_fuzzy_evm`, the third fallback after exact + structural) and the recall harness.
+    Proven end-to-end through the colony: seed Compound `redeemFresh`, audit Venus's real forked
+    `redeemFresh` (Jaccard 0.41) -> `SEEDED FUZZY MATCH -> Reentrancy`, guard fired `[High]` where
+    exact + structural both missed.
+  - Known limitation: the in-`.ag` `strip_comments` accumulates an O(n^2) string heap and overflows
+    on a full ~1500-line real contract target (the exact/structural paths run it first). Real
+    full-contract auditing needs that rewritten; single-function and mid-size targets are unaffected.
+  - `auditor/agents/share-patterns.ag` + `run-audit.sh --share-patterns` publish each seeded
+    `bugpat:exact:<hash>` / `bugpat:struct:<hash>` to the knowledge market (`knowledge_sell`, keyed
+    by content hash) so other federation members can `knowledge_buy` it — "share the DAG via the
+    knowledge market". The buy side is a real economic exchange (the buyer escrows the ask price
+    from its CB pool), so importing a shared pattern requires a funded consumer.
+
 - M1+ structural-variant bug-pattern matching (#861) — `evm-harness/struct-sig.js` + a new reconn
   fallback. Exact-hash seed matching (the prior M1) catches only a byte-identical N-day fork of a
   recorded finding; this also catches a RENAMED / REFORMATTED / RE-LITTERED fork. `struct-sig.js`

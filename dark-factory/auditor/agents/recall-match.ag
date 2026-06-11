@@ -1,0 +1,99 @@
+cb 200000;
+// #861 M3: match ONE held-out target against the ALREADY-seeded bugpat DAG and print the verdict
+// (exact + structural), for the recall harness. The seed side reuses the real seed-patterns.ag (zero
+// drift); this match side mirrors auditor.ag::match_seeded_evm and match_seeded_struct_evm EXACTLY
+// (same hashing, same is_vuln_class gate) so the measured recall reflects what reconn would do in
+// production. Env: TEST_SRC (path to the held-out .sol), TEST_CLASS (its true class), TEST_ID,
+// TEST_TRANSFORM (label), EVM_HARNESS_DIR. Prints one line:
+//   RECALL|<trueclass>|<id>|<transform>|exact=<class|MISS>|struct=<class|MISS>
+
+// Mirror of auditor.ag::strip_comments — must canonicalize IDENTICALLY to the exact-match path.
+fn strip_comments(src: string) -> string {
+    let lines = regex_split("\n", src);
+    return reduce(lines, |acc: string, l: string| -> string {
+        let c = index_of(l, "//");
+        if c >= 0 {
+            acc + substring(l, 0, c) + "\n";
+        } else {
+            acc + l + "\n";
+        }
+    }, "");
+}
+
+// Mirror of auditor.ag::is_vuln_class — only a recognized class counts as a hit (rejects "" / "void").
+fn is_vuln_class(c: string) -> bool {
+    if c == "Reentrancy" { return true; }
+    if c == "AccessControl" { return true; }
+    if c == "UncheckedCall" { return true; }
+    if c == "OracleManipulation" { return true; }
+    if c == "IntegerOverflow" { return true; }
+    return false;
+}
+
+// Mirror of auditor.ag::match_seeded_evm — exact byte-identical sub-graph match.
+fn match_exact(code: string) -> string {
+    return reduce(regex_split("function ", code), |acc: string, c: string| -> string {
+        if len(acc) > 0 { return acc; }
+        if len(c) == 0 { return acc; }
+        let h = dag_put("function " + c);
+        let cls = recall_latest("bugpat:exact:" + h);
+        if is_vuln_class(cls) { return cls; }
+        return acc;
+    }, "");
+}
+
+// Mirror of auditor.ag::match_seeded_struct_evm — structural-variant match via struct-sig.js.
+fn match_struct(path: string) -> string {
+    let ed = getenv("EVM_HARNESS_DIR");
+    if len(ed) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    let sigs = exec sh "node ${ed}/struct-sig.js ${path} 2>/dev/null || true";
+    return reduce(regex_split("\n", sigs), |acc: string, line: string| -> string {
+        if len(acc) > 0 { return acc; }
+        let sep = index_of(line, ":::");
+        if sep > 0 {
+            let sig = substring(line, sep + 3, len(line));
+            let h = dag_put(sig);
+            let cls = recall_latest("bugpat:struct:" + h);
+            if is_vuln_class(cls) { return cls; }
+        }
+        return acc;
+    }, "");
+}
+
+// #861 M3+: FUZZY structural match — shingle-Jaccard similarity (fuzzy-match.js) against the seed
+// corpus TSV ($FUZZY_SEEDS, one `Class:::sig` per line). The recall lift for REAL forks, where the
+// vuln function is restructured beyond exact-signature equality. Returns the matched class or "".
+fn match_fuzzy(path: string) -> string {
+    let ed = getenv("EVM_HARNESS_DIR");
+    let seeds = getenv("FUZZY_SEEDS");
+    if len(ed) == 0 { return ""; }
+    if len(seeds) == 0 { return ""; }
+    let th = getenv("FUZZY_THRESHOLD");
+    // colony-lint: safe-exec-concat
+    let out = exec sh "node ${ed}/fuzzy-match.js ${path} ${seeds} ${th} 2>/dev/null || true";
+    return reduce(regex_split("\n", out), |acc: string, line: string| -> string {
+        if is_vuln_class(acc) { return acc; }
+        if is_vuln_class(line) { return line; }
+        return acc;
+    }, "");
+}
+
+// Render a match result as the class name, or "MISS" when nothing matched (no reassignment — .ag
+// `let` bindings are single-assignment).
+fn label(c: string) -> string {
+    if is_vuln_class(c) { return c; }
+    return "MISS";
+}
+
+let path = getenv("TEST_SRC");
+let cls = getenv("TEST_CLASS");
+let id = getenv("TEST_ID");
+let tr = getenv("TEST_TRANSFORM");
+// colony-lint: safe-exec-concat
+let src = exec sh "cat ${path} 2>/dev/null || true";
+let code = strip_comments(src);
+let ex = match_exact(code);
+let st = match_struct(path);
+let fz = match_fuzzy(path);
+print("RECALL|" + cls + "|" + id + "|" + tr + "|exact=" + label(ex) + "|struct=" + label(st) + "|fuzzy=" + label(fz));

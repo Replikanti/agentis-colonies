@@ -70,6 +70,25 @@ function stripComments(src) {
 
 const TOK = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|0x[0-9a-fA-F]+|\d[\d_.eE]*|[A-Za-z_$][\w$]*|\S/g;
 
+// Visibility / mutability / inheritance keywords whose ORDER in a function header carries no
+// structural meaning — `override external view` and `external view override` are the same function.
+// Real forks and different solc versions reorder these freely (Compound `override external view`
+// vs its Venus fork `external view override`), so a maximal run of them is sorted to a canonical
+// order before hashing. Identifier NAMES (a named modifier like nonReentrant -> `_`) are NOT in
+// this set, so they break the run and their presence/position is preserved (a guard still matters).
+const MOD_ORDER = new Set([
+  'external', 'public', 'internal', 'private', 'view', 'pure', 'payable', 'nonpayable',
+  'override', 'virtual', 'constant', 'immutable',
+]);
+
+// `uint`/`int` are exact aliases of `uint256`/`int256`; canonicalize so a fork that spells one way
+// matches a base that spells the other (Compound `uint` vs Venus `uint256`).
+function canonType(t) {
+  if (t === 'uint') return 'uint256';
+  if (t === 'int') return 'int256';
+  return t;
+}
+
 function normalize(unit) {
   const toks = unit.match(TOK) || [];
   const out = [];
@@ -79,10 +98,20 @@ function normalize(unit) {
     if (c === '0' && (t[1] === 'x' || t[1] === 'X')) { out.push('0'); continue; } // hex number
     if (c >= '0' && c <= '9') { out.push('0'); continue; }        // number literal
     if (/[A-Za-z_$]/.test(c)) {                                    // identifier
-      out.push(KEEP.has(t) || sizedType(t) ? t : '_');
+      out.push(KEEP.has(t) || sizedType(t) ? canonType(t) : '_');
       continue;
     }
     out.push(t);                                                  // punctuation / operator, verbatim
+  }
+  // Canonicalize modifier-keyword order: sort each maximal run of MOD_ORDER tokens.
+  for (let i = 0; i < out.length; ) {
+    if (MOD_ORDER.has(out[i])) {
+      let j = i;
+      while (j < out.length && MOD_ORDER.has(out[j])) j++;
+      const run = out.slice(i, j).sort();
+      for (let k = i; k < j; k++) out[k] = run[k - i];
+      i = j;
+    } else { i++; }
   }
   return out.join(' ');
 }
@@ -139,4 +168,9 @@ function main() {
   if (lines.length) process.stdout.write(lines.join('\n') + '\n');
 }
 
-main();
+// Exported so the M3 recall harness's variant generator (make-variants.js) renames EXACTLY the
+// identifiers this normalizer drops — keeping a generated fork's signature identical to its seed.
+// Only run as a script when invoked directly (so `require()` doesn't trigger main()).
+module.exports = { KEEP, sizedType, normalize, extractFunctions, stripComments, TOK };
+
+if (require.main === module) main();
