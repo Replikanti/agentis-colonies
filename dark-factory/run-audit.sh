@@ -36,7 +36,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
 TARGET="" ; HARNESS="" ; ANCHOR_HARNESS="" ; EVM_HARNESS="" ; SNAPSHOT="" ; POC=""
 REPO="" ; IN_SCOPE="" ; CONTRACT="" ; SEED_MANIFEST="" ; SHARE_PATTERNS=""
-BACKEND="claude" ; SANDBOX="hardened" ; OUT="$PWD/audit-out" ; FUZZY_THRESHOLD="0.35"
+BACKEND="claude" ; SANDBOX="hardened" ; OUT="$PWD/audit-out" ; FUZZY_THRESHOLD="0.35" ; FUZZY_K="4" ; USE_EVOLVED=""
 
 need() { [ "$1" -ge 2 ] || { echo "run-audit.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -47,6 +47,9 @@ while [ $# -gt 0 ]; do
     --contract) need "$#"; CONTRACT="$2"; shift 2 ;;
     --seed-manifest) need "$#"; SEED_MANIFEST="$2"; shift 2 ;;
     --share-patterns) SHARE_PATTERNS=1; shift ;;
+    --use-evolved) need "$#"; USE_EVOLVED="$2"; shift 2 ;;
+    --fuzzy-threshold) need "$#"; FUZZY_THRESHOLD="$2"; shift 2 ;;
+    --fuzzy-k) need "$#"; FUZZY_K="$2"; shift 2 ;;
     --harness) need "$#"; HARNESS="$2"; shift 2 ;;
     --anchor-harness) need "$#"; ANCHOR_HARNESS="$2"; shift 2 ;;
     --evm-harness) need "$#"; EVM_HARNESS="$2"; shift 2 ;;
@@ -60,6 +63,17 @@ while [ $# -gt 0 ]; do
     *) echo "run-audit.sh: unknown flag $1" >&2; exit 2 ;;
   esac
 done
+
+# #861 M4: --use-evolved <evolve-out-dir> adopts the matcher granularity the pattern-evolver tuned
+# against the fork-pair fitness oracle (evolved:fuzzy_threshold / evolved:fuzzy_k memos) instead of
+# the hand-set default — the federation's own evolution picks the threshold/k.
+if [ -n "$USE_EVOLVED" ]; then
+  ET="$( ( cd "$USE_EVOLVED/run" 2>/dev/null && "$AGENTIS" memo get evolved:fuzzy_threshold 2>/dev/null ) || true )"
+  EK="$( ( cd "$USE_EVOLVED/run" 2>/dev/null && "$AGENTIS" memo get evolved:fuzzy_k 2>/dev/null ) || true )"
+  [ -n "$ET" ] && FUZZY_THRESHOLD="$ET"
+  [ -n "$EK" ] && FUZZY_K="$EK"
+  echo "run-audit.sh: adopted evolved matcher granularity threshold=$FUZZY_THRESHOLD k=$FUZZY_K" >&2
+fi
 
 # --repo mode (#859 phases 1-4): a REAL multi-file Foundry/Hardhat target. The operator points
 # at the repo + the in-scope contract within it; the colony compiles that contract WITH its deps
@@ -115,7 +129,7 @@ cp "$COLONY" "$RUN/auditor.ag"
   echo "llm.backend = $BACKEND"
   [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p"; echo "llm.cli_timeout_ms = 180000"; }
   echo "trace.level = normal"
-  echo "exec.env_passthrough = BOUNTY_TARGET,BOUNTY_POC,SOLANA_HARNESS_DIR,SOLANA_ANCHOR_HARNESS_DIR,EVM_HARNESS_DIR,BOUNTY_SNAPSHOT,BOUNTY_REPO,BOUNTY_IN_SCOPE,BOUNTY_CONTRACT,SEED_SRC,SEED_CLASS,SEED_FUNC,FUZZY_SEEDS,FUZZY_THRESHOLD"
+  echo "exec.env_passthrough = BOUNTY_TARGET,BOUNTY_POC,SOLANA_HARNESS_DIR,SOLANA_ANCHOR_HARNESS_DIR,EVM_HARNESS_DIR,BOUNTY_SNAPSHOT,BOUNTY_REPO,BOUNTY_IN_SCOPE,BOUNTY_CONTRACT,SEED_SRC,SEED_CLASS,SEED_FUNC,FUZZY_SEEDS,FUZZY_THRESHOLD,FUZZY_K"
   echo "exec.default_timeout_ms = 180000"
   # --share-patterns lists each seeded pattern on the knowledge market (knowledge_sell), so other
   # federation members can buy it. The market is gated on the learning/knowledge subsystem.
@@ -160,7 +174,7 @@ ENV=(BOUNTY_TARGET="$TARGET")
 [ -n "$HARNESS" ]        && ENV+=(SOLANA_HARNESS_DIR="$HARNESS")
 [ -n "$ANCHOR_HARNESS" ] && ENV+=(SOLANA_ANCHOR_HARNESS_DIR="$ANCHOR_HARNESS")
 [ -n "$EVM_HARNESS" ]    && ENV+=(EVM_HARNESS_DIR="$EVM_HARNESS")
-[ -f "$RUN/fuzzy-seeds.tsv" ] && ENV+=(FUZZY_SEEDS="$RUN/fuzzy-seeds.tsv" FUZZY_THRESHOLD="$FUZZY_THRESHOLD")
+[ -f "$RUN/fuzzy-seeds.tsv" ] && ENV+=(FUZZY_SEEDS="$RUN/fuzzy-seeds.tsv" FUZZY_THRESHOLD="$FUZZY_THRESHOLD" FUZZY_K="$FUZZY_K")
 [ -n "$SNAPSHOT" ]       && ENV+=(BOUNTY_SNAPSHOT="$SNAPSHOT")
 [ -n "$POC" ]            && ENV+=(BOUNTY_POC="$POC")
 [ -n "$REPO" ]           && ENV+=(BOUNTY_REPO="$REPO" BOUNTY_IN_SCOPE="$IN_SCOPE" BOUNTY_CONTRACT="$CONTRACT")

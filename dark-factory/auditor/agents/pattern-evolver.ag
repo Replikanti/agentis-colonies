@@ -1,0 +1,89 @@
+cb 2000000;
+// #861 M4: evolve the fuzzy matcher's GRANULARITY genome (shingle-Jaccard threshold × shingle
+// width k) against the fork-pair FITNESS ORACLE (forkpair-recall.js on a held-out real fork pair).
+// The granularity is the knob no human could hand-tune — too loose floods synthesis, too tight
+// misses forks, and the sweet spot is unknown a priori. That is a search problem, and the recall
+// harness IS the fitness function. This agent searches the genome, records each candidate as
+// substrate experience via learn() (so the exploration accrues fitness in the experience store),
+// selects the F-beta-max config, and writes evolved:fuzzy_threshold / evolved:fuzzy_k for reconn to
+// adopt. Fitness = F-beta with beta>1 (recall-leaning): the two-sided synthesis gate absorbs false
+// matches, so on a real fork recall is worth more than precision.
+//
+// Env: FORK_BASE + FORK_FORK (held-out fork-pair .sol), EVM_HARNESS_DIR, EVOLVE_BETA (default 2).
+
+fn fbeta(r: float, p: float, b2: float) -> float {
+    let denom = b2 * p + r;
+    if denom == 0.0 { return 0.0; }
+    return (1.0 + b2) * p * r / denom;
+}
+
+// beta^2 from the EVOLVE_BETA env (default beta=2 -> 4) — no `let` reassignment in .ag.
+fn beta_sq(b: float) -> float {
+    if b == 0.0 { return 4.0; }
+    return b * b;
+}
+
+// Candidate outcome for the experience store: beats the default baseline or not.
+fn outcome_of(fit: float, base: float) -> string {
+    if fit > base { return "success"; }
+    return "partial";
+}
+
+// Run the oracle for one genome point and return its EVAL line.
+fn run_eval(ed: string, base: string, fork: string, th: string, k: string) -> string {
+    // colony-lint: safe-exec-concat
+    return exec sh "node ${ed}/forkpair-recall.js ${base} ${fork} ${th} ${k} 2>/dev/null | grep '^EVAL|' || true";
+}
+
+// F-beta fitness of an EVAL line.
+fn eval_fbeta(out: string, b2: float) -> float {
+    let r = parse_float(regex_capture("recall=([0-9.]+)", out, 1));
+    let p = parse_float(regex_capture("precision=([0-9.]+)", out, 1));
+    return fbeta(r, p, b2);
+}
+
+let ed = getenv("EVM_HARNESS_DIR");
+let base = getenv("FORK_BASE");
+let fork = getenv("FORK_FORK");
+let b2 = beta_sq(parse_float(getenv("EVOLVE_BETA")));   // default beta = 2 -> b2 = 4
+
+if len(ed) == 0 { print("evolve: ERROR — EVM_HARNESS_DIR unset"); }
+if len(base) == 0 { print("evolve: ERROR — FORK_BASE unset"); }
+
+// Baseline: the hand-set default genome (threshold 0.35, k 4).
+let base_out = run_eval(ed, base, fork, "0.35", "4");
+let base_fit = eval_fbeta(base_out, b2);
+print("evolve: baseline default(th=0.35,k=4) F-beta =", to_string(base_fit));
+
+// Genome: flattened `threshold:k` candidates spanning the granularity space.
+let genome = ["0.20:3", "0.20:4", "0.25:3", "0.25:4", "0.25:5", "0.30:3", "0.30:4", "0.30:5", "0.35:3", "0.35:4", "0.35:5", "0.40:3", "0.40:4", "0.40:5", "0.45:4"];
+
+// Search: evaluate each candidate, learn() it (substrate experience), track the F-beta-max as
+// "th:k:fitness". Single-assignment acc threads the running best.
+let best = reduce(genome, |acc: string, g: string| -> string {
+    let sep = index_of(g, ":");
+    let th = substring(g, 0, sep);
+    let k = substring(g, sep + 1, len(g));
+    let out = run_eval(ed, base, fork, th, k);
+    let fit = eval_fbeta(out, b2);
+    let outcome = outcome_of(fit, base_fit);
+    learn("matcher-genome", "th=" + th + " k=" + k, "F-beta " + to_string(fit), outcome, ["evolve", th, k]);
+    print("evolve: th=" + th + " k=" + k + " F-beta=" + to_string(fit) + " (" + outcome + ")");
+    let arest = substring(acc, index_of(acc, ":") + 1, len(acc));
+    let afit = parse_float(substring(arest, index_of(arest, ":") + 1, len(arest)));
+    if fit > afit {
+        return th + ":" + k + ":" + to_string(fit);
+    }
+    return acc;
+}, "0.35:4:" + to_string(base_fit));
+
+// Parse the winning genome and persist it for reconn to adopt.
+let bth = substring(best, 0, index_of(best, ":"));
+let brest = substring(best, index_of(best, ":") + 1, len(best));
+let bk = substring(brest, 0, index_of(brest, ":"));
+let bfit = substring(brest, index_of(brest, ":") + 1, len(brest));
+
+memo_write("evolved:fuzzy_threshold", bth);
+memo_write("evolved:fuzzy_k", bk);
+print("evolve: BEST genome th=" + bth + " k=" + bk + " F-beta=" + bfit + " vs baseline " + to_string(base_fit));
+print("evolve: wrote evolved:fuzzy_threshold=" + bth + " evolved:fuzzy_k=" + bk);

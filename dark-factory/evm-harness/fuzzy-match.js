@@ -13,15 +13,17 @@
 // every match still has to clear the two-sided synthesis gate, so a false candidate only costs one
 // inconclusive synthesis, never a false finding.
 //
-// Usage:   node fuzzy-match.js <target.sol> <seeds-file> [threshold=0.35]
+// Usage:   node fuzzy-match.js <target.sol> <seeds-file> [threshold=0.35] [shingle-k=4]
 //   <seeds-file> is one `Class:::<normalized-sig>` per line (written by seed-patterns.ag).
+//   threshold + shingle-k are the matcher's evolvable granularity genome (tuned by pattern-evolver
+//   against the fork-pair fitness oracle in M4).
 // Output:  the matched Class of the FIRST target function that clears the threshold against any
 //          seed (mirrors reconn's first-hit short-circuit), or nothing. Exit 0 always (graceful).
 'use strict';
 const fs = require('fs');
 const { extractFunctions, normalize, stripComments } = require('./struct-sig.js');
 
-const K = 4; // shingle width (tokens). 4 balances structural specificity vs fork-drift tolerance.
+let K = 4; // shingle width (tokens). 4 balances structural specificity vs fork-drift tolerance.
 
 function shingles(sig) {
   const t = sig.split(' ').filter(Boolean);
@@ -46,6 +48,7 @@ function main() {
   const target = process.argv[2];
   const seedsFile = process.argv[3];
   const threshold = process.argv[4] ? parseFloat(process.argv[4]) : 0.35;
+  if (process.argv[5]) { const kv = parseInt(process.argv[5], 10); if (kv >= 1) K = kv; }
   if (!target || !seedsFile) return;
   let seedLines = [];
   try { seedLines = fs.readFileSync(seedsFile, 'utf8').split('\n').filter(Boolean); } catch (e) { return; }
