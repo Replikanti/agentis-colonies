@@ -29,6 +29,15 @@ fn struct_has_signal(sig: string) -> bool {
 // Mirror of auditor.ag::strip_comments — the seed must canonicalize IDENTICALLY to reconn or the
 // content hashes won't match.
 fn strip_comments(src: string) -> string {
+    // Offload to strip-comments.js (O(n)) so the seed strips comments IDENTICALLY to reconn's EVM
+    // exact-match path (which also offloads) — the in-.ag reduce is O(n^2). Falls back to the in-.ag
+    // stripper if no EVM_HARNESS_DIR (seeds are small, so the fallback never overflows).
+    let ed = getenv("EVM_HARNESS_DIR");
+    if len(ed) > 0 {
+        file_write("h_strip.sol", src);
+        // colony-lint: safe-exec-concat
+        return exec sh "node ${ed}/strip-comments.js h_strip.sol 2>/dev/null || true";
+    }
     let lines = regex_split("\n", src);
     return reduce(lines, |acc: string, l: string| -> string {
         let c = index_of(l, "//");

@@ -63,6 +63,16 @@ fn ingest_target() -> string {
 
 // Strip `//` line comments so they can neither forge nor mask a guard.
 fn strip_comments(src: string) -> string {
+    // EVM path: offload to strip-comments.js (O(n)). The in-.ag reduce below is O(n^2) string
+    // accumulation that overflows the per-tick string heap on a full ~1500-line real contract
+    // (agentis has no join/regex_replace builtin for an in-.ag O(n) rewrite). The Rust path
+    // (no EVM_HARNESS_DIR) keeps the in-.ag stripper. Both seed + match offload, so hashes align.
+    let ed = getenv("EVM_HARNESS_DIR");
+    if len(ed) > 0 {
+        file_write("h_strip.sol", src);
+        // colony-lint: safe-exec-concat
+        return exec sh "node ${ed}/strip-comments.js h_strip.sol 2>/dev/null || true";
+    }
     let lines = regex_split("\n", src);
     return reduce(lines, |acc: string, l: string| -> string {
         let c = index_of(l, "//");
