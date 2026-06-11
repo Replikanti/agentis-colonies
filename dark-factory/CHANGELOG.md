@@ -33,6 +33,16 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- M2 harvest — `harvest-sherlock.js` pulls real findings from a Sherlock judging repo (the `NNN-H`/`NNN-M`
+  valid-finding folders) into a seed manifest for the DAG bug-pattern matcher (#861). It maps each
+  finding's title/lead to one of the colony's verifiable classes (Reentrancy / AccessControl /
+  UncheckedCall / OracleManipulation / IntegerOverflow) by keyword cue, extracts the vulnerable function
+  from the finding's `solidity` block, and emits `<NNN>.sol` + a `Class|path|func-marker` manifest that
+  `run-audit.sh --seed-manifest` feeds to the seeder. Findings whose root cause is NOT one of the five
+  classes (subtle / multi-contract logic) are skipped — the harness can't verify them anyway. Proven on
+  the Alchemix Sherlock contest: 20 findings -> 4 real patterns seeded with their actual functions.
+  (Exact-hash match catches verbatim N-day forks of these; structural-variant matching is the next step.)
+
 - DAG bug-pattern matching — seed the federation's content-addressed DAG with real findings so the
   colony recognizes recurring patterns (N-day forks) on real targets (#861). `seed-patterns.ag` +
   `run-audit.sh --seed-manifest` record a finished-contest finding's vulnerable-function sub-graph as
