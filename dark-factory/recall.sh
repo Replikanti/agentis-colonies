@@ -16,7 +16,7 @@
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-AGENTIS="agentis"; SEED_MANIFEST=""; TEST_MANIFEST=""; EVM_HARNESS=""; OUT="$PWD/recall-out"
+AGENTIS="agentis"; SEED_MANIFEST=""; TEST_MANIFEST=""; EVM_HARNESS=""; OUT="$PWD/recall-out"; FUZZY_THRESHOLD="0.35"
 need() { [ "$1" -ge 2 ] || { echo "recall.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -24,6 +24,7 @@ while [ $# -gt 0 ]; do
     --test-manifest) need "$#"; TEST_MANIFEST="$2"; shift 2 ;;
     --evm-harness) need "$#"; EVM_HARNESS="$2"; shift 2 ;;
     --agentis) need "$#"; AGENTIS="$2"; shift 2 ;;
+    --threshold) need "$#"; FUZZY_THRESHOLD="$2"; shift 2 ;;
     --out) need "$#"; OUT="$2"; shift 2 ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "recall.sh: unknown flag $1" >&2; exit 2 ;;
@@ -43,7 +44,7 @@ cp "$HERE/auditor/agents/recall-match.ag" "$RUN/recall-match.ag"
 ( cd "$RUN" && "$AGENTIS" init >/dev/null 2>&1 )
 {
   echo "trace.level = normal"
-  echo "exec.env_passthrough = EVM_HARNESS_DIR,SEED_SRC,SEED_CLASS,SEED_FUNC,TEST_SRC,TEST_CLASS,TEST_ID,TEST_TRANSFORM"
+  echo "exec.env_passthrough = EVM_HARNESS_DIR,SEED_SRC,SEED_CLASS,SEED_FUNC,TEST_SRC,TEST_CLASS,TEST_ID,TEST_TRANSFORM,FUZZY_SEEDS,FUZZY_THRESHOLD"
   echo "exec.default_timeout_ms = 180000"
 } > "$RUN/.agentis/config"
 
@@ -58,17 +59,27 @@ while IFS='|' read -r C S M || [ -n "$C" ]; do
 done < "$SEED_MANIFEST"
 echo "recall: seeded $nseed pattern(s)" >&2
 
-# ---- match each held-out target (exact + structural) --------------------------------------------
+# build the fuzzy-match seed corpus: one `Class:::<normalized-sig>` per seed (its marker function),
+# consumed by fuzzy-match.js for shingle-Jaccard similarity matching.
+FUZZY_SEEDS="$OUT/fuzzy-seeds.tsv"; : > "$FUZZY_SEEDS"
+while IFS='|' read -r C S M || [ -n "$C" ]; do
+  case "$C" in ''|\#*) continue ;; esac
+  sig=$(node "$EVM_HARNESS/struct-sig.js" "$S" 2>/dev/null | grep "^${M}:::" | head -1 | sed 's/^[^:]*::://')
+  [ -n "$sig" ] && printf '%s:::%s\n' "$C" "$sig" >> "$FUZZY_SEEDS"
+done < "$SEED_MANIFEST"
+
+# ---- match each held-out target (exact + structural + fuzzy) -------------------------------------
 RAW="$OUT/recall-raw.txt"; : > "$RAW"
 ntest=0
 while IFS='|' read -r C S ID TR EXPECT || [ -n "$C" ]; do
   case "$C" in ''|\#*) continue ;; esac
   line=$( cd "$RUN" && env TEST_SRC="$S" TEST_CLASS="$C" TEST_ID="$ID" TEST_TRANSFORM="$TR" EVM_HARNESS_DIR="$EVM_HARNESS" \
+      FUZZY_SEEDS="$FUZZY_SEEDS" FUZZY_THRESHOLD="$FUZZY_THRESHOLD" \
       "$AGENTIS" go recall-match.ag --enable-exec 2>/dev/null | grep '^RECALL|' || true )
   [ -n "$line" ] && echo "${line}|expect=${EXPECT}" >> "$RAW"
   ntest=$((ntest + 1))
 done < "$TEST_MANIFEST"
-echo "recall: matched $ntest held-out target(s)" >&2
+echo "recall: matched $ntest held-out target(s) (fuzzy threshold $FUZZY_THRESHOLD)" >&2
 
 # ---- tally -> markdown --------------------------------------------------------------------------
 REPORT="$OUT/recall-report.md"
@@ -77,36 +88,40 @@ function pct(n, d) { return d == 0 ? "n/a" : sprintf("%.0f%% (%d/%d)", 100*n/d, 
 {
   split($5, a, "="); ex = a[2];
   split($6, b, "="); st = b[2];
-  split($7, c, "="); expect = c[2];
+  split($7, c, "="); fz = c[2];
+  split($8, d, "="); expect = d[2];
   cls = $2;
   if (expect == "match") {
     mt[cls]++; MT++;
-    if (ex == cls)  { me[cls]++; ME++; }
-    if (st == cls)  { ms[cls]++; MS++; }
+    if (ex == cls) { me[cls]++; ME++; }
+    if (st == cls) { ms[cls]++; MS++; }
+    if (fz == cls) { mf[cls]++; MF++; }
   } else {
     NT++;
     if (ex != "MISS") NE++;
     if (st != "MISS") NS++;
+    if (fz != "MISS") NFZ++;
   }
   seen[cls] = 1;
 }
 END {
   print "## M3 — held-out recall (DAG bug-pattern matcher)";
   print "";
-  print "Recall = a seeded pattern catching a held-out FORK it did not see seeded. Forks are";
-  print "rename / reformat / re-literal variants (what a real N-day fork is). Baseline = exact-hash.";
+  print "Recall = a seeded pattern catching a held-out target it did not see seeded.";
+  print "exact = byte-identical sub-graph; structural = exact normalized signature; fuzzy =";
+  print "shingle-Jaccard similarity (the lift for REAL forks where the function is restructured).";
   print "";
-  print "| Class | held-out forks | exact-only recall | **structural recall** |";
-  print "|-------|----------------|-------------------|-----------------------|";
+  print "| Class | held-out | exact | structural | **fuzzy** |";
+  print "|-------|----------|-------|------------|-----------|";
   for (k in seen) if (mt[k] > 0)
-    printf("| %s | %d | %s | **%s** |\n", k, mt[k], pct(me[k], mt[k]), pct(ms[k], mt[k]));
-  printf("| **ALL** | %d | %s | **%s** |\n", MT, pct(ME, MT), pct(MS, MT));
+    printf("| %s | %d | %s | %s | **%s** |\n", k, mt[k], pct(me[k], mt[k]), pct(ms[k], mt[k]), pct(mf[k], mt[k]));
+  printf("| **ALL** | %d | %s | %s | **%s** |\n", MT, pct(ME, MT), pct(MS, MT), pct(MF, MT));
   print "";
-  print "### Precision (negatives — structurally-different, MUST NOT match)";
+  print "### Precision (negatives / unrelated — MUST NOT match; false-match rate)";
   print "";
-  printf("| variants | exact false-match | structural false-match |\n");
-  printf("|----------|-------------------|------------------------|\n");
-  printf("| %d | %s | %s |\n", NT, pct(NE, NT), pct(NS, NT));
+  printf("| targets | exact | structural | fuzzy |\n");
+  printf("|---------|-------|------------|-------|\n");
+  printf("| %d | %s | %s | %s |\n", NT, pct(NE, NT), pct(NS, NT), pct(NFZ, NT));
 }
 ' "$RAW" | tee "$REPORT"
 

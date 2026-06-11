@@ -61,6 +61,24 @@ fn match_struct(path: string) -> string {
     }, "");
 }
 
+// #861 M3+: FUZZY structural match — shingle-Jaccard similarity (fuzzy-match.js) against the seed
+// corpus TSV ($FUZZY_SEEDS, one `Class:::sig` per line). The recall lift for REAL forks, where the
+// vuln function is restructured beyond exact-signature equality. Returns the matched class or "".
+fn match_fuzzy(path: string) -> string {
+    let ed = getenv("EVM_HARNESS_DIR");
+    let seeds = getenv("FUZZY_SEEDS");
+    if len(ed) == 0 { return ""; }
+    if len(seeds) == 0 { return ""; }
+    let th = getenv("FUZZY_THRESHOLD");
+    // colony-lint: safe-exec-concat
+    let out = exec sh "node ${ed}/fuzzy-match.js ${path} ${seeds} ${th} 2>/dev/null || true";
+    return reduce(regex_split("\n", out), |acc: string, line: string| -> string {
+        if is_vuln_class(acc) { return acc; }
+        if is_vuln_class(line) { return line; }
+        return acc;
+    }, "");
+}
+
 // Render a match result as the class name, or "MISS" when nothing matched (no reassignment — .ag
 // `let` bindings are single-assignment).
 fn label(c: string) -> string {
@@ -77,4 +95,5 @@ let src = exec sh "cat ${path} 2>/dev/null || true";
 let code = strip_comments(src);
 let ex = match_exact(code);
 let st = match_struct(path);
-print("RECALL|" + cls + "|" + id + "|" + tr + "|exact=" + label(ex) + "|struct=" + label(st));
+let fz = match_fuzzy(path);
+print("RECALL|" + cls + "|" + id + "|" + tr + "|exact=" + label(ex) + "|struct=" + label(st) + "|fuzzy=" + label(fz));

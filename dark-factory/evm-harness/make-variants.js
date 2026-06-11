@@ -46,14 +46,17 @@ function negCallKind(src) {
   return /\.call\b/.test(src) ? src.replace(/\.call\b/g, '.delegatecall') : null;
 }
 
-// NEGATIVE: inject an access guard as the first body statement. A guarded function is a DIFFERENT
-// (safer) shape than the unguarded vulnerable seed — must NOT match.
+// NEGATIVE: inject an access guard as the first body statement of the FIRST FUNCTION. A guarded
+// function is a DIFFERENT (safer) shape than the unguarded vulnerable seed — must NOT match. Anchor
+// on the function header's body brace (`function ...) ... {`), NOT the first `{` in the file — for a
+// seed wrapped in `contract X { ... }` the first `{` is the contract brace, which would leave the
+// function body unchanged and produce a spurious self-match (QA #987 finding).
 function negGuard(src) {
   let injected = false;
-  const out = src.replace(/\{/, (m) => {
+  const out = src.replace(/\bfunction\b[^{};]*\)[^{;]*\{/, (m) => {
     if (injected) return m;
     injected = true;
-    return '{\n        require(msg.sender == _guardOwner, "auth");';
+    return m + '\n        require(msg.sender == _guardOwner, "auth");';
   });
   return injected ? out : null;
 }

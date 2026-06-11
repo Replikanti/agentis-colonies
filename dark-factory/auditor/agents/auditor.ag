@@ -346,8 +346,34 @@ fn match_seeded_struct_evm(target: string) -> string {
     }, "");
 }
 
+// #861 M3+: FUZZY structural match. Where match_seeded_struct_evm needs an EXACT normalized
+// signature, this catches a RESTRUCTURED fork — a real fork roughly doubles the vuln-bearing
+// functions (adds error codes / fees / params, reorders), which exact-signature equality never
+// hits (fork-pair validation: Compound CToken -> Venus VToken, exact-sig 17% vs fuzzy ~60% incl.
+// the vuln functions). fuzzy-match.js cuts each function's signature into k-token shingles and
+// matches on shingle-Jaccard similarity >= FUZZY_THRESHOLD against the seed corpus TSV
+// ($FUZZY_SEEDS, written by run-audit.sh from the seed manifest). Lower precision than exact
+// (~52-67%) — but every match still has to clear the two-sided synthesis gate, so a false
+// candidate only costs one inconclusive synthesis, never a false finding. Returns class or "".
+fn match_seeded_fuzzy_evm(target: string) -> string {
+    let ed = getenv("EVM_HARNESS_DIR");
+    let seeds = getenv("FUZZY_SEEDS");
+    if len(ed) == 0 { return ""; }
+    if len(seeds) == 0 { return ""; }
+    file_write("h_fuzzy.sol", target);
+    let th = getenv("FUZZY_THRESHOLD");
+    // colony-lint: safe-exec-concat
+    let out = exec sh "node ${ed}/fuzzy-match.js h_fuzzy.sol ${seeds} ${th} 2>/dev/null || true";
+    return reduce(regex_split("\n", out), |acc: string, line: string| -> string {
+        if is_vuln_class(acc) { return acc; }
+        if is_vuln_class(line) { return line; }
+        return acc;
+    }, "");
+}
+
 // #861: try the seeded known-bug DAG against the target — exact byte-identical fork first (cheaper,
-// most precise), then the structural-variant fallback. Returns the matched vuln class, or "".
+// most precise), then the structural-variant fallback, then the fuzzy-similarity fallback (the
+// recall lift for REAL restructured forks). Returns the matched vuln class, or "".
 fn match_seeded_any_evm(ecode: string, target: string) -> string {
     let ex = match_seeded_evm(ecode);
     if is_vuln_class(ex) {
@@ -358,6 +384,11 @@ fn match_seeded_any_evm(ecode: string, target: string) -> string {
     if is_vuln_class(st) {
         print("reconn: SEEDED STRUCTURAL MATCH ->", st, "(known-bug DAG; a variant of a recorded finding — names/literals differ, shape matches)");
         return st;
+    }
+    let fz = match_seeded_fuzzy_evm(target);
+    if is_vuln_class(fz) {
+        print("reconn: SEEDED FUZZY MATCH ->", fz, "(known-bug DAG; a RESTRUCTURED fork of a recorded finding — shingle-similarity >= threshold)");
+        return fz;
     }
     return "";
 }
