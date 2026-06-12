@@ -133,7 +133,9 @@ multi-agent audit pass.
 The operator supplies three inputs and the colony fans out one substrate agent per cell:
 
 - `--repo <dir>` — the cloned target (use `fetch-target.sh`).
-- `--scope <scope.tsv>` — `subsystem | classid,… | file,…` per line (files relative to the repo).
+- `--scope <scope.tsv>` — `subsystem | classid,… | file,…` per line (files relative to the repo). A
+  file may be written `file@fn1+fn2` to feed the hunter **only those functions** (+ the contract header)
+  — slice big/complex contracts this way so a deep liquidation/redemption read fits the LLM budget.
 - `--brief <brief.md>` — the protocol's invariants-to-break, **known issues to exclude**, and trust model.
 
 ```bash
@@ -174,6 +176,7 @@ dark-factory/
     agents/auditor.ag           # the DAG-match pipeline (reconn → guard → tracker → synthesis)
     agents/hunter.ag            # the custom-code discovery agent (taxonomy-driven adversarial hunt)
     bug-taxonomy.md             # 14 DeFi bug classes + per-class hunt lens (the discovery knowledge)
+    slice-fns.sh                # Solidity function-slicer (scope `file@fn1+fn2` -> header + named fns)
     config/colony.example.toml  # forge.type = "none"; cb_budget
     scripts/start-colony.sh     # thin `agentis go` launcher
     README.md
