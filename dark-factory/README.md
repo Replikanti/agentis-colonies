@@ -119,25 +119,68 @@ a manual human action. `run-audit.sh` requires `--target` and never auto-picks a
 `--backend mock` runs offline-deterministically (structural heuristic, no LLM). Produce a
 frozen snapshot with `snapshot-rpc.sh --rpc <url> --out snap.txt <pubkey>`.
 
+## Discover bugs in custom code (`run-discovery.sh`)
+
+`run-audit.sh` drives the DAG fork-**matcher** (`auditor.ag`): it fires only where in-scope code
+**recurs a known-bug pattern**, so on a bespoke, never-forked protocol it returns nothing. Custom
+contest code (a fresh stablecoin, a new vault) needs **discovery**, not matching. `run-discovery.sh`
+drives the colony's discovery agent — [`auditor/agents/hunter.ag`](./auditor/agents/hunter.ag) — a
+taxonomy-driven, adversarial, per-(subsystem × bug-class) audit that runs **entirely through the
+agentis substrate** (`prompt` / `emit` / `learn`), so every hunt is recorded as experience and the
+taxonomy's per-class fitness reweights over time. It is the colony-native form of a hand-run
+multi-agent audit pass.
+
+The operator supplies three inputs and the colony fans out one substrate agent per cell:
+
+- `--repo <dir>` — the cloned target (use `fetch-target.sh`).
+- `--scope <scope.tsv>` — `subsystem | classid,… | file,…` per line (files relative to the repo).
+- `--brief <brief.md>` — the protocol's invariants-to-break, **known issues to exclude**, and trust model.
+
+```bash
+dark-factory/run-discovery.sh \
+    --repo "$PWD/target" --scope "$PWD/scope.tsv" --brief "$PWD/brief.md" \
+    --backend claude --out "$PWD/discovery-out"
+# cheap wiring smoke (no real LLM):  add  --backend mock --only "<subsystem>" --classes C1
+```
+
+The bug classes live in [`auditor/bug-taxonomy.md`](./auditor/bug-taxonomy.md) (14 DeFi classes —
+share-price/ERC4626, oracle, cross-chain/LZ, withdrawal-queue, access-control, accounting,
+sig-replay, reentrancy, decimals, …), each with a deep "hunt" lens distilled from real audits.
+
+Every `CANDIDATE` in `discovery-out/discovery-report.md` is a **lead, not a finding** — unverified
+until it reproduces through the multi-contract Foundry gate:
+
+```bash
+dark-factory/evm-harness/forge-verify.sh --repo "$PWD/target" --poc "$PWD/Exploit.t.sol" --lz-symlink
+# exit 0 = VERIFIED (the exploit PoC passes); only a VERIFIED lead is worth a human-gated submission.
+```
+
+A clean sweep (no candidate survives) is a **rigorous negative** — a valid outcome on audited code;
+nothing is submitted. As with `run-audit.sh`, the colony never posts to a platform.
+
 ## Layout
 
 ```
 dark-factory/
   README.md                     # this file
   VERSION  CHANGELOG.md  BUNDLE.manifest  install.sh
-  run-audit.sh                  # operator entrypoint: run an audit -> human-gated package
+  run-audit.sh                  # operator entrypoint: DAG fork-matcher audit -> human-gated package
+  run-discovery.sh              # operator entrypoint: custom-code discovery (hunter fan-out) -> leads
   setup-solana-toolchain.sh     # one-time offline toolchain build (network ON)
   snapshot-rpc.sh               # host RPC getAccountInfo -> frozen on-chain snapshot (V4)
   calibrate-sealevel.sh         # detection+validation scorecard over the sealevel corpus (V6)
   sealevel-scorecard.md         # calibration results (3/3 true-positive, 0 false-VERIFIED)
   auditor/                      # the single colony
-    agents/auditor.ag           # the audit pipeline (reconn → guard → tracker → synthesis)
+    agents/auditor.ag           # the DAG-match pipeline (reconn → guard → tracker → synthesis)
+    agents/hunter.ag            # the custom-code discovery agent (taxonomy-driven adversarial hunt)
+    bug-taxonomy.md             # 14 DeFi bug classes + per-class hunt lens (the discovery knowledge)
     config/colony.example.toml  # forge.type = "none"; cb_budget
     scripts/start-colony.sh     # thin `agentis go` launcher
     README.md
   solana-harness/               # offline solana-program-test crate (real SVM, native)
   solana-harness-anchor/        # offline anchor-lang 0.31 harness (real SVM, Anchor) (V6)
   evm-harness/                  # offline revm crate: two-sided EVM PoC (real EVM, Solidity)
+    forge-verify.sh             # multi-contract custom-protocol PoC gate (real Foundry deploy+exploit)
   sealevel/                     # modernized coral-xyz/sealevel-attacks lessons (corpus) (V6)
   fixtures/                     # detection fixtures (vuln + safe + rigged-harness cases)
 ```
