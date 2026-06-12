@@ -1,0 +1,80 @@
+cb 300000;
+// #863 — custom-code DISCOVERY hunter. Deep, taxonomy-driven adversarial audit of CUSTOM
+// (non-fork) in-scope code. Complements the DAG matcher (seed-patterns/recall-match), which
+// fires only on known-code RECURRENCE and returns nothing on bespoke protocols (a fresh stablecoin, a new vault).
+//
+// One invocation hunts ONE bug class over ONE subsystem; run-audit.sh --mode discovery fans out
+// (subsystem x class) in parallel — the colony-native version of a hand-run multi-agent audit pass,
+// feeding every candidate into the forge-verify gate before it counts as a finding.
+//
+// Env:
+//   TARGET_DIR  repo root of the cloned target
+//   IN_SCOPE    newline-separated contract paths (relative to TARGET_DIR) for this subsystem
+//   SCOPE_BRIEF path to a file holding the invariants-to-break + known-issues-to-exclude + trust model
+//   TAXONOMY    path to bug-taxonomy.md
+//   HUNT_CLASS  one class id, e.g. "C1"
+//   SUBSYSTEM   human label for this slice
+// Stdout: exactly one `CANDIDATE|file:fn:line|class|severity|exploit|poc` line per finding, else `SAFE`.
+
+// --- file readers (dynamic paths -> safe-exec-concat per recall-match.ag precedent) ---
+fn cat_file(path: string) -> string {
+    // colony-lint: safe-exec-concat
+    return exec sh "sed -n '1,700p' ${path} 2>/dev/null || true";
+}
+
+// Concatenate every in-scope contract into one labelled blob.
+fn scoped_code(dir: string, files: string) -> string {
+    return reduce(regex_split("\n", files), |acc: string, rel: string| -> string {
+        if len(rel) == 0 { return acc; }
+        return acc + "\n\n// ========== " + rel + " ==========\n" + cat_file(dir + "/" + rel);
+    }, "");
+}
+
+// Extract the `## <cls> ...` section from the taxonomy (until the next `## `).
+fn class_section(taxo: string, cls: string) -> string {
+    // colony-lint: safe-exec-concat
+    return exec sh "awk -v c=\"${cls}\" 'index($0,\"## \"c\" \")==1{f=1} f&&index($0,\"## \")==1&&index($0,\"## \"c\" \")!=1{exit} f{print}' ${taxo} 2>/dev/null || true";
+}
+
+// learn() outcome must be one of the runtime enum {success,failure,partial,timeout,error}.
+// A surfaced candidate = success; a rigorous SAFE = failure (so taxonomy fitness rewards the
+// classes that actually produce leads across targets, per #861's evolve loop). No reassignment.
+fn outcome_of(verdict: string) -> string {
+    if index_of(verdict, "CANDIDATE|") == 0 { return "success"; }
+    return "failure";
+}
+
+let dir = getenv("TARGET_DIR");
+let files = getenv("IN_SCOPE");
+let cls = getenv("HUNT_CLASS");
+let subsystem = getenv("SUBSYSTEM");
+let brief = cat_file(getenv("SCOPE_BRIEF"));
+let code = scoped_code(dir, files);
+let classDoc = class_section(getenv("TAXONOMY"), cls);
+
+// The instruction carries the lens (taxonomy class), the brief (invariants + known-issues), and the
+// strict output contract; the code is the prompt payload (matches auditor.ag::classify_evm_llm shape).
+let instruction =
+    "You are an elite adversarial smart-contract auditor competing in a LIVE audit contest for real money. "
+  + "Find a HIGH or MEDIUM severity bug an EXTERNAL attacker (holding NO privileged role) can exploit. "
+  + "This code is likely already audited, so report ONLY a bug you are confident survives expert judging — "
+  + "no speculation, no informational notes.\n\n"
+  + "=== HUNT THIS BUG CLASS (the lens) ===\n" + classDoc + "\n\n"
+  + "=== PROTOCOL BRIEF — invariants whose violation is a valid finding, and KNOWN ISSUES you MUST NOT report ===\n"
+  + brief + "\n\n"
+  + "=== RULES ===\nOnly Medium/High count. A trusted role acting WITHIN its documented permissions is OUT OF SCOPE; "
+  + "a role EXCEEDING its permissions, or any unprivileged user, IS in scope. Never report a listed KNOWN ISSUE. "
+  + "Subsystem under review: " + subsystem + ".\n\n"
+  + "=== OUTPUT CONTRACT ===\nIf you find a qualifying bug, output EXACTLY one line:\n"
+  + "CANDIDATE|<file:function:line>|<class=" + cls + ">|<severity=Medium|High>|<one-sentence external exploit path>|<concrete foundry PoC sketch: what to deploy, call, and assert>\n"
+  + "If after rigorous analysis there is NO qualifying bug of this class in this subsystem, output exactly:\nSAFE\n"
+  + "Output nothing else — no preamble, no markdown.";
+
+let verdict = prompt(instruction, code) -> string;
+
+// Surface to the verifier (stdout) and record the attempt so taxonomy fitness reweights over time.
+print(verdict);
+let outcome = outcome_of(verdict);
+emit("dark-factory:hunt_result", "{\"class\":\"" + cls + "\",\"subsystem\":\"" + subsystem + "\",\"outcome\":\"" + outcome + "\"}");
+learn("hunt", cls + ":" + subsystem, "discovery hunt of " + cls + " on " + subsystem, outcome, [cls, subsystem, outcome]);
+memo_write("hunter:last_check", "done");

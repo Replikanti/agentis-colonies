@@ -16,6 +16,31 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Custom-code DISCOVERY track — the colony can now hunt bugs in bespoke, never-forked protocols, not
+  just match known-fork patterns (#863). The DAG matcher (`auditor.ag`) fires only where in-scope code
+  recurs a seeded pattern, so it returns nothing on custom contest code (a fresh stablecoin, a new
+  vault). The discovery track closes that gap, entirely on the agentis substrate:
+  - `auditor/agents/hunter.ag` — a substrate discovery agent. One invocation hunts ONE bug class over
+    ONE subsystem: it slurps the in-scope contracts, loads the taxonomy lens + protocol brief, runs a
+    deep adversarial `prompt()`, and records the attempt via `learn()` (+ `emit`) so per-class fitness
+    reweights over targets (the #861 evolve loop, now over discovery).
+  - `auditor/bug-taxonomy.md` — the discovery knowledge: 14 DeFi bug classes (share-price/ERC4626,
+    oracle, cross-chain/LZ, withdrawal-queue, access-control, accounting, sig-replay, reentrancy,
+    decimals, liquidation, first-depositor, slippage, compliance, fork-delta), each with a "hunt" lens
+    distilled from real audits.
+  - `run-discovery.sh` — operator entrypoint. Takes `--repo` + a `--scope` manifest
+    (`subsystem | classes | files`) + a `--brief` (invariants-to-break, known-issues-to-exclude, trust
+    model) and fans out one substrate hunter per (subsystem × class), collecting `CANDIDATE` leads into
+    a report. Never posts to a platform; surfacing harness-checkable leads is the whole job.
+  - `evm-harness/forge-verify.sh` — the multi-contract verification gate. A custom protocol needs a full
+    Foundry deployment + attacker tx + invariant assertion (not the single-function revm harness), so a
+    candidate is VERIFIED only when its `Exploit.t.sol` PoC PASSES against the in-scope repo. A lead that
+    does not reproduce is not a finding (no junk submitted).
+  - **Proven end-to-end on a live, 3×-audited custom yield-bearing-stablecoin Sherlock contest**: the
+    substrate hunter read the ERC4626 savings + rewards-distributor contracts under the C1 share-price
+    lens and returned a reasoned `SAFE` — a rigorous negative, the valid outcome on audited code. Wiring
+    is mock-smoke-tested; the real claude pass completes the full prompt→verdict→learn loop.
+
 - M4 evolution — the matcher granularity tunes itself by fitness (#861). The fuzzy matcher's
   granularity (shingle-Jaccard threshold × shingle width `k`) is the knob no human can hand-tune:
   too loose floods synthesis, too tight misses forks, and the sweet spot is unknown a priori — a

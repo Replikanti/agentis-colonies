@@ -69,6 +69,42 @@ The colony **never** contacts a platform. A human reviews `audit-out/submission/
 confirms the finding, and submits it manually to Immunefi / Code4rena / Sherlock. This is
 deliberate: autonomous posting risks anti-bot bans and duplicate-submission penalties.
 
+## EVM custom-code discovery (`run-discovery.sh`)
+
+The flow above is the DAG fork-**matcher**: it only fires where in-scope code recurs a seeded pattern,
+so on a bespoke, never-forked protocol it finds nothing. For **custom** contest code (a fresh
+stablecoin, a new vault), use the discovery track — `run-discovery.sh` fans the substrate discovery
+agent (`auditor/agents/hunter.ag`) out over (subsystem × bug-class).
+
+1. **Clone the target** (`fetch-target.sh`, or any git clone). Note the repo root (the dir holding
+   `contracts/` or `src/`).
+2. **Write a scope manifest** — one subsystem per line, `subsystem | classid,… | file,…` (files
+   relative to the repo root); `#` comments allowed. Pick classes per subsystem from
+   `auditor/bug-taxonomy.md`. Example:
+   ```
+   rewards + savings  | C1,C6,C11 | contracts/SavingsVault.sol,contracts/RewardsDistributor.sol
+   oracle             | C2,C9,C10 | contracts/PriceOracle.sol,contracts/LendingAdapter.sol
+   ```
+3. **Write a brief** — the protocol's invariants whose violation is a valid finding, the **known
+   issues to exclude** (from prior audits — the hunter must not re-report them), and the trust model
+   (which roles are in/out of scope). This is what stops the hunt from surfacing already-audited noise.
+4. **Run** (each cell is a deep adversarial LLM read; a full sweep is `Ncells × ~3 min`, serial):
+   ```
+   ./run-discovery.sh --repo <repo> --scope scope.tsv --brief brief.md --backend claude --out discovery-out
+   # cheap wiring smoke first (no real LLM):  --backend mock --only "<subsystem>" --classes C1
+   ```
+5. **Read the leads** — `discovery-out/discovery-report.md`. Each `CANDIDATE` row is an **unverified
+   lead** (file:fn:line / severity / exploit / PoC sketch). No candidate = **rigorous negative**, the
+   valid outcome on audited code; nothing is submitted.
+6. **Verify each lead** through the multi-contract Foundry gate — write the `Exploit.t.sol` the PoC
+   sketch describes (deploy the protocol, run the attacker tx, assert the broken invariant), then:
+   ```
+   ./evm-harness/forge-verify.sh --repo <repo> --poc Exploit.t.sol --lz-symlink
+   # exit 0 = VERIFIED (the PoC passed = exploit reproduced). A lead that does not reproduce is NOT a finding.
+   ```
+7. **Submit (manual, human-gated)** — only a forge-VERIFIED lead is worth submitting, and only a human
+   submits it. As everywhere in this colony, nothing is auto-posted.
+
 ## Calibration
 
 `sealevel-scorecard.md` records the auditor against real `coral-xyz/sealevel-attacks`
