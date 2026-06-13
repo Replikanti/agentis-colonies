@@ -16,6 +16,40 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Substrate-native lead pre-screen via **`eval_ag`** (#997). The discovery hunter surfaces a CANDIDATE
+  as a *prose* PoC sketch — an unverified lead — and the only gate was `evm-harness/forge-verify.sh`, a
+  full Foundry deploy + attacker tx that needs the cloned repo + `foundryup` and runs slowly. A new
+  cheap gate runs first: `auditor/agents/poc-screener.ag` lowers a lead's machine-checkable invariant to
+  a self-contained `.ag` PoC harness and evaluates it through the substrate's `eval_ag` primitive — a
+  metered sub-interpreter with its own CB budget. It returns the stable outcome discriminator
+  (`success` / `parse_error` / `compile_error` / `inner_cb_exhausted` / …) so the screen distinguishes
+  "invariant HELD" (a clean run returning `0`) from "junk harness", and a runaway harness is CONTAINED
+  (the inner CB meter trips → `inner_cb_exhausted`) instead of crashing the screener. The harness
+  contract mirrors the colony's exit-101 two-sided gate (return `101` = INVARIANT VIOLATED = reproduced).
+  `screen-leads.sh` drives it over a `lead-id | harness.ag` manifest and emits a verdict table; every
+  screen is recorded via `learn()` + `emit("dark-factory:poc_screened", …)`. A reproduced screen is a
+  lead worth the forge-verify cost, NOT a finding — submission stays human-gated.
+  - **Demoed end-to-end** (`screen-leads.sh --demo`, zero external prerequisites): a reentrancy-vuln
+    harness → `reproduced | success | 101`, its CEI-fixed variant → `held | success | 0`, a malformed
+    harness → `indeterminate | parse_error`, and a recursion-bomb harness → `indeterminate |
+    inner_cb_exhausted` with the screener surviving.
+  - Documented in `docs/SUBSTRATE-PRIMITIVES.md`: which substrate primitives the colony adopted and,
+    honestly, why `replicate` (needs a live colony pool + peer; a fatal error otherwise), `delegate`
+    (no second in-process cooperating agent), `decide` (a soft choice where the colony deliberately
+    keeps a hard mechanical gate), the Lean verifier (wrong proof object for runtime exploit
+    reproduction), and confidence-tiers (the colony is one-shot + human-gated, with no autonomous write
+    to throttle) do not currently fit.
+  - **Correction (#997 QA):** the `eval_ag` containment claim was overstated and is now narrowed to what
+    actually holds. `eval_ag` does NOT sandbox `exec` in agentis v1.18.27 — a harness that calls
+    `exec sh` from inside `eval_ag` escapes to the host, so the earlier "cannot touch the host" /
+    "exec-free grant set" wording was wrong. What `eval_ag` DOES guarantee is **CB-exhaustion
+    containment**: a runaway/infinite harness is bounded by the inner CB budget (`inner_cb_exhausted`)
+    so it cannot starve or crash the screener. Harnesses must therefore be operator-trusted. The docs /
+    agent comments (`README.md`, `docs/SUBSTRATE-PRIMITIVES.md`, `auditor/agents/poc-screener.ag`,
+    `screen-leads.sh`) are reworded; the two-sided gate is also clarified as an author convention the
+    screener does NOT mechanically enforce (it maps the final int — it cannot detect a missing control
+    assertion), with mechanical two-sidedness enforced downstream by the forge-verify gate. No behavior
+    change.
 - `run-summary.sh` + `docs/run-observability.md` — make a one-shot run **observable** without touching
   the separately-versioned `federation-dashboard` component (#995). dark-factory runs one-shot via
   `agentis go` (no daemons, no `*:confidence` memos), so the dashboard — which assumes daemon-tick

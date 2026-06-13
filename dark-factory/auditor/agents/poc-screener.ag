@@ -1,0 +1,100 @@
+cb 300000;
+// #997 — substrate-native LEAD PRE-SCREEN. The discovery hunter (hunter.ag) surfaces a CANDIDATE as
+// a PROSE PoC sketch; that sketch is an UNVERIFIED lead until a real PoC reproduces it. The heavy gate
+// is evm-harness/forge-verify.sh — a full Foundry deploy + attacker tx + invariant assert — which is
+// slow and needs the cloned repo + foundryup. This agent is the CHEAP gate that runs FIRST: it takes a
+// self-contained `.ag` PoC harness encoding the lead's machine-checkable invariant and evaluates it
+// through the agentis substrate's `eval_ag` primitive — a metered sub-interpreter with its OWN CB
+// budget — so a malformed / runaway / non-reproducing harness is CB-exhaustion-contained (a runaway
+// harness trips the inner CB meter -> `inner_cb_exhausted` and the screener survives, it does not get
+// starved or crash) and the operator only spends forge-verify time on leads that survive. NOTE:
+// `eval_ag` does NOT sandbox `exec` in agentis v1.18.27 — a harness calling `exec sh` escapes to the
+// host, so the containment is CB-exhaustion only and harnesses must be operator-trusted.
+//
+// Why eval_ag (not exec sh + a second `agentis go`): eval_ag is the substrate's first-class
+// "evaluate generated agent code under a metered sub-interpreter" primitive.
+// It returns a STABLE outcome discriminator (success / parse_error / compile_error / runtime_error /
+// inner_cb_exhausted / ...) so the screen distinguishes "the invariant HELD" (a clean run that
+// returned 0) from "the harness was junk" (parse/compile/cap error) — a distinction a raw subprocess
+// exit code blurs. eval_ag runs the harness with the screener's own grant set and adds no NEW
+// capability — but it does NOT subtract one either: in agentis v1.18.27 the inner program keeps the
+// screener's `exec` grant, so a harness that calls `exec sh` reaches the host. Treat harnesses as
+// operator-trusted; the guarantee `eval_ag` provides is CB-exhaustion containment, not an exec sandbox.
+//
+// Harness contract (the convention the hunter's PoC sketch is lowered to — mirrors the colony's
+// exit-101 two-sided gate): a self-contained `.ag` program WITHOUT a top-level `cb` directive whose
+// FINAL expression is an int:
+//   101  -> INVARIANT VIOLATED  (the lead reproduced: the exploit broke the asserted invariant)
+//   0    -> invariant HELD       (the lead is refuted under this harness)
+//   else -> indeterminate        (harness/setup issue; not a verdict)
+// Two-sided is encouraged: assert the CONTROL (legit path accepted) AND the EXPLOIT (attacker path
+// breaks the invariant) inside the harness, returning 101 only when control held AND exploit fired.
+//
+// Env:
+//   POC_HARNESS  path to the self-contained `.ag` PoC harness for ONE candidate lead
+//   LEAD_ID      human label for the candidate (e.g. "savings:C1" or a finding slug)
+// Stdout: exactly one line
+//   SCREENED|<lead>|<reproduced|held|indeterminate>|<eval_ag-outcome>|<verdict-int-or-na>
+// Requires: --enable-eval-ag (or `eval_ag = allow` in config).
+
+// Read the harness source. Dynamic path -> safe-exec-concat per recall-match.ag / hunter.ag precedent.
+fn read_harness(path: string) -> string {
+    // colony-lint: safe-exec-concat
+    return exec sh "sed -n '1,4000p' ${path} 2>/dev/null || true";
+}
+
+// A self-contained `.ag` harness must NOT carry a top-level `cb` directive — eval_ag runs it as an
+// inner program and a nested `cb` is a compile_error (the budget comes from THIS agent's pool). Strip a
+// leading `cb <N>;` line defensively so an operator who copy-pastes a normal agent header still screens.
+fn strip_cb_header(src: string) -> string {
+    if index_of(src, "cb ") != 0 { return src; }
+    let nl = index_of(src, ";");
+    if nl < 0 { return src; }
+    return substring(src, nl + 1, len(src));
+}
+
+// Map the harness's returned verdict int (read from the eval_ag value) to the reproduction class.
+// Only an exact 101 is "reproduced" (the colony's INVARIANT-VIOLATED sentinel); 0 is an explicit
+// "held"; anything else is an indeterminate harness result, NOT a silent pass. SHALLOW leaf.
+fn verdict_class(outcome: string, value_str: string) -> string {
+    if outcome != "success" { return "indeterminate"; }
+    if value_str == "101" { return "reproduced"; }
+    if value_str == "0" { return "held"; }
+    return "indeterminate";
+}
+
+// learn() outcome enum {success,failure,partial,timeout,error}: a reproduced lead = success (the
+// screen surfaced a harness-confirmed lead worth forge-verify time); a clean "held" = failure (the
+// lead did not reproduce — a valid negative, like hunter.ag's rigorous SAFE); a junk harness = error.
+fn learn_outcome(klass: string) -> string {
+    if klass == "reproduced" { return "success"; }
+    if klass == "held" { return "failure"; }
+    return "error";
+}
+
+let lead = getenv("LEAD_ID");
+let hpath = getenv("POC_HARNESS");
+let raw = read_harness(hpath);
+
+if len(raw) == 0 {
+    print("SCREENED|" + lead + "|indeterminate|no_harness|na");
+    emit("dark-factory:poc_screened", "{\"lead\":\"" + lead + "\",\"class\":\"indeterminate\",\"outcome\":\"no_harness\"}");
+    memo_write("poc-screener:last_check", "done");
+} else {
+    let harness = strip_cb_header(raw);
+
+    // The substrate-native screen: evaluate the generated PoC harness in a metered, sandboxed
+    // sub-interpreter. eval_ag_with_outcome returns {value, outcome, partial, cb_spent}; `outcome` is
+    // the stable discriminator and `value` is the harness's final expression (the verdict int).
+    let result = eval_ag_with_outcome(harness);
+    let outcome = to_string(get(result, "outcome"));
+    let value_str = to_string(get(result, "value"));
+    let klass = verdict_class(outcome, value_str);
+
+    // Surface to the operator (stdout) + record on the bus and as substrate experience so screen
+    // fitness (reproduced vs held vs junk) accrues across leads — the same loop hunter.ag feeds.
+    print("SCREENED|" + lead + "|" + klass + "|" + outcome + "|" + value_str);
+    emit("dark-factory:poc_screened", "{\"lead\":\"" + lead + "\",\"class\":\"" + klass + "\",\"outcome\":\"" + outcome + "\"}");
+    learn("poc-screen", lead, "eval_ag screen of lead " + lead + " -> " + klass, learn_outcome(klass), [lead, klass, outcome]);
+    memo_write("poc-screener:last_check", "done");
+}
