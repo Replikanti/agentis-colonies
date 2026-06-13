@@ -160,6 +160,26 @@ dark-factory/evm-harness/forge-verify.sh --repo "$PWD/target" --poc "$PWD/Exploi
 A clean sweep (no candidate survives) is a **rigorous negative** — a valid outcome on audited code;
 nothing is submitted. As with `run-audit.sh`, the colony never posts to a platform.
 
+### Inter-agent coordination (shared blackboard, #1001)
+
+The fan-out is no longer a flat sum of independent cells. Because every (subsystem × class) cell runs
+against one shared agentis memo store, `hunter.ag` reads a rolling **blackboard**
+(`dark-factory:blackboard:leads`) before it prompts and posts every `CANDIDATE` back to it (also
+emitting `dark-factory:lead`). A later cell that sees a sibling's lead on the board is **steered** — its
+prompt gains a FOCUS block to corroborate a hit in the same subsystem or pivot toward a related surface
+a sibling already flagged — so one cell's finding changes what a later cell does. `run-discovery.sh`
+logs a `↳ COORDINATION:` line when a cell is steered and appends an **Inter-agent coordination** table
+to the report. The mechanism is inert on a clean sweep (no finding → identical prompt → the
+rigorous-negative behavior above is unchanged). Reproduce it offline (no network, deterministic fake
+LLM):
+
+```bash
+dark-factory/demo-blackboard.sh   # oracle cell posts a lead; downstream liquidation cell reads + is steered
+```
+
+This is one coordination step, not emergent behavior; a coordinator that reprioritizes/prunes the cell
+manifest from the board is a follow-up.
+
 ## Exercise the evolve/fitness loop (`evolve-fitness.sh`)
 
 Every hunt the colony runs records a `learn("hunt", "<class>:<subsystem>", ..., outcome, [...])` row in
@@ -188,6 +208,7 @@ dark-factory/
   run-discovery.sh              # operator entrypoint: custom-code discovery (hunter fan-out) -> leads
   evolve-fitness.sh             # drive the evolve/fitness loop over N iterations; show per-lens fitness move
   gen-agent.sh                  # materialise a colony-lint-valid .ag agent from an invented METHOD line (#1000)
+  demo-blackboard.sh            # offline, deterministic demo of the #1001 blackboard coordination loop
   setup-solana-toolchain.sh     # one-time offline toolchain build (network ON)
   snapshot-rpc.sh               # host RPC getAccountInfo -> frozen on-chain snapshot (V4)
   calibrate-sealevel.sh         # detection+validation scorecard over the sealevel corpus (V6)

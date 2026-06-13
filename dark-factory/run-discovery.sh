@@ -113,7 +113,10 @@ REPORT="$OUT/discovery-report.md"
   echo "|---|---|---|"
 } > "$REPORT"
 
-CELLS=0 ; CANDIDATES=0
+CELLS=0 ; CANDIDATES=0 ; STEERS=0
+# #1001: rows recording where one cell's lead STEERED a later cell (the blackboard coordination loop),
+# folded into the report at the end. Kept separate from $REPORT so it can be appended as its own table.
+COORD="$RUN/coordination.tsv"; : > "$COORD"
 # Manifest loop: one subsystem per line, `subsystem | classes | files`. Run the hunter once per
 # (subsystem x class) — that cell is the colony-native analogue of one focused audit agent.
 while IFS='|' read -r SUBSYS CLS_CSV FILES_CSV || [ -n "${SUBSYS:-}" ]; do
@@ -148,14 +151,29 @@ while IFS='|' read -r SUBSYS CLS_CSV FILES_CSV || [ -n "${SUBSYS:-}" ]; do
         SLICER="$RUN/slice-fns.sh" \
         "$AGENTIS" go hunter.ag --enable-exec --enable-messaging ) >"$CELL_LOG" 2>&1 || \
         echo "run-discovery.sh: hunter run failed for $CLS/'$SUBSYS' (see $CELL_LOG)" >&2
+    # #1001 coordination: the hunter reads a shared BLACKBOARD before it prompts and posts every
+    # CANDIDATE back to it, so a lead an EARLIER cell found steers later cells (corroborate / pivot).
+    # Surface both halves of that loop to the operator and the report: BLACKBOARD-FOCUS| = THIS cell was
+    # steered by a sibling's lead; BLACKBOARD-POST| = this cell posted a lead for later cells.
+    if grep -q '^BLACKBOARD-FOCUS|' "$CELL_LOG"; then
+      FOCUS_LINE="$(grep '^BLACKBOARD-FOCUS|' "$CELL_LOG" | head -1 | sed 's/^BLACKBOARD-FOCUS|//')"
+      echo "run-discovery.sh:   ↳ COORDINATION: $CLS/'$SUBSYS' steered by the blackboard ($FOCUS_LINE)" >&2
+      printf '| %s | %s | steered by blackboard — %s |\n' "$SUBSYS" "$CLS" "$FOCUS_LINE" >> "$COORD"
+      STEERS=$((STEERS + 1))
+    fi
     # The hunter's contract: a `CANDIDATE|file:fn:line|class|severity|exploit|poc` line, or `SAFE`.
-    if grep -q 'CANDIDATE|' "$CELL_LOG"; then
+    # Exclude the hunter's own `BLACKBOARD-*` diagnostic lines: they echo a lead summary (which no longer
+    # carries a bare `CANDIDATE|` token, but stay defensive) and must never be scraped as findings.
+    if grep -v '^BLACKBOARD-' "$CELL_LOG" | grep -q 'CANDIDATE|'; then
       while IFS= read -r LINE; do
         CAND="$(printf '%s' "$LINE" | sed 's/^.*\(CANDIDATE|\)/\1/')"
         BODY="$(printf '%s' "$CAND" | sed 's/^CANDIDATE|//; s/|/ \/ /g')"
         printf '| %s | %s | %s |\n' "$SUBSYS" "$CLS" "$BODY" >> "$REPORT"
         CANDIDATES=$((CANDIDATES + 1))
-      done < <(grep 'CANDIDATE|' "$CELL_LOG")
+      done < <(grep -v '^BLACKBOARD-' "$CELL_LOG" | grep 'CANDIDATE|')
+      if grep -q '^BLACKBOARD-POST|' "$CELL_LOG"; then
+        echo "run-discovery.sh:   ↳ posted a lead to the blackboard for later cells to focus on" >&2
+      fi
     fi
     IFS=','
   done
@@ -171,8 +189,26 @@ fi
   echo "Cells run: $CELLS    Candidates surfaced: $CANDIDATES (all UNVERIFIED — forge-verify each before it counts)."
 } >> "$REPORT"
 
+# #1001: append the coordination table — where a lead from one cell STEERED a later cell via the shared
+# blackboard. This is what makes the run more than a sum of independent audits: emit it whenever any
+# cell was steered, so the operator can see the inter-agent influence (and audit it).
+if [ "$STEERS" -gt 0 ]; then
+  {
+    echo
+    echo "## Inter-agent coordination (blackboard, #1001)"
+    echo
+    echo "A cell that surfaces a CANDIDATE posts it to a shared in-run blackboard; every later cell reads"
+    echo "the board and is steered to corroborate a sibling's hit or pivot to a related surface. Cells"
+    echo "steered this run:"
+    echo
+    echo "| Subsystem | Class | Steer |"
+    echo "|---|---|---|"
+    cat "$COORD"
+  } >> "$REPORT"
+fi
+
 echo >&2
-echo "================ DISCOVERY: $CELLS cells, $CANDIDATES candidate(s) ================" >&2
+echo "================ DISCOVERY: $CELLS cells, $CANDIDATES candidate(s), $STEERS blackboard-steered ================" >&2
 echo "run-discovery.sh: leads at $REPORT" >&2
 if [ "$CANDIDATES" -gt 0 ]; then
   echo "run-discovery.sh: NEXT = verify each lead with evm-harness/forge-verify.sh; only a PASSING PoC is a finding. Submission stays human-gated." >&2

@@ -16,6 +16,24 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Discovery: **inter-agent coordination via a shared blackboard** — a first coordination primitive so
+  hunter cells influence each other within a run, instead of the run being a flat sum of independent
+  one-shot audits (#1001). The discovery fan-out runs every (subsystem × class) cell against ONE shared
+  agentis memo store, so `hunter.ag` now READS a rolling `dark-factory:blackboard:leads` memo before it
+  prompts and WRITES every CANDIDATE back to it (+ emits `dark-factory:lead`). A later cell that finds a
+  sibling's lead on the board is STEERED — its prompt gains a FOCUS block telling it to corroborate a
+  hit in the same subsystem or pivot toward a related attack surface a sibling already flagged.
+  `run-discovery.sh` surfaces both halves of the loop (a `↳ COORDINATION:` log line when a cell is
+  steered, a "posted a lead" line when one contributes) and appends an **Inter-agent coordination**
+  table to the discovery report. The mechanism is inert on a clean sweep (no finding → no steer → the
+  prompt and the existing rigorous-negative contract are byte-identical), so it is additive and does not
+  change single-cell behavior. `demo-blackboard.sh` proves the loop end-to-end OFFLINE (deterministic
+  fake LLM, no network): an oracle cell posts a stale-price lead and a downstream liquidation cell reads
+  it — the demo asserts the liquidation cell's prompt actually carried the oracle lead, so the steer is
+  real, not cosmetic. Scoped as ONE coordination step; the broader emergent-behavior vision (a
+  coordinator that reprioritizes/prunes the cell manifest from the board) is deliberately left as
+  follow-up — no overclaim of emergence.
+
 - `evolve-fitness.sh` + `auditor/agents/fitness-driver.ag` — actually drive the discovery colony's
   evolve/fitness LOOP over several runs and DEMONSTRABLY move per-class/per-method fitness in the agentis
   experience store (#996). Until now `hunter.ag` recorded each hunt via `learn("hunt", "<class>:<subsystem>",
@@ -30,6 +48,7 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   pause) fall behind — the colony's evolved ranking of which lenses to lean on. Validated end-to-end:
   60 cells over 6 iterations moved fitness on 9/10 lenses (C1/C6 +0.600, C3 -0.600); re-runs are
   byte-identical. `--corpus` overrides the corpus, `--json` emits a machine-readable before/after table.
+
 - `gen-agent.sh <method-name>` — close the self-extension loop (#1000). The
   method-discovery meta-loop (`method-inventor.ag` + `run-method-discovery.sh`,
   #998) invents and adopts new audit *methods* — reusable hunting techniques

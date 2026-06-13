@@ -55,6 +55,87 @@ fn outcome_of(verdict: string) -> string {
     return "failure";
 }
 
+// --- #1001 shared BLACKBOARD: a first inter-agent coordination primitive ---
+// The discovery fan-out runs every (subsystem x class) cell against ONE shared agentis store, so a
+// memo a cell writes is visible to every LATER cell via recall_latest. That makes a "blackboard"
+// (Hayes-Roth) the minimal-but-real way for findings to STEER siblings instead of each cell being an
+// island: a cell that surfaces a CANDIDATE posts a one-line lead, and every cell that runs after it
+// reads the board and FOCUSES — corroborate a sibling's hit in the same subsystem, or pivot toward a
+// related attack surface a sibling already flagged. This is one coordination step, NOT a claim of
+// emergent behavior; the broader vision (a coordinator that reprioritizes/prunes the manifest) is
+// follow-up. The board is rolling newline-joined `subsystem|class|severity|one-line lead` lines.
+
+// Single-assignment .ag bindings — accumulate via pure helpers, never reassign a `let`.
+fn append_line(prev: string, line: string) -> string {
+    if len(line) == 0 { return prev; }
+    if len(prev) == 0 { return line; }
+    return prev + "\n" + line;
+}
+
+// First non-empty line of `s` (the verdict's lead summary lives on the first CANDIDATE| line).
+fn first_line(s: string) -> string {
+    return reduce(regex_split("\n", s), |acc: string, l: string| -> string {
+        if len(acc) > 0 { return acc; }
+        if len(l) > 0 { return l; }
+        return acc;
+    }, "");
+}
+
+// The first `CANDIDATE|...` line of the verdict as a lead summary, with the literal `CANDIDATE|` token
+// STRIPPED. Stripping matters: the board (and the diagnostic lines that echo it) must NOT carry a bare
+// `CANDIDATE|`, or run-discovery.sh's `grep 'CANDIDATE|'` report-scraper would double-count the
+// blackboard echo as a finding. The remaining `file:fn:line|class|sev|exploit|poc` is the lead body.
+fn lead_summary(verdict: string) -> string {
+    let at = index_of(verdict, "CANDIDATE|");
+    if at < 0 { return ""; }
+    let line = first_line(substring(verdict, at, len(verdict)));
+    return substring(line, len("CANDIDATE|"), len(line));
+}
+
+// Leads on the board that belong to `subsystem` (want_same=true) or to OTHER subsystems (false), each
+// rendered as a "  - <lead>" bullet. A lead line starts `subsystem|...`, so a same-subsystem match is
+// an exact prefix match on `subsystem + "|"`.
+fn board_bullets(board: string, subsystem: string, want_same: bool) -> string {
+    return reduce(regex_split("\n", board), |acc: string, l: string| -> string {
+        if len(l) == 0 { return acc; }
+        let is_same = index_of(l, subsystem + "|") == 0;
+        if is_same == want_same { return append_line(acc, "  - " + l); }
+        return acc;
+    }, "");
+}
+
+// The "corroborate THIS subsystem" paragraph (empty when no same-subsystem lead exists).
+fn corroborate_para(same: string) -> string {
+    if len(same) == 0 { return ""; }
+    return "A sibling cell already surfaced a lead in THIS subsystem — CORROBORATE or refute it, and "
+         + "check for the same root-cause class on adjacent functions:\n" + same + "\n";
+}
+
+// The "pivot toward an OTHER-subsystem lead" paragraph (empty when no other-subsystem lead exists).
+fn pivot_para(other: string) -> string {
+    if len(other) == 0 { return ""; }
+    return "Sibling cells flagged leads in OTHER subsystems — if any shares a dependency, code path, "
+         + "or invariant with what you are reviewing, PRIORITIZE that overlap:\n" + other + "\n";
+}
+
+// Render the FOCUS block injected into a later cell's prompt: split the board into leads from THIS
+// subsystem (corroborate) vs OTHER subsystems (pivot toward a related surface). Returns "" when the
+// board holds no sibling lead this cell should act on — so a virgin first cell prompts unchanged and
+// the existing single-cell behavior is preserved exactly. No `let` reassignment (single-assignment).
+fn focus_block(board: string, subsystem: string) -> string {
+    if len(board) == 0 { return ""; }
+    let same = board_bullets(board, subsystem, true);
+    let other = board_bullets(board, subsystem, false);
+    // No `&&`/`||` in .ag — nest: only the empty-same AND empty-other case returns "".
+    if len(same) == 0 {
+        if len(other) == 0 { return ""; }
+    }
+    return "=== BLACKBOARD — leads sibling cells already posted in THIS run (let them FOCUS your hunt) ===\n"
+         + corroborate_para(same) + pivot_para(other)
+         + "Use these as PRIORS, not facts: still trace the code yourself, still report SAFE if this class "
+         + "is genuinely clean here.\n\n";
+}
+
 let dir = getenv("TARGET_DIR");
 let files = getenv("IN_SCOPE");
 let cls = getenv("HUNT_CLASS");
@@ -63,13 +144,27 @@ let brief = cat_file(getenv("SCOPE_BRIEF"));
 let code = scoped_code(dir, files);
 let classDoc = class_section(getenv("TAXONOMY"), cls);
 
+// #1001 READ side: pull the shared blackboard FIRST, so a lead an EARLIER cell posted this run can
+// steer this one. `focus` is "" when the board is empty (first cell) or holds nothing for this cell —
+// then the instruction below is byte-identical to the pre-#1001 prompt (no behavior change). A printed
+// BLACKBOARD-FOCUS| line makes the steering observable in the cell log even on the mock backend (where
+// prompt() never reasons), so run-discovery.sh and the operator can SEE one cell steer another.
+let board = recall_latest("dark-factory:blackboard:leads");
+let focus = focus_block(board, subsystem);
+if len(focus) > 0 {
+    print("BLACKBOARD-FOCUS|" + subsystem + "|" + cls + "|focusing on leads sibling cells posted: "
+        + first_line(board));
+}
+
 // The instruction carries the lens (taxonomy class), the brief (invariants + known-issues), and the
 // strict output contract; the code is the prompt payload (matches auditor.ag::classify_evm_llm shape).
+// The (possibly empty) blackboard FOCUS block sits up top so prior siblings' leads bias the hunt.
 let instruction =
     "You are an elite adversarial smart-contract auditor hunting a HIGH or MEDIUM severity bug an EXTERNAL "
   + "attacker (holding NO privileged role) can exploit. Audit this code FRESH: assume nothing is safe until "
   + "you have traced the actual control/data flow yourself. An obvious-looking bug IS a real bug unless a "
   + "guard in the code provably stops it — do NOT assume prior auditors already caught it.\n\n"
+  + focus
   + "=== HUNT THIS BUG CLASS (the lens) ===\n" + classDoc + "\n\n"
   + "=== PROTOCOL BRIEF — invariants whose violation is a valid finding, and KNOWN ISSUES you MUST NOT report ===\n"
   + brief + "\n\n"
@@ -93,4 +188,18 @@ print(verdict);
 let outcome = outcome_of(verdict);
 emit("dark-factory:hunt_result", "{\"class\":\"" + cls + "\",\"subsystem\":\"" + subsystem + "\",\"outcome\":\"" + outcome + "\"}");
 learn("hunt", cls + ":" + subsystem, "discovery hunt of " + cls + " on " + subsystem, outcome, [cls, subsystem, outcome]);
+
+// #1001 WRITE side: a CANDIDATE is a LEAD worth steering siblings toward. POST it to the shared
+// blackboard (rolling, read by every later cell above) as `subsystem|class|<lead summary>`, and emit
+// `dark-factory:lead` on the bus so an out-of-band coordinator/dashboard can react too. A reasoned
+// SAFE writes nothing — only positive findings steer, never a clean result. memo_write overwrites the
+// key, so we read-append-write to keep prior siblings' leads (single shared store = no lost update,
+// cells run sequentially).
+if outcome == "success" {
+    let lead = subsystem + "|" + cls + "|" + lead_summary(verdict);
+    memo_write("dark-factory:blackboard:leads", append_line(board, lead));
+    memo_write("dark-factory:blackboard:" + subsystem, lead);
+    emit("dark-factory:lead", "{\"subsystem\":\"" + subsystem + "\",\"class\":\"" + cls + "\"}");
+    print("BLACKBOARD-POST|" + lead);
+}
 memo_write("hunter:last_check", "done");
