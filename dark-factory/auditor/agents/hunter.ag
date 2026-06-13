@@ -18,8 +18,19 @@ cb 300000;
 
 // --- file readers (dynamic paths -> safe-exec-concat per recall-match.ag precedent) ---
 fn cat_file(path: string) -> string {
+    let at = index_of(path, "@");
+    if at < 0 {
+        // colony-lint: safe-exec-concat
+        return exec sh "sed -n '1,2000p' ${path} 2>/dev/null || true";
+    }
+    // Function-level slice: a scope entry `path@fn1+fn2` feeds ONLY those functions (+ the contract
+    // header) so a deep adversarial read of a big/complex contract fits the LLM per-call budget —
+    // whole-file concats overflow it and the liquidation/seize cells time out (#863).
+    let file = substring(path, 0, at);
+    let funcs = substring(path, at + 1, len(path));
+    let slicer = getenv("SLICER");
     // colony-lint: safe-exec-concat
-    return exec sh "sed -n '1,700p' ${path} 2>/dev/null || true";
+    return exec sh "sh ${slicer} ${file} '${funcs}' 2>/dev/null || true";
 }
 
 // Concatenate every in-scope contract into one labelled blob.

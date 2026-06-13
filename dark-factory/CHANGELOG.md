@@ -16,6 +16,15 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Discovery: **function-level slicing** + a 600s deep-read budget (#863). A scope entry can now be
+  written `file@fn1+fn2` to feed the hunter ONLY those functions (plus the contract header) instead of
+  the whole file — `auditor/slice-fns.sh` (awk, brace-matched) extracts them, wired through
+  `hunter.ag`'s `cat_file` (via the `SLICER` env) and `run-discovery.sh`. This fixes the deep
+  liquidation/redemption cells timing out on big contracts, where a whole-file concat overflowed the
+  LLM per-call budget (e.g. a Compound-fork `CToken.sol` 1193→134 lines, a credit-vault
+  `CollateralVaultBase.sol` 611→152 lines). The discovery LLM timeout is also raised 300s→600s — the
+  reasoning, not the payload, is the real cost, and one 600s attempt beats three wasted 300s retries.
+
 - Custom-code DISCOVERY track — the colony can now hunt bugs in bespoke, never-forked protocols, not
   just match known-fork patterns (#863). The DAG matcher (`auditor.ag`) fires only where in-scope code
   recurs a seeded pattern, so it returns nothing on custom contest code (a fresh stablecoin, a new

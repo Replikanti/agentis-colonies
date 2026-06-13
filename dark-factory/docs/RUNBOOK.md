@@ -80,15 +80,20 @@ agent (`auditor/agents/hunter.ag`) out over (subsystem × bug-class).
    `contracts/` or `src/`).
 2. **Write a scope manifest** — one subsystem per line, `subsystem | classid,… | file,…` (files
    relative to the repo root); `#` comments allowed. Pick classes per subsystem from
-   `auditor/bug-taxonomy.md`. Example:
+   `auditor/bug-taxonomy.md`. A file may be written `file@fn1+fn2` to feed **only those functions**
+   (plus the contract header) instead of the whole file — use it for big/complex contracts (a 1000+
+   line CDP, money-market, or credit vault) whose whole-file read would overflow the LLM budget and
+   time out on a deep liquidation/redemption cell. Example:
    ```
    rewards + savings  | C1,C6,C11 | contracts/SavingsVault.sol,contracts/RewardsDistributor.sol
    oracle             | C2,C9,C10 | contracts/PriceOracle.sol,contracts/LendingAdapter.sol
+   vault liquidation  | C10       | contracts/Vault.sol@liquidate+seize+_redeem
    ```
 3. **Write a brief** — the protocol's invariants whose violation is a valid finding, the **known
    issues to exclude** (from prior audits — the hunter must not re-report them), and the trust model
    (which roles are in/out of scope). This is what stops the hunt from surfacing already-audited noise.
-4. **Run** (each cell is a deep adversarial LLM read; a full sweep is `Ncells × ~3 min`, serial):
+4. **Run** (each cell is a deep adversarial LLM read — ~3 min typical, up to ~8 min for a deep
+   liquidation/redemption cell, within the 600s per-call budget; a full sweep is serial):
    ```
    ./run-discovery.sh --repo <repo> --scope scope.tsv --brief brief.md --backend claude --out discovery-out
    # cheap wiring smoke first (no real LLM):  --backend mock --only "<subsystem>" --classes C1

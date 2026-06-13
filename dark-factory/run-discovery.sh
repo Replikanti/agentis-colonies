@@ -17,9 +17,13 @@
 #   run-discovery.sh --repo <dir> --scope <scope.tsv> --brief <brief.md> [options]
 #
 # Scope manifest (one subsystem per line; `#` and blank lines ignored):
-#   <subsystem label> | <classid,classid,...> | <file,file,...>      (files relative to --repo)
+#   <subsystem label> | <classid,classid,...> | <file[,file...]>     (files relative to --repo)
+# A file may be FUNCTION-SLICED as `file@fn1+fn2+...` to feed ONLY those functions (+ the contract
+# header) instead of the whole file. Use it for big/complex contracts whose whole-file payload
+# overflows the LLM per-call budget — without it the deep liquidation/redeem cells time out.
 # e.g.
 #   savings + rewards | C1,C6,C11 | contracts/SavingsVault.sol,contracts/RewardsDistributor.sol
+#   vault liquidation | C10       | contracts/Vault.sol@liquidate+seize+_redeem
 #
 # Options:
 #   --repo <dir>        Cloned target repo root (clone with fetch-target.sh). REQUIRED.
@@ -75,17 +79,20 @@ mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
 RUN="$OUT/run"
 rm -rf "$RUN"; mkdir -p "$RUN"
 cp "$HUNTER" "$RUN/hunter.ag"
+cp "$HERE/auditor/slice-fns.sh" "$RUN/slice-fns.sh"   # function-level slicer (scope `file@fn1+fn2`)
 
 # init the agentis store FIRST (before any .agentis/ subdir exists), else HEAD is not set.
 ( cd "$RUN" && "$AGENTIS" init >/dev/null 2>&1 )
 {
   echo "llm.backend = $BACKEND"
-  # 300s, not the auditor's 180s: a deep per-(subsystem x class) adversarial read of several full
-  # contracts legitimately exceeds 3 min, and eating a retry on every cell is wasteful.
-  [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p"; echo "llm.cli_timeout_ms = 300000"; }
+  # 600s: a deep adversarial read of complex liquidation/redemption logic legitimately runs 4-8 min
+  # even on a function-level slice (the reasoning, not the payload, is the cost). 300s made the hard
+  # cells time out 3x and return nothing; one 600s attempt beats three wasted 300s retries. Keep
+  # cells focused with `file@fn` slicing so the common case stays fast.
+  [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p"; echo "llm.cli_timeout_ms = 600000"; }
   echo "trace.level = normal"
   # The hunter reads source + the brief/taxonomy through exec sh; pass through its whole env contract.
-  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM"
+  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER"
   echo "exec.default_timeout_ms = 30000"
   # Discovery records every attempt as experience and reweights taxonomy fitness over time.
   echo "learning.enabled = true"
@@ -137,6 +144,7 @@ while IFS='|' read -r SUBSYS CLS_CSV FILES_CSV || [ -n "${SUBSYS:-}" ]; do
         TAXONOMY="$TAXONOMY" \
         HUNT_CLASS="$CLS" \
         SUBSYSTEM="$SUBSYS" \
+        SLICER="$RUN/slice-fns.sh" \
         "$AGENTIS" go hunter.ag --enable-exec --enable-messaging ) >"$CELL_LOG" 2>&1 || \
         echo "run-discovery.sh: hunter run failed for $CLS/'$SUBSYS' (see $CELL_LOG)" >&2
     # The hunter's contract: a `CANDIDATE|file:fn:line|class|severity|exploit|poc` line, or `SAFE`.
