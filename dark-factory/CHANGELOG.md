@@ -50,6 +50,116 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
     screener does NOT mechanically enforce (it maps the final int — it cannot detect a missing control
     assertion), with mechanical two-sidedness enforced downstream by the forge-verify gate. No behavior
     change.
+- `run-summary.sh` + `docs/run-observability.md` — make a one-shot run **observable** without touching
+  the separately-versioned `federation-dashboard` component (#995). dark-factory runs one-shot via
+  `agentis go` (no daemons, no `*:confidence` memos), so the dashboard — which assumes daemon-tick
+  agents with confidence-tier memos — has nothing to poll. `run-summary.sh` closes that gap on the
+  dark-factory side: pointed at a run's `--out` dir it distills the run's on-disk artifacts (the
+  agentis experience log + the run report) into one stable JSON at `<out>/run-summary.json` — runs/cells
+  executed, candidates found, `learn()` outcomes, **per-class fitness** (`success / attempts`, read from
+  the experience store), last-run timestamp, and verdict (discovery: `LEADS`/`SAFE`; audit: the
+  `Verdict:` line). It only READS what the run wrote — never mutates the store, never contacts a
+  platform. JSON is built with `python3` `json.dumps` (schema `dark-factory/run-summary@1`); `--json`
+  emits pure JSON on stdout (jq-safe), `--emit-event` appends one `dark-factory:run_summary` NDJSON line
+  to `<out>/events.jsonl` for a tailing monitor. `docs/run-observability.md` documents the schema +
+  three consumer shapes (poll the file / tail the event stream / aggregate across runs). Validated
+  end-to-end against a real mock-backend discovery run and synthetic discovery/audit fixtures (LEADS +
+  SAFE verdicts, non-zero per-class fitness, the no-experience-log fallback). `shellcheck`-clean,
+  `bash -n`-clean.
+- Substrate-native ADVERSARIAL REFUTATION — the first of the colony's deep audit capabilities ported
+  off externally-orchestrated subagents onto the agentis substrate (#999). The deepest steps (deep
+  cross-function audit, build-and-run PoC, fork-differential, adversarial refutation) ran as external
+  subagents, so the federation was a hybrid: a thin `.ag` layer + heavy external orchestration. This
+  ports the `adversarial-refute` step (`auditor/methods/registry.md`) into a real `.ag` agent as the
+  proven pattern for the rest:
+  - `auditor/agents/refuter.ag` — a substrate agent modelled exactly on `hunter.ag` (cb 300000;
+    one-shot, no `fn tick`; env reads via `getenv`; code read via `exec sh` with
+    `// colony-lint: safe-exec-concat`; two-arg `prompt(instruction, payload) -> string`; `emit`;
+    `print`). It env-ins ONE candidate finding (`file:fn` + claimed exploit + class) and the relevant
+    code, runs an INDEPENDENT skeptic that tries to REFUTE the claim against the actual control/data
+    flow — defaulting to REFUTED on any doubt so only unambiguous leads survive — `emit`s
+    `dark-factory:refute_verdict`, records the attempt via `learn()` (REAL=success, REFUTED=failure, so
+    refuter fitness rewards leads that survive a hostile read), and `print`s exactly one
+    `VERDICT|REAL|…` / `VERDICT|REFUTED|…` line.
+  - `run-refute.sh` — operator entrypoint. Sets up the rundir + `.agentis/config` (env passthrough for
+    the candidate contract + `claude` backend) and runs the refuter once per candidate from a
+    `file:fn | class | severity | exploit | code-file` manifest, staging each code file into the rundir
+    so the sandboxed `exec sh` (which cannot read `$HOME`) can always reach it. Collects verdicts into a
+    report. A REAL verdict is a LEAD that survived the gate, not a finding — it still must reproduce
+    through `evm-harness/forge-verify.sh` before it counts, and submission stays human-gated; this tool
+    never posts to a platform.
+  - This is the second gate, AFTER `hunter.ag` surfaces a `CANDIDATE` and BEFORE the operator spends a
+    Foundry PoC: a separate skeptic with no stake in the finding must fail to break it.
+  - **Demoed end-to-end on the real `claude` backend** over two sample candidates: a guarded `sweep()`
+    behind `onlyOwner` was correctly **REFUTED** (the `require(msg.sender == owner)` reverts for any
+    unprivileged caller), and a `withdraw()` that sends ETH before zeroing the balance was correctly
+    judged **REAL** (CEI violation → reentrancy, no guard) — surviving to the forge gate. The full
+    `prompt → VERDICT → emit → learn` loop ran on the substrate (2 experience rows: one success, one
+    failure).
+  - Follow-up (#999): port the remaining deep capabilities the same way — deep cross-function audit,
+    build-and-run PoC (forge/PoC harness via sandboxed `exec`), and fork-differential analysis — so the
+    federation owns the full audit pipeline end-to-end rather than depending on an external orchestrator.
+- Release wiring (#1002) — `dark-factory` is now a first-class release target. The shared
+  `tools/make-federation-bundle.sh dark-factory <X.Y.Z>` already stages a curated tarball from
+  `BUNDLE.manifest`; this change registers the `dark-factory-v*` tag prefix in
+  `.github/workflows/release.yml` so a tag push builds the bundle and creates/updates the GitHub
+  release automatically (same flow as the other federations). `dark-factory/` was already tracked by
+  `tools/check-changelog.sh` (added in #965), so the `[Unreleased]` soft-check covers it too. After a
+  release PR merges: `git tag dark-factory-v<X.Y.Z> <merge-sha> && git push origin dark-factory-v<X.Y.Z>`.
+- `evolve-fitness.sh` + `auditor/agents/fitness-driver.ag` — actually drive the discovery colony's
+  evolve/fitness LOOP over several runs and DEMONSTRABLY move per-class/per-method fitness in the agentis
+  experience store (#996). Until now `hunter.ag` recorded each hunt via `learn("hunt", "<class>:<subsystem>",
+  ..., outcome, [...])`, but nothing drove that loop across runs, so no evolved state accrued. The new
+  driver runs the colony's REAL recording path — `fitness-driver.ag` makes the IDENTICAL `learn()` call
+  `hunter.ag` makes — over a built-in ground-truth corpus (taxonomy class x subsystem, each with a known
+  CANDIDATE/SAFE verdict), repeated for N iterations, then reads the experience store BEFORE and AFTER and
+  prints the per-lens fitness delta. It is fully offline and reproducible (`--backend mock` semantics, no
+  LLM call — per #996 the point is the fitness LOOP, not LLM quality; verdicts come from the corpus), and
+  exits non-zero if the loop fails to move fitness. The built-in corpus encodes a realistic gradient so
+  high-yield lenses (vault accounting, rounding, reentrancy) pull ahead while speculative ones (cross-chain,
+  pause) fall behind — the colony's evolved ranking of which lenses to lean on. Validated end-to-end:
+  60 cells over 6 iterations moved fitness on 9/10 lenses (C1/C6 +0.600, C3 -0.600); re-runs are
+  byte-identical. `--corpus` overrides the corpus, `--json` emits a machine-readable before/after table.
+- `gen-agent.sh <method-name>` — close the self-extension loop (#1000). The
+  method-discovery meta-loop (`method-inventor.ag` + `run-method-discovery.sh`,
+  #998) invents and adopts new audit *methods* — reusable hunting techniques
+  recorded as `METHOD|name|classes|technique|how-to-invoke|status|fitness` lines
+  in `auditor/methods/registry.md` (an `invented` line carries an extra
+  control-assertion field before `status`) — but could not turn an adopted method
+  into a new AGENT; the agent set was fixed. The generator reads one
+  `METHOD|<name>|...` line (parsing both the builtin 7-field and invented 8-field
+  shapes) and materialises `auditor/agents/<name>.ag`, a colony-lint-valid
+  one-shot discovery agent (modelled on `hunter.ag`: `cb 300000;`, env reads, a
+  `safe-exec-concat` file reader, a single adversarial `prompt()`, and an
+  `emit()` + `learn()` so the method's per-target fitness reweights over runs —
+  the #861 evolve loop, now over a generated method-agent). The method's
+  technique / how-to-invoke / control-assertion (or a generic two-sided gate for
+  builtin methods) are wired into the agent's instruction; the agent prints one
+  `CANDIDATE|...|method=<name>|...` line per finding (else `SAFE`) for the
+  forge-verify gate. Refuses to overwrite an existing agent (exit 3) and rejects
+  non-kebab-case names (exit 2). Demo: adopted the `stateful-invariant-fuzz`
+  method (the multi-transaction-invariant gap the federation itself flagged in
+  `auditor/methods/gap-stateful.md`) into the registry and generated
+  `auditor/agents/stateful-invariant-fuzz.ag` from it — passes `colony-lint.sh`
+  (`agentis commit` syntax + `check-exec-sh`).
+
+- **Method-discovery meta-loop** — `run-method-discovery.sh` + `auditor/agents/method-inventor.ag`
+  + `auditor/methods/{registry.md,gap-stateful.md}` + `auditor/method-discovery/controls/` (#998,
+  #1003). The federation's self-improvement layer: when the current method-set plateaus, the
+  method-inventor proposes ONE new audit method and it is adopted into the registry ONLY if it
+  DISCRIMINATES on a known-bug control corpus (a planted accounting/solvency bug — `BuggyBank` —
+  caught while the paired clean `SafeBank` twin stays green). That two-sided gate (buggy suite
+  FAILS + safe twin PASSES) keeps method invention empirical rather than speculative. An adopted
+  `invented` row carries the proposal's control-assertion before `status` (the 8-field shape
+  `gen-agent.sh` consumes).
+
+- `state-export.sh` — export / verify / import a *trained* dark-factory federation's EVOLVED STATE
+  (#994, #1004): the accumulated learned `memo` plus the content-addressed Merkle DAG of audited
+  patterns, packaged into a portable, **checksum-verified** artifact. It deliberately EXCLUDES the
+  federation identity (private key), per-deployment config, and the transient sandbox, so an
+  importer keeps their OWN identity and only inherits the learned state — the technical enabler for
+  distributing a trained federation (agentis-core#864). The checksum proves integrity, not
+  authenticity: sign the manifest out-of-band before third-party distribution.
 
 - `contest-watch.sh` — a durable, host-cron-able watcher for newly-opened audit competitions (Sherlock
   API + Cantina/Code4rena probes). On a fresh contest it notifies via a state file / optional webhook /
@@ -164,6 +274,11 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Fixed
 
+- Discovery hunter was blind — `auditor/agents/hunter.ag` now reasons FIRST (#993). The prompt
+  drove the LLM straight to a verdict, so it returned `SAFE` even on textbook in-scope bugs. The hunt
+  prompt is reordered so the agent must enumerate the bug-class lens and walk the in-scope code
+  BEFORE it emits `CANDIDATE`/`SAFE` — surfacing leads it previously missed, with the two-sided
+  forge-verify gate still the only path from lead to finding.
 - Real FULL-contract auditing — `strip_comments` no longer overflows the string heap (#861). The
   in-`.ag` `strip_comments` builds its result with `reduce(lines, |acc,l| acc + ...)`, which is
   O(n²) string allocation and overflowed the 16 MiB per-tick string heap on a full ~1500-line real

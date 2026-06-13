@@ -57,6 +57,16 @@ printf '%s' "$safe"  | grep -q 'Suite result: ok'     && clean=1
 echo "   buggy-control caught (suite FAILED): $caught   safe-twin clean (suite ok): $clean"
 
 # --- 3. ADOPT (only on two-sided discrimination) ----------------------------
+# The same-name dedupe guard below is INTENTIONAL: the registry is operator-curated, so a
+# re-invented method with an existing name is a no-op rather than a duplicate row. Distinct
+# near-duplicate names can still accumulate over many runs — that is left to operator pruning
+# by design (the meta-loop proposes; the human curates the registry).
+#
+# Row shape is INTENTIONAL too: an `invented` row keeps the proposal's trailing <control-assert>
+# field, so it is METHOD|name|classes|technique|invoke|<control-assert>|invented|fitness (8 fields,
+# one more than a `builtin` 7-field row). That extra field is consumed by gen-agent.sh (#1000) to
+# wire the method's known-bug control assertion into the generated agent's two-sided gate — see the
+# `invented` shape documented in auditor/methods/registry.md. Do NOT strip it to 7 fields.
 if [ "$caught" = 1 ] && [ "$clean" = 1 ]; then
   if ! grep -q "^METHOD|$name|" "$REGISTRY"; then
     printf 'METHOD|%s|invented|0.50\n' "$(printf '%s' "$proposal" | sed 's/^METHOD|//')" >> "$REGISTRY"

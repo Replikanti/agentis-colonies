@@ -33,6 +33,7 @@ name: Release
 on:
   push:
     tags:
+      - 'dark-factory-v*'
       - 'dev-apprenticeship-v*'
       - 'research-foundry-v*'
       - 'tribes-bench-v*'

@@ -6,11 +6,23 @@ known-bug control gate. Machine-readable lines:
 
 `METHOD|<name>|<bug-classes>|<technique>|<how-to-invoke>|<status>|<fitness>`
 
+An `invented` line carries one extra field — the known-bug control assertion the
+method-inventor proposed — between `<how-to-invoke>` and `<status>`:
+
+`METHOD|<name>|<bug-classes>|<technique>|<how-to-invoke>|<control-assertion>|invented|<fitness>`
+
+`gen-agent.sh <name>` reads a line from this file and materialises a colony-lint-valid
+`.ag` agent under `agents/<name>.ag` that applies the method's technique, closing the
+self-extension loop (#1000): the federation grows its own agent set, not just its method
+list. It parses both shapes (the `<control-assertion>` is wired into the agent's output
+contract when present).
+
 METHOD|breadth-screen|C1-C14|per (subsystem x bug-class) reason-first adversarial LLM pass over sliced in-scope contracts|run-discovery.sh|builtin|0.50
 METHOD|function-slicing|*|extract `file@fn` slices (contract header + named fns) so big contracts fit the LLM budget|slice-fns.sh|builtin|0.60
 METHOD|brief-ingestion|*|fold the target's own audit docs / known-issues into the hunt anchor to exclude documented findings|run-discovery.sh --brief|builtin|0.70
 METHOD|deep-cross-function-audit|C5-C12|whole-contract read, enumerate invariants, trace the call-graph, build sequenced multi-actor attack hypotheses|deep-audit subagent|builtin|0.55
 METHOD|poc-build-run|*|build a forge harness over mocks, write + run a test to reproduce/refute a hypothesis|forge-verify.sh|builtin|0.65
-METHOD|adversarial-refute|*|independently try to REFUTE each candidate vs real control-flow + economic-honesty (count all positions)|refute subagent|builtin|0.75
+METHOD|adversarial-refute|*|independently try to REFUTE each candidate vs real control-flow (default to refuted on doubt); now substrate-native (auditor/agents/refuter.ag), #999|run-refute.sh|builtin|0.75
 METHOD|fork-differential|*|clone the upstream parent, diff, audit ONLY the delta (the lines the upstream auditors never saw)|fork-diff subagent|builtin|0.80
 METHOD|onchain-verify|C5,C14|Sourcify verified source + public-RPC eth_call + keccak selector/role checks on the live deployment|recall.sh / cast|builtin|0.50
+METHOD|stateful-invariant-fuzz|C5-C12|drive the contract through randomized multi-call sequences (varying caller, amounts, ordering) and assert a protocol invariant after every step|stateful-invariant-fuzz subagent|the BuggyBank solvency control (total == token.balanceOf) holds for the happy path but is provably broken by a deposit->transfer sequence, while the SafeBank twin is NOT tripped|invented|0.50
