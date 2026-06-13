@@ -160,6 +160,73 @@ dark-factory/evm-harness/forge-verify.sh --repo "$PWD/target" --poc "$PWD/Exploi
 A clean sweep (no candidate survives) is a **rigorous negative** — a valid outcome on audited code;
 nothing is submitted. As with `run-audit.sh`, the colony never posts to a platform.
 
+## Exercise the evolve/fitness loop (`evolve-fitness.sh`)
+
+Every hunt the colony runs records a `learn("hunt", "<class>:<subsystem>", ..., outcome, [...])` row in
+the agentis experience store; the cumulative `delta` per key (+0.15 per CANDIDATE lead, -0.15 per
+rigorous SAFE) is the **per-lens fitness** that reweights which taxonomy classes the colony leans on.
+`evolve-fitness.sh` drives that loop across N iterations over a built-in ground-truth corpus and prints
+the BEFORE/AFTER fitness so the movement is visible — high-yield lenses (vault accounting, rounding,
+reentrancy) pull ahead, speculative lenses (cross-chain, pause) fall behind. It runs the colony's REAL
+recording path (`auditor/agents/fitness-driver.ag`, the identical `learn()` call `hunter.ag` makes), is
+fully offline and reproducible (`--backend mock` semantics, no LLM call), and exits non-zero if the loop
+fails to move fitness.
+
+```bash
+dark-factory/evolve-fitness.sh --iters 6 --json
+# -> a per-lens before/after/Δ-fitness table + <out>/fitness.json; supply --corpus to use your own
+#    `class | subsystem | yield` manifest.
+```
+
+## Invent new audit methods (`run-method-discovery.sh`)
+
+The federation's **self-improvement** layer. When the current method-set plateaus, the
+method-inventor proposes ONE new audit method and it is adopted into the registry only if it
+**discriminates** on a known-bug control corpus. The loop is **invent → validate → adopt**:
+
+1. **invent** — `auditor/agents/method-inventor.ag` reads the current registry
+   ([`auditor/methods/registry.md`](./auditor/methods/registry.md)) + a documented GAP
+   ([`auditor/methods/gap-stateful.md`](./auditor/methods/gap-stateful.md)) and proposes one new,
+   distinct, concretely-runnable method (substrate-native via `agentis go`, direct-LLM as fallback).
+2. **validate** — the proposal is run against the paired control corpus under
+   `auditor/method-discovery/controls/`: a planted accounting/solvency bug (`BuggyBank`) plus a clean
+   twin (`SafeBank`). The two-sided gate is `forge test` on the buggy suite FAILING **and** the safe
+   twin PASSING — that is what makes invention empirical, not speculation.
+3. **adopt** — only on two-sided discrimination is the method appended to the registry
+   (`status=invented`, `fitness=0.50`). An `invented` row keeps the proposal's control-assertion
+   before `status` (one more field than a `builtin` row) — that field is what `gen-agent.sh` reads
+   to wire the agent's gate. The registry is operator-curated, so adoption is additive and
+   re-invented same-name methods are a no-op.
+
+```bash
+# Build a /tmp control corpus (controls/ + a local forge-std under lib/), then:
+dark-factory/run-method-discovery.sh /tmp/mdctl
+# exit 0 = invented + validated + adopted;  2 = proposal did not discriminate (no adoption);
+# 1 = the inventor produced no proposal.  Set NO_AGENTIS=1 to force the direct-LLM path.
+```
+
+Turn an adopted method into a runnable agent with `gen-agent.sh <method-name>` (#1000), which
+materialises `auditor/agents/<name>.ag` from the method's registry line.
+
+## Export / import a trained federation (`state-export.sh`)
+
+A *trained* federation's value is its **evolved state**: the accumulated learned `memo` (fitness
+weights, taxonomy/method state) and the content-addressed Merkle DAG of audited patterns.
+`state-export.sh` packages that state into a portable, **checksum-verified** artifact so a trained
+instance can be moved between machines. It deliberately **excludes** the federation identity (private
+key), per-deployment config, and the transient sandbox — an importer keeps their OWN identity and
+only inherits the learned state.
+
+```bash
+dark-factory/state-export.sh export <rundir> state.tar.gz   # package memo + DAG -> artifact
+dark-factory/state-export.sh verify state.tar.gz            # recompute + compare the sha256 digest
+dark-factory/state-export.sh import state.tar.gz <dest>     # overlay memo + DAG onto a fresh local store
+```
+
+`verify`/`import` prove the state blob matches the manifest digest (no in-transit corruption). The
+checksum is **not** a signature: it authenticates integrity, not the source. **Sign the manifest
+out-of-band** before distributing a trained federation to a third party.
+
 ## Layout
 
 ```
@@ -168,6 +235,10 @@ dark-factory/
   VERSION  CHANGELOG.md  BUNDLE.manifest  install.sh
   run-audit.sh                  # operator entrypoint: DAG fork-matcher audit -> human-gated package
   run-discovery.sh              # operator entrypoint: custom-code discovery (hunter fan-out) -> leads
+  evolve-fitness.sh             # drive the evolve/fitness loop over N iterations; show per-lens fitness move
+  run-method-discovery.sh       # self-improvement: invent -> validate-on-control -> adopt a new method
+  state-export.sh               # export/verify/import a trained federation's evolved state (checksum-verified)
+  gen-agent.sh                  # materialise a colony-lint-valid .ag agent from an invented METHOD line (#1000)
   setup-solana-toolchain.sh     # one-time offline toolchain build (network ON)
   snapshot-rpc.sh               # host RPC getAccountInfo -> frozen on-chain snapshot (V4)
   calibrate-sealevel.sh         # detection+validation scorecard over the sealevel corpus (V6)
@@ -175,6 +246,12 @@ dark-factory/
   auditor/                      # the single colony
     agents/auditor.ag           # the DAG-match pipeline (reconn → guard → tracker → synthesis)
     agents/hunter.ag            # the custom-code discovery agent (taxonomy-driven adversarial hunt)
+    agents/fitness-driver.ag    # one fitness-loop cell: hunter.ag's exact learn() over a ground-truth verdict
+    agents/method-inventor.ag   # the meta-loop inventor: proposes a new audit method for a known gap (#998)
+    agents/stateful-invariant-fuzz.ag  # generated by gen-agent.sh from the like-named method (#1000)
+    methods/registry.md         # the method registry gen-agent.sh reads (METHOD| lines; #998 loop, #1000 generator)
+    methods/gap-stateful.md     # a documented gap the current method-set misses (the #998 invent trigger)
+    method-discovery/controls/  # paired Buggy/Safe control corpus (the two-sided adoption gate)
     bug-taxonomy.md             # 14 DeFi bug classes + per-class hunt lens (the discovery knowledge)
     slice-fns.sh                # Solidity function-slicer (scope `file@fn1+fn2` -> header + named fns)
     config/colony.example.toml  # forge.type = "none"; cb_budget
