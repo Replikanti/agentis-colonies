@@ -160,6 +160,24 @@ dark-factory/evm-harness/forge-verify.sh --repo "$PWD/target" --poc "$PWD/Exploi
 A clean sweep (no candidate survives) is a **rigorous negative** — a valid outcome on audited code;
 nothing is submitted. As with `run-audit.sh`, the colony never posts to a platform.
 
+## Exercise the evolve/fitness loop (`evolve-fitness.sh`)
+
+Every hunt the colony runs records a `learn("hunt", "<class>:<subsystem>", ..., outcome, [...])` row in
+the agentis experience store; the cumulative `delta` per key (+0.15 per CANDIDATE lead, -0.15 per
+rigorous SAFE) is the **per-lens fitness** that reweights which taxonomy classes the colony leans on.
+`evolve-fitness.sh` drives that loop across N iterations over a built-in ground-truth corpus and prints
+the BEFORE/AFTER fitness so the movement is visible — high-yield lenses (vault accounting, rounding,
+reentrancy) pull ahead, speculative lenses (cross-chain, pause) fall behind. It runs the colony's REAL
+recording path (`auditor/agents/fitness-driver.ag`, the identical `learn()` call `hunter.ag` makes), is
+fully offline and reproducible (`--backend mock` semantics, no LLM call), and exits non-zero if the loop
+fails to move fitness.
+
+```bash
+dark-factory/evolve-fitness.sh --iters 6 --json
+# -> a per-lens before/after/Δ-fitness table + <out>/fitness.json; supply --corpus to use your own
+#    `class | subsystem | yield` manifest.
+```
+
 ## Layout
 
 ```
@@ -168,6 +186,7 @@ dark-factory/
   VERSION  CHANGELOG.md  BUNDLE.manifest  install.sh
   run-audit.sh                  # operator entrypoint: DAG fork-matcher audit -> human-gated package
   run-discovery.sh              # operator entrypoint: custom-code discovery (hunter fan-out) -> leads
+  evolve-fitness.sh             # drive the evolve/fitness loop over N iterations; show per-lens fitness move
   setup-solana-toolchain.sh     # one-time offline toolchain build (network ON)
   snapshot-rpc.sh               # host RPC getAccountInfo -> frozen on-chain snapshot (V4)
   calibrate-sealevel.sh         # detection+validation scorecard over the sealevel corpus (V6)
@@ -175,6 +194,7 @@ dark-factory/
   auditor/                      # the single colony
     agents/auditor.ag           # the DAG-match pipeline (reconn → guard → tracker → synthesis)
     agents/hunter.ag            # the custom-code discovery agent (taxonomy-driven adversarial hunt)
+    agents/fitness-driver.ag    # one fitness-loop cell: hunter.ag's exact learn() over a ground-truth verdict
     bug-taxonomy.md             # 14 DeFi bug classes + per-class hunt lens (the discovery knowledge)
     slice-fns.sh                # Solidity function-slicer (scope `file@fn1+fn2` -> header + named fns)
     config/colony.example.toml  # forge.type = "none"; cb_budget
