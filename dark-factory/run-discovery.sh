@@ -40,7 +40,7 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
 REPO="" ; SCOPE="" ; BRIEF="" ; TAXONOMY="" ; ONLY="" ; CLASSES_OVERRIDE=""
-BACKEND="claude" ; OUT="$PWD/discovery-out"
+BACKEND="claude" ; MODEL="" ; OUT="$PWD/discovery-out"
 
 need() { [ "$1" -ge 2 ] || { echo "run-discovery.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -52,6 +52,7 @@ while [ $# -gt 0 ]; do
     --only) need "$#"; ONLY="$2"; shift 2 ;;
     --classes) need "$#"; CLASSES_OVERRIDE="$2"; shift 2 ;;
     --backend) need "$#"; BACKEND="$2"; shift 2 ;;
+    --model) need "$#"; MODEL="$2"; shift 2 ;;
     --out) need "$#"; OUT="$2"; shift 2 ;;
     --agentis) need "$#"; AGENTIS="$2"; shift 2 ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
@@ -89,7 +90,7 @@ cp "$HERE/auditor/slice-fns.sh" "$RUN/slice-fns.sh"   # function-level slicer (s
   # even on a function-level slice (the reasoning, not the payload, is the cost). 300s made the hard
   # cells time out 3x and return nothing; one 600s attempt beats three wasted 300s retries. Keep
   # cells focused with `file@fn` slicing so the common case stays fast.
-  [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p"; echo "llm.cli_timeout_ms = 600000"; }
+  [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p${MODEL:+ --model $MODEL}"; echo "llm.cli_timeout_ms = 600000"; }
   echo "trace.level = normal"
   # The hunter reads source + the brief/taxonomy through exec sh; pass through its whole env contract.
   echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER"
