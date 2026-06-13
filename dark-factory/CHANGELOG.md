@@ -16,6 +16,11 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- `contest-watch.sh` — a durable, host-cron-able watcher for newly-opened audit competitions (Sherlock
+  API + Cantina/Code4rena probes). On a fresh contest it notifies via a state file / optional webhook /
+  optional command, so an early audit pass can start day-1; it survives across sessions, unlike an
+  in-session reminder. Validated: detects a RUNNING contest, stays silent when the platforms are dry.
+
 - Discovery: **function-level slicing** + a 600s deep-read budget (#863). A scope entry can now be
   written `file@fn1+fn2` to feed the hunter ONLY those functions (plus the contract header) instead of
   the whole file — `auditor/slice-fns.sh` (awk, brace-matched) extracts them, wired through
