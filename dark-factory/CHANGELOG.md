@@ -16,6 +16,14 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Release wiring (#1002) — `dark-factory` is now a first-class release target. The shared
+  `tools/make-federation-bundle.sh dark-factory <X.Y.Z>` already stages a curated tarball from
+  `BUNDLE.manifest`; this change registers the `dark-factory-v*` tag prefix in
+  `.github/workflows/release.yml` so a tag push builds the bundle and creates/updates the GitHub
+  release automatically (same flow as the other federations). `dark-factory/` was already tracked by
+  `tools/check-changelog.sh` (added in #965), so the `[Unreleased]` soft-check covers it too. After a
+  release PR merges: `git tag dark-factory-v<X.Y.Z> <merge-sha> && git push origin dark-factory-v<X.Y.Z>`.
+
 - `contest-watch.sh` — a durable, host-cron-able watcher for newly-opened audit competitions (Sherlock
   API + Cantina/Code4rena probes). On a fresh contest it notifies via a state file / optional webhook /
   optional command, so an early audit pass can start day-1; it survives across sessions, unlike an
