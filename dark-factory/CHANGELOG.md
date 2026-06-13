@@ -16,6 +16,29 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- `gen-agent.sh <method-name>` — close the self-extension loop (#1000). The
+  method-discovery meta-loop (`method-inventor.ag` + `run-method-discovery.sh`,
+  #998) invents and adopts new audit *methods* — reusable hunting techniques
+  recorded as `METHOD|name|classes|technique|how-to-invoke|status|fitness` lines
+  in `auditor/methods/registry.md` (an `invented` line carries an extra
+  control-assertion field before `status`) — but could not turn an adopted method
+  into a new AGENT; the agent set was fixed. The generator reads one
+  `METHOD|<name>|...` line (parsing both the builtin 7-field and invented 8-field
+  shapes) and materialises `auditor/agents/<name>.ag`, a colony-lint-valid
+  one-shot discovery agent (modelled on `hunter.ag`: `cb 300000;`, env reads, a
+  `safe-exec-concat` file reader, a single adversarial `prompt()`, and an
+  `emit()` + `learn()` so the method's per-target fitness reweights over runs —
+  the #861 evolve loop, now over a generated method-agent). The method's
+  technique / how-to-invoke / control-assertion (or a generic two-sided gate for
+  builtin methods) are wired into the agent's instruction; the agent prints one
+  `CANDIDATE|...|method=<name>|...` line per finding (else `SAFE`) for the
+  forge-verify gate. Refuses to overwrite an existing agent (exit 3) and rejects
+  non-kebab-case names (exit 2). Demo: adopted the `stateful-invariant-fuzz`
+  method (the multi-transaction-invariant gap the federation itself flagged in
+  `auditor/methods/gap-stateful.md`) into the registry and generated
+  `auditor/agents/stateful-invariant-fuzz.ag` from it — passes `colony-lint.sh`
+  (`agentis commit` syntax + `check-exec-sh`).
+
 - `contest-watch.sh` — a durable, host-cron-able watcher for newly-opened audit competitions (Sherlock
   API + Cantina/Code4rena probes). On a fresh contest it notifies via a state file / optional webhook /
   optional command, so an early audit pass can start day-1; it survives across sessions, unlike an
