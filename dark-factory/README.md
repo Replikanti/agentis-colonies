@@ -160,6 +160,26 @@ dark-factory/evm-harness/forge-verify.sh --repo "$PWD/target" --poc "$PWD/Exploi
 A clean sweep (no candidate survives) is a **rigorous negative** — a valid outcome on audited code;
 nothing is submitted. As with `run-audit.sh`, the colony never posts to a platform.
 
+## Observe a run (`run-summary.sh`)
+
+dark-factory runs **one-shot** (`agentis go`): no daemons, no `*:confidence` memos — so the
+standalone `federation-dashboard` (which assumes daemon-tick agents) has nothing to poll (#995).
+`run-summary.sh` closes that gap on the dark-factory side: after a run, point it at the same `--out`
+dir and it distills the run's on-disk artifacts (the agentis **experience log** + the run report)
+into one stable JSON at `<out>/run-summary.json` — runs/cells executed, candidates found, `learn()`
+outcomes, **per-class fitness** (`success / attempts` from the experience rows), last-run timestamp,
+and verdict — that a monitor or dashboard can poll. It only reads what the run already wrote.
+
+```bash
+dark-factory/run-discovery.sh --repo "$PWD/target" --scope scope.tsv --brief brief.md \
+    --backend claude --out "$PWD/discovery-out"
+dark-factory/run-summary.sh --out "$PWD/discovery-out"          # -> discovery-out/run-summary.json
+dark-factory/run-summary.sh --out "$PWD/discovery-out" --json | jq .verdict   # stdout is pure JSON
+dark-factory/run-summary.sh --out "$PWD/discovery-out" --emit-event           # + one NDJSON event line
+```
+
+Schema + the monitor/dashboard consumer contract: [`docs/run-observability.md`](./docs/run-observability.md).
+
 ## Layout
 
 ```
@@ -168,6 +188,7 @@ dark-factory/
   VERSION  CHANGELOG.md  BUNDLE.manifest  install.sh
   run-audit.sh                  # operator entrypoint: DAG fork-matcher audit -> human-gated package
   run-discovery.sh              # operator entrypoint: custom-code discovery (hunter fan-out) -> leads
+  run-summary.sh                # one-shot run -> monitor-/dashboard-consumable run-summary.json (#995)
   setup-solana-toolchain.sh     # one-time offline toolchain build (network ON)
   snapshot-rpc.sh               # host RPC getAccountInfo -> frozen on-chain snapshot (V4)
   calibrate-sealevel.sh         # detection+validation scorecard over the sealevel corpus (V6)

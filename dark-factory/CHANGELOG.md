@@ -16,6 +16,23 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- `run-summary.sh` + `docs/run-observability.md` — make a one-shot run **observable** without touching
+  the separately-versioned `federation-dashboard` component (#995). dark-factory runs one-shot via
+  `agentis go` (no daemons, no `*:confidence` memos), so the dashboard — which assumes daemon-tick
+  agents with confidence-tier memos — has nothing to poll. `run-summary.sh` closes that gap on the
+  dark-factory side: pointed at a run's `--out` dir it distills the run's on-disk artifacts (the
+  agentis experience log + the run report) into one stable JSON at `<out>/run-summary.json` — runs/cells
+  executed, candidates found, `learn()` outcomes, **per-class fitness** (`success / attempts`, read from
+  the experience store), last-run timestamp, and verdict (discovery: `LEADS`/`SAFE`; audit: the
+  `Verdict:` line). It only READS what the run wrote — never mutates the store, never contacts a
+  platform. JSON is built with `python3` `json.dumps` (schema `dark-factory/run-summary@1`); `--json`
+  emits pure JSON on stdout (jq-safe), `--emit-event` appends one `dark-factory:run_summary` NDJSON line
+  to `<out>/events.jsonl` for a tailing monitor. `docs/run-observability.md` documents the schema +
+  three consumer shapes (poll the file / tail the event stream / aggregate across runs). Validated
+  end-to-end against a real mock-backend discovery run and synthetic discovery/audit fixtures (LEADS +
+  SAFE verdicts, non-zero per-class fitness, the no-experience-log fallback). `shellcheck`-clean,
+  `bash -n`-clean.
+
 - `contest-watch.sh` — a durable, host-cron-able watcher for newly-opened audit competitions (Sherlock
   API + Cantina/Code4rena probes). On a fresh contest it notifies via a state file / optional webhook /
   optional command, so an early audit pass can start day-1; it survives across sessions, unlike an
