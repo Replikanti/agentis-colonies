@@ -16,6 +16,30 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Substrate-native lead pre-screen via **`eval_ag`** (#997). The discovery hunter surfaces a CANDIDATE
+  as a *prose* PoC sketch — an unverified lead — and the only gate was `evm-harness/forge-verify.sh`, a
+  full Foundry deploy + attacker tx that needs the cloned repo + `foundryup` and runs slowly. A new
+  cheap gate runs first: `auditor/agents/poc-screener.ag` lowers a lead's machine-checkable invariant to
+  a self-contained `.ag` PoC harness and evaluates it through the substrate's `eval_ag` primitive — a
+  sandboxed sub-interpreter with its own CB budget. It returns the stable outcome discriminator
+  (`success` / `parse_error` / `compile_error` / `inner_cb_exhausted` / …) so the screen distinguishes
+  "invariant HELD" (a clean run returning `0`) from "junk harness", and a runaway harness is CONTAINED
+  (the inner CB meter trips → `inner_cb_exhausted`) instead of crashing the screener. The harness
+  contract mirrors the colony's exit-101 two-sided gate (return `101` = INVARIANT VIOLATED = reproduced).
+  `screen-leads.sh` drives it over a `lead-id | harness.ag` manifest and emits a verdict table; every
+  screen is recorded via `learn()` + `emit("dark-factory:poc_screened", …)`. A reproduced screen is a
+  lead worth the forge-verify cost, NOT a finding — submission stays human-gated.
+  - **Demoed end-to-end** (`screen-leads.sh --demo`, zero external prerequisites): a reentrancy-vuln
+    harness → `reproduced | success | 101`, its CEI-fixed variant → `held | success | 0`, a malformed
+    harness → `indeterminate | parse_error`, and a recursion-bomb harness → `indeterminate |
+    inner_cb_exhausted` with the screener surviving.
+  - Documented in `docs/SUBSTRATE-PRIMITIVES.md`: which substrate primitives the colony adopted and,
+    honestly, why `replicate` (needs a live colony pool + peer; a fatal error otherwise), `delegate`
+    (no second in-process cooperating agent), `decide` (an LLM round-trip where the colony deliberately
+    keeps a hard mechanical gate), the Lean verifier (wrong proof object for runtime exploit
+    reproduction), and confidence-tiers (the colony is one-shot + human-gated, with no autonomous write
+    to throttle) do not currently fit.
+
 - `contest-watch.sh` — a durable, host-cron-able watcher for newly-opened audit competitions (Sherlock
   API + Cantina/Code4rena probes). On a fresh contest it notifies via a state file / optional webhook /
   optional command, so an early audit pass can start day-1; it survives across sessions, unlike an

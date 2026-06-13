@@ -160,6 +160,27 @@ dark-factory/evm-harness/forge-verify.sh --repo "$PWD/target" --poc "$PWD/Exploi
 A clean sweep (no candidate survives) is a **rigorous negative** — a valid outcome on audited code;
 nothing is submitted. As with `run-audit.sh`, the colony never posts to a platform.
 
+### Pre-screen a lead before the Foundry gate (`screen-leads.sh`)
+
+`forge-verify.sh` is the heavyweight gate (a full Foundry deploy + attacker tx). Between a hunter's
+*prose* PoC sketch and that repro, `screen-leads.sh` is the **cheap** gate: it lowers a lead's
+machine-checkable invariant to a self-contained `.ag` PoC harness and evaluates it through the
+substrate's **`eval_ag`** primitive — a sandboxed sub-interpreter with its own CB budget — via
+[`auditor/agents/poc-screener.ag`](./auditor/agents/poc-screener.ag). A reproduced screen (return
+`101`, the colony's INVARIANT-VIOLATED sentinel) decides a lead is worth the forge-verify cost; a
+runaway / malformed harness is **contained** (surfaced as `inner_cb_exhausted` / `parse_error`), so it
+cannot crash the screener or touch the host.
+
+```bash
+dark-factory/screen-leads.sh --demo          # self-contained: 3 leads -> 1 reproduced, 1 held, 1 indeterminate
+dark-factory/screen-leads.sh --manifest leads.tsv    # one `lead-id | harness.ag` per line
+```
+
+A reproduced screen is still a **lead, not a finding** — verify it through `forge-verify.sh` and keep
+submission human-gated. Which substrate primitives the colony adopted (and why `replicate` / `delegate`
+/ `decide` / Lean / confidence-tiers do **not** currently fit) is documented in
+[`docs/SUBSTRATE-PRIMITIVES.md`](./docs/SUBSTRATE-PRIMITIVES.md).
+
 ## Layout
 
 ```
@@ -168,6 +189,7 @@ dark-factory/
   VERSION  CHANGELOG.md  BUNDLE.manifest  install.sh
   run-audit.sh                  # operator entrypoint: DAG fork-matcher audit -> human-gated package
   run-discovery.sh              # operator entrypoint: custom-code discovery (hunter fan-out) -> leads
+  screen-leads.sh               # cheap substrate-native lead pre-screen (eval_ag) before forge-verify
   setup-solana-toolchain.sh     # one-time offline toolchain build (network ON)
   snapshot-rpc.sh               # host RPC getAccountInfo -> frozen on-chain snapshot (V4)
   calibrate-sealevel.sh         # detection+validation scorecard over the sealevel corpus (V6)
@@ -175,6 +197,7 @@ dark-factory/
   auditor/                      # the single colony
     agents/auditor.ag           # the DAG-match pipeline (reconn → guard → tracker → synthesis)
     agents/hunter.ag            # the custom-code discovery agent (taxonomy-driven adversarial hunt)
+    agents/poc-screener.ag      # substrate-native lead pre-screen via eval_ag (sandboxed PoC harness)
     bug-taxonomy.md             # 14 DeFi bug classes + per-class hunt lens (the discovery knowledge)
     slice-fns.sh                # Solidity function-slicer (scope `file@fn1+fn2` -> header + named fns)
     config/colony.example.toml  # forge.type = "none"; cb_budget
