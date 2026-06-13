@@ -1,0 +1,39 @@
+cb 300000;
+// #863 — method-inventor. The federation's META layer: when the current audit method-set
+// plateaus (recent audits keep returning clean/refuted with the methods it already has),
+// propose ONE NEW method that catches a bug class the registry MISSES. The proposal is
+// validated downstream by run-method-discovery.sh against a known-bug control corpus
+// (fail-on-buggy + pass-on-clean = a two-sided gate) before it is adopted — so the
+// federation's method invention is EMPIRICAL, not speculation.
+//
+// Env:
+//   REGISTRY  path to the current method registry (methods the federation already has)
+//   GAP       path to a description of the bug class the current methods keep MISSING
+// Stdout: exactly one line
+//   METHOD|<name>|<bug-classes>|<one-sentence technique>|<how-to-invoke>|<what a known-bug control asserts>
+
+fn cat(path: string) -> string {
+    // colony-lint: safe-exec-concat
+    return exec sh "sed -n '1,400p' ${path} 2>/dev/null || true";
+}
+
+let registry = cat(getenv("REGISTRY"));
+let gap = cat(getenv("GAP"));
+
+let instruction = "You are the METHOD-INVENTOR for an autonomous smart-contract audit federation. "
+  + "The payload has the federation's CURRENT methods and a GAP (a class of bug those methods keep "
+  + "MISSING: recent audits came back clean with them, yet a known control holds a real bug they do not "
+  + "surface). Propose EXACTLY ONE NEW audit method that catches this class, DISTINCT from every method "
+  + "already listed, concretely runnable (a real technique/tool), and validatable against a known-bug "
+  + "control. Reason briefly, then output EXACTLY one final line, no markdown:\n"
+  + "METHOD|<short-name>|<target-bug-classes>|<one-sentence technique>|<how-to-invoke>|"
+  + "<what a known-bug control would assert>";
+
+let payload = "=== CURRENT METHODS ===\n" + registry + "\n\n=== GAP ===\n" + gap;
+
+let proposal = prompt(instruction, payload) -> string;
+
+// Surface to the orchestrator (stdout) + record the proposal on the bus.
+print(proposal);
+emit("dark-factory:method_proposed", proposal);
+memo_write("method-inventor:last_check", "done");
