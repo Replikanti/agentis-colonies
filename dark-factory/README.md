@@ -160,6 +160,29 @@ dark-factory/evm-harness/forge-verify.sh --repo "$PWD/target" --poc "$PWD/Exploi
 A clean sweep (no candidate survives) is a **rigorous negative** — a valid outcome on audited code;
 nothing is submitted. As with `run-audit.sh`, the colony never posts to a platform.
 
+## Refute candidate leads (`run-refute.sh`)
+
+Between discovery and a (costly) Foundry PoC there is a cheaper gate: a **second, independent skeptic**
+must fail to break the lead. `run-refute.sh` drives that gate on the substrate via
+[`auditor/agents/refuter.ag`](./auditor/agents/refuter.ag) — for each candidate it env-ins the
+`file:fn` + claimed exploit + the relevant code, `prompt`s a hostile reader that tries to **REFUTE** the
+claim against the actual control/data flow (**defaulting to REFUTED on any doubt**, so only unambiguous
+leads survive), `emit`s `dark-factory:refute_verdict`, and `learn`s the attempt so refuter fitness
+reweights. This is the colony-native form of the `adversarial-refute` method
+([`auditor/methods/registry.md`](./auditor/methods/registry.md)) that previously ran as an external
+subagent — the proven pattern (#999) for porting the colony's other deep capabilities (deep
+cross-function audit, build-and-run PoC, fork-differential) onto the substrate.
+
+```bash
+# candidates.tsv: `file:fn | classid | severity | claimed exploit | code-file`  (one per line)
+dark-factory/run-refute.sh --candidates "$PWD/candidates.tsv" --backend claude --out "$PWD/refute-out"
+# cheap wiring smoke (no real LLM):  add  --backend mock
+```
+
+A **REAL** verdict is a lead that survived a hostile read — **not a finding**. It still must reproduce
+through `evm-harness/forge-verify.sh` before it counts, and submission stays a separate, explicit human
+action. A **REFUTED** verdict is killed here and never reaches the forge gate. The colony never posts.
+
 ## Layout
 
 ```
@@ -168,6 +191,7 @@ dark-factory/
   VERSION  CHANGELOG.md  BUNDLE.manifest  install.sh
   run-audit.sh                  # operator entrypoint: DAG fork-matcher audit -> human-gated package
   run-discovery.sh              # operator entrypoint: custom-code discovery (hunter fan-out) -> leads
+  run-refute.sh                 # operator entrypoint: adversarial refutation (refuter fan-out) -> verdicts
   setup-solana-toolchain.sh     # one-time offline toolchain build (network ON)
   snapshot-rpc.sh               # host RPC getAccountInfo -> frozen on-chain snapshot (V4)
   calibrate-sealevel.sh         # detection+validation scorecard over the sealevel corpus (V6)
@@ -175,6 +199,7 @@ dark-factory/
   auditor/                      # the single colony
     agents/auditor.ag           # the DAG-match pipeline (reconn → guard → tracker → synthesis)
     agents/hunter.ag            # the custom-code discovery agent (taxonomy-driven adversarial hunt)
+    agents/refuter.ag           # the adversarial-refutation agent (independent skeptic; default REFUTED)
     bug-taxonomy.md             # 14 DeFi bug classes + per-class hunt lens (the discovery knowledge)
     slice-fns.sh                # Solidity function-slicer (scope `file@fn1+fn2` -> header + named fns)
     config/colony.example.toml  # forge.type = "none"; cb_budget
