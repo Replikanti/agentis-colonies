@@ -1,0 +1,311 @@
+cb 300000;
+// #1014 — self-orchestrating COORDINATOR. ONE decision per `agentis go` invocation: read the current
+// FACTS, enumerate the audit ACTION OPTIONS, and pick the next action by a fact-criteria + evolving
+// POLICY — NOT a hardcoded sequence. This replaces the DECISION-MAKING that run-discovery.sh / an
+// operator used to do (fixed fan-out order, externally-chosen target/method/when-to-stop). A thin shell
+// (run-coordinator.sh) still DISPATCHES the chosen action in v1 and feeds the gate OUTCOME back; the
+// DECISION is the coordinator's, and the decision policy EVOLVES by outcome.
+//
+// Why argmax-then-decide (and not decide() alone): `decide(options, criteria)` is a real substrate
+// builtin in agentis v1.18.27, but its OFFLINE/unconfigured-backend resolution is deterministic-FIRST-
+// option — it does not read the `criteria` text (verified: same options in different order -> it returns
+// whichever option is first). So a fact+policy choice cannot come from `decide` text alone offline. The
+// coordinator therefore SCORES every option from the FACTS and the learned POLICY weight, ORDERS the
+// options by that score (a policy-weighted argmax), and then calls `decide()` on the already-fact-ranked
+// list as the substrate-native selection step (it returns the top-ranked option). The choice is genuinely
+// facts+policy; `decide` is the substrate primitive that consumes the ranking. With a real LLM backend
+// `decide` could additionally arbitrate near-ties from the criteria, but the gate-grade ordering is the
+// coordinator's, never a fixed order and never an LLM judgement of the verdict itself.
+//
+// EVOLVE: the PREVIOUS action's confirmed-finding -> success, dry/refuted -> failure is recorded via the
+// SAME learn() mechanic fitness-driver.ag / hunter.ag use (action "coordinator", key "<action-type>",
+// delta +-0.15). The CUMULATIVE delta per action-type key IS `coordinator:policy:<action-type>` — read
+// back by run-coordinator.sh from .agentis/experience/*.jsonl (exactly evolve-fitness.sh's reader) and
+// passed in as the POLICY fact next call. So the policy that ranks the options is DATA that improves.
+//
+// Env (all FACTS — none is an LLM call; the prior OUTCOME is a gate verdict, not a judgement):
+//   SCOPE         newline-joined `subsystem|class` cells still huntable, e.g. "vault accounting|C1"
+//   CLASS_FITNESS per-lens fitness as `class=delta;...`, e.g. "C1=0.45;C8=0.30;C3=-0.20" ("" = cold)
+//   POLICY        per-action-type policy fitness as `type=delta;...`, e.g. "hunt=0.30;refute=-0.15"
+//   PENDING       newline-joined unverified candidates `cand-id|subsystem|class`, "" if none
+//   BUDGET        remaining step budget (integer); <=0 forces stop
+//   DRY_STREAK    consecutive non-productive steps so far (integer); >= DRY_CAP forces stop
+//   DRY_CAP       K: stop after this many consecutive dry steps (default 3)
+//   PREV_ACTION   the action-type executed last step ("" on the first step) — what we attribute the
+//                 OUTCOME to so the policy reweights
+//   PREV_KEY      the full args of the previous action (for the experience `out` field / trace)
+//   LAST_OUTCOME  the gate verdict for the previous action: "confirmed" | "dry" | "refuted" | "" (none)
+// Stdout: exactly one line
+//   ACTION|<type>|<args>|<rationale citing the facts that drove it>
+//   where <type> in {hunt, refute, poc-screen, invent-method, stop}; <args> is `subsystem|class` for
+//   hunt, the candidate id for refute/poc-screen, "" for invent-method/stop.
+
+// --- single-assignment helpers (no `let` reassignment; pure accumulators, per hunter.ag) ----------
+
+fn append_line(prev: string, line: string) -> string {
+    if len(line) == 0 { return prev; }
+    if len(prev) == 0 { return line; }
+    return prev + "\n" + line;
+}
+
+// First non-empty line of `s`.
+fn first_line(s: string) -> string {
+    return reduce(regex_split("\n", s), |acc: string, l: string| -> string {
+        if len(acc) > 0 { return acc; }
+        if len(l) > 0 { return l; }
+        return acc;
+    }, "");
+}
+
+// Count non-empty lines in a newline-joined block (number of cells/candidates).
+fn count_lines(s: string) -> int {
+    return reduce(regex_split("\n", s), |acc: int, l: string| -> int {
+        if len(l) == 0 { return acc; }
+        return acc + 1;
+    }, 0);
+}
+
+// Look up `key`'s value in a `key=val;key2=val2` fitness string; "" if absent. The value runs from just
+// after `key=` to the next `;`-delimited segment boundary (regex_split already splits on `;`).
+fn fit_lookup(table: string, key: string) -> string {
+    if len(table) == 0 { return ""; }
+    return reduce(regex_split(";", table), |acc: string, kv: string| -> string {
+        if index_of(kv, key + "=") == 0 { return substring(kv, len(key) + 1, len(kv)); }
+        return acc;
+    }, "");
+}
+
+// Fitness value as a float; absent / unparseable -> 0.0 (a cold lens/policy has zero weight, never
+// blocks an action — it just carries no bonus). parse_float is a verified builtin.
+fn fit_value(table: string, key: string) -> float {
+    let s = fit_lookup(table, key);
+    if len(s) == 0 { return 0.0; }
+    return parse_float(s);
+}
+
+// The `subsystem` of a `subsystem|class` cell (segment before the first `|`).
+fn cell_subsystem(cell: string) -> string {
+    let bar = index_of(cell, "|");
+    if bar < 0 { return cell; }
+    return substring(cell, 0, bar);
+}
+
+// The `class` of a `subsystem|class` cell (segment after the first `|`).
+fn cell_class(cell: string) -> string {
+    let bar = index_of(cell, "|");
+    if bar < 0 { return ""; }
+    return substring(cell, bar + 1, len(cell));
+}
+
+// Does the blackboard hold a (fresh, this-run) lead for `subsystem`? A lead line starts `subsystem|...`,
+// so an exact prefix match on `subsystem + "|"` anywhere in the board means a sibling already flagged it.
+fn board_has_subsystem(board: string, subsystem: string) -> bool {
+    if len(board) == 0 { return false; }
+    return reduce(regex_split("\n", board), |acc: bool, l: string| -> bool {
+        if acc { return acc; }
+        if len(l) == 0 { return acc; }
+        return index_of(l, subsystem + "|") == 0;
+    }, false);
+}
+
+// --- option SCORING: the fact+policy criteria, made explicit and deterministic --------------------
+// Each candidate action gets a numeric score; the coordinator picks the ARGMAX (and breaks ties by a
+// fixed priority baked into the base scores). Higher = more preferred. The scores ENCODE the acceptance
+// criteria as fact-criteria:
+//   * a pending unverified candidate -> verifying it (refute / poc-screen) outranks fresh hunting
+//     (we do not pile up unverified leads; the gate is the source of truth),
+//   * a fresh blackboard lead -> hunting that subsystem outranks an unrelated lens,
+//   * a higher-fitness lens -> preferred over a lower-fitness one,
+//   * the learned POLICY weight for the action-type tilts the ranking toward what has paid off,
+//   * budget exhausted OR K consecutive dry -> `stop` dominates everything.
+// The weights are chosen so the QUALITATIVE ordering is robust (a pending candidate always outranks a
+// cold hunt; a board-matched hunt always outranks an unmatched equal-fitness hunt) while the POLICY term
+// still re-sorts WITHIN a tier as it evolves — i.e. the policy genuinely moves the choice, but never
+// inverts a hard fact-priority (a refute over a pending High candidate is not skipped because hunting
+// happens to have higher policy weight).
+
+// Score a `refute` of a pending candidate. Base 100 (verifying a pending lead is top non-stop priority).
+fn score_refute(policy: string) -> float {
+    return 100.0 + fit_value(policy, "refute");
+}
+
+// Score a `poc-screen` of a pending candidate. Base 98 — same tier as refute (both are "verify a pending
+// lead"), just below refute so a definite ordering exists; policy can still lift it above refute.
+fn score_poc(policy: string) -> float {
+    return 98.0 + (2.0 * fit_value(policy, "poc-screen"));
+}
+
+// Score hunting a `subsystem|class` cell. Base 50; +20 if a sibling already posted a lead for this
+// subsystem on the blackboard (corroborate a fresh lead), + the lens fitness (a higher-fitness class is
+// preferred) + the hunt policy weight. So a board-matched hunt always beats an unmatched one of equal
+// lens fitness, and a higher-fitness lens beats a lower one — both from FACTS.
+fn score_hunt(cell: string, classFit: string, policy: string, board: string) -> float {
+    let lensFit = fit_value(classFit, cell_class(cell));
+    let boardBonus = if board_has_subsystem(board, cell_subsystem(cell)) { 20.0 } else { 0.0 };
+    return 50.0 + boardBonus + (10.0 * lensFit) + fit_value(policy, "hunt");
+}
+
+// Score `invent-method`. Base 30 — a META move worth taking when ordinary hunting is not paying off, but
+// below an actually-available productive hunt. Policy can lift it as the colony learns invention pays.
+fn score_invent(policy: string) -> float {
+    return 30.0 + (5.0 * fit_value(policy, "invent-method"));
+}
+
+// Pick the highest-fitness huntable cell from SCOPE (the lens the facts most favour), with its score.
+// Returns "" cell when scope is empty. Single-assignment via reduce over an accumulator `bestcell\tscore`.
+fn best_hunt(scope: string, classFit: string, policy: string, board: string) -> string {
+    return reduce(regex_split("\n", scope), |acc: string, cell: string| -> string {
+        if len(cell) == 0 { return acc; }
+        let sc = score_hunt(cell, classFit, policy, board);
+        if len(acc) == 0 { return cell + "\t" + to_string(sc); }
+        let bar = index_of(acc, "\t");
+        let bestScore = parse_float(substring(acc, bar + 1, len(acc)));
+        if sc > bestScore { return cell + "\t" + to_string(sc); }
+        return acc;
+    }, "");
+}
+
+// learn() outcome enum {success,failure,partial,timeout,error}. The PREVIOUS action's gate verdict maps
+// to a policy signal: a confirmed finding = success (that action-type paid off -> +0.15), a dry sweep or
+// a refuted lead = failure (the action-type wasted a step -> -0.15). Mirrors hunter.ag::outcome_of's
+// success/failure split, now over DECISIONS not lenses. "" / unknown -> no learn (first step, nothing to
+// attribute yet).
+fn outcome_signal(verdict: string) -> string {
+    if verdict == "confirmed" { return "success"; }
+    if verdict == "dry" { return "failure"; }
+    if verdict == "refuted" { return "failure"; }
+    return "";
+}
+
+// --- read FACTS ------------------------------------------------------------------------------------
+let scope = getenv("SCOPE");
+let classFit = getenv("CLASS_FITNESS");
+let policy = getenv("POLICY");
+let pending = getenv("PENDING");
+let budgetStr = getenv("BUDGET");
+let dryStr = getenv("DRY_STREAK");
+let dryCapStr = getenv("DRY_CAP");
+let prevAction = getenv("PREV_ACTION");
+let prevKey = getenv("PREV_KEY");
+let lastOutcome = getenv("LAST_OUTCOME");
+
+// The shared blackboard is a FACT too (a fresh lead steers which subsystem to hunt) — read it directly
+// like hunter.ag does, so a lead posted earlier THIS run influences the decision.
+let board = recall_latest("dark-factory:blackboard:leads");
+
+let budget = if len(budgetStr) == 0 { 0 } else { parse_int(budgetStr) };
+let dryStreak = if len(dryStr) == 0 { 0 } else { parse_int(dryStr) };
+let dryCap = if len(dryCapStr) == 0 { 3 } else { parse_int(dryCapStr) };
+let pendingCount = count_lines(pending);
+let firstPending = first_line(pending);
+
+// --- EVOLVE FIRST: attribute the PREVIOUS action's gate OUTCOME to its action-type so the policy that
+// ranks THIS decision already reflects it. learn() is the same call fitness-driver.ag makes; the
+// cumulative delta per action-type key is the policy weight run-coordinator.sh reads back. No learn on
+// the first step (PREV_ACTION="") — there is nothing to attribute. ----------------------------------
+let signal = outcome_signal(lastOutcome);
+if len(prevAction) > 0 {
+    if len(signal) > 0 {
+        learn("coordinator", prevAction,
+              "outcome of previous " + prevAction + " (" + prevKey + ") was " + lastOutcome,
+              signal, [prevAction, signal]);
+        emit("dark-factory:policy_update",
+             "{\"action\":\"" + prevAction + "\",\"outcome\":\"" + lastOutcome + "\",\"signal\":\"" + signal + "\"}");
+    }
+}
+
+// --- DECIDE: build the option list, score each from FACTS+POLICY, rank, and let `decide` select the top.
+// `stop` short-circuits the ranking when budget is exhausted or K consecutive dry — a hard fact gate.
+let scopeEmpty = count_lines(scope) == 0;
+
+// The verify tier (pending candidate present): refute and poc-screen of the first pending candidate.
+let pendId = if pendingCount > 0 { cell_subsystem(firstPending) } else { "" };
+let refuteScore = score_refute(policy);
+let pocScore = score_poc(policy);
+
+// The hunt tier: the single best huntable cell (highest fact+policy score).
+let bestCell = best_hunt(scope, classFit, policy, board);
+let huntCell = if len(bestCell) == 0 { "" } else { substring(bestCell, 0, index_of(bestCell, "\t")) };
+let huntScore = if len(bestCell) == 0 { 0.0 } else { parse_float(substring(bestCell, index_of(bestCell, "\t") + 1, len(bestCell))) };
+let inventScore = score_invent(policy);
+
+// Decide the action TYPE by the fact gates + argmax of the scored options. Single-assignment: compute
+// the chosen type, args, score, and rationale as one nested expression (no `let` reassignment).
+// Priority of HARD fact gates (these are the colony's invariants, not policy): (1) stop on budget/dry,
+// (2) verify a pending lead before more hunting, (3) hunt the best available lens, (4) invent a method
+// when nothing is huntable. WITHIN the verify and hunt tiers the POLICY weight (and lens/board facts)
+// set the order, so the policy genuinely steers the choice.
+let stopForced = if budget <= 0 { true } else { dryStreak >= dryCap };
+
+let chosenType =
+    if stopForced { "stop" }
+    else { if pendingCount > 0 { if pocScore > refuteScore { "poc-screen" } else { "refute" } }
+    else { if len(huntCell) > 0 { if huntScore >= inventScore { "hunt" } else { "invent-method" } }
+    else { "invent-method" } } };
+
+let chosenArgs =
+    if chosenType == "hunt" { huntCell }
+    else { if chosenType == "refute" { pendId }
+    else { if chosenType == "poc-screen" { pendId }
+    else { "" } } };
+
+let chosenScore =
+    if chosenType == "stop" { 0.0 }
+    else { if chosenType == "refute" { refuteScore }
+    else { if chosenType == "poc-screen" { pocScore }
+    else { if chosenType == "hunt" { huntScore }
+    else { inventScore } } } };
+
+// Substrate-native selection step: present the chosen action as the FIRST (top-ranked) entry of a
+// `decide` option list, with the runner-up next, and let the substrate `decide` builtin make the
+// selection. Offline `decide` returns the top-ranked option (which IS our fact+policy argmax); a real
+// backend may arbitrate a near-tie from the criteria. Either way the ORDERING is the coordinator's,
+// derived from facts+policy. The selected token is `<type>|<args>` (re-split below).
+let topOption = chosenType + "|" + chosenArgs;
+let runnerUp =
+    if chosenType == "stop" { "stop|" }
+    else { if pendingCount > 0 { "hunt|" + huntCell }
+    else { if len(huntCell) > 0 { "invent-method|" }
+    else { "stop|" } } };
+let criteria =
+    "Pick the next audit action. The list is pre-ranked by FACTS and the evolving policy: verify a "
+  + "pending candidate before more hunting; prefer a blackboard-flagged subsystem and a higher-fitness "
+  + "lens; stop when budget is exhausted or " + to_string(dryCap) + " consecutive dry. Choose the "
+  + "highest-priority (first) action.";
+let selected = decide([topOption, runnerUp], criteria);
+let selType = cell_subsystem(selected);
+let selArgs = cell_class(selected);
+
+// --- RATIONALE: cite the FACTS that drove the choice (not an opaque pick). ------------------------
+let factSummary =
+    "budget=" + to_string(budget) + " dry=" + to_string(dryStreak) + "/" + to_string(dryCap)
+  + " pending=" + to_string(pendingCount) + " scope_cells=" + to_string(count_lines(scope));
+let rationale =
+    if selType == "stop" {
+        if budget <= 0 { "budget exhausted (" + factSummary + ") -> halt" }
+        else { to_string(dryStreak) + " consecutive dry >= K=" + to_string(dryCap) + " (" + factSummary + ") -> halt" }
+    }
+    else { if selType == "refute" {
+        "pending unverified candidate '" + selArgs + "' -> verify via refute before more hunting (policy hunt="
+      + to_string(fit_value(policy, "hunt")) + ", refute=" + to_string(fit_value(policy, "refute")) + "; " + factSummary + ")" }
+    else { if selType == "poc-screen" {
+        "pending unverified candidate '" + selArgs + "' -> cheap eval_ag pre-screen first (policy poc-screen="
+      + to_string(fit_value(policy, "poc-screen")) + "; " + factSummary + ")" }
+    else { if selType == "hunt" {
+        let bb = if board_has_subsystem(board, cell_subsystem(huntCell)) { "blackboard lead in this subsystem; " } else { "" };
+        "hunt highest-scored lens '" + selArgs + "' (" + bb + "lens_fitness="
+      + to_string(fit_value(classFit, cell_class(huntCell))) + ", hunt_policy=" + to_string(fit_value(policy, "hunt"))
+      + ", score=" + to_string(chosenScore) + "; " + factSummary + ")" }
+    else {
+        if len(huntCell) == 0 { "no huntable cell remains in scope -> invent a new method to open a fresh lens (" + factSummary + ")" }
+        else { "ordinary hunting is not paying off (invent_policy=" + to_string(fit_value(policy, "invent-method"))
+             + " > best hunt score " + to_string(huntScore) + ") -> invent a new method to open a fresh lens (" + factSummary + ")" } } } } };
+
+// --- OUTPUT exactly one ACTION line; record the decision on the bus + memo for the dispatcher. -----
+let actionLine = "ACTION|" + selType + "|" + selArgs + "|" + rationale;
+print(actionLine);
+emit("dark-factory:decision",
+     "{\"action\":\"" + selType + "\",\"args\":\"" + selArgs + "\",\"score\":\"" + to_string(chosenScore)
+   + "\",\"prev\":\"" + prevAction + "\",\"prev_outcome\":\"" + lastOutcome + "\"}");
+memo_write("coordinator:last_decision", actionLine);
+memo_write("coordinator:last_check", "done");

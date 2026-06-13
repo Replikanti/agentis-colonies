@@ -16,6 +16,37 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Discovery: **self-orchestrating coordinator — fact-based, evolving decision policy** (v1 of #1014). The
+  discovery colony used to take its workflow from a FIXED script (`run-discovery.sh`'s `(subsystem ×
+  class)` fan-out) and an external operator (target / method / when-to-stop). A new
+  `auditor/agents/coordinator.ag` moves that DECISION-MAKING into the substrate: each `agentis go`
+  invocation it reads the current FACTS (open scope, per-class lens fitness, the shared blackboard #1001,
+  pending unverified candidates, remaining step budget, and the previous action's gate OUTCOME — a FACT,
+  never an LLM judgement) and an evolving POLICY, then chooses ONE next action from
+  `hunt|<subsystem>|<class>` · `refute|<cand>` · `poc-screen|<cand>` · `invent-method` · `stop` and emits
+  exactly one `ACTION|<type>|<args>|<rationale>` line whose rationale CITES the facts that drove it. The
+  choice is a policy-weighted ARGMAX over fact-criteria (verify a pending lead before more hunting; prefer
+  a blackboard-flagged subsystem and a higher-fitness lens; stop on budget-exhausted or K consecutive
+  dry), then the substrate `decide(options, criteria)` builtin selects from that already-fact-ranked list
+  — so the ordering is the coordinator's, from facts+policy, never a fixed order. The decision policy
+  EVOLVES by outcome: the coordinator records each action's confirmed-finding → success / dry-or-refuted →
+  failure with the SAME `learn()` mechanic the lens-fitness loop uses (#996), so the cumulative experience
+  delta per action-type IS `coordinator:policy:<action-type>` and reweights which decisions it leans on.
+  `run-coordinator.sh` is a thin DISPATCHER (NOT a decider): it loops {ask the coordinator → execute the
+  chosen action → feed the outcome back} until `stop`/budget, reads the cumulative policy back from the
+  experience store between calls (mirroring `evolve-fitness.sh`), and routes a real run to
+  `hunter`/`refuter`/`poc-screener`/`method-inventor` or an offline stub executor. `demo-coordinator.sh`
+  proves BOTH acceptance criteria OFFLINE + DETERMINISTICALLY (mock backend, no network): (a) three
+  distinct fact-states choose three DIFFERENT actions — a pending candidate → refute, no-candidate with
+  the top lens C8 → hunt C8 while the same options with C1 on top → hunt C1 (the choice follows the
+  fitness FACT, not a fixed cell), budget=0 → stop — and (b) over a sequence where hunts confirm and
+  refutes are refuted, `coordinator:policy:hunt` ROSE (`+0.000 → +0.600`) while `coordinator:policy:refute`
+  FELL (`+0.000 → −0.600`), with the demo exiting non-zero if the policy did not move. v1 boundary
+  (`docs/coordinator.md`): the coordinator DECIDES, the shell still DISPATCHES; full event-driven
+  substrate dispatch (no shell loop), manifest reprioritisation, and multi-target portfolio decisions stay
+  follow-up on the epic. The human-gated submission boundary and the forge-verify / refuter / `eval_ag`
+  safety gates are unchanged — they remain FACTS the decision consumes, never bypassed.
+
 - Discovery: **inter-agent coordination via a shared blackboard** — a first coordination primitive so
   hunter cells influence each other within a run, instead of the run being a flat sum of independent
   one-shot audits (#1001). The discovery fan-out runs every (subsystem × class) cell against ONE shared
