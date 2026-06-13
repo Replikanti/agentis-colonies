@@ -1,0 +1,33 @@
+cb 50000;
+// #996 — fitness-loop driver cell. Records ONE (class x subsystem) hunt attempt into the agentis
+// experience store via the EXACT learn() call hunter.ag makes, so the per-class/per-method fitness
+// that drives reweighting accrues identically to a real discovery run — but deterministically and
+// offline, with the verdict supplied by the harness (evolve-fitness.sh) from a ground-truth corpus.
+// This is the colony's fitness mechanic exercised in isolation: the point is the evolve/fitness LOOP
+// moving measurable state, not LLM quality (hence the harness feeds the verdict; no prompt()).
+//
+// Env (all via exec.env_passthrough):
+//   HUNT_CLASS  taxonomy class id, e.g. "C1"
+//   SUBSYSTEM   human label for the slice, e.g. "vault accounting"
+//   VERDICT     ground-truth hunter verdict for this cell: a `CANDIDATE|...` line (a lead) or `SAFE`
+//   ITER        1-based iteration number (for the trace line only)
+
+// learn() outcome enum {success,failure,partial,timeout,error}. Mirrors hunter.ag::outcome_of EXACTLY:
+// a surfaced candidate = success, a rigorous SAFE = failure, so taxonomy fitness rewards the classes
+// that actually produce leads across targets (#861 evolve loop, now driven over N iterations for #996).
+fn outcome_of(verdict: string) -> string {
+    if index_of(verdict, "CANDIDATE|") == 0 { return "success"; }
+    return "failure";
+}
+
+let cls = getenv("HUNT_CLASS");
+let subsystem = getenv("SUBSYSTEM");
+let verdict = getenv("VERDICT");
+let iter = getenv("ITER");
+let outcome = outcome_of(verdict);
+
+// IDENTICAL to hunter.ag's recording path (action "hunt", key "<class>:<subsystem>", same tags) so the
+// fitness this accrues is the same signal a real hunt accrues — the experience store reweights the lens.
+learn("hunt", cls + ":" + subsystem, "discovery hunt of " + cls + " on " + subsystem, outcome, [cls, subsystem, outcome]);
+memo_write("fitness-driver:last_check", "iter=" + iter + " " + cls + ":" + subsystem + "=" + outcome);
+print("fitness-driver: iter", iter, cls + ":" + subsystem, "->", outcome);

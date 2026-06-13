@@ -32,6 +32,20 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   end-to-end against a real mock-backend discovery run and synthetic discovery/audit fixtures (LEADS +
   SAFE verdicts, non-zero per-class fitness, the no-experience-log fallback). `shellcheck`-clean,
   `bash -n`-clean.
+- `evolve-fitness.sh` + `auditor/agents/fitness-driver.ag` — actually drive the discovery colony's
+  evolve/fitness LOOP over several runs and DEMONSTRABLY move per-class/per-method fitness in the agentis
+  experience store (#996). Until now `hunter.ag` recorded each hunt via `learn("hunt", "<class>:<subsystem>",
+  ..., outcome, [...])`, but nothing drove that loop across runs, so no evolved state accrued. The new
+  driver runs the colony's REAL recording path — `fitness-driver.ag` makes the IDENTICAL `learn()` call
+  `hunter.ag` makes — over a built-in ground-truth corpus (taxonomy class x subsystem, each with a known
+  CANDIDATE/SAFE verdict), repeated for N iterations, then reads the experience store BEFORE and AFTER and
+  prints the per-lens fitness delta. It is fully offline and reproducible (`--backend mock` semantics, no
+  LLM call — per #996 the point is the fitness LOOP, not LLM quality; verdicts come from the corpus), and
+  exits non-zero if the loop fails to move fitness. The built-in corpus encodes a realistic gradient so
+  high-yield lenses (vault accounting, rounding, reentrancy) pull ahead while speculative ones (cross-chain,
+  pause) fall behind — the colony's evolved ranking of which lenses to lean on. Validated end-to-end:
+  60 cells over 6 iterations moved fitness on 9/10 lenses (C1/C6 +0.600, C3 -0.600); re-runs are
+  byte-identical. `--corpus` overrides the corpus, `--json` emits a machine-readable before/after table.
 - `gen-agent.sh <method-name>` — close the self-extension loop (#1000). The
   method-discovery meta-loop (`method-inventor.ag` + `run-method-discovery.sh`,
   #998) invents and adopts new audit *methods* — reusable hunting techniques
