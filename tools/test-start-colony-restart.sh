@@ -25,12 +25,21 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PASS=0
 FAIL=0
 TMPDIR_TEST="$(mktemp -d)"
+# #1008: per-run-unique fake-daemon marker. The marker was a fixed string
+# (`fake-daemon-inner-for-test-285`); under concurrent runs (sibling
+# worktrees on one host, shared colony-lint pipeline) the `pgrep -cf` count
+# in test_no_duplicate_on_restart matched ANOTHER run's fakes too, so the
+# "exactly 1 live daemon" assertion saw 2+ and flaked, and the cleanup
+# `pkill -f` reaped the other run's fakes mid-flight. Appending the PID +
+# the unique mktemp basename makes the marker collision-proof, so every
+# pgrep/pkill below matches ONLY this run's processes. The `-for-test-285`
+# stem is retained so the string still cannot collide with a real
+# `agentis daemon-inner` on the contributor's machine.
+RUN_MARKER="fake-daemon-inner-for-test-285-$$-$(basename "$TMPDIR_TEST")"
 # Kill any surviving fake daemons spawned by test_no_duplicate_on_restart
-# before the tmpdir is removed. The marker is deliberately unique (suffix
-# -for-test-285) so pkill cannot hit a real agentis process on the
-# contributor's machine.
+# before the tmpdir is removed. Scoped to this run's unique marker.
 cleanup() {
-    pkill -f 'fake-daemon-inner-for-test-285' 2>/dev/null || true
+    pkill -f "$RUN_MARKER" 2>/dev/null || true
     rm -rf "$TMPDIR_TEST"
 }
 trap cleanup EXIT
@@ -224,8 +233,8 @@ test_no_duplicate_on_restart() {
 
     # Dedicated shim dir. `agentis` impersonation:
     #   - `agentis daemon list --json` → JSON array of currently-alive
-    #     fake-daemon-inner-for-test-285 processes (colony, source, pid,
-    #     agent_id), constructed by pgrep-ing the marker.
+    #     $RUN_MARKER processes (colony, source, pid, agent_id),
+    #     constructed by pgrep-ing the per-run-unique marker.
     #   - `agentis daemon <path> --colony X ...` → exec into the long-sleep
     #     fake whose argv contains the marker and the agent source path
     #     (matchable by pgrep -f).
@@ -233,7 +242,10 @@ test_no_duplicate_on_restart() {
     local SHIM_BG_DIR="$TMPDIR_TEST/shim_bg_$colony"
     mkdir -p "$SHIM_BG_DIR"
 
-    cat > "$SHIM_BG_DIR/fake-daemon-inner-for-test-285" <<'FAKE'
+    # #1008: the fake-daemon binary is named with the per-run-unique
+    # $RUN_MARKER so its argv (and the pgrep that counts it) cannot collide
+    # with a concurrent run's fakes.
+    cat > "$SHIM_BG_DIR/$RUN_MARKER" <<'FAKE'
 #!/bin/bash
 # Long-lived stand-in for a real `agentis daemon-inner` child. Exits on
 # SIGTERM so the kill-before-spawn block exercises the TERM + 5s poll path
@@ -241,15 +253,18 @@ test_no_duplicate_on_restart() {
 trap 'exit 0' TERM
 while :; do sleep 60 & wait $!; done
 FAKE
-    chmod +x "$SHIM_BG_DIR/fake-daemon-inner-for-test-285"
+    chmod +x "$SHIM_BG_DIR/$RUN_MARKER"
 
     cat > "$SHIM_BG_DIR/agentis" <<SHIM
 #!/bin/bash
 SHIM_BG_DIR="$SHIM_BG_DIR"
+RUN_MARKER="$RUN_MARKER"
 if [ "\${1:-}" = "daemon" ] && [ "\${2:-}" = "list" ]; then
-    python3 - "\$SHIM_BG_DIR" <<'PY'
+    python3 - "\$RUN_MARKER" <<'PY'
 import json, os, re, subprocess, sys
-marker = os.path.basename(sys.argv[1] + '/fake-daemon-inner-for-test-285')
+# #1008: pgrep the per-run-unique marker (passed as argv[1]) so the
+# registry only ever reflects THIS run's fakes, never a sibling run's.
+marker = sys.argv[1]
 try:
     out = subprocess.check_output(
         ['pgrep', '-af', marker], stderr=subprocess.DEVNULL, text=True
@@ -263,7 +278,7 @@ for line in out.splitlines():
         continue
     pid = int(m.group(1))
     argv = m.group(2)
-    # Fake argv: "<shim>/fake-daemon-inner-for-test-285 <source.ag> <colony>".
+    # Fake argv: "<shim>/<marker> <source.ag> <colony>".
     m2 = re.search(r'(\S+\.ag)\s+(\S+)$', argv)
     if not m2:
         continue
@@ -289,7 +304,7 @@ if [ "\${1:-}" = "daemon" ]; then
             *) shift ;;
         esac
     done
-    exec "\$SHIM_BG_DIR/fake-daemon-inner-for-test-285" "\$script_path" "\$colony"
+    exec "\$SHIM_BG_DIR/\$RUN_MARKER" "\$script_path" "\$colony"
 fi
 exit 0
 SHIM
@@ -327,7 +342,7 @@ SHIM
         return
     fi
 
-    local pgrep_pat="fake-daemon-inner-for-test-285.*agents/${agent}\\.ag"
+    local pgrep_pat="$RUN_MARKER.*agents/${agent}\\.ag"
     local restart_ok=1
     for iter in 1 2 3; do
         out="$TMPDIR_TEST/$colony.dup_iter$iter.log"
