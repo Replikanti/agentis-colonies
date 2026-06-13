@@ -1,0 +1,94 @@
+cb 300000;
+// #999 — substrate-native ADVERSARIAL REFUTATION. Takes ONE candidate finding (a hunter/auditor LEAD:
+// file:fn + the claimed exploit) and the relevant in-scope code, then runs an INDEPENDENT skeptic that
+// tries to REFUTE the claim against the ACTUAL control/data flow — the colony-native form of the
+// `adversarial-refute` step (auditor/methods/registry.md) that previously ran as an externally-orchestrated
+// subagent. It is the proving pattern (#999) for porting the remaining deep capabilities (deep cross-function
+// audit, build-and-run PoC, fork-differential) onto the substrate too.
+//
+// This is the second gate AFTER the hunter surfaces a CANDIDATE and BEFORE the operator spends a Foundry
+// PoC on it: a separate skeptical reader, with NO stake in the finding being real, must fail to break it.
+// The bias is deliberately conservative — DEFAULT TO REFUTED whenever the code does not unambiguously
+// confirm the exploit, so only candidates that survive a hostile read reach the (expensive) forge gate.
+// A REAL verdict here is still a LEAD, never a finding: only a PASSING forge-verify PoC makes it a finding,
+// and submission stays an explicit human action.
+//
+// Env:
+//   CAND_FILE_FN   the candidate location, "path/to/Contract.sol:functionName" (free-form label; the lens)
+//   CAND_CLASS     the bug class id the candidate was filed under, e.g. "C10" (optional; "" if unknown)
+//   CAND_SEVERITY  the claimed severity, "Medium" | "High" (optional)
+//   CAND_EXPLOIT   the one-sentence external exploit path the candidate claims
+//   CODE_PATH      absolute path to a file holding the RELEVANT code (the function(s) + context to judge
+//                  against). The exec sandbox cannot read $HOME — pass a rundir path or a /tmp path.
+//   BRIEF_PATH     optional path to the protocol brief (invariants + KNOWN ISSUES to exclude); "" to skip.
+// Stdout: exactly one verdict line —
+//   VERDICT|REAL|<file:fn>|<class>|<one-sentence why the refutation FAILED: the exploit holds>
+//   VERDICT|REFUTED|<file:fn>|<class>|<one-sentence the specific guard / control-flow fact that kills it>
+
+// --- file reader (dynamic path -> safe-exec-concat, per hunter.ag / recall-match.ag precedent) ---
+fn cat_file(path: string) -> string {
+    if len(path) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "sed -n '1,2000p' ${path} 2>/dev/null || true";
+}
+
+// learn() outcome must be one of the runtime enum {success,failure,partial,timeout,error}.
+// A REAL verdict (the refutation FAILED -> the lead survives) = success; a REFUTED verdict (the skeptic
+// broke it) = failure, so refuter fitness rewards the cases where a hostile read still could not kill the
+// claim — i.e. the candidates worth a Foundry PoC. No reassignment (matches hunter.ag::outcome_of).
+fn outcome_of(verdict: string) -> string {
+    if index_of(verdict, "VERDICT|REAL|") >= 0 { return "success"; }
+    return "failure";
+}
+
+let candFn = getenv("CAND_FILE_FN");
+let candClass = getenv("CAND_CLASS");
+let candSev = getenv("CAND_SEVERITY");
+let candExploit = getenv("CAND_EXPLOIT");
+let code = cat_file(getenv("CODE_PATH"));
+let brief = cat_file(getenv("BRIEF_PATH"));
+
+// The instruction carries the skeptic role + the conservative tie-break (default REFUTED) + the strict
+// output contract; the code under review is the prompt payload (matches auditor.ag::classify_evm_llm and
+// hunter.ag shape: instruction = lens + contract, payload = the code).
+let instruction =
+    "You are an INDEPENDENT, skeptical smart-contract auditor. Another auditor has filed the finding below. "
+  + "You have NO stake in it being real — your job is to REFUTE it: prove, against the ACTUAL control and data "
+  + "flow in the code, that the claimed exploit does NOT work. Trace the real code yourself; do not take the "
+  + "claim on faith and do not invent guards that are not in the code.\n\n"
+  + "=== THE CANDIDATE FINDING UNDER REVIEW ===\n"
+  + "Location: " + candFn + "\n"
+  + "Bug class: " + candClass + "\n"
+  + "Claimed severity: " + candSev + "\n"
+  + "Claimed external exploit path: " + candExploit + "\n\n"
+  + "=== PROTOCOL BRIEF — invariants + KNOWN ISSUES (a finding that restates a listed known issue is NOT real) ===\n"
+  + brief + "\n\n"
+  + "=== HOW TO JUDGE ===\n"
+  + "Walk the relevant function(s) and decide which holds:\n"
+  + "  (a) A guard, require/revert, checks-effects-interactions order, access-control modifier, rounding "
+  + "direction, or other control-flow fact in the ACTUAL code provably stops the claimed exploit. -> REFUTED.\n"
+  + "  (b) The exploit relies on a privileged/trusted role acting within its documented permissions, or it "
+  + "restates a listed KNOWN ISSUE, or it is below Medium severity. -> REFUTED (out of scope).\n"
+  + "  (c) You traced the code and the claimed exploit genuinely holds for an UNPRIVILEGED external attacker, "
+  + "with no guard stopping it. -> REAL.\n"
+  + "TIE-BREAK: if after an honest trace you are NOT confident the exploit holds — the relevant code is not "
+  + "shown, the path is ambiguous, or you cannot point to the exact step that breaks an invariant — answer "
+  + "REFUTED. Surviving this gate must require the claim to be unambiguously real; uncertainty kills it.\n\n"
+  + "=== HOW TO ANSWER ===\n"
+  + "FIRST reason step by step through the actual control flow. THEN write EXACTLY ONE final line:\n"
+  + "VERDICT|REAL|" + candFn + "|" + candClass + "|<one sentence: why your refutation FAILED — the precise "
+  + "control-flow fact that lets the unprivileged exploit hold>\n"
+  + "or\n"
+  + "VERDICT|REFUTED|" + candFn + "|" + candClass + "|<one sentence: the specific guard / control-flow fact / "
+  + "scope rule that kills the claim>\n"
+  + "Reason for as long as you need first; ONLY the final VERDICT| line is parsed, so your analysis above it "
+  + "is free. If you are unsure, the line MUST be VERDICT|REFUTED|...";
+
+let verdict = prompt(instruction, code) -> string;
+
+// Surface the verdict (stdout, parsed by run-refute.sh) and record the attempt so refuter fitness reweights.
+print(verdict);
+let outcome = outcome_of(verdict);
+emit("dark-factory:refute_verdict", "{\"candidate\":\"" + candFn + "\",\"class\":\"" + candClass + "\",\"outcome\":\"" + outcome + "\"}");
+learn("refute", candClass + ":" + candFn, "adversarial refutation of " + candFn + " (" + candClass + ")", outcome, [candClass, outcome]);
+memo_write("refuter:last_check", "done");
