@@ -53,6 +53,24 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   `auditor/agents/stateful-invariant-fuzz.ag` from it — passes `colony-lint.sh`
   (`agentis commit` syntax + `check-exec-sh`).
 
+- **Method-discovery meta-loop** — `run-method-discovery.sh` + `auditor/agents/method-inventor.ag`
+  + `auditor/methods/{registry.md,gap-stateful.md}` + `auditor/method-discovery/controls/` (#998,
+  #1003). The federation's self-improvement layer: when the current method-set plateaus, the
+  method-inventor proposes ONE new audit method and it is adopted into the registry ONLY if it
+  DISCRIMINATES on a known-bug control corpus (a planted accounting/solvency bug — `BuggyBank` —
+  caught while the paired clean `SafeBank` twin stays green). That two-sided gate (buggy suite
+  FAILS + safe twin PASSES) keeps method invention empirical rather than speculative. An adopted
+  `invented` row carries the proposal's control-assertion before `status` (the 8-field shape
+  `gen-agent.sh` consumes).
+
+- `state-export.sh` — export / verify / import a *trained* dark-factory federation's EVOLVED STATE
+  (#994, #1004): the accumulated learned `memo` plus the content-addressed Merkle DAG of audited
+  patterns, packaged into a portable, **checksum-verified** artifact. It deliberately EXCLUDES the
+  federation identity (private key), per-deployment config, and the transient sandbox, so an
+  importer keeps their OWN identity and only inherits the learned state — the technical enabler for
+  distributing a trained federation (agentis-core#864). The checksum proves integrity, not
+  authenticity: sign the manifest out-of-band before third-party distribution.
+
 - `contest-watch.sh` — a durable, host-cron-able watcher for newly-opened audit competitions (Sherlock
   API + Cantina/Code4rena probes). On a fresh contest it notifies via a state file / optional webhook /
   optional command, so an early audit pass can start day-1; it survives across sessions, unlike an
@@ -166,6 +184,11 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Fixed
 
+- Discovery hunter was blind — `auditor/agents/hunter.ag` now reasons FIRST (#993). The prompt
+  drove the LLM straight to a verdict, so it returned `SAFE` even on textbook in-scope bugs. The hunt
+  prompt is reordered so the agent must enumerate the bug-class lens and walk the in-scope code
+  BEFORE it emits `CANDIDATE`/`SAFE` — surfacing leads it previously missed, with the two-sided
+  forge-verify gate still the only path from lead to finding.
 - Real FULL-contract auditing — `strip_comments` no longer overflows the string heap (#861). The
   in-`.ag` `strip_comments` builds its result with `reduce(lines, |acc,l| acc + ...)`, which is
   O(n²) string allocation and overflowed the 16 MiB per-tick string heap on a full ~1500-line real
