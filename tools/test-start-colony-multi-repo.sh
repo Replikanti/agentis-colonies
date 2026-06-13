@@ -25,8 +25,12 @@ INSTALL_SH="$REPO_ROOT/dev-apprenticeship/install.sh"
 PASS=0
 FAIL=0
 TMPDIR_TEST="$(mktemp -d)"
+# #1008: per-run-unique fake-daemon marker. A fixed `pkill -f` marker reaps a
+# concurrent run's fakes (sibling worktrees on one host); appending the PID +
+# the unique mktemp basename scopes every pkill to THIS run's processes.
+RUN_MARKER="fake-daemon-for-test-316m2-$$-$(basename "$TMPDIR_TEST")"
 cleanup() {
-    pkill -f 'fake-daemon-for-test-316m2' 2>/dev/null || true
+    pkill -f "$RUN_MARKER" 2>/dev/null || true
     rm -rf "$TMPDIR_TEST"
 }
 trap cleanup EXIT
@@ -36,8 +40,9 @@ fail() { echo "[FAIL] $1${2:+: $2}"; FAIL=$((FAIL + 1)); }
 skip() { echo "[SKIP] $1${2:+: $2}"; }
 
 # Shim: stub `agentis` so daemon launch dumps env then sleeps. The
-# `exec -a fake-daemon-for-test-316m2 sleep 5` form rewrites argv[0]
-# so the EXIT-trap pkill -f marker can find and reap the stray sleeps.
+# `exec -a "$T316M2_MARKER" sleep 5` form rewrites argv[0] to the per-run
+# unique marker (#1008) so the EXIT-trap pkill -f can reap THIS run's stray
+# sleeps without hitting a concurrent run's. The marker arrives via env.
 SHIM_DIR="$TMPDIR_TEST/shim"
 mkdir -p "$SHIM_DIR"
 cat > "$SHIM_DIR/agentis" <<'SHIM'
@@ -46,7 +51,7 @@ cat > "$SHIM_DIR/agentis" <<'SHIM'
 [ "${1:-}" = "memo" ] && exit 0
 if [ "${1:-}" = "daemon" ]; then
     [ -n "${T316M2_ENV_DUMP:-}" ] && env > "$T316M2_ENV_DUMP"
-    exec -a fake-daemon-for-test-316m2 sleep 5
+    exec -a "${T316M2_MARKER:-fake-daemon-for-test-316m2}" sleep 5
 fi
 exit 0
 SHIM
@@ -57,10 +62,10 @@ chmod +x "$SHIM_DIR/agentis"
 # daemon` invocation to $2. timeout 4s caps the test budget per call.
 run_start() {
     local config="$1" envdump="$2" rc=0
-    T316M2_ENV_DUMP="$envdump" PATH="$SHIM_DIR:$PATH" \
+    T316M2_ENV_DUMP="$envdump" T316M2_MARKER="$RUN_MARKER" PATH="$SHIM_DIR:$PATH" \
         timeout 4 bash "$START" --restart-agent issue_creator "$config" \
             >"$TMPDIR_TEST/stdout" 2>"$TMPDIR_TEST/stderr" || rc=$?
-    pkill -f 'fake-daemon-for-test-316m2' 2>/dev/null || true
+    pkill -f "$RUN_MARKER" 2>/dev/null || true
     return $rc
 }
 

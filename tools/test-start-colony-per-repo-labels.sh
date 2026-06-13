@@ -33,8 +33,12 @@ START_TRIAGE="$REPO_ROOT/dev-apprenticeship/triage/scripts/start-colony.sh"
 PASS=0
 FAIL=0
 TMPDIR_TEST="$(mktemp -d)"
+# #1008: per-run-unique fake-daemon marker. A fixed `pkill -f` marker reaps a
+# concurrent run's fakes (sibling worktrees on one host); appending the PID +
+# the unique mktemp basename scopes every pkill to THIS run's processes.
+RUN_MARKER="fake-daemon-for-test-316m5a-$$-$(basename "$TMPDIR_TEST")"
 cleanup() {
-    pkill -f 'fake-daemon-for-test-316m5a' 2>/dev/null || true
+    pkill -f "$RUN_MARKER" 2>/dev/null || true
     rm -rf "$TMPDIR_TEST"
 }
 trap cleanup EXIT
@@ -44,9 +48,9 @@ fail() { echo "[FAIL] $1${2:+: $2}"; FAIL=$((FAIL + 1)); }
 
 # Shim `agentis` so all `agentis memo set ...` calls land in a log file.
 # Each invocation appends one line: `memo set <key> <value>`. Daemon
-# launches still execute (rewritten to `sleep`) so the script reaches
-# the post-memo-seeding `agentis daemon` arm; the EXIT-trap pkill -f
-# marker reaps the strays.
+# launches still execute (rewritten to `sleep` with the per-run-unique
+# $RUN_MARKER as argv[0], #1008) so the script reaches the post-memo-seeding
+# `agentis daemon` arm; the EXIT-trap pkill -f marker reaps THIS run's strays.
 SHIM_DIR="$TMPDIR_TEST/shim"
 mkdir -p "$SHIM_DIR"
 MEMO_LOG="$TMPDIR_TEST/memo-calls.log"
@@ -62,7 +66,7 @@ if [ "\${1:-}" = "daemon" ] && [ "\${2:-}" = "list" ]; then
     exit 0
 fi
 if [ "\${1:-}" = "daemon" ]; then
-    exec -a fake-daemon-for-test-316m5a sleep 2
+    exec -a "$RUN_MARKER" sleep 2
 fi
 exit 0
 SHIM
@@ -77,7 +81,7 @@ run_start() {
     : > "$MEMO_LOG"
     PATH="$SHIM_DIR:$PATH" timeout 4 bash "$START_TRIAGE" "$config" \
         >"$TMPDIR_TEST/stdout" 2>"$TMPDIR_TEST/stderr" || rc=$?
-    pkill -f 'fake-daemon-for-test-316m5a' 2>/dev/null || true
+    pkill -f "$RUN_MARKER" 2>/dev/null || true
     return $rc
 }
 

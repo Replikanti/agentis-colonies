@@ -50,10 +50,25 @@ FAIL=0
 pass() { echo "[PASS] $1"; PASS=$((PASS + 1)); }
 fail() { echo "[FAIL] $1${2:+: $2}"; FAIL=$((FAIL + 1)); }
 
-FIXTURE_ROOT="/tmp/qa-319-pr1-fed"
-rm -rf "$FIXTURE_ROOT"
-mkdir -p "$FIXTURE_ROOT"
-trap 'rm -rf "$FIXTURE_ROOT"' EXIT
+# Per-run unique fixture root (#1008). A fixed path like /tmp/qa-319-pr1-fed
+# collides when several copies of this test run concurrently (sibling
+# worktrees on one host under a shared colony-lint pipeline): one copy's
+# startup `rm -rf` or EXIT-trap cleanup wipes another copy's
+# start-colony.stdout mid-flight, so assert_restart_ok reads an empty file
+# and the t5 subcase fails with empty stdout AND stderr. mktemp -d gives
+# each run its own tree, so two concurrent runs never touch each other's
+# fixtures. TMPDIR is honoured when set.
+FIXTURE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/qa-319-pr1-fed.XXXXXX")"
+# Cleanup reaps both the fixture tree AND any still-sleeping shim daemons
+# this run backgrounded. The shims' argv embeds the unique $FIXTURE_ROOT
+# path, so `pkill -f` matches ONLY this run's processes — a concurrent copy
+# (different mktemp dir) is never hit. This is the #1008 host-global-marker
+# rule applied here: scope every pgrep/pkill to a per-run unique token.
+cleanup() {
+    pkill -f "$FIXTURE_ROOT" 2>/dev/null || true
+    rm -rf "$FIXTURE_ROOT"
+}
+trap cleanup EXIT
 
 # The shim records every `agentis daemon ...` invocation's argv to
 # AGENTIS_RECORD_FILE so the test can grep it for --config-override pairs.
@@ -78,9 +93,19 @@ case "${1:-}" in
         if [ -n "${AGENTIS_RECORD_FILE:-}" ]; then
             printf '%s\n' "$*" >> "$AGENTIS_RECORD_FILE"
         fi
-        # Sleep just long enough for start-colony.sh's `sleep 0.5` +
-        # `kill -0` liveness probe to see us as alive.
-        sleep 1
+        # #1008: deterministic readiness, not a sleep-vs-sleep race. The
+        # OLD shim slept a fixed 1s "just long enough for start-colony.sh's
+        # `sleep 0.5`"; under host CPU contention either side's scheduling
+        # could slip and start-colony.sh's `kill -0` probe could miss us, so
+        # no `started` line was printed and the harness read empty stdout.
+        # Instead, drop a sentinel the instant we're up (so the harness can
+        # poll for genuine readiness) and then stay alive long enough for the
+        # liveness probe to observe us regardless of load. AGENTIS_READY_FILE
+        # is exported by run_for_fixture.
+        if [ -n "${AGENTIS_READY_FILE:-}" ]; then
+            : > "$AGENTIS_READY_FILE"
+        fi
+        sleep 5
         exit 0
         ;;
     memo)
@@ -149,12 +174,17 @@ run_for_fixture() {
     local tag="$1"
     local shim_dir="$FIXTURE_ROOT/$tag/shim"
     local record_file="$FIXTURE_ROOT/$tag/agentis-argv.log"
+    local ready_file="$FIXTURE_ROOT/$tag/daemon-ready"
     local fed="$FIXTURE_ROOT/$tag/dev-apprenticeship"
     build_shim "$shim_dir" "$record_file"
     : > "$record_file"
+    rm -f "$ready_file"
     # Restrict PATH to shim + minimum so the real agentis cannot leak in.
+    # AGENTIS_READY_FILE (#1008) is the deterministic readiness sentinel the
+    # shim touches the instant the simulated daemon is up.
     PATH="$shim_dir:/usr/bin:/bin" \
         AGENTIS_RECORD_FILE="$record_file" \
+        AGENTIS_READY_FILE="$ready_file" \
         bash "$fed/triage/scripts/start-colony.sh" \
             --restart-agent labeler \
             "$fed/triage/config/colony.toml" \
@@ -203,22 +233,27 @@ assert_no_config_override_token() {
 assert_restart_ok() {
     local name="$1" tag="$2"
     # start-colony.sh exits 0 on success and prints `started <agent> pid=<n> tick=<ms>`.
-    # The shim's `sleep 1` keeps the simulated agentis-daemon alive long enough
-    # for the start-colony.sh `kill -0` liveness probe.
     #
-    # Retry-with-backoff: same flush race as `read_recorded_argv` — the
-    # start-colony.sh stdout redirect can lag the immediate grep on busy
-    # hosts. Up to 10 attempts x 150ms backoff (~1.5s ceiling). See #509.
+    # #1008: deterministic readiness. The shim touches AGENTIS_READY_FILE the
+    # instant the simulated daemon is up (not a fixed sleep), so the daemon's
+    # liveness is load-independent. We poll for BOTH signals with a bounded
+    # `until`-style loop + timeout ceiling: the readiness sentinel (proves the
+    # daemon came up) and the `started` stdout line (proves start-colony.sh
+    # parsed + printed its contract). Polling, not sleeping, removes the
+    # sleep-vs-sleep race regardless of host CPU contention. The fixture dir is
+    # per-run unique (mktemp) so a concurrent copy can no longer delete this
+    # run's stdout mid-flight, which was the empty-stdout/empty-stderr failure.
     local stdout_file="$FIXTURE_ROOT/$tag/start-colony.stdout"
+    local ready_file="$FIXTURE_ROOT/$tag/daemon-ready"
     local _i
-    for _i in 1 2 3 4 5 6 7 8 9 10; do
-        if grep -qE '^started ' "$stdout_file" 2>/dev/null; then
+    for _i in $(seq 1 200); do  # 200 x 50ms = 10s ceiling, ample under load
+        if [ -f "$ready_file" ] && grep -qE '^started ' "$stdout_file" 2>/dev/null; then
             pass "$name"
             return 0
         fi
-        sleep 0.15
+        sleep 0.05
     done
-    fail "$name" "expected 'started <agent>' line in stdout: $(cat "$stdout_file" 2>/dev/null) / stderr: $(cat "$FIXTURE_ROOT/$tag/start-colony.stderr" 2>/dev/null)"
+    fail "$name" "expected 'started <agent>' line in stdout: $(cat "$stdout_file" 2>/dev/null) / stderr: $(cat "$FIXTURE_ROOT/$tag/start-colony.stderr" 2>/dev/null) / ready=$([ -f "$ready_file" ] && echo yes || echo no)"
 }
 
 # ----- t1: no [llm] block at all -----
