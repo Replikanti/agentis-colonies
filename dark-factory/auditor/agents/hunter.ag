@@ -51,7 +51,7 @@ fn class_section(taxo: string, cls: string) -> string {
 // A surfaced candidate = success; a rigorous SAFE = failure (so taxonomy fitness rewards the
 // classes that actually produce leads across targets, per #861's evolve loop). No reassignment.
 fn outcome_of(verdict: string) -> string {
-    if index_of(verdict, "CANDIDATE|") == 0 { return "success"; }
+    if index_of(verdict, "CANDIDATE|") >= 0 { return "success"; }
     return "failure";
 }
 
@@ -66,20 +66,25 @@ let classDoc = class_section(getenv("TAXONOMY"), cls);
 // The instruction carries the lens (taxonomy class), the brief (invariants + known-issues), and the
 // strict output contract; the code is the prompt payload (matches auditor.ag::classify_evm_llm shape).
 let instruction =
-    "You are an elite adversarial smart-contract auditor competing in a LIVE audit contest for real money. "
-  + "Find a HIGH or MEDIUM severity bug an EXTERNAL attacker (holding NO privileged role) can exploit. "
-  + "This code is likely already audited, so report ONLY a bug you are confident survives expert judging — "
-  + "no speculation, no informational notes.\n\n"
+    "You are an elite adversarial smart-contract auditor hunting a HIGH or MEDIUM severity bug an EXTERNAL "
+  + "attacker (holding NO privileged role) can exploit. Audit this code FRESH: assume nothing is safe until "
+  + "you have traced the actual control/data flow yourself. An obvious-looking bug IS a real bug unless a "
+  + "guard in the code provably stops it — do NOT assume prior auditors already caught it.\n\n"
   + "=== HUNT THIS BUG CLASS (the lens) ===\n" + classDoc + "\n\n"
   + "=== PROTOCOL BRIEF — invariants whose violation is a valid finding, and KNOWN ISSUES you MUST NOT report ===\n"
   + brief + "\n\n"
   + "=== RULES ===\nOnly Medium/High count. A trusted role acting WITHIN its documented permissions is OUT OF SCOPE; "
   + "a role EXCEEDING its permissions, or any unprivileged user, IS in scope. Never report a listed KNOWN ISSUE. "
   + "Subsystem under review: " + subsystem + ".\n\n"
-  + "=== OUTPUT CONTRACT ===\nIf you find a qualifying bug, output EXACTLY one line:\n"
+  + "=== HOW TO ANSWER ===\n"
+  + "FIRST reason step by step: walk EACH in-scope function relevant to this bug class and trace whether an "
+  + "external attacker can break an invariant — verify guards/CEI-order/rounding/auth in the actual code, do "
+  + "not hand-wave. THEN, for EVERY qualifying Medium/High bug you found, write one line:\n"
   + "CANDIDATE|<file:function:line>|<class=" + cls + ">|<severity=Medium|High>|<one-sentence external exploit path>|<concrete foundry PoC sketch: what to deploy, call, and assert>\n"
-  + "If after rigorous analysis there is NO qualifying bug of this class in this subsystem, output exactly:\nSAFE\n"
-  + "Output nothing else — no preamble, no markdown.";
+  + "If — after actually tracing the relevant functions — there is genuinely no qualifying bug of this class, "
+  + "write the single token: SAFE\n"
+  + "Reason for as long as you need first; ONLY the CANDIDATE| line(s) or the final SAFE token are parsed, so "
+  + "your analysis text above them is free.";
 
 let verdict = prompt(instruction, code) -> string;
 
