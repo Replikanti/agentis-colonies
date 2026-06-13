@@ -5,11 +5,13 @@
 # UNVERIFIED lead. The heavyweight gate is evm-harness/forge-verify.sh: a full Foundry deploy + attacker
 # tx + invariant assertion, which needs the cloned repo + foundryup and runs slowly. This tool is the
 # CHEAP gate that runs FIRST: for each lead it evaluates a self-contained `.ag` PoC harness through the
-# agentis substrate's `eval_ag` primitive (a sandboxed sub-interpreter with its OWN CB budget), and
+# agentis substrate's `eval_ag` primitive (a metered sub-interpreter with its OWN CB budget), and
 # reports whether the lead's machine-checkable invariant REPRODUCED — so the operator only spends
-# forge-verify time on leads that survive the screen. A runaway / malformed harness is CONTAINED by the
-# sub-interpreter's CB metering (surfaced as `inner_cb_exhausted` / `parse_error`), so it can neither
-# crash the screener nor touch the host. This tool NEVER contacts a bounty platform.
+# forge-verify time on leads that survive the screen. A runaway / malformed harness is CB-exhaustion-
+# CONTAINED by the sub-interpreter's CB metering (surfaced as `inner_cb_exhausted` / `parse_error`), so a
+# runaway harness cannot starve or crash the screener. NOTE: `eval_ag` does NOT sandbox `exec` in agentis
+# v1.18.27 — a harness calling `exec sh` reaches the host, so harnesses must be operator-trusted. This
+# tool NEVER contacts a bounty platform.
 #
 # Harness contract (mirrors the colony's exit-101 two-sided gate): a self-contained `.ag` program whose
 # FINAL expression is an int — 101 = INVARIANT VIOLATED (lead reproduced), 0 = invariant HELD (refuted),
@@ -18,7 +20,7 @@
 #
 # Usage:
 #   screen-leads.sh --manifest <leads.tsv> [--out <dir>] [--agentis <bin>]
-#   screen-leads.sh --demo [--out <dir>]            # self-contained demo (writes + screens 4 leads)
+#   screen-leads.sh --demo [--out <dir>]            # self-contained demo (writes + screens 3 leads)
 #
 # Manifest (one lead per line; `#` and blank lines ignored):
 #   <lead-id> | <path-to-harness.ag>                (harness path relative to CWD or absolute)
@@ -104,7 +106,7 @@ fi
   # The screener reads the harness via exec sh (sandbox-resolved) and runs it via eval_ag.
   echo "exec.env_passthrough = POC_HARNESS,LEAD_ID"
   echo "exec.default_timeout_ms = 30000"
-  # eval_ag is a sandboxed sub-interpreter; allow it without granting the inner program new caps.
+  # eval_ag is a metered sub-interpreter; allow it without granting the inner program new caps.
   echo "eval_ag = allow"
   # Record every screen as substrate experience so screen fitness (reproduced/held/junk) accrues.
   echo "learning.enabled = true"
@@ -116,7 +118,8 @@ REPORT="$OUT/screen-report.md"
   echo "# Dark Factory — substrate-native lead pre-screen (eval_ag)"
   echo
   echo "- Each lead's self-contained \`.ag\` PoC harness is evaluated through the substrate's \`eval_ag\`"
-  echo "  primitive (a sandboxed sub-interpreter with its own CB budget)."
+  echo "  primitive (a metered sub-interpreter with its own CB budget; CB-exhaustion containment only,"
+  echo "  NOT an exec sandbox — feed it operator-trusted harnesses)."
   echo "- A REPRODUCED lead is still UNVERIFIED for submission — it is a finding ONLY after the full"
   echo "  \`evm-harness/forge-verify.sh\` Foundry repro passes. This screen just decides what is WORTH that."
   echo

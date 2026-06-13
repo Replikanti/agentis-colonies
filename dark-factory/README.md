@@ -165,11 +165,13 @@ nothing is submitted. As with `run-audit.sh`, the colony never posts to a platfo
 `forge-verify.sh` is the heavyweight gate (a full Foundry deploy + attacker tx). Between a hunter's
 *prose* PoC sketch and that repro, `screen-leads.sh` is the **cheap** gate: it lowers a lead's
 machine-checkable invariant to a self-contained `.ag` PoC harness and evaluates it through the
-substrate's **`eval_ag`** primitive — a sandboxed sub-interpreter with its own CB budget — via
+substrate's **`eval_ag`** primitive — a metered sub-interpreter with its own CB budget — via
 [`auditor/agents/poc-screener.ag`](./auditor/agents/poc-screener.ag). A reproduced screen (return
 `101`, the colony's INVARIANT-VIOLATED sentinel) decides a lead is worth the forge-verify cost; a
-runaway / malformed harness is **contained** (surfaced as `inner_cb_exhausted` / `parse_error`), so it
-cannot crash the screener or touch the host.
+runaway / malformed harness is **CB-exhaustion-contained** (surfaced as `inner_cb_exhausted` /
+`parse_error`), so a runaway harness cannot starve or crash the screener — the screener survives.
+Note: `eval_ag` does NOT sandbox `exec` in agentis v1.18.27 — a harness that calls `exec sh` escapes
+to the host, so harnesses must be operator-trusted.
 
 ```bash
 dark-factory/screen-leads.sh --demo          # self-contained: 3 leads -> 1 reproduced, 1 held, 1 indeterminate

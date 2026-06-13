@@ -18,29 +18,38 @@ Foundry deploy + attacker tx + invariant assertion, which needs the cloned repo 
 slowly. Between "prose lead" and "full Foundry repro" there was nothing — every lead, including the junk
 ones, cost a human a forge-verify setup to triage.
 
-`eval_ag` is the substrate's first-class primitive for *evaluating generated agent code under a metered,
-capability-restricted sub-interpreter*. The screener lowers a lead's machine-checkable invariant to a
+`eval_ag` is the substrate's first-class primitive for *evaluating generated agent code under a metered
+sub-interpreter*. The screener lowers a lead's machine-checkable invariant to a
 self-contained `.ag` PoC harness and runs it through `eval_ag_with_outcome`, which returns
-`{value, outcome, partial, cb_spent}`. This buys three things a raw `exec sh` + second `agentis go`
+`{value, outcome, partial, cb_spent}`. This buys two things a raw `exec sh` + second `agentis go`
 subprocess does not:
 
-1. **Containment.** The harness runs with its OWN CB budget inside the sub-interpreter. A runaway
-   harness (deep recursion, a hot loop) trips the inner CB meter and surfaces as the stable outcome
-   `inner_cb_exhausted` — the screener survives cleanly instead of being starved or crashing. Verified
-   in the demo: a `burn(100000000, 0)` harness returns `indeterminate | inner_cb_exhausted`, screener
-   exit 0.
+1. **CB-exhaustion containment.** The harness runs with its OWN CB budget inside the sub-interpreter. A
+   runaway harness (deep recursion, a hot loop) trips the inner CB meter and surfaces as the stable
+   outcome `inner_cb_exhausted` — the screener is NOT starved or crashed by a runaway harness; it
+   survives cleanly. Verified in the demo: a `burn(100000000, 0)` harness returns
+   `indeterminate | inner_cb_exhausted`, screener exit 0. This is the containment guarantee `eval_ag`
+   buys here, and the ONLY one — see the caveat below.
 2. **A stable verdict vocabulary.** `outcome` discriminates "the invariant HELD" (a clean run returning
    `0`) from "the harness was junk" (`parse_error` / `compile_error` / `runtime_error` / `cap_denied`).
    A subprocess exit code blurs those — both look like "non-101."
-3. **No capability escalation.** `eval_ag` runs the harness with the screener's own (here exec-free,
-   network-free) grant set; the generated harness cannot reach the host.
+
+**`eval_ag` does NOT sandbox `exec` in this runtime.** Confirmed against agentis v1.18.27: a harness
+that calls `exec sh "..."` from inside `eval_ag` reaches the host — the sub-interpreter meters CB but
+does not strip the host-exec capability from the inner program. So the containment claim is bounded:
+`eval_ag` bounds a *runaway/infinite* harness (CB exhaustion), it does NOT bound a *malicious* one.
+Harnesses fed to the screener must be operator-trusted, exactly as the hunter's PoC sketches and the
+forge-verify Exploit.t.sol already are.
 
 **Harness contract** (mirrors the colony's existing exit-101 two-sided gate in `auditor.ag::assess`): a
 self-contained `.ag` program whose final expression is an int — `101` = INVARIANT VIOLATED (lead
-reproduced), `0` = invariant HELD (refuted), anything else = indeterminate. Two-sided is encouraged:
-assert the CONTROL (legit path accepted) AND the EXPLOIT (attacker path breaks the invariant), returning
-`101` only when control held AND exploit fired — so a rigged always-fire harness is rejected, exactly as
-the Rust/revm gate does. Every screen is recorded via `learn()` (a reproduced lead = `success`, a clean
+reproduced), `0` = invariant HELD (refuted), anything else = indeterminate. Two-sided is an **author
+convention, not a mechanical check**: the harness SHOULD assert the CONTROL (legit path accepted) AND
+the EXPLOIT (attacker path breaks the invariant), returning `101` only when control held AND exploit
+fired. But the screener only maps the harness's final int — it cannot detect a missing control
+assertion, so a rigged always-`101` harness is NOT mechanically rejected here. That two-sidedness is
+enforced downstream by the Rust/revm forge-verify gate (real deploy + control tx + exploit tx); the
+screen is the cheap filter, not the arbiter. Every screen is recorded via `learn()` (a reproduced lead = `success`, a clean
 held = `failure`, junk = `error`) and `emit("dark-factory:poc_screened", ...)`, so screen fitness accrues
 as substrate experience alongside the hunter's per-class fitness.
 
@@ -76,11 +85,12 @@ it — the `emit`/listen bus (`auditor.ag`'s reconn → guard → tracker → sy
 fan-out — both crash-isolated in a way an in-process `delegate` is not. Forcing `delegate` would mean
 inventing a sub-agent boundary that the audit logic does not actually have.
 
-### `decide` — an LLM round-trip where the colony deliberately wants a hard gate
+### `decide` — a soft choice where the colony deliberately wants a hard gate
 
-`decide(options, criteria)` is an **LLM-backed** choice primitive (it requires the Prompt capability and
-makes a model round-trip to pick from a list). The colony's verdicts are deliberately NOT LLM judgement
-calls: detection routes to synthesis, and the SOURCE OF TRUTH is the two-sided real-EVM/SVM gate
+`decide(options, criteria)` is a choice primitive with a deterministic offline fallback — it does NOT
+strictly require a Prompt round-trip (an unconfigured backend resolves the choice deterministically). The
+distinction here is not "LLM vs not": the colony's verdicts are deliberately NOT judgement calls at all,
+LLM-backed or otherwise. Detection routes to synthesis, and the SOURCE OF TRUTH is the two-sided real-EVM/SVM gate
 (`CONTROL OK:` + `INVARIANT VIOLATED:` + exit 101) and now the `eval_ag` screen — mechanical, reproducible
 gates whose whole point (see the CHANGELOG security entries) is that an LLM's optimism cannot mint a false
 VERIFIED. Replacing a hard gate with `decide` would regress that. The colony already uses `prompt()` for

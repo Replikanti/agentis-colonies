@@ -4,17 +4,22 @@ cb 300000;
 // is evm-harness/forge-verify.sh — a full Foundry deploy + attacker tx + invariant assert — which is
 // slow and needs the cloned repo + foundryup. This agent is the CHEAP gate that runs FIRST: it takes a
 // self-contained `.ag` PoC harness encoding the lead's machine-checkable invariant and evaluates it
-// through the agentis substrate's `eval_ag` primitive — a sandboxed sub-interpreter with its OWN CB
-// budget — so a malformed / runaway / non-reproducing harness is contained (it cannot exhaust the
-// screener or touch the host) and the operator only spends forge-verify time on leads that survive.
+// through the agentis substrate's `eval_ag` primitive — a metered sub-interpreter with its OWN CB
+// budget — so a malformed / runaway / non-reproducing harness is CB-exhaustion-contained (a runaway
+// harness trips the inner CB meter -> `inner_cb_exhausted` and the screener survives, it does not get
+// starved or crash) and the operator only spends forge-verify time on leads that survive. NOTE:
+// `eval_ag` does NOT sandbox `exec` in agentis v1.18.27 — a harness calling `exec sh` escapes to the
+// host, so the containment is CB-exhaustion only and harnesses must be operator-trusted.
 //
 // Why eval_ag (not exec sh + a second `agentis go`): eval_ag is the substrate's first-class
-// "evaluate generated agent code under a metered, capability-restricted sub-interpreter" primitive.
+// "evaluate generated agent code under a metered sub-interpreter" primitive.
 // It returns a STABLE outcome discriminator (success / parse_error / compile_error / runtime_error /
 // inner_cb_exhausted / ...) so the screen distinguishes "the invariant HELD" (a clean run that
 // returned 0) from "the harness was junk" (parse/compile/cap error) — a distinction a raw subprocess
-// exit code blurs. No new capability is granted to the harness: eval_ag runs it with the screener's
-// own (here exec-free, network-free) grant set.
+// exit code blurs. eval_ag runs the harness with the screener's own grant set and adds no NEW
+// capability — but it does NOT subtract one either: in agentis v1.18.27 the inner program keeps the
+// screener's `exec` grant, so a harness that calls `exec sh` reaches the host. Treat harnesses as
+// operator-trusted; the guarantee `eval_ag` provides is CB-exhaustion containment, not an exec sandbox.
 //
 // Harness contract (the convention the hunter's PoC sketch is lowered to — mirrors the colony's
 // exit-101 two-sided gate): a self-contained `.ag` program WITHOUT a top-level `cb` directive whose
