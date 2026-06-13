@@ -11,6 +11,11 @@
 # learned state. This is the technical enabler for distributing a trained federation
 # (agentis-core#864).
 #
+# INTEGRITY MODEL: the artifact is CHECKSUM-verified (sha256), NOT cryptographically signed.
+# `verify`/`import` prove the state blob matches the manifest digest (no in-transit corruption),
+# but a checksum alone does not authenticate the SOURCE — anyone can recompute it after tampering.
+# Sign the manifest out-of-band before distributing a trained federation to a third party.
+#
 # Usage:
 #   state-export.sh export <rundir> <out.tar.gz>
 #   state-export.sh verify <artifact.tar.gz>
@@ -65,8 +70,10 @@ EOF
     [ -f "$tmp/manifest.json" ] || die "no manifest in artifact"
     want="$(manifest_field state_sha256 "$tmp/manifest.json")"
     got="$(sha "$tmp/state.tar.gz")"
-    cat "$tmp/manifest.json"; rm -rf "$tmp"
-    [ "$want" = "$got" ] && echo "INTEGRITY OK ($got)" || die "INTEGRITY FAIL: manifest=$want actual=$got"
+    # Manifest dump goes to stderr so stdout stays clean on a failed verify (the only
+    # stdout line on success is the checksum verdict below).
+    cat "$tmp/manifest.json" >&2; rm -rf "$tmp"
+    [ "$want" = "$got" ] && echo "checksum OK (NOT authenticated — sign the manifest before distribution) ($got)" || die "INTEGRITY FAIL: manifest=$want actual=$got"
     ;;
 
   import)
