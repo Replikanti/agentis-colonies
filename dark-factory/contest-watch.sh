@@ -30,7 +30,7 @@ emit_new() {  # $1 = unique key, $2 = human line
   [ -n "$ON_NEW" ] && printf '%s\n' "$line" | sh -c "$ON_NEW" >/dev/null 2>&1 || true
 }
 
-# --- Sherlock (cleanest API; operator is KYC-verified here) ---
+# --- Sherlock (cleanest JSON API) ---
 # Write the JSON to a file and pass its path as argv[1]; the heredoc is python's stdin (the code), so
 # there is no pipe-vs-heredoc stdin clash (shellcheck SC2259).
 curl -sS --max-time 20 https://mainnet-contest.sherlock.xyz/contests -o "$DIR/.sherlock.json" 2>/dev/null \
@@ -39,7 +39,10 @@ python3 - "$DIR/.sherlock.json" <<'PY' 2>/dev/null | while IFS= read -r row; do
 import json,sys
 try: d=json.load(open(sys.argv[1]))
 except Exception: sys.exit(0)
-for c in (d if isinstance(d,list) else []):
+# The live API returns a paginated object {"items":[...],"pages":N}; page 1 (newest) holds any RUNNING
+# contest. Accept both that and a bare list. (Finished contests fill later pages — not worth paging for.)
+items = d if isinstance(d,list) else (d.get('items') if isinstance(d,dict) else [])
+for c in (items or []):
     if not isinstance(c,dict): continue
     if str(c.get('status','')).upper()!='RUNNING': continue
     cid=c.get('id'); title=str(c.get('title','')).replace('|',' ')
