@@ -6,7 +6,8 @@ target, the method, and when to stop. `coordinator.ag` (#1014) moves that **deci
 substrate: each step it reads the current FACTS and an evolving POLICY and chooses **one** next action —
 there is no fixed sequence, and the policy that ranks the options **improves by outcome**.
 
-This is v1 (MVP). It replaces the DECISIONS; a thin shell loop still DISPATCHES the chosen action (see
+This is v1 (MVP). It replaces the DECISIONS; the shell loop still DISPATCHES the chosen action, **except a
+`hunt`, whose dispatch moved into the substrate in #1014 M1** (see [`dispatch.md`](./dispatch.md) and
 [the v1 boundary](#the-v1-boundary) below).
 
 ## The loop: fact → decide → record → evolve
@@ -87,18 +88,26 @@ What the **coordinator DECIDES** (in the substrate, from facts + an evolving pol
 - when to stop (budget exhausted or *K* consecutive dry);
 - how to reweight its own decision policy by outcome.
 
-What the **shell still DISPATCHES** (v1 — `run-coordinator.sh`):
+What has **moved into the substrate since v1** (#1014 M1 — see [`dispatch.md`](./dispatch.md)):
 
-- *executing* the chosen action (route `hunt`→`hunter.ag`, `refute`→`refuter.ag`,
-  `poc-screen`→`poc-screener.ag`, `invent-method`→`method-inventor.ag`; or, for the offline demo, a
-  stubbed action-executor returning scripted outcomes from a fixture);
+- *dispatching a `hunt`*. The decision **and** its dispatch now happen in **one** `agentis go`:
+  `coordinator.ag` decides the hunt, `emit`s it over the in-process bus (`dark-factory:dispatch`), and a
+  sibling agent fn (`hunt_dispatch`, mirroring `auditor/agents/dispatcher.ag`) derives the gate verdict
+  from the `HUNT_FIXTURE` fact and writes it to the durable `coordinator:last_outcome` memo. The shell loop
+  **reads the verdict from that memo** instead of a shell `case`.
+
+What the **shell still DISPATCHES** (`run-coordinator.sh`):
+
+- *executing* the non-hunt actions (route `refute`→`refuter.ag`, `poc-screen`→`poc-screener.ag`,
+  `invent-method`→`method-inventor.ag`; or, for the offline demo, a stubbed action-executor returning
+  scripted outcomes from a fixture);
 - carrying state between steps (pending list, dry streak, budget) and feeding each outcome back;
 - reading the cumulative policy from the experience store between calls.
 
-**Follow-up (kept on epic #1014), explicitly out of v1:**
+**Follow-up (kept on epic #1014):**
 
-- move dispatch itself into the substrate via `emit`/listen/reflex, so even the shell loop disappears
-  (the loop currently *executes* decisions; it does not make them, but it is still a shell);
+- move the **remaining** dispatches (refute / poc-screen / invent-method) into the substrate too, so even
+  the shell loop disappears;
 - the coordinator pruning / reprioritising the live cell manifest from the blackboard;
 - multi-target portfolio decisions across more than one in-scope codebase;
 - the generate-and-verify routing from #1015.
@@ -121,7 +130,10 @@ What the **shell still DISPATCHES** (v1 — `run-coordinator.sh`):
 #   (b) the decision policy measurably evolves (rewarded type's weight rises, wasteful one's falls)
 dark-factory/demo-coordinator.sh        # exit 0 = both proven; non-zero = a criterion failed
 
-# Drive the loop yourself (stub executor = offline + deterministic):
+# Proves the #1014 M1 substrate hunt DISPATCH (decision + dispatch in one agentis go; verdict via memo):
+dark-factory/demo-dispatch.sh           # exit 0 = all four proven; non-zero = an assertion failed
+
+# Drive the loop yourself (stub executor = offline + deterministic; hunt is dispatched in-substrate):
 dark-factory/run-coordinator.sh --scope <scope.tsv> --class-fitness <fit.tsv> \
     --executor stub --fixture <fixture.tsv> --budget 8
 ```

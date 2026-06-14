@@ -14,8 +14,17 @@
 # This replaces the DECISION-MAKING that run-discovery.sh's fixed (subsystem x class) fan-out + an
 # operator used to do — fixed order, externally chosen target/method/when-to-stop. The fan-out scripts
 # remain valid executors; what moves into the substrate here is the CHOICE of what to run next, from
-# facts + a policy that improves by outcome. (Follow-up, tracked on epic #1014: move dispatch itself into
-# the substrate via emit/listen so even this loop disappears; multi-target portfolio decisions.)
+# facts + a policy that improves by outcome.
+#
+# #1014 M1 — the `hunt` DISPATCH is now in the substrate. The coordinator no longer just DECIDES a hunt;
+# when DISPATCH_ENABLED is set it also DISPATCHES it: coordinator.ag emits `dark-factory:dispatch` and runs
+# hunt_dispatch() (auditor/agents/dispatcher.ag's fn, inlined gated in coordinator.ag) in the SAME
+# `agentis go`, deriving the gate verdict from HUNT_FIXTURE and writing it to the durable
+# `coordinator:last_outcome` memo. This loop READS that memo for a hunt's outcome (the emit/listen bus is
+# in-process only; the memo is the substrate-native cross-process channel) instead of a shell `case`. The
+# OTHER action types (refute / poc-screen / invent-method / stop) keep their existing shell dispatch.
+# (Follow-up, still tracked on epic #1014: move those remaining dispatches into the substrate too;
+# multi-target portfolio decisions.)
 #
 # HOW THE POLICY EVOLVES (mirrors evolve-fitness.sh). coordinator.ag records the previous action's
 # outcome with the SAME learn() call hunter.ag/fitness-driver.ag use:
@@ -26,12 +35,14 @@
 # POLICY fact on the next call. So the policy that ranks the options is DATA that improves across steps.
 #
 # DISPATCH MODES.
-#   --executor real   (default) route hunt->hunter.ag, refute->refuter.ag, poc-screen->poc-screener.ag,
-#                     invent-method->method-inventor.ag, deriving the OUTCOME from the agent's verdict
-#                     line. Requires the per-action env a real run would set (TARGET_DIR/IN_SCOPE/...);
-#                     this mode is the integration surface for a live audit and needs a reasoning
-#                     backend (--backend flat-cyborg, flat-rate default; or --backend claude, metered)
-#                     for the agents to actually reason. (The decision is still offline-deterministic.)
+#   --executor real   (default) hunt is dispatched IN the substrate (coordinator.ag's hunt_dispatch();
+#                     with no HUNT_FIXTURE it takes the agent's live honest-stub path); refute->refuter.ag,
+#                     poc-screen->poc-screener.ag, invent-method->method-inventor.ag keep their shell
+#                     dispatch, deriving the OUTCOME from the agent's verdict line. Requires the per-action
+#                     env a real run would set (TARGET_DIR/IN_SCOPE/...); this mode is the integration
+#                     surface for a live audit and needs a reasoning backend (--backend flat-cyborg,
+#                     flat-rate default; or --backend claude, metered) for the agents to actually reason.
+#                     (The decision is still offline-deterministic.)
 #   --executor stub --fixture <f>   OFFLINE + DETERMINISTIC: dispatch each chosen action to a scripted
 #                     outcome read from a fixture (`<action-type> <args-glob> -> confirmed|dry|refuted`).
 #                     No LLM, no network — used by demo-coordinator.sh to prove the loop reproducibly.
@@ -108,7 +119,7 @@ cp "$COORD_AG" "$RUN/coordinator.ag"
   [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p"; echo "llm.cli_timeout_ms = 600000"; }
   [ "$BACKEND" = "flat-cyborg" ] && echo "llm.cli_timeout_ms = 600000"
   echo "trace.level = normal"
-  echo "exec.env_passthrough = SCOPE,CLASS_FITNESS,POLICY,PENDING,BUDGET,DRY_STREAK,DRY_CAP,PREV_ACTION,PREV_KEY,LAST_OUTCOME"
+  echo "exec.env_passthrough = SCOPE,CLASS_FITNESS,POLICY,PENDING,BUDGET,DRY_STREAK,DRY_CAP,PREV_ACTION,PREV_KEY,LAST_OUTCOME,DISPATCH_ENABLED,HUNT_FIXTURE"
   echo "exec.default_timeout_ms = 30000"
   # The whole point: every decision is recorded as experience so coordinator:policy:<type> reweights.
   echo "learning.enabled = true"
@@ -166,6 +177,23 @@ SCOPE="$(awk -F'|' '
   { printf "%s%s|%s", sep, s, c; sep="\n" }
 ' "$SCOPE_FILE")"
 
+# HUNT_FIXTURE fact (#1014 M1): the `hunt` dispatch now lives in the substrate (coordinator.ag emits
+# `dark-factory:dispatch` and calls hunt_dispatch() in-process; the verdict crosses back via the durable
+# `coordinator:last_outcome` memo). The dispatcher derives a hunt's OFFLINE verdict from this fact — the
+# SAME rules stub_outcome() reads, projected to the `glob=verdict;glob2=verdict2` env shape the agent
+# parses (subsystem-PREFIX glob, first match wins, default `dry`). Built from the `hunt` rows of --fixture
+# in stub mode; empty otherwise (the agent's live honest-stub path). Other action types keep the shell
+# fixture (stub_outcome) — M1 moves the hunt dispatch only.
+HUNT_FIXTURE=""
+if [ "$EXECUTOR" = "stub" ] && [ -n "$FIXTURE" ]; then
+  HUNT_FIXTURE="$(awk -F'|' '
+    function trim(x){ gsub(/^[ \t]+|[ \t]+$/,"",x); return x }
+    { t=trim($1); g=trim($2); o=trim($3) }
+    t=="" || t ~ /^#/ { next }
+    t=="hunt" { printf "%s%s=%s", sep, g, o; sep=";" }
+  ' "$FIXTURE")"
+fi
+
 # --- stub executor: scripted outcome for a chosen action from the fixture (first match wins; `*` glob on
 # the action ARGS). Returns confirmed|dry|refuted on stdout; `dry` if no rule matches (a benign default).
 # The fixture line is split on `|` into type|glob|outcome, so the glob must not contain a literal `|`
@@ -192,13 +220,11 @@ stub_outcome() {
 # the offline+deterministic proof uses --executor stub. We keep the routing explicit and honest.
 real_outcome() {
   _atype="$1"; _aargs="$2"
+  # NB: `hunt` never reaches here — since #1014 M1 it is dispatched IN the substrate (the coordinator call
+  # emits `dark-factory:dispatch` + runs hunt_dispatch()) and the loop reads the verdict from the
+  # `coordinator:last_outcome` memo BEFORE this function (see the dispatch step). The `*)` default below
+  # would still return a benign `dry` if it ever did.
   case "$_atype" in
-    hunt)
-      # hunter.ag prints `CANDIDATE|...` (a lead -> treat as a candidate to verify, outcome=dry until
-      # verified) or `SAFE` (outcome=dry). A live loop would queue the CANDIDATE into PENDING; without the
-      # target env wired here we cannot run the real read, so signal the missing wiring loudly.
-      echo "run-coordinator.sh: real hunt dispatch needs TARGET_DIR/IN_SCOPE/SCOPE_BRIEF/TAXONOMY/SLICER wired (see run-discovery.sh); use --executor stub for the offline demo" >&2
-      printf '%s' "dry" ;;
     refute|poc-screen|invent-method)
       echo "run-coordinator.sh: real $_atype dispatch needs the candidate code/env wired (see run-refute.sh / screen-leads.sh / run-method-discovery.sh); use --executor stub for the offline demo" >&2
       printf '%s' "dry" ;;
@@ -224,7 +250,11 @@ while [ "$STEP" -lt "$BUDGET" ]; do
   POLICY="$(read_policy)"
 
   DEC_LOG="$RUN/decision_$STEP.log"
-  # ONE decision: hand the coordinator every FACT; it returns exactly one ACTION| line.
+  # ONE decision: hand the coordinator every FACT; it returns exactly one ACTION| line. DISPATCH_ENABLED
+  # makes coordinator.ag DISPATCH a chosen `hunt` itself (#1014 M1): it emits `dark-factory:dispatch` and
+  # runs hunt_dispatch() in THIS same `agentis go`, landing the gate verdict in the durable
+  # `coordinator:last_outcome` memo. We read that memo below for a hunt instead of a shell `case`; every
+  # other action keeps its shell dispatch. HUNT_FIXTURE carries the offline verdict rules to the agent.
   ( cd "$RUN" && env \
       SCOPE="$SCOPE" \
       CLASS_FITNESS="$CLASS_FITNESS" \
@@ -236,6 +266,8 @@ while [ "$STEP" -lt "$BUDGET" ]; do
       PREV_ACTION="$PREV_ACTION" \
       PREV_KEY="$PREV_KEY" \
       LAST_OUTCOME="$LAST_OUTCOME" \
+      DISPATCH_ENABLED=1 \
+      HUNT_FIXTURE="$HUNT_FIXTURE" \
       "$AGENTIS" go coordinator.ag --enable-exec --enable-messaging ) >"$DEC_LOG" 2>&1 \
     || { echo "run-coordinator.sh: coordinator call failed at step $STEP (see $DEC_LOG)" >&2; exit 1; }
 
@@ -264,7 +296,18 @@ while [ "$STEP" -lt "$BUDGET" ]; do
   fi
 
   # DISPATCH the chosen action and capture its gate OUTCOME (a FACT, fed back next step).
-  if [ "$EXECUTOR" = "stub" ]; then
+  #  * hunt (#1014 M1): the dispatch already happened IN the coordinator call above (it emitted
+  #    `dark-factory:dispatch` and ran hunt_dispatch() in-process), recording the verdict in the durable
+  #    `coordinator:last_outcome` memo. We READ it back here (a separate `agentis memo get`, the only
+  #    substrate-native cross-process channel) instead of computing it in a shell `case`. The memo value
+  #    is `hunt|<subsystem>|<class>|<verdict>`; we take the trailing verdict field.
+  #  * every OTHER action type keeps its existing shell dispatch (stub_outcome / real_outcome) unchanged.
+  if [ "$ATYPE" = "hunt" ]; then
+    MEMO_OUTCOME="$( ( cd "$RUN" && "$AGENTIS" memo get coordinator:last_outcome ) 2>/dev/null | tail -1 )"
+    OUTCOME="$(printf '%s' "$MEMO_OUTCOME" | awk -F'|' '{ print $NF }')"
+    case "$OUTCOME" in confirmed|dry|refuted) : ;; *) OUTCOME="dry" ;; esac
+    echo "run-coordinator.sh:   hunt dispatched in-substrate; verdict from coordinator:last_outcome memo: $OUTCOME" >&2
+  elif [ "$EXECUTOR" = "stub" ]; then
     OUTCOME="$(stub_outcome "$ATYPE" "$AARGS")"
   else
     OUTCOME="$(real_outcome "$ATYPE" "$AARGS")"

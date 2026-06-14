@@ -177,6 +177,106 @@ fn outcome_signal(verdict: string) -> string {
     return "";
 }
 
+// --- substrate-native HUNT DISPATCH (#1014 M1) -----------------------------------------------------
+// When a hunt is chosen AND dispatch is enabled (DISPATCH_ENABLED set), the coordinator emits the chosen
+// hunt over the IN-PROCESS bus and CALLS hunt_dispatch() in this SAME `agentis go` — moving the `hunt`
+// branch of the old run-coordinator.sh shell `case` onto the substrate. The verdict crosses back to the
+// shell loop via the DURABLE `coordinator:last_outcome` memo (the emit/listen bus is in-process only).
+// This block is DARK unless DISPATCH_ENABLED is present, so a standalone coordinator run (demo-coordinator.sh,
+// which neither sets nor whitelists the flag) is BYTE-IDENTICAL. The fns mirror dispatcher.ag exactly
+// (the standalone, separately-committable copy of the same dispatch agent). M1 dispatches hunt only.
+
+// The Nth `|`-segment (0-based) of `s`, "" if absent. Single-assignment reduce: the accumulator carries
+// `<nextIndex>\t<captured>`; each segment captures itself when its index equals `n`, then the tab-prefix
+// is dropped to yield the field value. Leaf builtins only (kept shallow on the native call stack).
+fn payload_field(s: string, n: int) -> string {
+    let segs = regex_split("\\|", s);
+    let acc = reduce(segs, |a: string, seg: string| -> string {
+        let bar = index_of(a, "\t");
+        let idx = parse_int(substring(a, 0, bar));
+        let cap = substring(a, bar + 1, len(a));
+        if idx == n { return to_string(idx + 1) + "\t" + seg; }
+        return to_string(idx + 1) + "\t" + cap;
+    }, "0\t");
+    return substring(acc, index_of(acc, "\t") + 1, len(acc));
+}
+
+// Strip a single trailing `*` from a subsystem glob, yielding the literal prefix to match against.
+fn glob_prefix(glob: string) -> string {
+    let n = len(glob);
+    if n == 0 { return ""; }
+    if substring(glob, n - 1, n) == "*" { return substring(glob, 0, n - 1); }
+    return glob;
+}
+
+// Does `subsystem` match the subsystem-PREFIX `glob` (trailing `*` optional)? An empty prefix (a bare `*`
+// rule) matches anything; otherwise the subsystem must START with the prefix (index_of == 0).
+fn glob_matches(glob: string, subsystem: string) -> bool {
+    let pfx = glob_prefix(glob);
+    if len(pfx) == 0 { return true; }
+    return index_of(subsystem, pfx) == 0;
+}
+
+// First-match verdict for `subsystem` from the `glob=verdict;glob2=verdict2` HUNT_FIXTURE. Default `dry`
+// when nothing matches (a benign default, exactly like run-coordinator.sh::stub_outcome's END rule).
+fn fixture_verdict(fixture: string, subsystem: string) -> string {
+    if len(fixture) == 0 { return "dry"; }
+    let hit = reduce(regex_split(";", fixture), |acc: string, rule: string| -> string {
+        if len(acc) > 0 { return acc; }
+        if len(rule) == 0 { return acc; }
+        let eq = index_of(rule, "=");
+        if eq < 0 { return acc; }
+        let glob = substring(rule, 0, eq);
+        let verdict = substring(rule, eq + 1, len(rule));
+        if glob_matches(glob, subsystem) { return verdict; }
+        return acc;
+    }, "");
+    if len(hit) == 0 { return "dry"; }
+    return hit;
+}
+
+// Is `v` one of the three legal gate verdicts? Guards against a malformed fixture cell. Leaf compares.
+fn is_verdict(v: string) -> bool {
+    if v == "confirmed" { return true; }
+    if v == "dry" { return true; }
+    if v == "refuted" { return true; }
+    return false;
+}
+
+// Derive the gate OUTCOME for a hunt of `subsystem`. Offline (HUNT_FIXTURE set) -> the fixture rule, NO
+// prompt()/LLM. Otherwise the LIVE path: an honest stub that says what real wiring it needs (mirrors
+// run-coordinator.sh::real_outcome) and returns a benign `dry` — it does NOT attempt a real hunt.
+fn hunt_outcome(subsystem: string, cls: string) -> string {
+    let fixture = getenv("HUNT_FIXTURE");
+    if len(fixture) > 0 {
+        let v = fixture_verdict(fixture, subsystem);
+        if is_verdict(v) { return v; }
+        return "dry";
+    }
+    print("coordinator: LIVE hunt of '" + subsystem + "|" + cls + "' needs TARGET_DIR/IN_SCOPE/SCOPE_BRIEF/TAXONOMY/SLICER wired (see run-discovery.sh / hunter.ag); set HUNT_FIXTURE for the offline-deterministic path. No real hunt attempted.");
+    return "dry";
+}
+
+// Listen the chosen hunt off the in-process bus, derive + record the gate OUTCOME, print the marker.
+// An `agent fn` with NO `fn tick` (exempt from the ADR-0001 tier lint + the prompt-gate lint), driven by
+// the in-process `listen` of the `dark-factory:dispatch` event the top-level block emits — exactly the
+// emit->listen->call shape of auditor.ag's reconn/guard/tracker sub-agents.
+agent hunt_dispatch() -> void {
+    let payload = listen("dark-factory:dispatch");
+    let action = payload_field(payload, 0);
+    if action != "hunt" {
+        print("coordinator: ignoring non-hunt dispatch payload '" + payload + "' (M1 dispatches hunt only)");
+        memo_write("dispatcher:last_check", "done");
+        return;
+    }
+    let subsystem = payload_field(payload, 1);
+    let cls = payload_field(payload, 2);
+    let verdict = hunt_outcome(subsystem, cls);
+    memo_write("coordinator:last_outcome", "hunt|" + subsystem + "|" + cls + "|" + verdict);
+    print("DISPATCH|hunt|" + subsystem + "|" + cls + "|" + verdict);
+    memo_write("dispatcher:last_check", "done");
+}
+
 // --- read FACTS ------------------------------------------------------------------------------------
 let scope = getenv("SCOPE");
 let classFit = getenv("CLASS_FITNESS");
@@ -309,3 +409,15 @@ emit("dark-factory:decision",
    + "\",\"prev\":\"" + prevAction + "\",\"prev_outcome\":\"" + lastOutcome + "\"}");
 memo_write("coordinator:last_decision", actionLine);
 memo_write("coordinator:last_check", "done");
+
+// --- DISPATCH (#1014 M1, GATED): when dispatch is enabled AND the chosen action is `hunt`, emit the hunt
+// over the in-process bus and run the dispatch chain in THIS same program — the verdict lands in the
+// durable `coordinator:last_outcome` memo for the shell loop to read. DARK (no emit, no call, no extra
+// output) unless DISPATCH_ENABLED is present, so a standalone coordinator run stays byte-identical. M1
+// dispatches hunt only; refute/poc-screen/invent-method/stop keep their existing shell dispatch. -------
+if len(getenv("DISPATCH_ENABLED")) > 0 {
+    if selType == "hunt" {
+        emit("dark-factory:dispatch", "hunt|" + selArgs);
+        hunt_dispatch();
+    }
+}

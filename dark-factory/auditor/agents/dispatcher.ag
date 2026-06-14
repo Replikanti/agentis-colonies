@@ -1,0 +1,142 @@
+cb 300000;
+// dispatcher.ag — #1014 M1: the `hunt` DISPATCH, moved into the substrate.
+//
+// WHAT MOVED. run-coordinator.sh used to route the coordinator's chosen action through a shell `case`:
+// for `hunt` it called stub_outcome()/real_outcome() to derive the gate verdict, then fed it back. M1
+// moves the `hunt` branch of that dispatch ONTO the substrate. The coordinator (coordinator.ag) `emit`s
+// the chosen hunt over the IN-PROCESS bus (`dark-factory:dispatch`, payload `hunt|<subsystem>|<class>`);
+// THIS agent fn `listen`s it, derives the gate OUTCOME, writes it back as a DURABLE fact
+// (`coordinator:last_outcome` memo), and prints an observable `DISPATCH|...` marker. The shell loop then
+// READS the verdict from the memo instead of computing it in a `case`.
+//
+// WHY emit/listen + memo (not a cross-process bus). In agentis the emit/listen bus is IN-PROCESS only:
+// two separate `agentis go` invocations cannot exchange a bus event. So the coordinator's `emit` and this
+// `listen` only meet when they run in the SAME `agentis go` (coordinator.ag calls hunt_dispatch() after
+// it decides, gated on DISPATCH_ENABLED). The ONLY substrate-native CROSS-PROCESS channel is the durable
+// memo store — so the VERDICT crosses back to the shell loop via `memo_write(coordinator:last_outcome,...)`
+// + a separate `agentis memo get`. Mirrors auditor.ag's emit->listen->call DAG (reconn/guard/tracker/synth).
+//
+// OFFLINE/DETERMINISTIC verdict. The verdict comes from a FIXTURE (`HUNT_FIXTURE` env fact), NOT an LLM —
+// the same `subsystem-glob -> confirmed|dry|refuted` shape run-coordinator.sh's stub_outcome() uses, so
+// the offline demo reproduces byte-for-byte. NO prompt()/network on this path. The LIVE path is an honest
+// stub that prints what real wiring it still needs (mirrors today's real_outcome() honesty) — it does NOT
+// attempt a real hunt.
+//
+// Env (all FACTS; none is an LLM call):
+//   HUNT_FIXTURE   the offline verdict rules: `glob=verdict;glob2=verdict2`, first match wins, default
+//                  `dry`. <glob> is a subsystem-PREFIX glob (trailing `*` optional), e.g.
+//                  `vault*=confirmed;oracle*=refuted`. Empty / no rule -> `dry`. Mirrors stub_outcome().
+//   DISPATCH_LIVE  when set (and HUNT_FIXTURE empty), take the LIVE honest-stub path instead.
+// Bus (in-process): listen `dark-factory:dispatch`, payload `hunt|<subsystem>|<class>`.
+// Memo (durable, cross-process): write `coordinator:last_outcome` = `hunt|<subsystem>|<class>|<verdict>`.
+// Stdout marker: `DISPATCH|hunt|<subsystem>|<class>|<verdict>`.
+
+// --- payload parsing (single-assignment string helpers; only leaf builtins) ------------------------
+
+// The Nth `|`-segment (0-based) of `s`, "" if absent. Single-assignment reduce: the accumulator carries
+// `<nextIndex>\t<captured>`; each segment captures itself when its index equals `n`, then the tab-prefix
+// is dropped to yield the field value. Leaf builtins only (kept shallow on the native call stack).
+fn payload_field(s: string, n: int) -> string {
+    let segs = regex_split("\\|", s);
+    let acc = reduce(segs, |a: string, seg: string| -> string {
+        let bar = index_of(a, "\t");
+        let idx = parse_int(substring(a, 0, bar));
+        let cap = substring(a, bar + 1, len(a));
+        if idx == n { return to_string(idx + 1) + "\t" + seg; }
+        return to_string(idx + 1) + "\t" + cap;
+    }, "0\t");
+    return substring(acc, index_of(acc, "\t") + 1, len(acc));
+}
+
+// --- the offline FIXTURE verdict (mirrors run-coordinator.sh::stub_outcome semantics) --------------
+
+// Strip a single trailing `*` from a subsystem glob, yielding the literal prefix to match against.
+fn glob_prefix(glob: string) -> string {
+    let n = len(glob);
+    if n == 0 { return ""; }
+    if substring(glob, n - 1, n) == "*" { return substring(glob, 0, n - 1); }
+    return glob;
+}
+
+// Does `subsystem` match the subsystem-PREFIX `glob` (trailing `*` optional)? An empty prefix matches
+// anything (a bare `*` rule). Otherwise the subsystem must START with the prefix (index_of == 0).
+fn glob_matches(glob: string, subsystem: string) -> bool {
+    let pfx = glob_prefix(glob);
+    if len(pfx) == 0 { return true; }
+    return index_of(subsystem, pfx) == 0;
+}
+
+// First-match verdict for `subsystem` from the `glob=verdict;glob2=verdict2` fixture. Default `dry` when
+// nothing matches (a benign default, exactly like stub_outcome's END rule). Single-assignment reduce.
+fn fixture_verdict(fixture: string, subsystem: string) -> string {
+    if len(fixture) == 0 { return "dry"; }
+    let hit = reduce(regex_split(";", fixture), |acc: string, rule: string| -> string {
+        if len(acc) > 0 { return acc; }
+        if len(rule) == 0 { return acc; }
+        let eq = index_of(rule, "=");
+        if eq < 0 { return acc; }
+        let glob = substring(rule, 0, eq);
+        let verdict = substring(rule, eq + 1, len(rule));
+        if glob_matches(glob, subsystem) { return verdict; }
+        return acc;
+    }, "");
+    if len(hit) == 0 { return "dry"; }
+    return hit;
+}
+
+// Is `v` one of the three legal gate verdicts? Guards against a malformed fixture cell. Leaf compares.
+fn is_verdict(v: string) -> bool {
+    if v == "confirmed" { return true; }
+    if v == "dry" { return true; }
+    if v == "refuted" { return true; }
+    return false;
+}
+
+// Derive the gate OUTCOME for a hunt of `subsystem`. Offline (HUNT_FIXTURE set) -> the fixture rule, NO
+// prompt()/LLM. Otherwise the LIVE path: an honest stub that says what real wiring it needs (mirrors
+// run-coordinator.sh::real_outcome) and returns a benign `dry` — it does NOT attempt a real hunt.
+fn hunt_outcome(subsystem: string, cls: string) -> string {
+    let fixture = getenv("HUNT_FIXTURE");
+    if len(fixture) > 0 {
+        let v = fixture_verdict(fixture, subsystem);
+        if is_verdict(v) { return v; }
+        return "dry";
+    }
+    print("dispatcher: LIVE hunt of '" + subsystem + "|" + cls + "' needs TARGET_DIR/IN_SCOPE/SCOPE_BRIEF/TAXONOMY/SLICER wired (see run-discovery.sh / hunter.ag); set HUNT_FIXTURE for the offline-deterministic path. No real hunt attempted.");
+    return "dry";
+}
+
+// --- the dispatch agent fn: listen the chosen hunt, derive + record the OUTCOME, mark it ------------
+// Mirrors auditor.ag's sub-agents (reconn/guard/tracker): an `agent fn` with NO `fn tick` (so it is
+// exempt from the ADR-0001 tier lint and the prompt-gate lint), driven by an in-process `listen` of a
+// topic a sibling `emit`ted, then CALLED at top level after the emit.
+agent hunt_dispatch() -> void {
+    let payload = listen("dark-factory:dispatch");
+    let action = payload_field(payload, 0);
+    if action != "hunt" {
+        // M1 dispatches `hunt` only; every other action keeps its shell dispatch unchanged.
+        print("dispatcher: ignoring non-hunt dispatch payload '" + payload + "' (M1 dispatches hunt only)");
+        memo_write("dispatcher:last_check", "done");
+        return;
+    }
+    let subsystem = payload_field(payload, 1);
+    let cls = payload_field(payload, 2);
+    let verdict = hunt_outcome(subsystem, cls);
+    // Durable, cross-process: the shell loop READS this back instead of a shell `case`.
+    let outcome = "hunt|" + subsystem + "|" + cls + "|" + verdict;
+    memo_write("coordinator:last_outcome", outcome);
+    // Observable marker (the demo asserts ACTION|hunt|... and DISPATCH|hunt|... in the SAME process).
+    print("DISPATCH|hunt|" + subsystem + "|" + cls + "|" + verdict);
+    memo_write("dispatcher:last_check", "done");
+}
+
+// --- standalone entry: emit the chosen hunt over the in-process bus, then run the dispatch chain. ----
+// The CANONICAL use is the gated call from coordinator.ag (which decides, then emits + calls
+// hunt_dispatch() in the SAME `agentis go`). This top-level lets the agent be committed + lint-validated
+// on its own and dispatched directly: it reads the chosen `subsystem|class` from DISPATCH_ARGS, emits the
+// `dark-factory:dispatch` event, and calls the chain — exactly the shape coordinator.ag inlines.
+let dargs = getenv("DISPATCH_ARGS");
+if len(dargs) > 0 {
+    emit("dark-factory:dispatch", "hunt|" + dargs);
+    hunt_dispatch();
+}
