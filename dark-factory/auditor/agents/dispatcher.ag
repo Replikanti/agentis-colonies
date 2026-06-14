@@ -166,13 +166,45 @@ fn is_action(t: string) -> bool {
 // the deterministic demo needs no live solver. The live mapping is realized end-to-end in symbolic-prover.ag
 // (exit code -> verdict -> learn outcome) behind run-symbolic.sh; the honest live stub below points there.
 
+// === #1032: the LIVE symbolic-prove route — run REAL Halmos and map its SOUND verdict. =================
+// Kept BYTE-FOR-BYTE in sync with coordinator.ag's inlined copy (the demo-dispatch.sh sync-guard asserts the
+// two do not drift). Parse the `__rc=<n>` marker the halmos-verify run prints as its LAST line, map the
+// SOUND exit code DIRECTLY to the coordinator outcome enum (1->confirmed COUNTEREXAMPLE, 0->refuted PROVED,
+// 3/2/else->dry INCONCLUSIVE/harness), and run the gate with every value shell_escape()d. See the THESIS
+// block above for the full verdict->outcome contract.
+fn sym_rc_of(out: string) -> int {
+    if index_of(out, "__rc=") < 0 { return 2; }
+    return parse_int(regex_capture("__rc=([0-9]+)", out, 1));
+}
+fn sym_outcome_of(rc: int) -> string {
+    if rc == 1 { return "confirmed"; }
+    if rc == 0 { return "refuted"; }
+    return "dry";
+}
+fn sym_fn_prefix(raw: string) -> string {
+    if len(raw) == 0 { return "check"; }
+    return raw;
+}
+fn run_symbolic_live() -> string {
+    let gate = getenv("HALMOS_VERIFY");
+    let repo = getenv("SYM_REPO");
+    let spec = getenv("SYM_SPEC");
+    let fnPrefix = sym_fn_prefix(getenv("SYM_FUNCTION"));
+    let runOut = exec sh "set +e; sh " + shell_escape(gate) + " --repo " + shell_escape(repo)
+               + " --target " + shell_escape(spec) + " --function " + shell_escape(fnPrefix)
+               + " 2>&1; echo __rc=$?";
+    let rc = sym_rc_of(runOut);
+    return sym_outcome_of(rc);
+}
+
 // Derive the gate OUTCOME for an action of `<type>` with `<args>`. Offline (DISPATCH_FIXTURE set, or the
-// M1 HUNT_FIXTURE alias for a hunt) -> the fixture rule, NO prompt()/LLM. Otherwise the LIVE path: an
-// honest per-type stub that says what real wiring it needs (mirrors run-coordinator.sh::real_outcome) and
-// returns a benign `dry` — it does NOT attempt a real action. For `symbolic-prove` the real wiring is
-// run-symbolic.sh -> symbolic-prover.ag -> halmos-verify.sh, whose SOUND verdict maps through the
-// COUNTEREXAMPLE->confirmed / PROVED->refuted / INCONCLUSIVE->dry contract documented above — the
-// cross-process bridge from the sound engine's verdict to the coordinator's policy signal.
+// M1 HUNT_FIXTURE alias for a hunt) -> the fixture rule, NO prompt()/LLM. The LIVE symbolic-prove route
+// (#1032): when `symbolic-prove` is chosen AND no fixture matched AND a live symbolic env is present (a
+// SYM_REPO foundry dir + a SYM_SPEC target spec + the HALMOS_VERIFY gate path), run REAL Halmos and map its
+// SOUND exit code (1->confirmed, 0->refuted, 3/2/other->dry) — the verdict is the solver's, never the LLM's.
+// PURELY ADDITIVE: absent any of the three env facts it falls through to the honest stub. For the other
+// action types the real wiring is named on the live stub (hunt->run-discovery.sh, refute->run-refute.sh,
+// poc-screen->screen-leads.sh, invent-method->run-method-discovery.sh) and the stub returns a benign `dry`.
 fn action_outcome(atype: string, args: string) -> string {
     let fixture = getenv("DISPATCH_FIXTURE");
     if len(fixture) > 0 {
@@ -186,6 +218,23 @@ fn action_outcome(atype: string, args: string) -> string {
             let hv = hunt_fixture_verdict(huntFx, args);
             if is_verdict(hv) { return hv; }
             return "dry";
+        }
+    }
+    // LIVE symbolic-prove (#1032): an operator-supplied single-candidate context (SYM_REPO + SYM_SPEC + the
+    // HALMOS_VERIFY gate path) routes the chosen candidate through REAL Halmos end-to-end. All three must be
+    // present; otherwise this falls through to the honest stub (additive). The verdict is Halmos's exit code,
+    // mapped COUNTEREXAMPLE->confirmed / PROVED->refuted / INCONCLUSIVE|harness->dry — never an LLM judgement.
+    if atype == "symbolic-prove" {
+        let gate = getenv("HALMOS_VERIFY");
+        let repo = getenv("SYM_REPO");
+        let spec = getenv("SYM_SPEC");
+        if len(gate) > 0 {
+            if len(repo) > 0 {
+                if len(spec) > 0 {
+                    print("dispatcher: LIVE symbolic-prove of '" + args + "' -> running REAL Halmos via " + gate + " on " + spec + " (SOUND verdict; the LLM never judges).");
+                    return run_symbolic_live();
+                }
+            }
         }
     }
     print("dispatcher: LIVE " + atype + " of '" + args + "' needs its real wiring (hunt: TARGET_DIR/IN_SCOPE/SCOPE_BRIEF/TAXONOMY/SLICER per run-discovery.sh/hunter.ag; refute->run-refute.sh; poc-screen->screen-leads.sh; symbolic-prove->run-symbolic.sh (SOUND verdict: COUNTEREXAMPLE->confirmed, PROVED->refuted, INCONCLUSIVE->dry); invent-method->run-method-discovery.sh); set DISPATCH_FIXTURE for the offline-deterministic path. No real action attempted.");
