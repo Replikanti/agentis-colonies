@@ -172,6 +172,8 @@ dark-factory/evm-harness/halmos-verify.sh --repo "$PWD/target" --target test/Spe
 `forge-verify.sh` witnesses one concrete exploit path; `halmos-verify.sh` decides the property over all
 inputs. They are complementary — see [`docs/halmos.md`](./docs/halmos.md) for the verdict/exit contract,
 toolchain install, and how the gate fits the epic (the LLM hypothesizes; Halmos is the sound verdict).
+To **generate** the `*.t.sol` spec for a candidate and then verify it through that gate in one substrate
+step, see [`run-symbolic.sh`](#generate-and-verify-a-candidate-run-symbolicsh) below.
 
 A clean sweep (no candidate survives) is a **rigorous negative** — a valid outcome on audited code;
 nothing is submitted. As with `run-audit.sh`, the colony never posts to a platform.
@@ -308,6 +310,32 @@ A **REAL** verdict is a lead that survived a hostile read — **not a finding**.
 through `evm-harness/forge-verify.sh` before it counts, and submission stays a separate, explicit human
 action. A **REFUTED** verdict is killed here and never reaches the forge gate. The colony never posts.
 
+## Generate and verify a candidate (`run-symbolic.sh`)
+
+M1 shipped the **callable** Halmos gate (`evm-harness/halmos-verify.sh`); `run-symbolic.sh` (#1015 M2)
+closes the loop from a *candidate* to a SOUND symbolic verdict by **generating the spec** the gate runs.
+The **LLM is the hypothesis generator** — it turns a candidate (`file:fn` + the invariant to encode + the
+relevant code) into a Halmos `*.t.sol` property spec; **Halmos is the judge** — it PROVES the invariant
+holds for all inputs (the lead is refuted **by a proof**, safe) or returns a **concrete counterexample**
+(a real bug, **confirmed**). The verdict is Halmos's exit code, **never the LLM's opinion**.
+[`auditor/agents/symbolic-prover.ag`](./auditor/agents/symbolic-prover.ag) runs the whole step on the
+substrate (`emit`s `dark-factory:symbolic_verdict`, `learn`s the attempt so symbolic-prover fitness
+reweights) and prints one `SYMBOLIC|<file:fn>|<verdict>` line.
+
+```bash
+# candidates.tsv: `file:fn | class | invariant | code-file | spec-fixture`  (one per line)
+dark-factory/run-symbolic.sh --candidates "$PWD/candidates.tsv" --repo "$PWD/target" --out "$PWD/symbolic-out"
+# offline / cheap wiring smoke (no real LLM): supply a `spec-fixture` column + add  --backend mock
+# offline-deterministic end-to-end proof (real Halmos, fixture specs):  dark-factory/demo-symbolic.sh
+```
+
+A `spec-fixture` in the manifest takes the **offline/deterministic** path — that spec is used verbatim and
+**no LLM is called** — so the candidate → halmos → verdict loop is provable with zero LLM cost and a real
+solver. A **COUNTEREXAMPLE** is still a **lead** a human reviews, not an auto-submission; this colony never
+posts. See [`docs/generate-verify.md`](./docs/generate-verify.md) for the verdict-source contract, the
+fixture-vs-LLM paths, how it composes with M1, and the honest scope (a callable step today; coordinator
+auto-routing is a later milestone).
+
 ## Exercise the evolve/fitness loop (`evolve-fitness.sh`)
 
 Every hunt the colony runs records a `learn("hunt", "<class>:<subsystem>", ..., outcome, [...])` row in
@@ -386,6 +414,7 @@ dark-factory/
   screen-leads.sh               # cheap substrate-native lead pre-screen (eval_ag) before forge-verify
   run-summary.sh                # one-shot run -> monitor-/dashboard-consumable run-summary.json (#995)
   run-refute.sh                 # operator entrypoint: adversarial refutation (refuter fan-out) -> verdicts
+  run-symbolic.sh               # operator entrypoint: GENERATE a Halmos spec per candidate + VERIFY it (#1015 M2)
   run-coordinator.sh            # bootstrap for the self-orchestrating loop (ONE agentis go; the loop lives in-substrate; #1014 M3)
   demo-coordinator.sh           # offline, deterministic proof of the #1014 fact-driven + evolving-policy loop
   demo-dispatch.sh              # offline, deterministic proof of the #1014 M2 substrate DISPATCH (every action type)
@@ -396,6 +425,7 @@ dark-factory/
   gen-agent.sh                  # materialise a colony-lint-valid .ag agent from an invented METHOD line (#1000)
   demo-blackboard.sh            # offline, deterministic demo of the #1001 blackboard coordination loop
   demo-halmos.sh                # proof of the #1015 Halmos symbolic gate (PROVED + COUNTEREXAMPLE; SKIPs without the toolchain)
+  demo-symbolic.sh              # offline-deterministic proof of the #1015 M2 generate-and-verify loop (fixture spec + real Halmos; SKIPs without the toolchain)
   setup-solana-toolchain.sh     # one-time offline toolchain build (network ON)
   snapshot-rpc.sh               # host RPC getAccountInfo -> frozen on-chain snapshot (V4)
   calibrate-sealevel.sh         # detection+validation scorecard over the sealevel corpus (V6)
@@ -405,6 +435,7 @@ dark-factory/
     agents/hunter.ag            # the custom-code discovery agent (taxonomy-driven adversarial hunt)
     agents/poc-screener.ag      # substrate-native lead pre-screen via eval_ag (sandboxed PoC harness)
     agents/refuter.ag           # the adversarial-refutation agent (independent skeptic; default REFUTED)
+    agents/symbolic-prover.ag   # generate-and-verify: LLM writes a Halmos spec, Halmos returns the sound verdict (#1015 M2)
     agents/fitness-driver.ag    # one fitness-loop cell: hunter.ag's exact learn() over a ground-truth verdict
     agents/method-inventor.ag   # the meta-loop inventor: proposes a new audit method for a known gap (#998)
     agents/coordinator.ag       # self-orchestrating decider: fact+policy-driven actions (#1014); gated in-substrate dispatch for every action type (M2); gated in-substrate MULTI-STEP loop (M3)
@@ -425,6 +456,7 @@ dark-factory/
     halmos-verify.sh            # sound symbolic gate: PROVES an invariant or returns a counterexample (Halmos+z3; #1015)
     halmos-specs/               # self-contained Foundry specs: one Halmos PROVES, one it REFUTES (demo fixtures)
   docs/halmos.md                # the Halmos gate's verdict/exit contract, toolchain install, epic fit (#1015)
+  docs/generate-verify.md       # the #1015 M2 generate-and-verify loop: LLM hypothesizes, Halmos proves; verdict-source contract
   sealevel/                     # modernized coral-xyz/sealevel-attacks lessons (corpus) (V6)
   fixtures/                     # detection fixtures (vuln + safe + rigged-harness cases)
 ```

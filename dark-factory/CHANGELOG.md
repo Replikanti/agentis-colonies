@@ -16,6 +16,43 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **Generate-and-verify — the LLM HYPOTHESIZES a property, Halmos delivers the SOUND verdict** (#1015 M2).
+  M1 shipped the *callable* Halmos gate; M2 closes the loop from a *candidate* to a symbolic verdict by
+  **generating the spec** the gate runs. New `auditor/agents/symbolic-prover.ag` is a per-candidate substrate
+  agent (modelled on `refuter.ag`: `cb 300000;`, one-shot, no `fn tick`; env reads via `getenv`; reads via
+  `exec sh` with `// colony-lint: safe-exec-concat`; `emit`/`learn`/`memo_write`): it **GENERATES** a Halmos
+  `*.t.sol` property spec for one candidate — verbatim from a `SPEC_FIXTURE` env fact on the offline /
+  deterministic path (no LLM), or via `prompt()` on the live path — then **VERIFIES** it by running the M1
+  `evm-harness/halmos-verify.sh` through `exec sh` and mapping its exit code to the verdict (`0`→**PROVED**
+  = invariant holds for ALL inputs → candidate safe / refuted by a proof; `1`→**COUNTEREXAMPLE** = a concrete
+  input is a real bug, CONFIRMED with a witness; `3`→**INCONCLUSIVE**; else→**HARNESS_ERROR**). It `emit`s
+  `dark-factory:symbolic_verdict`, `learn`s the attempt (COUNTEREXAMPLE=success / PROVED=failure /
+  INCONCLUSIVE=partial / error) so symbolic-prover fitness reweights, and `print`s one
+  `SYMBOLIC|<file:fn>|<verdict>` marker. **The verdict is Halmos's exit code, NEVER the LLM's opinion** —
+  that is the whole point of the milestone; the LLM's job shrinks to writing the property to check.
+  - `run-symbolic.sh` — operator entrypoint mirroring `run-refute.sh`: drives `symbolic-prover.ag` once per
+    candidate over the substrate from a `file:fn | class | invariant | code-file | spec-fixture` manifest,
+    staging a fresh copy of `--repo` into the rundir (so the sandboxed `exec sh` can write the spec into
+    `test/` and run Halmos there) and threading `SPEC_FIXTURE` when provided. Default backend `flat-cyborg`
+    (consistent with the other `run-*.sh`); `--backend mock` + a fixture is the offline wiring smoke.
+    Collects verdicts into `symbolic-report.md`. A COUNTEREXAMPLE is a CONFIRMED bug but still a **lead** a
+    human reviews; submission stays human-gated and this tool NEVER posts.
+  - `demo-symbolic.sh` — offline-deterministic proof of the FULL candidate → spec → Halmos → verdict loop
+    with a **fixture spec** (no LLM) + **real Halmos**, over two candidates: the honest `transferSafe`
+    invariant Halmos PROVES (→ PROVED / safe) and the same invariant against the buggy `transferBuggy` Halmos
+    REFUTES (→ COUNTEREXAMPLE / confirmed). Reuses the M1 `evm-harness/halmos-specs` contracts; asserts both
+    verdicts and that a re-run is byte-identical (deterministic). Prints `[SKIP]` + exit 0 when
+    `halmos`/`forge`/`agentis` are absent (CI convention, like `demo-halmos.sh`).
+  - New `docs/generate-verify.md` documents the LLM-hypothesizes / Halmos-proves loop, the verdict-source
+    contract (the verdict is the solver's exit code), the offline-fixture vs live-LLM paths, how it composes
+    with M1, and the honest scope: M2 is the **callable** generate-and-verify step; coordinator auto-routing
+    (deciding *when* to spend a symbolic verify and feeding the verdict into the evolving policy) is a later
+    milestone. On the live path, a generated spec that does not compile / imports a missing contract /
+    writes an unbounded loop returns **INCONCLUSIVE** (the safe failure mode, never a false PROVED), so
+    INCONCLUSIVE is the honest common case for an un-reviewed live spec; the fixture path reaches a sound
+    PROVED / COUNTEREXAMPLE today. `README.md` updated (run-symbolic.sh in the verification flow + layout).
+    **Requires:** halmos >= 0.3 + foundry (forge) for a real verify; both optional for the rest of the
+    federation.
 - **Halmos symbolic-execution verification gate — a SOUND oracle that PROVES an invariant or returns a
   concrete counterexample, exhaustive over all inputs** (#1015 M1). New `evm-harness/halmos-verify.sh` runs
   [Halmos](https://github.com/a16z/halmos) (symbolic execution + the z3 SMT solver) over a `*.t.sol` spec

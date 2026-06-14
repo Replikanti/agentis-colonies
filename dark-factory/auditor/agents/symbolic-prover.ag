@@ -1,0 +1,164 @@
+cb 300000;
+// #1015 M2 — substrate-native GENERATE-AND-VERIFY. The LLM is the HYPOTHESIS GENERATOR (it turns ONE
+// candidate finding into a Halmos `*.t.sol` property spec encoding the candidate's invariant against the
+// in-scope contract); HALMOS is the JUDGE (it PROVES the invariant holds for ALL inputs -> the candidate
+// is SAFE / refuted by a proof, or it returns a CONCRETE COUNTEREXAMPLE -> a real bug with a witness).
+// The verdict NEVER comes from the LLM's opinion — it is the exit code of evm-harness/halmos-verify.sh,
+// the SOUND symbolic gate shipped in M1 (a deterministic z3 solver, no sampling). That is the whole point.
+//
+// This composes with M1: M1 shipped the callable gate + example specs + demo-halmos.sh; M2 closes the
+// loop from a candidate to a symbolic verdict by GENERATING the spec the gate runs. It mirrors
+// refuter.ag's per-candidate structure (env-in the candidate, prompt OR fixture, emit/learn the verdict,
+// memo the last_check, print one observable marker) — but where the refuter's verdict is the LLM's
+// hostile read, the symbolic prover's verdict is Halmos's proof.
+//
+// A PROVED here means the candidate's invariant HOLDS exhaustively -> the lead is refuted BY A PROOF (safe).
+// A COUNTEREXAMPLE means Halmos found a concrete input that breaks the invariant -> the bug is CONFIRMED
+// with a replayable witness. INCONCLUSIVE (solver unknown / timeout / loop not fully explored / nothing
+// matched) and a harness error are NOT verdicts. As everywhere in this colony, a CONFIRMED bug is still a
+// LEAD a human reviews; submission stays an explicit, human-gated action and this agent never posts.
+//
+// Env:
+//   CAND_FILE_FN  the candidate location, "path/to/Contract.sol:functionName" (free-form label; the lens).
+//   CAND_CLASS    the bug class id the candidate was filed under, e.g. "C10" (optional; "" if unknown).
+//   CAND_INVARIANT the one-sentence invariant the spec must encode (the property to prove/refute).
+//   SPEC_REPO     absolute path to the foundry project root (must hold foundry.toml) the spec is built in.
+//                 The exec sandbox cannot read $HOME — pass a rundir / /tmp path (run-symbolic.sh stages it).
+//   SPEC_OUT      absolute path the generated `*.t.sol` spec is written to (under SPEC_REPO/test/...).
+//   SPEC_FUNCTION the symbolic-test name prefix halmos-verify runs (default "check" when "").
+//   SPEC_FIXTURE  optional path to a ready-made spec. When set (offline / deterministic path) it is used
+//                 VERBATIM as the spec and NO LLM is called; otherwise the LLM generates the spec (live).
+//   CODE_PATH     optional path to the relevant in-scope code the LLM reads to write the spec; "" to skip.
+// Stdout: exactly one verdict marker line —
+//   SYMBOLIC|<file:fn>|<PROVED|COUNTEREXAMPLE|INCONCLUSIVE|HARNESS_ERROR>
+
+// --- file reader (dynamic path -> safe-exec-concat, per refuter.ag / hunter.ag precedent) ---
+fn cat_file(path: string) -> string {
+    if len(path) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "sed -n '1,4000p' ${path} 2>/dev/null || true";
+}
+
+// Map the SOUND halmos-verify.sh exit code to the colony verdict token. This is the ONLY source of the
+// verdict — the LLM never decides it. The exit contract mirrors evm-harness/halmos-verify.sh exactly:
+//   0 -> PROVED         (invariant holds for ALL inputs -> candidate SAFE / refuted by a proof)
+//   1 -> COUNTEREXAMPLE (a concrete input violates the invariant -> a real bug, CONFIRMED with a witness)
+//   3 -> INCONCLUSIVE   (solver unknown / timeout / loop not fully explored / nothing matched -> no verdict)
+//   else (2, etc.) -> HARNESS_ERROR (bad args / repo not a foundry project / halmos|forge missing)
+fn verdict_of(rc: int) -> string {
+    if rc == 0 { return "PROVED"; }
+    if rc == 1 { return "COUNTEREXAMPLE"; }
+    if rc == 3 { return "INCONCLUSIVE"; }
+    return "HARNESS_ERROR";
+}
+
+// learn() outcome must be one of the runtime enum {success,failure,partial,timeout,error}. A
+// COUNTEREXAMPLE is a confirmed bug (the highest-value outcome the loop can produce) = success; a PROVED
+// safely refutes the lead = failure (it consumed the hypothesis without yielding a finding, like a
+// rigorous SAFE in hunter.ag); INCONCLUSIVE = partial (the solver could not decide); a harness error =
+// error. No reassignment of a `let` (single-assignment .ag).
+fn outcome_of(verdict: string) -> string {
+    if verdict == "COUNTEREXAMPLE" { return "success"; }
+    if verdict == "PROVED" { return "failure"; }
+    if verdict == "INCONCLUSIVE" { return "partial"; }
+    return "error";
+}
+
+// Parse the `__rc=<n>` marker halmos-verify is wrapped to print as its LAST line (the auditor.ag exec
+// convention). regex_capture(pattern, input, group) returns the captured digits; parse_int is total
+// (non-numeric -> 0). A missing marker would wrongly read as 0/PROVED, so a "no marker" case is forced to
+// a harness error (2). (pattern-evolver.ag uses the same regex_capture(pattern, out, 1) idiom.)
+fn rc_of(out: string) -> int {
+    if index_of(out, "__rc=") < 0 { return 2; }
+    return parse_int(regex_capture("__rc=([0-9]+)", out, 1));
+}
+
+let candFn = getenv("CAND_FILE_FN");
+let candClass = getenv("CAND_CLASS");
+let candInvariant = getenv("CAND_INVARIANT");
+let specRepo = getenv("SPEC_REPO");
+let specOut = getenv("SPEC_OUT");
+// halmos-verify.sh's own default function prefix is `check`; default to it when SPEC_FUNCTION is unset.
+fn fn_prefix(raw: string) -> string {
+    if len(raw) == 0 { return "check"; }
+    return raw;
+}
+let specFn = fn_prefix(getenv("SPEC_FUNCTION"));
+let fixturePath = getenv("SPEC_FIXTURE");
+let code = cat_file(getenv("CODE_PATH"));
+
+// --- GENERATE the spec ---------------------------------------------------------------------------
+// Offline / deterministic path: a SPEC_FIXTURE is a ready-made spec used VERBATIM, no LLM. This is the
+// path demo-symbolic.sh and a `--backend mock` wiring smoke take, so the candidate->halmos->verdict loop
+// is provable with zero LLM cost and a real solver. The fixture is read through the sandboxed reader.
+let fixture = cat_file(fixturePath);
+
+// Live path: the LLM is the HYPOTHESIS GENERATOR. It reads the in-scope code + the claimed invariant and
+// emits a self-contained Halmos `*.t.sol` spec whose `check_*` function asserts the invariant over
+// SYMBOLIC inputs. The verdict is STILL Halmos's (below) — the LLM only writes the property to check.
+// This is the live cold path (one candidate in, one spec out); there is no per-tick staleness to gate, so
+// it carries an explicit prompt-gate-ok marker (this agent is also outside the prompt-gate scan scope —
+// auditor/agents/, like refuter.ag — but the marker documents the intent).
+fn generate_spec(invariant: string, klass: string, src: string, fnPrefix: string) -> string {
+    let instruction =
+        "You are a formal-verification engineer. Write a self-contained Halmos `*.t.sol` property spec "
+      + "(Solidity, `pragma solidity >=0.8.0;`) that encodes the INVARIANT below against the in-scope "
+      + "contract and lets Halmos (symbolic execution + z3) PROVE it or REFUTE it with a concrete "
+      + "counterexample. Requirements:\n"
+      + "  - Declare exactly the in-scope contract(s) the spec needs (inline a minimal copy, OR import from "
+      + "`../src/...` if the project already ships it — prefer inlining so the spec is self-contained).\n"
+      + "  - Add a test contract with a `setUp()` and ONE symbolic-test function whose name starts with `"
+      + fnPrefix + "` and that takes the symbolic inputs as arguments and `assert`s the invariant directly.\n"
+      + "  - Use SMALL bit-widths (uint8/uint16) for symbolic inputs so the solver returns a sound verdict "
+      + "quickly. No external libs (no forge-std). No fuzz cheatcodes — pure symbolic asserts.\n\n"
+      + "=== BUG CLASS (lens) ===\n" + klass + "\n\n"
+      + "=== THE INVARIANT THE SPEC MUST ENCODE ===\n" + invariant + "\n\n"
+      + "=== HOW TO ANSWER ===\n"
+      + "Output ONLY the Solidity source of the `*.t.sol` spec — no markdown fences, no prose before or "
+      + "after. The spec must compile and define at least one `contract` and one `" + fnPrefix + "*` function.";
+    // colony-lint: prompt-gate-ok
+    return prompt(instruction, src) -> string;
+}
+
+// Single-assignment .ag: pick the spec source ONCE (no `let` reassignment). A non-empty SPEC_FIXTURE wins
+// (offline/deterministic, verbatim, no LLM); otherwise the LLM generates it (live cold path).
+let usedFixture = len(fixture) > 0;
+fn choose_spec(usedFix: bool, fix: string, inv: string, klass: string, src: string, fnPrefix: string) -> string {
+    if usedFix { return fix; }
+    return generate_spec(inv, klass, src, fnPrefix);
+}
+let spec = choose_spec(usedFixture, fixture, candInvariant, candClass, code, specFn);
+
+// Write the generated/fixture spec to SPEC_OUT (inside SPEC_REPO/test) so halmos-verify can run it. The
+// spec content is UNTRUSTED — it is either an LLM completion (prompt-injectable by the untrusted candidate
+// code being audited) or an operator fixture — so it MUST go through shell_escape(), never a heredoc (a
+// heredoc body is not escaped: a spec line equal to the sentinel would terminate it early and the rest
+// would execute as shell). printf '%s' on a shell_escape()d single-quoted literal cannot be escaped by any
+// content (no shell metachar survives single-quoting), so the spec is written verbatim with zero injection.
+let wrote = exec sh "printf '%s' " + shell_escape(spec) + " > " + shell_escape(specOut) + "; echo __wrote=$?";
+
+// --- VERIFY with the SOUND M1 gate --------------------------------------------------------------
+// Run evm-harness/halmos-verify.sh against the just-written spec and capture its exit code via the
+// `__rc=$?` marker convention (auditor.ag). `set +e` so halmos-verify's non-zero verdict exit (1/3/2)
+// does not abort the shell before the marker is printed. The verdict is THIS exit code — nothing else.
+let gate = getenv("HALMOS_VERIFY");
+// colony-lint: safe-exec-concat
+let runOut = exec sh "set +e; sh ${gate} --repo ${specRepo} --target ${specOut} --function ${specFn} 2>&1; echo __rc=$?";
+
+let rc = rc_of(runOut);
+let verdict = verdict_of(rc);
+
+// --- EMIT the SOUND verdict ----------------------------------------------------------------------
+// Surface the marker (stdout, parsed by run-symbolic.sh), record it on the bus, and learn() the
+// attribution so symbolic-prover fitness reweights over candidates (COUNTEREXAMPLE=success, PROVED=failure,
+// INCONCLUSIVE=partial, harness=error). memo_write the last_check per the agent convention.
+print("SYMBOLIC|" + candFn + "|" + verdict);
+let outcome = outcome_of(verdict);
+fn gen_mode(usedFix: bool) -> string {
+    if usedFix { return "fixture"; }
+    return "llm";
+}
+let genMode = gen_mode(usedFixture);
+emit("dark-factory:symbolic_verdict", "{\"candidate\":\"" + candFn + "\",\"class\":\"" + candClass + "\",\"verdict\":\"" + verdict + "\",\"gen\":\"" + genMode + "\",\"outcome\":\"" + outcome + "\"}");
+learn("symbolic-prove", candClass + ":" + candFn, "symbolic generate-and-verify of " + candFn + " (" + candClass + ") -> " + verdict, outcome, [candClass, verdict, outcome]);
+memo_write("symbolic-prover:last_check", "done");
