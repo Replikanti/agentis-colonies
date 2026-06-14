@@ -157,6 +157,22 @@ dark-factory/evm-harness/forge-verify.sh --repo "$PWD/target" --poc "$PWD/Exploi
 # exit 0 = VERIFIED (the exploit PoC passes); only a VERIFIED lead is worth a human-gated submission.
 ```
 
+For invariant-shaped leads there is a second, **sound** gate alongside the execution one:
+[`evm-harness/halmos-verify.sh`](./evm-harness/halmos-verify.sh) (#1015) runs
+[Halmos](https://github.com/a16z/halmos) (symbolic execution + z3) over a `*.t.sol` spec and either
+**PROVES** the invariant holds for every input or returns a **concrete counterexample**:
+
+```bash
+dark-factory/evm-harness/halmos-verify.sh --repo "$PWD/target" --target test/Spec.t.sol
+# exit 0 = PROVED (holds for ALL inputs) ; 1 = COUNTEREXAMPLE (a concrete input is a real bug) ;
+#   3 = INCONCLUSIVE (solver unknown / timeout) ; 2 = harness/usage (tools missing, bad args).
+# Offline demo + verdict contract: `dark-factory/demo-halmos.sh`, `docs/halmos.md`.
+```
+
+`forge-verify.sh` witnesses one concrete exploit path; `halmos-verify.sh` decides the property over all
+inputs. They are complementary — see [`docs/halmos.md`](./docs/halmos.md) for the verdict/exit contract,
+toolchain install, and how the gate fits the epic (the LLM hypothesizes; Halmos is the sound verdict).
+
 A clean sweep (no candidate survives) is a **rigorous negative** — a valid outcome on audited code;
 nothing is submitted. As with `run-audit.sh`, the colony never posts to a platform.
 
@@ -379,6 +395,7 @@ dark-factory/
   state-export.sh               # export/verify/import a trained federation's evolved state (checksum-verified)
   gen-agent.sh                  # materialise a colony-lint-valid .ag agent from an invented METHOD line (#1000)
   demo-blackboard.sh            # offline, deterministic demo of the #1001 blackboard coordination loop
+  demo-halmos.sh                # proof of the #1015 Halmos symbolic gate (PROVED + COUNTEREXAMPLE; SKIPs without the toolchain)
   setup-solana-toolchain.sh     # one-time offline toolchain build (network ON)
   snapshot-rpc.sh               # host RPC getAccountInfo -> frozen on-chain snapshot (V4)
   calibrate-sealevel.sh         # detection+validation scorecard over the sealevel corpus (V6)
@@ -405,6 +422,9 @@ dark-factory/
   solana-harness-anchor/        # offline anchor-lang 0.31 harness (real SVM, Anchor) (V6)
   evm-harness/                  # offline revm crate: two-sided EVM PoC (real EVM, Solidity)
     forge-verify.sh             # multi-contract custom-protocol PoC gate (real Foundry deploy+exploit)
+    halmos-verify.sh            # sound symbolic gate: PROVES an invariant or returns a counterexample (Halmos+z3; #1015)
+    halmos-specs/               # self-contained Foundry specs: one Halmos PROVES, one it REFUTES (demo fixtures)
+  docs/halmos.md                # the Halmos gate's verdict/exit contract, toolchain install, epic fit (#1015)
   sealevel/                     # modernized coral-xyz/sealevel-attacks lessons (corpus) (V6)
   fixtures/                     # detection fixtures (vuln + safe + rigged-harness cases)
 ```

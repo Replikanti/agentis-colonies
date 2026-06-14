@@ -1,0 +1,9 @@
+# Minimal Foundry project for the Halmos symbolic-execution gate's example specs.
+# Self-contained: no external libs (no forge-std), so `forge build` / `halmos`
+# resolve everything from `src` + `test` alone. The specs use small bit-widths
+# so Halmos returns a sound verdict in a couple of seconds.
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+test = "test"
