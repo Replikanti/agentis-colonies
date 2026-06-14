@@ -16,6 +16,40 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **The self-orchestrating coordinator ROUTES a candidate to the SOUND symbolic engine — a new
+  `symbolic-prove` action** (#1015 M3). M2 shipped the *callable* generate-and-verify step; M3 wires it into
+  the #1014 self-orchestrating coordinator so the federation can **DECIDE** to route a pending candidate
+  through the sound symbolic engine, with the verdict weighted into its evolving policy.
+  - `auditor/agents/coordinator.ag` — new `symbolic-prove` action in the VERIFY tier (alongside
+    `refute`/`poc-screen`): `is_action` accepts it, a new `score_symbolic(policy)` scores it at **base 96**
+    (below `refute`(100) and `poc-screen`(98) — routing through the symbolic engine is the most expensive
+    verify, so the cheaper verifies go first by default), with the **steepest policy term in the tier** (×4)
+    so the colony can **learn** to lift it above either; a pending candidate still outranks any fresh hunt.
+    It operates on the first pending candidate (args = the candidate id, like refute/poc-screen) and consumes
+    it from `PENDING`. The in-substrate orchestrate loop carries a 5th policy int (field 19) + seen flag
+    (field 20) for `symbolic-prove`, appended **after** the existing fields so positions 0–18 are unchanged.
+    A new `SYM_POLICY_TT` env fact (ten-thousandths) seeds the loop's initial `symbolic-prove` policy so the
+    coordinator can choose it from step 0. **With `ORCHESTRATE_ENABLED` absent the single-decision path is
+    BYTE-IDENTICAL to before** (verified against `origin/main` on the `demo-coordinator.sh` fact-states — the
+    new action never wins any of those states since `refute` outranks it without a seeded policy).
+  - **The verdict→outcome mapping (the epic's thesis):** the SOUND symbolic verdict maps to the coordinator's
+    gate-outcome enum **COUNTEREXAMPLE → confirmed** (a real bug with a concrete witness),
+    **PROVED → refuted** (the lead is killed *by a proof*, safe), **INCONCLUSIVE → dry**. So the
+    confirmed/refuted policy signal the coordinator evolves on now comes from a **sound engine, never an LLM
+    opinion**. `auditor/agents/dispatcher.ag` documents the mapping prominently and routes `symbolic-prove`
+    to `run-symbolic.sh` on the honest live stub; on the offline path the `DISPATCH_FIXTURE` carries the
+    already-mapped outcome (`symbolic-prove|cand*=confirmed` = a COUNTEREXAMPLE, `=refuted` = a PROVED).
+  - `run-coordinator.sh` — new `--sym-policy <float>` flag seeds the in-substrate loop's `symbolic-prove`
+    policy weight (converted to `SYM_POLICY_TT` ten-thousandths) so an operator can have the coordinator
+    choose the symbolic route; usage/header list the new action; the in-loop-vs-store policy cross-check is
+    skipped when a seed is supplied (the seed is an in-loop offset not written to the experience store).
+  - `demo-symbolic-orchestrate.sh` — offline, deterministic proof: a hunt confirms → pushes a candidate →
+    the coordinator **CHOOSES** `symbolic-prove` for it → the SOUND verdict (via fixture) flows back as the
+    outcome (a COUNTEREXAMPLE run and a PROVED run, asserting the policy moves in **opposite** directions) →
+    the candidate is **consumed** from `PENDING` → the policy **evolves**; deterministic re-run. No real
+    Halmos needed for the orchestration proof (the fixture maps the sound verdict, exactly like every other
+    action's offline path). `docs/generate-verify.md` / `docs/coordinator.md` / `docs/dispatch.md` / `README.md`
+    updated with the action, the score/ordering rationale, and the verdict→outcome mapping.
 - **Generate-and-verify — the LLM HYPOTHESIZES a property, Halmos delivers the SOUND verdict** (#1015 M2).
   M1 shipped the *callable* Halmos gate; M2 closes the loop from a *candidate* to a symbolic verdict by
   **generating the spec** the gate runs. New `auditor/agents/symbolic-prover.ag` is a per-candidate substrate

@@ -135,6 +135,21 @@ fn score_poc(policy: string) -> float {
     return 98.0 + (2.0 * fit_value(policy, "poc-screen"));
 }
 
+// Score a `symbolic-prove` of a pending candidate (#1015 M3). Same VERIFY tier as refute/poc-screen (all
+// three "verify a pending lead" before more hunting), so a pending candidate present still outranks any
+// fresh hunt (base 50-75 — base 96 keeps the hard fact-priority intact). Base 96 — BELOW refute(100) and
+// poc-screen(98): routing a candidate through the SOUND symbolic engine GENERATES a Halmos spec and runs a
+// real z3 solver (run-symbolic.sh / the M1 gate, #1015 M2), the most EXPENSIVE verify, so by DEFAULT the
+// cheaper LLM-read refute and the cheap eval_ag poc-screen are tried first. The policy term (x4, the
+// steepest multiplier in the tier) lets the colony LEARN that the sound verdict pays off and lift
+// symbolic-prove ABOVE poc-screen (at policy >= 0.5) or refute (at policy >= 1.0) — `coordinator:policy:
+// symbolic-prove` is the cumulative experience delta, exactly like the other action types, so the choice is
+// policy-evolvable. Default ordering WITHIN the VERIFY tier: refute(100) > poc-screen(98) > symbolic-prove(96);
+// the policy re-sorts within it as the engine earns its keep.
+fn score_symbolic(policy: string) -> float {
+    return 96.0 + (4.0 * fit_value(policy, "symbolic-prove"));
+}
+
 // Score hunting a `subsystem|class` cell. Base 50; +20 if a sibling already posted a lead for this
 // subsystem on the blackboard (corroborate a fresh lead), + the lens fitness (a higher-fitness class is
 // preferred) + the hunt policy weight. So a board-matched hunt always beats an unmatched one of equal
@@ -280,10 +295,13 @@ fn is_verdict(v: string) -> bool {
 }
 
 // Is `t` a real (dispatchable) action type? `stop` is terminal and never dispatched. Leaf compares.
+// `symbolic-prove` (#1015 M3) routes a pending candidate through the SOUND symbolic engine; it is a real
+// verify action and so is dispatched like refute/poc-screen.
 fn is_action(t: string) -> bool {
     if t == "hunt" { return true; }
     if t == "refute" { return true; }
     if t == "poc-screen" { return true; }
+    if t == "symbolic-prove" { return true; }
     if t == "invent-method" { return true; }
     return false;
 }
@@ -307,7 +325,7 @@ fn action_outcome(atype: string, args: string) -> string {
             return "dry";
         }
     }
-    print("coordinator: LIVE " + atype + " of '" + args + "' needs its real wiring (hunt: TARGET_DIR/IN_SCOPE/SCOPE_BRIEF/TAXONOMY/SLICER per run-discovery.sh/hunter.ag; refute->run-refute.sh; poc-screen->screen-leads.sh; invent-method->run-method-discovery.sh); set DISPATCH_FIXTURE for the offline-deterministic path. No real action attempted.");
+    print("coordinator: LIVE " + atype + " of '" + args + "' needs its real wiring (hunt: TARGET_DIR/IN_SCOPE/SCOPE_BRIEF/TAXONOMY/SLICER per run-discovery.sh/hunter.ag; refute->run-refute.sh; poc-screen->screen-leads.sh; symbolic-prove->run-symbolic.sh; invent-method->run-method-discovery.sh); set DISPATCH_FIXTURE for the offline-deterministic path. No real action attempted.");
     return "dry";
 }
 
@@ -361,10 +379,21 @@ fn decide_once(scope: string, classFit: string, policy: string, pending: string,
 
     // --- DECIDE: build the option list, score each from FACTS+POLICY, rank, and let `decide` select the top.
     // `stop` short-circuits the ranking when budget is exhausted or K consecutive dry — a hard fact gate.
-    // The verify tier (pending candidate present): refute and poc-screen of the first pending candidate.
+    // The verify tier (pending candidate present): refute, poc-screen, and symbolic-prove (#1015 M3) of the
+    // first pending candidate — the colony picks the highest-scored of the three (default ordering
+    // refute > poc-screen > symbolic-prove; the evolving policy can re-sort within the tier).
     let pendId = if pendingCount > 0 { cell_subsystem(firstPending) } else { "" };
     let refuteScore = score_refute(policy);
     let pocScore = score_poc(policy);
+    let symScore = score_symbolic(policy);
+    // The winning VERIFY type by argmax of the three (single-assignment; ties resolve to the higher-base
+    // action, so the default ordering refute > poc-screen > symbolic-prove holds with no policy weight). The
+    // matching score is re-derived per-type in `chosenScore` below from the same three scores.
+    let verifyType =
+        if pocScore > refuteScore {
+            if symScore > pocScore { "symbolic-prove" } else { "poc-screen" }
+        }
+        else { if symScore > refuteScore { "symbolic-prove" } else { "refute" } };
 
     // The hunt tier: the single best huntable cell (highest fact+policy score).
     let bestCell = best_hunt(scope, classFit, policy, board);
@@ -382,7 +411,7 @@ fn decide_once(scope: string, classFit: string, policy: string, pending: string,
 
     let chosenType =
         if stopForced { "stop" }
-        else { if pendingCount > 0 { if pocScore > refuteScore { "poc-screen" } else { "refute" } }
+        else { if pendingCount > 0 { verifyType }
         else { if len(huntCell) > 0 { if huntScore >= inventScore { "hunt" } else { "invent-method" } }
         else { "invent-method" } } };
 
@@ -390,14 +419,16 @@ fn decide_once(scope: string, classFit: string, policy: string, pending: string,
         if chosenType == "hunt" { huntCell }
         else { if chosenType == "refute" { pendId }
         else { if chosenType == "poc-screen" { pendId }
-        else { "" } } };
+        else { if chosenType == "symbolic-prove" { pendId }
+        else { "" } } } };
 
     let chosenScore =
         if chosenType == "stop" { 0.0 }
         else { if chosenType == "refute" { refuteScore }
         else { if chosenType == "poc-screen" { pocScore }
+        else { if chosenType == "symbolic-prove" { symScore }
         else { if chosenType == "hunt" { huntScore }
-        else { inventScore } } } };
+        else { inventScore } } } } };
 
     // Substrate-native selection step: present the chosen action as the FIRST (top-ranked) entry of a
     // `decide` option list, with the runner-up next, and let the substrate `decide` builtin make the
@@ -434,6 +465,9 @@ fn decide_once(scope: string, classFit: string, policy: string, pending: string,
         else { if selType == "poc-screen" {
             "pending unverified candidate '" + selArgs + "' -> cheap eval_ag pre-screen first (policy poc-screen="
           + to_string(fit_value(policy, "poc-screen")) + "; " + factSummary + ")" }
+        else { if selType == "symbolic-prove" {
+            "pending unverified candidate '" + selArgs + "' -> route through the SOUND symbolic engine (generate a "
+          + "Halmos spec, z3 judges) (policy symbolic-prove=" + to_string(fit_value(policy, "symbolic-prove")) + "; " + factSummary + ")" }
         else { if selType == "hunt" {
             let bb = if board_has_subsystem(board, cell_subsystem(huntCell)) { "blackboard lead in this subsystem; " } else { "" };
             "hunt highest-scored lens '" + selArgs + "' (" + bb + "lens_fitness="
@@ -442,7 +476,7 @@ fn decide_once(scope: string, classFit: string, policy: string, pending: string,
         else {
             if len(huntCell) == 0 { "no huntable cell remains in scope -> invent a new method to open a fresh lens (" + factSummary + ")" }
             else { "ordinary hunting is not paying off (invent_policy=" + to_string(fit_value(policy, "invent-method"))
-                 + " > best hunt score " + to_string(huntScore) + ") -> invent a new method to open a fresh lens (" + factSummary + ")" } } } } };
+                 + " > best hunt score " + to_string(huntScore) + ") -> invent a new method to open a fresh lens (" + factSummary + ")" } } } } } };
 
     // --- OUTPUT exactly one ACTION line; record the decision on the bus + memo for the dispatcher. -----
     let actionLine = "ACTION|" + selType + "|" + selArgs + "|" + rationale;
@@ -492,8 +526,11 @@ fn decide_once(scope: string, classFit: string, policy: string, pending: string,
 //                 read_policy() (sum of experience `delta`) byte-for-byte: each ±0.15 attribution is ±1500
 //                 ten-thousandths, and fmt4() renders the same `%.4f` Python `read_policy` emits. (We ALSO
 //                 learn() for the durable experience record — the carried ints are the in-loop mirror.)
+//                 The symbolic-prove policy int is field 19 (appended after the #1026 lastAttr field) so the
+//                 existing field positions 0-18 are unchanged.
 //   12 sh,13 si,14 sp,15 sr  per-type "seen" flags ("1"/"0") — read_policy emits only keys that appear in
-//                 the store, sorted; the seen flags reproduce that (a key is omitted until first attributed)
+//                 the store, sorted; the seen flags reproduce that (a key is omitted until first attributed).
+//                 The symbolic-prove "seen" flag is field 20.
 //   16 trace      the accumulating decisions.tsv body (rows joined by `\n`, each a real TSV row)
 //   17 budget0    the ORIGINAL budget (for the BUDGET fact each row reports as the shell's REMAINING)
 //   18 lastAttr   "1" once the carried prevAction has ALREADY been attributed in-loop (so the post-loop FINAL
@@ -502,6 +539,8 @@ fn decide_once(scope: string, classFit: string, policy: string, pending: string,
 //                 and the final block skips it; on budget-exhaustion the last action is never attributed
 //                 in-loop (the next step's decide_once never runs), so it stays "0" and the final block
 //                 attributes it exactly once. Makes attribution IDEMPOTENT: every EXECUTED action counted once.
+//   19 pq         symbolic-prove cumulative policy in TEN-THOUSANDTHS (int), the 5th action type (#1015 M3).
+//   20 sq         symbolic-prove "seen" flag ("1"/"0").
 //
 // POLICY THREADING. decide_once() is fed the formatted carried policy (fields 8-15 -> the `type=delta;...`
 // string read_policy would return), so the in-loop decision ranks options against the SAME evolving policy
@@ -565,18 +604,21 @@ fn state_int(s: string, n: int) -> int {
 }
 
 // Build the `type=delta;...` POLICY string from the carried ints + seen flags — byte-identical to the
-// shell's read_policy(): only SEEN keys, ALPHABETICALLY sorted (hunt < invent-method < poc-screen < refute),
-// each `key=%.4f`, `;`-joined; "" when nothing has been attributed yet.
-fn policy_string(ph: int, pi: int, pp: int, pr: int, sh: bool, si: bool, sp: bool, sr: bool) -> string {
+// shell's read_policy(): only SEEN keys, ALPHABETICALLY sorted (hunt < invent-method < poc-screen < refute
+// < symbolic-prove), each `key=%.4f`, `;`-joined; "" when nothing has been attributed yet. symbolic-prove
+// (#1015 M3) sorts LAST (`r` < `s`), so it appends at the end exactly as Python's `sorted()` orders it.
+fn policy_string(ph: int, pi: int, pp: int, pr: int, pq: int, sh: bool, si: bool, sp: bool, sr: bool, sq: bool) -> string {
     let a = if sh { "hunt=" + fmt4(ph) } else { "" };
     let b = if si { "invent-method=" + fmt4(pi) } else { "" };
     let c = if sp { "poc-screen=" + fmt4(pp) } else { "" };
     let d = if sr { "refute=" + fmt4(pr) } else { "" };
+    let e = if sq { "symbolic-prove=" + fmt4(pq) } else { "" };
     let s1 = a;
     let s2 = if len(b) > 0 { if len(s1) > 0 { s1 + ";" + b } else { b } } else { s1 };
     let s3 = if len(c) > 0 { if len(s2) > 0 { s2 + ";" + c } else { c } } else { s2 };
     let s4 = if len(d) > 0 { if len(s3) > 0 { s3 + ";" + d } else { d } } else { s3 };
-    return s4;
+    let s5 = if len(e) > 0 { if len(s4) > 0 { s4 + ";" + e } else { e } } else { s4 };
+    return s5;
 }
 
 // The ±1500 ten-thousandths delta a `learn()` signal applies (success +0.15, failure -0.15, else 0) — the
@@ -633,10 +675,12 @@ fn step_fn(state: string, stepLabel: string) -> string {
     let srIn = state_int(state, 15) == 1;
     let trace = state_field(state, 16);
     let budget0 = state_int(state, 17);
+    let pqIn = state_int(state, 19);
+    let sqIn = state_int(state, 20) == 1;
 
     // POLICY snapshot used for THIS decision + the trace row (the pre-attribution sum, as the shell's env
     // POLICY is read before the call's learn() write).
-    let policyStr = policy_string(phIn, piIn, ppIn, prIn, shIn, siIn, spIn, srIn);
+    let policyStr = policy_string(phIn, piIn, ppIn, prIn, pqIn, shIn, siIn, spIn, srIn, sqIn);
 
     // Apply the PREVIOUS action's attribution to the carried ints (the shell's read_policy at the NEXT step
     // reflects it). decide_once() ALSO learn()s it for the durable record.
@@ -646,11 +690,13 @@ fn step_fn(state: string, stepLabel: string) -> string {
     let pi = if prevAction == "invent-method" { piIn + d } else { piIn };
     let pp = if prevAction == "poc-screen" { ppIn + d } else { ppIn };
     let pr = if prevAction == "refute" { prIn + d } else { prIn };
+    let pq = if prevAction == "symbolic-prove" { pqIn + d } else { pqIn };
     let didAttr = if len(prevAction) > 0 { len(sig) > 0 } else { false };
     let sh = if didAttr { if prevAction == "hunt" { true } else { shIn } } else { shIn };
     let si = if didAttr { if prevAction == "invent-method" { true } else { siIn } } else { siIn };
     let sp = if didAttr { if prevAction == "poc-screen" { true } else { spIn } } else { spIn };
     let sr = if didAttr { if prevAction == "refute" { true } else { srIn } } else { srIn };
+    let sq = if didAttr { if prevAction == "symbolic-prove" { true } else { sqIn } } else { sqIn };
 
     // ONE decision + in-substrate dispatch on the CARRIED facts (board re-read fresh, like the shell).
     let dryCap = if len(getenv("DRY_CAP")) == 0 { 3 } else { parse_int(getenv("DRY_CAP")) };
@@ -682,7 +728,8 @@ fn step_fn(state: string, stepLabel: string) -> string {
              + "@@F@@" + prevAction + "@@F@@" + prevKey + "@@F@@" + lastOutcome + "@@F@@" + pending
              + "@@F@@" + to_string(ph) + "@@F@@" + to_string(pi) + "@@F@@" + to_string(pp) + "@@F@@" + to_string(pr)
              + "@@F@@" + bool_flag(sh) + "@@F@@" + bool_flag(si) + "@@F@@" + bool_flag(sp) + "@@F@@" + bool_flag(sr)
-             + "@@F@@" + trace2 + "@@F@@" + to_string(budget0) + "@@F@@" + bool_flag(didAttr);
+             + "@@F@@" + trace2 + "@@F@@" + to_string(budget0) + "@@F@@" + bool_flag(didAttr)
+             + "@@F@@" + to_string(pq) + "@@F@@" + bool_flag(sq);
     }
 
     // Read the dispatch verdict back (decide_once already ran dispatch() in-process, writing the memo).
@@ -690,13 +737,14 @@ fn step_fn(state: string, stepLabel: string) -> string {
     let rawVerdict = tail_field(memoOutcome);
     let outcome = if is_verdict(rawVerdict) { rawVerdict } else { "dry" };
 
-    // Update PENDING from the outcome (the shell's case): a confirmed hunt pushes a candidate; refute/poc
-    // consume the first pending candidate.
+    // Update PENDING from the outcome (the shell's case): a confirmed hunt pushes a candidate; refute /
+    // poc-screen / symbolic-prove (#1015 M3) consume the first pending candidate (the one they verified).
     let pending2 =
         if selType == "hunt" { if outcome == "confirmed" { pending_push(pending, "cand-" + to_string(step) + "|" + selArgs) } else { pending } }
         else { if selType == "refute" { pending_pop(pending) }
         else { if selType == "poc-screen" { pending_pop(pending) }
-        else { pending } } };
+        else { if selType == "symbolic-prove" { pending_pop(pending) }
+        else { pending } } } };
 
     let dryStreak2 = if outcome == "confirmed" { 0 } else { dryStreak + 1 };
     let budget2 = budget - 1;
@@ -713,7 +761,8 @@ fn step_fn(state: string, stepLabel: string) -> string {
          + "@@F@@" + selType + "@@F@@" + selArgs + "@@F@@" + outcome + "@@F@@" + pending2
          + "@@F@@" + to_string(ph) + "@@F@@" + to_string(pi) + "@@F@@" + to_string(pp) + "@@F@@" + to_string(pr)
          + "@@F@@" + bool_flag(sh) + "@@F@@" + bool_flag(si) + "@@F@@" + bool_flag(sp) + "@@F@@" + bool_flag(sr)
-         + "@@F@@" + trace2 + "@@F@@" + to_string(budget0) + "@@F@@0";
+         + "@@F@@" + trace2 + "@@F@@" + to_string(budget0) + "@@F@@0"
+         + "@@F@@" + to_string(pq) + "@@F@@" + bool_flag(sq);
 }
 
 // === TOP LEVEL ===
@@ -725,10 +774,22 @@ if len(getenv("ORCHESTRATE_ENABLED")) > 0 {
     // a non-default cap arrives via DRY_CAP. BUDGET is the loop bound.
     let budget0 = if len(getenv("BUDGET")) == 0 { 0 } else { parse_int(getenv("BUDGET")) };
     let initPending = getenv("PENDING");
+    // SEED the loop's INITIAL symbolic-prove policy (field 19) from the integer env fact SYM_POLICY_TT, in
+    // ten-thousandths (the loop's internal policy unit — e.g. 15000 = +1.5). This lets a bootstrap pre-tilt
+    // the policy toward the SOUND symbolic engine BEFORE the loop has accumulated experience, so an operator
+    // (or the orchestration demo) can have the loop CHOOSE symbolic-prove from step 0. A ten-thousandths INT
+    // is used (not the float POLICY fact) because agentis offers no float->int builtin (parse_int rejects a
+    // decimal). Only the symbolic-prove component is seeded; the other four policy ints stay 0 (the existing
+    // M3 golden relies on hunt/refute starting cold), so the demo-orchestrate golden trace is unaffected. A
+    // non-zero seed also lights the "seen" flag (field 20) so the seeded weight renders in the policy string.
+    let symSeed = if len(getenv("SYM_POLICY_TT")) == 0 { 0 } else { parse_int(getenv("SYM_POLICY_TT")) };
+    let symSeen = if symSeed == 0 { "0" } else { "1" };
     // initial accumulator: nothing attributed yet (all ints 0, all seen "0"), no prev, empty trace, field 18
-    // lastAttr "0" (no prev action to have attributed).
+    // lastAttr "0" (no prev action to have attributed), field 19 symbolic-prove policy int (the seed), field
+    // 20 seen ("1" iff the seed is non-zero).
     let init = "0@@F@@" + to_string(budget0) + "@@F@@0@@F@@0@@F@@@@F@@@@F@@@@F@@" + initPending
-             + "@@F@@0@@F@@0@@F@@0@@F@@0@@F@@0@@F@@0@@F@@0@@F@@0@@F@@@@F@@" + to_string(budget0) + "@@F@@0";
+             + "@@F@@0@@F@@0@@F@@0@@F@@0@@F@@0@@F@@0@@F@@0@@F@@0@@F@@@@F@@" + to_string(budget0) + "@@F@@0"
+             + "@@F@@" + to_string(symSeed) + "@@F@@" + symSeen;
     let finalState = reduce(regex_split("\n", getenv("STEPS")),
                             |acc: string, s: string| -> string { return step_fn(acc, s); }, init);
 
@@ -755,15 +816,17 @@ if len(getenv("ORCHESTRATE_ENABLED")) > 0 {
     let fpi = state_int(finalState, 9) + (if fPrevAction == "invent-method" { fd } else { 0 });
     let fpp = state_int(finalState, 10) + (if fPrevAction == "poc-screen" { fd } else { 0 });
     let fpr = state_int(finalState, 11) + (if fPrevAction == "refute" { fd } else { 0 });
+    let fpq = state_int(finalState, 19) + (if fPrevAction == "symbolic-prove" { fd } else { 0 });
     let fsh = if state_int(finalState, 12) == 1 { true } else { if fAttribute { fPrevAction == "hunt" } else { false } };
     let fsi = if state_int(finalState, 13) == 1 { true } else { if fAttribute { fPrevAction == "invent-method" } else { false } };
     let fsp = if state_int(finalState, 14) == 1 { true } else { if fAttribute { fPrevAction == "poc-screen" } else { false } };
     let fsr = if state_int(finalState, 15) == 1 { true } else { if fAttribute { fPrevAction == "refute" } else { false } };
+    let fsq = if state_int(finalState, 20) == 1 { true } else { if fAttribute { fPrevAction == "symbolic-prove" } else { false } };
 
     // Publish the trace + the evolved policy to durable memos the bootstrap reads back (the cross-process
     // channel). The trace is the full decisions.tsv body; policy-after is the read_policy()-shaped string.
     memo_write("coordinator:trace", state_field(finalState, 16));
-    memo_write("coordinator:policy_after", policy_string(fph, fpi, fpp, fpr, fsh, fsi, fsp, fsr));
+    memo_write("coordinator:policy_after", policy_string(fph, fpi, fpp, fpr, fpq, fsh, fsi, fsp, fsr, fsq));
     print("ORCHESTRATE|done|steps=" + to_string(state_int(finalState, 3)));
 } else {
     // SINGLE DECISION (v1, byte-identical): read facts from env, run ONE decide_once(). The board is read

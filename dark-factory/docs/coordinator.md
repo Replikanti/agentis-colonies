@@ -46,12 +46,21 @@ trace/policy memos back. The data flow is unchanged — only the driver moved in
      forge-verify / the refuter / the screen, *not* an LLM call).
 
 2. **Decide.** It enumerates the ACTION OPTIONS — `hunt|<subsystem>|<class>`, `refute|<candidate>`,
-   `poc-screen|<candidate>`, `invent-method`, `stop` — **scores** each from the facts and the policy, and
-   picks the **argmax** (a policy-weighted ranking). The fact-criteria are explicit:
-   - a pending unverified candidate ⇒ **verify** it (refute / poc-screen) before more hunting;
+   `poc-screen|<candidate>`, `symbolic-prove|<candidate>`, `invent-method`, `stop` — **scores** each from the
+   facts and the policy, and picks the **argmax** (a policy-weighted ranking). The fact-criteria are explicit:
+   - a pending unverified candidate ⇒ **verify** it (refute / poc-screen / symbolic-prove) before more hunting;
    - a fresh blackboard lead in a subsystem ⇒ prefer **hunting that subsystem**;
    - a higher-fitness lens ⇒ prefer it;
    - budget exhausted **or** *K* consecutive dry ⇒ **stop** (a hard fact gate).
+
+   `symbolic-prove` (#1015 M3) routes the pending candidate through the **SOUND symbolic engine**
+   (`run-symbolic.sh` / Halmos + z3 — see [`docs/generate-verify.md`](./generate-verify.md)); its verdict
+   maps **COUNTEREXAMPLE → confirmed**, **PROVED → refuted**, **INCONCLUSIVE → dry**, so the confirmed/refuted
+   policy signal comes from a sound proof, never an LLM opinion. It sits in the **VERIFY tier** with `refute`
+   and `poc-screen`: default scores `refute`(100) > `poc-screen`(98) > `symbolic-prove`(96) — the symbolic
+   route is the most expensive verify (generate a spec + run z3), so the cheaper ones go first by default —
+   but its policy term (the steepest in the tier, ×4) lets the colony **learn** the sound verdict pays off and
+   lift it above either. All three keep a pending candidate ahead of any fresh hunt.
 
    It then calls the substrate **`decide(options, criteria)`** builtin on the already-fact-ranked list as
    the selection step. See [`decide` vs argmax](#decide-vs-policy-weighted-argmax).

@@ -6,7 +6,8 @@
 # per-class lens fitness, the shared blackboard, pending unverified candidates, remaining budget, the
 # previous action's gate OUTCOME) and the evolving POLICY, and emits exactly one
 #   ACTION|<type>|<args>|<rationale citing the facts>
-# line (type in {hunt, refute, poc-screen, invent-method, stop}). This loop then DISPATCHES that action,
+# line (type in {hunt, refute, poc-screen, symbolic-prove, invent-method, stop}). This loop then DISPATCHES
+# that action,
 # captures its OUTCOME (a FACT from a gate, never an LLM judgement), feeds the outcome back, and repeats
 # until the coordinator says `stop` or the step budget is spent. The DECISION + its evolution are the
 # coordinator's; the loop only executes the chosen action and carries state between steps.
@@ -18,7 +19,7 @@
 #
 # #1014 M2 — EVERY action's DISPATCH is now in the substrate. The coordinator no longer just DECIDES; when
 # DISPATCH_ENABLED is set it also DISPATCHES the chosen action: for ANY real action (hunt / refute /
-# poc-screen / invent-method) coordinator.ag emits `dark-factory:dispatch` and runs dispatch()
+# poc-screen / symbolic-prove / invent-method) coordinator.ag emits `dark-factory:dispatch` and runs dispatch()
 # (auditor/agents/dispatcher.ag's fn, inlined gated in coordinator.ag) in the SAME `agentis go`, deriving
 # the gate verdict from DISPATCH_FIXTURE and writing it to the durable `coordinator:last_outcome` memo.
 # This loop READS that memo for every non-`stop` action's outcome (the emit/listen bus is in-process only;
@@ -39,8 +40,10 @@
 #   --executor real   (default) EVERY action is dispatched IN the substrate (coordinator.ag's dispatch()).
 #                     With no DISPATCH_FIXTURE the agent takes its live honest per-type stub path, which
 #                     names the real wiring each action still needs (hunt: TARGET_DIR/IN_SCOPE/...;
-#                     refute->run-refute.sh; poc-screen->screen-leads.sh; invent-method->run-method-
-#                     discovery.sh) and returns a benign `dry` — it does NOT attempt a real action. This
+#                     refute->run-refute.sh; poc-screen->screen-leads.sh; symbolic-prove->run-symbolic.sh
+#                     (SOUND verdict: COUNTEREXAMPLE->confirmed, PROVED->refuted, INCONCLUSIVE->dry);
+#                     invent-method->run-method-discovery.sh) and returns a benign `dry` — it does NOT
+#                     attempt a real action. This
 #                     mode is the integration surface for a live audit and needs a reasoning backend
 #                     (--backend flat-cyborg, flat-rate default; or --backend claude, metered) for the
 #                     agents to actually reason. (The decision is still offline-deterministic.)
@@ -52,8 +55,8 @@
 #
 # Usage:
 #   run-coordinator.sh --scope <file> [--class-fitness <file>] [--budget N] [--dry-cap K]
-#                      [--executor real|stub] [--fixture <f>] [--backend mock|flat-cyborg|claude]
-#                      [--out <dir>] [--agentis <bin>]
+#                      [--executor real|stub] [--fixture <f>] [--sym-policy <float>]
+#                      [--backend mock|flat-cyborg|claude] [--out <dir>] [--agentis <bin>]
 #
 # Scope manifest (one huntable cell per line; `#` and blank lines ignored), pipe-delimited:
 #   <subsystem label> | <class id>          e.g.  vault accounting | C1
@@ -61,9 +64,17 @@
 #   <class id> | <fitness float>            e.g.  C1 | 0.45
 # Fixture (stub mode; one rule per line, first match wins; `*` glob on args):
 #   <action-type> | <args-glob> | <confirmed|dry|refuted>   e.g.  hunt | vault* | confirmed
+#   <action-type> is one of {hunt, refute, poc-screen, symbolic-prove, invent-method}. For symbolic-prove
+#   the fixture verdict stands in for the SOUND symbolic engine's mapped outcome (a `symbolic-prove | cand* |
+#   confirmed` rule = a Halmos COUNTEREXAMPLE; `... | refuted` = a PROVED; `... | dry` = INCONCLUSIVE).
 #   NB: the rule is split on `|`, so <args-glob> must NOT contain a literal `|`. A hunt's args are
 #   `subsystem|class`; match them with a subsystem-prefix glob (`vault*`) whose trailing `*` spans the
 #   `|class` suffix — `vault accounting|C1` would be mis-split (the class read as the outcome field).
+#
+# --sym-policy <float> seeds the in-substrate loop's INITIAL symbolic-prove policy weight (e.g. 1.5), so the
+#   coordinator can CHOOSE to route a pending candidate through the SOUND symbolic engine from step 0. The
+#   default verify ordering is refute > poc-screen > symbolic-prove; a seed >= 1.0 lifts symbolic-prove above
+#   refute. The verdict then comes from the symbolic gate (run-symbolic.sh) — never an LLM opinion.
 #
 # Exit: 0 on a clean run that reached `stop`/budget; 2 on usage error; 3 on missing prerequisite.
 set -uo pipefail
@@ -78,6 +89,7 @@ EXECUTOR="real"
 FIXTURE=""
 BACKEND="mock"
 OUT="$PWD/coordinator-out"
+SYM_POLICY=""
 
 need() { [ "$1" -ge 2 ] || { echo "run-coordinator.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -89,6 +101,7 @@ while [ $# -gt 0 ]; do
     --executor)      need "$#"; EXECUTOR="$2"; shift 2 ;;
     --fixture)       need "$#"; FIXTURE="$2"; shift 2 ;;
     --backend)       need "$#"; BACKEND="$2"; shift 2 ;;
+    --sym-policy)    need "$#"; SYM_POLICY="$2"; shift 2 ;;
     --out)           need "$#"; OUT="$2"; shift 2 ;;
     --agentis)       need "$#"; AGENTIS="$2"; shift 2 ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
@@ -102,6 +115,19 @@ case "$BUDGET"  in (*[!0-9]*|'') echo "run-coordinator.sh: --budget must be a no
 case "$DRY_CAP" in (*[!0-9]*|'') echo "run-coordinator.sh: --dry-cap must be a non-negative integer" >&2; exit 2 ;; esac
 case "$EXECUTOR" in real|stub) : ;; *) echo "run-coordinator.sh: --executor must be real|stub" >&2; exit 2 ;; esac
 [ "$EXECUTOR" = "stub" ] && { [ -n "$FIXTURE" ] || { echo "run-coordinator.sh: --executor stub needs --fixture <f>" >&2; exit 2; }; [ -f "$FIXTURE" ] || { echo "run-coordinator.sh: --fixture not found: $FIXTURE" >&2; exit 2; }; }
+# --sym-policy <float>: SEED the in-substrate loop's initial symbolic-prove policy weight so the coordinator
+# can CHOOSE symbolic-prove from step 0 (default ordering refute > poc-screen > symbolic-prove; a weight
+# >= 1.0 lifts symbolic-prove above refute). Convert the float to the loop's ten-thousandths int SYM_POLICY_TT
+# (agentis has no float->int builtin, so the integer is computed here). "" = no seed (the engine has to earn
+# its weight by outcome).
+SYM_POLICY_TT=""
+if [ -n "$SYM_POLICY" ]; then
+  case "$SYM_POLICY" in (-*[!0-9.]*|*[!0-9.-]*|''|*.*.*) echo "run-coordinator.sh: --sym-policy must be a decimal number (e.g. 1.5 or -0.15)" >&2; exit 2 ;; esac
+  # Require at least one digit so a bare `-`, `.`, or `-.` (which the metachar globs above let through and
+  # awk would silently coerce to 0) is rejected, not treated as a no-op seed.
+  case "$SYM_POLICY" in (*[0-9]*) : ;; (*) echo "run-coordinator.sh: --sym-policy must be a decimal number (e.g. 1.5 or -0.15)" >&2; exit 2 ;; esac
+  SYM_POLICY_TT="$(awk -v v="$SYM_POLICY" 'BEGIN{ printf "%d", (v>=0 ? v*10000+0.5 : v*10000-0.5) }')"
+fi
 # The in-substrate orchestrate loop (coordinator.ag) encodes its carried state as fields joined by the
 # `@@F@@` sentinel; an input cell that literally contains it would corrupt that encoding. Reject it loudly
 # (operator-controlled input; never legitimate in a subsystem label / class id / glob).
@@ -128,7 +154,7 @@ cp "$COORD_AG" "$RUN/coordinator.ag"
   [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p"; echo "llm.cli_timeout_ms = 600000"; }
   [ "$BACKEND" = "flat-cyborg" ] && echo "llm.cli_timeout_ms = 600000"
   echo "trace.level = normal"
-  echo "exec.env_passthrough = SCOPE,CLASS_FITNESS,POLICY,PENDING,BUDGET,DRY_STREAK,DRY_CAP,PREV_ACTION,PREV_KEY,LAST_OUTCOME,DISPATCH_ENABLED,DISPATCH_FIXTURE,HUNT_FIXTURE,ORCHESTRATE_ENABLED,STEPS"
+  echo "exec.env_passthrough = SCOPE,CLASS_FITNESS,POLICY,PENDING,BUDGET,DRY_STREAK,DRY_CAP,PREV_ACTION,PREV_KEY,LAST_OUTCOME,DISPATCH_ENABLED,DISPATCH_FIXTURE,HUNT_FIXTURE,ORCHESTRATE_ENABLED,STEPS,SYM_POLICY_TT"
   echo "exec.default_timeout_ms = 30000"
   # The whole point: every decision is recorded as experience so coordinator:policy:<type> reweights.
   echo "learning.enabled = true"
@@ -235,6 +261,7 @@ RUN_LOG="$RUN/orchestrate.log"
     BUDGET="$BUDGET" \
     DRY_CAP="$DRY_CAP" \
     STEPS="$STEPS" \
+    SYM_POLICY_TT="$SYM_POLICY_TT" \
     ORCHESTRATE_ENABLED=1 \
     DISPATCH_ENABLED=1 \
     DISPATCH_FIXTURE="$DISPATCH_FIXTURE" \
@@ -256,10 +283,14 @@ while IFS= read -r row; do
 done < "$TRACE"
 
 # The evolved policy: prefer the loop's in-process result (memo), cross-checked against the experience-store
-# read_policy() (they are byte-identical by construction — the in-loop threading mirrors the store sum).
+# read_policy() (they are byte-identical by construction — the in-loop threading mirrors the store sum). The
+# cross-check holds ONLY when the loop started cold: --sym-policy seeds the in-loop symbolic-prove weight with
+# an initial offset that is NOT written to the experience store (only the per-outcome ±0.15 learn() deltas
+# are), so a seeded run's in-loop policy intentionally exceeds the store sum by the seed. Skip the equality
+# cross-check when a seed was supplied.
 POLICY_LOOP="$( ( cd "$RUN" && "$AGENTIS" memo get coordinator:policy_after ) 2>/dev/null )"
 POLICY_STORE="$(read_policy)"
-if [ "$POLICY_LOOP" != "$POLICY_STORE" ]; then
+if [ -z "$SYM_POLICY_TT" ] && [ "$POLICY_LOOP" != "$POLICY_STORE" ]; then
   echo "run-coordinator.sh: WARNING in-loop policy [$POLICY_LOOP] != experience-store policy [$POLICY_STORE]" >&2
 fi
 POLICY_AFTER="$POLICY_LOOP"
