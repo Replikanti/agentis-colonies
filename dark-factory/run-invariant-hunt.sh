@@ -38,6 +38,15 @@
 #   --runs N             Forge invariant runs budget (search width). Default: the project's [invariant] config.
 #   --depth D            Forge invariant depth budget (calls per sequence). Default: the project's config.
 #   --seed S             Forge --fuzz-seed for a reproducible search. Default: forge's own seed.
+#   --fork-url <rpc>     FM1 (#1041): an http(s) RPC to FORK from — the handler + deep invariants run against
+#                        FORKED REAL ON-CHAIN STATE (the actual deployed contract) instead of a fresh deploy.
+#                        Threaded into the gate's `--fork-url`; also exported to the prover so the generated
+#                        handler/invariant can reference the deployed contract by address. Absent => no fork
+#                        (byte-identical to today). A fork RPC failure -> HARNESS_ERROR, never a false verdict.
+#   --fork-block <n>     FM1 (#1041): pin the fork to a block number for REPRODUCIBILITY (requires --fork-url).
+#   --fork-target <addr> FM1 (#1041): the deployed contract address the generated test should drive against the
+#                        forked state. Exported as FORK_TARGET so invariant-prover.ag references the LIVE
+#                        deployed contract by address (the proven POC shape). Optional; "" leaves it to the test.
 #   --out <dir>          Output dir for the run + report (default: ./invariant-out).
 #   --pattern-store <dir>  Int M3 (#1037): a PERSISTENT pattern-DAG store reused ACROSS runs. When set, the
 #                        winning-invariant patterns the prover PERSISTS on a FINDING (`invpat:*` memos) are
@@ -53,6 +62,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
 REPO="" ; TARGET="" ; CLASS="" ; FIXTURE="" ; CODE="" ; MATCH="invariant"
 BACKEND="flat-cyborg" ; MODEL="" ; RUNS="" ; DEPTH="" ; SEED="" ; OUT="$PWD/invariant-out" ; PATTERN_STORE=""
+FORK_URL="" ; FORK_BLOCK="" ; FORK_TARGET=""
 
 need() { [ "$1" -ge 2 ] || { echo "run-invariant-hunt.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -68,6 +78,9 @@ while [ $# -gt 0 ]; do
     --runs) need "$#"; RUNS="$2"; shift 2 ;;
     --depth) need "$#"; DEPTH="$2"; shift 2 ;;
     --seed) need "$#"; SEED="$2"; shift 2 ;;
+    --fork-url) need "$#"; FORK_URL="$2"; shift 2 ;;
+    --fork-block) need "$#"; FORK_BLOCK="$2"; shift 2 ;;
+    --fork-target) need "$#"; FORK_TARGET="$2"; shift 2 ;;
     --out) need "$#"; OUT="$2"; shift 2 ;;
     --pattern-store) need "$#"; PATTERN_STORE="$2"; shift 2 ;;
     --agentis) need "$#"; AGENTIS="$2"; shift 2 ;;
@@ -83,6 +96,17 @@ done
 for v in "$RUNS" "$DEPTH" "$SEED"; do
   case "$v" in '') ;; *[!0-9]*) echo "run-invariant-hunt.sh: --runs/--depth/--seed must be whole numbers" >&2; exit 2 ;; esac
 done
+# FM1 (#1041): fork-arg shape validation (mirrors the gate's). --fork-url must look like an http(s) URL,
+# --fork-block a whole number requiring --fork-url. --fork-target is a free-form deployed-address label the
+# generated test references (no on-chain validation here — the gate/forge resolve it on the forked state).
+case "$FORK_URL" in
+  '') ;;
+  http://*|https://*) ;;
+  *) echo "run-invariant-hunt.sh: --fork-url must be an http(s) URL (got: $FORK_URL)" >&2; exit 2 ;;
+esac
+case "$FORK_BLOCK" in '') ;; *[!0-9]*) echo "run-invariant-hunt.sh: --fork-block must be a whole number" >&2; exit 2 ;; esac
+[ -z "$FORK_BLOCK" ] || [ -n "$FORK_URL" ] || { echo "run-invariant-hunt.sh: --fork-block requires --fork-url" >&2; exit 2; }
+[ -z "$FORK_TARGET" ] || [ -n "$FORK_URL" ] || { echo "run-invariant-hunt.sh: --fork-target requires --fork-url (a deployed address is meaningless without a fork)" >&2; exit 2; }
 command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ] || { echo "run-invariant-hunt.sh: agentis binary not found ($AGENTIS)" >&2; exit 3; }
 
 # Resolve operator paths to ABSOLUTE — the colony runs from the rundir (a different cwd) and the exec sandbox
@@ -142,7 +166,9 @@ fi
   [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = 600000"; [ -n "$MODEL" ] && echo "llm.model = $MODEL"; }
   echo "trace.level = normal"
   # The prover reads code + the fixture and writes/runs the test through exec sh; pass its whole env contract.
-  echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_MATCH,HANDLER_FIXTURE,CODE_PATH,INV_RUNS,INV_DEPTH,INV_SEED,FORGE_INVARIANT"
+  # FM1 (#1041): FORK_URL/FORK_BLOCK thread the fork into the gate; FORK_TARGET is the deployed address the
+  # generated handler/invariant references against the forked state.
+  echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_MATCH,HANDLER_FIXTURE,CODE_PATH,INV_RUNS,INV_DEPTH,INV_SEED,FORGE_INVARIANT,FORK_URL,FORK_BLOCK,FORK_TARGET"
   # A forge invariant run (build + a few hundred fuzzed sequences) far exceeds the 10s default.
   echo "exec.default_timeout_ms = 600000"
   # Each verify is recorded as experience; invariant-prover fitness reweights over targets.
@@ -196,6 +222,9 @@ echo "run-invariant-hunt.sh: generating + stateful-fuzzing $TARGET ($CLASS) ..."
     INV_RUNS="$RUNS" \
     INV_DEPTH="$DEPTH" \
     INV_SEED="$SEED" \
+    FORK_URL="$FORK_URL" \
+    FORK_BLOCK="$FORK_BLOCK" \
+    FORK_TARGET="$FORK_TARGET" \
     FORGE_INVARIANT="$RUN/forge-invariant.sh" \
     "$AGENTIS" go invariant-prover.ag --enable-exec --enable-messaging ) >"$CELL_LOG" 2>&1 || \
     echo "run-invariant-hunt.sh: invariant-prover run failed for '$TARGET' (see $CELL_LOG)" >&2

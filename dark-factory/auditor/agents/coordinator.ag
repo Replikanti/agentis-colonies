@@ -409,9 +409,15 @@ fn run_invariant_live(candId: string) -> string {
     let match = inv_match_prefix(cand_fact(candId, "match", "INV_MATCH"));
     let budget = inv_opt_flag("--runs", getenv("INV_RUNS")) + inv_opt_flag("--depth", getenv("INV_DEPTH"))
                + inv_opt_flag("--seed", getenv("INV_SEED"));
+    // FM1 (#1041): in FORK MODE the chosen invariant-hunt runs against FORKED REAL ON-CHAIN STATE. Forward
+    // --fork-url [--fork-block] to the gate (each value shell_escape()d via inv_opt_flag, exactly like the
+    // budget flags). Empty INV_FORK_URL/INV_FORK_BLOCK => "" => the gate command is byte-identical to the
+    // no-fork build (purely additive). A fork RPC failure is the gate's HARNESS_ERROR (2) -> dry, never a
+    // false confirmed/refuted.
+    let fork = inv_opt_flag("--fork-url", getenv("INV_FORK_URL")) + inv_opt_flag("--fork-block", getenv("INV_FORK_BLOCK"));
     // colony-lint: safe-exec-concat
     let runOut = exec sh "set +e; sh " + shell_escape(gate) + " --repo " + shell_escape(repo)
-               + " --target " + shell_escape(target) + " --match " + shell_escape(match) + budget
+               + " --target " + shell_escape(target) + " --match " + shell_escape(match) + budget + fork
                + " 2>&1; echo __rc=$?";
     let rc = sym_rc_of(runOut);
     return sym_outcome_of(rc);

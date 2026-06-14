@@ -382,7 +382,20 @@ prints one `INVARIANT|<target>|<verdict>` line plus, on a FINDING, the **shrunk 
 dark-factory/run-invariant-hunt.sh --repo "$PWD/target" --target Vault.sol:Vault --class C-erc4626
 # offline / cheap wiring smoke (no real LLM): supply --handler-fixture <ready .t.sol> + --backend mock
 # offline-deterministic end-to-end proof (real fuzzer, fixture handler):  dark-factory/demo-invariant-hunt.sh
+# FM1 (#1041) fork mode — fuzz against the REAL deployed contract at a pinned block (RPC is an arg; no key):
+#   --fork-url <http(s)-rpc> [--fork-block <n>] [--fork-target <deployed-addr>]   |   proof: dark-factory/demo-fork-hunt.sh
 ```
+
+**Fork mode (FM1, #1041).** `--fork-url <rpc> [--fork-block <n>]` runs the same handler + deep invariants
+against **forked REAL on-chain state** (the actual deployed contract at a pinned block) instead of a fresh
+deploy — threading forge's own `--fork-url`/`--fork-block-number` into the run. `--fork-target <addr>` tells the
+generated test to drive the **live deployed contract by address** with funded actors (`vm.deal`). **Purely
+additive**: with no `--fork-url` the forge command is byte-identical to today. An unreachable / un-instantiable
+fork RPC is a **`HARNESS_ERROR`, never a false verdict**; the RPC is always an argument (no key hard-coded) and
+the pinned block makes a verdict reproducible. [`demo-fork-hunt.sh`](./demo-fork-hunt.sh) is the foundation
+proof: it forks the REAL deployed WETH at mainnet block `25318855` via a public RPC and asserts the funded
+solvency invariant → `CLEAN` (the machinery ran against real forked state), plus a forced-bad RPC →
+`HARNESS_ERROR`. A `FINDING` against real forked state is a **LEAD a human triages** — this colony never posts.
 
 The verdict is the **fuzzer's exit code, never the LLM's opinion**: `FINDING` = an invariant broke under a
 concrete SHRUNK call-sequence (a CANDIDATE with a reproducible witness), `CLEAN` = every invariant held
@@ -551,6 +564,7 @@ dark-factory/
   demo-autonomous-hunt.sh       # offline-deterministic proof of the Int M1 autonomous hunt (coordinator CHOOSES + LIVE-runs the fuzzer; SKIPs without forge)
   demo-candidate-carry.sh       # Int M2 proof: TWO candidates carry their OWN target via candidate:<id>:* memos, flat env EMPTY -> SPLIT verdict (cand-0|confirmed, cand-1|refuted; SKIPs without forge)
   demo-pattern-memory.sh        # Int M3 proof: a FINDING persists invpat:latest:<class> to the DAG, a same-class target RECALLs + reuses it across runs, invent-method seeds a new class (SKIPs without forge)
+  demo-fork-hunt.sh             # FM1 (#1041) foundation proof: forks the REAL deployed WETH at a pinned mainnet block -> funded-handler solvency invariant CLEAN against real forked state; forced-bad RPC -> HARNESS_ERROR (SKIPs without forge or a reachable public RPC)
   setup-solana-toolchain.sh     # one-time offline toolchain build (network ON)
   snapshot-rpc.sh               # host RPC getAccountInfo -> frozen on-chain snapshot (V4)
   calibrate-sealevel.sh         # detection+validation scorecard over the sealevel corpus (V6)
@@ -584,7 +598,7 @@ dark-factory/
     halmos-specs/               # self-contained Foundry specs: one Halmos PROVES, one it REFUTES (demo fixtures)
   docs/halmos.md                # the Halmos gate's verdict/exit contract, toolchain install, epic fit (#1015)
   docs/generate-verify.md       # the #1015 M2 generate-and-verify loop: LLM hypothesizes, Halmos proves; verdict-source contract
-  docs/invariant-hunt.md        # the #1035 stateful-invariant-fuzzing loop: LLM writes deep invariants, the fuzzer finds the multi-step exploit; verdict-source contract
+  docs/invariant-hunt.md        # the #1035 stateful-invariant-fuzzing loop: LLM writes deep invariants, the fuzzer finds the multi-step exploit; verdict-source contract; FM1 (#1041) fork mode: fuzz against forked REAL on-chain state (--fork-url/--fork-block/FORK_TARGET, RPC-failure->HARNESS_ERROR safety, human-gated boundary)
   docs/autonomous-hunt.md       # the Int M1+M2 (#1037) end-to-end: coordinator CHOOSES (policy) + LIVE-runs the fuzzer; per-candidate context carrying (candidate:<id>:* memos); verdict->outcome mapping; human-gated submit boundary
   sealevel/                     # modernized coral-xyz/sealevel-attacks lessons (corpus) (V6)
   fixtures/                     # detection fixtures (vuln + safe + rigged-harness cases)

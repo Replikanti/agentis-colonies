@@ -45,8 +45,9 @@ judged by the fuzzer), never executed as shell. The test only ever reaches `forg
 |---|---|
 | [`auditor/agents/invariant-prover.ag`](../auditor/agents/invariant-prover.ag) | Per-target substrate agent: GENERATE the test (fixture or `prompt()`), VERIFY it with the fuzzing gate, `emit`/`learn` the verdict, print `INVARIANT\|<target>\|<verdict>` + the shrunk sequence on a FINDING. |
 | [`evm-harness/forge-invariant.sh`](../evm-harness/forge-invariant.sh) | The callable gate: runs Foundry's stateful invariant fuzzer over a `*.t.sol`, parses the JSON, returns FINDING (+ the shrunk sequence) / CLEAN / HARNESS_ERROR. |
-| [`run-invariant-hunt.sh`](../run-invariant-hunt.sh) | Operator entrypoint: drive `invariant-prover.ag` once over the substrate on one target, collect the verdict + any exploit sequence into a report. |
+| [`run-invariant-hunt.sh`](../run-invariant-hunt.sh) | Operator entrypoint: drive `invariant-prover.ag` once over the substrate on one target, collect the verdict + any exploit sequence into a report. Threads `--fork-url`/`--fork-block`/`--fork-target` for FM1 fork mode (#1041). |
 | [`demo-invariant-hunt.sh`](../demo-invariant-hunt.sh) | Offline-deterministic demo: the full target → fixture-handler → REAL Foundry fuzzer → verdict loop, asserting a vulnerable vault → FINDING (with a non-empty shrunk sequence) and a hardened twin → CLEAN. |
+| [`demo-fork-hunt.sh`](../demo-fork-hunt.sh) | FM1 (#1041) foundation proof: forks the REAL deployed WETH at a pinned mainnet block via a public RPC and asserts the funded-handler solvency invariant → CLEAN (the machinery ran against real forked state) + a forced-bad RPC → HARNESS_ERROR. `[SKIP]`s without forge or a reachable RPC. |
 
 It mirrors the per-candidate structure of [`run-symbolic.sh`](../run-symbolic.sh) +
 [`auditor/agents/symbolic-prover.ag`](../auditor/agents/symbolic-prover.ag) — env-in the target, generate,
@@ -100,6 +101,47 @@ ABI Foundry auto-discovers — and asserts with plain `require(...)`, with a pri
 instead of forge-std's `bound`. So it compiles in **any** Foundry project with zero library remappings, which
 is what makes generation tractable across arbitrary targets.
 
+## Fork mode — fuzzing against forked REAL on-chain state (FM1, #1041)
+
+By default the handler **deploys a fresh copy** of the protocol and fuzzes that. The most valuable bugs,
+though, live in the **actual deployed contract** — with its real storage, real balances, real integrations at
+a real block. FM1 adds **fork mode**: the same handler + deep invariants run against **forked real on-chain
+state** (the deployed contract at a pinned block) instead of a fresh deploy.
+
+```
+forge-invariant.sh … --fork-url <http(s)-rpc> [--fork-block <n>]
+        └─ threads forge 1.7.1's own --fork-url <rpc> [--fork-block-number <n>] into `forge test`
+```
+
+- **`--fork-url <rpc>`** (gate + `run-invariant-hunt.sh` + `run-autonomous-hunt.sh`) — an http(s) RPC to fork
+  from. The shape is validated (`http(s)://…`); a non-URL value is a clean usage error, not an opaque forge
+  failure. When set, the handler/invariant run against the forked chain; **when unset the forge command is
+  byte-identical to the no-fork build** (purely additive — every #1035/#1037 demo stays green).
+- **`--fork-block <n>`** — pins the fork to a block number for **reproducibility** (requires `--fork-url`). The
+  proven foundation pins mainnet block `25318855`, where a 512-sequence WETH solvency fuzz passes against the
+  REAL deployed WETH. Mapped to forge's `--fork-block-number`.
+- **`FORK_TARGET=<deployed address>`** (`run-invariant-hunt.sh --fork-target`, exported to the prover) — the
+  deployed contract address the generated test should drive. In fork mode `invariant-prover.ag`'s generation
+  prompt is told *"the target is a LIVE DEPLOYED contract at `<address>` on a forked chain"* and to generate a
+  Handler that drives its **real functions** with bounded inputs and **funded actors** (`vm.deal`), plus a
+  deep invariant checked against the forked state (solvency / no-free-value-extraction / share-price
+  monotonicity). The `HANDLER_FIXTURE` path stays authoritative (the fixture always wins).
+
+**Safety — a fork failure is a non-verdict, never a false one.** An unreachable / rate-limited RPC, or a
+"could not instantiate forked environment", leaves forge with **no parseable result**, so the gate's existing
+no-result path returns **`HARNESS_ERROR` (exit 2)** — never a false `CLEAN`/`FINDING`. This is the FM1 contract
+the [`demo-fork-hunt.sh`](../demo-fork-hunt.sh) demo asserts directly (`--fork-url http://127.0.0.1:1` → exit
+2). **No RPC key is hard-coded** — the RPC is always an argument/env. **Reproducibility** is the pinned block:
+the same `--fork-block` re-creates the same forked state, so a verdict is replayable. And the **human-gated
+boundary** is unchanged: a `FINDING` against forked real state is a **CANDIDATE a human triages** — this colony
+**never auto-submits**.
+
+The foundation proof, [`demo-fork-hunt.sh`](../demo-fork-hunt.sh), forks the REAL deployed WETH
+(`0xC02aaA39…`) at block `25318855` via a public RPC, funds a handler with `vm.deal`, fuzzes its real
+`deposit()`/`withdraw()` over randomized sequences, and asserts the solvency invariant
+(`WETH.totalSupply() <= address(WETH).balance`) holds → **`CLEAN`** (the machinery ran against real forked
+state). It `[SKIP]`s + exits 0 when forge is absent or no public RPC is reachable.
+
 ## Run it
 
 ```bash
@@ -114,6 +156,14 @@ dark-factory/run-invariant-hunt.sh \
 # Live: the LLM writes the handler + deep invariants from the target source, the fuzzer judges
 dark-factory/run-invariant-hunt.sh \
   --repo "$PWD/target" --target Vault.sol:Vault --class C-erc4626 \
+  --backend flat-cyborg --runs 256 --depth 64 --seed 1 --out "$PWD/invariant-out"
+
+# FM1 (#1041) fork mode: fuzz against the REAL deployed contract at a pinned block (RPC is an arg; no key)
+dark-factory/demo-fork-hunt.sh   # foundation proof: forks real WETH -> CLEAN; SKIPs without forge/RPC
+dark-factory/run-invariant-hunt.sh \
+  --repo "$PWD/target" --target Vault.sol:Vault --class C-erc4626 \
+  --fork-url https://ethereum-rpc.publicnode.com --fork-block 25318855 \
+  --fork-target 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2 \
   --backend flat-cyborg --runs 256 --depth 64 --seed 1 --out "$PWD/invariant-out"
 ```
 

@@ -16,6 +16,43 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **Fork-state invariant hunting — the stateful hunter now fuzzes deep invariants against FORKED REAL
+  ON-CHAIN STATE (the actual deployed contract at a pinned block), not only a fresh deploy** (FM1, #1041).
+  Proven foundation: `forge` invariant-fuzzed 512 sequences against the REAL deployed WETH at mainnet block
+  25318855 via a public RPC and the solvency invariant (`totalSupply() <= address(WETH).balance`) held. FM1
+  productises that into the hunter. **Purely additive** — with no `--fork-url` the #1035/#1037 behaviour is
+  byte-identical.
+  - `evm-harness/forge-invariant.sh` — optional `--fork-url <http(s)-rpc> [--fork-block <n>]`. The RPC shape
+    (`http(s)://…`) and block (whole number) are validated; `--fork-block` requires `--fork-url`. When set,
+    the gate threads forge 1.7.1's own `--fork-url <rpc> [--fork-block-number <n>]` (each value an array
+    element, never a concatenated string) into the `forge test` invocation; when unset the forge command is
+    **byte-identical** to today. A fork RPC failure (unreachable / rate-limited / "could not instantiate
+    forked environment") leaves forge with no parseable result, so the existing no-result path returns
+    **HARNESS_ERROR (2)** — never a false CLEAN/FINDING (the FM1 safety contract).
+  - `run-invariant-hunt.sh` / `run-autonomous-hunt.sh` — `--fork-url`/`--fork-block` pass-through to the gate
+    (the autonomous driver forwards them via `INV_FORK_URL`/`INV_FORK_BLOCK` to the coordinator's chosen
+    `invariant-hunt`, and through the `--pattern-store` prover-gate wrapper to the prover). `run-invariant-hunt.sh`
+    also exports `FORK_TARGET=<deployed address>` (+ `FORK_URL`/`FORK_BLOCK`) to the prover so the generated
+    test can reference the real deployed contract by address. Absent the flags, behaviour is unchanged.
+  - `auditor/agents/invariant-prover.ag` — in fork mode (`FORK_TARGET`/`FORK_URL` non-empty) the generation
+    prompt is told the target is a **live deployed contract at `<address>`** and to generate a Handler that
+    drives its real functions with bounded inputs and funded actors (`vm.deal`), plus a deep invariant checked
+    against the forked state (solvency / no-free-value-extraction / share-price monotonicity). The
+    `HANDLER_FIXTURE` path stays authoritative; the `--fork-url`/`--fork-block` are forwarded to the gate,
+    each `shell_escape`d. **Purely additive** — no `FORK_*` ⇒ the generation prompt + gate command are
+    byte-identical. `auditor/agents/coordinator.ag`'s `run_invariant_live` forwards `INV_FORK_URL`/`INV_FORK_BLOCK`
+    to the gate the same way (each value `shell_escape`d via `inv_opt_flag`).
+  - **NEW `demo-fork-hunt.sh`** — the foundation proof. Probes a public RPC (`ethereum-rpc.publicnode.com`,
+    fall back to `eth.drpc.org`); when forge is absent OR no RPC is reachable it `[SKIP]`s and exits 0.
+    Otherwise it builds a tiny Foundry project with the proven WETH handler + solvency invariant, forks the
+    REAL deployed WETH at block 25318855, and asserts **CLEAN** (the funded handler drove the deployed
+    contract's real `deposit()`/`withdraw()` over fuzzed sequences and the invariant held — the machinery ran
+    against real forked state), plus a forced-bad `--fork-url http://127.0.0.1:1` → **HARNESS_ERROR (exit 2)**,
+    never a false verdict. The RPC is an argument (no key hard-coded); the block is pinned for reproducibility.
+    A FINDING here would be a CANDIDATE a human triages — this colony **never auto-submits**.
+  - `docs/invariant-hunt.md` — a fork-mode section (the `--fork-url`/`--fork-block`/`FORK_TARGET` contract, the
+    RPC-failure→HARNESS_ERROR safety, the human-gated boundary, reproducibility via the pinned block).
+
 - **Method-invention feeds the hunt + DAG pattern memory — the federation invents its own attack methods,
   stores winning ones in the pattern DAG, and self-drives** (Integration M3, #1037, the FINAL milestone). M1
   made the coordinator live-drive the fuzzer; M2 let each lead carry its own context. M3 closes the loop: a
