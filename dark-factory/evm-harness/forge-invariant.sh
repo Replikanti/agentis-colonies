@@ -169,7 +169,19 @@ SETUP_MARKERS = (
     "could not instantiate forked", "backend", "historical state",
     "is not available", "error sending request", "rpc",
 )
+def has_counterexample(res):
+    # A genuine invariant break always carries a counterexample (the shrunk failing
+    # call-SEQUENCE). A fork/backend/setup failure never does. So the presence of a
+    # counterexample is the decisive signal that this is a REAL finding, not a setup error.
+    cex = (res or {}).get("counterexample")
+    return bool(cex)
 def is_setup_failure(res):
+    # A HARNESS/fork/backend failure is a Failure whose `reason` matches a setup marker AND
+    # which carries NO counterexample. The no-counterexample gate is decisive: it prevents a
+    # genuine invariant break whose revert string merely CONTAINS a marker word (e.g. "...setup
+    # budget", "...rpc id") from being misclassified as a setup error and silently dropped.
+    if has_counterexample(res):
+        return False
     reason = (res or {}).get("reason") or ""
     rl = reason.lower()
     for m in SETUP_MARKERS:
