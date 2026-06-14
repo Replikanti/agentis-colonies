@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# run-autonomous-hunt.sh — Integration M1 (#1037): the self-orchestrating coordinator AUTONOMOUSLY chooses
-# and LIVE-runs the stateful-invariant fuzzer on a target, end-to-end.
+# run-autonomous-hunt.sh — Integration M1 + M2 (#1037): the self-orchestrating coordinator AUTONOMOUSLY
+# chooses and LIVE-runs the stateful-invariant fuzzer on one or more targets, end-to-end. M2 adds the
+# repeatable --candidate flag so each lead carries its OWN context and verifies on the RIGHT target.
 #
 # WHAT IT IS. This is the integration entrypoint that closes the loop between the #1014 self-orchestrating
 # coordinator and the #1035 stateful-invariant fuzzer (`evm-harness/forge-invariant.sh`). It drives ONE
@@ -115,6 +116,10 @@ for spec in "${CANDIDATES[@]}"; do
   c_target="${rest%%|*}"
   if [ "$rest" = "$c_target" ]; then c_match="$MATCH"; else c_match="${rest#*|}"; fi
   [ -n "$c_id" ]     || { echo "run-autonomous-hunt.sh: --candidate '$spec' has an empty id" >&2; exit 2; }
+  # The id becomes part of a `candidate:<id>:*` memo key (agentis memo keys reject whitespace and other
+  # special chars). Reject anything outside [A-Za-z0-9_:.-] up front so a malformed id is a clean error
+  # instead of a silenced `memo set` failure that would later degrade the candidate to the safe `dry` stub.
+  case "$c_id" in *[!A-Za-z0-9_:.-]*) echo "run-autonomous-hunt.sh: --candidate id '$c_id' must match [A-Za-z0-9_:.-] (no spaces/special chars — it is a memo key)" >&2; exit 2 ;; esac
   [ -n "$c_repo" ]   || { echo "run-autonomous-hunt.sh: --candidate '$c_id' has an empty repo" >&2; exit 2; }
   [ -n "$c_target" ] || { echo "run-autonomous-hunt.sh: --candidate '$c_id' has an empty target" >&2; exit 2; }
   [ -n "$c_match" ]  || c_match="$MATCH"
