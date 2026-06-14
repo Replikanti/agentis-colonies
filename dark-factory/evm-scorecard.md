@@ -29,9 +29,9 @@ Each pair lives alongside the M1–M3 Reentrancy + AccessControl pairs in
 ## Methodology
 
 ```bash
-# AGENTIS = a built agentis binary; BACKEND defaults to claude (the only backend with a
-# per-class router — mock falls back to the structural reentrancy heuristic and cannot
-# confirm class routing). EVM_HARNESS_DIR defaults to ./evm-harness.
+# AGENTIS = a built agentis binary; BACKEND defaults to flat-cyborg (a reasoning backend routes
+# each class to its per-class invariant — mock has no class router and falls back to the structural
+# reentrancy heuristic, so it cannot confirm class routing). EVM_HARNESS_DIR defaults to ./evm-harness.
 AGENTIS=/path/to/agentis ./calibrate-evm.sh            # writes ./evm-scorecard.md
 AGENTIS=/path/to/agentis ./calibrate-evm.sh out.md     # or a chosen output path
 ```
@@ -46,7 +46,7 @@ a false-VERIFIED.
 
 <!-- PARTIAL — Reentrancy + AccessControl recorded from operator-confirmed M1–M3 end-to-end runs
      (real verdicts, not the script). The three new classes await a full `calibrate-evm.sh`
-     (backend=claude) pass; that run is currently THROUGHPUT-GATED, not code-gated — a single
+     (reasoning backend) pass; that run is currently THROUGHPUT-GATED, not code-gated — a single
      colony run logs ~190 `[llm] still waiting` ticks + 180s `cli_timeout` retries, so a clean
      10-run sweep is an operator action for when the claude CLI is responsive. Re-run the script
      to overwrite this section with the full machine-scored table. -->

@@ -19,7 +19,7 @@ Run it after a discovery / audit run, pointed at the **same `--out` dir**:
 ```bash
 # 1. a one-shot discovery run
 dark-factory/run-discovery.sh --repo "$PWD/target" --scope scope.tsv --brief brief.md \
-    --backend claude --out "$PWD/discovery-out"
+    --out "$PWD/discovery-out"   # default backend = flat-cyborg (flat-rate); add --backend claude for metered -p
 
 # 2. distill it into a monitor-consumable summary
 dark-factory/run-summary.sh --out "$PWD/discovery-out"

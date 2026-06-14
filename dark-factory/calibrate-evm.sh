@@ -10,19 +10,20 @@
 #     hard blocker: a false-VERIFIED on a safe target is a ban-list risk on a live platform).
 #
 # Detection uses the configured LLM backend (the real classify_evm_llm). With the default
-# claude backend each class routes to its specific invariant; the mock backend has no class
-# router (it falls back to the structural reentrancy heuristic), so the per-class true-positive
-# tally is only meaningful under claude — run with the default BACKEND to populate the scorecard.
+# under a reasoning backend (the default flat-cyborg, or claude) each class routes to its specific
+# invariant; the mock backend has no class router (it falls back to the structural reentrancy
+# heuristic), so the per-class true-positive tally is only meaningful under a reasoning backend —
+# run with the default BACKEND to populate the scorecard.
 # The two-sided gate (CONTROL OK: + INVARIANT VIOLATED: + exit 101) is what makes a safe variant
 # resolve to a non-VERIFIED verdict even if detection over-flags it.
 #
-# Usage: AGENTIS=/path/to/agentis [BACKEND=claude] [EVM_HARNESS_DIR=/path/to/warm/harness] \
+# Usage: AGENTIS=/path/to/agentis [BACKEND=flat-cyborg] [EVM_HARNESS_DIR=/path/to/warm/harness] \
 #        ./calibrate-evm.sh [out.md]
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="${AGENTIS:-agentis}"
-BACKEND="${BACKEND:-claude}"
+BACKEND="${BACKEND:-flat-cyborg}"
 HARNESS="${EVM_HARNESS_DIR:-$HERE/evm-harness}"
 CORPUS="$HERE/evm-harness/contracts"
 OUT="${1:-$HERE/evm-scorecard.md}"

@@ -29,7 +29,8 @@
 #   --executor real   (default) route hunt->hunter.ag, refute->refuter.ag, poc-screen->poc-screener.ag,
 #                     invent-method->method-inventor.ag, deriving the OUTCOME from the agent's verdict
 #                     line. Requires the per-action env a real run would set (TARGET_DIR/IN_SCOPE/...);
-#                     this mode is the integration surface for a live audit and needs --backend claude
+#                     this mode is the integration surface for a live audit and needs a reasoning
+#                     backend (--backend flat-cyborg, flat-rate default; or --backend claude, metered)
 #                     for the agents to actually reason. (The decision is still offline-deterministic.)
 #   --executor stub --fixture <f>   OFFLINE + DETERMINISTIC: dispatch each chosen action to a scripted
 #                     outcome read from a fixture (`<action-type> <args-glob> -> confirmed|dry|refuted`).
@@ -37,7 +38,7 @@
 #
 # Usage:
 #   run-coordinator.sh --scope <file> [--class-fitness <file>] [--budget N] [--dry-cap K]
-#                      [--executor real|stub] [--fixture <f>] [--backend mock|claude]
+#                      [--executor real|stub] [--fixture <f>] [--backend mock|flat-cyborg|claude]
 #                      [--out <dir>] [--agentis <bin>]
 #
 # Scope manifest (one huntable cell per line; `#` and blank lines ignored), pipe-delimited:
@@ -102,6 +103,7 @@ cp "$COORD_AG" "$RUN/coordinator.ag"
 {
   echo "llm.backend = $BACKEND"
   [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p"; echo "llm.cli_timeout_ms = 600000"; }
+  [ "$BACKEND" = "flat-cyborg" ] && echo "llm.cli_timeout_ms = 600000"
   echo "trace.level = normal"
   echo "exec.env_passthrough = SCOPE,CLASS_FITNESS,POLICY,PENDING,BUDGET,DRY_STREAK,DRY_CAP,PREV_ACTION,PREV_KEY,LAST_OUTCOME"
   echo "exec.default_timeout_ms = 30000"
@@ -180,7 +182,8 @@ stub_outcome() {
 
 # --- real executor: dispatch to the matching agent and DERIVE the outcome from its verdict line. This is
 # the v1 integration surface; it needs the per-action env a live audit would set (TARGET_DIR/IN_SCOPE/
-# CODE_PATH/...). With --backend mock the agents do not reason, so this path is for --backend claude wiring;
+# CODE_PATH/...). With --backend mock the agents do not reason, so this path needs a reasoning backend
+# (--backend flat-cyborg, flat-rate default; or --backend claude, metered) for wiring;
 # the offline+deterministic proof uses --executor stub. We keep the routing explicit and honest.
 real_outcome() {
   _atype="$1"; _aargs="$2"

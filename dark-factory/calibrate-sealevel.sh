@@ -44,7 +44,7 @@ run_one() {
     cd "$d" || exit 1
     "$AGENTIS" init >/dev/null 2>&1
     printf '%s\n' \
-      'llm.backend = claude' 'llm.command = claude' 'llm.args = -p' \
+      'llm.backend = flat-cyborg' \
       'llm.cli_timeout_ms = 180000' 'trace.level = quiet' \
       'exec.env_passthrough = BOUNTY_TARGET,BOUNTY_POC,SOLANA_ANCHOR_HARNESS_DIR' \
       'exec.default_timeout_ms = 180000' > .agentis/config

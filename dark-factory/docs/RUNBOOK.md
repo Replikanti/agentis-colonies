@@ -27,13 +27,13 @@ The **operator** chooses the in-scope program (this tool never auto-picks a scop
 - `--snapshot <file>` — optional frozen on-chain state to replay against. Produce one with:
   `./snapshot-rpc.sh --rpc <RPC_URL> --out snap.txt <ACCOUNT_PUBKEY> [...]`
   (host-side; for a live target the operator dumps that program's own accounts).
-- `--backend claude|mock` — real LLM (default) or offline-deterministic.
+- `--backend flat-cyborg|claude|mock` — flat-rate PTY wrapper driving claude (default), metered claude `-p` API, or offline-deterministic mock.
 
 ## 3. Run
 
 ```
 ./run-audit.sh --target <program.rs> --anchor-harness ./solana-harness-anchor \
-               --backend claude --out audit-out
+               --out audit-out
 ```
 
 The run is sandboxed with the hardened profile by default (`--unshare-all`, network closed;
@@ -95,7 +95,7 @@ agent (`auditor/agents/hunter.ag`) out over (subsystem × bug-class).
 4. **Run** (each cell is a deep adversarial LLM read — ~3 min typical, up to ~8 min for a deep
    liquidation/redemption cell, within the 600s per-call budget; a full sweep is serial):
    ```
-   ./run-discovery.sh --repo <repo> --scope scope.tsv --brief brief.md --backend claude --out discovery-out
+   ./run-discovery.sh --repo <repo> --scope scope.tsv --brief brief.md --out discovery-out
    # cheap wiring smoke first (no real LLM):  --backend mock --only "<subsystem>" --classes C1
    ```
 5. **Read the leads** — `discovery-out/discovery-report.md`. Each `CANDIDATE` row is an **unverified

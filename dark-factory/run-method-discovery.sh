@@ -31,7 +31,7 @@ if [ -z "${NO_AGENTIS:-}" ] && command -v agentis >/dev/null 2>&1; then
   rd="$(mktemp -d)"; cp "$INVENTOR" "$rd/method-inventor.ag"
   cp "$REGISTRY" "$rd/registry.md"; cp "$GAP" "$rd/gap.md"
   ( cd "$rd" && agentis init >/dev/null 2>&1
-    { echo "llm.backend = claude"; echo "llm.command = claude"; echo "llm.args = -p --model $MODEL"
+    { echo "llm.backend = flat-cyborg"; [ -n "$MODEL" ] && echo "llm.model = $MODEL"
       echo "exec.env_passthrough = REGISTRY,GAP"; echo "llm.cli_timeout_ms = 300000"; echo "exec.default_timeout_ms = 30000"; } >> .agentis/config
     REGISTRY="$rd/registry.md" GAP="$rd/gap.md" agentis go method-inventor.ag --enable-exec --enable-messaging ) > "$rd/out" 2>"$rd/err"
   proposal="$(grep -m1 '^METHOD|' "$rd/out" 2>/dev/null || true)"
