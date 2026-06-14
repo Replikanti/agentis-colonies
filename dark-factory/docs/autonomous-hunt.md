@@ -1,4 +1,4 @@
-# Autonomous stateful-invariant hunt — Integration M1 + M2 (#1037)
+# Autonomous stateful-invariant hunt — Integration M1 + M2 + M3 (#1037)
 
 Two pieces shipped separately: the **self-orchestrating coordinator** ([`docs/coordinator.md`](./coordinator.md),
 #1014) that DECIDES the next audit action from facts + an evolving policy, and the **stateful-invariant
@@ -149,9 +149,99 @@ emits leads, so a discovered lead carries its contract + invariant test straight
 verify — no operator re-typing the target per candidate. The memo convention is the contract between the
 producer (discovery) and the consumer (the coordinator's live verify routes).
 
+## Pattern memory (M3)
+
+M1 made the coordinator live-drive the fuzzer; M2 let each lead carry its own context. **Integration M3**
+closes the loop the user described — *the federation invents its own attack methods, stores them in a DAG, and
+self-drives*: a winning invariant pattern (one that produced a FINDING) is **persisted to the pattern DAG** and
+**recalled to seed future hunts**, and `invent-method` can propose a new invariant class the next hunt then
+uses. It **reuses the existing `bugpat:*` DAG infrastructure** — the same `dag_put` / `recall_latest` /
+`memo_write` primitives the fork-matcher seed/recall agents use (`seed-patterns.ag` / `recall-match.ag`) and
+the same `knowledge_sell` cross-pollination channel (`share-patterns.ag`) — in a parallel `invpat:*` namespace.
+No new store is built.
+
+### The `invpat:*` namespace
+
+| memo key | written by | read by | role |
+|---|---|---|---|
+| `invpat:exact:<hash>` | `invariant-prover.ag` on a FINDING | (the DAG index, mirrors `bugpat:exact:<hash>`) | `dag_put(<signature>)` → the content-hash key class membership |
+| `invpat:latest:<class>` | `invariant-prover.ag` on a FINDING | `invariant-prover.ag` before GENERATE | the latest winning invariant pattern descriptor for a bug class |
+| `invpat:invented:<class>` | `run-autonomous-hunt.sh --method-fixture` | `invariant-prover.ag` before GENERATE | a NEW invariant class proposed by `invent-method` (a generation hint) |
+
+The signature persisted is a **deterministic, stable descriptor**: `<class>::<target-label>::<match-prefix>`
+— the same class/shape produces the same `invpat:exact:<hash>` across runs, so a later FINDING on the same
+class recalls it. `dag_put`'s content hash is the sha256 of the signature, so only the memo *values* travel
+between stores — re-`dag_put`ting the same signature reproduces the same key locally.
+
+### Persist-on-FINDING / recall-before-generate
+
+`invariant-prover.ag` (the GENERATE-and-VERIFY agent) gains two additive hooks:
+
+- **RECALL before GENERATE.** Before writing the test, it reads `recall_latest("invpat:latest:<class>")`
+  (falling back to `invpat:invented:<class>` — the invent-method hint — when no FINDING pattern exists yet).
+  When non-empty it prints `RECALL-INVPAT|<class>|<descriptor>` (so the transfer is observable) and folds the
+  descriptor into the LLM generation seed ("a prior FINDING on this class used this invariant pattern: …;
+  adapt it"). On the `HANDLER_FIXTURE` path the fixture is authoritative (recall does **not** change it) but
+  the `RECALL-INVPAT|` line is still printed so the loop is observable. **Recall steers GENERATION only — it
+  never changes the verdict** (which stays the fuzzer's exit code).
+- **PERSIST on FINDING.** *After* the verdict is printed (so a persist failure can never alter the verdict),
+  and only when `verdict == "FINDING"`, it computes the signature, `dag_put`s it, writes
+  `invpat:exact:<hash>` + `invpat:latest:<class>`, emits `dark-factory:invariant_pattern_learned`, and prints
+  `INVPAT-LEARNED|<class>|<descriptor>`. **Persistence only records what the fuzzer already confirmed.**
+
+`prior` / the signature are derived from prior agent state (treated as untrusted): they flow only into the
+prompt (a plain string) and the plain-stdout `RECALL-INVPAT|` line — never into `exec sh`.
+
+### Durable cross-run store — `--pattern-store`
+
+`run-invariant-hunt.sh` and `run-autonomous-hunt.sh` gain `--pattern-store <dir>`: a **persistent** agentis
+store reused across runs where the `invpat:*` memos are kept. The per-run store stays ephemeral; a small
+bridge (via the `agentis memo` CLI) moves `invpat:*` **in** before the run (so RECALL sees a prior run's
+confirmed shapes) and **out** after (so this run's FINDING is kept for the next).
+
+- `run-invariant-hunt.sh` bridges directly around its prover run.
+- `run-autonomous-hunt.sh` keeps the coordinator **byte-identical** by handing it a thin **prover-gate
+  wrapper** as `FORGE_INVARIANT`: the wrapper speaks the gate's exact CLI + exit contract
+  (`1=FINDING / 0=CLEAN / 2=error`), so the coordinator's `run_invariant_live` + `sym_rc_of` / `sym_outcome_of`
+  mapping is unchanged, but internally it routes through `invariant-prover.ag` in the persistent store (so
+  persist/recall happen and the prover's `RECALL-INVPAT|` / `INVPAT-LEARNED|` lines land in the run log).
+
+**Absent `--pattern-store` the behaviour is byte-identical to M1/M2** — the per-run store is ephemeral, no
+`invpat:*` is persisted, and the coordinator calls the bare gate directly (no wrapper).
+
+### The `invent-method` feed — `--method-fixture`
+
+`run-autonomous-hunt.sh --method-fixture <file>` consults a deterministic method-inventor proposal (a
+`METHOD|<name>|<bug-classes>|<technique>|<how-to-invoke>|<control-assert>` line — the same shape
+`method-inventor.ag` emits, used offline so the wiring is provable without an LLM). It parses the proposed bug
+class and seeds it as `invpat:invented:<class>` in the pattern store, so the next `invariant-hunt`
+generation's recall consults it as a hint. The live `method-inventor.ag` path stays prompt-driven; the
+fixture proves the wiring deterministically. Validation of an invented method stays the two-sided control
+gate `run-method-discovery.sh` already enforces.
+
+```bash
+# Run 1 persists a winning pattern; Run 2 on a same-class target recalls + reuses it (a shared store S):
+dark-factory/run-autonomous-hunt.sh --repo "$PWD/A" --target test/Inv.t.sol --pattern-store "$PWD/S" --seed 1
+dark-factory/run-autonomous-hunt.sh --repo "$PWD/B" --target test/Inv.t.sol --pattern-store "$PWD/S" --seed 1
+
+# the invent-method feed: a proposed NEW class steers the next hunt's generation
+dark-factory/run-autonomous-hunt.sh --repo "$PWD/C" --target test/Inv.t.sol \
+  --pattern-store "$PWD/S" --method-fixture method.txt --seed 1
+
+# the end-to-end proof (persist on A, recall+reuse on B, invent-method leg; SKIPs without forge/agentis):
+dark-factory/demo-pattern-memory.sh
+```
+
+`demo-pattern-memory.sh` proves the MEMORY LOOP works (persist → recall → reuse across a structurally-different
+same-class target, plus the invent-method feed). **Honest scope:** the claim is the memory loop works, **not**
+that recall is strictly necessary for the fuzzer to find B — both vaults are vulnerable, so each FINDs on its
+own; what the demo proves is that the discovered pattern is stored in the DAG and recalled to seed the later
+hunt, observably.
+
 ## Honest scope
 
-M2 carries each lead's repo/target context through the durable memo channel. A long-lived daemon-tick reflex
-(the loop running continuously without a shell bootstrap), auto-GENERATION of the per-candidate invariant test
-from a discovered lead (here the test is supplied alongside the contract), and the coordinator pruning a live
-cell manifest all remain follow-up on epics #1014 / #1035 / #1037.
+M2 carries each lead's repo/target context through the durable memo channel; M3 adds the cross-run pattern
+memory + the invent-method feed. A long-lived daemon-tick reflex (the loop running continuously without a
+shell bootstrap), auto-GENERATION of the per-candidate invariant test from a discovered lead (here the test is
+supplied alongside the contract), recall as a *requirement* (rather than a *seed*) for the fuzzer, and the
+coordinator pruning a live cell manifest all remain follow-up on epics #1014 / #1035 / #1037.

@@ -50,6 +50,19 @@
 #                     next attributes its outcome to the policy (proving outcome -> policy evolution).
 #   --out <dir>       Output dir for the run (default: ./autonomous-hunt-out). A fresh agentis store is built
 #                     under <out>/run.
+#   --pattern-store <dir>  Int M3 (#1037): a PERSISTENT pattern-DAG store reused ACROSS runs. When set, the
+#                     coordinator's chosen invariant-hunt is routed through invariant-prover.ag (not the bare
+#                     gate) so a winning invariant pattern is PERSISTED on a FINDING (`invpat:*` memos in this
+#                     store) and RECALLED to seed a LATER run on the same bug class (the prover prints
+#                     `RECALL-INVPAT|<class>|<pattern>` + `INVPAT-LEARNED|<class>|<pattern>` into the run log).
+#                     The verdict stays the fuzzer's exit code; persist/recall steer GENERATION only. Absent
+#                     the flag the coordinator calls the gate directly -> no cross-run memory (M1/M2 byte-
+#                     identical).
+#   --method-fixture <file>  Int M3 (#1037) Part B: a deterministic method-inventor proposal (a `METHOD|...`
+#                     line) the coordinator's invent-method action consults OFFLINE (no LLM) to propose a NEW
+#                     invariant class. When set, its proposed class is seeded as `invpat:invented:<class>` in
+#                     the pattern store so the NEXT invariant-hunt generation reads it as a hint. Absent the
+#                     flag the invent-method stub behaviour is unchanged.
 #   --agentis <bin>   agentis binary (default: `agentis` on PATH).
 #
 # Exit: 0 on a clean run that reached ORCHESTRATE|done; 2 on usage error; 3 on a missing prerequisite; 1 on a
@@ -68,6 +81,12 @@ SEED=""
 STEPS_N=2
 STEPS_SET=0
 OUT="$PWD/autonomous-hunt-out"
+PATTERN_STORE=""
+METHOD_FIXTURE=""
+# Int M3 (#1037): the run-level bug class the prover keys its invpat:latest:<class> recall/persist on. This
+# driver scopes the loop to a single class (matches SCOPE/CLASS_FITNESS below); the pattern memory is keyed on
+# it so a later run on the SAME class recalls the earlier run's confirmed invariant shape.
+PATTERN_CLASS="C1"
 # Int M2 (#1037): accumulated --candidate specs, one per array slot (`<id>|<repo>|<target>[|<match>]`).
 CANDIDATES=()
 
@@ -84,6 +103,8 @@ while [ $# -gt 0 ]; do
     --seed)      need "$#"; SEED="$2"; shift 2 ;;
     --steps)     need "$#"; STEPS_N="$2"; STEPS_SET=1; shift 2 ;;
     --out)       need "$#"; OUT="$2"; shift 2 ;;
+    --pattern-store) need "$#"; PATTERN_STORE="$2"; shift 2 ;;
+    --method-fixture) need "$#"; METHOD_FIXTURE="$2"; shift 2 ;;
     --agentis)   need "$#"; AGENTIS="$2"; shift 2 ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-autonomous-hunt.sh: unknown flag $1" >&2; exit 2 ;;
@@ -144,14 +165,126 @@ COORD_AG="$HERE/auditor/agents/coordinator.ag"
 # as FORGE_INVARIANT — the same env path invariant-prover.ag / run-invariant-hunt.sh use. No install location
 # is hardcoded; forge is the caller's PATH responsibility, exactly as forge-invariant.sh requires.
 FORGE_INVARIANT="$HERE/evm-harness/forge-invariant.sh"
+PROVER_AG="$HERE/auditor/agents/invariant-prover.ag"
 [ -f "$COORD_AG" ]        || { echo "run-autonomous-hunt.sh: coordinator agent not found at $COORD_AG" >&2; exit 3; }
 [ -f "$FORGE_INVARIANT" ] || { echo "run-autonomous-hunt.sh: forge-invariant gate not found at $FORGE_INVARIANT" >&2; exit 3; }
+
+# Int M3 (#1037): resolve the PERSISTENT pattern-DAG store and validate the optional method-fixture. Both are
+# only consulted on the --pattern-store path; absent --pattern-store the whole M3 layer is skipped and the
+# coordinator calls the bare gate (M1/M2 byte-identical).
+if [ -n "$PATTERN_STORE" ]; then
+  [ -f "$PROVER_AG" ] || { echo "run-autonomous-hunt.sh: invariant-prover agent not found at $PROVER_AG (needed for --pattern-store)" >&2; exit 3; }
+  mkdir -p "$PATTERN_STORE" || { echo "run-autonomous-hunt.sh: cannot create --pattern-store dir: $PATTERN_STORE" >&2; exit 1; }
+  PATTERN_STORE="$(cd "$PATTERN_STORE" && pwd)"
+  [ -d "$PATTERN_STORE/.agentis" ] || ( cd "$PATTERN_STORE" && "$AGENTIS" init >/dev/null 2>&1 )
+fi
+if [ -n "$METHOD_FIXTURE" ]; then
+  [ -f "$METHOD_FIXTURE" ] || { echo "run-autonomous-hunt.sh: --method-fixture not found: $METHOD_FIXTURE" >&2; exit 2; }
+  [ -n "$PATTERN_STORE" ] || { echo "run-autonomous-hunt.sh: --method-fixture requires --pattern-store (the invented class is seeded there)" >&2; exit 2; }
+  METHOD_FIXTURE="$(cd "$(dirname "$METHOD_FIXTURE")" && pwd)/$(basename "$METHOD_FIXTURE")"
+fi
 
 mkdir -p "$OUT" || { echo "run-autonomous-hunt.sh: cannot create --out dir: $OUT" >&2; exit 1; }
 OUT="$(cd "$OUT" && pwd)"
 RUN="$OUT/run"
 rm -rf "$RUN"; mkdir -p "$RUN" || { echo "run-autonomous-hunt.sh: cannot create run dir: $RUN" >&2; exit 1; }
 cp "$COORD_AG" "$RUN/coordinator.ag"
+
+# Int M3 (#1037): when --pattern-store is set, route the coordinator's chosen invariant-hunt through the
+# PROVER (which PERSISTS/RECALLS the winning invariant pattern) instead of the bare gate — WITHOUT touching
+# coordinator.ag. We do this by handing the coordinator a thin WRAPPER as FORGE_INVARIANT: it speaks the gate's
+# exact CLI (--repo/--target/--match[/--runs/--depth/--seed]) and exit contract (1=FINDING,0=CLEAN,2=error), so
+# the coordinator's run_invariant_live + sym_rc_of/sym_outcome_of mapping is byte-identical. Internally the
+# wrapper runs invariant-prover.ag in the PERSISTENT store with the candidate's class as TARGET_CLASS, so a
+# prior run's `invpat:latest:<class>` is RECALLED (the prover prints `RECALL-INVPAT|...`) before generation and
+# a FINDING is PERSISTED (`INVPAT-LEARNED|...`). The wrapper delegates the actual fuzzing to the real gate. The
+# prover's stdout (incl. RECALL-INVPAT/INVPAT-LEARNED) is teed to stderr so it lands in the orchestrate log.
+GATE_FOR_COORD="$FORGE_INVARIANT"
+if [ -n "$PATTERN_STORE" ]; then
+  cp "$PROVER_AG"       "$RUN/invariant-prover.ag"
+  cp "$FORGE_INVARIANT" "$RUN/forge-invariant.sh"
+  WRAP="$RUN/prover-gate.sh"
+  {
+    echo '#!/usr/bin/env bash'
+    echo '# Int M3 (#1037) prover-gate wrapper — auto-generated by run-autonomous-hunt.sh. Speaks the'
+    echo '# forge-invariant.sh CLI + exit contract but routes through invariant-prover.ag so the winning'
+    echo '# invariant pattern is persisted/recalled in the persistent pattern store. NOT for direct operator use.'
+    echo 'set -uo pipefail'
+    echo "RUNDIR=$(printf '%q' "$RUN")"
+    echo "AGENTIS=$(printf '%q' "$AGENTIS")"
+    echo "PATTERN_STORE=$(printf '%q' "$PATTERN_STORE")"
+    echo "REAL_GATE=$(printf '%q' "$RUN/forge-invariant.sh")"
+    # A stable trail file (the coordinator captures the wrapper's stdout/stderr into a string it discards, so
+    # the prover's RECALL-INVPAT/INVPAT-LEARNED lines are persisted here for the driver to surface afterwards).
+    echo "TRAIL=$(printf '%q' "$RUN/pattern-trail.log")"
+    echo 'REPO=""; TARGET=""; MATCH="invariant"; RUNS=""; DEPTH=""; SEED=""'
+    echo 'while [ $# -gt 0 ]; do case "$1" in'
+    echo '  --repo) REPO="${2:-}"; shift 2 ;; --target) TARGET="${2:-}"; shift 2 ;;'
+    echo '  --match) MATCH="${2:-}"; shift 2 ;; --runs) RUNS="${2:-}"; shift 2 ;;'
+    echo '  --depth) DEPTH="${2:-}"; shift 2 ;; --seed) SEED="${2:-}"; shift 2 ;;'
+    echo '  *) shift ;; esac; done'
+    # The candidate class the coordinator routes. The orchestrate loop's PENDING cells all carry the run-level
+    # class (the SCOPE class, C1), so the prover keys its invpat:latest:<class> recall/persist on it across runs.
+    # Baked as a literal here (the gate CLI has no class field) — set via --pattern-store's run class below.
+    echo "CLASS=$(printf '%q' "$PATTERN_CLASS")"
+    echo 'WORK="$(mktemp -d "${TMPDIR:-/tmp}/prover-gate.XXXXXX")"'
+    echo 'trap '"'"'rm -rf "$WORK"'"'"' EXIT'
+    echo 'cp "$RUNDIR/invariant-prover.ag" "$WORK/invariant-prover.ag"'
+    echo 'cp "$REAL_GATE" "$WORK/forge-invariant.sh"'
+    echo '( cd "$WORK" && "$AGENTIS" init >/dev/null 2>&1 )'
+    echo '{'
+    echo '  echo "llm.backend = mock"'
+    echo '  echo "trace.level = normal"'
+    echo '  echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_MATCH,HANDLER_FIXTURE,CODE_PATH,INV_RUNS,INV_DEPTH,INV_SEED,FORGE_INVARIANT"'
+    echo '  echo "exec.default_timeout_ms = 600000"'
+    echo '  echo "learning.enabled = true"'
+    echo '  echo "experience.enabled = true"'
+    echo '} > "$WORK/.agentis/config"'
+    # RECALL: bridge prior invpat:* from the persistent store into the prover work store so recall_pattern() sees them.
+    echo 'bridge() { _s="$1"; _d="$2"; ( cd "$_s" && "$AGENTIS" memo list 2>/dev/null ) | awk '"'"'{print $1}'"'"' | grep -E '"'"'^invpat:'"'"' | while IFS= read -r k; do v="$( ( cd "$_s" && "$AGENTIS" memo get "$k" ) 2>/dev/null )"; [ -n "$v" ] && ( cd "$_d" && "$AGENTIS" memo set "$k" "$v" >/dev/null 2>&1 ); done; }'
+    echo 'bridge "$PATTERN_STORE" "$WORK"'
+    # The prover writes the test into INV_REPO/test; stage a copy of the candidate repo so it can.
+    echo 'REPO_IN_WORK="$WORK/repo"; cp -R "$REPO" "$REPO_IN_WORK"; rm -f "$REPO_IN_WORK/test/"*.t.sol 2>/dev/null || true; mkdir -p "$REPO_IN_WORK/test"'
+    # Use the candidate's OWN target as the handler fixture (verbatim) so the verdict is the fuzzer's over the
+    # SAME test the live route would run — the prover's job here is the persist/recall, not regenerating the test.
+    echo 'cp "$TARGET" "$WORK/handler-fixture.t.sol"'
+    echo 'INV_OUT="$REPO_IN_WORK/test/Inv_gate.t.sol"'
+    echo 'OPT=""; [ -n "$RUNS" ] && OPT="$OPT --runs $RUNS"; [ -n "$DEPTH" ] && OPT="$OPT --depth $DEPTH"; [ -n "$SEED" ] && OPT="$OPT --seed $SEED"'
+    echo 'LOG="$WORK/prover.log"'
+    echo '( cd "$WORK" && env TARGET_FN="$TARGET" TARGET_CLASS="$CLASS" INV_REPO="$REPO_IN_WORK" INV_OUT="$INV_OUT" INV_MATCH="$MATCH" HANDLER_FIXTURE="$WORK/handler-fixture.t.sol" CODE_PATH="" INV_RUNS="$RUNS" INV_DEPTH="$DEPTH" INV_SEED="$SEED" FORGE_INVARIANT="$WORK/forge-invariant.sh" "$AGENTIS" go invariant-prover.ag --enable-exec --enable-messaging ) >"$LOG" 2>&1 || true'
+    # Surface the prover trail (incl. RECALL-INVPAT / INVPAT-LEARNED) to stderr AND append it to the stable
+    # trail file the driver reads back (the coordinator discards the captured exec output, so the trail file is
+    # the durable channel for the prover's recall/persist evidence).
+    echo 'grep -E "^(RECALL-INVPAT|INVPAT-LEARNED|INVARIANT)\|" "$LOG" | tee -a "$TRAIL" >&2 || true'
+    # PERSIST: bridge any invpat:* the prover wrote back OUT to the persistent store for the next run.
+    echo 'bridge "$WORK" "$PATTERN_STORE"'
+    # Map the prover verdict to the gate exit contract the coordinator expects (1=FINDING,0=CLEAN,2=error).
+    echo 'VL="$(grep "INVARIANT|" "$LOG" | tail -1 || true)"'
+    echo 'VERD="$(printf "%s" "$VL" | sed "s/.*INVARIANT|//" | cut -d"|" -f2)"'
+    echo 'case "$VERD" in FINDING) exit 1 ;; CLEAN) exit 0 ;; *) exit 2 ;; esac'
+  } > "$WRAP"
+  chmod +x "$WRAP"
+  GATE_FOR_COORD="$WRAP"
+fi
+
+# Int M3 (#1037) Part B: the invent-method feed. A --method-fixture is a deterministic method-inventor proposal
+# (a `METHOD|<name>|<bug-classes>|<technique>|<how-to-invoke>|<control-assert>` line — the same shape
+# method-inventor.ag emits, used OFFLINE so the wiring is provable without an LLM). We parse the proposed bug
+# class (field 3, the first comma-separated class) and seed it as `invpat:invented:<class>` in the PERSISTENT
+# pattern store, so the NEXT invariant-hunt generation's recall_pattern() reads it as a generation hint (the
+# prover checks `invpat:invented:<class>` when no persisted FINDING pattern exists yet). This is the
+# self-invents feed: a NEW invariant class the federation proposed steers a later hunt's GENERATE.
+if [ -n "$METHOD_FIXTURE" ]; then
+  M_LINE="$(grep -E '^METHOD\|' "$METHOD_FIXTURE" | head -1 || true)"
+  if [ -n "$M_LINE" ]; then
+    M_CLASSES="$(printf '%s' "$M_LINE" | cut -d'|' -f3)"
+    M_CLASS="$(printf '%s' "$M_CLASSES" | cut -d',' -f1 | tr -d '[:space:]')"
+    if [ -n "$M_CLASS" ]; then
+      ( cd "$PATTERN_STORE" && "$AGENTIS" memo set "invpat:invented:$M_CLASS" "$M_LINE" >/dev/null 2>&1 )
+      echo "run-autonomous-hunt.sh: invent-method seeded invpat:invented:$M_CLASS from $METHOD_FIXTURE" >&2
+    fi
+  fi
+fi
 
 # A single shared agentis store for the whole orchestrate run (the policy the coordinator writes one step
 # must be visible to the next). init FIRST (before any .agentis/ subdir), else HEAD is unset.
@@ -241,7 +374,7 @@ RUN_LOG="$RUN/orchestrate.log"
     ORCHESTRATE_ENABLED=1 \
     DISPATCH_ENABLED=1 \
     DISPATCH_FIXTURE="" \
-    FORGE_INVARIANT="$FORGE_INVARIANT" \
+    FORGE_INVARIANT="$GATE_FOR_COORD" \
     INV_REPO="$REPO" \
     INV_TARGET="$TARGET" \
     INV_MATCH="$MATCH" \
@@ -253,6 +386,19 @@ RUN_LOG="$RUN/orchestrate.log"
 
 grep -E '^ORCHESTRATE\|' "$RUN_LOG" >/dev/null 2>&1 \
   || { echo "run-autonomous-hunt.sh: orchestration did not complete (no ORCHESTRATE| marker; see $RUN_LOG)" >&2; exit 1; }
+
+# Int M3 (#1037): the prover-gate wrapper persists its RECALL-INVPAT / INVPAT-LEARNED evidence to the trail
+# file (the coordinator discards the captured exec output). Fold the trail INTO the orchestrate log so the
+# pattern-memory loop is observable in the run log the rest of the pipeline reads, and surface it on stderr.
+# Skipped (no-op) when --pattern-store was not supplied (the trail file does not exist).
+PATTERN_TRAIL="$RUN/pattern-trail.log"
+if [ -s "$PATTERN_TRAIL" ]; then
+  cat "$PATTERN_TRAIL" >> "$RUN_LOG"
+  echo "run-autonomous-hunt.sh: pattern-memory trail:" >&2
+  grep -E '^(RECALL-INVPAT|INVPAT-LEARNED)\|' "$PATTERN_TRAIL" | while IFS= read -r line; do
+    echo "run-autonomous-hunt.sh: $line" >&2
+  done
+fi
 
 # Surface the AUTONOMOUS DECISION TRAIL: the coordinator's ACTION| lines (what it chose + why) and the
 # DISPATCH| lines (the fuzzer's verdict for each). The full run log (incl. the LIVE-route message + any

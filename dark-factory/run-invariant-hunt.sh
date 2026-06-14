@@ -39,13 +39,20 @@
 #   --depth D            Forge invariant depth budget (calls per sequence). Default: the project's config.
 #   --seed S             Forge --fuzz-seed for a reproducible search. Default: forge's own seed.
 #   --out <dir>          Output dir for the run + report (default: ./invariant-out).
+#   --pattern-store <dir>  Int M3 (#1037): a PERSISTENT pattern-DAG store reused ACROSS runs. When set, the
+#                        winning-invariant patterns the prover PERSISTS on a FINDING (`invpat:*` memos) are
+#                        kept here, and any patterns a PRIOR run stored for the same bug class are RECALLED
+#                        into THIS run before GENERATE — so a later hunt on the same class is seeded by an
+#                        earlier hunt's confirmed invariant shape (discovered -> stored -> recalled -> reused).
+#                        Absent the flag the per-run store is ephemeral -> no cross-run pattern memory (the
+#                        M1/M2 behaviour is byte-identical).
 #   --agentis <bin>      agentis binary (default: `agentis` on PATH).
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
 REPO="" ; TARGET="" ; CLASS="" ; FIXTURE="" ; CODE="" ; MATCH="invariant"
-BACKEND="flat-cyborg" ; MODEL="" ; RUNS="" ; DEPTH="" ; SEED="" ; OUT="$PWD/invariant-out"
+BACKEND="flat-cyborg" ; MODEL="" ; RUNS="" ; DEPTH="" ; SEED="" ; OUT="$PWD/invariant-out" ; PATTERN_STORE=""
 
 need() { [ "$1" -ge 2 ] || { echo "run-invariant-hunt.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -62,6 +69,7 @@ while [ $# -gt 0 ]; do
     --depth) need "$#"; DEPTH="$2"; shift 2 ;;
     --seed) need "$#"; SEED="$2"; shift 2 ;;
     --out) need "$#"; OUT="$2"; shift 2 ;;
+    --pattern-store) need "$#"; PATTERN_STORE="$2"; shift 2 ;;
     --agentis) need "$#"; AGENTIS="$2"; shift 2 ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-invariant-hunt.sh: unknown flag $1" >&2; exit 2 ;;
@@ -146,6 +154,36 @@ SLUG="$(printf '%s' "$TARGET" | tr -cs 'A-Za-z0-9' '_' | sed 's/_*$//')"
 INV_OUT="$REPO_IN_RUN/test/Inv_${SLUG}.t.sol"
 CELL_LOG="$RUN/invariant_${SLUG}.log"
 
+# Int M3 (#1037): the PERSISTENT pattern-DAG store. When --pattern-store is set we resolve it to an
+# absolute path and `agentis init` it once (idempotent — re-init of an existing store is a no-op for our
+# memos). It holds the `invpat:*` memos ACROSS runs. The per-run store above is still ephemeral (wiped each
+# run); the bridge below moves patterns IN before the run (so RECALL sees a prior run's confirmed shapes)
+# and OUT after (so this run's FINDING is kept for the next). Absent the flag, $PATTERN_STORE stays empty and
+# the whole bridge is skipped -> no cross-run memory (M1/M2 byte-identical).
+if [ -n "$PATTERN_STORE" ]; then
+  mkdir -p "$PATTERN_STORE"; PATTERN_STORE="$(cd "$PATTERN_STORE" && pwd)"
+  [ -d "$PATTERN_STORE/.agentis" ] || ( cd "$PATTERN_STORE" && "$AGENTIS" init >/dev/null 2>&1 )
+fi
+
+# Bridge every `invpat:*` memo from $1's store into $2's store via the agentis memo CLI. The DAG content
+# HASH is deterministic (sha256 of the signature), so only the memo VALUES need to travel between stores —
+# `recall_latest("invpat:latest:<class>")` is what the prover reads to seed GENERATE, and re-`dag_put`ting
+# the same signature reproduces the same `invpat:exact:<hash>` key locally. memo keys are restricted to a
+# safe charset upstream, so no key here can carry a shell metachar.
+bridge_invpat() {  # $1 = src store dir, $2 = dst store dir
+  _src="$1"; _dst="$2"
+  ( cd "$_src" && "$AGENTIS" memo list 2>/dev/null ) | awk '{print $1}' | grep -E '^invpat:' | while IFS= read -r k; do
+    _v="$( ( cd "$_src" && "$AGENTIS" memo get "$k" ) 2>/dev/null )"
+    [ -n "$_v" ] && ( cd "$_dst" && "$AGENTIS" memo set "$k" "$_v" >/dev/null 2>&1 )
+  done
+}
+
+# RECALL: seed the per-run store with any patterns a PRIOR run persisted, BEFORE `agentis go` (so the
+# prover's recall_pattern() sees them and folds them into GENERATE).
+if [ -n "$PATTERN_STORE" ]; then
+  bridge_invpat "$PATTERN_STORE" "$RUN"
+fi
+
 echo "run-invariant-hunt.sh: generating + stateful-fuzzing $TARGET ($CLASS) ..." >&2
 ( cd "$RUN" && env \
     TARGET_FN="$TARGET" \
@@ -161,6 +199,12 @@ echo "run-invariant-hunt.sh: generating + stateful-fuzzing $TARGET ($CLASS) ..."
     FORGE_INVARIANT="$RUN/forge-invariant.sh" \
     "$AGENTIS" go invariant-prover.ag --enable-exec --enable-messaging ) >"$CELL_LOG" 2>&1 || \
     echo "run-invariant-hunt.sh: invariant-prover run failed for '$TARGET' (see $CELL_LOG)" >&2
+
+# PERSIST: copy any `invpat:*` the prover wrote this run (on a FINDING) back OUT to the persistent store,
+# so the NEXT run on the same class recalls it. Skipped (no-op) when --pattern-store was not supplied.
+if [ -n "$PATTERN_STORE" ]; then
+  bridge_invpat "$RUN" "$PATTERN_STORE"
+fi
 
 # The prover's contract: exactly one `INVARIANT|<file:fn>|<verdict>` line, then (on a FINDING) `STEP|...`
 # lines. Take the LAST verdict match. No line at all = treat as HARNESS_ERROR (no verdict was produced).
