@@ -16,6 +16,25 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **Every action's DISPATCH moved into the substrate** (#1014 M2). M1 moved the `hunt` slice; M2
+  **generalises** the dispatch to *all* action types. `dispatcher.ag`'s `hunt_dispatch` becomes a `dispatch`
+  agent fn that parses the action `<type>` from the bus payload (`<type>|<args>`) and handles `hunt`,
+  `refute`, `poc-screen`, and `invent-method`. The offline verdict now comes from a `DISPATCH_FIXTURE` env
+  fact whose rules are `type|glob=verdict;…` (a PREFIX glob matched against the action ARGS — a hunt's
+  `subsystem|class`, a refute/poc-screen candidate id, or invent-method's empty args; first match wins,
+  default `dry`) — the same `<type>|<glob>|<outcome>` shape `run-coordinator.sh`'s `--fixture` holds.
+  `HUNT_FIXTURE` is kept as a backward-compat alias consulted for a `hunt` only when `DISPATCH_FIXTURE` is
+  empty. The agent keeps an honest per-type LIVE stub when no fixture is set. It writes
+  `coordinator:last_outcome = <type>|<args>|<verdict>` and prints `DISPATCH|<type>|<args>|<verdict>`; the
+  standalone `DISPATCH_ARGS` entry now takes `<type>|<args>`. `demo-dispatch.sh` is extended to prove the
+  in-substrate dispatch + memo round-trip for **hunt, refute, poc-screen, and invent-method**, each with the
+  standalone-dispatcher **sync-guard** (run `dispatcher.ag` standalone, assert its `DISPATCH|`/memo equals
+  the inlined coordinator path), plus the hunt determinism + fixture-flip checks; deterministic (run twice,
+  byte-identical). `docs/dispatch.md`, `docs/coordinator.md`, and `README.md` updated to say all action
+  dispatch is now substrate-native (the shell loop remains; only outcome-computation moved). The dispatch
+  block stays **dark** when `DISPATCH_ENABLED` is absent, so a standalone `coordinator.ag` run
+  (`demo-coordinator.sh`) is **byte-identical** to before this change. **Requires:** agentis >= 1.19.0.
+
 - **The `hunt` DISPATCH moved into the substrate** (#1014 M1). The self-orchestrating coordinator no longer
   just *decides* a hunt — in **one** `agentis go` it also *dispatches* it. `coordinator.ag` `emit`s the
   chosen hunt over the in-process bus (`dark-factory:dispatch`, payload `hunt|<subsystem>|<class>`) and a
@@ -36,6 +55,16 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   event/fact contract. **Requires:** agentis >= 1.19.0.
 
 ### Changed
+
+- **`run-coordinator.sh` dispatches EVERY action through the substrate** (#1014 M2). The
+  `stub_outcome()` / `real_outcome()` shell functions and their `case` dispatch are **removed** — the shell
+  computes no action's outcome. For every non-`stop` action the loop reads the verdict from the
+  `coordinator:last_outcome` memo the coordinator's in-substrate `dispatch()` writes (one `agentis memo get`
+  per step). The full `--fixture` content (all rows, not just the `hunt` rows) is passed as
+  `DISPATCH_FIXTURE` (projected to `type|glob=verdict;…`) and added to `exec.env_passthrough`
+  (`HUNT_FIXTURE` stays whitelisted for the backward-compat alias). PENDING/DRY_STREAK/BUDGET threading is
+  unchanged. Header comment + `docs/coordinator.md` updated to mark dispatch-into-the-substrate **done for
+  all action types**.
 
 - **`run-coordinator.sh` dispatches a `hunt` through the substrate** (#1014 M1). The hunt branch of the
   shell `case` (`stub_outcome` / `real_outcome`) is replaced by reading the verdict from the
