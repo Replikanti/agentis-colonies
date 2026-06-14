@@ -16,6 +16,49 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **The stateful-invariant-fuzzing bounty hunter — finds the MULTI-STEP bugs single-function symbolic exec
+  misses** (#1035). The symbolic gate (#1015) proves a property over all inputs of ONE function; the refuter
+  (#999) is a hostile LLM read of ONE claim. Both miss the **multi-step, stateful** bug — the ERC4626
+  inflation attack, an accounting drift that compounds, a re-entrancy that only breaks on the third interleave
+  — exactly the class that survives a single-function audit. This MVP ships the engine for that class: the LLM
+  writes the deep invariants + the handler, Foundry's stateful fuzzer finds the exploit SEQUENCE, and **the
+  verdict is the fuzzer's concrete failing call-sequence, never the LLM's opinion**.
+  - `auditor/agents/invariant-prover.ag` — per-target substrate agent (the third GENERATE-AND-VERIFY sibling
+    after `refuter.ag` and `symbolic-prover.ag`). It env-ins the target (`TARGET_FN` + class) + the contract
+    source, GENERATES a Foundry stateful-invariant test — a `Handler` exposing the protocol's actions as
+    bounded actor functions + a set of DEEP `invariant_*` properties (value-conservation, no-depositor-loss,
+    solvency-under-any-sequence, no-free-value-extraction, share-price-monotonicity) — verbatim from a
+    `HANDLER_FIXTURE` on the offline path or via `prompt()` on the live path (prompt-gate-ok per convention).
+    It writes the UNTRUSTED test injection-safely (`printf '%s' <shell_escape(test)>`, NEVER a heredoc),
+    VERIFIES it through the fuzzing gate, maps the exit code **1 → FINDING** / **0 → CLEAN** / **else →
+    HARNESS_ERROR**, `emit`s `dark-factory:invariant_verdict`, `learn`s the attempt (FINDING=success,
+    CLEAN=failure, harness=error) so invariant-prover fitness reweights, and prints `INVARIANT|<target>|
+    <verdict>` plus, on a FINDING, the shrunk exploit call-sequence (one `STEP|...` line per call).
+  - `evm-harness/forge-invariant.sh` — the callable gate. Runs Foundry's built-in stateful invariant fuzzer
+    over a `*.t.sol` (`forge test --match-test invariant --json`), parses the JSON without `jq`, and returns
+    **FINDING** (exit 1, with the shrunk exploit sequence surfaced on stderr) / **CLEAN** (exit 0, every
+    invariant held across the fuzzed search) / **HARNESS_ERROR** (exit 2, compile/setup error / no invariant
+    matched / forge absent). forge-std-free by design: the test registers fuzz targets via the
+    `targetContracts()` StdInvariant ABI Foundry auto-discovers and asserts with plain `require(...)`, so it
+    compiles in ANY Foundry project with zero remappings. runs/depth tune the search via
+    `FOUNDRY_INVARIANT_RUNS`/`_DEPTH`; `--seed` pins forge's fuzz seed for reproducibility.
+  - `run-invariant-hunt.sh` — operator entrypoint mirroring `run-symbolic.sh`. `--repo <foundry project>
+    --target <Contract.sol[:Name]> [--handler-fixture <file>] [--backend mock|flat-cyborg|claude] [--runs N]
+    [--depth D] [--seed S] [--out <dir>]`. Stages a fresh copy of `--repo` into the rundir, drops pre-existing
+    `*.t.sol` so the gate scopes to exactly the generated test, drives `invariant-prover.ag` over the
+    substrate, and collects the verdict + any shrunk exploit sequence into `<out>/invariant-report.md`.
+    Default backend flat-cyborg.
+  - `demo-invariant-hunt.sh` — offline-deterministic proof. Builds two tiny Foundry repos — a VULNERABLE
+    ERC4626-style vault (no virtual offset) and a HARDENED twin (a large virtual-share/asset offset) — and
+    drives the harness with a fixture handler on each: asserts the vulnerable vault → **FINDING** with a
+    non-empty shrunk exploit sequence (the inflation attack: donate → seed → victimDeposit), the hardened
+    vault → **CLEAN** (no false positive on the fix). A fixed `--seed` makes the search reproducible.
+    `[SKIP]` + exit 0 when forge/agentis are absent (CI convention).
+  - `docs/invariant-hunt.md` — the thesis (audit-surviving bugs are multi-step/stateful; the LLM writes deep
+    invariants + handlers, the fuzzer finds the exploit sequence, the verdict is the fuzzer's), the
+    verdict-source contract + verdict→outcome mapping, the deep-invariant taxonomy, fixture-vs-LLM paths,
+    honest scope (the engine; coordinator-routing + fan-out are follow-up), and how it relates to #1015 / #1033.
+    Wired into `README.md` (`## Hunt multi-step bugs (run-invariant-hunt.sh)` + the Layout map).
 - **The LIVE coordinator → Halmos `symbolic-prove` route — REAL symbolic execution inside the autonomous
   loop** (#1032). #1015 M3 proved the *offline* orchestration (a `DISPATCH_FIXTURE` stood in for the sound
   verdict); #1032 closes the **live** slice for an operator-supplied single candidate: when the coordinator

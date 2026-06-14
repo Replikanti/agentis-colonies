@@ -1,0 +1,196 @@
+cb 300000;
+// #1035 — substrate-native STATEFUL-INVARIANT-FUZZING bounty hunter. The LLM is the HYPOTHESIS GENERATOR
+// (it turns a target protocol into a Foundry stateful-invariant test: a `Handler` exposing the protocol's
+// actions as bounded actor functions + a set of DEEP `invariant_*` properties); the FUZZER is the JUDGE
+// (Foundry drives randomized multi-call sequences through the Handler and re-checks every invariant after
+// each call — if one breaks it SHRINKS the offending sequence to a minimal reproducer). The verdict NEVER
+// comes from the LLM's opinion — it is the exit code of evm-harness/forge-invariant.sh over the just-written
+// test: a FAILED invariant + a concrete shrunk call-sequence is a CANDIDATE finding (a reproducible exploit
+// WITNESS); all invariants holding is no finding. That is the whole point.
+//
+// This is the third sibling of the GENERATE-AND-VERIFY family, after refuter.ag (the verdict is the LLM's
+// hostile read) and symbolic-prover.ag (the verdict is Halmos's proof over ALL inputs of ONE function). The
+// gap those two leave is the MULTI-STEP, multi-caller bug — the ERC4626 inflation attack, an accounting
+// drift that compounds, a re-entrancy that only breaks on the third interleave — exactly the class that
+// survives a single-function audit. Stateful fuzzing is the tool built for that class: it searches over
+// SEQUENCES of calls, not single inputs, so the witness it returns is a concrete exploit transaction order.
+//
+// A FINDING here is a CANDIDATE the fuzzer reproduced — still a LEAD a human triages, never a finding and
+// NEVER auto-submitted. CLEAN means every deep invariant held across the whole fuzzed search (no finding in
+// this budget — not a proof of safety). HARNESS_ERROR (the generated/fixture test did not compile, no
+// invariant matched, or forge is absent) is NOT a verdict. Submission stays an explicit, human-gated action
+// and this agent never posts to a bounty platform.
+//
+// Env:
+//   TARGET_FN     the target location, "path/to/Contract.sol[:Name]" (free-form label; the lens).
+//   TARGET_CLASS  the bug class id the target is filed under, e.g. "C-erc4626" (optional; "" if unknown).
+//   INV_REPO      absolute path to the foundry project root (must hold foundry.toml) the test is built in.
+//                 The exec sandbox cannot read $HOME — pass a rundir / /tmp path (run-invariant-hunt.sh stages it).
+//   INV_OUT       absolute path the generated/fixture `*.t.sol` invariant test is written to (under INV_REPO/test/...).
+//   INV_MATCH     the invariant function-name prefix forge-invariant runs (default "invariant" when "").
+//   HANDLER_FIXTURE optional path to a ready-made invariant test. When set (offline / deterministic path) it
+//                 is used VERBATIM as the test and NO LLM is called; otherwise the LLM generates it (live).
+//   CODE_PATH     optional path to the target contract source the LLM reads to write the handler; "" to skip.
+//   INV_RUNS      optional forge invariant runs budget (passed to the gate); "" = the gate / project default.
+//   INV_DEPTH     optional forge invariant depth budget (passed to the gate); "" = the gate / project default.
+//   INV_SEED      optional forge --fuzz-seed for a reproducible search; "" = forge's default seed.
+//   FORGE_INVARIANT the absolute path to evm-harness/forge-invariant.sh (the verdict gate).
+// Stdout: exactly one verdict marker line —
+//   INVARIANT|<file:fn>|<FINDING|CLEAN|HARNESS_ERROR>
+// followed, on a FINDING, by the shrunk exploit call-sequence (one `STEP|...` line per call).
+
+// --- file reader (dynamic path -> safe-exec-concat, per symbolic-prover.ag / refuter.ag precedent) ---
+fn cat_file(path: string) -> string {
+    if len(path) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "sed -n '1,4000p' ${path} 2>/dev/null || true";
+}
+
+// Map the forge-invariant.sh exit code to the colony verdict token. This is the ONLY source of the verdict
+// — the LLM never decides it. The exit contract mirrors evm-harness/forge-invariant.sh exactly:
+//   1 -> FINDING        (>=1 invariant broken by a multi-step sequence -> a CANDIDATE with a shrunk witness)
+//   0 -> CLEAN          (every invariant held across the whole fuzzed search -> no finding in this budget)
+//   else (2, etc.) -> HARNESS_ERROR (compile/setup error / no invariant matched / repo not foundry / forge missing)
+fn verdict_of(rc: int) -> string {
+    if rc == 1 { return "FINDING"; }
+    if rc == 0 { return "CLEAN"; }
+    return "HARNESS_ERROR";
+}
+
+// learn() outcome must be one of the runtime enum {success,failure,partial,timeout,error}. A FINDING is the
+// highest-value outcome the loop can produce (a reproduced multi-step exploit witness) = success; a CLEAN
+// consumed the hypothesis without yielding a candidate = failure (like a rigorous SAFE in hunter.ag); a
+// harness error = error. No reassignment of a `let` (single-assignment .ag).
+fn outcome_of(verdict: string) -> string {
+    if verdict == "FINDING" { return "success"; }
+    if verdict == "CLEAN" { return "failure"; }
+    return "error";
+}
+
+// Parse the `__rc=<n>` marker forge-invariant is wrapped to print as its LAST line (the auditor.ag exec
+// convention). regex_capture(pattern, input, group) returns the captured digits; parse_int is total
+// (non-numeric -> 0). A missing marker would wrongly read as 0/CLEAN, so a "no marker" case is forced to a
+// harness error (2). (symbolic-prover.ag / pattern-evolver.ag use the same regex_capture(pattern, out, 1).)
+fn rc_of(out: string) -> int {
+    if index_of(out, "__rc=") < 0 { return 2; }
+    return parse_int(regex_capture("__rc=([0-9]+)", out, 1));
+}
+
+// The gate prints the shrunk exploit sequence on stderr as `  step <n>: <call>` lines on a FINDING. Pull
+// them out of the captured run output verbatim so the marker line(s) carry the concrete witness a human
+// triages. Total: no match -> "" (a FINDING with no parsed steps still surfaces the marker).
+fn steps_of(out: string) -> string {
+    // colony-lint: safe-exec-concat
+    return exec sh "printf '%s' " + shell_escape(out) + " | sed -n 's/^[[:space:]]*step [0-9]*: /STEP|/p' || true";
+}
+
+let targetFn = getenv("TARGET_FN");
+let targetClass = getenv("TARGET_CLASS");
+let invRepo = getenv("INV_REPO");
+let invOut = getenv("INV_OUT");
+// forge-invariant.sh's own default function prefix is `invariant`; default to it when INV_MATCH is unset.
+fn match_prefix(raw: string) -> string {
+    if len(raw) == 0 { return "invariant"; }
+    return raw;
+}
+let invMatch = match_prefix(getenv("INV_MATCH"));
+let fixturePath = getenv("HANDLER_FIXTURE");
+let code = cat_file(getenv("CODE_PATH"));
+
+// --- GENERATE the handler + invariants -----------------------------------------------------------
+// Offline / deterministic path: a HANDLER_FIXTURE is a ready-made invariant test used VERBATIM, no LLM.
+// This is the path demo-invariant-hunt.sh and a `--backend mock` wiring smoke take, so the
+// target->handler->fuzzer->verdict loop is provable with zero LLM cost and a real fuzzer. The fixture is
+// read through the sandboxed reader.
+let fixture = cat_file(fixturePath);
+
+// Live path: the LLM is the HYPOTHESIS GENERATOR. It reads the target contract source and writes a
+// self-contained Foundry stateful-invariant test — a `Handler` that exposes the protocol's actions as
+// BOUNDED actor functions + a set of DEEP `invariant_*` properties (value-conservation, no-depositor-loss,
+// solvency-under-any-sequence, no-free-value-extraction, share-price-monotonicity). The verdict is STILL the
+// FUZZER's (below); the LLM only writes the handler + the properties to check. Cold path, one target in / one
+// test out (no per-tick staleness to gate) -> the prompt carries an explicit prompt-gate-ok marker.
+fn generate_test(klass: string, src: string, matchPrefix: string) -> string {
+    let instruction =
+        "You are a stateful-invariant-fuzzing engineer. Write a self-contained Foundry stateful-invariant "
+      + "test (Solidity, `pragma solidity ^0.8.20;`) for the target contract below so Foundry's invariant "
+      + "fuzzer can drive randomized multi-call SEQUENCES through it and find a MULTI-STEP exploit. "
+      + "Requirements:\n"
+      + "  - Import the target from `../src/...` if the project ships it there; otherwise inline a minimal "
+      + "copy. Do NOT import forge-std — this test must compile with ZERO library remappings.\n"
+      + "  - A `Handler` contract whose PUBLIC functions are the protocol's actions as a real attacker/user "
+      + "would call them (deposit, withdraw, donate, borrow, ...), each taking fuzzed `uint` inputs you BOUND "
+      + "to realistic ranges with a private `_bound(x, lo, hi)` helper (NO forge-std `bound`). Track the "
+      + "honest victim's deposits/shares in Handler state so an invariant can compare claim-vs-deposit.\n"
+      + "  - An `abstract contract InvBase` that exposes `function targetContracts() public view returns "
+      + "(address[] memory)` returning the addresses to fuzz, with an internal `_target(address)` that pushes "
+      + "to that array (this is the StdInvariant ABI Foundry auto-discovers — no forge-std needed).\n"
+      + "  - A test contract `is InvBase` with a `setUp()` that deploys the protocol + the Handler and calls "
+      + "`_target(address(handler))`, plus a set of DEEP `" + matchPrefix + "_*` view functions asserting with "
+      + "plain `require(...)`: value-conservation, no-depositor-loss (a depositor's claim >= their deposit "
+      + "minus dust), solvency-under-any-sequence, no-free-value-extraction, share-price-monotonicity. Each "
+      + "must catch a bug that only a SEQUENCE of calls can produce, not a single call.\n\n"
+      + "=== BUG CLASS (lens) ===\n" + klass + "\n\n"
+      + "=== HOW TO ANSWER ===\n"
+      + "Output ONLY the Solidity source of the `*.t.sol` test — no markdown fences, no prose before or "
+      + "after. It must compile and define at least one `contract` and one `" + matchPrefix + "_*` function.";
+    // colony-lint: prompt-gate-ok
+    return prompt(instruction, src) -> string;
+}
+
+// Single-assignment .ag: pick the test source ONCE (no `let` reassignment). A non-empty HANDLER_FIXTURE wins
+// (offline/deterministic, verbatim, no LLM); otherwise the LLM generates it (live path).
+let usedFixture = len(fixture) > 0;
+fn choose_test(usedFix: bool, fix: string, klass: string, src: string, matchPrefix: string) -> string {
+    if usedFix { return fix; }
+    return generate_test(klass, src, matchPrefix);
+}
+let test = choose_test(usedFixture, fixture, targetClass, code, invMatch);
+
+// Write the generated/fixture test to INV_OUT (inside INV_REPO/test) so forge-invariant can run it. The test
+// content is UNTRUSTED — it is either an LLM completion (prompt-injectable by the untrusted target code under
+// audit) or an operator fixture — so it MUST go through shell_escape(), never a heredoc (a heredoc body is
+// not escaped: a test line equal to the sentinel would terminate it early and the rest would execute as
+// shell). printf '%s' on a shell_escape()d single-quoted literal cannot be escaped by any content (no shell
+// metachar survives single-quoting), so the test is written verbatim with zero injection.
+let wrote = exec sh "printf '%s' " + shell_escape(test) + " > " + shell_escape(invOut) + "; echo __wrote=$?";
+
+// --- VERIFY with the stateful-fuzzing gate ------------------------------------------------------
+// Run evm-harness/forge-invariant.sh against the just-written test and capture its exit code via the
+// `__rc=$?` marker convention (auditor.ag). `set +e` so the gate's non-zero verdict exit (1/2) does not
+// abort the shell before the marker is printed. The verdict is THIS exit code — nothing else. Optional
+// runs/depth/seed are forwarded only when set, each as a shell_escape()d value.
+let gate = getenv("FORGE_INVARIANT");
+let runsArg = getenv("INV_RUNS");
+let depthArg = getenv("INV_DEPTH");
+let seedArg = getenv("INV_SEED");
+fn opt_flag(flag: string, val: string) -> string {
+    if len(val) == 0 { return ""; }
+    return " " + flag + " " + shell_escape(val);
+}
+let budget = opt_flag("--runs", runsArg) + opt_flag("--depth", depthArg) + opt_flag("--seed", seedArg);
+// colony-lint: safe-exec-concat
+let runOut = exec sh "set +e; sh " + shell_escape(gate) + " --repo " + shell_escape(invRepo) + " --target " + shell_escape(invOut) + " --match " + shell_escape(invMatch) + budget + " 2>&1; echo __rc=$?";
+
+let rc = rc_of(runOut);
+let verdict = verdict_of(rc);
+
+// --- EMIT the FUZZER's verdict -------------------------------------------------------------------
+// Surface the marker (stdout, parsed by run-invariant-hunt.sh), then on a FINDING the shrunk exploit
+// sequence (one STEP| line per call), record it on the bus, and learn() the attribution so invariant-prover
+// fitness reweights over targets (FINDING=success, CLEAN=failure, harness=error). memo_write the last_check
+// per the agent convention.
+print("INVARIANT|" + targetFn + "|" + verdict);
+let steps = steps_of(runOut);
+if verdict == "FINDING" {
+    if len(steps) > 0 { print(steps); }
+}
+let outcome = outcome_of(verdict);
+fn gen_mode(usedFix: bool) -> string {
+    if usedFix { return "fixture"; }
+    return "llm";
+}
+let genMode = gen_mode(usedFixture);
+emit("dark-factory:invariant_verdict", "{\"target\":\"" + targetFn + "\",\"class\":\"" + targetClass + "\",\"verdict\":\"" + verdict + "\",\"gen\":\"" + genMode + "\",\"outcome\":\"" + outcome + "\"}");
+learn("invariant-prove", targetClass + ":" + targetFn, "stateful-invariant-fuzz generate-and-verify of " + targetFn + " (" + targetClass + ") -> " + verdict, outcome, [targetClass, verdict, outcome]);
+memo_write("invariant-prover:last_check", "done");

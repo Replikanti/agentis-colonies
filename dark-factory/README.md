@@ -362,6 +362,40 @@ above and `dark-factory/demo-symbolic-orchestrate.sh`). See
 [`docs/generate-verify.md`](./docs/generate-verify.md) for the verdict-source contract, the fixture-vs-LLM
 paths, how it composes with M1, and the verdict→outcome mapping the coordinator routes on.
 
+## Hunt multi-step bugs (`run-invariant-hunt.sh`)
+
+The symbolic gate above PROVES a property over all inputs of **one function**; this gate catches the bug
+class that survives a single-function audit — the **multi-step, stateful** one that only emerges from a
+SEQUENCE of calls (the ERC4626 inflation attack, an accounting drift that compounds, a re-entrancy that
+only breaks on the third interleave). The **LLM is the hypothesis generator** — it turns a target contract
+into a Foundry **stateful-invariant test**: a `Handler` exposing the protocol's actions as bounded actor
+functions + a set of DEEP `invariant_*` properties (value-conservation, no-depositor-loss,
+solvency-under-any-sequence, no-free-value-extraction, share-price-monotonicity). The **fuzzer is the
+judge** — Foundry drives randomized multi-call sequences through the Handler, re-checks every invariant
+after each call, and on a break **shrinks** the offending sequence to a minimal reproducer.
+[`auditor/agents/invariant-prover.ag`](./auditor/agents/invariant-prover.ag) runs the whole step on the
+substrate (writes the test injection-safely, runs [`evm-harness/forge-invariant.sh`](./evm-harness/forge-invariant.sh),
+`emit`s `dark-factory:invariant_verdict`, `learn`s the attempt so invariant-prover fitness reweights) and
+prints one `INVARIANT|<target>|<verdict>` line plus, on a FINDING, the **shrunk exploit call-sequence**.
+
+```bash
+dark-factory/run-invariant-hunt.sh --repo "$PWD/target" --target Vault.sol:Vault --class C-erc4626
+# offline / cheap wiring smoke (no real LLM): supply --handler-fixture <ready .t.sol> + --backend mock
+# offline-deterministic end-to-end proof (real fuzzer, fixture handler):  dark-factory/demo-invariant-hunt.sh
+```
+
+The verdict is the **fuzzer's exit code, never the LLM's opinion**: `FINDING` = an invariant broke under a
+concrete SHRUNK call-sequence (a CANDIDATE with a reproducible witness), `CLEAN` = every invariant held
+across the fuzzed search (no finding in this budget — **not** a proof of safety), `HARNESS_ERROR` = the
+test did not compile / no invariant matched / forge absent (not a verdict). A `--handler-fixture` takes the
+**offline/deterministic** path (used verbatim, no LLM) so the target → fuzzer → verdict loop is provable
+with zero LLM cost; `--seed` pins forge's fuzz seed for a reproducible search. A FINDING is still a **LEAD
+a human triages**, never an auto-submission — this colony never posts. Honest scope: this ships the
+**engine** (one target → handler+invariants → the fuzzer's verdict); coordinator-routing and fan-out over
+many targets are follow-up. See [`docs/invariant-hunt.md`](./docs/invariant-hunt.md) for the
+verdict-source contract, the fixture-vs-LLM paths, the deep-invariant taxonomy, and how it relates to the
+symbolic gate (#1015) and the discovery method-gap (#1033).
+
 ## Exercise the evolve/fitness loop (`evolve-fitness.sh`)
 
 Every hunt the colony runs records a `learn("hunt", "<class>:<subsystem>", ..., outcome, [...])` row in
@@ -441,6 +475,7 @@ dark-factory/
   run-summary.sh                # one-shot run -> monitor-/dashboard-consumable run-summary.json (#995)
   run-refute.sh                 # operator entrypoint: adversarial refutation (refuter fan-out) -> verdicts
   run-symbolic.sh               # operator entrypoint: GENERATE a Halmos spec per candidate + VERIFY it (#1015 M2)
+  run-invariant-hunt.sh         # operator entrypoint: GENERATE a Foundry stateful-invariant test + VERIFY it with the fuzzer (#1035)
   run-coordinator.sh            # bootstrap for the self-orchestrating loop (ONE agentis go; the loop lives in-substrate; #1014 M3)
   demo-coordinator.sh           # offline, deterministic proof of the #1014 fact-driven + evolving-policy loop
   demo-dispatch.sh              # offline, deterministic proof of the #1014 M2 substrate DISPATCH (every action type)
@@ -453,6 +488,7 @@ dark-factory/
   demo-halmos.sh                # proof of the #1015 Halmos symbolic gate (PROVED + COUNTEREXAMPLE; SKIPs without the toolchain)
   demo-symbolic.sh              # offline-deterministic proof of the #1015 M2 generate-and-verify loop (fixture spec + real Halmos; SKIPs without the toolchain)
   demo-symbolic-orchestrate.sh  # offline, deterministic proof of the #1015 M3 coordinator routing a candidate to the sound symbolic engine
+  demo-invariant-hunt.sh        # offline-deterministic proof of the #1035 stateful-fuzzing loop (vulnerable -> FINDING, hardened -> CLEAN; SKIPs without forge)
   setup-solana-toolchain.sh     # one-time offline toolchain build (network ON)
   snapshot-rpc.sh               # host RPC getAccountInfo -> frozen on-chain snapshot (V4)
   calibrate-sealevel.sh         # detection+validation scorecard over the sealevel corpus (V6)
@@ -463,6 +499,7 @@ dark-factory/
     agents/poc-screener.ag      # substrate-native lead pre-screen via eval_ag (sandboxed PoC harness)
     agents/refuter.ag           # the adversarial-refutation agent (independent skeptic; default REFUTED)
     agents/symbolic-prover.ag   # generate-and-verify: LLM writes a Halmos spec, Halmos returns the sound verdict (#1015 M2)
+    agents/invariant-prover.ag  # stateful-fuzzing generate-and-verify: LLM writes a handler+deep invariants, the fuzzer returns the verdict + shrunk exploit sequence (#1035)
     agents/fitness-driver.ag    # one fitness-loop cell: hunter.ag's exact learn() over a ground-truth verdict
     agents/method-inventor.ag   # the meta-loop inventor: proposes a new audit method for a known gap (#998)
     agents/coordinator.ag       # self-orchestrating decider: fact+policy-driven actions (#1014); gated in-substrate dispatch for every action type (M2); gated in-substrate MULTI-STEP loop (M3)
@@ -481,9 +518,11 @@ dark-factory/
   evm-harness/                  # offline revm crate: two-sided EVM PoC (real EVM, Solidity)
     forge-verify.sh             # multi-contract custom-protocol PoC gate (real Foundry deploy+exploit)
     halmos-verify.sh            # sound symbolic gate: PROVES an invariant or returns a counterexample (Halmos+z3; #1015)
+    forge-invariant.sh          # stateful-fuzzing gate: drives Foundry invariant fuzzing -> FINDING (+ shrunk sequence) / CLEAN / HARNESS_ERROR (#1035)
     halmos-specs/               # self-contained Foundry specs: one Halmos PROVES, one it REFUTES (demo fixtures)
   docs/halmos.md                # the Halmos gate's verdict/exit contract, toolchain install, epic fit (#1015)
   docs/generate-verify.md       # the #1015 M2 generate-and-verify loop: LLM hypothesizes, Halmos proves; verdict-source contract
+  docs/invariant-hunt.md        # the #1035 stateful-invariant-fuzzing loop: LLM writes deep invariants, the fuzzer finds the multi-step exploit; verdict-source contract
   sealevel/                     # modernized coral-xyz/sealevel-attacks lessons (corpus) (V6)
   fixtures/                     # detection fixtures (vuln + safe + rigged-harness cases)
 ```
