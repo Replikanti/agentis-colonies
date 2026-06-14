@@ -1,4 +1,4 @@
-# Symbolic generate-and-verify (#1015 M2)
+# Symbolic generate-and-verify (#1015 M2 / M3)
 
 M1 shipped the **callable** Halmos gate ([`docs/halmos.md`](./halmos.md)): given a hand-written `*.t.sol`
 spec, [`evm-harness/halmos-verify.sh`](../evm-harness/halmos-verify.sh) returns a SOUND verdict (PROVED /
@@ -90,13 +90,70 @@ spec into `test/` and run Halmos there), drops any pre-existing `*.t.sol` so the
 generated spec, and routes each candidate through the substrate (`prompt`/`emit`/`learn`). The verdict table
 lands at `<out>/symbolic-report.md`.
 
+## Orchestration: the coordinator routes a candidate to the sound engine (#1015 M3)
+
+M2 ships the **callable** step (`run-symbolic.sh` over a candidate manifest). **M3 wires it into the
+self-orchestrating coordinator** ([`docs/coordinator.md`](./coordinator.md)): a new `symbolic-prove`
+coordinator ACTION lets the federation **DECIDE** to route a pending candidate through the SOUND symbolic
+engine, and the engine's verdict feeds back into the coordinator's **evolving policy** — the same
+`learn()` mechanic every other action uses.
+
+```
+coordinator decides ──▶ ACTION|symbolic-prove|<cand> ──▶ run-symbolic.sh / symbolic-prover.ag
+                                                              GENERATE spec ──▶ halmos-verify.sh (z3)
+                                                              SOUND verdict
+   policy evolves  ◀──── outcome (confirmed / refuted / dry) ◀──── verdict→outcome mapping
+```
+
+`symbolic-prove` lives in the coordinator's **VERIFY tier** alongside `refute` and `poc-screen` (a pending
+candidate present ⇒ verify it before more hunting). Base score **96**, below `refute` (100) and `poc-screen`
+(98) — routing through the symbolic engine is the most expensive verify (generate a spec + run z3), so the
+cheaper verifies are tried first by default; the **policy weight** (the steepest in the tier, ×4) lets the
+colony **learn** the sound verdict pays off and lift `symbolic-prove` above either. The ordering is
+fact-and-policy-driven and **policy-evolvable**, exactly like the other action types.
+
+### The verdict→outcome mapping (the epic's thesis)
+
+The whole point: the confirmed/refuted signal the coordinator evolves on now comes from a **sound engine**,
+never an LLM opinion. The symbolic gate's verdict maps to the coordinator's three-value gate-outcome enum:
+
+| Symbolic verdict | Coordinator outcome | Meaning | policy signal |
+|---|---|---|---|
+| **COUNTEREXAMPLE** | `confirmed` | a concrete input is a real bug, CONFIRMED with a replayable witness | success (+0.15) |
+| **PROVED** | `refuted` | the invariant holds for ALL inputs — the lead is killed **by a proof** (safe) | failure (−0.15) |
+| **INCONCLUSIVE** | `dry` | solver unknown / timeout / not fully explored — no verdict, a non-productive step | failure (−0.15) |
+| HARNESS_ERROR / other | `dry` | the run produced no verdict | failure (−0.15) |
+
+On the **offline / deterministic** path the `DISPATCH_FIXTURE` carries the already-mapped outcome directly —
+a `symbolic-prove|cand*=confirmed` rule stands in for a COUNTEREXAMPLE, `=refuted` for a PROVED — so the
+orchestration is provable with **no live solver** (every action's offline path works this way). On the
+**live** path the mapping is realized end-to-end in `symbolic-prover.ag` (Halmos exit code → verdict →
+outcome) behind `run-symbolic.sh`; `dispatcher.ag` / `coordinator.ag` document the contract and route to it.
+
+### Reproduce
+
+```bash
+# Offline-deterministic proof of the ORCHESTRATION (no Halmos needed — the fixture maps the sound verdict):
+#   a hunt confirms -> pushes a candidate -> the coordinator CHOOSES symbolic-prove -> the SOUND verdict
+#   flows back (COUNTEREXAMPLE->confirmed / PROVED->refuted) -> the candidate is consumed -> the policy evolves.
+dark-factory/demo-symbolic-orchestrate.sh      # exit 0 = proven; non-zero = an assertion failed
+
+# Bootstrap the in-substrate loop with a symbolic-prove route yourself (stub executor = offline; --sym-policy
+# seeds the symbolic-prove policy so the coordinator chooses it from step 0):
+dark-factory/run-coordinator.sh --scope <scope.tsv> --executor stub --fixture <fixture.tsv> \
+    --sym-policy 1.5 --budget 4
+#   fixture rule: `symbolic-prove | cand* | confirmed`  (= a Halmos COUNTEREXAMPLE; `refuted` = a PROVED)
+```
+
 ## Honest scope
 
 M2 ships the **callable** generate-and-verify step: an operator (or a higher-level script) invokes
-`run-symbolic.sh` over a candidate manifest. **Auto-routing** discovery candidates from `run-discovery.sh`
-into the symbolic gate inside the self-orchestrating coordinator ([`docs/coordinator.md`](./coordinator.md))
-— so the coordinator decides *when* to spend a symbolic verify and feeds the verdict back into its evolving
-policy — is a **later milestone** on epic #1015.
+`run-symbolic.sh` over a candidate manifest. **M3 wires it into the self-orchestrating coordinator** (above):
+the coordinator decides *when* to spend a symbolic verify and feeds the SOUND verdict back into its evolving
+policy. The deterministic orchestration proof uses a fixture that maps the sound verdict (no live Halmos
+needed for the routing proof — exactly like every other action's offline path); the **live** symbolic route
+(`run-symbolic.sh` driving real Halmos behind the chosen action) is the same wiring M2 ships, and remains a
+follow-up to thread end-to-end from the coordinator's live dispatch path (epic #1015 / #1014).
 
 On the **live** (LLM-generated-spec) path, an honest expectation: a generated Halmos spec must both **compile**
 (`forge build` via Halmos) and stay **decidable** (small symbolic widths, bounded loops) for a clean

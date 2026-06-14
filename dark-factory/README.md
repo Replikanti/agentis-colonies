@@ -244,6 +244,29 @@ scope: the loop self-orchestrates per bootstrap invocation; a long-lived daemon-
 refinement. v1 boundary (the live-path executor wiring per action is follow-up; manifest reprioritisation is
 follow-up; submission stays human-gated): [`docs/coordinator.md`](./docs/coordinator.md).
 
+**#1015 M3 — the coordinator ROUTES a candidate to the SOUND symbolic engine.** A new `symbolic-prove`
+coordinator ACTION lets the self-orchestrating loop **DECIDE** to route a pending candidate through the
+generate-and-verify gate (`run-symbolic.sh` / Halmos + z3, #1015 M2): a hunt confirms → pushes a candidate →
+the coordinator may CHOOSE `symbolic-prove` for it → the engine's **SOUND** verdict flows back into the
+evolving policy, mapped **COUNTEREXAMPLE → confirmed**, **PROVED → refuted** (the lead is killed *by a
+proof*), **INCONCLUSIVE → dry**. So the confirmed/refuted signal the policy evolves on now comes from a
+sound engine, never an LLM opinion — the epic's thesis as a coordinator decision. `symbolic-prove` sits in
+the VERIFY tier (default `refute` > `poc-screen` > `symbolic-prove`, the symbolic route being the most
+expensive verify; its policy term is the steepest, so the colony can learn to lift it). The orchestration is
+proven offline + deterministically with a fixture standing in for the sound verdict (no live Halmos needed,
+exactly like every other action's offline path):
+
+```sh
+dark-factory/demo-symbolic-orchestrate.sh   # hunt -> push -> CHOOSE symbolic-prove -> sound verdict ->
+                                            #   consumed from PENDING -> policy evolves; deterministic re-run
+# or bootstrap it yourself (--sym-policy seeds the symbolic-prove weight so the coordinator chooses it):
+dark-factory/run-coordinator.sh --scope <scope.tsv> --executor stub --fixture <fixture.tsv> --sym-policy 1.5
+```
+
+See [`docs/generate-verify.md`](./docs/generate-verify.md) (the verdict→outcome mapping) and
+[`docs/coordinator.md`](./docs/coordinator.md) (the action). The **live** symbolic route end-to-end from the
+coordinator's dispatch path remains follow-up; submission stays human-gated.
+
 ### Pre-screen a lead before the Foundry gate (`screen-leads.sh`)
 
 `forge-verify.sh` is the heavyweight gate (a full Foundry deploy + attacker tx). Between a hunter's
@@ -332,9 +355,12 @@ dark-factory/run-symbolic.sh --candidates "$PWD/candidates.tsv" --repo "$PWD/tar
 A `spec-fixture` in the manifest takes the **offline/deterministic** path — that spec is used verbatim and
 **no LLM is called** — so the candidate → halmos → verdict loop is provable with zero LLM cost and a real
 solver. A **COUNTEREXAMPLE** is still a **lead** a human reviews, not an auto-submission; this colony never
-posts. See [`docs/generate-verify.md`](./docs/generate-verify.md) for the verdict-source contract, the
-fixture-vs-LLM paths, how it composes with M1, and the honest scope (a callable step today; coordinator
-auto-routing is a later milestone).
+posts. **#1015 M3** wires this step into the self-orchestrating coordinator as the `symbolic-prove` action
+(the coordinator DECIDES to route a candidate here; the SOUND verdict maps **COUNTEREXAMPLE → confirmed** /
+**PROVED → refuted** / **INCONCLUSIVE → dry** back into its evolving policy — see the coordinator section
+above and `dark-factory/demo-symbolic-orchestrate.sh`). See
+[`docs/generate-verify.md`](./docs/generate-verify.md) for the verdict-source contract, the fixture-vs-LLM
+paths, how it composes with M1, and the verdict→outcome mapping the coordinator routes on.
 
 ## Exercise the evolve/fitness loop (`evolve-fitness.sh`)
 
@@ -426,6 +452,7 @@ dark-factory/
   demo-blackboard.sh            # offline, deterministic demo of the #1001 blackboard coordination loop
   demo-halmos.sh                # proof of the #1015 Halmos symbolic gate (PROVED + COUNTEREXAMPLE; SKIPs without the toolchain)
   demo-symbolic.sh              # offline-deterministic proof of the #1015 M2 generate-and-verify loop (fixture spec + real Halmos; SKIPs without the toolchain)
+  demo-symbolic-orchestrate.sh  # offline, deterministic proof of the #1015 M3 coordinator routing a candidate to the sound symbolic engine
   setup-solana-toolchain.sh     # one-time offline toolchain build (network ON)
   snapshot-rpc.sh               # host RPC getAccountInfo -> frozen on-chain snapshot (V4)
   calibrate-sealevel.sh         # detection+validation scorecard over the sealevel corpus (V6)

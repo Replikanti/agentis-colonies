@@ -7,7 +7,7 @@ shell loop (`run-coordinator.sh`) still **dispatched** that action — it ran a 
 `hunt` slice onto the substrate.
 
 **M2 moves the dispatch onto the substrate for EVERY action type.** The decision *and* its dispatch now
-happen in **one** `agentis go` for any real action (`hunt` / `refute` / `poc-screen` / `invent-method`):
+happen in **one** `agentis go` for any real action (`hunt` / `refute` / `poc-screen` / `symbolic-prove` / `invent-method`):
 the coordinator decides the action, emits it over the in-process bus, a sibling agent fn derives the gate
 verdict and writes it to a durable memo, and the shell loop **reads the verdict from the memo** instead of
 computing it in a `case`. **The shell computes no action's outcome.** Only `stop` is never dispatched — it
@@ -38,14 +38,18 @@ that is the only substrate-native way to reach the next process.
 `DISPATCH_FIXTURE` is the **offline-determinism** fact: the dispatch fn derives an action's verdict from it
 with **no `prompt()` / LLM**. Each rule is `<type>|<glob>=<verdict>`; it applies when `<type>` equals the
 chosen action type **and** `<glob>` (a **prefix** glob, trailing `*` optional) matches the action **args**
-(for a hunt that is `subsystem|class`; for refute/poc-screen the candidate id; invent-method has empty
-args, matched by a bare `*` or empty glob). First match wins, default `dry` — the same semantics
+(for a hunt that is `subsystem|class`; for refute/poc-screen/symbolic-prove the candidate id; invent-method
+has empty args, matched by a bare `*` or empty glob). First match wins, default `dry` — the same semantics
 `run-coordinator.sh`'s old `stub_outcome()` used, projected to one env string. `run-coordinator.sh` builds
-it from **all** rows of `--fixture` in stub mode. With `DISPATCH_FIXTURE` empty (and no `HUNT_FIXTURE`
+it from **all** rows of `--fixture` in stub mode. For `symbolic-prove` (#1015 M3) the fixture verdict is the
+**already-mapped** outcome of the SOUND symbolic engine: `symbolic-prove|cand*=confirmed` = a Halmos
+COUNTEREXAMPLE, `=refuted` = a PROVED, `=dry` = INCONCLUSIVE (the verdict→outcome mapping lives in
+[`generate-verify.md`](./generate-verify.md)). With `DISPATCH_FIXTURE` empty (and no `HUNT_FIXTURE`
 alias for a hunt), the dispatch fn takes an **honest per-type live stub** that prints what real wiring each
 action still needs (`hunt`: `TARGET_DIR` / `IN_SCOPE` / …; `refute` → `run-refute.sh`; `poc-screen` →
-`screen-leads.sh`; `invent-method` → `run-method-discovery.sh`, mirroring the old `real_outcome()` honesty)
-and returns a benign `dry` — it does **not** attempt a real action.
+`screen-leads.sh`; `symbolic-prove` → `run-symbolic.sh` (SOUND verdict: COUNTEREXAMPLE→confirmed,
+PROVED→refuted, INCONCLUSIVE→dry); `invent-method` → `run-method-discovery.sh`, mirroring the old
+`real_outcome()` honesty) and returns a benign `dry` — it does **not** attempt a real action.
 
 ## The flow
 

@@ -134,18 +134,45 @@ fn is_verdict(v: string) -> bool {
 }
 
 // Is `t` a real (dispatchable) action type? `stop` is terminal and never dispatched. Leaf compares.
+// `symbolic-prove` (#1015 M3) routes a pending candidate through the SOUND symbolic engine; it is a real
+// verify action and so is dispatched like refute/poc-screen.
 fn is_action(t: string) -> bool {
     if t == "hunt" { return true; }
     if t == "refute" { return true; }
     if t == "poc-screen" { return true; }
+    if t == "symbolic-prove" { return true; }
     if t == "invent-method" { return true; }
     return false;
 }
 
+// === THE EPIC'S THESIS (#1015 M3): the SOUND symbolic verdict -> the coordinator OUTCOME enum. ===========
+// `symbolic-prove` routes a pending candidate through the SOUND symbolic engine (symbolic-prover.ag /
+// run-symbolic.sh, #1015 M2): the LLM only WRITES the property spec, but the verdict is HALMOS's exit code
+// (z3, no sampling) — never an LLM opinion. The engine's verdict tokens map to the coordinator's three-value
+// gate-outcome enum (confirmed | refuted | dry) as follows — this mapping is the WHOLE point of the action:
+//
+//   COUNTEREXAMPLE -> confirmed   a concrete input violates the invariant -> a REAL bug, CONFIRMED with a
+//                                 replayable witness (the highest-value outcome the loop can produce).
+//   PROVED         -> refuted     the invariant holds for ALL inputs -> the lead is killed BY A PROOF (safe);
+//                                 it is REFUTED — the same polarity a refuter's hostile read produces, but
+//                                 here from a sound proof, not an opinion.
+//   INCONCLUSIVE   -> dry         solver unknown / timeout / loop not fully explored / nothing matched -> no
+//                                 verdict; a non-productive step (the SAFE failure mode, never a false claim).
+//   HARNESS_ERROR / anything else -> dry   the run did not produce a verdict; treated as non-productive.
+//
+// So the confirmed/refuted policy signal the coordinator evolves on now comes from a SOUND oracle, not the
+// LLM. On the OFFLINE path the DISPATCH_FIXTURE carries the ALREADY-MAPPED outcome directly (a
+// `symbolic-prove|cand*=confirmed` rule stands in for a COUNTEREXAMPLE verdict, `=refuted` for a PROVED), so
+// the deterministic demo needs no live solver. The live mapping is realized end-to-end in symbolic-prover.ag
+// (exit code -> verdict -> learn outcome) behind run-symbolic.sh; the honest live stub below points there.
+
 // Derive the gate OUTCOME for an action of `<type>` with `<args>`. Offline (DISPATCH_FIXTURE set, or the
 // M1 HUNT_FIXTURE alias for a hunt) -> the fixture rule, NO prompt()/LLM. Otherwise the LIVE path: an
 // honest per-type stub that says what real wiring it needs (mirrors run-coordinator.sh::real_outcome) and
-// returns a benign `dry` — it does NOT attempt a real action.
+// returns a benign `dry` — it does NOT attempt a real action. For `symbolic-prove` the real wiring is
+// run-symbolic.sh -> symbolic-prover.ag -> halmos-verify.sh, whose SOUND verdict maps through the
+// COUNTEREXAMPLE->confirmed / PROVED->refuted / INCONCLUSIVE->dry contract documented above — the
+// cross-process bridge from the sound engine's verdict to the coordinator's policy signal.
 fn action_outcome(atype: string, args: string) -> string {
     let fixture = getenv("DISPATCH_FIXTURE");
     if len(fixture) > 0 {
@@ -161,7 +188,7 @@ fn action_outcome(atype: string, args: string) -> string {
             return "dry";
         }
     }
-    print("dispatcher: LIVE " + atype + " of '" + args + "' needs its real wiring (hunt: TARGET_DIR/IN_SCOPE/SCOPE_BRIEF/TAXONOMY/SLICER per run-discovery.sh/hunter.ag; refute->run-refute.sh; poc-screen->screen-leads.sh; invent-method->run-method-discovery.sh); set DISPATCH_FIXTURE for the offline-deterministic path. No real action attempted.");
+    print("dispatcher: LIVE " + atype + " of '" + args + "' needs its real wiring (hunt: TARGET_DIR/IN_SCOPE/SCOPE_BRIEF/TAXONOMY/SLICER per run-discovery.sh/hunter.ag; refute->run-refute.sh; poc-screen->screen-leads.sh; symbolic-prove->run-symbolic.sh (SOUND verdict: COUNTEREXAMPLE->confirmed, PROVED->refuted, INCONCLUSIVE->dry); invent-method->run-method-discovery.sh); set DISPATCH_FIXTURE for the offline-deterministic path. No real action attempted.");
     return "dry";
 }
 
