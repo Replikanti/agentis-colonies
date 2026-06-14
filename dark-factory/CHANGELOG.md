@@ -28,6 +28,17 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   `--extract` is a TUI screen-scrape — for reads where a refusal/malformed reply must never be misread,
   prefer `--backend claude` (fidelity hardening tracked in `Replikanti/flat-cyborg#42`).
 
+### Fixed
+
+- **`run-coordinator.sh` dispatch dropped a hunt's class** (#1014 v1 follow-up). The coordinator's
+  `ACTION|<type>|<args>|<rationale>` line was parsed with a flat `cut -f3`/`-f4-`, but a `hunt`'s
+  `<args>` is two `|`-fields (`subsystem|class`) where every other action's is one. The class leaked
+  into the logged rationale and the queued PENDING candidate id was built malformed as
+  `cand-N|subsystem` instead of the documented `cand-N|subsystem|class`. The parse is now type-aware
+  (hunt → fields 3-4 for args, 5- for rationale), mirroring `demo-coordinator.sh`. Also documented the
+  stub fixture's subsystem-prefix-glob rule (an args-glob must not contain a literal `|`) and fixed
+  `README.md` heading blank-line spacing (MD022).
+
 ### Added
 
 - Discovery: **self-orchestrating coordinator — fact-based, evolving decision policy** (v1 of #1014). The
