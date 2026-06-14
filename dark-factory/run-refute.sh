@@ -33,7 +33,7 @@
 #   --only <file:fn>     Refute only the candidate whose file:fn matches (re-run / smoke one).
 #   --backend <mock|flat-cyborg|claude>  LLM backend (default: flat-cyborg = flat-rate PTY wrapper;
 #                       claude = metered -p API; mock = offline-deterministic wiring smoke).
-#   --model <id>         Optional model id passed to the claude CLI.
+#   --model <id>         Optional model id (claude: passed to the CLI; flat-cyborg: set as llm.model).
 #   --out <dir>          Output dir for the run + verdicts (default: ./refute-out).
 #   --agentis <bin>      agentis binary (default: `agentis` on PATH).
 set -eu

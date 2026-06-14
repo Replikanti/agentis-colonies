@@ -104,9 +104,12 @@ chmod +x "$BIN/claude"
 echo "demo-blackboard.sh: running run-discovery.sh (offline, fake LLM) ..." >&2
 RUN_LOG="$WORK/run.log"
 set +e
+# --backend claude is REQUIRED here: the fake LLM stood up on PATH above is a fake `claude`,
+# so the run must pin the claude backend (which honors llm.command). The default flat-cyborg
+# backend ignores llm.command and would drive the real claude TUI — defeating the offline demo.
 PATH="$BIN:$PATH" "$HERE/run-discovery.sh" \
   --repo "$REPO" --scope "$WORK/scope.tsv" --brief "$WORK/brief.md" \
-  --out "$OUT" >"$RUN_LOG" 2>&1
+  --backend claude --out "$OUT" >"$RUN_LOG" 2>&1
 RC=$?
 set -e
 

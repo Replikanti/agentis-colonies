@@ -29,9 +29,9 @@ Each pair lives alongside the M1–M3 Reentrancy + AccessControl pairs in
 ## Methodology
 
 ```bash
-# AGENTIS = a built agentis binary; BACKEND defaults to claude (the only backend with a
-# per-class router — mock falls back to the structural reentrancy heuristic and cannot
-# confirm class routing). EVM_HARNESS_DIR defaults to ./evm-harness.
+# AGENTIS = a built agentis binary; BACKEND defaults to flat-cyborg (a reasoning backend routes
+# each class to its per-class invariant — mock has no class router and falls back to the structural
+# reentrancy heuristic, so it cannot confirm class routing). EVM_HARNESS_DIR defaults to ./evm-harness.
 AGENTIS=/path/to/agentis ./calibrate-evm.sh            # writes ./evm-scorecard.md
 AGENTIS=/path/to/agentis ./calibrate-evm.sh out.md     # or a chosen output path
 ```
