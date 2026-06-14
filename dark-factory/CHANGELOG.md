@@ -16,6 +16,59 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **The self-orchestrating coordinator AUTONOMOUSLY chooses + LIVE-runs the stateful-invariant fuzzer — a new
+  `invariant-hunt` action, end-to-end** (Integration M1, #1037). #1035 shipped the fuzzer as a *callable
+  engine* (an operator runs `run-invariant-hunt.sh`); Int M1 wires it into the #1014 self-orchestrating
+  coordinator so the **federation itself CHOOSES** to spend it and LIVE-runs it on a target — finding the
+  multi-step bug without an operator picking the engine. This mirrors EXACTLY how `symbolic-prove` was added
+  as a VERIFY-tier action (#1015 M3) and given a live route (#1032).
+  - `auditor/agents/coordinator.ag` — a new `invariant-hunt` action in the VERIFY tier (alongside
+    `refute`/`poc-screen`/`symbolic-prove`): `is_action` accepts it, a new `score_invariant(policy)` scores it
+    at **base 94** (below `refute`(100) / `poc-screen`(98) / `symbolic-prove`(96) — the stateful fuzzer is the
+    most EXPENSIVE verify, a multi-call sequence search, so the cheaper verifies go first by default), with the
+    **steep ×4 policy term** so the colony can **learn** to lift it above the others (`94 + 4 × policy` beats
+    `refute`(100) at policy > 1.5); a pending candidate still outranks any fresh hunt. The 3-way VERIFY argmax
+    is refactored to a single-assignment **4-way climbing argmax** that preserves the default ordering
+    `refute > poc-screen > symbolic-prove > invariant-hunt` on ties. It operates on the first pending candidate
+    (args = the candidate id) and consumes it from `PENDING`.
+  - **The LIVE route:** a new branch in `action_outcome` — when `invariant-hunt` is chosen AND no
+    `DISPATCH_FIXTURE` matched AND a live invariant env is present (`FORGE_INVARIANT` gate + `INV_REPO` foundry
+    dir + `INV_TARGET` invariant test), `run_invariant_live()` `exec sh`-runs `forge-invariant.sh --repo …
+    --target … --match … [--runs/--depth/--seed]` (optional budgets appended only when non-empty, every value
+    `shell_escape()`d), captures the exit code via the `__rc=$?` marker, and maps it **1 → confirmed** (FINDING,
+    a real multi-step bug with a shrunk witness), **0 → refuted** (CLEAN, the lead is killed in this budget),
+    **2/other → dry** (HARNESS_ERROR). The mapping is IDENTICAL to the symbolic route, so it **reuses**
+    `sym_rc_of`/`sym_outcome_of`. The branch is **purely additive** — absent any of the three env facts it
+    falls through to the existing honest stub, so behaviour with no live env is **byte-identical**. The verdict
+    is forge's shrunk witness, **never the LLM** — the **CHOICE** of engine is the policy's, the **VERDICT** is
+    the fuzzer's.
+  - The in-substrate orchestrate loop carries a 6th policy int (field 21) + seen flag (field 22) for
+    `invariant-hunt`, appended **after** the symbolic-prove fields so positions 0–20 are unchanged; a new
+    `INV_POLICY_TT` env fact (ten-thousandths) seeds the loop's initial `invariant-hunt` policy so the
+    coordinator can choose it from step 0 (exactly as `SYM_POLICY_TT` seeds `symbolic-prove`). `policy_string`
+    sorts `invariant-hunt` between `hunt` and `invent-method` (`inva` < `inve`), so a run that never touches it
+    renders the same string as before. `auditor/agents/dispatcher.ag` carries the byte-identical `is_action`
+    update (the `demo-dispatch.sh` sync-guard asserts the two copies do not drift). **With `ORCHESTRATE_ENABLED`
+    absent the single-decision path is byte-identical to before** (the new action never wins any
+    `demo-coordinator.sh` fact-state without a seeded policy).
+  - `run-autonomous-hunt.sh` — operator entrypoint mirroring `demo-symbolic-orchestrate-live.sh`'s driver.
+    `--repo <foundry-root> --target <Invariant.t.sol> [--match <prefix>] [--backend <b>] [--runs N] [--depth D]
+    [--seed S] [--steps N] [--out <dir>]`. Resolves `evm-harness/forge-invariant.sh` relative to `$0` into
+    `FORGE_INVARIANT`, builds a fresh agentis store, seeds a pending candidate for the target + `INV_POLICY_TT`
+    (= +2.0, representing the policy a prior run would have evolved), exports the LIVE env, runs ONE
+    `agentis go coordinator.ag --enable-exec --enable-messaging` in ORCHESTRATE mode, prints the autonomous
+    decision trail (`ACTION|`/`DISPATCH|`) + the final `coordinator:last_outcome` verdict.
+  - `demo-autonomous-hunt.sh` — offline-deterministic proof. Reuses `demo-invariant-hunt.sh`'s inflation-vault
+    + hardened-twin scaffolding (same contracts/handler/invariant), drives **`run-autonomous-hunt.sh`** (not
+    the fuzzer directly) on each, and asserts: (A) the coordinator AUTONOMOUSLY emitted `ACTION|invariant-hunt|`
+    (the coordinator chose the engine, not the operator), (B) `DISPATCH|invariant-hunt|…|confirmed` for the
+    vulnerable vault + `…|refuted` for the hardened twin (the LIVE fuzzer's verdict), (C) a `learn` for
+    `invariant-hunt` referencing the verdict appears in the store on the step AFTER the verdict (outcome →
+    policy). `[SKIP]` + exit 0 when forge/agentis are absent (CI convention).
+  - `docs/autonomous-hunt.md` — the end-to-end flow (coordinator chooses → live forge-invariant → sound verdict
+    → policy evolves), the verdict→outcome mapping, and the human-gated submit boundary. Wired into `README.md`
+    (`## Hunt autonomously (run-autonomous-hunt.sh, Int M1)` + the Layout map). **Requires:** foundry (forge)
+    for a real run; optional for the rest of the federation.
 - **The stateful-invariant-fuzzing bounty hunter — finds the MULTI-STEP bugs single-function symbolic exec
   misses** (#1035). The symbolic gate (#1015) proves a property over all inputs of ONE function; the refuter
   (#999) is a hostile LLM read of ONE claim. Both miss the **multi-step, stateful** bug — the ERC4626
