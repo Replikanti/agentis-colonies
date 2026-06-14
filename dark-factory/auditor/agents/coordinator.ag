@@ -496,14 +496,22 @@ fn decide_once(scope: string, classFit: string, policy: string, pending: string,
 //                 the store, sorted; the seen flags reproduce that (a key is omitted until first attributed)
 //   16 trace      the accumulating decisions.tsv body (rows joined by `\n`, each a real TSV row)
 //   17 budget0    the ORIGINAL budget (for the BUDGET fact each row reports as the shell's REMAINING)
+//   18 lastAttr   "1" once the carried prevAction has ALREADY been attributed in-loop (so the post-loop FINAL
+//                 ATTRIBUTION must NOT attribute it again), else "0". On a `stop`/dry-cap termination the stop
+//                 step's decide_once already attributed the last executed action (#1026), so this flag is "1"
+//                 and the final block skips it; on budget-exhaustion the last action is never attributed
+//                 in-loop (the next step's decide_once never runs), so it stays "0" and the final block
+//                 attributes it exactly once. Makes attribution IDEMPOTENT: every EXECUTED action counted once.
 //
 // POLICY THREADING. decide_once() is fed the formatted carried policy (fields 8-15 -> the `type=delta;...`
 // string read_policy would return), so the in-loop decision ranks options against the SAME evolving policy
 // the shell read between calls. The attribution for the PREVIOUS action is applied to the carried ints at
 // the START of each step (exactly when read_policy reflects it: the shell's read_policy at step N already
 // includes the call-(N-1) write, but NOT the call-N write of action N-1 — so the policy string a step uses
-// is the pre-attribution snapshot). After the loop, prevAction is attributed ONE more time, mirroring the
-// shell's final BUDGET=0 record call (which double-counts the last real action on a `stop` — reproduced).
+// is the pre-attribution snapshot). After the loop, prevAction is attributed ONE more time ONLY when the loop
+// did NOT already attribute it (field 18) — so every EXECUTED action is counted exactly once. `stop` is a
+// decision, never an executed action, so it is never attributed. (#1026 fixed the prior double-count where a
+// `stop`/dry-cap termination attributed the last executed action twice: the stop step AND the final block.)
 
 // Format a ten-thousandths int as a fixed `%.4f` decimal, byte-identical to Python "%.4f" (the shell's
 // read_policy formatting). pad4 zero-pads the fractional part to 4 digits.
@@ -665,12 +673,16 @@ fn step_fn(state: string, stepLabel: string) -> string {
     let trace2 = append_line(trace, row);
 
     if selType == "stop" {
-        // Terminal: record the row, freeze the loop (no action executed, no PENDING/streak change).
+        // Terminal: record the row, freeze the loop (no action executed, no PENDING/streak change). The
+        // PREVIOUS (last executed) action was ALREADY attributed by this step's decide_once + the carried-int
+        // delta above (when didAttr), so flag it attributed (field 18) — the post-loop FINAL ATTRIBUTION must
+        // NOT count it again (#1026). `stop` itself is a decision, never an executed action, so it is never
+        // attributed regardless.
         return "1@@F@@" + to_string(budget) + "@@F@@" + to_string(dryStreak) + "@@F@@" + to_string(step)
              + "@@F@@" + prevAction + "@@F@@" + prevKey + "@@F@@" + lastOutcome + "@@F@@" + pending
              + "@@F@@" + to_string(ph) + "@@F@@" + to_string(pi) + "@@F@@" + to_string(pp) + "@@F@@" + to_string(pr)
              + "@@F@@" + bool_flag(sh) + "@@F@@" + bool_flag(si) + "@@F@@" + bool_flag(sp) + "@@F@@" + bool_flag(sr)
-             + "@@F@@" + trace2 + "@@F@@" + to_string(budget0);
+             + "@@F@@" + trace2 + "@@F@@" + to_string(budget0) + "@@F@@" + bool_flag(didAttr);
     }
 
     // Read the dispatch verdict back (decide_once already ran dispatch() in-process, writing the memo).
@@ -694,11 +706,14 @@ fn step_fn(state: string, stepLabel: string) -> string {
     // BOUND, not the authority — we stop the moment carried budget hits 0 by flipping `stopped`.
     let stopped2 = if budget2 <= 0 { "1" } else { "0" };
 
+    // The action JUST executed (selType) is the NEW carried prevAction; it has NOT been attributed yet (its
+    // attribution happens at the NEXT step's decide_once, or — on budget-exhaustion, when no next step runs —
+    // at the post-loop FINAL ATTRIBUTION). Flag it un-attributed (field 18 = "0"). (#1026)
     return stopped2 + "@@F@@" + to_string(budget2) + "@@F@@" + to_string(dryStreak2) + "@@F@@" + to_string(step2)
          + "@@F@@" + selType + "@@F@@" + selArgs + "@@F@@" + outcome + "@@F@@" + pending2
          + "@@F@@" + to_string(ph) + "@@F@@" + to_string(pi) + "@@F@@" + to_string(pp) + "@@F@@" + to_string(pr)
          + "@@F@@" + bool_flag(sh) + "@@F@@" + bool_flag(si) + "@@F@@" + bool_flag(sp) + "@@F@@" + bool_flag(sr)
-         + "@@F@@" + trace2 + "@@F@@" + to_string(budget0);
+         + "@@F@@" + trace2 + "@@F@@" + to_string(budget0) + "@@F@@0";
 }
 
 // === TOP LEVEL ===
@@ -710,36 +725,40 @@ if len(getenv("ORCHESTRATE_ENABLED")) > 0 {
     // a non-default cap arrives via DRY_CAP. BUDGET is the loop bound.
     let budget0 = if len(getenv("BUDGET")) == 0 { 0 } else { parse_int(getenv("BUDGET")) };
     let initPending = getenv("PENDING");
-    // initial accumulator: nothing attributed yet (all ints 0, all seen "0"), no prev, empty trace.
+    // initial accumulator: nothing attributed yet (all ints 0, all seen "0"), no prev, empty trace, field 18
+    // lastAttr "0" (no prev action to have attributed).
     let init = "0@@F@@" + to_string(budget0) + "@@F@@0@@F@@0@@F@@@@F@@@@F@@@@F@@" + initPending
-             + "@@F@@0@@F@@0@@F@@0@@F@@0@@F@@0@@F@@0@@F@@0@@F@@0@@F@@@@F@@" + to_string(budget0);
+             + "@@F@@0@@F@@0@@F@@0@@F@@0@@F@@0@@F@@0@@F@@0@@F@@0@@F@@@@F@@" + to_string(budget0) + "@@F@@0";
     let finalState = reduce(regex_split("\n", getenv("STEPS")),
                             |acc: string, s: string| -> string { return step_fn(acc, s); }, init);
 
-    // FINAL ATTRIBUTION: record the last action's outcome once more — the shell's terminal BUDGET=0 call.
-    // (On a `stop` this double-counts the last real action exactly as the shell does; on budget-exhaustion
-    // it attributes the final action the loop didn't get to attribute. Both match run-coordinator.sh.)
+    // FINAL ATTRIBUTION (#1026): attribute the last EXECUTED action's outcome ONCE — but ONLY if the in-loop
+    // pass did NOT already attribute it (field 18 `lastAttr`). On budget-exhaustion the last action is never
+    // attributed in-loop (the next step's decide_once never runs), so lastAttr is "0" and we attribute it here
+    // exactly once. On a `stop`/dry-cap termination the stop step's decide_once ALREADY attributed it, so
+    // lastAttr is "1" and we skip — no double-count. The carried policy ints already hold every executed
+    // action's delta; this block only adds the one the loop deferred. Attribution is thus IDEMPOTENT: every
+    // executed action is counted exactly once across all termination paths.
+    let fLastAttr = state_int(finalState, 18) == 1;
     let fPrevAction = state_field(finalState, 4);
     let fPrevKey = state_field(finalState, 5);
     let fLastOutcome = state_field(finalState, 6);
     let fSig = outcome_signal(fLastOutcome);
-    if len(fPrevAction) > 0 {
-        if len(fSig) > 0 {
-            learn("coordinator", fPrevAction,
-                  "outcome of previous " + fPrevAction + " (" + fPrevKey + ") was " + fLastOutcome,
-                  fSig, [fPrevAction, fSig]);
-        }
+    let fAttribute = if fLastAttr { false } else { if len(fPrevAction) > 0 { len(fSig) > 0 } else { false } };
+    if fAttribute {
+        learn("coordinator", fPrevAction,
+              "outcome of previous " + fPrevAction + " (" + fPrevKey + ") was " + fLastOutcome,
+              fSig, [fPrevAction, fSig]);
     }
-    let fd = signal_delta(fSig);
+    let fd = if fAttribute { signal_delta(fSig) } else { 0 };
     let fph = state_int(finalState, 8) + (if fPrevAction == "hunt" { fd } else { 0 });
     let fpi = state_int(finalState, 9) + (if fPrevAction == "invent-method" { fd } else { 0 });
     let fpp = state_int(finalState, 10) + (if fPrevAction == "poc-screen" { fd } else { 0 });
     let fpr = state_int(finalState, 11) + (if fPrevAction == "refute" { fd } else { 0 });
-    let fDidAttr = if len(fPrevAction) > 0 { len(fSig) > 0 } else { false };
-    let fsh = if state_int(finalState, 12) == 1 { true } else { if fDidAttr { fPrevAction == "hunt" } else { false } };
-    let fsi = if state_int(finalState, 13) == 1 { true } else { if fDidAttr { fPrevAction == "invent-method" } else { false } };
-    let fsp = if state_int(finalState, 14) == 1 { true } else { if fDidAttr { fPrevAction == "poc-screen" } else { false } };
-    let fsr = if state_int(finalState, 15) == 1 { true } else { if fDidAttr { fPrevAction == "refute" } else { false } };
+    let fsh = if state_int(finalState, 12) == 1 { true } else { if fAttribute { fPrevAction == "hunt" } else { false } };
+    let fsi = if state_int(finalState, 13) == 1 { true } else { if fAttribute { fPrevAction == "invent-method" } else { false } };
+    let fsp = if state_int(finalState, 14) == 1 { true } else { if fAttribute { fPrevAction == "poc-screen" } else { false } };
+    let fsr = if state_int(finalState, 15) == 1 { true } else { if fAttribute { fPrevAction == "refute" } else { false } };
 
     // Publish the trace + the evolved policy to durable memos the bootstrap reads back (the cross-process
     // channel). The trace is the full decisions.tsv body; policy-after is the read_policy()-shaped string.
