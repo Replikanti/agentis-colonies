@@ -189,7 +189,17 @@ if [ "${1:-}" = "daemon" ] && [ "${2:-}" = "list" ]; then
     printf '[]\n'
     exit 0
 fi
-sleep 30
+# Background the long sleep and reap it on signal. The cleanup `pkill -f
+# "$SHIM_PIPE_DIR/agentis"` (below) reaches THIS bash process (its cmdline
+# carries the full shim path), but a foreground `sleep 30` would be a separate
+# child (argv `sleep 30`, no shim path) that pkill can't match and that would
+# linger, orphaned to systemd, for its remaining seconds (#1022). The trap
+# propagates the kill to the child. We still `wait` the full duration, so a
+# genuinely pipe-inheriting daemon still trips the subprocess.run timeout.
+sleep 30 &
+_sleep_pid=$!
+trap 'kill "$_sleep_pid" 2>/dev/null' TERM INT
+wait "$_sleep_pid"
 exit 0
 SHIM
     chmod +x "$SHIM_PIPE_DIR/agentis"
