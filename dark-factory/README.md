@@ -419,6 +419,23 @@ spend*, the fuzzer decides *whether the bug reproduces*, a human decides *whethe
 posts. See [`docs/autonomous-hunt.md`](./docs/autonomous-hunt.md) for the end-to-end flow, the verdict→outcome
 mapping, and the human-gated submit boundary.
 
+**Multi-candidate carrying (Int M2, #1037).** Each pending lead can carry its **own** repo/target via the
+durable `candidate:<id>:{repo,target,match}` memo, so when the loop verifies several leads each `invariant-hunt`
+runs on the **right** lead — not one shared operator env. The live route resolves each fact per-candidate-first,
+env-fallback (empty memo ⇒ the M1 env path ⇒ byte-identical M1). A repeatable `--candidate
+'<id>|<repo>|<target>[|<match>]'` seeds them (the single `--repo/--target` is the one-candidate `cand-0`
+shorthand). [`demo-candidate-carry.sh`](./demo-candidate-carry.sh) is the rigorous proof: two candidates, the
+flat `INV_REPO`/`INV_TARGET` env left EMPTY, yielding a SPLIT verdict (`cand-0|confirmed` on the vulnerable
+vault, `cand-1|refuted` on the hardened twin) that a shared env could not produce.
+
+```bash
+# multi-candidate, each lead carrying its OWN target via its candidate:<id>:* memo:
+dark-factory/run-autonomous-hunt.sh \
+  --candidate "cand-0|$PWD/A|test/Inv.t.sol" --candidate "cand-1|$PWD/B|test/Inv.t.sol" --seed 1
+# the split-verdict proof (flat env EMPTY; SKIPs without forge/agentis):
+dark-factory/demo-candidate-carry.sh
+```
+
 ## Exercise the evolve/fitness loop (`evolve-fitness.sh`)
 
 Every hunt the colony runs records a `learn("hunt", "<class>:<subsystem>", ..., outcome, [...])` row in
@@ -500,7 +517,7 @@ dark-factory/
   run-symbolic.sh               # operator entrypoint: GENERATE a Halmos spec per candidate + VERIFY it (#1015 M2)
   run-invariant-hunt.sh         # operator entrypoint: GENERATE a Foundry stateful-invariant test + VERIFY it with the fuzzer (#1035)
   run-coordinator.sh            # bootstrap for the self-orchestrating loop (ONE agentis go; the loop lives in-substrate; #1014 M3)
-  run-autonomous-hunt.sh        # integration: the coordinator CHOOSES + LIVE-runs the stateful fuzzer on a target (Int M1, #1037)
+  run-autonomous-hunt.sh        # integration: the coordinator CHOOSES + LIVE-runs the stateful fuzzer on a target; --candidate carries each lead's own context (Int M1+M2, #1037)
   demo-coordinator.sh           # offline, deterministic proof of the #1014 fact-driven + evolving-policy loop
   demo-dispatch.sh              # offline, deterministic proof of the #1014 M2 substrate DISPATCH (every action type)
   demo-orchestrate.sh           # offline, deterministic proof of the #1014 M3 in-substrate loop (byte-identical to the M2 shell loop)
@@ -514,6 +531,7 @@ dark-factory/
   demo-symbolic-orchestrate.sh  # offline, deterministic proof of the #1015 M3 coordinator routing a candidate to the sound symbolic engine
   demo-invariant-hunt.sh        # offline-deterministic proof of the #1035 stateful-fuzzing loop (vulnerable -> FINDING, hardened -> CLEAN; SKIPs without forge)
   demo-autonomous-hunt.sh       # offline-deterministic proof of the Int M1 autonomous hunt (coordinator CHOOSES + LIVE-runs the fuzzer; SKIPs without forge)
+  demo-candidate-carry.sh       # Int M2 proof: TWO candidates carry their OWN target via candidate:<id>:* memos, flat env EMPTY -> SPLIT verdict (cand-0|confirmed, cand-1|refuted; SKIPs without forge)
   setup-solana-toolchain.sh     # one-time offline toolchain build (network ON)
   snapshot-rpc.sh               # host RPC getAccountInfo -> frozen on-chain snapshot (V4)
   calibrate-sealevel.sh         # detection+validation scorecard over the sealevel corpus (V6)
@@ -548,7 +566,7 @@ dark-factory/
   docs/halmos.md                # the Halmos gate's verdict/exit contract, toolchain install, epic fit (#1015)
   docs/generate-verify.md       # the #1015 M2 generate-and-verify loop: LLM hypothesizes, Halmos proves; verdict-source contract
   docs/invariant-hunt.md        # the #1035 stateful-invariant-fuzzing loop: LLM writes deep invariants, the fuzzer finds the multi-step exploit; verdict-source contract
-  docs/autonomous-hunt.md       # the Int M1 (#1037) end-to-end: coordinator CHOOSES (policy) + LIVE-runs the fuzzer; verdict->outcome mapping; human-gated submit boundary
+  docs/autonomous-hunt.md       # the Int M1+M2 (#1037) end-to-end: coordinator CHOOSES (policy) + LIVE-runs the fuzzer; per-candidate context carrying (candidate:<id>:* memos); verdict->outcome mapping; human-gated submit boundary
   sealevel/                     # modernized coral-xyz/sealevel-attacks lessons (corpus) (V6)
   fixtures/                     # detection fixtures (vuln + safe + rigged-harness cases)
 ```

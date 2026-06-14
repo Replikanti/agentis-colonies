@@ -1,4 +1,4 @@
-# Autonomous stateful-invariant hunt — Integration M1 (#1037)
+# Autonomous stateful-invariant hunt — Integration M1 + M2 (#1037)
 
 Two pieces shipped separately: the **self-orchestrating coordinator** ([`docs/coordinator.md`](./coordinator.md),
 #1014) that DECIDES the next audit action from facts + an evolving policy, and the **stateful-invariant
@@ -89,10 +89,69 @@ dark-factory/demo-autonomous-hunt.sh
 bug), for the HARDENED twin `…|refuted` (no false positive). It asserts (A) the coordinator AUTONOMOUSLY chose
 the engine, (B) the LIVE fuzzer's verdict crossed back, and (C) the outcome evolved the policy.
 
+## Per-candidate context carrying (M2)
+
+M1's live route reads the target from a SINGLE flat env (`INV_REPO`/`INV_TARGET`/`INV_MATCH`), so every
+candidate the loop verifies hits the same operator-supplied target. **Integration M2** makes each pending lead
+carry its **own** repo/target context, so when the loop verifies several candidates each `invariant-hunt`
+(and `symbolic-prove`) runs on the **right** lead — closing the loop from discovery (many leads) to a sound
+verdict on each *specific* lead.
+
+### The `candidate:<id>:*` memo convention
+
+A candidate id `cand-N` carries its context in `recall_latest`-readable memos (the durable cross-process
+channel, dynamic-key) — NOT in env. The keys:
+
+| memo key | env fallback | role |
+|---|---|---|
+| `candidate:<id>:repo` | `INV_REPO` | foundry project root the fuzzer runs in |
+| `candidate:<id>:target` | `INV_TARGET` | the invariant `*.t.sol` the fuzzer scopes to |
+| `candidate:<id>:match` | `INV_MATCH` | invariant function-name prefix (default `invariant`) |
+| `candidate:<id>:sym_repo` | `SYM_REPO` | foundry project root Halmos runs in |
+| `candidate:<id>:sym_spec` | `SYM_SPEC` | the symbolic spec target Halmos scopes to |
+| `candidate:<id>:sym_function` | `SYM_FUNCTION` | symbolic check-function prefix (default `check`) |
+
+Run-level forge budgets (`INV_RUNS`/`INV_DEPTH`/`INV_SEED`) stay env-only — they are knobs of the *run*, not
+of a *candidate*.
+
+### Per-candidate-first, env-fallback
+
+`coordinator.ag`'s live routes (`run_invariant_live(candId)` / `run_symbolic_live(candId)`) resolve each fact
+**per-candidate-first**: read `candidate:<id>:<field>`; if that memo is non-empty use it, else fall back to the
+flat env. The live-route GATE keys on the **resolved** repo+target (per-candidate OR env), so a candidate
+carrying ONLY its own memo (flat env empty) still routes live; with **neither** it falls through to the honest
+stub. An empty per-candidate memo ⇒ the M1 env path ⇒ **byte-identical M1 behaviour** — M2 is purely additive.
+
+### Driving it — `--candidate`
+
+`run-autonomous-hunt.sh` takes a repeatable `--candidate '<id>|<repo>|<target>[|<match>]'`. For each candidate
+it `agentis memo set candidate:<id>:repo/target/match` into the shared store (after `agentis init`, before
+`agentis go`) and appends one `<id>|…` cell to `PENDING`. The single `--repo/--target` stays as the
+one-candidate `cand-0` shorthand (full M1 back-compat). With candidates supplied, `BUDGET`/`STEPS` auto-scale
+to `>= 2 × candidate-count` so every candidate is both routed (one step) and attributed (the next).
+
+```bash
+# multi-candidate: each lead carries its OWN target via its candidate:<id>:* memo
+dark-factory/run-autonomous-hunt.sh \
+  --candidate "cand-0|$PWD/A|test/Inv.t.sol" \
+  --candidate "cand-1|$PWD/B|test/Inv.t.sol" --seed 1
+
+# the rigorous proof: TWO candidates, flat INV_REPO/INV_TARGET EMPTY -> a SPLIT verdict
+# (cand-0|confirmed on the vulnerable vault, cand-1|refuted on the hardened twin) that a shared env
+# could not produce. SKIPs without forge/agentis.
+dark-factory/demo-candidate-carry.sh
+```
+
+### The discovery producer
+
+`run-discovery.sh` / `hunter.ag` (the discovery side) can populate these `candidate:<id>:*` memos as it
+emits leads, so a discovered lead carries its contract + invariant test straight through `PENDING` to the live
+verify — no operator re-typing the target per candidate. The memo convention is the contract between the
+producer (discovery) and the consumer (the coordinator's live verify routes).
+
 ## Honest scope
 
-This integration drives a SINGLE operator-supplied candidate through the live route — the minimum live slice,
-exactly the boundary `symbolic-prove`'s live route (#1032) set. Multi-candidate code-carrying (a discovered
-lead auto-carrying its contract + invariant test through `PENDING`), a long-lived daemon-tick reflex (the loop
-running continuously without a shell bootstrap), and the coordinator pruning a live cell manifest all remain
-follow-up on epics #1014 / #1035 / #1037.
+M2 carries each lead's repo/target context through the durable memo channel. A long-lived daemon-tick reflex
+(the loop running continuously without a shell bootstrap), auto-GENERATION of the per-candidate invariant test
+from a discovered lead (here the test is supplied alongside the contract), and the coordinator pruning a live
+cell manifest all remain follow-up on epics #1014 / #1035 / #1037.
