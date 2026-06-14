@@ -436,6 +436,24 @@ dark-factory/run-autonomous-hunt.sh \
 dark-factory/demo-candidate-carry.sh
 ```
 
+**Pattern memory + invent-method feed (Int M3, #1037).** A winning invariant pattern — one that produced a
+FINDING — is **persisted to the pattern DAG** (`invpat:latest:<class>`, reusing the same `dag_put`/
+`recall_latest` infra as the `bugpat:*` fork-matcher) and **recalled to seed a later hunt** on the same bug
+class (the prover prints `RECALL-INVPAT|<class>|…` / `INVPAT-LEARNED|<class>|…`), and `invent-method` can
+propose a **new** invariant class the next hunt then uses. `--pattern-store <dir>` is the persistent cross-run
+store; absent it, behaviour is byte-identical to M1/M2. `--method-fixture <file>` seeds an invented class
+(`invpat:invented:<class>`) deterministically. [`demo-pattern-memory.sh`](./demo-pattern-memory.sh) proves the
+loop: discovered → stored in the DAG → recalled → reused across a structurally-different same-class target,
+plus the invent-method leg.
+
+```bash
+# Run 1 persists a winning pattern; Run 2 on a same-class target recalls + reuses it (shared store S):
+dark-factory/run-autonomous-hunt.sh --repo "$PWD/A" --target test/Inv.t.sol --pattern-store "$PWD/S" --seed 1
+dark-factory/run-autonomous-hunt.sh --repo "$PWD/B" --target test/Inv.t.sol --pattern-store "$PWD/S" --seed 1
+# the persist -> recall -> reuse proof + the invent-method feed (SKIPs without forge/agentis):
+dark-factory/demo-pattern-memory.sh
+```
+
 ## Exercise the evolve/fitness loop (`evolve-fitness.sh`)
 
 Every hunt the colony runs records a `learn("hunt", "<class>:<subsystem>", ..., outcome, [...])` row in
@@ -515,9 +533,9 @@ dark-factory/
   run-summary.sh                # one-shot run -> monitor-/dashboard-consumable run-summary.json (#995)
   run-refute.sh                 # operator entrypoint: adversarial refutation (refuter fan-out) -> verdicts
   run-symbolic.sh               # operator entrypoint: GENERATE a Halmos spec per candidate + VERIFY it (#1015 M2)
-  run-invariant-hunt.sh         # operator entrypoint: GENERATE a Foundry stateful-invariant test + VERIFY it with the fuzzer (#1035)
+  run-invariant-hunt.sh         # operator entrypoint: GENERATE a Foundry stateful-invariant test + VERIFY it with the fuzzer (#1035); --pattern-store persists/recalls winning invariant patterns across runs (Int M3, #1037)
   run-coordinator.sh            # bootstrap for the self-orchestrating loop (ONE agentis go; the loop lives in-substrate; #1014 M3)
-  run-autonomous-hunt.sh        # integration: the coordinator CHOOSES + LIVE-runs the stateful fuzzer on a target; --candidate carries each lead's own context (Int M1+M2, #1037)
+  run-autonomous-hunt.sh        # integration: the coordinator CHOOSES + LIVE-runs the stateful fuzzer on a target; --candidate carries each lead's own context; --pattern-store persists/recalls winning patterns + --method-fixture feeds invent-method (Int M1+M2+M3, #1037)
   demo-coordinator.sh           # offline, deterministic proof of the #1014 fact-driven + evolving-policy loop
   demo-dispatch.sh              # offline, deterministic proof of the #1014 M2 substrate DISPATCH (every action type)
   demo-orchestrate.sh           # offline, deterministic proof of the #1014 M3 in-substrate loop (byte-identical to the M2 shell loop)
@@ -532,6 +550,7 @@ dark-factory/
   demo-invariant-hunt.sh        # offline-deterministic proof of the #1035 stateful-fuzzing loop (vulnerable -> FINDING, hardened -> CLEAN; SKIPs without forge)
   demo-autonomous-hunt.sh       # offline-deterministic proof of the Int M1 autonomous hunt (coordinator CHOOSES + LIVE-runs the fuzzer; SKIPs without forge)
   demo-candidate-carry.sh       # Int M2 proof: TWO candidates carry their OWN target via candidate:<id>:* memos, flat env EMPTY -> SPLIT verdict (cand-0|confirmed, cand-1|refuted; SKIPs without forge)
+  demo-pattern-memory.sh        # Int M3 proof: a FINDING persists invpat:latest:<class> to the DAG, a same-class target RECALLs + reuses it across runs, invent-method seeds a new class (SKIPs without forge)
   setup-solana-toolchain.sh     # one-time offline toolchain build (network ON)
   snapshot-rpc.sh               # host RPC getAccountInfo -> frozen on-chain snapshot (V4)
   calibrate-sealevel.sh         # detection+validation scorecard over the sealevel corpus (V6)
@@ -542,7 +561,7 @@ dark-factory/
     agents/poc-screener.ag      # substrate-native lead pre-screen via eval_ag (sandboxed PoC harness)
     agents/refuter.ag           # the adversarial-refutation agent (independent skeptic; default REFUTED)
     agents/symbolic-prover.ag   # generate-and-verify: LLM writes a Halmos spec, Halmos returns the sound verdict (#1015 M2)
-    agents/invariant-prover.ag  # stateful-fuzzing generate-and-verify: LLM writes a handler+deep invariants, the fuzzer returns the verdict + shrunk exploit sequence (#1035)
+    agents/invariant-prover.ag  # stateful-fuzzing generate-and-verify: LLM writes a handler+deep invariants, the fuzzer returns the verdict + shrunk exploit sequence (#1035); RECALLs a prior winning pattern before GENERATE + PERSISTs one on a FINDING to the invpat:* DAG memory (Int M3, #1037)
     agents/fitness-driver.ag    # one fitness-loop cell: hunter.ag's exact learn() over a ground-truth verdict
     agents/method-inventor.ag   # the meta-loop inventor: proposes a new audit method for a known gap (#998)
     agents/coordinator.ag       # self-orchestrating decider: fact+policy-driven actions (#1014); gated in-substrate dispatch for every action type (M2); gated in-substrate MULTI-STEP loop (M3)

@@ -97,6 +97,29 @@ let invMatch = match_prefix(getenv("INV_MATCH"));
 let fixturePath = getenv("HANDLER_FIXTURE");
 let code = cat_file(getenv("CODE_PATH"));
 
+// --- RECALL a prior winning invariant pattern (Int M3, #1037) ------------------------------------
+// Before GENERATE, recall the latest invariant pattern that produced a FINDING on THIS bug class from the
+// DAG pattern memory (the `invpat:latest:<class>` memo, mirroring recall-match.ag's recall_latest over the
+// bugpat namespace). Recall steers GENERATION only — it can never change the verdict (which stays the
+// fuzzer's exit code). When non-empty we print a `RECALL-INVPAT|<class>|<descriptor>` line so the
+// discovered->stored->recalled->reused transfer is OBSERVABLE in the run log, and fold the descriptor into
+// the LLM generation seed (the HANDLER_FIXTURE path is authoritative — the fixture is unchanged — but the
+// RECALL line is STILL printed so the loop is observable). `prior` is derived from prior agent state, so it
+// is treated as UNTRUSTED: it flows ONLY into the prompt (a plain string) and the plain-stdout RECALL line,
+// never into `exec sh` — no shell_escape is needed because it never reaches a shell.
+// Int M3 (#1037) Part B: also consult `invpat:invented:<class>` — a NEW invariant class proposed by the
+// coordinator's invent-method action (method-inventor.ag, fixture path) — as an additional generation hint.
+// When the persisted-FINDING pattern is empty, the invented hint stands in as the recall descriptor.
+fn recall_pattern(klass: string) -> string {
+    let learned = recall_latest("invpat:latest:" + klass);
+    if len(learned) > 0 { return learned; }
+    return recall_latest("invpat:invented:" + klass);
+}
+let prior = recall_pattern(targetClass);
+if len(prior) > 0 {
+    print("RECALL-INVPAT|" + targetClass + "|" + prior);
+}
+
 // --- GENERATE the handler + invariants -----------------------------------------------------------
 // Offline / deterministic path: a HANDLER_FIXTURE is a ready-made invariant test used VERBATIM, no LLM.
 // This is the path demo-invariant-hunt.sh and a `--backend mock` wiring smoke take, so the
@@ -110,9 +133,18 @@ let fixture = cat_file(fixturePath);
 // solvency-under-any-sequence, no-free-value-extraction, share-price-monotonicity). The verdict is STILL the
 // FUZZER's (below); the LLM only writes the handler + the properties to check. Cold path, one target in / one
 // test out (no per-tick staleness to gate) -> the prompt carries an explicit prompt-gate-ok marker.
-fn generate_test(klass: string, src: string, matchPrefix: string) -> string {
+// Int M3 (#1037): fold a recalled prior pattern into the generation seed. When `prior` is non-empty (a prior
+// FINDING on this class, or an invented class hint), prepend a line steering the LLM to adapt that proven
+// invariant/handler shape to the current target. Empty `prior` => the instruction is byte-identical to M2.
+fn recall_seed(klass: string, prior: string) -> string {
+    if len(prior) == 0 { return ""; }
+    return "A prior FINDING on bug class " + klass + " used this invariant pattern: " + prior
+         + ". Adapt that invariant/handler shape to the current target.\n";
+}
+fn generate_test(klass: string, src: string, matchPrefix: string, prior: string) -> string {
     let instruction =
-        "You are a stateful-invariant-fuzzing engineer. Write a self-contained Foundry stateful-invariant "
+        recall_seed(klass, prior)
+      + "You are a stateful-invariant-fuzzing engineer. Write a self-contained Foundry stateful-invariant "
       + "test (Solidity, `pragma solidity ^0.8.20;`) for the target contract below so Foundry's invariant "
       + "fuzzer can drive randomized multi-call SEQUENCES through it and find a MULTI-STEP exploit. "
       + "Requirements:\n"
@@ -141,11 +173,11 @@ fn generate_test(klass: string, src: string, matchPrefix: string) -> string {
 // Single-assignment .ag: pick the test source ONCE (no `let` reassignment). A non-empty HANDLER_FIXTURE wins
 // (offline/deterministic, verbatim, no LLM); otherwise the LLM generates it (live path).
 let usedFixture = len(fixture) > 0;
-fn choose_test(usedFix: bool, fix: string, klass: string, src: string, matchPrefix: string) -> string {
+fn choose_test(usedFix: bool, fix: string, klass: string, src: string, matchPrefix: string, prior: string) -> string {
     if usedFix { return fix; }
-    return generate_test(klass, src, matchPrefix);
+    return generate_test(klass, src, matchPrefix, prior);
 }
-let test = choose_test(usedFixture, fixture, targetClass, code, invMatch);
+let test = choose_test(usedFixture, fixture, targetClass, code, invMatch, prior);
 
 // Write the generated/fixture test to INV_OUT (inside INV_REPO/test) so forge-invariant can run it. The test
 // content is UNTRUSTED — it is either an LLM completion (prompt-injectable by the untrusted target code under
@@ -193,4 +225,25 @@ fn gen_mode(usedFix: bool) -> string {
 let genMode = gen_mode(usedFixture);
 emit("dark-factory:invariant_verdict", "{\"target\":\"" + targetFn + "\",\"class\":\"" + targetClass + "\",\"verdict\":\"" + verdict + "\",\"gen\":\"" + genMode + "\",\"outcome\":\"" + outcome + "\"}");
 learn("invariant-prove", targetClass + ":" + targetFn, "stateful-invariant-fuzz generate-and-verify of " + targetFn + " (" + targetClass + ") -> " + verdict, outcome, [targetClass, verdict, outcome]);
+
+// --- PERSIST the winning invariant pattern to the DAG memory (Int M3, #1037) ---------------------
+// AFTER the verdict print (above), and ONLY on a FINDING, record the invariant pattern the fuzzer just
+// CONFIRMED into the same DAG pattern memory recall_pattern() reads from next time. This mirrors
+// seed-patterns.ag's `let h = dag_put(content); memo_write("bugpat:exact:" + h, class)` exactly, in the
+// parallel `invpat:*` namespace. The signature is a DETERMINISTIC, stable descriptor: the bug class + the
+// target label (the `INVARIANT|<target>` lens) + the invariant match-prefix — the same shape produces the
+// same `psig` across runs, so a later FINDING on the same class/shape recalls it. Placing PERSIST AFTER the
+// verdict print guarantees a persist failure can NEVER alter the verdict — persistence only RECORDS what the
+// fuzzer already confirmed; it does not change `verdict`, the printed marker, or the learn() outcome.
+fn persist_pattern(verd: string, klass: string, target: string, matchPrefix: string) -> void {
+    if verd == "FINDING" {
+        let psig = klass + "::" + target + "::" + matchPrefix;
+        let h = dag_put(psig);
+        memo_write("invpat:exact:" + h, klass);
+        memo_write("invpat:latest:" + klass, psig);
+        emit("dark-factory:invariant_pattern_learned", "{\"class\":\"" + klass + "\",\"sig\":\"" + psig + "\"}");
+        print("INVPAT-LEARNED|" + klass + "|" + psig);
+    }
+}
+persist_pattern(verdict, targetClass, targetFn, invMatch);
 memo_write("invariant-prover:last_check", "done");
