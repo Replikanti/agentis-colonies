@@ -16,6 +16,27 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **Halmos symbolic-execution verification gate — a SOUND oracle that PROVES an invariant or returns a
+  concrete counterexample, exhaustive over all inputs** (#1015 M1). New `evm-harness/halmos-verify.sh` runs
+  [Halmos](https://github.com/a16z/halmos) (symbolic execution + the z3 SMT solver) over a `*.t.sol` spec
+  and parses its `Symbolic test result: N passed; M failed` summary into a structured verdict + exit code:
+  **PROVED** (exit 0 — holds for every input), **COUNTEREXAMPLE** (exit 1 — a concrete input violates the
+  property, a real bug), **INCONCLUSIVE** (exit 3 — solver `unknown` / timeout / unbounded loop / nothing
+  matched), and harness/usage error (exit 2 — bad args, `--repo` not a Foundry project, or `halmos`/`forge`
+  absent with an install hint). It is the SYMBOLIC sibling of `evm-harness/forge-verify.sh` (which witnesses
+  one concrete exploit path) and an **additional** sound oracle alongside it — `forge-verify.sh` is
+  unchanged. Tools are resolved via `PATH` (`command -v`), no install location is hardcoded; the banner
+  (`================ HALMOS-VERIFY: <VERDICT> ================`) mirrors `forge-verify.sh`. Ships two
+  self-contained example specs under `evm-harness/halmos-specs/` (a `Ledger` with an honest `transferSafe`
+  Halmos PROVES value-conserving, a buggy `transferBuggy` Halmos REFUTES with a concrete witness, and an
+  under-unrolled-loop spec the gate must report **INCONCLUSIVE** — a soundness guard so a not-fully-explored
+  loop is never over-claimed as PROVED) plus `demo-halmos.sh`, which asserts all three verdicts against the
+  real solver (deterministic, no mock) and prints a single `[SKIP]` + exit 0 when `halmos`/`forge` are not on
+  `PATH` (so CI passes without the toolchain). New
+  `docs/halmos.md` documents the verdict/exit contract, toolchain install, and how the gate fits the epic
+  (the LLM hypothesizes; Halmos is the sound verdict). Honest scope: M1 is the **callable gate only** —
+  auto-routing discovery candidates into it (generate-and-verify) is a later milestone. **Requires:** halmos
+  >= 0.3 + foundry (forge) for a real run; both are optional for the rest of the federation.
 - **The shell loop is DISSOLVED — the federation self-orchestrates the whole multi-step audit in the
   substrate** (#1014 M3). Through M2 the decision and each action's dispatch lived in the substrate, but a
   thin shell while-loop (`run-coordinator.sh`) still **drove** the loop (per step: one `agentis go`, read the
