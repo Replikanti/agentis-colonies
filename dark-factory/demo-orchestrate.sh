@@ -18,10 +18,20 @@
 #       (origin/main's run-coordinator.sh) produced for the SAME facts + fixture — captured below as the
 #       GOLDEN reference. Same decisions, same policy deltas; only the DRIVER moved into the substrate.
 #   (3) A re-run into a fresh store is byte-identical (deterministic, no RNG).
+#   (5) #1026 REGRESSION GUARD: a `stop`/dry-cap-terminated run attributes the LAST executed action EXACTLY
+#       ONCE. N executed hunts (all dry) -> policy hunt = N x -0.15, NOT (N+1) x -0.15. The prior in-substrate
+#       loop double-counted the last action on a stop (the stop step's decide_once attributed it AND the
+#       post-loop final block attributed it again); the fix makes attribution idempotent across all
+#       termination paths. `stop` is a decision, never an executed action, so it is never attributed.
 #
 # The GOLDEN reference (decisions.tsv + policy-after) was captured from `origin/main`'s shell-loop
 # `run-coordinator.sh` with the scope/class-fitness/fixture facts mirrored below (budget 8, dry-cap 3,
-# stub executor). It is the literal M2 output the M3 in-substrate loop must reproduce.
+# stub executor). This GOLDEN scenario terminates on BUDGET-EXHAUSTION (8 actions, never a `stop`), where the
+# old shell loop's final attribution was already CORRECT — so the GOLDEN_POLICY below is the once-per-action
+# value and stays byte-identical to the M2 shell loop. The #1026 double-count was specific to the `stop`/dry-
+# cap path, which is exercised + asserted separately in proof (5). After #1026 the in-substrate policy is the
+# CORRECT once-per-action attribution on EVERY path (no longer reproducing the shell loop's stop-path
+# double-count — that was the bug).
 #
 # Everything is deterministic and offline: the coordinator's choice is a fact+policy argmax (no RNG), the
 # dispatch verdicts come from a fixture (no LLM, no prompt()), and the backend is `mock` (zero cost).
@@ -198,6 +208,88 @@ if [ "$GUARD_STEPN" -eq "$GUARD_BUDGET" ]; then
   ok "budget=$GUARD_BUDGET ran all $GUARD_STEPN steps in one process (cb header covers the loop — no CB cliff)"
 else
   bad "budget=$GUARD_BUDGET produced $GUARD_STEPN/$GUARD_BUDGET trace rows — coordinator.ag cb header too low for the loop (CB cliff)"
+fi
+
+echo
+echo "=================================================================================="
+echo " (5) #1026 ONCE-PER-ACTION — a stop/dry-cap-terminated run attributes the last action EXACTLY ONCE"
+echo "=================================================================================="
+# Regression guard for #1026: before the fix the in-substrate loop double-counted the last EXECUTED action on
+# a `stop`/dry-cap termination (the stop step's decide_once attributed it AND the post-loop final block
+# attributed it again). Scenario: a single hunt cell that always comes back `dry`, dry-cap K=2. The loop hunts
+# twice (both dry -> dry-streak hits 2), then the 3rd decision is `stop`. Two EXECUTED hunts, each a failure
+# (-0.15). CORRECT once-per-action policy: hunt = 2 x -0.15 = -0.3000. The pre-fix double-count was -0.4500
+# (3 x -0.15). We assert BOTH the in-loop policy memo AND the experience-store sum equal -0.3000, AND that the
+# store holds EXACTLY 2 hunt attribution rows (N, not N+1). `stop` is a decision, not an executed action, so it
+# is never attributed.
+STOP_SCOPE=$'vault accounting|C1'
+STOP_FIT="C1=0.5500"
+STOP_FIXTURE="hunt|vault*=dry;refute|cand-*=refuted;poc-screen|cand-*=dry;invent-method|*=dry"
+STOP_BUDGET=8
+STOP_DRY_CAP=2
+EXPECT_HUNTS=2
+EXPECT_POLICY="hunt=-0.3000"
+init_store "$WORK/stop"
+STOP_STEPS="$(awk -v n="$STOP_BUDGET" 'BEGIN{ for (i=0;i<n;i++){ printf "%s%d", (i?"\n":""), i } }')"
+( cd "$WORK/stop" && env \
+    SCOPE="$STOP_SCOPE" CLASS_FITNESS="$STOP_FIT" PENDING="" \
+    BUDGET="$STOP_BUDGET" DRY_CAP="$STOP_DRY_CAP" STEPS="$STOP_STEPS" \
+    ORCHESTRATE_ENABLED=1 DISPATCH_ENABLED=1 DISPATCH_FIXTURE="$STOP_FIXTURE" \
+    agentis go coordinator.ag --enable-exec --enable-messaging >/dev/null 2>&1 )
+STOP_TRACE="$(read_trace "$WORK/stop")"
+STOP_POLICY="$(read_policy "$WORK/stop")"
+# The number of hunt actions actually EXECUTED (non-stop hunt rows in the trace).
+STOP_HUNTS="$(printf '%s\n' "$STOP_TRACE" | grep '^step=' | while IFS= read -r r; do row_action "$r"; done | grep -c '^hunt$')"
+# The number of hunt ATTRIBUTION rows in the durable experience store (must equal the executed hunts, not +1).
+STOP_HUNT_ROWS="$(python3 - "$WORK/stop/.agentis/experience/main.jsonl" <<'PY'
+import json, os, sys
+path = sys.argv[1]; n = 0
+if os.path.exists(path):
+    for line in open(path):
+        line = line.strip()
+        if not line: continue
+        try: r = json.loads(line)
+        except Exception: continue
+        if r.get("action") == "coordinator" and r.get("in") == "hunt": n += 1
+print(n)
+PY
+)"
+# The experience-store policy sum (the same read_policy() mechanic the shell uses) for the cross-check.
+STOP_STORE_POLICY="$(python3 - "$WORK/stop/.agentis/experience/main.jsonl" <<'PY'
+import json, os, sys
+path = sys.argv[1]; agg = {}
+if os.path.exists(path):
+    for line in open(path):
+        line = line.strip()
+        if not line: continue
+        try: r = json.loads(line)
+        except Exception: continue
+        if r.get("action") != "coordinator": continue
+        k = r.get("in", "")
+        if not k: continue
+        agg[k] = agg.get(k, 0.0) + float(r.get("delta", 0.0))
+print(";".join("%s=%.4f" % (k, agg[k]) for k in sorted(agg)))
+PY
+)"
+if [ "$STOP_HUNTS" -eq "$EXPECT_HUNTS" ]; then
+  ok "the run executed $STOP_HUNTS hunts then stopped (dry-cap) — the stop-terminated scenario under test"
+else
+  bad "expected $EXPECT_HUNTS executed hunts before the stop, got $STOP_HUNTS — wrong scenario"
+fi
+if [ "$STOP_POLICY" = "$EXPECT_POLICY" ]; then
+  ok "in-loop policy is $STOP_POLICY ($STOP_HUNTS hunts x -0.15) — last action attributed EXACTLY ONCE (not $((EXPECT_HUNTS + 1))x; #1026 fixed)"
+else
+  bad "in-loop policy '$STOP_POLICY' != expected '$EXPECT_POLICY' — the last action is double-counted (#1026 regressed)"
+fi
+if [ "$STOP_HUNT_ROWS" -eq "$EXPECT_HUNTS" ]; then
+  ok "the experience store holds EXACTLY $STOP_HUNT_ROWS hunt attribution rows (== executed hunts, not +1)"
+else
+  bad "the experience store holds $STOP_HUNT_ROWS hunt attribution rows, expected $EXPECT_HUNTS (the last action is double-attributed)"
+fi
+if [ "$STOP_POLICY" = "$STOP_STORE_POLICY" ]; then
+  ok "in-loop policy == experience-store read_policy() sum ($STOP_STORE_POLICY) on the stop path — both drop the double-count"
+else
+  bad "in-loop policy '$STOP_POLICY' != experience-store sum '$STOP_STORE_POLICY' on the stop path — the two sides disagree"
 fi
 
 echo

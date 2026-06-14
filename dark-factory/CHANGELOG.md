@@ -116,6 +116,24 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Fixed
 
+- **Coordinator orchestrate loop double-counted the final action's policy on a `stop`/dry-cap stop** (#1026).
+  In `ORCHESTRATE_ENABLED` mode `coordinator.ag` attributes each step's PREVIOUS action inside `step_fn`, and a
+  post-loop FINAL ATTRIBUTION block attributes the last action the loop did not get to. On a `stop`/dry-cap
+  termination the stop-deciding step's `decide_once` had ALREADY attributed that last executed action, so the
+  final block counted it a SECOND time — a run with 2 executed hunts ended `hunt=-0.4500` (3 × −0.15) instead
+  of the correct `hunt=-0.3000` (2 × −0.15). The carried state now tracks a `lastAttr` flag (state field
+  18); the FINAL ATTRIBUTION fires only for an action the in-loop pass did NOT already attribute — and drops
+  both the extra `learn()` AND the extra carried-int delta, so the in-loop policy still equals the
+  experience-store `read_policy()` sum. Attribution is now IDEMPOTENT: every EXECUTED action (hunt / refute /
+  poc-screen / invent-method) is counted EXACTLY once across both termination paths (budget-exhaustion and
+  the dry-cap `stop`); `stop` is a decision, never an executed action, so it is never attributed. The
+  per-step `decisions.tsv` trace rows are unchanged (the double-count was in the terminal policy only).
+  `demo-orchestrate.sh` gains a #1026 regression guard (proof (5): a dry-cap-terminated run attributes the
+  last action exactly once — N executed hunts → N × the delta, not N+1) and its comments note the in-substrate
+  policy is now the correct once-per-action attribution (no longer reproducing the M2 shell loop's stop-path
+  double-count — that was the bug). The single-decision path (`demo-coordinator.sh`, `ORCHESTRATE_ENABLED`
+  absent) is byte-identical, and the budget-exhaustion GOLDEN (`hunt=0.6000;refute=-0.6000`) is unchanged
+  (that path never double-counted).
 - **`run-coordinator.sh` dispatch dropped a hunt's class** (#1014 v1 follow-up). The coordinator's
   `ACTION|<type>|<args>|<rationale>` line was parsed with a flat `cut -f3`/`-f4-`, but a `hunt`'s
   `<args>` is two `|`-fields (`subsystem|class`) where every other action's is one. The class leaked
