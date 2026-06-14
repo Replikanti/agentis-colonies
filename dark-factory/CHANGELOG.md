@@ -14,7 +14,36 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+
+- **The `hunt` DISPATCH moved into the substrate** (#1014 M1). The self-orchestrating coordinator no longer
+  just *decides* a hunt — in **one** `agentis go` it also *dispatches* it. `coordinator.ag` `emit`s the
+  chosen hunt over the in-process bus (`dark-factory:dispatch`, payload `hunt|<subsystem>|<class>`) and a
+  new sibling agent fn `hunt_dispatch` derives the gate verdict from a `HUNT_FIXTURE` env fact (offline,
+  no `prompt()`/LLM; the same subsystem-glob → `confirmed|dry|refuted` shape `stub_outcome()` used) and
+  writes it to the durable `coordinator:last_outcome` memo (`hunt|<subsystem>|<class>|<verdict>`). The
+  emit→listen→call DAG mirrors `auditor.ag`'s sub-agents; the durable memo is the substrate-native
+  cross-process channel (the emit/listen bus is in-process only). New
+  `auditor/agents/dispatcher.ag` is the standalone, separately-committable copy of the dispatch fn (agentis
+  `go` has no file includes, so `coordinator.ag` inlines the same fns gated on a new `DISPATCH_ENABLED`
+  flag). New `demo-dispatch.sh` proves it offline + deterministically: one `agentis go` prints both
+  `ACTION|hunt|...` and `DISPATCH|hunt|...`, a separate `agentis memo get` reads the verdict back, a re-run
+  is byte-identical, and the verdict follows the fixture. It also runs `dispatcher.ag` standalone (its
+  `DISPATCH_ARGS` entry) and asserts its `DISPATCH|`/memo output equals the inlined coordinator path — a
+  **sync-guard** so the two copies of the verdict fns can't silently drift. The dispatch block is **dark**
+  when `DISPATCH_ENABLED` is absent, so a standalone `coordinator.ag` run (`demo-coordinator.sh`) stays
+  byte-identical. New `docs/dispatch.md` documents the in-process-bus + durable-memo model and the
+  event/fact contract. **Requires:** agentis >= 1.19.0.
+
 ### Changed
+
+- **`run-coordinator.sh` dispatches a `hunt` through the substrate** (#1014 M1). The hunt branch of the
+  shell `case` (`stub_outcome` / `real_outcome`) is replaced by reading the verdict from the
+  `coordinator:last_outcome` memo the coordinator's in-substrate dispatch writes; `DISPATCH_ENABLED=1` +
+  `HUNT_FIXTURE` are set on the decision call and added to `exec.env_passthrough`. The other action types
+  (`refute` / `poc-screen` / `invent-method` / `stop`) keep their existing shell dispatch unchanged, and
+  PENDING/DRY_STREAK/BUDGET threading is unchanged. Header comment + `docs/coordinator.md` updated to move
+  "dispatch into the substrate" to **Done for `hunt`**.
 
 - **Default LLM backend across the live-reasoning orchestrators switched from the metered `claude -p`
   path to the flat-rate `flat-cyborg` PTY-wrapper backend** (`llm.backend = flat-cyborg`). `run-audit.sh`,
