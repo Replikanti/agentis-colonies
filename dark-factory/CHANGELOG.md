@@ -16,6 +16,36 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **The LIVE coordinator → Halmos `symbolic-prove` route — REAL symbolic execution inside the autonomous
+  loop** (#1032). #1015 M3 proved the *offline* orchestration (a `DISPATCH_FIXTURE` stood in for the sound
+  verdict); #1032 closes the **live** slice for an operator-supplied single candidate: when the coordinator
+  CHOOSES `symbolic-prove` and a live symbolic context is present, it runs REAL Halmos end-to-end and maps the
+  solver's exit code to the gate outcome — never an LLM opinion.
+  - `auditor/agents/coordinator.ag` — a new LIVE branch in `action_outcome`: when `symbolic-prove` is chosen
+    AND no `DISPATCH_FIXTURE` matched AND a live symbolic env is present (`SYM_REPO` foundry dir + `SYM_SPEC`
+    target spec + the `HALMOS_VERIFY` gate path), it `exec sh`-runs `halmos-verify.sh --repo <SYM_REPO>
+    --target <SYM_SPEC> --function <prefix>`, captures the exit code via the `__rc=$?` marker, and maps it
+    **1 → confirmed** (COUNTEREXAMPLE, a real bug), **0 → refuted** (PROVED, safe), **3/2/other → dry**
+    (INCONCLUSIVE / harness). ALL dynamic values are `shell_escape()`d; the gate is resolved via the
+    `HALMOS_VERIFY` env path. The branch is **purely additive** — absent any of the three env facts it falls
+    through to the existing honest stub, so behaviour with no live env is **byte-identical** (verified:
+    `demo-coordinator.sh` is unchanged against `origin/main`). `auditor/agents/dispatcher.ag` carries the
+    byte-identical live branch (the `demo-dispatch.sh` sync-guard asserts the two copies do not drift).
+  - `run-coordinator.sh` — new `--sym-repo <dir>` + `--sym-spec <file>` flags supply the single-candidate live
+    symbolic context (plus `--sym-function <prefix>`, default `check`); they must be supplied together,
+    `--sym-repo` must be a Foundry project, `--sym-spec` a readable file. `halmos-verify.sh` is resolved to an
+    absolute path and passed as `HALMOS_VERIFY`; `SYM_REPO,SYM_SPEC,SYM_FUNCTION,HALMOS_VERIFY` are whitelisted
+    in `exec.env_passthrough`; the per-step `exec.default_timeout_ms` is raised to 180s when a live context is
+    supplied (Halmos runs forge build + z3 — tens of seconds). Header/usage document the flags + the
+    verdict→outcome mapping.
+  - `demo-symbolic-orchestrate-live.sh` — new LIVE demo: builds a tiny Foundry vault with a real
+    rounding-direction solvency bug (`convertToAssets` rounds UP, minting value) + its fix (rounds DOWN) and a
+    Halmos solvency spec, drives the coordinator with the live env so its chosen `symbolic-prove` runs REAL
+    Halmos → the buggy spec returns a COUNTEREXAMPLE → **confirmed**, the fixed spec PROVES the invariant →
+    **refuted**; asserts the outcomes flip purely from the solver's verdict. `[SKIP]` + exit 0 when
+    forge/halmos/agentis are absent (CI convention). `docs/generate-verify.md` updated: the live coordinator
+    route now runs Halmos end-to-end for a supplied candidate, the offline fixture path is the CI proof, and
+    multi-candidate code-carrying remains the follow-up.
 - **The self-orchestrating coordinator ROUTES a candidate to the SOUND symbolic engine — a new
   `symbolic-prove` action** (#1015 M3). M2 shipped the *callable* generate-and-verify step; M3 wires it into
   the #1014 self-orchestrating coordinator so the federation can **DECIDE** to route a pending candidate

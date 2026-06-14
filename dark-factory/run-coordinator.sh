@@ -56,6 +56,7 @@
 # Usage:
 #   run-coordinator.sh --scope <file> [--class-fitness <file>] [--budget N] [--dry-cap K]
 #                      [--executor real|stub] [--fixture <f>] [--sym-policy <float>]
+#                      [--sym-repo <foundry-dir> --sym-spec <Spec.t.sol> [--sym-function <prefix>]]
 #                      [--backend mock|flat-cyborg|claude] [--out <dir>] [--agentis <bin>]
 #
 # Scope manifest (one huntable cell per line; `#` and blank lines ignored), pipe-delimited:
@@ -76,6 +77,23 @@
 #   default verify ordering is refute > poc-screen > symbolic-prove; a seed >= 1.0 lifts symbolic-prove above
 #   refute. The verdict then comes from the symbolic gate (run-symbolic.sh) — never an LLM opinion.
 #
+# --sym-repo <dir> --sym-spec <Spec.t.sol> (#1032) supply the LIVE single-candidate symbolic context: when
+#   the coordinator CHOOSES symbolic-prove (typically combined with --sym-policy to lift it from step 0), it
+#   runs REAL Halmos END-TO-END inside the loop — `halmos-verify.sh --repo <SYM_REPO> --target <SYM_SPEC>
+#   [--function <prefix>]` — and maps the gate's SOUND exit code to the coordinator outcome:
+#     exit 1 = COUNTEREXAMPLE -> confirmed   (a concrete input is a real bug, CONFIRMED with a witness)
+#     exit 0 = PROVED         -> refuted     (the invariant holds for ALL inputs — the lead is killed by a proof)
+#     exit 3/2/other = INCONCLUSIVE/harness -> dry  (no verdict; a non-productive step)
+#   The verdict is HALMOS's exit code, NEVER an LLM opinion. --sym-repo must be a foundry project (hold a
+#   foundry.toml); --sym-spec must be a readable `*.t.sol` whose `--function`-prefixed (default `check`)
+#   symbolic test asserts the invariant. Both must be supplied together. halmos-verify.sh is resolved to an
+#   absolute path and passed as HALMOS_VERIFY; forge + halmos must be on PATH (the gate does NOT hardcode any
+#   install location). The flags are PURELY ADDITIVE: without them symbolic-prove falls through to the honest
+#   stub (-> dry) and the offline/fixture orchestration is unchanged. The single-candidate context is the
+#   minimum live slice; multi-candidate code-carrying (a discovered lead auto-carrying its contract+invariant
+#   through PENDING) remains a broader follow-up (epic #1015 / #1014). --sym-function <prefix> overrides the
+#   spec's symbolic-test name prefix (default `check`).
+#
 # Exit: 0 on a clean run that reached `stop`/budget; 2 on usage error; 3 on missing prerequisite.
 set -uo pipefail
 
@@ -90,6 +108,9 @@ FIXTURE=""
 BACKEND="mock"
 OUT="$PWD/coordinator-out"
 SYM_POLICY=""
+SYM_REPO=""
+SYM_SPEC=""
+SYM_FUNCTION=""
 
 need() { [ "$1" -ge 2 ] || { echo "run-coordinator.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -102,6 +123,9 @@ while [ $# -gt 0 ]; do
     --fixture)       need "$#"; FIXTURE="$2"; shift 2 ;;
     --backend)       need "$#"; BACKEND="$2"; shift 2 ;;
     --sym-policy)    need "$#"; SYM_POLICY="$2"; shift 2 ;;
+    --sym-repo)      need "$#"; SYM_REPO="$2"; shift 2 ;;
+    --sym-spec)      need "$#"; SYM_SPEC="$2"; shift 2 ;;
+    --sym-function)  need "$#"; SYM_FUNCTION="$2"; shift 2 ;;
     --out)           need "$#"; OUT="$2"; shift 2 ;;
     --agentis)       need "$#"; AGENTIS="$2"; shift 2 ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
@@ -127,6 +151,28 @@ if [ -n "$SYM_POLICY" ]; then
   # awk would silently coerce to 0) is rejected, not treated as a no-op seed.
   case "$SYM_POLICY" in (*[0-9]*) : ;; (*) echo "run-coordinator.sh: --sym-policy must be a decimal number (e.g. 1.5 or -0.15)" >&2; exit 2 ;; esac
   SYM_POLICY_TT="$(awk -v v="$SYM_POLICY" 'BEGIN{ printf "%d", (v>=0 ? v*10000+0.5 : v*10000-0.5) }')"
+fi
+# --sym-repo / --sym-spec: the LIVE single-candidate symbolic context (#1032). When BOTH are supplied the
+# coordinator's chosen symbolic-prove action runs REAL Halmos end-to-end (halmos-verify.sh --repo <SYM_REPO>
+# --target <SYM_SPEC>) inside the loop and maps its SOUND exit code to the gate outcome (1=COUNTEREXAMPLE ->
+# confirmed, 0=PROVED -> refuted, 3/2/other=INCONCLUSIVE/harness -> dry). The verdict is Halmos's, never an
+# LLM opinion. Without the live env the symbolic-prove action falls through to the honest stub (-> dry), so
+# the flags are PURELY ADDITIVE. They must be supplied together; SYM_REPO must be a foundry project (hold a
+# foundry.toml) and SYM_SPEC must be a readable file. Both are resolved to ABSOLUTE paths (the colony runs
+# from the rundir, a different cwd) and exported into the in-substrate run.
+HALMOS_VERIFY=""
+if [ -n "$SYM_REPO" ] || [ -n "$SYM_SPEC" ]; then
+  [ -n "$SYM_REPO" ] && [ -n "$SYM_SPEC" ] || { echo "run-coordinator.sh: --sym-repo and --sym-spec must be supplied together (the LIVE symbolic context)" >&2; exit 2; }
+  [ -d "$SYM_REPO" ] || { echo "run-coordinator.sh: --sym-repo is not a directory: $SYM_REPO" >&2; exit 2; }
+  [ -f "$SYM_REPO/foundry.toml" ] || { echo "run-coordinator.sh: --sym-repo is not a foundry project (no foundry.toml): $SYM_REPO" >&2; exit 2; }
+  [ -f "$SYM_SPEC" ] || { echo "run-coordinator.sh: --sym-spec not found: $SYM_SPEC" >&2; exit 2; }
+  SYM_REPO="$(cd "$SYM_REPO" && pwd)"
+  SYM_SPEC="$(cd "$(dirname "$SYM_SPEC")" && pwd)/$(basename "$SYM_SPEC")"
+  # Resolve halmos-verify.sh to an ABSOLUTE path and pass it as HALMOS_VERIFY (the same env path
+  # symbolic-prover.ag / run-symbolic.sh use). No hardcoded install location — the toolchain (forge/halmos)
+  # is the caller's PATH responsibility, exactly as halmos-verify.sh requires.
+  HALMOS_VERIFY="$HERE/evm-harness/halmos-verify.sh"
+  [ -f "$HALMOS_VERIFY" ] || { echo "run-coordinator.sh: halmos-verify gate not found at $HALMOS_VERIFY" >&2; exit 3; }
 fi
 # The in-substrate orchestrate loop (coordinator.ag) encodes its carried state as fields joined by the
 # `@@F@@` sentinel; an input cell that literally contains it would corrupt that encoding. Reject it loudly
@@ -154,8 +200,12 @@ cp "$COORD_AG" "$RUN/coordinator.ag"
   [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p"; echo "llm.cli_timeout_ms = 600000"; }
   [ "$BACKEND" = "flat-cyborg" ] && echo "llm.cli_timeout_ms = 600000"
   echo "trace.level = normal"
-  echo "exec.env_passthrough = SCOPE,CLASS_FITNESS,POLICY,PENDING,BUDGET,DRY_STREAK,DRY_CAP,PREV_ACTION,PREV_KEY,LAST_OUTCOME,DISPATCH_ENABLED,DISPATCH_FIXTURE,HUNT_FIXTURE,ORCHESTRATE_ENABLED,STEPS,SYM_POLICY_TT"
-  echo "exec.default_timeout_ms = 30000"
+  echo "exec.env_passthrough = SCOPE,CLASS_FITNESS,POLICY,PENDING,BUDGET,DRY_STREAK,DRY_CAP,PREV_ACTION,PREV_KEY,LAST_OUTCOME,DISPATCH_ENABLED,DISPATCH_FIXTURE,HUNT_FIXTURE,ORCHESTRATE_ENABLED,STEPS,SYM_POLICY_TT,SYM_REPO,SYM_SPEC,SYM_FUNCTION,HALMOS_VERIFY"
+  # The LIVE symbolic-prove route (#1032) runs forge build + halmos + z3 over the supplied spec inside the
+  # loop — tens of seconds, well past the 10s/30s defaults — so the per-step exec timeout is raised to 180s
+  # when a live symbolic context is supplied (matches run-symbolic.sh's 180000ms). The offline/fixture path
+  # never runs the gate, so its timeout is unchanged at 30s.
+  if [ -n "$HALMOS_VERIFY" ]; then echo "exec.default_timeout_ms = 180000"; else echo "exec.default_timeout_ms = 30000"; fi
   # The whole point: every decision is recorded as experience so coordinator:policy:<type> reweights.
   echo "learning.enabled = true"
   echo "experience.enabled = true"
@@ -262,6 +312,10 @@ RUN_LOG="$RUN/orchestrate.log"
     DRY_CAP="$DRY_CAP" \
     STEPS="$STEPS" \
     SYM_POLICY_TT="$SYM_POLICY_TT" \
+    SYM_REPO="$SYM_REPO" \
+    SYM_SPEC="$SYM_SPEC" \
+    SYM_FUNCTION="$SYM_FUNCTION" \
+    HALMOS_VERIFY="$HALMOS_VERIFY" \
     ORCHESTRATE_ENABLED=1 \
     DISPATCH_ENABLED=1 \
     DISPATCH_FIXTURE="$DISPATCH_FIXTURE" \

@@ -39,6 +39,7 @@ sandbox.
 | [`auditor/agents/symbolic-prover.ag`](../auditor/agents/symbolic-prover.ag) | Per-candidate substrate agent: GENERATE the spec (fixture or `prompt()`), VERIFY it with the M1 gate, `emit`/`learn` the verdict, print `SYMBOLIC\|<file:fn>\|<verdict>`. |
 | [`run-symbolic.sh`](../run-symbolic.sh) | Operator entrypoint: drive `symbolic-prover.ag` once per candidate over the substrate from a manifest, collect the verdicts into a report. |
 | [`demo-symbolic.sh`](../demo-symbolic.sh) | Offline-deterministic demo: the full candidate → fixture-spec → REAL Halmos → verdict loop, asserting PROVED-safe + COUNTEREXAMPLE-confirmed. |
+| [`demo-symbolic-orchestrate-live.sh`](../demo-symbolic-orchestrate-live.sh) | LIVE demo (#1032): the **coordinator's** chosen `symbolic-prove` action runs REAL Halmos end-to-end on an operator-supplied vault — buggy → COUNTEREXAMPLE → confirmed, fixed → PROVED → refuted. `[SKIP]` + exit 0 without forge/halmos/agentis. |
 
 It mirrors the per-candidate structure of [`run-refute.sh`](../run-refute.sh) +
 [`auditor/agents/refuter.ag`](../auditor/agents/refuter.ag) — env-in the candidate, generate, `emit`/`learn`
@@ -127,8 +128,14 @@ never an LLM opinion. The symbolic gate's verdict maps to the coordinator's thre
 On the **offline / deterministic** path the `DISPATCH_FIXTURE` carries the already-mapped outcome directly —
 a `symbolic-prove|cand*=confirmed` rule stands in for a COUNTEREXAMPLE, `=refuted` for a PROVED — so the
 orchestration is provable with **no live solver** (every action's offline path works this way). On the
-**live** path the mapping is realized end-to-end in `symbolic-prover.ag` (Halmos exit code → verdict →
-outcome) behind `run-symbolic.sh`; `dispatcher.ag` / `coordinator.ag` document the contract and route to it.
+**live** path (#1032) the mapping is realized end-to-end inside `coordinator.ag` itself: when the coordinator
+**chooses** `symbolic-prove` and an operator-supplied live symbolic context is present (`SYM_REPO` +
+`SYM_SPEC` + the `HALMOS_VERIFY` gate path), `coordinator.ag::action_outcome` runs **REAL Halmos**
+(`halmos-verify.sh --repo <SYM_REPO> --target <SYM_SPEC>`) through `exec sh`, captures its exit code via the
+`__rc=$?` marker, and maps it (1→confirmed, 0→refuted, 3/2/other→dry) — the verdict is the solver's, never an
+LLM judgement. The branch is **purely additive**: absent any of the three env facts it falls through to the
+honest stub, so the offline orchestration is unchanged. `dispatcher.ag` carries the byte-identical live branch
+(the `demo-dispatch.sh` sync-guard asserts the two copies do not drift).
 
 ### Reproduce
 
@@ -138,11 +145,22 @@ outcome) behind `run-symbolic.sh`; `dispatcher.ag` / `coordinator.ag` document t
 #   flows back (COUNTEREXAMPLE->confirmed / PROVED->refuted) -> the candidate is consumed -> the policy evolves.
 dark-factory/demo-symbolic-orchestrate.sh      # exit 0 = proven; non-zero = an assertion failed
 
+# LIVE proof (#1032): the coordinator's chosen symbolic-prove action runs REAL Halmos end-to-end inside the
+# loop for an operator-supplied single candidate — a buggy vault's solvency spec -> COUNTEREXAMPLE -> confirmed,
+# a fixed vault's -> PROVED -> refuted. [SKIP] + exit 0 when forge/halmos/agentis are absent (CI convention).
+dark-factory/demo-symbolic-orchestrate-live.sh # needs forge + halmos on PATH; else SKIP
+
 # Bootstrap the in-substrate loop with a symbolic-prove route yourself (stub executor = offline; --sym-policy
 # seeds the symbolic-prove policy so the coordinator chooses it from step 0):
 dark-factory/run-coordinator.sh --scope <scope.tsv> --executor stub --fixture <fixture.tsv> \
     --sym-policy 1.5 --budget 4
 #   fixture rule: `symbolic-prove | cand* | confirmed`  (= a Halmos COUNTEREXAMPLE; `refuted` = a PROVED)
+
+# LIVE single-candidate route: supply a Foundry repo + a ready Halmos spec so the chosen symbolic-prove action
+# runs REAL Halmos (forge + halmos must be on PATH). The verdict is Halmos's exit code, mapped
+# COUNTEREXAMPLE->confirmed / PROVED->refuted / INCONCLUSIVE->dry — never an LLM opinion.
+dark-factory/run-coordinator.sh --scope <scope.tsv> --sym-policy 1.5 --budget 4 \
+    --sym-repo <foundry-dir> --sym-spec <Spec.t.sol>
 ```
 
 ## Honest scope
@@ -151,9 +169,15 @@ M2 ships the **callable** generate-and-verify step: an operator (or a higher-lev
 `run-symbolic.sh` over a candidate manifest. **M3 wires it into the self-orchestrating coordinator** (above):
 the coordinator decides *when* to spend a symbolic verify and feeds the SOUND verdict back into its evolving
 policy. The deterministic orchestration proof uses a fixture that maps the sound verdict (no live Halmos
-needed for the routing proof — exactly like every other action's offline path); the **live** symbolic route
-(`run-symbolic.sh` driving real Halmos behind the chosen action) is the same wiring M2 ships, and remains a
-follow-up to thread end-to-end from the coordinator's live dispatch path (epic #1015 / #1014).
+needed for the routing proof — exactly like every other action's offline path). **#1032 closes the LIVE
+slice for an operator-supplied single candidate:** when the coordinator chooses `symbolic-prove` and a live
+symbolic context is present (`--sym-repo` + `--sym-spec`, threaded as `SYM_REPO` / `SYM_SPEC` / `HALMOS_VERIFY`),
+`coordinator.ag::action_outcome` runs **REAL Halmos end-to-end inside the loop** and maps its exit code to the
+gate outcome — `demo-symbolic-orchestrate-live.sh` proves it against a vault with a real rounding-direction
+solvency bug (COUNTEREXAMPLE → confirmed) and its fix (PROVED → refuted). The offline fixture path remains the
+**CI proof** (no toolchain on the runners). **Multi-candidate code-carrying** — a *discovered* lead
+auto-carrying its contract + invariant through `PENDING` so the loop spins up the live context itself — stays
+the remaining follow-up (epic #1015 / #1014); this slice wires the operator-supplied single candidate.
 
 On the **live** (LLM-generated-spec) path, an honest expectation: a generated Halmos spec must both **compile**
 (`forge build` via Halmos) and stay **decidable** (small symbolic widths, bounded loops) for a clean
