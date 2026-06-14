@@ -69,15 +69,18 @@ no emit, no call, no extra output — so the standalone decision path is **byte-
 
 ## What moved vs what is still shell
 
-| Concern | Before #1014 | After M2 |
-|---------|--------------|----------|
-| **decide** the next action | substrate (`coordinator.ag`) | substrate (unchanged) |
-| **dispatch** any action + derive its verdict | shell `case` (`stub_outcome` / `real_outcome`) | **substrate** (`coordinator.ag` emit → `dispatch` → memo) for **every** action type |
-| carry the verdict back to the loop | shell variable | **durable memo** read by the shell loop (every non-`stop` action) |
-| carry state between steps (PENDING / DRY_STREAK / BUDGET / policy read) | shell | shell (unchanged) |
+| Concern | Before #1014 | After M2 | After M3 |
+|---------|--------------|----------|---------|
+| **decide** the next action | substrate (`coordinator.ag`) | substrate (unchanged) | substrate (unchanged) |
+| **dispatch** any action + derive its verdict | shell `case` (`stub_outcome` / `real_outcome`) | **substrate** (`coordinator.ag` emit → `dispatch` → memo) for **every** action type | substrate (unchanged) |
+| carry the verdict back to the loop | shell variable | **durable memo** read by the shell loop (every non-`stop` action) | **in-process** `recall_latest` inside the loop |
+| carry state between steps (PENDING / DRY_STREAK / BUDGET / policy) | shell | shell | **substrate** — the loop threads it all in the carried `reduce` state (#1014 M3) |
+| **drive** the multi-step loop | shell while-loop | shell while-loop | **substrate** (`coordinator.ag` `reduce` over a budget-bounded `STEPS` list) |
 
-The `stub_outcome()` / `real_outcome()` shell functions and their `case` dispatch are **removed** —
-`run-coordinator.sh` no longer derives any outcome; it reads one memo per non-`stop` step.
+The `stub_outcome()` / `real_outcome()` shell functions and their `case` dispatch were **removed in M2** —
+the shell derives no outcome. **In M3 the shell while-loop itself is removed**: `run-coordinator.sh` is a
+**bootstrap** that fires **one** `agentis go` and reads the final `decisions.tsv` + evolved policy back from
+the `coordinator:trace` / `coordinator:policy_after` memos — see [`coordinator.md`](./coordinator.md).
 
 `auditor/agents/dispatcher.ag` is the standalone, separately-committable copy of the dispatch agent fn
 (`dispatch` + its helpers + a `DISPATCH_ARGS` top-level entry). Because agentis `go` has no file includes,

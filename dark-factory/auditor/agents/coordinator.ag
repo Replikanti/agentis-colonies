@@ -1,4 +1,4 @@
-cb 300000;
+cb 2000000;
 // #1014 — self-orchestrating COORDINATOR. ONE decision per `agentis go` invocation: read the current
 // FACTS, enumerate the audit ACTION OPTIONS, and pick the next action by a fact-criteria + evolving
 // POLICY — NOT a hardcoded sequence. This replaces the DECISION-MAKING that run-discovery.sh / an
@@ -330,148 +330,430 @@ agent dispatch() -> void {
     memo_write("dispatcher:last_check", "done");
 }
 
-// --- read FACTS ------------------------------------------------------------------------------------
-let scope = getenv("SCOPE");
-let classFit = getenv("CLASS_FITNESS");
-let policy = getenv("POLICY");
-let pending = getenv("PENDING");
-let budgetStr = getenv("BUDGET");
-let dryStr = getenv("DRY_STREAK");
-let dryCapStr = getenv("DRY_CAP");
-let prevAction = getenv("PREV_ACTION");
-let prevKey = getenv("PREV_KEY");
-let lastOutcome = getenv("LAST_OUTCOME");
+// --- ONE DECISION (+ gated dispatch), as a pure-ish fn so BOTH the single-step top-level AND the #1014
+// M3 in-process loop run the SAME code. Takes every FACT as an explicit PARAMETER (no getenv inside) so a
+// loop iteration can feed CARRIED state instead of env; performs the identical side-effects in the
+// identical order the v1 top-level did — the prev-outcome attribution (learn + policy_update emit), the
+// `ACTION|` print, the `dark-factory:decision` emit, the `coordinator:last_decision` / `:last_check`
+// memo_writes, and the DISPATCH_ENABLED-gated emit+dispatch(). Returns the chosen action as
+// `<selType>@@F@@<selArgs>` so the loop can thread PENDING / DRY_STREAK / PREV_* without re-parsing the
+// `ACTION|` line. `dispatchEnabled`/`board` are passed so a loop carries them once, not per-iteration env.
+fn decide_once(scope: string, classFit: string, policy: string, pending: string, budget: int,
+               dryStreak: int, dryCap: int, prevAction: string, prevKey: string, lastOutcome: string,
+               board: string, dispatchEnabled: bool) -> string {
+    let pendingCount = count_lines(pending);
+    let firstPending = first_line(pending);
 
-// The shared blackboard is a FACT too (a fresh lead steers which subsystem to hunt) — read it directly
-// like hunter.ag does, so a lead posted earlier THIS run influences the decision.
-let board = recall_latest("dark-factory:blackboard:leads");
-
-let budget = if len(budgetStr) == 0 { 0 } else { parse_int(budgetStr) };
-let dryStreak = if len(dryStr) == 0 { 0 } else { parse_int(dryStr) };
-let dryCap = if len(dryCapStr) == 0 { 3 } else { parse_int(dryCapStr) };
-let pendingCount = count_lines(pending);
-let firstPending = first_line(pending);
-
-// --- EVOLVE FIRST: attribute the PREVIOUS action's gate OUTCOME to its action-type so the policy that
-// ranks THIS decision already reflects it. learn() is the same call fitness-driver.ag makes; the
-// cumulative delta per action-type key is the policy weight run-coordinator.sh reads back. No learn on
-// the first step (PREV_ACTION="") — there is nothing to attribute. ----------------------------------
-let signal = outcome_signal(lastOutcome);
-if len(prevAction) > 0 {
-    if len(signal) > 0 {
-        learn("coordinator", prevAction,
-              "outcome of previous " + prevAction + " (" + prevKey + ") was " + lastOutcome,
-              signal, [prevAction, signal]);
-        emit("dark-factory:policy_update",
-             "{\"action\":\"" + prevAction + "\",\"outcome\":\"" + lastOutcome + "\",\"signal\":\"" + signal + "\"}");
+    // --- EVOLVE FIRST: attribute the PREVIOUS action's gate OUTCOME to its action-type so the policy that
+    // ranks THIS decision already reflects it. learn() is the same call fitness-driver.ag makes; the
+    // cumulative delta per action-type key is the policy weight run-coordinator.sh reads back. No learn on
+    // the first step (PREV_ACTION="") — there is nothing to attribute. ------------------------------
+    let signal = outcome_signal(lastOutcome);
+    if len(prevAction) > 0 {
+        if len(signal) > 0 {
+            learn("coordinator", prevAction,
+                  "outcome of previous " + prevAction + " (" + prevKey + ") was " + lastOutcome,
+                  signal, [prevAction, signal]);
+            emit("dark-factory:policy_update",
+                 "{\"action\":\"" + prevAction + "\",\"outcome\":\"" + lastOutcome + "\",\"signal\":\"" + signal + "\"}");
+        }
     }
+
+    // --- DECIDE: build the option list, score each from FACTS+POLICY, rank, and let `decide` select the top.
+    // `stop` short-circuits the ranking when budget is exhausted or K consecutive dry — a hard fact gate.
+    // The verify tier (pending candidate present): refute and poc-screen of the first pending candidate.
+    let pendId = if pendingCount > 0 { cell_subsystem(firstPending) } else { "" };
+    let refuteScore = score_refute(policy);
+    let pocScore = score_poc(policy);
+
+    // The hunt tier: the single best huntable cell (highest fact+policy score).
+    let bestCell = best_hunt(scope, classFit, policy, board);
+    let huntCell = if len(bestCell) == 0 { "" } else { substring(bestCell, 0, index_of(bestCell, "\t")) };
+    let huntScore = if len(bestCell) == 0 { 0.0 } else { parse_float(substring(bestCell, index_of(bestCell, "\t") + 1, len(bestCell))) };
+    let inventScore = score_invent(policy);
+
+    // Decide the action TYPE by the fact gates + argmax of the scored options. Single-assignment: compute
+    // the chosen type, args, score, and rationale as one nested expression (no `let` reassignment).
+    // Priority of HARD fact gates (these are the colony's invariants, not policy): (1) stop on budget/dry,
+    // (2) verify a pending lead before more hunting, (3) hunt the best available lens, (4) invent a method
+    // when nothing is huntable. WITHIN the verify and hunt tiers the POLICY weight (and lens/board facts)
+    // set the order, so the policy genuinely steers the choice.
+    let stopForced = if budget <= 0 { true } else { dryStreak >= dryCap };
+
+    let chosenType =
+        if stopForced { "stop" }
+        else { if pendingCount > 0 { if pocScore > refuteScore { "poc-screen" } else { "refute" } }
+        else { if len(huntCell) > 0 { if huntScore >= inventScore { "hunt" } else { "invent-method" } }
+        else { "invent-method" } } };
+
+    let chosenArgs =
+        if chosenType == "hunt" { huntCell }
+        else { if chosenType == "refute" { pendId }
+        else { if chosenType == "poc-screen" { pendId }
+        else { "" } } };
+
+    let chosenScore =
+        if chosenType == "stop" { 0.0 }
+        else { if chosenType == "refute" { refuteScore }
+        else { if chosenType == "poc-screen" { pocScore }
+        else { if chosenType == "hunt" { huntScore }
+        else { inventScore } } } };
+
+    // Substrate-native selection step: present the chosen action as the FIRST (top-ranked) entry of a
+    // `decide` option list, with the runner-up next, and let the substrate `decide` builtin make the
+    // selection. Offline `decide` returns the top-ranked option (which IS our fact+policy argmax); a real
+    // backend may arbitrate a near-tie from the criteria. Either way the ORDERING is the coordinator's,
+    // derived from facts+policy. The selected token is `<type>|<args>` (re-split below).
+    let topOption = chosenType + "|" + chosenArgs;
+    let runnerUp =
+        if chosenType == "stop" { "stop|" }
+        else { if pendingCount > 0 { "hunt|" + huntCell }
+        else { if len(huntCell) > 0 { "invent-method|" }
+        else { "stop|" } } };
+    let criteria =
+        "Pick the next audit action. The list is pre-ranked by FACTS and the evolving policy: verify a "
+      + "pending candidate before more hunting; prefer a blackboard-flagged subsystem and a higher-fitness "
+      + "lens; stop when budget is exhausted or " + to_string(dryCap) + " consecutive dry. Choose the "
+      + "highest-priority (first) action.";
+    let selected = decide([topOption, runnerUp], criteria);
+    let selType = cell_subsystem(selected);
+    let selArgs = cell_class(selected);
+
+    // --- RATIONALE: cite the FACTS that drove the choice (not an opaque pick). ------------------------
+    let factSummary =
+        "budget=" + to_string(budget) + " dry=" + to_string(dryStreak) + "/" + to_string(dryCap)
+      + " pending=" + to_string(pendingCount) + " scope_cells=" + to_string(count_lines(scope));
+    let rationale =
+        if selType == "stop" {
+            if budget <= 0 { "budget exhausted (" + factSummary + ") -> halt" }
+            else { to_string(dryStreak) + " consecutive dry >= K=" + to_string(dryCap) + " (" + factSummary + ") -> halt" }
+        }
+        else { if selType == "refute" {
+            "pending unverified candidate '" + selArgs + "' -> verify via refute before more hunting (policy hunt="
+          + to_string(fit_value(policy, "hunt")) + ", refute=" + to_string(fit_value(policy, "refute")) + "; " + factSummary + ")" }
+        else { if selType == "poc-screen" {
+            "pending unverified candidate '" + selArgs + "' -> cheap eval_ag pre-screen first (policy poc-screen="
+          + to_string(fit_value(policy, "poc-screen")) + "; " + factSummary + ")" }
+        else { if selType == "hunt" {
+            let bb = if board_has_subsystem(board, cell_subsystem(huntCell)) { "blackboard lead in this subsystem; " } else { "" };
+            "hunt highest-scored lens '" + selArgs + "' (" + bb + "lens_fitness="
+          + to_string(fit_value(classFit, cell_class(huntCell))) + ", hunt_policy=" + to_string(fit_value(policy, "hunt"))
+          + ", score=" + to_string(chosenScore) + "; " + factSummary + ")" }
+        else {
+            if len(huntCell) == 0 { "no huntable cell remains in scope -> invent a new method to open a fresh lens (" + factSummary + ")" }
+            else { "ordinary hunting is not paying off (invent_policy=" + to_string(fit_value(policy, "invent-method"))
+                 + " > best hunt score " + to_string(huntScore) + ") -> invent a new method to open a fresh lens (" + factSummary + ")" } } } } };
+
+    // --- OUTPUT exactly one ACTION line; record the decision on the bus + memo for the dispatcher. -----
+    let actionLine = "ACTION|" + selType + "|" + selArgs + "|" + rationale;
+    print(actionLine);
+    emit("dark-factory:decision",
+         "{\"action\":\"" + selType + "\",\"args\":\"" + selArgs + "\",\"score\":\"" + to_string(chosenScore)
+       + "\",\"prev\":\"" + prevAction + "\",\"prev_outcome\":\"" + lastOutcome + "\"}");
+    memo_write("coordinator:last_decision", actionLine);
+    memo_write("coordinator:last_check", "done");
+
+    // --- DISPATCH (#1014 M2, GATED): when dispatch is enabled AND the chosen action is a real action (hunt /
+    // refute / poc-screen / invent-method), emit it over the in-process bus and run the dispatch chain in THIS
+    // same program — the verdict lands in the durable `coordinator:last_outcome` memo for the shell loop to
+    // read. DARK (no emit, no call, no extra output) unless DISPATCH_ENABLED is present, so a standalone
+    // coordinator run stays byte-identical. `stop` is terminal and never dispatched. The payload is
+    // `<type>|<args>` (the same shape dispatcher.ag's DISPATCH_ARGS takes). -----------------------------
+    if dispatchEnabled {
+        if is_action(selType) {
+            emit("dark-factory:dispatch", selType + "|" + selArgs);
+            dispatch();
+        }
+    }
+    return selType + "@@F@@" + selArgs;
 }
 
-// --- DECIDE: build the option list, score each from FACTS+POLICY, rank, and let `decide` select the top.
-// `stop` short-circuits the ranking when budget is exhausted or K consecutive dry — a hard fact gate.
-let scopeEmpty = count_lines(scope) == 0;
+// === #1014 M3: DISSOLVE THE SHELL LOOP — the federation self-orchestrates the whole multi-step audit in
+// ONE `agentis go`. The old run-coordinator.sh while-loop (per step: one `agentis go` decide+dispatch, read
+// the verdict memo, push/pop PENDING, advance DRY_STREAK/BUDGET, read_policy, append a decisions.tsv row)
+// now runs INSIDE the substrate as a `reduce` over a budget-bounded STEPS list. The shell is a BOOTSTRAP:
+// it seeds the facts + a STEPS list and reads the final trace/policy memo back. GATED on ORCHESTRATE_ENABLED
+// — absent, the top-level does EXACTLY ONE decide_once() with byte-identical output to v1 (the #1 guard).
+//
+// STATE ENCODING. The carried `reduce` accumulator is ONE string of NAMED fields joined by the 5-char
+// sentinel `@@F@@` (it cannot occur in any field — ids/rationales never contain it; regex-safe). Fields,
+// in order:
+//   0 stopped     "1" once a `stop`/budget/dry-cap terminated the loop (then step_fn is a no-op), else "0"
+//   1 budget      remaining step budget (int) — decremented per executed action
+//   2 dryStreak   consecutive non-productive steps (int)
+//   3 step        0-based step counter (for the cand-<step> id + the trace row)
+//   4 prevAction  previous action type ("" before step 0)
+//   5 prevKey     previous action args
+//   6 lastOutcome previous gate verdict ("confirmed"|"dry"|"refuted"|"")
+//   7 pending     the unverified-candidate list, newline-joined INTERNALLY (its own `\n` separator, which
+//                 `@@F@@` is chosen NOT to collide with) — push on hunt+confirmed, pop-first on refute/poc
+//   8 ph,9 pi,10 pp,11 pr   per-action-type cumulative policy in TEN-THOUSANDTHS (int): hunt /
+//                 invent-method / poc-screen / refute. Carrying the policy IN-PROCESS reproduces the shell's
+//                 read_policy() (sum of experience `delta`) byte-for-byte: each ±0.15 attribution is ±1500
+//                 ten-thousandths, and fmt4() renders the same `%.4f` Python `read_policy` emits. (We ALSO
+//                 learn() for the durable experience record — the carried ints are the in-loop mirror.)
+//   12 sh,13 si,14 sp,15 sr  per-type "seen" flags ("1"/"0") — read_policy emits only keys that appear in
+//                 the store, sorted; the seen flags reproduce that (a key is omitted until first attributed)
+//   16 trace      the accumulating decisions.tsv body (rows joined by `\n`, each a real TSV row)
+//   17 budget0    the ORIGINAL budget (for the BUDGET fact each row reports as the shell's REMAINING)
+//
+// POLICY THREADING. decide_once() is fed the formatted carried policy (fields 8-15 -> the `type=delta;...`
+// string read_policy would return), so the in-loop decision ranks options against the SAME evolving policy
+// the shell read between calls. The attribution for the PREVIOUS action is applied to the carried ints at
+// the START of each step (exactly when read_policy reflects it: the shell's read_policy at step N already
+// includes the call-(N-1) write, but NOT the call-N write of action N-1 — so the policy string a step uses
+// is the pre-attribution snapshot). After the loop, prevAction is attributed ONE more time, mirroring the
+// shell's final BUDGET=0 record call (which double-counts the last real action on a `stop` — reproduced).
 
-// The verify tier (pending candidate present): refute and poc-screen of the first pending candidate.
-let pendId = if pendingCount > 0 { cell_subsystem(firstPending) } else { "" };
-let refuteScore = score_refute(policy);
-let pocScore = score_poc(policy);
+// Format a ten-thousandths int as a fixed `%.4f` decimal, byte-identical to Python "%.4f" (the shell's
+// read_policy formatting). pad4 zero-pads the fractional part to 4 digits.
+fn pad4(n: int) -> string {
+    if n >= 1000 { return to_string(n); }
+    if n >= 100 { return "0" + to_string(n); }
+    if n >= 10 { return "00" + to_string(n); }
+    return "000" + to_string(n);
+}
+fn fmt4(t: int) -> string {
+    let neg = t < 0;
+    let a = if neg { 0 - t } else { t };
+    let whole = a / 10000;
+    let frac = a - (whole * 10000);
+    let body = to_string(whole) + "." + pad4(frac);
+    if neg { return "-" + body; }
+    return body;
+}
 
-// The hunt tier: the single best huntable cell (highest fact+policy score).
-let bestCell = best_hunt(scope, classFit, policy, board);
-let huntCell = if len(bestCell) == 0 { "" } else { substring(bestCell, 0, index_of(bestCell, "\t")) };
-let huntScore = if len(bestCell) == 0 { 0.0 } else { parse_float(substring(bestCell, index_of(bestCell, "\t") + 1, len(bestCell))) };
-let inventScore = score_invent(policy);
+// "1"/"0" string for a bool flag (no bool_flag builtin in v1.19.0).
+fn bool_flag(b: bool) -> string {
+    if b { return "1"; }
+    return "0";
+}
 
-// Decide the action TYPE by the fact gates + argmax of the scored options. Single-assignment: compute
-// the chosen type, args, score, and rationale as one nested expression (no `let` reassignment).
-// Priority of HARD fact gates (these are the colony's invariants, not policy): (1) stop on budget/dry,
-// (2) verify a pending lead before more hunting, (3) hunt the best available lens, (4) invent a method
-// when nothing is huntable. WITHIN the verify and hunt tiers the POLICY weight (and lens/board facts)
-// set the order, so the policy genuinely steers the choice.
-let stopForced = if budget <= 0 { true } else { dryStreak >= dryCap };
+// The TRAILING `|`-segment of `s` (the shell's `awk -F'|' '{print $NF}'`); "" when `s` is empty. The memo
+// verdict `<type>|<args>|<verdict>` carries the verdict last, and a hunt's args themselves contain a `|`,
+// so we cannot take field 2 — we walk to the last `|`.
+fn tail_field(s: string) -> string {
+    if len(s) == 0 { return ""; }
+    return reduce(regex_split("\\|", s), |acc: string, seg: string| -> string { return seg; }, "");
+}
 
-let chosenType =
-    if stopForced { "stop" }
-    else { if pendingCount > 0 { if pocScore > refuteScore { "poc-screen" } else { "refute" } }
-    else { if len(huntCell) > 0 { if huntScore >= inventScore { "hunt" } else { "invent-method" } }
-    else { "invent-method" } } };
+// The Nth `@@F@@` field of the state string. Same single-assignment reduce as payload_field, on the state
+// sentinel instead of `|` (the sentinel never collides with a field's `\n`/`\t`/`|`/spaces).
+fn state_field(s: string, n: int) -> string {
+    let segs = regex_split("@@F@@", s);
+    let acc = reduce(segs, |a: string, seg: string| -> string {
+        let bar = index_of(a, "\t");
+        let idx = parse_int(substring(a, 0, bar));
+        let cap = substring(a, bar + 1, len(a));
+        if idx == n { return to_string(idx + 1) + "\t" + seg; }
+        return to_string(idx + 1) + "\t" + cap;
+    }, "0\t");
+    return substring(acc, index_of(acc, "\t") + 1, len(acc));
+}
+fn state_int(s: string, n: int) -> int {
+    let v = state_field(s, n);
+    if len(v) == 0 { return 0; }
+    return parse_int(v);
+}
 
-let chosenArgs =
-    if chosenType == "hunt" { huntCell }
-    else { if chosenType == "refute" { pendId }
-    else { if chosenType == "poc-screen" { pendId }
-    else { "" } } };
+// Build the `type=delta;...` POLICY string from the carried ints + seen flags — byte-identical to the
+// shell's read_policy(): only SEEN keys, ALPHABETICALLY sorted (hunt < invent-method < poc-screen < refute),
+// each `key=%.4f`, `;`-joined; "" when nothing has been attributed yet.
+fn policy_string(ph: int, pi: int, pp: int, pr: int, sh: bool, si: bool, sp: bool, sr: bool) -> string {
+    let a = if sh { "hunt=" + fmt4(ph) } else { "" };
+    let b = if si { "invent-method=" + fmt4(pi) } else { "" };
+    let c = if sp { "poc-screen=" + fmt4(pp) } else { "" };
+    let d = if sr { "refute=" + fmt4(pr) } else { "" };
+    let s1 = a;
+    let s2 = if len(b) > 0 { if len(s1) > 0 { s1 + ";" + b } else { b } } else { s1 };
+    let s3 = if len(c) > 0 { if len(s2) > 0 { s2 + ";" + c } else { c } } else { s2 };
+    let s4 = if len(d) > 0 { if len(s3) > 0 { s3 + ";" + d } else { d } } else { s3 };
+    return s4;
+}
 
-let chosenScore =
-    if chosenType == "stop" { 0.0 }
-    else { if chosenType == "refute" { refuteScore }
-    else { if chosenType == "poc-screen" { pocScore }
-    else { if chosenType == "hunt" { huntScore }
-    else { inventScore } } } };
+// The ±1500 ten-thousandths delta a `learn()` signal applies (success +0.15, failure -0.15, else 0) — the
+// in-loop mirror of the experience `delta` read_policy sums.
+fn signal_delta(signal: string) -> int {
+    if signal == "success" { return 1500; }
+    if signal == "failure" { return 0 - 1500; }
+    return 0;
+}
 
-// Substrate-native selection step: present the chosen action as the FIRST (top-ranked) entry of a
-// `decide` option list, with the runner-up next, and let the substrate `decide` builtin make the
-// selection. Offline `decide` returns the top-ranked option (which IS our fact+policy argmax); a real
-// backend may arbitrate a near-tie from the criteria. Either way the ORDERING is the coordinator's,
-// derived from facts+policy. The selected token is `<type>|<args>` (re-split below).
-let topOption = chosenType + "|" + chosenArgs;
-let runnerUp =
-    if chosenType == "stop" { "stop|" }
-    else { if pendingCount > 0 { "hunt|" + huntCell }
-    else { if len(huntCell) > 0 { "invent-method|" }
-    else { "stop|" } } };
-let criteria =
-    "Pick the next audit action. The list is pre-ranked by FACTS and the evolving policy: verify a "
-  + "pending candidate before more hunting; prefer a blackboard-flagged subsystem and a higher-fitness "
-  + "lens; stop when budget is exhausted or " + to_string(dryCap) + " consecutive dry. Choose the "
-  + "highest-priority (first) action.";
-let selected = decide([topOption, runnerUp], criteria);
-let selType = cell_subsystem(selected);
-let selArgs = cell_class(selected);
+// --- PENDING list ops (mirror run-coordinator.sh's shell PENDING threading exactly) ----------------
+// Push a candidate onto the (newline-joined) pending list; drop empty lines first (the shell does
+// `grep -v '^$'`). A confirmed hunt at step S surfaces `cand-S|<args>`.
+fn pending_push(pending: string, cand: string) -> string {
+    let cleaned = reduce(regex_split("\n", pending), |acc: string, l: string| -> string {
+        if len(l) == 0 { return acc; }
+        return append_line(acc, l);
+    }, "");
+    return append_line(cleaned, cand);
+}
+// Pop the FIRST non-empty candidate (the one the coordinator pointed at) — the shell's `tail -n +2`.
+fn pending_pop(pending: string) -> string {
+    let cleaned = reduce(regex_split("\n", pending), |acc: string, l: string| -> string {
+        if len(l) == 0 { return acc; }
+        return append_line(acc, l);
+    }, "");
+    let drop = first_line(cleaned);
+    return reduce(regex_split("\n", cleaned), |acc: string, l: string| -> string {
+        if len(l) == 0 { return acc; }
+        if len(acc) == 0 { if l == drop { return acc; } }
+        return append_line(acc, l);
+    }, "");
+}
 
-// --- RATIONALE: cite the FACTS that drove the choice (not an opaque pick). ------------------------
-let factSummary =
-    "budget=" + to_string(budget) + " dry=" + to_string(dryStreak) + "/" + to_string(dryCap)
-  + " pending=" + to_string(pendingCount) + " scope_cells=" + to_string(count_lines(scope));
-let rationale =
+// --- one LOOP STEP: decode the carried state, run decide_once on it with the carried policy, dispatch +
+// read the verdict, update PENDING/DRY_STREAK/BUDGET/PREV_* + the policy ints, append the trace row, and
+// re-encode. A no-op once `stopped`. This IS the body of the old shell while-loop, now in-substrate. ----
+fn step_fn(state: string, stepLabel: string) -> string {
+    if state_int(state, 0) == 1 { return state; }
+    let budget = state_int(state, 1);
+    let dryStreak = state_int(state, 2);
+    let step = state_int(state, 3);
+    let prevAction = state_field(state, 4);
+    let prevKey = state_field(state, 5);
+    let lastOutcome = state_field(state, 6);
+    let pending = state_field(state, 7);
+    let phIn = state_int(state, 8);
+    let piIn = state_int(state, 9);
+    let ppIn = state_int(state, 10);
+    let prIn = state_int(state, 11);
+    let shIn = state_int(state, 12) == 1;
+    let siIn = state_int(state, 13) == 1;
+    let spIn = state_int(state, 14) == 1;
+    let srIn = state_int(state, 15) == 1;
+    let trace = state_field(state, 16);
+    let budget0 = state_int(state, 17);
+
+    // POLICY snapshot used for THIS decision + the trace row (the pre-attribution sum, as the shell's env
+    // POLICY is read before the call's learn() write).
+    let policyStr = policy_string(phIn, piIn, ppIn, prIn, shIn, siIn, spIn, srIn);
+
+    // Apply the PREVIOUS action's attribution to the carried ints (the shell's read_policy at the NEXT step
+    // reflects it). decide_once() ALSO learn()s it for the durable record.
+    let sig = outcome_signal(lastOutcome);
+    let d = signal_delta(sig);
+    let ph = if prevAction == "hunt" { phIn + d } else { phIn };
+    let pi = if prevAction == "invent-method" { piIn + d } else { piIn };
+    let pp = if prevAction == "poc-screen" { ppIn + d } else { ppIn };
+    let pr = if prevAction == "refute" { prIn + d } else { prIn };
+    let didAttr = if len(prevAction) > 0 { len(sig) > 0 } else { false };
+    let sh = if didAttr { if prevAction == "hunt" { true } else { shIn } } else { shIn };
+    let si = if didAttr { if prevAction == "invent-method" { true } else { siIn } } else { siIn };
+    let sp = if didAttr { if prevAction == "poc-screen" { true } else { spIn } } else { spIn };
+    let sr = if didAttr { if prevAction == "refute" { true } else { srIn } } else { srIn };
+
+    // ONE decision + in-substrate dispatch on the CARRIED facts (board re-read fresh, like the shell).
+    let dryCap = if len(getenv("DRY_CAP")) == 0 { 3 } else { parse_int(getenv("DRY_CAP")) };
+    let board = recall_latest("dark-factory:blackboard:leads");
+    let chosen = decide_once(getenv("SCOPE"), getenv("CLASS_FITNESS"), policyStr, pending, budget,
+                             dryStreak, dryCap, prevAction, prevKey, lastOutcome,
+                             board, true);
+    let selType = state_field(chosen, 0);
+    let selArgs = state_field(chosen, 1);
+
+    // Record the decisions.tsv row (byte-identical shape to run-coordinator.sh's printf). The rationale is
+    // the ACTION| line minus the fixed `ACTION|<selType>|<selArgs>|` prefix — robust even though a hunt's
+    // args (`subsystem|class`) and the rationale itself contain `|`, because we strip the EXACT prefix
+    // length rather than field-splitting.
+    let actionLine = recall_latest("coordinator:last_decision");
+    let prefix = "ACTION|" + selType + "|" + selArgs + "|";
+    let rationale = substring(actionLine, len(prefix), len(actionLine));
+    let row = "step=" + to_string(step) + "\taction=" + selType + "\targs=" + selArgs
+            + "\tpolicy=[" + policyStr + "]\trationale=" + rationale;
+    let trace2 = append_line(trace, row);
+
     if selType == "stop" {
-        if budget <= 0 { "budget exhausted (" + factSummary + ") -> halt" }
-        else { to_string(dryStreak) + " consecutive dry >= K=" + to_string(dryCap) + " (" + factSummary + ") -> halt" }
+        // Terminal: record the row, freeze the loop (no action executed, no PENDING/streak change).
+        return "1@@F@@" + to_string(budget) + "@@F@@" + to_string(dryStreak) + "@@F@@" + to_string(step)
+             + "@@F@@" + prevAction + "@@F@@" + prevKey + "@@F@@" + lastOutcome + "@@F@@" + pending
+             + "@@F@@" + to_string(ph) + "@@F@@" + to_string(pi) + "@@F@@" + to_string(pp) + "@@F@@" + to_string(pr)
+             + "@@F@@" + bool_flag(sh) + "@@F@@" + bool_flag(si) + "@@F@@" + bool_flag(sp) + "@@F@@" + bool_flag(sr)
+             + "@@F@@" + trace2 + "@@F@@" + to_string(budget0);
     }
-    else { if selType == "refute" {
-        "pending unverified candidate '" + selArgs + "' -> verify via refute before more hunting (policy hunt="
-      + to_string(fit_value(policy, "hunt")) + ", refute=" + to_string(fit_value(policy, "refute")) + "; " + factSummary + ")" }
-    else { if selType == "poc-screen" {
-        "pending unverified candidate '" + selArgs + "' -> cheap eval_ag pre-screen first (policy poc-screen="
-      + to_string(fit_value(policy, "poc-screen")) + "; " + factSummary + ")" }
-    else { if selType == "hunt" {
-        let bb = if board_has_subsystem(board, cell_subsystem(huntCell)) { "blackboard lead in this subsystem; " } else { "" };
-        "hunt highest-scored lens '" + selArgs + "' (" + bb + "lens_fitness="
-      + to_string(fit_value(classFit, cell_class(huntCell))) + ", hunt_policy=" + to_string(fit_value(policy, "hunt"))
-      + ", score=" + to_string(chosenScore) + "; " + factSummary + ")" }
-    else {
-        if len(huntCell) == 0 { "no huntable cell remains in scope -> invent a new method to open a fresh lens (" + factSummary + ")" }
-        else { "ordinary hunting is not paying off (invent_policy=" + to_string(fit_value(policy, "invent-method"))
-             + " > best hunt score " + to_string(huntScore) + ") -> invent a new method to open a fresh lens (" + factSummary + ")" } } } } };
 
-// --- OUTPUT exactly one ACTION line; record the decision on the bus + memo for the dispatcher. -----
-let actionLine = "ACTION|" + selType + "|" + selArgs + "|" + rationale;
-print(actionLine);
-emit("dark-factory:decision",
-     "{\"action\":\"" + selType + "\",\"args\":\"" + selArgs + "\",\"score\":\"" + to_string(chosenScore)
-   + "\",\"prev\":\"" + prevAction + "\",\"prev_outcome\":\"" + lastOutcome + "\"}");
-memo_write("coordinator:last_decision", actionLine);
-memo_write("coordinator:last_check", "done");
+    // Read the dispatch verdict back (decide_once already ran dispatch() in-process, writing the memo).
+    let memoOutcome = recall_latest("coordinator:last_outcome");
+    let rawVerdict = tail_field(memoOutcome);
+    let outcome = if is_verdict(rawVerdict) { rawVerdict } else { "dry" };
 
-// --- DISPATCH (#1014 M2, GATED): when dispatch is enabled AND the chosen action is a real action (hunt /
-// refute / poc-screen / invent-method), emit it over the in-process bus and run the dispatch chain in THIS
-// same program — the verdict lands in the durable `coordinator:last_outcome` memo for the shell loop to
-// read. DARK (no emit, no call, no extra output) unless DISPATCH_ENABLED is present, so a standalone
-// coordinator run stays byte-identical. `stop` is terminal and never dispatched. The payload is
-// `<type>|<args>` (the same shape dispatcher.ag's DISPATCH_ARGS takes). -----------------------------
-if len(getenv("DISPATCH_ENABLED")) > 0 {
-    if is_action(selType) {
-        emit("dark-factory:dispatch", selType + "|" + selArgs);
-        dispatch();
+    // Update PENDING from the outcome (the shell's case): a confirmed hunt pushes a candidate; refute/poc
+    // consume the first pending candidate.
+    let pending2 =
+        if selType == "hunt" { if outcome == "confirmed" { pending_push(pending, "cand-" + to_string(step) + "|" + selArgs) } else { pending } }
+        else { if selType == "refute" { pending_pop(pending) }
+        else { if selType == "poc-screen" { pending_pop(pending) }
+        else { pending } } };
+
+    let dryStreak2 = if outcome == "confirmed" { 0 } else { dryStreak + 1 };
+    let budget2 = budget - 1;
+    let step2 = step + 1;
+
+    // Terminate when the budget the loop carries is spent (the shell's `STEP < BUDGET`). The STEPS list is a
+    // BOUND, not the authority — we stop the moment carried budget hits 0 by flipping `stopped`.
+    let stopped2 = if budget2 <= 0 { "1" } else { "0" };
+
+    return stopped2 + "@@F@@" + to_string(budget2) + "@@F@@" + to_string(dryStreak2) + "@@F@@" + to_string(step2)
+         + "@@F@@" + selType + "@@F@@" + selArgs + "@@F@@" + outcome + "@@F@@" + pending2
+         + "@@F@@" + to_string(ph) + "@@F@@" + to_string(pi) + "@@F@@" + to_string(pp) + "@@F@@" + to_string(pr)
+         + "@@F@@" + bool_flag(sh) + "@@F@@" + bool_flag(si) + "@@F@@" + bool_flag(sp) + "@@F@@" + bool_flag(sr)
+         + "@@F@@" + trace2 + "@@F@@" + to_string(budget0);
+}
+
+// === TOP LEVEL ===
+// GATE: with ORCHESTRATE_ENABLED set, run the whole audit loop in-process; absent, do EXACTLY ONE
+// decide_once() with byte-identical output to v1 (demo-coordinator.sh's regression guard).
+if len(getenv("ORCHESTRATE_ENABLED")) > 0 {
+    // BOOTSTRAP FACTS (from the bootstrap shell): the same facts the v1 loop seeded, plus a STEPS budget
+    // list. The blackboard is re-read fresh inside each step. DRY_CAP defaults to 3 (the shell's default);
+    // a non-default cap arrives via DRY_CAP. BUDGET is the loop bound.
+    let budget0 = if len(getenv("BUDGET")) == 0 { 0 } else { parse_int(getenv("BUDGET")) };
+    let initPending = getenv("PENDING");
+    // initial accumulator: nothing attributed yet (all ints 0, all seen "0"), no prev, empty trace.
+    let init = "0@@F@@" + to_string(budget0) + "@@F@@0@@F@@0@@F@@@@F@@@@F@@@@F@@" + initPending
+             + "@@F@@0@@F@@0@@F@@0@@F@@0@@F@@0@@F@@0@@F@@0@@F@@0@@F@@@@F@@" + to_string(budget0);
+    let finalState = reduce(regex_split("\n", getenv("STEPS")),
+                            |acc: string, s: string| -> string { return step_fn(acc, s); }, init);
+
+    // FINAL ATTRIBUTION: record the last action's outcome once more — the shell's terminal BUDGET=0 call.
+    // (On a `stop` this double-counts the last real action exactly as the shell does; on budget-exhaustion
+    // it attributes the final action the loop didn't get to attribute. Both match run-coordinator.sh.)
+    let fPrevAction = state_field(finalState, 4);
+    let fPrevKey = state_field(finalState, 5);
+    let fLastOutcome = state_field(finalState, 6);
+    let fSig = outcome_signal(fLastOutcome);
+    if len(fPrevAction) > 0 {
+        if len(fSig) > 0 {
+            learn("coordinator", fPrevAction,
+                  "outcome of previous " + fPrevAction + " (" + fPrevKey + ") was " + fLastOutcome,
+                  fSig, [fPrevAction, fSig]);
+        }
     }
+    let fd = signal_delta(fSig);
+    let fph = state_int(finalState, 8) + (if fPrevAction == "hunt" { fd } else { 0 });
+    let fpi = state_int(finalState, 9) + (if fPrevAction == "invent-method" { fd } else { 0 });
+    let fpp = state_int(finalState, 10) + (if fPrevAction == "poc-screen" { fd } else { 0 });
+    let fpr = state_int(finalState, 11) + (if fPrevAction == "refute" { fd } else { 0 });
+    let fDidAttr = if len(fPrevAction) > 0 { len(fSig) > 0 } else { false };
+    let fsh = if state_int(finalState, 12) == 1 { true } else { if fDidAttr { fPrevAction == "hunt" } else { false } };
+    let fsi = if state_int(finalState, 13) == 1 { true } else { if fDidAttr { fPrevAction == "invent-method" } else { false } };
+    let fsp = if state_int(finalState, 14) == 1 { true } else { if fDidAttr { fPrevAction == "poc-screen" } else { false } };
+    let fsr = if state_int(finalState, 15) == 1 { true } else { if fDidAttr { fPrevAction == "refute" } else { false } };
+
+    // Publish the trace + the evolved policy to durable memos the bootstrap reads back (the cross-process
+    // channel). The trace is the full decisions.tsv body; policy-after is the read_policy()-shaped string.
+    memo_write("coordinator:trace", state_field(finalState, 16));
+    memo_write("coordinator:policy_after", policy_string(fph, fpi, fpp, fpr, fsh, fsi, fsp, fsr));
+    print("ORCHESTRATE|done|steps=" + to_string(state_int(finalState, 3)));
+} else {
+    // SINGLE DECISION (v1, byte-identical): read facts from env, run ONE decide_once(). The board is read
+    // here (as v1 did at top level). DISPATCH_ENABLED gates the in-substrate dispatch (as v1).
+    let board = recall_latest("dark-factory:blackboard:leads");
+    let budget = if len(getenv("BUDGET")) == 0 { 0 } else { parse_int(getenv("BUDGET")) };
+    let dryStreak = if len(getenv("DRY_STREAK")) == 0 { 0 } else { parse_int(getenv("DRY_STREAK")) };
+    let dryCap = if len(getenv("DRY_CAP")) == 0 { 3 } else { parse_int(getenv("DRY_CAP")) };
+    let _chosen = decide_once(getenv("SCOPE"), getenv("CLASS_FITNESS"), getenv("POLICY"), getenv("PENDING"),
+                              budget, dryStreak, dryCap, getenv("PREV_ACTION"), getenv("PREV_KEY"),
+                              getenv("LAST_OUTCOME"), board, len(getenv("DISPATCH_ENABLED")) > 0);
 }

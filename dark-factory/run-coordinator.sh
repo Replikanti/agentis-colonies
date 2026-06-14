@@ -102,6 +102,12 @@ case "$BUDGET"  in (*[!0-9]*|'') echo "run-coordinator.sh: --budget must be a no
 case "$DRY_CAP" in (*[!0-9]*|'') echo "run-coordinator.sh: --dry-cap must be a non-negative integer" >&2; exit 2 ;; esac
 case "$EXECUTOR" in real|stub) : ;; *) echo "run-coordinator.sh: --executor must be real|stub" >&2; exit 2 ;; esac
 [ "$EXECUTOR" = "stub" ] && { [ -n "$FIXTURE" ] || { echo "run-coordinator.sh: --executor stub needs --fixture <f>" >&2; exit 2; }; [ -f "$FIXTURE" ] || { echo "run-coordinator.sh: --fixture not found: $FIXTURE" >&2; exit 2; }; }
+# The in-substrate orchestrate loop (coordinator.ag) encodes its carried state as fields joined by the
+# `@@F@@` sentinel; an input cell that literally contains it would corrupt that encoding. Reject it loudly
+# (operator-controlled input; never legitimate in a subsystem label / class id / glob).
+if grep -qF '@@F@@' "$SCOPE_FILE" 2>/dev/null || { [ -n "$FIXTURE" ] && grep -qF '@@F@@' "$FIXTURE" 2>/dev/null; }; then
+  echo "run-coordinator.sh: --scope/--fixture must not contain the reserved '@@F@@' field sentinel" >&2; exit 2
+fi
 command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ] || { echo "run-coordinator.sh: agentis binary not found ($AGENTIS)" >&2; exit 3; }
 
 COORD_AG="$HERE/auditor/agents/coordinator.ag"
@@ -122,7 +128,7 @@ cp "$COORD_AG" "$RUN/coordinator.ag"
   [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p"; echo "llm.cli_timeout_ms = 600000"; }
   [ "$BACKEND" = "flat-cyborg" ] && echo "llm.cli_timeout_ms = 600000"
   echo "trace.level = normal"
-  echo "exec.env_passthrough = SCOPE,CLASS_FITNESS,POLICY,PENDING,BUDGET,DRY_STREAK,DRY_CAP,PREV_ACTION,PREV_KEY,LAST_OUTCOME,DISPATCH_ENABLED,DISPATCH_FIXTURE,HUNT_FIXTURE"
+  echo "exec.env_passthrough = SCOPE,CLASS_FITNESS,POLICY,PENDING,BUDGET,DRY_STREAK,DRY_CAP,PREV_ACTION,PREV_KEY,LAST_OUTCOME,DISPATCH_ENABLED,DISPATCH_FIXTURE,HUNT_FIXTURE,ORCHESTRATE_ENABLED,STEPS"
   echo "exec.default_timeout_ms = 30000"
   # The whole point: every decision is recorded as experience so coordinator:policy:<type> reweights.
   echo "learning.enabled = true"
@@ -197,122 +203,66 @@ if [ "$EXECUTOR" = "stub" ] && [ -n "$FIXTURE" ]; then
   ' "$FIXTURE")"
 fi
 
-# --- the loop. State carried between steps: PENDING (unverified candidates), DRY_STREAK, BUDGET, and the
-# PREV action/outcome the coordinator attributes to its policy. The coordinator DECIDES; we DISPATCH. ---
-PENDING=""
-DRY_STREAK=0
-PREV_ACTION=""
-PREV_KEY=""
-LAST_OUTCOME=""
-STEP=0
+# --- #1014 M3: the shell LOOP is DISSOLVED. The whole multi-step audit now self-orchestrates INSIDE the
+# substrate: ONE `agentis go coordinator.ag` with ORCHESTRATE_ENABLED runs the entire decide -> dispatch ->
+# read-verdict -> update-PENDING/DRY_STREAK/BUDGET -> evolve-policy -> append-trace loop as a `reduce` over a
+# budget-bounded STEPS list. This script is now a BOOTSTRAP: it seeds the FACTS + a STEPS budget list, fires
+# the single in-substrate run, and reads the final `decisions.tsv` + evolved policy back from the durable
+# memos the loop writes (`coordinator:trace`, `coordinator:policy_after`). NO per-step shell loop, NO
+# shell-side PENDING/DRY_STREAK/BUDGET threading, NO shell-derived outcome — the federation drives the audit.
+# (Follow-up, still on epic #1014: a long-lived daemon-tick reflex so the loop runs continuously, not once
+# per bootstrap; the per-action LIVE executors.)
 TRACE="$OUT/decisions.tsv"
 : > "$TRACE"
 
-echo "run-coordinator.sh: policy BEFORE the run: [$(read_policy)]" >&2
-
-while [ "$STEP" -lt "$BUDGET" ]; do
-  REMAINING=$((BUDGET - STEP))
-  POLICY="$(read_policy)"
-
-  DEC_LOG="$RUN/decision_$STEP.log"
-  # ONE decision: hand the coordinator every FACT; it returns exactly one ACTION| line. DISPATCH_ENABLED
-  # makes coordinator.ag DISPATCH the chosen action itself (#1014 M2): for ANY real action it emits
-  # `dark-factory:dispatch` and runs dispatch() in THIS same `agentis go`, landing the gate verdict in the
-  # durable `coordinator:last_outcome` memo. We read that memo below for every non-`stop` action instead of
-  # a shell `case` — the shell no longer computes any outcome. DISPATCH_FIXTURE carries the offline verdict
-  # rules to the agent (all of --fixture, projected to `type|glob=verdict;...`).
-  ( cd "$RUN" && env \
-      SCOPE="$SCOPE" \
-      CLASS_FITNESS="$CLASS_FITNESS" \
-      POLICY="$POLICY" \
-      PENDING="$PENDING" \
-      BUDGET="$REMAINING" \
-      DRY_STREAK="$DRY_STREAK" \
-      DRY_CAP="$DRY_CAP" \
-      PREV_ACTION="$PREV_ACTION" \
-      PREV_KEY="$PREV_KEY" \
-      LAST_OUTCOME="$LAST_OUTCOME" \
-      DISPATCH_ENABLED=1 \
-      DISPATCH_FIXTURE="$DISPATCH_FIXTURE" \
-      "$AGENTIS" go coordinator.ag --enable-exec --enable-messaging ) >"$DEC_LOG" 2>&1 \
-    || { echo "run-coordinator.sh: coordinator call failed at step $STEP (see $DEC_LOG)" >&2; exit 1; }
-
-  ACTION_LINE="$(grep -E '^ACTION\|' "$DEC_LOG" | head -1)"
-  [ -n "$ACTION_LINE" ] || { echo "run-coordinator.sh: no ACTION line at step $STEP (see $DEC_LOG)" >&2; exit 1; }
-
-  # Parse `ACTION|<type>|<args>|<rationale>`. <args> is a SINGLE `|`-field for refute/poc-screen
-  # (a `cand-id`) and "" for invent-method/stop, but TWO fields for a hunt (`subsystem|class`). So the
-  # field where the rationale begins is type-dependent — a flat `cut -f3`/`-f4-` would otherwise drop a
-  # hunt's class into the rationale and build a malformed `cand-N|subsystem` PENDING id. Mirrors the
-  # field shape demo-coordinator.sh's `expect` helper documents.
-  ATYPE="$(printf '%s' "$ACTION_LINE" | cut -d'|' -f2)"
-  if [ "$ATYPE" = "hunt" ]; then
-    AARGS="$(printf '%s' "$ACTION_LINE" | cut -d'|' -f3-4)"
-    ARATIONALE="$(printf '%s' "$ACTION_LINE" | cut -d'|' -f5-)"
-  else
-    AARGS="$(printf '%s' "$ACTION_LINE" | cut -d'|' -f3)"
-    ARATIONALE="$(printf '%s' "$ACTION_LINE" | cut -d'|' -f4-)"
-  fi
-  printf 'step=%s\taction=%s\targs=%s\tpolicy=[%s]\trationale=%s\n' "$STEP" "$ATYPE" "$AARGS" "$POLICY" "$ARATIONALE" >> "$TRACE"
-  echo "run-coordinator.sh: step $STEP -> $ATYPE${AARGS:+ $AARGS}  ($ARATIONALE)" >&2
-
-  if [ "$ATYPE" = "stop" ]; then
-    echo "run-coordinator.sh: coordinator decided STOP at step $STEP" >&2
-    break
-  fi
-
-  # CAPTURE the chosen action's gate OUTCOME (a FACT, fed back next step). Since #1014 M2 the dispatch
-  # already happened IN the coordinator call above: for ANY real action it emitted `dark-factory:dispatch`
-  # and ran dispatch() in-process, recording the verdict in the durable `coordinator:last_outcome` memo. We
-  # READ it back here (a separate `agentis memo get`, the only substrate-native cross-process channel)
-  # instead of computing it in a shell `case` — the shell no longer derives any outcome. The memo value is
-  # `<type>|<args>|<verdict>`; we take the trailing verdict field (`dry` if malformed/missing).
-  MEMO_OUTCOME="$( ( cd "$RUN" && "$AGENTIS" memo get coordinator:last_outcome ) 2>/dev/null | tail -1 )"
-  OUTCOME="$(printf '%s' "$MEMO_OUTCOME" | awk -F'|' '{ print $NF }')"
-  case "$OUTCOME" in confirmed|dry|refuted) : ;; *) OUTCOME="dry" ;; esac
-  echo "run-coordinator.sh:   $ATYPE dispatched in-substrate; verdict from coordinator:last_outcome memo: $OUTCOME" >&2
-  echo "run-coordinator.sh:   dispatch outcome: $OUTCOME" >&2
-
-  # Update carried state from the outcome (these are FACTS, not decisions):
-  #  * a hunt that 'confirmed' surfaces a NEW candidate lead -> push it onto PENDING for verification.
-  #  * refute/poc-screen consume the first pending candidate (the one the coordinator pointed at),
-  #    regardless of confirmed/refuted — the gate has now spoken on it either way.
-  #  * dry/refuted advance the dry streak; a confirmed finding resets it.
-  case "$ATYPE" in
-    hunt)
-      if [ "$OUTCOME" = "confirmed" ]; then
-        CAND="cand-$STEP|$AARGS"
-        PENDING="$(printf '%s\n%s' "$PENDING" "$CAND" | grep -v '^$' || true)"
-      fi ;;
-    refute|poc-screen)
-      # consume the first pending candidate (the one the coordinator pointed at)
-      PENDING="$(printf '%s\n' "$PENDING" | grep -v '^$' | tail -n +2 || true)" ;;
-  esac
-
-  if [ "$OUTCOME" = "confirmed" ]; then
-    DRY_STREAK=0
-  else
-    DRY_STREAK=$((DRY_STREAK + 1))
-  fi
-
-  PREV_ACTION="$ATYPE"
-  PREV_KEY="$AARGS"
-  LAST_OUTCOME="$OUTCOME"
-  STEP=$((STEP + 1))
-done
-
-# Feed the FINAL action's outcome back so its policy delta is recorded too (the loop above attributes the
-# previous outcome on the NEXT call; a terminal `stop`/budget has no next call). One last coordinator
-# invocation with BUDGET=0 forces a stop AND records the last attribution, then exits.
-if [ -n "$PREV_ACTION" ]; then
-  ( cd "$RUN" && env \
-      SCOPE="$SCOPE" CLASS_FITNESS="$CLASS_FITNESS" POLICY="$(read_policy)" PENDING="$PENDING" \
-      BUDGET=0 DRY_STREAK="$DRY_STREAK" DRY_CAP="$DRY_CAP" \
-      PREV_ACTION="$PREV_ACTION" PREV_KEY="$PREV_KEY" LAST_OUTCOME="$LAST_OUTCOME" \
-      "$AGENTIS" go coordinator.ag --enable-exec --enable-messaging ) >"$RUN/decision_final.log" 2>&1 || true
+# STEPS is a BOUND, not a sequence authority: a `0\n1\n…\n<BUDGET-1>` list whose LENGTH caps the loop at
+# BUDGET iterations (agentis has no range(); a `reduce` over this string is the bounded-iteration idiom).
+# The coordinator stops the moment its carried budget/dry-cap fires — the list only bounds the worst case.
+STEPS=""
+if [ "$BUDGET" -gt 0 ]; then
+  STEPS="$(awk -v n="$BUDGET" 'BEGIN{ for (i=0;i<n;i++){ printf "%s%d", (i?"\n":""), i } }')"
 fi
 
-POLICY_AFTER="$(read_policy)"
+echo "run-coordinator.sh: policy BEFORE the run: [$(read_policy)]" >&2
+
+# ONE in-substrate run drives the ENTIRE audit. ORCHESTRATE_ENABLED selects the loop mode; DISPATCH_ENABLED
+# keeps every action's dispatch in-substrate (#1014 M2); DISPATCH_FIXTURE carries the offline verdict rules.
+RUN_LOG="$RUN/orchestrate.log"
+( cd "$RUN" && env \
+    SCOPE="$SCOPE" \
+    CLASS_FITNESS="$CLASS_FITNESS" \
+    PENDING="" \
+    BUDGET="$BUDGET" \
+    DRY_CAP="$DRY_CAP" \
+    STEPS="$STEPS" \
+    ORCHESTRATE_ENABLED=1 \
+    DISPATCH_ENABLED=1 \
+    DISPATCH_FIXTURE="$DISPATCH_FIXTURE" \
+    "$AGENTIS" go coordinator.ag --enable-exec --enable-messaging ) >"$RUN_LOG" 2>&1 \
+  || { echo "run-coordinator.sh: in-substrate orchestration failed (see $RUN_LOG)" >&2; exit 1; }
+
+grep -E '^ORCHESTRATE\|' "$RUN_LOG" >/dev/null 2>&1 \
+  || { echo "run-coordinator.sh: orchestration did not complete (no ORCHESTRATE| marker; see $RUN_LOG)" >&2; exit 1; }
+
+# Read the decisions.tsv body + the evolved policy back from the durable memos the loop wrote (the only
+# substrate-native cross-process channel). The trace memo is the full TSV body; policy_after is the
+# read_policy()-shaped `type=delta;…` string the in-loop policy threading produced.
+( cd "$RUN" && "$AGENTIS" memo get coordinator:trace ) 2>/dev/null > "$TRACE" || true
+
+# Echo each decision to stderr (the operator feed the per-step loop used to print live).
+while IFS= read -r row; do
+  [ -n "$row" ] || continue
+  echo "run-coordinator.sh: $row" >&2
+done < "$TRACE"
+
+# The evolved policy: prefer the loop's in-process result (memo), cross-checked against the experience-store
+# read_policy() (they are byte-identical by construction — the in-loop threading mirrors the store sum).
+POLICY_LOOP="$( ( cd "$RUN" && "$AGENTIS" memo get coordinator:policy_after ) 2>/dev/null )"
+POLICY_STORE="$(read_policy)"
+if [ "$POLICY_LOOP" != "$POLICY_STORE" ]; then
+  echo "run-coordinator.sh: WARNING in-loop policy [$POLICY_LOOP] != experience-store policy [$POLICY_STORE]" >&2
+fi
+POLICY_AFTER="$POLICY_LOOP"
 echo "run-coordinator.sh: policy AFTER the run:  [$POLICY_AFTER]" >&2
 echo "run-coordinator.sh: decision trace -> $TRACE" >&2
 printf '%s' "$POLICY_AFTER" > "$OUT/policy-after.txt"
