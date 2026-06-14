@@ -46,7 +46,7 @@ a false-VERIFIED.
 
 <!-- PARTIAL — Reentrancy + AccessControl recorded from operator-confirmed M1–M3 end-to-end runs
      (real verdicts, not the script). The three new classes await a full `calibrate-evm.sh`
-     (backend=claude) pass; that run is currently THROUGHPUT-GATED, not code-gated — a single
+     (reasoning backend) pass; that run is currently THROUGHPUT-GATED, not code-gated — a single
      colony run logs ~190 `[llm] still waiting` ticks + 180s `cli_timeout` retries, so a clean
      10-run sweep is an operator action for when the claude CLI is responsive. Re-run the script
      to overwrite this section with the full machine-scored table. -->

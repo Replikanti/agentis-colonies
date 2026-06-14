@@ -99,17 +99,17 @@ choose** and, on a VERIFIED finding, stages a **human-gated** submission package
 ```bash
 # native solana-program target
 dark-factory/run-audit.sh --target "$PWD/path/to/program.rs" \
-    --harness "$PWD/dark-factory/solana-harness" --backend claude
+    --harness "$PWD/dark-factory/solana-harness"   # default backend = flat-cyborg (flat-rate); add --backend claude for the metered -p path
 
 # Anchor target (+ optional frozen on-chain snapshot for state replay)
 dark-factory/run-audit.sh --target "$PWD/path/to/lib.rs" \
     --anchor-harness "$PWD/dark-factory/solana-harness-anchor" \
-    --snapshot "$PWD/snap.txt" --backend claude --out "$PWD/audit-out"
+    --snapshot "$PWD/snap.txt" --out "$PWD/audit-out"
 
 # EVM/Solidity target (M1: Reentrancy) — verified through the real EVM (revm).
 # One-time host-side: (cd dark-factory/evm-harness && npm i solc)   # pins solc 0.8.26 for compile.js
 dark-factory/run-audit.sh --target "$PWD/path/to/Contract.sol" \
-    --evm-harness "$PWD/dark-factory/evm-harness" --backend claude --out "$PWD/audit-out"
+    --evm-harness "$PWD/dark-factory/evm-harness" --out "$PWD/audit-out"
 ```
 
 On `Verdict: VERIFIED` the package lands at `<out>/submission/`: `report.md` (Immunefi-format,
@@ -141,7 +141,7 @@ The operator supplies three inputs and the colony fans out one substrate agent p
 ```bash
 dark-factory/run-discovery.sh \
     --repo "$PWD/target" --scope "$PWD/scope.tsv" --brief "$PWD/brief.md" \
-    --backend claude --out "$PWD/discovery-out"
+    --out "$PWD/discovery-out"
 # cheap wiring smoke (no real LLM):  add  --backend mock --only "<subsystem>" --classes C1
 ```
 
@@ -238,7 +238,7 @@ and verdict — that a monitor or dashboard can poll. It only reads what the run
 
 ```bash
 dark-factory/run-discovery.sh --repo "$PWD/target" --scope scope.tsv --brief brief.md \
-    --backend claude --out "$PWD/discovery-out"
+    --out "$PWD/discovery-out"
 dark-factory/run-summary.sh --out "$PWD/discovery-out"          # -> discovery-out/run-summary.json
 dark-factory/run-summary.sh --out "$PWD/discovery-out" --json | jq .verdict   # stdout is pure JSON
 dark-factory/run-summary.sh --out "$PWD/discovery-out" --emit-event           # + one NDJSON event line
@@ -260,7 +260,7 @@ cross-function audit, build-and-run PoC, fork-differential) onto the substrate.
 
 ```bash
 # candidates.tsv: `file:fn | classid | severity | claimed exploit | code-file`  (one per line)
-dark-factory/run-refute.sh --candidates "$PWD/candidates.tsv" --backend claude --out "$PWD/refute-out"
+dark-factory/run-refute.sh --candidates "$PWD/candidates.tsv" --out "$PWD/refute-out"
 # cheap wiring smoke (no real LLM):  add  --backend mock
 ```
 

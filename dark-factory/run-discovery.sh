@@ -32,7 +32,8 @@
 #   --taxonomy <file>   bug-taxonomy.md (default: bundled ./auditor/bug-taxonomy.md).
 #   --only <subsystem>  Hunt only the line whose subsystem label matches (smoke test / re-run one slice).
 #   --classes <ids>     Override EVERY line's class list with this comma list (e.g. C1,C2 for a cheap probe).
-#   --backend <mock|claude>  LLM backend (default: claude). mock = offline-deterministic wiring smoke.
+#   --backend <mock|flat-cyborg|claude>  LLM backend (default: flat-cyborg = flat-rate PTY wrapper;
+#                       claude = metered -p API; mock = offline-deterministic wiring smoke).
 #   --out <dir>         Output dir for the run + leads (default: ./discovery-out).
 #   --agentis <bin>     agentis binary (default: `agentis` on PATH).
 set -eu
@@ -40,7 +41,7 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
 REPO="" ; SCOPE="" ; BRIEF="" ; TAXONOMY="" ; ONLY="" ; CLASSES_OVERRIDE=""
-BACKEND="claude" ; MODEL="" ; OUT="$PWD/discovery-out"
+BACKEND="flat-cyborg" ; MODEL="" ; OUT="$PWD/discovery-out"
 
 need() { [ "$1" -ge 2 ] || { echo "run-discovery.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -91,6 +92,7 @@ cp "$HERE/auditor/slice-fns.sh" "$RUN/slice-fns.sh"   # function-level slicer (s
   # cells time out 3x and return nothing; one 600s attempt beats three wasted 300s retries. Keep
   # cells focused with `file@fn` slicing so the common case stays fast.
   [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p${MODEL:+ --model $MODEL}"; echo "llm.cli_timeout_ms = 600000"; }
+  [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = 600000"; [ -n "$MODEL" ] && echo "llm.model = $MODEL"; }
   echo "trace.level = normal"
   # The hunter reads source + the brief/taxonomy through exec sh; pass through its whole env contract.
   echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER"

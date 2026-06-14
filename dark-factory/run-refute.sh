@@ -31,7 +31,8 @@
 #   --code-dir <dir>     Base dir for a candidate's relative <code-file> (default: dir of --candidates).
 #   --brief <file>       Optional protocol brief (invariants + known issues to exclude). Default: none.
 #   --only <file:fn>     Refute only the candidate whose file:fn matches (re-run / smoke one).
-#   --backend <mock|claude>  LLM backend (default: claude). mock = offline-deterministic wiring smoke.
+#   --backend <mock|flat-cyborg|claude>  LLM backend (default: flat-cyborg = flat-rate PTY wrapper;
+#                       claude = metered -p API; mock = offline-deterministic wiring smoke).
 #   --model <id>         Optional model id passed to the claude CLI.
 #   --out <dir>          Output dir for the run + verdicts (default: ./refute-out).
 #   --agentis <bin>      agentis binary (default: `agentis` on PATH).
@@ -40,7 +41,7 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
 CANDS="" ; CODE_DIR="" ; BRIEF="" ; ONLY=""
-BACKEND="claude" ; MODEL="" ; OUT="$PWD/refute-out"
+BACKEND="flat-cyborg" ; MODEL="" ; OUT="$PWD/refute-out"
 
 need() { [ "$1" -ge 2 ] || { echo "run-refute.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -92,6 +93,7 @@ fi
   echo "llm.backend = $BACKEND"
   # 600s: a hostile cross-function trace of a candidate is the same order of cost as a discovery read.
   [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p${MODEL:+ --model $MODEL}"; echo "llm.cli_timeout_ms = 600000"; }
+  [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = 600000"; [ -n "$MODEL" ] && echo "llm.model = $MODEL"; }
   echo "trace.level = normal"
   # The refuter reads the candidate code + brief through exec sh; pass through its whole env contract.
   echo "exec.env_passthrough = CAND_FILE_FN,CAND_CLASS,CAND_SEVERITY,CAND_EXPLOIT,CODE_PATH,BRIEF_PATH"

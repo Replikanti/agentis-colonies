@@ -106,7 +106,7 @@ RUN_LOG="$WORK/run.log"
 set +e
 PATH="$BIN:$PATH" "$HERE/run-discovery.sh" \
   --repo "$REPO" --scope "$WORK/scope.tsv" --brief "$WORK/brief.md" \
-  --backend claude --out "$OUT" >"$RUN_LOG" 2>&1
+  --out "$OUT" >"$RUN_LOG" 2>&1
 RC=$?
 set -e
 

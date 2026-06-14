@@ -36,7 +36,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
 TARGET="" ; HARNESS="" ; ANCHOR_HARNESS="" ; EVM_HARNESS="" ; SNAPSHOT="" ; POC=""
 REPO="" ; IN_SCOPE="" ; CONTRACT="" ; SEED_MANIFEST="" ; SHARE_PATTERNS=""
-BACKEND="claude" ; SANDBOX="hardened" ; OUT="$PWD/audit-out" ; FUZZY_THRESHOLD="0.35" ; FUZZY_K="4" ; USE_EVOLVED=""
+BACKEND="flat-cyborg" ; SANDBOX="hardened" ; OUT="$PWD/audit-out" ; FUZZY_THRESHOLD="0.35" ; FUZZY_K="4" ; USE_EVOLVED=""
 
 need() { [ "$1" -ge 2 ] || { echo "run-audit.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -127,7 +127,9 @@ cp "$COLONY" "$RUN/auditor.ag"
 ( cd "$RUN" && "$AGENTIS" init >/dev/null 2>&1 )
 {
   echo "llm.backend = $BACKEND"
+  # claude = metered `-p` API path (opt-in via --backend claude); flat-cyborg = flat-rate PTY wrapper (default)
   [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p"; echo "llm.cli_timeout_ms = 180000"; }
+  [ "$BACKEND" = "flat-cyborg" ] && echo "llm.cli_timeout_ms = 180000"
   echo "trace.level = normal"
   echo "exec.env_passthrough = BOUNTY_TARGET,BOUNTY_POC,SOLANA_HARNESS_DIR,SOLANA_ANCHOR_HARNESS_DIR,EVM_HARNESS_DIR,BOUNTY_SNAPSHOT,BOUNTY_REPO,BOUNTY_IN_SCOPE,BOUNTY_CONTRACT,SEED_SRC,SEED_CLASS,SEED_FUNC,FUZZY_SEEDS,FUZZY_THRESHOLD,FUZZY_K"
   echo "exec.default_timeout_ms = 180000"

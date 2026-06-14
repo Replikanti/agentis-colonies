@@ -14,6 +14,20 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Changed
+
+- **Default LLM backend across the live-reasoning orchestrators switched from the metered `claude -p`
+  path to the flat-rate `flat-cyborg` PTY-wrapper backend** (`llm.backend = flat-cyborg`). `run-audit.sh`,
+  `run-discovery.sh`, `run-refute.sh`, and `calibrate-evm.sh` now default `BACKEND=flat-cyborg`;
+  `run-method-discovery.sh` and `calibrate-sealevel.sh` (previously hardcoded `claude`) emit a
+  `flat-cyborg` config; `run-coordinator.sh` gains a `--backend flat-cyborg` branch (its default stays
+  `mock`). `--backend claude` remains the explicit metered `-p` opt-in for fidelity-critical work, and
+  `--backend mock` (offline-deterministic) is unchanged. Docs/examples (README, RUNBOOK,
+  run-observability) updated to show the flat-rate default. **Requires:** agentis >= 1.19.0 (the
+  `flat-cyborg` LLM backend) and a `flat-cyborg` binary with `--no-jitter` (>= v0.9.0) on PATH. Note:
+  `--extract` is a TUI screen-scrape — for reads where a refusal/malformed reply must never be misread,
+  prefer `--backend claude` (fidelity hardening tracked in `Replikanti/flat-cyborg#42`).
+
 ### Added
 
 - Discovery: **self-orchestrating coordinator — fact-based, evolving decision policy** (v1 of #1014). The
