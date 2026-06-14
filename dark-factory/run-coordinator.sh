@@ -47,6 +47,9 @@
 #   <class id> | <fitness float>            e.g.  C1 | 0.45
 # Fixture (stub mode; one rule per line, first match wins; `*` glob on args):
 #   <action-type> | <args-glob> | <confirmed|dry|refuted>   e.g.  hunt | vault* | confirmed
+#   NB: the rule is split on `|`, so <args-glob> must NOT contain a literal `|`. A hunt's args are
+#   `subsystem|class`; match them with a subsystem-prefix glob (`vault*`) whose trailing `*` spans the
+#   `|class` suffix — `vault accounting|C1` would be mis-split (the class read as the outcome field).
 #
 # Exit: 0 on a clean run that reached `stop`/budget; 2 on usage error; 3 on missing prerequisite.
 set -uo pipefail
@@ -165,6 +168,8 @@ SCOPE="$(awk -F'|' '
 
 # --- stub executor: scripted outcome for a chosen action from the fixture (first match wins; `*` glob on
 # the action ARGS). Returns confirmed|dry|refuted on stdout; `dry` if no rule matches (a benign default).
+# The fixture line is split on `|` into type|glob|outcome, so the glob must not contain a literal `|`
+# (see the Fixture note in the header): a subsystem-prefix glob matches a `subsystem|class` hunt arg.
 stub_outcome() {
   _atype="$1"; _aargs="$2"
   awk -F'|' -v at="$_atype" -v ar="$_aargs" '
@@ -237,9 +242,19 @@ while [ "$STEP" -lt "$BUDGET" ]; do
   ACTION_LINE="$(grep -E '^ACTION\|' "$DEC_LOG" | head -1)"
   [ -n "$ACTION_LINE" ] || { echo "run-coordinator.sh: no ACTION line at step $STEP (see $DEC_LOG)" >&2; exit 1; }
 
+  # Parse `ACTION|<type>|<args>|<rationale>`. <args> is a SINGLE `|`-field for refute/poc-screen
+  # (a `cand-id`) and "" for invent-method/stop, but TWO fields for a hunt (`subsystem|class`). So the
+  # field where the rationale begins is type-dependent — a flat `cut -f3`/`-f4-` would otherwise drop a
+  # hunt's class into the rationale and build a malformed `cand-N|subsystem` PENDING id. Mirrors the
+  # field shape demo-coordinator.sh's `expect` helper documents.
   ATYPE="$(printf '%s' "$ACTION_LINE" | cut -d'|' -f2)"
-  AARGS="$(printf '%s' "$ACTION_LINE" | cut -d'|' -f3)"
-  ARATIONALE="$(printf '%s' "$ACTION_LINE" | cut -d'|' -f4-)"
+  if [ "$ATYPE" = "hunt" ]; then
+    AARGS="$(printf '%s' "$ACTION_LINE" | cut -d'|' -f3-4)"
+    ARATIONALE="$(printf '%s' "$ACTION_LINE" | cut -d'|' -f5-)"
+  else
+    AARGS="$(printf '%s' "$ACTION_LINE" | cut -d'|' -f3)"
+    ARATIONALE="$(printf '%s' "$ACTION_LINE" | cut -d'|' -f4-)"
+  fi
   printf 'step=%s\taction=%s\targs=%s\tpolicy=[%s]\trationale=%s\n' "$STEP" "$ATYPE" "$AARGS" "$POLICY" "$ARATIONALE" >> "$TRACE"
   echo "run-coordinator.sh: step $STEP -> $ATYPE${AARGS:+ $AARGS}  ($ARATIONALE)" >&2
 

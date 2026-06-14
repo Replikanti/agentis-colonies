@@ -179,6 +179,7 @@ dark-factory/demo-blackboard.sh   # oracle cell posts a lead; downstream liquida
 
 This is one coordination step, not emergent behavior; a coordinator that reprioritizes/prunes the cell
 manifest from the board is a follow-up.
+
 ### Self-orchestrating coordinator (`run-coordinator.sh`, #1014)
 
 The fan-out above still runs in a **fixed order** chosen by a script + an operator. The coordinator moves
@@ -204,6 +205,7 @@ dark-factory/demo-coordinator.sh   # (a) distinct facts -> distinct actions; (b)
 `decide` as the selection step over its already-ranked list. v1 boundary (the shell still dispatches;
 event-driven dispatch + manifest reprioritisation are follow-up; submission stays human-gated):
 [`docs/coordinator.md`](./docs/coordinator.md).
+
 ### Pre-screen a lead before the Foundry gate (`screen-leads.sh`)
 
 `forge-verify.sh` is the heavyweight gate (a full Foundry deploy + attacker tx). Between a hunter's
@@ -226,6 +228,7 @@ A reproduced screen is still a **lead, not a finding** — verify it through `fo
 submission human-gated. Which substrate primitives the colony adopted (and why `replicate` / `delegate`
 / `decide` / Lean / confidence-tiers do **not** currently fit) is documented in
 [`docs/SUBSTRATE-PRIMITIVES.md`](./docs/SUBSTRATE-PRIMITIVES.md).
+
 ## Observe a run (`run-summary.sh`)
 
 dark-factory runs **one-shot** (`agentis go`): no daemons, no `*:confidence` memos — so the
@@ -245,6 +248,7 @@ dark-factory/run-summary.sh --out "$PWD/discovery-out" --emit-event           # 
 ```
 
 Schema + the monitor/dashboard consumer contract: [`docs/run-observability.md`](./docs/run-observability.md).
+
 ## Refute candidate leads (`run-refute.sh`)
 
 Between discovery and a (costly) Foundry PoC there is a cheaper gate: a **second, independent skeptic**
