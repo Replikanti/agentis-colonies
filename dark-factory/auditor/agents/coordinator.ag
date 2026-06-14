@@ -37,8 +37,9 @@ cb 2000000;
 //   LAST_OUTCOME  the gate verdict for the previous action: "confirmed" | "dry" | "refuted" | "" (none)
 // Stdout: exactly one line
 //   ACTION|<type>|<args>|<rationale citing the facts that drove it>
-//   where <type> in {hunt, refute, poc-screen, invent-method, stop}; <args> is `subsystem|class` for
-//   hunt, the candidate id for refute/poc-screen, "" for invent-method/stop.
+//   where <type> in {hunt, refute, poc-screen, symbolic-prove, invariant-hunt, invent-method, stop}; <args>
+//   is `subsystem|class` for hunt, the candidate id for refute/poc-screen/symbolic-prove/invariant-hunt, ""
+//   for invent-method/stop.
 
 // --- single-assignment helpers (no `let` reassignment; pure accumulators, per hunter.ag) ----------
 
@@ -148,6 +149,24 @@ fn score_poc(policy: string) -> float {
 // the policy re-sorts within it as the engine earns its keep.
 fn score_symbolic(policy: string) -> float {
     return 96.0 + (4.0 * fit_value(policy, "symbolic-prove"));
+}
+
+// Score an `invariant-hunt` of a pending candidate (Int M1, #1037). Same VERIFY tier as refute/poc-screen/
+// symbolic-prove (all "verify a pending lead" before more hunting), so a pending candidate present still
+// outranks any fresh hunt. Base 96 BELOW refute(100)/poc-screen(98)/symbolic-prove(96)... — BASE 94 keeps the
+// default tier ordering refute(100) > poc-screen(98) > symbolic-prove(96) > invariant-hunt(94): routing a
+// candidate through the STATEFUL invariant fuzzer GENERATES a Foundry handler + deep invariants and drives
+// Foundry's invariant fuzzer over randomized call-SEQUENCES (forge-invariant.sh / the #1035 gate), the most
+// EXPENSIVE verify of the four (a multi-call search, not a single-input proof), so by DEFAULT the cheaper
+// LLM-read refute, the cheap eval_ag poc-screen, and the single-function symbolic-prove are tried first. The
+// policy term (x4, the same steep multiplier the symbolic tier uses) lets the colony LEARN that the fuzzer's
+// witness pays off and lift invariant-hunt ABOVE symbolic-prove (at policy >= 0.5), poc-screen (at >= 1.0),
+// or refute (at >= 1.5) — `coordinator:policy:invariant-hunt` is the cumulative experience delta, exactly
+// like the other action types, so the choice is policy-evolvable. Default ordering WITHIN the VERIFY tier:
+// refute(100) > poc-screen(98) > symbolic-prove(96) > invariant-hunt(94); the policy re-sorts within it as
+// the engine earns its keep.
+fn score_invariant(policy: string) -> float {
+    return 94.0 + (4.0 * fit_value(policy, "invariant-hunt"));
 }
 
 // Score hunting a `subsystem|class` cell. Base 50; +20 if a sibling already posted a lead for this
@@ -295,13 +314,15 @@ fn is_verdict(v: string) -> bool {
 }
 
 // Is `t` a real (dispatchable) action type? `stop` is terminal and never dispatched. Leaf compares.
-// `symbolic-prove` (#1015 M3) routes a pending candidate through the SOUND symbolic engine; it is a real
-// verify action and so is dispatched like refute/poc-screen.
+// `symbolic-prove` (#1015 M3) routes a pending candidate through the SOUND symbolic engine; `invariant-hunt`
+// (Int M1, #1037) routes a pending candidate through the STATEFUL invariant fuzzer; both are real verify
+// actions and so are dispatched like refute/poc-screen.
 fn is_action(t: string) -> bool {
     if t == "hunt" { return true; }
     if t == "refute" { return true; }
     if t == "poc-screen" { return true; }
     if t == "symbolic-prove" { return true; }
+    if t == "invariant-hunt" { return true; }
     if t == "invent-method" { return true; }
     return false;
 }
@@ -351,14 +372,50 @@ fn run_symbolic_live() -> string {
     return sym_outcome_of(rc);
 }
 
+// === Int M1 (#1037): the LIVE invariant-hunt route — run the REAL stateful fuzzer and map its SOUND verdict.
+// Mirrors run_symbolic_live() but drives evm-harness/forge-invariant.sh (the #1035 gate) instead of Halmos:
+// forge fuzzes randomized call-SEQUENCES through a generated Handler and re-checks each deep invariant. The
+// gate's exit-code -> coordinator-outcome mapping is IDENTICAL to the symbolic one (1=FINDING -> confirmed,
+// 0=CLEAN -> refuted, 2/else=HARNESS_ERROR -> dry), so we REUSE sym_rc_of/sym_outcome_of. The verdict is the
+// fuzzer's shrunk witness (forge's exit code), NEVER the LLM — that soundness is the whole point. The gate's
+// own default invariant prefix is `invariant`; default to it when INV_MATCH is unset (invariant-prover.ag's
+// match_prefix). INV_RUNS/INV_DEPTH/INV_SEED are OPTIONAL forge budgets, appended as --runs/--depth/--seed
+// only when non-empty (built exactly like invariant-prover.ag's `budget` concat), each value shell_escape()d.
+fn inv_match_prefix(raw: string) -> string {
+    if len(raw) == 0 { return "invariant"; }
+    return raw;
+}
+fn inv_opt_flag(flag: string, val: string) -> string {
+    if len(val) == 0 { return ""; }
+    return " " + flag + " " + shell_escape(val);
+}
+fn run_invariant_live() -> string {
+    let gate = getenv("FORGE_INVARIANT");
+    let repo = getenv("INV_REPO");
+    let target = getenv("INV_TARGET");
+    let match = inv_match_prefix(getenv("INV_MATCH"));
+    let budget = inv_opt_flag("--runs", getenv("INV_RUNS")) + inv_opt_flag("--depth", getenv("INV_DEPTH"))
+               + inv_opt_flag("--seed", getenv("INV_SEED"));
+    // colony-lint: safe-exec-concat
+    let runOut = exec sh "set +e; sh " + shell_escape(gate) + " --repo " + shell_escape(repo)
+               + " --target " + shell_escape(target) + " --match " + shell_escape(match) + budget
+               + " 2>&1; echo __rc=$?";
+    let rc = sym_rc_of(runOut);
+    return sym_outcome_of(rc);
+}
+
 // Derive the gate OUTCOME for an action of `<type>` with `<args>`. Offline (DISPATCH_FIXTURE set, or the
 // M1 HUNT_FIXTURE alias for a hunt) -> the fixture rule, NO prompt()/LLM. The LIVE symbolic-prove route
 // (#1032): when `symbolic-prove` is chosen AND no fixture matched AND a live symbolic env is present (a
 // SYM_REPO foundry dir + a SYM_SPEC target spec + the HALMOS_VERIFY gate path), run REAL Halmos and map its
 // SOUND exit code (1->confirmed, 0->refuted, 3/2/other->dry) — the verdict is the solver's, never the LLM's.
-// This branch is PURELY ADDITIVE: absent any of the three env facts it falls through to the existing honest
-// stub, so behaviour with no live env is byte-identical. Otherwise the LIVE path is an honest per-type stub
-// that says what real wiring it needs (mirrors run-coordinator.sh::real_outcome) and returns a benign `dry`.
+// The LIVE invariant-hunt route (Int M1, #1037): when `invariant-hunt` is chosen AND no fixture matched AND a
+// live invariant env is present (an INV_REPO foundry dir + an INV_TARGET invariant test + the FORGE_INVARIANT
+// gate path), run the REAL stateful fuzzer and map its exit code (1->confirmed, 0->refuted, 2/other->dry) —
+// the verdict is forge's shrunk witness, never the LLM's. Both LIVE branches are PURELY ADDITIVE: absent any
+// of their three env facts they fall through to the existing honest stub, so behaviour with no live env is
+// byte-identical. Otherwise the LIVE path is an honest per-type stub that says what real wiring it needs
+// (mirrors run-coordinator.sh::real_outcome) and returns a benign `dry`.
 fn action_outcome(atype: string, args: string) -> string {
     let fixture = getenv("DISPATCH_FIXTURE");
     if len(fixture) > 0 {
@@ -392,7 +449,25 @@ fn action_outcome(atype: string, args: string) -> string {
             }
         }
     }
-    print("coordinator: LIVE " + atype + " of '" + args + "' needs its real wiring (hunt: TARGET_DIR/IN_SCOPE/SCOPE_BRIEF/TAXONOMY/SLICER per run-discovery.sh/hunter.ag; refute->run-refute.sh; poc-screen->screen-leads.sh; symbolic-prove->run-symbolic.sh; invent-method->run-method-discovery.sh); set DISPATCH_FIXTURE for the offline-deterministic path. No real action attempted.");
+    // LIVE invariant-hunt (Int M1, #1037): an operator-supplied single-candidate context (INV_REPO foundry dir
+    // + INV_TARGET invariant `*.t.sol` + the FORGE_INVARIANT gate path) routes the chosen candidate through the
+    // REAL stateful fuzzer end-to-end inside the loop. All three must be present; otherwise this falls through
+    // to the honest stub (additive — no live env = unchanged behaviour). The verdict is forge's shrunk witness
+    // (its exit code), mapped FINDING->confirmed / CLEAN->refuted / HARNESS_ERROR->dry — never an LLM judgement.
+    if atype == "invariant-hunt" {
+        let gate = getenv("FORGE_INVARIANT");
+        let repo = getenv("INV_REPO");
+        let target = getenv("INV_TARGET");
+        if len(gate) > 0 {
+            if len(repo) > 0 {
+                if len(target) > 0 {
+                    print("coordinator: LIVE invariant-hunt of '" + args + "' -> running the REAL stateful fuzzer via " + gate + " on " + target + " (verdict = forge's shrunk witness; the LLM never judges).");
+                    return run_invariant_live();
+                }
+            }
+        }
+    }
+    print("coordinator: LIVE " + atype + " of '" + args + "' needs its real wiring (hunt: TARGET_DIR/IN_SCOPE/SCOPE_BRIEF/TAXONOMY/SLICER per run-discovery.sh/hunter.ag; refute->run-refute.sh; poc-screen->screen-leads.sh; symbolic-prove->run-symbolic.sh; invariant-hunt->run-invariant-hunt.sh; invent-method->run-method-discovery.sh); set DISPATCH_FIXTURE for the offline-deterministic path. No real action attempted.");
     return "dry";
 }
 
@@ -446,21 +521,24 @@ fn decide_once(scope: string, classFit: string, policy: string, pending: string,
 
     // --- DECIDE: build the option list, score each from FACTS+POLICY, rank, and let `decide` select the top.
     // `stop` short-circuits the ranking when budget is exhausted or K consecutive dry — a hard fact gate.
-    // The verify tier (pending candidate present): refute, poc-screen, and symbolic-prove (#1015 M3) of the
-    // first pending candidate — the colony picks the highest-scored of the three (default ordering
-    // refute > poc-screen > symbolic-prove; the evolving policy can re-sort within the tier).
+    // The verify tier (pending candidate present): refute, poc-screen, symbolic-prove (#1015 M3), and
+    // invariant-hunt (Int M1, #1037) of the first pending candidate — the colony picks the highest-scored of
+    // the four (default ordering refute > poc-screen > symbolic-prove > invariant-hunt; the evolving policy
+    // can re-sort within the tier).
     let pendId = if pendingCount > 0 { cell_subsystem(firstPending) } else { "" };
     let refuteScore = score_refute(policy);
     let pocScore = score_poc(policy);
     let symScore = score_symbolic(policy);
-    // The winning VERIFY type by argmax of the three (single-assignment; ties resolve to the higher-base
-    // action, so the default ordering refute > poc-screen > symbolic-prove holds with no policy weight). The
-    // matching score is re-derived per-type in `chosenScore` below from the same three scores.
-    let verifyType =
-        if pocScore > refuteScore {
-            if symScore > pocScore { "symbolic-prove" } else { "poc-screen" }
-        }
-        else { if symScore > refuteScore { "symbolic-prove" } else { "refute" } };
+    let invScore = score_invariant(policy);
+    // The winning VERIFY type by a single-assignment climbing argmax over the four scores (each step keeps the
+    // running best type+score, only switching on a STRICT >, so a tie resolves to the higher-base action and
+    // the default ordering refute > poc-screen > symbolic-prove > invariant-hunt holds with no policy weight).
+    // The matching score is re-derived per-type in `chosenScore` below from the same four scores.
+    let v_a = if pocScore > refuteScore { "poc-screen" } else { "refute" };
+    let s_a = if pocScore > refuteScore { pocScore } else { refuteScore };
+    let v_b = if symScore > s_a { "symbolic-prove" } else { v_a };
+    let s_b = if symScore > s_a { symScore } else { s_a };
+    let verifyType = if invScore > s_b { "invariant-hunt" } else { v_b };
 
     // The hunt tier: the single best huntable cell (highest fact+policy score).
     let bestCell = best_hunt(scope, classFit, policy, board);
@@ -487,15 +565,17 @@ fn decide_once(scope: string, classFit: string, policy: string, pending: string,
         else { if chosenType == "refute" { pendId }
         else { if chosenType == "poc-screen" { pendId }
         else { if chosenType == "symbolic-prove" { pendId }
-        else { "" } } } };
+        else { if chosenType == "invariant-hunt" { pendId }
+        else { "" } } } } };
 
     let chosenScore =
         if chosenType == "stop" { 0.0 }
         else { if chosenType == "refute" { refuteScore }
         else { if chosenType == "poc-screen" { pocScore }
         else { if chosenType == "symbolic-prove" { symScore }
+        else { if chosenType == "invariant-hunt" { invScore }
         else { if chosenType == "hunt" { huntScore }
-        else { inventScore } } } } };
+        else { inventScore } } } } } };
 
     // Substrate-native selection step: present the chosen action as the FIRST (top-ranked) entry of a
     // `decide` option list, with the runner-up next, and let the substrate `decide` builtin make the
@@ -535,6 +615,9 @@ fn decide_once(scope: string, classFit: string, policy: string, pending: string,
         else { if selType == "symbolic-prove" {
             "pending unverified candidate '" + selArgs + "' -> route through the SOUND symbolic engine (generate a "
           + "Halmos spec, z3 judges) (policy symbolic-prove=" + to_string(fit_value(policy, "symbolic-prove")) + "; " + factSummary + ")" }
+        else { if selType == "invariant-hunt" {
+            "pending unverified candidate '" + selArgs + "' -> route through the STATEFUL invariant fuzzer (generate a "
+          + "handler + deep invariants, forge fuzzes call-SEQUENCES) (policy invariant-hunt=" + to_string(fit_value(policy, "invariant-hunt")) + "; " + factSummary + ")" }
         else { if selType == "hunt" {
             let bb = if board_has_subsystem(board, cell_subsystem(huntCell)) { "blackboard lead in this subsystem; " } else { "" };
             "hunt highest-scored lens '" + selArgs + "' (" + bb + "lens_fitness="
@@ -543,7 +626,7 @@ fn decide_once(scope: string, classFit: string, policy: string, pending: string,
         else {
             if len(huntCell) == 0 { "no huntable cell remains in scope -> invent a new method to open a fresh lens (" + factSummary + ")" }
             else { "ordinary hunting is not paying off (invent_policy=" + to_string(fit_value(policy, "invent-method"))
-                 + " > best hunt score " + to_string(huntScore) + ") -> invent a new method to open a fresh lens (" + factSummary + ")" } } } } } };
+                 + " > best hunt score " + to_string(huntScore) + ") -> invent a new method to open a fresh lens (" + factSummary + ")" } } } } } } };
 
     // --- OUTPUT exactly one ACTION line; record the decision on the bus + memo for the dispatcher. -----
     let actionLine = "ACTION|" + selType + "|" + selArgs + "|" + rationale;
@@ -608,6 +691,9 @@ fn decide_once(scope: string, classFit: string, policy: string, pending: string,
 //                 attributes it exactly once. Makes attribution IDEMPOTENT: every EXECUTED action counted once.
 //   19 pq         symbolic-prove cumulative policy in TEN-THOUSANDTHS (int), the 5th action type (#1015 M3).
 //   20 sq         symbolic-prove "seen" flag ("1"/"0").
+//   21 pj         invariant-hunt cumulative policy in TEN-THOUSANDTHS (int), the 6th action type (Int M1,
+//                 #1037), appended AFTER the symbolic-prove fields so positions 0-20 are unchanged.
+//   22 sj         invariant-hunt "seen" flag ("1"/"0").
 //
 // POLICY THREADING. decide_once() is fed the formatted carried policy (fields 8-15 -> the `type=delta;...`
 // string read_policy would return), so the in-loop decision ranks options against the SAME evolving policy
@@ -671,17 +757,21 @@ fn state_int(s: string, n: int) -> int {
 }
 
 // Build the `type=delta;...` POLICY string from the carried ints + seen flags — byte-identical to the
-// shell's read_policy(): only SEEN keys, ALPHABETICALLY sorted (hunt < invent-method < poc-screen < refute
-// < symbolic-prove), each `key=%.4f`, `;`-joined; "" when nothing has been attributed yet. symbolic-prove
-// (#1015 M3) sorts LAST (`r` < `s`), so it appends at the end exactly as Python's `sorted()` orders it.
-fn policy_string(ph: int, pi: int, pp: int, pr: int, pq: int, sh: bool, si: bool, sp: bool, sr: bool, sq: bool) -> string {
+// shell's read_policy(): only SEEN keys, ALPHABETICALLY sorted (hunt < invariant-hunt < invent-method <
+// poc-screen < refute < symbolic-prove), each `key=%.4f`, `;`-joined; "" when nothing has been attributed
+// yet. symbolic-prove (#1015 M3) sorts LAST (`r` < `s`). invariant-hunt (Int M1, #1037) sorts BETWEEN hunt
+// and invent-method (`inva` < `inve`), exactly as Python's `sorted()` orders it — its slot keeps every other
+// key's position byte-identical, so a run that never touches invariant-hunt renders the same string as before.
+fn policy_string(ph: int, pj: int, pi: int, pp: int, pr: int, pq: int, sh: bool, sj: bool, si: bool, sp: bool, sr: bool, sq: bool) -> string {
     let a = if sh { "hunt=" + fmt4(ph) } else { "" };
+    let f = if sj { "invariant-hunt=" + fmt4(pj) } else { "" };
     let b = if si { "invent-method=" + fmt4(pi) } else { "" };
     let c = if sp { "poc-screen=" + fmt4(pp) } else { "" };
     let d = if sr { "refute=" + fmt4(pr) } else { "" };
     let e = if sq { "symbolic-prove=" + fmt4(pq) } else { "" };
     let s1 = a;
-    let s2 = if len(b) > 0 { if len(s1) > 0 { s1 + ";" + b } else { b } } else { s1 };
+    let s1b = if len(f) > 0 { if len(s1) > 0 { s1 + ";" + f } else { f } } else { s1 };
+    let s2 = if len(b) > 0 { if len(s1b) > 0 { s1b + ";" + b } else { b } } else { s1b };
     let s3 = if len(c) > 0 { if len(s2) > 0 { s2 + ";" + c } else { c } } else { s2 };
     let s4 = if len(d) > 0 { if len(s3) > 0 { s3 + ";" + d } else { d } } else { s3 };
     let s5 = if len(e) > 0 { if len(s4) > 0 { s4 + ";" + e } else { e } } else { s4 };
@@ -744,10 +834,12 @@ fn step_fn(state: string, stepLabel: string) -> string {
     let budget0 = state_int(state, 17);
     let pqIn = state_int(state, 19);
     let sqIn = state_int(state, 20) == 1;
+    let pjIn = state_int(state, 21);
+    let sjIn = state_int(state, 22) == 1;
 
     // POLICY snapshot used for THIS decision + the trace row (the pre-attribution sum, as the shell's env
     // POLICY is read before the call's learn() write).
-    let policyStr = policy_string(phIn, piIn, ppIn, prIn, pqIn, shIn, siIn, spIn, srIn, sqIn);
+    let policyStr = policy_string(phIn, pjIn, piIn, ppIn, prIn, pqIn, shIn, sjIn, siIn, spIn, srIn, sqIn);
 
     // Apply the PREVIOUS action's attribution to the carried ints (the shell's read_policy at the NEXT step
     // reflects it). decide_once() ALSO learn()s it for the durable record.
@@ -758,12 +850,14 @@ fn step_fn(state: string, stepLabel: string) -> string {
     let pp = if prevAction == "poc-screen" { ppIn + d } else { ppIn };
     let pr = if prevAction == "refute" { prIn + d } else { prIn };
     let pq = if prevAction == "symbolic-prove" { pqIn + d } else { pqIn };
+    let pj = if prevAction == "invariant-hunt" { pjIn + d } else { pjIn };
     let didAttr = if len(prevAction) > 0 { len(sig) > 0 } else { false };
     let sh = if didAttr { if prevAction == "hunt" { true } else { shIn } } else { shIn };
     let si = if didAttr { if prevAction == "invent-method" { true } else { siIn } } else { siIn };
     let sp = if didAttr { if prevAction == "poc-screen" { true } else { spIn } } else { spIn };
     let sr = if didAttr { if prevAction == "refute" { true } else { srIn } } else { srIn };
     let sq = if didAttr { if prevAction == "symbolic-prove" { true } else { sqIn } } else { sqIn };
+    let sj = if didAttr { if prevAction == "invariant-hunt" { true } else { sjIn } } else { sjIn };
 
     // ONE decision + in-substrate dispatch on the CARRIED facts (board re-read fresh, like the shell).
     let dryCap = if len(getenv("DRY_CAP")) == 0 { 3 } else { parse_int(getenv("DRY_CAP")) };
@@ -796,7 +890,8 @@ fn step_fn(state: string, stepLabel: string) -> string {
              + "@@F@@" + to_string(ph) + "@@F@@" + to_string(pi) + "@@F@@" + to_string(pp) + "@@F@@" + to_string(pr)
              + "@@F@@" + bool_flag(sh) + "@@F@@" + bool_flag(si) + "@@F@@" + bool_flag(sp) + "@@F@@" + bool_flag(sr)
              + "@@F@@" + trace2 + "@@F@@" + to_string(budget0) + "@@F@@" + bool_flag(didAttr)
-             + "@@F@@" + to_string(pq) + "@@F@@" + bool_flag(sq);
+             + "@@F@@" + to_string(pq) + "@@F@@" + bool_flag(sq)
+             + "@@F@@" + to_string(pj) + "@@F@@" + bool_flag(sj);
     }
 
     // Read the dispatch verdict back (decide_once already ran dispatch() in-process, writing the memo).
@@ -805,13 +900,15 @@ fn step_fn(state: string, stepLabel: string) -> string {
     let outcome = if is_verdict(rawVerdict) { rawVerdict } else { "dry" };
 
     // Update PENDING from the outcome (the shell's case): a confirmed hunt pushes a candidate; refute /
-    // poc-screen / symbolic-prove (#1015 M3) consume the first pending candidate (the one they verified).
+    // poc-screen / symbolic-prove (#1015 M3) / invariant-hunt (Int M1, #1037) consume the first pending
+    // candidate (the one they verified).
     let pending2 =
         if selType == "hunt" { if outcome == "confirmed" { pending_push(pending, "cand-" + to_string(step) + "|" + selArgs) } else { pending } }
         else { if selType == "refute" { pending_pop(pending) }
         else { if selType == "poc-screen" { pending_pop(pending) }
         else { if selType == "symbolic-prove" { pending_pop(pending) }
-        else { pending } } } };
+        else { if selType == "invariant-hunt" { pending_pop(pending) }
+        else { pending } } } } };
 
     let dryStreak2 = if outcome == "confirmed" { 0 } else { dryStreak + 1 };
     let budget2 = budget - 1;
@@ -829,7 +926,8 @@ fn step_fn(state: string, stepLabel: string) -> string {
          + "@@F@@" + to_string(ph) + "@@F@@" + to_string(pi) + "@@F@@" + to_string(pp) + "@@F@@" + to_string(pr)
          + "@@F@@" + bool_flag(sh) + "@@F@@" + bool_flag(si) + "@@F@@" + bool_flag(sp) + "@@F@@" + bool_flag(sr)
          + "@@F@@" + trace2 + "@@F@@" + to_string(budget0) + "@@F@@0"
-         + "@@F@@" + to_string(pq) + "@@F@@" + bool_flag(sq);
+         + "@@F@@" + to_string(pq) + "@@F@@" + bool_flag(sq)
+         + "@@F@@" + to_string(pj) + "@@F@@" + bool_flag(sj);
 }
 
 // === TOP LEVEL ===
@@ -851,12 +949,22 @@ if len(getenv("ORCHESTRATE_ENABLED")) > 0 {
     // non-zero seed also lights the "seen" flag (field 20) so the seeded weight renders in the policy string.
     let symSeed = if len(getenv("SYM_POLICY_TT")) == 0 { 0 } else { parse_int(getenv("SYM_POLICY_TT")) };
     let symSeen = if symSeed == 0 { "0" } else { "1" };
+    // SEED the loop's INITIAL invariant-hunt policy (field 21) from the integer env fact INV_POLICY_TT, in
+    // ten-thousandths (Int M1, #1037), exactly as SYM_POLICY_TT seeds symbolic-prove. This lets a bootstrap
+    // pre-tilt the policy toward the STATEFUL fuzzer BEFORE the loop has accumulated experience, so an
+    // operator (or the autonomous-hunt demo) can have the loop CHOOSE invariant-hunt from step 0. Only the
+    // invariant-hunt component is seeded; the other five policy ints stay 0 (the existing goldens rely on
+    // hunt/refute/symbolic-prove starting cold), so the demo-orchestrate / demo-symbolic goldens are
+    // unaffected. A non-zero seed also lights the "seen" flag (field 22) so the seeded weight renders.
+    let invSeed = if len(getenv("INV_POLICY_TT")) == 0 { 0 } else { parse_int(getenv("INV_POLICY_TT")) };
+    let invSeen = if invSeed == 0 { "0" } else { "1" };
     // initial accumulator: nothing attributed yet (all ints 0, all seen "0"), no prev, empty trace, field 18
     // lastAttr "0" (no prev action to have attributed), field 19 symbolic-prove policy int (the seed), field
-    // 20 seen ("1" iff the seed is non-zero).
+    // 20 seen ("1" iff the seed is non-zero), field 21 invariant-hunt policy int (the seed), field 22 seen.
     let init = "0@@F@@" + to_string(budget0) + "@@F@@0@@F@@0@@F@@@@F@@@@F@@@@F@@" + initPending
              + "@@F@@0@@F@@0@@F@@0@@F@@0@@F@@0@@F@@0@@F@@0@@F@@0@@F@@@@F@@" + to_string(budget0) + "@@F@@0"
-             + "@@F@@" + to_string(symSeed) + "@@F@@" + symSeen;
+             + "@@F@@" + to_string(symSeed) + "@@F@@" + symSeen
+             + "@@F@@" + to_string(invSeed) + "@@F@@" + invSeen;
     let finalState = reduce(regex_split("\n", getenv("STEPS")),
                             |acc: string, s: string| -> string { return step_fn(acc, s); }, init);
 
@@ -884,16 +992,18 @@ if len(getenv("ORCHESTRATE_ENABLED")) > 0 {
     let fpp = state_int(finalState, 10) + (if fPrevAction == "poc-screen" { fd } else { 0 });
     let fpr = state_int(finalState, 11) + (if fPrevAction == "refute" { fd } else { 0 });
     let fpq = state_int(finalState, 19) + (if fPrevAction == "symbolic-prove" { fd } else { 0 });
+    let fpj = state_int(finalState, 21) + (if fPrevAction == "invariant-hunt" { fd } else { 0 });
     let fsh = if state_int(finalState, 12) == 1 { true } else { if fAttribute { fPrevAction == "hunt" } else { false } };
     let fsi = if state_int(finalState, 13) == 1 { true } else { if fAttribute { fPrevAction == "invent-method" } else { false } };
     let fsp = if state_int(finalState, 14) == 1 { true } else { if fAttribute { fPrevAction == "poc-screen" } else { false } };
     let fsr = if state_int(finalState, 15) == 1 { true } else { if fAttribute { fPrevAction == "refute" } else { false } };
     let fsq = if state_int(finalState, 20) == 1 { true } else { if fAttribute { fPrevAction == "symbolic-prove" } else { false } };
+    let fsj = if state_int(finalState, 22) == 1 { true } else { if fAttribute { fPrevAction == "invariant-hunt" } else { false } };
 
     // Publish the trace + the evolved policy to durable memos the bootstrap reads back (the cross-process
     // channel). The trace is the full decisions.tsv body; policy-after is the read_policy()-shaped string.
     memo_write("coordinator:trace", state_field(finalState, 16));
-    memo_write("coordinator:policy_after", policy_string(fph, fpi, fpp, fpr, fpq, fsh, fsi, fsp, fsr, fsq));
+    memo_write("coordinator:policy_after", policy_string(fph, fpj, fpi, fpp, fpr, fpq, fsh, fsj, fsi, fsp, fsr, fsq));
     print("ORCHESTRATE|done|steps=" + to_string(state_int(finalState, 3)));
 } else {
     // SINGLE DECISION (v1, byte-identical): read facts from env, run ONE decide_once(). The board is read

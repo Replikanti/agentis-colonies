@@ -5,7 +5,8 @@ cb 300000;
 // stub_outcome()/real_outcome() derived the gate verdict, then fed it back. M1 moved the `hunt` branch
 // of that dispatch onto the substrate. M2 GENERALISES it: the coordinator (coordinator.ag) `emit`s the
 // chosen action over the IN-PROCESS bus (`dark-factory:dispatch`, payload `<type>|<args>`) for ANY real
-// action (hunt / refute / poc-screen / invent-method); THIS agent fn `listen`s it, parses the action
+// action (hunt / refute / poc-screen / symbolic-prove / invariant-hunt / invent-method); THIS agent fn
+// `listen`s it, parses the action
 // `<type>`, derives the gate OUTCOME, writes it back as a DURABLE fact (`coordinator:last_outcome` memo),
 // and prints an observable `DISPATCH|...` marker. The shell loop then READS the verdict from the memo
 // instead of computing it in a `case` — for EVERY non-`stop` action, not just hunt.
@@ -134,13 +135,15 @@ fn is_verdict(v: string) -> bool {
 }
 
 // Is `t` a real (dispatchable) action type? `stop` is terminal and never dispatched. Leaf compares.
-// `symbolic-prove` (#1015 M3) routes a pending candidate through the SOUND symbolic engine; it is a real
-// verify action and so is dispatched like refute/poc-screen.
+// `symbolic-prove` (#1015 M3) routes a pending candidate through the SOUND symbolic engine; `invariant-hunt`
+// (Int M1, #1037) routes a pending candidate through the STATEFUL invariant fuzzer; both are real verify
+// actions and so are dispatched like refute/poc-screen.
 fn is_action(t: string) -> bool {
     if t == "hunt" { return true; }
     if t == "refute" { return true; }
     if t == "poc-screen" { return true; }
     if t == "symbolic-prove" { return true; }
+    if t == "invariant-hunt" { return true; }
     if t == "invent-method" { return true; }
     return false;
 }
