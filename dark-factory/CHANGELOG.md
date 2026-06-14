@@ -16,6 +16,34 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **The shell loop is DISSOLVED — the federation self-orchestrates the whole multi-step audit in the
+  substrate** (#1014 M3). Through M2 the decision and each action's dispatch lived in the substrate, but a
+  thin shell while-loop (`run-coordinator.sh`) still **drove** the loop (per step: one `agentis go`, read the
+  verdict memo, push/pop `PENDING`, advance `DRY_STREAK`/`BUDGET`, re-read the policy, append a
+  `decisions.tsv` row). M3 moves that **entire loop** into `coordinator.ag`: gated on a new
+  `ORCHESTRATE_ENABLED` fact, the top level runs the audit as a `reduce` over a budget-bounded `STEPS` list —
+  deciding, dispatching in-substrate, reading the verdict, threading `PENDING` / `DRY_STREAK` / `BUDGET` and
+  the **evolving policy** entirely in-process, and accumulating the trace — then writes the final
+  `decisions.tsv` body + evolved policy to durable memos (`coordinator:trace`, `coordinator:policy_after`).
+  The single-decision top level is refactored into a `decide_once()` fn both paths call; with
+  `ORCHESTRATE_ENABLED` **absent** the top level does **exactly one** `decide_once()`, **byte-identical** to
+  before (the #1 regression guard — `demo-coordinator.sh` is unchanged). The in-process policy is carried in
+  the loop's state in ten-thousandths and rendered `%.4f`, so it stays **byte-identical** to the shell's
+  experience-store `read_policy()` sum step for step (the loop also `learn()`s for the durable record).
+  `run-coordinator.sh` becomes a **bootstrap**: it seeds the facts + a `STEPS` budget list, fires **one**
+  `agentis go coordinator.ag` with `ORCHESTRATE_ENABLED`, and reads the final trace + policy back from the
+  memos — the per-step shell loop and all shell-side `PENDING`/`DRY_STREAK`/`BUDGET` threading are removed;
+  `--executor stub` (offline) and the `--out` trace contract still work. New `demo-orchestrate.sh` proves
+  **one** `agentis go` runs a >=3-step audit with distinct chosen actions and that the resulting
+  `decisions.tsv` + evolved policy are **byte-identical** to the M2 shell-loop output for the same
+  facts/fixture (re-run byte-identical, mock backend, zero cost). `docs/coordinator.md`, `docs/dispatch.md`,
+  and `README.md` updated. Honest scope: the loop self-orchestrates per bootstrap invocation; a long-lived
+  daemon-tick reflex (the loop running continuously without a shell bootstrap) is a separate refinement still
+  on epic #1014. Because the whole loop now runs in **one** `agentis go`, `coordinator.ag`'s `cb` budget must
+  cover every step cumulatively (it was raised 300000 → 2000000 to match the colony `cb_budget` and clear the
+  default budget with headroom). `run-coordinator.sh` rejects a `--scope`/`--fixture` cell containing the
+  reserved `@@F@@` state-field sentinel. **Requires:** agentis >= 1.19.0.
+
 - **Every action's DISPATCH moved into the substrate** (#1014 M2). M1 moved the `hunt` slice; M2
   **generalises** the dispatch to *all* action types. `dispatcher.ag`'s `hunt_dispatch` becomes a `dispatch`
   agent fn that parses the action `<type>` from the bus payload (`<type>|<args>`) and handles `hunt`,

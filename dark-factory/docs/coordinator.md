@@ -8,13 +8,19 @@ there is no fixed sequence, and the policy that ranks the options **improves by 
 
 This is v1 (MVP). It replaces the DECISIONS; **every action's DISPATCH also moved into the substrate in
 #1014 M2** (M1 did `hunt`; M2 generalised it to refute / poc-screen / invent-method too — see
-[`dispatch.md`](./dispatch.md) and [the v1 boundary](#the-v1-boundary) below). The shell loop still drives
-the loop and carries state between steps, but it computes **no** action's outcome.
+[`dispatch.md`](./dispatch.md) and [the v1 boundary](#the-v1-boundary) below). **In #1014 M3 the SHELL LOOP
+is DISSOLVED** — the whole multi-step audit self-orchestrates inside the substrate in **one** `agentis go`;
+the shell (`run-coordinator.sh`) is now a **bootstrap**, not a loop driver. See
+[the v1 boundary](#the-v1-boundary).
 
 ## The loop: fact → decide → record → evolve
 
+In #1014 M3 this whole loop runs INSIDE `coordinator.ag` (a `reduce` over a budget-bounded `STEPS` list); the
+box below is now ONE `agentis go`, with `run-coordinator.sh` only bootstrapping it and reading the final
+trace/policy memos back. The data flow is unchanged — only the driver moved into the substrate.
+
 ```
-                 ┌──────────────────── run-coordinator.sh (loop driver; reads the verdict memo) ─────────┐
+                 ┌──────────── coordinator.ag (#1014 M3: the loop runs IN-PROCESS; shell only bootstraps) ┐
                  │                                                                                       │
   FACTS  ───────▶│  coordinator.ag  ──▶  ACTION|<type>|<args>  ──▶  DISPATCH in-substrate  ──▶ OUTCOME (a gate verdict)
  (scope, per-    │   one decision +         (decide from facts +     emit → dispatch() →        confirmed / dry / refuted
@@ -90,26 +96,42 @@ What the **coordinator DECIDES** (in the substrate, from facts + an evolving pol
 - when to stop (budget exhausted or *K* consecutive dry);
 - how to reweight its own decision policy by outcome.
 
-What has **moved into the substrate since v1** (#1014 M1 → M2 — see [`dispatch.md`](./dispatch.md)):
+What has **moved into the substrate since v1** (#1014 M1 → M2 → M3 — see [`dispatch.md`](./dispatch.md)):
 
-- *dispatching EVERY action* (hunt / refute / poc-screen / invent-method). The decision **and** its
-  dispatch now happen in **one** `agentis go`: `coordinator.ag` decides the action, `emit`s it over the
+- *dispatching EVERY action* (hunt / refute / poc-screen / invent-method) — **M2**. The decision **and** its
+  dispatch happen in **one** `agentis go`: `coordinator.ag` decides the action, `emit`s it over the
   in-process bus (`dark-factory:dispatch`, payload `<type>|<args>`), and a sibling agent fn (`dispatch`,
   mirroring `auditor/agents/dispatcher.ag`) derives the gate verdict from the `DISPATCH_FIXTURE` fact and
-  writes it to the durable `coordinator:last_outcome` memo. The shell loop **reads the verdict from that
-  memo** for every non-`stop` action instead of a shell `case` — the `stub_outcome()` / `real_outcome()`
-  shell functions are gone.
+  writes it to the durable `coordinator:last_outcome` memo. The `stub_outcome()` / `real_outcome()` shell
+  functions are gone.
 
-What the **shell still does** (`run-coordinator.sh`):
+- *driving the WHOLE multi-step loop* — **M3**. Gated on `ORCHESTRATE_ENABLED`, `coordinator.ag`'s top level
+  runs the entire audit as a `reduce` over a budget-bounded `STEPS` list: per step it decides, dispatches
+  in-substrate, reads the verdict back (`recall_latest("coordinator:last_outcome")`), threads `PENDING`
+  (push on a confirmed hunt, pop-first on refute/poc-screen), `DRY_STREAK`, `BUDGET`, and the **evolving
+  policy** entirely in-process, and accumulates the `decisions.tsv` trace — then writes the final trace +
+  evolved policy to the `coordinator:trace` / `coordinator:policy_after` memos. The in-process policy is
+  carried in the loop state in ten-thousandths and rendered `%.4f`, so it is **byte-identical** to the
+  shell's old experience-store `read_policy()` sum step for step (the loop also `learn()`s for the durable
+  record). A `reduce` cannot `break`, so termination is modelled by a `stopped` flag that makes the step a
+  no-op once `stop` / budget / dry-cap fires. With `ORCHESTRATE_ENABLED` **absent**, the top level does
+  **exactly one** decision, **byte-identical** to before (the `demo-coordinator.sh` regression guard).
 
-- driving the loop and carrying state between steps (pending list, dry streak, budget) and feeding each
-  outcome back;
-- reading the cumulative policy from the experience store between calls.
+What the **shell still does** (`run-coordinator.sh`) — it is now a **bootstrap**, not a loop driver:
 
-  It no longer **computes** any action's outcome — that is the substrate dispatch's job; the shell reads one
-  `coordinator:last_outcome` memo per non-`stop` step.
+- builds the agentis store, seeds the FACTS + a `STEPS` budget list, and fires **one** `agentis go
+  coordinator.ag` with `ORCHESTRATE_ENABLED`;
+- reads the final `decisions.tsv` body + evolved policy back from the durable memos the in-substrate loop
+  wrote, and cross-checks the in-loop policy against the experience-store `read_policy()` sum.
+
+  It computes **no** action's outcome and carries **no** per-step loop state — both live in the substrate
+  now. (Honest scope: the loop self-orchestrates per bootstrap invocation; a long-lived daemon-tick reflex —
+  the loop running continuously without a shell bootstrap — is a separate refinement, below.)
 
 **Follow-up (kept on epic #1014):**
+
+- a long-lived **daemon-tick reflex** so the audit loop runs continuously in the substrate without a shell
+  bootstrap re-seeding it each run;
 
 - wire each action type to its real executor agent on the LIVE path (`refute`→`refuter.ag`,
   `poc-screen`→`poc-screener.ag`, `invent-method`→`method-inventor.ag`, hunt→`hunter.ag`), so the
@@ -140,7 +162,12 @@ dark-factory/demo-coordinator.sh        # exit 0 = both proven; non-zero = a cri
 # verdict via memo; per-type standalone-dispatcher sync-guard):
 dark-factory/demo-dispatch.sh           # exit 0 = all proven; non-zero = an assertion failed
 
-# Drive the loop yourself (stub executor = offline + deterministic; every action is dispatched in-substrate):
+# Proves the #1014 M3 in-substrate LOOP: ONE agentis go self-orchestrates a >=3-step audit, and the
+# resulting decisions.tsv + evolved policy are byte-identical to the M2 shell-loop output for the same facts:
+dark-factory/demo-orchestrate.sh        # exit 0 = proven; non-zero = an assertion failed
+
+# Bootstrap the in-substrate loop yourself (stub executor = offline + deterministic; ONE agentis go drives
+# the whole audit; the shell only seeds the facts + reads the trace/policy memos back):
 dark-factory/run-coordinator.sh --scope <scope.tsv> --class-fitness <fit.tsv> \
     --executor stub --fixture <fixture.tsv> --budget 8
 ```

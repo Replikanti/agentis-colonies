@@ -191,14 +191,13 @@ call) — and an evolving **policy**, then chooses **one** next action (`hunt` /
 more hunting; prefer a blackboard-flagged subsystem and a higher-fitness lens; stop on budget/dry). The
 decision policy **evolves**: each action's confirmed-finding → success / dry-or-refuted → failure is
 recorded with the same `learn()` mechanic the lens-fitness loop uses (#996), so
-`coordinator:policy:<action-type>` reweights which decisions it leans on. `run-coordinator.sh` is a thin
-**dispatcher** (not a decider): it loops {ask the coordinator → execute the chosen action → feed the
-outcome back} until `stop`/budget. Reproduce both halves offline (no network, deterministic, mock
-backend):
+`coordinator:policy:<action-type>` reweights which decisions it leans on. Reproduce both halves offline (no
+network, deterministic, mock backend):
 
 ```bash
 dark-factory/demo-coordinator.sh   # (a) distinct facts -> distinct actions; (b) the policy measurably evolves
 dark-factory/demo-dispatch.sh      # #1014 M2: every action's DISPATCH moved into the substrate (proof, offline)
+dark-factory/demo-orchestrate.sh   # #1014 M3: ONE agentis go self-orchestrates the whole multi-step audit (proof, offline)
 ```
 
 `decide(options, criteria)` **is** a real substrate builtin, but offline it resolves to the first option
@@ -210,11 +209,22 @@ in **one** `agentis go` it also *dispatches* any real action (hunt / refute / po
 it `emit`s `dark-factory:dispatch` (payload `<type>|<args>`) over the in-process bus and a sibling agent fn
 ([`auditor/agents/dispatcher.ag`](./auditor/agents/dispatcher.ag), inlined gated in `coordinator.ag`)
 derives the gate verdict from a `DISPATCH_FIXTURE` fact and writes it to the durable
-`coordinator:last_outcome` memo — which the shell loop **reads** instead of a shell `case`. The shell
-computes **no** action's outcome (the `stub_outcome()` / `real_outcome()` functions are gone); only `stop`
-is never dispatched. Full model in [`docs/dispatch.md`](./docs/dispatch.md). v1 boundary (the live-path
-executor wiring per action is follow-up; manifest reprioritisation is follow-up; submission stays
-human-gated): [`docs/coordinator.md`](./docs/coordinator.md).
+`coordinator:last_outcome` memo. Only `stop` is never dispatched. Full model in
+[`docs/dispatch.md`](./docs/dispatch.md).
+
+**#1014 M3 — the SHELL LOOP is DISSOLVED; the federation self-orchestrates the whole audit in the
+substrate.** Through M2 a thin shell while-loop still *drove* the loop (per step: one `agentis go`, read the
+verdict memo, push/pop `PENDING`, advance `DRY_STREAK`/`BUDGET`, re-read the policy, append a `decisions.tsv`
+row). M3 moves that **entire loop** into `coordinator.ag`: gated on `ORCHESTRATE_ENABLED`, the top level runs
+the audit as a `reduce` over a budget-bounded `STEPS` list — deciding, dispatching in-substrate, reading the
+verdict, threading `PENDING` / `DRY_STREAK` / `BUDGET` and the evolving policy **entirely in-process** — and
+writes the final `decisions.tsv` body + evolved policy to durable memos. `run-coordinator.sh` is now a thin
+**bootstrap** (not a loop driver): it seeds the facts + a `STEPS` budget list, fires **one** `agentis go`,
+and reads the final trace + policy back from the memos. With `ORCHESTRATE_ENABLED` **absent** the top level
+does **exactly one** decision, **byte-identical** to before (so `demo-coordinator.sh` is unchanged). Honest
+scope: the loop self-orchestrates per bootstrap invocation; a long-lived daemon-tick reflex is a separate
+refinement. v1 boundary (the live-path executor wiring per action is follow-up; manifest reprioritisation is
+follow-up; submission stays human-gated): [`docs/coordinator.md`](./docs/coordinator.md).
 
 ### Pre-screen a lead before the Foundry gate (`screen-leads.sh`)
 
@@ -360,9 +370,10 @@ dark-factory/
   screen-leads.sh               # cheap substrate-native lead pre-screen (eval_ag) before forge-verify
   run-summary.sh                # one-shot run -> monitor-/dashboard-consumable run-summary.json (#995)
   run-refute.sh                 # operator entrypoint: adversarial refutation (refuter fan-out) -> verdicts
-  run-coordinator.sh            # loop driver for the self-orchestrating loop (coordinator decides + dispatches in-substrate; #1014 M2)
+  run-coordinator.sh            # bootstrap for the self-orchestrating loop (ONE agentis go; the loop lives in-substrate; #1014 M3)
   demo-coordinator.sh           # offline, deterministic proof of the #1014 fact-driven + evolving-policy loop
   demo-dispatch.sh              # offline, deterministic proof of the #1014 M2 substrate DISPATCH (every action type)
+  demo-orchestrate.sh           # offline, deterministic proof of the #1014 M3 in-substrate loop (byte-identical to the M2 shell loop)
   evolve-fitness.sh             # drive the evolve/fitness loop over N iterations; show per-lens fitness move
   run-method-discovery.sh       # self-improvement: invent -> validate-on-control -> adopt a new method
   state-export.sh               # export/verify/import a trained federation's evolved state (checksum-verified)
@@ -379,7 +390,7 @@ dark-factory/
     agents/refuter.ag           # the adversarial-refutation agent (independent skeptic; default REFUTED)
     agents/fitness-driver.ag    # one fitness-loop cell: hunter.ag's exact learn() over a ground-truth verdict
     agents/method-inventor.ag   # the meta-loop inventor: proposes a new audit method for a known gap (#998)
-    agents/coordinator.ag       # self-orchestrating decider: one fact+policy-driven action per call (#1014); gated in-substrate dispatch for every action type (M2)
+    agents/coordinator.ag       # self-orchestrating decider: fact+policy-driven actions (#1014); gated in-substrate dispatch for every action type (M2); gated in-substrate MULTI-STEP loop (M3)
     agents/dispatcher.ag        # the substrate action-DISPATCH agent fn (emit/listen + durable verdict memo; #1014 M2)
     agents/stateful-invariant-fuzz.ag  # generated by gen-agent.sh from the like-named method (#1000)
     methods/registry.md         # the method registry gen-agent.sh reads (METHOD| lines; #998 loop, #1000 generator)
