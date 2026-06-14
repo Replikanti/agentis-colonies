@@ -25,7 +25,7 @@ target ──(coordinator's evolving POLICY)──► CHOOSE invariant-hunt ─�
   expensive verify (a multi-call search, not a single-input proof), so by default the cheaper verifies go
   first. Its policy term is the steep ×4 multiplier (the same the symbolic tier uses), so the colony can
   **learn** to lift it above the others as the fuzzer's witnesses pay off:
-  `94 + 4 × policy` beats `refute`(100) at policy ≥ 1.5.
+  `94 + 4 × policy` beats `refute`(100) at policy > 1.5 (at exactly 1.5 the score ties 100 and the tie resolves to the higher-base `refute`).
 - **The FINDING/CLEAN VERDICT is the fuzzer's**, the exit code of [`evm-harness/forge-invariant.sh`](../evm-harness/forge-invariant.sh),
   NEVER the LLM. The gate's exit code maps to the coordinator's gate-outcome enum exactly as the symbolic
   route does:

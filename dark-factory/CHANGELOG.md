@@ -27,7 +27,7 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
     at **base 94** (below `refute`(100) / `poc-screen`(98) / `symbolic-prove`(96) — the stateful fuzzer is the
     most EXPENSIVE verify, a multi-call sequence search, so the cheaper verifies go first by default), with the
     **steep ×4 policy term** so the colony can **learn** to lift it above the others (`94 + 4 × policy` beats
-    `refute`(100) at policy ≥ 1.5); a pending candidate still outranks any fresh hunt. The 3-way VERIFY argmax
+    `refute`(100) at policy > 1.5); a pending candidate still outranks any fresh hunt. The 3-way VERIFY argmax
     is refactored to a single-assignment **4-way climbing argmax** that preserves the default ordering
     `refute > poc-screen > symbolic-prove > invariant-hunt` on ties. It operates on the first pending candidate
     (args = the candidate id) and consumes it from `PENDING`.

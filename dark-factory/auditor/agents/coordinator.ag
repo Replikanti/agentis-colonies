@@ -160,8 +160,9 @@ fn score_symbolic(policy: string) -> float {
 // EXPENSIVE verify of the four (a multi-call search, not a single-input proof), so by DEFAULT the cheaper
 // LLM-read refute, the cheap eval_ag poc-screen, and the single-function symbolic-prove are tried first. The
 // policy term (x4, the same steep multiplier the symbolic tier uses) lets the colony LEARN that the fuzzer's
-// witness pays off and lift invariant-hunt ABOVE symbolic-prove (at policy >= 0.5), poc-screen (at >= 1.0),
-// or refute (at >= 1.5) — `coordinator:policy:invariant-hunt` is the cumulative experience delta, exactly
+// witness pays off and lift invariant-hunt ABOVE symbolic-prove (at policy > 0.5), poc-screen (at > 1.0),
+// or refute (at > 1.5) — the argmax compares with strict `>`, so a score that exactly ties an opponent's
+// base resolves to that higher-base opponent. `coordinator:policy:invariant-hunt` is the cumulative experience delta, exactly
 // like the other action types, so the choice is policy-evolvable. Default ordering WITHIN the VERIFY tier:
 // refute(100) > poc-screen(98) > symbolic-prove(96) > invariant-hunt(94); the policy re-sorts within it as
 // the engine earns its keep.
