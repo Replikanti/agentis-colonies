@@ -361,11 +361,21 @@ fn sym_fn_prefix(raw: string) -> string {
     if len(raw) == 0 { return "check"; }
     return raw;
 }
-fn run_symbolic_live() -> string {
+// Int M2 (#1037): resolve a per-candidate context fact PER-CANDIDATE-FIRST, env-fallback. The candidate id
+// carries its own context in a `candidate:<id>:<field>` memo (the durable cross-process channel); when that
+// memo is empty (the M1 single-target case), fall back to the flat env fact. Empty per-candidate memo =>
+// the M1 env path => byte-identical M1 behaviour (purely additive). `repo`/`target`/`spec` are the run-level
+// knobs (INV_RUNS/_DEPTH/_SEED) stay env-only.
+fn cand_fact(candId: string, field: string, envKey: string) -> string {
+    let pc = recall_latest("candidate:" + candId + ":" + field);
+    if len(pc) > 0 { return pc; }
+    return getenv(envKey);
+}
+fn run_symbolic_live(candId: string) -> string {
     let gate = getenv("HALMOS_VERIFY");
-    let repo = getenv("SYM_REPO");
-    let spec = getenv("SYM_SPEC");
-    let fnPrefix = sym_fn_prefix(getenv("SYM_FUNCTION"));
+    let repo = cand_fact(candId, "sym_repo", "SYM_REPO");
+    let spec = cand_fact(candId, "sym_spec", "SYM_SPEC");
+    let fnPrefix = sym_fn_prefix(cand_fact(candId, "sym_function", "SYM_FUNCTION"));
     let runOut = exec sh "set +e; sh " + shell_escape(gate) + " --repo " + shell_escape(repo)
                + " --target " + shell_escape(spec) + " --function " + shell_escape(fnPrefix)
                + " 2>&1; echo __rc=$?";
@@ -382,6 +392,8 @@ fn run_symbolic_live() -> string {
 // own default invariant prefix is `invariant`; default to it when INV_MATCH is unset (invariant-prover.ag's
 // match_prefix). INV_RUNS/INV_DEPTH/INV_SEED are OPTIONAL forge budgets, appended as --runs/--depth/--seed
 // only when non-empty (built exactly like invariant-prover.ag's `budget` concat), each value shell_escape()d.
+// Int M2 (#1037): repo/target/match resolve PER-CANDIDATE-FIRST via cand_fact(candId, ...) (the
+// `candidate:<id>:{repo,target,match}` memo) then env-fallback, so each pending lead verifies its OWN target.
 fn inv_match_prefix(raw: string) -> string {
     if len(raw) == 0 { return "invariant"; }
     return raw;
@@ -390,11 +402,11 @@ fn inv_opt_flag(flag: string, val: string) -> string {
     if len(val) == 0 { return ""; }
     return " " + flag + " " + shell_escape(val);
 }
-fn run_invariant_live() -> string {
+fn run_invariant_live(candId: string) -> string {
     let gate = getenv("FORGE_INVARIANT");
-    let repo = getenv("INV_REPO");
-    let target = getenv("INV_TARGET");
-    let match = inv_match_prefix(getenv("INV_MATCH"));
+    let repo = cand_fact(candId, "repo", "INV_REPO");
+    let target = cand_fact(candId, "target", "INV_TARGET");
+    let match = inv_match_prefix(cand_fact(candId, "match", "INV_MATCH"));
     let budget = inv_opt_flag("--runs", getenv("INV_RUNS")) + inv_opt_flag("--depth", getenv("INV_DEPTH"))
                + inv_opt_flag("--seed", getenv("INV_SEED"));
     // colony-lint: safe-exec-concat
@@ -432,38 +444,41 @@ fn action_outcome(atype: string, args: string) -> string {
             return "dry";
         }
     }
-    // LIVE symbolic-prove (#1032): an operator-supplied single-candidate context (SYM_REPO + SYM_SPEC + the
-    // HALMOS_VERIFY gate path) routes the chosen candidate through REAL Halmos end-to-end inside the loop.
-    // All three must be present; otherwise this falls through to the honest stub (additive — no live env =
-    // unchanged behaviour). The verdict is Halmos's exit code, mapped COUNTEREXAMPLE->confirmed / PROVED->
-    // refuted / INCONCLUSIVE|harness->dry — never an LLM judgement.
+    // LIVE symbolic-prove (#1032): a per-candidate-first context (the `candidate:<id>:sym_repo` / `:sym_spec`
+    // memo, else the flat SYM_REPO / SYM_SPEC env — Int M2 #1037) plus the HALMOS_VERIFY gate path routes the
+    // chosen candidate through REAL Halmos end-to-end inside the loop. The GATE keys on the RESOLVED repo+spec
+    // (per-candidate OR env): a candidate with only its carried memo still routes live; with neither it falls
+    // through to the honest stub (additive — no live context = byte-identical M1). The verdict is Halmos's
+    // exit code, mapped COUNTEREXAMPLE->confirmed / PROVED->refuted / INCONCLUSIVE|harness->dry — never an LLM.
     if atype == "symbolic-prove" {
         let gate = getenv("HALMOS_VERIFY");
-        let repo = getenv("SYM_REPO");
-        let spec = getenv("SYM_SPEC");
+        let repo = cand_fact(args, "sym_repo", "SYM_REPO");
+        let spec = cand_fact(args, "sym_spec", "SYM_SPEC");
         if len(gate) > 0 {
             if len(repo) > 0 {
                 if len(spec) > 0 {
                     print("coordinator: LIVE symbolic-prove of '" + args + "' -> running REAL Halmos via " + gate + " on " + spec + " (SOUND verdict; the LLM never judges).");
-                    return run_symbolic_live();
+                    return run_symbolic_live(args);
                 }
             }
         }
     }
-    // LIVE invariant-hunt (Int M1, #1037): an operator-supplied single-candidate context (INV_REPO foundry dir
-    // + INV_TARGET invariant `*.t.sol` + the FORGE_INVARIANT gate path) routes the chosen candidate through the
-    // REAL stateful fuzzer end-to-end inside the loop. All three must be present; otherwise this falls through
-    // to the honest stub (additive — no live env = unchanged behaviour). The verdict is forge's shrunk witness
-    // (its exit code), mapped FINDING->confirmed / CLEAN->refuted / HARNESS_ERROR->dry — never an LLM judgement.
+    // LIVE invariant-hunt (Int M1, #1037): a per-candidate-first context (the `candidate:<id>:repo` /
+    // `:target` memo, else the flat INV_REPO foundry dir / INV_TARGET invariant `*.t.sol` env — Int M2 #1037)
+    // plus the FORGE_INVARIANT gate path routes the chosen candidate through the REAL stateful fuzzer
+    // end-to-end inside the loop. The GATE keys on the RESOLVED repo+target (per-candidate OR env): a candidate
+    // carrying only its own memo still routes live; with neither it falls through to the honest stub (additive
+    // — no live context = byte-identical M1). The verdict is forge's shrunk witness (its exit code), mapped
+    // FINDING->confirmed / CLEAN->refuted / HARNESS_ERROR->dry — never an LLM judgement.
     if atype == "invariant-hunt" {
         let gate = getenv("FORGE_INVARIANT");
-        let repo = getenv("INV_REPO");
-        let target = getenv("INV_TARGET");
+        let repo = cand_fact(args, "repo", "INV_REPO");
+        let target = cand_fact(args, "target", "INV_TARGET");
         if len(gate) > 0 {
             if len(repo) > 0 {
                 if len(target) > 0 {
                     print("coordinator: LIVE invariant-hunt of '" + args + "' -> running the REAL stateful fuzzer via " + gate + " on " + target + " (verdict = forge's shrunk witness; the LLM never judges).");
-                    return run_invariant_live();
+                    return run_invariant_live(args);
                 }
             }
         }

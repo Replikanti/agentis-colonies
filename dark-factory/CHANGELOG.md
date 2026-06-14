@@ -16,6 +16,41 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **Multi-candidate carrying — each pending lead verifies its OWN target, not one shared operator env**
+  (Integration M2, #1037). M1's live route read the target from a SINGLE flat env (`INV_REPO`/`INV_TARGET`),
+  so every candidate the loop verified hit the same operator-supplied target. M2 makes each candidate carry
+  its **own** repo/target context via the durable memo channel, so the loop can verify several pending leads
+  and each `invariant-hunt`/`symbolic-prove` runs on the **right** lead — closing the loop from discovery
+  (many leads) to a sound verdict on each *specific* lead.
+  - `auditor/agents/coordinator.ag` — `run_invariant_live(candId)` and `run_symbolic_live(candId)` now take the
+    candidate id (the action `args`, threaded from the `action_outcome` live branches) and resolve repo/target/
+    match (and the symbolic `sym_repo`/`sym_spec`/`sym_function`) **per-candidate-first, env-fallback** via a
+    new `cand_fact(candId, field, envKey)` helper: read `candidate:<id>:<field>` (the `recall_latest`-durable
+    cross-process channel), use it when non-empty, else fall back to the flat M1 env. The live-route **GATE**
+    keys on the **resolved** repo+target (per-candidate OR env), so a candidate carrying only its own memo
+    (flat env empty) still routes live; with neither it falls through to the honest stub. Run-level forge
+    budgets (`INV_RUNS`/`INV_DEPTH`/`INV_SEED`) stay env-only. **Purely additive** — an empty per-candidate
+    memo ⇒ the M1 env path ⇒ **byte-identical M1 behaviour** (the `decide_once` scoring and state-field carry
+    are untouched; all M1 + sibling goldens stay green). Every resolved value is still `shell_escape()`d.
+  - `run-autonomous-hunt.sh` — a repeatable `--candidate '<id>|<repo>|<target>[|<match>]'` flag. Each candidate
+    is validated (a foundry dir + an existing target), `agentis memo set candidate:<id>:repo/target/match` into
+    the shared store (after `agentis init`, before `agentis go` — NOT in `exec.env_passthrough`, they cross via
+    the durable memo channel), and contributes one `<id>|…` cell to `PENDING`. The single `--repo/--target`
+    stays as the one-candidate `cand-0` shorthand (full M1 back-compat — `demo-autonomous-hunt.sh` passes
+    unchanged). With candidates supplied, `BUDGET`/`STEPS` auto-scale to `>= 2 × candidate-count` so every
+    candidate is both routed and attributed; `INV_POLICY_TT` seeding keeps `invariant-hunt` winning the VERIFY
+    tier for each.
+  - `demo-candidate-carry.sh` — the rigorous proof. Builds the vulnerable inflation vault (project A) + hardened
+    twin (project B) in two separate temp foundry projects, drives ONE `run-autonomous-hunt.sh` with TWO
+    `--candidate` args, and **leaves the flat `INV_REPO`/`INV_TARGET` env EMPTY** so the ONLY way each candidate
+    can resolve a target is via its carried `candidate:<id>:*` memo. Asserts BOTH the autonomous choice
+    (`ACTION|invariant-hunt|cand-{0,1}`) and the SPLIT verdict (`DISPATCH|invariant-hunt|cand-0|confirmed` on A,
+    `…|cand-1|refuted` on B) — a shared env could not produce two different verdicts, so the split PROVES
+    per-candidate carrying. `[SKIP]` + exit 0 when forge/agentis are absent (CI convention).
+  - `docs/autonomous-hunt.md` — a "Per-candidate context carrying (M2)" section documenting the
+    `candidate:<id>:{repo,target,match,sym_repo,sym_spec,sym_function}` memo convention, the
+    per-candidate-first/env-fallback rule, and that `run-discovery.sh`/`hunter.ag` can populate these memos as
+    the discovery producer. Wired into `README.md` (the Hunt-autonomously section + the Layout map).
 - **The self-orchestrating coordinator AUTONOMOUSLY chooses + LIVE-runs the stateful-invariant fuzzer — a new
   `invariant-hunt` action, end-to-end** (Integration M1, #1037). #1035 shipped the fuzzer as a *callable
   engine* (an operator runs `run-invariant-hunt.sh`); Int M1 wires it into the #1014 self-orchestrating
