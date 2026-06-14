@@ -171,6 +171,11 @@ test_one_colony() {
     # every /restart. This test uses a shim that lives LONGER than the
     # subprocess.run timeout; if stdio is detached from the inherited
     # pipes the script returns in ~0.6s, otherwise Python hits TimeoutExpired.
+    # The shim sleep (30s) and the timeout (15s) are deliberately far apart:
+    # the detached path returns in ~0.6s, so 15s leaves ~14s of headroom for
+    # scheduling jitter under extreme host load (#1018 saw a 0.6s op pushed past
+    # 3s at load avg ~32), while an inherited pipe still blocks the full 30s and
+    # trips the 15s timeout. Do NOT tighten these toward each other.
     out="$TMPDIR_TEST/$colony.pipe.log"
     SHIM_PIPE_DIR="$TMPDIR_TEST/shim_pipe_$colony"
     mkdir -p "$SHIM_PIPE_DIR"
@@ -184,7 +189,7 @@ if [ "${1:-}" = "daemon" ] && [ "${2:-}" = "list" ]; then
     printf '[]\n'
     exit 0
 fi
-sleep 5
+sleep 30
 exit 0
 SHIM
     chmod +x "$SHIM_PIPE_DIR/agentis"
@@ -194,7 +199,7 @@ start = time.time()
 try:
     r = subprocess.run(
         ['bash', sys.argv[1], '--restart-agent', sys.argv[2], sys.argv[3]],
-        capture_output=True, text=True, timeout=3,
+        capture_output=True, text=True, timeout=15,
     )
     elapsed = time.time() - start
     print(f'OK rc={r.returncode} elapsed={elapsed:.2f} stdout={r.stdout.strip()!r}')
