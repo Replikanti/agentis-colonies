@@ -38,10 +38,16 @@ if [ -z "${NO_AGENTIS:-}" ] && command -v agentis >/dev/null 2>&1; then
   if [ -n "$proposal" ]; then echo "[invent] via agentis go (substrate-native)"; else echo "[invent] agentis go produced no METHOD| line (see $rd/err); falling back" >&2; fi
 fi
 if [ -z "$proposal" ]; then
-  # direct-LLM fallback (same reasoning the .ag prompt() performs)
+  # direct-LLM fallback (same reasoning the .ag prompt() performs), routed through
+  # the flat-cyborg PTY wrapper so this stays on the flat-rate subscription session
+  # rather than the metered `claude -p` API — same backend the substrate path above
+  # uses. LLM_WRAP overrides the wrapper path. (No --model: the wrapper drives the
+  # interactive claude session, which has no per-call model arg; the substrate path
+  # keeps llm.model = $MODEL.)
+  WRAP="${LLM_WRAP:-$HERE/flat-cyborg-claude.sh}"
   pr="$(printf 'You are the METHOD-INVENTOR for an autonomous smart-contract audit federation.\n\nCurrent methods:\n%s\n\nGAP (a bug class the current methods keep MISSING):\n%s\n\nPropose EXACTLY ONE new, distinct, concretely-runnable audit method that catches this class. Reason briefly then output EXACTLY one final line:\nMETHOD|<name>|<bug-classes>|<one-sentence technique>|<how-to-invoke>|<what a known-bug control asserts>' "$(cat "$REGISTRY")" "$(cat "$GAP")")"
-  proposal="$(claude -p --model "$MODEL" "$pr" 2>/dev/null | grep -m1 '^METHOD|' || true)"
-  [ -n "$proposal" ] && echo "[invent] via direct LLM fallback"
+  proposal="$("$WRAP" "$pr" 2>/dev/null | grep -m1 '^METHOD|' || true)"
+  [ -n "$proposal" ] && echo "[invent] via direct LLM fallback (flat-cyborg)"
 fi
 [ -z "$proposal" ] && { echo "FAIL: inventor produced no METHOD| line"; exit 1; }
 name="$(printf '%s' "$proposal" | cut -d'|' -f2)"

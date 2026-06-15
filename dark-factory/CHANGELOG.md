@@ -41,6 +41,11 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   `flat-cyborg-claude.sh` passes `--wrap-input 72` (folds the long instruction block so it no longer
   overflows claude's editor) and flat-cyborg >= v0.10.0 gates `--extract` on the reply sentinel (a slow
   first reply is no longer captured as empty). Bumps the flat-cyborg floor to **v0.10.0**.
+- `run-method-discovery.sh`: the INVENT direct-LLM **fallback** (taken when the substrate-native `agentis go`
+  path yields no `METHOD|` line) now routes through the `flat-cyborg-claude.sh` wrapper instead of calling
+  `claude -p` directly — so the entire dark-factory federation's live LLM generation is on the flat-rate
+  subscription session. `claude -p` remains only as the explicit, opt-in `--backend claude` escape hatch in
+  the sibling run scripts. `LLM_WRAP` overrides the wrapper path.
 
 
 ### Added
