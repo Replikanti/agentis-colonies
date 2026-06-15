@@ -567,6 +567,7 @@ dark-factory/
   run-invariant-hunt.sh         # operator entrypoint: GENERATE a Foundry stateful-invariant test + VERIFY it with the fuzzer (#1035); --pattern-store persists/recalls winning invariant patterns across runs (Int M3, #1037)
   run-coordinator.sh            # bootstrap for the self-orchestrating loop (ONE agentis go; the loop lives in-substrate; #1014 M3)
   run-autonomous-hunt.sh        # integration: the coordinator CHOOSES + LIVE-runs the stateful fuzzer on a target; --candidate carries each lead's own context; --pattern-store persists/recalls winning patterns + --method-fixture feeds invent-method (Int M1+M2+M3, #1037)
+  run-funnel.sh                 # target-intake funnel: discover (live Sherlock + Cantina/C4 probe, or --from <json>) -> freshness (drop status!=RUNNING) -> self-dedup (funnel-ledger.txt) -> deterministic weighted score -> ranked targets.queue TSV (#1054, epic #1053); SKIPs without network or --from; never submits
   demo-coordinator.sh           # offline, deterministic proof of the #1014 fact-driven + evolving-policy loop
   demo-dispatch.sh              # offline, deterministic proof of the #1014 M2 substrate DISPATCH (every action type)
   demo-orchestrate.sh           # offline, deterministic proof of the #1014 M3 in-substrate loop (byte-identical to the M2 shell loop)
@@ -584,6 +585,7 @@ dark-factory/
   demo-pattern-memory.sh        # Int M3 proof: a FINDING persists invpat:latest:<class> to the DAG, a same-class target RECALLs + reuses it across runs, invent-method seeds a new class (SKIPs without forge)
   demo-fork-hunt.sh             # FM1 (#1041) foundation proof: forks the REAL deployed WETH at a pinned mainnet block -> funded-handler solvency invariant CLEAN against real forked state; forced-bad RPC -> HARNESS_ERROR (SKIPs without forge or a reachable public RPC)
   demo-composability.sh         # FM2 (#1041) proof: synthetic MiniAMM+LendingVault+FlashLender; composable handler (target+dex+flashloan) -> FINDING with a cross-contract witness, single-contract handler same budget/seed -> CLEAN (the split proves composability is the lift; SKIPs without forge/agentis)
+  demo-funnel.sh                # offline, deterministic proof of the #1054 funnel: a fixture candidate list via --from -> ranked by score desc, non-RUNNING dropped (freshness), ledger-seen dropped (self-dedup), exit 0
   setup-solana-toolchain.sh     # one-time offline toolchain build (network ON)
   snapshot-rpc.sh               # host RPC getAccountInfo -> frozen on-chain snapshot (V4)
   calibrate-sealevel.sh         # detection+validation scorecard over the sealevel corpus (V6)
