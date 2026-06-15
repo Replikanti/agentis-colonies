@@ -72,6 +72,13 @@ daemons_json   = _read(sys.argv[1])
 agent_map_json = sys.argv[2]
 fed_dir        = sys.argv[3]
 epoch          = int(sys.argv[4])
+# Single injected "now" for EVERY wall-clock-relative computation (startup grace,
+# orphan inference, sidecar health, cost day-bucket). The caller passes the current
+# epoch as argv[4]; re-sampling the wall clock anywhere below would take a SECOND
+# sample that can disagree with this one across the 00:00 UTC date boundary, flaking
+# the timeline/cost tests (#1043). Everything derives from NOW_TS — never the wall
+# clock again (a source-guard test in tools/test-timeline-rendering.sh enforces it).
+NOW_TS = epoch
 exp_dir        = sys.argv[5]
 log_dir        = sys.argv[6]
 dash_dir       = sys.argv[7]
@@ -958,7 +965,7 @@ if os.path.isfile(started_at_file):
 if started_at_ts is not None:
     sidecar['started_at_ts'] = started_at_ts
     if sidecar['interval_s'] is not None and sidecar['interval_s'] > 0:
-        now_ts = int(time.time())
+        now_ts = NOW_TS
         sidecar['in_startup_grace'] = (
             (now_ts - started_at_ts) < (sidecar['interval_s'] + 120)
         )
@@ -967,7 +974,7 @@ if started_at_ts is not None:
 # loop is still running. Only meaningful when last_tick_ts is fresher than
 # ORPHAN_INFER_S — older ticks resolve to plain `not-installed`.
 if not sidecar['installed'] and sidecar['last_tick_ts'] is not None:
-    now_ts_orphan = int(time.time())
+    now_ts_orphan = NOW_TS
     if (now_ts_orphan - sidecar['last_tick_ts']) < ORPHAN_INFER_S:
         sidecar['running_orphan'] = True
 
@@ -1856,14 +1863,14 @@ if os.path.isfile(cost_cap_started_at):
         cost_cap['started_at_ts'] = None
 if (cost_cap['started_at_ts'] is not None and cost_cap_interval is not None
         and cost_cap_interval > 0):
-    now_ts = int(time.time())
+    now_ts = NOW_TS
     cost_cap['in_startup_grace'] = (
         (now_ts - cost_cap['started_at_ts']) < (cost_cap_interval + 120)
     )
 
 # Orphan check (#378), parallel to the auto-promote path above.
 if not cost_cap['installed'] and cost_cap['last_tick_ts'] is not None:
-    now_ts_orphan = int(time.time())
+    now_ts_orphan = NOW_TS
     if (now_ts_orphan - cost_cap['last_tick_ts']) < ORPHAN_INFER_S:
         cost_cap['running_orphan'] = True
 
@@ -1911,7 +1918,7 @@ def _sidecar_status(installed, enabled, in_startup_grace, last_tick_ts,
         return 'silent'
     return 'healthy'
 
-now_ts_for_sidecars = int(time.time())
+now_ts_for_sidecars = NOW_TS
 sidecars = [
     {
         'name': 'auto-promote',
