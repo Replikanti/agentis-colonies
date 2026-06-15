@@ -19,6 +19,10 @@
 #   (3) The STANDALONE dispatcher.ag (its DISPATCH_ARGS entry) produces the byte-identical `DISPATCH|`
 #       marker + memo as the inlined coordinator path — a SYNC-GUARD so the two copies of the verdict fns
 #       can't silently drift (agentis `go` has no file includes, so coordinator.ag inlines the same fns).
+#       The guard asserts byte-identity on the FIXTURE path. dispatcher.ag also mirrors the live
+#       symbolic-prove route (#1032); the newer live routes (invariant-hunt / auto-harness execution)
+#       live ONLY in coordinator.ag and are intentionally not mirrored here — coordinator.ag, not this
+#       standalone copy, is the production entry point (see dispatcher.ag's ROLE/SCOPE header, #1049).
 # Plus, for hunt: a re-run is byte-identical (deterministic, no RNG), and the verdict follows the fixture
 # (flip the fixture, the verdict flips; a no-match subsystem defaults to dry).
 #

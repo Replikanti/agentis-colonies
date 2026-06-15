@@ -1,6 +1,17 @@
 cb 300000;
 // dispatcher.ag — #1014 M2: the action DISPATCH, moved into the substrate for EVERY action type.
 //
+// ROLE / SCOPE (#1049). This file is the canonical STANDALONE copy of the dispatch fn; demo-dispatch.sh's
+// sync-guard asserts it stays byte-identical with coordinator.ag's INLINED dispatch (agentis `go` has no
+// file includes, so coordinator.ag inlines the same fns and the guard catches drift). It mirrors the
+// offline FIXTURE path AND the live symbolic-prove route (#1032; see the `=== #1032` route below). It is
+// NOT a production entry point — the autonomous loop dispatches through coordinator.ag, not this file.
+// The newer live routes — invariant-hunt (#1037) and auto-harness (#1048) execution — live ONLY in
+// coordinator.ag and are INTENTIONALLY NOT mirrored here (the guard only exercises the fixture path, so
+// carrying them would be unguarded code to hand-sync; the invariant-hunt/auto-harness divergence #1049
+// flagged is by design, not a bug). Add a NEW live route to coordinator.ag; mirror it here only if the
+// sync-guard must cover it.
+//
 // WHAT MOVED. run-coordinator.sh used to route the coordinator's chosen action through a shell `case`:
 // stub_outcome()/real_outcome() derived the gate verdict, then fed it back. M1 moved the `hunt` branch
 // of that dispatch onto the substrate. M2 GENERALISES it: the coordinator (coordinator.ag) `emit`s the
