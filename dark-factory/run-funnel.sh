@@ -253,7 +253,7 @@ def scope_count(c):
 def score_of(c):
     # recency: 40 at launch, linear to 0 by 30 days old.
     age = parse_launched(c.get("launched_at"))
-    recency = 0.0 if age is None else 40.0 * max(0.0, 1.0 - age / 30.0)
+    recency = 0.0 if age is None else min(40.0, 40.0 * max(0.0, 1.0 - age / 30.0))
     # prize: log10-scaled, ~25 by $10M.
     prize = parse_prize(c.get("prize_hint"))
     prize_term = 25.0 * min(1.0, math.log10(1.0 + prize) / 7.0) if prize > 0 else 0.0
@@ -268,7 +268,7 @@ def score_of(c):
         plat_term = 0.0
     # scope: smaller surface = higher density. 15 at 0 contracts, 0 at >=20.
     n = scope_count(c)
-    scope_term = 15.0 * max(0.0, 1.0 - n / 20.0)
+    scope_term = min(15.0, 15.0 * max(0.0, 1.0 - n / 20.0))
     return int(round(recency + prize_term + plat_term + scope_term))
 
 
@@ -301,5 +301,7 @@ PY
 
 # Mirror the queue to stdout (the file is the durable artifact; stdout is the live view).
 cat "$QUEUE"
-N="$(grep -c . "$QUEUE" 2>/dev/null || echo 0)"
-echo "run-funnel: ranked $N candidate(s) -> $QUEUE" >&2
+# grep -c prints the count (0 on no match) but exits 1 when empty; `|| true` keeps
+# the single printed number instead of appending a second 0.
+N="$(grep -c . "$QUEUE" 2>/dev/null || true)"
+echo "run-funnel: ranked ${N:-0} candidate(s) -> $QUEUE" >&2
