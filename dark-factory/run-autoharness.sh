@@ -8,15 +8,21 @@
 #
 # Usage: run-autoharness.sh (--spec <recon.txt> | --address <0x..> [--chain <id>]) --rpc <archive-rpc> --block <n>
 #                           [--invariant "<text>"] [--repairs N] [--runs N] [--out <dir>]
+#                           [--audit-context <file>] [--dry-prompt]
 #   --spec    : a text file describing the target (addresses, function signatures, the deep invariant).
 #   --address : instead of a hand-written spec, auto-fetch the verified ABI keyless from Sourcify (no API key)
 #               and build the recon spec from it — full chain: address -> recon -> harness -> hunt, no human.
+#   --audit-context <file> : FM4 (#1058) — fold the target's PRIOR AUDIT FINDINGS + known-gap notes into the
+#               generation prompt so the LLM targets what audits/formal tools MISS (cross-function emergent
+#               state, deep value-extraction) and does NOT re-derive an already-disclosed finding.
+#   --dry-prompt : build + print the generation prompt and exit (no LLM, no forge) — for inspecting/testing
+#               what the model is asked, incl. the --audit-context wiring. Offline.
 # Requires: a flat-cyborg LLM backend wrapper on PATH (LLM_WRAP env or ./flat-cyborg-claude.sh), forge, an
-# ARCHIVE RPC (forge fork execution at a historical block needs a true archive node).
+# ARCHIVE RPC (forge fork execution at a historical block needs a true archive node). (--dry-prompt needs none.)
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WRAP="${LLM_WRAP:-$HERE/flat-cyborg-claude.sh}"
-SPEC="" ; ADDR="" ; CHAIN="1" ; INV="" ; RPC="" ; BLK="" ; REPAIRS=6 ; RUNS=400 ; OUT=""
+SPEC="" ; ADDR="" ; CHAIN="1" ; INV="" ; RPC="" ; BLK="" ; REPAIRS=6 ; RUNS=400 ; OUT="" ; AUDITCTX="" ; DRYPROMPT=""
 # nv: a value-taking flag must be followed by a value; under `set -u` a bare trailing flag would otherwise
 # crash on $2 (unbound) instead of the promised exit 2. $1 = remaining argc ($#), $2 = the flag name.
 nv() { [ "$1" -ge 2 ] || { echo "run-autoharness.sh: $2 requires a value" >&2; exit 2; }; }
@@ -24,10 +30,15 @@ while [ $# -gt 0 ]; do case "$1" in
   --spec) nv "$#" "$1"; SPEC="$2"; shift 2;; --address) nv "$#" "$1"; ADDR="$2"; shift 2;; --chain) nv "$#" "$1"; CHAIN="$2"; shift 2;;
   --invariant) nv "$#" "$1"; INV="$2"; shift 2;; --rpc) nv "$#" "$1"; RPC="$2"; shift 2;; --block) nv "$#" "$1"; BLK="$2"; shift 2;;
   --repairs) nv "$#" "$1"; REPAIRS="$2"; shift 2;; --runs) nv "$#" "$1"; RUNS="$2"; shift 2;; --out) nv "$#" "$1"; OUT="$2"; shift 2;;
-  -h|--help) sed -n '2,14p' "$0"; exit 0;; *) echo "run-autoharness.sh: unknown arg $1" >&2; exit 2;; esac; done
-[ -n "$RPC" ] && [ -n "$BLK" ] || { echo "run-autoharness.sh: --rpc and --block required" >&2; exit 2; }
-command -v forge >/dev/null || { echo "[SKIP] forge not installed" >&2; exit 0; }
-[ -x "$WRAP" ] || { echo "[SKIP] LLM backend wrapper not found ($WRAP); set LLM_WRAP" >&2; exit 0; }
+  --audit-context) nv "$#" "$1"; AUDITCTX="$2"; shift 2;; --dry-prompt) DRYPROMPT=1; shift;;
+  -h|--help) sed -n '2,21p' "$0"; exit 0;; *) echo "run-autoharness.sh: unknown arg $1" >&2; exit 2;; esac; done
+# --dry-prompt builds + prints the generation prompt and exits WITHOUT calling the LLM or forge — so the
+# audit-context wiring is offline-testable. The real hunt needs --rpc/--block + forge + the LLM wrapper.
+if [ -z "$DRYPROMPT" ]; then
+  [ -n "$RPC" ] && [ -n "$BLK" ] || { echo "run-autoharness.sh: --rpc and --block required" >&2; exit 2; }
+  command -v forge >/dev/null || { echo "[SKIP] forge not installed" >&2; exit 0; }
+  [ -x "$WRAP" ] || { echo "[SKIP] LLM backend wrapper not found ($WRAP); set LLM_WRAP" >&2; exit 0; }
+fi
 WORK="${OUT:-$(mktemp -d "${TMPDIR:-/tmp}/autoharness.XXXXXX")}"; mkdir -p "$WORK/test"
 # Auto-recon: --address with no --spec -> fetch ABI keyless from Sourcify and synthesize the recon spec.
 if [ -z "$SPEC" ] && [ -n "$ADDR" ]; then
@@ -42,6 +53,24 @@ printf '[profile.default]\ntest = "test"\nsolc = "0.8.24"\nevm_version = "cancun
 PROMPT="$WORK/prompt.txt"
 { echo "You are an autonomous smart-contract bug-hunting harness generator. Output ONLY a single Solidity file (no markdown, no prose): a forge-std-FREE Foundry test, contract name AutoHarness, pragma ^0.8.24. Use the cheatcode interface at 0x7109709ECfa91a80626fF3989D68f67F5b1DD12D (createSelectFork(string,uint256), envString, envUint, store, load). Fund the test contract by storage-slot scan + approve. Expose the protocol's primitive operations as fuzzable try/catch actions. Add a FUZZ test function testFuzz_hunt(uint256 seed) that derives a SEQUENCE of ops from the seed, executes them on the REAL forked protocol, then require()s the deep invariant. FM3 — if the target READS A PRICE/ORACLE (a spot reserve ratio, price()/getPrice()/latestAnswer(), a DEX quote), ALSO expose the price-MOVEMENT vector as a fuzzable action (a real swap on the forked pool, a large donation/transfer that skews reserves, or a manipulable-feed write) so the seed can move the price within attacker-reachable bounds BEFORE the borrow/redeem/liquidate — manipulate-then-act sequences are exactly where oracle bugs hide and a static price would miss them. Fork via env ETH_RPC + the block below.";
   echo "=== TARGET RECON ==="; cat "$SPEC"; } > "$PROMPT"
+# FM4 (#1058): fold in the target's prior audit findings + the known-gap lens so the LLM targets what
+# audits/Certora typically MISS (cross-function emergent state, deep economic value-extraction, multi-step
+# accounting drift) — NOT the generic single-function conservation an audit already checked — and does NOT
+# re-derive an already-disclosed finding (a re-find is worthless). Off unless --audit-context is supplied.
+if [ -n "$AUDITCTX" ]; then
+  [ -r "$AUDITCTX" ] || { echo "run-autoharness.sh: --audit-context file not readable: $AUDITCTX" >&2; exit 2; }
+  { echo "";
+    echo "=== FM4: AUDIT-INFORMED INVARIANT TARGETING ===";
+    echo "This target has PRIOR AUDITS. Generate invariants that target the GAP classes auditors / formal";
+    echo "tools typically miss — cross-function emergent state, deep economic value-extraction, multi-step";
+    echo "accounting drift — NOT the generic conservation / single-function properties an audit already";
+    echo "checks. Do NOT re-derive any finding listed below as already DISCLOSED; aim PAST them (a re-find";
+    echo "is worthless on a first-reporter bounty).";
+    echo "--- PRIOR AUDIT FINDINGS / KNOWN-GAP NOTES (already disclosed — do not re-report) ---";
+    cat "$AUDITCTX"; } >> "$PROMPT"
+fi
+# --dry-prompt: dump the assembled generation prompt and stop (offline; no LLM, no forge).
+if [ -n "$DRYPROMPT" ]; then cat "$PROMPT"; exit 0; fi
 SOL="$WORK/test/AutoHarness.t.sol"
 # A REAL fork-fuzz harness — not a trivial compiling stub — must FORK the chain, expose a seed-derived FUZZ
 # function, and assert a deep invariant. A bare `test_sanity()` that asserts `1+1==2` compiles cleanly but

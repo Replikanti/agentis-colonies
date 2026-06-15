@@ -388,6 +388,9 @@ dark-factory/run-invariant-hunt.sh --repo "$PWD/target" --target Vault.sol:Vault
 #   --fork-target target=<addr> --fork-target dex=<addr> --fork-target flashloan=<addr>   |   proof: dark-factory/demo-composability.sh
 # FM3 (#1041) oracle/price perturbation — the harness exposes a price-MOVEMENT action (swap/donation/feed write)
 #   so the fuzzer moves the price before the borrow/redeem; manipulate->act sequences reachable.   proof: dark-factory/demo-fm3-oracle.sh
+# FM4 (#1041) audit-informed synthesis — run-autoharness.sh --audit-context <file> folds prior audit findings
+#   + the gap lens into the gen prompt (target what audits miss; don't re-report disclosed); --dry-prompt
+#   dumps the prompt offline.   proof: dark-factory/demo-fm4-audit.sh
 ```
 
 **Fork mode (FM1, #1041).** `--fork-url <rpc> [--fork-block <n>]` runs the same handler + deep invariants
