@@ -51,6 +51,12 @@
 #                     of a fresh deploy. Forwarded to the gate's --fork-url. Absent => no fork (byte-identical).
 #                     A fork RPC failure -> HARNESS_ERROR (dry), never a false confirmed/refuted.
 #   --fork-block <n>  FM1 (#1041): pin the fork to a block number for REPRODUCIBILITY (requires --fork-url).
+#   --fork-target <spec>  FM2 (#1041): a deployed contract in the COMPOSABILITY context set. REPEATABLE. Either
+#                     a bare `<addr>` (FM1 shorthand, role `target`) or `<role>=<addr>` (role in {target, dex,
+#                     flashloan, oracle, ...}). The whole set is forwarded to the coordinator's chosen
+#                     invariant-hunt as FORK_CONTEXT (a semicolon-separated `role=addr` list) so a `--pattern-
+#                     store` prover-gate run can compose calls across the deployed protocols. Role charset
+#                     [a-z0-9_]; each address 0x + 40 hex. Absent any role beyond `target` => FM1 byte-identical.
 #   --steps N         Loop step bound (default 2): one decision routes the candidate to invariant-hunt; the
 #                     next attributes its outcome to the policy (proving outcome -> policy evolution).
 #   --out <dir>       Output dir for the run (default: ./autonomous-hunt-out). A fresh agentis store is built
@@ -85,6 +91,9 @@ DEPTH=""
 SEED=""
 FORK_URL=""
 FORK_BLOCK=""
+# FM2 (#1041): the composability context set — one `--fork-target '<role>=<addr>'` per array slot. A bare
+# `--fork-target <addr>` (FM1 shorthand, no '=') is normalised to a `target=<addr>` slot below.
+FORK_TARGET_SPECS=()
 STEPS_N=2
 STEPS_SET=0
 OUT="$PWD/autonomous-hunt-out"
@@ -110,6 +119,7 @@ while [ $# -gt 0 ]; do
     --seed)      need "$#"; SEED="$2"; shift 2 ;;
     --fork-url)  need "$#"; FORK_URL="$2"; shift 2 ;;
     --fork-block) need "$#"; FORK_BLOCK="$2"; shift 2 ;;
+    --fork-target) need "$#"; FORK_TARGET_SPECS+=("$2"); shift 2 ;;
     --steps)     need "$#"; STEPS_N="$2"; STEPS_SET=1; shift 2 ;;
     --out)       need "$#"; OUT="$2"; shift 2 ;;
     --pattern-store) need "$#"; PATTERN_STORE="$2"; shift 2 ;;
@@ -136,6 +146,32 @@ case "$FORK_URL" in
 esac
 case "$FORK_BLOCK" in '') ;; *[!0-9]*) echo "run-autonomous-hunt.sh: --fork-block must be a whole number" >&2; exit 2 ;; esac
 [ -z "$FORK_BLOCK" ] || [ -n "$FORK_URL" ] || { echo "run-autonomous-hunt.sh: --fork-block requires --fork-url" >&2; exit 2; }
+
+# FM2 (#1041): resolve the repeatable --fork-target specs into the FORK_CONTEXT role->address set (mirrors
+# run-invariant-hunt.sh). Each spec is `<role>=<addr>` or a bare `<addr>` (FM1 shorthand -> role `target`).
+# Validate each address (0x + 40 hex) and role ([a-z0-9_]); a role may not repeat. The encoding forwarded to
+# the coordinator is a semicolon-separated `role=addr` list (parse-safe). Absent any --fork-target it stays "".
+FORK_CONTEXT=""
+fork_ctx_has_role() {  # $1 = role -> 0 if FORK_CONTEXT already carries `<role>=`
+  case ";$FORK_CONTEXT;" in *";$1="*) return 0 ;; *) return 1 ;; esac
+}
+for spec in ${FORK_TARGET_SPECS+"${FORK_TARGET_SPECS[@]}"}; do
+  case "$spec" in
+    *=*) _role="${spec%%=*}"; _addr="${spec#*=}" ;;
+    *)   _role="target"; _addr="$spec" ;;
+  esac
+  case "$_role" in
+    '' ) echo "run-autonomous-hunt.sh: --fork-target role must be non-empty (got: $spec)" >&2; exit 2 ;;
+    *[!a-z0-9_]*) echo "run-autonomous-hunt.sh: --fork-target role must match [a-z0-9_] (got: $_role)" >&2; exit 2 ;;
+  esac
+  case "$_addr" in
+    0x*) _hex="${_addr#0x}"; case "$_hex" in *[!0-9a-fA-F]*) _bad=1 ;; *) [ "${#_hex}" -eq 40 ] && _bad=0 || _bad=1 ;; esac ;;
+    *) _bad=1 ;;
+  esac
+  [ "${_bad:-1}" -eq 0 ] || { echo "run-autonomous-hunt.sh: --fork-target address must be 0x + 40 hex (got: $_addr)" >&2; exit 2; }
+  fork_ctx_has_role "$_role" && { echo "run-autonomous-hunt.sh: --fork-target role '$_role' given more than once" >&2; exit 2; }
+  if [ -z "$FORK_CONTEXT" ]; then FORK_CONTEXT="$_role=$_addr"; else FORK_CONTEXT="$FORK_CONTEXT;$_role=$_addr"; fi
+done
 
 # The single --repo/--target is the one-candidate `cand-0` shorthand (full M1 back-compat). It is folded into
 # the SAME candidate list the repeatable --candidate populates, so the seeding loop below treats both uniformly.
@@ -236,14 +272,16 @@ if [ -n "$PATTERN_STORE" ]; then
     # A stable trail file (the coordinator captures the wrapper's stdout/stderr into a string it discards, so
     # the prover's RECALL-INVPAT/INVPAT-LEARNED lines are persisted here for the driver to surface afterwards).
     echo "TRAIL=$(printf '%q' "$RUN/pattern-trail.log")"
-    echo 'REPO=""; TARGET=""; MATCH="invariant"; RUNS=""; DEPTH=""; SEED=""; FORK_URL=""; FORK_BLOCK=""'
+    echo 'REPO=""; TARGET=""; MATCH="invariant"; RUNS=""; DEPTH=""; SEED=""; FORK_URL=""; FORK_BLOCK=""; FORK_CONTEXT=""'
     echo 'while [ $# -gt 0 ]; do case "$1" in'
     echo '  --repo) REPO="${2:-}"; shift 2 ;; --target) TARGET="${2:-}"; shift 2 ;;'
     echo '  --match) MATCH="${2:-}"; shift 2 ;; --runs) RUNS="${2:-}"; shift 2 ;;'
     echo '  --depth) DEPTH="${2:-}"; shift 2 ;; --seed) SEED="${2:-}"; shift 2 ;;'
     # FM1 (#1041): the coordinator appends --fork-url [--fork-block] to the gate (this wrapper) in fork mode.
     # Capture them and forward to the prover as FORK_URL/FORK_BLOCK so it threads them into the REAL gate.
+    # FM2 (#1041): --fork-context <role=addr;...> is the composability context set forwarded to the prover.
     echo '  --fork-url) FORK_URL="${2:-}"; shift 2 ;; --fork-block) FORK_BLOCK="${2:-}"; shift 2 ;;'
+    echo '  --fork-context) FORK_CONTEXT="${2:-}"; shift 2 ;;'
     echo '  *) shift ;; esac; done'
     # The candidate class the coordinator routes. The orchestrate loop's PENDING cells all carry the run-level
     # class (the SCOPE class, C1), so the prover keys its invpat:latest:<class> recall/persist on it across runs.
@@ -257,7 +295,7 @@ if [ -n "$PATTERN_STORE" ]; then
     echo '{'
     echo '  echo "llm.backend = mock"'
     echo '  echo "trace.level = normal"'
-    echo '  echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_MATCH,HANDLER_FIXTURE,CODE_PATH,INV_RUNS,INV_DEPTH,INV_SEED,FORGE_INVARIANT,FORK_URL,FORK_BLOCK,FORK_TARGET"'
+    echo '  echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_MATCH,HANDLER_FIXTURE,CODE_PATH,INV_RUNS,INV_DEPTH,INV_SEED,FORGE_INVARIANT,FORK_URL,FORK_BLOCK,FORK_TARGET,FORK_CONTEXT"'
     echo '  echo "exec.default_timeout_ms = 600000"'
     echo '  echo "learning.enabled = true"'
     echo '  echo "experience.enabled = true"'
@@ -273,7 +311,7 @@ if [ -n "$PATTERN_STORE" ]; then
     echo 'INV_OUT="$REPO_IN_WORK/test/Inv_gate.t.sol"'
     echo 'OPT=""; [ -n "$RUNS" ] && OPT="$OPT --runs $RUNS"; [ -n "$DEPTH" ] && OPT="$OPT --depth $DEPTH"; [ -n "$SEED" ] && OPT="$OPT --seed $SEED"'
     echo 'LOG="$WORK/prover.log"'
-    echo '( cd "$WORK" && env TARGET_FN="$TARGET" TARGET_CLASS="$CLASS" INV_REPO="$REPO_IN_WORK" INV_OUT="$INV_OUT" INV_MATCH="$MATCH" HANDLER_FIXTURE="$WORK/handler-fixture.t.sol" CODE_PATH="" INV_RUNS="$RUNS" INV_DEPTH="$DEPTH" INV_SEED="$SEED" FORK_URL="$FORK_URL" FORK_BLOCK="$FORK_BLOCK" FORK_TARGET="" FORGE_INVARIANT="$WORK/forge-invariant.sh" "$AGENTIS" go invariant-prover.ag --enable-exec --enable-messaging ) >"$LOG" 2>&1 || true'
+    echo '( cd "$WORK" && env TARGET_FN="$TARGET" TARGET_CLASS="$CLASS" INV_REPO="$REPO_IN_WORK" INV_OUT="$INV_OUT" INV_MATCH="$MATCH" HANDLER_FIXTURE="$WORK/handler-fixture.t.sol" CODE_PATH="" INV_RUNS="$RUNS" INV_DEPTH="$DEPTH" INV_SEED="$SEED" FORK_URL="$FORK_URL" FORK_BLOCK="$FORK_BLOCK" FORK_TARGET="" FORK_CONTEXT="$FORK_CONTEXT" FORGE_INVARIANT="$WORK/forge-invariant.sh" "$AGENTIS" go invariant-prover.ag --enable-exec --enable-messaging ) >"$LOG" 2>&1 || true'
     # Surface the prover trail (incl. RECALL-INVPAT / INVPAT-LEARNED) to stderr AND append it to the stable
     # trail file the driver reads back (the coordinator discards the captured exec output, so the trail file is
     # the durable channel for the prover's recall/persist evidence).
@@ -316,7 +354,7 @@ fi
   [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p"; echo "llm.cli_timeout_ms = 600000"; }
   [ "$BACKEND" = "flat-cyborg" ] && echo "llm.cli_timeout_ms = 600000"
   echo "trace.level = normal"
-  echo "exec.env_passthrough = SCOPE,CLASS_FITNESS,POLICY,PENDING,BUDGET,DRY_STREAK,DRY_CAP,PREV_ACTION,PREV_KEY,LAST_OUTCOME,DISPATCH_ENABLED,DISPATCH_FIXTURE,HUNT_FIXTURE,ORCHESTRATE_ENABLED,STEPS,SYM_POLICY_TT,INV_POLICY_TT,SYM_REPO,SYM_SPEC,SYM_FUNCTION,HALMOS_VERIFY,FORGE_INVARIANT,INV_REPO,INV_TARGET,INV_MATCH,INV_RUNS,INV_DEPTH,INV_SEED,INV_FORK_URL,INV_FORK_BLOCK"
+  echo "exec.env_passthrough = SCOPE,CLASS_FITNESS,POLICY,PENDING,BUDGET,DRY_STREAK,DRY_CAP,PREV_ACTION,PREV_KEY,LAST_OUTCOME,DISPATCH_ENABLED,DISPATCH_FIXTURE,HUNT_FIXTURE,ORCHESTRATE_ENABLED,STEPS,SYM_POLICY_TT,INV_POLICY_TT,SYM_REPO,SYM_SPEC,SYM_FUNCTION,HALMOS_VERIFY,FORGE_INVARIANT,INV_REPO,INV_TARGET,INV_MATCH,INV_RUNS,INV_DEPTH,INV_SEED,INV_FORK_URL,INV_FORK_BLOCK,INV_FORK_CONTEXT"
   # A forge invariant run (build + a few hundred fuzzed sequences) far exceeds the 10s/30s defaults — match
   # run-invariant-hunt.sh's 600s budget so the live fuzzer has room to run inside the loop.
   echo "exec.default_timeout_ms = 600000"
@@ -405,6 +443,7 @@ RUN_LOG="$RUN/orchestrate.log"
     INV_SEED="$SEED" \
     INV_FORK_URL="$FORK_URL" \
     INV_FORK_BLOCK="$FORK_BLOCK" \
+    INV_FORK_CONTEXT="$FORK_CONTEXT" \
     "$AGENTIS" go coordinator.ag --enable-exec --enable-messaging ) >"$RUN_LOG" 2>&1 \
   || { echo "run-autonomous-hunt.sh: in-substrate autonomous hunt failed (see $RUN_LOG)" >&2; exit 1; }
 

@@ -44,9 +44,20 @@
 #                        handler/invariant can reference the deployed contract by address. Absent => no fork
 #                        (byte-identical to today). A fork RPC failure -> HARNESS_ERROR, never a false verdict.
 #   --fork-block <n>     FM1 (#1041): pin the fork to a block number for REPRODUCIBILITY (requires --fork-url).
-#   --fork-target <addr> FM1 (#1041): the deployed contract address the generated test should drive against the
-#                        forked state. Exported as FORK_TARGET so invariant-prover.ag references the LIVE
-#                        deployed contract by address (the proven POC shape). Optional; "" leaves it to the test.
+#   --fork-target <spec> FM1/FM2 (#1041): a deployed contract the generated test should drive. REPEATABLE. Two
+#                        forms:
+#                          * FM1 shorthand `--fork-target <addr>` (a bare 0x-address, no '=') — the single
+#                            target the prover references as FORK_TARGET (the proven POC shape).
+#                          * FM2 composability `--fork-target '<role>=<addr>'` — a ROLE in a CONTEXT SET of
+#                            deployed contracts the handler may compose calls ACROSS (role in {target, dex,
+#                            flashloan, oracle, ...}). Roles are charset [a-z0-9_]; each address is 0x + 40 hex.
+#                            The whole set is exported to the prover as FORK_CONTEXT (a semicolon-separated
+#                            `role=addr` list) so the generation prompt can model a flashloan-funded attacker
+#                            who moves price via the dex and checks the TARGET's solvency after the cross-
+#                            contract sequence. The `target` role still also sets FORK_TARGET (FM1 compat).
+#                        Absent any role beyond `target` => FM1 behaviour byte-identical. Optional; "" leaves it
+#                        to the test. A --fork-target does NOT require --fork-url (the context contracts may be
+#                        deployed locally by the test — composability is orthogonal to fork; the two COMPOSE).
 #   --out <dir>          Output dir for the run + report (default: ./invariant-out).
 #   --pattern-store <dir>  Int M3 (#1037): a PERSISTENT pattern-DAG store reused ACROSS runs. When set, the
 #                        winning-invariant patterns the prover PERSISTS on a FINDING (`invpat:*` memos) are
@@ -63,6 +74,9 @@ AGENTIS="agentis"
 REPO="" ; TARGET="" ; CLASS="" ; FIXTURE="" ; CODE="" ; MATCH="invariant"
 BACKEND="flat-cyborg" ; MODEL="" ; RUNS="" ; DEPTH="" ; SEED="" ; OUT="$PWD/invariant-out" ; PATTERN_STORE=""
 FORK_URL="" ; FORK_BLOCK="" ; FORK_TARGET=""
+# FM2 (#1041): the composability context set — one `--fork-target '<role>=<addr>'` per array slot. A bare
+# `--fork-target <addr>` (FM1 shorthand, no '=') is normalised to a `target=<addr>` slot below.
+FORK_TARGET_SPECS=()
 
 need() { [ "$1" -ge 2 ] || { echo "run-invariant-hunt.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -80,7 +94,7 @@ while [ $# -gt 0 ]; do
     --seed) need "$#"; SEED="$2"; shift 2 ;;
     --fork-url) need "$#"; FORK_URL="$2"; shift 2 ;;
     --fork-block) need "$#"; FORK_BLOCK="$2"; shift 2 ;;
-    --fork-target) need "$#"; FORK_TARGET="$2"; shift 2 ;;
+    --fork-target) need "$#"; FORK_TARGET_SPECS+=("$2"); shift 2 ;;
     --out) need "$#"; OUT="$2"; shift 2 ;;
     --pattern-store) need "$#"; PATTERN_STORE="$2"; shift 2 ;;
     --agentis) need "$#"; AGENTIS="$2"; shift 2 ;;
@@ -97,8 +111,7 @@ for v in "$RUNS" "$DEPTH" "$SEED"; do
   case "$v" in '') ;; *[!0-9]*) echo "run-invariant-hunt.sh: --runs/--depth/--seed must be whole numbers" >&2; exit 2 ;; esac
 done
 # FM1 (#1041): fork-arg shape validation (mirrors the gate's). --fork-url must look like an http(s) URL,
-# --fork-block a whole number requiring --fork-url. --fork-target is a free-form deployed-address label the
-# generated test references (no on-chain validation here — the gate/forge resolve it on the forked state).
+# --fork-block a whole number requiring --fork-url.
 case "$FORK_URL" in
   '') ;;
   http://*|https://*) ;;
@@ -106,7 +119,36 @@ case "$FORK_URL" in
 esac
 case "$FORK_BLOCK" in '') ;; *[!0-9]*) echo "run-invariant-hunt.sh: --fork-block must be a whole number" >&2; exit 2 ;; esac
 [ -z "$FORK_BLOCK" ] || [ -n "$FORK_URL" ] || { echo "run-invariant-hunt.sh: --fork-block requires --fork-url" >&2; exit 2; }
-[ -z "$FORK_TARGET" ] || [ -n "$FORK_URL" ] || { echo "run-invariant-hunt.sh: --fork-target requires --fork-url (a deployed address is meaningless without a fork)" >&2; exit 2; }
+
+# FM2 (#1041): resolve the repeatable --fork-target specs into the FORK_CONTEXT role->address set and the
+# FM1 FORK_TARGET single-address. Each spec is either `<role>=<addr>` (a context role) or a bare `<addr>`
+# (FM1 shorthand, normalised to role `target`). Validate each address (0x + 40 hex) and role ([a-z0-9_]) so a
+# malformed value is a clean usage error here, never an opaque forge failure. A role may not repeat. The
+# encoding exported to the prover is a semicolon-separated `role=addr` list (parse-safe: no metachar in either
+# field after validation). Absent any role beyond `target`, FORK_CONTEXT carries only `target` (or is empty)
+# and the prover's FM1 prompt is byte-identical (the composability extension fires only on >1 role).
+FORK_CONTEXT=""
+fork_ctx_has_role() {  # $1 = role -> 0 if FORK_CONTEXT already carries `<role>=`
+  case ";$FORK_CONTEXT;" in *";$1="*) return 0 ;; *) return 1 ;; esac
+}
+for spec in ${FORK_TARGET_SPECS+"${FORK_TARGET_SPECS[@]}"}; do
+  case "$spec" in
+    *=*) _role="${spec%%=*}"; _addr="${spec#*=}" ;;
+    *)   _role="target"; _addr="$spec" ;;
+  esac
+  case "$_role" in
+    '' ) echo "run-invariant-hunt.sh: --fork-target role must be non-empty (got: $spec)" >&2; exit 2 ;;
+    *[!a-z0-9_]*) echo "run-invariant-hunt.sh: --fork-target role must match [a-z0-9_] (got: $_role)" >&2; exit 2 ;;
+  esac
+  case "$_addr" in
+    0x*) _hex="${_addr#0x}"; case "$_hex" in *[!0-9a-fA-F]*) _bad=1 ;; *) [ "${#_hex}" -eq 40 ] && _bad=0 || _bad=1 ;; esac ;;
+    *) _bad=1 ;;
+  esac
+  [ "${_bad:-1}" -eq 0 ] || { echo "run-invariant-hunt.sh: --fork-target address must be 0x + 40 hex (got: $_addr)" >&2; exit 2; }
+  fork_ctx_has_role "$_role" && { echo "run-invariant-hunt.sh: --fork-target role '$_role' given more than once" >&2; exit 2; }
+  if [ -z "$FORK_CONTEXT" ]; then FORK_CONTEXT="$_role=$_addr"; else FORK_CONTEXT="$FORK_CONTEXT;$_role=$_addr"; fi
+  [ "$_role" = "target" ] && FORK_TARGET="$_addr"
+done
 command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ] || { echo "run-invariant-hunt.sh: agentis binary not found ($AGENTIS)" >&2; exit 3; }
 
 # Resolve operator paths to ABSOLUTE — the colony runs from the rundir (a different cwd) and the exec sandbox
@@ -167,8 +209,9 @@ fi
   echo "trace.level = normal"
   # The prover reads code + the fixture and writes/runs the test through exec sh; pass its whole env contract.
   # FM1 (#1041): FORK_URL/FORK_BLOCK thread the fork into the gate; FORK_TARGET is the deployed address the
-  # generated handler/invariant references against the forked state.
-  echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_MATCH,HANDLER_FIXTURE,CODE_PATH,INV_RUNS,INV_DEPTH,INV_SEED,FORGE_INVARIANT,FORK_URL,FORK_BLOCK,FORK_TARGET"
+  # generated handler/invariant references against the forked state. FM2 (#1041): FORK_CONTEXT carries the
+  # role->address context set so the generation prompt can compose calls across the deployed protocols.
+  echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_MATCH,HANDLER_FIXTURE,CODE_PATH,INV_RUNS,INV_DEPTH,INV_SEED,FORGE_INVARIANT,FORK_URL,FORK_BLOCK,FORK_TARGET,FORK_CONTEXT"
   # A forge invariant run (build + a few hundred fuzzed sequences) far exceeds the 10s default.
   echo "exec.default_timeout_ms = 600000"
   # Each verify is recorded as experience; invariant-prover fitness reweights over targets.
@@ -225,6 +268,7 @@ echo "run-invariant-hunt.sh: generating + stateful-fuzzing $TARGET ($CLASS) ..."
     FORK_URL="$FORK_URL" \
     FORK_BLOCK="$FORK_BLOCK" \
     FORK_TARGET="$FORK_TARGET" \
+    FORK_CONTEXT="$FORK_CONTEXT" \
     FORGE_INVARIANT="$RUN/forge-invariant.sh" \
     "$AGENTIS" go invariant-prover.ag --enable-exec --enable-messaging ) >"$CELL_LOG" 2>&1 || \
     echo "run-invariant-hunt.sh: invariant-prover run failed for '$TARGET' (see $CELL_LOG)" >&2

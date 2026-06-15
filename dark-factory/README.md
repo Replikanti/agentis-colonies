@@ -384,6 +384,8 @@ dark-factory/run-invariant-hunt.sh --repo "$PWD/target" --target Vault.sol:Vault
 # offline-deterministic end-to-end proof (real fuzzer, fixture handler):  dark-factory/demo-invariant-hunt.sh
 # FM1 (#1041) fork mode — fuzz against the REAL deployed contract at a pinned block (RPC is an arg; no key):
 #   --fork-url <http(s)-rpc> [--fork-block <n>] [--fork-target <deployed-addr>]   |   proof: dark-factory/demo-fork-hunt.sh
+# FM2 (#1041) composability — compose calls across a context set of deployed contracts (target + dex + flashloan):
+#   --fork-target target=<addr> --fork-target dex=<addr> --fork-target flashloan=<addr>   |   proof: dark-factory/demo-composability.sh
 ```
 
 **Fork mode (FM1, #1041).** `--fork-url <rpc> [--fork-block <n>]` runs the same handler + deep invariants
@@ -396,6 +398,22 @@ the pinned block makes a verdict reproducible. [`demo-fork-hunt.sh`](./demo-fork
 proof: it forks the REAL deployed WETH at mainnet block `25318855` via a public RPC and asserts the funded
 solvency invariant → `CLEAN` (the machinery ran against real forked state), plus a forced-bad RPC →
 `HARNESS_ERROR`. A `FINDING` against real forked state is a **LEAD a human triages** — this colony never posts.
+
+**Cross-contract composability (FM2, #1041).** Fork mode fuzzes the real target, but still as **one contract** —
+structurally blind to the highest-value class, **flashloan-funded cross-contract value extraction** (the
+canonical oracle/price-manipulation drain). FM2 lets the handler compose call-SEQUENCES across the target
+**and the protocols it interacts with**, via a **repeatable `--fork-target '<role>=<addr>'`** (role ∈
+{`target`, `dex`, `flashloan`, `oracle`, …}; a bare `--fork-target <addr>` stays the FM1 one-target shorthand).
+The role→address **context set** is exported to the prover as `FORK_CONTEXT` (a semicolon-separated `role=addr`
+list); the generation prompt then models a **flashloan-funded attacker** who moves price via the `dex` and
+checks the **target's** solvency after the cross-contract sequence (no free value extraction). **Purely
+additive**: with no role beyond `target`, FM1/#1035/#1037 behaviour is byte-identical. Composability ≠ fork —
+**they compose** (a real run pairs `--fork-url` with multiple `--fork-target` roles).
+[`demo-composability.sh`](./demo-composability.sh) is the proof: a synthetic `MiniAMM` + `LendingVault` +
+`FlashLender` system where the **composable** handler (target + dex + flashloan) finds the drain → `FINDING`
+with a shrunk cross-contract witness, while the **single-contract** (vault-only) handler over the same
+budget/seed → `CLEAN` — the split proving composability is the lift. A `FINDING` is a **LEAD a human triages** —
+this colony never posts.
 
 The verdict is the **fuzzer's exit code, never the LLM's opinion**: `FINDING` = an invariant broke under a
 concrete SHRUNK call-sequence (a CANDIDATE with a reproducible witness), `CLEAN` = every invariant held
@@ -565,6 +583,7 @@ dark-factory/
   demo-candidate-carry.sh       # Int M2 proof: TWO candidates carry their OWN target via candidate:<id>:* memos, flat env EMPTY -> SPLIT verdict (cand-0|confirmed, cand-1|refuted; SKIPs without forge)
   demo-pattern-memory.sh        # Int M3 proof: a FINDING persists invpat:latest:<class> to the DAG, a same-class target RECALLs + reuses it across runs, invent-method seeds a new class (SKIPs without forge)
   demo-fork-hunt.sh             # FM1 (#1041) foundation proof: forks the REAL deployed WETH at a pinned mainnet block -> funded-handler solvency invariant CLEAN against real forked state; forced-bad RPC -> HARNESS_ERROR (SKIPs without forge or a reachable public RPC)
+  demo-composability.sh         # FM2 (#1041) proof: synthetic MiniAMM+LendingVault+FlashLender; composable handler (target+dex+flashloan) -> FINDING with a cross-contract witness, single-contract handler same budget/seed -> CLEAN (the split proves composability is the lift; SKIPs without forge/agentis)
   setup-solana-toolchain.sh     # one-time offline toolchain build (network ON)
   snapshot-rpc.sh               # host RPC getAccountInfo -> frozen on-chain snapshot (V4)
   calibrate-sealevel.sh         # detection+validation scorecard over the sealevel corpus (V6)

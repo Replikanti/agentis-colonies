@@ -45,9 +45,10 @@ judged by the fuzzer), never executed as shell. The test only ever reaches `forg
 |---|---|
 | [`auditor/agents/invariant-prover.ag`](../auditor/agents/invariant-prover.ag) | Per-target substrate agent: GENERATE the test (fixture or `prompt()`), VERIFY it with the fuzzing gate, `emit`/`learn` the verdict, print `INVARIANT\|<target>\|<verdict>` + the shrunk sequence on a FINDING. |
 | [`evm-harness/forge-invariant.sh`](../evm-harness/forge-invariant.sh) | The callable gate: runs Foundry's stateful invariant fuzzer over a `*.t.sol`, parses the JSON, returns FINDING (+ the shrunk sequence) / CLEAN / HARNESS_ERROR. |
-| [`run-invariant-hunt.sh`](../run-invariant-hunt.sh) | Operator entrypoint: drive `invariant-prover.ag` once over the substrate on one target, collect the verdict + any exploit sequence into a report. Threads `--fork-url`/`--fork-block`/`--fork-target` for FM1 fork mode (#1041). |
+| [`run-invariant-hunt.sh`](../run-invariant-hunt.sh) | Operator entrypoint: drive `invariant-prover.ag` once over the substrate on one target, collect the verdict + any exploit sequence into a report. Threads `--fork-url`/`--fork-block`/`--fork-target` for FM1 fork mode and the repeatable `--fork-target <role>=<addr>` context set for FM2 composability (#1041). |
 | [`demo-invariant-hunt.sh`](../demo-invariant-hunt.sh) | Offline-deterministic demo: the full target → fixture-handler → REAL Foundry fuzzer → verdict loop, asserting a vulnerable vault → FINDING (with a non-empty shrunk sequence) and a hardened twin → CLEAN. |
 | [`demo-fork-hunt.sh`](../demo-fork-hunt.sh) | FM1 (#1041) foundation proof: forks the REAL deployed WETH at a pinned mainnet block via a public RPC and asserts the funded-handler solvency invariant → CLEAN (the machinery ran against real forked state) + a forced-bad RPC → HARNESS_ERROR. `[SKIP]`s without forge or a reachable RPC. |
+| [`demo-composability.sh`](../demo-composability.sh) | FM2 (#1041) proof: a synthetic three-contract system (MiniAMM + LendingVault + FlashLender) where the COMPOSABLE handler (target + dex + flashloan roles) finds a flashloan-funded oracle-manipulation drain → FINDING (with a cross-contract shrunk witness) while the SINGLE-CONTRACT (vault-only) handler over the same budget/seed → CLEAN — the split proves composability is the lift. `[SKIP]`s without forge/agentis. |
 
 It mirrors the per-candidate structure of [`run-symbolic.sh`](../run-symbolic.sh) +
 [`auditor/agents/symbolic-prover.ag`](../auditor/agents/symbolic-prover.ag) — env-in the target, generate,
@@ -142,6 +143,67 @@ The foundation proof, [`demo-fork-hunt.sh`](../demo-fork-hunt.sh), forks the REA
 (`WETH.totalSupply() <= address(WETH).balance`) holds → **`CLEAN`** (the machinery ran against real forked
 state). It `[SKIP]`s + exits 0 when forge is absent or no public RPC is reachable.
 
+## Cross-contract composability — flashloan-funded value extraction (FM2, #1041)
+
+Fork mode (FM1) fuzzes the **real deployed target**, but still as **one contract**. The highest-value bug
+class lives *between* contracts: **flashloan-funded cross-contract value extraction** — the canonical
+oracle/price-manipulation exploit. A single-contract invariant fuzzer is **structurally blind** to it: it
+never composes a sequence that touches the DEX the target reads its price from, or the flashloan source that
+funds the attack. FM2 lets the handler compose call-SEQUENCES across the target **and the protocols it
+interacts with**.
+
+```
+run-invariant-hunt.sh … --fork-target target=<addr> --fork-target dex=<addr> --fork-target flashloan=<addr>
+        └─ FORK_CONTEXT = "target=<addr>;dex=<addr>;flashloan=<addr>"  ->  the prover's composability prompt
+```
+
+- **`--fork-target '<role>=<addr>'`** (`run-invariant-hunt.sh` / `run-autonomous-hunt.sh`, **repeatable**) — a
+  **context set** of deployed contracts the handler may compose calls across. `role` ∈ {`target`, `dex`,
+  `flashloan`, `oracle`, …} (charset `[a-z0-9_]`); `<addr>` is validated as `0x` + 40 hex. A role may not
+  repeat. A bare `--fork-target <addr>` (no `=`) stays the **FM1 one-target shorthand** (role defaults to
+  `target`, also sets `FORK_TARGET`).
+- **`FORK_CONTEXT`** — the role→address set exported to the prover, encoded as a **semicolon-separated
+  `role=addr` list** (e.g. `target=0x…;dex=0x…;flashloan=0x…`). Parse-safe after validation (no shell metachar
+  in either field). **Additive:** a `FORK_CONTEXT` with only the `target` role (or empty) leaves the prover's
+  FM1/single-target generation prompt **byte-identical** — the composability extension fires only when the set
+  carries **more than one role**.
+- **The attacker model in the prompt.** In composability mode `invariant-prover.ag`'s generation prompt tells
+  the LLM: *"you may compose calls across these deployed contracts [role→address list]; model an attacker
+  funded by a flashloan from `<flashloan>` (or `vm.deal` if none); move price via `<dex>`; generate a Handler
+  whose actions span all of them, and a deep invariant checking the TARGET's value/solvency after the
+  cross-contract sequence — NO free value extraction (an attacker who starts and ends with the same external
+  position must not have increased the target's debt to them / drained its reserves)."* The `HANDLER_FIXTURE`
+  path stays authoritative; the `FORK_CONTEXT` addresses reach the prompt as **plain text** (never a shell),
+  and anything passed to the gate is `shell_escape`d at the call site.
+
+**Composability ≠ fork — they COMPOSE.** FM1 proved fork (the real deployed WETH); FM2 proves cross-contract
+composition. The synthetic [`demo-composability.sh`](../demo-composability.sh) deploys its three contracts
+**locally** (no RPC) to demonstrate the mechanism in isolation — a `--fork-target <role>=<addr>` does **not**
+require `--fork-url`. A real run pairs the two: `--fork-url <rpc>` to fork the live state **plus** multiple
+`--fork-target` roles for the deployed DEX / flashloan / oracle the target composes with.
+
+The proof, [`demo-composability.sh`](../demo-composability.sh), builds a synthetic system that **genuinely
+encodes** the exploit: a `MiniAMM` (constant-product `x*y=k`, whose `swap` moves the collateral spot price), a
+`LendingVault` that prices deposited collateral at the AMM **spot** price (the manipulable-oracle bug) and
+lends quote against it, and a `FlashLender` (lend + require same-tx repayment). It runs two configs through
+`run-invariant-hunt.sh` over the **same** fuzz budget + seed:
+
+- **(A) composable** — `--fork-target target=<vault> --fork-target dex=<amm> --fork-target flashloan=<lender>`
+  with a handler whose actions span all three (`flashAndSwap` / `borrowMax` / `swapBack` / `repay`) → **FINDING**.
+  The fuzzer composes the cross-contract sequence (flashloan → swap to inflate the collateral spot price →
+  borrow against the now-overvalued collateral → swap back → repay → keep the surplus) and breaks
+  `invariant_vault_not_drained` (the vault is left under-collateralised). The break reason is a **real value
+  extraction** (`stolen != 0`), not a hard-coded assert, and the shrunk cross-contract witness is surfaced.
+- **(B) single-contract** — only the vault as target, a handler restricted to vault-only calls
+  (deposit/borrow/repay/withdraw), **same budget + seed** → **CLEAN**. Without the AMM swap and the flashloan
+  the actor cannot move the oracle or self-fund, so the exploit is **structurally unreachable** (the search
+  exercises the full budget — 256 runs × 64 depth, thousands of calls, hundreds of LTV reverts — and the
+  invariant holds).
+
+The **A-FINDING / B-CLEAN split proves composability is the lift** — not the budget, not the invariant. The
+verdict is the **fuzzer's exit code** (a deterministic `HANDLER_FIXTURE`; no LLM). A FINDING here is a **LEAD a
+human triages** — this colony never auto-submits.
+
 ## Run it
 
 ```bash
@@ -164,6 +226,14 @@ dark-factory/run-invariant-hunt.sh \
   --repo "$PWD/target" --target Vault.sol:Vault --class C-erc4626 \
   --fork-url https://ethereum-rpc.publicnode.com --fork-block 25318855 \
   --fork-target 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2 \
+  --backend flat-cyborg --runs 256 --depth 64 --seed 1 --out "$PWD/invariant-out"
+
+# FM2 (#1041) composability: compose calls across a context set (target + dex + flashloan roles)
+dark-factory/demo-composability.sh   # proof: composable -> FINDING, single-contract -> CLEAN; SKIPs w/o forge
+dark-factory/run-invariant-hunt.sh \
+  --repo "$PWD/target" --target Vault.sol:Vault --class C-oracle-manip \
+  --fork-url https://mainnet.example/rpc --fork-block 25318855 \
+  --fork-target target=0xVAULT --fork-target dex=0xAMM --fork-target flashloan=0xLENDER \
   --backend flat-cyborg --runs 256 --depth 64 --seed 1 --out "$PWD/invariant-out"
 ```
 

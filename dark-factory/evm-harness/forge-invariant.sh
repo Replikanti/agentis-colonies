@@ -60,6 +60,11 @@ while [ $# -gt 0 ]; do
     --seed)   SEED="${2:-}"; shift 2 ;;
     --fork-url)   FORK_URL="${2:-}"; shift 2 ;;
     --fork-block) FORK_BLOCK="${2:-}"; shift 2 ;;
+    # FM2 (#1041): --fork-context <role=addr;...> is a GENERATION-PROMPT hint (the composability context set the
+    # prover reads). The fuzzer auto-discovers its fuzz targets from the test's `targetContracts()` view, so the
+    # gate itself needs nothing from the context — it ACCEPTS and IGNORES the flag so a composability-mode caller
+    # (run-invariant-hunt.sh / the prover-gate wrapper) can forward it uniformly without an "unknown arg" error.
+    --fork-context) shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "forge-invariant: unknown arg $1" >&2; exit 2 ;;
   esac

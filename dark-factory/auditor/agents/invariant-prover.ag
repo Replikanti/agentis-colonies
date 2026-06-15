@@ -112,6 +112,23 @@ fn fork_active(url: string, target: string) -> bool {
 }
 let forkMode = fork_active(forkUrl, forkTarget);
 
+// FM2 (#1041) — COMPOSABILITY MODE. FORK_CONTEXT is a semicolon-separated `role=addr` list (the context set
+// of deployed contracts the handler may compose calls ACROSS — target, dex, flashloan, oracle, ...). It is
+// UNTRUSTED operator input that flows ONLY into the LLM generation prompt (a plain string, never `exec sh`),
+// so the bare read needs no shell_escape. Composability fires only when the set carries MORE than the single
+// `target` role: a lone `target=...` (or an empty FORK_CONTEXT) leaves the FM1/single-target prompt
+// byte-identical. count_roles counts the `=` separators (one per `role=addr` pair) via regex_find_all;
+// >1 role => composability.
+let forkContext = getenv("FORK_CONTEXT");
+fn count_roles(ctx: string) -> int {
+    if len(ctx) == 0 { return 0; }
+    return len(regex_find_all("=", ctx));
+}
+fn composable_active(ctx: string) -> bool {
+    return count_roles(ctx) > 1;
+}
+let composableMode = composable_active(forkContext);
+
 // --- RECALL a prior winning invariant pattern (Int M3, #1037) ------------------------------------
 // Before GENERATE, recall the latest invariant pattern that produced a FINDING on THIS bug class from the
 // DAG pattern memory (the `invpat:latest:<class>` memo, mirroring recall-match.ag's recall_latest over the
@@ -174,10 +191,36 @@ fn fork_seed(active: bool, target: string, url: string, block: string) -> string
          + "handler), plus a deep invariant checked against the forked state — solvency, no-free-value-"
          + "extraction, or share-price monotonicity — that can only break under a SEQUENCE of calls.\n";
 }
-fn generate_test(klass: string, src: string, matchPrefix: string, prior: string, forkActive: bool, forkTarget: string, forkUrl: string, forkBlock: string) -> string {
+// FM2 (#1041) — COMPOSABILITY generation seed. When FORK_CONTEXT carries MORE than the single `target` role,
+// the handler may compose calls ACROSS the whole context set (a DEX/AMM for price moves, a flashloan source,
+// the oracle the target reads). The canonical highest-value bug a single-contract handler is structurally
+// blind to is FLASHLOAN-FUNDED CROSS-CONTRACT VALUE EXTRACTION (oracle/price manipulation): borrow a flashloan,
+// move the spot price on the DEX, interact with the TARGET at the mispriced state, swap back, repay — and walk
+// away with the target's reserves. The deep invariant checks the TARGET's value/solvency AFTER the whole
+// cross-contract sequence: an attacker who starts and ends with the SAME external position must NOT have
+// increased the target's debt to them / drained its reserves (NO free value extraction). The role->address set
+// (FORK_CONTEXT, a semicolon `role=addr` list) is untrusted operator input that flows only into this plain-
+// string prompt — never a shell. Empty / single-`target` context => "" so the prompt is byte-identical to FM1.
+fn compose_seed(active: bool, ctx: string) -> string {
+    if !active { return ""; }
+    return "COMPOSABILITY MODE: you may compose calls ACROSS these deployed contracts (role=address set): "
+         + ctx + ". Model an ATTACKER funded by a FLASHLOAN from the `flashloan` role (or `vm.deal` at Vm "
+         + "address 0x7109709ECfa91a80626fF3989D68f67F5b1DD12D when no flashloan role is given); MOVE the "
+         + "collateral/asset price via the `dex` role; then interact with the `target` role at the mispriced "
+         + "state. Generate a Handler whose action functions SPAN ALL of these contracts (e.g. flashAndSwap, "
+         + "borrowMax, swapBack, repay), and register EVERY one of them as a fuzz target via `targetContracts()` "
+         + "so the fuzzer can interleave them into a cross-contract SEQUENCE. The DEEP invariant must check the "
+         + "TARGET's value/solvency AFTER the cross-contract sequence: there is NO free value extraction — an "
+         + "attacker who starts and ends with the SAME external position must not have increased the target's "
+         + "debt to them or drained its reserves below the no-attack baseline. The exploit is the flashloan -> "
+         + "manipulate-price-on-dex -> extract-from-target -> restore -> repay SEQUENCE that single-contract "
+         + "fuzzing cannot reach.\n";
+}
+fn generate_test(klass: string, src: string, matchPrefix: string, prior: string, forkActive: bool, forkTarget: string, forkUrl: string, forkBlock: string, composeActive: bool, forkContext: string) -> string {
     let instruction =
         recall_seed(klass, prior)
       + fork_seed(forkActive, forkTarget, forkUrl, forkBlock)
+      + compose_seed(composeActive, forkContext)
       + "You are a stateful-invariant-fuzzing engineer. Write a self-contained Foundry stateful-invariant "
       + "test (Solidity, `pragma solidity ^0.8.20;`) for the target contract below so Foundry's invariant "
       + "fuzzer can drive randomized multi-call SEQUENCES through it and find a MULTI-STEP exploit. "
@@ -207,11 +250,11 @@ fn generate_test(klass: string, src: string, matchPrefix: string, prior: string,
 // Single-assignment .ag: pick the test source ONCE (no `let` reassignment). A non-empty HANDLER_FIXTURE wins
 // (offline/deterministic, verbatim, no LLM); otherwise the LLM generates it (live path).
 let usedFixture = len(fixture) > 0;
-fn choose_test(usedFix: bool, fix: string, klass: string, src: string, matchPrefix: string, prior: string, forkActive: bool, forkTarget: string, forkUrl: string, forkBlock: string) -> string {
+fn choose_test(usedFix: bool, fix: string, klass: string, src: string, matchPrefix: string, prior: string, forkActive: bool, forkTarget: string, forkUrl: string, forkBlock: string, composeActive: bool, forkContext: string) -> string {
     if usedFix { return fix; }
-    return generate_test(klass, src, matchPrefix, prior, forkActive, forkTarget, forkUrl, forkBlock);
+    return generate_test(klass, src, matchPrefix, prior, forkActive, forkTarget, forkUrl, forkBlock, composeActive, forkContext);
 }
-let test = choose_test(usedFixture, fixture, targetClass, code, invMatch, prior, forkMode, forkTarget, forkUrl, forkBlock);
+let test = choose_test(usedFixture, fixture, targetClass, code, invMatch, prior, forkMode, forkTarget, forkUrl, forkBlock, composableMode, forkContext);
 
 // Write the generated/fixture test to INV_OUT (inside INV_REPO/test) so forge-invariant can run it. The test
 // content is UNTRUSTED — it is either an LLM completion (prompt-injectable by the untrusted target code under

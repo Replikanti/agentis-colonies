@@ -16,6 +16,50 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **Cross-contract composability — the fuzzer now composes call-SEQUENCES across the target AND the protocols
+  it interacts with, so flashloan-funded cross-contract value extraction (the canonical oracle/price-
+  manipulation drain) is REACHABLE** (FM2, #1041). Single-contract invariant fuzzing is structurally blind to
+  it; this makes the highest-value bug class findable. Builds on FM1 fork mode. **Purely additive** — with no
+  `--fork-target` role beyond `target`, FM1/#1035/#1037 behaviour is byte-identical.
+  - `run-invariant-hunt.sh` / `run-autonomous-hunt.sh` — a **repeatable `--fork-target '<role>=<addr>'`** that
+    accepts a CONTEXT SET of deployed contracts beyond the single target (role ∈ {`target`, `dex`, `flashloan`,
+    `oracle`, …}). A bare `--fork-target <addr>` (no `=`) stays the FM1 one-target shorthand (role defaults to
+    `target`). Each address is validated as `0x` + 40 hex and each role against `[a-z0-9_]`; a role may not
+    repeat. The set is exported to the prover as `FORK_CONTEXT` — a **semicolon-separated `role=addr` list**
+    (e.g. `target=0x…;dex=0x…;flashloan=0x…`), parse-safe after validation. `run-autonomous-hunt.sh` forwards it
+    via `INV_FORK_CONTEXT` to the coordinator, which appends `--fork-context` to the gate the chosen
+    invariant-hunt runs (each value `shell_escape`d via `inv_opt_flag`).
+  - `evm-harness/forge-invariant.sh` — accepts and IGNORES a `--fork-context <role=addr;…>` flag (a
+    generation-prompt hint; the fuzzer auto-discovers its fuzz targets from the test's `targetContracts()`
+    view, so the gate needs nothing from the context) so a composability-mode caller can forward it uniformly
+    without an "unknown arg" error. No-fork / no-context behaviour is byte-identical.
+  - `auditor/agents/invariant-prover.ag` — when `FORK_CONTEXT` carries MORE than the `target` role the
+    generation prompt is extended: *"you may compose calls across these deployed contracts [role→address list];
+    model an attacker funded by a flashloan from `<flashloan>` (or `vm.deal` if none); move price via `<dex>`;
+    generate a Handler whose actions span all of them, and a deep invariant checking the TARGET's value/
+    solvency after the cross-contract sequence — NO free value extraction."* The `HANDLER_FIXTURE` path stays
+    authoritative; the `FORK_CONTEXT` addresses reach the prompt as plain text (never a shell). **Additive** —
+    a `FORK_CONTEXT` with only `target` (or empty) leaves the FM1 prompt byte-identical (composability fires
+    only on >1 role, counted via `regex_find_all("=", ctx)`).
+  - **NEW `demo-composability.sh`** — the proof, fully synthetic + offline (no RPC; it demonstrates the
+    mechanism the fork path then applies to real protocols). A `MiniAMM` (constant-product `x*y=k` whose `swap`
+    moves the spot price), a `LendingVault` that prices deposited collateral at the AMM **spot** price (the
+    manipulable-oracle bug) and lends quote against it, and a `FlashLender` (lend + require same-tx repayment).
+    Two configs run through `run-invariant-hunt.sh` over the same budget + seed: **(A) composable** —
+    `--fork-target target=<vault> --fork-target dex=<amm> --fork-target flashloan=<lender>` with a handler
+    spanning all three → **FINDING** (the fuzzer composes flashloan → swap to inflate the collateral spot price
+    → borrow against the overvalued collateral → swap back → repay → keep the surplus, breaking
+    `invariant_vault_not_drained`; the break is a REAL value extraction, not a hard-coded assert, with a shrunk
+    cross-contract witness); **(B) single-contract** — only the vault as target, a vault-only handler, same
+    budget/seed → **CLEAN** (the exploit is structurally unreachable without composing the DEX + flashloan; the
+    search still exercises the full budget — 256 runs × 64 depth — and holds). The A-FINDING / B-CLEAN split
+    proves composability is the lift. `[SKIP]`s + exits 0 without forge/agentis; temp dirs under `${TMPDIR}`,
+    trap-cleaned; a fixed `--seed` for reproducibility. The verdict is the FUZZER's exit code (no LLM — a
+    deterministic fixture). A FINDING is a LEAD a human triages — this colony never auto-submits.
+  - `README.md` / `docs/invariant-hunt.md` — a composability section (the `--fork-target <role>=<addr>` /
+    `FORK_CONTEXT` encoding, the flashloan-attacker model, that it composes with FM1 fork mode for real
+    targets, the human-gated boundary).
+
 - **Fork-state invariant hunting — the stateful hunter now fuzzes deep invariants against FORKED REAL
   ON-CHAIN STATE (the actual deployed contract at a pinned block), not only a fresh deploy** (FM1, #1041).
   Proven foundation: `forge` invariant-fuzzed 512 sequences against the REAL deployed WETH at mainnet block

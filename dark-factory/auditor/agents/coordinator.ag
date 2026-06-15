@@ -415,9 +415,14 @@ fn run_invariant_live(candId: string) -> string {
     // no-fork build (purely additive). A fork RPC failure is the gate's HARNESS_ERROR (2) -> dry, never a
     // false confirmed/refuted.
     let fork = inv_opt_flag("--fork-url", getenv("INV_FORK_URL")) + inv_opt_flag("--fork-block", getenv("INV_FORK_BLOCK"));
+    // FM2 (#1041): in COMPOSABILITY mode forward the role->address context set (INV_FORK_CONTEXT, a semicolon-
+    // separated `role=addr` list) to the gate as --fork-context (shell_escape()d via inv_opt_flag). Only the
+    // --pattern-store prover-gate wrapper consumes it (the prover's generation prompt); the bare forge gate
+    // ignores an unknown flag-shaped value it does not parse. Empty INV_FORK_CONTEXT => "" => byte-identical.
+    let forkCtx = inv_opt_flag("--fork-context", getenv("INV_FORK_CONTEXT"));
     // colony-lint: safe-exec-concat
     let runOut = exec sh "set +e; sh " + shell_escape(gate) + " --repo " + shell_escape(repo)
-               + " --target " + shell_escape(target) + " --match " + shell_escape(match) + budget + fork
+               + " --target " + shell_escape(target) + " --match " + shell_escape(match) + budget + fork + forkCtx
                + " 2>&1; echo __rc=$?";
     let rc = sym_rc_of(runOut);
     return sym_outcome_of(rc);
