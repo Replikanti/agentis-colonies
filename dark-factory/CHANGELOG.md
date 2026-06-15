@@ -15,6 +15,18 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- `run-batch.sh` — the **batch/continuous runner** that operationalizes the proven engines at volume by
+  consuming the #1054 funnel queue (epic #1053). Per `targets.queue` line (highest score first): skip keys
+  already in `funnel-ledger.txt` (resumable; reuses the funnel dedup contract); run a hunt under a
+  per-target timeout via a pluggable `--hunt-cmd` (the seam — it gets `BATCH_KEY/URL/SCOPE` in env and
+  prints a `VERDICT|<confirmed|dry|refuted>` line) or a best-effort default (a resolvable `0x` address ->
+  `run-autoharness.sh` given `ETH_RPC`+`FORK_BLOCK`, else `dry`+`needs recon`); the verdict is the engine's,
+  NEVER an LLM; on `confirmed`, stage the finding under `<out>/submission/<key>/` marked PENDING HUMAN
+  REVIEW — the colony has no platform-egress and **never auto-submits**; append `key<TAB>verdict<TAB>ts` to
+  `funnel-ledger.txt` (the funnel dedups it next run) and `policy-outcomes.log`. Bounded by `--max-targets`;
+  resumable via the ledger. `demo-batch.sh` proves the loop offline + deterministically (fixture queue +
+  stub hunt-cmd -> score order, ledger-skip, staged confirmed, resumable no-op re-run). SKIPs cleanly with
+  no queue.
 - `run-funnel.sh` — the **target-intake funnel**: turns target selection from a human pick into a ranked,
   freshness-checked, self-deduped queue (#1054, part of epic #1053). Pipeline: **discover** (live RUNNING
   Sherlock contests via its JSON API, reusing `contest-watch.sh`'s `items[]` pattern, plus a best-effort
