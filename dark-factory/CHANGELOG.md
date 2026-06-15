@@ -14,6 +14,13 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Documentation
+- `dispatcher.ag`: documented as the **fixture-path sync-guard** canonical copy (used only by
+  `demo-dispatch.sh` to diff against `coordinator.ag`'s inlined dispatch on the offline fixture path).
+  The LIVE routes (real `symbolic-prove` / `invariant-hunt` / auto-harness execution) live ONLY in
+  `coordinator.ag` and are intentionally not mirrored into `dispatcher.ag`, which is never run live — so
+  the divergence flagged in #1049 is by design, not a bug. Resolves #1049 (comment-only, no behavior change).
+
 ## [0.2.0] — 2026-06-15
 
 ### Added
