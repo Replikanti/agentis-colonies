@@ -428,6 +428,39 @@ fn run_invariant_live(candId: string) -> string {
     return sym_outcome_of(rc);
 }
 
+// === AUTO-HARNESS realization of invariant-hunt — the harness is GENERATED from a bare on-chain ADDRESS.
+// Same SOUND-verdict contract as run_invariant_live, but instead of a PRE-WRITTEN invariant `*.t.sol` it
+// drives dark-factory/run-autoharness.sh, which: keyless-recons the target ABI from Sourcify (no API key),
+// has the $0 flat-cyborg LLM GENERATE a complete fork-fuzz harness, compile-repairs it, and fuzzes seed-
+// derived call SEQUENCES against the REAL forked protocol. This is what lets the autonomous loop hunt an
+// audited deployed target with NO human writing the harness — proven to rediscover the real Euler $197M
+// audit-survivor. run-autoharness's exit code is its OWN protocol (1=FINDING, 3=CLEAN, 2=harness/fork error,
+// 0=[SKIP] no forge/wrapper/Sourcify) — so it gets its OWN map (NOT sym_outcome_of, whose 0->refuted is
+// wrong here): a FUZZER can only CONFIRM (it has a counterexample) or come up dry; it can NEVER refute /
+// prove safety, and a SKIP is not a verdict. So 1->confirmed and EVERYTHING else (3/2/0)->dry. Reuses
+// sym_rc_of to parse the `__rc=` marker. INV_FORK_* are not used here (run-autoharness owns its fork flags).
+fn ah_outcome_of(rc: int) -> string {
+    if rc == 1 { return "confirmed"; }
+    return "dry";
+}
+fn ah_chain_or1(raw: string) -> string {
+    if len(raw) == 0 { return "1"; }
+    return raw;
+}
+fn run_autoharness_live(candId: string) -> string {
+    let gate = getenv("AUTOHARNESS");
+    let addr = cand_fact(candId, "ah_address", "AH_ADDRESS");
+    let chain = ah_chain_or1(cand_fact(candId, "ah_chain", "AH_CHAIN"));
+    let rpc = cand_fact(candId, "ah_rpc", "AH_RPC");
+    let blk = cand_fact(candId, "ah_block", "AH_BLOCK");
+    // colony-lint: safe-exec-concat
+    let runOut = exec sh "set +e; sh " + shell_escape(gate) + " --address " + shell_escape(addr)
+               + " --chain " + shell_escape(chain) + " --rpc " + shell_escape(rpc)
+               + " --block " + shell_escape(blk) + " 2>&1; echo __rc=$?";
+    let rc = sym_rc_of(runOut);
+    return ah_outcome_of(rc);
+}
+
 // Derive the gate OUTCOME for an action of `<type>` with `<args>`. Offline (DISPATCH_FIXTURE set, or the
 // M1 HUNT_FIXTURE alias for a hunt) -> the fixture rule, NO prompt()/LLM. The LIVE symbolic-prove route
 // (#1032): when `symbolic-prove` is chosen AND no fixture matched AND a live symbolic env is present (a
@@ -493,8 +526,29 @@ fn action_outcome(atype: string, args: string) -> string {
                 }
             }
         }
+        // AUTO-HARNESS fallback (#1047): no PRE-WRITTEN invariant test for this candidate, but an on-chain
+        // ADDRESS + an archive RPC + a fork block ARE present (the AUTOHARNESS gate path + AH_ADDRESS/AH_RPC/
+        // AH_BLOCK, per-candidate-first via cand_fact then env). The loop then GENERATES the fork-fuzz harness
+        // from the address (keyless Sourcify recon + $0 flat-cyborg LLM) and hunts — no human writes it. The
+        // verdict is the fuzzer's (FINDING->confirmed, everything else->dry; a fuzzer never refutes). All four
+        // facts must be present; otherwise this falls through to the honest stub (purely additive — no AH_*
+        // env => byte-identical to the pre-#1047 invariant-hunt stub, so the offline demos are unaffected).
+        let ahGate = getenv("AUTOHARNESS");
+        let ahAddr = cand_fact(args, "ah_address", "AH_ADDRESS");
+        let ahRpc = cand_fact(args, "ah_rpc", "AH_RPC");
+        let ahBlk = cand_fact(args, "ah_block", "AH_BLOCK");
+        if len(ahGate) > 0 {
+            if len(ahAddr) > 0 {
+                if len(ahRpc) > 0 {
+                    if len(ahBlk) > 0 {
+                        print("coordinator: LIVE invariant-hunt of '" + args + "' via AUTO-HARNESS -> GENERATING a fork-fuzz harness from address " + ahAddr + " (keyless recon, $0 flat-cyborg LLM) and hunting; verdict = the fuzzer's, never the LLM.");
+                        return run_autoharness_live(args);
+                    }
+                }
+            }
+        }
     }
-    print("coordinator: LIVE " + atype + " of '" + args + "' needs its real wiring (hunt: TARGET_DIR/IN_SCOPE/SCOPE_BRIEF/TAXONOMY/SLICER per run-discovery.sh/hunter.ag; refute->run-refute.sh; poc-screen->screen-leads.sh; symbolic-prove->run-symbolic.sh; invariant-hunt->run-invariant-hunt.sh; invent-method->run-method-discovery.sh); set DISPATCH_FIXTURE for the offline-deterministic path. No real action attempted.");
+    print("coordinator: LIVE " + atype + " of '" + args + "' needs its real wiring (hunt: TARGET_DIR/IN_SCOPE/SCOPE_BRIEF/TAXONOMY/SLICER per run-discovery.sh/hunter.ag; refute->run-refute.sh; poc-screen->screen-leads.sh; symbolic-prove->run-symbolic.sh; invariant-hunt->run-invariant-hunt.sh OR auto-harness via run-autoharness.sh when AH_ADDRESS/AH_RPC/AH_BLOCK+AUTOHARNESS are set; invent-method->run-method-discovery.sh); set DISPATCH_FIXTURE for the offline-deterministic path. No real action attempted.");
     return "dry";
 }
 

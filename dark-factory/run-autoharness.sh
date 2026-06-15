@@ -59,4 +59,15 @@ done
 FN="$(grep -oE 'function (testFuzz|test)[A-Za-z_]*' "$WORK/test/AutoHarness.t.sol" | head -1 | sed 's/function //')"
 [ -n "$FN" ] || { echo "run-autoharness: no test/testFuzz function in generated harness (empty/truncated LLM output?)" >&2; exit 1; }
 echo "run-autoharness: hunting via $FN (fork $RPC @ $BLK) ..."
-( cd "$WORK" && ETH_RPC="$RPC" FORK_BLK="$BLK" FOUNDRY_FUZZ_RUNS="$RUNS" forge test --mt "$FN" --fork-url "$RPC" --fork-block-number "$BLK" 2>&1 ) | grep -iE '\[PASS\]|\[FAIL\]|VIOLAT|counterexample|Suite result'
+HUNT="$( cd "$WORK" && ETH_RPC="$RPC" FORK_BLK="$BLK" FOUNDRY_FUZZ_RUNS="$RUNS" forge test --mt "$FN" --fork-url "$RPC" --fork-block-number "$BLK" 2>&1 )"
+echo "$HUNT" | grep -iE '\[PASS\]|\[FAIL\]|VIOLAT|counterexample|Suite result'
+# Structured verdict so this doubles as a SOUND coordinator gate (the verdict is the FUZZER's, never an LLM).
+# A fuzzer can only CONFIRM a bug (it has a counterexample) or come up dry — it can NEVER prove safety, so a
+# clean run is `dry` (exit 3), NOT a refutation. exit 1 = FINDING (counterexample), 3 = clean (no witness), 2 = no verdict.
+if echo "$HUNT" | grep -qiE '\[FAIL\]|VIOLAT|counterexample'; then
+  echo "run-autoharness: FINDING — invariant violated, the autonomous harness has a counterexample"; exit 1
+elif echo "$HUNT" | grep -qi '\[PASS\]'; then
+  echo "run-autoharness: CLEAN — no counterexample (fuzzing is unsound; this is NOT a proof of safety)"; exit 3
+else
+  echo "run-autoharness: NO VERDICT — harness/fork error, treated as non-productive"; exit 2
+fi
