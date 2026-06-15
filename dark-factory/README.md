@@ -386,6 +386,8 @@ dark-factory/run-invariant-hunt.sh --repo "$PWD/target" --target Vault.sol:Vault
 #   --fork-url <http(s)-rpc> [--fork-block <n>] [--fork-target <deployed-addr>]   |   proof: dark-factory/demo-fork-hunt.sh
 # FM2 (#1041) composability — compose calls across a context set of deployed contracts (target + dex + flashloan):
 #   --fork-target target=<addr> --fork-target dex=<addr> --fork-target flashloan=<addr>   |   proof: dark-factory/demo-composability.sh
+# FM3 (#1041) oracle/price perturbation — the harness exposes a price-MOVEMENT action (swap/donation/feed write)
+#   so the fuzzer moves the price before the borrow/redeem; manipulate->act sequences reachable.   proof: dark-factory/demo-fm3-oracle.sh
 ```
 
 **Fork mode (FM1, #1041).** `--fork-url <rpc> [--fork-block <n>]` runs the same handler + deep invariants

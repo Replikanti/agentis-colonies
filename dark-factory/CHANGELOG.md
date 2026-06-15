@@ -15,6 +15,17 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **FM3 — oracle / price perturbation as a stateful fuzz dimension** (#1057, epic #1041). FM1 forks real
+  state and FM2 composes protocols, but the price/oracle stayed STATIC, so the flashloan-funded
+  price-manipulation drain (where bounty money concentrates) was unreachable. The harness-generation prompt
+  (`run-autoharness.sh`, main + repair) now instructs the LLM: when the target reads a price/oracle (spot
+  reserve ratio, `price()`/`getPrice()`/`latestAnswer()`, a DEX quote), expose the price-MOVEMENT vector as a
+  fuzzable action (a real swap on the forked pool, a donation/transfer that skews reserves, or a
+  manipulable-feed write) so the seed can move the price within attacker-reachable bounds BEFORE the
+  borrow/redeem/liquidate. `demo-fm3-oracle.sh` proves the dimension through the real `forge-invariant.sh`
+  gate on a two-sided calibration: a spot-priced lender is over-borrowed by a fuzzed move-price->borrow
+  sequence (**FINDING**) while the anchor+1%-bound twin rejects the manipulated borrow (**CLEAN**) — 0
+  false-VERIFIED, verdict the fuzzer's. SKIPs cleanly without forge.
 - `run-batch.sh` — the **batch/continuous runner** that operationalizes the proven engines at volume by
   consuming the #1054 funnel queue (epic #1053). Per `targets.queue` line (highest score first): skip keys
   already in `funnel-ledger.txt` (resumable; reuses the funnel dedup contract); run a hunt under a
