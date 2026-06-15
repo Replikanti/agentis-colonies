@@ -14,6 +14,15 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Changed
+- `run-audit.sh`: the default `--backend flat-cyborg` now wires `llm.command` to the new
+  `flat-cyborg-claude.sh` wrapper, which drives the **interactive** claude CLI through
+  flat-cyborg's PTY ($0 subscription) instead of the metered `claude -p` API. The
+  `flat-cyborg` backend branch previously set only the timeout and left `llm.command`
+  unset. `--backend claude` (metered `claude -p`) stays an explicit opt-in. Requires
+  flat-cyborg >= v0.9.1 (`--extract` implies the screen grid).
+
+
 ### Added
 
 - **Cross-contract composability — the fuzzer now composes call-SEQUENCES across the target AND the protocols
