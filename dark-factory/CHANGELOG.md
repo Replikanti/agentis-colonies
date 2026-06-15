@@ -15,6 +15,17 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **FM4 — audit-informed deep-invariant synthesis** (#1058, epic #1041). Generic conservation /
+  single-function invariants are what auditors and formal tools check FIRST, so re-deriving them finds
+  nothing new. `run-autoharness.sh` gains `--audit-context <file>`: it folds the target's prior audit
+  findings + known-gap notes into the generation prompt and instructs the LLM to target what audits MISS
+  (cross-function emergent state, deep economic value-extraction, multi-step accounting drift) and to NOT
+  re-derive an already-disclosed finding (worthless on a first-reporter bounty). A new `--dry-prompt` mode
+  builds + prints the prompt without calling the LLM/forge, making the wiring offline-testable.
+  `demo-fm4-audit.sh` asserts (deterministically, no LLM): with `--audit-context` the prompt carries the
+  FM4 targeting block + the gap instruction + the do-not-re-report instruction + the disclosed findings
+  verbatim; without it the prompt is unchanged (additive); an unreadable context file errors loudly. The
+  invariant-quality uplift is the LLM's; this ships and proves the deterministic wiring.
 - **FM3 — oracle / price perturbation as a stateful fuzz dimension** (#1057, epic #1041). FM1 forks real
   state and FM2 composes protocols, but the price/oracle stayed STATIC, so the flashloan-funded
   price-manipulation drain (where bounty money concentrates) was unreachable. The harness-generation prompt
