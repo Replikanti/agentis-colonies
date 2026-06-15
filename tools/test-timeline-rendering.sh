@@ -2373,6 +2373,18 @@ else
     fail "64: Promote Candidates top-5 cap or more-candidates hint regressed (#369)"
 fi
 
+# t65 (#1043): the collector must derive ALL now-relative computation from the single
+# injected epoch (NOW_TS), never re-sample the wall clock. A second time-sample can
+# disagree with the injected epoch across the 00:00 UTC date boundary and flake the
+# timeline/cost tests (test-sse-stream.sh test 8 runs this suite, so it goes red too).
+# Source-guard so the regression can't return silently.
+if [ -f "$COLLECTOR_PY" ] && ! grep -Eq 'time\.time\(\)' "$COLLECTOR_PY"; then
+    pass "65: collector takes no second wall-clock sample — all now-derived from the injected epoch/NOW_TS (#1043)"
+else
+    fail "65: federation-dashboard-collector.py still calls time.time() — 00:00 UTC date-boundary flake risk (#1043)" \
+         "offending: $(grep -nE 'time\.time\(\)' "$COLLECTOR_PY" 2>/dev/null | tr '\n' ' ')"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
