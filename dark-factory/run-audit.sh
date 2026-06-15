@@ -26,7 +26,9 @@
 #                            `Class|abs-src-path|func-marker` (harvest-sherlock.js output).
 #   --share-patterns         After seeding, publish each pattern to the knowledge market so other
 #                            federation members can buy it (knowledge_sell; requires --seed-manifest).
-#   --backend <mock|claude>  LLM backend (default: claude). mock = offline-deterministic.
+#   --backend <flat-cyborg|claude|mock>  LLM backend (default: flat-cyborg). flat-cyborg = flat-rate
+#                            PTY wrapper driving the interactive claude CLI ($0 subscription, via
+#                            flat-cyborg-claude.sh); claude = metered `claude -p` API; mock = offline.
 #   --sandbox <hardened|none> Sandbox profile (default: hardened).
 #   --out <dir>              Output dir for the run + submission package (default: ./audit-out).
 #   --agentis <bin>          agentis binary (default: `agentis` on PATH).
@@ -127,9 +129,10 @@ cp "$COLONY" "$RUN/auditor.ag"
 ( cd "$RUN" && "$AGENTIS" init >/dev/null 2>&1 )
 {
   echo "llm.backend = $BACKEND"
-  # claude = metered `-p` API path (opt-in via --backend claude); flat-cyborg = flat-rate PTY wrapper (default)
+  # flat-cyborg = flat-rate PTY wrapper driving the interactive claude CLI (default, $0 subscription via
+  # flat-cyborg-claude.sh); claude = metered `claude -p` API path (explicit opt-in only — do not default to it).
   [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p"; echo "llm.cli_timeout_ms = 180000"; }
-  [ "$BACKEND" = "flat-cyborg" ] && echo "llm.cli_timeout_ms = 180000"
+  [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.command = $HERE/flat-cyborg-claude.sh"; echo "llm.cli_timeout_ms = 180000"; }
   echo "trace.level = normal"
   echo "exec.env_passthrough = BOUNTY_TARGET,BOUNTY_POC,SOLANA_HARNESS_DIR,SOLANA_ANCHOR_HARNESS_DIR,EVM_HARNESS_DIR,BOUNTY_SNAPSHOT,BOUNTY_REPO,BOUNTY_IN_SCOPE,BOUNTY_CONTRACT,SEED_SRC,SEED_CLASS,SEED_FUNC,FUZZY_SEEDS,FUZZY_THRESHOLD,FUZZY_K"
   echo "exec.default_timeout_ms = 180000"
