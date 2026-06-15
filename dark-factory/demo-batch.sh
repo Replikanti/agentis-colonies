@@ -80,7 +80,7 @@ else
 fi
 
 # (f) never-submit: the runner has no platform-egress (no curl/POST in its source).
-if ! grep -nE 'curl|wget|-X[[:space:]]*POST|--data' "$RUN" >/dev/null 2>&1; then
+if ! grep -nE 'curl|wget|nc |netcat|/dev/tcp|-X[[:space:]]*(POST|PUT)|--data|--upload|gh (pr|issue|api)|http[s]?://[^ ]*(submit|api)' "$RUN" >/dev/null 2>&1; then
   pass "run-batch.sh has no network-egress (never submits)"
 else
   fail "run-batch.sh contains an egress call — must never submit"

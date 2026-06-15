@@ -57,9 +57,9 @@ mkdir -p "$DIR"
 ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 TIMEOUT_BIN="$(command -v timeout || true)"
 
-# Empty / missing queue -> nothing to do (CI-safe, mirrors the sibling [SKIP] convention).
+# Empty / missing queue -> nothing to do (CI-safe; [SKIP] to stderr, mirroring run-funnel.sh).
 if [ ! -s "$QUEUE" ]; then
-  echo "[SKIP] no queue at $QUEUE (run run-funnel.sh first) — nothing to process"
+  echo "[SKIP] no queue at $QUEUE (run run-funnel.sh first) — nothing to process" >&2
   exit 0
 fi
 
