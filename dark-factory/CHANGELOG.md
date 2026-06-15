@@ -14,6 +14,18 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- `run-autoharness.sh` — **autonomous harness generation + hunt**. Given a target recon spec (deployed
+  addresses + function signatures + fork block + the deep invariant to assert), the `$0` flat-cyborg LLM
+  backend GENERATES a complete Foundry fork-fuzz harness on its own; a compile-repair loop fixes errors via
+  the LLM; then the fuzzer hunts against the REAL forked protocol. No human writes the harness. Proven +
+  reproducible: the LLM-generated harness rediscovers the real **Euler $197M audit-surviving bug** on a fork
+  at the pre-exploit block, and reports CLEAN on a safe ERC4626 vault (sDAI) — generalises across protocols.
+  Closes the harness-automation gap: the federation can go from a target's recon to a verdict autonomously.
+  Needs a flat-cyborg backend wrapper + forge + an archive RPC (`[SKIP]`+exit0 otherwise). Example recon:
+  `docs/autoharness-euler-example.txt`.
+
+
 ### Changed
 - `run-audit.sh`: the default `--backend flat-cyborg` now wires `llm.command` to the new
   `flat-cyborg-claude.sh` wrapper, which drives the **interactive** claude CLI through

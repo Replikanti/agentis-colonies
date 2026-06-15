@@ -1,0 +1,12 @@
+# Example target recon spec for run-autoharness.sh (Euler Finance, the $197M audit-survivor).
+# The pipeline feeds this to the LLM, which GENERATES the harness; the fuzzer then hunts.
+Chain: Ethereum mainnet. Fork via env ETH_RPC, block via env FORK_BLK (use 16817000 = pre-exploit).
+Protocol: Euler lending. Deposit collateral, self-mint debt (leverage); the protocol must stay solvent.
+Contracts + functions:
+- DAI collateral ERC20: 0x6B175474E89094C44Da98b954EedeAC495271d0F (balanceOf, approve)
+- Euler main proxy (approve target): 0x27182842E098f60e3D576794A5bFFb0777E025d3
+- Markets: 0x3520d5a913427E6F0D6A83E07ccD4A4da316e4d3 -> enterMarket(uint256 subAccountId, address underlying)
+- eDAI: 0xe025E3ca2bE02316033184551D4d3Aa22024D9DC -> deposit(uint256,uint256), mint(uint256,uint256), donateToReserves(uint256,uint256), balanceOf(address)
+- Exec: 0x59828FdF7ee634AaaD3f58B19fDBa3b03E2D9d80 -> liquidity(address) returns (uint256 collateralValue, uint256 liabilityValue)
+DEEP INVARIANT to assert: collateralValue >= liabilityValue (the account must stay solvent). At constant
+fork price+time, any sequence that drives it insolvent is a real accounting bug.
