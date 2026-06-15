@@ -12,7 +12,10 @@
 set -eu
 PROMPT="${1:-}"
 if [ -z "$PROMPT" ]; then PROMPT="$(cat)"; fi
-exec flat-cyborg --extract --no-jitter --auto-approve \
+# --wrap-input 72: fold the (often single-line, ~700-char) instruction block so it
+# does not overflow claude's editor input. flat-cyborg >=0.10.0 also gates --extract
+# on the reply sentinel, so a slow first reply is no longer captured as empty.
+exec flat-cyborg --extract --no-jitter --auto-approve --wrap-input 72 \
   --idle-ms "${FLAT_CYBORG_IDLE_MS:-8000}" \
   --timeout-ms "${FLAT_CYBORG_TIMEOUT_MS:-180000}" \
   --cmd "$PROMPT" -- claude

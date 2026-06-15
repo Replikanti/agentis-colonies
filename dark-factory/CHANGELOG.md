@@ -33,6 +33,14 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   `flat-cyborg` backend branch previously set only the timeout and left `llm.command`
   unset. `--backend claude` (metered `claude -p`) stays an explicit opt-in. Requires
   flat-cyborg >= v0.9.1 (`--extract` implies the screen grid).
+- `run-autoharness.sh`: **rejects a vacuous stub harness**. A generated file must carry a real fork
+  (`createSelectFork`), a `testFuzz_*(uint256 ...)` fuzz entrypoint, and a `require()` invariant, or it is
+  sent back to the compile-repair loop with the full structural requirement re-stated — a live sDAI run
+  exposed the LLM occasionally returning a degenerate `1+1==2` sanity test that compiled but hunted nothing.
+  The shell-side prompt-fold + empty-retry workaround is removed now that delivery is fixed at the source:
+  `flat-cyborg-claude.sh` passes `--wrap-input 72` (folds the long instruction block so it no longer
+  overflows claude's editor) and flat-cyborg >= v0.10.0 gates `--extract` on the reply sentinel (a slow
+  first reply is no longer captured as empty). Bumps the flat-cyborg floor to **v0.10.0**.
 
 
 ### Added
