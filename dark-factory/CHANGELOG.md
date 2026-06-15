@@ -14,6 +14,8 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-06-15
+
 ### Added
 - `run-autoharness.sh` — **autonomous harness generation + hunt**. Given a target recon spec (deployed
   addresses + function signatures + fork block + the deep invariant to assert), the `$0` flat-cyborg LLM
@@ -1102,5 +1104,6 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   with a `pending_human_review` marker. The colony NEVER auto-posts to a
   bounty platform — submission is always an explicit human action.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.1.0...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.2.0...HEAD
+[0.2.0]: https://github.com/Replikanti/agentis-colonies/releases/tag/dark-factory-v0.2.0
 [0.1.0]: https://github.com/Replikanti/agentis-colonies/releases/tag/dark-factory-v0.1.0
