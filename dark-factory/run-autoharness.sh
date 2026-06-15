@@ -53,8 +53,21 @@ real_harness() {
     && grep -qE 'function +testFuzz[A-Za-z_]*\([^)]*uint256' "$SOL" \
     && grep -q 'require(' "$SOL"
 }
+# Generate a harness with the flat-cyborg LLM backend ($WRAP), then strip any
+# markdown fences and keep from the first SPDX/pragma line onward.
+#
+# flat-cyborg >=0.10.0 (set up in flat-cyborg-claude.sh with --wrap-input) makes
+# delivery reliable at the source: it folds the long single-line instruction block
+# so it no longer overflows claude's editor, and gates --extract on the reply
+# sentinel so a slow first reply (the model emits chrome / thinks before answering)
+# is no longer captured as empty. So no shell-side fold or retry is needed here; a
+# rare empty extraction is already handled by the compile/real_harness repair loop
+# below, which re-generates against a sharper prompt.
+gen() {
+  "$WRAP" < "$1" 2>/dev/null | sed -e 's/```[a-zA-Z]*//g' | awk 'f||/\/\/ SPDX|pragma/{f=1; print}'
+}
 ATT=0
-"$WRAP" < "$PROMPT" 2>/dev/null | sed -e 's/```[a-zA-Z]*//g' | awk 'f||/\/\/ SPDX|pragma/{f=1; print}' > "$SOL"
+gen "$PROMPT" > "$SOL"
 while : ; do
   ERR="$( cd "$WORK" && forge build 2>&1 )"
   # forge build trivially "succeeds" on an empty dir, so also require a real AutoHarness contract AND the
@@ -73,7 +86,7 @@ while : ; do
     echo "--- COMPILE ERRORS (if any) ---"; echo "$ERR" | grep -iE 'error|-->' | head -20;
     echo "--- TARGET RECON ---"; cat "$SPEC";
     echo "--- YOUR REJECTED FILE ---"; cat "$SOL"; } > "$WORK/repair.txt"
-  "$WRAP" < "$WORK/repair.txt" 2>/dev/null | sed -e 's/```[a-zA-Z]*//g' | awk 'f||/\/\/ SPDX|pragma/{f=1; print}' > "$SOL"
+  gen "$WORK/repair.txt" > "$SOL"
 done
 # Prefer the seed-derived testFuzz_ function (the real hunt) over any plain test_ helper the harness may also
 # carry — real_harness() already guarantees a testFuzz fn exists, so this never falls back to a sanity test.
