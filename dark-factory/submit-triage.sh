@@ -25,8 +25,9 @@ ROOT="$PWD" ; CHECKLIST=""
 while [ $# -gt 0 ]; do case "$1" in
   --root)      nv "$#" "$1"; ROOT="$2"; shift 2;;
   --checklist) nv "$#" "$1"; CHECKLIST="$2"; shift 2;;
-  -h|--help)   sed -n '2,22p' "$0"; exit 0;;
+  -h|--help)   sed -n '2,20p' "$0"; exit 0;;
   *) echo "submit-triage.sh: unknown arg $1" >&2; exit 2;; esac; done
+ROOT="${ROOT%/}"; [ -n "$ROOT" ] || ROOT="."   # strip a trailing slash so the relative-path display is clean
 
 # A PoC/witness file in a package dir: a Rust PoC, a Foundry test, or an exploit .sol. Test each candidate
 # (a non-matching glob expands to its literal, which `-f` rejects) so one present file is enough.
