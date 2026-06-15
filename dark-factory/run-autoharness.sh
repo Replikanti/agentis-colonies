@@ -16,7 +16,8 @@
 #               generation prompt so the LLM targets what audits/formal tools MISS (cross-function emergent
 #               state, deep value-extraction) and does NOT re-derive an already-disclosed finding.
 #   --dry-prompt : build + print the generation prompt and exit (no LLM, no forge) — for inspecting/testing
-#               what the model is asked, incl. the --audit-context wiring. Offline.
+#               what the model is asked, incl. the --audit-context wiring. Offline WITH --spec; with
+#               --address it still fetches the recon from Sourcify (network) before printing.
 # Requires: a flat-cyborg LLM backend wrapper on PATH (LLM_WRAP env or ./flat-cyborg-claude.sh), forge, an
 # ARCHIVE RPC (forge fork execution at a historical block needs a true archive node). (--dry-prompt needs none.)
 set -u
@@ -31,7 +32,7 @@ while [ $# -gt 0 ]; do case "$1" in
   --invariant) nv "$#" "$1"; INV="$2"; shift 2;; --rpc) nv "$#" "$1"; RPC="$2"; shift 2;; --block) nv "$#" "$1"; BLK="$2"; shift 2;;
   --repairs) nv "$#" "$1"; REPAIRS="$2"; shift 2;; --runs) nv "$#" "$1"; RUNS="$2"; shift 2;; --out) nv "$#" "$1"; OUT="$2"; shift 2;;
   --audit-context) nv "$#" "$1"; AUDITCTX="$2"; shift 2;; --dry-prompt) DRYPROMPT=1; shift;;
-  -h|--help) sed -n '2,21p' "$0"; exit 0;; *) echo "run-autoharness.sh: unknown arg $1" >&2; exit 2;; esac; done
+  -h|--help) sed -n '2,22p' "$0"; exit 0;; *) echo "run-autoharness.sh: unknown arg $1" >&2; exit 2;; esac; done
 # --dry-prompt builds + prints the generation prompt and exits WITHOUT calling the LLM or forge — so the
 # audit-context wiring is offline-testable. The real hunt needs --rpc/--block + forge + the LLM wrapper.
 if [ -z "$DRYPROMPT" ]; then
