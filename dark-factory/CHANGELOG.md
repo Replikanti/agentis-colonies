@@ -15,6 +15,15 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- `submit-triage.sh` — the **human-gated submission triage** layer (#1056, epic #1053). Scans a staging
+  root for the verified-FINDING packages `run-audit.sh` / `run-batch.sh` drop under
+  `<out>/submission[/<key>]/` and scores each candidate's readiness (**READY** = report.md + a PoC/witness +
+  the NOT-SUBMITTED marker; **INCOMPLETE** lists the missing pieces), with a best-effort severity parse and a
+  `--checklist <dir>` per-candidate review list. It NEVER contacts a platform — a READY package is a LEAD the
+  operator reviews and submits MANUALLY; "take one finding end-to-end to a real submission" is the operator's
+  step (a payable target + their platform account/KYC), which this tool only makes fast. `demo-submit-triage.sh`
+  proves it offline + deterministically (a complete package -> READY/HIGH, an incomplete one -> INCOMPLETE
+  missing `poc`, the checklist prints the manual-submit note, empty root -> SKIP, no egress).
 - **FM4 — audit-informed deep-invariant synthesis** (#1058, epic #1041). Generic conservation /
   single-function invariants are what auditors and formal tools check FIRST, so re-deriving them finds
   nothing new. `run-autoharness.sh` gains `--audit-context <file>`: it folds the target's prior audit
