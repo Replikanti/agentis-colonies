@@ -14,6 +14,25 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- `run-funnel.sh` — the **target-intake funnel**: turns target selection from a human pick into a ranked,
+  freshness-checked, self-deduped queue (#1054, part of epic #1053). Pipeline: **discover** (live RUNNING
+  Sherlock contests via its JSON API, reusing `contest-watch.sh`'s `items[]` pattern, plus a best-effort
+  Cantina/Code4rena probe) with a `--from <candidates.json>` offline override for deterministic/reproducible
+  runs; **freshness** (drop any candidate whose `status` is not RUNNING); **self-dedup** (drop keys
+  `platform:id` already in the read-only ledger `${DARK_FACTORY_DIR:-$HOME/.dark-factory}/funnel-ledger.txt`,
+  whose `key<TAB>verdict<TAB>ts` rows the #1055 batch runner appends); **score** (a deterministic weighted sum
+  documented in-script — recency of `launched_at` 0..40, log-scaled prize/TVL hint 0..25, platform weight
+  contest>permanent 0..20, smaller in-scope size 0..15, max 100, ties broken by key ascending); and **emit** a
+  ranked TSV `score<TAB>platform:id<TAB>url<TAB>title<TAB>scope_hint` to stdout AND
+  `${DARK_FACTORY_DIR}/targets.queue`. No network AND no `--from` → `[SKIP]` + exit 0 (CI-safe). It NEVER
+  contacts a platform to submit — a queued target is a LEAD a human (or the #1055 batch runner) triages.
+- `demo-funnel.sh` — offline, deterministic proof of the funnel (mirrors the other `demo-*.sh`): feeds a
+  fixture candidate list (varying `launched_at`/prize for a non-trivial rank, one non-RUNNING candidate, one
+  pre-seeded in a temp ledger) to `run-funnel.sh --from` with `DARK_FACTORY_DIR` pointed at a temp dir, and
+  asserts the queue is ranked by score descending, the non-RUNNING candidate is dropped (freshness), the
+  ledger-seen candidate is dropped (self-dedup), and the run exits 0. No network, no LLM.
+
 ### Documentation
 - `dispatcher.ag`: documented as the **standalone sync-guard** canonical copy of the dispatch fn (used by
   `demo-dispatch.sh` to diff against `coordinator.ag`'s inlined dispatch on the offline fixture path).
