@@ -17,16 +17,26 @@
 # fuzz targets via a `targetContracts() returns (address[])` view (the StdInvariant ABI forge auto-discovers)
 # and asserts with plain `require(...)`, so it compiles in ANY foundry project with zero library remappings.
 #
+# FM1 (#1041) — FORK MODE. The optional `--fork-url <rpc> [--fork-block <n>]` pair runs the same handler +
+# deep invariants against FORKED REAL ON-CHAIN STATE (the actual deployed contract at a pinned block) instead
+# of a fresh deploy. When set, the gate threads forge's own `--fork-url <rpc> [--fork-block-number <n>]` into
+# the `forge test` invocation (forge 1.7.1 spelling; `--fork-url` aliases `--rpc-url`). A fork RPC failure
+# (unreachable / rate-limited / "could not instantiate forked environment") yields NO parseable result, so the
+# existing "no parseable result / no invariant ran" path returns HARNESS_ERROR (2) — never a false CLEAN/
+# FINDING. When `--fork-url` is UNSET the forge command is BYTE-IDENTICAL to the no-fork build.
+#
 # Usage:
 #   forge-invariant.sh --repo <foundry-project-root> --target <Invariant.t.sol>
 #                      [--match <invariant_ prefix>] [--runs N] [--depth D] [--seed S]
+#                      [--fork-url <http(s)-rpc>] [--fork-block <n>]
 #
 # Verdict / exit contract (mirrors halmos-verify.sh's shape):
 #   CLEAN          exit 0  — >=1 invariant ran and ALL held across every fuzzed sequence: no finding.
 #   FINDING        exit 1  — >=1 invariant FAILED; the shrunk exploit sequence is printed to stderr and
 #                            captured in the JSON. A reproducible multi-step witness -> a CANDIDATE.
 #   HARNESS_ERROR  exit 2  — bad args, repo is not a foundry project, forge missing, compile/setup error,
-#                            or no invariant function matched (nothing was actually checked).
+#                            no invariant function matched (nothing was actually checked), or a fork RPC
+#                            that was unreachable / could not instantiate the forked environment.
 set -uo pipefail
 
 REPO=""
@@ -35,8 +45,10 @@ MATCH="invariant"
 RUNS=""
 DEPTH=""
 SEED=""
+FORK_URL=""
+FORK_BLOCK=""
 
-usage() { sed -n '2,36p' "$0"; }
+usage() { sed -n '2,39p' "$0"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -46,6 +58,8 @@ while [ $# -gt 0 ]; do
     --runs)   RUNS="${2:-}"; shift 2 ;;
     --depth)  DEPTH="${2:-}"; shift 2 ;;
     --seed)   SEED="${2:-}"; shift 2 ;;
+    --fork-url)   FORK_URL="${2:-}"; shift 2 ;;
+    --fork-block) FORK_BLOCK="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "forge-invariant: unknown arg $1" >&2; exit 2 ;;
   esac
@@ -66,13 +80,25 @@ fi
 for v in "$RUNS" "$DEPTH" "$SEED"; do
   case "$v" in '') ;; *[!0-9]*) echo "forge-invariant: --runs/--depth/--seed must be whole numbers" >&2; exit 2 ;; esac
 done
+# FM1 (#1041): fork-arg shape validation. --fork-url must look like an http(s) URL (a typo'd / non-URL value
+# must be a clean usage error, not a forge invocation that fails opaquely). --fork-block must be a whole number.
+# --fork-block without --fork-url is meaningless (forge ignores it without a fork), so reject it up front.
+case "$FORK_URL" in
+  '') ;;
+  http://*|https://*) ;;
+  *) echo "forge-invariant: --fork-url must be an http(s) URL (got: $FORK_URL)" >&2; exit 2 ;;
+esac
+case "$FORK_BLOCK" in '') ;; *[!0-9]*) echo "forge-invariant: --fork-block must be a whole number" >&2; exit 2 ;; esac
+[ -z "$FORK_BLOCK" ] || [ -n "$FORK_URL" ] || { echo "forge-invariant: --fork-block requires --fork-url (a fork block is meaningless without a fork)" >&2; exit 2; }
 
 # --- tool presence ------------------------------------------------------------------------------
 # We do NOT hardcode any install location — the caller exports the toolchain onto PATH.
 command -v forge >/dev/null 2>&1 || {
   echo "forge-invariant: forge not installed (run foundryup; https://getfoundry.sh)" >&2; exit 2; }
 
-echo "== forge-invariant: stateful-fuzzing $(basename "$TARGET_PATH") (invariants ${MATCH}*) ==" >&2
+FORK_NOTE=""
+[ -n "$FORK_URL" ] && FORK_NOTE=" [fork=${FORK_URL}${FORK_BLOCK:+@${FORK_BLOCK}}]"
+echo "== forge-invariant: stateful-fuzzing $(basename "$TARGET_PATH") (invariants ${MATCH}*)${FORK_NOTE} ==" >&2
 
 # Build forge's invariant args. --match-path scopes to exactly this test file; --match-test to the
 # invariant_* functions. A finite seed makes the run reproducible (the demo pins it). forge has no CLI flag
@@ -82,6 +108,15 @@ ARGS=(test --match-path "$TARGET_PATH" --match-test "$MATCH" --json)
 [ -n "$SEED" ] && ARGS+=(--fuzz-seed "$SEED")
 [ -n "$RUNS" ]  && export FOUNDRY_INVARIANT_RUNS="$RUNS"
 [ -n "$DEPTH" ] && export FOUNDRY_INVARIANT_DEPTH="$DEPTH"
+# FM1 (#1041): FORK MODE. Append forge's own fork flags ONLY when --fork-url is set, so the no-fork build is
+# byte-identical to today. forge 1.7.1: `--fork-url <rpc>` (aliases --rpc-url) + `--fork-block-number <n>`.
+# Each value is an array element (never a concatenated string), so no content can mangle a flag, and a fork
+# that cannot be instantiated leaves forge with no parseable result -> the no-result path returns
+# HARNESS_ERROR (2) below, never a false verdict.
+if [ -n "$FORK_URL" ]; then
+  ARGS+=(--fork-url "$FORK_URL")
+  [ -n "$FORK_BLOCK" ] && ARGS+=(--fork-block-number "$FORK_BLOCK")
+fi
 
 # A scratch dir for this run's JSON + parser. Trapped so we never leak temp files.
 TMPD="$(mktemp -d "${TMPDIR:-/tmp}/forge-invariant.XXXXXX")" || { echo "forge-invariant: cannot create temp dir" >&2; exit 2; }
@@ -97,21 +132,62 @@ trap 'rm -rf "$TMPD"' EXIT
 # element behind). A fixed seed keeps the human run aligned with the json run.
 HUMAN_ARGS=()
 for a in "${ARGS[@]}"; do [ "$a" = "--json" ] || HUMAN_ARGS+=("$a"); done
-( cd "$REPO" && forge "${HUMAN_ARGS[@]}" --fuzz-seed "${SEED:-1}" 1>&2 2>&1 ) || true
+# Append a fallback --fuzz-seed ONLY when SEED is unset — when SEED is set it is ALREADY in ARGS/HUMAN_ARGS, and
+# forge rejects a repeated --fuzz-seed ("cannot be used multiple times"), which would suppress the readable
+# table. A fixed seed keeps the human run aligned with the json run either way.
+if [ -n "$SEED" ]; then
+  ( cd "$REPO" && forge "${HUMAN_ARGS[@]}" 1>&2 2>&1 ) || true
+else
+  ( cd "$REPO" && forge "${HUMAN_ARGS[@]}" --fuzz-seed 1 1>&2 2>&1 ) || true
+fi
 
 banner() { echo "================ FORGE-INVARIANT: $1 ================" >&2; }
 
 # --- parse the verdict from forge's --json ------------------------------------------------------
 # forge --json emits a per-suite object (sometimes several concatenated values): { "<path>:<Contract>": {
-# "test_results": { "<fn>()": { "status": "Success"|"Failure", "counterexample": { "Sequence": [...] } } } } }.
-# We do not depend on jq; a small python reads the structure with a raw_decode loop (robust to a single
-# object OR several concatenated ones), counts ran/failed invariants, and pulls the shrunk sequence text.
-# The JSON is passed as a FILE argument (never stdin) so the heredoc body cannot be confused for input.
+# "test_results": { "<fn>()": { "status": "Success"|"Failure", "reason": "...", "counterexample": {
+# "Sequence": [...] } } } } }. We do not depend on jq; a small python reads the structure with a raw_decode
+# loop (robust to a single object OR several concatenated ones), counts ran/failed invariants, and pulls the
+# shrunk sequence text. The JSON is passed as a FILE argument (never stdin) so the heredoc body cannot be
+# confused for input.
+#
+# FM1 (#1041) SAFETY: a fork/backend error (an unreachable or non-archive RPC that cannot serve the forked
+# state forge touches mid-fuzz) is reported by forge as the invariant function with status=Failure and a
+# `reason` like "failed to set up invariant testing environment / database error / could not instantiate
+# forked environment" — and NO counterexample sequence. That is a HARNESS error, NOT a real FINDING. We
+# classify any such Failure as a SETUP error (counted separately, never as a finding), so a flaky/non-archive
+# fork RPC can NEVER surface a false FINDING — it degrades to HARNESS_ERROR (the FM1 contract).
 cat > "$TMPD/parse.py" <<'PY'
 import sys, json
 match = sys.argv[1]
 raw = open(sys.argv[2]).read().strip()
 dec = json.JSONDecoder()
+# Reason substrings that mark a HARNESS/fork/backend failure rather than a genuine invariant break.
+SETUP_MARKERS = (
+    "failed to set up", "setup", "set up invariant",
+    "could not make raw evm call", "database error", "evm error",
+    "could not instantiate forked", "backend", "historical state",
+    "is not available", "error sending request", "rpc",
+)
+def has_counterexample(res):
+    # A genuine invariant break always carries a counterexample (the shrunk failing
+    # call-SEQUENCE). A fork/backend/setup failure never does. So the presence of a
+    # counterexample is the decisive signal that this is a REAL finding, not a setup error.
+    cex = (res or {}).get("counterexample")
+    return bool(cex)
+def is_setup_failure(res):
+    # A HARNESS/fork/backend failure is a Failure whose `reason` matches a setup marker AND
+    # which carries NO counterexample. The no-counterexample gate is decisive: it prevents a
+    # genuine invariant break whose revert string merely CONTAINS a marker word (e.g. "...setup
+    # budget", "...rpc id") from being misclassified as a setup error and silently dropped.
+    if has_counterexample(res):
+        return False
+    reason = (res or {}).get("reason") or ""
+    rl = reason.lower()
+    for m in SETUP_MARKERS:
+        if m in rl:
+            return True
+    return False
 objs = []; idx = 0
 while idx < len(raw):
     while idx < len(raw) and raw[idx] in ' \t\r\n':
@@ -125,7 +201,7 @@ while idx < len(raw):
     objs.append(obj); idx = end
 if not objs:
     print("PARSE_ERROR"); sys.exit(0)
-ran = 0; failed = 0; seqs = []
+ran = 0; failed = 0; setup_err = 0; seqs = []
 for obj in objs:
     if not isinstance(obj, dict):
         continue
@@ -137,6 +213,10 @@ for obj in objs:
             continue
         for fn, res in results.items():
             if not fn.startswith(match):
+                continue
+            if (res or {}).get("status", "") == "Failure" and is_setup_failure(res):
+                # A fork/backend/setup error — NOT a checked invariant, NOT a finding. Do not count it as ran.
+                setup_err += 1
                 continue
             ran += 1
             if (res or {}).get("status", "") == "Failure":
@@ -161,6 +241,7 @@ for obj in objs:
                 seqs.append((fn.rstrip("()"), steps))
 print("RAN=%d" % ran)
 print("FAILED=%d" % failed)
+print("SETUP_ERR=%d" % setup_err)
 for label, steps in seqs:
     print("SEQBEGIN=%s" % label)
     for i, s in enumerate(steps, 1):
@@ -172,19 +253,44 @@ ERROUT="$(cat "$TMPD/err.txt" 2>/dev/null || true)"
 
 RAN="$(printf '%s\n' "$PARSE" | sed -n 's/^RAN=//p' | head -1)"
 FAILED="$(printf '%s\n' "$PARSE" | sed -n 's/^FAILED=//p' | head -1)"
+SETUP_ERR="$(printf '%s\n' "$PARSE" | sed -n 's/^SETUP_ERR=//p' | head -1)"
 case "$RAN" in    ''|*[!0-9]*) RAN=0 ;; esac
 case "$FAILED" in ''|*[!0-9]*) FAILED=0 ;; esac
+case "$SETUP_ERR" in ''|*[!0-9]*) SETUP_ERR=0 ;; esac
 
-# A PARSE_ERROR (forge produced no JSON object) or a compile/setup failure means nothing was checked.
+# A PARSE_ERROR (forge produced no JSON object) or a compile/setup failure means nothing was checked. In FORK
+# MODE this same path also catches an unreachable / rate-limited RPC or a "could not instantiate forked
+# environment" — forge emits no parseable suite object, so the verdict is HARNESS_ERROR (2), NEVER a false
+# CLEAN/FINDING (the FM1 #1041 safety contract).
 if printf '%s' "$PARSE" | grep -q 'PARSE_ERROR' || [ ! -s "$TMPD/out.json" ]; then
-  banner "HARNESS_ERROR (forge produced no parseable result — compile/setup error or no test ran)"
-  printf '%s\n' "$ERROUT" | grep -iE 'error|compil|panic' | head -5 >&2 || true
+  if [ -n "$FORK_URL" ]; then
+    banner "HARNESS_ERROR (forge produced no parseable result — compile/setup error, no test ran, or the fork RPC was unreachable / could not instantiate the forked environment)"
+  else
+    banner "HARNESS_ERROR (forge produced no parseable result — compile/setup error or no test ran)"
+  fi
+  printf '%s\n' "$ERROUT" | grep -iE 'error|compil|panic|fork|rpc' | head -5 >&2 || true
   exit 2
 fi
 
-# No invariant matched the prefix -> nothing was actually fuzzed -> not a verdict.
+# FM1 (#1041) SAFETY: a fork/backend/setup error (forge reports the invariant as Failure with a setup/database/
+# RPC `reason` and no counterexample) means the forked state could NOT be served, so the invariant was never
+# genuinely fuzzed. That is HARNESS_ERROR — never a false FINDING/CLEAN. Checked BEFORE the FAILED>0 branch so a
+# fork that died mid-fuzz can never be mistaken for a reproduced exploit. This is the exact failure mode of a
+# non-archive / pruned RPC asked for a block outside its recent-state window.
+if [ "$SETUP_ERR" -gt 0 ] && [ "$FAILED" -eq 0 ]; then
+  banner "HARNESS_ERROR (${SETUP_ERR} invariant(s) failed at setup — fork/backend/RPC could not serve the forked state; nothing was actually checked, NOT a finding)"
+  printf '%s\n' "$ERROUT" | grep -iE 'historical state|not available|database error|forked environment|error sending request|rpc' | head -5 >&2 || true
+  exit 2
+fi
+
+# No invariant matched the prefix (or every match was a setup error) -> nothing was actually fuzzed -> not a
+# verdict.
 if [ "$RAN" -eq 0 ]; then
-  banner "HARNESS_ERROR (no invariant_* function matched '${MATCH}' — nothing was checked)"
+  if [ "$SETUP_ERR" -gt 0 ]; then
+    banner "HARNESS_ERROR (no invariant ran — ${SETUP_ERR} failed at setup, the fork/backend could not serve the forked state; nothing was checked)"
+  else
+    banner "HARNESS_ERROR (no invariant_* function matched '${MATCH}' — nothing was checked)"
+  fi
   exit 2
 fi
 
@@ -194,7 +300,7 @@ if [ "$FAILED" -gt 0 ]; then
   printf '%s\n' "$PARSE" | awk '
     /^SEQBEGIN=/ { sub(/^SEQBEGIN=/,""); print "-- broken invariant: " $0 " — shrunk exploit sequence:"; next }
     /^SEQEND$/   { next }
-    /^RAN=|^FAILED=/ { next }
+    /^RAN=|^FAILED=|^SETUP_ERR=/ { next }
     { print }
   ' >&2
   exit 1

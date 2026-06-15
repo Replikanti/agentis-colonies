@@ -97,6 +97,21 @@ let invMatch = match_prefix(getenv("INV_MATCH"));
 let fixturePath = getenv("HANDLER_FIXTURE");
 let code = cat_file(getenv("CODE_PATH"));
 
+// FM1 (#1041) — FORK MODE. When FORK_TARGET (and/or FORK_URL) is non-empty, the target is a LIVE DEPLOYED
+// contract at FORK_TARGET on a forked chain (run-invariant-hunt.sh threads --fork-url/--fork-block-number into
+// the gate). These env facts are UNTRUSTED operator input: FORK_TARGET / FORK_URL / FORK_BLOCK flow ONLY into
+// the LLM generation prompt (a plain string, never `exec sh`) and into the gate invocation where each is
+// shell_escape()d at the call site below — so no shell_escape is needed on the bare reads here.
+let forkUrl = getenv("FORK_URL");
+let forkBlock = getenv("FORK_BLOCK");
+let forkTarget = getenv("FORK_TARGET");
+fn fork_active(url: string, target: string) -> bool {
+    if len(url) > 0 { return true; }
+    if len(target) > 0 { return true; }
+    return false;
+}
+let forkMode = fork_active(forkUrl, forkTarget);
+
 // --- RECALL a prior winning invariant pattern (Int M3, #1037) ------------------------------------
 // Before GENERATE, recall the latest invariant pattern that produced a FINDING on THIS bug class from the
 // DAG pattern memory (the `invpat:latest:<class>` memo, mirroring recall-match.ag's recall_latest over the
@@ -141,9 +156,28 @@ fn recall_seed(klass: string, prior: string) -> string {
     return "A prior FINDING on bug class " + klass + " used this invariant pattern: " + prior
          + ". Adapt that invariant/handler shape to the current target.\n";
 }
-fn generate_test(klass: string, src: string, matchPrefix: string, prior: string) -> string {
+// FM1 (#1041) — FORK-MODE generation seed. When the target is a LIVE DEPLOYED contract on a forked chain, the
+// generator must drive the REAL deployed contract by ADDRESS (not deploy a fresh copy): a Handler that calls
+// its real functions with bounded inputs and FUNDED actors (`vm.deal`), plus a DEEP invariant checked against
+// the FORKED state (solvency / no-free-value-extraction / share-price monotonicity). Empty fork facts => "" so
+// the generation prompt is byte-identical to the no-fork build (purely additive). The address/url/block are
+// untrusted operator input but flow only into this plain-string prompt — never a shell.
+fn fork_seed(active: bool, target: string, url: string, block: string) -> string {
+    if !active { return ""; }
+    return "FORK MODE: the target is a LIVE DEPLOYED contract at address " + target
+         + " on a forked chain"
+         + (if len(url) > 0 { " (rpc " + url + (if len(block) > 0 { " @ block " + block } else { "" }) + ")" } else { "" })
+         + ". Do NOT deploy a fresh copy — interact with the deployed contract AT THAT ADDRESS so the handler "
+         + "and invariants run against the REAL on-chain state. Generate a Handler that drives the deployed "
+         + "contract's real functions with bounded inputs and FUNDED actors (use the cheatcode "
+         + "`vm.deal(address, amount)` at Vm address 0x7109709ECfa91a80626fF3989D68f67F5b1DD12D to fund the "
+         + "handler), plus a deep invariant checked against the forked state — solvency, no-free-value-"
+         + "extraction, or share-price monotonicity — that can only break under a SEQUENCE of calls.\n";
+}
+fn generate_test(klass: string, src: string, matchPrefix: string, prior: string, forkActive: bool, forkTarget: string, forkUrl: string, forkBlock: string) -> string {
     let instruction =
         recall_seed(klass, prior)
+      + fork_seed(forkActive, forkTarget, forkUrl, forkBlock)
       + "You are a stateful-invariant-fuzzing engineer. Write a self-contained Foundry stateful-invariant "
       + "test (Solidity, `pragma solidity ^0.8.20;`) for the target contract below so Foundry's invariant "
       + "fuzzer can drive randomized multi-call SEQUENCES through it and find a MULTI-STEP exploit. "
@@ -173,11 +207,11 @@ fn generate_test(klass: string, src: string, matchPrefix: string, prior: string)
 // Single-assignment .ag: pick the test source ONCE (no `let` reassignment). A non-empty HANDLER_FIXTURE wins
 // (offline/deterministic, verbatim, no LLM); otherwise the LLM generates it (live path).
 let usedFixture = len(fixture) > 0;
-fn choose_test(usedFix: bool, fix: string, klass: string, src: string, matchPrefix: string, prior: string) -> string {
+fn choose_test(usedFix: bool, fix: string, klass: string, src: string, matchPrefix: string, prior: string, forkActive: bool, forkTarget: string, forkUrl: string, forkBlock: string) -> string {
     if usedFix { return fix; }
-    return generate_test(klass, src, matchPrefix, prior);
+    return generate_test(klass, src, matchPrefix, prior, forkActive, forkTarget, forkUrl, forkBlock);
 }
-let test = choose_test(usedFixture, fixture, targetClass, code, invMatch, prior);
+let test = choose_test(usedFixture, fixture, targetClass, code, invMatch, prior, forkMode, forkTarget, forkUrl, forkBlock);
 
 // Write the generated/fixture test to INV_OUT (inside INV_REPO/test) so forge-invariant can run it. The test
 // content is UNTRUSTED — it is either an LLM completion (prompt-injectable by the untrusted target code under
@@ -201,8 +235,12 @@ fn opt_flag(flag: string, val: string) -> string {
     return " " + flag + " " + shell_escape(val);
 }
 let budget = opt_flag("--runs", runsArg) + opt_flag("--depth", depthArg) + opt_flag("--seed", seedArg);
+// FM1 (#1041): in FORK MODE, forward --fork-url [--fork-block] to the gate (each value shell_escape()d via
+// opt_flag, exactly like runs/depth/seed). Empty fork facts => "" => the gate command is byte-identical to the
+// no-fork build. A fork RPC failure becomes the gate's HARNESS_ERROR (exit 2), never a false verdict.
+let fork = opt_flag("--fork-url", forkUrl) + opt_flag("--fork-block", forkBlock);
 // colony-lint: safe-exec-concat
-let runOut = exec sh "set +e; sh " + shell_escape(gate) + " --repo " + shell_escape(invRepo) + " --target " + shell_escape(invOut) + " --match " + shell_escape(invMatch) + budget + " 2>&1; echo __rc=$?";
+let runOut = exec sh "set +e; sh " + shell_escape(gate) + " --repo " + shell_escape(invRepo) + " --target " + shell_escape(invOut) + " --match " + shell_escape(invMatch) + budget + fork + " 2>&1; echo __rc=$?";
 
 let rc = rc_of(runOut);
 let verdict = verdict_of(rc);
