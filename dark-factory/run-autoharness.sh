@@ -17,10 +17,13 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 WRAP="${LLM_WRAP:-$HERE/flat-cyborg-claude.sh}"
 SPEC="" ; ADDR="" ; CHAIN="1" ; INV="" ; RPC="" ; BLK="" ; REPAIRS=6 ; RUNS=400 ; OUT=""
+# nv: a value-taking flag must be followed by a value; under `set -u` a bare trailing flag would otherwise
+# crash on $2 (unbound) instead of the promised exit 2. $1 = remaining argc ($#), $2 = the flag name.
+nv() { [ "$1" -ge 2 ] || { echo "run-autoharness.sh: $2 requires a value" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do case "$1" in
-  --spec) SPEC="$2"; shift 2;; --address) ADDR="$2"; shift 2;; --chain) CHAIN="$2"; shift 2;;
-  --invariant) INV="$2"; shift 2;; --rpc) RPC="$2"; shift 2;; --block) BLK="$2"; shift 2;;
-  --repairs) REPAIRS="$2"; shift 2;; --runs) RUNS="$2"; shift 2;; --out) OUT="$2"; shift 2;;
+  --spec) nv "$#" "$1"; SPEC="$2"; shift 2;; --address) nv "$#" "$1"; ADDR="$2"; shift 2;; --chain) nv "$#" "$1"; CHAIN="$2"; shift 2;;
+  --invariant) nv "$#" "$1"; INV="$2"; shift 2;; --rpc) nv "$#" "$1"; RPC="$2"; shift 2;; --block) nv "$#" "$1"; BLK="$2"; shift 2;;
+  --repairs) nv "$#" "$1"; REPAIRS="$2"; shift 2;; --runs) nv "$#" "$1"; RUNS="$2"; shift 2;; --out) nv "$#" "$1"; OUT="$2"; shift 2;;
   -h|--help) sed -n '2,14p' "$0"; exit 0;; *) echo "run-autoharness.sh: unknown arg $1" >&2; exit 2;; esac; done
 [ -n "$RPC" ] && [ -n "$BLK" ] || { echo "run-autoharness.sh: --rpc and --block required" >&2; exit 2; }
 command -v forge >/dev/null || { echo "[SKIP] forge not installed" >&2; exit 0; }
@@ -33,7 +36,8 @@ if [ -z "$SPEC" ] && [ -n "$ADDR" ]; then
     || { echo "run-autoharness.sh: auto-recon failed for $ADDR" >&2; exit 1; }
   [ -s "$SPEC" ] || { echo "[SKIP] auto-recon produced no spec for $ADDR (not on Sourcify?); supply --spec" >&2; exit 0; }
 fi
-[ -f "$SPEC" ] || { echo "run-autoharness.sh: --spec <file> or --address <0x..> required" >&2; exit 2; }
+# -r (readable), not -f, so a piped spec works too — e.g. `recon-from-address.sh ... | run-autoharness --spec /dev/stdin`.
+[ -r "$SPEC" ] || { echo "run-autoharness.sh: --spec <file> or --address <0x..> required" >&2; exit 2; }
 printf '[profile.default]\ntest = "test"\nsolc = "0.8.24"\nevm_version = "cancun"\n' > "$WORK/foundry.toml"
 PROMPT="$WORK/prompt.txt"
 { echo "You are an autonomous smart-contract bug-hunting harness generator. Output ONLY a single Solidity file (no markdown, no prose): a forge-std-FREE Foundry test, contract name AutoHarness, pragma ^0.8.24. Use the cheatcode interface at 0x7109709ECfa91a80626fF3989D68f67F5b1DD12D (createSelectFork(string,uint256), envString, envUint, store, load). Fund the test contract by storage-slot scan + approve. Expose the protocol's primitive operations as fuzzable try/catch actions. Add a FUZZ test function testFuzz_hunt(uint256 seed) that derives a SEQUENCE of ops from the seed, executes them on the REAL forked protocol, then require()s the deep invariant. Fork via env ETH_RPC + the block below.";

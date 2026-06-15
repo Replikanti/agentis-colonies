@@ -13,10 +13,13 @@
 #   --out       : write the spec here (default: stdout, so it can be piped straight into --spec /dev/stdin).
 # Requires: python3 + outbound HTTPS to sourcify.dev. Exit 0 on success OR clean [SKIP]; exit 2 on bad args.
 set -u
+# nv: a value-taking flag must be followed by a value; under `set -u` a bare trailing flag would otherwise
+# crash on $2 (unbound) instead of the promised exit 2. $1 = remaining argc ($#), $2 = the flag name.
+nv() { [ "$1" -ge 2 ] || { echo "recon-from-address.sh: $2 requires a value" >&2; exit 2; }; }
 ADDR="" ; CHAIN="1" ; INV="" ; OUT=""
 while [ $# -gt 0 ]; do case "$1" in
-  --address) ADDR="$2"; shift 2;; --chain) CHAIN="$2"; shift 2;;
-  --invariant) INV="$2"; shift 2;; --out) OUT="$2"; shift 2;;
+  --address) nv "$#" "$1"; ADDR="$2"; shift 2;; --chain) nv "$#" "$1"; CHAIN="$2"; shift 2;;
+  --invariant) nv "$#" "$1"; INV="$2"; shift 2;; --out) nv "$#" "$1"; OUT="$2"; shift 2;;
   -h|--help) sed -n '2,13p' "$0"; exit 0;; *) echo "recon-from-address.sh: unknown arg $1" >&2; exit 2;; esac; done
 case "$ADDR" in 0x*) :;; *) echo "recon-from-address.sh: --address <0x..> required" >&2; exit 2;; esac
 command -v python3 >/dev/null || { echo "[SKIP] python3 not installed" >&2; exit 0; }
