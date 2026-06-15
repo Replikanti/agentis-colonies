@@ -42,21 +42,43 @@ printf '[profile.default]\ntest = "test"\nsolc = "0.8.24"\nevm_version = "cancun
 PROMPT="$WORK/prompt.txt"
 { echo "You are an autonomous smart-contract bug-hunting harness generator. Output ONLY a single Solidity file (no markdown, no prose): a forge-std-FREE Foundry test, contract name AutoHarness, pragma ^0.8.24. Use the cheatcode interface at 0x7109709ECfa91a80626fF3989D68f67F5b1DD12D (createSelectFork(string,uint256), envString, envUint, store, load). Fund the test contract by storage-slot scan + approve. Expose the protocol's primitive operations as fuzzable try/catch actions. Add a FUZZ test function testFuzz_hunt(uint256 seed) that derives a SEQUENCE of ops from the seed, executes them on the REAL forked protocol, then require()s the deep invariant. Fork via env ETH_RPC + the block below.";
   echo "=== TARGET RECON ==="; cat "$SPEC"; } > "$PROMPT"
+SOL="$WORK/test/AutoHarness.t.sol"
+# A REAL fork-fuzz harness — not a trivial compiling stub — must FORK the chain, expose a seed-derived FUZZ
+# function, and assert a deep invariant. A bare `test_sanity()` that asserts `1+1==2` compiles cleanly but
+# proves NOTHING, so the compile gate alone is not enough: a degenerate stub would otherwise yield a vacuous
+# "CLEAN" verdict. Require the three structural markers before accepting the harness; absent any, keep
+# repairing (and tell the LLM exactly what a real harness needs), then give up rather than hunt a stub.
+real_harness() {
+  grep -q 'createSelectFork' "$SOL" \
+    && grep -qE 'function +testFuzz[A-Za-z_]*\([^)]*uint256' "$SOL" \
+    && grep -q 'require(' "$SOL"
+}
 ATT=0
-"$WRAP" < "$PROMPT" 2>/dev/null | sed -e 's/```[a-zA-Z]*//g' | awk 'f||/\/\/ SPDX|pragma/{f=1; print}' > "$WORK/test/AutoHarness.t.sol"
+"$WRAP" < "$PROMPT" 2>/dev/null | sed -e 's/```[a-zA-Z]*//g' | awk 'f||/\/\/ SPDX|pragma/{f=1; print}' > "$SOL"
 while : ; do
   ERR="$( cd "$WORK" && forge build 2>&1 )"
-  # forge build trivially "succeeds" on an empty dir, so also require a real contract in the generated file
-  # (guards against a truncated/empty LLM response being mistaken for a clean compile).
-  if echo "$ERR" | grep -q 'Compiler run successful' && grep -q 'contract[[:space:]]\+AutoHarness' "$WORK/test/AutoHarness.t.sol"; then
-    echo "run-autoharness: harness COMPILES (attempt $ATT)"; break
+  # forge build trivially "succeeds" on an empty dir, so also require a real AutoHarness contract AND the
+  # fork-fuzz structure (real_harness) — a stub that compiles is rejected, not mistaken for a ready harness.
+  if echo "$ERR" | grep -q 'Compiler run successful' && grep -q 'contract[[:space:]]\+AutoHarness' "$SOL" && real_harness; then
+    echo "run-autoharness: real fork-fuzz harness COMPILES (attempt $ATT)"; break
   fi
-  ATT=$((ATT+1)); [ "$ATT" -gt "$REPAIRS" ] && { echo "run-autoharness: gave up after $REPAIRS repair attempts" >&2; exit 1; }
-  { echo "Fix the Solidity compile error(s). Output ONLY the corrected complete .sol (no markdown), contract AutoHarness, pragma ^0.8.24, forge-std-free.";
-    echo "--- ERRORS ---"; echo "$ERR" | grep -iE 'error|-->' | head -20; echo "--- FILE ---"; cat "$WORK/test/AutoHarness.t.sol"; } > "$WORK/repair.txt"
-  "$WRAP" < "$WORK/repair.txt" 2>/dev/null | sed -e 's/```[a-zA-Z]*//g' | awk 'f||/\/\/ SPDX|pragma/{f=1; print}' > "$WORK/test/AutoHarness.t.sol"
+  ATT=$((ATT+1)); [ "$ATT" -gt "$REPAIRS" ] && { echo "run-autoharness: gave up after $REPAIRS attempts — no real fork-fuzz harness (only a stub / non-compiling output)" >&2; exit 1; }
+  # Re-state the FULL structural requirement (not just 'fix the compile error') + the recon spec, so the LLM
+  # repairs toward a real fork-fuzz harness instead of degenerating into a trivial constant-asserting stub.
+  { echo "Your previous Solidity output is REJECTED. Output ONLY one complete .sol file (no markdown, no prose): contract AutoHarness, pragma ^0.8.24, forge-std-FREE. It MUST be a REAL fork-fuzz harness, NOT a sanity test:";
+    echo "  1. createSelectFork(envString(\"ETH_RPC\"), <FORK_BLOCK>) — fork the REAL chain at the block.";
+    echo "  2. Expose each TARGET state-changing op below as a try/catch action against the real deployed address.";
+    echo "  3. function testFuzz_hunt(uint256 seed): derive a SEQUENCE of those ops from seed, run them on the fork, then require() the deep solvency / no-free-value invariant.";
+    echo "  A test that only asserts constants (e.g. 1+1==2) or omits the fork / the fuzz fn / the require() is WRONG and will be rejected again.";
+    echo "--- COMPILE ERRORS (if any) ---"; echo "$ERR" | grep -iE 'error|-->' | head -20;
+    echo "--- TARGET RECON ---"; cat "$SPEC";
+    echo "--- YOUR REJECTED FILE ---"; cat "$SOL"; } > "$WORK/repair.txt"
+  "$WRAP" < "$WORK/repair.txt" 2>/dev/null | sed -e 's/```[a-zA-Z]*//g' | awk 'f||/\/\/ SPDX|pragma/{f=1; print}' > "$SOL"
 done
-FN="$(grep -oE 'function (testFuzz|test)[A-Za-z_]*' "$WORK/test/AutoHarness.t.sol" | head -1 | sed 's/function //')"
+# Prefer the seed-derived testFuzz_ function (the real hunt) over any plain test_ helper the harness may also
+# carry — real_harness() already guarantees a testFuzz fn exists, so this never falls back to a sanity test.
+FN="$(grep -oE 'function +testFuzz[A-Za-z_]*' "$SOL" | head -1 | sed 's/function *//')"
+[ -n "$FN" ] || FN="$(grep -oE 'function +test[A-Za-z_]*' "$SOL" | head -1 | sed 's/function *//')"
 [ -n "$FN" ] || { echo "run-autoharness: no test/testFuzz function in generated harness (empty/truncated LLM output?)" >&2; exit 1; }
 echo "run-autoharness: hunting via $FN (fork $RPC @ $BLK) ..."
 HUNT="$( cd "$WORK" && ETH_RPC="$RPC" FORK_BLK="$BLK" FOUNDRY_FUZZ_RUNS="$RUNS" forge test --mt "$FN" --fork-url "$RPC" --fork-block-number "$BLK" 2>&1 )"
