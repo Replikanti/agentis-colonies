@@ -95,7 +95,53 @@ fn match_prefix(raw: string) -> string {
 }
 let invMatch = match_prefix(getenv("INV_MATCH"));
 let fixturePath = getenv("HANDLER_FIXTURE");
-let code = cat_file(getenv("CODE_PATH"));
+let codePath = getenv("CODE_PATH");
+let code = cat_file(codePath);
+
+// #1070-B1 — drive the REAL target. The generated test is written to INV_OUT (under <repo>/test/...) and the
+// target source is CODE_PATH; the model needs the CORRECT relative import path so it can `import` and DEPLOY
+// the real contract instead of inlining a meaningless MOCK of it. Two facts feed the import directive:
+//   targetName  — the contract NAME the caller filed the target under (the `*.sol:Name` label in TARGET_FN,
+//                 the part after the `:`). Empty when only the FILE is known (no `:Name`) — then the
+//                 instruction tells the model to import the contract it sees DECLARED in the source below.
+//   relImport   — CODE_PATH made relative to dirname(INV_OUT), computed in the sandbox with
+//                 `realpath --relative-to` (both are absolute paths the colony staged into the rundir). Empty
+//                 when CODE_PATH is empty (no target source) -> the import-path line is skipped (today's path).
+// Both values are UNTRUSTED operator input; they flow ONLY into the plain-string generation prompt below,
+// never into a verdict and (relImport apart, which is read back from a shell_escape()d exec) never into a
+// shell as an unescaped concat.
+fn target_name(label: string) -> string {
+    let c = index_of(label, ":");
+    if c < 0 { return ""; }
+    return substring(label, c + 1, len(label));
+}
+let targetName = target_name(targetFn);
+// The NAME used in the DEPLOY guidance template. When the caller's label carries no `:Name` we fall back to
+// the `<Target>` placeholder so the `new <Target>(args)` / proxy-deploy template stays readable (the model
+// substitutes the declared contract name it reads from the source below).
+fn deploy_name(name: string) -> string {
+    if len(name) == 0 { return "<Target>"; }
+    return name;
+}
+let deployName = deploy_name(targetName);
+fn rel_import_path(out: string, src: string) -> string {
+    if len(src) == 0 { return ""; }
+    if len(out) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "realpath --relative-to \"$(dirname " + shell_escape(out) + ")\" " + shell_escape(src) + " 2>/dev/null | tr -d '\\n' || true";
+}
+let relImport = rel_import_path(invOut, codePath);
+// The import-path injection line the model reads. When the NAME is known we name it explicitly; when only the
+// file is known we point the model at the contract it sees DECLARED in the source. Empty when there is no
+// target source to import (relImport == "") -> today's behaviour (no import-path line).
+fn import_line(name: string, rel: string) -> string {
+    if len(rel) == 0 { return ""; }
+    if len(name) > 0 {
+        return "  - Import the target with: import {" + name + "} from \"" + rel + "\";\n";
+    }
+    return "  - Import the target from \"" + rel + "\" — import the contract you see DECLARED in the source below.\n";
+}
+let importLine = import_line(targetName, relImport);
 
 // FM1 (#1041) — FORK MODE. When FORK_TARGET (and/or FORK_URL) is non-empty, the target is a LIVE DEPLOYED
 // contract at FORK_TARGET on a forked chain (run-invariant-hunt.sh threads --fork-url/--fork-block-number into
@@ -221,7 +267,7 @@ fn compose_seed(active: bool, ctx: string) -> string {
          + "manipulate-price-on-dex -> extract-from-target -> restore -> repay SEQUENCE that single-contract "
          + "fuzzing cannot reach.\n";
 }
-fn generate_test(klass: string, src: string, matchPrefix: string, prior: string, forkActive: bool, forkTarget: string, forkUrl: string, forkBlock: string, composeActive: bool, forkContext: string) -> string {
+fn generate_test(klass: string, src: string, matchPrefix: string, prior: string, forkActive: bool, forkTarget: string, forkUrl: string, forkBlock: string, composeActive: bool, forkContext: string, deployName: string, importLine: string) -> string {
     let instruction =
         recall_seed(klass, prior)
       + fork_seed(forkActive, forkTarget, forkUrl, forkBlock)
@@ -230,8 +276,18 @@ fn generate_test(klass: string, src: string, matchPrefix: string, prior: string,
       + "test (Solidity, `pragma solidity ^0.8.20;`) for the target contract below so Foundry's invariant "
       + "fuzzer can drive randomized multi-call SEQUENCES through it and find a MULTI-STEP exploit. "
       + "Requirements:\n"
-      + "  - Import the target from `../src/...` if the project ships it there; otherwise inline a minimal "
-      + "copy. Do NOT import forge-std — this test must compile with ZERO library remappings.\n"
+      + "  - IMPORT and DEPLOY the REAL target contract under test (the contract whose source is shown below) "
+      + "— do NOT inline a mock copy of it. A minimal mock of an EXTERNAL dependency it needs (e.g. an ERC20 "
+      + "asset/token, an oracle) is fine, but the unit under test MUST be the real imported contract, so the "
+      + "verdict is about real code. Do NOT import forge-std — this test must compile with ZERO library "
+      + "remappings.\n"
+      + importLine
+      + "  - In `setUp()` deploy the real target. For a normal `constructor(args)`: `new " + deployName + "(args)`. "
+      + "For an OpenZeppelin **upgradeable** contract whose constructor calls `_disableInitializers()`: deploy "
+      + "behind a proxy — add `import {ERC1967Proxy} from \"@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol\";` "
+      + "and `" + deployName + " t = " + deployName + "(address(new ERC1967Proxy(address(new " + deployName
+      + "()), abi.encodeCall(" + deployName + ".initialize, (<args>)))));`. Read the target's "
+      + "constructor/initializer signature from the source below to wire the arguments correctly.\n"
       + "  - A `Handler` contract whose PUBLIC functions are the protocol's actions as a real attacker/user "
       + "would call them (deposit, withdraw, donate, borrow, ...), each taking fuzzed `uint` inputs you BOUND "
       + "to realistic ranges with a private `_bound(x, lo, hi)` helper (NO forge-std `bound`). Track the "
@@ -246,7 +302,8 @@ fn generate_test(klass: string, src: string, matchPrefix: string, prior: string,
       + "share-price monotonicity for a vault lens), do NOT enumerate every property. Expose in the Handler "
       + "ONLY the core state-changing actions needed to exercise THAT one invariant — not every protocol action. "
       + "The invariant must catch a bug that only a SEQUENCE of calls can produce, not a single call. "
-      + "Keep the entire test under ~120 lines; do not exceed it.\n\n"
+      + "Keep the entire test under ~120 lines; do not exceed it — the real-deploy `setUp()` counts toward "
+      + "that budget, so keep the import/deploy minimal and stay bounded.\n\n"
       + "=== BUG CLASS (lens) ===\n" + klass + "\n\n"
       + "=== HOW TO ANSWER ===\n"
       + "Output ONLY the Solidity source of the `*.t.sol` test — no markdown fences, no prose before or "
@@ -258,11 +315,11 @@ fn generate_test(klass: string, src: string, matchPrefix: string, prior: string,
 // Single-assignment .ag: pick the test source ONCE (no `let` reassignment). A non-empty HANDLER_FIXTURE wins
 // (offline/deterministic, verbatim, no LLM); otherwise the LLM generates it (live path).
 let usedFixture = len(fixture) > 0;
-fn choose_test(usedFix: bool, fix: string, klass: string, src: string, matchPrefix: string, prior: string, forkActive: bool, forkTarget: string, forkUrl: string, forkBlock: string, composeActive: bool, forkContext: string) -> string {
+fn choose_test(usedFix: bool, fix: string, klass: string, src: string, matchPrefix: string, prior: string, forkActive: bool, forkTarget: string, forkUrl: string, forkBlock: string, composeActive: bool, forkContext: string, deployName: string, importLine: string) -> string {
     if usedFix { return fix; }
-    return generate_test(klass, src, matchPrefix, prior, forkActive, forkTarget, forkUrl, forkBlock, composeActive, forkContext);
+    return generate_test(klass, src, matchPrefix, prior, forkActive, forkTarget, forkUrl, forkBlock, composeActive, forkContext, deployName, importLine);
 }
-let test = choose_test(usedFixture, fixture, targetClass, code, invMatch, prior, forkMode, forkTarget, forkUrl, forkBlock, composableMode, forkContext);
+let test = choose_test(usedFixture, fixture, targetClass, code, invMatch, prior, forkMode, forkTarget, forkUrl, forkBlock, composableMode, forkContext, deployName, importLine);
 
 // Write the generated/fixture test to INV_OUT (inside INV_REPO/test) so forge-invariant can run it. The test
 // content is UNTRUSTED — it is either an LLM completion (prompt-injectable by the untrusted target code under
