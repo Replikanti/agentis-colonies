@@ -86,6 +86,13 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   (comment-only, no behavior change).
 
 ### Fixed
+- **`forge-invariant.sh` degraded a self-contained harness to HARNESS_ERROR when the TARGET project's own
+  tests don't compile** (#1069). `forge test` compiles the whole project, so a real-world target whose own
+  `*.t.sol` fail under our forge/solc (e.g. a `view` function the compiler now rejects as state-modifying —
+  solc drift) blocked even a fully self-contained generated harness, producing a non-verdict for a reason
+  unrelated to our harness or the target's source. The gate now `--skip`s every other `*.sol` under the
+  target's `test/` dir from compilation, keeping only the harness + `src`; targets whose tests compile
+  cleanly are unaffected. Regression guard: `tools/test-forge-invariant-harness-isolation.sh`.
 - **`invariant-prover.ag` `generate_test()` degraded to HARNESS_ERROR on realistically-sized targets**
   (#1067). The live-generation ask asked the model, in ONE completion, for a full `Handler` + abstract
   `InvBase` + a test contract asserting FIVE deep invariants (value-conservation, no-depositor-loss,

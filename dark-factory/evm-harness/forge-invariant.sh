@@ -109,7 +109,27 @@ echo "== forge-invariant: stateful-fuzzing $(basename "$TARGET_PATH") (invariant
 # invariant_* functions. A finite seed makes the run reproducible (the demo pins it). forge has no CLI flag
 # for invariant runs/depth — those are tuned via the FOUNDRY_INVARIANT_RUNS / FOUNDRY_INVARIANT_DEPTH env
 # vars (exported below), which override the project's [invariant] config; left to it when unset.
-ARGS=(test --match-path "$TARGET_PATH" --match-test "$MATCH" --json)
+# HARNESS ISOLATION (#1069): `forge test` compiles the WHOLE project, including the target's OWN
+# `*.t.sol` files. A real-world target whose own tests do not compile under our forge/solc (e.g. a
+# function declared `view` that the compiler now rejects as state-modifying — solc drift in the
+# target's tests) would block even a fully self-contained generated harness, degrading a real run to
+# HARNESS_ERROR for a reason unrelated to our harness or the target's source. So we --skip every OTHER
+# `*.sol` under the target's test dir from COMPILATION, keeping only this harness + `src`. The harness
+# is self-contained by construction, so this is sound. (forge --skip is Rust-regex with no lookahead,
+# hence enumerate-and-skip-each rather than one "all-but-harness" pattern; each path is its own array
+# element so no value can mangle a flag.) Targets whose tests compile cleanly are unaffected — skipping
+# files that would have compiled is a no-op for this single-harness run.
+SKIP_ARGS=()
+_harness_abs="$(cd "$(dirname "$TARGET_PATH")" 2>/dev/null && pwd)/$(basename "$TARGET_PATH")"
+if [ -d "$REPO/test" ]; then
+  while IFS= read -r _tf; do
+    [ -n "$_tf" ] || continue
+    [ "$(cd "$(dirname "$_tf")" && pwd)/$(basename "$_tf")" = "$_harness_abs" ] && continue
+    SKIP_ARGS+=(--skip "${_tf#"$REPO"/}")
+  done < <(find "$REPO/test" -type f -name '*.sol' 2>/dev/null)
+fi
+
+ARGS=(test --match-path "$TARGET_PATH" --match-test "$MATCH" --json "${SKIP_ARGS[@]}")
 [ -n "$SEED" ] && ARGS+=(--fuzz-seed "$SEED")
 [ -n "$RUNS" ]  && export FOUNDRY_INVARIANT_RUNS="$RUNS"
 [ -n "$DEPTH" ] && export FOUNDRY_INVARIANT_DEPTH="$DEPTH"
