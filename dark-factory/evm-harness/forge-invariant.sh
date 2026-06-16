@@ -129,7 +129,10 @@ if [ -d "$REPO/test" ]; then
   done < <(find "$REPO/test" -type f -name '*.sol' 2>/dev/null)
 fi
 
-ARGS=(test --match-path "$TARGET_PATH" --match-test "$MATCH" --json "${SKIP_ARGS[@]}")
+# `${SKIP_ARGS[@]+"..."}` (not a bare `"${SKIP_ARGS[@]}"`): under `set -u`, expanding an EMPTY array
+# the bare way is an unbound-variable error on bash < 4.4 (stock macOS bash 3.2) — a target with no
+# OTHER test files leaves SKIP_ARGS empty. The `+` alternate form expands to nothing when empty, safely.
+ARGS=(test --match-path "$TARGET_PATH" --match-test "$MATCH" --json ${SKIP_ARGS[@]+"${SKIP_ARGS[@]}"})
 [ -n "$SEED" ] && ARGS+=(--fuzz-seed "$SEED")
 [ -n "$RUNS" ]  && export FOUNDRY_INVARIANT_RUNS="$RUNS"
 [ -n "$DEPTH" ] && export FOUNDRY_INVARIANT_DEPTH="$DEPTH"
