@@ -160,11 +160,16 @@ if len(prior) > 0 {
 let fixture = cat_file(fixturePath);
 
 // Live path: the LLM is the HYPOTHESIS GENERATOR. It reads the target contract source and writes a
-// self-contained Foundry stateful-invariant test — a `Handler` that exposes the protocol's actions as
-// BOUNDED actor functions + a set of DEEP `invariant_*` properties (value-conservation, no-depositor-loss,
-// solvency-under-any-sequence, no-free-value-extraction, share-price-monotonicity). The verdict is STILL the
-// FUZZER's (below); the LLM only writes the handler + the properties to check. Cold path, one target in / one
-// test out (no per-tick staleness to gate) -> the prompt carries an explicit prompt-gate-ok marker.
+// self-contained Foundry stateful-invariant test — a MINIMAL `Handler` that exposes only the core
+// state-changing actions as BOUNDED actor functions + EXACTLY ONE deep `invariant_*` property: the single
+// highest-value invariant for the current bug-class lens (e.g. solvency/collateralization for an accounting
+// lens, share-price monotonicity for a vault lens). The ask is bounded (one focused invariant, a minimal
+// handler, ~120 lines) so the generation returns reliably and compiles instead of degrading to a
+// HARNESS_ERROR on a too-large single completion (#1067). BREADTH comes from running the prover across
+// MULTIPLE lenses — one focused invariant per run — not from one mega-test enumerating every property. The
+// verdict is STILL the FUZZER's (below); the LLM only writes the handler + the one property to check. Cold
+// path, one target in / one test out (no per-tick staleness to gate) -> the prompt carries an explicit
+// prompt-gate-ok marker.
 // Int M3 (#1037): fold a recalled prior pattern into the generation seed. When `prior` is non-empty (a prior
 // FINDING on this class, or an invented class hint), prepend a line steering the LLM to adapt that proven
 // invariant/handler shape to the current target. Empty `prior` => the instruction is byte-identical to M2.
@@ -235,10 +240,13 @@ fn generate_test(klass: string, src: string, matchPrefix: string, prior: string,
       + "(address[] memory)` returning the addresses to fuzz, with an internal `_target(address)` that pushes "
       + "to that array (this is the StdInvariant ABI Foundry auto-discovers — no forge-std needed).\n"
       + "  - A test contract `is InvBase` with a `setUp()` that deploys the protocol + the Handler and calls "
-      + "`_target(address(handler))`, plus a set of DEEP `" + matchPrefix + "_*` view functions asserting with "
-      + "plain `require(...)`: value-conservation, no-depositor-loss (a depositor's claim >= their deposit "
-      + "minus dust), solvency-under-any-sequence, no-free-value-extraction, share-price-monotonicity. Each "
-      + "must catch a bug that only a SEQUENCE of calls can produce, not a single call.\n\n"
+      + "`_target(address(handler))`, plus EXACTLY ONE deep `" + matchPrefix + "_*` view function asserting with "
+      + "plain `require(...)` the SINGLE highest-value property for the bug-class lens below — pick the one "
+      + "invariant most relevant to that lens (e.g. solvency / collateralization for an accounting lens, "
+      + "share-price monotonicity for a vault lens), do NOT enumerate every property. Expose in the Handler "
+      + "ONLY the core state-changing actions needed to exercise THAT one invariant — not every protocol action. "
+      + "The invariant must catch a bug that only a SEQUENCE of calls can produce, not a single call. "
+      + "Keep the entire test under ~120 lines; do not exceed it.\n\n"
       + "=== BUG CLASS (lens) ===\n" + klass + "\n\n"
       + "=== HOW TO ANSWER ===\n"
       + "Output ONLY the Solidity source of the `*.t.sol` test — no markdown fences, no prose before or "

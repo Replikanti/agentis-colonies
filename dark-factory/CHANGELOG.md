@@ -85,6 +85,22 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   invariant-hunt/auto-harness divergence flagged in #1049 is by design, not a bug. Resolves #1049
   (comment-only, no behavior change).
 
+### Fixed
+- **`invariant-prover.ag` `generate_test()` degraded to HARNESS_ERROR on realistically-sized targets**
+  (#1067). The live-generation ask asked the model, in ONE completion, for a full `Handler` + abstract
+  `InvBase` + a test contract asserting FIVE deep invariants (value-conservation, no-depositor-loss,
+  solvency-under-any-sequence, no-free-value-extraction, share-price-monotonicity). On a real contract that
+  single generation is too large to return within the LLM timeout, so the engine produced no verdict
+  (HARNESS_ERROR). The ask is now **bounded**: EXACTLY ONE deep invariant — the single highest-value property
+  for the current bug-class lens (e.g. solvency/collateralization for an accounting lens, share-price
+  monotonicity for a vault lens) — plus a MINIMAL handler exposing only the actions needed to exercise that
+  one invariant, under an explicit `~120-line` size budget, so the generation returns reliably and compiles.
+  Breadth now comes from running the prover across MULTIPLE lenses (one focused invariant per run), not one
+  mega-test. All hard constraints are unchanged (`pragma solidity ^0.8.20;`, no forge-std import, the
+  StdInvariant `targetContracts()` ABI, plain `require(...)`, the `<matchPrefix>_*` naming, output-only
+  Solidity), and the FM1/FM2 fork/compose seeds stay byte-identical when inactive.
+  `tools/test-invariant-prover-bounded-gen.sh` pins the bounded ask (no LLM; grep over the `.ag` source).
+
 ## [0.2.0] — 2026-06-15
 
 ### Added
