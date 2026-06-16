@@ -229,6 +229,82 @@ RUN="$OUT/run"
 rm -rf "$RUN"; mkdir -p "$RUN"
 cp "$PROVER" "$RUN/invariant-prover.ag"
 cp "$GATE" "$RUN/forge-invariant.sh"
+
+# #1079: SLIM a Solidity source before it is staged into the rundir as the prover's CODE_PATH / aux source.
+# The generation prompt embeds the FULL source of the target (and, in composable-fresh mode, of every aux),
+# so a cross-contract pair was ~90 KB of Solidity per gen call and hung flat-cyborg->claude on a SINGLE call
+# past the per-run timeout (all cross-contract coverage lost). The OUTPUT ask is already bounded (#1067); this
+# slims the INPUT. We drop only NOISE the model does not need — comments, imports, pragmas, blank-line runs —
+# and KEEP every line of real callable surface + logic (the `contract` decl, state vars, function signatures
+# AND bodies, structs/enums/events/errors). A reasonable target is roughly halving heavily-NatSpec'd sources.
+#
+# Portable awk (no GNU-only features) implementing, in ONE pass with a block-comment state machine:
+#   * `/* ... */` block comments INCLUDING multi-line NatSpec `/** ... */` (the state machine spans lines; a
+#     naive sed cannot do this robustly). A block opened and closed on one line is removed too.
+#   * full-line `//` / `///` line comments (after leading whitespace) -> the whole line is dropped.
+#   * trailing `// ...` on a code line -> stripped ONLY when the line carries no quote (`"` or `'`) before it,
+#     so a `//` inside a string literal is NEVER corrupted (conservative; correctness over maximal slimming).
+#   * `import ...;` and `pragma ...;` statement lines (after leading whitespace) -> dropped.
+#   * runs of blank lines squeezed to a single blank line.
+# Real code lines are emitted verbatim. The whole transform writes to a temp file; if it somehow EMPTIES the
+# source (pathological input), we fall back to a flat copy of the original so CODE_PATH is never empty/truncated.
+slim_sol_source() {  # $1 = src .sol path, $2 = dest staged path
+  _slim_src="$1"; _slim_dst="$2"
+  awk '
+    BEGIN { inblock = 0; blank = 0 }
+    {
+      line = $0
+      out = ""
+      i = 1
+      n = length(line)
+      # --- block-comment state machine (handles /* */, /** */, multi-line) ---
+      while (i <= n) {
+        if (inblock) {
+          # inside a block comment: look for the closing */
+          p = index(substr(line, i), "*/")
+          if (p == 0) { i = n + 1 }          # no close on this line -> consume the rest
+          else { i = i + p + 1; inblock = 0 } # skip past the */ and resume scanning
+          continue
+        }
+        c = substr(line, i, 1)
+        # opening of a // line comment: only honour it if no quote precedes it on the kept part so far
+        # (conservative: a // inside a string literal is left alone -> the whole line is kept verbatim).
+        if (c == "/" && substr(line, i + 1, 1) == "/") {
+          if (index(out, "\"") == 0 && index(out, "\x27") == 0) { i = n + 1; continue }
+          else { out = out substr(line, i); i = n + 1; continue }
+        }
+        # opening of a /* block comment (covers /** NatSpec)
+        if (c == "/" && substr(line, i + 1, 1) == "*") {
+          inblock = 1; i = i + 2; continue
+        }
+        out = out c
+        i = i + 1
+      }
+      # strip trailing whitespace left by a removed trailing comment
+      sub(/[ \t]+$/, "", out)
+      # drop import/pragma statement lines (after any leading whitespace)
+      tmp = out
+      sub(/^[ \t]+/, "", tmp)
+      if (tmp ~ /^import[ \t(]/ || tmp ~ /^pragma[ \t]/) { next }
+      # squeeze runs of blank lines to one
+      if (out ~ /^[ \t]*$/) {
+        if (blank) { next }
+        blank = 1
+        print ""
+        next
+      }
+      blank = 0
+      print out
+    }
+  ' "$_slim_src" > "$_slim_dst" 2>/dev/null || true
+  # Empty-output guard: never ship an empty CODE_PATH. A truly empty file, OR one with no non-whitespace
+  # content (e.g. a pathological all-comments/all-import source that slimmed down to only blank lines), falls
+  # back to the original verbatim so the prover always reads a real, complete source.
+  if [ ! -s "$_slim_dst" ] || ! grep -q '[^[:space:]]' "$_slim_dst" 2>/dev/null; then
+    cp "$_slim_src" "$_slim_dst"
+  fi
+}
+
 # Stage a fresh copy of the foundry project into the rundir so the sandboxed exec sh can write the test into
 # its test/ dir and run forge there (it cannot reach a $HOME-rooted --repo). Drop any pre-existing *.t.sol so
 # the generated test is the ONLY one the fuzzer scopes to.
@@ -245,7 +321,9 @@ if [ -n "$FIXTURE" ]; then
 fi
 CODE_IN_RUN=""
 if [ -n "$CODE" ]; then
-  cp "$CODE" "$RUN/target-code.sol"
+  # #1079: SLIM the target source on its way into the rundir (instead of a flat copy) so the generation prompt
+  # embeds a smaller, comment/import-free source — the gen call no longer hangs on a ~90 KB single completion.
+  slim_sol_source "$CODE" "$RUN/target-code.sol"
   CODE_IN_RUN="$RUN/target-code.sol"
 fi
 
@@ -260,7 +338,9 @@ _aux_idx=0
 for entry in ${AUX_ABS_SPECS+"${AUX_ABS_SPECS[@]}"}; do
   _aabs="${entry%:*}"; _aname="${entry##*:}"
   _aux_in_run="$RUN/aux-code-${_aux_idx}.sol"
-  cp "$_aabs" "$_aux_in_run"
+  # #1079: SLIM each aux source too — a cross-contract PAIR (two full sources in one prompt) was the worst
+  # offender for the gen-call timeout, so the aux staging goes through the same slimmer as the target.
+  slim_sol_source "$_aabs" "$_aux_in_run"
   if [ -z "$INV_AUX" ]; then INV_AUX="$_aux_in_run:$_aname"; else INV_AUX="$INV_AUX@@A@@$_aux_in_run:$_aname"; fi
   _aux_idx=$((_aux_idx + 1))
 done
