@@ -58,6 +58,13 @@
 #                        Absent any role beyond `target` => FM1 behaviour byte-identical. Optional; "" leaves it
 #                        to the test. A --fork-target does NOT require --fork-url (the context contracts may be
 #                        deployed locally by the test — composability is orthogonal to fork; the two COMPOSE).
+#   --repair-rounds N    #1073: number of EXTRA bounded compile-repair rounds the prover runs when its FIRST
+#                        LLM-generated test does NOT compile / matches no invariant (a HARNESS_ERROR on the LLM
+#                        path). On each round the prover feeds forge's compiler error back to the model and
+#                        regenerates, then re-runs the gate; it STOPS the moment the gate returns a verdict
+#                        (FINDING/CLEAN). Default 2 (so <=3 total attempts). 0 disables repair (one shot). The
+#                        verbatim HANDLER_FIXTURE path is NEVER repaired. Exported to the prover as
+#                        INV_REPAIR_ROUNDS; omitted => the prover's own default (2) applies.
 #   --out <dir>          Output dir for the run + report (default: ./invariant-out).
 #   --pattern-store <dir>  Int M3 (#1037): a PERSISTENT pattern-DAG store reused ACROSS runs. When set, the
 #                        winning-invariant patterns the prover PERSISTS on a FINDING (`invpat:*` memos) are
@@ -73,6 +80,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
 REPO="" ; TARGET="" ; CLASS="" ; FIXTURE="" ; CODE="" ; MATCH="invariant"
 BACKEND="flat-cyborg" ; MODEL="" ; RUNS="" ; DEPTH="" ; SEED="" ; OUT="$PWD/invariant-out" ; PATTERN_STORE=""
+REPAIR_ROUNDS=""  # #1073: extra compile-repair rounds; "" => the prover's own default (2)
 FORK_URL="" ; FORK_BLOCK="" ; FORK_TARGET=""
 # FM2 (#1041): the composability context set — one `--fork-target '<role>=<addr>'` per array slot. A bare
 # `--fork-target <addr>` (FM1 shorthand, no '=') is normalised to a `target=<addr>` slot below.
@@ -92,6 +100,7 @@ while [ $# -gt 0 ]; do
     --runs) need "$#"; RUNS="$2"; shift 2 ;;
     --depth) need "$#"; DEPTH="$2"; shift 2 ;;
     --seed) need "$#"; SEED="$2"; shift 2 ;;
+    --repair-rounds) need "$#"; REPAIR_ROUNDS="$2"; shift 2 ;;
     --fork-url) need "$#"; FORK_URL="$2"; shift 2 ;;
     --fork-block) need "$#"; FORK_BLOCK="$2"; shift 2 ;;
     --fork-target) need "$#"; FORK_TARGET_SPECS+=("$2"); shift 2 ;;
@@ -110,6 +119,9 @@ done
 for v in "$RUNS" "$DEPTH" "$SEED"; do
   case "$v" in '') ;; *[!0-9]*) echo "run-invariant-hunt.sh: --runs/--depth/--seed must be whole numbers" >&2; exit 2 ;; esac
 done
+# #1073: --repair-rounds must be a whole number when set (a non-numeric value would silently fall back to the
+# prover's default; reject it here so an operator typo surfaces).
+case "$REPAIR_ROUNDS" in '') ;; *[!0-9]*) echo "run-invariant-hunt.sh: --repair-rounds must be a whole number" >&2; exit 2 ;; esac
 # FM1 (#1041): fork-arg shape validation (mirrors the gate's). --fork-url must look like an http(s) URL,
 # --fork-block a whole number requiring --fork-url.
 case "$FORK_URL" in
@@ -211,7 +223,7 @@ fi
   # FM1 (#1041): FORK_URL/FORK_BLOCK thread the fork into the gate; FORK_TARGET is the deployed address the
   # generated handler/invariant references against the forked state. FM2 (#1041): FORK_CONTEXT carries the
   # role->address context set so the generation prompt can compose calls across the deployed protocols.
-  echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_MATCH,HANDLER_FIXTURE,CODE_PATH,INV_RUNS,INV_DEPTH,INV_SEED,FORGE_INVARIANT,FORK_URL,FORK_BLOCK,FORK_TARGET,FORK_CONTEXT"
+  echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_MATCH,HANDLER_FIXTURE,CODE_PATH,INV_RUNS,INV_DEPTH,INV_SEED,FORGE_INVARIANT,FORK_URL,FORK_BLOCK,FORK_TARGET,FORK_CONTEXT,INV_REPAIR_ROUNDS"
   # A forge invariant run (build + a few hundred fuzzed sequences) far exceeds the 10s default.
   echo "exec.default_timeout_ms = 600000"
   # Each verify is recorded as experience; invariant-prover fitness reweights over targets.
@@ -265,6 +277,7 @@ echo "run-invariant-hunt.sh: generating + stateful-fuzzing $TARGET ($CLASS) ..."
     INV_RUNS="$RUNS" \
     INV_DEPTH="$DEPTH" \
     INV_SEED="$SEED" \
+    INV_REPAIR_ROUNDS="$REPAIR_ROUNDS" \
     FORK_URL="$FORK_URL" \
     FORK_BLOCK="$FORK_BLOCK" \
     FORK_TARGET="$FORK_TARGET" \
