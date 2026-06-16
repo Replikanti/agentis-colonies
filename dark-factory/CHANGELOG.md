@@ -14,6 +14,24 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+- **invariant-prover drives the REAL target, not a mock** (#1070-B1, epic #1041). The live-path generation
+  instruction in `auditor/agents/invariant-prover.ag` (`generate_test()`) used to tell the model: import the
+  target "if the project ships it there; otherwise inline a minimal copy." On a realistically-sized target the
+  model frequently inlined a MOCK of the unit under test and fuzzed the mock, so the FUZZER's verdict was about
+  fake code, not the real contract. The bullet is now a STRONG real-target directive — IMPORT and DEPLOY the
+  REAL contract under test; a minimal mock of an EXTERNAL dependency (an ERC20 asset, an oracle) is fine, but
+  the unit under test MUST be the real imported contract — plus `setUp()` deploy guidance for both a normal
+  `constructor(args)` and an OpenZeppelin **upgradeable** contract (an `ERC1967Proxy` +
+  `abi.encodeCall(<Target>.initialize, ...)` recipe for the `_disableInitializers()` case). The agent also
+  computes the exact relative import path (`CODE_PATH` relative to `dirname(INV_OUT)` via
+  `realpath --relative-to`) and injects it as an `import {<Name>} from "<RELPATH>";` line so the model wires
+  the import correctly; when no target source is supplied the import-path line is skipped (today's behaviour).
+  The #1067 bounding is preserved unchanged — EXACTLY ONE lens-driven invariant + a minimal handler under the
+  `~120-line` budget (the real-deploy `setUp()` now counts toward that budget). A new deterministic guard,
+  `tools/test-invariant-prover-real-target.sh`, pins the real-target directive + the proxy recipe + the
+  import-path injection (grep over the `.ag`, no LLM). The compile-repair loop is a separate follow-up.
+
 ### Added
 - `submit-triage.sh` — the **human-gated submission triage** layer (#1056, epic #1053). Scans a staging
   root for the verified-FINDING packages `run-audit.sh` / `run-batch.sh` drop under
