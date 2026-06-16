@@ -31,6 +31,25 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   `~120-line` budget (the real-deploy `setUp()` now counts toward that budget). A new deterministic guard,
   `tools/test-invariant-prover-real-target.sh`, pins the real-target directive + the proxy recipe + the
   import-path injection (grep over the `.ag`, no LLM). The compile-repair loop is a separate follow-up.
+- **invariant-prover bounded compile-repair loop** (#1073, epic #1041). With #1069 harness-isolation, a
+  `HARNESS_ERROR` (forge exit code not in {0,1}) on the **LLM-generated** path means OUR generated handler
+  failed to compile / matched no `invariant_*` — a recoverable fault, not the target's other tests. The prover
+  used to do ONE shot (generate → write to `INV_OUT` → run `forge-invariant.sh` → map the exit code to a
+  verdict), so a single bad first generation wasted the whole run. `auditor/agents/invariant-prover.ag` now
+  runs a BOUNDED compile-repair loop: on a `HARNESS_ERROR` it extracts a capped compiler-error excerpt from
+  forge's output, feeds it back to the model with the prior test source (a `repair_instruction()` reasserting
+  the same hard constraints — `pragma ^0.8.20`, no forge-std, `targetContracts()`, plain `require()`,
+  `<matchPrefix>_*` naming, import+deploy the REAL target, output-only), writes the repaired source through the
+  SAME `shell_escape()`d `printf` mechanism (never a heredoc — the test is untrusted), and re-runs the gate.
+  The loop is a bounded recursion (single-assignment `.ag` has no `while`/`for`) carrying the
+  `(stopped, testSrc, runOut)` state, with the round count from `getenv("INV_REPAIR_ROUNDS")` (default **2** —
+  so ≤3 total attempts — on unset/empty/non-numeric; `0` disables repair = today's one-shot). It STOPS the
+  moment the gate returns a real verdict (`FINDING`/`CLEAN`), and the verbatim `HANDLER_FIXTURE` path is NEVER
+  LLM-repaired (the fold is seeded already-stopped when `usedFixture`). The FINAL emitted verdict, the
+  `learn()`/experience outcome, and the `INVARIANT|<file:fn>|<token>` line stay the gate's exit code on the
+  LAST attempt — never the LLM's opinion (unchanged contract). `run-invariant-hunt.sh` gains a
+  `--repair-rounds N` flag that threads `INV_REPAIR_ROUNDS` through. A new deterministic guard,
+  `tools/test-invariant-prover-repair-loop.sh`, pins the loop (grep over the `.ag`, no LLM/forge).
 
 ### Added
 - `submit-triage.sh` — the **human-gated submission triage** layer (#1056, epic #1053). Scans a staging

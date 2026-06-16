@@ -312,8 +312,9 @@ fn generate_test(klass: string, src: string, matchPrefix: string, prior: string,
     return prompt(instruction, src) -> string;
 }
 
-// Single-assignment .ag: pick the test source ONCE (no `let` reassignment). A non-empty HANDLER_FIXTURE wins
-// (offline/deterministic, verbatim, no LLM); otherwise the LLM generates it (live path).
+// Single-assignment .ag: pick the FIRST test source ONCE (no `let` reassignment). A non-empty HANDLER_FIXTURE
+// wins (offline/deterministic, verbatim, no LLM); otherwise the LLM generates it (live path). On the live path
+// this is only the FIRST attempt — the bounded compile-repair loop below may regenerate it (#1073).
 let usedFixture = len(fixture) > 0;
 fn choose_test(usedFix: bool, fix: string, klass: string, src: string, matchPrefix: string, prior: string, forkActive: bool, forkTarget: string, forkUrl: string, forkBlock: string, composeActive: bool, forkContext: string, deployName: string, importLine: string) -> string {
     if usedFix { return fix; }
@@ -321,19 +322,11 @@ fn choose_test(usedFix: bool, fix: string, klass: string, src: string, matchPref
 }
 let test = choose_test(usedFixture, fixture, targetClass, code, invMatch, prior, forkMode, forkTarget, forkUrl, forkBlock, composableMode, forkContext, deployName, importLine);
 
-// Write the generated/fixture test to INV_OUT (inside INV_REPO/test) so forge-invariant can run it. The test
-// content is UNTRUSTED — it is either an LLM completion (prompt-injectable by the untrusted target code under
-// audit) or an operator fixture — so it MUST go through shell_escape(), never a heredoc (a heredoc body is
-// not escaped: a test line equal to the sentinel would terminate it early and the rest would execute as
-// shell). printf '%s' on a shell_escape()d single-quoted literal cannot be escaped by any content (no shell
-// metachar survives single-quoting), so the test is written verbatim with zero injection.
-let wrote = exec sh "printf '%s' " + shell_escape(test) + " > " + shell_escape(invOut) + "; echo __wrote=$?";
-
 // --- VERIFY with the stateful-fuzzing gate ------------------------------------------------------
-// Run evm-harness/forge-invariant.sh against the just-written test and capture its exit code via the
-// `__rc=$?` marker convention (auditor.ag). `set +e` so the gate's non-zero verdict exit (1/2) does not
-// abort the shell before the marker is printed. The verdict is THIS exit code — nothing else. Optional
-// runs/depth/seed are forwarded only when set, each as a shell_escape()d value.
+// The gate is evm-harness/forge-invariant.sh. We write the test to INV_OUT (inside INV_REPO/test) then run
+// the gate against it and capture its exit code via the `__rc=$?` marker convention (auditor.ag). `set +e` so
+// the gate's non-zero verdict exit (1/2) does not abort the shell before the marker is printed. The verdict is
+// THIS exit code — nothing else. Optional runs/depth/seed are forwarded only when set, each shell_escape()d.
 let gate = getenv("FORGE_INVARIANT");
 let runsArg = getenv("INV_RUNS");
 let depthArg = getenv("INV_DEPTH");
@@ -347,9 +340,143 @@ let budget = opt_flag("--runs", runsArg) + opt_flag("--depth", depthArg) + opt_f
 // opt_flag, exactly like runs/depth/seed). Empty fork facts => "" => the gate command is byte-identical to the
 // no-fork build. A fork RPC failure becomes the gate's HARNESS_ERROR (exit 2), never a false verdict.
 let fork = opt_flag("--fork-url", forkUrl) + opt_flag("--fork-block", forkBlock);
-// colony-lint: safe-exec-concat
-let runOut = exec sh "set +e; sh " + shell_escape(gate) + " --repo " + shell_escape(invRepo) + " --target " + shell_escape(invOut) + " --match " + shell_escape(invMatch) + budget + fork + " 2>&1; echo __rc=$?";
 
+// Write the generated/fixture test to INV_OUT. The test content is UNTRUSTED — it is either an LLM completion
+// (prompt-injectable by the untrusted target code under audit) or an operator fixture — so it MUST go through
+// shell_escape(), never a heredoc (a heredoc body is not escaped: a test line equal to the sentinel would
+// terminate it early and the rest would execute as shell). printf '%s' on a shell_escape()d single-quoted
+// literal cannot be escaped by any content (no shell metachar survives single-quoting), so the test is written
+// verbatim with zero injection. Wrapped in a fn so the repair loop below reuses the SAME write mechanism.
+fn write_test(src: string, out: string) -> string {
+    // colony-lint: safe-exec-concat
+    return exec sh "printf '%s' " + shell_escape(src) + " > " + shell_escape(out) + "; echo __wrote=$?";
+}
+// Run the gate over the just-written INV_OUT and capture its `__rc=<n>` marker. Wrapped in a fn so the repair
+// loop reuses the EXACT gate invocation (same flags, same shell_escape()ing) every attempt.
+fn run_gate(gateSh: string, repo: string, out: string, matchPrefix: string, budgetArgs: string, forkArgs: string) -> string {
+    // colony-lint: safe-exec-concat
+    return exec sh "set +e; sh " + shell_escape(gateSh) + " --repo " + shell_escape(repo) + " --target " + shell_escape(out) + " --match " + shell_escape(matchPrefix) + budgetArgs + forkArgs + " 2>&1; echo __rc=$?";
+}
+
+// --- BOUNDED COMPILE-REPAIR LOOP (#1073) --------------------------------------------------------
+// A single bad FIRST generation used to waste the whole run: with #1069 harness-isolation, a HARNESS_ERROR
+// (rc not in {0,1}) on the LLM path means OUR harness failed to compile / matched no invariant — a recoverable
+// fault, not the target's other tests. So on a HARNESS_ERROR we feed forge's compiler error back to the model
+// and regenerate, up to N EXTRA rounds. The loop runs ONLY on the LLM-generated path; the verbatim
+// HANDLER_FIXTURE path is NEVER LLM-repaired (an operator fixture is authoritative). The FINAL verdict stays
+// the gate's exit code on the LAST attempt — the LLM never decides it (unchanged contract).
+//
+// BOUND. INV_REPAIR_ROUNDS = number of EXTRA repair rounds, default 2 (so <=3 total attempts). 0 disables
+// repair (one shot — today's behaviour). Non-numeric / unset / empty => the default.
+fn repair_rounds(raw: string) -> int {
+    if len(raw) == 0 { return 2; }
+    if len(regex_find_all("[^0-9]", raw)) > 0 { return 2; }
+    return parse_int(raw);
+}
+let repairRounds = repair_rounds(getenv("INV_REPAIR_ROUNDS"));
+
+// Extract a useful compiler-error excerpt from the gate's captured output (forge stderr). Keep only the lines
+// that carry diagnostic signal (Error / error[ / a `-->` source pointer / a Compiler banner) so the repair
+// prompt stays focused, then cap the whole excerpt to a few KB so it stays bounded (forge can emit very long
+// build logs). Untrusted: it flows ONLY into the plain-string repair prompt below, never into a shell.
+fn error_excerpt(out: string) -> string {
+    // colony-lint: safe-exec-concat
+    let filtered = exec sh "printf '%s' " + shell_escape(out) + " | grep -E 'Error|error\\[|[-][-]>|Compiler' | head -n 80 || true";
+    if len(filtered) > 4000 { return substring(filtered, 0, 4000); }
+    return filtered;
+}
+// The repair instruction: hand the model the compiler error + its PRIOR test source, with the SAME hard
+// constraints as the first generation (pragma ^0.8.20, no forge-std, targetContracts(), plain require(),
+// `<matchPrefix>_*` naming, import+deploy the REAL target, output-only). prevSrc/excerpt are derived from the
+// LLM completion + the untrusted target's forge output — they flow ONLY into this plain-string prompt, never
+// a shell.
+fn repair_instruction(excerpt: string, prevSrc: string, matchPrefix: string) -> string {
+    return "The Foundry invariant test you wrote did NOT compile (or matched no `invariant_*`). Compiler output:\n"
+         + excerpt
+         + "\nYour previous test was:\n"
+         + prevSrc
+         + "\nFix it and output ONLY the corrected Solidity — same constraints (pragma ^0.8.20, NO forge-std, "
+         + "targetContracts(), plain require(), `" + matchPrefix + "_*` naming, import+deploy the REAL target, "
+         + "output-only).";
+}
+fn repair_test(excerpt: string, prevSrc: string, matchPrefix: string) -> string {
+    // colony-lint: prompt-gate-ok
+    return prompt(repair_instruction(excerpt, prevSrc, matchPrefix), "") -> string;
+}
+
+// STATE ENCODING for the repair loop. One string of 3 NAMED fields joined by the 5-char sentinel `@@F@@` (it
+// cannot occur in Solidity source or forge output; the same convention coordinator.ag uses for its carried
+// reduce accumulator). Fields, in order:
+//   0 stopped  "1" once a FINDING/CLEAN verdict (rc in {0,1}) ended the loop — then a repair round is a no-op
+//              — else "0"
+//   1 testSrc  the CURRENT test source written to INV_OUT for the latest attempt
+//   2 runOut   the gate's captured output (`...__rc=<n>`) for the latest attempt
+fn rstate_field(s: string, n: int) -> string {
+    let segs = regex_split("@@F@@", s);
+    let acc = reduce(segs, |a: string, seg: string| -> string {
+        let bar = index_of(a, "\t");
+        let idx = parse_int(substring(a, 0, bar));
+        let cap = substring(a, bar + 1, len(a));
+        if idx == n { return to_string(idx + 1) + "\t" + seg; }
+        return to_string(idx + 1) + "\t" + cap;
+    }, "0\t");
+    return substring(acc, index_of(acc, "\t") + 1, len(acc));
+}
+fn rstate(stopped: string, testSrc: string, runOut: string) -> string {
+    return stopped + "@@F@@" + testSrc + "@@F@@" + runOut;
+}
+// Flip `stopped` to "1" iff the gate produced a TERMINAL verdict (rc 1 FINDING / rc 0 CLEAN); a HARNESS_ERROR
+// (any other rc) leaves it "0" so the loop keeps repairing.
+fn stop_flag(rc: int) -> string {
+    if rc == 1 { return "1"; }
+    if rc == 0 { return "1"; }
+    return "0";
+}
+// One repair round over the carried state. A no-op once stopped (a FINDING/CLEAN was already reached). Else the
+// PRIOR attempt was a HARNESS_ERROR: regenerate from its compiler-error excerpt + prior source, write the
+// repaired source through the SAME shell_escape()d printf mechanism, re-run the gate, and STOP if the new rc is
+// FINDING/CLEAN. matchPrefix + the gate-invocation pieces are carried in as params (the .ag pass-everything
+// convention) so the body needs no module globals.
+fn repair_step(acc: string, gateSh: string, repo: string, out: string, matchPrefix: string, budgetArgs: string, forkArgs: string) -> string {
+    if rstate_field(acc, 0) == "1" { return acc; }
+    let prevSrc = rstate_field(acc, 1);
+    let prevOut = rstate_field(acc, 2);
+    let excerpt = error_excerpt(prevOut);
+    let fixed = repair_test(excerpt, prevSrc, matchPrefix);
+    let _wr = write_test(fixed, out);
+    let newOut = run_gate(gateSh, repo, out, matchPrefix, budgetArgs, forkArgs);
+    return rstate(stop_flag(rc_of(newOut)), fixed, newOut);
+}
+// BOUNDED RECURSION (single-assignment .ag has no `while`/`for`): drive `repair_step` at most `remaining`
+// times, decrementing per round, threading the carried (stopped, testSrc, runOut) state through each call.
+// `remaining <= 0` is a true no-op (returns the state untouched), so INV_REPAIR_ROUNDS=0 — and the fixture
+// path, which seeds stopped="1" — make ZERO extra prompt()/gate calls. `repair_step` itself short-circuits
+// once stopped, so a FINDING/CLEAN ends the recursion early even with rounds left.
+fn repair_loop(acc: string, remaining: int, gateSh: string, repo: string, out: string, matchPrefix: string, budgetArgs: string, forkArgs: string) -> string {
+    if remaining <= 0 { return acc; }
+    if rstate_field(acc, 0) == "1" { return acc; }
+    let next = repair_step(acc, gateSh, repo, out, matchPrefix, budgetArgs, forkArgs);
+    return repair_loop(next, remaining - 1, gateSh, repo, out, matchPrefix, budgetArgs, forkArgs);
+}
+
+// FIRST attempt: write the chosen test + run the gate ONCE (today's one-shot — byte-identical for the fixture
+// path and for INV_REPAIR_ROUNDS=0). `firstStop` is "1" iff the first attempt already produced a verdict, so
+// the loop below makes zero extra prompt()/gate calls once a FINDING/CLEAN is in hand.
+let wrote = write_test(test, invOut);
+let firstOut = run_gate(gate, invRepo, invOut, invMatch, budget, fork);
+let firstStop = stop_flag(rc_of(firstOut));
+// Repair fires ONLY on the LLM path: the fixture path seeds the loop ALREADY-stopped (stopped="1") so it can
+// never be LLM-repaired, regardless of its rc. On the LLM path the initial stopped flag is firstStop, so a
+// FINDING/CLEAN first attempt short-circuits (no repair) and a HARNESS_ERROR first attempt enters repair.
+let initStopped = if usedFixture { "1" } else { firstStop };
+let initState = rstate(initStopped, test, firstOut);
+// Bounded compile-repair loop (#1073): at most `repairRounds` EXTRA rounds, each a no-op once stopped. The
+// carried per-attempt state is the (stopped, testSrc, runOut) triple. repairRounds==0 (the disable path) and
+// the fixture path both leave `finalState` == `initState` (today's one-shot behaviour).
+let finalState = repair_loop(initState, repairRounds, gate, invRepo, invOut, invMatch, budget, fork);
+
+// The verdict is the gate's exit code on the LAST attempt — NEVER the LLM's opinion (unchanged contract).
+let runOut = rstate_field(finalState, 2);
 let rc = rc_of(runOut);
 let verdict = verdict_of(rc);
 
