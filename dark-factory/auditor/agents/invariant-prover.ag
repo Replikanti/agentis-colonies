@@ -143,6 +143,53 @@ fn import_line(name: string, rel: string) -> string {
 }
 let importLine = import_line(targetName, relImport);
 
+// FM2 (#1075) — COMPOSABLE-FRESH MODE. INV_AUX is the FRESH-DEPLOY sibling of FORK_CONTEXT: a sentinel-joined
+// list of AUXILIARY in-scope contracts the prover should ALSO deploy + WIRE alongside the target so the
+// generated handler can compose calls ACROSS the system (oracle -> manager mispricing, reward accrual ->
+// vault share inflation — the cross-contract bug a single-contract harness is structurally blind to). Each
+// entry is `<abs_path>:<Name>` (the staged rundir source path + the optional contract Name), entries joined by
+// the 5-char sentinel `@@A@@` (run-invariant-hunt.sh stages each aux under an ASCII `aux-code-<n>.sol` name, so
+// the sentinel can occur in neither a path nor a Solidity identifier — entries and the path:Name split are
+// unambiguous). INV_AUX is UNTRUSTED operator input that flows ONLY into the plain-string generation prompt
+// below (the aux SOURCES, import paths, and names — exactly like the target source), never into a verdict and
+// never into a shell as an unescaped concat (the rel-import realpath is read back from a shell_escape()d exec,
+// as for the target). Empty INV_AUX => composable-fresh is OFF => the single-target prompt is byte-identical.
+let invAux = getenv("INV_AUX");
+fn composable_fresh(aux: string) -> bool {
+    return len(aux) > 0;
+}
+let composableFresh = composable_fresh(invAux);
+// Split one `<abs_path>:<Name>` entry on its FIRST `:` (the Name, a Solidity identifier, carries none; an abs
+// path may, so we split on the first colon only and keep the remainder as the Name). field 0 = path, 1 = name.
+fn aux_field(entry: string, n: int) -> string {
+    let c = index_of(entry, ":");
+    if c < 0 {
+        if n == 0 { return entry; }
+        return "";
+    }
+    if n == 0 { return substring(entry, 0, c); }
+    return substring(entry, c + 1, len(entry));
+}
+// The list of `<abs_path>:<Name>` entries. regex_split on the empty string would yield a spurious [""] entry,
+// so an empty INV_AUX returns the empty list -> the reduces below produce "" -> the prompt is byte-identical.
+fn aux_entries(aux: string) -> list<string> {
+    if len(aux) == 0 { return []; }
+    return regex_split("@@A@@", aux);
+}
+let auxEntries = aux_entries(invAux);
+// The concatenated import-line directives for EVERY auxiliary (reusing the SAME import_line + rel_import_path
+// helpers as the target). Each aux source is staged in the rundir, so rel_import_path() computes its path
+// relative to dirname(INV_OUT) exactly as for the target. Empty list => "".
+let auxImportLines = reduce(auxEntries, |acc: string, entry: string| -> string {
+    return acc + import_line(aux_field(entry, 1), rel_import_path(invOut, aux_field(entry, 0)));
+}, "");
+// The concatenated aux SOURCE block — one clearly delimited `=== AUX CONTRACT (<name>) ===` section per
+// auxiliary, carrying the full source (via the sandboxed cat_file reader) so the model can read each aux's
+// constructor/initializer + setter/admin functions to deploy + WIRE the system. Empty list => "".
+let auxBlock = reduce(auxEntries, |acc: string, entry: string| -> string {
+    return acc + "=== AUX CONTRACT (" + aux_field(entry, 1) + ") ===\n" + cat_file(aux_field(entry, 0)) + "\n\n";
+}, "");
+
 // FM1 (#1041) — FORK MODE. When FORK_TARGET (and/or FORK_URL) is non-empty, the target is a LIVE DEPLOYED
 // contract at FORK_TARGET on a forked chain (run-invariant-hunt.sh threads --fork-url/--fork-block-number into
 // the gate). These env facts are UNTRUSTED operator input: FORK_TARGET / FORK_URL / FORK_BLOCK flow ONLY into
@@ -267,11 +314,34 @@ fn compose_seed(active: bool, ctx: string) -> string {
          + "manipulate-price-on-dex -> extract-from-target -> restore -> repay SEQUENCE that single-contract "
          + "fuzzing cannot reach.\n";
 }
-fn generate_test(klass: string, src: string, matchPrefix: string, prior: string, forkActive: bool, forkTarget: string, forkUrl: string, forkBlock: string, composeActive: bool, forkContext: string, deployName: string, importLine: string) -> string {
+// FM2 (#1075) — COMPOSABLE-FRESH generation seed (the FRESH-DEPLOY sibling of compose_seed's fork path). When
+// INV_AUX carries auxiliary in-scope contracts, the prover must DEPLOY + WIRE the WHOLE system from SOURCE (not
+// reference live addresses) so the handler can compose calls across it — the cross-contract bug class a
+// single-contract harness is blind to (oracle manipulation -> manager mispricing; reward accrual -> vault share
+// inflation). The aux SOURCES are injected separately (auxBlock, below `=== BUG CLASS ===`) and the import line
+// for EACH aux is injected next to the target's (auxImportLines); this seed adds the deploy+wire DIRECTIVE +
+// the EXACTLY-ONE deep cross-contract invariant + the grown (still bounded) size budget. Empty INV_AUX => "" so
+// the prompt is byte-identical to the #1070-B1 single-target build. The directive is a plain string — no shell.
+fn compose_fresh_seed(active: bool) -> string {
+    if !active { return ""; }
+    return "COMPOSABLE-FRESH MODE: in addition to the target, AUXILIARY in-scope contracts are provided below "
+         + "(each delimited `=== AUX CONTRACT (<name>) ===`). Deploy + WIRE the WHOLE system in `setUp()`: "
+         + "deploy the target AND each auxiliary contract (read their constructors/initializers from the sources "
+         + "— use the ERC1967Proxy recipe for upgradeable ones), then WIRE them together via their setter/admin "
+         + "functions (e.g. `manager.setOracle(oracle)`, `vault.setRewardsDistributor(rewards)` — INFER the "
+         + "wiring from the sources). Register the relevant contracts via `targetContracts()`. Write a Handler "
+         + "whose actions SPAN the system (e.g. move the oracle price, then mint/redeem via the manager, then "
+         + "check the vault), and EXACTLY ONE deep CROSS-CONTRACT invariant: NO free value extraction / system "
+         + "solvency holds across any sequence — an actor who starts and ends with the SAME external position "
+         + "must not have drained the system. In this composable-fresh mode the size budget grows to ~180 lines "
+         + "(still bounded) to fit the multi-deploy + wiring `setUp()`.\n";
+}
+fn generate_test(klass: string, src: string, matchPrefix: string, prior: string, forkActive: bool, forkTarget: string, forkUrl: string, forkBlock: string, composeActive: bool, forkContext: string, deployName: string, importLine: string, composeFresh: bool, auxBlock: string, auxImportLines: string) -> string {
     let instruction =
         recall_seed(klass, prior)
       + fork_seed(forkActive, forkTarget, forkUrl, forkBlock)
       + compose_seed(composeActive, forkContext)
+      + compose_fresh_seed(composeFresh)
       + "You are a stateful-invariant-fuzzing engineer. Write a self-contained Foundry stateful-invariant "
       + "test (Solidity, `pragma solidity ^0.8.20;`) for the target contract below so Foundry's invariant "
       + "fuzzer can drive randomized multi-call SEQUENCES through it and find a MULTI-STEP exploit. "
@@ -282,6 +352,7 @@ fn generate_test(klass: string, src: string, matchPrefix: string, prior: string,
       + "verdict is about real code. Do NOT import forge-std — this test must compile with ZERO library "
       + "remappings.\n"
       + importLine
+      + auxImportLines
       + "  - In `setUp()` deploy the real target. For a normal `constructor(args)`: `new " + deployName + "(args)`. "
       + "For an OpenZeppelin **upgradeable** contract whose constructor calls `_disableInitializers()`: deploy "
       + "behind a proxy — add `import {ERC1967Proxy} from \"@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol\";` "
@@ -304,6 +375,7 @@ fn generate_test(klass: string, src: string, matchPrefix: string, prior: string,
       + "The invariant must catch a bug that only a SEQUENCE of calls can produce, not a single call. "
       + "Keep the entire test under ~120 lines; do not exceed it — the real-deploy `setUp()` counts toward "
       + "that budget, so keep the import/deploy minimal and stay bounded.\n\n"
+      + auxBlock
       + "=== BUG CLASS (lens) ===\n" + klass + "\n\n"
       + "=== HOW TO ANSWER ===\n"
       + "Output ONLY the Solidity source of the `*.t.sol` test — no markdown fences, no prose before or "
@@ -316,11 +388,11 @@ fn generate_test(klass: string, src: string, matchPrefix: string, prior: string,
 // wins (offline/deterministic, verbatim, no LLM); otherwise the LLM generates it (live path). On the live path
 // this is only the FIRST attempt — the bounded compile-repair loop below may regenerate it (#1073).
 let usedFixture = len(fixture) > 0;
-fn choose_test(usedFix: bool, fix: string, klass: string, src: string, matchPrefix: string, prior: string, forkActive: bool, forkTarget: string, forkUrl: string, forkBlock: string, composeActive: bool, forkContext: string, deployName: string, importLine: string) -> string {
+fn choose_test(usedFix: bool, fix: string, klass: string, src: string, matchPrefix: string, prior: string, forkActive: bool, forkTarget: string, forkUrl: string, forkBlock: string, composeActive: bool, forkContext: string, deployName: string, importLine: string, composeFresh: bool, auxBlock: string, auxImportLines: string) -> string {
     if usedFix { return fix; }
-    return generate_test(klass, src, matchPrefix, prior, forkActive, forkTarget, forkUrl, forkBlock, composeActive, forkContext, deployName, importLine);
+    return generate_test(klass, src, matchPrefix, prior, forkActive, forkTarget, forkUrl, forkBlock, composeActive, forkContext, deployName, importLine, composeFresh, auxBlock, auxImportLines);
 }
-let test = choose_test(usedFixture, fixture, targetClass, code, invMatch, prior, forkMode, forkTarget, forkUrl, forkBlock, composableMode, forkContext, deployName, importLine);
+let test = choose_test(usedFixture, fixture, targetClass, code, invMatch, prior, forkMode, forkTarget, forkUrl, forkBlock, composableMode, forkContext, deployName, importLine, composableFresh, auxBlock, auxImportLines);
 
 // --- VERIFY with the stateful-fuzzing gate ------------------------------------------------------
 // The gate is evm-harness/forge-invariant.sh. We write the test to INV_OUT (inside INV_REPO/test) then run

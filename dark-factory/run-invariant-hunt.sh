@@ -30,6 +30,16 @@
 #                        NO LLM). When set the verdict is the fuzzer's over THIS test. Omit = live (LLM) path.
 #   --code <file>        Path to the target contract source the LLM reads to write the handler (live path).
 #                        Defaults to <repo>/src/<Contract.sol> when omitted and a fixture is NOT supplied.
+#   --aux <C.sol[:Name]> FM2 (#1075): an AUXILIARY in-scope contract (relative to --repo, like --target) the
+#                        prover should ALSO deploy + WIRE alongside the target so the generated handler can
+#                        compose calls ACROSS the system (the FRESH-DEPLOY composability path — oracle ->
+#                        manager mispricing, reward accrual -> vault share inflation, ...). REPEATABLE. Each
+#                        value is validated like --target (exists, is a *.sol) and exported to the prover as
+#                        one entry of INV_AUX (a sentinel-joined list of `<abs_path>:<Name>` entries, sentinel
+#                        `@@A@@` — it cannot occur in a filesystem path or a Solidity identifier). No --aux =>
+#                        INV_AUX empty => the single-target generation prompt is byte-identical to today. This
+#                        is the FRESH-DEPLOY sibling of the FORK-mode --fork-target composability set: --aux
+#                        deploys the auxiliaries from SOURCE, --fork-target references them by on-chain address.
 #   --match <prefix>     Invariant function-name prefix the fuzzer runs (default "invariant").
 #   --backend <mock|flat-cyborg|claude>  LLM backend for the live generation path (default: flat-cyborg =
 #                        flat-rate PTY wrapper; claude = metered -p API; mock = offline wiring smoke). On the
@@ -85,6 +95,9 @@ FORK_URL="" ; FORK_BLOCK="" ; FORK_TARGET=""
 # FM2 (#1041): the composability context set — one `--fork-target '<role>=<addr>'` per array slot. A bare
 # `--fork-target <addr>` (FM1 shorthand, no '=') is normalised to a `target=<addr>` slot below.
 FORK_TARGET_SPECS=()
+# FM2 (#1075): the FRESH-DEPLOY auxiliary set — one `--aux <Contract.sol[:Name]>` per array slot (relative to
+# --repo, like --target). Resolved + staged + encoded into INV_AUX below. Empty => single-target behaviour.
+AUX_SPECS=()
 
 need() { [ "$1" -ge 2 ] || { echo "run-invariant-hunt.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -94,6 +107,7 @@ while [ $# -gt 0 ]; do
     --class) need "$#"; CLASS="$2"; shift 2 ;;
     --handler-fixture) need "$#"; FIXTURE="$2"; shift 2 ;;
     --code) need "$#"; CODE="$2"; shift 2 ;;
+    --aux) need "$#"; AUX_SPECS+=("$2"); shift 2 ;;
     --match) need "$#"; MATCH="$2"; shift 2 ;;
     --backend) need "$#"; BACKEND="$2"; shift 2 ;;
     --model) need "$#"; MODEL="$2"; shift 2 ;;
@@ -181,6 +195,30 @@ if [ -n "$CODE" ]; then
   CODE="$(cd "$(dirname "$CODE")" && pwd)/$(basename "$CODE")"
 fi
 
+# FM2 (#1075): resolve + validate each --aux <Contract.sol[:Name]> the way --target/--code are validated —
+# the FILE part is relative to --repo (tried as `<repo>/<file>` then the `<repo>/src/<file>` convention the
+# target's default-code path uses), must exist, and must be a *.sol. The optional `:Name` (a Solidity
+# identifier) is preserved verbatim so the prover can name the import. Each resolved entry is held as
+# `<abs_file>:<Name>` in AUX_ABS_SPECS; staging into the rundir + the INV_AUX encoding happen below (once the
+# rundir exists). Empty AUX_SPECS leaves AUX_ABS_SPECS empty => INV_AUX empty => single-target behaviour.
+AUX_ABS_SPECS=()
+for aspec in ${AUX_SPECS+"${AUX_SPECS[@]}"}; do
+  case "$aspec" in
+    *:*) _afile="${aspec%%:*}"; _aname="${aspec#*:}" ;;
+    *)   _afile="$aspec"; _aname="" ;;
+  esac
+  [ -n "$_afile" ] || { echo "run-invariant-hunt.sh: --aux file part must be non-empty (got: $aspec)" >&2; exit 2; }
+  case "$_afile" in
+    *.sol) ;;
+    *) echo "run-invariant-hunt.sh: --aux must be a *.sol file (got: $_afile)" >&2; exit 2 ;;
+  esac
+  if [ -f "$REPO/$_afile" ]; then _aabs="$REPO/$_afile";
+  elif [ -f "$REPO/src/$_afile" ]; then _aabs="$REPO/src/$_afile";
+  else echo "run-invariant-hunt.sh: --aux not found under --repo: $_afile" >&2; exit 2; fi
+  _aabs="$(cd "$(dirname "$_aabs")" && pwd)/$(basename "$_aabs")"
+  AUX_ABS_SPECS+=("$_aabs:$_aname")
+done
+
 PROVER="$HERE/auditor/agents/invariant-prover.ag"
 GATE="$HERE/evm-harness/forge-invariant.sh"
 [ -f "$PROVER" ] || { echo "run-invariant-hunt.sh: invariant-prover agent not found at $PROVER" >&2; exit 3; }
@@ -211,6 +249,22 @@ if [ -n "$CODE" ]; then
   CODE_IN_RUN="$RUN/target-code.sol"
 fi
 
+# FM2 (#1075): stage each resolved --aux source into the rundir (so the sandboxed reader can reach it) and
+# build INV_AUX — a sentinel-joined list of `<abs_path_in_run>:<Name>` entries, sentinel `@@A@@`. The sentinel
+# cannot occur in a filesystem path (it stages each aux under a colony-controlled `aux-code-<n>.sol` name, all
+# ASCII alnum + `-`) nor in a Solidity identifier, so the prover can split the list and each entry on the FIRST
+# `:` unambiguously. No --aux => AUX_ABS_SPECS empty => INV_AUX stays "" => the prover's single-target prompt
+# is byte-identical. The aux SOURCES + names flow only into the prover's plain-string prompt (never a shell).
+INV_AUX=""
+_aux_idx=0
+for entry in ${AUX_ABS_SPECS+"${AUX_ABS_SPECS[@]}"}; do
+  _aabs="${entry%:*}"; _aname="${entry##*:}"
+  _aux_in_run="$RUN/aux-code-${_aux_idx}.sol"
+  cp "$_aabs" "$_aux_in_run"
+  if [ -z "$INV_AUX" ]; then INV_AUX="$_aux_in_run:$_aname"; else INV_AUX="$INV_AUX@@A@@$_aux_in_run:$_aname"; fi
+  _aux_idx=$((_aux_idx + 1))
+done
+
 # init the agentis store FIRST (before any .agentis/ subdir exists), else HEAD is not set.
 ( cd "$RUN" && "$AGENTIS" init >/dev/null 2>&1 )
 {
@@ -223,7 +277,9 @@ fi
   # FM1 (#1041): FORK_URL/FORK_BLOCK thread the fork into the gate; FORK_TARGET is the deployed address the
   # generated handler/invariant references against the forked state. FM2 (#1041): FORK_CONTEXT carries the
   # role->address context set so the generation prompt can compose calls across the deployed protocols.
-  echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_MATCH,HANDLER_FIXTURE,CODE_PATH,INV_RUNS,INV_DEPTH,INV_SEED,FORGE_INVARIANT,FORK_URL,FORK_BLOCK,FORK_TARGET,FORK_CONTEXT,INV_REPAIR_ROUNDS"
+  # FM2 (#1075): INV_AUX carries the sentinel-joined `<abs_path>:<Name>` auxiliary-contract list so the prover
+  # can deploy + WIRE the whole system (fresh-deploy composability).
+  echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_MATCH,HANDLER_FIXTURE,CODE_PATH,INV_RUNS,INV_DEPTH,INV_SEED,FORGE_INVARIANT,FORK_URL,FORK_BLOCK,FORK_TARGET,FORK_CONTEXT,INV_REPAIR_ROUNDS,INV_AUX"
   # A forge invariant run (build + a few hundred fuzzed sequences) far exceeds the 10s default.
   echo "exec.default_timeout_ms = 600000"
   # Each verify is recorded as experience; invariant-prover fitness reweights over targets.
@@ -274,6 +330,7 @@ echo "run-invariant-hunt.sh: generating + stateful-fuzzing $TARGET ($CLASS) ..."
     INV_MATCH="$MATCH" \
     HANDLER_FIXTURE="$FIXTURE_IN_RUN" \
     CODE_PATH="$CODE_IN_RUN" \
+    INV_AUX="$INV_AUX" \
     INV_RUNS="$RUNS" \
     INV_DEPTH="$DEPTH" \
     INV_SEED="$SEED" \
