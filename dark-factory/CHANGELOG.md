@@ -15,6 +15,28 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **invariant-hunt SLIMS the embedded contract source(s) in the generation prompt** (#1079, epic #1041). On a
+  real autonomous sweep every cross-contract PAIR (two full contract sources in ONE gen prompt) and one complex
+  single-contract target hit the per-run timeout: the flat-cyborg→claude generation hung on a SINGLE gen call
+  for ~712 s because the prompt embeds the FULL source of each contract (a pair ≈ 90 KB of Solidity), so all
+  cross-contract coverage was lost. The OUTPUT ask was already bounded (#1067); this slims the INPUT.
+  `run-invariant-hunt.sh` now stages the target source (`CODE_PATH`) and each `--aux` source (#1075) through a
+  portable awk Solidity-source SLIMMER (`slim_sol_source`) instead of a flat `cp`: it drops `//`/`///` line
+  comments (full-line + safe trailing), `/* ... */` block comments INCLUDING multi-line NatSpec `/** ... */`
+  (a single-pass block-comment state machine — a naive sed cannot span lines robustly), `import ...;` and
+  `pragma ...;` statement lines, and squeezes runs of blank lines to one — while KEEPING every line of real
+  callable surface + logic: the `contract <Name> is ...` declaration, state variables, every function signature
+  AND body, and structs/enums/events/errors. The prover's contract is unchanged — it still `cat_file`s the same
+  staged `CODE_PATH`/aux paths and the generation prompt's STRUCTURE is identical; only the embedded source
+  content is smaller (roughly halved on heavily-NatSpec'd sources). Trailing-comment stripping is CONSERVATIVE:
+  a `//` is stripped from a code line only when no quote (`"`/`'`) precedes it on that line, so a `//` inside a
+  string literal is NEVER corrupted (correctness of the staged Solidity over maximal slimming). An empty-output
+  guard never ships an empty / truncated `CODE_PATH`: a pathological all-comments/all-import source that slims to
+  only blank lines falls back to the ORIGINAL verbatim. A new deterministic guard,
+  `tools/test-invariant-hunt-slim-source.sh`, feeds a fixture `.sol` (every comment/import/pragma/blank-run noise
+  class + real `contract`/state/function/struct/event/error code) through the live slimmer and asserts the noise
+  is removed, the real code survives intact, a string-literal `//` is preserved, and the empty-output fallback
+  fires — plus that the runner wires the slimmer into BOTH stagings (grep/awk over the runner, no LLM/forge).
 - **invariant-prover ENFORCES both-real cross-contract deployment (composable-fresh)** (#1077, epic #1041). In
   composable-fresh mode (#1075, `INV_AUX` non-empty) the LLM was supposed to deploy + wire the target AND each
   aux contract REAL. Validation on two real pairs showed it instead deployed only the EASIER contract real and
