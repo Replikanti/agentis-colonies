@@ -204,15 +204,15 @@ let requiredNames = reduce(auxEntries, |acc: list<string>, entry: string| -> lis
     return push(acc, n);
 }, if len(targetName) > 0 { [targetName] } else { [] });
 // missing_real_deploys(testSrc, names) -> the comma-joined list of names that are MISSING a REAL deploy in the
-// harness. A name is deployed REAL iff the source carries BOTH an `import {<name>}` marker AND a `new <name>`
-// marker. The `new <name>` marker covers the plain `new <name>(` form and the proxy form
-// `new ERC1967Proxy(address(new <name>()...` (both contain the substring `new <name>(`). A name that is missing
-// EITHER marker was dropped or replaced by a mock (e.g. `RewardVaultMock`) and is reported. Empty result =>
-// every named contract is deployed real. Pure string work on the (untrusted) testSrc via index_of — no shell.
+// harness. A name is deployed REAL iff the source carries a `new <name>(` marker — which covers the plain
+// `new <name>(` form and the proxy form `new ERC1967Proxy(address(new <name>()...` (both contain that
+// substring). The trailing `(` anchors the name, so `new <name>Mock(` does NOT match `new <name>(`. We do NOT
+// also require a canonical `import {<name>}` line: a `new <name>(` the gate compiles is necessarily in scope,
+// and matching the exact import form would false-positive on legal grouped/spaced/aliased imports and could
+// suppress a GENUINE finding to HARNESS_ERROR. A dropped or mocked contract never emits `new <name>(` for the
+// real type, so the deploy marker alone catches it. Pure string work on the (untrusted) testSrc — no shell.
 fn has_real_deploy(testSrc: string, name: string) -> bool {
-    if index_of(testSrc, "import {" + name + "}") < 0 { return false; }
-    if index_of(testSrc, "new " + name + "(") < 0 { return false; }
-    return true;
+    return index_of(testSrc, "new " + name + "(") >= 0;
 }
 fn missing_real_deploys(testSrc: string, names: list<string>) -> string {
     let joined = reduce(names, |acc: string, name: string| -> string {
@@ -638,7 +638,10 @@ let finalState = repair_loop(initState, repairRounds, gate, invRepo, invOut, inv
 // single-target / fixture verdict (composableFresh false) — passes through unchanged.
 let runOut = rstate_field(finalState, 2);
 let finalSrc = rstate_field(finalState, 1);
-let bothRealMissing = if composableFresh { missing_real_deploys(finalSrc, requiredNames) } else { "" };
+// Gated on composableFresh AND NOT usedFixture: an operator-supplied HANDLER_FIXTURE is verbatim and is
+// never repaired (seeded stopped); it must likewise never be force-overridden to HARNESS_ERROR by the
+// both-real check, even if it is run with --aux. Only LLM-generated composable-fresh harnesses are enforced.
+let bothRealMissing = if composableFresh { if usedFixture { "" } else { missing_real_deploys(finalSrc, requiredNames) } } else { "" };
 let bothRealViolated = len(bothRealMissing) > 0;
 let rc = rc_of(runOut);
 fn final_verdict(rc: int, violated: bool) -> string {
