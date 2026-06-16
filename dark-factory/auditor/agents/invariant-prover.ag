@@ -190,6 +190,39 @@ let auxBlock = reduce(auxEntries, |acc: string, entry: string| -> string {
     return acc + "=== AUX CONTRACT (" + aux_field(entry, 1) + ") ===\n" + cat_file(aux_field(entry, 0)) + "\n\n";
 }, "");
 
+// FM2 (#1077) — BOTH-REAL ENFORCEMENT (composable-fresh only). #1075 told the model to deploy the target AND
+// each aux REAL; validation on two real pairs showed it instead deployed only the EASIER contract real and
+// mocked/omitted the harder one (real distributor + a `RewardVaultMock`; real oracle + the manager never
+// imported). A CLEAN on a harness that mocked the unit-under-test is a FALSE verdict. The defence is pure
+// string validation of the EMITTED test + a targeted re-prompt (reusing the #1073 repair loop) — NOT a
+// Solidity-parsing deploy scaffold. `requiredNames` is the set of contract names that MUST appear deployed
+// REAL: {target name} ∪ {each aux name}, dropping any empty name (a `*.sol` label with no `:Name` — we cannot
+// name-check a contract we were not told the name of, exactly as the import-path line is skipped for it).
+let requiredNames = reduce(auxEntries, |acc: list<string>, entry: string| -> list<string> {
+    let n = aux_field(entry, 1);
+    if len(n) == 0 { return acc; }
+    return push(acc, n);
+}, if len(targetName) > 0 { [targetName] } else { [] });
+// missing_real_deploys(testSrc, names) -> the comma-joined list of names that are MISSING a REAL deploy in the
+// harness. A name is deployed REAL iff the source carries a `new <name>(` marker — which covers the plain
+// `new <name>(` form and the proxy form `new ERC1967Proxy(address(new <name>()...` (both contain that
+// substring). The trailing `(` anchors the name, so `new <name>Mock(` does NOT match `new <name>(`. We do NOT
+// also require a canonical `import {<name>}` line: a `new <name>(` the gate compiles is necessarily in scope,
+// and matching the exact import form would false-positive on legal grouped/spaced/aliased imports and could
+// suppress a GENUINE finding to HARNESS_ERROR. A dropped or mocked contract never emits `new <name>(` for the
+// real type, so the deploy marker alone catches it. Pure string work on the (untrusted) testSrc — no shell.
+fn has_real_deploy(testSrc: string, name: string) -> bool {
+    return index_of(testSrc, "new " + name + "(") >= 0;
+}
+fn missing_real_deploys(testSrc: string, names: list<string>) -> string {
+    let joined = reduce(names, |acc: string, name: string| -> string {
+        if has_real_deploy(testSrc, name) { return acc; }
+        if len(acc) == 0 { return name; }
+        return acc + ", " + name;
+    }, "");
+    return joined;
+}
+
 // FM1 (#1041) — FORK MODE. When FORK_TARGET (and/or FORK_URL) is non-empty, the target is a LIVE DEPLOYED
 // contract at FORK_TARGET on a forked chain (run-invariant-hunt.sh threads --fork-url/--fork-block-number into
 // the gate). These env facts are UNTRUSTED operator input: FORK_TARGET / FORK_URL / FORK_BLOCK flow ONLY into
@@ -475,6 +508,26 @@ fn repair_test(excerpt: string, prevSrc: string, matchPrefix: string) -> string 
     // colony-lint: prompt-gate-ok
     return prompt(repair_instruction(excerpt, prevSrc, matchPrefix), "") -> string;
 }
+// FM2 (#1077) — the POINTED both-real-violation repair instruction. The harness COMPILED + the gate returned a
+// verdict, but in composable-fresh mode it mocked or omitted one or more REQUIRED real contracts (`missing`,
+// the comma-joined name list) — a verdict on a partial harness, not the real system. Unlike the compile-error
+// repair this names the exact contracts that must become real and keeps the ones already real. prevSrc/missing
+// are derived from the LLM completion (untrusted) — they flow ONLY into this plain-string prompt, never a shell.
+fn repair_instruction_bothreal(missing: string, prevSrc: string, matchPrefix: string) -> string {
+    return "Your test did NOT deploy these REQUIRED real contracts (you mocked or omitted them): " + missing
+         + ". Each one MUST be imported (`import {<Name>} from \"<its path>\";`) and deployed as the REAL "
+         + "contract (plain `new`, or `ERC1967Proxy` for upgradeable) and wired into the system — a mock or "
+         + "omission of any of them is INVALID. Keep the ones you already deployed real."
+         + "\nYour previous test was:\n"
+         + prevSrc
+         + "\nFix it and output ONLY the corrected Solidity — same constraints (pragma ^0.8.20, NO forge-std, "
+         + "targetContracts(), plain require(), `" + matchPrefix + "_*` naming, import+deploy the REAL target, "
+         + "output-only).";
+}
+fn repair_test_bothreal(missing: string, prevSrc: string, matchPrefix: string) -> string {
+    // colony-lint: prompt-gate-ok
+    return prompt(repair_instruction_bothreal(missing, prevSrc, matchPrefix), "") -> string;
+}
 
 // STATE ENCODING for the repair loop. One string of 3 NAMED fields joined by the 5-char sentinel `@@F@@` (it
 // cannot occur in Solidity source or forge output; the same convention coordinator.ag uses for its carried
@@ -504,31 +557,55 @@ fn stop_flag(rc: int) -> string {
     if rc == 0 { return "1"; }
     return "0";
 }
-// One repair round over the carried state. A no-op once stopped (a FINDING/CLEAN was already reached). Else the
-// PRIOR attempt was a HARNESS_ERROR: regenerate from its compiler-error excerpt + prior source, write the
-// repaired source through the SAME shell_escape()d printf mechanism, re-run the gate, and STOP if the new rc is
-// FINDING/CLEAN. matchPrefix + the gate-invocation pieces are carried in as params (the .ag pass-everything
-// convention) so the body needs no module globals.
-fn repair_step(acc: string, gateSh: string, repo: string, out: string, matchPrefix: string, budgetArgs: string, forkArgs: string) -> string {
+// FM2 (#1077) — the BOTH-REAL-AWARE stop flag. In composable-fresh mode a TERMINAL verdict (rc 0/1) is NOT a
+// reason to stop the repair loop if the harness still mocked/omitted a required real contract — that verdict is
+// about a partial harness, not the real system, so we keep repairing (within the INV_REPAIR_ROUNDS budget) to
+// drive ALL named contracts real. Outside composable-fresh (`composeFresh` false) — and on the single-target
+// path — this is byte-identical to `stop_flag(rc)`: only the rc decides. A residual violation after the budget
+// is exhausted is forced to HARNESS_ERROR by the final-verdict computation below (it never leaks a partial CLEAN).
+fn stop_flag_both(rc: int, testSrc: string, composeFresh: bool, names: list<string>) -> string {
+    if stop_flag(rc) == "0" { return "0"; }
+    if !composeFresh { return "1"; }
+    if len(missing_real_deploys(testSrc, names)) > 0 { return "0"; }
+    return "1";
+}
+// One repair round over the carried state. A no-op once stopped (a FINDING/CLEAN with both-real satisfied was
+// already reached). Else the PRIOR attempt needs repair — either a HARNESS_ERROR (compile/no-invariant) OR (in
+// composable-fresh mode) a verdict on a harness that mocked/omitted a required real contract. The repair prompt
+// is chosen accordingly: the POINTED both-real message (#1077) naming the missing contracts when the prior
+// attempt COMPILED but is missing real deploys, else the compile-error message (#1073). Write the repaired
+// source through the SAME shell_escape()d printf mechanism, re-run the gate, and STOP via the both-real-aware
+// stop flag. matchPrefix + the gate-invocation pieces + composeFresh/names are carried in as params (the .ag
+// pass-everything convention) so the body needs no module globals.
+fn repair_step(acc: string, gateSh: string, repo: string, out: string, matchPrefix: string, budgetArgs: string, forkArgs: string, composeFresh: bool, names: list<string>) -> string {
     if rstate_field(acc, 0) == "1" { return acc; }
     let prevSrc = rstate_field(acc, 1);
     let prevOut = rstate_field(acc, 2);
-    let excerpt = error_excerpt(prevOut);
-    let fixed = repair_test(excerpt, prevSrc, matchPrefix);
+    let prevRc = rc_of(prevOut);
+    let missing = if composeFresh { missing_real_deploys(prevSrc, names) } else { "" };
+    // A both-real violation is a prior attempt that COMPILED to a verdict (rc 0/1) yet still mocked/omitted a
+    // required real contract. A HARNESS_ERROR (rc not in {0,1}) takes the compile-error repair regardless.
+    // (Nested if, not `&&`: single-assignment .ag has no short-circuit boolean operators.)
+    let bothRealViolation = if stop_flag(prevRc) == "1" { len(missing) > 0 } else { false };
+    let fixed = if bothRealViolation {
+        repair_test_bothreal(missing, prevSrc, matchPrefix)
+    } else {
+        repair_test(error_excerpt(prevOut), prevSrc, matchPrefix)
+    };
     let _wr = write_test(fixed, out);
     let newOut = run_gate(gateSh, repo, out, matchPrefix, budgetArgs, forkArgs);
-    return rstate(stop_flag(rc_of(newOut)), fixed, newOut);
+    return rstate(stop_flag_both(rc_of(newOut), fixed, composeFresh, names), fixed, newOut);
 }
 // BOUNDED RECURSION (single-assignment .ag has no `while`/`for`): drive `repair_step` at most `remaining`
 // times, decrementing per round, threading the carried (stopped, testSrc, runOut) state through each call.
 // `remaining <= 0` is a true no-op (returns the state untouched), so INV_REPAIR_ROUNDS=0 — and the fixture
 // path, which seeds stopped="1" — make ZERO extra prompt()/gate calls. `repair_step` itself short-circuits
-// once stopped, so a FINDING/CLEAN ends the recursion early even with rounds left.
-fn repair_loop(acc: string, remaining: int, gateSh: string, repo: string, out: string, matchPrefix: string, budgetArgs: string, forkArgs: string) -> string {
+// once stopped, so a FINDING/CLEAN (with both-real satisfied) ends the recursion early even with rounds left.
+fn repair_loop(acc: string, remaining: int, gateSh: string, repo: string, out: string, matchPrefix: string, budgetArgs: string, forkArgs: string, composeFresh: bool, names: list<string>) -> string {
     if remaining <= 0 { return acc; }
     if rstate_field(acc, 0) == "1" { return acc; }
-    let next = repair_step(acc, gateSh, repo, out, matchPrefix, budgetArgs, forkArgs);
-    return repair_loop(next, remaining - 1, gateSh, repo, out, matchPrefix, budgetArgs, forkArgs);
+    let next = repair_step(acc, gateSh, repo, out, matchPrefix, budgetArgs, forkArgs, composeFresh, names);
+    return repair_loop(next, remaining - 1, gateSh, repo, out, matchPrefix, budgetArgs, forkArgs, composeFresh, names);
 }
 
 // FIRST attempt: write the chosen test + run the gate ONCE (today's one-shot — byte-identical for the fixture
@@ -536,21 +613,52 @@ fn repair_loop(acc: string, remaining: int, gateSh: string, repo: string, out: s
 // the loop below makes zero extra prompt()/gate calls once a FINDING/CLEAN is in hand.
 let wrote = write_test(test, invOut);
 let firstOut = run_gate(gate, invRepo, invOut, invMatch, budget, fork);
-let firstStop = stop_flag(rc_of(firstOut));
+// FM2 (#1077): the first-attempt stop flag is both-real-aware too — in composable-fresh mode a first-attempt
+// FINDING/CLEAN on a harness that mocked/omitted a required real contract does NOT short-circuit; it enters
+// repair. Outside composable-fresh this is byte-identical to `stop_flag(rc_of(firstOut))` (only the rc decides).
+let firstStop = stop_flag_both(rc_of(firstOut), test, composableFresh, requiredNames);
 // Repair fires ONLY on the LLM path: the fixture path seeds the loop ALREADY-stopped (stopped="1") so it can
 // never be LLM-repaired, regardless of its rc. On the LLM path the initial stopped flag is firstStop, so a
-// FINDING/CLEAN first attempt short-circuits (no repair) and a HARNESS_ERROR first attempt enters repair.
+// FINDING/CLEAN first attempt (both-real satisfied) short-circuits (no repair) and a HARNESS_ERROR — or a
+// both-real violation in composable-fresh mode — enters repair.
 let initStopped = if usedFixture { "1" } else { firstStop };
 let initState = rstate(initStopped, test, firstOut);
-// Bounded compile-repair loop (#1073): at most `repairRounds` EXTRA rounds, each a no-op once stopped. The
-// carried per-attempt state is the (stopped, testSrc, runOut) triple. repairRounds==0 (the disable path) and
-// the fixture path both leave `finalState` == `initState` (today's one-shot behaviour).
-let finalState = repair_loop(initState, repairRounds, gate, invRepo, invOut, invMatch, budget, fork);
+// Bounded compile-repair loop (#1073, extended for #1077): at most `repairRounds` EXTRA rounds, each a no-op
+// once stopped. The carried per-attempt state is the (stopped, testSrc, runOut) triple. repairRounds==0 (the
+// disable path) and the fixture path both leave `finalState` == `initState` (today's one-shot behaviour). The
+// composeFresh flag + requiredNames are threaded so a both-real violation also drives a round (and the pointed
+// repair prompt) in composable-fresh mode; outside it they are inert (composeFresh false => no extra trigger).
+let finalState = repair_loop(initState, repairRounds, gate, invRepo, invOut, invMatch, budget, fork, composableFresh, requiredNames);
 
-// The verdict is the gate's exit code on the LAST attempt — NEVER the LLM's opinion (unchanged contract).
+// The verdict is the gate's exit code on the LAST attempt — NEVER the LLM's opinion (unchanged contract) —
+// EXCEPT the #1077 both-real override: in composable-fresh mode, if the FINAL harness STILL mocked/omitted a
+// required real contract after the repair budget was exhausted, a gate CLEAN/FINDING on that partial harness is
+// a FALSE cross-contract verdict, so it is FORCED to HARNESS_ERROR. The override fires ONLY in composable-fresh
+// mode and ONLY on a residual violation, so a genuine FINDING/CLEAN on an ALL-real harness — and every
+// single-target / fixture verdict (composableFresh false) — passes through unchanged.
 let runOut = rstate_field(finalState, 2);
+let finalSrc = rstate_field(finalState, 1);
+// Gated on composableFresh AND NOT usedFixture: an operator-supplied HANDLER_FIXTURE is verbatim and is
+// never repaired (seeded stopped); it must likewise never be force-overridden to HARNESS_ERROR by the
+// both-real check, even if it is run with --aux. Only LLM-generated composable-fresh harnesses are enforced.
+let bothRealMissing = if composableFresh { if usedFixture { "" } else { missing_real_deploys(finalSrc, requiredNames) } } else { "" };
+let bothRealViolated = len(bothRealMissing) > 0;
 let rc = rc_of(runOut);
-let verdict = verdict_of(rc);
+fn final_verdict(rc: int, violated: bool) -> string {
+    if violated { return "HARNESS_ERROR"; }
+    return verdict_of(rc);
+}
+let verdict = final_verdict(rc, bothRealViolated);
+// Surface WHY this is not a real verdict so the HARNESS_ERROR marker below is not mistaken for a genuine
+// compile failure. Routed to STDERR via `exec sh` (the prover has no stderr print builtin) so the stdout marker
+// line stays the single machine-parsed verdict. `bothRealMissing` is untrusted LLM-derived text, so it is
+// shell_escape()d. A no-op (empty echo, no `>&2` reason) when there is no violation — purely additive.
+fn bothreal_reason(violated: bool, missing: string) -> string {
+    if !violated { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "printf '%s\\n' " + shell_escape("invariant-prover: forcing HARNESS_ERROR — harness mocked/omitted required real contract(s): " + missing) + " >&2; true";
+}
+let _bothRealReason = bothreal_reason(bothRealViolated, bothRealMissing);
 
 // --- EMIT the FUZZER's verdict -------------------------------------------------------------------
 // Surface the marker (stdout, parsed by run-invariant-hunt.sh), then on a FINDING the shrunk exploit

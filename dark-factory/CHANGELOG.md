@@ -15,6 +15,30 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **invariant-prover ENFORCES both-real cross-contract deployment (composable-fresh)** (#1077, epic #1041). In
+  composable-fresh mode (#1075, `INV_AUX` non-empty) the LLM was supposed to deploy + wire the target AND each
+  aux contract REAL. Validation on two real pairs showed it instead deployed only the EASIER contract real and
+  MOCKED/OMITTED the harder one (`--target dreUSDs --aux dreRewardsDistributor` → real distributor + a
+  `RewardVaultMock`; `--target dreUSDManager --aux dreUSDOracle` → real oracle, manager never imported). A CLEAN
+  on a harness that mocked the unit-under-test is a FALSE verdict. `auditor/agents/invariant-prover.ag` now
+  enforces both-real via validation + targeted repair (reusing the #1073 loop) — NOT a Solidity-parsing deploy
+  scaffold, and ONLY active in composable-fresh mode (the #1070-B1 single-target path is byte-identical, the
+  offline `HANDLER_FIXTURE` path is untouched). A `missing_real_deploys(testSrc, names)` helper reports, over the
+  `{target name} ∪ {each aux name}` set, every contract MISSING BOTH an `import {<name>}` marker AND a
+  `new <name>(` marker (the latter covers the plain `new` form and the `new ERC1967Proxy(address(new <name>()...`
+  proxy form) — i.e. dropped or mocked. The #1073 repair trigger is EXTENDED: a round also fires when
+  composable-fresh AND `missing_real_deploys(...)` is non-empty, with a POINTED repair prompt that names the
+  missing contracts ("Your test did NOT deploy these REQUIRED real contracts (you mocked or omitted them): …")
+  and tells the model to keep the ones already real. After the `INV_REPAIR_ROUNDS` budget is exhausted, a
+  RESIDUAL both-real violation FORCES the emitted verdict to `HARNESS_ERROR` (with a stderr reason: "harness
+  mocked/omitted required real contract(s): …") — even if the gate returned CLEAN/FINDING on the partial harness
+  — so a FALSE cross-contract CLEAN can never leak; a genuine FINDING/CLEAN on a harness where ALL named
+  contracts are real passes through unchanged, and the gate exit code stays the source of FINDING/CLEAN when
+  both-real holds. The both-real check is pure string work on the (untrusted) test source (no shell), the loop
+  stays bounded by the existing single-assignment recursion (no `while`/`for`), and the stderr reason is
+  `shell_escape()`d. A new deterministic guard, `tools/test-invariant-prover-both-real.sh`, pins the both-real
+  check, the extra repair trigger, the pointed message, the force-`HARNESS_ERROR`-on-residual-violation override,
+  and the single-target/fixture exemption (grep over the `.ag`, no LLM/forge).
 - **invariant-prover drives the REAL target, not a mock** (#1070-B1, epic #1041). The live-path generation
   instruction in `auditor/agents/invariant-prover.ag` (`generate_test()`) used to tell the model: import the
   target "if the project ships it there; otherwise inline a minimal copy." On a realistically-sized target the
