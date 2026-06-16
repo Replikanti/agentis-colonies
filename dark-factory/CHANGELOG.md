@@ -15,6 +15,16 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **invariant-prover cuts false-positive findings — realistic input bounds + mocked-dep decimal/type fidelity**
+  (#1080, epic #1041). A real autonomous sweep produced two FINDINGs that triaged to harness artifacts, not
+  bugs: an oracle target's unbounded price-setter let the fuzzer drive the price to absurd magnitudes
+  (`2.26e30`) and trivially break a sanity-band invariant; and a mocked dependency used 18 decimals while the
+  target computes that token in 6 (10^12 mismatch) → a spurious solvency break. The `generate_test()` prompt
+  now directs the model to (a) `_bound` every fuzzed input — ESPECIALLY external-perturbation actions
+  (price/oracle/deviation/donation/fee setters) — to a REALISTIC range, and that a break caused SOLELY by an
+  absurd-magnitude input is NOT a finding; and (b) make every mock of an external dependency MATCH the real
+  units/decimals/types the target assumes (read from the target source) — a mismatched mock is invalid.
+  Regression guard: `tools/test-invariant-prover-false-positives.sh`.
 - **invariant-hunt SLIMS the embedded contract source(s) in the generation prompt** (#1079, epic #1041). On a
   real autonomous sweep every cross-contract PAIR (two full contract sources in ONE gen prompt) and one complex
   single-contract target hit the per-run timeout: the flat-cyborg→claude generation hung on a SINGLE gen call
