@@ -52,6 +52,32 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   `tools/test-invariant-prover-repair-loop.sh`, pins the loop (grep over the `.ag`, no LLM/forge).
 
 ### Added
+- **invariant-prover cross-contract multi-deploy harnesses (composable-fresh)** (#1075, epic #1041). The
+  FRESH-DEPLOY real-target path deployed ONE target (single-contract) + mocked its externals, so the
+  highest-value stablecoin bugs — which are CROSS-contract (oracle manipulation → manager mispricing; reward
+  accrual → vault share inflation) — were structurally out of a single-contract harness's reach.
+  `run-invariant-hunt.sh` gains a repeatable `--aux <Contract.sol[:Name]>` flag (relative to `--repo`, like
+  `--target`): each value is validated the way `--target` is (exists, is a `*.sol`), staged into the rundir, and
+  threaded to the prover as `INV_AUX` — a sentinel-joined list of `<abs_path>:<Name>` entries (sentinel `@@A@@`,
+  which can occur in neither a filesystem path nor a Solidity identifier), also added to
+  `exec.env_passthrough`. When `INV_AUX` is non-empty (composable-fresh mode)
+  `auditor/agents/invariant-prover.ag` EXTENDS the generation prompt: it injects every auxiliary's source
+  (clearly delimited `=== AUX CONTRACT (<name>) ===`), an import line per auxiliary (reusing the #1070-B1
+  `import_line`/`rel_import_path`/`cat_file` helpers — no duplicated import/deploy machinery), and a new
+  `compose_fresh_seed()` directive: deploy + WIRE the WHOLE system in `setUp()` (deploy the target AND each
+  auxiliary, reading their constructors/initializers from the sources — the ERC1967Proxy recipe for upgradeable
+  ones — then wire them via their setter/admin functions inferred from the sources), register the relevant
+  contracts via `targetContracts()`, write a Handler whose actions SPAN the system, and EXACTLY ONE deep
+  cross-contract invariant (NO free value extraction / system solvency holds across any sequence). The size
+  budget grows to `~180 lines` in composable-fresh mode (still bounded). The whole composable-fresh extension is
+  gated behind a non-empty `INV_AUX`, so with no `--aux` the rendered single-target prompt is **byte-identical**
+  to #1070-B1 (verified by md5 of the rendered prompt), and the #1067 bounding, the #1073 compile-repair loop
+  (a multi-deploy `setUp()` is MORE likely to need repair, and the new prompt flows through the same
+  generate→write→gate→repair path), the fork-based `fork_seed`/`compose_seed` (FM1/FM2-fork), the offline
+  `HANDLER_FIXTURE` path, and the verdict-from-gate-exit-code contract are all preserved unchanged. A new
+  deterministic guard, `tools/test-invariant-prover-multideploy.sh`, pins the `--aux`→`INV_AUX` threading + the
+  composable-fresh directive and asserts the no-`--aux` path is unchanged (grep over the `.ag` + the runner, no
+  LLM/forge).
 - `submit-triage.sh` — the **human-gated submission triage** layer (#1056, epic #1053). Scans a staging
   root for the verified-FINDING packages `run-audit.sh` / `run-batch.sh` drop under
   `<out>/submission[/<key>]/` and scores each candidate's readiness (**READY** = report.md + a PoC/witness +
