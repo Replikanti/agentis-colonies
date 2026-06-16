@@ -15,6 +15,12 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **`flat-cyborg-claude.sh` uses `--extract-structural`** (#1083, needs flat-cyborg ≥ 0.10.2). claude
+  intermittently omits the reply sentinel; strict `--extract` then burned the full `--timeout-ms` and exited
+  "no fenced reply", which the agentis caller retried — repeated ~700 s gen hangs ending in HARNESS_ERROR
+  (several sweep TIMEOUTs traced to exactly this). With flat-cyborg #55 (v0.10.2), `--extract-structural`
+  completes on a SETTLED screen and recovers the reply marker-first → structural-fallback (fast +
+  marker-less-tolerant); a marker-ful reply is extracted exactly as before.
 - **invariant-prover cuts false-positive findings — realistic input bounds + mocked-dep decimal/type fidelity**
   (#1080, epic #1041). A real autonomous sweep produced two FINDINGs that triaged to harness artifacts, not
   bugs: an oracle target's unbounded price-setter let the fuzzer drive the price to absurd magnitudes
