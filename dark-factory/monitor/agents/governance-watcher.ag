@@ -1,0 +1,327 @@
+// governance-watcher.ag — Monitor colony (Dark Factory federation).
+//
+// Watches a protocol's GOVERNANCE / UPGRADE surface for a CHANGE versus the last
+// observed baseline — the highest-value PRE-exploit early-warning a monitor can
+// raise. The classic upgrade-attack tell is the implementation pointer of an
+// EIP-1967 proxy flipping (or the proxy admin / owner rotating) moments before a
+// malicious implementation drains the protocol. This watcher reads:
+//   * the EIP-1967 IMPLEMENTATION slot
+//     (0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc);
+//   * the EIP-1967 ADMIN slot
+//     (0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103);
+//   * an owner()/admin() view when the contract exposes one;
+//   * a timelock-queue indicator + a role-grant indicator when configured.
+// It flags a CHANGE (impl-slot moved / admin moved / owner moved / a new role
+// grant / a pending timelock op) by comparing the current read to a durable
+// baseline memo it learned on a prior tick. NON-custodial / read-only: it only
+// READS chain state via `cast`/RPC over `exec sh` — it never signs a transaction
+// and never touches funds.
+//
+// Same on-chain read pattern + tier-gated emission as invariant-watcher.ag /
+// oracle-watcher.ag. The signal is a FACT (an on-chain read + a deterministic
+// comparison vs the learned baseline), never an LLM opinion. Emission is gated
+// PURELY on the ADR-0001 tier of this agent (the false-positive control):
+//   shadow / dormant -> observe + learn a baseline (record the governance
+//                       state), NO emit (learning the protocol's normal upgrade
+//                       surface before it is trusted to page);
+//   propose          -> emit a DRAFT `monitor:alert` (low severity);
+//   review-gated /    -> emit a DIRECT-page `monitor:alert` (high severity).
+//   autonomous
+// One tier() call per tick, branch once, fall through to shadow/dormant.
+//
+// Env contract (all read via getenv; exported by scripts/start-colony.sh; add
+// each to exec.env_passthrough in .agentis/config so the sandboxed `exec sh`
+// can read them):
+//   MONITOR_CAST          path to the `cast` binary; "" => no reader, observe only.
+//   MONITOR_RPC_URL       the chain RPC endpoint (read-only).
+//   MONITOR_GOV_TARGET    the governed proxy contract address (0x...); "" =>
+//                         falls back to MONITOR_TARGET (the invariant target).
+//   MONITOR_GOV_OWNER_SIG the `cast call` signature returning the owner/admin
+//                         address (e.g. "owner()" / "admin()"); "" => skip the
+//                         owner check (proxy-slot-only watch).
+//   MONITOR_GOV_ROLE_SIG  a `cast call` signature returning a role-grant
+//                         indicator (e.g. "getRoleMemberCount(bytes32)" wired by
+//                         the operator to a fixed role, or a count view); "" =>
+//                         skip the role-grant check.
+//   MONITOR_GOV_TIMELOCK_SIG a `cast call` signature returning a timelock-queue
+//                         indicator (e.g. a queued-op count / a pending-op id);
+//                         "" => skip the timelock check.
+//   MONITOR_GOV_LABEL     a human label for the target (for the alert body).
+// Emits: "monitor:alert" (the colony bus contract).
+
+cb 90000;
+
+// The two canonical EIP-1967 storage slots. Constants (not env) so the operator
+// cannot mis-wire the standard slots; a non-standard proxy is covered by the
+// owner()/admin() view path instead.
+fn impl_slot() -> string {
+    return "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc";
+}
+
+fn admin_slot() -> string {
+    return "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103";
+}
+
+// --- diagnostic confidence read (logging only; tier() gates behaviour) ---------
+fn get_confidence() -> float {
+    let raw = recall_latest("governance-watcher:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    }
+    return 0.0;
+}
+
+// --- env defaults --------------------------------------------------------------
+fn target_or(raw: string, fallback: string) -> string {
+    if len(raw) > 0 { return raw; }
+    return fallback;
+}
+
+fn label_or(raw: string, addr: string) -> string {
+    if len(raw) > 0 { return raw; }
+    return addr;
+}
+
+// JSON-string escape a free-text field (#1089): backslash -> \\ and double-quote
+// -> \" , so an operator-authored label/address containing a `"` cannot corrupt
+// the alert/signal JSON. Per-char fold (.ag has no string-replace builtin);
+// regex_find_all over [\s\S] yields every char incl. whitespace.
+fn json_escape(s: string) -> string {
+    return reduce(regex_find_all("[\\s\\S]", s), |acc: string, c: string| -> string {
+        if c == "\\" { return acc + "\\\\"; }
+        if c == "\"" { return acc + "\\\""; }
+        return acc + c;
+    }, "");
+}
+
+// --- read a raw storage slot via cast storage ----------------------------------
+// `cast storage --rpc-url <url> <addr> <slot>` prints one 0x-hex word (the slot's
+// contents). EVERY dynamic value (the cast path, the rpc url, the address, the
+// slot) is shell_escape()d — they are all operator/coordinator-supplied facts
+// that flow into a shell, so none may be a bare concat. `set +e` + `|| true` so a
+// transient RPC failure returns "" (no reading -> no false flag) instead of
+// aborting the tick. Returns the 0x-hex word, or "" on any failure / empty reader.
+fn read_slot(castBin: string, rpc: string, addr: string, slot: string) -> string {
+    if len(castBin) == 0 { return ""; }
+    if len(rpc) == 0 { return ""; }
+    if len(addr) == 0 { return ""; }
+    if len(slot) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    let out = exec sh "set +e; " + shell_escape(castBin) + " storage --rpc-url " + shell_escape(rpc)
+            + " " + shell_escape(addr) + " " + shell_escape(slot)
+            + " 2>/dev/null || true";
+    return out;
+}
+
+// --- read a single view return via cast call (owner/role/timelock indicators) --
+// EVERY dynamic value is shell_escape()d. `set +e` + `|| true` so a transient RPC
+// failure (or a contract with no such view) returns "" (no reading -> no false
+// flag). Returns the 0x-hex word cast prints, or "" on any failure / empty reader.
+fn read_view(castBin: string, rpc: string, addr: string, sig: string) -> string {
+    if len(castBin) == 0 { return ""; }
+    if len(rpc) == 0 { return ""; }
+    if len(addr) == 0 { return ""; }
+    if len(sig) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    let out = exec sh "set +e; " + shell_escape(castBin) + " call --rpc-url " + shell_escape(rpc)
+            + " " + shell_escape(addr) + " " + shell_escape(sig)
+            + " 2>/dev/null || true";
+    return out;
+}
+
+// Trim a trailing newline cast leaves on its output, leaving only the first token.
+fn first_token(s: string) -> string {
+    let nl = index_of(s, "\n");
+    if nl < 0 { return s; }
+    return substring(s, 0, nl);
+}
+
+// Normalise a raw cast read to a comparable token: the first whitespace-free
+// token, lowercased so a 0x-hex word compares case-insensitively (cast may render
+// the same word in either case across versions). "" stays "" (the "no read"
+// sentinel). A read that is not a 0x-hex word (e.g. an error string that leaked
+// past `2>/dev/null`) is collapsed to "" so it can never masquerade as a change.
+fn normalize_read(raw: string) -> string {
+    let tok = first_token(raw);
+    if len(tok) == 0 { return ""; }
+    if index_of(tok, "0x") != 0 { return ""; }
+    return to_lower(tok);
+}
+
+// A baseline is "present" once a non-empty value has been recorded for a field.
+// An empty baseline means this field has never been read cleanly -> the FIRST
+// good read seeds it (no change flagged on the seeding tick).
+fn baseline_present(base: string) -> bool {
+    if len(base) == 0 { return false; }
+    return true;
+}
+
+// --- the deterministic CHANGE verdict (a FACT, never an LLM call) --------------
+// A single field "changed" when it has BOTH a present baseline AND a present
+// current read that DIFFERS from the baseline. A missing current read (RPC blind)
+// is NOT a change (no-read -> no false flag); a missing baseline is the seeding
+// case (record, don't flag).
+fn field_changed(base: string, cur: string) -> bool {
+    if !baseline_present(base) { return false; }
+    if len(cur) == 0 { return false; }
+    if cur == base { return false; }
+    return true;
+}
+
+// Could this field be read at all this tick? (Both the configured reader produced
+// a value.) Used to decide whether the WHOLE watch was RPC-blind.
+fn field_readable(cur: string) -> bool {
+    if len(cur) == 0 { return false; }
+    return true;
+}
+
+// Fuse the per-field change flags into ONE verdict token. Precedence: an
+// implementation-pointer flip is the single most dangerous tell (impl-changed);
+// then an admin rotation (admin-changed); then an owner rotation (owner-changed);
+// then a new role grant / a pending timelock op (gov-changed). When nothing
+// changed but at least one field was readable, "ok". When NOTHING was readable
+// this tick, "no-read" (RPC-blind -> the watcher raises no false alarm).
+fn verdict_of(implCh: bool, adminCh: bool, ownerCh: bool, roleCh: bool, tlCh: bool, anyRead: bool) -> string {
+    if implCh { return "impl-changed"; }
+    if adminCh { return "admin-changed"; }
+    if ownerCh { return "owner-changed"; }
+    if roleCh { return "gov-changed"; }
+    if tlCh { return "gov-changed"; }
+    if anyRead { return "ok"; }
+    return "no-read";
+}
+
+// learn() outcome enum {success,failure,partial,timeout,error}. A clean,
+// unchanged governance surface is a confirmed-healthy observation (success); an
+// impl/admin/owner rotation is the anomaly the watcher exists to catch (failure);
+// a role grant / pending timelock op is a partial (a change worth surfacing, not
+// yet proven hostile); a fully RPC-blind tick is an error (no fact produced).
+fn outcome_of(verdict: string) -> string {
+    if verdict == "ok" { return "success"; }
+    if verdict == "impl-changed" { return "failure"; }
+    if verdict == "admin-changed" { return "failure"; }
+    if verdict == "owner-changed" { return "failure"; }
+    if verdict == "gov-changed" { return "partial"; }
+    return "error";
+}
+
+fn is_anomaly(verdict: string) -> bool {
+    if verdict == "impl-changed" { return true; }
+    if verdict == "admin-changed" { return true; }
+    if verdict == "owner-changed" { return true; }
+    if verdict == "gov-changed" { return true; }
+    return false;
+}
+
+// A compact, deterministic alert payload (JSON). All fields are facts the watcher
+// computed; none is LLM text. `sev` is set by the tier branch (draft vs page).
+fn alert_payload(label: string, verdict: string, addr: string, sev: string) -> string {
+    return "{\"watcher\":\"governance\",\"target\":\"" + json_escape(label) + "\",\"verdict\":\"" + verdict
+         + "\",\"address\":\"" + json_escape(addr) + "\",\"severity\":\"" + sev + "\"}";
+}
+
+fn tick(reason: string) -> void {
+    let now = to_string(now_ms());
+    // Heartbeat first (dashboard memo-freshness probe) even on an early return.
+    memo_write("governance-watcher:last_check", now);
+
+    let castBin = getenv("MONITOR_CAST");
+    let rpc = getenv("MONITOR_RPC_URL");
+    let addr = target_or(getenv("MONITOR_GOV_TARGET"), getenv("MONITOR_TARGET"));
+    let ownerSig = getenv("MONITOR_GOV_OWNER_SIG");
+    let roleSig = getenv("MONITOR_GOV_ROLE_SIG");
+    let tlSig = getenv("MONITOR_GOV_TIMELOCK_SIG");
+    let label = label_or(getenv("MONITOR_GOV_LABEL"), addr);
+
+    // Read the current governance surface. The two proxy slots are always read;
+    // owner/role/timelock are read only when a signature is configured ("" reader
+    // -> "" read -> that field is simply absent from the watch, never a change).
+    let curImpl = normalize_read(read_slot(castBin, rpc, addr, impl_slot()));
+    let curAdmin = normalize_read(read_slot(castBin, rpc, addr, admin_slot()));
+    let curOwner = if len(ownerSig) > 0 { normalize_read(read_view(castBin, rpc, addr, ownerSig)) } else { "" };
+    let curRole = if len(roleSig) > 0 { normalize_read(read_view(castBin, rpc, addr, roleSig)) } else { "" };
+    let curTl = if len(tlSig) > 0 { normalize_read(read_view(castBin, rpc, addr, tlSig)) } else { "" };
+
+    // The learned baselines (durable per-field memos keyed by address). On the
+    // first read each is "" -> the field is seeded this tick and NOT flagged; the
+    // next tick compares against it.
+    let baseImpl = recall_latest("governance-watcher:baseline:impl:" + addr);
+    let baseAdmin = recall_latest("governance-watcher:baseline:admin:" + addr);
+    let baseOwner = recall_latest("governance-watcher:baseline:owner:" + addr);
+    let baseRole = recall_latest("governance-watcher:baseline:role:" + addr);
+    let baseTl = recall_latest("governance-watcher:baseline:timelock:" + addr);
+
+    // The per-field CHANGE flags (FACTS, never an LLM call), then the fused
+    // verdict. anyRead is the RPC-blind guard: when NO field was readable this
+    // tick the verdict is "no-read" and the watcher stays quiet.
+    let implCh = field_changed(baseImpl, curImpl);
+    let adminCh = field_changed(baseAdmin, curAdmin);
+    let ownerCh = field_changed(baseOwner, curOwner);
+    let roleCh = field_changed(baseRole, curRole);
+    let tlCh = field_changed(baseTl, curTl);
+    let anyRead = if field_readable(curImpl) { true } else { if field_readable(curAdmin) { true } else { if field_readable(curOwner) { true } else { if field_readable(curRole) { true } else { field_readable(curTl) } } } };
+    let verdict = verdict_of(implCh, adminCh, ownerCh, roleCh, tlCh, anyRead);
+    let outcome = outcome_of(verdict);
+
+    print("governance-watcher: " + label + " impl=" + curImpl + " admin=" + curAdmin
+        + " -> " + verdict + " (conf=" + to_string(get_confidence()) + ")");
+
+    // Update each per-field baseline to the latest GOOD read so the next tick
+    // compares against the current surface (a no-read leaves the old baseline
+    // intact; a clean read of a NEW value re-baselines AFTER it has been flagged
+    // this tick, so a one-time rotation pages once and then becomes the new normal).
+    if field_readable(curImpl) { memo_write("governance-watcher:baseline:impl:" + addr, curImpl); };
+    if field_readable(curAdmin) { memo_write("governance-watcher:baseline:admin:" + addr, curAdmin); };
+    if field_readable(curOwner) { memo_write("governance-watcher:baseline:owner:" + addr, curOwner); };
+    if field_readable(curRole) { memo_write("governance-watcher:baseline:role:" + addr, curRole); };
+    if field_readable(curTl) { memo_write("governance-watcher:baseline:timelock:" + addr, curTl); };
+
+    let key = label + ":" + addr;
+    let desc = "governance surface " + label + " -> " + verdict;
+    let anomaly = is_anomaly(verdict);
+
+    // Post this watcher's latest verdict to the shared blackboard memo the
+    // coordinator reads each tick to fuse + dedup signals (a memo write — allowed
+    // at every tier, including shadow). Severity is re-decided by the coordinator.
+    memo_write("monitor:signal:governance", alert_payload(label, verdict, addr, "info"));
+
+    // ONE tier() call, branch ONCE (ADR-0001). The tier gates EMISSION only; the
+    // verdict above is unchanged by tier. shadow/dormant fall through to observe.
+    // (.ag has no `else if`; the tiers nest as `else { if ... { } else { } }`.)
+    let my_tier = tier("governance-watcher");
+    if my_tier == "autonomous" {
+        // Proven reliable -> a DIRECT page on a real anomaly (high severity).
+        if anomaly {
+            emit("monitor:alert", alert_payload(label, verdict, addr, "high"));
+            learn("governance-watch", key, desc, outcome, [verdict, outcome, "acted"]);
+        } else {
+            learn("governance-watch", key, desc, outcome, [verdict, outcome, "observed"]);
+        };
+    } else {
+        if my_tier == "review-gated" {
+            // Trusted to page under a review gate -> a DIRECT page (high severity).
+            if anomaly {
+                emit("monitor:alert", alert_payload(label, verdict, addr, "high"));
+                learn("governance-watch", key, desc, outcome, [verdict, outcome, "review-gated"]);
+            } else {
+                learn("governance-watch", key, desc, outcome, [verdict, outcome, "observed"]);
+            };
+        } else {
+            if my_tier == "propose" {
+                // Enough signal to contribute -> a DRAFT alert (low severity).
+                if anomaly {
+                    emit("monitor:alert", alert_payload(label, verdict, addr, "low"));
+                    learn("governance-watch", key, desc, outcome, [verdict, outcome, "emitted"]);
+                } else {
+                    learn("governance-watch", key, desc, outcome, [verdict, outcome, "observed"]);
+                };
+            } else {
+                // shadow / dormant: learn the baseline ONLY — no emit, no write.
+                learn("governance-watch", key, desc + " (baseline)", outcome, [verdict, outcome, "observed"]);
+                print("governance-watcher: observing (tier: " + my_tier + ") — no emit");
+            };
+        };
+    };
+
+    memo_write("governance-watcher:last_check", to_string(now_ms()));
+}

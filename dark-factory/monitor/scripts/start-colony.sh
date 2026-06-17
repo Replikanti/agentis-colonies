@@ -5,9 +5,10 @@
 #   ./scripts/start-colony.sh [path/to/colony.toml]
 #   ./scripts/start-colony.sh --restart-agent <name> [path/to/colony.toml]
 #
-# The monitor colony runs four long-lived daemons (invariant-watcher,
-# oracle-watcher, coordinator, notifier) that continuously WATCH a target EVM
-# protocol and emit reasoned anomaly alerts on the bus (`monitor:alert`); the
+# The monitor colony runs eight long-lived daemons (invariant-watcher,
+# oracle-watcher, governance-watcher, liquidity-watcher, flow-watcher,
+# pause-state-watcher, coordinator, notifier) that continuously WATCH a target
+# EVM protocol and emit reasoned anomaly alerts on the bus (`monitor:alert`); the
 # notifier (#1092) forwards each alert to scripts/notify.sh so a page is actually
 # DELIVERED, and owns the liveness heartbeat + dead-man's switch (#1093).
 # NON-custodial / read-only: the watchers only READ chain state via `cast`/RPC
@@ -28,6 +29,11 @@
 #   MONITOR_TARGET MONITOR_INV_LHS_SIG MONITOR_INV_RHS_SIG ...    (single invariant)
 #   MONITOR_INV_SPEC                                              (derived invariant set, #1086)
 #   MONITOR_ORACLE MONITOR_ORACLE_PRICE_SIG MONITOR_ORACLE_TS_SIG (oracle)
+#   MONITOR_GOV_TARGET MONITOR_GOV_OWNER_SIG MONITOR_GOV_ROLE_SIG (governance, #1095)
+#   MONITOR_GOV_TIMELOCK_SIG MONITOR_GOV_LABEL                    (governance, #1095)
+#   MONITOR_LIQ_TARGET MONITOR_LIQ_SIG MONITOR_LIQ_DROP_BP ...    (liquidity, #1096)
+#   MONITOR_FLOW_TARGET MONITOR_FLOW_SIG MONITOR_FLOW_OUT_BP ...  (flow, #1096)
+#   MONITOR_PAUSE_TARGET MONITOR_PAUSE_SIG MONITOR_PAUSE_LABEL    (pause-state, #1096)
 #   MONITOR_WEBHOOK_URL[/_WARN/_HIGH]                             (notify.sh sink + routing)
 #   MONITOR_HEARTBEAT_INTERVAL_S MONITOR_DEADMAN_WINDOW_S         (notifier liveness)
 #   MONITOR_NOTIFY_MAX_RETRIES MONITOR_NOTIFY_BACKOFF_S ...       (notify.sh hardening)
@@ -113,6 +119,26 @@ MONITOR_ORACLE_DEV_BP="${MONITOR_ORACLE_DEV_BP:-}"
 MONITOR_ORACLE_MIN="${MONITOR_ORACLE_MIN:-}"
 MONITOR_ORACLE_MAX="${MONITOR_ORACLE_MAX:-}"
 MONITOR_ORACLE_LABEL="${MONITOR_ORACLE_LABEL:-}"
+# governance-watcher (#1095) — flags a CHANGE vs the learned baseline.
+MONITOR_GOV_TARGET="${MONITOR_GOV_TARGET:-}"
+MONITOR_GOV_OWNER_SIG="${MONITOR_GOV_OWNER_SIG:-}"
+MONITOR_GOV_ROLE_SIG="${MONITOR_GOV_ROLE_SIG:-}"
+MONITOR_GOV_TIMELOCK_SIG="${MONITOR_GOV_TIMELOCK_SIG:-}"
+MONITOR_GOV_LABEL="${MONITOR_GOV_LABEL:-}"
+# liquidity-watcher (#1096) — flags a reserve / TVL drop past a learned band.
+MONITOR_LIQ_TARGET="${MONITOR_LIQ_TARGET:-}"
+MONITOR_LIQ_SIG="${MONITOR_LIQ_SIG:-}"
+MONITOR_LIQ_DROP_BP="${MONITOR_LIQ_DROP_BP:-}"
+MONITOR_LIQ_LABEL="${MONITOR_LIQ_LABEL:-}"
+# flow-watcher (#1096) — flags an abnormal net outflow burst over a window.
+MONITOR_FLOW_TARGET="${MONITOR_FLOW_TARGET:-}"
+MONITOR_FLOW_SIG="${MONITOR_FLOW_SIG:-}"
+MONITOR_FLOW_OUT_BP="${MONITOR_FLOW_OUT_BP:-}"
+MONITOR_FLOW_LABEL="${MONITOR_FLOW_LABEL:-}"
+# pause-state-watcher (#1096) — flags a paused() / circuit-breaker transition.
+MONITOR_PAUSE_TARGET="${MONITOR_PAUSE_TARGET:-}"
+MONITOR_PAUSE_SIG="${MONITOR_PAUSE_SIG:-}"
+MONITOR_PAUSE_LABEL="${MONITOR_PAUSE_LABEL:-}"
 MONITOR_WEBHOOK_URL="${MONITOR_WEBHOOK_URL:-}"
 # Alert delivery (notifier #1092 / #1093 / notify.sh hardening #1094). All
 # optional; unset preserves the single-webhook stdout-fallback behaviour.
@@ -131,6 +157,11 @@ export MONITOR_TARGET MONITOR_INV_LHS_SIG MONITOR_INV_RHS_SIG MONITOR_INV_RHS_CO
 export MONITOR_INV_REL MONITOR_INV_MARGIN_BP MONITOR_INV_LABEL MONITOR_INV_SPEC
 export MONITOR_ORACLE MONITOR_ORACLE_PRICE_SIG MONITOR_ORACLE_TS_SIG MONITOR_ORACLE_MAX_AGE
 export MONITOR_ORACLE_DEV_BP MONITOR_ORACLE_MIN MONITOR_ORACLE_MAX MONITOR_ORACLE_LABEL
+export MONITOR_GOV_TARGET MONITOR_GOV_OWNER_SIG MONITOR_GOV_ROLE_SIG
+export MONITOR_GOV_TIMELOCK_SIG MONITOR_GOV_LABEL
+export MONITOR_LIQ_TARGET MONITOR_LIQ_SIG MONITOR_LIQ_DROP_BP MONITOR_LIQ_LABEL
+export MONITOR_FLOW_TARGET MONITOR_FLOW_SIG MONITOR_FLOW_OUT_BP MONITOR_FLOW_LABEL
+export MONITOR_PAUSE_TARGET MONITOR_PAUSE_SIG MONITOR_PAUSE_LABEL
 export MONITOR_WEBHOOK_URL MONITOR_WEBHOOK_URL_WARN MONITOR_WEBHOOK_URL_HIGH
 export MONITOR_HEARTBEAT_INTERVAL_S MONITOR_DEADMAN_WINDOW_S
 export MONITOR_NOTIFY_MAX_RETRIES MONITOR_NOTIFY_BACKOFF_S
@@ -139,16 +170,24 @@ export MONITOR_NOTIFY_DEDUP_COOLDOWN_S MONITOR_NOTIFY_STATE_DIR
 AGENTS=(
     invariant-watcher
     oracle-watcher
+    governance-watcher
+    liquidity-watcher
+    flow-watcher
+    pause-state-watcher
     coordinator
     notifier
 )
 
 # Per-agent tick interval. The watchers + coordinator all run at 60000ms by
-# default; MONITOR_TICK_MS overrides all three for faster/slower polling.
+# default; MONITOR_TICK_MS overrides them all for faster/slower polling.
 tick_interval_for() {
     case "$1" in
         invariant-watcher) echo "${MONITOR_TICK_MS:-60000}" ;;
         oracle-watcher) echo "${MONITOR_TICK_MS:-60000}" ;;
+        governance-watcher) echo "${MONITOR_TICK_MS:-60000}" ;;
+        liquidity-watcher) echo "${MONITOR_TICK_MS:-60000}" ;;
+        flow-watcher) echo "${MONITOR_TICK_MS:-60000}" ;;
+        pause-state-watcher) echo "${MONITOR_TICK_MS:-60000}" ;;
         coordinator) echo "${MONITOR_TICK_MS:-60000}" ;;
         notifier) echo "${MONITOR_TICK_MS:-60000}" ;;
         *) echo 60000 ;;

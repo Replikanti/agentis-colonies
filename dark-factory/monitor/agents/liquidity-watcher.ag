@@ -1,0 +1,349 @@
+// liquidity-watcher.ag — Monitor colony (Dark Factory federation).
+//
+// Watches a pool / vault's RESERVE or TVL PROXY for a sudden DROP beyond a
+// learned band — the canonical drain tell. A liquidity read is a single view
+// call (a 4626 `totalAssets()`, an AMM reserve, or — when no view fits — the
+// contract's native balance via `cast balance`). The watcher compares the
+// current reading to the last good reading (a durable learned baseline) and
+// flags a DROP whose magnitude exceeds MONITOR_LIQ_DROP_BP basis points. A RISE
+// (a deposit) is never an anomaly; only a fall past the band is. NON-custodial /
+// read-only: it only READS chain state via `cast`/RPC over `exec sh` — it never
+// signs a transaction and never touches funds.
+//
+// Same on-chain read pattern + tier-gated emission as invariant-watcher.ag /
+// oracle-watcher.ag. The signal is a FACT (an on-chain read + a deterministic
+// comparison vs the learned baseline), never an LLM opinion. Emission is gated
+// PURELY on the ADR-0001 tier of this agent (the false-positive control):
+//   shadow / dormant -> observe + learn a baseline (record the reserve), NO emit;
+//   propose          -> emit a DRAFT `monitor:alert` (low severity);
+//   review-gated /    -> emit a DIRECT-page `monitor:alert` (high severity).
+//   autonomous
+// One tier() call per tick, branch once, fall through to shadow/dormant.
+//
+// Env contract (all read via getenv; exported by scripts/start-colony.sh; add
+// each to exec.env_passthrough in .agentis/config so the sandboxed `exec sh`
+// can read them):
+//   MONITOR_CAST          path to the `cast` binary; "" => no reader, observe only.
+//   MONITOR_RPC_URL       the chain RPC endpoint (read-only).
+//   MONITOR_LIQ_TARGET    the pool / vault contract address (0x...); "" => falls
+//                         back to MONITOR_TARGET (the invariant target).
+//   MONITOR_LIQ_SIG       the `cast call` signature returning the reserve / TVL
+//                         proxy (e.g. "totalAssets()" / "getReserves()"); "" =>
+//                         the watcher uses the contract's native `cast balance`
+//                         instead (the ETH-reserve proxy).
+//   MONITOR_LIQ_DROP_BP   the drop band in basis points (0..10000): a fall of
+//                         more than this fraction vs the baseline flags a drain;
+//                         "" => 0 (any drop flags — the most sensitive setting).
+//   MONITOR_LIQ_LABEL     a human label for the pool / vault (for the alert body).
+// Emits: "monitor:alert" (the colony bus contract).
+
+cb 90000;
+
+// --- diagnostic confidence read (logging only; tier() gates behaviour) ---------
+fn get_confidence() -> float {
+    let raw = recall_latest("liquidity-watcher:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    }
+    return 0.0;
+}
+
+// --- env defaults --------------------------------------------------------------
+fn target_or(raw: string, fallback: string) -> string {
+    if len(raw) > 0 { return raw; }
+    return fallback;
+}
+
+fn label_or(raw: string, addr: string) -> string {
+    if len(raw) > 0 { return raw; }
+    return addr;
+}
+
+// JSON-string escape a free-text field (#1089): backslash -> \\ and double-quote
+// -> \" , so an operator-authored label/address containing a `"` cannot corrupt
+// the alert/signal JSON. Per-char fold (.ag has no string-replace builtin).
+fn json_escape(s: string) -> string {
+    return reduce(regex_find_all("[\\s\\S]", s), |acc: string, c: string| -> string {
+        if c == "\\" { return acc + "\\\\"; }
+        if c == "\"" { return acc + "\\\""; }
+        return acc + c;
+    }, "");
+}
+
+// --- read the reserve / TVL proxy ----------------------------------------------
+// When MONITOR_LIQ_SIG is set we read a view via `cast call`; otherwise we read
+// the contract's native balance via `cast balance`. EVERY dynamic value (the cast
+// path, the rpc url, the address, the signature) is shell_escape()d — they are
+// operator/coordinator-supplied facts that flow into a shell, so none may be a
+// bare concat. `set +e` + `|| true` so a transient RPC failure returns "" (no
+// reading -> no false flag) instead of aborting the tick. Returns the decimal
+// string, or "" on any failure / empty reader.
+fn read_view(castBin: string, rpc: string, addr: string, sig: string) -> string {
+    if len(castBin) == 0 { return ""; }
+    if len(rpc) == 0 { return ""; }
+    if len(addr) == 0 { return ""; }
+    if len(sig) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    let out = exec sh "set +e; " + shell_escape(castBin) + " call --rpc-url " + shell_escape(rpc)
+            + " " + shell_escape(addr) + " " + shell_escape(sig)
+            + " 2>/dev/null | " + shell_escape(castBin) + " --to-dec 2>/dev/null || true";
+    return out;
+}
+
+fn read_balance(castBin: string, rpc: string, addr: string) -> string {
+    if len(castBin) == 0 { return ""; }
+    if len(rpc) == 0 { return ""; }
+    if len(addr) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    let out = exec sh "set +e; " + shell_escape(castBin) + " balance --rpc-url " + shell_escape(rpc)
+            + " " + shell_escape(addr)
+            + " 2>/dev/null || true";
+    return out;
+}
+
+// Read the reserve: a view when a signature is configured, else the native
+// balance. The chosen source is reflected in the alert body's verdict facts.
+fn read_reserve(castBin: string, rpc: string, addr: string, sig: string) -> string {
+    if len(sig) > 0 {
+        return read_view(castBin, rpc, addr, sig);
+    }
+    return read_balance(castBin, rpc, addr);
+}
+
+// Trim a trailing newline cast leaves on its output, leaving only the first token.
+fn first_token(s: string) -> string {
+    let nl = index_of(s, "\n");
+    if nl < 0 { return s; }
+    return substring(s, 0, nl);
+}
+
+// --- big-number-safe wei handling (NO bare parse_int on the raw reading) -------
+// A realistic reserve / TVL is in wei: 1000 ETH = 1e21, far beyond the i64 range
+// (~9.2e18, ≈ 9.22 ETH at 18 dp) parse_int can hold — parse_int SATURATES such a
+// value to 0, so a 1000-ETH vault used to baseline at 0 and a real drain read as
+// "ok". The reading + baseline are therefore kept as DECIMAL STRINGS and, when
+// they exceed 18 digits, SCALED DOWN by truncating the same number of low-order
+// digits from BOTH (the ratio is preserved) BEFORE any parse_int — so every
+// parse_int below operates on a value guaranteed to fit i64. (#1095.)
+
+// Strip leading zeros from a digit string, leaving at least one digit ("0").
+fn strip_leading_zeros(s: string) -> string {
+    let kept = reduce(regex_find_all("[0-9]", s), |acc: string, d: string| -> string {
+        if len(acc) > 0 { return acc + d; }
+        if d == "0" { return acc; }
+        return d;
+    }, "");
+    if len(kept) == 0 { return "0"; }
+    return kept;
+}
+
+// Normalise a raw decimal reading to a clean digit string (leading zeros stripped).
+// "" / non-numeric -> "" (the "no reading" sentinel, distinct from a legitimate
+// "0"). Total. Mirrors prospector/value-scorer.ag's reading_to_dec.
+fn reading_to_dec(s: string) -> string {
+    let t = first_token(s);
+    if len(t) == 0 { return ""; }
+    if len(regex_find_all("[^0-9]", t)) > 0 { return ""; }
+    return strip_leading_zeros(t);
+}
+
+// The most significant digits a scaled value may keep so parse_int never wraps:
+// i64 max is 19 digits (9223372036854775807); 18 digits (<1e18) always fits.
+fn max_safe_digits() -> int {
+    return 18;
+}
+
+// How many low-order digits must be dropped so BOTH `a` and `b` fit i64: the
+// excess of the LONGER string over max_safe_digits(), clamped to >= 0. The SAME
+// drop is applied to both, so the drop_bp ratio is preserved.
+fn excess_digits(a: string, b: string) -> int {
+    let longest = if len(a) > len(b) { len(a) } else { len(b) };
+    let excess = longest - max_safe_digits();
+    if excess < 0 { return 0; }
+    return excess;
+}
+
+// Truncate the `drop` low-order digits off a digit string (scale down by 10^drop).
+// The "" no-read / no-baseline sentinel is PRESERVED (a missing value must stay
+// missing through scaling — never become "0"). A real value whose every digit is
+// dropped scales to dust "0". Total.
+fn scale_dec(s: string, drop: int) -> string {
+    if len(s) == 0 { return ""; }
+    if drop <= 0 { return s; }
+    if drop >= len(s) { return "0"; }
+    return substring(s, 0, len(s) - drop);
+}
+
+// Parse a SCALED (<= 18-digit) digit string to int; "" -> -1 (the "no reading" /
+// "no baseline" sentinel, distinct from a legitimate 0). parse_int is total and,
+// post-scaling, never overflows.
+fn scaled_to_int(s: string) -> int {
+    if len(s) == 0 { return -1; }
+    return parse_int(s);
+}
+
+// Optional integer env fact: "" / non-numeric -> -1 (the "unset" sentinel). Bands
+// (basis points 0..10000) always fit i64, so a bare parse_int is safe here.
+fn opt_int(raw: string) -> int {
+    if len(raw) == 0 { return -1; }
+    if len(regex_find_all("[^0-9]", raw)) > 0 { return -1; }
+    return parse_int(raw);
+}
+
+// --- the deterministic DROP verdict (a FACT, never an LLM call) ----------------
+// The drop in basis points of `reserve` vs `base` (positive when reserve FELL).
+// -1 when there is no usable baseline. A rise yields 0 (a rise is never a drop).
+// DIVISION-FIRST: a basis-point ratio `(base - reserve) * 10000 / base` overflows
+// i64 even for an in-range 18-digit base, so we compute `unit = base / 10000`
+// (the per-bp magnitude) FIRST and then `diff / unit` — no large multiply, no
+// overflow. A base below 10000 (after scaling) is dust: `unit < 1` -> no drop.
+fn drop_bp(reserve: int, base: int) -> int {
+    if base <= 0 { return -1; }
+    if reserve >= base { return 0; }
+    let unit = base / 10000;
+    if unit < 1 { return 0; }
+    return (base - reserve) / unit;
+}
+
+fn drained(reserve: int, base: int, dropBp: int) -> bool {
+    if reserve < 0 { return false; }
+    let d = drop_bp(reserve, base);
+    if d < 0 { return false; }
+    return d > dropBp;
+}
+
+// Fuse the reserve read + baseline into ONE verdict token, both already SCALED to
+// fit i64. A reserve that could not be read is "no-read"; a fall past the band is
+// "drained"; anything else (a rise, a hold, or a sub-band dip) is "ok".
+fn verdict_of(reserve: int, base: int, dropBp: int) -> string {
+    if reserve < 0 { return "no-read"; }
+    if drained(reserve, base, dropBp) { return "drained"; }
+    return "ok";
+}
+
+// learn() outcome enum {success,failure,partial,timeout,error}. A clean reserve
+// read is a healthy observation (success); a drain past the band is the anomaly
+// the watcher exists to catch (failure); a missing read is error.
+fn outcome_of(verdict: string) -> string {
+    if verdict == "ok" { return "success"; }
+    if verdict == "drained" { return "failure"; }
+    return "error";
+}
+
+fn is_anomaly(verdict: string) -> bool {
+    if verdict == "drained" { return true; }
+    return false;
+}
+
+// The reserve / baseline reported in the payload: the full (UN-scaled) digit
+// string, or "-1" for a no-read / no-baseline (the sentinel, mirroring the sibling
+// watchers' convention). Carried as a JSON STRING because a wei magnitude (>1e18)
+// overflows the JSON number parser downstream (the prospector value-scorer
+// convention).
+fn value_for_json(s: string) -> string {
+    if len(s) == 0 { return "-1"; }
+    return s;
+}
+
+// A compact, deterministic alert payload (JSON). All fields are facts the watcher
+// computed; none is LLM text. `sev` is set by the tier branch (draft vs page).
+// reserve/baseline are the full wei digit strings, quoted (see value_for_json).
+fn alert_payload(label: string, verdict: string, reserve: string, base: string, addr: string, sev: string) -> string {
+    return "{\"watcher\":\"liquidity\",\"pool\":\"" + json_escape(label) + "\",\"verdict\":\"" + verdict
+         + "\",\"reserve\":\"" + value_for_json(reserve) + "\",\"baseline\":\"" + value_for_json(base)
+         + "\",\"address\":\"" + json_escape(addr) + "\",\"severity\":\"" + sev + "\"}";
+}
+
+fn tick(reason: string) -> void {
+    let now = to_string(now_ms());
+    // Heartbeat first (dashboard memo-freshness probe) even on an early return.
+    memo_write("liquidity-watcher:last_check", now);
+
+    let castBin = getenv("MONITOR_CAST");
+    let rpc = getenv("MONITOR_RPC_URL");
+    let addr = target_or(getenv("MONITOR_LIQ_TARGET"), getenv("MONITOR_TARGET"));
+    let sig = getenv("MONITOR_LIQ_SIG");
+    let dropBp = if len(getenv("MONITOR_LIQ_DROP_BP")) > 0 { opt_int(getenv("MONITOR_LIQ_DROP_BP")) } else { 0 };
+    let dropBand = if dropBp < 0 { 0 } else { dropBp };
+    let label = label_or(getenv("MONITOR_LIQ_LABEL"), addr);
+
+    // Read the current reserve / TVL proxy as a big-number-safe DIGIT STRING. The
+    // DROP baseline is the last reserve this watcher observed, persisted as the SAME
+    // digit string (so read, baseline, and comparison share one representation). On
+    // the first read there is no baseline ("") -> the drop check is skipped this
+    // tick; the current reserve becomes the baseline for next time.
+    let reserveDec = reading_to_dec(read_reserve(castBin, rpc, addr, sig));
+    let baseDec = recall_latest("liquidity-watcher:baseline:" + addr);
+
+    // SCALE both to <= 18 digits by dropping the SAME number of low-order digits
+    // (the ratio is preserved) BEFORE any parse_int, so neither wraps to 0. A
+    // no-read / no-baseline ("") yields the -1 sentinel and is never scaled.
+    let drop = excess_digits(reserveDec, baseDec);
+    let reserve = scaled_to_int(scale_dec(reserveDec, drop));
+    let base = scaled_to_int(scale_dec(baseDec, drop));
+
+    let verdict = verdict_of(reserve, base, dropBand);
+    let outcome = outcome_of(verdict);
+
+    print("liquidity-watcher: " + label + " reserve=" + value_for_json(reserveDec)
+        + " base=" + value_for_json(baseDec)
+        + " -> " + verdict + " (conf=" + to_string(get_confidence()) + ")");
+
+    // Update the drop baseline to the latest GOOD read (the full digit string) so
+    // the next tick compares against a recent reserve (a no-read leaves the old
+    // baseline intact). A drained reading STILL re-baselines AFTER this tick's flag,
+    // so a single drain pages once and the new (lower) reserve becomes the next
+    // normal.
+    if len(reserveDec) > 0 {
+        memo_write("liquidity-watcher:baseline:" + addr, reserveDec);
+    };
+
+    let key = label + ":" + addr;
+    let desc = "pool reserve " + label + " reserve=" + value_for_json(reserveDec) + " -> " + verdict;
+    let anomaly = is_anomaly(verdict);
+
+    // Post this watcher's latest verdict to the shared blackboard memo the
+    // coordinator reads each tick to fuse + dedup signals (a memo write — allowed
+    // at every tier, including shadow). Severity is re-decided by the coordinator.
+    memo_write("monitor:signal:liquidity", alert_payload(label, verdict, reserveDec, baseDec, addr, "info"));
+
+    // ONE tier() call, branch ONCE (ADR-0001). The tier gates EMISSION only; the
+    // verdict above is unchanged by tier. shadow/dormant fall through to observe.
+    // (.ag has no `else if`; the tiers nest as `else { if ... { } else { } }`.)
+    let my_tier = tier("liquidity-watcher");
+    if my_tier == "autonomous" {
+        // Proven reliable -> a DIRECT page on a real anomaly (high severity).
+        if anomaly {
+            emit("monitor:alert", alert_payload(label, verdict, reserveDec, baseDec, addr, "high"));
+            learn("liquidity-watch", key, desc, outcome, [verdict, outcome, "acted"]);
+        } else {
+            learn("liquidity-watch", key, desc, outcome, [verdict, outcome, "observed"]);
+        };
+    } else {
+        if my_tier == "review-gated" {
+            // Trusted to page under a review gate -> a DIRECT page (high severity).
+            if anomaly {
+                emit("monitor:alert", alert_payload(label, verdict, reserveDec, baseDec, addr, "high"));
+                learn("liquidity-watch", key, desc, outcome, [verdict, outcome, "review-gated"]);
+            } else {
+                learn("liquidity-watch", key, desc, outcome, [verdict, outcome, "observed"]);
+            };
+        } else {
+            if my_tier == "propose" {
+                // Enough signal to contribute -> a DRAFT alert (low severity).
+                if anomaly {
+                    emit("monitor:alert", alert_payload(label, verdict, reserveDec, baseDec, addr, "low"));
+                    learn("liquidity-watch", key, desc, outcome, [verdict, outcome, "emitted"]);
+                } else {
+                    learn("liquidity-watch", key, desc, outcome, [verdict, outcome, "observed"]);
+                };
+            } else {
+                // shadow / dormant: learn the baseline ONLY — no emit, no write.
+                learn("liquidity-watch", key, desc + " (baseline)", outcome, [verdict, outcome, "observed"]);
+                print("liquidity-watcher: observing (tier: " + my_tier + ") — no emit");
+            };
+        };
+    };
+
+    memo_write("liquidity-watcher:last_check", to_string(now_ms()));
+}
