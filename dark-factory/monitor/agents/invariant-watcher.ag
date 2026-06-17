@@ -1,0 +1,243 @@
+// invariant-watcher.ag — Monitor colony (Dark Factory federation).
+//
+// Continuously evaluates DERIVED protocol invariants against CURRENT on-chain
+// state and flags a violation (or a thin margin-to-violation) as a candidate
+// anomaly. NON-custodial / read-only: it only READS chain state via `cast`/RPC
+// over `exec sh` — it never signs a transaction and never touches funds.
+//
+// The signal is a FACT (an on-chain read + a deterministic comparison), never an
+// LLM opinion. Emission is gated PURELY on the ADR-0001 tier of this agent (the
+// false-positive control):
+//   shadow / dormant -> observe + learn a baseline, NO emit (learning the
+//                       protocol's normal state before it is trusted to page);
+//   propose          -> emit a DRAFT `monitor:alert` (low severity);
+//   review-gated /    -> emit a DIRECT-page `monitor:alert` (high severity).
+//   autonomous
+// One tier() call per tick, branch once, fall through to shadow/dormant.
+//
+// Env contract (all read via getenv; the coordinator + scripts/start-colony.sh
+// export them; add each to exec.env_passthrough in .agentis/config so the
+// sandboxed `exec sh` can read them):
+//   MONITOR_CAST        path to the `cast` binary (foundry) used for the read;
+//                       "" => the watcher has no reader and observes nothing.
+//   MONITOR_RPC_URL     the chain RPC endpoint `cast` reads from (read-only).
+//   MONITOR_TARGET      the target protocol contract address (0x...).
+//   MONITOR_INV_LHS_SIG the `cast call` function signature whose return is the
+//                       invariant's LEFT-hand quantity (e.g. "totalSupply()").
+//   MONITOR_INV_RHS_SIG the function signature for the RIGHT-hand quantity
+//                       (e.g. "totalAssets()"); "" => RHS is the literal bound
+//                       MONITOR_INV_RHS_CONST instead (a fixed reserve floor).
+//   MONITOR_INV_RHS_CONST a literal integer RHS bound used when RHS_SIG is "".
+//   MONITOR_INV_REL     the relation that MUST hold: "le" (lhs<=rhs, e.g.
+//                       solvency: supply<=assets), "ge" (lhs>=rhs), or "eq".
+//                       "" => default "le".
+//   MONITOR_INV_MARGIN_BP a margin-to-violation band in basis points (0..10000):
+//                       when the invariant HOLDS but the gap is within this band
+//                       of flipping, the watcher flags a margin warning. "" => 0
+//                       (only a hard violation flags).
+//   MONITOR_INV_LABEL   a human label for the invariant (for the alert body).
+// Emits: "monitor:alert" (the colony bus contract).
+
+cb 90000;
+
+// --- tier read (ADR-0001 / CLAUDE.md threshold table) --------------------------
+// Mirrors the runtime tier() builtin's table so a missing memo reads as dormant.
+// We STILL call tier("invariant-watcher") below (the lint requires the builtin
+// call); this helper is used only for the diagnostic get_confidence() log.
+fn get_confidence() -> float {
+    let raw = recall_latest("invariant-watcher:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    }
+    return 0.0;
+}
+
+// --- env facts -----------------------------------------------------------------
+fn rel_or_default(raw: string) -> string {
+    if len(raw) == 0 { return "le"; }
+    return raw;
+}
+
+fn label_or_sig(raw: string, lhs: string) -> string {
+    if len(raw) > 0 { return raw; }
+    return lhs;
+}
+
+// --- read a single uint return from an on-chain view via cast call -------------
+// `cast call --rpc-url <url> <addr> <sig>` prints one 0x-hex word; `cast --to-dec`
+// renders it as a decimal integer string. EVERY dynamic value (the cast path, the
+// rpc url, the address, the function signature) is shell_escape()d — they are all
+// operator/coordinator-supplied facts that flow into a shell, so none may be a
+// bare concat. `set +e` + `|| true` so a transient RPC failure returns "" (no
+// reading -> no false flag) instead of aborting the tick. Returns the decimal
+// string, or "" on any failure / empty reader.
+fn read_uint(castBin: string, rpc: string, addr: string, sig: string) -> string {
+    if len(castBin) == 0 { return ""; }
+    if len(rpc) == 0 { return ""; }
+    if len(addr) == 0 { return ""; }
+    if len(sig) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    let out = exec sh "set +e; " + shell_escape(castBin) + " call --rpc-url " + shell_escape(rpc)
+            + " " + shell_escape(addr) + " " + shell_escape(sig)
+            + " 2>/dev/null | " + shell_escape(castBin) + " --to-dec 2>/dev/null || true";
+    return out;
+}
+
+// Trim a trailing newline cast leaves on its decimal output, leaving only digits.
+fn first_token(s: string) -> string {
+    let nl = index_of(s, "\n");
+    if nl < 0 { return s; }
+    return substring(s, 0, nl);
+}
+
+// Parse a decimal reading to an int; an empty / non-numeric reading -> -1 (the
+// "no reading" sentinel, distinct from a legitimate 0). parse_int is total.
+fn reading_to_int(s: string) -> int {
+    let t = first_token(s);
+    if len(t) == 0 { return -1; }
+    if len(regex_find_all("[^0-9]", t)) > 0 { return -1; }
+    return parse_int(t);
+}
+
+// Resolve the RHS quantity: a live read of RHS_SIG when present, else the literal
+// MONITOR_INV_RHS_CONST. Returns -1 when neither yields a numeric value.
+fn resolve_rhs(castBin: string, rpc: string, addr: string, rhsSig: string, rhsConst: string) -> int {
+    if len(rhsSig) > 0 {
+        return reading_to_int(read_uint(castBin, rpc, addr, rhsSig));
+    }
+    if len(rhsConst) == 0 { return -1; }
+    if len(regex_find_all("[^0-9]", rhsConst)) > 0 { return -1; }
+    return parse_int(rhsConst);
+}
+
+// --- the deterministic invariant verdict (a FACT, never an LLM call) -----------
+// "violated" when the required relation does NOT hold; "margin" when it holds but
+// the gap is within MONITOR_INV_MARGIN_BP basis points of flipping; "ok" when it
+// holds comfortably; "no-read" when either side could not be read.
+fn within_margin(lhs: int, rhs: int, rel: string, marginBp: int) -> bool {
+    if marginBp <= 0 { return false; }
+    if rhs <= 0 { return false; }
+    // gap_bp = |lhs - rhs| * 10000 / rhs ; flag when the holding side is within
+    // marginBp of equality (the point the relation flips).
+    let diff = if lhs >= rhs { lhs - rhs } else { rhs - lhs };
+    let gapBp = (diff * 10000) / rhs;
+    return gapBp <= marginBp;
+}
+
+fn invariant_holds(lhs: int, rhs: int, rel: string) -> bool {
+    if rel == "le" { return lhs <= rhs; }
+    if rel == "ge" { return lhs >= rhs; }
+    if rel == "eq" { return lhs == rhs; }
+    return lhs <= rhs;
+}
+
+fn verdict_of(lhs: int, rhs: int, rel: string, marginBp: int) -> string {
+    if lhs < 0 { return "no-read"; }
+    if rhs < 0 { return "no-read"; }
+    if !invariant_holds(lhs, rhs, rel) { return "violated"; }
+    if within_margin(lhs, rhs, rel, marginBp) { return "margin"; }
+    return "ok";
+}
+
+// learn() outcome enum {success,failure,partial,timeout,error}. A clean hold is a
+// confirmed-healthy observation (success); a violation is the anomaly the watcher
+// exists to catch (failure); a margin is a partial (holding but thin); a missing
+// read is an error (the reader could not produce a fact this tick).
+fn outcome_of(verdict: string) -> string {
+    if verdict == "ok" { return "success"; }
+    if verdict == "violated" { return "failure"; }
+    if verdict == "margin" { return "partial"; }
+    return "error";
+}
+
+// Is this verdict worth surfacing as an alert at all (vs a healthy/quiet tick)?
+fn is_anomaly(verdict: string) -> bool {
+    if verdict == "violated" { return true; }
+    if verdict == "margin" { return true; }
+    return false;
+}
+
+// A compact, deterministic alert payload (JSON). All fields are facts the watcher
+// computed; none is LLM text. `sev` is set by the tier branch (draft vs page).
+fn alert_payload(label: string, verdict: string, lhs: int, rhs: int, rel: string, addr: string, sev: string) -> string {
+    return "{\"watcher\":\"invariant\",\"invariant\":\"" + label + "\",\"verdict\":\"" + verdict
+         + "\",\"lhs\":" + to_string(lhs) + ",\"rhs\":" + to_string(rhs) + ",\"rel\":\"" + rel
+         + "\",\"target\":\"" + addr + "\",\"severity\":\"" + sev + "\"}";
+}
+
+fn tick(reason: string) -> void {
+    let now = to_string(now_ms());
+    // Heartbeat first so the dashboard's memo-freshness probe sees the daemon
+    // alive even when the reader is unconfigured and the tick early-returns.
+    memo_write("invariant-watcher:last_check", now);
+
+    let castBin = getenv("MONITOR_CAST");
+    let rpc = getenv("MONITOR_RPC_URL");
+    let addr = getenv("MONITOR_TARGET");
+    let lhsSig = getenv("MONITOR_INV_LHS_SIG");
+    let rhsSig = getenv("MONITOR_INV_RHS_SIG");
+    let rhsConst = getenv("MONITOR_INV_RHS_CONST");
+    let rel = rel_or_default(getenv("MONITOR_INV_REL"));
+    let label = label_or_sig(getenv("MONITOR_INV_LABEL"), lhsSig);
+    let marginRaw = getenv("MONITOR_INV_MARGIN_BP");
+    let marginBp = if len(marginRaw) > 0 { reading_to_int(marginRaw) } else { 0 };
+
+    // Read BOTH sides of the invariant from current on-chain state (FACTS).
+    let lhs = reading_to_int(read_uint(castBin, rpc, addr, lhsSig));
+    let rhs = resolve_rhs(castBin, rpc, addr, rhsSig, rhsConst);
+    let verdict = verdict_of(lhs, rhs, rel, marginBp);
+    let outcome = outcome_of(verdict);
+
+    print("invariant-watcher: " + label + " " + rel + " -> " + verdict
+        + " (lhs=" + to_string(lhs) + " rhs=" + to_string(rhs) + ", conf=" + to_string(get_confidence()) + ")");
+
+    let key = label + ":" + addr;
+    let desc = "on-chain invariant " + label + " " + rel + " -> " + verdict;
+    let anomaly = is_anomaly(verdict);
+
+    // Post this watcher's latest verdict to the shared blackboard memo the
+    // coordinator reads each tick to fuse + dedup signals (a memo write — allowed
+    // at every tier, including shadow). The payload is the same fact JSON the
+    // emit carries, with a neutral severity the coordinator re-decides on fusion.
+    memo_write("monitor:signal:invariant", alert_payload(label, verdict, lhs, rhs, rel, addr, "info"));
+
+    // ONE tier() call, branch ONCE (ADR-0001). The tier gates EMISSION only; the
+    // verdict above is unchanged by tier. shadow/dormant fall through to observe.
+    // (.ag has no `else if`; the tiers nest as `else { if ... { } else { } }`.)
+    let my_tier = tier("invariant-watcher");
+    if my_tier == "autonomous" {
+        // Proven reliable -> a DIRECT page on a real anomaly (high severity).
+        if anomaly {
+            emit("monitor:alert", alert_payload(label, verdict, lhs, rhs, rel, addr, "high"));
+            learn("invariant-watch", key, desc, outcome, [verdict, outcome, "acted"]);
+        } else {
+            learn("invariant-watch", key, desc, outcome, [verdict, outcome, "observed"]);
+        };
+    } else {
+        if my_tier == "review-gated" {
+            // Trusted to page under a review gate -> a DIRECT page (high severity).
+            if anomaly {
+                emit("monitor:alert", alert_payload(label, verdict, lhs, rhs, rel, addr, "high"));
+                learn("invariant-watch", key, desc, outcome, [verdict, outcome, "review-gated"]);
+            } else {
+                learn("invariant-watch", key, desc, outcome, [verdict, outcome, "observed"]);
+            };
+        } else {
+            if my_tier == "propose" {
+                // Enough signal to contribute -> a DRAFT alert (low severity).
+                if anomaly {
+                    emit("monitor:alert", alert_payload(label, verdict, lhs, rhs, rel, addr, "low"));
+                    learn("invariant-watch", key, desc, outcome, [verdict, outcome, "emitted"]);
+                } else {
+                    learn("invariant-watch", key, desc, outcome, [verdict, outcome, "observed"]);
+                };
+            } else {
+                // shadow / dormant: learn the baseline ONLY — no emit, no write.
+                learn("invariant-watch", key, desc + " (baseline)", outcome, [verdict, outcome, "observed"]);
+                print("invariant-watcher: observing (tier: " + my_tier + ") — no emit");
+            };
+        };
+    };
+
+    memo_write("invariant-watcher:last_check", to_string(now_ms()));
+}

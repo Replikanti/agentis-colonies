@@ -1,0 +1,105 @@
+# Monitor Colony Configuration
+#
+# Part of the Dark Factory federation. The monitor colony continuously WATCHES a
+# target EVM protocol and emits reasoned, high-signal anomaly alerts on the
+# colony bus (`monitor:alert`). NON-custodial / read-only: every watcher only
+# READS chain state via `cast`/RPC; no agent signs a transaction or touches
+# funds. Copy to colony.toml and edit for your environment.
+
+[colony]
+name = "monitor"
+tick_interval_ms = 60000
+
+# dark-factory is a non-forge federation (ADR-0003). The monitor watchers read
+# on-chain state through `cast`/RPC inside the sandbox via `exec sh`; no agent
+# calls a GitLab/GitHub forge API. `forge.type = "none"` is the explicit
+# non-forge marker recognised by colony-lint — no [forge.gitlab] / [forge.github]
+# sub-block is required. See ADR-0003 for the portability contract and ADR-0002
+# for the forge-bound contract this opts out of.
+[forge]
+type = "none"
+
+[llm]
+# Only "backend" is read today. "cli" uses the agentis daemon default CLI
+# adapter. The watchers' verdicts are deterministic on-chain reads (no LLM call
+# on the hot path); the backend is declared for schema conformance + future
+# reasoning extensions.
+backend = "cli"
+
+# Agent definitions. Each agent runs as a separate `agentis daemon` process,
+# launched by scripts/start-colony.sh with a per-agent tick interval. They
+# coordinate via durable memos (the `monitor:signal:*` blackboard) and emit over
+# the bus. cb_budget MUST match the `cb <N>;` decl at the top of each .ag file.
+
+# Evaluates derived protocol invariants against current on-chain state and flags
+# a violation / margin-to-violation. Posts monitor:signal:invariant.
+[[agents]]
+name = "invariant-watcher"
+source = "agents/invariant-watcher.ag"
+cb_budget = 90000
+tick_interval_ms = 60000
+
+# Watches the price feed for deviation / staleness / out-of-bounds. Posts
+# monitor:signal:oracle.
+[[agents]]
+name = "oracle-watcher"
+source = "agents/oracle-watcher.ag"
+cb_budget = 90000
+tick_interval_ms = 60000
+
+# Fuses the watcher signals, dedups, decides severity, and emits one
+# consolidated monitor:alert. Reads the monitor:signal:* blackboard.
+[[agents]]
+name = "coordinator"
+source = "agents/coordinator.ag"
+cb_budget = 120000
+tick_interval_ms = 60000
+
+# Monitor environment contract (consumed by the agents via getenv; exported by
+# scripts/start-colony.sh). Operators export these before launching, and add
+# each to exec.env_passthrough in .agentis/config so the sandboxed `exec sh` can
+# read them. All watchers degrade safely when their reader is unconfigured: with
+# no MONITOR_CAST / MONITOR_RPC_URL they read nothing and only observe (no false
+# alert).
+#
+# Shared (both watchers):
+#   MONITOR_CAST            absolute path to the `cast` binary (foundry).
+#   MONITOR_RPC_URL         the chain RPC endpoint cast reads from (read-only).
+#
+# invariant-watcher:
+#   MONITOR_TARGET          the target protocol contract address (0x...).
+#   MONITOR_INV_LHS_SIG     cast-call signature for the invariant's LHS quantity
+#                           (e.g. "totalSupply()").
+#   MONITOR_INV_RHS_SIG     cast-call signature for the RHS quantity (e.g.
+#                           "totalAssets()"); "" => use MONITOR_INV_RHS_CONST.
+#   MONITOR_INV_RHS_CONST   a literal integer RHS bound (used when RHS_SIG is "").
+#   MONITOR_INV_REL         the relation that MUST hold: "le" | "ge" | "eq"
+#                           (default "le", e.g. solvency: supply <= assets).
+#   MONITOR_INV_MARGIN_BP   margin-to-violation band in basis points (0..10000);
+#                           "" => 0 (only a hard violation flags).
+#   MONITOR_INV_LABEL       a human label for the invariant (alert body).
+#
+# oracle-watcher:
+#   MONITOR_ORACLE          the price-feed contract address (0x...).
+#   MONITOR_ORACLE_PRICE_SIG cast-call signature returning the price
+#                           (default "latestAnswer()").
+#   MONITOR_ORACLE_TS_SIG   signature returning the feed's last-update unix ts
+#                           (e.g. "latestTimestamp()"); "" => skip staleness.
+#   MONITOR_ORACLE_MAX_AGE  max feed age in seconds before STALENESS flags;
+#                           "" => 0 (skip staleness).
+#   MONITOR_ORACLE_DEV_BP   deviation band in basis points vs the last baseline;
+#                           "" => 0 (skip deviation).
+#   MONITOR_ORACLE_MIN      lower sanity bound on the price; "" => no lower bound.
+#   MONITOR_ORACLE_MAX      upper sanity bound on the price; "" => no upper bound.
+#   MONITOR_ORACLE_LABEL    a human label for the feed (alert body).
+#
+# Alert sink (optional, scripts/notify.sh):
+#   MONITOR_WEBHOOK_URL     a Discord/Slack incoming-webhook URL. When set,
+#                           notify.sh POSTs the alert payload to it. NEVER commit
+#                           a real URL — export it in the operator's environment.
+[monitor]
+cast = ""
+rpc_url = ""
+target = ""
+oracle = ""
+webhook_url = ""
