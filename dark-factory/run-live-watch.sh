@@ -29,6 +29,15 @@
 #   rel       the relation that MUST hold: "le" (lhs<=rhs) | "ge" (lhs>=rhs) | "eq". Defaults to "le".
 #   margin_bp margin-to-violation band in basis points (0..10000); 0 = only a hard violation flags.
 #
+# TARGET FINGERPRINT (#1097) — written alongside the spec at <out>.fingerprint.json:
+#   {"address":"0x..","rpc_url":"...","code_hash":"<sha256 of cast code>","impl_slot":"<EIP-1967 impl slot value>"}
+# A static watch-spec silently stops matching the deployed contract once the target UPGRADES (new impl, new
+# selectors). monitor/scripts/check-drift.sh re-reads this fingerprint and raises a `drift` alert (severity
+# high) when the deployed code / impl no longer matches — so the monitor SAYS it has gone blind rather than
+# keep "watching" stale invariants. READ-ONLY: the fingerprint is captured with `cast code` / `cast storage`
+# only. Re-derivation hook: re-run this script (e.g. `run-live-watch.sh --rederive ...` from cron) to derive a
+# fresh spec + fingerprint and hot-swap MONITOR_INV_SPEC (operator-gated — re-derivation needs the LLM/forge path).
+#
 # Usage:
 #   run-live-watch.sh --repo <foundry project> --target <Contract.sol[:Name]> --address <0x..> \
 #                     --rpc-url <http(s)-rpc> [options]
@@ -51,6 +60,11 @@
 #   --backend <b>         LLM backend forwarded to run-invariant-hunt.sh on the live path (default flat-cyborg).
 #   --runs N / --depth D / --seed S   Forge invariant budgets forwarded to the derivation (live path).
 #   --out <file>          Where to write the watch-spec JSON (default: ./live-watch-out/watch-spec.json).
+#   --cast <bin>          (#1097) foundry `cast` binary used to capture the target fingerprint (deployed-code
+#                         hash + EIP-1967 impl slot) at <out>.fingerprint.json (default `cast` on PATH). A
+#                         missing cast / unreachable RPC writes an empty fingerprint — the drift check stays quiet.
+#   --rederive            (#1097) re-derivation hook: re-run the derivation and overwrite the spec + fingerprint
+#                         (e.g. from cron). Behaves like a normal live run; accepted for intent / scripting.
 #   --agentis <bin>       agentis binary (forwarded to run-invariant-hunt.sh; default `agentis` on PATH).
 set -eu
 
@@ -58,6 +72,14 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
 REPO=""; TARGET=""; ADDRESS=""; RPC_URL=""; CLASS=""; CODE=""; SPEC_FIXTURE=""
 BACKEND="flat-cyborg"; RUNS=""; DEPTH=""; SEED=""; OUT="$PWD/live-watch-out/watch-spec.json"
+# #1097: the foundry `cast` binary used to capture the deployed-target FINGERPRINT
+# (deployed-bytecode hash + EIP-1967 implementation slot) at derivation time. The
+# fingerprint is written next to the spec so check-drift.sh can detect when the
+# deployed contract upgraded out from under a now-stale watch-spec. "" / unreachable
+# RPC => the fingerprint is written with empty fields (drift check stays quiet — it
+# can only flag a CHANGE vs a captured baseline, never a false alarm).
+CAST="cast"
+REDERIVE=0
 
 need() { [ "$1" -ge 2 ] || { echo "run-live-watch.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -74,6 +96,8 @@ while [ $# -gt 0 ]; do
     --depth) need "$#"; DEPTH="$2"; shift 2 ;;
     --seed) need "$#"; SEED="$2"; shift 2 ;;
     --out) need "$#"; OUT="$2"; shift 2 ;;
+    --cast) need "$#"; CAST="$2"; shift 2 ;;
+    --rederive) REDERIVE=1; shift ;;
     --agentis) need "$#"; AGENTIS="$2"; shift 2 ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-live-watch.sh: unknown flag $1" >&2; exit 2 ;;
@@ -161,6 +185,63 @@ with open(out, "w", encoding="utf-8") as fh:
     fh.write("\n")
 print(len(recs))
 PY
+}
+
+# The canonical EIP-1967 IMPLEMENTATION slot (same constant the governance-watcher
+# watches). A proxy whose impl pointer moves is exactly an upgrade — the drift tell.
+IMPL_SLOT="0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+
+# emit_fingerprint — capture the deployed-target FINGERPRINT (#1097) next to the
+# spec at <OUT>.fingerprint.json: the deployed-bytecode HASH (sha256 of `cast code
+# <addr>`) and the EIP-1967 IMPLEMENTATION slot value (`cast storage <addr>
+# <impl-slot>`). check-drift.sh re-reads these and raises a `drift` alert when the
+# deployed contract no longer matches — so a static spec cannot silently go blind on
+# an upgraded target. READ-ONLY: only `cast code` / `cast storage`. A missing `cast`
+# or an unreachable RPC is NOT fatal — the fingerprint is written with empty fields
+# and the drift check stays quiet (it can only flag a CHANGE vs a captured baseline).
+emit_fingerprint() {
+    _fp="$OUT.fingerprint.json"
+    _code_hash=""
+    _impl=""
+    if command -v "$CAST" >/dev/null 2>&1; then
+        # `cast code` prints the deployed bytecode as one 0x-hex word (no 0x on an
+        # EOA / unreachable read). Hash it so the fingerprint is a small fixed digest,
+        # not the whole bytecode. set +e + 2>/dev/null: a failed read leaves "".
+        set +e
+        _code="$("$CAST" code --rpc-url "$RPC_URL" "$ADDRESS" 2>/dev/null)"
+        _impl="$("$CAST" storage --rpc-url "$RPC_URL" "$ADDRESS" "$IMPL_SLOT" 2>/dev/null)"
+        set -e
+        # lowercase BOTH (symmetric with check-drift.sh's cast-read.sh re-read, which
+        # lowercases every token) so a `cast` that emits mixed-case bytecode can't
+        # produce a false `spec-stale` drift on an unchanged target — QA #1108.
+        _code="$(printf '%s' "$_code" | awk 'NR==1{print $1}' | tr '[:upper:]' '[:lower:]')"
+        _impl="$(printf '%s' "$_impl" | awk 'NR==1{print $1}' | tr '[:upper:]' '[:lower:]')"
+        if [ -n "$_code" ] && [ "$_code" != "0x" ]; then
+            if command -v sha256sum >/dev/null 2>&1; then
+                _code_hash="$(printf '%s' "$_code" | sha256sum | awk '{print $1}')"
+            elif command -v shasum >/dev/null 2>&1; then
+                _code_hash="$(printf '%s' "$_code" | shasum -a 256 | awk '{print $1}')"
+            fi
+        fi
+    fi
+    ADDRESS="$ADDRESS" RPC_URL="$RPC_URL" CODE_HASH="$_code_hash" IMPL="$_impl" \
+        FP_FILE="$_fp" python3 - <<'PY'
+import json, os
+fp = {
+    "address": os.environ["ADDRESS"],
+    "rpc_url": os.environ["RPC_URL"],
+    "code_hash": os.environ["CODE_HASH"],
+    "impl_slot": os.environ["IMPL"],
+}
+with open(os.environ["FP_FILE"], "w", encoding="utf-8") as fh:
+    json.dump(fp, fh, indent=2)
+    fh.write("\n")
+PY
+    if [ -n "$_code_hash" ] || [ -n "$_impl" ]; then
+        echo "run-live-watch.sh: captured target fingerprint -> $_fp (code_hash=${_code_hash:-none} impl=${_impl:-none})" >&2
+    else
+        echo "run-live-watch.sh: target fingerprint not captured (no cast / unreachable RPC) -> $_fp written empty; drift check will stay quiet" >&2
+    fi
 }
 
 # extract_from_test <generated *.t.sol> — pull the live-watchable two-sided invariants OUT of the derived
@@ -256,6 +337,7 @@ with open(recs_path, "w", encoding="utf-8") as fh:
         fh.write("\n")
 PY
   N="$(emit_spec "$RECORDS")"
+  emit_fingerprint
   echo "run-live-watch.sh: wrote watch-spec ($N invariant(s)) from fixture to $OUT" >&2
   echo "$OUT"
   exit 0
@@ -275,6 +357,9 @@ HUNT="$HERE/run-invariant-hunt.sh"
 # the artifact we extract the live-watchable comparisons from. The fork address is forwarded as the FM1
 # single-target --fork-target so the derived handler can reference the real deployed contract.
 HUNT_OUT="$OUT_DIR/invariant-out"
+if [ "$REDERIVE" -eq 1 ]; then
+  echo "run-live-watch.sh: --rederive — re-running derivation; the spec + fingerprint at $OUT will be overwritten" >&2
+fi
 echo "run-live-watch.sh: deriving the invariant SET for $TARGET (once) via run-invariant-hunt.sh ..." >&2
 set -- --repo "$REPO" --target "$TARGET" --backend "$BACKEND" --fork-url "$RPC_URL" --fork-target "$ADDRESS" \
        --out "$HUNT_OUT" --agentis "$AGENTIS"
@@ -292,6 +377,9 @@ GEN_TEST="$HUNT_OUT/run/repo/test/Inv_${SLUG}.t.sol"
 RECORDS="$OUT_DIR/derived-invariants.txt"
 extract_from_test "$GEN_TEST" > "$RECORDS" || : > "$RECORDS"
 N="$(emit_spec "$RECORDS")"
+# #1097: capture the deployed-target fingerprint next to the spec so check-drift.sh
+# can tell when the target upgraded out from under this (now-stale) watch-spec.
+emit_fingerprint
 
 echo >&2
 echo "================ LIVE-WATCH: $TARGET -> $N watchable invariant(s) ================" >&2

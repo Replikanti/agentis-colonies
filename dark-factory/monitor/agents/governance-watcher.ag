@@ -34,6 +34,10 @@
 // can read them):
 //   MONITOR_CAST          path to the `cast` binary; "" => no reader, observe only.
 //   MONITOR_RPC_URL       the chain RPC endpoint (read-only).
+//   MONITOR_CAST_READ     (#1098) OPTIONAL path to scripts/cast-read.sh — the ONE
+//                         centralized read wrapper (RPC failover MONITOR_RPC_URLS +
+//                         consensus MONITOR_RPC_CONSENSUS). When set, read_slot /
+//                         read_view route through it; "" => the legacy direct read.
 //   MONITOR_GOV_TARGET    the governed proxy contract address (0x...); "" =>
 //                         falls back to MONITOR_TARGET (the invariant target).
 //   MONITOR_GOV_OWNER_SIG the `cast call` signature returning the owner/admin
@@ -94,6 +98,12 @@ fn json_escape(s: string) -> string {
     }, "");
 }
 
+// The centralized read wrapper (#1098): scripts/cast-read.sh, the ONE place RPC
+// failover + read consensus live. "" => no wrapper, use the legacy direct `cast`.
+fn cast_reader() -> string {
+    return getenv("MONITOR_CAST_READ");
+}
+
 // --- read a raw storage slot via cast storage ----------------------------------
 // `cast storage --rpc-url <url> <addr> <slot>` prints one 0x-hex word (the slot's
 // contents). EVERY dynamic value (the cast path, the rpc url, the address, the
@@ -101,11 +111,22 @@ fn json_escape(s: string) -> string {
 // that flow into a shell, so none may be a bare concat. `set +e` + `|| true` so a
 // transient RPC failure returns "" (no reading -> no false flag) instead of
 // aborting the tick. Returns the 0x-hex word, or "" on any failure / empty reader.
+//
+// #1098: when MONITOR_CAST_READ is set, route through scripts/cast-read.sh so RPC
+// FAILOVER + read CONSENSUS apply in ONE place (the wrapper reads the endpoint list
+// / quorum from the environment). No --to-dec: the slot stays the raw 0x-hex word
+// the change comparison expects. With it unset the legacy direct read runs unchanged.
 fn read_slot(castBin: string, rpc: string, addr: string, slot: string) -> string {
     if len(castBin) == 0 { return ""; }
     if len(rpc) == 0 { return ""; }
     if len(addr) == 0 { return ""; }
     if len(slot) == 0 { return ""; }
+    let reader = cast_reader();
+    if len(reader) > 0 {
+        // colony-lint: safe-exec-concat
+        return exec sh "set +e; " + shell_escape(reader) + " storage "
+            + shell_escape(addr) + " " + shell_escape(slot) + " 2>/dev/null || true";
+    }
     // colony-lint: safe-exec-concat
     let out = exec sh "set +e; " + shell_escape(castBin) + " storage --rpc-url " + shell_escape(rpc)
             + " " + shell_escape(addr) + " " + shell_escape(slot)
@@ -117,11 +138,21 @@ fn read_slot(castBin: string, rpc: string, addr: string, slot: string) -> string
 // EVERY dynamic value is shell_escape()d. `set +e` + `|| true` so a transient RPC
 // failure (or a contract with no such view) returns "" (no reading -> no false
 // flag). Returns the 0x-hex word cast prints, or "" on any failure / empty reader.
+//
+// #1098: routes through scripts/cast-read.sh when MONITOR_CAST_READ is set (RPC
+// failover + consensus in ONE place); no --to-dec — owner/role/timelock indicators
+// compare as the raw 0x word. Unset => the legacy direct read runs unchanged.
 fn read_view(castBin: string, rpc: string, addr: string, sig: string) -> string {
     if len(castBin) == 0 { return ""; }
     if len(rpc) == 0 { return ""; }
     if len(addr) == 0 { return ""; }
     if len(sig) == 0 { return ""; }
+    let reader = cast_reader();
+    if len(reader) > 0 {
+        // colony-lint: safe-exec-concat
+        return exec sh "set +e; " + shell_escape(reader) + " call "
+            + shell_escape(addr) + " " + shell_escape(sig) + " 2>/dev/null || true";
+    }
     // colony-lint: safe-exec-concat
     let out = exec sh "set +e; " + shell_escape(castBin) + " call --rpc-url " + shell_escape(rpc)
             + " " + shell_escape(addr) + " " + shell_escape(sig)

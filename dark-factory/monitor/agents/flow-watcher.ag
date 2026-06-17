@@ -26,6 +26,10 @@
 // can read them):
 //   MONITOR_CAST          path to the `cast` binary; "" => no reader, observe only.
 //   MONITOR_RPC_URL       the chain RPC endpoint (read-only).
+//   MONITOR_CAST_READ     (#1098) OPTIONAL path to scripts/cast-read.sh — the ONE
+//                         centralized read wrapper (RPC failover MONITOR_RPC_URLS +
+//                         consensus MONITOR_RPC_CONSENSUS). When set, read_view /
+//                         read_balance route through it; "" => the legacy direct read.
 //   MONITOR_FLOW_TARGET   the watched contract address (0x...); "" => falls back
 //                         to MONITOR_TARGET (the invariant target).
 //   MONITOR_FLOW_SIG      the `cast call` signature returning the level proxy
@@ -71,17 +75,35 @@ fn json_escape(s: string) -> string {
     }, "");
 }
 
+// The centralized read wrapper (#1098): scripts/cast-read.sh, the ONE place RPC
+// failover + read consensus live. "" => no wrapper, use the legacy direct `cast`.
+fn cast_reader() -> string {
+    return getenv("MONITOR_CAST_READ");
+}
+
 // --- read the level proxy (a view, else the native balance) --------------------
 // EVERY dynamic value (the cast path, the rpc url, the address, the signature) is
 // shell_escape()d — they are operator/coordinator-supplied facts flowing into a
 // shell. `set +e` + `|| true` so a transient RPC failure returns "" (no reading
 // -> no false flag). Returns the decimal string, or "" on any failure / empty
 // reader.
+//
+// #1098: when MONITOR_CAST_READ is set, route through scripts/cast-read.sh so RPC
+// FAILOVER (MONITOR_RPC_URLS) + read CONSENSUS (MONITOR_RPC_CONSENSUS) apply in ONE
+// place (the wrapper reads the endpoint list / quorum from the environment); it
+// emits the no-read sentinel (empty) only when ALL endpoints fail. Unset => the
+// legacy single-endpoint direct `cast` read below runs unchanged.
 fn read_view(castBin: string, rpc: string, addr: string, sig: string) -> string {
     if len(castBin) == 0 { return ""; }
     if len(rpc) == 0 { return ""; }
     if len(addr) == 0 { return ""; }
     if len(sig) == 0 { return ""; }
+    let reader = cast_reader();
+    if len(reader) > 0 {
+        // colony-lint: safe-exec-concat
+        return exec sh "set +e; " + shell_escape(reader) + " --to-dec call "
+            + shell_escape(addr) + " " + shell_escape(sig) + " 2>/dev/null || true";
+    }
     // colony-lint: safe-exec-concat
     let out = exec sh "set +e; " + shell_escape(castBin) + " call --rpc-url " + shell_escape(rpc)
             + " " + shell_escape(addr) + " " + shell_escape(sig)
@@ -93,6 +115,12 @@ fn read_balance(castBin: string, rpc: string, addr: string) -> string {
     if len(castBin) == 0 { return ""; }
     if len(rpc) == 0 { return ""; }
     if len(addr) == 0 { return ""; }
+    let reader = cast_reader();
+    if len(reader) > 0 {
+        // colony-lint: safe-exec-concat
+        return exec sh "set +e; " + shell_escape(reader) + " --to-dec balance "
+            + shell_escape(addr) + " 2>/dev/null || true";
+    }
     // colony-lint: safe-exec-concat
     let out = exec sh "set +e; " + shell_escape(castBin) + " balance --rpc-url " + shell_escape(rpc)
             + " " + shell_escape(addr)

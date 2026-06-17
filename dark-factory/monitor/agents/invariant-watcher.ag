@@ -36,6 +36,15 @@
 //                       of flipping, the watcher flags a margin warning. "" => 0
 //                       (only a hard violation flags).
 //   MONITOR_INV_LABEL   a human label for the invariant (for the alert body).
+//   MONITOR_CAST_READ   (#1098) OPTIONAL — path to scripts/cast-read.sh, the ONE
+//                       centralized read wrapper that adds RPC FAILOVER (a comma
+//                       list MONITOR_RPC_URLS, tried in order) + optional read
+//                       CONSENSUS (MONITOR_RPC_CONSENSUS). When set, read_uint
+//                       routes through it instead of `cast` directly; the wrapper
+//                       reads the endpoint list / quorum from the environment, so
+//                       failover lives in ONE place, not duplicated per watcher.
+//                       "" => the legacy single-endpoint direct-`cast` read (the
+//                       behaviour is byte-for-byte unchanged when unset).
 //   MONITOR_INV_SPEC    (#1086) OPTIONAL — a DERIVED watch-spec for the WHOLE
 //                       invariant SET of the target (run-live-watch.sh emits it
 //                       once from the invariant-prover derivation path). Either an
@@ -98,6 +107,12 @@ fn json_escape(s: string) -> string {
     }, "");
 }
 
+// The centralized read wrapper (#1098): scripts/cast-read.sh, the ONE place RPC
+// failover + read consensus live. "" => no wrapper, use the legacy direct `cast`.
+fn cast_reader() -> string {
+    return getenv("MONITOR_CAST_READ");
+}
+
 // --- read a single uint return from an on-chain view via cast call -------------
 // `cast call --rpc-url <url> <addr> <sig>` prints one 0x-hex word; `cast --to-dec`
 // renders it as a decimal integer string. EVERY dynamic value (the cast path, the
@@ -106,11 +121,24 @@ fn json_escape(s: string) -> string {
 // bare concat. `set +e` + `|| true` so a transient RPC failure returns "" (no
 // reading -> no false flag) instead of aborting the tick. Returns the decimal
 // string, or "" on any failure / empty reader.
+//
+// #1098: when MONITOR_CAST_READ is set, route through scripts/cast-read.sh so RPC
+// FAILOVER (MONITOR_RPC_URLS) + read CONSENSUS (MONITOR_RPC_CONSENSUS) apply in
+// ONE place — the wrapper reads the endpoint list / quorum from the environment,
+// emits the no-read sentinel (empty + non-zero) only when ALL endpoints fail, and
+// `|| true` keeps the tick alive. With it unset the legacy single-endpoint direct
+// `cast` read below runs unchanged.
 fn read_uint(castBin: string, rpc: string, addr: string, sig: string) -> string {
     if len(castBin) == 0 { return ""; }
     if len(rpc) == 0 { return ""; }
     if len(addr) == 0 { return ""; }
     if len(sig) == 0 { return ""; }
+    let reader = cast_reader();
+    if len(reader) > 0 {
+        // colony-lint: safe-exec-concat
+        return exec sh "set +e; " + shell_escape(reader) + " --to-dec call "
+            + shell_escape(addr) + " " + shell_escape(sig) + " 2>/dev/null || true";
+    }
     // colony-lint: safe-exec-concat
     let out = exec sh "set +e; " + shell_escape(castBin) + " call --rpc-url " + shell_escape(rpc)
             + " " + shell_escape(addr) + " " + shell_escape(sig)
