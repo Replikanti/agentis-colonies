@@ -78,6 +78,12 @@ tick_interval_ms = 60000
 #   MONITOR_INV_MARGIN_BP   margin-to-violation band in basis points (0..10000);
 #                           "" => 0 (only a hard violation flags).
 #   MONITOR_INV_LABEL       a human label for the invariant (alert body).
+#   MONITOR_INV_SPEC        (#1086) a DERIVED watch-spec for the WHOLE invariant
+#                           SET — an absolute PATH to the JSON file
+#                           run-live-watch.sh emits, or the JSON array INLINE. When
+#                           set, the watcher evaluates EVERY invariant in the set
+#                           each tick; when unset it uses the single MONITOR_INV_*
+#                           invariant above (backward-compatible).
 #
 # oracle-watcher:
 #   MONITOR_ORACLE          the price-feed contract address (0x...).
