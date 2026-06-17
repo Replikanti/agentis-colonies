@@ -1,0 +1,79 @@
+# Monitor Fleet — Per-Target Config Unit (one client = one of these)
+#
+# Part of the Dark Factory federation, the multi-tenant / fleet layer (#1099).
+# The monitor colony watches ONE target per instance; this file is the
+# config-unit for a SINGLE watched target (one protocol / one client). The fleet
+# launcher (../fleet.sh) keeps one of these per target, each in its own isolated
+# slot under ${MONITOR_FLEET_DIR:-$HOME/.agentis-monitor}/<slug>/ with its OWN
+# agentis state (daemon registry + memo baselines + logs), so targets never
+# collide and an alert from target A never routes to target B.
+#
+# This is the HUMAN-FACING template. `fleet.sh add <slug> <0xaddress> [opts]`
+# materialises the machine contract it consumes (target.env, sourced as POSIX sh)
+# from the SAME MONITOR_* names documented below — every key here maps 1:1 to a
+# MONITOR_* the colony's start-colony.sh exports and the .ag watchers read. Copy
+# this to a target slot and edit, OR drive it all through `fleet.sh add` flags.
+#
+# NON-custodial / read-only: every watcher only READS chain state via `cast`/RPC;
+# no agent signs a transaction or touches funds. The webhook URL is the only
+# secret — keep it in the operator's environment / the chmod-600 target.env,
+# NEVER commit a real one.
+
+[target]
+# A stable, filesystem-safe key for this target (lowercase letters, digits, dash,
+# underscore). It names the slot dir under the fleet base dir. `fleet.sh add`
+# takes it as the first positional arg.
+slug = "example-protocol"
+
+# The target protocol contract address (0x + 40 hex). Maps to MONITOR_TARGET and
+# is the default address every watcher reads unless overridden per-watcher below.
+address = "0x0000000000000000000000000000000000000000"
+
+# The EVM chain id this target lives on (informational / future multi-chain
+# routing). Maps to MONITOR_CHAIN_ID.
+chain_id = 1
+
+[reader]
+# Shared on-chain reader for this target. With no rpc_url / cast set, the watchers
+# read nothing and only observe — they never raise a false alert. Maps to
+# MONITOR_RPC_URL / MONITOR_CAST.
+rpc_url = ""
+cast = ""
+
+[watch]
+# The DERIVED watch-spec for the whole invariant SET (#1086): an absolute PATH to
+# the JSON file run-live-watch.sh emits (or the JSON array inline). When set, the
+# invariant-watcher evaluates every invariant in the set each tick. Maps to
+# MONITOR_INV_SPEC. Leave empty to use the single MONITOR_INV_* invariant instead.
+inv_spec = ""
+
+[alerts]
+# Per-target alert routing — this is what makes the fleet multi-tenant: each
+# client gets THEIR OWN webhook, so a page for this target never lands in another
+# target's channel. Maps to MONITOR_WEBHOOK_URL / _WARN / _HIGH. NEVER commit a
+# real URL here — set it via `fleet.sh add --webhook ...` into the chmod-600
+# target.env, or export it in the operator's environment.
+webhook_url = ""
+webhook_url_warn = ""
+webhook_url_high = ""
+
+# Per-target alert hardening (see config/colony.example.toml [monitor] for the
+# full semantics). All optional. Maps to MONITOR_HEARTBEAT_INTERVAL_S /
+# MONITOR_DEADMAN_WINDOW_S / MONITOR_NOTIFY_DEDUP_COOLDOWN_S.
+heartbeat_interval_s = 86400
+deadman_window_s = 0
+notify_dedup_cooldown_s = 0
+
+[tiers]
+# Per-target starting confidence. start-colony.sh seeds each agent at propose
+# (0.7) by default so the watchers emit out of the box; lower a watcher here to
+# have it observe baselines first for this specific client. Tier names per
+# ADR-0001: shadow / propose / review-gated / autonomous.
+invariant_watcher = 0.7
+oracle_watcher = 0.7
+governance_watcher = 0.7
+liquidity_watcher = 0.7
+flow_watcher = 0.7
+pause_state_watcher = 0.7
+coordinator = 0.7
+notifier = 0.7

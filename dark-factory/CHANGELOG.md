@@ -15,6 +15,16 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **monitor: multi-tenant / fleet layer** (#1099) — `monitor/fleet.sh` (dash-safe, `set -eu`,
+  shellcheck-clean) manages N watched targets as a NEW layer over the unmodified
+  `monitor/scripts/start-colony.sh`: each target gets an isolated slot under
+  `${MONITOR_FLEET_DIR:-$HOME/.agentis-monitor}/<slug>/` holding its own `target.env` (address, chain, RPC,
+  webhook(s), watch-spec, tiers) and its own `.agentis` state (private daemon registry + memo baselines +
+  logs), so targets never collide and an alert for target A never routes to target B's webhook. Subcommands
+  `add` / `start [--all]` / `stop [--all]` / `list` / `status` / `path`; `stop` scopes the shutdown per-target
+  via `kill-federation.sh --fed-dir`. New `monitor/config/target.example.toml` per-target config-unit template
+  and `monitor/docs/fleet.md` operator notes (isolation model, per-target dashboard scoping). NON-custodial /
+  read-only — the fleet only orchestrates the read-only colony.
 - **monitor: backtest / calibration harness + scorecard + operator runbook** (#1101, #1102) — the Path C
   outreach proof. `monitor/backtest.sh` (dash-safe, `set -eu`, shellcheck-clean) points the
   `invariant-watcher`'s deterministic verdict logic at a fork pinned to HISTORICAL block heights around a
