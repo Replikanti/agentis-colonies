@@ -208,6 +208,65 @@ to before — the single env-configured invariant.
 `run-live-watch.sh` is **read-only / non-custodial**: a watch-spec is a set of
 facts to read + compare; it carries no keys and never describes a write.
 
+## Read robustness — RPC failover + consensus (#1098)
+
+A 24/7 monitor can't rely on a single RPC endpoint, and a flaky node must not be
+confused with an invariant verdict. All chain reads route through **one** wrapper —
+[`scripts/cast-read.sh`](scripts/cast-read.sh) — so the failover logic lives in a
+single place instead of being copy-pasted across the six watchers' read functions
+(`read_uint` / `read_view` / `read_slot` / `read_balance`).
+
+- **Failover** — `MONITOR_RPC_URLS` is a comma-separated endpoint list, tried **in
+  order** on failure; it falls back to the single `MONITOR_RPC_URL`. Kill the
+  primary and reads transparently fail over to the next.
+- **Read consensus** — `MONITOR_RPC_CONSENSUS` (≥2, or `1` as shorthand for 2)
+  requires that many endpoints to **agree** on the value before it is returned, so a
+  single lying / lagging node can't drive a false `violated`. On disagreement the
+  read returns the **no-read** sentinel.
+- **No-read vs verdict** — when **all** endpoints fail (or consensus can't be
+  reached) the wrapper returns an empty value + non-zero exit, which every watcher
+  already treats as `no-read` (observe, never a false flag). This is **distinct**
+  from a real verdict and feeds the dead-man's-switch / blind path (#1093).
+
+`cast-read.sh` is **read-only**: only `call` / `storage` / `balance` / `code` are
+permitted; any write subcommand (`send`, `mktx`, `wallet`, …) is rejected. With
+`MONITOR_RPC_URLS` / `MONITOR_RPC_CONSENSUS` unset a single configured endpoint
+behaves exactly as before.
+
+```bash
+export MONITOR_RPC_URLS="https://rpc-a/x,https://rpc-b/y,https://rpc-c/z"
+export MONITOR_RPC_CONSENSUS=2   # require 2 of the 3 to agree before flagging
+# (MONITOR_CAST_READ defaults to this colony's scripts/cast-read.sh)
+```
+
+## Watch-spec drift detection (#1097)
+
+A static watch-spec is **derived once**. When the target **upgrades** (new
+implementation, changed params, new selectors) the spec silently stops matching the
+deployed contract — the monitor keeps "watching" stale invariants and goes blind
+without saying so. Two pieces close that gap:
+
+- **Fingerprint at derivation** — `run-live-watch.sh` records a fingerprint of the
+  deployed target next to the spec at `<spec>.fingerprint.json`: the deployed-code
+  hash (`cast code`) and the EIP-1967 implementation slot value (`cast storage`).
+- **Drift check** — [`scripts/check-drift.sh`](scripts/check-drift.sh) (a periodic
+  job / cron) re-reads that fingerprint through `cast-read.sh` (so the failover +
+  consensus apply) and raises a `monitor:alert` (kind `drift`, severity **high**,
+  verdict `spec-stale`) when the deployed code / impl no longer matches — the
+  monitor **says** it has gone blind on a stale spec. No drift ⇒ no alert; a blind
+  RPC re-read ⇒ quiet (never a false drift); an empty captured fingerprint ⇒ quiet.
+
+```bash
+# periodically (cron): flag drift + page if the target upgraded
+MONITOR_INV_SPEC="$PWD/watch-spec.json" ./scripts/check-drift.sh
+```
+
+**Re-derivation hook** — on drift, re-run the derivation to produce a fresh spec +
+fingerprint and hot-swap `MONITOR_INV_SPEC` (operator-gated — re-derivation needs the
+LLM/forge path): `../run-live-watch.sh --rederive --repo … --target … --address …
+--rpc-url …`. Both scripts are **read-only / non-custodial** throughout (`cast
+code` / `cast storage` only).
+
 ## Setup
 
 1. Copy and edit the config:
@@ -245,6 +304,9 @@ watcher reads nothing and only observes — it never raises a false alert.
 |-----|---------|---------|
 | `MONITOR_CAST` | Absolute path to the `cast` binary (foundry), the read tool. | unset (observe only) |
 | `MONITOR_RPC_URL` | Chain RPC endpoint `cast` reads from (read-only). | unset (observe only) |
+| `MONITOR_RPC_URLS` | (#1098) Comma-separated list of RPC endpoints, tried IN ORDER on failure (the failover list). | falls back to `MONITOR_RPC_URL` |
+| `MONITOR_RPC_CONSENSUS` | (#1098) Read-consensus quorum: `""`/`0`/`1` ⇒ first-success failover; `1` is shorthand for quorum 2; `N>=2` requires N endpoints to agree before a value is returned (a single lying / lagging node can't drive a false `violated`). | `""` (no consensus) |
+| `MONITOR_CAST_READ` | (#1098) Path to `scripts/cast-read.sh`, the ONE centralized read wrapper owning the failover + consensus. `""` ⇒ watchers read `cast` directly (legacy single-endpoint behaviour). | the colony's `scripts/cast-read.sh` |
 | `MONITOR_TARGET` | Target protocol contract address (`0x...`) for the invariant. | unset |
 | `MONITOR_INV_LHS_SIG` | `cast call` signature for the invariant's LHS quantity (e.g. `totalSupply()`). | unset |
 | `MONITOR_INV_RHS_SIG` | Signature for the RHS quantity (e.g. `totalAssets()`); `""` ⇒ use the literal const. | unset |
@@ -304,7 +366,12 @@ emitted alert into a delivered page. The **governance / upgrade watcher**
 ([#1095](https://github.com/Replikanti/agentis-colonies/issues/1095)) and the
 **liquidity / flow / pause-state watchers**
 ([#1096](https://github.com/Replikanti/agentis-colonies/issues/1096)) extend the
-fused signal set with the highest-value pre-exploit early-warnings. Follow-ups: an
-external dead-man's-switch cron and a dashboard view. The colony is **read-only**
-and **never** posts an alert without a configured sink — and **never** signs or
-touches funds.
+fused signal set with the highest-value pre-exploit early-warnings. **Read
+robustness** — RPC failover + read consensus via the centralized `cast-read.sh`
+wrapper ([#1098](https://github.com/Replikanti/agentis-colonies/issues/1098)) — and
+the **watch-spec drift detector** — a deployed-target fingerprint in the spec +
+`check-drift.sh` ([#1097](https://github.com/Replikanti/agentis-colonies/issues/1097))
+— keep a 24/7 watch from silently relying on one flaky node or watching a spec that
+the target has upgraded away from. Follow-ups: an external dead-man's-switch cron and
+a dashboard view. The colony is **read-only** and **never** posts an alert without a
+configured sink — and **never** signs or touches funds.

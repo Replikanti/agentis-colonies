@@ -110,6 +110,29 @@ tick_interval_ms = 60000
 # Shared (both watchers):
 #   MONITOR_CAST            absolute path to the `cast` binary (foundry).
 #   MONITOR_RPC_URL         the chain RPC endpoint cast reads from (read-only).
+#   MONITOR_RPC_URLS        (#1098) comma-separated list of RPC endpoints, tried IN
+#                           ORDER on failure (the failover list). "" => fall back to
+#                           the single MONITOR_RPC_URL. A 24/7 monitor should not
+#                           rely on one endpoint; a flaky RPC must not be confused
+#                           with an invariant verdict.
+#   MONITOR_RPC_CONSENSUS   (#1098) read-consensus quorum. "" / 0 / 1 => first-success
+#                           failover (no consensus). "1" is shorthand for the default
+#                           quorum 2; any integer N>=2 requires N endpoints to AGREE
+#                           on the value before it is returned — a single lying /
+#                           lagging node can NOT drive a false `violated`. On
+#                           disagreement the read returns the no-read sentinel.
+#   MONITOR_CAST_READ       (#1098) path to scripts/cast-read.sh, the ONE centralized
+#                           read wrapper that owns the failover + consensus above.
+#                           Default: the colony's own scripts/cast-read.sh (set by
+#                           start-colony.sh). "" => the watchers read `cast` directly
+#                           (the legacy single-endpoint behaviour, byte-for-byte).
+#   MONITOR_INV_SPEC's sibling <spec>.fingerprint.json + scripts/check-drift.sh
+#                           (#1097) detect watch-spec DRIFT: run-live-watch.sh records
+#                           the deployed-code hash + EIP-1967 impl slot at derivation;
+#                           check-drift.sh (a periodic job / cron) re-reads them and
+#                           raises a `drift` alert (severity high) when the target has
+#                           upgraded out from under the static spec — so the monitor
+#                           SAYS it has gone blind rather than watch stale invariants.
 #
 # invariant-watcher:
 #   MONITOR_TARGET          the target protocol contract address (0x...).
@@ -201,6 +224,13 @@ tick_interval_ms = 60000
 [monitor]
 cast = ""
 rpc_url = ""
+# RPC failover + read consensus (#1098). rpc_urls is a comma-separated endpoint list
+# (overrides rpc_url when set); rpc_consensus is the agreement quorum ("" / 0 / 1 =>
+# first-success failover; >=2 => require N endpoints to agree). These are documented
+# here for reference; export MONITOR_RPC_URLS / MONITOR_RPC_CONSENSUS in the operator
+# environment before launching (start-colony.sh passes them through).
+rpc_urls = ""
+rpc_consensus = ""
 target = ""
 oracle = ""
 webhook_url = ""

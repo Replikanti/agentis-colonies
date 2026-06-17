@@ -26,6 +26,7 @@
 # MONITOR_CAST / MONITOR_RPC_URL a watcher reads nothing and only observes — it
 # never raises a false alert:
 #   MONITOR_CAST  MONITOR_RPC_URL                                 (shared reader)
+#   MONITOR_RPC_URLS MONITOR_RPC_CONSENSUS MONITOR_CAST_READ      (RPC failover/consensus, #1098)
 #   MONITOR_TARGET MONITOR_INV_LHS_SIG MONITOR_INV_RHS_SIG ...    (single invariant)
 #   MONITOR_INV_SPEC                                              (derived invariant set, #1086)
 #   MONITOR_ORACLE MONITOR_ORACLE_PRICE_SIG MONITOR_ORACLE_TS_SIG (oracle)
@@ -103,6 +104,16 @@ COLONY_NAME="monitor"
 # with no reader configured simply observes and never raises a false alert.
 MONITOR_CAST="${MONITOR_CAST:-}"
 MONITOR_RPC_URL="${MONITOR_RPC_URL:-}"
+# RPC failover + read consensus (#1098). MONITOR_RPC_URLS is a comma-separated list
+# of endpoints tried in order on failure; it falls back to the single MONITOR_RPC_URL.
+# MONITOR_RPC_CONSENSUS ("" / 0 / 1 => first-success failover; >=2 => require N
+# endpoints to AGREE before a value is returned). MONITOR_CAST_READ points the
+# watchers at scripts/cast-read.sh, the ONE place that owns the failover + consensus;
+# default it to this colony's wrapper so a single configured endpoint behaves exactly
+# as before and adding endpoints/quorum is the only change needed for robustness.
+MONITOR_RPC_URLS="${MONITOR_RPC_URLS:-}"
+MONITOR_RPC_CONSENSUS="${MONITOR_RPC_CONSENSUS:-}"
+MONITOR_CAST_READ="${MONITOR_CAST_READ:-$SCRIPT_DIR/cast-read.sh}"
 MONITOR_TARGET="${MONITOR_TARGET:-}"
 MONITOR_INV_LHS_SIG="${MONITOR_INV_LHS_SIG:-}"
 MONITOR_INV_RHS_SIG="${MONITOR_INV_RHS_SIG:-}"
@@ -153,6 +164,7 @@ MONITOR_NOTIFY_STATE_DIR="${MONITOR_NOTIFY_STATE_DIR:-}"
 
 export COLONY_DIR COLONY_NAME
 export MONITOR_CAST MONITOR_RPC_URL
+export MONITOR_RPC_URLS MONITOR_RPC_CONSENSUS MONITOR_CAST_READ
 export MONITOR_TARGET MONITOR_INV_LHS_SIG MONITOR_INV_RHS_SIG MONITOR_INV_RHS_CONST
 export MONITOR_INV_REL MONITOR_INV_MARGIN_BP MONITOR_INV_LABEL MONITOR_INV_SPEC
 export MONITOR_ORACLE MONITOR_ORACLE_PRICE_SIG MONITOR_ORACLE_TS_SIG MONITOR_ORACLE_MAX_AGE

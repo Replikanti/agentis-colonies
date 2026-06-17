@@ -15,6 +15,37 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **monitor: read robustness — RPC failover + read consensus, and a watch-spec drift detector** (#1098, #1097).
+  Two hardening passes that keep a 24/7 read-only watch honest. NON-custodial / read-only throughout
+  (`cast call` / `cast storage` / `cast balance` / `cast code` only — never a signed transaction, never fund
+  access); all dynamic values `shell_escape()`d in the `.ag` and quoted in the scripts; big-number-safe (values
+  stay strings; no i64 overflow); dash-safe + `set -eu` + shellcheck-clean scripts.
+  - **#1098 RPC failover + read consensus** — `monitor/scripts/cast-read.sh` is now the ONE place chain reads
+    happen, so failover lives in a single wrapper instead of being copy-pasted across the six watchers'
+    `read_uint` / `read_view` / `read_slot` / `read_balance`. It reads a comma-separated `MONITOR_RPC_URLS`
+    (falling back to the single `MONITOR_RPC_URL`), tries each endpoint IN ORDER on failure, and — when
+    `MONITOR_RPC_CONSENSUS` is set (`1` ⇒ quorum 2, or any `N>=2`) — requires N endpoints to AGREE on the value
+    before returning it, so a single lying / lagging node cannot drive a false `violated`. When ALL endpoints
+    fail (or consensus can't be reached) it returns the no-read sentinel (empty stdout + non-zero exit),
+    DISTINCT from a real verdict and feeding the dead-man's-switch / blind path (#1093). Read-only allowlist:
+    only `call` / `storage` / `balance` / `code`; any write subcommand is rejected. The six watchers route
+    through it via `MONITOR_CAST_READ` (defaulted to the colony's `scripts/cast-read.sh` by `start-colony.sh`);
+    with `MONITOR_RPC_URLS` / `MONITOR_RPC_CONSENSUS` unset a single configured endpoint behaves exactly as
+    before.
+  - **#1097 watch-spec drift detector + re-derivation hook** — `run-live-watch.sh` now records a fingerprint of
+    the deployed target at derivation time next to the spec at `<spec>.fingerprint.json`: the deployed-code hash
+    (`cast code`) and the EIP-1967 implementation slot value (`cast storage`). `monitor/scripts/check-drift.sh`
+    (a periodic job / cron) re-reads that fingerprint through `cast-read.sh` (so the failover + consensus apply)
+    and raises a `monitor:alert` (kind `drift`, severity `high`, verdict `spec-stale`) when the deployed code /
+    impl no longer matches — the monitor SAYS it has gone blind on a stale spec rather than silently watching
+    stale invariants. No drift ⇒ quiet; a blind RPC re-read ⇒ quiet (never a false drift); an empty captured
+    fingerprint ⇒ quiet. The optional re-derivation hook is documented as `run-live-watch.sh --rederive` (re-run
+    the derivation to produce a fresh spec + fingerprint and hot-swap `MONITOR_INV_SPEC`; operator-gated).
+  - New env contract (`MONITOR_RPC_URLS` / `MONITOR_RPC_CONSENSUS` / `MONITOR_CAST_READ`) is exported by
+    `monitor/scripts/start-colony.sh`, documented in `monitor/config/colony.example.toml` (env block +
+    `[monitor]` `rpc_urls` / `rpc_consensus` keys), and in `monitor/README.md` (env table + a "Read robustness"
+    section and a "Watch-spec drift detection" section). Operators add each new `MONITOR_*` var to
+    `exec.env_passthrough` in `.agentis/config`.
 - **monitor: governance / upgrade + liquidity / flow / pause-state watchers** (#1095, #1096). Four more
   read-only, tier-gated watcher agents feed the monitor coordinator's `monitor:signal:*` blackboard, each with
   the same ADR-0001 emission pattern as `invariant-watcher` / `oracle-watcher` (one `tier()` call per tick,
