@@ -15,6 +15,11 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **monitor: JSON-escape free-text fields in alert/signal payloads** (#1089). `invariant-watcher` and
+  `oracle-watcher` now route the operator-supplied `label`/`addr` through a `json_escape()` helper (escapes
+  `\` and `"`) in every alert/signal payload builder, so a label containing a `"` can no longer corrupt the
+  emitted JSON. Per-char fold (`.ag` has no string-replace builtin). Verified via `agentis repl`:
+  `json_escape("a\"b\\c")` → `a\"b\\c`.
 - **`flat-cyborg-claude.sh` uses `--extract-structural`** (#1083, needs flat-cyborg ≥ 0.10.2). claude
   intermittently omits the reply sentinel; strict `--extract` then burned the full `--timeout-ms` and exited
   "no fenced reply", which the agentis caller retried — repeated ~700 s gen hangs ending in HARNESS_ERROR

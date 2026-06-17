@@ -86,6 +86,18 @@ fn label_or_sig(raw: string, lhs: string) -> string {
     return lhs;
 }
 
+// JSON-string escape a free-text field (#1089): backslash -> \\ and double-quote
+// -> \" , so an operator-authored label/address containing a `"` cannot corrupt
+// the alert/signal JSON. Per-char fold (.ag has no string-replace builtin);
+// regex_find_all over [\s\S] yields every char incl. whitespace.
+fn json_escape(s: string) -> string {
+    return reduce(regex_find_all("[\\s\\S]", s), |acc: string, c: string| -> string {
+        if c == "\\" { return acc + "\\\\"; }
+        if c == "\"" { return acc + "\\\""; }
+        return acc + c;
+    }, "");
+}
+
 // --- read a single uint return from an on-chain view via cast call -------------
 // `cast call --rpc-url <url> <addr> <sig>` prints one 0x-hex word; `cast --to-dec`
 // renders it as a decimal integer string. EVERY dynamic value (the cast path, the
@@ -183,9 +195,9 @@ fn is_anomaly(verdict: string) -> bool {
 // A compact, deterministic alert payload (JSON). All fields are facts the watcher
 // computed; none is LLM text. `sev` is set by the tier branch (draft vs page).
 fn alert_payload(label: string, verdict: string, lhs: int, rhs: int, rel: string, addr: string, sev: string) -> string {
-    return "{\"watcher\":\"invariant\",\"invariant\":\"" + label + "\",\"verdict\":\"" + verdict
+    return "{\"watcher\":\"invariant\",\"invariant\":\"" + json_escape(label) + "\",\"verdict\":\"" + verdict
          + "\",\"lhs\":" + to_string(lhs) + ",\"rhs\":" + to_string(rhs) + ",\"rel\":\"" + rel
-         + "\",\"target\":\"" + addr + "\",\"severity\":\"" + sev + "\"}";
+         + "\",\"target\":\"" + json_escape(addr) + "\",\"severity\":\"" + sev + "\"}";
 }
 
 // === #1086 — DERIVED watch-spec (multi-invariant SET) path =====================
@@ -299,8 +311,8 @@ fn signal_key_label(label: string) -> string {
 // sanitized label; the payload carries the original label.
 fn post_signal(label: string, verdict: string, addr: string) -> void {
     memo_write("monitor:signal:invariant:" + signal_key_label(label),
-        "{\"watcher\":\"invariant\",\"invariant\":\"" + label + "\",\"verdict\":\"" + verdict
-        + "\",\"target\":\"" + addr + "\",\"severity\":\"info\"}");
+        "{\"watcher\":\"invariant\",\"invariant\":\"" + json_escape(label) + "\",\"verdict\":\"" + verdict
+        + "\",\"target\":\"" + json_escape(addr) + "\",\"severity\":\"info\"}");
 }
 
 // BOUNDED RECURSION over the spec array (single-assignment .ag has no while/for):

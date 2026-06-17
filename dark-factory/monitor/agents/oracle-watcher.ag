@@ -57,6 +57,18 @@ fn price_sig_or_default(raw: string) -> string {
     return raw;
 }
 
+// JSON-string escape a free-text field (#1089): backslash -> \\ and double-quote
+// -> \" , so an operator-authored feed label/address containing a `"` cannot
+// corrupt the alert/signal JSON. Per-char fold (.ag has no string-replace
+// builtin); regex_find_all over [\s\S] yields every char incl. whitespace.
+fn json_escape(s: string) -> string {
+    return reduce(regex_find_all("[\\s\\S]", s), |acc: string, c: string| -> string {
+        if c == "\\" { return acc + "\\\\"; }
+        if c == "\"" { return acc + "\\\""; }
+        return acc + c;
+    }, "");
+}
+
 fn label_or(raw: string, addr: string) -> string {
     if len(raw) > 0 { return raw; }
     return addr;
@@ -167,9 +179,9 @@ fn is_anomaly(verdict: string) -> bool {
 // A compact, deterministic alert payload (JSON). All fields are facts the watcher
 // computed; none is LLM text. `sev` is set by the tier branch (draft vs page).
 fn alert_payload(label: string, verdict: string, price: int, base: int, addr: string, sev: string) -> string {
-    return "{\"watcher\":\"oracle\",\"feed\":\"" + label + "\",\"verdict\":\"" + verdict
+    return "{\"watcher\":\"oracle\",\"feed\":\"" + json_escape(label) + "\",\"verdict\":\"" + verdict
          + "\",\"price\":" + to_string(price) + ",\"baseline\":" + to_string(base)
-         + ",\"oracle\":\"" + addr + "\",\"severity\":\"" + sev + "\"}";
+         + ",\"oracle\":\"" + json_escape(addr) + "\",\"severity\":\"" + sev + "\"}";
 }
 
 fn tick(reason: string) -> void {
