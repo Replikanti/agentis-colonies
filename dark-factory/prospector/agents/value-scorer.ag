@@ -1,0 +1,352 @@
+// value-scorer.ag — Prospector colony (Dark Factory federation).
+//
+// For each candidate on the `prospector:candidates` blackboard, computes a
+// read-only ON-CHAIN VALUE SCORE (a balance / TVL proxy) and decides whether the
+// candidate clears a VALUE FLOOR. Standing up a continuous monitor is only worth
+// it for a target holding non-trivial value — this agent supplies that gate: a
+// value-floor verdict the coordinator fuses with the source-classifier's
+// monitorability verdict.
+//
+// The value proxy is a single read-only `cast call` to a configured value view
+// (e.g. `totalAssets()` for a vault, `totalSupply()` for a token), OR — when no
+// value signature is configured — the contract's native balance via `cast
+// balance`. NON-custodial / read-only: only `cast call` / `cast balance`, never
+// `cast send`, never a key, never a write-RPC. EVERY dynamic value is
+// shell_escape()d. The score is a FACT (an on-chain read + a deterministic
+// comparison), never an LLM opinion.
+//
+// Mirrors the monitor watchers' read pattern (`read_uint` over `exec sh`,
+// degrade-safe when the reader is unconfigured: no reader => "no-read", observed,
+// never a false verdict).
+//
+// Emission is gated PURELY on the ADR-0001 tier of this agent:
+//   shadow / dormant -> score + learn the verdict, NO emit;
+//   propose          -> + emit a DRAFT `prospector:value` signal (low);
+//   review-gated /    -> + emit a DIRECT `prospector:value` signal.
+//   autonomous
+// One tier() call per tick, branch once, fall through to shadow/dormant. The
+// per-candidate verdict is posted to a blackboard memo (`prospector:value:<addr>`)
+// at EVERY tier so the coordinator can fuse it.
+//
+// Env contract (read via getenv; exported by scripts/start-colony.sh; add each
+// to exec.env_passthrough in .agentis/config so the sandboxed `exec sh` reads it):
+//   PROSPECTOR_CAST        absolute path to the `cast` binary (foundry); the read
+//                          tool. "" => no reader; every candidate "no-read".
+//   PROSPECTOR_RPC_URL     the chain RPC endpoint cast reads from (read-only).
+//   PROSPECTOR_VALUE_SIG   the `cast call` signature returning the value proxy
+//                          (e.g. "totalAssets()" / "totalSupply()"). "" => use
+//                          the contract's native balance (`cast balance`) instead.
+//   PROSPECTOR_VALUE_FLOOR the minimum value (decimal integer, in the read's own
+//                          units — wei for native balance, raw token units for a
+//                          view) a candidate must hold to clear the floor. "" => 0
+//                          (any successful read clears; the floor is effectively
+//                          "reads non-zero value").
+// Reads (blackboard): prospector:candidates (the normalised candidate board).
+// Writes (blackboard): prospector:value:<addr> (per-candidate verdict JSON).
+// Emits: "prospector:value" (the colony bus contract).
+
+cb 120000;
+
+// Upper bound on how many candidates the scorer walks in one tick (the bounded
+// recursion's depth cap; .ag has no loops). Matches the classifier's cap.
+fn board_max() -> int {
+    return 64;
+}
+
+// --- diagnostic confidence read (logging only; tier() gates behaviour) ---------
+fn get_confidence() -> float {
+    let raw = recall_latest("value-scorer:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    }
+    return 0.0;
+}
+
+// --- candidate-cell field extraction (`<address>|<chain>|<metadata>`) -----------
+fn cell_address(cell: string) -> string {
+    let bar = index_of(cell, "|");
+    if bar < 0 { return cell; }
+    return substring(cell, 0, bar);
+}
+
+fn cell_chain(cell: string) -> string {
+    let bar = index_of(cell, "|");
+    if bar < 0 { return ""; }
+    let rest = substring(cell, bar + 1, len(cell));
+    let bar2 = index_of(rest, "|");
+    if bar2 < 0 { return rest; }
+    return substring(rest, 0, bar2);
+}
+
+// JSON-string escape a free-text field (mirrors the monitor watchers' json_escape).
+fn json_escape(s: string) -> string {
+    return reduce(regex_find_all("[\\s\\S]", s), |acc: string, c: string| -> string {
+        if c == "\\" { return acc + "\\\\"; }
+        if c == "\"" { return acc + "\\\""; }
+        return acc + c;
+    }, "");
+}
+
+// --- read a single uint value proxy for one candidate via cast (read-only) ------
+// When a value signature is configured: `cast call <addr> <sig>` -> a 0x-hex word
+// -> `cast --to-dec` -> a decimal string. When not: `cast balance <addr>` -> the
+// native balance in wei (already decimal). EVERY dynamic value (cast path, rpc
+// url, address, signature) is shell_escape()d. `set +e` + `|| true` so a transient
+// RPC failure returns "" (no read -> no false verdict) instead of aborting.
+// READ-ONLY: `cast call` / `cast balance` only — never `cast send`, never a key.
+fn read_value(castBin: string, rpc: string, addr: string, sig: string) -> string {
+    if len(castBin) == 0 { return ""; }
+    if len(rpc) == 0 { return ""; }
+    if len(addr) == 0 { return ""; }
+    if len(sig) > 0 {
+        // colony-lint: safe-exec-concat
+        let out = exec sh "set +e; " + shell_escape(castBin) + " call --rpc-url " + shell_escape(rpc)
+                + " " + shell_escape(addr) + " " + shell_escape(sig)
+                + " 2>/dev/null | " + shell_escape(castBin) + " --to-dec 2>/dev/null || true";
+        return out;
+    }
+    // colony-lint: safe-exec-concat
+    let bal = exec sh "set +e; " + shell_escape(castBin) + " balance --rpc-url " + shell_escape(rpc)
+            + " " + shell_escape(addr) + " 2>/dev/null || true";
+    return bal;
+}
+
+// Trim a trailing newline cast leaves on its decimal output.
+fn first_token(s: string) -> string {
+    let nl = index_of(s, "\n");
+    if nl < 0 { return s; }
+    return substring(s, 0, nl);
+}
+
+// --- big-decimal value handling (NO parse_int — a TVL in wei OVERFLOWS i64) -----
+// A realistic value floor is in wei: 1000 ETH = 1e21, far beyond the i64 range
+// (~9.2e18) parse_int can hold, so the value + floor are kept as DECIMAL STRINGS
+// and compared with a length-then-lexicographic big-decimal comparator. This is
+// exact for arbitrarily large non-negative integers and never overflows.
+//
+// Normalise a raw decimal reading to a clean digit string: the first token, with
+// any leading zeros stripped (so "007" -> "7", "0" -> "0"). "" / non-numeric ->
+// "" (the "no reading" sentinel, distinct from a legitimate "0"). Total.
+fn reading_to_dec(s: string) -> string {
+    let t = first_token(s);
+    if len(t) == 0 { return ""; }
+    if len(regex_find_all("[^0-9]", t)) > 0 { return ""; }
+    return strip_leading_zeros(t);
+}
+
+// Strip leading zeros from a digit string, leaving at least one digit ("0").
+fn strip_leading_zeros(s: string) -> string {
+    let kept = reduce(regex_find_all("[0-9]", s), |acc: string, d: string| -> string {
+        if len(acc) > 0 { return acc + d; }
+        if d == "0" { return acc; }
+        return d;
+    }, "");
+    if len(kept) == 0 { return "0"; }
+    return kept;
+}
+
+// The configured value floor as a normalised digit string; "" / non-numeric -> "0"
+// (any successful read >= 0 clears a zero floor — i.e. "reads a value at all").
+fn floor_dec(raw: string) -> string {
+    if len(raw) == 0 { return "0"; }
+    if len(regex_find_all("[^0-9]", raw)) > 0 { return "0"; }
+    return strip_leading_zeros(raw);
+}
+
+// Big-decimal `a >= b` over two normalised (no-leading-zero) digit strings:
+// longer string is the larger number; equal length compares DIGIT-WISE from the
+// most-significant end (the runtime's `>=` does not accept strings, so the
+// lexicographic compare is open-coded over single digits). Total.
+fn dec_ge(a: string, b: string) -> bool {
+    if len(a) > len(b) { return true; }
+    if len(a) < len(b) { return false; }
+    return same_len_ge(a, b, 0);
+}
+
+// The rank (0..9) of a single decimal digit; -1 for a non-digit (defensive). The
+// inputs are validated digit strings, so the -1 path is unreachable in practice.
+fn digit_rank(c: string) -> int {
+    return index_of("0123456789", c);
+}
+
+// Digit-wise `a >= b` for two EQUAL-LENGTH digit strings, scanning from the most
+// significant digit. The first differing position decides; all-equal -> true (>=).
+fn same_len_ge(a: string, b: string, i: int) -> bool {
+    if i >= len(a) { return true; }
+    let da = digit_rank(substring(a, i, i + 1));
+    let db = digit_rank(substring(b, i, i + 1));
+    if da > db { return true; }
+    if da < db { return false; }
+    return same_len_ge(a, b, i + 1);
+}
+
+// --- the deterministic value-floor verdict (a FACT, never an LLM call) ----------
+// "no-read"  the value could not be read (unverified / unconfigured / RPC down);
+// "below"    the value read but is below the floor (not worth monitoring by value);
+// "above"    the value clears the floor (a value-qualified monitoring target).
+// A zero floor still requires a NON-ZERO read to clear (a contract holding 0 value
+// is not a monitoring target), so "0" >= "0" does not auto-qualify.
+fn verdict_of(value: string, floor: string) -> string {
+    if len(value) == 0 { return "no-read"; }
+    if value == "0" { return "below"; }
+    if !dec_ge(value, floor) { return "below"; }
+    return "above";
+}
+
+// Does the verdict clear the value floor (a value-qualified target)?
+fn clears_floor(verdict: string) -> bool {
+    return verdict == "above";
+}
+
+// learn() outcome enum {success,failure,partial,timeout,error}. Clearing the
+// floor is the signal worth surfacing (success); a below-floor read is a
+// confirmed non-target (partial); a missing read is error.
+fn outcome_of(verdict: string) -> string {
+    if verdict == "no-read" { return "error"; }
+    if verdict == "below" { return "partial"; }
+    return "success";
+}
+
+// The value reported in the payload: the digit string, or "-1" for a no-read
+// (the no-read sentinel, mirroring the monitor watchers' convention).
+fn value_for_json(value: string) -> string {
+    if len(value) == 0 { return "-1"; }
+    return value;
+}
+
+// A compact, deterministic per-candidate verdict payload (JSON). All fields are
+// facts; none is LLM text. value/floor are emitted as JSON STRINGS (quoted): a
+// realistic value/floor is in wei (>1e21), which OVERFLOWS the JSON number
+// parser and would corrupt json_get on sibling fields downstream, so the
+// big-decimal digit strings are carried as strings (the coordinator keys on the
+// `verdict` field, not on re-parsing the magnitude). Both are validated digit
+// strings, so no JSON escaping is needed.
+fn verdict_payload(addr: string, chain: string, value: string, floor: string, verdict: string, sev: string) -> string {
+    return "{\"agent\":\"value-scorer\",\"target\":\"" + json_escape(addr)
+         + "\",\"chain\":\"" + json_escape(chain) + "\",\"value\":\"" + value_for_json(value)
+         + "\",\"floor\":\"" + floor + "\",\"verdict\":\"" + verdict
+         + "\",\"severity\":\"" + sev + "\"}";
+}
+
+// Post one candidate's verdict to its per-candidate blackboard memo so the
+// coordinator can fuse it. The address is the validated `0x` + 40-hex key.
+fn post_verdict(addr: string, chain: string, value: string, floor: string, verdict: string) -> void {
+    memo_write("prospector:value:" + addr,
+        verdict_payload(addr, chain, value, floor, verdict, "info"));
+}
+
+// Score one candidate cell LIVE: read its value proxy, compare to the floor, post
+// the per-candidate signal. Returns 1 when the candidate clears the floor, else 0.
+fn score_cell(castBin: string, rpc: string, sig: string, floor: string, cell: string) -> int {
+    let addr = cell_address(cell);
+    let chain = cell_chain(cell);
+    let value = reading_to_dec(read_value(castBin, rpc, addr, sig));
+    let verdict = verdict_of(value, floor);
+    let _sig = post_verdict(addr, chain, value, floor, verdict);
+    print("value-scorer: " + addr + " value=" + value_for_json(value) + " floor=" + floor
+        + " -> " + verdict);
+    if clears_floor(verdict) { return 1; }
+    return 0;
+}
+
+// The i-th non-empty line of a newline-joined board; "" when out of range. The
+// board is split + folded (.ag has no list indexing), picking the line whose
+// non-empty position equals `i`. Total on every failure mode.
+fn nth_cell(lines: list<string>, i: int) -> string {
+    let acc = reduce(lines, |st: string, cell: string| -> string {
+        let pos = pick_pos(st);
+        let found = pick_found(st);
+        if len(found) > 0 { return st; }
+        if len(cell) == 0 { return st; }
+        if pos == i { return to_string(pos + 1) + "|" + cell; }
+        return to_string(pos + 1) + "|";
+    }, "0|");
+    return pick_found(acc);
+}
+
+// The position field (before the first `|`) of the pick accumulator.
+fn pick_pos(st: string) -> int {
+    let bar = index_of(st, "|");
+    if bar < 0 { return 0; }
+    return parse_int(substring(st, 0, bar));
+}
+
+// The found-cell field (after the first `|`) of the pick accumulator; "" until
+// the target position is reached.
+fn pick_found(st: string) -> string {
+    let bar = index_of(st, "|");
+    if bar < 0 { return ""; }
+    return substring(st, bar + 1, len(st));
+}
+
+// Count the non-empty cells on the board (for the bounded-recursion length).
+fn count_cells(lines: list<string>) -> int {
+    return reduce(lines, |acc: int, cell: string| -> int {
+        if len(cell) == 0 { return acc; }
+        return acc + 1;
+    }, 0);
+}
+
+// BOUNDED RECURSION over the candidate board (single-assignment .ag has no
+// while/for): at each non-empty cell up to the board_max() cap, score the
+// candidate LIVE, post its per-candidate signal, and count the floor-clearing
+// matches. Stops at the cap or when the board is exhausted.
+fn score_board(castBin: string, rpc: string, sig: string, floor: string, lines: list<string>, i: int, total: int, remaining: int, acc: int) -> int {
+    if remaining <= 0 { return acc; }
+    if i >= total { return acc; }
+    let cell = nth_cell(lines, i);
+    if len(cell) == 0 { return acc; }
+    let hit = score_cell(castBin, rpc, sig, floor, cell);
+    return score_board(castBin, rpc, sig, floor, lines, i + 1, total, remaining - 1, acc + hit);
+}
+
+fn tick(reason: string) -> void {
+    let now = to_string(now_ms());
+    // Heartbeat first (dashboard memo-freshness probe) even on an early return.
+    memo_write("value-scorer:last_check", now);
+
+    let castBin = getenv("PROSPECTOR_CAST");
+    let rpc = getenv("PROSPECTOR_RPC_URL");
+    let sig = getenv("PROSPECTOR_VALUE_SIG");
+    let floor = floor_dec(getenv("PROSPECTOR_VALUE_FLOOR"));
+    let board = recall_latest("prospector:candidates");
+    let lines = regex_split("\n", board);
+    let total = count_cells(lines);
+    let cleared = score_board(castBin, rpc, sig, floor, lines, 0, total, board_max(), 0);
+
+    print("value-scorer: scored board -> " + to_string(cleared)
+        + " above floor (conf=" + to_string(get_confidence()) + ")");
+
+    let verdict = if cleared > 0 { "qualified" } else { "none" };
+    let outcome = if cleared > 0 { "success" } else { "partial" };
+    let key = "value:" + to_string(cleared);
+    let desc = "scored board -> " + to_string(cleared) + " candidate(s) above floor";
+
+    let summary = "{\"agent\":\"value-scorer\",\"kind\":\"summary\",\"above_floor\":"
+        + to_string(cleared) + ",\"verdict\":\"" + verdict + "\"}";
+
+    // ONE tier() call, branch ONCE (ADR-0001). The tier gates EMISSION only; the
+    // per-candidate verdicts above are posted at every tier. shadow/dormant fall
+    // through. (.ag has no `else if`; the tiers nest as `else { if ... } else {}`.)
+    let my_tier = tier("value-scorer");
+    if my_tier == "autonomous" {
+        emit("prospector:value", summary);
+        learn("prospector-value", key, desc, outcome, [verdict, outcome, "acted"]);
+    } else {
+        if my_tier == "review-gated" {
+            emit("prospector:value", summary);
+            learn("prospector-value", key, desc, outcome, [verdict, outcome, "review-gated"]);
+        } else {
+            if my_tier == "propose" {
+                emit("prospector:value", summary);
+                learn("prospector-value", key, desc, outcome, [verdict, outcome, "emitted"]);
+            } else {
+                // shadow / dormant: score + learn ONLY — no emit.
+                learn("prospector-value", key, desc + " (baseline)", outcome, [verdict, outcome, "observed"]);
+                print("value-scorer: observing (tier: " + my_tier + ") — no emit");
+            };
+        };
+    };
+
+    memo_write("value-scorer:last_check", to_string(now_ms()));
+}

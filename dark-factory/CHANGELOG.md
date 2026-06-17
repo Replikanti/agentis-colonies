@@ -119,6 +119,45 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   `tools/test-invariant-prover-repair-loop.sh`, pins the loop (grep over the `.ag`, no LLM/forge).
 
 ### Added
+- **`prospector` colony — qualify EVM protocols as monitoring targets by public on-chain/source signals**
+  (#871). A new colony alongside `monitor` + `auditor` that takes a list of candidate EVM protocols and decides
+  which ones are worth standing up the `monitor` colony on, and why. NON-custodial / read-only: every agent only
+  READS public source/ABI + on-chain state via `cast`/explorer over `exec sh` (each dynamic value
+  `shell_escape()`d) — no agent signs a transaction or touches funds, and the value-scorer uses ONLY `cast call`
+  / `cast balance` (never `cast send` / a key / a write-RPC). The qualification verdict is a FACT (a source/ABI
+  read + a read-only on-chain value read + a deterministic comparison), never an LLM opinion. This PR ships the
+  lint-clean foundation: the colony scaffold (`prospector/{agents,config,scripts,README.md}`, `[forge] type =
+  "none"` per ADR-0003), the four agents, and the confidence-tiered qualification pipeline.
+  - `prospector/agents/intake.ag` — ingests the candidate protocol list from `PROSPECTOR_CANDIDATES` (newline
+    `<address>|<chain>[|<metadata>]` cells), validates (`0x` + 40 hex address, integer chain id) + dedups each
+    candidate, and writes the normalised `prospector:candidates` blackboard memo.
+  - `prospector/agents/source-classifier.ag` — for each candidate reads its verified function-signature surface
+    via a configured reader command (`PROSPECTOR_ABI_CMD`, e.g. `cast interface` or a keyless Sourcify ABI fetch;
+    the address/chain reach the reader as exported env vars, never interpolated) and classifies whether it
+    exposes a DeFi value-invariant family (lending / vault-4626 / AMM / stablecoin / perps / staking / bridge) —
+    the monitorability gate. Posts `prospector:classified:<addr>`.
+  - `prospector/agents/value-scorer.ag` — for each candidate reads a read-only on-chain value proxy (a `cast
+    call` view such as `totalAssets()`, or the contract's native `cast balance`) and decides whether it clears a
+    configured value floor — the value-floor gate. The value + floor are compared as BIG-DECIMAL strings (a TVL
+    in wei exceeds i64, which `parse_int` cannot hold and which corrupts JSON number parsing downstream), so the
+    digit strings are compared digit-wise and carried as JSON strings. Posts `prospector:value:<addr>`.
+  - `prospector/agents/coordinator.ag` — fuses the three HARD GATES (verified-source + DeFi-value-invariants +
+    value-floor) into a per-target qualification verdict and writes the `prospector:qualified` dossier (per-target:
+    qualifies yes/no, the matched family, the failed gate when any, and the suggested invariant to watch — the
+    handoff to the `monitor` colony, phrased in the monitor's `MONITOR_INV_*` terms) plus a ranked
+    qualifying-target index. Single-assignment helpers, reduce/bounded-recursion (no loops), per the
+    `auditor`/`monitor` coordinator pattern.
+  - **Confidence-tiered qualification (ADR-0001) as the false-positive control.** Every agent makes ONE `tier()`
+    call per tick and branches once; the tier gates PUBLICATION only (the verdict is identical at every tier):
+    `shadow`/`dormant` score + write the dossier (no publish), `propose` emits a draft shortlist, `review-gated`/
+    `autonomous` publish the ranked dossier index. `cb <N>;` matches `cb_budget`, and every tick begins + ends
+    with `memo_write("<agent>:last_check", now)`.
+  - `prospector/scripts/start-colony.sh` — ADR-0003-conformant daemon launcher (symlink-safe `$0`, sources
+    `parse-toml.sh`, exports the `PROSPECTOR_*` env contract, `--restart-agent`, allowlisted daemon flags).
+  - `prospector/README.md` — agent table + mermaid diagram + the env contract + the tier semantics + the
+    `monitor`-colony handoff recipe.
+  Follow-ups (out of scope here): off-chain qualification signals (web-research scoring) and freshness via
+  deploy-time indexing. The colony NEVER signs and NEVER touches funds.
 - **`monitor` live-watch runtime — derive a target's invariant SET once, watch the whole set continuously**
   (#1086, builds on the `monitor` colony #1085). The `monitor` colony's `invariant-watcher` evaluated ONE
   env-configured invariant against live on-chain state; dark-factory separately DERIVES a target's deep
