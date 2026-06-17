@@ -18,7 +18,7 @@ before it is ever trusted to page.
 
 | Agent | Role | Output |
 |-------|------|--------|
-| `invariant-watcher` | Evaluates a derived protocol invariant (e.g. `totalSupply() <= totalAssets()`) against current on-chain state; flags a violation or a thin margin-to-violation | `monitor:signal:invariant`, `monitor:alert` (tier-gated) |
+| `invariant-watcher` | Evaluates the target's protocol invariant(s) against current on-chain state; flags a violation or a thin margin-to-violation. Evaluates a single env-configured invariant, OR — when a derived watch-spec is supplied (`MONITOR_INV_SPEC`, #1086) — the WHOLE derived invariant SET | `monitor:signal:invariant` (fused), `monitor:signal:invariant:<label>` (per-invariant), `monitor:alert` (tier-gated) |
 | `oracle-watcher` | Watches a price feed for deviation / staleness / out-of-bounds price | `monitor:signal:oracle`, `monitor:alert` (tier-gated) |
 | `coordinator` | Fuses the watcher signals off the shared blackboard, dedups a persistent condition, decides fused severity, emits one consolidated alert | `monitor:alert` (tier-gated) |
 
@@ -52,6 +52,60 @@ Every agent makes ONE `tier()` call per tick and branches once. The tier gates
 This is the false-positive control: a fresh watcher seeded at `shadow` learns the
 protocol's normal state before it can page, and auto-promotion lifts it as its
 alerts prove real over noise.
+
+## Derive → watch the whole invariant set (#1086)
+
+dark-factory **derives** a target's deep invariants
+([`../run-invariant-hunt.sh`](../run-invariant-hunt.sh) +
+[`../auditor/agents/invariant-prover.ag`](../auditor/agents/invariant-prover.ag) +
+the `../evm-harness/`). The monitor colony **watches** invariants live. `#1086`
+bridges the two with [`../run-live-watch.sh`](../run-live-watch.sh): derive a
+target's invariant SET **once**, emit a small static **watch-spec**, then have the
+`invariant-watcher` re-check the **whole set** continuously — no re-derivation per
+tick.
+
+```
+target (repo + address + RPC) ──run-live-watch.sh──► watch-spec.json ──MONITOR_INV_SPEC──► invariant-watcher (per tick)
+        derive ONCE (LLM/forge)                      a static set of facts             read-only `cast` re-checks every member
+```
+
+1. **Derive once** — `run-live-watch.sh` runs the existing invariant-prover
+   derivation a single time for the target (reusing `run-invariant-hunt.sh`),
+   extracts the live-watchable two-sided comparisons (a view-call vs another
+   view-call, or vs a literal bound), and writes a **watch-spec**: a JSON array of
+   `{label, lhs_sig, rhs_sig | rhs_const, rel, margin_bp}` objects (`rel` ∈
+   `le|ge|eq`). An offline `--spec-fixture <file>` path takes a hand-authored
+   watch-spec **verbatim** (no LLM/forge) for the live-watchable subset.
+
+   ```bash
+   ../run-live-watch.sh \
+     --repo "$PWD/target" --target Vault.sol:Vault \
+     --address 0xVAULT --rpc-url https://rpc.example/x \
+     --out "$PWD/watch-spec.json"
+   ```
+
+2. **Watch continuously** — point the watcher at the emitted spec and the same
+   target. `MONITOR_INV_SPEC` may be the file PATH or the JSON array inline:
+
+   ```bash
+   export MONITOR_INV_SPEC="$PWD/watch-spec.json"
+   export MONITOR_TARGET=0xVAULT MONITOR_RPC_URL=https://rpc.example/x
+   export MONITOR_CAST="$(command -v cast)"
+   # add MONITOR_INV_SPEC to exec.env_passthrough in .agentis/config, then:
+   ./scripts/start-colony.sh
+   ```
+
+Each tick the watcher evaluates **every** invariant in the set with two read-only
+`cast call`s, posts each member's verdict to its own `monitor:signal:invariant:<label>`
+blackboard memo, and **fuses** them to the worst verdict across the set
+(`violated` > `margin` > `ok`) — so one broken member pages the whole set. The
+fused verdict drives the **same** tier-gated emission as the single-invariant path,
+and the fused `monitor:signal:invariant` memo the `coordinator` already reads is
+unchanged. With `MONITOR_INV_SPEC` **unset** the watcher's behaviour is identical
+to before — the single env-configured invariant.
+
+`run-live-watch.sh` is **read-only / non-custodial**: a watch-spec is a set of
+facts to read + compare; it carries no keys and never describes a write.
 
 ## Setup
 
@@ -95,6 +149,7 @@ watcher reads nothing and only observes — it never raises a false alert.
 | `MONITOR_INV_REL` | Required relation: `le` \| `ge` \| `eq`. | `le` |
 | `MONITOR_INV_MARGIN_BP` | Margin-to-violation band in basis points (0..10000). | `0` |
 | `MONITOR_INV_LABEL` | Human label for the invariant (alert body). | the LHS signature |
+| `MONITOR_INV_SPEC` | (#1086) A **derived watch-spec** for the whole invariant SET — an absolute PATH to the JSON file `run-live-watch.sh` emits, or the JSON array INLINE. When set, the watcher evaluates EVERY invariant in the set against live state each tick; when unset it uses the single `MONITOR_INV_*` invariant above (backward-compatible). | unset (single-invariant) |
 | `MONITOR_ORACLE` | Price-feed contract address (`0x...`). | unset |
 | `MONITOR_ORACLE_PRICE_SIG` | Signature returning the price. | `latestAnswer()` |
 | `MONITOR_ORACLE_TS_SIG` | Signature returning the feed's last-update unix ts; `""` ⇒ skip staleness. | unset |
@@ -106,10 +161,12 @@ watcher reads nothing and only observes — it never raises a false alert.
 
 ## Status
 
-Experimental, lint-clean foundation. This PR ships the colony scaffold + the two
-highest-value watchers + the fusion coordinator + a webhook sink. Follow-ups
-(see [#1085](https://github.com/Replikanti/agentis-colonies/issues/1085) and the
-[live-watch runtime, #1086](https://github.com/Replikanti/agentis-colonies/issues/1086)):
-the liquidity / governance / flow watchers, a live-watch runtime, and a dashboard
-view. The colony is **read-only** and **never** posts an alert without a
-configured sink — and **never** signs or touches funds.
+Experimental, lint-clean foundation. The colony scaffold + the two highest-value
+watchers + the fusion coordinator + a webhook sink shipped in
+[#1085](https://github.com/Replikanti/agentis-colonies/issues/1085); the
+**live-watch runtime** (`run-live-watch.sh` + the `invariant-watcher`'s
+`MONITOR_INV_SPEC` derived-set path) shipped in
+[#1086](https://github.com/Replikanti/agentis-colonies/issues/1086). Follow-ups:
+the liquidity / governance / flow watchers and a dashboard view. The colony is
+**read-only** and **never** posts an alert without a configured sink — and
+**never** signs or touches funds.

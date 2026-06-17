@@ -114,6 +114,42 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   `tools/test-invariant-prover-repair-loop.sh`, pins the loop (grep over the `.ag`, no LLM/forge).
 
 ### Added
+- **`monitor` live-watch runtime — derive a target's invariant SET once, watch the whole set continuously**
+  (#1086, builds on the `monitor` colony #1085). The `monitor` colony's `invariant-watcher` evaluated ONE
+  env-configured invariant against live on-chain state; dark-factory separately DERIVES a target's deep
+  invariants (`run-invariant-hunt.sh` + `auditor/agents/invariant-prover.ag` + `evm-harness/`). This bridges
+  the two: derive a target's invariant SET ONCE, emit a static **watch-spec**, then have the watcher re-check
+  the WHOLE set continuously — no re-derivation per tick. READ-ONLY / NON-custodial throughout (a watch-spec
+  is a set of facts to read + compare; it carries no keys and never describes a write).
+  - `run-live-watch.sh` — given a target (`--repo`/`--target` + `--address` + `--rpc-url`), DERIVES the
+    invariant set ONCE by REUSING `run-invariant-hunt.sh` (the established invariant-prover derivation entry
+    point), then EXTRACTS the live-watchable two-sided comparisons (a view-call vs another view-call, or vs a
+    literal bound — `require(a() <= b())` / `require(a() >= <n>)` / `assertLe(a(), b())`) from the generated
+    invariant test into a **watch-spec**: a JSON array of `{label, lhs_sig, rhs_sig | rhs_const, rel,
+    margin_bp}` objects (`rel` ∈ `le|ge|eq`). Complex multi-term/arithmetic invariants are deliberately
+    UNDER-extracted (not a single live two-`cast` comparison) rather than emitted as an unwatchable spec. An
+    offline `--spec-fixture <file>` path (the sibling of `run-invariant-hunt.sh`'s `--handler-fixture`) takes a
+    hand-authored watch-spec VERBATIM — NO LLM, NO forge — so the derive→spec wiring is provable
+    deterministically. POSIX-sh, dash-safe (`set -eu`), shellcheck-clean; all JSON construction goes through
+    `python3 json.dumps` (the repo convention) so no signature can corrupt the spec; `--address` (0x + 40 hex)
+    and `--rpc-url` (http(s)) are validated.
+  - `monitor/agents/invariant-watcher.ag` — now ALSO consumes a derived watch-spec via `MONITOR_INV_SPEC` (an
+    absolute PATH to the JSON file, or the JSON array INLINE). When SET, the watcher evaluates EVERY invariant
+    in the set against live state each tick — `.ag` has no loops, so the set is walked by BOUNDED RECURSION
+    over the array indices (cap 64; the runtime exposes no json-array-length builtin, so the walk stops at the
+    first entry with no `lhs_sig`), reading each side with the SAME `shell_escape()`d `cast call` reader and
+    the SAME deterministic `verdict_of()` the single-invariant path uses. Each member's verdict is posted to
+    its own `monitor:signal:invariant:<label>` blackboard memo (the label is sanitized for the memo-key
+    charset; the JSON payload keeps the original label), and the members are FUSED to the worst verdict across
+    the set (`violated` > `margin` > `ok`) — one broken member pages the whole set. The fused verdict drives
+    the EXISTING tier-gated emission (ONE `tier()` call per tick, branch once, `monitor:alert` on an anomaly),
+    and the fused `monitor:signal:invariant` memo the `coordinator` already reads is unchanged. When
+    `MONITOR_INV_SPEC` is UNSET the watcher's behaviour is byte-identical to before — the single env-configured
+    invariant; `cb 90000` matches `cb_budget`, and every tick still ends with `memo_write(...:last_check)`.
+  - `monitor/README.md` (a "Derive → watch the whole invariant set" section + the `MONITOR_INV_SPEC`
+    env-contract row), `monitor/config/colony.example.toml`, and `monitor/scripts/start-colony.sh` (exports
+    `MONITOR_INV_SPEC`) document the derive→watch flow. The colony stays read-only and never signs / never
+    auto-submits.
 - **`monitor` colony — continuous protocol monitoring with confidence-tiered alerting** (#1085). A new colony
   alongside `auditor` that continuously WATCHES a target EVM protocol and emits reasoned, high-signal anomaly
   alerts on the bus (`monitor:alert`). NON-custodial / read-only: every watcher only READS chain state via

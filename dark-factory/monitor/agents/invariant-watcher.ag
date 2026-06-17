@@ -36,9 +36,32 @@
 //                       of flipping, the watcher flags a margin warning. "" => 0
 //                       (only a hard violation flags).
 //   MONITOR_INV_LABEL   a human label for the invariant (for the alert body).
+//   MONITOR_INV_SPEC    (#1086) OPTIONAL — a DERIVED watch-spec for the WHOLE
+//                       invariant SET of the target (run-live-watch.sh emits it
+//                       once from the invariant-prover derivation path). Either an
+//                       absolute PATH to a JSON file, or the JSON array INLINE. The
+//                       array holds one object per invariant:
+//                         {"label","lhs_sig","rhs_sig","rhs_const","rel","margin_bp"}
+//                       (rhs_sig OR rhs_const per entry; rel in le|ge|eq). When SET,
+//                       the watcher evaluates EVERY invariant in the set against
+//                       live state each tick (the set path); when UNSET it falls
+//                       back to the single MONITOR_INV_* env contract above (the
+//                       legacy path is byte-for-byte unchanged). .ag has no loops,
+//                       so the set is walked by BOUNDED RECURSION over the array
+//                       indices (cap MONITOR_INV_SPEC_MAX entries), per the
+//                       single-assignment reduce/recursion convention.
 // Emits: "monitor:alert" (the colony bus contract).
 
 cb 90000;
+
+// Upper bound on how many invariants the set path walks in one tick (the bounded
+// recursion's depth cap, since .ag has no loops and the runtime exposes no
+// json-array-length builtin). A derived watch-spec for one target is a small,
+// curated set; 64 is far above any realistic per-target invariant count and keeps
+// the per-tick cost bounded.
+fn spec_max() -> int {
+    return 64;
+}
 
 // --- tier read (ADR-0001 / CLAUDE.md threshold table) --------------------------
 // Mirrors the runtime tier() builtin's table so a missing memo reads as dormant.
@@ -165,6 +188,145 @@ fn alert_payload(label: string, verdict: string, lhs: int, rhs: int, rel: string
          + "\",\"target\":\"" + addr + "\",\"severity\":\"" + sev + "\"}";
 }
 
+// === #1086 — DERIVED watch-spec (multi-invariant SET) path =====================
+// Everything below is ADDITIVE: it fires only when MONITOR_INV_SPEC is set. With
+// it unset, tick() takes the unchanged single-invariant env path above.
+
+// Resolve MONITOR_INV_SPEC to the JSON array text. The env value is either the
+// JSON INLINE (first non-space char `[`) or an absolute PATH to the JSON file the
+// derivation step (run-live-watch.sh) wrote. A path is read through the sandboxed
+// reader; the path is the ONLY dynamic value in the shell, so it is shell_escape()d
+// (operator/derivation-supplied — never a bare concat). `set +e` + `|| true` so a
+// missing/unreadable file degrades to "" (no spec -> no set path), never an abort.
+fn read_spec_file(path: string) -> string {
+    if len(path) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "set +e; cat -- " + shell_escape(path) + " 2>/dev/null || true";
+}
+
+// First non-whitespace character of the raw env value, used to tell inline JSON
+// (`[`) from a filesystem path. Total: "" stays "".
+fn first_nonspace(s: string) -> string {
+    let trimmed = reduce(regex_find_all("[^ \t\r\n]", s), |acc: string, c: string| -> string {
+        if len(acc) > 0 { return acc; }
+        return c;
+    }, "");
+    return trimmed;
+}
+
+fn resolve_spec(raw: string) -> string {
+    if len(raw) == 0 { return ""; }
+    if first_nonspace(raw) == "[" { return raw; }
+    return read_spec_file(raw);
+}
+
+// Pull one field of the i-th invariant object out of the spec array. A miss
+// (index out of range, or an absent field) is json_get -> Void -> "void", which
+// we collapse to "" — the same total-on-failure idiom the env path uses for an
+// empty reading. The path is built from a controlled index + a fixed field name,
+// so it carries no untrusted text into json_get's selector.
+fn spec_field(spec: string, i: int, field: string) -> string {
+    let v = to_string(json_get(spec, "[" + to_string(i) + "]." + field));
+    if v == "void" { return ""; }
+    return v;
+}
+
+// margin_bp may be absent (=> 0) or non-numeric (=> 0); reading_to_int is total.
+fn spec_margin(spec: string, i: int) -> int {
+    let raw = spec_field(spec, i, "margin_bp");
+    if len(raw) == 0 { return 0; }
+    return reading_to_int(raw);
+}
+
+// The per-invariant LIVE verdict for the i-th entry: read LHS (always a sig), read
+// RHS (a sig when rhs_sig is present, else the rhs_const literal), then the SAME
+// deterministic verdict_of() the single-invariant path uses. A FACT, never an LLM
+// call. rel "" defaults to "le" via rel_or_default, matching the env path.
+fn spec_verdict(castBin: string, rpc: string, addr: string, spec: string, i: int) -> string {
+    let lhsSig = spec_field(spec, i, "lhs_sig");
+    let rhsSig = spec_field(spec, i, "rhs_sig");
+    let rhsConst = spec_field(spec, i, "rhs_const");
+    let rel = rel_or_default(spec_field(spec, i, "rel"));
+    let marginBp = spec_margin(spec, i);
+    let lhs = reading_to_int(read_uint(castBin, rpc, addr, lhsSig));
+    let rhs = resolve_rhs(castBin, rpc, addr, rhsSig, rhsConst);
+    return verdict_of(lhs, rhs, rel, marginBp);
+}
+
+// The i-th invariant's human label, falling back to its lhs_sig (the env path's
+// label_or_sig rule), then to a positional "inv-<i>" when both are empty.
+fn spec_label(spec: string, i: int) -> string {
+    let label = label_or_sig(spec_field(spec, i, "label"), spec_field(spec, i, "lhs_sig"));
+    if len(label) > 0 { return label; }
+    return "inv-" + to_string(i);
+}
+
+// FUSE two per-invariant verdicts into the worse of the two — the SET's verdict is
+// the most severe across all its invariants, so one violation pages the whole set.
+// Order of severity: violated > margin > ok > no-read (a side that could not be
+// read is the quietest — it raises no false alarm, exactly like the env path).
+fn verdict_rank(verdict: string) -> int {
+    if verdict == "violated" { return 3; }
+    if verdict == "margin" { return 2; }
+    if verdict == "ok" { return 1; }
+    return 0;
+}
+
+fn worse_verdict(a: string, b: string) -> string {
+    if verdict_rank(a) >= verdict_rank(b) { return a; }
+    return b;
+}
+
+// A memo key must be non-empty, start alnum, and contain only [A-Za-z0-9_:.-]. An
+// invariant label is free text (e.g. "totalSupply()"), whose `(`/`)`/space would be
+// illegal in a key, so the label's key SUFFIX is sanitized: every run of
+// disallowed chars collapses to a single "_" (regex_split on the disallowed class,
+// rejoined with "_"). The prefix "monitor:signal:invariant:" supplies the required
+// leading alnum + the `:` separators, so only the suffix needs cleaning. The JSON
+// payload still carries the ORIGINAL label verbatim — only the key is sanitized.
+fn signal_key_label(label: string) -> string {
+    return reduce(regex_split("[^A-Za-z0-9_.-]", label), |acc: string, seg: string| -> string {
+        if len(acc) == 0 { return seg; }
+        if len(seg) == 0 { return acc + "_"; }
+        return acc + "_" + seg;
+    }, "");
+}
+
+// One per-invariant blackboard signal, posted under monitor:signal:invariant:<label>
+// so the coordinator (or an operator) can see the SET broken down by member while
+// the fused monitor:signal:invariant stays the single fused fact it already reads.
+// A memo write — allowed at every tier, including shadow. The key suffix is the
+// sanitized label; the payload carries the original label.
+fn post_signal(label: string, verdict: string, addr: string) -> void {
+    memo_write("monitor:signal:invariant:" + signal_key_label(label),
+        "{\"watcher\":\"invariant\",\"invariant\":\"" + label + "\",\"verdict\":\"" + verdict
+        + "\",\"target\":\"" + addr + "\",\"severity\":\"info\"}");
+}
+
+// BOUNDED RECURSION over the spec array (single-assignment .ag has no while/for):
+// at each index i evaluate the i-th invariant LIVE, post its per-invariant signal,
+// and fold its verdict into the running fused verdict. Stops at the first absent
+// label (end of array) or at the spec_max() cap, so a missing json_len builtin is
+// not a hazard. Returns the fused (worst) verdict across the whole set; "no-read"
+// when the set is empty / unreadable (no spec -> no fact -> no flag).
+fn fuse_set(castBin: string, rpc: string, addr: string, spec: string, i: int, remaining: int, acc: string) -> string {
+    if remaining <= 0 { return acc; }
+    let label = spec_label(spec, i);
+    if len(spec_field(spec, i, "lhs_sig")) == 0 { return acc; }
+    let verdict = spec_verdict(castBin, rpc, addr, spec, i);
+    let _sig = post_signal(label, verdict, addr);
+    print("invariant-watcher: [set] " + label + " -> " + verdict);
+    return fuse_set(castBin, rpc, addr, spec, i + 1, remaining - 1, worse_verdict(acc, verdict));
+}
+
+// Count the invariants the set path actually evaluated (for the fused label/log) —
+// same bounded walk, no live reads. Stops at the first entry with no lhs_sig.
+fn count_set(spec: string, i: int, remaining: int, acc: int) -> int {
+    if remaining <= 0 { return acc; }
+    if len(spec_field(spec, i, "lhs_sig")) == 0 { return acc; }
+    return count_set(spec, i + 1, remaining - 1, acc + 1);
+}
+
 fn tick(reason: string) -> void {
     let now = to_string(now_ms());
     // Heartbeat first so the dashboard's memo-freshness probe sees the daemon
@@ -174,18 +336,47 @@ fn tick(reason: string) -> void {
     let castBin = getenv("MONITOR_CAST");
     let rpc = getenv("MONITOR_RPC_URL");
     let addr = getenv("MONITOR_TARGET");
+
+    // #1086: when MONITOR_INV_SPEC is set, evaluate the DERIVED invariant SET; else
+    // fall through to the single MONITOR_INV_* env contract (byte-identical legacy
+    // path). resolve_spec() yields the JSON array (inline or file-read), "" when
+    // unset/unreadable -> the env path. ONE branch, no `let` reassignment: every
+    // downstream fact (label, rel, lhs, rhs, verdict) is picked here via `if`.
+    let spec = resolve_spec(getenv("MONITOR_INV_SPEC"));
+    let useSet = len(spec) > 0;
+
+    // --- single-invariant env facts (the legacy path; only used when !useSet) ---
     let lhsSig = getenv("MONITOR_INV_LHS_SIG");
     let rhsSig = getenv("MONITOR_INV_RHS_SIG");
     let rhsConst = getenv("MONITOR_INV_RHS_CONST");
-    let rel = rel_or_default(getenv("MONITOR_INV_REL"));
-    let label = label_or_sig(getenv("MONITOR_INV_LABEL"), lhsSig);
     let marginRaw = getenv("MONITOR_INV_MARGIN_BP");
     let marginBp = if len(marginRaw) > 0 { reading_to_int(marginRaw) } else { 0 };
 
-    // Read BOTH sides of the invariant from current on-chain state (FACTS).
-    let lhs = reading_to_int(read_uint(castBin, rpc, addr, lhsSig));
-    let rhs = resolve_rhs(castBin, rpc, addr, rhsSig, rhsConst);
-    let verdict = verdict_of(lhs, rhs, rel, marginBp);
+    // The relation reported in the alert body. The SET fuses many relations, so the
+    // fused body reports "set"; the env path reports its single configured relation.
+    let rel = if useSet { "set" } else { rel_or_default(getenv("MONITOR_INV_REL")) };
+
+    // The label reported in the alert body. The SET fuses many members, so it
+    // reports "set(<N>)" (N = members evaluated); the env path keeps its single
+    // label (operator label, else the LHS signature).
+    let label = if useSet {
+        "set(" + to_string(count_set(spec, 0, spec_max(), 0)) + ")"
+    } else {
+        label_or_sig(getenv("MONITOR_INV_LABEL"), lhsSig)
+    };
+
+    // The VERDICT (a FACT, never an LLM call). SET path: the fused (worst) verdict
+    // across every member, with each member ALSO posted to its own per-invariant
+    // blackboard signal inside fuse_set(). Env path: the single deterministic
+    // verdict over the two configured sides. lhs/rhs are only meaningful on the env
+    // path; on the SET path they are the "no single pair" sentinel -1.
+    let lhs = if useSet { -1 } else { reading_to_int(read_uint(castBin, rpc, addr, lhsSig)) };
+    let rhs = if useSet { -1 } else { resolve_rhs(castBin, rpc, addr, rhsSig, rhsConst) };
+    let verdict = if useSet {
+        fuse_set(castBin, rpc, addr, spec, 0, spec_max(), "no-read")
+    } else {
+        verdict_of(lhs, rhs, rel, marginBp)
+    };
     let outcome = outcome_of(verdict);
 
     print("invariant-watcher: " + label + " " + rel + " -> " + verdict
@@ -195,10 +386,13 @@ fn tick(reason: string) -> void {
     let desc = "on-chain invariant " + label + " " + rel + " -> " + verdict;
     let anomaly = is_anomaly(verdict);
 
-    // Post this watcher's latest verdict to the shared blackboard memo the
-    // coordinator reads each tick to fuse + dedup signals (a memo write — allowed
-    // at every tier, including shadow). The payload is the same fact JSON the
-    // emit carries, with a neutral severity the coordinator re-decides on fusion.
+    // Post this watcher's latest (fused, on the SET path) verdict to the shared
+    // blackboard memo the coordinator reads each tick to fuse + dedup signals (a
+    // memo write — allowed at every tier, including shadow). The payload is the same
+    // fact JSON the emit carries, with a neutral severity the coordinator re-decides
+    // on fusion. The per-invariant signals (monitor:signal:invariant:<label>) are
+    // posted inside fuse_set(); this fused signal stays the single fact the existing
+    // coordinator already consumes (backward-compatible).
     memo_write("monitor:signal:invariant", alert_payload(label, verdict, lhs, rhs, rel, addr, "info"));
 
     // ONE tier() call, branch ONCE (ADR-0001). The tier gates EMISSION only; the
