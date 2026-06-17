@@ -55,6 +55,17 @@ source = "agents/coordinator.ag"
 cb_budget = 120000
 tick_interval_ms = 60000
 
+# The bus->webhook BRIDGE (#1092): listens for monitor:alert and forwards each to
+# scripts/notify.sh (the configured sink) so a page is actually delivered, not
+# just emitted. Also owns the liveness HEARTBEAT and the dead-man's switch
+# (#1093). Read-only / non-custodial (outbound notification only). Needs
+# --enable-messaging (listen) + --enable-exec (notify.sh).
+[[agents]]
+name = "notifier"
+source = "agents/notifier.ag"
+cb_budget = 90000
+tick_interval_ms = 60000
+
 # Monitor environment contract (consumed by the agents via getenv; exported by
 # scripts/start-colony.sh). Operators export these before launching, and add
 # each to exec.env_passthrough in .agentis/config so the sandboxed `exec sh` can
@@ -99,10 +110,28 @@ tick_interval_ms = 60000
 #   MONITOR_ORACLE_MAX      upper sanity bound on the price; "" => no upper bound.
 #   MONITOR_ORACLE_LABEL    a human label for the feed (alert body).
 #
-# Alert sink (optional, scripts/notify.sh):
+# Alert delivery — the bus->webhook bridge (notifier; #1092/#1093/#1094):
 #   MONITOR_WEBHOOK_URL     a Discord/Slack incoming-webhook URL. When set,
 #                           notify.sh POSTs the alert payload to it. NEVER commit
 #                           a real URL — export it in the operator's environment.
+#   MONITOR_WEBHOOK_URL_WARN  channel for `warn`-severity pages; falls back to
+#                           MONITOR_WEBHOOK_URL when unset (#1094 severity routing).
+#   MONITOR_WEBHOOK_URL_HIGH  channel for `high`-severity pages; falls back to
+#                           MONITOR_WEBHOOK_URL when unset (#1094 severity routing).
+#   MONITOR_HEARTBEAT_INTERVAL_S  heartbeat cadence in seconds (#1093); "" => 86400
+#                           (daily); 0 => heartbeat disabled.
+#   MONITOR_DEADMAN_WINDOW_S  dead-man's switch window in seconds (#1093); "" => 0
+#                           (disabled); when >0, no fresh watcher tick within the
+#                           window emits a `high`/`liveness` meta-alert (RPC-blind).
+#   MONITOR_NOTIFY_MAX_RETRIES  bounded retry count on a transient webhook failure
+#                           (#1094); "" => 3.
+#   MONITOR_NOTIFY_BACKOFF_S  initial backoff seconds, doubled each retry (#1094);
+#                           "" => 2.
+#   MONITOR_NOTIFY_DEDUP_COOLDOWN_S  sink-side dedup cooldown in seconds (#1094);
+#                           "" / 0 => disabled (no defence-in-depth dedup).
+#   MONITOR_NOTIFY_STATE_DIR  where notify.sh persists last-sent signatures
+#                           (#1094); "" => ${XDG_STATE_HOME:-$HOME/.local/state}/
+#                           dark-factory-monitor.
 [monitor]
 cast = ""
 rpc_url = ""

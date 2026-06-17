@@ -5,10 +5,13 @@
 #   ./scripts/start-colony.sh [path/to/colony.toml]
 #   ./scripts/start-colony.sh --restart-agent <name> [path/to/colony.toml]
 #
-# The monitor colony runs three long-lived daemons (invariant-watcher,
-# oracle-watcher, coordinator) that continuously WATCH a target EVM protocol and
-# emit reasoned anomaly alerts on the bus (`monitor:alert`). NON-custodial /
-# read-only: the watchers only READ chain state via `cast`/RPC; no agent signs a
+# The monitor colony runs four long-lived daemons (invariant-watcher,
+# oracle-watcher, coordinator, notifier) that continuously WATCH a target EVM
+# protocol and emit reasoned anomaly alerts on the bus (`monitor:alert`); the
+# notifier (#1092) forwards each alert to scripts/notify.sh so a page is actually
+# DELIVERED, and owns the liveness heartbeat + dead-man's switch (#1093).
+# NON-custodial / read-only: the watchers only READ chain state via `cast`/RPC
+# and the notifier only sends an OUTBOUND notification; no agent signs a
 # transaction or touches funds.
 #
 # ADR-0003 conformance: --restart-agent (#257) respawns one agent with the full
@@ -25,7 +28,9 @@
 #   MONITOR_TARGET MONITOR_INV_LHS_SIG MONITOR_INV_RHS_SIG ...    (single invariant)
 #   MONITOR_INV_SPEC                                              (derived invariant set, #1086)
 #   MONITOR_ORACLE MONITOR_ORACLE_PRICE_SIG MONITOR_ORACLE_TS_SIG (oracle)
-#   MONITOR_WEBHOOK_URL                                           (notify.sh sink)
+#   MONITOR_WEBHOOK_URL[/_WARN/_HIGH]                             (notify.sh sink + routing)
+#   MONITOR_HEARTBEAT_INTERVAL_S MONITOR_DEADMAN_WINDOW_S         (notifier liveness)
+#   MONITOR_NOTIFY_MAX_RETRIES MONITOR_NOTIFY_BACKOFF_S ...       (notify.sh hardening)
 
 set -e
 
@@ -109,6 +114,16 @@ MONITOR_ORACLE_MIN="${MONITOR_ORACLE_MIN:-}"
 MONITOR_ORACLE_MAX="${MONITOR_ORACLE_MAX:-}"
 MONITOR_ORACLE_LABEL="${MONITOR_ORACLE_LABEL:-}"
 MONITOR_WEBHOOK_URL="${MONITOR_WEBHOOK_URL:-}"
+# Alert delivery (notifier #1092 / #1093 / notify.sh hardening #1094). All
+# optional; unset preserves the single-webhook stdout-fallback behaviour.
+MONITOR_WEBHOOK_URL_WARN="${MONITOR_WEBHOOK_URL_WARN:-}"
+MONITOR_WEBHOOK_URL_HIGH="${MONITOR_WEBHOOK_URL_HIGH:-}"
+MONITOR_HEARTBEAT_INTERVAL_S="${MONITOR_HEARTBEAT_INTERVAL_S:-}"
+MONITOR_DEADMAN_WINDOW_S="${MONITOR_DEADMAN_WINDOW_S:-}"
+MONITOR_NOTIFY_MAX_RETRIES="${MONITOR_NOTIFY_MAX_RETRIES:-}"
+MONITOR_NOTIFY_BACKOFF_S="${MONITOR_NOTIFY_BACKOFF_S:-}"
+MONITOR_NOTIFY_DEDUP_COOLDOWN_S="${MONITOR_NOTIFY_DEDUP_COOLDOWN_S:-}"
+MONITOR_NOTIFY_STATE_DIR="${MONITOR_NOTIFY_STATE_DIR:-}"
 
 export COLONY_DIR COLONY_NAME
 export MONITOR_CAST MONITOR_RPC_URL
@@ -116,12 +131,16 @@ export MONITOR_TARGET MONITOR_INV_LHS_SIG MONITOR_INV_RHS_SIG MONITOR_INV_RHS_CO
 export MONITOR_INV_REL MONITOR_INV_MARGIN_BP MONITOR_INV_LABEL MONITOR_INV_SPEC
 export MONITOR_ORACLE MONITOR_ORACLE_PRICE_SIG MONITOR_ORACLE_TS_SIG MONITOR_ORACLE_MAX_AGE
 export MONITOR_ORACLE_DEV_BP MONITOR_ORACLE_MIN MONITOR_ORACLE_MAX MONITOR_ORACLE_LABEL
-export MONITOR_WEBHOOK_URL
+export MONITOR_WEBHOOK_URL MONITOR_WEBHOOK_URL_WARN MONITOR_WEBHOOK_URL_HIGH
+export MONITOR_HEARTBEAT_INTERVAL_S MONITOR_DEADMAN_WINDOW_S
+export MONITOR_NOTIFY_MAX_RETRIES MONITOR_NOTIFY_BACKOFF_S
+export MONITOR_NOTIFY_DEDUP_COOLDOWN_S MONITOR_NOTIFY_STATE_DIR
 
 AGENTS=(
     invariant-watcher
     oracle-watcher
     coordinator
+    notifier
 )
 
 # Per-agent tick interval. The watchers + coordinator all run at 60000ms by
@@ -131,6 +150,7 @@ tick_interval_for() {
         invariant-watcher) echo "${MONITOR_TICK_MS:-60000}" ;;
         oracle-watcher) echo "${MONITOR_TICK_MS:-60000}" ;;
         coordinator) echo "${MONITOR_TICK_MS:-60000}" ;;
+        notifier) echo "${MONITOR_TICK_MS:-60000}" ;;
         *) echo 60000 ;;
     esac
 }
