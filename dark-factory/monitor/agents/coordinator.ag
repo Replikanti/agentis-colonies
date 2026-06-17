@@ -1,14 +1,15 @@
 // coordinator.ag — Monitor colony (Dark Factory federation).
 //
-// The fusion + dedup + severity-decision agent. The two watchers
-// (invariant-watcher, oracle-watcher) each post their latest verdict to a shared
-// blackboard memo (`monitor:signal:<watcher>`); each ALSO emits its own
-// per-watcher `monitor:alert`. This coordinator reads BOTH blackboard signals
-// every tick, FUSES them into one consolidated picture, DEDUPS against the last
-// consolidated signature it emitted (so a persistent condition pages once, not
-// every tick), DECIDES the fused severity, and emits ONE consolidated
-// `monitor:alert`. NON-custodial / read-only: it reads memos + emits on the bus
-// only — no signing, no fund access, no `exec sh`.
+// The fusion + dedup + severity-decision agent. The watchers (invariant-watcher,
+// oracle-watcher, governance-watcher, liquidity-watcher, flow-watcher,
+// pause-state-watcher) each post their latest verdict to a shared blackboard
+// memo (`monitor:signal:<watcher>`); each ALSO emits its own per-watcher
+// `monitor:alert`. This coordinator reads ALL blackboard signals every tick,
+// FUSES them into one consolidated picture, DEDUPS against the last consolidated
+// signature it emitted (so a persistent condition pages once, not every tick),
+// DECIDES the fused severity, and emits ONE consolidated `monitor:alert`.
+// NON-custodial / read-only: it reads memos + emits on the bus only — no signing,
+// no fund access, no `exec sh`.
 //
 // Pattern (per dark-factory/auditor/agents/coordinator.ag): single-assignment
 // helpers (no `let` reassignment), reduce/recursion instead of loops. The fused
@@ -22,7 +23,8 @@
 // One tier() call per tick, branch once, fall through to shadow/dormant.
 //
 // Reads (durable memos written by the watchers): monitor:signal:invariant,
-//   monitor:signal:oracle.
+//   monitor:signal:oracle, monitor:signal:governance, monitor:signal:liquidity,
+//   monitor:signal:flow, monitor:signal:pause.
 // Emits: "monitor:alert" (the colony bus contract).
 
 cb 120000;
@@ -59,16 +61,32 @@ fn is_anomalous(verdict: string) -> bool {
     return true;
 }
 
-// A signal's contribution to the fused SEVERITY SCORE. A hard violation/break
-// (invariant violated, oracle bounds/stale) is the highest-severity tell; a
-// margin / deviation is a softer warning. Scores accumulate across watchers so
-// two simultaneous anomalies fuse to a higher severity than either alone.
+// A signal's contribution to the fused SEVERITY SCORE. A hard violation/break is
+// the highest-severity tell; a softer warning scores less. Scores accumulate
+// across watchers so simultaneous anomalies fuse to a higher severity than any
+// alone. The tokens span every watcher:
+//   invariant:  violated (hard) / margin (warn);
+//   oracle:     bounds (hard) / stale (warn) / deviation (warn);
+//   governance: impl-changed / admin-changed / owner-changed (hard upgrade
+//               tells) / gov-changed (warn: a role grant or pending timelock op);
+//   liquidity:  drained (hard: a reserve fell past its band);
+//   flow:       outflow-burst (hard: a large net outflow in one window);
+//   pause:      paused (hard: a fresh circuit-breaker trip) / unpaused (warn: a
+//               recovery worth surfacing).
 fn severity_score(verdict: string) -> int {
     if verdict == "violated" { return 3; }
     if verdict == "bounds" { return 3; }
+    if verdict == "impl-changed" { return 3; }
+    if verdict == "admin-changed" { return 3; }
+    if verdict == "owner-changed" { return 3; }
+    if verdict == "drained" { return 3; }
+    if verdict == "outflow-burst" { return 3; }
+    if verdict == "paused" { return 3; }
     if verdict == "stale" { return 2; }
     if verdict == "deviation" { return 1; }
     if verdict == "margin" { return 1; }
+    if verdict == "gov-changed" { return 1; }
+    if verdict == "unpaused" { return 1; }
     return 0;
 }
 
@@ -79,18 +97,32 @@ fn severity_label(score: int) -> string {
     return "none";
 }
 
-// --- fused consolidated picture (single-assignment over the two signals) -------
-// The deterministic fused score = sum of the per-watcher severity contributions.
-fn fuse_score(invVerdict: string, oracleVerdict: string) -> int {
-    return severity_score(invVerdict) + severity_score(oracleVerdict);
+// --- fused consolidated picture (single-assignment fold over all signals) ------
+// Each watcher contributes one (name, verdict) pair. The fold helpers below walk
+// the list with reduce (no loops, no `let` reassignment) so adding a watcher is a
+// one-line list extension in tick() — the fusion math is watcher-agnostic.
+
+// A verdict's display token in the dossier: the verdict itself, or "none" when
+// the watcher has not run yet ("" verdict).
+fn verdict_or_none(verdict: string) -> string {
+    if len(verdict) > 0 { return verdict; }
+    return "none";
 }
 
-// .ag has no short-circuit `&&` / `||` (single-assignment grammar), so the two
-// fused boolean predicates are expressed as explicit nested-if helpers.
-fn either_anomalous(invVerdict: string, oracleVerdict: string) -> bool {
-    if is_anomalous(invVerdict) { return true; }
-    if is_anomalous(oracleVerdict) { return true; }
-    return false;
+// The deterministic fused score = sum of the per-watcher severity contributions.
+fn fuse_score(verdicts: list<string>) -> int {
+    return reduce(verdicts, |acc: int, v: string| -> int {
+        return acc + severity_score(v);
+    }, 0);
+}
+
+// .ag has no short-circuit `&&` / `||` (single-assignment grammar); the fused
+// "any anomalous?" predicate is a reduce over the per-watcher anomaly flags.
+fn any_anomalous(verdicts: list<string>) -> bool {
+    return reduce(verdicts, |acc: bool, v: string| -> bool {
+        if acc { return true; }
+        return is_anomalous(v);
+    }, false);
 }
 
 fn anomaly_and_novel(anomaly: bool, novel: bool) -> bool {
@@ -98,24 +130,49 @@ fn anomaly_and_novel(anomaly: bool, novel: bool) -> bool {
     return novel;
 }
 
-// A stable DEDUP SIGNATURE for the consolidated picture: the two watchers'
-// verdicts joined. The same pair of conditions yields the same signature, so a
-// persistent anomaly is emitted ONCE (until a verdict changes) rather than every
-// tick. Quiet ticks (no anomaly) produce the "quiet" signature.
-fn fused_signature(invVerdict: string, oracleVerdict: string, anomaly: bool) -> string {
+// A stable DEDUP SIGNATURE for the consolidated picture: every watcher's verdict
+// joined as `<name>=<verdict>` in a FIXED order. The same set of conditions
+// yields the same signature, so a persistent anomaly is emitted ONCE (until a
+// verdict changes) rather than every tick. Quiet ticks (no anomaly) produce the
+// "quiet" signature. `names`/`verdicts` are positionally paired (built together
+// in tick()); the fold walks the index it carries.
+// Strip the fold's `<index>|` cursor prefix off the accumulator, leaving the
+// joined dossier/signature body the fold built.
+fn drop_cursor(acc: string) -> string {
+    return substring(acc, index_of(acc, "|") + 1, len(acc));
+}
+
+fn fused_signature(names: list<string>, verdicts: list<string>, anomaly: bool) -> string {
     if !anomaly { return "quiet"; }
-    let inv = if len(invVerdict) > 0 { invVerdict } else { "none" };
-    let orc = if len(oracleVerdict) > 0 { oracleVerdict } else { "none" };
-    return "inv=" + inv + ";oracle=" + orc;
+    return drop_cursor(reduce(verdicts, |acc: string, v: string| -> string {
+        let i = parse_int(substring(acc, 0, index_of(acc, "|")));
+        let so_far = drop_cursor(acc);
+        let sep = if i == 0 { "" } else { ";" };
+        let entry = to_string(get(names, i)) + "=" + verdict_or_none(v);
+        return to_string(i + 1) + "|" + so_far + sep + entry;
+    }, "0|"));
+}
+
+// The fused dossier body: every watcher's verdict as a JSON key/value, in the
+// same fixed order, so the consolidated alert carries the PER-SIGNAL breakdown a
+// reader needs (not just the score). Built by the same index-carrying fold.
+fn fused_dossier(names: list<string>, verdicts: list<string>) -> string {
+    return drop_cursor(reduce(verdicts, |acc: string, v: string| -> string {
+        let i = parse_int(substring(acc, 0, index_of(acc, "|")));
+        let so_far = drop_cursor(acc);
+        let sep = if i == 0 { "" } else { "," };
+        let entry = "\"" + to_string(get(names, i)) + "\":\"" + verdict_or_none(v) + "\"";
+        return to_string(i + 1) + "|" + so_far + sep + entry;
+    }, "0|"));
 }
 
 // The consolidated alert payload (JSON). All fields are facts the coordinator
-// fused from the watchers; none is LLM text. `sev` is set per tier on emit.
-fn fused_payload(invVerdict: string, oracleVerdict: string, score: int, sig: string, sev: string) -> string {
-    let inv = if len(invVerdict) > 0 { invVerdict } else { "none" };
-    let orc = if len(oracleVerdict) > 0 { oracleVerdict } else { "none" };
-    return "{\"watcher\":\"coordinator\",\"kind\":\"fused\",\"invariant\":\"" + inv
-         + "\",\"oracle\":\"" + orc + "\",\"score\":" + to_string(score)
+// fused from the watchers; none is LLM text. `sev` is set per tier on emit. The
+// per-signal dossier carries every watcher's verdict so a reader sees the
+// breakdown that produced the score + signature.
+fn fused_payload(names: list<string>, verdicts: list<string>, score: int, sig: string, sev: string) -> string {
+    return "{\"watcher\":\"coordinator\",\"kind\":\"fused\",\"signals\":{" + fused_dossier(names, verdicts)
+         + "},\"score\":" + to_string(score)
          + ",\"signature\":\"" + sig + "\",\"severity\":\"" + sev + "\"}";
 }
 
@@ -133,17 +190,25 @@ fn tick(reason: string) -> void {
     // Heartbeat first (dashboard memo-freshness probe) even on an early return.
     memo_write("coordinator:last_check", now);
 
-    // Read the two watchers' latest blackboard signals + pull their verdicts.
-    let invSig = recall_latest("monitor:signal:invariant");
-    let oracleSig = recall_latest("monitor:signal:oracle");
-    let invVerdict = signal_verdict(invSig);
-    let oracleVerdict = signal_verdict(oracleSig);
+    // Read every watcher's latest blackboard signal + pull its verdict. The
+    // `names`/`verdicts` lists are positionally paired and in a FIXED order so the
+    // fused signature/dossier are stable across ticks; adding a watcher is one
+    // entry in each list (the fusion math is watcher-agnostic).
+    let names = ["invariant", "oracle", "governance", "liquidity", "flow", "pause"];
+    let verdicts = [
+        signal_verdict(recall_latest("monitor:signal:invariant")),
+        signal_verdict(recall_latest("monitor:signal:oracle")),
+        signal_verdict(recall_latest("monitor:signal:governance")),
+        signal_verdict(recall_latest("monitor:signal:liquidity")),
+        signal_verdict(recall_latest("monitor:signal:flow")),
+        signal_verdict(recall_latest("monitor:signal:pause"))
+    ];
 
     // FUSE: deterministic score + anomaly flag + severity label + dedup signature.
-    let anomaly = either_anomalous(invVerdict, oracleVerdict);
-    let score = fuse_score(invVerdict, oracleVerdict);
+    let anomaly = any_anomalous(verdicts);
+    let score = fuse_score(verdicts);
     let sevLabel = severity_label(score);
-    let sig = fused_signature(invVerdict, oracleVerdict, anomaly);
+    let sig = fused_signature(names, verdicts, anomaly);
     let outcome = outcome_of(sevLabel);
 
     // DEDUP: only a NEW signature (vs the last one we acted on) is novel; a
@@ -151,12 +216,12 @@ fn tick(reason: string) -> void {
     let lastSig = recall_latest("coordinator:last_signature");
     let novel = sig != lastSig;
 
-    print("coordinator: fuse inv=" + invVerdict + " oracle=" + oracleVerdict
-        + " -> score=" + to_string(score) + " sev=" + sevLabel + " novel=" + to_string(novel)
+    print("coordinator: fuse " + sig + " -> score=" + to_string(score)
+        + " sev=" + sevLabel + " novel=" + to_string(novel)
         + " (conf=" + to_string(get_confidence()) + ")");
 
     let key = "fused:" + sig;
-    let desc = "fused inv=" + invVerdict + " oracle=" + oracleVerdict + " score=" + to_string(score);
+    let desc = "fused " + sig + " score=" + to_string(score);
     // Worth emitting only when there is an anomaly AND it is a NEW signature.
     let emitWorthy = anomaly_and_novel(anomaly, novel);
 
@@ -167,7 +232,7 @@ fn tick(reason: string) -> void {
     if my_tier == "autonomous" {
         // Proven reliable -> a DIRECT consolidated page on a new anomaly.
         if emitWorthy {
-            emit("monitor:alert", fused_payload(invVerdict, oracleVerdict, score, sig, sevLabel));
+            emit("monitor:alert", fused_payload(names, verdicts, score, sig, sevLabel));
             learn("monitor-fuse", key, desc, outcome, [sevLabel, outcome, "acted"]);
         } else {
             learn("monitor-fuse", key, desc, outcome, [sevLabel, outcome, "observed"]);
@@ -176,7 +241,7 @@ fn tick(reason: string) -> void {
         if my_tier == "review-gated" {
             // Trusted to page under a review gate -> a DIRECT consolidated page.
             if emitWorthy {
-                emit("monitor:alert", fused_payload(invVerdict, oracleVerdict, score, sig, sevLabel));
+                emit("monitor:alert", fused_payload(names, verdicts, score, sig, sevLabel));
                 learn("monitor-fuse", key, desc, outcome, [sevLabel, outcome, "review-gated"]);
             } else {
                 learn("monitor-fuse", key, desc, outcome, [sevLabel, outcome, "observed"]);
@@ -185,7 +250,7 @@ fn tick(reason: string) -> void {
             if my_tier == "propose" {
                 // Enough signal to contribute -> a DRAFT consolidated alert (low).
                 if emitWorthy {
-                    emit("monitor:alert", fused_payload(invVerdict, oracleVerdict, score, sig, "low"));
+                    emit("monitor:alert", fused_payload(names, verdicts, score, sig, "low"));
                     learn("monitor-fuse", key, desc, outcome, [sevLabel, outcome, "emitted"]);
                 } else {
                     learn("monitor-fuse", key, desc, outcome, [sevLabel, outcome, "observed"]);

@@ -47,6 +47,40 @@ source = "agents/oracle-watcher.ag"
 cb_budget = 90000
 tick_interval_ms = 60000
 
+# Watches the governance / upgrade surface (EIP-1967 impl + admin slots,
+# owner/admin view, role grants, timelock queue) and flags a CHANGE vs the
+# learned baseline — the highest-value pre-exploit early-warning. Posts
+# monitor:signal:governance.
+[[agents]]
+name = "governance-watcher"
+source = "agents/governance-watcher.ag"
+cb_budget = 90000
+tick_interval_ms = 60000
+
+# Watches a pool / vault reserve or TVL proxy and flags a drop beyond a learned
+# band (sudden drain). Posts monitor:signal:liquidity.
+[[agents]]
+name = "liquidity-watcher"
+source = "agents/liquidity-watcher.ag"
+cb_budget = 90000
+tick_interval_ms = 60000
+
+# Watches net flow over a window and flags an abnormal outflow burst vs the
+# previous window. Posts monitor:signal:flow.
+[[agents]]
+name = "flow-watcher"
+source = "agents/flow-watcher.ag"
+cb_budget = 90000
+tick_interval_ms = 60000
+
+# Watches the paused() / circuit-breaker boolean and flags a state transition
+# (a protocol pausing itself is signal). Posts monitor:signal:pause.
+[[agents]]
+name = "pause-state-watcher"
+source = "agents/pause-state-watcher.ag"
+cb_budget = 90000
+tick_interval_ms = 60000
+
 # Fuses the watcher signals, dedups, decides severity, and emits one
 # consolidated monitor:alert. Reads the monitor:signal:* blackboard.
 [[agents]]
@@ -109,6 +143,38 @@ tick_interval_ms = 60000
 #   MONITOR_ORACLE_MIN      lower sanity bound on the price; "" => no lower bound.
 #   MONITOR_ORACLE_MAX      upper sanity bound on the price; "" => no upper bound.
 #   MONITOR_ORACLE_LABEL    a human label for the feed (alert body).
+#
+# governance-watcher (#1095) — flags a CHANGE vs the learned baseline:
+#   MONITOR_GOV_TARGET      the governed proxy address (0x...); "" => MONITOR_TARGET.
+#   MONITOR_GOV_OWNER_SIG   cast-call signature returning the owner/admin address
+#                           (e.g. "owner()" / "admin()"); "" => skip the owner check
+#                           (the two EIP-1967 proxy slots are always watched).
+#   MONITOR_GOV_ROLE_SIG    cast-call signature returning a role-grant indicator
+#                           (e.g. a member count for a fixed role); "" => skip.
+#   MONITOR_GOV_TIMELOCK_SIG cast-call signature returning a timelock-queue
+#                           indicator (queued-op count / pending-op id); "" => skip.
+#   MONITOR_GOV_LABEL       a human label for the target (alert body).
+#
+# liquidity-watcher (#1096) — flags a reserve / TVL drop past a learned band:
+#   MONITOR_LIQ_TARGET      the pool / vault address (0x...); "" => MONITOR_TARGET.
+#   MONITOR_LIQ_SIG         cast-call signature for the reserve / TVL proxy
+#                           (e.g. "totalAssets()"); "" => native `cast balance`.
+#   MONITOR_LIQ_DROP_BP     drop band in basis points (0..10000); "" => 0 (any drop).
+#   MONITOR_LIQ_LABEL       a human label for the pool / vault (alert body).
+#
+# flow-watcher (#1096) — flags an abnormal net outflow burst over a window:
+#   MONITOR_FLOW_TARGET     the watched address (0x...); "" => MONITOR_TARGET.
+#   MONITOR_FLOW_SIG        cast-call signature for the level proxy (e.g.
+#                           "totalAssets()"); "" => native `cast balance`.
+#   MONITOR_FLOW_OUT_BP     per-window outflow band in basis points (0..10000);
+#                           "" => 0 (any net outflow).
+#   MONITOR_FLOW_LABEL      a human label for the contract (alert body).
+#
+# pause-state-watcher (#1096) — flags a paused() / circuit-breaker transition:
+#   MONITOR_PAUSE_TARGET    the watched address (0x...); "" => MONITOR_TARGET.
+#   MONITOR_PAUSE_SIG       cast-call signature returning the pause boolean;
+#                           "" => default "paused()".
+#   MONITOR_PAUSE_LABEL     a human label for the contract (alert body).
 #
 # Alert delivery — the bus->webhook bridge (notifier; #1092/#1093/#1094):
 #   MONITOR_WEBHOOK_URL     a Discord/Slack incoming-webhook URL. When set,

@@ -15,6 +15,38 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **monitor: governance / upgrade + liquidity / flow / pause-state watchers** (#1095, #1096). Four more
+  read-only, tier-gated watcher agents feed the monitor coordinator's `monitor:signal:*` blackboard, each with
+  the same ADR-0001 emission pattern as `invariant-watcher` / `oracle-watcher` (one `tier()` call per tick,
+  branch once; `cb 90000` matches `cb_budget`; `<agent>:last_check` written at the start AND end of every tick;
+  a baseline learned via a durable memo; degrade-safe — no reader ⇒ `no-read` ⇒ no false flag; every `exec sh`
+  dynamic value `shell_escape()`d). NON-custodial / read-only throughout (`cast call` / `cast storage` /
+  `cast balance` only — never a signed transaction, never fund access).
+  - **#1095 `governance-watcher.ag`** — the highest-value PRE-exploit early-warning. Reads the two canonical
+    EIP-1967 storage slots (implementation `0x360894…d382bbc` + admin `0xb53127…5d6103`) via `cast storage`,
+    plus an optional `owner()`/`admin()` view, a role-grant indicator, and a timelock-queue indicator via
+    `cast call`, and flags a CHANGE vs the learned per-field baseline (an impl-slot flip / a new admin or owner /
+    a role grant or pending timelock op — the upgrade-attack tell). Verdict tokens `impl-changed` /
+    `admin-changed` / `owner-changed` / `gov-changed` / `ok` / `no-read`. Posts `monitor:signal:governance`.
+  - **#1096 `liquidity-watcher.ag`** — reads a pool / vault reserve or TVL proxy (`totalAssets()` or, with no
+    view configured, native `cast balance`) and flags a drop beyond a learned band (`MONITOR_LIQ_DROP_BP`) — a
+    sudden drain; a rise is never an anomaly. Verdict `drained` / `ok` / `no-read`. Posts
+    `monitor:signal:liquidity`.
+  - **#1096 `flow-watcher.ag`** — reads the same level proxy and flags an abnormal net outflow burst over a
+    window (a net fall since the previous reading exceeding `MONITOR_FLOW_OUT_BP` of the held reserve). Verdict
+    `outflow-burst` / `ok` / `no-read`. Posts `monitor:signal:flow`.
+  - **#1096 `pause-state-watcher.ag`** — reads the `paused()` / circuit-breaker boolean and flags a state
+    transition vs the learned baseline (a protocol pausing itself is signal; a recovery is surfaced too).
+    Verdict `paused` / `unpaused` / `ok` / `no-read`. Posts `monitor:signal:pause`.
+  - `coordinator.ag` now fuses the four new `monitor:signal:*` kinds into the consolidated severity score, the
+    dedup signature, AND a per-signal dossier (the emitted `monitor:alert` carries a `"signals"` map of every
+    watcher's verdict), alongside the existing `invariant` / `oracle` signals — keeping its single-`tier()`-per-
+    tick discipline; the fusion math is a watcher-agnostic `reduce` over the signal list.
+  - All four agents are registered in `monitor/config/colony.example.toml` (`[[agents]]`, `cb_budget` matching
+    `cb`) and `monitor/scripts/start-colony.sh` (`AGENTS`, `tick_interval_for`, and the `MONITOR_GOV_*` /
+    `MONITOR_LIQ_*` / `MONITOR_FLOW_*` / `MONITOR_PAUSE_*` env exports). The new env contract is documented in the
+    config, `monitor/README.md` (agent table + mermaid + env table + a per-watcher section), and the `[monitor]`
+    comment block. Operators add each new `MONITOR_*` var to `exec.env_passthrough` in `.agentis/config`.
 - **monitor: alert-delivery pipeline — the bus→webhook bridge, liveness, and a hardened sink** (#1092, #1093,
   #1094). The monitor colony emitted `monitor:alert` on the bus but nothing forwarded it, so in a real
   deployment no page was ever delivered. A new `notifier` agent (`dark-factory/monitor/agents/notifier.ag`,

@@ -1,0 +1,264 @@
+// flow-watcher.ag — Monitor colony (Dark Factory federation).
+//
+// Watches a protocol's NET FLOW over a window for an abnormal OUTFLOW BURST — a
+// large net withdrawal relative to the held reserve in a single observation
+// window (the drip-vs-flood distinction the liquidity-watcher's absolute-level
+// band does not make on its own). Each tick reads the same reserve / balance
+// proxy, computes the NET CHANGE since the LAST observed reading (the window
+// delta), and flags an OUTFLOW (a fall) whose magnitude exceeds
+// MONITOR_FLOW_OUT_BP basis points of the held reserve. An inflow (a rise) is
+// never an anomaly. NON-custodial / read-only: it only READS chain state via
+// `cast`/RPC over `exec sh` — it never signs a transaction and never touches
+// funds.
+//
+// Same on-chain read pattern + tier-gated emission as the sibling watchers. The
+// signal is a FACT (an on-chain read + a deterministic comparison vs the last
+// window), never an LLM opinion. Emission is gated PURELY on the ADR-0001 tier of
+// this agent (the false-positive control):
+//   shadow / dormant -> observe + learn a baseline (record the level), NO emit;
+//   propose          -> emit a DRAFT `monitor:alert` (low severity);
+//   review-gated /    -> emit a DIRECT-page `monitor:alert` (high severity).
+//   autonomous
+// One tier() call per tick, branch once, fall through to shadow/dormant.
+//
+// Env contract (all read via getenv; exported by scripts/start-colony.sh; add
+// each to exec.env_passthrough in .agentis/config so the sandboxed `exec sh`
+// can read them):
+//   MONITOR_CAST          path to the `cast` binary; "" => no reader, observe only.
+//   MONITOR_RPC_URL       the chain RPC endpoint (read-only).
+//   MONITOR_FLOW_TARGET   the watched contract address (0x...); "" => falls back
+//                         to MONITOR_TARGET (the invariant target).
+//   MONITOR_FLOW_SIG      the `cast call` signature returning the level proxy
+//                         (e.g. "totalAssets()"); "" => the watcher uses the
+//                         contract's native `cast balance` instead.
+//   MONITOR_FLOW_OUT_BP   the per-window outflow band in basis points (0..10000):
+//                         a net fall of more than this fraction of the reserve in
+//                         one window flags an outflow burst; "" => 0 (any net
+//                         outflow flags — the most sensitive setting).
+//   MONITOR_FLOW_LABEL    a human label for the contract (for the alert body).
+// Emits: "monitor:alert" (the colony bus contract).
+
+cb 90000;
+
+// --- diagnostic confidence read (logging only; tier() gates behaviour) ---------
+fn get_confidence() -> float {
+    let raw = recall_latest("flow-watcher:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    }
+    return 0.0;
+}
+
+// --- env defaults --------------------------------------------------------------
+fn target_or(raw: string, fallback: string) -> string {
+    if len(raw) > 0 { return raw; }
+    return fallback;
+}
+
+fn label_or(raw: string, addr: string) -> string {
+    if len(raw) > 0 { return raw; }
+    return addr;
+}
+
+// JSON-string escape a free-text field (#1089): backslash -> \\ and double-quote
+// -> \" , so an operator-authored label/address containing a `"` cannot corrupt
+// the alert/signal JSON. Per-char fold (.ag has no string-replace builtin).
+fn json_escape(s: string) -> string {
+    return reduce(regex_find_all("[\\s\\S]", s), |acc: string, c: string| -> string {
+        if c == "\\" { return acc + "\\\\"; }
+        if c == "\"" { return acc + "\\\""; }
+        return acc + c;
+    }, "");
+}
+
+// --- read the level proxy (a view, else the native balance) --------------------
+// EVERY dynamic value (the cast path, the rpc url, the address, the signature) is
+// shell_escape()d — they are operator/coordinator-supplied facts flowing into a
+// shell. `set +e` + `|| true` so a transient RPC failure returns "" (no reading
+// -> no false flag). Returns the decimal string, or "" on any failure / empty
+// reader.
+fn read_view(castBin: string, rpc: string, addr: string, sig: string) -> string {
+    if len(castBin) == 0 { return ""; }
+    if len(rpc) == 0 { return ""; }
+    if len(addr) == 0 { return ""; }
+    if len(sig) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    let out = exec sh "set +e; " + shell_escape(castBin) + " call --rpc-url " + shell_escape(rpc)
+            + " " + shell_escape(addr) + " " + shell_escape(sig)
+            + " 2>/dev/null | " + shell_escape(castBin) + " --to-dec 2>/dev/null || true";
+    return out;
+}
+
+fn read_balance(castBin: string, rpc: string, addr: string) -> string {
+    if len(castBin) == 0 { return ""; }
+    if len(rpc) == 0 { return ""; }
+    if len(addr) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    let out = exec sh "set +e; " + shell_escape(castBin) + " balance --rpc-url " + shell_escape(rpc)
+            + " " + shell_escape(addr)
+            + " 2>/dev/null || true";
+    return out;
+}
+
+fn read_level(castBin: string, rpc: string, addr: string, sig: string) -> string {
+    if len(sig) > 0 {
+        return read_view(castBin, rpc, addr, sig);
+    }
+    return read_balance(castBin, rpc, addr);
+}
+
+// Trim a trailing newline cast leaves on its output, leaving only the first token.
+fn first_token(s: string) -> string {
+    let nl = index_of(s, "\n");
+    if nl < 0 { return s; }
+    return substring(s, 0, nl);
+}
+
+// Parse a decimal reading to an int; empty / non-numeric -> -1 (the "no reading"
+// sentinel, distinct from a legitimate 0). parse_int is total.
+fn reading_to_int(s: string) -> int {
+    let t = first_token(s);
+    if len(t) == 0 { return -1; }
+    if len(regex_find_all("[^0-9]", t)) > 0 { return -1; }
+    return parse_int(t);
+}
+
+// Optional integer env fact: "" / non-numeric -> -1 (the "unset" sentinel).
+fn opt_int(raw: string) -> int {
+    if len(raw) == 0 { return -1; }
+    if len(regex_find_all("[^0-9]", raw)) > 0 { return -1; }
+    return parse_int(raw);
+}
+
+// --- the deterministic OUTFLOW verdict (a FACT, never an LLM call) -------------
+// The net outflow in basis points of `last` over one window: positive when the
+// level FELL from the last reading, normalised by the last (held) reserve so a
+// drain reads as a fraction of what was held. -1 when there is no usable prior
+// reading. An inflow (a rise) yields 0 (a rise is never an outflow).
+fn outflow_bp(level: int, last: int) -> int {
+    if last <= 0 { return -1; }
+    if level >= last { return 0; }
+    return ((last - level) * 10000) / last;
+}
+
+fn burst(level: int, last: int, outBp: int) -> bool {
+    if level < 0 { return false; }
+    let o = outflow_bp(level, last);
+    if o < 0 { return false; }
+    return o > outBp;
+}
+
+// Fuse the level read + prior window into ONE verdict token. A level that could
+// not be read is "no-read"; a net outflow past the band in one window is
+// "outflow-burst"; anything else (an inflow, a hold, or a sub-band drip) is "ok".
+fn verdict_of(level: int, last: int, outBp: int) -> string {
+    if level < 0 { return "no-read"; }
+    if burst(level, last, outBp) { return "outflow-burst"; }
+    return "ok";
+}
+
+// learn() outcome enum {success,failure,partial,timeout,error}. A clean level
+// read is a healthy observation (success); an outflow burst is the anomaly the
+// watcher exists to catch (failure); a missing read is error.
+fn outcome_of(verdict: string) -> string {
+    if verdict == "ok" { return "success"; }
+    if verdict == "outflow-burst" { return "failure"; }
+    return "error";
+}
+
+fn is_anomaly(verdict: string) -> bool {
+    if verdict == "outflow-burst" { return true; }
+    return false;
+}
+
+// A compact, deterministic alert payload (JSON). All fields are facts the watcher
+// computed; none is LLM text. `sev` is set by the tier branch (draft vs page).
+fn alert_payload(label: string, verdict: string, level: int, last: int, addr: string, sev: string) -> string {
+    return "{\"watcher\":\"flow\",\"contract\":\"" + json_escape(label) + "\",\"verdict\":\"" + verdict
+         + "\",\"level\":" + to_string(level) + ",\"prev\":" + to_string(last)
+         + ",\"address\":\"" + json_escape(addr) + "\",\"severity\":\"" + sev + "\"}";
+}
+
+fn tick(reason: string) -> void {
+    let now = to_string(now_ms());
+    // Heartbeat first (dashboard memo-freshness probe) even on an early return.
+    memo_write("flow-watcher:last_check", now);
+
+    let castBin = getenv("MONITOR_CAST");
+    let rpc = getenv("MONITOR_RPC_URL");
+    let addr = target_or(getenv("MONITOR_FLOW_TARGET"), getenv("MONITOR_TARGET"));
+    let sig = getenv("MONITOR_FLOW_SIG");
+    let outBp = if len(getenv("MONITOR_FLOW_OUT_BP")) > 0 { opt_int(getenv("MONITOR_FLOW_OUT_BP")) } else { 0 };
+    let outBand = if outBp < 0 { 0 } else { outBp };
+    let label = label_or(getenv("MONITOR_FLOW_LABEL"), addr);
+
+    // Read the current level. The window baseline is the level this watcher
+    // observed on the PREVIOUS tick (durable memo). On the first read there is no
+    // prior level (-1) -> the outflow check is skipped this tick; the current
+    // level becomes the prior for the next window.
+    let level = reading_to_int(read_level(castBin, rpc, addr, sig));
+    let last = opt_int(recall_latest("flow-watcher:last_level:" + addr));
+
+    let verdict = verdict_of(level, last, outBand);
+    let outcome = outcome_of(verdict);
+
+    print("flow-watcher: " + label + " level=" + to_string(level) + " prev=" + to_string(last)
+        + " -> " + verdict + " (conf=" + to_string(get_confidence()) + ")");
+
+    // Roll the window: store the latest GOOD level as the prior for next tick (a
+    // no-read leaves the old prior intact). A burst reading STILL rolls forward
+    // AFTER this tick's flag, so one burst pages once and the new level becomes
+    // the next window's baseline.
+    if level >= 0 {
+        memo_write("flow-watcher:last_level:" + addr, to_string(level));
+    };
+
+    let key = label + ":" + addr;
+    let desc = "net flow " + label + " level=" + to_string(level) + " -> " + verdict;
+    let anomaly = is_anomaly(verdict);
+
+    // Post this watcher's latest verdict to the shared blackboard memo the
+    // coordinator reads each tick to fuse + dedup signals (a memo write — allowed
+    // at every tier, including shadow). Severity is re-decided by the coordinator.
+    memo_write("monitor:signal:flow", alert_payload(label, verdict, level, last, addr, "info"));
+
+    // ONE tier() call, branch ONCE (ADR-0001). The tier gates EMISSION only; the
+    // verdict above is unchanged by tier. shadow/dormant fall through to observe.
+    // (.ag has no `else if`; the tiers nest as `else { if ... { } else { } }`.)
+    let my_tier = tier("flow-watcher");
+    if my_tier == "autonomous" {
+        // Proven reliable -> a DIRECT page on a real anomaly (high severity).
+        if anomaly {
+            emit("monitor:alert", alert_payload(label, verdict, level, last, addr, "high"));
+            learn("flow-watch", key, desc, outcome, [verdict, outcome, "acted"]);
+        } else {
+            learn("flow-watch", key, desc, outcome, [verdict, outcome, "observed"]);
+        };
+    } else {
+        if my_tier == "review-gated" {
+            // Trusted to page under a review gate -> a DIRECT page (high severity).
+            if anomaly {
+                emit("monitor:alert", alert_payload(label, verdict, level, last, addr, "high"));
+                learn("flow-watch", key, desc, outcome, [verdict, outcome, "review-gated"]);
+            } else {
+                learn("flow-watch", key, desc, outcome, [verdict, outcome, "observed"]);
+            };
+        } else {
+            if my_tier == "propose" {
+                // Enough signal to contribute -> a DRAFT alert (low severity).
+                if anomaly {
+                    emit("monitor:alert", alert_payload(label, verdict, level, last, addr, "low"));
+                    learn("flow-watch", key, desc, outcome, [verdict, outcome, "emitted"]);
+                } else {
+                    learn("flow-watch", key, desc, outcome, [verdict, outcome, "observed"]);
+                };
+            } else {
+                // shadow / dormant: learn the baseline ONLY — no emit, no write.
+                learn("flow-watch", key, desc + " (baseline)", outcome, [verdict, outcome, "observed"]);
+                print("flow-watcher: observing (tier: " + my_tier + ") — no emit");
+            };
+        };
+    };
+
+    memo_write("flow-watcher:last_check", to_string(now_ms()));
+}

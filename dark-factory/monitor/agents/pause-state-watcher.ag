@@ -1,0 +1,235 @@
+// pause-state-watcher.ag — Monitor colony (Dark Factory federation).
+//
+// Watches a protocol's CIRCUIT-BREAKER / PAUSE state for a TRANSITION. A
+// protocol pausing ITSELF (or a guardian pausing it) is signal: it usually means
+// the team detected something wrong, often moments before — or during — an
+// incident. The watcher reads a `paused()` (or equivalent circuit-breaker)
+// boolean each tick and flags a CHANGE versus the last observed state (a learned
+// baseline): an unpause→pause is the high-value tell (the protocol just tripped
+// its breaker), an pause→unpause is a recovery worth surfacing too. NON-custodial
+// / read-only: it only READS chain state via `cast`/RPC over `exec sh` — it never
+// signs a transaction and never touches funds.
+//
+// Same on-chain read pattern + tier-gated emission as the sibling watchers. The
+// signal is a FACT (an on-chain read + a deterministic comparison vs the learned
+// baseline), never an LLM opinion. Emission is gated PURELY on the ADR-0001 tier
+// of this agent (the false-positive control):
+//   shadow / dormant -> observe + learn a baseline (record the state), NO emit;
+//   propose          -> emit a DRAFT `monitor:alert` (low severity);
+//   review-gated /    -> emit a DIRECT-page `monitor:alert` (high severity).
+//   autonomous
+// One tier() call per tick, branch once, fall through to shadow/dormant.
+//
+// Env contract (all read via getenv; exported by scripts/start-colony.sh; add
+// each to exec.env_passthrough in .agentis/config so the sandboxed `exec sh`
+// can read them):
+//   MONITOR_CAST          path to the `cast` binary; "" => no reader, observe only.
+//   MONITOR_RPC_URL       the chain RPC endpoint (read-only).
+//   MONITOR_PAUSE_TARGET  the watched contract address (0x...); "" => falls back
+//                         to MONITOR_TARGET (the invariant target).
+//   MONITOR_PAUSE_SIG     the `cast call` signature returning the pause /
+//                         circuit-breaker boolean (e.g. "paused()"); "" =>
+//                         default "paused()".
+//   MONITOR_PAUSE_LABEL   a human label for the contract (for the alert body).
+// Emits: "monitor:alert" (the colony bus contract).
+
+cb 90000;
+
+// --- diagnostic confidence read (logging only; tier() gates behaviour) ---------
+fn get_confidence() -> float {
+    let raw = recall_latest("pause-state-watcher:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    }
+    return 0.0;
+}
+
+// --- env defaults --------------------------------------------------------------
+fn target_or(raw: string, fallback: string) -> string {
+    if len(raw) > 0 { return raw; }
+    return fallback;
+}
+
+fn pause_sig_or_default(raw: string) -> string {
+    if len(raw) == 0 { return "paused()"; }
+    return raw;
+}
+
+fn label_or(raw: string, addr: string) -> string {
+    if len(raw) > 0 { return raw; }
+    return addr;
+}
+
+// JSON-string escape a free-text field (#1089): backslash -> \\ and double-quote
+// -> \" , so an operator-authored label/address containing a `"` cannot corrupt
+// the alert/signal JSON. Per-char fold (.ag has no string-replace builtin).
+fn json_escape(s: string) -> string {
+    return reduce(regex_find_all("[\\s\\S]", s), |acc: string, c: string| -> string {
+        if c == "\\" { return acc + "\\\\"; }
+        if c == "\"" { return acc + "\\\""; }
+        return acc + c;
+    }, "");
+}
+
+// --- read the pause boolean via cast call --------------------------------------
+// `cast call <addr> paused()` prints one 0x-hex word (32-byte ABI bool). EVERY
+// dynamic value (the cast path, the rpc url, the address, the signature) is
+// shell_escape()d — they are operator/coordinator-supplied facts flowing into a
+// shell, so none may be a bare concat. `set +e` + `|| true` so a transient RPC
+// failure returns "" (no reading -> no false flag). Returns the 0x-hex word, or
+// "" on any failure / empty reader.
+fn read_view(castBin: string, rpc: string, addr: string, sig: string) -> string {
+    if len(castBin) == 0 { return ""; }
+    if len(rpc) == 0 { return ""; }
+    if len(addr) == 0 { return ""; }
+    if len(sig) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    let out = exec sh "set +e; " + shell_escape(castBin) + " call --rpc-url " + shell_escape(rpc)
+            + " " + shell_escape(addr) + " " + shell_escape(sig)
+            + " 2>/dev/null || true";
+    return out;
+}
+
+// Trim a trailing newline cast leaves on its output, leaving only the first token.
+fn first_token(s: string) -> string {
+    let nl = index_of(s, "\n");
+    if nl < 0 { return s; }
+    return substring(s, 0, nl);
+}
+
+// Decode the raw ABI bool word to a state token: any 0x word whose last digit is
+// non-zero is "paused"; an all-zero word is "active"; an empty / non-hex read is
+// "" (the "no read" sentinel). Comparing the FULL word would be brittle across
+// cast's zero-padding widths, so the verdict keys on the canonical token.
+fn decode_bool(raw: string) -> string {
+    let tok = first_token(raw);
+    if len(tok) == 0 { return ""; }
+    if index_of(tok, "0x") != 0 { return ""; }
+    if len(regex_find_all("[1-9a-fA-F]", tok)) > 0 { return "paused"; }
+    return "active";
+}
+
+// A baseline is "present" once a non-empty state has been recorded.
+fn baseline_present(base: string) -> bool {
+    if len(base) == 0 { return false; }
+    return true;
+}
+
+// --- the deterministic TRANSITION verdict (a FACT, never an LLM call) ----------
+// "no-read" when the state could not be read (RPC-blind -> no false flag). When
+// there is no baseline yet, the FIRST good read seeds it -> "ok" (no transition
+// flagged on the seeding tick). An unpause->pause is "paused" (the high-value
+// tell); a pause->unpause is "unpaused" (a recovery, also surfaced); an unchanged
+// state is "ok".
+fn verdict_of(cur: string, base: string) -> string {
+    if len(cur) == 0 { return "no-read"; }
+    if !baseline_present(base) { return "ok"; }
+    if cur == base { return "ok"; }
+    if cur == "paused" { return "paused"; }
+    return "unpaused";
+}
+
+// learn() outcome enum {success,failure,partial,timeout,error}. An unchanged
+// state is a healthy observation (success); a fresh pause is the anomaly the
+// watcher exists to catch (failure); an unpause is a partial (a recovery worth
+// surfacing, not itself an incident); a missing read is error.
+fn outcome_of(verdict: string) -> string {
+    if verdict == "ok" { return "success"; }
+    if verdict == "paused" { return "failure"; }
+    if verdict == "unpaused" { return "partial"; }
+    return "error";
+}
+
+fn is_anomaly(verdict: string) -> bool {
+    if verdict == "paused" { return true; }
+    if verdict == "unpaused" { return true; }
+    return false;
+}
+
+// A compact, deterministic alert payload (JSON). All fields are facts the watcher
+// computed; none is LLM text. `sev` is set by the tier branch (draft vs page).
+fn alert_payload(label: string, verdict: string, state: string, addr: string, sev: string) -> string {
+    return "{\"watcher\":\"pause\",\"contract\":\"" + json_escape(label) + "\",\"verdict\":\"" + verdict
+         + "\",\"state\":\"" + state + "\",\"address\":\"" + json_escape(addr) + "\",\"severity\":\"" + sev + "\"}";
+}
+
+fn tick(reason: string) -> void {
+    let now = to_string(now_ms());
+    // Heartbeat first (dashboard memo-freshness probe) even on an early return.
+    memo_write("pause-state-watcher:last_check", now);
+
+    let castBin = getenv("MONITOR_CAST");
+    let rpc = getenv("MONITOR_RPC_URL");
+    let addr = target_or(getenv("MONITOR_PAUSE_TARGET"), getenv("MONITOR_TARGET"));
+    let sig = pause_sig_or_default(getenv("MONITOR_PAUSE_SIG"));
+    let label = label_or(getenv("MONITOR_PAUSE_LABEL"), addr);
+
+    // Read the current pause state. The baseline is the last state this watcher
+    // observed (durable memo). On the first read there is no baseline ("") -> the
+    // state is seeded this tick and NOT flagged; the next tick compares against it.
+    let cur = decode_bool(read_view(castBin, rpc, addr, sig));
+    let base = recall_latest("pause-state-watcher:baseline:" + addr);
+
+    let verdict = verdict_of(cur, base);
+    let outcome = outcome_of(verdict);
+
+    print("pause-state-watcher: " + label + " state=" + cur + " base=" + base
+        + " -> " + verdict + " (conf=" + to_string(get_confidence()) + ")");
+
+    // Update the baseline to the latest GOOD read so the next tick compares
+    // against the current state (a no-read leaves the old baseline intact). A
+    // transition STILL re-baselines AFTER this tick's flag, so one transition
+    // pages once and the new state becomes the next normal.
+    if len(cur) > 0 {
+        memo_write("pause-state-watcher:baseline:" + addr, cur);
+    };
+
+    let key = label + ":" + addr;
+    let desc = "pause state " + label + " state=" + cur + " -> " + verdict;
+    let anomaly = is_anomaly(verdict);
+
+    // Post this watcher's latest verdict to the shared blackboard memo the
+    // coordinator reads each tick to fuse + dedup signals (a memo write — allowed
+    // at every tier, including shadow). Severity is re-decided by the coordinator.
+    memo_write("monitor:signal:pause", alert_payload(label, verdict, cur, addr, "info"));
+
+    // ONE tier() call, branch ONCE (ADR-0001). The tier gates EMISSION only; the
+    // verdict above is unchanged by tier. shadow/dormant fall through to observe.
+    // (.ag has no `else if`; the tiers nest as `else { if ... { } else { } }`.)
+    let my_tier = tier("pause-state-watcher");
+    if my_tier == "autonomous" {
+        // Proven reliable -> a DIRECT page on a real anomaly (high severity).
+        if anomaly {
+            emit("monitor:alert", alert_payload(label, verdict, cur, addr, "high"));
+            learn("pause-state-watch", key, desc, outcome, [verdict, outcome, "acted"]);
+        } else {
+            learn("pause-state-watch", key, desc, outcome, [verdict, outcome, "observed"]);
+        };
+    } else {
+        if my_tier == "review-gated" {
+            // Trusted to page under a review gate -> a DIRECT page (high severity).
+            if anomaly {
+                emit("monitor:alert", alert_payload(label, verdict, cur, addr, "high"));
+                learn("pause-state-watch", key, desc, outcome, [verdict, outcome, "review-gated"]);
+            } else {
+                learn("pause-state-watch", key, desc, outcome, [verdict, outcome, "observed"]);
+            };
+        } else {
+            if my_tier == "propose" {
+                // Enough signal to contribute -> a DRAFT alert (low severity).
+                if anomaly {
+                    emit("monitor:alert", alert_payload(label, verdict, cur, addr, "low"));
+                    learn("pause-state-watch", key, desc, outcome, [verdict, outcome, "emitted"]);
+                } else {
+                    learn("pause-state-watch", key, desc, outcome, [verdict, outcome, "observed"]);
+                };
+            } else {
+                // shadow / dormant: learn the baseline ONLY — no emit, no write.
+                learn("pause-state-watch", key, desc + " (baseline)", outcome, [verdict, outcome, "observed"]);
+                print("pause-state-watcher: observing (tier: " + my_tier + ") — no emit");
+            };
+        };
+    };
+
+    memo_write("pause-state-watcher:last_check", to_string(now_ms()));
+}

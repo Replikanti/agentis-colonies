@@ -2,13 +2,13 @@
 
 > Part of the [Dark Factory](../) federation.
 
-A continuous **protocol monitor**. Four cooperating agents watch a target EVM
+A continuous **protocol monitor**. Cooperating agents watch a target EVM
 protocol on-chain and emit reasoned, high-signal anomaly alerts on the colony bus
-(`monitor:alert`); a fourth agent — the **notifier** — bridges the bus to the
-configured webhook so a page is actually **delivered**, not just emitted. The
-colony is **non-custodial / read-only**: every watcher only **reads** chain state
-via `cast`/RPC and the notifier only sends an **outbound** notification — no agent
-signs a transaction and none ever touches funds.
+(`monitor:alert`); the **notifier** bridges the bus to the configured webhook so a
+page is actually **delivered**, not just emitted. The colony is **non-custodial /
+read-only**: every watcher only **reads** chain state via `cast`/RPC and the
+notifier only sends an **outbound** notification — no agent signs a transaction
+and none ever touches funds.
 
 The hot-path verdicts are **facts** (an on-chain read + a deterministic
 comparison), never an LLM opinion. Emission is gated purely on each agent's
@@ -22,22 +22,38 @@ before it is ever trusted to page.
 |-------|------|--------|
 | `invariant-watcher` | Evaluates the target's protocol invariant(s) against current on-chain state; flags a violation or a thin margin-to-violation. Evaluates a single env-configured invariant, OR — when a derived watch-spec is supplied (`MONITOR_INV_SPEC`, #1086) — the WHOLE derived invariant SET | `monitor:signal:invariant` (fused), `monitor:signal:invariant:<label>` (per-invariant), `monitor:alert` (tier-gated) |
 | `oracle-watcher` | Watches a price feed for deviation / staleness / out-of-bounds price | `monitor:signal:oracle`, `monitor:alert` (tier-gated) |
-| `coordinator` | Fuses the watcher signals off the shared blackboard, dedups a persistent condition, decides fused severity, emits one consolidated alert | `monitor:alert` (tier-gated) |
+| `governance-watcher` | Watches the governance / upgrade surface (the two EIP-1967 proxy slots — implementation + admin — plus an optional `owner()`/`admin()` view, a role-grant indicator, and a timelock-queue indicator); flags a CHANGE vs the learned baseline — the highest-value pre-exploit early-warning (#1095) | `monitor:signal:governance`, `monitor:alert` (tier-gated) |
+| `liquidity-watcher` | Watches a pool / vault reserve or TVL proxy (`totalAssets()` / native balance); flags a drop beyond a learned band (sudden drain) (#1096) | `monitor:signal:liquidity`, `monitor:alert` (tier-gated) |
+| `flow-watcher` | Watches net flow over a window; flags an abnormal net outflow burst vs the previous window (large outflow) (#1096) | `monitor:signal:flow`, `monitor:alert` (tier-gated) |
+| `pause-state-watcher` | Watches the `paused()` / circuit-breaker boolean; flags a state transition (a protocol pausing itself is signal) (#1096) | `monitor:signal:pause`, `monitor:alert` (tier-gated) |
+| `coordinator` | Fuses ALL watcher signals off the shared blackboard, dedups a persistent condition, decides fused severity, emits one consolidated alert carrying the per-signal dossier | `monitor:alert` (tier-gated) |
 | `notifier` | The bus→webhook **bridge** (#1092): `listen()`s for `monitor:alert` and forwards each to `scripts/notify.sh` so a page is delivered. Owns the liveness **heartbeat** + **dead-man's switch** (#1093) | webhook page (via `notify.sh`), `monitor:alert` (the dead-man's-switch meta-alert, severity `high` / kind `liveness`) |
 
 Each agent runs as its own `agentis daemon`. The watchers post their latest
 verdict to a durable blackboard memo (`monitor:signal:*`); the coordinator reads
-both each tick and fuses them. The notifier consumes the consolidated
+every signal each tick and fuses them. The notifier consumes the consolidated
 `monitor:alert` off the bus and forwards it to the configured sink.
 
 ```mermaid
 flowchart LR
     C[cast / RPC<br/>read-only] --> IW[invariant-watcher]
     C --> OW[oracle-watcher]
+    C --> GW[governance-watcher]
+    C --> LW[liquidity-watcher]
+    C --> FW[flow-watcher]
+    C --> PW[pause-state-watcher]
     IW -->|monitor:signal:invariant| CO[coordinator]
     OW -->|monitor:signal:oracle| CO
+    GW -->|monitor:signal:governance| CO
+    LW -->|monitor:signal:liquidity| CO
+    FW -->|monitor:signal:flow| CO
+    PW -->|monitor:signal:pause| CO
     IW -->|monitor:alert| BUS[(bus)]
     OW -->|monitor:alert| BUS
+    GW -->|monitor:alert| BUS
+    LW -->|monitor:alert| BUS
+    FW -->|monitor:alert| BUS
+    PW -->|monitor:alert| BUS
     CO -->|monitor:alert<br/>fused + deduped| BUS
     BUS -->|monitor:alert| NF[notifier<br/>bridge + heartbeat<br/>+ dead-man's switch]
     NF -->|monitor:alert<br/>liveness meta-alert| BUS
@@ -59,6 +75,48 @@ Every agent makes ONE `tier()` call per tick and branches once. The tier gates
 This is the false-positive control: a fresh watcher seeded at `shadow` learns the
 protocol's normal state before it can page, and auto-promotion lifts it as its
 alerts prove real over noise.
+
+## Governance / upgrade + liquidity / flow / pause watchers (#1095 / #1096)
+
+Four more read-only watchers feed the coordinator's `monitor:signal:*`
+blackboard, each with the same ADR-0001 tier-gated emission as the
+`invariant`/`oracle` watchers (one `tier()` call per tick, branch once; a
+baseline learned via a durable memo; degrade-safe — no reader ⇒ no false flag;
+every `exec sh` dynamic value `shell_escape()`d):
+
+- **`governance-watcher` (#1095)** — the highest-value **pre-exploit
+  early-warning**. The classic upgrade-attack tell is a proxy's implementation
+  pointer flipping (or the admin / owner rotating) moments before a malicious
+  implementation drains the protocol. The watcher reads the two canonical
+  **EIP-1967** storage slots — implementation
+  (`0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc`) and admin
+  (`0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103`) — via
+  `cast storage`, plus an optional `owner()`/`admin()` view, a role-grant
+  indicator, and a timelock-queue indicator via `cast call`, and flags a **CHANGE
+  vs the learned baseline**. Verdict tokens: `impl-changed` / `admin-changed` /
+  `owner-changed` (hard) / `gov-changed` (a role grant or pending timelock op,
+  warn) / `ok` / `no-read`. Posts `monitor:signal:governance`.
+- **`liquidity-watcher` (#1096)** — reads a pool / vault **reserve or TVL proxy**
+  (`totalAssets()` or, with no view configured, the contract's native
+  `cast balance`) and flags a **drop beyond a learned band** (`MONITOR_LIQ_DROP_BP`
+  basis points) — a sudden drain. A rise (a deposit) is never an anomaly. Verdict:
+  `drained` / `ok` / `no-read`. Posts `monitor:signal:liquidity`.
+- **`flow-watcher` (#1096)** — reads the same level proxy and flags an **abnormal
+  net outflow burst** over a window: a net fall since the previous reading
+  exceeding `MONITOR_FLOW_OUT_BP` basis points of the held reserve (the
+  flood-vs-drip distinction the absolute-level band does not make alone). Verdict:
+  `outflow-burst` / `ok` / `no-read`. Posts `monitor:signal:flow`.
+- **`pause-state-watcher` (#1096)** — reads the `paused()` / circuit-breaker
+  boolean and flags a **state transition** vs the learned baseline. A protocol
+  pausing itself usually means the team detected something wrong, often during an
+  incident; a recovery is surfaced too. Verdict: `paused` (hard) / `unpaused`
+  (warn) / `ok` / `no-read`. Posts `monitor:signal:pause`.
+
+The `coordinator` fuses these new `monitor:signal:*` kinds into the consolidated
+severity score, the dedup signature, **and the per-signal dossier** (the emitted
+`monitor:alert` carries a `"signals"` map of every watcher's verdict) — alongside
+the existing `invariant` / `oracle` signals, keeping its single-`tier()`-per-tick
+discipline.
 
 ## Alert delivery — the bus→webhook bridge (#1092 / #1093 / #1094)
 
@@ -202,6 +260,22 @@ watcher reads nothing and only observes — it never raises a false alert.
 | `MONITOR_ORACLE_DEV_BP` | Deviation band in basis points vs the last baseline. | `0` (skip) |
 | `MONITOR_ORACLE_MIN` / `MONITOR_ORACLE_MAX` | Lower / upper price sanity bounds. | unset (no bound) |
 | `MONITOR_ORACLE_LABEL` | Human label for the feed (alert body). | the oracle address |
+| `MONITOR_GOV_TARGET` | (#1095) Governed proxy address (`0x...`) for the governance watch. | falls back to `MONITOR_TARGET` |
+| `MONITOR_GOV_OWNER_SIG` | (#1095) `cast call` signature returning the owner/admin address (e.g. `owner()` / `admin()`); `""` ⇒ skip the owner check (the two EIP-1967 proxy slots are always watched). | unset (slots only) |
+| `MONITOR_GOV_ROLE_SIG` | (#1095) `cast call` signature returning a role-grant indicator (e.g. a member count for a fixed role); `""` ⇒ skip. | unset (skip) |
+| `MONITOR_GOV_TIMELOCK_SIG` | (#1095) `cast call` signature returning a timelock-queue indicator (queued-op count / pending-op id); `""` ⇒ skip. | unset (skip) |
+| `MONITOR_GOV_LABEL` | (#1095) Human label for the governed target (alert body). | the target address |
+| `MONITOR_LIQ_TARGET` | (#1096) Pool / vault address (`0x...`) for the liquidity watch. | falls back to `MONITOR_TARGET` |
+| `MONITOR_LIQ_SIG` | (#1096) `cast call` signature for the reserve / TVL proxy (e.g. `totalAssets()`); `""` ⇒ native `cast balance`. | unset (native balance) |
+| `MONITOR_LIQ_DROP_BP` | (#1096) Drop band in basis points (0..10000); a fall past it flags a drain. | `0` (any drop) |
+| `MONITOR_LIQ_LABEL` | (#1096) Human label for the pool / vault (alert body). | the target address |
+| `MONITOR_FLOW_TARGET` | (#1096) Watched address (`0x...`) for the flow watch. | falls back to `MONITOR_TARGET` |
+| `MONITOR_FLOW_SIG` | (#1096) `cast call` signature for the level proxy (e.g. `totalAssets()`); `""` ⇒ native `cast balance`. | unset (native balance) |
+| `MONITOR_FLOW_OUT_BP` | (#1096) Per-window outflow band in basis points (0..10000); a net fall past it flags a burst. | `0` (any net outflow) |
+| `MONITOR_FLOW_LABEL` | (#1096) Human label for the contract (alert body). | the target address |
+| `MONITOR_PAUSE_TARGET` | (#1096) Watched address (`0x...`) for the pause-state watch. | falls back to `MONITOR_TARGET` |
+| `MONITOR_PAUSE_SIG` | (#1096) `cast call` signature returning the pause / circuit-breaker boolean. | `paused()` |
+| `MONITOR_PAUSE_LABEL` | (#1096) Human label for the contract (alert body). | the target address |
 | `MONITOR_WEBHOOK_URL` | Discord/Slack/PagerDuty incoming-webhook URL for `notify.sh`. **Never commit a real URL.** | unset (stdout sink) |
 | `MONITOR_WEBHOOK_URL_WARN` | Channel for `warn`-severity pages (#1094 routing). | falls back to `MONITOR_WEBHOOK_URL` |
 | `MONITOR_WEBHOOK_URL_HIGH` | Channel for `high`-severity pages (#1094 routing). | falls back to `MONITOR_WEBHOOK_URL` |
@@ -226,7 +300,11 @@ liveness heartbeat + dead-man's switch
 ([#1093](https://github.com/Replikanti/agentis-colonies/issues/1093)), and the
 hardened `notify.sh` (retry/backoff, sink-side dedup, severity routing,
 [#1094](https://github.com/Replikanti/agentis-colonies/issues/1094)) — turns an
-emitted alert into a delivered page. Follow-ups: the liquidity / governance / flow
-watchers, an external dead-man's-switch cron, and a dashboard view. The colony is
-**read-only** and **never** posts an alert without a configured sink — and
-**never** signs or touches funds.
+emitted alert into a delivered page. The **governance / upgrade watcher**
+([#1095](https://github.com/Replikanti/agentis-colonies/issues/1095)) and the
+**liquidity / flow / pause-state watchers**
+([#1096](https://github.com/Replikanti/agentis-colonies/issues/1096)) extend the
+fused signal set with the highest-value pre-exploit early-warnings. Follow-ups: an
+external dead-man's-switch cron and a dashboard view. The colony is **read-only**
+and **never** posts an alert without a configured sink — and **never** signs or
+touches funds.
