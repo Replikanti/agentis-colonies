@@ -129,6 +129,33 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   never signs and never touches funds.
 
 ### Fixed
+- **monitor: big-number-safe wei handling in `invariant-watcher` / `oracle-watcher`** (#1109). The two CORE
+  watchers still read on-chain quantities through a bare `parse_int`, which SATURATES any value above i64 max
+  (9223372036854775807 ≈ 9.22 ETH at 18 dp) to `0`. `invariant-watcher` reads solvency-grade magnitudes like
+  `totalAssets()` / `totalSupply()` (a real $100M vault ≈ 1e26 wei), so BOTH sides read as `0`,
+  `verdict_of(0, 0, ge)` returned `ok`, and the watcher reported EVERY real protocol healthy regardless of true
+  state — solvency-blind on essentially every live target (confirmed: `parse_int("176142539498998091993593571")
+  = 0`). The margin band `(|lhs - rhs|) * 10000 / rhs` separately overflowed i64 for any in-range 18-digit side.
+  `oracle-watcher` shared the same `reading_to_int` + `(diff * 10000) / base` deviation pattern (mostly escaping
+  for 8-dp prices, but unsafe for large / high-decimal feeds). Both watchers now mirror the proven #1095 /
+  liquidity-watcher / value-scorer idiom: read each side as a validated DECIMAL STRING (`reading_to_dec` /
+  strip-leading-zeros / digits-only validate / `""` no-read sentinel); SCALE >18-digit values down by truncating
+  the same number of low-order digits from BOTH (the relation / ratio is preserved; the `""` sentinel survives
+  scaling, so cold-start and RPC-blind ticks never false-fire or divide by zero) BEFORE any `parse_int`; and
+  compute the basis-point margin / deviation DIVISION-FIRST (`unit = rhs / 10000`; `gap_bp = diff / unit`) so
+  there is no large multiply to overflow. `oracle-watcher`'s sanity BOUNDS now compare the un-scaled price
+  digit-string against MIN/MAX with the big-decimal comparator (exact for high-decimal feeds). The
+  single-invariant `tick()` path, the `MONITOR_INV_SPEC` multi-invariant SET path (`spec_verdict` / `fuse_set`),
+  and the alert/signal payloads (which now carry the full magnitudes as quoted JSON strings, like
+  liquidity-watcher's `value_for_json`) are all big-number-safe. Everything else is preserved: one `tier()` per
+  tick + branch once, `cb 90000`, `<agent>:last_check` at tick start + end, `shell_escape()` on every `exec sh`
+  value, the `cast-read.sh` / `MONITOR_CAST_READ` failover read path, the no-read (`""` / `-1`) and cold-start
+  sentinels → no false flag, non-custodial read-only. Verified via `agentis repl` with real 1e26 magnitudes: a
+  solvent vault (`totalAssets = 176142539498998091993593571` ≥ `totalSupply = 149658545051669083717603536`, rel
+  `ge`) now yields `ok` (was a false `0`-based `ok`), the same magnitude underwater (assets < shares) yields
+  `violated` (was a false `ok`), a thin-margin case yields `margin`, and cold-start (`-1`) / no-read (`""`) yield
+  no flag and no div-by-zero; `oracle-watcher` flags a 5% move on an 18-dp feed as `deviation` (`dev_bp = 500`,
+  was blind) and bounds-violations on high-decimal feeds as `bounds`.
 - **monitor: big-number-safe wei handling in `liquidity-watcher` / `flow-watcher`** (#1095, #1096). Both
   watchers read an on-chain reserve / level (a TVL proxy in wei) and fed it through a bare `parse_int`, which
   SATURATES any value above i64 max (9223372036854775807 ≈ 9.22 ETH at 18 dp) to `0` — so a 1000-ETH vault

@@ -121,7 +121,9 @@ fn first_token(s: string) -> string {
 }
 
 // Parse a decimal reading to an int; empty / non-numeric -> -1 (the "no reading"
-// sentinel, distinct from a legitimate 0). parse_int is total.
+// sentinel, distinct from a legitimate 0). parse_int is total. Used for the feed's
+// last-update unix TIMESTAMP only (a unix ts ~1.7e9 always fits i64); the PRICE
+// goes through the big-number-safe digit-string path below.
 fn reading_to_int(s: string) -> int {
     let t = first_token(s);
     if len(t) == 0 { return -1; }
@@ -129,19 +131,125 @@ fn reading_to_int(s: string) -> int {
     return parse_int(t);
 }
 
-// Optional integer env fact: "" / non-numeric -> -1 (the "unset" sentinel).
+// Optional integer env fact: "" / non-numeric -> -1 (the "unset" sentinel). Bands
+// (basis points 0..10000) + max-age seconds always fit i64, so a bare parse_int is
+// safe here. The price BOUNDS (MIN/MAX) go through the digit-string path instead.
 fn opt_int(raw: string) -> int {
     if len(raw) == 0 { return -1; }
     if len(regex_find_all("[^0-9]", raw)) > 0 { return -1; }
     return parse_int(raw);
 }
 
+// --- big-number-safe wei handling (NO bare parse_int on the price reading) ------
+// A high-decimal feed can report a price beyond the i64 range (~9.2e18, ≈ 9.22 ETH
+// at 18 dp) — parse_int SATURATES such a value to 0, so two large prices both read
+// as 0 and a real deviation reads as `ok`, and the basis-point ratio
+// `(diff * 10000) / base` separately overflows i64 even for an in-range 18-digit
+// base. The price + deviation baseline + sanity bounds are therefore kept as
+// DECIMAL STRINGS and, for the deviation ratio, SCALED DOWN by truncating the same
+// number of low-order digits from BOTH (the ratio is preserved) BEFORE any
+// parse_int. Mirrors the proven liquidity-watcher / value-scorer idiom. (#1109.)
+
+// Strip leading zeros from a digit string, leaving at least one digit ("0").
+fn strip_leading_zeros(s: string) -> string {
+    let kept = reduce(regex_find_all("[0-9]", s), |acc: string, d: string| -> string {
+        if len(acc) > 0 { return acc + d; }
+        if d == "0" { return acc; }
+        return d;
+    }, "");
+    if len(kept) == 0 { return "0"; }
+    return kept;
+}
+
+// Normalise a raw decimal reading to a clean digit string (leading zeros stripped).
+// "" / non-numeric -> "" (the "no reading" sentinel, distinct from a legitimate
+// "0"). Total. Mirrors prospector/value-scorer.ag's reading_to_dec.
+fn reading_to_dec(s: string) -> string {
+    let t = first_token(s);
+    if len(t) == 0 { return ""; }
+    if len(regex_find_all("[^0-9]", t)) > 0 { return ""; }
+    return strip_leading_zeros(t);
+}
+
+// An optional digit-string env fact (a price bound): "" / non-numeric -> "" (the
+// "unset" / "no bound" sentinel). Total.
+fn opt_dec(raw: string) -> string {
+    if len(raw) == 0 { return ""; }
+    if len(regex_find_all("[^0-9]", raw)) > 0 { return ""; }
+    return strip_leading_zeros(raw);
+}
+
+// The most significant digits a scaled value may keep so parse_int never wraps:
+// i64 max is 19 digits (9223372036854775807); 18 digits (<1e18) always fits.
+fn max_safe_digits() -> int {
+    return 18;
+}
+
+// How many low-order digits must be dropped so BOTH `a` and `b` fit i64: the
+// excess of the LONGER string over max_safe_digits(), clamped to >= 0. The SAME
+// drop is applied to both, so the deviation-bp ratio is preserved.
+fn excess_digits(a: string, b: string) -> int {
+    let longest = if len(a) > len(b) { len(a) } else { len(b) };
+    let excess = longest - max_safe_digits();
+    if excess < 0 { return 0; }
+    return excess;
+}
+
+// Truncate the `drop` low-order digits off a digit string (scale down by 10^drop).
+// The "" no-read / no-baseline sentinel is PRESERVED (a missing value must stay
+// missing through scaling — never become "0"). Total.
+fn scale_dec(s: string, drop: int) -> string {
+    if len(s) == 0 { return ""; }
+    if drop <= 0 { return s; }
+    if drop >= len(s) { return "0"; }
+    return substring(s, 0, len(s) - drop);
+}
+
+// Parse a SCALED (<= 18-digit) digit string to int; "" -> -1 (the "no reading" /
+// "no baseline" sentinel, distinct from a legitimate 0). parse_int is total and,
+// post-scaling, never overflows.
+fn scaled_to_int(s: string) -> int {
+    if len(s) == 0 { return -1; }
+    return parse_int(s);
+}
+
+// --- big-decimal comparison (for the price-vs-bound sanity check) ---------------
+// The runtime's `>=` does not accept strings, so a big-decimal compare is open-coded
+// over single digits (the value-scorer idiom): a longer normalised string is the
+// larger number; equal length compares DIGIT-WISE from the most-significant end.
+fn digit_rank(c: string) -> int {
+    return index_of("0123456789", c);
+}
+
+fn same_len_ge(a: string, b: string, i: int) -> bool {
+    if i >= len(a) { return true; }
+    let da = digit_rank(substring(a, i, i + 1));
+    let db = digit_rank(substring(b, i, i + 1));
+    if da > db { return true; }
+    if da < db { return false; }
+    return same_len_ge(a, b, i + 1);
+}
+
+// Big-decimal `a >= b` over two normalised (no-leading-zero) digit strings. Total.
+fn dec_ge(a: string, b: string) -> bool {
+    if len(a) > len(b) { return true; }
+    if len(a) < len(b) { return false; }
+    return same_len_ge(a, b, 0);
+}
+
 // --- deterministic deviation / staleness / bounds verdicts (FACTS) -------------
-// Deviation in basis points of `price` vs `base`; -1 when no usable baseline.
+// Deviation in basis points of `price` vs `base`, both already SCALED to fit i64;
+// -1 when no usable baseline. DIVISION-FIRST: a `diff * 10000 / base` ratio
+// overflows i64 even for an in-range 18-digit base, so we compute `unit =
+// base / 10000` (the per-bp magnitude) FIRST and then `diff / unit` — no large
+// multiply, no overflow. A base below 10000 (after scaling) is dust: `unit < 1`
+// -> no deviation flag.
 fn deviation_bp(price: int, base: int) -> int {
     if base <= 0 { return -1; }
     let diff = if price >= base { price - base } else { base - price };
-    return (diff * 10000) / base;
+    let unit = base / 10000;
+    if unit < 1 { return 0; }
+    return diff / unit;
 }
 
 fn deviates(price: int, base: int, devBp: int) -> bool {
@@ -158,22 +266,28 @@ fn is_stale(updatedAt: int, nowSec: int, maxAge: int) -> bool {
     return (nowSec - updatedAt) > maxAge;
 }
 
-fn out_of_bounds(price: int, lo: int, hi: int) -> bool {
-    if lo >= 0 {
-        if price < lo { return true; }
+// Bounds check on the FULL (UN-scaled) price digit string vs the operator MIN/MAX
+// digit strings (big-decimal compare, never parse_int — a high-decimal price
+// overflows i64). "" lo/hi => that side is unbounded. price "" (no read) never
+// flags here (the no-read precedence handles it in verdict_of). price < lo is
+// `!dec_ge(price, lo)`; price > hi is `!dec_ge(hi, price)`.
+fn out_of_bounds(price: string, lo: string, hi: string) -> bool {
+    if len(price) == 0 { return false; }
+    if len(lo) > 0 {
+        if !dec_ge(price, lo) { return true; }
     }
-    if hi >= 0 {
-        if price > hi { return true; }
+    if len(hi) > 0 {
+        if !dec_ge(hi, price) { return true; }
     }
     return false;
 }
 
 // Fuse the three checks into ONE verdict token. Precedence: a price that could
-// not be read is "no-read"; then bounds (hard sanity), staleness, deviation; a
-// clean read is "ok".
-fn verdict_of(price: int, base: int, devBp: int, updatedAt: int, nowSec: int, maxAge: int, lo: int, hi: int) -> string {
+// not be read is "no-read"; then bounds (hard sanity, big-decimal on the UN-scaled
+// price), staleness, deviation (on the SCALED price/base). A clean read is "ok".
+fn verdict_of(price: int, base: int, devBp: int, updatedAt: int, nowSec: int, maxAge: int, priceDec: string, lo: string, hi: string) -> string {
     if price < 0 { return "no-read"; }
-    if out_of_bounds(price, lo, hi) { return "bounds"; }
+    if out_of_bounds(priceDec, lo, hi) { return "bounds"; }
     if is_stale(updatedAt, nowSec, maxAge) { return "stale"; }
     if deviates(price, base, devBp) { return "deviation"; }
     return "ok";
@@ -198,12 +312,23 @@ fn is_anomaly(verdict: string) -> bool {
     return false;
 }
 
+// The price / baseline reported in the payload: the full (UN-scaled) digit string,
+// or "-1" for a no-read / no-baseline (the sentinel, mirroring the sibling
+// watchers' convention). Carried as a JSON STRING because a high-decimal price
+// (>1e18) overflows the JSON number parser downstream (the prospector value-scorer
+// / liquidity-watcher convention).
+fn value_for_json(s: string) -> string {
+    if len(s) == 0 { return "-1"; }
+    return s;
+}
+
 // A compact, deterministic alert payload (JSON). All fields are facts the watcher
 // computed; none is LLM text. `sev` is set by the tier branch (draft vs page).
-fn alert_payload(label: string, verdict: string, price: int, base: int, addr: string, sev: string) -> string {
+// price/baseline are the full (UN-scaled) digit strings, quoted (see value_for_json).
+fn alert_payload(label: string, verdict: string, price: string, base: string, addr: string, sev: string) -> string {
     return "{\"watcher\":\"oracle\",\"feed\":\"" + json_escape(label) + "\",\"verdict\":\"" + verdict
-         + "\",\"price\":" + to_string(price) + ",\"baseline\":" + to_string(base)
-         + ",\"oracle\":\"" + json_escape(addr) + "\",\"severity\":\"" + sev + "\"}";
+         + "\",\"price\":\"" + value_for_json(price) + "\",\"baseline\":\"" + value_for_json(base)
+         + "\",\"oracle\":\"" + json_escape(addr) + "\",\"severity\":\"" + sev + "\"}";
 }
 
 fn tick(reason: string) -> void {
@@ -218,39 +343,52 @@ fn tick(reason: string) -> void {
     let tsSig = getenv("MONITOR_ORACLE_TS_SIG");
     let maxAge = opt_int(getenv("MONITOR_ORACLE_MAX_AGE"));
     let devBp = opt_int(getenv("MONITOR_ORACLE_DEV_BP"));
-    let lo = opt_int(getenv("MONITOR_ORACLE_MIN"));
-    let hi = opt_int(getenv("MONITOR_ORACLE_MAX"));
+    let lo = opt_dec(getenv("MONITOR_ORACLE_MIN"));
+    let hi = opt_dec(getenv("MONITOR_ORACLE_MAX"));
     let label = label_or(getenv("MONITOR_ORACLE_LABEL"), addr);
 
-    // Read the current price + (optionally) the feed's last-update timestamp.
-    let price = reading_to_int(read_uint(castBin, rpc, addr, priceSig));
+    // Read the current price as a big-number-safe DIGIT STRING + (optionally) the
+    // feed's last-update timestamp (a unix ts fits i64 -> reading_to_int).
+    let priceDec = reading_to_dec(read_uint(castBin, rpc, addr, priceSig));
     let updatedAt = if len(tsSig) > 0 { reading_to_int(read_uint(castBin, rpc, addr, tsSig)) } else { -1 };
-    // The DEVIATION baseline is the last price this watcher observed (durable
-    // memo). On the first read there is no baseline (-1) -> deviation is skipped
-    // this tick; the current price becomes the baseline for next time.
-    let base = opt_int(recall_latest("oracle-watcher:baseline:" + addr));
+    // The DEVIATION baseline is the last price this watcher observed (durable memo),
+    // persisted as the SAME digit string. On the first read there is no baseline
+    // ("") -> deviation is skipped this tick; the current price becomes the baseline
+    // for next time.
+    let baseDec = recall_latest("oracle-watcher:baseline:" + addr);
     let nowSec = now_ms() / 1000;
 
-    let verdict = verdict_of(price, base, devBp, updatedAt, nowSec, maxAge, lo, hi);
+    // SCALE price + baseline together to <= 18 digits (the SAME drop applied to
+    // both, so the deviation ratio is preserved) BEFORE any parse_int, so a
+    // high-decimal price never wraps to 0. A no-read / no-baseline ("") yields the
+    // -1 sentinel and is never scaled. The BOUNDS compare uses the UN-scaled
+    // priceDec (big-decimal), so a high-decimal MIN/MAX stays exact.
+    let drop = excess_digits(priceDec, baseDec);
+    let price = scaled_to_int(scale_dec(priceDec, drop));
+    let base = scaled_to_int(scale_dec(baseDec, drop));
+
+    let verdict = verdict_of(price, base, devBp, updatedAt, nowSec, maxAge, priceDec, lo, hi);
     let outcome = outcome_of(verdict);
 
-    print("oracle-watcher: " + label + " price=" + to_string(price) + " base=" + to_string(base)
+    print("oracle-watcher: " + label + " price=" + value_for_json(priceDec) + " base=" + value_for_json(baseDec)
         + " -> " + verdict + " (conf=" + to_string(get_confidence()) + ")");
 
-    // Update the deviation baseline to the latest GOOD read so the next tick
-    // compares against a recent price (a no-read leaves the old baseline intact).
-    if price >= 0 {
-        memo_write("oracle-watcher:baseline:" + addr, to_string(price));
+    // Update the deviation baseline to the latest GOOD read (the full digit string)
+    // so the next tick compares against a recent price (a no-read leaves the old
+    // baseline intact).
+    if len(priceDec) > 0 {
+        memo_write("oracle-watcher:baseline:" + addr, priceDec);
     };
 
     let key = label + ":" + addr;
-    let desc = "oracle feed " + label + " price=" + to_string(price) + " -> " + verdict;
+    let desc = "oracle feed " + label + " price=" + value_for_json(priceDec) + " -> " + verdict;
     let anomaly = is_anomaly(verdict);
 
     // Post this watcher's latest verdict to the shared blackboard memo the
     // coordinator reads each tick to fuse + dedup signals (a memo write — allowed
     // at every tier, including shadow). Severity is re-decided by the coordinator.
-    memo_write("monitor:signal:oracle", alert_payload(label, verdict, price, base, addr, "info"));
+    // price/baseline carry the full (UN-scaled) magnitudes as quoted JSON strings.
+    memo_write("monitor:signal:oracle", alert_payload(label, verdict, priceDec, baseDec, addr, "info"));
 
     // ONE tier() call, branch ONCE (ADR-0001). The tier gates EMISSION only.
     // (.ag has no `else if`; the tiers nest as `else { if ... { } else { } }`.)
@@ -258,7 +396,7 @@ fn tick(reason: string) -> void {
     if my_tier == "autonomous" {
         // Proven reliable -> a DIRECT page on a real anomaly (high severity).
         if anomaly {
-            emit("monitor:alert", alert_payload(label, verdict, price, base, addr, "high"));
+            emit("monitor:alert", alert_payload(label, verdict, priceDec, baseDec, addr, "high"));
             learn("oracle-watch", key, desc, outcome, [verdict, outcome, "acted"]);
         } else {
             learn("oracle-watch", key, desc, outcome, [verdict, outcome, "observed"]);
@@ -267,7 +405,7 @@ fn tick(reason: string) -> void {
         if my_tier == "review-gated" {
             // Trusted to page under a review gate -> a DIRECT page (high severity).
             if anomaly {
-                emit("monitor:alert", alert_payload(label, verdict, price, base, addr, "high"));
+                emit("monitor:alert", alert_payload(label, verdict, priceDec, baseDec, addr, "high"));
                 learn("oracle-watch", key, desc, outcome, [verdict, outcome, "review-gated"]);
             } else {
                 learn("oracle-watch", key, desc, outcome, [verdict, outcome, "observed"]);
@@ -276,7 +414,7 @@ fn tick(reason: string) -> void {
             if my_tier == "propose" {
                 // Enough signal to contribute -> a DRAFT alert (low severity).
                 if anomaly {
-                    emit("monitor:alert", alert_payload(label, verdict, price, base, addr, "low"));
+                    emit("monitor:alert", alert_payload(label, verdict, priceDec, baseDec, addr, "low"));
                     learn("oracle-watch", key, desc, outcome, [verdict, outcome, "emitted"]);
                 } else {
                     learn("oracle-watch", key, desc, outcome, [verdict, outcome, "observed"]);
