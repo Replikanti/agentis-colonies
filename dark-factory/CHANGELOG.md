@@ -14,6 +14,32 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **monitor: alert-delivery pipeline — the bus→webhook bridge, liveness, and a hardened sink** (#1092, #1093,
+  #1094). The monitor colony emitted `monitor:alert` on the bus but nothing forwarded it, so in a real
+  deployment no page was ever delivered. A new `notifier` agent (`dark-factory/monitor/agents/notifier.ag`,
+  `cb 90000`) closes that last-mile gap:
+  - **#1092 bus→webhook bridge** — the `notifier` `listen()`s for `monitor:alert` and forwards each alert to
+    `scripts/notify.sh` via `exec sh`. The alert JSON is passed through an exported env var
+    (`MONITOR_ALERT_BODY`), never interpolated into the shell text, and every other dynamic value is
+    `shell_escape()`d. Forwarding is gated purely on the agent's ADR-0001 tier (one `tier()` call/tick, branch
+    once); needs `--enable-messaging` + `--enable-exec` (wired into `start-colony.sh` + registered in
+    `config/colony.example.toml`).
+  - **#1093 heartbeat + dead-man's switch** — a periodic low-severity `heartbeat` is sent through `notify.sh`
+    at `MONITOR_HEARTBEAT_INTERVAL_S` cadence (default daily) so silence is meaningful; and a memo-freshness
+    dead-man's switch emits a `high`/`liveness` meta-alert when no watcher tick / fresh `*:last_check` memo is
+    observed within `MONITOR_DEADMAN_WINDOW_S` (the RPC-blind / colony-down case), deduped against the last
+    liveness signature so a persistent outage pages once.
+  - **#1094 hardened `notify.sh`** — bounded exponential retry/backoff on a transient webhook failure
+    (`5xx`/network; a `4xx` is not retried); sink-side dedup keyed on the alert signature with a cooldown
+    window (`MONITOR_NOTIFY_DEDUP_COOLDOWN_S`, persisted to a small state file); and severity routing so
+    `warn`/`high` land in different channels (`MONITOR_WEBHOOK_URL_WARN` / `MONITOR_WEBHOOK_URL_HIGH`, each
+    falling back to `MONITOR_WEBHOOK_URL`). Dash-safe (`set -eu`, shellcheck clean, no `\xHH` escapes). Unset
+    config preserves the original single-webhook stdout-fallback behaviour exactly.
+
+  Non-custodial / read-only throughout: the notifier only reads the bus and sends an outbound notification — it
+  never signs and never touches funds.
+
 ### Fixed
 - **monitor: JSON-escape free-text fields in alert/signal payloads** (#1089). `invariant-watcher` and
   `oracle-watcher` now route the operator-supplied `label`/`addr` through a `json_escape()` helper (escapes

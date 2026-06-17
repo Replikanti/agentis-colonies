@@ -1,0 +1,256 @@
+// notifier.ag — Monitor colony (Dark Factory federation).
+//
+// The bus->webhook BRIDGE (#1092): the last-mile that turns an emitted
+// `monitor:alert` into a DELIVERED page. Each tick it `listen()`s for one
+// pending `monitor:alert` and FORWARDS it to scripts/notify.sh (the configured
+// Discord/Slack/PagerDuty sink) via `exec sh`. So a page is actually delivered,
+// not merely emitted on the in-process bus. NON-custodial / read-only: it only
+// reads the bus + sends an OUTBOUND notification — no signing, no fund access.
+//
+// Two further liveness guarantees of a paid 24/7 service (#1093) live here too:
+//   * HEARTBEAT — a periodic "still watching, all green" signal through the same
+//     sink at MONITOR_HEARTBEAT_INTERVAL_S cadence (default daily), so SILENCE is
+//     meaningful: a missing heartbeat means the pager itself is down.
+//   * DEAD-MAN'S SWITCH — if no watcher tick / no fresh `*:last_check` memo is
+//     observed within MONITOR_DEADMAN_WINDOW_S, emit a meta-alert
+//     (`monitor:alert` severity `high`, kind `liveness`) — the RPC-blind /
+//     colony-down case, the single most important guarantee of the service. The
+//     emitted meta-alert is itself forwarded by a later notifier tick.
+//
+// Injection-safe forwarding: the alert JSON (operator/coordinator/watcher facts)
+// is passed to notify.sh through an EXPORTED env var (MONITOR_ALERT_BODY),
+// never interpolated into the shell text; every other dynamic value is
+// shell_escape()d. `set +e` + `|| true` so a transient sink failure leaves the
+// tick intact (notify.sh owns its own bounded retry — #1094).
+//
+// Emission/forwarding is gated PURELY on the ADR-0001 tier of this agent:
+//   shadow / dormant -> observe + learn the alert, NO forward, NO heartbeat;
+//   propose          -> forward the page + heartbeat (the bridge is active);
+//   review-gated /    -> forward the page + heartbeat (proven-reliable bridge).
+//   autonomous
+// One tier() call per tick, branch once, fall through to shadow/dormant. The
+// dead-man's switch emit is a memo-freshness FACT independent of tier (a down
+// colony must page regardless of the bridge's confidence), so it runs before the
+// tier branch — exactly like the watchers' blackboard memo write.
+//
+// Env contract (read inside the sandboxed `exec sh`; exported by
+// scripts/start-colony.sh; add each to exec.env_passthrough in .agentis/config):
+//   COLONY_DIR                  the colony root (locates scripts/notify.sh).
+//   MONITOR_WEBHOOK_URL[/_WARN/_HIGH]  the sink(s); unset => notify.sh stdout sink.
+//   MONITOR_HEARTBEAT_INTERVAL_S  heartbeat cadence in seconds; "" => 86400 (1d);
+//                               0 => heartbeat disabled.
+//   MONITOR_DEADMAN_WINDOW_S    liveness window in seconds; "" => 0 (dead-man's
+//                               switch disabled); when >0, no fresh watcher
+//                               `*:last_check` within the window raises the meta.
+// Emits: "monitor:alert" (the dead-man's switch meta-alert only).
+
+cb 90000;
+
+// --- diagnostic confidence read (logging only; tier() gates behaviour) ---------
+fn get_confidence() -> float {
+    let raw = recall_latest("notifier:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    }
+    return 0.0;
+}
+
+// json_get on a miss returns Void -> to_string => "void"; collapse that to "".
+fn sanitize(s: string) -> string {
+    if s == "void" { return ""; }
+    return s;
+}
+
+// listen() returns Value::Void on an empty inbox; to_string renders that as
+// "void". Collapse to "" so a quiet tick is distinguishable from a real alert.
+fn alert_or_empty(raw: string) -> string {
+    return sanitize(raw);
+}
+
+// Optional integer env fact: "" / non-numeric -> -1 (the "unset" sentinel).
+fn opt_int(raw: string) -> int {
+    if len(raw) == 0 { return -1; }
+    if len(regex_find_all("[^0-9]", raw)) > 0 { return -1; }
+    return parse_int(raw);
+}
+
+// Heartbeat cadence in seconds. "" => the daily default; an explicit 0 disables.
+fn heartbeat_interval_s(raw: string) -> int {
+    if len(raw) == 0 { return 86400; }
+    let n = opt_int(raw);
+    if n < 0 { return 86400; }
+    return n;
+}
+
+// --- forward one payload to scripts/notify.sh ----------------------------------
+// The alert body is passed through the EXPORTED env var MONITOR_ALERT_BODY so the
+// untrusted JSON is NEVER interpolated into the shell text; COLONY_DIR is the
+// only path that flows into the command and it is operator-supplied (exported by
+// start-colony.sh). `set +e` + `|| true` keeps the tick alive on a sink error —
+// notify.sh owns the bounded retry/backoff (#1094). Returns notify.sh's output.
+fn forward(payload: string) -> string {
+    if len(payload) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    let out = exec sh "set +e; export MONITOR_ALERT_BODY=" + shell_escape(payload)
+            + "; sh \"$COLONY_DIR/scripts/notify.sh\" \"$MONITOR_ALERT_BODY\" 2>&1 || true";
+    return out;
+}
+
+// --- heartbeat payload (a low-severity "still watching" signal) ----------------
+fn heartbeat_payload(now: string) -> string {
+    return "{\"watcher\":\"notifier\",\"kind\":\"heartbeat\",\"severity\":\"low\",\"verdict\":\"ok\",\"ts\":\"" + now + "\"}";
+}
+
+// --- dead-man's switch meta-alert payload (the RPC-blind / colony-down case) ---
+fn deadman_payload(staleS: int) -> string {
+    return "{\"watcher\":\"notifier\",\"kind\":\"liveness\",\"severity\":\"high\",\"verdict\":\"blind\",\"stale_s\":" + to_string(staleS) + "}";
+}
+
+// --- liveness: freshness of the watchers' last_check heartbeat memos -----------
+// Each watcher (+ the coordinator) writes `<agent>:last_check` = now_ms() at the
+// top AND bottom of every tick. The freshest of those is the colony's liveness
+// proof. opt_int is total: a missing/non-numeric memo => -1.
+fn freshest_last_check() -> int {
+    let inv = opt_int(recall_latest("invariant-watcher:last_check"));
+    let orc = opt_int(recall_latest("oracle-watcher:last_check"));
+    let coo = opt_int(recall_latest("coordinator:last_check"));
+    let a = if inv > orc { inv } else { orc };
+    return if coo > a { coo } else { a };
+}
+
+// Seconds since the freshest watcher tick. -1 when no watcher has ticked yet
+// (no baseline -> the switch must NOT fire on a cold start; only a colony that
+// WAS alive and went silent is the RPC-blind case).
+fn staleness_s(freshMs: int, nowMs: int) -> int {
+    if freshMs < 0 { return -1; }
+    if freshMs > nowMs { return 0; }
+    return (nowMs - freshMs) / 1000;
+}
+
+// The dead-man's switch trips only when a window is configured (>0), a baseline
+// exists (the colony WAS alive), and the staleness exceeds the window.
+fn deadman_tripped(windowS: int, staleS: int) -> bool {
+    if windowS <= 0 { return false; }
+    if staleS < 0 { return false; }
+    return staleS > windowS;
+}
+
+// Has enough time elapsed since the last heartbeat to send the next one?
+// disabled (interval 0) -> never due; no prior heartbeat (-1 baseline) -> due now.
+fn heartbeat_due(intervalS: int, lastMs: int, nowMs: int) -> bool {
+    if intervalS <= 0 { return false; }
+    if lastMs < 0 { return true; }
+    if lastMs > nowMs { return false; }
+    return ((nowMs - lastMs) / 1000) >= intervalS;
+}
+
+fn tick(reason: string) -> void {
+    let now = to_string(now_ms());
+    // Heartbeat first (dashboard memo-freshness probe) even on an early return.
+    memo_write("notifier:last_check", now);
+
+    let nowMs = now_ms();
+
+    // --- DEAD-MAN'S SWITCH (#1093): a memo-freshness FACT, tier-independent. ----
+    // A down colony / RPC-blind monitor must page regardless of the bridge's
+    // confidence, so this runs BEFORE the tier branch (like the watchers' memo
+    // write). It emits a meta-alert ONCE per stale-onset: dedup against the last
+    // liveness signature so a persistent outage pages once, not every tick.
+    let windowS = opt_int(getenv("MONITOR_DEADMAN_WINDOW_S"));
+    let freshMs = freshest_last_check();
+    let staleS = staleness_s(freshMs, nowMs);
+    let tripped = deadman_tripped(windowS, staleS);
+    let lastLive = recall_latest("notifier:last_liveness");
+    let liveSig = if tripped { "blind" } else { "alive" };
+    let liveNovel = liveSig != lastLive;
+    if tripped {
+        if liveNovel {
+            emit("monitor:alert", deadman_payload(staleS));
+            learn("monitor-notify", "liveness", "dead-man's switch: no watcher tick for " + to_string(staleS) + "s", "failure", ["liveness", "failure", "acted"]);
+            print("notifier: DEAD-MAN'S SWITCH tripped — no watcher tick for " + to_string(staleS) + "s (window=" + to_string(windowS) + "s) — meta-alert emitted");
+        };
+    };
+    // Record the liveness signature so the next tick dedups against it: a recovered
+    // colony stores "alive", so a fresh outage after recovery is novel and re-pages.
+    memo_write("notifier:last_liveness", liveSig);
+
+    // --- the pending alert to forward (one per tick; the bridge's hot path) -----
+    let alert = alert_or_empty(to_string(listen("monitor:alert", 500)));
+    let hasAlert = len(alert) > 0;
+
+    // --- heartbeat bookkeeping (the "still watching, all green" signal) ---------
+    let intervalS = heartbeat_interval_s(getenv("MONITOR_HEARTBEAT_INTERVAL_S"));
+    let lastBeatMs = opt_int(recall_latest("notifier:last_heartbeat"));
+    let beatDue = heartbeat_due(intervalS, lastBeatMs, nowMs);
+
+    print("notifier: alert=" + to_string(hasAlert) + " heartbeat_due=" + to_string(beatDue)
+        + " stale_s=" + to_string(staleS) + " (conf=" + to_string(get_confidence()) + ")");
+
+    // ONE tier() call, branch ONCE (ADR-0001). The tier gates FORWARDING +
+    // HEARTBEAT only; the dead-man's switch above is unchanged by tier.
+    // (.ag has no `else if`; the tiers nest as `else { if ... { } else { } }`.)
+    let my_tier = tier("notifier");
+    if my_tier == "autonomous" {
+        // Proven-reliable bridge -> deliver pages + heartbeats directly.
+        if hasAlert {
+            forward(alert);
+            learn("monitor-notify", "alert", "forwarded alert to sink", "success", ["alert", "success", "acted"]);
+        };
+        if beatDue {
+            forward(heartbeat_payload(now));
+            memo_write("notifier:last_heartbeat", now);
+            learn("monitor-notify", "heartbeat", "sent liveness heartbeat to sink", "success", ["heartbeat", "success", "acted"]);
+        };
+        if !hasAlert {
+            if !beatDue {
+                learn("monitor-notify", "idle", "no pending alert, heartbeat not yet due", "success", ["idle", "success", "observed"]);
+            };
+        };
+    } else {
+        if my_tier == "review-gated" {
+            // Trusted under a review gate -> deliver pages + heartbeats directly.
+            if hasAlert {
+                forward(alert);
+                learn("monitor-notify", "alert", "forwarded alert to sink", "success", ["alert", "success", "review-gated"]);
+            };
+            if beatDue {
+                forward(heartbeat_payload(now));
+                memo_write("notifier:last_heartbeat", now);
+                learn("monitor-notify", "heartbeat", "sent liveness heartbeat to sink", "success", ["heartbeat", "success", "review-gated"]);
+            };
+            if !hasAlert {
+                if !beatDue {
+                    learn("monitor-notify", "idle", "no pending alert, heartbeat not yet due", "success", ["idle", "success", "observed"]);
+                };
+            };
+        } else {
+            if my_tier == "propose" {
+                // Bridge active -> forward pages + heartbeats (notify.sh routes severity).
+                if hasAlert {
+                    forward(alert);
+                    learn("monitor-notify", "alert", "forwarded alert to sink", "success", ["alert", "success", "emitted"]);
+                };
+                if beatDue {
+                    forward(heartbeat_payload(now));
+                    memo_write("notifier:last_heartbeat", now);
+                    learn("monitor-notify", "heartbeat", "sent liveness heartbeat to sink", "success", ["heartbeat", "success", "emitted"]);
+                };
+                if !hasAlert {
+                    if !beatDue {
+                        learn("monitor-notify", "idle", "no pending alert, heartbeat not yet due", "success", ["idle", "success", "observed"]);
+                    };
+                };
+            } else {
+                // shadow / dormant: observe the alert ONLY — no forward, no heartbeat.
+                if hasAlert {
+                    learn("monitor-notify", "alert", "observed alert (bridge inactive at tier)", "success", ["alert", "success", "observed"]);
+                } else {
+                    learn("monitor-notify", "idle", "observing (bridge inactive at tier)", "success", ["idle", "success", "observed"]);
+                };
+                print("notifier: observing (tier: " + my_tier + ") — no forward");
+            };
+        };
+    };
+
+    memo_write("notifier:last_check", to_string(now_ms()));
+}
