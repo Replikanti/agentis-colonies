@@ -73,6 +73,21 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   never signs and never touches funds.
 
 ### Fixed
+- **monitor: big-number-safe wei handling in `liquidity-watcher` / `flow-watcher`** (#1095, #1096). Both
+  watchers read an on-chain reserve / level (a TVL proxy in wei) and fed it through a bare `parse_int`, which
+  SATURATES any value above i64 max (9223372036854775807 ≈ 9.22 ETH at 18 dp) to `0` — so a 1000-ETH vault
+  (1e21 wei) baselined at `0`, and a real drain to 1 ETH read as verdict `ok`: the drain was invisible on
+  essentially every real target. The basis-point ratio `(base - reserve) * 10000 / base` separately overflowed
+  i64 for any drop past ~0.001 ETH on an 18-dp token, computing `drop_bp = 0`. Both watchers now keep the
+  reading + baseline as DECIMAL STRINGS (reusing the prospector `value-scorer`'s big-decimal idiom), SCALE both
+  down to ≤18 digits by truncating the same number of low-order digits from BOTH before any `parse_int` (the
+  ratio is preserved; the "" no-read / no-baseline sentinel survives scaling, so cold-start and RPC-blind ticks
+  never false-fire or divide by zero), and compute the basis-point drop DIVISION-FIRST (`unit = base / 10000`;
+  `drop_bp = diff / unit`) so there is no large multiply to overflow. The baseline is persisted as the same
+  digit string it is compared in, and the alert/signal payloads carry the full wei magnitudes as JSON strings.
+  Verified via `agentis repl`: a 1000-ETH baseline drained to 1 ETH now yields `drained` with `drop_bp ≈ 9990`
+  (was `ok`/`drop_bp = 0`), an in-range 5-ETH→2.5-ETH drop yields `drop_bp = 5000`, and cold-start / no-read
+  yield no flag.
 - **monitor: JSON-escape free-text fields in alert/signal payloads** (#1089). `invariant-watcher` and
   `oracle-watcher` now route the operator-supplied `label`/`addr` through a `json_escape()` helper (escapes
   `\` and `"`) in every alert/signal payload builder, so a label containing a `"` can no longer corrupt the

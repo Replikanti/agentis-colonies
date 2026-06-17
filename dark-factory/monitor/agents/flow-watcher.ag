@@ -114,16 +114,73 @@ fn first_token(s: string) -> string {
     return substring(s, 0, nl);
 }
 
-// Parse a decimal reading to an int; empty / non-numeric -> -1 (the "no reading"
-// sentinel, distinct from a legitimate 0). parse_int is total.
-fn reading_to_int(s: string) -> int {
-    let t = first_token(s);
-    if len(t) == 0 { return -1; }
-    if len(regex_find_all("[^0-9]", t)) > 0 { return -1; }
-    return parse_int(t);
+// --- big-number-safe wei handling (NO bare parse_int on the raw reading) -------
+// A realistic level / TVL is in wei: 1000 ETH = 1e21, far beyond the i64 range
+// (~9.2e18, ≈ 9.22 ETH at 18 dp) parse_int can hold — parse_int SATURATES such a
+// value to 0, so a 1000-ETH contract used to baseline at 0 and a real outflow read
+// as "ok". The reading + prior window are therefore kept as DECIMAL STRINGS and,
+// when they exceed 18 digits, SCALED DOWN by truncating the same number of
+// low-order digits from BOTH (the ratio is preserved) BEFORE any parse_int — so
+// every parse_int below operates on a value guaranteed to fit i64. (#1095.)
+
+// Strip leading zeros from a digit string, leaving at least one digit ("0").
+fn strip_leading_zeros(s: string) -> string {
+    let kept = reduce(regex_find_all("[0-9]", s), |acc: string, d: string| -> string {
+        if len(acc) > 0 { return acc + d; }
+        if d == "0" { return acc; }
+        return d;
+    }, "");
+    if len(kept) == 0 { return "0"; }
+    return kept;
 }
 
-// Optional integer env fact: "" / non-numeric -> -1 (the "unset" sentinel).
+// Normalise a raw decimal reading to a clean digit string (leading zeros stripped).
+// "" / non-numeric -> "" (the "no reading" sentinel, distinct from a legitimate
+// "0"). Total. Mirrors prospector/value-scorer.ag's reading_to_dec.
+fn reading_to_dec(s: string) -> string {
+    let t = first_token(s);
+    if len(t) == 0 { return ""; }
+    if len(regex_find_all("[^0-9]", t)) > 0 { return ""; }
+    return strip_leading_zeros(t);
+}
+
+// The most significant digits a scaled value may keep so parse_int never wraps:
+// i64 max is 19 digits (9223372036854775807); 18 digits (<1e18) always fits.
+fn max_safe_digits() -> int {
+    return 18;
+}
+
+// How many low-order digits must be dropped so BOTH `a` and `b` fit i64: the
+// excess of the LONGER string over max_safe_digits(), clamped to >= 0. The SAME
+// drop is applied to both, so the outflow_bp ratio is preserved.
+fn excess_digits(a: string, b: string) -> int {
+    let longest = if len(a) > len(b) { len(a) } else { len(b) };
+    let excess = longest - max_safe_digits();
+    if excess < 0 { return 0; }
+    return excess;
+}
+
+// Truncate the `drop` low-order digits off a digit string (scale down by 10^drop).
+// The "" no-read / no-prior sentinel is PRESERVED (a missing value must stay
+// missing through scaling — never become "0"). A real value whose every digit is
+// dropped scales to dust "0". Total.
+fn scale_dec(s: string, drop: int) -> string {
+    if len(s) == 0 { return ""; }
+    if drop <= 0 { return s; }
+    if drop >= len(s) { return "0"; }
+    return substring(s, 0, len(s) - drop);
+}
+
+// Parse a SCALED (<= 18-digit) digit string to int; "" -> -1 (the "no reading" /
+// "no prior" sentinel, distinct from a legitimate 0). parse_int is total and,
+// post-scaling, never overflows.
+fn scaled_to_int(s: string) -> int {
+    if len(s) == 0 { return -1; }
+    return parse_int(s);
+}
+
+// Optional integer env fact: "" / non-numeric -> -1 (the "unset" sentinel). Bands
+// (basis points 0..10000) always fit i64, so a bare parse_int is safe here.
 fn opt_int(raw: string) -> int {
     if len(raw) == 0 { return -1; }
     if len(regex_find_all("[^0-9]", raw)) > 0 { return -1; }
@@ -135,10 +192,16 @@ fn opt_int(raw: string) -> int {
 // level FELL from the last reading, normalised by the last (held) reserve so a
 // drain reads as a fraction of what was held. -1 when there is no usable prior
 // reading. An inflow (a rise) yields 0 (a rise is never an outflow).
+// DIVISION-FIRST: a basis-point ratio `(last - level) * 10000 / last` overflows
+// i64 even for an in-range 18-digit `last`, so we compute `unit = last / 10000`
+// (the per-bp magnitude) FIRST and then `diff / unit` — no large multiply, no
+// overflow. A `last` below 10000 (after scaling) is dust: `unit < 1` -> no flag.
 fn outflow_bp(level: int, last: int) -> int {
     if last <= 0 { return -1; }
     if level >= last { return 0; }
-    return ((last - level) * 10000) / last;
+    let unit = last / 10000;
+    if unit < 1 { return 0; }
+    return (last - level) / unit;
 }
 
 fn burst(level: int, last: int, outBp: int) -> bool {
@@ -148,9 +211,10 @@ fn burst(level: int, last: int, outBp: int) -> bool {
     return o > outBp;
 }
 
-// Fuse the level read + prior window into ONE verdict token. A level that could
-// not be read is "no-read"; a net outflow past the band in one window is
-// "outflow-burst"; anything else (an inflow, a hold, or a sub-band drip) is "ok".
+// Fuse the level read + prior window into ONE verdict token, both already SCALED
+// to fit i64. A level that could not be read is "no-read"; a net outflow past the
+// band in one window is "outflow-burst"; anything else (an inflow, a hold, or a
+// sub-band drip) is "ok".
 fn verdict_of(level: int, last: int, outBp: int) -> string {
     if level < 0 { return "no-read"; }
     if burst(level, last, outBp) { return "outflow-burst"; }
@@ -171,12 +235,22 @@ fn is_anomaly(verdict: string) -> bool {
     return false;
 }
 
+// The level / prev reported in the payload: the full (UN-scaled) digit string, or
+// "-1" for a no-read / no-prior (the sentinel, mirroring the sibling watchers'
+// convention). Carried as a JSON STRING because a wei magnitude (>1e18) overflows
+// the JSON number parser downstream (the prospector value-scorer convention).
+fn value_for_json(s: string) -> string {
+    if len(s) == 0 { return "-1"; }
+    return s;
+}
+
 // A compact, deterministic alert payload (JSON). All fields are facts the watcher
 // computed; none is LLM text. `sev` is set by the tier branch (draft vs page).
-fn alert_payload(label: string, verdict: string, level: int, last: int, addr: string, sev: string) -> string {
+// level/prev are the full wei digit strings, quoted (see value_for_json).
+fn alert_payload(label: string, verdict: string, level: string, last: string, addr: string, sev: string) -> string {
     return "{\"watcher\":\"flow\",\"contract\":\"" + json_escape(label) + "\",\"verdict\":\"" + verdict
-         + "\",\"level\":" + to_string(level) + ",\"prev\":" + to_string(last)
-         + ",\"address\":\"" + json_escape(addr) + "\",\"severity\":\"" + sev + "\"}";
+         + "\",\"level\":\"" + value_for_json(level) + "\",\"prev\":\"" + value_for_json(last)
+         + "\",\"address\":\"" + json_escape(addr) + "\",\"severity\":\"" + sev + "\"}";
 }
 
 fn tick(reason: string) -> void {
@@ -192,35 +266,44 @@ fn tick(reason: string) -> void {
     let outBand = if outBp < 0 { 0 } else { outBp };
     let label = label_or(getenv("MONITOR_FLOW_LABEL"), addr);
 
-    // Read the current level. The window baseline is the level this watcher
-    // observed on the PREVIOUS tick (durable memo). On the first read there is no
-    // prior level (-1) -> the outflow check is skipped this tick; the current
-    // level becomes the prior for the next window.
-    let level = reading_to_int(read_level(castBin, rpc, addr, sig));
-    let last = opt_int(recall_latest("flow-watcher:last_level:" + addr));
+    // Read the current level as a big-number-safe DIGIT STRING. The window baseline
+    // is the level this watcher observed on the PREVIOUS tick, persisted as the SAME
+    // digit string (so read, prior, and comparison share one representation). On the
+    // first read there is no prior level ("") -> the outflow check is skipped this
+    // tick; the current level becomes the prior for the next window.
+    let levelDec = reading_to_dec(read_level(castBin, rpc, addr, sig));
+    let lastDec = recall_latest("flow-watcher:last_level:" + addr);
+
+    // SCALE both to <= 18 digits by dropping the SAME number of low-order digits
+    // (the ratio is preserved) BEFORE any parse_int, so neither wraps to 0. A
+    // no-read / no-prior ("") yields the -1 sentinel and is never scaled.
+    let drop = excess_digits(levelDec, lastDec);
+    let level = scaled_to_int(scale_dec(levelDec, drop));
+    let last = scaled_to_int(scale_dec(lastDec, drop));
 
     let verdict = verdict_of(level, last, outBand);
     let outcome = outcome_of(verdict);
 
-    print("flow-watcher: " + label + " level=" + to_string(level) + " prev=" + to_string(last)
+    print("flow-watcher: " + label + " level=" + value_for_json(levelDec)
+        + " prev=" + value_for_json(lastDec)
         + " -> " + verdict + " (conf=" + to_string(get_confidence()) + ")");
 
-    // Roll the window: store the latest GOOD level as the prior for next tick (a
-    // no-read leaves the old prior intact). A burst reading STILL rolls forward
-    // AFTER this tick's flag, so one burst pages once and the new level becomes
-    // the next window's baseline.
-    if level >= 0 {
-        memo_write("flow-watcher:last_level:" + addr, to_string(level));
+    // Roll the window: store the latest GOOD level (the full digit string) as the
+    // prior for next tick (a no-read leaves the old prior intact). A burst reading
+    // STILL rolls forward AFTER this tick's flag, so one burst pages once and the
+    // new level becomes the next window's baseline.
+    if len(levelDec) > 0 {
+        memo_write("flow-watcher:last_level:" + addr, levelDec);
     };
 
     let key = label + ":" + addr;
-    let desc = "net flow " + label + " level=" + to_string(level) + " -> " + verdict;
+    let desc = "net flow " + label + " level=" + value_for_json(levelDec) + " -> " + verdict;
     let anomaly = is_anomaly(verdict);
 
     // Post this watcher's latest verdict to the shared blackboard memo the
     // coordinator reads each tick to fuse + dedup signals (a memo write — allowed
     // at every tier, including shadow). Severity is re-decided by the coordinator.
-    memo_write("monitor:signal:flow", alert_payload(label, verdict, level, last, addr, "info"));
+    memo_write("monitor:signal:flow", alert_payload(label, verdict, levelDec, lastDec, addr, "info"));
 
     // ONE tier() call, branch ONCE (ADR-0001). The tier gates EMISSION only; the
     // verdict above is unchanged by tier. shadow/dormant fall through to observe.
@@ -229,7 +312,7 @@ fn tick(reason: string) -> void {
     if my_tier == "autonomous" {
         // Proven reliable -> a DIRECT page on a real anomaly (high severity).
         if anomaly {
-            emit("monitor:alert", alert_payload(label, verdict, level, last, addr, "high"));
+            emit("monitor:alert", alert_payload(label, verdict, levelDec, lastDec, addr, "high"));
             learn("flow-watch", key, desc, outcome, [verdict, outcome, "acted"]);
         } else {
             learn("flow-watch", key, desc, outcome, [verdict, outcome, "observed"]);
@@ -238,7 +321,7 @@ fn tick(reason: string) -> void {
         if my_tier == "review-gated" {
             // Trusted to page under a review gate -> a DIRECT page (high severity).
             if anomaly {
-                emit("monitor:alert", alert_payload(label, verdict, level, last, addr, "high"));
+                emit("monitor:alert", alert_payload(label, verdict, levelDec, lastDec, addr, "high"));
                 learn("flow-watch", key, desc, outcome, [verdict, outcome, "review-gated"]);
             } else {
                 learn("flow-watch", key, desc, outcome, [verdict, outcome, "observed"]);
@@ -247,7 +330,7 @@ fn tick(reason: string) -> void {
             if my_tier == "propose" {
                 // Enough signal to contribute -> a DRAFT alert (low severity).
                 if anomaly {
-                    emit("monitor:alert", alert_payload(label, verdict, level, last, addr, "low"));
+                    emit("monitor:alert", alert_payload(label, verdict, levelDec, lastDec, addr, "low"));
                     learn("flow-watch", key, desc, outcome, [verdict, outcome, "emitted"]);
                 } else {
                     learn("flow-watch", key, desc, outcome, [verdict, outcome, "observed"]);
