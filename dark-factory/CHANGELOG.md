@@ -15,6 +15,21 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **monitor: backtest / calibration harness + scorecard + operator runbook** (#1101, #1102) — the Path C
+  outreach proof. `monitor/backtest.sh` (dash-safe, `set -eu`, shellcheck-clean) points the
+  `invariant-watcher`'s deterministic verdict logic at a fork pinned to HISTORICAL block heights around a
+  known incident and replays it tick-by-tick via read-only `cast call --block <N>`, reporting (a) the PAGE
+  at/before the incident block with its lead time and (b) a quiet pre-incident window's false-positive
+  count/rate; it reuses the watcher's read path + verdict tokens (`violated`/`margin`/`ok`/`no-read`) and the
+  fuse-to-worst SET rule byte-for-byte, accepts the same watch-spec `run-live-watch.sh` emits (`--spec`) or
+  the single-invariant flags, and degrades gracefully (clear message, exit 4, no crash) without an archive
+  node. `monitor/scorecard.md` is the credibility-artifact template (incident, lead time, which watcher
+  fired, quiet-window false-positive rate), the monitoring peer of `evm-scorecard.md`. `monitor/docs/runbook.md`
+  is the operator runbook: onboard a target (`run-live-watch.sh` → watch-spec → tiers → start → shadow→propose
+  promotion → backtest), read an alert (verdict meanings, severity routing, ack/escalation via `notify.sh`
+  #1094), respond (triage, when to page the client, dead-man's switch, postmortem template), and scope & SLA
+  (non-custodial read/alert/report boundary, response-time tiers, supported + out-of-scope). NON-custodial /
+  read-only throughout (`cast call` only — never a signed transaction, never fund access).
 - **monitor: governance / upgrade + liquidity / flow / pause-state watchers** (#1095, #1096). Four more
   read-only, tier-gated watcher agents feed the monitor coordinator's `monitor:signal:*` blackboard, each with
   the same ADR-0001 emission pattern as `invariant-watcher` / `oracle-watcher` (one `tier()` call per tick,
