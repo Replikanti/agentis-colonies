@@ -46,6 +46,31 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
     `[monitor]` `rpc_urls` / `rpc_consensus` keys), and in `monitor/README.md` (env table + a "Read robustness"
     section and a "Watch-spec drift detection" section). Operators add each new `MONITOR_*` var to
     `exec.env_passthrough` in `.agentis/config`.
+- **monitor: multi-tenant / fleet layer** (#1099) — `monitor/fleet.sh` (dash-safe, `set -eu`,
+  shellcheck-clean) manages N watched targets as a NEW layer over the unmodified
+  `monitor/scripts/start-colony.sh`: each target gets an isolated slot under
+  `${MONITOR_FLEET_DIR:-$HOME/.agentis-monitor}/<slug>/` holding its own `target.env` (address, chain, RPC,
+  webhook(s), watch-spec, tiers) and its own `.agentis` state (private daemon registry + memo baselines +
+  logs), so targets never collide and an alert for target A never routes to target B's webhook. Subcommands
+  `add` / `start [--all]` / `stop [--all]` / `list` / `status` / `path`; `stop` scopes the shutdown per-target
+  via `kill-federation.sh --fed-dir`. New `monitor/config/target.example.toml` per-target config-unit template
+  and `monitor/docs/fleet.md` operator notes (isolation model, per-target dashboard scoping). NON-custodial /
+  read-only — the fleet only orchestrates the read-only colony.
+- **monitor: backtest / calibration harness + scorecard + operator runbook** (#1101, #1102) — the Path C
+  outreach proof. `monitor/backtest.sh` (dash-safe, `set -eu`, shellcheck-clean) points the
+  `invariant-watcher`'s deterministic verdict logic at a fork pinned to HISTORICAL block heights around a
+  known incident and replays it tick-by-tick via read-only `cast call --block <N>`, reporting (a) the PAGE
+  at/before the incident block with its lead time and (b) a quiet pre-incident window's false-positive
+  count/rate; it reuses the watcher's read path + verdict tokens (`violated`/`margin`/`ok`/`no-read`) and the
+  fuse-to-worst SET rule byte-for-byte, accepts the same watch-spec `run-live-watch.sh` emits (`--spec`) or
+  the single-invariant flags, and degrades gracefully (clear message, exit 4, no crash) without an archive
+  node. `monitor/scorecard.md` is the credibility-artifact template (incident, lead time, which watcher
+  fired, quiet-window false-positive rate), the monitoring peer of `evm-scorecard.md`. `monitor/docs/runbook.md`
+  is the operator runbook: onboard a target (`run-live-watch.sh` → watch-spec → tiers → start → shadow→propose
+  promotion → backtest), read an alert (verdict meanings, severity routing, ack/escalation via `notify.sh`
+  #1094), respond (triage, when to page the client, dead-man's switch, postmortem template), and scope & SLA
+  (non-custodial read/alert/report boundary, response-time tiers, supported + out-of-scope). NON-custodial /
+  read-only throughout (`cast call` only — never a signed transaction, never fund access).
 - **monitor: governance / upgrade + liquidity / flow / pause-state watchers** (#1095, #1096). Four more
   read-only, tier-gated watcher agents feed the monitor coordinator's `monitor:signal:*` blackboard, each with
   the same ADR-0001 emission pattern as `invariant-watcher` / `oracle-watcher` (one `tier()` call per tick,
