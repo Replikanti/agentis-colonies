@@ -114,6 +114,34 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   `tools/test-invariant-prover-repair-loop.sh`, pins the loop (grep over the `.ag`, no LLM/forge).
 
 ### Added
+- **`monitor` colony — continuous protocol monitoring with confidence-tiered alerting** (#1085). A new colony
+  alongside `auditor` that continuously WATCHES a target EVM protocol and emits reasoned, high-signal anomaly
+  alerts on the bus (`monitor:alert`). NON-custodial / read-only: every watcher only READS chain state via
+  `cast`/RPC over `exec sh` (each dynamic value `shell_escape()`d) — no agent signs a transaction or touches
+  funds. The hot-path verdicts are FACTS (an on-chain read + a deterministic comparison), never an LLM opinion.
+  This PR ships the lint-clean foundation: the colony scaffold (`monitor/{agents,config,scripts,README.md}`,
+  `[forge] type = "none"` per ADR-0003), two highest-value watchers, the fusion coordinator, and a webhook sink.
+  - `monitor/agents/invariant-watcher.ag` — evaluates a derived protocol invariant (e.g. `totalSupply() <=
+    totalAssets()`) against current on-chain state and flags a violation or a thin margin-to-violation. The
+    invariant sides, target address, relation, and margin band come from env/config (getenv).
+  - `monitor/agents/oracle-watcher.ag` — watches a price feed for deviation (vs a learned baseline) / staleness
+    (feed age) / out-of-bounds price, same on-chain read pattern.
+  - `monitor/agents/coordinator.ag` — fuses the two watcher signals off the shared `monitor:signal:*` blackboard
+    (single-assignment helpers, no loops), dedups a persistent condition against the last emitted signature,
+    decides fused severity, and emits one consolidated `monitor:alert`.
+  - **Confidence-tiered alerting (ADR-0001) as the false-positive control.** Every agent makes ONE `tier()` call
+    per tick and branches once; the tier gates EMISSION only (the verdict is identical at every tier): `shadow`/
+    `dormant` observe + learn a baseline (no emit), `propose` emits a DRAFT alert (low severity), `review-gated`/
+    `autonomous` emit a DIRECT page (high severity). `cb <N>;` matches `cb_budget`, and every tick ends with
+    `memo_write("<agent>:last_check", now)`.
+  - `monitor/scripts/start-colony.sh` — ADR-0003-conformant daemon launcher (symlink-safe `$0`, sources
+    `parse-toml.sh`, exports the `MONITOR_*` env contract, `--restart-agent`, allowlisted daemon flags).
+  - `monitor/scripts/notify.sh` — a thin POSIX-sh / dash-safe notifier that POSTs an alert payload to a
+    Discord/Slack webhook when `MONITOR_WEBHOOK_URL` is set (no secret committed; read-only); prints to stdout
+    as a no-op sink when unset.
+  - `monitor/README.md` — agent table + mermaid diagram + the env contract + the tier semantics.
+  Follow-ups (out of scope here): the liquidity / governance / flow watchers, the live-watch runtime (#1086),
+  and a dashboard view. The colony NEVER signs, NEVER touches funds, and NEVER posts without a configured sink.
 - **invariant-prover cross-contract multi-deploy harnesses (composable-fresh)** (#1075, epic #1041). The
   FRESH-DEPLOY real-target path deployed ONE target (single-contract) + mocked its externals, so the
   highest-value stablecoin bugs — which are CROSS-contract (oracle manipulation → manager mispricing; reward

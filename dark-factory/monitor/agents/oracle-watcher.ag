@@ -1,0 +1,259 @@
+// oracle-watcher.ag — Monitor colony (Dark Factory federation).
+//
+// Watches a protocol's PRICE FEED for the three classic oracle-risk signals:
+//   * DEVIATION — the reported price has moved more than DEV_BP basis points
+//     from the last observed baseline (a flash move / manipulation tell);
+//   * STALENESS — the feed's updatedAt timestamp is older than MAX_AGE seconds
+//     (a frozen feed the protocol may still be trusting);
+//   * BOUNDS    — the price is outside an operator-set [MIN, MAX] sanity band.
+// NON-custodial / read-only: it only READS the feed via `cast`/RPC over
+// `exec sh`. It never signs a transaction and never touches funds.
+//
+// Same on-chain read pattern + tier-gated emission as invariant-watcher.ag. The
+// signal is a FACT (an on-chain read + a deterministic comparison), never an LLM
+// opinion. Emission is gated PURELY on the ADR-0001 tier of this agent:
+//   shadow / dormant -> observe + learn a baseline (record the price), NO emit;
+//   propose          -> emit a DRAFT `monitor:alert` (low severity);
+//   review-gated /    -> emit a DIRECT-page `monitor:alert` (high severity).
+//   autonomous
+// One tier() call per tick, branch once, fall through to shadow/dormant.
+//
+// Env contract (all read via getenv; exported by scripts/start-colony.sh; add
+// each to exec.env_passthrough in .agentis/config):
+//   MONITOR_CAST          path to the `cast` binary; "" => no reader, observe only.
+//   MONITOR_RPC_URL       the chain RPC endpoint (read-only).
+//   MONITOR_ORACLE        the price-feed contract address (0x...).
+//   MONITOR_ORACLE_PRICE_SIG the `cast call` signature returning the price
+//                         (e.g. "latestAnswer()"); default "latestAnswer()".
+//                         NOTE: the reader parses an UNSIGNED integer — a signed
+//                         feed (int256) returning a NEGATIVE value reads as
+//                         "no-read" (observed, never a false alert). Signed-feed
+//                         support is a follow-up (live-watch #1086).
+//   MONITOR_ORACLE_TS_SIG the signature returning the feed's last-update unix ts
+//                         (e.g. "latestTimestamp()"); "" => skip the staleness check.
+//   MONITOR_ORACLE_MAX_AGE max feed age in seconds before STALENESS flags; "" => 0
+//                         (skip the staleness check).
+//   MONITOR_ORACLE_DEV_BP deviation band in basis points vs the last baseline;
+//                         "" => 0 (skip the deviation check).
+//   MONITOR_ORACLE_MIN    lower sanity bound on the price; "" => no lower bound.
+//   MONITOR_ORACLE_MAX    upper sanity bound on the price; "" => no upper bound.
+//   MONITOR_ORACLE_LABEL  a human label for the feed (for the alert body).
+// Emits: "monitor:alert" (the colony bus contract).
+
+cb 90000;
+
+// --- diagnostic confidence read (logging only; tier() gates behaviour) ---------
+fn get_confidence() -> float {
+    let raw = recall_latest("oracle-watcher:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    }
+    return 0.0;
+}
+
+// --- env defaults --------------------------------------------------------------
+fn price_sig_or_default(raw: string) -> string {
+    if len(raw) == 0 { return "latestAnswer()"; }
+    return raw;
+}
+
+fn label_or(raw: string, addr: string) -> string {
+    if len(raw) > 0 { return raw; }
+    return addr;
+}
+
+// --- read a single uint return from an on-chain view via cast call -------------
+// EVERY dynamic value (cast path, rpc url, feed address, function signature) is
+// shell_escape()d — all are operator/coordinator-supplied facts flowing into a
+// shell. `set +e` + `|| true` so a transient RPC failure returns "" (no reading
+// -> no false flag) instead of aborting the tick. Returns the decimal string,
+// or "" on any failure / empty reader.
+fn read_uint(castBin: string, rpc: string, addr: string, sig: string) -> string {
+    if len(castBin) == 0 { return ""; }
+    if len(rpc) == 0 { return ""; }
+    if len(addr) == 0 { return ""; }
+    if len(sig) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    let out = exec sh "set +e; " + shell_escape(castBin) + " call --rpc-url " + shell_escape(rpc)
+            + " " + shell_escape(addr) + " " + shell_escape(sig)
+            + " 2>/dev/null | " + shell_escape(castBin) + " --to-dec 2>/dev/null || true";
+    return out;
+}
+
+fn first_token(s: string) -> string {
+    let nl = index_of(s, "\n");
+    if nl < 0 { return s; }
+    return substring(s, 0, nl);
+}
+
+// Parse a decimal reading to an int; empty / non-numeric -> -1 (the "no reading"
+// sentinel, distinct from a legitimate 0). parse_int is total.
+fn reading_to_int(s: string) -> int {
+    let t = first_token(s);
+    if len(t) == 0 { return -1; }
+    if len(regex_find_all("[^0-9]", t)) > 0 { return -1; }
+    return parse_int(t);
+}
+
+// Optional integer env fact: "" / non-numeric -> -1 (the "unset" sentinel).
+fn opt_int(raw: string) -> int {
+    if len(raw) == 0 { return -1; }
+    if len(regex_find_all("[^0-9]", raw)) > 0 { return -1; }
+    return parse_int(raw);
+}
+
+// --- deterministic deviation / staleness / bounds verdicts (FACTS) -------------
+// Deviation in basis points of `price` vs `base`; -1 when no usable baseline.
+fn deviation_bp(price: int, base: int) -> int {
+    if base <= 0 { return -1; }
+    let diff = if price >= base { price - base } else { base - price };
+    return (diff * 10000) / base;
+}
+
+fn deviates(price: int, base: int, devBp: int) -> bool {
+    if devBp <= 0 { return false; }
+    let d = deviation_bp(price, base);
+    if d < 0 { return false; }
+    return d > devBp;
+}
+
+fn is_stale(updatedAt: int, nowSec: int, maxAge: int) -> bool {
+    if maxAge <= 0 { return false; }
+    if updatedAt < 0 { return false; }
+    if updatedAt > nowSec { return false; }
+    return (nowSec - updatedAt) > maxAge;
+}
+
+fn out_of_bounds(price: int, lo: int, hi: int) -> bool {
+    if lo >= 0 {
+        if price < lo { return true; }
+    }
+    if hi >= 0 {
+        if price > hi { return true; }
+    }
+    return false;
+}
+
+// Fuse the three checks into ONE verdict token. Precedence: a price that could
+// not be read is "no-read"; then bounds (hard sanity), staleness, deviation; a
+// clean read is "ok".
+fn verdict_of(price: int, base: int, devBp: int, updatedAt: int, nowSec: int, maxAge: int, lo: int, hi: int) -> string {
+    if price < 0 { return "no-read"; }
+    if out_of_bounds(price, lo, hi) { return "bounds"; }
+    if is_stale(updatedAt, nowSec, maxAge) { return "stale"; }
+    if deviates(price, base, devBp) { return "deviation"; }
+    return "ok";
+}
+
+// learn() outcome enum {success,failure,partial,timeout,error}. A clean read is a
+// healthy observation (success); a bounds break or a stale feed is the anomaly
+// the watcher exists to catch (failure); a deviation is partial (moved, not yet
+// proven bad); a missing read is error.
+fn outcome_of(verdict: string) -> string {
+    if verdict == "ok" { return "success"; }
+    if verdict == "bounds" { return "failure"; }
+    if verdict == "stale" { return "failure"; }
+    if verdict == "deviation" { return "partial"; }
+    return "error";
+}
+
+fn is_anomaly(verdict: string) -> bool {
+    if verdict == "bounds" { return true; }
+    if verdict == "stale" { return true; }
+    if verdict == "deviation" { return true; }
+    return false;
+}
+
+// A compact, deterministic alert payload (JSON). All fields are facts the watcher
+// computed; none is LLM text. `sev` is set by the tier branch (draft vs page).
+fn alert_payload(label: string, verdict: string, price: int, base: int, addr: string, sev: string) -> string {
+    return "{\"watcher\":\"oracle\",\"feed\":\"" + label + "\",\"verdict\":\"" + verdict
+         + "\",\"price\":" + to_string(price) + ",\"baseline\":" + to_string(base)
+         + ",\"oracle\":\"" + addr + "\",\"severity\":\"" + sev + "\"}";
+}
+
+fn tick(reason: string) -> void {
+    let now = to_string(now_ms());
+    // Heartbeat first (dashboard memo-freshness probe) even on an early return.
+    memo_write("oracle-watcher:last_check", now);
+
+    let castBin = getenv("MONITOR_CAST");
+    let rpc = getenv("MONITOR_RPC_URL");
+    let addr = getenv("MONITOR_ORACLE");
+    let priceSig = price_sig_or_default(getenv("MONITOR_ORACLE_PRICE_SIG"));
+    let tsSig = getenv("MONITOR_ORACLE_TS_SIG");
+    let maxAge = opt_int(getenv("MONITOR_ORACLE_MAX_AGE"));
+    let devBp = opt_int(getenv("MONITOR_ORACLE_DEV_BP"));
+    let lo = opt_int(getenv("MONITOR_ORACLE_MIN"));
+    let hi = opt_int(getenv("MONITOR_ORACLE_MAX"));
+    let label = label_or(getenv("MONITOR_ORACLE_LABEL"), addr);
+
+    // Read the current price + (optionally) the feed's last-update timestamp.
+    let price = reading_to_int(read_uint(castBin, rpc, addr, priceSig));
+    let updatedAt = if len(tsSig) > 0 { reading_to_int(read_uint(castBin, rpc, addr, tsSig)) } else { -1 };
+    // The DEVIATION baseline is the last price this watcher observed (durable
+    // memo). On the first read there is no baseline (-1) -> deviation is skipped
+    // this tick; the current price becomes the baseline for next time.
+    let base = opt_int(recall_latest("oracle-watcher:baseline:" + addr));
+    let nowSec = now_ms() / 1000;
+
+    let verdict = verdict_of(price, base, devBp, updatedAt, nowSec, maxAge, lo, hi);
+    let outcome = outcome_of(verdict);
+
+    print("oracle-watcher: " + label + " price=" + to_string(price) + " base=" + to_string(base)
+        + " -> " + verdict + " (conf=" + to_string(get_confidence()) + ")");
+
+    // Update the deviation baseline to the latest GOOD read so the next tick
+    // compares against a recent price (a no-read leaves the old baseline intact).
+    if price >= 0 {
+        memo_write("oracle-watcher:baseline:" + addr, to_string(price));
+    };
+
+    let key = label + ":" + addr;
+    let desc = "oracle feed " + label + " price=" + to_string(price) + " -> " + verdict;
+    let anomaly = is_anomaly(verdict);
+
+    // Post this watcher's latest verdict to the shared blackboard memo the
+    // coordinator reads each tick to fuse + dedup signals (a memo write — allowed
+    // at every tier, including shadow). Severity is re-decided by the coordinator.
+    memo_write("monitor:signal:oracle", alert_payload(label, verdict, price, base, addr, "info"));
+
+    // ONE tier() call, branch ONCE (ADR-0001). The tier gates EMISSION only.
+    // (.ag has no `else if`; the tiers nest as `else { if ... { } else { } }`.)
+    let my_tier = tier("oracle-watcher");
+    if my_tier == "autonomous" {
+        // Proven reliable -> a DIRECT page on a real anomaly (high severity).
+        if anomaly {
+            emit("monitor:alert", alert_payload(label, verdict, price, base, addr, "high"));
+            learn("oracle-watch", key, desc, outcome, [verdict, outcome, "acted"]);
+        } else {
+            learn("oracle-watch", key, desc, outcome, [verdict, outcome, "observed"]);
+        };
+    } else {
+        if my_tier == "review-gated" {
+            // Trusted to page under a review gate -> a DIRECT page (high severity).
+            if anomaly {
+                emit("monitor:alert", alert_payload(label, verdict, price, base, addr, "high"));
+                learn("oracle-watch", key, desc, outcome, [verdict, outcome, "review-gated"]);
+            } else {
+                learn("oracle-watch", key, desc, outcome, [verdict, outcome, "observed"]);
+            };
+        } else {
+            if my_tier == "propose" {
+                // Enough signal to contribute -> a DRAFT alert (low severity).
+                if anomaly {
+                    emit("monitor:alert", alert_payload(label, verdict, price, base, addr, "low"));
+                    learn("oracle-watch", key, desc, outcome, [verdict, outcome, "emitted"]);
+                } else {
+                    learn("oracle-watch", key, desc, outcome, [verdict, outcome, "observed"]);
+                };
+            } else {
+                // shadow / dormant: learn the baseline ONLY — no emit, no write.
+                learn("oracle-watch", key, desc + " (baseline)", outcome, [verdict, outcome, "observed"]);
+                print("oracle-watcher: observing (tier: " + my_tier + ") — no emit");
+            };
+        };
+    };
+
+    memo_write("oracle-watcher:last_check", to_string(now_ms()));
+}

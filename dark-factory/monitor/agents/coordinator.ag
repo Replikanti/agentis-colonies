@@ -1,0 +1,211 @@
+// coordinator.ag — Monitor colony (Dark Factory federation).
+//
+// The fusion + dedup + severity-decision agent. The two watchers
+// (invariant-watcher, oracle-watcher) each post their latest verdict to a shared
+// blackboard memo (`monitor:signal:<watcher>`); each ALSO emits its own
+// per-watcher `monitor:alert`. This coordinator reads BOTH blackboard signals
+// every tick, FUSES them into one consolidated picture, DEDUPS against the last
+// consolidated signature it emitted (so a persistent condition pages once, not
+// every tick), DECIDES the fused severity, and emits ONE consolidated
+// `monitor:alert`. NON-custodial / read-only: it reads memos + emits on the bus
+// only — no signing, no fund access, no `exec sh`.
+//
+// Pattern (per dark-factory/auditor/agents/coordinator.ag): single-assignment
+// helpers (no `let` reassignment), reduce/recursion instead of loops. The fused
+// verdict is a deterministic function of the watchers' FACTS — never an LLM call.
+//
+// Emission is gated PURELY on the ADR-0001 tier of this agent:
+//   shadow / dormant -> observe + learn the fused picture, NO emit;
+//   propose          -> emit a DRAFT consolidated `monitor:alert` (low severity);
+//   review-gated /    -> emit a DIRECT-page consolidated `monitor:alert`.
+//   autonomous
+// One tier() call per tick, branch once, fall through to shadow/dormant.
+//
+// Reads (durable memos written by the watchers): monitor:signal:invariant,
+//   monitor:signal:oracle.
+// Emits: "monitor:alert" (the colony bus contract).
+
+cb 120000;
+
+// --- diagnostic confidence read (logging only; tier() gates behaviour) ---------
+fn get_confidence() -> float {
+    let raw = recall_latest("coordinator:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    }
+    return 0.0;
+}
+
+// --- read a watcher's blackboard signal + pull its verdict ---------------------
+// json_get on a miss returns Void -> to_string => "void"; collapse that to "".
+fn sanitize(s: string) -> string {
+    if s == "void" { return ""; }
+    return s;
+}
+
+// The verdict token a watcher last posted ("" when the watcher has not run yet).
+fn signal_verdict(sig: string) -> string {
+    if len(sig) == 0 { return ""; }
+    return sanitize(to_string(json_get(sig, "verdict")));
+}
+
+// Is a watcher verdict an ANOMALY worth fusing into an alert? "ok" / "no-read" /
+// "" (not run) are quiet. Everything else (violated / margin / bounds / stale /
+// deviation) is an anomalous signal.
+fn is_anomalous(verdict: string) -> bool {
+    if len(verdict) == 0 { return false; }
+    if verdict == "ok" { return false; }
+    if verdict == "no-read" { return false; }
+    return true;
+}
+
+// A signal's contribution to the fused SEVERITY SCORE. A hard violation/break
+// (invariant violated, oracle bounds/stale) is the highest-severity tell; a
+// margin / deviation is a softer warning. Scores accumulate across watchers so
+// two simultaneous anomalies fuse to a higher severity than either alone.
+fn severity_score(verdict: string) -> int {
+    if verdict == "violated" { return 3; }
+    if verdict == "bounds" { return 3; }
+    if verdict == "stale" { return 2; }
+    if verdict == "deviation" { return 1; }
+    if verdict == "margin" { return 1; }
+    return 0;
+}
+
+// Map a fused score to a severity token. 0 = no anomaly; 1-2 = warn; >=3 = page.
+fn severity_label(score: int) -> string {
+    if score >= 3 { return "high"; }
+    if score >= 1 { return "warn"; }
+    return "none";
+}
+
+// --- fused consolidated picture (single-assignment over the two signals) -------
+// The deterministic fused score = sum of the per-watcher severity contributions.
+fn fuse_score(invVerdict: string, oracleVerdict: string) -> int {
+    return severity_score(invVerdict) + severity_score(oracleVerdict);
+}
+
+// .ag has no short-circuit `&&` / `||` (single-assignment grammar), so the two
+// fused boolean predicates are expressed as explicit nested-if helpers.
+fn either_anomalous(invVerdict: string, oracleVerdict: string) -> bool {
+    if is_anomalous(invVerdict) { return true; }
+    if is_anomalous(oracleVerdict) { return true; }
+    return false;
+}
+
+fn anomaly_and_novel(anomaly: bool, novel: bool) -> bool {
+    if !anomaly { return false; }
+    return novel;
+}
+
+// A stable DEDUP SIGNATURE for the consolidated picture: the two watchers'
+// verdicts joined. The same pair of conditions yields the same signature, so a
+// persistent anomaly is emitted ONCE (until a verdict changes) rather than every
+// tick. Quiet ticks (no anomaly) produce the "quiet" signature.
+fn fused_signature(invVerdict: string, oracleVerdict: string, anomaly: bool) -> string {
+    if !anomaly { return "quiet"; }
+    let inv = if len(invVerdict) > 0 { invVerdict } else { "none" };
+    let orc = if len(oracleVerdict) > 0 { oracleVerdict } else { "none" };
+    return "inv=" + inv + ";oracle=" + orc;
+}
+
+// The consolidated alert payload (JSON). All fields are facts the coordinator
+// fused from the watchers; none is LLM text. `sev` is set per tier on emit.
+fn fused_payload(invVerdict: string, oracleVerdict: string, score: int, sig: string, sev: string) -> string {
+    let inv = if len(invVerdict) > 0 { invVerdict } else { "none" };
+    let orc = if len(oracleVerdict) > 0 { oracleVerdict } else { "none" };
+    return "{\"watcher\":\"coordinator\",\"kind\":\"fused\",\"invariant\":\"" + inv
+         + "\",\"oracle\":\"" + orc + "\",\"score\":" + to_string(score)
+         + ",\"signature\":\"" + sig + "\",\"severity\":\"" + sev + "\"}";
+}
+
+// learn() outcome enum {success,failure,partial,timeout,error}. A high-severity
+// fused page is the anomaly the colony exists to surface (failure); a warn-level
+// fusion is partial; a quiet tick is a healthy observation (success).
+fn outcome_of(sevLabel: string) -> string {
+    if sevLabel == "high" { return "failure"; }
+    if sevLabel == "warn" { return "partial"; }
+    return "success";
+}
+
+fn tick(reason: string) -> void {
+    let now = to_string(now_ms());
+    // Heartbeat first (dashboard memo-freshness probe) even on an early return.
+    memo_write("coordinator:last_check", now);
+
+    // Read the two watchers' latest blackboard signals + pull their verdicts.
+    let invSig = recall_latest("monitor:signal:invariant");
+    let oracleSig = recall_latest("monitor:signal:oracle");
+    let invVerdict = signal_verdict(invSig);
+    let oracleVerdict = signal_verdict(oracleSig);
+
+    // FUSE: deterministic score + anomaly flag + severity label + dedup signature.
+    let anomaly = either_anomalous(invVerdict, oracleVerdict);
+    let score = fuse_score(invVerdict, oracleVerdict);
+    let sevLabel = severity_label(score);
+    let sig = fused_signature(invVerdict, oracleVerdict, anomaly);
+    let outcome = outcome_of(sevLabel);
+
+    // DEDUP: only a NEW signature (vs the last one we acted on) is novel; a
+    // persistent condition holds the same signature and is not re-paged.
+    let lastSig = recall_latest("coordinator:last_signature");
+    let novel = sig != lastSig;
+
+    print("coordinator: fuse inv=" + invVerdict + " oracle=" + oracleVerdict
+        + " -> score=" + to_string(score) + " sev=" + sevLabel + " novel=" + to_string(novel)
+        + " (conf=" + to_string(get_confidence()) + ")");
+
+    let key = "fused:" + sig;
+    let desc = "fused inv=" + invVerdict + " oracle=" + oracleVerdict + " score=" + to_string(score);
+    // Worth emitting only when there is an anomaly AND it is a NEW signature.
+    let emitWorthy = anomaly_and_novel(anomaly, novel);
+
+    // ONE tier() call, branch ONCE (ADR-0001). The tier gates EMISSION only; the
+    // fused verdict above is unchanged by tier. shadow/dormant fall through.
+    // (.ag has no `else if`; the tiers nest as `else { if ... { } else { } }`.)
+    let my_tier = tier("coordinator");
+    if my_tier == "autonomous" {
+        // Proven reliable -> a DIRECT consolidated page on a new anomaly.
+        if emitWorthy {
+            emit("monitor:alert", fused_payload(invVerdict, oracleVerdict, score, sig, sevLabel));
+            learn("monitor-fuse", key, desc, outcome, [sevLabel, outcome, "acted"]);
+        } else {
+            learn("monitor-fuse", key, desc, outcome, [sevLabel, outcome, "observed"]);
+        };
+    } else {
+        if my_tier == "review-gated" {
+            // Trusted to page under a review gate -> a DIRECT consolidated page.
+            if emitWorthy {
+                emit("monitor:alert", fused_payload(invVerdict, oracleVerdict, score, sig, sevLabel));
+                learn("monitor-fuse", key, desc, outcome, [sevLabel, outcome, "review-gated"]);
+            } else {
+                learn("monitor-fuse", key, desc, outcome, [sevLabel, outcome, "observed"]);
+            };
+        } else {
+            if my_tier == "propose" {
+                // Enough signal to contribute -> a DRAFT consolidated alert (low).
+                if emitWorthy {
+                    emit("monitor:alert", fused_payload(invVerdict, oracleVerdict, score, sig, "low"));
+                    learn("monitor-fuse", key, desc, outcome, [sevLabel, outcome, "emitted"]);
+                } else {
+                    learn("monitor-fuse", key, desc, outcome, [sevLabel, outcome, "observed"]);
+                };
+            } else {
+                // shadow / dormant: learn the fused picture ONLY — no emit.
+                learn("monitor-fuse", key, desc + " (baseline)", outcome, [sevLabel, outcome, "observed"]);
+                print("coordinator: observing (tier: " + my_tier + ") — no emit");
+            };
+        };
+    };
+
+    // Record the signature we just fused so the next tick dedups against it (a
+    // memo write — allowed at every tier). Written EVERY tick, including quiet
+    // ones: a quiet tick stores the "quiet" signature, so a genuine anomaly that
+    // RECURS after a quiet gap is novel again and re-pages, while a persistent,
+    // unbroken condition keeps the same signature and pages exactly once. (Guarding
+    // this write on `anomaly` would pin last_signature to the first anomaly and
+    // silently suppress an identical recurrence after a quiet gap — QA #1087.)
+    memo_write("coordinator:last_signature", sig);
+
+    memo_write("coordinator:last_check", to_string(now_ms()));
+}
