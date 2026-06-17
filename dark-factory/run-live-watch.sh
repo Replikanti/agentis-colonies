@@ -211,7 +211,10 @@ emit_fingerprint() {
         _code="$("$CAST" code --rpc-url "$RPC_URL" "$ADDRESS" 2>/dev/null)"
         _impl="$("$CAST" storage --rpc-url "$RPC_URL" "$ADDRESS" "$IMPL_SLOT" 2>/dev/null)"
         set -e
-        _code="$(printf '%s' "$_code" | awk 'NR==1{print $1}')"
+        # lowercase BOTH (symmetric with check-drift.sh's cast-read.sh re-read, which
+        # lowercases every token) so a `cast` that emits mixed-case bytecode can't
+        # produce a false `spec-stale` drift on an unchanged target — QA #1108.
+        _code="$(printf '%s' "$_code" | awk 'NR==1{print $1}' | tr '[:upper:]' '[:lower:]')"
         _impl="$(printf '%s' "$_impl" | awk 'NR==1{print $1}' | tr '[:upper:]' '[:lower:]')"
         if [ -n "$_code" ] && [ "$_code" != "0x" ]; then
             if command -v sha256sum >/dev/null 2>&1; then
