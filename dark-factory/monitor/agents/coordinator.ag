@@ -198,12 +198,14 @@ fn tick(reason: string) -> void {
         };
     };
 
-    // Record the signature we just acted on so the next tick dedups against it
-    // (a memo write — allowed at every tier). Only advance it on an anomaly so a
-    // return to quiet re-arms the next genuine anomaly for emission.
-    if anomaly {
-        memo_write("coordinator:last_signature", sig);
-    };
+    // Record the signature we just fused so the next tick dedups against it (a
+    // memo write — allowed at every tier). Written EVERY tick, including quiet
+    // ones: a quiet tick stores the "quiet" signature, so a genuine anomaly that
+    // RECURS after a quiet gap is novel again and re-pages, while a persistent,
+    // unbroken condition keeps the same signature and pages exactly once. (Guarding
+    // this write on `anomaly` would pin last_signature to the first anomaly and
+    // silently suppress an identical recurrence after a quiet gap — QA #1087.)
+    memo_write("coordinator:last_signature", sig);
 
     memo_write("coordinator:last_check", to_string(now_ms()));
 }

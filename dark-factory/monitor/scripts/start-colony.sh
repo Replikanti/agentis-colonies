@@ -12,10 +12,10 @@
 # transaction or touches funds.
 #
 # ADR-0003 conformance: --restart-agent (#257) respawns one agent with the full
-# colony env, skips memo seeding + log truncation. Exit codes: 0 ok, 2 unknown
-# flag / missing arg, 3 unknown agent, 4 daemon launch failure. On success of a
-# --restart-agent run, prints exactly one line `started <agent> pid=<n>
-# tick=<ms>` for the dashboard's /restart endpoint to parse.
+# colony env, skips memo seeding + log truncation. Exit codes: 0 ok, 1 agentis
+# not found, 2 unknown flag / missing arg, 3 unknown agent, 4 daemon launch
+# failure. On success of a --restart-agent run, prints exactly one line
+# `started <agent> pid=<n> tick=<ms>` for the dashboard's /restart endpoint to parse.
 #
 # Monitor inputs are passed via the environment (all optional; see
 # config/colony.example.toml [monitor] and the colony README). With no

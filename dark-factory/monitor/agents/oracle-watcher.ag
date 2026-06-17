@@ -25,6 +25,10 @@
 //   MONITOR_ORACLE        the price-feed contract address (0x...).
 //   MONITOR_ORACLE_PRICE_SIG the `cast call` signature returning the price
 //                         (e.g. "latestAnswer()"); default "latestAnswer()".
+//                         NOTE: the reader parses an UNSIGNED integer — a signed
+//                         feed (int256) returning a NEGATIVE value reads as
+//                         "no-read" (observed, never a false alert). Signed-feed
+//                         support is a follow-up (live-watch #1086).
 //   MONITOR_ORACLE_TS_SIG the signature returning the feed's last-update unix ts
 //                         (e.g. "latestTimestamp()"); "" => skip the staleness check.
 //   MONITOR_ORACLE_MAX_AGE max feed age in seconds before STALENESS flags; "" => 0
