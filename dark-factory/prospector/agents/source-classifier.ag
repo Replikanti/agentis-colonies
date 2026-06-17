@@ -1,0 +1,414 @@
+// source-classifier.ag — Prospector colony (Dark Factory federation).
+//
+// For each candidate on the `prospector:candidates` blackboard, READS the
+// candidate's verified source / ABI (the contract's function-signature surface)
+// and CLASSIFIES whether it exposes a DeFi VALUE-INVARIANT family worth
+// monitoring — lending / vault-4626 / AMM / stablecoin / perps / staking /
+// bridge. The verdict is a MONITORABILITY signal: a verified-source contract
+// whose surface matches a known value-invariant family is a candidate the
+// `monitor` colony can stand up derived invariants on; an unverified or
+// invariant-less contract is not.
+//
+// NON-custodial / read-only: it only READS the verified-source surface via a
+// reader command over `exec sh` (a keyless explorer/Sourcify ABI fetch, or
+// `cast interface`). EVERY dynamic value is shell_escape()d. It never signs a
+// transaction and never touches funds. The classification is a deterministic
+// match over the read signature surface — never an LLM opinion.
+//
+// Mirrors the monitor watchers' read pattern (`read_uint` over `exec sh`,
+// degrade-safe when the reader is unconfigured) and dark-factory's
+// source-classification heuristics (recon-from-address.sh fetches the verified
+// ABI keyless from Sourcify; the bug-taxonomy's DeFi value families).
+//
+// Emission is gated PURELY on the ADR-0001 tier of this agent:
+//   shadow / dormant -> classify + learn the verdict, NO emit;
+//   propose          -> + emit a DRAFT `prospector:classified` signal (low);
+//   review-gated /    -> + emit a DIRECT `prospector:classified` signal.
+//   autonomous
+// One tier() call per tick, branch once, fall through to shadow/dormant. The
+// per-candidate verdict is posted to a blackboard memo
+// (`prospector:classified:<addr>`) at EVERY tier so the coordinator can fuse it.
+//
+// Env contract (read via getenv; exported by scripts/start-colony.sh; add each
+// to exec.env_passthrough in .agentis/config so the sandboxed `exec sh` reads it):
+//   PROSPECTOR_ABI_CMD  the reader command template that, given a candidate's
+//                       address + chain id, prints the contract's verified
+//                       function-signature surface (one signature per line, e.g.
+//                       `cast interface` output or a Sourcify ABI fetch). It is
+//                       run as `sh -c "<cmd>"` with PROSPECTOR_ADDR / PROSPECTOR_CHAIN
+//                       exported into its environment (NOT concatenated — the
+//                       address/chain reach the reader as env vars, never as
+//                       shell-interpolated text). "" => no reader; every
+//                       candidate classifies "no-read" (observed, never a false
+//                       verdict).
+// Reads (blackboard): prospector:candidates (the normalised candidate board).
+// Writes (blackboard): prospector:classified:<addr> (per-candidate verdict JSON).
+// Emits: "prospector:classified" (the colony bus contract).
+
+cb 120000;
+
+// Upper bound on how many candidates the classifier walks in one tick (the
+// bounded recursion's depth cap, since .ag has no loops). A curated candidate
+// list is small; 64 keeps the per-tick on-chain read cost bounded.
+fn board_max() -> int {
+    return 64;
+}
+
+// --- diagnostic confidence read (logging only; tier() gates behaviour) ---------
+fn get_confidence() -> float {
+    let raw = recall_latest("source-classifier:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    }
+    return 0.0;
+}
+
+// --- candidate-cell field extraction (`<address>|<chain>|<metadata>`) -----------
+fn cell_address(cell: string) -> string {
+    let bar = index_of(cell, "|");
+    if bar < 0 { return cell; }
+    return substring(cell, 0, bar);
+}
+
+fn cell_chain(cell: string) -> string {
+    let bar = index_of(cell, "|");
+    if bar < 0 { return ""; }
+    let rest = substring(cell, bar + 1, len(cell));
+    let bar2 = index_of(rest, "|");
+    if bar2 < 0 { return rest; }
+    return substring(rest, 0, bar2);
+}
+
+// JSON-string escape a free-text field (mirrors the monitor watchers' #1089
+// json_escape): backslash -> \\ and double-quote -> \" so an address (validated
+// upstream, but defensive here) cannot corrupt the verdict JSON.
+fn json_escape(s: string) -> string {
+    return reduce(regex_find_all("[\\s\\S]", s), |acc: string, c: string| -> string {
+        if c == "\\" { return acc + "\\\\"; }
+        if c == "\"" { return acc + "\\\""; }
+        return acc + c;
+    }, "");
+}
+
+// --- read the verified function-signature surface for one candidate -------------
+// The reader command (PROSPECTOR_ABI_CMD) is run as `sh -c "<cmd>"`; the
+// candidate's address + chain are passed via the ENVIRONMENT (PROSPECTOR_ADDR /
+// PROSPECTOR_CHAIN), exported INSIDE the sandbox by an `export` prefix — so the
+// untrusted-from-the-board address/chain are NEVER interpolated into the shell
+// text. The reader command template itself is operator-supplied (config), so it
+// is the only thing that flows into the shell, and it is shell_escape()d as the
+// argument to `sh -c`. `set +e` + `|| true` so a transient explorer failure
+// returns "" (no read -> no false verdict) instead of aborting the tick.
+fn read_surface(abiCmd: string, addr: string, chain: string) -> string {
+    if len(abiCmd) == 0 { return ""; }
+    if len(addr) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    let out = exec sh "set +e; export PROSPECTOR_ADDR=" + shell_escape(addr)
+            + "; export PROSPECTOR_CHAIN=" + shell_escape(chain)
+            + "; sh -c " + shell_escape(abiCmd) + " 2>/dev/null || true";
+    return out;
+}
+
+// Lowercase a string for a case-insensitive family match (the read surface uses
+// mixed-case ABI names like `totalAssets`). Per-char fold; .ag has no lower
+// builtin. Only ASCII letters are folded.
+fn to_lower(s: string) -> string {
+    return reduce(regex_find_all("[\\s\\S]", s), |acc: string, c: string| -> string {
+        return acc + lower_char(c);
+    }, "");
+}
+
+fn lower_char(c: string) -> string {
+    if c == "A" { return "a"; }
+    if c == "B" { return "b"; }
+    if c == "C" { return "c"; }
+    if c == "D" { return "d"; }
+    if c == "E" { return "e"; }
+    if c == "F" { return "f"; }
+    if c == "G" { return "g"; }
+    if c == "H" { return "h"; }
+    if c == "I" { return "i"; }
+    if c == "J" { return "j"; }
+    if c == "K" { return "k"; }
+    if c == "L" { return "l"; }
+    if c == "M" { return "m"; }
+    if c == "N" { return "n"; }
+    if c == "O" { return "o"; }
+    if c == "P" { return "p"; }
+    if c == "Q" { return "q"; }
+    if c == "R" { return "r"; }
+    if c == "S" { return "s"; }
+    if c == "T" { return "t"; }
+    if c == "U" { return "u"; }
+    if c == "V" { return "v"; }
+    if c == "W" { return "w"; }
+    if c == "X" { return "x"; }
+    if c == "Y" { return "y"; }
+    if c == "Z" { return "z"; }
+    return c;
+}
+
+// Does the (lowercased) surface contain `needle`? index_of is total.
+fn surface_has(surface: string, needle: string) -> bool {
+    return index_of(surface, needle) >= 0;
+}
+
+// --- DeFi value-invariant family classification (a FACT over the surface) -------
+// Each family is recognised by a small set of canonical view/action names that
+// imply a monitorable value-invariant. The match is deterministic over the read
+// signature surface — never an LLM call. The families track the DeFi value
+// classes dark-factory already reasons about (vault / lending / AMM / stablecoin
+// / perps / staking / bridge).
+//
+// vault-4626: an ERC-4626 tokenised vault exposes a solvency invariant
+// (totalAssets backing totalSupply / convertToAssets monotonicity).
+fn is_vault(surface: string) -> bool {
+    if surface_has(surface, "totalassets") { return true; }
+    if surface_has(surface, "converttoassets") { return true; }
+    if surface_has(surface, "converttoshares") { return true; }
+    return false;
+}
+
+// lending: a money-market exposes a collateralisation / solvency invariant.
+fn is_lending(surface: string) -> bool {
+    if surface_has(surface, "borrow") {
+        if surface_has(surface, "repay") { return true; }
+        if surface_has(surface, "liquidate") { return true; }
+    }
+    if surface_has(surface, "collateralfactor") { return true; }
+    if surface_has(surface, "borrowbalance") { return true; }
+    return false;
+}
+
+// amm: a constant-product / pool DEX exposes a reserve / k-invariant.
+fn is_amm(surface: string) -> bool {
+    if surface_has(surface, "getreserves") { return true; }
+    if surface_has(surface, "swap") {
+        if surface_has(surface, "addliquidity") { return true; }
+        if surface_has(surface, "mint") { return true; }
+    }
+    return false;
+}
+
+// stablecoin: a peg-bearing token exposes a backing / supply invariant.
+fn is_stablecoin(surface: string) -> bool {
+    if surface_has(surface, "totalsupply") {
+        if surface_has(surface, "mint") {
+            if surface_has(surface, "burn") { return true; }
+        }
+    }
+    return false;
+}
+
+// perps: a perpetuals / margin venue exposes a position-solvency invariant.
+fn is_perps(surface: string) -> bool {
+    if surface_has(surface, "openposition") { return true; }
+    if surface_has(surface, "fundingrate") { return true; }
+    if surface_has(surface, "liquidateposition") { return true; }
+    return false;
+}
+
+// staking: a staking pool exposes a staked-balance / reward-accounting invariant.
+fn is_staking(surface: string) -> bool {
+    if surface_has(surface, "stake") {
+        if surface_has(surface, "unstake") { return true; }
+        if surface_has(surface, "withdraw") { return true; }
+    }
+    if surface_has(surface, "rewardpertoken") { return true; }
+    return false;
+}
+
+// bridge: a cross-chain bridge exposes a locked-vs-minted conservation invariant.
+fn is_bridge(surface: string) -> bool {
+    if surface_has(surface, "deposit") {
+        if surface_has(surface, "relaytokens") { return true; }
+        if surface_has(surface, "claimwithdrawal") { return true; }
+    }
+    if surface_has(surface, "bridgetoken") { return true; }
+    return false;
+}
+
+// The FAMILY token a surface matches; "" when it matches no known family. First
+// match wins by a fixed family precedence (the families are largely disjoint by
+// signature; ties resolve deterministically).
+fn family_of(surface: string) -> string {
+    if is_vault(surface) { return "vault-4626"; }
+    if is_lending(surface) { return "lending"; }
+    if is_perps(surface) { return "perps"; }
+    if is_amm(surface) { return "amm"; }
+    if is_stablecoin(surface) { return "stablecoin"; }
+    if is_staking(surface) { return "staking"; }
+    if is_bridge(surface) { return "bridge"; }
+    return "";
+}
+
+// The MONITORABILITY verdict for a candidate:
+//   "no-read"    the reader produced no surface (unverified / unconfigured) —
+//                we cannot classify, so it is NOT a false verdict (observed);
+//   "no-invariant" the surface read but matched no value-invariant family —
+//                  not a monitoring target by this signal;
+//   "<family>"   the matched DeFi value-invariant family (monitorable).
+fn verdict_of(surface: string, family: string) -> string {
+    if len(surface) == 0 { return "no-read"; }
+    if len(family) == 0 { return "no-invariant"; }
+    return family;
+}
+
+// Does the verdict mark a monitorable target (a matched value-invariant family)?
+fn is_monitorable(verdict: string) -> bool {
+    if verdict == "no-read" { return false; }
+    if verdict == "no-invariant" { return false; }
+    return true;
+}
+
+// learn() outcome enum {success,failure,partial,timeout,error}. A matched family
+// is the signal the classifier exists to surface (success); a read-but-no-family
+// is a confirmed non-target (partial); a missing read is error.
+fn outcome_of(verdict: string) -> string {
+    if verdict == "no-read" { return "error"; }
+    if verdict == "no-invariant" { return "partial"; }
+    return "success";
+}
+
+// A compact, deterministic per-candidate verdict payload (JSON). All fields are
+// facts; none is LLM text. `sev` is set by the tier branch.
+fn verdict_payload(addr: string, chain: string, verdict: string, monitorable: bool, sev: string) -> string {
+    return "{\"agent\":\"source-classifier\",\"target\":\"" + json_escape(addr)
+         + "\",\"chain\":\"" + json_escape(chain) + "\",\"family\":\"" + verdict
+         + "\",\"monitorable\":" + to_string(monitorable) + ",\"severity\":\"" + sev + "\"}";
+}
+
+// Post one candidate's verdict to its per-candidate blackboard memo so the
+// coordinator can fuse it (a memo write — allowed at every tier). The address is
+// the validated `0x` + 40-hex key, a safe memo-key charset, so it needs no extra
+// sanitisation.
+fn post_verdict(addr: string, chain: string, verdict: string, monitorable: bool) -> void {
+    memo_write("prospector:classified:" + addr,
+        verdict_payload(addr, chain, verdict, monitorable, "info"));
+}
+
+// Classify one candidate cell LIVE: read its surface, lowercase it, match a
+// family, decide the verdict, and post the per-candidate signal. Returns 1 when
+// the candidate is monitorable, 0 otherwise (for the running count).
+fn classify_cell(abiCmd: string, cell: string) -> int {
+    let addr = cell_address(cell);
+    let chain = cell_chain(cell);
+    let surface = to_lower(read_surface(abiCmd, addr, chain));
+    let family = family_of(surface);
+    let verdict = verdict_of(surface, family);
+    let monitorable = is_monitorable(verdict);
+    let _sig = post_verdict(addr, chain, verdict, monitorable);
+    print("source-classifier: " + addr + " (chain " + chain + ") -> " + verdict);
+    if monitorable { return 1; }
+    return 0;
+}
+
+// The i-th non-empty line of a newline-joined board; "" when out of range. The
+// board is split + folded (.ag has no list indexing), picking the line whose
+// position equals `i`. Total on every failure mode.
+fn nth_cell(lines: list<string>, i: int) -> string {
+    return reduce_indexed_pick(lines, i);
+}
+
+// Fold the split lines, tracking the running NON-EMPTY position; return the
+// cell at non-empty position `target` (skipping blank segments regex_split may
+// leave). Packs (pos, found) into a "pos|found" string accumulator so the
+// single-assignment fold carries both without a struct (unsupported in .ag).
+fn reduce_indexed_pick(lines: list<string>, target: int) -> string {
+    let acc = reduce(lines, |st: string, cell: string| -> string {
+        let pos = pick_pos(st);
+        let found = pick_found(st);
+        if len(found) > 0 { return st; }
+        if len(cell) == 0 { return st; }
+        if pos == target { return to_string(pos + 1) + "|" + cell; }
+        return to_string(pos + 1) + "|";
+    }, "0|");
+    return pick_found(acc);
+}
+
+// The position field (before the first `|`) of the pick accumulator.
+fn pick_pos(st: string) -> int {
+    let bar = index_of(st, "|");
+    if bar < 0 { return 0; }
+    return parse_int(substring(st, 0, bar));
+}
+
+// The found-cell field (after the first `|`) of the pick accumulator; "" until
+// the target position is reached.
+fn pick_found(st: string) -> string {
+    let bar = index_of(st, "|");
+    if bar < 0 { return ""; }
+    return substring(st, bar + 1, len(st));
+}
+
+// Count the non-empty cells on the board (for the bounded-recursion length).
+fn count_cells(lines: list<string>) -> int {
+    return reduce(lines, |acc: int, cell: string| -> int {
+        if len(cell) == 0 { return acc; }
+        return acc + 1;
+    }, 0);
+}
+
+// BOUNDED RECURSION over the candidate board (single-assignment .ag has no
+// while/for): at each non-empty cell up to the board_max() cap, classify the
+// candidate LIVE, post its per-candidate signal, and count the monitorable
+// matches. Stops at the cap or when the board is exhausted.
+fn classify_board(abiCmd: string, lines: list<string>, i: int, total: int, remaining: int, acc: int) -> int {
+    if remaining <= 0 { return acc; }
+    if i >= total { return acc; }
+    let cell = nth_cell(lines, i);
+    if len(cell) == 0 { return acc; }
+    let hit = classify_cell(abiCmd, cell);
+    return classify_board(abiCmd, lines, i + 1, total, remaining - 1, acc + hit);
+}
+
+fn tick(reason: string) -> void {
+    let now = to_string(now_ms());
+    // Heartbeat first (dashboard memo-freshness probe) even on an early return.
+    memo_write("source-classifier:last_check", now);
+
+    let abiCmd = getenv("PROSPECTOR_ABI_CMD");
+    let board = recall_latest("prospector:candidates");
+    let lines = regex_split("\n", board);
+    let total = count_cells(lines);
+    let monitorable = classify_board(abiCmd, lines, 0, total, board_max(), 0);
+
+    print("source-classifier: classified board -> " + to_string(monitorable)
+        + " monitorable (conf=" + to_string(get_confidence()) + ")");
+
+    // The tick-level verdict for the LEARN/EMIT layer: at least one monitorable
+    // candidate is the signal worth surfacing; none read / matched is quiet.
+    let verdict = if monitorable > 0 { "monitorable" } else { "none" };
+    let outcome = if monitorable > 0 { "success" } else { "partial" };
+    let key = "classified:" + to_string(monitorable);
+    let desc = "classified board -> " + to_string(monitorable) + " monitorable candidate(s)";
+
+    // A tick-level summary payload (count only — no untrusted free text).
+    let summary = "{\"agent\":\"source-classifier\",\"kind\":\"summary\",\"monitorable\":"
+        + to_string(monitorable) + ",\"verdict\":\"" + verdict + "\"}";
+
+    // ONE tier() call, branch ONCE (ADR-0001). The tier gates EMISSION only; the
+    // per-candidate verdicts above are posted at every tier. shadow/dormant fall
+    // through. (.ag has no `else if`; the tiers nest as `else { if ... } else {}`.)
+    let my_tier = tier("source-classifier");
+    if my_tier == "autonomous" {
+        emit("prospector:classified", summary);
+        learn("prospector-classify", key, desc, outcome, [verdict, outcome, "acted"]);
+    } else {
+        if my_tier == "review-gated" {
+            emit("prospector:classified", summary);
+            learn("prospector-classify", key, desc, outcome, [verdict, outcome, "review-gated"]);
+        } else {
+            if my_tier == "propose" {
+                emit("prospector:classified", summary);
+                learn("prospector-classify", key, desc, outcome, [verdict, outcome, "emitted"]);
+            } else {
+                // shadow / dormant: classify + learn ONLY — no emit.
+                learn("prospector-classify", key, desc + " (baseline)", outcome, [verdict, outcome, "observed"]);
+                print("source-classifier: observing (tier: " + my_tier + ") — no emit");
+            };
+        };
+    };
+
+    memo_write("source-classifier:last_check", to_string(now_ms()));
+}

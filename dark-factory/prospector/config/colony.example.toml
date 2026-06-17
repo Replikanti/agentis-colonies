@@ -1,0 +1,115 @@
+# Prospector Colony Configuration
+#
+# Part of the Dark Factory federation. The prospector colony QUALIFIES candidate
+# EVM protocols as MONITORING TARGETS by public on-chain/source signals: given a
+# list of candidate protocols, it decides which ones are worth standing up the
+# `monitor` colony on, and why. NON-custodial / read-only: every agent only READS
+# public source/ABI + on-chain state via `cast`/explorer over `exec sh`; no agent
+# signs a transaction or touches funds. Copy to colony.toml and edit for your
+# environment.
+
+[colony]
+name = "prospector"
+tick_interval_ms = 60000
+
+# dark-factory is a non-forge federation (ADR-0003). The prospector agents read
+# verified source/ABI + on-chain state through `cast`/explorer inside the sandbox
+# via `exec sh`; no agent calls a GitLab/GitHub forge API. `forge.type = "none"`
+# is the explicit non-forge marker recognised by colony-lint — no [forge.gitlab] /
+# [forge.github] sub-block is required. See ADR-0003 for the portability contract
+# and ADR-0002 for the forge-bound contract this opts out of.
+[forge]
+type = "none"
+
+[llm]
+# Only "backend" is read today. "cli" uses the agentis daemon default CLI
+# adapter. The agents' verdicts are deterministic source/on-chain reads (no LLM
+# call on the hot path); the backend is declared for schema conformance + future
+# reasoning extensions.
+backend = "cli"
+
+# Agent definitions. Each agent runs as a separate `agentis daemon` process,
+# launched by scripts/start-colony.sh with a per-agent tick interval. They
+# coordinate via durable memos (the `prospector:*` blackboard). cb_budget MUST
+# match the `cb <N>;` decl at the top of each .ag file.
+
+# Ingests the candidate protocol list from PROSPECTOR_CANDIDATES onto the
+# blackboard (prospector:candidates).
+[[agents]]
+name = "intake"
+source = "agents/intake.ag"
+cb_budget = 60000
+tick_interval_ms = 60000
+
+# Reads each candidate's verified source/ABI surface and classifies whether it
+# exposes a DeFi value-invariant family (the monitorability gate). Posts
+# prospector:classified:<addr>.
+[[agents]]
+name = "source-classifier"
+source = "agents/source-classifier.ag"
+cb_budget = 120000
+tick_interval_ms = 60000
+
+# Reads a read-only on-chain value proxy (balance / TVL) for each candidate and
+# decides whether it clears the value floor (the value-floor gate). Posts
+# prospector:value:<addr>.
+[[agents]]
+name = "value-scorer"
+source = "agents/value-scorer.ag"
+cb_budget = 120000
+tick_interval_ms = 60000
+
+# Fuses the hard gates (verified-source + DeFi-value-invariants + value-floor)
+# into a ranked qualification verdict and writes the prospector:qualified dossier
+# (per-target: qualifies yes/no, why, and the suggested invariant to watch — the
+# handoff to the monitor colony).
+[[agents]]
+name = "coordinator"
+source = "agents/coordinator.ag"
+cb_budget = 150000
+tick_interval_ms = 60000
+
+# Prospector environment contract (consumed by the agents via getenv; exported by
+# scripts/start-colony.sh). Operators export these before launching. The agents'
+# `exec sh` readers ALSO need each PROSPECTOR_* var (and the per-candidate
+# PROSPECTOR_ADDR / PROSPECTOR_CHAIN the classifier exports into its reader) added
+# to exec.env_passthrough in .agentis/config so the sandboxed shell can read them.
+# All agents degrade safely when their reader is unconfigured: with no
+# PROSPECTOR_ABI_CMD / PROSPECTOR_CAST a candidate classifies "no-read" and is not
+# qualified (never a false verdict).
+#
+# intake:
+#   PROSPECTOR_CANDIDATES   newline-joined `<address>|<chain>[|<metadata>]` list of
+#                           candidate protocols. address = 0x + 40 hex; chain = EVM
+#                           chain id (integer); metadata = OPTIONAL free-text label.
+#                           A malformed line is dropped. "" => no candidates.
+#
+# source-classifier:
+#   PROSPECTOR_ABI_CMD      a reader command template that, given a candidate's
+#                           address + chain (exported into its environment as
+#                           PROSPECTOR_ADDR / PROSPECTOR_CHAIN, NOT interpolated),
+#                           prints the contract's verified function-signature
+#                           surface (one signature per line — e.g. `cast interface`
+#                           output, or a keyless Sourcify ABI fetch like
+#                           recon-from-address.sh). "" => no reader (observe only).
+#
+# value-scorer:
+#   PROSPECTOR_CAST         absolute path to the `cast` binary (foundry); the read
+#                           tool. "" => no reader (observe only).
+#   PROSPECTOR_RPC_URL      the chain RPC endpoint cast reads from (read-only).
+#   PROSPECTOR_VALUE_SIG    the `cast call` signature returning the value proxy
+#                           (e.g. "totalAssets()" / "totalSupply()"). "" => use the
+#                           contract's native balance (`cast balance`) instead.
+#   PROSPECTOR_VALUE_FLOOR  the minimum value (decimal integer, in the read's own
+#                           units — wei for native balance, raw token units for a
+#                           view) a candidate must hold to clear the value floor.
+#                           "" => 0 (any non-zero read clears).
+#
+# READ-ONLY contract: the value-scorer uses ONLY `cast call` / `cast balance` —
+# never `cast send`, never a key, never a write-RPC.
+[prospector]
+abi_cmd = ""
+cast = ""
+rpc_url = ""
+value_sig = ""
+value_floor = ""

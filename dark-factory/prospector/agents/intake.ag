@@ -1,0 +1,255 @@
+// intake.ag — Prospector colony (Dark Factory federation).
+//
+// The candidate-ingest agent. It reads a newline-list of candidate EVM
+// protocols from the environment (PROSPECTOR_CANDIDATES) and NORMALISES them
+// onto a shared blackboard memo (`prospector:candidates`) that the classifier,
+// the value-scorer, and the coordinator all read. The colony's job is to QUALIFY
+// EVM protocols as MONITORING TARGETS by public on-chain/source signals — i.e.
+// decide which candidates are worth standing up the `monitor` colony on. This
+// agent is the front of that pipeline: it turns an operator-supplied candidate
+// list into a clean, deduped fact the downstream agents key on.
+//
+// NON-custodial / read-only: it reads an env var + writes a blackboard memo
+// only. No on-chain read, no signing, no `exec sh`, no fund access.
+//
+// Each candidate line is `<address>|<chain>[|<metadata>]`:
+//   address   the deployed contract address (0x + 40 hex);
+//   chain     the EVM chain id (integer, e.g. 1 = Ethereum mainnet);
+//   metadata  OPTIONAL free-text label (a protocol name / note). Ignored for
+//             keying; carried verbatim into the normalised board for context.
+// A malformed line (no address, bad chain) is dropped — intake never emits a
+// candidate the downstream readers cannot key on.
+//
+// Emission is gated PURELY on the ADR-0001 tier of this agent:
+//   shadow / dormant -> normalise + learn the candidate set, NO emit;
+//   propose          -> + emit a DRAFT `prospector:intake` summary on the bus;
+//   review-gated /    -> + emit a DIRECT `prospector:intake` summary.
+//   autonomous
+// One tier() call per tick, branch once, fall through to shadow/dormant. The
+// normalised board is written at EVERY tier (a memo write — the downstream
+// agents read it regardless of intake's own tier).
+//
+// Env contract (read via getenv; exported by scripts/start-colony.sh):
+//   PROSPECTOR_CANDIDATES  newline-joined `<address>|<chain>[|<metadata>]` list.
+//                          "" => no candidates this tick (the board is cleared).
+// Writes (durable blackboard memo): prospector:candidates  (normalised,
+//   newline-joined `<address>|<chain>|<metadata>` cells the downstream agents read).
+// Emits: "prospector:intake" (a count summary; the colony bus contract).
+
+cb 60000;
+
+// --- diagnostic confidence read (logging only; tier() gates behaviour) ---------
+fn get_confidence() -> float {
+    let raw = recall_latest("intake:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    }
+    return 0.0;
+}
+
+// --- candidate-line field extraction (`<address>|<chain>|<metadata>`) -----------
+// The address is the segment before the first `|`.
+fn line_address(line: string) -> string {
+    let bar = index_of(line, "|");
+    if bar < 0 { return line; }
+    return substring(line, 0, bar);
+}
+
+// The chain id is the segment between the first and second `|` (or after the
+// first `|` to end-of-line when there is no metadata).
+fn line_chain(line: string) -> string {
+    let bar = index_of(line, "|");
+    if bar < 0 { return ""; }
+    let rest = substring(line, bar + 1, len(line));
+    let bar2 = index_of(rest, "|");
+    if bar2 < 0 { return rest; }
+    return substring(rest, 0, bar2);
+}
+
+// The OPTIONAL metadata is everything after the second `|`; "" when absent.
+fn line_metadata(line: string) -> string {
+    let bar = index_of(line, "|");
+    if bar < 0 { return ""; }
+    let rest = substring(line, bar + 1, len(line));
+    let bar2 = index_of(rest, "|");
+    if bar2 < 0 { return ""; }
+    return substring(rest, bar2 + 1, len(rest));
+}
+
+// Strip surrounding whitespace from a field (the operator's list may be
+// loosely formatted). .ag has no trim builtin, so leading/trailing ASCII
+// whitespace is removed by scanning in from both ends; interior spaces are
+// PRESERVED (a metadata label may contain spaces) by keeping everything from
+// the first to the last non-space character.
+fn trim(s: string) -> string {
+    let n = len(s);
+    if n == 0 { return ""; }
+    let startIdx = first_nonws(s, 0, n);
+    if startIdx >= n { return ""; }
+    let endIdx = last_nonws(s, n - 1);
+    if endIdx < startIdx { return ""; }
+    return substring(s, startIdx, endIdx + 1);
+}
+
+// Index of the first non-whitespace char from `i` (bounded recursion; .ag has
+// no while/for). Returns n when the whole string is whitespace.
+fn first_nonws(s: string, i: int, n: int) -> int {
+    if i >= n { return n; }
+    let c = substring(s, i, i + 1);
+    if is_ws(c) { return first_nonws(s, i + 1, n); }
+    return i;
+}
+
+// Index of the last non-whitespace char scanning down from `i`; -1 when none.
+fn last_nonws(s: string, i: int) -> int {
+    if i < 0 { return -1; }
+    let c = substring(s, i, i + 1);
+    if is_ws(c) { return last_nonws(s, i - 1); }
+    return i;
+}
+
+fn is_ws(c: string) -> bool {
+    if c == " " { return true; }
+    if c == "\t" { return true; }
+    if c == "\r" { return true; }
+    if c == "\n" { return true; }
+    return false;
+}
+
+// --- candidate validation (a candidate must be keyable by the downstream agents)-
+// A valid address is `0x` + exactly 40 hex digits. The classifier + value-scorer
+// pass it to `cast` as an on-chain key, so a malformed address is dropped here.
+fn is_hex40(addr: string) -> bool {
+    if len(addr) != 42 { return false; }
+    if substring(addr, 0, 2) != "0x" { return false; }
+    let body = substring(addr, 2, 42);
+    return len(regex_find_all("[^0-9a-fA-F]", body)) == 0;
+}
+
+// A valid chain id is a non-empty run of digits (an EVM chain id).
+fn is_chain_id(chain: string) -> bool {
+    if len(chain) == 0 { return false; }
+    return len(regex_find_all("[^0-9]", chain)) == 0;
+}
+
+// Is the candidate well-formed enough for the downstream agents to key on?
+fn valid_candidate(addr: string, chain: string) -> bool {
+    if !is_hex40(addr) { return false; }
+    return is_chain_id(chain);
+}
+
+// --- normalise one raw line into a clean `<address>|<chain>|<metadata>` cell ----
+// Returns "" for a malformed line (dropped). The metadata is carried verbatim
+// (trimmed); the address + chain are validated.
+fn normalise_line(line: string) -> string {
+    let addr = trim(line_address(line));
+    let chain = trim(line_chain(line));
+    let meta = trim(line_metadata(line));
+    if !valid_candidate(addr, chain) { return ""; }
+    return addr + "|" + chain + "|" + meta;
+}
+
+// --- accumulate the normalised board over the raw candidate list ----------------
+// Append `cell` to the running board, deduped on the `<address>|<chain>` key (a
+// candidate listed twice is ingested once). Single-assignment accumulator.
+fn cell_key(cell: string) -> string {
+    let bar = index_of(cell, "|");
+    if bar < 0 { return cell; }
+    let rest = substring(cell, bar + 1, len(cell));
+    let bar2 = index_of(rest, "|");
+    if bar2 < 0 { return cell; }
+    return substring(cell, 0, bar + 1 + bar2);
+}
+
+fn board_has_key(board: string, key: string) -> bool {
+    if len(board) == 0 { return false; }
+    return reduce(regex_split("\n", board), |acc: bool, l: string| -> bool {
+        if acc { return acc; }
+        if len(l) == 0 { return acc; }
+        return cell_key(l) == key;
+    }, false);
+}
+
+fn append_cell(board: string, cell: string) -> string {
+    if len(cell) == 0 { return board; }
+    if board_has_key(board, cell_key(cell)) { return board; }
+    if len(board) == 0 { return cell; }
+    return board + "\n" + cell;
+}
+
+// Fold the raw newline list into the normalised, deduped board.
+fn build_board(raw: string) -> string {
+    return reduce(regex_split("\n", raw), |acc: string, line: string| -> string {
+        if len(line) == 0 { return acc; }
+        return append_cell(acc, normalise_line(line));
+    }, "");
+}
+
+fn count_cells(board: string) -> int {
+    if len(board) == 0 { return 0; }
+    return reduce(regex_split("\n", board), |acc: int, l: string| -> int {
+        if len(l) == 0 { return acc; }
+        return acc + 1;
+    }, 0);
+}
+
+// learn() outcome enum {success,failure,partial,timeout,error}. Ingesting at
+// least one valid candidate is a productive tick (success); an empty / all-
+// malformed list is a no-op (partial — nothing for the pipeline to qualify).
+fn outcome_of(n: int) -> string {
+    if n > 0 { return "success"; }
+    return "partial";
+}
+
+// A compact intake summary payload (JSON). Count only — no untrusted free text
+// reaches the bus, so no JSON escaping is needed.
+fn intake_payload(n: int) -> string {
+    return "{\"agent\":\"intake\",\"kind\":\"candidates\",\"count\":" + to_string(n) + "}";
+}
+
+fn tick(reason: string) -> void {
+    let now = to_string(now_ms());
+    // Heartbeat first (dashboard memo-freshness probe) even on an early return.
+    memo_write("intake:last_check", now);
+
+    let raw = getenv("PROSPECTOR_CANDIDATES");
+    let board = build_board(raw);
+    let n = count_cells(board);
+    let outcome = outcome_of(n);
+
+    print("intake: ingested " + to_string(n) + " candidate(s)"
+        + " (conf=" + to_string(get_confidence()) + ")");
+
+    // Publish the normalised board to the shared blackboard memo the downstream
+    // agents read each tick (a memo write — allowed at every tier, including
+    // shadow). Written EVERY tick so the board tracks the current candidate list.
+    memo_write("prospector:candidates", board);
+
+    let key = "intake:" + to_string(n);
+    let desc = "ingested " + to_string(n) + " candidate(s) from PROSPECTOR_CANDIDATES";
+
+    // ONE tier() call, branch ONCE (ADR-0001). The tier gates the BUS SUMMARY
+    // only; the board above is written at every tier. shadow/dormant fall through.
+    // (.ag has no `else if`; the tiers nest as `else { if ... { } else { } }`.)
+    let my_tier = tier("intake");
+    if my_tier == "autonomous" {
+        emit("prospector:intake", intake_payload(n));
+        learn("prospector-intake", key, desc, outcome, [outcome, "acted"]);
+    } else {
+        if my_tier == "review-gated" {
+            emit("prospector:intake", intake_payload(n));
+            learn("prospector-intake", key, desc, outcome, [outcome, "review-gated"]);
+        } else {
+            if my_tier == "propose" {
+                emit("prospector:intake", intake_payload(n));
+                learn("prospector-intake", key, desc, outcome, [outcome, "emitted"]);
+            } else {
+                // shadow / dormant: normalise + learn the candidate set, NO emit.
+                learn("prospector-intake", key, desc + " (baseline)", outcome, [outcome, "observed"]);
+                print("intake: observing (tier: " + my_tier + ") — no emit");
+            };
+        };
+    };
+
+    memo_write("intake:last_check", to_string(now_ms()));
+}

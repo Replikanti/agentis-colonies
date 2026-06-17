@@ -1,0 +1,328 @@
+// coordinator.ag — Prospector colony (Dark Factory federation).
+//
+// The fusion + ranking agent. For every candidate on the `prospector:candidates`
+// blackboard it reads the two upstream per-candidate verdicts the classifier and
+// the value-scorer posted (`prospector:classified:<addr>`,
+// `prospector:value:<addr>`), FUSES the HARD GATES into one QUALIFICATION
+// verdict, and writes a per-target DOSSIER to `prospector:qualified:<addr>` plus a
+// rolled-up `prospector:qualified` index. The dossier is the HANDOFF to the
+// `monitor` colony: for a qualifying target it names the value-invariant family
+// and the SUGGESTED INVARIANTS to watch (mapped to the monitor's MONITOR_INV_*
+// contract), so an operator can stand up the monitor on exactly the right
+// property.
+//
+// The HARD GATES (all must hold for a target to QUALIFY):
+//   1. verified-source       the classifier read a real source/ABI surface
+//                            (verdict != "no-read");
+//   2. DeFi value-invariants the surface matched a known value-invariant family
+//                            (lending / vault-4626 / AMM / stablecoin / perps /
+//                            staking / bridge);
+//   3. value-floor           the value-scorer's on-chain value cleared the floor
+//                            (verdict == "above").
+// A target failing ANY gate does NOT qualify (the dossier records which gate it
+// failed). The fused verdict is a deterministic function of the upstream FACTS —
+// never an LLM call.
+//
+// NON-custodial / read-only: it reads blackboard memos + writes blackboard memos
+// + emits on the bus only — no signing, no fund access, no `exec sh`.
+//
+// Pattern (per dark-factory/{auditor,monitor}/agents/coordinator.ag): single-
+// assignment helpers (no `let` reassignment), reduce/recursion instead of loops.
+//
+// Emission is gated PURELY on the ADR-0001 tier of this agent:
+//   shadow / dormant -> fuse + write the dossier, NO emit (score only, no publish);
+//   propose          -> + emit a DRAFT `prospector:qualified` shortlist (the
+//                        ranked qualifying-target index);
+//   review-gated /    -> + emit the DIRECT ranked dossier index.
+//   autonomous
+// One tier() call per tick, branch once, fall through to shadow/dormant. The
+// per-target dossiers are written at EVERY tier (a memo write) so the score is
+// always available; only the bus PUBLISH of the ranked index is tier-gated.
+//
+// Reads (blackboard): prospector:candidates, prospector:classified:<addr>,
+//   prospector:value:<addr>.
+// Writes (blackboard): prospector:qualified:<addr> (per-target dossier),
+//   prospector:qualified (the ranked qualifying-target index).
+// Emits: "prospector:qualified" (the colony bus contract).
+
+cb 150000;
+
+// Upper bound on how many candidates the coordinator fuses in one tick (the
+// bounded recursion's depth cap; .ag has no loops). Matches the upstream agents.
+fn board_max() -> int {
+    return 64;
+}
+
+// --- diagnostic confidence read (logging only; tier() gates behaviour) ---------
+fn get_confidence() -> float {
+    let raw = recall_latest("coordinator:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    }
+    return 0.0;
+}
+
+// --- candidate-cell field extraction (`<address>|<chain>|<metadata>`) -----------
+fn cell_address(cell: string) -> string {
+    let bar = index_of(cell, "|");
+    if bar < 0 { return cell; }
+    return substring(cell, 0, bar);
+}
+
+fn cell_chain(cell: string) -> string {
+    let bar = index_of(cell, "|");
+    if bar < 0 { return ""; }
+    let rest = substring(cell, bar + 1, len(cell));
+    let bar2 = index_of(rest, "|");
+    if bar2 < 0 { return rest; }
+    return substring(rest, 0, bar2);
+}
+
+fn cell_metadata(cell: string) -> string {
+    let bar = index_of(cell, "|");
+    if bar < 0 { return ""; }
+    let rest = substring(cell, bar + 1, len(cell));
+    let bar2 = index_of(rest, "|");
+    if bar2 < 0 { return ""; }
+    return substring(rest, bar2 + 1, len(rest));
+}
+
+// JSON-string escape a free-text field (mirrors the upstream agents' json_escape):
+// backslash -> \\ and double-quote -> \" so an operator-supplied metadata label
+// containing a `"` cannot corrupt the dossier JSON.
+fn json_escape(s: string) -> string {
+    return reduce(regex_find_all("[\\s\\S]", s), |acc: string, c: string| -> string {
+        if c == "\\" { return acc + "\\\\"; }
+        if c == "\"" { return acc + "\\\""; }
+        return acc + c;
+    }, "");
+}
+
+// json_get on a miss returns Void -> to_string => "void"; collapse to "".
+fn sanitize(s: string) -> string {
+    if s == "void" { return ""; }
+    return s;
+}
+
+// Pull a field from a stored signal JSON; "" on a miss / unread signal.
+fn signal_field(sig: string, field: string) -> string {
+    if len(sig) == 0 { return ""; }
+    return sanitize(to_string(json_get(sig, field)));
+}
+
+// --- the three HARD GATES, read off the upstream per-candidate signals ----------
+// Gate 1 + 2 (verified-source + value-invariant family): the classifier's
+// `family` field is "no-read" (gate 1 fails), "no-invariant" (gate 1 holds, gate
+// 2 fails), or a value-invariant family token (both hold).
+fn class_family(addr: string) -> string {
+    return signal_field(recall_latest("prospector:classified:" + addr), "family");
+}
+
+// Gate 3 (value-floor): the value-scorer's `verdict` is "no-read" / "below" /
+// "above". Only "above" clears.
+fn value_verdict(addr: string) -> string {
+    return signal_field(recall_latest("prospector:value:" + addr), "verdict");
+}
+
+fn gate_verified_source(family: string) -> bool {
+    if len(family) == 0 { return false; }
+    if family == "no-read" { return false; }
+    return true;
+}
+
+fn gate_value_invariant(family: string) -> bool {
+    if !gate_verified_source(family) { return false; }
+    if family == "no-invariant" { return false; }
+    return true;
+}
+
+fn gate_value_floor(verdict: string) -> bool {
+    return verdict == "above";
+}
+
+// A target QUALIFIES iff all three gates hold (nested ifs — .ag has no `&&`).
+fn qualifies(family: string, valVerdict: string) -> bool {
+    if !gate_verified_source(family) { return false; }
+    if !gate_value_invariant(family) { return false; }
+    return gate_value_floor(valVerdict);
+}
+
+// The first gate that FAILED (for the dossier's "why"); "" when all hold.
+fn failed_gate(family: string, valVerdict: string) -> string {
+    if !gate_verified_source(family) { return "verified-source"; }
+    if !gate_value_invariant(family) { return "value-invariant"; }
+    if !gate_value_floor(valVerdict) { return "value-floor"; }
+    return "";
+}
+
+// --- SUGGESTED INVARIANTS per value-invariant family (the monitor handoff) ------
+// Each family maps to the deep value-invariant the `monitor` colony's
+// invariant-watcher should watch, phrased in the monitor's MONITOR_INV_* terms (a
+// two-sided view comparison with a required relation). This is the qualification
+// pipeline's OUTPUT: not just "monitor this", but "watch THIS property".
+fn suggested_invariant(family: string) -> string {
+    if family == "vault-4626" { return "totalAssets() ge totalSupply() (share solvency)"; }
+    if family == "lending" { return "total collateral value ge total borrowed value (collateralisation)"; }
+    if family == "amm" { return "reserve product non-decreasing across swaps (k-invariant)"; }
+    if family == "stablecoin" { return "backing ge totalSupply() (peg backing)"; }
+    if family == "perps" { return "margin + collateral ge open-position notional (position solvency)"; }
+    if family == "staking" { return "staked balance ge accounted stake (reward accounting)"; }
+    if family == "bridge" { return "locked ge minted (cross-chain conservation)"; }
+    return "";
+}
+
+// learn() outcome enum {success,failure,partial,timeout,error}. A qualifying
+// target is the productive signal (success); a fully-evaluated but non-qualifying
+// candidate is partial; no candidates / no upstream verdicts is partial too.
+fn outcome_of(qualified: int) -> string {
+    if qualified > 0 { return "success"; }
+    return "partial";
+}
+
+// The per-target dossier (JSON). Carries qualifies yes/no, the matched family,
+// the failed gate (when any), the suggested invariant (the monitor handoff), and
+// the value verdict. All fields are upstream FACTS; none is LLM text.
+fn dossier_payload(addr: string, chain: string, meta: string, family: string, valVerdict: string, qualified: bool, why: string, invariant: string) -> string {
+    return "{\"agent\":\"coordinator\",\"target\":\"" + json_escape(addr)
+         + "\",\"chain\":\"" + json_escape(chain) + "\",\"label\":\"" + json_escape(meta)
+         + "\",\"qualifies\":" + to_string(qualified) + ",\"family\":\"" + family
+         + "\",\"value\":\"" + valVerdict + "\",\"why\":\"" + why
+         + "\",\"watch\":\"" + json_escape(invariant) + "\"}";
+}
+
+// Write one candidate's dossier to its per-target blackboard memo (a memo write —
+// allowed at every tier). The address is the validated `0x` + 40-hex key.
+// Returns 1 when the target qualifies, else 0 (for the running count).
+fn fuse_cell(cell: string) -> int {
+    let addr = cell_address(cell);
+    let chain = cell_chain(cell);
+    let meta = cell_metadata(cell);
+    let family = class_family(addr);
+    let valVerdict = value_verdict(addr);
+    let qualified = qualifies(family, valVerdict);
+    let gate = failed_gate(family, valVerdict);
+    let why = if qualified { "all gates pass" } else { "failed gate: " + gate };
+    let invariant = if qualified { suggested_invariant(family) } else { "" };
+    memo_write("prospector:qualified:" + addr,
+        dossier_payload(addr, chain, meta, family, valVerdict, qualified, why, invariant));
+    print("coordinator: " + addr + " family=" + family + " value=" + valVerdict
+        + " -> qualifies=" + to_string(qualified));
+    if qualified { return 1; }
+    return 0;
+}
+
+// The i-th non-empty line of a newline-joined board; "" when out of range. The
+// board is split + folded (.ag has no list indexing), picking the line whose
+// non-empty position equals `i`. Total on every failure mode.
+fn nth_cell(lines: list<string>, i: int) -> string {
+    let acc = reduce(lines, |st: string, cell: string| -> string {
+        let pos = pick_pos(st);
+        let found = pick_found(st);
+        if len(found) > 0 { return st; }
+        if len(cell) == 0 { return st; }
+        if pos == i { return to_string(pos + 1) + "|" + cell; }
+        return to_string(pos + 1) + "|";
+    }, "0|");
+    return pick_found(acc);
+}
+
+fn pick_pos(st: string) -> int {
+    let bar = index_of(st, "|");
+    if bar < 0 { return 0; }
+    return parse_int(substring(st, 0, bar));
+}
+
+fn pick_found(st: string) -> string {
+    let bar = index_of(st, "|");
+    if bar < 0 { return ""; }
+    return substring(st, bar + 1, len(st));
+}
+
+fn count_cells(lines: list<string>) -> int {
+    return reduce(lines, |acc: int, cell: string| -> int {
+        if len(cell) == 0 { return acc; }
+        return acc + 1;
+    }, 0);
+}
+
+// BOUNDED RECURSION over the candidate board (single-assignment .ag has no
+// while/for): at each non-empty cell up to the board_max() cap, fuse the gates,
+// write the per-target dossier, and ACCUMULATE the ranked index of QUALIFYING
+// targets (one `<addr>|<family>` cell per qualifier). Stops at the cap or end of
+// board. Returns the ranked index (newline-joined; "" when none qualify).
+fn fuse_board(lines: list<string>, i: int, total: int, remaining: int, idx: string) -> string {
+    if remaining <= 0 { return idx; }
+    if i >= total { return idx; }
+    let cell = nth_cell(lines, i);
+    if len(cell) == 0 { return idx; }
+    let q = fuse_cell(cell);
+    if q > 0 {
+        let entry = cell_address(cell) + "|" + class_family(cell_address(cell));
+        let nextIdx = if len(idx) == 0 { entry } else { idx + "\n" + entry };
+        return fuse_board(lines, i + 1, total, remaining - 1, nextIdx);
+    }
+    return fuse_board(lines, i + 1, total, remaining - 1, idx);
+}
+
+fn count_index(idx: string) -> int {
+    if len(idx) == 0 { return 0; }
+    return reduce(regex_split("\n", idx), |acc: int, l: string| -> int {
+        if len(l) == 0 { return acc; }
+        return acc + 1;
+    }, 0);
+}
+
+fn tick(reason: string) -> void {
+    let now = to_string(now_ms());
+    // Heartbeat first (dashboard memo-freshness probe) even on an early return.
+    memo_write("coordinator:last_check", now);
+
+    let board = recall_latest("prospector:candidates");
+    let lines = regex_split("\n", board);
+    let total = count_cells(lines);
+    // FUSE: write every per-target dossier + accumulate the ranked qualifying index.
+    let idx = fuse_board(lines, 0, total, board_max(), "");
+    let qualified = count_index(idx);
+
+    print("coordinator: fused board -> " + to_string(qualified)
+        + " qualified of " + to_string(total) + " (conf=" + to_string(get_confidence()) + ")");
+
+    let outcome = outcome_of(qualified);
+    let key = "qualified:" + to_string(qualified);
+    let desc = "fused board -> " + to_string(qualified) + " qualified monitoring target(s)";
+
+    // Write the ranked qualifying-target INDEX to the rolled-up blackboard memo
+    // (a memo write — allowed at every tier). The per-target dossiers carry the
+    // detail; this index is the shortlist the monitor handoff consumes.
+    memo_write("prospector:qualified", idx);
+
+    // A compact summary payload for the bus (count only — no untrusted free text).
+    let summary = "{\"agent\":\"coordinator\",\"kind\":\"shortlist\",\"qualified\":"
+        + to_string(qualified) + ",\"evaluated\":" + to_string(total) + "}";
+
+    // ONE tier() call, branch ONCE (ADR-0001). The tier gates the bus PUBLISH of
+    // the ranked index only; the dossiers + index memo above are written at every
+    // tier. shadow/dormant fall through (score only, no publish).
+    // (.ag has no `else if`; the tiers nest as `else { if ... } else { }`.)
+    let my_tier = tier("coordinator");
+    if my_tier == "autonomous" {
+        emit("prospector:qualified", summary);
+        learn("prospector-qualify", key, desc, outcome, [outcome, "acted"]);
+    } else {
+        if my_tier == "review-gated" {
+            emit("prospector:qualified", summary);
+            learn("prospector-qualify", key, desc, outcome, [outcome, "review-gated"]);
+        } else {
+            if my_tier == "propose" {
+                emit("prospector:qualified", summary);
+                learn("prospector-qualify", key, desc, outcome, [outcome, "emitted"]);
+            } else {
+                // shadow / dormant: fuse + write the dossier ONLY — no publish.
+                learn("prospector-qualify", key, desc + " (baseline)", outcome, [outcome, "observed"]);
+                print("coordinator: observing (tier: " + my_tier + ") — no publish");
+            };
+        };
+    };
+
+    memo_write("coordinator:last_check", to_string(now_ms()));
+}
