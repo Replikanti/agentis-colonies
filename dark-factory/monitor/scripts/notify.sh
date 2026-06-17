@@ -135,7 +135,10 @@ sys.stdout.write(hashlib.sha256(sig.encode("utf-8")).hexdigest()[:16])
     fi
 
     AGE_S=$((NOW_S - LAST_TS))
-    if [ "$LAST_TS" -gt 0 ] && [ "$AGE_S" -lt "$COOLDOWN_S" ]; then
+    # A negative age (clock rollback after a write, or a tampered state file) must
+    # NEVER suppress a genuine page — only a fresh, in-cooldown duplicate is dropped
+    # (QA #1103: defence on the page-delivery path).
+    if [ "$LAST_TS" -gt 0 ] && [ "$AGE_S" -ge 0 ] && [ "$AGE_S" -lt "$COOLDOWN_S" ]; then
         echo "notify.sh: suppressed duplicate alert (signature $SIGNATURE, ${AGE_S}s < ${COOLDOWN_S}s cooldown)"
         exit 0
     fi
