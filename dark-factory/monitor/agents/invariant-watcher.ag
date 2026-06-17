@@ -153,37 +153,113 @@ fn first_token(s: string) -> string {
     return substring(s, 0, nl);
 }
 
-// Parse a decimal reading to an int; an empty / non-numeric reading -> -1 (the
-// "no reading" sentinel, distinct from a legitimate 0). parse_int is total.
-fn reading_to_int(s: string) -> int {
-    let t = first_token(s);
-    if len(t) == 0 { return -1; }
-    if len(regex_find_all("[^0-9]", t)) > 0 { return -1; }
-    return parse_int(t);
+// --- big-number-safe wei handling (NO bare parse_int on the raw reading) -------
+// A realistic on-chain quantity is in wei: a $100M vault's totalAssets() ≈ 1e26,
+// far beyond the i64 range (~9.2e18, ≈ 9.22 ETH at 18 dp) parse_int can hold —
+// parse_int SATURATES such a value to 0, so totalAssets() and totalSupply() BOTH
+// read as 0, verdict_of(0,0,ge) returns "ok", and the watcher reported every real
+// protocol healthy regardless of true state (solvency-blind). The two invariant
+// sides are therefore kept as DECIMAL STRINGS and, when they exceed 18 digits,
+// SCALED DOWN by truncating the SAME number of low-order digits from BOTH (the
+// relation / ratio is preserved) BEFORE any parse_int — so every parse_int below
+// operates on a value guaranteed to fit i64. Mirrors the proven liquidity-watcher
+// / flow-watcher / prospector value-scorer idiom. (#1109.)
+
+// Strip leading zeros from a digit string, leaving at least one digit ("0").
+fn strip_leading_zeros(s: string) -> string {
+    let kept = reduce(regex_find_all("[0-9]", s), |acc: string, d: string| -> string {
+        if len(acc) > 0 { return acc + d; }
+        if d == "0" { return acc; }
+        return d;
+    }, "");
+    if len(kept) == 0 { return "0"; }
+    return kept;
 }
 
-// Resolve the RHS quantity: a live read of RHS_SIG when present, else the literal
-// MONITOR_INV_RHS_CONST. Returns -1 when neither yields a numeric value.
-fn resolve_rhs(castBin: string, rpc: string, addr: string, rhsSig: string, rhsConst: string) -> int {
+// Normalise a raw decimal reading to a clean digit string (leading zeros stripped).
+// "" / non-numeric -> "" (the "no reading" sentinel, distinct from a legitimate
+// "0"). Total. Mirrors prospector/value-scorer.ag's reading_to_dec.
+fn reading_to_dec(s: string) -> string {
+    let t = first_token(s);
+    if len(t) == 0 { return ""; }
+    if len(regex_find_all("[^0-9]", t)) > 0 { return ""; }
+    return strip_leading_zeros(t);
+}
+
+// The most significant digits a scaled value may keep so parse_int never wraps:
+// i64 max is 19 digits (9223372036854775807); 18 digits (<1e18) always fits.
+fn max_safe_digits() -> int {
+    return 18;
+}
+
+// How many low-order digits must be dropped so BOTH `a` and `b` fit i64: the
+// excess of the LONGER string over max_safe_digits(), clamped to >= 0. The SAME
+// drop is applied to both, so the relation / margin-bp ratio is preserved.
+fn excess_digits(a: string, b: string) -> int {
+    let longest = if len(a) > len(b) { len(a) } else { len(b) };
+    let excess = longest - max_safe_digits();
+    if excess < 0 { return 0; }
+    return excess;
+}
+
+// Truncate the `drop` low-order digits off a digit string (scale down by 10^drop).
+// The "" no-read sentinel is PRESERVED (a missing value must stay missing through
+// scaling — never become "0"). A real value whose every digit is dropped scales to
+// dust "0". Total.
+fn scale_dec(s: string, drop: int) -> string {
+    if len(s) == 0 { return ""; }
+    if drop <= 0 { return s; }
+    if drop >= len(s) { return "0"; }
+    return substring(s, 0, len(s) - drop);
+}
+
+// Parse a SCALED (<= 18-digit) digit string to int; "" -> -1 (the "no reading"
+// sentinel, distinct from a legitimate 0). parse_int is total and, post-scaling,
+// never overflows.
+fn scaled_to_int(s: string) -> int {
+    if len(s) == 0 { return -1; }
+    return parse_int(s);
+}
+
+// Resolve the RHS quantity as a big-number-safe DIGIT STRING: a live read of
+// RHS_SIG when present, else the literal MONITOR_INV_RHS_CONST. Returns "" (the
+// "no reading" sentinel) when neither yields a numeric value.
+fn resolve_rhs_dec(castBin: string, rpc: string, addr: string, rhsSig: string, rhsConst: string) -> string {
     if len(rhsSig) > 0 {
-        return reading_to_int(read_uint(castBin, rpc, addr, rhsSig));
+        return reading_to_dec(read_uint(castBin, rpc, addr, rhsSig));
     }
-    if len(rhsConst) == 0 { return -1; }
-    if len(regex_find_all("[^0-9]", rhsConst)) > 0 { return -1; }
-    return parse_int(rhsConst);
+    if len(rhsConst) == 0 { return ""; }
+    if len(regex_find_all("[^0-9]", rhsConst)) > 0 { return ""; }
+    return strip_leading_zeros(rhsConst);
+}
+
+// margin_bp may be absent / non-numeric (=> 0). A basis-point band (0..10000)
+// always fits i64, so a bare parse_int is safe here. "" / non-numeric -> 0.
+fn margin_int(raw: string) -> int {
+    if len(raw) == 0 { return 0; }
+    if len(regex_find_all("[^0-9]", raw)) > 0 { return 0; }
+    return parse_int(raw);
 }
 
 // --- the deterministic invariant verdict (a FACT, never an LLM call) -----------
 // "violated" when the required relation does NOT hold; "margin" when it holds but
 // the gap is within MONITOR_INV_MARGIN_BP basis points of flipping; "ok" when it
-// holds comfortably; "no-read" when either side could not be read.
+// holds comfortably; "no-read" when either side could not be read. lhs/rhs are
+// already SCALED to fit i64 (the same drop applied to both, so the relation +
+// margin ratio are preserved).
 fn within_margin(lhs: int, rhs: int, rel: string, marginBp: int) -> bool {
     if marginBp <= 0 { return false; }
     if rhs <= 0 { return false; }
-    // gap_bp = |lhs - rhs| * 10000 / rhs ; flag when the holding side is within
-    // marginBp of equality (the point the relation flips).
+    // gap_bp = |lhs - rhs| / (rhs / 10000) ; flag when the holding side is within
+    // marginBp of equality (the point the relation flips). DIVISION-FIRST: a
+    // `|lhs - rhs| * 10000 / rhs` ratio overflows i64 even for an in-range 18-digit
+    // rhs, so we compute `unit = rhs / 10000` (the per-bp magnitude) FIRST and then
+    // `diff / unit` — no large multiply, no overflow. An rhs below 10000 (after
+    // scaling) is dust: `unit < 1` -> treat as within margin (a tiny denominator).
     let diff = if lhs >= rhs { lhs - rhs } else { rhs - lhs };
-    let gapBp = (diff * 10000) / rhs;
+    let unit = rhs / 10000;
+    if unit < 1 { return true; }
+    let gapBp = diff / unit;
     return gapBp <= marginBp;
 }
 
@@ -220,11 +296,22 @@ fn is_anomaly(verdict: string) -> bool {
     return false;
 }
 
+// The lhs / rhs reported in the payload: the full (UN-scaled) digit string, or
+// "-1" for a no-read (the sentinel, mirroring the sibling watchers' convention).
+// Carried as a JSON STRING because a wei magnitude (>1e18) overflows the JSON
+// number parser downstream (the prospector value-scorer / liquidity-watcher
+// convention).
+fn value_for_json(s: string) -> string {
+    if len(s) == 0 { return "-1"; }
+    return s;
+}
+
 // A compact, deterministic alert payload (JSON). All fields are facts the watcher
 // computed; none is LLM text. `sev` is set by the tier branch (draft vs page).
-fn alert_payload(label: string, verdict: string, lhs: int, rhs: int, rel: string, addr: string, sev: string) -> string {
+// lhs/rhs are the full (UN-scaled) wei digit strings, quoted (see value_for_json).
+fn alert_payload(label: string, verdict: string, lhs: string, rhs: string, rel: string, addr: string, sev: string) -> string {
     return "{\"watcher\":\"invariant\",\"invariant\":\"" + json_escape(label) + "\",\"verdict\":\"" + verdict
-         + "\",\"lhs\":" + to_string(lhs) + ",\"rhs\":" + to_string(rhs) + ",\"rel\":\"" + rel
+         + "\",\"lhs\":\"" + value_for_json(lhs) + "\",\"rhs\":\"" + value_for_json(rhs) + "\",\"rel\":\"" + rel
          + "\",\"target\":\"" + json_escape(addr) + "\",\"severity\":\"" + sev + "\"}";
 }
 
@@ -271,25 +358,29 @@ fn spec_field(spec: string, i: int, field: string) -> string {
     return v;
 }
 
-// margin_bp may be absent (=> 0) or non-numeric (=> 0); reading_to_int is total.
+// margin_bp may be absent (=> 0) or non-numeric (=> 0); margin_int is total. A
+// basis-point band always fits i64, so no scaling is needed.
 fn spec_margin(spec: string, i: int) -> int {
-    let raw = spec_field(spec, i, "margin_bp");
-    if len(raw) == 0 { return 0; }
-    return reading_to_int(raw);
+    return margin_int(spec_field(spec, i, "margin_bp"));
 }
 
 // The per-invariant LIVE verdict for the i-th entry: read LHS (always a sig), read
-// RHS (a sig when rhs_sig is present, else the rhs_const literal), then the SAME
-// deterministic verdict_of() the single-invariant path uses. A FACT, never an LLM
-// call. rel "" defaults to "le" via rel_or_default, matching the env path.
+// RHS (a sig when rhs_sig is present, else the rhs_const literal) — BOTH as
+// big-number-safe DIGIT STRINGS — SCALE both down by the SAME drop so neither wraps
+// to 0, then the SAME deterministic verdict_of() the single-invariant path uses. A
+// FACT, never an LLM call. rel "" defaults to "le" via rel_or_default, matching the
+// env path.
 fn spec_verdict(castBin: string, rpc: string, addr: string, spec: string, i: int) -> string {
     let lhsSig = spec_field(spec, i, "lhs_sig");
     let rhsSig = spec_field(spec, i, "rhs_sig");
     let rhsConst = spec_field(spec, i, "rhs_const");
     let rel = rel_or_default(spec_field(spec, i, "rel"));
     let marginBp = spec_margin(spec, i);
-    let lhs = reading_to_int(read_uint(castBin, rpc, addr, lhsSig));
-    let rhs = resolve_rhs(castBin, rpc, addr, rhsSig, rhsConst);
+    let lhsDec = reading_to_dec(read_uint(castBin, rpc, addr, lhsSig));
+    let rhsDec = resolve_rhs_dec(castBin, rpc, addr, rhsSig, rhsConst);
+    let drop = excess_digits(lhsDec, rhsDec);
+    let lhs = scaled_to_int(scale_dec(lhsDec, drop));
+    let rhs = scaled_to_int(scale_dec(rhsDec, drop));
     return verdict_of(lhs, rhs, rel, marginBp);
 }
 
@@ -389,8 +480,7 @@ fn tick(reason: string) -> void {
     let lhsSig = getenv("MONITOR_INV_LHS_SIG");
     let rhsSig = getenv("MONITOR_INV_RHS_SIG");
     let rhsConst = getenv("MONITOR_INV_RHS_CONST");
-    let marginRaw = getenv("MONITOR_INV_MARGIN_BP");
-    let marginBp = if len(marginRaw) > 0 { reading_to_int(marginRaw) } else { 0 };
+    let marginBp = margin_int(getenv("MONITOR_INV_MARGIN_BP"));
 
     // The relation reported in the alert body. The SET fuses many relations, so the
     // fused body reports "set"; the env path reports its single configured relation.
@@ -405,13 +495,25 @@ fn tick(reason: string) -> void {
         label_or_sig(getenv("MONITOR_INV_LABEL"), lhsSig)
     };
 
+    // Read the two invariant sides as big-number-safe DIGIT STRINGS (env path only;
+    // on the SET path each member is read inside fuse_set()). A no-read yields the ""
+    // sentinel. lhs/rhs are only meaningful on the env path; on the SET path they are
+    // the "no single pair" sentinel "".
+    let lhsDec = if useSet { "" } else { reading_to_dec(read_uint(castBin, rpc, addr, lhsSig)) };
+    let rhsDec = if useSet { "" } else { resolve_rhs_dec(castBin, rpc, addr, rhsSig, rhsConst) };
+
+    // SCALE both to <= 18 digits by dropping the SAME number of low-order digits
+    // (the relation + margin ratio are preserved) BEFORE any parse_int, so a 1e26
+    // totalAssets()/totalSupply() never wraps to 0. A no-read ("") yields the -1
+    // sentinel and is never scaled.
+    let drop = excess_digits(lhsDec, rhsDec);
+    let lhs = scaled_to_int(scale_dec(lhsDec, drop));
+    let rhs = scaled_to_int(scale_dec(rhsDec, drop));
+
     // The VERDICT (a FACT, never an LLM call). SET path: the fused (worst) verdict
     // across every member, with each member ALSO posted to its own per-invariant
     // blackboard signal inside fuse_set(). Env path: the single deterministic
-    // verdict over the two configured sides. lhs/rhs are only meaningful on the env
-    // path; on the SET path they are the "no single pair" sentinel -1.
-    let lhs = if useSet { -1 } else { reading_to_int(read_uint(castBin, rpc, addr, lhsSig)) };
-    let rhs = if useSet { -1 } else { resolve_rhs(castBin, rpc, addr, rhsSig, rhsConst) };
+    // verdict over the two SCALED configured sides.
     let verdict = if useSet {
         fuse_set(castBin, rpc, addr, spec, 0, spec_max(), "no-read")
     } else {
@@ -420,7 +522,7 @@ fn tick(reason: string) -> void {
     let outcome = outcome_of(verdict);
 
     print("invariant-watcher: " + label + " " + rel + " -> " + verdict
-        + " (lhs=" + to_string(lhs) + " rhs=" + to_string(rhs) + ", conf=" + to_string(get_confidence()) + ")");
+        + " (lhs=" + value_for_json(lhsDec) + " rhs=" + value_for_json(rhsDec) + ", conf=" + to_string(get_confidence()) + ")");
 
     let key = label + ":" + addr;
     let desc = "on-chain invariant " + label + " " + rel + " -> " + verdict;
@@ -432,8 +534,9 @@ fn tick(reason: string) -> void {
     // fact JSON the emit carries, with a neutral severity the coordinator re-decides
     // on fusion. The per-invariant signals (monitor:signal:invariant:<label>) are
     // posted inside fuse_set(); this fused signal stays the single fact the existing
-    // coordinator already consumes (backward-compatible).
-    memo_write("monitor:signal:invariant", alert_payload(label, verdict, lhs, rhs, rel, addr, "info"));
+    // coordinator already consumes (backward-compatible). lhs/rhs carry the full
+    // (UN-scaled) wei magnitudes as quoted JSON strings.
+    memo_write("monitor:signal:invariant", alert_payload(label, verdict, lhsDec, rhsDec, rel, addr, "info"));
 
     // ONE tier() call, branch ONCE (ADR-0001). The tier gates EMISSION only; the
     // verdict above is unchanged by tier. shadow/dormant fall through to observe.
@@ -442,7 +545,7 @@ fn tick(reason: string) -> void {
     if my_tier == "autonomous" {
         // Proven reliable -> a DIRECT page on a real anomaly (high severity).
         if anomaly {
-            emit("monitor:alert", alert_payload(label, verdict, lhs, rhs, rel, addr, "high"));
+            emit("monitor:alert", alert_payload(label, verdict, lhsDec, rhsDec, rel, addr, "high"));
             learn("invariant-watch", key, desc, outcome, [verdict, outcome, "acted"]);
         } else {
             learn("invariant-watch", key, desc, outcome, [verdict, outcome, "observed"]);
@@ -451,7 +554,7 @@ fn tick(reason: string) -> void {
         if my_tier == "review-gated" {
             // Trusted to page under a review gate -> a DIRECT page (high severity).
             if anomaly {
-                emit("monitor:alert", alert_payload(label, verdict, lhs, rhs, rel, addr, "high"));
+                emit("monitor:alert", alert_payload(label, verdict, lhsDec, rhsDec, rel, addr, "high"));
                 learn("invariant-watch", key, desc, outcome, [verdict, outcome, "review-gated"]);
             } else {
                 learn("invariant-watch", key, desc, outcome, [verdict, outcome, "observed"]);
@@ -460,7 +563,7 @@ fn tick(reason: string) -> void {
             if my_tier == "propose" {
                 // Enough signal to contribute -> a DRAFT alert (low severity).
                 if anomaly {
-                    emit("monitor:alert", alert_payload(label, verdict, lhs, rhs, rel, addr, "low"));
+                    emit("monitor:alert", alert_payload(label, verdict, lhsDec, rhsDec, rel, addr, "low"));
                     learn("invariant-watch", key, desc, outcome, [verdict, outcome, "emitted"]);
                 } else {
                     learn("invariant-watch", key, desc, outcome, [verdict, outcome, "observed"]);
