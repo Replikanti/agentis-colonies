@@ -2581,6 +2581,244 @@ for _col, _acc in _compute_by_colony.items():
     })
 analytics_per_colony.sort(key=lambda r: r['colony'])
 
+# --- #1100: Monitor colony client-status block ---
+# Client-facing "what are we watching / current health / recent alerts"
+# surface for the dark-factory `monitor` colony. Read-only: pulls the
+# durable blackboard signals the watchers post (`monitor:signal:invariant`
+# fused, `monitor:signal:invariant:<label>` per-member, `monitor:signal:oracle`,
+# and any other `monitor:signal:<kind>`) plus the recent `monitor:alert`
+# emissions harvested from the monitor agents' log tails. Gracefully no-ops
+# to an empty/absent block when there is no `monitor` colony in the
+# federation — `dev-apprenticeship` / `tribes-bench` rendering is untouched.
+#
+# Source of truth is the on-disk memo store (`<fed>/.agentis/memo/<key>.jsonl`,
+# each line a versioned `{"value": ...}` record, latest non-empty value wins —
+# the same layout tools/auto-promote-decisions.py and tools/colony-fitness.py
+# read). The monitor agents write the JSON payloads verbatim as the memo
+# value, so each parsed value is itself a small JSON object. No `agentis`
+# subprocess is required (the directory listing lets us enumerate the
+# per-invariant `monitor:signal:invariant:<label>` keys we cannot name ahead
+# of time), and a missing memo dir / colony collapses to the empty block.
+MONITOR_ALERTS_CAP = 12
+
+
+def _read_memo_disk_value(memo_dir, key):
+    """Latest non-empty `value` from <memo_dir>/<key>.jsonl, or '' on any
+    error. Mirrors the disk-memo reader in tools/auto-promote-decisions.py
+    (`_colony_memo_read`): one host file per memo key, the key used verbatim
+    as the filename (only '/' is sanitized to '_'; monitor keys use ':' which
+    is preserved). Returns the raw string value (the watcher's JSON payload)."""
+    safe_key = key.replace('/', '_')
+    path = os.path.join(memo_dir, safe_key + '.jsonl')
+    last_val = ''
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if isinstance(row, dict):
+                    v = row.get('value')
+                    if v is not None:
+                        last_val = v
+    except (OSError, IOError):
+        return ''
+    return last_val
+
+
+def _parse_signal_value(raw):
+    """Parse a watcher signal memo value (a JSON object) into a dict, or
+    None on any failure. Tolerant of an empty / non-object value so a
+    half-written memo never breaks the block."""
+    if not raw:
+        return None
+    try:
+        obj = json.loads(raw)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    return obj
+
+
+def collect_monitor(fed_dir, monitor_colony, id_to_colony_map, log_dir_path,
+                    max_alerts=MONITOR_ALERTS_CAP):
+    """Build the `monitor` block for the client-status view. Returns
+    `{present: False}` when no monitor colony exists (the renderer then
+    hides the panel). When present, returns the watched target(s)+address,
+    the live invariant SET (each member's current verdict ok/margin/violated),
+    the oracle signal, the fused coordinator signal, any other monitor
+    signals, and the last N `monitor:alert`s."""
+    if not monitor_colony:
+        return {'present': False}
+
+    memo_dir = os.path.join(fed_dir, '.agentis', 'memo')
+    block = {
+        'present': True,
+        'colony': monitor_colony,
+        'targets': [],
+        'invariant_fused': None,
+        'invariants': [],
+        'oracle': None,
+        'signals': [],
+        'alerts': [],
+    }
+
+    # Fused invariant verdict (the single fact the coordinator reads).
+    fused = _parse_signal_value(_read_memo_disk_value(memo_dir, 'monitor:signal:invariant'))
+    if fused is not None:
+        block['invariant_fused'] = fused
+
+    # Per-invariant SET members: every `monitor:signal:invariant:<label>` memo.
+    # We cannot name the labels ahead of time, so enumerate the memo dir and
+    # filter by the key prefix (the `.jsonl` suffix is the on-disk artefact).
+    inv_prefix = 'monitor:signal:invariant:'
+    seen_targets = []
+    if os.path.isdir(memo_dir):
+        try:
+            memo_files = sorted(os.listdir(memo_dir))
+        except OSError:
+            memo_files = []
+        for fn in memo_files:
+            if not fn.endswith('.jsonl'):
+                continue
+            key = fn[:-6]
+            if not key.startswith(inv_prefix):
+                continue
+            member = _parse_signal_value(_read_memo_disk_value(memo_dir, key))
+            if member is None:
+                continue
+            block['invariants'].append({
+                'label': member.get('invariant') or key[len(inv_prefix):],
+                'verdict': member.get('verdict') or 'no-read',
+                'target': member.get('target') or '',
+            })
+            tgt = member.get('target')
+            if tgt and tgt not in seen_targets:
+                seen_targets.append(tgt)
+    block['invariants'].sort(key=lambda m: m.get('label') or '')
+
+    # Oracle signal (price-feed watcher).
+    oracle = _parse_signal_value(_read_memo_disk_value(memo_dir, 'monitor:signal:oracle'))
+    if oracle is not None:
+        block['oracle'] = oracle
+        oaddr = oracle.get('oracle')
+        if oaddr and oaddr not in seen_targets:
+            seen_targets.append(oaddr)
+
+    # Any other `monitor:signal:<kind>` memo (forward-compat for the planned
+    # liquidity / governance / flow watchers) — excluding the invariant-set
+    # members and the two named signals already surfaced above.
+    sig_prefix = 'monitor:signal:'
+    known_sig_keys = {'monitor:signal:invariant', 'monitor:signal:oracle'}
+    if os.path.isdir(memo_dir):
+        try:
+            memo_files = sorted(os.listdir(memo_dir))
+        except OSError:
+            memo_files = []
+        for fn in memo_files:
+            if not fn.endswith('.jsonl'):
+                continue
+            key = fn[:-6]
+            if not key.startswith(sig_prefix):
+                continue
+            if key in known_sig_keys or key.startswith(inv_prefix):
+                continue
+            sig = _parse_signal_value(_read_memo_disk_value(memo_dir, key))
+            if sig is None:
+                continue
+            block['signals'].append({
+                'kind': key[len(sig_prefix):],
+                'value': sig,
+            })
+
+    # Target(s) + address: prefer the fused signal's target, then fall back
+    # to the distinct addresses seen across the per-invariant + oracle signals.
+    if block['invariant_fused'] and block['invariant_fused'].get('target'):
+        ftgt = block['invariant_fused'].get('target')
+        if ftgt and ftgt not in seen_targets:
+            seen_targets.insert(0, ftgt)
+    block['targets'] = seen_targets
+
+    # Recent `monitor:alert` emissions, harvested from the monitor agents'
+    # log tails. The watchers + coordinator emit on the bus, which the daemon
+    # mirrors to each agent's `<agent_id>.log` as an `emit ... monitor:alert
+    # <payload>` line. We scan the last 200 lines of each monitor-colony
+    # agent's log for `monitor:alert`, parse the trailing JSON payload, and
+    # return the newest N reverse-chrono. Best-effort: a line we cannot parse
+    # is skipped, never fatal.
+    alerts = []
+    monitor_aids = [aid for aid, col in id_to_colony_map.items()
+                    if col == monitor_colony]
+    if log_dir_path and os.path.isdir(log_dir_path):
+        for aid in monitor_aids:
+            log_path = os.path.join(log_dir_path, aid + '.log')
+            if not os.path.isfile(log_path):
+                continue
+            try:
+                with open(log_path) as f:
+                    lines = f.readlines()
+            except OSError:
+                continue
+            for line in lines[-200:]:
+                line = line.strip()
+                if not line or 'monitor:alert' not in line:
+                    continue
+                # Extract a leading 13-digit epoch-ms timestamp when present.
+                ts = 0
+                content = line
+                ts_match = re.match(r'^(\d{13})\s+(.*)', line)
+                if ts_match:
+                    try:
+                        ts = int(ts_match.group(1))
+                        content = ts_match.group(2)
+                    except ValueError:
+                        ts = 0
+                        content = line
+                # The alert payload is the trailing JSON object on the line.
+                payload = None
+                brace = content.find('{')
+                if brace >= 0:
+                    payload = _parse_signal_value(content[brace:])
+                alerts.append({
+                    'ts': ts,
+                    'agent_id': aid,
+                    'agent': id_to_role.get(aid, aid[:8]),
+                    'payload': payload,
+                    'raw': content[:240],
+                })
+    alerts.sort(key=lambda a: a.get('ts', 0), reverse=True)
+    block['alerts'] = alerts[:max_alerts]
+
+    return block
+
+
+# Detect the monitor colony by name. dark-factory ships it as `monitor`;
+# the federation passes the live colony names in colony_list_json (argv[8]).
+_monitor_colony = 'monitor' if 'monitor' in colonies else ''
+monitor_block = collect_monitor(
+    fed_dir, _monitor_colony, _id_to_colony_for_analytics, log_dir)
+
+# --- #1100 (optional): prospector qualifying-target shortlist ---
+# The prospector colony rolls up its qualifying monitoring targets into a
+# single `prospector:qualified` index memo (free-form ranked text). Surface
+# it as a raw preview when the prospector colony is present so the monitor
+# view can show the upstream "what's queued to watch" handoff. Easy single
+# memo read; absent block when no prospector colony.
+prospector_block = {'present': False}
+if 'prospector' in colonies:
+    _memo_dir = os.path.join(fed_dir, '.agentis', 'memo')
+    _qualified = _read_memo_disk_value(_memo_dir, 'prospector:qualified')
+    prospector_block = {
+        'present': True,
+        'colony': 'prospector',
+        'qualified_index': _qualified[:2000] if _qualified else '',
+    }
+
 output = {
     'agents': result,
     'experience_counts': colony_exp,
@@ -2606,6 +2844,13 @@ output = {
     'config_editor': config_editor_block,
     # #359: forensic last-10 watchdog-kill events (Recovery tab).
     'watchdog_kills': watchdog_kills,
+    # #1100: monitor colony client-status block (watched targets + live
+    # invariant SET verdicts + oracle/other signals + recent alerts). Absent
+    # (present=false) when no `monitor` colony exists.
+    'monitor': monitor_block,
+    # #1100: optional prospector qualifying-target shortlist (the upstream
+    # "what's queued to watch" handoff). Absent when no `prospector` colony.
+    'prospector': prospector_block,
     # #359: epoch-now stamp so renderers don't have to derive a "stale"
     # cue from a missing field; SSE pushes update this in-place.
     'now_epoch': epoch,

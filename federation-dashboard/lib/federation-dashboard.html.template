@@ -245,6 +245,23 @@
   .agent-name { color: var(--cyan); text-shadow: 0 0 6px rgba(0,255,255,0.2); }
   .colony-name { color: var(--copper); }
   .muted { color: var(--muted); font-style: italic; }
+  /* #1100: monitor client-status view. Verdict pills mirror the ADR-0001
+     ok/margin/violated colour language (green / yellow / red). */
+  .monitor-targets { font-size: 12px; margin-bottom: 12px; }
+  .monitor-target-addr { color: var(--cyan); font-family: 'Share Tech Mono', monospace; }
+  .monitor-verdict {
+    display: inline-block; padding: 1px 8px; border-radius: 2px;
+    font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+    border: 1px solid var(--muted); color: var(--muted);
+  }
+  .monitor-verdict.ok { border-color: var(--green); color: var(--green); text-shadow: 0 0 6px rgba(0,255,0,0.3); }
+  .monitor-verdict.margin { border-color: var(--yellow); color: var(--yellow); text-shadow: 0 0 6px rgba(255,255,0,0.3); }
+  .monitor-verdict.violated { border-color: var(--red); color: var(--red); text-shadow: 0 0 6px rgba(255,68,68,0.4); }
+  .monitor-alert-row { display: flex; gap: 10px; font-size: 11px; padding: 3px 0; border-bottom: 1px solid var(--border2); }
+  .monitor-alert-row:last-child { border-bottom: none; }
+  .monitor-alert-ts { color: var(--muted); white-space: nowrap; }
+  .monitor-alert-watcher { color: var(--copper); white-space: nowrap; }
+  .monitor-section-head { color: var(--yellow); font-size: 10px; text-transform: uppercase; letter-spacing: 2px; margin: 14px 0 6px; }
   .conf-indicator { font-size: 11px; margin-left: 4px; }
   .conf-indicator.up { color: var(--green); }
   .conf-indicator.down { color: var(--red); }
@@ -1485,6 +1502,11 @@
 <section data-tab="status">
   <div id="status-verdict"></div>
   <div id="status-stat-tiles"></div>
+  <!-- #1100: Monitor colony client-status view. Read-only "what are we
+       watching / current health / recent alerts" surface. Hidden entirely
+       unless the federation runs a `monitor` colony (renderMonitor hides
+       the card when data.monitor.present is false). -->
+  <div id="monitor-status" class="card full" style="display:none;"></div>
   <div id="status-agent-table"></div>
   <div id="status-sidecar-pills"></div>
   <div id="status-meta"></div>
@@ -4360,6 +4382,122 @@ function renderRecoveryAgents(data) {
   el.innerHTML = html;
 }
 
+// #1100: Monitor colony client-status view. Renders the read-only
+// "what are we watching / current health / recent alerts" surface into the
+// Status tab. The whole card is hidden when no monitor colony is present
+// (data.monitor.present === false), so dev-apprenticeship / tribes-bench
+// dashboards never show an empty panel. Verdict pills use the ADR-0001
+// ok/margin/violated colour language.
+function monitorVerdictPill(verdict) {
+  const v = String(verdict || 'no-read').toLowerCase();
+  let cls = '';
+  if (v === 'ok') cls = 'ok';
+  else if (v === 'margin') cls = 'margin';
+  else if (v === 'violated') cls = 'violated';
+  return '<span class="monitor-verdict ' + cls + '">' + esc(v) + '</span>';
+}
+function renderMonitor(data) {
+  const el = document.getElementById('monitor-status');
+  if (!el) return;
+  const m = (data && data.monitor) || null;
+  if (!m || !m.present) {
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  el.style.display = '';
+
+  let html = '<h2>Monitor — Live Watch</h2>';
+
+  // Watched target(s) + address.
+  const targets = m.targets || [];
+  html += '<div class="monitor-targets">';
+  if (targets.length) {
+    html += 'Watching: ';
+    html += targets.map(t => '<span class="monitor-target-addr">' + esc(t) + '</span>').join(', ');
+  } else {
+    html += '<span class="empty">No target configured (observe-only).</span>';
+  }
+  // Fused verdict for the whole invariant set.
+  if (m.invariant_fused && m.invariant_fused.verdict) {
+    html += ' · set verdict: ' + monitorVerdictPill(m.invariant_fused.verdict);
+  }
+  html += '</div>';
+
+  // Live invariant SET: each member's current verdict.
+  html += '<div class="monitor-section-head">Invariant set</div>';
+  const invs = m.invariants || [];
+  if (invs.length) {
+    html += '<table><thead><tr><th>Invariant</th><th>Verdict</th></tr></thead><tbody>';
+    invs.forEach(inv => {
+      html += '<tr><td>' + esc(inv.label || '?') + '</td>' +
+              '<td>' + monitorVerdictPill(inv.verdict) + '</td></tr>';
+    });
+    html += '</tbody></table>';
+  } else {
+    html += '<span class="empty">No per-invariant signals yet.</span>';
+  }
+
+  // Oracle + other signals.
+  const sigRows = [];
+  if (m.oracle) {
+    sigRows.push({
+      label: 'oracle' + (m.oracle.feed ? ' (' + m.oracle.feed + ')' : ''),
+      verdict: m.oracle.verdict,
+    });
+  }
+  (m.signals || []).forEach(s => {
+    const v = (s.value && s.value.verdict) || '';
+    sigRows.push({ label: s.kind || '?', verdict: v });
+  });
+  if (sigRows.length) {
+    html += '<div class="monitor-section-head">Other signals</div>';
+    html += '<table><thead><tr><th>Signal</th><th>Verdict</th></tr></thead><tbody>';
+    sigRows.forEach(s => {
+      html += '<tr><td>' + esc(s.label) + '</td>' +
+              '<td>' + monitorVerdictPill(s.verdict) + '</td></tr>';
+    });
+    html += '</tbody></table>';
+  }
+
+  // Recent alerts (last N).
+  html += '<div class="monitor-section-head">Recent alerts</div>';
+  const alerts = m.alerts || [];
+  if (alerts.length) {
+    alerts.forEach(a => {
+      const ts = a.ts ? Math.floor(a.ts / 1000) : 0;
+      let agoStr = '—';
+      if (ts > 0) {
+        const ago = Math.max(0, nowEpoch - ts);
+        if (ago < 60) agoStr = ago + 's ago';
+        else if (ago < 3600) agoStr = Math.floor(ago/60) + 'm ago';
+        else if (ago < 86400) agoStr = Math.floor(ago/3600) + 'h ago';
+        else agoStr = Math.floor(ago/86400) + 'd ago';
+      }
+      const p = a.payload || {};
+      const watcher = p.watcher || a.agent || '?';
+      let detail;
+      if (p.verdict) {
+        detail = monitorVerdictPill(p.verdict);
+        if (p.severity) detail += ' <span class="muted">' + esc(p.severity) + '</span>';
+        if (p.invariant) detail += ' ' + esc(p.invariant);
+        else if (p.feed) detail += ' ' + esc(p.feed);
+      } else {
+        detail = '<span class="muted">' + esc(a.raw || '') + '</span>';
+      }
+      html += '<div class="monitor-alert-row">' +
+              '<span class="monitor-alert-ts">' + esc(agoStr) + '</span>' +
+              '<span class="monitor-alert-watcher">' + esc(watcher) + '</span>' +
+              '<span>' + detail + '</span>' +
+              '</div>';
+    });
+  } else {
+    html += '<span class="empty">No alerts recorded.</span>';
+  }
+
+  el.innerHTML = html;
+}
+
 function renderWatchdogKills(data) {
   const el = document.getElementById('watchdog-kills');
   if (!el) return;
@@ -6035,6 +6173,9 @@ function rerender(snap) {
   // #362: Status tab stat-tile row + per-agent table (replaces pulse-grid).
   renderStatusStatTiles(snap);
   renderStatusAgentTable(snap);
+  // #1100: monitor colony client-status view (hidden unless a monitor
+  // colony is present).
+  renderMonitor(snap);
   renderCostProjections(snap);
   renderRecoveryActions(snap);
   renderRecoveryAgents(snap);
