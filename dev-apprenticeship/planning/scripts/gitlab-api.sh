@@ -106,6 +106,26 @@ fi
 
 API="$GITLAB_URL/api/v4/projects/$GITLAB_PROJECT"
 
+# #1111: GitLab folded the legacy `issues` REST collection into the unified
+# `work_items` collection. Resolve the segment through one helper so the
+# rename — and any future per-item-type split — lives in one place instead
+# of every call site below. All issue-family work item types (issue,
+# incident, task, …) share the single project-level `work_items` collection
+# and are distinguished by a type field in the body, not by path. Operators
+# on an instance that still serves the legacy path can pin it with
+# GITLAB_ITEMS_ENDPOINT=issues (one env var, no code change).
+gl_items_path() {
+    if [ -n "${GITLAB_ITEMS_ENDPOINT:-}" ]; then
+        printf '%s' "$GITLAB_ITEMS_ENDPOINT"
+        return 0
+    fi
+    case "${1:-issue}" in
+        issue|incident|task|test_case|ticket) printf 'work_items' ;;
+        *)                                     printf 'work_items' ;;
+    esac
+}
+ITEMS="$(gl_items_path issue)"
+
 # gl_call <method> <url> [curl-args...]
 #
 # Single wrapper used by every gl_get/gl_get_q/gl_post/gl_put below.
@@ -276,10 +296,10 @@ case "$CMD" in
             # survives the projection pipe. A bare `gl_get_q ... | project_json`
             # would let python3 (or `cat` when GITLAB_VIEW_MODE=raw) override
             # the meaningful exit code with 0 or 1, masking the real failure.
-            body="$(gl_get_q "$API/issues" "${ARGS[@]}")" || exit $?
+            body="$(gl_get_q "$API/$ITEMS" "${ARGS[@]}")" || exit $?
             printf '%s' "$body" | project_json "$VIEW"
         else
-            gl_get_q "$API/issues" "${ARGS[@]}"
+            gl_get_q "$API/$ITEMS" "${ARGS[@]}"
         fi
         ;;
 
@@ -300,7 +320,7 @@ case "$CMD" in
         # Use python3 json.dumps so newlines, quotes, backslashes, and control
         # chars are all escaped correctly and markdown formatting is preserved.
         JSON_BODY=$(printf '%s' "$BODY" | python3 -c 'import sys,json; print(json.dumps({"body": sys.stdin.read()}))')
-        gl_post "$API/issues/$ID/notes" "$JSON_BODY"
+        gl_post "$API/$ITEMS/$ID/notes" "$JSON_BODY"
         ;;
 
     issue-label-events)
@@ -320,7 +340,7 @@ case "$CMD" in
                 *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
-        body="$(gl_get "$API/issues/$IID/resource_label_events?per_page=100")" || exit $?
+        body="$(gl_get "$API/$ITEMS/$IID/resource_label_events?per_page=100")" || exit $?
         # Pass body via env (BODY=) rather than stdin because the heredoc
         # (<<'PY') would otherwise override the piped input — shellcheck
         # SC2259. Same idiom as the split / hit / matched / final blocks
@@ -380,7 +400,7 @@ PY
             --data-urlencode "sort=desc"
             --data-urlencode "updated_after=$EV_SINCE"
         )
-        recent="$(gl_get_q "$API/issues" "${BASE_ARGS[@]}")" || exit $?
+        recent="$(gl_get_q "$API/$ITEMS" "${BASE_ARGS[@]}")" || exit $?
         # Split into currently-labeled (include directly) and need-events-check.
         split="$(RECENT="$recent" LABEL="$LABEL" python3 <<'PY'
 import os, json
@@ -395,7 +415,7 @@ PY
         iids_to_check="$(printf '%s' "$split" | python3 -c 'import sys,json;print(" ".join(str(i) for i in json.load(sys.stdin)["to_check"]))')"
         matched="[]"
         for IID in $iids_to_check; do
-            ev_body="$(gl_get "$API/issues/$IID/resource_label_events?per_page=100")" || continue
+            ev_body="$(gl_get "$API/$ITEMS/$IID/resource_label_events?per_page=100")" || continue
             hit="$(EVBODY="$ev_body" LABEL="$LABEL" EV_SINCE="$EV_SINCE" python3 <<'PY'
 import os, json
 events = json.loads(os.environ["EVBODY"])
@@ -411,7 +431,7 @@ else:
 PY
 )"
             if [ -n "$hit" ]; then
-                issue_body="$(gl_get "$API/issues/$IID")" || continue
+                issue_body="$(gl_get "$API/$ITEMS/$IID")" || continue
                 matched="$(MATCHED="$matched" ISSUE="$issue_body" python3 <<'PY'
 import os, json
 acc = json.loads(os.environ["MATCHED"])

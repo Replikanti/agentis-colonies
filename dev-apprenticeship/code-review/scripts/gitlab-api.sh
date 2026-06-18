@@ -85,6 +85,26 @@ fi
 
 API="$GITLAB_URL/api/v4/projects/$GITLAB_PROJECT"
 
+# #1111: GitLab folded the legacy `issues` REST collection into the unified
+# `work_items` collection. Resolve the segment through one helper so the
+# rename — and any future per-item-type split — lives in one place instead
+# of every call site below. All issue-family work item types (issue,
+# incident, task, …) share the single project-level `work_items` collection
+# and are distinguished by a type field in the body, not by path. Operators
+# on an instance that still serves the legacy path can pin it with
+# GITLAB_ITEMS_ENDPOINT=issues (one env var, no code change).
+gl_items_path() {
+    if [ -n "${GITLAB_ITEMS_ENDPOINT:-}" ]; then
+        printf '%s' "$GITLAB_ITEMS_ENDPOINT"
+        return 0
+    fi
+    case "${1:-issue}" in
+        issue|incident|task|test_case|ticket) printf 'work_items' ;;
+        *)                                     printf 'work_items' ;;
+    esac
+}
+ITEMS="$(gl_items_path issue)"
+
 # gl_call <method> <url> [curl-args...]
 #
 # Single wrapper used by every gl_get/gl_get_q/gl_post/gl_put below.
@@ -314,7 +334,7 @@ case "$CMD" in
         case "$IID" in
             ''|*[!0-9]*) emit_error "iid must be numeric: $IID"; exit 2 ;;
         esac
-        gl_get "$API/issues/$IID"
+        gl_get "$API/$ITEMS/$IID"
         ;;
 
     rate-limit-status)

@@ -15,6 +15,20 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Changed
+
+- GitLab issue-tracking REST endpoint resolution (#1111): all `gitlab-api.sh`
+  helpers (triage, planning, implementation, code-review) now resolve the
+  issue collection segment through a single `gl_items_path()` helper +
+  `ITEMS` variable instead of hardcoding `/issues` at 23 call sites. Defaults
+  to GitLab's renamed `work_items` collection; pin the legacy path on
+  un-migrated instances with `GITLAB_ITEMS_ENDPOINT=issues` (one env var, no
+  code change). All issue-family work-item types (issue / incident / task / …)
+  map to the unified `work_items` collection. **Note:** the `work_items`
+  REST response shape may differ from legacy `issues` (widget-based); the
+  `project_json` views still read flat fields — verify field compatibility
+  against the live instance (or roll back via the env var) as part of #1111.
+
 ### Added
 
 - Cross-repo reference detection in PR review prompts (#317): the four
