@@ -16,9 +16,10 @@ tick_interval_ms = 120000
 type = "none"
 
 [llm]
-# tools/run-auditor.sh overlays the real llm.command / llm.args block
-# in the container bootstrap when AUDITOR_LLM_BACKEND=claude.
-backend = "cli"
+# Only "backend" is read today. "flat-cyborg" = flat-rate Claude via the
+# PTY wrapper (#1138). The run-research.sh orchestrator overlays the real
+# [llm.flat_cyborg] + per-tier block in the container bootstrap.
+backend = "flat-cyborg"
 
 [groupprops_search]
 max_queries = 5

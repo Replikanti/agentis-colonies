@@ -15,26 +15,31 @@
 #     for the agentis-runtime release download below.
 #   - ssmtp so the submitter colony can mail submission.tar.gz to the
 #     arXiv email gateway when a human flips the HITL approval flag.
-#   - claude CLI for the (default) claude llm backend.
+#   - claude CLI + the flat-cyborg PTY wrapper for the (default)
+#     flat-cyborg llm backend (flat-rate Claude); claude is the opt-in
+#     metered fallback. Both backends drive the same `claude` CLI.
 #
 # The orchestrator does NOT pass `--network none`; rootless podman's
 # default slirp4netns egress is used.
 #
 # WARNING: this image deliberately bakes ONLY the agentis runtime, the
-# Python / LaTeX / GAP toolchains, and the claude CLI. The 15 colonies
-# and the per-run hermetic .agentis/ state are mounted at run time via
-# `-v $REPO_ROOT:/repo:ro` and `-v $RUN_DIR/<node>:/run-root:rw`. Do
-# NOT `COPY` any colony source into the image.
+# Python / LaTeX / GAP toolchains, the claude CLI, and the flat-cyborg
+# PTY wrapper. The 15 colonies and the per-run hermetic .agentis/ state
+# are mounted at run time via `-v $REPO_ROOT:/repo:ro` and
+# `-v $RUN_DIR/<node>:/run-root:rw`. Do NOT `COPY` any colony source
+# into the image.
 #
 # WARNING: Claude Code session credentials
-# (`~/.claude/.credentials.json`) MUST NOT be baked in. The orchestrator
-# bind-mounts the host operator's `$HOME/.claude` at run time via
-# `-v $HOST_CLAUDE_DIR:/root/.claude:rw,z`; never `COPY` the directory
-# into the image.
+# (`~/.claude/.credentials.json`) MUST NOT be baked in. The flat-cyborg
+# backend is now the DEFAULT (claude is the opt-in metered fallback);
+# both drive the same `claude` CLI, so the orchestrator bind-mounts the
+# host operator's `$HOME/.claude` at run time via
+# `-v $HOST_CLAUDE_DIR:/root/.claude:rw,z` for either backend; never
+# `COPY` the directory into the image.
 
 FROM ubuntu:24.04
 
-ARG AGENTIS_VERSION=v1.18.24
+ARG AGENTIS_VERSION=v1.19.0
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -75,12 +80,17 @@ RUN cd /tmp \
  && install -m 0755 agentis-linux-x86_64 /usr/local/bin/agentis \
  && rm /tmp/agentis-linux-x86_64 /tmp/agentis-linux-x86_64.sha256
 
-# Install Claude Code CLI for the default claude-backend support. A
-# future Phase 2 cut may split per-colony backends (Sonnet for the
-# four searchers, Opus for the auditor / introducer / theorist /
-# editor) via per-colony AGENTIS_ROOT.
+# Install Claude Code CLI. The flat-cyborg wrapper (installed below)
+# drives this same CLI for the default flat-cyborg backend; the opt-in
+# metered claude backend drives it directly. A future Phase 2 cut may
+# split per-colony backends (Sonnet for the four searchers, Opus for the
+# auditor / introducer / theorist / editor) via per-colony AGENTIS_ROOT.
 RUN curl -fsSL https://claude.ai/install.sh | bash \
  && ln -s /root/.local/bin/claude /usr/local/bin/claude
+
+# Install the flat-cyborg PTY wrapper (#1138): drives the `claude` CLI on a
+# flat-rate Claude subscription so the default run bills no per-token API.
+RUN curl -fsSL https://raw.githubusercontent.com/Replikanti/flat-cyborg/main/install.sh | sh
 
 # Lean 4 toolchain for first-class proof verification in theorist.ag
 # (#745). Uses elan (Lean version manager) with a pinned toolchain so

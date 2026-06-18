@@ -10,8 +10,10 @@
 #   - host `pdflatex` / `gap` are nice-to-have for local review
 #     (tools/review-cli.sh --show); the container always ships its own
 #     TeX Live + GAP copy.
-#   - optionally a Claude CLI / OAuth session at $HOME/.claude when the
-#     orchestrator runs with RESEARCH_LLM_BACKEND=claude (the default).
+#   - a Claude CLI / OAuth session at $HOME/.claude for the default
+#     RESEARCH_LLM_BACKEND=flat-cyborg backend (flat-rate Claude via the
+#     flat-cyborg PTY wrapper, which drives the same `claude` CLI). The
+#     opt-in metered RESEARCH_LLM_BACKEND=claude backend uses it too.
 #
 # install.sh copies each <colony>/config/colony.example.toml to
 # colony.toml in place and copies config/authors.toml.example to
@@ -88,7 +90,7 @@ check_cmd curl    || MISSING=1
 # own pdflatex / latexmk / gap.
 check_cmd_warn pdflatex "host PDF preview / review-cli --show needs it; container has its own copy"
 check_cmd_warn gap "host group-theory reproducibility-script runs need it; container has its own copy"
-check_cmd_warn claude "RESEARCH_LLM_BACKEND=claude needs the CLI on the host for credential-volume mount"
+check_cmd_warn claude "the default RESEARCH_LLM_BACKEND=flat-cyborg (and opt-in =claude) needs the CLI on the host for credential-volume mount"
 
 if [ "$MISSING" -eq 1 ]; then
     echo ""
@@ -105,7 +107,7 @@ if [ -f "$HOME/.claude/.credentials.json" ]; then
     ok "claude CLI credentials present at \$HOME/.claude/.credentials.json"
 else
     info "claude CLI credentials NOT found at \$HOME/.claude/.credentials.json"
-    info "  (only needed when RESEARCH_LLM_BACKEND=claude, which is the default)"
+    info "  (needed for the default RESEARCH_LLM_BACKEND=flat-cyborg path, and the opt-in =claude path)"
 fi
 
 # --- Per-colony config copy ---

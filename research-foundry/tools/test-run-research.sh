@@ -42,6 +42,13 @@
 #      41j is a regression sentinel against an unconditional
 #      emit-with-default that would break the byte-identical
 #      production-config guarantee.
+#  43a-t. #1138 flat-cyborg is the DEFAULT llm backend (flat-rate
+#      Claude via the PTY wrapper). Per-tier model routing translated
+#      from cli_command_args --model to llm.tier.<tier>.model;
+#      auditor/theorist/submitter pin opus via per-agent overrides.
+#      Metered claude + openai stay opt-in via RESEARCH_LLM_BACKEND;
+#      the claude fallback retains the #746/#825 cli_command_args
+#      block (tests 24/40).
 #
 # Standard library only -- no pytest, no requests, no live LLM, no
 # podman.
@@ -1121,15 +1128,16 @@ assert_contains "40o. RESEARCH_PER_TIER_ROUTING documented in header" "$SRC" \
     "RESEARCH_PER_TIER_ROUTING"
 
 # Extract the lines between the bootstrap-emit gate-open `if [
-# "${RESEARCH_PER_TIER_ROUTING:-1}" = "1" ]; then` (the SECOND
-# occurrence in run-research.sh; the first is the pre-flight warning
-# check ABOVE the emit_step block, which has different scope) and the
-# corresponding closing `fi`. Then assert the extracted block contains
-# the representative per-tier + per-agent lines.
+# "${RESEARCH_PER_TIER_ROUTING:-1}" = "1" ]; then` (the THIRD occurrence
+# in run-research.sh: the first is the pre-flight warning check ABOVE the
+# emit_step block; the second is the #1138 flat-cyborg branch's own gate;
+# this is the metered-claude #825 branch's gate) and the corresponding
+# closing `fi`. Then assert the extracted block contains the
+# representative per-tier + per-agent lines.
 GATED_BLOCK="$(awk '
     /"\$\{RESEARCH_PER_TIER_ROUTING:-1\}" = "1"/ {
         seen++
-        if (seen == 2) { in_block=1 }
+        if (seen == 3) { in_block=1 }
         next
     }
     in_block && /^[[:space:]]*fi[[:space:]]*$/ { exit }
@@ -1162,8 +1170,8 @@ assert_contains "40t. claude-branch podman spawn threads OPENROUTER_API_KEY cond
     'openai_key_env_flag=" -e $OPENAI_KEY_ENV='
 assert_contains "40u. pre-flight warning string present in source" "$SRC" \
     "per-tier shadow routing won't work"
-assert_contains "40v. pre-flight check covers LLM_BACKEND=claude + RESEARCH_PER_TIER_ROUTING=1" "$SRC" \
-    'if [ "$LLM_BACKEND" = "claude" ] && [ "${RESEARCH_PER_TIER_ROUTING:-1}" = "1" ]'
+assert_contains "40v. pre-flight check covers flat-cyborg/claude + RESEARCH_PER_TIER_ROUTING=1" "$SRC" \
+    'if { [ "$LLM_BACKEND" = "flat-cyborg" ] || [ "$LLM_BACKEND" = "flat_cyborg" ] || [ "$LLM_BACKEND" = "claude" ]; } && [ "${RESEARCH_PER_TIER_ROUTING:-1}" = "1" ]'
 
 # Live snapshot: when OPENROUTER_API_KEY is set in the env, the emitted
 # claude-backend spawn line carries `-e OPENROUTER_API_KEY=...`.
@@ -1254,6 +1262,82 @@ assert_contains "42c. RESEARCH_FORCE_REBUILD=1 dry-run emits podman rmi -f" "$FO
     "podman rmi -f research-foundry:latest"
 assert_contains "42d. RESEARCH_FORCE_REBUILD=1 dry-run emits pinned build command" "$FORCE_REBUILD_OUT" \
     "podman build --build-arg AGENTIS_VERSION="
+
+# ---------------------------------------------------------------------------
+# 43. #1138: flat-cyborg is now the DEFAULT llm backend. The wrapper drives
+# the `claude` CLI on a flat-rate Claude subscription so the default run
+# bills no per-token API. Per-tier model routing is TRANSLATED from the
+# metered claude branch's `cli_command_args = --model <M>` to flat-cyborg's
+# `llm.tier.<tier>.model` (shadow + dormant get haiku, propose +
+# review-gated + autonomous get sonnet); the three terminal-writers
+# (auditor/theorist/submitter) pin opus via per-agent overrides. Metered
+# `claude` + `openai` stay opt-in via RESEARCH_LLM_BACKEND. The printf lines
+# live in the container-side bootstrap heredoc and never reach dry-run
+# stdout, so they are source-grepped from $SRC like the #746/#825 claude
+# tier assertions above; the default dry-run capture asserts the parametric
+# emit_step + the ~/.claude mount.
+# ---------------------------------------------------------------------------
+assert_contains "43a. LLM_BACKEND default pins flat-cyborg" "$SRC" \
+    'LLM_BACKEND="${RESEARCH_LLM_BACKEND:-flat-cyborg}"'
+assert_contains "43b. FLAT_CYBORG_IDLE_MS defaults to 4000" "$SRC" \
+    'FLAT_CYBORG_IDLE_MS="${RESEARCH_FLAT_CYBORG_IDLE_MS:-4000}"'
+assert_contains "43c. FLAT_CYBORG_MODEL defaults to empty" "$SRC" \
+    'FLAT_CYBORG_MODEL="${RESEARCH_FLAT_CYBORG_MODEL:-}"'
+assert_contains "43d. flat-cyborg emits llm.flat_cyborg.idle_ms printf" "$SRC" \
+    'printf "llm.flat_cyborg.idle_ms = %s\\n"'
+assert_contains "43e. llm.tier.dormant.model = claude-haiku-4-5" "$SRC" \
+    'printf "llm.tier.dormant.model = claude-haiku-4-5\\n"'
+assert_contains "43f. llm.tier.shadow.model = claude-haiku-4-5" "$SRC" \
+    'printf "llm.tier.shadow.model = claude-haiku-4-5\\n"'
+assert_contains "43g. llm.tier.propose.model = claude-sonnet-4-6" "$SRC" \
+    'printf "llm.tier.propose.model = claude-sonnet-4-6\\n"'
+assert_contains "43h. llm.tier.review-gated.model = claude-sonnet-4-6" "$SRC" \
+    'printf "llm.tier.review-gated.model = claude-sonnet-4-6\\n"'
+assert_contains "43i. llm.tier.autonomous.model = claude-sonnet-4-6" "$SRC" \
+    'printf "llm.tier.autonomous.model = claude-sonnet-4-6\\n"'
+assert_contains "43j. flat-cyborg llm.tier.propose.backend = flat-cyborg" "$SRC" \
+    'printf "llm.tier.propose.backend = flat-cyborg\\n"'
+assert_contains "43k. flat-cyborg llm.tier.review-gated.backend = flat-cyborg" "$SRC" \
+    'printf "llm.tier.review-gated.backend = flat-cyborg\\n"'
+assert_contains "43l. flat-cyborg llm.tier.autonomous.backend = flat-cyborg" "$SRC" \
+    'printf "llm.tier.autonomous.backend = flat-cyborg\\n"'
+assert_contains "43m. agents.auditor.llm pins claude-opus-4-8" "$SRC" \
+    'printf "agents.auditor.llm.model = claude-opus-4-8\\n"'
+assert_contains "43n. agents.theorist.llm pins claude-opus-4-8" "$SRC" \
+    'printf "agents.theorist.llm.model = claude-opus-4-8\\n"'
+assert_contains "43o. agents.submitter.llm pins claude-opus-4-8" "$SRC" \
+    'printf "agents.submitter.llm.model = claude-opus-4-8\\n"'
+# Default dry-run capture: the default backend is flat-cyborg, and the
+# ~/.claude mount fires for it. The mount is print-only (no -d existence
+# check) so this stays CI-green without ~/.claude on the runner.
+assert_contains "43p. default dry-run emit_step names flat-cyborg backend" "$OUT" \
+    "llm backend: flat-cyborg"
+assert_contains "43q. default dry-run mounts ~/.claude into the container" "$OUT" \
+    ":/root/.claude:rw,z"
+
+# ---------------------------------------------------------------------------
+# 43r-w. #1138: metered claude remains the opt-in fallback. The #746/#825
+# claude-branch source assertions above (tests 24/40) already guard the
+# llm.command = claude + cli_command_args --model lines + per-agent opus
+# pins; here a RESEARCH_LLM_BACKEND=claude dry-run capture asserts the
+# emit_step + mount still fire for the explicit fallback.
+# ---------------------------------------------------------------------------
+assert_contains "43r. fallback source still emits llm.command = claude" "$SRC" \
+    'printf "llm.command = claude\\n"'
+CLAUDE_OUT="$(RESEARCH_DRY_RUN=1 \
+              RESEARCH_LLM_BACKEND=claude \
+              RESEARCH_TOPICS=number_theory,combinatorics \
+              RESEARCH_PAPER_CORPUS=/tmp/research-corpus \
+              RESEARCH_TICK_INTERVAL_S=30 \
+              RESEARCH_TOTAL_TICKS=12 \
+              RESEARCH_DAEMONS_PER_COLONY=2 \
+              RESEARCH_HOLD_PERIOD=5 \
+              RESEARCH_RUN_DIR="$WORK_DIR/run-claude" \
+              bash "$ORCH" 2>&1)" || true
+assert_contains "43s. RESEARCH_LLM_BACKEND=claude dry-run names claude backend" "$CLAUDE_OUT" \
+    "llm backend: claude"
+assert_contains "43t. claude fallback dry-run mounts ~/.claude into the container" "$CLAUDE_OUT" \
+    ":/root/.claude:rw,z"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

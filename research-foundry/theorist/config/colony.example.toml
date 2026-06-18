@@ -15,7 +15,11 @@ tick_interval_ms = 180000
 type = "none"
 
 [llm]
-backend = "cli"
+# Only "backend" is read today. The run-research.sh orchestrator
+# overlays the real [llm.flat_cyborg] + per-tier block in the
+# container bootstrap. "flat-cyborg" = flat-rate Claude via the
+# PTY wrapper (#1138).
+backend = "flat-cyborg"
 
 [theorist]
 # When the upstream classification is computational, theorist.ag hedges

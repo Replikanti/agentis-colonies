@@ -87,7 +87,29 @@
 #   RESEARCH_HOLD_PERIOD         Ticks before explorer settles a verdict.
 #                                Default 4
 #   RESEARCH_LLM_BACKEND         llm.backend value injected into hermetic
-#                                config. Default: claude
+#                                config. Default: flat-cyborg (#1138) --
+#                                flat-rate Claude via the flat-cyborg PTY
+#                                wrapper, which drives the `claude` CLI so
+#                                the default run bills no per-token API.
+#                                Metered `claude` + `openai` remain opt-in
+#                                fallbacks. The terminal-writer agents
+#                                (auditor/theorist/submitter/editor) are
+#                                --extract TUI screen-scrape fidelity-
+#                                sensitive, so operators who need that
+#                                fidelity should fall back to
+#                                RESEARCH_LLM_BACKEND=claude. flat-cyborg
+#                                is flat-rate so per-prompt usage is
+#                                reported as None. Needs flat-cyborg >=
+#                                0.9.0 with --no-jitter on PATH (the
+#                                Containerfile.research image ships it) and
+#                                a logged-in ~/.claude.
+#   RESEARCH_FLAT_CYBORG_IDLE_MS flat-cyborg llm.flat_cyborg.idle_ms when
+#                                RESEARCH_LLM_BACKEND=flat-cyborg.
+#                                Default: 4000.
+#   RESEARCH_FLAT_CYBORG_MODEL   flat-cyborg shared llm.model when
+#                                RESEARCH_LLM_BACKEND=flat-cyborg.
+#                                Default: unset (the wrapper picks the
+#                                ~/.claude default model).
 #   RESEARCH_OPENAI_ENDPOINT     Chat-completions URL.
 #                                Default: https://openrouter.ai/api/v1/chat/completions
 #   RESEARCH_OPENAI_MODEL        Model id when backend=openai.
@@ -99,7 +121,10 @@
 #                                Default: opus
 #   RESEARCH_CLAUDE_EFFORT       Default effort. Default: medium
 #   RESEARCH_HOST_CLAUDE_DIR     Host path bind-mounted to /root/.claude.
-#                                Default: $HOME/.claude
+#                                The mount fires for the flat-cyborg
+#                                (default) and claude backends so the
+#                                `claude` CLI can read OAuth session
+#                                tokens. Default: $HOME/.claude
 #   RESEARCH_AUDITOR_CONFIDENCE_FLOOR
 #                                Quality-gate floor for auditor verdicts
 #                                surfaced in run-meta. Default 0.7
@@ -386,7 +411,7 @@ TICK_INTERVAL_S="${RESEARCH_TICK_INTERVAL_S:-120}"
 TOTAL_TICKS="${RESEARCH_TOTAL_TICKS:-75}"
 DAEMONS_PER_COLONY="${RESEARCH_DAEMONS_PER_COLONY:-1}"
 HOLD_PERIOD="${RESEARCH_HOLD_PERIOD:-4}"
-LLM_BACKEND="${RESEARCH_LLM_BACKEND:-claude}"
+LLM_BACKEND="${RESEARCH_LLM_BACKEND:-flat-cyborg}"
 OPENAI_ENDPOINT="${RESEARCH_OPENAI_ENDPOINT:-https://openrouter.ai/api/v1/chat/completions}"
 OPENAI_MODEL="${RESEARCH_OPENAI_MODEL:-qwen/qwen3-coder-30b-a3b-instruct}"
 OPENAI_KEY_ENV="${RESEARCH_OPENAI_KEY_ENV:-OPENROUTER_API_KEY}"
@@ -394,6 +419,8 @@ OPENAI_TIMEOUT_MS="${RESEARCH_OPENAI_TIMEOUT_MS:-180000}"
 CLAUDE_MODEL="${RESEARCH_CLAUDE_MODEL:-opus}"
 CLAUDE_EFFORT="${RESEARCH_CLAUDE_EFFORT:-medium}"
 HOST_CLAUDE_DIR="${RESEARCH_HOST_CLAUDE_DIR:-$HOME/.claude}"
+FLAT_CYBORG_IDLE_MS="${RESEARCH_FLAT_CYBORG_IDLE_MS:-4000}"
+FLAT_CYBORG_MODEL="${RESEARCH_FLAT_CYBORG_MODEL:-}"
 CONFIDENCE_FLOOR="${RESEARCH_AUDITOR_CONFIDENCE_FLOOR:-0.7}"
 AUTHOR_CONFIG="${RESEARCH_AUTHOR_CONFIG:-$FED_DIR/config/authors.toml}"
 DAEMON_CB_PER_TICK="${RESEARCH_DAEMON_CB_PER_TICK:-100000}"
@@ -760,7 +787,7 @@ fi
 # via RESEARCH_PER_TIER_ROUTING=0 without re-running with the env var
 # set. Emitted in both dry-run and live modes so operators get an
 # early signal during plan inspection.
-if [ "$LLM_BACKEND" = "claude" ] && [ "${RESEARCH_PER_TIER_ROUTING:-1}" = "1" ]; then
+if { [ "$LLM_BACKEND" = "flat-cyborg" ] || [ "$LLM_BACKEND" = "flat_cyborg" ] || [ "$LLM_BACKEND" = "claude" ]; } && [ "${RESEARCH_PER_TIER_ROUTING:-1}" = "1" ]; then
     eval "openai_key_value=\${$OPENAI_KEY_ENV:-}"
     if [ -z "${openai_key_value:-}" ]; then
         echo "run-research: warning -- \$$OPENAI_KEY_ENV is unset; per-tier shadow routing won't work without it (set RESEARCH_PER_TIER_ROUTING=0 to opt out)" >&2
@@ -966,6 +993,51 @@ write_bootstrap() {
             printf '  printf "llm.openai.model = %s\\n"\n' "$OPENAI_MODEL"
             printf '  printf "llm.openai.api_key_env = %s\\n"\n' "$OPENAI_KEY_ENV"
             printf '  printf "llm.openai.timeout_ms = %s\\n"\n' "$OPENAI_TIMEOUT_MS"
+        elif [ "$LLM_BACKEND" = "flat-cyborg" ] || [ "$LLM_BACKEND" = "flat_cyborg" ]; then
+            # #1138 flat-cyborg backend (default): the wrapper drives the
+            # `claude` CLI itself, so we emit NO llm.command = claude here
+            # (that is the metered-claude path below). Only the idle-ms
+            # knob, plus an optional shared llm.model.
+            printf '  printf "llm.flat_cyborg.idle_ms = %s\\n"\n' "$FLAT_CYBORG_IDLE_MS"
+            if [ -n "$FLAT_CYBORG_MODEL" ]; then
+                printf '  printf "llm.model = %s\\n"\n' "$FLAT_CYBORG_MODEL"
+            fi
+            # #1138: per-tier model routing TRANSLATED from the metered
+            # claude branch's `cli_command_args = --model <M>` to
+            # flat-cyborg's `llm.tier.<tier>.model` (flat-cyborg passes
+            # `--model M` to the claude CLI it drives). shadow + dormant
+            # get haiku, propose + review-gated + autonomous get sonnet;
+            # the three terminal-writers (auditor/theorist/submitter) pin
+            # opus via per-agent override below.
+            printf '  printf "llm.tier.dormant.model = claude-haiku-4-5\\n"\n'
+            printf '  printf "llm.tier.shadow.model = claude-haiku-4-5\\n"\n'
+            printf '  printf "llm.tier.propose.model = claude-sonnet-4-6\\n"\n'
+            printf '  printf "llm.tier.review-gated.model = claude-sonnet-4-6\\n"\n'
+            printf '  printf "llm.tier.autonomous.model = claude-sonnet-4-6\\n"\n'
+            # #1138: per-tier BACKEND selection mirrors the metered-claude
+            # #825 block -- shadow runs against the cheap OpenRouter-hosted
+            # Qwen model, propose/review-gated/autonomous + the three
+            # terminal-writers stay on flat-cyborg. agentis-core resolves
+            # `llm.tier.<tier>.backend` per-prompt by re-reading the calling
+            # agent's <agent>:confidence memo via tier(). Operators opt out
+            # of the entire per-tier + per-agent block via
+            # RESEARCH_PER_TIER_ROUTING=0.
+            if [ "${RESEARCH_PER_TIER_ROUTING:-1}" = "1" ]; then
+                printf '  printf "llm.tier.shadow.backend = openai\\n"\n'
+                printf '  printf "llm.tier.shadow.openai.endpoint = %s\\n"\n' "$OPENAI_ENDPOINT"
+                printf '  printf "llm.tier.shadow.openai.model = %s\\n"\n' "$OPENAI_MODEL"
+                printf '  printf "llm.tier.shadow.openai.api_key_env = %s\\n"\n' "$OPENAI_KEY_ENV"
+                printf '  printf "llm.tier.shadow.openai.timeout_ms = %s\\n"\n' "$OPENAI_TIMEOUT_MS"
+                printf '  printf "llm.tier.propose.backend = flat-cyborg\\n"\n'
+                printf '  printf "llm.tier.review-gated.backend = flat-cyborg\\n"\n'
+                printf '  printf "llm.tier.autonomous.backend = flat-cyborg\\n"\n'
+                printf '  printf "agents.auditor.llm.backend = flat-cyborg\\n"\n'
+                printf '  printf "agents.auditor.llm.model = claude-opus-4-8\\n"\n'
+                printf '  printf "agents.theorist.llm.backend = flat-cyborg\\n"\n'
+                printf '  printf "agents.theorist.llm.model = claude-opus-4-8\\n"\n'
+                printf '  printf "agents.submitter.llm.backend = flat-cyborg\\n"\n'
+                printf '  printf "agents.submitter.llm.model = claude-opus-4-8\\n"\n'
+            fi
         elif [ "$LLM_BACKEND" = "claude" ]; then
             # Per-tier model split (#746): replaces the per-role
             # ANTHROPIC_MODEL=<resolved> spawn-prefix routing introduced
@@ -1535,11 +1607,11 @@ spawn_container() {
             ln -snf /persistent/knowledge "$LAPTOP_DIR/.agentis/knowledge"
         fi
     fi
-    if [ "$LLM_BACKEND" = "claude" ]; then
-        # Bind-mount host's ~/.claude into container so claude CLI can
-        # read OAuth session tokens (Max 20x flat-rate). ':z' SELinux
-        # relabel required on Fedora / RHEL. Mirrors tribes-bench
-        # (#535, #540).
+    if [ "$LLM_BACKEND" = "claude" ] || [ "$LLM_BACKEND" = "flat-cyborg" ] || [ "$LLM_BACKEND" = "flat_cyborg" ]; then
+        # Bind-mount host's ~/.claude into container so the flat-cyborg
+        # (default) or claude backend's `claude` CLI can read OAuth
+        # session tokens (Max 20x flat-rate). ':z' SELinux relabel
+        # required on Fedora / RHEL. Mirrors tribes-bench (#535, #540).
         #
         # #825 follow-up: when per-tier routing is enabled (default) the
         # shadow-tier prompt() resolves to the openai backend which
