@@ -17,6 +17,29 @@ is asserted until multi-version CI is in place.
 
 ### Added
 
+- First-real-task **completion criterion + post-run triage protocol**
+  (#1116 / #1118). New `doc/dev-apprenticeship-first-task.md` pins down,
+  *before* the first end-to-end run (#1117), the two things that were
+  never defined: (1) a single binary, non-author-checkable **completion
+  criterion** — the federation "completed" a nominated ~1h bounded task
+  iff it opened a PR that is mergeable **and** passes the gate green
+  (`colony-lint.sh` 0-failed + required CI) — plus an explicit
+  **human-intervention boundary** (operator may fix the environment —
+  infra/creds/prompts/I-O/restarts/tiers — but may not produce the work
+  being measured; crossing that invalidates the run); and (2) a standing
+  **post-run triage** rule (fail → file a `dev-apprenticeship` issue
+  naming the exact failure mode with `cost-rate-report.sh` (#1114)
+  evidence and fix that; succeed → record the completion and nominate the
+  next task; **never** close a `dev-apprenticeship` issue with a
+  cut-reason instead of a fix-reason or recorded data point). New
+  `tools/completion-gate.sh <fed-dir> <target-issue> --pr <N>` makes the
+  criterion script-checkable — prints `[PASS]`/`[FAIL]` per condition (PR
+  mergeable, CI green, local colony-lint 0-failed) and an overall verdict,
+  exits non-zero unless all pass (no heredocs, dash-safe ASCII markers).
+  Both the doc and the gate are bundled (added to `BUNDLE.manifest`) and
+  linked from the federation README. The run itself (#1117) is
+  operator-driven (live federation, real backend, operator's repo); this
+  is the pre-run scaffolding that makes its outcome objective.
 - Shared GitLab snapshot + payload compression for the Triage colony
   (#1111 / #1112). The `issues` collection is now fetched **once per
   colony per tick** and shared via a memo instead of each of the four
