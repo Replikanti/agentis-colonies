@@ -1,0 +1,50 @@
+# Tribe Zeta Colony Configuration
+#
+# Part of the Trading Binance federation. Tribe Zeta specialises in the
+# volume-divergence fade (reversal on unconfirmed price extremes vs
+# volumeMA(20)) trading setup. Copy to colony.toml and
+# edit for your environment.
+
+[colony]
+name = "tribe-zeta"
+tick_interval_ms = 60000
+
+# trading-binance is a non-forge federation (ADR-0003). The strategist
+# agent reads OHLCV candles streamed by tools/run-replay.sh and settles
+# trades via the deterministic verifier under VERIFIER_PATH; no agent
+# calls a forge API. `forge.type = "none"` opts out of the forge contract
+# without requiring a [forge.gitlab] / [forge.github] sub-block.
+[forge]
+type = "none"
+
+[llm]
+# Only "backend" is read today. "cli" uses the agentis daemon default CLI
+# adapter. The replay orchestrator (`tools/run-replay.sh`) overlays a
+# proper [llm.openai] block in the container bootstrap.
+backend = "cli"
+
+# Agent definitions
+# Each agent runs as a separate agentis daemon process. They discover
+# each other via colony UDP and communicate over TCP emit/listen.
+
+[[agents]]
+name = "strategist"
+source = "agents/strategist.ag"
+cb_budget = 200000000
+tick_interval_ms = 60000
+
+# Economy knobs. Operator override path: edit env vars before launching
+# scripts/start-colony.sh (INITIAL_CB, BASE_COST, K_MALTHUSIAN,
+# MAX_REPLICAS, REPRODUCTIVE_FITNESS_THRESHOLD). The values below match
+# the script defaults — they are documentation only and are NOT read by
+# start-colony.sh today.
+
+[tribe.replication]
+enabled = true
+initial_cb = 1000
+base_cost = 100
+k_malthusian = 3
+max_replicas = 5
+
+[tribe.reproductive]
+fitness_threshold = 100

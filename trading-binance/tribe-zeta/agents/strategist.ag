@@ -1,0 +1,505 @@
+// strategist.ag -- Tribe Zeta strategist: encodes a Dr. David Paul style
+// volume-divergence fade setup (reversal on unconfirmed extremes) over
+// Binance USDT-M candles streamed by `tools/run-replay.sh` (#573 PR-3).
+//
+// Per-tick behaviour:
+//   1. Read replay state (`replay:current_tick`, `replay:context_path`).
+//   2. Read the context candle window via `file_read()`.
+//   3. Build a tribe-specific strategy prompt (volume-divergence here)
+//      and call prompt() -> Decision JSON.
+//   4. Persist the decision to memo and the per-run trade ledger.
+//   5. Settle the decision from `tick - HOLD_PERIOD` via the
+//      deterministic verifier (`tools/verify-trade.sh`) and update
+//      fitness on the realised PnL.
+//   6. M98 v3 prompt evolution (verified_count >= threshold triggers
+//      meta-prompt rewrite), M106 hash-pointer wrap before replicate,
+//      M2-Malthusian replicate when fitness > threshold AND tribe pool
+//      sufficient AND tribe population < cap.
+//
+// Run as daemon: agentis daemon agents/strategist.ag --colony tribe-zeta
+// Requires: exec capability, replication capability, VERIFIER_PATH +
+// CANDLES_CSV + HOLD_PERIOD env (set by tools/run-replay.sh bootstrap).
+
+cb 200000000;
+
+type Decision {
+    action: string,
+    size: float,
+    rationale: string,
+    setup: string
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("strategist:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    };
+    return 0.0;
+}
+
+fn tribe_name() -> string {
+    let _tn = try { exec sh "printenv TRIBE_NAME"; } catch e { ""; };
+    if len(_tn) > 0 {
+        return _tn;
+    };
+    return "tribe-zeta";
+}
+
+fn now_ms_via_shell() -> int {
+    let s = try { exec sh "date +%s%3N"; } catch e { "0"; };
+    return parse_int(s);
+}
+
+fn _tribe_default_setup() -> string {
+    return "volume_divergence";
+}
+
+// Per-tribe seed strategy prompt. Returns the volume-divergence setup
+// hypothesis verbatim; M98 v3 evolution rewrites this body once K
+// verified trades accumulate. All five tribes share the same no-
+// indicators rule; the per-tribe lines differ only in the setup
+// hypothesis paragraph.
+fn _seed_prompt_for_setup(setup: string) -> string {
+    if setup == "volume_divergence" {
+        return "You are a contrarian price-action trader specialising in volume-divergence fades (Dr. David Paul method). From the supplied CSV, compute a 20-bar simple moving average of volume (volumeMA(20)) and identify the highest high and lowest low over the lookback window. Trade plan: when price prints a NEW LOCAL HIGH over the lookback but the current candle's volume is at or below volumeMA(20), the breakout is unconfirmed -- SHORT to fade the move (expect a reversal down). When price prints a NEW LOCAL LOW over the lookback but the current candle's volume is at or below volumeMA(20), sellers are exhausted -- LONG to fade the move (expect a bounce). When volume CONFIRMS the move (current volume clearly above volumeMA(20) and rising together with price), the move is genuine -- FLAT, do not fade. FLAT when price is mid-range or the signal is ambiguous. NEVER reference RSI, MACD, Bollinger Bands, ATR, or any computed indicator beyond raw OHLCV and a volume moving average. Reason from raw OHLCV + volumeMA(20) only. Return JSON with these fields: action: string -- LONG | SHORT | FLAT. size: float -- 0.1 to 1.0 (position size, FLAT must use 0.0). rationale: string -- one sentence explaining the setup you identified. setup: string -- must be exactly \"volume_divergence\".";
+    };
+    return "";
+}
+
+fn _variant_overlay_suffix() -> string {
+    let variant = recall_latest("strategist:prompt_variant");
+    if len(variant) > 0 {
+        return "\n\n[Replica focus: prompt variant '" + variant + "' -- lean into that interpretation when scanning the candle stream below.]";
+    };
+    return "";
+}
+
+// #520 M98 v3 PR 3/3: hash-pointer extraction over the M106 wire.
+fn _extract_pp_hash(variant_tag: string) -> string {
+    if len(variant_tag) < 67 { return ""; };
+    if substring(variant_tag, 0, 3) != "pp:" { return ""; };
+    let hex = substring(variant_tag, 3, 67);
+    // colony-lint: safe-exec-concat
+    let cmd = "printf '%s' " + shell_escape(hex) + " | tr -d '0-9a-f' | wc -c";
+    let leftover = try { exec sh cmd; } catch e { "1"; };
+    if parse_int(leftover) != 0 { return ""; };
+    return hex;
+}
+
+// Parent pre-replicate hash-pointer wrap. Body:
+//   1. Read the parent's current strategy prompt body from memo.
+//   2. If empty, return the unchanged variant_tag (no body to inherit).
+//   3. Compute sha256 via `python3 -c` exec sh.
+//   4. Write-once content-addressed registry under
+//      `strategist:prompt_body:<sha>`.
+//   5. Return `"pp:" + h + "|" + variant_tag`.
+fn _publish_prompt_body_and_wrap_variant(self_pid: string, variant_tag: string) -> string {
+    if len(self_pid) == 0 { return variant_tag; };
+    let body = recall_latest("strategist:" + self_pid + ":strategy_prompt");
+    if len(body) == 0 { return variant_tag; };
+    // colony-lint: safe-exec-concat
+    let sha_cmd = "python3 -c 'import sys,hashlib; sys.stdout.write(hashlib.sha256(sys.argv[1].encode(\"utf-8\")).hexdigest())' " + shell_escape(body);
+    let h = try { exec sh sha_cmd; } catch e { ""; };
+    if len(h) != 64 { return variant_tag; };
+    let body_key = "strategist:prompt_body:" + h;
+    let existing = recall_latest(body_key);
+    if len(existing) == 0 { memo_write(body_key, body); };
+    return "pp:" + h + "|" + variant_tag;
+}
+
+// Levenshtein ratio in integer percent (0..100).
+fn _levenshtein_ratio_pct(a: string, b: string) -> int {
+    if len(a) == 0 {
+        if len(b) == 0 { return 100; };
+        return 0;
+    };
+    if len(b) == 0 { return 0; };
+    if a == b { return 100; };
+    let max_bytes_env = try { exec sh "printenv STRATEGIST_PROMPT_MAX_BYTES"; } catch e { ""; };
+    let max_bytes = if len(max_bytes_env) > 0 { parse_int(max_bytes_env); } else { 4096; };
+    let max_bytes_eff = if max_bytes <= 0 { 4096; } else { max_bytes; };
+    let a_clamped = if len(a) > max_bytes_eff { substring(a, 0, max_bytes_eff); } else { a; };
+    let b_clamped = if len(b) > max_bytes_eff { substring(b, 0, max_bytes_eff); } else { b; };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys\nA=sys.argv[1]\nB=sys.argv[2]\nif A==B:\n print(100); sys.exit(0)\nn=len(A); m=len(B)\nprev=list(range(m+1))\nfor i in range(1,n+1):\n cur=[i]+[0]*m\n for j in range(1,m+1):\n  c=0 if A[i-1]==B[j-1] else 1\n  cur[j]=min(prev[j]+1,cur[j-1]+1,prev[j-1]+c)\n prev=cur\nd=prev[m]\nmx=max(n,m)\nprint(int(round((1.0 - d/mx)*100)))' " + shell_escape(a_clamped) + " " + shell_escape(b_clamped);
+    let out = try { exec sh cmd; } catch e { "0"; };
+    let r = parse_int(out);
+    if r < 0 { return 0; };
+    if r > 100 { return 100; };
+    return r;
+}
+
+// Append a verified-PnL trade outcome to the per-pid rolling buffer,
+// truncated to last K (default 3 from STRATEGIST_PROMPT_EVOLUTION_THRESHOLD).
+fn _push_settled_trade(self_pid: string, classification: string, pnl_bps: int, setup: string) -> int {
+    let buf_key = "strategist:" + self_pid + ":settled_trades";
+    let buf_raw = recall_latest(buf_key);
+    let thr_env = try { exec sh "printenv STRATEGIST_PROMPT_EVOLUTION_THRESHOLD"; } catch e { ""; };
+    let thr = if len(thr_env) > 0 { parse_int(thr_env); } else { 3; };
+    let thr_eff = if thr <= 0 { 3; } else { thr; };
+    // colony-lint: safe-exec-concat
+    let cmd = "python3 -c 'import sys,json\nraw=sys.argv[1]\ncls=sys.argv[2]\npnl=int(sys.argv[3])\nsetup=sys.argv[4]\nk=int(sys.argv[5])\ntry:\n arr=json.loads(raw) if raw else []\n if not isinstance(arr,list): arr=[]\nexcept Exception:\n arr=[]\narr.append({\"classification\":cls,\"pnl_bps\":pnl,\"setup\":setup})\nif len(arr)>k: arr=arr[-k:]\nprint(json.dumps(arr,separators=(\",\",\":\")))' " + shell_escape(buf_raw) + " " + shell_escape(classification) + " " + shell_escape(to_string(pnl_bps)) + " " + shell_escape(setup) + " " + shell_escape(to_string(thr_eff));
+    let new_buf = try { exec sh cmd; } catch e { "[]"; };
+    memo_write(buf_key, new_buf);
+    // colony-lint: safe-exec-concat
+    let count_cmd = "python3 -c 'import sys,json\ntry: a=json.loads(sys.argv[1])\nexcept Exception: a=[]\nprint(len(a) if isinstance(a,list) else 0)' " + shell_escape(new_buf);
+    let n = try { exec sh count_cmd; } catch e { "0"; };
+    return parse_int(n);
+}
+
+// Schema-sanity ping: dry-run the candidate prompt against a tiny
+// fixture CSV and verify it produces a Decision-shaped response.
+fn _schema_sanity_ok(candidate_prompt: string) -> bool {
+    let fixture = "ts,open,high,low,close,volume\n1,100.0,101.0,99.5,100.5,1000\n2,100.5,101.5,100.0,101.0,1100\n3,101.0,102.0,100.5,101.5,1200\n";
+    let ok = try {
+        let probe = prompt(candidate_prompt + _variant_overlay_suffix(), fixture) -> Decision;
+        if len(probe.action) == 0 { false; }
+        else { if len(probe.setup) == 0 { false; }
+        else { if len(probe.rationale) == 0 { false; }
+        else { true; }; }; };
+    } catch e {
+        false;
+    };
+    return ok;
+}
+
+// Meta-prompt rewrite + anti-degeneracy guards. Called once the
+// settled_trades buffer reaches K and the generation counter is below
+// the cap. Mirrors hunter.ag _evolve_hunting_prompt: rewrite via LLM,
+// length-clamp, Levenshtein floor, schema-sanity ping, generation-cap
+// seed reset.
+fn _evolve_strategy_prompt(self_pid: string, prompt_text: string) -> string {
+    let buf_key = "strategist:" + self_pid + ":settled_trades";
+    let buffer_json = recall_latest(buf_key);
+    let gen_key = "strategist:" + self_pid + ":strategy_generation";
+    let gen_str = recall_latest(gen_key);
+    let gen = if len(gen_str) > 0 { parse_int(gen_str); } else { 0; };
+    let gen_cap_env = try { exec sh "printenv STRATEGIST_PROMPT_GEN_CAP"; } catch e { ""; };
+    let gen_cap = if len(gen_cap_env) > 0 { parse_int(gen_cap_env); } else { 10; };
+    let gen_cap_eff = if gen_cap <= 0 { 10; } else { gen_cap; };
+    let max_bytes_env = try { exec sh "printenv STRATEGIST_PROMPT_MAX_BYTES"; } catch e { ""; };
+    let max_bytes = if len(max_bytes_env) > 0 { parse_int(max_bytes_env); } else { 4096; };
+    let max_bytes_eff = if max_bytes <= 0 { 4096; } else { max_bytes; };
+    let lev_floor_env = try { exec sh "printenv STRATEGIST_PROMPT_LEVENSHTEIN_FLOOR"; } catch e { ""; };
+    let lev_floor = if len(lev_floor_env) > 0 { parse_int(lev_floor_env); } else { 5; };
+    let lev_floor_eff = if lev_floor < 0 { 5; } else { lev_floor; };
+    let prompt_key = "strategist:" + self_pid + ":strategy_prompt";
+
+    let meta = "Rewrite the trading-strategy prompt below given these settled-trade outcomes. "
+             + "Keep the JSON output schema identical (return Decision{action, size, rationale, setup}). "
+             + "Preserve the no-indicators rule: NEVER reference RSI, MACD, Bollinger Bands, ATR, moving averages, or any computed indicator. "
+             + "Refine the trade-plan section to lean into the setups that produced WIN classifications and away from the ones that produced LOSS classifications. "
+             + "Old prompt: <"
+             + prompt_text + ">. Settled trades: <" + buffer_json + ">.";
+    let new_prompt_raw = try { prompt(meta, "") -> string; } catch e { ""; };
+    let new_prompt = if len(new_prompt_raw) > max_bytes_eff { substring(new_prompt_raw, 0, max_bytes_eff); } else { new_prompt_raw; };
+
+    if gen >= gen_cap_eff {
+        let seed = _seed_prompt_for_setup(_tribe_default_setup());
+        let seed_clamped = if len(seed) > max_bytes_eff { substring(seed, 0, max_bytes_eff); } else { seed; };
+        memo_write(prompt_key, seed_clamped);
+        memo_write(gen_key, "0");
+        let lineage_key = "strategist:" + self_pid + ":lineage_id";
+        let lin_str = recall_latest(lineage_key);
+        let lin = if len(lin_str) > 0 { parse_int(lin_str); } else { 0; };
+        memo_write(lineage_key, to_string(lin + 1));
+        memo_write(buf_key, "[]");
+        learn("strategist_prompt_evolve", "lineage_reset", "gen_cap=" + to_string(gen_cap_eff) + " lineage=" + to_string(lin + 1), "partial", ["prompt-evolution", "lineage-reset", "trading-binance"]);
+        return seed_clamped;
+    };
+
+    if len(new_prompt) == 0 {
+        return prompt_text;
+    };
+    let lev_pct = _levenshtein_ratio_pct(prompt_text, new_prompt);
+    let dissim_pct = 100 - lev_pct;
+    if dissim_pct < lev_floor_eff {
+        learn("strategist_prompt_evolve", "no_op_similarity", "lev_pct=" + to_string(lev_pct) + " floor=" + to_string(lev_floor_eff), "partial", ["prompt-evolution", "no-op", "trading-binance"]);
+        return prompt_text;
+    };
+
+    if _schema_sanity_ok(new_prompt) == false {
+        learn("strategist_prompt_evolve", "schema_revert", "gen=" + to_string(gen), "failure", ["prompt-evolution", "schema-revert", "trading-binance"]);
+        return prompt_text;
+    };
+
+    memo_write(prompt_key, new_prompt);
+    memo_write(gen_key, to_string(gen + 1));
+    memo_write(buf_key, "[]");
+    learn("strategist_prompt_evolve", "rewrite", "gen=" + to_string(gen + 1) + " dissim_pct=" + to_string(dissim_pct), "success", ["prompt-evolution", "rewritten", "trading-binance"]);
+    return new_prompt;
+}
+
+fn pick_variant(n: int) -> string {
+    let idx = n - ((n / 5) * 5);
+    if idx == 0 { return "volume_divergence:default"; };
+    if idx == 1 { return "volume_divergence:high-fade-strict"; };
+    if idx == 2 { return "volume_divergence:low-fade-strict"; };
+    if idx == 3 { return "volume_divergence:confirmation-flat"; };
+    return "volume_divergence:extreme-range-edges";
+}
+
+fn self_node_addr() -> string {
+    let addr = recall_latest("trading-binance:worker_addr");
+    if len(addr) > 0 {
+        return addr;
+    };
+    return "127.0.0.1:9100";
+}
+
+fn select_replication_target() -> string {
+    let cnt_str = recall_latest("trading-binance:peer_worker_count");
+    let cnt = if len(cnt_str) > 0 { parse_int(cnt_str); } else { 0; };
+    if cnt <= 0 {
+        return self_node_addr();
+    };
+    let rr_str = recall_latest("strategist:replicate_rr_counter");
+    let rr = if len(rr_str) > 0 { parse_int(rr_str); } else { 0; };
+    let idx = rr - ((rr / cnt) * cnt);
+    memo_write("strategist:replicate_rr_counter", to_string(rr + 1));
+    let addr = recall_latest("trading-binance:peer_worker_addr:" + to_string(idx));
+    if len(addr) > 0 {
+        return addr;
+    };
+    return self_node_addr();
+}
+
+fn tick(reason: string) -> void {
+    let _ = reason;
+    let _tick_now_ms = now_ms_via_shell();
+    let _tribe_name = tribe_name();
+    let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
+    let _variant = recall_latest("strategist:prompt_variant");
+    let conf = get_confidence();
+    print("[strategist] tick conf=", conf);
+
+    // Read replay state seeded by the orchestrator (`tools/run-replay.sh`)
+    // before each tick: `replay:current_tick` is the candle index and
+    // `replay:context_path` is the sandbox-relative CSV slice.
+    let tick_idx_str = recall_latest("replay:current_tick");
+    let tick_idx = if len(tick_idx_str) > 0 { parse_int(tick_idx_str); } else { -1; };
+    let context_path = recall_latest("replay:context_path");
+    if tick_idx < 0 {
+        print("[strategist] no replay tick yet");
+        return;
+    };
+    if len(context_path) == 0 {
+        print("[strategist] no context path");
+        return;
+    };
+
+    // Bootstrap the strategy prompt: first tick on a fresh strategist
+    // populates the memo from `_seed_prompt_for_setup(_tribe_default_setup())`
+    // or adopts a parent's evolved body via the M106 hash-pointer wire
+    // when `_variant` starts with `pp:`. Body byte-clamped to
+    // STRATEGIST_PROMPT_MAX_BYTES on read.
+    let prompt_text_raw = recall_latest("strategist:" + _self_pid + ":strategy_prompt");
+    let prompt_text = if len(prompt_text_raw) == 0 {
+        let max_bytes_env = try { exec sh "printenv STRATEGIST_PROMPT_MAX_BYTES"; } catch e { ""; };
+        let max_bytes = if len(max_bytes_env) > 0 { parse_int(max_bytes_env); } else { 4096; };
+        let max_bytes_eff = if max_bytes <= 0 { 4096; } else { max_bytes; };
+        let pp_hash = _extract_pp_hash(_variant);
+        if len(pp_hash) > 0 {
+            let inherited = recall_latest("strategist:prompt_body:" + pp_hash);
+            if len(inherited) > 0 {
+                let inh_clamped = if len(inherited) > max_bytes_eff { substring(inherited, 0, max_bytes_eff); } else { inherited; };
+                memo_write("strategist:" + _self_pid + ":strategy_prompt", inh_clamped);
+                memo_write("strategist:" + _self_pid + ":strategy_generation", "0");
+                learn("strategist_prompt_inherit", _tribe_name + "/" + _self_pid, "sha=" + substring(pp_hash, 0, 12), "success", ["prompt-inheritance", "adopted", "trading-binance"]);
+                inh_clamped;
+            } else {
+                let seed_m = _seed_prompt_for_setup(_tribe_default_setup());
+                let seed_m_clamped = if len(seed_m) > max_bytes_eff { substring(seed_m, 0, max_bytes_eff); } else { seed_m; };
+                memo_write("strategist:" + _self_pid + ":strategy_prompt", seed_m_clamped);
+                memo_write("strategist:" + _self_pid + ":strategy_generation", "0");
+                learn("strategist_prompt_inherit", _tribe_name + "/" + _self_pid, "sha=" + substring(pp_hash, 0, 12), "failure", ["prompt-inheritance", "miss", "trading-binance"]);
+                seed_m_clamped;
+            };
+        } else {
+            let seed = _seed_prompt_for_setup(_tribe_default_setup());
+            let seed_clamped = if len(seed) > max_bytes_eff { substring(seed, 0, max_bytes_eff); } else { seed; };
+            memo_write("strategist:" + _self_pid + ":strategy_prompt", seed_clamped);
+            memo_write("strategist:" + _self_pid + ":strategy_generation", "0");
+            seed_clamped;
+        };
+    } else {
+        prompt_text_raw;
+    };
+
+    // Read the candle context window. The orchestrator writes a slice of
+    // [tick - lookback .. tick] OHLCV rows to `context_path` relative to
+    // the agentis sandbox dir.
+    let sandbox_dir = try { exec sh "printenv AGENTIS_ROOT"; } catch e { ""; };
+    let sandbox_eff = if len(sandbox_dir) > 0 { sandbox_dir + "/sandbox"; } else { "/run-root/.agentis/sandbox"; };
+    let ctx_full = sandbox_eff + "/" + context_path;
+    let candles_csv = try {
+        file_read(ctx_full);
+    } catch e {
+        print("[strategist] context read failed:", e);
+        "";
+    };
+
+    if len(candles_csv) < 10 {
+        print("[strategist] empty candle context tick=", tick_idx);
+        return;
+    };
+
+    let decision = prompt(
+        prompt_text + _variant_overlay_suffix(),
+        candles_csv
+    ) -> Decision;
+
+    let my_tier = tier("strategist");
+    if my_tier == "autonomous" {
+        // Phase 1 has no autonomous external-write surface (no live
+        // exchange order placement yet). Collapse to propose semantics
+        // so verification + fitness still run.
+        learn("trade", "tick " + to_string(tick_idx) + " " + decision.action, decision.rationale, "partial", ["acted", "trading-binance"]);
+    } else {
+        if my_tier == "review-gated" {
+            learn("trade", "tick " + to_string(tick_idx) + " " + decision.action, decision.rationale, "partial", ["review-gated", "trading-binance"]);
+        } else {
+            if my_tier == "propose" {
+                emit("tribe-zeta:decision", decision);
+
+                // Persist the decision JSON to memo keyed on the tick
+                // so the settlement path can read it HOLD_PERIOD ticks
+                // later.
+                let decision_json = "{\"action\":\"" + decision.action + "\",\"size\":" + to_string(decision.size) + ",\"rationale\":\"" + decision.rationale + "\",\"setup\":\"" + decision.setup + "\"}";
+                memo_write("strategist:" + _self_pid + ":decision:tick-" + to_string(tick_idx), decision_json);
+
+                // Append to per-run trade ledger (best-effort, ledger
+                // path injected via TRADE_LEDGER env by the orchestrator).
+                let ledger_path = try { exec sh "printenv TRADE_LEDGER"; } catch e { ""; };
+                if len(ledger_path) > 0 {
+                    let ledger_row = "{\"ts\":" + to_string(_tick_now_ms) + ",\"tribe\":\"" + _tribe_name + "\",\"pid\":\"" + _self_pid + "\",\"tick\":" + to_string(tick_idx) + ",\"decision\":" + decision_json + "}";
+                    // colony-lint: safe-exec-concat
+                    let append_cmd = "printf '%s\n' " + shell_escape(ledger_row) + " >> " + shell_escape(ledger_path);
+                    let _ = try { exec sh append_cmd; } catch e { ""; };
+                };
+
+                // Settlement: read the decision from `tick - HOLD_PERIOD`
+                // and invoke the deterministic verifier. The verifier
+                // owns the PnL calculation (slippage + funding cost
+                // subtraction); .ag only consumes the JSON verdict.
+                let hold_env = try { exec sh "printenv HOLD_PERIOD"; } catch e { ""; };
+                let hold = if len(hold_env) > 0 { parse_int(hold_env); } else { 8; };
+                let hold_eff = if hold <= 0 { 8; } else { hold; };
+                let settle_tick = tick_idx - hold_eff;
+                if settle_tick >= 0 {
+                    let prior_decision = recall_latest("strategist:" + _self_pid + ":decision:tick-" + to_string(settle_tick));
+                    if len(prior_decision) > 0 {
+                        let verifier_path = try { exec sh "printenv VERIFIER_PATH"; } catch e { ""; };
+                        let candles_path = try { exec sh "printenv CANDLES_CSV"; } catch e { ""; };
+                        if len(verifier_path) > 0 {
+                            if len(candles_path) > 0 {
+                                // colony-lint: safe-exec-concat
+                                let verify_cmd = "DECISION_JSON=" + shell_escape(prior_decision) + " CONTEXT_TICK=" + shell_escape(to_string(settle_tick)) + " HOLD_PERIOD=" + shell_escape(to_string(hold_eff)) + " CANDLES_CSV=" + shell_escape(candles_path) + " bash " + shell_escape(verifier_path);
+                                let verdict_raw = try {
+                                    exec sh verify_cmd;
+                                } catch e {
+                                    print("[strategist] verifier call failed:", e);
+                                    "";
+                                };
+                                let verified_str = to_string(json_get(verdict_raw, "verified"));
+                                let classification = to_string(json_get(verdict_raw, "classification"));
+                                let pnl_bps_x100_str = to_string(json_get(verdict_raw, "pnl_bps_x100"));
+                                let pnl_bps_x100 = parse_int(pnl_bps_x100_str);
+                                let pnl_bps = pnl_bps_x100 / 100;
+                                if verified_str == "true" {
+                                    print("[strategist] settled tick=", settle_tick, " classification=", classification, " pnl_bps=", pnl_bps);
+                                    learn("settle", "tick " + to_string(settle_tick) + " " + classification, "pnl_bps=" + to_string(pnl_bps) + " pnl_bps_x100=" + to_string(pnl_bps_x100), "success", ["acted", "trading-binance", _tribe_name, "classification:" + classification]);
+
+                                    // Fitness update: reward WIN, penalty
+                                    // LOSS, neutral FLAT. Knob env vars are
+                                    // bps-scaled so per-bps reward stays
+                                    // calibratable from the orchestrator.
+                                    if len(_self_pid) > 0 {
+                                        let reward_per_bps_env = try { exec sh "printenv STRATEGIST_FITNESS_REWARD_WIN_PER_BPS"; } catch e { ""; };
+                                        let reward_per_bps = if len(reward_per_bps_env) > 0 { parse_int(reward_per_bps_env); } else { 1; };
+                                        let penalty_per_bps_env = try { exec sh "printenv STRATEGIST_FITNESS_PENALTY_LOSS_PER_BPS"; } catch e { ""; };
+                                        let penalty_per_bps = if len(penalty_per_bps_env) > 0 { parse_int(penalty_per_bps_env); } else { 1; };
+                                        let fit_pre = parse_int(recall_latest("strategist:" + _self_pid + ":fitness"));
+                                        let fit_delta = if classification == "WIN" {
+                                            pnl_bps * reward_per_bps;
+                                        } else { if classification == "LOSS" {
+                                            pnl_bps * penalty_per_bps;
+                                        } else {
+                                            0;
+                                        }; };
+                                        memo_write("strategist:" + _self_pid + ":fitness", to_string(fit_pre + fit_delta));
+                                    };
+
+                                    // M98 v3 evolution trigger: push the
+                                    // outcome into the settled-trades
+                                    // buffer; once K accumulate, fire the
+                                    // meta-prompt rewrite path.
+                                    if len(_self_pid) > 0 {
+                                        let _buf_len = _push_settled_trade(_self_pid, classification, pnl_bps, decision.setup);
+                                        let _thr_env = try { exec sh "printenv STRATEGIST_PROMPT_EVOLUTION_THRESHOLD"; } catch e { ""; };
+                                        let _thr = if len(_thr_env) > 0 { parse_int(_thr_env); } else { 3; };
+                                        let _thr_eff = if _thr <= 0 { 3; } else { _thr; };
+                                        if _buf_len >= _thr_eff {
+                                            let _ = _evolve_strategy_prompt(_self_pid, prompt_text);
+                                        };
+                                    };
+
+                                    // M2-Malthusian replicate gate: fitness
+                                    // > threshold AND tribe pool >= cost
+                                    // AND tribe size < max_replicas.
+                                    let repr_thr = parse_int(recall_latest("strategist:reproductive_fitness_threshold"));
+                                    if repr_thr > 0 {
+                                        let my_fit_r = parse_int(recall_latest("strategist:" + _self_pid + ":fitness"));
+                                        if my_fit_r > repr_thr {
+                                            let n_r = parse_int(recall_latest("tribe-" + _tribe_name + ":size"));
+                                            let max_repl_r = parse_int(recall_latest("tribe-" + _tribe_name + ":max_replicas"));
+                                            if n_r < max_repl_r {
+                                                let pool_r = parse_int(recall_latest("tribe-" + _tribe_name + ":pool"));
+                                                let base_r = parse_int(recall_latest("tribe-" + _tribe_name + ":replication_base_cost"));
+                                                let raw_k_r = parse_int(recall_latest("tribe-" + _tribe_name + ":replication_k"));
+                                                let k_r = if raw_k_r <= 0 { 3; } else { raw_k_r; };
+                                                let cost_r = base_r + (base_r * n_r) / k_r;
+                                                if pool_r >= cost_r {
+                                                    let variant_pick = pick_variant(n_r);
+                                                    memo_write("strategist:prompt_variant", variant_pick);
+                                                    let target_r = select_replication_target();
+                                                    if len(target_r) > 0 {
+                                                        // M106 hash-pointer wrap so the child
+                                                        // inherits the parent's evolved prompt.
+                                                        let variant_wrapped = _publish_prompt_body_and_wrap_variant(_self_pid, variant_pick);
+                                                        let replica_id = try { replicate(target_r, my_fit_r, variant_wrapped); } catch e { "__replicate_error__"; };
+                                                        if replica_id != "__replicate_error__" {
+                                                            if len(replica_id) > 0 {
+                                                                memo_write("tribe-" + _tribe_name + ":pool", to_string(pool_r - cost_r));
+                                                                memo_write("tribe-" + _tribe_name + ":size", to_string(n_r + 1));
+                                                                learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "success", ["replicated", "trading-binance", _tribe_name]);
+                                                            } else {
+                                                                learn("replicate", "n=" + to_string(n_r), "cost=" + to_string(cost_r), "failure", ["replicate-nak", "trading-binance", _tribe_name]);
+                                                            };
+                                                        };
+                                                    };
+                                                };
+                                            };
+                                        };
+                                    };
+                                } else {
+                                    print("[strategist] verifier verified=false tick=", settle_tick);
+                                    learn("settle", "tick " + to_string(settle_tick), "verified=false", "failure", ["verifier-error", "trading-binance"]);
+                                };
+                            };
+                        };
+                    };
+                };
+            } else {
+                // shadow / dormant: observe-only.
+                print("[strategist] observing (tier:", my_tier, ") action=", decision.action);
+                learn("trade", "tick " + to_string(tick_idx) + " " + decision.action, decision.rationale, "partial", ["observed", "trading-binance"]);
+            };
+        };
+    };
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write("strategist:last_check", now);
+    };
+}
