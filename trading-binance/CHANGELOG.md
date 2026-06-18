@@ -103,6 +103,11 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   (#573 PR-5).
 - `tools/run-replay.sh` orchestrator now wires the sixth tribe `tribe-zeta` into the replay run — the copy-into-container, confidence-seed, and source `strategist.ag` daemon-spawn loops enumerate `alpha beta gamma delta epsilon zeta` (6 daemons, was 5). The new daemon inherits the identical per-tribe env (`TRIBE_NAME=tribe-zeta`, `VERIFIER_PATH`, `CANDLES_CSV`, `HOLD_PERIOD`, `TRADE_LEDGER`, plus the six `STRATEGIST_*` prompt-evolution/fitness knobs); the existing five tribes' spawn and env are byte-identical. `REPLAY_DAEMON_COUNT` default bumped 5 → 6. The A/B harness (`tools/run-ab-experiment.sh`) covers all six tribes automatically since it forwards to run-replay.sh. `tribe-zeta/` added to `BUNDLE.manifest`. (#1122)
 - `tools/run-replay.sh` now defaults `REPLAY_LLM_BACKEND` to `flat-cyborg` (flat-rate Claude subscription via the flat-cyborg PTY wrapper) instead of `openai`, so the replay no longer requires `OPENROUTER_API_KEY` out of the box; on the flat-cyborg path the orchestrator bind-mounts the host `~/.claude` into the container at `/root/.claude:rw,z` (#535/#537 precedent; `:z` SELinux relabel for Fedora/RHEL); `Containerfile.replay` installs the flat-cyborg binary; the metered `openai` backend stays as an opt-in fallback (`REPLAY_LLM_BACKEND=openai`) which still injects `[llm.openai]` and still enforces the key; new knobs `REPLAY_FLAT_CYBORG_MODEL` / `REPLAY_FLAT_CYBORG_IDLE_MS` / `REPLAY_HOST_CLAUDE_DIR`; the 6 tribe colonies' `[llm]` backend flipped `cli` → `flat-cyborg`; note the `--extract` TUI screen-scrape fidelity caveat and flat-rate cost (usage=None); requires a flat-cyborg >= 0.9.0 binary with `--no-jitter` on PATH. (#1133, part of #1132)
+- `tools/Containerfile.replay` bumps `ARG AGENTIS_VERSION` `v1.7.12` → `v1.19.0` — the
+  agentis-core release that introduced the native `flat-cyborg` backend. The #1133 default
+  (`llm.backend = flat-cyborg`) is a v1.19.0 feature; the prior pin would reject it at real
+  container runtime (dry-run/CI never executes agentis, so it was latent). The `.sha256` is
+  fetched from the same release tag, so the integrity check self-verifies. (#1141, part of #1132)
 
 ### Deprecated
 
