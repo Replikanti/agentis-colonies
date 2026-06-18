@@ -17,10 +17,12 @@ tick_interval_ms = 90000
 type = "none"
 
 [llm]
-# tools/run-auditor.sh overlays the real llm.command / llm.args block
-# in the container bootstrap. By default the auditor runs on Opus
-# (AUDITOR_CLAUDE_MODEL=opus) while the four searchers run on Sonnet.
-backend = "cli"
+# Only "backend" is read today. "flat-cyborg" = flat-rate Claude via the
+# PTY wrapper (#1138). The run-research.sh orchestrator overlays the real
+# [llm.flat_cyborg] + per-tier block in the container bootstrap; the
+# auditor is a terminal-writer, so it pins claude-opus-4-8 via the
+# agents.auditor.llm.model per-agent override.
+backend = "flat-cyborg"
 
 [auditor]
 confidence_floor = 0.7

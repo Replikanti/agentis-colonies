@@ -17,11 +17,10 @@ tick_interval_ms = 120000
 type = "none"
 
 [llm]
-# Only "backend" is read today. "cli" uses the agentis daemon default
-# CLI adapter. tools/run-auditor.sh overlays a proper llm.command /
-# llm.args block in the container bootstrap when
-# AUDITOR_LLM_BACKEND=claude.
-backend = "cli"
+# Only "backend" is read today. "flat-cyborg" = flat-rate Claude via the
+# PTY wrapper (#1138). The run-research.sh orchestrator overlays the real
+# [llm.flat_cyborg] + per-tier block in the container bootstrap.
+backend = "flat-cyborg"
 
 # Agent-specific knobs read at startup via env var (ARXIV_MAX_QUERY_RESULTS).
 [arxiv_search]

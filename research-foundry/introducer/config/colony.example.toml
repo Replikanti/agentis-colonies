@@ -17,9 +17,10 @@ tick_interval_ms = 180000
 type = "none"
 
 [llm]
-# tools/run-preprint.sh overlays the real llm.command / llm.args block
-# in the container bootstrap (PREPRINT_CLAUDE_MODEL default: opus).
-backend = "cli"
+# Only "backend" is read today. "flat-cyborg" = flat-rate Claude via the
+# PTY wrapper (#1138). The run-research.sh orchestrator overlays the real
+# [llm.flat_cyborg] + per-tier block in the container bootstrap.
+backend = "flat-cyborg"
 
 [introducer]
 # Abstract target length (LLM is asked for 100-180 words; this knob
