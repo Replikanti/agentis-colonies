@@ -1,17 +1,24 @@
 #!/bin/bash
 # test-run-stage2-llm-backend.sh — assert run-stage2.sh injects the
 # right backend-specific config keys when STAGE2_LLM_BACKEND selects
-# openai or ollama, and stays inert for the default claude path (#438).
+# openai or ollama, defaults to flat-cyborg, and stays inert on the
+# metered-claude path (#438, #1136).
 #
-# Three cases:
+# Five cases:
 #
+#   T0: STAGE2_LLM_BACKEND unset (default) produces a hermetic
+#       .agentis/config with llm.backend = flat-cyborg +
+#       llm.flat_cyborg.idle_ms = 4000 and NO openai / ollama keys.
 #   T1: STAGE2_LLM_BACKEND=openai produces a hermetic .agentis/config
 #       containing all four llm.openai.* keys at their documented
 #       defaults.
 #   T2: STAGE2_LLM_BACKEND=ollama produces a config containing
 #       llm.endpoint and llm.model at their documented defaults.
-#   T3: STAGE2_LLM_BACKEND=claude (default) produces NO llm.openai.*
-#       and NO llm.endpoint / llm.model lines (regression guard).
+#   T3: STAGE2_LLM_BACKEND=claude produces NO llm.openai.* and NO
+#       llm.endpoint / llm.model lines (regression guard).
+#   T4: STAGE2_LLM_BACKEND=flat-cyborg (explicit) produces
+#       llm.backend = flat-cyborg + llm.flat_cyborg.idle_ms = 4000 and
+#       NO openai / ollama keys.
 #
 # STAGE2_WALL_CLOCK_S=1 makes the harness exit after a single 1-second
 # snapshot tick. The federation daemons + worker that start-federation.sh
@@ -126,6 +133,7 @@ run_case() {
         env -u STAGE2_OPENAI_MODEL -u STAGE2_OPENAI_ENDPOINT \
             -u STAGE2_OPENAI_KEY_ENV -u STAGE2_OPENAI_TIMEOUT_MS \
             -u STAGE2_OLLAMA_ENDPOINT -u STAGE2_OLLAMA_MODEL \
+            -u STAGE2_FLAT_CYBORG_IDLE_MS -u STAGE2_FLAT_CYBORG_MODEL \
             -u STAGE2_RESUME_RUN_DIR -u STAGE2_CRASH_AT_S \
             STAGE2_LLM_BACKEND="$backend" \
             STAGE2_WALL_CLOCK_S=1 STAGE2_SNAPSHOT_S=1 \
@@ -135,6 +143,7 @@ run_case() {
             -u STAGE2_OPENAI_MODEL -u STAGE2_OPENAI_ENDPOINT \
             -u STAGE2_OPENAI_KEY_ENV -u STAGE2_OPENAI_TIMEOUT_MS \
             -u STAGE2_OLLAMA_ENDPOINT -u STAGE2_OLLAMA_MODEL \
+            -u STAGE2_FLAT_CYBORG_IDLE_MS -u STAGE2_FLAT_CYBORG_MODEL \
             -u STAGE2_RESUME_RUN_DIR -u STAGE2_CRASH_AT_S \
             STAGE2_WALL_CLOCK_S=1 STAGE2_SNAPSHOT_S=1 \
             bash "$FED_DIR/tools/run-stage2.sh" >"$log" 2>&1 || true
@@ -158,6 +167,26 @@ EOF_RUNS
     LAST_RUN_DIR="$new_dir"
     printf '%s\n' "$new_dir"
 }
+
+# --- T0: default (unset) backend → flat-cyborg ---
+echo "--- T0: STAGE2_LLM_BACKEND unset (default flat-cyborg) ---"
+RUN_T0="$(run_case "T0" "" || true)"
+if [ -n "$RUN_T0" ]; then
+    CFG="$RUN_T0/.agentis/config"
+    assert_grep_F "T0: llm.backend defaults to flat-cyborg" "$CFG" \
+        "llm.backend = flat-cyborg"
+    assert_grep_F "T0: llm.flat_cyborg.idle_ms default injected" "$CFG" \
+        "llm.flat_cyborg.idle_ms = 4000"
+    assert_no_active_key "T0: no active llm.openai.endpoint key" "$CFG" "llm\\.openai\\.endpoint"
+    assert_no_active_key "T0: no active llm.openai.model key" "$CFG" "llm\\.openai\\.model"
+    assert_no_active_key "T0: no active llm.endpoint key" "$CFG" "llm\\.endpoint"
+    assert_no_active_key "T0: no active llm.model key" "$CFG" "llm\\.model"
+else
+    echo "[FAIL] T0: no run dir produced"
+    FAIL=$((FAIL + 1))
+fi
+cleanup_run "$RUN_T0"
+LAST_RUN_DIR=""
 
 # --- T1: openai backend ---
 echo "--- T1: STAGE2_LLM_BACKEND=openai ---"
@@ -220,6 +249,26 @@ else
     FAIL=$((FAIL + 1))
 fi
 cleanup_run "$RUN_T3"
+LAST_RUN_DIR=""
+
+# --- T4: flat-cyborg (explicit) backend ---
+echo "--- T4: STAGE2_LLM_BACKEND=flat-cyborg ---"
+RUN_T4="$(run_case "T4" "flat-cyborg" || true)"
+if [ -n "$RUN_T4" ]; then
+    CFG="$RUN_T4/.agentis/config"
+    assert_grep_F "T4: llm.backend rewritten to flat-cyborg" "$CFG" \
+        "llm.backend = flat-cyborg"
+    assert_grep_F "T4: llm.flat_cyborg.idle_ms default injected" "$CFG" \
+        "llm.flat_cyborg.idle_ms = 4000"
+    assert_no_active_key "T4: no active llm.openai.endpoint key" "$CFG" "llm\\.openai\\.endpoint"
+    assert_no_active_key "T4: no active llm.openai.model key" "$CFG" "llm\\.openai\\.model"
+    assert_no_active_key "T4: no active llm.endpoint key" "$CFG" "llm\\.endpoint"
+    assert_no_active_key "T4: no active llm.model key" "$CFG" "llm\\.model"
+else
+    echo "[FAIL] T4: no run dir produced"
+    FAIL=$((FAIL + 1))
+fi
+cleanup_run "$RUN_T4"
 LAST_RUN_DIR=""
 
 echo ""

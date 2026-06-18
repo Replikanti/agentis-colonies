@@ -56,6 +56,10 @@ if [ ! -x "$ORCH" ]; then
     exit 1
 fi
 
+# #1136: the default backend is now flat-cyborg, which bind-mounts the
+# host ~/.claude into both containers. Pass STAGE3_HOST_CLAUDE_DIR=/tmp so
+# the -d existence check passes deterministically in CI (where $HOME/.claude
+# may be absent), and so the default dry-run can be asserted to mount it.
 OUT="$(STAGE3_WALL_CLOCK_S=1800 \
        STAGE3_ROTATION_INTERVAL_S=120 \
        STAGE3_DEATH_THRESHOLD=300 \
@@ -64,6 +68,7 @@ OUT="$(STAGE3_WALL_CLOCK_S=1800 \
        STAGE3_LAPTOP_WORKER_PORT=9200 \
        STAGE3_SERVER_WORKER_PORT=9201 \
        STAGE3_WORKER_SECRET=testsecret \
+       STAGE3_HOST_CLAUDE_DIR=/tmp \
        bash "$ORCH" --dry-run 2>&1)"
 
 # 1. image build / reuse
@@ -227,9 +232,9 @@ assert_contains "POOL_CAP env propagated into start-colony.sh bootstrap line" \
     "$(cat "$ORCH")" \
     "POOL_CAP=%s METABOLIC_COST=%s"
 
-# OpenAI backend defaults wired in.
-assert_contains "llm.backend=openai default" "$OUT" \
-    "llm_backend\":\"openai"
+# #1136: flat-cyborg is the default backend.
+assert_contains "llm.backend=flat-cyborg default" "$OUT" \
+    "llm_backend\":\"flat-cyborg"
 
 # Negative assertions: dry-run did NOT actually invoke `podman run` —
 # every podman run line in the transcript is preceded by `+ ` (the
@@ -681,14 +686,38 @@ assert_contains "hermetic config emits daemon.cb_per_tick line" \
     "$(cat "$ORCH")" \
     'printf "daemon.cb_per_tick = %s'
 
-# 9c. #535 + #537: claude-backend wiring. Default OpenAI dry-run must
-# NOT emit any /root/.claude reference; claude-backend dry-run with a
-# valid host dir must inject -v <host>:/root/.claude:rw into BOTH
-# containers; claude-backend dry-run with a missing host dir must
-# exit 1 with the helpful message.
-assert_not_contains "default openai dry-run has no /root/.claude mount" \
+# 9c. #535 + #537 + #1136: claude / flat-cyborg backend ~/.claude wiring.
+# Post-#1136 flat-cyborg is the default backend, so the default dry-run
+# (run with STAGE3_HOST_CLAUDE_DIR=/tmp above) now POSITIVELY mounts the
+# host ~/.claude into BOTH containers. claude + flat-cyborg dry-runs with
+# a valid host dir must inject -v <host>:/root/.claude:rw,z into both
+# containers; both must exit 1 when the host dir is missing.
+assert_contains "default flat-cyborg dry-run mounts /tmp:/root/.claude:rw,z" \
     "$OUT" \
-    "/root/.claude"
+    "-v /tmp:/root/.claude:rw,z"
+DEFAULT_CLAUDE_COUNT="$(printf '%s' "$OUT" | grep -cF -- '-v /tmp:/root/.claude:rw,z' || true)"
+if [ "$DEFAULT_CLAUDE_COUNT" -ge 2 ]; then
+    echo "[PASS] default flat-cyborg dry-run mounts /tmp:/root/.claude:rw,z on BOTH containers (found $DEFAULT_CLAUDE_COUNT instances)"
+    PASS=$((PASS + 1))
+else
+    echo "[FAIL] default flat-cyborg dry-run should mount /root/.claude on both containers (found only $DEFAULT_CLAUDE_COUNT instance(s))"
+    FAIL=$((FAIL + 1))
+fi
+# Default flat-cyborg hermetic config emits the idle-ms knob (the
+# bootstrap config-printf lines live in the script source; the dry-run
+# only emits a `write-bootstrap` placeholder, so assert against source).
+# The flat-cyborg branch is structurally guarded by the new elif so the
+# metered-claude `llm.command = claude` line cannot fire on it.
+assert_contains "flat-cyborg branch emits llm.flat_cyborg.idle_ms in source" \
+    "$(cat "$ORCH")" \
+    'printf "llm.flat_cyborg.idle_ms = %s'
+assert_contains "flat-cyborg branch guarded by elif (not the claude branch)" \
+    "$(cat "$ORCH")" \
+    'elif [ "$LLM_BACKEND" = "flat-cyborg" ] || [ "$LLM_BACKEND" = "flat_cyborg" ]; then'
+assert_contains "llm.command = claude guarded under the claude elif" \
+    "$(cat "$ORCH")" \
+    'elif [ "$LLM_BACKEND" = "claude" ]; then'
+
 CLAUDE_OUT="$(STAGE3_WALL_CLOCK_S=1800 \
               STAGE3_ROTATION_INTERVAL_S=120 \
               STAGE3_DEATH_THRESHOLD=300 \
@@ -717,6 +746,17 @@ fi
 assert_contains "claude mount includes :z SELinux relabel suffix" \
     "$CLAUDE_OUT" \
     ":rw,z"
+# #1136 caveman --model / --effort CONFIG-emission assertions: on the
+# default flat-cyborg backend llm.command = claude no longer fires, so
+# these now live under the claude elif branch. The bootstrap config-printf
+# lines are only present in the script source (dry-run emits a
+# `write-bootstrap` placeholder), so assert against source.
+assert_contains "claude branch emits llm.command = claude in source" \
+    "$(cat "$ORCH")" \
+    'printf "llm.command = claude\\n"'
+assert_contains "claude caveman args carry --model + --effort in source" \
+    "$(cat "$ORCH")" \
+    '--model %s --tools \\"\\" --system-prompt \\"%s\\" --effort %s'
 CLAUDE_MISSING_RC=0
 STAGE3_LLM_BACKEND=claude \
 STAGE3_HOST_CLAUDE_DIR=/nonexistent-path-$$ \
@@ -736,6 +776,76 @@ else
     echo "[FAIL] claude backend with missing STAGE3_HOST_CLAUDE_DIR should exit 1 (got $CLAUDE_MISSING_RC)"
     FAIL=$((FAIL + 1))
 fi
+
+# 9c-1136. flat-cyborg backend (explicit). Mounts ~/.claude on both
+# containers (same as claude), emits the idle-ms knob, must NOT emit
+# llm.command = claude, and exits 1 when the host dir is missing.
+FLAT_OUT="$(STAGE3_WALL_CLOCK_S=1800 \
+            STAGE3_ROTATION_INTERVAL_S=120 \
+            STAGE3_DEATH_THRESHOLD=300 \
+            STAGE3_LAPTOP_PORT=9100 \
+            STAGE3_SERVER_PORT=9101 \
+            STAGE3_LAPTOP_WORKER_PORT=9200 \
+            STAGE3_SERVER_WORKER_PORT=9201 \
+            STAGE3_WORKER_SECRET=testsecret \
+            STAGE3_LLM_BACKEND=flat-cyborg \
+            STAGE3_HOST_CLAUDE_DIR=/tmp \
+            bash "$ORCH" --dry-run 2>&1 || true)"
+FLAT_CLAUDE_COUNT="$(printf '%s' "$FLAT_OUT" | grep -cF -- '-v /tmp:/root/.claude:rw,z' || true)"
+if [ "$FLAT_CLAUDE_COUNT" -ge 2 ]; then
+    echo "[PASS] flat-cyborg backend mounts /tmp:/root/.claude:rw,z on BOTH containers (found $FLAT_CLAUDE_COUNT instances)"
+    PASS=$((PASS + 1))
+else
+    echo "[FAIL] flat-cyborg backend should mount /root/.claude on both containers (found only $FLAT_CLAUDE_COUNT instance(s))"
+    FAIL=$((FAIL + 1))
+fi
+assert_contains "flat-cyborg backend run-meta records llm_backend=flat-cyborg" \
+    "$FLAT_OUT" \
+    "llm_backend\":\"flat-cyborg"
+assert_contains "flat-cyborg mount includes :z SELinux relabel suffix" \
+    "$FLAT_OUT" \
+    ":rw,z"
+FLAT_MISSING_RC=0
+STAGE3_LLM_BACKEND=flat-cyborg \
+STAGE3_HOST_CLAUDE_DIR=/nonexistent-path-$$ \
+STAGE3_WALL_CLOCK_S=1800 \
+STAGE3_ROTATION_INTERVAL_S=120 \
+STAGE3_DEATH_THRESHOLD=300 \
+STAGE3_LAPTOP_PORT=9100 \
+STAGE3_SERVER_PORT=9101 \
+STAGE3_LAPTOP_WORKER_PORT=9200 \
+STAGE3_SERVER_WORKER_PORT=9201 \
+STAGE3_WORKER_SECRET=testsecret \
+bash "$ORCH" --dry-run >/dev/null 2>&1 || FLAT_MISSING_RC=$?
+if [ "$FLAT_MISSING_RC" -eq 1 ]; then
+    echo "[PASS] flat-cyborg backend with missing STAGE3_HOST_CLAUDE_DIR exits 1"
+    PASS=$((PASS + 1))
+else
+    echo "[FAIL] flat-cyborg backend with missing STAGE3_HOST_CLAUDE_DIR should exit 1 (got $FLAT_MISSING_RC)"
+    FAIL=$((FAIL + 1))
+fi
+
+# 9c-openai. openai backend regression: enforces its key, injects the
+# [llm.openai] block, and mounts NO ~/.claude.
+OPENAI_OUT="$(STAGE3_WALL_CLOCK_S=1800 \
+              STAGE3_ROTATION_INTERVAL_S=120 \
+              STAGE3_DEATH_THRESHOLD=300 \
+              STAGE3_LAPTOP_PORT=9100 \
+              STAGE3_SERVER_PORT=9101 \
+              STAGE3_LAPTOP_WORKER_PORT=9200 \
+              STAGE3_SERVER_WORKER_PORT=9201 \
+              STAGE3_WORKER_SECRET=testsecret \
+              STAGE3_LLM_BACKEND=openai \
+              bash "$ORCH" --dry-run 2>&1 || true)"
+assert_contains "openai backend run-meta records llm_backend=openai" \
+    "$OPENAI_OUT" \
+    "llm_backend\":\"openai"
+assert_not_contains "openai backend mounts no /root/.claude" \
+    "$OPENAI_OUT" \
+    "/root/.claude"
+assert_contains "openai branch emits llm.openai.endpoint in source" \
+    "$(cat "$ORCH")" \
+    'printf "llm.openai.endpoint = %s'
 
 # 10. #520 M98 v3 PR 3/3: M106 hash-pointer inheritance — assert each
 # hunter.ag carries the new helpers, the bootstrap inheritance branch,

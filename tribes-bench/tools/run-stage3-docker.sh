@@ -159,7 +159,20 @@
 #                              Lower this only when intentionally
 #                              reproducing CB-exhaustion behaviour.
 #   STAGE3_LLM_BACKEND         llm.backend value injected into both
-#                              hermetic configs. Default: openai (#445).
+#                              hermetic configs. Default: flat-cyborg
+#                              (#1136) — flat-rate Claude via the
+#                              flat-cyborg PTY wrapper; needs claude +
+#                              flat-cyborg >= 0.9.0 with --no-jitter on
+#                              PATH (the Containerfile.stage3 image ships
+#                              both) and a logged-in ~/.claude. Metered
+#                              `claude`, `openai`, and `ollama` remain
+#                              opt-in fallbacks.
+#   STAGE3_FLAT_CYBORG_IDLE_MS  flat-cyborg llm.flat_cyborg.idle_ms when
+#                              STAGE3_LLM_BACKEND=flat-cyborg. Default: 4000.
+#   STAGE3_FLAT_CYBORG_MODEL   flat-cyborg shared llm.model when
+#                              STAGE3_LLM_BACKEND=flat-cyborg. Default:
+#                              unset (the wrapper picks the ~/.claude
+#                              default model).
 #   STAGE3_OPENAI_MODEL        Model id when STAGE3_LLM_BACKEND=openai.
 #                              Default: gpt-4o-mini.
 #   STAGE3_OPENAI_ENDPOINT     Chat-completions URL.
@@ -167,14 +180,16 @@
 #   STAGE3_OPENAI_KEY_ENV      Name of the env var that carries the
 #                              OpenAI API key. Default: OPENAI_API_KEY.
 #   STAGE3_OPENAI_TIMEOUT_MS   Per-request timeout (ms). Default: 180000.
-#   STAGE3_HOST_CLAUDE_DIR     #535: when STAGE3_LLM_BACKEND=claude,
-#                              host directory bind-mounted into both
+#   STAGE3_HOST_CLAUDE_DIR     #535: when STAGE3_LLM_BACKEND=claude (or
+#                              =flat-cyborg, the #1136 default), host
+#                              directory bind-mounted into both
 #                              containers' `/root/.claude` (read-write
 #                              so the Claude Code CLI can refresh
 #                              session tokens). Default: $HOME/.claude
 #                              on the orchestrator host. Required when
-#                              backend=claude; orchestrator exits 1
-#                              when the directory does not exist.
+#                              backend=claude or backend=flat-cyborg;
+#                              orchestrator exits 1 when the directory
+#                              does not exist.
 #                              SECURITY NOTE: mounting ~/.claude
 #                              exposes .credentials.json (the host
 #                              operator's Claude Code session token)
@@ -422,11 +437,17 @@ HUNTER_PROMPT_GEN_CAP="${STAGE3_HUNTER_PROMPT_GEN_CAP:-10}"
 # for an LLM-proposed prompt rewrite to be accepted. Default 5 (5%).
 HUNTER_PROMPT_LEVENSHTEIN_FLOOR="${STAGE3_HUNTER_PROMPT_LEVENSHTEIN_FLOOR:-5}"
 DAEMON_CB_PER_TICK="${STAGE3_DAEMON_CB_PER_TICK:-2000}"
-LLM_BACKEND="${STAGE3_LLM_BACKEND:-openai}"
+LLM_BACKEND="${STAGE3_LLM_BACKEND:-flat-cyborg}"
 OPENAI_MODEL="${STAGE3_OPENAI_MODEL:-gpt-4o-mini}"
 OPENAI_ENDPOINT="${STAGE3_OPENAI_ENDPOINT:-https://api.openai.com/v1/chat/completions}"
 OPENAI_KEY_ENV="${STAGE3_OPENAI_KEY_ENV:-OPENAI_API_KEY}"
 OPENAI_TIMEOUT_MS="${STAGE3_OPENAI_TIMEOUT_MS:-180000}"
+# #1136 flat-cyborg backend (default): drives the metered-free `claude`
+# CLI via the flat-cyborg PTY wrapper. idle_ms tunes the wrapper's
+# quiescence detection; the optional shared llm.model lets the operator
+# pin a model when the ~/.claude default is not desired.
+FLAT_CYBORG_IDLE_MS="${STAGE3_FLAT_CYBORG_IDLE_MS:-4000}"
+FLAT_CYBORG_MODEL="${STAGE3_FLAT_CYBORG_MODEL:-}"
 LAPTOP_PORT="${STAGE3_LAPTOP_PORT:-9100}"
 SERVER_PORT="${STAGE3_SERVER_PORT:-9101}"
 LAPTOP_WORKER_PORT="${STAGE3_LAPTOP_WORKER_PORT:-9200}"
@@ -595,6 +616,7 @@ else
     emit_step "caveman mode: disabled (default Claude CLI overhead)"
 fi
 emit_step "claude model: $STAGE3_CLAUDE_MODEL_VAL"
+emit_step "llm backend: $LLM_BACKEND"
 emit_step "tribes: laptop=[${LAPTOP_TRIBES[*]}] server=[${SERVER_TRIBES[*]}]"
 emit_step "image tag: $IMAGE_TAG"
 emit_step "host ports: laptop=$LAPTOP_PORT server=$SERVER_PORT"
@@ -695,27 +717,37 @@ write_bootstrap() {
             printf '  printf "llm.openai.model = %s\\n"\n' "$OPENAI_MODEL"
             printf '  printf "llm.openai.api_key_env = %s\\n"\n' "$OPENAI_KEY_ENV"
             printf '  printf "llm.openai.timeout_ms = %s\\n"\n' "$OPENAI_TIMEOUT_MS"
-        fi
-        # #554 burn-rate mitigation: when caveman mode is on, inject
-        # llm.command + llm.args to drive the claude CLI with minimal
-        # session overhead (--tools "" --system-prompt <minimal> --effort
-        # low). Strips Claude Code default system prompt + tools manifest
-        # from each hunter call (~38K → ~11K tokens). Stays on flat-rate
-        # OAuth (no --bare).
-        # #563 cost-reduction: in BOTH caveman states, inject the
-        # explicit --model flag right after --output-format json so the
-        # claude CLI no longer silently falls back to subscription tier
-        # (Opus on Max 20x). The non-caveman branch also emits
-        # llm.command = claude + a minimal llm.args carrying just
-        # -p --output-format json --model <model> so the model knob
-        # applies even when operators opt out of caveman mode.
-        if [ "$STAGE3_CLAUDE_CAVEMAN_VAL" = "1" ]; then
-            escaped_caveman_prompt=$(printf '%s' "$STAGE3_CAVEMAN_SYSTEM_PROMPT" | sed 's/"/\\"/g')
-            printf '  printf "llm.command = claude\\n"\n'
-            printf '  printf "llm.args = -p --output-format json --model %s --tools \\"\\" --system-prompt \\"%s\\" --effort %s\\n"\n' "$STAGE3_CLAUDE_MODEL_VAL" "$escaped_caveman_prompt" "$STAGE3_CLAUDE_EFFORT_VAL"
-        else
-            printf '  printf "llm.command = claude\\n"\n'
-            printf '  printf "llm.args = -p --output-format json --model %s\\n"\n' "$STAGE3_CLAUDE_MODEL_VAL"
+        elif [ "$LLM_BACKEND" = "flat-cyborg" ] || [ "$LLM_BACKEND" = "flat_cyborg" ]; then
+            # #1136 flat-cyborg backend (default): the wrapper drives the
+            # `claude` CLI itself, so we emit NO llm.command = claude here
+            # (that is the metered-claude path below). Only the idle-ms
+            # knob, plus an optional shared llm.model.
+            printf '  printf "llm.flat_cyborg.idle_ms = %s\\n"\n' "$FLAT_CYBORG_IDLE_MS"
+            if [ -n "$FLAT_CYBORG_MODEL" ]; then
+                printf '  printf "llm.model = %s\\n"\n' "$FLAT_CYBORG_MODEL"
+            fi
+        elif [ "$LLM_BACKEND" = "claude" ]; then
+            # #554 burn-rate mitigation: when caveman mode is on, inject
+            # llm.command + llm.args to drive the claude CLI with minimal
+            # session overhead (--tools "" --system-prompt <minimal> --effort
+            # low). Strips Claude Code default system prompt + tools manifest
+            # from each hunter call (~38K → ~11K tokens). Stays on flat-rate
+            # OAuth (no --bare).
+            # #563 cost-reduction: in BOTH caveman states, inject the
+            # explicit --model flag right after --output-format json so the
+            # claude CLI no longer silently falls back to subscription tier
+            # (Opus on Max 20x). The non-caveman branch also emits
+            # llm.command = claude + a minimal llm.args carrying just
+            # -p --output-format json --model <model> so the model knob
+            # applies even when operators opt out of caveman mode.
+            if [ "$STAGE3_CLAUDE_CAVEMAN_VAL" = "1" ]; then
+                escaped_caveman_prompt=$(printf '%s' "$STAGE3_CAVEMAN_SYSTEM_PROMPT" | sed 's/"/\\"/g')
+                printf '  printf "llm.command = claude\\n"\n'
+                printf '  printf "llm.args = -p --output-format json --model %s --tools \\"\\" --system-prompt \\"%s\\" --effort %s\\n"\n' "$STAGE3_CLAUDE_MODEL_VAL" "$escaped_caveman_prompt" "$STAGE3_CLAUDE_EFFORT_VAL"
+            else
+                printf '  printf "llm.command = claude\\n"\n'
+                printf '  printf "llm.args = -p --output-format json --model %s\\n"\n' "$STAGE3_CLAUDE_MODEL_VAL"
+            fi
         fi
         printf '  printf "colony.secret = %%s\\n" "$WORKER_SECRET"\n'
         printf '} >> .agentis/config\n'
@@ -853,7 +885,7 @@ write_bootstraps() {
 #      `:z` is a no-op on SELinux-disabled hosts (Ubuntu, Debian).
 spawn_containers() {
     local CLAUDE_MOUNT_FLAG=""
-    if [ "$LLM_BACKEND" = "claude" ]; then
+    if [ "$LLM_BACKEND" = "claude" ] || [ "$LLM_BACKEND" = "flat-cyborg" ] || [ "$LLM_BACKEND" = "flat_cyborg" ]; then
         local HOST_CLAUDE_DIR="${STAGE3_HOST_CLAUDE_DIR:-$HOME/.claude}"
         if [ -d "$HOST_CLAUDE_DIR" ]; then
             # #540: append `:z` so podman applies a shared SELinux

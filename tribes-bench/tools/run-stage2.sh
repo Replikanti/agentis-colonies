@@ -21,8 +21,22 @@
 #                          = 48h, M3 #394). Lower values still work for
 #                          smoke tests; the M3 reproduction recipe
 #                          assumes the 48h default.
-#   STAGE2_LLM_BACKEND     Override [llm].backend in colony.toml
-#                          (default: leave config alone, which means cli)
+#   STAGE2_LLM_BACKEND     llm.backend value force-rewritten into the
+#                          hermetic .agentis/config (default: flat-cyborg
+#                          — flat-rate Claude via the flat-cyborg PTY
+#                          wrapper; needs claude + flat-cyborg on PATH +
+#                          a logged-in ~/.claude). Legacy `cli` resolves
+#                          to `claude`. Metered claude / openai / ollama
+#                          remain opt-in fallbacks. CAVEAT: the
+#                          flat-cyborg wrapper drives the `claude` TUI via
+#                          --extract screen-scrape, so output fidelity
+#                          depends on the wrapper keeping pace with TUI
+#                          screen layout changes.
+#   STAGE2_FLAT_CYBORG_IDLE_MS  flat-cyborg llm.flat_cyborg.idle_ms when
+#                          STAGE2_LLM_BACKEND=flat-cyborg (default: 4000).
+#   STAGE2_FLAT_CYBORG_MODEL  flat-cyborg shared llm.model when
+#                          STAGE2_LLM_BACKEND=flat-cyborg (default: unset
+#                          — wrapper picks the ~/.claude default model).
 #   STAGE2_SNAPSHOT_S      Snapshot interval in seconds (default: 3600
 #                          = 1h, M3 #394).
 #   STAGE2_CRASH_AT_S      M3 #394: when set to a positive integer N,
@@ -225,7 +239,9 @@ if [ "$RESUMING" = "0" ] && [ -f "$CONFIG_FILE" ]; then
     # the chosen backend into the daemon config — every pilot silently
     # ran against the mock backend. Resolve `cli` legacy alias to
     # `claude` (per agentis 1.6.0 rename) and force-rewrite the line.
-    RESOLVED_BACKEND="${STAGE2_LLM_BACKEND:-cli}"
+    FLAT_CYBORG_IDLE_MS="${STAGE2_FLAT_CYBORG_IDLE_MS:-4000}"
+    FLAT_CYBORG_MODEL="${STAGE2_FLAT_CYBORG_MODEL:-}"
+    RESOLVED_BACKEND="${STAGE2_LLM_BACKEND:-flat-cyborg}"
     if [ "$RESOLVED_BACKEND" = "cli" ]; then
         RESOLVED_BACKEND="claude"
     fi
@@ -260,6 +276,16 @@ with open(p, 'w') as f: f.write(s2)
         OLLAMA_MODEL="${STAGE2_OLLAMA_MODEL:-llama3.1:8b}"
         grep -q '^llm\.endpoint' "$CONFIG_FILE" || printf 'llm.endpoint = %s\n' "$OLLAMA_ENDPOINT" >> "$CONFIG_FILE"
         grep -q '^llm\.model'    "$CONFIG_FILE" || printf 'llm.model = %s\n'    "$OLLAMA_MODEL" >> "$CONFIG_FILE"
+    fi
+    # #1136: flat-cyborg drives the metered-free `claude` CLI via the
+    # flat-cyborg PTY wrapper. The python force-rewrite above already
+    # wrote `llm.backend = flat-cyborg`; here we only add the idle-ms
+    # knob (and an optional shared llm.model). No api_key / command keys.
+    if [ "$RESOLVED_BACKEND" = "flat-cyborg" ] || [ "$RESOLVED_BACKEND" = "flat_cyborg" ]; then
+        grep -q '^llm\.flat_cyborg\.idle_ms' "$CONFIG_FILE" || printf 'llm.flat_cyborg.idle_ms = %s\n' "$FLAT_CYBORG_IDLE_MS" >> "$CONFIG_FILE"
+        if [ -n "$FLAT_CYBORG_MODEL" ]; then
+            grep -q '^llm\.model' "$CONFIG_FILE" || printf 'llm.model = %s\n' "$FLAT_CYBORG_MODEL" >> "$CONFIG_FILE"
+        fi
     fi
 fi
 
@@ -343,7 +369,7 @@ fi
 
 # --- Capture run metadata (M3 #394). On resume, write a sidecar instead
 # of clobbering the original. ---
-RUN_LLM_BACKEND="${STAGE2_LLM_BACKEND:-cli}"
+RUN_LLM_BACKEND="${STAGE2_LLM_BACKEND:-flat-cyborg}"
 STARTED_AT_NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 if [ "$RESUMING" = "0" ]; then
     agentis --version > "$RUN_DIR/agentis-version.txt" 2>&1 || true
