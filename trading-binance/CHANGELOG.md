@@ -16,6 +16,23 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Deterministic reference backtest of the `tribe-zeta` volume-divergence
+  **fade** signal over a real 90-day BTCUSDT 1h window (2026-03-01 →
+  2026-05-31), recorded under `runs/20260618T-fade-determ/`
+  (`backtest-fade-signal.py`, `comparison.md`, `results.json`,
+  `run-meta.json`). Decisions are settled by the repo's own ground-truth
+  verifier (`tools/verify-trade.sh`). **Honest verdict: the mechanical fade
+  signal has no edge on this window** — it loses at every lookback tested
+  (20 / 50 / 100 bars: total −360 / −324 / −424 bps, win rate < 50 %,
+  negative per-trade Sharpe) and beats neither FLAT (0 bps) nor buy-and-hold
+  (+757 bps); the window trended up, so fading new highs is the wrong side of
+  a trend. The full 6-tribe LLM replay (tribe-zeta vs the other five) is
+  deferred — it needs `OPENROUTER_API_KEY` (the replay's `openai` backend
+  hard-fails without it; the `claude`/`cli` backend is not yet wired into the
+  replay container), so #1123 stays open for that step (#1123).
+- `.gitignore` for the federation: downloaded market-data shards under
+  `data/` are not committed (mounted at runtime / re-downloadable), keeping
+  `data/.gitkeep` present.
 - Sixth tribe colony `tribe-zeta/` shipping a `strategist.ag` agent that encodes Dr. David Paul's volume-divergence **fade** setup: SHORT an unconfirmed new local high (volume <= volumeMA(20)), LONG an unconfirmed new local low, FLAT when volume confirms the move. Mirrors the `tribe-alpha/` structure exactly (M98 v3 prompt evolution, M106 hash-pointer inheritance, M2-Malthusian replicate, tier-gated settlement via the shared verifier); `setup` is `"volume_divergence"`. Self-contained and inert — not yet wired into `tools/run-replay.sh` or `BUNDLE.manifest` (#1121, follow-ups #1122/#1123).
 - `tools/run-ab-experiment.sh` A/B emergence experiment harness:
   runs N paired replicates x 2 arms (control =
