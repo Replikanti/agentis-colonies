@@ -289,6 +289,19 @@ Paste the printed URI into each `colony.toml` in place of the plaintext token. `
 
 The plaintext path keeps working — vault use is opt-in. `tools/colony-lint.sh` warns when it spots a plaintext forge token; set `COLONY_LINT_STRICT_SECRETS=1` to upgrade the warning to a hard fail in CI.
 
+## LLM backend: flat-cyborg over Claude Code (default CLI, [#1131](https://github.com/Replikanti/agentis-colonies/issues/1131))
+
+The default CLI backend for this federation is **flat-cyborg**, a PTY wrapper that drives the *interactive* Claude Code session through `tools/flat-cyborg-claude.sh`. It uses the Claude Code subscription (not the metered `claude -p` API path) and returns only the model's reply (`--extract`).
+
+`install.sh` §6 wires it for you: when `flat-cyborg` is on your `PATH`, it offers (default Yes) to write `llm.backend = claude` and `llm.command = <fed>/tools/flat-cyborg-claude.sh` (with an empty `llm.args` — the prompt is the sole positional arg) into `<fed>/.agentis/config`. The wrapper path resolves from the federation root, so it works both in a source checkout and in the release bundle.
+
+**flat-cyborg must be installed** — get it from [Replikanti/flat-cyborg](https://github.com/Replikanti/flat-cyborg) (an installed copy self-updates with `flat-cyborg update`). If it is absent at install time, `install.sh` warns and falls back to printing the manual backend examples.
+
+Two env-var knobs tune the wrapper (defaults shown):
+
+- `FLAT_CYBORG_IDLE_MS` (`8000`) — settle window before flat-cyborg reads the screen.
+- `FLAT_CYBORG_TIMEOUT_MS` (`180000`) — hard cap on a single generation.
+
 ## LLM backend (per-colony override, [#319](https://github.com/Replikanti/agentis-colonies/issues/319))
 
 Every agent reads its LLM backend from `<fed>/.agentis/config` by default — that is the federation-wide pin written by `install.sh` step 4 (one of `cli` / `http` / `mock`). A colony can pin its own backend via an optional `[llm]` block in `<colony>/config/colony.toml`:

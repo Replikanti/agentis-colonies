@@ -67,9 +67,13 @@ require_assignee = false
 # documentation-only until then.
 #
 # Operators: leaving these keys set is harmless; do not rely on them yet.
+# Forward-compat / inert per #351: this block is parsed but has NO RUNTIME
+# EFFECT today. The REAL backend lives in `<fed>/.agentis/config` (set by
+# install.sh §6). install.sh wires the default CLI = the flat-cyborg PTY
+# wrapper over Claude Code.
 [llm]
-backend = "cli"
-# command = "claude"
+backend = "claude"
+# command = "tools/flat-cyborg-claude.sh"   # default CLI over Claude Code (illustrative; install.sh writes the resolved path to .agentis/config — this [llm] block is inert per #351)
 # model = "claude-sonnet-4"
 # api_key_env = "ANTHROPIC_API_KEY"
 

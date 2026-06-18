@@ -814,17 +814,91 @@ if [ -n "$OPERATOR_ME" ]; then
     fi
 fi
 
-# --- 6. LLM backend ---
+# --- 6. LLM backend (flat-cyborg = default CLI, #1131) ---
+#
+# The default CLI backend is the flat-cyborg PTY wrapper over Claude Code
+# (tools/flat-cyborg-claude.sh). flat-cyborg drives the INTERACTIVE Claude
+# Code session (uses the Claude Code subscription, NOT the metered
+# `claude -p` API path) and returns only the model's reply (--extract).
+#
+# The wrapper path resolves from FED_ROOT so it works both in a source
+# checkout AND in the release bundle, where tools/ sits beside
+# dev-apprenticeship/.
 
 echo ""
 echo "LLM backend"
 echo ""
-info "Agentis needs an LLM backend configured in .agentis/config."
-info "Examples:"
+
+FLAT_CYBORG_WRAPPER="$FED_ROOT/tools/flat-cyborg-claude.sh"
+
+if command -v flat-cyborg >/dev/null 2>&1; then
+    info "Default CLI backend: flat-cyborg PTY wrapper over Claude Code."
+    info "Wrapper: $FLAT_CYBORG_WRAPPER"
+    info "It drives the interactive Claude Code session (subscription, not the"
+    info "metered 'claude -p' API path) and returns only the model's reply."
+    echo ""
+    ask "Wire flat-cyborg as the LLM backend in .agentis/config? [Y/n]:"
+    read -r FLAT_CYBORG_ANSWER
+    FLAT_CYBORG_ANSWER="${FLAT_CYBORG_ANSWER:-Y}"
+
+    case "$FLAT_CYBORG_ANSWER" in
+        [Yy]|[Yy][Ee][Ss])
+            CONFIG_FILE="$AGENTIS_DIR/config"
+            if [ -f "$CONFIG_FILE" ]; then
+                # Rewrite llm.backend = claude and llm.command = <wrapper>, and
+                # ensure llm.args is empty (the prompt is the sole positional
+                # arg). Regex-replace existing lines or append (matches the
+                # in-place rewrite tribes-bench/tools/run-baseline.sh uses).
+                python3 - "$CONFIG_FILE" "$FLAT_CYBORG_WRAPPER" <<'PYEOF'
+import sys, re
+p, wrapper = sys.argv[1], sys.argv[2]
+with open(p) as f:
+    s = f.read()
+
+
+def set_key(text, key, value):
+    pat = re.compile(r'^' + re.escape(key) + r'\s*=.*$', flags=re.M)
+    line = f'{key} = {value}'
+    if pat.search(text):
+        return pat.sub(line, text, count=1)
+    return text.rstrip('\n') + '\n' + line + '\n'
+
+
+s = set_key(s, 'llm.backend', 'claude')
+s = set_key(s, 'llm.command', wrapper)
+s = set_key(s, 'llm.args', '')
+with open(p, 'w') as f:
+    f.write(s)
+PYEOF
+                ok "Wired flat-cyborg backend in $CONFIG_FILE"
+                ok "llm.backend = claude / llm.command = $FLAT_CYBORG_WRAPPER"
+            else
+                fail "Config not found at $CONFIG_FILE — is agentis initialized? Try: agentis init"
+            fi
+            ;;
+        *)
+            info "Skipped. To wire it manually, set in .agentis/config:"
+            echo ""
+            echo "    llm.backend = claude"
+            echo "    llm.command = $FLAT_CYBORG_WRAPPER"
+            echo "    llm.args ="
+            echo ""
+            ;;
+    esac
+else
+    fail "flat-cyborg not found on PATH — it is the default CLI backend."
+    info "Install it from https://github.com/Replikanti/flat-cyborg"
+    info "(an installed copy self-updates with 'flat-cyborg update'), then"
+    info "re-run ./install.sh to wire it automatically."
+fi
+
 echo ""
-echo "    # Claude via CLI"
-echo "    llm.backend = cli"
-echo "    llm.command = claude"
+info "LLM backend options for .agentis/config:"
+echo ""
+echo "    # flat-cyborg over Claude Code (default CLI)"
+echo "    llm.backend = claude"
+echo "    llm.command = $FLAT_CYBORG_WRAPPER"
+echo "    llm.args ="
 echo ""
 echo "    # Ollama (local)"
 echo "    llm.backend = http"
