@@ -49,6 +49,17 @@ bash -n scripts/gitlab-api.sh   # Bash syntax check on any script
 
 Colony lint must pass with 0 failures before merge. Current CI baseline: 42 passed, 0 failed, 1 skipped (agentis binary not installed on runners). Local runs add ~42 per-agent `.ag` syntax + tier-branch passes when `agentis` is installed, and 5 skips when `shellcheck` is not.
 
+## LLM backend
+
+Federations default to **flat-cyborg** ([`Replikanti/flat-cyborg`](https://github.com/Replikanti/flat-cyborg)) — a PTY wrapper that drives the interactive Claude Code session, so `prompt()` bills against a **flat-rate** Claude subscription instead of the metered `claude -p` API (`usage = None`). Two wiring styles, both flat-cyborg:
+
+- **Container federations** (`trading-binance`, `tribes-bench`, `research-foundry`) inject the **native** agentis-core backend `llm.backend = flat-cyborg` (requires agentis **>= v1.19.0** — pin `ARG AGENTIS_VERSION` accordingly in the federation's `Containerfile`) into the hermetic `.agentis/config` from their run/replay orchestrator, and bind-mount the host operator's `~/.claude` into the container at `/root/.claude:rw,z` (`:z` for SELinux/Fedora). Each orchestrator keeps a metered `claude` and/or `openai` path as an **opt-in fallback** via its `*_LLM_BACKEND` env knob (e.g. `REPLAY_LLM_BACKEND`, `STAGE3_LLM_BACKEND`, `RESEARCH_LLM_BACKEND`). `research-foundry` additionally routes per confidence tier via `llm.tier.<tier>.model` (haiku for dormant/shadow, sonnet for propose/review-gated/autonomous, opus for the terminal-writer agents).
+- **Host-run federations** (`dev-apprenticeship`, `dark-factory`) set `llm.backend = claude` + `llm.command = tools/flat-cyborg-claude.sh` (the wrapper script) in `.agentis/config` via `install.sh` / the run scripts, so the on-host `agentis daemon` shells out to flat-cyborg.
+
+A colony's `[llm] backend` in `colony.example.toml` is `"cli"` — meaning "use the agentis daemon default", which **inherits** the federation-level backend from `.agentis/config`. **Do not hardcode `"flat-cyborg"` there**: it would override the federation default and break the host wrapper path. The federation default (orchestrator hermetic config, or `install.sh`-written `.agentis/config`) is the single source of truth.
+
+Caveat: flat-cyborg's `--extract` is a TUI screen-scrape (output fidelity tracks the TUI layout). Keep the metered `claude` backend available for fidelity-critical paths. Deployment prereq: a `flat-cyborg` >= 0.9.0 binary with `--no-jitter` on PATH plus a logged-in `~/.claude`.
+
 ## Colony structure
 
 Every colony follows this layout:

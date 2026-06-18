@@ -312,7 +312,12 @@ tick_interval_ms = 60000
 $forge_block
 
 [llm]
-# Only "backend" is read today. "cli" uses the agentis daemon default CLI adapter.
+# Only "backend" is read today. Keep "cli" — it means "use the agentis daemon
+# default CLI adapter", which INHERITS the federation backend from
+# .agentis/config (typically flat-cyborg, the flat-rate Claude PTY wrapper).
+# Do not hardcode "flat-cyborg" here: that would override the federation
+# default and break host-run federations that use the flat-cyborg-claude.sh
+# wrapper. See CLAUDE.md "LLM backend".
 backend = "cli"
 
 # Agent definitions
