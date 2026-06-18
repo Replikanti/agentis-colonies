@@ -5,10 +5,10 @@
 **Version:** `0.1.0` · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.4.1`
 
 Federation that hunts profitable USDT-M perpetual-futures trade setups
-on Binance via five competing tribe colonies, each encoding a
+on Binance via six competing tribe colonies, each encoding a
 different Ludvik Turek style trading hypothesis (volume profile /
 fibonacci retracement / market structure / price action / mean
-reversion). Strategy decisions settle through a deterministic PnL
+reversion / volume-divergence fade). Strategy decisions settle through a deterministic PnL
 verifier (`tools/verify-trade.sh`) — no LLM in the verifier path — and
 feed back into per-tribe fitness, M98 v3 prompt evolution, and the
 M2-Malthusian replicate gate borrowed from `tribes-bench/`.
@@ -28,6 +28,7 @@ federation shapes.
 | [tribe-gamma](./tribe-gamma/) | Market structure (BOS / CHoCH) | 1 |
 | [tribe-delta](./tribe-delta/) | Price action (engulfings / pin bars / momentum) | 1 |
 | [tribe-epsilon](./tribe-epsilon/) | Mean reversion (50-bar median, 2-stddev band) | 1 |
+| [tribe-zeta](./tribe-zeta/) | Volume-divergence fade (unconfirmed new high/low vs volumeMA(20)) | 1 |
 
 ## Quickstart
 
@@ -35,7 +36,7 @@ federation shapes.
 ./install.sh                                  # interactive setup
 python3 tools/binance-feed-download.py --help # PR-2: download historical klines
 bash tools/run-replay.sh --dry-run            # PR-3: orchestrator dry-run
-bash tools/run-replay.sh                      # real run — spawns 5 tribes in podman
+bash tools/run-replay.sh                      # real run — spawns 6 tribes in podman
 ```
 
 ## Tier contract

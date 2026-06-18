@@ -84,6 +84,7 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   Defaults match the strategist.ag in-agent defaults so existing
   PR-3 / PR-4 behaviour is preserved when the new knobs are unset
   (#573 PR-5).
+- `tools/run-replay.sh` orchestrator now wires the sixth tribe `tribe-zeta` into the replay run — the copy-into-container, confidence-seed, and source `strategist.ag` daemon-spawn loops enumerate `alpha beta gamma delta epsilon zeta` (6 daemons, was 5). The new daemon inherits the identical per-tribe env (`TRIBE_NAME=tribe-zeta`, `VERIFIER_PATH`, `CANDLES_CSV`, `HOLD_PERIOD`, `TRADE_LEDGER`, plus the six `STRATEGIST_*` prompt-evolution/fitness knobs); the existing five tribes' spawn and env are byte-identical. `REPLAY_DAEMON_COUNT` default bumped 5 → 6. The A/B harness (`tools/run-ab-experiment.sh`) covers all six tribes automatically since it forwards to run-replay.sh. `tribe-zeta/` added to `BUNDLE.manifest`. (#1122)
 
 ### Deprecated
 
