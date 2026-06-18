@@ -152,7 +152,7 @@ run_case() {
     new_dir=""
     while IFS= read -r d; do
         [ -n "$d" ] || continue
-        if ! printf '%s\n' "$before" | grep -Fxq -- "$d"; then
+        if ! grep -Fxq -- "$d" <<<"$before"; then
             new_dir="$d"
             break
         fi

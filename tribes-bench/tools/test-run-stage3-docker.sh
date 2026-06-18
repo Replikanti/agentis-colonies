@@ -29,7 +29,11 @@ FAIL=0
 
 assert_contains() {
     label="$1"; haystack="$2"; needle="$3"
-    if printf '%s' "$haystack" | grep -Fq -- "$needle"; then
+    # here-string (not a printf|grep pipe): grep -Fq exits on first match and
+    # would SIGPIPE the upstream printf on a large haystack, which surfaces as
+    # `printf: write error: Broken pipe` and can fail the suite on fast CI
+    # runners. The here-string feeds grep without a pipe, so no SIGPIPE.
+    if grep -Fq -- "$needle" <<<"$haystack"; then
         echo "[PASS] $label"
         PASS=$((PASS + 1))
     else
@@ -41,7 +45,7 @@ assert_contains() {
 
 assert_not_contains() {
     label="$1"; haystack="$2"; needle="$3"
-    if ! printf '%s' "$haystack" | grep -Fq -- "$needle"; then
+    if ! grep -Fq -- "$needle" <<<"$haystack"; then
         echo "[PASS] $label"
         PASS=$((PASS + 1))
     else
@@ -620,8 +624,8 @@ MODEL_BAD_OUT="$(STAGE3_WALL_CLOCK_S=1800 \
        STAGE3_WORKER_SECRET=testsecret \
        STAGE3_CLAUDE_MODEL=gpt-4 \
        bash "$ORCH" --dry-run 2>&1)" || MODEL_BAD_RC=$?
-if [ "$MODEL_BAD_RC" -eq 2 ] && printf '%s' "$MODEL_BAD_OUT" | grep -Fq -- \
-    "STAGE3_CLAUDE_MODEL must be alias (sonnet|haiku|opus) or explicit model name"; then
+if [ "$MODEL_BAD_RC" -eq 2 ] && grep -Fq -- \
+    "STAGE3_CLAUDE_MODEL must be alias (sonnet|haiku|opus) or explicit model name" <<<"$MODEL_BAD_OUT"; then
     echo "[PASS] STAGE3_CLAUDE_MODEL=gpt-4 exits 2 with helpful stderr (#563)"
     PASS=$((PASS + 1))
 else
@@ -662,8 +666,8 @@ HEARTBEAT_BAD_OUT="$(STAGE3_WALL_CLOCK_S=1800 \
        STAGE3_WORKER_SECRET=testsecret \
        STAGE3_DAEMON_HEARTBEAT_MS=abc \
        bash "$ORCH" --dry-run 2>&1)" || HEARTBEAT_BAD_RC=$?
-if [ "$HEARTBEAT_BAD_RC" -eq 1 ] && printf '%s' "$HEARTBEAT_BAD_OUT" | grep -Fq -- \
-    "STAGE3_DAEMON_HEARTBEAT_MS_VAL must be a positive integer"; then
+if [ "$HEARTBEAT_BAD_RC" -eq 1 ] && grep -Fq -- \
+    "STAGE3_DAEMON_HEARTBEAT_MS_VAL must be a positive integer" <<<"$HEARTBEAT_BAD_OUT"; then
     echo "[PASS] STAGE3_DAEMON_HEARTBEAT_MS=abc exits 1 with helpful stderr (#571)"
     PASS=$((PASS + 1))
 else

@@ -29,7 +29,9 @@ FAIL=0
 
 assert_contains() {
     label="$1"; haystack="$2"; needle="$3"
-    if printf '%s' "$haystack" | grep -Fq -- "$needle"; then
+    # here-string (not a printf|grep pipe): avoids SIGPIPE on the upstream
+    # printf when grep -Fq exits early on a large haystack (CI broken-pipe).
+    if grep -Fq -- "$needle" <<<"$haystack"; then
         echo "[PASS] $label"
         PASS=$((PASS + 1))
     else
