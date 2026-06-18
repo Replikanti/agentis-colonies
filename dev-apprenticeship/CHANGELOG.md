@@ -17,6 +17,32 @@ is asserted until multi-version CI is in place.
 
 ### Added
 
+- Shared GitLab snapshot + payload compression for the Triage colony
+  (#1111 / #1112). The `issues` collection is now fetched **once per
+  colony per tick** and shared via a memo instead of each of the four
+  triage agents (labeler / router / prioritizer / issue_creator)
+  curling it independently (the former 3–4× duplicate fetch per tick).
+  `triage/scripts/start-colony.sh` publishes the snapshot to
+  `gitlab:snapshot:issues` (+ epoch freshness key
+  `gitlab:snapshot:issues:ts`) via the new `forge-api.sh snapshot issues`
+  verb on bootstrap, and standalone via `--snapshot-refresh`. The
+  snapshot is **compressed before it reaches `prompt()`**: the new
+  `triage/scripts/snapshot-compress.py` (normalized-subtree-hashing,
+  reusing the `dark-factory/evm-harness/struct-sig.js` concept)
+  normalizes each item to role-relevant fields, content-addresses each
+  item's structure, interns repeated structures once, and references
+  them by index — deterministic + byte-stable, ~11× smaller than raw
+  on a realistic 20-issue payload. Agents read the memo via a new
+  `snapshot_issues_cmd()` helper and render their role view with
+  `forge-api.sh issues --from-snapshot --view <role>` (zero HTTP).
+  Backward-safe: a missing / empty / stale (> 600 s) / malformed
+  snapshot transparently degrades to the legacy direct fetch, and the
+  shared snapshot is used only on the single-repo path (multi-repo
+  fan-out keeps its per-repo fetch). Both `gitlab-api.sh` and
+  `github-api.sh` gained the symmetric `snapshot` verb +
+  `--from-snapshot` flag. The `merge_requests` collection in the other
+  four colonies uses label-event-filtered reads and is deferred to the
+  live run (#1117).
 - Cross-repo reference detection in PR review prompts (#317): the four
   code-review agents (logic / style / security / test) scan PR body
   for `<owner>/<repo>#<N>` references and splice resolved issue context

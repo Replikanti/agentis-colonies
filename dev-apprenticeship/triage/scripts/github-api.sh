@@ -30,6 +30,11 @@
 
 set -e
 
+# Resolve this script's own directory so the snapshot verb (#1111/#1112) can
+# locate the sibling snapshot-compress.py helper (shared with gitlab-api.sh)
+# regardless of the caller's CWD.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 # emit_error <message>
 # Matches gitlab-api.sh emit_error contract: JSON error object to stderr.
 emit_error() {
@@ -370,6 +375,7 @@ case "$CMD" in
         SINCE=""
         STATE="open"
         VIEW=""
+        FROM_SNAPSHOT=0
         while [ $# -gt 0 ]; do
             case "$1" in
                 # GitLab uses "opened" in the state filter; GitHub uses "open".
@@ -386,9 +392,24 @@ case "$CMD" in
                     shift 2
                     ;;
                 --view) VIEW="$2"; shift 2 ;;
+                --from-snapshot) FROM_SNAPSHOT=1; shift ;;
                 *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
+        # #1111: shared-snapshot read path (symmetric with gitlab-api.sh). The
+        # snapshot is already GitLab-normalized (snapshot-compress.py stores
+        # the normalized shape), so we rehydrate + project WITHOUT normalize_issues
+        # and WITHOUT any HTTP call. Empty/malformed snapshot -> `[]` -> the
+        # agent's `len(raw) < 3` early-exit treats it as no work (degrade).
+        if [ "$FROM_SNAPSHOT" = "1" ]; then
+            rehydrated="$(printf '%s' "${GITLAB_SNAPSHOT:-}" | python3 "$SCRIPT_DIR/snapshot-compress.py" --rehydrate 2>/dev/null || printf '[]')"
+            if [ -n "$VIEW" ]; then
+                printf '%s' "$rehydrated" | project_json "$VIEW"
+            else
+                printf '%s' "$rehydrated"
+            fi
+            exit 0
+        fi
         ARGS=(
             --data-urlencode "state=$STATE"
             --data-urlencode "per_page=20"
@@ -407,6 +428,45 @@ case "$CMD" in
         else
             printf '%s' "$normalized"
         fi
+        ;;
+
+    snapshot)
+        # #1111/#1112: fetch the GitHub issues collection ONCE, normalize to
+        # GitLab shape, and emit the COMPRESSED envelope. Symmetric with
+        # gitlab-api.sh snapshot so start-colony.sh's snapshot step is
+        # backend-agnostic (it always calls `forge-api.sh snapshot issues`).
+        COLLECTION="${1:-issues}"
+        case "$COLLECTION" in
+            issues|work_items) shift || true ;;
+            *) emit_error "snapshot: unsupported collection: $COLLECTION (expected: issues)"; exit 2 ;;
+        esac
+        STATE="open"
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --state)
+                    case "$2" in
+                        opened|open) STATE="open" ;;
+                        closed)      STATE="closed" ;;
+                        all)         STATE="all" ;;
+                        *) emit_error "unknown state: $2 (expected open|closed|all)"; exit 2 ;;
+                    esac
+                    shift 2
+                    ;;
+                --since) shift 2 ;;  # accepted + ignored: snapshot is full-set
+                *) emit_error "unknown flag: $1"; exit 2 ;;
+            esac
+        done
+        SNAP_ARGS=(
+            --data-urlencode "state=$STATE"
+            --data-urlencode "per_page=20"
+            --data-urlencode "sort=updated"
+            --data-urlencode "direction=desc"
+        )
+        # Single fetch -> normalize -> compress. On any gh_call failure emit a
+        # valid empty envelope so the memo write never stores a stderr blob.
+        snap_body="$(gh_get_q "$API/issues" "${SNAP_ARGS[@]}")" || snap_body="[]"
+        snap_norm="$(printf '%s' "$snap_body" | normalize_issues 2>/dev/null || printf '[]')"
+        printf '%s' "$snap_norm" | python3 "$SCRIPT_DIR/snapshot-compress.py" issues
         ;;
 
     create-issue)

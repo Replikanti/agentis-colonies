@@ -354,6 +354,33 @@ Each needs its own matcher (did the MR get merged? was the plan followed? was th
 
 Cross-colony wiring: Triage routes issues to Implementation. Implementation signals Code Review and Release when an MR is ready. See individual colony READMEs for internal event wiring.
 
+## Shared GitLab snapshot (#1111 / #1112)
+
+Without sharing, every agent in a colony curls the same GitLab collection on every tick and passes the raw JSON straight into `prompt()`. In the Triage colony that meant the `/issues` (now `/work_items`) endpoint was fetched **three times per tick** — once each by the labeler, router, and prioritizer (four with the issue_creator) — and each copy was the full ~74 KB raw payload. The duplicate fetches throttle the API; the raw payloads waste a factor 5–10× of the model's input budget.
+
+Two mechanisms fix this:
+
+**One shared fetch per colony per tick (#1111).** The Triage `scripts/start-colony.sh` publishes a single snapshot of the `issues` collection:
+
+- It fetches the collection **once** via `scripts/forge-api.sh snapshot issues` (the single fetch implementation — `gitlab-api.sh` / `github-api.sh` stay the only code that touches the network) and writes the result to the shared memo `gitlab:snapshot:issues`, with an epoch-seconds freshness key at `gitlab:snapshot:issues:ts`.
+- The publish runs on full-colony bootstrap, and can be re-run any time via `scripts/start-colony.sh --snapshot-refresh` (a lightweight, daemon-free mode for a per-tick sidecar).
+- Each agent reads `recall_latest("gitlab:snapshot:issues")` instead of curling the endpoint. The agent renders its role view from the snapshot via `forge-api.sh issues --from-snapshot --view <role>`, which rehydrates + projects the memo with **zero HTTP calls**.
+
+**Compressed before it reaches `prompt()` (#1112).** The snapshot is not stored raw. `scripts/snapshot-compress.py` (reusing the normalized-subtree-hashing idea from `dark-factory/evm-harness/struct-sig.js`) transforms the raw GitLab JSON into a compact, deduplicated, structurally-chunked envelope before it lands in the memo:
+
+- Each item is normalized to the union of role-relevant fields (everything else — `web_url`, `time_stats`, `references`, `milestone`, … — is dropped).
+- Each item's normalized **structure** is content-addressed (SHA-256 of its canonical JSON); identical structures are interned once in a `chunks` table and referenced by index, so repeated structure (and unchanged structure across ticks) is stored once, not re-serialized.
+- The transform is deterministic and **byte-stable** for identical input (the key that makes cross-tick caching sound). On a realistic 20-issue payload this is ~11× smaller than the raw JSON.
+
+**Backward-safe degrade.** Every read path is total-on-failure: if the snapshot memo is missing, empty, malformed, or older than the freshness window (600 s), the agent silently falls back to its legacy direct `forge-api.sh issues` fetch. A broken or stale snapshot never hard-fails a tick. The per-colony snapshot is used only on the single-repo path; the multi-repo (`[[forge.github]]`) fan-out keeps its per-repo direct fetch.
+
+| Memo key | Writer | Readers |
+|----------|--------|---------|
+| `gitlab:snapshot:issues` | `triage/scripts/start-colony.sh` (snapshot step) | labeler, router, prioritizer, issue_creator |
+| `gitlab:snapshot:issues:ts` | `triage/scripts/start-colony.sh` (snapshot step) | the four agents' `snapshot_fresh()` gate |
+
+> The same mechanism extends to the `merge_requests` collection in the Planning / Implementation / Code Review / Release colonies; their reads are label-event-filtered rather than plain full-collection fetches, so that wiring is driven by the live run (#1117) and is not enabled yet.
+
 ## Knowledge portability
 
 Every `learn()` call in the federation's agents tags entries with one of `observed` (shadow tier: passive learning from GitLab activity), `emitted` (propose tier: suggestion logged with draft external write), `review-gated` (review-gated tier: direct non-terminal external write under the review gate), or `acted` (autonomous tier: terminal external write with no second gate) plus the colony name (`triage`, `code-review`, `planning`, `implementation`, `release`). See [`doc/auto-promote.md#classification`](../doc/auto-promote.md#classification) for how the auto-promote heuristic consumes these tags.

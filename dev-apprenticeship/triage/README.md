@@ -51,6 +51,19 @@ Reactive agents (`router`, `prioritizer`) follow a **delta-check + early-exit** 
 
 The last-check refresh inside the early-exit branch is load-bearing — otherwise the `--since` window never advances on quiet projects and each tick would keep re-querying the same gap. This is the conventional structure for all reactive agents in this federation; see `agents/router.ag` and `agents/prioritizer.ag` for the canonical shape.
 
+## Shared issues snapshot (#1111 / #1112)
+
+All four agents read the same `issues` collection, so without sharing the endpoint is fetched once per agent per tick (3–4× the same payload). Instead, `scripts/start-colony.sh` publishes **one** compressed snapshot per colony per tick:
+
+- **Fetch once + compress:** `scripts/forge-api.sh snapshot issues` fetches the collection a single time and pipes it through `scripts/snapshot-compress.py`, producing a compact, deduplicated, structurally-chunked envelope (#1112) — the bytes that reach `prompt()` are this compact form, not raw JSON.
+- **Publish to a shared memo:** the envelope is written to `gitlab:snapshot:issues` with an epoch-seconds freshness key at `gitlab:snapshot:issues:ts`. Re-run the publish standalone with `./scripts/start-colony.sh --snapshot-refresh`.
+- **Agents read the memo:** each agent's `issues_cmd()` first tries `snapshot_issues_cmd(<view>)`, which `recall_latest()`s the snapshot and (when fresh, ≤ 600 s) renders its role view via `forge-api.sh issues --from-snapshot --view <view>` — **zero HTTP**. A missing / empty / stale / malformed snapshot returns `""`, so the agent transparently falls back to its legacy direct `forge-api.sh issues` fetch (backward-safe). The shared snapshot is used only on the single-repo path; the multi-repo (`[[forge.github]]`) fan-out keeps its per-repo direct fetch.
+
+| Key | Written by | Read by |
+|-----|-----------|---------|
+| `gitlab:snapshot:issues` | `start-colony.sh` snapshot step | `labeler`, `router`, `prioritizer`, `issue_creator` |
+| `gitlab:snapshot:issues:ts` | `start-colony.sh` snapshot step | each agent's `snapshot_fresh()` gate |
+
 ## Setup
 
 1. Copy and edit the config:
