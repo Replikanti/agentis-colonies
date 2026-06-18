@@ -17,10 +17,11 @@ tick_interval_ms = 60000
 type = "none"
 
 [llm]
-# Only "backend" is read today. "cli" uses the agentis daemon default CLI
-# adapter. The replay orchestrator (`tools/run-replay.sh`) overlays a
-# proper [llm.openai] block in the container bootstrap.
-backend = "cli"
+# Only "backend" is read today. "flat-cyborg" runs the agentis flat-cyborg
+# backend (flat-rate Claude subscription via the flat-cyborg PTY wrapper).
+# The replay orchestrator (`tools/run-replay.sh`) overlays the backend plus
+# any llm.flat_cyborg.* / llm.openai.* keys in the container bootstrap.
+backend = "flat-cyborg"
 
 # Agent definitions
 # Each agent runs as a separate agentis daemon process. They discover

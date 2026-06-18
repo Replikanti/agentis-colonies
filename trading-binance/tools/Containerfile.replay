@@ -17,10 +17,10 @@
 # into the image layers and `podman save` exports.
 #
 # WARNING: Claude Code session credentials (`~/.claude/.credentials.json`)
-# MUST NOT be baked in either. Future replay-side claude backend support
-# will follow the tribes-bench pattern of bind-mounting the host
-# operator's `$HOME/.claude` at run time; never `COPY` the directory into
-# the image.
+# MUST NOT be baked in either. The flat-cyborg backend is now WIRED: the
+# orchestrator bind-mounts the host operator's `$HOME/.claude` into the
+# container at run time (following the tribes-bench pattern); never `COPY`
+# the directory into the image.
 #
 # The agentis binary fetch is sha256-verified against the publisher's
 # detached signature so a compromised CDN can't substitute a backdoored
@@ -64,6 +64,12 @@ RUN cd /tmp \
 # Operators who need reproducibility should rebuild the image periodically.
 RUN curl -fsSL https://claude.ai/install.sh | bash \
  && ln -s /root/.local/bin/claude /usr/local/bin/claude
+
+# Install the flat-cyborg PTY wrapper (#1133): drives the `claude` CLI on a
+# flat-rate Claude subscription so the replay needs no OPENROUTER_API_KEY.
+# Installer downloads the latest release, SHA256-verifies fail-closed,
+# installs into FLAT_CYBORG_INSTALL_DIR (default /usr/local/bin, on PATH).
+RUN curl -fsSL https://raw.githubusercontent.com/Replikanti/flat-cyborg/main/install.sh | sh
 
 WORKDIR /run-root
 
