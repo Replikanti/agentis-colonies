@@ -69,6 +69,11 @@ tools/cross-repo-cache.py
 tools/resolve-cross-repo-ref.sh
 tools/closed-by-index.sh
 tools/closed-by-index.py
+# First-real-task completion gate (#1116): mechanically evaluates the
+# single binary completion criterion in doc/dev-apprenticeship-first-task.md
+# (PR mergeable + green gate) so an operator can check "done" without a
+# judgement call.
+tools/completion-gate.sh
 
 # ----- Federation dashboard -----
 # Extracted to a separately-versioned standalone component in #252.
@@ -82,6 +87,7 @@ tools/closed-by-index.py
 doc/adr/
 doc/auto-promote.md
 doc/federation-dashboard.md
+doc/dev-apprenticeship-first-task.md
 
 # ----- Top-level repository surface users read on first contact -----
 README.md

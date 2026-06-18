@@ -51,6 +51,7 @@ graph LR
 - [Colonies](#colonies)
 - [Cost / rate instrumentation](#cost--rate-instrumentation-1114)
 - [CB cap + forge rate-limit backoff](#cb-cap--forge-rate-limit-backoff-1115)
+- [First real task — completion criterion & post-run triage](#first-real-task--completion-criterion--post-run-triage-1116--1118)
 - [Knowledge portability](#knowledge-portability)
 - [Troubleshooting](#troubleshooting)
 - [Extension points](#extension-points)
@@ -406,6 +407,21 @@ Two colony-side guardrails bound per-tick spend and survive a rate-limited forge
 - **Jittered forge-429 backoff + observable rate-limited state.** Each colony's `gitlab-api.sh` retry loop adds equal-jitter on top of its existing exponential backoff (slept value in `[delay, delay + delay/2]`) so simultaneous retries from many agents do not synchronise into a thundering herd. When a forge write hits the backend rate limit, the acting agents (`approval_decider`, `risk_assessor`, `plan_reviewer`) record a growing jittered backoff window in a `<agent>:rate_limited_until` memo, emit a `<colony>:rate-limited` event, and **defer** the write to a later tick rather than mark the task failed; a successful write clears the state. `tools/test-rate-limit-backoff.sh` stubs a 429-on-every-attempt forge call and asserts the delays grow within their jitter bounds, the call gives up after the retry budget (no retry storm), and the rate-limited memo + emit + defer wiring is present.
 
 > The LLM-backend HTTP-429 backoff and prompt cache are a separate layer that lives in the agentis runtime / LLM backend (handled upstream). The `--cb-per-tick` cap and the forge-429 backoff above are the colony-side mechanisms; the live induced-rate-limit recovery DoD line is operator-run.
+
+## First real task — completion criterion & post-run triage (#1116 / #1118)
+
+Before the first real end-to-end run, two things are pinned down in writing so the run cannot fool itself: **what "done" means**, and **what happens after the run — success or failure**. Both live in [`doc/dev-apprenticeship-first-task.md`](../doc/dev-apprenticeship-first-task.md).
+
+- **Completion criterion (#1116).** One binary, non-author-checkable condition: the federation **opened a PR that is mergeable and passes the gate green** (`colony-lint.sh` 0-failed + required CI), on a nominated ~1h bounded task, with no forbidden human help. Verify mechanically:
+
+  ```bash
+  tools/completion-gate.sh dev-apprenticeship <target-issue> --pr <PR-number>
+  ```
+
+  The gate prints `[PASS]`/`[FAIL]` per condition and an overall verdict (exit non-zero unless all pass). The doc also fixes the **human-intervention boundary** — the operator may fix the *environment* (infra, creds, prompts, I/O, restarts, tiers) but may **not** produce the *work being measured* (hand-write the diff, edit the target's code/tests, or lower the bar mid-run); crossing that line invalidates the run.
+- **Post-run triage (#1118).** A standing rule that a setback produces a **diagnosis, not a shutdown**: on failure, file a new `dev-apprenticeship` issue naming the exact failure mode with `cost-rate-report.sh` (#1114) evidence and fix that; on success, record the completion and nominate the next task. **No `dev-apprenticeship` issue may be closed with a cut-reason** ("wasn't using Agentis enough") instead of a fix-reason or recorded data point.
+
+> The run itself ([#1117](https://github.com/Replikanti/agentis-colonies/issues/1117)) is operator-driven — it needs a live federation against a real backend on a repo you know. The doc + gate above are the pre-run scaffolding that makes that run's outcome objective.
 
 ## Knowledge portability
 
