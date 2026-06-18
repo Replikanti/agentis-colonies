@@ -254,6 +254,42 @@ tick_interval_for() {
     esac
 }
 
+# Per-tick cognitive-budget cap override (#1115). Config-driven, mirroring
+# the per-agent tick-interval pattern (#146): a per-agent `cb_per_tick` under
+# the matching `[[agents]]` entry wins; otherwise the colony-wide
+# `[colony].cb_per_tick` default applies; otherwise the federation-wide
+# fallback (2000, matching `daemon.cb_per_tick` in `<fed>/.agentis/config`
+# written by install.sh). Spliced onto every `agentis daemon` launch as
+# `--cb-per-tick <n>` so a runaway tick cannot burn the whole budget in one
+# pass. The flag is a real `agentis daemon` flag (unlike `--config-override`,
+# #351), so this lands on the binary.
+CB_PER_TICK_DEFAULT="$(parse_toml colony cb_per_tick)"
+case "$CB_PER_TICK_DEFAULT" in
+    ''|*[!0-9]*) CB_PER_TICK_DEFAULT=2000 ;;
+    *) [ "$CB_PER_TICK_DEFAULT" -gt 0 ] || CB_PER_TICK_DEFAULT=2000 ;;
+esac
+
+cb_per_tick_for() {
+    local want="$1"
+    local n i name val
+    n="$(parse_toml_array_count agents 2>/dev/null || echo 0)"
+    case "$n" in ''|*[!0-9]*) n=0 ;; esac
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        name="$(parse_toml_array_get agents "$i" name 2>/dev/null || echo '')"
+        if [ "$name" = "$want" ]; then
+            val="$(parse_toml_array_get agents "$i" cb_per_tick 2>/dev/null || echo '')"
+            case "$val" in
+                ''|*[!0-9]*) : ;;
+                *) if [ "$val" -gt 0 ]; then echo "$val"; return 0; fi ;;
+            esac
+            break
+        fi
+        i=$((i + 1))
+    done
+    echo "$CB_PER_TICK_DEFAULT"
+}
+
 # #319 PR 1 + #318: combined LLM-config override emitter.
 #
 # Precedence (highest first):
@@ -368,6 +404,7 @@ for d in daemons:
         done
     fi
     tick=$(tick_interval_for "$RESTART_AGENT")
+    cb=$(cb_per_tick_for "$RESTART_AGENT")
     # Detach daemon stdio from any inherited pipes (e.g. the dashboard's
     # subprocess.run(capture_output=True) pipes). Without this, the daemon
     # keeps those fds open after start-colony.sh exits, and the Python
@@ -383,6 +420,7 @@ for d in daemons:
         --enable-exec \
         --enable-messaging \
         --tick-interval "$tick" \
+        --cb-per-tick "$cb" \
         ${CC_ARGS[@]+"${CC_ARGS[@]}"} </dev/null >/dev/null 2>&1 &
     agent_pid=$!
     sleep 0.5
@@ -407,12 +445,14 @@ while IFS= read -r line; do
 done < <(llm_override_args)
 for agent in "${AGENTS[@]}"; do
     interval=$(tick_interval_for "$agent")
-    echo "  Starting $agent (tick=${interval}ms)..."
+    cb=$(cb_per_tick_for "$agent")
+    echo "  Starting $agent (tick=${interval}ms, cb-per-tick=${cb})..."
     agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
         --colony code-review \
         --enable-exec \
         --enable-messaging \
         --tick-interval "$interval" \
+        --cb-per-tick "$cb" \
         ${CC_ARGS[@]+"${CC_ARGS[@]}"} &
     sleep 2  # stagger starts to reduce API contention
 done

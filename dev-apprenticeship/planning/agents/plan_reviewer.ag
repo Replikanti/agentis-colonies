@@ -84,6 +84,75 @@ fn repo_field(line: string, idx: int) -> string {
     return out;
 }
 
+// --- Forge rate-limit backoff observability (#1115) ---
+//
+// When a forge write fails because the backend is rate-limited (the
+// gitlab-api.sh / github-api.sh wrapper returns exit 3 after exhausting its
+// own jittered exponential retries), the agent must NOT mark the task failed.
+// Instead it records a backoff window in `<agent>:rate_limited_until` and
+// emits `planning:rate-limited` so the condition is observable, then defers
+// the write to a later tick. The window grows exponentially across
+// consecutive hits (`<agent>:rl_count`) with +/-25% jitter so many agents do
+// not resynchronise their retries into a thundering herd. The LLM-backend
+// HTTP-429 backoff / prompt cache lives in the agentis runtime / LLM backend
+// (handled upstream); this helper only governs the colony-side forge calls.
+
+fn rl_now_epoch() -> int {
+    let raw = try { exec sh "date -u +%s"; } catch e { ""; };
+    if len(raw) == 0 { return 0; };
+    return parse_int(raw);
+}
+
+fn rl_active(agent_name: string, owner: string, repo: string) -> int {
+    let until_raw = recall_latest(scoped_memo(owner, repo, agent_name + ":rate_limited_until"));
+    if len(until_raw) == 0 { return 0; };
+    let until = parse_int(until_raw);
+    let now = rl_now_epoch();
+    if now == 0 { return 0; };
+    if until > now { return 1; };
+    return 0;
+}
+
+fn rl_backoff_secs(count: int) -> int {
+    let cmd = "C=" + shell_escape(to_string(count)) +
+        " python3 -c 'import os,random; c=int(os.environ[\"C\"]); base=min(300, 5*(2**max(0,c-1))); lo=int(base*0.75); hi=int(base*1.25); print(random.randint(lo, hi) if hi>lo else base)'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    if len(out) == 0 { return 5; };
+    let secs = parse_int(out);
+    if secs <= 0 { return 5; };
+    return secs;
+}
+
+fn rl_mark(agent_name: string, owner: string, repo: string) -> void {
+    let count_raw = recall_latest(scoped_memo(owner, repo, agent_name + ":rl_count"));
+    let prev = if len(count_raw) > 0 { parse_int(count_raw); } else { 0; };
+    let count = prev + 1;
+    let now = rl_now_epoch();
+    let backoff = rl_backoff_secs(count);
+    let until = now + backoff;
+    memo_write(scoped_memo(owner, repo, agent_name + ":rl_count"), to_string(count));
+    memo_write(scoped_memo(owner, repo, agent_name + ":rate_limited_until"), to_string(until));
+    emit("planning:rate-limited", agent_name + " backoff " + to_string(backoff) + "s until " + to_string(until));
+    print("[plan_reviewer] rate-limited; backing off", backoff, "s (hit", count, ")");
+}
+
+fn rl_clear(agent_name: string, owner: string, repo: string) -> void {
+    memo_write(scoped_memo(owner, repo, agent_name + ":rl_count"), "0");
+    memo_write(scoped_memo(owner, repo, agent_name + ":rate_limited_until"), "0");
+}
+
+fn rl_is_limited(owner: string, repo: string) -> int {
+    // colony-lint: safe-exec-concat
+    let cmd = "$COLONY_DIR/scripts/forge-api.sh rate-limit-status" + repo_arg(owner, repo);
+    let raw = try { exec sh cmd; } catch e { ""; };
+    if len(raw) < 3 { return 0; };
+    let val = to_string(json_get(raw, "remaining"));
+    if val == "void" { return 0; };
+    let remaining = parse_int(val);
+    if remaining == 0 { return 1; };
+    return 0;
+}
+
 fn stash(owner: string, repo: string, slot: string, issue_id: int, body: string) -> void {
     if len(body) > 2 {
         memo_write(scoped_memo(owner, repo, "plan_reviewer:" + to_string(issue_id) + ":" + slot), body);
@@ -176,6 +245,13 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         return;
     };
 
+    // #1115: rate-limit backoff gate. Defer the prompt + write (task is NOT
+    // failed) while the jittered backoff window from a prior 429 is open.
+    if rl_active("plan_reviewer", owner, repo) == 1 {
+        print("[plan_reviewer] in rate-limit backoff; deferring this tick");
+        return;
+    };
+
     let s = recall_latest(scoped_memo(owner, repo, "plan_reviewer:" + to_string(target_iid) + ":scope"));
     let r = recall_latest(scoped_memo(owner, repo, "plan_reviewer:" + to_string(target_iid) + ":risks"));
     let b = recall_latest(scoped_memo(owner, repo, "plan_reviewer:" + to_string(target_iid) + ":breakdown"));
@@ -224,6 +300,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         // (auth/429/5xx/transport) we leave the marker unset so the
         // next tick retries instead of silently consuming the issue.
         if len(post_result) > 0 {
+            rl_clear("plan_reviewer", owner, repo);
             memo_write(posted_key, "1");
             if len(owner) > 0 {
                 learn(
@@ -244,6 +321,13 @@ fn tick_for_repo(owner: string, repo: string) -> void {
             };
             print("[plan_reviewer] Posted plan to issue", draft.issue_id);
         } else {
+            // #1115: a rate-limited write defers (records backoff + emits the
+            // observable event) instead of marking the task failed; the
+            // posted marker stays unset so a later tick retries after backoff.
+            if rl_is_limited(owner, repo) == 1 {
+                rl_mark("plan_reviewer", owner, repo);
+                return;
+            };
             if len(owner) > 0 {
                 learn(
                     "review_plan",
