@@ -20,6 +20,13 @@
 #  13. Container spawn command is emitted in dry-run output (echo-only)
 #  14. Run-meta.json write step is emitted in dry-run output
 #  15. Cleanup trap is installed in dry-run output
+#  T-a. Default dry-run uses the flat-cyborg backend, bind-mounts
+#       /root/.claude, emits no OPENROUTER_API_KEY error, and the script
+#       source injects llm.flat_cyborg.idle_ms (#1133)
+#  T-b. REPLAY_LLM_BACKEND=openai fallback still names the openai backend,
+#       omits the /root/.claude mount, and the script source keeps the
+#       llm.openai.api_key_env injection + the openai key enforcement (#1133)
+#  Header-doc: REPLAY_LLM_BACKEND + REPLAY_HOST_CLAUDE_DIR documented (#1133)
 #
 # Standard library only — no pytest, no requests, no live LLM, no podman.
 # Self-contained: fixture CSV is generated inline.
@@ -227,6 +234,57 @@ assert_contains "header documents REPLAY_LOOKBACK_WINDOW" "$SRC" "REPLAY_LOOKBAC
 assert_contains "header documents REPLAY_HOLD_PERIOD" "$SRC" "REPLAY_HOLD_PERIOD"
 assert_contains "header documents REPLAY_DRY_RUN" "$SRC" "REPLAY_DRY_RUN"
 assert_contains "header documents REPLAY_RUN_DIR" "$SRC" "REPLAY_RUN_DIR"
+assert_contains "header documents REPLAY_LLM_BACKEND" "$SRC" "REPLAY_LLM_BACKEND"
+assert_contains "header documents REPLAY_HOST_CLAUDE_DIR" "$SRC" "REPLAY_HOST_CLAUDE_DIR"
+
+# ---------------------------------------------------------------------------
+# T-a. Default backend is flat-cyborg: the default $OUT capture (no
+# REPLAY_LLM_BACKEND set) selects flat-cyborg, names it in the plan, bind-
+# mounts /root/.claude, never trips the openai key-empty hard-fail, and the
+# script source injects the llm.flat_cyborg.idle_ms hermetic-config line.
+# ---------------------------------------------------------------------------
+assert_contains "T-a1. default backend is flat-cyborg" "$OUT" "llm backend: flat-cyborg"
+assert_contains "T-a2. flat-cyborg dry-run bind-mounts /root/.claude" "$OUT" \
+    ":/root/.claude:rw,z"
+if printf '%s' "$OUT" | grep -Fq -- "OPENROUTER_API_KEY is empty"; then
+    echo "[FAIL] T-a3. flat-cyborg dry-run does not trip the openai key-empty fail"
+    FAIL=$((FAIL + 1))
+else
+    echo "[PASS] T-a3. flat-cyborg dry-run does not trip the openai key-empty fail"
+    PASS=$((PASS + 1))
+fi
+assert_contains "T-a4. script source injects llm.flat_cyborg.idle_ms" "$SRC" \
+    "llm.flat_cyborg.idle_ms"
+
+# ---------------------------------------------------------------------------
+# T-b. openai fallback regression: REPLAY_LLM_BACKEND=openai still names the
+# openai backend in the plan, omits the /root/.claude bind-mount, and the
+# script source keeps both the llm.openai.api_key_env injection and the
+# openai key enforcement message.
+# ---------------------------------------------------------------------------
+OPENAI_OUT="$(REPLAY_DRY_RUN=1 \
+              REPLAY_LLM_BACKEND=openai \
+              REPLAY_SYMBOL=BTCUSDT \
+              REPLAY_TIMEFRAME=30m \
+              REPLAY_DAEMON_COUNT=5 \
+              REPLAY_LOOKBACK_WINDOW=200 \
+              REPLAY_HOLD_PERIOD=8 \
+              REPLAY_SPEED=100 \
+              REPLAY_RUN_DIR="$WORK_DIR/run-openai" \
+              bash "$ORCH" 2>&1)"
+assert_contains "T-b1. openai fallback names the openai backend" "$OPENAI_OUT" \
+    "llm backend: openai"
+if printf '%s' "$OPENAI_OUT" | grep -Fq -- ":/root/.claude:rw,z"; then
+    echo "[FAIL] T-b2. openai fallback does not bind-mount /root/.claude"
+    FAIL=$((FAIL + 1))
+else
+    echo "[PASS] T-b2. openai fallback does not bind-mount /root/.claude"
+    PASS=$((PASS + 1))
+fi
+assert_contains "T-b3. script source injects llm.openai.api_key_env" "$SRC" \
+    "llm.openai.api_key_env"
+assert_contains "T-b4. script source enforces the openai key" "$SRC" \
+    "required for llm.backend=openai"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

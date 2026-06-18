@@ -31,7 +31,7 @@
 #   REPLAY_DAEMON_COUNT          Number of strategist daemons to spawn.
 #                                Default: 6
 #   REPLAY_LLM_BACKEND           llm.backend value injected into hermetic
-#                                config. Default: openai
+#                                config. Default: flat-cyborg
 #   REPLAY_OPENAI_ENDPOINT       Chat-completions URL.
 #                                Default: https://openrouter.ai/api/v1/chat/completions
 #   REPLAY_OPENAI_MODEL          Model id when backend=openai.
@@ -39,6 +39,14 @@
 #   REPLAY_OPENAI_KEY_ENV        Env var carrying the LLM API key.
 #                                Default: OPENROUTER_API_KEY
 #   REPLAY_OPENAI_TIMEOUT_MS     Per-request timeout (ms). Default: 180000
+#   REPLAY_FLAT_CYBORG_MODEL     flat-cyborg llm.model when
+#                                backend=flat-cyborg. Default: unset
+#   REPLAY_FLAT_CYBORG_IDLE_MS   flat-cyborg llm.flat_cyborg.idle_ms when
+#                                backend=flat-cyborg. Default: 4000
+#   REPLAY_HOST_CLAUDE_DIR       Host ~/.claude dir bind-mounted to
+#                                /root/.claude when backend=flat-cyborg.
+#                                Default: $HOME/.claude; a real run
+#                                requires it to exist.
 #   REPLAY_DAEMON_CB_PER_TICK    Per-tick CB replenishment written into
 #                                hermetic .agentis/config as
 #                                `daemon.cb_per_tick`. Default 2000 —
@@ -151,11 +159,14 @@ START="${REPLAY_START:-}"
 END="${REPLAY_END:-}"
 SPEED="${REPLAY_SPEED:-100}"
 DAEMON_COUNT="${REPLAY_DAEMON_COUNT:-6}"
-LLM_BACKEND="${REPLAY_LLM_BACKEND:-openai}"
+LLM_BACKEND="${REPLAY_LLM_BACKEND:-flat-cyborg}"
 OPENAI_ENDPOINT="${REPLAY_OPENAI_ENDPOINT:-https://openrouter.ai/api/v1/chat/completions}"
 OPENAI_MODEL="${REPLAY_OPENAI_MODEL:-qwen/qwen3-coder-30b-a3b-instruct}"
 OPENAI_KEY_ENV="${REPLAY_OPENAI_KEY_ENV:-OPENROUTER_API_KEY}"
 OPENAI_TIMEOUT_MS="${REPLAY_OPENAI_TIMEOUT_MS:-180000}"
+FLAT_CYBORG_MODEL="${REPLAY_FLAT_CYBORG_MODEL:-}"
+FLAT_CYBORG_IDLE_MS="${REPLAY_FLAT_CYBORG_IDLE_MS:-4000}"
+HOST_CLAUDE_DIR="${REPLAY_HOST_CLAUDE_DIR:-$HOME/.claude}"
 DAEMON_CB_PER_TICK="${REPLAY_DAEMON_CB_PER_TICK:-2000}"
 DAEMON_HEARTBEAT_MS="${REPLAY_DAEMON_HEARTBEAT_MS:-1800000}"
 LOOKBACK_WINDOW="${REPLAY_LOOKBACK_WINDOW:-200}"
@@ -267,6 +278,13 @@ if [ "$DRY_RUN" = "0" ]; then
             exit 1
         fi
         unset openai_key_value
+    fi
+    if [ "$LLM_BACKEND" = "flat-cyborg" ] || [ "$LLM_BACKEND" = "flat_cyborg" ]; then
+        if [ ! -d "$HOST_CLAUDE_DIR" ]; then
+            echo "run-replay: REPLAY_HOST_CLAUDE_DIR=$HOST_CLAUDE_DIR does not exist" >&2
+            echo "            set REPLAY_HOST_CLAUDE_DIR or install + log in to Claude Code first" >&2
+            exit 1
+        fi
     fi
     mkdir -p "$RUN_DIR" "$LAPTOP_DIR" "$SANDBOX_CTX" "$LAPTOP_DIR/.agentis/logs" "$LAPTOP_DIR/.agentis/spend"
     : >"$ORCH_LOG"
@@ -382,6 +400,11 @@ write_bootstrap() {
             printf '  printf "llm.openai.model = %s\\n"\n' "$OPENAI_MODEL"
             printf '  printf "llm.openai.api_key_env = %s\\n"\n' "$OPENAI_KEY_ENV"
             printf '  printf "llm.openai.timeout_ms = %s\\n"\n' "$OPENAI_TIMEOUT_MS"
+        elif [ "$LLM_BACKEND" = "flat-cyborg" ] || [ "$LLM_BACKEND" = "flat_cyborg" ]; then
+            printf '  printf "llm.flat_cyborg.idle_ms = %s\\n"\n' "$FLAT_CYBORG_IDLE_MS"
+            if [ -n "$FLAT_CYBORG_MODEL" ]; then
+                printf '  printf "llm.model = %s\\n"\n' "$FLAT_CYBORG_MODEL"
+            fi
         fi
         printf '} >> .agentis/config\n'
         printf 'for t in alpha beta gamma delta epsilon zeta; do\n'
@@ -414,8 +437,20 @@ write_bootstrap() {
 
 # --- 4) Spawn the container ---
 spawn_container() {
+    # #1133: on the flat-cyborg backend bind-mount the host operator's
+    # ~/.claude into the container's /root/.claude so the flat-cyborg PTY
+    # wrapper can drive the `claude` CLI on the operator's flat-rate
+    # subscription (mirrors the tribes-bench #535/#537 precedent). The
+    # trailing space inside CLAUDE_MOUNT_FLAG keeps the openai path
+    # byte-identical (the flag collapses to empty). `:z` requests a shared
+    # SELinux relabel — required on SELinux-enforcing hosts (Fedora/RHEL),
+    # a no-op on SELinux-disabled hosts (Ubuntu/Debian) (#540).
+    CLAUDE_MOUNT_FLAG=""
+    if [ "$LLM_BACKEND" = "flat-cyborg" ] || [ "$LLM_BACKEND" = "flat_cyborg" ]; then
+        CLAUDE_MOUNT_FLAG="-v $HOST_CLAUDE_DIR:/root/.claude:rw,z "
+    fi
     emit_step "spawning replay-laptop container (image=$IMAGE_TAG)"
-    emit_cmd "podman run -d --replace --name replay-laptop -e $OPENAI_KEY_ENV=\"\${$OPENAI_KEY_ENV:-}\" -v $REPO_ROOT:/repo:ro -v $LAPTOP_DIR:/run-root:rw $IMAGE_TAG /run-root/bootstrap.sh"
+    emit_cmd "podman run -d --replace --name replay-laptop -e $OPENAI_KEY_ENV=\"\${$OPENAI_KEY_ENV:-}\" -v $REPO_ROOT:/repo:ro -v $LAPTOP_DIR:/run-root:rw ${CLAUDE_MOUNT_FLAG}$IMAGE_TAG /run-root/bootstrap.sh"
 }
 
 # --- 5) Cleanup trap ---
