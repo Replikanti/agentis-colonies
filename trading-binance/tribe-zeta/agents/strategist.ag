@@ -5,7 +5,7 @@
 // Per-tick behaviour:
 //   1. Read replay state (`replay:current_tick`, `replay:context_path`).
 //   2. Read the context candle window via `file_read()`.
-//   3. Build a tribe-specific strategy prompt (volume-profile here)
+//   3. Build a tribe-specific strategy prompt (volume-divergence here)
 //      and call prompt() -> Decision JSON.
 //   4. Persist the decision to memo and the per-run trade ledger.
 //   5. Settle the decision from `tick - HOLD_PERIOD` via the
@@ -54,7 +54,7 @@ fn _tribe_default_setup() -> string {
     return "volume_divergence";
 }
 
-// Per-tribe seed strategy prompt. Returns the volume-profile setup
+// Per-tribe seed strategy prompt. Returns the volume-divergence setup
 // hypothesis verbatim; M98 v3 evolution rewrites this body once K
 // verified trades accumulate. All five tribes share the same no-
 // indicators rule; the per-tribe lines differ only in the setup
