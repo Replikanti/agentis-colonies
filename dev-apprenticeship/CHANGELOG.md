@@ -85,6 +85,81 @@ is asserted until multi-version CI is in place.
   closed-by-index}.{sh,py}`. Test: `tools/test-cross-repo-refs.sh` (7
   cases). Dashboard timeline overlay deferred to follow-up.
 
+- **Cost / rate instrumentation report + sidecar (#1114).** New
+  `tools/cost-rate-report.sh <fed-dir> [--json] [--baseline] [--self-test]`
+  (all Python in `tools/cost-rate-report.py`, no heredocs) folds each
+  colony's per-prompt spend rows
+  (`<fed>/<colony>/.agentis/spend/<agent>.jsonl`, #311 — one row ≈ one
+  prompt) plus `agentis stats --json --per-identity` into a
+  machine-readable per-agent **and** per-role (per-colony) record:
+  `prompts`, `prompts_per_hour` (rolling over the trailing window from row
+  `ts`), `chars_in` (proxy: `avg_input_size` × prompts), `chars_out`
+  (proxy: Σ `output_tokens`), `cost_usd` (Σ `cost_usd`, null → 0), a
+  **throttle vs task-error split** (`throttle_events` = forge-429 /
+  `[llm.cancelled]` rows; `task_errors` = agent failure markers — kept as
+  separate fields end to end), and `retries` (0 with a documented note:
+  spend rows do not carry a colony-side retry count today, so the field is
+  wired but reads 0 until the runtime emits it). Default output is one
+  compact line per role (`role=… prompts=… pph=… cin=… cout=… cost=…
+  throttle=… retries=…`); `--json` emits the structured object;
+  `--baseline` stamps the pre-fix number (~74 KB/agent) to
+  `<fed>/.agentis/logs/cost-rate-baseline.json` so improvements are
+  provable. A **4th `start-federation.sh` sidecar** runs the report every
+  `COST_RATE_INTERVAL_S` (default 60 s) to `.agentis/logs/cost-rate.log`,
+  mirroring the snapshot-refresh / cost-cap / auto-promote sidecars
+  exactly (tick-first emit, `''|*[!0-9]*` / `-gt 0` interval validation,
+  self-terminate on zero running daemons, EXIT/TERM/INT trap that also
+  kills the new `COST_RATE_PID`, backward-safe skip-with-warning when the
+  report is not executable). `--self-test` seeds a synthetic spend.jsonl +
+  stats fixture in a temp dir and asserts every field including the
+  throttle-vs-error split and the baseline stamp. **Operator-run-gated /
+  upstream (NOT in this PR):** the real-backend baseline number, the
+  ≥ 90 % prompt-cache-hit DoD line, and the induced-rate-limit recovery
+  line all require a live LLM backend and are operator-run. The
+  LLM-backend HTTP-429 backoff / prompt cache that produces
+  `[llm.cancelled]` rows lives in the agentis runtime / LLM backend
+  (handled upstream); this report only observes the resulting rows. Tools
+  added to `BUNDLE.manifest`.
+
+- **Per-tick CB cap + forge rate-limit backoff (#1115).** Two colony-side
+  guardrails:
+  - **`--cb-per-tick` cap.** All five colonies' `start-colony.sh` now
+    splice `--cb-per-tick <n>` onto every `agentis daemon` launch (both the
+    normal launch and the `--restart-agent` respawn path), config-driven
+    via a new `cb_per_tick_for()` helper that mirrors the per-agent
+    `--tick-interval` pattern (#146): a per-agent `cb_per_tick` under the
+    matching `[[agents]]` entry wins, else the colony-wide
+    `[colony].cb_per_tick` default, else 2000 (matching
+    `daemon.cb_per_tick` in `<fed>/.agentis/config`). The example configs
+    document the key. Unlike `--config-override` (#351), `--cb-per-tick` is
+    a real `agentis daemon` flag, so this lands on the binary. A runaway
+    tick can no longer burn the whole budget in one pass.
+  - **Jittered forge-429 backoff + observable rate-limited state.** Every
+    colony's `gitlab-api.sh` retry loop now adds equal-jitter on top of its
+    existing exponential backoff (`_backoff_sleep`: slept value in
+    `[delay, delay + delay/2]`) so simultaneous retries from many agents do
+    not synchronise into a thundering herd. The agents that act on forge
+    writes (`approval_decider`, `risk_assessor`, `plan_reviewer`) detect a
+    rate-limited write (via the `rate-limit-status` contract), record a
+    growing jittered backoff window in a `<agent>:rate_limited_until` memo,
+    emit a `<colony>:rate-limited` event, and **defer** rather than mark the
+    task failed; a successful write clears the state. `--cb-per-tick` and
+    the LLM-backend HTTP-429 backoff are distinct layers: the latter lives
+    in the agentis runtime / LLM backend (handled upstream). Test:
+    `tools/test-rate-limit-backoff.sh` stubs a 429-on-every-attempt forge
+    call and asserts the backoff delays grow within their jitter bounds,
+    the call gives up after the retry budget (no retry storm), and the
+    rate-limited memo + emit + defer wiring is present. **Operator-run-gated
+    (NOT in this PR):** the live induced-rate-limit recovery DoD line
+    requires a real backend and is operator-run; this PR ships the
+    mechanism + synthetic proof. The `rl_is_limited` helper guards the
+    null/absent-`remaining` case (`to_string(json_get(...)) == "void"` →
+    not limited) so a genuine forge failure on an instance that emits no
+    `RateLimit-*` headers (null `remaining`, e.g. self-hosted GitLab with
+    rate limiting disabled) is no longer misclassified as a rate-limit and
+    swallowed into backoff — only a real numeric `remaining == 0` trips the
+    rate-limited path.
+
 ### Fixed
 
 - GitLab issue-collection rename (#1119): GitLab migrated the

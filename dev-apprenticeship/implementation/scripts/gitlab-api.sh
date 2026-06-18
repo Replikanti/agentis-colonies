@@ -134,6 +134,38 @@ ISSUE_COLLECTION="${GITLAB_ISSUE_COLLECTION:-work_items}"
 #   GITLAB_CURL_RETRIES   retry budget for 5xx/timeouts/429 (default 3).
 #                         Budget is attempts-after-first, so 3 means
 #                         4 total attempts before giving up.
+# _backoff_sleep <delay> — sleep for <delay> seconds plus jitter (#1115).
+#
+# The retry loop already grows <delay> exponentially (delay=$((delay * 2))).
+# Adding jitter on top spreads simultaneous retries from many agents so a
+# shared 429 does not synchronise into a thundering-herd retry storm. Jitter
+# is equal-jitter: the slept value lands in [delay, delay + delay/2], i.e. up
+# to +50% of the base delay, so the lower bound preserves the exponential
+# floor while the upper bound stays predictable for tests.
+#
+# GITLAB_BACKOFF_DRYRUN=1 turns this into a no-sleep trace: the chosen value
+# is appended to $GITLAB_BACKOFF_TRACE (one integer per line) and no sleep
+# happens, so tools/test-rate-limit-backoff.sh can assert growth + jitter
+# bounds deterministically without waiting on real wall-clock seconds.
+_backoff_sleep() {
+    local base="$1"
+    local span jitter slept
+    span=$((base / 2))
+    if [ "$span" -lt 1 ]; then
+        span=1
+    fi
+    # RANDOM is bash-builtin (0..32767); modulo into [0, span].
+    jitter=$((RANDOM % (span + 1)))
+    slept=$((base + jitter))
+    if [ "${GITLAB_BACKOFF_DRYRUN:-0}" = "1" ]; then
+        if [ -n "${GITLAB_BACKOFF_TRACE:-}" ]; then
+            echo "$slept" >> "$GITLAB_BACKOFF_TRACE"
+        fi
+        return 0
+    fi
+    sleep "$slept"
+}
+
 gl_call() {
     local method="$1" url="$2"
     shift 2
@@ -169,7 +201,7 @@ gl_call() {
         # curl didn't get a status line back, so $code is empty.
         if [ "$rc" -ne 0 ] || [ -z "$code" ]; then
             if [ "$attempt" -le "$max_retries" ]; then
-                sleep "$delay"
+                _backoff_sleep "$delay"
                 delay=$((delay * 2))
                 continue
             fi
@@ -197,7 +229,7 @@ gl_call() {
                 # exponential backoff matches what a Retry-After would
                 # typically request on a self-hosted instance.
                 if [ "$attempt" -le "$max_retries" ]; then
-                    sleep "$delay"
+                    _backoff_sleep "$delay"
                     delay=$((delay * 2))
                     continue
                 fi
@@ -206,7 +238,7 @@ gl_call() {
                 ;;
             5*)
                 if [ "$attempt" -le "$max_retries" ]; then
-                    sleep "$delay"
+                    _backoff_sleep "$delay"
                     delay=$((delay * 2))
                     continue
                 fi

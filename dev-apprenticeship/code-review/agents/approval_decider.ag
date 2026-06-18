@@ -70,6 +70,89 @@ fn repo_field(line: string, idx: int) -> string {
     return out;
 }
 
+// --- Forge rate-limit backoff observability (#1115) ---
+//
+// When a forge write fails because the backend is rate-limited (the
+// gitlab-api.sh / github-api.sh wrapper returns exit 3 after exhausting its
+// own jittered exponential retries), the agent must NOT mark the task failed.
+// Instead it records a backoff window in the `<agent>:rate_limited_until`
+// memo and emits a `code-review:rate-limited` event so the condition is
+// observable, then defers the write to a later tick. The window grows
+// exponentially across consecutive rate-limit hits (tracked in
+// `<agent>:rl_count`) with +/-25% jitter so many agents do not resynchronise
+// their retries into a thundering herd. The LLM-backend HTTP-429 backoff /
+// prompt cache lives in the agentis runtime / LLM backend (handled upstream);
+// this helper only governs the colony-side forge calls.
+
+fn rl_now_epoch() -> int {
+    let raw = try { exec sh "date -u +%s"; } catch e { ""; };
+    if len(raw) == 0 { return 0; };
+    return parse_int(raw);
+}
+
+// Active when `rate_limited_until` is set and still in the future.
+fn rl_active(agent_name: string, owner: string, repo: string) -> int {
+    let until_raw = recall_latest(scoped_memo(owner, repo, agent_name + ":rate_limited_until"));
+    if len(until_raw) == 0 { return 0; };
+    let until = parse_int(until_raw);
+    let now = rl_now_epoch();
+    if now == 0 { return 0; };
+    if until > now { return 1; };
+    return 0;
+}
+
+// Compute a jittered exponential backoff (seconds) for the given hit count.
+// base 5s, doubled per consecutive hit, capped at 300s, then +/-25% jitter
+// via the shell so the value is non-deterministic between agents.
+fn rl_backoff_secs(count: int) -> int {
+    let cmd = "C=" + shell_escape(to_string(count)) +
+        " python3 -c 'import os,random; c=int(os.environ[\"C\"]); base=min(300, 5*(2**max(0,c-1))); lo=int(base*0.75); hi=int(base*1.25); print(random.randint(lo, hi) if hi>lo else base)'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    if len(out) == 0 { return 5; };
+    let secs = parse_int(out);
+    if secs <= 0 { return 5; };
+    return secs;
+}
+
+// Record a rate-limit hit: grow the count, stamp the until-memo, emit the
+// observable event. Returns nothing; the caller defers its write.
+fn rl_mark(agent_name: string, owner: string, repo: string) -> void {
+    let count_raw = recall_latest(scoped_memo(owner, repo, agent_name + ":rl_count"));
+    let prev = if len(count_raw) > 0 { parse_int(count_raw); } else { 0; };
+    let count = prev + 1;
+    let now = rl_now_epoch();
+    let backoff = rl_backoff_secs(count);
+    let until = now + backoff;
+    memo_write(scoped_memo(owner, repo, agent_name + ":rl_count"), to_string(count));
+    memo_write(scoped_memo(owner, repo, agent_name + ":rate_limited_until"), to_string(until));
+    emit("code-review:rate-limited", agent_name + " backoff " + to_string(backoff) + "s until " + to_string(until));
+    print("[approval_decider] rate-limited; backing off", backoff, "s (hit", count, ")");
+}
+
+// Clear the backoff state after a successful forge write.
+fn rl_clear(agent_name: string, owner: string, repo: string) -> void {
+    memo_write(scoped_memo(owner, repo, agent_name + ":rl_count"), "0");
+    memo_write(scoped_memo(owner, repo, agent_name + ":rate_limited_until"), "0");
+}
+
+// Detect whether a just-failed forge call failed because the backend is
+// rate-limited (vs an auth / 4xx / transport error). Consults the
+// `forge-api.sh rate-limit-status` contract ({remaining, limit, reset_at}):
+// `remaining == 0` is the rate-limit signature. Total-on-failure: when the
+// status call itself errors or the instance reports null remaining, returns
+// 0 so a non-rate-limit failure is not misclassified as a backoff.
+fn rl_is_limited(owner: string, repo: string) -> int {
+    // colony-lint: safe-exec-concat
+    let cmd = "$COLONY_DIR/scripts/forge-api.sh rate-limit-status" + repo_arg(owner, repo);
+    let raw = try { exec sh cmd; } catch e { ""; };
+    if len(raw) < 3 { return 0; };
+    let val = to_string(json_get(raw, "remaining"));
+    if val == "void" { return 0; };
+    let remaining = parse_int(val);
+    if remaining == 0 { return 1; };
+    return 0;
+}
+
 fn tick_for_repo(owner: string, repo: string) -> void {
     // #147: cheap delta-check. approval_decider has no GitLab poll —
     // its input is the colony bus. If no reviewer emitted findings
@@ -94,6 +177,19 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
         if len(now_e) > 0 {
             memo_write(scoped_memo(owner, repo, "approval_decider:last_check"), now_e);
+        };
+        return;
+    };
+
+    // #1115: rate-limit backoff gate. If a prior forge write tripped the
+    // backend's rate limit, `rate_limited_until` holds an epoch in the
+    // future; defer this tick's prompt + write entirely (task is NOT failed,
+    // just postponed) until the jittered backoff window elapses.
+    if rl_active("approval_decider", owner, repo) == 1 {
+        print("[approval_decider] in rate-limit backoff; deferring this tick");
+        let now_g = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_g) > 0 {
+            memo_write(scoped_memo(owner, repo, "approval_decider:last_check"), now_g);
         };
         return;
     };
@@ -140,8 +236,19 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         if decision.action == "approve" {
             // colony-lint: safe-exec-concat
             let approve_cmd = "$COLONY_DIR/scripts/forge-api.sh approve " + to_string(decision.mr_iid) + repo_arg(owner, repo);
-            try { exec sh approve_cmd; } catch e {
+            let approve_result = try { exec sh approve_cmd; } catch e {
                 print("[approval_decider] Failed to approve:", e);
+                "";
+            };
+            // #1115: a rate-limited write defers (records backoff + emits the
+            // observable event) instead of marking the task failed.
+            if len(approve_result) == 0 {
+                if rl_is_limited(owner, repo) == 1 {
+                    rl_mark("approval_decider", owner, repo);
+                    return;
+                };
+            } else {
+                rl_clear("approval_decider", owner, repo);
             };
             print("[approval_decider] Approved MR", decision.mr_iid);
             if len(owner) > 0 {
@@ -154,8 +261,18 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 let comment = "**Review Summary** (automated)\n\n" + decision.reasoning + "\n\nFindings: " + to_string(decision.total_findings) + " total, " + to_string(decision.critical_count) + " critical";
                 // colony-lint: safe-exec-concat
                 let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(decision.mr_iid) + " --body " + shell_escape(comment) + repo_arg(owner, repo);
-                try { exec sh post_cmd; } catch e {
+                let post_result = try { exec sh post_cmd; } catch e {
                     print("[approval_decider] Failed to post:", e);
+                    "";
+                };
+                // #1115: defer on rate-limit instead of failing.
+                if len(post_result) == 0 {
+                    if rl_is_limited(owner, repo) == 1 {
+                        rl_mark("approval_decider", owner, repo);
+                        return;
+                    };
+                } else {
+                    rl_clear("approval_decider", owner, repo);
                 };
                 if len(owner) > 0 {
                     learn("approval_decision", "MR " + to_string(decision.mr_iid), "request_changes: " + decision.reasoning, "success", ["acted", "code-review", repo_tag(owner, repo)]);

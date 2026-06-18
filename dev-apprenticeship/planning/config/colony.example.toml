@@ -6,6 +6,13 @@
 [colony]
 name = "planning"
 tick_interval_ms = 60000
+# Per-tick cognitive-budget cap (#1115). Splices `--cb-per-tick <n>` onto every
+# `agentis daemon` launch so a single runaway tick cannot burn the whole budget
+# in one pass. This colony-wide value is the default for every agent; override
+# it per agent with a `cb_per_tick` key inside that agent's `[[agents]]` entry.
+# Left unset, start-colony.sh falls back to 2000 (matching `daemon.cb_per_tick`
+# in `<fed>/.agentis/config` written by install.sh).
+# cb_per_tick = 2000
 
 [planning]
 # GitLab label that marks an issue as ready for planning. The 4 planning

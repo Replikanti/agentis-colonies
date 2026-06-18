@@ -170,7 +170,7 @@ if [ -f "$AUTO_PROMOTE_INSTALL_FILE" ]; then
                 ) &
                 AUTO_PROMOTE_PID=$!
                 # shellcheck disable=SC2064  # Expand PID at trap-install time, not at trigger time.
-                trap "[ -n \"$AUTO_PROMOTE_PID\" ] && kill \"$AUTO_PROMOTE_PID\" 2>/dev/null; [ -n \"\${COST_CAP_PID:-}\" ] && kill \"\$COST_CAP_PID\" 2>/dev/null; [ -n \"\${SNAPSHOT_REFRESH_PID:-}\" ] && kill \"\$SNAPSHOT_REFRESH_PID\" 2>/dev/null; exit" EXIT TERM INT
+                trap "[ -n \"$AUTO_PROMOTE_PID\" ] && kill \"$AUTO_PROMOTE_PID\" 2>/dev/null; [ -n \"\${COST_CAP_PID:-}\" ] && kill \"\$COST_CAP_PID\" 2>/dev/null; [ -n \"\${SNAPSHOT_REFRESH_PID:-}\" ] && kill \"\$SNAPSHOT_REFRESH_PID\" 2>/dev/null; [ -n \"\${COST_RATE_PID:-}\" ] && kill \"\$COST_RATE_PID\" 2>/dev/null; exit" EXIT TERM INT
                 echo "Auto-promote scheduler: PID $AUTO_PROMOTE_PID, every ${AP_INTERVAL}s (log: .agentis/logs/auto-promote.log)"
                 echo ""
             fi
@@ -233,7 +233,7 @@ if [ -f "$COST_CAP_INSTALL_FILE" ]; then
                 ) &
                 COST_CAP_PID=$!
                 # shellcheck disable=SC2064
-                trap "[ -n \"\${AUTO_PROMOTE_PID:-}\" ] && kill \"\$AUTO_PROMOTE_PID\" 2>/dev/null; [ -n \"$COST_CAP_PID\" ] && kill \"$COST_CAP_PID\" 2>/dev/null; [ -n \"\${SNAPSHOT_REFRESH_PID:-}\" ] && kill \"\$SNAPSHOT_REFRESH_PID\" 2>/dev/null; exit" EXIT TERM INT
+                trap "[ -n \"\${AUTO_PROMOTE_PID:-}\" ] && kill \"\$AUTO_PROMOTE_PID\" 2>/dev/null; [ -n \"$COST_CAP_PID\" ] && kill \"$COST_CAP_PID\" 2>/dev/null; [ -n \"\${SNAPSHOT_REFRESH_PID:-}\" ] && kill \"\$SNAPSHOT_REFRESH_PID\" 2>/dev/null; [ -n \"\${COST_RATE_PID:-}\" ] && kill \"\$COST_RATE_PID\" 2>/dev/null; exit" EXIT TERM INT
                 echo "Cost-cap sidecar: PID $COST_CAP_PID, every ${CC_INTERVAL}s (log: .agentis/logs/cost-cap.log)"
                 echo ""
             fi
@@ -297,8 +297,66 @@ else
     ) &
     SNAPSHOT_REFRESH_PID=$!
     # shellcheck disable=SC2064  # Expand PID at trap-install time, not at trigger time.
-    trap "[ -n \"\${AUTO_PROMOTE_PID:-}\" ] && kill \"\$AUTO_PROMOTE_PID\" 2>/dev/null; [ -n \"\${COST_CAP_PID:-}\" ] && kill \"\$COST_CAP_PID\" 2>/dev/null; [ -n \"$SNAPSHOT_REFRESH_PID\" ] && kill \"$SNAPSHOT_REFRESH_PID\" 2>/dev/null; exit" EXIT TERM INT
+    trap "[ -n \"\${AUTO_PROMOTE_PID:-}\" ] && kill \"\$AUTO_PROMOTE_PID\" 2>/dev/null; [ -n \"\${COST_CAP_PID:-}\" ] && kill \"\$COST_CAP_PID\" 2>/dev/null; [ -n \"$SNAPSHOT_REFRESH_PID\" ] && kill \"$SNAPSHOT_REFRESH_PID\" 2>/dev/null; [ -n \"\${COST_RATE_PID:-}\" ] && kill \"\$COST_RATE_PID\" 2>/dev/null; exit" EXIT TERM INT
     echo "Snapshot-refresh sidecar: PID $SNAPSHOT_REFRESH_PID, every ${SNAPSHOT_REFRESH_INTERVAL}s (log: .agentis/logs/snapshot-refresh.log)"
+    echo ""
+fi
+
+# --- Cost-rate instrumentation sidecar (#1114) ---
+#
+# Periodically runs tools/cost-rate-report.sh, which folds each colony's
+# per-prompt spend rows (#311) plus `agentis stats --json --per-identity`
+# into a machine-readable per-agent / per-role cost+rate report (prompts,
+# prompts/hour, chars in/out proxies, cost_usd, the throttle-vs-task-error
+# split, and retries). The log is the recorded artifact that proves the
+# #1114 "a run produces a machine-readable log with all fields" DoD line on
+# a live federation.
+#
+# Mirrors the snapshot-refresh / auto-promote / cost-cap sidecar shape: a
+# tick-first background loop (emit immediately, not after a sleep), the same
+# ''|*[!0-9]* / -gt 0 interval validation, self-terminate when the
+# federation has zero running daemons, and an EXIT/TERM/INT trap that kills
+# it on shutdown.
+#
+# Backward-safe: if tools/cost-rate-report.sh is not executable (broken
+# checkout, chmod -x), the sidecar is skipped with a warning and the
+# federation runs without it — the report is observational only and never
+# gates the agents.
+COST_RATE_INTERVAL="${COST_RATE_INTERVAL_S:-60}"
+case "$COST_RATE_INTERVAL" in
+    ''|*[!0-9]*) COST_RATE_INTERVAL=60 ;;
+    *) [ "$COST_RATE_INTERVAL" -gt 0 ] || COST_RATE_INTERVAL=60 ;;
+esac
+COST_RATE_PID=""
+COST_RATE_SCRIPT="$SCRIPT_DIR/../tools/cost-rate-report.sh"
+COST_RATE_FED_NAME="$(basename "$FED_DIR")"
+if [ ! -x "$COST_RATE_SCRIPT" ]; then
+    echo "[!!] Cost-rate sidecar: tools/cost-rate-report.sh not executable, skipping."
+else
+    CR_LOG_DIR="$FED_DIR/.agentis/logs"
+    CR_LOG="$CR_LOG_DIR/cost-rate.log"
+    mkdir -p "$CR_LOG_DIR"
+    (
+        # First action is a tick (not a sleep) so a cost-rate report appears
+        # immediately after spawn instead of after a full interval.
+        while :; do
+            if ! agentis daemon list --json 2>/dev/null | grep -Fq '"state":"running"'; then
+                printf '=== %s: no running daemons; sidecar exiting ===\n' \
+                    "$(date -Iseconds)" >> "$CR_LOG"
+                exit 0
+            fi
+            {
+                printf '=== %s: cost-rate tick ===\n' "$(date -Iseconds)"
+                "$COST_RATE_SCRIPT" "$COST_RATE_FED_NAME" 2>&1 \
+                    || printf '[sidecar] cost-rate-report.sh exited %s\n' "$?"
+            } >> "$CR_LOG"
+            sleep "$COST_RATE_INTERVAL"
+        done
+    ) &
+    COST_RATE_PID=$!
+    # shellcheck disable=SC2064  # Expand PID at trap-install time, not at trigger time.
+    trap "[ -n \"\${AUTO_PROMOTE_PID:-}\" ] && kill \"\$AUTO_PROMOTE_PID\" 2>/dev/null; [ -n \"\${COST_CAP_PID:-}\" ] && kill \"\$COST_CAP_PID\" 2>/dev/null; [ -n \"\${SNAPSHOT_REFRESH_PID:-}\" ] && kill \"\$SNAPSHOT_REFRESH_PID\" 2>/dev/null; [ -n \"$COST_RATE_PID\" ] && kill \"$COST_RATE_PID\" 2>/dev/null; exit" EXIT TERM INT
+    echo "Cost-rate sidecar: PID $COST_RATE_PID, every ${COST_RATE_INTERVAL}s (log: .agentis/logs/cost-rate.log)"
     echo ""
 fi
 

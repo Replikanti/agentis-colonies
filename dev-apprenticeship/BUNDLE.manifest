@@ -42,6 +42,11 @@ tools/resolve-tick-interval.py
 tools/cost-cap.sh
 tools/cost-cap-sum.py
 tools/cost-cap-lock.py
+# Cost/rate instrumentation report (#1114) — driven by a start-federation.sh
+# sidecar that folds per-prompt spend rows + `agentis stats` into a
+# machine-readable per-agent / per-role cost+rate log.
+tools/cost-rate-report.sh
+tools/cost-rate-report.py
 tools/experience-transfer.sh
 tools/experience-transfer-pack.py
 # scaffold-agent.sh ships so installed federations can scaffold pre-built
