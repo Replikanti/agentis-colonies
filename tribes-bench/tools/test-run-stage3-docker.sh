@@ -24,6 +24,16 @@ set -eu
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ORCH="$SCRIPT_DIR/run-stage3-docker.sh"
 
+# #1136: the default backend is now flat-cyborg, which (like the metered
+# `claude` backend) bind-mounts the host ~/.claude into both containers and
+# validates that the dir exists — and that validation fires even in
+# --dry-run (tribes-bench design; see the "missing dir exits 1" cases
+# below). CI runners have no $HOME/.claude, so without this the default
+# dry-run captures exit 1 and `OUT=$(...)` aborts the suite under `set -e`.
+# Point every capture at an always-present dir; the missing-dir cases
+# override this inline with a nonexistent path.
+export STAGE3_HOST_CLAUDE_DIR="${STAGE3_HOST_CLAUDE_DIR:-/tmp}"
+
 PASS=0
 FAIL=0
 
