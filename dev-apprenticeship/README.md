@@ -364,7 +364,9 @@ Two mechanisms fix this:
 
 - It fetches the collection **once** via `scripts/forge-api.sh snapshot issues` (the single fetch implementation — `gitlab-api.sh` / `github-api.sh` stay the only code that touches the network) and writes the result to the shared memo `gitlab:snapshot:issues`, with an epoch-seconds freshness key at `gitlab:snapshot:issues:ts`.
 - The publish runs on full-colony bootstrap, and can be re-run any time via `scripts/start-colony.sh --snapshot-refresh` (a lightweight, daemon-free mode for a per-tick sidecar).
+- **`start-federation.sh` runs a snapshot-refresh sidecar** that re-publishes the snapshot every 300 s (override via `SNAPSHOT_REFRESH_INTERVAL_S`) — deliberately **shorter than the 600 s freshness window** so a fresh snapshot is always within reach. Without it the snapshot would go stale after the first window and every agent would fall back to the per-agent direct fetch the snapshot exists to eliminate, evaporating the I/O win. The sidecar mirrors the auto-promote / cost-cap sidecars: it self-terminates once the federation has zero running daemons and is killed on `start-federation.sh` shutdown (EXIT/TERM/INT trap). It is backward-safe — a missing `triage/scripts/start-colony.sh` or a refresh failure is logged to `.agentis/logs/snapshot-refresh.log` and ignored (the snapshot step leaves the prior snapshot in place on error), so a sidecar hiccup never breaks the federation.
 - Each agent reads `recall_latest("gitlab:snapshot:issues")` instead of curling the endpoint. The agent renders its role view from the snapshot via `forge-api.sh issues --from-snapshot --view <role>`, which rehydrates + projects the memo with **zero HTTP calls**.
+- Because the shared snapshot is the **full** collection (not a `--since last_check` delta), `raw` is non-empty on every tick even when nothing changed. To keep the quiet-project cost down, the labeler / router / prioritizer fingerprint their projected view (SHA-256) and memo it as `<agent>:snapshot_hash`; on a tick whose fingerprint matches the last-processed one they refresh `last_check` and skip `prompt()` entirely — restoring the legacy `--since`-empty early-exit on the snapshot path.
 
 **Compressed before it reaches `prompt()` (#1112).** The snapshot is not stored raw. `scripts/snapshot-compress.py` (reusing the normalized-subtree-hashing idea from `dark-factory/evm-harness/struct-sig.js`) transforms the raw GitLab JSON into a compact, deduplicated, structurally-chunked envelope before it lands in the memo:
 
@@ -376,8 +378,9 @@ Two mechanisms fix this:
 
 | Memo key | Writer | Readers |
 |----------|--------|---------|
-| `gitlab:snapshot:issues` | `triage/scripts/start-colony.sh` (snapshot step) | labeler, router, prioritizer, issue_creator |
-| `gitlab:snapshot:issues:ts` | `triage/scripts/start-colony.sh` (snapshot step) | the four agents' `snapshot_fresh()` gate |
+| `gitlab:snapshot:issues` | `triage/scripts/start-colony.sh` (snapshot step; refreshed by the `start-federation.sh` sidecar) | labeler, router, prioritizer, issue_creator |
+| `gitlab:snapshot:issues:ts` | `triage/scripts/start-colony.sh` (snapshot step; refreshed by the `start-federation.sh` sidecar) | the four agents' `snapshot_fresh()` gate |
+| `<agent>:snapshot_hash` | labeler / router / prioritizer (end of tick) | the same agent's per-tick no-change gate (skip `prompt()` when the view fingerprint is unchanged) |
 
 > The same mechanism extends to the `merge_requests` collection in the Planning / Implementation / Code Review / Release colonies; their reads are label-event-filtered rather than plain full-collection fetches, so that wiring is driven by the live run (#1117) and is not enabled yet.
 

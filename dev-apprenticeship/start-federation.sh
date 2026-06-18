@@ -170,7 +170,7 @@ if [ -f "$AUTO_PROMOTE_INSTALL_FILE" ]; then
                 ) &
                 AUTO_PROMOTE_PID=$!
                 # shellcheck disable=SC2064  # Expand PID at trap-install time, not at trigger time.
-                trap "[ -n \"$AUTO_PROMOTE_PID\" ] && kill \"$AUTO_PROMOTE_PID\" 2>/dev/null; [ -n \"\${COST_CAP_PID:-}\" ] && kill \"\$COST_CAP_PID\" 2>/dev/null; exit" EXIT TERM INT
+                trap "[ -n \"$AUTO_PROMOTE_PID\" ] && kill \"$AUTO_PROMOTE_PID\" 2>/dev/null; [ -n \"\${COST_CAP_PID:-}\" ] && kill \"\$COST_CAP_PID\" 2>/dev/null; [ -n \"\${SNAPSHOT_REFRESH_PID:-}\" ] && kill \"\$SNAPSHOT_REFRESH_PID\" 2>/dev/null; exit" EXIT TERM INT
                 echo "Auto-promote scheduler: PID $AUTO_PROMOTE_PID, every ${AP_INTERVAL}s (log: .agentis/logs/auto-promote.log)"
                 echo ""
             fi
@@ -233,12 +233,73 @@ if [ -f "$COST_CAP_INSTALL_FILE" ]; then
                 ) &
                 COST_CAP_PID=$!
                 # shellcheck disable=SC2064
-                trap "[ -n \"\${AUTO_PROMOTE_PID:-}\" ] && kill \"\$AUTO_PROMOTE_PID\" 2>/dev/null; [ -n \"$COST_CAP_PID\" ] && kill \"$COST_CAP_PID\" 2>/dev/null; exit" EXIT TERM INT
+                trap "[ -n \"\${AUTO_PROMOTE_PID:-}\" ] && kill \"\$AUTO_PROMOTE_PID\" 2>/dev/null; [ -n \"$COST_CAP_PID\" ] && kill \"$COST_CAP_PID\" 2>/dev/null; [ -n \"\${SNAPSHOT_REFRESH_PID:-}\" ] && kill \"\$SNAPSHOT_REFRESH_PID\" 2>/dev/null; exit" EXIT TERM INT
                 echo "Cost-cap sidecar: PID $COST_CAP_PID, every ${CC_INTERVAL}s (log: .agentis/logs/cost-cap.log)"
                 echo ""
             fi
         fi
     fi
+fi
+
+# --- Shared-snapshot refresh sidecar (#1111) ---
+#
+# The Triage colony publishes ONE shared GitLab issues snapshot per colony
+# per tick (#1111/#1112): triage/scripts/start-colony.sh writes the compact
+# envelope to the `gitlab:snapshot:issues` memo plus an epoch freshness key
+# at `gitlab:snapshot:issues:ts`. Every triage agent reads that memo instead
+# of each curling /issues, collapsing the former 3-4x duplicate fetch per
+# tick down to one. The snapshot is published on full-colony bootstrap, but
+# the agents' snapshot_fresh() gate treats anything older than 600s as stale
+# and degrades to a per-agent direct fetch — i.e. without periodic refresh
+# the I/O win evaporates after the freshness window and every agent
+# permanently falls back to the per-agent fetch #1111 set out to eliminate.
+#
+# This sidecar keeps the snapshot fresh by re-running the daemon-free
+# `--snapshot-refresh` mode on an interval SHORTER than the 600s window
+# (default 300s) so a fresh snapshot is always within reach. It mirrors the
+# auto-promote / cost-cap sidecar shape: self-terminate when the federation
+# has zero running daemons, EXIT/TERM/INT trap that kills it on shutdown.
+#
+# Backward-safe: a missing triage start-colony.sh, or a refresh failure, is
+# logged and ignored — the snapshot step itself is total-on-failure (it
+# leaves the prior snapshot in place on error), so a sidecar hiccup never
+# breaks the federation; agents simply degrade to direct fetch until the
+# next successful refresh.
+SNAPSHOT_REFRESH_INTERVAL="${SNAPSHOT_REFRESH_INTERVAL_S:-300}"
+case "$SNAPSHOT_REFRESH_INTERVAL" in
+    ''|*[!0-9]*) SNAPSHOT_REFRESH_INTERVAL=300 ;;
+    *) [ "$SNAPSHOT_REFRESH_INTERVAL" -gt 0 ] || SNAPSHOT_REFRESH_INTERVAL=300 ;;
+esac
+SNAPSHOT_REFRESH_PID=""
+SNAP_START_COLONY="$FED_DIR/triage/scripts/start-colony.sh"
+if [ ! -x "$SNAP_START_COLONY" ]; then
+    echo "[!!] Snapshot-refresh sidecar: triage/scripts/start-colony.sh not executable, skipping."
+else
+    SNAP_LOG_DIR="$FED_DIR/.agentis/logs"
+    SNAP_LOG="$SNAP_LOG_DIR/snapshot-refresh.log"
+    mkdir -p "$SNAP_LOG_DIR"
+    (
+        # First action is a tick (not a sleep) so the snapshot is refreshed
+        # immediately and the freshness clock restarts right after spawn.
+        while :; do
+            if ! agentis daemon list --json 2>/dev/null | grep -Fq '"state":"running"'; then
+                printf '=== %s: no running daemons; sidecar exiting ===\n' \
+                    "$(date -Iseconds)" >> "$SNAP_LOG"
+                exit 0
+            fi
+            {
+                printf '=== %s: snapshot-refresh tick ===\n' "$(date -Iseconds)"
+                "$SNAP_START_COLONY" --snapshot-refresh 2>&1 \
+                    || printf '[sidecar] start-colony.sh --snapshot-refresh exited %s\n' "$?"
+            } >> "$SNAP_LOG"
+            sleep "$SNAPSHOT_REFRESH_INTERVAL"
+        done
+    ) &
+    SNAPSHOT_REFRESH_PID=$!
+    # shellcheck disable=SC2064  # Expand PID at trap-install time, not at trigger time.
+    trap "[ -n \"\${AUTO_PROMOTE_PID:-}\" ] && kill \"\$AUTO_PROMOTE_PID\" 2>/dev/null; [ -n \"\${COST_CAP_PID:-}\" ] && kill \"\$COST_CAP_PID\" 2>/dev/null; [ -n \"$SNAPSHOT_REFRESH_PID\" ] && kill \"$SNAPSHOT_REFRESH_PID\" 2>/dev/null; exit" EXIT TERM INT
+    echo "Snapshot-refresh sidecar: PID $SNAPSHOT_REFRESH_PID, every ${SNAPSHOT_REFRESH_INTERVAL}s (log: .agentis/logs/snapshot-refresh.log)"
+    echo ""
 fi
 
 wait

@@ -57,12 +57,15 @@ All four agents read the same `issues` collection, so without sharing the endpoi
 
 - **Fetch once + compress:** `scripts/forge-api.sh snapshot issues` fetches the collection a single time and pipes it through `scripts/snapshot-compress.py`, producing a compact, deduplicated, structurally-chunked envelope (#1112) — the bytes that reach `prompt()` are this compact form, not raw JSON.
 - **Publish to a shared memo:** the envelope is written to `gitlab:snapshot:issues` with an epoch-seconds freshness key at `gitlab:snapshot:issues:ts`. Re-run the publish standalone with `./scripts/start-colony.sh --snapshot-refresh`.
+- **Keep it fresh:** `start-federation.sh` runs a snapshot-refresh sidecar that re-runs `--snapshot-refresh` every 300 s (`SNAPSHOT_REFRESH_INTERVAL_S` override) — shorter than the 600 s freshness window, so the snapshot never goes stale and the agents never permanently fall back to per-agent fetches. The sidecar self-terminates when the federation stops and is backward-safe (refresh failures are logged, not fatal).
 - **Agents read the memo:** each agent's `issues_cmd()` first tries `snapshot_issues_cmd(<view>)`, which `recall_latest()`s the snapshot and (when fresh, ≤ 600 s) renders its role view via `forge-api.sh issues --from-snapshot --view <view>` — **zero HTTP**. A missing / empty / stale / malformed snapshot returns `""`, so the agent transparently falls back to its legacy direct `forge-api.sh issues` fetch (backward-safe). The shared snapshot is used only on the single-repo path; the multi-repo (`[[forge.github]]`) fan-out keeps its per-repo direct fetch.
+- **No-change gate:** because the snapshot is the full collection (not a `--since` delta), `raw` is non-empty every tick even when nothing changed. `labeler` / `router` / `prioritizer` fingerprint (SHA-256) their projected view, memo it as `<agent>:snapshot_hash`, and skip `prompt()` on a tick whose fingerprint matches the last-processed one — restoring the quiet-project early-exit on the snapshot path. `issue_creator`'s suggest prompt is already gated by `poll_inbox()`.
 
 | Key | Written by | Read by |
 |-----|-----------|---------|
-| `gitlab:snapshot:issues` | `start-colony.sh` snapshot step | `labeler`, `router`, `prioritizer`, `issue_creator` |
-| `gitlab:snapshot:issues:ts` | `start-colony.sh` snapshot step | each agent's `snapshot_fresh()` gate |
+| `gitlab:snapshot:issues` | `start-colony.sh` snapshot step (refreshed by the `start-federation.sh` sidecar) | `labeler`, `router`, `prioritizer`, `issue_creator` |
+| `gitlab:snapshot:issues:ts` | `start-colony.sh` snapshot step (refreshed by the `start-federation.sh` sidecar) | each agent's `snapshot_fresh()` gate |
+| `<agent>:snapshot_hash` | `labeler` / `router` / `prioritizer` (end of tick) | the same agent's per-tick no-change gate |
 
 ## Setup
 

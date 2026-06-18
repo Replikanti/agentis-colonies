@@ -150,6 +150,20 @@ fn snapshot_issues_cmd(view: string) -> string {
     return "GITLAB_SNAPSHOT=" + shell_escape(blob) + " $COLONY_DIR/scripts/forge-api.sh issues --from-snapshot --view " + view;
 }
 
+// #1111 (Fix #9): content fingerprint of the view bytes that would feed
+// prompt(). On the legacy `--since last_check` path a quiet project returns
+// `[]` (handled by the len(raw) < 3 early-exit), but the shared snapshot is
+// the FULL collection, so `raw` is non-empty every tick even when nothing
+// changed. Hashing the projected view and comparing to a per-agent memo
+// restores the quiet-project early-exit: identical content => no prompt().
+// Total-on-failure: a hash failure yields "" so the gate never matches and
+// the agent falls through to its normal prompt() path (never starved).
+fn content_hash(raw: string) -> string {
+    let cmd = "RAW=" + shell_escape(raw) +
+        " python3 -c 'import os,hashlib; print(hashlib.sha256(os.environ[\"RAW\"].encode(\"utf-8\")).hexdigest())'";
+    return try { exec sh cmd; } catch e { ""; };
+}
+
 fn issues_cmd(owner: string, repo: string) -> string {
     // #1111: prefer the shared snapshot on the single-repo path. When it is
     // fresh, every triage agent reads the same memo instead of each curling
@@ -197,6 +211,27 @@ fn tick_for_repo(owner: string, repo: string) -> void {
             memo_write(scoped_memo(owner, repo, "router:last_check"), now_e);
         };
         return;
+    };
+
+    // #1111 (Fix #9): snapshot-content-hash gate. The shared snapshot is the
+    // full issues collection, so `raw` is non-empty every tick even on a
+    // quiet project — without this gate the agent would call prompt() each
+    // tick for no change. Compare the fingerprint of the current view bytes
+    // against the last-processed hash; if unchanged, no-op (refresh
+    // last_check, keep the hash) exactly like the legacy `--since`-empty
+    // early-exit. ADDITIONAL to the prompt-gate, not a replacement: one
+    // tier() call/tick and the recall_latest()-based check-prompt-gate stay
+    // intact. A "" hash (compute failure) never matches -> agent proceeds.
+    let cur_hash = content_hash(raw);
+    let prev_hash = recall_latest(scoped_memo(owner, repo, "router:snapshot_hash"));
+    if len(cur_hash) > 0 {
+        if cur_hash == prev_hash {
+            let now_h = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+            if len(now_h) > 0 {
+                memo_write(scoped_memo(owner, repo, "router:last_check"), now_h);
+            };
+            return;
+        };
     };
 
     // Get team members
@@ -304,6 +339,12 @@ fn tick_for_repo(owner: string, repo: string) -> void {
     let new_issue = listen("triage:new_issue", 100);
     if len(to_string(new_issue)) > 5 {
         print("[router] Received new issue draft, will route on next tick");
+    };
+
+    // #1111 (Fix #9): stamp the just-processed view fingerprint so the next
+    // tick's hash gate above can detect "nothing changed" and skip prompt().
+    if len(cur_hash) > 0 {
+        memo_write(scoped_memo(owner, repo, "router:snapshot_hash"), cur_hash);
     };
 
     let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };

@@ -85,11 +85,17 @@ def normalize_issue(item):
         "author": _username(item.get("author")),
         "assignees": [_username(a) for a in item.get("assignees", []) if isinstance(item.get("assignees"), list)],
     }
-    # description is large; keep only its presence + a short head so the
-    # compact form does not re-import the very bulk we are compressing.
+    # description is consumed in FULL by the issue_creator view (it reads
+    # `description`), so the compact form must carry the untruncated value or
+    # the rehydrated issue_creator projection would silently differ from the
+    # legacy direct-fetch one. We keep the full string here; the
+    # labeler/router/prioritizer views drop `description` in their
+    # project_json projections, so this field never reaches their prompts —
+    # only the issue_creator view pays for it. Structural interning still
+    # collapses two issues with identical full descriptions to one chunk.
     desc = _str(item.get("description"))
     if desc:
-        out["desc_head"] = desc[:200]
+        out["description"] = desc
     return out
 
 
@@ -219,13 +225,13 @@ def rehydrate(env):
         assignees = chunk.get("assignees")
         if isinstance(assignees, list) and assignees:
             row["assignees"] = [{"username": a} for a in assignees]
-        for opt in ("desc_head", "source_branch", "target_branch"):
+        for opt in ("description", "source_branch", "target_branch"):
             if opt in chunk:
-                # desc_head maps back to description for the issue_creator
-                # view (which reads `description`); branch fields pass
-                # straight through for the MR views.
-                key = "description" if opt == "desc_head" else opt
-                row[key] = chunk.get(opt, "")
+                # `description` is carried in full (see normalize_issue) so the
+                # issue_creator view's rehydrated `description` is byte-identical
+                # to the legacy direct-fetch value; branch fields pass straight
+                # through for the MR views.
+                row[opt] = chunk.get(opt, "")
         out.append(row)
     return out
 
@@ -274,10 +280,16 @@ if __name__ == "__main__":
     # Allow `--self-test` for a quick local determinism/round-trip check
     # without standing up a GitLab instance. Not used at runtime.
     if len(sys.argv) > 1 and sys.argv[1] == "--self-test":
+        # A description long enough that the legacy 200-char `desc_head` would
+        # have truncated it — used below to prove the issue_creator view's
+        # rehydrated `description` is now byte-identical to the source value.
+        long_desc = "Steps to reproduce:\n" + ("x" * 500) + "\nExpected: no crash."
         sample = json.dumps([
             {"iid": 1, "title": "fix bug", "labels": ["bug"], "state": "opened",
+             "description": long_desc,
              "author": {"username": "alice"}, "assignees": [{"username": "bob"}]},
             {"iid": 2, "title": "fix bug", "labels": ["bug"], "state": "opened",
+             "description": long_desc,
              "author": {"username": "alice"}, "assignees": [{"username": "bob"}]},
             {"iid": 3, "title": "add docs", "labels": [], "state": "opened",
              "author": {"username": "carol"}, "assignees": []},
@@ -305,9 +317,16 @@ if __name__ == "__main__":
         assert rh[0]["assignees"] == [{"username": "bob"}], rh[0]
         assert rh[2]["author"] == {"username": "carol"}, rh[2]
         assert "assignees" not in rh[2], rh[2]  # carol has no assignees
+        # #2b: the issue_creator view reads `description` in full. The
+        # rehydrated value must be byte-identical to the source description
+        # (the legacy desc_head[:200] truncation is gone). carol's issue had
+        # no description -> the field is absent (not "" — matches a
+        # direct-fetch item that omits a null description from the view).
+        assert rh[0]["description"] == long_desc, "description truncated/altered"
+        assert "description" not in rh[2], rh[2]  # carol has no description
         # rehydrate of garbage -> [] (total-on-failure).
         assert rehydrate({}) == [] and rehydrate("nope") == [], "rehydrate degrade"
-        sys.stderr.write("self-test OK: byte-stable, dedup 3->2 chunks, rehydrate round-trip, total-on-failure\n")
+        sys.stderr.write("self-test OK: byte-stable, dedup 3->2 chunks, rehydrate round-trip, full-description fidelity, total-on-failure\n")
         sys.exit(0)
     if len(sys.argv) > 1 and sys.argv[1] == "--rehydrate":
         main_rehydrate()

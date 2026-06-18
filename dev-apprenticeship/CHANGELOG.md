@@ -42,7 +42,34 @@ is asserted until multi-version CI is in place.
   `github-api.sh` gained the symmetric `snapshot` verb +
   `--from-snapshot` flag. The `merge_requests` collection in the other
   four colonies uses label-event-filtered reads and is deferred to the
-  live run (#1117).
+  live run (#1117). Three follow-up fixes harden the snapshot path:
+  - **Snapshot-refresh sidecar (#1111).** `start-federation.sh` now
+    runs a background loop that re-publishes the shared snapshot every
+    300 s (override via `SNAPSHOT_REFRESH_INTERVAL_S`) — shorter than
+    the 600 s freshness window — so the snapshot never goes stale and
+    the agents never permanently fall back to per-agent direct fetches
+    (the exact I/O problem #1111 fixes). It mirrors the auto-promote /
+    cost-cap sidecars (self-terminates on zero running daemons,
+    EXIT/TERM/INT trap) and is backward-safe (refresh failures are
+    logged to `.agentis/logs/snapshot-refresh.log`, never fatal).
+  - **Full `description` for the issue_creator view (#1112).**
+    `snapshot-compress.py` previously kept only a 200-char `desc_head`,
+    but the `issue_creator` view consumes the full `description`, so its
+    rehydrated input was truncated vs. the legacy direct fetch. The
+    compact form now carries the untruncated `description` (only the
+    issue_creator view projects it; labeler/router/prioritizer drop it),
+    making the rehydrated issue_creator `description` byte-identical to
+    the direct-fetch value. `--self-test` gained a full-description
+    fidelity assertion.
+  - **Quiet-project prompt suppression on the snapshot path (#1111).**
+    The shared snapshot is the full collection (not a `--since` delta),
+    so `raw` is non-empty every tick even when nothing changed, causing
+    `prompt()` on every tick. labeler / router / prioritizer now
+    fingerprint (SHA-256) their projected view, memo it as
+    `<agent>:snapshot_hash`, and skip `prompt()` on a tick whose
+    fingerprint matches the last-processed one — an additional gate that
+    restores the legacy `--since`-empty early-exit (one `tier()` call
+    per tick and the existing prompt-gate are preserved).
 - Cross-repo reference detection in PR review prompts (#317): the four
   code-review agents (logic / style / security / test) scan PR body
   for `<owner>/<repo>#<N>` references and splice resolved issue context
