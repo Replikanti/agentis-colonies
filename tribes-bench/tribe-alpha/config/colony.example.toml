@@ -17,10 +17,13 @@ tick_interval_ms = 60000
 type = "none"
 
 [llm]
-# Only "backend" is read today. "cli" uses the agentis daemon default CLI
-# adapter. Stage 0 expects Claude CLI on $PATH (subscription-backed; no
-# per-token API cost). Override via STAGE0_LLM_BACKEND if needed.
-backend = "cli"
+# Only "backend" is read today. "flat-cyborg" drives the `claude` CLI via
+# the flat-cyborg PTY wrapper on a flat-rate Claude subscription (no
+# per-token API cost; needs claude + flat-cyborg on $PATH + a logged-in
+# ~/.claude). The stage runners force-rewrite this value, so override the
+# backend there via STAGE{2,3}_LLM_BACKEND (e.g. =openai or =claude) rather
+# than editing it here.
+backend = "flat-cyborg"
 
 # Agent definitions
 # Each agent runs as a separate agentis daemon process.

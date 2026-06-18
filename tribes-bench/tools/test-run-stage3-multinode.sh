@@ -29,7 +29,9 @@ FAIL=0
 
 assert_contains() {
     label="$1"; haystack="$2"; needle="$3"
-    if printf '%s' "$haystack" | grep -Fq -- "$needle"; then
+    # here-string (not a printf|grep pipe): avoids SIGPIPE on the upstream
+    # printf when grep -Fq exits early on a large haystack (CI broken-pipe).
+    if grep -Fq -- "$needle" <<<"$haystack"; then
         echo "[PASS] $label"
         PASS=$((PASS + 1))
     else
@@ -123,14 +125,32 @@ assert_contains "cleanup trap installed" "$OUT" \
 assert_contains "death threshold 300 propagated to laptop spawns" "$OUT" \
     "DEATH_THRESHOLD=300"
 
-# OpenAI backend defaults wired in (#445).
-assert_contains "llm.backend=openai injected on laptop config" "$OUT" \
-    "llm.backend = openai"
-assert_contains "llm.openai.api_key_env defaulted to OPENAI_API_KEY" "$OUT" \
-    "llm.openai.api_key_env = OPENAI_API_KEY"
+# #1136: flat-cyborg is the default backend. Both nodes inject
+# llm.backend = flat-cyborg + llm.flat_cyborg.idle_ms = 4000, and NO
+# openai keys.
+assert_contains "llm.backend=flat-cyborg injected on laptop config" "$OUT" \
+    "llm.backend = flat-cyborg"
+assert_contains "laptop flat_cyborg.idle_ms default injected" "$OUT" \
+    "llm.flat_cyborg.idle_ms = 4000"
+assert_contains "server flat_cyborg.idle_ms default injected over SSH" "$OUT" \
+    "printf \"llm.flat_cyborg.idle_ms = 4000"
 
 # Negative assertions: dry-run did NOT side-effect.
 assert_not_exists "dry-run did not open tunnel socket" "$TMP_SOCK"
+
+# #445 + #1136: openai backend remains an opt-in fallback. An explicit
+# STAGE3_LLM_BACKEND=openai run must inject llm.backend = openai +
+# llm.openai.api_key_env on both nodes.
+OUT_OPENAI="$(STAGE3_TUNNEL_SOCK="$TMP_SOCK" \
+       STAGE3_WALL_CLOCK_S=1800 \
+       STAGE3_ROTATION_INTERVAL_S=120 \
+       STAGE3_DEATH_THRESHOLD=300 \
+       STAGE3_LLM_BACKEND=openai \
+       bash "$ORCH" --dry-run 2>&1)"
+assert_contains "llm.backend=openai injected on laptop config" "$OUT_OPENAI" \
+    "llm.backend = openai"
+assert_contains "llm.openai.api_key_env defaulted to OPENAI_API_KEY" "$OUT_OPENAI" \
+    "llm.openai.api_key_env = OPENAI_API_KEY"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

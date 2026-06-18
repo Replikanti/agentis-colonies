@@ -19,8 +19,9 @@
 # WARNING: Claude Code session credentials (`~/.claude/.credentials.json`)
 # MUST NOT be baked in either. The orchestrator bind-mounts the host
 # operator's `$HOME/.claude` into the container at run time when
+# `STAGE3_LLM_BACKEND=flat-cyborg` (the #1136 default) or
 # `STAGE3_LLM_BACKEND=claude` is set; never `COPY` the directory into
-# the image (#535).
+# the image (#535, #1136).
 #
 # The agentis binary fetch is sha256-verified against the publisher's
 # detached signature so a compromised CDN can't substitute a backdoored
@@ -63,6 +64,10 @@ RUN cd /tmp \
 # Operators who need reproducibility should rebuild the image periodically.
 RUN curl -fsSL https://claude.ai/install.sh | bash \
  && ln -s /root/.local/bin/claude /usr/local/bin/claude
+
+# Install the flat-cyborg PTY wrapper (#1136): drives the `claude` CLI on a
+# flat-rate Claude subscription so the pilot needs no OPENAI_API_KEY.
+RUN curl -fsSL https://raw.githubusercontent.com/Replikanti/flat-cyborg/main/install.sh | sh
 
 WORKDIR /run-root
 

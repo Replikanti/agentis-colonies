@@ -36,7 +36,19 @@
 #   STAGE3_DEATH_THRESHOLD     CB level at which a hunter is culled.
 #                              Default: 300 (Stage 2 was 100).
 #   STAGE3_LLM_BACKEND         llm.backend value injected into both
-#                              hermetic configs. Default: openai (#445).
+#                              hermetic configs. Default: flat-cyborg
+#                              (#1136) — flat-rate Claude via the
+#                              flat-cyborg PTY wrapper; each node needs
+#                              claude + flat-cyborg >= 0.9.0 with
+#                              --no-jitter on PATH and a logged-in
+#                              ~/.claude. openai remains an opt-in
+#                              fallback (#445).
+#   STAGE3_FLAT_CYBORG_IDLE_MS  flat-cyborg llm.flat_cyborg.idle_ms when
+#                              STAGE3_LLM_BACKEND=flat-cyborg. Default: 4000.
+#   STAGE3_FLAT_CYBORG_MODEL   flat-cyborg shared llm.model when
+#                              STAGE3_LLM_BACKEND=flat-cyborg. Default:
+#                              unset (the wrapper picks the ~/.claude
+#                              default model).
 #   STAGE3_OPENAI_MODEL        Model id when STAGE3_LLM_BACKEND=openai.
 #                              Default: gpt-4o-mini.
 #   STAGE3_OPENAI_ENDPOINT     Chat-completions URL.
@@ -104,7 +116,7 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         -h|--help)
-            sed -n '2,90p' "$SCRIPT_PATH" | sed 's/^# \{0,1\}//'
+            sed -n '2,102p' "$SCRIPT_PATH" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -118,11 +130,17 @@ done
 WALL_CLOCK="${STAGE3_WALL_CLOCK_S:-21600}"
 ROTATION_INTERVAL="${STAGE3_ROTATION_INTERVAL_S:-1200}"
 DEATH_THRESHOLD="${STAGE3_DEATH_THRESHOLD:-300}"
-LLM_BACKEND="${STAGE3_LLM_BACKEND:-openai}"
+LLM_BACKEND="${STAGE3_LLM_BACKEND:-flat-cyborg}"
 OPENAI_MODEL="${STAGE3_OPENAI_MODEL:-gpt-4o-mini}"
 OPENAI_ENDPOINT="${STAGE3_OPENAI_ENDPOINT:-https://api.openai.com/v1/chat/completions}"
 OPENAI_KEY_ENV="${STAGE3_OPENAI_KEY_ENV:-OPENAI_API_KEY}"
 OPENAI_TIMEOUT_MS="${STAGE3_OPENAI_TIMEOUT_MS:-180000}"
+# #1136 flat-cyborg backend (default): drives the metered-free `claude`
+# CLI via the flat-cyborg PTY wrapper on each node. idle_ms tunes the
+# wrapper's quiescence detection; the optional shared llm.model pins a
+# model when the ~/.claude default is not desired.
+FLAT_CYBORG_IDLE_MS="${STAGE3_FLAT_CYBORG_IDLE_MS:-4000}"
+FLAT_CYBORG_MODEL="${STAGE3_FLAT_CYBORG_MODEL:-}"
 REMOTE_HOST="${STAGE3_REMOTE_HOST:-ylohnitram@94.112.2.177}"
 REMOTE_AGENTIS="${STAGE3_REMOTE_AGENTIS:-agentis}"
 TUNNEL_LOCAL_PORT="${STAGE3_TUNNEL_LOCAL_PORT:-9101}"
@@ -270,6 +288,15 @@ configure_local_node() {
     if [ "$LLM_BACKEND" = "openai" ]; then
         emit_cmd "printf 'llm.openai.endpoint = $OPENAI_ENDPOINT\\nllm.openai.model = $OPENAI_MODEL\\nllm.openai.api_key_env = $OPENAI_KEY_ENV\\nllm.openai.timeout_ms = $OPENAI_TIMEOUT_MS\\n' >>$RUN_DIR/.agentis/config"
     fi
+    # #1136 flat-cyborg backend (default): add the idle-ms knob (and an
+    # optional shared llm.model). The wrapper drives `claude` itself; no
+    # llm.command / api_key keys are written.
+    if [ "$LLM_BACKEND" = "flat-cyborg" ] || [ "$LLM_BACKEND" = "flat_cyborg" ]; then
+        emit_cmd "printf 'llm.flat_cyborg.idle_ms = $FLAT_CYBORG_IDLE_MS\\n' >>$RUN_DIR/.agentis/config"
+        if [ -n "$FLAT_CYBORG_MODEL" ]; then
+            emit_cmd "printf 'llm.model = $FLAT_CYBORG_MODEL\\n' >>$RUN_DIR/.agentis/config"
+        fi
+    fi
     # Stage 3 cross-node replication (#460 PR B): seed the peer-worker
     # address list so hunter's select_replication_target() picks the
     # remote node when deciding where to dispatch replicate(target).
@@ -285,6 +312,15 @@ configure_remote_node() {
     emit_cmd "ssh -S $TUNNEL_SOCK $REMOTE_HOST bash -lc 'printf \"federation.enabled = true\\nllm.backend = $LLM_BACKEND\\n\" >>$REMOTE_RUN_ROOT/.agentis/config'"
     if [ "$LLM_BACKEND" = "openai" ]; then
         emit_cmd "ssh -S $TUNNEL_SOCK $REMOTE_HOST bash -lc 'printf \"llm.openai.endpoint = $OPENAI_ENDPOINT\\nllm.openai.model = $OPENAI_MODEL\\nllm.openai.api_key_env = $OPENAI_KEY_ENV\\nllm.openai.timeout_ms = $OPENAI_TIMEOUT_MS\\n\" >>$REMOTE_RUN_ROOT/.agentis/config'"
+    fi
+    # #1136 flat-cyborg backend (default): mirror the laptop idle-ms append
+    # on the server side (and the optional shared llm.model). Each node
+    # needs claude + flat-cyborg >= 0.9.0 on PATH + a logged-in ~/.claude.
+    if [ "$LLM_BACKEND" = "flat-cyborg" ] || [ "$LLM_BACKEND" = "flat_cyborg" ]; then
+        emit_cmd "ssh -S $TUNNEL_SOCK $REMOTE_HOST bash -lc 'printf \"llm.flat_cyborg.idle_ms = $FLAT_CYBORG_IDLE_MS\\n\" >>$REMOTE_RUN_ROOT/.agentis/config'"
+        if [ -n "$FLAT_CYBORG_MODEL" ]; then
+            emit_cmd "ssh -S $TUNNEL_SOCK $REMOTE_HOST bash -lc 'printf \"llm.model = $FLAT_CYBORG_MODEL\\n\" >>$REMOTE_RUN_ROOT/.agentis/config'"
+        fi
     fi
     # Stage 3 cross-node replication (#460 PR B): mirror the laptop seed
     # so server-side hunters also rotate replicate() across nodes. The
