@@ -73,7 +73,46 @@ fn repo_field(line: string, idx: int) -> string {
     return out;
 }
 
+// #1111: is the shared per-colony issues snapshot fresh enough to read?
+// start-colony.sh's snapshot step writes `gitlab:snapshot:issues:ts` (epoch
+// seconds) alongside the snapshot blob. A snapshot older than the window
+// (or with no ts at all) is treated as stale -> caller falls back to a
+// direct fetch. Total-on-failure: a missing/garbled ts yields stale=false
+// via the parse_int->0 path, so a broken snapshot can never starve an agent.
+fn snapshot_fresh() -> bool {
+    let ts_raw = recall_latest("gitlab:snapshot:issues:ts");
+    if len(ts_raw) == 0 { return false; };
+    let ts = parse_int(ts_raw);
+    if ts == 0 { return false; };
+    let now_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let now = parse_int(now_raw);
+    if now == 0 { return false; };
+    return (now - ts) <= 600;
+}
+
+// #1111: build a forge-api.sh command that projects `view` out of the
+// shared snapshot memo (zero HTTP) when a fresh snapshot exists; "" means
+// "no usable snapshot — degrade to a direct fetch". Reads the compressed
+// (#1112) envelope from the memo and passes it to the --from-snapshot path
+// via the GITLAB_SNAPSHOT env var. Only used on the legacy single-repo path
+// (owner==""); the per-colony snapshot is not repo-scoped.
+fn snapshot_issues_cmd(view: string) -> string {
+    let blob = recall_latest("gitlab:snapshot:issues");
+    if len(blob) < 20 { return ""; };
+    if !snapshot_fresh() { return ""; };
+    // colony-lint: safe-exec-concat
+    return "GITLAB_SNAPSHOT=" + shell_escape(blob) + " $COLONY_DIR/scripts/forge-api.sh issues --from-snapshot --view " + view;
+}
+
 fn issues_cmd(owner: string, repo: string) -> string {
+    // #1111: prefer the shared snapshot on the single-repo path. When it is
+    // fresh, every triage agent reads the same memo instead of each curling
+    // /issues (the 3x duplicate fetch per tick). Empty return = no fresh
+    // snapshot -> fall through to the legacy direct fetch below.
+    if len(owner) == 0 {
+        let snap = snapshot_issues_cmd("issue_creator");
+        if len(snap) > 0 { return snap; };
+    };
     let ts = recall_latest(scoped_memo(owner, repo, "issue_creator:last_check"));
     // colony-lint: safe-exec-concat
     if len(ts) > 0 {

@@ -17,6 +17,59 @@ is asserted until multi-version CI is in place.
 
 ### Added
 
+- Shared GitLab snapshot + payload compression for the Triage colony
+  (#1111 / #1112). The `issues` collection is now fetched **once per
+  colony per tick** and shared via a memo instead of each of the four
+  triage agents (labeler / router / prioritizer / issue_creator)
+  curling it independently (the former 3–4× duplicate fetch per tick).
+  `triage/scripts/start-colony.sh` publishes the snapshot to
+  `gitlab:snapshot:issues` (+ epoch freshness key
+  `gitlab:snapshot:issues:ts`) via the new `forge-api.sh snapshot issues`
+  verb on bootstrap, and standalone via `--snapshot-refresh`. The
+  snapshot is **compressed before it reaches `prompt()`**: the new
+  `triage/scripts/snapshot-compress.py` (normalized-subtree-hashing,
+  reusing the `dark-factory/evm-harness/struct-sig.js` concept)
+  normalizes each item to role-relevant fields, content-addresses each
+  item's structure, interns repeated structures once, and references
+  them by index — deterministic + byte-stable, ~11× smaller than raw
+  on a realistic 20-issue payload. Agents read the memo via a new
+  `snapshot_issues_cmd()` helper and render their role view with
+  `forge-api.sh issues --from-snapshot --view <role>` (zero HTTP).
+  Backward-safe: a missing / empty / stale (> 600 s) / malformed
+  snapshot transparently degrades to the legacy direct fetch, and the
+  shared snapshot is used only on the single-repo path (multi-repo
+  fan-out keeps its per-repo fetch). Both `gitlab-api.sh` and
+  `github-api.sh` gained the symmetric `snapshot` verb +
+  `--from-snapshot` flag. The `merge_requests` collection in the other
+  four colonies uses label-event-filtered reads and is deferred to the
+  live run (#1117). Three follow-up fixes harden the snapshot path:
+  - **Snapshot-refresh sidecar (#1111).** `start-federation.sh` now
+    runs a background loop that re-publishes the shared snapshot every
+    300 s (override via `SNAPSHOT_REFRESH_INTERVAL_S`) — shorter than
+    the 600 s freshness window — so the snapshot never goes stale and
+    the agents never permanently fall back to per-agent direct fetches
+    (the exact I/O problem #1111 fixes). It mirrors the auto-promote /
+    cost-cap sidecars (self-terminates on zero running daemons,
+    EXIT/TERM/INT trap) and is backward-safe (refresh failures are
+    logged to `.agentis/logs/snapshot-refresh.log`, never fatal).
+  - **Full `description` for the issue_creator view (#1112).**
+    `snapshot-compress.py` previously kept only a 200-char `desc_head`,
+    but the `issue_creator` view consumes the full `description`, so its
+    rehydrated input was truncated vs. the legacy direct fetch. The
+    compact form now carries the untruncated `description` (only the
+    issue_creator view projects it; labeler/router/prioritizer drop it),
+    making the rehydrated issue_creator `description` byte-identical to
+    the direct-fetch value. `--self-test` gained a full-description
+    fidelity assertion.
+  - **Quiet-project prompt suppression on the snapshot path (#1111).**
+    The shared snapshot is the full collection (not a `--since` delta),
+    so `raw` is non-empty every tick even when nothing changed, causing
+    `prompt()` on every tick. labeler / router / prioritizer now
+    fingerprint (SHA-256) their projected view, memo it as
+    `<agent>:snapshot_hash`, and skip `prompt()` on a tick whose
+    fingerprint matches the last-processed one — an additional gate that
+    restores the legacy `--since`-empty early-exit (one `tier()` call
+    per tick and the existing prompt-gate are preserved).
 - Cross-repo reference detection in PR review prompts (#317): the four
   code-review agents (logic / style / security / test) scan PR body
   for `<owner>/<repo>#<N>` references and splice resolved issue context

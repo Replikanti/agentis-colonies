@@ -9,6 +9,8 @@
 #
 # Usage:
 #   gitlab-api.sh issues [--since ISO8601] [--state opened|closed|all] [--view <name>]
+#   gitlab-api.sh issues --from-snapshot --view <name>   (#1111: read shared snapshot)
+#   gitlab-api.sh snapshot issues [--state ...]          (#1111/#1112: fetch once + compress)
 #   gitlab-api.sh create-issue --title <t> --description <d> [--labels l1,l2] [--priority p]
 #   gitlab-api.sh update-issue <id> [--add-labels l1,l2] [--remove-labels l1,l2] [--priority p] [--assignee username]
 #   gitlab-api.sh members [--view <name>]
@@ -28,6 +30,11 @@
 # Returns JSON to stdout. Exit code 0 on success, 1 on error, 2 on unknown flag/view.
 
 set -e
+
+# Resolve this script's own directory so the snapshot verb (#1111/#1112) can
+# locate the sibling snapshot-compress.py helper regardless of the caller's
+# CWD. forge-api.sh execs us with an absolute $0, so dirname is reliable.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # emit_error <message>
 # Print a JSON error object to stderr with <message> safely encoded via
@@ -298,14 +305,34 @@ case "$CMD" in
         SINCE=""
         STATE="opened"
         VIEW=""
+        FROM_SNAPSHOT=0
         while [ $# -gt 0 ]; do
             case "$1" in
                 --since) SINCE="$2"; shift 2 ;;
                 --state) STATE="$2"; shift 2 ;;
                 --view) VIEW="$2"; shift 2 ;;
+                --from-snapshot) FROM_SNAPSHOT=1; shift ;;
                 *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
+        # #1111: shared-snapshot read path. The agent passes the compact
+        # snapshot envelope (the value of the `gitlab:snapshot:issues` memo,
+        # written once per tick by start-colony.sh's snapshot step) via the
+        # GITLAB_SNAPSHOT env var and asks for --from-snapshot. We rehydrate
+        # the compact form back to the GitLab-native item shape and run the
+        # SAME project_json view — zero HTTP calls. An empty / malformed
+        # snapshot rehydrates to `[]`, which the agent's `len(raw) < 3`
+        # early-exit treats as "no work", so the agent then naturally
+        # degrades to a direct fetch on the next tick (backward-safe).
+        if [ "$FROM_SNAPSHOT" = "1" ]; then
+            rehydrated="$(printf '%s' "${GITLAB_SNAPSHOT:-}" | python3 "$SCRIPT_DIR/snapshot-compress.py" --rehydrate 2>/dev/null || printf '[]')"
+            if [ -n "$VIEW" ]; then
+                printf '%s' "$rehydrated" | project_json "$VIEW"
+            else
+                printf '%s' "$rehydrated"
+            fi
+            exit 0
+        fi
         ARGS=(
             --data-urlencode "state=$STATE"
             --data-urlencode "per_page=20"
@@ -325,6 +352,46 @@ case "$CMD" in
         else
             gl_get_q "$API/$ISSUE_COLLECTION" "${ARGS[@]}"
         fi
+        ;;
+
+    snapshot)
+        # #1111/#1112: fetch one GitLab collection ONCE and emit its
+        # COMPRESSED representation on stdout. start-colony.sh's per-tick
+        # snapshot step runs this exactly once per collection per colony per
+        # tick and publishes the result to the `gitlab:snapshot:<collection>`
+        # memo; every agent then reads that memo instead of curling the
+        # endpoint itself (killing the 3x/4x duplicate fetch per tick).
+        #
+        # The compression (snapshot-compress.py, #1112) normalizes each item
+        # to the union of role-relevant fields, content-addresses each item's
+        # structure, interns repeated structures once, and references them by
+        # index — so the bytes that reach prompt() are the compact form, not
+        # raw JSON. Deterministic + byte-stable for identical input.
+        COLLECTION="${1:-issues}"
+        case "$COLLECTION" in
+            issues|work_items) shift || true ;;
+            *) emit_error "snapshot: unsupported collection: $COLLECTION (expected: issues)"; exit 2 ;;
+        esac
+        STATE="opened"
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --state) STATE="$2"; shift 2 ;;
+                --since) shift 2 ;;  # accepted + ignored: snapshot is full-set
+                *) emit_error "unknown flag: $1"; exit 2 ;;
+            esac
+        done
+        SNAP_ARGS=(
+            --data-urlencode "state=$STATE"
+            --data-urlencode "per_page=20"
+            --data-urlencode "order_by=updated_at"
+            --data-urlencode "sort=desc"
+        )
+        # Single fetch. On any gl_call failure (auth/429/5xx/transport) we
+        # still emit a valid empty envelope so the memo write does not store
+        # a stderr error blob — agents degrade to direct fetch when the
+        # snapshot is empty/stale.
+        snap_body="$(gl_get_q "$API/$ISSUE_COLLECTION" "${SNAP_ARGS[@]}")" || snap_body="[]"
+        printf '%s' "$snap_body" | python3 "$SCRIPT_DIR/snapshot-compress.py" issues
         ;;
 
     create-issue)

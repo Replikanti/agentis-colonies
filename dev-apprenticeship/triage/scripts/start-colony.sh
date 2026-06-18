@@ -28,6 +28,7 @@ set -e
 # path, for backwards compatibility with pre-#257 callers.
 RESTART_AGENT=""
 RATE_LIMIT_STATUS=0
+SNAPSHOT_REFRESH=0
 POSITIONAL=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -41,6 +42,14 @@ while [ $# -gt 0 ]; do
             ;;
         --rate-limit-status)
             RATE_LIMIT_STATUS=1
+            shift
+            ;;
+        --snapshot-refresh)
+            # #1111: re-run the shared-snapshot publish step and exit. Lets a
+            # lightweight sidecar (or start-federation.sh) refresh the
+            # per-colony GitLab snapshot every tick without re-bootstrapping
+            # the colony. Reuses the full env-load path below.
+            SNAPSHOT_REFRESH=1
             shift
             ;;
         --)
@@ -211,6 +220,53 @@ AGENTS=(
     router
 )
 
+# #1111/#1112: publish ONE shared GitLab snapshot per colony per tick.
+#
+# Fetches the issues collection exactly once via forge-api.sh (the single
+# fetch implementation), compresses it (#1112, snapshot-compress.py inside
+# the backend wrapper), and writes the compact envelope to the shared
+# `gitlab:snapshot:issues` memo plus an epoch-seconds freshness key at
+# `gitlab:snapshot:issues:ts`. Every triage agent then reads that memo via
+# recall_latest() instead of each curling /issues — collapsing the former
+# 3x-per-tick duplicate fetch (labeler + router + prioritizer; +
+# issue_creator) down to one.
+#
+# Total-on-failure: a fetch/compress failure leaves the prior snapshot (and
+# its ts) in place; agents see a stale ts and degrade to a direct fetch.
+# We only publish a snapshot that parses to a non-empty envelope, so a
+# transient error never overwrites a good snapshot with `[]`.
+publish_snapshot() {
+    local fed_root="$1"
+    local snap
+    snap="$("$COLONY_DIR/scripts/forge-api.sh" snapshot issues 2>/dev/null)" || return 0
+    # Guard: only publish a structurally-valid, non-empty envelope. The
+    # compressed empty form is `{"chunks":[],...,"count":0,...}`; refuse to
+    # clobber a good snapshot with an empty one on a transient fetch error.
+    local ok
+    ok="$(SNAP="$snap" python3 -c 'import os,json,sys
+try:
+    e=json.loads(os.environ["SNAP"])
+    sys.stdout.write("1" if isinstance(e,dict) and e.get("count",0)>0 else "0")
+except Exception:
+    sys.stdout.write("0")' 2>/dev/null || printf '0')"
+    if [ "$ok" != "1" ]; then
+        return 0
+    fi
+    local now
+    now="$(date +%s)"
+    (cd "$fed_root" && agentis memo set gitlab:snapshot:issues "$snap" >/dev/null 2>&1) || true
+    (cd "$fed_root" && agentis memo set gitlab:snapshot:issues:ts "$now" >/dev/null 2>&1) || true
+}
+
+# #1111: --snapshot-refresh mode. Re-publish the shared snapshot and exit.
+# Same env-load path as --rate-limit-status; safe to invoke every tick from
+# a sidecar. No daemon launches, no memo seeding, no log truncation.
+if [ "$SNAPSHOT_REFRESH" = "1" ]; then
+    SNAP_FED_ROOT="$(cd "$REPO_ROOT/dev-apprenticeship" && pwd)"
+    publish_snapshot "$SNAP_FED_ROOT"
+    exit 0
+fi
+
 # #226: vocabulary memo seeding. Operator-tuned priority label vocabulary
 # overrides the hardcoded defaults baked into the prioritizer prompts.
 # Read from colony.toml on every restart so config edits take effect on
@@ -245,6 +301,13 @@ if [ -z "$RESTART_AGENT" ] && [ "$RATE_LIMIT_STATUS" = "0" ]; then
             i=$((i + 1))
         done
     fi
+
+    # #1111: seed the shared GitLab snapshot once on full-colony bootstrap so
+    # the first tick of every agent already reads the memo instead of
+    # cold-curling /issues. A sidecar (or the next bootstrap) keeps it fresh
+    # via `--snapshot-refresh`. Best-effort: a fetch failure here just means
+    # the first tick falls back to a direct fetch (backward-safe).
+    publish_snapshot "$FED_ROOT"
 fi
 
 # Opt-in log truncation. Off by default so operators who rely on log
