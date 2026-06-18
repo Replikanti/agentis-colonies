@@ -10,7 +10,7 @@
 # planted-bug-surface rotation.
 #
 # Spawns one source strategist daemon per tribe (alpha / beta / gamma /
-# delta / epsilon). Each tribe's M2-Malthusian replicate gate grows the
+# delta / epsilon / zeta). Each tribe's M2-Malthusian replicate gate grows the
 # population from there. The deterministic PnL verifier
 # (`tools/verify-trade.sh`) settles trades HOLD_PERIOD candles forward
 # of each decision; no LLM is involved in the verifier path.
@@ -29,7 +29,7 @@
 #   REPLAY_SPEED                 Replay multiplier. 100 = 1h market data
 #                                in 36s wall clock. Default: 100
 #   REPLAY_DAEMON_COUNT          Number of strategist daemons to spawn.
-#                                Default: 5
+#                                Default: 6
 #   REPLAY_LLM_BACKEND           llm.backend value injected into hermetic
 #                                config. Default: openai
 #   REPLAY_OPENAI_ENDPOINT       Chat-completions URL.
@@ -150,7 +150,7 @@ TIMEFRAME="${REPLAY_TIMEFRAME:-30m}"
 START="${REPLAY_START:-}"
 END="${REPLAY_END:-}"
 SPEED="${REPLAY_SPEED:-100}"
-DAEMON_COUNT="${REPLAY_DAEMON_COUNT:-5}"
+DAEMON_COUNT="${REPLAY_DAEMON_COUNT:-6}"
 LLM_BACKEND="${REPLAY_LLM_BACKEND:-openai}"
 OPENAI_ENDPOINT="${REPLAY_OPENAI_ENDPOINT:-https://openrouter.ai/api/v1/chat/completions}"
 OPENAI_MODEL="${REPLAY_OPENAI_MODEL:-qwen/qwen3-coder-30b-a3b-instruct}"
@@ -328,10 +328,10 @@ build_image() {
 # bootstrap.sh that, when executed inside the container, performs:
 #   1. agentis init in /run-root (idempotent)
 #   2. Append llm config lines to .agentis/config
-#   3. Copy the 5 tribe colonies + tools/ from the read-only /repo bind-mount
+#   3. Copy the 6 tribe colonies + tools/ from the read-only /repo bind-mount
 #      into /run-root
 #   4. Spawn one source strategist daemon per tribe (alpha / beta / gamma /
-#      delta / epsilon). Replication grows the population from there per the
+#      delta / epsilon / zeta). Replication grows the population from there per the
 #      M2-Malthusian gate inside strategist.ag.
 #   5. Block until /run-root/.shutdown is touched by the host orchestrator
 #
@@ -341,10 +341,10 @@ build_image() {
 # at the per-trade settlement window.
 write_bootstrap() {
     bootstrap_path="$LAPTOP_DIR/bootstrap.sh"
-    emit_step "generating bootstrap script at $bootstrap_path (tribes=5 daemon_per_tribe=1)"
+    emit_step "generating bootstrap script at $bootstrap_path (tribes=6 daemon_per_tribe=1)"
 
     if [ "$DRY_RUN" = "1" ]; then
-        emit_cmd "write-bootstrap path=$bootstrap_path tribes=alpha,beta,gamma,delta,epsilon symbol=$SYMBOL timeframe=$TIMEFRAME"
+        emit_cmd "write-bootstrap path=$bootstrap_path tribes=alpha,beta,gamma,delta,epsilon,zeta symbol=$SYMBOL timeframe=$TIMEFRAME"
         return
     fi
 
@@ -384,18 +384,18 @@ write_bootstrap() {
             printf '  printf "llm.openai.timeout_ms = %s\\n"\n' "$OPENAI_TIMEOUT_MS"
         fi
         printf '} >> .agentis/config\n'
-        printf 'for t in alpha beta gamma delta epsilon; do\n'
+        printf 'for t in alpha beta gamma delta epsilon zeta; do\n'
         printf '    cp -r /repo/trading-binance/tribe-$t /run-root/tribe-$t\n'
         printf 'done\n'
         printf 'cp -r /repo/trading-binance/tools /run-root/tools\n'
         printf 'mkdir -p /run-root/.agentis/sandbox /run-root/.agentis/logs\n'
         # Seed propose-tier confidence for each tribe's strategist daemon.
-        printf 'for t in alpha beta gamma delta epsilon; do\n'
+        printf 'for t in alpha beta gamma delta epsilon zeta; do\n'
         printf '    (cd /run-root && agentis memo set strategist:confidence 0.7 >/dev/null 2>&1 || true)\n'
         printf 'done\n'
         # Spawn one source strategist daemon per tribe. Each tribe's
         # M2-Malthusian replicate path grows the population from there.
-        printf 'for t in alpha beta gamma delta epsilon; do\n'
+        printf 'for t in alpha beta gamma delta epsilon zeta; do\n'
         printf '    DAEMON_ID=1 TRIBE_NAME=tribe-$t REPLAY_SYMBOL=%s REPLAY_TIMEFRAME=%s REPLAY_LOOKBACK_WINDOW=%s REPLAY_HOLD_PERIOD=%s HOLD_PERIOD=%s VERIFIER_PATH=/run-root/tools/verify-trade.sh CANDLES_CSV=/run-root/candles.csv TRADE_LEDGER=/run-root/trade-ledger.jsonl AGENTIS_ROOT=/run-root/.agentis STRATEGIST_PROMPT_EVOLUTION_THRESHOLD=%s STRATEGIST_PROMPT_GEN_CAP=%s STRATEGIST_PROMPT_MAX_BYTES=%s STRATEGIST_PROMPT_LEVENSHTEIN_FLOOR=%s STRATEGIST_FITNESS_REWARD_WIN_PER_BPS=%s STRATEGIST_FITNESS_PENALTY_LOSS_PER_BPS=%s agentis daemon /run-root/tribe-$t/agents/strategist.ag --colony tribe-$t --enable-exec --enable-messaging --enable-replication --allow-replica-replication --tick-interval %s > /run-root/.agentis/logs/strategist-$t.log 2>&1 &\n' \
             "$SYMBOL" "$TIMEFRAME" "$LOOKBACK_WINDOW" "$HOLD_PERIOD" "$HOLD_PERIOD" \
             "$REPLAY_STRATEGIST_PROMPT_EVOLUTION_THRESHOLD" \
