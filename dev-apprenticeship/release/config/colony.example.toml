@@ -58,8 +58,13 @@ default_branch = "main"  # primary branch (#224)
 # install.sh §6). install.sh wires the default CLI = the flat-cyborg PTY
 # wrapper over Claude Code.
 [llm]
-backend = "claude"
-# command = "tools/flat-cyborg-claude.sh"   # default CLI over Claude Code (illustrative; install.sh writes the resolved path to .agentis/config — this [llm] block is inert per #351)
+# "cli" = inherit the agentis daemon default (the federation backend in
+# .agentis/config — flat-cyborg, set by install.sh). Do NOT hardcode a
+# specific backend here: this [llm] block is inert per #351 (the daemon
+# reads .agentis/config) so hardcoding would only mislead. See the
+# "LLM backend" section in CLAUDE.md.
+backend = "cli"
+# command = "claude"
 # model = "claude-sonnet-4"
 # api_key_env = "ANTHROPIC_API_KEY"
 

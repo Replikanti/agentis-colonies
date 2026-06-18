@@ -15,6 +15,18 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Fixed
+
+- Reverted the `[llm] backend` in all 5 `*/config/colony.example.toml`
+  blocks from `"claude"` back to `"cli"` (a follow-up correction to #1131).
+  Per the CLAUDE.md "LLM backend" convention, `"cli"` means "use the
+  agentis daemon default" and **inherits** the federation-level backend
+  from `.agentis/config` (flat-cyborg); a specific backend must **not** be
+  hardcoded in the colony block (it would override the federation default
+  and break the host wrapper path). The block is inert per #351 either way,
+  so this is doc-consistency only — the real backend (`llm.backend = claude`
+  + the flat-cyborg wrapper) is written to `.agentis/config` by install.sh.
+
 ### Added
 
 - **flat-cyborg is now the default CLI LLM backend** (#1131). New shared
