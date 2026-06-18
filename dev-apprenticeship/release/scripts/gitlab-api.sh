@@ -121,6 +121,16 @@ fi
 
 API="$GITLAB_URL/api/v4/projects/$GITLAB_PROJECT"
 
+# GitLab renamed the issue-tracking REST collection from /issues to the unified
+# /work_items collection (#1119). Resolve the collection segment in one place so
+# every issue read/write routes through it. Default = work_items (migrated
+# instances). Set GITLAB_ISSUE_COLLECTION=issues to pin the legacy path on a
+# non-migrated instance — no code change required. The release colony only talks
+# to /merge_requests today, so this is defined for cross-script consistency and
+# is intentionally unused here (SC2034) until a future issue call site lands.
+# shellcheck disable=SC2034
+ISSUE_COLLECTION="${GITLAB_ISSUE_COLLECTION:-work_items}"
+
 # gl_call <method> <url> [curl-args...]
 #
 # Single wrapper used by every gl_get/gl_get_q/gl_post/gl_put below.

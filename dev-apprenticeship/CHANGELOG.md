@@ -32,6 +32,22 @@ is asserted until multi-version CI is in place.
   closed-by-index}.{sh,py}`. Test: `tools/test-cross-repo-refs.sh` (7
   cases). Dashboard timeline overlay deferred to follow-up.
 
+### Fixed
+
+- GitLab issue-collection rename (#1119): GitLab migrated the
+  issue-tracking REST collection from `/issues` to the unified
+  `/work_items` collection, which broke every issue read/write on a
+  migrated instance. Each colony's `gitlab-api.sh` (triage / planning /
+  implementation / code-review) now resolves the collection segment in
+  one place via `ISSUE_COLLECTION="${GITLAB_ISSUE_COLLECTION:-work_items}"`
+  and routes all issue reads, writes, `/notes`, and
+  `/resource_label_events` sub-paths through it. Default is `work_items`;
+  set `GITLAB_ISSUE_COLLECTION=issues` to pin the legacy path on a
+  non-migrated instance (no code change). `release/gitlab-api.sh` defines
+  the same knob for cross-script consistency (it only talks to
+  `/merge_requests` today). Documented in the README troubleshooting
+  section.
+
 ## [2.0.0] — 2026-04-29
 
 **Requires:** agentis >= 1.4.7

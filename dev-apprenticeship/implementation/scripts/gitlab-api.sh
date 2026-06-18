@@ -105,6 +105,13 @@ fi
 
 API="$GITLAB_URL/api/v4/projects/$GITLAB_PROJECT"
 
+# GitLab renamed the issue-tracking REST collection from /issues to the unified
+# /work_items collection (#1119). Resolve the collection segment in one place so
+# every issue read/write routes through it. Default = work_items (migrated
+# instances). Set GITLAB_ISSUE_COLLECTION=issues to pin the legacy path on a
+# non-migrated instance — no code change required.
+ISSUE_COLLECTION="${GITLAB_ISSUE_COLLECTION:-work_items}"
+
 # gl_call <method> <url> [curl-args...]
 #
 # Single wrapper used by every gl_get/gl_get_q/gl_post/gl_put below.
@@ -292,7 +299,7 @@ case "$CMD" in
 
     issue)
         IID="${1:?Usage: gitlab-api.sh issue <iid>}"
-        gl_get "$API/issues/$IID"
+        gl_get "$API/$ISSUE_COLLECTION/$IID"
         ;;
 
     assigned-issues)
@@ -326,10 +333,10 @@ case "$CMD" in
         if [ -n "$VIEW" ]; then
             # Two-step pipe so gl_call's non-zero exit survives projection (see
             # merge-requests branch above).
-            body="$(gl_get_q "$API/issues" "${ARGS[@]}")" || exit $?
+            body="$(gl_get_q "$API/$ISSUE_COLLECTION" "${ARGS[@]}")" || exit $?
             printf '%s' "$body" | project_json "$VIEW"
         else
-            gl_get_q "$API/issues" "${ARGS[@]}"
+            gl_get_q "$API/$ISSUE_COLLECTION" "${ARGS[@]}"
         fi
         ;;
 
@@ -350,7 +357,7 @@ case "$CMD" in
                 *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
-        body="$(gl_get "$API/issues/$IID/resource_label_events?per_page=100")" || exit $?
+        body="$(gl_get "$API/$ISSUE_COLLECTION/$IID/resource_label_events?per_page=100")" || exit $?
         # Pass body via env (BODY=) rather than stdin because the heredoc
         # (<<'PY') would otherwise override the piped input — shellcheck
         # SC2259. Same idiom as the split / hit / matched / final blocks
@@ -419,7 +426,7 @@ PY
         if [ "$INCLUDE_UNASSIGNED" = "0" ]; then
             BASE_ARGS+=(--data-urlencode "assignee_id=Any")
         fi
-        recent="$(gl_get_q "$API/issues" "${BASE_ARGS[@]}")" || exit $?
+        recent="$(gl_get_q "$API/$ISSUE_COLLECTION" "${BASE_ARGS[@]}")" || exit $?
         split="$(RECENT="$recent" LABEL="$LABEL" python3 <<'PY'
 import os, json
 items = json.loads(os.environ["RECENT"])
@@ -433,7 +440,7 @@ PY
         iids_to_check="$(printf '%s' "$split" | python3 -c 'import sys,json;print(" ".join(str(i) for i in json.load(sys.stdin)["to_check"]))')"
         matched="[]"
         for IID in $iids_to_check; do
-            ev_body="$(gl_get "$API/issues/$IID/resource_label_events?per_page=100")" || continue
+            ev_body="$(gl_get "$API/$ISSUE_COLLECTION/$IID/resource_label_events?per_page=100")" || continue
             hit="$(EVBODY="$ev_body" LABEL="$LABEL" EV_SINCE="$EV_SINCE" python3 <<'PY'
 import os, json
 events = json.loads(os.environ["EVBODY"])
@@ -449,7 +456,7 @@ else:
 PY
 )"
             if [ -n "$hit" ]; then
-                issue_body="$(gl_get "$API/issues/$IID")" || continue
+                issue_body="$(gl_get "$API/$ISSUE_COLLECTION/$IID")" || continue
                 matched="$(MATCHED="$matched" ISSUE="$issue_body" python3 <<'PY'
 import os, json
 acc = json.loads(os.environ["MATCHED"])
@@ -597,7 +604,7 @@ PY
             ''|*[!0-9]*) emit_error "issue iid must be numeric: $ID"; exit 2 ;;
         esac
         JSON_BODY=$(printf '%s' "$BODY" | python3 -c 'import sys,json; print(json.dumps({"body": sys.stdin.read()}))')
-        gl_post "$API/issues/$ID/notes" "$JSON_BODY"
+        gl_post "$API/$ISSUE_COLLECTION/$ID/notes" "$JSON_BODY"
         ;;
 
     post-note)

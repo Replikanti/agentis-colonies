@@ -85,6 +85,13 @@ fi
 
 API="$GITLAB_URL/api/v4/projects/$GITLAB_PROJECT"
 
+# GitLab renamed the issue-tracking REST collection from /issues to the unified
+# /work_items collection (#1119). Resolve the collection segment in one place so
+# every issue read/write routes through it. Default = work_items (migrated
+# instances). Set GITLAB_ISSUE_COLLECTION=issues to pin the legacy path on a
+# non-migrated instance — no code change required.
+ISSUE_COLLECTION="${GITLAB_ISSUE_COLLECTION:-work_items}"
+
 # gl_call <method> <url> [curl-args...]
 #
 # Single wrapper used by every gl_get/gl_get_q/gl_post/gl_put below.
@@ -314,7 +321,7 @@ case "$CMD" in
         case "$IID" in
             ''|*[!0-9]*) emit_error "iid must be numeric: $IID"; exit 2 ;;
         esac
-        gl_get "$API/issues/$IID"
+        gl_get "$API/$ISSUE_COLLECTION/$IID"
         ;;
 
     rate-limit-status)

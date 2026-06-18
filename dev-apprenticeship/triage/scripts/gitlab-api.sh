@@ -146,6 +146,13 @@ fi
 
 API="$GITLAB_URL/api/v4/projects/$GITLAB_PROJECT"
 
+# GitLab renamed the issue-tracking REST collection from /issues to the unified
+# /work_items collection (#1119). Resolve the collection segment in one place so
+# every issue read/write routes through it. Default = work_items (migrated
+# instances). Set GITLAB_ISSUE_COLLECTION=issues to pin the legacy path on a
+# non-migrated instance — no code change required.
+ISSUE_COLLECTION="${GITLAB_ISSUE_COLLECTION:-work_items}"
+
 # gl_call <method> <url> [curl-args...]
 #
 # Single wrapper used by every gl_get/gl_get_q/gl_post/gl_put below.
@@ -313,10 +320,10 @@ case "$CMD" in
             # survives the projection pipe. A bare `gl_get_q ... | project_json`
             # would let python3 (or `cat` when GITLAB_VIEW_MODE=raw) override
             # the meaningful exit code with 0 or 1, masking the real failure.
-            body="$(gl_get_q "$API/issues" "${ARGS[@]}")" || exit $?
+            body="$(gl_get_q "$API/$ISSUE_COLLECTION" "${ARGS[@]}")" || exit $?
             printf '%s' "$body" | project_json "$VIEW"
         else
-            gl_get_q "$API/issues" "${ARGS[@]}"
+            gl_get_q "$API/$ISSUE_COLLECTION" "${ARGS[@]}"
         fi
         ;;
 
@@ -354,7 +361,7 @@ if os.environ.get("PRIORITY"):
 print(json.dumps(body))
 PY
 )
-        gl_post "$API/issues" "$JSON_BODY"
+        gl_post "$API/$ISSUE_COLLECTION" "$JSON_BODY"
         ;;
 
     update-issue)
@@ -419,7 +426,7 @@ if os.environ.get("ASSIGNEE_ID"):
 print(json.dumps(body))
 PY
 )
-        gl_put "$API/issues/$ID" "$JSON_BODY"
+        gl_put "$API/$ISSUE_COLLECTION/$ID" "$JSON_BODY"
         ;;
 
     members)
@@ -475,10 +482,10 @@ PY
             ''|*[!0-9]*) emit_error "iid must be numeric: $IID"; exit 2 ;;
         esac
         if [ -n "$VIEW" ]; then
-            body="$(gl_get "$API/issues/$IID")" || exit $?
+            body="$(gl_get "$API/$ISSUE_COLLECTION/$IID")" || exit $?
             printf '%s' "$body" | project_json "$VIEW"
         else
-            gl_get "$API/issues/$IID"
+            gl_get "$API/$ISSUE_COLLECTION/$IID"
         fi
         ;;
 
@@ -532,7 +539,7 @@ PY
             ''|*[!0-9]*) emit_error "issue iid must be numeric: $ID"; exit 2 ;;
         esac
         JSON_BODY=$(printf '%s' "$BODY" | python3 -c 'import sys,json; print(json.dumps({"body": sys.stdin.read()}))')
-        gl_post "$API/issues/$ID/notes" "$JSON_BODY"
+        gl_post "$API/$ISSUE_COLLECTION/$ID/notes" "$JSON_BODY"
         ;;
 
     rate-limit-status)

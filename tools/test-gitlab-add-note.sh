@@ -109,7 +109,8 @@ if [ "$rc" -eq 0 ] && [ -s "$CURL_TRACE" ]; then
     trace="$(cat "$CURL_TRACE")"
     ok=1
     printf '%s' "$trace" | grep -q '^METHOD=POST$' || ok=0
-    printf '%s' "$trace" | grep -q '/projects/42/issues/7/notes' || ok=0
+    # #1119: default issue collection is the unified /work_items.
+    printf '%s' "$trace" | grep -q '/projects/42/work_items/7/notes' || ok=0
     # JSON body should have {"body": "hello world"}.
     if ! printf '%s' "$trace" | python3 -c '
 import sys, json, re
@@ -122,12 +123,32 @@ assert b == {"body": "hello world"}, f"unexpected body: {b}"
         ok=0
     fi
     if [ "$ok" -eq 1 ]; then
-        pass "happy path: POST /issues/7/notes with {body:'hello world'}"
+        pass "happy path: POST /work_items/7/notes with {body:'hello world'}"
     else
         fail "happy path" "trace=$trace out=$out"
     fi
 else
     fail "happy path" "rc=$rc out=$out trace_exists=$([ -s "$CURL_TRACE" ] && echo yes || echo no)"
+fi
+
+# --- Test 5: rollback toggle pins the legacy /issues collection (#1119) ---
+# GITLAB_ISSUE_COLLECTION=issues restores the pre-migration path for
+# instances that have not migrated to the unified /work_items collection.
+: > "$CURL_TRACE"
+set +e
+out=$(PATH="$TMPDIR_SHIM:$PATH" GITLAB_ISSUE_COLLECTION=issues GITLAB_URL=http://example.gitlab GITLAB_TOKEN=tok GITLAB_PROJECT=42 "$SCRIPT" add-note 7 --body 'hello world' 2>&1)
+rc=$?
+set -e
+
+if [ "$rc" -eq 0 ] && [ -s "$CURL_TRACE" ]; then
+    trace="$(cat "$CURL_TRACE")"
+    if printf '%s' "$trace" | grep -q '/projects/42/issues/7/notes'; then
+        pass "rollback toggle: GITLAB_ISSUE_COLLECTION=issues hits legacy /issues/7/notes"
+    else
+        fail "rollback toggle" "trace=$trace out=$out"
+    fi
+else
+    fail "rollback toggle" "rc=$rc out=$out trace_exists=$([ -s "$CURL_TRACE" ] && echo yes || echo no)"
 fi
 
 echo ""

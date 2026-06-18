@@ -417,6 +417,8 @@ agentis knowledge import /tmp/donor-knowledge.json --merge
 
 **"GitLab poll failed"**: Token lacks `api` scope, or the project path is wrong.
 
+**Issue reads/writes 404 on a self-hosted GitLab**: GitLab renamed the issue-tracking REST collection from `/issues` to the unified `/work_items` collection ([#1119](https://github.com/Replikanti/agentis-colonies/issues/1119)). The colony `gitlab-api.sh` helpers default to `work_items`. If your instance has **not** migrated yet, set `GITLAB_ISSUE_COLLECTION=issues` in the environment that launches the federation to pin the legacy path — no code change required. The default (`work_items`) is correct for migrated instances. This knob, like `GITLAB_CURL_MAX_TIME` / `GITLAB_CURL_RETRIES`, is read from the operator environment by each colony's `gitlab-api.sh` and is not seeded from `colony.toml`.
+
 **"Config not found"**: Run `./install.sh` or copy the template: `cp config/colony.example.toml config/colony.toml`
 
 **LLM errors**: Check your backend configuration in `.agentis/config`. For CLI backends, verify the command works in your terminal. For HTTP backends, verify the endpoint is reachable and the API key is set.
