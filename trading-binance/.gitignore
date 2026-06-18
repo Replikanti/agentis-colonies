@@ -1,0 +1,5 @@
+# Downloaded Binance market-data shards are not committed: they are mounted
+# into the replay container at runtime and are re-downloadable via
+# tools/binance-feed-download.py. Keep the directory present via .gitkeep.
+/data/*
+!/data/.gitkeep

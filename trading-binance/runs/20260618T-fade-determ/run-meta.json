@@ -1,0 +1,21 @@
+{
+  "run_id": "20260618T-fade-determ",
+  "issue": 1123,
+  "kind": "deterministic-reference-backtest",
+  "note": "Deterministic reference implementation of the tribe-zeta volume-divergence FADE signal, settled by tools/verify-trade.sh. NOT the LLM strategist; the 6-tribe LLM replay is deferred (needs OPENROUTER_API_KEY).",
+  "symbol": "BTCUSDT",
+  "timeframe": "1h",
+  "window_start": "2026-03-01",
+  "window_end": "2026-05-31",
+  "window_candles": 2208,
+  "verifier": "tools/verify-trade.sh",
+  "hold_period": 8,
+  "vol_ma": 20,
+  "timeframe_minutes": 60,
+  "slippage_bps": 5,
+  "funding_rate_bps": 1,
+  "size": 1.0,
+  "lookbacks_swept": [20, 50, 100],
+  "base_commit": "ed7ca90401a1d42b2a6a7cb4377c302aee98875f",
+  "reproduce": "python3 tools/binance-feed-download.py --symbol BTCUSDT --timeframe 1h --start 2026-03-01 --end 2026-05-31 && python3 tools/load-candles.py --data-dir data --symbol BTCUSDT --timeframe 1h --start 2026-03-01 --end 2026-05-31 > candles.csv && python3 runs/20260618T-fade-determ/backtest-fade-signal.py --candles candles.csv --verifier tools/verify-trade.sh --hold-period 8 --vol-ma 20 --timeframe-minutes 60 --lookbacks 20,50,100"
+}
