@@ -444,13 +444,17 @@ spawn_container() {
     # trailing space inside CLAUDE_MOUNT_FLAG keeps the openai path
     # byte-identical (the flag collapses to empty). `:z` requests a shared
     # SELinux relabel — required on SELinux-enforcing hosts (Fedora/RHEL),
-    # a no-op on SELinux-disabled hosts (Ubuntu/Debian) (#540).
+    # a no-op on SELinux-disabled hosts (Ubuntu/Debian) (#540). All three
+    # bind mounts (/repo, /run-root, ~/.claude) carry `:z`: without it the
+    # container's SELinux context cannot read the bind-mounted bootstrap.sh /
+    # candles.csv and the container dies at boot with "Permission denied"
+    # (exit 126) on an enforcing host (#1159).
     CLAUDE_MOUNT_FLAG=""
     if [ "$LLM_BACKEND" = "flat-cyborg" ] || [ "$LLM_BACKEND" = "flat_cyborg" ]; then
         CLAUDE_MOUNT_FLAG="-v $HOST_CLAUDE_DIR:/root/.claude:rw,z "
     fi
     emit_step "spawning replay-laptop container (image=$IMAGE_TAG)"
-    emit_cmd "podman run -d --replace --name replay-laptop -e $OPENAI_KEY_ENV=\"\${$OPENAI_KEY_ENV:-}\" -v $REPO_ROOT:/repo:ro -v $LAPTOP_DIR:/run-root:rw ${CLAUDE_MOUNT_FLAG}$IMAGE_TAG /run-root/bootstrap.sh"
+    emit_cmd "podman run -d --replace --name replay-laptop -e $OPENAI_KEY_ENV=\"\${$OPENAI_KEY_ENV:-}\" -v $REPO_ROOT:/repo:ro,z -v $LAPTOP_DIR:/run-root:rw,z ${CLAUDE_MOUNT_FLAG}$IMAGE_TAG /run-root/bootstrap.sh"
 }
 
 # --- 5) Cleanup trap ---
