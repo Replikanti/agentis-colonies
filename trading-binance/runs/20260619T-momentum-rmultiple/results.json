@@ -1,0 +1,72 @@
+{
+  "window_candles": 2208,
+  "hold_period": 8,
+  "vol_ma": 20,
+  "lookback": 20,
+  "timeframe_minutes": 60,
+  "slippage_bps": 5.0,
+  "funding_rate_bps": 1.0,
+  "size": 1.0,
+  "flat_baseline_total_pnl_bps": 0.0,
+  "fade_1123_total_pnl_bps_L20": -360.02,
+  "buy_and_hold_net_bps": 757.01,
+  "results_by_r_multiple": [
+    {
+      "stop_bps": 100.0,
+      "target_bps": 100.0,
+      "r_multiple": 1.0,
+      "trades": 341,
+      "longs": 183,
+      "shorts": 158,
+      "flats": 1867,
+      "win_rate_pct": 43.1,
+      "total_pnl_bps": -5252.35,
+      "mean_pnl_bps_expectancy": -15.403,
+      "profit_factor": 0.681,
+      "max_drawdown_bps": 5449.98,
+      "exit_reasons": {
+        "stop": 132,
+        "target": 119,
+        "time": 90
+      }
+    },
+    {
+      "stop_bps": 100.0,
+      "target_bps": 200.0,
+      "r_multiple": 2.0,
+      "trades": 341,
+      "longs": 183,
+      "shorts": 158,
+      "flats": 1867,
+      "win_rate_pct": 36.1,
+      "total_pnl_bps": -6442.76,
+      "mean_pnl_bps_expectancy": -18.894,
+      "profit_factor": 0.644,
+      "max_drawdown_bps": 6780.21,
+      "exit_reasons": {
+        "stop": 143,
+        "target": 41,
+        "time": 157
+      }
+    },
+    {
+      "stop_bps": 100.0,
+      "target_bps": 300.0,
+      "r_multiple": 3.0,
+      "trades": 341,
+      "longs": 183,
+      "shorts": 158,
+      "flats": 1867,
+      "win_rate_pct": 34.9,
+      "total_pnl_bps": -7090.02,
+      "mean_pnl_bps_expectancy": -20.792,
+      "profit_factor": 0.616,
+      "max_drawdown_bps": 7721.68,
+      "exit_reasons": {
+        "stop": 146,
+        "target": 17,
+        "time": 178
+      }
+    }
+  ]
+}

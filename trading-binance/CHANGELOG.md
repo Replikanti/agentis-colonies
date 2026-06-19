@@ -16,6 +16,23 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Deterministic **momentum/breakout** backtest under the #1148 R-multiple
+  exits over the real 90-day BTCUSDT 1h window (2026-03-01 → 2026-05-31),
+  recorded under `runs/20260619T-momentum-rmultiple/`
+  (`backtest-momentum-rmultiple.py`, `comparison.md`, `results.json`,
+  `run-meta.json`). Tests whether asymmetric payoff (small stop, larger
+  target) produces a positive expectancy where the #1123 fade lost.
+  **Honest verdict: no — momentum + R-multiple loses worse than the fade**
+  and worse as the target widens (1R/2R/3R: total −5252/−6443/−7090 bps,
+  win rate < 44 %, profit factor < 1, expectancy negative); the wider target
+  almost never hits (119 → 41 → 17 targets of 341), because most 1h BTCUSDT
+  breakouts are false on this window. The R-multiple **lever is validated
+  mechanically** (exit_reason stop/target/time distributes as the geometry
+  predicts, funding over the actual hold) — but asymmetric payoff alone
+  doesn't create an edge: both deterministic signals (fade AND momentum) lose
+  on this window. Selection metric is expectancy + profit factor, not win
+  rate. Single in-sample window; deterministic signal ≠ LLM strategist;
+  no walk-forward (#1154).
 - `tools/verify-trade.sh` optional R-multiple stop-loss / take-profit
   settlement via two new env knobs `STOP_BPS` / `TARGET_BPS` (both bps of
   the entry price, default `0` = disabled). When either is `> 0`, the
