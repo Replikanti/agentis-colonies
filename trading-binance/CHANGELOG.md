@@ -16,6 +16,19 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Fixed
 
+- `tools/run-replay.sh` container flat-cyborg path now bind-mounts the
+  host-level `~/.claude.json` (onboarding/oauth state) into
+  `/root/.claude.json` alongside the existing `~/.claude` dir, and routes
+  through the `tools/flat-cyborg-claude.sh` wrapper
+  (`flat-cyborg --extract --extract-structural -- claude`) under agentis's
+  `claude` backend instead of the native bare-`--extract` `flat-cyborg`
+  backend. Without the `.claude.json` mount the container `claude` sat on the
+  login menu and never replied; the bare `--extract` intermittently timed out
+  on a missing reply sentinel — together they produced zero-decision replay
+  runs failing every tick with `flat-cyborg exited with exit status: 124:
+  --extract found no fenced reply`. `tools/test-run-replay.sh` asserts the
+  wrapper wiring + the `/root/.claude.json` mount on the flat-cyborg path and
+  its absence on the openai path (#1161).
 - `tools/run-replay.sh` now adds the `:z` SELinux relabel suffix to the
   `/repo` and `/run-root` bind mounts (the `~/.claude` mount already had it).
   Without it, on an SELinux-enforcing host (Fedora/RHEL) the `replay-laptop`

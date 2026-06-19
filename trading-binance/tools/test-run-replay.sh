@@ -22,10 +22,15 @@
 #  15. Cleanup trap is installed in dry-run output
 #  T-a. Default dry-run uses the flat-cyborg backend, bind-mounts
 #       /root/.claude, emits no OPENROUTER_API_KEY error, and the script
-#       source injects llm.flat_cyborg.idle_ms (#1133)
+#       source injects llm.flat_cyborg.idle_ms (#1133). The flat-cyborg path
+#       additionally routes through the tools/flat-cyborg-claude.sh wrapper
+#       under agentis's `claude` backend (CONFIG_BACKEND="claude" +
+#       llm.command), and the spawn command bind-mounts /root/.claude.json
+#       (onboarding/oauth state) (#1161)
 #  T-b. REPLAY_LLM_BACKEND=openai fallback still names the openai backend,
-#       omits the /root/.claude mount, and the script source keeps the
-#       llm.openai.api_key_env injection + the openai key enforcement (#1133)
+#       omits the /root/.claude AND /root/.claude.json mounts, and the script
+#       source keeps the llm.openai.api_key_env injection + the openai key
+#       enforcement (#1133, #1161)
 #  Header-doc: REPLAY_LLM_BACKEND + REPLAY_HOST_CLAUDE_DIR documented (#1133)
 #
 # Standard library only — no pytest, no requests, no live LLM, no podman.
@@ -263,6 +268,18 @@ else
 fi
 assert_contains "T-a4. script source injects llm.flat_cyborg.idle_ms" "$SRC" \
     "llm.flat_cyborg.idle_ms"
+# #1161: the container flat-cyborg path now runs through the
+# tools/flat-cyborg-claude.sh wrapper under agentis's `claude` backend (bare
+# --extract can't scrape claude's TUI). The generated hermetic config feeds
+# CONFIG_BACKEND (= "claude" on the flat-cyborg path) into llm.backend and
+# injects llm.command pointing at the wrapper; the spawn command additionally
+# bind-mounts ~/.claude.json (onboarding/oauth state) into /root/.claude.json.
+assert_contains "T-a5. script source injects the flat-cyborg-claude.sh wrapper command" "$SRC" \
+    "flat-cyborg-claude.sh"
+assert_contains "T-a6. flat-cyborg path config backend is claude" "$SRC" \
+    'CONFIG_BACKEND="claude"'
+assert_contains "T-a7. flat-cyborg dry-run bind-mounts /root/.claude.json" "$OUT" \
+    ":/root/.claude.json:rw,z"
 
 # ---------------------------------------------------------------------------
 # T-b. openai fallback regression: REPLAY_LLM_BACKEND=openai still names the
@@ -287,6 +304,14 @@ if printf '%s' "$OPENAI_OUT" | grep -Fq -- ":/root/.claude:rw,z"; then
     FAIL=$((FAIL + 1))
 else
     echo "[PASS] T-b2. openai fallback does not bind-mount /root/.claude"
+    PASS=$((PASS + 1))
+fi
+# #1161: the ~/.claude.json onboarding/auth mount is flat-cyborg-only too.
+if printf '%s' "$OPENAI_OUT" | grep -Fq -- ":/root/.claude.json:rw,z"; then
+    echo "[FAIL] T-b2a. openai fallback does not bind-mount /root/.claude.json"
+    FAIL=$((FAIL + 1))
+else
+    echo "[PASS] T-b2a. openai fallback does not bind-mount /root/.claude.json"
     PASS=$((PASS + 1))
 fi
 assert_contains "T-b3. script source injects llm.openai.api_key_env" "$SRC" \
