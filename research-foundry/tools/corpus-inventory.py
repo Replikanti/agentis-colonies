@@ -65,6 +65,9 @@ BUCKET_KEYWORDS = {
         "hypergraph", "catalan", "partition", "generating function",
         "matroid", "turan", "ramsey", "enumeration", "bijection",
         "set system", "design theory",
+        "graph", "chromatic", "planar", "coloring", "colouring",
+        "clique", "matching", "bipartite", "domination", "spanning tree",
+        "tournament", "vertex", "minor",
     ],
     "number_theory": [
         "number_theory", "hecke", "l-function", "zeta", "modular form",

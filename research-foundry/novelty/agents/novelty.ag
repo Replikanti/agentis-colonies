@@ -534,7 +534,7 @@ fn _classify_bucket(condition: string) -> string {
     if len(condition) == 0 { return ""; };
     let txt = to_lower(condition);
     if regex_match("group_theory|sylow|cayley|monoid|semigroup|permutation|symmetric_group|sym_n|schur|lattice|coset|conjugacy|abelian|nilpotent|solvable|simple group|presentation|free group", txt) { return "group_theory"; };
-    if regex_match("combinatorics|hamiltonicity|hamilton cycle|latin square|hypergraph|catalan|partition|generating function|matroid|turan|ramsey|enumeration|bijection|set system|design theory", txt) { return "combinatorics"; };
+    if regex_match("combinatorics|hamiltonicity|hamilton cycle|latin square|hypergraph|catalan|partition|generating function|matroid|turan|ramsey|enumeration|bijection|set system|design theory|graph|chromatic|planar|coloring|colouring|clique|matching|bipartite|domination|spanning tree|tournament|vertex|minor", txt) { return "combinatorics"; };
     if regex_match("number_theory|hecke|l-function|zeta|modular form|diophantine|frobenius|p-adic|elliptic curve|galois|class field|automorphic|prime|sieve|riemann", txt) { return "number_theory"; };
     if regex_match("probability|martingale|random walk|mixing time|stationary distribution|markov chain|percolation|branching process|brownian|stochastic|renyi|entropy", txt) { return "probability"; };
     if regex_match("algebra|cohomology|sheaf|ring spectrum|module|derived category|witt|lie algebra|hopf|tensor|homotopy|scheme|variety|ideal|polynomial ring", txt) { return "algebra"; };
@@ -551,7 +551,7 @@ fn _classify_buckets_all(condition: string) -> string {
     if len(condition) == 0 { return ""; };
     let txt = to_lower(condition);
     let h1 = if regex_match("group_theory|sylow|cayley|monoid|semigroup|permutation|symmetric_group|sym_n|schur|lattice|coset|conjugacy|abelian|nilpotent|solvable|simple group|presentation|free group", txt) { "group_theory"; } else { ""; };
-    let h2 = if regex_match("combinatorics|hamiltonicity|hamilton cycle|latin square|hypergraph|catalan|partition|generating function|matroid|turan|ramsey|enumeration|bijection|set system|design theory", txt) { "combinatorics"; } else { ""; };
+    let h2 = if regex_match("combinatorics|hamiltonicity|hamilton cycle|latin square|hypergraph|catalan|partition|generating function|matroid|turan|ramsey|enumeration|bijection|set system|design theory|graph|chromatic|planar|coloring|colouring|clique|matching|bipartite|domination|spanning tree|tournament|vertex|minor", txt) { "combinatorics"; } else { ""; };
     let h3 = if regex_match("number_theory|hecke|l-function|zeta|modular form|diophantine|frobenius|p-adic|elliptic curve|galois|class field|automorphic|prime|sieve|riemann", txt) { "number_theory"; } else { ""; };
     let h4 = if regex_match("probability|martingale|random walk|mixing time|stationary distribution|markov chain|percolation|branching process|brownian|stochastic|renyi|entropy", txt) { "probability"; } else { ""; };
     let h5 = if regex_match("algebra|cohomology|sheaf|ring spectrum|module|derived category|witt|lie algebra|hopf|tensor|homotopy|scheme|variety|ideal|polynomial ring", txt) { "algebra"; } else { ""; };
