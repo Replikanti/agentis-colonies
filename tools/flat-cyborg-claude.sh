@@ -20,6 +20,7 @@
 #
 # Knobs (env vars): FLAT_CYBORG_IDLE_MS, FLAT_CYBORG_TIMEOUT_MS.
 set -eu
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROMPT="${1:-}"
 if [ -z "$PROMPT" ]; then PROMPT="$(cat)"; fi
 # --wrap-input 72: fold the (often single-line, ~700-char) instruction block so it
@@ -30,7 +31,29 @@ if [ -z "$PROMPT" ]; then PROMPT="$(cat)"; fi
 # in HARNESS_ERROR. Structural mode completes on a SETTLED screen and recovers the
 # reply marker-first -> structural-fallback (fast + marker-less-tolerant); a reply that
 # DOES carry the markers is extracted exactly as before.
-exec flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 \
+# JSON-shaped-reply unwrap (#1163): --extract-structural is a TUI screen-scrape,
+# so claude's TUI LINE-WRAPS long output, injecting newline+indent INSIDE a JSON
+# string and breaking the JSON the caller decodes. Post-process the extracted
+# reply through tools/flat-cyborg-unwrap.py: when the trimmed reply is a single
+# JSON object (`{…}`) it collapses soft-wrap whitespace to one line; any other
+# reply (prose/code/markdown from non-JSON consumers) passes through
+# byte-for-byte. The filter only ever fires on `{…}`-shaped replies, so prose
+# consumers are safe.
+#
+# We do NOT pipe directly (POSIX sh / dash has no `pipefail` and no PIPESTATUS):
+# capture flat-cyborg's stdout to a temp file AND its exit status first,
+# propagate that status unchanged (a flat-cyborg failure must still reach the
+# agentis caller as before), then feed the captured reply through the unwrap
+# filter. A temp file (not `$(...)`) preserves the reply's bytes exactly,
+# including any trailing newline, so prose consumers stay byte-identical.
+REPLY_FILE="$(mktemp)"
+trap 'rm -f "$REPLY_FILE"' EXIT
+set +e
+flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 \
   --idle-ms "${FLAT_CYBORG_IDLE_MS:-8000}" \
   --timeout-ms "${FLAT_CYBORG_TIMEOUT_MS:-180000}" \
-  --cmd "$PROMPT" -- claude
+  --cmd "$PROMPT" -- claude > "$REPLY_FILE"
+FC_RC=$?
+set -e
+[ "$FC_RC" -eq 0 ] || exit "$FC_RC"
+python3 "$SCRIPT_DIR/flat-cyborg-unwrap.py" < "$REPLY_FILE"

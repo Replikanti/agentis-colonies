@@ -16,6 +16,19 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Fixed
 
+- The 6 replay strategists (`tribe-{alpha,beta,gamma,delta,epsilon,zeta}/agents/strategist.ag`)
+  now append a strict JSON-only output directive (`_output_format_directive()`)
+  at the `prompt() -> Decision` call site, OUTSIDE the evolvable prompt body so
+  M98 prompt-evolution cannot drop it. On the flat-rate flat-cyborg path claude
+  was writing verbose analysis prose before any JSON, so the Decision reply
+  failed to parse with `unexpected character N`. The shared
+  `tools/flat-cyborg-claude.sh` wrapper additionally post-processes JSON-shaped
+  replies through `tools/flat-cyborg-unwrap.py`: when a reply is a single
+  `{…}` object it collapses the soft-wrap whitespace that
+  `--extract-structural`'s TUI screen-scrape injects INSIDE the JSON string
+  (newline+indent from line-wrapping), so the JSON parses again; prose/code
+  replies pass through byte-for-byte. `tools/test-flat-cyborg-claude.sh` covers
+  the unwrap logic (#1163).
 - `tools/run-replay.sh` container flat-cyborg path now bind-mounts the
   host-level `~/.claude.json` (onboarding/oauth state) into
   `/root/.claude.json` alongside the existing `~/.claude` dir, and routes

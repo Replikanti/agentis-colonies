@@ -74,6 +74,15 @@ fn _variant_overlay_suffix() -> string {
     return "";
 }
 
+// #1163: a strict JSON-only output directive appended at the prompt() call
+// site (OUTSIDE the evolvable prompt body so M98 prompt-evolution cannot drop
+// it). On the flat-rate flat-cyborg path claude writes verbose analysis prose
+// before any JSON -> 'unexpected character N' parse error; this forces a
+// single-line minified Decision object and nothing else.
+fn _output_format_directive() -> string {
+    return "\n\nOUTPUT FORMAT (critical): Reply with ONLY a single-line minified JSON object and nothing else — no analysis, no reasoning, no preamble, no markdown, no code fence. Your entire reply must be exactly one line of the form {\"action\":\"LONG|SHORT|FLAT\",\"size\":<float 0.0-1.0>,\"rationale\":\"<one short sentence>\",\"setup\":\"<the exact setup string from your instructions>\"}";
+}
+
 // #520 M98 v3 PR 3/3: hash-pointer extraction over the M106 wire.
 fn _extract_pp_hash(variant_tag: string) -> string {
     if len(variant_tag) < 67 { return ""; };
@@ -345,7 +354,7 @@ fn tick(reason: string) -> void {
     };
 
     let decision = prompt(
-        prompt_text + _variant_overlay_suffix(),
+        prompt_text + _variant_overlay_suffix() + _output_format_directive(),
         candles_csv
     ) -> Decision;
 

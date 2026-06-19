@@ -33,6 +33,14 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- **Shared `tools/flat-cyborg-claude.sh` wrapper now unwraps JSON-shaped replies**
+  (#1163). `--extract-structural` is a TUI screen-scrape, so claude's TUI
+  line-wraps long output and injects newline+indent INSIDE a JSON string,
+  breaking any `prompt() -> <struct>` decode. The wrapper post-processes the
+  extracted reply through `tools/flat-cyborg-unwrap.py`: a reply that is a single
+  `{…}` object has its soft-wrap whitespace collapsed to one line; every other
+  reply (the prose the observe / suggest / review workflow relies on) passes
+  through byte-for-byte. flat-cyborg's exit status is still propagated unchanged.
 - **`implementation` code_writer -> commit_composer MR handoff is now durable**
   (#1151). The handoff used to depend on commit_composer catching the transient
   `implementation:code_draft` bus event inside a 100ms `listen()` window; when
