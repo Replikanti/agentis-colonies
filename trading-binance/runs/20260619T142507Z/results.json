@@ -1,0 +1,16 @@
+{
+  "run_id": "20260619T142507Z",
+  "backend": "claude-p",
+  "symbol": "BTCUSDT", "timeframe": "1h",
+  "window": "2026-03-01..2026-03-05", "lookback": 50, "hold_period": 8, "speed": 90,
+  "decisions_total": 269, "parse_errors": 0,
+  "action_spread": {"FLAT": 216, "LONG": 42, "SHORT": 11},
+  "settled_total": 174, "settled_FLAT": 138, "settled_LOSS": 26, "settled_WIN": 10,
+  "directional_settled": 36, "wins": 10, "losses": 26,
+  "total_pnl_bps": -1130, "mean_pnl_bps_per_directional_trade": -31.4,
+  "m98_evolution_generations_per_tribe": [3, 3, 5, 3, 5, 4],
+  "m2_replicate_events": 0,
+  "per_tribe_fitness": [-362, 0, -97, 0, 40, -183],
+  "verdict": "substrate ran end-to-end (decisions->settle->fitness->M98 evolution); no trading edge (negative expectancy), consistent with deterministic-backtest prior",
+  "base_commit": "7482b0f54c939ef29b5ff391f46b69a09a3ce13a"
+}
