@@ -16,6 +16,22 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- `tools/verify-trade.sh` optional R-multiple stop-loss / take-profit
+  settlement via two new env knobs `STOP_BPS` / `TARGET_BPS` (both bps of
+  the entry price, default `0` = disabled). When either is `> 0`, the
+  verifier scans the forward candles intrabar (`low` / `high`) for the
+  first stop / target touch and exits there; a same-candle tie resolves
+  pessimistically to the stop; with no touch it falls back to the legacy
+  fixed-time open exit. On this path funding accrues over the ACTUAL hold
+  (exit candle − entry candle) and the verdict carries an additional
+  `exit_reason` field (`"stop"` | `"target"` | `"time"`). **Fully
+  backward-compatible**: with both knobs unset / `0` the behaviour AND
+  output JSON are byte-identical to the prior fixed-time path (no
+  `exit_reason` key) — `run-replay.sh` never sets these knobs, so the live
+  settlement is unaffected. `tools/test-verify-trade.sh` grows from 13 to
+  31 assertions covering stop-first, target-first, time-fallback,
+  same-candle tie, SHORT mirror, funding-over-actual-hold, and a
+  byte-identical disabled-path regression (#1148).
 - Deterministic reference backtest of the `tribe-zeta` volume-divergence
   **fade** signal over a real 90-day BTCUSDT 1h window (2026-03-01 →
   2026-05-31), recorded under `runs/20260618T-fade-determ/`
