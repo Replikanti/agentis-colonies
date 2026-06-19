@@ -276,6 +276,15 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     if len(commit_result) > 0 {
                         print("[code_writer] Committed code to", draft.branch_name);
                         emit("implementation:code_draft", draft);
+                        // #1151: durable single-slot handoff to commit_composer.
+                        // The live `code_draft` bus event above is the fast path,
+                        // but commit_composer only catches it inside a 100ms
+                        // listen() window; a missed event left the branch
+                        // committed with no MR ever opened. Persist a durable
+                        // tab-delimited (issue_id, branch_name, summary) signal
+                        // so commit_composer's no-event branch can recover it.
+                        memo_write(scoped_memo(owner, repo, "implementation:pending_mr"),
+                            to_string(draft.issue_id) + "\t" + draft.branch_name + "\t" + draft.summary);
                         if len(owner) > 0 {
                             learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "success", ["acted", "implementation", repo_tag(owner, repo)]);
                         } else {
