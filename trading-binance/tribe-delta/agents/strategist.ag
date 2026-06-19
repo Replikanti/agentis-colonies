@@ -307,8 +307,15 @@ fn tick(reason: string) -> void {
         let max_bytes_env = try { exec sh "printenv STRATEGIST_PROMPT_MAX_BYTES"; } catch e { ""; };
         let max_bytes = if len(max_bytes_env) > 0 { parse_int(max_bytes_env); } else { 4096; };
         let max_bytes_eff = if max_bytes <= 0 { 4096; } else { max_bytes; };
+        let seed_override = recall_latest("strategist:seed_prompt:" + _tribe_name);
         let pp_hash = _extract_pp_hash(_variant);
-        if len(pp_hash) > 0 {
+        if len(seed_override) > 0 {
+            let seed_ov_clamped = if len(seed_override) > max_bytes_eff { substring(seed_override, 0, max_bytes_eff); } else { seed_override; };
+            memo_write("strategist:" + _self_pid + ":strategy_prompt", seed_ov_clamped);
+            memo_write("strategist:" + _self_pid + ":strategy_generation", "0");
+            learn("strategist_prompt_inherit", _tribe_name + "/" + _self_pid, "seed-override", "success", ["prompt-inheritance", "walk-forward-seed", "trading-binance"]);
+            seed_ov_clamped;
+        } else { if len(pp_hash) > 0 {
             let inherited = recall_latest("strategist:prompt_body:" + pp_hash);
             if len(inherited) > 0 {
                 let inh_clamped = if len(inherited) > max_bytes_eff { substring(inherited, 0, max_bytes_eff); } else { inherited; };
@@ -330,7 +337,7 @@ fn tick(reason: string) -> void {
             memo_write("strategist:" + _self_pid + ":strategy_prompt", seed_clamped);
             memo_write("strategist:" + _self_pid + ":strategy_generation", "0");
             seed_clamped;
-        };
+        }; };
     } else {
         prompt_text_raw;
     };

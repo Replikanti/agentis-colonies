@@ -36,6 +36,12 @@
 #       omits the /root/.claude AND /root/.claude.json mounts, and the script
 #       source keeps the llm.openai.api_key_env injection + the openai key
 #       enforcement (#1133, #1161)
+#  T-seed. Walk-forward seed-prompt injection (#1167): with
+#       REPLAY_SEED_PROMPTS_DIR set, the dry-run emits the seed-prompt
+#       staging step + copies host tribe-<t>.txt into the run dir's
+#       seed-prompts/, and the script source wires the per-tribe
+#       `agentis memo set strategist:seed_prompt:tribe-<t>` step; without it,
+#       no staging step and behaviour is byte-identical (the <none> sentinel).
 #  Header-doc: REPLAY_LLM_BACKEND + REPLAY_HOST_CLAUDE_DIR documented (#1133)
 #
 # Standard library only — no pytest, no requests, no live LLM, no podman.
@@ -350,6 +356,48 @@ assert_contains "T-b3. script source injects llm.openai.api_key_env" "$SRC" \
     "llm.openai.api_key_env"
 assert_contains "T-b4. script source enforces the openai key" "$SRC" \
     "required for llm.backend=openai"
+
+# ---------------------------------------------------------------------------
+# T-seed. Walk-forward seed-prompt injection (#1167). With
+# REPLAY_SEED_PROMPTS_DIR set on a dry-run, the orchestrator surfaces the
+# seed-prompt staging step (copy host tribe-<t>.txt into the run dir's
+# seed-prompts/) and the script source wires the per-tribe
+# `agentis memo set strategist:seed_prompt:tribe-<t>` step before the daemon
+# launch. Without the dir set, the staging step is NOT emitted (behaviour
+# byte-identical to a normal replay). The memo-set printf line lives in the
+# real-run bootstrap generator, so it is asserted on the script SOURCE.
+# ---------------------------------------------------------------------------
+SEED_SRC_DIR="$WORK_DIR/seed-prompts"
+mkdir -p "$SEED_SRC_DIR"
+printf 'frozen alpha strategy\nline two\n' >"$SEED_SRC_DIR/tribe-alpha.txt"
+SEED_OUT="$(REPLAY_DRY_RUN=1 \
+            REPLAY_SEED_PROMPTS_DIR="$SEED_SRC_DIR" \
+            REPLAY_SYMBOL=BTCUSDT \
+            REPLAY_TIMEFRAME=30m \
+            REPLAY_RUN_DIR="$WORK_DIR/run-seed" \
+            bash "$ORCH" 2>&1)"
+assert_contains "T-seed1. seeded dry-run names the seed prompts dir" "$SEED_OUT" \
+    "seed prompts dir: $SEED_SRC_DIR"
+assert_contains "T-seed2. seeded dry-run emits the seed-prompt staging step" "$SEED_OUT" \
+    "staging seed prompts from $SEED_SRC_DIR"
+assert_contains "T-seed3. seeded dry-run copies into the run dir seed-prompts/" "$SEED_OUT" \
+    "$WORK_DIR/run-seed/laptop-node/seed-prompts/"
+assert_contains "T-seed4. script source wires the seed_prompt memo-set step" "$SRC" \
+    "agentis memo set strategist:seed_prompt:tribe-\$t"
+assert_contains "T-seed5. header documents REPLAY_SEED_PROMPTS_DIR" "$SRC" \
+    "REPLAY_SEED_PROMPTS_DIR"
+
+# T-seed6. Unset REPLAY_SEED_PROMPTS_DIR -> the staging step is absent, the
+# default capture's "<none>" sentinel is used, and behaviour is unchanged.
+if printf '%s' "$OUT" | grep -Fq -- "staging seed prompts from"; then
+    echo "[FAIL] T-seed6. unseeded dry-run does not emit a staging step"
+    FAIL=$((FAIL + 1))
+else
+    echo "[PASS] T-seed6. unseeded dry-run does not emit a staging step"
+    PASS=$((PASS + 1))
+fi
+assert_contains "T-seed7. unseeded dry-run shows the <none> seed sentinel" "$OUT" \
+    "seed prompts dir: <none>"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
