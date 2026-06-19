@@ -24,7 +24,7 @@ Does the funding-carry edge hold **out-of-sample across market regimes**, or is 
 - The backtest models **funding accrual − turnover cost only**. It does NOT model delta-neutral execution risk (basis dislocation, short-leg liquidation/margin, spot custody, rebalance slippage). **Real net is lower** — and during a violent regime transition (funding flips hard negative + basis blows out), a delta-neutral book can take a real hit the funding-only model doesn't see. The 2.5y Sharpe 2.33 is an upper-ish bound.
 - Sub-window "0.00 % max DD" is degenerate (few rebalance periods inside a half-year); the **full-span** DD 0.32 % / Sharpe 2.33 are the meaningful figures.
 - 30-day rebalance cost (~1.2 %/yr over the full span) is a real drag the carry exceeds; tighter rebalancing would lose (Phase 1 #1174).
-- Survivorship: the 18-symbol universe is today's liquid set; some weren't liquid early in 2024.
+- **Survivorship / executability of the biggest numbers.** The 18-symbol universe is today's liquid set; several (ARB/OP/INJ/APT/SUI) were newly-listed, thin, high-volatility names early in the span. The early-window outperformance — the +20.44 %/yr 2024 H1 headline — **rides precisely on those newest, least-executable alts** (the early top-6 selections are dominated by ARB/OP/INJ/APT/AVAX/NEAR/SUI). That is exactly where a real delta-neutral book is hardest to run (wide spreads, shallow spot, basis blowouts, liquidation risk on the short leg) — so the headline number is the *least* trustworthy in practice. The thinner, more recent windows on more-liquid names (2025 H1–H2: +2.5–3.7 %/yr) are the more honest guide to a deployable figure.
 
 ## Verdict
 

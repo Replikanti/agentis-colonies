@@ -23,9 +23,6 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   **+7.11%/yr at Sharpe 2.33 / 0.32% max DD**; strongly bull-amplified; the
   trailing filter protects in weak regimes (2026 H1: filter +0.19% vs naive
   all-alts -1.82%). First robust multi-regime positive-expectancy result.
-
-### Added
-
 - `tools/carry-verify.sh` (#1175 M1): deterministic settlement verifier for a
   delta-neutral funding-CARRY basket -- the carry analogue of verify-trade.sh.
   Net carry = weighted sum of forward funding (short-perp receives positive
