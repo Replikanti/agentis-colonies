@@ -15,6 +15,22 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Changed
+
+- **Documented the code-generation fidelity constraint** (#1152). flat-cyborg's
+  `--extract` is a TUI screen-scrape: great for prose (the observe / suggest /
+  review workflow), but it corrupts the fidelity-critical structured JSON the
+  autonomous `code_writer` feeds to `commit-files`, so the branch commits but
+  the file-contents commit fails (`Expecting ',' delimiter` / control chars).
+  The README LLM-backend section now documents this and the fix: run
+  code-generation-capable autonomous runs on the metered `claude -p` backend
+  (`llm.command = claude` / `llm.args = -p` in `.agentis/config`) while keeping
+  flat-cyborg as the default for the prose-only workflow. `code_writer` now also
+  prints a fidelity-backend hint on a commit failure so the cause is legible.
+  A true per-agent backend (flat-cyborg for prose + `claude -p` for `code_writer`
+  in the same run) is an agentis-core upstream dependency. Found in the #1117
+  first live run.
+
 ### Fixed
 
 - **`implementation` code_writer -> commit_composer MR handoff is now durable**

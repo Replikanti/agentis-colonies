@@ -270,6 +270,12 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     let commit_cmd = "$COLONY_DIR/scripts/forge-api.sh commit-files --branch " + shell_escape(draft.branch_name) + " --message " + shell_escape("feat: implement #" + to_string(draft.issue_id) + " - " + draft.summary) + " --actions " + shell_escape(actions_json) + repo_arg(owner, repo);
                     let commit_result = try { exec sh commit_cmd; } catch e {
                         print("[code_writer] Commit failed:", e);
+                        // #1152: a recurring cause is an unparseable --actions JSON.
+                        // Code generation is fidelity-critical: a TUI screen-scrape
+                        // backend (flat-cyborg) corrupts the structured JSON of file
+                        // contents. Run code-gen on the metered `claude -p` backend
+                        // (see README "Code-generation fidelity"), not flat-cyborg.
+                        print("[code_writer] hint: if this is an '--actions JSON' parse error, code-gen needs a fidelity backend (claude -p), not the flat-cyborg screen-scrape — see README");
                         "";
                     };
 
