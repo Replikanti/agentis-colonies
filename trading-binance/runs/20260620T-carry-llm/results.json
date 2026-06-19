@@ -1,0 +1,123 @@
+{
+  "window": {
+    "start": "2026-03-01",
+    "end": "2026-06-01",
+    "harvest_days": 71.0
+  },
+  "params": {
+    "rebalance_days": 14.0,
+    "lookback_days": 21.0,
+    "top_k": 4,
+    "cost_bps_roundtrip": 20.0
+  },
+  "rebalances": 6,
+  "llm_total_net_bps": 26.83,
+  "llm_annualised_pct": 1.379,
+  "naive_total_net_bps": 8.95,
+  "naive_annualised_pct": 0.46,
+  "llm_beats_naive_oos": true,
+  "folds": [
+    {
+      "t": 1774137600000,
+      "llm_basket": [
+        "AAVEUSDT",
+        "AVAXUSDT",
+        "LINKUSDT",
+        "LTCUSDT"
+      ],
+      "llm_net_bps": -2.6594,
+      "naive_basket": [
+        "AAVEUSDT",
+        "AVAXUSDT",
+        "LINKUSDT",
+        "LTCUSDT"
+      ],
+      "naive_net_bps": -3.5571
+    },
+    {
+      "t": 1775347200000,
+      "llm_basket": [
+        "AAVEUSDT",
+        "LINKUSDT",
+        "LTCUSDT",
+        "NEARUSDT"
+      ],
+      "llm_net_bps": 5.5856,
+      "naive_basket": [
+        "AAVEUSDT",
+        "LINKUSDT",
+        "LTCUSDT",
+        "NEARUSDT"
+      ],
+      "naive_net_bps": 6.7545
+    },
+    {
+      "t": 1776556800000,
+      "llm_basket": [
+        "AAVEUSDT",
+        "ARBUSDT",
+        "LINKUSDT",
+        "NEARUSDT"
+      ],
+      "llm_net_bps": 8.3503,
+      "naive_basket": [
+        "AAVEUSDT",
+        "ARBUSDT",
+        "LINKUSDT",
+        "NEARUSDT"
+      ],
+      "naive_net_bps": 6.9602
+    },
+    {
+      "t": 1777766400000,
+      "llm_basket": [
+        "AAVEUSDT",
+        "DOGEUSDT",
+        "LINKUSDT",
+        "NEARUSDT"
+      ],
+      "llm_net_bps": 7.288,
+      "naive_basket": [
+        "AAVEUSDT",
+        "DOGEUSDT",
+        "LINKUSDT",
+        "NEARUSDT"
+      ],
+      "naive_net_bps": 6.9527
+    },
+    {
+      "t": 1778976000000,
+      "llm_basket": [
+        "AAVEUSDT",
+        "DOGEUSDT",
+        "LINKUSDT",
+        "NEARUSDT"
+      ],
+      "llm_net_bps": 12.6366,
+      "naive_basket": [
+        "ADAUSDT",
+        "BNBUSDT",
+        "DOGEUSDT",
+        "LINKUSDT"
+      ],
+      "naive_net_bps": 0.6023
+    },
+    {
+      "t": 1780185600000,
+      "llm_basket": [
+        "DOGEUSDT",
+        "ETHUSDT",
+        "LINKUSDT",
+        "NEARUSDT"
+      ],
+      "llm_net_bps": -4.3721,
+      "naive_basket": [
+        "BNBUSDT",
+        "BTCUSDT",
+        "ETHUSDT",
+        "LINKUSDT"
+      ],
+      "naive_net_bps": -8.7606
+    }
+  ]
+}

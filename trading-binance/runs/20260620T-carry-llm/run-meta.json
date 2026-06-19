@@ -1,0 +1,8 @@
+{
+  "run_id": "20260620T-carry-llm", "issue": 1175, "milestone": "M2 value-gate",
+  "kind": "walk-forward-LLM-vs-naive-carry-basket-backtest",
+  "window": "2026-03-01..2026-06-01", "harvest_days": 71, "rebalances": 6,
+  "config": "rebalance 14d, lookback 21d, top-k 4, cost 20bps; LLM=claude -p, settlement=tools/carry-verify.sh",
+  "base_commit": "26e1889528d13311d753c4549612b720738b43be",
+  "reproduce": "python3 tools/funding-download.py --symbols <universe> --start 2026-03-01 --end 2026-06-01 && python3 runs/20260620T-carry-llm/backtest-carry-llm.py --funding-dir data/funding --verifier tools/carry-verify.sh --symbols <universe> --start 2026-03-01 --end 2026-06-01 --rebalance-days 14 --lookback-days 21 --top-k 4 (NOTE: LLM calls are non-deterministic; numbers vary run-to-run)"
+}
