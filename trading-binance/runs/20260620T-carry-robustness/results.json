@@ -1,0 +1,13 @@
+{"config":"top-6 / rebalance 30d / lookback 21d / min_pos_ratio 0.55 / cost 20bps","windows":{
+"2024H1":{"window": {"start": "2024-01-01", "end": "2024-07-01", "harvest_days": 161.0}, "strategy": {"label": "WF top-6 carry", "rebalances": 6, "total_return_pct": 9.0179, "annualised_pct": 20.444, "sharpe": 3.6, "max_drawdown_pct": 0.0}, "benchmark_all_alts": {"label": "always-on all alts", "rebalances": 6, "total_return_pct": 7.7759, "annualised_pct": 17.629, "sharpe": 3.42, "max_drawdown_pct": 0.0}, "cost_drag_pct": 0.4}
+,
+"2024H2":{"window": {"start": "2024-07-01", "end": "2025-01-01", "harvest_days": 163.0}, "strategy": {"label": "WF top-6 carry", "rebalances": 6, "total_return_pct": 3.35, "annualised_pct": 7.502, "sharpe": 3.44, "max_drawdown_pct": 0.0}, "benchmark_all_alts": {"label": "always-on all alts", "rebalances": 6, "total_return_pct": 2.6392, "annualised_pct": 5.91, "sharpe": 2.17, "max_drawdown_pct": 0.0794}, "cost_drag_pct": 0.8}
+,
+"2025H1":{"window": {"start": "2025-01-01", "end": "2025-07-01", "harvest_days": 160.0}, "strategy": {"label": "WF top-6 carry", "rebalances": 6, "total_return_pct": 1.1171, "annualised_pct": 2.548, "sharpe": 5.69, "max_drawdown_pct": 0.0}, "benchmark_all_alts": {"label": "always-on all alts", "rebalances": 6, "total_return_pct": 0.4992, "annualised_pct": 1.139, "sharpe": 2.15, "max_drawdown_pct": 0.1247}, "cost_drag_pct": 0.4667}
+,
+"2025H2":{"window": {"start": "2025-07-01", "end": "2026-01-01", "harvest_days": 163.0}, "strategy": {"label": "WF top-6 carry", "rebalances": 6, "total_return_pct": 1.6567, "annualised_pct": 3.71, "sharpe": 5.26, "max_drawdown_pct": 0.0}, "benchmark_all_alts": {"label": "always-on all alts", "rebalances": 6, "total_return_pct": 0.3641, "annualised_pct": 0.815, "sharpe": 0.61, "max_drawdown_pct": 0.7178}, "cost_drag_pct": 0.6}
+,
+"2026H1":{"window": {"start": "2026-01-01", "end": "2026-06-20", "harvest_days": 149.0}, "strategy": {"label": "WF top-6 carry", "rebalances": 5, "total_return_pct": 0.0778, "annualised_pct": 0.191, "sharpe": 0.45, "max_drawdown_pct": 0.0866}, "benchmark_all_alts": {"label": "always-on all alts", "rebalances": 5, "total_return_pct": -0.7417, "annualised_pct": -1.817, "sharpe": -2.34, "max_drawdown_pct": 0.3594}, "cost_drag_pct": 0.5167}
+,
+"FULL":{"window": {"start": "2024-01-01", "end": "2026-06-20", "harvest_days": 880.0}, "strategy": {"label": "WF top-6 carry", "rebalances": 30, "total_return_pct": 17.1485, "annualised_pct": 7.113, "sharpe": 2.33, "max_drawdown_pct": 0.3212}, "benchmark_all_alts": {"label": "always-on all alts", "rebalances": 30, "total_return_pct": 11.7853, "annualised_pct": 4.888, "sharpe": 1.63, "max_drawdown_pct": 1.2134}, "cost_drag_pct": 2.9833}
+}}
