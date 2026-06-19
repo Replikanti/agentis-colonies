@@ -14,6 +14,15 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+
+- `tools/carry-verify.sh` (#1175 M1): deterministic settlement verifier for a
+  delta-neutral funding-CARRY basket -- the carry analogue of verify-trade.sh.
+  Net carry = weighted sum of forward funding (short-perp receives positive
+  funding) minus amortised round-trip turnover cost vs the previous basket.
+  `tools/test-carry-verify.sh` (14 cases: known funding->carry, weighting,
+  negative funding, turnover cost, cash/empty, missing data, window selection).
+
 ### Fixed
 
 - The 6 replay strategists (`tribe-{alpha,beta,gamma,delta,epsilon,zeta}/agents/strategist.ag`)
