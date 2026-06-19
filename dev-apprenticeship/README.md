@@ -302,6 +302,20 @@ Two env-var knobs tune the wrapper (defaults shown):
 - `FLAT_CYBORG_IDLE_MS` (`8000`) — settle window before flat-cyborg reads the screen.
 - `FLAT_CYBORG_TIMEOUT_MS` (`180000`) — hard cap on a single generation.
 
+### Code-generation fidelity ([#1152](https://github.com/Replikanti/agentis-colonies/issues/1152))
+
+flat-cyborg's `--extract` is a **TUI screen-scrape** — it reads the model's reply off the rendered terminal. That is perfect for **prose** (the observe / suggest / review-gated workflow: routing, priority, plans, review notes all come back clean), but it **corrupts fidelity-critical structured output**. The one path that needs exact structured output is the **autonomous code-writer's terminal write** — `code_writer` asks the model for the file contents as a JSON array and feeds them to `commit-files`. On flat-cyborg the terminal's line-wrapping mangles that JSON (`Expecting ',' delimiter` / `Invalid control character`), so the branch is created and committed-to but the commit fails. (Observed end-to-end in the [#1117](https://github.com/Replikanti/agentis-colonies/issues/1117) first live run; switching the backend to `claude -p` produced correct committed code immediately.)
+
+**So: run code-generation-capable autonomous runs on the fidelity backend.** Set in `<fed>/.agentis/config`:
+
+```
+llm.backend = claude
+llm.command = claude
+llm.args    = -p
+```
+
+`claude -p` is the metered (per-token) Claude CLI print mode — clean stdout, proper JSON escaping, no screen-scrape. Keep **flat-cyborg as the default** for the prose-only observe/suggest workflow (flat-rate subscription); switch to `claude -p` when you want the implementation colony to actually write code and open PRs. A true per-agent backend (flat-cyborg for prose agents + `claude -p` for `code_writer` in the *same* run) needs an agentis-core per-agent/per-prompt backend override and is tracked as an upstream dependency.
+
 ## LLM backend (per-colony override, [#319](https://github.com/Replikanti/agentis-colonies/issues/319))
 
 Every agent reads its LLM backend from `<fed>/.agentis/config` by default — that is the federation-wide pin written by `install.sh` step 4 (one of `cli` / `http` / `mock`). A colony can pin its own backend via an optional `[llm]` block in `<colony>/config/colony.toml`:
