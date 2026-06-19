@@ -14,6 +14,17 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+
+- `tools/run-replay.sh` now adds the `:z` SELinux relabel suffix to the
+  `/repo` and `/run-root` bind mounts (the `~/.claude` mount already had it).
+  Without it, on an SELinux-enforcing host (Fedora/RHEL) the `replay-laptop`
+  container cannot read the bind-mounted `bootstrap.sh` / `candles.csv` and
+  dies at boot with `Permission denied` (exit 126); the orchestrator then
+  loops `can only create exec sessions on running containers`. `:z` is a
+  no-op on SELinux-disabled hosts. `tools/test-run-replay.sh` asserts both
+  mounts carry `:z` (#1159).
+
 ### Added
 
 - Deterministic **momentum/breakout** backtest under the #1148 R-multiple

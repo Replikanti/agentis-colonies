@@ -218,6 +218,14 @@ assert_contains "12. bootstrap-script generation step emitted" "$OUT" \
     "generating bootstrap script"
 assert_contains "13. container spawn command emitted via echo prefix" "$OUT" \
     "+ podman run -d --replace --name replay-laptop"
+# #1159: /repo and /run-root bind mounts carry the `:z` SELinux relabel suffix,
+# else the container cannot read bootstrap.sh/candles.csv on an enforcing host
+# and dies at boot with "Permission denied" (exit 126). Asserted on the default
+# (flat-cyborg) capture; the suffix is backend-independent.
+assert_contains "13a. /repo mount carries :z (SELinux relabel)" "$OUT" \
+    ":/repo:ro,z"
+assert_contains "13b. /run-root mount carries :z (SELinux relabel)" "$OUT" \
+    ":/run-root:rw,z"
 assert_contains "14. run-meta.json write step emitted" "$OUT" \
     "writing run-meta.json"
 assert_contains "15. cleanup trap installed" "$OUT" \
