@@ -30,8 +30,24 @@
 #                                in 36s wall clock. Default: 100
 #   REPLAY_DAEMON_COUNT          Number of strategist daemons to spawn.
 #                                Default: 6
-#   REPLAY_LLM_BACKEND           llm.backend value injected into hermetic
-#                                config. Default: flat-cyborg
+#   REPLAY_LLM_BACKEND           Which LLM backend the hermetic config
+#                                drives. Default: claude-p — Claude Code in
+#                                PRINT mode (`claude -p` via
+#                                tools/claude-p.sh): non-interactive, clean
+#                                single-shot stdout JSON, billed against the
+#                                flat-rate Claude subscription. The default
+#                                changed from flat-cyborg because its
+#                                --extract-structural TUI screen-scrape is
+#                                unreliable for the strategist's structured
+#                                JSON (#1163). Alternatives (opt-in):
+#                                flat-cyborg (interactive Claude via the
+#                                flat-cyborg PTY wrapper) and openai (metered
+#                                OpenRouter/Chat-Completions). claude-p and
+#                                flat-cyborg are both subscription-claude
+#                                backends (CONFIG_BACKEND=claude); they share
+#                                the ~/.claude + ~/.claude.json mounts and
+#                                pre-flight checks, differing only in which
+#                                wrapper llm.command points at.
 #   REPLAY_OPENAI_ENDPOINT       Chat-completions URL.
 #                                Default: https://openrouter.ai/api/v1/chat/completions
 #   REPLAY_OPENAI_MODEL          Model id when backend=openai.
@@ -44,12 +60,14 @@
 #   REPLAY_FLAT_CYBORG_IDLE_MS   flat-cyborg llm.flat_cyborg.idle_ms when
 #                                backend=flat-cyborg. Default: 4000
 #   REPLAY_HOST_CLAUDE_DIR       Host ~/.claude dir bind-mounted to
-#                                /root/.claude when backend=flat-cyborg.
+#                                /root/.claude on any subscription-claude
+#                                backend (claude-p or flat-cyborg).
 #                                Default: $HOME/.claude; a real run
 #                                requires it to exist.
 #   REPLAY_HOST_CLAUDE_JSON      Host ~/.claude.json file bind-mounted to
-#                                /root/.claude.json when backend=flat-cyborg
-#                                (claude onboarding/auth state).
+#                                /root/.claude.json on any subscription-claude
+#                                backend (claude-p or flat-cyborg);
+#                                claude onboarding/auth state.
 #                                Default: $HOME/.claude.json.
 #   REPLAY_DAEMON_CB_PER_TICK    Per-tick CB replenishment written into
 #                                hermetic .agentis/config as
@@ -163,7 +181,13 @@ START="${REPLAY_START:-}"
 END="${REPLAY_END:-}"
 SPEED="${REPLAY_SPEED:-100}"
 DAEMON_COUNT="${REPLAY_DAEMON_COUNT:-6}"
-LLM_BACKEND="${REPLAY_LLM_BACKEND:-flat-cyborg}"
+# Default backend is claude-p (Claude Code PRINT mode via tools/claude-p.sh):
+# non-interactive, clean single-shot stdout JSON, flat-rate Claude
+# subscription. flat-cyborg's --extract-structural TUI screen-scrape is
+# unreliable for the strategist's structured JSON (the 6-tribe replay parsed
+# 0% of Decision replies — #1163), so it is no longer the default. flat-cyborg
+# and openai stay available as opt-in REPLAY_LLM_BACKEND values.
+LLM_BACKEND="${REPLAY_LLM_BACKEND:-claude-p}"
 OPENAI_ENDPOINT="${REPLAY_OPENAI_ENDPOINT:-https://openrouter.ai/api/v1/chat/completions}"
 OPENAI_MODEL="${REPLAY_OPENAI_MODEL:-qwen/qwen3-coder-30b-a3b-instruct}"
 OPENAI_KEY_ENV="${REPLAY_OPENAI_KEY_ENV:-OPENROUTER_API_KEY}"
@@ -227,6 +251,20 @@ if [ "$DAEMON_COUNT" -lt 1 ]; then
     exit 2
 fi
 
+# A "subscription-claude" backend drives the operator's flat-rate Claude
+# subscription (NOT the metered openai path), so it needs the same hermetic
+# wiring: CONFIG_BACKEND=claude, the ~/.claude + ~/.claude.json bind-mounts,
+# and the host-side credential pre-flight. claude-p (Claude Code PRINT mode)
+# and flat-cyborg (interactive Claude via the PTY wrapper) differ ONLY in
+# which wrapper llm.command points at. Underscore aliases are accepted so the
+# env knob tolerates either separator.
+is_subscription_claude_backend() {
+    case "$1" in
+        claude-p|claude_p|flat-cyborg|flat_cyborg) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # Resolve DATA_DIR to absolute path (so we can pass it into containers /
 # helpers safely regardless of where the orchestrator is launched from).
 if [ -d "$DATA_DIR_RAW" ]; then
@@ -284,7 +322,7 @@ if [ "$DRY_RUN" = "0" ]; then
         fi
         unset openai_key_value
     fi
-    if [ "$LLM_BACKEND" = "flat-cyborg" ] || [ "$LLM_BACKEND" = "flat_cyborg" ]; then
+    if is_subscription_claude_backend "$LLM_BACKEND"; then
         if [ ! -d "$HOST_CLAUDE_DIR" ]; then
             echo "run-replay: REPLAY_HOST_CLAUDE_DIR=$HOST_CLAUDE_DIR does not exist" >&2
             echo "            set REPLAY_HOST_CLAUDE_DIR or install + log in to Claude Code first" >&2
@@ -376,16 +414,26 @@ write_bootstrap() {
         return
     fi
 
-    # #1161: the container flat-cyborg path runs through the
-    # tools/flat-cyborg-claude.sh wrapper (flat-cyborg --extract
-    # --extract-structural -- claude) under agentis's `claude` backend,
-    # because the native flat-cyborg backend's bare --extract can't
-    # scrape claude's TUI (intermittent sentinel omission -> exit 124).
+    # Both subscription-claude backends inject CONFIG_BACKEND=claude + an
+    # llm.command wrapper into the hermetic config; they differ ONLY in which
+    # wrapper llm.command points at:
+    #   claude-p     -> /repo/tools/claude-p.sh — Claude Code PRINT mode
+    #                   (`claude -p`): non-interactive, clean single-shot
+    #                   stdout JSON. Default, because flat-cyborg's
+    #                   --extract-structural TUI screen-scrape is unreliable
+    #                   for the strategist's structured JSON (#1163).
+    #   flat-cyborg  -> /repo/tools/flat-cyborg-claude.sh
+    #                   (flat-cyborg --extract --extract-structural -- claude):
+    #                   interactive Claude via the PTY wrapper (#1161, opt-in).
+    # The openai path keeps CONFIG_BACKEND="openai" and emits no llm.command.
     CONFIG_BACKEND="$LLM_BACKEND"
     LLM_COMMAND=""
-    if [ "$LLM_BACKEND" = "flat-cyborg" ] || [ "$LLM_BACKEND" = "flat_cyborg" ]; then
+    if is_subscription_claude_backend "$LLM_BACKEND"; then
         CONFIG_BACKEND="claude"
-        LLM_COMMAND="/repo/tools/flat-cyborg-claude.sh"
+        case "$LLM_BACKEND" in
+            claude-p|claude_p) LLM_COMMAND="/repo/tools/claude-p.sh" ;;
+            *)                 LLM_COMMAND="/repo/tools/flat-cyborg-claude.sh" ;;
+        esac
     fi
 
     {
@@ -422,11 +470,22 @@ write_bootstrap() {
             printf '  printf "llm.openai.model = %s\\n"\n' "$OPENAI_MODEL"
             printf '  printf "llm.openai.api_key_env = %s\\n"\n' "$OPENAI_KEY_ENV"
             printf '  printf "llm.openai.timeout_ms = %s\\n"\n' "$OPENAI_TIMEOUT_MS"
-        elif [ "$LLM_BACKEND" = "flat-cyborg" ] || [ "$LLM_BACKEND" = "flat_cyborg" ]; then
+        elif is_subscription_claude_backend "$LLM_BACKEND"; then
+            # Both claude-p and flat-cyborg run under CONFIG_BACKEND=claude and
+            # point llm.command at their wrapper (LLM_COMMAND, derived above).
             printf '  printf "llm.command = %s\\n"\n' "$LLM_COMMAND"
-            if [ -n "$FLAT_CYBORG_MODEL" ]; then
-                printf '  printf "llm.model = %s\\n"\n' "$FLAT_CYBORG_MODEL"
-            fi
+            # llm.model (the flat-cyborg model knob) is flat-cyborg-only; it
+            # has no meaning on the claude-p print-mode path. The native
+            # llm.flat_cyborg.idle_ms line is likewise NOT emitted here — both
+            # subscription-claude paths drive claude through a wrapper, not the
+            # native flat-cyborg backend.
+            case "$LLM_BACKEND" in
+                flat-cyborg|flat_cyborg)
+                    if [ -n "$FLAT_CYBORG_MODEL" ]; then
+                        printf '  printf "llm.model = %s\\n"\n' "$FLAT_CYBORG_MODEL"
+                    fi
+                    ;;
+            esac
         fi
         printf '} >> .agentis/config\n'
         printf 'for t in alpha beta gamma delta epsilon zeta; do\n'
@@ -459,26 +518,25 @@ write_bootstrap() {
 
 # --- 4) Spawn the container ---
 spawn_container() {
-    # #1133: on the flat-cyborg backend bind-mount the host operator's
-    # ~/.claude into the container's /root/.claude so the flat-cyborg PTY
-    # wrapper can drive the `claude` CLI on the operator's flat-rate
-    # subscription (mirrors the tribes-bench #535/#537 precedent).
+    # #1133: on any subscription-claude backend bind-mount the host operator's
+    # ~/.claude into the container's /root/.claude so the in-container `claude`
+    # CLI runs on the operator's flat-rate subscription (mirrors the
+    # tribes-bench #535/#537 precedent). Applies to BOTH claude-p (Claude Code
+    # PRINT mode, the default — #1163) and flat-cyborg (interactive Claude via
+    # the PTY wrapper — #1161).
     # #1161: BOTH ~/.claude (dir, credentials) AND ~/.claude.json (home-level
     # file, onboarding/oauth state) are bind-mounted — without the .json file
     # `claude` sits on the login menu (hasCompletedOnboarding/oauthAccount live
-    # there) and never replies. On this path the container drives claude via
-    # the tools/flat-cyborg-claude.sh wrapper (flat-cyborg --extract
-    # --extract-structural -- claude) under agentis's `claude` backend. The
-    # trailing space inside CLAUDE_MOUNT_FLAG keeps the openai path
-    # byte-identical (the flag collapses to empty). `:z` requests a shared
-    # SELinux relabel — required on SELinux-enforcing hosts (Fedora/RHEL),
-    # a no-op on SELinux-disabled hosts (Ubuntu/Debian) (#540). All bind
-    # mounts (/repo, /run-root, ~/.claude, ~/.claude.json) carry `:z`: without
-    # it the container's SELinux context cannot read the bind-mounted
+    # there) and never replies. The trailing space inside CLAUDE_MOUNT_FLAG
+    # keeps the openai path byte-identical (the flag collapses to empty). `:z`
+    # requests a shared SELinux relabel — required on SELinux-enforcing hosts
+    # (Fedora/RHEL), a no-op on SELinux-disabled hosts (Ubuntu/Debian) (#540).
+    # All bind mounts (/repo, /run-root, ~/.claude, ~/.claude.json) carry `:z`:
+    # without it the container's SELinux context cannot read the bind-mounted
     # bootstrap.sh / candles.csv and the container dies at boot with
     # "Permission denied" (exit 126) on an enforcing host (#1159).
     CLAUDE_MOUNT_FLAG=""
-    if [ "$LLM_BACKEND" = "flat-cyborg" ] || [ "$LLM_BACKEND" = "flat_cyborg" ]; then
+    if is_subscription_claude_backend "$LLM_BACKEND"; then
         CLAUDE_MOUNT_FLAG="-v $HOST_CLAUDE_DIR:/root/.claude:rw,z -v $HOST_CLAUDE_JSON:/root/.claude.json:rw,z "
     fi
     emit_step "spawning replay-laptop container (image=$IMAGE_TAG)"

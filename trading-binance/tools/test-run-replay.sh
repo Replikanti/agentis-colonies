@@ -20,13 +20,18 @@
 #  13. Container spawn command is emitted in dry-run output (echo-only)
 #  14. Run-meta.json write step is emitted in dry-run output
 #  15. Cleanup trap is installed in dry-run output
-#  T-a. Default dry-run uses the flat-cyborg backend, bind-mounts
-#       /root/.claude, emits no OPENROUTER_API_KEY error, and the script
-#       source injects llm.flat_cyborg.idle_ms (#1133). The flat-cyborg path
-#       additionally routes through the tools/flat-cyborg-claude.sh wrapper
+#  T-a. Default dry-run uses the claude-p backend (Claude Code PRINT mode):
+#       names it in the plan, routes through the tools/claude-p.sh wrapper
 #       under agentis's `claude` backend (CONFIG_BACKEND="claude" +
-#       llm.command), and the spawn command bind-mounts /root/.claude.json
-#       (onboarding/oauth state) (#1161)
+#       llm.command=/repo/tools/claude-p.sh), bind-mounts BOTH /root/.claude
+#       AND /root/.claude.json, and emits no OPENROUTER_API_KEY error. The
+#       default flipped from flat-cyborg because its --extract-structural TUI
+#       screen-scrape is unreliable for the strategist's structured JSON
+#       (#1163; cf #1152). claude-p is clean single-shot stdout + flat-rate.
+#  T-fc. REPLAY_LLM_BACKEND=flat-cyborg (opt-in) regression: still names the
+#       flat-cyborg backend and still wires
+#       llm.command=/repo/tools/flat-cyborg-claude.sh under CONFIG_BACKEND=
+#       claude, bind-mounting both ~/.claude mounts (#1161 parity).
 #  T-b. REPLAY_LLM_BACKEND=openai fallback still names the openai backend,
 #       omits the /root/.claude AND /root/.claude.json mounts, and the script
 #       source keeps the llm.openai.api_key_env injection + the openai key
@@ -251,34 +256,61 @@ assert_contains "header documents REPLAY_LLM_BACKEND" "$SRC" "REPLAY_LLM_BACKEND
 assert_contains "header documents REPLAY_HOST_CLAUDE_DIR" "$SRC" "REPLAY_HOST_CLAUDE_DIR"
 
 # ---------------------------------------------------------------------------
-# T-a. Default backend is flat-cyborg: the default $OUT capture (no
-# REPLAY_LLM_BACKEND set) selects flat-cyborg, names it in the plan, bind-
-# mounts /root/.claude, never trips the openai key-empty hard-fail, and the
-# script source injects the llm.flat_cyborg.idle_ms hermetic-config line.
+# T-a. Default backend is claude-p (Claude Code PRINT mode): the default $OUT
+# capture (no REPLAY_LLM_BACKEND set) selects claude-p, names it in the plan,
+# routes through tools/claude-p.sh under agentis's `claude` backend
+# (CONFIG_BACKEND="claude" + llm.command=/repo/tools/claude-p.sh), bind-mounts
+# BOTH /root/.claude AND /root/.claude.json, and never trips the openai
+# key-empty hard-fail. The default flipped from flat-cyborg because its
+# --extract-structural TUI screen-scrape is unreliable for the strategist's
+# structured JSON (#1163).
 # ---------------------------------------------------------------------------
-assert_contains "T-a1. default backend is flat-cyborg" "$OUT" "llm backend: flat-cyborg"
-assert_contains "T-a2. flat-cyborg dry-run bind-mounts /root/.claude" "$OUT" \
+assert_contains "T-a1. default backend is claude-p" "$OUT" "llm backend: claude-p"
+assert_contains "T-a2. claude-p dry-run bind-mounts /root/.claude" "$OUT" \
     ":/root/.claude:rw,z"
 if printf '%s' "$OUT" | grep -Fq -- "OPENROUTER_API_KEY is empty"; then
-    echo "[FAIL] T-a3. flat-cyborg dry-run does not trip the openai key-empty fail"
+    echo "[FAIL] T-a3. claude-p dry-run does not trip the openai key-empty fail"
     FAIL=$((FAIL + 1))
 else
-    echo "[PASS] T-a3. flat-cyborg dry-run does not trip the openai key-empty fail"
+    echo "[PASS] T-a3. claude-p dry-run does not trip the openai key-empty fail"
     PASS=$((PASS + 1))
 fi
-assert_contains "T-a4. script source injects llm.flat_cyborg.idle_ms" "$SRC" \
-    "llm.flat_cyborg.idle_ms"
-# #1161: the container flat-cyborg path now runs through the
-# tools/flat-cyborg-claude.sh wrapper under agentis's `claude` backend (bare
-# --extract can't scrape claude's TUI). The generated hermetic config feeds
-# CONFIG_BACKEND (= "claude" on the flat-cyborg path) into llm.backend and
-# injects llm.command pointing at the wrapper; the spawn command additionally
+# The default claude-p path runs claude in PRINT mode (`claude -p`) via the
+# tools/claude-p.sh wrapper under agentis's `claude` backend: the generated
+# hermetic config feeds CONFIG_BACKEND (= "claude") into llm.backend and
+# injects llm.command pointing at /repo/tools/claude-p.sh; the spawn command
 # bind-mounts ~/.claude.json (onboarding/oauth state) into /root/.claude.json.
-assert_contains "T-a5. script source injects the flat-cyborg-claude.sh wrapper command" "$SRC" \
-    "flat-cyborg-claude.sh"
-assert_contains "T-a6. flat-cyborg path config backend is claude" "$SRC" \
+assert_contains "T-a4. script source wires the claude-p.sh wrapper command" "$SRC" \
+    "/repo/tools/claude-p.sh"
+assert_contains "T-a5. subscription-claude path config backend is claude" "$SRC" \
     'CONFIG_BACKEND="claude"'
-assert_contains "T-a7. flat-cyborg dry-run bind-mounts /root/.claude.json" "$OUT" \
+assert_contains "T-a6. claude-p dry-run bind-mounts /root/.claude.json" "$OUT" \
+    ":/root/.claude.json:rw,z"
+
+# ---------------------------------------------------------------------------
+# T-fc. flat-cyborg opt-in regression: REPLAY_LLM_BACKEND=flat-cyborg still
+# names the flat-cyborg backend in the plan, still wires
+# llm.command=/repo/tools/flat-cyborg-claude.sh under CONFIG_BACKEND=claude,
+# and still bind-mounts BOTH ~/.claude mounts. Keeps the #1161 path working
+# now that claude-p is the default.
+# ---------------------------------------------------------------------------
+FC_OUT="$(REPLAY_DRY_RUN=1 \
+          REPLAY_LLM_BACKEND=flat-cyborg \
+          REPLAY_SYMBOL=BTCUSDT \
+          REPLAY_TIMEFRAME=30m \
+          REPLAY_DAEMON_COUNT=5 \
+          REPLAY_LOOKBACK_WINDOW=200 \
+          REPLAY_HOLD_PERIOD=8 \
+          REPLAY_SPEED=100 \
+          REPLAY_RUN_DIR="$WORK_DIR/run-flat-cyborg" \
+          bash "$ORCH" 2>&1)"
+assert_contains "T-fc1. flat-cyborg opt-in names the flat-cyborg backend" "$FC_OUT" \
+    "llm backend: flat-cyborg"
+assert_contains "T-fc2. script source wires the flat-cyborg-claude.sh wrapper command" "$SRC" \
+    "/repo/tools/flat-cyborg-claude.sh"
+assert_contains "T-fc3. flat-cyborg opt-in bind-mounts /root/.claude" "$FC_OUT" \
+    ":/root/.claude:rw,z"
+assert_contains "T-fc4. flat-cyborg opt-in bind-mounts /root/.claude.json" "$FC_OUT" \
     ":/root/.claude.json:rw,z"
 
 # ---------------------------------------------------------------------------
