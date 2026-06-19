@@ -77,6 +77,9 @@ tools/completion-gate.sh
 # Default CLI LLM backend (#1131): flat-cyborg PTY wrapper over Claude Code.
 # install.sh §6 resolves and wires it as `llm.command` in <fed>/.agentis/config.
 tools/flat-cyborg-claude.sh
+# #1163: the wrapper invokes this at runtime to unwrap JSON-shaped replies that
+# --extract-structural's TUI screen-scrape line-wrapped (newline inside JSON).
+tools/flat-cyborg-unwrap.py
 
 # ----- Federation dashboard -----
 # Extracted to a separately-versioned standalone component in #252.
