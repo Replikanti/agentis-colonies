@@ -1,0 +1,14 @@
+{
+  "run_id": "20260619T-momentum-rmultiple",
+  "issue": 1154,
+  "kind": "deterministic-momentum-rmultiple-backtest",
+  "note": "Deterministic momentum/breakout signal settled by the #1148 R-multiple verifier. NOT the LLM strategist. Tests whether asymmetric payoff produces positive expectancy where the #1123 fade lost.",
+  "symbol": "BTCUSDT", "timeframe": "1h",
+  "window_start": "2026-03-01", "window_end": "2026-05-31", "window_candles": 2208,
+  "verifier": "tools/verify-trade.sh (R-multiple, #1148)",
+  "hold_period": 8, "vol_ma": 20, "lookback": 20, "timeframe_minutes": 60,
+  "slippage_bps": 5, "funding_rate_bps": 1, "size": 1.0,
+  "r_configs": ["100:100 (1R)", "100:200 (2R)", "100:300 (3R)"],
+  "base_commit": "1396d365305bcbf8b78fdf3aaa41ad28d8536616",
+  "reproduce": "python3 tools/binance-feed-download.py --symbol BTCUSDT --timeframe 1h --start 2026-03-01 --end 2026-05-31 && python3 tools/load-candles.py --data-dir data --symbol BTCUSDT --timeframe 1h --start 2026-03-01 --end 2026-05-31 > candles.csv && python3 runs/20260619T-momentum-rmultiple/backtest-momentum-rmultiple.py --candles candles.csv --verifier tools/verify-trade.sh --hold-period 8 --vol-ma 20 --lookback 20 --timeframe-minutes 60 --r-configs 100:100,100:200,100:300"
+}
