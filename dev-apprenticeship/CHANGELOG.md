@@ -33,6 +33,33 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- **flat-cyborg wrapper no longer overflows ARG_MAX on large prompts** (#1171).
+  `tools/flat-cyborg-claude.sh` passed the prompt to flat-cyborg as `--cmd
+  "$PROMPT"` (an argv value); a multi-MB prompt — which agents build on a real
+  repo from MR diffs + history — overflows `ARG_MAX`, so `exec flat-cyborg`
+  fails E2BIG (`Argument list too long`) and the agent's `prompt()` errors. The
+  wrapper now writes the prompt to a temp file and passes `--cmd-file
+  "$PROMPT_FILE"` (cleaned up by the existing `trap`). **Requires flat-cyborg
+  >= 0.11.0** (the `--cmd-file` flag); on an older flat-cyborg this fails with
+  `unknown flag: --cmd-file` — run `flat-cyborg update`. Found dogfooding the
+  federation on this repo (the release/planning agents hit it within seconds).
+- **`implementation` code_writer now EDITs existing files instead of clobbering them**
+  (#1172). The autonomous code-gen path built its prompt context from the issue,
+  the plan, and learned patterns but never fetched the *current* content of the
+  files it was about to write, so a task that modifies an existing file produced
+  a from-scratch rewrite that dropped everything the model did not reconstruct.
+  Both forge adapters gain a `get-file --path <path> [--ref <branch>]` verb
+  (`github-api.sh`, `gitlab-api.sh`) that base64-decodes the file's content to
+  stdout, returning empty + exit 0 on a 404 so the caller treats "no existing
+  content" as "new file"; any other HTTP error still propagates. code_writer
+  extracts the plan's primary file path from `draft.files` and folds the fetched
+  content into the code-gen context with an explicit "EDIT this — return the
+  full updated file, preserve everything you are not changing" instruction (or
+  "(file does not exist yet — create it)" when get-file is empty). The JSON-array
+  `{action, file_path, content}` output contract is unchanged. Single-file fetch
+  only — multi-file path extraction in `.ag` is impractical, so the rest of the
+  plan keeps the from-scratch fallback. Found dogfooding the federation on this
+  repo.
 - **Shared `tools/flat-cyborg-claude.sh` wrapper now unwraps JSON-shaped replies**
   (#1163). `--extract-structural` is a TUI screen-scrape, so claude's TUI
   line-wraps long output and injects newline+indent INSIDE a JSON string,

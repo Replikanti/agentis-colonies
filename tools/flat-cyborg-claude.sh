@@ -47,12 +47,19 @@ if [ -z "$PROMPT" ]; then PROMPT="$(cat)"; fi
 # filter. A temp file (not `$(...)`) preserves the reply's bytes exactly,
 # including any trailing newline, so prose consumers stay byte-identical.
 REPLY_FILE="$(mktemp)"
-trap 'rm -f "$REPLY_FILE"' EXIT
+# #1171: pass the prompt via --cmd-file (a file), NOT --cmd (an argv value). A
+# multi-MB prompt as a command-line argument overflows ARG_MAX (exec fails
+# E2BIG / "Argument list too long") — agents on a real repo build multi-MB
+# contexts (MR diffs + history) and hit exactly this. Requires flat-cyborg
+# >= 0.11.0 (the --cmd-file flag).
+PROMPT_FILE="$(mktemp)"
+printf '%s' "$PROMPT" > "$PROMPT_FILE"
+trap 'rm -f "$REPLY_FILE" "$PROMPT_FILE"' EXIT
 set +e
 flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 \
   --idle-ms "${FLAT_CYBORG_IDLE_MS:-8000}" \
   --timeout-ms "${FLAT_CYBORG_TIMEOUT_MS:-180000}" \
-  --cmd "$PROMPT" -- claude > "$REPLY_FILE"
+  --cmd-file "$PROMPT_FILE" -- claude > "$REPLY_FILE"
 FC_RC=$?
 set -e
 [ "$FC_RC" -eq 0 ] || exit "$FC_RC"

@@ -27,6 +27,7 @@
 #   gitlab-api.sh create-mr --source <branch> --title <title> [--description <d>]
 #   gitlab-api.sh add-note <iid> --body <text>
 #   gitlab-api.sh post-note <iid> --body <text>
+#   gitlab-api.sh get-file --path <path> [--ref <branch>]
 #
 # Views (opt-in projection; default is full JSON):
 #   merge-requests  --view impl       [{iid, title, merged_at, target_branch}]
@@ -655,6 +656,56 @@ PY
         fi
         JSON_BODY=$(printf '%s' "$BODY" | python3 -c 'import sys,json; print(json.dumps({"body": sys.stdin.read()}))')
         gl_post "$API/merge_requests/$IID/notes" "$JSON_BODY"
+        ;;
+
+    get-file)
+        # #1172: fetch the raw decoded content of a single file at --ref so
+        # code_writer can EDIT an existing file instead of clobbering it with
+        # a from-scratch rewrite. GET /projects/{id}/repository/files/{path}?ref={ref}
+        # returns a JSON object with base64-encoded `.content`; we decode it to
+        # stdout. The file path must be URL-encoded into the path segment (GitLab
+        # requires the whole path percent-encoded, including slashes). A 404
+        # (file does not exist on that ref) is NOT an error here: the caller
+        # treats empty output as "new file", so we swallow the 404 and exit 0.
+        # Any other HTTP error propagates (gl_get's emit_error + non-zero return).
+        FILE_PATH=""
+        FILE_REF="${GITLAB_DEFAULT_BRANCH:-main}"
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --path) FILE_PATH="$2"; shift 2 ;;
+                --ref) FILE_REF="$2"; shift 2 ;;
+                *) emit_error "unknown flag: $1"; exit 2 ;;
+            esac
+        done
+        if [ -z "$FILE_PATH" ]; then
+            emit_error "--path is required"
+            exit 1
+        fi
+        # GitLab needs the file path percent-encoded into the URL path segment
+        # (slashes become %2F). python3 urllib.parse.quote with safe="" encodes
+        # every reserved char. The ref travels as a -G query param via gl_get_q.
+        ENC_PATH="$(FILE_PATH="$FILE_PATH" python3 -c 'import os,urllib.parse;print(urllib.parse.quote(os.environ["FILE_PATH"], safe=""))')"
+        gf_err_file="$(mktemp)"
+        gf_out=""
+        gf_rc=0
+        gf_out="$(gl_get_q "$API/repository/files/$ENC_PATH" --data-urlencode "ref=$FILE_REF" 2>"$gf_err_file")" || gf_rc=$?
+        if [ "$gf_rc" -eq 0 ]; then
+            rm -f "$gf_err_file"
+            printf '%s' "$gf_out" | python3 -c 'import sys,json,base64; d=json.loads(sys.stdin.read()); sys.stdout.buffer.write(base64.b64decode((d.get("content") or "")))'
+        else
+            gf_err="$(cat "$gf_err_file")"
+            rm -f "$gf_err_file"
+            case "$gf_err" in
+                *"HTTP 404"*)
+                    # File does not exist on this ref — emit nothing, exit 0.
+                    :
+                    ;;
+                *)
+                    printf '%s\n' "$gf_err" >&2
+                    exit "$gf_rc"
+                    ;;
+            esac
+        fi
         ;;
 
     rate-limit-status)

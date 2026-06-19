@@ -69,6 +69,31 @@ fn repo_field(line: string, idx: int) -> string {
     return out;
 }
 
+// #1172: pull the primary file path out of `draft.files` (a markdown list of
+// "file path + what each does" lines). We fetch the existing content of that
+// one file so the code-gen prompt can EDIT it rather than clobber it. Multi-
+// file extraction in `.ag` is impractical, so we deliberately fetch only the
+// first/primary path; a from-scratch fallback still applies to the rest. The
+// helper scans for the first backtick-quoted token (the draft prompt tends to
+// wrap paths in backticks); failing that, the first slash-or-dot-bearing token
+// on the first list line. Returns "" when nothing path-shaped is found.
+fn primary_file_path(files: string) -> string {
+    let cmd = "F=" + shell_escape(files) +
+        " python3 -c 'import os,re,sys" +
+        "\nt=os.environ[\"F\"]" +
+        "\nm=re.search(r\"`([^`]+)`\", t)" +
+        "\nif m:" +
+        "\n    print(m.group(1).strip()); sys.exit(0)" +
+        "\nfor ln in t.splitlines():" +
+        "\n    s=ln.lstrip(\"-*0123456789. \\t\")" +
+        "\n    for tok in re.split(r\"[\\s:,]+\", s):" +
+        "\n        if (\"/\" in tok or \".\" in tok) and len(tok)>2:" +
+        "\n            print(tok.strip()); sys.exit(0)" +
+        "\nprint(\"\")'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
 fn merged_mr_cmd(owner: string, repo: string) -> string {
     let ts = recall_latest(scoped_memo(owner, repo, "code_writer:last_check"));
     // colony-lint: safe-exec-concat
@@ -259,10 +284,31 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     // colony-lint: safe-exec-concat
                     let issue_cmd = "$COLONY_DIR/scripts/forge-api.sh issue " + to_string(draft.issue_id) + repo_arg(owner, repo);
                     let issue_detail = try { exec sh issue_cmd; } catch e { ""; };
-                    let code_context = "Issue: " + issue_detail + "\nPlan: " + draft.files + "\nPatterns: " + to_string(rec);
+
+                    // #1172: before generating file contents from scratch, fetch
+                    // the existing content of the plan's primary file so an EDIT
+                    // task preserves everything it is not changing instead of
+                    // clobbering the file. get-file returns empty (exit 0) when
+                    // the file is new. Single-file fetch only — see
+                    // primary_file_path() for why multi-file is out of scope.
+                    let primary_path = primary_file_path(draft.files);
+                    let existing_block = if len(primary_path) > 0 {
+                        // colony-lint: safe-exec-concat
+                        let getfile_cmd = "$COLONY_DIR/scripts/forge-api.sh get-file --path " + shell_escape(primary_path) + " --ref main" + repo_arg(owner, repo);
+                        let existing_content = try { exec sh getfile_cmd; } catch e { ""; };
+                        if len(existing_content) > 0 {
+                            "\nExisting file " + primary_path + " (EDIT this — return the full updated file, preserve everything you are not changing):\n" + existing_content;
+                        } else {
+                            "\nExisting file " + primary_path + ": (file does not exist yet — create it)";
+                        };
+                    } else {
+                        "";
+                    };
+
+                    let code_context = "Issue: " + issue_detail + "\nPlan: " + draft.files + "\nPatterns: " + to_string(rec) + existing_block;
 
                     let actions_json = prompt(
-                        "You are a code writer. Generate the actual file contents for this implementation plan. Return a JSON array of objects, each with: action (string, 'create' or 'update'), file_path (string), content (string, the full file content). Follow the learned naming and structure patterns. Only return the JSON array, nothing else.",
+                        "You are a code writer. Generate the actual file contents for this implementation plan. If an existing file is shown, EDIT it — return the FULL updated file content with only the necessary changes, preserving everything else. Only create from scratch when no existing content is shown. Return a JSON array of objects, each with: action (string, 'create' or 'update'), file_path (string), content (string, the full file content). Follow the learned naming and structure patterns. Only return the JSON array, nothing else.",
                         code_context
                     ) -> string;
 
