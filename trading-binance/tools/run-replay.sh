@@ -92,6 +92,21 @@
 #                                Default: 200
 #   REPLAY_HOLD_PERIOD           Forward candles for PnL settlement.
 #                                Default: 8
+#   REPLAY_SEED_PROMPTS_DIR      Host dir holding per-tribe frozen-prompt
+#                                seeds named `tribe-<t>.txt` (one per
+#                                tribe). When set on a real run, each file
+#                                is copied into the run dir's
+#                                `seed-prompts/` (mounted at
+#                                /run-root/seed-prompts/) and the bootstrap
+#                                seeds `strategist:seed_prompt:tribe-<t>`
+#                                from it BEFORE launching the daemons, so
+#                                that tribe adopts the frozen prompt as its
+#                                initial strategy (walk-forward TEST phase,
+#                                #1167). Pair with
+#                                REPLAY_STRATEGIST_PROMPT_EVOLUTION_THRESHOLD
+#                                set very high to keep the seed frozen.
+#                                Absent (default "") = no-op, behaviour
+#                                byte-identical to a normal replay.
 #   REPLAY_DRY_RUN               1 = emit_step the plan, skip podman.
 #                                Default: "" (real run)
 #   REPLAY_RUN_DIR               Output dir override. Default: auto-
@@ -200,6 +215,7 @@ DAEMON_CB_PER_TICK="${REPLAY_DAEMON_CB_PER_TICK:-2000}"
 DAEMON_HEARTBEAT_MS="${REPLAY_DAEMON_HEARTBEAT_MS:-1800000}"
 LOOKBACK_WINDOW="${REPLAY_LOOKBACK_WINDOW:-200}"
 HOLD_PERIOD="${REPLAY_HOLD_PERIOD:-8}"
+SEED_PROMPTS_DIR="${REPLAY_SEED_PROMPTS_DIR:-}"
 IMAGE_TAG="${REPLAY_IMAGE_TAG:-trading-binance-replay:latest}"
 
 # Strategist M98 v3 prompt-evolution + fitness knobs. The first one
@@ -352,6 +368,7 @@ emit_step "hold period: $HOLD_PERIOD"
 emit_step "llm backend: $LLM_BACKEND"
 emit_step "image tag: $IMAGE_TAG"
 emit_step "data dir: $DATA_DIR"
+emit_step "seed prompts dir: ${SEED_PROMPTS_DIR:-<none>}"
 
 # --- 1) Load candles via helper (single point of file-existence enforcement) ---
 # Candles land in two places:
@@ -387,6 +404,31 @@ load_candles() {
 build_image() {
     emit_step "checking for existing image $IMAGE_TAG (build if missing)"
     emit_cmd "podman image exists $IMAGE_TAG || podman build -t $IMAGE_TAG -f $TOOLS_DIR/Containerfile.replay $FED_DIR"
+}
+
+# --- 2b) Seed-prompt staging (#1167 walk-forward TEST phase) ---
+# When REPLAY_SEED_PROMPTS_DIR is set, copy its `tribe-<t>.txt` files into
+# the run dir's seed-prompts/ so they land at /run-root/seed-prompts/ via
+# the existing /run-root bind mount. The bootstrap then seeds
+# `strategist:seed_prompt:tribe-<t>` from each present file before the
+# daemons launch. Absent dir = no-op (behaviour byte-identical to a normal
+# replay).
+stage_seed_prompts() {
+    if [ -z "$SEED_PROMPTS_DIR" ]; then
+        return 0
+    fi
+    emit_step "staging seed prompts from $SEED_PROMPTS_DIR into $LAPTOP_DIR/seed-prompts/"
+    if [ "$DRY_RUN" = "1" ]; then
+        emit_cmd "mkdir -p $LAPTOP_DIR/seed-prompts && cp $SEED_PROMPTS_DIR/tribe-*.txt $LAPTOP_DIR/seed-prompts/ 2>/dev/null || true"
+        return 0
+    fi
+    mkdir -p "$LAPTOP_DIR/seed-prompts"
+    for t in alpha beta gamma delta epsilon zeta; do
+        if [ -f "$SEED_PROMPTS_DIR/tribe-$t.txt" ]; then
+            cp "$SEED_PROMPTS_DIR/tribe-$t.txt" "$LAPTOP_DIR/seed-prompts/tribe-$t.txt"
+            emit_step "seed prompt staged: tribe-$t"
+        fi
+    done
 }
 
 # --- 3) Per-node bootstrap script generator ---
@@ -497,6 +539,21 @@ write_bootstrap() {
         printf 'for t in alpha beta gamma delta epsilon zeta; do\n'
         printf '    (cd /run-root && agentis memo set strategist:confidence 0.7 >/dev/null 2>&1 || true)\n'
         printf 'done\n'
+        # Walk-forward TEST-phase seed (#1167): when REPLAY_SEED_PROMPTS_DIR
+        # staged per-tribe frozen prompts into /run-root/seed-prompts/, seed
+        # `strategist:seed_prompt:tribe-<t>` from each present file BEFORE the
+        # daemons launch so the .ag seed-override branch adopts the frozen
+        # prompt as that tribe's initial strategy. `"$(cat ...)"` preserves
+        # multi-line prompt bodies through the memo set. Emitted only when
+        # REPLAY_SEED_PROMPTS_DIR is set, so an unseeded replay is
+        # byte-identical to before.
+        if [ -n "$SEED_PROMPTS_DIR" ]; then
+            printf 'for t in alpha beta gamma delta epsilon zeta; do\n'
+            printf '    if [ -f /run-root/seed-prompts/tribe-$t.txt ]; then\n'
+            printf '        (cd /run-root && agentis memo set strategist:seed_prompt:tribe-$t "$(cat /run-root/seed-prompts/tribe-$t.txt)" >/dev/null 2>&1 || true)\n'
+            printf '    fi\n'
+            printf 'done\n'
+        fi
         # Spawn one source strategist daemon per tribe. Each tribe's
         # M2-Malthusian replicate path grows the population from there.
         printf 'for t in alpha beta gamma delta epsilon zeta; do\n'
@@ -633,6 +690,7 @@ analyse_placeholder() {
 install_cleanup_trap
 load_candles
 build_image
+stage_seed_prompts
 write_bootstrap
 write_run_meta
 spawn_container

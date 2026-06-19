@@ -53,6 +53,29 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Walk-forward harness for out-of-sample edge validation (#1167). Three
+  parts: (1) a per-tribe **frozen-prompt seed-override** hook in all six
+  `tribe-{alpha,beta,gamma,delta,epsilon,zeta}/agents/strategist.ag` — when a
+  fresh daemon's `strategist:<pid>:strategy_prompt` is empty, it now FIRST
+  checks `strategist:seed_prompt:<tribe>` and, if non-empty, adopts it as the
+  initial prompt (byte-clamped, generation 0, `learn(...,
+  ["prompt-inheritance","walk-forward-seed",...])`), taking precedence over
+  the existing `pp:`-inherit / hardcoded-seed fallback; (2) a
+  `REPLAY_SEED_PROMPTS_DIR` knob in `tools/run-replay.sh` that stages host
+  `tribe-<t>.txt` prompts into the run dir's `seed-prompts/`
+  (`/run-root/seed-prompts/`) and, before launching the daemons, seeds
+  `strategist:seed_prompt:tribe-<t>` from each present file — absent dir is a
+  no-op (behaviour byte-identical to a normal replay); (3) a new
+  `tools/walk-forward.sh` orchestrator that, per fold, EVOLVES on a TRAIN
+  window (evolution on), FREEZES each tribe's final evolved prompt, then
+  MEASURES it on an UNSEEN TEST window (`REPLAY_SEED_PROMPTS_DIR` +
+  `STRATEGIST_PROMPT_EVOLUTION_THRESHOLD=999999`), computing OOS expectancy
+  / WIN-LOSS / profit factor per tribe and federation-wide, aggregated across
+  folds into `walk-forward-summary.md` + `results.json` with an honest verdict
+  (does OOS expectancy stay positive across folds?). `tools/test-walk-forward.sh`
+  covers fold-spec parsing, the tribe->pid->prompt extraction, and the
+  `--dry-run` seed/freeze wiring without containers; `tools/test-run-replay.sh`
+  grows seed-injection assertions (#1167).
 - `tools/claude-p.sh` — a `claude-p` (Claude Code PRINT mode) LLM backend for
   the replay. `claude -p "<prompt>"` is non-interactive, so it returns clean
   single-shot stdout JSON (no TUI, no line-wrap) and bills against the SAME
