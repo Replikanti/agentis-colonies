@@ -14,6 +14,13 @@
 #          GETs the existing ref and emits it as success (exit 0). Any OTHER
 #          failure must still propagate.
 #
+#   #1172  get-file must decode the base64 `.content` of an existing file to
+#          stdout, return empty + exit 0 on a 404 (so the caller treats "no
+#          existing content" as "new file"), and propagate other HTTP errors.
+#          code_writer.ag must fetch existing content (get-file) before the
+#          code-gen prompt so an EDIT preserves the file instead of clobbering
+#          it (grep-level wiring assertion).
+#
 # Unlike test-github-implementation-normalize.sh (which sources just the
 # function defs and exercises the normalizers), this test drives the full CMD
 # dispatcher against a STUBBED curl placed on PATH — the same stub-curl idiom
@@ -247,6 +254,103 @@ if [ "$CB3_RC" -eq 0 ]; then
     esac
 else
     fail "#1150 create-branch: clean 201 create regressed to exit $CB3_RC"
+fi
+
+# =============================================================================
+# #1172: get-file decodes base64 content; 404 -> empty + exit 0.
+# =============================================================================
+reset_routes
+# Build a base64-encoded GitHub contents response for an existing file.
+GETFILE_BODY=$(python3 - <<'PY'
+import json, base64
+content = "line one\nline two\n"
+b64 = base64.b64encode(content.encode()).decode()
+print(json.dumps({"content": b64, "encoding": "base64", "path": "src/foo.py"}), end="")
+PY
+)
+add_route GET "/contents/src/foo.py" 200 "$GETFILE_BODY"
+
+GF_ERR_FILE="$FAKE_ROOT/gf-err"
+GF_OUT="$(run_api get-file --path src/foo.py --ref main 2>"$GF_ERR_FILE")"
+GF_RC=$?
+GF_ERR="$(cat "$GF_ERR_FILE")"
+
+if [ "$GF_RC" -eq 0 ]; then
+    pass "#1172 get-file: existing file decodes to exit 0"
+else
+    fail "#1172 get-file: expected exit 0 on existing file, got $GF_RC (stderr: $GF_ERR)"
+fi
+
+case "$GF_OUT" in
+    *"line one"*)
+        pass "#1172 get-file: base64 .content decoded to raw stdout" ;;
+    *)
+        fail "#1172 get-file: expected decoded content on stdout, got '$GF_OUT'" ;;
+esac
+
+# 404: file does not exist on this ref -> empty output, exit 0.
+reset_routes
+add_route GET "/contents/src/missing.py" 404 "{\"message\":\"Not Found\"}"
+
+GF2_ERR_FILE="$FAKE_ROOT/gf2-err"
+GF2_OUT="$(run_api get-file --path src/missing.py --ref main 2>"$GF2_ERR_FILE")"
+GF2_RC=$?
+GF2_ERR="$(cat "$GF2_ERR_FILE")"
+
+if [ "$GF2_RC" -eq 0 ]; then
+    pass "#1172 get-file: 404 (missing file) treated as success (exit 0)"
+else
+    fail "#1172 get-file: expected exit 0 on 404, got $GF2_RC (stderr: $GF2_ERR)"
+fi
+
+if [ -z "$GF2_OUT" ]; then
+    pass "#1172 get-file: 404 (missing file) emits empty stdout (caller -> new file)"
+else
+    fail "#1172 get-file: expected empty stdout on 404, got '$GF2_OUT'"
+fi
+
+# A non-404 HTTP error must still propagate (not be masked as a missing file).
+reset_routes
+add_route GET "/contents/src/boom.py" 500 "{\"message\":\"server error\"}"
+
+run_api get-file --path src/boom.py --ref main >/dev/null 2>/dev/null
+GF3_RC=$?
+if [ "$GF3_RC" -ne 0 ]; then
+    pass "#1172 get-file: non-404 HTTP error still propagates as failure (rc=$GF3_RC)"
+else
+    fail "#1172 get-file: a 500 was masked as success (should propagate)"
+fi
+
+# Unknown flag -> exit 2 (verb-parser contract parity with the other arms).
+reset_routes
+run_api get-file --path src/foo.py --bogus x >/dev/null 2>/dev/null
+GF4_RC=$?
+if [ "$GF4_RC" -eq 2 ]; then
+    pass "#1172 get-file: unknown flag exits 2"
+else
+    fail "#1172 get-file: expected exit 2 on unknown flag, got $GF4_RC"
+fi
+
+# =============================================================================
+# #1172: code_writer.ag wires get-file into the code-gen context (grep-level).
+# =============================================================================
+CW_AG="$REPO_ROOT/dev-apprenticeship/implementation/agents/code_writer.ag"
+if grep -q "get-file --path" "$CW_AG"; then
+    pass "#1172 code_writer.ag: fetches existing content via 'get-file --path' before code-gen"
+else
+    fail "#1172 code_writer.ag: no 'get-file --path' fetch found before code-gen"
+fi
+
+if grep -q "EDIT this" "$CW_AG"; then
+    pass "#1172 code_writer.ag: existing-file block instructs the model to EDIT and preserve"
+else
+    fail "#1172 code_writer.ag: existing-file EDIT instruction missing from code_context"
+fi
+
+if grep -q "If an existing file is shown, EDIT it" "$CW_AG"; then
+    pass "#1172 code_writer.ag: code-gen prompt updated to EDIT-when-existing"
+else
+    fail "#1172 code_writer.ag: code-gen prompt not updated for the EDIT path"
 fi
 
 echo ""

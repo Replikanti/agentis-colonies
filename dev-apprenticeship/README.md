@@ -295,7 +295,7 @@ The default CLI backend for this federation is **flat-cyborg**, a PTY wrapper th
 
 `install.sh` §6 wires it for you: when `flat-cyborg` is on your `PATH`, it offers (default Yes) to write `llm.backend = claude` and `llm.command = <fed>/tools/flat-cyborg-claude.sh` (with an empty `llm.args` — the prompt is the sole positional arg) into `<fed>/.agentis/config`. The wrapper path resolves from the federation root, so it works both in a source checkout and in the release bundle.
 
-**flat-cyborg must be installed** — get it from [Replikanti/flat-cyborg](https://github.com/Replikanti/flat-cyborg) (an installed copy self-updates with `flat-cyborg update`). If it is absent at install time, `install.sh` warns and falls back to printing the manual backend examples.
+**flat-cyborg must be installed, >= 0.11.0** — get it from [Replikanti/flat-cyborg](https://github.com/Replikanti/flat-cyborg) (an installed copy self-updates with `flat-cyborg update`). If it is absent at install time, `install.sh` warns and falls back to printing the manual backend examples. The wrapper passes the prompt via `--cmd-file` (flat-cyborg >= 0.11.0) so a multi-MB context does not overflow `ARG_MAX` (#1171); an older binary fails with `unknown flag: --cmd-file`.
 
 Two env-var knobs tune the wrapper (defaults shown):
 

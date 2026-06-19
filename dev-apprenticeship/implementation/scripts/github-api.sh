@@ -36,6 +36,7 @@
 #   github-api.sh commit-files --branch <b> --message <m> --actions <json>
 #   github-api.sh create-mr --source <branch> --title <title> [--description <d>]
 #   github-api.sh add-note <number> --body <text>
+#   github-api.sh get-file --path <path> [--ref <branch>]
 #
 # Views (opt-in projection; byte-identical to gitlab-api.sh):
 #   merge-requests  --view impl       [{iid, title, merged_at, target_branch}]
@@ -935,6 +936,53 @@ PY
         esac
         JSON_BODY=$(printf '%s' "$BODY" | python3 -c 'import sys,json; print(json.dumps({"body": sys.stdin.read()}))')
         gh_post "$API/issues/$IID/comments" "$JSON_BODY"
+        ;;
+
+    get-file)
+        # #1172: fetch the raw decoded content of a single file at --ref so
+        # code_writer can EDIT an existing file instead of clobbering it with
+        # a from-scratch rewrite. GET /repos/{o}/{r}/contents/{path}?ref={ref}
+        # returns a JSON object with base64-encoded `.content`; we decode it to
+        # stdout. A 404 (file does not exist on that ref) is NOT an error here:
+        # the caller treats empty output as "new file", so we swallow the 404
+        # and exit 0. Any other HTTP error propagates (gh_get's emit_error +
+        # non-zero return).
+        FILE_PATH=""
+        FILE_REF="${GITLAB_DEFAULT_BRANCH:-main}"
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --path) FILE_PATH="$2"; shift 2 ;;
+                --ref) FILE_REF="$2"; shift 2 ;;
+                *) emit_error "unknown flag: $1"; exit 2 ;;
+            esac
+        done
+        if [ -z "$FILE_PATH" ]; then
+            emit_error "--path is required"
+            exit 1
+        fi
+        # gh_get emits a 404 client error on stderr and returns 4. Capture both
+        # so we can distinguish the benign "file absent" 404 from a real error.
+        gf_err_file="$(mktemp)"
+        gf_out=""
+        gf_rc=0
+        gf_out="$(gh_get_q "$API/contents/$FILE_PATH" --data-urlencode "ref=$FILE_REF" 2>"$gf_err_file")" || gf_rc=$?
+        if [ "$gf_rc" -eq 0 ]; then
+            rm -f "$gf_err_file"
+            printf '%s' "$gf_out" | python3 -c 'import sys,json,base64; d=json.loads(sys.stdin.read()); sys.stdout.buffer.write(base64.b64decode((d.get("content") or "")))'
+        else
+            gf_err="$(cat "$gf_err_file")"
+            rm -f "$gf_err_file"
+            case "$gf_err" in
+                *"HTTP 404"*)
+                    # File does not exist on this ref — emit nothing, exit 0.
+                    :
+                    ;;
+                *)
+                    printf '%s\n' "$gf_err" >&2
+                    exit "$gf_rc"
+                    ;;
+            esac
+        fi
         ;;
 
     rate-limit-status)
