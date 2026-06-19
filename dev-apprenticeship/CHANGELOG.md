@@ -17,6 +17,21 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- **`implementation` code_writer -> commit_composer MR handoff is now durable**
+  (#1151). The handoff used to depend on commit_composer catching the transient
+  `implementation:code_draft` bus event inside a 100ms `listen()` window; when
+  the event was missed the federation committed correct code to the branch but
+  never opened the merge request. `code_writer` now also persists a durable
+  single-slot memo (`implementation:pending_mr`, tab-delimited issue_id /
+  branch_name / summary) right after a successful autonomous commit.
+  `commit_composer`'s no-event branch consults that memo and, at the autonomous
+  tier, opens the MR via the same `create-mr` path (deterministic title and
+  description, no new `prompt()`), emits `implementation:mr_ready`, records an
+  idempotency marker (`commit_composer:last_mr_issue`), and clears the pending
+  memo. The live `code_draft` event stays the fast path — and that fast path now
+  records the same marker + clears the same memo, so a successful event-driven
+  open is never re-opened as a duplicate by the next tick's fallback. Found
+  during the #1117 first live federation run.
 - **`implementation/scripts/github-api.sh` `commit-files` now tolerates raw
   control characters in `--actions` file content** (#1149). Both
   `json.loads(ACTIONS)` calls (the up-front validation parse and the tree-build

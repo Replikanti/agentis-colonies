@@ -164,7 +164,68 @@ fn tick_for_repo(owner: string, repo: string) -> void {
     let code_str = to_string(code_draft);
 
     if len(code_str) < 5 {
-        // No code draft ready yet, nothing to compose
+        // #1151: the live `implementation:code_draft` event was not caught in
+        // this tick's 100ms listen() window. Fall back to the durable
+        // single-slot memo code_writer persists right after a successful
+        // commit, so a missed event no longer strands a committed branch
+        // without an MR. The memo is tab-delimited (issue_id, branch_name,
+        // summary); see code_writer.ag.
+        let pending = recall_latest(scoped_memo(owner, repo, "implementation:pending_mr"));
+        if len(pending) < 3 {
+            // No durable handoff pending either — nothing to compose.
+            let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+            if len(now) > 0 {
+                memo_write(scoped_memo(owner, repo, "commit_composer:last_check"), now);
+            };
+            return;
+        };
+
+        let pending_issue = repo_field(pending, 0);
+        let pending_branch = repo_field(pending, 1);
+        let pending_summary = repo_field(pending, 2);
+
+        // Idempotency: skip if we already opened the MR for this issue.
+        let last_mr = recall_latest(scoped_memo(owner, repo, "commit_composer:last_mr_issue"));
+        if last_mr == pending_issue {
+            let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+            if len(now) > 0 {
+                memo_write(scoped_memo(owner, repo, "commit_composer:last_check"), now);
+            };
+            return;
+        };
+
+        // One tier() call per tick: this fallback path returns before the
+        // live-event path below ever reaches its own repo_tier() call.
+        let fallback_tier = repo_tier("commit_composer", owner, repo);
+        if fallback_tier == "autonomous" {
+            // Derive MR fields deterministically (no prompt(): the
+            // check-prompt-gate lint forbids an ungated prompt here, and the
+            // durable fallback is specifically the autonomous terminal write).
+            let mr_title = "feat: resolve #" + pending_issue;
+            let mr_description = pending_summary;
+            // colony-lint: safe-exec-concat
+            let mr_cmd = "$COLONY_DIR/scripts/forge-api.sh create-mr --source " + shell_escape(pending_branch) + " --title " + shell_escape(mr_title) + " --description " + shell_escape(mr_description) + repo_arg(owner, repo);
+            let mr_result = try { exec sh mr_cmd; } catch e {
+                print("[commit_composer] MR creation failed (durable handoff):", e);
+                "";
+            };
+
+            if len(mr_result) > 0 {
+                print("[commit_composer] Opened MR via durable handoff for issue", pending_issue);
+                emit("implementation:mr_ready", pending);
+                if len(owner) > 0 {
+                    learn("commit_compose", "issue " + pending_issue, mr_title, "success", ["acted", "implementation", repo_tag(owner, repo)]);
+                } else {
+                    learn("commit_compose", "issue " + pending_issue, mr_title, "success", ["acted", "implementation"]);
+                };
+                memo_write(scoped_memo(owner, repo, "commit_composer:last_mr_issue"), pending_issue);
+                memo_write(scoped_memo(owner, repo, "implementation:pending_mr"), "");
+            };
+        };
+        // Below autonomous: leave the durable memo in place so a later tick at
+        // a higher tier can still open the MR. The terminal write is gated to
+        // the autonomous tier only.
+
         let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
         if len(now) > 0 {
             memo_write(scoped_memo(owner, repo, "commit_composer:last_check"), now);
@@ -208,6 +269,10 @@ fn tick_for_repo(owner: string, repo: string) -> void {
             } else {
                 learn("commit_compose", "issue " + to_string(plan.issue_id), plan.mr_title, "success", ["acted", "implementation"]);
             };
+            // #1151: record the idempotency marker + clear the durable handoff
+            // so the no-event fallback does not re-open this same MR next tick.
+            memo_write(scoped_memo(owner, repo, "commit_composer:last_mr_issue"), to_string(plan.issue_id));
+            memo_write(scoped_memo(owner, repo, "implementation:pending_mr"), "");
         };
     } else {
         if my_tier == "review-gated" {
