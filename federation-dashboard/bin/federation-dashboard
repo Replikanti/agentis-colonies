@@ -295,7 +295,7 @@ generate() {
     python3 "$LIB_DIR/federation-dashboard-timeline.py" \
         "$EXPERIENCE_DIR" "$SPEND_DIR" "$LIFECYCLE_DIR" \
         "$DASH_DIR" "$AGENT_COLONY_MAP" "@$DAEMON_FILE" \
-        "$TIMELINE_FULL_FILE" 2>/dev/null || true
+        "$TIMELINE_FULL_FILE" "$EPOCH" 2>/dev/null || true
 }
 
 # --- Regen-only mode ---
