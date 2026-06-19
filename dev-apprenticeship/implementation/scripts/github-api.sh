@@ -729,7 +729,39 @@ import os, json
 print(json.dumps({"ref": "refs/heads/" + os.environ["NAME"], "sha": os.environ["SHA"]}))
 PY
 )
-        gh_post "$API/git/refs" "$JSON_BODY"
+        # Idempotency (#1150): a retry after a prior failed commit finds the
+        # branch already present, and GitHub answers the create POST with HTTP
+        # 422 "Reference already exists". The branch being present is the
+        # desired end state, so treat that one case as success: GET the existing
+        # ref and emit it so callers receive a create-shaped payload, exit 0.
+        # gh_post surfaces the 422 body snippet on stderr (gh_call's 4xx arm),
+        # so we capture stderr to a temp file and only swallow the "already
+        # exists" signature — any other failure re-surfaces its error and
+        # propagates the original gh_post exit code.
+        create_err_file="$(mktemp)"
+        create_out=""
+        create_rc=0
+        create_out="$(gh_post "$API/git/refs" "$JSON_BODY" 2>"$create_err_file")" || create_rc=$?
+        if [ "$create_rc" -eq 0 ]; then
+            rm -f "$create_err_file"
+            printf '%s' "$create_out"
+        else
+            create_err="$(cat "$create_err_file")"
+            rm -f "$create_err_file"
+            case "$create_err" in
+                *"Reference already exists"*|*"already exists"*)
+                    # Branch already present — desired end state reached.
+                    existing_ref="$(gh_get "$API/git/refs/heads/$NAME")" || exit $?
+                    printf '%s' "$existing_ref"
+                    ;;
+                *)
+                    # Real failure: re-surface the captured error and propagate
+                    # the original gh_post exit code.
+                    printf '%s\n' "$create_err" >&2
+                    exit "$create_rc"
+                    ;;
+            esac
+        fi
         ;;
 
     commit-files)
@@ -765,7 +797,9 @@ PY
         ACTIONS="$ACTIONS" python3 - <<'PY' >/dev/null
 import os, json, sys
 try:
-    a = json.loads(os.environ["ACTIONS"])
+    # strict=False permits literal control chars (raw newlines, tabs) inside
+    # JSON strings — LLM-generated file `content` routinely carries them (#1149).
+    a = json.loads(os.environ["ACTIONS"], strict=False)
 except Exception as e:
     print(json.dumps({"error": f"invalid --actions JSON: {e}"}), file=sys.stderr)
     sys.exit(1)
@@ -805,7 +839,9 @@ PY
         # GitHub removes the path. For create/update, carry content inline.
         TREE_BODY=$(ACTIONS="$ACTIONS" BASE_TREE="$BASE_TREE_SHA" python3 - <<'PY'
 import os, json
-actions = json.loads(os.environ["ACTIONS"])
+# strict=False mirrors the up-front validation parse (#1149): file content
+# may contain raw control chars that strict JSON would reject.
+actions = json.loads(os.environ["ACTIONS"], strict=False)
 tree = []
 for a in actions:
     path = a["file_path"]

@@ -17,6 +17,22 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- **`implementation/scripts/github-api.sh` `commit-files` now tolerates raw
+  control characters in `--actions` file content** (#1149). Both
+  `json.loads(ACTIONS)` calls (the up-front validation parse and the tree-build
+  parse) now pass `strict=False`, which permits literal newlines/tabs inside
+  JSON strings. LLM-generated file `content` routinely carries raw control
+  chars; the previous strict parse rejected such payloads with `Invalid control
+  character`, dead-ending the code_writer. Found during the #1117 first live
+  federation run.
+- **`implementation/scripts/github-api.sh` `create-branch` is now idempotent**
+  (#1150). A retry after a prior failed commit finds the branch already present,
+  and GitHub answers the create `POST /git/refs` with HTTP 422 "Reference
+  already exists". The branch being present is the desired end state, so that
+  one case is now treated as success: the wrapper GETs the existing ref and
+  emits it as a create-shaped payload (exit 0). Any other failure still
+  propagates with its original exit code and error. Found during the #1117
+  first live federation run.
 - Reverted the `[llm] backend` in all 5 `*/config/colony.example.toml`
   blocks from `"claude"` back to `"cli"` (a follow-up correction to #1131).
   Per the CLAUDE.md "LLM backend" convention, `"cli"` means "use the
