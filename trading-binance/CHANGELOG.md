@@ -16,6 +16,13 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Carry robustness study (#1175): the deterministic walk-forward funding-carry
+  backtest run across 2.5 years (2024-01..2026-06, 18 alts) per half-year +
+  full span (`runs/20260620T-carry-robustness/`). The carry edge is **robust
+  across regimes** — positive every half-year (+0.19% to +20.44%/yr), full-span
+  **+7.11%/yr at Sharpe 2.33 / 0.32% max DD**; strongly bull-amplified; the
+  trailing filter protects in weak regimes (2026 H1: filter +0.19% vs naive
+  all-alts -1.82%). First robust multi-regime positive-expectancy result.
 - `tools/carry-verify.sh` (#1175 M1): deterministic settlement verifier for a
   delta-neutral funding-CARRY basket -- the carry analogue of verify-trade.sh.
   Net carry = weighted sum of forward funding (short-perp receives positive
