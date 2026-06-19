@@ -27,6 +27,9 @@ Args (positional):
     6: daemons_json     JSON array from `agentis daemon list --json`,
                         or "@<path>" to read from file (#293)
     7: out_path         where to write timeline-full.jsonl
+    8: now              injected "now" (epoch seconds or ms) — the single
+                        epoch the caller already sampled for the collector
+                        (#1043 / #1145); never re-sample the wall clock here
 
 The file is written newline-delimited JSON, one row per line, in
 reverse-chronological order (newest first). Every row that is not a
@@ -37,7 +40,6 @@ tolerance pattern).
 import os
 import sys
 import json
-import time
 
 TIMELINE_FULL_CAP = 5000
 SEVEN_DAYS_MS = 7 * 24 * 3600 * 1000
@@ -108,10 +110,10 @@ def _severity(kind, payload):
 
 
 def main():
-    if len(sys.argv) != 8:
+    if len(sys.argv) != 9:
         sys.stderr.write(
             'Usage: %s exp_dir spend_dir lifecycle_dir dash_dir '
-            'agent_map_json daemons_json out_path\n' % sys.argv[0]
+            'agent_map_json daemons_json out_path now\n' % sys.argv[0]
         )
         sys.exit(2)
 
@@ -122,6 +124,7 @@ def main():
     agent_map_raw = sys.argv[5]
     daemons_raw   = _read_arg(sys.argv[6])
     out_path      = sys.argv[7]
+    now_arg       = sys.argv[8]
 
     try:
         agent_map = json.loads(agent_map_raw or '[]')
@@ -153,7 +156,15 @@ def main():
             'colony': role_to_colony.get(role, ''),
         }
 
-    now_ms = int(time.time() * 1000)
+    # `now` MUST be injected — the caller passes the single epoch it already
+    # sampled for the collector (argv[8]). Re-sampling the wall clock here
+    # would take a SECOND sample that can disagree with that one across the
+    # 00:00 UTC date boundary, flaking the timeline test (#1043 / #1145).
+    try:
+        now_n = int(now_arg)
+    except (TypeError, ValueError):
+        now_n = 0
+    now_ms = _coerce_ms(now_n)
     cutoff = now_ms - SEVEN_DAYS_MS
 
     # Bucket lifecycle + confidence-log by agent_id ONCE — both files are

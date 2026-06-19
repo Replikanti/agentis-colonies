@@ -28,6 +28,14 @@ FAIL=0
 TMPDIR_TEST="$(mktemp -d)"
 DASH_PID=""
 
+# #1145: freeze a SINGLE wall-clock sample for the WHOLE suite. Every "now"
+# baseline fed into experience/spend/lifecycle fixture rows, the collector,
+# the timeline helper, and any date comparison derives from this one epoch —
+# so no two reads can straddle 00:00 UTC within a single run (#1043). Reads
+# used purely for uniqueness (e.g. %s%N sentinels) are intentionally not
+# frozen.
+SUITE_NOW="$(date '+%s')"
+
 cleanup() {
     if [ -n "$DASH_PID" ]; then
         kill -TERM "-$DASH_PID" 2>/dev/null || kill -TERM "$DASH_PID" 2>/dev/null || true
@@ -756,7 +764,7 @@ fn tick() { return Void; }
 AG
 
 QA_AID="bbbbbbbb"
-QA_NOW="$(date '+%s')"
+QA_NOW="$SUITE_NOW"
 QA_NOW_MS=$((QA_NOW * 1000))
 
 # 1 experience row (epoch-SECONDS, mirroring agentis-core's writer).
@@ -886,7 +894,7 @@ done
 QA_AID_A1="aaaaaaa1"
 QA_AID_A2="aaaaaaa2"
 QA_AID_B1="bbbbbbb1"
-QA_NOW2="$(date '+%s')"
+QA_NOW2="$SUITE_NOW"
 QA_NOW2_MS=$((QA_NOW2 * 1000))
 
 # Each agent gets >=1 experience row + >=1 spend row + >=1 lifecycle row,
@@ -1819,7 +1827,7 @@ fn tick() { return Void; }
 AG
 
 T51_AID="cccccccc"
-T51_NOW="$(date '+%s')"
+T51_NOW="$SUITE_NOW"
 T51_DAEMONS=$(python3 -c "
 import json
 print(json.dumps([{
@@ -2032,7 +2040,7 @@ T57_JSON="$(python3 "$COLLECTOR_PY" \
     "$T57_DAEMONS" \
     "$T57_AGENT_MAP" \
     "$T57_FED" \
-    "$(date '+%s')" \
+    "$SUITE_NOW" \
     "$T57_FED/.agentis/experience" \
     "$T57_FED/.agentis/logs" \
     "$T57_FED/.dashboard" \
@@ -2373,6 +2381,70 @@ else
     fail "64: Promote Candidates top-5 cap or more-candidates hint regressed (#369)"
 fi
 
+# --- t65b (#1145): federation-dashboard-timeline.py must take its "now" as
+#     an injected arg (the single epoch the wrapper already sampled for the
+#     collector), never re-sample the wall clock. We run the helper twice
+#     against the SAME fixture with the SAME frozen $SUITE_NOW and assert the
+#     output is byte-identical and the 7-day cutoff is anchored on the
+#     injected now (a row just inside the window survives; a row just outside
+#     is dropped). Before the fix the helper sampled time.time() internally,
+#     so its cutoff disagreed with the injected epoch across 00:00 UTC. ---
+TIMELINE_PY="$REPO_ROOT/federation-dashboard/lib/federation-dashboard-timeline.py"
+T65B_FED="/tmp/qa-1145-timeline-fed"
+rm -rf "$T65B_FED"
+mkdir -p "$T65B_FED/.agentis/experience" \
+         "$T65B_FED/.agentis/spend" \
+         "$T65B_FED/.agentis/lifecycle" \
+         "$T65B_FED/.dashboard"
+T65B_AID="dddddddd"
+T65B_NOW="$SUITE_NOW"
+# Two experience rows: one 30s old (inside the 7-day window) and one 8 days
+# old (outside). The injected-now cutoff decides which survives.
+cat > "$T65B_FED/.agentis/experience/$T65B_AID.jsonl" <<EXP
+{"v":1,"ts":$((T65B_NOW - 30)),"agent":"$T65B_AID","action":"draft","in":"recent","outcome":"success","delta":0.10}
+{"v":1,"ts":$((T65B_NOW - 8 * 86400)),"agent":"$T65B_AID","action":"draft","in":"stale","outcome":"success","delta":0.10}
+EXP
+cat > "$T65B_FED/.agentis/lifecycle/events.jsonl" <<LIFE
+{"agent_id":"$T65B_AID","event":"daemon.started","cb_per_tick":2000,"tick_interval_ms":60000,"ts":$((T65B_NOW - 90))}
+LIFE
+T65B_DAEMONS=$(python3 -c "
+import json
+print(json.dumps([{
+    'agent_id': '$T65B_AID',
+    'source':   '$T65B_FED/qa-colony/agents/d_agent.ag',
+    'state':    'running',
+}]))
+")
+T65B_MAP='[{"agent":"d_agent","colony":"qa-colony"}]'
+T65B_OUT="$T65B_FED/.dashboard/timeline-full.jsonl"
+python3 "$TIMELINE_PY" \
+    "$T65B_FED/.agentis/experience" "$T65B_FED/.agentis/spend" \
+    "$T65B_FED/.agentis/lifecycle" "$T65B_FED/.dashboard" \
+    "$T65B_MAP" "$T65B_DAEMONS" "$T65B_OUT" "$T65B_NOW" 2>/dev/null || true
+T65B_FIRST="$(cat "$T65B_OUT" 2>/dev/null || true)"
+python3 "$TIMELINE_PY" \
+    "$T65B_FED/.agentis/experience" "$T65B_FED/.agentis/spend" \
+    "$T65B_FED/.agentis/lifecycle" "$T65B_FED/.dashboard" \
+    "$T65B_MAP" "$T65B_DAEMONS" "$T65B_OUT" "$T65B_NOW" 2>/dev/null || true
+T65B_SECOND="$(cat "$T65B_OUT" 2>/dev/null || true)"
+t65b_ok=1
+if [ "$T65B_FIRST" != "$T65B_SECOND" ]; then
+    echo "  timeline.py output not deterministic w.r.t. the injected now"
+    t65b_ok=0
+elif ! printf '%s\n' "$T65B_FIRST" | grep -q '"in":"recent"'; then
+    echo "  in-window experience row missing from timeline.py output"
+    t65b_ok=0
+elif printf '%s\n' "$T65B_FIRST" | grep -q '"in":"stale"'; then
+    echo "  out-of-window experience row leaked past the injected-now cutoff"
+    t65b_ok=0
+fi
+rm -rf "$T65B_FED"
+if [ "$t65b_ok" -eq 1 ]; then
+    pass "65b: timeline.py anchors its 7-day cutoff on the injected now — deterministic, 00:00-UTC-safe (#1145)"
+else
+    fail "65b: timeline.py mis-handled the injected now — see stderr above (#1145)"
+fi
+
 # t65 (#1043): the collector must derive ALL now-relative computation from the single
 # injected epoch (NOW_TS), never re-sample the wall clock. A second time-sample can
 # disagree with the injected epoch across the 00:00 UTC date boundary and flake the
@@ -2383,6 +2455,18 @@ if [ -f "$COLLECTOR_PY" ] && ! grep -Eq 'time\.time\(\)' "$COLLECTOR_PY"; then
 else
     fail "65: federation-dashboard-collector.py still calls time.time() — 00:00 UTC date-boundary flake risk (#1043)" \
          "offending: $(grep -nE 'time\.time\(\)' "$COLLECTOR_PY" 2>/dev/null | tr '\n' ' ')"
+fi
+
+# t66 (#1145): the sibling timeline helper must ALSO take no second wall-clock
+# sample — it now derives its 7-day cutoff from the injected now (argv[8]),
+# the same single epoch the wrapper passes the collector. #1043 hardened the
+# collector but MISSED timeline.py, which re-sampled time.time() and disagreed
+# across 00:00 UTC. Source-guard so the regression can't return silently.
+if [ -f "$TIMELINE_PY" ] && ! grep -Eq 'time\.time\(\)' "$TIMELINE_PY"; then
+    pass "66: timeline helper takes no second wall-clock sample — cutoff now-derived from the injected epoch (#1145)"
+else
+    fail "66: federation-dashboard-timeline.py still calls time.time() — 00:00 UTC date-boundary flake risk (#1145)" \
+         "offending: $(grep -nE 'time\.time\(\)' "$TIMELINE_PY" 2>/dev/null | tr '\n' ' ')"
 fi
 
 echo ""
