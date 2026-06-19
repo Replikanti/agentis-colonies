@@ -53,6 +53,27 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- `tools/claude-p.sh` — a `claude-p` (Claude Code PRINT mode) LLM backend for
+  the replay. `claude -p "<prompt>"` is non-interactive, so it returns clean
+  single-shot stdout JSON (no TUI, no line-wrap) and bills against the SAME
+  flat-rate Claude subscription as interactive (same `~/.claude` creds, NOT
+  the metered API). `tools/run-replay.sh` now defaults `REPLAY_LLM_BACKEND`
+  to `claude-p` (was `flat-cyborg`): flat-cyborg's `--extract-structural` TUI
+  screen-scrape is unreliable for the strategist's structured Decision JSON —
+  the 6-tribe daemon replay parsed 0% of replies — so screen-scrape is no
+  longer the default. `claude-p` and `flat-cyborg` are both subscription-claude
+  backends (`CONFIG_BACKEND=claude`): they share the `~/.claude` +
+  `~/.claude.json` bind-mounts and the host-credential pre-flight, differing
+  ONLY in which wrapper `llm.command` points at
+  (`/repo/tools/claude-p.sh` vs `/repo/tools/flat-cyborg-claude.sh`).
+  flat-cyborg (`REPLAY_LLM_BACKEND=flat-cyborg`) and openai
+  (`REPLAY_LLM_BACKEND=openai`) stay available as opt-in alternatives.
+  `tools/test-run-replay.sh` asserts the default capture names `claude-p`,
+  wires `llm.command = /repo/tools/claude-p.sh`, and mounts both
+  `~/.claude` + `~/.claude.json`, with a flat-cyborg-explicit regression
+  capture and the openai regression kept green (consistent with #1152, which
+  routed code-gen to `claude -p` for the same fidelity reason) (#1163).
+
 - Deterministic **momentum/breakout** backtest under the #1148 R-multiple
   exits over the real 90-day BTCUSDT 1h window (2026-03-01 → 2026-05-31),
   recorded under `runs/20260619T-momentum-rmultiple/`
