@@ -1,0 +1,7 @@
+{
+  "run_id": "20260620T-carry", "issue": 1173, "kind": "deterministic-walk-forward-funding-carry-backtest",
+  "symbol_universe_size": 18, "window": "2026-03-01..2026-06-01", "funding_events_per_symbol": "~276 (8h cadence; TIA ~552)",
+  "canonical_config": "top-6 basket, rebalance 30d, lookback 21d, min_pos_ratio 0.55, cost 20bps round-trip",
+  "base_commit": "caad041cc19ea20887d4966b396fcd020994eea7",
+  "reproduce": "python3 tools/funding-download.py --symbols <universe> --start 2026-03-01 --end 2026-06-01 && python3 runs/20260620T-carry/backtest-carry.py --funding-dir data/funding --symbols <universe> --start 2026-03-01 --end 2026-06-01 --rebalance-days 30 --lookback-days 21 --top-k 6"
+}

@@ -1,0 +1,111 @@
+{
+  "universe": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "BNBUSDT",
+    "XRPUSDT",
+    "DOGEUSDT",
+    "AVAXUSDT",
+    "LINKUSDT",
+    "SUIUSDT",
+    "ADAUSDT",
+    "LTCUSDT",
+    "NEARUSDT",
+    "APTUSDT",
+    "ARBUSDT",
+    "OPUSDT",
+    "INJUSDT",
+    "TIAUSDT",
+    "AAVEUSDT"
+  ],
+  "loaded": [
+    "AAVEUSDT",
+    "ADAUSDT",
+    "APTUSDT",
+    "ARBUSDT",
+    "AVAXUSDT",
+    "BNBUSDT",
+    "BTCUSDT",
+    "DOGEUSDT",
+    "ETHUSDT",
+    "INJUSDT",
+    "LINKUSDT",
+    "LTCUSDT",
+    "NEARUSDT",
+    "OPUSDT",
+    "SOLUSDT",
+    "SUIUSDT",
+    "TIAUSDT",
+    "XRPUSDT"
+  ],
+  "window": {
+    "start": "2026-03-01",
+    "end": "2026-06-01",
+    "harvest_days": 71.0
+  },
+  "params": {
+    "rebalance_days": 30.0,
+    "lookback_days": 21.0,
+    "top_k": 6,
+    "min_pos_ratio": 0.55,
+    "cost_bps_roundtrip": 20.0
+  },
+  "strategy_oos_walk_forward": {
+    "label": "WF top-6 carry",
+    "rebalances": 3,
+    "total_return_pct": 0.2378,
+    "annualised_pct": 1.222,
+    "sharpe": 3.01,
+    "max_drawdown_pct": 0.0252
+  },
+  "total_cost_drag_pct": 0.2833,
+  "benchmark_always_on_all_alts": {
+    "label": "always-on all alts",
+    "rebalances": 3,
+    "total_return_pct": 0.0561,
+    "annualised_pct": 0.288,
+    "sharpe": 0.66,
+    "max_drawdown_pct": 0.0
+  },
+  "benchmark_btc_only": {
+    "label": "BTC-only always-on",
+    "rebalances": 3,
+    "total_return_pct": 0.0306,
+    "annualised_pct": 0.157,
+    "sharpe": 0.26,
+    "max_drawdown_pct": 0.0396
+  },
+  "benchmark_cash_pct_per_yr": 0.0,
+  "sample_selections": [
+    {
+      "chosen": [
+        "LINKUSDT",
+        "AAVEUSDT",
+        "LTCUSDT",
+        "AVAXUSDT",
+        "ARBUSDT"
+      ]
+    },
+    {
+      "chosen": [
+        "ARBUSDT",
+        "LINKUSDT",
+        "NEARUSDT",
+        "SUIUSDT",
+        "DOGEUSDT",
+        "AAVEUSDT"
+      ]
+    },
+    {
+      "chosen": [
+        "LINKUSDT",
+        "OPUSDT",
+        "ADAUSDT",
+        "BNBUSDT",
+        "SUIUSDT",
+        "DOGEUSDT"
+      ]
+    }
+  ]
+}
