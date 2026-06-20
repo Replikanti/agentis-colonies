@@ -1,0 +1,6 @@
+{"run_id":"20260620T-xs-refine","issue":1197,"kind":"cross-sectional-momentum-sweep-and-vol-target-sizing",
+ "universe_size":18,"span":"2024-01..2026-06 daily","cost_bps":60,
+ "sweep":"rebalance {3,7,14}d x top-K {3,4,6} x lookback {14,30}d, momentum, walk-forward",
+ "sizing":"trailing-vol target 20% ann, 8-period window, 3x leverage cap, no look-ahead",
+ "best_config":"7d rebalance / top-4 / 30d lookback","base_commit":"67e32ddfc2fa693b45ee99e7d9551f34c259d668",
+ "reproduce":"python3 runs/20260620T-xs-refine/cross-sectional-sweep.py --symbols <universe> --start 2024-01-01 --end 2026-06-20 --cost-bps-roundtrip 60 --rebalances 3,7,14 --top-ks 3,4,6 --lookbacks 14,30 --target-vol-pct 20 --vol-window 8 --max-leverage 3"}

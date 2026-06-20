@@ -16,6 +16,13 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Cross-sectional momentum refinement (#1197): swept rebalance x top-K x
+  lookback + applied drawdown-aware trailing-vol-target sizing. The #1194 config
+  (weekly / top-4 / 30d) is confirmed the best risk-adjusted sweet spot. Sizing
+  to a 20% vol target tames the raw +43%/yr/33%-DD high-octane book to a
+  **deployable ~+20%/yr at ~18% max DD, Sharpe ~0.8** -- return is a dial via
+  target vol. Sizing controls risk, not alpha (sized Sharpe < raw).
+  (`runs/20260620T-xs-refine/`)
 - Carry paper-trade harness (#1190): `tools/carry-paper.py` -- the last gate
   before real money. Periodic snapshots track what the regime-gated, UNLEVERED
   delta-neutral carry book would do live, accumulating a forward out-of-sample
