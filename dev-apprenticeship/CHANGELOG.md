@@ -33,6 +33,23 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- **GitLab `commit-files` now tolerates raw control chars in `--actions`
+  content** (#1169). The `commit-files` handler in
+  `implementation/scripts/gitlab-api.sh` parsed the actions payload with a
+  strict `json.loads(os.environ["ACTIONS"])`. LLM-generated file `content`
+  routinely carries literal newlines/tabs, which strict JSON rejects with
+  "Invalid control character", so the commit failed. The parse now passes
+  `strict=False`, mirroring the GitHub-adapter fix #1149 (PR #1156).
+- **GitLab `create-branch` is now idempotent on "Branch already exists"**
+  (#1170). The `create-branch` handler dead-ended when a retry (after a prior
+  failed commit) found the branch already present — GitLab answers the create
+  POST with an error containing "Branch already exists" (typically HTTP 400),
+  which `gl_post` surfaced as a hard failure. The branch being present is the
+  desired end state, so that one case is now treated as success: the wrapper
+  GETs the existing branch (URL-encoding the name into the path segment) and
+  emits it as a create-shaped payload, exit 0. Any other failure still
+  propagates with its original exit code. Mirrors the GitHub-adapter fix #1150
+  (PR #1156).
 - **Work pickup is now assignment-based, not gated on label events** (#1181).
   The five agents that "check assigned issues" — `implementation/code_writer`
   and `planning/{risk_assessor, plan_reviewer, task_decomposer,

@@ -542,7 +542,43 @@ import os, json
 print(json.dumps({"branch": os.environ["NAME"], "ref": os.environ["REF"]}))
 PY
 )
-        gl_post "$API/repository/branches" "$JSON_BODY"
+        # Idempotency (#1170, mirrors github-api.sh create-branch #1150): a retry
+        # after a prior failed commit finds the branch already present, and
+        # GitLab answers the create POST with an error containing "Branch already
+        # exists" (typically HTTP 400). The branch being present is the desired
+        # end state, so treat that one case as success: GET the existing branch
+        # and emit it so callers receive a create-shaped payload, exit 0.
+        # gl_post surfaces the error body snippet on stderr (gl_call's 4xx arm),
+        # so we capture stderr to a temp file and only swallow the "already
+        # exists" signature — any other failure re-surfaces its error and
+        # propagates the original gl_post exit code.
+        cb_err_file="$(mktemp)"
+        cb_out=""
+        cb_rc=0
+        cb_out="$(gl_post "$API/repository/branches" "$JSON_BODY" 2>"$cb_err_file")" || cb_rc=$?
+        if [ "$cb_rc" -eq 0 ]; then
+            rm -f "$cb_err_file"
+            printf '%s' "$cb_out"
+        else
+            cb_err="$(cat "$cb_err_file")"
+            rm -f "$cb_err_file"
+            case "$cb_err" in
+                *"Branch already exists"*|*"already exists"*)
+                    # Branch already present — desired end state reached. GitLab
+                    # needs the branch name percent-encoded into the URL path
+                    # segment (same urllib.parse.quote safe="" idiom as get-file).
+                    ENC_BRANCH="$(NAME="$NAME" python3 -c 'import os,urllib.parse;print(urllib.parse.quote(os.environ["NAME"], safe=""))')"
+                    existing_branch="$(gl_get "$API/repository/branches/$ENC_BRANCH")" || exit $?
+                    printf '%s' "$existing_branch"
+                    ;;
+                *)
+                    # Real failure: re-surface the captured error and propagate
+                    # the original gl_post exit code.
+                    printf '%s\n' "$cb_err" >&2
+                    exit "$cb_rc"
+                    ;;
+            esac
+        fi
         ;;
 
     commit-files)
@@ -565,7 +601,11 @@ PY
         # We pass it as raw JSON so python3 can parse and embed it.
         JSON_BODY=$(BRANCH="$BRANCH" MESSAGE="$MESSAGE" ACTIONS="$ACTIONS" python3 - <<'PY'
 import os, json
-actions = json.loads(os.environ["ACTIONS"])
+# strict=False permits literal control chars (raw newlines, tabs) inside JSON
+# strings — LLM-generated file `content` routinely carries them (#1169, mirrors
+# the github-api.sh commit-files fix #1149). A strict parse rejects such
+# payloads with "Invalid control character".
+actions = json.loads(os.environ["ACTIONS"], strict=False)
 body = {
     "branch": os.environ["BRANCH"],
     "commit_message": os.environ["MESSAGE"],
