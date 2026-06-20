@@ -16,6 +16,13 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Cross-sectional long-short paper-trade harness (#1197): `tools/xsectional-
+  paper.py` -- the live forward gate for the cross-sectional momentum strategy,
+  the long-short analogue of carry-paper.py. Periodic snapshots rank trailing
+  30d return -> long top-4 / short bottom-4, settle the prior basket against
+  realised forward returns minus turnover, and vol-target the book (trailing-vol,
+  no look-ahead, 3x cap) on the #1194/#1197 winning config. Accumulates a live
+  OOS ledger. `tools/test-xsectional-paper.sh` 10 cases.
 - Cross-sectional momentum refinement (#1197): swept rebalance x top-K x
   lookback + applied drawdown-aware trailing-vol-target sizing. The #1194 config
   (weekly / top-4 / 30d) is confirmed the best risk-adjusted sweet spot. Sizing
