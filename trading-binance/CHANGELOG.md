@@ -16,6 +16,13 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Carry cost-realism sensitivity (#1183): swept the merged carry backtest across
+  all-in round-trip costs (20-120 bps) over 2.5y + regimes
+  (`runs/20260620T-carry-cost/`). The edge **survives realistic costs in
+  aggregate** (full-span +5.88%/yr at 40 bps, breakeven ~140 bps) and is
+  cost-proof in bull regimes (+15.9%/yr at 120 bps), but **dies in calm regimes**
+  (2026 H1 negative at 40 bps). Operational consequence: carry must be
+  **regime-gated** (harvest when funding is hot, cash when calm), not always-on.
 - Carry robustness study (#1175): the deterministic walk-forward funding-carry
   backtest run across 2.5 years (2024-01..2026-06, 18 alts) per half-year +
   full span (`runs/20260620T-carry-robustness/`). The carry edge is **robust
