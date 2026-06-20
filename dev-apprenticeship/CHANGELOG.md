@@ -33,6 +33,29 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- **Three pickup/operability fixes for autonomous runs on a mature repo**
+  (#1185), found dogfooding the federation. (1) **Trigger-label env passthrough:**
+  `install.sh`'s `exec.env_passthrough` allowlist did not include
+  `IMPLEMENTATION_TRIGGER_LABEL` / `PLANNING_TRIGGER_LABEL`, so agentis stripped
+  a `colony.toml` `trigger_label` override before `exec sh forge-api.sh` and the
+  forge fell back to the default `implementation` / `needs-planning` label. Both
+  vars are now in the allowlist, and an in-place migration upgrades an existing
+  `.agentis/config` so re-running `install.sh` on a live federation picks it up.
+  (2) **First-run MR-learning is bounded:** `code_writer`'s `merged_mr_cmd()`
+  returned the no-`--since` form on the first tick (empty `last_check`), learning
+  from the WHOLE merged-MR history — one `prompt()` per MR per tick — which
+  starved the drafting step on a mature repo. The first-run query is now bounded
+  to the single most recent merged MR (`--per-page 1`; both forge backends sort
+  `updated_at desc`), and the existing at-most-once-per-iid memo gate still caps
+  duplicate learning. (3) **Half-completed autonomous flows are retried, not
+  stranded:** the #200 staleness markers (`code_writer:last_drafted_iid` /
+  `:last_drafted_updated_at`) were written right after the draft prompt, BEFORE
+  the autonomous `create-branch` / `commit-files`, so a branch-created-but-commit-
+  failed tick still marked the issue "drafted" and the #200 gate skipped it
+  forever, stranding an empty branch. The autonomous path now sets the markers
+  only inside the commit-success block; the review-gated / propose / shadow paths
+  still mark after their terminal draft comment / emit, so each path sets the
+  marker exactly when its own action has completed.
 - **GitLab `commit-files` now tolerates raw control chars in `--actions`
   content** (#1169). The `commit-files` handler in
   `implementation/scripts/gitlab-api.sh` parsed the actions payload with a

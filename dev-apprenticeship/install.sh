@@ -607,7 +607,18 @@ if [ -d "$AGENTIS_DIR" ]; then
     #                                 (to resolve $COLONY_DIR/scripts/...
     #                                 paths) and GITLAB_* (so gitlab-api.sh
     #                                 authenticates against the instance
-    #                                 configured by start-colony.sh).
+    #                                 configured by start-colony.sh). The
+    #                                 trigger-label vars
+    #                                 IMPLEMENTATION_TRIGGER_LABEL /
+    #                                 PLANNING_TRIGGER_LABEL must pass through
+    #                                 too (#1185): start-colony.sh exports a
+    #                                 colony.toml `trigger_label` override,
+    #                                 but without them in the allowlist
+    #                                 agentis strips the override before
+    #                                 `exec sh forge-api.sh` and the forge
+    #                                 falls back to the default
+    #                                 `implementation` / `needs-planning`
+    #                                 label.
     #   exec.default_timeout_ms     — gitlab-api.sh calls curl with a
     #                                 per-attempt `--max-time` of
     #                                 `$GITLAB_CURL_MAX_TIME` (default
@@ -696,11 +707,22 @@ if [ -d "$AGENTIS_DIR" ]; then
     if [ -f "$AGENTIS_CONFIG" ] && grep -qxF 'exec.env_passthrough = COLONY_DIR,GITLAB_*' "$AGENTIS_CONFIG"; then
         # Use a tmp file + mv for atomicity; no sed -i (BSD vs GNU portability).
         awk '/^exec\.env_passthrough = COLONY_DIR,GITLAB_\*$/ \
-             { print "exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*"; next } { print }' \
+             { print "exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL"; next } { print }' \
             "$AGENTIS_CONFIG" > "$AGENTIS_CONFIG.tmp" && mv "$AGENTIS_CONFIG.tmp" "$AGENTIS_CONFIG"
         ok "upgraded exec.env_passthrough (#277)"
     fi
-    write_key 'exec.env_passthrough'         'COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*'
+    # Migrate #1185 pre-fix literal in-place. Upgrades the #277-era value to
+    # also pass through the trigger-label vars so a colony.toml
+    # `trigger_label` override survives the env strip before `exec sh`.
+    # Exact-match only — any operator customization is preserved untouched.
+    if [ -f "$AGENTIS_CONFIG" ] && grep -qxF 'exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*' "$AGENTIS_CONFIG"; then
+        # Use a tmp file + mv for atomicity; no sed -i (BSD vs GNU portability).
+        awk '/^exec\.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_\*,GITHUB_\*$/ \
+             { print "exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL"; next } { print }' \
+            "$AGENTIS_CONFIG" > "$AGENTIS_CONFIG.tmp" && mv "$AGENTIS_CONFIG.tmp" "$AGENTIS_CONFIG"
+        ok "upgraded exec.env_passthrough (#1185)"
+    fi
+    write_key 'exec.env_passthrough'         'COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL'
     write_key 'exec.default_timeout_ms'      '120000'
     write_key 'pii_transmit'                 'allow'
     write_key 'knowledge.enabled'            'true'
