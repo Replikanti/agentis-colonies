@@ -1,0 +1,90 @@
+{
+  "window": {
+    "start": "2024-01-01",
+    "end": "2026-06-20"
+  },
+  "reference_annual_carry_pct": 5.0,
+  "per_symbol": [
+    {
+      "symbol": "LINKUSDT",
+      "max_basis_pct": 0.183,
+      "min_basis_pct": -0.202,
+      "max_abs_basis_pct": 0.202,
+      "worst_adverse_day_up_pct": 42.16,
+      "max_safe_leverage": 2.4,
+      "worst_negative_funding_run_bps": -15.35,
+      "days": 902
+    },
+    {
+      "symbol": "AVAXUSDT",
+      "max_basis_pct": 0.212,
+      "min_basis_pct": -0.348,
+      "max_abs_basis_pct": 0.348,
+      "worst_adverse_day_up_pct": 21.82,
+      "max_safe_leverage": 4.6,
+      "worst_negative_funding_run_bps": -84.37,
+      "days": 902
+    },
+    {
+      "symbol": "DOGEUSDT",
+      "max_basis_pct": 0.198,
+      "min_basis_pct": -0.191,
+      "max_abs_basis_pct": 0.198,
+      "worst_adverse_day_up_pct": 36.07,
+      "max_safe_leverage": 2.8,
+      "worst_negative_funding_run_bps": -12.6,
+      "days": 902
+    },
+    {
+      "symbol": "SUIUSDT",
+      "max_basis_pct": 0.173,
+      "min_basis_pct": -0.307,
+      "max_abs_basis_pct": 0.307,
+      "worst_adverse_day_up_pct": 39.88,
+      "max_safe_leverage": 2.5,
+      "worst_negative_funding_run_bps": -46.98,
+      "days": 902
+    },
+    {
+      "symbol": "NEARUSDT",
+      "max_basis_pct": 0.158,
+      "min_basis_pct": -0.221,
+      "max_abs_basis_pct": 0.221,
+      "worst_adverse_day_up_pct": 41.5,
+      "max_safe_leverage": 2.4,
+      "worst_negative_funding_run_bps": -20.54,
+      "days": 902
+    },
+    {
+      "symbol": "AAVEUSDT",
+      "max_basis_pct": 0.215,
+      "min_basis_pct": -0.232,
+      "max_abs_basis_pct": 0.232,
+      "worst_adverse_day_up_pct": 29.97,
+      "max_safe_leverage": 3.3,
+      "worst_negative_funding_run_bps": -16.07,
+      "days": 902
+    },
+    {
+      "symbol": "ARBUSDT",
+      "max_basis_pct": 0.188,
+      "min_basis_pct": -0.25,
+      "max_abs_basis_pct": 0.25,
+      "worst_adverse_day_up_pct": 31.27,
+      "max_safe_leverage": 3.2,
+      "worst_negative_funding_run_bps": -11.99,
+      "days": 902
+    }
+  ],
+  "basket": {
+    "worst_single_symbol_basis_pct": 0.348,
+    "mean_worst_basis_pct": 0.251,
+    "worst_negative_funding_run_bps": -84.37,
+    "mean_worst_negative_funding_run_bps": -29.7,
+    "min_safe_leverage_across_basket": 2.4
+  },
+  "interpretation": {
+    "fully_funded_1to1_tail_pct": 0.548,
+    "note": "fully-funded tail = mean worst basis (forced-unwind) + mean worst sustained negative-funding run; directional cancels (no liquidation). leveraged adds liquidation at moves > 1/L."
+  }
+}

@@ -16,6 +16,13 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Carry tail-risk study (#1188): measured the basis-blowout / funding-flip /
+  liquidation tails a funding-only backtest can't see, over 2.5y for the carry
+  basket. **Tail does NOT wipe the year if run UNLEVERED**: perp-spot basis never
+  widened >0.35% (tight peg, even through crashes), worst sustained negative-
+  funding run -84bps; fully-funded 1:1 residual tail ~0.55% (mean) vs ~5%/yr
+  carry. But adverse up-days hit +22-42% -> short leg MUST be unlevered (>2.4x
+  liquidates). Remaining gate: paper-trade for real slippage (`runs/20260620T-carry-tail/`).
 - Carry cost-realism sensitivity (#1183): swept the merged carry backtest across
   all-in round-trip costs (20-120 bps) over 2.5y + regimes
   (`runs/20260620T-carry-cost/`). The edge **survives realistic costs in
