@@ -100,8 +100,15 @@ fn merged_mr_cmd(owner: string, repo: string) -> string {
     if len(ts) > 0 {
         return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --since " + shell_escape(ts) + " --view impl" + repo_arg(owner, repo);
     };
+    // #1185: first run has no `last_check`, so without a bound the no-since
+    // query learns from the WHOLE merged-MR history — one prompt() per MR per
+    // tick, starving the drafting step on a mature repo. Bound the first run to
+    // the single most recent merged MR via --per-page 1 (both forge backends
+    // sort by updated_at desc and accept --per-page). The should_learn_from_mr
+    // memo gate still caps learning at at-most-once per distinct MR iid; this
+    // just stops the very first tick from fanning out across the full backlog.
     // colony-lint: safe-exec-concat
-    return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --view impl" + repo_arg(owner, repo);
+    return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --per-page 1 --view impl" + repo_arg(owner, repo);
 }
 
 // #291: the forge wrappers' assigned-issues* subcommands gate on BOTH the
@@ -253,8 +260,14 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         let first_iid_str = to_string(json_get(issues_raw, "[0].iid"));
         let first_upd = to_string(json_get(issues_raw, "[0].updated_at"));
         if should_draft_code(owner, repo, first_iid_str, first_upd) {
-            memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_iid"), first_iid_str);
-            memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_updated_at"), first_upd);
+            // #1185: the staleness markers (last_drafted_iid / _updated_at)
+            // are NOT set here. The #200 gate must only short-circuit once an
+            // action for this issue has actually COMPLETED. The autonomous
+            // path sets them after commit-files succeeds; the review-gated /
+            // propose / shadow paths set them after their own terminal action
+            // (the draft comment / emit). A branch-created-but-commit-failed
+            // tick leaves the markers unset so the next tick retries instead
+            // of stranding an empty branch.
             let rec = recommend("code_write", ["accuracy"]);
             let context = "Assigned issues: " + issues_raw + "\nLearned code patterns: " + to_string(rec);
 
@@ -322,6 +335,13 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     };
 
                     if len(commit_result) > 0 {
+                        // #1185: mark drafted only now that the commit landed.
+                        // If create-branch succeeded but commit-files failed,
+                        // we never reach here, so the markers stay unset and
+                        // the next tick retries the issue instead of skipping
+                        // it forever behind the #200 gate with an empty branch.
+                        memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_iid"), first_iid_str);
+                        memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_updated_at"), first_upd);
                         print("[code_writer] Committed code to", draft.branch_name);
                         emit("implementation:code_draft", draft);
                         // #1151: durable single-slot handoff to commit_composer.
@@ -374,6 +394,14 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                         };
                     };
                 };
+                // #1185: for the review-gated / propose / shadow paths the
+                // draft comment / emit IS the terminal action and it has just
+                // run, so mark drafted now to preserve their per-tick
+                // idempotency (they must not re-post / re-emit every tick).
+                // The autonomous path deliberately does NOT fall through here
+                // — it sets the markers only after commit-files succeeds.
+                memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_iid"), first_iid_str);
+                memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_updated_at"), first_upd);
             };
         };
     };

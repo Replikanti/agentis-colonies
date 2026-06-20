@@ -15,6 +15,9 @@
 #   Test 7: GITHUB_ME (GITLAB_ME unset) seeds gitlab:me on github backend
 #   Test 8: GITLAB_ME (GITHUB_ME unset) seeds gitlab:me on gitlab backend
 #   Test 9: Both unset — gitlab:me memo left unset
+#   Test 10: Fresh install env_passthrough carries the trigger-label vars (#1185)
+#   Test 11: #1185 upgrade rewrites the #277-era literal to add trigger-labels
+#   Test 12: #277-era pre-fix literal also migrates straight to the #1185 value
 #
 # Usage: ./tools/test-install-env-passthrough.sh
 # Exit code 0 if all tests pass, 1 otherwise.
@@ -48,13 +51,21 @@ run_install_fragment() {
     # customization (extra vars, reordering) is preserved untouched.
     if [ -f "$AGENTIS_CONFIG" ] && grep -qxF 'exec.env_passthrough = COLONY_DIR,GITLAB_*' "$AGENTIS_CONFIG"; then
         awk '/^exec\.env_passthrough = COLONY_DIR,GITLAB_\*$/ \
-             { print "exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*"; next } { print }' \
+             { print "exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL"; next } { print }' \
             "$AGENTIS_CONFIG" > "$AGENTIS_CONFIG.tmp" && mv "$AGENTIS_CONFIG.tmp" "$AGENTIS_CONFIG"
     fi
-    write_key 'exec.env_passthrough' 'COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*'
+    # Migrate #1185 pre-fix literal in-place. Upgrades the #277-era value to
+    # also pass through the trigger-label vars. Exact-match only.
+    if [ -f "$AGENTIS_CONFIG" ] && grep -qxF 'exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*' "$AGENTIS_CONFIG"; then
+        awk '/^exec\.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_\*,GITHUB_\*$/ \
+             { print "exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL"; next } { print }' \
+            "$AGENTIS_CONFIG" > "$AGENTIS_CONFIG.tmp" && mv "$AGENTIS_CONFIG.tmp" "$AGENTIS_CONFIG"
+    fi
+    write_key 'exec.env_passthrough' 'COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL'
 }
 
-EXPECTED_NEW='exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*'
+EXPECTED_NEW='exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL'
+EXPECTED_277='exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*'
 EXPECTED_OLD='exec.env_passthrough = COLONY_DIR,GITLAB_*'
 OPERATOR_TUNED='exec.env_passthrough = COLONY_DIR,GITLAB_*,MY_CUSTOM'
 
@@ -67,7 +78,7 @@ T1_CONFIG="$T1_DIR/config"
 run_install_fragment "$T1_CONFIG"
 
 if grep -qxF "$EXPECTED_NEW" "$T1_CONFIG"; then
-    pass "fresh install writes exec.env_passthrough with FORGE_TYPE + GITHUB_*"
+    pass "fresh install writes exec.env_passthrough with FORGE_TYPE + GITHUB_* + trigger labels"
 else
     fail "fresh install — expected '$EXPECTED_NEW', got:"
     cat "$T1_CONFIG"
@@ -103,6 +114,62 @@ if grep -qxF "$OPERATOR_TUNED" "$T3_CONFIG" \
 else
     fail "operator-tuned preservation — expected '$OPERATOR_TUNED' untouched, got:"
     cat "$T3_CONFIG"
+fi
+
+# ----- Trigger-label env passthrough (#1185) -----
+
+# ----- Test 10: Fresh install carries the trigger-label vars -----
+# A colony.toml `trigger_label` override is exported by start-colony.sh as
+# IMPLEMENTATION_TRIGGER_LABEL / PLANNING_TRIGGER_LABEL; without them in the
+# allowlist agentis strips the override before `exec sh forge-api.sh`.
+T10_DIR="$FAKE_ROOT/t10"
+mkdir -p "$T10_DIR"
+T10_CONFIG="$T10_DIR/config"
+: > "$T10_CONFIG"
+
+run_install_fragment "$T10_CONFIG"
+
+if grep -q 'IMPLEMENTATION_TRIGGER_LABEL' "$T10_CONFIG" \
+    && grep -q 'PLANNING_TRIGGER_LABEL' "$T10_CONFIG"; then
+    pass "fresh install env_passthrough carries IMPLEMENTATION_TRIGGER_LABEL + PLANNING_TRIGGER_LABEL (#1185)"
+else
+    fail "fresh install trigger labels — expected both trigger-label vars, got:"
+    cat "$T10_CONFIG"
+fi
+
+# ----- Test 11: #1185 upgrade rewrites the #277-era literal -----
+T11_DIR="$FAKE_ROOT/t11"
+mkdir -p "$T11_DIR"
+T11_CONFIG="$T11_DIR/config"
+printf '%s\n' "$EXPECTED_277" > "$T11_CONFIG"
+
+run_install_fragment "$T11_CONFIG"
+
+if grep -qxF "$EXPECTED_NEW" "$T11_CONFIG" \
+    && ! grep -qxF "$EXPECTED_277" "$T11_CONFIG"; then
+    pass "#1185 upgrade rewrites #277-era literal to add the trigger-label vars"
+else
+    fail "#1185 upgrade — expected '$EXPECTED_NEW' and no bare '$EXPECTED_277', got:"
+    cat "$T11_CONFIG"
+fi
+
+# ----- Test 12: #277-era pre-fix literal migrates straight to the #1185 value -----
+# The #277 migration's awk target now emits the full #1185 value, so an even
+# older `COLONY_DIR,GITLAB_*` config lands on the trigger-label value in one
+# install run (no second pass needed).
+T12_DIR="$FAKE_ROOT/t12"
+mkdir -p "$T12_DIR"
+T12_CONFIG="$T12_DIR/config"
+printf '%s\n' "$EXPECTED_OLD" > "$T12_CONFIG"
+
+run_install_fragment "$T12_CONFIG"
+
+if grep -qxF "$EXPECTED_NEW" "$T12_CONFIG" \
+    && ! grep -qxF "$EXPECTED_OLD" "$T12_CONFIG"; then
+    pass "#277-era literal migrates straight to the #1185 trigger-label value"
+else
+    fail "#277->#1185 migration — expected '$EXPECTED_NEW', got:"
+    cat "$T12_CONFIG"
 fi
 
 # ----- Heartbeat interval (#280) -----
