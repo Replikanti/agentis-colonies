@@ -16,7 +16,7 @@ The maker quotes bid/ask around a fair value = trailing EMA of price. The EMA's 
 | 0.1 (medium) | 12 / 18 | +$409 |
 | **0.3 (fast / responsive)** | **18 / 18** | +$370 |
 
-- **A naive lagging-fair maker LOSES** — every config is negative at the slowest setting in the first cut (no skew); the stale quotes get **run over** on every move (you keep buying as price falls). Adverse selection dominates the spread. This is the textbook naive-MM failure.
+- **A naive lagging-fair maker mostly LOSES** — at the slowest setting (alpha 0.02) only 6/18 configs are positive, and they are the *widest* spreads (15 bps) where the spread is fat enough to overcome adverse selection even with a stale fair; every tighter-spread lagging config is negative — the stale quotes get **run over** on every move (you keep buying as price falls) and adverse selection dominates the spread. This is the textbook naive-MM failure: a lagging fair forces you to quote wide to survive, which kills fill rate.
 - **A responsive-fair maker is POSITIVE** (under the optimistic fill) across the board at `alpha=0.3`. With quotes that track price quickly, the spread earned exceeds the adverse selection. So the MM economics are **not impossible** — the spread CAN beat adverse selection, IF your fair value is good enough.
 - Rebate helps but isn't required at `alpha=0.3` (positive even at 0 maker fee); a lagging fair can't be rescued by a rebate.
 
