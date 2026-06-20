@@ -80,6 +80,12 @@ tools/flat-cyborg-claude.sh
 # #1163: the wrapper invokes this at runtime to unwrap JSON-shaped replies that
 # --extract-structural's TUI screen-scrape line-wrapped (newline inside JSON).
 tools/flat-cyborg-unwrap.py
+# #1195: deterministic search/replace applier. code_writer's autonomous edit
+# path asks the LLM for small old_str/new_str edits (small output works on
+# flat-cyborg) and this assembles the full file before commit-files — letting
+# the federation edit large existing files (e.g. a ~47KB README) without
+# regenerating the whole thing.
+tools/apply-edits.py
 
 # ----- Federation dashboard -----
 # Extracted to a separately-versioned standalone component in #252.
