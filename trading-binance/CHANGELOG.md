@@ -16,6 +16,13 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Carry paper-trade harness (#1190): `tools/carry-paper.py` -- the last gate
+  before real money. Periodic snapshots track what the regime-gated, UNLEVERED
+  delta-neutral carry book would do live, accumulating a forward out-of-sample
+  ledger marked by carry-verify.sh. Regime-gate (deploy only if expected carry
+  clears the cost hurdle, else CASH, #1184) + unlevered (#1188) + the #1174
+  basket rule. First live snapshot chose CASH (calm regime, ~2.4%/yr < hurdle).
+  `tools/test-carry-paper.sh` 12 cases.
 - Cross-sectional long-short backtest (#1193): genuine active TRADING (not
   yield) -- long top-K / short bottom-K alts by trailing return, dollar-neutral,
   weekly, walk-forward. **Cross-sectional MOMENTUM (30d lookback) has a real,

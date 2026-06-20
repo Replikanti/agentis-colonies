@@ -3,3 +3,6 @@
 # tools/binance-feed-download.py. Keep the directory present via .gitkeep.
 /data/*
 !/data/.gitkeep
+
+# carry paper-trade live ledger (runtime state, accumulates forward)
+runs/carry-paper-live/
