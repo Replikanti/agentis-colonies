@@ -121,6 +121,51 @@ fn apply_edits_to_actions(path: string, orig: string, edits: string) -> string {
     return out;
 }
 
+// #1208: render a line-NUMBERED view of the file content for the edit prompt.
+// Each line gets an `N|` prefix (N = 1-based line number) so the LLM can name
+// line-range edits without ever reproducing exact source bytes (the markdown
+// `**`-drop failure mode of the search/replace path). The UN-numbered content
+// rides $C (env var, off-argv) so ARG_MAX never bites; splitlines() keepends is
+// not needed here because the numbered view is a display artifact, not content.
+fn numbered_view(content: string) -> string {
+    // colony-lint: safe-exec-concat
+    let cmd = "C=" + shell_escape(content) +
+        " python3 -c 'import os,sys" +
+        "\ntext=os.environ[\"C\"]" +
+        "\nlines=text.splitlines()" +
+        "\nsys.stdout.write(\"\\n\".join(\"%d|%s\" % (i+1, ln) for i,ln in enumerate(lines)))'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+// #1208: deterministically turn (existing UN-numbered content, LLM line-range
+// edits) into the `--actions` JSON commit-files expects, WITHOUT the LLM ever
+// reproducing source bytes. tools/apply-line-edits.py reads the original content
+// on stdin and the edits JSON from $LINE_EDITS ([{start_line,end_line,new_text}],
+// 1-based inclusive; empty new_text deletes), validates 1<=start<=end<=nlines and
+// NON-OVERLAPPING, applies descending-by-start so earlier replacements don't shift
+// later ranges, and prints the new full content; we then json.dumps a single
+// [{action:"update", file_path, content}] array. Large values (fetched file +
+// edits) ride env vars / a pipe (`printf`, a shell builtin), never argv. If
+// apply-line-edits.py exits non-zero (out-of-bounds / overlapping — the
+// validation guard) the whole `exec sh` exits non-zero and the caller's `try`
+// collapses to "" => treated as a failed code-gen, no commit. `path` is
+// shell_escape'd; `orig` and `edits` are passed as env vars so the body itself
+// carries no untrusted concatenation.
+fn apply_line_edits_to_actions(path: string, orig: string, edits: string) -> string {
+    // colony-lint: safe-exec-concat
+    let cmd = "ORIG=" + shell_escape(orig) + " LINE_EDITS=" + shell_escape(edits) +
+        " FP=" + shell_escape(path) +
+        " python3 -c 'import os,sys,subprocess,json" +
+        "\ntools=os.path.join(os.environ[\"COLONY_DIR\"], \"..\", \"..\", \"tools\", \"apply-line-edits.py\")" +
+        "\np=subprocess.run([sys.executable, tools], input=os.environ[\"ORIG\"], capture_output=True, text=True, env=os.environ)" +
+        "\nif p.returncode != 0:" +
+        "\n    sys.stderr.write(p.stderr); sys.exit(1)" +
+        "\nprint(json.dumps([{\"action\": \"update\", \"file_path\": os.environ[\"FP\"], \"content\": p.stdout}]))'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
 fn merged_mr_cmd(owner: string, repo: string) -> string {
     let ts = recall_latest(scoped_memo(owner, repo, "code_writer:last_check"));
     // colony-lint: safe-exec-concat
@@ -336,30 +381,34 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                         "";
                     };
 
-                    // #1195: when the primary file ALREADY EXISTS, do NOT ask the
+                    // #1208: when the primary file ALREADY EXISTS, do NOT ask the
                     // LLM to regenerate the whole file (large output -> timeout on
-                    // claude, line-wrap corruption on flat-cyborg). Ask only for a
-                    // small JSON array of search/replace edits, then assemble the
-                    // full file deterministically via apply-edits.py. The actions
-                    // JSON is built by json.dumps, not the LLM, so the committed
-                    // content is fragility-free. For a NEW file we keep the
-                    // from-scratch full-content path unchanged.
+                    // claude, line-wrap corruption on flat-cyborg) NOR to reproduce
+                    // exact source bytes as a search/replace anchor (the model drops
+                    // `**` markdown from anchors, so old_str never matched). Instead
+                    // show a line-NUMBERED view (`N|` prefix) and ask for line-RANGE
+                    // edits ({start_line,end_line,new_text}); apply-line-edits.py
+                    // splices them in deterministically. The actions JSON is built by
+                    // json.dumps, not the LLM, so the committed content is
+                    // fragility-free. For a NEW file we keep the from-scratch
+                    // full-content path unchanged.
                     let actions_json = if len(existing_content) > 0 {
+                        let numbered = numbered_view(existing_content);
                         let edit_context = "Issue: " + issue_detail + "\nPlan: " + draft.files + "\nPatterns: " + to_string(rec) +
-                            "\nCurrent content of " + primary_path + " (edit THIS file):\n" + existing_content;
+                            "\nCurrent content of " + primary_path + " (edit THIS file; each line is prefixed with its 1-based line number as `N|`):\n" + numbered;
                         let edits_json = prompt(
-                            "You are a code writer editing an EXISTING file. Make the smallest edits that satisfy the task. Return a JSON array of edits, each object with: file_path (string), old_str (string), new_str (string, the replacement). For old_str: copy it VERBATIM from the shown current file content — character for character, including every space, tab, indentation, and line break exactly as displayed. Do NOT paraphrase, reflow, re-indent, trim, or otherwise alter it. Each old_str must be UNIQUE in the file (occur exactly once); include enough surrounding lines of context to guarantee uniqueness. Do NOT return the whole file. Return ONLY the raw JSON array — no markdown code fences, no ```json wrapper, no prose.",
+                            "You are a code writer editing an EXISTING file. Make the smallest edits that satisfy the task. Use the line numbers shown (the `N|` prefix; the `N|` is NOT part of the file content). Return the smallest set of NON-OVERLAPPING line-range replacements as a JSON array, each object with: file_path (string), start_line (int), end_line (int), new_text (string). new_text is the FULL replacement for lines start_line..end_line (inclusive); empty new_text deletes them. Do NOT include the `N|` prefix in new_text. Do NOT return the whole file. Return ONLY the raw JSON array — no markdown code fences, no ```json wrapper, no prose.",
                             edit_context
                         ) -> string;
-                        // Deterministic apply: old_str must match the real file
-                        // exactly-once or apply-edits.py fails loudly and this
+                        // Deterministic apply: line ranges must be in-bounds and
+                        // non-overlapping or apply-line-edits.py fails loudly and this
                         // returns "" => treated as a failed code-gen below (no
                         // commit; #1185 retry re-runs the issue next tick).
-                        let assembled = apply_edits_to_actions(primary_path, existing_content, edits_json);
+                        let assembled = apply_line_edits_to_actions(primary_path, existing_content, edits_json);
                         if len(assembled) > 0 {
                             assembled;
                         } else {
-                            print("[code_writer] apply-edits failed (old_str did not match exactly once) — not committing; will retry");
+                            print("[code_writer] apply-line-edits failed (out-of-bounds or overlapping ranges) — not committing; will retry");
                             "";
                         };
                     } else {
@@ -379,10 +428,10 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                             // #1152: a recurring cause is an unparseable --actions JSON.
                             // Code generation is fidelity-critical: a TUI screen-scrape
                             // backend (flat-cyborg) corrupts the structured JSON of file
-                            // contents. The #1195 search/replace edit path keeps LLM
-                            // output small (works on flat-cyborg); a from-scratch NEW
-                            // file still wants the metered `claude -p` backend for the
-                            // large content (see README "Code-generation fidelity").
+                            // contents. The #1208 line-range edit path keeps LLM output
+                            // small (works on flat-cyborg); a from-scratch NEW file still
+                            // wants the metered `claude -p` backend for the large content
+                            // (see README "Code-generation fidelity").
                             print("[code_writer] hint: if this is an '--actions JSON' parse error, code-gen needs a fidelity backend (claude -p), not the flat-cyborg screen-scrape — see README");
                             "";
                         };

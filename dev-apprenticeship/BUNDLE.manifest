@@ -86,6 +86,13 @@ tools/flat-cyborg-unwrap.py
 # the federation edit large existing files (e.g. a ~47KB README) without
 # regenerating the whole thing.
 tools/apply-edits.py
+# #1208: deterministic line-NUMBERED range applier. code_writer's autonomous
+# existing-file path now shows a `N|`-prefixed numbered view and asks the LLM
+# for line-range edits ({start_line,end_line,new_text}) — so the model never
+# has to reproduce exact source bytes (the markdown `**`-drop failure mode of
+# the search/replace anchors). This validates + splices the ranges into the
+# full file before commit-files.
+tools/apply-line-edits.py
 
 # ----- Federation dashboard -----
 # Extracted to a separately-versioned standalone component in #252.
