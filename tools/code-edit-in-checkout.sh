@@ -215,19 +215,31 @@ flat-cyborg --no-jitter --auto-approve --cwd "$WS" \
     --cmd-file "$TASKFILE" -- claude
 FC_RC=$?
 set -e
-if [ "$FC_RC" -ne 0 ]; then
-    echo "[code-edit] flat-cyborg editing agent failed (exit $FC_RC)" >&2
-    exit "$FC_RC"
-fi
 
 # ---------------------------------------------------------------------------
-# 4. Commit the diff. No staged change => NO_EDITS => exit 3 (retry, not error).
+# 4. Commit the diff. The ARTIFACT is the edit, not the editing session's exit
+#    code: flat-cyborg drives an interactive Claude Code TUI that frequently
+#    never settles to its idle prompt, so flat-cyborg rides to its --timeout-ms
+#    and returns non-zero EVEN WHEN claude finished editing correctly. So we
+#    stage first and decide on the diff:
+#      * staged change present  -> commit + push + PR, regardless of FC_RC
+#        (a timeout that still produced edits is a success, not a failure).
+#      * no change + FC_RC == 0 -> NO_EDITS  => exit 3 (retry, not error).
+#      * no change + FC_RC != 0 -> the session genuinely failed => exit FC_RC.
 # ---------------------------------------------------------------------------
 run_git -C "$WS" add -A
 if run_git -C "$WS" diff --cached --quiet; then
+    if [ "$FC_RC" -ne 0 ]; then
+        echo "[code-edit] flat-cyborg editing agent failed (exit $FC_RC) and produced no edits" >&2
+        exit "$FC_RC"
+    fi
     echo "NO_EDITS"
     echo "[code-edit] claude produced no file changes — not committing, not opening a PR" >&2
     exit 3
+fi
+
+if [ "$FC_RC" -ne 0 ]; then
+    echo "[code-edit] flat-cyborg exited non-zero (exit $FC_RC, likely idle/timeout) but edits were produced — committing the diff" >&2
 fi
 
 run_git -C "$WS" commit -m "feat: $TITLE (#$ISSUE)"
