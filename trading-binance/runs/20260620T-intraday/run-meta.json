@@ -1,0 +1,4 @@
+{"run_id":"20260620T-intraday","issue":1201,"kind":"intraday-cross-sectional-reversal-hourly",
+ "universe_size":18,"span":"2025-09-01..2026-06-20 hourly (~7000 bars)","cost_bps_canonical":8,
+ "sweep":"lookback {1,2,4,6}h x hold {2,4,6}h x signal {reversal,momentum}, top-4, walk-forward","base_commit":"0af3e377e6910ec3ec051709b083e1cc153c9de3",
+ "reproduce":"python3 runs/20260620T-intraday/intraday-xs.py --symbols <universe> --start 2025-09-01 --end 2026-06-20 --top-k 4 --cost-bps-roundtrip 8 --lookbacks 1,2,4,6 --holds 2,4,6 (hourly klines fetched live)"}
