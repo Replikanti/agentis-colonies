@@ -69,13 +69,10 @@ fn repo_field(line: string, idx: int) -> string {
 }
 
 fn unplanned_cmd(owner: string, repo: string) -> string {
-    let ts = recall_latest(scoped_memo(owner, repo, "task_decomposer:last_check"));
-    // colony-lint: safe-exec-concat
-    if len(ts) > 0 {
-        // #235: events-aware query — see risk_assessor.ag for rationale.
-        return "$COLONY_DIR/scripts/forge-api.sh issues-by-label-events --since " + shell_escape(ts) + " --view planning" + repo_arg(owner, repo);
-    };
-    // First-tick fallback: no prior window; snapshot preserves pre-#235 boot behavior.
+    // #1181: pickup keys on ASSIGNMENT, not label events — see
+    // risk_assessor.ag for rationale. Always query the current-state
+    // `issues --needs-planning` snapshot so an unplanned issue stays
+    // visible on every tick; the #227 `:posted` guard prevents re-prompting.
     // colony-lint: safe-exec-concat
     return "$COLONY_DIR/scripts/forge-api.sh issues --needs-planning --view planning" + repo_arg(owner, repo);
 }

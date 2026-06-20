@@ -137,18 +137,11 @@ fn rl_is_limited(owner: string, repo: string) -> int {
 }
 
 fn unplanned_cmd(owner: string, repo: string) -> string {
-    let ts = recall_latest(scoped_memo(owner, repo, "risk_assessor:last_check"));
-    // colony-lint: safe-exec-concat
-    if len(ts) > 0 {
-        // #235: events-aware query closes the short-lived-label gap.
-        // issues-by-label-events unions currently-labeled + issues where
-        // the trigger label was added at any point in [ts, now] per
-        // resource_label_events. Catches transitions we'd miss between
-        // 60 s polls with a pure current-state snapshot.
-        return "$COLONY_DIR/scripts/forge-api.sh issues-by-label-events --since " + shell_escape(ts) + " --view planning" + repo_arg(owner, repo);
-    };
-    // First-tick fallback: no prior window to diff against; the snapshot
-    // preserves pre-#235 boot behavior byte-identically.
+    // #1181: pickup keys on ASSIGNMENT, not label events. Always query the
+    // current-state `issues --needs-planning` snapshot so an unplanned
+    // issue (no recent label churn) stays visible on every tick, not just
+    // the first. The #227 `:posted` idempotency guard in tick_for_repo
+    // prevents re-prompting once the assessment has been posted.
     // colony-lint: safe-exec-concat
     return "$COLONY_DIR/scripts/forge-api.sh issues --needs-planning --view planning" + repo_arg(owner, repo);
 }
