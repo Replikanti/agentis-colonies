@@ -1,0 +1,5 @@
+{"run_id":"20260620T-mm","issue":1205,"kind":"market-making-feasibility-tickdata-optimistic-fill",
+ "symbol":"LINKUSDT","span":"2026-06-13..2026-06-15 (3 days aggTrades, ~181k trades)",
+ "fill_model":"OPTIMISTIC touch-based (front-of-queue, no latency) -> UPPER BOUND",
+ "sweep":"half-spread {6,10,15}bps x maker-fee {2,0,-0.5}bps x inv-skew {0,10}bps x fair-EMA-alpha {0.02,0.1,0.3}","base_commit":"6410fbc81f0a84382ada428982d447820500436b",
+ "reproduce":"python3 runs/20260620T-mm/mm-backtest.py --symbol LINKUSDT --dates 2026-06-13,2026-06-14,2026-06-15 --half-spreads-bps 6,10,15 --maker-fees-bps 2,0,-0.5 --inventory-skews-bps 0,10 --ema-alphas 0.02,0.1,0.3 --max-inventory-notional 5000 --quote-notional 1000 (tick data fetched live from data.binance.vision)"}
