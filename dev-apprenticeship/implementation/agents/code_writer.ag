@@ -94,6 +94,33 @@ fn primary_file_path(files: string) -> string {
     return out;
 }
 
+// #1195: deterministically turn (existing content, LLM search/replace edits)
+// into the `--actions` JSON commit-files expects, WITHOUT the LLM ever having
+// to emit the full file. tools/apply-edits.py reads the original content on
+// stdin and the edits JSON from $APPLY_EDITS, replaces each edit's old_str
+// (which must be an EXACT, unique substring) and prints the new full content;
+// we then json.dumps a single-element [{action:"update", file_path, content}]
+// array. Large values (the fetched file + the edits) ride env vars / a pipe
+// fed by `printf` (a shell builtin), never argv, so ARG_MAX never bites. If
+// apply-edits.py exits non-zero (mangled / ambiguous / missing old_str — the
+// flat-cyborg screen-scrape corruption guard) the whole `exec sh` exits
+// non-zero and the caller's `try` collapses to "" => treated as a failed
+// code-gen, no commit. `path` is shell_escape'd; `orig` and `edits` are passed
+// as env vars so the body itself carries no untrusted concatenation.
+fn apply_edits_to_actions(path: string, orig: string, edits: string) -> string {
+    // colony-lint: safe-exec-concat
+    let cmd = "ORIG=" + shell_escape(orig) + " APPLY_EDITS=" + shell_escape(edits) +
+        " FP=" + shell_escape(path) +
+        " python3 -c 'import os,sys,subprocess,json" +
+        "\ntools=os.path.join(os.environ[\"COLONY_DIR\"], \"..\", \"..\", \"tools\", \"apply-edits.py\")" +
+        "\np=subprocess.run([sys.executable, tools], input=os.environ[\"ORIG\"], capture_output=True, text=True, env=os.environ)" +
+        "\nif p.returncode != 0:" +
+        "\n    sys.stderr.write(p.stderr); sys.exit(1)" +
+        "\nprint(json.dumps([{\"action\": \"update\", \"file_path\": os.environ[\"FP\"], \"content\": p.stdout}]))'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
 fn merged_mr_cmd(owner: string, repo: string) -> string {
     let ts = recall_latest(scoped_memo(owner, repo, "code_writer:last_check"));
     // colony-lint: safe-exec-concat
@@ -301,36 +328,65 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     // the file is new. Single-file fetch only — see
                     // primary_file_path() for why multi-file is out of scope.
                     let primary_path = primary_file_path(draft.files);
-                    let existing_block = if len(primary_path) > 0 {
+                    let existing_content = if len(primary_path) > 0 {
                         // colony-lint: safe-exec-concat
                         let getfile_cmd = "$COLONY_DIR/scripts/forge-api.sh get-file --path " + shell_escape(primary_path) + " --ref main" + repo_arg(owner, repo);
-                        let existing_content = try { exec sh getfile_cmd; } catch e { ""; };
-                        if len(existing_content) > 0 {
-                            "\nExisting file " + primary_path + " (EDIT this — return the full updated file, preserve everything you are not changing):\n" + existing_content;
-                        } else {
-                            "\nExisting file " + primary_path + ": (file does not exist yet — create it)";
-                        };
+                        try { exec sh getfile_cmd; } catch e { ""; };
                     } else {
                         "";
                     };
 
-                    let code_context = "Issue: " + issue_detail + "\nPlan: " + draft.files + "\nPatterns: " + to_string(rec) + existing_block;
+                    // #1195: when the primary file ALREADY EXISTS, do NOT ask the
+                    // LLM to regenerate the whole file (large output -> timeout on
+                    // claude, line-wrap corruption on flat-cyborg). Ask only for a
+                    // small JSON array of search/replace edits, then assemble the
+                    // full file deterministically via apply-edits.py. The actions
+                    // JSON is built by json.dumps, not the LLM, so the committed
+                    // content is fragility-free. For a NEW file we keep the
+                    // from-scratch full-content path unchanged.
+                    let actions_json = if len(existing_content) > 0 {
+                        let edit_context = "Issue: " + issue_detail + "\nPlan: " + draft.files + "\nPatterns: " + to_string(rec) +
+                            "\nCurrent content of " + primary_path + " (edit THIS file):\n" + existing_content;
+                        let edits_json = prompt(
+                            "You are a code writer editing an EXISTING file. Make the smallest edits that satisfy the task. Return a JSON array of edits, each object with: file_path (string), old_str (string, an EXACT, UNIQUE substring of the shown current file content — it must occur exactly once, copy it verbatim including whitespace), new_str (string, the replacement). Do NOT return the whole file. Return ONLY the raw JSON array — no markdown code fences, no ```json wrapper, no prose.",
+                            edit_context
+                        ) -> string;
+                        // Deterministic apply: old_str must match the real file
+                        // exactly-once or apply-edits.py fails loudly and this
+                        // returns "" => treated as a failed code-gen below (no
+                        // commit; #1185 retry re-runs the issue next tick).
+                        let assembled = apply_edits_to_actions(primary_path, existing_content, edits_json);
+                        if len(assembled) > 0 {
+                            assembled;
+                        } else {
+                            print("[code_writer] apply-edits failed (old_str did not match exactly once) — not committing; will retry");
+                            "";
+                        };
+                    } else {
+                        let code_context = "Issue: " + issue_detail + "\nPlan: " + draft.files + "\nPatterns: " + to_string(rec) +
+                            "\nFile " + primary_path + ": (does not exist yet — create it)";
+                        prompt(
+                            "You are a code writer. Generate the actual file contents for this implementation plan. Create the file(s) from scratch. Return a JSON array of objects, each with: action (string, 'create' or 'update'), file_path (string), content (string, the full file content). Follow the learned naming and structure patterns. Only return the JSON array, nothing else.",
+                            code_context
+                        ) -> string;
+                    };
 
-                    let actions_json = prompt(
-                        "You are a code writer. Generate the actual file contents for this implementation plan. If an existing file is shown, EDIT it — return the FULL updated file content with only the necessary changes, preserving everything else. Only create from scratch when no existing content is shown. Return a JSON array of objects, each with: action (string, 'create' or 'update'), file_path (string), content (string, the full file content). Follow the learned naming and structure patterns. Only return the JSON array, nothing else.",
-                        code_context
-                    ) -> string;
-
-                    // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
-                    let commit_cmd = "$COLONY_DIR/scripts/forge-api.sh commit-files --branch " + shell_escape(draft.branch_name) + " --message " + shell_escape("feat: implement #" + to_string(draft.issue_id) + " - " + draft.summary) + " --actions " + shell_escape(actions_json) + repo_arg(owner, repo);
-                    let commit_result = try { exec sh commit_cmd; } catch e {
-                        print("[code_writer] Commit failed:", e);
-                        // #1152: a recurring cause is an unparseable --actions JSON.
-                        // Code generation is fidelity-critical: a TUI screen-scrape
-                        // backend (flat-cyborg) corrupts the structured JSON of file
-                        // contents. Run code-gen on the metered `claude -p` backend
-                        // (see README "Code-generation fidelity"), not flat-cyborg.
-                        print("[code_writer] hint: if this is an '--actions JSON' parse error, code-gen needs a fidelity backend (claude -p), not the flat-cyborg screen-scrape — see README");
+                    let commit_result = if len(actions_json) > 0 {
+                        // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+                        let commit_cmd = "$COLONY_DIR/scripts/forge-api.sh commit-files --branch " + shell_escape(draft.branch_name) + " --message " + shell_escape("feat: implement #" + to_string(draft.issue_id) + " - " + draft.summary) + " --actions " + shell_escape(actions_json) + repo_arg(owner, repo);
+                        try { exec sh commit_cmd; } catch e {
+                            print("[code_writer] Commit failed:", e);
+                            // #1152: a recurring cause is an unparseable --actions JSON.
+                            // Code generation is fidelity-critical: a TUI screen-scrape
+                            // backend (flat-cyborg) corrupts the structured JSON of file
+                            // contents. The #1195 search/replace edit path keeps LLM
+                            // output small (works on flat-cyborg); a from-scratch NEW
+                            // file still wants the metered `claude -p` backend for the
+                            // large content (see README "Code-generation fidelity").
+                            print("[code_writer] hint: if this is an '--actions JSON' parse error, code-gen needs a fidelity backend (claude -p), not the flat-cyborg screen-scrape — see README");
+                            "";
+                        };
+                    } else {
                         "";
                     };
 

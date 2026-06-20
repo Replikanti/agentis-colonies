@@ -17,6 +17,22 @@ is asserted until multi-version CI is in place.
 
 ### Changed
 
+- **`code_writer` edits existing files via search/replace, not full rewrites**
+  (#1195). The autonomous path used to fetch an existing file (#1172) and then
+  ask the LLM to return the FULL updated file content. For a large file (e.g. a
+  ~47KB README) that times out the LLM call (`[llm.cancelled]`) and, on the
+  flat-cyborg screen-scrape backend, line-wrap-corrupts the big JSON. Now, when
+  the planned primary file already exists, the code-gen prompt asks only for a
+  small JSON array of `{old_str, new_str}` edits (each `old_str` an EXACT,
+  unique substring), and a new deterministic helper `tools/apply-edits.py`
+  assembles the full file before `commit-files`. This keeps the LLM output
+  SMALL — so the edit path now works on the flat-cyborg backend (the federation
+  default), not just `claude -p` — and lets the federation edit large real
+  files. `apply-edits.py` fails loudly (non-zero, no partial output) when an
+  `old_str` matches zero or more than one time, which doubles as the corruption
+  guard: a mangled edit won't match the real file, so the agent retries
+  (#1185) instead of committing silent garbage. New files keep the existing
+  from-scratch full-content path unchanged.
 - **Documented the code-generation fidelity constraint** (#1152). flat-cyborg's
   `--extract` is a TUI screen-scrape: great for prose (the observe / suggest /
   review workflow), but it corrupts the fidelity-critical structured JSON the
