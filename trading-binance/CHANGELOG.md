@@ -16,6 +16,13 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Carry paper-trade harness (#1190): `tools/carry-paper.py` -- the last gate
+  before real money. Periodic snapshots track what the regime-gated, UNLEVERED
+  delta-neutral carry book would do live, accumulating a forward out-of-sample
+  ledger marked by carry-verify.sh. Regime-gate (deploy only if expected carry
+  clears the cost hurdle, else CASH, #1184) + unlevered (#1188) + the #1174
+  basket rule. First live snapshot chose CASH (calm regime, ~2.4%/yr < hurdle).
+  `tools/test-carry-paper.sh` 12 cases.
 - Carry cost-realism sensitivity (#1183): swept the merged carry backtest across
   all-in round-trip costs (20-120 bps) over 2.5y + regimes
   (`runs/20260620T-carry-cost/`). The edge **survives realistic costs in
