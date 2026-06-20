@@ -97,8 +97,15 @@ tools/apply-line-edits.py
 # Claude Code (via flat-cyborg) to edit files DIRECTLY in a local git checkout,
 # then commits the `git diff` and opens the PR — sidestepping flat-cyborg's TUI
 # screen-scrape corruption of large structured-JSON file content (#1152 /
-# #1195 / #1208). Runtime dep: code_writer.ag invokes it via exec sh.
+# #1195 / #1208). Runtime dep: code-edit-job.sh launches it detached.
 tools/code-edit-in-checkout.sh
+# #1214: fast detached launcher/poller for the orchestrator above. agentis caps
+# a single `exec sh` at ~120000ms, but the orchestrator runs for minutes, so a
+# synchronous call was killed mid-edit. code_writer.ag now invokes this launcher
+# via exec sh: it runs code-edit-in-checkout.sh DETACHED (setsid) in a per-issue
+# job dir and returns fast, and code_writer polls its LAUNCHED/RUNNING/DONE/
+# NO_EDITS/ERROR state across ticks. Runtime dep: code_writer.ag invokes it.
+tools/code-edit-job.sh
 
 # ----- Federation dashboard -----
 # Extracted to a separately-versioned standalone component in #252.

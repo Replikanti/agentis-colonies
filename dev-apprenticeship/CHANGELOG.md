@@ -17,6 +17,33 @@ is asserted until multi-version CI is in place.
 
 ### Changed
 
+- **`code_writer`'s autonomous checkout-edit now runs DETACHED and is polled
+  across ticks, instead of one synchronous `exec sh` that the runtime killed
+  mid-edit** (#1214). agentis caps a single `exec sh` at ~120000ms (the
+  `exec.default_timeout_ms` knob is ignored), but the checkout-edit orchestrator
+  (#1210: clone + flat-cyborg/claude edit + commit + push + open PR) routinely
+  runs for minutes, so the synchronous call from #1210 hit `ExecTimeout after
+  120000ms` and the orchestrator was SIGKILLed mid-edit. A new fast launcher
+  `tools/code-edit-job.sh` now wraps `tools/code-edit-in-checkout.sh`: it runs
+  the orchestrator DETACHED (`setsid … </dev/null &`) inside a per-issue job dir
+  (`<fed>/.agentis/jobs/<colony>/issue-<iid>/` with `status` / `result` / `pid`
+  / `log`) and returns in well under 120s on every call, printing one poll-state
+  line: `LAUNCHED` (just started), `RUNNING` (still alive — a re-poll never
+  starts a second clone/edit, guarded by the recorded pid's liveness), `DONE
+  <pr-url>`, `NO_EDITS` (claude changed nothing → retry), or `ERROR <short>`. A
+  detached worker captures the orchestrator's exit code (0 → `done` + PR URL,
+  3 → `no_edits`, other → `error`) and writes the terminal status atomically
+  (temp file + `mv`); a terminal poll consumes/clears the job dir so the next
+  call relaunches. A crashed job (`status=running` but the pid is dead) is
+  reported as `ERROR job-died` and cleared rather than hung on. The token is
+  inherited via the environment exactly as before — never named on a command
+  line, never echoed, never written to the job dir (the orchestrator's
+  `GIT_ASKPASS` path is untouched). `code_writer.ag`'s autonomous branch now
+  calls the launcher (no `prompt()` in this branch) and runs the poll-state
+  machine: `LAUNCHED`/`RUNNING` leave the #1185 completion markers unset so the
+  same assigned issue is re-polled next tick; only `DONE` sets the markers and
+  emits `implementation:mr_ready`; `NO_EDITS`/`ERROR` retry. The review-gated /
+  propose / shadow paths are unchanged.
 - **`code_writer`'s autonomous path edits a local checkout and commits the
   `git diff`, instead of generating edit-JSON and committing via the forge API**
   (#1210, Approach A). The old autonomous chain (`create-branch` → `get-file` →

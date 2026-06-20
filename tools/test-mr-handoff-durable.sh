@@ -33,13 +33,16 @@ pass() { echo "[PASS] $1"; PASS=$((PASS + 1)); }
 fail() { echo "[FAIL] $1"; FAIL=$((FAIL + 1)); }
 
 # =============================================================================
-# code_writer: #1210 (Approach A) — the autonomous path now edits files in a
-# local checkout and opens the PR DIRECTLY (via tools/code-edit-in-checkout.sh),
-# emitting implementation:mr_ready itself. It therefore no longer hands off to
-# commit_composer via the durable implementation:pending_mr memo — writing that
-# memo would make commit_composer open a DUPLICATE MR for the same branch. The
-# durable handoff machinery stays in commit_composer (asserted below) for any
-# pending_mr written by other code paths; code_writer just no longer feeds it.
+# code_writer: #1210 (Approach A) — the autonomous path edits files in a local
+# checkout and opens the PR DIRECTLY, emitting implementation:mr_ready itself.
+# #1214 — the slow orchestrator (tools/code-edit-in-checkout.sh) now runs
+# DETACHED behind a fast launcher (tools/code-edit-job.sh) that code_writer
+# polls across ticks (LAUNCHED/RUNNING/DONE/NO_EDITS/ERROR). The path still does
+# NOT hand off to commit_composer via the durable implementation:pending_mr memo
+# — writing that memo would make commit_composer open a DUPLICATE MR for the
+# same branch. The durable handoff machinery stays in commit_composer (asserted
+# below) for any pending_mr written by other code paths; code_writer never feeds
+# it. The mr_ready emit sits on the DONE poll-state (the PR-opened path).
 # =============================================================================
 if [ -f "$CODE_WRITER" ]; then
     # The autonomous path must NOT write the pending_mr handoff (it opens the PR
@@ -51,24 +54,24 @@ if [ -f "$CODE_WRITER" ]; then
         pass "#1210 code_writer: no pending_mr handoff (autonomous path opens the PR directly, no double-open)"
     fi
 
-    # The autonomous path opens the PR via the checkout-edit orchestrator and
-    # emits implementation:mr_ready itself.
-    if grep -q 'code-edit-in-checkout.sh' "$CODE_WRITER"; then
-        pass "#1210 code_writer: autonomous path drives tools/code-edit-in-checkout.sh"
+    # The autonomous path drives the slow orchestrator via the #1214 detached
+    # launcher (tools/code-edit-job.sh) and emits implementation:mr_ready itself.
+    if grep -q 'tools/code-edit-job.sh --owner' "$CODE_WRITER"; then
+        pass "#1214 code_writer: autonomous path drives the detached tools/code-edit-job.sh launcher"
     else
-        fail "#1210 code_writer: missing the code-edit-in-checkout.sh orchestrator call"
+        fail "#1214 code_writer: missing the code-edit-job.sh launcher call"
     fi
 
     # The mr_ready emit must sit on the PR-opened path (inside the
-    # `if len(edit_result) > 0` block).
+    # `if job_state == "DONE"` block, #1214's poll-state machine).
     if awk '
-        /if len\(edit_result\) > 0/ { grab = 1 }
+        /if job_state == "DONE"/ { grab = 1 }
         grab && /emit\("implementation:mr_ready", draft\)/ { found = 1 }
         END { exit(found ? 0 : 1) }
     ' "$CODE_WRITER"; then
-        pass "#1210 code_writer: emits implementation:mr_ready on the PR-opened path"
+        pass "#1214 code_writer: emits implementation:mr_ready on the DONE (PR-opened) path"
     else
-        fail "#1210 code_writer: does not emit implementation:mr_ready after opening the PR"
+        fail "#1214 code_writer: does not emit implementation:mr_ready after opening the PR"
     fi
 else
     fail "#1151 code_writer: agent file not found at $CODE_WRITER"
