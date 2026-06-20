@@ -33,6 +33,20 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- **Work pickup is now assignment-based, not gated on label events** (#1181).
+  The five agents that "check assigned issues" — `implementation/code_writer`
+  and `planning/{risk_assessor, plan_reviewer, task_decomposer,
+  scope_estimator}` — used to switch to a `...-by-label-events --since
+  <last_check>` query once `last_check` was set, so after the first tick they
+  only saw issues whose label had changed since the last poll. A stably-assigned
+  issue with no recent label churn went invisible on every subsequent tick, so
+  on a mature repo the federation never picked up assigned work. Each agent now
+  always queries the current-state snapshot (`assigned-issues --view assigned` /
+  `issues --needs-planning --view planning`), keeping its existing staleness
+  gate (`code_writer`'s #200 `last_drafted_iid`/`updated_at`, the planning
+  agents' #223/#227 `:posted` markers) so the snapshot query does not re-pay the
+  LLM cost on a sticky assignment. Found dogfooding the federation on a mature
+  repo (assigned issues were never drafted after tick 1).
 - **flat-cyborg wrapper no longer overflows ARG_MAX on large prompts** (#1171).
   `tools/flat-cyborg-claude.sh` passed the prompt to flat-cyborg as `--cmd
   "$PROMPT"` (an argv value); a multi-MB prompt — which agents build on a real
