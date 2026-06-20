@@ -17,7 +17,7 @@ The intraday counterpart to the daily cross-sectional momentum (#1194): at short
 
 | cost (round-trip) | best config | result | configs still positive |
 |---|---|---|---|
-| 0 bps | reversal 4h/4h | +126 %/yr, Sharpe 2.92 | 24 / 24 |
+| 0 bps | reversal 4h/4h | +126 %/yr, Sharpe 2.92 | 12 / 24 (11 of 12 reversal; momentum mirror negative) |
 | **8 bps** (liquid perp taker) | reversal 4h/6h | **−9.3 %/yr, Sharpe −0.21** | **0 / 24** |
 | 12 bps (thin alts) | reversal 4h/6h | −54 %/yr | 0 / 24 |
 
