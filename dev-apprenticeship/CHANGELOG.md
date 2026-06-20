@@ -15,6 +15,32 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Large existing-file edits now survive the flat-cyborg backend end-to-end**
+  (#1203, #1204). Two fixes that together let the federation edit a large
+  existing file (e.g. a ~47KB README) on the flat-cyborg default backend.
+  (1) Every colony's `start-colony.sh` now splices `--prompt-timeout-s
+  "$PROMPT_TIMEOUT_S"` onto both daemon launch paths (the normal per-agent loop
+  AND the `--restart-agent` respawn). The daemon's `--prompt-timeout-s` flag
+  (#649) defaults to 120s and OVERRIDES `llm.cli_timeout_ms`, so large-context
+  flat-cyborg round-trips (>120s) were being killed mid-prompt as
+  `[llm.cancelled]`. The cap is resolved from `[colony].prompt_timeout_s` when
+  set (positive integer), else defaults to 300s — consistent across all five
+  colonies. (2) `tools/apply-edits.py` now falls back to a whitespace-normalized
+  match when an `old_str` does not match the file content exactly. On
+  flat-cyborg the returned `old_str` drifts (trailing whitespace, CRLF), so
+  exact match kept failing. The fallback strips trailing whitespace per line and
+  normalizes CRLF→LF on both sides (no leading/internal collapse, which would
+  mis-locate the anchor), maps a unique normalized span back to the original
+  content, and replaces it — preserving every original byte outside the matched
+  span. The exactly-once requirement is enforced at BOTH steps: zero or >1
+  matches still loud-fails (non-zero, JSON error on stderr, no stdout), so an
+  ambiguous or absent anchor never applies. The `code_writer` existing-file
+  code-gen prompt now also instructs the model to copy `old_str` VERBATIM from
+  the shown current content (no paraphrase/reflow) with enough surrounding
+  context to be unique.
+
 ### Changed
 
 - **`code_writer` edits existing files via search/replace, not full rewrites**

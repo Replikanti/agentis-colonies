@@ -276,7 +276,7 @@ if errors:
                 # miscompiles backslash-newline inside case-pattern labels
                 # (#121). Keep all alternatives on a single line.
                 case "$flag" in
-                    --tick-interval|--cb-per-tick|--colony|--deadline|--priority|--enable-migration|--enable-replication|--allow-replica-replication|--enable-exec|--enable-messaging|--deny-exec|--config-override|--help|-h) ;;
+                    --tick-interval|--cb-per-tick|--prompt-timeout-s|--colony|--deadline|--priority|--enable-migration|--enable-replication|--allow-replica-replication|--enable-exec|--enable-messaging|--deny-exec|--config-override|--help|-h) ;;
                     *) echo "$flag" ;;
                 esac
             done)
