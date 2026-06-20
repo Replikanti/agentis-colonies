@@ -352,6 +352,21 @@ cb_per_tick_for() {
     echo "$CB_PER_TICK_DEFAULT"
 }
 
+# Per-daemon prompt-timeout-s cap (#1203). The `agentis daemon`
+# `--prompt-timeout-s` flag (#649) defaults to 120s and OVERRIDES
+# `llm.cli_timeout_ms`, so a large-context flat-cyborg round-trip (>120s, e.g.
+# editing a ~47KB README) gets killed mid-prompt and surfaces as
+# `[llm.cancelled]`. We resolve a wall-clock cap from `[colony].prompt_timeout_s`
+# when set (positive integer), else default 300s — generous enough for big
+# files on the flat-cyborg backend — and splice it onto every `agentis daemon`
+# launch as `--prompt-timeout-s "$PROMPT_TIMEOUT_S"` (a real daemon flag, like
+# `--cb-per-tick`). Mirrors the CB_PER_TICK_DEFAULT validation shape.
+PROMPT_TIMEOUT_S="$(parse_toml colony prompt_timeout_s)"
+case "$PROMPT_TIMEOUT_S" in
+    ''|*[!0-9]*) PROMPT_TIMEOUT_S=300 ;;
+    *) [ "$PROMPT_TIMEOUT_S" -gt 0 ] || PROMPT_TIMEOUT_S=300 ;;
+esac
+
 # #319 PR 1 + #318: combined LLM-config override emitter.
 #
 # Precedence (highest first):
@@ -482,6 +497,7 @@ for d in daemons:
         --enable-messaging \
         --tick-interval "$tick" \
         --cb-per-tick "$cb" \
+        --prompt-timeout-s "$PROMPT_TIMEOUT_S" \
         ${CC_ARGS[@]+"${CC_ARGS[@]}"} </dev/null >/dev/null 2>&1 &
     agent_pid=$!
     sleep 0.5
@@ -514,6 +530,7 @@ for agent in "${AGENTS[@]}"; do
         --enable-messaging \
         --tick-interval "$interval" \
         --cb-per-tick "$cb" \
+        --prompt-timeout-s "$PROMPT_TIMEOUT_S" \
         ${CC_ARGS[@]+"${CC_ARGS[@]}"} &
     sleep 2  # stagger starts to reduce API contention
 done

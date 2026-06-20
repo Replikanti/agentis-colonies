@@ -348,7 +348,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                         let edit_context = "Issue: " + issue_detail + "\nPlan: " + draft.files + "\nPatterns: " + to_string(rec) +
                             "\nCurrent content of " + primary_path + " (edit THIS file):\n" + existing_content;
                         let edits_json = prompt(
-                            "You are a code writer editing an EXISTING file. Make the smallest edits that satisfy the task. Return a JSON array of edits, each object with: file_path (string), old_str (string, an EXACT, UNIQUE substring of the shown current file content — it must occur exactly once, copy it verbatim including whitespace), new_str (string, the replacement). Do NOT return the whole file. Return ONLY the raw JSON array — no markdown code fences, no ```json wrapper, no prose.",
+                            "You are a code writer editing an EXISTING file. Make the smallest edits that satisfy the task. Return a JSON array of edits, each object with: file_path (string), old_str (string), new_str (string, the replacement). For old_str: copy it VERBATIM from the shown current file content — character for character, including every space, tab, indentation, and line break exactly as displayed. Do NOT paraphrase, reflow, re-indent, trim, or otherwise alter it. Each old_str must be UNIQUE in the file (occur exactly once); include enough surrounding lines of context to guarantee uniqueness. Do NOT return the whole file. Return ONLY the raw JSON array — no markdown code fences, no ```json wrapper, no prose.",
                             edit_context
                         ) -> string;
                         // Deterministic apply: old_str must match the real file

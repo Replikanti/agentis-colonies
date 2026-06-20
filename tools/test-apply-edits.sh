@@ -12,16 +12,23 @@
 # Contract under test:
 #   - original content on stdin, edits JSON in $APPLY_EDITS, new content on
 #     stdout (large values ride a pipe / env var, never argv -> no ARG_MAX).
-#   - each edit's old_str must occur EXACTLY ONCE; zero or >1 matches is a loud,
-#     non-zero failure with a JSON {"error": ...} on stderr and NO stdout.
+#   - each edit's old_str must resolve to EXACTLY ONE span — first by exact
+#     match, then (#1204) by a whitespace-normalized fallback (trailing
+#     whitespace stripped per line + CRLF->LF, no leading/internal collapse).
+#     Zero or >1 matches at BOTH steps is a loud, non-zero failure with a JSON
+#     {"error": ...} on stderr and NO stdout.
 #   - edits apply sequentially.
 #
 # Cases:
-#   1. single edit replaces a unique substring.
+#   1. single edit replaces a unique substring (exact match).
 #   2. multiple sequential edits apply in order.
 #   3. zero-match old_str fails loudly (non-zero, JSON error, no stdout).
 #   4. ambiguous (multi-match) old_str fails loudly (non-zero, JSON error).
 #   5. large content (simulated big file) round-trips via the env/stdin path.
+#   6. (#1204) trailing-whitespace drift matches via the normalized fallback.
+#   7. (#1204) CRLF-vs-LF drift matches via the normalized fallback.
+#   8. (#1204) genuinely absent old_str still loud-fails (no normalized match).
+#   9. (#1204) ambiguous-under-normalization old_str still loud-fails.
 #
 # Auto-discovered by tools/colony-lint.sh's tools-test loop. Exit 0 if all pass.
 
@@ -111,6 +118,73 @@ if [ "$RC" -eq 0 ] && [ "$OUT" = "$EXPECTED" ]; then
     pass "large content round-trips via env/stdin (>50KB, marker edit, rest preserved)"
 else
     fail "large content" "rc=$RC bytes_in=$(printf '%s' "$BIG" | wc -c) bytes_out=$(printf '%s' "$OUT" | wc -c)"
+fi
+
+# -----------------------------------------------------------------------------
+# Case 6 (#1204): trailing-whitespace drift matches via the normalized fallback.
+# The file's anchor line has no trailing whitespace; the LLM-returned old_str
+# carries trailing spaces (flat-cyborg TUI line-wrap drift). Exact match fails
+# (0 occurrences), but the whitespace-normalized fallback finds the unique span
+# and edits the RIGHT line — leaving the surrounding lines verbatim.
+# -----------------------------------------------------------------------------
+IN6="$(printf 'alpha\nbeta gamma\ndelta\n')"
+OUT="$(printf '%s' "$IN6" | APPLY_EDITS='[{"old_str":"beta gamma   ","new_str":"BETA GAMMA"}]' python3 "$APPLY" 2>/dev/null)"
+RC=$?
+EXP6="$(printf 'alpha\nBETA GAMMA\ndelta')"
+if [ "$RC" -eq 0 ] && [ "$OUT" = "$EXP6" ]; then
+    pass "trailing-whitespace drift matches via normalized fallback (#1204)"
+else
+    fail "trailing-ws drift" "rc=$RC out=$(printf '%q' "$OUT")"
+fi
+
+# -----------------------------------------------------------------------------
+# Case 7 (#1204): CRLF-vs-LF drift matches via the normalized fallback. The file
+# uses CRLF line endings; the returned old_str spans two lines with LF endings.
+# Exact match fails; the normalized (CRLF->LF) fallback locates the unique span.
+# -----------------------------------------------------------------------------
+IN7="$(printf 'one\r\ntwo\r\nthree\r\n')"
+OUT="$(printf '%s' "$IN7" | APPLY_EDITS='[{"old_str":"one\ntwo","new_str":"ONE\nTWO"}]' python3 "$APPLY" 2>/dev/null)"
+RC=$?
+# Expected: the matched two-line span is replaced by new_str (LF); the untouched
+# tail line keeps its original CRLF.
+EXP7="$(printf 'ONE\nTWO\r\nthree\r\n')"
+if [ "$RC" -eq 0 ] && [ "$OUT" = "$EXP7" ]; then
+    pass "CRLF-vs-LF drift matches via normalized fallback (#1204)"
+else
+    fail "CRLF/LF drift" "rc=$RC out=$(printf '%q' "$OUT") exp=$(printf '%q' "$EXP7")"
+fi
+
+# -----------------------------------------------------------------------------
+# Case 8 (#1204): genuinely absent old_str still loud-fails. No exact match AND
+# no normalized match -> non-zero exit, JSON error on stderr, NO stdout.
+# -----------------------------------------------------------------------------
+ERR_FILE="$(mktemp)"
+OUT="$(printf 'alpha\nbeta\n' | APPLY_EDITS='[{"old_str":"totally absent line","new_str":"x"}]' python3 "$APPLY" 2>"$ERR_FILE")" && RC=0 || RC=$?
+ERR="$(cat "$ERR_FILE")"; rm -f "$ERR_FILE"
+if [ "$RC" -ne 0 ] && [ -z "$OUT" ] && printf '%s' "$ERR" | grep -q '"error"'; then
+    pass "genuinely absent old_str still loud-fails under normalization (#1204)"
+else
+    fail "absent under normalization" "rc=$RC out=$(printf '%q' "$OUT") err=$(printf '%q' "$ERR")"
+fi
+
+# -----------------------------------------------------------------------------
+# Case 9 (#1204): ambiguous-under-normalization old_str still loud-fails. Two
+# file lines are identical except for trailing whitespace, so they collapse to
+# the same normalized line: a normalized old_str matching that line resolves to
+# >1 span -> loud failure, NO stdout. Uniqueness is the correctness guard.
+# -----------------------------------------------------------------------------
+ERR_FILE="$(mktemp)"
+# Lines 1 and 3 both normalize to "dup line" (each carries a DIFFERENT amount of
+# trailing whitespace: 1 space vs 2). The old_str "dup line   " (3 trailing
+# spaces) is a substring of NEITHER line, so exact match is 0; under
+# normalization it matches BOTH lines -> 2 spans -> loud failure, NO stdout.
+IN9="$(printf 'dup line \nmiddle\ndup line  \n')"
+OUT="$(printf '%s' "$IN9" | APPLY_EDITS='[{"old_str":"dup line   ","new_str":"X"}]' python3 "$APPLY" 2>"$ERR_FILE")" && RC=0 || RC=$?
+ERR="$(cat "$ERR_FILE")"; rm -f "$ERR_FILE"
+if [ "$RC" -ne 0 ] && [ -z "$OUT" ] && printf '%s' "$ERR" | grep -q '"error"'; then
+    pass "ambiguous-under-normalization old_str still loud-fails (#1204)"
+else
+    fail "ambiguous under normalization" "rc=$RC out=$(printf '%q' "$OUT") err=$(printf '%q' "$ERR")"
 fi
 
 echo ""

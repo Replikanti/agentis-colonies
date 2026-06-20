@@ -385,6 +385,50 @@ SHIM
 
 test_no_duplicate_on_restart triage labeler
 
+# #1203: every colony's start-colony.sh must splice --prompt-timeout-s onto
+# BOTH daemon launch paths (the --restart-agent single-agent respawn AND the
+# normal per-agent loop). The daemon's --prompt-timeout-s (#649) defaults to
+# 120s and OVERRIDES llm.cli_timeout_ms; without it, large-context flat-cyborg
+# prompts (>120s, e.g. editing a ~47KB README) are killed as [llm.cancelled].
+# Pure source grep — no agentis runtime needed. We assert each script:
+#   - resolves a PROMPT_TIMEOUT_S value (the [colony].prompt_timeout_s parse).
+#   - carries `--prompt-timeout-s "$PROMPT_TIMEOUT_S"` on exactly TWO actual
+#     daemon-launch lines (restart path + normal-loop path), excluding the
+#     comment that documents the splice.
+test_prompt_timeout_flag() {
+    local colony="$1"
+    local script="$REPO_ROOT/dev-apprenticeship/$colony/scripts/start-colony.sh"
+
+    if [ ! -f "$script" ]; then
+        fail "$colony: start-colony.sh missing for prompt-timeout-s check" "$script"
+        return
+    fi
+
+    # shellcheck disable=SC2016  # grep pattern matching the literal source line; $ must not expand.
+    if ! grep -qF 'PROMPT_TIMEOUT_S="$(parse_toml colony prompt_timeout_s)"' "$script"; then
+        fail "$colony: start-colony.sh does not resolve [colony].prompt_timeout_s into PROMPT_TIMEOUT_S (#1203)"
+        return
+    fi
+
+    # Count the launch-line splices only (anchored to the indented continuation
+    # form `        --prompt-timeout-s "$PROMPT_TIMEOUT_S" \`), so the resolver
+    # comment that mentions the flag inline is not miscounted.
+    local launch_count
+    # shellcheck disable=SC2016  # grep pattern matching the literal source line; $ must not expand.
+    launch_count=$(grep -c '^        --prompt-timeout-s "\$PROMPT_TIMEOUT_S" \\$' "$script" || true)
+    if [ "$launch_count" = "2" ]; then
+        pass "$colony: --prompt-timeout-s spliced onto both daemon launch paths (#1203)"
+    else
+        fail "$colony: expected 2 --prompt-timeout-s launch splices (restart + normal), got $launch_count (#1203)"
+    fi
+}
+
+test_prompt_timeout_flag triage
+test_prompt_timeout_flag planning
+test_prompt_timeout_flag implementation
+test_prompt_timeout_flag code-review
+test_prompt_timeout_flag release
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
