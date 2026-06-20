@@ -120,10 +120,10 @@ clear_job() {
 
 # read_status / read_result: total reads — empty when the file is absent.
 read_status() {
-    [ -f "$JOBDIR/status" ] && cat "$JOBDIR/status" 2>/dev/null || true
+    if [ -f "$JOBDIR/status" ]; then cat "$JOBDIR/status" 2>/dev/null || true; fi
 }
 read_result() {
-    [ -f "$JOBDIR/result" ] && cat "$JOBDIR/result" 2>/dev/null || true
+    if [ -f "$JOBDIR/result" ]; then cat "$JOBDIR/result" 2>/dev/null || true; fi
 }
 
 # ---------------------------------------------------------------------------
@@ -133,7 +133,8 @@ if [ -d "$JOBDIR" ]; then
     STATUS="$(read_status)"
     case "$STATUS" in
         running)
-            PID="$([ -f "$JOBDIR/pid" ] && cat "$JOBDIR/pid" 2>/dev/null || true)"
+            PID=""
+            if [ -f "$JOBDIR/pid" ]; then PID="$(cat "$JOBDIR/pid" 2>/dev/null || true)"; fi
             if pid_alive "$PID"; then
                 # Job still in flight — do NOT start a second clone/edit.
                 echo "RUNNING"
