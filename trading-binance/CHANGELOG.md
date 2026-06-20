@@ -16,6 +16,14 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Intraday cross-sectional reversal study (#1201, hourly bars): there IS a
+  strong raw intraday reversal signal (long losers / short winners, gross Sharpe
+  ~2.9, +126%/yr at 0bps) -- reversal dominates momentum at short horizons -- but
+  it does **NOT survive realistic taker cost**: 0 of 24 configs positive at 8bps
+  round-trip. The per-trade edge (~5.75bps) is smaller than the cost of capturing
+  it as a taker; the edge belongs to the liquidity provider (maker), not the
+  taker. Dividing line: per-trade edge > per-trade cost -- daily momentum wins
+  (rare trades), intraday reversal loses (frequent). (`runs/20260620T-intraday/`)
 - Cross-sectional long-short paper-trade harness (#1197): `tools/xsectional-
   paper.py` -- the live forward gate for the cross-sectional momentum strategy,
   the long-short analogue of carry-paper.py. Periodic snapshots rank trailing

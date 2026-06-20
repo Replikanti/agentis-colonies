@@ -1,0 +1,247 @@
+{
+  "symbols_loaded": 18,
+  "hours": 7009,
+  "cost_bps": 8.0,
+  "results": [
+    {
+      "rebalances": 1167,
+      "ann_pct": -9.29,
+      "sharpe": -0.21,
+      "max_dd_pct": 46.3,
+      "avg_per_reb_bps": -0.64,
+      "lookback_h": 4,
+      "hold_h": 6,
+      "signal": "reversal"
+    },
+    {
+      "rebalances": 1751,
+      "ann_pct": -9.91,
+      "sharpe": -0.23,
+      "max_dd_pct": 73.7,
+      "avg_per_reb_bps": -0.45,
+      "lookback_h": 4,
+      "hold_h": 4,
+      "signal": "reversal"
+    },
+    {
+      "rebalances": 1167,
+      "ann_pct": -39.28,
+      "sharpe": -0.94,
+      "max_dd_pct": 53.8,
+      "avg_per_reb_bps": -2.69,
+      "lookback_h": 1,
+      "hold_h": 6,
+      "signal": "reversal"
+    },
+    {
+      "rebalances": 1167,
+      "ann_pct": -43.49,
+      "sharpe": -1.04,
+      "max_dd_pct": 53.7,
+      "avg_per_reb_bps": -2.98,
+      "lookback_h": 2,
+      "hold_h": 6,
+      "signal": "momentum"
+    },
+    {
+      "rebalances": 1167,
+      "ann_pct": -66.04,
+      "sharpe": -1.6,
+      "max_dd_pct": 71.1,
+      "avg_per_reb_bps": -4.52,
+      "lookback_h": 6,
+      "hold_h": 6,
+      "signal": "reversal"
+    },
+    {
+      "rebalances": 3502,
+      "ann_pct": -77.88,
+      "sharpe": -1.66,
+      "max_dd_pct": 74.1,
+      "avg_per_reb_bps": -1.78,
+      "lookback_h": 4,
+      "hold_h": 2,
+      "signal": "reversal"
+    },
+    {
+      "rebalances": 1751,
+      "ann_pct": -71.57,
+      "sharpe": -1.74,
+      "max_dd_pct": 75.5,
+      "avg_per_reb_bps": -3.27,
+      "lookback_h": 2,
+      "hold_h": 4,
+      "signal": "reversal"
+    },
+    {
+      "rebalances": 1751,
+      "ann_pct": -74.71,
+      "sharpe": -1.76,
+      "max_dd_pct": 92.4,
+      "avg_per_reb_bps": -3.41,
+      "lookback_h": 1,
+      "hold_h": 4,
+      "signal": "reversal"
+    },
+    {
+      "rebalances": 1750,
+      "ann_pct": -89.9,
+      "sharpe": -1.98,
+      "max_dd_pct": 80.9,
+      "avg_per_reb_bps": -4.1,
+      "lookback_h": 6,
+      "hold_h": 4,
+      "signal": "reversal"
+    },
+    {
+      "rebalances": 3501,
+      "ann_pct": -105.32,
+      "sharpe": -2.31,
+      "max_dd_pct": 96.0,
+      "avg_per_reb_bps": -2.4,
+      "lookback_h": 6,
+      "hold_h": 2,
+      "signal": "reversal"
+    },
+    {
+      "rebalances": 1167,
+      "ann_pct": -112.84,
+      "sharpe": -2.73,
+      "max_dd_pct": 101.1,
+      "avg_per_reb_bps": -7.73,
+      "lookback_h": 6,
+      "hold_h": 6,
+      "signal": "momentum"
+    },
+    {
+      "rebalances": 1750,
+      "ann_pct": -132.91,
+      "sharpe": -2.93,
+      "max_dd_pct": 114.9,
+      "avg_per_reb_bps": -6.07,
+      "lookback_h": 6,
+      "hold_h": 4,
+      "signal": "momentum"
+    },
+    {
+      "rebalances": 1167,
+      "ann_pct": -132.31,
+      "sharpe": -3.17,
+      "max_dd_pct": 116.9,
+      "avg_per_reb_bps": -9.06,
+      "lookback_h": 2,
+      "hold_h": 6,
+      "signal": "reversal"
+    },
+    {
+      "rebalances": 1167,
+      "ann_pct": -137.37,
+      "sharpe": -3.3,
+      "max_dd_pct": 116.6,
+      "avg_per_reb_bps": -9.41,
+      "lookback_h": 1,
+      "hold_h": 6,
+      "signal": "momentum"
+    },
+    {
+      "rebalances": 1167,
+      "ann_pct": -169.58,
+      "sharpe": -3.83,
+      "max_dd_pct": 135.6,
+      "avg_per_reb_bps": -11.62,
+      "lookback_h": 4,
+      "hold_h": 6,
+      "signal": "momentum"
+    },
+    {
+      "rebalances": 3503,
+      "ann_pct": -176.53,
+      "sharpe": -4.1,
+      "max_dd_pct": 150.6,
+      "avg_per_reb_bps": -4.03,
+      "lookback_h": 1,
+      "hold_h": 2,
+      "signal": "reversal"
+    },
+    {
+      "rebalances": 1751,
+      "ann_pct": -191.34,
+      "sharpe": -4.5,
+      "max_dd_pct": 158.6,
+      "avg_per_reb_bps": -8.74,
+      "lookback_h": 1,
+      "hold_h": 4,
+      "signal": "momentum"
+    },
+    {
+      "rebalances": 3501,
+      "ann_pct": -216.66,
+      "sharpe": -4.76,
+      "max_dd_pct": 174.6,
+      "avg_per_reb_bps": -4.95,
+      "lookback_h": 6,
+      "hold_h": 2,
+      "signal": "momentum"
+    },
+    {
+      "rebalances": 1751,
+      "ann_pct": -197.13,
+      "sharpe": -4.79,
+      "max_dd_pct": 163.4,
+      "avg_per_reb_bps": -9.0,
+      "lookback_h": 2,
+      "hold_h": 4,
+      "signal": "momentum"
+    },
+    {
+      "rebalances": 3503,
+      "ann_pct": -238.2,
+      "sharpe": -5.18,
+      "max_dd_pct": 196.2,
+      "avg_per_reb_bps": -5.44,
+      "lookback_h": 2,
+      "hold_h": 2,
+      "signal": "reversal"
+    },
+    {
+      "rebalances": 1751,
+      "ann_pct": -261.82,
+      "sharpe": -6.07,
+      "max_dd_pct": 209.3,
+      "avg_per_reb_bps": -11.96,
+      "lookback_h": 4,
+      "hold_h": 4,
+      "signal": "momentum"
+    },
+    {
+      "rebalances": 3503,
+      "ann_pct": -296.2,
+      "sharpe": -6.44,
+      "max_dd_pct": 240.9,
+      "avg_per_reb_bps": -6.76,
+      "lookback_h": 2,
+      "hold_h": 2,
+      "signal": "momentum"
+    },
+    {
+      "rebalances": 3502,
+      "ann_pct": -310.41,
+      "sharpe": -6.6,
+      "max_dd_pct": 248.5,
+      "avg_per_reb_bps": -7.09,
+      "lookback_h": 4,
+      "hold_h": 2,
+      "signal": "momentum"
+    },
+    {
+      "rebalances": 3503,
+      "ann_pct": -357.07,
+      "sharpe": -8.29,
+      "max_dd_pct": 288.2,
+      "avg_per_reb_bps": -8.15,
+      "lookback_h": 1,
+      "hold_h": 2,
+      "signal": "momentum"
+    }
+  ]
+}
