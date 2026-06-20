@@ -16,6 +16,16 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Market-making feasibility probe (#1205, tick data + optimistic touch-fill):
+  tests whether a maker can capture the intraday reversal edge (#1202). A naive
+  lagging-fair maker LOSES (adverse selection runs over stale quotes); a
+  RESPONSIVE-fair maker is net-positive (18/18 configs at EMA alpha 0.3) **under
+  the optimistic fill model**. So MM economics aren't impossible -- the spread
+  can beat adverse selection -- BUT the touch-fill is the whole game: real
+  capture is a latency/queue race vs HFT (adversely-selected fill subset, needs
+  L2/L3 + colocation) this backtest can't validate. MM is a capability/infra
+  gate, not a deployable signal; the validated edge stays daily/weekly
+  (#1194/#1197). (`runs/20260620T-mm/`)
 - Intraday cross-sectional reversal study (#1201, hourly bars): there IS a
   strong raw intraday reversal signal (long losers / short winners, gross Sharpe
   ~2.9, +126%/yr at 0bps) -- reversal dominates momentum at short horizons -- but
