@@ -69,6 +69,27 @@ fn repo_field(line: string, idx: int) -> string {
     return out;
 }
 
+// #1214: code-edit-job.sh prints ONE line of the form `<KEYWORD>` or
+// `<KEYWORD> <payload>` (e.g. `LAUNCHED`, `RUNNING`, `DONE <pr-url>`,
+// `NO_EDITS`, `ERROR <short>`). job_word returns the leading keyword (the
+// poll-state) and job_rest returns everything after the first space (the
+// payload — a PR URL on DONE, a short reason on ERROR). The value rides $L
+// (env var, off-argv) so ARG_MAX never bites and there is no untrusted
+// concatenation in the body. Both are total: missing/garbled input -> "".
+fn job_word(out: string) -> string {
+    let cmd = "L=" + shell_escape(out) +
+        " python3 -c 'import os; s=os.environ[\"L\"].strip(); print(s.split(None,1)[0] if s else \"\")'";
+    let res = try { exec sh cmd; } catch e { ""; };
+    return res;
+}
+
+fn job_rest(out: string) -> string {
+    let cmd = "L=" + shell_escape(out) +
+        " python3 -c 'import os; p=os.environ[\"L\"].strip().split(None,1); print(p[1] if len(p)>1 else \"\")'";
+    let res = try { exec sh cmd; } catch e { ""; };
+    return res;
+}
+
 // #1172: pull the primary file path out of `draft.files` (a markdown list of
 // "file path + what each does" lines). We fetch the existing content of that
 // one file so the code-gen prompt can EDIT it rather than clobber it. Multi-
@@ -366,6 +387,21 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 // prompt() — so this branch has no prompt() at all. flat-cyborg
                 // stays the only backend; `claude -p` is not used.
                 //
+                // #1214: the orchestrator's job (clone + flat-cyborg edit +
+                // commit + push + PR) runs for MINUTES, but agentis caps a single
+                // `exec sh` at ~120000ms (the exec.default_timeout_ms knob is
+                // ignored), so a synchronous call was killed mid-edit with
+                // ExecTimeout. Instead we call tools/code-edit-job.sh — a FAST
+                // launcher that runs code-edit-in-checkout.sh DETACHED (setsid)
+                // and tracks it in a per-issue job dir. It returns in well under
+                // 120s on every tick, printing one of: LAUNCHED (just started),
+                // RUNNING (still going), DONE <url> (PR opened), NO_EDITS (claude
+                // changed nothing), or ERROR <short>. code_writer polls it across
+                // ticks: while LAUNCHED/RUNNING it leaves the #1185 markers unset
+                // so the same assigned issue is re-polled next tick (a re-poll
+                // does NOT start a second clone/edit — the launcher's pid check
+                // guards idempotency). Only DONE sets the markers + emits.
+                //
                 // Deterministic per-issue branch (fix/issue-<iid>) so a retry
                 // reuses the same branch instead of littering empty branches.
                 let issue_iid = to_string(draft.issue_id);
@@ -376,31 +412,46 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 // Task text = issue body + the drafted plan. The orchestrator
                 // wraps this into the claude editing instruction.
                 let task_text = "Issue:\n" + issue_detail + "\n\nPlan:\n" + draft.files + "\n\n" + draft.summary;
-                // The orchestrator handles both new-file and existing-file cases
-                // (claude creates or edits files in the checkout). It exits 0 with
-                // the PR URL on success, 3 (no edits) when claude changed nothing,
-                // and non-zero otherwise — `exec sh` throws on any non-zero, so
-                // the catch covers both NO_EDITS and hard failures; either way we
-                // leave the #1185 markers unset so the next tick retries.
+                // The launcher manages the detached orchestrator's lifecycle and
+                // prints the current poll-state on stdout. It never blocks on the
+                // slow job, so this `exec sh` returns fast and never hits the
+                // 120s cap. A non-zero exit (a usage / launch error) collapses
+                // the `try` to "" => job_word "" => the ERROR/else branch retries.
                 // colony-lint: safe-exec-concat
-                let edit_cmd = "$COLONY_DIR/../../tools/code-edit-in-checkout.sh --owner " + shell_escape(owner) + " --repo " + shell_escape(repo) + " --issue " + shell_escape(issue_iid) + " --branch " + shell_escape(branch_name) + " --title " + shell_escape(draft.summary) + " --task " + shell_escape(task_text);
-                let edit_result = try { exec sh edit_cmd; } catch e {
-                    print("[code_writer] code-edit-in-checkout failed or produced no edits (NO_EDITS / error) — not marking drafted, will retry:", e);
+                let job_cmd = "$COLONY_DIR/../../tools/code-edit-job.sh --owner " + shell_escape(owner) + " --repo " + shell_escape(repo) + " --issue " + shell_escape(issue_iid) + " --branch " + shell_escape(branch_name) + " --title " + shell_escape(draft.summary) + " --task " + shell_escape(task_text);
+                let job_out = try { exec sh job_cmd; } catch e {
+                    print("[code_writer] code-edit-job launcher failed — not marking drafted, will retry:", e);
                     "";
                 };
+                let job_state = job_word(job_out);
 
-                if len(edit_result) > 0 {
-                    // #1185: mark drafted only now that the PR opened. A NO_EDITS
-                    // (exit 3) or any failure leaves edit_result == "" so the
-                    // markers stay unset and the next tick retries the issue.
+                if job_state == "DONE" {
+                    // #1185: mark drafted only now that the PR opened. LAUNCHED /
+                    // RUNNING / NO_EDITS / ERROR all leave the markers unset so
+                    // the next tick re-polls (or retries) the same issue.
+                    let pr_url = job_rest(job_out);
                     memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_iid"), first_iid_str);
                     memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_updated_at"), first_upd);
-                    print("[code_writer] Opened PR via checkout-edit for issue", draft.issue_id, ":", edit_result);
+                    print("[code_writer] Opened PR via detached checkout-edit for issue", draft.issue_id, ":", pr_url);
                     emit("implementation:mr_ready", draft);
                     if len(owner) > 0 {
                         learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "success", ["acted", "implementation", repo_tag(owner, repo)]);
                     } else {
                         learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "success", ["acted", "implementation"]);
+                    };
+                } else {
+                    if job_state == "LAUNCHED" {
+                        print("[code_writer] Launched detached checkout-edit for issue", draft.issue_id, "— will poll next tick");
+                    } else {
+                        if job_state == "RUNNING" {
+                            print("[code_writer] Detached checkout-edit still running for issue", draft.issue_id, "— will poll next tick");
+                        } else {
+                            if job_state == "NO_EDITS" {
+                                print("[code_writer] Detached checkout-edit produced no edits for issue", draft.issue_id, "— will retry");
+                            } else {
+                                print("[code_writer] Detached checkout-edit error for issue", draft.issue_id, ":", job_out, "— will retry");
+                            };
+                        };
                     };
                 };
             } else {
