@@ -1,0 +1,89 @@
+{
+  "symbols_loaded": [
+    "AAVEUSDT",
+    "ADAUSDT",
+    "APTUSDT",
+    "ARBUSDT",
+    "AVAXUSDT",
+    "BNBUSDT",
+    "BTCUSDT",
+    "DOGEUSDT",
+    "ETHUSDT",
+    "INJUSDT",
+    "LINKUSDT",
+    "LTCUSDT",
+    "NEARUSDT",
+    "OPUSDT",
+    "SOLUSDT",
+    "SUIUSDT",
+    "TIAUSDT",
+    "XRPUSDT"
+  ],
+  "params": {
+    "top_k": 4,
+    "cost_bps_roundtrip": 60.0,
+    "rebalance_days": 7
+  },
+  "results": [
+    {
+      "rebalances": 127,
+      "total_return_pct": -67.99,
+      "annualised_pct": -27.76,
+      "sharpe": -0.54,
+      "max_drawdown_pct": 127.865,
+      "avg_per_rebalance_pct": -0.5354,
+      "lookback_days": 7,
+      "signal": "momentum"
+    },
+    {
+      "rebalances": 127,
+      "total_return_pct": -48.41,
+      "annualised_pct": -19.76,
+      "sharpe": -0.39,
+      "max_drawdown_pct": 124.047,
+      "avg_per_rebalance_pct": -0.3812,
+      "lookback_days": 7,
+      "signal": "reversal"
+    },
+    {
+      "rebalances": 126,
+      "total_return_pct": 100.071,
+      "annualised_pct": 41.18,
+      "sharpe": 0.84,
+      "max_drawdown_pct": 51.43,
+      "avg_per_rebalance_pct": 0.7942,
+      "lookback_days": 14,
+      "signal": "momentum"
+    },
+    {
+      "rebalances": 126,
+      "total_return_pct": -178.821,
+      "annualised_pct": -73.58,
+      "sharpe": -1.5,
+      "max_drawdown_pct": 187.186,
+      "avg_per_rebalance_pct": -1.4192,
+      "lookback_days": 14,
+      "signal": "reversal"
+    },
+    {
+      "rebalances": 124,
+      "total_return_pct": 102.728,
+      "annualised_pct": 43.05,
+      "sharpe": 0.93,
+      "max_drawdown_pct": 32.626,
+      "avg_per_rebalance_pct": 0.8285,
+      "lookback_days": 30,
+      "signal": "momentum"
+    },
+    {
+      "rebalances": 124,
+      "total_return_pct": -157.028,
+      "annualised_pct": -65.8,
+      "sharpe": -1.41,
+      "max_drawdown_pct": 165.409,
+      "avg_per_rebalance_pct": -1.2664,
+      "lookback_days": 30,
+      "signal": "reversal"
+    }
+  ]
+}
