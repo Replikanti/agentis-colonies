@@ -6,3 +6,6 @@
 
 # carry paper-trade live ledger (runtime state, accumulates forward)
 runs/carry-paper-live/
+
+# cross-sectional paper-trade live ledger (runtime state)
+runs/xsectional-paper-live/
