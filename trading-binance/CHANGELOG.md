@@ -23,6 +23,20 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   clears the cost hurdle, else CASH, #1184) + unlevered (#1188) + the #1174
   basket rule. First live snapshot chose CASH (calm regime, ~2.4%/yr < hurdle).
   `tools/test-carry-paper.sh` 12 cases.
+- Cross-sectional long-short backtest (#1193): genuine active TRADING (not
+  yield) -- long top-K / short bottom-K alts by trailing return, dollar-neutral,
+  weekly, walk-forward. **Cross-sectional MOMENTUM (30d lookback) has a real,
+  robust edge**: ~+43%/yr at realistic 60bps, positive every year (+31 to +88%),
+  breakeven cost ~280bps, Sharpe ~0.9 -- the strongest result of the effort. The
+  price is drawdown: max DD 30-35% (vs carry's 0.3%). Reversal + short-term
+  momentum lose. (`runs/20260620T-xsectional/`)
+- Carry tail-risk study (#1188): measured the basis-blowout / funding-flip /
+  liquidation tails a funding-only backtest can't see, over 2.5y for the carry
+  basket. **Tail does NOT wipe the year if run UNLEVERED**: perp-spot basis never
+  widened >0.35% (tight peg, even through crashes), worst sustained negative-
+  funding run -84bps; fully-funded 1:1 residual tail ~0.55% (mean) vs ~5%/yr
+  carry. But adverse up-days hit +22-42% -> short leg MUST be unlevered (>2.4x
+  liquidates). Remaining gate: paper-trade for real slippage (`runs/20260620T-carry-tail/`).
 - Carry cost-realism sensitivity (#1183): swept the merged carry backtest across
   all-in round-trip costs (20-120 bps) over 2.5y + regimes
   (`runs/20260620T-carry-cost/`). The edge **survives realistic costs in

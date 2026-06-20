@@ -1,0 +1,4 @@
+{"run_id":"20260620T-xsectional","issue":1193,"kind":"cross-sectional-longshort-relative-value-backtest",
+ "universe_size":18,"span":"2024-01..2026-06 daily","strategy":"long top-K / short bottom-K by trailing return, dollar-neutral, weekly rebalance, walk-forward",
+ "headline_config":"momentum 30d lookback, top-4, weekly, 60bps","base_commit":"7c3af9f595b2fa588be2a41c349534ad6e6613c3",
+ "reproduce":"python3 runs/20260620T-xsectional/cross-sectional-backtest.py --symbols <universe> --start 2024-01-01 --end 2026-06-20 --top-k 4 --cost-bps-roundtrip 60 --lookbacks 7,14,30 --rebalance-days 7 (daily klines fetched live from fapi)"}
