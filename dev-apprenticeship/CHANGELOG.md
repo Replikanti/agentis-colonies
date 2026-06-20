@@ -15,6 +15,29 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Changed
+
+- **`code_writer` edits existing files via line-numbered ranges, not byte-exact
+  search/replace** (#1208). The autonomous existing-file path used to fetch a
+  file (#1172) and ask the LLM for `{old_str, new_str}` edits whose `old_str`
+  had to reproduce the file's source BYTE-FOR-BYTE (#1195/#1204). On markdown
+  that fails: the model drops `**` markdown from the anchor, so `old_str` never
+  matches and the edit is silently dropped. Now the prompt shows a line-NUMBERED
+  view of the file (each line prefixed with `N|`, its 1-based line number) and
+  asks for the smallest set of NON-OVERLAPPING line-range replacements
+  (`{file_path, start_line, end_line, new_text}`; empty `new_text` deletes the
+  span) — so the model never reproduces exact source bytes, it only names line
+  numbers. A new deterministic helper `tools/apply-line-edits.py` reads the
+  UN-numbered content on stdin and the edits from `$LINE_EDITS`, validates
+  `1 <= start <= end <= nlines` and non-overlap, applies the ranges DESCENDING
+  by start_line (so an earlier replacement never shifts a later range's line
+  numbers), preserves every line outside the edited ranges byte-verbatim, and
+  prints the new full content. On any validation failure it fails loudly
+  (non-zero, JSON error on stderr, NO stdout — the corruption guard) so the
+  edit is dropped and `code_writer` does not commit (#1185 retries next tick).
+  New files keep the from-scratch full-content path unchanged. The old
+  search/replace `apply-edits.py` stays in the tree for other potential callers.
+
 ### Fixed
 
 - **Large existing-file edits now survive the flat-cyborg backend end-to-end**

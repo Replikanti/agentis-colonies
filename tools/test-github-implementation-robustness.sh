@@ -332,10 +332,11 @@ else
 fi
 
 # =============================================================================
-# #1172 / #1195: code_writer.ag wires get-file into the code-gen context AND,
-# when the file already exists, requests SMALL search/replace edits (not a
-# whole-file regeneration) and applies them deterministically before commit.
-# Grep-level wiring assertions.
+# #1172 / #1208: code_writer.ag wires get-file into the code-gen context AND,
+# when the file already exists, shows a line-NUMBERED view and requests
+# line-RANGE edits (not a whole-file regeneration, not byte-exact search/replace
+# anchors) and applies them deterministically before commit. Grep-level wiring
+# assertions.
 # =============================================================================
 CW_AG="$REPO_ROOT/dev-apprenticeship/implementation/agents/code_writer.ag"
 if grep -q "get-file --path" "$CW_AG"; then
@@ -344,24 +345,25 @@ else
     fail "#1172 code_writer.ag: no 'get-file --path' fetch found before code-gen"
 fi
 
-# #1195: the existing-file code-gen prompt must request search/replace edits
-# (old_str / new_str), NOT a full-file rewrite — small LLM output is what makes
-# the path work on flat-cyborg's screen-scrape backend.
-if grep -q "old_str" "$CW_AG" && grep -q "new_str" "$CW_AG"; then
-    pass "#1195 code_writer.ag: existing-file path requests search/replace edits (old_str/new_str)"
+# #1208: the existing-file path must present a line-NUMBERED view of the file
+# (numbered_view -> `N|` prefix) and request line-RANGE edits
+# (start_line / end_line / new_text), so the model never reproduces exact source
+# bytes (the markdown `**`-drop failure mode of the old old_str/new_str path).
+if grep -q "numbered_view(" "$CW_AG" && grep -q "start_line" "$CW_AG" && grep -q "end_line" "$CW_AG" && grep -q "new_text" "$CW_AG"; then
+    pass "#1208 code_writer.ag: existing-file path shows a numbered view and requests line-range edits (start_line/end_line/new_text)"
 else
-    fail "#1195 code_writer.ag: existing-file edit prompt missing old_str/new_str search-replace request"
+    fail "#1208 code_writer.ag: existing-file edit prompt missing numbered_view / line-range fields"
 fi
 
-# #1195: those edits must be applied deterministically (apply_edits_to_actions
-# -> tools/apply-edits.py) to assemble the full file BEFORE commit-files runs,
-# so the committed content never depends on fragile large LLM output.
-apply_line="$(grep -n "apply_edits_to_actions(" "$CW_AG" | tail -1 | cut -d: -f1)"
+# #1208: those edits must be applied deterministically (apply_line_edits_to_actions
+# -> tools/apply-line-edits.py) to assemble the full file BEFORE commit-files
+# runs, so the committed content never depends on fragile large LLM output.
+apply_line="$(grep -n "apply_line_edits_to_actions(" "$CW_AG" | tail -1 | cut -d: -f1)"
 commit_line="$(grep -n "commit-files --branch" "$CW_AG" | head -1 | cut -d: -f1)"
 if [ -n "$apply_line" ] && [ -n "$commit_line" ] && [ "$apply_line" -lt "$commit_line" ]; then
-    pass "#1195 code_writer.ag: applies edits (apply_edits_to_actions) before commit-files"
+    pass "#1208 code_writer.ag: applies line edits (apply_line_edits_to_actions) before commit-files"
 else
-    fail "#1195 code_writer.ag: edits not deterministically applied before commit-files"
+    fail "#1208 code_writer.ag: line edits not deterministically applied before commit-files"
 fi
 
 echo ""
