@@ -14,16 +14,17 @@
 #
 #   Part 3 (don't strand a half-completed autonomous flow). The #200 staleness
 #   markers (last_drafted_iid / _updated_at) used to be written right after the
-#   draft prompt, BEFORE the autonomous create-branch / commit-files. A
-#   branch-created-but-commit-failed tick still marked the issue "drafted", so
-#   the #200 gate skipped it forever and stranded an empty branch. The fix sets
-#   the markers only once the path's own action has COMPLETED: the autonomous
-#   path sets them inside the commit-success block; the non-autonomous
+#   draft prompt, BEFORE the autonomous action ran. A half-completed tick still
+#   marked the issue "drafted", so the #200 gate skipped it forever. The fix
+#   sets the markers only once the path's own action has COMPLETED: the
+#   autonomous path (#1210: Approach A — edit in a local checkout via
+#   code-edit-in-checkout.sh, then commit the diff + open the PR) sets them only
+#   inside the PR-opened block (`if len(edit_result) > 0`); the non-autonomous
 #   (review-gated / propose / shadow) paths still set them after their terminal
 #   draft comment / emit. We assert, structurally:
 #     - the markers are NOT written before the tier branch (no write between
 #       `should_draft_code(...)` and the `if my_tier == "autonomous"` branch);
-#     - a marker write appears inside the `if len(commit_result) > 0` block;
+#     - a marker write appears inside the `if len(edit_result) > 0` block;
 #     - a marker write still exists on the non-autonomous side.
 #
 # Matches the test style of tools/test-assignment-based-pickup.sh (bash,
@@ -74,7 +75,7 @@ fi
 # three regions delimited by the structural anchors, so we assert *where* the
 # marker writes live, not just that they exist somewhere.
 #   region A: from `should_draft_code(` up to (not incl.) the autonomous branch
-#   region B: from `if len(commit_result) > 0` to its closing scope
+#   region B: from `if len(edit_result) > 0` to its closing scope
 #   region C: from the non-autonomous `} else {` (the tier else) to end
 # -----------------------------------------------------------------------------
 MARKER='memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_iid")'
@@ -93,38 +94,39 @@ else
   pass "marker NOT set before the tier branch (autonomous flow can retry)"
 fi
 
-# Region B: inside the commit-success block. The autonomous path must mark
-# only after commit-files lands.
+# Region B: inside the PR-opened block. The autonomous path must mark only
+# after code-edit-in-checkout.sh returns success (the PR URL).
 region_b="$(awk '
-  /if len\(commit_result\) > 0/ { grab=1 }
+  /if len\(edit_result\) > 0/ { grab=1 }
   grab { print }
-  /emit\("implementation:code_draft", draft\)/ { if (grab) exit }
+  /emit\("implementation:mr_ready", draft\)/ { if (grab) exit }
 ' "$AG")"
 if printf '%s\n' "$region_b" | grep -F -q -- "$MARKER"; then
-  pass "autonomous path sets the marker inside the commit-success block"
+  pass "autonomous path sets the marker inside the PR-opened block"
 else
   fail "autonomous marker placement" \
-    "last_drafted_iid not written inside the 'if len(commit_result) > 0' block"
+    "last_drafted_iid not written inside the 'if len(edit_result) > 0' block"
 fi
 
-# The autonomous branch must NOT mark before create-branch: assert the marker
-# write occurs after the create-branch command line within the file.
-branch_line="$(grep -n -F -- 'create-branch --name' "$AG" | head -1 | cut -d: -f1)"
+# The autonomous branch must NOT mark before the checkout-edit orchestrator
+# runs: assert the marker write occurs after the code-edit-in-checkout.sh
+# command line within the file.
+edit_line="$(grep -n -F -- 'code-edit-in-checkout.sh' "$AG" | head -1 | cut -d: -f1)"
 marker_lines="$(grep -n -F -- "$MARKER" "$AG" | cut -d: -f1)"
-autonomous_marker_after_branch=0
-if [ -n "$branch_line" ]; then
+autonomous_marker_after_edit=0
+if [ -n "$edit_line" ]; then
   for ln in $marker_lines; do
-    if [ "$ln" -gt "$branch_line" ]; then
-      autonomous_marker_after_branch=1
+    if [ "$ln" -gt "$edit_line" ]; then
+      autonomous_marker_after_edit=1
       break
     fi
   done
 fi
-if [ "$autonomous_marker_after_branch" = "1" ]; then
-  pass "a marker write follows create-branch (not before it)"
+if [ "$autonomous_marker_after_edit" = "1" ]; then
+  pass "a marker write follows the code-edit-in-checkout.sh call (not before it)"
 else
-  fail "marker vs create-branch ordering" \
-    "no last_drafted_iid write found after the create-branch line"
+  fail "marker vs checkout-edit ordering" \
+    "no last_drafted_iid write found after the code-edit-in-checkout.sh line"
 fi
 
 # Region C: the non-autonomous paths (review-gated / propose / shadow) must

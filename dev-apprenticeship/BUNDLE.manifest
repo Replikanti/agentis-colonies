@@ -93,6 +93,12 @@ tools/apply-edits.py
 # the search/replace anchors). This validates + splices the ranges into the
 # full file before commit-files.
 tools/apply-line-edits.py
+# #1210: checkout-edit orchestrator. code_writer's autonomous path now drives
+# Claude Code (via flat-cyborg) to edit files DIRECTLY in a local git checkout,
+# then commits the `git diff` and opens the PR — sidestepping flat-cyborg's TUI
+# screen-scrape corruption of large structured-JSON file content (#1152 /
+# #1195 / #1208). Runtime dep: code_writer.ag invokes it via exec sh.
+tools/code-edit-in-checkout.sh
 
 # ----- Federation dashboard -----
 # Extracted to a separately-versioned standalone component in #252.

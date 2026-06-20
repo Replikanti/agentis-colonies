@@ -33,32 +33,42 @@ pass() { echo "[PASS] $1"; PASS=$((PASS + 1)); }
 fail() { echo "[FAIL] $1"; FAIL=$((FAIL + 1)); }
 
 # =============================================================================
-# code_writer: persists the durable pending_mr memo after a successful commit.
+# code_writer: #1210 (Approach A) — the autonomous path now edits files in a
+# local checkout and opens the PR DIRECTLY (via tools/code-edit-in-checkout.sh),
+# emitting implementation:mr_ready itself. It therefore no longer hands off to
+# commit_composer via the durable implementation:pending_mr memo — writing that
+# memo would make commit_composer open a DUPLICATE MR for the same branch. The
+# durable handoff machinery stays in commit_composer (asserted below) for any
+# pending_mr written by other code paths; code_writer just no longer feeds it.
 # =============================================================================
 if [ -f "$CODE_WRITER" ]; then
-    if grep -q 'implementation:pending_mr' "$CODE_WRITER"; then
-        pass "#1151 code_writer: writes the durable implementation:pending_mr memo"
+    # The autonomous path must NOT write the pending_mr handoff (it opens the PR
+    # itself). The only remaining mention of `implementation:pending_mr` in
+    # code_writer would be a memo_write, so assert there is none.
+    if grep -q 'memo_write(scoped_memo(owner, repo, "implementation:pending_mr")' "$CODE_WRITER"; then
+        fail "#1210 code_writer: still writes implementation:pending_mr (would double-open MR; the autonomous path now opens the PR directly)"
     else
-        fail "#1151 code_writer: missing implementation:pending_mr memo write"
+        pass "#1210 code_writer: no pending_mr handoff (autonomous path opens the PR directly, no double-open)"
     fi
 
-    # The durable write must live in the committed-code path: it sits between
-    # the `Committed code to` log line and the success learn() tags.
+    # The autonomous path opens the PR via the checkout-edit orchestrator and
+    # emits implementation:mr_ready itself.
+    if grep -q 'code-edit-in-checkout.sh' "$CODE_WRITER"; then
+        pass "#1210 code_writer: autonomous path drives tools/code-edit-in-checkout.sh"
+    else
+        fail "#1210 code_writer: missing the code-edit-in-checkout.sh orchestrator call"
+    fi
+
+    # The mr_ready emit must sit on the PR-opened path (inside the
+    # `if len(edit_result) > 0` block).
     if awk '
-        /Committed code to/ { seen_commit = 1 }
-        seen_commit && /implementation:pending_mr/ { found = 1 }
+        /if len\(edit_result\) > 0/ { grab = 1 }
+        grab && /emit\("implementation:mr_ready", draft\)/ { found = 1 }
         END { exit(found ? 0 : 1) }
     ' "$CODE_WRITER"; then
-        pass "#1151 code_writer: pending_mr memo written after the successful commit"
+        pass "#1210 code_writer: emits implementation:mr_ready on the PR-opened path"
     else
-        fail "#1151 code_writer: pending_mr memo not on the post-commit path"
-    fi
-
-    # Tab-delimited (issue_id, branch_name, summary) payload.
-    if grep -Eq 'to_string\(draft\.issue_id\)[[:space:]]*\+[[:space:]]*"\\t"[[:space:]]*\+[[:space:]]*draft\.branch_name[[:space:]]*\+[[:space:]]*"\\t"[[:space:]]*\+[[:space:]]*draft\.summary' "$CODE_WRITER"; then
-        pass "#1151 code_writer: pending_mr payload is tab-delimited issue/branch/summary"
-    else
-        fail "#1151 code_writer: pending_mr payload is not the tab-delimited issue/branch/summary triple"
+        fail "#1210 code_writer: does not emit implementation:mr_ready after opening the PR"
     fi
 else
     fail "#1151 code_writer: agent file not found at $CODE_WRITER"
