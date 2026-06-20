@@ -332,38 +332,38 @@ else
 fi
 
 # =============================================================================
-# #1172 / #1208: code_writer.ag wires get-file into the code-gen context AND,
-# when the file already exists, shows a line-NUMBERED view and requests
-# line-RANGE edits (not a whole-file regeneration, not byte-exact search/replace
-# anchors) and applies them deterministically before commit. Grep-level wiring
-# assertions.
+# #1210 (Approach A): code_writer.ag's AUTONOMOUS path no longer round-trips
+# file content through the forge API. It drives tools/code-edit-in-checkout.sh,
+# which edits files DIRECTLY in a local checkout (via flat-cyborg/Claude Code)
+# and commits the `git diff`. The old get-file -> numbered_view -> line-range
+# prompt() -> apply-line-edits.py -> commit-files chain is gone from the
+# autonomous path (it corrupted large files on flat-cyborg's screen-scrape;
+# #1152 / #1195 / #1208). The github-api.sh `get-file` / `commit-files` backend
+# verbs themselves are unchanged and still validated above for other callers.
+# Grep-level wiring assertions.
 # =============================================================================
 CW_AG="$REPO_ROOT/dev-apprenticeship/implementation/agents/code_writer.ag"
-if grep -q "get-file --path" "$CW_AG"; then
-    pass "#1172 code_writer.ag: fetches existing content via 'get-file --path' before code-gen"
+if grep -q "code-edit-in-checkout.sh" "$CW_AG"; then
+    pass "#1210 code_writer.ag: autonomous path drives tools/code-edit-in-checkout.sh (edit-in-checkout)"
 else
-    fail "#1172 code_writer.ag: no 'get-file --path' fetch found before code-gen"
+    fail "#1210 code_writer.ag: no code-edit-in-checkout.sh orchestrator call found"
 fi
 
-# #1208: the existing-file path must present a line-NUMBERED view of the file
-# (numbered_view -> `N|` prefix) and request line-RANGE edits
-# (start_line / end_line / new_text), so the model never reproduces exact source
-# bytes (the markdown `**`-drop failure mode of the old old_str/new_str path).
-if grep -q "numbered_view(" "$CW_AG" && grep -q "start_line" "$CW_AG" && grep -q "end_line" "$CW_AG" && grep -q "new_text" "$CW_AG"; then
-    pass "#1208 code_writer.ag: existing-file path shows a numbered view and requests line-range edits (start_line/end_line/new_text)"
+# The orchestrator handles both new and existing files (claude creates/edits in
+# the checkout), so the autonomous path must NOT still go through the old
+# commit-files forge API call.
+if grep -q "commit-files --branch" "$CW_AG"; then
+    fail "#1210 code_writer.ag: still commits via the forge commit-files API (the checkout-edit path commits the git diff instead)"
 else
-    fail "#1208 code_writer.ag: existing-file edit prompt missing numbered_view / line-range fields"
+    pass "#1210 code_writer.ag: autonomous path no longer commits via the forge commit-files API"
 fi
 
-# #1208: those edits must be applied deterministically (apply_line_edits_to_actions
-# -> tools/apply-line-edits.py) to assemble the full file BEFORE commit-files
-# runs, so the committed content never depends on fragile large LLM output.
-apply_line="$(grep -n "apply_line_edits_to_actions(" "$CW_AG" | tail -1 | cut -d: -f1)"
-commit_line="$(grep -n "commit-files --branch" "$CW_AG" | head -1 | cut -d: -f1)"
-if [ -n "$apply_line" ] && [ -n "$commit_line" ] && [ "$apply_line" -lt "$commit_line" ]; then
-    pass "#1208 code_writer.ag: applies line edits (apply_line_edits_to_actions) before commit-files"
+# A deterministic per-issue branch (fix/issue-<iid>) is passed to the
+# orchestrator so a retry reuses the branch instead of littering empty ones.
+if grep -q '"fix/issue-"' "$CW_AG"; then
+    pass "#1210 code_writer.ag: uses a deterministic fix/issue-<iid> branch for the checkout edit"
 else
-    fail "#1208 code_writer.ag: line edits not deterministically applied before commit-files"
+    fail "#1210 code_writer.ag: missing the deterministic fix/issue-<iid> branch"
 fi
 
 echo ""

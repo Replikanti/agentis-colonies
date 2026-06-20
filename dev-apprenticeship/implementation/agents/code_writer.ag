@@ -352,117 +352,55 @@ fn tick_for_repo(owner: string, repo: string) -> void {
             print("[code_writer] Drafted code for issue", draft.issue_id, "(tier:", my_tier, ")");
 
             if my_tier == "autonomous" {
-                // Create branch
+                // #1210: Approach A — edit files DIRECTLY in a local checkout via
+                // Claude Code (flat-cyborg), then commit the `git diff` and open
+                // the PR. This replaces the old "create-branch -> get-file ->
+                // numbered_view -> line-range prompt() -> apply-line-edits.py ->
+                // commit-files via the forge Git Database API" chain. That chain
+                // round-tripped file CONTENT through flat-cyborg's TUI screen-
+                // scrape, which line-wraps and corrupts large files (#1152 /
+                // #1195 / #1208). Editing in a real checkout sidesteps the
+                // screen-scrape: claude's own file tools touch the working tree
+                // and we commit whatever git shows. The editing prompt now lives
+                // INSIDE the orchestrator's flat-cyborg invocation, NOT as an .ag
+                // prompt() — so this branch has no prompt() at all. flat-cyborg
+                // stays the only backend; `claude -p` is not used.
+                //
+                // Deterministic per-issue branch (fix/issue-<iid>) so a retry
+                // reuses the same branch instead of littering empty branches.
+                let issue_iid = to_string(draft.issue_id);
+                let branch_name = "fix/issue-" + issue_iid;
                 // colony-lint: safe-exec-concat
-                let branch_cmd = "$COLONY_DIR/scripts/forge-api.sh create-branch --name " + shell_escape(draft.branch_name) + " --ref main" + repo_arg(owner, repo);
-                let branch_result = try { exec sh branch_cmd; } catch e {
-                    print("[code_writer] Branch creation failed:", e);
+                let issue_cmd = "$COLONY_DIR/scripts/forge-api.sh issue " + to_string(draft.issue_id) + repo_arg(owner, repo);
+                let issue_detail = try { exec sh issue_cmd; } catch e { ""; };
+                // Task text = issue body + the drafted plan. The orchestrator
+                // wraps this into the claude editing instruction.
+                let task_text = "Issue:\n" + issue_detail + "\n\nPlan:\n" + draft.files + "\n\n" + draft.summary;
+                // The orchestrator handles both new-file and existing-file cases
+                // (claude creates or edits files in the checkout). It exits 0 with
+                // the PR URL on success, 3 (no edits) when claude changed nothing,
+                // and non-zero otherwise — `exec sh` throws on any non-zero, so
+                // the catch covers both NO_EDITS and hard failures; either way we
+                // leave the #1185 markers unset so the next tick retries.
+                // colony-lint: safe-exec-concat
+                let edit_cmd = "$COLONY_DIR/../../tools/code-edit-in-checkout.sh --owner " + shell_escape(owner) + " --repo " + shell_escape(repo) + " --issue " + shell_escape(issue_iid) + " --branch " + shell_escape(branch_name) + " --title " + shell_escape(draft.summary) + " --task " + shell_escape(task_text);
+                let edit_result = try { exec sh edit_cmd; } catch e {
+                    print("[code_writer] code-edit-in-checkout failed or produced no edits (NO_EDITS / error) — not marking drafted, will retry:", e);
                     "";
                 };
 
-                if len(branch_result) > 0 {
-                    // Generate actual code and commit it to the branch
-                    // colony-lint: safe-exec-concat
-                    let issue_cmd = "$COLONY_DIR/scripts/forge-api.sh issue " + to_string(draft.issue_id) + repo_arg(owner, repo);
-                    let issue_detail = try { exec sh issue_cmd; } catch e { ""; };
-
-                    // #1172: before generating file contents from scratch, fetch
-                    // the existing content of the plan's primary file so an EDIT
-                    // task preserves everything it is not changing instead of
-                    // clobbering the file. get-file returns empty (exit 0) when
-                    // the file is new. Single-file fetch only — see
-                    // primary_file_path() for why multi-file is out of scope.
-                    let primary_path = primary_file_path(draft.files);
-                    let existing_content = if len(primary_path) > 0 {
-                        // colony-lint: safe-exec-concat
-                        let getfile_cmd = "$COLONY_DIR/scripts/forge-api.sh get-file --path " + shell_escape(primary_path) + " --ref main" + repo_arg(owner, repo);
-                        try { exec sh getfile_cmd; } catch e { ""; };
+                if len(edit_result) > 0 {
+                    // #1185: mark drafted only now that the PR opened. A NO_EDITS
+                    // (exit 3) or any failure leaves edit_result == "" so the
+                    // markers stay unset and the next tick retries the issue.
+                    memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_iid"), first_iid_str);
+                    memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_updated_at"), first_upd);
+                    print("[code_writer] Opened PR via checkout-edit for issue", draft.issue_id, ":", edit_result);
+                    emit("implementation:mr_ready", draft);
+                    if len(owner) > 0 {
+                        learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "success", ["acted", "implementation", repo_tag(owner, repo)]);
                     } else {
-                        "";
-                    };
-
-                    // #1208: when the primary file ALREADY EXISTS, do NOT ask the
-                    // LLM to regenerate the whole file (large output -> timeout on
-                    // claude, line-wrap corruption on flat-cyborg) NOR to reproduce
-                    // exact source bytes as a search/replace anchor (the model drops
-                    // `**` markdown from anchors, so old_str never matched). Instead
-                    // show a line-NUMBERED view (`N|` prefix) and ask for line-RANGE
-                    // edits ({start_line,end_line,new_text}); apply-line-edits.py
-                    // splices them in deterministically. The actions JSON is built by
-                    // json.dumps, not the LLM, so the committed content is
-                    // fragility-free. For a NEW file we keep the from-scratch
-                    // full-content path unchanged.
-                    let actions_json = if len(existing_content) > 0 {
-                        let numbered = numbered_view(existing_content);
-                        let edit_context = "Issue: " + issue_detail + "\nPlan: " + draft.files + "\nPatterns: " + to_string(rec) +
-                            "\nCurrent content of " + primary_path + " (edit THIS file; each line is prefixed with its 1-based line number as `N|`):\n" + numbered;
-                        let edits_json = prompt(
-                            "You are a code writer editing an EXISTING file. Make the smallest edits that satisfy the task. Use the line numbers shown (the `N|` prefix; the `N|` is NOT part of the file content). Return the smallest set of NON-OVERLAPPING line-range replacements as a JSON array, each object with: file_path (string), start_line (int), end_line (int), new_text (string). new_text is the FULL replacement for lines start_line..end_line (inclusive); empty new_text deletes them. Do NOT include the `N|` prefix in new_text. Do NOT return the whole file. Return ONLY the raw JSON array — no markdown code fences, no ```json wrapper, no prose.",
-                            edit_context
-                        ) -> string;
-                        // Deterministic apply: line ranges must be in-bounds and
-                        // non-overlapping or apply-line-edits.py fails loudly and this
-                        // returns "" => treated as a failed code-gen below (no
-                        // commit; #1185 retry re-runs the issue next tick).
-                        let assembled = apply_line_edits_to_actions(primary_path, existing_content, edits_json);
-                        if len(assembled) > 0 {
-                            assembled;
-                        } else {
-                            print("[code_writer] apply-line-edits failed (out-of-bounds or overlapping ranges) — not committing; will retry");
-                            "";
-                        };
-                    } else {
-                        let code_context = "Issue: " + issue_detail + "\nPlan: " + draft.files + "\nPatterns: " + to_string(rec) +
-                            "\nFile " + primary_path + ": (does not exist yet — create it)";
-                        prompt(
-                            "You are a code writer. Generate the actual file contents for this implementation plan. Create the file(s) from scratch. Return a JSON array of objects, each with: action (string, 'create' or 'update'), file_path (string), content (string, the full file content). Follow the learned naming and structure patterns. Only return the JSON array, nothing else.",
-                            code_context
-                        ) -> string;
-                    };
-
-                    let commit_result = if len(actions_json) > 0 {
-                        // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
-                        let commit_cmd = "$COLONY_DIR/scripts/forge-api.sh commit-files --branch " + shell_escape(draft.branch_name) + " --message " + shell_escape("feat: implement #" + to_string(draft.issue_id) + " - " + draft.summary) + " --actions " + shell_escape(actions_json) + repo_arg(owner, repo);
-                        try { exec sh commit_cmd; } catch e {
-                            print("[code_writer] Commit failed:", e);
-                            // #1152: a recurring cause is an unparseable --actions JSON.
-                            // Code generation is fidelity-critical: a TUI screen-scrape
-                            // backend (flat-cyborg) corrupts the structured JSON of file
-                            // contents. The #1208 line-range edit path keeps LLM output
-                            // small (works on flat-cyborg); a from-scratch NEW file still
-                            // wants the metered `claude -p` backend for the large content
-                            // (see README "Code-generation fidelity").
-                            print("[code_writer] hint: if this is an '--actions JSON' parse error, code-gen needs a fidelity backend (claude -p), not the flat-cyborg screen-scrape — see README");
-                            "";
-                        };
-                    } else {
-                        "";
-                    };
-
-                    if len(commit_result) > 0 {
-                        // #1185: mark drafted only now that the commit landed.
-                        // If create-branch succeeded but commit-files failed,
-                        // we never reach here, so the markers stay unset and
-                        // the next tick retries the issue instead of skipping
-                        // it forever behind the #200 gate with an empty branch.
-                        memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_iid"), first_iid_str);
-                        memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_updated_at"), first_upd);
-                        print("[code_writer] Committed code to", draft.branch_name);
-                        emit("implementation:code_draft", draft);
-                        // #1151: durable single-slot handoff to commit_composer.
-                        // The live `code_draft` bus event above is the fast path,
-                        // but commit_composer only catches it inside a 100ms
-                        // listen() window; a missed event left the branch
-                        // committed with no MR ever opened. Persist a durable
-                        // tab-delimited (issue_id, branch_name, summary) signal
-                        // so commit_composer's no-event branch can recover it.
-                        memo_write(scoped_memo(owner, repo, "implementation:pending_mr"),
-                            to_string(draft.issue_id) + "\t" + draft.branch_name + "\t" + draft.summary);
-                        if len(owner) > 0 {
-                            learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "success", ["acted", "implementation", repo_tag(owner, repo)]);
-                        } else {
-                            learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "success", ["acted", "implementation"]);
-                        };
+                        learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "success", ["acted", "implementation"]);
                     };
                 };
             } else {

@@ -17,6 +17,33 @@ is asserted until multi-version CI is in place.
 
 ### Changed
 
+- **`code_writer`'s autonomous path edits a local checkout and commits the
+  `git diff`, instead of generating edit-JSON and committing via the forge API**
+  (#1210, Approach A). The old autonomous chain (`create-branch` → `get-file` →
+  line-numbered view → line-range `prompt()` → `apply-line-edits.py` →
+  `commit-files` through the GitHub Git Database API) round-tripped file CONTENT
+  through flat-cyborg's TUI screen-scrape, which line-wraps and corrupts large
+  files (#1152 / #1195 / #1208). The new path drives Claude Code (via
+  flat-cyborg, still the ONLY backend — `claude -p` is not used) as an EDITING
+  agent inside a real git checkout: a new orchestrator
+  `tools/code-edit-in-checkout.sh` clones/refreshes a per-colony workspace
+  (`<fed>/.agentis/workspaces/<colony>/<owner>-<repo>`), checks out a
+  deterministic per-issue branch (`fix/issue-<iid>`, reused on retry), runs
+  `flat-cyborg --no-jitter --auto-approve --cwd <checkout> --cmd-file <task>
+  -- claude` so claude's own file tools touch the working tree, then `git add -A`
+  + commits the diff and opens the PR. If claude changed nothing it prints
+  `NO_EDITS` and exits 3 (the caller retries, no empty PR); the token is read
+  from `GITHUB_TOKEN` and never embedded in a remote URL, argv, or any `set -x`
+  trace (it flows only through a `GIT_ASKPASS` helper and the inherited
+  environment). `code_writer.ag`'s autonomous branch now makes a single
+  `exec sh` call to the orchestrator, emits `implementation:mr_ready` on
+  success, and sets the #1185 completion markers only when a PR was opened
+  (NO_EDITS / failure leaves them unset so the next tick retries). New files are
+  handled by the same orchestrator (claude creates them in the checkout) — no
+  separate from-scratch path. The autonomous path no longer hands off to
+  `commit_composer` via `implementation:pending_mr` (it opens the PR itself);
+  the durable-handoff machinery stays in `commit_composer` for other callers.
+  The review-gated / propose / shadow paths are unchanged.
 - **`code_writer` edits existing files via line-numbered ranges, not byte-exact
   search/replace** (#1208). The autonomous existing-file path used to fetch a
   file (#1172) and ask the LLM for `{old_str, new_str}` edits whose `old_str`
