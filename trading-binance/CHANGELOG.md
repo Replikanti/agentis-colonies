@@ -16,6 +16,13 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- Cross-sectional long-short backtest (#1193): genuine active TRADING (not
+  yield) -- long top-K / short bottom-K alts by trailing return, dollar-neutral,
+  weekly, walk-forward. **Cross-sectional MOMENTUM (30d lookback) has a real,
+  robust edge**: ~+43%/yr at realistic 60bps, positive every year (+31 to +88%),
+  breakeven cost ~280bps, Sharpe ~0.9 -- the strongest result of the effort. The
+  price is drawdown: max DD 30-35% (vs carry's 0.3%). Reversal + short-term
+  momentum lose. (`runs/20260620T-xsectional/`)
 - Carry tail-risk study (#1188): measured the basis-blowout / funding-flip /
   liquidation tails a funding-only backtest can't see, over 2.5y for the carry
   basket. **Tail does NOT wipe the year if run UNLEVERED**: perp-spot basis never
