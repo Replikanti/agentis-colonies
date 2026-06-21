@@ -15,6 +15,28 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Added
+
+- **`labeler` (triage) now distils deterministic label rules and replays them
+  without an LLM call — the first crystallizer-substrate pilot in this
+  federation** ([#1235](https://github.com/Replikanti/agentis-colonies/issues/1235),
+  epic [#1234](https://github.com/Replikanti/agentis-colonies/issues/1234)).
+  Before `prompt()`, labeler builds a deterministic keyword-signature context
+  for the chosen unlabeled issue and calls
+  `crystallizer_lookup_with_confidence("label", ctx, min_conf)`; on a hit ≥
+  confidence it applies the rule's labels deterministically (all four tier
+  branches) and skips the LLM. The LLM path distils its decision
+  (`distill("label", coarse_ctx, sorted_labels)` + `knowledge_validate()`), and
+  the existing reality-check (`evaluate_label_verdict` / autonomous soak) now
+  threads the `rule_id` and calls `crystallizer_record_use(rule_id, kept?,
+  +0.1/-0.15)` — operator-kept labels reinforce the rule, changed labels demote
+  it, and agentis-core compaction retires rules at `success_rate < 0.5 &&
+  use_count ≥ 20`. Requires **agentis ≥ 1.8.0** (crystallizer builtins).
+  Rollback: `LABELER_RULE_FIRST=0` restores pre-pilot behaviour;
+  `LABELER_RULE_CONFIDENCE` (default 0.85) tunes the replay threshold. Host-run
+  `.agentis` persists rules on disk across restarts, so no extra persistence
+  wiring is needed.
+
 ### Changed
 
 - **`code_writer`'s autonomous checkout-edit now runs DETACHED and is polled

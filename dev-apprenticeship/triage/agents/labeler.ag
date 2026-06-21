@@ -118,7 +118,7 @@ fn repo_field(line: string, idx: int) -> string {
 fn canonical_label_context(issues_raw: string, me: string) -> string {
     let cmd = "RAW=" + shell_escape(issues_raw) + " ME=" + shell_escape(me) +
         " python3 -c '" +
-        "import os, json\n" +
+        "import os, json, re\n" +
         "VOCAB=[\"bug\",\"crash\",\"error\",\"fail\",\"segfault\",\"panic\",\"exception\",\"docs\",\"documentation\",\"readme\",\"feature\",\"enhancement\",\"request\",\"question\",\"security\",\"vuln\",\"cve\",\"performance\",\"perf\",\"slow\",\"test\",\"ci\",\"build\",\"regression\",\"refactor\",\"dependency\"]\n" +
         "me=os.environ.get(\"ME\",\"\").strip()\n" +
         "try:\n" +
@@ -139,7 +139,8 @@ fn canonical_label_context(issues_raw: string, me: string) -> string {
         "    print(\"\"); raise SystemExit\n" +
         "author=((chosen.get(\"author\") or {}).get(\"username\")) or \"\"\n" +
         "text=((chosen.get(\"title\") or \"\")+\" \"+(chosen.get(\"description\") or \"\")).lower()\n" +
-        "hits=sorted({w for w in VOCAB if w in text})\n" +
+        "toks=set(re.findall(r\"[a-z]+\", text))\n" +
+        "hits=sorted({w for w in VOCAB if w in toks})\n" +
         "scope=\"personal\" if (me and author==me) else \"team\"\n" +
         "ctx=\"kw=\"+\",\".join(hits)+\" scope=\"+scope\n" +
         "print(str(iid)+\"\\t\"+author+\"\\t\"+ctx)" +
@@ -857,20 +858,30 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         // there are >= 3 successful "label" records, so it is guarded;
         // knowledge_validate() bumps empirical_validations toward the
         // crystallize threshold.
+        // #1235 QA #6b: only distill when the LLM labeled the SAME issue the
+        // canonical_ctx was built for (canon_iid = first unlabeled). The LLM
+        // picks the "most important" unlabeled issue, which may differ from
+        // canon_iid; distilling canonical_ctx (issue A keywords) against
+        // action.labels (issue B labels) would mint a mis-scoped rule that
+        // Stage 1 later replays onto the wrong keyword class. When they
+        // diverge we skip distillation this tick (slower crystallization, but
+        // no rule-store poisoning); the reality-check still scores the write.
         if rule_first_enabled {
             if len(canonical_ctx) > 0 {
-                let canonical_action = normalize_labels_csv(action.labels);
-                if len(canonical_action) > 0 {
-                    let scope_at = index_of(canonical_ctx, " scope=");
-                    let coarse_ctx = if scope_at > 0 { substring(canonical_ctx, 0, scope_at); } else { canonical_ctx; };
-                    if len(owner) > 0 {
-                        learn("label", canonical_ctx, canonical_action, "success", ["distilled", "triage", repo_tag(owner, repo)]);
-                    } else {
-                        learn("label", canonical_ctx, canonical_action, "success", ["distilled", "triage"]);
-                    };
-                    let did = try { distill("label", coarse_ctx, canonical_action, "heuristic"); } catch e { ""; };
-                    if len(did) > 0 {
-                        knowledge_validate(did);
+                if action.issue_id == canon_iid {
+                    let canonical_action = normalize_labels_csv(action.labels);
+                    if len(canonical_action) > 0 {
+                        let scope_at = index_of(canonical_ctx, " scope=");
+                        let coarse_ctx = if scope_at > 0 { substring(canonical_ctx, 0, scope_at); } else { canonical_ctx; };
+                        if len(owner) > 0 {
+                            learn("label", canonical_ctx, canonical_action, "success", ["distilled", "triage", repo_tag(owner, repo)]);
+                        } else {
+                            learn("label", canonical_ctx, canonical_action, "success", ["distilled", "triage"]);
+                        };
+                        let did = try { distill("label", coarse_ctx, canonical_action, "heuristic"); } catch e { ""; };
+                        if len(did) > 0 {
+                            knowledge_validate(did);
+                        };
                     };
                 };
             };
