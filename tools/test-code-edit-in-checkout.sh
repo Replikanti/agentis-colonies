@@ -562,6 +562,116 @@ else
     fail "run 6 (multi-repo miss): create-mr must NOT be invoked" "log=$(cat "$CREATE_MR_LOG")"
 fi
 
+# ===========================================================================
+# Run 7 (GitLab parity #1213): FORGE_TYPE=gitlab. The orchestrator must drive
+# the GitLab backend (gitlab-api.sh, NOT github-api.sh), pass GITLAB_PROJECT as
+# the URL-encoded owner%2Frepo, let GITLAB_TOKEN reach the backend via env, and
+# parse `web_url` from the MR response. A github-api.sh stub is also planted to
+# prove it is NOT the one invoked.
+# ===========================================================================
+rm -rf "$FED_DIR" "$REMOTE_BASE" "$SEED" "$CREATE_MR_LOG" "$FC_FLAGS_LOG"
+mkdir -p "$COLONY_DIR/scripts"
+# GitLab backend stub: records the token/project/url it saw, echoes MR JSON.
+cat > "$COLONY_DIR/scripts/gitlab-api.sh" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+shift
+{ echo "gitlab token_seen=\${GITLAB_TOKEN:-MISSING} project=\${GITLAB_PROJECT:-} url=\${GITLAB_URL:-}"; } >> "$CREATE_MR_LOG"
+printf '%s\n' '{"web_url": "https://gitlab.example.test/acme/widget/-/merge_requests/7"}'
+STUB_EOF
+chmod +x "$COLONY_DIR/scripts/gitlab-api.sh"
+# Wrong-backend tripwire: if the orchestrator ignores FORGE_TYPE it would call
+# this and pollute the log with WRONG-BACKEND.
+cat > "$COLONY_DIR/scripts/github-api.sh" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+{ echo "WRONG-BACKEND github-api.sh called"; } >> "$CREATE_MR_LOG"
+printf '%s\n' '{"html_url": "https://example.test/pr/WRONG"}'
+STUB_EOF
+chmod +x "$COLONY_DIR/scripts/github-api.sh"
+
+mkdir -p "$BARE"
+git init --quiet --bare --initial-branch=main "$BARE" 2>/dev/null || git init --quiet --bare "$BARE"
+git init --quiet --initial-branch=main "$SEED" 2>/dev/null || git init --quiet "$SEED"
+(
+    cd "$SEED" || exit 1
+    git symbolic-ref HEAD refs/heads/main 2>/dev/null || true
+    printf 'hello\n' > README.md
+    git add -A
+    git commit --quiet -m "seed: initial commit"
+    git branch -M main 2>/dev/null || true
+    git remote add origin "$BARE"
+    git push --quiet origin main
+)
+git --git-dir="$BARE" symbolic-ref HEAD refs/heads/main
+
+GITLAB_FAKE_TOKEN="glpat-FAKE_TOKEN_DO_NOT_LEAK_abcdef0123456789"
+OUT7_FILE="$WORK/out7.txt"
+env \
+    PATH="$STUB_BIN:$PATH" \
+    COLONY_DIR="$COLONY_DIR" \
+    FORGE_TYPE="gitlab" \
+    GITLAB_URL="file://$REMOTE_BASE" \
+    GITLAB_TOKEN="$GITLAB_FAKE_TOKEN" \
+    FC_STUB_MODE="edit" \
+    bash "$ORCH" \
+        --owner "$OWNER" --repo "$REPO" --issue 42 \
+        --branch "fix/issue-42" --title "add new file" \
+        --task "Create NEWFILE.txt with a greeting." >"$OUT7_FILE" 2>"$WORK/err7.txt"
+RC7=$?
+OUT7="$(cat "$OUT7_FILE")"
+
+if [ "$RC7" -eq 0 ]; then
+    pass "run 7 (gitlab): orchestrator exits 0 on the GitLab path"
+else
+    fail "run 7 (gitlab): exit 0 on GitLab path" "rc=$RC7 err=$(cat "$WORK/err7.txt")"
+fi
+if [ "$OUT7" = "https://gitlab.example.test/acme/widget/-/merge_requests/7" ]; then
+    pass "run 7 (gitlab): parses web_url from the MR response"
+else
+    fail "run 7 (gitlab): web_url on stdout" "stdout=[$OUT7]"
+fi
+if grep -q "^gitlab token_seen=$GITLAB_FAKE_TOKEN " "$CREATE_MR_LOG" 2>/dev/null; then
+    pass "run 7 (gitlab): GITLAB_TOKEN reached gitlab-api.sh via env"
+else
+    fail "run 7 (gitlab): GITLAB_TOKEN to backend" "log=$(cat "$CREATE_MR_LOG" 2>/dev/null)"
+fi
+if grep -q "project=acme%2Fwidget" "$CREATE_MR_LOG" 2>/dev/null; then
+    pass "run 7 (gitlab): GITLAB_PROJECT URL-encoded as owner%2Frepo"
+else
+    fail "run 7 (gitlab): GITLAB_PROJECT encoding" "log=$(cat "$CREATE_MR_LOG" 2>/dev/null)"
+fi
+if grep -q "WRONG-BACKEND" "$CREATE_MR_LOG" 2>/dev/null; then
+    fail "run 7 (gitlab): github-api.sh was wrongly invoked for a gitlab forge"
+else
+    pass "run 7 (gitlab): github-api.sh was NOT invoked (forge backend selected correctly)"
+fi
+if grep -q "$GITLAB_FAKE_TOKEN" "$OUT7_FILE" "$WORK/err7.txt" 2>/dev/null; then
+    fail "run 7 (gitlab): token LEAKED into orchestrator stdout/stderr"
+else
+    pass "run 7 (gitlab): token never appears in orchestrator stdout/stderr"
+fi
+
+# Run 8 (gitlab presence check): FORGE_TYPE=gitlab with no GITLAB_TOKEN must fail
+# loudly (exit 1) and name GITLAB_TOKEN, not GITHUB_TOKEN.
+OUT8_FILE="$WORK/out8.txt"
+env \
+    PATH="$STUB_BIN:$PATH" \
+    COLONY_DIR="$COLONY_DIR" \
+    FORGE_TYPE="gitlab" \
+    GITLAB_URL="file://$REMOTE_BASE" \
+    FC_STUB_MODE="edit" \
+    bash "$ORCH" \
+        --owner "$OWNER" --repo "$REPO" --issue 42 \
+        --branch "fix/issue-42" --title "add new file" \
+        --task "Create NEWFILE.txt with a greeting." >"$OUT8_FILE" 2>"$WORK/err8.txt"
+RC8=$?
+if [ "$RC8" -eq 1 ] && grep -q "GITLAB_TOKEN must be set" "$WORK/err8.txt" 2>/dev/null; then
+    pass "run 8 (gitlab no-token): fails loudly naming GITLAB_TOKEN"
+else
+    fail "run 8 (gitlab no-token): exit 1 + GITLAB_TOKEN message" "rc=$RC8 err=$(cat "$WORK/err8.txt" 2>/dev/null)"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
