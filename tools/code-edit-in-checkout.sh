@@ -198,21 +198,31 @@ run_git -C "$WS" checkout -B "$BRANCH" "origin/$DEFAULT_BRANCH"
 
 # ---------------------------------------------------------------------------
 # 3. Edit: run claude (via flat-cyborg) as an editing agent inside the
-#    checkout. We mirror flat-cyborg-claude.sh's flags MINUS --extract /
-#    --extract-structural: here claude EDITS files with its own tools, so we do
-#    not need to scrape a reply off the screen. --cwd points it at the checkout;
-#    --auto-approve lets it write without an interactive confirm; --no-jitter +
-#    the idle/timeout knobs keep behaviour identical to the wrapper.
+#    checkout. We mirror flat-cyborg-claude.sh's FULL flag set, including
+#    --extract --extract-structural --wrap-input 72. Earlier this path dropped
+#    those flags on the theory that an editing agent makes file changes with its
+#    own tools and never needs a scraped reply — but #1221 showed that without
+#    --extract flat-cyborg does NOT reliably drive the interactive Claude session
+#    to submit-and-act: the prompt is typed but never executed, so claude sits
+#    idle at the input bar until --timeout-ms and produces NO edit (reproduced
+#    live, even for a one-line edit). --extract is what makes flat-cyborg wait
+#    for the session to be ready, submit the prompt, and let claude run to a
+#    settled screen. We do NOT consume its scraped reply here (the artifact is
+#    the git diff), and we redirect flat-cyborg's stdout to stderr so the
+#    scraped screen text can never contaminate this script's stdout, which must
+#    stay the PR URL alone. --wrap-input 72 folds the (large) task prompt so it
+#    does not overflow claude's input editor; --cwd points claude at the
+#    checkout; --auto-approve writes without an interactive confirm.
 # ---------------------------------------------------------------------------
 printf 'Implement issue #%s in this repository by editing the files directly with your tools. %s\n\n%s\n\nMake the change and stop; do not run git or open a PR.' \
     "$ISSUE" "$TITLE" "$TASK" > "$TASKFILE"
 
 echo "[code-edit] running flat-cyborg editing agent in $WS" >&2
 set +e
-flat-cyborg --no-jitter --auto-approve --cwd "$WS" \
+flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 --cwd "$WS" \
     --idle-ms "${FLAT_CYBORG_IDLE_MS:-8000}" \
     --timeout-ms "${CODE_EDIT_TIMEOUT_MS:-600000}" \
-    --cmd-file "$TASKFILE" -- claude
+    --cmd-file "$TASKFILE" -- claude >&2
 FC_RC=$?
 set -e
 

@@ -124,7 +124,8 @@ chmod +x "$COLONY_DIR/scripts/github-api.sh"
 #   edit    : parse --cwd, write a new file there (simulate an editing agent)
 #   no-edit : touch nothing (simulate claude making no change)
 # It also records the flags it was given so we can confirm the orchestrator
-# passed --cwd / --auto-approve / --no-jitter and NOT --extract.
+# passed the full driving set --cwd / --auto-approve / --no-jitter / --extract /
+# --wrap-input (#1221).
 # ---------------------------------------------------------------------------
 STUB_BIN="$WORK/bin"
 mkdir -p "$STUB_BIN"
@@ -234,8 +235,12 @@ else
     fail "run 1: token passed to create-mr via env"
 fi
 
-# flat-cyborg was driven as an editing agent: --cwd + --auto-approve +
-# --no-jitter, and NOT --extract (we don't scrape a reply here).
+# flat-cyborg was driven as an editing agent with the FULL driving flag set:
+# --cwd + --auto-approve + --no-jitter AND --extract + --wrap-input. Without
+# --extract flat-cyborg does not reliably submit-and-run the interactive Claude
+# session, so the prompt is typed but never executed and no edit is produced
+# (#1221). We don't consume the scraped reply (the artifact is the git diff) —
+# --extract is here purely to drive the session.
 FC_FLAGS="$(cat "$FC_FLAGS_LOG" 2>/dev/null || echo '')"
 if printf '%s' "$FC_FLAGS" | grep -q -- '--cwd' \
     && printf '%s' "$FC_FLAGS" | grep -q -- '--auto-approve' \
@@ -244,10 +249,11 @@ if printf '%s' "$FC_FLAGS" | grep -q -- '--cwd' \
 else
     fail "run 1: flat-cyborg editing-agent flags" "flags=[$FC_FLAGS]"
 fi
-if printf '%s' "$FC_FLAGS" | grep -q -- '--extract'; then
-    fail "run 1: flat-cyborg must NOT run in --extract mode (editing agent, no reply scrape)"
+if printf '%s' "$FC_FLAGS" | grep -q -- '--extract' \
+    && printf '%s' "$FC_FLAGS" | grep -q -- '--wrap-input'; then
+    pass "run 1: flat-cyborg driven with --extract + --wrap-input (reliable session submit, #1219)"
 else
-    pass "run 1: flat-cyborg not run in --extract mode (editing agent)"
+    fail "run 1: flat-cyborg must drive with --extract + --wrap-input" "flags=[$FC_FLAGS]"
 fi
 
 # ===========================================================================
