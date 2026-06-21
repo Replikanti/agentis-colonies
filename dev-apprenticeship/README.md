@@ -37,8 +37,50 @@ graph LR
     style RE fill:#1a1e24,stroke:#57ab5a,color:#adbac7
 ```
 
+## Quickstart
+
+The zero-to-first-PR happy path. Each step links to the detailed section below.
+
+**1. Prerequisites** ([What you need](#what-you-need)) — on `PATH`: the [`agentis`](https://github.com/Replikanti/agentis) runtime and [`flat-cyborg`](https://github.com/Replikanti/flat-cyborg) (the default LLM backend — a PTY wrapper over Claude Code), plus a logged-in `~/.claude` session so agents bill against your Claude subscription instead of the metered API. Also `python3`, `git`, and `gh` (GitHub) or `glab` (GitLab). You need a repo, a personal access token, and a **bot account** to assign work to.
+
+**2. Install** ([Installation](#installation)) — from a clone or the release tarball:
+
+```bash
+cd dev-apprenticeship
+./install.sh        # checks prereqs, writes configs + credentials, seeds confidence, wires the flat-cyborg backend
+```
+
+**3. Start** ([Starting and stopping](#starting-and-stopping)):
+
+```bash
+./start-federation.sh       # 5 colonies, 21 agents
+./dashboard.sh 8420         # optional web dashboard at http://localhost:8420
+```
+
+**4. Give it work** ([How work enters the system](#how-work-enters-the-system)) — assign an issue to the bot account and add the colony's trigger label:
+
+```bash
+gh issue create --repo <owner>/<repo> --title "..." --body "..." --label implementation
+gh issue edit <N> --repo <owner>/<repo> --add-assignee <bot-account>
+```
+
+On its next 60-second tick the implementation colony drafts a plan, edits the files in a local checkout, commits, pushes, and opens a PR for you to review and merge. (Planning work uses the `needs-planning` label instead.)
+
+**5. Unlock autonomy** ([Confidence tiers](#confidence-tiers)) — agents start silent (`shadow`) and only watch. An agent opens PRs on its own only at the `autonomous` tier (confidence >= 0.95). Let it climb on good outcomes via [auto-promote](#auto-promote-and-auto-evolve-148), or bump it directly:
+
+```bash
+agentis memo set code_writer:confidence 0.97
+```
+
+**6. Stop** when you are done:
+
+```bash
+./kill-federation.sh
+```
+
 ## Contents
 
+- [Quickstart](#quickstart)
 - [What you need](#what-you-need)
 - [Installation](#installation)
 - [Starting and stopping](#starting-and-stopping)
