@@ -124,7 +124,8 @@ chmod +x "$COLONY_DIR/scripts/github-api.sh"
 #   edit    : parse --cwd, write a new file there (simulate an editing agent)
 #   no-edit : touch nothing (simulate claude making no change)
 # It also records the flags it was given so we can confirm the orchestrator
-# passed --cwd / --auto-approve / --no-jitter and NOT --extract.
+# passed the full driving set --cwd / --auto-approve / --no-jitter / --extract /
+# --wrap-input (#1221).
 # ---------------------------------------------------------------------------
 STUB_BIN="$WORK/bin"
 mkdir -p "$STUB_BIN"
