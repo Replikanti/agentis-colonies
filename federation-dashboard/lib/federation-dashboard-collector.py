@@ -1918,6 +1918,54 @@ def _sidecar_status(installed, enabled, in_startup_grace, last_tick_ts,
         return 'silent'
     return 'healthy'
 
+# --- #1227: per-sidecar interval table + always-on liveness ---
+# The federation runs three background sidecars, each with its own log under
+# <fed>/.agentis/logs/. Their tick cadences are the single source of truth
+# here; the comment cross-references start-federation.sh (auto-promote) and
+# colony start (snapshot-refresh, cost-rate).
+#
+#   auto-promote     1800s  install-gated (.auto-promote-install.toml), stamped
+#   snapshot-refresh  300s  always-on (no toggle, no started_at)
+#   cost-rate          60s  always-on (no toggle, no started_at)
+#
+# auto-promote (and cost-cap) keep their install/started_at/startup-grace
+# semantics above — only snapshot-refresh and cost-rate are derived here.
+SIDECAR_INTERVALS_S = {
+    'auto-promote': 1800,
+    'snapshot-refresh': 300,
+    'cost-rate': 60,
+}
+
+def _always_on_sidecar_record(name, now_ts):
+    """Build a sidecars[] record for an always-on sidecar (snapshot-refresh,
+    cost-rate). These have no install file, no `*.sidecar_started_at` stamp,
+    and no startup-grace — liveness is purely a fresh log tick. last_tick =
+    mtime of <fed>/.agentis/logs/<name>.log (None when the log is absent).
+    Status reuses _sidecar_status() with installed=enabled=True so the same
+    4×interval `down` / 2×interval `silent` ceilings apply (240s/120s for
+    cost-rate, 1200s/600s for snapshot-refresh)."""
+    interval_s = SIDECAR_INTERVALS_S.get(name)
+    log_path = os.path.join(fed_dir, '.agentis', 'logs', name + '.log')
+    last_tick_ts = None
+    if os.path.isfile(log_path):
+        try:
+            last_tick_ts = int(os.path.getmtime(log_path))
+        except OSError:
+            last_tick_ts = None
+    return {
+        'name': name,
+        'installed': True,
+        'enabled': True,
+        'interval_s': interval_s,
+        'last_tick_ts': last_tick_ts,
+        'started_at_ts': None,
+        'in_startup_grace': False,
+        'running_orphan': False,
+        'status': _sidecar_status(
+            True, True, False, last_tick_ts, interval_s, now_ts,
+        ),
+    }
+
 now_ts_for_sidecars = NOW_TS
 sidecars = [
     {
@@ -1956,6 +2004,10 @@ sidecars = [
             now_ts_for_sidecars,
         ),
     },
+    # #1227: always-on sidecars appended after auto-promote (idx 0) and
+    # cost-cap (idx 1) so the orphan-test indices stay stable.
+    _always_on_sidecar_record('snapshot-refresh', now_ts_for_sidecars),
+    _always_on_sidecar_record('cost-rate', now_ts_for_sidecars),
 ]
 
 # --- #352 (rewritten in #357): Config editor scope ---

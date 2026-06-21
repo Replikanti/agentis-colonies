@@ -1293,10 +1293,11 @@ else
     fail "38: pickTextColor contrast mapping regressed"
 fi
 
-# --- #352: sidecar listing renders 2 entries (auto-promote + cost-cap)
-#     with name labels and per-row [restart] button. The collector
-#     emits `data.sidecars` as a 2-record array; the renderer iterates
-#     and emits one .sidecar-row per record. ---
+# --- #352/#1227: sidecar listing renders all federation sidecars with name
+#     labels and per-row [restart] button. The collector emits `data.sidecars`
+#     with auto-promote + cost-cap (install-gated) plus the always-on
+#     snapshot-refresh + cost-rate records (#1227); the renderer iterates and
+#     emits one .sidecar-row per record. ---
 if python3 - "$HTML_FILE" <<'PY' 2>/dev/null
 import sys, re, json
 with open(sys.argv[1]) as f:
@@ -1309,9 +1310,20 @@ except Exception:
     sys.exit(2)
 sidecars = data.get('sidecars') or []
 names = [s.get('name') for s in sidecars]
-if 'auto-promote' not in names or 'cost-cap' not in names:
-    sys.stderr.write('sidecars[] does not include both auto-promote + cost-cap: %r\n' % names)
-    sys.exit(3)
+# #1227: all three federation sidecars must be present (cost-cap too).
+for required in ('auto-promote', 'cost-cap', 'snapshot-refresh', 'cost-rate'):
+    if required not in names:
+        sys.stderr.write('sidecars[] missing %r: %r\n' % (required, names))
+        sys.exit(3)
+# #1227: the always-on sidecars carry no install file / started_at, so the
+# collector must mark them installed+enabled (else the row shows a spurious
+# `not installed` age + a disabled restart button).
+by_name = {s.get('name'): s for s in sidecars}
+for always_on in ('snapshot-refresh', 'cost-rate'):
+    rec = by_name[always_on]
+    if not rec.get('installed') or not rec.get('enabled'):
+        sys.stderr.write('always-on %r not installed/enabled: %r\n' % (always_on, rec))
+        sys.exit(6)
 # renderSidecarStatus must be defined.
 if 'function renderSidecarStatus' not in html:
     sys.stderr.write('renderSidecarStatus not defined\n'); sys.exit(4)
@@ -1321,7 +1333,7 @@ if 'sidecar-restart' not in html:
 sys.exit(0)
 PY
 then
-    pass "40: data.sidecars has 2 entries (auto-promote + cost-cap), per-row [restart] (#352)"
+    pass "40: data.sidecars has auto-promote + cost-cap + snapshot-refresh + cost-rate, per-row [restart] (#352/#1227)"
 else
     fail "40: sidecar listing wiring regressed"
 fi

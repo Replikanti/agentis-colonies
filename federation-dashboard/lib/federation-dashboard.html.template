@@ -1967,8 +1967,11 @@ let decisions = data.decisions || [];
 // fed without .auto-promote-install.toml — banner falls back to
 // daemon-liveness only.
 let sidecar = data.sidecar || {installed: false, enabled: false, interval_s: null, last_tick_ts: null};
-// #352: per-sidecar listing for the Overview tab. Default to two empty
-// records so renderSidecarStatus always emits the two known sidecars.
+// #352: per-sidecar listing for the Overview tab. #1227: the collector now
+// emits all three federation sidecars — auto-promote (install-gated),
+// snapshot-refresh and cost-rate (always-on, no install toggle / started_at).
+// Default to an empty array so renderSidecarStatus bails gracefully when a
+// snapshot predates the field.
 let sidecars = data.sidecars || [];
 // #357: config editor scope. Editable by default; setting
 // `[config_editor].operator_writes_disabled = true` in
@@ -2452,8 +2455,11 @@ function renderForgeRateLimits(data) {
 
 // --- Sidecar status (#352, Overview tab) ---
 // Per-sidecar listing for the Overview tab. The collector emits a
-// `data.sidecars[]` array with one record per sidecar (auto-promote,
-// cost-cap, plus any future ones). Each row renders the sidecar name,
+// `data.sidecars[]` array with one record per sidecar: auto-promote and
+// cost-cap (install-gated), plus the always-on snapshot-refresh and
+// cost-rate sidecars (#1227, installed/enabled=true with no install file or
+// started_at, so they render a live age + an enabled [restart] button rather
+// than a spurious `not installed`). Each row renders the sidecar name,
 // age since last tick, a status pill (healthy/silent/down/disabled), and
 // a `[restart]` button. Operators clicking restart confirm() into a POST
 // to /sidecar-restart which the server thin-shells into
