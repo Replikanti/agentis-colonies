@@ -444,6 +444,124 @@ else
     fail "run 4 (fail+no-edits): create-mr must NOT be invoked" "log=$(cat "$CREATE_MR_LOG")"
 fi
 
+# ===========================================================================
+# Run 5 (multi-repo #316 / #1212): the inherited GITHUB_TOKEN + GITHUB_URL are
+# the WRONG (first-repo) values; GITHUB_REPOS_JSON carries this repo's OWN
+# token + url. The orchestrator must re-resolve via forge-resolve-repo.py and
+# clone/push/open-PR with the resolved credentials, not the inherited ones.
+# ===========================================================================
+rm -rf "$FED_DIR" "$REMOTE_BASE" "$SEED" "$CREATE_MR_LOG" "$FC_FLAGS_LOG"
+mkdir -p "$COLONY_DIR/scripts"
+# Stub records the token it actually saw via env (the resolved one must win).
+cat > "$COLONY_DIR/scripts/github-api.sh" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+shift
+{ echo "token_seen=\${GITHUB_TOKEN:-MISSING} owner=\${GITHUB_OWNER:-} repo=\${GITHUB_REPO:-}"; } >> "$CREATE_MR_LOG"
+printf '%s\n' '{"html_url": "https://example.test/pr/5"}'
+STUB_EOF
+chmod +x "$COLONY_DIR/scripts/github-api.sh"
+
+mkdir -p "$BARE"
+git init --quiet --bare --initial-branch=main "$BARE" 2>/dev/null || git init --quiet --bare "$BARE"
+git init --quiet --initial-branch=main "$SEED" 2>/dev/null || git init --quiet "$SEED"
+(
+    cd "$SEED" || exit 1
+    git symbolic-ref HEAD refs/heads/main 2>/dev/null || true
+    printf 'hello\n' > README.md
+    git add -A
+    git commit --quiet -m "seed: initial commit"
+    git branch -M main 2>/dev/null || true
+    git remote add origin "$BARE"
+    git push --quiet origin main
+)
+git --git-dir="$BARE" symbolic-ref HEAD refs/heads/main
+
+PERREPO_TOKEN="ghp_PERREPO_TOKEN_DO_NOT_LEAK_9876543210fedcba"
+# This repo's OWN entry: correct file:// url + its own token. Built with
+# json.dumps so the mktemp path is escaped safely.
+REPOS_JSON_5="$(python3 -c "import json,sys; print(json.dumps([{'url':'file://'+sys.argv[1],'owner':'acme','repo':'widget','token':sys.argv[2],'me':'acme-bot'}]))" "$REMOTE_BASE" "$PERREPO_TOKEN")"
+
+OUT5_FILE="$WORK/out5.txt"
+env \
+    PATH="$STUB_BIN:$PATH" \
+    COLONY_DIR="$COLONY_DIR" \
+    GITHUB_URL="file:///nonexistent-inherited-base" \
+    GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    GITHUB_REPOS_JSON="$REPOS_JSON_5" \
+    FC_STUB_MODE="edit" \
+    bash "$ORCH" \
+        --owner "$OWNER" --repo "$REPO" --issue 42 \
+        --branch "fix/issue-42" --title "add new file" \
+        --task "Create NEWFILE.txt with a greeting." >"$OUT5_FILE" 2>"$WORK/err5.txt"
+RC5=$?
+OUT5="$(cat "$OUT5_FILE")"
+
+if [ "$RC5" -eq 0 ]; then
+    pass "run 5 (multi-repo): orchestrator exits 0 using the RESOLVED url (inherited url was bogus)"
+else
+    fail "run 5 (multi-repo): exit 0 with resolved creds" "rc=$RC5 err=$(cat "$WORK/err5.txt")"
+fi
+if [ "$OUT5" = "https://example.test/pr/5" ]; then
+    pass "run 5 (multi-repo): prints the PR URL on stdout"
+else
+    fail "run 5 (multi-repo): PR URL on stdout" "stdout=[$OUT5]"
+fi
+if grep -q "token_seen=$PERREPO_TOKEN" "$CREATE_MR_LOG" 2>/dev/null; then
+    pass "run 5 (multi-repo): create-mr saw the RESOLVED per-repo token (#1212)"
+else
+    fail "run 5 (multi-repo): per-repo token must reach create-mr" "log=$(cat "$CREATE_MR_LOG" 2>/dev/null)"
+fi
+if grep -q "token_seen=$FAKE_TOKEN" "$CREATE_MR_LOG" 2>/dev/null; then
+    fail "run 5 (multi-repo): WRONG inherited token reached create-mr"
+else
+    pass "run 5 (multi-repo): inherited (first-repo) token did NOT leak through"
+fi
+if grep -q -e "$PERREPO_TOKEN" -e "$FAKE_TOKEN" "$OUT5_FILE" "$WORK/err5.txt" 2>/dev/null; then
+    fail "run 5 (multi-repo): a token LEAKED into orchestrator stdout/stderr"
+else
+    pass "run 5 (multi-repo): neither token appears in orchestrator stdout/stderr"
+fi
+
+# ===========================================================================
+# Run 6 (multi-repo #1212): the requested repo is NOT in GITHUB_REPOS_JSON.
+# The orchestrator must fail LOUDLY (exit 1) before cloning, and open no PR.
+# ===========================================================================
+rm -f "$CREATE_MR_LOG"
+REPOS_JSON_6="$(python3 -c "import json; print(json.dumps([{'url':'file:///nope','owner':'other','repo':'thing','token':'x','me':'y'}]))")"
+
+OUT6_FILE="$WORK/out6.txt"
+env \
+    PATH="$STUB_BIN:$PATH" \
+    COLONY_DIR="$COLONY_DIR" \
+    GITHUB_URL="file:///nonexistent-inherited-base" \
+    GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    GITHUB_REPOS_JSON="$REPOS_JSON_6" \
+    FC_STUB_MODE="edit" \
+    bash "$ORCH" \
+        --owner "$OWNER" --repo "$REPO" --issue 42 \
+        --branch "fix/issue-42" --title "add new file" \
+        --task "Create NEWFILE.txt with a greeting." >"$OUT6_FILE" 2>"$WORK/err6.txt"
+RC6=$?
+
+if [ "$RC6" -eq 1 ]; then
+    pass "run 6 (multi-repo miss): orchestrator exits 1 (fails loudly when repo absent from GITHUB_REPOS_JSON)"
+else
+    fail "run 6 (multi-repo miss): exit 1 on unresolved repo" "rc=$RC6"
+fi
+if grep -q "not in GITHUB_REPOS_JSON" "$WORK/err6.txt" 2>/dev/null; then
+    pass "run 6 (multi-repo miss): emits an explanatory error on stderr"
+else
+    fail "run 6 (multi-repo miss): error message on stderr" "err=$(cat "$WORK/err6.txt" 2>/dev/null)"
+fi
+if [ ! -f "$CREATE_MR_LOG" ]; then
+    pass "run 6 (multi-repo miss): no PR opened (create-mr never invoked)"
+else
+    fail "run 6 (multi-repo miss): create-mr must NOT be invoked" "log=$(cat "$CREATE_MR_LOG")"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

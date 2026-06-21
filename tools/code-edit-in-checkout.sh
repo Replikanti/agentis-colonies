@@ -79,17 +79,40 @@ if [ -z "$OWNER" ] || [ -z "$REPO" ] || [ -z "$ISSUE" ] || [ -z "$BRANCH" ] || [
     exit 2
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Per-repo token re-resolution (#1212). In multi-repo mode (#316) start-colony
+# exports GITHUB_TOKEN as the FIRST repo's token, so cloning/pushing/opening a
+# PR for a NON-first repo would auth with the wrong credential. Mirror
+# forge-api.sh's `--repo` dispatch: when GITHUB_REPOS_JSON is present, re-resolve
+# owner/repo to its OWN token/url/me via tools/forge-resolve-repo.py and override
+# the inherited GITHUB_* env. The token rides only the helper's stdout (consumed
+# by `eval`), never argv — no leak. Single-repo configs (no GITHUB_REPOS_JSON)
+# are unaffected and keep the inherited token. GitLab parity is tracked by #1213.
+if [ "${FORGE_TYPE:-github}" = "github" ] && [ -n "${GITHUB_REPOS_JSON:-}" ]; then
+    LOOKUP="$SCRIPT_DIR/forge-resolve-repo.py"
+    if [ ! -f "$LOOKUP" ]; then
+        echo "code-edit-in-checkout.sh: per-repo token helper missing: $LOOKUP" >&2
+        exit 1
+    fi
+    RESOLVED="$(python3 "$LOOKUP" "$OWNER" "$REPO")" || {
+        echo "code-edit-in-checkout.sh: --repo $OWNER/$REPO not in GITHUB_REPOS_JSON" >&2
+        exit 1
+    }
+    eval "$RESOLVED"
+    export GITHUB_OWNER GITHUB_REPO GITHUB_TOKEN GITHUB_URL GITHUB_ME
+fi
+
 # Presence-only check via `${GITHUB_TOKEN:+x}` so the token VALUE is never
 # expanded onto a command line (stays out of any external `set -x` trace): the
 # expansion yields the literal `x` when the token is set+non-empty, empty
 # otherwise. The value itself is only ever read by the GIT_ASKPASS helper and
-# inherited by github-api.sh — never named in this script.
+# inherited by github-api.sh — never named in this script. In multi-repo mode
+# this validates the RESOLVED per-repo token (the block above ran first).
 if [ -z "${GITHUB_TOKEN:+x}" ]; then
     echo "code-edit-in-checkout.sh: GITHUB_TOKEN must be set in the environment" >&2
     exit 1
 fi
-
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # ---------------------------------------------------------------------------
 # Resolve FED_DIR + colony name the same way the rest of the federation does.
