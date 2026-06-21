@@ -442,6 +442,48 @@ else
     fi
 fi
 
+# --- Test 13: store-split symlinked .agentis/daemon is cleaned + backed up
+# through the symlink (#1240) ---
+# A store-split federation keeps the canonical daemon registry in one place and
+# symlinks $FED_DIR/.agentis/daemon to it. `find <symlink-to-dir>` without -L
+# does NOT traverse the symlink, so pre-fix the registry was never cleaned
+# (reported "0 files" while stale records survived → next start-federation
+# refused), and `tar -C .agentis daemon` archived the symlink rather than its
+# contents. Verify the resolved-physical-path fix cleans the canonical store
+# AND the backup tarball contains the real sidecar files.
+FIX13="$TMPDIR_TEST/fix13"
+CANON13="$TMPDIR_TEST/fix13-canonical-store"
+mkdir -p "$FIX13/.agentis" "$CANON13"
+# Real registry files live in the canonical store...
+touch "$CANON13/agent1.pid" \
+      "$CANON13/agent1.heartbeat" \
+      "$CANON13/agent1.colony"
+# ...and $FED_DIR/.agentis/daemon is a SYMLINK to it (store-split layout).
+ln -s "$CANON13" "$FIX13/.agentis/daemon"
+
+NOPATTERN13="kill-fed-test-no-such-pattern-$$-symlink"
+set +e
+"$KILL_SH" --fed-dir "$FIX13" \
+    --match-pattern "$NOPATTERN13" \
+    --dashboard-pattern "$NOPATTERN13" \
+    --dashboard-py-pattern "$NOPATTERN13" >/dev/null 2>&1
+rc=$?
+set -e
+# Registry files in the canonical store must be gone (cleaned through symlink).
+canon_left=$(find "$CANON13" -maxdepth 1 -type f | wc -l | tr -d ' ')
+# Backup tarball must exist AND contain the real sidecar files (proving tar
+# followed the symlink to the physical dir, not archived the symlink itself).
+backup13="$(find "$FIX13/.agentis/backups" -name 'agentis-daemon-registry-backup-*.tar.gz' 2>/dev/null | head -n 1)"
+backup_has_files=0
+if [ -n "$backup13" ] && tar tzf "$backup13" 2>/dev/null | grep -q '\.pid$'; then
+    backup_has_files=1
+fi
+if [ "$rc" -eq 0 ] && [ "$canon_left" -eq 0 ] && [ "$backup_has_files" -eq 1 ]; then
+    pass "13: store-split symlinked daemon dir cleaned + backed up through symlink"
+else
+    fail "13: store-split symlink" "rc=$rc canon_left=$canon_left backup_has_files=$backup_has_files"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
