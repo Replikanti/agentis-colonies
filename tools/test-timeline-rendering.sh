@@ -2481,6 +2481,145 @@ else
          "offending: $(grep -nE 'time\.time\(\)' "$TIMELINE_PY" 2>/dev/null | tr '\n' ' ')"
 fi
 
+# --- #1231: the Status-tab status-meta verdict summary rolls up liveness
+#     across ALL sidecars in data.sidecars[] (healthy/silent count as alive,
+#     down as not), instead of echoing only the auto-promote object. Follow-up
+#     to #1227 / #1228, which generalised the sidecar status PANEL
+#     (renderSidecarStatus) but left this one-line summary pushing a single
+#     'sidecar ticked Xm ago' (the auto-promote object only) — so an operator
+#     reading '21/21 running daemons alive · sidecar ticked 24m ago'
+#     reasonably concluded only one sidecar was monitored. We extract
+#     renderFedHealthBanner() from the template and execute it under a DOM
+#     stub: a 3-healthy-sidecar fixture must read '3/3 sidecars healthy' and
+#     NEVER the single 'sidecar ticked' phrasing; a mixed fixture proves
+#     silent counts alive / down counts not; and the auto-promote
+#     install/disabled/orphan/not-installed fallback branches must still
+#     render when data.sidecars[] is empty or holds nothing but auto-promote.
+#     Behavioural (node) when available; static template guard otherwise. ---
+T67_ERR="$TMPDIR_TEST/t67.err"
+if command -v node >/dev/null 2>&1; then
+    if TEMPLATE_HTML="$TEMPLATE_HTML" node <<'JS' 2>"$T67_ERR"
+const fs = require('fs');
+const tpl = fs.readFileSync(process.env.TEMPLATE_HTML, 'utf8');
+const start = tpl.indexOf('function renderFedHealthBanner');
+const end = tpl.indexOf('// --- Stats Row ---', start);
+if (start < 0 || end < 0) { process.stderr.write('could not extract renderFedHealthBanner\n'); process.exit(2); }
+const fnSrc = tpl.slice(start, end);
+
+const elStub = { classList: { remove() {}, add() {} }, innerHTML: '' };
+globalThis.document = { getElementById: () => elStub };
+globalThis.esc = s => String(s);
+globalThis.nowEpoch = 1000000;
+const runningAgents = [
+  { state: 'running', pid: 0, pid_alive: true, name: 'a' },
+  { state: 'running', pid: 0, pid_alive: true, name: 'b' },
+];
+
+function render(data, sidecarObj) {
+  globalThis.agents = runningAgents;
+  globalThis.sidecar = sidecarObj;
+  globalThis.sidecars = (data && data.sidecars) || [];
+  globalThis.__data = data;
+  elStub.innerHTML = '';
+  // Direct sloppy eval: defines renderFedHealthBanner in this scope and runs
+  // it against the fixture; the function's free vars resolve to the globals
+  // set above. Returns the rendered detail HTML.
+  eval(fnSrc + '\nrenderFedHealthBanner(globalThis.__data);');
+  return elStub.innerHTML;
+}
+
+const fails = [];
+function check(cond, msg) { if (!cond) fails.push(msg); }
+
+// 1. Three healthy sidecars -> "3/3 sidecars healthy"; never single phrasing.
+const multi = render(
+  { sidecars: [
+    { name: 'auto-promote', status: 'healthy' },
+    { name: 'snapshot-refresh', status: 'healthy' },
+    { name: 'cost-rate', status: 'healthy' },
+  ] },
+  { installed: false, enabled: false, interval_s: null, last_tick_ts: null }
+);
+check(/3\/3 sidecars healthy/.test(multi), 'multi-healthy: expected "3/3 sidecars healthy", got: ' + multi);
+check(!/sidecar ticked/.test(multi), 'multi-healthy: must NOT use single "sidecar ticked" phrasing, got: ' + multi);
+check(/Healthy/.test(multi), 'multi-healthy: verdict should be Healthy, got: ' + multi);
+
+// 2. silent counts alive, down counts not-alive -> "2/3 sidecars healthy".
+const mixed = render(
+  { sidecars: [
+    { name: 'auto-promote', status: 'healthy' },
+    { name: 'snapshot-refresh', status: 'silent' },
+    { name: 'cost-rate', status: 'down' },
+  ] },
+  { installed: false, enabled: false }
+);
+check(/2\/3 sidecars healthy/.test(mixed), 'mixed: expected "2/3 sidecars healthy" (silent alive, down not), got: ' + mixed);
+
+// 3. auto-promote fallback branches still render when data.sidecars[] is empty
+//    or holds nothing but auto-promote.
+const disabled = render({ sidecars: [] }, { installed: true, enabled: false, interval_s: 1800 });
+check(/sidecar installed but disabled/.test(disabled), 'disabled fallback regressed, got: ' + disabled);
+
+const orphan = render({ sidecars: [] }, { installed: false, enabled: false, running_orphan: true });
+check(/sidecar running but install file missing/.test(orphan), 'orphan fallback regressed, got: ' + orphan);
+
+const notInstalled = render({ sidecars: [] }, { installed: false, enabled: false });
+check(/sidecar not installed/.test(notInstalled), 'not-installed fallback regressed, got: ' + notInstalled);
+
+// only auto-promote, watched + ticked -> terse single line stays, no roll-up.
+const onlyAp = render(
+  { sidecars: [{ name: 'auto-promote', status: 'healthy' }] },
+  { installed: true, enabled: true, interval_s: 1800, last_tick_ts: 1000000 - 600 }
+);
+check(/sidecar ticked 10m ago/.test(onlyAp), 'only-auto-promote should keep terse "sidecar ticked", got: ' + onlyAp);
+check(!/sidecars healthy/.test(onlyAp), 'only-auto-promote must not imply a multi-sidecar roll-up, got: ' + onlyAp);
+
+if (fails.length) { process.stderr.write(fails.join('\n') + '\n'); process.exit(1); }
+process.exit(0);
+JS
+    then
+        pass "67: status-meta summary rolls up all sidecars (3/3 healthy), auto-promote fallback branches preserved (#1231)"
+    else
+        fail "67: status-meta summary did not roll up data.sidecars[] correctly (#1231)" \
+             "$(tr '\n' ' ' < "$T67_ERR" 2>/dev/null)"
+    fi
+else
+    # node unavailable on this runner: static template guard on the
+    # renderFedHealthBanner() body so the roll-up intent can't silently regress.
+    if python3 - "$TEMPLATE_HTML" <<'PY' 2>"$T67_ERR"
+import sys, re
+with open(sys.argv[1]) as f:
+    html = f.read()
+m = re.search(r'function renderFedHealthBanner\b.*?// --- Stats Row ---', html, re.DOTALL)
+if not m:
+    sys.stderr.write('renderFedHealthBanner not found\n'); sys.exit(2)
+body = m.group(0)
+if 'sidecars healthy' not in body:
+    sys.stderr.write('roll-up "N/M sidecars healthy" missing from healthy branch\n'); sys.exit(3)
+if "status === 'healthy'" not in body or "status === 'silent'" not in body:
+    sys.stderr.write('alive predicate (healthy/silent) missing\n'); sys.exit(4)
+if 'data.sidecars' not in body and 'allSidecars' not in body:
+    sys.stderr.write('roll-up does not read data.sidecars[]\n'); sys.exit(5)
+# The roll-up must precede the single-sidecar "sidecar ticked" fallback.
+i_roll = body.find('sidecars healthy')
+i_tick = body.find('sidecar ticked')
+if i_tick != -1 and i_tick < i_roll:
+    sys.stderr.write('single "sidecar ticked" still precedes the roll-up branch\n'); sys.exit(6)
+for needle in ('sidecar installed but disabled',
+               'sidecar running but install file missing',
+               'sidecar not installed'):
+    if needle not in body:
+        sys.stderr.write('auto-promote fallback branch missing: %r\n' % needle); sys.exit(7)
+sys.exit(0)
+PY
+    then
+        pass "67: status-meta roll-up over data.sidecars[] present, auto-promote fallbacks preserved (static; node absent) (#1231)"
+    else
+        fail "67: status-meta roll-up template guard failed (#1231)" \
+             "$(tr '\n' ' ' < "$T67_ERR" 2>/dev/null)"
+    fi
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

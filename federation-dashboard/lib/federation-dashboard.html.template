@@ -2097,7 +2097,20 @@ function renderFedHealthBanner(data) {
     // "N/N alive" is the truthful denominator (agents.length includes
     // intentionally-stopped agents and would render a misleading ratio).
     const parts = [running.length + '/' + running.length + ' running daemons alive'];
-    if (sidecarWatched && sidecarAge !== null) {
+    // #1231: roll up liveness across ALL federation sidecars from
+    // data.sidecars[] (auto-promote, cost-cap, snapshot-refresh, cost-rate
+    // since #1227) instead of echoing only the auto-promote object — the old
+    // 'sidecar ticked Xm ago' push implied a single monitored sidecar.
+    // healthy/silent count as alive, down as not. Fall back to the
+    // auto-promote-keyed single-sidecar lines below only when data.sidecars[]
+    // is empty or holds nothing but auto-promote.
+    const allSidecars = (data && data.sidecars) || sidecars || [];
+    const hasOtherSidecars = allSidecars.some(s => s.name !== 'auto-promote');
+    if (hasOtherSidecars) {
+      const aliveSidecars = allSidecars.filter(
+        s => s.status === 'healthy' || s.status === 'silent').length;
+      parts.push(aliveSidecars + '/' + allSidecars.length + ' sidecars healthy');
+    } else if (sidecarWatched && sidecarAge !== null) {
       const mins = Math.round(Math.max(0, sidecarAge) / 60);
       parts.push('sidecar ticked ' + mins + 'm ago');
     } else if (sidecar.installed && sidecar.enabled) {
