@@ -81,6 +81,20 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Forge selection (#1213). The orchestrator is forge-agnostic: github (default)
+# or gitlab. Exported so the GIT_ASKPASS helper (a subprocess of git) can branch
+# on it. The per-repo token resolution and clone/auth/create-mr blocks below all
+# key off $FORGE_TYPE.
+FORGE_TYPE="${FORGE_TYPE:-github}"
+export FORGE_TYPE
+case "$FORGE_TYPE" in
+    github|gitlab) ;;
+    *)
+        echo "code-edit-in-checkout.sh: unknown FORGE_TYPE '$FORGE_TYPE' (expected github|gitlab)" >&2
+        exit 2
+        ;;
+esac
+
 # Per-repo token re-resolution (#1212). In multi-repo mode (#316) start-colony
 # exports GITHUB_TOKEN as the FIRST repo's token, so cloning/pushing/opening a
 # PR for a NON-first repo would auth with the wrong credential. Mirror
@@ -103,15 +117,22 @@ if [ "${FORGE_TYPE:-github}" = "github" ] && [ -n "${GITHUB_REPOS_JSON:-}" ]; th
     export GITHUB_OWNER GITHUB_REPO GITHUB_TOKEN GITHUB_URL GITHUB_ME
 fi
 
-# Presence-only check via `${GITHUB_TOKEN:+x}` so the token VALUE is never
-# expanded onto a command line (stays out of any external `set -x` trace): the
-# expansion yields the literal `x` when the token is set+non-empty, empty
-# otherwise. The value itself is only ever read by the GIT_ASKPASS helper and
-# inherited by github-api.sh — never named in this script. In multi-repo mode
-# this validates the RESOLVED per-repo token (the block above ran first).
-if [ -z "${GITHUB_TOKEN:+x}" ]; then
-    echo "code-edit-in-checkout.sh: GITHUB_TOKEN must be set in the environment" >&2
-    exit 1
+# Presence-only check via `${VAR:+x}` so the token VALUE is never expanded onto a
+# command line (stays out of any external `set -x` trace): the expansion yields
+# the literal `x` when the token is set+non-empty, empty otherwise. The value
+# itself is only ever read by the GIT_ASKPASS helper and inherited by the forge
+# API wrapper — never named in this script. In multi-repo (github) mode this
+# validates the RESOLVED per-repo token (the block above ran first).
+if [ "$FORGE_TYPE" = "gitlab" ]; then
+    if [ -z "${GITLAB_TOKEN:+x}" ]; then
+        echo "code-edit-in-checkout.sh: GITLAB_TOKEN must be set in the environment" >&2
+        exit 1
+    fi
+else
+    if [ -z "${GITHUB_TOKEN:+x}" ]; then
+        echo "code-edit-in-checkout.sh: GITHUB_TOKEN must be set in the environment" >&2
+        exit 1
+    fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -130,20 +151,28 @@ else
 fi
 
 GITHUB_URL="${GITHUB_URL:-https://api.github.com}"
-# Derive the git host base from the API base. api.github.com -> github.com;
-# a GHE API base like https://ghe.example.com/api/v3 -> https://ghe.example.com.
-# A schemeless-host URL (file:// — used by the offline test harness, never in
-# production) forwards its path verbatim so a local bare repo can stand in for
-# the remote.
-GIT_HOST="$(GH_URL="$GITHUB_URL" python3 -c '
+# Pick the API base per forge. github: the API base (api.github.com or a GHE
+# /api/v3 base). gitlab: the INSTANCE url (e.g. https://gitlab.com) — gitlab-api.sh
+# itself appends /api/v4/projects/<id>.
+if [ "$FORGE_TYPE" = "gitlab" ]; then
+    API_BASE="${GITLAB_URL:-https://gitlab.com}"
+else
+    API_BASE="$GITHUB_URL"
+fi
+# Derive the git host base from the API base. github api.github.com -> github.com;
+# a GHE / GitLab base like https://host/api/<v> -> https://host (the else-branch
+# drops the /api path). A schemeless-host URL (file:// — used by the offline test
+# harness, never in production) forwards its path verbatim so a local bare repo
+# can stand in for the remote.
+GIT_HOST="$(API_BASE="$API_BASE" FORGE_TYPE="$FORGE_TYPE" python3 -c '
 import os
 from urllib.parse import urlsplit
-u = urlsplit(os.environ["GH_URL"])
+u = urlsplit(os.environ["API_BASE"])
 host = u.netloc
 if u.scheme == "file":
     # file:///path -> file:///path (path carries the location, no netloc).
     print("file://" + u.path.rstrip("/"))
-elif host == "api.github.com":
+elif os.environ["FORGE_TYPE"] == "github" and host == "api.github.com":
     print("https://github.com")
 else:
     print(u.scheme + "://" + host)
@@ -156,14 +185,24 @@ CLONE_URL="$GIT_HOST/$OWNER/$REPO.git"
 # ---------------------------------------------------------------------------
 ASKPASS="$(mktemp)"
 # The helper distinguishes git's two prompts ("Username for ..." vs
-# "Password for ...") and answers each. Token rides $GITHUB_TOKEN in the env it
-# inherits; it is never written into this file.
+# "Password for ...") and answers each. It branches on FORGE_TYPE (a non-secret
+# var, inherited from the env): GitHub uses username "x-access-token" + the PAT;
+# GitLab uses username "oauth2" + the PAT. The token rides $GITHUB_TOKEN /
+# $GITLAB_TOKEN in the env this helper inherits and is read ONLY here, in a
+# subprocess — it is never written into this file nor named in the parent script.
 cat > "$ASKPASS" <<'ASKPASS_EOF'
 #!/usr/bin/env sh
-case "$1" in
-    *Username*|*username*) printf '%s' "x-access-token" ;;
-    *) printf '%s' "${GITHUB_TOKEN}" ;;
-esac
+if [ "${FORGE_TYPE:-github}" = "gitlab" ]; then
+    case "$1" in
+        *Username*|*username*) printf '%s' "oauth2" ;;
+        *) printf '%s' "${GITLAB_TOKEN}" ;;
+    esac
+else
+    case "$1" in
+        *Username*|*username*) printf '%s' "x-access-token" ;;
+        *) printf '%s' "${GITHUB_TOKEN}" ;;
+    esac
+fi
 ASKPASS_EOF
 chmod 700 "$ASKPASS"
 
@@ -279,33 +318,50 @@ run_git -C "$WS" commit -m "feat: $TITLE (#$ISSUE)"
 run_git -C "$WS" push --force-with-lease origin "$BRANCH"
 
 # ---------------------------------------------------------------------------
-# 5. Open the PR via the colony's github-api.sh create-mr verb. That wrapper
-#    reads GITHUB_TOKEN/OWNER/REPO from the env (already present here) and prints
-#    the GitHub PR JSON; we extract html_url and print it on stdout.
+# 5. Open the PR/MR via the colony's forge API wrapper create-mr verb. The
+#    wrapper reads its token from the env (already present here) and prints the
+#    forge's PR/MR JSON; we extract the URL and print it on stdout. The verb +
+#    flags (--source/--title/--description) are forge-symmetric; only the env
+#    contract differs (github: OWNER/REPO/URL; gitlab: PROJECT/URL).
 # ---------------------------------------------------------------------------
-GITHUB_API="$FED_DIR/$COLONY_NAME/scripts/github-api.sh"
 DESCRIPTION="Implements #$ISSUE.
 
 $TASK"
 
-if [ ! -x "$GITHUB_API" ]; then
-    echo "[code-edit] github-api.sh not found/executable at $GITHUB_API" >&2
+if [ "$FORGE_TYPE" = "gitlab" ]; then
+    FORGE_API="$FED_DIR/$COLONY_NAME/scripts/gitlab-api.sh"
+else
+    FORGE_API="$FED_DIR/$COLONY_NAME/scripts/github-api.sh"
+fi
+if [ ! -x "$FORGE_API" ]; then
+    echo "[code-edit] $FORGE_TYPE-api.sh not found/executable at $FORGE_API" >&2
     exit 1
 fi
 
-# `env` (not a plain VAR=val prefix on the assignment) so the github-api.sh
-# subprocess inherits OWNER/REPO/URL/default-branch cleanly. GITHUB_TOKEN is
-# deliberately NOT named here: it is already in this script's inherited
-# environment, so the child inherits it automatically. Never referencing
-# $GITHUB_TOKEN as an expanded word keeps the token out of any external `set -x`
+# `env` (not a plain VAR=val prefix on the assignment) so the wrapper subprocess
+# inherits OWNER/REPO/PROJECT/URL/default-branch cleanly. The token (GITHUB_TOKEN
+# / GITLAB_TOKEN) is deliberately NOT named here: it is already in this script's
+# inherited environment, so the child inherits it automatically. Never
+# referencing the token as an expanded word keeps it out of any external `set -x`
 # trace of this script (the token never appears on a command line).
-PR_JSON="$(env \
-    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" GITHUB_URL="$GITHUB_URL" \
-    GITLAB_DEFAULT_BRANCH="$DEFAULT_BRANCH" \
-    "$GITHUB_API" create-mr --source "$BRANCH" --title "$TITLE" --description "$DESCRIPTION")" || {
-        echo "[code-edit] create-mr failed" >&2
-        exit 1
-    }
+if [ "$FORGE_TYPE" = "gitlab" ]; then
+    # gitlab-api.sh wants GITLAB_PROJECT = URL-encoded namespace/project path.
+    PR_JSON="$(env \
+        GITLAB_URL="$API_BASE" GITLAB_PROJECT="$OWNER%2F$REPO" \
+        GITLAB_DEFAULT_BRANCH="$DEFAULT_BRANCH" \
+        "$FORGE_API" create-mr --source "$BRANCH" --title "$TITLE" --description "$DESCRIPTION")" || {
+            echo "[code-edit] create-mr failed" >&2
+            exit 1
+        }
+else
+    PR_JSON="$(env \
+        GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" GITHUB_URL="$GITHUB_URL" \
+        GITLAB_DEFAULT_BRANCH="$DEFAULT_BRANCH" \
+        "$FORGE_API" create-mr --source "$BRANCH" --title "$TITLE" --description "$DESCRIPTION")" || {
+            echo "[code-edit] create-mr failed" >&2
+            exit 1
+        }
+fi
 
 PR_URL="$(PR="$PR_JSON" python3 -c '
 import os, json, sys
@@ -313,11 +369,11 @@ try:
     d = json.loads(os.environ["PR"])
 except Exception:
     sys.exit(1)
-print(d.get("html_url") or d.get("url") or "")
+print(d.get("html_url") or d.get("web_url") or d.get("url") or "")
 ')" || true
 
 if [ -z "$PR_URL" ]; then
-    echo "[code-edit] PR opened but could not parse html_url from create-mr response" >&2
+    echo "[code-edit] PR/MR opened but could not parse its URL from the create-mr response" >&2
     exit 1
 fi
 
