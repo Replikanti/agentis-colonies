@@ -104,6 +104,97 @@ else
          "out=[$OUT3]"
 fi
 
+# ===========================================================================
+# RESULT-FILE channel (#1219): exercise the WRAPPER's channel-selection logic
+# with a STUB `flat-cyborg` on PATH (no real flat-cyborg / claude needed). The
+# stub parses the --cmd-file prompt for the RESULT_FILE path the wrapper told
+# claude to write to, then — per FCSTUB_MODE — writes the result file and/or the
+# screen reply and exits with FCSTUB_RC. We assert the wrapper:
+#   1. prefers the result-file reply when claude wrote it (exit 0),
+#   2. falls back to the screen-scrape reply when the file is empty,
+#   3. honours a non-empty result file even on a flat-cyborg non-zero exit,
+#   4. propagates the flat-cyborg exit code when nothing was produced.
+# ===========================================================================
+WRAPPER="$SCRIPT_DIR/flat-cyborg-claude.sh"
+if [ ! -f "$WRAPPER" ]; then
+    fail "missing wrapper: $WRAPPER"
+else
+    STUB_DIR="$(mktemp -d)"
+    cat > "$STUB_DIR/flat-cyborg" <<'STUB_EOF'
+#!/usr/bin/env bash
+set -eu
+CMDFILE=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --cmd-file) CMDFILE="$2"; shift 2 ;;
+        --) shift; break ;;
+        *) shift ;;
+    esac
+done
+# Recover the path the wrapper asked claude to write its reply to.
+RESULT_FILE="$(grep -F 'file-writing tool:' "$CMDFILE" 2>/dev/null | sed 's/.*file-writing tool: //' | head -1)"
+case "${FCSTUB_MODE:-file}" in
+    file)        printf '%s' "$FCSTUB_FILE_REPLY"   > "$RESULT_FILE" ;;
+    screen-only) printf '%s\n' "$FCSTUB_SCREEN_REPLY" ;;            # screen (stdout) only, no file
+    file-and-rc) printf '%s' "$FCSTUB_FILE_REPLY"   > "$RESULT_FILE" ;;
+    none)        : ;;                                               # neither file nor screen
+esac
+exit "${FCSTUB_RC:-0}"
+STUB_EOF
+    chmod +x "$STUB_DIR/flat-cyborg"
+
+    run_wrapper() {  # $1=mode $2=rc ; reads FCSTUB_FILE_REPLY/FCSTUB_SCREEN_REPLY from env
+        PATH="$STUB_DIR:$PATH" FCSTUB_MODE="$1" FCSTUB_RC="$2" \
+            sh "$WRAPPER" "draft something. Return ONLY the raw JSON object."
+    }
+
+    # 1. result file written -> wrapper returns the file reply (exit 0)
+    FILE_JSON='{"action":"LONG","size":0.5,"setup":"file_channel"}'
+    OUTW="$(FCSTUB_FILE_REPLY="$FILE_JSON" run_wrapper file 0 2>/dev/null)"; RCW=$?
+    if [ "$RCW" -eq 0 ] && printf '%s' "$OUTW" | python3 -c '
+import json,sys
+d=json.load(sys.stdin); assert d["setup"]=="file_channel", d
+' >/dev/null 2>&1; then
+        pass "test 4: wrapper returns the result-file reply when claude wrote it"
+    else
+        fail "test 4: result-file reply preferred" "rc=$RCW out=[$OUTW]"
+    fi
+
+    # 2. no file written, screen has the reply -> fallback to screen-scrape
+    OUTW="$(FCSTUB_SCREEN_REPLY='{"action":"FLAT","setup":"screen_fallback"}' run_wrapper screen-only 0 2>/dev/null)"; RCW=$?
+    if [ "$RCW" -eq 0 ] && printf '%s' "$OUTW" | python3 -c '
+import json,sys
+d=json.load(sys.stdin); assert d["setup"]=="screen_fallback", d
+' >/dev/null 2>&1; then
+        pass "test 5: wrapper falls back to the screen reply when no result file"
+    else
+        fail "test 5: screen-scrape fallback" "rc=$RCW out=[$OUTW]"
+    fi
+
+    # 3. flat-cyborg exits non-zero BUT the result file was written -> use it, exit 0
+    OUTW="$(FCSTUB_FILE_REPLY='{"setup":"file_despite_timeout"}' run_wrapper file-and-rc 124 2>/dev/null)"; RCW=$?
+    if [ "$RCW" -eq 0 ] && printf '%s' "$OUTW" | python3 -c '
+import json,sys
+d=json.load(sys.stdin); assert d["setup"]=="file_despite_timeout", d
+' >/dev/null 2>&1; then
+        pass "test 6: non-empty result file honoured even on flat-cyborg non-zero exit"
+    else
+        fail "test 6: result file beats a non-zero exit" "rc=$RCW out=[$OUTW]"
+    fi
+
+    # 4. nothing produced + non-zero exit -> propagate the flat-cyborg exit code
+    set +e
+    OUTW="$(run_wrapper none 17 2>/dev/null)"; RCW=$?
+    set -e
+    if [ "$RCW" -eq 17 ]; then
+        pass "test 7: flat-cyborg exit code propagates when no reply is produced"
+    else
+        fail "test 7: propagate exit on empty reply" "rc=$RCW (expected 17) out=[$OUTW]"
+    fi
+
+    rm -rf "$STUB_DIR"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
