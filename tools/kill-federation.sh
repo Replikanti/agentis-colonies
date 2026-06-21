@@ -232,6 +232,20 @@ if [ ! -d "$AGENTIS_DIR" ]; then
 fi
 ok "federation dir = $FED_DIR"
 [ -n "$AGENTIS_DIR" ] && ok "agentis state  = $AGENTIS_DIR"
+
+# Resolve the daemon-registry dir to its PHYSICAL path. In a store-split
+# layout, $FED_DIR/.agentis/daemon is a SYMLINK to the canonical store. `find
+# <symlink-to-dir>` without -L does NOT traverse the symlink, so every registry
+# scan below would report 0 files and the registry would never be cleaned —
+# leaving stale "running" records that block the next start-federation. `tar -C
+# .agentis daemon` would likewise archive the symlink, not its contents.
+# Resolving through the symlink once, up front, fixes all of them (#1240).
+DAEMON_DIR=""
+if [ -n "$AGENTIS_DIR" ] && [ -d "$AGENTIS_DIR/daemon" ]; then
+    DAEMON_DIR="$(cd "$AGENTIS_DIR/daemon" 2>/dev/null && pwd -P || echo "$AGENTIS_DIR/daemon")"
+fi
+[ -n "$DAEMON_DIR" ] && ok "daemon registry = $DAEMON_DIR"
+
 [ "$DRY_RUN" -eq 1 ] && warn "DRY-RUN: no signals will be sent, no files deleted"
 
 # --- Collect PIDs (once, up front, with precise patterns) ---
@@ -318,7 +332,7 @@ if [ -d /proc ] && command -v readlink >/dev/null 2>&1; then
             # Each daemon writes a single-line file containing its PID.
             # `*.pid` covers both the primary (<id>.pid) and watchdog
             # (<id>.watchdog.pid) sidecars.
-            REGISTERED_PIDS_NL="$(find "$AGENTIS_DIR/daemon" -maxdepth 1 -name '*.pid' -type f 2>/dev/null \
+            REGISTERED_PIDS_NL="$(find "$DAEMON_DIR" -maxdepth 1 -name '*.pid' -type f 2>/dev/null \
                 | while IFS= read -r f; do
                     [ -z "$f" ] && continue
                     _pid="$(head -n 1 "$f" 2>/dev/null | tr -d ' \t\r\n' || true)"
@@ -532,7 +546,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
                 [ -z "$f" ] && continue
                 echo "  would remove: $f" >&2
                 REG_FILES_LIST="$REG_FILES_LIST$f"$'\n'
-            done < <(find "$AGENTIS_DIR/daemon" -maxdepth 1 -name "*.$ext" -type f 2>/dev/null)
+            done < <(find "$DAEMON_DIR" -maxdepth 1 -name "*.$ext" -type f 2>/dev/null)
         done
     fi
     REG_COUNT=$(printf '%s' "$REG_FILES_LIST" | grep -c . || true)
@@ -639,7 +653,7 @@ if [ -n "$AGENTIS_DIR" ] && [ -d "$AGENTIS_DIR/daemon" ]; then
         # (only inbox/ subdirs or it's empty). Avoids leaving a ~100-byte
         # empty tarball behind on every nothing-to-clean run.
         _has_files=0
-        if find "$AGENTIS_DIR/daemon" -maxdepth 1 -type f -print -quit 2>/dev/null | grep -q .; then
+        if find "$DAEMON_DIR" -maxdepth 1 -type f -print -quit 2>/dev/null | grep -q .; then
             _has_files=1
         fi
         if [ "$_has_files" -eq 0 ]; then
@@ -653,7 +667,7 @@ if [ -n "$AGENTIS_DIR" ] && [ -d "$AGENTIS_DIR/daemon" ]; then
             # backup tarball. PID is preferred over `mktemp` to avoid
             # adding a dependency we don't already require.
             BACKUP_PATH="$BACKUP_DIR/agentis-daemon-registry-backup-$TS-$$.tar.gz"
-            if tar czf "$BACKUP_PATH" -C "$AGENTIS_DIR" daemon 2>/dev/null; then
+            if tar czf "$BACKUP_PATH" -C "$(dirname "$DAEMON_DIR")" "$(basename "$DAEMON_DIR")" 2>/dev/null; then
                 ok "backup: $BACKUP_PATH"
             else
                 warn "backup failed (continuing): $BACKUP_PATH"
@@ -668,14 +682,14 @@ if [ -n "$AGENTIS_DIR" ] && [ -d "$AGENTIS_DIR/daemon" ]; then
     # Use find -delete (not shell globs) — avoids 'no match' failures on
     # bash 3.2 / zsh when a registry happens to be empty.
     for ext in pid watchdog.pid colony heartbeat status stop; do
-        find "$AGENTIS_DIR/daemon" -maxdepth 1 -name "*.$ext" -type f -delete 2>/dev/null || true
+        find "$DAEMON_DIR" -maxdepth 1 -name "*.$ext" -type f -delete 2>/dev/null || true
     done
     # Use `find -printf '.'` rather than `wc -l` so a filename containing
     # a literal newline doesn't inflate the count. Fall back to `wc -l` if
     # `find -printf` is unavailable (e.g. BSD/macOS find).
-    REMAINING_FILES=$(find "$AGENTIS_DIR/daemon" -maxdepth 1 -type f -printf '.' 2>/dev/null | wc -c | tr -d ' ')
+    REMAINING_FILES=$(find "$DAEMON_DIR" -maxdepth 1 -type f -printf '.' 2>/dev/null | wc -c | tr -d ' ')
     if [ -z "$REMAINING_FILES" ]; then
-        REMAINING_FILES=$(find "$AGENTIS_DIR/daemon" -maxdepth 1 -type f 2>/dev/null | wc -l | tr -d ' ')
+        REMAINING_FILES=$(find "$DAEMON_DIR" -maxdepth 1 -type f 2>/dev/null | wc -l | tr -d ' ')
     fi
     ok "registry sidecar files removed (${REMAINING_FILES} regular files remain — inbox/ subdirs kept)"
 else
@@ -727,9 +741,9 @@ REGISTRY_REMAINING=0
 if [ -n "$AGENTIS_DIR" ] && [ -d "$AGENTIS_DIR/daemon" ]; then
     # See the matching `find -printf '.'` block above for why we don't pipe
     # to `wc -l` here — newlines in filenames would inflate the count.
-    REGISTRY_REMAINING=$(find "$AGENTIS_DIR/daemon" -maxdepth 1 -type f -printf '.' 2>/dev/null | wc -c | tr -d ' ')
+    REGISTRY_REMAINING=$(find "$DAEMON_DIR" -maxdepth 1 -type f -printf '.' 2>/dev/null | wc -c | tr -d ' ')
     if [ -z "$REGISTRY_REMAINING" ]; then
-        REGISTRY_REMAINING=$(find "$AGENTIS_DIR/daemon" -maxdepth 1 -type f 2>/dev/null | wc -l | tr -d ' ')
+        REGISTRY_REMAINING=$(find "$DAEMON_DIR" -maxdepth 1 -type f 2>/dev/null | wc -l | tr -d ' ')
     fi
 fi
 
