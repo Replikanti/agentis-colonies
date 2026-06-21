@@ -47,7 +47,7 @@ The `federation-dashboard/` component follows the same release-PR + tag-after-me
 bash -n scripts/gitlab-api.sh   # Bash syntax check on any script
 ```
 
-Colony lint must pass with 0 failures before merge. Current CI baseline: 42 passed, 0 failed, 1 skipped (agentis binary not installed on runners). Local runs add ~42 per-agent `.ag` syntax + tier-branch passes when `agentis` is installed, and 5 skips when `shellcheck` is not.
+Colony lint must pass with 0 failures before merge. Current CI baseline: 289 passed, 0 failed, 6 skipped (agentis binary not installed on runners). Local runs add ~42 per-agent `.ag` syntax + tier-branch passes when `agentis` is installed, and 5 skips when `shellcheck` is not.
 
 ## LLM backend
 

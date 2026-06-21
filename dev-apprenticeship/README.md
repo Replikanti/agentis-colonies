@@ -92,6 +92,8 @@ cd agentis-colonies/dev-apprenticeship
 
 The install script checks prerequisites, creates configs for all 5 colonies, writes your GitLab credentials, and seeds agent confidence levels. Running it again is safe. See [Security](#security) for how tokens are stored and rotated.
 
+> **Trigger-label overrides need env passthrough.** To override a colony's trigger label, set `trigger_label` in that colony's `config/colony.toml` **and** make sure `exec.env_passthrough` in `<fed>/.agentis/config` includes `IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL`. `install.sh` writes this passthrough for you as of [#1185](https://github.com/Replikanti/agentis-colonies/issues/1185); without those keys the override never reaches the agents and the default trigger label (`implementation` / `needs-planning`) is used. A federation installed before #1185 needs the keys added manually (then restart the colonies).
+
 ## Starting and stopping
 
 ```bash
@@ -168,21 +170,23 @@ agentis remediation history     # Any auto-remediation actions?
 
 Agents pick up work from three sources:
 
-1. **GitLab polling**: Every 60 seconds, agents poll for new issues, merge requests, pipeline results, and review activity. This is the primary input. If something changes on GitLab, the relevant colony reacts on the next tick.
+1. **Forge polling (GitHub or GitLab)**: Every 60 seconds, agents poll for new issues, merge/pull requests, pipeline results, and review activity. This is the primary input — the GitHub forge is the proven path. If something changes on the forge, the relevant colony reacts on the next tick.
 
-2. **Colony bus events**: Colonies pass work to each other over the federation bus. When triage routes an issue, the implementation colony picks it up. When implementation opens an MR, the code-review and release colonies react. You do not need to trigger these handoffs manually.
+2. **Assignment-based pickup**: A colony picks up an issue when it is **assigned to the federation's bot account** *and* carries the colony's trigger label (default `implementation` for the implementation colony, `needs-planning` for planning). Such an issue is picked up on the next tick ([#1181](https://github.com/Replikanti/agentis-colonies/issues/1181)). Cross-colony bus events — triage routing an issue onward, implementation signalling code-review/release — are a **best-effort fast path, not a guarantee**: do not rely on cross-colony routing being automatic. Assigning the issue to the bot with the trigger label is the reliable trigger.
 
 3. **Operator commands**: You can intervene directly via the agentis CLI. Adjust confidence (`agentis memo set labeler:confidence 0.95`), inspect knowledge (`agentis knowledge list`), or stop individual agents. The CLI is your control plane.
 
+> The implementation colony's `code_writer` **edits existing files** — it fetches the current file content first and applies the change to it — not just creates new ones ([#1172](https://github.com/Replikanti/agentis-colonies/issues/1172)).
+
 ```mermaid
 graph LR
-    GL["GitLab Activity"]
-    BUS["Colony Bus"]
+    GL["Forge Activity (GitHub / GitLab)"]
+    ASG["Assignment + trigger label"]
     CLI["Operator CLI"]
     FED["Federation"]
 
     GL -- "poll every 60s" --> FED
-    BUS -- "cross-colony events" --> FED
+    ASG -- "assigned to bot, picked up next tick" --> FED
     CLI -- "confidence, knowledge, stop" --> FED
 
     style FED fill:#2d333b,stroke:#539bf5,color:#adbac7
