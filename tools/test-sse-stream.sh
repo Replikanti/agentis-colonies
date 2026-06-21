@@ -20,8 +20,10 @@
 #       host divs on the new Logs & Events tab.
 #   t7: PR 2 — bootstrap shape: single rerender(window.__data) call,
 #       no leftover anon IIFE renderers, window.__data hung off window.
-#   t8: PR 2 — test-timeline-rendering.sh stays green (29/0 baseline)
-#       under the refactor.
+#   (t8 removed in #1244 — it re-ran the full test-timeline-rendering.sh suite,
+#    which colony-lint already runs directly; the nested re-run only amplified
+#    that suite's load and flaked under concurrency. Tile-render coverage is
+#    unchanged — it is owned by test-timeline-rendering.sh on its own.)
 #
 # Self-contained: only bash, python3, curl. Cleans up via trap on every
 # exit path. Auto-skips when python3 or a free port is unavailable.
@@ -314,28 +316,12 @@ else
     fail "7: bootstrap shape regression: $T7_MSG"
 fi
 
-# t8: validate that test-timeline-rendering.sh still passes (the IIFE
-#     refactor must not break any of the 29 existing tile-rendering
-#     tests). We invoke it as a child and grep for "0 failed" — if it
-#     fails, this top-level test fails too. Skip cleanly when the
-#     timeline test isn't reachable (CI shape change).
-T8_HARNESS="$REPO_ROOT/tools/test-timeline-rendering.sh"
-if [ -x "$T8_HARNESS" ] || [ -r "$T8_HARNESS" ]; then
-    T8_OUT="$TMPDIR_TEST/timeline-rendering.log"
-    if bash "$T8_HARNESS" >"$T8_OUT" 2>&1; then
-        if grep -q '0 failed' "$T8_OUT"; then
-            pass "8: test-timeline-rendering.sh stays green after IIFE -> renderXxx refactor"
-        else
-            fail "8: test-timeline-rendering.sh exited 0 but reported failures" \
-                 "tail: $(tail -3 "$T8_OUT" | tr '\n' ' ')"
-        fi
-    else
-        fail "8: test-timeline-rendering.sh failed under the refactor" \
-             "tail: $(tail -3 "$T8_OUT" 2>/dev/null | tr '\n' ' ')"
-    fi
-else
-    skip "8: test-timeline-rendering.sh not reachable"
-fi
+# t8 (re-running test-timeline-rendering.sh) was REMOVED in #1244. colony-lint's
+# tools-test loop already runs test-timeline-rendering.sh directly, so re-running
+# its full 63-test suite here was redundant — and it doubled that suite's load
+# under colony-lint, flaking one assertion under concurrent runs (62/1 once,
+# 63/0 in isolation). SSE-streaming behaviour is covered by t1-t7 above;
+# tile-rendering correctness is owned by test-timeline-rendering.sh on its own.
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
