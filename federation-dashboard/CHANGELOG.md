@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-06-21
+
 ### Added
 
 - **dashboard**: the sidecar status area now surfaces liveness for **all three** federation sidecars, not just auto-promote. The federation runs `auto-promote` (1800s, install-gated by `.auto-promote-install.toml`), `snapshot-refresh` (300s) and `cost-rate` (60s, both always-on, started by colony start), but the collector only modelled `auto-promote` (+ `cost-cap`), so snapshot-refresh and cost-rate liveness was invisible. The collector (`federation-dashboard/lib/federation-dashboard-collector.py`) gains a per-sidecar interval table (`SIDECAR_INTERVALS_S`, the single source of truth for cadence) plus an `_always_on_sidecar_record()` helper that derives last-tick from the mtime of `<fed>/.agentis/logs/<name>.log` and reuses the existing `4 × interval` `down` / `2 × interval` `silent` ceilings via `_sidecar_status()` (240s/120s for cost-rate, 1200s/600s for snapshot-refresh). The always-on records carry `installed=enabled=true` with no install file or `started_at` stamp, so `renderSidecarStatus()` renders a live age + an enabled `[restart]` button instead of a spurious `not installed`. auto-promote's install / `*.sidecar_started_at` / startup-grace semantics are unchanged, and the new records are appended after `auto-promote` (idx 0) and `cost-cap` (idx 1) so existing orphan-test indices stay stable. ([#1227](https://github.com/Replikanti/agentis-colonies/issues/1227))
@@ -818,7 +820,8 @@ First release as a standalone component. Code extracted from
 For history prior to extraction, see
 `git log -- tools/federation-dashboard*`.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.9.0...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.11.0...HEAD
+[0.11.0]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.9.0...federation-dashboard-v0.11.0
 [0.9.0]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.8.0...federation-dashboard-v0.9.0
 [0.8.0]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.7.0...federation-dashboard-v0.8.0
 [0.7.0]: https://github.com/Replikanti/agentis-colonies/compare/federation-dashboard-v0.6.0...federation-dashboard-v0.7.0
