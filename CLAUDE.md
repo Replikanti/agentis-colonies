@@ -58,7 +58,7 @@ Federations default to **flat-cyborg** ([`Replikanti/flat-cyborg`](https://githu
 
 A colony's `[llm] backend` in `colony.example.toml` is `"cli"` — meaning "use the agentis daemon default", which **inherits** the federation-level backend from `.agentis/config`. **Do not hardcode `"flat-cyborg"` there**: it would override the federation default and break the host wrapper path. The federation default (orchestrator hermetic config, or `install.sh`-written `.agentis/config`) is the single source of truth.
 
-Caveat: flat-cyborg's `--extract` is a TUI screen-scrape (output fidelity tracks the TUI layout). Keep the metered `claude` backend available for fidelity-critical paths. Deployment prereq: a `flat-cyborg` >= 0.9.0 binary with `--no-jitter` on PATH plus a logged-in `~/.claude`.
+Caveat: the host-run `flat-cyborg-claude.sh` wrapper (`dev-apprenticeship`, `dark-factory`) now reads the model's reply from a **result file claude writes** with its file-write tool ([#1219](https://github.com/Replikanti/agentis-colonies/issues/1219)), so reply fidelity no longer tracks the TUI layout; the `--extract` screen-scrape is only a **fallback** for when claude does not write the file. Container federations that use the **native** `flat-cyborg` backend with `--extract` still screen-scrape, so keeping a metered `claude`/`openai` fallback available there remains sensible. Deployment prereq: a `flat-cyborg` >= 0.9.0 binary with `--no-jitter` on PATH plus a logged-in `~/.claude`.
 
 ## Colony structure
 
