@@ -1076,6 +1076,112 @@ else
     fail "run 13 (verify-budget): commit-anyway + warning" "rc=$RC13 out=$(cat "$OUT13_FILE" 2>/dev/null) err=$(tail -4 "$WORK/err13.txt" 2>/dev/null)"
 fi
 
+# ===========================================================================
+# Run 14 (#1254 decompose): with --decompose, the orchestrator first asks claude
+# to split the epic into an ORDERED subtask list (written to a file, no repo
+# edits), then runs the edit loop ONCE PER SUBTASK on the SAME branch,
+# accumulating into ONE commit/PR. The stateful stub recognises the decompose
+# drive by the word "Decompose" in the cmd-file, writes a 3-line list, and edits
+# nothing; each subsequent EDIT invocation writes a unique SUB_<n>.txt file.
+# Asserts: exit 0 + PR url; exactly 3 EDIT invocations (one per subtask); all
+# three SUB_*.txt in the pushed commit; the decomposed-into-3 log line.
+# ===========================================================================
+rm -rf "$FED_DIR" "$REMOTE_BASE" "$SEED" "$CREATE_MR_LOG" "$FC_FLAGS_LOG"
+mkdir -p "$COLONY_DIR/scripts"
+cat > "$COLONY_DIR/scripts/github-api.sh" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+{ echo "create-mr called"; } >> "$CREATE_MR_LOG"
+printf '%s\n' '{"html_url": "https://example.test/pr/14"}'
+STUB_EOF
+chmod +x "$COLONY_DIR/scripts/github-api.sh"
+
+# Stateful decompose-aware stub: if the cmd-file contains "Decompose" it is the
+# decomposition drive -> write a 3-line subtask list to the target path the
+# prompt names ("this exact file: <path>") and make NO repo edit. Otherwise it
+# is an edit drive -> bump an EDIT counter and write a unique SUB_<n>.txt.
+EDIT_CNT_FILE="$WORK/fc-edit-count-14"; rm -f "$EDIT_CNT_FILE"
+cat > "$STUB_BIN/flat-cyborg" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "\$*" >> "$FC_FLAGS_LOG"
+CWD=""; CMDFILE=""
+while [ \$# -gt 0 ]; do
+    case "\$1" in
+        --cwd) CWD="\$2"; shift 2 ;;
+        --cmd-file) CMDFILE="\$2"; shift 2 ;;
+        --) shift; break ;;
+        *) shift ;;
+    esac
+done
+if [ -n "\$CMDFILE" ] && grep -q "Decompose" "\$CMDFILE" 2>/dev/null; then
+    # Extract the target list path from the "this exact file: <path>" line.
+    TARGET="\$(grep "this exact file" "\$CMDFILE" | grep -oE '/[^ ]+' | head -n1)"
+    if [ -n "\$TARGET" ]; then
+        printf 'subtask one\nsubtask two\nsubtask three\n' > "\$TARGET"
+    fi
+    exit 0
+fi
+n=\$(cat "$EDIT_CNT_FILE" 2>/dev/null || echo 0); n=\$((n + 1)); printf '%s' "\$n" > "$EDIT_CNT_FILE"
+if [ -n "\$CWD" ]; then
+    printf 'edit %s\n' "\$n" > "\$CWD/SUB_\$n.txt"
+fi
+exit 0
+STUB_EOF
+chmod +x "$STUB_BIN/flat-cyborg"
+
+mkdir -p "$BARE"
+git init --quiet --bare --initial-branch=main "$BARE" 2>/dev/null || git init --quiet --bare "$BARE"
+git init --quiet --initial-branch=main "$SEED" 2>/dev/null || git init --quiet "$SEED"
+(
+    cd "$SEED" || exit 1
+    git symbolic-ref HEAD refs/heads/main 2>/dev/null || true
+    printf 'hello\n' > README.md
+    git add -A
+    git commit --quiet -m "seed: initial commit"
+    git branch -M main 2>/dev/null || true
+    git remote add origin "$BARE"
+    git push --quiet origin main
+)
+git --git-dir="$BARE" symbolic-ref HEAD refs/heads/main
+
+OUT14_FILE="$WORK/out14.txt"
+env \
+    PATH="$STUB_BIN:$PATH" \
+    COLONY_DIR="$COLONY_DIR" \
+    GITHUB_URL="file://$REMOTE_BASE" \
+    GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    bash "$ORCH" \
+        --owner "$OWNER" --repo "$REPO" --issue 130 \
+        --branch "fix/issue-130" --title "epic task" \
+        --task "Do a big multi-part change." --decompose >"$OUT14_FILE" 2>"$WORK/err14.txt"
+RC14=$?
+EDIT_CALLS="$(cat "$EDIT_CNT_FILE" 2>/dev/null || echo 0)"
+
+if [ "$RC14" -eq 0 ] && [ "$(cat "$OUT14_FILE")" = "https://example.test/pr/14" ]; then
+    pass "run 14 (decompose): exits 0 + opens the PR after running per-subtask"
+else
+    fail "run 14 (decompose): exit 0 + PR url" "rc=$RC14 out=$(cat "$OUT14_FILE" 2>/dev/null) err=$(tail -4 "$WORK/err14.txt" 2>/dev/null)"
+fi
+if [ "$EDIT_CALLS" = "3" ]; then
+    pass "run 14 (decompose): ran the edit loop ONCE PER SUBTASK (3 edit invocations)"
+else
+    fail "run 14 (decompose): expected 3 edit invocations" "got $EDIT_CALLS"
+fi
+if grep -q "decomposed issue #130 into 3 subtasks" "$WORK/err14.txt" 2>/dev/null; then
+    pass "run 14 (decompose): logged the 3-subtask decomposition"
+else
+    fail "run 14 (decompose): decomposed-into-3 log line" "err=$(tail -6 "$WORK/err14.txt" 2>/dev/null)"
+fi
+if git --git-dir="$BARE" cat-file -e "refs/heads/fix/issue-130:SUB_1.txt" 2>/dev/null \
+   && git --git-dir="$BARE" cat-file -e "refs/heads/fix/issue-130:SUB_2.txt" 2>/dev/null \
+   && git --git-dir="$BARE" cat-file -e "refs/heads/fix/issue-130:SUB_3.txt" 2>/dev/null; then
+    pass "run 14 (decompose): all THREE subtask files in ONE pushed commit (same branch)"
+else
+    fail "run 14 (decompose): SUB_1.txt + SUB_2.txt + SUB_3.txt in pushed commit"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -49,9 +49,10 @@ ISSUE=""
 BRANCH=""
 TITLE=""
 TASK=""
+DECOMPOSE=0
 
 usage() {
-    echo "usage: code-edit-in-checkout.sh --owner <o> --repo <r> --issue <iid> --branch <name> --title <t> --task <text>" >&2
+    echo "usage: code-edit-in-checkout.sh --owner <o> --repo <r> --issue <iid> --branch <name> --title <t> --task <text> [--decompose]" >&2
 }
 
 while [ $# -gt 0 ]; do
@@ -62,6 +63,7 @@ while [ $# -gt 0 ]; do
         --branch) BRANCH="${2:-}"; shift 2 ;;
         --title)  TITLE="${2:-}";  shift 2 ;;
         --task)   TASK="${2:-}";   shift 2 ;;
+        --decompose) DECOMPOSE=1; shift ;;
         *) echo "code-edit-in-checkout.sh: unknown flag: $1" >&2; usage; exit 2 ;;
     esac
 done
@@ -209,7 +211,7 @@ chmod 700 "$ASKPASS"
 # A task file for flat-cyborg --cmd-file (a multi-KB instruction must not ride
 # argv — ARG_MAX, same lesson as #1171). Cleaned up on exit alongside ASKPASS.
 TASKFILE="$(mktemp)"
-trap 'rm -f "$ASKPASS" "$TASKFILE" "${VERIFY_OUT:-}"' EXIT
+trap 'rm -f "$ASKPASS" "$TASKFILE" "${VERIFY_OUT:-}" "${SUBTASKS_FILE:-}" "${SUBTASKS_LIST:-}"' EXIT
 
 # git wrappers that thread the askpass helper + non-interactive terminal so a
 # missing/invalid token fails fast instead of hanging on a prompt.
@@ -362,6 +364,11 @@ case "$MAX_ATTEMPTS"   in ''|*[!0-9]*) MAX_ATTEMPTS=3 ;; esac
 case "$TOTAL_BUDGET_MS" in ''|*[!0-9]*) TOTAL_BUDGET_MS=1500000 ;; esac
 case "$PER_ATTEMPT_MS"  in ''|*[!0-9]*) PER_ATTEMPT_MS=600000 ;; esac
 if [ "$MAX_ATTEMPTS" -lt 1 ]; then MAX_ATTEMPTS=1; fi
+# Cap on the number of decomposed sub-edits (#1254). A non-integer / empty
+# override falls back to 8; never below 1.
+MAX_SUBTASKS="${CODE_EDIT_MAX_SUBTASKS:-8}"
+case "$MAX_SUBTASKS" in ''|*[!0-9]*) MAX_SUBTASKS=8 ;; esac
+if [ "$MAX_SUBTASKS" -lt 1 ]; then MAX_SUBTASKS=1; fi
 # Verify gate (#1253): run the repo's gate after a settled attempt and only stop
 # when it passes; feed failures back as another iteration (bounded by the same
 # attempts/budget). Empty VERIFY_CMD -> no gate -> M1 behaviour.
@@ -370,11 +377,48 @@ VERIFY_TIMEOUT_MS="${CODE_EDIT_VERIFY_TIMEOUT_MS:-300000}"
 case "$VERIFY_TIMEOUT_MS" in ''|*[!0-9]*) VERIFY_TIMEOUT_MS=300000 ;; esac
 VERIFY_OUT="$(mktemp)"
 [ -n "$VERIFY_CMD" ] && echo "[code-edit] verification gate: $VERIFY_CMD" >&2
-loop_start="$(date +%s)"
-attempt=0
-prev_lines=0
-FC_RC=0
-continuation_mode="interrupted"
+
+# Decompose (#1254): for a large/epic task, split it into an ORDERED list of
+# small sub-edits and run the edit loop once per subtask on the SAME branch,
+# accumulating into ONE commit/PR. Without --decompose (or if decomposition
+# yields nothing) the whole task is the single "subtask" -> identical to M1/M2.
+SUBTASKS_FILE="$(mktemp)"
+if [ "$DECOMPOSE" -eq 1 ]; then
+    SUBTASKS_LIST="$(mktemp)"
+    : > "$SUBTASKS_LIST"
+    {
+        printf 'Decompose issue #%s (%s) into an ORDERED list of small, self-contained sub-edits, each about the size of one focused change.\n\n' "$ISSUE" "$TITLE"
+        printf 'Write ONLY the list to this exact file with your file-writing tool: %s\n' "$SUBTASKS_LIST"
+        printf 'One sub-edit per line, plain text, no numbering and no markdown. Do NOT edit any repository files in this step.\n\nIssue task:\n%s\n' "$TASK"
+    } > "$TASKFILE"
+    echo "[code-edit] decomposing issue #$ISSUE into subtasks" >&2
+    set +e
+    flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 --cwd "$WS" \
+        --idle-ms "${FLAT_CYBORG_IDLE_MS:-8000}" --timeout-ms "$PER_ATTEMPT_MS" \
+        --cmd-file "$TASKFILE" -- claude >&2
+    set -e
+    reap_editing_strays
+    # discard any stray edits the decomposition step made; the subtask loop owns edits.
+    run_git -C "$WS" reset --hard >/dev/null 2>&1 || true
+    run_git -C "$WS" clean -fd >/dev/null 2>&1 || true
+    awk 'NF' "$SUBTASKS_LIST" 2>/dev/null | sed 's/^[[:space:]]*[-*0-9.)]\{0,4\}[[:space:]]*//' | head -n "$MAX_SUBTASKS" > "$SUBTASKS_FILE"
+fi
+if [ ! -s "$SUBTASKS_FILE" ]; then
+    printf '%s\n' "$TASK" > "$SUBTASKS_FILE"
+fi
+SUBTASK_COUNT="$(awk 'END { print NR }' "$SUBTASKS_FILE")"
+[ "$SUBTASK_COUNT" -gt 1 ] && echo "[code-edit] decomposed issue #$ISSUE into $SUBTASK_COUNT subtasks" >&2
+
+subtask_idx=0
+while IFS= read -r CUR_TASK <&3; do
+    [ -z "$CUR_TASK" ] && continue
+    subtask_idx=$((subtask_idx + 1))
+    [ "$SUBTASK_COUNT" -gt 1 ] && echo "[code-edit] subtask $subtask_idx/$SUBTASK_COUNT: $CUR_TASK" >&2
+    loop_start="$(date +%s)"
+    attempt=0
+    prev_lines=0
+    FC_RC=0
+    continuation_mode="interrupted"
 
 while :; do
     attempt=$((attempt + 1))
@@ -386,7 +430,7 @@ while :; do
 
     if [ "$attempt" -eq 1 ]; then
         printf 'Implement issue #%s in this repository by editing the files directly with your tools. %s\n\n%s\n\nMake the change and stop; do not run git or open a PR.' \
-            "$ISSUE" "$TITLE" "$TASK" > "$TASKFILE"
+            "$ISSUE" "$TITLE" "$CUR_TASK" > "$TASKFILE"
     elif [ "$continuation_mode" = "verify" ]; then
         # Continuation prompt: the change does not pass the verification gate.
         {
@@ -395,7 +439,7 @@ while :; do
             git_capture -C "$WS" diff --cached --stat 2>/dev/null || true
             printf '\nThe gate output (tail):\n\n'
             tail -c 4000 "$VERIFY_OUT" 2>/dev/null || true
-            printf '\n\nFix the change so the gate passes, then stop. Do not run git or open a PR.\n\nIssue task:\n%s\n' "$TASK"
+            printf '\n\nFix the change so the gate passes, then stop. Do not run git or open a PR.\n\nIssue task:\n%s\n' "$CUR_TASK"
         } > "$TASKFILE"
         echo "[code-edit] continuing editing session (verify-fix, attempt $attempt/$MAX_ATTEMPTS, ${remaining_ms}ms budget left)" >&2
     else
@@ -404,7 +448,7 @@ while :; do
             printf 'You are CONTINUING work on issue #%s: %s\n\n' "$ISSUE" "$TITLE"
             printf 'Your previous turn was interrupted before the change was finished. Files changed so far in this checkout:\n\n'
             git_capture -C "$WS" diff --cached --stat 2>/dev/null || true
-            printf '\nReview the current state, COMPLETE the remaining work for the issue below, and stop. Do not run git or open a PR.\n\nIssue task:\n%s\n' "$TASK"
+            printf '\nReview the current state, COMPLETE the remaining work for the issue below, and stop. Do not run git or open a PR.\n\nIssue task:\n%s\n' "$CUR_TASK"
         } > "$TASKFILE"
         echo "[code-edit] continuing editing session (attempt $attempt/$MAX_ATTEMPTS, ${remaining_ms}ms budget left)" >&2
     fi
@@ -461,6 +505,7 @@ while :; do
     echo "[code-edit] attempt $attempt timed out (exit $FC_RC) but made progress (staged churn $prev_lines -> $cur_lines) — continuing" >&2
     prev_lines="$cur_lines"
 done
+done 3< "$SUBTASKS_FILE"
 
 # ---------------------------------------------------------------------------
 # 4. Commit the diff. The ARTIFACT is the edit, not the editing session's exit

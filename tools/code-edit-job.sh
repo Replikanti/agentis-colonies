@@ -60,9 +60,10 @@ ISSUE=""
 BRANCH=""
 TITLE=""
 TASK=""
+DECOMPOSE=0
 
 usage() {
-    echo "usage: code-edit-job.sh --owner <o> --repo <r> --issue <iid> --branch <name> --title <t> --task <text>" >&2
+    echo "usage: code-edit-job.sh --owner <o> --repo <r> --issue <iid> --branch <name> --title <t> --task <text> [--decompose]" >&2
 }
 
 while [ $# -gt 0 ]; do
@@ -73,6 +74,7 @@ while [ $# -gt 0 ]; do
         --branch) BRANCH="${2:-}"; shift 2 ;;
         --title)  TITLE="${2:-}";  shift 2 ;;
         --task)   TASK="${2:-}";   shift 2 ;;
+        --decompose) DECOMPOSE=1; shift ;;
         *) echo "code-edit-job.sh: unknown flag: $1" >&2; usage; exit 2 ;;
     esac
 done
@@ -196,16 +198,17 @@ export CEJ_ORCH="$ORCH"
 export CEJ_JOBDIR="$JOBDIR"
 export CEJ_OWNER="$OWNER" CEJ_REPO="$REPO" CEJ_ISSUE="$ISSUE"
 export CEJ_BRANCH="$BRANCH" CEJ_TITLE="$TITLE" CEJ_TASK="$TASK"
+export CEJ_DECOMPOSE="$DECOMPOSE"
 
 # SC2016: the $CEJ_* refs are deliberately INSIDE single quotes — they must
 # expand in the DETACHED child from its inherited env, NOT in this launcher.
 # shellcheck disable=SC2016
 setsid bash -c '
     set +e
-    "$CEJ_ORCH" \
-        --owner "$CEJ_OWNER" --repo "$CEJ_REPO" --issue "$CEJ_ISSUE" \
-        --branch "$CEJ_BRANCH" --title "$CEJ_TITLE" --task "$CEJ_TASK" \
-        > "$CEJ_JOBDIR/out" 2> "$CEJ_JOBDIR/log"
+    set -- --owner "$CEJ_OWNER" --repo "$CEJ_REPO" --issue "$CEJ_ISSUE" \
+        --branch "$CEJ_BRANCH" --title "$CEJ_TITLE" --task "$CEJ_TASK"
+    [ "$CEJ_DECOMPOSE" = "1" ] && set -- "$@" --decompose
+    "$CEJ_ORCH" "$@" > "$CEJ_JOBDIR/out" 2> "$CEJ_JOBDIR/log"
     rc=$?
     if [ "$rc" -eq 0 ]; then
         # Last non-empty line of stdout is the PR URL.

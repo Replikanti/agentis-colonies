@@ -63,7 +63,7 @@ cat > "$STUB" <<'STUB_EOF'
 #!/usr/bin/env bash
 set -u
 # Record one start (append) so the harness can count launches.
-if [ -n "${STUB_MARKER:-}" ]; then echo "start $$ token=${GITHUB_TOKEN:-MISSING}" >> "$STUB_MARKER"; fi
+if [ -n "${STUB_MARKER:-}" ]; then echo "start $$ token=${GITHUB_TOKEN:-MISSING} args=[$*]" >> "$STUB_MARKER"; fi
 sleep "${STUB_SLEEP:-2}"
 if [ "${STUB_EXIT:-0}" -eq 0 ]; then
     printf '%s\n' "${STUB_URL:-https://example.test/pr/1}"
@@ -243,6 +243,45 @@ if [ ! -d "$JD" ]; then
     pass "D: stale dead-pid job dir cleared for relaunch"
 else
     fail "D: dead-pid job dir cleared" "still exists: $JD"
+fi
+
+# ===========================================================================
+# Scenario E (#1254): --decompose is forwarded to the orchestrator; a normal
+# run omits it. The stub records its argv to a marker file.
+# ===========================================================================
+poll_done() {
+    _jd="$1"
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        [ -f "$_jd/status" ] && grep -q "done" "$_jd/status" 2>/dev/null && return 0
+        sleep 1
+    done
+    return 1
+}
+
+DEC_MARKER="$WORK/dec-marker"; : > "$DEC_MARKER"
+env COLONY_DIR="$COLONY_DIR" CODE_EDIT_ORCH="$STUB" GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    STUB_SLEEP=0 STUB_EXIT=0 STUB_URL="https://example.test/pr/dec" STUB_MARKER="$DEC_MARKER" \
+    bash "$LAUNCHER" --owner "$OWNER" --repo "$REPO" --issue 700 \
+        --branch "fix/issue-700" --title "epic" --task "do it" --decompose >/dev/null 2>&1
+poll_done "$(job_dir_for 700)" || true
+if grep -q -- '--decompose' "$DEC_MARKER" 2>/dev/null; then
+    pass "E: --decompose is forwarded to the orchestrator"
+else
+    fail "E: --decompose passthrough" "marker=$(cat "$DEC_MARKER" 2>/dev/null)"
+fi
+
+NEG_MARKER="$WORK/neg-marker"; : > "$NEG_MARKER"
+env COLONY_DIR="$COLONY_DIR" CODE_EDIT_ORCH="$STUB" GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    STUB_SLEEP=0 STUB_EXIT=0 STUB_URL="https://example.test/pr/nodec" STUB_MARKER="$NEG_MARKER" \
+    bash "$LAUNCHER" --owner "$OWNER" --repo "$REPO" --issue 701 \
+        --branch "fix/issue-701" --title "normal" --task "do it" >/dev/null 2>&1
+poll_done "$(job_dir_for 701)" || true
+if grep -q -- '--decompose' "$NEG_MARKER" 2>/dev/null; then
+    fail "E: normal run wrongly forwarded --decompose" "marker=$(cat "$NEG_MARKER" 2>/dev/null)"
+else
+    pass "E: a normal run does NOT pass --decompose"
 fi
 
 echo ""
