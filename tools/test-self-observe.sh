@@ -94,6 +94,22 @@ else
     fail "rate-limit" "creates=$(creates)"
 fi
 
+# ---- Test 5: a failed gh issue create does NOT consume a rate-limit slot ----
+write_detector 2
+cat > "$WORK/gh" <<EOF
+#!/usr/bin/env bash
+if [ "\$1" = "issue" ] && [ "\$2" = "list" ]; then echo 0; exit 0; fi
+if [ "\$1" = "issue" ] && [ "\$2" = "create" ]; then exit 1; fi
+exit 0
+EOF
+chmod +x "$WORK/gh"
+OUT="$(run_so --file)"
+if [ "$(printf '%s\n' "$OUT" | grep -c 'create FAILED')" = "2" ] && printf '%s\n' "$OUT" | grep -q 'filed=0'; then
+    pass "create-failure: reported as FAILED and does not consume a rate-limit slot (filed=0)"
+else
+    fail "create-failure" "$(printf '%s\n' "$OUT" | tail -3)"
+fi
+
 echo
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

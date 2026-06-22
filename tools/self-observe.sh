@@ -97,11 +97,14 @@ while IFS="$tab" read -r tag kind loc text; do
     body="$(printf 'Auto-detected by tools/self-observe.sh (%s detector).\n\n- **finding:** %s\n- **location:** %s\n\nA small, single-purpose self-improvement task for the federation.\n\n<!-- self-observe-fingerprint: %s -->\n' "$kind" "$text" "$loc" "$fp")"
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "[self-observe] WOULD FILE: $title  [$fp]"
+        filed=$((filed + 1))
+    elif url="$("$GH" issue create --repo "$REPO" --title "$title" --body "$body" --label "$LABELS" 2>/dev/null)" && [ -n "$url" ]; then
+        echo "[self-observe] FILED: $title -> $url  [$fp]"
+        filed=$((filed + 1))
     else
-        url="$("$GH" issue create --repo "$REPO" --title "$title" --body "$body" --label "$LABELS" 2>/dev/null || true)"
-        echo "[self-observe] FILED: $title -> ${url:-<create-failed>}  [$fp]"
+        # A failed create does NOT consume a rate-limit slot — retried next run.
+        echo "[self-observe] create FAILED (will retry next run): $title  [$fp]"
     fi
-    filed=$((filed + 1))
 done < "$FINDINGS"
 
 if [ "$DRY_RUN" -eq 1 ]; then
