@@ -1,9 +1,13 @@
 #!/bin/bash
 # tools/detect-todo-markers.sh: in-tree TODO/FIXME/XXX marker detector (M1 of #1266).
 #
-# Walks the repo tree (skipping .git/) and prints one TSV line per marker on
-# stdout, then exits 0. It is a DETECTOR, not a gate: it prints nothing when
-# there are no markers and never fails the build.
+# Walks the repo tree and prints one TSV line per marker on stdout, then exits
+# 0. It is a DETECTOR, not a gate: it prints nothing when there are no markers
+# and never fails the build.
+#
+# Vendored and generated directories are skipped so third-party / build output
+# does not surface as noise: .git, node_modules, .solc-cache, dist, build,
+# target, __pycache__, vendor (#1283).
 #
 # For every TODO, FIXME, or XXX marker it prints:
 #
@@ -30,9 +34,19 @@ ROOT="${DETECT_TODO_ROOT:-$REPO_ROOT}"
 [ -d "$ROOT" ] || exit 0
 
 # Scan from inside the root so grep emits paths relative to it. -I skips binary
-# files, -n adds line numbers, -E enables the alternation. .git/ is excluded.
+# files, -n adds line numbers, -E enables the alternation. Vendored/generated
+# directories are excluded so third-party / build output is not reported.
 cd "$ROOT" || exit 0
-grep -rInE 'TODO|FIXME|XXX' --exclude-dir=.git . 2>/dev/null | while IFS= read -r hit; do
+grep -rInE 'TODO|FIXME|XXX' \
+    --exclude-dir=.git \
+    --exclude-dir=node_modules \
+    --exclude-dir=.solc-cache \
+    --exclude-dir=dist \
+    --exclude-dir=build \
+    --exclude-dir=target \
+    --exclude-dir=__pycache__ \
+    --exclude-dir=vendor \
+    . 2>/dev/null | while IFS= read -r hit; do
     # grep output is "<file>:<line>:<content>"; peel the first two colon fields.
     file="${hit%%:*}"
     rest="${hit#*:}"

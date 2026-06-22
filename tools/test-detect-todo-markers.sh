@@ -5,6 +5,7 @@
 #   Test 1: a file carrying a TODO marker -> prints exactly the DRIFT TSV line
 #   Test 2: a clean file                  -> no line is emitted for it
 #   Test 3: detector always exits 0 (it is a detector, not a gate)
+#   Test 4: a TODO inside node_modules/   -> excluded, not reported (#1283)
 #
 # The scanned tree is driven through DETECT_TODO_ROOT so the assertions use a
 # throwaway fixture dir and never depend on the live repo contents.
@@ -30,9 +31,11 @@ fail() { echo "[FAIL] $1: $2"; FAIL=$((FAIL + 1)); }
 TMPDIR_TEST="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR_TEST"' EXIT
 
-# ----- Fixture tree: one marked file, one clean file -----
+# ----- Fixture tree: one marked file, one clean file, one vendored marker -----
 printf 'TODO: wire this up\n' > "$TMPDIR_TEST/marked.txt"
 printf 'all good here\n' > "$TMPDIR_TEST/clean.txt"
+mkdir -p "$TMPDIR_TEST/node_modules/some-pkg"
+printf 'TODO: third-party noise\n' > "$TMPDIR_TEST/node_modules/some-pkg/index.js"
 
 OUT="$(DETECT_TODO_ROOT="$TMPDIR_TEST" "$DETECTOR")"
 RC=$?
@@ -57,6 +60,13 @@ if [ "$RC" -eq 0 ]; then
     pass "exit 0 (detector, not gate)"
 else
     fail "exit" "rc=$RC"
+fi
+
+# ----- Test 4: TODO inside node_modules/ is excluded (#1283) -----
+if printf '%s\n' "$OUT" | grep -q 'node_modules'; then
+    fail "vendored" "expected no line for node_modules/, got <$OUT>"
+else
+    pass "vendored: skips the TODO inside node_modules/"
 fi
 
 echo ""
