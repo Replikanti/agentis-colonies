@@ -60,6 +60,28 @@ else
     fail "exit" "rc=$RC"
 fi
 
+# ----- Test 4: recency window — matches older than the window are not counted (#1293) -----
+WIN_DIR="$(mktemp -d)"
+printf 'create-mr failed once\ncreate-mr failed twice\ncreate-mr failed thrice\nrecent line A\nrecent line B\n' > "$WIN_DIR/agent.log"
+OUT_W="$(AGENT_LOG_DIR="$WIN_DIR" AGENT_LOG_WINDOW_LINES=2 "$DETECTOR")"
+rm -rf "$WIN_DIR"
+if printf '%s\n' "$OUT_W" | grep -q 'create-mr failed'; then
+    fail "recency" "window=2 must exclude the 3 older matches, got <$OUT_W>"
+else
+    pass "recency: matches older than the window are not counted"
+fi
+
+# ----- Test 5: the self-observe sidecar's own log is excluded (#1293) -----
+SO_DIR="$(mktemp -d)"
+printf 'produced no edits\nproduced no edits\nproduced no edits\n' > "$SO_DIR/self-observe.log"
+OUT_SO="$(AGENT_LOG_DIR="$SO_DIR" "$DETECTOR")"
+rm -rf "$SO_DIR"
+if printf '%s\n' "$OUT_SO" | grep -q 'produced no edits'; then
+    fail "self-exclude" "self-observe.log must be excluded, got <$OUT_SO>"
+else
+    pass "self-exclude: skips the self-observe sidecar's own log"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

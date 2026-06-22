@@ -29,8 +29,24 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 LOG_DIR="${AGENT_LOG_DIR:-$REPO_ROOT/.agentis/logs}"
 REPEAT_THRESHOLD="${REPEAT_THRESHOLD:-3}"
+# Recency window (#1293): only count failures within the last N lines of each
+# log, so historical/cumulative churn (e.g. a since-fixed incident) is not
+# re-reported as if it were happening now.
+WINDOW="${AGENT_LOG_WINDOW_LINES:-800}"
+case "$WINDOW" in ''|*[!0-9]*) WINDOW=800 ;; esac
 
 [ -d "$LOG_DIR" ] || exit 0
+
+# Build a "recent" stream = the last WINDOW lines of each *.log, EXCLUDING the
+# self-observe sidecar's own log (#1293): its echoed proposals contain the very
+# failure phrases we count, which would be self-referential noise.
+RECENT="$(mktemp)"
+trap 'rm -f "$RECENT"' EXIT
+for _f in "$LOG_DIR"/*.log; do
+    [ -f "$_f" ] || continue
+    case "$(basename "$_f")" in self-observe.log) continue ;; esac
+    tail -n "$WINDOW" "$_f" 2>/dev/null >> "$RECENT" || true
+done
 
 # Emit a DRIFT line for <pattern> only when its count clears the threshold.
 report() {
@@ -46,15 +62,15 @@ report() {
 # Simple fixed-string substring patterns (case-sensitive).
 for pattern in 'produced no edits' 'ERROR job-failed' 'create-mr failed' \
                'monolithic fallback' 'memo write limit'; do
-    matches="$(grep -rhF -- "$pattern" "$LOG_DIR" 2>/dev/null || true)"
-    [ -n "$matches" ] || continue
-    count="$(printf '%s\n' "$matches" | grep -cF -- "$pattern")"
-    sample="$(printf '%s\n' "$matches" | head -n1)"
+    count="$(grep -cF -- "$pattern" "$RECENT" 2>/dev/null || true)"
+    case "$count" in ''|*[!0-9]*) count=0 ;; esac
+    [ "$count" -gt 0 ] || continue
+    sample="$(grep -F -- "$pattern" "$RECENT" 2>/dev/null | head -n1)"
     report "$pattern" "$count" "$sample"
 done
 
 # Combined pattern: lines containing BOTH `watchdog` and `restarting`.
-matches="$(grep -rhF -- 'watchdog' "$LOG_DIR" 2>/dev/null | grep -F -- 'restarting' || true)"
+matches="$(grep -F -- 'watchdog' "$RECENT" 2>/dev/null | grep -F -- 'restarting' || true)"
 if [ -n "$matches" ]; then
     count="$(printf '%s\n' "$matches" | grep -c .)"
     sample="$(printf '%s\n' "$matches" | head -n1)"
