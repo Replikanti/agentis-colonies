@@ -1259,6 +1259,94 @@ else
     pass "run 15 (multi-line no-decompose): did NOT decompose (no --decompose flag)"
 fi
 
+# ===========================================================================
+# Run 16 (#1262 light verify gate): with NO CODE_EDIT_VERIFY_CMD (and no fast
+# project gate in the WS), the built-in light gate runs — it executes any
+# changed test-*.sh. The stub writes a test-*.sh that EXITS 1 on attempt 1
+# (light gate fails -> feed back) then EXITS 0 on attempt 2 (passes -> commit).
+# Proves the light gate runs change-scoped checks + iterates, without the heavy
+# full-repo lint.
+# ===========================================================================
+rm -rf "$FED_DIR" "$REMOTE_BASE" "$SEED" "$CREATE_MR_LOG" "$FC_FLAGS_LOG"
+mkdir -p "$COLONY_DIR/scripts"
+cat > "$COLONY_DIR/scripts/github-api.sh" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+{ echo "create-mr called"; } >> "$CREATE_MR_LOG"
+printf '%s\n' '{"html_url": "https://example.test/pr/16"}'
+STUB_EOF
+chmod +x "$COLONY_DIR/scripts/github-api.sh"
+
+CNT_FILE6="$WORK/fc-attempt-count-6"; rm -f "$CNT_FILE6"
+cat > "$STUB_BIN/flat-cyborg" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "\$*" >> "$FC_FLAGS_LOG"
+CWD=""
+while [ \$# -gt 0 ]; do case "\$1" in --cwd) CWD="\$2"; shift 2 ;; --) shift; break ;; *) shift ;; esac; done
+n=\$(cat "$CNT_FILE6" 2>/dev/null || echo 0); n=\$((n + 1)); printf '%s' "\$n" > "$CNT_FILE6"
+# A changed test-*.sh that the light gate will RUN. Attempt 1 exits 1 (gate
+# fails); attempt 2 exits 0 (gate passes). Both are shellcheck-clean.
+if [ "\$n" -eq 1 ]; then
+    printf '#!/usr/bin/env sh\nexit 1\n' > "\$CWD/test-lvprobe.sh"
+else
+    printf '#!/usr/bin/env sh\nexit 0\n' > "\$CWD/test-lvprobe.sh"
+fi
+exit 0
+STUB_EOF
+chmod +x "$STUB_BIN/flat-cyborg"
+
+mkdir -p "$BARE"
+git init --quiet --bare --initial-branch=main "$BARE" 2>/dev/null || git init --quiet --bare "$BARE"
+git init --quiet --initial-branch=main "$SEED" 2>/dev/null || git init --quiet "$SEED"
+(
+    cd "$SEED" || exit 1
+    git symbolic-ref HEAD refs/heads/main 2>/dev/null || true
+    printf 'hello\n' > README.md
+    git add -A
+    git commit --quiet -m "seed: initial commit"
+    git branch -M main 2>/dev/null || true
+    git remote add origin "$BARE"
+    git push --quiet origin main
+)
+git --git-dir="$BARE" symbolic-ref HEAD refs/heads/main
+
+OUT16_FILE="$WORK/out16.txt"
+env \
+    PATH="$STUB_BIN:$PATH" \
+    COLONY_DIR="$COLONY_DIR" \
+    GITHUB_URL="file://$REMOTE_BASE" \
+    GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    CODE_EDIT_MAX_ATTEMPTS=3 \
+    bash "$ORCH" \
+        --owner "$OWNER" --repo "$REPO" --issue 150 \
+        --branch "fix/issue-150" --title "light gate" \
+        --task "Add a test." >"$OUT16_FILE" 2>"$WORK/err16.txt"
+RC16=$?
+ATTEMPTS6="$(cat "$CNT_FILE6" 2>/dev/null || echo 0)"
+
+if [ "$RC16" -eq 0 ] && [ "$(cat "$OUT16_FILE")" = "https://example.test/pr/16" ]; then
+    pass "run 16 (light gate): exits 0 + opens PR after the light gate passes"
+else
+    fail "run 16 (light gate): exit 0 + PR url" "rc=$RC16 out=$(cat "$OUT16_FILE" 2>/dev/null) err=$(tail -4 "$WORK/err16.txt" 2>/dev/null)"
+fi
+if [ "$ATTEMPTS6" = "2" ]; then
+    pass "run 16 (light gate): iterated after the light gate failed (ran the changed test-*.sh twice)"
+else
+    fail "run 16 (light gate): expected 2 attempts" "got $ATTEMPTS6"
+fi
+if grep -q "light change-scoped gate" "$WORK/err16.txt" 2>/dev/null && grep -q "verification PASSED" "$WORK/err16.txt" 2>/dev/null; then
+    pass "run 16 (light gate): used the built-in light gate (not full colony-lint) and PASSED on retry"
+else
+    fail "run 16 (light gate): light-gate + PASSED log lines" "err=$(tail -6 "$WORK/err16.txt" 2>/dev/null)"
+fi
+if git --git-dir="$BARE" cat-file -e "refs/heads/fix/issue-150:test-lvprobe.sh" 2>/dev/null; then
+    pass "run 16 (light gate): committed only after the changed test passed"
+else
+    fail "run 16 (light gate): test-lvprobe.sh in pushed commit"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

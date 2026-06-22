@@ -319,14 +319,15 @@ staged_line_count() {
         | awk '{ a = ($1 == "-" ? 0 : $1); d = ($2 == "-" ? 0 : $2); s += a + d } END { print s + 0 }'
 }
 
-# detect_verify_cmd (#1253): the command (run in $WS) that decides whether the
-# change is CORRECT, not just present. Explicit CODE_EDIT_VERIFY_CMD wins;
-# otherwise auto-detect a common gate; empty = "no verifier" -> the loop degrades
-# to M1 (a settled session is treated as done). Set CODE_EDIT_VERIFY_CMD=true to
-# force-skip verification.
+# detect_verify_cmd (#1253, #1262): the explicit verify command run in $WS.
+# CODE_EDIT_VERIFY_CMD wins; else a FAST project gate (npm/make/pytest). We do
+# NOT auto-pick the repo's full lint (e.g. tools/colony-lint.sh) — it is heavy
+# and flaky under the federation's load and false-fails (#1262, found live on
+# #1260). Empty result means "use the built-in LIGHT, change-scoped gate"
+# (run_light_verify); the PR's own CI remains the authoritative full gate.
+# CODE_EDIT_VERIFY_CMD=true force-skips (always passes).
 detect_verify_cmd() {
     if [ -n "${CODE_EDIT_VERIFY_CMD:-}" ]; then printf '%s' "$CODE_EDIT_VERIFY_CMD"; return 0; fi
-    if [ -x "$WS/tools/colony-lint.sh" ]; then printf '%s' './tools/colony-lint.sh'; return 0; fi
     if [ -f "$WS/package.json" ] && grep -q '"test"' "$WS/package.json" 2>/dev/null; then printf '%s' 'npm test --silent'; return 0; fi
     if [ -f "$WS/Makefile" ] && grep -qE '^test:' "$WS/Makefile" 2>/dev/null; then printf '%s' 'make test'; return 0; fi
     if [ -d "$WS/tests" ] && command -v pytest >/dev/null 2>&1; then printf '%s' 'pytest -q'; return 0; fi
@@ -344,6 +345,47 @@ run_verify() {
     else
         ( cd "$WS" && env -u GITHUB_TOKEN -u GITLAB_TOKEN sh -c "$1" ) >"$VERIFY_OUT" 2>&1
     fi
+}
+
+# run_light_verify (#1262): the built-in change-scoped gate used when no explicit
+# CODE_EDIT_VERIFY_CMD / fast project gate is detected. Over the STAGED changed
+# files only: `bash -n` + `shellcheck` on changed *.sh, and RUN any changed
+# test-*.sh (token-scrubbed + time-bounded). Fast and flake-free vs the full repo
+# lint; the PR's own CI is the authoritative full gate. Output -> $VERIFY_OUT,
+# returns 0 (all clean) or 1.
+run_light_verify() {
+    : > "$VERIFY_OUT"
+    _lv_rc=0
+    _lv_tt=$(( VERIFY_TIMEOUT_MS / 1000 ))
+    [ "$_lv_tt" -lt 1 ] && _lv_tt=1
+    _lv_list="$(mktemp)"
+    git_capture -C "$WS" diff --cached --name-only --diff-filter=d > "$_lv_list" 2>/dev/null || true
+    # FD 8 so the inner test runs do not consume this list.
+    while IFS= read -r _lv_f <&8; do
+        [ -n "$_lv_f" ] || continue
+        case "$_lv_f" in
+            *.sh)
+                echo "[light-verify] check $_lv_f" >> "$VERIFY_OUT"
+                if ! bash -n "$WS/$_lv_f" >>"$VERIFY_OUT" 2>&1; then _lv_rc=1; fi
+                if command -v shellcheck >/dev/null 2>&1; then
+                    if ! ( cd "$WS" && shellcheck "$_lv_f" ) >>"$VERIFY_OUT" 2>&1; then _lv_rc=1; fi
+                fi
+                case "$_lv_f" in
+                    */test-*.sh|test-*.sh)
+                        echo "[light-verify] run $_lv_f" >> "$VERIFY_OUT"
+                        if command -v timeout >/dev/null 2>&1; then
+                            if ! ( cd "$WS" && env -u GITHUB_TOKEN -u GITLAB_TOKEN timeout "${_lv_tt}s" sh "$_lv_f" ) >>"$VERIFY_OUT" 2>&1; then _lv_rc=1; fi
+                        else
+                            if ! ( cd "$WS" && env -u GITHUB_TOKEN -u GITLAB_TOKEN sh "$_lv_f" ) >>"$VERIFY_OUT" 2>&1; then _lv_rc=1; fi
+                        fi
+                        ;;
+                esac
+                ;;
+        esac
+    done 8< "$_lv_list"
+    rm -f "$_lv_list"
+    if [ "$_lv_rc" -eq 0 ]; then echo "[light-verify] no shell issues in changed files" >> "$VERIFY_OUT"; fi
+    return "$_lv_rc"
 }
 
 # Bounded continue-on-incomplete loop (#1251). A single fixed-timeout shot was
@@ -475,11 +517,16 @@ while :; do
     # diff, "settled" is not "done": run the gate and only stop when it's GREEN;
     # otherwise feed the failure back as another iteration (#1253).
     if [ "$FC_RC" -eq 0 ]; then
-        if [ -z "$VERIFY_CMD" ] || [ "$cur_lines" -eq 0 ]; then
+        if [ "$cur_lines" -eq 0 ]; then
             break
         fi
-        echo "[code-edit] verifying ($VERIFY_CMD) ..." >&2
-        set +e; run_verify "$VERIFY_CMD"; verify_rc=$?; set -e
+        if [ -n "$VERIFY_CMD" ]; then
+            echo "[code-edit] verifying ($VERIFY_CMD) ..." >&2
+            set +e; run_verify "$VERIFY_CMD"; verify_rc=$?; set -e
+        else
+            echo "[code-edit] verifying (light change-scoped gate) ..." >&2
+            set +e; run_light_verify; verify_rc=$?; set -e
+        fi
         if [ "$verify_rc" -eq 0 ]; then
             echo "[code-edit] verification PASSED" >&2
             break
