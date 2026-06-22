@@ -1182,6 +1182,83 @@ else
     fail "run 14 (decompose): SUB_1.txt + SUB_2.txt + SUB_3.txt in pushed commit"
 fi
 
+# ===========================================================================
+# Run 15 (#1254 backward-compat regression): a MULTI-LINE --task WITHOUT
+# --decompose must be treated as ONE task (one edit invocation receiving the
+# whole task), NOT split one-subtask-per-line. The production caller always
+# sends a multi-line task_text, so this is the common path.
+# ===========================================================================
+rm -rf "$FED_DIR" "$REMOTE_BASE" "$SEED" "$CREATE_MR_LOG" "$FC_FLAGS_LOG"
+mkdir -p "$COLONY_DIR/scripts"
+cat > "$COLONY_DIR/scripts/github-api.sh" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+{ echo "create-mr called"; } >> "$CREATE_MR_LOG"
+printf '%s\n' '{"html_url": "https://example.test/pr/15"}'
+STUB_EOF
+chmod +x "$COLONY_DIR/scripts/github-api.sh"
+
+CNT_FILE5="$WORK/fc-attempt-count-5"; rm -f "$CNT_FILE5"
+CMD_LOG="$WORK/fc-cmdfile-5.log"; rm -f "$CMD_LOG"
+cat > "$STUB_BIN/flat-cyborg" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "\$*" >> "$FC_FLAGS_LOG"
+CWD=""; CMDF=""
+while [ \$# -gt 0 ]; do case "\$1" in --cwd) CWD="\$2"; shift 2 ;; --cmd-file) CMDF="\$2"; shift 2 ;; --) shift; break ;; *) shift ;; esac; done
+n=\$(cat "$CNT_FILE5" 2>/dev/null || echo 0); n=\$((n + 1)); printf '%s' "\$n" > "$CNT_FILE5"
+[ -n "\$CMDF" ] && cat "\$CMDF" >> "$CMD_LOG"
+printf 'edit %s\n' "\$n" > "\$CWD/EDIT.txt"
+exit 0
+STUB_EOF
+chmod +x "$STUB_BIN/flat-cyborg"
+
+mkdir -p "$BARE"
+git init --quiet --bare --initial-branch=main "$BARE" 2>/dev/null || git init --quiet --bare "$BARE"
+git init --quiet --initial-branch=main "$SEED" 2>/dev/null || git init --quiet "$SEED"
+(
+    cd "$SEED" || exit 1
+    git symbolic-ref HEAD refs/heads/main 2>/dev/null || true
+    printf 'hello\n' > README.md
+    git add -A
+    git commit --quiet -m "seed: initial commit"
+    git branch -M main 2>/dev/null || true
+    git remote add origin "$BARE"
+    git push --quiet origin main
+)
+git --git-dir="$BARE" symbolic-ref HEAD refs/heads/main
+
+MULTI_TASK="$(printf 'Line one of the task.\nLine two of the task.\nLine three of the task.')"
+OUT15_FILE="$WORK/out15.txt"
+env \
+    PATH="$STUB_BIN:$PATH" \
+    COLONY_DIR="$COLONY_DIR" \
+    GITHUB_URL="file://$REMOTE_BASE" \
+    GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    bash "$ORCH" \
+        --owner "$OWNER" --repo "$REPO" --issue 140 \
+        --branch "fix/issue-140" --title "multi-line task" \
+        --task "$MULTI_TASK" >"$OUT15_FILE" 2>"$WORK/err15.txt"
+RC15=$?
+EDITS5="$(cat "$CNT_FILE5" 2>/dev/null || echo 0)"
+
+if [ "$RC15" -eq 0 ] && [ "$EDITS5" = "1" ]; then
+    pass "run 15 (multi-line no-decompose): ONE edit invocation (task not split per line)"
+else
+    fail "run 15 (multi-line no-decompose): expected exactly 1 edit invocation" "rc=$RC15 edits=$EDITS5 err=$(tail -3 "$WORK/err15.txt" 2>/dev/null)"
+fi
+if grep -q "Line one of the task" "$CMD_LOG" 2>/dev/null && grep -q "Line two of the task" "$CMD_LOG" 2>/dev/null && grep -q "Line three of the task" "$CMD_LOG" 2>/dev/null; then
+    pass "run 15 (multi-line no-decompose): the WHOLE multi-line task reached claude in one drive"
+else
+    fail "run 15 (multi-line no-decompose): whole task in the prompt" "cmdlog=$(tail -8 "$CMD_LOG" 2>/dev/null)"
+fi
+if grep -q "decomposed issue" "$WORK/err15.txt" 2>/dev/null; then
+    fail "run 15 (multi-line no-decompose): wrongly decomposed a non --decompose run"
+else
+    pass "run 15 (multi-line no-decompose): did NOT decompose (no --decompose flag)"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -401,16 +401,21 @@ if [ "$DECOMPOSE" -eq 1 ]; then
     # discard any stray edits the decomposition step made; the subtask loop owns edits.
     run_git -C "$WS" reset --hard >/dev/null 2>&1 || true
     run_git -C "$WS" clean -fd >/dev/null 2>&1 || true
-    awk 'NF' "$SUBTASKS_LIST" 2>/dev/null | sed 's/^[[:space:]]*[-*0-9.)]\{0,4\}[[:space:]]*//' | head -n "$MAX_SUBTASKS" > "$SUBTASKS_FILE"
+    # Each parsed line becomes a NUL-separated record. NUL (not newline) is the
+    # subtask delimiter so the no-decompose fallback below can hold the WHOLE
+    # multi-line $TASK as a SINGLE record — the production caller's task_text is
+    # always multi-line, and splitting it per line would feed claude fragments.
+    awk 'NF' "$SUBTASKS_LIST" 2>/dev/null | sed 's/^[[:space:]]*[-*0-9.)]\{0,4\}[[:space:]]*//' | head -n "$MAX_SUBTASKS" | tr '\n' '\0' > "$SUBTASKS_FILE"
 fi
 if [ ! -s "$SUBTASKS_FILE" ]; then
-    printf '%s\n' "$TASK" > "$SUBTASKS_FILE"
+    # Single record = the whole task (newlines preserved) -> one subtask -> M1/M2.
+    printf '%s\0' "$TASK" > "$SUBTASKS_FILE"
 fi
-SUBTASK_COUNT="$(awk 'END { print NR }' "$SUBTASKS_FILE")"
+SUBTASK_COUNT="$(tr -cd '\0' < "$SUBTASKS_FILE" | wc -c | tr -d ' ')"
 [ "$SUBTASK_COUNT" -gt 1 ] && echo "[code-edit] decomposed issue #$ISSUE into $SUBTASK_COUNT subtasks" >&2
 
 subtask_idx=0
-while IFS= read -r CUR_TASK <&3; do
+while IFS= read -r -d '' CUR_TASK <&3; do
     [ -z "$CUR_TASK" ] && continue
     subtask_idx=$((subtask_idx + 1))
     [ "$SUBTASK_COUNT" -gt 1 ] && echo "[code-edit] subtask $subtask_idx/$SUBTASK_COUNT: $CUR_TASK" >&2
