@@ -749,6 +749,102 @@ else
     pass "run 9 (reap): orphaned editing-session child was reaped (#1249)"
 fi
 
+# ===========================================================================
+# Run 10 (#1251 continue-on-incomplete): a stateful stub flat-cyborg times out
+# (exit 124) on attempt 1 with a PARTIAL edit, then settles (exit 0) on attempt
+# 2 completing the change. The orchestrator must ITERATE — re-drive with the
+# continuation prompt, building on attempt 1's checkout — then commit the FULL
+# result. This is the loop that lets big tasks finish across turns.
+# ===========================================================================
+rm -rf "$FED_DIR" "$REMOTE_BASE" "$SEED" "$CREATE_MR_LOG" "$FC_FLAGS_LOG"
+mkdir -p "$COLONY_DIR/scripts"
+cat > "$COLONY_DIR/scripts/github-api.sh" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+{ echo "create-mr called"; } >> "$CREATE_MR_LOG"
+printf '%s\n' '{"html_url": "https://example.test/pr/10"}'
+STUB_EOF
+chmod +x "$COLONY_DIR/scripts/github-api.sh"
+
+# Stateful editing stub: attempt 1 -> partial edit + timeout (124); attempt 2 ->
+# finish the change + settle (0). The counter persists across the two
+# invocations within this single orchestrator run.
+CNT_FILE="$WORK/fc-attempt-count"; rm -f "$CNT_FILE"
+cat > "$STUB_BIN/flat-cyborg" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "\$*" >> "$FC_FLAGS_LOG"
+CWD=""
+while [ \$# -gt 0 ]; do
+    case "\$1" in
+        --cwd) CWD="\$2"; shift 2 ;;
+        --) shift; break ;;
+        *) shift ;;
+    esac
+done
+n=\$(cat "$CNT_FILE" 2>/dev/null || echo 0); n=\$((n + 1)); printf '%s' "\$n" > "$CNT_FILE"
+if [ "\$n" -eq 1 ]; then
+    printf 'part one\n' > "\$CWD/PART1.txt"
+    exit 124
+fi
+printf 'part two\n' > "\$CWD/PART2.txt"
+exit 0
+STUB_EOF
+chmod +x "$STUB_BIN/flat-cyborg"
+
+mkdir -p "$BARE"
+git init --quiet --bare --initial-branch=main "$BARE" 2>/dev/null || git init --quiet --bare "$BARE"
+git init --quiet --initial-branch=main "$SEED" 2>/dev/null || git init --quiet "$SEED"
+(
+    cd "$SEED" || exit 1
+    git symbolic-ref HEAD refs/heads/main 2>/dev/null || true
+    printf 'hello\n' > README.md
+    git add -A
+    git commit --quiet -m "seed: initial commit"
+    git branch -M main 2>/dev/null || true
+    git remote add origin "$BARE"
+    git push --quiet origin main
+)
+git --git-dir="$BARE" symbolic-ref HEAD refs/heads/main
+
+OUT10_FILE="$WORK/out10.txt"
+env \
+    PATH="$STUB_BIN:$PATH" \
+    COLONY_DIR="$COLONY_DIR" \
+    GITHUB_URL="file://$REMOTE_BASE" \
+    GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    CODE_EDIT_MAX_ATTEMPTS=3 \
+    bash "$ORCH" \
+        --owner "$OWNER" --repo "$REPO" --issue 88 \
+        --branch "fix/issue-88" --title "add two files" \
+        --task "Create PART1.txt and PART2.txt." >"$OUT10_FILE" 2>"$WORK/err10.txt"
+RC10=$?
+ATTEMPTS="$(cat "$CNT_FILE" 2>/dev/null || echo 0)"
+
+if [ "$RC10" -eq 0 ] && [ "$(cat "$OUT10_FILE")" = "https://example.test/pr/10" ]; then
+    pass "run 10 (continue): orchestrator exits 0 + opens the PR after iterating"
+else
+    fail "run 10 (continue): exit 0 + PR url" "rc=$RC10 out=$(cat "$OUT10_FILE" 2>/dev/null) err=$(tail -3 "$WORK/err10.txt" 2>/dev/null)"
+fi
+if [ "$ATTEMPTS" = "2" ]; then
+    pass "run 10 (continue): drove the editing session TWICE (timeout -> continue -> settle)"
+else
+    fail "run 10 (continue): expected 2 attempts" "got $ATTEMPTS"
+fi
+if grep -q "continuing editing session (attempt 2" "$WORK/err10.txt" 2>/dev/null; then
+    pass "run 10 (continue): took the continuation-prompt path on attempt 2"
+else
+    fail "run 10 (continue): continuation log line" "err=$(tail -5 "$WORK/err10.txt" 2>/dev/null)"
+fi
+# attempt 2 built on attempt 1's checkout: BOTH files must be in the pushed commit.
+if git --git-dir="$BARE" cat-file -e "refs/heads/fix/issue-88:PART1.txt" 2>/dev/null \
+   && git --git-dir="$BARE" cat-file -e "refs/heads/fix/issue-88:PART2.txt" 2>/dev/null; then
+    pass "run 10 (continue): final commit has BOTH partial + completed files (built on prior attempt)"
+else
+    fail "run 10 (continue): both PART1.txt + PART2.txt in pushed commit"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
