@@ -308,37 +308,106 @@ reap_editing_strays() {
 #    does not overflow claude's input editor; --cwd points claude at the
 #    checkout; --auto-approve writes without an interactive confirm.
 # ---------------------------------------------------------------------------
-printf 'Implement issue #%s in this repository by editing the files directly with your tools. %s\n\n%s\n\nMake the change and stop; do not run git or open a PR.' \
-    "$ISSUE" "$TITLE" "$TASK" > "$TASKFILE"
+# staged_line_count: total churn (added+removed) of the staged diff; 0 when the
+# tree is clean. Used to detect PROGRESS between attempts. Binary files report
+# numstat "-" for added/removed, treated as 0.
+staged_line_count() {
+    run_git -C "$WS" add -A
+    git_capture -C "$WS" diff --cached --numstat 2>/dev/null \
+        | awk '{ a = ($1 == "-" ? 0 : $1); d = ($2 == "-" ? 0 : $2); s += a + d } END { print s + 0 }'
+}
 
-echo "[code-edit] running flat-cyborg editing agent in $WS" >&2
-set +e
-flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 --cwd "$WS" \
-    --idle-ms "${FLAT_CYBORG_IDLE_MS:-8000}" \
-    --timeout-ms "${CODE_EDIT_TIMEOUT_MS:-600000}" \
-    --cmd-file "$TASKFILE" -- claude >&2
-FC_RC=$?
-set -e
+# Bounded continue-on-incomplete loop (#1251). A single fixed-timeout shot was
+# the main limiter on complex tasks: claude was interrupted mid-edit (exit 124)
+# with a partial diff, or simply ran out of one turn, and nobody told it to keep
+# going. Now, if a session TIMES OUT but made PROGRESS (the staged diff grew) and
+# attempts/budget remain, we re-drive with a "continue, finish it" prompt that
+# carries the diff-so-far. A SETTLED session (FC_RC == 0) means claude finished
+# its turn — stop looping. Backward-compatible: a task that settles on attempt 1
+# behaves exactly as the old single shot (one drive -> commit).
+MAX_ATTEMPTS="${CODE_EDIT_MAX_ATTEMPTS:-3}"
+TOTAL_BUDGET_MS="${CODE_EDIT_TOTAL_BUDGET_MS:-1500000}"
+PER_ATTEMPT_MS="${CODE_EDIT_TIMEOUT_MS:-600000}"
+# Harden the numeric knobs: a non-integer / empty override would otherwise make
+# `[ -ge ]` print "integer expected" (silently bypassing the attempt gate) or
+# abort an `$(( ))` under set -e. Fall back to the defaults on any non-digit value.
+case "$MAX_ATTEMPTS"   in ''|*[!0-9]*) MAX_ATTEMPTS=3 ;; esac
+case "$TOTAL_BUDGET_MS" in ''|*[!0-9]*) TOTAL_BUDGET_MS=1500000 ;; esac
+case "$PER_ATTEMPT_MS"  in ''|*[!0-9]*) PER_ATTEMPT_MS=600000 ;; esac
+if [ "$MAX_ATTEMPTS" -lt 1 ]; then MAX_ATTEMPTS=1; fi
+loop_start="$(date +%s)"
+attempt=0
+prev_lines=0
+FC_RC=0
 
-# Reap orphaned editing-session descendants immediately — before commit/exit —
-# so a wedged claude child can never outlive its job and peg the CPU (#1249).
-reap_editing_strays
+while :; do
+    attempt=$((attempt + 1))
+    elapsed_ms=$(( ($(date +%s) - loop_start) * 1000 ))
+    remaining_ms=$(( TOTAL_BUDGET_MS - elapsed_ms ))
+    [ "$remaining_ms" -lt 1000 ] && remaining_ms=1000
+    this_timeout="$PER_ATTEMPT_MS"
+    [ "$this_timeout" -gt "$remaining_ms" ] && this_timeout="$remaining_ms"
+
+    if [ "$attempt" -eq 1 ]; then
+        printf 'Implement issue #%s in this repository by editing the files directly with your tools. %s\n\n%s\n\nMake the change and stop; do not run git or open a PR.' \
+            "$ISSUE" "$TITLE" "$TASK" > "$TASKFILE"
+    else
+        # Continuation prompt: claude was interrupted; show what changed so far.
+        {
+            printf 'You are CONTINUING work on issue #%s: %s\n\n' "$ISSUE" "$TITLE"
+            printf 'Your previous turn was interrupted before the change was finished. Files changed so far in this checkout:\n\n'
+            git_capture -C "$WS" diff --cached --stat 2>/dev/null || true
+            printf '\nReview the current state, COMPLETE the remaining work for the issue below, and stop. Do not run git or open a PR.\n\nIssue task:\n%s\n' "$TASK"
+        } > "$TASKFILE"
+        echo "[code-edit] continuing editing session (attempt $attempt/$MAX_ATTEMPTS, ${remaining_ms}ms budget left)" >&2
+    fi
+
+    echo "[code-edit] running flat-cyborg editing agent in $WS (attempt $attempt)" >&2
+    set +e
+    flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 --cwd "$WS" \
+        --idle-ms "${FLAT_CYBORG_IDLE_MS:-8000}" \
+        --timeout-ms "$this_timeout" \
+        --cmd-file "$TASKFILE" -- claude >&2
+    FC_RC=$?
+    set -e
+
+    # Reap orphaned editing-session descendants before measuring/looping (#1249).
+    reap_editing_strays
+    cur_lines="$(staged_line_count)"
+
+    # Settled (claude finished its turn) -> stop, whatever it produced.
+    [ "$FC_RC" -eq 0 ] && break
+    # Timed out / errored: stop unless we made progress AND budget+attempts remain.
+    if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
+        echo "[code-edit] reached max attempts ($MAX_ATTEMPTS) — committing whatever was produced" >&2
+        break
+    fi
+    if [ "$(( ($(date +%s) - loop_start) * 1000 ))" -ge "$TOTAL_BUDGET_MS" ]; then
+        echo "[code-edit] exhausted total edit budget — committing whatever was produced" >&2
+        break
+    fi
+    if [ "$cur_lines" -le "$prev_lines" ]; then
+        echo "[code-edit] attempt $attempt timed out (exit $FC_RC) with no new progress (staged churn $cur_lines <= $prev_lines) — stopping" >&2
+        break
+    fi
+    echo "[code-edit] attempt $attempt timed out (exit $FC_RC) but made progress (staged churn $prev_lines -> $cur_lines) — continuing" >&2
+    prev_lines="$cur_lines"
+done
 
 # ---------------------------------------------------------------------------
 # 4. Commit the diff. The ARTIFACT is the edit, not the editing session's exit
 #    code: flat-cyborg drives an interactive Claude Code TUI that frequently
-#    never settles to its idle prompt, so flat-cyborg rides to its --timeout-ms
-#    and returns non-zero EVEN WHEN claude finished editing correctly. So we
-#    stage first and decide on the diff:
+#    never settles to its idle prompt. After the loop above we decide on the
+#    final staged diff:
 #      * staged change present  -> commit + push + PR, regardless of FC_RC
 #        (a timeout that still produced edits is a success, not a failure).
-#      * no change + FC_RC == 0 -> NO_EDITS  => exit 3 (retry, not error).
-#      * no change + FC_RC != 0 -> the session genuinely failed => exit FC_RC.
+#      * no change + last FC_RC == 0 -> NO_EDITS  => exit 3 (retry, not error).
+#      * no change + last FC_RC != 0 -> the session genuinely failed => exit FC_RC.
 # ---------------------------------------------------------------------------
 run_git -C "$WS" add -A
 if run_git -C "$WS" diff --cached --quiet; then
     if [ "$FC_RC" -ne 0 ]; then
-        echo "[code-edit] flat-cyborg editing agent failed (exit $FC_RC) and produced no edits" >&2
+        echo "[code-edit] editing agent failed (last exit $FC_RC) and produced no edits" >&2
         exit "$FC_RC"
     fi
     echo "NO_EDITS"
@@ -347,7 +416,7 @@ if run_git -C "$WS" diff --cached --quiet; then
 fi
 
 if [ "$FC_RC" -ne 0 ]; then
-    echo "[code-edit] flat-cyborg exited non-zero (exit $FC_RC, likely idle/timeout) but edits were produced — committing the diff" >&2
+    echo "[code-edit] last attempt exited non-zero (exit $FC_RC, likely idle/timeout) but edits were produced — committing the diff" >&2
 fi
 
 run_git -C "$WS" commit -m "feat: $TITLE (#$ISSUE)"
