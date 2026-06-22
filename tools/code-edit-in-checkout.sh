@@ -209,7 +209,7 @@ chmod 700 "$ASKPASS"
 # A task file for flat-cyborg --cmd-file (a multi-KB instruction must not ride
 # argv — ARG_MAX, same lesson as #1171). Cleaned up on exit alongside ASKPASS.
 TASKFILE="$(mktemp)"
-trap 'rm -f "$ASKPASS" "$TASKFILE"' EXIT
+trap 'rm -f "$ASKPASS" "$TASKFILE" "${VERIFY_OUT:-}"' EXIT
 
 # git wrappers that thread the askpass helper + non-interactive terminal so a
 # missing/invalid token fails fast instead of hanging on a prompt.
@@ -317,6 +317,33 @@ staged_line_count() {
         | awk '{ a = ($1 == "-" ? 0 : $1); d = ($2 == "-" ? 0 : $2); s += a + d } END { print s + 0 }'
 }
 
+# detect_verify_cmd (#1253): the command (run in $WS) that decides whether the
+# change is CORRECT, not just present. Explicit CODE_EDIT_VERIFY_CMD wins;
+# otherwise auto-detect a common gate; empty = "no verifier" -> the loop degrades
+# to M1 (a settled session is treated as done). Set CODE_EDIT_VERIFY_CMD=true to
+# force-skip verification.
+detect_verify_cmd() {
+    if [ -n "${CODE_EDIT_VERIFY_CMD:-}" ]; then printf '%s' "$CODE_EDIT_VERIFY_CMD"; return 0; fi
+    if [ -x "$WS/tools/colony-lint.sh" ]; then printf '%s' './tools/colony-lint.sh'; return 0; fi
+    if [ -f "$WS/package.json" ] && grep -q '"test"' "$WS/package.json" 2>/dev/null; then printf '%s' 'npm test --silent'; return 0; fi
+    if [ -f "$WS/Makefile" ] && grep -qE '^test:' "$WS/Makefile" 2>/dev/null; then printf '%s' 'make test'; return 0; fi
+    if [ -d "$WS/tests" ] && command -v pytest >/dev/null 2>&1; then printf '%s' 'pytest -q'; return 0; fi
+    printf '%s' ''
+}
+
+# run_verify <cmd>: run the gate inside $WS, time-bounded and token-scrubbed (the
+# gate never needs forge creds), combined output captured to $VERIFY_OUT. Returns
+# the gate's exit code.
+run_verify() {
+    _vt_s=$(( VERIFY_TIMEOUT_MS / 1000 ))
+    [ "$_vt_s" -lt 1 ] && _vt_s=1
+    if command -v timeout >/dev/null 2>&1; then
+        ( cd "$WS" && env -u GITHUB_TOKEN -u GITLAB_TOKEN timeout "${_vt_s}s" sh -c "$1" ) >"$VERIFY_OUT" 2>&1
+    else
+        ( cd "$WS" && env -u GITHUB_TOKEN -u GITLAB_TOKEN sh -c "$1" ) >"$VERIFY_OUT" 2>&1
+    fi
+}
+
 # Bounded continue-on-incomplete loop (#1251). A single fixed-timeout shot was
 # the main limiter on complex tasks: claude was interrupted mid-edit (exit 124)
 # with a partial diff, or simply ran out of one turn, and nobody told it to keep
@@ -335,10 +362,19 @@ case "$MAX_ATTEMPTS"   in ''|*[!0-9]*) MAX_ATTEMPTS=3 ;; esac
 case "$TOTAL_BUDGET_MS" in ''|*[!0-9]*) TOTAL_BUDGET_MS=1500000 ;; esac
 case "$PER_ATTEMPT_MS"  in ''|*[!0-9]*) PER_ATTEMPT_MS=600000 ;; esac
 if [ "$MAX_ATTEMPTS" -lt 1 ]; then MAX_ATTEMPTS=1; fi
+# Verify gate (#1253): run the repo's gate after a settled attempt and only stop
+# when it passes; feed failures back as another iteration (bounded by the same
+# attempts/budget). Empty VERIFY_CMD -> no gate -> M1 behaviour.
+VERIFY_CMD="$(detect_verify_cmd)"
+VERIFY_TIMEOUT_MS="${CODE_EDIT_VERIFY_TIMEOUT_MS:-300000}"
+case "$VERIFY_TIMEOUT_MS" in ''|*[!0-9]*) VERIFY_TIMEOUT_MS=300000 ;; esac
+VERIFY_OUT="$(mktemp)"
+[ -n "$VERIFY_CMD" ] && echo "[code-edit] verification gate: $VERIFY_CMD" >&2
 loop_start="$(date +%s)"
 attempt=0
 prev_lines=0
 FC_RC=0
+continuation_mode="interrupted"
 
 while :; do
     attempt=$((attempt + 1))
@@ -351,6 +387,17 @@ while :; do
     if [ "$attempt" -eq 1 ]; then
         printf 'Implement issue #%s in this repository by editing the files directly with your tools. %s\n\n%s\n\nMake the change and stop; do not run git or open a PR.' \
             "$ISSUE" "$TITLE" "$TASK" > "$TASKFILE"
+    elif [ "$continuation_mode" = "verify" ]; then
+        # Continuation prompt: the change does not pass the verification gate.
+        {
+            printf 'You are CONTINUING work on issue #%s: %s\n\n' "$ISSUE" "$TITLE"
+            printf 'Your change so far does NOT pass the project verification gate: %s\n\nFiles changed in this checkout:\n\n' "$VERIFY_CMD"
+            git_capture -C "$WS" diff --cached --stat 2>/dev/null || true
+            printf '\nThe gate output (tail):\n\n'
+            tail -c 4000 "$VERIFY_OUT" 2>/dev/null || true
+            printf '\n\nFix the change so the gate passes, then stop. Do not run git or open a PR.\n\nIssue task:\n%s\n' "$TASK"
+        } > "$TASKFILE"
+        echo "[code-edit] continuing editing session (verify-fix, attempt $attempt/$MAX_ATTEMPTS, ${remaining_ms}ms budget left)" >&2
     else
         # Continuation prompt: claude was interrupted; show what changed so far.
         {
@@ -375,9 +422,30 @@ while :; do
     reap_editing_strays
     cur_lines="$(staged_line_count)"
 
-    # Settled (claude finished its turn) -> stop, whatever it produced.
-    [ "$FC_RC" -eq 0 ] && break
+    # Settled (claude finished its turn). With a verifier configured + a non-empty
+    # diff, "settled" is not "done": run the gate and only stop when it's GREEN;
+    # otherwise feed the failure back as another iteration (#1253).
+    if [ "$FC_RC" -eq 0 ]; then
+        if [ -z "$VERIFY_CMD" ] || [ "$cur_lines" -eq 0 ]; then
+            break
+        fi
+        echo "[code-edit] verifying ($VERIFY_CMD) ..." >&2
+        set +e; run_verify "$VERIFY_CMD"; verify_rc=$?; set -e
+        if [ "$verify_rc" -eq 0 ]; then
+            echo "[code-edit] verification PASSED" >&2
+            break
+        fi
+        if [ "$attempt" -ge "$MAX_ATTEMPTS" ] || [ "$(( ($(date +%s) - loop_start) * 1000 ))" -ge "$TOTAL_BUDGET_MS" ]; then
+            echo "[code-edit] verification still FAILING after $attempt attempt(s) (gate exit $verify_rc) — committing anyway; the PR's own CI is the backstop" >&2
+            break
+        fi
+        echo "[code-edit] verification FAILED (gate exit $verify_rc) — feeding the failure back (attempt $attempt -> $((attempt + 1)))" >&2
+        continuation_mode="verify"
+        prev_lines="$cur_lines"
+        continue
+    fi
     # Timed out / errored: stop unless we made progress AND budget+attempts remain.
+    continuation_mode="interrupted"
     if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
         echo "[code-edit] reached max attempts ($MAX_ATTEMPTS) — committing whatever was produced" >&2
         break
