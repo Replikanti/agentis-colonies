@@ -417,8 +417,21 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 // slow job, so this `exec sh` returns fast and never hits the
                 // 120s cap. A non-zero exit (a usage / launch error) collapses
                 // the `try` to "" => job_word "" => the ERROR/else branch retries.
+                // Epic auto-trigger (#1257): an epic-class issue gets --decompose so
+                // the orchestrator splits it into per-subtask edits (M3, #1254). The
+                // epic label is the planning vocabulary (planning:labels:epic, read
+                // cross-colony) or "epic" by default, matched as an EXACT quoted JSON
+                // array element on the issue's labels so "not-epic"/"epic-foo" don't
+                // false-match. Decomposing a non-epic is harmless (one subtask = the
+                // whole task), so a loose match here is low-stakes.
+                let epic_vocab = recall_latest("planning:labels:epic");
+                let epic_label = if len(epic_vocab) > 0 { epic_vocab; } else { "epic"; };
+                let labels_str = to_string(json_get(issues_raw, "[0].labels"));
+                let is_epic = index_of(labels_str, "\"" + epic_label + "\"") > 0;
+                if is_epic { print("[code_writer] issue", issue_iid, "is epic-class — auto-decomposing (#1257)"); };
+                let decompose_flag = if is_epic { " --decompose"; } else { ""; };
                 // colony-lint: safe-exec-concat
-                let job_cmd = "$COLONY_DIR/../../tools/code-edit-job.sh --owner " + shell_escape(owner) + " --repo " + shell_escape(repo) + " --issue " + shell_escape(issue_iid) + " --branch " + shell_escape(branch_name) + " --title " + shell_escape(draft.summary) + " --task " + shell_escape(task_text);
+                let job_cmd = "$COLONY_DIR/../../tools/code-edit-job.sh --owner " + shell_escape(owner) + " --repo " + shell_escape(repo) + " --issue " + shell_escape(issue_iid) + " --branch " + shell_escape(branch_name) + " --title " + shell_escape(draft.summary) + " --task " + shell_escape(task_text) + decompose_flag;
                 let job_out = try { exec sh job_cmd; } catch e {
                     print("[code_writer] code-edit-job launcher failed — not marking drafted, will retry:", e);
                     "";
