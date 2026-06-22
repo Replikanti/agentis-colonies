@@ -15,6 +15,21 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Added
+
+- **`tools/self-observe.sh` — deterministic self-improvement driver**
+  ([#1266](https://github.com/Replikanti/agentis-colonies/issues/1266) M3). Runs
+  every `tools/detect-*.sh`, fingerprints each finding, **dedups** it against
+  open issues, **rate-limits** (`SELF_OBSERVE_MAX_NEW`, default 5), and proposes
+  a small single-purpose tracking issue per finding — **dry-run by default**,
+  `--file` to create them. Observation is deterministic (a shell scan, no LLM →
+  no over-exploration or flakiness), and every finding becomes a small issue the
+  proven small-issue pipeline can fix rather than one monolithic epic — the
+  robust shape of self-tuning. Pairs with the `tools/detect-*.sh` family
+  (`detect-doc-drift` #1267, `detect-todo-markers` #1272, `detect-agent-failures`
+  forthcoming #1278). Knobs: `SELF_OBSERVE_REPO` / `SELF_OBSERVE_MAX_NEW` /
+  `SELF_OBSERVE_LABELS` / `SELF_OBSERVE_GH`.
+
 ### Fixed
 
 - **`code_writer` epic auto-decompose (#1257) now actually fires**
