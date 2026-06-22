@@ -29,6 +29,14 @@ is asserted until multi-version CI is in place.
   (`detect-doc-drift` #1267, `detect-todo-markers` #1272, `detect-agent-failures`
   forthcoming #1278). Knobs: `SELF_OBSERVE_REPO` / `SELF_OBSERVE_MAX_NEW` /
   `SELF_OBSERVE_LABELS` / `SELF_OBSERVE_GH`.
+- **`start-federation.sh` self-observe sidecar** ([#1266](https://github.com/Replikanti/agentis-colonies/issues/1266)
+  M3) — closes the loop. An **opt-in** (`SELF_OBSERVE_SIDECAR=1`) background loop
+  that runs `tools/self-observe.sh` every `SELF_OBSERVE_INTERVAL_S` (default
+  3600s) so the federation continuously proposes its own work. **Dry-run by
+  default**; `SELF_OBSERVE_FILE=1` lets it actually file (dedup + rate-limit
+  bound the volume). Mirrors the auto-promote / cost-cap sidecar shape:
+  tick-first loop, self-terminates when no daemons run, EXIT/TERM/INT trap.
+  Points the self-failure detector at the federation's own `.agentis/logs`.
 
 ### Fixed
 
