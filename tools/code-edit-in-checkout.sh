@@ -328,6 +328,13 @@ staged_line_count() {
 MAX_ATTEMPTS="${CODE_EDIT_MAX_ATTEMPTS:-3}"
 TOTAL_BUDGET_MS="${CODE_EDIT_TOTAL_BUDGET_MS:-1500000}"
 PER_ATTEMPT_MS="${CODE_EDIT_TIMEOUT_MS:-600000}"
+# Harden the numeric knobs: a non-integer / empty override would otherwise make
+# `[ -ge ]` print "integer expected" (silently bypassing the attempt gate) or
+# abort an `$(( ))` under set -e. Fall back to the defaults on any non-digit value.
+case "$MAX_ATTEMPTS"   in ''|*[!0-9]*) MAX_ATTEMPTS=3 ;; esac
+case "$TOTAL_BUDGET_MS" in ''|*[!0-9]*) TOTAL_BUDGET_MS=1500000 ;; esac
+case "$PER_ATTEMPT_MS"  in ''|*[!0-9]*) PER_ATTEMPT_MS=600000 ;; esac
+if [ "$MAX_ATTEMPTS" -lt 1 ]; then MAX_ATTEMPTS=1; fi
 loop_start="$(date +%s)"
 attempt=0
 prev_lines=0

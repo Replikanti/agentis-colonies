@@ -845,6 +845,80 @@ else
     fail "run 10 (continue): both PART1.txt + PART2.txt in pushed commit"
 fi
 
+# ===========================================================================
+# Run 11 (#1251 loop bound + knob hardening): a stub that ALWAYS times out (124)
+# AND always makes NEW progress (a fresh file each attempt) would loop until the
+# 25-min budget if the attempt cap failed. Combined with a GARBAGE
+# CODE_EDIT_MAX_ATTEMPTS ("not-a-number"), this proves (a) the non-integer knob
+# is sanitized to the default and (b) the loop is hard-bounded by MAX_ATTEMPTS
+# (default 3), then commits whatever was produced.
+# ===========================================================================
+rm -rf "$FED_DIR" "$REMOTE_BASE" "$SEED" "$CREATE_MR_LOG" "$FC_FLAGS_LOG"
+mkdir -p "$COLONY_DIR/scripts"
+cat > "$COLONY_DIR/scripts/github-api.sh" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+{ echo "create-mr called"; } >> "$CREATE_MR_LOG"
+printf '%s\n' '{"html_url": "https://example.test/pr/11"}'
+STUB_EOF
+chmod +x "$COLONY_DIR/scripts/github-api.sh"
+
+CNT_FILE2="$WORK/fc-attempt-count-2"; rm -f "$CNT_FILE2"
+cat > "$STUB_BIN/flat-cyborg" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "\$*" >> "$FC_FLAGS_LOG"
+CWD=""
+while [ \$# -gt 0 ]; do case "\$1" in --cwd) CWD="\$2"; shift 2 ;; --) shift; break ;; *) shift ;; esac; done
+n=\$(cat "$CNT_FILE2" 2>/dev/null || echo 0); n=\$((n + 1)); printf '%s' "\$n" > "$CNT_FILE2"
+# Always new progress + always time out: without a working attempt cap this
+# loops until the budget. The sanitized MAX_ATTEMPTS must bound it.
+printf 'chunk %s\n' "\$n" > "\$CWD/CHUNK_\$n.txt"
+exit 124
+STUB_EOF
+chmod +x "$STUB_BIN/flat-cyborg"
+
+mkdir -p "$BARE"
+git init --quiet --bare --initial-branch=main "$BARE" 2>/dev/null || git init --quiet --bare "$BARE"
+git init --quiet --initial-branch=main "$SEED" 2>/dev/null || git init --quiet "$SEED"
+(
+    cd "$SEED" || exit 1
+    git symbolic-ref HEAD refs/heads/main 2>/dev/null || true
+    printf 'hello\n' > README.md
+    git add -A
+    git commit --quiet -m "seed: initial commit"
+    git branch -M main 2>/dev/null || true
+    git remote add origin "$BARE"
+    git push --quiet origin main
+)
+git --git-dir="$BARE" symbolic-ref HEAD refs/heads/main
+
+OUT11_FILE="$WORK/out11.txt"
+env \
+    PATH="$STUB_BIN:$PATH" \
+    COLONY_DIR="$COLONY_DIR" \
+    GITHUB_URL="file://$REMOTE_BASE" \
+    GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    CODE_EDIT_MAX_ATTEMPTS="not-a-number" \
+    bash "$ORCH" \
+        --owner "$OWNER" --repo "$REPO" --issue 99 \
+        --branch "fix/issue-99" --title "perpetual progress" \
+        --task "Keep adding chunks." >"$OUT11_FILE" 2>"$WORK/err11.txt"
+RC11=$?
+ATTEMPTS2="$(cat "$CNT_FILE2" 2>/dev/null || echo 0)"
+
+if [ "$ATTEMPTS2" = "3" ]; then
+    pass "run 11 (bound): loop hard-capped at MAX_ATTEMPTS=3 despite perpetual progress + garbage knob"
+else
+    fail "run 11 (bound): expected exactly 3 attempts" "got $ATTEMPTS2 (rc=$RC11)"
+fi
+if [ "$RC11" -eq 0 ] && [ "$(cat "$OUT11_FILE")" = "https://example.test/pr/11" ]; then
+    pass "run 11 (bound): committed what was produced + opened the PR after the cap"
+else
+    fail "run 11 (bound): exit 0 + PR url after cap" "rc=$RC11 out=$(cat "$OUT11_FILE" 2>/dev/null)"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
