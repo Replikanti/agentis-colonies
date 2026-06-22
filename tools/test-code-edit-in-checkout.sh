@@ -919,6 +919,163 @@ else
     fail "run 11 (bound): exit 0 + PR url after cap" "rc=$RC11 out=$(cat "$OUT11_FILE" 2>/dev/null)"
 fi
 
+# ===========================================================================
+# Run 12 (#1253 verify-and-fix): claude SETTLES each attempt, but the change
+# fails the verification gate on attempt 1 (no DONE.marker) and passes on
+# attempt 2 (marker written). The orchestrator must run the gate, feed the
+# failure back, iterate, and only commit once GREEN.
+# ===========================================================================
+rm -rf "$FED_DIR" "$REMOTE_BASE" "$SEED" "$CREATE_MR_LOG" "$FC_FLAGS_LOG"
+mkdir -p "$COLONY_DIR/scripts"
+cat > "$COLONY_DIR/scripts/github-api.sh" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+{ echo "create-mr called"; } >> "$CREATE_MR_LOG"
+printf '%s\n' '{"html_url": "https://example.test/pr/12"}'
+STUB_EOF
+chmod +x "$COLONY_DIR/scripts/github-api.sh"
+
+CNT_FILE3="$WORK/fc-attempt-count-3"; rm -f "$CNT_FILE3"
+cat > "$STUB_BIN/flat-cyborg" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "\$*" >> "$FC_FLAGS_LOG"
+CWD=""
+while [ \$# -gt 0 ]; do case "\$1" in --cwd) CWD="\$2"; shift 2 ;; --) shift; break ;; *) shift ;; esac; done
+n=\$(cat "$CNT_FILE3" 2>/dev/null || echo 0); n=\$((n + 1)); printf '%s' "\$n" > "$CNT_FILE3"
+# Always settle (exit 0). Attempt 1 leaves the gate failing (no marker);
+# attempt 2 writes the marker the gate checks for.
+if [ "\$n" -eq 1 ]; then
+    printf 'work\n' > "\$CWD/WORK.txt"
+else
+    printf 'done\n' > "\$CWD/DONE.marker"
+fi
+exit 0
+STUB_EOF
+chmod +x "$STUB_BIN/flat-cyborg"
+
+mkdir -p "$BARE"
+git init --quiet --bare --initial-branch=main "$BARE" 2>/dev/null || git init --quiet --bare "$BARE"
+git init --quiet --initial-branch=main "$SEED" 2>/dev/null || git init --quiet "$SEED"
+(
+    cd "$SEED" || exit 1
+    git symbolic-ref HEAD refs/heads/main 2>/dev/null || true
+    printf 'hello\n' > README.md
+    git add -A
+    git commit --quiet -m "seed: initial commit"
+    git branch -M main 2>/dev/null || true
+    git remote add origin "$BARE"
+    git push --quiet origin main
+)
+git --git-dir="$BARE" symbolic-ref HEAD refs/heads/main
+
+OUT12_FILE="$WORK/out12.txt"
+env \
+    PATH="$STUB_BIN:$PATH" \
+    COLONY_DIR="$COLONY_DIR" \
+    GITHUB_URL="file://$REMOTE_BASE" \
+    GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    CODE_EDIT_MAX_ATTEMPTS=3 \
+    CODE_EDIT_VERIFY_CMD="test -f DONE.marker" \
+    bash "$ORCH" \
+        --owner "$OWNER" --repo "$REPO" --issue 120 \
+        --branch "fix/issue-120" --title "verify gate" \
+        --task "Write the change and the DONE.marker." >"$OUT12_FILE" 2>"$WORK/err12.txt"
+RC12=$?
+ATTEMPTS3="$(cat "$CNT_FILE3" 2>/dev/null || echo 0)"
+
+if [ "$RC12" -eq 0 ] && [ "$(cat "$OUT12_FILE")" = "https://example.test/pr/12" ]; then
+    pass "run 12 (verify): exits 0 + opens PR only after the gate passes"
+else
+    fail "run 12 (verify): exit 0 + PR url" "rc=$RC12 out=$(cat "$OUT12_FILE" 2>/dev/null) err=$(tail -3 "$WORK/err12.txt" 2>/dev/null)"
+fi
+if [ "$ATTEMPTS3" = "2" ]; then
+    pass "run 12 (verify): iterated after a failing gate (drove twice: fail -> fix -> pass)"
+else
+    fail "run 12 (verify): expected 2 attempts" "got $ATTEMPTS3"
+fi
+if grep -q "verify-fix" "$WORK/err12.txt" 2>/dev/null && grep -q "verification PASSED" "$WORK/err12.txt" 2>/dev/null; then
+    pass "run 12 (verify): took the verify-fix path then verification PASSED"
+else
+    fail "run 12 (verify): verify-fix + PASSED log lines" "err=$(tail -6 "$WORK/err12.txt" 2>/dev/null)"
+fi
+if git --git-dir="$BARE" cat-file -e "refs/heads/fix/issue-120:DONE.marker" 2>/dev/null; then
+    pass "run 12 (verify): committed only after the gate-satisfying marker was added"
+else
+    fail "run 12 (verify): DONE.marker in pushed commit"
+fi
+
+# ===========================================================================
+# Run 13 (#1253 verify-budget): the gate NEVER passes. The orchestrator must
+# stop at MAX_ATTEMPTS, log that verification is still failing, and commit
+# anyway (the PR's own CI is the backstop) rather than loop forever.
+# ===========================================================================
+rm -rf "$FED_DIR" "$REMOTE_BASE" "$SEED" "$CREATE_MR_LOG" "$FC_FLAGS_LOG"
+mkdir -p "$COLONY_DIR/scripts"
+cat > "$COLONY_DIR/scripts/github-api.sh" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+{ echo "create-mr called"; } >> "$CREATE_MR_LOG"
+printf '%s\n' '{"html_url": "https://example.test/pr/13"}'
+STUB_EOF
+chmod +x "$COLONY_DIR/scripts/github-api.sh"
+
+CNT_FILE4="$WORK/fc-attempt-count-4"; rm -f "$CNT_FILE4"
+cat > "$STUB_BIN/flat-cyborg" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "\$*" >> "$FC_FLAGS_LOG"
+CWD=""
+while [ \$# -gt 0 ]; do case "\$1" in --cwd) CWD="\$2"; shift 2 ;; --) shift; break ;; *) shift ;; esac; done
+n=\$(cat "$CNT_FILE4" 2>/dev/null || echo 0); n=\$((n + 1)); printf '%s' "\$n" > "$CNT_FILE4"
+printf 'chunk %s\n' "\$n" > "\$CWD/WORK_\$n.txt"
+exit 0
+STUB_EOF
+chmod +x "$STUB_BIN/flat-cyborg"
+
+mkdir -p "$BARE"
+git init --quiet --bare --initial-branch=main "$BARE" 2>/dev/null || git init --quiet --bare "$BARE"
+git init --quiet --initial-branch=main "$SEED" 2>/dev/null || git init --quiet "$SEED"
+(
+    cd "$SEED" || exit 1
+    git symbolic-ref HEAD refs/heads/main 2>/dev/null || true
+    printf 'hello\n' > README.md
+    git add -A
+    git commit --quiet -m "seed: initial commit"
+    git branch -M main 2>/dev/null || true
+    git remote add origin "$BARE"
+    git push --quiet origin main
+)
+git --git-dir="$BARE" symbolic-ref HEAD refs/heads/main
+
+OUT13_FILE="$WORK/out13.txt"
+env \
+    PATH="$STUB_BIN:$PATH" \
+    COLONY_DIR="$COLONY_DIR" \
+    GITHUB_URL="file://$REMOTE_BASE" \
+    GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    CODE_EDIT_MAX_ATTEMPTS=2 \
+    CODE_EDIT_VERIFY_CMD="test -f NEVER_EXISTS.marker" \
+    bash "$ORCH" \
+        --owner "$OWNER" --repo "$REPO" --issue 121 \
+        --branch "fix/issue-121" --title "always failing gate" \
+        --task "Add work." >"$OUT13_FILE" 2>"$WORK/err13.txt"
+RC13=$?
+ATTEMPTS4="$(cat "$CNT_FILE4" 2>/dev/null || echo 0)"
+
+if [ "$ATTEMPTS4" = "2" ]; then
+    pass "run 13 (verify-budget): stopped at MAX_ATTEMPTS=2 instead of looping on a never-passing gate"
+else
+    fail "run 13 (verify-budget): expected 2 attempts" "got $ATTEMPTS4 (rc=$RC13)"
+fi
+if [ "$RC13" -eq 0 ] && [ "$(cat "$OUT13_FILE")" = "https://example.test/pr/13" ] && grep -q "still FAILING" "$WORK/err13.txt" 2>/dev/null; then
+    pass "run 13 (verify-budget): logged 'still FAILING' and committed anyway (CI is the backstop)"
+else
+    fail "run 13 (verify-budget): commit-anyway + warning" "rc=$RC13 out=$(cat "$OUT13_FILE" 2>/dev/null) err=$(tail -4 "$WORK/err13.txt" 2>/dev/null)"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
