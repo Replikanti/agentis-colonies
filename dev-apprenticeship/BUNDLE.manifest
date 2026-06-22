@@ -107,6 +107,14 @@ tools/code-edit-in-checkout.sh
 # NO_EDITS/ERROR state across ticks. Runtime dep: code_writer.ag invokes it.
 tools/code-edit-job.sh
 
+# ----- Self-tuning loop (#1266) -----
+# The start-federation.sh self-observe sidecar invokes self-observe.sh, which in
+# turn runs the detect-*.sh family. Runtime deps of the (opt-in) sidecar.
+tools/self-observe.sh
+tools/detect-doc-drift.sh
+tools/detect-todo-markers.sh
+tools/detect-agent-failures.sh
+
 # ----- Federation dashboard -----
 # Extracted to a separately-versioned standalone component in #252.
 # `dev-apprenticeship/install.sh` offers an opt-in download of

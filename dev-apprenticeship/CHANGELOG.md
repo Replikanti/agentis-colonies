@@ -15,6 +15,11 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+## [2.2.0] — 2026-06-23
+
+**Requires:** agentis >= 1.8.0
+**Recommends:** flat-cyborg >= 0.11.0 (`--cmd-file`, #1171) for the checkout-edit path
+
 ### Added
 
 - **`tools/self-observe.sh` — deterministic self-improvement driver**
@@ -1683,7 +1688,8 @@ permissible per semver §4.
 - All dynamic values flowing into `exec sh` are required to pass through `shell_escape()`;
   `check-exec-sh.sh` enforces this grep-level contract.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.1.0...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.2.0...HEAD
+[2.2.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.1.0...dev-apprenticeship-v2.2.0
 [2.1.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.0.0...dev-apprenticeship-v2.1.0
 [2.0.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v1.3.0...dev-apprenticeship-v2.0.0
 [1.3.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v1.2.0...dev-apprenticeship-v1.3.0

@@ -1,8 +1,8 @@
 # Dev Apprenticeship
 
-![Version: 2.1.0](https://img.shields.io/badge/version-2.1.0-blue) ![Agentis >= v1.8.0](https://img.shields.io/badge/agentis-%3E%3D%20v1.8.0-blue) ![Agents: 21](https://img.shields.io/badge/agents-21-green) ![Status: Beta](https://img.shields.io/badge/status-beta-yellow)
+![Version: 2.2.0](https://img.shields.io/badge/version-2.2.0-blue) ![Agentis >= v1.8.0](https://img.shields.io/badge/agentis-%3E%3D%20v1.8.0-blue) ![Agents: 21](https://img.shields.io/badge/agents-21-green) ![Status: Beta](https://img.shields.io/badge/status-beta-yellow)
 
-**Version:** `2.1.0` · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.8.0`
+**Version:** `2.2.0` · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.8.0`
 
 > **One example federation** built on the [`agentis-colonies`](../) platform. The platform contract every federation must satisfy is [ADR-0003](../doc/adr/ADR-0003-federation-portability-contract.md); to scaffold a different kind of federation (data-ops, research, support-triage, monitoring-ops, …) see [`doc/federation-patterns.md`](../doc/federation-patterns.md) and [`tools/new-federation.sh`](../tools/new-federation.sh).
 
@@ -113,7 +113,7 @@ Pick one of the two install paths.
 **Option A — release tarball** (recommended for running the federation; install-ready, no git tree required):
 
 ```bash
-VERSION=2.1.0
+VERSION=2.2.0
 curl -LO https://github.com/Replikanti/agentis-colonies/releases/download/dev-apprenticeship-v${VERSION}/dev-apprenticeship-v${VERSION}.tar.gz
 curl -LO https://github.com/Replikanti/agentis-colonies/releases/download/dev-apprenticeship-v${VERSION}/dev-apprenticeship-v${VERSION}.tar.gz.sha256
 sha256sum -c dev-apprenticeship-v${VERSION}.tar.gz.sha256   # optional but recommended
