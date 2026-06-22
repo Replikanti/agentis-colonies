@@ -15,6 +15,22 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`code-edit-in-checkout.sh --decompose` now reliably splits epic-sized tasks
+  instead of silently falling back to a monolithic run**
+  ([#1269](https://github.com/Replikanti/agentis-colonies/issues/1269)). The
+  decompose-generation step let the editing agent explore the repository before
+  listing sub-edits, so on a large task it spent its whole budget exploring and
+  wrote an empty list — which fell through to "whole task = one subtask" and then
+  timed out mid-exploration with zero edits (observed live on an epic). The
+  decompose prompt now instructs the agent to base the sub-edit list **solely on
+  the task description** (no repo exploration, write the list immediately); the
+  first-attempt editing prompt tells it to **begin editing immediately and keep
+  exploration minimal**; and the monolithic fallback is now logged instead of
+  silent. Prompt/logging only — no control-flow change; the stub-based
+  orchestration tests are unchanged (64/0).
+
 ## [2.1.0] — 2026-06-22
 
 **Requires:** agentis >= 1.8.0 (crystallizer builtins, #1235)

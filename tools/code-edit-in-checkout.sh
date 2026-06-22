@@ -444,8 +444,9 @@ if [ "$DECOMPOSE" -eq 1 ]; then
     : > "$SUBTASKS_LIST"
     {
         printf 'Decompose issue #%s (%s) into an ORDERED list of small, self-contained sub-edits, each about the size of one focused change.\n\n' "$ISSUE" "$TITLE"
+        printf 'Base the list SOLELY on the task description below. Do NOT read, search, or explore repository files in this step, and do NOT edit any files — just produce the list immediately.\n'
         printf 'Write ONLY the list to this exact file with your file-writing tool: %s\n' "$SUBTASKS_LIST"
-        printf 'One sub-edit per line, plain text, no numbering and no markdown. Do NOT edit any repository files in this step.\n\nIssue task:\n%s\n' "$TASK"
+        printf 'One sub-edit per line, plain text, no numbering and no markdown.\n\nIssue task:\n%s\n' "$TASK"
     } > "$TASKFILE"
     echo "[code-edit] decomposing issue #$ISSUE into subtasks" >&2
     set +e
@@ -465,6 +466,7 @@ if [ "$DECOMPOSE" -eq 1 ]; then
 fi
 if [ ! -s "$SUBTASKS_FILE" ]; then
     # Single record = the whole task (newlines preserved) -> one subtask -> M1/M2.
+    [ "$DECOMPOSE" -eq 1 ] && echo "[code-edit] decomposition produced no subtasks — running the whole task as one (monolithic fallback)" >&2
     printf '%s\0' "$TASK" > "$SUBTASKS_FILE"
 fi
 SUBTASK_COUNT="$(tr -cd '\0' < "$SUBTASKS_FILE" | wc -c | tr -d ' ')"
@@ -490,7 +492,7 @@ while :; do
     [ "$this_timeout" -gt "$remaining_ms" ] && this_timeout="$remaining_ms"
 
     if [ "$attempt" -eq 1 ]; then
-        printf 'Implement issue #%s in this repository by editing the files directly with your tools. %s\n\n%s\n\nMake the change and stop; do not run git or open a PR.' \
+        printf 'Implement issue #%s in this repository by editing the files directly with your tools. %s\n\nBegin editing immediately and keep exploration minimal — the task below already specifies the change; read only the specific files you must modify.\n\n%s\n\nMake the change and stop; do not run git or open a PR.' \
             "$ISSUE" "$TITLE" "$CUR_TASK" > "$TASKFILE"
     elif [ "$continuation_mode" = "verify" ]; then
         # Continuation prompt: the change does not pass the verification gate.
