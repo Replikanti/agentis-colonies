@@ -426,8 +426,16 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 // whole task), so a loose match here is low-stakes.
                 let epic_vocab = recall_latest("planning:labels:epic");
                 let epic_label = if len(epic_vocab) > 0 { epic_vocab; } else { "epic"; };
-                let labels_str = to_string(json_get(issues_raw, "[0].labels"));
-                let is_epic = index_of(labels_str, "\"" + epic_label + "\"") > 0;
+                // #1271: detect epic on the DRAFTED issue (issue_detail, fetched
+                // above), NOT issues_raw[0] — the LLM may draft ANY assigned issue,
+                // so [0] is the wrong issue whenever more than one is assigned.
+                // Match the quoted label in the RAW issue JSON: to_string() of an
+                // ARRAY-valued json_get yields "void" on the runtime, so the old
+                // json_get(...,"labels") path never matched. Searching the raw text
+                // for "\"epic\"" is reliable and keeps the anti-false-match
+                // (an "epic"-prefixed label like "epic-foo" lacks the closing quote;
+                // body/title quotes are JSON-escaped as \" so they cannot match).
+                let is_epic = index_of(issue_detail, "\"" + epic_label + "\"") > 0;
                 if is_epic { print("[code_writer] issue", issue_iid, "is epic-class — auto-decomposing (#1257)"); };
                 let decompose_flag = if is_epic { " --decompose"; } else { ""; };
                 // colony-lint: safe-exec-concat

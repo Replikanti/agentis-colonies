@@ -17,6 +17,22 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- **`code_writer` epic auto-decompose (#1257) now actually fires**
+  ([#1271](https://github.com/Replikanti/agentis-colonies/issues/1271)). Two
+  stacked defects kept `--decompose` from ever being passed for an epic: (1) the
+  `is_epic` check read `issues_raw[0].labels`, but the LLM may draft any issue in
+  the assigned snapshot, so with more than one assigned issue the flag was read
+  off the wrong issue; (2) more fundamentally, `to_string(json_get(obj,
+  "labels"))` of an **array-valued** field yields `"void"` on the runtime, so the
+  quoted-label `index_of` never matched at all — epic detection had been a no-op
+  since #1257 shipped. The check now matches the quoted label in the **raw JSON
+  of the drafted issue** (`index_of(issue_detail, "\"<epic>\"")`), which is
+  reliable on the runtime and preserves the anti-false-match (an `epic`-prefixed
+  label lacks the closing quote; title/body quotes are JSON-escaped). Together
+  with #1269 this makes the epic path actually decompose. Verified by live
+  `agentis` runtime probes (the raw-text match returns true where the array
+  stringify returned `"void"`); full end-to-end decompose is confirmed on a live
+  epic re-run after deploy.
 - **`code-edit-in-checkout.sh --decompose` now reliably splits epic-sized tasks
   instead of silently falling back to a monolithic run**
   ([#1269](https://github.com/Replikanti/agentis-colonies/issues/1269)). The
