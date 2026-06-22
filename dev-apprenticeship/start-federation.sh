@@ -360,4 +360,69 @@ else
     echo ""
 fi
 
+# --- Self-observe sidecar (#1266 M3) ---
+#
+# Periodically runs tools/self-observe.sh so the federation proposes its OWN
+# work — documentation drift, untracked TODOs, and recurring self-failures
+# scanned from its own .agentis/logs — as small, deduplicated, rate-limited
+# tracking issues. The robust shape of self-tuning: observation is a
+# deterministic shell scan (no LLM, no over-exploration), and every finding
+# becomes a SMALL issue the proven small-issue pipeline can fix.
+#
+# Opt-in: runs only when SELF_OBSERVE_SIDECAR=1 (default off — autonomous
+# issue filing on a shared tracker is a deliberate choice). DRY-RUN by default
+# (proposals go to the log only); set SELF_OBSERVE_FILE=1 to actually create
+# issues — dedup + the SELF_OBSERVE_MAX_NEW rate-limit bound the volume.
+# Mirrors the other sidecars: tick-first loop, self-terminate when the
+# federation has zero running daemons, EXIT/TERM/INT trap.
+SELF_OBSERVE_PID=""
+if [ "${SELF_OBSERVE_SIDECAR:-0}" = "1" ]; then
+    SO_INTERVAL="${SELF_OBSERVE_INTERVAL_S:-3600}"
+    case "$SO_INTERVAL" in
+        ''|*[!0-9]*) SO_INTERVAL=3600 ;;
+        *) [ "$SO_INTERVAL" -gt 0 ] || SO_INTERVAL=3600 ;;
+    esac
+    SO_SCRIPT="$SCRIPT_DIR/../tools/self-observe.sh"
+    if [ ! -x "$SO_SCRIPT" ]; then
+        echo "[!!] Self-observe sidecar: tools/self-observe.sh not executable, skipping."
+    else
+        SO_LOG_DIR="$FED_DIR/.agentis/logs"
+        SO_LOG="$SO_LOG_DIR/self-observe.log"
+        mkdir -p "$SO_LOG_DIR"
+        if [ "${SELF_OBSERVE_FILE:-0}" = "1" ]; then SO_MODE_LABEL="--file"; else SO_MODE_LABEL="dry-run"; fi
+        date +%s > "$SO_LOG_DIR/self-observe.sidecar_started_at"
+        (
+            # First action is a tick (not a sleep) so a proposal pass appears
+            # immediately after spawn. AGENT_LOG_DIR points the self-failure
+            # detector at this federation's own daemon logs. GH auth rides the
+            # forge token already in the environment.
+            while :; do
+                if ! agentis daemon list --json 2>/dev/null | grep -Fq '"state":"running"'; then
+                    printf '=== %s: no running daemons; sidecar exiting ===\n' \
+                        "$(date -Iseconds)" >> "$SO_LOG"
+                    exit 0
+                fi
+                {
+                    printf '=== %s: self-observe tick (%s) ===\n' "$(date -Iseconds)" "$SO_MODE_LABEL"
+                    if [ "${SELF_OBSERVE_FILE:-0}" = "1" ]; then
+                        AGENT_LOG_DIR="$SO_LOG_DIR" GH_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}" \
+                            "$SO_SCRIPT" --file 2>&1 \
+                            || printf '[sidecar] self-observe.sh exited %s\n' "$?"
+                    else
+                        AGENT_LOG_DIR="$SO_LOG_DIR" GH_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}" \
+                            "$SO_SCRIPT" 2>&1 \
+                            || printf '[sidecar] self-observe.sh exited %s\n' "$?"
+                    fi
+                } >> "$SO_LOG"
+                sleep "$SO_INTERVAL"
+            done
+        ) &
+        SELF_OBSERVE_PID=$!
+        # shellcheck disable=SC2064  # Expand PID at trap-install time, not at trigger time.
+        trap "[ -n \"\${AUTO_PROMOTE_PID:-}\" ] && kill \"\$AUTO_PROMOTE_PID\" 2>/dev/null; [ -n \"\${COST_CAP_PID:-}\" ] && kill \"\$COST_CAP_PID\" 2>/dev/null; [ -n \"\${SNAPSHOT_REFRESH_PID:-}\" ] && kill \"\$SNAPSHOT_REFRESH_PID\" 2>/dev/null; [ -n \"\${COST_RATE_PID:-}\" ] && kill \"\$COST_RATE_PID\" 2>/dev/null; [ -n \"$SELF_OBSERVE_PID\" ] && kill \"$SELF_OBSERVE_PID\" 2>/dev/null; exit" EXIT TERM INT
+        echo "Self-observe sidecar: PID $SELF_OBSERVE_PID, every ${SO_INTERVAL}s ($SO_MODE_LABEL) (log: .agentis/logs/self-observe.log)"
+        echo ""
+    fi
+fi
+
 wait
