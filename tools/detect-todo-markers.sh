@@ -46,6 +46,8 @@ grep -rInE 'TODO|FIXME|XXX' \
     --exclude-dir=target \
     --exclude-dir=__pycache__ \
     --exclude-dir=vendor \
+    --exclude-dir=.agentis \
+    --exclude-dir=targets \
     . 2>/dev/null | while IFS= read -r hit; do
     # grep output is "<file>:<line>:<content>"; peel the first two colon fields.
     file="${hit%%:*}"

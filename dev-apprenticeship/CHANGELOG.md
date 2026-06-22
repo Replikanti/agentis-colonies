@@ -40,6 +40,15 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- **`detect-todo-markers.sh` also excludes run-dir state and vendored crate
+  targets** ([#1287](https://github.com/Replikanti/agentis-colonies/issues/1287)).
+  Surfaced by the live `self-observe.sh` sidecar: the TODO scan still reported
+  markers inside `.agentis/` (run-dir state + per-issue workspace clones) and
+  `targets/` (tribes-bench vendored crates). Added both to the `--exclude-dir`
+  set (alongside the node_modules/.solc-cache/… excludes from #1283), so
+  self-observation no longer proposes vendored/run-dir noise — the gate that
+  makes autonomous `--file` filing clean. Test extended with `.agentis/` and
+  `targets/` fixtures (6/6).
 - **`code_writer` epic auto-decompose (#1257) now actually fires**
   ([#1271](https://github.com/Replikanti/agentis-colonies/issues/1271)). Two
   stacked defects kept `--decompose` from ever being passed for an epic: (1) the
