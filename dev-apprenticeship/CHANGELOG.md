@@ -15,6 +15,11 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+## [2.1.0] — 2026-06-22
+
+**Requires:** agentis >= 1.8.0 (crystallizer builtins, #1235)
+**Recommends:** flat-cyborg >= 0.11.0 (`--cmd-file`, #1171) for the checkout-edit path
+
 ### Added
 
 - **`labeler` (triage) now distils deterministic label rules and replays them
@@ -36,6 +41,36 @@ is asserted until multi-version CI is in place.
   `LABELER_RULE_CONFIDENCE` (default 0.85) tunes the replay threshold. Host-run
   `.agentis` persists rules on disk across restarts, so no extra persistence
   wiring is needed.
+- **`code_writer`'s checkout-edit now handles COMPLEX tasks — iterate, verify,
+  decompose.** The single-shot orchestrator gained: a bounded
+  continue-on-incomplete loop ([#1251](https://github.com/Replikanti/agentis-colonies/issues/1251))
+  — a session that times out mid-edit but made progress is re-driven with a
+  "continue, finish it" prompt (`CODE_EDIT_MAX_ATTEMPTS`=3,
+  `CODE_EDIT_TOTAL_BUDGET_MS`=1500000); a verify-and-fix gate
+  ([#1253](https://github.com/Replikanti/agentis-colonies/issues/1253)) that runs
+  a change-scoped check after a settled attempt and feeds failures back until
+  green (or commits anyway after the budget — the PR's own CI is the backstop);
+  and `--decompose` ([#1254](https://github.com/Replikanti/agentis-colonies/issues/1254))
+  which splits an epic into an ordered list of sub-edits run one-per-subtask on
+  the same branch → ONE commit/PR (`CODE_EDIT_MAX_SUBTASKS`=8). `code_writer`
+  passes `--decompose` automatically for epic-labelled issues
+  ([#1257](https://github.com/Replikanti/agentis-colonies/issues/1257); epic
+  label from `planning:labels:epic`, default `epic`). All backward-compatible: a
+  small task that settles on the first attempt behaves exactly as before.
+- **GitLab forge parity for the checkout-edit path**
+  ([#1213](https://github.com/Replikanti/agentis-colonies/issues/1213)).
+  `FORGE_TYPE=gitlab` drives the same clone → edit → verify → commit → MR loop
+  against GitLab: `oauth2`-over-HTTPS clone auth, `gitlab-api.sh create-mr`,
+  `GITLAB_PROJECT` derived from `owner%2Frepo`, and `web_url` parsed from the MR
+  response. GitHub stays the default and is unchanged. (2-segment project paths;
+  nested GitLab group paths are a known follow-up.)
+- **Per-repo token resolution for the checkout-edit path in multi-repo
+  ([#316](https://github.com/Replikanti/agentis-colonies/issues/316)) mode**
+  ([#1212](https://github.com/Replikanti/agentis-colonies/issues/1212)): the
+  orchestrator re-resolves the correct per-repo token via `forge-resolve-repo.py`
+  instead of using the inherited first-repo token, so a non-first repo
+  authenticates correctly. Single-repo configs are unaffected; the token never
+  reaches argv (it rides only the helper's stdout, consumed by `eval`).
 
 ### Changed
 
@@ -505,6 +540,25 @@ is asserted until multi-version CI is in place.
   the same knob for cross-script consistency (it only talks to
   `/merge_requests` today). Documented in the README troubleshooting
   section.
+- **Checkout-edit job lifecycle hardening: per-job workspace isolation, orphan
+  reaping, disk cleanup, and a light verify gate**
+  ([#1248](https://github.com/Replikanti/agentis-colonies/issues/1248),
+  [#1249](https://github.com/Replikanti/agentis-colonies/issues/1249),
+  [#1262](https://github.com/Replikanti/agentis-colonies/issues/1262)).
+  Concurrent detached jobs no longer share one checkout — the workspace is keyed
+  per issue (`.../workspaces/<colony>/<owner>-<repo>/issue-<iid>`), so a second
+  job's `checkout -B` can't strand the first job's commit on the wrong branch
+  (#1248). After every editing run the orchestrator reaps any process still
+  rooted in the per-issue workspace (#1249), so a wedged claude child can't
+  orphan and peg a CPU core after its job ends; the per-issue workspace is
+  removed on a successful PR to bound disk. The in-loop verify gate is now a
+  fast, change-scoped check (`bash -n` + `shellcheck` on changed shell files, and
+  it RUNS any changed `test-*.sh`) instead of the whole-repo lint, which was
+  heavy and false-failed under load (#1262); an explicit `CODE_EDIT_VERIFY_CMD`
+  or an auto-detected `npm test`/`make test`/`pytest` still wins, and the PR's
+  own CI remains the authoritative full gate. The verify gate runs token-scrubbed
+  (`env -u GITHUB_TOKEN -u GITLAB_TOKEN`) and time-bounded
+  (`CODE_EDIT_VERIFY_TIMEOUT_MS`=300000).
 
 ## [2.0.0] — 2026-04-29
 
@@ -1553,7 +1607,8 @@ permissible per semver §4.
 - All dynamic values flowing into `exec sh` are required to pass through `shell_escape()`;
   `check-exec-sh.sh` enforces this grep-level contract.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.0.0...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.1.0...HEAD
+[2.1.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.0.0...dev-apprenticeship-v2.1.0
 [2.0.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v1.3.0...dev-apprenticeship-v2.0.0
 [1.3.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v1.2.0...dev-apprenticeship-v1.3.0
 [1.2.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v1.1.0...dev-apprenticeship-v1.2.0
