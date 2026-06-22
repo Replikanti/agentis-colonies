@@ -36,6 +36,10 @@ printf 'TODO: wire this up\n' > "$TMPDIR_TEST/marked.txt"
 printf 'all good here\n' > "$TMPDIR_TEST/clean.txt"
 mkdir -p "$TMPDIR_TEST/node_modules/some-pkg"
 printf 'TODO: third-party noise\n' > "$TMPDIR_TEST/node_modules/some-pkg/index.js"
+mkdir -p "$TMPDIR_TEST/.agentis/workspaces/x"
+printf 'TODO: run-dir clone noise\n' > "$TMPDIR_TEST/.agentis/workspaces/x/foo.sh"
+mkdir -p "$TMPDIR_TEST/targets/vendored-crate/src"
+printf 'TODO: vendored crate noise\n' > "$TMPDIR_TEST/targets/vendored-crate/src/lib.rs"
 
 OUT="$(DETECT_TODO_ROOT="$TMPDIR_TEST" "$DETECTOR")"
 RC=$?
@@ -67,6 +71,20 @@ if printf '%s\n' "$OUT" | grep -q 'node_modules'; then
     fail "vendored" "expected no line for node_modules/, got <$OUT>"
 else
     pass "vendored: skips the TODO inside node_modules/"
+fi
+
+# ----- Test 5: TODO inside .agentis/ (run-dir state + workspace clones) excluded (#1287) -----
+if printf '%s\n' "$OUT" | grep -q '\.agentis'; then
+    fail "run-dir" "expected no line for .agentis/, got <$OUT>"
+else
+    pass "run-dir: skips the TODO inside .agentis/"
+fi
+
+# ----- Test 6: TODO inside targets/ (vendored crate targets) excluded (#1287) -----
+if printf '%s\n' "$OUT" | grep -q 'targets/'; then
+    fail "targets" "expected no line for targets/, got <$OUT>"
+else
+    pass "targets: skips the TODO inside targets/"
 fi
 
 echo ""
