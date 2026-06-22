@@ -17,6 +17,15 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- **`code_writer` epic auto-decompose (#1257) now fires for the issue it is
+  actually building, not the first assigned issue**
+  ([#1271](https://github.com/Replikanti/agentis-colonies/issues/1271)). The
+  `is_epic` check read `issues_raw[0].labels`, but the LLM may draft any issue in
+  the assigned snapshot, so whenever more than one issue was assigned the epic
+  flag was read off the wrong issue — `--decompose` was silently dropped and the
+  epic ran monolithically (observed live on #1266). It now reads the labels of
+  the **drafted** issue (`issue_detail`, already fetched for the task text).
+  Together with #1269 this makes the epic path actually decompose.
 - **`code-edit-in-checkout.sh --decompose` now reliably splits epic-sized tasks
   instead of silently falling back to a monolithic run**
   ([#1269](https://github.com/Replikanti/agentis-colonies/issues/1269)). The

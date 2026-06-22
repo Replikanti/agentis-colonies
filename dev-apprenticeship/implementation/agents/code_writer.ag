@@ -426,7 +426,11 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 // whole task), so a loose match here is low-stakes.
                 let epic_vocab = recall_latest("planning:labels:epic");
                 let epic_label = if len(epic_vocab) > 0 { epic_vocab; } else { "epic"; };
-                let labels_str = to_string(json_get(issues_raw, "[0].labels"));
+                // #1271: check the DRAFTED issue's labels (issue_detail, fetched
+                // above), NOT issues_raw[0]. The LLM may draft ANY issue from the
+                // assigned list, so [0] is the wrong issue whenever more than one
+                // is assigned — that silently missed the epic flag on #1266.
+                let labels_str = to_string(json_get(issue_detail, "labels"));
                 let is_epic = index_of(labels_str, "\"" + epic_label + "\"") > 0;
                 if is_epic { print("[code_writer] issue", issue_iid, "is epic-class — auto-decomposing (#1257)"); };
                 let decompose_flag = if is_epic { " --decompose"; } else { ""; };
