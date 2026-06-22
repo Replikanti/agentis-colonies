@@ -14,7 +14,13 @@
 #
 # Usage:
 #   code-edit-in-checkout.sh --owner <o> --repo <r> --issue <iid> \
-#       --branch <name> --title <t> --task <text>
+#       --branch <name> --title <t> --task <text> [--decompose]
+#
+#   --decompose first drives claude to split <task> into an ordered list of
+#   sub-edits, then runs the edit+verify loop once per subtask on the same
+#   branch -> one commit/PR (code_writer passes it for epic-labelled issues).
+#   Set FORGE_TYPE=gitlab to run the same clone -> edit -> verify -> commit ->
+#   MR loop against GitLab (GITHUB_* / GITLAB_* env supplies the host + token).
 #
 # The forge token is read from the environment (GITHUB_TOKEN). It is NEVER
 # embedded in a remote URL on disk, never echoed, and never visible under
@@ -35,9 +41,17 @@
 #      is NOT an error and must NOT open an empty PR)
 #   other  failure (clone/branch/edit/commit/push/PR-open)
 #
-# Knobs (env vars): FLAT_CYBORG_IDLE_MS, FLAT_CYBORG_TIMEOUT_MS,
-#                   CODE_EDIT_TIMEOUT_MS (overall flat-cyborg edit timeout,
-#                   default 600000).
+# Knobs (env vars):
+#   FLAT_CYBORG_IDLE_MS          flat-cyborg idle settle window (default 8000)
+#   CODE_EDIT_TIMEOUT_MS         per-attempt flat-cyborg edit timeout (600000)
+#   CODE_EDIT_MAX_ATTEMPTS       continue-on-incomplete attempts (3)
+#   CODE_EDIT_TOTAL_BUDGET_MS    overall wall-clock budget across attempts (1500000)
+#   CODE_EDIT_VERIFY_CMD         verify gate command after a settled attempt
+#                                (else auto-detect npm test / make test / pytest;
+#                                empty = fast change-scoped check; `true` = skip)
+#   CODE_EDIT_VERIFY_TIMEOUT_MS  verify gate timeout (300000)
+#   CODE_EDIT_MAX_SUBTASKS       --decompose subtask cap (8)
+#   FORGE_TYPE                   github (default) | gitlab
 set -eu
 
 # ---------------------------------------------------------------------------
