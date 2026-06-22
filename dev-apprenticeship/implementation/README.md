@@ -38,6 +38,25 @@ graph LR
 
 When an issue is assigned, the Code Writer produces an implementation draft. The Test Writer generates tests and the Refactorer suggests improvements, both informed by what the Code Writer produced. The Commit Composer packages everything into well-structured commits following learned conventions and opens a merge request.
 
+## Code generation: the checkout-edit path
+
+On the autonomous tier the Code Writer does not round-trip file content through the LLM transcript. Instead it edits a **real local git checkout** and the federation commits the resulting `git diff` (Approach A, #1210). A detached launcher (`tools/code-edit-job.sh`, via `setsid`) runs `tools/code-edit-in-checkout.sh` in the background; the agent polls for completion across ticks and opens the PR/MR when the job finishes. This works on both **GitHub** and **GitLab** (`FORGE_TYPE`), and editing a real tree sidesteps the TUI screen-scrape corruption the old edit-JSON path suffered on large files.
+
+### Complex (multi-file) tasks
+
+The orchestrator handles tasks bigger than a single edit. All knobs are environment variables on the daemon:
+
+| Knob | Default | Effect |
+|------|---------|--------|
+| `CODE_EDIT_MAX_ATTEMPTS` | `3` | Re-drive a session that timed out **with progress** ("you were interrupted, finish it") instead of giving up after one shot. |
+| `CODE_EDIT_TOTAL_BUDGET_MS` | `1500000` | Overall wall-clock budget across all attempts. |
+| `CODE_EDIT_TIMEOUT_MS` | `600000` | Per-attempt flat-cyborg edit timeout. |
+| `CODE_EDIT_VERIFY_CMD` | _(auto)_ | Verify gate run after a settled attempt, inside the checkout, token-scrubbed. An explicit command wins; otherwise it auto-detects `npm test` / `make test` / `pytest`; if none, it falls back to a fast change-scoped check (`bash -n` + `shellcheck` on changed shell files, and runs any changed `test-*.sh`). A red gate is fed back and re-driven until green or the budget runs out — the PR's own CI is the authoritative full gate. Set to `true` to force-skip. |
+| `CODE_EDIT_VERIFY_TIMEOUT_MS` | `300000` | Verify gate timeout. |
+| `CODE_EDIT_MAX_SUBTASKS` | `8` | With `--decompose`, the cap on the number of sub-edits an epic is split into (run one-per-subtask on one branch → one PR). |
+
+The Code Writer passes `--decompose` automatically when the assigned issue carries the epic label (`planning:labels:epic`, default `epic`, #1257); ordinary issues stay single-shot. Each detached job runs in a **per-issue workspace** (`.agentis/workspaces/<colony>/<owner>-<repo>/issue-<iid>`) so concurrent jobs never collide, and any process still rooted in that workspace is reaped when the job ends.
+
 ## Setup
 
 1. Copy and edit the config:
