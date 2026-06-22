@@ -40,6 +40,18 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- **self-observe detectors are clean enough for unattended `--file`**
+  ([#1293](https://github.com/Replikanti/agentis-colonies/issues/1293)) — the
+  last noise gate, surfaced by a controlled live `--file` run. `detect-todo-markers.sh`
+  now also excludes `test-*.sh` files (it was matching TODO literals inside test
+  fixtures, including its own) and `*.md` files (README/scaffold placeholder
+  TODOs). `detect-agent-failures.sh` gained a **recency window**
+  (`AGENT_LOG_WINDOW_LINES`, default 800): it counts only failures within the
+  last N lines of each log, so historical/cumulative churn (e.g. a since-fixed
+  `watchdog+restarting` incident) is no longer re-filed as if current — and it
+  **excludes the self-observe sidecar's own log** (its echoed proposals contain
+  the very failure phrases it counts). Tests: agent-failures 5/5 (recency +
+  self-exclude), todo-markers 8/8 (test-file + markdown excludes).
 - **`detect-todo-markers.sh` also excludes run-dir state and vendored crate
   targets** ([#1287](https://github.com/Replikanti/agentis-colonies/issues/1287)).
   Surfaced by the live `self-observe.sh` sidecar: the TODO scan still reported

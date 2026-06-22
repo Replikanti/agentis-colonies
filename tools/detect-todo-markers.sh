@@ -48,6 +48,8 @@ grep -rInE 'TODO|FIXME|XXX' \
     --exclude-dir=vendor \
     --exclude-dir=.agentis \
     --exclude-dir=targets \
+    --exclude='test-*.sh' \
+    --exclude='*.md' \
     . 2>/dev/null | while IFS= read -r hit; do
     # grep output is "<file>:<line>:<content>"; peel the first two colon fields.
     file="${hit%%:*}"

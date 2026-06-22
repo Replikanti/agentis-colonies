@@ -40,6 +40,8 @@ mkdir -p "$TMPDIR_TEST/.agentis/workspaces/x"
 printf 'TODO: run-dir clone noise\n' > "$TMPDIR_TEST/.agentis/workspaces/x/foo.sh"
 mkdir -p "$TMPDIR_TEST/targets/vendored-crate/src"
 printf 'TODO: vendored crate noise\n' > "$TMPDIR_TEST/targets/vendored-crate/src/lib.rs"
+printf 'TODO: test fixture literal\n' > "$TMPDIR_TEST/test-something.sh"
+printf '# TODO: scaffold readme placeholder\n' > "$TMPDIR_TEST/notes.md"
 
 OUT="$(DETECT_TODO_ROOT="$TMPDIR_TEST" "$DETECTOR")"
 RC=$?
@@ -85,6 +87,20 @@ if printf '%s\n' "$OUT" | grep -q 'targets/'; then
     fail "targets" "expected no line for targets/, got <$OUT>"
 else
     pass "targets: skips the TODO inside targets/"
+fi
+
+# ----- Test 7: TODO inside a test-*.sh file is excluded (#1293) -----
+if printf '%s\n' "$OUT" | grep -q 'test-something.sh'; then
+    fail "test-file" "expected no line for test-*.sh, got <$OUT>"
+else
+    pass "test-file: skips the TODO inside a test-*.sh file"
+fi
+
+# ----- Test 8: TODO inside a .md file (README/doc placeholder) is excluded (#1293) -----
+if printf '%s\n' "$OUT" | grep -q 'notes.md'; then
+    fail "markdown" "expected no line for *.md, got <$OUT>"
+else
+    pass "markdown: skips the TODO inside a .md file"
 fi
 
 echo ""
