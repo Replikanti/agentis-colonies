@@ -225,9 +225,17 @@ git_capture() {
 }
 
 # ---------------------------------------------------------------------------
-# 1. Workspace: idempotent fresh clone/reset.
+# 1. Workspace: idempotent fresh clone/reset, ISOLATED PER JOB (#1248).
 # ---------------------------------------------------------------------------
-WS="$FED_DIR/.agentis/workspaces/$COLONY_NAME/$OWNER-$REPO"
+# Key the checkout by issue so concurrent detached jobs never share a working
+# tree. code_writer launches one detached job per ~60s tick while each job runs
+# for minutes, so several run at once; a single shared checkout let a second
+# job's `git checkout -B fix/issue-B` switch the branch out from under the first
+# → the first job's commit landed on the WRONG branch and its create-mr failed
+# ("No commits between main and fix/issue-A"). Per-issue dirs give each job its
+# own tree. A retry of the SAME issue still reuses its own dir (fetch+reset);
+# different issues are fully isolated.
+WS="$FED_DIR/.agentis/workspaces/$COLONY_NAME/$OWNER-$REPO/issue-$ISSUE"
 
 if [ -d "$WS/.git" ]; then
     echo "[code-edit] reusing workspace $WS" >&2
@@ -258,6 +266,30 @@ run_git -C "$WS" clean -fd
 # ---------------------------------------------------------------------------
 run_git -C "$WS" checkout -B "$BRANCH" "origin/$DEFAULT_BRANCH"
 
+# Reap any process still rooted in THIS job's per-issue workspace (#1249).
+# flat-cyborg's --timeout-ms ends the editing session but does NOT kill claude's
+# grandchildren — e.g. a Bash-tool `until …; do :; done` wait loop claude
+# launched — which then orphan (re-parent to init) and peg a CPU core
+# indefinitely. Matching by cwd is precise BECAUSE $WS is per-issue (#1248): the
+# daemons (cwd = fed dir) and concurrent jobs (other per-issue workspaces) never
+# match, and the orchestrator runs git via `git -C "$WS"` with its OWN cwd
+# OUTSIDE $WS, so it is not a match either. Called after every editing run.
+reap_editing_strays() {
+    ws_real="$(cd "$WS" 2>/dev/null && pwd -P)" || return 0
+    [ -n "$ws_real" ] || return 0
+    for _cwd_link in /proc/[0-9]*/cwd; do
+        _tgt="$(readlink "$_cwd_link" 2>/dev/null)" || continue
+        case "$_tgt" in
+            "$ws_real"|"$ws_real"/*)
+                _pid="${_cwd_link#/proc/}"; _pid="${_pid%/cwd}"
+                if [ "$_pid" != "$$" ]; then
+                    kill -KILL "$_pid" 2>/dev/null || true
+                fi
+                ;;
+        esac
+    done
+}
+
 # ---------------------------------------------------------------------------
 # 3. Edit: run claude (via flat-cyborg) as an editing agent inside the
 #    checkout. We mirror flat-cyborg-claude.sh's FULL flag set, including
@@ -287,6 +319,10 @@ flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-inp
     --cmd-file "$TASKFILE" -- claude >&2
 FC_RC=$?
 set -e
+
+# Reap orphaned editing-session descendants immediately — before commit/exit —
+# so a wedged claude child can never outlive its job and peg the CPU (#1249).
+reap_editing_strays
 
 # ---------------------------------------------------------------------------
 # 4. Commit the diff. The ARTIFACT is the edit, not the editing session's exit
@@ -376,6 +412,12 @@ if [ -z "$PR_URL" ]; then
     echo "[code-edit] PR/MR opened but could not parse its URL from the create-mr response" >&2
     exit 1
 fi
+
+# Bound disk: the PR is open and the branch pushed, so this per-issue workspace
+# (#1248) is no longer needed — remove it so successful issues don't accumulate
+# checkouts. The NO_EDITS / failure paths above exit earlier and KEEP their
+# workspace so a retry of the same issue reuses it (fetch+reset).
+rm -rf "$WS" 2>/dev/null || true
 
 echo "$PR_URL"
 exit 0
