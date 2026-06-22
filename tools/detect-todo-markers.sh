@@ -7,7 +7,9 @@
 #
 # Vendored and generated directories are skipped so third-party / build output
 # does not surface as noise: .git, node_modules, .solc-cache, dist, build,
-# target, __pycache__, vendor (#1283).
+# target, __pycache__, vendor (#1283), plus .agentis (run-dir state +
+# per-issue workspace clones) and targets (tribes-bench vendored crate
+# builds) (#1287).
 #
 # For every TODO, FIXME, or XXX marker it prints:
 #
@@ -46,6 +48,8 @@ grep -rInE 'TODO|FIXME|XXX' \
     --exclude-dir=target \
     --exclude-dir=__pycache__ \
     --exclude-dir=vendor \
+    --exclude-dir=.agentis \
+    --exclude-dir=targets \
     . 2>/dev/null | while IFS= read -r hit; do
     # grep output is "<file>:<line>:<content>"; peel the first two colon fields.
     file="${hit%%:*}"
