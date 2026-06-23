@@ -11,6 +11,8 @@
 #      stderr carries an error message (helper degrades gracefully so a
 #      bad config doesn't crash every agent's tick).
 #   6. Entry missing repo -> entry skipped, others emitted, exit 0.
+#   7. GitLab single-project (GITLAB_PROJECT set, no GITHUB_*) -> 1 sentinel line (#1301).
+#   8. No forge at all (no GITHUB_*, no GITLAB_PROJECT) -> empty stdout, exit 0 (unchanged).
 #
 # Standard scaffold: set -eu, mktemp -d isolation, EXIT trap for cleanup.
 # Auto-discovered by tools/colony-lint.sh's tools-test loop.
@@ -129,6 +131,42 @@ if [ "$rc" = "0" ] && [ "$(cat "$OUT")" = "$expected_t6" ] && grep -q 'missing o
     pass "test 6: entry missing repo -> skipped, others emitted, stderr warns"
 else
     fail "test 6: entry missing repo -> skipped, others emitted, stderr warns" \
+         "rc=$rc stdout='$(cat "$OUT")' stderr='$(cat "$ERR")'"
+fi
+
+# --- Test 7: GitLab single-project (no GITHUB_*) ------------------------
+# #1301: with a GITLAB_PROJECT configured and no GITHUB_* env, emit the same
+# empty-owner sentinel line so the agent ticks the one GitLab project via
+# tick_for_repo("", "") instead of no-opping the whole tick. url + me carry
+# the GITLAB_URL / GITLAB_ME values.
+OUT="$TMPDIR_TEST/t7.out"
+ERR="$TMPDIR_TEST/t7.err"
+rc=0
+run_iter "$OUT" "$ERR" \
+    GITLAB_PROJECT="mygroup/myproj" \
+    GITLAB_URL="https://gitlab.example.com" \
+    GITLAB_ME="gitlab-me" || rc=$?
+expected_t7="		https://gitlab.example.com	gitlab-me"
+if [ "$rc" = "0" ] && [ "$(cat "$OUT")" = "$expected_t7" ]; then
+    pass "test 7: GitLab single-project -> sentinel TSV line (empty owner/repo)"
+else
+    fail "test 7: GitLab single-project -> sentinel TSV line (empty owner/repo)" \
+         "rc=$rc got='$(cat "$OUT")' expected='$expected_t7'"
+fi
+
+# --- Test 8: no forge at all (GitLab path does not fire) -----------------
+# Guard the unchanged empty-stdout case: with neither GITHUB_* nor
+# GITLAB_PROJECT set the helper still emits nothing (no-op tick).
+OUT="$TMPDIR_TEST/t8.out"
+ERR="$TMPDIR_TEST/t8.err"
+rc=0
+run_iter "$OUT" "$ERR" \
+    GITLAB_URL="https://gitlab.example.com" \
+    GITLAB_ME="gitlab-me" || rc=$?
+if [ "$rc" = "0" ] && [ ! -s "$OUT" ]; then
+    pass "test 8: no GITHUB_* + no GITLAB_PROJECT -> empty stdout, exit 0 (unchanged)"
+else
+    fail "test 8: no GITHUB_* + no GITLAB_PROJECT -> empty stdout, exit 0 (unchanged)" \
          "rc=$rc stdout='$(cat "$OUT")' stderr='$(cat "$ERR")'"
 fi
 

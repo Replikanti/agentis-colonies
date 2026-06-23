@@ -4,8 +4,10 @@
 Companion helper for `tools/iter-repos.sh` (#316 M3a). Reads
 `GITHUB_REPOS_JSON` from the environment when set, falls back to the
 legacy `GITHUB_OWNER` / `GITHUB_REPO` / `GITHUB_URL` / `GITHUB_ME`
-single-block env when unset, and emits one tab-separated record per
-repository on stdout:
+single-block env when unset, then to a GitLab single-project source
+(`GITLAB_PROJECT` / `GITLAB_URL` / `GITLAB_ME`) when no `GITHUB_*` is
+configured (#1301), and emits one tab-separated record per repository
+on stdout:
 
     <owner>\\t<repo>\\t<url>\\t<me>\\n
 
@@ -86,15 +88,26 @@ def main():
         return 0
     owner = os.environ.get("GITHUB_OWNER", "")
     repo = os.environ.get("GITHUB_REPO", "")
-    if not owner or not repo:
+    if owner and repo:
+        url = os.environ.get("GITHUB_URL", "https://api.github.com") or "https://api.github.com"
+        me = os.environ.get("GITHUB_ME", "")
+        # Legacy fallback: emit the sentinel (empty owner/repo) line so the
+        # agent runs with `tick_for_repo("", "")` — no `--repo` flag, no
+        # `repo:` tag, no memo scoping. github-api.sh consumes the env-
+        # exported GITHUB_OWNER/REPO directly so no information is lost.
+        sys.stdout.write("\t\t%s\t%s\n" % (url, me))
         return 0
-    url = os.environ.get("GITHUB_URL", "https://api.github.com") or "https://api.github.com"
-    me = os.environ.get("GITHUB_ME", "")
-    # Legacy fallback: emit the sentinel (empty owner/repo) line so the
-    # agent runs with `tick_for_repo("", "")` — no `--repo` flag, no
-    # `repo:` tag, no memo scoping. github-api.sh consumes the env-
-    # exported GITHUB_OWNER/REPO directly so no information is lost.
-    sys.stdout.write("\t\t%s\t%s\n" % (url, me))
+    # GitLab single-project: no GITHUB_* but a GITLAB_PROJECT is configured.
+    # Emit the same empty-owner sentinel so the agent ticks the one GitLab
+    # project via tick_for_repo("", ""). gitlab-api.sh reads GITLAB_PROJECT /
+    # GITLAB_URL from the env directly so no information is lost. Key on
+    # GITLAB_PROJECT (it matches the GITLAB_* glob in exec.env_passthrough and
+    # therefore reaches the agent's exec sh); FORGE_TYPE is not passed through.
+    if os.environ.get("GITLAB_PROJECT", ""):
+        url = os.environ.get("GITLAB_URL", "")
+        me = os.environ.get("GITLAB_ME", "")
+        sys.stdout.write("\t\t%s\t%s\n" % (url, me))
+        return 0
     return 0
 
 
