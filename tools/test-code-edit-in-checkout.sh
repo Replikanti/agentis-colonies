@@ -101,17 +101,18 @@ if [ "\${1:-}" != "create-mr" ]; then
     exit 1
 fi
 shift
-SRC=""; TITLE=""
+SRC=""; TITLE=""; DESC=""
 while [ \$# -gt 0 ]; do
     case "\$1" in
         --source) SRC="\$2"; shift 2 ;;
         --title) TITLE="\$2"; shift 2 ;;
-        --description) shift 2 ;;
+        --description) DESC="\$2"; shift 2 ;;
         *) shift ;;
     esac
 done
 {
     echo "create-mr source=\$SRC title=\$TITLE"
+    echo "desc_first=\$(printf '%s' "\$DESC" | head -n 1)"
     echo "token_seen=\${GITHUB_TOKEN:-MISSING}"
     echo "owner=\${GITHUB_OWNER:-} repo=\${GITHUB_REPO:-}"
 } >> "$CREATE_MR_LOG"
@@ -228,13 +229,13 @@ else
 fi
 HEAD_MSG="$(git --git-dir="$BARE" log -1 --pretty=%s refs/heads/fix/issue-42 2>/dev/null || echo '')"
 case "$HEAD_MSG" in
-    "feat: add new file (#42)") pass "run 1: commit message is feat: <title> (#<iid>)" ;;
-    *) fail "run 1: commit message format" "got [$HEAD_MSG]" ;;
+    "fix: add new file (#42)") pass "run 1: commit subject = normalised conventional title (#<iid>), no hardcoded feat: prefix (#1308)" ;;
+    *) fail "run 1: commit subject format" "got [$HEAD_MSG]" ;;
 esac
 
 # create-mr was called with the right source + title and saw the token via env.
-if [ -f "$CREATE_MR_LOG" ] && grep -q "create-mr source=fix/issue-42 title=add new file" "$CREATE_MR_LOG"; then
-    pass "run 1: invoked github-api.sh create-mr with the branch + title"
+if [ -f "$CREATE_MR_LOG" ] && grep -q "create-mr source=fix/issue-42 title=fix: add new file" "$CREATE_MR_LOG"; then
+    pass "run 1: invoked github-api.sh create-mr with the branch + normalised title"
 else
     fail "run 1: create-mr invocation recorded" "log=$(cat "$CREATE_MR_LOG" 2>/dev/null)"
 fi
@@ -242,6 +243,15 @@ if grep -q "token_seen=$FAKE_TOKEN" "$CREATE_MR_LOG"; then
     pass "run 1: token reached create-mr via the environment (never argv)"
 else
     fail "run 1: token passed to create-mr via env"
+fi
+
+# #1308: the PR description must open with a Closes #<iid> keyword so the forge
+# links the PR to the issue and auto-closes it on merge (a bare "Implements #N"
+# mention does neither).
+if grep -q "desc_first=Closes #42" "$CREATE_MR_LOG"; then
+    pass "run 1: PR description opens with 'Closes #<iid>' (links + auto-closes the issue, #1308)"
+else
+    fail "run 1: PR description must start with 'Closes #<iid>'" "log=$(cat "$CREATE_MR_LOG" 2>/dev/null)"
 fi
 
 # flat-cyborg was driven as an editing agent with the FULL driving flag set:

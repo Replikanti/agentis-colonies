@@ -15,6 +15,21 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Federation PRs now use clean Conventional Commits titles and link their
+  issue.** `code_writer` drafted a 2-3 sentence `summary` and passed it verbatim
+  as the PR/MR title, producing multi-sentence run-on titles; the PR body opened
+  with `Implements #<n>` (a bare mention that neither links nor auto-closes the
+  issue); and `code-edit-in-checkout.sh` hardcoded a `feat:` commit prefix. Now
+  the draft schema/prompt asks for a short Conventional Commits `title`
+  (`type(scope): summary`, ≤72 chars, imperative) passed as `--title`;
+  `code-edit-in-checkout.sh` normalises it (collapses whitespace, ensures a
+  conventional type prefix, strips a trailing period, caps at 72 chars), commits
+  with the title's own type instead of a hardcoded `feat:`, and opens the PR with
+  a `Closes #<n>` body so the forge links and auto-closes the issue on merge
+  ([#1308](https://github.com/Replikanti/agentis-colonies/issues/1308)).
+
 ## [2.2.0] — 2026-06-23
 
 **Requires:** agentis >= 1.8.0

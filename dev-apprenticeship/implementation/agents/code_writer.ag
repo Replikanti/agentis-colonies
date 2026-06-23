@@ -19,6 +19,7 @@ type CodePatterns {
 type CodeDraft {
     issue_id: int,
     branch_name: string,
+    title: string,
     files: string,
     summary: string,
     confidence: float
@@ -365,7 +366,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
             let context = "Assigned issues: " + issues_raw + "\nLearned code patterns: " + to_string(rec);
 
             let draft = prompt(
-                "You are a code writer agent. Pick the highest-priority assigned issue and draft an implementation plan. Propose a branch name (kebab-case, prefixed with feat/ or fix/), list the files to create or modify with brief descriptions, and summarize the approach. Return JSON: issue_id (int), branch_name (string), files (string, markdown list of file paths and what each does), summary (string, 2-3 sentences), confidence (float 0-1). Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.",
+                "You are a code writer agent. Pick the highest-priority assigned issue and draft an implementation plan. Propose a branch name (kebab-case, prefixed with feat/ or fix/), a concise Conventional Commits PR title (format `type(scope): summary` in the imperative mood, 50-72 chars, lowercase summary, NO trailing period; type is one of feat/fix/docs/test/refactor/chore/perf), list the files to create or modify with brief descriptions, and summarize the approach. Return JSON: issue_id (int), branch_name (string), title (string, the Conventional Commits PR title — short, NOT the full summary), files (string, markdown list of file paths and what each does), summary (string, 2-3 sentences for the PR body), confidence (float 0-1). Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.",
                 context
             ) -> CodeDraft;
 
@@ -439,7 +440,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 if is_epic { print("[code_writer] issue", issue_iid, "is epic-class — auto-decomposing (#1257)"); };
                 let decompose_flag = if is_epic { " --decompose"; } else { ""; };
                 // colony-lint: safe-exec-concat
-                let job_cmd = "$COLONY_DIR/../../tools/code-edit-job.sh --owner " + shell_escape(owner) + " --repo " + shell_escape(repo) + " --issue " + shell_escape(issue_iid) + " --branch " + shell_escape(branch_name) + " --title " + shell_escape(draft.summary) + " --task " + shell_escape(task_text) + decompose_flag;
+                let job_cmd = "$COLONY_DIR/../../tools/code-edit-job.sh --owner " + shell_escape(owner) + " --repo " + shell_escape(repo) + " --issue " + shell_escape(issue_iid) + " --branch " + shell_escape(branch_name) + " --title " + shell_escape(draft.title) + " --task " + shell_escape(task_text) + decompose_flag;
                 let job_out = try { exec sh job_cmd; } catch e {
                     print("[code_writer] code-edit-job launcher failed — not marking drafted, will retry:", e);
                     "";
