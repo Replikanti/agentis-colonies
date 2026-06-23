@@ -95,6 +95,23 @@ if [ -z "$OWNER" ] || [ -z "$REPO" ] || [ -z "$ISSUE" ] || [ -z "$BRANCH" ] || [
     exit 2
 fi
 
+# Normalise the title into a clean Conventional Commits subject, reused for both
+# the commit message and the PR/MR title. code_writer drafts a
+# `type(scope): summary` title, but be defensive: collapse whitespace/newlines,
+# strip a trailing period, ensure a conventional type prefix (default `fix:`),
+# and cap the subject at 72 chars. This keeps titles short + conventional even if
+# the upstream draft ever regresses to a multi-sentence prose blob.
+normalize_title() {
+    _t=$(printf '%s' "$1" | tr '\n\t' '  ' | sed -e 's/  */ /g' -e 's/^ *//' -e 's/ *$//' -e 's/\.$//')
+    case "$_t" in
+        feat:*|fix:*|docs:*|test:*|refactor:*|chore:*|perf:*|build:*|ci:*|style:*|revert:*) : ;;
+        feat\(*|fix\(*|docs\(*|test\(*|refactor\(*|chore\(*|perf\(*|build\(*|ci\(*|style\(*|revert\(*) : ;;
+        *) _t="fix: $_t" ;;
+    esac
+    printf '%s' "$_t" | cut -c1-72
+}
+TITLE="$(normalize_title "$TITLE")"
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Forge selection (#1213). The orchestrator is forge-agnostic: github (default)
@@ -600,7 +617,7 @@ if [ "$FC_RC" -ne 0 ]; then
     echo "[code-edit] last attempt exited non-zero (exit $FC_RC, likely idle/timeout) but edits were produced — committing the diff" >&2
 fi
 
-run_git -C "$WS" commit -m "feat: $TITLE (#$ISSUE)"
+run_git -C "$WS" commit -m "$TITLE (#$ISSUE)"
 run_git -C "$WS" push --force-with-lease origin "$BRANCH"
 
 # ---------------------------------------------------------------------------
@@ -610,9 +627,9 @@ run_git -C "$WS" push --force-with-lease origin "$BRANCH"
 #    flags (--source/--title/--description) are forge-symmetric; only the env
 #    contract differs (github: OWNER/REPO/URL; gitlab: PROJECT/URL).
 # ---------------------------------------------------------------------------
-DESCRIPTION="Implements #$ISSUE.
+DESCRIPTION="Closes #$ISSUE.
 
-$TASK"
+Autonomously implemented by the dev-apprenticeship federation."
 
 if [ "$FORGE_TYPE" = "gitlab" ]; then
     FORGE_API="$FED_DIR/$COLONY_NAME/scripts/gitlab-api.sh"
