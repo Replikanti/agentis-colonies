@@ -101,17 +101,20 @@ if [ "\${1:-}" != "create-mr" ]; then
     exit 1
 fi
 shift
-SRC=""; TITLE=""
+SRC=""; TITLE=""; DESC=""
 while [ \$# -gt 0 ]; do
     case "\$1" in
         --source) SRC="\$2"; shift 2 ;;
         --title) TITLE="\$2"; shift 2 ;;
-        --description) shift 2 ;;
+        --description) DESC="\$2"; shift 2 ;;
         *) shift ;;
     esac
 done
 {
     echo "create-mr source=\$SRC title=\$TITLE"
+    # Record only the leading line of the description so the harness can assert
+    # it opens with a recognised closing keyword (#1308).
+    echo "desc_firstline=\$(printf '%s' "\$DESC" | head -n1)"
     echo "token_seen=\${GITHUB_TOKEN:-MISSING}"
     echo "owner=\${GITHUB_OWNER:-} repo=\${GITHUB_REPO:-}"
 } >> "$CREATE_MR_LOG"
@@ -242,6 +245,20 @@ if grep -q "token_seen=$FAKE_TOKEN" "$CREATE_MR_LOG"; then
     pass "run 1: token reached create-mr via the environment (never argv)"
 else
     fail "run 1: token passed to create-mr via env"
+fi
+# The PR/MR description must lead with a recognised closing keyword so the forge
+# creates the linked-issue/development link and auto-closes the issue on merge
+# (#1308). `Closes #<iid>` is valid on both GitHub and GitLab; `Implements` is
+# not and must never reappear.
+if grep -q "^desc_firstline=Closes #42\." "$CREATE_MR_LOG"; then
+    pass "run 1: create-mr description leads with the closing keyword (Closes #<iid>)"
+else
+    fail "run 1: description must lead with 'Closes #<iid>'" "log=$(cat "$CREATE_MR_LOG" 2>/dev/null)"
+fi
+if grep -q "^desc_firstline=Implements" "$CREATE_MR_LOG"; then
+    fail "run 1: description must NOT lead with the non-closing 'Implements' keyword"
+else
+    pass "run 1: description does not regress to the non-closing 'Implements' keyword"
 fi
 
 # flat-cyborg was driven as an editing agent with the FULL driving flag set:

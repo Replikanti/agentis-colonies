@@ -610,7 +610,7 @@ run_git -C "$WS" push --force-with-lease origin "$BRANCH"
 #    flags (--source/--title/--description) are forge-symmetric; only the env
 #    contract differs (github: OWNER/REPO/URL; gitlab: PROJECT/URL).
 # ---------------------------------------------------------------------------
-DESCRIPTION="Implements #$ISSUE.
+DESCRIPTION="Closes #$ISSUE.
 
 $TASK"
 
