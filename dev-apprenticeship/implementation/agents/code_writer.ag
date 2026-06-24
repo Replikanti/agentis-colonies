@@ -365,7 +365,11 @@ fn recover_at(owner: string, repo: string, raw: string, idx: int) -> int {
     let next_attempt = attempts + 1;
     memo_write(scoped_memo(owner, repo, "ci_fix:attempts:" + iid_str), to_string(next_attempt));
 
-    let branch_name = "fix/issue-" + iid_str;
+    // Re-drive the PR's ACTUAL head branch (source_branch), NOT a branch
+    // reconstructed from the PR number: a PR for issue N has its own PR number
+    // M != N, so "fix/issue-" + <PR iid> would target a non-existent branch.
+    // `src` was already validated to start with "fix/issue-" (own-PRs guard).
+    let branch_name = src;
     let recover_title = "fix: recover CI for #" + iid_str;
     let recover_task = "The CI gate (colony-lint) is failing on this PR. Reproduce the failure locally, fix it with a MINIMAL change, and do not touch unrelated code.";
     // colony-lint: safe-exec-concat
