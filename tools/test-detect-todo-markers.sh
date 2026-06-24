@@ -42,6 +42,8 @@ mkdir -p "$TMPDIR_TEST/targets/vendored-crate/src"
 printf 'TODO: vendored crate noise\n' > "$TMPDIR_TEST/targets/vendored-crate/src/lib.rs"
 printf 'TODO: test fixture literal\n' > "$TMPDIR_TEST/test-something.sh"
 printf '# TODO: scaffold readme placeholder\n' > "$TMPDIR_TEST/notes.md"
+printf '# TODO: scaffold template placeholder\n' > "$TMPDIR_TEST/new-thing.sh"
+printf '# TODO: leaked colony-lint temp artifact\n' > "$TMPDIR_TEST/tmp.AbC123"
 
 OUT="$(DETECT_TODO_ROOT="$TMPDIR_TEST" "$DETECTOR")"
 RC=$?
@@ -101,6 +103,22 @@ if printf '%s\n' "$OUT" | grep -q 'notes.md'; then
     fail "markdown" "expected no line for *.md, got <$OUT>"
 else
     pass "markdown: skips the TODO inside a .md file"
+fi
+
+# ----- Test 9: TODO inside a new-*.sh scaffolding template is excluded -----
+# new-federation.sh / new-colony.sh carry intentional TODO placeholders in their
+# heredoc templates; filing an issue per template TODO is pure noise.
+if printf '%s\n' "$OUT" | grep -q 'new-thing.sh'; then
+    fail "scaffold" "expected no line for new-*.sh scaffolding, got <$OUT>"
+else
+    pass "scaffold: skips the TODO inside a new-*.sh scaffolding template"
+fi
+
+# ----- Test 10: TODO inside a leaked tmp.* file is excluded (#1300 leak) -----
+if printf '%s\n' "$OUT" | grep -q 'tmp\.'; then
+    fail "tmp-leak" "expected no line for tmp.*, got <$OUT>"
+else
+    pass "tmp-leak: skips the TODO inside a leaked tmp.* file"
 fi
 
 echo ""
