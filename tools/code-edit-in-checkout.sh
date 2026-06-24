@@ -119,7 +119,13 @@ normalize_title() {
         feat\(*|fix\(*|docs\(*|test\(*|refactor\(*|chore\(*|perf\(*|build\(*|ci\(*|style\(*|revert\(*) : ;;
         *) _t="fix: $_t" ;;
     esac
-    printf '%s' "$_t" | cut -c1-72
+    # Cap at 72 *characters*, not bytes, INDEPENDENT of the ambient locale.
+    # `cut -c` is byte-wise under C/POSIX, and `LC_ALL=C.UTF-8` only helps when
+    # that locale is actually installed (it often is NOT on CI runners), so a
+    # multibyte char straddling byte 72 could be sliced into invalid UTF-8 that a
+    # forge JSON API rejects (#1316). python3 slices by code point and re-encodes,
+    # so the result is always valid UTF-8 capped at 72 characters (#1330 fix).
+    printf '%s' "$_t" | python3 -c 'import sys; sys.stdout.buffer.write(sys.stdin.buffer.read().decode("utf-8", "ignore")[:72].encode("utf-8"))'
 }
 TITLE="$(normalize_title "$TITLE")"
 
