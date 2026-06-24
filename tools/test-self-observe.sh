@@ -46,7 +46,13 @@ write_gh() {
     cat > "$WORK/gh" <<EOF
 #!/usr/bin/env bash
 if [ "\$1" = "issue" ] && [ "\$2" = "list" ]; then echo "$1"; exit 0; fi
-if [ "\$1" = "issue" ] && [ "\$2" = "create" ]; then echo "create" >> "$WORK/create.log"; echo "https://example.test/issues/1"; exit 0; fi
+if [ "\$1" = "issue" ] && [ "\$2" = "create" ]; then
+    L=""
+    while [ \$# -gt 0 ]; do case "\$1" in --label) L="\$2"; shift 2 ;; *) shift ;; esac; done
+    echo "create label=\$L" >> "$WORK/create.log"
+    echo "https://example.test/issues/1"
+    exit 0
+fi
 exit 0
 EOF
     chmod +x "$WORK/gh"
@@ -122,6 +128,30 @@ if printf '%s\n' "$OUT" | grep -q 'log-only (todo-marker' && [ "$(creates)" = "0
     pass "log-only: todo-marker finding is logged, not filed (NOFILE_KINDS default)"
 else
     fail "log-only" "out=$(printf '%s\n' "$OUT" | tail -3) creates=$(creates)"
+fi
+
+# ---- Test 7: a FILED issue carries the implementation trigger label so the
+# federation's SDLC auto-processes it (default SELF_OBSERVE_TRIGGER_LABEL) ----
+write_detector 1; write_gh 0; rm -f "$WORK/create.log"
+OUT="$(run_so --file)"
+if grep -q 'label=.*implementation' "$WORK/create.log" 2>/dev/null; then
+    pass "trigger label: filed issue gets --label including the implementation trigger"
+else
+    fail "trigger label" "create.log=$(cat "$WORK/create.log" 2>/dev/null)"
+fi
+
+# ---- Test 8: agent-failure findings are log-only by default (NOFILE_KINDS) ----
+cat > "$WORK/tools/detect-stub.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'DRIFT\tagent-failure\twatchdog+restarting:14\twatchdog restart count\n'
+STUB
+chmod +x "$WORK/tools/detect-stub.sh"
+write_gh 0; rm -f "$WORK/create.log"
+OUT="$(run_so --file)"
+if printf '%s\n' "$OUT" | grep -q 'log-only (agent-failure' && [ "$(creates)" = "0" ]; then
+    pass "log-only: agent-failure finding is logged, not filed (NOFILE_KINDS default)"
+else
+    fail "agent-failure log-only" "out=$(printf '%s\n' "$OUT" | tail -3) creates=$(creates)"
 fi
 
 echo

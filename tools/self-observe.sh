@@ -43,13 +43,22 @@ REPO="${SELF_OBSERVE_REPO:-Replikanti/agentis-colonies}"
 MAX_NEW="${SELF_OBSERVE_MAX_NEW:-5}"
 case "$MAX_NEW" in ''|*[!0-9]*) MAX_NEW=5 ;; esac
 LABELS="${SELF_OBSERVE_LABELS:-dev-apprenticeship}"
+# Trigger label applied to every FILED issue so the federation's own SDLC picks
+# it up and processes it autonomously — the #1266 self-improving loop closing on
+# itself (find -> file -> implement -> review -> merge). Defaults to the
+# implementation trigger label; set SELF_OBSERVE_TRIGGER_LABEL="" to file an
+# untriggered, operator-triaged issue instead.
+TRIGGER_LABEL="${SELF_OBSERVE_TRIGGER_LABEL-implementation}"
+if [ -n "$TRIGGER_LABEL" ]; then FILE_LABELS="$LABELS,$TRIGGER_LABEL"; else FILE_LABELS="$LABELS"; fi
 GH="${SELF_OBSERVE_GH:-gh}"
-# Detector kinds that are observed + logged but NOT filed as issues. Raw TODO
-# markers are author notes, not work items — filing a GitHub issue per marker is
-# pure noise (proven repeatedly), so `todo-marker` is log-only by DEFAULT. The
-# higher-signal detectors (doc-drift, agent-failure) still file. Override with a
-# comma-separated SELF_OBSERVE_NOFILE_KINDS (set to "" to file every kind).
-NOFILE_KINDS="${SELF_OBSERVE_NOFILE_KINDS-todo-marker}"
+# Detector kinds that are observed + logged but NOT filed as issues. These are
+# OBSERVATIONS, not actionable code tasks, so auto-filing them — and now
+# auto-triggering the SDLC on them — would be noise: raw TODO markers are author
+# notes, and agent-failure findings are cumulative health counts (a monotonic
+# counter that files a fresh issue per increment). The one actionable detector,
+# doc-drift, still files + triggers. Override with a comma-separated
+# SELF_OBSERVE_NOFILE_KINDS (set to "" to file every kind).
+NOFILE_KINDS="${SELF_OBSERVE_NOFILE_KINDS-todo-marker,agent-failure}"
 
 # Short, portable fingerprint of stdin (first 12 hex of sha256).
 fp_of() {
@@ -108,7 +117,7 @@ while IFS="$tab" read -r tag kind loc text; do
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "[self-observe] WOULD FILE: $title  [$fp]"
         filed=$((filed + 1))
-    elif url="$("$GH" issue create --repo "$REPO" --title "$title" --body "$body" --label "$LABELS" 2>/dev/null)" && [ -n "$url" ]; then
+    elif url="$("$GH" issue create --repo "$REPO" --title "$title" --body "$body" --label "$FILE_LABELS" 2>/dev/null)" && [ -n "$url" ]; then
         echo "[self-observe] FILED: $title -> $url  [$fp]"
         filed=$((filed + 1))
     else
