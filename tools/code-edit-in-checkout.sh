@@ -108,7 +108,12 @@ normalize_title() {
         feat\(*|fix\(*|docs\(*|test\(*|refactor\(*|chore\(*|perf\(*|build\(*|ci\(*|style\(*|revert\(*) : ;;
         *) _t="fix: $_t" ;;
     esac
-    printf '%s' "$_t" | cut -c1-72
+    # Cap at 72 *characters*, not bytes. `cut -c` is character-aware only under a
+    # UTF-8 locale; under C/POSIX it counts bytes and could slice a multibyte char
+    # straddling byte 72 into invalid UTF-8 that a forge JSON API rejects (#1316).
+    # Force a UTF-8 locale so the cut always lands on a character boundary
+    # regardless of the ambient locale.
+    printf '%s' "$_t" | LC_ALL=C.UTF-8 cut -c1-72
 }
 TITLE="$(normalize_title "$TITLE")"
 
