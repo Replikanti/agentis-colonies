@@ -516,6 +516,61 @@ PY
         printf '%s' "$body" | normalize_mr_commits
         ;;
 
+    pr-checks)
+        # #1332: CI verdict read for the bounded red-PR recovery loop (code_writer
+        # re-drives its OWN red PRs). Prints exactly two space-separated tokens on
+        # stdout: `STATE=<red|green|pending> REF=<head-branch>`. Same check-runs
+        # verdict logic as the code-review colony's #1317 merge gate, but read-only
+        # and reporting red/pending/green instead of a binary refuse — recovery
+        # acts only on `red`, never `pending` (don't race CI). Pagination fail-safe:
+        # if total_count exceeds the fetched page a red check could hide on a later
+        # page, so report `pending` (never `green`).
+        NUM="${1:?Usage: github-api.sh pr-checks <number>}"
+        case "$NUM" in
+            ''|*[!0-9]*) emit_error "pr number must be numeric: $NUM"; exit 2 ;;
+        esac
+
+        pull_json="$(gh_get "$API/pulls/$NUM")" || exit $?
+        PR_META="$(printf '%s' "$pull_json" | python3 -c '
+import sys, json
+d = json.loads(sys.stdin.read())
+print("HEAD_SHA=" + str((d.get("head") or {}).get("sha") or ""))
+print("HEAD_REF=" + str((d.get("head") or {}).get("ref") or ""))
+')" || { emit_error "PR #$NUM: failed to parse pull metadata"; exit 4; }
+        HEAD_SHA="$(printf '%s\n' "$PR_META" | sed -n 's/^HEAD_SHA=//p')"
+        HEAD_REF="$(printf '%s\n' "$PR_META" | sed -n 's/^HEAD_REF=//p')"
+        if [ -z "$HEAD_SHA" ]; then
+            emit_error "PR #$NUM: missing head.sha; cannot read CI"
+            exit 4
+        fi
+
+        checks_json="$(gh_get_q "$API/commits/$HEAD_SHA/check-runs" --data-urlencode "per_page=100")" || exit $?
+        STATE="$(printf '%s' "$checks_json" | python3 -c '
+import sys, json
+d = json.loads(sys.stdin.read())
+runs = d.get("check_runs") or []
+total = d.get("total_count")
+if total is None:
+    total = len(runs)
+if not runs:
+    print("pending")
+    sys.exit(0)
+if total > len(runs):
+    print("pending")
+    sys.exit(0)
+ok_conclusions = {"success", "neutral", "skipped"}
+state = "green"
+for r in runs:
+    if r.get("status") != "completed":
+        print("pending")
+        sys.exit(0)
+    if r.get("conclusion") not in ok_conclusions:
+        state = "red"
+print(state)
+')" || { emit_error "PR #$NUM: failed to parse check-runs"; exit 4; }
+        printf 'STATE=%s REF=%s\n' "$STATE" "$HEAD_REF"
+        ;;
+
     issue)
         IID="${1:?Usage: github-api.sh issue <number>}"
         case "$IID" in

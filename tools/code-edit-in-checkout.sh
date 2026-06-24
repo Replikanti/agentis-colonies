@@ -14,13 +14,22 @@
 #
 # Usage:
 #   code-edit-in-checkout.sh --owner <o> --repo <r> --issue <iid> \
-#       --branch <name> --title <t> --task <text> [--decompose]
+#       --branch <name> --title <t> --task <text> [--decompose] [--recover]
 #
 #   --decompose first drives claude to split <task> into an ordered list of
 #   sub-edits, then runs the edit+verify loop once per subtask on the same
 #   branch -> one commit/PR (code_writer passes it for epic-labelled issues).
 #   Set FORGE_TYPE=gitlab to run the same clone -> edit -> verify -> commit ->
 #   MR loop against GitLab (GITHUB_* / GITLAB_* env supplies the host + token).
+#
+#   --recover (#1332) re-drives an EXISTING PR's branch whose CI went red.
+#   Instead of cutting a fresh branch off the default branch, it checks OUT the
+#   existing remote head branch (which already carries the prior commit), FORCES
+#   the verify gate ON (an empty CODE_EDIT_VERIFY_CMD cannot skip it — the gate
+#   reproduces the red CI locally and the loop iterates to fix it), and on a new
+#   commit it PUSHES the branch only — the PR already exists, so it NEVER opens a
+#   second PR. Exit 0 if it pushed a fix, 3 (NO_EDITS) if the loop produced
+#   nothing new.
 #
 # The forge token is read from the environment (GITHUB_TOKEN). It is NEVER
 # embedded in a remote URL on disk, never echoed, and never visible under
@@ -64,9 +73,10 @@ BRANCH=""
 TITLE=""
 TASK=""
 DECOMPOSE=0
+RECOVER=0
 
 usage() {
-    echo "usage: code-edit-in-checkout.sh --owner <o> --repo <r> --issue <iid> --branch <name> --title <t> --task <text> [--decompose]" >&2
+    echo "usage: code-edit-in-checkout.sh --owner <o> --repo <r> --issue <iid> --branch <name> --title <t> --task <text> [--decompose] [--recover]" >&2
 }
 
 while [ $# -gt 0 ]; do
@@ -78,6 +88,7 @@ while [ $# -gt 0 ]; do
         --title)  TITLE="${2:-}";  shift 2 ;;
         --task)   TASK="${2:-}";   shift 2 ;;
         --decompose) DECOMPOSE=1; shift ;;
+        --recover) RECOVER=1; shift ;;
         *) echo "code-edit-in-checkout.sh: unknown flag: $1" >&2; usage; exit 2 ;;
     esac
 done
@@ -295,9 +306,21 @@ run_git -C "$WS" reset --hard "origin/$DEFAULT_BRANCH"
 run_git -C "$WS" clean -fd
 
 # ---------------------------------------------------------------------------
-# 2. Branch: deterministic per-issue (reuse, no empty-branch litter).
+# 2. Branch.
+#   normal mode  : deterministic per-issue branch cut off the default branch
+#                  (reuse, no empty-branch litter).
+#   recover mode (#1332): check OUT the EXISTING remote head branch — it
+#                  already carries the prior (now-red-on-CI) commit, so we
+#                  build the fix ON TOP of it rather than off a clean default.
+#                  Reset hard to origin/<branch> so the local tree matches the
+#                  pushed state (idempotent across recovery re-drives).
 # ---------------------------------------------------------------------------
-run_git -C "$WS" checkout -B "$BRANCH" "origin/$DEFAULT_BRANCH"
+if [ "$RECOVER" -eq 1 ]; then
+    run_git -C "$WS" checkout -B "$BRANCH" "origin/$BRANCH"
+    run_git -C "$WS" reset --hard "origin/$BRANCH"
+else
+    run_git -C "$WS" checkout -B "$BRANCH" "origin/$DEFAULT_BRANCH"
+fi
 
 # Reap any process still rooted in THIS job's per-issue workspace (#1249).
 # flat-cyborg's --timeout-ms ends the editing session but does NOT kill claude's
@@ -446,6 +469,18 @@ if [ "$MAX_SUBTASKS" -lt 1 ]; then MAX_SUBTASKS=1; fi
 # when it passes; feed failures back as another iteration (bounded by the same
 # attempts/budget). Empty VERIFY_CMD -> no gate -> M1 behaviour.
 VERIFY_CMD="$(detect_verify_cmd)"
+# Recover mode (#1332): the verify gate MUST run — it is the local reproduction
+# of the red CI we are recovering from. Neutralise the two ways the gate can be
+# skipped: an explicit `CODE_EDIT_VERIFY_CMD=true` force-skip collapses to the
+# built-in light change-scoped gate (empty VERIFY_CMD), and the loop below never
+# treats a settled-but-unverified attempt as done. detect_verify_cmd's
+# auto-detect (npm/make/pytest) is still honoured when present.
+if [ "$RECOVER" -eq 1 ]; then
+    case "$VERIFY_CMD" in
+        true|:) VERIFY_CMD="" ;;
+    esac
+    echo "[code-edit] recover mode: verify gate forced ON" >&2
+fi
 VERIFY_TIMEOUT_MS="${CODE_EDIT_VERIFY_TIMEOUT_MS:-300000}"
 case "$VERIFY_TIMEOUT_MS" in ''|*[!0-9]*) VERIFY_TIMEOUT_MS=300000 ;; esac
 VERIFY_OUT="$(mktemp)"
@@ -619,6 +654,17 @@ fi
 
 run_git -C "$WS" commit -m "$TITLE (#$ISSUE)"
 run_git -C "$WS" push --force-with-lease origin "$BRANCH"
+
+# Recover mode (#1332): the PR already exists, so we ONLY push the fix — we do
+# NOT open a second PR. A new commit landed (the diff check above proved it), so
+# this is a successful recovery push. The same `--force-with-lease` push as the
+# normal path (no destructive force-push). Keep the per-issue workspace so a
+# subsequent recovery re-drive of the same red PR reuses it (fetch+reset).
+if [ "$RECOVER" -eq 1 ]; then
+    echo "[code-edit] recover: pushed fix to existing branch $BRANCH (PR already open — not creating a new PR)" >&2
+    echo "RECOVERED $BRANCH"
+    exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # 5. Open the PR/MR via the colony's forge API wrapper create-mr verb. The

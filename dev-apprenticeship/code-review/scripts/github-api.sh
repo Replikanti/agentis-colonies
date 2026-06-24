@@ -23,6 +23,9 @@
 #   github-api.sh approve <number>
 #   github-api.sh merge <number>   (gated: refuses unless mergeable=true AND
 #                                   CI all-green; squash + delete-branch; #1317)
+#   github-api.sh pr-checks <number>  (CI verdict for the red-PR recovery loop;
+#                                   prints `STATE=<red|green|pending> REF=<branch>`
+#                                   on stdout; #1332)
 #   github-api.sh get-issue <number>
 #
 # Views (opt-in projection; byte-identical to gitlab-api.sh):
@@ -578,6 +581,68 @@ print("GREEN")
             gh_call DELETE "$API/git/refs/heads/$HEAD_REF" >/dev/null 2>&1 || true
         fi
         printf '%s' "$merge_resp"
+        ;;
+
+    pr-checks)
+        # #1332: CI verdict read for the bounded red-PR recovery loop. Prints
+        # exactly two space-separated tokens on stdout:
+        #   STATE=<red|green|pending> REF=<head-branch>
+        # so the .ag can branch on STATE and re-drive the EXISTING head branch.
+        # This is the SAME check-runs verdict logic as the #1317 merge gate,
+        # but read-only (no merge) and reporting `red`/`pending` instead of a
+        # binary refuse — recovery only acts on `red`, never `pending`.
+        NUM="${1:?Usage: github-api.sh pr-checks <number>}"
+        case "$NUM" in
+            ''|*[!0-9]*) emit_error "pr number must be numeric: $NUM"; exit 2 ;;
+        esac
+
+        # GET the pull to read head.ref (the branch to re-drive) + head.sha
+        # (the commit the check-runs gate queries).
+        pull_json="$(gh_get "$API/pulls/$NUM")" || exit $?
+        PR_META="$(printf '%s' "$pull_json" | python3 -c '
+import sys, json
+d = json.loads(sys.stdin.read())
+print("HEAD_SHA=" + str((d.get("head") or {}).get("sha") or ""))
+print("HEAD_REF=" + str((d.get("head") or {}).get("ref") or ""))
+')" || { emit_error "PR #$NUM: failed to parse pull metadata"; exit 4; }
+        HEAD_SHA="$(printf '%s\n' "$PR_META" | sed -n 's/^HEAD_SHA=//p')"
+        HEAD_REF="$(printf '%s\n' "$PR_META" | sed -n 's/^HEAD_REF=//p')"
+        if [ -z "$HEAD_SHA" ]; then
+            emit_error "PR #$NUM: missing head.sha; cannot read CI"
+            exit 4
+        fi
+
+        # Read the check-runs for the head commit. Pagination fail-safe mirrors
+        # the merge gate: if total_count exceeds what we fetched, a red check
+        # could hide on a later page, so report `pending` (never `green`).
+        # Verdict: any check not `completed` => pending; any completed check
+        # whose conclusion is not success/neutral/skipped => red; all green =>
+        # green; empty check_runs => pending (CI not verified yet).
+        checks_json="$(gh_get_q "$API/commits/$HEAD_SHA/check-runs" --data-urlencode "per_page=100")" || exit $?
+        STATE="$(printf '%s' "$checks_json" | python3 -c '
+import sys, json
+d = json.loads(sys.stdin.read())
+runs = d.get("check_runs") or []
+total = d.get("total_count")
+if total is None:
+    total = len(runs)
+if not runs:
+    print("pending")
+    sys.exit(0)
+if total > len(runs):
+    print("pending")
+    sys.exit(0)
+ok_conclusions = {"success", "neutral", "skipped"}
+state = "green"
+for r in runs:
+    if r.get("status") != "completed":
+        print("pending")
+        sys.exit(0)
+    if r.get("conclusion") not in ok_conclusions:
+        state = "red"
+print(state)
+')" || { emit_error "PR #$NUM: failed to parse check-runs"; exit 4; }
+        printf 'STATE=%s REF=%s\n' "$STATE" "$HEAD_REF"
         ;;
 
     get-issue)

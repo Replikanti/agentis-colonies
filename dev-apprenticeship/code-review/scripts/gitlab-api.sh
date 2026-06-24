@@ -16,6 +16,9 @@
 #   gitlab-api.sh merge <iid>   (gated: refuses unless merge_status ==
 #                                can_be_merged AND head pipeline succeeded;
 #                                squash + remove source branch; #1317)
+#   gitlab-api.sh pr-checks <iid>  (CI verdict for the red-PR recovery loop;
+#                                prints `STATE=<red|green|pending> REF=<branch>`
+#                                on stdout; #1332)
 #   gitlab-api.sh get-issue <iid>
 #
 # Views (opt-in projection; default is full JSON):
@@ -378,6 +381,39 @@ print("OK")
         # Body via python3 json.dumps (repo convention).
         MERGE_BODY="$(python3 -c 'import json; print(json.dumps({"squash": True, "should_remove_source_branch": True}))')"
         gl_put "$API/merge_requests/$IID/merge" "$MERGE_BODY"
+        ;;
+
+    pr-checks)
+        # #1332: CI verdict read for the bounded red-PR recovery loop. Prints
+        # exactly two space-separated tokens on stdout:
+        #   STATE=<red|green|pending> REF=<source-branch>
+        # so the .ag can branch on STATE and re-drive the EXISTING source
+        # branch. Read-only mirror of the #1317 merge gate's pipeline check:
+        # head-pipeline pending/running => pending, failed/canceled => red,
+        # success => green, missing pipeline => pending (CI not verified yet).
+        IID="${1:?Usage: gitlab-api.sh pr-checks <iid>}"
+        case "$IID" in
+            ''|*[!0-9]*) emit_error "iid must be numeric: $IID"; exit 2 ;;
+        esac
+
+        mr_json="$(gl_get "$API/merge_requests/$IID")" || exit $?
+        VERDICT="$(printf '%s' "$mr_json" | python3 -c '
+import sys, json
+d = json.loads(sys.stdin.read())
+ref = d.get("source_branch") or ""
+pipeline = d.get("head_pipeline") or d.get("pipeline") or {}
+pstatus = pipeline.get("status")
+if pstatus in ("pending", "running", "created", "waiting_for_resource", "preparing", "scheduled"):
+    state = "pending"
+elif pstatus in ("failed", "canceled", "cancelled"):
+    state = "red"
+elif pstatus == "success":
+    state = "green"
+else:
+    state = "pending"
+print("STATE=%s REF=%s" % (state, ref))
+')" || { emit_error "MR !$IID: failed to parse pipeline metadata"; exit 4; }
+        printf '%s\n' "$VERDICT"
         ;;
 
     get-issue)

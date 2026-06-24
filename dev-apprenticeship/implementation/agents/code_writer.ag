@@ -282,7 +282,148 @@ fn should_learn_from_mr(owner: string, repo: string, mr_iid: int) -> bool {
     return false;
 }
 
+// #1332: red-PR recovery helpers. The federation opens PRs and (#1317)
+// auto-merges green ones, but had NO reaction to a RED CI: when code_writer's
+// edit job exhausts its local verify budget it commits anyway ("CI is the
+// backstop"), and the then-red PR sits forever (the merge gate refuses it; the
+// draft path won't re-touch the issue due to its last_drafted_iid staleness
+// gate). These helpers add the missing fix-if-red edge. The CI gate IS the
+// local verify gate (colony-lint), so recovery re-drives the edit job on the
+// EXISTING branch with the verify-and-fix loop (which reproduces the failure
+// locally and iterates) — it never needs to fetch CI logs.
+
+// open_pr_field: extract [idx].<field> (a scalar string) from the open-PR
+// list JSON. The raw JSON rides $J (env var, off-argv) so ARG_MAX never bites.
+// Total: missing index / field / malformed JSON all collapse to "".
+fn open_pr_field(raw: string, idx: int, field: string) -> string {
+    let cmd = "J=" + shell_escape(raw) + " I=" + to_string(idx) + " F=" + shell_escape(field) +
+        " python3 -c 'import os,json,sys" +
+        "\ntry:" +
+        "\n    d=json.loads(os.environ[\"J\"])" +
+        "\nexcept Exception:" +
+        "\n    print(\"\"); sys.exit(0)" +
+        "\ni=int(os.environ[\"I\"]); f=os.environ[\"F\"]" +
+        "\nif not isinstance(d,list) or not (0<=i<len(d)):" +
+        "\n    print(\"\"); sys.exit(0)" +
+        "\nv=d[i].get(f) if isinstance(d[i],dict) else None" +
+        "\nprint(v if isinstance(v,str) else (\"\" if v is None else str(v)))'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+// pr_check_token: pull the value of KEY out of a `STATE=<x> REF=<y>` line (the
+// forge pr-checks verb output). Value rides $L (env var, off-argv). Total: "".
+fn pr_check_token(out: string, key: string) -> string {
+    let cmd = "L=" + shell_escape(out) + " K=" + shell_escape(key) +
+        " python3 -c 'import os,sys" +
+        "\ns=os.environ[\"L\"].strip(); k=os.environ[\"K\"]+\"=\"" +
+        "\nfor tok in s.split():" +
+        "\n    if tok.startswith(k):" +
+        "\n        print(tok[len(k):]); sys.exit(0)" +
+        "\nprint(\"\")'";
+    let res = try { exec sh cmd; } catch e { ""; };
+    return res;
+}
+
+// recover_attempts: how many recovery re-drives we have already launched for
+// this PR (read from the ci_fix:attempts:<iid> memo). Missing => 0.
+fn recover_attempts(owner: string, repo: string, iid_str: string) -> int {
+    let raw = recall_latest(scoped_memo(owner, repo, "ci_fix:attempts:" + iid_str));
+    if len(raw) == 0 { return 0; };
+    return parse_int(raw);
+}
+
+// recover_at: process the open PR at index `idx`. Returns 1 if it LAUNCHED a
+// recovery re-drive (the caller then returns for this tick — one job per tick,
+// do not also draft), 0 otherwise (skip + keep scanning). Own PRs only: the
+// head branch must start `fix/issue-` (the federation's own). Acts only on
+// STATE=red, never pending (don't race CI). Retry cap 2 per PR via the
+// ci_fix:attempts:<iid> memo; after that, give up + log (needs human).
+fn recover_at(owner: string, repo: string, raw: string, idx: int) -> int {
+    let iid_str = open_pr_field(raw, idx, "iid");
+    if len(iid_str) == 0 { return 0; };
+    if iid_str == "void" { return 0; };
+    let src = open_pr_field(raw, idx, "source_branch");
+    // Own PRs only: never touch a PR we did not open.
+    if index_of(src, "fix/issue-") != 0 { return 0; };
+
+    // colony-lint: safe-exec-concat
+    let checks_cmd = "$COLONY_DIR/scripts/forge-api.sh pr-checks " + shell_escape(iid_str) + repo_arg(owner, repo);
+    let checks_out = try { exec sh checks_cmd; } catch e { ""; };
+    let state = pr_check_token(checks_out, "STATE");
+    // Only act on a confirmed red CI; pending => don't race, green => merge gate.
+    if state != "red" { return 0; };
+
+    let attempts = recover_attempts(owner, repo, iid_str);
+    if attempts >= 2 {
+        print("[code_writer] CI-fix gave up on PR", iid_str, "after 2 attempts — needs human");
+        return 0;
+    };
+
+    // Bump the attempt memo BEFORE launching so a crash mid-launch still counts
+    // against the cap (fail-closed: never exceed 2 re-drives).
+    let next_attempt = attempts + 1;
+    memo_write(scoped_memo(owner, repo, "ci_fix:attempts:" + iid_str), to_string(next_attempt));
+
+    let branch_name = "fix/issue-" + iid_str;
+    let recover_title = "fix: recover CI for #" + iid_str;
+    let recover_task = "The CI gate (colony-lint) is failing on this PR. Reproduce the failure locally, fix it with a MINIMAL change, and do not touch unrelated code.";
+    // colony-lint: safe-exec-concat
+    let job_cmd = "$COLONY_DIR/../../tools/code-edit-job.sh --owner " + shell_escape(owner) + " --repo " + shell_escape(repo) + " --issue " + shell_escape(iid_str) + " --branch " + shell_escape(branch_name) + " --title " + shell_escape(recover_title) + " --task " + shell_escape(recover_task) + " --recover";
+    let job_out = try { exec sh job_cmd; } catch e {
+        print("[code_writer] CI-fix launcher failed for PR", iid_str, ":", e);
+        "";
+    };
+    let job_state = job_word(job_out);
+    if job_state == "DONE" {
+        print("[code_writer] CI-fix pushed a fix to red PR", iid_str, "(attempt", next_attempt, "/2)");
+    } else {
+        print("[code_writer] re-driving red PR", iid_str, "(attempt", next_attempt, "/2)");
+    };
+    // One recovery job per tick: signal the caller to return without drafting.
+    // The launcher's pid check gives idempotency so a re-poll won't double-launch.
+    return 1;
+}
+
+// recover_scan: recurse over the open-PR list, launching at most ONE recovery
+// re-drive per tick. Returns 1 once a job is launched (stop scanning), else 0.
+fn recover_scan(owner: string, repo: string, raw: string, idx: int) -> int {
+    let iid_str = open_pr_field(raw, idx, "iid");
+    if len(iid_str) == 0 { return 0; };
+    let did = recover_at(owner, repo, raw, idx);
+    if did == 1 { return 1; };
+    return recover_scan(owner, repo, raw, idx + 1);
+}
+
+// recover_red_prs: list the federation's own open PRs and, at the autonomous
+// tier only, re-drive the FIRST red one whose head is a fix/issue- branch we
+// opened. Returns 1 if it launched a recovery job (the caller returns for this
+// tick — one job per tick, do not also draft).
+fn recover_red_prs(owner: string, repo: string) -> int {
+    // Autonomous-only: re-pushing to PRs is a terminal write.
+    if repo_tier("code_writer", owner, repo) != "autonomous" { return 0; };
+    // Raw (no --view): the normalized GitLab-shape list carries both `iid` and
+    // `source_branch`, the two fields recover_at needs. The implementation
+    // colony's `impl` view drops source_branch, so we read the raw shape here.
+    // colony-lint: safe-exec-concat
+    let list_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state opened" + repo_arg(owner, repo);
+    let raw = try { exec sh list_cmd; } catch e { ""; };
+    if len(raw) < 5 { return 0; };
+    return recover_scan(owner, repo, raw, 0);
+}
+
 fn tick_for_repo(owner: string, repo: string) -> void {
+    // #1332: red-PR recovery runs FIRST (autonomous tier only), BEFORE the
+    // draft path. If a red PR we own is re-driven this tick, return without
+    // drafting — one code-edit job per tick.
+    if recover_red_prs(owner, repo) == 1 {
+        let now_r = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_r) > 0 {
+            memo_write(scoped_memo(owner, repo, "code_writer:last_check"), now_r);
+        };
+        return;
+    };
+
     // 1. Learn from recently merged MRs
     let cmd = merged_mr_cmd(owner, repo);
     let raw = try {
