@@ -265,18 +265,24 @@ fn tick_for_repo(owner: string, repo: string) -> void {
             // not-ready PR here is a logged no-op that retries next tick. This
             // adds NO second prompt() (the existing staleness gate stands) and
             // leaves the decide-once memo behaviour untouched.
+            // #1317: only auto-merge after a SUCCESSFUL approve (non-empty
+            // approve_result). A non-rate-limit approve failure falls through
+            // this branch, so without the len(approve_result) guard the merge
+            // hook could fire without a posted approval review (QA on #1323).
             let auto_merge = getenv("AUTO_MERGE");
             if auto_merge == "1" {
-                // colony-lint: safe-exec-concat
-                let merge_cmd = "$COLONY_DIR/scripts/forge-api.sh merge " + to_string(decision.mr_iid) + repo_arg(owner, repo);
-                let merge_result = try { exec sh merge_cmd; } catch e {
-                    print("[approval_decider] Auto-merge refused/failed for MR", decision.mr_iid, ":", e);
-                    "";
-                };
-                if len(merge_result) > 0 {
-                    print("[approval_decider] Auto-merged MR", decision.mr_iid);
-                } else {
-                    print("[approval_decider] Auto-merge no-op for MR", decision.mr_iid, "(not green / not mergeable); will retry");
+                if len(approve_result) > 0 {
+                    // colony-lint: safe-exec-concat
+                    let merge_cmd = "$COLONY_DIR/scripts/forge-api.sh merge " + to_string(decision.mr_iid) + repo_arg(owner, repo);
+                    let merge_result = try { exec sh merge_cmd; } catch e {
+                        print("[approval_decider] Auto-merge refused/failed for MR", decision.mr_iid, ":", e);
+                        "";
+                    };
+                    if len(merge_result) > 0 {
+                        print("[approval_decider] Auto-merged MR", decision.mr_iid);
+                    } else {
+                        print("[approval_decider] Auto-merge no-op for MR", decision.mr_iid, "(not green / not mergeable); will retry");
+                    };
                 };
             };
         } else {

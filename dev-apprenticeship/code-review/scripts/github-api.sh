@@ -532,13 +532,23 @@ print("HEAD_REF=" + str((d.get("head") or {}).get("ref") or ""))
         # timed_out / action_required / stale / startup_failure, refuses the
         # merge. An empty check_runs list is treated as not-verified (refuse)
         # so a repo with no CI configured never auto-merges silently.
-        checks_json="$(gh_get "$API/commits/$HEAD_SHA/check-runs")" || exit $?
+        checks_json="$(gh_get_q "$API/commits/$HEAD_SHA/check-runs" --data-urlencode "per_page=100")" || exit $?
         CHECK_VERDICT="$(printf '%s' "$checks_json" | python3 -c '
 import sys, json
 d = json.loads(sys.stdin.read())
 runs = d.get("check_runs") or []
+# total_count is the FULL number of check-runs on the head commit. We request
+# per_page=100; if GitHub reports more than we received, more pages exist and a
+# red check could be hiding on one of them — fail CLOSED (never merge on a
+# partially-verified check set) rather than trust the first page.
+total = d.get("total_count")
+if total is None:
+    total = len(runs)
 if not runs:
     print("REFUSE empty check_runs (no CI verified)")
+    sys.exit(0)
+if total > len(runs):
+    print("REFUSE %d checks but only %d fetched (pagination - cannot verify all)" % (total, len(runs)))
     sys.exit(0)
 ok_conclusions = {"success", "neutral", "skipped"}
 for r in runs:

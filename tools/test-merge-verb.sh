@@ -132,6 +132,14 @@ mkdir -p "$B3_DIR"
 printf '%s' '{"mergeable": true, "head": {"sha": "aaa111", "ref": "feature/w"}}' > "$B3_DIR/pull.json"
 printf '%s' '{"check_runs": []}' > "$B3_DIR/checks.json"
 
+# ---- Fixtures for case (b4): pagination — total_count exceeds the fetched
+# page, so a red check could hide on a later page. Every FETCHED run is green,
+# but total_count (31) > len(check_runs) (2) ⇒ must fail CLOSED (#1323 QA). ----
+B4_DIR="$TMPDIR_SHIM/b4"
+mkdir -p "$B4_DIR"
+printf '%s' '{"mergeable": true, "head": {"sha": "bbb222", "ref": "feature/p"}}' > "$B4_DIR/pull.json"
+printf '%s' '{"total_count": 31, "check_runs": [{"name": "ci", "status": "completed", "conclusion": "success"}, {"name": "lint", "status": "completed", "conclusion": "success"}]}' > "$B4_DIR/checks.json"
+
 # ---- Fixtures for case (c): mergeable=false ----
 C_DIR="$TMPDIR_SHIM/c"
 mkdir -p "$C_DIR"
@@ -178,6 +186,15 @@ if [ "$rc" -eq 4 ] && ! merge_put_fired; then
     pass "case (b3) empty check_runs: refused (exit 4), NO merge PUT"
 else
     fail "case (b3)" "rc=$rc fired=$(merge_put_fired && echo yes || echo no) out=$out trace=$(cat "$CURL_TRACE")"
+fi
+
+# ===== Case (b4): pagination (total_count > fetched) ⇒ refused, NO merge PUT =====
+out="$(run_merge "$B4_DIR")"
+rc=$?
+if [ "$rc" -eq 4 ] && ! merge_put_fired; then
+    pass "case (b4) pagination (total_count 31 > 2 fetched, all green): fail-closed (exit 4), NO merge PUT"
+else
+    fail "case (b4)" "rc=$rc fired=$(merge_put_fired && echo yes || echo no) out=$out trace=$(cat "$CURL_TRACE")"
 fi
 
 # ===== Case (c): mergeable=false ⇒ refused, NO merge PUT =====
