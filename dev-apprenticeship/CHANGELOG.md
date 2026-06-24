@@ -17,6 +17,25 @@ is asserted until multi-version CI is in place.
 
 ### Added
 
+- **Bounded CI-failure recovery loop (`fix-if-red`).** The federation opened
+  PRs and auto-merged green ones but had no reaction to a RED CI: when
+  `code_writer`'s edit job exhausted its local verify budget it committed
+  anyway ("CI is the backstop"), and the then-red PR sat forever (the merge
+  gate refuses it; the draft path won't re-touch the issue due to its
+  `last_drafted_iid` staleness gate). A new read-only `pr-checks <iid>` verb in
+  the code-review AND implementation `github-api.sh` / `gitlab-api.sh` reports
+  `STATE=<red|green|pending> REF=<head-branch>` (same check-runs / pipeline
+  verdict logic as the `merge` gate, including the pagination fail-safe). Early
+  in its autonomous-tier tick — before the draft path — `code_writer` lists its
+  OWN open PRs (head starts `fix/issue-`), and for the first one whose CI is
+  `red` it re-drives the EXISTING branch via `code-edit-in-checkout.sh
+  --recover` (checks out the existing head branch, forces the verify gate ON,
+  iterates the verify-and-fix loop, then PUSHES the branch only — never opens a
+  second PR). A retry cap of 2 per PR (the `ci_fix:attempts:<iid>` memo, bumped
+  before each launch) gives up + logs "needs human" afterwards; recovery acts
+  only on `STATE=red` (never `pending` — no CI race) and one re-drive per tick
+  ([#1332](https://github.com/Replikanti/agentis-colonies/issues/1332)).
+
 - **Opt-in autonomous PR auto-merge for the code-review colony.** The
   federation reviewed and approved PRs but never merged them. A new `merge`
   verb in `code-review/scripts/github-api.sh` and `gitlab-api.sh` closes the

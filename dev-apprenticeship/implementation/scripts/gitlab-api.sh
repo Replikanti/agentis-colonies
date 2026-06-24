@@ -330,6 +330,38 @@ case "$CMD" in
         gl_get "$API/merge_requests/$IID/commits?per_page=100"
         ;;
 
+    pr-checks)
+        # #1332: CI verdict read for the bounded red-PR recovery loop (code_writer
+        # re-drives its OWN red MRs). Prints exactly two space-separated tokens on
+        # stdout: `STATE=<red|green|pending> REF=<source-branch>`. Read-only mirror
+        # of the code-review colony's #1317 merge gate pipeline check: head-pipeline
+        # pending/running => pending, failed/canceled => red, success => green,
+        # missing pipeline => pending (CI not verified yet). Recovery acts only on
+        # `red`, never `pending` (don't race CI).
+        IID="${1:?Usage: gitlab-api.sh pr-checks <iid>}"
+        case "$IID" in
+            ''|*[!0-9]*) emit_error "iid must be numeric: $IID"; exit 2 ;;
+        esac
+        mr_json="$(gl_get "$API/merge_requests/$IID")" || exit $?
+        VERDICT="$(printf '%s' "$mr_json" | python3 -c '
+import sys, json
+d = json.loads(sys.stdin.read())
+ref = d.get("source_branch") or ""
+pipeline = d.get("head_pipeline") or d.get("pipeline") or {}
+pstatus = pipeline.get("status")
+if pstatus in ("pending", "running", "created", "waiting_for_resource", "preparing", "scheduled"):
+    state = "pending"
+elif pstatus in ("failed", "canceled", "cancelled"):
+    state = "red"
+elif pstatus == "success":
+    state = "green"
+else:
+    state = "pending"
+print("STATE=%s REF=%s" % (state, ref))
+')" || { emit_error "MR !$IID: failed to parse pipeline metadata"; exit 4; }
+        printf '%s\n' "$VERDICT"
+        ;;
+
     issue)
         IID="${1:?Usage: gitlab-api.sh issue <iid>}"
         gl_get "$API/$ISSUE_COLLECTION/$IID"
