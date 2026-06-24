@@ -15,6 +15,17 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Fixed
+
+- **CI-failure recovery re-drove the wrong branch.** `code_writer`'s recovery
+  path built the branch from the PR number (`fix/issue-<PR-iid>`) instead of the
+  PR's actual head branch. A PR for issue N has its own number M != N, so the
+  re-drive always targeted a non-existent branch and could never apply a fix
+  (the bounded retry then gave up). Now it passes the PR's real `source_branch`
+  (already validated to start `fix/issue-`). Caught by the #1330 live dogfood
+  test, which the source-grep unit tests (coincidental matching fixtures)
+  missed; the regression test now asserts `--branch src`.
+
 ### Added
 
 - **Bounded CI-failure recovery loop (`fix-if-red`).** The federation opened

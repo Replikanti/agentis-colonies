@@ -114,17 +114,21 @@ else
 fi
 
 # 5. Launches code-edit-job.sh with --recover (push-only; no new PR), with the
-# deterministic fix/issue-<iid> branch + the minimal-change recovery task.
+# minimal-change recovery task.
 if printf '%s' "$RECOVER_AT" | grep -q 'code-edit-job.sh' \
    && printf '%s' "$RECOVER_AT" | grep -q -- '--recover'; then
     pass "launches code-edit-job.sh --recover (re-drive existing branch, push only)"
 else
     fail "--recover launch" "recover_at must launch code-edit-job.sh with --recover"
 fi
-if printf '%s' "$RECOVER_AT" | grep -q 'let branch_name = "fix/issue-" + iid_str'; then
-    pass "re-drives the deterministic fix/issue-<iid> branch"
+# Re-drives the PR's ACTUAL head branch (source_branch / src), NOT a branch
+# reconstructed from the PR number: a PR for issue N has its own number M != N,
+# so "fix/issue-" + <PR iid> targets a non-existent branch (the bug #1330 hit).
+if printf '%s' "$RECOVER_AT" | grep -q 'let branch_name = src' \
+   && ! printf '%s' "$RECOVER_AT" | grep -q 'let branch_name = "fix/issue-" + iid_str'; then
+    pass "re-drives the PR's actual head branch (src), not a reconstructed fix/issue-<PR-iid>"
 else
-    fail "deterministic branch" "recover_at must target fix/issue-<iid>"
+    fail "head branch" "recover_at must pass --branch src (the PR's real source_branch), never fix/issue-<PR-iid>"
 fi
 if printf '%s' "$RECOVER_AT" | grep -q 'colony-lint) is failing' \
    && printf '%s' "$RECOVER_AT" | grep -q 'MINIMAL change'; then
