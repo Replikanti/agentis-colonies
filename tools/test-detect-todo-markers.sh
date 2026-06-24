@@ -44,6 +44,7 @@ printf 'TODO: test fixture literal\n' > "$TMPDIR_TEST/test-something.sh"
 printf '# TODO: scaffold readme placeholder\n' > "$TMPDIR_TEST/notes.md"
 printf '# TODO: scaffold template placeholder\n' > "$TMPDIR_TEST/new-thing.sh"
 printf '# TODO: leaked colony-lint temp artifact\n' > "$TMPDIR_TEST/tmp.AbC123"
+printf 'this file describes the TODO/FIXME/XXX detector, not a marker\n' > "$TMPDIR_TEST/mention.txt"
 
 OUT="$(DETECT_TODO_ROOT="$TMPDIR_TEST" "$DETECTOR")"
 RC=$?
@@ -119,6 +120,15 @@ if printf '%s\n' "$OUT" | grep -q 'tmp\.'; then
     fail "tmp-leak" "expected no line for tmp.*, got <$OUT>"
 else
     pass "tmp-leak: skips the TODO inside a leaked tmp.* file"
+fi
+
+# ----- Test 11: a bare MENTION (word not in marker form) is NOT reported -----
+# The marker convention is `TODO:` / `FIXME:` / `XXX:` / `TODO(...)`. A prose
+# mention like "TODO/FIXME/XXX detector" must not be flagged (self-reference).
+if printf '%s\n' "$OUT" | grep -q 'mention.txt'; then
+    fail "mention" "expected no line for a bare-word mention, got <$OUT>"
+else
+    pass "mention: bare-word TODO/FIXME/XXX mention (no colon/paren) is not reported"
 fi
 
 echo ""
