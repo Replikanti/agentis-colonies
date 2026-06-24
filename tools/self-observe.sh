@@ -44,6 +44,12 @@ MAX_NEW="${SELF_OBSERVE_MAX_NEW:-5}"
 case "$MAX_NEW" in ''|*[!0-9]*) MAX_NEW=5 ;; esac
 LABELS="${SELF_OBSERVE_LABELS:-dev-apprenticeship}"
 GH="${SELF_OBSERVE_GH:-gh}"
+# Detector kinds that are observed + logged but NOT filed as issues. Raw TODO
+# markers are author notes, not work items — filing a GitHub issue per marker is
+# pure noise (proven repeatedly), so `todo-marker` is log-only by DEFAULT. The
+# higher-signal detectors (doc-drift, agent-failure) still file. Override with a
+# comma-separated SELF_OBSERVE_NOFILE_KINDS (set to "" to file every kind).
+NOFILE_KINDS="${SELF_OBSERVE_NOFILE_KINDS-todo-marker}"
 
 # Short, portable fingerprint of stdin (first 12 hex of sha256).
 fp_of() {
@@ -84,6 +90,10 @@ tab="$(printf '\t')"
 while IFS="$tab" read -r tag kind loc text; do
     [ "$tag" = "DRIFT" ] || continue
     considered=$((considered + 1))
+    # Some detector kinds are log-only (NOFILE_KINDS) — observe + log, never file.
+    case ",$NOFILE_KINDS," in
+        *",$kind,"*) echo "[self-observe] log-only ($kind, not filed): $loc"; continue ;;
+    esac
     fp="$(printf '%s|~|%s|~|%s' "$kind" "$loc" "$(normalize "$text")" | fp_of)"
     if issue_exists "$fp"; then
         echo "[self-observe] skip (open issue exists): $kind $loc [$fp]"

@@ -37,7 +37,7 @@ ROOT="${DETECT_TODO_ROOT:-$REPO_ROOT}"
 # files, -n adds line numbers, -E enables the alternation. Vendored/generated
 # directories are excluded so third-party / build output is not reported.
 cd "$ROOT" || exit 0
-grep -rInE 'TODO|FIXME|XXX' \
+grep -rInE '(TODO|FIXME|XXX)[:(]' \
     --exclude-dir=.git \
     --exclude-dir=node_modules \
     --exclude-dir=.solc-cache \

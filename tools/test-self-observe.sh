@@ -110,6 +110,20 @@ else
     fail "create-failure" "$(printf '%s\n' "$OUT" | tail -3)"
 fi
 
+# ---- Test 6: a log-only kind (todo-marker) is observed but NOT filed ----
+cat > "$WORK/tools/detect-stub.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'DRIFT\ttodo-marker\ttools/x.sh:5\tTODO: do the thing\n'
+STUB
+chmod +x "$WORK/tools/detect-stub.sh"
+write_gh 0; rm -f "$WORK/create.log"
+OUT="$(run_so --file)"
+if printf '%s\n' "$OUT" | grep -q 'log-only (todo-marker' && [ "$(creates)" = "0" ]; then
+    pass "log-only: todo-marker finding is logged, not filed (NOFILE_KINDS default)"
+else
+    fail "log-only" "out=$(printf '%s\n' "$OUT" | tail -3) creates=$(creates)"
+fi
+
 echo
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
