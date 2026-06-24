@@ -21,6 +21,8 @@
 #   github-api.sh mr-notes <number>
 #   github-api.sh post-note <number> --body <text>
 #   github-api.sh approve <number>
+#   github-api.sh merge <number>   (gated: refuses unless mergeable=true AND
+#                                   CI all-green; squash + delete-branch; #1317)
 #   github-api.sh get-issue <number>
 #
 # Views (opt-in projection; byte-identical to gitlab-api.sh):
@@ -482,6 +484,90 @@ PY
         # approval_decider already guards via its decide-once memo so double
         # invocations here would only waste a round-trip and a review row.
         gh_post "$API/pulls/$NUM/reviews" '{"event":"APPROVE"}'
+        ;;
+
+    merge)
+        # #1317: gated, opt-in terminal merge. This is the single SAFETY
+        # chokepoint for the autonomous auto-merge loop — it MUST refuse
+        # any PR that is not cleanly mergeable AND all-green on CI. Two
+        # independent gates run before the merge PUT fires; either one
+        # failing means no merge (exit 4) and the caller logs a no-op +
+        # retries next tick.
+        NUM="${1:?Usage: github-api.sh merge <number>}"
+        case "$NUM" in
+            ''|*[!0-9]*) emit_error "pr number must be numeric: $NUM"; exit 2 ;;
+        esac
+
+        # Gate 1: cleanly mergeable. GitHub's `mergeable` is a tri-state
+        # (true / false / null) — null means GitHub has not finished its
+        # background mergeability computation, so we treat anything that is
+        # not exactly true as not-mergeable and refuse. Also capture
+        # head.sha (the commit the check-runs gate queries) and head.ref
+        # (the source branch to best-effort delete after a clean merge).
+        pull_json="$(gh_get "$API/pulls/$NUM")" || exit $?
+        MERGE_META="$(printf '%s' "$pull_json" | python3 -c '
+import sys, json
+d = json.loads(sys.stdin.read())
+mergeable = d.get("mergeable")
+print("MERGEABLE=" + ("true" if mergeable is True else ("false" if mergeable is False else "null")))
+print("HEAD_SHA=" + str((d.get("head") or {}).get("sha") or ""))
+print("HEAD_REF=" + str((d.get("head") or {}).get("ref") or ""))
+')" || { emit_error "PR #$NUM: failed to parse pull metadata"; exit 4; }
+        MERGEABLE="$(printf '%s\n' "$MERGE_META" | sed -n 's/^MERGEABLE=//p')"
+        HEAD_SHA="$(printf '%s\n' "$MERGE_META" | sed -n 's/^HEAD_SHA=//p')"
+        HEAD_REF="$(printf '%s\n' "$MERGE_META" | sed -n 's/^HEAD_REF=//p')"
+        if [ "$MERGEABLE" != "true" ]; then
+            emit_error "PR #$NUM not mergeable (mergeable=$MERGEABLE)"
+            exit 4
+        fi
+        if [ -z "$HEAD_SHA" ]; then
+            emit_error "PR #$NUM: missing head.sha; cannot verify CI"
+            exit 4
+        fi
+
+        # Gate 2: CI all-green. Read the check-runs for the head commit and
+        # require a NON-EMPTY list where every run is completed with a
+        # passing-or-inert conclusion (success / neutral / skipped). Any run
+        # still queued/in_progress, or concluded failure / cancelled /
+        # timed_out / action_required / stale / startup_failure, refuses the
+        # merge. An empty check_runs list is treated as not-verified (refuse)
+        # so a repo with no CI configured never auto-merges silently.
+        checks_json="$(gh_get "$API/commits/$HEAD_SHA/check-runs")" || exit $?
+        CHECK_VERDICT="$(printf '%s' "$checks_json" | python3 -c '
+import sys, json
+d = json.loads(sys.stdin.read())
+runs = d.get("check_runs") or []
+if not runs:
+    print("REFUSE empty check_runs (no CI verified)")
+    sys.exit(0)
+ok_conclusions = {"success", "neutral", "skipped"}
+for r in runs:
+    name = r.get("name") or "?"
+    status = r.get("status")
+    conclusion = r.get("conclusion")
+    if status != "completed":
+        print("REFUSE check %r status=%s (not completed)" % (name, status))
+        sys.exit(0)
+    if conclusion not in ok_conclusions:
+        print("REFUSE check %r conclusion=%s" % (name, conclusion))
+        sys.exit(0)
+print("GREEN")
+')" || { emit_error "PR #$NUM: failed to parse check-runs"; exit 4; }
+        if [ "$CHECK_VERDICT" != "GREEN" ]; then
+            emit_error "PR #$NUM checks not green (${CHECK_VERDICT#REFUSE })"
+            exit 4
+        fi
+
+        # Both gates passed: squash-merge. Build the body via python3
+        # json.dumps (repo convention). gh_call returns 0 only on a 2xx.
+        MERGE_BODY="$(python3 -c 'import json; print(json.dumps({"merge_method": "squash"}))')"
+        merge_resp="$(gh_call PUT "$API/pulls/$NUM/merge" -H "Content-Type: application/json" -d "$MERGE_BODY")" || exit $?
+        # Best-effort branch cleanup. A delete failure (protected branch,
+        # already gone, perms) must NOT fail the merge — the PR is merged.
+        if [ -n "$HEAD_REF" ]; then
+            gh_call DELETE "$API/git/refs/heads/$HEAD_REF" >/dev/null 2>&1 || true
+        fi
+        printf '%s' "$merge_resp"
         ;;
 
     get-issue)

@@ -256,6 +256,29 @@ fn tick_for_repo(owner: string, repo: string) -> void {
             } else {
                 learn("approval_decision", "MR " + to_string(decision.mr_iid), "approved: " + decision.reasoning, "success", ["acted", "code-review"]);
             };
+            // #1317: opt-in autonomous auto-merge. Only when the operator set
+            // AUTO_MERGE=1 in colony.toml ([code-review] auto_merge = true,
+            // exported by start-colony.sh) AND this agent is at the autonomous
+            // tier (already true in this branch) do we close the loop. The
+            // merge verb is the SAFETY chokepoint — it independently re-checks
+            // mergeability + all-green CI and refuses (exit 4) otherwise, so a
+            // not-ready PR here is a logged no-op that retries next tick. This
+            // adds NO second prompt() (the existing staleness gate stands) and
+            // leaves the decide-once memo behaviour untouched.
+            let auto_merge = getenv("AUTO_MERGE");
+            if auto_merge == "1" {
+                // colony-lint: safe-exec-concat
+                let merge_cmd = "$COLONY_DIR/scripts/forge-api.sh merge " + to_string(decision.mr_iid) + repo_arg(owner, repo);
+                let merge_result = try { exec sh merge_cmd; } catch e {
+                    print("[approval_decider] Auto-merge refused/failed for MR", decision.mr_iid, ":", e);
+                    "";
+                };
+                if len(merge_result) > 0 {
+                    print("[approval_decider] Auto-merged MR", decision.mr_iid);
+                } else {
+                    print("[approval_decider] Auto-merge no-op for MR", decision.mr_iid, "(not green / not mergeable); will retry");
+                };
+            };
         } else {
             if decision.action == "request_changes" {
                 let comment = "**Review Summary** (automated)\n\n" + decision.reasoning + "\n\nFindings: " + to_string(decision.total_findings) + " total, " + to_string(decision.critical_count) + " critical";

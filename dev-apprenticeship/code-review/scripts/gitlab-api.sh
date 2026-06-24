@@ -13,6 +13,9 @@
 #   gitlab-api.sh mr-notes <iid>
 #   gitlab-api.sh post-note <iid> --body <text>
 #   gitlab-api.sh approve <iid>
+#   gitlab-api.sh merge <iid>   (gated: refuses unless merge_status ==
+#                                can_be_merged AND head pipeline succeeded;
+#                                squash + remove source branch; #1317)
 #   gitlab-api.sh get-issue <iid>
 #
 # Views (opt-in projection; default is full JSON):
@@ -257,6 +260,10 @@ gl_post() {
     gl_call POST "$1" -H "Content-Type: application/json" -d "$2"
 }
 
+gl_put() {
+    gl_call PUT "$1" -H "Content-Type: application/json" -d "$2"
+}
+
 CMD="${1:?Usage: gitlab-api.sh <command> [args...]}"
 shift
 
@@ -330,6 +337,47 @@ case "$CMD" in
     approve)
         IID="${1:?Usage: gitlab-api.sh approve <iid>}"
         gl_post "$API/merge_requests/$IID/approve" "{}"
+        ;;
+
+    merge)
+        # #1317: gated, opt-in terminal merge (GitHub parity). The SAFETY
+        # chokepoint: refuse unless GitLab reports the MR is cleanly
+        # mergeable AND its head pipeline succeeded. Either gate failing
+        # means no merge (exit 4); the caller logs a no-op and retries.
+        IID="${1:?Usage: gitlab-api.sh merge <iid>}"
+        case "$IID" in
+            ''|*[!0-9]*) emit_error "iid must be numeric: $IID"; exit 2 ;;
+        esac
+
+        # GET the MR once and read both gate inputs from it: `merge_status`
+        # (must be can_be_merged) and the head pipeline status. GitLab
+        # exposes the latest pipeline as either `.head_pipeline` (newer) or
+        # `.pipeline` (older); accept whichever is present and require its
+        # status == success. Absent / non-success pipeline => refuse.
+        mr_json="$(gl_get "$API/merge_requests/$IID")" || exit $?
+        MERGE_VERDICT="$(printf '%s' "$mr_json" | python3 -c '
+import sys, json
+d = json.loads(sys.stdin.read())
+merge_status = d.get("merge_status")
+if merge_status != "can_be_merged":
+    print("REFUSE merge_status=%s" % merge_status)
+    sys.exit(0)
+pipeline = d.get("head_pipeline") or d.get("pipeline") or {}
+pstatus = pipeline.get("status")
+if pstatus != "success":
+    print("REFUSE pipeline status=%s" % pstatus)
+    sys.exit(0)
+print("OK")
+')" || { emit_error "MR !$IID: failed to parse merge metadata"; exit 4; }
+        if [ "$MERGE_VERDICT" != "OK" ]; then
+            emit_error "MR !$IID not mergeable (${MERGE_VERDICT#REFUSE })"
+            exit 4
+        fi
+
+        # Both gates passed: squash-merge + remove the source branch.
+        # Body via python3 json.dumps (repo convention).
+        MERGE_BODY="$(python3 -c 'import json; print(json.dumps({"squash": True, "should_remove_source_branch": True}))')"
+        gl_put "$API/merge_requests/$IID/merge" "$MERGE_BODY"
         ;;
 
     get-issue)
