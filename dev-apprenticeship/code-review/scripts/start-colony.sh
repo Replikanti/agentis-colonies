@@ -193,6 +193,20 @@ esac
 export FORGE_TYPE
 export COLONY_DIR
 
+# #1317: opt-in autonomous auto-merge flag. `[code-review].auto_merge` in
+# colony.toml gates whether an autonomous-tier approval_decider closes the
+# loop by merging a PR after approving it. Normalised to "1" (true) / "0"
+# (false, the default when unset/false/anything-else). Exported so the
+# agent's getenv("AUTO_MERGE") reads it from the daemon process env. The
+# merge verb itself enforces the CI-green + clean-mergeable gate, so this
+# flag only decides whether to attempt the gated merge at all.
+AUTO_MERGE_RAW="$(parse_toml code-review auto_merge)"
+case "$AUTO_MERGE_RAW" in
+    true|True|TRUE|1|yes|on) AUTO_MERGE=1 ;;
+    *) AUTO_MERGE=0 ;;
+esac
+export AUTO_MERGE
+
 # #316 M5a: --print-repos-json probe for the federation-dashboard collector.
 # Emits the GITHUB_REPOS_JSON value (empty string for legacy single-block
 # configs) and exits. Probed once per colony per dashboard regen so the

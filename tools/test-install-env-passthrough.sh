@@ -18,6 +18,7 @@
 #   Test 10: Fresh install env_passthrough carries the trigger-label vars (#1185)
 #   Test 11: #1185 upgrade rewrites the #277-era literal to add trigger-labels
 #   Test 12: #277-era pre-fix literal also migrates straight to the #1185 value
+#   Test 13: #1185-era literal migrates to add AUTO_MERGE (#1317)
 #
 # Usage: ./tools/test-install-env-passthrough.sh
 # Exit code 0 if all tests pass, 1 otherwise.
@@ -58,13 +59,22 @@ run_install_fragment() {
     # also pass through the trigger-label vars. Exact-match only.
     if [ -f "$AGENTIS_CONFIG" ] && grep -qxF 'exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*' "$AGENTIS_CONFIG"; then
         awk '/^exec\.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_\*,GITHUB_\*$/ \
-             { print "exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL"; next } { print }' \
+             { print "exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE"; next } { print }' \
             "$AGENTIS_CONFIG" > "$AGENTIS_CONFIG.tmp" && mv "$AGENTIS_CONFIG.tmp" "$AGENTIS_CONFIG"
     fi
-    write_key 'exec.env_passthrough' 'COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL'
+    # Migrate #1317 pre-fix literal in-place. Adds AUTO_MERGE so the
+    # code-review colony's opt-in auto-merge flag survives the env strip.
+    # Exact-match only.
+    if [ -f "$AGENTIS_CONFIG" ] && grep -qxF 'exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL' "$AGENTIS_CONFIG"; then
+        awk '/^exec\.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_\*,GITHUB_\*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL$/ \
+             { print "exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE"; next } { print }' \
+            "$AGENTIS_CONFIG" > "$AGENTIS_CONFIG.tmp" && mv "$AGENTIS_CONFIG.tmp" "$AGENTIS_CONFIG"
+    fi
+    write_key 'exec.env_passthrough' 'COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE'
 }
 
-EXPECTED_NEW='exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL'
+EXPECTED_NEW='exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE'
+EXPECTED_1185='exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL'
 EXPECTED_277='exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*'
 EXPECTED_OLD='exec.env_passthrough = COLONY_DIR,GITLAB_*'
 OPERATOR_TUNED='exec.env_passthrough = COLONY_DIR,GITLAB_*,MY_CUSTOM'
@@ -166,10 +176,29 @@ run_install_fragment "$T12_CONFIG"
 
 if grep -qxF "$EXPECTED_NEW" "$T12_CONFIG" \
     && ! grep -qxF "$EXPECTED_OLD" "$T12_CONFIG"; then
-    pass "#277-era literal migrates straight to the #1185 trigger-label value"
+    pass "#277-era literal migrates straight to the AUTO_MERGE value"
 else
-    fail "#277->#1185 migration — expected '$EXPECTED_NEW', got:"
+    fail "#277->#1317 migration — expected '$EXPECTED_NEW', got:"
     cat "$T12_CONFIG"
+fi
+
+# ----- Test 13: #1185-era literal migrates to add AUTO_MERGE (#1317) -----
+# A federation installed between #1185 and #1317 carries the trigger-label
+# value without AUTO_MERGE; the #1317 migration appends it so the
+# code-review auto-merge flag survives the env strip before `exec sh`.
+T13_DIR="$FAKE_ROOT/t13"
+mkdir -p "$T13_DIR"
+T13_CONFIG="$T13_DIR/config"
+printf '%s\n' "$EXPECTED_1185" > "$T13_CONFIG"
+
+run_install_fragment "$T13_CONFIG"
+
+if grep -qxF "$EXPECTED_NEW" "$T13_CONFIG" \
+    && ! grep -qxF "$EXPECTED_1185" "$T13_CONFIG"; then
+    pass "#1185-era literal migrates to add AUTO_MERGE (#1317)"
+else
+    fail "#1185->#1317 migration — expected '$EXPECTED_NEW' and no bare '$EXPECTED_1185', got:"
+    cat "$T13_CONFIG"
 fi
 
 # ----- Heartbeat interval (#280) -----

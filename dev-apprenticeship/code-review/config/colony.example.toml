@@ -14,6 +14,17 @@ tick_interval_ms = 60000
 # in `<fed>/.agentis/config` written by install.sh).
 # cb_per_tick = 2000
 
+# Code-review colony knobs (#1317).
+[code-review]
+# Opt-in autonomous auto-merge. When `true`, an autonomous-tier
+# approval_decider merges a PR after approving it — but ONLY when CI is
+# all-green and the PR is cleanly mergeable (the `merge` verb in
+# github-api.sh / gitlab-api.sh enforces this gate and refuses otherwise).
+# Squash + delete-branch. Default `false`; leaving it false keeps the
+# federation review-and-approve only (a human merges). Requires the
+# agent to be at the autonomous tier AND the merge gate to pass.
+auto_merge = false
+
 # Forge backend selection (ADR-0002, #256). `type` picks which of the
 # per-backend blocks below is active. Legal values: "gitlab", "github".
 # The legacy top-level [gitlab] section was retired in PR 7 of #256

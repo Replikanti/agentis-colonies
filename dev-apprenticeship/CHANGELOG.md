@@ -15,6 +15,25 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Added
+
+- **Opt-in autonomous PR auto-merge for the code-review colony.** The
+  federation reviewed and approved PRs but never merged them. A new `merge`
+  verb in `code-review/scripts/github-api.sh` and `gitlab-api.sh` closes the
+  loop — but it is the single SAFETY chokepoint and refuses (exit 4) any PR
+  that is not cleanly mergeable AND all-green on CI: GitHub requires
+  `mergeable == true` plus a non-empty check-runs list where every run is
+  `completed` with a `success`/`neutral`/`skipped` conclusion (empty/pending/
+  failing all refuse); GitLab requires `merge_status == can_be_merged` plus a
+  head pipeline `status == success`. On pass it squash-merges and deletes the
+  source branch. `approval_decider`'s autonomous-tier branch now performs the
+  gated merge after a successful approve, but only when the operator sets
+  `[code-review] auto_merge = true` (default `false`) — start-colony.sh exports
+  `AUTO_MERGE`, the agent reads it via `getenv`, and a not-ready PR is a logged
+  no-op that retries next tick. `install.sh` adds `AUTO_MERGE` to the
+  federation `exec.env_passthrough` allowlist
+  ([#1317](https://github.com/Replikanti/agentis-colonies/issues/1317)).
+
 ### Fixed
 
 - **Federation PRs now use clean Conventional Commits titles and link their
