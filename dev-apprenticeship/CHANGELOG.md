@@ -62,15 +62,6 @@ is asserted until multi-version CI is in place.
   `max_concurrent_agents = 6` into `.agentis/config` (idempotent upsert, so
   pre-#1367 configs get it appended on the next install run) as an agentis-core
   host-concurrency cap.
-- **`tools/flat-cyborg-claude.sh` reaps claude descendants on the
-  plain-prompt path.** The wrapper relied solely on flat-cyborg's
-  `--timeout-ms`; its EXIT trap only removed temp files, so a wedged claude
-  (Node) child and its Bash-tool grandchildren could survive the wrapper and
-  keep burning CPU (#1367). The `flat-cyborg … -- claude …` invocation now runs
-  in its own process group (`set -m` makes the backgrounded job a process-group
-  leader) and the EXIT trap `kill -KILL`s that whole group, guarded so it never
-  signals the wrapper's own group or pid 1. The happy path (result-file read,
-  exit-code propagation, token scrubbing) is unchanged.
 
 ### Fixed
 
