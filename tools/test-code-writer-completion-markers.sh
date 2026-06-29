@@ -28,9 +28,22 @@
 #     - a marker write appears inside the `if job_state == "DONE"` block;
 #     - a marker write still exists on the non-autonomous side.
 #
+#   Part 4 (#1350: re-draft when no MR exists; clear markers on terminal
+#   failure). The #200 staleness markers record "we drafted once", NOT "an MR
+#   landed". A detached edit job that dies without opening an MR (NO_EDITS /
+#   error / killed) used to strand the issue: should_draft_code short-circuits
+#   until the issue's updated_at changes, yet no MR exists. The fix gates on
+#   actual completion — the draft path also fires when no open OR merged MR
+#   exists for the issue's deterministic fix/issue-<iid> branch (has_mr_for_branch
+#   helper) — and defensively clears both markers on the autonomous path's
+#   NO_EDITS / error terminal branches so the next tick retries. We assert:
+#     - the draft gate consults has_mr_for_branch(owner, repo, first_iid_str);
+#     - has_mr_for_branch queries BOTH the opened and merged MR states;
+#     - both markers are cleared (written "") at least twice (NO_EDITS + error).
+#
 # Matches the test style of tools/test-assignment-based-pickup.sh (bash,
 # [PASS]/[FAIL] lines, `Results: N passed, M failed`). Exit 0 all-pass, 1
-# any-fail. Related: #1185.
+# any-fail. Related: #1185, #1350.
 
 set -u
 
@@ -150,6 +163,49 @@ if [ "$nonauto_marker_after_post" = "1" ]; then
 else
   fail "non-autonomous marker placement" \
     "no last_drafted_iid write found after the review-gated add-note post"
+fi
+
+# -----------------------------------------------------------------------------
+# Part 4: #1350 — gate on actual completion (no open/merged MR) + clear the
+# staleness markers on a terminal job failure so a job that died without an MR
+# is retried instead of stranded.
+# -----------------------------------------------------------------------------
+
+# 4a. The draft gate must consult has_mr_for_branch so an issue whose launched
+# edit job died without an MR is re-drafted regardless of the staleness markers.
+if grep -F -q -- 'has_mr_for_branch(owner, repo, first_iid_str)' "$AG"; then
+  pass "draft gate re-fires when no MR exists (has_mr_for_branch at the call site)"
+else
+  fail "draft gate completion check" \
+    "should_draft_code call site does not consult has_mr_for_branch(owner, repo, first_iid_str)"
+fi
+
+# 4b. has_mr_for_branch must query BOTH the opened and the merged MR states —
+# the issue title is "no open or merged mr", so a merged-but-still-open issue
+# must not be re-drafted. Slice the helper body and assert both states appear.
+hmfb_body="$(awk '
+  /^fn has_mr_for_branch\(/ { grab=1; print; next }
+  /^fn / { grab=0 }
+  grab { print }
+' "$AG")"
+if printf '%s\n' "$hmfb_body" | grep -F -q -- 'merge-requests --state opened' \
+  && printf '%s\n' "$hmfb_body" | grep -F -q -- 'merge-requests --state merged'; then
+  pass "has_mr_for_branch checks both opened and merged MR states"
+else
+  fail "has_mr_for_branch state coverage" \
+    "has_mr_for_branch must query both '--state opened' and '--state merged'"
+fi
+
+# 4c. The autonomous path's terminal-failure branches (NO_EDITS / error) must
+# CLEAR both markers (write "") — two clears each (one per failure branch) — so
+# the next tick re-drafts. DONE writes the real iid/upd, never "".
+clear_iid="$(grep -c -F -- 'memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_iid"), "")' "$AG")"
+clear_upd="$(grep -c -F -- 'memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_updated_at"), "")' "$AG")"
+if [ "$clear_iid" -ge 2 ] && [ "$clear_upd" -ge 2 ]; then
+  pass "terminal-failure branches clear both staleness markers (NO_EDITS + error)"
+else
+  fail "terminal-failure marker clear" \
+    "expected >=2 clears each; got iid=$clear_iid upd=$clear_upd"
 fi
 
 # -----------------------------------------------------------------------------
