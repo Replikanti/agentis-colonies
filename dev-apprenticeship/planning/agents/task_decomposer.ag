@@ -302,6 +302,10 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         } else {
             if my_tier == "propose" {
                 emit("planning:breakdown", breakdown);
+                // #1370 QA fix: durable :breakdown_drafted at propose too, so
+                // plan_reviewer's slot_ready() has a persistent signal beyond the
+                // single transient emit (otherwise a missed listen() starves it).
+                memo_write(scoped_memo(owner, repo, "plan_reviewer:" + to_string(breakdown.issue_id) + ":breakdown_drafted"), "true");
                 if len(owner) > 0 {
                     learn(
                         "task_decomposition",

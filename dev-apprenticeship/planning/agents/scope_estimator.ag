@@ -296,6 +296,11 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         } else {
             if my_tier == "propose" {
                 emit("planning:scope_estimate", estimate);
+                // #1370 QA fix: write the durable :scope_drafted key at propose
+                // too (not only review-gated). Otherwise the single transient
+                // emit + the handled marker starve plan_reviewer's slot_ready()
+                // if its 500ms listen() misses the emit (no durable fallback).
+                memo_write(scoped_memo(owner, repo, "plan_reviewer:" + to_string(estimate.issue_id) + ":scope_drafted"), "true");
                 if len(owner) > 0 {
                     learn(
                         "scope_estimate",

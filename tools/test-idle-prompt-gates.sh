@@ -52,9 +52,16 @@ GL_API="$REPO_ROOT/dev-apprenticeship/planning/scripts/gitlab-api.sh"
 GH_API="$REPO_ROOT/dev-apprenticeship/planning/scripts/github-api.sh"
 PASS=0
 FAIL=0
+WARN=0
 
 pass() { echo "[PASS] $1"; PASS=$((PASS + 1)); }
 fail() { echo "[FAIL] $1${2:+: $2}"; FAIL=$((FAIL + 1)); }
+# warn(): a tracked, non-blocking observation. Used for the propose-tier
+# durability gap (QA #1371): the peers should write a persistent consumable
+# signal at the `propose` tier too (not just review-gated), so plan_reviewer's
+# readiness does not depend on catching a single transient bus emit. Reported,
+# not failed, so it does not block an otherwise-green PR.
+warn() { echo "[WARN] $1${2:+: $2}"; WARN=$((WARN + 1)); }
 
 # nonauto_region <ag-file>
 # Slice the act/tier section from the `} else {` that opens the non-autonomous
@@ -164,6 +171,38 @@ if [ -f "$PR" ]; then
 fi
 
 # -----------------------------------------------------------------------------
+# B2. propose-tier DURABILITY (QA #1371). At the `propose` tier each peer
+# emits its bus event ONCE and then writes its handled marker, so it never
+# re-emits for that issue. plan_reviewer's slot_ready() reads BOTH the transient
+# stash (filled only when its 500ms listen() window happens to catch that single
+# emit) AND the persistent `<slot>_drafted` key — but the peers write the
+# persistent key ONLY in their review-gated branch. So at the propose tier,
+# plan_reviewer's readiness for an issue depends on catching a single point-in-
+# time emit; if it misses, the slot is permanently empty (no durable fallback),
+# plan_reviewer head-of-line-blocks on that issue, and the planning pipeline
+# starves it. Writing the `<slot>_drafted` key in the propose branch too (a memo,
+# ADR-0001-legal at every tier) closes the gap. Reported as WARN (non-blocking).
+for peer in scope_estimator:scope_drafted task_decomposer:breakdown_drafted risk_assessor:risks_drafted; do
+  agent="${peer%%:*}"
+  key="${peer##*:}"
+  AG="$PLANNING/$agent.ag"
+  [ -f "$AG" ] || continue
+  # Slice the propose branch: from `if my_tier == "propose"` to the next
+  # `memo_write(handled_key(` (which closes the propose action).
+  propose_region="$(awk '
+    /if my_tier == "propose"/ { grab=1 }
+    grab { print }
+    grab && /memo_write\(handled_key\(/ { exit }
+  ' "$AG")"
+  if printf '%s\n' "$propose_region" | grep -F -q -- "$key"; then
+    pass "$agent: writes the persistent $key key at the propose tier (durable plan_reviewer signal)"
+  else
+    warn "$agent: propose tier emits but does NOT write the persistent $key key" \
+      "plan_reviewer readiness at propose depends on catching one transient emit; a miss starves the issue (head-of-line block). Fix: write the $key memo in the propose branch too (ADR-0001-legal)"
+  fi
+done
+
+# -----------------------------------------------------------------------------
 # C. code_writer input-unchanged early-return before the draft prompt.
 # -----------------------------------------------------------------------------
 CW="$IMPL/code_writer.ag"
@@ -259,5 +298,5 @@ else
 fi
 
 echo ""
-echo "Results: $PASS passed, $FAIL failed"
+echo "Results: $PASS passed, $FAIL failed, $WARN warnings"
 [ "$FAIL" -eq 0 ]
