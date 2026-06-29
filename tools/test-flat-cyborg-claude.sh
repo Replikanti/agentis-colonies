@@ -217,6 +217,67 @@ else
         fail "test 9: EXIT trap performs a process-group kill" \
              "missing 'set -m' or 'kill -KILL -- \"-\$FC_PGID\"'"
     fi
+
+    # --- test 10: FUNCTIONAL reap + clean-stdout (#1367) ----------------------
+    # The static greps above pin the MECHANISM; this drives the REAL wrapper with
+    # a stub `flat-cyborg` that (a) writes a valid result-file reply and (b)
+    # spawns a TRACKED grandchild that outlives flat-cyborg. We assert two
+    # safety-critical properties the live overheating fix depends on:
+    #   (1) stdout is EXACTLY the reply — no `set -m` job-control noise
+    #       (`[1]`/`Done`/`Killed`) leaks into the channel the agentis caller
+    #       parses (a single leaked line corrupts every prompt() reply);
+    #   (2) when the shell HAS job control (`set -m` took), the leaked grandchild
+    #       is SIGKILLed by the EXIT trap. Where job control is unavailable
+    #       (non-interactive dash / no controlling tty), `set -m` is a no-op and
+    #       the reap cannot fire — we skip the kill assertion there rather than
+    #       fail, since the stdout-cleanliness property (1) still holds and is
+    #       the one that protects the reply channel.
+    REAP_STUB_DIR="$(mktemp -d)"
+    GC_PIDFILE="$(mktemp)"
+    cat > "$REAP_STUB_DIR/flat-cyborg" <<REAP_STUB_EOF
+#!/usr/bin/env bash
+set -eu
+CMDFILE=""
+while [ \$# -gt 0 ]; do
+    case "\$1" in
+        --cmd-file) CMDFILE="\$2"; shift 2 ;;
+        --) shift; break ;;
+        *) shift ;;
+    esac
+done
+RESULT_FILE="\$(grep -F 'file-writing tool:' "\$CMDFILE" 2>/dev/null | sed 's/.*file-writing tool: //' | head -1)"
+printf '%s' '{"reply":"clean","n":1}' > "\$RESULT_FILE"
+# A grandchild that outlives flat-cyborg — the leak the reap must clean up.
+( sleep 30 ) &
+echo "\$!" > "$GC_PIDFILE"
+exit 0
+REAP_STUB_EOF
+    chmod +x "$REAP_STUB_DIR/flat-cyborg"
+
+    REAP_OUT="$(PATH="$REAP_STUB_DIR:$PATH" sh "$WRAPPER" "draft. return JSON." 2>/dev/null)"
+    if [ "$REAP_OUT" = '{"reply":"clean","n":1}' ]; then
+        pass "test 10a: wrapper stdout is exactly the reply (no set -m job-control noise leaks)"
+    else
+        fail "test 10a: stdout clean under the reap path" "out=[$REAP_OUT]"
+    fi
+
+    GC_PID="$(cat "$GC_PIDFILE" 2>/dev/null || echo '')"
+    # Was job control actually available in this shell? (No controlling tty /
+    # non-interactive dash turns `set -m` into a no-op — reaping cannot fire.)
+    if ( set -m ) 2>/dev/null && [ -n "$GC_PID" ]; then
+        # Give the EXIT trap a beat; then the grandchild must be gone.
+        sleep 0.5
+        if kill -0 "$GC_PID" 2>/dev/null; then
+            fail "test 10b: EXIT trap SIGKILLs the leaked grandchild" "grandchild $GC_PID still alive"
+            kill -KILL "$GC_PID" 2>/dev/null || true
+        else
+            pass "test 10b: EXIT trap reaped the leaked grandchild (process group SIGKILLed)"
+        fi
+    else
+        pass "test 10b: [SKIP] job control unavailable in this shell — reap is a no-op (stdout still clean)"
+        [ -n "$GC_PID" ] && kill -KILL "$GC_PID" 2>/dev/null || true
+    fi
+    rm -rf "$REAP_STUB_DIR" "$GC_PIDFILE"
 fi
 
 echo ""
