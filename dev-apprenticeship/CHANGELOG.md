@@ -15,6 +15,31 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Added
+
+- **Opt-in plan-approved auto-promotion (planning → implementation handoff).**
+  The federation planned issues (scope / risks / breakdown / plan-review all
+  ran) but nothing advanced a planned issue to implementation — `plan_reviewer`
+  only posted an advisory note, so issues stalled at `needs-planning` forever
+  and `code_writer` idled. A new opt-in flag `[planning] auto_promote` (default
+  `false`) closes the loop: when `plan_reviewer` APPROVES a plan at the
+  autonomous tier (posts the plan note), it advances the issue from the
+  planning stage to the implementation stage — adds the implementation trigger
+  label (so `code_writer` picks it up) and removes `needs-planning`. The label
+  mutation runs through a new gated `update-issue` forge verb in the planning
+  `github-api.sh` / `gitlab-api.sh` (`--add-labels` / `--remove-labels`, with
+  GitHub 404-on-already-absent treated as a no-op, GitLab `remove_labels` in the
+  PUT body). Epic-class issues are SKIPPED (left for the operator to decompose),
+  detected the same way `code_writer` does — searching the target issue's raw
+  JSON (fetched via a new single-issue `issue` verb) for the quoted epic label
+  from the `planning:labels:epic` vocabulary memo. `start-colony.sh` exports
+  `PLAN_AUTO_PROMOTE` (normalised `1`/`0`) plus `IMPLEMENTATION_TRIGGER_LABEL`,
+  and `install.sh` adds `PLAN_AUTO_PROMOTE` to the `exec.env_passthrough`
+  allowlist (with an in-place migration for pre-#1362 configs). Mirrors the
+  `[code-review] auto_merge` auto-merge build (#1317). No new prompt(); the
+  existing staleness gate stands. The revise/reject (post-failed / non-autonomous)
+  paths never promote.
+
 ### Fixed
 
 - **CI-failure recovery re-drove the wrong branch.** `code_writer`'s recovery

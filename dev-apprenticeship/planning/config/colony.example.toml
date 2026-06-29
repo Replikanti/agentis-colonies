@@ -23,6 +23,16 @@ tick_interval_ms = 60000
 # encoding at the API layer.
 trigger_label = "needs-planning"
 
+# #1362: opt-in plan-approved auto-promotion. When true, an autonomous-tier
+# plan_reviewer (confidence >= 0.95) that APPROVES a plan advances the issue
+# from the planning stage to the implementation stage — it adds the
+# implementation trigger label (so code_writer picks it up) and removes the
+# needs-planning label. Epic-class issues are skipped (left for the operator
+# to decompose). Default false: a plan is posted as an advisory note only and
+# the operator promotes the issue by hand. The label mutation runs through the
+# gated `update-issue` forge verb. Mirrors [code-review] auto_merge (#1317).
+auto_promote = false
+
 # #226: label vocabulary injected into risk_assessor and task_decomposer
 # prompts. Free-text; the agents splice the value into their prompt
 # verbatim so operators can list comma-separated label names or describe
@@ -56,6 +66,14 @@ me      = ""  # your GitLab username (optional, enables personal/team tagging)
 #
 # To serve N repos from this colony, repeat the [[forge.github]] block once
 # per repo. Each entry has its own owner/repo/token/url/me.
+
+# #1362: the implementation trigger label, only consulted by plan_reviewer's
+# auto-promotion hook (auto_promote = true above). It MUST match the
+# implementation colony's [implementation] trigger_label so a promoted issue
+# lands on the label code_writer triggers on. Leave unset to use the default
+# "implementation". Same key name the implementation colony parses.
+# [implementation]
+# trigger_label = "implementation"
 
 # Per-colony LLM backend override (#319, schema reserved for forward-
 # compat — NO RUNTIME EFFECT today; see #351). All four keys are

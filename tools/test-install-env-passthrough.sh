@@ -18,7 +18,8 @@
 #   Test 10: Fresh install env_passthrough carries the trigger-label vars (#1185)
 #   Test 11: #1185 upgrade rewrites the #277-era literal to add trigger-labels
 #   Test 12: #277-era pre-fix literal also migrates straight to the #1185 value
-#   Test 13: #1185-era literal migrates to add AUTO_MERGE (#1317)
+#   Test 13: #1185-era literal migrates straight to the PLAN_AUTO_PROMOTE value
+#   Test 14: #1317-era literal migrates to add PLAN_AUTO_PROMOTE (#1362)
 #
 # Usage: ./tools/test-install-env-passthrough.sh
 # Exit code 0 if all tests pass, 1 otherwise.
@@ -70,10 +71,19 @@ run_install_fragment() {
              { print "exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE"; next } { print }' \
             "$AGENTIS_CONFIG" > "$AGENTIS_CONFIG.tmp" && mv "$AGENTIS_CONFIG.tmp" "$AGENTIS_CONFIG"
     fi
-    write_key 'exec.env_passthrough' 'COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE'
+    # Migrate #1362 pre-fix literal in-place. Adds PLAN_AUTO_PROMOTE so the
+    # planning colony's opt-in plan-approved auto-promotion flag survives the
+    # env strip. Exact-match only.
+    if [ -f "$AGENTIS_CONFIG" ] && grep -qxF 'exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE' "$AGENTIS_CONFIG"; then
+        awk '/^exec\.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_\*,GITHUB_\*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE$/ \
+             { print "exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE,PLAN_AUTO_PROMOTE"; next } { print }' \
+            "$AGENTIS_CONFIG" > "$AGENTIS_CONFIG.tmp" && mv "$AGENTIS_CONFIG.tmp" "$AGENTIS_CONFIG"
+    fi
+    write_key 'exec.env_passthrough' 'COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE,PLAN_AUTO_PROMOTE'
 }
 
-EXPECTED_NEW='exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE'
+EXPECTED_NEW='exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE,PLAN_AUTO_PROMOTE'
+EXPECTED_1317='exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE'
 EXPECTED_1185='exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL'
 EXPECTED_277='exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*'
 EXPECTED_OLD='exec.env_passthrough = COLONY_DIR,GITLAB_*'
@@ -176,16 +186,16 @@ run_install_fragment "$T12_CONFIG"
 
 if grep -qxF "$EXPECTED_NEW" "$T12_CONFIG" \
     && ! grep -qxF "$EXPECTED_OLD" "$T12_CONFIG"; then
-    pass "#277-era literal migrates straight to the AUTO_MERGE value"
+    pass "#277-era literal migrates straight to the PLAN_AUTO_PROMOTE value"
 else
-    fail "#277->#1317 migration — expected '$EXPECTED_NEW', got:"
+    fail "#277->#1362 migration — expected '$EXPECTED_NEW', got:"
     cat "$T12_CONFIG"
 fi
 
-# ----- Test 13: #1185-era literal migrates to add AUTO_MERGE (#1317) -----
+# ----- Test 13: #1185-era literal migrates straight to the PLAN_AUTO_PROMOTE value -----
 # A federation installed between #1185 and #1317 carries the trigger-label
-# value without AUTO_MERGE; the #1317 migration appends it so the
-# code-review auto-merge flag survives the env strip before `exec sh`.
+# value without AUTO_MERGE; the chained #1317 + #1362 migrations append both
+# AUTO_MERGE and PLAN_AUTO_PROMOTE in one install run.
 T13_DIR="$FAKE_ROOT/t13"
 mkdir -p "$T13_DIR"
 T13_CONFIG="$T13_DIR/config"
@@ -195,10 +205,29 @@ run_install_fragment "$T13_CONFIG"
 
 if grep -qxF "$EXPECTED_NEW" "$T13_CONFIG" \
     && ! grep -qxF "$EXPECTED_1185" "$T13_CONFIG"; then
-    pass "#1185-era literal migrates to add AUTO_MERGE (#1317)"
+    pass "#1185-era literal migrates straight to the PLAN_AUTO_PROMOTE value"
 else
-    fail "#1185->#1317 migration — expected '$EXPECTED_NEW' and no bare '$EXPECTED_1185', got:"
+    fail "#1185->#1362 migration — expected '$EXPECTED_NEW' and no bare '$EXPECTED_1185', got:"
     cat "$T13_CONFIG"
+fi
+
+# ----- Test 14: #1317-era literal migrates to add PLAN_AUTO_PROMOTE (#1362) -----
+# A federation installed between #1317 and #1362 carries the AUTO_MERGE value
+# without PLAN_AUTO_PROMOTE; the #1362 migration appends it so the planning
+# colony's opt-in auto-promotion flag survives the env strip before `exec sh`.
+T14_DIR="$FAKE_ROOT/t14"
+mkdir -p "$T14_DIR"
+T14_CONFIG="$T14_DIR/config"
+printf '%s\n' "$EXPECTED_1317" > "$T14_CONFIG"
+
+run_install_fragment "$T14_CONFIG"
+
+if grep -qxF "$EXPECTED_NEW" "$T14_CONFIG" \
+    && ! grep -qxF "$EXPECTED_1317" "$T14_CONFIG"; then
+    pass "#1317-era literal migrates to add PLAN_AUTO_PROMOTE (#1362)"
+else
+    fail "#1317->#1362 migration — expected '$EXPECTED_NEW' and no bare '$EXPECTED_1317', got:"
+    cat "$T14_CONFIG"
 fi
 
 # ----- Heartbeat interval (#280) -----

@@ -197,8 +197,34 @@ esac
 # consume PLANNING_TRIGGER_LABEL identically.
 PLANNING_TRIGGER_LABEL=$(parse_toml planning trigger_label)
 
+# #1362: the implementation trigger label, so plan_reviewer's opt-in
+# auto-promotion hook can add the label code_writer triggers on when it
+# advances an approved plan to the implementation stage. Read from an
+# optional [implementation] trigger_label key in the planning colony.toml
+# (same key name the implementation colony parses) so the two colonies stay
+# in sync. Empty if unset — plan_reviewer's getenv fallback is the
+# documented default "implementation".
+IMPLEMENTATION_TRIGGER_LABEL=$(parse_toml implementation trigger_label)
+
+# #1362: opt-in plan-approved auto-promotion flag. `[planning].auto_promote`
+# in colony.toml gates whether an autonomous-tier plan_reviewer advances an
+# approved-plan issue from the planning stage to the implementation stage
+# (add the implementation trigger label + remove needs-planning). Normalised
+# to "1" (true) / "0" (false, the default when unset/false/anything-else).
+# Exported so the agent's getenv("PLAN_AUTO_PROMOTE") reads it from the daemon
+# process env. The update-issue verb itself performs the label mutation; this
+# flag only decides whether to attempt the promotion at all. Mirrors the
+# code-review colony's AUTO_MERGE flag (#1317).
+PLAN_AUTO_PROMOTE_RAW="$(parse_toml planning auto_promote)"
+case "$PLAN_AUTO_PROMOTE_RAW" in
+    true|True|TRUE|1|yes|on) PLAN_AUTO_PROMOTE=1 ;;
+    *) PLAN_AUTO_PROMOTE=0 ;;
+esac
+
 export FORGE_TYPE
 export PLANNING_TRIGGER_LABEL
+export IMPLEMENTATION_TRIGGER_LABEL
+export PLAN_AUTO_PROMOTE
 export COLONY_DIR
 
 # #316 M5a: --print-repos-json probe for the federation-dashboard collector.
