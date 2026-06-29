@@ -17,6 +17,20 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- **Stranded issues with a failed edit job never got re-drafted.** `code_writer`'s
+  #200 staleness gate (`should_draft_code`) short-circuits re-drafting once an
+  issue's `(iid, updated_at)` is recorded — but those markers are set after a
+  successful draft + launch, NOT after the detached edit job actually opens an
+  MR. A launched job that then died without producing an MR (`NO_EDITS`, error,
+  or a killed editing session) left the issue stuck: no MR, and no retry until
+  the issue's `updated_at` changed. The draft path now gates on actual
+  completion — it re-drafts whenever no open OR merged MR exists for the issue's
+  deterministic `fix/issue-<iid>` branch, regardless of the staleness markers
+  (new `has_mr_for_branch` helper reusing the raw `merge-requests` query +
+  python branch-scan the red-PR recovery path already uses) — and defensively
+  clears the `last_drafted_iid` / `last_drafted_updated_at` markers on the
+  autonomous path's terminal-failure (`NO_EDITS` / error) branches so the next
+  tick retries.
 - **CI-failure recovery re-drove the wrong branch.** `code_writer`'s recovery
   path built the branch from the PR number (`fix/issue-<PR-iid>`) instead of the
   PR's actual head branch. A PR for issue N has its own number M != N, so the

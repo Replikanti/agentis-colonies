@@ -259,6 +259,56 @@ fn should_draft_code(owner: string, repo: string, iid_str: string, upd: string) 
     return false;
 }
 
+// #1350: scan a raw merge-requests list JSON for an MR whose `source_branch`
+// equals BR. Returns "1" on a match, "0" otherwise. The raw JSON rides $J
+// (env var, off-argv) so ARG_MAX never bites. Total: malformed JSON / missing
+// field / non-list all collapse to "0".
+fn raw_list_has_branch(raw: string, branch: string) -> bool {
+    let cmd = "J=" + shell_escape(raw) + " BR=" + shell_escape(branch) +
+        " python3 -c 'import os,json,sys" +
+        "\ntry:" +
+        "\n    d=json.loads(os.environ[\"J\"])" +
+        "\nexcept Exception:" +
+        "\n    print(\"0\"); sys.exit(0)" +
+        "\nbr=os.environ[\"BR\"]" +
+        "\nif not isinstance(d,list):" +
+        "\n    print(\"0\"); sys.exit(0)" +
+        "\nfor it in d:" +
+        "\n    if isinstance(it,dict) and it.get(\"source_branch\")==br:" +
+        "\n        print(\"1\"); sys.exit(0)" +
+        "\nprint(\"0\")'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out == "1";
+}
+
+// #1350: does an open OR merged MR already exist for this issue's deterministic
+// fix/issue-<iid> branch? The #200 staleness markers (last_drafted_iid /
+// _updated_at) record "we drafted once", NOT "an MR landed", so a detached edit
+// job that dies without opening an MR (NO_EDITS / error / killed session) leaves
+// the issue stranded: should_draft_code short-circuits until the issue's
+// updated_at changes, yet no MR exists. Gating on actual completion fixes that —
+// the draft path re-fires whenever this returns false regardless of the markers.
+// Queries the RAW (no --view) opened then merged lists — the raw GitLab shape
+// carries source_branch, which the `impl` view drops (same reason recover_red_prs
+// reads raw). A void/empty iid has no branch to key on, so we report true
+// (suppress the forced re-draft, mirroring should_draft_code's void guard).
+// A poll that errors collapses to "" => no branch match, so a transient forge
+// outage biases toward a (harmless, pid-guarded) re-draft attempt rather than
+// silently stranding the issue.
+fn has_mr_for_branch(owner: string, repo: string, iid_str: string) -> bool {
+    if iid_str == "void" { return true; };
+    if len(iid_str) == 0 { return true; };
+    let branch = "fix/issue-" + iid_str;
+    // colony-lint: safe-exec-concat
+    let opened_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state opened" + repo_arg(owner, repo);
+    let opened_raw = try { exec sh opened_cmd; } catch e { ""; };
+    if raw_list_has_branch(opened_raw, branch) { return true; };
+    // colony-lint: safe-exec-concat
+    let merged_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged" + repo_arg(owner, repo);
+    let merged_raw = try { exec sh merged_cmd; } catch e { ""; };
+    return raw_list_has_branch(merged_raw, branch);
+}
+
 // #239: learn from each merged MR at most once per daemon lifetime.
 // Without this gate, the `merge-requests --since <last_check>` query
 // keeps returning the same MR at index [0] as long as its `updated_at`
@@ -498,7 +548,19 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         // the `draft = prompt(...)` call below.
         let first_iid_str = to_string(json_get(issues_raw, "[0].iid"));
         let first_upd = to_string(json_get(issues_raw, "[0].updated_at"));
-        if should_draft_code(owner, repo, first_iid_str, first_upd) {
+        // #1350: gate on actual completion, not "we drafted once". Re-draft when
+        // the #200 staleness gate says so OR when no open/merged MR exists for
+        // the issue's deterministic fix/issue-<iid> branch — the latter rescues
+        // an issue whose launched edit job died without opening an MR. The
+        // has_mr_for_branch check is only reached when should_draft_code is false
+        // (the if-expression short-circuits), so the extra MR-list queries cost
+        // nothing on the common drafted-and-changed path.
+        let needs_draft = if should_draft_code(owner, repo, first_iid_str, first_upd) {
+            true;
+        } else {
+            !has_mr_for_branch(owner, repo, first_iid_str);
+        };
+        if needs_draft {
             // #1185: the staleness markers (last_drafted_iid / _updated_at)
             // are NOT set here. The #200 gate must only short-circuit once an
             // action for this issue has actually COMPLETED. The autonomous
@@ -614,9 +676,18 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                             print("[code_writer] Detached checkout-edit still running for issue", draft.issue_id, "— will poll next tick");
                         } else {
                             if job_state == "NO_EDITS" {
-                                print("[code_writer] Detached checkout-edit produced no edits for issue", draft.issue_id, "— will retry");
+                                // #1350: a terminal failure that opened no MR. Clear
+                                // the #200 staleness markers (defensively — the
+                                // autonomous path only sets them on DONE) so the
+                                // next tick re-drafts instead of stranding the issue.
+                                memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_iid"), "");
+                                memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_updated_at"), "");
+                                print("[code_writer] Detached checkout-edit produced no edits for issue", draft.issue_id, "— cleared draft markers, will retry");
                             } else {
-                                print("[code_writer] Detached checkout-edit error for issue", draft.issue_id, ":", job_out, "— will retry");
+                                // #1350: same terminal-failure marker clear on ERROR.
+                                memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_iid"), "");
+                                memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_updated_at"), "");
+                                print("[code_writer] Detached checkout-edit error for issue", draft.issue_id, ":", job_out, "— cleared draft markers, will retry");
                             };
                         };
                     };
