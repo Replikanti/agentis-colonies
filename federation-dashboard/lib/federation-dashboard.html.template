@@ -2093,10 +2093,20 @@ function renderFedHealthBanner(data) {
 
   let detail = '';
   if (!degraded) {
-    // QA finding #4: HEALTHY means every running daemon is alive, so
-    // "N/N alive" is the truthful denominator (agents.length includes
-    // intentionally-stopped agents and would render a misleading ratio).
-    const parts = [running.length + '/' + running.length + ' running daemons alive'];
+    // #1351: the denominator is the REGISTERED agent count (agents.length),
+    // not running.length. Deriving both numerator and denominator from the
+    // running set always renders an all-green "N/N" bar and actively hides a
+    // federation where registered agents are stopped/failed. Match the
+    // "Agents Running" stat box (running/registered) so running < registered
+    // is visible, and surface the stopped/failed agents distinctly below
+    // (count + first names) so the gap is named, not just numeric.
+    const stopped = agents.filter(a => a.state !== 'running');
+    const parts = [running.length + '/' + agents.length + ' running daemons alive'];
+    if (stopped.length > 0) {
+      const names = stopped.map(a => a.name).slice(0, 3).join(', ');
+      parts.push(stopped.length + ' stopped (' + names +
+                 (stopped.length > 3 ? ', ...' : '') + ')');
+    }
     // #1231: roll up liveness across ALL federation sidecars from
     // data.sidecars[] (auto-promote, cost-cap, snapshot-refresh, cost-rate
     // since #1227) instead of echoing only the auto-promote object — the old

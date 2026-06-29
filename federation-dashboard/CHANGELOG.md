@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **dashboard**: the federation health banner no longer renders an all-green `N/N running daemons alive` line by deriving both the numerator and the denominator from the **running** set. `renderFedHealthBanner()`'s healthy branch built `running.length + '/' + running.length`, so a federation with 16 of 21 registered agents running still read `16/16` — actively hiding the 5 stopped/failed daemons and contradicting the "Agents Running" stat box that already shows `running/registered`. The denominator is now the **registered** agent count (`agents.length`), so `running < registered` is visible (`16/21`), and a distinct `N stopped (name1, name2, name3, ...)` segment is pushed to the banner detail naming the stopped/failed agents whenever any registered agent is not running. Purely display-side — no collector schema change. ([#1351](https://github.com/Replikanti/agentis-colonies/issues/1351))
+
 ## [0.11.1] — 2026-06-21
 
 ### Fixed
