@@ -275,7 +275,7 @@ REAP_STUB_EOF
         fi
     else
         pass "test 10b: [SKIP] job control unavailable in this shell — reap is a no-op (stdout still clean)"
-        [ -n "$GC_PID" ] && kill -KILL "$GC_PID" 2>/dev/null || true
+        if [ -n "$GC_PID" ]; then kill -KILL "$GC_PID" 2>/dev/null || true; fi
     fi
     rm -rf "$REAP_STUB_DIR" "$GC_PIDFILE"
 fi
