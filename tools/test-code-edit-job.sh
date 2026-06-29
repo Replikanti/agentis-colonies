@@ -347,7 +347,7 @@ fi
 # Clean up the forged live sibling + the under-cap detached job.
 kill "$LIVE_PID" 2>/dev/null || true
 UNCAP_PID="$(cat "$UNCAP_JD/pid" 2>/dev/null || echo '')"
-[ -n "$UNCAP_PID" ] && kill "$UNCAP_PID" 2>/dev/null || true
+if [ -n "$UNCAP_PID" ]; then kill "$UNCAP_PID" 2>/dev/null || true; fi
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
