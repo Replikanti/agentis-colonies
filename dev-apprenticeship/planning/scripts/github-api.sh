@@ -18,6 +18,8 @@
 #   github-api.sh issues-by-label-events --since ISO8601 [--view <name>]
 #   github-api.sh issue-label-events <number> [--since ISO8601] [--label NAME]
 #   github-api.sh add-note <number> --body <text>
+#   github-api.sh issue <number>
+#   github-api.sh update-issue <number> [--add-labels l1,l2] [--remove-labels l1,l2]
 #   github-api.sh merge-requests [--state opened|merged|all] [--since ISO8601]
 #                                [--per-page N] [--view <name>]
 #
@@ -606,6 +608,84 @@ PY
         else
             printf '%s' "$normalized"
         fi
+        ;;
+
+    issue)
+        # Single-issue fetch, normalized to GitLab shape. Used by
+        # plan_reviewer's promotion hook (#1362) to read the target issue's
+        # raw labels for the epic guard. Mirrors implementation/github-api.sh.
+        IID="${1:?Usage: github-api.sh issue <number>}"
+        case "$IID" in
+            ''|*[!0-9]*) emit_error "issue number must be numeric: $IID"; exit 2 ;;
+        esac
+        body="$(gh_get "$API/issues/$IID")" || exit $?
+        printf '%s' "$body" | normalize_issue
+        ;;
+
+    update-issue)
+        # Label-mutation verb (#1362). plan_reviewer's autonomous promotion
+        # hook calls this to add the implementation trigger label and remove
+        # the needs-planning label after approving a plan. Mirrors the
+        # triage colony's update-issue --add-labels/--remove-labels contract.
+        ID="${1:?Usage: github-api.sh update-issue <number> [--add-labels ...] ...}"
+        shift
+        ADD_LABELS=""
+        REMOVE_LABELS=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --add-labels) ADD_LABELS="$2"; shift 2 ;;
+                --remove-labels) REMOVE_LABELS="$2"; shift 2 ;;
+                *) emit_error "unknown flag: $1"; exit 2 ;;
+            esac
+        done
+        # Fail fast if no modifying flags were passed (mirror of gitlab-api.sh).
+        if [ -z "$ADD_LABELS" ] && [ -z "$REMOVE_LABELS" ]; then
+            emit_error "update-issue requires at least one of --add-labels, --remove-labels"
+            exit 1
+        fi
+        case "$ID" in
+            ''|*[!0-9]*) emit_error "issue number must be numeric: $ID"; exit 2 ;;
+        esac
+        # Add-labels: POST /issues/{n}/labels with {"labels": [...]} — GitHub
+        # supports this natively (appends, no PATCH needed).
+        if [ -n "$ADD_LABELS" ]; then
+            ADD_JSON=$(LABELS="$ADD_LABELS" python3 -c 'import os, json; print(json.dumps({"labels": [s.strip() for s in os.environ["LABELS"].split(",") if s.strip()]}))')
+            gh_post "$API/issues/$ID/labels" "$ADD_JSON" >/dev/null || exit $?
+        fi
+        # Remove-labels: DELETE /issues/{n}/labels/{name} per label. GitHub has
+        # no bulk remove endpoint — loop. URL-encode via python3 so label names
+        # containing '/', ' ', '::' etc. survive. Idempotency parity with
+        # gitlab-api.sh: a 404 (label already absent) is a no-op, not an error.
+        # Use gh_call so 429 + 5xx retry, secondary-rate-limit 403 detection,
+        # and the transport-failure handling all work identically to every
+        # other verb. gh_call emits to stderr + returns 4 on any 4xx; capture
+        # stderr, and if it reports HTTP 404 specifically, swallow silently.
+        if [ -n "$REMOVE_LABELS" ]; then
+            IFS=',' read -r -a _RM <<< "$REMOVE_LABELS"
+            for lab in "${_RM[@]}"; do
+                lab_trimmed="$(printf '%s' "$lab" | python3 -c 'import sys; print(sys.stdin.read().strip())')"
+                [ -z "$lab_trimmed" ] && continue
+                enc="$(printf '%s' "$lab_trimmed" | python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.stdin.read(), safe=""))')"
+                del_err="$(mktemp)"
+                set +e
+                gh_call DELETE "$API/issues/$ID/labels/$enc" >/dev/null 2> "$del_err"
+                del_rc=$?
+                set -e
+                if [ "$del_rc" -eq 4 ] && grep -q 'HTTP 404' "$del_err"; then
+                    rm -f "$del_err"
+                    continue  # label already absent — no-op
+                fi
+                if [ "$del_rc" -ne 0 ]; then
+                    cat "$del_err" >&2
+                    rm -f "$del_err"
+                    exit "$del_rc"
+                fi
+                rm -f "$del_err"
+            done
+        fi
+        # Return the updated issue so callers have a consistent response shape.
+        body="$(gh_get "$API/issues/$ID")" || exit $?
+        printf '%s' "$body" | normalize_issue
         ;;
 
     rate-limit-status)

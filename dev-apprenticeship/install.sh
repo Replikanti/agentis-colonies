@@ -734,7 +734,19 @@ if [ -d "$AGENTIS_DIR" ]; then
             "$AGENTIS_CONFIG" > "$AGENTIS_CONFIG.tmp" && mv "$AGENTIS_CONFIG.tmp" "$AGENTIS_CONFIG"
         ok "upgraded exec.env_passthrough (#1317)"
     fi
-    write_key 'exec.env_passthrough'         'COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE'
+    # Migrate #1362 pre-fix literal in-place. Adds PLAN_AUTO_PROMOTE so the
+    # planning colony's opt-in plan-approved auto-promotion flag survives the
+    # env strip (plan_reviewer reads it via getenv from the daemon process
+    # env; the passthrough keeps it visible to `exec sh` forge calls too).
+    # Exact-match only — any operator customization is preserved untouched.
+    if [ -f "$AGENTIS_CONFIG" ] && grep -qxF 'exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE' "$AGENTIS_CONFIG"; then
+        # Use a tmp file + mv for atomicity; no sed -i (BSD vs GNU portability).
+        awk '/^exec\.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_\*,GITHUB_\*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE$/ \
+             { print "exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE,PLAN_AUTO_PROMOTE"; next } { print }' \
+            "$AGENTIS_CONFIG" > "$AGENTIS_CONFIG.tmp" && mv "$AGENTIS_CONFIG.tmp" "$AGENTIS_CONFIG"
+        ok "upgraded exec.env_passthrough (#1362)"
+    fi
+    write_key 'exec.env_passthrough'         'COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE,PLAN_AUTO_PROMOTE'
     write_key 'exec.default_timeout_ms'      '120000'
     write_key 'pii_transmit'                 'allow'
     write_key 'knowledge.enabled'            'true'

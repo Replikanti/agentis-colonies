@@ -22,6 +22,8 @@
 #   gitlab-api.sh issues-by-label-events --since ISO8601 [--view <name>]
 #   gitlab-api.sh issue-label-events <iid> [--since ISO8601] [--label NAME]
 #   gitlab-api.sh add-note <iid> --body <text>
+#   gitlab-api.sh issue <iid>
+#   gitlab-api.sh update-issue <iid> [--add-labels l1,l2] [--remove-labels l1,l2]
 #   gitlab-api.sh merge-requests [--state merged] [--since ISO8601] [--per-page N] [--view <name>]
 #
 # Views (opt-in projection; default is full JSON):
@@ -33,10 +35,12 @@
 #   <cmd>          --view raw          explicit pass-through (same as no flag)
 #   GITLAB_VIEW_MODE=raw               env-override that forces pass-through globally.
 #
-# Planning only reads from GitLab and posts comments. It never changes labels,
-# approves, assigns, or merges. That surface lives in triage / code-review /
-# release colonies. If you are tempted to add a write endpoint here, it
-# probably belongs in a different colony.
+# Planning reads from GitLab and posts comments. The one write exception is
+# the opt-in planning->implementation handoff (#1362): `update-issue` adds the
+# implementation trigger label and removes needs-planning when plan_reviewer
+# approves a plan at the autonomous tier (gated by PLAN_AUTO_PROMOTE=1). It
+# never approves, assigns, or merges — that surface lives in triage /
+# code-review / release colonies.
 #
 # Returns JSON to stdout. Exit code 0 on success, 1 on error, 2 on unknown flag/view.
 
@@ -278,6 +282,10 @@ gl_post() {
     gl_call POST "$1" -H "Content-Type: application/json" -d "$2"
 }
 
+gl_put() {
+    gl_call PUT "$1" -H "Content-Type: application/json" -d "$2"
+}
+
 CMD="${1:?Usage: gitlab-api.sh <command> [args...]}"
 shift
 
@@ -517,6 +525,54 @@ PY
         else
             gl_get_q "$API/merge_requests" "${ARGS[@]}"
         fi
+        ;;
+
+    issue)
+        # Single-issue fetch (raw GitLab JSON). Used by plan_reviewer's
+        # promotion hook (#1362) to read the target issue's raw labels for
+        # the epic guard. Mirrors implementation/gitlab-api.sh.
+        IID="${1:?Usage: gitlab-api.sh issue <iid>}"
+        gl_get "$API/$ISSUE_COLLECTION/$IID"
+        ;;
+
+    update-issue)
+        # Label-mutation verb (#1362). plan_reviewer's autonomous promotion
+        # hook calls this to add the implementation trigger label and remove
+        # the needs-planning label after approving a plan. Mirrors the
+        # triage colony's update-issue --add-labels/--remove-labels contract.
+        ID="${1:?Usage: gitlab-api.sh update-issue <iid> [--add-labels ...] ...}"
+        shift
+        ADD_LABELS=""
+        REMOVE_LABELS=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --add-labels) ADD_LABELS="$2"; shift 2 ;;
+                --remove-labels) REMOVE_LABELS="$2"; shift 2 ;;
+                *) emit_error "unknown flag: $1"; exit 2 ;;
+            esac
+        done
+        # Fail fast if no modifying flags were passed. A PUT with body {}
+        # is a confusing no-op: GitLab happily returns the unchanged issue
+        # as if the update had happened, so the caller has no signal that
+        # they forgot to pass anything.
+        if [ -z "$ADD_LABELS" ] && [ -z "$REMOVE_LABELS" ]; then
+            emit_error "update-issue requires at least one of --add-labels, --remove-labels"
+            exit 1
+        fi
+        # Build JSON body via python3 json.dumps so label names containing
+        # quotes, backslashes, commas, or control chars are escaped correctly.
+        # Both add_labels and remove_labels are accepted in a single PUT.
+        JSON_BODY=$(ADD_LABELS="$ADD_LABELS" REMOVE_LABELS="$REMOVE_LABELS" python3 - <<'PY'
+import os, json
+body = {}
+if os.environ.get("ADD_LABELS"):
+    body["add_labels"] = os.environ["ADD_LABELS"]
+if os.environ.get("REMOVE_LABELS"):
+    body["remove_labels"] = os.environ["REMOVE_LABELS"]
+print(json.dumps(body))
+PY
+)
+        gl_put "$API/$ISSUE_COLLECTION/$ID" "$JSON_BODY"
         ;;
 
     rate-limit-status)

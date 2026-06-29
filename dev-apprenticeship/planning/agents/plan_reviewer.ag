@@ -317,6 +317,65 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 );
             };
             print("[plan_reviewer] Posted plan to issue", draft.issue_id);
+            // #1362: opt-in plan-approved auto-promotion. plan_reviewer posts a
+            // plan for EVERY reviewed issue (no separate revise/reject path), so
+            // approval is decided by the self-review score gate below, NOT by the
+            // fact a plan was posted. Only when the operator set PLAN_AUTO_PROMOTE=1
+            // in colony.toml ([planning] auto_promote = true, exported by
+            // start-colony.sh), the plan clears the review_score bar, AND the
+            // issue is non-epic, do we advance it from planning to implementation:
+            // add the implementation trigger label and remove the planning one so
+            // code_writer picks it up. This adds NO second prompt() (the staleness
+            // gate stands) and leaves the posted marker untouched. Epic-class
+            // issues are skipped — they need operator-driven decomposition.
+            let auto_promote = getenv("PLAN_AUTO_PROMOTE");
+            if auto_promote == "1" {
+                // Fetch the target issue's RAW JSON for the epic guard. The
+                // single-issue `issue` verb returns the raw labels array;
+                // to_string() of an ARRAY-valued json_get yields "void" on the
+                // runtime, so we search the raw text for the exact quoted label
+                // the SAME way code_writer.ag does (#1271/#1273). epic vocabulary
+                // is planning:labels:epic (cross-colony memo) or "epic" default.
+                // colony-lint: safe-exec-concat
+                let issue_cmd = "$COLONY_DIR/scripts/forge-api.sh issue " + to_string(draft.issue_id) + repo_arg(owner, repo);
+                let issue_detail = try { exec sh issue_cmd; } catch e { ""; };
+                let epic_vocab = recall_latest("planning:labels:epic");
+                let epic_label = if len(epic_vocab) > 0 { epic_vocab; } else { "epic"; };
+                let is_epic = index_of(issue_detail, "\"" + epic_label + "\"") > 0;
+                if is_epic {
+                    print("[plan_reviewer] issue", draft.issue_id, "is epic-class — leaving for the operator (no auto-promotion, #1362)");
+                } else {
+                    // #1362 APPROVE GATE: plan_reviewer posts a plan for EVERY
+                    // reviewed issue (there is no separate revise/reject path),
+                    // so "a plan was posted" is NOT approval. The self-review
+                    // score IS the approve signal — only a plan that clears the
+                    // bar promotes; a weak plan stays at needs-planning for the
+                    // next planning pass to improve.
+                    if draft.review_score < 0.7 {
+                        print("[plan_reviewer] plan review_score", draft.review_score, "below 0.7 — not auto-promoting issue", draft.issue_id);
+                    } else {
+                        // Resolve the implementation trigger label (the label
+                        // code_writer triggers on) and the planning trigger label
+                        // (this colony's own, to remove). Both fall back to the
+                        // documented defaults when the env vars are empty.
+                        let impl_env = getenv("IMPLEMENTATION_TRIGGER_LABEL");
+                        let impl_label = if len(impl_env) > 0 { impl_env; } else { "implementation"; };
+                        let plan_env = getenv("PLANNING_TRIGGER_LABEL");
+                        let plan_label = if len(plan_env) > 0 { plan_env; } else { "needs-planning"; };
+                        // colony-lint: safe-exec-concat
+                        let promote_cmd = "$COLONY_DIR/scripts/forge-api.sh update-issue " + to_string(draft.issue_id) + " --add-labels " + shell_escape(impl_label) + " --remove-labels " + shell_escape(plan_label) + repo_arg(owner, repo);
+                        let promote_result = try { exec sh promote_cmd; } catch e {
+                            print("[plan_reviewer] Auto-promote failed for issue", draft.issue_id, ":", e);
+                            "";
+                        };
+                        if len(promote_result) > 0 {
+                            print("[plan_reviewer] Auto-promoted issue", draft.issue_id, "to implementation (#1362)");
+                        } else {
+                            print("[plan_reviewer] Auto-promote no-op for issue", draft.issue_id, "(will retry next tick)");
+                        };
+                    };
+                };
+            };
         } else {
             // #1115: a rate-limited write defers (records backoff + emits the
             // observable event) instead of marking the task failed; the
