@@ -195,6 +195,30 @@ d=json.load(sys.stdin); assert d["setup"]=="file_despite_timeout", d
     rm -rf "$STUB_DIR"
 fi
 
+# ===========================================================================
+# Descendant reaping (#1367): a live process-group-kill test would need real
+# flat-cyborg + claude, so instead we statically assert the wrapper (a) parses
+# clean and (b) its EXIT trap performs a process-group KILL of the flat-cyborg
+# invocation. The two source-greps pin the mechanism: `set -m` (own pgroup) and
+# a `kill -KILL -- "-$FC_PGID"` (negative-pgid group signal) in the trap.
+# ===========================================================================
+if [ ! -f "$WRAPPER" ]; then
+    fail "missing wrapper for reaping checks: $WRAPPER"
+else
+    if bash -n "$WRAPPER" 2>/dev/null && sh -n "$WRAPPER" 2>/dev/null; then
+        pass "test 8: wrapper parses clean under bash -n and sh -n"
+    else
+        fail "test 8: wrapper parses clean (bash -n / sh -n)"
+    fi
+    # shellcheck disable=SC2016  # Matching the literal wrapper source ($FC_PGID is intentional, not expanded here).
+    if grep -q 'set -m' "$WRAPPER" && grep -q 'kill -KILL -- "-\$FC_PGID"' "$WRAPPER"; then
+        pass "test 9: EXIT trap reaps the flat-cyborg process group (set -m + kill -KILL -PGID)"
+    else
+        fail "test 9: EXIT trap performs a process-group kill" \
+             "missing 'set -m' or 'kill -KILL -- \"-\$FC_PGID\"'"
+    fi
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

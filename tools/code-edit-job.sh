@@ -49,6 +49,17 @@
 # Override (testing): CODE_EDIT_ORCH points at a stub orchestrator instead of
 # tools/code-edit-in-checkout.sh. The stub must honour the same exit-code
 # contract (0 -> PR URL on stdout, 3 -> NO_EDITS, other -> failure).
+#
+# Global concurrency cap (#1367): each detached orchestrator runs a
+# flat-cyborg -> claude (Node) session ~330MB RSS, so an unbounded fan-out
+# (code_writer can pick several issues) overheats the host. Before launching a
+# NEW job we count the live sibling jobs (status=running + pid alive) under the
+# same jobs root; if that count is already >= CODE_EDIT_MAX_CONCURRENT (default
+# 2) we print `RUNNING` — the same not-yet-done sentinel code_writer treats as
+# "still busy, poll next tick" (it leaves the #1185 markers unset and re-polls)
+# — and exit 0 WITHOUT touching this issue's job dir, so the next tick
+# re-evaluates the issue cleanly. Polls of an EXISTING job dir are never capped
+# (no new orchestrator is started on that path).
 set -eu
 
 # ---------------------------------------------------------------------------
@@ -112,9 +123,43 @@ ORCH="${CODE_EDIT_ORCH:-$SCRIPT_DIR/code-edit-in-checkout.sh}"
 
 JOBDIR="$FED_DIR/.agentis/jobs/$COLONY_NAME/issue-$ISSUE"
 
+# Jobs root shared by every issue-<iid> dir for this colony (the parent of
+# JOBDIR). The concurrency cap counts live siblings here.
+JOBS_ROOT="$(dirname "$JOBDIR")"
+
+# CODE_EDIT_MAX_CONCURRENT (#1367): hard ceiling on simultaneously-running
+# detached orchestrators. Validate to a positive integer; fall back to 2 on
+# empty / non-numeric / zero garbage.
+CODE_EDIT_MAX_CONCURRENT="${CODE_EDIT_MAX_CONCURRENT:-2}"
+case "$CODE_EDIT_MAX_CONCURRENT" in
+    ''|*[!0-9]*) CODE_EDIT_MAX_CONCURRENT=2 ;;
+    *) [ "$CODE_EDIT_MAX_CONCURRENT" -gt 0 ] || CODE_EDIT_MAX_CONCURRENT=2 ;;
+esac
+
 # pid_alive <pid>: 0 (true) if the pid names a live process, 1 otherwise.
 pid_alive() {
     [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null
+}
+
+# count_live_jobs: number of sibling issue-<iid> job dirs under JOBS_ROOT whose
+# status reads `running` AND whose recorded pid is alive, EXCLUDING this issue's
+# own dir. Reuses the exact same status/pid-liveness logic the poll path uses so
+# the two never diverge. Prints an integer.
+count_live_jobs() {
+    _live=0
+    [ -d "$JOBS_ROOT" ] || { printf '%s' 0; return 0; }
+    for _d in "$JOBS_ROOT"/issue-*; do
+        # Literal-glob guard (no matches) + skip our own dir.
+        [ -d "$_d" ] || continue
+        [ "$_d" = "$JOBDIR" ] && continue
+        _st=""
+        if [ -f "$_d/status" ]; then _st="$(cat "$_d/status" 2>/dev/null || true)"; fi
+        [ "$_st" = "running" ] || continue
+        _p=""
+        if [ -f "$_d/pid" ]; then _p="$(cat "$_d/pid" 2>/dev/null || true)"; fi
+        if pid_alive "$_p"; then _live=$((_live + 1)); fi
+    done
+    printf '%s' "$_live"
 }
 
 # clear_job: remove the job dir so the next invocation starts fresh.
@@ -179,6 +224,18 @@ if [ -d "$JOBDIR" ]; then
             clear_job
             ;;
     esac
+fi
+
+# ---------------------------------------------------------------------------
+# Global concurrency cap (#1367): before starting a NEW orchestrator, refuse if
+# the host is already running CODE_EDIT_MAX_CONCURRENT of them. Print the
+# not-yet-done sentinel (`RUNNING`) so code_writer polls again next tick, and do
+# NOT create/overwrite this issue's job dir — the next tick re-evaluates cleanly.
+# ---------------------------------------------------------------------------
+LIVE_JOBS="$(count_live_jobs)"
+if [ "$LIVE_JOBS" -ge "$CODE_EDIT_MAX_CONCURRENT" ]; then
+    echo "RUNNING"
+    exit 0
 fi
 
 # ---------------------------------------------------------------------------

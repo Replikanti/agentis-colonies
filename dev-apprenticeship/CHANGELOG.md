@@ -40,6 +40,38 @@ is asserted until multi-version CI is in place.
   existing staleness gate stands. The revise/reject (post-failed / non-autonomous)
   paths never promote.
 
+### Changed
+
+- **Host-overheating fixes: edit-job concurrency cap + interleaved tick
+  spacing.** Running all 21 daemons on an aligned 60s tick fired every agent's
+  flat-cyborg → claude (Node, ~330MB) session on the same wall-clock boundary,
+  and `code_writer` could spawn several concurrent detached edit orchestrators
+  with no global ceiling — together overheating the host (#1367). Three
+  surgical caps: (1) `tools/code-edit-job.sh` gains a global concurrency
+  semaphore — before launching a NEW orchestrator it counts the live sibling
+  jobs (`status=running` + pid alive) under the colony's jobs root and, if that
+  is already `>= CODE_EDIT_MAX_CONCURRENT` (default `2`), prints the existing
+  not-yet-done sentinel `RUNNING` and exits WITHOUT creating the issue's job dir
+  (the next tick re-evaluates cleanly; per-issue idempotency unchanged). (2) The
+  per-colony `tick_interval_for()` maps are retuned to de-bunch the steady
+  state: planning agents move to 180000ms; the active implementation agents
+  stagger across 90000/120000/150000ms (`code_writer` 90000, `commit_composer`
+  / `test_writer` 120000, `refactorer` 150000); triage's `issue_creator` /
+  `labeler` stagger to 90000 / 120000ms (router/prioritizer stay 180000ms,
+  release/code-review stay 300000ms). (3) `install.sh` writes
+  `max_concurrent_agents = 6` into `.agentis/config` (idempotent upsert, so
+  pre-#1367 configs get it appended on the next install run) as an agentis-core
+  host-concurrency cap.
+- **`tools/flat-cyborg-claude.sh` reaps claude descendants on the
+  plain-prompt path.** The wrapper relied solely on flat-cyborg's
+  `--timeout-ms`; its EXIT trap only removed temp files, so a wedged claude
+  (Node) child and its Bash-tool grandchildren could survive the wrapper and
+  keep burning CPU (#1367). The `flat-cyborg … -- claude …` invocation now runs
+  in its own process group (`set -m` makes the backgrounded job a process-group
+  leader) and the EXIT trap `kill -KILL`s that whole group, guarded so it never
+  signals the wrapper's own group or pid 1. The happy path (result-file read,
+  exit-code propagation, token scrubbing) is unchanged.
+
 ### Fixed
 
 - **Stranded issues with a failed edit job never got re-drafted.** `code_writer`'s

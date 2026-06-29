@@ -79,13 +79,42 @@ REPLY_FILE="$(mktemp)"
 # >= 0.11.0 (the --cmd-file flag).
 PROMPT_FILE="$(mktemp)"
 printf '%s' "$PROMPT" > "$PROMPT_FILE"
-trap 'rm -f "$REPLY_FILE" "$PROMPT_FILE" "$RESULT_FILE"' EXIT
+# Descendant reaping (#1367): flat-cyborg drives a claude (Node) child plus its
+# Bash-tool grandchildren. flat-cyborg's --timeout-ms ends flat-cyborg itself,
+# but a wedged claude / grandchild can survive and keep burning CPU. So we run
+# the invocation in its OWN process group (`set -m` makes a backgrounded job a
+# process-group leader: PGID == the job's PID) and, on EXIT, SIGKILL that whole
+# group. We capture the PGID into FC_PGID and reference it from the trap so the
+# happy path (file cleanup) and the leak-path (group kill) are one trap. Guards:
+# only kill a real, positive PGID that is NOT this wrapper's own group and not
+# pid 1, so we never signal ourselves or init.
+FC_PGID=""
+reap() {
+    _rc=$?
+    if [ -n "$FC_PGID" ] && [ "$FC_PGID" -gt 1 ] 2>/dev/null \
+       && [ "$FC_PGID" != "$$" ] && [ "$FC_PGID" != "$WRAPPER_PGID" ]; then
+        kill -KILL -- "-$FC_PGID" 2>/dev/null || true
+    fi
+    rm -f "$REPLY_FILE" "$PROMPT_FILE" "$RESULT_FILE"
+    return $_rc
+}
+# This wrapper's own process group — never kill it.
+WRAPPER_PGID="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
+case "$WRAPPER_PGID" in ''|*[!0-9]*) WRAPPER_PGID="$$" ;; esac
+trap 'reap' EXIT
 set +e
+set -m
 flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 \
   --idle-ms "${FLAT_CYBORG_IDLE_MS:-8000}" \
   --timeout-ms "${FLAT_CYBORG_TIMEOUT_MS:-180000}" \
-  --cmd-file "$PROMPT_FILE" -- claude > "$REPLY_FILE"
+  --cmd-file "$PROMPT_FILE" -- claude > "$REPLY_FILE" &
+# With `set -m` the backgrounded job leads its own process group whose PGID
+# equals this PID; reap that whole group on EXIT/timeout so claude + its
+# Bash-tool grandchildren die with the wrapper.
+FC_PGID=$!
+wait "$FC_PGID"
 FC_RC=$?
+set +m
 set -e
 # Prefer the result-file channel: if claude wrote a non-empty reply there, that
 # is authoritative — even when flat-cyborg exited non-zero (an idle/timeout that

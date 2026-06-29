@@ -305,14 +305,21 @@ fi
 # `--enable-exec` is required since agentis v1.1.6 (exec sh is opt-in; see #484/#489).
 # `--enable-messaging` is required for cross-agent emit/listen (#484, v1.1.6+).
 
-# Per-agent tick-interval override (#146). All implementation agents are
-# active: code_writer, test_writer, refactorer and commit_composer each
-# run against the current working tree and produce output every tick once
-# fed by upstream route_suggestion events. 60s keeps the write-test-commit
-# pipeline responsive. Fallback is 60000ms.
+# Per-agent tick-interval override (#146, retuned #1367). The implementation
+# agents are active (code_writer, test_writer, refactorer, commit_composer),
+# but on an aligned 60s tick all 21 federation daemons fired prompt() on the
+# same boundary and overheated the host (#1367). We STAGGER these four across
+# 90000/120000/150000ms so their steady-state ticks interleave rather than
+# bunch. code_writer keeps the shortest (90s) since it launches/polls the
+# detached edit jobs and benefits from prompt re-polling; the rest stagger
+# behind it. Fallback is 120000ms.
 tick_interval_for() {
     case "$1" in
-        *) echo 60000 ;;
+        code_writer)     echo 90000 ;;
+        commit_composer) echo 120000 ;;
+        test_writer)     echo 120000 ;;
+        refactorer)      echo 150000 ;;
+        *)               echo 120000 ;;
     esac
 }
 

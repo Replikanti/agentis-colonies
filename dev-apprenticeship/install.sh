@@ -701,6 +701,15 @@ if [ -d "$AGENTIS_DIR" ]; then
     fi
     write_key 'daemon.heartbeat_interval_ms' '900000'
     write_key 'daemon.cb_per_tick'           '2000'
+    # Host-concurrency cap (#1367): an upper bound on how many agent daemons the
+    # agentis-core daemon supervisor runs a tick for at once. With 21 daemons in
+    # the federation, an aligned tick fired every agent's flat-cyborg -> claude
+    # (Node, ~330MB) session simultaneously and overheated the host. 6 keeps a
+    # bounded set of concurrent prompt() sessions; the rest queue and run on a
+    # later tick. write_key is an idempotent upsert, so existing configs that
+    # predate this key get it appended on the next install run (the in-place
+    # migration), and operator-tuned values are never clobbered.
+    write_key 'max_concurrent_agents'        '6'
     write_key 'experience.enabled'           'true'
     # Migrate #277 pre-fix literal in-place. Exact-match only — any operator
     # customization (extra vars, reordering) is preserved untouched.
