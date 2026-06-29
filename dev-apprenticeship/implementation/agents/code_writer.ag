@@ -259,6 +259,35 @@ fn should_draft_code(owner: string, repo: string, iid_str: string, upd: string) 
     return false;
 }
 
+// #1370 (B3): tier-independent input fingerprint. Unlike the #200/#1185
+// completion markers (last_drafted_*), which are written ONLY after a
+// per-tier terminal action completes, this fingerprint is written at the END
+// of EVERY tick regardless of tier (and regardless of job poll-state). It
+// records the (iid, updated_at) of the top assigned issue we last *saw*, so a
+// tier-independent early-return can skip re-prompting an unchanged,
+// already-handled issue every tick. It NEVER starves: an EXTERNAL edit,
+// re-assignment, or any change that bumps updated_at flips this to false and
+// re-triggers a fresh draft. The early-return that consumes it is additionally
+// guarded by has_mr_for_branch, so an MR-less branch (a launched job that died
+// without opening an MR — the #1363 rescue) is never suppressed.
+fn input_unchanged(owner: string, repo: string, iid_str: string, upd: string) -> bool {
+    if iid_str == "void" {
+        return false;
+    };
+    if len(iid_str) == 0 {
+        return false;
+    };
+    let seen_iid = recall_latest(scoped_memo(owner, repo, "code_writer:last_seen_iid"));
+    if len(seen_iid) == 0 {
+        return false;
+    };
+    if iid_str != seen_iid {
+        return false;
+    };
+    let seen_upd = recall_latest(scoped_memo(owner, repo, "code_writer:last_seen_updated_at"));
+    return upd == seen_upd;
+}
+
 // #1350: scan a raw merge-requests list JSON for an MR whose `source_branch`
 // equals BR. Returns "1" on a match, "0" otherwise. The raw JSON rides $J
 // (env var, off-argv) so ARG_MAX never bites. Total: malformed JSON / missing
@@ -561,6 +590,30 @@ fn tick_for_repo(owner: string, repo: string) -> void {
             !has_mr_for_branch(owner, repo, first_iid_str);
         };
         if needs_draft {
+            // #1370 (B3): tier-independent input-unchanged early-return BEFORE
+            // the draft prompt(). If the top assigned issue's (iid, updated_at)
+            // fingerprint is unchanged since the last tick we saw it AND an
+            // open/merged MR already exists for its fix/issue-<iid> branch
+            // (has_mr_for_branch — i.e. real work landed, NOT an MR-less branch
+            // that needs the #1363 rescue), there is nothing new to do this
+            // tick: skip the expensive draft prompt and re-poll next tick. The
+            // red-CI recovery path already ran first (recover_red_prs returns
+            // before reaching here), so "no red CI to recover" holds. This is
+            // the idle-prompt-suppression win: it stops re-prompting an
+            // unchanged, already-handled issue every tick. It never starves —
+            // an external edit/re-assignment bumps updated_at and re-triggers.
+            if input_unchanged(owner, repo, first_iid_str, first_upd) {
+                if has_mr_for_branch(owner, repo, first_iid_str) {
+                    let now_s = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+                    if len(now_s) > 0 {
+                        memo_write(scoped_memo(owner, repo, "code_writer:last_check"), now_s);
+                    };
+                    memo_write(scoped_memo(owner, repo, "code_writer:last_seen_iid"), first_iid_str);
+                    memo_write(scoped_memo(owner, repo, "code_writer:last_seen_updated_at"), first_upd);
+                    print("[code_writer] issue", first_iid_str, "unchanged + MR exists — skipping draft prompt this tick");
+                    return;
+                };
+            };
             // #1185: the staleness markers (last_drafted_iid / _updated_at)
             // are NOT set here. The #200 gate must only short-circuit once an
             // action for this issue has actually COMPLETED. The autonomous
@@ -736,6 +789,15 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_updated_at"), first_upd);
             };
         };
+        // #1370 (B3): record the input fingerprint of the top assigned issue we
+        // saw THIS tick, at the END of the tick regardless of tier and
+        // regardless of whether we drafted/skipped. The next tick's
+        // input_unchanged early-return reads it. Written unconditionally here
+        // (not only on a completed action) so the early-return is robust even
+        // when the #1185 completion markers are deliberately left unset
+        // (LAUNCHED/RUNNING). An external edit bumps updated_at -> re-triggers.
+        memo_write(scoped_memo(owner, repo, "code_writer:last_seen_iid"), first_iid_str);
+        memo_write(scoped_memo(owner, repo, "code_writer:last_seen_updated_at"), first_upd);
     };
 
     // 3. Listen for routing suggestions from triage colony

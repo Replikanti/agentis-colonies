@@ -85,6 +85,35 @@ fn get_confidence() -> float {
     return 0.0;
 }
 
+// #1370 (B2/B3): per-issue handled marker, written at EVERY tier (not just
+// autonomous). Value = the tier the issue was handled at, so a future
+// promotion can re-run by clearing the marker. See scope_estimator.ag for the
+// full rationale (filter-before-index + idle-suppression).
+fn handled_key(owner: string, repo: string, iid: int) -> string {
+    return scoped_memo(owner, repo, "task_decomposer:" + to_string(iid) + ":handled");
+}
+
+fn is_handled(owner: string, repo: string, iid: int) -> bool {
+    return len(recall_latest(handled_key(owner, repo, iid))) > 0;
+}
+
+// #1370: first iid (created_at asc, stable) whose handled marker is unset.
+// Returns 0 when every listed issue is already handled — caller returns before
+// prompt(). See scope_estimator.ag first_unhandled_iid for the recursion bound.
+fn first_unhandled_iid(owner: string, repo: string, issues_raw: string, idx: int) -> int {
+    if idx >= 20 {
+        return 0;
+    };
+    let iid = parse_int(to_string(json_get(issues_raw, "[" + to_string(idx) + "].iid")));
+    if iid <= 0 {
+        return 0;
+    };
+    if is_handled(owner, repo, iid) {
+        return first_unhandled_iid(owner, repo, issues_raw, idx + 1);
+    };
+    return iid;
+}
+
 fn tick_for_repo(owner: string, repo: string) -> void {
     // Staleness gate for the observe step (#187). See risk_assessor.ag
     // for rationale. 1 800 s = 30 min between observe prompts keeps
@@ -174,21 +203,21 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         return;
     };
 
-    // #227: idempotency guard — see risk_assessor.ag for rationale.
-    let target_iid = parse_int(to_string(json_get(issues_raw, "[0].iid")));
+    // #1370 (B2/B3): filter already-handled issues BEFORE indexing, then pin
+    // to the first UNHANDLED iid. If none remain unhandled this tick, return
+    // before prompt() — the idle-suppression win. Replaces the pre-#1370 raw
+    // `[0]` pick + autonomous-only `:posted` gate.
+    let target_iid = first_unhandled_iid(owner, repo, issues_raw, 0);
     if target_iid <= 0 {
-        return;
-    };
-    let posted_key = scoped_memo(owner, repo, "task_decomposer:" + to_string(target_iid) + ":posted");
-    if len(recall_latest(posted_key)) > 0 {
         return;
     };
 
     let rec = recommend("task_decomposition", ["accuracy"]);
-    let context = "Unplanned issues (newest first): " + issues_raw + "\nPast decomposition patterns: " + to_string(rec);
+    let context = "Target issue id: " + to_string(target_iid) +
+        "\nUnplanned issues: " + issues_raw + "\nPast decomposition patterns: " + to_string(rec);
 
     let breakdown = prompt(
-        "You are a task decomposer. Pick the newest unplanned issue and propose a subtask breakdown that matches past granularity (learned average). Return JSON: issue_id (int, from the issues JSON), subtasks (string, numbered markdown list of 3-8 subtasks), count (int, how many subtasks), confidence (float 0-1).",
+        "You are a task decomposer. Propose a subtask breakdown for the issue whose iid equals the Target issue id given in the context (find it in the issues JSON), matching past granularity (learned average). Return JSON: issue_id (int, MUST equal the Target issue id), subtasks (string, numbered markdown list of 3-8 subtasks), count (int, how many subtasks), confidence (float 0-1).",
         context
     ) -> TaskBreakdown;
 
@@ -207,7 +236,10 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         };
         // #227: gate marker + success learn on non-empty post result.
         if len(post_result) > 0 {
+            let posted_key = scoped_memo(owner, repo, "task_decomposer:" + to_string(target_iid) + ":posted");
             memo_write(posted_key, "1");
+            // #1370: all-tier handled marker (value = tier).
+            memo_write(handled_key(owner, repo, target_iid), "autonomous");
             if len(owner) > 0 {
                 learn(
                     "task_decomposition",
@@ -265,6 +297,8 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     ["planning", "review-gated"]
                 );
             };
+            // #1370: all-tier handled marker (value = tier).
+            memo_write(handled_key(owner, repo, target_iid), "review-gated");
         } else {
             if my_tier == "propose" {
                 emit("planning:breakdown", breakdown);
@@ -285,6 +319,8 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                         ["emitted", "planning"]
                     );
                 };
+                // #1370: all-tier handled marker (value = tier).
+                memo_write(handled_key(owner, repo, target_iid), "propose");
             } else {
                 print("[task_decomposer] Observing (tier:", my_tier, ")");
                 if len(owner) > 0 {
@@ -304,6 +340,10 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                         ["observed", "planning"]
                     );
                 };
+                // #1370: all-tier handled marker (value = tier). observe-only,
+                // but advances the cursor so the same issue is not re-prompted
+                // every tick.
+                memo_write(handled_key(owner, repo, target_iid), my_tier);
             };
         };
     };

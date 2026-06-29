@@ -302,11 +302,19 @@ case "$CMD" in
                 *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
+        # #1370 (B2): stable ordering. The planning squad (scope_estimator,
+        # task_decomposer, risk_assessor, plan_reviewer) all index `[0]` of
+        # this list. With `updated_at desc` an agent's own note-post bumps the
+        # acted-on issue back to `[0]`, so the four agents chase a moving
+        # target and never converge. `created_at asc` is stable: a note never
+        # reshuffles the head, so the colony pipelines the backlog deterministically.
+        # Only the planning `issues` verb sorts this way; merge-requests and
+        # issues-by-label-events keep `updated_at desc` (recency-driven views).
         ARGS=(
             --data-urlencode "state=opened"
             --data-urlencode "per_page=20"
-            --data-urlencode "order_by=updated_at"
-            --data-urlencode "sort=desc"
+            --data-urlencode "order_by=created_at"
+            --data-urlencode "sort=asc"
         )
         if [ "$NEEDS_PLANNING" -eq 1 ]; then
             # #223: label read from env var (seeded by start-colony.sh
