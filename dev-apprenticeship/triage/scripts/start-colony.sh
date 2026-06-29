@@ -337,16 +337,19 @@ fi
 # `--enable-exec` is required since agentis v1.1.6 (exec sh is opt-in; see #484/#489).
 # `--enable-messaging` is required for cross-agent emit/listen (#484, v1.1.6+).
 
-# Per-agent tick-interval override (#146). Mixed colony: issue_creator and
-# labeler are active (they produce work on every tick driven by incoming
-# issues) and stay on the 60s default; router and prioritizer are reactive
-# (periodic routing sweeps, re-ranking) and run at 3-min cadence since
-# minute-grained latency on priority changes is not observable. Fallback is
-# 60000ms.
+# Per-agent tick-interval override (#146, retuned #1367). Mixed colony: router
+# and prioritizer are reactive (periodic routing sweeps, re-ranking) and run at
+# 3-min cadence since minute-grained latency on priority changes is not
+# observable. issue_creator and labeler are active, but an aligned 60s tick
+# bunched every federation daemon on one boundary and overheated the host
+# (#1367), so they are STAGGERED across 90000/120000ms to interleave with the
+# other active colonies. Fallback is 120000ms.
 tick_interval_for() {
     case "$1" in
         router|prioritizer) echo 180000 ;;
-        *)                  echo 60000 ;;
+        issue_creator)      echo 90000 ;;
+        labeler)            echo 120000 ;;
+        *)                  echo 120000 ;;
     esac
 }
 

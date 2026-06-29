@@ -312,15 +312,17 @@ fi
 # `--enable-exec` is required since agentis v1.1.6 (exec sh is opt-in; see #484/#489).
 # `--enable-messaging` is required for cross-agent emit/listen (#484, v1.1.6+).
 
-# Per-agent tick-interval override (#146). All planning agents are active:
-# scope_estimator, risk_assessor, task_decomposer and plan_reviewer each
-# produce work whenever an issue reaches triage:route_suggestion, so 60s
-# cadence preserves throughput. The map is kept for consistency with the
-# reactive colonies and to make future overrides obvious. Fallback is
-# 60000ms.
+# Per-agent tick-interval override (#146, retuned #1367). All planning agents
+# are issue-reactive (scope_estimator, risk_assessor, task_decomposer,
+# plan_reviewer) and the slowest-moving in the federation, so they tick at
+# 180000ms. This de-bunches them from the active colonies: with 21 daemons an
+# aligned 60s boundary fired every agent's prompt() at once and overheated the
+# host (#1367); spreading planning out to 3 minutes interleaves the steady
+# state. Fallback is 180000ms.
 tick_interval_for() {
     case "$1" in
-        *) echo 60000 ;;
+        scope_estimator|risk_assessor|task_decomposer|plan_reviewer) echo 180000 ;;
+        *) echo 180000 ;;
     esac
 }
 

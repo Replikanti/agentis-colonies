@@ -284,6 +284,71 @@ else
     pass "E: a normal run does NOT pass --decompose"
 fi
 
+# ===========================================================================
+# Scenario F (#1367): global concurrency cap. With CODE_EDIT_MAX_CONCURRENT=1
+# and ONE live `running` sibling job present, a NEW issue's launch must print
+# the not-yet-done sentinel `RUNNING`, NOT spawn an orchestrator, and NOT
+# create its own job dir (so the next tick re-evaluates cleanly). Raising the
+# cap lets the same launch proceed (LAUNCHED + job dir created).
+# ===========================================================================
+# Forge a live sibling job by hand: status=running with a pid that stays alive
+# for the duration of this scenario.
+LIVE_IID=800
+LIVE_JD="$(job_dir_for "$LIVE_IID")"
+mkdir -p "$LIVE_JD"
+printf 'running' > "$LIVE_JD/status"
+sleep 30 & LIVE_PID=$!
+printf '%s' "$LIVE_PID" > "$LIVE_JD/pid"
+
+CAP_MARKER="$WORK/cap-marker"; : > "$CAP_MARKER"
+CAP_IID=801
+CAP_OUT="$WORK/cap.out"
+env COLONY_DIR="$COLONY_DIR" CODE_EDIT_ORCH="$STUB" GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    CODE_EDIT_MAX_CONCURRENT=1 \
+    STUB_SLEEP=5 STUB_EXIT=0 STUB_URL="https://example.test/pr/801" STUB_MARKER="$CAP_MARKER" \
+    bash "$LAUNCHER" --owner "$OWNER" --repo "$REPO" --issue "$CAP_IID" \
+        --branch "fix/issue-$CAP_IID" --title "capped" --task "do it" >"$CAP_OUT" 2>/dev/null
+CAPW="$(cat "$CAP_OUT")"
+if [ "$CAPW" = "RUNNING" ]; then
+    pass "F: at cap, a new launch prints the not-yet-done sentinel RUNNING"
+else
+    fail "F: capped launch prints RUNNING" "stdout=[$CAPW]"
+fi
+if [ ! -d "$(job_dir_for "$CAP_IID")" ]; then
+    pass "F: a capped launch does NOT create the issue's job dir"
+else
+    fail "F: capped launch leaves no job dir" "dir exists: $(job_dir_for "$CAP_IID")"
+fi
+if [ ! -s "$CAP_MARKER" ]; then
+    pass "F: a capped launch does NOT spawn the orchestrator"
+else
+    fail "F: capped launch spawned nothing" "marker=$(cat "$CAP_MARKER" 2>/dev/null)"
+fi
+
+# Under the cap (raise to 2 with one live sibling) the same launch proceeds.
+UNCAP_MARKER="$WORK/uncap-marker"; : > "$UNCAP_MARKER"
+UNCAP_IID=802
+UNCAP_OUT="$WORK/uncap.out"
+env COLONY_DIR="$COLONY_DIR" CODE_EDIT_ORCH="$STUB" GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    CODE_EDIT_MAX_CONCURRENT=2 \
+    STUB_SLEEP=5 STUB_EXIT=0 STUB_URL="https://example.test/pr/802" STUB_MARKER="$UNCAP_MARKER" \
+    bash "$LAUNCHER" --owner "$OWNER" --repo "$REPO" --issue "$UNCAP_IID" \
+        --branch "fix/issue-$UNCAP_IID" --title "uncapped" --task "do it" >"$UNCAP_OUT" 2>/dev/null
+UNCAPW="$(cat "$UNCAP_OUT")"
+UNCAP_JD="$(job_dir_for "$UNCAP_IID")"
+if [ "$UNCAPW" = "LAUNCHED" ] && [ -d "$UNCAP_JD" ] \
+   && [ "$(cat "$UNCAP_JD/status" 2>/dev/null)" = "running" ]; then
+    pass "F: under the cap, the same launch proceeds (LAUNCHED + job dir)"
+else
+    fail "F: under-cap launch proceeds" "stdout=[$UNCAPW] dir=$UNCAP_JD"
+fi
+# Clean up the forged live sibling + the under-cap detached job.
+kill "$LIVE_PID" 2>/dev/null || true
+UNCAP_PID="$(cat "$UNCAP_JD/pid" 2>/dev/null || echo '')"
+if [ -n "$UNCAP_PID" ]; then kill "$UNCAP_PID" 2>/dev/null || true; fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
