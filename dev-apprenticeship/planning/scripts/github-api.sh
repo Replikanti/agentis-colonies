@@ -377,11 +377,16 @@ case "$CMD" in
                 *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
+        # #1370 (B2): stable ordering — see gitlab-api.sh issues for rationale.
+        # The four planning agents all index `[0]`; `created asc` is stable so an
+        # agent's own note-post never reshuffles the head and the colony
+        # pipelines the backlog deterministically. Only the planning `issues`
+        # verb sorts this way; pulls + issues-by-label-events stay `updated desc`.
         ARGS=(
             --data-urlencode "state=open"
             --data-urlencode "per_page=20"
-            --data-urlencode "sort=updated"
-            --data-urlencode "direction=desc"
+            --data-urlencode "sort=created"
+            --data-urlencode "direction=asc"
         )
         if [ "$NEEDS_PLANNING" -eq 1 ]; then
             # GitHub /issues accepts a comma-separated labels filter — same semantic

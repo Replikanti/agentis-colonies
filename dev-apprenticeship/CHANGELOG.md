@@ -65,6 +65,35 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- **Agents `prompt()`-ed every tick at idle; the planning colony thrashed
+  ([#1370](https://github.com/Replikanti/agentis-colonies/issues/1370)).** Every
+  ticking agent has a staleness gate, but the per-issue "handled" marker
+  (`<agent>:<iid>:posted` and friends) was written ONLY in the autonomous-tier
+  branch after a terminal action. At the default sub-autonomous tier the recall
+  returned empty every tick, so the `prompt()` re-fired every tick on the same
+  `[0]` issue — a flat-cyborg → Claude session per agent per tick at idle, the
+  host-overheating idle firehose. The planning colony additionally thrashed
+  because all four agents (`scope_estimator`, `task_decomposer`, `risk_assessor`,
+  `plan_reviewer`) picked raw `[0]` of an `updated_at desc`-sorted list and each
+  note they posted bumped the issue back to `[0]`, so the squad never converged
+  (`plan_reviewer` sat "Waiting on scope for #N" while peers churned #M). The fix:
+  (a) the four planning agents now write a per-issue handled marker
+  (`<agent>:<iid>:handled` = tier) at **every** tier; (b) they FILTER already-handled
+  issues before indexing (`first_unhandled_iid`) and `return` before `prompt()`
+  when none remain unhandled — the key idle-suppression win; (c) the act prompt is
+  PINNED to the computed `target_iid` (dropped "pick the newest unplanned issue")
+  so the gated and acted-on issue match; (d) `plan_reviewer` reads the peers'
+  persistent `:scope_drafted` / `:risks_drafted` / `:breakdown_drafted` keys for
+  readiness (`slot_ready`) so it converges on the issue the peers actually
+  completed; (e) the planning `issues` query sorts `created_at asc` (stable) in
+  both `gitlab-api.sh` and `github-api.sh` so an agent's own note-post no longer
+  reshuffles `[0]`. `code_writer` gains a tier-independent `input_unchanged`
+  early-return BEFORE its draft `prompt()` (per-tick `last_seen_iid` /
+  `last_seen_updated_at` fingerprint), guarded by `has_mr_for_branch` so the
+  #1363 MR-less-branch re-draft and the #1332 CI-recovery path still fire on real
+  work. Markers key on issue identity / the fingerprint includes `updated_at`, so
+  an externally-edited or re-assigned issue is never starved. Source-asserted by
+  `tools/test-idle-prompt-gates.sh`. (B1 concurrency cap shipped in #1368.)
 - **Stranded issues with a failed edit job never got re-drafted.** `code_writer`'s
   #200 staleness gate (`should_draft_code`) short-circuits re-drafting once an
   issue's `(iid, updated_at)` is recorded — but those markers are set after a

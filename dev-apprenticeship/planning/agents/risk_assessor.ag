@@ -154,6 +154,35 @@ fn get_confidence() -> float {
     return 0.0;
 }
 
+// #1370 (B2/B3): per-issue handled marker, written at EVERY tier (not just
+// autonomous). Value = the tier the issue was handled at, so a future
+// promotion can re-run by clearing the marker. See scope_estimator.ag for the
+// full rationale (filter-before-index + idle-suppression).
+fn handled_key(owner: string, repo: string, iid: int) -> string {
+    return scoped_memo(owner, repo, "risk_assessor:" + to_string(iid) + ":handled");
+}
+
+fn is_handled(owner: string, repo: string, iid: int) -> bool {
+    return len(recall_latest(handled_key(owner, repo, iid))) > 0;
+}
+
+// #1370: first iid (created_at asc, stable) whose handled marker is unset.
+// Returns 0 when every listed issue is already handled — caller returns before
+// prompt(). See scope_estimator.ag first_unhandled_iid for the recursion bound.
+fn first_unhandled_iid(owner: string, repo: string, issues_raw: string, idx: int) -> int {
+    if idx >= 20 {
+        return 0;
+    };
+    let iid = parse_int(to_string(json_get(issues_raw, "[" + to_string(idx) + "].iid")));
+    if iid <= 0 {
+        return 0;
+    };
+    if is_handled(owner, repo, iid) {
+        return first_unhandled_iid(owner, repo, issues_raw, idx + 1);
+    };
+    return iid;
+}
+
 fn tick_for_repo(owner: string, repo: string) -> void {
     // Staleness gate for the observe step (#187): the pattern library
     // only feeds `recommend()` inside the act branch below, which rarely
@@ -246,18 +275,14 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         return;
     };
 
-    // #227: idempotency guard. Long-lived workflow labels (e.g.
-    // "DEV::not started" on projects using scoped-label taxonomies)
-    // persist across human-gated transitions, so without this marker
-    // the act branch would re-prompt() + re-add-note() every tick.
-    // target_iid via json_get (mechanical JSON read, 0 LLM calls) —
-    // same idiom as plan_reviewer after #147.
-    let target_iid = parse_int(to_string(json_get(issues_raw, "[0].iid")));
+    // #1370 (B2/B3): filter already-handled issues BEFORE indexing, then pin
+    // to the first UNHANDLED iid. If none remain unhandled this tick, return
+    // before prompt() — the idle-suppression win. Replaces the pre-#1370 raw
+    // `[0]` pick + autonomous-only `:posted` gate (the marker was never set at
+    // the default sub-autonomous tier, so the act branch re-prompted every
+    // tick on the same `[0]` issue).
+    let target_iid = first_unhandled_iid(owner, repo, issues_raw, 0);
     if target_iid <= 0 {
-        return;
-    };
-    let posted_key = scoped_memo(owner, repo, "risk_assessor:" + to_string(target_iid) + ":posted");
-    if len(recall_latest(posted_key)) > 0 {
         return;
     };
 
@@ -269,10 +294,11 @@ fn tick_for_repo(owner: string, repo: string) -> void {
     };
 
     let rec = recommend("risk_assessment", ["accuracy", "safety"]);
-    let context = "Unplanned issues (newest first): " + issues_raw + "\nPast incident patterns: " + to_string(rec);
+    let context = "Target issue id: " + to_string(target_iid) +
+        "\nUnplanned issues: " + issues_raw + "\nPast incident patterns: " + to_string(rec);
 
     let assessment = prompt(
-        "You are a risk assessor. Pick the newest unplanned issue and identify its delivery risks based on historical incident patterns. Return JSON: issue_id (int, from the issues JSON), risks (string, bulleted markdown list of 2-5 risks), severity (string: 'low', 'medium', or 'high'), confidence (float 0-1).",
+        "You are a risk assessor. Identify the delivery risks of the issue whose iid equals the Target issue id given in the context (find it in the issues JSON), based on historical incident patterns. Return JSON: issue_id (int, MUST equal the Target issue id), risks (string, bulleted markdown list of 2-5 risks), severity (string: 'low', 'medium', or 'high'), confidence (float 0-1).",
         context
     ) -> RiskAssessment;
 
@@ -296,7 +322,10 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         // instead of silently consuming the issue.
         if len(post_result) > 0 {
             rl_clear("risk_assessor", owner, repo);
+            let posted_key = scoped_memo(owner, repo, "risk_assessor:" + to_string(target_iid) + ":posted");
             memo_write(posted_key, "1");
+            // #1370: all-tier handled marker (value = tier).
+            memo_write(handled_key(owner, repo, target_iid), "autonomous");
             if len(owner) > 0 {
                 learn(
                     "risk_assessment",
@@ -363,9 +392,15 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     ["planning", "review-gated"]
                 );
             };
+            // #1370: all-tier handled marker (value = tier).
+            memo_write(handled_key(owner, repo, target_iid), "review-gated");
         } else {
             if my_tier == "propose" {
                 emit("planning:risks", assessment);
+                // #1370 QA fix: durable :risks_drafted at propose too, so
+                // plan_reviewer's slot_ready() has a persistent signal beyond the
+                // single transient emit (otherwise a missed listen() starves it).
+                memo_write(scoped_memo(owner, repo, "plan_reviewer:" + to_string(assessment.issue_id) + ":risks_drafted"), "true");
                 if len(owner) > 0 {
                     learn(
                         "risk_assessment",
@@ -383,6 +418,8 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                         ["emitted", "planning"]
                     );
                 };
+                // #1370: all-tier handled marker (value = tier).
+                memo_write(handled_key(owner, repo, target_iid), "propose");
             } else {
                 print("[risk_assessor] Observing (tier:", my_tier, ")");
                 if len(owner) > 0 {
@@ -402,6 +439,10 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                         ["observed", "planning"]
                     );
                 };
+                // #1370: all-tier handled marker (value = tier). observe-only,
+                // but advances the cursor so the same issue is not re-prompted
+                // every tick.
+                memo_write(handled_key(owner, repo, target_iid), my_tier);
             };
         };
     };

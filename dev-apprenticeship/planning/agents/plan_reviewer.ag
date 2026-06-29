@@ -159,6 +159,56 @@ fn stash(owner: string, repo: string, slot: string, issue_id: int, body: string)
     };
 }
 
+// #1370 (B2/B3): per-issue handled marker, written at EVERY tier (not just the
+// post-able autonomous + review-gated tiers). Value = the tier the issue was
+// handled at, so a future promotion can re-run by clearing the marker. The
+// pre-#1370 `:posted` marker was only set in the branches that post a note, so
+// at the default sub-autonomous tier the reviewer re-prompted every tick.
+fn handled_key(owner: string, repo: string, iid: int) -> string {
+    return scoped_memo(owner, repo, "plan_reviewer:" + to_string(iid) + ":handled");
+}
+
+fn is_handled(owner: string, repo: string, iid: int) -> bool {
+    return len(recall_latest(handled_key(owner, repo, iid))) > 0;
+}
+
+// #1370: first iid (created_at asc, stable) whose handled marker is unset.
+// Returns 0 when every listed issue is already handled — caller returns before
+// prompt(). See scope_estimator.ag first_unhandled_iid for the recursion bound.
+// With the stable created_at-asc ordering the four planning agents all pin to
+// the SAME first-unhandled iid, so plan_reviewer converges on the issue its
+// peers are actually completing instead of chasing a moving `[0]`.
+fn first_unhandled_iid(owner: string, repo: string, issues_raw: string, idx: int) -> int {
+    if idx >= 20 {
+        return 0;
+    };
+    let iid = parse_int(to_string(json_get(issues_raw, "[" + to_string(idx) + "].iid")));
+    if iid <= 0 {
+        return 0;
+    };
+    if is_handled(owner, repo, iid) {
+        return first_unhandled_iid(owner, repo, issues_raw, idx + 1);
+    };
+    return iid;
+}
+
+// #1370: peer readiness for a slot, reading BOTH the persistent peer-drafted
+// key (plan_reviewer:<iid>:<slot>_drafted, written by the review-gated peers)
+// and the transient stash slot (plan_reviewer:<iid>:<slot>, stashed from this
+// tick's listen()). Either signal counts as "the peer completed this slot for
+// this issue", so the reviewer converges on the same issue the peers actually
+// finished instead of waiting only on the per-tick transient bus.
+fn slot_body(owner: string, repo: string, iid: int, slot: string) -> string {
+    return recall_latest(scoped_memo(owner, repo, "plan_reviewer:" + to_string(iid) + ":" + slot));
+}
+
+fn slot_ready(owner: string, repo: string, iid: int, slot: string) -> bool {
+    if len(slot_body(owner, repo, iid, slot)) >= 2 {
+        return true;
+    };
+    return len(recall_latest(scoped_memo(owner, repo, "plan_reviewer:" + to_string(iid) + ":" + slot + "_drafted"))) > 0;
+}
+
 fn tick_for_repo(owner: string, repo: string) -> void {
     // 1. Collect peer outputs emitted this tick (partial over time).
     let scope = listen("planning:scope_estimate", 500);
@@ -184,8 +234,8 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         stash(owner, repo, "breakdown", breakdown.issue_id, breakdown_str);
     };
 
-    // 3. Pick the newest unplanned issue and see if we have all three
-    //    slots filled for it. If not, keep waiting.
+    // 3. Pin to the first UNHANDLED unplanned issue (#1370 filter, below) and
+    //    see if we have all three slots filled for it. If not, keep waiting.
     // #147: cheap delta-check. The query returns `[]` when every open
     // issue already has a plan, so we early-exit before the assembly
     // prompt(). last_check is refreshed so the agent's liveness signal
@@ -212,11 +262,15 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         return;
     };
 
-    // #147: extract target_iid via json_get instead of prompt() — avoids
-    // an LLM round-trip on a purely mechanical JSON extraction (matches
-    // CLAUDE.md "prefer json_get" convention, same idiom as the MR
-    // reviewers).
-    let target_iid = parse_int(to_string(json_get(issues_raw, "[0].iid")));
+    // #1370 (B2/B3): filter already-handled issues BEFORE indexing, then pin to
+    // the first UNHANDLED iid. With the stable created_at-asc ordering the four
+    // planning agents all pin to the same iid, so plan_reviewer converges on
+    // the issue its peers are actually completing instead of chasing a moving
+    // `[0]` (the pre-#1370 thrash). If none remain unhandled, return before
+    // prompt() — the idle-suppression win. This subsumes the pre-#1370 `[0]`
+    // pick + `:posted` gate (the `:posted` marker was only set in the post-able
+    // branches, so the reviewer re-prompted every tick at sub-autonomous tiers).
+    let target_iid = first_unhandled_iid(owner, repo, issues_raw, 0);
     if target_iid <= 0 {
         let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
         if len(now_e) > 0 {
@@ -224,23 +278,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         };
         return;
     };
-
-    // #223: idempotency guard. Long-lived workflow labels (e.g.
-    // "DEV::not started" on projects using scoped-label taxonomies)
-    // persist across human-gated transitions, so without this marker
-    // the reviewer would re-prompt() and re-add-note() every tick for
-    // days on end. Marker is written only in the branches that actually
-    // post a GitLab note (autonomous + review-gated); propose/shadow do
-    // no external write, so leaving them unmarked is correct.
     let iid_str = to_string(target_iid);
-    let posted_key = scoped_memo(owner, repo, "plan_reviewer:" + iid_str + ":posted");
-    if len(recall_latest(posted_key)) > 0 {
-        let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
-        if len(now_e) > 0 {
-            memo_write(scoped_memo(owner, repo, "plan_reviewer:last_check"), now_e);
-        };
-        return;
-    };
 
     // #1115: rate-limit backoff gate. Defer the prompt + write (task is NOT
     // failed) while the jittered backoff window from a prior 429 is open.
@@ -249,19 +287,23 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         return;
     };
 
-    let s = recall_latest(scoped_memo(owner, repo, "plan_reviewer:" + to_string(target_iid) + ":scope"));
-    let r = recall_latest(scoped_memo(owner, repo, "plan_reviewer:" + to_string(target_iid) + ":risks"));
-    let b = recall_latest(scoped_memo(owner, repo, "plan_reviewer:" + to_string(target_iid) + ":breakdown"));
+    // #1370: readiness reads BOTH the persistent peer-drafted keys
+    // (:scope_drafted/:risks_drafted/:breakdown_drafted, written by the
+    // review-gated peers) and the transient stash slots — see slot_ready. The
+    // assembly prompt still consumes the stashed bodies (s/r/b) when present.
+    let s = slot_body(owner, repo, target_iid, "scope");
+    let r = slot_body(owner, repo, target_iid, "risks");
+    let b = slot_body(owner, repo, target_iid, "breakdown");
 
-    if len(s) < 2 {
+    if !slot_ready(owner, repo, target_iid, "scope") {
         print("[plan_reviewer] Waiting on scope for issue", target_iid);
         return;
     };
-    if len(r) < 2 {
+    if !slot_ready(owner, repo, target_iid, "risks") {
         print("[plan_reviewer] Waiting on risks for issue", target_iid);
         return;
     };
-    if len(b) < 2 {
+    if !slot_ready(owner, repo, target_iid, "breakdown") {
         print("[plan_reviewer] Waiting on breakdown for issue", target_iid);
         return;
     };
@@ -298,7 +340,10 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         // next tick retries instead of silently consuming the issue.
         if len(post_result) > 0 {
             rl_clear("plan_reviewer", owner, repo);
+            let posted_key = scoped_memo(owner, repo, "plan_reviewer:" + iid_str + ":posted");
             memo_write(posted_key, "1");
+            // #1370: all-tier handled marker (value = tier).
+            memo_write(handled_key(owner, repo, target_iid), "autonomous");
             if len(owner) > 0 {
                 learn(
                     "review_plan",
@@ -416,7 +461,10 @@ fn tick_for_repo(owner: string, repo: string) -> void {
             // #223: same gating as autonomous — only mark posted when
             // the GitLab call actually succeeded.
             if len(draft_result) > 0 {
+                let posted_key = scoped_memo(owner, repo, "plan_reviewer:" + iid_str + ":posted");
                 memo_write(posted_key, "1");
+                // #1370: all-tier handled marker (value = tier).
+                memo_write(handled_key(owner, repo, target_iid), "review-gated");
                 if len(owner) > 0 {
                     learn(
                         "review_plan",
@@ -474,6 +522,8 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                         ["emitted", "planning"]
                     );
                 };
+                // #1370: all-tier handled marker (value = tier).
+                memo_write(handled_key(owner, repo, target_iid), "propose");
                 print("[plan_reviewer] Emitted draft plan for issue", draft.issue_id);
             } else {
                 print("[plan_reviewer] Observing (tier:", my_tier, ")");
@@ -494,6 +544,10 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                         ["observed", "planning"]
                     );
                 };
+                // #1370: all-tier handled marker (value = tier). observe-only,
+                // but advances the cursor so the same issue is not re-prompted
+                // every tick.
+                memo_write(handled_key(owner, repo, target_iid), my_tier);
             };
         };
     };
