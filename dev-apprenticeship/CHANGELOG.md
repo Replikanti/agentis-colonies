@@ -72,13 +72,27 @@ is asserted until multi-version CI is in place.
   reviewer almost always missed those emits, and the #1370 mark-and-forget removed
   the every-tick re-emits that used to give it many catch chances — so it assembled
   "No scope/risk/breakdown supplied" skeleton plans, self-scored them ~0.3, and the
-  #1362 promote-gate (`review_score >= 0.7`) correctly held them → the
-  needs-planning queue never drained. Now scope_estimator / task_decomposer /
-  risk_assessor persist their full body to the exact slot the reviewer reads
-  (`plan_reviewer:<iid>:{scope,risks,breakdown}`) at **every** tier (a memo write
-  is ADR-0001-legal even at shadow), and `plan_reviewer.slot_ready()` requires the
-  real BODY rather than a `:_drafted` readiness flag — so the reviewer waits for
-  complete inputs and assembles an actionable plan that can clear the promote-gate.
+  #1362 promote-gate held them → the needs-planning queue never drained. Now
+  scope_estimator / task_decomposer / risk_assessor persist their full body to the
+  exact slot the reviewer reads (`plan_reviewer:<iid>:{scope,risks,breakdown}`) at
+  **every** tier (a memo write is ADR-0001-legal even at shadow), and
+  `plan_reviewer.slot_ready()` requires the real BODY rather than a `:_drafted`
+  readiness flag — so the reviewer waits for complete inputs and assembles an
+  actionable plan. The promote-gate was also recalibrated (`review_score >= 0.7`
+  → `>= 0.5`): with complete plans the LLM self-scores ~0.62-0.82, so 0.7 was too
+  aspirational for this self-scoring; 0.5 separates a complete plan from a skeleton
+  (~0.3) while downstream review + CI stay the real quality gate.
+- **Planning agents `CognitiveOverload`-ed every tick (CB budget too low for the
+  #1370 operations).** The idle-gate helpers added in #1370 (`first_unhandled_iid`
+  recursing the issue window with a `recall_latest`-backed `is_handled` per item,
+  `plan_reviewer.slot_ready()` reading the persistent peer keys, plus the #1362
+  auto-promotion's issue fetch + label update) pushed each planning tick's
+  cognitive-budget cost past the declared `cb` (scope_estimator / task_decomposer
+  / risk_assessor were `cb 500`, plan_reviewer `cb 600`), so the tick aborted with
+  `CognitiveOverload` — often AFTER posting the plan but BEFORE the auto-promotion
+  ran, leaving issues marked `handled` yet never promoted (and the #1370
+  mark-and-forget then never re-processed them). Raised all four planning agents +
+  their `cb_budget` to `1500`. No logic change. (code_writer was already `cb 2000`.)
 - **Agents `prompt()`-ed every tick at idle; the planning colony thrashed
   ([#1370](https://github.com/Replikanti/agentis-colonies/issues/1370)).** Every
   ticking agent has a staleness gate, but the per-issue "handled" marker
