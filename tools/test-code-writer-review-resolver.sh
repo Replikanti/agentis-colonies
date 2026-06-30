@@ -17,9 +17,11 @@
 #   4. Acts ONLY on STATE=green (red is owned by recover_red_prs — no race;
 #      pending => don't race CI), read from the forge pr-checks STATE token.
 #   5. Idempotency: re-drive only when the newest actionable note id is strictly
-#      greater than the review_fix:last_note:<iid> watermark, which is written
-#      BEFORE the launch (fail-closed).
-#   6. Retry cap 2 per PR via review_fix:attempts:<iid> (bumped before launch);
+#      greater than the review_fix:last_note:<iid> watermark, written AFTER the
+#      launch but SKIPPED on a RUNNING cap-defer (#1379) so a deferral never
+#      blocks re-entry; fail-closed on any real launch.
+#   6. Retry cap 2 per PR via review_fix:attempts:<iid> (bumped after launch,
+#      skipped on a RUNNING cap-defer so a deferral never consumes the budget);
 #      after that it gives up + logs (needs human) and does NOT launch a 3rd job.
 #   7. The launch uses code-edit-job.sh --recover (push-only; no new PR), with a
 #      findings-derived --task, keying --issue on the PR iid and --branch on src.
@@ -106,13 +108,19 @@ if printf '%s' "$RESOLVE_AT" | grep -Fq 'review_fix:last_note:' \
 else
     fail "note-id idempotency" "resolve_review_at must gate on note_id > last_seen watermark"
 fi
-# The watermark memo is written BEFORE the code-edit-job launch (fail-closed).
+# The watermark memo is written AFTER the launch and is GATED behind the RUNNING
+# cap-defer guard (#1379): a deferred launch (no job dir created) must NOT advance
+# the watermark, else re-entry for this note id is blocked. Fail-closed otherwise —
+# any real launch (incl. a crash mid-launch) writes it. Ordering: launch < RUNNING
+# guard < watermark write.
 notewm_pos="$(printf '%s\n' "$RESOLVE_AT" | grep -n 'review_fix:last_note:" + iid_str), note_id_str)' | head -n1 | cut -d: -f1)"
 job_pos="$(printf '%s\n' "$RESOLVE_AT" | grep -n 'code-edit-job.sh' | head -n1 | cut -d: -f1)"
-if [ -n "$notewm_pos" ] && [ -n "$job_pos" ] && [ "$notewm_pos" -lt "$job_pos" ]; then
-    pass "review_fix:last_note watermark written BEFORE the launch (fail-closed)"
+running_pos="$(printf '%s\n' "$RESOLVE_AT" | grep -n 'if job_state == "RUNNING"' | head -n1 | cut -d: -f1)"
+if [ -n "$notewm_pos" ] && [ -n "$job_pos" ] && [ -n "$running_pos" ] \
+   && [ "$job_pos" -lt "$running_pos" ] && [ "$running_pos" -lt "$notewm_pos" ]; then
+    pass "review_fix:last_note watermark written AFTER launch, skipped on RUNNING cap-defer (#1379)"
 else
-    fail "watermark before launch" "notewm_pos=$notewm_pos job_pos=$job_pos"
+    fail "watermark after launch, skipped on RUNNING defer" "job_pos=$job_pos running_pos=$running_pos notewm_pos=$notewm_pos"
 fi
 
 # 6. Retry cap 2: give up after >= 2 attempts with the human-needed log; the
@@ -130,13 +138,15 @@ if printf '%s' "$GIVEUP_BLOCK" | grep -Fq 'return 0;'; then
 else
     fail "give-up returns 0" "after the cap the function must return 0, not launch"
 fi
-# The attempt memo is BUMPED (+1) before launch (fail-closed: never exceed 2).
+# The attempt memo is BUMPED (+1) AFTER a real launch and SKIPPED on a RUNNING
+# cap-defer (#1379), so a deferral never consumes the 2-attempt budget. next_attempt
+# is still computed up-front; the memo_write lands behind the RUNNING guard.
 attempts_pos="$(printf '%s\n' "$RESOLVE_AT" | grep -n 'review_fix:attempts:" + iid_str), to_string(next_attempt))' | head -n1 | cut -d: -f1)"
 if printf '%s' "$RESOLVE_AT" | grep -Fq 'let next_attempt = attempts + 1' \
-   && [ -n "$attempts_pos" ] && [ -n "$job_pos" ] && [ "$attempts_pos" -lt "$job_pos" ]; then
-    pass "review_fix:attempts:<iid> bumped (+1) before launch"
+   && [ -n "$attempts_pos" ] && [ -n "$running_pos" ] && [ "$running_pos" -lt "$attempts_pos" ]; then
+    pass "review_fix:attempts:<iid> bumped (+1) after launch, skipped on RUNNING cap-defer"
 else
-    fail "attempt memo bump" "resolve_review_at must bump review_fix:attempts:<iid> before launching"
+    fail "attempt memo bump" "resolve_review_at must bump review_fix:attempts:<iid> behind the RUNNING guard"
 fi
 
 # 7. Launches code-edit-job.sh with --recover (push-only; no new PR), a
