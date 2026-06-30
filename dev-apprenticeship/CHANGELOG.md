@@ -65,6 +65,17 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- **Planning agents `CognitiveOverload`-ed every tick (CB budget too low for the
+  #1370 operations).** The idle-gate helpers added in #1370 (`first_unhandled_iid`
+  recursing the issue window with a `recall_latest`-backed `is_handled` per item,
+  `plan_reviewer.slot_ready()` reading the persistent peer keys, plus the #1362
+  auto-promotion's issue fetch + label update) pushed each planning tick's
+  cognitive-budget cost past the declared `cb` (scope_estimator / task_decomposer
+  / risk_assessor were `cb 500`, plan_reviewer `cb 600`), so the tick aborted with
+  `CognitiveOverload` — often AFTER posting the plan but BEFORE the auto-promotion
+  ran, leaving issues marked `handled` yet never promoted (and the #1370
+  mark-and-forget then never re-processed them). Raised all four planning agents +
+  their `cb_budget` to `1500`. No logic change. (code_writer was already `cb 2000`.)
 - **Agents `prompt()`-ed every tick at idle; the planning colony thrashed
   ([#1370](https://github.com/Replikanti/agentis-colonies/issues/1370)).** Every
   ticking agent has a staleness gate, but the per-issue "handled" marker
