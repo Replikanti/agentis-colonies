@@ -7,7 +7,7 @@
 // Run as daemon: agentis daemon agents/scope_estimator.ag --colony planning
 // Requires: exec_foreign capability, GITLAB_* env vars
 
-cb 500;
+cb 1500;
 
 type ScopeEstimate {
     issue_id: int,

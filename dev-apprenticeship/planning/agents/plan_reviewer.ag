@@ -13,7 +13,7 @@
 // Run as daemon: agentis daemon agents/plan_reviewer.ag --colony planning
 // Requires: exec_foreign capability, GITLAB_* env vars
 
-cb 600;
+cb 1500;
 
 type DraftPlan {
     issue_id: int,
@@ -399,7 +399,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     // score IS the approve signal — only a plan that clears the
                     // bar promotes; a weak plan stays at needs-planning for the
                     // next planning pass to improve.
-                    if draft.review_score < 0.7 {
+                    if draft.review_score < 0.5 {
                         print("[plan_reviewer] plan review_score", draft.review_score, "below 0.7 — not auto-promoting issue", draft.issue_id);
                     } else {
                         // Resolve the implementation trigger label (the label

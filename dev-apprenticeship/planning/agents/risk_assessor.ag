@@ -8,7 +8,7 @@
 // Run as daemon: agentis daemon agents/risk_assessor.ag --colony planning
 // Requires: exec_foreign capability, GITLAB_* env vars
 
-cb 500;
+cb 1500;
 
 type RiskAssessment {
     issue_id: int,
