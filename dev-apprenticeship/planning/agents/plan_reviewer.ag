@@ -13,7 +13,7 @@
 // Run as daemon: agentis daemon agents/plan_reviewer.ag --colony planning
 // Requires: exec_foreign capability, GITLAB_* env vars
 
-cb 600;
+cb 1500;
 
 type DraftPlan {
     issue_id: int,
