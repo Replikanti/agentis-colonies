@@ -17,6 +17,11 @@
 #      stays valid JSON (parseable, fields intact).
 #   2. A JSON object already on one line is returned unchanged-but-valid.
 #   3. A multi-line prose reply (not `{…}`-shaped) passes through byte-for-byte.
+#   4-7. WRAPPER channel-selection logic against a stub flat-cyborg.
+#   8-15 (#1340). The prose/fence/sentinel-wrapped unwrap path: a clean object,
+#      an `FCB_<hex>_BEGIN` screen-scrape sentinel prefix, a ```json fence, a
+#      no-language fence, a short prose trailer, a pure-prose passthrough, a
+#      long-prose-with-tiny-json passthrough (margin guard), and a soft-wrap.
 #
 # Auto-discovered by tools/colony-lint.sh's tools-test loop. Exit 0 if all pass.
 
@@ -193,6 +198,108 @@ d=json.load(sys.stdin); assert d["setup"]=="file_despite_timeout", d
     fi
 
     rm -rf "$STUB_DIR"
+fi
+
+# ===========================================================================
+# Prose / fence / sentinel-wrapped JSON unwrap (#1340). Heavier prompts (notably
+# implementation/code_writer's code-draft) reliably hit flat-cyborg's --extract
+# screen-scrape fallback, which leaks an `FCB_<hex>_BEGIN` sentinel into stdout,
+# or the interactive session answers conversationally with a fenced/prose-wrapped
+# object. The trimmed reply then no longer starts with `{`, so unwrap used to
+# pass it through unchanged and the typed `prompt(...) -> Schema` decode failed
+# every tick. The unwrap filter now extracts the JSON span — but ONLY when it
+# actually parses AND the surrounding prose is short (<=160 chars), so genuine
+# prose and long-form replies still pass through byte-for-byte.
+# ===========================================================================
+
+# Assert: unwrap($1) parses as JSON and its `setup` field == $2.
+assert_setup() {  # $1=input $2=expected_setup $3=test_label
+    local _out
+    _out="$(unwrap "$1")"
+    if printf '%s' "$_out" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+assert d["setup"] == sys.argv[1], (d.get("setup"), sys.argv[1])
+' "$2" >/dev/null 2>&1; then
+        pass "$3"
+    else
+        fail "$3" "out=[$_out]"
+    fi
+}
+
+# Assert: unwrap($1) is returned byte-for-byte unchanged (prose passthrough).
+assert_passthrough() {  # $1=input $2=test_label
+    local _out
+    _out="$(unwrap "$1")"
+    if [ "$_out" = "$1" ]; then
+        pass "$2"
+    else
+        fail "$2" "out=[$_out]"
+    fi
+}
+
+# --- Test 8: a clean single-line JSON object survives the fast path ----------
+assert_setup '{"count":1,"patterns":"abc","setup":"clean_fast_path"}' \
+    "clean_fast_path" \
+    "test 8: clean single-line JSON returned valid via the fast path"
+
+# --- Test 9: FCB_<hex>_BEGIN screen-scrape sentinel prefix is stripped -------
+SENTINEL_JSON='FCB_e67818bbb8163396b060_BEGIN
+{"count": 1, "patterns": "x", "setup": "sentinel_strip"}'
+assert_setup "$SENTINEL_JSON" \
+    "sentinel_strip" \
+    "test 9: FCB_<hex>_BEGIN sentinel-prefixed JSON is unwrapped and valid"
+
+# --- Test 10: ```json fenced object is unwrapped -----------------------------
+FENCED_JSON='```json
+{"count": 2, "setup": "fenced_lang"}
+```'
+assert_setup "$FENCED_JSON" \
+    "fenced_lang" \
+    "test 10: json-language-fenced JSON is unwrapped and valid"
+
+# --- Test 11: a no-language ``` fence is unwrapped ---------------------------
+FENCE_NOLANG='```
+{"count": 3, "setup": "fence_no_lang"}
+```'
+assert_setup "$FENCE_NOLANG" \
+    "fence_no_lang" \
+    "test 11: no-language-fenced JSON is unwrapped and valid"
+
+# --- Test 12: a short prose trailer after the object is stripped -------------
+TRAILER_JSON='{"count": 4, "setup": "trailer_prose"}
+
+Let me know if you need anything else.'
+assert_setup "$TRAILER_JSON" \
+    "trailer_prose" \
+    "test 12: short prose trailer after JSON is stripped, object stays valid"
+
+# --- Test 13: a pure-prose reply passes through byte-for-byte ----------------
+assert_passthrough 'I considered the request but there is nothing to draft here.' \
+    "test 13: pure-prose reply (no JSON) passes through byte-for-byte"
+
+# --- Test 14: long prose merely CONTAINING a tiny JSON object passes through -
+# The margin guard (<=160 chars of surrounding prose) must keep a genuine
+# long-form analysis that happens to contain a `{...}` from being mis-extracted.
+LONG_PROSE_JSON='After reviewing the issue in depth across the affected modules, the call sites, and the surrounding documentation, I concluded that the safest course of action is to defer and document the rationale clearly. {"note":"tiny"} That summary above captures the reasoning.'
+assert_passthrough "$LONG_PROSE_JSON" \
+    "test 14: long prose containing a tiny JSON object passes through (margin guard)"
+
+# --- Test 15: an embedded soft-wrap inside prose-free JSON collapses ----------
+SOFTWRAP_JSON='{"count": 5, "patterns": "price bounced from VAL with
+  rising volume on the retest", "setup": "soft_wrap_batch"}'
+OUT15="$(unwrap "$SOFTWRAP_JSON")"
+LINES15="$(printf '%s' "$OUT15" | wc -l | tr -d ' ')"
+if [ "$LINES15" = "0" ] && printf '%s' "$OUT15" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+assert d["setup"] == "soft_wrap_batch", d.get("setup")
+assert d["patterns"] == "price bounced from VAL with rising volume on the retest", repr(d["patterns"])
+' >/dev/null 2>&1; then
+    pass "test 15: embedded soft-wrap JSON collapses to one valid line, fields intact"
+else
+    fail "test 15: embedded soft-wrap JSON collapses to one valid line, fields intact" \
+         "out=[$OUT15] lines=$LINES15"
 fi
 
 echo ""
