@@ -153,7 +153,179 @@ fn rl_is_limited(owner: string, repo: string) -> int {
     return 0;
 }
 
+// --- #1375: durable own-PR auto-merge sweep ---
+//
+// The bus-based findings -> decision path below gates the WHOLE tick on four
+// ephemeral `listen("review:*_findings")` reads, which the reviewers emit on
+// their own independent tick schedules — so the narrow listen() window almost
+// never catches them and the tick early-exits before ever reaching the
+// approve/merge block. Two green, reviewed PRs sat unmerged for ~19h despite
+// AUTO_MERGE=1 and the autonomous tier (#1375). The remedy (sibling of #1360):
+// poll DURABLE forge state instead of the ephemeral bus. This sweep lists the
+// federation's OWN open PRs every tick, BEFORE the bus gate, and approves +
+// merges the green/mergeable ones — re-deriving the trigger from persisted
+// state rather than a missed pub/sub. The merge verb (the SAFETY chokepoint:
+// it independently re-checks mergeable + all-green and is a logged no-op
+// otherwise), the green+mergeable gating semantics, and the AUTO_MERGE env
+// contract are all unchanged. This path adds NO prompt().
+
+// open_pr_field: extract [idx].<field> (a scalar string) from the open-PR list
+// JSON. The raw JSON rides $J (env var, off-argv) so ARG_MAX never bites. Total:
+// missing index / field / malformed JSON all collapse to "". Mirrors the helper
+// of the same name in implementation/code_writer.ag (#1332).
+fn open_pr_field(raw: string, idx: int, field: string) -> string {
+    let cmd = "J=" + shell_escape(raw) + " I=" + to_string(idx) + " F=" + shell_escape(field) +
+        " python3 -c 'import os,json,sys" +
+        "\ntry:" +
+        "\n    d=json.loads(os.environ[\"J\"])" +
+        "\nexcept Exception:" +
+        "\n    print(\"\"); sys.exit(0)" +
+        "\ni=int(os.environ[\"I\"]); f=os.environ[\"F\"]" +
+        "\nif not isinstance(d,list) or not (0<=i<len(d)):" +
+        "\n    print(\"\"); sys.exit(0)" +
+        "\nv=d[i].get(f) if isinstance(d[i],dict) else None" +
+        "\nprint(v if isinstance(v,str) else (\"\" if v is None else str(v)))'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+// pr_check_token: pull the value of KEY out of a `STATE=<x> REF=<y>` line (the
+// forge pr-checks verb output). Value rides $L (env var, off-argv). Total: "".
+// Mirrors the helper of the same name in implementation/code_writer.ag (#1332).
+fn pr_check_token(out: string, key: string) -> string {
+    let cmd = "L=" + shell_escape(out) + " K=" + shell_escape(key) +
+        " python3 -c 'import os,sys" +
+        "\ns=os.environ[\"L\"].strip(); k=os.environ[\"K\"]+\"=\"" +
+        "\nfor tok in s.split():" +
+        "\n    if tok.startswith(k):" +
+        "\n        print(tok[len(k):]); sys.exit(0)" +
+        "\nprint(\"\")'";
+    let res = try { exec sh cmd; } catch e { ""; };
+    return res;
+}
+
+// merge_attempts: how many auto-merge attempts we have already made on this PR
+// (read from the merge_sweep:attempts:<iid> memo). Missing => 0.
+fn merge_attempts(owner: string, repo: string, iid_str: string) -> int {
+    let raw = recall_latest(scoped_memo(owner, repo, "merge_sweep:attempts:" + iid_str));
+    if len(raw) == 0 { return 0; };
+    return parse_int(raw);
+}
+
+// merge_at: process the open PR at index `idx`. Returns 1 if it ACTED (the caller
+// then returns for this tick — one merge action per tick), 0 otherwise (skip +
+// keep scanning). Own PRs only: the head branch must start `fix/issue-` (the
+// federation's own — never touch a human / third-party PR). Acts ONLY on
+// STATE=green (never red / pending — don't race CI). Approves at most once per PR
+// (the merge_sweep:approved:<iid> memo, written BEFORE the approve call). Hard
+// cap 3 merge attempts per PR via merge_sweep:attempts:<iid>; after that it gives
+// up + logs (needs human) so a green-but-permanently-unmergeable PR can't spin.
+fn merge_at(owner: string, repo: string, raw: string, idx: int) -> int {
+    let iid_str = open_pr_field(raw, idx, "iid");
+    if len(iid_str) == 0 { return 0; };
+    if iid_str == "void" { return 0; };
+    let src = open_pr_field(raw, idx, "source_branch");
+    // Own PRs only: never touch a PR we did not open.
+    if index_of(src, "fix/issue-") != 0 { return 0; };
+
+    // colony-lint: safe-exec-concat
+    let checks_cmd = "$COLONY_DIR/scripts/forge-api.sh pr-checks " + shell_escape(iid_str) + repo_arg(owner, repo);
+    let checks_out = try { exec sh checks_cmd; } catch e { ""; };
+    let state = pr_check_token(checks_out, "STATE");
+    // Only act on a confirmed green CI; pending => don't race, red => not ready.
+    if state != "green" { return 0; };
+
+    // Hard cap: after 3 merge attempts on a green-but-unmergeable PR, give up so
+    // it can't spin forever — a human takes over from here.
+    let attempts = merge_attempts(owner, repo, iid_str);
+    if attempts >= 3 {
+        print("[approval_decider] auto-merge gave up on PR", iid_str, "after 3 attempts — needs human");
+        return 0;
+    };
+    // Bump the attempt memo BEFORE acting so a crash mid-merge still counts
+    // against the cap (fail-closed: never exceed 3 attempts).
+    let next_attempt = attempts + 1;
+    memo_write(scoped_memo(owner, repo, "merge_sweep:attempts:" + iid_str), to_string(next_attempt));
+
+    // Approve at most once per PR. Write the merge_sweep:approved:<iid> memo
+    // BEFORE the approve call so a retry next tick (a green-but-not-yet-mergeable
+    // PR) skips re-approving — only the merge verb retries.
+    let approved = recall_latest(scoped_memo(owner, repo, "merge_sweep:approved:" + iid_str));
+    if len(approved) == 0 {
+        memo_write(scoped_memo(owner, repo, "merge_sweep:approved:" + iid_str), "1");
+        // colony-lint: safe-exec-concat
+        let approve_cmd = "$COLONY_DIR/scripts/forge-api.sh approve " + shell_escape(iid_str) + repo_arg(owner, repo);
+        try { exec sh approve_cmd; } catch e {
+            print("[approval_decider] Failed to approve PR", iid_str, ":", e);
+        };
+    };
+
+    // The gated merge verb independently re-checks mergeable + all-green and is a
+    // logged no-op (empty / non-zero) when not ready, so a not-yet-mergeable PR
+    // simply retries next tick (until the attempts cap).
+    // colony-lint: safe-exec-concat
+    let merge_cmd = "$COLONY_DIR/scripts/forge-api.sh merge " + shell_escape(iid_str) + repo_arg(owner, repo);
+    let merge_result = try { exec sh merge_cmd; } catch e {
+        print("[approval_decider] Auto-merge refused/failed for PR", iid_str, ":", e);
+        "";
+    };
+    if len(merge_result) > 0 {
+        print("[approval_decider] Auto-merged PR", iid_str);
+    } else {
+        print("[approval_decider] Auto-merge no-op for PR", iid_str, "(not green / not mergeable); will retry");
+    };
+    // One merge action per tick: signal the caller to return.
+    return 1;
+}
+
+// merge_scan: recurse over the open-PR list, acting on at most ONE PR per tick.
+// Returns 1 once an action ran (stop scanning), else 0.
+fn merge_scan(owner: string, repo: string, raw: string, idx: int) -> int {
+    let iid_str = open_pr_field(raw, idx, "iid");
+    if len(iid_str) == 0 { return 0; };
+    let did = merge_at(owner, repo, raw, idx);
+    if did == 1 { return 1; };
+    return merge_scan(owner, repo, raw, idx + 1);
+}
+
+// merge_ready_prs: list the federation's own open PRs and, at the autonomous
+// tier ONLY (merging is a terminal write) and ONLY when the operator opted in
+// via AUTO_MERGE=1 (the unchanged env contract), approve + merge the FIRST green
+// one whose head is a fix/issue- branch we opened. Returns 1 if it acted (the
+// caller returns for this tick — one merge action per tick). This is the DURABLE
+// trigger (#1375): it polls persisted forge state every tick instead of relying
+// on the ephemeral review-findings bus, which the independent tick schedules
+// almost always miss.
+fn merge_ready_prs(owner: string, repo: string) -> int {
+    // Autonomous-only: merging is a terminal write.
+    if repo_tier("approval_decider", owner, repo) != "autonomous" { return 0; };
+    // Preserve the AUTO_MERGE opt-in contract: no auto-merge unless enabled.
+    if getenv("AUTO_MERGE") != "1" { return 0; };
+    // Raw (no --view): the normalized list carries both `iid` and `source_branch`,
+    // the two fields merge_at needs.
+    // colony-lint: safe-exec-concat
+    let list_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state opened" + repo_arg(owner, repo);
+    let raw = try { exec sh list_cmd; } catch e { ""; };
+    if len(raw) < 5 { return 0; };
+    return merge_scan(owner, repo, raw, 0);
+}
+
 fn tick_for_repo(owner: string, repo: string) -> void {
+    // #1375: durable own-PR auto-merge sweep runs FIRST — BEFORE the ephemeral
+    // `listen("review:*_findings")` bus reads / early-exit gate below — so the
+    // merge sweep happens every tick regardless of bus traffic (the bus emits
+    // almost never land inside the narrow listen() window across independent tick
+    // schedules). If a green/mergeable PR we own is merged this tick, stamp
+    // last_check and return — one merge action per tick. The bus-based
+    // findings -> decision path below stays intact for the no-merge ticks.
+    if merge_ready_prs(owner, repo) == 1 {
+        let now_m = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_m) > 0 {
+            memo_write(scoped_memo(owner, repo, "approval_decider:last_check"), now_m);
+        };
+        return;
+    };
+
     // #147: cheap delta-check. approval_decider has no GitLab poll —
     // its input is the colony bus. If no reviewer emitted findings
     // since the last tick (all four `listen()` calls returned Void —
