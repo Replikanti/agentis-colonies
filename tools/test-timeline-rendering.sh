@@ -42,6 +42,11 @@ cleanup() {
         sleep 1
         kill -KILL "-$DASH_PID" 2>/dev/null || kill -KILL "$DASH_PID" 2>/dev/null || true
     fi
+    # Defense-in-depth: reap any federation-dashboard-server.py child the
+    # process-group kill missed (e.g. the secondary servers torn down inline,
+    # or a server orphaned by an early exit / interrupt), scoped to this
+    # suite's temp dir so a real production dashboard is never touched (#1300).
+    pkill -f "federation-dashboard-server.py.*$TMPDIR_TEST" 2>/dev/null || true
     rm -rf "$TMPDIR_TEST"
 }
 trap cleanup EXIT

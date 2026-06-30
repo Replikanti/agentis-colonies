@@ -37,6 +37,10 @@ cleanup() {
     for pid in $DASH_PIDS; do
         kill -KILL "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
     done
+    # Defense-in-depth: reap any python federation-dashboard-server.py child the
+    # process-group kill missed, scoped to this test's temp dir so a real
+    # production dashboard is never touched (#1300).
+    pkill -f "federation-dashboard-server.py.*$TMPDIR_TEST" 2>/dev/null || true
     rm -rf "$TMPDIR_TEST"
 }
 trap cleanup EXIT
@@ -56,10 +60,18 @@ free_port() {
 
 boot_dashboard() {
     local fed_dir="$1" port="$2" log_file="$3" cwd="${4:-}"
+    # Launch the wrapper under setsid so it leads its own process group: $! is
+    # then the real group-leader PID, and cleanup()'s `kill -TERM "-$pid"` reaps
+    # the wrapper AND its python federation-dashboard-server.py child. The old
+    # un-setsid'd `( ... ) &` recorded a non-leader subshell PID, so the
+    # negative-PID group kill was a no-op and every booted server orphaned
+    # across colony-lint runs (#1300).
     if [ -n "$cwd" ]; then
-        ( cd "$cwd" && bash "$DASHBOARD_SH" "$fed_dir" "$port" >"$log_file" 2>&1 < /dev/null ) &
+        # shellcheck disable=SC2016  # $1-$4 are the inner bash -c argv, expanded by the inner shell, not here.
+        setsid bash -c 'cd "$1" && exec bash "$2" "$3" "$4"' _ \
+            "$cwd" "$DASHBOARD_SH" "$fed_dir" "$port" >"$log_file" 2>&1 < /dev/null &
     else
-        bash "$DASHBOARD_SH" "$fed_dir" "$port" >"$log_file" 2>&1 < /dev/null &
+        setsid bash "$DASHBOARD_SH" "$fed_dir" "$port" >"$log_file" 2>&1 < /dev/null &
     fi
     local pid=$!
     DASH_PIDS="$DASH_PIDS $pid"
@@ -350,9 +362,12 @@ PORT_D="$(free_port)"
 LOG_D="$TMPDIR_TEST/dashboard-D.log"
 
 # Boot wrapper from /tmp (cwd != FED_D) with the mock agentis on PATH.
-# boot_dashboard's cwd arg is honoured before exec, so the dashboard inherits
-# /tmp as cwd — exactly the systemd-run --user failure mode #288 reproduces.
-( cd /tmp && PATH="$MOCK_BIN_D:$PATH" bash "$DASHBOARD_SH" "$FED_D" "$PORT_D" >"$LOG_D" 2>&1 < /dev/null ) &
+# The wrapper inherits /tmp as cwd — exactly the systemd-run --user failure
+# mode #288 reproduces. setsid -> own process group so cleanup()'s negative-PID
+# kill reaps the wrapper + python child instead of orphaning them (#1300).
+# shellcheck disable=SC2016  # $1-$4 are the inner bash -c argv, expanded by the inner shell, not here.
+setsid bash -c 'cd /tmp && PATH="$1:$PATH" exec bash "$2" "$3" "$4"' _ \
+    "$MOCK_BIN_D" "$DASHBOARD_SH" "$FED_D" "$PORT_D" >"$LOG_D" 2>&1 < /dev/null &
 DASH_PID_D=$!
 DASH_PIDS="$DASH_PIDS $DASH_PID_D"
 
