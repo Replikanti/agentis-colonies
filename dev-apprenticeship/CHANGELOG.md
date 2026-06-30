@@ -65,6 +65,23 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- **plan_reviewer assembled SKELETON plans (peer hand-off was transient-only).**
+  The scope / risk / breakdown peers passed their result to plan_reviewer ONLY via
+  a transient bus `emit()` that plan_reviewer had to catch inside its own 500ms
+  `listen()` window. After the #1367 tick de-bunching (180s, staggered) the
+  reviewer almost always missed those emits, and the #1370 mark-and-forget removed
+  the every-tick re-emits that used to give it many catch chances — so it assembled
+  "No scope/risk/breakdown supplied" skeleton plans, self-scored them ~0.3, and the
+  #1362 promote-gate held them → the needs-planning queue never drained. Now
+  scope_estimator / task_decomposer / risk_assessor persist their full body to the
+  exact slot the reviewer reads (`plan_reviewer:<iid>:{scope,risks,breakdown}`) at
+  **every** tier (a memo write is ADR-0001-legal even at shadow), and
+  `plan_reviewer.slot_ready()` requires the real BODY rather than a `:_drafted`
+  readiness flag — so the reviewer waits for complete inputs and assembles an
+  actionable plan. The promote-gate was also recalibrated (`review_score >= 0.7`
+  → `>= 0.5`): with complete plans the LLM self-scores ~0.62-0.82, so 0.7 was too
+  aspirational for this self-scoring; 0.5 separates a complete plan from a skeleton
+  (~0.3) while downstream review + CI stay the real quality gate.
 - **Planning agents `CognitiveOverload`-ed every tick (CB budget too low for the
   #1370 operations).** The idle-gate helpers added in #1370 (`first_unhandled_iid`
   recursing the issue window with a `recall_latest`-backed `is_handled` per item,

@@ -225,6 +225,11 @@ fn tick_for_repo(owner: string, repo: string) -> void {
 
     print("[task_decomposer] Issue", breakdown.issue_id, "->", breakdown.count, "subtasks");
 
+    // #1372 durable hand-off: persist the breakdown BODY to the exact slot
+    // plan_reviewer reads (plan_reviewer:<iid>:breakdown), at EVERY tier, so the
+    // reviewer never assembles a skeleton plan when it misses the transient emit.
+    memo_write(scoped_memo(owner, repo, "plan_reviewer:" + to_string(breakdown.issue_id) + ":breakdown"), to_string(breakdown));
+
     if my_tier == "autonomous" {
         emit("planning:breakdown", breakdown);
         let note = "**Task Breakdown** (automated): " + to_string(breakdown.count) + " subtasks\n\n" + breakdown.subtasks;
