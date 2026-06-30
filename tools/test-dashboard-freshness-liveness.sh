@@ -43,7 +43,26 @@ COLLECTOR="$REPO_ROOT/federation-dashboard/lib/federation-dashboard-collector.py
 PASS=0
 FAIL=0
 TMPDIR_TEST="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR_TEST"' EXIT
+# Test 6 (#705) optional path launches a real wrapper + python server + agentis
+# daemon. Track them at script scope so the EXIT trap reaps them even when an
+# early exit or an interrupt during the 70s regen wait skips the inline
+# teardown — otherwise the python federation-dashboard-server.py child leaks
+# across colony-lint runs (#1300).
+WRAPPER_PID=""
+T6_DIR=""
+cleanup() {
+    if [ -n "$WRAPPER_PID" ]; then
+        kill -TERM "$WRAPPER_PID" 2>/dev/null || true
+    fi
+    if [ -n "$T6_DIR" ]; then
+        # Scope the server reap to this test's temp dir so a real production
+        # dashboard is never touched (#1300).
+        pkill -f "federation-dashboard-server.py.*$T6_DIR" 2>/dev/null || true
+        (cd "$T6_DIR" && agentis daemon stop --all >/dev/null 2>&1) || true
+    fi
+    rm -rf "$TMPDIR_TEST"
+}
+trap cleanup EXIT
 
 pass() { echo "[PASS] $1"; PASS=$((PASS + 1)); }
 fail() { echo "[FAIL] $1${2:+: $2}"; FAIL=$((FAIL + 1)); }
@@ -442,15 +461,13 @@ PY
             fail "6c: orphan bash subshell survived SIGKILL: $ORPHAN_HITS"
         fi
 
-        # Clean up: SIGKILL on the wrapper bypassed its trap, so the python
-        # server child orphans to init. That is the documented behaviour
-        # of bash on uncatchable signals; out of scope for #705 (the bug
-        # was the SECOND orphan — the regen bash subshell — which is now
-        # gone). We clean up the orphan python server here so this test
-        # does not leak processes across reruns. Scope to our specific
-        # fed dir to avoid touching unrelated dashboards.
-        pkill -f "federation-dashboard-server.py.*$T6_DIR" 2>/dev/null || true
-        (cd "$T6_DIR" && agentis daemon stop --all >/dev/null 2>&1) || true
+        # Teardown of the orphan python server (SIGKILL on the wrapper bypassed
+        # its trap so the child reparents to init) plus the real agentis daemon
+        # now lives in the EXIT trap (cleanup()), keyed on WRAPPER_PID + T6_DIR.
+        # Doing it there instead of inline means an early exit or an interrupt
+        # during the 70s regen wait above still reaps the server instead of
+        # leaking it across colony-lint runs (#1300). #705's orphan-detection
+        # assertion (6c) stays inline above.
     fi
 else
     echo "[SKIP] 6: auto-regen daemon-thread test (set RUN_AUTO_REGEN_TEST=1 to enable; adds ~70-90s)"
