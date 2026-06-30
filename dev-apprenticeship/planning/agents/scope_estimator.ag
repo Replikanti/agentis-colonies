@@ -218,6 +218,15 @@ fn tick_for_repo(owner: string, repo: string) -> void {
 
     print("[scope_estimator] Issue", estimate.issue_id, "->", estimate.phases, "phases,", estimate.points, "points");
 
+    // #1372 durable hand-off: persist the scope BODY to the exact slot
+    // plan_reviewer reads (plan_reviewer:<iid>:scope), at EVERY tier — a memo
+    // write is ADR-0001-legal even at shadow. Pre-#1372 plan_reviewer only got
+    // the scope if it caught the transient `emit` inside its own 500ms listen()
+    // window; with de-bunched 180s ticks it usually missed it and assembled a
+    // skeleton plan (self-scored ~0.3, so the #1362 promote-gate correctly held
+    // it and the needs-planning queue never drained).
+    memo_write(scoped_memo(owner, repo, "plan_reviewer:" + to_string(estimate.issue_id) + ":scope"), to_string(estimate));
+
     if my_tier == "autonomous" {
         emit("planning:scope_estimate", estimate);
         let note = "**Scope Estimate** (automated): " + to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points\n\n" + estimate.reasoning;

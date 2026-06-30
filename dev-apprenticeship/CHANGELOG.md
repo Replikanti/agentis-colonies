@@ -65,6 +65,20 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- **plan_reviewer assembled SKELETON plans (peer hand-off was transient-only).**
+  The scope / risk / breakdown peers passed their result to plan_reviewer ONLY via
+  a transient bus `emit()` that plan_reviewer had to catch inside its own 500ms
+  `listen()` window. After the #1367 tick de-bunching (180s, staggered) the
+  reviewer almost always missed those emits, and the #1370 mark-and-forget removed
+  the every-tick re-emits that used to give it many catch chances — so it assembled
+  "No scope/risk/breakdown supplied" skeleton plans, self-scored them ~0.3, and the
+  #1362 promote-gate (`review_score >= 0.7`) correctly held them → the
+  needs-planning queue never drained. Now scope_estimator / task_decomposer /
+  risk_assessor persist their full body to the exact slot the reviewer reads
+  (`plan_reviewer:<iid>:{scope,risks,breakdown}`) at **every** tier (a memo write
+  is ADR-0001-legal even at shadow), and `plan_reviewer.slot_ready()` requires the
+  real BODY rather than a `:_drafted` readiness flag — so the reviewer waits for
+  complete inputs and assembles an actionable plan that can clear the promote-gate.
 - **Agents `prompt()`-ed every tick at idle; the planning colony thrashed
   ([#1370](https://github.com/Replikanti/agentis-colonies/issues/1370)).** Every
   ticking agent has a staleness gate, but the per-issue "handled" marker

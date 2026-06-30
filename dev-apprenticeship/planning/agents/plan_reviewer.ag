@@ -203,10 +203,13 @@ fn slot_body(owner: string, repo: string, iid: int, slot: string) -> string {
 }
 
 fn slot_ready(owner: string, repo: string, iid: int, slot: string) -> bool {
-    if len(slot_body(owner, repo, iid, slot)) >= 2 {
-        return true;
-    };
-    return len(recall_latest(scoped_memo(owner, repo, "plan_reviewer:" + to_string(iid) + ":" + slot + "_drafted"))) > 0;
+    // #1372: require the actual peer BODY, not just a readiness flag. The peers
+    // now persist their full body to plan_reviewer:<iid>:<slot> at every tier
+    // (durable hand-off), so the reviewer waits until the real scope / risk /
+    // breakdown content is present instead of posting a skeleton plan the moment
+    // a `:_drafted` flag is set (which it then self-scored ~0.3, blocking the
+    // #1362 promote-gate and starving the needs-planning queue).
+    return len(slot_body(owner, repo, iid, slot)) >= 2;
 }
 
 fn tick_for_repo(owner: string, repo: string) -> void {

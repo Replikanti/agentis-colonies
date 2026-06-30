@@ -306,6 +306,11 @@ fn tick_for_repo(owner: string, repo: string) -> void {
 
     print("[risk_assessor] Issue", assessment.issue_id, "-> severity:", assessment.severity);
 
+    // #1372 durable hand-off: persist the risk BODY to the exact slot
+    // plan_reviewer reads (plan_reviewer:<iid>:risks), at EVERY tier, so the
+    // reviewer never assembles a skeleton plan when it misses the transient emit.
+    memo_write(scoped_memo(owner, repo, "plan_reviewer:" + to_string(assessment.issue_id) + ":risks"), to_string(assessment));
+
     if my_tier == "autonomous" {
         // Direct external write: post the risk assessment as an issue note.
         emit("planning:risks", assessment);
