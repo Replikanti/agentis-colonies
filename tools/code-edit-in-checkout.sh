@@ -679,9 +679,32 @@ fi
 #    flags (--source/--title/--description) are forge-symmetric; only the env
 #    contract differs (github: OWNER/REPO/URL; gitlab: PROJECT/URL).
 # ---------------------------------------------------------------------------
-DESCRIPTION="Closes #$ISSUE.
+# Build the PR/MR body. A static "Closes #N" line tells a reviewer nothing about
+# the change (#1347), so prefer an LLM-generated summary: gen-mr-description.sh
+# turns the issue + the committed diff into `## Problem` / `## Fix` / `## Testing`
+# sections via the same flat-cyborg result-file channel, printing NOTHING on any
+# failure (no LLM, error, empty reply) so we transparently fall back to the
+# static template. We append `Closes #N` ourselves so the issue auto-closes on
+# merge regardless of which path produced the body. The diff is `origin/<base>`..
+# HEAD (the branch was cut off origin/<base> and the recover path returned
+# earlier, so this is exactly this PR's cumulative change).
+STATIC_DESCRIPTION="Closes #$ISSUE.
 
 Autonomously implemented by the dev-apprenticeship federation."
+
+GEN_DIFF_FILE="$(mktemp)"
+git_capture -C "$WS" diff "origin/$DEFAULT_BRANCH" HEAD > "$GEN_DIFF_FILE" 2>/dev/null || : > "$GEN_DIFF_FILE"
+GEN_BODY="$("$SCRIPT_DIR/gen-mr-description.sh" \
+    --issue "$ISSUE" --title "$TITLE" --task "$TASK" --diff-file "$GEN_DIFF_FILE" 2>/dev/null || true)"
+rm -f "$GEN_DIFF_FILE" 2>/dev/null || true
+
+if printf '%s' "$GEN_BODY" | grep -q '[^[:space:]]'; then
+    DESCRIPTION="$GEN_BODY
+
+Closes #$ISSUE"
+else
+    DESCRIPTION="$STATIC_DESCRIPTION"
+fi
 
 if [ "$FORGE_TYPE" = "gitlab" ]; then
     FORGE_API="$FED_DIR/$COLONY_NAME/scripts/gitlab-api.sh"

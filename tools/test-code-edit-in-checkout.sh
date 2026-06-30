@@ -70,6 +70,18 @@ unset GITHUB_REPOS_JSON GITLAB_REPOS_JSON FORGE_TYPE \
 export GIT_AUTHOR_NAME="test" GIT_AUTHOR_EMAIL="test@example.com"
 export GIT_COMMITTER_NAME="test" GIT_COMMITTER_EMAIL="test@example.com"
 
+# #1347: code-edit-in-checkout.sh now calls gen-mr-description.sh before
+# create-mr. Point its LLM at a no-op stub (consumes the prompt, prints nothing)
+# so (a) this harness's flat-cyborg invocation COUNTS — the edit-loop assertions
+# below — are not inflated by the description-gen call going through the real
+# flat-cyborg-claude.sh, and (b) the body deterministically falls back to the
+# static `Closes #N` template these tests already assert. The generation path
+# itself is covered by tools/test-gen-mr-description.sh.
+GEN_MR_LLM_STUB="$WORK/gen-mr-llm-noop.sh"
+printf '%s\n' '#!/usr/bin/env sh' 'cat >/dev/null 2>&1 || true' > "$GEN_MR_LLM_STUB"
+chmod +x "$GEN_MR_LLM_STUB"
+export GEN_MR_LLM_CMD="$GEN_MR_LLM_STUB"
+
 # ---------------------------------------------------------------------------
 # A local "remote": a bare repo seeded with one commit on main. The
 # orchestrator clones file://$REMOTE_BASE/<owner>/<repo>.git.
