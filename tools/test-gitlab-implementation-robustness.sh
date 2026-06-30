@@ -238,6 +238,51 @@ else
     fail "#1170 create-branch: clean 201 create regressed to exit $CB3_RC"
 fi
 
+# =============================================================================
+# #1360: mr-notes verb — exists, returns the raw GitLab notes shape, exit 2 on
+# a non-numeric number. The review-resolver in code_writer polls this durable
+# notes endpoint; the raw shape carries id, body, author.username, created_at,
+# and the `system` boolean the scanner filters on.
+# =============================================================================
+reset_routes
+NOTES_BODY='[{"id":101,"body":"**Review Summary** (automated)","author":{"username":"reviewbot"},"created_at":"2026-04-10T10:00:00Z","system":false},{"id":99,"body":"label added","author":{"username":"reviewbot"},"created_at":"2026-04-10T09:00:00Z","system":true}]'
+add_route GET "/merge_requests/5/notes" 200 "$NOTES_BODY"
+
+MN_ERR_FILE="$FAKE_ROOT/mn-err"
+MN_OUT="$(run_api mr-notes 5 2>"$MN_ERR_FILE")"
+MN_RC=$?
+
+if [ "$MN_RC" -eq 0 ]; then
+    pass "#1360 mr-notes: GET /merge_requests/{iid}/notes exits 0"
+else
+    fail "#1360 mr-notes: expected exit 0, got $MN_RC (stderr: $(cat "$MN_ERR_FILE"))"
+fi
+
+MN_SHAPE="$(MN="$MN_OUT" python3 -c '
+import os, json
+d = json.loads(os.environ["MN"])
+n = d[0]
+ok = (n["id"] == 101 and n["author"]["username"] == "reviewbot"
+      and n["created_at"] == "2026-04-10T10:00:00Z" and n["system"] is False
+      and isinstance(n["body"], str) and d[1]["system"] is True)
+print("ok" if ok else "bad")
+' 2>/dev/null)"
+if [ "$MN_SHAPE" = "ok" ]; then
+    pass "#1360 mr-notes: raw GitLab notes shape (id, body, author.username, created_at, system) round-trips"
+else
+    fail "#1360 mr-notes: notes shape mismatch, got '$MN_OUT'"
+fi
+
+# Non-numeric iid is rejected with exit 2 BEFORE any network call.
+reset_routes
+MN2_RC=0
+run_api mr-notes not-a-number >/dev/null 2>&1 || MN2_RC=$?
+if [ "$MN2_RC" -eq 2 ]; then
+    pass "#1360 mr-notes: non-numeric iid exits 2"
+else
+    fail "#1360 mr-notes: expected exit 2 on non-numeric iid, got $MN2_RC"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

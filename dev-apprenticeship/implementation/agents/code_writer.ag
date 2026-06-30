@@ -495,6 +495,194 @@ fn recover_red_prs(owner: string, repo: string) -> int {
     return recover_scan(owner, repo, raw, 0);
 }
 
+// #1360: review-finding recovery helpers (the review-resolver pattern). The
+// federation re-drives a RED PR (recover_red_prs), but a GREEN PR carrying
+// actionable review findings — the code-review colony's request_changes summary
+// (approval_decider's `**Review Summary** (automated)` note / the
+// `[draft-review-decision] ... request_changes` draft) or a human review note —
+// just sat until a human manually triggered a --recover. These helpers add the
+// missing implement->review->fix edge, a near-exact structural mirror of the
+// red-CI path but triggered by a durable review NOTE instead of STATE=red. The
+// signal is the durable forge note (polled here, exactly as recover_at polls
+// pr-checks), NOT the ephemeral colony bus: the reviewers emit on sub-second
+// listen() windows on an independent schedule, so a cross-daemon emit is almost
+// never caught. Idempotency is the note-id watermark (review_fix:last_note:<iid>)
+// plus the hard cap (review_fix:attempts:<iid>, cap 2 — identical to recover_at).
+
+// review_fix_attempts: how many review-fix re-drives we have already launched for
+// this PR (read from the review_fix:attempts:<iid> memo). Missing => 0. Mirrors
+// recover_attempts.
+fn review_fix_attempts(owner: string, repo: string, iid_str: string) -> int {
+    let raw = recall_latest(scoped_memo(owner, repo, "review_fix:attempts:" + iid_str));
+    if len(raw) == 0 { return 0; };
+    return parse_int(raw);
+}
+
+// bot_username: the federation's own forge username (memo `gitlab:me`, seeded by
+// install.sh — the same memo style_reviewer reads). Lets actionable_note tell a
+// human review note from the federation's own notes. Empty when unseeded, which
+// actionable_note treats fail-safe (only the federation's own request_changes /
+// draft markers stay actionable, never a bare author mismatch).
+fn bot_username() -> string {
+    return recall_latest("gitlab:me");
+}
+
+// actionable_note: scan the mr-notes JSON (on $J, off-argv) for the most-recent
+// (highest `id`) ACTIONABLE note, given the bot username on $ME. A note is
+// actionable when it is non-system AND either (a) authored by a human
+// (author.username != $ME, and $ME is non-empty) or (b) the federation's own
+// request_changes verdict — body starts `**Review Summary** (automated)` (the
+// autonomous post) or contains both `[draft-review-decision]` and
+// `request_changes` (the review-gated draft). Plain reviewer comments, approvals,
+// and clean reviews are NOT actionable. Prints a tab-joined record
+// `<max_note_id>\t<concatenated actionable bodies>` (tabs in bodies collapsed to
+// spaces so the record stays two fields) or "" when none / malformed JSON.
+fn actionable_note(raw: string, me: string) -> string {
+    let cmd = "J=" + shell_escape(raw) + " ME=" + shell_escape(me) +
+        " python3 -c 'import os,json,sys" +
+        "\ntry:" +
+        "\n    d=json.loads(os.environ[\"J\"])" +
+        "\nexcept Exception:" +
+        "\n    print(\"\"); sys.exit(0)" +
+        "\nif not isinstance(d,list):" +
+        "\n    print(\"\"); sys.exit(0)" +
+        "\nme=os.environ[\"ME\"]" +
+        "\nhits=[]" +
+        "\nfor it in d:" +
+        "\n    if not isinstance(it,dict):" +
+        "\n        continue" +
+        "\n    if it.get(\"system\") is True:" +
+        "\n        continue" +
+        "\n    nid=it.get(\"id\")" +
+        "\n    if not isinstance(nid,int):" +
+        "\n        continue" +
+        "\n    body=it.get(\"body\")" +
+        "\n    if not isinstance(body,str):" +
+        "\n        continue" +
+        "\n    a=it.get(\"author\")" +
+        "\n    author=a.get(\"username\") if isinstance(a,dict) else None" +
+        "\n    is_human=(me!=\"\" and isinstance(author,str) and author!=me)" +
+        "\n    is_req=body.startswith(\"**Review Summary** (automated)\")" +
+        "\n    is_draft=(\"[draft-review-decision]\" in body and \"request_changes\" in body)" +
+        "\n    if is_human or is_req or is_draft:" +
+        "\n        hits.append((nid, body.replace(chr(9), \" \")))" +
+        "\nif not hits:" +
+        "\n    print(\"\"); sys.exit(0)" +
+        "\nmax_id=max(h[0] for h in hits)" +
+        "\nbodies=(chr(10)+chr(10)).join(b for _,b in sorted(hits))" +
+        "\nsys.stdout.write(str(max_id)+chr(9)+bodies)'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+// resolve_review_at: process the open PR at index `idx`. Returns 1 if it LAUNCHED
+// a review-fix re-drive (caller returns for this tick — one job per tick, do not
+// also draft), 0 otherwise. Own PRs only (head branch starts fix/issue-). Acts
+// ONLY on STATE=green: red is owned by recover_red_prs (no race), pending => do
+// not race CI. Idempotent: re-drives only when the newest actionable note id is
+// strictly greater than the review_fix:last_note:<iid> watermark. Retry cap 2 via
+// review_fix:attempts:<iid>; after that, give up + log (needs human). Mirrors
+// recover_at but keyed on a review note instead of STATE=red.
+fn resolve_review_at(owner: string, repo: string, raw: string, idx: int) -> int {
+    let iid_str = open_pr_field(raw, idx, "iid");
+    if len(iid_str) == 0 { return 0; };
+    if iid_str == "void" { return 0; };
+    let src = open_pr_field(raw, idx, "source_branch");
+    // Own PRs only: never touch a PR we did not open.
+    if index_of(src, "fix/issue-") != 0 { return 0; };
+
+    // colony-lint: safe-exec-concat
+    let checks_cmd = "$COLONY_DIR/scripts/forge-api.sh pr-checks " + shell_escape(iid_str) + repo_arg(owner, repo);
+    let checks_out = try { exec sh checks_cmd; } catch e { ""; };
+    let state = pr_check_token(checks_out, "STATE");
+    // Act ONLY on a green PR: red is owned by recover_red_prs (avoid the race),
+    // pending => don't race CI. The precise inverse of recover_at's red-only guard.
+    if state != "green" { return 0; };
+
+    // colony-lint: safe-exec-concat
+    let notes_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-notes " + shell_escape(iid_str) + repo_arg(owner, repo);
+    let notes_raw = try { exec sh notes_cmd; } catch e { ""; };
+    let rec = actionable_note(notes_raw, bot_username());
+    if len(rec) == 0 { return 0; };
+
+    let note_id_str = repo_field(rec, 0);
+    if len(note_id_str) == 0 { return 0; };
+    let note_id = parse_int(note_id_str);
+    // Idempotency: re-drive only when a STRICTLY newer actionable note appears.
+    // Once we re-drive against the newest finding we never re-drive again until a
+    // re-review posts a strictly-newer actionable note (so a satisfied review,
+    // which posts no new request_changes note, terminates the loop).
+    let last_seen = recall_latest(scoped_memo(owner, repo, "review_fix:last_note:" + iid_str));
+    if len(last_seen) > 0 {
+        if note_id <= parse_int(last_seen) { return 0; };
+    };
+
+    let attempts = review_fix_attempts(owner, repo, iid_str);
+    if attempts >= 2 {
+        print("[code_writer] review-fix gave up on PR", iid_str, "after 2 attempts — needs human");
+        return 0;
+    };
+
+    // Write the note watermark + bump the attempt memo BEFORE launching so a
+    // crash mid-launch still counts (fail-closed: never exceed 2 re-drives, never
+    // re-drive the same finding twice).
+    memo_write(scoped_memo(owner, repo, "review_fix:last_note:" + iid_str), note_id_str);
+    let next_attempt = attempts + 1;
+    memo_write(scoped_memo(owner, repo, "review_fix:attempts:" + iid_str), to_string(next_attempt));
+
+    let bodies = repo_field(rec, 1);
+    // Re-drive the PR's ACTUAL head branch (source_branch), validated above to
+    // start with fix/issue-. --recover pushes to the existing branch (no new PR);
+    // keying --issue on the PR iid shares the per-issue job dir with recover_at so
+    // the launcher pid-guard serializes the two paths on one PR.
+    let branch_name = src;
+    let recover_title = "fix: address review findings on #" + iid_str;
+    let recover_task = "Address these code-review findings on this PR with a MINIMAL change; do not touch unrelated code:\n" + bodies;
+    // colony-lint: safe-exec-concat
+    let job_cmd = "$COLONY_DIR/../../tools/code-edit-job.sh --owner " + shell_escape(owner) + " --repo " + shell_escape(repo) + " --issue " + shell_escape(iid_str) + " --branch " + shell_escape(branch_name) + " --title " + shell_escape(recover_title) + " --task " + shell_escape(recover_task) + " --recover";
+    let job_out = try { exec sh job_cmd; } catch e {
+        print("[code_writer] review-fix launcher failed for PR", iid_str, ":", e);
+        "";
+    };
+    let job_state = job_word(job_out);
+    if job_state == "DONE" {
+        print("[code_writer] review-fix pushed a fix to PR", iid_str, "(attempt", next_attempt, "/2)");
+    } else {
+        print("[code_writer] re-driving PR", iid_str, "for review findings (attempt", next_attempt, "/2)");
+    };
+    // One review-fix job per tick: signal the caller to return without drafting.
+    // The launcher's pid check gives idempotency so a re-poll won't double-launch.
+    return 1;
+}
+
+// resolve_review_scan: recurse over the open-PR list, launching at most ONE
+// review-fix re-drive per tick. Returns 1 once a job is launched, else 0. Mirrors
+// recover_scan.
+fn resolve_review_scan(owner: string, repo: string, raw: string, idx: int) -> int {
+    let iid_str = open_pr_field(raw, idx, "iid");
+    if len(iid_str) == 0 { return 0; };
+    let did = resolve_review_at(owner, repo, raw, idx);
+    if did == 1 { return 1; };
+    return resolve_review_scan(owner, repo, raw, idx + 1);
+}
+
+// resolve_review_prs: list the federation's own open PRs and, at the autonomous
+// tier only, re-drive the FIRST green one whose head is a fix/issue- branch we
+// opened and that carries an actionable review note. Returns 1 if it launched a
+// review-fix job (the caller returns for this tick — one job per tick, do not
+// also draft). Mirrors recover_red_prs.
+fn resolve_review_prs(owner: string, repo: string) -> int {
+    // Autonomous-only: re-pushing to PRs is a terminal write.
+    if repo_tier("code_writer", owner, repo) != "autonomous" { return 0; };
+    // Raw (no --view): the normalized GitLab-shape list carries both `iid` and
+    // `source_branch`, the two fields resolve_review_at needs.
+    // colony-lint: safe-exec-concat
+    let list_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state opened" + repo_arg(owner, repo);
+    let raw = try { exec sh list_cmd; } catch e { ""; };
+    if len(raw) < 5 { return 0; };
+    return resolve_review_scan(owner, repo, raw, 0);
+}
+
 fn tick_for_repo(owner: string, repo: string) -> void {
     // #1332: red-PR recovery runs FIRST (autonomous tier only), BEFORE the
     // draft path. If a red PR we own is re-driven this tick, return without
@@ -503,6 +691,18 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         let now_r = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
         if len(now_r) > 0 {
             memo_write(scoped_memo(owner, repo, "code_writer:last_check"), now_r);
+        };
+        return;
+    };
+
+    // #1360: review-finding recovery. Runs AFTER red-CI recovery (red PRs are
+    // owned by recover_red_prs — no race) and BEFORE the draft path. Acts only on
+    // a GREEN own-PR carrying an actionable review note (the durable forge note,
+    // not the ephemeral bus). One job per tick: a launch returns without drafting.
+    if resolve_review_prs(owner, repo) == 1 {
+        let now_v = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_v) > 0 {
+            memo_write(scoped_memo(owner, repo, "code_writer:last_check"), now_v);
         };
         return;
     };
