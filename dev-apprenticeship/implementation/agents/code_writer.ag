@@ -623,12 +623,7 @@ fn resolve_review_at(owner: string, repo: string, raw: string, idx: int) -> int 
         return 0;
     };
 
-    // Write the note watermark + bump the attempt memo BEFORE launching so a
-    // crash mid-launch still counts (fail-closed: never exceed 2 re-drives, never
-    // re-drive the same finding twice).
-    memo_write(scoped_memo(owner, repo, "review_fix:last_note:" + iid_str), note_id_str);
     let next_attempt = attempts + 1;
-    memo_write(scoped_memo(owner, repo, "review_fix:attempts:" + iid_str), to_string(next_attempt));
 
     let bodies = repo_field(rec, 1);
     // Re-drive the PR's ACTUAL head branch (source_branch), validated above to
@@ -645,6 +640,20 @@ fn resolve_review_at(owner: string, repo: string, raw: string, idx: int) -> int 
         "";
     };
     let job_state = job_word(job_out);
+    // Cap-deferred (RUNNING): the CODE_EDIT_MAX_CONCURRENT semaphore was saturated,
+    // so the launcher created NO job dir and promised a next-tick re-poll. Skip the
+    // watermark/attempts write so re-entry for this note id is NOT blocked — without
+    // this guard the watermark would swallow the deferral into the needs-human
+    // fallback. Mirrors recover_at, which never consumes budget on a RUNNING defer.
+    if job_state == "RUNNING" {
+        print("[code_writer] review-fix deferred for PR", iid_str, "(concurrency cap) — will re-poll");
+        return 1;
+    };
+    // Launched (or crashed mid-launch): write the note watermark + bump the attempt
+    // memo so a crash still counts (fail-closed: never exceed 2 re-drives, never
+    // re-drive the same finding twice).
+    memo_write(scoped_memo(owner, repo, "review_fix:last_note:" + iid_str), note_id_str);
+    memo_write(scoped_memo(owner, repo, "review_fix:attempts:" + iid_str), to_string(next_attempt));
     if job_state == "DONE" {
         print("[code_writer] review-fix pushed a fix to PR", iid_str, "(attempt", next_attempt, "/2)");
     } else {
