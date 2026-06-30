@@ -65,6 +65,33 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- **`approval_decider` AUTO_MERGE never fired (tick gated on the ephemeral
+  review-findings bus).** The whole `approval_decider` tick was gated on four
+  ephemeral `listen("review:*_findings", 500)` reads; the reviewers `emit()` on
+  their own independent 300000ms tick schedules, so an emit almost never landed
+  inside the consumer's narrow 500ms `listen()` window — the tick early-exited
+  (`total_len < 24`) before ever reaching the approve/merge block. Result: with
+  `AUTO_MERGE=1` and the autonomous tier (confidence 0.97), green, clean,
+  reviewed PRs sat OPEN and unmerged for ~19h until a human merged them, while
+  the `last_check` memo saturated the per-generation write cap. The remedy
+  (sibling of #1360): poll DURABLE forge state instead of the ephemeral bus. A
+  new `merge_ready_prs` sweep runs at the TOP of `tick_for_repo`, BEFORE the bus
+  reads, every tick: it lists the federation's OWN open PRs
+  (`merge-requests --state opened`), skips any whose head is not a `fix/issue-`
+  branch we opened, reads `pr-checks` and acts only when `STATE=green` (red /
+  pending are skipped — no CI race), approves at most once per PR (guarded by a
+  `merge_sweep:approved:<iid>` memo written before the approve call), then calls
+  the unchanged gated `merge` verb (still the SAFETY chokepoint: it independently
+  re-checks mergeable + all-green and is a logged no-op otherwise, so a
+  not-yet-mergeable PR simply retries next tick). A hard cap of 3 attempts per PR
+  (`merge_sweep:attempts:<iid>`, bumped before acting) logs "auto-merge gave up —
+  needs human" and stops, so a green-but-permanently-unmergeable PR can't spin
+  forever. The sweep is gated on the autonomous tier and preserves the
+  `AUTO_MERGE` opt-in env contract (no auto-merge unless `AUTO_MERGE=1`); it adds
+  NO `prompt()`. One merge action per tick (mirrors `code_writer`'s
+  `recover_red_prs` discipline); the existing bus-based findings → decision path
+  stays intact for the no-merge ticks. Source-asserted by
+  `tools/test-approval-decider-auto-merge.sh`.
 - **plan_reviewer assembled SKELETON plans (peer hand-off was transient-only).**
   The scope / risk / breakdown peers passed their result to plan_reviewer ONLY via
   a transient bus `emit()` that plan_reviewer had to catch inside its own 500ms
