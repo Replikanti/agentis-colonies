@@ -330,6 +330,19 @@ case "$CMD" in
         gl_get "$API/merge_requests/$IID/commits?per_page=100"
         ;;
 
+    mr-notes)
+        # #1360: read the MR's notes for the review-resolver in code_writer (poll
+        # the durable review note instead of the ephemeral bus). Ported from the
+        # code-review backend; the raw GitLab notes shape carries id, body,
+        # author.username, created_at, and the `system` boolean the scanner filters
+        # on. Numeric guard mirrors this backend's pr-checks contract (exit 2).
+        IID="${1:?Usage: gitlab-api.sh mr-notes <iid>}"
+        case "$IID" in
+            ''|*[!0-9]*) emit_error "iid must be numeric: $IID"; exit 2 ;;
+        esac
+        gl_get "$API/merge_requests/$IID/notes?per_page=100&order_by=created_at&sort=desc"
+        ;;
+
     pr-checks)
         # #1332: CI verdict read for the bounded red-PR recovery loop (code_writer
         # re-drives its OWN red MRs). Prints exactly two space-separated tokens on

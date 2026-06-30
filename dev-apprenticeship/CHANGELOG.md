@@ -17,6 +17,34 @@ is asserted until multi-version CI is in place.
 
 ### Added
 
+- **Autonomous review → fix loop in `code_writer` (the review-resolver pattern).**
+  The federation re-drove a RED PR (`code_writer.recover_red_prs`) but had no
+  path from a posted REVIEW finding to an autonomous fix: a GREEN PR carrying
+  actionable findings (the code-review colony's `request_changes` summary, or a
+  human review note) just sat until a human manually triggered a `--recover`
+  re-drive — implement → review → (human) → fix. A new review-resolver path
+  (`resolve_review_prs`) closes the loop. It runs at the **autonomous tier only**,
+  AFTER the red-CI recovery (red PRs stay owned by `recover_red_prs` — no race)
+  and BEFORE the draft path, launching at most one re-drive per tick. Discovery
+  polls the PR's **durable** review notes (a new `mr-notes` forge read verb) — not
+  the ephemeral colony bus, which is missed across the reviewers' independent
+  tick schedule — and re-drives the PR's existing head branch via
+  `code-edit-job.sh --recover` (push-only, no new PR) with the findings as the
+  task. An actionable note is a non-system note that is either authored by a human
+  or the federation's own `request_changes` verdict (`**Review Summary**
+  (automated)` / `[draft-review-decision] … request_changes`); plain comments,
+  approvals, and clean reviews are ignored. A dual loop-guard keeps it idempotent
+  and bounded: a per-PR note-id watermark (`review_fix:last_note:<iid>`, so a
+  re-drive fires only when a strictly-newer actionable note appears and a
+  satisfied review terminates the loop) plus a hard cap of 2 re-drives per PR
+  (`review_fix:attempts:<iid>`, both written before launch — fail-closed), after
+  which it logs "needs human". No new `prompt()` is added on this path. Own PRs
+  only (head branch must start `fix/issue-`). The new `mr-notes <number>` verb is
+  ported into both implementation forge backends (`github-api.sh` /
+  `gitlab-api.sh`) from the code-review backends, returning the normalized notes
+  shape `{id, body, author:{username}, created_at, system}` and exiting 2 on a
+  non-numeric number. ([#1360](https://github.com/Replikanti/agentis-colonies/issues/1360))
+
 - **Opt-in plan-approved auto-promotion (planning → implementation handoff).**
   The federation planned issues (scope / risks / breakdown / plan-review all
   ran) but nothing advanced a planned issue to implementation — `plan_reviewer`

@@ -126,6 +126,19 @@ FIXTURE_TIMELINE='[
   {"id":5,"event":"committed","created_at":"2026-04-12T09:30:00Z"}
 ]'
 
+# GitHub /issues/{n}/comments fixture for normalize_notes (#1360): the
+# review-resolver mr-notes verb reads PR conversation comments under the issues
+# endpoint. normalize_notes must emit the GitLab notes shape
+# {id, body, author:{username}, created_at, system:false}.
+FIXTURE_NOTES='[
+  {"id":101,"body":"**Review Summary** (automated)\n\nMissing regression test.",
+   "user":{"login":"reviewbot","id":1},"created_at":"2026-04-10T10:00:00Z",
+   "updated_at":"2026-04-10T10:00:00Z"},
+  {"id":102,"body":"Please also tighten the error message.",
+   "user":{"login":"alice","id":2},"created_at":"2026-04-10T11:00:00Z",
+   "updated_at":"2026-04-10T11:00:00Z"}
+]'
+
 # --- Plumbing: source just the function defs (stop before the CMD dispatcher) ---
 build_prelude() {
     awk '/^CMD=/{exit} {print}' "$SCRIPT" > "$1"
@@ -265,6 +278,35 @@ assert_eq "abc123" "$C0_ID" "normalize_mr_commits: id <- sha"
 assert_eq "feat: add foo" "$C0_TITLE" "normalize_mr_commits: title is first line of message"
 assert_eq "Alice Example" "$C0_AUTHOR" "normalize_mr_commits: author_name <- commit.author.name"
 assert_eq "2026-04-01T10:00:00Z" "$C0_DATE" "normalize_mr_commits: created_at <- commit.author.date"
+
+# --- normalize_notes (#1360): /issues/{n}/comments -> GitLab notes shape ---
+NOTES_OUT=$(run_fn normalize_notes "$FIXTURE_NOTES")
+N_COUNT=$(json_extract "$NOTES_OUT" "len(data)")
+assert_eq "2" "$N_COUNT" "normalize_notes: two notes"
+
+N0_KEYS=$(json_extract "$NOTES_OUT" "','.join(sorted(data[0].keys()))")
+assert_eq "author,body,created_at,id,system,updated_at" "$N0_KEYS" "normalize_notes: GitLab notes shape keys"
+
+N0_ID=$(json_extract "$NOTES_OUT" "data[0]['id']")
+N0_AUTHOR=$(json_extract "$NOTES_OUT" "data[0]['author']['username']")
+N0_SYSTEM=$(json_extract "$NOTES_OUT" "data[0]['system']")
+N0_CREATED=$(json_extract "$NOTES_OUT" "data[0]['created_at']")
+assert_eq "101" "$N0_ID" "normalize_notes: id <- comment.id"
+assert_eq "reviewbot" "$N0_AUTHOR" "normalize_notes: author.username <- user.login"
+assert_eq "False" "$N0_SYSTEM" "normalize_notes: system stamped false (so the GitLab-shape filter works)"
+assert_eq "2026-04-10T10:00:00Z" "$N0_CREATED" "normalize_notes: created_at preserved"
+
+# --- mr-notes verb (#1360): exists + rejects a non-numeric number with exit 2 ---
+# The numeric guard runs BEFORE any network call, so this needs no curl stub.
+if grep -Eq '^[[:space:]]*mr-notes\)' "$SCRIPT"; then
+    pass "mr-notes verb: present in the GitHub implementation backend"
+else
+    fail "mr-notes verb: present in the GitHub implementation backend"
+fi
+MRNOTES_RC=0
+GITHUB_URL=http://x GITHUB_TOKEN=y GITHUB_OWNER=o GITHUB_REPO=r \
+    bash "$SCRIPT" mr-notes not-a-number >/dev/null 2>&1 || MRNOTES_RC=$?
+assert_eq "2" "$MRNOTES_RC" "mr-notes verb: non-numeric number exits 2"
 
 # --- normalize_timeline: label events only + add/remove mapping ---
 TIMELINE_OUT=$(run_fn normalize_timeline "$FIXTURE_TIMELINE" "" "")

@@ -218,6 +218,30 @@ print(json.dumps(out))
 PY
 }
 
+# normalize_notes
+# Reads GitHub /issues/{n}/comments JSON, writes GitLab /notes-shape:
+# [{id, body, author:{username}, created_at, system}]. GitHub's issue-comments
+# endpoint returns only human discussion — state-change / label / review
+# system events live in /issues/{n}/timeline. We stamp system: false on every
+# row so the GitLab-shape filter (`if not system`) that consumers apply over
+# mr-notes continues to work. Ported from the code-review backend (#1360) so the
+# review-resolver in code_writer can poll its own PRs' durable review notes.
+normalize_notes() {
+    python3 /dev/fd/3 3<<'PY'
+import sys, json
+data = json.loads(sys.stdin.read())
+out = [{
+    "id": c.get("id"),
+    "body": c.get("body"),
+    "author": {"username": (c.get("user") or {}).get("login")},
+    "created_at": c.get("created_at"),
+    "updated_at": c.get("updated_at"),
+    "system": False,
+} for c in data]
+print(json.dumps(out))
+PY
+}
+
 # normalize_timeline <label_filter> <since_filter>
 # Reads GitHub /issues/{n}/timeline JSON, writes GitLab resource_label_events
 # shape: [{ts, action, label, user}]. Same logic as the planning wrapper —
@@ -514,6 +538,25 @@ PY
         esac
         body="$(gh_get_q "$API/pulls/$IID/commits" --data-urlencode "per_page=100")" || exit $?
         printf '%s' "$body" | normalize_mr_commits
+        ;;
+
+    mr-notes)
+        # #1360: read the PR's discussion notes for the review-resolver in
+        # code_writer (poll the durable review note instead of the ephemeral bus).
+        # Ported from the code-review backend so the normalized shape is identical.
+        NUM="${1:?Usage: github-api.sh mr-notes <number>}"
+        case "$NUM" in
+            ''|*[!0-9]*) emit_error "pr number must be numeric: $NUM"; exit 2 ;;
+        esac
+        # GitHub PR conversation comments live under the issues endpoint
+        # (same number). Inline review comments at /pulls/{n}/comments are
+        # a separate stream consumers don't currently ingest; adding them
+        # later would be additive in this endpoint.
+        body="$(gh_get_q "$API/issues/$NUM/comments" \
+            --data-urlencode "per_page=100" \
+            --data-urlencode "sort=created" \
+            --data-urlencode "direction=desc")" || exit $?
+        printf '%s' "$body" | normalize_notes
         ;;
 
     pr-checks)
