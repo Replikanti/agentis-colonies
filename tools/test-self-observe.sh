@@ -9,6 +9,9 @@
 #   2. --file: each new finding triggers exactly one gh issue create
 #   3. dedup: when an open issue already carries the fingerprint, the finding is skipped
 #   4. rate-limit: no more than SELF_OBSERVE_MAX_NEW issues created per run
+#   9.  recently-closed dedup: a fingerprint closed within the window is skipped (#1298)
+#   10. stale-closed re-file: a fingerprint closed past the window is re-filed (#1298)
+#   11. dismissed dedup: a self-observe-dismissed-labelled closed match is always skipped (#1298)
 #
 # Usage: ./tools/test-self-observe.sh   (exit 0 = all pass, 1 = failure)
 set -eu
@@ -40,12 +43,14 @@ EOF
     chmod +x "$WORK/tools/detect-stub.sh"
 }
 
-# Stub gh whose 'issue list' search returns the count baked in $1, and whose
-# 'issue create' appends to $WORK/create.log and prints a URL.
-write_gh() {
+# Stub gh whose 'issue list' prints the JSON array in $1 (matching the real
+# `--json number,state,closedAt,labels` shape self-observe.sh now requests), and
+# whose 'issue create' appends to $WORK/create.log and prints a URL. Search args
+# are ignored — the same array is returned for every fingerprint query.
+write_gh_json() {
     cat > "$WORK/gh" <<EOF
 #!/usr/bin/env bash
-if [ "\$1" = "issue" ] && [ "\$2" = "list" ]; then echo "$1"; exit 0; fi
+if [ "\$1" = "issue" ] && [ "\$2" = "list" ]; then printf '%s' '$1'; exit 0; fi
 if [ "\$1" = "issue" ] && [ "\$2" = "create" ]; then
     L=""
     while [ \$# -gt 0 ]; do case "\$1" in --label) L="\$2"; shift 2 ;; *) shift ;; esac; done
@@ -56,6 +61,16 @@ fi
 exit 0
 EOF
     chmod +x "$WORK/gh"
+}
+
+# Back-compat shim for the count-based tests: 0 -> no matching issue ([]),
+# anything else -> a single OPEN matching issue (a dedup hit, as before).
+write_gh() {
+    if [ "$1" = "0" ]; then
+        write_gh_json '[]'
+    else
+        write_gh_json '[{"number":1,"state":"OPEN","closedAt":null,"labels":[]}]'
+    fi
 }
 
 run_so() {  # args passed to self-observe
@@ -104,7 +119,7 @@ fi
 write_detector 2
 cat > "$WORK/gh" <<EOF
 #!/usr/bin/env bash
-if [ "\$1" = "issue" ] && [ "\$2" = "list" ]; then echo 0; exit 0; fi
+if [ "\$1" = "issue" ] && [ "\$2" = "list" ]; then printf '%s' '[]'; exit 0; fi
 if [ "\$1" = "issue" ] && [ "\$2" = "create" ]; then exit 1; fi
 exit 0
 EOF
@@ -152,6 +167,41 @@ if printf '%s\n' "$OUT" | grep -q 'log-only (agent-failure' && [ "$(creates)" = 
     pass "log-only: agent-failure finding is logged, not filed (NOFILE_KINDS default)"
 else
     fail "agent-failure log-only" "out=$(printf '%s\n' "$OUT" | tail -3) creates=$(creates)"
+fi
+
+# Deterministic close timestamps for the #1298 closed-dedup tests: one safely
+# inside the default 14-day window, one far outside it.
+RECENT_CLOSED="$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ"))')"
+STALE_CLOSED="2000-01-01T00:00:00Z"
+
+# ---- Test 9: a CLOSED match within the dedup window is skipped, not re-filed ----
+write_detector 2; rm -f "$WORK/create.log"
+write_gh_json "[{\"number\":2,\"state\":\"CLOSED\",\"closedAt\":\"$RECENT_CLOSED\",\"labels\":[]}]"
+OUT="$(run_so --file)"
+if [ "$(creates)" = "0" ] && [ "$(printf '%s\n' "$OUT" | grep -c 'skip (recently closed)')" = "2" ]; then
+    pass "closed-dedup: a recently-closed fingerprint is skipped (#1298)"
+else
+    fail "closed-dedup recent" "creates=$(creates) skips=$(printf '%s\n' "$OUT" | grep -c 'recently closed')"
+fi
+
+# ---- Test 10: a CLOSED match past the dedup window IS re-filed ----
+write_detector 2; rm -f "$WORK/create.log"
+write_gh_json "[{\"number\":3,\"state\":\"CLOSED\",\"closedAt\":\"$STALE_CLOSED\",\"labels\":[]}]"
+OUT="$(run_so --file)"
+if [ "$(creates)" = "2" ] && [ "$(printf '%s\n' "$OUT" | grep -c 'FILED:')" = "2" ]; then
+    pass "closed-dedup: a stale-closed fingerprint past the cap is re-filed (#1298)"
+else
+    fail "closed-dedup stale" "creates=$(creates) filed=$(printf '%s\n' "$OUT" | grep -c 'FILED:')"
+fi
+
+# ---- Test 11: a self-observe-dismissed-labelled closed match is always skipped ----
+write_detector 2; rm -f "$WORK/create.log"
+write_gh_json "[{\"number\":4,\"state\":\"CLOSED\",\"closedAt\":\"$STALE_CLOSED\",\"labels\":[{\"name\":\"self-observe-dismissed\"}]}]"
+OUT="$(run_so --file)"
+if [ "$(creates)" = "0" ] && [ "$(printf '%s\n' "$OUT" | grep -c 'skip (dismissed)')" = "2" ]; then
+    pass "closed-dedup: a self-observe-dismissed closed match is always skipped (#1298)"
+else
+    fail "closed-dedup dismissed" "creates=$(creates) skips=$(printf '%s\n' "$OUT" | grep -c 'dismissed')"
 fi
 
 echo
