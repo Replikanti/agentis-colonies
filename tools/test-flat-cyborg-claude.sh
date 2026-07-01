@@ -452,7 +452,17 @@ RSTUB_EOF
     SETSID_B=$!
     if wait_for_pidfile "$GC_B"; then
         GCPID_B="$(cat "$GC_B" 2>/dev/null)"
-        WRAP_B="$(child_of "$SETSID_B" 2>/dev/null)"   # wrapper = child of setsid
+        # setsid(1) without --fork EXECs the wrapper in place (a backgrounded subshell
+        # is not a process-group leader, so setsid() succeeds without forking) — then
+        # $SETSID_B IS the wrapper. Only when it forks is the wrapper $SETSID_B's child.
+        # Resolve both cases: otherwise child_of returns the flat-cyborg stub (FC_PID)
+        # and we SIGTERM *that*, orphaning the grandchild to init before the wrapper's
+        # own reap runs — a teardown-target bug that masquerades as a reap failure.
+        if tr '\0' ' ' < "/proc/$SETSID_B/cmdline" 2>/dev/null | grep -Fq "$WRAPPER"; then
+            WRAP_B="$SETSID_B"                          # setsid exec'd the wrapper in place
+        else
+            WRAP_B="$(child_of "$SETSID_B" 2>/dev/null)"   # setsid forked; wrapper is its child
+        fi
         [ -n "$WRAP_B" ] && kill -TERM "$WRAP_B" 2>/dev/null
         wait "$SETSID_B" 2>/dev/null
         if [ -n "$GCPID_B" ] && wait_dead "$GCPID_B"; then
