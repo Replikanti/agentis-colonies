@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2030,SC2031  # This test deliberately scopes PATH inside
+# subshells (run 21 simulates stock macOS with no timeout/gtimeout) and via
+# `env PATH=…` per-command prefixes (#1343 oauth-token cases). shellcheck's
+# info-level "PATH modified in a subshell / might be lost" notes are false
+# positives here — every such PATH is intentionally command- or subshell-local.
 # test-code-edit-in-checkout.sh (#1210): exercise the git orchestration of
 # tools/code-edit-in-checkout.sh WITHOUT a real Claude Code session. The
 # claude-edit step is replaced by a STUB `flat-cyborg` on PATH that simulates an
