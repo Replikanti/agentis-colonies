@@ -25,6 +25,12 @@
 # Auto-discovered by tools/colony-lint.sh's tools-test loop. Exit 0 if all pass.
 set -u
 
+# Isolate from the operator's ambient multi-repo forge config: the env blocks
+# below override GITHUB_URL/TOKEN/OWNER/REPO but NOT these two, so a leaked
+# GITHUB_REPOS_JSON + FORGE_TYPE=github would route the single-repo acme/widget
+# case through forge-resolve-repo.py (which has no acme/widget entry) and fail.
+unset GITHUB_REPOS_JSON FORGE_TYPE 2>/dev/null || true
+
 REPO_ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 ORCH="$REPO_ROOT/tools/code-edit-in-checkout.sh"
 LAUNCHER="$REPO_ROOT/tools/code-edit-job.sh"
