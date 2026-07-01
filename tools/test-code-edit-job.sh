@@ -98,7 +98,7 @@ job_dir_for() { echo "$FED_DIR/.agentis/jobs/implementation/issue-$1"; }
 # ===========================================================================
 IID=42
 MARKER_A="$WORK/marker-a.log"
-export STUB_SLEEP=2 STUB_EXIT=0 STUB_URL="https://example.test/pr/42" STUB_MARKER="$MARKER_A"
+export STUB_SLEEP=1 STUB_EXIT=0 STUB_URL="https://example.test/pr/42" STUB_MARKER="$MARKER_A"
 
 OUTA1="$WORK/a1.out"; ERRA1="$WORK/a1.err"
 run_launcher "$IID" >"$OUTA1" 2>"$ERRA1"
@@ -150,11 +150,11 @@ else
     fail "A: only one orchestrator launched" "starts=$STARTS"
 fi
 
-# Wait for the detached stub to finish (sleep 2 + margin), then poll -> DONE.
+# Wait for the detached stub to finish (sleep 1 + margin), then poll -> DONE.
 i=0
-while kill -0 "$JPID" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.2; i=$((i + 1)); done
+while kill -0 "$JPID" 2>/dev/null && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
 # Give the worker a beat to write the terminal status atomically.
-sleep 0.3
+sleep 0.2
 
 OUTA3="$WORK/a3.out"; ERRA3="$WORK/a3.err"
 run_launcher "$IID" >"$OUTA3" 2>"$ERRA3"
@@ -184,13 +184,13 @@ fi
 # ===========================================================================
 IID=43
 MARKER_B="$WORK/marker-b.log"
-export STUB_SLEEP=1 STUB_EXIT=3 STUB_MARKER="$MARKER_B"
+export STUB_SLEEP=0.5 STUB_EXIT=3 STUB_MARKER="$MARKER_B"
 run_launcher "$IID" >/dev/null 2>&1
 JD="$(job_dir_for "$IID")"
 JPID="$(cat "$JD/pid" 2>/dev/null || echo '')"
 i=0
-while kill -0 "$JPID" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.2; i=$((i + 1)); done
-sleep 0.3
+while kill -0 "$JPID" 2>/dev/null && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+sleep 0.2
 B="$(run_launcher "$IID" 2>/dev/null)"
 if [ "$B" = "NO_EDITS" ]; then
     pass "B: exit-3 orchestrator -> NO_EDITS"
@@ -203,13 +203,13 @@ fi
 # ===========================================================================
 IID=44
 MARKER_C="$WORK/marker-c.log"
-export STUB_SLEEP=1 STUB_EXIT=7 STUB_MARKER="$MARKER_C"
+export STUB_SLEEP=0.5 STUB_EXIT=7 STUB_MARKER="$MARKER_C"
 run_launcher "$IID" >/dev/null 2>&1
 JD="$(job_dir_for "$IID")"
 JPID="$(cat "$JD/pid" 2>/dev/null || echo '')"
 i=0
-while kill -0 "$JPID" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.2; i=$((i + 1)); done
-sleep 0.3
+while kill -0 "$JPID" 2>/dev/null && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+sleep 0.2
 C="$(run_launcher "$IID" 2>/dev/null)"
 case "$C" in
     ERROR*) pass "C: non-0/non-3 orchestrator exit -> ERROR" ;;
@@ -253,7 +253,7 @@ poll_done() {
     _jd="$1"
     for _ in 1 2 3 4 5 6 7 8 9 10; do
         [ -f "$_jd/status" ] && grep -q "done" "$_jd/status" 2>/dev/null && return 0
-        sleep 1
+        sleep 0.2
     done
     return 1
 }
