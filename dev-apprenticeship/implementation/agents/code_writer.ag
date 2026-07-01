@@ -70,23 +70,19 @@ fn repo_field(line: string, idx: int) -> string {
     return out;
 }
 
-// #1214: code-edit-job.sh prints ONE line of the form `<KEYWORD>` or
-// `<KEYWORD> <payload>` (e.g. `LAUNCHED`, `RUNNING`, `DONE <pr-url>`,
-// `NO_EDITS`, `ERROR <short>`). job_word returns the leading keyword (the
-// poll-state) and job_rest returns everything after the first space (the
-// payload — a PR URL on DONE, a short reason on ERROR). The value rides $L
-// (env var, off-argv) so ARG_MAX never bites and there is no untrusted
-// concatenation in the body. Both are total: missing/garbled input -> "".
+// #1214/#1356: code-edit-job.sh prints ONE raw line. On a fresh launch it is
+// the bare keyword `LAUNCHED`; when the global concurrency cap deferred the
+// launch (no job dir created) it is `RUNNING`; when polling an existing job dir
+// it is `STATUS=<s> PID_ALIVE=<0|1> RESULT=<url>` — RAW facts, no decision. The
+// running/done/no_edits/error/job-died FSM that used to live in the launcher's
+// case block now lives here in job_decide (below, after pr_check_token, whose
+// KEY=<v> token reader it reuses). job_word returns the leading whitespace token
+// (`LAUNCHED` / `RUNNING` / `STATUS=<s>`) — enough for job_decide to tell the two
+// launch-path sentinels from a poll line. The value rides $L (env var, off-argv)
+// so ARG_MAX never bites. Total: missing/garbled input -> "".
 fn job_word(out: string) -> string {
     let cmd = "L=" + shell_escape(out) +
         " python3 -c 'import os; s=os.environ[\"L\"].strip(); print(s.split(None,1)[0] if s else \"\")'";
-    let res = try { exec sh cmd; } catch e { ""; };
-    return res;
-}
-
-fn job_rest(out: string) -> string {
-    let cmd = "L=" + shell_escape(out) +
-        " python3 -c 'import os; p=os.environ[\"L\"].strip().split(None,1); print(p[1] if len(p)>1 else \"\")'";
     let res = try { exec sh cmd; } catch e { ""; };
     return res;
 }
@@ -438,6 +434,65 @@ fn pr_check_token(out: string, key: string) -> string {
         "\nprint(\"\")'";
     let res = try { exec sh cmd; } catch e { ""; };
     return res;
+}
+
+// #1356: the poll-time FSM code-edit-job.sh used to own. The launcher now
+// prints ONE raw line and decides NOTHING; job_decide interprets it into the
+// vocabulary the autonomous draft-poll branch (and the recover paths) already
+// switch on. It reuses pr_check_token's KEY=<v> reader (a poll line is
+// `STATUS=<s> PID_ALIVE=<0|1> RESULT=<url>`) and job_word for the two bare
+// launch-path sentinels. Mapping (mirrors the old launcher case block, per its
+// header):
+//   LAUNCHED                      -> "LAUNCHED"  (fresh detached launch)
+//   RUNNING                       -> "RUNNING"   (cap-deferred; no job dir yet)
+//   STATUS=running PID_ALIVE=1 .. -> "RUNNING"   (orchestrator still alive)
+//   STATUS=running PID_ALIVE=0 .. -> "ERROR"     (job-died: pid gone, no terminal status)
+//   STATUS=done   RESULT=<url>    -> "DONE"      (PR URL read via job_rest)
+//   STATUS=done   RESULT=<empty>  -> "ERROR"     (done-without-url)
+//   STATUS=no_edits ..            -> "NO_EDITS"
+//   STATUS=error  ..              -> "ERROR"     (job-failed)
+//   STATUS=none / unknown         -> "ERROR"     (stale/half-written dir)
+// Total: a missing/garbled line collapses through job_word "" -> the ERROR
+// (retry) branch, the safe failure (clears markers + job dir, re-drafts).
+fn job_decide(out: string) -> string {
+    let w = job_word(out);
+    if w == "LAUNCHED" { return "LAUNCHED"; };
+    if w == "RUNNING" { return "RUNNING"; };
+    let status = pr_check_token(out, "STATUS");
+    if status == "running" {
+        if pr_check_token(out, "PID_ALIVE") == "1" { return "RUNNING"; };
+        return "ERROR";
+    };
+    if status == "done" {
+        if len(pr_check_token(out, "RESULT")) > 0 { return "DONE"; };
+        return "ERROR";
+    };
+    if status == "no_edits" { return "NO_EDITS"; };
+    return "ERROR";
+}
+
+// #1356: the PR URL from a DONE poll line — the RESULT= token. Empty for any
+// non-DONE line. Reuses pr_check_token's KEY=<v> reader.
+fn job_rest(out: string) -> string {
+    return pr_check_token(out, "RESULT");
+}
+
+// #1356: clear the per-issue job dir once the poll FSM reaches a terminal state
+// (DONE / NO_EDITS / ERROR). This cleanup used to live in the launcher's poll
+// path; it moved here with the decision logic so code-edit-job.sh stays a dumb
+// reporter that never deletes the dir. Path mirrors the launcher exactly:
+// <FED_DIR>/.agentis/jobs/<colony>/issue-<iid>, with FED_DIR=$COLONY_DIR/.. and
+// colony=$(basename "$COLONY_DIR"). The iid rides $IID
+// (off-argv, shell_escape'd); a void/empty iid is a no-op (nothing safe to key
+// on). rm -rf is total on a missing dir, so the catch is effectively dead.
+fn clear_job_dir(iid_str: string) -> void {
+    if len(iid_str) == 0 { return; };
+    if iid_str == "void" { return; };
+    let cmd = "IID=" + shell_escape(iid_str) +
+        "; rm -rf \"$COLONY_DIR/../.agentis/jobs/$(basename \"$COLONY_DIR\")/issue-$IID\"";
+    try { exec sh cmd; } catch e {
+        print("[code_writer] job-dir cleanup failed for issue", iid_str, ":", e);
+    };
 }
 
 // ci_state: classify a raw CI status word (the mr-pipeline-status verb's STATUS
@@ -981,13 +1036,18 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     print("[code_writer] code-edit-job launcher failed — not marking drafted, will retry:", e);
                     "";
                 };
-                let job_state = job_word(job_out);
+                let job_state = job_decide(job_out);
 
                 if job_state == "DONE" {
                     // #1185: mark drafted only now that the PR opened. LAUNCHED /
                     // RUNNING / NO_EDITS / ERROR all leave the markers unset so
                     // the next tick re-polls (or retries) the same issue.
+                    // #1356: the launcher reports RAW facts now; job_decide (above)
+                    // resolved them into this DONE, and job_rest reads the PR URL
+                    // from the RESULT= token. Clear the now-consumed job dir so a
+                    // future re-draft relaunches cleanly (was the launcher's job).
                     let pr_url = job_rest(job_out);
+                    clear_job_dir(issue_iid);
                     memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_iid"), first_iid_str);
                     memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_updated_at"), first_upd);
                     print("[code_writer] Opened PR via detached checkout-edit for issue", draft.issue_id, ":", pr_url);
@@ -1009,11 +1069,19 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                                 // the #200 staleness markers (defensively — the
                                 // autonomous path only sets them on DONE) so the
                                 // next tick re-drafts instead of stranding the issue.
+                                // #1356: also clear the consumed job dir so the
+                                // relaunch starts fresh (was the launcher's poll job).
+                                clear_job_dir(issue_iid);
                                 memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_iid"), "");
                                 memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_updated_at"), "");
                                 print("[code_writer] Detached checkout-edit produced no edits for issue", draft.issue_id, "— cleared draft markers, will retry");
                             } else {
-                                // #1350: same terminal-failure marker clear on ERROR.
+                                // #1356: terminal ERROR — job-died (running pid gone),
+                                // done-without-url, job-failed, or a stale/half-written
+                                // dir, all folded here by job_decide. Same job-dir +
+                                // marker clear so the next tick retries. job_out carries
+                                // the raw STATUS=.. PID_ALIVE=.. line for diagnosis.
+                                clear_job_dir(issue_iid);
                                 memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_iid"), "");
                                 memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_updated_at"), "");
                                 print("[code_writer] Detached checkout-edit error for issue", draft.issue_id, ":", job_out, "— cleared draft markers, will retry");
