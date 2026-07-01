@@ -22,6 +22,11 @@
 #      an `FCB_<hex>_BEGIN` screen-scrape sentinel prefix, a ```json fence, a
 #      no-language fence, a short prose trailer, a pure-prose passthrough, a
 #      long-prose-with-tiny-json passthrough (margin guard), and a soft-wrap.
+#   16-19 (#1345). The raised idle/timeout defaults: the wrapper passes the new
+#      idle=30000 / timeout=240000 defaults through to flat-cyborg (recording
+#      stub), FLAT_CYBORG_IDLE_MS / FLAT_CYBORG_TIMEOUT_MS overrides still win,
+#      the wrapper source carries the raised literals, and code-edit-in-checkout.sh
+#      editing sessions default idle to 45000.
 #
 # Auto-discovered by tools/colony-lint.sh's tools-test loop. Exit 0 if all pass.
 
@@ -300,6 +305,93 @@ assert d["patterns"] == "price bounced from VAL with rising volume on the retest
 else
     fail "test 15: embedded soft-wrap JSON collapses to one valid line, fields intact" \
          "out=[$OUT15] lines=$LINES15"
+fi
+
+# ===========================================================================
+# Idle/timeout defaults (#1345): under concurrent multi-agent load a long reply
+# stalls mid-generation for several seconds; the old 8s idle window mistook that
+# stall for a settled screen and screen-scraped an empty/partial reply, failing
+# the JSON decode. The wrapper default idle window was raised 8000->30000 and the
+# total timeout 180000->240000; the editing sessions in code-edit-in-checkout.sh
+# were raised 8000->45000 for the longer xhigh extended-thinking pauses. We
+# assert the wrapper passes the new defaults through to flat-cyborg AND that the
+# FLAT_CYBORG_IDLE_MS / FLAT_CYBORG_TIMEOUT_MS env overrides still win, using a
+# RECORDING stub that captures the --idle-ms / --timeout-ms args it was invoked
+# with. Case 19 source-asserts the editing-session 45000ms default.
+# ===========================================================================
+if [ ! -f "$WRAPPER" ]; then
+    fail "missing wrapper for idle/timeout tests: $WRAPPER"
+else
+    REC_DIR="$(mktemp -d)"
+    cat > "$REC_DIR/flat-cyborg" <<'REC_EOF'
+#!/usr/bin/env bash
+set -eu
+IDLE=""; TIMEOUT=""; CMDFILE=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --idle-ms)    IDLE="$2";    shift 2 ;;
+        --timeout-ms) TIMEOUT="$2"; shift 2 ;;
+        --cmd-file)   CMDFILE="$2"; shift 2 ;;
+        --) shift; break ;;
+        *) shift ;;
+    esac
+done
+printf 'idle=%s timeout=%s\n' "$IDLE" "$TIMEOUT" > "$FCREC_FILE"
+# Write claude's result-file channel so the wrapper exits 0 cleanly.
+RESULT_FILE="$(grep -F 'file-writing tool:' "$CMDFILE" 2>/dev/null | sed 's/.*file-writing tool: //' | head -1)"
+[ -n "$RESULT_FILE" ] && printf '%s' '{"ok":true}' > "$RESULT_FILE"
+exit 0
+REC_EOF
+    chmod +x "$REC_DIR/flat-cyborg"
+    FCREC="$(mktemp)"
+
+    # 5. defaults: idle=30000, timeout=240000 when no env override is set.
+    PATH="$REC_DIR:$PATH" FCREC_FILE="$FCREC" \
+        sh "$WRAPPER" "hi" >/dev/null 2>&1 || true
+    REC="$(cat "$FCREC")"
+    if [ "$REC" = "idle=30000 timeout=240000" ]; then
+        pass "test 16: wrapper passes raised defaults idle=30000 timeout=240000"
+    else
+        fail "test 16: raised idle/timeout defaults" "recorded=[$REC]"
+    fi
+
+    # 6. env overrides still win over the raised defaults.
+    PATH="$REC_DIR:$PATH" FCREC_FILE="$FCREC" \
+        FLAT_CYBORG_IDLE_MS=12345 FLAT_CYBORG_TIMEOUT_MS=67890 \
+        sh "$WRAPPER" "hi" >/dev/null 2>&1 || true
+    REC="$(cat "$FCREC")"
+    if [ "$REC" = "idle=12345 timeout=67890" ]; then
+        pass "test 17: FLAT_CYBORG_IDLE_MS / FLAT_CYBORG_TIMEOUT_MS overrides still win"
+    else
+        fail "test 17: env overrides win over defaults" "recorded=[$REC]"
+    fi
+
+    # 7. source-assert the wrapper's default literals (belt-and-suspenders).
+    if grep -q 'FLAT_CYBORG_IDLE_MS:-30000' "$WRAPPER" \
+       && grep -q 'FLAT_CYBORG_TIMEOUT_MS:-240000' "$WRAPPER" \
+       && ! grep -q 'FLAT_CYBORG_IDLE_MS:-8000' "$WRAPPER"; then
+        pass "test 18: wrapper source carries the raised default literals, no stale 8000"
+    else
+        fail "test 18: wrapper default literals raised"
+    fi
+
+    rm -rf "$REC_DIR" "$FCREC"
+fi
+
+# --- Test 19: code-edit-in-checkout.sh editing sessions default idle 45000 ----
+# The editing-session invocations run xhigh extended thinking, whose pauses
+# exceed the old 8000ms window; the default was raised to 45000. Source-assert
+# it (running that script needs a real clone + forge). Every FLAT_CYBORG_IDLE_MS
+# fallback there must be 45000 and none may remain at the old 8000.
+CODE_EDIT="$SCRIPT_DIR/code-edit-in-checkout.sh"
+if [ ! -f "$CODE_EDIT" ]; then
+    fail "missing code-edit-in-checkout.sh for test 19: $CODE_EDIT"
+elif grep -q 'FLAT_CYBORG_IDLE_MS:-45000' "$CODE_EDIT" \
+     && ! grep -q 'FLAT_CYBORG_IDLE_MS:-8000' "$CODE_EDIT"; then
+    pass "test 19: code-edit-in-checkout.sh editing-session idle default raised to 45000"
+else
+    fail "test 19: editing-session idle default 45000" \
+         "found stale :-8000 or missing :-45000"
 fi
 
 echo ""

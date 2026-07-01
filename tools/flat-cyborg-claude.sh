@@ -81,9 +81,16 @@ PROMPT_FILE="$(mktemp)"
 printf '%s' "$PROMPT" > "$PROMPT_FILE"
 trap 'rm -f "$REPLY_FILE" "$PROMPT_FILE" "$RESULT_FILE"' EXIT
 set +e
+# Idle/timeout defaults (#1345): under concurrent multi-agent load a long reply
+# (e.g. the ~140s code-writer draft) stalls mid-generation for several seconds;
+# an 8s idle window mistakes that stall for a settled screen and screen-scrapes
+# an empty/partial reply, so the JSON decode fails and the tick silently dies
+# ("exit 124: no fenced reply"). Raise the idle settle window to 30s and the
+# total wall-clock timeout to 240s so a mid-reply pause is not read as "done".
+# The FLAT_CYBORG_IDLE_MS / FLAT_CYBORG_TIMEOUT_MS env overrides still win.
 flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 \
-  --idle-ms "${FLAT_CYBORG_IDLE_MS:-8000}" \
-  --timeout-ms "${FLAT_CYBORG_TIMEOUT_MS:-180000}" \
+  --idle-ms "${FLAT_CYBORG_IDLE_MS:-30000}" \
+  --timeout-ms "${FLAT_CYBORG_TIMEOUT_MS:-240000}" \
   --cmd-file "$PROMPT_FILE" -- claude > "$REPLY_FILE"
 FC_RC=$?
 set -e
