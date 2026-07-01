@@ -51,7 +51,10 @@
 #   other  failure (clone/branch/edit/commit/push/PR-open)
 #
 # Knobs (env vars):
-#   FLAT_CYBORG_IDLE_MS          flat-cyborg idle settle window (default 8000)
+#   FLAT_CYBORG_IDLE_MS          flat-cyborg idle settle window (default 45000;
+#                                #1345: editing sessions run xhigh extended
+#                                thinking, whose pauses exceed the old 8000ms —
+#                                a short window screen-scraped a partial reply)
 #   CODE_EDIT_TIMEOUT_MS         per-attempt flat-cyborg edit timeout (600000)
 #   CODE_EDIT_MAX_ATTEMPTS       continue-on-incomplete attempts (3)
 #   CODE_EDIT_TOTAL_BUDGET_MS    overall wall-clock budget across attempts (1500000)
@@ -515,7 +518,7 @@ if [ "$DECOMPOSE" -eq 1 ]; then
     echo "[code-edit] decomposing issue #$ISSUE into subtasks" >&2
     set +e
     flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 --cwd "$WS" \
-        --idle-ms "${FLAT_CYBORG_IDLE_MS:-8000}" --timeout-ms "$PER_ATTEMPT_MS" \
+        --idle-ms "${FLAT_CYBORG_IDLE_MS:-45000}" --timeout-ms "$PER_ATTEMPT_MS" \
         --cmd-file "$TASKFILE" -- claude >&2
     set -e
     reap_editing_strays
@@ -583,7 +586,7 @@ while :; do
     echo "[code-edit] running flat-cyborg editing agent in $WS (attempt $attempt)" >&2
     set +e
     flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 --cwd "$WS" \
-        --idle-ms "${FLAT_CYBORG_IDLE_MS:-8000}" \
+        --idle-ms "${FLAT_CYBORG_IDLE_MS:-45000}" \
         --timeout-ms "$this_timeout" \
         --cmd-file "$TASKFILE" -- claude >&2
     FC_RC=$?
