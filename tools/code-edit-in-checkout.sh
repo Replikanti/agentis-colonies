@@ -546,6 +546,29 @@ case "$VERIFY_TIMEOUT_MS" in ''|*[!0-9]*) VERIFY_TIMEOUT_MS=300000 ;; esac
 VERIFY_OUT="$(mktemp)"
 [ -n "$VERIFY_CMD" ] && echo "[code-edit] verification gate: $VERIFY_CMD" >&2
 
+# ---------------------------------------------------------------------------
+# macOS Keychain sidestep (#1343): the editing claude session flat-cyborg spawns
+# below is a child of THIS detached job, which crossed the agentis `exec`
+# boundary — that sanitizes the env (USER/LOGNAME unset) and drops the GUI
+# security session, so macOS claude cannot reach the login Keychain and comes up
+# "Not logged in", making ZERO edits (setsid / setpgrp / launchctl asuser detach
+# variants all failed to restore Keychain access). Support an opt-in file
+# credential path: read a long-lived token from a gitignored file and export it
+# as CLAUDE_CODE_OAUTH_TOKEN so the spawned session authenticates without the
+# Keychain. The token MUST be one produced by `claude setup-token` (long-lived,
+# headless) — a raw OAuth `accessToken` copied out of ~/.claude/.credentials.json
+# is the WRONG type for this env var and 401s ("Invalid authentication
+# credentials"). Default path lives under the already-gitignored .agentis/ tree.
+# No-op when the file is absent (Linux hosts keep the inherited Keychain/creds
+# path unchanged), and we never clobber a CLAUDE_CODE_OAUTH_TOKEN the caller
+# already set.
+CLAUDE_OAUTH_TOKEN_FILE="${CLAUDE_OAUTH_TOKEN_FILE:-$FED_DIR/.agentis/secrets/claude-oauth-token}"
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -s "$CLAUDE_OAUTH_TOKEN_FILE" ]; then
+    CLAUDE_CODE_OAUTH_TOKEN="$(tr -d '\r\n' < "$CLAUDE_OAUTH_TOKEN_FILE")"
+    export CLAUDE_CODE_OAUTH_TOKEN
+    echo "[code-edit] exported CLAUDE_CODE_OAUTH_TOKEN from $CLAUDE_OAUTH_TOKEN_FILE (macOS Keychain sidestep)" >&2
+fi
+
 # Decompose (#1254): for a large/epic task, split it into an ORDERED list of
 # small sub-edits and run the edit loop once per subtask on the SAME branch,
 # accumulating into ONE commit/PR. Without --decompose (or if decomposition
