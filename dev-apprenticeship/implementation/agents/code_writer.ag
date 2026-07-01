@@ -482,14 +482,14 @@ fn job_rest(out: string) -> string {
 // path; it moved here with the decision logic so code-edit-job.sh stays a dumb
 // reporter that never deletes the dir. Path mirrors the launcher exactly:
 // <FED_DIR>/.agentis/jobs/<colony>/issue-<iid>, with FED_DIR=$COLONY_DIR/.. and
-// colony=${COLONY_DIR##*/} (== basename $COLONY_DIR). The iid rides $IID
+// colony=$(basename "$COLONY_DIR"). The iid rides $IID
 // (off-argv, shell_escape'd); a void/empty iid is a no-op (nothing safe to key
 // on). rm -rf is total on a missing dir, so the catch is effectively dead.
 fn clear_job_dir(iid_str: string) -> void {
     if len(iid_str) == 0 { return; };
     if iid_str == "void" { return; };
     let cmd = "IID=" + shell_escape(iid_str) +
-        "; rm -rf \"$COLONY_DIR/../.agentis/jobs/${COLONY_DIR##*/}/issue-$IID\"";
+        "; rm -rf \"$COLONY_DIR/../.agentis/jobs/$(basename \"$COLONY_DIR\")/issue-$IID\"";
     try { exec sh cmd; } catch e {
         print("[code_writer] job-dir cleanup failed for issue", iid_str, ":", e);
     };

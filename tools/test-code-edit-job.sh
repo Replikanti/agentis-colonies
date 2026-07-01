@@ -5,16 +5,20 @@
 # the CODE_EDIT_ORCH override env. The stub sleeps briefly (so the launcher must
 # return WHILE it is still running) then writes a known result keyed by exit code.
 #
-# Asserts:
+# Asserts (post-#1356 the launcher is a DUMB reporter: it prints ONE raw line
+# `STATUS=<s> PID_ALIVE=<0|1> RESULT=<url>` and NEVER deletes the job dir — the
+# running/done/no_edits/error FSM and dir cleanup moved into code_writer.ag):
 #   1. first call returns LAUNCHED, creates a job dir with status=running, a
 #      recorded pid, and a LIVE detached process (returns fast, < a few sec)
-#   2. a second call while running returns RUNNING and does NOT start a second
-#      orchestrator (exactly one child observed)
+#   2. a second call while running reports STATUS=running PID_ALIVE=1 and does
+#      NOT start a second orchestrator (exactly one child observed)
 #   3. after the stub finishes:
-#        exit 0 -> DONE <url>   (url from the stub's stdout)
-#        exit 3 -> NO_EDITS
-#        exit 7 -> ERROR ...
-#   4. dead-pid-with-running-status -> ERROR (no hang)
+#        exit 0 -> STATUS=done PID_ALIVE=0 RESULT=<url> (url from the stub stdout)
+#        exit 3 -> STATUS=no_edits PID_ALIVE=0 RESULT=
+#        exit 7 -> STATUS=error PID_ALIVE=0 RESULT=
+#      and the launcher leaves the job dir INTACT (cleanup is code_writer's job)
+#   4. dead-pid-with-running-status -> STATUS=running PID_ALIVE=0 (no hang), dir
+#      left intact
 #   5. the token NEVER appears in the launcher's stdout/stderr
 #
 # Auto-discovered by tools/colony-lint.sh's tools-test loop. Exit 0 if all pass.
@@ -132,14 +136,15 @@ else
     pass "A: token never appears in launcher stdout/stderr"
 fi
 
-# Second call WHILE running -> RUNNING, and must NOT start a second job.
+# Second call WHILE running -> STATUS=running PID_ALIVE=1, and must NOT start a
+# second job.
 OUTA2="$WORK/a2.out"; ERRA2="$WORK/a2.err"
 run_launcher "$IID" >"$OUTA2" 2>"$ERRA2"
 A2="$(cat "$OUTA2")"
-if [ "$A2" = "RUNNING" ]; then
-    pass "A: second call while running returns RUNNING"
+if [ "$A2" = "STATUS=running PID_ALIVE=1 RESULT=" ]; then
+    pass "A: second call while running reports STATUS=running PID_ALIVE=1"
 else
-    fail "A: second call RUNNING" "stdout=[$A2]"
+    fail "A: second call raw running status" "stdout=[$A2]"
 fi
 
 # Exactly ONE orchestrator instance ever started (idempotency).
@@ -159,17 +164,19 @@ sleep 0.2
 OUTA3="$WORK/a3.out"; ERRA3="$WORK/a3.err"
 run_launcher "$IID" >"$OUTA3" 2>"$ERRA3"
 A3="$(cat "$OUTA3")"
-if [ "$A3" = "DONE https://example.test/pr/42" ]; then
-    pass "A: poll after finish returns DONE <pr-url>"
+if [ "$A3" = "STATUS=done PID_ALIVE=0 RESULT=https://example.test/pr/42" ]; then
+    pass "A: poll after finish reports STATUS=done + RESULT <pr-url>"
 else
-    fail "A: DONE <pr-url>" "stdout=[$A3] log=$(cat "$JD/log" 2>/dev/null)"
+    fail "A: done raw status" "stdout=[$A3] log=$(cat "$JD/log" 2>/dev/null)"
 fi
 
-# Terminal poll consumes/clears the job dir so the next call would relaunch.
-if [ ! -d "$JD" ]; then
-    pass "A: terminal poll cleared the job dir (consumed)"
+# The launcher NEVER clears the job dir now (#1356) — cleanup moved to
+# code_writer.ag once it decides a terminal state. A terminal poll must LEAVE
+# the dir in place (still status=done) so code_writer can consume it.
+if [ -d "$JD" ] && [ "$(cat "$JD/status" 2>/dev/null)" = "done" ]; then
+    pass "A: terminal poll leaves the job dir intact (launcher never clears)"
 else
-    fail "A: job dir cleared after DONE" "still exists: $JD"
+    fail "A: job dir intact after done" "dir=$JD status=$(cat "$JD/status" 2>/dev/null)"
 fi
 
 # The stub saw the token via the inherited environment (never argv).
@@ -192,10 +199,10 @@ i=0
 while kill -0 "$JPID" 2>/dev/null && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
 sleep 0.2
 B="$(run_launcher "$IID" 2>/dev/null)"
-if [ "$B" = "NO_EDITS" ]; then
-    pass "B: exit-3 orchestrator -> NO_EDITS"
+if [ "$B" = "STATUS=no_edits PID_ALIVE=0 RESULT=" ]; then
+    pass "B: exit-3 orchestrator reports STATUS=no_edits"
 else
-    fail "B: NO_EDITS on exit 3" "stdout=[$B]"
+    fail "B: no_edits raw status on exit 3" "stdout=[$B]"
 fi
 
 # ===========================================================================
@@ -211,10 +218,11 @@ i=0
 while kill -0 "$JPID" 2>/dev/null && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
 sleep 0.2
 C="$(run_launcher "$IID" 2>/dev/null)"
-case "$C" in
-    ERROR*) pass "C: non-0/non-3 orchestrator exit -> ERROR" ;;
-    *) fail "C: ERROR on exit 7" "stdout=[$C]" ;;
-esac
+if [ "$C" = "STATUS=error PID_ALIVE=0 RESULT=" ]; then
+    pass "C: non-0/non-3 orchestrator exit reports STATUS=error"
+else
+    fail "C: error raw status on exit 7" "stdout=[$C]"
+fi
 
 # ===========================================================================
 # Scenario D (dead pid + status=running -> ERROR, no hang). Forge a job dir by
@@ -235,14 +243,18 @@ printf '%s' "$DEAD" > "$JD/pid"
 # so the STUB_* knobs are irrelevant here; the launcher must return on its own.
 export STUB_SLEEP=1 STUB_EXIT=0 STUB_MARKER=''
 D="$(run_launcher "$IID" 2>/dev/null)" || true
-case "$D" in
-    ERROR*) pass "D: dead-pid + status=running -> ERROR (no hang)" ;;
-    *) fail "D: ERROR on dead pid" "stdout=[$D]" ;;
-esac
-if [ ! -d "$JD" ]; then
-    pass "D: stale dead-pid job dir cleared for relaunch"
+if [ "$D" = "STATUS=running PID_ALIVE=0 RESULT=" ]; then
+    pass "D: dead-pid + status=running reports PID_ALIVE=0 (no hang)"
 else
-    fail "D: dead-pid job dir cleared" "still exists: $JD"
+    fail "D: dead-pid raw status" "stdout=[$D]"
+fi
+# The launcher no longer clears a dead-pid dir (#1356) — it just reports
+# PID_ALIVE=0 and code_writer reads that as job-died and clears the dir. The
+# launcher itself must LEAVE the forged dir intact.
+if [ -d "$JD" ]; then
+    pass "D: dead-pid job dir left intact (launcher never clears)"
+else
+    fail "D: dead-pid job dir intact" "missing: $JD"
 fi
 
 # ===========================================================================
