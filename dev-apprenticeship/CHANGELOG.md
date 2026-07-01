@@ -240,6 +240,21 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- **PR/MR bodies now carry the agent's drafted summary instead of a static
+  template.** `code_writer`'s `draft = prompt(...)` already produces a `summary`
+  ("2-3 sentences for the PR body"), but the code-edit job launch only passed
+  `--title` — the summary was silently dropped and `code-edit-in-checkout.sh`
+  opened every MR/PR with the static `Closes #N. / Autonomously implemented ...`
+  line, telling a reviewer nothing about the change. The drafted body is now
+  threaded end-to-end (`code_writer.ag` passes `--description
+  shell_escape(draft.summary)` → `code-edit-job.sh` forwards it to the detached
+  worker → `code-edit-in-checkout.sh` uses it as the create-mr body, appending
+  `Closes #N`), with the static template kept only as the empty-value fallback.
+  The reasoning stays in the agent's `prompt()`, so the earlier shell-level LLM
+  diff-summariser (`gen-mr-description.sh`, #1347) is reverted — the orchestrator
+  no longer summarises the diff itself
+  ([#1349](https://github.com/Replikanti/agentis-colonies/issues/1349)).
+
 - **Federation PRs now use clean Conventional Commits titles and link their
   issue.** `code_writer` drafted a 2-3 sentence `summary` and passed it verbatim
   as the PR/MR title, producing multi-sentence run-on titles; the PR body opened

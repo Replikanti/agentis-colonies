@@ -349,6 +349,40 @@ kill "$LIVE_PID" 2>/dev/null || true
 UNCAP_PID="$(cat "$UNCAP_JD/pid" 2>/dev/null || echo '')"
 if [ -n "$UNCAP_PID" ]; then kill "$UNCAP_PID" 2>/dev/null || true; fi
 
+# ===========================================================================
+# Scenario G (#1349): --description is forwarded to the orchestrator verbatim,
+# the same way --title/--decompose are relayed. The stub records its argv to a
+# marker file (line "start ... args=[...]"). A run WITH --description must show
+# the description text passed through; a run WITHOUT it must not add the flag.
+# ===========================================================================
+DESC_MARKER="$WORK/desc-marker"; : > "$DESC_MARKER"
+DESC_TEXT="Threaded PR body: rewire the sprocket so the widget stops jamming."
+env COLONY_DIR="$COLONY_DIR" CODE_EDIT_ORCH="$STUB" GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    STUB_SLEEP=0 STUB_EXIT=0 STUB_URL="https://example.test/pr/desc" STUB_MARKER="$DESC_MARKER" \
+    bash "$LAUNCHER" --owner "$OWNER" --repo "$REPO" --issue 900 \
+        --branch "fix/issue-900" --title "thread desc" \
+        --description "$DESC_TEXT" --task "do it" >/dev/null 2>&1
+poll_done "$(job_dir_for 900)" || true
+if grep -q -- '--description' "$DESC_MARKER" 2>/dev/null && grep -qF "$DESC_TEXT" "$DESC_MARKER" 2>/dev/null; then
+    pass "G: --description is forwarded to the orchestrator verbatim"
+else
+    fail "G: --description passthrough" "marker=$(cat "$DESC_MARKER" 2>/dev/null)"
+fi
+
+NODESC_MARKER="$WORK/nodesc-marker"; : > "$NODESC_MARKER"
+env COLONY_DIR="$COLONY_DIR" CODE_EDIT_ORCH="$STUB" GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    STUB_SLEEP=0 STUB_EXIT=0 STUB_URL="https://example.test/pr/nodesc" STUB_MARKER="$NODESC_MARKER" \
+    bash "$LAUNCHER" --owner "$OWNER" --repo "$REPO" --issue 901 \
+        --branch "fix/issue-901" --title "no desc" --task "do it" >/dev/null 2>&1
+poll_done "$(job_dir_for 901)" || true
+if grep -q -- '--description' "$NODESC_MARKER" 2>/dev/null; then
+    fail "G: a run without --description wrongly forwarded it" "marker=$(cat "$NODESC_MARKER" 2>/dev/null)"
+else
+    pass "G: a run without --description does NOT forward the flag"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
