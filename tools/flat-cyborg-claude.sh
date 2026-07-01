@@ -79,12 +79,71 @@ REPLY_FILE="$(mktemp)"
 # >= 0.11.0 (the --cmd-file flag).
 PROMPT_FILE="$(mktemp)"
 printf '%s' "$PROMPT" > "$PROMPT_FILE"
-trap 'rm -f "$REPLY_FILE" "$PROMPT_FILE" "$RESULT_FILE"' EXIT
+# Descendant reap (#1369). flat-cyborg drives claude through its OWN PTY session,
+# so the leaked claude (Node) child + its Bash-tool grandchildren sit behind a
+# process-group AND session boundary a group-kill can't reach; and `set -m`/PGID
+# job control no-ops without a controlling terminal — which is exactly the agentis
+# daemon's runtime context, so the retired #1367 `set -m` reap silently no-op'd
+# where it mattered. Do it tty-independently instead: capture flat-cyborg's PID
+# from `&`/`$!` (no job control needed) and, at teardown, SIGKILL the whole
+# transitive /proc parent-PID-chain closure rooted at it — crossing any group or
+# session boundary. Mirrors the cwd-match reap already proven on the edit-job path
+# (code-edit-in-checkout.sh:reap_editing_strays, #1248/#1249).
+reap_fc_descendants() {
+    _root="${1:-}"
+    { [ -n "$_root" ] && [ -d /proc ]; } || return 0
+    # Transitive descendant closure of $_root via repeated PPid sweeps over /proc
+    # (fixpoint; POSIX, no arrays — a space-padded PID-set string).
+    _set=" $_root "
+    _changed=1
+    while [ "$_changed" = 1 ]; do
+        _changed=0
+        for _st in /proc/[0-9]*/status; do
+            [ -r "$_st" ] || continue
+            _pid="${_st#/proc/}"; _pid="${_pid%/status}"
+            case "$_set" in *" $_pid "*) continue ;; esac
+            _ppid="$(awk '/^PPid:/{print $2; exit}' "$_st" 2>/dev/null || true)"
+            [ -n "$_ppid" ] || continue
+            case "$_set" in
+                *" $_ppid "*) _set="$_set$_pid "; _changed=1 ;;
+            esac
+        done
+    done
+    # Closure captured; SIGKILL every member except this wrapper. SIGKILL needs no
+    # ordering, and a member reparented mid-loop is already in the set.
+    for _pid in $_set; do
+        [ "$_pid" != "$$" ] || continue
+        kill -KILL "$_pid" 2>/dev/null || true
+    done
+}
+
+FC_PID=""
+_CLEANED=0
+_cleanup() {
+    [ "$_CLEANED" = 0 ] || return 0
+    _CLEANED=1
+    set +e   # a teardown reap must never abort mid-cleanup under `set -e`
+    reap_fc_descendants "$FC_PID"
+    rm -f "$REPLY_FILE" "$PROMPT_FILE" "$RESULT_FILE"
+}
+# EXIT covers the normal + `exit` paths; the signal traps cover the daemon tearing
+# a wedged wrapper down (SIGKILL is untrappable, but INT/TERM/HUP are not). The
+# once-guard keeps the EXIT trap from re-reaping after a signal handler already did.
+trap '_cleanup' EXIT
+trap '_cleanup; exit 130' INT
+trap '_cleanup; exit 143' TERM
+trap '_cleanup; exit 129' HUP
 set +e
+# Background flat-cyborg so we can capture its PID (`$!`) for the reap, then wait
+# for it exactly as a foreground run would (its stdout is still redirected to
+# REPLY_FILE). A trapped signal interrupts the wait, runs _cleanup (reap + rm),
+# and exits.
 flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 \
   --idle-ms "${FLAT_CYBORG_IDLE_MS:-8000}" \
   --timeout-ms "${FLAT_CYBORG_TIMEOUT_MS:-180000}" \
-  --cmd-file "$PROMPT_FILE" -- claude > "$REPLY_FILE"
+  --cmd-file "$PROMPT_FILE" -- claude > "$REPLY_FILE" &
+FC_PID=$!
+wait "$FC_PID"
 FC_RC=$?
 set -e
 # Prefer the result-file channel: if claude wrote a non-empty reply there, that
