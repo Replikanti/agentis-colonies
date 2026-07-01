@@ -919,8 +919,16 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 let is_epic = index_of(issue_detail, "\"" + epic_label + "\"") > 0;
                 if is_epic { print("[code_writer] issue", issue_iid, "is epic-class — auto-decomposing (#1257)"); };
                 let decompose_flag = if is_epic { " --decompose"; } else { ""; };
+                // #1349: thread the agent's OWN drafted summary through as the
+                // PR/MR body (--description). draft.summary is the "2-3 sentences
+                // for the PR body" the prompt() above already produced; without
+                // this it was silently dropped and the orchestrator fell back to a
+                // static template. The LLM reasoning stays in the .ag prompt(), NOT
+                // in shell plumbing. code-edit-job.sh forwards it to the detached
+                // worker; code-edit-in-checkout.sh uses it for create-mr (static
+                // template only as the empty-value fallback).
                 // colony-lint: safe-exec-concat
-                let job_cmd = "$COLONY_DIR/../../tools/code-edit-job.sh --owner " + shell_escape(owner) + " --repo " + shell_escape(repo) + " --issue " + shell_escape(issue_iid) + " --branch " + shell_escape(branch_name) + " --title " + shell_escape(draft.title) + " --task " + shell_escape(task_text) + decompose_flag;
+                let job_cmd = "$COLONY_DIR/../../tools/code-edit-job.sh --owner " + shell_escape(owner) + " --repo " + shell_escape(repo) + " --issue " + shell_escape(issue_iid) + " --branch " + shell_escape(branch_name) + " --title " + shell_escape(draft.title) + " --description " + shell_escape(draft.summary) + " --task " + shell_escape(task_text) + decompose_flag;
                 let job_out = try { exec sh job_cmd; } catch e {
                     print("[code_writer] code-edit-job launcher failed — not marking drafted, will retry:", e);
                     "";

@@ -99,11 +99,6 @@ tools/apply-line-edits.py
 # screen-scrape corruption of large structured-JSON file content (#1152 /
 # #1195 / #1208). Runtime dep: code-edit-job.sh launches it detached.
 tools/code-edit-in-checkout.sh
-# #1347: generates the opened MR/PR body (`## Problem`/`## Fix`/`## Testing`)
-# from the issue + committed diff via the flat-cyborg result-file channel, with
-# a silent fall-back to the static template. Runtime dep: code-edit-in-checkout.sh
-# invokes it before create-mr.
-tools/gen-mr-description.sh
 # #1214: fast detached launcher/poller for the orchestrator above. agentis caps
 # a single `exec sh` at ~120000ms, but the orchestrator runs for minutes, so a
 # synchronous call was killed mid-edit. code_writer.ag now invokes this launcher

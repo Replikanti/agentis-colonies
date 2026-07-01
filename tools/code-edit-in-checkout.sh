@@ -72,11 +72,16 @@ ISSUE=""
 BRANCH=""
 TITLE=""
 TASK=""
+# --description (#1349) is OPTIONAL: the reviewer-facing PR/MR body drafted by
+# code_writer.ag's prompt() (its "2-3 sentences for the PR body" summary),
+# threaded through code-edit-job.sh. Empty => fall back to the static template
+# at create-mr time. The LLM reasoning lives in the .ag prompt(), NOT here.
+DESCRIPTION_ARG=""
 DECOMPOSE=0
 RECOVER=0
 
 usage() {
-    echo "usage: code-edit-in-checkout.sh --owner <o> --repo <r> --issue <iid> --branch <name> --title <t> --task <text> [--decompose] [--recover]" >&2
+    echo "usage: code-edit-in-checkout.sh --owner <o> --repo <r> --issue <iid> --branch <name> --title <t> --task <text> [--description <d>] [--decompose] [--recover]" >&2
 }
 
 while [ $# -gt 0 ]; do
@@ -87,6 +92,7 @@ while [ $# -gt 0 ]; do
         --branch) BRANCH="${2:-}"; shift 2 ;;
         --title)  TITLE="${2:-}";  shift 2 ;;
         --task)   TASK="${2:-}";   shift 2 ;;
+        --description) DESCRIPTION_ARG="${2:-}"; shift 2 ;;
         --decompose) DECOMPOSE=1; shift ;;
         --recover) RECOVER=1; shift ;;
         *) echo "code-edit-in-checkout.sh: unknown flag: $1" >&2; usage; exit 2 ;;
@@ -680,26 +686,19 @@ fi
 #    contract differs (github: OWNER/REPO/URL; gitlab: PROJECT/URL).
 # ---------------------------------------------------------------------------
 # Build the PR/MR body. A static "Closes #N" line tells a reviewer nothing about
-# the change (#1347), so prefer an LLM-generated summary: gen-mr-description.sh
-# turns the issue + the committed diff into `## Problem` / `## Fix` / `## Testing`
-# sections via the same flat-cyborg result-file channel, printing NOTHING on any
-# failure (no LLM, error, empty reply) so we transparently fall back to the
-# static template. We append `Closes #N` ourselves so the issue auto-closes on
-# merge regardless of which path produced the body. The diff is `origin/<base>`..
-# HEAD (the branch was cut off origin/<base> and the recover path returned
-# earlier, so this is exactly this PR's cumulative change).
+# the change (#1347), so we thread the reviewer-facing summary the AGENT already
+# drafted (#1349): code_writer.ag's prompt() returns a "2-3 sentences for the PR
+# body" summary, passed here verbatim as --description. The LLM reasoning belongs
+# in the agent's prompt(), NOT in shell plumbing — so this orchestrator does NOT
+# summarise the diff itself. When --description is empty (no upstream summary) we
+# fall back to the static template. Either way we append `Closes #N` ourselves so
+# the issue auto-closes on merge regardless of which path produced the body.
 STATIC_DESCRIPTION="Closes #$ISSUE.
 
 Autonomously implemented by the dev-apprenticeship federation."
 
-GEN_DIFF_FILE="$(mktemp)"
-git_capture -C "$WS" diff "origin/$DEFAULT_BRANCH" HEAD > "$GEN_DIFF_FILE" 2>/dev/null || : > "$GEN_DIFF_FILE"
-GEN_BODY="$("$SCRIPT_DIR/gen-mr-description.sh" \
-    --issue "$ISSUE" --title "$TITLE" --task "$TASK" --diff-file "$GEN_DIFF_FILE" 2>/dev/null || true)"
-rm -f "$GEN_DIFF_FILE" 2>/dev/null || true
-
-if printf '%s' "$GEN_BODY" | grep -q '[^[:space:]]'; then
-    DESCRIPTION="$GEN_BODY
+if printf '%s' "$DESCRIPTION_ARG" | grep -q '[^[:space:]]'; then
+    DESCRIPTION="$DESCRIPTION_ARG
 
 Closes #$ISSUE"
 else

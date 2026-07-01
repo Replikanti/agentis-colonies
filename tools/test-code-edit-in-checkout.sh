@@ -70,17 +70,12 @@ unset GITHUB_REPOS_JSON GITLAB_REPOS_JSON FORGE_TYPE \
 export GIT_AUTHOR_NAME="test" GIT_AUTHOR_EMAIL="test@example.com"
 export GIT_COMMITTER_NAME="test" GIT_COMMITTER_EMAIL="test@example.com"
 
-# #1347: code-edit-in-checkout.sh now calls gen-mr-description.sh before
-# create-mr. Point its LLM at a no-op stub (consumes the prompt, prints nothing)
-# so (a) this harness's flat-cyborg invocation COUNTS — the edit-loop assertions
-# below — are not inflated by the description-gen call going through the real
-# flat-cyborg-claude.sh, and (b) the body deterministically falls back to the
-# static `Closes #N` template these tests already assert. The generation path
-# itself is covered by tools/test-gen-mr-description.sh.
-GEN_MR_LLM_STUB="$WORK/gen-mr-llm-noop.sh"
-printf '%s\n' '#!/usr/bin/env sh' 'cat >/dev/null 2>&1 || true' > "$GEN_MR_LLM_STUB"
-chmod +x "$GEN_MR_LLM_STUB"
-export GEN_MR_LLM_CMD="$GEN_MR_LLM_STUB"
+# #1349: the orchestrator no longer summarises the diff in shell (the #1347
+# gen-mr-description.sh path was reverted). The reviewer-facing body is threaded
+# in from the agent via --description; when absent (as in the default run_orch
+# below) the body deterministically falls back to the static `Closes #N`
+# template these tests assert. The threaded/verbatim + fallback paths get their
+# own dedicated scenario near the end of this harness.
 
 # ---------------------------------------------------------------------------
 # A local "remote": a bare repo seeded with one commit on main. The
@@ -1497,6 +1492,86 @@ if [ "$COMMIT17_CHECK" = "VALID" ]; then
 else
     fail "run 17 (#1316): commit subject must be valid UTF-8" \
         "bytes=[$(od -An -tx1 "$WORK/commit17.txt" 2>/dev/null | tr -d '\n')]"
+fi
+
+# ===========================================================================
+# Run 18 (#1349): the agent-drafted PR/MR body is threaded through --description
+# and used VERBATIM (with `Closes #<iid>` appended); when no --description is
+# given the orchestrator still falls back to the static template. A dedicated
+# github-api.sh stub records the FULL description body it received.
+# ===========================================================================
+DESC_LOG="$WORK/desc-body.log"
+cat > "$COLONY_DIR/scripts/github-api.sh" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+if [ "\${1:-}" != "create-mr" ]; then
+    echo "stub github-api.sh: unexpected verb \${1:-}" >&2
+    exit 1
+fi
+shift
+DESC=""
+while [ \$# -gt 0 ]; do
+    case "\$1" in
+        --source) shift 2 ;;
+        --title) shift 2 ;;
+        --description) DESC="\$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+printf '%s' "\$DESC" > "$DESC_LOG"
+printf '%s\n' '{"html_url": "https://example.test/pr/1349", "number": 1349}'
+STUB_EOF
+chmod +x "$COLONY_DIR/scripts/github-api.sh"
+
+# 18a: a supplied --description is used verbatim as the body, + `Closes #<iid>`.
+DESC_CUSTOM="This change threads the agent-drafted summary into the PR body.
+It replaces the static template so a reviewer sees the real explanation."
+: > "$DESC_LOG"
+env \
+    PATH="$STUB_BIN:$PATH" \
+    COLONY_DIR="$COLONY_DIR" \
+    GITHUB_URL="file://$REMOTE_BASE" \
+    GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    FC_STUB_MODE=edit \
+    bash "$ORCH" \
+        --owner "$OWNER" --repo "$REPO" --issue 1349 \
+        --branch "fix/issue-1349" --title "thread draft summary into pr description" \
+        --description "$DESC_CUSTOM" \
+        --task "Create NEWFILE.txt with a greeting." >"$WORK/out18a.txt" 2>"$WORK/err18a.txt"
+
+EXPECT_DESC_A="$DESC_CUSTOM
+
+Closes #1349"
+if [ "$(cat "$DESC_LOG" 2>/dev/null)" = "$EXPECT_DESC_A" ]; then
+    pass "run 18a (#1349): supplied --description is used verbatim as the PR body (+ Closes #<iid>)"
+else
+    fail "run 18a (#1349): --description used verbatim (+ Closes)" \
+        "got=[$(cat "$DESC_LOG" 2>/dev/null)]"
+fi
+
+# 18b: with NO --description the static template still applies.
+: > "$DESC_LOG"
+env \
+    PATH="$STUB_BIN:$PATH" \
+    COLONY_DIR="$COLONY_DIR" \
+    GITHUB_URL="file://$REMOTE_BASE" \
+    GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    FC_STUB_MODE=edit \
+    bash "$ORCH" \
+        --owner "$OWNER" --repo "$REPO" --issue 1350 \
+        --branch "fix/issue-1350" --title "no description supplied" \
+        --task "Create NEWFILE.txt with a greeting." >"$WORK/out18b.txt" 2>"$WORK/err18b.txt"
+
+EXPECT_DESC_B="Closes #1350.
+
+Autonomously implemented by the dev-apprenticeship federation."
+if [ "$(cat "$DESC_LOG" 2>/dev/null)" = "$EXPECT_DESC_B" ]; then
+    pass "run 18b (#1349): the static template body still applies when no --description is given"
+else
+    fail "run 18b (#1349): static template fallback" \
+        "got=[$(cat "$DESC_LOG" 2>/dev/null)]"
 fi
 
 echo ""
