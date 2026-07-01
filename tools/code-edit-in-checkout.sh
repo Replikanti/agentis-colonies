@@ -423,17 +423,46 @@ detect_verify_cmd() {
     printf '%s' ''
 }
 
+# run_bounded <seconds> <cmd...> (#1342): run a command with a hard wall-clock cap
+# that works on stock macOS, which ships NO `timeout` binary. The old verify paths
+# used `timeout ...` only "when timeout exists" and ran the command UNBOUNDED
+# otherwise — so on macOS a watch-mode test runner selected as the project gate
+# (a bare `vitest`/`npm test` that never exits) hung the detached job forever with
+# live-but-wedged children. Preference order: real `timeout` (GNU/coreutils), then
+# `gtimeout` (Homebrew coreutils on macOS); if neither is on PATH, fall back to a
+# POSIX background-process + `sleep N; kill` watchdog. The fallback runs the command
+# in its own process group (bash job control) so the SIGKILL reaps the whole subtree
+# — a watch-mode runner forks children a bare `kill $pid` would orphan. Whichever of
+# the command / the watchdog finishes first wins; the loser is torn down. A watchdog
+# kill is normalised to exit 124 to match `timeout`'s convention. Runs in the
+# CALLER's cwd/env (callers still `cd "$WS"` and scrub tokens with `env -u`).
+run_bounded() {
+    _rb_s="$1"; shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "${_rb_s}s" "$@"; return $?
+    fi
+    if command -v gtimeout >/dev/null 2>&1; then
+        gtimeout "${_rb_s}s" "$@"; return $?
+    fi
+    set -m 2>/dev/null || true
+    "$@" &
+    _rb_pid=$!
+    ( sleep "$_rb_s"; kill -KILL -"$_rb_pid" 2>/dev/null || kill -KILL "$_rb_pid" 2>/dev/null ) &
+    _rb_watch=$!
+    wait "$_rb_pid" 2>/dev/null; _rb_rc=$?
+    kill -KILL -"$_rb_watch" 2>/dev/null || kill -KILL "$_rb_watch" 2>/dev/null || true
+    wait "$_rb_watch" 2>/dev/null || true
+    if [ "$_rb_rc" -gt 128 ]; then _rb_rc=124; fi
+    return "$_rb_rc"
+}
+
 # run_verify <cmd>: run the gate inside $WS, time-bounded and token-scrubbed (the
 # gate never needs forge creds), combined output captured to $VERIFY_OUT. Returns
 # the gate's exit code.
 run_verify() {
     _vt_s=$(( VERIFY_TIMEOUT_MS / 1000 ))
     [ "$_vt_s" -lt 1 ] && _vt_s=1
-    if command -v timeout >/dev/null 2>&1; then
-        ( cd "$WS" && env -u GITHUB_TOKEN -u GITLAB_TOKEN timeout "${_vt_s}s" sh -c "$1" ) >"$VERIFY_OUT" 2>&1
-    else
-        ( cd "$WS" && env -u GITHUB_TOKEN -u GITLAB_TOKEN sh -c "$1" ) >"$VERIFY_OUT" 2>&1
-    fi
+    ( cd "$WS" && run_bounded "$_vt_s" env -u GITHUB_TOKEN -u GITLAB_TOKEN sh -c "$1" ) >"$VERIFY_OUT" 2>&1
 }
 
 # run_light_verify (#1262): the built-in change-scoped gate used when no explicit
@@ -462,11 +491,7 @@ run_light_verify() {
                 case "$_lv_f" in
                     */test-*.sh|test-*.sh)
                         echo "[light-verify] run $_lv_f" >> "$VERIFY_OUT"
-                        if command -v timeout >/dev/null 2>&1; then
-                            if ! ( cd "$WS" && env -u GITHUB_TOKEN -u GITLAB_TOKEN timeout "${_lv_tt}s" sh "$_lv_f" ) >>"$VERIFY_OUT" 2>&1; then _lv_rc=1; fi
-                        else
-                            if ! ( cd "$WS" && env -u GITHUB_TOKEN -u GITLAB_TOKEN sh "$_lv_f" ) >>"$VERIFY_OUT" 2>&1; then _lv_rc=1; fi
-                        fi
+                        if ! ( cd "$WS" && run_bounded "$_lv_tt" env -u GITHUB_TOKEN -u GITLAB_TOKEN sh "$_lv_f" ) >>"$VERIFY_OUT" 2>&1; then _lv_rc=1; fi
                         ;;
                 esac
                 ;;
