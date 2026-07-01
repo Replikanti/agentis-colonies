@@ -30,8 +30,9 @@
 #   github-api.sh mr-commits <number>
 #   github-api.sh issue <number>
 #   github-api.sh assigned-issues [--since ISO8601] [--view <name>] [--include-unassigned]
-#   github-api.sh assigned-issues-by-label-events --since ISO8601 [--view <name>] [--include-unassigned]
+#   github-api.sh recent-issues [--since ISO8601] [--view <name>] [--include-unassigned]
 #   github-api.sh issue-label-events <number> [--since ISO8601] [--label NAME]
+#   github-api.sh mr-pipeline-status <number>
 #   github-api.sh create-branch --name <name> [--ref <ref>]
 #   github-api.sh commit-files --branch <b> --message <m> --actions <json>
 #   github-api.sh create-mr --source <branch> --title <title> [--description <d>]
@@ -107,8 +108,7 @@ PY
 }
 
 # normalize_issue
-# Single-issue variant (used by `issue <n>` and by assigned-issues-by-label-events
-# after a timeline hit).
+# Single-issue variant (used by the `issue <n>` verb).
 normalize_issue() {
     python3 /dev/fd/3 3<<'PY'
 import sys, json
@@ -559,16 +559,20 @@ PY
         printf '%s' "$body" | normalize_notes
         ;;
 
-    pr-checks)
-        # #1332: CI verdict read for the bounded red-PR recovery loop (code_writer
+    mr-pipeline-status)
+        # #1355: thin CI read for the bounded red-PR recovery loop (code_writer
         # re-drives its OWN red PRs). Prints exactly two space-separated tokens on
-        # stdout: `STATE=<red|green|pending> REF=<head-branch>`. Same check-runs
-        # verdict logic as the code-review colony's #1317 merge gate, but read-only
-        # and reporting red/pending/green instead of a binary refuse — recovery
-        # acts only on `red`, never `pending` (don't race CI). Pagination fail-safe:
-        # if total_count exceeds the fetched page a red check could hide on a later
-        # page, so report `pending` (never `green`).
-        NUM="${1:?Usage: github-api.sh pr-checks <number>}"
+        # stdout: `STATUS=<raw-status> REF=<head-branch>`. GitHub has no single
+        # "pipeline status", so the forge layer reduces the head commit's check-runs
+        # to ONE raw CI status word — `success` | `failed` | `pending` — matching
+        # the GitLab pipeline-status vocabulary so the .ag `ci_state()` classifier
+        # stays forge-agnostic. `pending` covers "not verified yet": an empty
+        # check_runs list, any not-`completed` run, OR a pagination overflow
+        # (total_count > fetched, where a red check could hide on a later page).
+        # The red/green/pending classification the recovery loop branches on moved
+        # to the consuming .ag (#1353); this wrapper only normalizes the forge's
+        # multi-check shape to one status token.
+        NUM="${1:?Usage: github-api.sh mr-pipeline-status <number>}"
         case "$NUM" in
             ''|*[!0-9]*) emit_error "pr number must be numeric: $NUM"; exit 2 ;;
         esac
@@ -588,7 +592,7 @@ print("HEAD_REF=" + str((d.get("head") or {}).get("ref") or ""))
         fi
 
         checks_json="$(gh_get_q "$API/commits/$HEAD_SHA/check-runs" --data-urlencode "per_page=100")" || exit $?
-        STATE="$(printf '%s' "$checks_json" | python3 -c '
+        STATUS="$(printf '%s' "$checks_json" | python3 -c '
 import sys, json
 d = json.loads(sys.stdin.read())
 runs = d.get("check_runs") or []
@@ -602,16 +606,16 @@ if total > len(runs):
     print("pending")
     sys.exit(0)
 ok_conclusions = {"success", "neutral", "skipped"}
-state = "green"
+status = "success"
 for r in runs:
     if r.get("status") != "completed":
         print("pending")
         sys.exit(0)
     if r.get("conclusion") not in ok_conclusions:
-        state = "red"
-print(state)
+        status = "failed"
+print(status)
 ')" || { emit_error "PR #$NUM: failed to parse check-runs"; exit 4; }
-        printf 'STATE=%s REF=%s\n' "$STATE" "$HEAD_REF"
+        printf 'STATUS=%s REF=%s\n' "$STATUS" "$HEAD_REF"
         ;;
 
     issue)
@@ -684,102 +688,45 @@ print(state)
         printf '%s' "$body" | normalize_timeline "$EV_LABEL" "$EV_SINCE"
         ;;
 
-    assigned-issues-by-label-events)
-        # Composite parity query: currently-assigned+labeled ∪ timeline-added-
-        # in-window for the same assignee. Same structure as planning's
-        # issues-by-label-events but with the assignee filter.
-        # #291: --include-unassigned drops the assignee filter; label-event
-        # window matching is unchanged.
-        EV_SINCE=""
+    recent-issues)
+        # #1355: thin replacement for the removed assigned-issues-by-label-events
+        # fat verb (backend parity with gitlab-api.sh). Returns the RAW normalized
+        # list of recent open issues (assignee-filtered unless --include-unassigned)
+        # with NO trigger-label set-union, per-issue timeline scan, or dedup-merge —
+        # that agent-level reasoning left the wrapper (#1353), and the union query
+        # lost its only consumer when code_writer moved to the plain assigned-issues
+        # snapshot (#1181). --since is optional here; callers wanting the
+        # label-triggered feed use assigned-issues.
+        SINCE=""
         VIEW=""
         INCLUDE_UNASSIGNED=0
         while [ $# -gt 0 ]; do
             case "$1" in
-                --since) EV_SINCE="$2"; shift 2 ;;
+                --since) SINCE="$2"; shift 2 ;;
                 --view) VIEW="$2"; shift 2 ;;
                 --include-unassigned) INCLUDE_UNASSIGNED=1; shift ;;
                 *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
-        if [ -z "$EV_SINCE" ]; then
-            emit_error "--since is required for assigned-issues-by-label-events"
-            exit 2
-        fi
-        LABEL="${IMPLEMENTATION_TRIGGER_LABEL:-implementation}"
         ASSIGNEE="${GITHUB_ME:-*}"
-        BASE_ARGS=(
+        ARGS=(
             --data-urlencode "state=open"
             --data-urlencode "per_page=20"
             --data-urlencode "sort=updated"
             --data-urlencode "direction=desc"
-            --data-urlencode "since=$EV_SINCE"
         )
         if [ "$INCLUDE_UNASSIGNED" = "0" ]; then
-            BASE_ARGS+=(--data-urlencode "assignee=$ASSIGNEE")
+            ARGS+=(--data-urlencode "assignee=$ASSIGNEE")
         fi
-        recent_raw="$(gh_get_q "$API/issues" "${BASE_ARGS[@]}")" || exit $?
-        recent="$(printf '%s' "$recent_raw" | normalize_issues)"
-        split="$(RECENT="$recent" LABEL="$LABEL" python3 <<'PY'
-import os, json
-items = json.loads(os.environ["RECENT"])
-label = os.environ["LABEL"]
-current = [x for x in items if label in (x.get("labels") or [])]
-to_check = [x["iid"] for x in items if label not in (x.get("labels") or [])]
-print(json.dumps({"current": current, "to_check": to_check}))
-PY
-)" || exit $?
-        current_list="$(printf '%s' "$split" | python3 -c 'import sys,json;print(json.dumps(json.load(sys.stdin)["current"]))')"
-        iids_to_check="$(printf '%s' "$split" | python3 -c 'import sys,json;print(" ".join(str(i) for i in json.load(sys.stdin)["to_check"]))')"
-        matched="[]"
-        for IID in $iids_to_check; do
-            tl_body="$(gh_get_q "$API/issues/$IID/timeline" --data-urlencode "per_page=100")" || continue
-            hit="$(TLBODY="$tl_body" LABEL="$LABEL" EV_SINCE="$EV_SINCE" python3 <<'PY'
-import os, json
-events = json.loads(os.environ["TLBODY"])
-label = os.environ["LABEL"]
-since = os.environ["EV_SINCE"]
-for ev in events:
-    if ev.get("event") != "labeled":
-        continue
-    ev_label = (ev.get("label") or {}).get("name")
-    ev_ts = ev.get("created_at") or ""
-    if ev_label == label and ev_ts >= since:
-        print("1"); break
-else:
-    print("")
-PY
-)"
-            if [ -n "$hit" ]; then
-                issue_raw="$(gh_get "$API/issues/$IID")" || continue
-                issue_norm="$(printf '%s' "$issue_raw" | normalize_issue)"
-                matched="$(MATCHED="$matched" ISSUE="$issue_norm" python3 <<'PY'
-import os, json
-acc = json.loads(os.environ["MATCHED"])
-acc.append(json.loads(os.environ["ISSUE"]))
-print(json.dumps(acc))
-PY
-)"
-            fi
-        done
-        final="$(CUR="$current_list" MATCHED="$matched" python3 <<'PY'
-import os, json
-a = json.loads(os.environ["CUR"])
-b = json.loads(os.environ["MATCHED"])
-seen = set()
-out = []
-for x in a + b:
-    iid = x.get("iid")
-    if iid in seen:
-        continue
-    seen.add(iid)
-    out.append(x)
-print(json.dumps(out))
-PY
-)"
+        if [ -n "$SINCE" ]; then
+            ARGS+=(--data-urlencode "since=$SINCE")
+        fi
+        body="$(gh_get_q "$API/issues" "${ARGS[@]}")" || exit $?
+        normalized="$(printf '%s' "$body" | normalize_issues)"
         if [ -n "$VIEW" ]; then
-            printf '%s' "$final" | project_json "$VIEW"
+            printf '%s' "$normalized" | project_json "$VIEW"
         else
-            printf '%s' "$final"
+            printf '%s' "$normalized"
         fi
         ;;
 

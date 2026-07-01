@@ -91,11 +91,13 @@ if printf '%s' "$MERGE_AT" | grep -q 'if state != "green" { return 0; }'; then
 else
     fail "green-only guard" "merge_at must early-return unless state == green"
 fi
-# The state is read from the pr-checks verb.
-if printf '%s' "$MERGE_AT" | grep -q 'pr-checks ' && printf '%s' "$MERGE_AT" | grep -q 'pr_check_token(checks_out, "STATE")'; then
-    pass "state comes from the forge pr-checks verb (STATE token)"
+# The status is read from the thin mr-pipeline-status verb and classified by the
+# .ag-local ci_state() helper (#1355 moved the red/green/pending mapping out of
+# the forge wrapper into the agent).
+if printf '%s' "$MERGE_AT" | grep -q 'mr-pipeline-status ' && printf '%s' "$MERGE_AT" | grep -q 'ci_state(pr_check_token(checks_out, "STATUS"))'; then
+    pass "state comes from mr-pipeline-status (STATUS token) classified by ci_state()"
 else
-    fail "pr-checks wiring" "merge_at must call forge-api.sh pr-checks and parse STATE"
+    fail "mr-pipeline-status wiring" "merge_at must call forge-api.sh mr-pipeline-status and classify STATUS via ci_state()"
 fi
 
 # 4. Approve guarded by merge_sweep:approved:<iid>, written BEFORE the approve call.
@@ -161,14 +163,14 @@ fi
 
 # 8. exec-sh safety: every dynamic value in the sweep exec-sh commands is
 # shell_escape'd, and each command line carries the safe-exec-concat pragma.
-if printf '%s' "$MERGE_AT" | grep -q 'pr-checks " + shell_escape(iid_str) + repo_arg' \
+if printf '%s' "$MERGE_AT" | grep -q 'mr-pipeline-status " + shell_escape(iid_str) + repo_arg' \
    && printf '%s' "$MERGE_AT" | grep -q 'approve " + shell_escape(iid_str) + repo_arg' \
    && printf '%s' "$MERGE_AT" | grep -q 'merge " + shell_escape(iid_str) + repo_arg'; then
-    pass "dynamic exec-sh values are shell_escape'd (iid in pr-checks/approve/merge)"
+    pass "dynamic exec-sh values are shell_escape'd (iid in mr-pipeline-status/approve/merge)"
 else
     fail "exec-sh shell_escape" "the sweep exec-sh commands must shell_escape the iid"
 fi
-if grep -B1 'pr-checks " + shell_escape(iid_str)' "$AG" | grep -q 'colony-lint: safe-exec-concat' \
+if grep -B1 'mr-pipeline-status " + shell_escape(iid_str)' "$AG" | grep -q 'colony-lint: safe-exec-concat' \
    && grep -B1 'forge-api.sh approve " + shell_escape(iid_str)' "$AG" | grep -q 'colony-lint: safe-exec-concat' \
    && grep -B1 'forge-api.sh merge " + shell_escape(iid_str)' "$AG" | grep -q 'colony-lint: safe-exec-concat'; then
     pass "sweep exec-sh lines carry the safe-exec-concat lint pragma"

@@ -14,8 +14,9 @@
 #      and a launch returns without drafting (one code-edit job per tick).
 #   3. Own PRs only: head branch must start `fix/issue-` (never touch a PR we did
 #      not open).
-#   4. Acts ONLY on STATE=green (red is owned by recover_red_prs — no race;
-#      pending => don't race CI), read from the forge pr-checks STATE token.
+#   4. Acts ONLY on state green (red is owned by recover_red_prs — no race;
+#      pending => don't race CI), read from the forge mr-pipeline-status STATUS
+#      token and classified by the .ag-local ci_state() helper (#1355).
 #   5. Idempotency: re-drive only when the newest actionable note id is strictly
 #      greater than the review_fix:last_note:<iid> watermark, written AFTER the
 #      launch but SKIPPED on a RUNNING cap-defer (#1379) so a deferral never
@@ -82,8 +83,9 @@ else
     fail "own-PRs-only guard" "resolve_review_at must reject branches not starting fix/issue-"
 fi
 
-# 4. Acts ONLY on STATE=green (the inverse of recover_at's red-only guard); the
-# verdict is read from the forge pr-checks STATE token. It must NOT act on red.
+# 4. Acts ONLY on state green (the inverse of recover_at's red-only guard); the
+# verdict is read from the forge mr-pipeline-status STATUS token, classified by
+# ci_state(). It must NOT act on red.
 if printf '%s' "$RESOLVE_AT" | grep -Fq 'if state != "green" { return 0; }'; then
     pass "acts ONLY on STATE=green (red/pending are skipped — no CI race)"
 else
@@ -94,10 +96,10 @@ if printf '%s' "$RESOLVE_AT" | grep -Fq 'if state != "red"'; then
 else
     pass "does not act on red (delegated to recover_red_prs)"
 fi
-if printf '%s' "$RESOLVE_AT" | grep -Fq 'pr-checks ' && printf '%s' "$RESOLVE_AT" | grep -Fq 'pr_check_token(checks_out, "STATE")'; then
-    pass "state comes from the forge pr-checks verb (STATE token)"
+if printf '%s' "$RESOLVE_AT" | grep -Fq 'mr-pipeline-status ' && printf '%s' "$RESOLVE_AT" | grep -Fq 'ci_state(pr_check_token(checks_out, "STATUS"))'; then
+    pass "state comes from mr-pipeline-status (STATUS token) classified by ci_state()"
 else
-    fail "pr-checks wiring" "resolve_review_at must call forge-api.sh pr-checks and parse STATE"
+    fail "mr-pipeline-status wiring" "resolve_review_at must call forge-api.sh mr-pipeline-status and classify STATUS via ci_state()"
 fi
 
 # 5. Idempotency: re-drive only when the newest actionable note id is strictly
@@ -182,7 +184,7 @@ fi
 
 # 8. exec-sh safety: every dynamic value in the resolver exec-sh commands is
 # shell_escape'd; each resolver forge call line carries the safe-exec-concat pragma.
-if printf '%s' "$RESOLVE_AT" | grep -Fq 'pr-checks " + shell_escape(iid_str) + repo_arg' \
+if printf '%s' "$RESOLVE_AT" | grep -Fq 'mr-pipeline-status " + shell_escape(iid_str) + repo_arg' \
    && printf '%s' "$RESOLVE_AT" | grep -Fq 'shell_escape(owner)' \
    && printf '%s' "$RESOLVE_AT" | grep -Fq 'shell_escape(repo)'; then
     pass "dynamic exec-sh values are shell_escape'd (iid/owner/repo)"

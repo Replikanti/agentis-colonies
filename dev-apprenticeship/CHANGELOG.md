@@ -70,6 +70,28 @@ is asserted until multi-version CI is in place.
 
 ### Changed
 
+- **Thin forge verbs: agent reasoning moved out of `gitlab-api.sh` /
+  `github-api.sh` into the consuming `.ag` (#1355, part of #1353).** Two API
+  wrappers embedded agent-level reasoning: `pr-checks` mapped a raw
+  pipeline/check-runs status to a red/green/pending verdict, and
+  `assigned-issues-by-label-events` computed a two-source set union
+  (current-label issues ∪ label-event-window issues) with per-issue event
+  scanning and dedup-merge. Both are replaced by thin single-endpoint verbs.
+  `pr-checks` → `mr-pipeline-status`, which now prints the raw
+  `STATUS=<status> REF=<branch>` (GitLab forwards the head-pipeline `status`
+  verbatim; GitHub reduces its head-commit check-runs to one
+  `success|failed|pending` word so the classifier stays forge-agnostic); the
+  red/green/pending mapping moved into a new `ci_state()` helper in
+  `implementation/code_writer.ag` and `code-review/approval_decider.ag`.
+  `assigned-issues-by-label-events` → `recent-issues`, a raw recent-open-issues
+  read with no set-union, event scan, or dedup — the union query lost its only
+  consumer when `code_writer` moved to the plain `assigned-issues` snapshot
+  (#1181), so no `.ag` re-hosts it. `gl_call`/`gh_call` (curl + auth header +
+  backoff + `json.dumps` body) and `issue-label-events` stay as-is (already
+  thin). Applied to both the implementation and code-review colony copies of the
+  wrappers; `forge-api.sh` forwards argv verbatim, so the renamed verbs pass
+  through unchanged.
+
 - **Host-overheating fixes: edit-job concurrency cap + interleaved tick
   spacing.** Running all 21 daemons on an aligned 60s tick fired every agent's
   flat-cyborg → claude (Node, ~330MB) session on the same wall-clock boundary,
