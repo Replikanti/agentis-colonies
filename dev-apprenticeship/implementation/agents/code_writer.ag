@@ -321,6 +321,30 @@ fn raw_list_has_branch(raw: string, branch: string) -> bool {
     return out == "1";
 }
 
+// #1259: split a (possibly CSV) planning:labels:epic vocab and OR the exact-
+// quoted match across its tokens, restoring CSV parity with task_decomposer.ag
+// (which splices the same vocab whole into an LLM prompt that CAN split it —
+// the two consumers diverged for multi-token configs like "epic, big-feature").
+// A single-token vocab ("epic", the shipped default) matches exactly as before.
+// Each token is JSON-quoted (chr(34)+t+chr(34) => "<token>") before the substring
+// test, preserving the anti-false-match property: an "epic-foo" label lacks the
+// closing quote so it still can't match. ISSUE_DETAIL + VOCAB ride env vars
+// (off-argv, so ARG_MAX never bites). Total: a malformed/empty vocab or no token
+// match collapses to "0" => false (a missed auto-decompose is the safe failure).
+fn is_epic_match(issue_detail: string, epic_vocab: string) -> bool {
+    let cmd = "D=" + shell_escape(issue_detail) + " V=" + shell_escape(epic_vocab) +
+        " python3 -c 'import os,sys" +
+        "\nd=os.environ[\"D\"]" +
+        "\nv=os.environ[\"V\"]" +
+        "\nfor t in v.split(\",\"):" +
+        "\n    t=t.strip()" +
+        "\n    if t and chr(34)+t+chr(34) in d:" +
+        "\n        print(\"1\"); sys.exit(0)" +
+        "\nprint(\"0\")'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out == "1";
+}
+
 // #1350: does an open OR merged MR already exist for this issue's deterministic
 // fix/issue-<iid> branch? The #200 staleness markers (last_drafted_iid /
 // _updated_at) record "we drafted once", NOT "an MR landed", so a detached edit
@@ -921,22 +945,26 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 // Epic auto-trigger (#1257): an epic-class issue gets --decompose so
                 // the orchestrator splits it into per-subtask edits (M3, #1254). The
                 // epic label is the planning vocabulary (planning:labels:epic, read
-                // cross-colony) or "epic" by default, matched as an EXACT quoted JSON
-                // array element on the issue's labels so "not-epic"/"epic-foo" don't
+                // cross-colony) or "epic" by default, matched as EXACT quoted JSON
+                // array element(s) on the issue's labels so "not-epic"/"epic-foo" don't
                 // false-match. Decomposing a non-epic is harmless (one subtask = the
                 // whole task), so a loose match here is low-stakes.
                 let epic_vocab = recall_latest("planning:labels:epic");
-                let epic_label = if len(epic_vocab) > 0 { epic_vocab; } else { "epic"; };
+                let epic_vocab_or_default = if len(epic_vocab) > 0 { epic_vocab; } else { "epic"; };
                 // #1271: detect epic on the DRAFTED issue (issue_detail, fetched
                 // above), NOT issues_raw[0] — the LLM may draft ANY assigned issue,
                 // so [0] is the wrong issue whenever more than one is assigned.
                 // Match the quoted label in the RAW issue JSON: to_string() of an
                 // ARRAY-valued json_get yields "void" on the runtime, so the old
                 // json_get(...,"labels") path never matched. Searching the raw text
-                // for "\"epic\"" is reliable and keeps the anti-false-match
+                // for "\"<token>\"" is reliable and keeps the anti-false-match
                 // (an "epic"-prefixed label like "epic-foo" lacks the closing quote;
                 // body/title quotes are JSON-escaped as \" so they cannot match).
-                let is_epic = index_of(issue_detail, "\"" + epic_label + "\"") > 0;
+                // #1259: is_epic_match splits a CSV vocab ("epic, big-feature") and
+                // ORs the quoted match across tokens, so a "big-feature"-only issue
+                // decomposes too — CSV parity with task_decomposer.ag, which splices
+                // the same vocab whole into an LLM prompt that can split it.
+                let is_epic = is_epic_match(issue_detail, epic_vocab_or_default);
                 if is_epic { print("[code_writer] issue", issue_iid, "is epic-class — auto-decomposing (#1257)"); };
                 let decompose_flag = if is_epic { " --decompose"; } else { ""; };
                 // #1349: thread the agent's OWN drafted summary through as the
