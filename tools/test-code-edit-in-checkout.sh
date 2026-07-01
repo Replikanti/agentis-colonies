@@ -1742,6 +1742,73 @@ else
     fail "run 20 (#1346 no node_modules): exit 0 + PR url" "rc=$RC20 out=$(cat "$OUT20_FILE" 2>/dev/null) err=$(tail -4 "$WORK/err20.txt" 2>/dev/null)"
 fi
 
+# ===========================================================================
+# Run 21 (#1342 portable timeout): stock macOS ships NO `timeout` binary, and
+# the old verify paths dropped the time bound entirely when `timeout` was
+# absent — so a watch-mode verify command selected as the project gate hung the
+# detached job forever. The fix routes both verify code paths through the
+# portable `run_bounded` helper (timeout -> gtimeout -> background kill-watchdog).
+# Extract that helper from the orchestrator, simulate stock macOS by running it
+# under a PATH that has neither `timeout` nor `gtimeout`, feed it a deliberately
+# non-terminating command, and assert it is still KILLED within the bound
+# (returns timeout's 124, and wall-clock stays far under the command's runtime).
+# ===========================================================================
+if ! command -v sleep >/dev/null 2>&1; then
+    echo "[SKIP] run 21 (#1342 portable timeout): sleep not on PATH"
+else
+    RB_SRC="$WORK/run_bounded.sh"
+    awk '/^run_bounded\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$ORCH" > "$RB_SRC"
+    if ! grep -q '^run_bounded() {' "$RB_SRC" || ! grep -q '^}' "$RB_SRC"; then
+        fail "run 21 (#1342 portable timeout): could not extract run_bounded from orchestrator"
+    else
+        # A PATH that hides timeout/gtimeout but keeps the few binaries the
+        # watchdog fallback + the test command need (sleep/sh/env). command -v
+        # inside run_bounded then falls through both to the kill-watchdog.
+        RB_BIN="$WORK/run21-bin"; rm -rf "$RB_BIN"; mkdir -p "$RB_BIN"
+        for _b in sleep sh env; do
+            _p="$(command -v "$_b" 2>/dev/null)" && ln -sf "$_p" "$RB_BIN/$_b"
+        done
+
+        # shellcheck disable=SC1090
+        . "$RB_SRC"
+
+        # CODE_EDIT_VERIFY_TIMEOUT_MS -> seconds exactly as run_verify computes it.
+        RB_MS=1000
+        RB_S=$(( RB_MS / 1000 )); [ "$RB_S" -lt 1 ] && RB_S=1
+        RB_START="$(date +%s)"
+        ( PATH="$RB_BIN"; export PATH; run_bounded "$RB_S" sleep 3600 ) \
+            >/dev/null 2>"$WORK/run21-err.txt"
+        RB_RC=$?
+        RB_END="$(date +%s)"
+        RB_ELAPSED=$(( RB_END - RB_START ))
+
+        # Prove the simulated environment really had no timeout/gtimeout, so the
+        # watchdog (not a real timeout binary) is what enforced the bound.
+        if ( PATH="$RB_BIN"; command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1 ); then
+            fail "run 21 (#1342 portable timeout): PATH sandbox still exposes timeout/gtimeout" "not a valid macOS simulation"
+        else
+            pass "run 21 (#1342 portable timeout): simulated stock macOS (no timeout, no gtimeout on PATH)"
+        fi
+
+        # The command asks to sleep an hour; the watchdog must kill it in ~1s. A
+        # generous 60s wall-clock ceiling proves it did NOT run unbounded while
+        # tolerating CI load.
+        if [ "$RB_ELAPSED" -le 60 ]; then
+            pass "run 21 (#1342 portable timeout): non-terminating verify command was killed within the bound (${RB_ELAPSED}s)"
+        else
+            fail "run 21 (#1342 portable timeout): watchdog did not kill the unbounded command" "elapsed=${RB_ELAPSED}s rc=$RB_RC"
+        fi
+
+        # timeout(1) returns 124 on a kill; run_bounded normalises its watchdog
+        # kill to the same code.
+        if [ "$RB_RC" -eq 124 ]; then
+            pass "run 21 (#1342 portable timeout): returned 124 (timeout convention) on the watchdog kill"
+        else
+            fail "run 21 (#1342 portable timeout): expected rc 124 from the watchdog kill" "rc=$RB_RC"
+        fi
+    fi
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
