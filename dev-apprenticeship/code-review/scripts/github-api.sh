@@ -23,9 +23,10 @@
 #   github-api.sh approve <number>
 #   github-api.sh merge <number>   (gated: refuses unless mergeable=true AND
 #                                   CI all-green; squash + delete-branch; #1317)
-#   github-api.sh pr-checks <number>  (CI verdict for the red-PR recovery loop;
-#                                   prints `STATE=<red|green|pending> REF=<branch>`
-#                                   on stdout; #1332)
+#   github-api.sh mr-pipeline-status <number>  (raw CI read for the red-PR
+#                                   recovery loop; prints `STATUS=<raw-status>
+#                                   REF=<branch>` on stdout — the red/green/pending
+#                                   classification lives in approval_decider.ag; #1355)
 #   github-api.sh get-issue <number>
 #
 # Views (opt-in projection; byte-identical to gitlab-api.sh):
@@ -583,15 +584,20 @@ print("GREEN")
         printf '%s' "$merge_resp"
         ;;
 
-    pr-checks)
-        # #1332: CI verdict read for the bounded red-PR recovery loop. Prints
+    mr-pipeline-status)
+        # #1355: thin CI read for the bounded red-PR recovery loop. Prints
         # exactly two space-separated tokens on stdout:
-        #   STATE=<red|green|pending> REF=<head-branch>
-        # so the .ag can branch on STATE and re-drive the EXISTING head branch.
-        # This is the SAME check-runs verdict logic as the #1317 merge gate,
-        # but read-only (no merge) and reporting `red`/`pending` instead of a
-        # binary refuse — recovery only acts on `red`, never `pending`.
-        NUM="${1:?Usage: github-api.sh pr-checks <number>}"
+        #   STATUS=<raw-status> REF=<head-branch>
+        # GitHub has no single "pipeline status", so the forge layer reduces the
+        # head commit's check-runs to ONE raw CI status word — `success` |
+        # `failed` | `pending` — matching the GitLab pipeline-status vocabulary so
+        # the .ag `ci_state()` classifier stays forge-agnostic. `pending` covers
+        # "not verified yet": an empty check_runs list, any not-`completed` run, OR
+        # a pagination overflow (total_count > fetched, where a red check could
+        # hide on a later page). The red/green/pending classification the recovery
+        # loop branches on moved to the consuming .ag (#1353); this wrapper only
+        # normalizes the forge's multi-check shape to one status token.
+        NUM="${1:?Usage: github-api.sh mr-pipeline-status <number>}"
         case "$NUM" in
             ''|*[!0-9]*) emit_error "pr number must be numeric: $NUM"; exit 2 ;;
         esac
@@ -614,12 +620,12 @@ print("HEAD_REF=" + str((d.get("head") or {}).get("ref") or ""))
 
         # Read the check-runs for the head commit. Pagination fail-safe mirrors
         # the merge gate: if total_count exceeds what we fetched, a red check
-        # could hide on a later page, so report `pending` (never `green`).
-        # Verdict: any check not `completed` => pending; any completed check
-        # whose conclusion is not success/neutral/skipped => red; all green =>
-        # green; empty check_runs => pending (CI not verified yet).
+        # could hide on a later page, so report `pending` (never `success`).
+        # Reduction: any check not `completed` => pending; any completed check
+        # whose conclusion is not success/neutral/skipped => failed; all ok =>
+        # success; empty check_runs => pending (CI not verified yet).
         checks_json="$(gh_get_q "$API/commits/$HEAD_SHA/check-runs" --data-urlencode "per_page=100")" || exit $?
-        STATE="$(printf '%s' "$checks_json" | python3 -c '
+        STATUS="$(printf '%s' "$checks_json" | python3 -c '
 import sys, json
 d = json.loads(sys.stdin.read())
 runs = d.get("check_runs") or []
@@ -633,16 +639,16 @@ if total > len(runs):
     print("pending")
     sys.exit(0)
 ok_conclusions = {"success", "neutral", "skipped"}
-state = "green"
+status = "success"
 for r in runs:
     if r.get("status") != "completed":
         print("pending")
         sys.exit(0)
     if r.get("conclusion") not in ok_conclusions:
-        state = "red"
-print(state)
+        status = "failed"
+print(status)
 ')" || { emit_error "PR #$NUM: failed to parse check-runs"; exit 4; }
-        printf 'STATE=%s REF=%s\n' "$STATE" "$HEAD_REF"
+        printf 'STATUS=%s REF=%s\n' "$STATUS" "$HEAD_REF"
         ;;
 
     get-issue)

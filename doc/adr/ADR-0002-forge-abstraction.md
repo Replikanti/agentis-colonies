@@ -332,7 +332,7 @@ optional `me` into it.
 | `issues-by-label-events <labels>` | `[{"issue": {...get-issue...}, "events": [...label-events...]}, ...]` |
 | `assigned-issues`    | `[{...get-issue shape...}, ...]` |
 | `issue-label-events` | alias of `label-events` for issue-scoped consumption |
-| `assigned-issues-by-label-events <labels>` | `[{...}, ...]` composed from the two above |
+| `recent-issues`      | `[{...get-issue shape...}, ...]` raw recent-open-issues read (thin; replaced the fat `assigned-issues-by-label-events` set-union in #1355) |
 | `pipeline-status <sha>` | `{"status": "success\|failed\|running\|pending", "web_url"}` |
 | `releases`           | `[{"tag", "name", "created_at", "body"}, ...]` |
 | `tags`               | `[{"name", "sha", "created_at"}, ...]` |

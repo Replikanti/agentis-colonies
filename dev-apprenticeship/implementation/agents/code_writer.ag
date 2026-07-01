@@ -401,8 +401,9 @@ fn open_pr_field(raw: string, idx: int, field: string) -> string {
     return out;
 }
 
-// pr_check_token: pull the value of KEY out of a `STATE=<x> REF=<y>` line (the
-// forge pr-checks verb output). Value rides $L (env var, off-argv). Total: "".
+// pr_check_token: pull the value of KEY out of a `STATUS=<x> REF=<y>` line (the
+// forge mr-pipeline-status verb output). Value rides $L (env var, off-argv).
+// Total: "".
 fn pr_check_token(out: string, key: string) -> string {
     let cmd = "L=" + shell_escape(out) + " K=" + shell_escape(key) +
         " python3 -c 'import os,sys" +
@@ -413,6 +414,22 @@ fn pr_check_token(out: string, key: string) -> string {
         "\nprint(\"\")'";
     let res = try { exec sh cmd; } catch e { ""; };
     return res;
+}
+
+// ci_state: classify a raw CI status word (the mr-pipeline-status verb's STATUS
+// token) into the red/green/pending vocabulary the recovery loops branch on.
+// This is the classification that lived inside gitlab-api.sh/github-api.sh
+// pr-checks before #1355 moved the reasoning out of the thin forge wrapper:
+// failed/canceled => red, success => green, everything else (running, pending,
+// created, …, or "" when the MR has no pipeline yet) => pending — CI not
+// verified yet, so never race it. GitHub's backend pre-reduces its check-runs to
+// the same success|failed|pending vocabulary, so this classifier is forge-agnostic.
+fn ci_state(status: string) -> string {
+    if status == "failed" { return "red"; };
+    if status == "canceled" { return "red"; };
+    if status == "cancelled" { return "red"; };
+    if status == "success" { return "green"; };
+    return "pending";
 }
 
 // recover_attempts: how many recovery re-drives we have already launched for
@@ -427,7 +444,7 @@ fn recover_attempts(owner: string, repo: string, iid_str: string) -> int {
 // recovery re-drive (the caller then returns for this tick — one job per tick,
 // do not also draft), 0 otherwise (skip + keep scanning). Own PRs only: the
 // head branch must start `fix/issue-` (the federation's own). Acts only on
-// STATE=red, never pending (don't race CI). Retry cap 2 per PR via the
+// a red state, never pending (don't race CI). Retry cap 2 per PR via the
 // ci_fix:attempts:<iid> memo; after that, give up + log (needs human).
 fn recover_at(owner: string, repo: string, raw: string, idx: int) -> int {
     let iid_str = open_pr_field(raw, idx, "iid");
@@ -438,9 +455,11 @@ fn recover_at(owner: string, repo: string, raw: string, idx: int) -> int {
     if index_of(src, "fix/issue-") != 0 { return 0; };
 
     // colony-lint: safe-exec-concat
-    let checks_cmd = "$COLONY_DIR/scripts/forge-api.sh pr-checks " + shell_escape(iid_str) + repo_arg(owner, repo);
+    let checks_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-pipeline-status " + shell_escape(iid_str) + repo_arg(owner, repo);
     let checks_out = try { exec sh checks_cmd; } catch e { ""; };
-    let state = pr_check_token(checks_out, "STATE");
+    // Classify the raw pipeline status here (was gitlab-api.sh/github-api.sh
+    // pr-checks before #1355 thinned the forge wrapper to a raw STATUS read).
+    let state = ci_state(pr_check_token(checks_out, "STATUS"));
     // Only act on a confirmed red CI; pending => don't race, green => merge gate.
     if state != "red" { return 0; };
 
@@ -513,9 +532,9 @@ fn recover_red_prs(owner: string, repo: string) -> int {
 // `[draft-review-decision] ... request_changes` draft) or a human review note —
 // just sat until a human manually triggered a --recover. These helpers add the
 // missing implement->review->fix edge, a near-exact structural mirror of the
-// red-CI path but triggered by a durable review NOTE instead of STATE=red. The
+// red-CI path but triggered by a durable review NOTE instead of a red CI state. The
 // signal is the durable forge note (polled here, exactly as recover_at polls
-// pr-checks), NOT the ephemeral colony bus: the reviewers emit on sub-second
+// mr-pipeline-status), NOT the ephemeral colony bus: the reviewers emit on sub-second
 // listen() windows on an independent schedule, so a cross-daemon emit is almost
 // never caught. Idempotency is the note-id watermark (review_fix:last_note:<iid>)
 // plus the hard cap (review_fix:attempts:<iid>, cap 2 — identical to recover_at).
@@ -603,9 +622,10 @@ fn resolve_review_at(owner: string, repo: string, raw: string, idx: int) -> int 
     if index_of(src, "fix/issue-") != 0 { return 0; };
 
     // colony-lint: safe-exec-concat
-    let checks_cmd = "$COLONY_DIR/scripts/forge-api.sh pr-checks " + shell_escape(iid_str) + repo_arg(owner, repo);
+    let checks_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-pipeline-status " + shell_escape(iid_str) + repo_arg(owner, repo);
     let checks_out = try { exec sh checks_cmd; } catch e { ""; };
-    let state = pr_check_token(checks_out, "STATE");
+    // Classify the raw pipeline status here (see recover_at / #1355).
+    let state = ci_state(pr_check_token(checks_out, "STATUS"));
     // Act ONLY on a green PR: red is owned by recover_red_prs (avoid the race),
     // pending => don't race CI. The precise inverse of recover_at's red-only guard.
     if state != "green" { return 0; };

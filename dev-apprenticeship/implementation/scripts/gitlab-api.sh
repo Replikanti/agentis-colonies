@@ -20,8 +20,9 @@
 #   gitlab-api.sh mr-commits <iid>
 #   gitlab-api.sh issue <iid>
 #   gitlab-api.sh assigned-issues [--since ISO8601] [--view <name>] [--include-unassigned]
-#   gitlab-api.sh assigned-issues-by-label-events --since ISO8601 [--view <name>] [--include-unassigned]
+#   gitlab-api.sh recent-issues [--since ISO8601] [--view <name>] [--include-unassigned]
 #   gitlab-api.sh issue-label-events <iid> [--since ISO8601] [--label NAME]
+#   gitlab-api.sh mr-pipeline-status <iid>
 #   gitlab-api.sh create-branch --name <name> --ref <ref>
 #   gitlab-api.sh commit-files --branch <b> --message <m> --actions <json>
 #   gitlab-api.sh create-mr --source <branch> --title <title> [--description <d>]
@@ -335,7 +336,7 @@ case "$CMD" in
         # the durable review note instead of the ephemeral bus). Ported from the
         # code-review backend; the raw GitLab notes shape carries id, body,
         # author.username, created_at, and the `system` boolean the scanner filters
-        # on. Numeric guard mirrors this backend's pr-checks contract (exit 2).
+        # on. Numeric guard mirrors this backend's mr-pipeline-status contract (exit 2).
         IID="${1:?Usage: gitlab-api.sh mr-notes <iid>}"
         case "$IID" in
             ''|*[!0-9]*) emit_error "iid must be numeric: $IID"; exit 2 ;;
@@ -343,15 +344,16 @@ case "$CMD" in
         gl_get "$API/merge_requests/$IID/notes?per_page=100&order_by=created_at&sort=desc"
         ;;
 
-    pr-checks)
-        # #1332: CI verdict read for the bounded red-PR recovery loop (code_writer
+    mr-pipeline-status)
+        # #1355: thin CI read for the bounded red-PR recovery loop (code_writer
         # re-drives its OWN red MRs). Prints exactly two space-separated tokens on
-        # stdout: `STATE=<red|green|pending> REF=<source-branch>`. Read-only mirror
-        # of the code-review colony's #1317 merge gate pipeline check: head-pipeline
-        # pending/running => pending, failed/canceled => red, success => green,
-        # missing pipeline => pending (CI not verified yet). Recovery acts only on
-        # `red`, never `pending` (don't race CI).
-        IID="${1:?Usage: gitlab-api.sh pr-checks <iid>}"
+        # stdout: `STATUS=<raw-pipeline-status> REF=<source-branch>`. The
+        # head-pipeline `status` is forwarded VERBATIM (empty string when the MR
+        # has no pipeline yet); the red/green/pending classification that used to
+        # live here — the reasoning the recovery loop branches on — now lives in
+        # the consuming .ag as `ci_state()`, so this wrapper stays a thin
+        # single-endpoint read (#1353).
+        IID="${1:?Usage: gitlab-api.sh mr-pipeline-status <iid>}"
         case "$IID" in
             ''|*[!0-9]*) emit_error "iid must be numeric: $IID"; exit 2 ;;
         esac
@@ -361,16 +363,8 @@ import sys, json
 d = json.loads(sys.stdin.read())
 ref = d.get("source_branch") or ""
 pipeline = d.get("head_pipeline") or d.get("pipeline") or {}
-pstatus = pipeline.get("status")
-if pstatus in ("pending", "running", "created", "waiting_for_resource", "preparing", "scheduled"):
-    state = "pending"
-elif pstatus in ("failed", "canceled", "cancelled"):
-    state = "red"
-elif pstatus == "success":
-    state = "green"
-else:
-    state = "pending"
-print("STATE=%s REF=%s" % (state, ref))
+pstatus = pipeline.get("status") or ""
+print("STATUS=%s REF=%s" % (pstatus, ref))
 ')" || { emit_error "MR !$IID: failed to parse pipeline metadata"; exit 4; }
         printf '%s\n' "$VERDICT"
         ;;
@@ -438,8 +432,8 @@ print("STATE=%s REF=%s" % (state, ref))
         body="$(gl_get "$API/$ISSUE_COLLECTION/$IID/resource_label_events?per_page=100")" || exit $?
         # Pass body via env (BODY=) rather than stdin because the heredoc
         # (<<'PY') would otherwise override the piped input — shellcheck
-        # SC2259. Same idiom as the split / hit / matched / final blocks
-        # below in assigned-issues-by-label-events.
+        # SC2259. Same BODY=/env idiom used throughout this script to feed a
+        # python3 heredoc its JSON payload.
         BODY="$body" EV_SINCE="$EV_SINCE" EV_LABEL="$EV_LABEL" python3 <<'PY'
 import os, json
 events = json.loads(os.environ["BODY"])
@@ -463,106 +457,47 @@ print(json.dumps(out))
 PY
         ;;
 
-    assigned-issues-by-label-events)
-        # #235: events-aware trigger query for implementation colony. Returns
-        # the union of
-        #   (a) open issues currently assigned to anyone and carrying
-        #       $IMPLEMENTATION_TRIGGER_LABEL, and
-        #   (b) open assigned issues that had the label added at any point
-        #       in [--since, now] per resource_label_events.
-        # Closes the observability gap where a short-lived trigger label
-        # is added and removed between two 60 s polls. Mirrors the planning
-        # colony's issues-by-label-events (#235) but keeps the assignee_id
-        # filter that assigned-issues uses.
-        # #291: --include-unassigned drops the assignee_id filter; label-event
-        # window matching is unchanged.
-        EV_SINCE=""
+    recent-issues)
+        # #1355: thin replacement for the removed assigned-issues-by-label-events
+        # fat verb. Returns the RAW list of recent open issues (assignee-filtered
+        # unless --include-unassigned) with NO trigger-label set-union, per-issue
+        # resource_label_events scan, or dedup-merge — that agent-level reasoning
+        # left the wrapper (#1353). It is the same single GET the fat verb used as
+        # its first source, minus the union. The union query also lost its only
+        # consumer when code_writer moved to the plain `assigned-issues` snapshot
+        # (#1181), so no .ag re-hosts the set-union today. --since is optional here
+        # (the fat verb required it only to bound the label-event window, which no
+        # longer runs); callers wanting the label-triggered feed use assigned-issues.
+        SINCE=""
         VIEW=""
         INCLUDE_UNASSIGNED=0
         while [ $# -gt 0 ]; do
             case "$1" in
-                --since) EV_SINCE="$2"; shift 2 ;;
+                --since) SINCE="$2"; shift 2 ;;
                 --view) VIEW="$2"; shift 2 ;;
                 --include-unassigned) INCLUDE_UNASSIGNED=1; shift ;;
                 *) emit_error "unknown flag: $1"; exit 2 ;;
             esac
         done
-        if [ -z "$EV_SINCE" ]; then
-            emit_error "--since is required for assigned-issues-by-label-events"
-            exit 2
-        fi
-        LABEL="${IMPLEMENTATION_TRIGGER_LABEL:-implementation}"
-        # Fetch recent open assigned issues with no label filter so we catch
-        # those that had the trigger label briefly and lost it again.
-        BASE_ARGS=(
+        ARGS=(
             --data-urlencode "state=opened"
             --data-urlencode "per_page=20"
             --data-urlencode "order_by=updated_at"
             --data-urlencode "sort=desc"
-            --data-urlencode "updated_after=$EV_SINCE"
         )
         if [ "$INCLUDE_UNASSIGNED" = "0" ]; then
-            BASE_ARGS+=(--data-urlencode "assignee_id=Any")
+            ARGS+=(--data-urlencode "assignee_id=Any")
         fi
-        recent="$(gl_get_q "$API/$ISSUE_COLLECTION" "${BASE_ARGS[@]}")" || exit $?
-        split="$(RECENT="$recent" LABEL="$LABEL" python3 <<'PY'
-import os, json
-items = json.loads(os.environ["RECENT"])
-label = os.environ["LABEL"]
-current = [x for x in items if label in (x.get("labels") or [])]
-to_check = [x["iid"] for x in items if label not in (x.get("labels") or [])]
-print(json.dumps({"current": current, "to_check": to_check}))
-PY
-)" || exit $?
-        current_list="$(printf '%s' "$split" | python3 -c 'import sys,json;print(json.dumps(json.load(sys.stdin)["current"]))')"
-        iids_to_check="$(printf '%s' "$split" | python3 -c 'import sys,json;print(" ".join(str(i) for i in json.load(sys.stdin)["to_check"]))')"
-        matched="[]"
-        for IID in $iids_to_check; do
-            ev_body="$(gl_get "$API/$ISSUE_COLLECTION/$IID/resource_label_events?per_page=100")" || continue
-            hit="$(EVBODY="$ev_body" LABEL="$LABEL" EV_SINCE="$EV_SINCE" python3 <<'PY'
-import os, json
-events = json.loads(os.environ["EVBODY"])
-label = os.environ["LABEL"]
-since = os.environ["EV_SINCE"]
-for ev in events:
-    ev_label = (ev.get("label") or {}).get("name")
-    ev_ts = ev.get("created_at") or ""
-    if ev_label == label and ev.get("action") == "add" and ev_ts >= since:
-        print("1"); break
-else:
-    print("")
-PY
-)"
-            if [ -n "$hit" ]; then
-                issue_body="$(gl_get "$API/$ISSUE_COLLECTION/$IID")" || continue
-                matched="$(MATCHED="$matched" ISSUE="$issue_body" python3 <<'PY'
-import os, json
-acc = json.loads(os.environ["MATCHED"])
-acc.append(json.loads(os.environ["ISSUE"]))
-print(json.dumps(acc))
-PY
-)"
-            fi
-        done
-        final="$(CUR="$current_list" MATCHED="$matched" python3 <<'PY'
-import os, json
-a = json.loads(os.environ["CUR"])
-b = json.loads(os.environ["MATCHED"])
-seen = set()
-out = []
-for x in a + b:
-    iid = x.get("iid")
-    if iid in seen:
-        continue
-    seen.add(iid)
-    out.append(x)
-print(json.dumps(out))
-PY
-)"
+        if [ -n "$SINCE" ]; then
+            ARGS+=(--data-urlencode "updated_after=$SINCE")
+        fi
         if [ -n "$VIEW" ]; then
-            printf '%s' "$final" | project_json "$VIEW"
+            # Two-step pipe so gl_call's non-zero exit survives projection (see
+            # merge-requests branch above).
+            body="$(gl_get_q "$API/$ISSUE_COLLECTION" "${ARGS[@]}")" || exit $?
+            printf '%s' "$body" | project_json "$VIEW"
         else
-            printf '%s' "$final"
+            gl_get_q "$API/$ISSUE_COLLECTION" "${ARGS[@]}"
         fi
         ;;
 

@@ -16,9 +16,10 @@
 #   gitlab-api.sh merge <iid>   (gated: refuses unless merge_status ==
 #                                can_be_merged AND head pipeline succeeded;
 #                                squash + remove source branch; #1317)
-#   gitlab-api.sh pr-checks <iid>  (CI verdict for the red-PR recovery loop;
-#                                prints `STATE=<red|green|pending> REF=<branch>`
-#                                on stdout; #1332)
+#   gitlab-api.sh mr-pipeline-status <iid>  (raw CI read for the red-PR recovery
+#                                loop; prints `STATUS=<raw-pipeline-status>
+#                                REF=<branch>` on stdout — the red/green/pending
+#                                classification lives in approval_decider.ag; #1355)
 #   gitlab-api.sh get-issue <iid>
 #
 # Views (opt-in projection; default is full JSON):
@@ -383,15 +384,16 @@ print("OK")
         gl_put "$API/merge_requests/$IID/merge" "$MERGE_BODY"
         ;;
 
-    pr-checks)
-        # #1332: CI verdict read for the bounded red-PR recovery loop. Prints
+    mr-pipeline-status)
+        # #1355: thin CI read for the bounded red-PR recovery loop. Prints
         # exactly two space-separated tokens on stdout:
-        #   STATE=<red|green|pending> REF=<source-branch>
-        # so the .ag can branch on STATE and re-drive the EXISTING source
-        # branch. Read-only mirror of the #1317 merge gate's pipeline check:
-        # head-pipeline pending/running => pending, failed/canceled => red,
-        # success => green, missing pipeline => pending (CI not verified yet).
-        IID="${1:?Usage: gitlab-api.sh pr-checks <iid>}"
+        #   STATUS=<raw-pipeline-status> REF=<source-branch>
+        # The head-pipeline `status` is forwarded VERBATIM (empty string when the
+        # MR has no pipeline yet) so the .ag can re-drive the EXISTING source
+        # branch. The red/green/pending classification that used to live here —
+        # the reasoning approval_decider branches on — moved to the consuming .ag
+        # as `ci_state()` (#1353), keeping this wrapper a thin single-endpoint read.
+        IID="${1:?Usage: gitlab-api.sh mr-pipeline-status <iid>}"
         case "$IID" in
             ''|*[!0-9]*) emit_error "iid must be numeric: $IID"; exit 2 ;;
         esac
@@ -402,16 +404,8 @@ import sys, json
 d = json.loads(sys.stdin.read())
 ref = d.get("source_branch") or ""
 pipeline = d.get("head_pipeline") or d.get("pipeline") or {}
-pstatus = pipeline.get("status")
-if pstatus in ("pending", "running", "created", "waiting_for_resource", "preparing", "scheduled"):
-    state = "pending"
-elif pstatus in ("failed", "canceled", "cancelled"):
-    state = "red"
-elif pstatus == "success":
-    state = "green"
-else:
-    state = "pending"
-print("STATE=%s REF=%s" % (state, ref))
+pstatus = pipeline.get("status") or ""
+print("STATUS=%s REF=%s" % (pstatus, ref))
 ')" || { emit_error "MR !$IID: failed to parse pipeline metadata"; exit 4; }
         printf '%s\n' "$VERDICT"
         ;;

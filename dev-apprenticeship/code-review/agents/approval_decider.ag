@@ -189,9 +189,9 @@ fn open_pr_field(raw: string, idx: int, field: string) -> string {
     return out;
 }
 
-// pr_check_token: pull the value of KEY out of a `STATE=<x> REF=<y>` line (the
-// forge pr-checks verb output). Value rides $L (env var, off-argv). Total: "".
-// Mirrors the helper of the same name in implementation/code_writer.ag (#1332).
+// pr_check_token: pull the value of KEY out of a `STATUS=<x> REF=<y>` line (the
+// forge mr-pipeline-status verb output). Value rides $L (env var, off-argv).
+// Total: "". Mirrors the helper of the same name in implementation/code_writer.ag.
 fn pr_check_token(out: string, key: string) -> string {
     let cmd = "L=" + shell_escape(out) + " K=" + shell_escape(key) +
         " python3 -c 'import os,sys" +
@@ -202,6 +202,23 @@ fn pr_check_token(out: string, key: string) -> string {
         "\nprint(\"\")'";
     let res = try { exec sh cmd; } catch e { ""; };
     return res;
+}
+
+// ci_state: classify a raw CI status word (the mr-pipeline-status verb's STATUS
+// token) into the red/green/pending vocabulary the merge sweep branches on. This
+// is the classification that lived inside gitlab-api.sh/github-api.sh pr-checks
+// before #1355 moved the reasoning out of the thin forge wrapper: failed/canceled
+// => red, success => green, everything else (running, pending, created, …, or ""
+// when the MR has no pipeline yet) => pending — CI not verified yet, so never
+// race it. GitHub's backend pre-reduces its check-runs to the same
+// success|failed|pending vocabulary, so this classifier is forge-agnostic.
+// Mirrors the helper of the same name in implementation/code_writer.ag.
+fn ci_state(status: string) -> string {
+    if status == "failed" { return "red"; };
+    if status == "canceled" { return "red"; };
+    if status == "cancelled" { return "red"; };
+    if status == "success" { return "green"; };
+    return "pending";
 }
 
 // merge_attempts: how many auto-merge attempts we have already made on this PR
@@ -229,9 +246,11 @@ fn merge_at(owner: string, repo: string, raw: string, idx: int) -> int {
     if index_of(src, "fix/issue-") != 0 { return 0; };
 
     // colony-lint: safe-exec-concat
-    let checks_cmd = "$COLONY_DIR/scripts/forge-api.sh pr-checks " + shell_escape(iid_str) + repo_arg(owner, repo);
+    let checks_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-pipeline-status " + shell_escape(iid_str) + repo_arg(owner, repo);
     let checks_out = try { exec sh checks_cmd; } catch e { ""; };
-    let state = pr_check_token(checks_out, "STATE");
+    // Classify the raw pipeline status here (was gitlab-api.sh/github-api.sh
+    // pr-checks before #1355 thinned the forge wrapper to a raw STATUS read).
+    let state = ci_state(pr_check_token(checks_out, "STATUS"));
     // Only act on a confirmed green CI; pending => don't race, red => not ready.
     if state != "green" { return 0; };
 

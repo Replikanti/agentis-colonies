@@ -81,11 +81,13 @@ if printf '%s' "$RECOVER_AT" | grep -q 'if state != "red" { return 0; }'; then
 else
     fail "red-only guard" "recover_at must early-return unless state == red"
 fi
-# The state is read from the pr-checks verb.
-if printf '%s' "$RECOVER_AT" | grep -q 'pr-checks ' && printf '%s' "$RECOVER_AT" | grep -q 'pr_check_token(checks_out, "STATE")'; then
-    pass "state comes from the forge pr-checks verb (STATE token)"
+# The status is read from the thin mr-pipeline-status verb and classified by the
+# .ag-local ci_state() helper (#1355 moved the red/green/pending mapping out of
+# the forge wrapper into the agent).
+if printf '%s' "$RECOVER_AT" | grep -q 'mr-pipeline-status ' && printf '%s' "$RECOVER_AT" | grep -q 'ci_state(pr_check_token(checks_out, "STATUS"))'; then
+    pass "state comes from mr-pipeline-status (STATUS token) classified by ci_state()"
 else
-    fail "pr-checks wiring" "recover_at must call forge-api.sh pr-checks and parse STATE"
+    fail "mr-pipeline-status wiring" "recover_at must call forge-api.sh mr-pipeline-status and classify STATUS via ci_state()"
 fi
 
 # 4a. Retry cap 2: give up after >= 2 attempts with the human-needed log.
@@ -144,8 +146,8 @@ else
 fi
 
 # 6. exec-sh safety: every dynamic value in the recovery exec-sh commands is
-# wrapped in shell_escape(). The pr-checks + job commands are the writes here.
-if printf '%s' "$RECOVER_AT" | grep -q 'pr-checks " + shell_escape(iid_str) + repo_arg' \
+# wrapped in shell_escape(). The mr-pipeline-status + job commands are the writes here.
+if printf '%s' "$RECOVER_AT" | grep -q 'mr-pipeline-status " + shell_escape(iid_str) + repo_arg' \
    && printf '%s' "$RECOVER_AT" | grep -q 'shell_escape(iid_str)' \
    && printf '%s' "$RECOVER_AT" | grep -q 'shell_escape(owner)' \
    && printf '%s' "$RECOVER_AT" | grep -q 'shell_escape(repo)'; then
@@ -154,7 +156,7 @@ else
     fail "exec-sh shell_escape" "recovery exec-sh commands must shell_escape dynamic values"
 fi
 # The two recovery exec-sh lines carry the safe-exec-concat lint pragma.
-if grep -B1 'pr-checks " + shell_escape' "$AG" | grep -q 'colony-lint: safe-exec-concat' \
+if grep -B1 'mr-pipeline-status " + shell_escape' "$AG" | grep -q 'colony-lint: safe-exec-concat' \
    && grep -B1 'code-edit-job.sh --owner " + shell_escape(owner) + " --repo " + shell_escape(repo) + " --issue " + shell_escape(iid_str)' "$AG" | grep -q 'colony-lint: safe-exec-concat'; then
     pass "recovery exec-sh lines carry the safe-exec-concat lint pragma"
 else
