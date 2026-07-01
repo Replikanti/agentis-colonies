@@ -27,6 +27,13 @@
 #      stub), FLAT_CYBORG_IDLE_MS / FLAT_CYBORG_TIMEOUT_MS overrides still win,
 #      the wrapper source carries the raised literals, and code-edit-in-checkout.sh
 #      editing sessions default idle to 45000.
+#   20-22 (#1369). The plain-prompt DESCENDANT REAP: the wrapper parses clean
+#      (20), source-pins the tty-independent /proc PPid-chain walk and asserts no
+#      `set -m` job control (21), and — with a stub flat-cyborg that detaches a
+#      grandchild into its OWN session via setsid — FUNCTIONALLY reaps it on
+#      SIGTERM teardown, including a no-controlling-tty sub-case via `setsid -w`
+#      (22). These invoke the wrapper against a STUB flat-cyborg; they still never
+#      invoke the real flat-cyborg / claude binaries.
 #
 # Auto-discovered by tools/colony-lint.sh's tools-test loop. Exit 0 if all pass.
 
@@ -392,6 +399,177 @@ elif grep -q 'FLAT_CYBORG_IDLE_MS:-45000' "$CODE_EDIT" \
 else
     fail "test 19: editing-session idle default 45000" \
          "found stale :-8000 or missing :-45000"
+fi
+
+# ===========================================================================
+# Descendant reap (#1369). The plain-prompt wrapper backgrounds
+# `flat-cyborg … -- claude` and, on EXIT or a trapped signal (the daemon tearing
+# a wedged wrapper down), SIGKILLs the whole transitive /proc parent-PID-chain
+# closure rooted at the flat-cyborg child PID. This SUPERSEDES the retired #1367
+# (B4) `set -m` process-group reap, which (a) no-ops without a controlling tty —
+# true on the CI runner AND in the agentis daemon, the exact production context —
+# and (b) could not cross flat-cyborg's own PTY session boundary anyway. The /proc
+# PPid walk is tty-independent and crosses group/session boundaries, so it fires
+# where `set -m` could not. Mirrors the cwd-match reap on the edit-job path
+# (code-edit-in-checkout.sh:reap_editing_strays, #1248/#1249).
+# ===========================================================================
+
+# --- Test 16: the wrapper parses clean under both sh -n and bash -n ----------
+if [ ! -f "$WRAPPER" ]; then
+    fail "test 20: missing wrapper: $WRAPPER"
+elif sh -n "$WRAPPER" 2>/dev/null && bash -n "$WRAPPER" 2>/dev/null; then
+    pass "test 20: wrapper parses clean under both sh -n and bash -n"
+else
+    fail "test 20: wrapper parses clean under both sh -n and bash -n"
+fi
+
+# --- Test 17: source pins the tty-independent /proc walk, not set -m ----------
+# The reap must be the PPid-chain walk keyed on the backgrounded flat-cyborg PID
+# (`FC_PID=$!`), driven from the EXIT/signal cleanup, killing the closure with
+# SIGKILL — and must NOT (re)introduce `set -m` job control (a no-op without a
+# controlling terminal, which is why #1367's attempt failed on CI and in the
+# daemon).
+if [ -f "$WRAPPER" ] \
+   && grep -q 'reap_fc_descendants' "$WRAPPER" \
+   && grep -qF 'FC_PID=$!' "$WRAPPER" \
+   && grep -Eq '/proc/\[0-9\]\*/status' "$WRAPPER" \
+   && grep -q 'kill -KILL' "$WRAPPER" \
+   && ! grep -Eq '^[[:space:]]*set -m([^[:alnum:]_]|$)' "$WRAPPER"; then
+    pass "test 21: reap uses the tty-independent /proc PPid-chain walk, no set -m"
+else
+    fail "test 21: reap uses the tty-independent /proc PPid-chain walk, no set -m"
+fi
+
+# --- Test 18: FUNCTIONAL reap — SIGTERM teardown SIGKILLs a setsid-detached
+# grandchild, unconditionally (no job-control-availability skip: the /proc walk
+# does not depend on job control), incl. a no-controlling-tty `setsid -w` case. --
+# Needs setsid (to reproduce the PTY-session escape) + /proc (the walk's substrate
+# — and the wrapper's reap itself is a documented no-op without /proc, e.g. macOS).
+if [ ! -f "$WRAPPER" ]; then
+    fail "test 22: missing wrapper: $WRAPPER"
+elif ! command -v setsid >/dev/null 2>&1 || [ ! -d /proc ]; then
+    echo "[SKIP] test 22: functional reap needs setsid + /proc (not both present)"
+else
+    # first pid whose PPid == $1 (pure /proc; no pgrep dependency).
+    child_of() {
+        for _st in /proc/[0-9]*/status; do
+            [ -r "$_st" ] || continue
+            _pp="$(awk '/^PPid:/{print $2; exit}' "$_st" 2>/dev/null || true)"
+            if [ "$_pp" = "$1" ]; then
+                _p="${_st#/proc/}"; printf '%s' "${_p%/status}"; return 0
+            fi
+        done
+        return 1
+    }
+    # a pid is "dead" when it no longer exists OR is a reaped/zombie entry.
+    pid_dead() {
+        kill -0 "$1" 2>/dev/null || return 0
+        _s="$(awk '/^State:/{print $2; exit}' "/proc/$1/status" 2>/dev/null || true)"
+        [ "$_s" = "Z" ]
+    }
+    # poll up to ~8s for a non-empty pidfile to appear.
+    wait_for_pidfile() {
+        _i=0
+        while [ "$_i" -lt 80 ]; do
+            [ -s "$1" ] && return 0
+            sleep 0.1; _i=$((_i + 1))
+        done
+        return 1
+    }
+    # poll up to ~5s for a pid to become dead.
+    wait_dead() {
+        _i=0
+        while [ "$_i" -lt 50 ]; do
+            pid_dead "$1" && return 0
+            sleep 0.1; _i=$((_i + 1))
+        done
+        return 1
+    }
+
+    REAP_STUB_DIR="$(mktemp -d)"
+    # Stub flat-cyborg: spawn a "claude" grandchild that detaches into its OWN
+    # session (setsid) — the PTY-session escape a PGID group-kill can't reach —
+    # yet stays a PPid descendant of THIS stub (the wrapper's FC_PID); record its
+    # pid, then BLOCK so the stub stays alive for the reap to walk into. (A stub
+    # that exited would reparent the grandchild to init and defeat the point.)
+    cat > "$REAP_STUB_DIR/flat-cyborg" <<'RSTUB_EOF'
+#!/usr/bin/env bash
+set -eu
+GC_PIDFILE="${REAP_GC_PIDFILE:?reap stub needs REAP_GC_PIDFILE}"
+python3 - "$GC_PIDFILE" <<'PY' &
+import os, sys, time
+pidfile = sys.argv[1]
+pid = os.fork()
+if pid == 0:
+    os.setsid()                       # new session — the PTY-session escape
+    with open(pidfile, "w") as fh:
+        fh.write(str(os.getpid()))
+    time.sleep(600)                   # long-lived leaked descendant
+else:
+    os.waitpid(pid, 0)                # stay alive as the grandchild's parent
+PY
+wait
+RSTUB_EOF
+    chmod +x "$REAP_STUB_DIR/flat-cyborg"
+
+    # --- Test 18a: plain background invocation, torn down with SIGTERM ---------
+    set +e
+    GC_A="$REAP_STUB_DIR/gc_a.pid"; rm -f "$GC_A"
+    PATH="$REAP_STUB_DIR:$PATH" REAP_GC_PIDFILE="$GC_A" \
+        sh "$WRAPPER" "reap probe A" >/dev/null 2>&1 &
+    WRAP_A=$!
+    if wait_for_pidfile "$GC_A"; then
+        GCPID_A="$(cat "$GC_A" 2>/dev/null)"
+        kill -TERM "$WRAP_A" 2>/dev/null     # daemon-style teardown of a live wrapper
+        wait "$WRAP_A" 2>/dev/null
+        if [ -n "$GCPID_A" ] && wait_dead "$GCPID_A"; then
+            pass "test 22a: SIGTERM teardown SIGKILLs the setsid-detached grandchild"
+        else
+            fail "test 22a: grandchild survived the reap" "gc=$GCPID_A"
+        fi
+        [ -n "$GCPID_A" ] && kill -KILL "$GCPID_A" 2>/dev/null   # cleanup on failure
+    else
+        kill -KILL "$WRAP_A" 2>/dev/null
+        fail "test 22a: grandchild never registered (stub did not start?)"
+    fi
+    set -e
+
+    # --- Test 18b: NO controlling tty (setsid -w) — the daemon's real context --
+    # `set -m` reaps no-op here; the /proc walk must still fire. Run the whole
+    # wrapper in a fresh session with no controlling terminal, tear it down mid-run.
+    set +e
+    GC_B="$REAP_STUB_DIR/gc_b.pid"; rm -f "$GC_B"
+    PATH="$REAP_STUB_DIR:$PATH" REAP_GC_PIDFILE="$GC_B" \
+        setsid -w sh "$WRAPPER" "reap probe B" >/dev/null 2>&1 &
+    SETSID_B=$!
+    if wait_for_pidfile "$GC_B"; then
+        GCPID_B="$(cat "$GC_B" 2>/dev/null)"
+        # setsid(1) without --fork EXECs the wrapper in place (a backgrounded subshell
+        # is not a process-group leader, so setsid() succeeds without forking) — then
+        # $SETSID_B IS the wrapper. Only when it forks is the wrapper $SETSID_B's child.
+        # Resolve both cases: otherwise child_of returns the flat-cyborg stub (FC_PID)
+        # and we SIGTERM *that*, orphaning the grandchild to init before the wrapper's
+        # own reap runs — a teardown-target bug that masquerades as a reap failure.
+        if tr '\0' ' ' < "/proc/$SETSID_B/cmdline" 2>/dev/null | grep -Fq "$WRAPPER"; then
+            WRAP_B="$SETSID_B"                          # setsid exec'd the wrapper in place
+        else
+            WRAP_B="$(child_of "$SETSID_B" 2>/dev/null)"   # setsid forked; wrapper is its child
+        fi
+        [ -n "$WRAP_B" ] && kill -TERM "$WRAP_B" 2>/dev/null
+        wait "$SETSID_B" 2>/dev/null
+        if [ -n "$GCPID_B" ] && wait_dead "$GCPID_B"; then
+            pass "test 22b: no-tty (setsid -w) teardown still reaps the grandchild"
+        else
+            fail "test 22b: grandchild survived the no-tty reap" "gc=$GCPID_B wrap=$WRAP_B"
+        fi
+        [ -n "$GCPID_B" ] && kill -KILL "$GCPID_B" 2>/dev/null   # cleanup on failure
+    else
+        kill -KILL "$SETSID_B" 2>/dev/null
+        fail "test 22b: grandchild never registered under setsid -w"
+    fi
+    set -e
+
+    rm -rf "$REAP_STUB_DIR"
 fi
 
 echo ""
