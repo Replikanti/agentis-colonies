@@ -245,6 +245,17 @@ fn should_draft_code(owner: string, repo: string, iid_str: string, upd: string) 
     if len(iid_str) == 0 {
         return false;
     };
+    // #1277: a projection that drops/nulls updated_at renders it as "void".
+    // If we let a stored ("void") marker match a freshly-seen "void" the gate
+    // short-circuits forever and the issue is starved (observed live on #1266,
+    // which never produced a PR). The projection fix (restore updated_at to the
+    // `assigned` view) is the primary cure; this guard is the belt-and-braces:
+    // treat a void updated_at as ALWAYS stale so a future projection regression
+    // degrades to "redraft every tick" instead of "never redraft again".
+    // Mirrors the iid_str == "void" guard above.
+    if upd == "void" {
+        return true;
+    };
     let last_iid = recall_latest(scoped_memo(owner, repo, "code_writer:last_drafted_iid"));
     if len(last_iid) == 0 {
         return true;

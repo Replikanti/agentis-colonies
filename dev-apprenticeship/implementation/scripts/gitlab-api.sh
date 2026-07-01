@@ -32,7 +32,7 @@
 # Views (opt-in projection; default is full JSON):
 #   merge-requests  --view impl       [{iid, title, merged_at, target_branch}]
 #   assigned-issues --view assigned   [{iid, title, description, labels,
-#                                       assignees:[{username}], priority}]
+#                                       assignees:[{username}], priority, updated_at}]
 #   <cmd>           --view raw        explicit pass-through (same as no flag)
 #   GITLAB_VIEW_MODE=raw              env-override that forces pass-through globally.
 #
@@ -88,7 +88,7 @@ data = json.loads(os.environ["DATA"])
 out = [{"iid": x.get("iid"), "title": x.get("title"), "description": x.get("description"),
         "labels": x.get("labels", []),
         "assignees": [{"username": a.get("username")} for a in x.get("assignees", [])],
-        "priority": x.get("priority")} for x in data]
+        "priority": x.get("priority"), "updated_at": x.get("updated_at")} for x in data]
 print(json.dumps(out))
 PY
             ;;

@@ -334,7 +334,7 @@ assert_eq "2" "$TL_SINCE_COUNT" "normalize_timeline: since filter drops pre-cuto
 # --- End-to-end: normalize_issues -> project_json assigned ---
 # code_writer reads `assigned-issues --view assigned` for trigger detection.
 # The view keys must stay locked to {iid, title, description, labels,
-# assignees, priority} — drift would silently misfeed prompts.
+# assignees, priority, updated_at} — drift would silently misfeed prompts.
 PIPE_PRELUDE=$(mktemp)
 build_prelude "$PIPE_PRELUDE"
 # shellcheck disable=SC1090,SC2016
@@ -350,7 +350,7 @@ E2E_IID=$(json_extract "$E2E_OUT" "data[0]['iid']")
 E2E_ASSIGNEE=$(json_extract "$E2E_OUT" "data[0]['assignees'][0]['username']")
 E2E_PRIORITY=$(json_extract "$E2E_OUT" "repr(data[0]['priority'])")
 assert_eq "2" "$E2E_COUNT" "e2e assigned: normalize | assigned view emits 2 items (PR filtered)"
-assert_eq "assignees,description,iid,labels,priority,title" "$E2E_KEYS" "e2e assigned: view keys match gitlab shape"
+assert_eq "assignees,description,iid,labels,priority,title,updated_at" "$E2E_KEYS" "e2e assigned: view keys match gitlab shape"
 assert_eq "1" "$E2E_IID" "e2e assigned: view carries iid through pipe"
 assert_eq "bob" "$E2E_ASSIGNEE" "e2e assigned: view carries assignees[].username through pipe"
 assert_eq "None" "$E2E_PRIORITY" "e2e assigned: GitHub issue -> priority null"
