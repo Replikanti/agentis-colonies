@@ -947,6 +947,63 @@ else
     info "re-run ./install.sh to wire it automatically."
 fi
 
+# macOS editing-session credentials (#1343). The reasoning/draft claude session
+# is a direct daemon child and authenticates fine, but the EDITING session that
+# tools/code-edit-in-checkout.sh spawns crosses the agentis `exec` boundary,
+# which sanitizes the env (USER/LOGNAME unset) and drops the GUI security
+# session. macOS Claude Code then cannot reach the login Keychain, comes up
+# "Not logged in", and makes ZERO edits (setsid / setpgrp / launchctl asuser
+# detach variants all failed to restore Keychain access). Provision an opt-in
+# file credential: a long-lived token from `claude setup-token` saved to a
+# gitignored secrets file that code-edit-in-checkout.sh exports as
+# CLAUDE_CODE_OAUTH_TOKEN. Linux hosts do not need this, so only prompt on
+# Darwin.
+if [ "$(uname -s)" = "Darwin" ]; then
+    OAUTH_TOKEN_FILE="$AGENTIS_DIR/secrets/claude-oauth-token"
+    echo ""
+    echo "macOS editing-session credentials (#1343)"
+    echo ""
+    info "On macOS the editing Claude Code session that code-edit-in-checkout.sh"
+    info "spawns cannot read the login Keychain (it crosses the agentis exec"
+    info "boundary), so it comes up 'Not logged in' and makes no edits. Provision"
+    info "a long-lived token so it authenticates without the Keychain."
+    info "IMPORTANT: use 'claude setup-token' (long-lived, headless) — a raw OAuth"
+    info "accessToken from ~/.claude/.credentials.json is the WRONG token type for"
+    info "CLAUDE_CODE_OAUTH_TOKEN and yields a 401 Invalid authentication error."
+    echo ""
+    if [ -s "$OAUTH_TOKEN_FILE" ]; then
+        ok "Token file already present: $OAUTH_TOKEN_FILE"
+        info "code-edit-in-checkout.sh reads it via CLAUDE_OAUTH_TOKEN_FILE."
+    else
+        ask "Provision a CLAUDE_CODE_OAUTH_TOKEN for the editing session now? [y/N]:"
+        read -r OAUTH_ANSWER
+        OAUTH_ANSWER="${OAUTH_ANSWER:-N}"
+        case "$OAUTH_ANSWER" in
+            [Yy]|[Yy][Ee][Ss])
+                info "Run 'claude setup-token' in another terminal and paste the"
+                info "emitted token below (input is hidden)."
+                ask "Token:"
+                read -rs OAUTH_TOKEN_VALUE
+                echo ""
+                if [ -n "$OAUTH_TOKEN_VALUE" ]; then
+                    mkdir -p "$AGENTIS_DIR/secrets"
+                    printf '%s\n' "$OAUTH_TOKEN_VALUE" > "$OAUTH_TOKEN_FILE"
+                    chmod 600 "$OAUTH_TOKEN_FILE"
+                    ok "Saved token to $OAUTH_TOKEN_FILE (gitignored under .agentis/)"
+                    info "Override the path with CLAUDE_OAUTH_TOKEN_FILE if needed."
+                else
+                    fail "No token entered — skipped. Re-run install.sh to provision later."
+                fi
+                ;;
+            *)
+                info "Skipped. To provision later, run 'claude setup-token' and save"
+                info "the token to $OAUTH_TOKEN_FILE (or point CLAUDE_OAUTH_TOKEN_FILE"
+                info "at a custom path)."
+                ;;
+        esac
+    fi
+fi
+
 echo ""
 info "LLM backend options for .agentis/config:"
 echo ""
