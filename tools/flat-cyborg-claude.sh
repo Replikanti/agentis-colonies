@@ -134,13 +134,20 @@ trap '_cleanup; exit 130' INT
 trap '_cleanup; exit 143' TERM
 trap '_cleanup; exit 129' HUP
 set +e
-# Background flat-cyborg so we can capture its PID (`$!`) for the reap, then wait
-# for it exactly as a foreground run would (its stdout is still redirected to
-# REPLY_FILE). A trapped signal interrupts the wait, runs _cleanup (reap + rm),
-# and exits.
+# Idle/timeout defaults (#1345): under concurrent multi-agent load a long reply
+# (e.g. the ~140s code-writer draft) stalls mid-generation for several seconds;
+# an 8s idle window mistakes that stall for a settled screen and screen-scrapes
+# an empty/partial reply, so the JSON decode fails and the tick silently dies
+# ("exit 124: no fenced reply"). Raise the idle settle window to 30s and the
+# total wall-clock timeout to 240s so a mid-reply pause is not read as "done".
+# The FLAT_CYBORG_IDLE_MS / FLAT_CYBORG_TIMEOUT_MS env overrides still win.
+# Background flat-cyborg (#1369) so we can capture its PID (`$!`) for the reap,
+# then wait for it exactly as a foreground run would (its stdout is still
+# redirected to REPLY_FILE). A trapped signal interrupts the wait, runs _cleanup
+# (reap + rm), and exits.
 flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 \
-  --idle-ms "${FLAT_CYBORG_IDLE_MS:-8000}" \
-  --timeout-ms "${FLAT_CYBORG_TIMEOUT_MS:-180000}" \
+  --idle-ms "${FLAT_CYBORG_IDLE_MS:-30000}" \
+  --timeout-ms "${FLAT_CYBORG_TIMEOUT_MS:-240000}" \
   --cmd-file "$PROMPT_FILE" -- claude > "$REPLY_FILE" &
 FC_PID=$!
 wait "$FC_PID"

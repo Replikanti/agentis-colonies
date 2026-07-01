@@ -9,15 +9,21 @@
 # and is killed mid-edit. So the long job MUST run DETACHED and code_writer must
 # POLL a result file across ticks.
 #
-# This launcher returns in well under 120s on EVERY invocation:
+# This launcher returns in well under 120s on EVERY invocation. It is a DUMB
+# launcher/reporter — it does NOT interpret job state (#1356). The running/done/
+# no_edits/error/job-died decision, and the terminal-dir cleanup, now live in
+# code_writer.ag's tick (it already polls job state across ticks). This script
+# keeps only its irreducible job: fork the detached orchestrator (`.ag` cannot)
+# and report the raw job-dir facts.
 #   - First call for an issue: create a per-issue job dir, mark it `running`,
 #     and launch code-edit-in-checkout.sh DETACHED (setsid, fully redirected,
 #     </dev/null). Print `LAUNCHED` and exit 0 immediately — does NOT wait.
-#   - A later call while the detached job is still alive: print `RUNNING`,
-#     exit 0. It does NOT start a second clone/edit (the whole point — the old
-#     synchronous version re-cloned every tick).
-#   - A later call after the job finished: print the terminal state read from
-#     the job dir — `DONE <pr-url>` / `NO_EDITS` / `ERROR <short>` — and exit 0.
+#   - A later call that finds an existing job dir: print ONE raw line
+#     `STATUS=<s> PID_ALIVE=<0|1> RESULT=<url>` (see below) and exit 0. It does
+#     NOT start a second clone/edit (the whole point — the old synchronous
+#     version re-cloned every tick), and it does NOT decide what the facts mean.
+#   - When the global concurrency cap deferred the launch (no job dir created):
+#     print `RUNNING` — the not-yet-done sentinel code_writer re-polls on.
 #
 # Job dir: <fed>/.agentis/jobs/<colony>/issue-<iid>/ with files:
 #   status  : running | done | no_edits | error
@@ -25,17 +31,28 @@
 #   pid      : pid of the detached orchestrator (the setsid leader)
 #   log      : combined stdout+stderr of the detached orchestrator
 #
-# Job-dir lifecycle / consumption: this launcher does NOT delete the job dir.
-# On a terminal poll (`DONE`/`NO_EDITS`/`ERROR`) it CLEARS the dir so the next
-# invocation for the same iid starts a fresh job (a retry after ERROR/NO_EDITS,
-# or a brand-new edit if the issue changed). code_writer consumes the terminal
-# line on the tick it observes it. Idempotency while running is preserved by the
-# pid-liveness check, not by the dir's persistence.
+# Poll output (raw, non-deciding — one line, space-separated KEY=VALUE tokens):
+#   STATUS=<running|done|no_edits|error|none>  raw status-file content (`none`
+#                                              when the file is absent/empty)
+#   PID_ALIVE=<0|1>                            1 iff the recorded pid is live
+#   RESULT=<url>                               result-file content (PR URL on
+#                                              done), empty otherwise (last token)
+# code_writer.ag interprets: running+PID_ALIVE=1 -> still running; running+
+# PID_ALIVE=0 -> job-died; done+RESULT -> DONE <url>; done+empty -> done-without-
+# url; no_edits -> NO_EDITS; error -> job-failed; none/unknown -> stale dir. It
+# then issues its own cleanup (rm -rf of the job dir) on every terminal state, so
+# the next invocation for the same iid starts fresh.
+#
+# Job-dir lifecycle / consumption: this launcher NEVER deletes the job dir — the
+# cleanup moved to code_writer.ag (#1356), which clears it once it decides a
+# terminal state. Idempotency while running is preserved by the pid-liveness
+# check, not by the dir's persistence.
 #
 # Dead/crashed job: if status=running but the recorded pid is no longer alive,
-# the job is treated as `error` (the detached orchestrator died without writing
-# a terminal status — e.g. OOM/SIGKILL). We report `ERROR job-died` and clear
-# the dir so the next poll relaunches; we never hang waiting on a dead pid.
+# this launcher just reports `PID_ALIVE=0` alongside `STATUS=running`; code_writer
+# reads that as `ERROR job-died` (the detached orchestrator died without writing a
+# terminal status — e.g. OOM/SIGKILL) and clears the dir so the next poll
+# relaunches. We never hang waiting on a dead pid.
 #
 # Token handling: the detached child inherits GITHUB_TOKEN from this launcher's
 # environment exactly as the synchronous path did. The token VALUE is never
@@ -167,11 +184,6 @@ count_live_jobs() {
     printf '%s' "$_live"
 }
 
-# clear_job: remove the job dir so the next invocation starts fresh.
-clear_job() {
-    rm -rf "$JOBDIR"
-}
-
 # read_status / read_result: total reads — empty when the file is absent.
 read_status() {
     if [ -f "$JOBDIR/status" ]; then cat "$JOBDIR/status" 2>/dev/null || true; fi
@@ -181,54 +193,22 @@ read_result() {
 }
 
 # ---------------------------------------------------------------------------
-# Poll an existing job dir before launching anything.
+# Poll an existing job dir (#1356): report the RAW status + pid-liveness +
+# result and exit. This launcher no longer INTERPRETS those facts — the
+# running/done/no_edits/error/job-died FSM and the terminal-dir cleanup now
+# live in code_writer.ag's tick. `none` marks an absent/empty status file (a
+# stale or half-written dir); code_writer treats it as stale and clears it.
+# A URL carries no spaces, so the single-line KEY=VALUE token format is total.
 # ---------------------------------------------------------------------------
 if [ -d "$JOBDIR" ]; then
     STATUS="$(read_status)"
-    case "$STATUS" in
-        running)
-            PID=""
-            if [ -f "$JOBDIR/pid" ]; then PID="$(cat "$JOBDIR/pid" 2>/dev/null || true)"; fi
-            if pid_alive "$PID"; then
-                # Job still in flight — do NOT start a second clone/edit.
-                echo "RUNNING"
-                exit 0
-            fi
-            # status=running but the orchestrator is gone: it died without
-            # writing a terminal status. Report error + clear so the next poll
-            # relaunches; never hang on a dead pid.
-            clear_job
-            echo "ERROR job-died"
-            exit 0
-            ;;
-        done)
-            URL="$(read_result)"
-            clear_job
-            if [ -n "$URL" ]; then
-                echo "DONE $URL"
-            else
-                # done with no URL recorded — treat as an error so the caller
-                # retries rather than silently succeeding with no PR.
-                echo "ERROR done-without-url"
-            fi
-            exit 0
-            ;;
-        no_edits)
-            clear_job
-            echo "NO_EDITS"
-            exit 0
-            ;;
-        error)
-            clear_job
-            echo "ERROR job-failed"
-            exit 0
-            ;;
-        *)
-            # Unknown / empty status (a stale or half-written dir): drop it and
-            # fall through to a fresh launch below.
-            clear_job
-            ;;
-    esac
+    [ -n "$STATUS" ] || STATUS="none"
+    PID=""
+    if [ -f "$JOBDIR/pid" ]; then PID="$(cat "$JOBDIR/pid" 2>/dev/null || true)"; fi
+    if pid_alive "$PID"; then ALIVE=1; else ALIVE=0; fi
+    RESULT="$(read_result)"
+    printf 'STATUS=%s PID_ALIVE=%s RESULT=%s\n' "$STATUS" "$ALIVE" "$RESULT"
+    exit 0
 fi
 
 # ---------------------------------------------------------------------------

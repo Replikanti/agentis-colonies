@@ -22,12 +22,17 @@
 #      an `FCB_<hex>_BEGIN` screen-scrape sentinel prefix, a ```json fence, a
 #      no-language fence, a short prose trailer, a pure-prose passthrough, a
 #      long-prose-with-tiny-json passthrough (margin guard), and a soft-wrap.
-#   16-18 (#1369). The plain-prompt DESCENDANT REAP: the wrapper parses clean
-#      (16), source-pins the tty-independent /proc PPid-chain walk and asserts no
-#      `set -m` job control (17), and — with a stub flat-cyborg that detaches a
+#   16-19 (#1345). The raised idle/timeout defaults: the wrapper passes the new
+#      idle=30000 / timeout=240000 defaults through to flat-cyborg (recording
+#      stub), FLAT_CYBORG_IDLE_MS / FLAT_CYBORG_TIMEOUT_MS overrides still win,
+#      the wrapper source carries the raised literals, and code-edit-in-checkout.sh
+#      editing sessions default idle to 45000.
+#   20-22 (#1369). The plain-prompt DESCENDANT REAP: the wrapper parses clean
+#      (20), source-pins the tty-independent /proc PPid-chain walk and asserts no
+#      `set -m` job control (21), and — with a stub flat-cyborg that detaches a
 #      grandchild into its OWN session via setsid — FUNCTIONALLY reaps it on
 #      SIGTERM teardown, including a no-controlling-tty sub-case via `setsid -w`
-#      (18). These invoke the wrapper against a STUB flat-cyborg; they still never
+#      (22). These invoke the wrapper against a STUB flat-cyborg; they still never
 #      invoke the real flat-cyborg / claude binaries.
 #
 # Auto-discovered by tools/colony-lint.sh's tools-test loop. Exit 0 if all pass.
@@ -310,6 +315,93 @@ else
 fi
 
 # ===========================================================================
+# Idle/timeout defaults (#1345): under concurrent multi-agent load a long reply
+# stalls mid-generation for several seconds; the old 8s idle window mistook that
+# stall for a settled screen and screen-scraped an empty/partial reply, failing
+# the JSON decode. The wrapper default idle window was raised 8000->30000 and the
+# total timeout 180000->240000; the editing sessions in code-edit-in-checkout.sh
+# were raised 8000->45000 for the longer xhigh extended-thinking pauses. We
+# assert the wrapper passes the new defaults through to flat-cyborg AND that the
+# FLAT_CYBORG_IDLE_MS / FLAT_CYBORG_TIMEOUT_MS env overrides still win, using a
+# RECORDING stub that captures the --idle-ms / --timeout-ms args it was invoked
+# with. Case 19 source-asserts the editing-session 45000ms default.
+# ===========================================================================
+if [ ! -f "$WRAPPER" ]; then
+    fail "missing wrapper for idle/timeout tests: $WRAPPER"
+else
+    REC_DIR="$(mktemp -d)"
+    cat > "$REC_DIR/flat-cyborg" <<'REC_EOF'
+#!/usr/bin/env bash
+set -eu
+IDLE=""; TIMEOUT=""; CMDFILE=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --idle-ms)    IDLE="$2";    shift 2 ;;
+        --timeout-ms) TIMEOUT="$2"; shift 2 ;;
+        --cmd-file)   CMDFILE="$2"; shift 2 ;;
+        --) shift; break ;;
+        *) shift ;;
+    esac
+done
+printf 'idle=%s timeout=%s\n' "$IDLE" "$TIMEOUT" > "$FCREC_FILE"
+# Write claude's result-file channel so the wrapper exits 0 cleanly.
+RESULT_FILE="$(grep -F 'file-writing tool:' "$CMDFILE" 2>/dev/null | sed 's/.*file-writing tool: //' | head -1)"
+[ -n "$RESULT_FILE" ] && printf '%s' '{"ok":true}' > "$RESULT_FILE"
+exit 0
+REC_EOF
+    chmod +x "$REC_DIR/flat-cyborg"
+    FCREC="$(mktemp)"
+
+    # 5. defaults: idle=30000, timeout=240000 when no env override is set.
+    PATH="$REC_DIR:$PATH" FCREC_FILE="$FCREC" \
+        sh "$WRAPPER" "hi" >/dev/null 2>&1 || true
+    REC="$(cat "$FCREC")"
+    if [ "$REC" = "idle=30000 timeout=240000" ]; then
+        pass "test 16: wrapper passes raised defaults idle=30000 timeout=240000"
+    else
+        fail "test 16: raised idle/timeout defaults" "recorded=[$REC]"
+    fi
+
+    # 6. env overrides still win over the raised defaults.
+    PATH="$REC_DIR:$PATH" FCREC_FILE="$FCREC" \
+        FLAT_CYBORG_IDLE_MS=12345 FLAT_CYBORG_TIMEOUT_MS=67890 \
+        sh "$WRAPPER" "hi" >/dev/null 2>&1 || true
+    REC="$(cat "$FCREC")"
+    if [ "$REC" = "idle=12345 timeout=67890" ]; then
+        pass "test 17: FLAT_CYBORG_IDLE_MS / FLAT_CYBORG_TIMEOUT_MS overrides still win"
+    else
+        fail "test 17: env overrides win over defaults" "recorded=[$REC]"
+    fi
+
+    # 7. source-assert the wrapper's default literals (belt-and-suspenders).
+    if grep -q 'FLAT_CYBORG_IDLE_MS:-30000' "$WRAPPER" \
+       && grep -q 'FLAT_CYBORG_TIMEOUT_MS:-240000' "$WRAPPER" \
+       && ! grep -q 'FLAT_CYBORG_IDLE_MS:-8000' "$WRAPPER"; then
+        pass "test 18: wrapper source carries the raised default literals, no stale 8000"
+    else
+        fail "test 18: wrapper default literals raised"
+    fi
+
+    rm -rf "$REC_DIR" "$FCREC"
+fi
+
+# --- Test 19: code-edit-in-checkout.sh editing sessions default idle 45000 ----
+# The editing-session invocations run xhigh extended thinking, whose pauses
+# exceed the old 8000ms window; the default was raised to 45000. Source-assert
+# it (running that script needs a real clone + forge). Every FLAT_CYBORG_IDLE_MS
+# fallback there must be 45000 and none may remain at the old 8000.
+CODE_EDIT="$SCRIPT_DIR/code-edit-in-checkout.sh"
+if [ ! -f "$CODE_EDIT" ]; then
+    fail "missing code-edit-in-checkout.sh for test 19: $CODE_EDIT"
+elif grep -q 'FLAT_CYBORG_IDLE_MS:-45000' "$CODE_EDIT" \
+     && ! grep -q 'FLAT_CYBORG_IDLE_MS:-8000' "$CODE_EDIT"; then
+    pass "test 19: code-edit-in-checkout.sh editing-session idle default raised to 45000"
+else
+    fail "test 19: editing-session idle default 45000" \
+         "found stale :-8000 or missing :-45000"
+fi
+
+# ===========================================================================
 # Descendant reap (#1369). The plain-prompt wrapper backgrounds
 # `flat-cyborg … -- claude` and, on EXIT or a trapped signal (the daemon tearing
 # a wedged wrapper down), SIGKILLs the whole transitive /proc parent-PID-chain
@@ -324,11 +416,11 @@ fi
 
 # --- Test 16: the wrapper parses clean under both sh -n and bash -n ----------
 if [ ! -f "$WRAPPER" ]; then
-    fail "test 16: missing wrapper: $WRAPPER"
+    fail "test 20: missing wrapper: $WRAPPER"
 elif sh -n "$WRAPPER" 2>/dev/null && bash -n "$WRAPPER" 2>/dev/null; then
-    pass "test 16: wrapper parses clean under both sh -n and bash -n"
+    pass "test 20: wrapper parses clean under both sh -n and bash -n"
 else
-    fail "test 16: wrapper parses clean under both sh -n and bash -n"
+    fail "test 20: wrapper parses clean under both sh -n and bash -n"
 fi
 
 # --- Test 17: source pins the tty-independent /proc walk, not set -m ----------
@@ -343,9 +435,9 @@ if [ -f "$WRAPPER" ] \
    && grep -Eq '/proc/\[0-9\]\*/status' "$WRAPPER" \
    && grep -q 'kill -KILL' "$WRAPPER" \
    && ! grep -Eq '^[[:space:]]*set -m([^[:alnum:]_]|$)' "$WRAPPER"; then
-    pass "test 17: reap uses the tty-independent /proc PPid-chain walk, no set -m"
+    pass "test 21: reap uses the tty-independent /proc PPid-chain walk, no set -m"
 else
-    fail "test 17: reap uses the tty-independent /proc PPid-chain walk, no set -m"
+    fail "test 21: reap uses the tty-independent /proc PPid-chain walk, no set -m"
 fi
 
 # --- Test 18: FUNCTIONAL reap — SIGTERM teardown SIGKILLs a setsid-detached
@@ -354,9 +446,9 @@ fi
 # Needs setsid (to reproduce the PTY-session escape) + /proc (the walk's substrate
 # — and the wrapper's reap itself is a documented no-op without /proc, e.g. macOS).
 if [ ! -f "$WRAPPER" ]; then
-    fail "test 18: missing wrapper: $WRAPPER"
+    fail "test 22: missing wrapper: $WRAPPER"
 elif ! command -v setsid >/dev/null 2>&1 || [ ! -d /proc ]; then
-    echo "[SKIP] test 18: functional reap needs setsid + /proc (not both present)"
+    echo "[SKIP] test 22: functional reap needs setsid + /proc (not both present)"
 else
     # first pid whose PPid == $1 (pure /proc; no pgrep dependency).
     child_of() {
@@ -431,14 +523,14 @@ RSTUB_EOF
         kill -TERM "$WRAP_A" 2>/dev/null     # daemon-style teardown of a live wrapper
         wait "$WRAP_A" 2>/dev/null
         if [ -n "$GCPID_A" ] && wait_dead "$GCPID_A"; then
-            pass "test 18a: SIGTERM teardown SIGKILLs the setsid-detached grandchild"
+            pass "test 22a: SIGTERM teardown SIGKILLs the setsid-detached grandchild"
         else
-            fail "test 18a: grandchild survived the reap" "gc=$GCPID_A"
+            fail "test 22a: grandchild survived the reap" "gc=$GCPID_A"
         fi
         [ -n "$GCPID_A" ] && kill -KILL "$GCPID_A" 2>/dev/null   # cleanup on failure
     else
         kill -KILL "$WRAP_A" 2>/dev/null
-        fail "test 18a: grandchild never registered (stub did not start?)"
+        fail "test 22a: grandchild never registered (stub did not start?)"
     fi
     set -e
 
@@ -466,14 +558,14 @@ RSTUB_EOF
         [ -n "$WRAP_B" ] && kill -TERM "$WRAP_B" 2>/dev/null
         wait "$SETSID_B" 2>/dev/null
         if [ -n "$GCPID_B" ] && wait_dead "$GCPID_B"; then
-            pass "test 18b: no-tty (setsid -w) teardown still reaps the grandchild"
+            pass "test 22b: no-tty (setsid -w) teardown still reaps the grandchild"
         else
-            fail "test 18b: grandchild survived the no-tty reap" "gc=$GCPID_B wrap=$WRAP_B"
+            fail "test 22b: grandchild survived the no-tty reap" "gc=$GCPID_B wrap=$WRAP_B"
         fi
         [ -n "$GCPID_B" ] && kill -KILL "$GCPID_B" 2>/dev/null   # cleanup on failure
     else
         kill -KILL "$SETSID_B" 2>/dev/null
-        fail "test 18b: grandchild never registered under setsid -w"
+        fail "test 22b: grandchild never registered under setsid -w"
     fi
     set -e
 
