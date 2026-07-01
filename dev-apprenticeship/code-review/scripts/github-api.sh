@@ -585,45 +585,56 @@ print("GREEN")
         ;;
 
     mr-pipeline-status)
-        # #1355: thin CI read for the bounded red-PR recovery loop. Prints
-        # exactly two space-separated tokens on stdout:
-        #   STATUS=<raw-status> REF=<head-branch>
-        # GitHub has no single "pipeline status", so the forge layer reduces the
-        # head commit's check-runs to ONE raw CI status word — `success` |
-        # `failed` | `pending` — matching the GitLab pipeline-status vocabulary so
-        # the .ag `ci_state()` classifier stays forge-agnostic. `pending` covers
-        # "not verified yet": an empty check_runs list, any not-`completed` run, OR
-        # a pagination overflow (total_count > fetched, where a red check could
-        # hide on a later page). The red/green/pending classification the recovery
-        # loop branches on moved to the consuming .ag (#1353); this wrapper only
-        # normalizes the forge's multi-check shape to one status token.
+        # #1355: thin CI read for the bounded red-PR recovery loop (code_writer
+        # re-drives its OWN red PRs). Prints exactly three space-separated tokens on
+        # stdout: `STATUS=<raw-status> REF=<head-branch> MERGEABLE=<signal>` (#1374
+        # added the trailing MERGEABLE token; tokens are order-independent, read via
+        # the .ag pr_check_token() KEY= splitter). GitHub has no single
+        # "pipeline status", so the forge layer reduces the head commit's check-runs
+        # to ONE raw CI status word — `success` | `failed` | `pending` — matching
+        # the GitLab pipeline-status vocabulary so the .ag `ci_state()` classifier
+        # stays forge-agnostic. `pending` covers "not verified yet": an empty
+        # check_runs list, any not-`completed` run, OR a pagination overflow
+        # (total_count > fetched, where a red check could hide on a later page).
+        # The red/green/pending classification the recovery loop branches on moved
+        # to the consuming .ag (#1353); this wrapper only normalizes the forge's
+        # multi-check shape to one status token. MERGEABLE (true|false|conflicting)
+        # feeds the #1374 rebase-recovery loop for git-conflicting own PRs.
         NUM="${1:?Usage: github-api.sh mr-pipeline-status <number>}"
         case "$NUM" in
             ''|*[!0-9]*) emit_error "pr number must be numeric: $NUM"; exit 2 ;;
         esac
 
-        # GET the pull to read head.ref (the branch to re-drive) + head.sha
-        # (the commit the check-runs gate queries).
         pull_json="$(gh_get "$API/pulls/$NUM")" || exit $?
         PR_META="$(printf '%s' "$pull_json" | python3 -c '
 import sys, json
 d = json.loads(sys.stdin.read())
 print("HEAD_SHA=" + str((d.get("head") or {}).get("sha") or ""))
 print("HEAD_REF=" + str((d.get("head") or {}).get("ref") or ""))
+# #1374: mergeability signal for the bounded rebase-recovery loop (code_writer
+# re-bases its OWN git-conflicting PRs onto the current base). GitHub computes
+# mergeability asynchronously, so "mergeable" is null until ready and a
+# "mergeable_state" of "dirty" is its git-conflict marker: dirty => conflicting;
+# mergeable True => true; anything else (null/not-yet-computed/blocked/behind)
+# => false. The .ag only re-bases on conflicting, so a not-yet-computed null
+# never triggers a spurious re-base (the next poll re-reads it).
+mstate = d.get("mergeable_state") or ""
+mergeable = d.get("mergeable")
+if mstate == "dirty":
+    print("MERGEABLE=conflicting")
+elif mergeable is True:
+    print("MERGEABLE=true")
+else:
+    print("MERGEABLE=false")
 ')" || { emit_error "PR #$NUM: failed to parse pull metadata"; exit 4; }
         HEAD_SHA="$(printf '%s\n' "$PR_META" | sed -n 's/^HEAD_SHA=//p')"
         HEAD_REF="$(printf '%s\n' "$PR_META" | sed -n 's/^HEAD_REF=//p')"
+        MERGEABLE="$(printf '%s\n' "$PR_META" | sed -n 's/^MERGEABLE=//p')"
         if [ -z "$HEAD_SHA" ]; then
             emit_error "PR #$NUM: missing head.sha; cannot read CI"
             exit 4
         fi
 
-        # Read the check-runs for the head commit. Pagination fail-safe mirrors
-        # the merge gate: if total_count exceeds what we fetched, a red check
-        # could hide on a later page, so report `pending` (never `success`).
-        # Reduction: any check not `completed` => pending; any completed check
-        # whose conclusion is not success/neutral/skipped => failed; all ok =>
-        # success; empty check_runs => pending (CI not verified yet).
         checks_json="$(gh_get_q "$API/commits/$HEAD_SHA/check-runs" --data-urlencode "per_page=100")" || exit $?
         STATUS="$(printf '%s' "$checks_json" | python3 -c '
 import sys, json
@@ -648,7 +659,7 @@ for r in runs:
         status = "failed"
 print(status)
 ')" || { emit_error "PR #$NUM: failed to parse check-runs"; exit 4; }
-        printf 'STATUS=%s REF=%s\n' "$STATUS" "$HEAD_REF"
+        printf 'STATUS=%s REF=%s MERGEABLE=%s\n' "$STATUS" "$HEAD_REF" "$MERGEABLE"
         ;;
 
     get-issue)

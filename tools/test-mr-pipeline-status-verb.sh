@@ -191,7 +191,7 @@ for SCRIPT in \
     # failed
     D="$TMPDIR_SHIM/$label-red"; mk_gh_fixture "$D" "$GH_PULL" "$GH_RED"
     out="$(run_github "$SCRIPT" "$D")"
-    if [ "$out" = "STATUS=failed REF=fix/issue-7" ]; then
+    if [ "$out" = "STATUS=failed REF=fix/issue-7 MERGEABLE=false" ]; then
         pass "github/$label: failing check ⇒ STATUS=failed (REF echoed)"
     else
         fail "github/$label: failed" "got [$out]"
@@ -200,7 +200,7 @@ for SCRIPT in \
     # pending (in_progress)
     D="$TMPDIR_SHIM/$label-pending"; mk_gh_fixture "$D" "$GH_PULL" "$GH_PENDING"
     out="$(run_github "$SCRIPT" "$D")"
-    if [ "$out" = "STATUS=pending REF=fix/issue-7" ]; then
+    if [ "$out" = "STATUS=pending REF=fix/issue-7 MERGEABLE=false" ]; then
         pass "github/$label: in_progress check ⇒ STATUS=pending"
     else
         fail "github/$label: pending (in_progress)" "got [$out]"
@@ -209,7 +209,7 @@ for SCRIPT in \
     # pending (empty check_runs)
     D="$TMPDIR_SHIM/$label-empty"; mk_gh_fixture "$D" "$GH_PULL" "$GH_EMPTY"
     out="$(run_github "$SCRIPT" "$D")"
-    if [ "$out" = "STATUS=pending REF=fix/issue-7" ]; then
+    if [ "$out" = "STATUS=pending REF=fix/issue-7 MERGEABLE=false" ]; then
         pass "github/$label: empty check_runs ⇒ STATUS=pending (CI not verified)"
     else
         fail "github/$label: pending (empty)" "got [$out]"
@@ -218,7 +218,7 @@ for SCRIPT in \
     # success
     D="$TMPDIR_SHIM/$label-green"; mk_gh_fixture "$D" "$GH_PULL" "$GH_GREEN"
     out="$(run_github "$SCRIPT" "$D")"
-    if [ "$out" = "STATUS=success REF=fix/issue-7" ]; then
+    if [ "$out" = "STATUS=success REF=fix/issue-7 MERGEABLE=false" ]; then
         pass "github/$label: all success/skipped ⇒ STATUS=success"
     else
         fail "github/$label: success" "got [$out]"
@@ -227,7 +227,7 @@ for SCRIPT in \
     # pagination (total_count > fetched, all green) ⇒ pending (never success)
     D="$TMPDIR_SHIM/$label-page"; mk_gh_fixture "$D" "$GH_PULL" "$GH_PAGINATED"
     out="$(run_github "$SCRIPT" "$D")"
-    if [ "$out" = "STATUS=pending REF=fix/issue-7" ]; then
+    if [ "$out" = "STATUS=pending REF=fix/issue-7 MERGEABLE=false" ]; then
         pass "github/$label: pagination (total_count 31 > 2 fetched) ⇒ STATUS=pending (fail-safe)"
     else
         fail "github/$label: pagination fail-safe" "got [$out]"
