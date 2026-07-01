@@ -109,6 +109,18 @@ done
 if [ -z "$OWNER" ]; then OWNER="${GITHUB_OWNER:-}"; fi
 if [ -z "$REPO" ]; then REPO="${GITHUB_REPO:-}"; fi
 
+# GitLab single-project fallback: no GITHUB_* env, but the colony exports a
+# URL-encoded GITLAB_PROJECT (group%2Fproject, possibly nested group%2Fsub%2Frepo).
+# Decode the %2F separators and split into owner/repo so CLONE_URL resolves.
+# Mirrors the iter-repos.py / forge-api.sh GitLab handling. Without this, GitLab
+# federations error at the required-args check below and the code-edit never runs.
+if { [ -z "$OWNER" ] || [ -z "$REPO" ]; } && [ -n "${GITLAB_PROJECT:-}" ]; then
+    _gl_proj="${GITLAB_PROJECT//%2F//}"
+    _gl_proj="${_gl_proj//%2f//}"
+    [ -z "$OWNER" ] && OWNER="${_gl_proj%/*}"
+    [ -z "$REPO" ] && REPO="${_gl_proj##*/}"
+fi
+
 if [ -z "$OWNER" ] || [ -z "$REPO" ] || [ -z "$ISSUE" ] || [ -z "$BRANCH" ] || [ -z "$TITLE" ] || [ -z "$TASK" ]; then
     echo "code-edit-in-checkout.sh: --owner, --repo, --issue, --branch, --title, --task are all required" >&2
     usage
