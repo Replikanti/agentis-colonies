@@ -1809,6 +1809,30 @@ else
     fi
 fi
 
+# ---------------------------------------------------------------------------
+# Run 22 (#1344 raised editing-session idle window). The editing sessions run
+# claude at xhigh extended thinking, whose mid-reply pauses run LONGER than a
+# normal reasoning/draft session; under concurrent multi-agent load a heavy edit
+# stalls for tens of seconds. The general flat-cyborg-claude.sh default idle
+# window is 30000ms, but the editing invocations here MUST override it to a
+# larger ~45000ms so a settle pause is not screen-scraped as a partial reply
+# (which truncates the diff / empties the result). Statically assert every
+# flat-cyborg editing invocation in the orchestrator defaults --idle-ms to
+# 45000, and that no invocation regressed to the retired 8000ms window.
+# ---------------------------------------------------------------------------
+# shellcheck disable=SC2016  # the ${...} is a literal grep pattern, not a shell expansion
+IDLE_INVOCATIONS="$(grep -cF -- '--idle-ms "${FLAT_CYBORG_IDLE_MS:-45000}"' "$ORCH" 2>/dev/null || true)"
+if [ "${IDLE_INVOCATIONS:-0}" -ge 2 ]; then
+    pass "run 22 (#1344 editing idle): all editing-session invocations default --idle-ms to 45000 (found $IDLE_INVOCATIONS)"
+else
+    fail "run 22 (#1344 editing idle): editing-session --idle-ms default not raised to 45000" "matches=${IDLE_INVOCATIONS:-0} (expected >= 2)"
+fi
+if grep -qF -- 'FLAT_CYBORG_IDLE_MS:-8000' "$ORCH" 2>/dev/null; then
+    fail "run 22 (#1344 editing idle): orchestrator still carries the retired 8000ms idle default"
+else
+    pass "run 22 (#1344 editing idle): no editing invocation regressed to the retired 8000ms window"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
