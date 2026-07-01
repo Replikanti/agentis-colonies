@@ -1574,6 +1574,174 @@ else
         "got=[$(cat "$DESC_LOG" 2>/dev/null)]"
 fi
 
+# ===========================================================================
+# Run 19 (#1346): a verify gate that exits 127 (command missing/unrunnable —
+# e.g. `npm test` on a fresh clone with no node_modules) is NOT a code failure.
+# The loop must treat it as UNVERIFIABLE: stop immediately (NO re-invocation of
+# the editing agent, so it can't undo its own correct edit chasing an env gap)
+# and commit the diff anyway (the PR's own CI is the authoritative gate). Drive
+# the orchestrator with CODE_EDIT_VERIFY_CMD set to a missing binary (a real
+# exit 127) and MAX_ATTEMPTS=3; assert exactly ONE flat-cyborg invocation, the
+# exit-127/UNVERIFIABLE log line (no "verification FAILED" feed-back), exit 0 +
+# PR url, and the edit present in the pushed commit.
+# ===========================================================================
+rm -rf "$FED_DIR" "$REMOTE_BASE" "$SEED" "$CREATE_MR_LOG" "$FC_FLAGS_LOG"
+mkdir -p "$COLONY_DIR/scripts"
+cat > "$COLONY_DIR/scripts/github-api.sh" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+{ echo "create-mr called"; } >> "$CREATE_MR_LOG"
+printf '%s\n' '{"html_url": "https://example.test/pr/19"}'
+STUB_EOF
+chmod +x "$COLONY_DIR/scripts/github-api.sh"
+
+CNT_FILE19="$WORK/fc-attempt-count-19"; rm -f "$CNT_FILE19"
+cat > "$STUB_BIN/flat-cyborg" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "\$*" >> "$FC_FLAGS_LOG"
+CWD=""
+while [ \$# -gt 0 ]; do case "\$1" in --cwd) CWD="\$2"; shift 2 ;; --) shift; break ;; *) shift ;; esac; done
+n=\$(cat "$CNT_FILE19" 2>/dev/null || echo 0); n=\$((n + 1)); printf '%s' "\$n" > "$CNT_FILE19"
+printf 'work %s\n' "\$n" > "\$CWD/WORK_19.txt"
+exit 0
+STUB_EOF
+chmod +x "$STUB_BIN/flat-cyborg"
+
+mkdir -p "$BARE"
+git init --quiet --bare --initial-branch=main "$BARE" 2>/dev/null || git init --quiet --bare "$BARE"
+git init --quiet --initial-branch=main "$SEED" 2>/dev/null || git init --quiet "$SEED"
+(
+    cd "$SEED" || exit 1
+    git symbolic-ref HEAD refs/heads/main 2>/dev/null || true
+    printf 'hello\n' > README.md
+    git add -A
+    git commit --quiet -m "seed: initial commit"
+    git branch -M main 2>/dev/null || true
+    git remote add origin "$BARE"
+    git push --quiet origin main
+)
+git --git-dir="$BARE" symbolic-ref HEAD refs/heads/main
+
+OUT19_FILE="$WORK/out19.txt"
+env \
+    PATH="$STUB_BIN:$PATH" \
+    COLONY_DIR="$COLONY_DIR" \
+    GITHUB_URL="file://$REMOTE_BASE" \
+    GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    CODE_EDIT_MAX_ATTEMPTS=3 \
+    CODE_EDIT_VERIFY_CMD="this_binary_definitely_missing_1346" \
+    bash "$ORCH" \
+        --owner "$OWNER" --repo "$REPO" --issue 1346 \
+        --branch "fix/issue-1346" --title "exit 127 is unverifiable" \
+        --task "Add work." >"$OUT19_FILE" 2>"$WORK/err19.txt"
+RC19=$?
+ATTEMPTS19="$(cat "$CNT_FILE19" 2>/dev/null || echo 0)"
+
+if [ "$ATTEMPTS19" = "1" ]; then
+    pass "run 19 (#1346 exit 127): stopped after ONE attempt (no re-invocation of the editing agent on an unverifiable env gap)"
+else
+    fail "run 19 (#1346 exit 127): expected exactly 1 attempt" "got $ATTEMPTS19 (rc=$RC19)"
+fi
+if grep -q "UNVERIFIABLE" "$WORK/err19.txt" 2>/dev/null && grep -q "exit 127" "$WORK/err19.txt" 2>/dev/null; then
+    pass "run 19 (#1346 exit 127): logged the UNVERIFIABLE / exit-127 message"
+else
+    fail "run 19 (#1346 exit 127): UNVERIFIABLE + exit-127 log line" "err=$(tail -6 "$WORK/err19.txt" 2>/dev/null)"
+fi
+if grep -q "verification FAILED" "$WORK/err19.txt" 2>/dev/null; then
+    fail "run 19 (#1346 exit 127): must NOT feed a 127 back as a failure" "err=$(tail -6 "$WORK/err19.txt" 2>/dev/null)"
+else
+    pass "run 19 (#1346 exit 127): did NOT feed the 127 back as a 'fix this failure' iteration"
+fi
+if [ "$RC19" -eq 0 ] && [ "$(cat "$OUT19_FILE")" = "https://example.test/pr/19" ]; then
+    pass "run 19 (#1346 exit 127): exit 0 + opened PR (kept the edit; CI is the authoritative gate)"
+else
+    fail "run 19 (#1346 exit 127): exit 0 + PR url" "rc=$RC19 out=$(cat "$OUT19_FILE" 2>/dev/null) err=$(tail -4 "$WORK/err19.txt" 2>/dev/null)"
+fi
+if git --git-dir="$BARE" cat-file -e "refs/heads/fix/issue-1346:WORK_19.txt" 2>/dev/null; then
+    pass "run 19 (#1346 exit 127): committed the edit despite the unverifiable gate"
+else
+    fail "run 19 (#1346 exit 127): WORK_19.txt in pushed commit"
+fi
+
+# ===========================================================================
+# Run 20 (#1346): when package.json declares a `test` script but node_modules/
+# is ABSENT (fresh clone, deps not installed), detect_verify_cmd must NOT pick
+# `npm test` (which would exit 127 on the missing runner) — it falls through to
+# the built-in light change-scoped gate. Seed a package.json with a `test`
+# script (and no node_modules), have the stub make a plain edit, and assert the
+# run used the light gate (not `npm test`), passed, exit 0, and opened the PR.
+# ===========================================================================
+rm -rf "$FED_DIR" "$REMOTE_BASE" "$SEED" "$CREATE_MR_LOG" "$FC_FLAGS_LOG"
+mkdir -p "$COLONY_DIR/scripts"
+cat > "$COLONY_DIR/scripts/github-api.sh" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+{ echo "create-mr called"; } >> "$CREATE_MR_LOG"
+printf '%s\n' '{"html_url": "https://example.test/pr/20"}'
+STUB_EOF
+chmod +x "$COLONY_DIR/scripts/github-api.sh"
+
+CNT_FILE20="$WORK/fc-attempt-count-20"; rm -f "$CNT_FILE20"
+cat > "$STUB_BIN/flat-cyborg" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "\$*" >> "$FC_FLAGS_LOG"
+CWD=""
+while [ \$# -gt 0 ]; do case "\$1" in --cwd) CWD="\$2"; shift 2 ;; --) shift; break ;; *) shift ;; esac; done
+n=\$(cat "$CNT_FILE20" 2>/dev/null || echo 0); n=\$((n + 1)); printf '%s' "\$n" > "$CNT_FILE20"
+printf 'work %s\n' "\$n" > "\$CWD/WORK_20.txt"
+exit 0
+STUB_EOF
+chmod +x "$STUB_BIN/flat-cyborg"
+
+mkdir -p "$BARE"
+git init --quiet --bare --initial-branch=main "$BARE" 2>/dev/null || git init --quiet --bare "$BARE"
+git init --quiet --initial-branch=main "$SEED" 2>/dev/null || git init --quiet "$SEED"
+(
+    cd "$SEED" || exit 1
+    git symbolic-ref HEAD refs/heads/main 2>/dev/null || true
+    printf 'hello\n' > README.md
+    printf '{\n  "name": "widget",\n  "scripts": { "test": "vitest run" }\n}\n' > package.json
+    git add -A
+    git commit --quiet -m "seed: initial commit"
+    git branch -M main 2>/dev/null || true
+    git remote add origin "$BARE"
+    git push --quiet origin main
+)
+git --git-dir="$BARE" symbolic-ref HEAD refs/heads/main
+
+OUT20_FILE="$WORK/out20.txt"
+env \
+    PATH="$STUB_BIN:$PATH" \
+    COLONY_DIR="$COLONY_DIR" \
+    GITHUB_URL="file://$REMOTE_BASE" \
+    GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    CODE_EDIT_MAX_ATTEMPTS=2 \
+    bash "$ORCH" \
+        --owner "$OWNER" --repo "$REPO" --issue 1347 \
+        --branch "fix/issue-1347" --title "no node_modules falls through to light gate" \
+        --task "Add work." >"$OUT20_FILE" 2>"$WORK/err20.txt"
+RC20=$?
+
+if grep -q "light change-scoped gate" "$WORK/err20.txt" 2>/dev/null; then
+    pass "run 20 (#1346 no node_modules): detect_verify_cmd fell through to the light gate"
+else
+    fail "run 20 (#1346 no node_modules): expected the light change-scoped gate" "err=$(tail -6 "$WORK/err20.txt" 2>/dev/null)"
+fi
+if grep -q "npm test" "$WORK/err20.txt" 2>/dev/null; then
+    fail "run 20 (#1346 no node_modules): must NOT auto-select npm test without node_modules" "err=$(tail -6 "$WORK/err20.txt" 2>/dev/null)"
+else
+    pass "run 20 (#1346 no node_modules): did NOT auto-select npm test on a deps-less clone"
+fi
+if [ "$RC20" -eq 0 ] && [ "$(cat "$OUT20_FILE")" = "https://example.test/pr/20" ]; then
+    pass "run 20 (#1346 no node_modules): exit 0 + opened PR via the light gate"
+else
+    fail "run 20 (#1346 no node_modules): exit 0 + PR url" "rc=$RC20 out=$(cat "$OUT20_FILE" 2>/dev/null) err=$(tail -4 "$WORK/err20.txt" 2>/dev/null)"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

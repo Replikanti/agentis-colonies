@@ -395,9 +395,17 @@ staged_line_count() {
 # #1260). Empty result means "use the built-in LIGHT, change-scoped gate"
 # (run_light_verify); the PR's own CI remains the authoritative full gate.
 # CODE_EDIT_VERIFY_CMD=true force-skips (always passes).
+#
+# #1346: only auto-select `npm test` when `node_modules/` is present. A fresh
+# clone with a declared `test` script but no installed deps runs a test runner
+# that isn't there → exit 127 (command-not-found), which the loop below would
+# feed back as a "fix this" failure and make the editing agent undo its own
+# correct edit chasing an unfixable env gap. Falling through to the light
+# change-scoped gate avoids that; the PR's own CI installs deps and is the
+# authoritative gate.
 detect_verify_cmd() {
     if [ -n "${CODE_EDIT_VERIFY_CMD:-}" ]; then printf '%s' "$CODE_EDIT_VERIFY_CMD"; return 0; fi
-    if [ -f "$WS/package.json" ] && grep -q '"test"' "$WS/package.json" 2>/dev/null; then printf '%s' 'npm test --silent'; return 0; fi
+    if [ -f "$WS/package.json" ] && grep -q '"test"' "$WS/package.json" 2>/dev/null && [ -d "$WS/node_modules" ]; then printf '%s' 'npm test --silent'; return 0; fi
     if [ -f "$WS/Makefile" ] && grep -qE '^test:' "$WS/Makefile" 2>/dev/null; then printf '%s' 'make test'; return 0; fi
     if [ -d "$WS/tests" ] && command -v pytest >/dev/null 2>&1; then printf '%s' 'pytest -q'; return 0; fi
     printf '%s' ''
@@ -612,6 +620,15 @@ while :; do
         fi
         if [ "$verify_rc" -eq 0 ]; then
             echo "[code-edit] verification PASSED" >&2
+            break
+        fi
+        if [ "$verify_rc" -eq 127 ]; then
+            # #1346: exit 127 = the gate command itself is missing/unrunnable
+            # here (e.g. `npm test` with no installed test runner), NOT a code
+            # failure. Feeding it back would make the editing agent undo its
+            # correct edit chasing an unfixable env gap. Treat as UNVERIFIABLE:
+            # keep the edit and stop; the PR's own CI is the authoritative gate.
+            echo "[code-edit] verification UNVERIFIABLE (gate exit 127, command missing/unrunnable) — keeping the edit; the PR's own CI is the authoritative gate" >&2
             break
         fi
         if [ "$attempt" -ge "$MAX_ATTEMPTS" ] || [ "$(( ($(date +%s) - loop_start) * 1000 ))" -ge "$TOTAL_BUDGET_MS" ]; then
