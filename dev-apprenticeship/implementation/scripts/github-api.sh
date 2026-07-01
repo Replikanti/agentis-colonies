@@ -307,7 +307,7 @@ data = json.loads(sys.stdin.read())
 out = [{"iid": x.get("iid"), "title": x.get("title"), "description": x.get("description"),
         "labels": x.get("labels", []),
         "assignees": [{"username": a.get("username")} for a in x.get("assignees", [])],
-        "priority": x.get("priority")} for x in data]
+        "priority": x.get("priority"), "updated_at": x.get("updated_at")} for x in data]
 print(json.dumps(out))
 PY
             ;;

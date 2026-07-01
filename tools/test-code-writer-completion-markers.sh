@@ -209,6 +209,30 @@ else
 fi
 
 # -----------------------------------------------------------------------------
+# Part 5: #1277 — a "void" updated_at must never lock the staleness gate shut.
+# The `assigned` view once dropped updated_at from its projection, so
+# to_string(json_get(.., "updated_at")) rendered "void"; once the first draft
+# stored ("void") as last_drafted_updated_at, every later tick compared
+# "void" == "void" and the issue (#1266, which never produced a PR) was starved.
+# should_draft_code() must carry an explicit `upd == "void"` guard that forces
+# re-evaluation (returns true) — belt-and-braces alongside the projection fix,
+# mirroring the existing `iid_str == "void"` guard. Slice the function body and
+# assert the void-upd guard exists and returns true.
+# -----------------------------------------------------------------------------
+sdc_body="$(awk '
+  /^fn should_draft_code\(/ { grab=1; print; next }
+  /^fn / { grab=0 }
+  grab { print }
+' "$AG")"
+if printf '%s\n' "$sdc_body" | grep -F -q -- 'if upd == "void"' \
+  && printf '%s\n' "$sdc_body" | grep -A2 -F -- 'if upd == "void"' | grep -F -q -- 'return true'; then
+  pass "should_draft_code treats a void updated_at as always-stale (#1277 gate guard)"
+else
+  fail "void updated_at guard" \
+    "should_draft_code must guard 'if upd == \"void\" { return true; }' so a null updated_at never starves the gate"
+fi
+
+# -----------------------------------------------------------------------------
 # Parse check: the agent commits cleanly under `agentis commit`, same as the
 # per-agent syntax pass in colony-lint.sh. Skipped (not failed) when agentis is
 # not installed, matching the CI runner contract.

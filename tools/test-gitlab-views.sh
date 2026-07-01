@@ -193,7 +193,7 @@ test_view "planning" "planning-mr" "iid,title,description,labels,changes_count,u
 
 # --- Implementation ---
 test_view "implementation" "impl"     "iid,title,merged_at,target_branch"                      "$FIXTURE_MRS"
-test_view "implementation" "assigned" "iid,title,description,labels,assignees,priority"        "$FIXTURE_ISSUES"
+test_view "implementation" "assigned" "iid,title,description,labels,assignees,priority,updated_at" "$FIXTURE_ISSUES"
 
 # --- Release ---
 test_view "release" "release-summary"  "tag_name,name,released_at,description" "$FIXTURE_RELEASES"
