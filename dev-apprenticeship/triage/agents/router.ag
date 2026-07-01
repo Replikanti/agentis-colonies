@@ -5,6 +5,24 @@
 //
 // Run as daemon: agentis daemon agents/router.ag --colony triage
 // Requires: exec_foreign capability, GITLAB_* env vars
+//
+// #1234 crystallizer pilot (ports the labeler #1235 mechanism to routing):
+// repeat routing decisions on the same canonical context CLASS crystallize
+// into a "route" rule the agent replays without prompt() (Stage 1), the LLM
+// decision is distilled so the class accumulates toward crystallization
+// (Stage 2), and a reality-check demotes rules whose suggested assignee the
+// operator reassigns away (crystallizer_record_use). Router had no
+// reality-check at all before this, so evaluate_route_verdict() is new: it
+// treats a later reassignment away from the rule's suggested assignee as the
+// demote signal, and a kept assignment as reinforcement. Requires the agentis
+// crystallizer builtins (agentis >= 1.8.0; host is v1.19.0).
+// Operator knobs (process env, read via getenv — mirror labeler's):
+//   - ROUTER_RULE_FIRST=0       short-circuits the ENTIRE pilot path (Stage 1
+//                               replay, Stage 2 distill, verdict recording +
+//                               reality-check) to the LLM path — byte-identical
+//                               to pre-pilot behaviour, the rollback knob.
+//   - ROUTER_RULE_CONFIDENCE=<float>  overrides the default 0.85 minimum
+//                               confidence for a rule-first hit.
 
 cb 400;
 
@@ -190,7 +208,335 @@ fn get_confidence() -> float {
     return 0.0;
 }
 
+// #1234 crystallizer pilot (ports labeler #1235): deterministic, prompt-free
+// canonical context for the first UNASSIGNED issue in `raw` (the router-view
+// JSON the LLM path consumes). Emits a single tab-separated line:
+//   "<iid>\t<canonical_ctx>"
+// where canonical_ctx is "kw=" + sorted_kw_csv + " labels=" + sorted_labels_csv.
+// The keyword signature lowercases the issue title and matches a FIXED triage
+// vocabulary (the same set labeler uses); the sorted matched set plus the
+// sorted labels CSV are stable across repeats so the crystallized rule id is
+// identical tick-to-tick. Routing carries no personal/team scope dimension
+// (router's learn() rows have no scope tag), so — unlike labeler — no author
+// field is emitted; the router view also carries no description, so only the
+// title feeds the keyword signature. An issue with no vocab hit / no labels
+// still yields a valid ctx ("kw= labels="); it rarely crystallizes, which is
+// fine. Total-on-failure: any python/exec failure returns "" so the caller
+// falls through to the LLM path and is never starved.
+fn canonical_route_context(issues_raw: string) -> string {
+    let cmd = "RAW=" + shell_escape(issues_raw) +
+        " python3 -c '" +
+        "import os, json, re\n" +
+        "VOCAB=[\"bug\",\"crash\",\"error\",\"fail\",\"segfault\",\"panic\",\"exception\",\"docs\",\"documentation\",\"readme\",\"feature\",\"enhancement\",\"request\",\"question\",\"security\",\"vuln\",\"cve\",\"performance\",\"perf\",\"slow\",\"test\",\"ci\",\"build\",\"regression\",\"refactor\",\"dependency\"]\n" +
+        "try:\n" +
+        "    data=json.loads(os.environ[\"RAW\"])\n" +
+        "except Exception:\n" +
+        "    print(\"\"); raise SystemExit\n" +
+        "if not isinstance(data, list):\n" +
+        "    print(\"\"); raise SystemExit\n" +
+        "chosen=None\n" +
+        "for x in data:\n" +
+        "    if not isinstance(x, dict): continue\n" +
+        "    if not x.get(\"assignees\"):\n" +
+        "        chosen=x; break\n" +
+        "if chosen is None:\n" +
+        "    print(\"\"); raise SystemExit\n" +
+        "iid=chosen.get(\"iid\")\n" +
+        "if iid is None:\n" +
+        "    print(\"\"); raise SystemExit\n" +
+        "text=(chosen.get(\"title\") or \"\").lower()\n" +
+        "toks=set(re.findall(r\"[a-z]+\", text))\n" +
+        "hits=sorted({w for w in VOCAB if w in toks})\n" +
+        "labels=sorted({str(l).strip() for l in (chosen.get(\"labels\") or []) if str(l).strip()})\n" +
+        "ctx=\"kw=\"+\",\".join(hits)+\" labels=\"+\",\".join(labels)\n" +
+        "print(str(iid)+\"\\t\"+ctx)" +
+        "'";
+    return try { exec sh cmd; } catch e { ""; };
+}
+
+// #1234 crystallizer pilot: canonical assignee for the rule's `action` slot.
+// A single username, trimmed of surrounding whitespace and a leading `@` (the
+// reasoning strings spell it `@user`), so the KnowledgeEntry id is identical
+// across repeats of the same decision (NOT free-form LLM prose). Total-on-
+// failure returns "" (caller treats "" as no usable action).
+fn normalize_assignee(name: string) -> string {
+    let cmd = "A=" + shell_escape(name) +
+        " python3 -c 'import os; print(os.environ[\"A\"].strip().lstrip(\"@\"))'";
+    return try { exec sh cmd; } catch e { ""; };
+}
+
+// #1234: auto-confidence from the reality-check (mirrors labeler #106). Each
+// suggested / drafted assignment stashes a pending verdict; a later tick reads
+// back the issue's current assignee and scores kept-vs-reassigned. Kept => a
+// small positive bump, reassigned-away => a small negative. Capped at 0.85
+// (the autonomy threshold): operators sign off on autonomous routing writes
+// explicitly, so the reality-check alone never pushes past it.
+fn clamp_auto(cur: float, delta: float) -> float {
+    let cap = 0.85;
+    if delta > 0.0 {
+        if cur >= cap {
+            return cur;
+        };
+        if (cur + delta) > cap {
+            return cap;
+        };
+        return cur + delta;
+    };
+    if (cur + delta) < 0.0 {
+        return 0.0;
+    };
+    return cur + delta;
+}
+
+// #1234: reality-check signal -> confidence delta. Single-assignee routing has
+// no "partial" (our person is either currently assigned or not): signal 1 =
+// kept (+0.02), signal 3 = reassigned away (-0.01). Signal 0 ("still
+// unassigned, no signal yet") is handled by the caller via an early return.
+fn signal_to_delta(signal: int) -> float {
+    if signal == 1 {
+        return 0.02;
+    };
+    if signal == 3 {
+        return 0.0 - 0.01;
+    };
+    return 0.0;
+}
+
+// #1234: map the reality-check signal to the experience-store outcome enum so
+// auto-promote's fitness gates (#186) see an honest acting-path reject rate.
+fn signal_to_outcome(signal: int) -> string {
+    if signal == 1 {
+        return "success";
+    };
+    if signal == 2 {
+        return "partial";
+    };
+    return "fail";
+}
+
+// #1234: map the reality-check signal to the crystallizer demote/reinforce
+// delta. Kept assignment reinforces the rule (+0.1), a reassignment away
+// demotes it (-0.15). Core compaction retires a rule at success_rate < 0.5 &&
+// use_count >= 20, so sustained reassignments eventually drop it.
+fn rule_feedback_delta(signal: int) -> float {
+    if signal == 1 {
+        return 0.1;
+    };
+    if signal == 3 {
+        return 0.0 - 0.15;
+    };
+    return 0.0;
+}
+
+// #1234: thread the crystallizer demote/reinforce feedback. `blob` is the
+// pending-verdict array; its 4th field is the rule_id ("" for LLM-path
+// verdicts). When non-empty, credit / penalise the rule the reality-check just
+// scored. No-op on LLM-path verdicts (empty rule_id) so an LLM-only tick never
+// touches the crystallizer.
+fn record_rule_feedback(blob: string, signal: int) -> void {
+    let rule_id = to_string(json_get(blob, "[3]"));
+    // Empty rule_id = LLM-path verdict. "void" = an in-flight 3-field blob
+    // written before this pilot deployed (json_get on the missing [3] index
+    // yields Void -> "void"); ignore it so the transition across the deploy
+    // boundary never feeds a bogus rule id to the crystallizer.
+    if len(rule_id) == 0 {
+        return;
+    };
+    if rule_id == "void" {
+        return;
+    };
+    crystallizer_record_use(rule_id, signal == 1, rule_feedback_delta(signal));
+    print("[router] crystallizer feedback: rule", rule_id, "signal", signal);
+}
+
+// #1234: per-repo write target for the auto-confidence bump. get_confidence()
+// keeps reading the legacy unscoped key (bounded by clamp_auto's 0.85 cap, so
+// per-repo drift cannot push past the autonomy threshold from reality-check
+// feedback alone). Operators set per-repo overrides via
+// `agentis memo set <owner>__<repo>:router:confidence <value>`.
+fn apply_feedback(delta: float, owner: string, repo: string) -> void {
+    let cur = get_confidence();
+    let target = clamp_auto(cur, delta);
+    memo_write(scoped_memo(owner, repo, "router:confidence"), to_string(target));
+    print("[router] feedback delta", delta, "confidence", cur, "->", target);
+}
+
+// #1234: record a pending routing verdict. Stored as JSON array
+// [t, iid, "assignee", "rule_id"] — the four fields are ASCII-safe (epoch int,
+// iid int, a single username, crystallizer rule ids have no
+// quotes/newlines/backslashes in practice) so naive concatenation is
+// sufficient and we skip a JSON encoder. The 4th `rule_id` field is "" for
+// LLM-path verdicts and the crystallized rule id for rule-hit verdicts;
+// evaluate_route_verdict feeds it to crystallizer_record_use after the
+// reality-check signal settles (kept reinforces, reassigned demotes).
+fn record_route_verdict(owner: string, repo: string, issue_id: int, assignee: string, rule_id: string) -> void {
+    let ts_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let blob = "[" + ts_raw + "," + to_string(issue_id) + ",\"" + assignee + "\",\"" + rule_id + "\"]";
+    memo_write(scoped_memo(owner, repo, "router:pending_verdict"), blob);
+    print("[router] verdict recorded: issue", issue_id, "suggested", assignee);
+}
+
+fn verdict_age_seconds(blob: string) -> int {
+    let emit_ts = parse_int(to_string(json_get(blob, "[0]")));
+    let now_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let now = parse_int(now_raw);
+    return now - emit_ts;
+}
+
+// #1234: score the pending routing verdict against what the operator actually
+// did on GitLab (ports labeler's single-slot evaluate_label_verdict). Returns
+// early (leaves the verdict pending) when the pilot is disabled, no verdict
+// exists, or the issue still has no assignee (no signal yet). Clears the
+// verdict when scored or aged out (> 24h). The current assignee is read from
+// the `raw` get-issue view (the `feedback-issue` view drops assignees), which
+// exposes both the `assignees` array and the deprecated singular `assignee`.
+// The reality-check treats a reassignment away from our suggested username as
+// the demote signal (signal 3) and a kept assignment as reinforcement
+// (signal 1). The whole function is gated on ROUTER_RULE_FIRST so the rollback
+// knob leaves pre-pilot behaviour byte-identical (no verdict is ever recorded
+// when disabled, and any stale blob from a previously-enabled run is ignored).
+fn evaluate_route_verdict(owner: string, repo: string) -> void {
+    if getenv("ROUTER_RULE_FIRST") == "0" {
+        return;
+    };
+    let key = scoped_memo(owner, repo, "router:pending_verdict");
+    let blob = recall_latest(key);
+    if len(blob) < 3 {
+        return;
+    };
+    let timeout_s = 86400;
+    if verdict_age_seconds(blob) > timeout_s {
+        print("[router] verdict aged out without signal");
+        memo_write(key, "");
+        return;
+    };
+    let issue_id = parse_int(to_string(json_get(blob, "[1]")));
+    let suggested = to_string(json_get(blob, "[2]"));
+    // colony-lint: safe-exec-concat
+    let cur_cmd = "$COLONY_DIR/scripts/forge-api.sh get-issue " + to_string(issue_id) + " --view raw" + repo_arg(owner, repo);
+    let cur_raw = try { exec sh cur_cmd; } catch e { ""; };
+    if len(cur_raw) < 3 {
+        return;
+    };
+    // Deterministic compare in python (cheap, reproducible) rather than a
+    // prompt() round-trip. Output: 0 = no signal (still unassigned),
+    // 1 = kept (our suggested username is among the current assignees),
+    // 3 = reassigned (assigned, but not to our username).
+    let match_cmd = "SUGGESTED=" + shell_escape(suggested) + " RAW=" + shell_escape(cur_raw) + " python3 -c 'import os, json; sug=os.environ[\"SUGGESTED\"].strip(); d=json.loads(os.environ[\"RAW\"]); ns={(a or {}).get(\"username\") for a in (d.get(\"assignees\") or [])}; a1=d.get(\"assignee\"); ns.add((a1 or {}).get(\"username\")) if isinstance(a1, dict) else None; ns={n for n in ns if n}; print(0 if not ns else (1 if sug in ns else 3))'";
+    let signal_raw = try { exec sh match_cmd; } catch e { "0"; };
+    let signal = parse_int(signal_raw);
+    if signal == 0 {
+        return;
+    };
+    apply_feedback(signal_to_delta(signal), owner, repo);
+    // Credit / penalise the crystallized rule (no-op on LLM-path verdicts
+    // whose blob carries an empty rule_id).
+    record_rule_feedback(blob, signal);
+    // Emit the reality-check outcome to the experience store so auto-promote's
+    // fitness gates (#186) see an honest acting-path reject rate. Tagged
+    // "acted" regardless of the original tier so the row lands in the acting
+    // bucket.
+    let outcome = signal_to_outcome(signal);
+    if len(owner) > 0 {
+        learn(
+            "route",
+            "issue " + to_string(issue_id) + " reality-check",
+            "suggested: " + suggested + " | signal: " + to_string(signal),
+            outcome,
+            ["acted", "triage", repo_tag(owner, repo)]
+        );
+    } else {
+        learn(
+            "route",
+            "issue " + to_string(issue_id) + " reality-check",
+            "suggested: " + suggested + " | signal: " + to_string(signal),
+            outcome,
+            ["acted", "triage"]
+        );
+    };
+    print("[router] reality-check: issue", issue_id, "signal", signal, "->", outcome);
+    memo_write(key, "");
+}
+
+// #1234 crystallizer pilot: rule-hit application. Mirror of the LLM tier-block
+// in tick_for_repo, but takes primitive fields because the .ag grammar
+// disallows inline RouteAction struct literals (so the rule-hit path cannot
+// synthesize a RouteAction to feed the existing block). The tier semantics are
+// byte-identical to the LLM path (autonomous assigns via update-issue,
+// review-gated posts a draft note, propose emits, shadow/dormant observes);
+// only the source of the decision differs (crystallized rule vs prompt). Every
+// learn() row on this path carries "rule-hit" + "distilled" so auto-promote and
+// the dashboard can separate replayed decisions from LLM-driven ones, and the
+// review-gated / propose branches thread rule_id through record_route_verdict
+// so the reality-check later credits / penalises the rule via
+// crystallizer_record_use. Autonomous route writes are NOT single-slot
+// verdict-recorded here: that tier's longer-horizon revert-check is the
+// labeler #203 multi-slot mechanism, a deliberate follow-up to this pilot (the
+// optimistic +0.1 recorded in Stage 1 stands until then). The emit payload is a
+// JSON string of the RouteAction shape; triage:route_suggestion's only consumer
+// (implementation/code_writer) treats the event as a wake-up signal (checks
+// len > 5), so the loose shape is safe.
+fn apply_route_rule_hit(owner: string, repo: string, my_tier: string, issue_id: int, assignee: string, reasoning: string, rule_id: string) -> void {
+    let conf_str = recall_latest("router:confidence");
+    let action_json = "{\"issue_id\":" + to_string(issue_id) + ",\"assignee\":\"" + assignee + "\",\"reasoning\":\"" + reasoning + "\",\"confidence\":" + conf_str + ",\"rule_id\":\"" + rule_id + "\"}";
+    if my_tier == "autonomous" {
+        // colony-lint: safe-exec-concat
+        let update_cmd = "$COLONY_DIR/scripts/forge-api.sh update-issue " + to_string(issue_id) + " --assignee " + shell_escape(assignee) + repo_arg(owner, repo);
+        let result = try { exec sh update_cmd; } catch e {
+            print("[router] Failed to assign (rule-hit):", e);
+            "";
+        };
+        if len(result) > 0 {
+            print("[router] Assigned issue", issue_id, "to", assignee, "(rule-hit)");
+            emit("triage:route_suggestion", action_json);
+            if len(owner) > 0 {
+                learn("route", "issue " + to_string(issue_id), assignee, "success", ["acted", "triage", "rule-hit", "distilled", repo_tag(owner, repo)]);
+            } else {
+                learn("route", "issue " + to_string(issue_id), assignee, "success", ["acted", "triage", "rule-hit", "distilled"]);
+            };
+        };
+    } else {
+        if my_tier == "review-gated" {
+            let note = "[draft-route] **Routing Suggestion** (automated, pending approval): assign to @" + assignee + "\n\n" + reasoning;
+            // colony-lint: safe-exec-concat
+            let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(issue_id) + " --body " + shell_escape(note) + repo_arg(owner, repo);
+            try { exec sh post_cmd; } catch e {
+                print("[router] Failed to post draft note (rule-hit):", e);
+            };
+            emit("triage:route_suggestion", action_json);
+            record_route_verdict(owner, repo, issue_id, assignee, rule_id);
+            if len(owner) > 0 {
+                learn("route", "issue " + to_string(issue_id), assignee, "partial", ["triage", "review-gated", "rule-hit", "distilled", repo_tag(owner, repo)]);
+            } else {
+                learn("route", "issue " + to_string(issue_id), assignee, "partial", ["triage", "review-gated", "rule-hit", "distilled"]);
+            };
+        } else {
+            if my_tier == "propose" {
+                print("[router] Suggesting assignee for issue", issue_id, "(rule-hit):", assignee);
+                emit("triage:route_suggestion", action_json);
+                record_route_verdict(owner, repo, issue_id, assignee, rule_id);
+                if len(owner) > 0 {
+                    learn("route", "issue " + to_string(issue_id), assignee, "partial", ["emitted", "triage", "rule-hit", "distilled", repo_tag(owner, repo)]);
+                } else {
+                    learn("route", "issue " + to_string(issue_id), assignee, "partial", ["emitted", "triage", "rule-hit", "distilled"]);
+                };
+            } else {
+                print("[router] Observing rule-hit (tier:", my_tier, ")");
+                if len(owner) > 0 {
+                    learn("route", "issue " + to_string(issue_id), assignee, "partial", ["observed", "triage", "rule-hit", "distilled", repo_tag(owner, repo)]);
+                } else {
+                    learn("route", "issue " + to_string(issue_id), assignee, "partial", ["observed", "triage", "rule-hit", "distilled"]);
+                };
+            };
+        };
+    };
+}
+
 fn tick_for_repo(owner: string, repo: string) -> void {
+    // #1234: score any pending routing verdict from a previous tick before
+    // doing new work (cheap no-op when nothing is pending / pilot disabled).
+    // Same call-site position evaluate_label_verdict occupies in labeler.
+    evaluate_route_verdict(owner, repo);
     // #147: cheap delta-check. `issues_cmd()` already filters
     // server-side via --since last_check, so an empty response
     // (`[]`, 2 chars) means "no new issues since last tick" and we
@@ -278,10 +624,110 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         let closed_by_block = closed_by_context(owner, repo, analysis.unassigned_issues);
         let context = "Unassigned issues: " + analysis.unassigned_issues + "\nTeam members: " + members_raw + "\nPast learning: " + to_string(rec) + closed_by_block;
 
+        // #1234 Stage 1: rule-first lookup. Build the deterministic,
+        // prompt-free canonical context for the first unassigned issue in
+        // `raw` (same selection rule the LLM uses for "most important": first
+        // listed). If a crystallized "route" rule matches at
+        // >= ROUTER_RULE_CONFIDENCE, replay its assignee without the routing
+        // prompt() and skip Stage 2 entirely. Rollback knob: ROUTER_RULE_FIRST=0
+        // short-circuits BOTH stages (and the verdict recording below) to the
+        // LLM path -- byte-identical to pre-pilot behaviour, including no extra
+        // exec sh subprocess (the canonical-context build is itself behind the
+        // flag). The crystallizer category is "route", matching the
+        // learn()/recommend() topic this agent already uses.
+        let rule_first_flag = getenv("ROUTER_RULE_FIRST");
+        let rule_first_enabled = rule_first_flag != "0";
+        let min_conf_str = getenv("ROUTER_RULE_CONFIDENCE");
+        let min_conf = if len(min_conf_str) > 0 { parse_float(min_conf_str); } else { 0.85; };
+        let canon_line = if rule_first_enabled { canonical_route_context(raw); } else { ""; };
+        let canon_iid = if rule_first_enabled { parse_int(repo_field(canon_line, 0)); } else { 0; };
+        let canonical_ctx = if rule_first_enabled { repo_field(canon_line, 1); } else { ""; };
+
+        if rule_first_enabled {
+            if len(canon_line) > 0 {
+                if len(canonical_ctx) > 0 {
+                    if canon_iid > 0 {
+                        let rule = crystallizer_lookup_with_confidence("route", canonical_ctx, min_conf);
+                        if len(rule) > 0 {
+                            // #843: crystallizer_lookup_with_confidence returns
+                            // map<string,string> (Value::Map). Read fields with
+                            // get() (the map accessor); json_get() expects a JSON
+                            // string and raises "expected string, got map" on a map.
+                            let rule_id = to_string(get(rule, "rule_id"));
+                            let rule_action = to_string(get(rule, "action"));
+                            let rule_conf_str = to_string(get(rule, "confidence"));
+                            let rule_conf = if len(rule_conf_str) > 0 { parse_float(rule_conf_str); } else { min_conf; };
+                            let rule_assignee = normalize_assignee(rule_action);
+                            if len(rule_assignee) > 0 {
+                                let rule_reasoning = "rule-first: crystallized route rule @conf " + to_string(rule_conf) + ". Context: " + canonical_ctx;
+                                // Optimistic at-write reinforcement; the
+                                // reality-check (evaluate_route_verdict) later
+                                // corrects via the threaded rule_id (+0.1 kept /
+                                // -0.15 reassigned).
+                                crystallizer_record_use(rule_id, true, 0.1);
+                                apply_route_rule_hit(owner, repo, my_tier, canon_iid, rule_assignee, rule_reasoning, rule_id);
+                                memo_write(scoped_memo(owner, repo, "router:rule_ctx"), canonical_ctx);
+                                memo_write(scoped_memo(owner, repo, "router:rule_id"), rule_id);
+                                if len(cur_hash) > 0 {
+                                    memo_write(scoped_memo(owner, repo, "router:snapshot_hash"), cur_hash);
+                                };
+                                let now_s1 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+                                if len(now_s1) > 0 {
+                                    memo_write(scoped_memo(owner, repo, "router:last_check"), now_s1);
+                                };
+                                return;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+
         let action = prompt(
             "You are a routing agent. Suggest who should be assigned to the most important unassigned issue based on team expertise. Return JSON: issue_id (int), assignee (string, username), reasoning (string), confidence (float 0-1).",
             context
         ) -> RouteAction;
+
+        // #1234 Stage 2: distill the LLM decision so repeat decisions on the
+        // same context CLASS crystallize into a rule Stage 1 replays. The
+        // crystallized rule's `action` slot stores the normalized assignee
+        // (canonical_action) -- NOT free-form LLM prose -- so the KnowledgeEntry
+        // id is identical across repeats and empirical_validations accumulates
+        // toward crystallization. The distilled CONDITION (coarse_ctx) is a
+        // literal prefix of canonical_ctx (the "kw=<sorted_csv>" part, dropping
+        // the " labels=<csv>" tail) so the same keyword class crystallizes
+        // regardless of the exact label set, and CrystallizedRule.matches_context
+        // (ctx.starts_with(condition)) still matches the full canonical_ctx
+        // Stage 1 passes. Gated behind ROUTER_RULE_FIRST so the rollback knob
+        // produces byte-identical behaviour (no extra learn rows, no distill
+        // side-effects) when set to "0". distill() raises until there are >= 3
+        // successful "route" records, so it is guarded; knowledge_validate()
+        // bumps empirical_validations toward the crystallize threshold. Only
+        // distill when the LLM routed the SAME issue the canonical_ctx was built
+        // for (canon_iid = first unassigned): the LLM picks the "most important"
+        // unassigned issue, which may differ; distilling issue A's ctx against
+        // issue B's assignee would mint a mis-scoped rule Stage 1 later replays
+        // onto the wrong class. When they diverge we skip distillation this tick.
+        if rule_first_enabled {
+            if len(canonical_ctx) > 0 {
+                if action.issue_id == canon_iid {
+                    let canonical_action = normalize_assignee(action.assignee);
+                    if len(canonical_action) > 0 {
+                        let labels_at = index_of(canonical_ctx, " labels=");
+                        let coarse_ctx = if labels_at > 0 { substring(canonical_ctx, 0, labels_at); } else { canonical_ctx; };
+                        if len(owner) > 0 {
+                            learn("route", canonical_ctx, canonical_action, "success", ["distilled", "triage", repo_tag(owner, repo)]);
+                        } else {
+                            learn("route", canonical_ctx, canonical_action, "success", ["distilled", "triage"]);
+                        };
+                        let did = try { distill("route", coarse_ctx, canonical_action, "heuristic"); } catch e { ""; };
+                        if len(did) > 0 {
+                            knowledge_validate(did);
+                        };
+                    };
+                };
+            };
+        };
 
         if my_tier == "autonomous" {
             // colony-lint: safe-exec-concat
@@ -310,6 +756,13 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     print("[router] Failed to post draft note:", e);
                 };
                 emit("triage:route_suggestion", action);
+                // #1234: stash the verdict (LLM-path, empty rule_id) so the next
+                // tick can score this suggestion against whatever the operator
+                // eventually assigns. Gated on the pilot flag so ROUTER_RULE_FIRST=0
+                // records nothing and stays byte-identical to pre-pilot.
+                if rule_first_enabled {
+                    record_route_verdict(owner, repo, action.issue_id, action.assignee, "");
+                };
                 if len(owner) > 0 {
                     learn("route", "issue " + to_string(action.issue_id), action.assignee, "partial", ["triage", "review-gated", repo_tag(owner, repo)]);
                 } else {
@@ -319,6 +772,13 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 if my_tier == "propose" {
                     print("[router] Suggesting assignee for issue", action.issue_id, ":", action.assignee);
                     emit("triage:route_suggestion", action);
+                    // #1234: stash the verdict (LLM-path, empty rule_id) so the
+                    // next tick can score this suggestion against whatever the
+                    // operator actually assigns. Gated on the pilot flag so
+                    // ROUTER_RULE_FIRST=0 records nothing (byte-identical).
+                    if rule_first_enabled {
+                        record_route_verdict(owner, repo, action.issue_id, action.assignee, "");
+                    };
                     if len(owner) > 0 {
                         learn("route", "issue " + to_string(action.issue_id), action.assignee, "partial", ["emitted", "triage", repo_tag(owner, repo)]);
                     } else {

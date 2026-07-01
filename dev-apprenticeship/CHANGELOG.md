@@ -17,6 +17,30 @@ is asserted until multi-version CI is in place.
 
 ### Added
 
+- **`router` (triage) now distils deterministic route rules and replays them
+  without an LLM call — extends the crystallizer pilot from `labeler` to
+  routing** ([#1234](https://github.com/Replikanti/agentis-colonies/issues/1234),
+  the epic's stated next step after the `labeler` pilot
+  [#1235](https://github.com/Replikanti/agentis-colonies/issues/1235) proved
+  live rule-hits + demotes). Before `prompt()`, `router` builds a deterministic
+  keyword+label signature for the first unassigned issue and calls
+  `crystallizer_lookup_with_confidence("route", ctx, min_conf)`; on a hit ≥
+  confidence it applies the rule's assignee across all four tier branches and
+  skips the LLM. The LLM path distils its decision
+  (`distill("route", coarse_ctx, assignee)` + `knowledge_validate()`), which
+  crystallizes into a replayable rule after ≥ 3 validations. Router had no
+  reality-check before this, so `evaluate_route_verdict()` is new: it stashes a
+  pending verdict on each suggested/drafted assignment, then a later tick reads
+  back the issue's current assignee and threads the `rule_id` into
+  `crystallizer_record_use(rule_id, kept?, +0.1/-0.15)` — a kept assignment
+  reinforces the rule, a reassignment away demotes it, and agentis-core
+  compaction retires rules at `success_rate < 0.5 && use_count ≥ 20`. Requires
+  **agentis ≥ 1.8.0** (crystallizer builtins). Rollback: `ROUTER_RULE_FIRST=0`
+  restores byte-identical pre-pilot behaviour (short-circuits replay, distil,
+  and verdict recording to the LLM path); `ROUTER_RULE_CONFIDENCE` (default
+  0.85) tunes the replay threshold. Host-run `.agentis` persists rules on disk
+  across restarts, so no extra persistence wiring is needed.
+
 - **Autonomous review → fix loop in `code_writer` (the review-resolver pattern).**
   The federation re-drove a RED PR (`code_writer.recover_red_prs`) but had no
   path from a posted REVIEW finding to an autonomous fix: a GREEN PR carrying

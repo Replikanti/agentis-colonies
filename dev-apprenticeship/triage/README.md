@@ -67,6 +67,61 @@ All four agents read the same `issues` collection, so without sharing the endpoi
 | `gitlab:snapshot:issues:ts` | `start-colony.sh` snapshot step (refreshed by the `start-federation.sh` sidecar) | each agent's `snapshot_fresh()` gate |
 | `<agent>:snapshot_hash` | `labeler` / `router` / `prioritizer` (end of tick) | the same agent's per-tick no-change gate |
 
+## Crystallizer rule replay (#1234)
+
+Mature triage agents distil their high-frequency, low-variance decisions into
+**deterministic rules** and replay them **without an LLM call** (cheaper +
+faster), and rules that stop performing are **demoted and retired**. This is the
+agentis-core crystallizer substrate (`distill` /
+`crystallizer_lookup_with_confidence` / `crystallizer_record_use` /
+`knowledge_validate`, agentis ≥ 1.8.0). Two agents carry the pilot today:
+`labeler` (the first, #1235) and `router` (#1234). The demote signal is **free**
+— the operator keeping or changing what the agent applied is a natural
+deterministic verifier, so no separate skeptic is needed.
+
+Each agent runs three stages every tick:
+
+1. **Replay (Stage 1).** Before `prompt()`, the agent builds a deterministic,
+   keyword-signature context for the chosen issue and calls
+   `crystallizer_lookup_with_confidence(<category>, ctx, min_conf)`. On a hit ≥
+   `min_conf` it applies the rule's action across all four tier branches
+   (autonomous writes directly, review-gated drafts a note, propose emits,
+   shadow/dormant observes) and **skips the LLM entirely**.
+2. **Distil (Stage 2).** When no rule hit, the LLM decides as before and the
+   agent distils that decision — `learn(<category>, canonical_ctx, action)` then
+   `distill(<category>, coarse_ctx, action)` + `knowledge_validate()`. After ≥ 3
+   validations agentis-core crystallizes the class into a replayable rule.
+3. **Demote (Stage 3).** A reality-check on a later tick reads back what the
+   operator actually did and threads the rule id into
+   `crystallizer_record_use(rule_id, kept?, +0.1 / -0.15)` — a kept decision
+   reinforces the rule, an operator override demotes it. agentis-core compaction
+   retires a rule at `success_rate < 0.5 && use_count ≥ 20`.
+
+`router`'s category is `route`, keyed on the first **unassigned** issue's
+keyword+label signature; its action slot is the normalized assignee username.
+Router had no reality-check before this pilot, so `evaluate_route_verdict()` is
+new: it stashes a pending verdict when it suggests/drafts an assignment, then a
+later tick reads back the issue's current assignee and treats a **reassignment
+away** from the suggested username as the demote signal (and a **kept**
+assignment as reinforcement).
+
+Host-run `.agentis` persists crystallized rules on disk across restarts, so no
+container-style persistence wiring is needed.
+
+**Operator knobs** (process env, read via `getenv`; set them in
+`scripts/start-colony.sh`'s environment or export before launch):
+
+| Knob | Default | Effect |
+|------|---------|--------|
+| `ROUTER_RULE_FIRST` | on (any value ≠ `0`) | `0` short-circuits the **entire** router pilot — Stage 1 replay, Stage 2 distil, and the verdict recording + reality-check — to the LLM path. Behaviour is byte-identical to pre-pilot routing (no extra `exec sh` subprocess, no distil rows, no pending verdicts). The rollback switch. |
+| `ROUTER_RULE_CONFIDENCE` | `0.85` | Minimum confidence for a Stage 1 rule-first hit. Raise to replay only very well-established rules; lower to replay more aggressively. |
+
+`labeler` exposes the equivalent `LABELER_RULE_FIRST` / `LABELER_RULE_CONFIDENCE`
+knobs. Setting `ROUTER_RULE_FIRST=0` (or `LABELER_RULE_FIRST=0`) is the safe
+rollback if a replayed rule misbehaves: the agent reverts to LLM-only routing
+immediately on the next tick, and any stale pending verdict from an
+earlier enabled run is ignored rather than scored.
+
 ## Setup
 
 1. Copy and edit the config:
