@@ -65,6 +65,13 @@
 #                                #1345: editing sessions run xhigh extended
 #                                thinking, whose pauses exceed the old 8000ms —
 #                                a short window screen-scraped a partial reply)
+#   CODE_EDIT_MODEL              claude --model for the editing session (default
+#                                `opus` = Opus 4.8, the strongest model — code
+#                                generation is the heaviest workload in the
+#                                federation; agents' lighter prompt() reasoning
+#                                runs on Sonnet 5 via flat-cyborg-claude.sh).
+#                                Accepts an alias (`opus`/`sonnet`/`fable`) or a
+#                                full model id.
 #   CODE_EDIT_TIMEOUT_MS         per-attempt flat-cyborg edit timeout (600000)
 #   CODE_EDIT_MAX_ATTEMPTS       continue-on-incomplete attempts (3)
 #   CODE_EDIT_TOTAL_BUDGET_MS    overall wall-clock budget across attempts (1500000)
@@ -633,7 +640,7 @@ if [ "$ONE_ATTEMPT" -eq 1 ]; then
     flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 --cwd "$WS" \
         --idle-ms "${FLAT_CYBORG_IDLE_MS:-45000}" \
         --timeout-ms "$PER_ATTEMPT_MS" \
-        --cmd-file "$TASKFILE" -- claude >&2
+        --cmd-file "$TASKFILE" -- claude --model "${CODE_EDIT_MODEL:-opus}" >&2
     FC_RC=$?
     set -e
     reap_editing_strays
@@ -680,7 +687,7 @@ if [ "$DECOMPOSE" -eq 1 ]; then
     set +e
     flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 --cwd "$WS" \
         --idle-ms "${FLAT_CYBORG_IDLE_MS:-45000}" --timeout-ms "$PER_ATTEMPT_MS" \
-        --cmd-file "$TASKFILE" -- claude >&2
+        --cmd-file "$TASKFILE" -- claude --model "${CODE_EDIT_MODEL:-opus}" >&2
     set -e
     reap_editing_strays
     # discard any stray edits the decomposition step made; the subtask loop owns edits.
@@ -749,7 +756,7 @@ while :; do
     flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 --cwd "$WS" \
         --idle-ms "${FLAT_CYBORG_IDLE_MS:-45000}" \
         --timeout-ms "$this_timeout" \
-        --cmd-file "$TASKFILE" -- claude >&2
+        --cmd-file "$TASKFILE" -- claude --model "${CODE_EDIT_MODEL:-opus}" >&2
     FC_RC=$?
     set -e
 

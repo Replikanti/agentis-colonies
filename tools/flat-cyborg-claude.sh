@@ -145,10 +145,15 @@ set +e
 # then wait for it exactly as a foreground run would (its stdout is still
 # redirected to REPLY_FILE). A trapped signal interrupts the wait, runs _cleanup
 # (reap + rm), and exits.
+# Model routing (tier-by-workload): every agent's prompt() reasoning runs on the
+# lighter/faster model by default (Sonnet 5 via the `sonnet` alias = latest
+# sonnet). The heavier code-generation path (tools/code-edit-in-checkout.sh)
+# routes to Opus 4.8 separately. Override with CLAUDE_REASONING_MODEL (a claude
+# --model value: an alias like `sonnet`/`opus`/`fable`, or a full model id).
 flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 \
   --idle-ms "${FLAT_CYBORG_IDLE_MS:-30000}" \
   --timeout-ms "${FLAT_CYBORG_TIMEOUT_MS:-240000}" \
-  --cmd-file "$PROMPT_FILE" -- claude > "$REPLY_FILE" &
+  --cmd-file "$PROMPT_FILE" -- claude --model "${CLAUDE_REASONING_MODEL:-sonnet}" > "$REPLY_FILE" &
 FC_PID=$!
 wait "$FC_PID"
 FC_RC=$?
