@@ -42,7 +42,7 @@ graph TD
 
 | Federation | Version | Description | Agents | Status |
 |------------|---------|-------------|--------|--------|
-| [dev-apprenticeship](./dev-apprenticeship/) | [`2.2.0`](https://github.com/Replikanti/agentis-colonies/releases/tag/dev-apprenticeship-v2.2.0) | Learns a developer's complete workflow by observing how you work on GitLab or GitHub. Covers triage, code review, planning, implementation, and release. Implementation generates code by editing a real git checkout, with iterate / verify / decompose handling for complex multi-file tasks (GitHub + GitLab). | 22 | Beta |
+| [dev-apprenticeship](./dev-apprenticeship/) | [`2.3.0`](https://github.com/Replikanti/agentis-colonies/releases/tag/dev-apprenticeship-v2.3.0) | Learns a developer's complete workflow by observing how you work on GitLab or GitHub. Covers triage, code review, planning, implementation, and release. Implementation generates code by editing a real git checkout, with iterate / verify / decompose handling for complex multi-file tasks (GitHub + GitLab). | 22 | Beta |
 | [tribes-bench](./tribes-bench/) | unreleased | Tribal-emergence harness — five seed colonies hunt CVE-grade memory safety bugs in vendored Rust crates via a deterministic verifier. Stage 2 M3 reached: 5-tribe ecosystem vs 1-tribe baseline verdict apparatus + N=3 paired pilot results. | 5 | Experimental |
 | [trading-binance](./trading-binance/) | unreleased | Emergence-driven crypto futures strategy discovery on Binance USDT-margined perpetuals. Multi-agent population evolves price-action / volume-profile / CME-gap / fibo / market-structure / volume-divergence-fade setups against historical and live OHLCV feeds (no indicators, no oscillators). Backtest-only in Phase 1. | 6 | Experimental |
 | [research-foundry](./research-foundry/) | unreleased | End-to-end research pipeline: compute-first novelty discovery (6 colonies), literature audit across arXiv / OEIS / groupprops / Semantic Scholar (6 colonies), and arXiv preprint generation with LaTeX + reproducibility scripts (6 colonies). Single orchestrator + single container; the 18 colonies share one in-container `.agentis/` so each consumer reads its upstream colleague's memo directly. The arXiv email-gateway dispatch is gated on an explicit human-in-the-loop approval; the federation never auto-submits. Consolidates the retired math-foundry / claim-auditor / preprint-foundry federations (#638). See [ADR-0008](./doc/adr/ADR-0008-compute-first-novelty.md). | 18 | Experimental |
@@ -73,7 +73,7 @@ Federation-agnostic components are versioned and released independently so fixes
 From a release tarball (recommended — install-ready, no git clone needed):
 
 ```bash
-VERSION=2.2.0   # or any tagged dev-apprenticeship release
+VERSION=2.3.0   # or any tagged dev-apprenticeship release
 curl -LO https://github.com/Replikanti/agentis-colonies/releases/download/dev-apprenticeship-v${VERSION}/dev-apprenticeship-v${VERSION}.tar.gz
 tar xzf dev-apprenticeship-v${VERSION}.tar.gz
 cd dev-apprenticeship-v${VERSION}/dev-apprenticeship
@@ -90,7 +90,7 @@ docker run --rm -d \
   -e GITLAB_PROJECT=my-org/my-project \
   -e GITLAB_TOKEN=glpat-... \
   -v $PWD/data:/data \
-  ghcr.io/replikanti/agentis-colonies:dev-apprenticeship-2.2.0
+  ghcr.io/replikanti/agentis-colonies:dev-apprenticeship-2.3.0
 ```
 
 Sample compose + Kubernetes manifests under [`examples/docker/`](./examples/docker/) and [`examples/k8s/`](./examples/k8s/).
