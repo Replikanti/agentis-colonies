@@ -2,7 +2,7 @@
 
 A home for [Agentis](https://github.com/Replikanti/agentis) agent federations. **Apache 2.0**.
 
-**Agentis** is a proprietary AI-native platform for agent emergence (runtime, language, evolution engine, distributed infrastructure). **This repo** hosts open-source federations and federation-agnostic platform components built on that runtime. [`dev-apprenticeship/`](./dev-apprenticeship/) is the first federation — coder workflow on GitLab/GitHub, 22 agents — and the platform contract in [ADR-0003](./doc/adr/ADR-0003-federation-portability-contract.md) keeps the door open for federations of other kinds (data-ops, research, support-triage, monitoring-ops — sketches in [`doc/federation-patterns.md`](./doc/federation-patterns.md)).
+**Agentis** is a proprietary AI-native platform for agent emergence (runtime, language, evolution engine, distributed infrastructure). **This repo** hosts the open-source federations built on that runtime — five ship today, spanning developer-workflow automation, security research, trading-strategy discovery, and a scientific research pipeline — plus federation-agnostic platform components (dashboard, auto-promote, scaffolding, lint). The platform contract every federation satisfies is codified in [ADR-0003](./doc/adr/ADR-0003-federation-portability-contract.md); sketches for further domains (data-ops, support-triage, monitoring-ops) live in [`doc/federation-patterns.md`](./doc/federation-patterns.md).
 
 **What makes this repo distinctive:** every agent runs in `shadow` (observe-only) mode by default. It graduates up a four-tier confidence ladder — `shadow` → `propose` → `review-gated` → `autonomous` — based on measured experience, not hand-tuned thresholds. An agent only acts on your project once it has earned the tier. See [`doc/adr/ADR-0001-confidence-tiers.md`](./doc/adr/ADR-0001-confidence-tiers.md).
 
@@ -36,7 +36,7 @@ graph TD
     C3 --> A6
 ```
 
-[`dev-apprenticeship/`](./dev-apprenticeship/) is the first concrete federation: 5 colonies, 22 agents covering triage, planning, implementation, code review, and release. The platform contract that makes a federation directory "platform-compliant" — and that the platform tooling (dashboard, auto-promote, kill-federation) consumes — is codified in [ADR-0003](./doc/adr/ADR-0003-federation-portability-contract.md).
+Every federation directory in this repo follows the same platform contract ([ADR-0003](./doc/adr/ADR-0003-federation-portability-contract.md)) — `VERSION`, `CHANGELOG.md`, `BUNDLE.manifest`, `install.sh`, per-colony `start-colony.sh` — which is what lets the platform tooling (dashboard, auto-promote, kill-federation) operate any of them without federation-specific code.
 
 ## Federations
 
@@ -44,9 +44,9 @@ graph TD
 |------------|---------|-------------|--------|--------|
 | [dev-apprenticeship](./dev-apprenticeship/) | [`2.3.0`](https://github.com/Replikanti/agentis-colonies/releases/tag/dev-apprenticeship-v2.3.0) | Learns a developer's complete workflow by observing how you work on GitLab or GitHub. Covers triage, code review, planning, implementation, and release. Implementation generates code by editing a real git checkout, with iterate / verify / decompose handling for complex multi-file tasks (GitHub + GitLab). | 22 | Beta |
 | [tribes-bench](./tribes-bench/) | unreleased | Tribal-emergence harness — five seed colonies hunt CVE-grade memory safety bugs in vendored Rust crates via a deterministic verifier. Stage 2 M3 reached: 5-tribe ecosystem vs 1-tribe baseline verdict apparatus + N=3 paired pilot results. | 5 | Experimental |
-| [trading-binance](./trading-binance/) | unreleased | Emergence-driven crypto futures strategy discovery on Binance USDT-margined perpetuals. Multi-agent population evolves price-action / volume-profile / CME-gap / fibo / market-structure / volume-divergence-fade setups against historical and live OHLCV feeds (no indicators, no oscillators). Backtest-only in Phase 1. | 6 | Experimental |
-| [research-foundry](./research-foundry/) | unreleased | End-to-end research pipeline: compute-first novelty discovery (6 colonies), literature audit across arXiv / OEIS / groupprops / Semantic Scholar (6 colonies), and arXiv preprint generation with LaTeX + reproducibility scripts (6 colonies). Single orchestrator + single container; the 18 colonies share one in-container `.agentis/` so each consumer reads its upstream colleague's memo directly. The arXiv email-gateway dispatch is gated on an explicit human-in-the-loop approval; the federation never auto-submits. Consolidates the retired math-foundry / claim-auditor / preprint-foundry federations (#638). See [ADR-0008](./doc/adr/ADR-0008-compute-first-novelty.md). | 18 | Experimental |
-| [dark-factory](./dark-factory/) | [`0.2.0`](https://github.com/Replikanti/agentis-colonies/releases/tag/dark-factory-v0.2.0) | Autonomous Solana/Anchor bounty auditor. A single `auditor` colony runs an `agentis go` pipeline (reconn → guard → tracker → synthesis): ingest a program, detect an access-control / signer-authorization finding, synthesize a two-sided proof-of-concept, validate it through the real Solana SVM offline, and write a standardized Immunefi report. Submission is human-gated — the colony never auto-posts to a bounty platform. | 4 | Experimental |
+| [trading-binance](./trading-binance/) | unreleased | Emergence-driven crypto futures strategy discovery on Binance USDT-margined perpetuals. Multi-agent population evolves price-action / volume-profile / CME-gap / fibo / market-structure / volume-divergence-fade setups against historical and live OHLCV feeds (no indicators, no oscillators). Backtest-only in Phase 1. | 6 | Alpha |
+| [research-foundry](./research-foundry/) | [`0.3.0`](https://github.com/Replikanti/agentis-colonies/releases/tag/research-foundry-v0.3.0) | End-to-end research pipeline: compute-first novelty discovery (6 colonies), literature audit across arXiv / OEIS / groupprops / Semantic Scholar (6 colonies), and arXiv preprint generation with LaTeX + reproducibility scripts (6 colonies). Single orchestrator + single container; the 18 colonies share one in-container `.agentis/` so each consumer reads its upstream colleague's memo directly. The arXiv email-gateway dispatch is gated on an explicit human-in-the-loop approval; the federation never auto-submits. Consolidates the retired math-foundry / claim-auditor / preprint-foundry federations (#638). See [ADR-0008](./doc/adr/ADR-0008-compute-first-novelty.md). | 18 | Experimental |
+| [dark-factory](./dark-factory/) | [`0.2.0`](https://github.com/Replikanti/agentis-colonies/releases/tag/dark-factory-v0.2.0) | Autonomous smart-contract security research across three colonies: `auditor` runs the bug-finding pipeline (reconn → guard → tracker → synthesis — detect a finding, synthesize a two-sided proof-of-concept, validate it offline against the real VM, write a standardized report), `prospector` qualifies live on-chain targets, and `monitor` derives and watches read-only protocol invariants. Submission and paging stay human-gated — no colony ever auto-posts to a bounty platform. | 27 | Experimental |
 
 To start a new federation, see [`tools/new-federation.sh`](./tools/new-federation.sh) and [`doc/federation-patterns.md`](./doc/federation-patterns.md). The contract every federation must satisfy is [ADR-0003](./doc/adr/ADR-0003-federation-portability-contract.md).
 
@@ -68,7 +68,23 @@ Federation-agnostic components are versioned and released independently so fixes
 | **Experimental** | Research scaffold. Wiring works end-to-end but no claim about findings quality, stability, or backwards compatibility. |
 | **Planned** | Design exists, implementation not started. |
 
+## Documentation map
+
+Start from your role. An index of everything under `doc/` is in [`doc/README.md`](./doc/README.md).
+
+| You are… | Start here | Then |
+|----------|-----------|------|
+| **Just browsing** (what is this?) | This README, top to bottom | [`doc/federation-patterns.md`](./doc/federation-patterns.md) for what else a federation can be |
+| **A developer who wants agents working their repo** | [Quickstart](#quickstart) below, then the [`dev-apprenticeship/`](./dev-apprenticeship/) README | [Tiers](#tiers) for what agents may do at each confidence level; [`doc/dev-apprenticeship-first-task.md`](./doc/dev-apprenticeship-first-task.md) for a worked end-to-end run |
+| **An operator / infra engineer** (install, run, monitor, kill) | Each federation's `install.sh` + start script; container images + [`examples/docker/`](./examples/docker/) and [`examples/k8s/`](./examples/k8s/) | [`doc/federation-dashboard.md`](./doc/federation-dashboard.md) (monitoring + operator controls), [`doc/auto-promote.md`](./doc/auto-promote.md) (unattended tier governance), [`tools/kill-federation.sh`](./tools/kill-federation.sh) (reliable shutdown) |
+| **A contributor** (first PR, conventions, lint) | [`CLAUDE.md`](./CLAUDE.md) — repo conventions, agent + script rules, release process | [`tools/colony-lint.sh`](./tools/colony-lint.sh) (must pass clean), [`templates/`](./templates/) (starter agents), [`tools/new-colony.sh`](./tools/new-colony.sh) / [`tools/new-federation.sh`](./tools/new-federation.sh) (scaffolding) |
+| **An architect** (contracts, why it is built this way) | [`doc/adr/`](./doc/adr/README.md) — normative ADRs; start with [ADR-0001](./doc/adr/ADR-0001-confidence-tiers.md) (tiers) and [ADR-0003](./doc/adr/ADR-0003-federation-portability-contract.md) (portability contract) | [`doc/federation-patterns.md`](./doc/federation-patterns.md), [`doc/cross-fed-memo.md`](./doc/cross-fed-memo.md) (cross-federation knowledge transfer), [`doc/replay-mode.md`](./doc/replay-mode.md) (offline scoring) |
+| **An AI coding agent working in this repo** | [`CLAUDE.md`](./CLAUDE.md) — written for you: conventions, validation commands, release steps | The README of whatever federation or component you are changing |
+| **A security reviewer** | [`SECURITY.md`](./SECURITY.md) — safety model, autonomous-write inventory, secrets handling, reporting | [ADR-0001](./doc/adr/ADR-0001-confidence-tiers.md) (the tier ladder is the safety model) and the `merge`-verb contract in [`CLAUDE.md`](./CLAUDE.md#script-conventions) |
+
 ## Quickstart
+
+The quickstart below uses `dev-apprenticeship/` — the most mature federation and the only one aimed at end users today. Of the other four, `tribes-bench/`, `research-foundry/`, and `trading-binance/` are container-first research scaffolds, and `dark-factory/` is host-run; each ships its own run instructions in its README (see the [Federations](#federations) table).
 
 From a release tarball (recommended — install-ready, no git clone needed):
 
@@ -110,18 +126,28 @@ Need the runtime first? See [Replikanti/agentis](https://github.com/Replikanti/a
 
 ## Prerequisites
 
-- [Agentis](https://github.com/Replikanti/agentis) runtime
-- An LLM backend (Claude CLI, Ollama, or any OpenAI-compatible API)
-- GitLab instance with API access
+Prerequisites are per-federation; each federation README states its exact runtime floor (the `**Requires:** agentis >= X.Y.Z` line). In general:
+
+- **All federations** — the [Agentis](https://github.com/Replikanti/agentis) runtime at or above the federation's pinned floor, and an LLM backend (Claude CLI, Ollama, or any OpenAI-compatible API).
+- **dev-apprenticeship** — a GitLab or GitHub project the agents can reach with an API token.
+- **tribes-bench, research-foundry, trading-binance** — a container runtime (Docker or Podman); they run hermetically from their own orchestrator scripts.
+- **dark-factory** — the Solana/Anchor toolchain pieces documented in its README.
 
 ## Repository structure
 
 ```
-dev-apprenticeship/    # First federation: GitLab/GitHub coder workflow (22 agents, Beta)
-federation-dashboard/  # Standalone, separately-versioned platform component (#252)
+dev-apprenticeship/    # Coder-workflow federation: GitLab/GitHub (22 agents, Beta)
+tribes-bench/          # Memory-safety bug-hunt harness, 5 tribes (Experimental)
+trading-binance/       # Futures strategy-discovery federation (Experimental)
+research-foundry/      # Research pipeline: novelty -> audit -> preprint (Experimental)
+dark-factory/          # Solana/Anchor bounty-audit federation (Experimental)
+federation-dashboard/  # Standalone, separately-versioned dashboard component (#252)
 tools/                 # Shared platform tooling (lint, auto-promote, kill, scaffolders)
-doc/                   # Reference docs (auto-promote, federation-dashboard, federation patterns)
+templates/             # Copy-pasteable starter agents for any ADR-0003 colony
+examples/              # docker/, k8s/, replay/ fixtures, multi-repo config example
+doc/                   # Reference docs (see doc/README.md for an index)
 doc/adr/               # Architecture Decision Records (normative cross-repo contracts)
+cross-fed-memo/        # Host-local shared memo namespace (content never committed)
 ```
 
 ## Starting a new federation
@@ -135,7 +161,7 @@ The scaffolder generates an [ADR-0003](./doc/adr/ADR-0003-federation-portability
 
 ## Operator scripts
 
-End-user scripts live inside each federation. For `dev-apprenticeship/`:
+Every federation ships its own operator surface behind the same ADR-0003 entry points (`install.sh`, a start script, a kill path). For `dev-apprenticeship/`:
 
 | Script | Purpose |
 |--------|---------|
@@ -146,6 +172,8 @@ End-user scripts live inside each federation. For `dev-apprenticeship/`:
 | [`kill-federation.sh`](./dev-apprenticeship/kill-federation.sh) | Reliable shutdown (wraps [`tools/kill-federation.sh`](./tools/kill-federation.sh) with `--fed-dir` scoping) |
 
 `kill-federation.sh` bypasses the `agentis` CLI and uses OS signals with post-kill verification, so it works even when `agentis daemon stop --all` reports false success or false failure. Run with `--help` for options including `--dry-run` and `--json`.
+
+The container-first federations (`tribes-bench/`, `research-foundry/`, `trading-binance/`) are driven by their own run/replay orchestrator scripts documented in their READMEs; `dark-factory/` ships `install.sh` plus per-capability `demo-*.sh` drivers.
 
 ## Tiers
 
@@ -162,7 +190,7 @@ Below `0.4` the agent is `dormant`. The full normative contract — per-tier act
 
 ## Auto-governance
 
-Agents don't stay at their seed confidence forever. [`tools/auto-promote.sh`](./tools/auto-promote.sh) reads the experience store and promotes agents up the tier ladder (or triggers `agentis evolve` when an agent is degrading) based on a statistical fitness signal. Scheduling is installed by `dev-apprenticeship/install.sh` — a sidecar spawned by `start-federation.sh` runs the script every 30 minutes while the federation is up, and dies cleanly when the federation is torn down. The heuristic classifies experience rows by tag — acting rows (`acted`, `review-gated`, `emitted`) contribute to the fitness signal; observe rows (`observed`) do not — so an agent can't earn promotion just by ticking in shadow mode.
+Agents don't stay at their seed confidence forever. [`tools/auto-promote.sh`](./tools/auto-promote.sh) reads the experience store and promotes agents up the tier ladder (or triggers `agentis evolve` when an agent is degrading) based on a statistical fitness signal. Scheduling is installed by each federation's `install.sh` — a sidecar spawned by the federation's start script runs the script every 30 minutes while the federation is up, and dies cleanly when the federation is torn down. The heuristic classifies experience rows by tag — acting rows (`acted`, `review-gated`, `emitted`) contribute to the fitness signal; observe rows (`observed`) do not — so an agent can't earn promotion just by ticking in shadow mode.
 
 Every decision is written to `tools/auto-promote-journal.jsonl` and defaults to dry-run. The full reference — DMN decision table, per-step rationale, statistical derivation of the `ceil(3 / reject_rate_threshold)` acting-floor formula, and operator override workflow — lives in [`doc/auto-promote.md`](./doc/auto-promote.md).
 
@@ -172,13 +200,17 @@ Before swapping a hand-edited or `agentis evolve`-d `.ag` into a running federat
 
 - [`doc/replay-mode.md`](./doc/replay-mode.md) — operator workflow, export pipeline, verdict interpretation, integration with `auto-promote`. Wraps the upstream CLI; uses [`tools/replay-export-experience.sh`](./tools/replay-export-experience.sh) to package a federation's experience store as a single replay-friendly JSONL pack keyed by agent name. See [`examples/replay/`](./examples/replay/) for a sample fixture and dry-run walk-through.
 
+## Security
+
+The tier ladder is the safety model: terminal actions (merge, tag, publish, external submission) are reachable only at the `autonomous` tier, and the highest-impact ones sit behind additional opt-in gates or stay human-gated permanently — auto-merge is off by default and refuses anything not cleanly-mergeable-and-CI-green, dark-factory never auto-submits bounty reports, research-foundry never auto-submits preprints. Secrets stay in local, git-ignored config. The full picture — autonomous-write inventory, secrets handling, and how to report a vulnerability — is in [`SECURITY.md`](./SECURITY.md).
+
 ## Design decisions
 
 Normative design decisions for this repository are recorded as Architecture Decision Records under [`doc/adr/`](./doc/adr/README.md). External authors of `.ag` federations should treat the ADRs as the source of truth for cross-repo contracts such as the confidence-tier ladder.
 
 ## Versioning
 
-Each federation is versioned independently at the federation level (not per-colony — the five colonies inside `dev-apprenticeship/` are coupled by bus events, so they ship as one unit). Tags use the prefixed form `<federation>-v<X.Y.Z>` (e.g. `dev-apprenticeship-v0.1.0`) so tool-level or alternate-federation releases can coexist without collision.
+Each federation is versioned independently at the federation level (not per-colony — the colonies inside a federation are coupled by bus events, so they ship as one unit). Tags use the prefixed form `<federation>-v<X.Y.Z>` (e.g. `dev-apprenticeship-v2.3.0`, `dark-factory-v0.2.0`) so federation and component releases coexist without collision.
 
 The [`federation-dashboard/`](./federation-dashboard/) component is versioned and released independently (`federation-dashboard-v<X.Y.Z>`) so dashboard fixes ship without forcing a federation re-release, and the same dashboard install can serve any federation that meets its compatibility floor. Federations declare a soft minimum dashboard version via a per-federation pin (`dev-apprenticeship/.dashboard-version`).
 
