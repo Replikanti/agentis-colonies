@@ -14,7 +14,7 @@ SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 COLONIES=(triage code-review planning implementation release)
 ALL_AGENTS=(
     router prioritizer labeler issue_creator
-    logic_reviewer style_reviewer security_reviewer test_reviewer approval_decider
+    logic_reviewer style_reviewer security_reviewer test_reviewer qa_reviewer approval_decider
     scope_estimator risk_assessor task_decomposer plan_reviewer
     code_writer test_writer refactorer commit_composer
     ship_decider changelog_writer version_bumper release_checker

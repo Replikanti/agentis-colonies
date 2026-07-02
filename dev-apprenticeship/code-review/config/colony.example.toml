@@ -106,6 +106,12 @@ cb_budget = 800
 tick_interval_ms = 60000
 
 [[agents]]
+name = "qa_reviewer"
+source = "agents/qa_reviewer.ag"
+cb_budget = 800
+tick_interval_ms = 60000
+
+[[agents]]
 name = "approval_decider"
 source = "agents/approval_decider.ag"
 cb_budget = 600

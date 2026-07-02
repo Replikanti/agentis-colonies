@@ -1,12 +1,12 @@
 # Dev Apprenticeship
 
-![Version: 2.2.0](https://img.shields.io/badge/version-2.2.0-blue) ![Agentis >= v1.8.0](https://img.shields.io/badge/agentis-%3E%3D%20v1.8.0-blue) ![Agents: 21](https://img.shields.io/badge/agents-21-green) ![Status: Beta](https://img.shields.io/badge/status-beta-yellow)
+![Version: 2.2.0](https://img.shields.io/badge/version-2.2.0-blue) ![Agentis >= v1.8.0](https://img.shields.io/badge/agentis-%3E%3D%20v1.8.0-blue) ![Agents: 22](https://img.shields.io/badge/agents-22-green) ![Status: Beta](https://img.shields.io/badge/status-beta-yellow)
 
 **Version:** `2.2.0` · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.8.0`
 
 > **One example federation** built on the [`agentis-colonies`](../) platform. The platform contract every federation must satisfy is [ADR-0003](../doc/adr/ADR-0003-federation-portability-contract.md); to scaffold a different kind of federation (data-ops, research, support-triage, monitoring-ops, …) see [`doc/federation-patterns.md`](../doc/federation-patterns.md) and [`tools/new-federation.sh`](../tools/new-federation.sh).
 
-A federation of 21 agents that learns how you work by watching your GitLab or GitHub activity. It observes how you triage issues, review merge requests, plan features, write code, and ship releases. Over time it takes over the mechanical parts, while you keep control over the decisions that matter.
+A federation of 22 agents that learns how you work by watching your GitLab or GitHub activity. It observes how you triage issues, review merge requests, plan features, write code, and ship releases. Over time it takes over the mechanical parts, while you keep control over the decisions that matter.
 
 The federation starts silent. Agents only watch. As you see what they are learning in the logs and trust what they would do, you progressively unlock autonomy by raising each agent's confidence memo through four named tiers — `shadow` (observe), `propose` (suggest), `review-gated` (act under review), and `autonomous` (act alone). The tier contract is defined in [`doc/adr/ADR-0001-confidence-tiers.md`](../doc/adr/ADR-0001-confidence-tiers.md) and is normative for every agent in this federation. Agents do not promote themselves; the gradient is operator-controlled. You can always veto or demote.
 
@@ -53,7 +53,7 @@ cd dev-apprenticeship
 **3. Start** ([Starting and stopping](#starting-and-stopping)):
 
 ```bash
-./start-federation.sh       # 5 colonies, 21 agents
+./start-federation.sh       # 5 colonies, 22 agents
 ./dashboard.sh 8420         # optional web dashboard at http://localhost:8420
 ```
 
@@ -101,7 +101,7 @@ agentis memo set code_writer:confidence 0.97
 
 ## What you need
 
-- [Agentis](https://github.com/Replikanti/agentis) runtime **>= v1.8.0** (v1.4.0 provides the `tier()` builtin required by the four-tier confidence gating in all 21 agents; v1.4.1 wires `fitness_delta` from the `outcome` argument to `learn()` so downstream consumers — auto-promote, evolve, dashboard — see non-zero deltas; v1.8.0 adds the crystallizer builtins used by the `labeler` rule-replay pilot and is the floor pinned by the [2.1.0] CHANGELOG entry)
+- [Agentis](https://github.com/Replikanti/agentis) runtime **>= v1.8.0** (v1.4.0 provides the `tier()` builtin required by the four-tier confidence gating in all 22 agents; v1.4.1 wires `fitness_delta` from the `outcome` argument to `learn()` so downstream consumers — auto-promote, evolve, dashboard — see non-zero deltas; v1.8.0 adds the crystallizer builtins used by the `labeler` rule-replay pilot and is the floor pinned by the [2.1.0] CHANGELOG entry)
 - An LLM backend (Claude CLI, Ollama, or any OpenAI-compatible API)
 - GitLab instance with API access (personal access token with `api` scope)
 - Python 3 and git
@@ -139,7 +139,7 @@ The install script checks prerequisites, creates configs for all 5 colonies, wri
 ## Starting and stopping
 
 ```bash
-./start-federation.sh           # Start all 5 colonies (21 agents)
+./start-federation.sh           # Start all 5 colonies (22 agents)
 ./kill-federation.sh            # Stop everything reliably (preferred)
 agentis daemon stop --all       # Fallback only — known false-positive / false-negative on stale registry entries (see top-level README)
 ```
@@ -172,7 +172,7 @@ The dashboard auto-discovers colonies and agents from the directory structure. I
 Verify everything is alive:
 
 ```bash
-agentis daemon list             # 21 processes, all STATE=running?
+agentis daemon list             # 22 processes, all STATE=running?
 agentis federation status       # 5 colonies connected?
 tail .agentis/logs/router.log   # See "[router] GitLab poll..." lines?
 ```
@@ -265,7 +265,7 @@ Agents below `0.4` are `dormant` — not yet admitted to the ladder. Fresh feder
 
 ```bash
 agentis memo set labeler:confidence 0.6
-./watch-suggestions.sh          # Live feed from all 21 agent logs
+./watch-suggestions.sh          # Live feed from all 22 agent logs
 ```
 
 **Promote to 0.8 (review-gated)** when proposals have been reliable. Agents now post directly on GitLab (non-terminal writes: comments, non-draft MRs). Terminal actions (merge, tag, publish, credential rotation) still require an explicit second gate.
@@ -423,7 +423,7 @@ Each needs its own matcher (did the MR get merged? was the plan followed? was th
 | Colony | Agents | What it learns |
 |--------|--------|---------------|
 | [Triage](./triage/) | 4 | Issue creation, labeling, prioritization, routing |
-| [Code Review](./code-review/) | 5 | Style, logic, security, test coverage review, approval decisions |
+| [Code Review](./code-review/) | 6 | Style, logic, security, test coverage review, pre-merge QA verdicts, approval decisions |
 | [Planning](./planning/) | 4 | Scope estimation, risk assessment, task decomposition, plan review |
 | [Implementation](./implementation/) | 4 | Code generation, test writing, refactoring, commit conventions |
 | [Release](./release/) | 4 | Pre-release checks, ship decisions, changelogs, versioning |
@@ -567,7 +567,7 @@ agentis knowledge import /tmp/donor-knowledge.json --merge
 
 **Agents not learning**: Run `agentis knowledge list`. If empty after several ticks, verify the GitLab project has recent activity.
 
-**Log growth**: Logs go to `.agentis/logs/<agent>.log` with no built-in rotation. Volume is low (a few lines per tick per agent), but with 21 agents running continuously and occasional error loops (e.g. a bad GitLab token causing one log line per retry × 6 retries × per tick) individual logs can reach tens of megabytes per day. A sample logrotate config lives at `ops/logrotate.conf` — copy it into `/etc/logrotate.d/` (requires sudo) and adjust the path to your federation root, or adapt it for a user-level cron if you prefer not to touch system logrotate.
+**Log growth**: Logs go to `.agentis/logs/<agent>.log` with no built-in rotation. Volume is low (a few lines per tick per agent), but with 22 agents running continuously and occasional error loops (e.g. a bad GitLab token causing one log line per retry × 6 retries × per tick) individual logs can reach tens of megabytes per day. A sample logrotate config lives at `ops/logrotate.conf` — copy it into `/etc/logrotate.d/` (requires sudo) and adjust the path to your federation root, or adapt it for a user-level cron if you prefer not to touch system logrotate.
 
 As a zero-config fallback, `start-federation.sh` can be asked to truncate logs on start by setting `TRUNCATE_LOGS=1` in the environment. This keeps disk usage bounded between manual restarts but loses history — use logrotate for long-running federations.
 

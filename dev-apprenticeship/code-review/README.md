@@ -2,7 +2,7 @@
 
 > Part of the [Dev Apprenticeship](../) federation.
 
-A colony of five specialized agents that learn how you review code. They observe your merge request interactions on GitLab (what you approve, what you flag, what you dismiss) and gradually take over routine review work.
+A colony of six specialized agents that learn how you review code. They observe your merge request interactions on GitLab (what you approve, what you flag, what you dismiss) and gradually take over routine review work.
 
 > **Fresh colony is silent by default.** Every agent's confidence starts at `0.0` (observe-only) and stays there until you seed the memo store. See [Confidence gradient](../README.md#confidence-gradient) in the federation README for the ramp procedure.
 
@@ -14,6 +14,7 @@ A colony of five specialized agents that learn how you review code. They observe
 | Logic Reviewer | `agents/logic_reviewer.ag` | Edge cases, off-by-one errors, null handling, race conditions | ~20 observations |
 | Security Reviewer | `agents/security_reviewer.ag` | Injection risks, auth checks, secret exposure, dependency vulnerabilities | ~15 observations |
 | Test Reviewer | `agents/test_reviewer.ag` | Coverage expectations, test quality, missing edge case tests | ~15 observations |
+| QA Reviewer | `agents/qa_reviewer.ag` | Pre-merge QA: completeness of the diff vs the linked issue, description claims vs the committed diff | ~15 observations |
 | Approval Decider | `agents/approval_decider.ag` | When to approve, request changes, or escalate (aggregates findings from other reviewers) | ~25 observations |
 
 ## How It Works
@@ -25,6 +26,7 @@ graph LR
     LR["Logic Reviewer"]
     SCR["Security Reviewer"]
     TR["Test Reviewer"]
+    QA["QA Reviewer"]
     AD["Approval Decider"]
     GL["GitLab MR Comment / Approval"]
     CB["Colony Bus"]
@@ -34,14 +36,33 @@ graph LR
     CB --> LR
     CB --> SCR
     CB --> TR
+    CB --> QA
     SR -- findings --> AD
     LR -- findings --> AD
     SCR -- findings --> AD
     TR -- findings --> AD
+    QA -- qa_verdict --> GL
     AD --> GL
 ```
 
-When a new merge request appears, all four reviewers analyze it in parallel, each from their own perspective. They publish findings to the colony bus. The Approval Decider aggregates those findings, weighs severity, and produces the final review action: approve, request changes, or escalate to the human.
+When a new merge request appears, all four advisory reviewers analyze it in parallel, each from their own perspective. They publish findings to the colony bus. The Approval Decider aggregates those findings, weighs severity, and produces the final review action: approve, request changes, or escalate to the human. The QA Reviewer runs a separate pre-merge QA pass (see below) whose verdict lands as its own MR note; gating approval on that verdict is a planned follow-up (step 3 of #1359).
+
+## Pre-merge QA verdict (#1401)
+
+`qa_reviewer` is a QA pass **distinct from** the advisory logic/security/style/test notes. For each open, non-draft MR it judges two dimensions:
+
+1. **completeness** — does the committed diff actually address the whole linked issue (resolved from the `fix/issue-<n>` branch name, else the first `#<n>` in the description) and every site/test the MR description claims to touch? Partial or claim-only changes fail.
+2. **description-vs-diff** — is every claim in the MR description backed by the committed diff? Overstatements fail (e.g. "audits every X" / "adds a regression test" with no such test in the diff — cross-ref #1349).
+
+It posts ONE structured verdict note per MR head:
+
+```
+QA verdict: completeness=pass|fail, description-vs-diff=pass|fail
+- completeness: <one-line reason, only when failed>
+- description-vs-diff: <one-line reason, only when failed>
+```
+
+The note is memo-deduped on a fingerprint of the MR diff (`qa_reviewer:verdict_head:<iid>`), so an unchanged MR is never re-prompted or re-posted; a new push re-triggers a fresh verdict. Tier semantics match the other reviewers: shadow observes (memo + learn only), propose emits `review:qa_verdict` on the bus, review-gated posts a draft-flagged note, autonomous posts the note directly. `review:qa_verdict` is an extension point until #1359 step 3 wires it into `approval_decider`.
 
 ## Early-exit on quiet ticks (#147)
 

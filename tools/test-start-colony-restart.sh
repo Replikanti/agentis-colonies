@@ -93,7 +93,7 @@ chmod +x "$SHIM_DIR/agentis"
 agents_triage="issue_creator labeler prioritizer router"
 agents_planning="scope_estimator risk_assessor task_decomposer plan_reviewer"
 agents_implementation="code_writer test_writer refactorer commit_composer"
-agents_code_review="style_reviewer logic_reviewer security_reviewer test_reviewer approval_decider"
+agents_code_review="style_reviewer logic_reviewer security_reviewer test_reviewer qa_reviewer approval_decider"
 agents_release="release_checker ship_decider changelog_writer version_bumper"
 
 test_one_colony() {
