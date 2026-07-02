@@ -18,3 +18,11 @@ not rewrite decisions.
 - [ADR-0002: Forge abstraction — normalized wrapper dispatch for multi-forge federations](./ADR-0002-forge-abstraction.md) — Accepted, 2026-04-24
 - [ADR-0003: Federation portability contract — what every federation in this repo must provide](./ADR-0003-federation-portability-contract.md) — Accepted, 2026-04-24
 - [ADR-0008: Compute-first novelty discovery as the canonical pattern for novelty-requiring Agentis federations](./ADR-0008-compute-first-novelty.md) — Proposed, 2026-05-17
+
+## Evaluation records
+
+Pre-decision evaluations whose recommended decision lands outside this
+repository (typically in agentis-core). Numbered ADRs they lead to should
+reference them.
+
+- [Single-agent restart supervision — where the kill/poll/verify machine should live](./daemon-restart-supervision.md) — Proposed, 2026-07-02

@@ -119,6 +119,32 @@ is asserted until multi-version CI is in place.
 
 ### Changed
 
+- **Shared single-agent restart machine: the five identical `--restart-agent`
+  kill/poll/verify blocks extracted into `tools/lib/daemon-restart.sh`**
+  ([#1357](https://github.com/Replikanti/agentis-colonies/issues/1357), part of
+  [#1353](https://github.com/Replikanti/agentis-colonies/issues/1353)). Every
+  colony's `start-colony.sh` reimplemented process supervision in bash on the
+  single-agent respawn path (#257/#285): daemon-registry lookup
+  (`agentis daemon list --json` + embedded python3 matched by colony +
+  `/agents/<name>.ag` source suffix), SIGTERM, 25×0.2s exit poll, SIGKILL
+  escalation with 1s settle, and best-effort sidecar-file cleanup (`pid`,
+  `watchdog.pid`, `colony`, `heartbeat`, `status`, `stop`) — five byte-identical
+  copies. The machine now lives once as
+  `daemon_restart_kill_existing <fed_root> <colony> <agent>`, sourced by all
+  five colony scripts; the irreducibly-shell `agentis daemon` launch, its
+  liveness verification, and the parseable `started <agent> pid=<n> tick=<ms>`
+  stdout line stay in each colony script, so the operator/dashboard contract
+  (flags, exit codes 0/2/3/4) is byte-stable. Behaviour covered by the new
+  fixture-driven `tools/test-daemon-restart.sh` (stubbed `agentis` on PATH:
+  SIGTERM path + sidecar removal, SIGKILL escalation for a TERM-resistant PID,
+  no-match no-op, malformed-registry-JSON degradation, per-colony wiring). The
+  evaluation the issue asked for — `agentis daemon restart` subcommand
+  (agentis-core) vs an `.ag` supervisor — is recorded in
+  `doc/adr/daemon-restart-supervision.md`, recommending the upstream subcommand
+  as the end state with this shared helper as the interim consolidation, and
+  why the `GITHUB_REPOS_JSON` assembly loop stays in shell. The helper ships in
+  the release bundle (`BUNDLE.manifest` entry).
+
 - **Thin forge verbs: agent reasoning moved out of `gitlab-api.sh` /
   `github-api.sh` into the consuming `.ag` (#1355, part of #1353).** Two API
   wrappers embedded agent-level reasoning: `pr-checks` mapped a raw
