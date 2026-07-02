@@ -223,6 +223,7 @@ AGENTS=(
     logic_reviewer
     security_reviewer
     test_reviewer
+    qa_reviewer
     approval_decider
 )
 
@@ -256,14 +257,15 @@ cd "$COLONY_DIR"
 # `--enable-messaging` is required for cross-agent emit/listen (#484, v1.1.6+).
 
 # Per-agent tick-interval override (#146). Every agent in this colony is
-# reactive: the four reviewers wait on implementation:mr_ready events, and
-# approval_decider waits on their findings. When no MR is in flight the
-# ticks are no-ops. 5-min cadence matches the natural rhythm of merge
-# requests in a small team and cuts idle LLM spend ~5×. Fallback is 60000ms
-# for any agent not listed.
+# reactive: the four advisory reviewers wait on implementation:mr_ready
+# events, qa_reviewer's per-head verdict memo suppresses unchanged MRs
+# (#1401), and approval_decider waits on the reviewers' findings. When no
+# MR is in flight the ticks are no-ops. 5-min cadence matches the natural
+# rhythm of merge requests in a small team and cuts idle LLM spend ~5×.
+# Fallback is 60000ms for any agent not listed.
 tick_interval_for() {
     case "$1" in
-        style_reviewer|logic_reviewer|security_reviewer|test_reviewer|approval_decider) echo 300000 ;;
+        style_reviewer|logic_reviewer|security_reviewer|test_reviewer|qa_reviewer|approval_decider) echo 300000 ;;
         *) echo 60000 ;;
     esac
 }

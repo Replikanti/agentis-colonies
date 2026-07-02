@@ -1,0 +1,301 @@
+#!/usr/bin/env bash
+# test-qa-reviewer.sh (#1401): wiring + contract assertions for the code-review
+# colony's pre-merge QA verdict agent (step 1 of #1359).
+#
+# qa_reviewer judges every open MR on two dimensions — completeness (does the
+# diff address the whole linked issue and every site/test the description
+# claims to touch) and description-vs-diff (are the description's claims backed
+# by the committed diff; cross-ref #1349) — and posts ONE structured note per
+# MR head:
+#
+#   QA verdict: completeness=pass|fail, description-vs-diff=pass|fail
+#
+# The .ag has no runtime unit harness (colony-lint's per-agent `agentis commit`
+# parse is its gate) and the pass/fail judgement itself is an LLM call, so —
+# exactly like tools/test-approval-decider-auto-merge.sh — the four issue-#1401
+# scenarios are asserted at the contract level (grep over the .ag) plus a
+# fixture-driven check of the head-fingerprint dedup that scenario (d) rides on:
+#
+#   (a) overstated description  -> description-vs-diff=fail: the prompt must
+#       define the description_vs_diff dimension, instruct that overstatements
+#       (claimed-but-absent regression test) fail, and the note renderer must
+#       append a reason line on the fail branch.
+#   (b) partial change vs issue -> completeness=fail: the prompt must define
+#       the completeness dimension against the LINKED ISSUE + claimed
+#       sites/tests, instruct that partial/claim-only changes fail, and the
+#       linked issue must actually be resolved + fetched into the context.
+#   (c) clean MR -> both pass: the fixed verdict header renders both
+#       dimensions, and reason lines are emitted ONLY on the fail branches.
+#   (d) no repost on unchanged MR head: the per-head fingerprint is stable for
+#       an identical diff and changes when the diff changes (fixture run of the
+#       same hashlib pipeline the agent execs), the memo gate reads
+#       qa_reviewer:verdict_head:<iid> BEFORE prompt() in the same function,
+#       every tier branch writes the marker, and the autonomous/review-gated
+#       branches write it only after a successful post.
+#
+# Plus registration parity with test_reviewer (colony.example.toml,
+# start-colony.sh AGENTS + tick case arm, install.sh ALL_AGENTS, colony README)
+# and the federation lint contracts (learn/recommend topic match, exec-sh
+# escaping + pragmas, tier gating via repo_tier).
+#
+# Matches the test style of tools/test-approval-decider-auto-merge.sh (bash,
+# [PASS]/[FAIL] lines, `Results: N passed, M failed`). Exit 0 all-pass, 1 any-fail.
+set -u
+
+REPO_ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
+COLONY="$REPO_ROOT/dev-apprenticeship/code-review"
+AG="$COLONY/agents/qa_reviewer.ag"
+PASS=0
+FAIL=0
+pass() { echo "[PASS] $1"; PASS=$((PASS + 1)); }
+fail() { echo "[FAIL] $1${2:+: $2}"; FAIL=$((FAIL + 1)); }
+
+if [ ! -f "$AG" ]; then
+    echo "[FAIL] qa_reviewer.ag present: missing $AG"
+    echo ""
+    echo "Results: 0 passed, 1 failed"
+    exit 1
+fi
+
+# Bodies of the functions carrying the per-MR contract.
+QA_ONE="$(awk '/^fn qa_one_mr\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
+NOTE_FN="$(awk '/^fn verdict_note\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
+
+# ---------------------------------------------------------------------------
+# (a) Overstated description -> description-vs-diff=fail
+# ---------------------------------------------------------------------------
+if printf '%s' "$QA_ONE" | grep -q 'description_vs_diff' \
+   && printf '%s' "$QA_ONE" | grep -qi 'Overstatements fail'; then
+    pass "(a) prompt defines description_vs_diff and instructs that overstatements fail"
+else
+    fail "(a) description_vs_diff dimension" "prompt must define description_vs_diff and fail overstatements"
+fi
+if printf '%s' "$QA_ONE" | grep -q 'adds a regression test'; then
+    pass "(a) prompt names the claimed-but-absent regression test as a canonical overstatement (#1349)"
+else
+    fail "(a) regression-test example" "prompt must call out the 'adds a regression test' overstatement"
+fi
+if printf '%s' "$NOTE_FN" | grep -q 'description_vs_diff == "fail"' \
+   && printf '%s' "$NOTE_FN" | grep -q 'description-vs-diff: " + v.description_vs_diff_reason'; then
+    pass "(a) note renderer appends a one-line description-vs-diff reason on the fail branch"
+else
+    fail "(a) fail-reason line" "verdict_note must append description_vs_diff_reason when the dimension fails"
+fi
+
+# ---------------------------------------------------------------------------
+# (b) Partial change vs issue claims -> completeness=fail
+# ---------------------------------------------------------------------------
+if printf '%s' "$QA_ONE" | grep -q 'completeness' \
+   && printf '%s' "$QA_ONE" | grep -qi 'Partial changes and claim-only changes'; then
+    pass "(b) prompt defines completeness and fails partial / claim-only changes"
+else
+    fail "(b) completeness dimension" "prompt must define completeness and fail partial/claim-only changes"
+fi
+if printf '%s' "$QA_ONE" | grep -q 'WHOLE linked issue'; then
+    pass "(b) completeness is judged against the WHOLE linked issue"
+else
+    fail "(b) whole-issue wording" "prompt must judge the diff against the whole linked issue"
+fi
+# The linked issue must actually be resolved (branch fix/issue-<n>, else #<n>
+# in the description) and fetched via the forge get-issue verb into the context.
+if grep -Eq '^fn linked_issue_iid\(' "$AG" \
+   && grep -q 'issue-(\[0-9\]+)' "$AG" \
+   && printf '%s' "$QA_ONE" | grep -q 'forge-api.sh get-issue '; then
+    pass "(b) linked issue resolved (fix/issue-<n> branch, else #<n>) and fetched via get-issue"
+else
+    fail "(b) linked-issue wiring" "linked_issue_iid + forge-api.sh get-issue must feed the prompt context"
+fi
+if printf '%s' "$QA_ONE" | grep -q 'Linked issue #'; then
+    pass "(b) fetched issue is spliced into the prompt context"
+else
+    fail "(b) issue context splice" "the fetched issue JSON must be part of the prompt context"
+fi
+
+# ---------------------------------------------------------------------------
+# (c) Clean MR -> both pass (single header line, no reason lines)
+# ---------------------------------------------------------------------------
+if printf '%s' "$NOTE_FN" | grep -q '"QA verdict: completeness=" + v.completeness + ", description-vs-diff=" + v.description_vs_diff'; then
+    pass "(c) fixed verdict header renders 'QA verdict: completeness=..., description-vs-diff=...'"
+else
+    fail "(c) verdict header" "verdict_note must render the structured one-line header"
+fi
+# Reason lines are guarded by == "fail" checks — a clean MR gets ONLY the header.
+fail_guards="$(printf '%s' "$NOTE_FN" | grep -c '== "fail"')"
+reason_appends="$(printf '%s' "$NOTE_FN" | grep -c '_reason')"
+if [ "$fail_guards" -eq 2 ] && [ "$reason_appends" -eq 2 ]; then
+    pass "(c) both reason lines are gated on == \"fail\" — a clean MR posts the bare header"
+else
+    fail "(c) pass-path purity" "expected exactly 2 fail-guards and 2 reason appends, got $fail_guards/$reason_appends"
+fi
+
+# ---------------------------------------------------------------------------
+# (d) No repost on unchanged MR head
+# ---------------------------------------------------------------------------
+# Fixture: the agent fingerprints the mr-changes payload with the exact
+# pipeline below. Same diff => same fingerprint (no repost); changed diff =>
+# new fingerprint (fresh verdict). Run it twice on an identical fixture and
+# once on a mutated one.
+FP_PY='import sys, hashlib; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:16])'
+FIX_CLEAN='{"changes": [{"old_path": "a.sh", "new_path": "a.sh", "diff": "@@ -1 +1 @@\n-old\n+new"}]}'
+FIX_PUSHED='{"changes": [{"old_path": "a.sh", "new_path": "a.sh", "diff": "@@ -1 +1 @@\n-old\n+newer"}]}'
+fp1="$(printf '%s' "$FIX_CLEAN" | python3 -c "$FP_PY")"
+fp2="$(printf '%s' "$FIX_CLEAN" | python3 -c "$FP_PY")"
+fp3="$(printf '%s' "$FIX_PUSHED" | python3 -c "$FP_PY")"
+if [ -n "$fp1" ] && [ "$fp1" = "$fp2" ] && [ "$fp1" != "$fp3" ]; then
+    pass "(d) head fingerprint fixture: stable on identical diff, changes on new push"
+else
+    fail "(d) fingerprint fixture" "fp1=$fp1 fp2=$fp2 fp3=$fp3"
+fi
+# The .ag execs that same hashlib pipeline (portable: no sha256sum on stock macOS).
+if grep -q 'hashlib.sha256(sys.stdin.buffer.read()).hexdigest()\[:16\]' "$AG"; then
+    pass "(d) agent fingerprints the diff with the same portable hashlib pipeline"
+else
+    fail "(d) fingerprint pipeline" "head_fingerprint must use the python3 hashlib sha256[:16] pipeline"
+fi
+# Memo gate reads qa_reviewer:verdict_head:<iid> BEFORE prompt() in the same
+# function (this recall_latest is also the check-prompt-gate.sh staleness gate).
+gate_line="$(grep -n 'recall_latest(scoped_memo(owner, repo, "qa_reviewer:verdict_head:" + to_string(mr_iid)))' "$AG" | head -n1 | cut -d: -f1)"
+prompt_line="$(grep -n 'let verdict = prompt(' "$AG" | head -n1 | cut -d: -f1)"
+if [ -n "$gate_line" ] && [ -n "$prompt_line" ] && [ "$gate_line" -lt "$prompt_line" ]; then
+    pass "(d) per-head memo gate (qa_reviewer:verdict_head:<iid>) precedes prompt() — no re-prompt on unchanged head"
+else
+    fail "(d) dedup gate before prompt" "gate_line=$gate_line prompt_line=$prompt_line"
+fi
+if [ -n "$gate_line" ] && sed -n "$((gate_line + 1)),$((gate_line + 3))p" "$AG" | grep -q 'return;'; then
+    pass "(d) unchanged head returns before any LLM call or repost"
+else
+    fail "(d) early return" "the posted_head == head branch must return;"
+fi
+# Every tier branch writes the marker (autonomous, review-gated, propose,
+# shadow/dormant) — the #1370 mark-at-every-tier pattern.
+marker_writes="$(grep -c 'memo_write(scoped_memo(owner, repo, "qa_reviewer:verdict_head:" + to_string(mr_iid)), head)' "$AG")"
+if [ "$marker_writes" -eq 4 ]; then
+    pass "(d) all four tier branches write the per-head marker (#1370 pattern)"
+else
+    fail "(d) marker at every tier" "expected 4 marker writes, found $marker_writes"
+fi
+# On the posting tiers the marker is written only AFTER a successful post
+# (inside `if len(result) > 0`) so a failed post retries next tick.
+post_guarded="$(awk '/if len\(result\) > 0/{f=1} f && /memo_write\(scoped_memo\(owner, repo, "qa_reviewer:verdict_head:"/{c++} /};/{f=0} END{print c+0}' "$AG")"
+if [ "$post_guarded" -ge 2 ]; then
+    pass "(d) autonomous + review-gated markers are gated on a successful post (failed post retries)"
+else
+    fail "(d) post-success guard" "expected >=2 marker writes under 'if len(result) > 0', found $post_guarded"
+fi
+
+# ---------------------------------------------------------------------------
+# Tier semantics + federation lint contracts
+# ---------------------------------------------------------------------------
+if printf '%s' "$QA_ONE" | grep -q 'repo_tier("qa_reviewer", owner, repo)' \
+   && printf '%s' "$QA_ONE" | grep -q 'if my_tier == "autonomous"' \
+   && printf '%s' "$QA_ONE" | grep -q 'if my_tier == "review-gated"' \
+   && printf '%s' "$QA_ONE" | grep -q 'if my_tier == "propose"'; then
+    pass "tier gating via repo_tier() with autonomous/review-gated/propose branches + shadow fallthrough"
+else
+    fail "tier gating" "qa_one_mr must branch on repo_tier(\"qa_reviewer\", ...) per ADR-0001"
+fi
+# The bus verdict is emitted at propose and above (extension point for #1359 step 3).
+emits="$(printf '%s' "$QA_ONE" | grep -c 'emit("review:qa_verdict", verdict)')"
+if [ "$emits" -eq 3 ]; then
+    pass "review:qa_verdict emitted at propose, review-gated, and autonomous (not at shadow)"
+else
+    fail "bus emit" "expected 3 emit(\"review:qa_verdict\") sites, found $emits"
+fi
+# The autonomous note is the structured verdict, posted via the forge post-note verb.
+if printf '%s' "$QA_ONE" | grep -q '"\*\*QA Verdict\*\* (automated)' \
+   && printf '%s' "$QA_ONE" | grep -q 'forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment)'; then
+    pass "autonomous tier posts the verdict note via post-note with a shell_escape'd body"
+else
+    fail "autonomous post" "autonomous branch must post-note the QA Verdict comment"
+fi
+if printf '%s' "$QA_ONE" | grep -q '\[draft-review\] \*\*QA Verdict\*\* (automated, pending approval)'; then
+    pass "review-gated tier posts the draft-flagged variant"
+else
+    fail "review-gated draft" "review-gated branch must draft-flag the note"
+fi
+# learn() topic matches recommend() topic (check-learn-recommend-topic-match.sh).
+if printf '%s' "$QA_ONE" | grep -q 'recommend("qa_review"' \
+   && ! printf '%s' "$QA_ONE" | grep 'learn(' | grep -v 'learn("qa_review"' | grep -q 'learn('; then
+    pass "learn()/recommend() topics both 'qa_review'"
+else
+    fail "topic match" "every learn() must use the recommend() topic qa_review"
+fi
+# Draft MRs are skipped (reviewer-view draft flag).
+if printf '%s' "$QA_ONE" | grep -q '.draft' && printf '%s' "$QA_ONE" | grep -q 'is_draft == "true"'; then
+    pass "draft MRs are skipped"
+else
+    fail "draft skip" "qa_one_mr must skip draft == true MRs"
+fi
+# exec-sh safety pragmas on the concat-built commands.
+for needle in 'forge-api.sh mr-changes ' 'forge-api.sh get-issue ' 'forge-api.sh post-note ' 'forge-api.sh merge-requests --view reviewer'; do
+    if grep -B1 -- "$needle" "$AG" | grep -q 'colony-lint: safe-exec-concat'; then
+        pass "safe-exec-concat pragma on '$needle' command build"
+    else
+        fail "exec-sh pragma" "missing safe-exec-concat pragma above the '$needle' line"
+    fi
+done
+# last_check memo written at end of tick (script convention).
+if grep -q 'memo_write(scoped_memo(owner, repo, "qa_reviewer:last_check"), now)' "$AG"; then
+    pass "qa_reviewer:last_check memo written at end of tick"
+else
+    fail "last_check memo" "tick must refresh qa_reviewer:last_check"
+fi
+
+# ---------------------------------------------------------------------------
+# Registration parity with test_reviewer
+# ---------------------------------------------------------------------------
+if awk '/name = "qa_reviewer"/{f=1} f && /source = "agents\/qa_reviewer.ag"/{print "ok"; exit}' "$COLONY/config/colony.example.toml" | grep -q ok; then
+    pass "registered in colony.example.toml ([[agents]] qa_reviewer -> agents/qa_reviewer.ag)"
+else
+    fail "colony.example.toml registration" "missing [[agents]] block for qa_reviewer"
+fi
+# cb <N>; in the .ag must match cb_budget in the example config (CLAUDE.md rule).
+ag_cb="$(sed -n 's/^cb \([0-9]*\);$/\1/p' "$AG" | head -n1)"
+cfg_cb="$(awk '/name = "qa_reviewer"/{f=1} f && /cb_budget/{gsub(/[^0-9]/,""); print; exit}' "$COLONY/config/colony.example.toml")"
+if [ -n "$ag_cb" ] && [ "$ag_cb" = "$cfg_cb" ]; then
+    pass "cb $ag_cb; in qa_reviewer.ag matches cb_budget = $cfg_cb in colony.example.toml"
+else
+    fail "cb budget match" "ag=$ag_cb config=$cfg_cb"
+fi
+SC="$COLONY/scripts/start-colony.sh"
+if awk '/^AGENTS=\(/,/^\)/' "$SC" | grep -q 'qa_reviewer'; then
+    pass "start-colony.sh AGENTS array includes qa_reviewer"
+else
+    fail "start-colony.sh AGENTS" "qa_reviewer missing from the AGENTS array"
+fi
+if awk '/tick_interval_for\(\)/,/^}/' "$SC" | grep 'qa_reviewer' | grep -q '300000'; then
+    pass "start-colony.sh tick_interval_for() puts qa_reviewer on the 300000ms reviewer cadence"
+else
+    fail "tick interval" "qa_reviewer must share the reviewers' 300000ms case arm"
+fi
+if grep -q 'test_reviewer qa_reviewer approval_decider' "$REPO_ROOT/dev-apprenticeship/install.sh"; then
+    pass "install.sh ALL_AGENTS enumerates qa_reviewer (code-review line)"
+else
+    fail "install.sh ALL_AGENTS" "qa_reviewer missing from the code-review agent enumeration"
+fi
+if grep -q 'agents/qa_reviewer.ag' "$COLONY/README.md" && grep -q 'QA verdict: completeness=' "$COLONY/README.md"; then
+    pass "colony README documents the agent and the verdict-note format"
+else
+    fail "README documentation" "code-review/README.md must document qa_reviewer + the note format"
+fi
+
+# ---------------------------------------------------------------------------
+# Parse check (same as the per-agent syntax pass in colony-lint.sh). Skipped
+# (not failed) when agentis is not installed.
+# ---------------------------------------------------------------------------
+if command -v agentis >/dev/null 2>&1; then
+    LINT_TMP="$(mktemp -d)"
+    (cd "$LINT_TMP" && agentis init) >/dev/null 2>&1
+    if (cd "$LINT_TMP" && agentis commit "$AG") >/dev/null 2>&1; then
+        pass "qa_reviewer.ag parses (agentis commit)"
+    else
+        fail "qa_reviewer.ag parses (agentis commit)" "syntax error in qa_reviewer.ag"
+    fi
+    rm -rf "$LINT_TMP"
+else
+    echo "[SKIP] agentis not on PATH — skipping .ag parse check"
+fi
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ]

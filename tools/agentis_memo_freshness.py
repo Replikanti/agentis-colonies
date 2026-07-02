@@ -91,6 +91,7 @@ STALENESS_TICKS_BY_ROLE = {
     "style_reviewer": 30,
     "security_reviewer": 30,
     "test_reviewer": 30,
+    "qa_reviewer": 30,
     "approval_decider": 30,
     "scope_estimator": 30,
     "risk_assessor": 30,

@@ -1,0 +1,326 @@
+// qa_reviewer.ag -- Code Review colony: pre-merge QA verdict (#1401, step 1 of #1359).
+//
+// A QA pass DISTINCT from the advisory logic/security/style/test notes: for
+// each open MR it judges two dimensions and posts ONE structured verdict note:
+//
+//   QA verdict: completeness=pass|fail, description-vs-diff=pass|fail
+//
+//   1. completeness      — does the committed diff actually address the whole
+//                          linked issue and every site/test the MR description
+//                          claims to touch? Partial or claim-only changes fail.
+//   2. description-vs-diff — is every claim in the MR description backed by
+//                          the committed diff? Overstatements fail (root cause
+//                          cross-ref: #1349).
+//
+// One verdict per MR head: the note is memo-deduped on a fingerprint of the
+// MR's diff (`qa_reviewer:verdict_head:<iid>`), so an unchanged MR costs zero
+// LLM calls on subsequent ticks and never gets a duplicate note. A new push
+// changes the diff, changes the fingerprint, and re-triggers a fresh verdict.
+// Operators can force a re-run (e.g. after a tier promotion) by clearing the
+// per-iid memo.
+//
+// Out of scope here (follow-ups per #1359): the adversarial/cross-provider
+// second opinion (step 2) and gating approval on the QA verdict (step 3).
+// `review:qa_verdict` is emitted as an extension point for step 3.
+//
+// Run as daemon: agentis daemon agents/qa_reviewer.ag --colony code-review
+// Requires: exec_foreign capability, GITLAB_* env vars
+
+cb 800;
+
+type QaVerdict {
+    mr_iid: int,
+    completeness: string,
+    completeness_reason: string,
+    description_vs_diff: string,
+    description_vs_diff_reason: string
+}
+
+// #316 M3b: per-tick fan-out helpers. See triage/agents/router.ag for
+// the full rationale. Single-block configs collapse to owner=="" sentinel,
+// repo_arg/repo_tag return "", scoped_memo passes the suffix through.
+
+fn repo_arg(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return " --repo " + shell_escape(owner + "/" + repo);
+}
+
+fn repo_tag(owner: string, repo: string) -> string {
+    if len(owner) == 0 { return ""; };
+    return "repo:" + owner + "/" + repo;
+}
+
+fn scoped_memo(owner: string, repo: string, suffix: string) -> string {
+    if len(owner) == 0 { return suffix; };
+    return owner + "__" + repo + ":" + suffix;
+}
+
+// #316 M4: per-repo confidence read with legacy fallback. Mirrors the
+// runtime tier() builtin's threshold table from ADR-0001 / CLAUDE.md.
+// `agent_name` (not `agent`) — `agent` is a reserved keyword in `.ag`.
+fn repo_tier(agent_name: string, owner: string, repo: string) -> string {
+    let raw = if len(owner) == 0 {
+        recall_latest(agent_name + ":confidence");
+    } else {
+        let scoped = recall_latest(scoped_memo(owner, repo, agent_name + ":confidence"));
+        if len(scoped) > 0 { scoped; } else { recall_latest(agent_name + ":confidence"); };
+    };
+    if len(raw) == 0 { return "dormant"; };
+    let c = parse_float(raw);
+    if c >= 0.95 { return "autonomous"; };
+    if c >= 0.8  { return "review-gated"; };
+    if c >= 0.6  { return "propose"; };
+    if c >= 0.4  { return "shadow"; };
+    return "dormant";
+}
+
+fn repo_field(line: string, idx: int) -> string {
+    let cmd = "L=" + shell_escape(line) + " I=" + to_string(idx) +
+        " python3 -c 'import os; parts=os.environ[\"L\"].split(\"\t\"); i=int(os.environ[\"I\"]); print(parts[i] if 0<=i<len(parts) else \"\")'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+fn get_confidence() -> float {
+    let raw = recall_latest("qa_reviewer:confidence");
+    if len(raw) > 0 {
+        return parse_float(raw);
+    };
+    return 0.0;
+}
+
+// json_get on a missing/null field stringifies to "void"; collapse to "".
+fn nz(s: string) -> string {
+    if s == "void" { return ""; };
+    return s;
+}
+
+// Fingerprint of the MR head: sha256 of the mr-changes payload, first 16 hex
+// chars. Forge-agnostic (no head-sha verb needed on either wrapper) and
+// stable across our own note posts — posting a note bumps updated_at but
+// never the diff, so the dedup gate below cannot self-retrigger (#1370
+// idle-suppression principle applied to the reviewer shape). python3 hashlib
+// rather than sha256sum for macOS portability (stock macOS has no sha256sum).
+fn head_fingerprint(changes_raw: string) -> string {
+    let cmd = "printf '%s' " + shell_escape(changes_raw) +
+        " | python3 -c 'import sys, hashlib; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:16])'";
+    return try { exec sh cmd; } catch e { ""; };
+}
+
+// Linked-issue extraction: `fix/issue-<n>` on the source branch wins (that is
+// the federation's own-PR branch scheme), else the first `#<n>` reference in
+// the MR description. 0 = no linked issue (completeness is then judged
+// against the description's own claims only).
+fn linked_issue_iid(branch: string, body: string) -> int {
+    let cmd = "B=" + shell_escape(branch) + " D=" + shell_escape(body) +
+        " python3 -c 'import os, re; b=os.environ[\"B\"]; d=os.environ[\"D\"]; m=re.search(\"issue-([0-9]+)\", b) or re.search(\"#([0-9]+)\", d); print(m.group(1) if m else 0)'";
+    let out = try { exec sh cmd; } catch e { "0"; };
+    return parse_int(out);
+}
+
+// One structured verdict note per MR: the fixed header line plus a one-line
+// reason per FAILED dimension only (a clean pass is a single line).
+fn verdict_note(v: QaVerdict) -> string {
+    let line = "QA verdict: completeness=" + v.completeness + ", description-vs-diff=" + v.description_vs_diff;
+    let with_c = if v.completeness == "fail" {
+        line + "\n- completeness: " + v.completeness_reason;
+    } else {
+        line;
+    };
+    let with_d = if v.description_vs_diff == "fail" {
+        with_c + "\n- description-vs-diff: " + v.description_vs_diff_reason;
+    } else {
+        with_c;
+    };
+    return with_d;
+}
+
+// QA-judge one MR at index `idx` of the reviewer-view list. Skips drafts and
+// already-verdicted heads; otherwise prompts once and acts per tier.
+fn qa_one_mr(owner: string, repo: string, raw: string, idx: int) -> void {
+    let prefix = "[" + to_string(idx) + "]";
+    let mr_iid = parse_int(to_string(json_get(raw, prefix + ".iid")));
+    if mr_iid <= 0 {
+        return;
+    };
+    let is_draft = to_string(json_get(raw, prefix + ".draft"));
+    if is_draft == "true" {
+        return;
+    };
+
+    // colony-lint: safe-exec-concat
+    let changes_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-changes " + to_string(mr_iid) + repo_arg(owner, repo);
+    let changes_raw = try { exec sh changes_cmd; } catch e { ""; };
+    if len(changes_raw) < 10 {
+        return;
+    };
+
+    let head = head_fingerprint(changes_raw);
+    if len(head) == 0 {
+        return;
+    };
+
+    // #1401 memo-dedup per MR head: one verdict per (iid, diff fingerprint).
+    // This recall_latest() is also the staleness gate check-prompt-gate.sh
+    // requires before the prompt() below — an unchanged MR head exits here,
+    // before any LLM round-trip, and is never re-posted.
+    let posted_head = recall_latest(scoped_memo(owner, repo, "qa_reviewer:verdict_head:" + to_string(mr_iid)));
+    if posted_head == head {
+        return;
+    };
+
+    let title = nz(to_string(json_get(raw, prefix + ".title")));
+    let body = nz(to_string(json_get(raw, prefix + ".description")));
+    let branch = nz(to_string(json_get(raw, prefix + ".source_branch")));
+
+    let issue_iid = linked_issue_iid(branch, body);
+    let issue_block = if issue_iid > 0 {
+        // colony-lint: safe-exec-concat
+        let issue_cmd = "$COLONY_DIR/scripts/forge-api.sh get-issue " + to_string(issue_iid) + repo_arg(owner, repo);
+        let issue_raw = try { exec sh issue_cmd; } catch e { ""; };
+        if len(issue_raw) > 2 {
+            "\n\nLinked issue #" + to_string(issue_iid) + ":\n" + issue_raw;
+        } else {
+            "";
+        };
+    } else {
+        "";
+    };
+
+    let rec = recommend("qa_review", ["accuracy"]);
+    let context = "MR " + to_string(mr_iid) + " title: " + title +
+        "\n\nMR description:\n" + body +
+        issue_block +
+        "\n\nMR diff:\n" + changes_raw +
+        "\n\nLearned patterns: " + to_string(rec);
+
+    let verdict = prompt(
+        "You are a pre-merge QA reviewer. Judge this merge request on exactly two dimensions. 1) completeness: does the committed diff actually address the WHOLE linked issue (when one is provided) and every site, file, and test the MR description claims to touch? Partial changes and claim-only changes (claimed but absent from the diff) fail. 2) description_vs_diff: is every claim in the MR description backed by the committed diff? Overstatements fail — e.g. a description saying 'audits every X' when the diff covers one X, or 'adds a regression test' with no test change in the diff. Return JSON: mr_iid (int), completeness ('pass' or 'fail'), completeness_reason (one line explaining the failure, empty string when pass), description_vs_diff ('pass' or 'fail'), description_vs_diff_reason (one line explaining the failure, empty string when pass). Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.",
+        context
+    ) -> QaVerdict;
+
+    let my_tier = repo_tier("qa_reviewer", owner, repo);
+    let note = verdict_note(verdict);
+    print("[qa_reviewer] MR", mr_iid, "(tier:", my_tier, "):", note);
+
+    if my_tier == "autonomous" {
+        emit("review:qa_verdict", verdict);
+        let comment = "**QA Verdict** (automated)\n\n" + note;
+        // colony-lint: safe-exec-concat
+        let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment) + repo_arg(owner, repo);
+        let result = try { exec sh post_cmd; } catch e {
+            print("[qa_reviewer] Failed to post verdict:", e);
+            "";
+        };
+        if len(result) > 0 {
+            // Marker written only AFTER a successful post: a failed post is a
+            // logged no-op that retries next tick.
+            memo_write(scoped_memo(owner, repo, "qa_reviewer:verdict_head:" + to_string(mr_iid)), head);
+            if len(owner) > 0 {
+                learn("qa_review", "MR " + to_string(mr_iid), note, "success", ["code-review", "acted", repo_tag(owner, repo)]);
+            } else {
+                learn("qa_review", "MR " + to_string(mr_iid), note, "success", ["code-review", "acted"]);
+            };
+        };
+    } else {
+        if my_tier == "review-gated" {
+            emit("review:qa_verdict", verdict);
+            let comment = "[draft-review] **QA Verdict** (automated, pending approval)\n\n" + note;
+            // colony-lint: safe-exec-concat
+            let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment) + repo_arg(owner, repo);
+            let result = try { exec sh post_cmd; } catch e {
+                print("[qa_reviewer] Failed to post draft verdict:", e);
+                "";
+            };
+            if len(result) > 0 {
+                memo_write(scoped_memo(owner, repo, "qa_reviewer:verdict_head:" + to_string(mr_iid)), head);
+                if len(owner) > 0 {
+                    learn("qa_review", "drafted on MR " + to_string(mr_iid), note, "partial", ["code-review", "review-gated", repo_tag(owner, repo)]);
+                } else {
+                    learn("qa_review", "drafted on MR " + to_string(mr_iid), note, "partial", ["code-review", "review-gated"]);
+                };
+            };
+        } else {
+            if my_tier == "propose" {
+                emit("review:qa_verdict", verdict);
+                memo_write(scoped_memo(owner, repo, "qa_reviewer:verdict_head:" + to_string(mr_iid)), head);
+                if len(owner) > 0 {
+                    learn("qa_review", "MR " + to_string(mr_iid), note, "partial", ["code-review", "emitted", repo_tag(owner, repo)]);
+                } else {
+                    learn("qa_review", "MR " + to_string(mr_iid), note, "partial", ["code-review", "emitted"]);
+                };
+            } else {
+                // shadow / dormant: observe only — no emit, no external write.
+                // The head marker is still written (per-tier action complete,
+                // #1370 pattern) so the same head is not re-prompted every
+                // tick at the default sub-autonomous tier.
+                memo_write(scoped_memo(owner, repo, "qa_reviewer:verdict_head:" + to_string(mr_iid)), head);
+                if len(owner) > 0 {
+                    learn("qa_review", "MR " + to_string(mr_iid), note, "partial", ["code-review", "observed", repo_tag(owner, repo)]);
+                } else {
+                    learn("qa_review", "MR " + to_string(mr_iid), note, "partial", ["code-review", "observed"]);
+                };
+            };
+        };
+    };
+}
+
+// Recursive iterator over the reviewer-view MR list: QA-judge EVERY open MR
+// (the per-head dedup above makes unchanged MRs a single cheap forge read).
+fn qa_mr_at(owner: string, repo: string, raw: string, idx: int) -> void {
+    let prefix = "[" + to_string(idx) + "]";
+    let mr_iid = parse_int(to_string(json_get(raw, prefix + ".iid")));
+    if mr_iid <= 0 {
+        return;
+    };
+    qa_one_mr(owner, repo, raw, idx);
+    return qa_mr_at(owner, repo, raw, idx + 1);
+}
+
+fn tick_for_repo(owner: string, repo: string) -> void {
+    // Open MRs, reviewer view. No --since filter: the per-head memo gate is
+    // the idle suppressor here — a bounded list read per tick, zero LLM calls
+    // when every head is already verdicted.
+    // colony-lint: safe-exec-concat
+    let cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --view reviewer" + repo_arg(owner, repo);
+    let raw = try {
+        exec sh cmd;
+    } catch e {
+        print("[qa_reviewer] forge poll failed:", e);
+        "";
+    };
+
+    if len(raw) < 3 {
+        return;
+    };
+
+    qa_mr_at(owner, repo, raw, 0);
+
+    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now) > 0 {
+        memo_write(scoped_memo(owner, repo, "qa_reviewer:last_check"), now);
+    };
+}
+
+// Recursive iterator over `iter-repos.sh` output. See router.ag for the
+// empty-owner sentinel rationale.
+fn tick_at(spool: string, line_no: int) -> void {
+    let line_cmd = "SP=" + shell_escape(spool) + " N=" + to_string(line_no) +
+        " python3 -c 'import os; lines=os.environ[\"SP\"].splitlines(); n=int(os.environ[\"N\"]); print(lines[n] if 0<=n<len(lines) else \"\")'";
+    let line = try { exec sh line_cmd; } catch e { ""; };
+    if len(line) == 0 { return; };
+    let owner = repo_field(line, 0);
+    let repo = repo_field(line, 1);
+    tick_for_repo(owner, repo);
+    return tick_at(spool, line_no + 1);
+}
+
+fn tick(reason: string) -> void {
+    // #316 M3b: per-repo fan-out. See triage/agents/router.ag for the
+    // back-compat sentinel pattern and byte-identity rationale.
+    let spool = try { exec sh "$COLONY_DIR/../../tools/iter-repos.sh"; } catch e { ""; };
+    if len(spool) == 0 {
+        return;
+    };
+    tick_at(spool, 0);
+}

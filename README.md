@@ -2,7 +2,7 @@
 
 A home for [Agentis](https://github.com/Replikanti/agentis) agent federations. **Apache 2.0**.
 
-**Agentis** is a proprietary AI-native platform for agent emergence (runtime, language, evolution engine, distributed infrastructure). **This repo** hosts open-source federations and federation-agnostic platform components built on that runtime. [`dev-apprenticeship/`](./dev-apprenticeship/) is the first federation — coder workflow on GitLab/GitHub, 21 agents — and the platform contract in [ADR-0003](./doc/adr/ADR-0003-federation-portability-contract.md) keeps the door open for federations of other kinds (data-ops, research, support-triage, monitoring-ops — sketches in [`doc/federation-patterns.md`](./doc/federation-patterns.md)).
+**Agentis** is a proprietary AI-native platform for agent emergence (runtime, language, evolution engine, distributed infrastructure). **This repo** hosts open-source federations and federation-agnostic platform components built on that runtime. [`dev-apprenticeship/`](./dev-apprenticeship/) is the first federation — coder workflow on GitLab/GitHub, 22 agents — and the platform contract in [ADR-0003](./doc/adr/ADR-0003-federation-portability-contract.md) keeps the door open for federations of other kinds (data-ops, research, support-triage, monitoring-ops — sketches in [`doc/federation-patterns.md`](./doc/federation-patterns.md)).
 
 **What makes this repo distinctive:** every agent runs in `shadow` (observe-only) mode by default. It graduates up a four-tier confidence ladder — `shadow` → `propose` → `review-gated` → `autonomous` — based on measured experience, not hand-tuned thresholds. An agent only acts on your project once it has earned the tier. See [`doc/adr/ADR-0001-confidence-tiers.md`](./doc/adr/ADR-0001-confidence-tiers.md).
 
@@ -36,13 +36,13 @@ graph TD
     C3 --> A6
 ```
 
-[`dev-apprenticeship/`](./dev-apprenticeship/) is the first concrete federation: 5 colonies, 21 agents covering triage, planning, implementation, code review, and release. The platform contract that makes a federation directory "platform-compliant" — and that the platform tooling (dashboard, auto-promote, kill-federation) consumes — is codified in [ADR-0003](./doc/adr/ADR-0003-federation-portability-contract.md).
+[`dev-apprenticeship/`](./dev-apprenticeship/) is the first concrete federation: 5 colonies, 22 agents covering triage, planning, implementation, code review, and release. The platform contract that makes a federation directory "platform-compliant" — and that the platform tooling (dashboard, auto-promote, kill-federation) consumes — is codified in [ADR-0003](./doc/adr/ADR-0003-federation-portability-contract.md).
 
 ## Federations
 
 | Federation | Version | Description | Agents | Status |
 |------------|---------|-------------|--------|--------|
-| [dev-apprenticeship](./dev-apprenticeship/) | [`2.2.0`](https://github.com/Replikanti/agentis-colonies/releases/tag/dev-apprenticeship-v2.2.0) | Learns a developer's complete workflow by observing how you work on GitLab or GitHub. Covers triage, code review, planning, implementation, and release. Implementation generates code by editing a real git checkout, with iterate / verify / decompose handling for complex multi-file tasks (GitHub + GitLab). | 21 | Beta |
+| [dev-apprenticeship](./dev-apprenticeship/) | [`2.2.0`](https://github.com/Replikanti/agentis-colonies/releases/tag/dev-apprenticeship-v2.2.0) | Learns a developer's complete workflow by observing how you work on GitLab or GitHub. Covers triage, code review, planning, implementation, and release. Implementation generates code by editing a real git checkout, with iterate / verify / decompose handling for complex multi-file tasks (GitHub + GitLab). | 22 | Beta |
 | [tribes-bench](./tribes-bench/) | unreleased | Tribal-emergence harness — five seed colonies hunt CVE-grade memory safety bugs in vendored Rust crates via a deterministic verifier. Stage 2 M3 reached: 5-tribe ecosystem vs 1-tribe baseline verdict apparatus + N=3 paired pilot results. | 5 | Experimental |
 | [trading-binance](./trading-binance/) | unreleased | Emergence-driven crypto futures strategy discovery on Binance USDT-margined perpetuals. Multi-agent population evolves price-action / volume-profile / CME-gap / fibo / market-structure / volume-divergence-fade setups against historical and live OHLCV feeds (no indicators, no oscillators). Backtest-only in Phase 1. | 6 | Experimental |
 | [research-foundry](./research-foundry/) | unreleased | End-to-end research pipeline: compute-first novelty discovery (6 colonies), literature audit across arXiv / OEIS / groupprops / Semantic Scholar (6 colonies), and arXiv preprint generation with LaTeX + reproducibility scripts (6 colonies). Single orchestrator + single container; the 18 colonies share one in-container `.agentis/` so each consumer reads its upstream colleague's memo directly. The arXiv email-gateway dispatch is gated on an explicit human-in-the-loop approval; the federation never auto-submits. Consolidates the retired math-foundry / claim-auditor / preprint-foundry federations (#638). See [ADR-0008](./doc/adr/ADR-0008-compute-first-novelty.md). | 18 | Experimental |
@@ -78,7 +78,7 @@ curl -LO https://github.com/Replikanti/agentis-colonies/releases/download/dev-ap
 tar xzf dev-apprenticeship-v${VERSION}.tar.gz
 cd dev-apprenticeship-v${VERSION}/dev-apprenticeship
 ./install.sh           # interactive: prereqs, config, GitLab creds, confidence seed
-./start-federation.sh  # launches 21 daemons
+./start-federation.sh  # launches 22 daemons
 ```
 
 From the official Docker image (multi-arch `linux/amd64` + `linux/arm64`, no host-side `agentis` install required, [#324](https://github.com/Replikanti/agentis-colonies/issues/324)):
@@ -104,7 +104,7 @@ cd agentis-colonies/dev-apprenticeship
 ./start-federation.sh
 ```
 
-You now have 21 agents in `shadow` mode observing your GitLab project. Watch their reasoning via `./watch-suggestions.sh` or the web dashboard via `./dashboard.sh`.
+You now have 22 agents in `shadow` mode observing your GitLab project. Watch their reasoning via `./watch-suggestions.sh` or the web dashboard via `./dashboard.sh`.
 
 Need the runtime first? See [Replikanti/agentis](https://github.com/Replikanti/agentis).
 
@@ -117,7 +117,7 @@ Need the runtime first? See [Replikanti/agentis](https://github.com/Replikanti/a
 ## Repository structure
 
 ```
-dev-apprenticeship/    # First federation: GitLab/GitHub coder workflow (21 agents, Beta)
+dev-apprenticeship/    # First federation: GitLab/GitHub coder workflow (22 agents, Beta)
 federation-dashboard/  # Standalone, separately-versioned platform component (#252)
 tools/                 # Shared platform tooling (lint, auto-promote, kill, scaffolders)
 doc/                   # Reference docs (auto-promote, federation-dashboard, federation patterns)
@@ -140,8 +140,8 @@ End-user scripts live inside each federation. For `dev-apprenticeship/`:
 | Script | Purpose |
 |--------|---------|
 | [`install.sh`](./dev-apprenticeship/install.sh) | Interactive setup: prerequisites, config, GitLab creds, confidence seed |
-| [`start-federation.sh`](./dev-apprenticeship/start-federation.sh) | Launch all 5 colonies (21 daemons) |
-| [`watch-suggestions.sh`](./dev-apprenticeship/watch-suggestions.sh) | Live feed of agent suggestions from all 21 logs |
+| [`start-federation.sh`](./dev-apprenticeship/start-federation.sh) | Launch all 5 colonies (22 daemons) |
+| [`watch-suggestions.sh`](./dev-apprenticeship/watch-suggestions.sh) | Live feed of agent suggestions from all 22 logs |
 | [`dashboard.sh`](./dev-apprenticeship/dashboard.sh) | Resolver wrapper that launches the standalone [`federation-dashboard`](./federation-dashboard/) component (installed independently, pinned via `dev-apprenticeship/.dashboard-version`). Web UI with operator controls (promote, demote, evolve, restart, kill). Full reference: [`doc/federation-dashboard.md`](./doc/federation-dashboard.md) |
 | [`kill-federation.sh`](./dev-apprenticeship/kill-federation.sh) | Reliable shutdown (wraps [`tools/kill-federation.sh`](./tools/kill-federation.sh) with `--fed-dir` scoping) |
 

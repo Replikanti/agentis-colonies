@@ -17,6 +17,31 @@ is asserted until multi-version CI is in place.
 
 ### Added
 
+- **`qa_reviewer` (code-review): pre-merge QA verdict agent — completeness +
+  description-vs-diff** ([#1401](https://github.com/Replikanti/agentis-colonies/issues/1401),
+  step 1 of [#1359](https://github.com/Replikanti/agentis-colonies/issues/1359)).
+  A sixth code-review agent, distinct from the advisory logic/security/style/test
+  notes: for each open, non-draft MR it judges (1) **completeness** — does the
+  committed diff address the whole linked issue (resolved from the
+  `fix/issue-<n>` branch, else the first `#<n>` in the description) and every
+  site/test the description claims to touch, and (2) **description-vs-diff** —
+  is every description claim backed by the diff (overstatements fail; root
+  cause cross-ref [#1349](https://github.com/Replikanti/agentis-colonies/issues/1349)) —
+  then posts ONE structured note per MR head:
+  `QA verdict: completeness=pass|fail, description-vs-diff=pass|fail` plus a
+  one-line reason per failed dimension. The note is memo-deduped on a sha256
+  fingerprint of the MR diff (`qa_reviewer:verdict_head:<iid>`, marker written
+  at every tier per the #1370 pattern, post-tiers only after a successful
+  post), so an unchanged MR costs zero LLM calls and is never re-posted; a new
+  push re-triggers a fresh verdict. Tier semantics mirror the other reviewers
+  (shadow observes, propose emits `review:qa_verdict` — a new extension-point
+  bus event — review-gated posts a draft-flagged note, autonomous posts
+  directly). Registered everywhere `test_reviewer` is (colony config,
+  `start-colony.sh` AGENTS + 300000ms reviewer cadence, `install.sh`
+  ALL_AGENTS, colony README, dashboard/restart/freshness tooling tables).
+  Source-asserted by `tools/test-qa-reviewer.sh`. The adversarial second
+  opinion and approval gating are follow-ups (#1359 steps 2–3).
+
 - **`router` (triage) now distils deterministic route rules and replays them
   without an LLM call — extends the crystallizer pilot from `labeler` to
   routing** ([#1234](https://github.com/Replikanti/agentis-colonies/issues/1234),

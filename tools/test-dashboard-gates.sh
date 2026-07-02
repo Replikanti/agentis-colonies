@@ -46,6 +46,7 @@ EXPECTED = {
     'security_reviewer': (FOUR_TIERS, None),
     'style_reviewer':    (FOUR_TIERS, None),
     'test_reviewer':     (FOUR_TIERS, None),
+    'qa_reviewer':       (FOUR_TIERS, None),
     'approval_decider':  (FOUR_TIERS, None),
     'router':            (FOUR_TIERS, 0.85),
     'prioritizer':       (FOUR_TIERS, None),
