@@ -31,6 +31,15 @@
 #   second PR. Exit 0 if it pushed a fix, 3 (NO_EDITS) if the loop produced
 #   nothing new.
 #
+#   --one-attempt (#1406, #1354 step 1) runs exactly ONE flat-cyborg editing
+#   attempt in the prepared workspace — no internal retry/continue loop, no
+#   commit, no PR — and prints a single structured outcome line on stdout:
+#       ONE_ATTEMPT exit=<code> churn=<staged-lines-changed> verify=<pass|fail|unverifiable|skipped>
+#   then exits 0. The optional --continuation <file> supplies the editing
+#   prompt VERBATIM (instead of the default task template) so the caller-driven
+#   loop migrating into code_writer.ag (#1354) can re-drive an incomplete
+#   attempt.
+#
 # The forge token is read from the environment (GITHUB_TOKEN). It is NEVER
 # embedded in a remote URL on disk, never echoed, and never visible under
 # `set -x` (we deliberately do not enable `set -x`, and the token only flows
@@ -45,7 +54,8 @@
 #   token never appears in argv, in the remote URL, in `ps`, or in any log line.
 #
 # Exit codes:
-#   0  PR opened (URL printed on stdout)
+#   0  PR opened (URL printed on stdout); with --one-attempt: the ONE_ATTEMPT
+#      outcome line was printed (its exit= field carries the session's code)
 #   3  NO_EDITS — claude made no change to the tree (caller retries later; this
 #      is NOT an error and must NOT open an empty PR)
 #   other  failure (clone/branch/edit/commit/push/PR-open)
@@ -82,9 +92,14 @@ TASK=""
 DESCRIPTION_ARG=""
 DECOMPOSE=0
 RECOVER=0
+# --one-attempt (#1406): the single-attempt primitive for the #1354
+# caller-driven loop. --continuation names a file whose contents replace the
+# default task prompt for that one drive.
+ONE_ATTEMPT=0
+CONTINUATION_FILE=""
 
 usage() {
-    echo "usage: code-edit-in-checkout.sh --owner <o> --repo <r> --issue <iid> --branch <name> --title <t> --task <text> [--description <d>] [--decompose] [--recover]" >&2
+    echo "usage: code-edit-in-checkout.sh --owner <o> --repo <r> --issue <iid> --branch <name> --title <t> --task <text> [--description <d>] [--decompose] [--recover] [--one-attempt] [--continuation <file>]" >&2
 }
 
 while [ $# -gt 0 ]; do
@@ -98,6 +113,8 @@ while [ $# -gt 0 ]; do
         --description) DESCRIPTION_ARG="${2:-}"; shift 2 ;;
         --decompose) DECOMPOSE=1; shift ;;
         --recover) RECOVER=1; shift ;;
+        --one-attempt) ONE_ATTEMPT=1; shift ;;
+        --continuation) CONTINUATION_FILE="${2:-}"; shift 2 ;;
         *) echo "code-edit-in-checkout.sh: unknown flag: $1" >&2; usage; exit 2 ;;
     esac
 done
@@ -125,6 +142,21 @@ if [ -z "$OWNER" ] || [ -z "$REPO" ] || [ -z "$ISSUE" ] || [ -z "$BRANCH" ] || [
     echo "code-edit-in-checkout.sh: --owner, --repo, --issue, --branch, --title, --task are all required" >&2
     usage
     exit 2
+fi
+
+# --continuation is only meaningful for the single-attempt primitive; a caller
+# passing it on the default multi-attempt path is a bug — fail loudly (exit 2,
+# same convention as an unknown flag) rather than silently ignoring the file.
+if [ -n "$CONTINUATION_FILE" ]; then
+    if [ "$ONE_ATTEMPT" -ne 1 ]; then
+        echo "code-edit-in-checkout.sh: --continuation requires --one-attempt" >&2
+        usage
+        exit 2
+    fi
+    if [ ! -r "$CONTINUATION_FILE" ]; then
+        echo "code-edit-in-checkout.sh: --continuation file not readable: $CONTINUATION_FILE" >&2
+        exit 2
+    fi
 fi
 
 # Normalise the title into a clean Conventional Commits subject, reused for both
@@ -567,6 +599,67 @@ if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -s "$CLAUDE_OAUTH_TOKEN_FILE" ]; t
     CLAUDE_CODE_OAUTH_TOKEN="$(tr -d '\r\n' < "$CLAUDE_OAUTH_TOKEN_FILE")"
     export CLAUDE_CODE_OAUTH_TOKEN
     echo "[code-edit] exported CLAUDE_CODE_OAUTH_TOKEN from $CLAUDE_OAUTH_TOKEN_FILE (macOS Keychain sidestep)" >&2
+fi
+
+# ---------------------------------------------------------------------------
+# --one-attempt (#1406, #1354 step 1): the single-attempt primitive for the
+# caller-driven loop that is migrating the attempt/budget/progress/verify state
+# machine up into code_writer.ag. Runs exactly ONE flat-cyborg editing drive
+# (the same invocation the multi-attempt loop below uses), reaps strays,
+# measures the staged churn, runs the verify gate once, and reports
+#     ONE_ATTEMPT exit=<code> churn=<staged-lines-changed> verify=<outcome>
+# as the SINGLE final stdout line, then exits 0 — the outcome line is the
+# contract; the CALLER decides whether to re-drive (via --continuation),
+# commit, or give up. No retry loop, no commit, no push, no PR here. The
+# per-issue workspace is kept (its staged diff is the attempt's artifact).
+# verify outcomes:
+#     pass          gate exit 0
+#     fail          gate failed (non-zero, non-127)
+#     unverifiable  gate exit 127 — the gate command itself is missing or
+#                   unrunnable here, NOT a code failure (#1346 / #1391)
+#     skipped       zero churn, no detected gate, or a force-skip
+#                   (CODE_EDIT_VERIFY_CMD=true) — nothing was verified
+# ---------------------------------------------------------------------------
+if [ "$ONE_ATTEMPT" -eq 1 ]; then
+    if [ -n "$CONTINUATION_FILE" ]; then
+        cat "$CONTINUATION_FILE" > "$TASKFILE"
+        echo "[code-edit] one-attempt: driving with the caller's continuation prompt ($CONTINUATION_FILE)" >&2
+    else
+        printf 'Implement issue #%s in this repository by editing the files directly with your tools. %s\n\nBegin editing immediately and keep exploration minimal — the task below already specifies the change; read only the specific files you must modify.\n\n%s\n\nMake the change and stop; do not run git or open a PR.' \
+            "$ISSUE" "$TITLE" "$TASK" > "$TASKFILE"
+    fi
+    echo "[code-edit] running flat-cyborg editing agent in $WS (one-attempt)" >&2
+    set +e
+    flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 --cwd "$WS" \
+        --idle-ms "${FLAT_CYBORG_IDLE_MS:-45000}" \
+        --timeout-ms "$PER_ATTEMPT_MS" \
+        --cmd-file "$TASKFILE" -- claude >&2
+    FC_RC=$?
+    set -e
+    reap_editing_strays
+    cur_lines="$(staged_line_count)"
+    verify_outcome="skipped"
+    if [ "$cur_lines" -gt 0 ] && [ -n "$VERIFY_CMD" ]; then
+        case "$VERIFY_CMD" in
+            true|:)
+                echo "[code-edit] one-attempt: verify gate force-skipped (CODE_EDIT_VERIFY_CMD=$VERIFY_CMD)" >&2
+                ;;
+            *)
+                echo "[code-edit] verifying ($VERIFY_CMD) ..." >&2
+                set +e; run_verify "$VERIFY_CMD"; verify_rc=$?; set -e
+                if [ "$verify_rc" -eq 0 ]; then
+                    verify_outcome="pass"
+                elif [ "$verify_rc" -eq 127 ]; then
+                    verify_outcome="unverifiable"
+                else
+                    verify_outcome="fail"
+                fi
+                ;;
+        esac
+    fi
+    echo "[code-edit] one-attempt outcome: exit=$FC_RC churn=$cur_lines verify=$verify_outcome" >&2
+    echo "ONE_ATTEMPT exit=$FC_RC churn=$cur_lines verify=$verify_outcome"
+    exit 0
 fi
 
 # Decompose (#1254): for a large/epic task, split it into an ORDERED list of
