@@ -434,58 +434,19 @@ if [ -n "$RESTART_AGENT" ]; then
         echo "start-colony.sh: unknown agent '$RESTART_AGENT' for this colony" >&2
         exit 3
     fi
-    # #285: kill any pre-existing daemon for this agent before respawning.
-    # The daemon registry (`agentis daemon list`) indexes by agent_id and
-    # collapses duplicates to a single entry, so a silently-accumulated old
-    # daemon-inner process is invisible from that view. Query the JSON form by
-    # colony + source-path suffix (backend-agnostic), SIGTERM the live PID,
-    # poll every 0.2s × 25 iterations (5s) for exit, SIGKILL survivors + 1s
-    # settle. Best-effort sidecar cleanup afterwards so the registry does
-    # not carry a stale pointer to the dead agent_id. Pattern mirrors
-    # tools/kill-federation.sh (#161/#162) applied at per-agent scope.
+    # #285: kill any pre-existing daemon for this agent before respawning —
+    # otherwise every restart silently accumulates another live daemon-inner
+    # process (the registry collapses duplicates by agent_id, so they are
+    # invisible from `agentis daemon list`). The kill/poll/verify machine
+    # itself (registry query, SIGTERM, 5s exit poll, SIGKILL escalation,
+    # sidecar cleanup) is shared by all five colonies via
+    # tools/lib/daemon-restart.sh (#1357); see
+    # doc/adr/daemon-restart-supervision.md for the supervision end state.
     FED_ROOT="$(cd "$REPO_ROOT/dev-apprenticeship" && pwd)"
-    # `agentis daemon list` is a read-only registry query, not a daemon launch;
-    # the indirection via AGENTIS_BIN keeps colony-lint's launch-flag whitelist
-    # (#68/#71) from misreading `--json` as a daemon flag on the same line.
-    AGENTIS_BIN=agentis
-    # shellcheck disable=SC2015 # pipe to python3, not an if-then-else
-    existing_entry="$(cd "$FED_ROOT" && "$AGENTIS_BIN" daemon list --json 2>/dev/null | python3 -c '
-import json, sys
-try:
-    daemons = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-colony = sys.argv[1]
-suffix = "/agents/" + sys.argv[2] + ".ag"
-for d in daemons:
-    if d.get("colony") == colony and str(d.get("source", "")).endswith(suffix):
-        pid = d.get("pid")
-        aid = d.get("agent_id", "") or ""
-        if isinstance(pid, int) and pid > 0:
-            print("%d|%s" % (pid, aid))
-            break
-' implementation "$RESTART_AGENT" 2>/dev/null || true)"
-    existing_pid="${existing_entry%%|*}"
-    existing_agent_id="${existing_entry#*|}"
-    [ "$existing_pid" = "$existing_entry" ] && existing_agent_id=""
-    if [ -n "$existing_pid" ] && kill -0 "$existing_pid" 2>/dev/null; then
-        kill -TERM "$existing_pid" 2>/dev/null || true
-        i=0
-        while [ "$i" -lt 25 ]; do
-            kill -0 "$existing_pid" 2>/dev/null || break
-            sleep 0.2
-            i=$((i + 1))
-        done
-        if kill -0 "$existing_pid" 2>/dev/null; then
-            kill -KILL "$existing_pid" 2>/dev/null || true
-            sleep 1
-        fi
-    fi
-    if [ -n "$existing_agent_id" ]; then
-        for ext in pid watchdog.pid colony heartbeat status stop; do
-            rm -f "$FED_ROOT/.agentis/daemon/${existing_agent_id}.${ext}" 2>/dev/null || true
-        done
-    fi
+    # shellcheck source=../../../tools/lib/daemon-restart.sh
+    # shellcheck disable=SC1091  # colony-lint runs shellcheck without -x
+    . "$REPO_ROOT/tools/lib/daemon-restart.sh"
+    daemon_restart_kill_existing "$FED_ROOT" implementation "$RESTART_AGENT"
     tick=$(tick_interval_for "$RESTART_AGENT")
     cb=$(cb_per_tick_for "$RESTART_AGENT")
     # Detach daemon stdio from any inherited pipes (e.g. the dashboard's

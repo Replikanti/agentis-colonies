@@ -106,6 +106,12 @@ tools/code-edit-in-checkout.sh
 # job dir and returns fast, and code_writer polls its LAUNCHED/RUNNING/DONE/
 # NO_EDITS/ERROR state across ticks. Runtime dep: code_writer.ag invokes it.
 tools/code-edit-job.sh
+# #1357: shared single-agent restart machine (registry lookup, SIGTERM, exit
+# poll, SIGKILL escalation, sidecar cleanup) sourced by every colony's
+# start-colony.sh on the --restart-agent path. Interim consolidation until
+# agentis-core ships `agentis daemon restart`; see
+# doc/adr/daemon-restart-supervision.md.
+tools/lib/daemon-restart.sh
 
 # ----- Self-tuning loop (#1266) -----
 # The start-federation.sh self-observe sidecar invokes self-observe.sh, which in
