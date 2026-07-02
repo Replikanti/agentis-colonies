@@ -63,11 +63,29 @@ fn repo_tier(agent_name: string, owner: string, repo: string) -> string {
     return "dormant";
 }
 
+// #1358: nth 0-based sep-delimited field of `s`, walked natively with
+// index_of/substring — `.ag` v1.7 has no split(s, sep) builtin, so this
+// recursive walk is the workaround (a general split(s, sep) -> list<string>
+// builtin is a candidate upstream agentis-core language ask). Serves both the
+// tab-separated iter-repos records (repo_field) and tick_at's newline-split
+// spool reader. Total: out-of-range / negative n -> "", mirroring the
+// bounds-checked python one-liner it replaces.
+fn nth_field(s: string, sep: string, n: int) -> string {
+    if n < 0 { return ""; };
+    if len(s) == 0 { return ""; };
+    let p = index_of(s, sep);
+    if n == 0 {
+        if p < 0 { return s; };
+        return substring(s, 0, p);
+    };
+    if p < 0 { return ""; };
+    return nth_field(substring(s, p + len(sep), len(s)), sep, n - 1);
+}
+
+// #1358: tab-separated field read, now native via nth_field (was an inline
+// python3 -c split). Total: missing field / out-of-range idx -> "".
 fn repo_field(line: string, idx: int) -> string {
-    let cmd = "L=" + shell_escape(line) + " I=" + to_string(idx) +
-        " python3 -c 'import os; parts=os.environ[\"L\"].split(\"\t\"); i=int(os.environ[\"I\"]); print(parts[i] if 0<=i<len(parts) else \"\")'";
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out;
+    return nth_field(line, "\t", idx);
 }
 
 // #1214/#1356: code-edit-job.sh prints ONE raw line. On a fresh launch it is
@@ -78,13 +96,15 @@ fn repo_field(line: string, idx: int) -> string {
 // case block now lives here in job_decide (below, after pr_check_token, whose
 // KEY=<v> token reader it reuses). job_word returns the leading whitespace token
 // (`LAUNCHED` / `RUNNING` / `STATUS=<s>`) — enough for job_decide to tell the two
-// launch-path sentinels from a poll line. The value rides $L (env var, off-argv)
-// so ARG_MAX never bites. Total: missing/garbled input -> "".
+// launch-path sentinels from a poll line. Native since #1358 (was an inline
+// python3 -c): the leading token is everything before the first space, cut
+// again at a newline in case a garbled multi-line blob slipped through.
+// Total: missing/garbled input -> "".
 fn job_word(out: string) -> string {
-    let cmd = "L=" + shell_escape(out) +
-        " python3 -c 'import os; s=os.environ[\"L\"].strip(); print(s.split(None,1)[0] if s else \"\")'";
-    let res = try { exec sh cmd; } catch e { ""; };
-    return res;
+    let head = nth_field(out, " ", 0);
+    let nl = index_of(head, "\n");
+    if nl < 0 { return head; };
+    return substring(head, 0, nl);
 }
 
 // #1172: pull the primary file path out of `draft.files` (a markdown list of
@@ -403,37 +423,40 @@ fn should_learn_from_mr(owner: string, repo: string, mr_iid: int) -> bool {
 // locally and iterates) — it never needs to fetch CI logs.
 
 // open_pr_field: extract [idx].<field> (a scalar string) from the open-PR
-// list JSON. The raw JSON rides $J (env var, off-argv) so ARG_MAX never bites.
-// Total: missing index / field / malformed JSON all collapse to "".
+// list JSON — native json_get since #1358 (was an inline python3 -c), the
+// idiom the code-review agents already use for `[0].iid`. to_string() of a
+// Void json_get (missing index / field / null / malformed JSON) renders as
+// "void", collapsed to "" here so callers keep the empty-means-missing
+// contract (recover_scan / resolve_review_scan terminate on len()==0).
 fn open_pr_field(raw: string, idx: int, field: string) -> string {
-    let cmd = "J=" + shell_escape(raw) + " I=" + to_string(idx) + " F=" + shell_escape(field) +
-        " python3 -c 'import os,json,sys" +
-        "\ntry:" +
-        "\n    d=json.loads(os.environ[\"J\"])" +
-        "\nexcept Exception:" +
-        "\n    print(\"\"); sys.exit(0)" +
-        "\ni=int(os.environ[\"I\"]); f=os.environ[\"F\"]" +
-        "\nif not isinstance(d,list) or not (0<=i<len(d)):" +
-        "\n    print(\"\"); sys.exit(0)" +
-        "\nv=d[i].get(f) if isinstance(d[i],dict) else None" +
-        "\nprint(v if isinstance(v,str) else (\"\" if v is None else str(v)))'";
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out;
+    let v = to_string(json_get(raw, "[" + to_string(idx) + "]." + field));
+    if v == "void" { return ""; };
+    return v;
 }
 
 // pr_check_token: pull the value of KEY out of a `STATUS=<x> REF=<y>` line (the
-// forge mr-pipeline-status verb output). Value rides $L (env var, off-argv).
-// Total: "".
+// forge mr-pipeline-status verb output) — native index_of/substring scan since
+// #1358 (was an inline python3 -c). The KEY= marker must sit at a token start
+// (position 0 or right after a space) so a key that is a suffix of another
+// token (XRESULT= vs RESULT=) can't false-match — the startswith property of
+// the old per-token loop. The value runs to the next space (or newline, for a
+// garbled multi-line blob). Total: "".
 fn pr_check_token(out: string, key: string) -> string {
-    let cmd = "L=" + shell_escape(out) + " K=" + shell_escape(key) +
-        " python3 -c 'import os,sys" +
-        "\ns=os.environ[\"L\"].strip(); k=os.environ[\"K\"]+\"=\"" +
-        "\nfor tok in s.split():" +
-        "\n    if tok.startswith(k):" +
-        "\n        print(tok[len(k):]); sys.exit(0)" +
-        "\nprint(\"\")'";
-    let res = try { exec sh cmd; } catch e { ""; };
-    return res;
+    let marker = key + "=";
+    // len(out) is the not-found sentinel (avoids a negative literal).
+    let at = if index_of(out, marker) == 0 {
+        0;
+    } else {
+        let mid = index_of(out, " " + marker);
+        if mid < 0 { len(out); } else { mid + 1; };
+    };
+    if at >= len(out) { return ""; };
+    let rest = substring(out, at + len(marker), len(out));
+    let sp = index_of(rest, " ");
+    let tok = if sp < 0 { rest; } else { substring(rest, 0, sp); };
+    let nl = index_of(tok, "\n");
+    if nl < 0 { return tok; };
+    return substring(tok, 0, nl);
 }
 
 // #1356: the poll-time FSM code-edit-job.sh used to own. The launcher now
@@ -1159,9 +1182,10 @@ fn tick_for_repo(owner: string, repo: string) -> void {
 // Recursive iterator over `iter-repos.sh` output. See router.ag for the
 // empty-owner sentinel rationale.
 fn tick_at(spool: string, line_no: int) -> void {
-    let line_cmd = "SP=" + shell_escape(spool) + " N=" + to_string(line_no) +
-        " python3 -c 'import os; lines=os.environ[\"SP\"].splitlines(); n=int(os.environ[\"N\"]); print(lines[n] if 0<=n<len(lines) else \"\")'";
-    let line = try { exec sh line_cmd; } catch e { ""; };
+    // #1358: nth-line read via nth_field (newline sep) — was an inline
+    // python3 -c splitlines() one-liner. Out-of-range line_no -> "", which
+    // ends the recursion exactly like the old bounds-checked print.
+    let line = nth_field(spool, "\n", line_no);
     if len(line) == 0 { return; };
     let owner = repo_field(line, 0);
     let repo = repo_field(line, 1);
