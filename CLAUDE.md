@@ -2,11 +2,11 @@
 
 ## Project overview
 
-A home for [Agentis](https://github.com/Replikanti/agentis) agent **federations** plus federation-agnostic **platform components**. The platform contract every federation must satisfy is normative in [ADR-0003](./doc/adr/ADR-0003-federation-portability-contract.md). Two federations ship today: `dev-apprenticeship/` — 5 colonies, 22 agents that learn a developer's workflow by observing how they work on GitLab/GitHub (Beta), and `tribes-bench/` — 5 tribes hunting CVE-grade memory safety bugs in vendored Rust crates via a deterministic verifier (Experimental, research scaffold). All `dev-apprenticeship/` agents implement the full confidence gradient (observe / suggest / act). Federation patterns beyond the coder workflow live in [`doc/federation-patterns.md`](./doc/federation-patterns.md).
+A home for [Agentis](https://github.com/Replikanti/agentis) agent **federations** plus federation-agnostic **platform components**. The platform contract every federation must satisfy is normative in [ADR-0003](./doc/adr/ADR-0003-federation-portability-contract.md). Five federations ship today: `dev-apprenticeship/` — 5 colonies, 22 agents that learn a developer's workflow by observing how they work on GitLab/GitHub (Beta); `tribes-bench/` — 5 tribes hunting CVE-grade memory safety bugs in vendored Rust crates via a deterministic verifier (Experimental); `trading-binance/` — emergence-driven futures strategy discovery, backtest-only (Experimental); `research-foundry/` — 18-colony research pipeline from compute-first novelty to human-gated arXiv preprints (Experimental); and `dark-factory/` — Solana/Anchor bounty auditing with human-gated submission (Experimental). All `dev-apprenticeship/` agents implement the full confidence gradient (observe / suggest / act). Federation patterns beyond the coder workflow live in [`doc/federation-patterns.md`](./doc/federation-patterns.md); the audience-oriented documentation map is in the top-level [README](./README.md#documentation-map).
 
 This file is split into two parts:
 - **Platform invariants** — federation-agnostic. Tier contract, release process, ADRs, scaffolding, agent and script conventions. Applies to any federation in this repo.
-- **dev-apprenticeship specifics** — only true for the dev-apprenticeship federation: bus-event wiring, confidence keys, trigger labels, the 21-agent inventory.
+- **dev-apprenticeship specifics** — only true for the dev-apprenticeship federation: bus-event wiring, confidence keys, trigger labels, the 22-agent inventory.
 
 # Platform invariants
 
