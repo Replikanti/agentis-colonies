@@ -607,9 +607,13 @@ fn ag_edit_step(owner: string, repo: string, iid: string, branch: string, title:
         // Consume this attempt's dir; the next launch is a fresh primitive.
         clear_job_dir(iid);
         if churn <= 0 {
-            // No edits this attempt.
-            if attempts >= max_attempts {
-                print("[code_writer] ag-loop issue", iid, "made no edits after", to_string(attempts), "attempts — giving up");
+            // No edits this attempt. attempts is the value the just-completed
+            // drive launched with (drive #N has attempts == N-1), so the drive
+            // that just finished was #(attempts+1). Cap TOTAL drives at
+            // max_attempts to match the in-shell loop's CODE_EDIT_MAX_ATTEMPTS
+            // (which counts total attempts, not retries).
+            if attempts + 1 >= max_attempts {
+                print("[code_writer] ag-loop issue", iid, "made no edits after", to_string(attempts + 1), "attempts — giving up");
                 ag_edit_reset(owner, repo, iid);
                 return "NO_EDITS";
             };
@@ -620,7 +624,10 @@ fn ag_edit_step(owner: string, repo: string, iid: string, branch: string, title:
         };
         // churn > 0: there is a diff to keep.
         if verify == "fail" {
-            if attempts < max_attempts {
+            // Re-drive only if a FURTHER drive stays within the total-drives cap
+            // (the just-finished drive was #(attempts+1)); otherwise finalize the
+            // diff we have. Matches CODE_EDIT_MAX_ATTEMPTS as a total count.
+            if attempts + 1 < max_attempts {
                 memo_write(scoped_memo(owner, repo, "code_edit_loop:phase:" + iid), "attempt");
                 memo_write(scoped_memo(owner, repo, "code_edit_loop:attempts:" + iid), to_string(attempts + 1));
                 print("[code_writer] ag-loop issue", iid, "verify=fail — re-driving to fix (attempt", to_string(attempts + 1), ")");
@@ -637,8 +644,16 @@ fn ag_edit_step(owner: string, repo: string, iid: string, branch: string, title:
         return "RUNNING";
     };
     if status == "done" {
-        // The finalize drive opened the PR.
+        // The finalize drive opened the PR. A done status with an EMPTY RESULT=
+        // (finalize succeeded but no URL parsed) is a failure, not a success —
+        // mirror job_decide's done-without-url => ERROR so we never mark an issue
+        // drafted + emit mr_ready on a URL-less finalize.
         let url = pr_check_token(job_out, "RESULT");
+        if len(url) == 0 {
+            ag_edit_reset(owner, repo, iid);
+            clear_job_dir(iid);
+            return "ERROR";
+        };
         ag_edit_reset(owner, repo, iid);
         clear_job_dir(iid);
         return "DONE:" + url;
@@ -1197,17 +1212,25 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 // "DONE:<url>" / "RUNNING" / "NO_EDITS" / "ERROR" — so the
                 // terminal handling below is shared. For the default path the PR
                 // URL is folded into DONE via job_rest (the RESULT= token).
-                let verdict = if getenv("AG_DRIVEN_EDIT_LOOP") == "1" {
-                    ag_edit_step(owner, repo, issue_iid, branch_name, draft.title, task_text, draft.summary);
-                } else {
-                    // colony-lint: safe-exec-concat
-                    let job_cmd = "$COLONY_DIR/../../tools/code-edit-job.sh --owner " + shell_escape(owner) + " --repo " + shell_escape(repo) + " --issue " + shell_escape(issue_iid) + " --branch " + shell_escape(branch_name) + " --title " + shell_escape(draft.title) + " --description " + shell_escape(draft.summary) + " --task " + shell_escape(task_text) + decompose_flag;
-                    let job_out_d = try { exec sh job_cmd; } catch e {
+                let ag_loop_on = getenv("AG_DRIVEN_EDIT_LOOP") == "1";
+                // Default path launches the in-shell loop HERE so its raw poll
+                // line (STATUS=.. PID_ALIVE=.. RESULT=..) stays in scope for the
+                // ERROR diagnostic below; job_cmd is built either way but only
+                // exec'd on the default path. The AG path drives + logs its own
+                // detail inside ag_edit_step, so job_raw is "" there.
+                // colony-lint: safe-exec-concat
+                let job_cmd = "$COLONY_DIR/../../tools/code-edit-job.sh --owner " + shell_escape(owner) + " --repo " + shell_escape(repo) + " --issue " + shell_escape(issue_iid) + " --branch " + shell_escape(branch_name) + " --title " + shell_escape(draft.title) + " --description " + shell_escape(draft.summary) + " --task " + shell_escape(task_text) + decompose_flag;
+                let job_raw = if ag_loop_on { ""; } else {
+                    try { exec sh job_cmd; } catch e {
                         print("[code_writer] code-edit-job launcher failed — not marking drafted, will retry:", e);
                         "";
                     };
-                    let d = job_decide(job_out_d);
-                    if d == "DONE" { "DONE:" + job_rest(job_out_d); } else { d; };
+                };
+                let verdict = if ag_loop_on {
+                    ag_edit_step(owner, repo, issue_iid, branch_name, draft.title, task_text, draft.summary);
+                } else {
+                    let d = job_decide(job_raw);
+                    if d == "DONE" { "DONE:" + job_rest(job_raw); } else { d; };
                 };
                 // Split the verdict into a bare state + the PR URL (empty unless
                 // DONE) so the branches below read a stable job_state / pr_url.
@@ -1257,12 +1280,14 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                                 // #1356: terminal ERROR — job-died (running pid gone),
                                 // done-without-url, job-failed, or a stale/half-written
                                 // dir, all folded here by job_decide. Same job-dir +
-                                // marker clear so the next tick retries. job_out carries
-                                // the raw STATUS=.. PID_ALIVE=.. line for diagnosis.
+                                // marker clear so the next tick retries. On the default
+                                // path job_raw carries the raw STATUS=.. PID_ALIVE=..
+                                // line for diagnosis; on the AG path ag_edit_step logged
+                                // its own detail and job_raw is "" (verdict = "ERROR").
                                 clear_job_dir(issue_iid);
                                 memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_iid"), "");
                                 memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_updated_at"), "");
-                                print("[code_writer] Detached checkout-edit error for issue", draft.issue_id, ":", verdict, "— cleared draft markers, will retry");
+                                print("[code_writer] Detached checkout-edit error for issue", draft.issue_id, ":", job_raw, verdict, "— cleared draft markers, will retry");
                             };
                         };
                     };
