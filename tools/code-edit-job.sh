@@ -94,9 +94,21 @@ TASK=""
 DESCRIPTION=""
 DECOMPOSE=0
 RECOVER=0
+# #1354 step 2b — the caller-driven-loop primitives. When AG_DRIVEN_EDIT_LOOP is
+# on, code_writer.ag drives the attempt/budget/continuation/verify state machine
+# itself and uses this launcher only to fork ONE detached primitive drive per
+# tick. --one-attempt runs a single edit and its outcome line is surfaced on the
+# poll as STATUS=attempt_done with CHURN/VERIFY/ATTEMPT_EXIT tokens; --finalize
+# commits the accumulated diff + opens the PR (surfaced as the ordinary
+# done/no_edits/error the default path already reports). --reuse / --continuation
+# ride along to the orchestrator verbatim.
+ONE_ATTEMPT=0
+REUSE=0
+FINALIZE=0
+CONTINUATION=""
 
 usage() {
-    echo "usage: code-edit-job.sh --owner <o> --repo <r> --issue <iid> --branch <name> --title <t> --task <text> [--description <d>] [--decompose] [--recover]" >&2
+    echo "usage: code-edit-job.sh --owner <o> --repo <r> --issue <iid> --branch <name> --title <t> --task <text> [--description <d>] [--decompose] [--recover] [--one-attempt] [--reuse] [--finalize] [--continuation <file>]" >&2
 }
 
 while [ $# -gt 0 ]; do
@@ -110,6 +122,10 @@ while [ $# -gt 0 ]; do
         --description) DESCRIPTION="${2:-}"; shift 2 ;;
         --decompose) DECOMPOSE=1; shift ;;
         --recover) RECOVER=1; shift ;;
+        --one-attempt) ONE_ATTEMPT=1; shift ;;
+        --reuse) REUSE=1; shift ;;
+        --finalize) FINALIZE=1; shift ;;
+        --continuation) CONTINUATION="${2:-}"; shift 2 ;;
         *) echo "code-edit-job.sh: unknown flag: $1" >&2; usage; exit 2 ;;
     esac
 done
@@ -207,7 +223,19 @@ if [ -d "$JOBDIR" ]; then
     if [ -f "$JOBDIR/pid" ]; then PID="$(cat "$JOBDIR/pid" 2>/dev/null || true)"; fi
     if pid_alive "$PID"; then ALIVE=1; else ALIVE=0; fi
     RESULT="$(read_result)"
-    printf 'STATUS=%s PID_ALIVE=%s RESULT=%s\n' "$STATUS" "$ALIVE" "$RESULT"
+    # #1354 step 2b: a --one-attempt job records its outcome as re-keyed tokens
+    # (ATTEMPT_EXIT/CHURN/VERIFY) in the `attempt` file. Splice them in BEFORE the
+    # trailing RESULT= token so RESULT stays last + space-free and the default
+    # poll line is byte-identical when no attempt file is present.
+    ATTEMPT=""
+    if [ "$STATUS" = "attempt_done" ] && [ -f "$JOBDIR/attempt" ]; then
+        ATTEMPT="$(cat "$JOBDIR/attempt" 2>/dev/null || true)"
+    fi
+    if [ -n "$ATTEMPT" ]; then
+        printf 'STATUS=%s PID_ALIVE=%s %s RESULT=%s\n' "$STATUS" "$ALIVE" "$ATTEMPT" "$RESULT"
+    else
+        printf 'STATUS=%s PID_ALIVE=%s RESULT=%s\n' "$STATUS" "$ALIVE" "$RESULT"
+    fi
     exit 0
 fi
 
@@ -238,6 +266,15 @@ printf 'running' > "$JOBDIR/status"
 #
 # We export the identifying args + ORCH/JOBDIR for the worker subshell so the
 # detached `setsid bash -c` body carries no untrusted concatenation.
+# #1354 step 2b: a --continuation file is authored by the caller (code_writer.ag)
+# in its own temp space, which may be reclaimed before this DETACHED worker execs
+# the orchestrator. Copy it into the job dir NOW so the job owns a stable copy;
+# forward that path (empty when absent).
+CONT_FWD=""
+if [ -n "$CONTINUATION" ] && [ -r "$CONTINUATION" ]; then
+    cp "$CONTINUATION" "$JOBDIR/continuation" 2>/dev/null && CONT_FWD="$JOBDIR/continuation"
+fi
+
 export CEJ_ORCH="$ORCH"
 export CEJ_JOBDIR="$JOBDIR"
 export CEJ_OWNER="$OWNER" CEJ_REPO="$REPO" CEJ_ISSUE="$ISSUE"
@@ -245,6 +282,10 @@ export CEJ_BRANCH="$BRANCH" CEJ_TITLE="$TITLE" CEJ_TASK="$TASK"
 export CEJ_DESCRIPTION="$DESCRIPTION"
 export CEJ_DECOMPOSE="$DECOMPOSE"
 export CEJ_RECOVER="$RECOVER"
+export CEJ_ONE_ATTEMPT="$ONE_ATTEMPT"
+export CEJ_REUSE="$REUSE"
+export CEJ_FINALIZE="$FINALIZE"
+export CEJ_CONTINUATION="$CONT_FWD"
 
 # SC2016: the $CEJ_* refs are deliberately INSIDE single quotes — they must
 # expand in the DETACHED child from its inherited env, NOT in this launcher.
@@ -256,10 +297,34 @@ setsid bash -c '
     [ -n "$CEJ_DESCRIPTION" ] && set -- "$@" --description "$CEJ_DESCRIPTION"
     [ "$CEJ_DECOMPOSE" = "1" ] && set -- "$@" --decompose
     [ "$CEJ_RECOVER" = "1" ] && set -- "$@" --recover
+    [ "$CEJ_ONE_ATTEMPT" = "1" ] && set -- "$@" --one-attempt
+    [ "$CEJ_REUSE" = "1" ] && set -- "$@" --reuse
+    [ "$CEJ_FINALIZE" = "1" ] && set -- "$@" --finalize
+    [ -n "$CEJ_CONTINUATION" ] && set -- "$@" --continuation "$CEJ_CONTINUATION"
     "$CEJ_ORCH" "$@" > "$CEJ_JOBDIR/out" 2> "$CEJ_JOBDIR/log"
     rc=$?
-    if [ "$rc" -eq 0 ]; then
-        # Last non-empty line of stdout is the PR URL.
+    if [ "$CEJ_ONE_ATTEMPT" = "1" ]; then
+        # #1354 step 2b: a --one-attempt drive prints exactly ONE structured
+        # outcome line and exits 0. Surface its fields to the poller as a
+        # dedicated terminal status; the CALLER (code_writer.ag) decides whether
+        # to re-drive (--reuse), finalize, or give up. A missing/garbled line or
+        # a non-zero exit is a genuine failure of the primitive itself.
+        line="$(grep "^ONE_ATTEMPT " "$CEJ_JOBDIR/out" 2>/dev/null | tail -n 1)"
+        if [ "$rc" -eq 0 ] && [ -n "$line" ]; then
+            # Re-key exit=/churn=/verify= into poll tokens the caller reads with
+            # its KEY=value reader (ATTEMPT_EXIT avoids any collision with a bare
+            # exit; values are single space-free words so the token line stays
+            # total).
+            printf "%s" "${line#ONE_ATTEMPT }" \
+                | sed "s/exit=/ATTEMPT_EXIT=/; s/churn=/CHURN=/; s/verify=/VERIFY=/" \
+                > "$CEJ_JOBDIR/attempt.tmp"
+            mv -f "$CEJ_JOBDIR/attempt.tmp" "$CEJ_JOBDIR/attempt"
+            printf "attempt_done" > "$CEJ_JOBDIR/status.tmp"
+        else
+            printf "error" > "$CEJ_JOBDIR/status.tmp"
+        fi
+    elif [ "$rc" -eq 0 ]; then
+        # Last non-empty line of stdout is the PR URL (default + --finalize).
         url="$(grep -v "^$" "$CEJ_JOBDIR/out" 2>/dev/null | tail -n 1)"
         printf "%s" "$url" > "$CEJ_JOBDIR/result.tmp"
         mv -f "$CEJ_JOBDIR/result.tmp" "$CEJ_JOBDIR/result"

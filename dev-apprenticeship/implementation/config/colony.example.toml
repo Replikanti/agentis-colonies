@@ -54,6 +54,17 @@ trigger_label = "implementation"
 # both labeled AND assigned). (#291)
 require_assignee = false
 
+# #1354 step 2b: opt-in caller-driven edit loop. When true, code_writer.ag
+# drives the attempt/continuation/verify/finalize state machine ITSELF over the
+# --one-attempt / --reuse / --finalize primitives, instead of delegating the
+# whole loop to code-edit-in-checkout.sh's in-shell multi-attempt loop. This is
+# the #1354 migration (the loop logic living in the .ag, the shell being a thin
+# per-invocation primitive). Default false — the in-shell loop remains the
+# shipped behaviour until #1354 step 3 flips the default. Exported to the daemon
+# as AG_DRIVEN_EDIT_LOOP (read via getenv). Honours the same
+# true/True/1/yes/on vocabulary as the other opt-in flags.
+ag_driven_edit_loop = false
+
 # Per-colony LLM backend override (#319, schema reserved for forward-
 # compat — NO RUNTIME EFFECT today; see #351). All four keys are
 # OPTIONAL — when absent, the agent inherits the federation-wide default

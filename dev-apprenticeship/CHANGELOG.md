@@ -17,6 +17,21 @@ is asserted until multi-version CI is in place.
 
 ### Added
 
+- **Opt-in caller-driven edit loop in `code_writer.ag`**
+  ([#1354](https://github.com/Replikanti/agentis-colonies/issues/1354) step 2b).
+  A new `[implementation] ag_driven_edit_loop` flag (default `false`, exported as
+  `AG_DRIVEN_EDIT_LOOP`) makes `code_writer.ag` drive the
+  attempt/continuation/verify/finalize state machine ITSELF over the step-2a
+  `--one-attempt` / `--reuse` / `--finalize` primitives — the migration of the
+  loop logic OUT of `code-edit-in-checkout.sh`'s in-shell multi-attempt loop and
+  INTO the agent (per-issue `code_edit_loop:phase`/`:attempts` memos, one
+  detached primitive drive per tick). `code-edit-job.sh` gains the matching
+  launcher modes: a `--one-attempt` drive is surfaced on the poll as
+  `STATUS=attempt_done` with re-keyed `ATTEMPT_EXIT`/`CHURN`/`VERIFY` tokens, and
+  `--continuation` is copied into the job dir so it survives the caller's temp
+  lifecycle. **Default OFF** — the in-shell loop remains the shipped behaviour
+  until step 3 flips the default and retires it. Covered by
+  `test-code-edit-job.sh` runs H–J.
 - **`code-edit-in-checkout.sh` `--reuse` / `--finalize` primitives**
   ([#1354](https://github.com/Replikanti/agentis-colonies/issues/1354) step 2a).
   The two building blocks the caller-driven edit loop (being migrated up into

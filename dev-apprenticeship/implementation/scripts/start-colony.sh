@@ -204,6 +204,19 @@ IMPLEMENTATION_TRIGGER_LABEL=$(parse_toml implementation trigger_label)
 IMPLEMENTATION_REQUIRE_ASSIGNEE=$(parse_toml implementation require_assignee)
 IMPLEMENTATION_REQUIRE_ASSIGNEE="${IMPLEMENTATION_REQUIRE_ASSIGNEE:-true}"
 
+# #1354 step 2b: opt-in caller-driven edit loop. When on, code_writer.ag drives
+# the attempt/continuation/verify/finalize state machine itself over the #1354
+# step-2a primitives (--one-attempt / --reuse / --finalize) instead of delegating
+# the whole loop to code-edit-in-checkout.sh's in-shell loop. Default OFF (0) —
+# the in-shell loop stays the shipped behaviour until step 3 flips the default.
+# Read via getenv("AG_DRIVEN_EDIT_LOOP") from the daemon env (no env_passthrough
+# needed, mirroring PLAN_AUTO_PROMOTE / AUTO_MERGE); normalise to 1/0.
+AG_DRIVEN_EDIT_LOOP_RAW="$(parse_toml implementation ag_driven_edit_loop)"
+case "$AG_DRIVEN_EDIT_LOOP_RAW" in
+    true|True|TRUE|1|yes|on) AG_DRIVEN_EDIT_LOOP=1 ;;
+    *) AG_DRIVEN_EDIT_LOOP=0 ;;
+esac
+
 # #224: primary branch name. Read from whichever of [forge.gitlab] or
 # [forge.github] the operator selected via [forge].type. The env var
 # is kept as GITLAB_DEFAULT_BRANCH for cross-backend parity (both
@@ -228,6 +241,7 @@ esac
 export FORGE_TYPE
 export IMPLEMENTATION_TRIGGER_LABEL
 export IMPLEMENTATION_REQUIRE_ASSIGNEE
+export AG_DRIVEN_EDIT_LOOP
 export GITLAB_DEFAULT_BRANCH
 export COLONY_DIR
 # LLM-session concurrency cap (#1352): pin the slot pool to a fed-FIXED path
