@@ -15,6 +15,74 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Added
+
+- **self-observe acceptance gate — filing volume now feeds back on filed-issue
+  acceptance rate** ([#1411](https://github.com/Replikanti/agentis-colonies/issues/1411),
+  M4 step 2 of [#1266](https://github.com/Replikanti/agentis-colonies/issues/1266);
+  builds on the outcome tracker from
+  [#1402](https://github.com/Replikanti/agentis-colonies/issues/1402)). Closes the
+  self-improving loop's last gap: before filing a candidate, `tools/self-observe.sh`
+  consults the recorded acceptance rate for the finding's `signal_class` and
+  **suppresses** filing for any class the record proves is chronically rejected.
+  A class is gated only when its rate is below `SELF_OBSERVE_MIN_ACCEPTANCE`
+  (0..1, default `0.3`) **and** it has accumulated at least
+  `SELF_OBSERVE_MIN_SAMPLES` closed outcomes (default `5`) — so a class is never
+  judged on one or two data points, and classes with no history file as normal.
+  The rates come from a deterministic, memo-only source
+  (`SELF_OBSERVE_RATES_CMD`, default `tools/track-issue-outcomes.sh --rates` — no
+  forge calls), and the gate runs **before** dedup/rate-limit so a dead class
+  costs zero `gh` calls. Every suppression is logged so the decision is
+  observable:
+  `[self-observe] suppress (low acceptance: <class> rate=<r> n=<t> < min <M>): <loc>`,
+  and the run summary now carries a `suppressed=<n>` count. The detectors
+  themselves are untouched — this is purely the feedback gate on top of existing
+  detection + tracking.
+
+- **`tools/track-issue-outcomes.sh --rates` — machine-readable per-class TSV**
+  ([#1411](https://github.com/Replikanti/agentis-colonies/issues/1411)). A new
+  read-only mode (reads only the memo store, no forge calls) that prints one
+  `<signal_class>\t<success>\t<total>\t<rate>` line per class with recorded
+  outcomes (`rate` = success/total, 4dp), consumed by the self-observe filing
+  gate above. The human-readable `--summary` is unchanged.
+
+- **`learn()` rows per classified outcome — so the crystallizer / auto-promote
+  can see which signal classes are worth filing**
+  ([#1411](https://github.com/Replikanti/agentis-colonies/issues/1411), M4 step 2).
+  On each scan, `track-issue-outcomes.sh` emits ONE `learn()`-shaped row per
+  newly-classified closed issue — topic `self_observe_outcome`, tag
+  `success`/`noise` per the fate — into a second memo-backed log
+  (`self_observe:learn`, via `tools/lib/outcome-store.sh`'s new
+  `learn_log_append`/`learn_log_read`). `learn()` is an in-`.ag` builtin with no
+  CLI, so this deterministic shell-side log is the bridge that records the same
+  signal. A failed learn append is non-fatal and never undoes the recorded
+  outcome.
+
+- Both new self-observe runtime deps (`tools/track-issue-outcomes.sh`,
+  `tools/lib/outcome-store.sh`) added to `dev-apprenticeship/BUNDLE.manifest`:
+  the bundled self-observe sidecar now invokes the tracker for its rate lookup,
+  so both must ship for the acceptance gate to work in an installed bundle.
+
+### Notes
+
+- **Issue-creator tier gate ([#1411](https://github.com/Replikanti/agentis-colonies/issues/1411)
+  step 3) scoped out to auto-promote — by design.** The issue offered this step
+  as optional and asked to say so if better handled in auto-promote config. It
+  is: `issue_creator`'s effective tier is already governed by the Layer-1
+  auto-promote sidecar (`tools/auto-promote.sh`), which computes fitness on
+  acting/tagged experience rows and promotes toward autonomous only when the
+  agent clears its thresholds — the same mechanism the new `self_observe_outcome`
+  `learn()` rows feed. Duplicating a tier ceiling inside the deterministic
+  shell driver would fork that policy; the per-class filing gate above is the
+  right layer for the volume feedback, and tier movement stays with
+  auto-promote. See [`doc/auto-promote.md`](../doc/auto-promote.md).
+
+- Tests: `tools/test-self-observe.sh` gains cases 12–14 (low-acceptance class
+  with ≥ min samples is suppressed + logged with its rate; a class below the
+  sample floor is NOT suppressed; a high-acceptance class still files), and
+  `tools/test-track-issue-outcomes.sh` gains cases 8–9 (a `learn()` row per
+  classified outcome with the correct tag; `--rates` TSV shape).
+
 ## [2.3.0] — 2026-07-02
 
 **Requires:** agentis >= 1.8.0

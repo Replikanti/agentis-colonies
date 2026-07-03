@@ -16,6 +16,8 @@
 #   5. re-run             -> no duplicate records (dedup on iid)
 #   6. --summary          -> per-signal-class acceptance-rate math
 #   7. every stored line is well-formed JSONL with exactly the 4 fields
+#   8. learn() rows        -> one self_observe_outcome row per classified issue (#1411)
+#   9. --rates            -> machine-readable per-class TSV for the filing gate (#1411)
 #
 # Usage: ./tools/test-track-issue-outcomes.sh   (exit 0 = all pass, 1 = failure)
 set -eu
@@ -60,8 +62,9 @@ STUB
 chmod +x "$WORK/bin/agentis"
 export AGENTIS_STUB_STORE="$STORE"
 export PATH="$WORK/bin:$PATH"
-# Default OUTCOME_STORE_KEY slugified by the stub:
+# Default OUTCOME_STORE_KEY / LEARN_LOG_KEY slugified by the stub:
 STORE_FILE="$STORE/self_observe_outcomes"
+LEARN_FILE="$STORE/self_observe_learn"
 
 # --- Stub `gh`: `issue list` serves $GH_STUB_DIR/issues.json; `api graphql`
 #     serves $GH_STUB_DIR/graphql-<number>.json (empty closing-PR list when
@@ -94,6 +97,7 @@ run_tio() {
     TRACK_OUTCOMES_GH="$WORK/gh" TRACK_OUTCOMES_REPO="o/r" "$TIO" "$@" 2>&1
 }
 store_lines() { cat "$STORE_FILE" 2>/dev/null || true; }
+learn_lines() { cat "$LEARN_FILE" 2>/dev/null || true; }
 
 # --- Fixtures: 4 closed issues. #101 closed by a merged PR (success),
 #     #102 closed not-planned (noise, no lookup), #103's closing PR was
@@ -185,6 +189,30 @@ for ln in lines:
     pass "store contract: 3 well-formed JSONL records with exactly {iid, signal_class, outcome, closed_at}"
 else
     fail "store contract" "store=$(store_lines)"
+fi
+
+# ---- Test 8: a learn() row is emitted per newly-classified outcome (#1411) ----
+# The first scan (OUT, above) classified 3 issues -> 3 learn rows, topic
+# self_observe_outcome, tag = fate (#101 success, #102/#103 noise). The
+# idempotent re-run (OUT2) added none. Both the stdout marker and the durable
+# learn-log memo are asserted.
+if [ "$(learn_lines | grep -c '"topic": "self_observe_outcome"')" = "3" ] \
+   && printf '%s\n' "$OUT" | grep -q 'learn: topic=self_observe_outcome iid=#101 class=doc-drift tag=success' \
+   && learn_lines | grep '"iid": 101' | grep -q '"tag": "success"' \
+   && learn_lines | grep '"iid": 103' | grep -q '"tag": "noise"'; then
+    pass "learn() rows: 3 self_observe_outcome rows emitted, tag matches fate (#101 success, #103 noise)"
+else
+    fail "learn() rows" "out=$(printf '%s\n' "$OUT" | grep learn || true) learn=$(learn_lines)"
+fi
+
+# ---- Test 9: --rates emits machine-readable per-class TSV for the filing gate ----
+# Store holds doc-drift 1/2 and todo-marker 0/1 -> rates 0.5000 / 0.0000.
+RATES="$(run_tio --rates)"
+if printf '%s\n' "$RATES" | grep -Fq "$(printf 'doc-drift\t1\t2\t0.5000')" \
+   && printf '%s\n' "$RATES" | grep -Fq "$(printf 'todo-marker\t0\t1\t0.0000')"; then
+    pass "--rates: per-class TSV (doc-drift 1/2 0.5000, todo-marker 0/1 0.0000)"
+else
+    fail "--rates TSV" "$(printf '%s\n' "$RATES")"
 fi
 
 echo
