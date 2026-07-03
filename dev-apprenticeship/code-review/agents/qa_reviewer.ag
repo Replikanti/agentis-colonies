@@ -1,9 +1,9 @@
 // qa_reviewer.ag -- Code Review colony: pre-merge QA verdict (#1401, step 1 of #1359).
 //
 // A QA pass DISTINCT from the advisory logic/security/style/test notes: for
-// each open MR it judges two dimensions and posts ONE structured verdict note:
+// each open MR it judges three dimensions and posts ONE structured verdict note:
 //
-//   QA verdict: completeness=pass|fail, description-vs-diff=pass|fail
+//   QA verdict: completeness=pass|fail, description-vs-diff=pass|fail, adversarial=pass|fail
 //
 //   1. completeness      — does the committed diff actually address the whole
 //                          linked issue and every site/test the MR description
@@ -11,6 +11,20 @@
 //   2. description-vs-diff — is every claim in the MR description backed by
 //                          the committed diff? Overstatements fail (root cause
 //                          cross-ref: #1349).
+//   3. adversarial        — an independent, DEFAULT-SKEPTICAL second opinion
+//                          (#1405, step 2 of #1359) that actively tries to
+//                          REFUTE the change: given the MR diff and the linked
+//                          issue it hunts for one concrete input/state/sequence
+//                          where the change is wrong, incomplete, or breaks an
+//                          adjacent consumer. Framed to refute, never to
+//                          summarize; a concrete refutation fails the dimension
+//                          with a one-line reason.
+//
+// Cross-provider (optional): when the operator sets QA_ADVERSARIAL_LLM_CMD to an
+// alternative `llm.command` backend, the adversarial refutation runs through IT
+// (prompt on stdin, reply on stdout — the flat-cyborg-claude.sh / llm.command
+// contract); absent the env var it falls back to THIS colony's default backend
+// via prompt(). The env var only REROUTES the dimension — it never disables it.
 //
 // One verdict per MR head: the note is memo-deduped on a fingerprint of the
 // MR's diff (`qa_reviewer:verdict_head:<iid>`), so an unchanged MR costs zero
@@ -19,9 +33,8 @@
 // Operators can force a re-run (e.g. after a tier promotion) by clearing the
 // per-iid memo.
 //
-// Out of scope here (follow-ups per #1359): the adversarial/cross-provider
-// second opinion (step 2) and gating approval on the QA verdict (step 3).
-// `review:qa_verdict` is emitted as an extension point for step 3.
+// Out of scope here (follow-up per #1359): gating approval/merge on the QA
+// verdict (step 3). `review:qa_verdict` is emitted as an extension point for it.
 //
 // Run as daemon: agentis daemon agents/qa_reviewer.ag --colony code-review
 // Requires: exec_foreign capability, GITLAB_* env vars
@@ -118,10 +131,12 @@ fn linked_issue_iid(branch: string, body: string) -> int {
     return parse_int(out);
 }
 
-// One structured verdict note per MR: the fixed header line plus a one-line
-// reason per FAILED dimension only (a clean pass is a single line).
-fn verdict_note(v: QaVerdict) -> string {
-    let line = "QA verdict: completeness=" + v.completeness + ", description-vs-diff=" + v.description_vs_diff;
+// One structured verdict note per MR: the fixed three-dimension header line
+// plus a one-line reason per FAILED dimension only (a clean pass is a single
+// line). `adv` / `adv_reason` are the adversarial dimension (#1405), threaded
+// as strings — QaVerdict stays the two-dimension shape the bus event carries.
+fn verdict_note(v: QaVerdict, adv: string, adv_reason: string) -> string {
+    let line = "QA verdict: completeness=" + v.completeness + ", description-vs-diff=" + v.description_vs_diff + ", adversarial=" + adv;
     let with_c = if v.completeness == "fail" {
         line + "\n- completeness: " + v.completeness_reason;
     } else {
@@ -132,7 +147,62 @@ fn verdict_note(v: QaVerdict) -> string {
     } else {
         with_c;
     };
-    return with_d;
+    let with_a = if adv == "fail" {
+        with_d + "\n- adversarial: " + adv_reason;
+    } else {
+        with_d;
+    };
+    return with_a;
+}
+
+// The adversarial dimension's prompt (#1405): DEFAULT-SKEPTICAL, framed to
+// REFUTE the change rather than summarize it. Fed the same context (MR diff +
+// linked issue) as the two-dimension verdict prompt.
+fn adversarial_instruction() -> string {
+    return "You are an ADVERSARIAL pre-merge reviewer. Your ONLY job is to REFUTE this merge request: treat it as broken until you have genuinely tried and failed to break it. Do NOT summarize what the change does. Given the MR diff and the linked issue, hunt for ONE concrete input, state, or call sequence under which the change is wrong, incomplete, or breaks an adjacent consumer of the code it touches (a caller, a sibling code path, a persisted format, an assumed invariant). Name the exact trigger and the resulting wrong behaviour — a vague 'could be risky' is NOT a refutation. Return JSON: adversarial ('fail' when you constructed a concrete refutation, 'pass' ONLY when a genuine skeptical attempt found none), adversarial_reason (one line naming the concrete input/state/sequence and the wrong result when fail, empty string when pass). Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.";
+}
+
+// Parse an adversarial backend reply (JSON, possibly fence/prose-wrapped) into
+// "<status>\t<reason>". Total: any parse failure — empty reply, junk, a backend
+// that errored — collapses to "pass\t" so a flaky or absent backend NEVER emits
+// a false refutation. status is normalised to exactly "fail" or "pass".
+fn adv_parse(reply: string) -> string {
+    let prog = "import os,json\n" +
+        "r=os.environ[\"R\"]\n" +
+        "i=r.find(\"{\"); j=r.rfind(\"}\")\n" +
+        "try:\n" +
+        "    d=json.loads(r[i:j+1]) if i>=0 and j>i else {}\n" +
+        "except Exception:\n" +
+        "    d={}\n" +
+        "s=str(d.get(\"adversarial\",\"\")).strip().lower()\n" +
+        "s=\"fail\" if s==\"fail\" else \"pass\"\n" +
+        "print(s+chr(9)+str(d.get(\"adversarial_reason\",\"\")).replace(chr(10),\" \").strip())";
+    let cmd = "R=" + shell_escape(reply) + " python3 -c " + shell_escape(prog);
+    return try { exec sh cmd; } catch e { "pass\t"; };
+}
+
+// Run the adversarial refutation and return the raw JSON reply. Cross-provider
+// optional: when QA_ADVERSARIAL_LLM_CMD points at an alternative llm.command
+// backend the prompt runs through IT (fed on stdin, reply on stdout — same
+// contract flat-cyborg-claude.sh honours: $1 else stdin); absent the env var it
+// falls back to THIS colony's default backend via prompt(). The dimension is
+// ALWAYS computed — the env var only reroutes it, never disables it.
+fn adversarial_reply(context: string) -> string {
+    let alt_cmd = getenv("QA_ADVERSARIAL_LLM_CMD");
+    if len(alt_cmd) > 0 {
+        // Same printf-into-stdin idiom as head_fingerprint above. alt_cmd is an
+        // operator-trusted command, interpolated (not escaped) on purpose.
+        // colony-lint: safe-exec-concat
+        let cmd = "printf '%s' " + shell_escape(adversarial_instruction() + "\n\n" + context) + " | " + alt_cmd;
+        return try { exec sh cmd; } catch e {
+            print("[qa_reviewer] adversarial backend failed:", e);
+            "";
+        };
+    };
+    // Fallback path — gated by the caller's per-head dedup (the recall_latest
+    // before the first prompt() in qa_one_mr), so no per-tick idle re-prompt.
+    // colony-lint: prompt-gate-ok
+    return prompt(adversarial_instruction(), context) -> string;
 }
 
 // QA-judge one MR at index `idx` of the reviewer-view list. Skips drafts and
@@ -199,8 +269,16 @@ fn qa_one_mr(owner: string, repo: string, raw: string, idx: int) -> void {
         context
     ) -> QaVerdict;
 
+    // #1405 step 2: independent, default-skeptical adversarial second opinion on
+    // the SAME context (MR diff + linked issue). Routed through
+    // QA_ADVERSARIAL_LLM_CMD when the operator set it, else this colony's
+    // default backend — either way the dimension is always computed.
+    let adv_line = adv_parse(adversarial_reply(context));
+    let adv_status = repo_field(adv_line, 0);
+    let adv_reason = repo_field(adv_line, 1);
+
     let my_tier = repo_tier("qa_reviewer", owner, repo);
-    let note = verdict_note(verdict);
+    let note = verdict_note(verdict, adv_status, adv_reason);
     print("[qa_reviewer] MR", mr_iid, "(tier:", my_tier, "):", note);
 
     if my_tier == "autonomous" {

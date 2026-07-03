@@ -2,13 +2,14 @@
 # test-qa-reviewer.sh (#1401): wiring + contract assertions for the code-review
 # colony's pre-merge QA verdict agent (step 1 of #1359).
 #
-# qa_reviewer judges every open MR on two dimensions — completeness (does the
+# qa_reviewer judges every open MR on three dimensions — completeness (does the
 # diff address the whole linked issue and every site/test the description
-# claims to touch) and description-vs-diff (are the description's claims backed
-# by the committed diff; cross-ref #1349) — and posts ONE structured note per
-# MR head:
+# claims to touch), description-vs-diff (are the description's claims backed
+# by the committed diff; cross-ref #1349), and adversarial (a default-skeptical
+# second opinion that tries to REFUTE the change; #1405) — and posts ONE
+# structured note per MR head:
 #
-#   QA verdict: completeness=pass|fail, description-vs-diff=pass|fail
+#   QA verdict: completeness=pass|fail, description-vs-diff=pass|fail, adversarial=pass|fail
 #
 # The .ag has no runtime unit harness (colony-lint's per-agent `agentis commit`
 # parse is its gate) and the pass/fail judgement itself is an LLM call, so —
@@ -32,6 +33,25 @@
 #       qa_reviewer:verdict_head:<iid> BEFORE prompt() in the same function,
 #       every tier branch writes the marker, and the autonomous/review-gated
 #       branches write it only after a successful post.
+#
+# The #1405 adversarial dimension adds four more scenarios (labelled adv-*):
+#
+#   (adv-a) refutable change -> adversarial=fail with a reason: the prompt is
+#       framed to REFUTE (default-skeptical, not summarize), a constructed
+#       concrete refutation is 'fail', and the note renderer appends the
+#       one-line reason only on the adv == "fail" branch.
+#   (adv-b) sound change -> adversarial=pass: the prompt passes ONLY on a
+#       genuine failed refutation attempt, and adv_parse is total — an empty /
+#       junk / errored backend reply collapses to "pass" (never a false fail).
+#   (adv-c) QA_ADVERSARIAL_LLM_CMD is honoured + exercised when set: the env
+#       var reroutes the refutation through an alternative backend via exec sh,
+#       falls back to prompt() when unset, and NEVER disables the dimension
+#       (qa_one_mr computes it unconditionally). A behavioural fixture drives a
+#       fake backend through the exact override pipeline + the agent's adv_parse
+#       program (fence/prose-wrapped refutation -> fail with reason).
+#   (adv-d) the posted verdict note carries all THREE dimensions on one header
+#       line (completeness, description-vs-diff, adversarial) and qa_one_mr
+#       threads the adversarial status/reason into verdict_note.
 #
 # Plus registration parity with test_reviewer (colony.example.toml,
 # start-colony.sh AGENTS + tick case arm, install.sh ALL_AGENTS, colony README)
@@ -60,6 +80,10 @@ fi
 # Bodies of the functions carrying the per-MR contract.
 QA_ONE="$(awk '/^fn qa_one_mr\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
 NOTE_FN="$(awk '/^fn verdict_note\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
+# Bodies of the adversarial-dimension functions (#1405).
+ADV_PROMPT="$(awk '/^fn adversarial_instruction\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
+ADV_REPLY="$(awk '/^fn adversarial_reply\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
+ADV_PARSE="$(awk '/^fn adv_parse\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
 
 # ---------------------------------------------------------------------------
 # (a) Overstated description -> description-vs-diff=fail
@@ -120,12 +144,15 @@ else
     fail "(c) verdict header" "verdict_note must render the structured one-line header"
 fi
 # Reason lines are guarded by == "fail" checks — a clean MR gets ONLY the header.
+# Three dimensions after #1405: completeness, description-vs-diff, adversarial.
 fail_guards="$(printf '%s' "$NOTE_FN" | grep -c '== "fail"')"
-reason_appends="$(printf '%s' "$NOTE_FN" | grep -c '_reason')"
-if [ "$fail_guards" -eq 2 ] && [ "$reason_appends" -eq 2 ]; then
-    pass "(c) both reason lines are gated on == \"fail\" — a clean MR posts the bare header"
+if [ "$fail_guards" -eq 3 ] \
+   && printf '%s' "$NOTE_FN" | grep -q 'v.completeness == "fail"' \
+   && printf '%s' "$NOTE_FN" | grep -q 'v.description_vs_diff == "fail"' \
+   && printf '%s' "$NOTE_FN" | grep -q 'adv == "fail"'; then
+    pass "(c) all three reason lines are gated on == \"fail\" — a clean MR posts the bare header"
 else
-    fail "(c) pass-path purity" "expected exactly 2 fail-guards and 2 reason appends, got $fail_guards/$reason_appends"
+    fail "(c) pass-path purity" "expected 3 fail-guards (completeness, description-vs-diff, adversarial), got $fail_guards"
 fi
 
 # ---------------------------------------------------------------------------
@@ -181,6 +208,133 @@ if [ "$post_guarded" -ge 2 ]; then
     pass "(d) autonomous + review-gated markers are gated on a successful post (failed post retries)"
 else
     fail "(d) post-success guard" "expected >=2 marker writes under 'if len(result) > 0', found $post_guarded"
+fi
+
+# ---------------------------------------------------------------------------
+# Adversarial dimension (#1405, step 2 of #1359)
+# ---------------------------------------------------------------------------
+# (adv-a) refutable change -> adversarial=fail with a one-line reason.
+# The prompt is framed to REFUTE (default-skeptical, not summarize) and marks a
+# constructed concrete refutation as 'fail'; the note renderer appends the
+# one-line reason ONLY on the adv == "fail" branch.
+if printf '%s' "$ADV_PROMPT" | grep -q 'REFUTE' \
+   && printf '%s' "$ADV_PROMPT" | grep -q 'Do NOT summarize' \
+   && printf '%s' "$ADV_PROMPT" | grep -q 'breaks an adjacent consumer' \
+   && printf '%s' "$ADV_PROMPT" | grep -q "'fail' when you constructed a concrete refutation"; then
+    pass "(adv-a) adversarial prompt refutes (default-skeptical, not summarize); concrete refutation -> fail"
+else
+    fail "(adv-a) refute framing" "adversarial_instruction must be framed to REFUTE and fail on a concrete refutation"
+fi
+if printf '%s' "$ADV_PROMPT" | grep -q 'adversarial_reason'; then
+    pass "(adv-a) prompt returns adversarial_reason naming the concrete input/state/sequence on fail"
+else
+    fail "(adv-a) reason field" "prompt must ask for a one-line adversarial_reason on fail"
+fi
+if printf '%s' "$NOTE_FN" | grep -q 'adv == "fail"' \
+   && printf '%s' "$NOTE_FN" | grep -q 'adversarial: " + adv_reason'; then
+    pass "(adv-a) note renderer appends the one-line adversarial reason on the fail branch"
+else
+    fail "(adv-a) fail-reason line" "verdict_note must append adv_reason when adversarial == fail"
+fi
+
+# (adv-b) sound change -> adversarial=pass. The prompt passes ONLY on a genuine
+# failed refutation attempt, and adv_parse is TOTAL: an empty / junk / errored
+# backend reply collapses to "pass" so a flaky or absent backend never emits a
+# FALSE refutation (status normalised to exactly "fail" or "pass").
+if printf '%s' "$ADV_PROMPT" | grep -q "'pass' ONLY when a genuine skeptical attempt found none"; then
+    pass "(adv-b) prompt passes ONLY when a skeptical attempt found no refutation"
+else
+    fail "(adv-b) pass framing" "prompt must pass only when no concrete refutation was found"
+fi
+if printf '%s' "$ADV_PARSE" | grep -F -q 'catch e { "pass' \
+   && printf '%s' "$ADV_PARSE" | grep -F -q 's=\"fail\" if s==\"fail\" else \"pass\"'; then
+    pass "(adv-b) adv_parse is total: empty/junk/errored reply -> pass (never a false fail), status normalised"
+else
+    fail "(adv-b) total parse" "adv_parse must default to pass on any parse failure and normalise the status"
+fi
+
+# (adv-c) QA_ADVERSARIAL_LLM_CMD is honoured and exercised when set. When the
+# env var is non-empty the refutation is piped through THAT command via exec sh;
+# when unset it falls back to the colony default via prompt(). Either way the
+# dimension is ALWAYS computed (qa_one_mr calls it unconditionally) — the env
+# var only reroutes, never disables.
+if printf '%s' "$ADV_REPLY" | grep -q 'getenv("QA_ADVERSARIAL_LLM_CMD")' \
+   && printf '%s' "$ADV_REPLY" | grep -q 'len(alt_cmd) > 0' \
+   && printf '%s' "$ADV_REPLY" | grep -q '" | " + alt_cmd' \
+   && printf '%s' "$ADV_REPLY" | grep -q 'prompt(adversarial_instruction(), context)'; then
+    pass "(adv-c) QA_ADVERSARIAL_LLM_CMD reroutes via exec sh when set, else falls back to prompt()"
+else
+    fail "(adv-c) backend override" "adversarial_reply must read QA_ADVERSARIAL_LLM_CMD and fall back to prompt()"
+fi
+if printf '%s' "$QA_ONE" | grep -q 'adv_parse(adversarial_reply(context))'; then
+    pass "(adv-c) adversarial dimension is always computed (env var absence never disables it)"
+else
+    fail "(adv-c) always computed" "qa_one_mr must call adv_parse(adversarial_reply(context)) unconditionally"
+fi
+# Behavioural fixture: exercise the override dispatch shape end-to-end. A fake
+# backend (standing in for QA_ADVERSARIAL_LLM_CMD) that emits a fence/prose-
+# wrapped refutation JSON, driven through the exact `printf '%s' <prompt> | <cmd>`
+# pipeline the override branch execs, then through the SAME adv_parse python
+# program the agent runs, must yield fail + a non-empty reason.
+FAKE_BACKEND="$(mktemp)"
+cat > "$FAKE_BACKEND" <<'FAKEEOF'
+#!/usr/bin/env bash
+# Ignores stdin; emits a fixed refutation like an alternative LLM backend would,
+# deliberately wrapped in prose + a fenced block to exercise adv_parse's
+# brace-slice extraction.
+cat <<'JSON'
+Sure -- here is my adversarial verdict:
+```json
+{"adversarial": "fail", "adversarial_reason": "empty changes list makes reduce() raise on the first tick"}
+```
+JSON
+FAKEEOF
+chmod +x "$FAKE_BACKEND"
+# The exact parser program from adv_parse() in the .ag (kept byte-aligned).
+ADV_PARSE_PY='import os,json
+r=os.environ["R"]
+i=r.find("{"); j=r.rfind("}")
+try:
+    d=json.loads(r[i:j+1]) if i>=0 and j>i else {}
+except Exception:
+    d={}
+s=str(d.get("adversarial","")).strip().lower()
+s="fail" if s=="fail" else "pass"
+print(s+chr(9)+str(d.get("adversarial_reason","")).replace(chr(10)," ").strip())'
+adv_reply_fx="$(printf '%s' "REFUTE THIS CHANGE" | "$FAKE_BACKEND")"
+adv_line_fx="$(R="$adv_reply_fx" python3 -c "$ADV_PARSE_PY")"
+adv_status_fx="$(printf '%s' "$adv_line_fx" | cut -f1)"
+adv_reason_fx="$(printf '%s' "$adv_line_fx" | cut -f2)"
+if [ "$adv_status_fx" = "fail" ] && [ -n "$adv_reason_fx" ]; then
+    pass "(adv-c) override backend dispatch + adv_parse: fence/prose-wrapped refutation -> fail with reason"
+else
+    fail "(adv-c) override fixture" "status=$adv_status_fx reason=$adv_reason_fx"
+fi
+# Same parser on an empty backend reply collapses to pass (total-on-failure).
+adv_empty_fx="$(R="" python3 -c "$ADV_PARSE_PY")"
+if [ "$(printf '%s' "$adv_empty_fx" | cut -f1)" = "pass" ]; then
+    pass "(adv-c) adv_parse fixture: empty backend reply -> pass (flaky/absent backend never false-fails)"
+else
+    fail "(adv-c) empty-reply fixture" "empty reply did not collapse to pass: $adv_empty_fx"
+fi
+rm -f "$FAKE_BACKEND"
+
+# (adv-d) the posted verdict note carries ALL THREE dimensions on one header
+# line, and qa_one_mr threads the adversarial status + reason into verdict_note.
+header_line="$(printf '%s' "$NOTE_FN" | grep 'QA verdict: completeness=')"
+if printf '%s' "$header_line" | grep -q 'completeness=" + v.completeness' \
+   && printf '%s' "$header_line" | grep -q 'description-vs-diff=" + v.description_vs_diff' \
+   && printf '%s' "$header_line" | grep -q 'adversarial=" + adv'; then
+    pass "(adv-d) the single verdict header line carries completeness, description-vs-diff AND adversarial"
+else
+    fail "(adv-d) three-dimension header" "verdict_note header must render all three dimensions"
+fi
+if printf '%s' "$QA_ONE" | grep -q 'verdict_note(verdict, adv_status, adv_reason)' \
+   && printf '%s' "$QA_ONE" | grep -q 'repo_field(adv_line, 0)' \
+   && printf '%s' "$QA_ONE" | grep -q 'repo_field(adv_line, 1)'; then
+    pass "(adv-d) qa_one_mr threads the adversarial status/reason into the verdict note"
+else
+    fail "(adv-d) note threading" "qa_one_mr must pass adv_status/adv_reason into verdict_note"
 fi
 
 # ---------------------------------------------------------------------------
