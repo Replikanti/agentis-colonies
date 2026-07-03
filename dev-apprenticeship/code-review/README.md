@@ -14,7 +14,7 @@ A colony of six specialized agents that learn how you review code. They observe 
 | Logic Reviewer | `agents/logic_reviewer.ag` | Edge cases, off-by-one errors, null handling, race conditions | ~20 observations |
 | Security Reviewer | `agents/security_reviewer.ag` | Injection risks, auth checks, secret exposure, dependency vulnerabilities | ~15 observations |
 | Test Reviewer | `agents/test_reviewer.ag` | Coverage expectations, test quality, missing edge case tests | ~15 observations |
-| QA Reviewer | `agents/qa_reviewer.ag` | Pre-merge QA: completeness of the diff vs the linked issue, description claims vs the committed diff | ~15 observations |
+| QA Reviewer | `agents/qa_reviewer.ag` | Pre-merge QA: completeness of the diff vs the linked issue, description claims vs the committed diff, and a default-skeptical adversarial refutation | ~15 observations |
 | Approval Decider | `agents/approval_decider.ag` | When to approve, request changes, or escalate (aggregates findings from other reviewers) | ~25 observations |
 
 ## How It Works
@@ -47,22 +47,26 @@ graph LR
 
 When a new merge request appears, all four advisory reviewers analyze it in parallel, each from their own perspective. They publish findings to the colony bus. The Approval Decider aggregates those findings, weighs severity, and produces the final review action: approve, request changes, or escalate to the human. The QA Reviewer runs a separate pre-merge QA pass (see below) whose verdict lands as its own MR note; gating approval on that verdict is a planned follow-up (step 3 of #1359).
 
-## Pre-merge QA verdict (#1401)
+## Pre-merge QA verdict (#1401, #1405)
 
-`qa_reviewer` is a QA pass **distinct from** the advisory logic/security/style/test notes. For each open, non-draft MR it judges two dimensions:
+`qa_reviewer` is a QA pass **distinct from** the advisory logic/security/style/test notes. For each open, non-draft MR it judges three dimensions:
 
 1. **completeness** — does the committed diff actually address the whole linked issue (resolved from the `fix/issue-<n>` branch name, else the first `#<n>` in the description) and every site/test the MR description claims to touch? Partial or claim-only changes fail.
 2. **description-vs-diff** — is every claim in the MR description backed by the committed diff? Overstatements fail (e.g. "audits every X" / "adds a regression test" with no such test in the diff — cross-ref #1349).
+3. **adversarial** (#1405) — an independent, **default-skeptical** second opinion that actively tries to **refute** the change: given the MR diff and the linked issue it hunts for one concrete input/state/sequence where the change is wrong, incomplete, or breaks an adjacent consumer. It is framed to refute, never to summarize; a concrete refutation fails the dimension with a one-line reason.
 
 It posts ONE structured verdict note per MR head:
 
 ```
-QA verdict: completeness=pass|fail, description-vs-diff=pass|fail
+QA verdict: completeness=pass|fail, description-vs-diff=pass|fail, adversarial=pass|fail
 - completeness: <one-line reason, only when failed>
 - description-vs-diff: <one-line reason, only when failed>
+- adversarial: <one-line refutation, only when failed>
 ```
 
-The note is memo-deduped on a fingerprint of the MR diff (`qa_reviewer:verdict_head:<iid>`), so an unchanged MR is never re-prompted or re-posted; a new push re-triggers a fresh verdict. Tier semantics match the other reviewers: shadow observes (memo + learn only), propose emits `review:qa_verdict` on the bus, review-gated posts a draft-flagged note, autonomous posts the note directly. `review:qa_verdict` is an extension point until #1359 step 3 wires it into `approval_decider`.
+**Cross-provider adversarial backend (optional).** By default the adversarial refutation runs through the colony's own LLM backend (the same one `prompt()` uses). When the operator sets the `QA_ADVERSARIAL_LLM_CMD` env var to an alternative `llm.command` backend (e.g. a different provider's wrapper script), the refutation is instead piped through *that* command (prompt on stdin, reply on stdout — the same contract `flat-cyborg-claude.sh` honours), so the second opinion can come from an independent model. The env var only **reroutes** the dimension; its absence never disables it.
+
+The note is memo-deduped on a fingerprint of the MR diff (`qa_reviewer:verdict_head:<iid>`), so an unchanged MR is never re-prompted or re-posted; a new push re-triggers a fresh verdict. Tier semantics match the other reviewers: shadow observes (memo + learn only), propose emits `review:qa_verdict` on the bus, review-gated posts a draft-flagged note, autonomous posts the note directly. `review:qa_verdict` is an extension point until #1359 step 3 wires it into `approval_decider` — gating approval/merge on the QA verdict remains out of scope here.
 
 ## Early-exit on quiet ticks (#147)
 
