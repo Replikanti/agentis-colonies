@@ -25,11 +25,22 @@
 # Deterministic by design (bash + python3 + the gh CLI; no LLM), same spirit
 # as tools/detect-todo-markers.sh (#1272).
 #
+# On each scan, every NEWLY-classified closed issue also emits ONE learn()-
+# shaped row to a memo-backed learn log (tools/lib/outcome-store.sh) — topic
+# self_observe_outcome, tag success|noise per the fate — so the crystallizer
+# can distill "this signal class is worth filing" rules and auto-promote can
+# see the signal (#1411, M4 step 2 of #1266). learn() is an in-`.ag` builtin
+# with no CLI, so this deterministic shell-side log is the bridge.
+#
 # Usage:
-#   tools/track-issue-outcomes.sh             # scan + record new outcomes
+#   tools/track-issue-outcomes.sh             # scan + record new outcomes + learn()
 #   tools/track-issue-outcomes.sh --summary   # per-signal-class acceptance
 #                                             # rates from the store (reads
 #                                             # only the memo, no forge calls)
+#   tools/track-issue-outcomes.sh --rates     # machine-readable per-class TSV
+#                                             # (signal_class success total rate)
+#                                             # for the self-observe filing gate
+#                                             # (#1411); reads only the memo
 #
 # Knobs (env):
 #   TRACK_OUTCOMES_REPO          owner/repo to scan (default Replikanti/agentis-colonies)
@@ -39,9 +50,7 @@
 #                                tools/self-observe.sh's title format)
 #   TRACK_OUTCOMES_LIMIT         max closed issues fetched per scan (default 200)
 #   OUTCOME_STORE_KEY            memo key for the store (via lib/outcome-store.sh)
-#
-# Out of scope (M4 step 2 follow-up): consuming these rates to gate
-# self-observe filing volume and issue_creator tier promotion.
+#   LEARN_LOG_KEY                memo key for the learn log (via lib/outcome-store.sh)
 #
 # Exit: 0 on success (even when there is nothing new to record), 2 on usage error.
 set -eu
@@ -49,8 +58,9 @@ set -eu
 MODE=scan
 case "${1:-}" in
     --summary) MODE=summary ;;
+    --rates)   MODE=rates ;;
     "")        ;;
-    *)         echo "usage: track-issue-outcomes.sh [--summary]" >&2; exit 2 ;;
+    *)         echo "usage: track-issue-outcomes.sh [--summary|--rates]" >&2; exit 2 ;;
 esac
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -100,6 +110,39 @@ for sc in sorted(stats):
           % (sc, s, t, int(round(100.0 * s / t)), s, n))
 print("[track-outcomes] overall: %d/%d (%d%%)"
       % (tot_s, tot, int(round(100.0 * tot_s / tot))))
+'
+    exit 0
+fi
+
+# ---- --rates: machine-readable per-signal-class TSV for the filing gate ----
+# One line per class, reading ONLY the store (no forge calls):
+#   <signal_class>\t<success>\t<total>\t<rate>
+# where rate = success/total as a 0..1 fraction (4dp). Consumed by
+# tools/self-observe.sh's per-class acceptance gate (#1411). No header, no
+# blank lines — a class with zero outcomes never appears.
+if [ "$MODE" = "rates" ]; then
+    outcome_store_read | python3 -c '
+import json, sys
+
+stats = {}
+for ln in sys.stdin:
+    ln = ln.strip()
+    if not ln:
+        continue
+    try:
+        rec = json.loads(ln)
+    except ValueError:
+        continue
+    sc = str(rec.get("signal_class") or "unknown")
+    st = stats.setdefault(sc, [0, 0])  # [success, total]
+    st[1] += 1
+    if rec.get("outcome") == "success":
+        st[0] += 1
+
+for sc in sorted(stats):
+    s, t = stats[sc]
+    rate = (float(s) / t) if t else 0.0
+    print("%s\t%d\t%d\t%.4f" % (sc, s, t, rate))
 '
     exit 0
 fi
@@ -206,6 +249,13 @@ while IFS="$tab" read -r iid signal closed_at state_reason; do
         fi
     fi
     outcome_store_append "$iid" "$signal" "$outcome" "$closed_at"
+    # Emit a learn()-shaped row (topic self_observe_outcome, tag = fate) so the
+    # crystallizer / auto-promote can distill which signal classes are worth
+    # filing (#1411, M4 step 2). The outcome value doubles as the success/noise
+    # tag. Never fatal: a failed learn append does not undo the recorded outcome.
+    learn_log_append "$iid" "$signal" "$outcome" "$closed_at" "self_observe_outcome" \
+        && echo "[track-outcomes] learn: topic=self_observe_outcome iid=#$iid class=$signal tag=$outcome" \
+        || echo "[track-outcomes] learn append FAILED (non-fatal): #$iid ($signal)"
     recorded=$((recorded + 1))
     echo "[track-outcomes] recorded: #$iid $signal -> $outcome ($why)"
 done < "$CAND_FILE"

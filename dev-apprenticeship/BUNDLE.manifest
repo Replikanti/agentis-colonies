@@ -120,6 +120,11 @@ tools/self-observe.sh
 tools/detect-doc-drift.sh
 tools/detect-todo-markers.sh
 tools/detect-agent-failures.sh
+# #1411 (M4): the acceptance gate in self-observe.sh consults
+# track-issue-outcomes.sh --rates by default, which sources lib/outcome-store.sh
+# — so both are now runtime deps of the bundled sidecar.
+tools/track-issue-outcomes.sh
+tools/lib/outcome-store.sh
 
 # ----- Federation dashboard -----
 # Extracted to a separately-versioned standalone component in #252.

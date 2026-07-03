@@ -12,6 +12,9 @@
 #   9.  recently-closed dedup: a fingerprint closed within the window is skipped (#1298)
 #   10. stale-closed re-file: a fingerprint closed past the window is re-filed (#1298)
 #   11. dismissed dedup: a self-observe-dismissed-labelled closed match is always skipped (#1298)
+#   12. acceptance gate: a low-acceptance class with >= MIN_SAMPLES outcomes is suppressed + logged (#1411)
+#   13. acceptance gate: a low-acceptance class BELOW MIN_SAMPLES is NOT suppressed (#1411)
+#   14. acceptance gate: a high-acceptance class still files (#1411)
 #
 # Usage: ./tools/test-self-observe.sh   (exit 0 = all pass, 1 = failure)
 set -eu
@@ -73,8 +76,22 @@ write_gh() {
     fi
 }
 
+# Stub rate source for the #1411 acceptance gate: emits the per-class TSV
+# (signal_class success total rate) that the real track-issue-outcomes.sh
+# --rates would print. Default: empty, so tests 1-11 gate nothing.
+write_rates() {  # $1 = TSV body (may be empty)
+    printf '%s' "$1" > "$WORK/rates.tsv"
+    cat > "$WORK/rates.sh" <<EOF
+#!/usr/bin/env bash
+cat "$WORK/rates.tsv"
+EOF
+    chmod +x "$WORK/rates.sh"
+}
+write_rates ""
+
 run_so() {  # args passed to self-observe
     SELF_OBSERVE_GH="$WORK/gh" SELF_OBSERVE_REPO="o/r" SELF_OBSERVE_LABELS="dev-apprenticeship" \
+        SELF_OBSERVE_RATES_CMD="$WORK/rates.sh" \
         "$SO" "$@" 2>&1
 }
 creates() { [ -f "$WORK/create.log" ] && wc -l < "$WORK/create.log" | tr -d ' ' || echo 0; }
@@ -202,6 +219,39 @@ if [ "$(creates)" = "0" ] && [ "$(printf '%s\n' "$OUT" | grep -c 'skip (dismisse
     pass "closed-dedup: a self-observe-dismissed closed match is always skipped (#1298)"
 else
     fail "closed-dedup dismissed" "creates=$(creates) skips=$(printf '%s\n' "$OUT" | grep -c 'dismissed')"
+fi
+
+# ---- Test 12: a low-acceptance class with enough samples is SUPPRESSED and
+#      the suppression (with its rate) is logged (#1411) ----
+write_detector 2; write_gh 0; rm -f "$WORK/create.log"
+write_rates "$(printf 'test-kind\t1\t10\t0.1000\n')"
+OUT="$(run_so --file)"
+if [ "$(creates)" = "0" ] \
+   && [ "$(printf '%s\n' "$OUT" | grep -c 'suppress (low acceptance: test-kind')" = "2" ] \
+   && printf '%s\n' "$OUT" | grep -q 'rate=0.1000 n=10'; then
+    pass "acceptance gate: low-acceptance class (0.10, n=10) suppressed + logged with rate, nothing filed"
+else
+    fail "acceptance gate suppress" "creates=$(creates) sup=$(printf '%s\n' "$OUT" | grep -c 'suppress')"
+fi
+
+# ---- Test 13: a class below MIN_SAMPLES is NOT suppressed (files normally) ----
+write_detector 2; write_gh 0; rm -f "$WORK/create.log"
+write_rates "$(printf 'test-kind\t0\t3\t0.0000\n')"
+OUT="$(run_so --file)"
+if [ "$(creates)" = "2" ] && ! printf '%s\n' "$OUT" | grep -q 'suppress (low acceptance'; then
+    pass "acceptance gate: class below min-sample (n=3) is NOT suppressed — files normally"
+else
+    fail "acceptance gate min-sample" "creates=$(creates) sup=$(printf '%s\n' "$OUT" | grep -c 'suppress')"
+fi
+
+# ---- Test 14: a high-acceptance class still files (#1411) ----
+write_detector 2; write_gh 0; rm -f "$WORK/create.log"
+write_rates "$(printf 'test-kind\t9\t10\t0.9000\n')"
+OUT="$(run_so --file)"
+if [ "$(creates)" = "2" ] && ! printf '%s\n' "$OUT" | grep -q 'suppress (low acceptance'; then
+    pass "acceptance gate: high-acceptance class (0.90, n=10) still files"
+else
+    fail "acceptance gate high-acceptance" "creates=$(creates) sup=$(printf '%s\n' "$OUT" | grep -c 'suppress')"
 fi
 
 echo

@@ -26,6 +26,17 @@
 #   tools/self-observe.sh            # DRY RUN: print what WOULD be filed
 #   tools/self-observe.sh --file     # actually create the issues
 #
+# Before filing, each candidate is also passed through an ACCEPTANCE GATE
+# (#1411, M4 step 2 of #1266): tools/track-issue-outcomes.sh tracks the fate of
+# every previously-filed self-observe issue, and this driver suppresses filing
+# for any signal_class whose recorded acceptance rate has fallen below
+# SELF_OBSERVE_MIN_ACCEPTANCE once it has accumulated at least
+# SELF_OBSERVE_MIN_SAMPLES closed outcomes (so a class is never judged on one or
+# two data points). Every suppression is logged with the class + its rate, so a
+# chronically-rejected detector goes quiet on its own without touching the
+# detectors themselves. Classes below the sample floor, or with no history, file
+# as normal — the gate only ever removes noise that the record already proves.
+#
 # Knobs (env):
 #   SELF_OBSERVE_REPO     owner/repo to file into (default Replikanti/agentis-colonies)
 #   SELF_OBSERVE_MAX_NEW  cap on new issues per run (default 5)
@@ -35,6 +46,12 @@
 #                                   this many days after it closed (default 14)
 #   SELF_OBSERVE_DISMISS_LABEL      label on a matching issue that permanently
 #                                   suppresses re-filing (default self-observe-dismissed)
+#   SELF_OBSERVE_MIN_ACCEPTANCE     suppress a signal_class below this acceptance
+#                                   rate (0..1, default 0.3) once it has samples
+#   SELF_OBSERVE_MIN_SAMPLES        min closed outcomes before a class can be
+#                                   gated on its rate (default 5)
+#   SELF_OBSERVE_RATES_CMD          command whose stdout is the per-class rate
+#                                   TSV (default: track-issue-outcomes.sh --rates)
 #
 # Exit: 0 on success (even when there is nothing to file).
 set -eu
@@ -75,6 +92,17 @@ DISMISS_LABEL="${SELF_OBSERVE_DISMISS_LABEL:-self-observe-dismissed}"
 # doc-drift, still files + triggers. Override with a comma-separated
 # SELF_OBSERVE_NOFILE_KINDS (set to "" to file every kind).
 NOFILE_KINDS="${SELF_OBSERVE_NOFILE_KINDS-todo-marker,agent-failure}"
+# Acceptance-gate knobs (#1411). A signal_class is suppressed when its recorded
+# acceptance rate is below MIN_ACCEPTANCE and it has at least MIN_SAMPLES closed
+# outcomes. MIN_ACCEPTANCE is a 0..1 fraction (validated in python during the
+# precompute); MIN_SAMPLES is an integer.
+MIN_ACCEPTANCE="${SELF_OBSERVE_MIN_ACCEPTANCE:-0.3}"
+MIN_SAMPLES="${SELF_OBSERVE_MIN_SAMPLES:-5}"
+case "$MIN_SAMPLES" in ''|*[!0-9]*) MIN_SAMPLES=5 ;; esac
+# Command whose stdout is the per-class rate TSV (signal_class success total
+# rate). Defaults to this repo's tracker; overridable for tests. Word-split on
+# purpose so the default carries its own --rates flag.
+RATES_CMD="${SELF_OBSERVE_RATES_CMD:-$SCRIPT_DIR/track-issue-outcomes.sh --rates}"
 
 # Short, portable fingerprint of stdin (first 12 hex of sha256).
 fp_of() {
@@ -136,7 +164,42 @@ sys.exit(1)
 }
 
 FINDINGS="$(mktemp)"
-trap 'rm -f "$FINDINGS"' EXIT
+SUPPRESSED="$(mktemp)"
+trap 'rm -f "$FINDINGS" "$SUPPRESSED"' EXIT
+
+# Precompute the SUPPRESSED signal classes from the acceptance record: one line
+# `<class>\t<rate>\t<total>` per class that has >= MIN_SAMPLES closed outcomes
+# AND a rate below MIN_ACCEPTANCE. An unavailable/empty rate source (no history,
+# no agentis, script missing) yields an empty file and gates nothing. The rate
+# source is deterministic (the tracker reads only the memo — no forge calls).
+$RATES_CMD 2>/dev/null | SO_MIN_ACCEPTANCE="$MIN_ACCEPTANCE" SO_MIN_SAMPLES="$MIN_SAMPLES" python3 -c '
+import os, sys
+try:
+    min_acc = float(os.environ.get("SO_MIN_ACCEPTANCE", "0.3"))
+except ValueError:
+    min_acc = 0.3
+try:
+    min_n = int(os.environ.get("SO_MIN_SAMPLES", "5"))
+except ValueError:
+    min_n = 5
+for ln in sys.stdin:
+    parts = ln.rstrip("\n").split("\t")
+    if len(parts) < 4:
+        continue
+    cls, _succ, total, rate = parts[0], parts[1], parts[2], parts[3]
+    try:
+        total_i = int(total)
+        rate_f = float(rate)
+    except ValueError:
+        continue
+    if total_i >= min_n and rate_f < min_acc:
+        print("%s\t%s\t%d" % (cls, rate, total_i))
+' > "$SUPPRESSED" || true
+
+# Print "rate=<r> n=<t>" when $1's signal_class is suppressed, empty otherwise.
+suppress_reason() {
+    awk -F'\t' -v k="$1" '$1 == k { printf "rate=%s n=%s", $2, $3; found=1 } END {}' "$SUPPRESSED"
+}
 
 # Collect findings from every detector (each self-resolves its own repo root).
 for det in "$SCRIPT_DIR"/detect-*.sh; do
@@ -146,6 +209,7 @@ done
 
 filed=0
 considered=0
+suppressed=0
 tab="$(printf '\t')"
 # Read from the file (not a pipe) so the counters survive in this shell.
 while IFS="$tab" read -r tag kind loc text; do
@@ -155,6 +219,16 @@ while IFS="$tab" read -r tag kind loc text; do
     case ",$NOFILE_KINDS," in
         *",$kind,"*) echo "[self-observe] log-only ($kind, not filed): $loc"; continue ;;
     esac
+    # Acceptance gate (#1411): suppress classes the record proves are chronically
+    # rejected (rate < MIN_ACCEPTANCE with >= MIN_SAMPLES outcomes). Logged so the
+    # decision is observable; happens before dedup/rate-limit so a dead class
+    # costs no forge calls.
+    gate="$(suppress_reason "$kind")"
+    if [ -n "$gate" ]; then
+        echo "[self-observe] suppress (low acceptance: $kind $gate < min $MIN_ACCEPTANCE): $loc"
+        suppressed=$((suppressed + 1))
+        continue
+    fi
     fp="$(printf '%s|~|%s|~|%s' "$kind" "$loc" "$(normalize "$text")" | fp_of)"
     if issue_exists "$fp"; then
         echo "[self-observe] skip (${DEDUP_REASON:-issue exists}): $kind $loc [$fp]"
@@ -179,7 +253,7 @@ while IFS="$tab" read -r tag kind loc text; do
 done < "$FINDINGS"
 
 if [ "$DRY_RUN" -eq 1 ]; then
-    echo "[self-observe] done (dry-run): considered=$considered, would-file=$filed (cap $MAX_NEW). Re-run with --file to create them."
+    echo "[self-observe] done (dry-run): considered=$considered, would-file=$filed, suppressed=$suppressed (cap $MAX_NEW). Re-run with --file to create them."
 else
-    echo "[self-observe] done: considered=$considered, filed=$filed (cap $MAX_NEW)."
+    echo "[self-observe] done: considered=$considered, filed=$filed, suppressed=$suppressed (cap $MAX_NEW)."
 fi
