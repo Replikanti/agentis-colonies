@@ -186,9 +186,24 @@ if [ -n "$CONTINUATION_FILE" ]; then
 fi
 
 # --finalize is the no-edit terminal step (commit the accumulated diff + PR);
-# combining it with an editing primitive is a caller bug — fail loudly.
-if [ "$FINALIZE" -eq 1 ] && { [ "$ONE_ATTEMPT" -eq 1 ] || [ "$DECOMPOSE" -eq 1 ]; }; then
-    echo "code-edit-in-checkout.sh: --finalize cannot be combined with --one-attempt/--decompose" >&2
+# combining it with an editing primitive OR --recover is a caller bug — fail
+# loudly. (--recover has its OWN terminal path: it pushes to the existing PR
+# branch and prints RECOVERED, never opening a PR — so --finalize --recover
+# would silently suppress the PR finalize is documented to open.)
+if [ "$FINALIZE" -eq 1 ] && { [ "$ONE_ATTEMPT" -eq 1 ] || [ "$DECOMPOSE" -eq 1 ] || [ "$RECOVER" -eq 1 ]; }; then
+    echo "code-edit-in-checkout.sh: --finalize cannot be combined with --one-attempt/--decompose/--recover" >&2
+    usage
+    exit 2
+fi
+
+# --reuse only makes sense ON TOP of --one-attempt (accumulate on the prior
+# attempt) or --finalize (which implies it). Bare --reuse on the default path
+# would silently run the WHOLE in-shell multi-attempt loop against the reused
+# branch and open a PR — the exact state machine #1354 is migrating OUT — so a
+# caller that drops --one-attempt on a continuation tick would get a surprising,
+# destructive path (loop + commit + PR + workspace removal). Reject it.
+if [ "$REUSE" -eq 1 ] && [ "$ONE_ATTEMPT" -ne 1 ] && [ "$FINALIZE" -ne 1 ]; then
+    echo "code-edit-in-checkout.sh: --reuse requires --one-attempt or --finalize" >&2
     usage
     exit 2
 fi

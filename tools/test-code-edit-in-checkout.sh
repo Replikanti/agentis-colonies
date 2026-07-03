@@ -2364,6 +2364,34 @@ else
     fail "run 26c (#1354 --finalize): expected exit 3 NO_EDITS" "rc=$RC26C stdout=[$(cat "$OUT26C")] err=$(tail -3 "$WORK/err26c.txt")"
 fi
 
+# 26d: bare --reuse (no --one-attempt, no --finalize) is a caller footgun — it
+# would silently run the whole in-shell multi-attempt loop + open a PR. Reject
+# (exit 2) BEFORE any workspace touch. (QA #1419 F1.)
+env PATH="$STUB_BIN:$PATH" COLONY_DIR="$COLONY_DIR" GITHUB_URL="file://$REMOTE_BASE" \
+    GITHUB_TOKEN="$FAKE_TOKEN" GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" FC_STUB_MODE=edit \
+    bash "$ORCH" --owner "$OWNER" --repo "$REPO" --issue 81 --branch "fix/issue-81" \
+        --title "x" --task "y" --reuse >"$WORK/out26d.txt" 2>&1
+RC26D=$?
+if [ "$RC26D" -eq 2 ]; then
+    pass "run 26d (#1354): bare --reuse (no --one-attempt/--finalize) rejected (exit 2)"
+else
+    fail "run 26d (#1354): expected exit 2" "rc=$RC26D $(tail -2 "$WORK/out26d.txt")"
+fi
+
+# 26e: --finalize --recover is nonsensical (recover has its own RECOVERED
+# terminal path that suppresses the PR finalize is meant to open). Reject
+# (exit 2). (QA #1419 F2.)
+env COLONY_DIR="$COLONY_DIR" GITHUB_URL="file://$REMOTE_BASE" GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    bash "$ORCH" --owner "$OWNER" --repo "$REPO" --issue 82 --branch "fix/issue-82" \
+        --title "x" --task "y" --finalize --recover >"$WORK/out26e.txt" 2>&1
+RC26E=$?
+if [ "$RC26E" -eq 2 ]; then
+    pass "run 26e (#1354): --finalize + --recover rejected (exit 2)"
+else
+    fail "run 26e (#1354): expected exit 2" "rc=$RC26E $(tail -2 "$WORK/out26e.txt")"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
