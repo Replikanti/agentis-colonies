@@ -81,7 +81,7 @@ fi
 QA_ONE="$(awk '/^fn qa_one_mr\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
 NOTE_FN="$(awk '/^fn verdict_note\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
 # Bodies of the adversarial-dimension functions (#1405).
-ADV_PROMPT="$(awk '/^fn adversarial_prompt\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
+ADV_PROMPT="$(awk '/^fn adversarial_instruction\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
 ADV_REPLY="$(awk '/^fn adversarial_reply\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
 ADV_PARSE="$(awk '/^fn adv_parse\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
 
@@ -223,7 +223,7 @@ if printf '%s' "$ADV_PROMPT" | grep -q 'REFUTE' \
    && printf '%s' "$ADV_PROMPT" | grep -q "'fail' when you constructed a concrete refutation"; then
     pass "(adv-a) adversarial prompt refutes (default-skeptical, not summarize); concrete refutation -> fail"
 else
-    fail "(adv-a) refute framing" "adversarial_prompt must be framed to REFUTE and fail on a concrete refutation"
+    fail "(adv-a) refute framing" "adversarial_instruction must be framed to REFUTE and fail on a concrete refutation"
 fi
 if printf '%s' "$ADV_PROMPT" | grep -q 'adversarial_reason'; then
     pass "(adv-a) prompt returns adversarial_reason naming the concrete input/state/sequence on fail"
@@ -261,7 +261,7 @@ fi
 if printf '%s' "$ADV_REPLY" | grep -q 'getenv("QA_ADVERSARIAL_LLM_CMD")' \
    && printf '%s' "$ADV_REPLY" | grep -q 'len(alt_cmd) > 0' \
    && printf '%s' "$ADV_REPLY" | grep -q '" | " + alt_cmd' \
-   && printf '%s' "$ADV_REPLY" | grep -q 'prompt(adversarial_prompt(), context)'; then
+   && printf '%s' "$ADV_REPLY" | grep -q 'prompt(adversarial_instruction(), context)'; then
     pass "(adv-c) QA_ADVERSARIAL_LLM_CMD reroutes via exec sh when set, else falls back to prompt()"
 else
     fail "(adv-c) backend override" "adversarial_reply must read QA_ADVERSARIAL_LLM_CMD and fall back to prompt()"

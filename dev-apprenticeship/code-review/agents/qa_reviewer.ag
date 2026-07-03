@@ -158,7 +158,7 @@ fn verdict_note(v: QaVerdict, adv: string, adv_reason: string) -> string {
 // The adversarial dimension's prompt (#1405): DEFAULT-SKEPTICAL, framed to
 // REFUTE the change rather than summarize it. Fed the same context (MR diff +
 // linked issue) as the two-dimension verdict prompt.
-fn adversarial_prompt() -> string {
+fn adversarial_instruction() -> string {
     return "You are an ADVERSARIAL pre-merge reviewer. Your ONLY job is to REFUTE this merge request: treat it as broken until you have genuinely tried and failed to break it. Do NOT summarize what the change does. Given the MR diff and the linked issue, hunt for ONE concrete input, state, or call sequence under which the change is wrong, incomplete, or breaks an adjacent consumer of the code it touches (a caller, a sibling code path, a persisted format, an assumed invariant). Name the exact trigger and the resulting wrong behaviour — a vague 'could be risky' is NOT a refutation. Return JSON: adversarial ('fail' when you constructed a concrete refutation, 'pass' ONLY when a genuine skeptical attempt found none), adversarial_reason (one line naming the concrete input/state/sequence and the wrong result when fail, empty string when pass). Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.";
 }
 
@@ -193,7 +193,7 @@ fn adversarial_reply(context: string) -> string {
         // Same printf-into-stdin idiom as head_fingerprint above. alt_cmd is an
         // operator-trusted command, interpolated (not escaped) on purpose.
         // colony-lint: safe-exec-concat
-        let cmd = "printf '%s' " + shell_escape(adversarial_prompt() + "\n\n" + context) + " | " + alt_cmd;
+        let cmd = "printf '%s' " + shell_escape(adversarial_instruction() + "\n\n" + context) + " | " + alt_cmd;
         return try { exec sh cmd; } catch e {
             print("[qa_reviewer] adversarial backend failed:", e);
             "";
@@ -202,7 +202,7 @@ fn adversarial_reply(context: string) -> string {
     // Fallback path — gated by the caller's per-head dedup (the recall_latest
     // before the first prompt() in qa_one_mr), so no per-tick idle re-prompt.
     // colony-lint: prompt-gate-ok
-    return prompt(adversarial_prompt(), context) -> string;
+    return prompt(adversarial_instruction(), context) -> string;
 }
 
 // QA-judge one MR at index `idx` of the reviewer-view list. Skips drafts and
