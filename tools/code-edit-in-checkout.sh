@@ -190,6 +190,16 @@ normalize_title() {
 TITLE="$(normalize_title "$TITLE")"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Federation-wide LLM-session concurrency cap (#1352): the editing flat-cyborg
+# sessions count against the same K-slot pool as the reasoning sessions
+# (flat-cyborg-claude.sh), so the total concurrent PTY-session count is bounded.
+# A slot is claimed before each editing session and freed by the post-session
+# reap; a slot leaked by a SIGKILL'd detached job self-heals via the helper's
+# PID-liveness reclaim. Sourcing is best-effort (absent lib → no-op).
+# shellcheck source=lib/llm-session-slot.sh
+# shellcheck disable=SC1091
+[ -r "$SCRIPT_DIR/lib/llm-session-slot.sh" ] && . "$SCRIPT_DIR/lib/llm-session-slot.sh"
+command -v acquire_llm_slot >/dev/null 2>&1 || { acquire_llm_slot() { :; }; release_llm_slot() { :; }; }
 
 # Forge selection (#1213). The orchestrator is forge-agnostic: github (default)
 # or gitlab. Exported so the GIT_ASKPASS helper (a subprocess of git) can branch
@@ -637,6 +647,7 @@ if [ "$ONE_ATTEMPT" -eq 1 ]; then
     fi
     echo "[code-edit] running flat-cyborg editing agent in $WS (one-attempt)" >&2
     set +e
+    acquire_llm_slot
     flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 --cwd "$WS" \
         --idle-ms "${FLAT_CYBORG_IDLE_MS:-45000}" \
         --timeout-ms "$PER_ATTEMPT_MS" \
@@ -644,6 +655,7 @@ if [ "$ONE_ATTEMPT" -eq 1 ]; then
     FC_RC=$?
     set -e
     reap_editing_strays
+    release_llm_slot
     cur_lines="$(staged_line_count)"
     verify_outcome="skipped"
     if [ "$cur_lines" -gt 0 ] && [ -n "$VERIFY_CMD" ]; then
@@ -685,11 +697,13 @@ if [ "$DECOMPOSE" -eq 1 ]; then
     } > "$TASKFILE"
     echo "[code-edit] decomposing issue #$ISSUE into subtasks" >&2
     set +e
+    acquire_llm_slot
     flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 --cwd "$WS" \
         --idle-ms "${FLAT_CYBORG_IDLE_MS:-45000}" --timeout-ms "$PER_ATTEMPT_MS" \
         --cmd-file "$TASKFILE" -- claude --model "${CODE_EDIT_MODEL:-opus}" >&2
     set -e
     reap_editing_strays
+    release_llm_slot
     # discard any stray edits the decomposition step made; the subtask loop owns edits.
     run_git -C "$WS" reset --hard >/dev/null 2>&1 || true
     run_git -C "$WS" clean -fd >/dev/null 2>&1 || true
@@ -753,6 +767,7 @@ while :; do
 
     echo "[code-edit] running flat-cyborg editing agent in $WS (attempt $attempt)" >&2
     set +e
+    acquire_llm_slot
     flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 --cwd "$WS" \
         --idle-ms "${FLAT_CYBORG_IDLE_MS:-45000}" \
         --timeout-ms "$this_timeout" \
@@ -762,6 +777,7 @@ while :; do
 
     # Reap orphaned editing-session descendants before measuring/looping (#1249).
     reap_editing_strays
+    release_llm_slot
     cur_lines="$(staged_line_count)"
 
     # Settled (claude finished its turn). With a verifier configured + a non-empty

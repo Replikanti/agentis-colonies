@@ -112,6 +112,10 @@ tools/code-edit-job.sh
 # agentis-core ships `agentis daemon restart`; see
 # doc/adr/daemon-restart-supervision.md.
 tools/lib/daemon-restart.sh
+# #1352: federation-wide LLM-session concurrency cap. Sourced by BOTH
+# flat-cyborg-claude.sh (reasoning) and code-edit-in-checkout.sh (editing) to
+# bound concurrent flat-cyborg PTY sessions — a runtime dep of both.
+tools/lib/llm-session-slot.sh
 
 # ----- Self-tuning loop (#1266) -----
 # The start-federation.sh self-observe sidecar invokes self-observe.sh, which in
