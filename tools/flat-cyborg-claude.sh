@@ -36,6 +36,15 @@
 # is honoured — same spirit as commit-on-diff in code-edit-in-checkout.sh (#1216).
 set -eu
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Federation-wide LLM-session concurrency cap (#1352): hold one of K slots for
+# the duration of this flat-cyborg session so at most LLM_MAX_CONCURRENT sessions
+# run across the whole federation, independent of how many agents are at
+# autonomous tier. Sourcing is best-effort — an absent lib must never break the
+# wrapper (acquire/release degrade to no-ops).
+# shellcheck source=lib/llm-session-slot.sh
+# shellcheck disable=SC1091
+[ -r "$SCRIPT_DIR/lib/llm-session-slot.sh" ] && . "$SCRIPT_DIR/lib/llm-session-slot.sh"
+command -v acquire_llm_slot >/dev/null 2>&1 || { acquire_llm_slot() { :; }; release_llm_slot() { :; }; }
 PROMPT="${1:-}"
 if [ -z "$PROMPT" ]; then PROMPT="$(cat)"; fi
 # The authoritative output channel: a file claude writes its reply to. Created
@@ -124,6 +133,7 @@ _cleanup() {
     _CLEANED=1
     set +e   # a teardown reap must never abort mid-cleanup under `set -e`
     reap_fc_descendants "$FC_PID"
+    release_llm_slot   # free our concurrency slot (#1352); idempotent
     rm -f "$REPLY_FILE" "$PROMPT_FILE" "$RESULT_FILE"
 }
 # EXIT covers the normal + `exit` paths; the signal traps cover the daemon tearing
@@ -145,6 +155,12 @@ set +e
 # then wait for it exactly as a foreground run would (its stdout is still
 # redirected to REPLY_FILE). A trapped signal interrupts the wait, runs _cleanup
 # (reap + rm), and exits.
+# Concurrency cap (#1352): claim a slot BEFORE spawning flat-cyborg. Under
+# contention this waits its turn (bounded, fails open) — backpressure that keeps
+# the host from thrashing on N simultaneous PTY sessions. The _cleanup trap (set
+# above, before any early exit) releases it. Acquire here, after the traps are
+# armed, so a signal during the wait still releases cleanly.
+acquire_llm_slot
 # Model routing (tier-by-workload): every agent's prompt() reasoning runs on the
 # lighter/faster model by default (Sonnet 5 via the `sonnet` alias = latest
 # sonnet). The heavier code-generation path (tools/code-edit-in-checkout.sh)
