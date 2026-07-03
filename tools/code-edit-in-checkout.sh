@@ -40,6 +40,13 @@
 #   loop migrating into code_writer.ag (#1354) can re-drive an incomplete
 #   attempt.
 #
+#   --reuse (#1354 step 2a) makes an attempt build ON the diff already in the
+#   workspace instead of resetting to the default branch, so successive
+#   --one-attempt processes (separate loop ticks) accumulate on one branch.
+#   --finalize (#1354 step 2a) does NO editing: it commits the workspace's
+#   accumulated staged diff, pushes, and opens the PR — the terminal step of the
+#   caller-driven loop (implies --reuse; exit 3/NO_EDITS if nothing is staged).
+#
 # The forge token is read from the environment (GITHUB_TOKEN). It is NEVER
 # embedded in a remote URL on disk, never echoed, and never visible under
 # `set -x` (we deliberately do not enable `set -x`, and the token only flows
@@ -104,9 +111,19 @@ RECOVER=0
 # default task prompt for that one drive.
 ONE_ATTEMPT=0
 CONTINUATION_FILE=""
+# --reuse / --finalize (#1354 step 2a): the two primitives the caller-driven
+# loop needs ON TOP of --one-attempt. --reuse keeps the diff accumulated so far
+# on the existing per-issue branch INSTEAD of resetting to the default branch,
+# so a SEPARATE --one-attempt process (the next loop tick) builds on the prior
+# attempt's edits rather than starting from scratch. --finalize does NO editing
+# at all: it commits the workspace's accumulated staged diff, pushes, and opens
+# the PR — the terminal step of the loop. --finalize implies --reuse (it must
+# not reset away the diff it is about to commit).
+REUSE=0
+FINALIZE=0
 
 usage() {
-    echo "usage: code-edit-in-checkout.sh --owner <o> --repo <r> --issue <iid> --branch <name> --title <t> --task <text> [--description <d>] [--decompose] [--recover] [--one-attempt] [--continuation <file>]" >&2
+    echo "usage: code-edit-in-checkout.sh --owner <o> --repo <r> --issue <iid> --branch <name> --title <t> --task <text> [--description <d>] [--decompose] [--recover] [--one-attempt] [--continuation <file>] [--reuse] [--finalize]" >&2
 }
 
 while [ $# -gt 0 ]; do
@@ -122,6 +139,8 @@ while [ $# -gt 0 ]; do
         --recover) RECOVER=1; shift ;;
         --one-attempt) ONE_ATTEMPT=1; shift ;;
         --continuation) CONTINUATION_FILE="${2:-}"; shift 2 ;;
+        --reuse) REUSE=1; shift ;;
+        --finalize) FINALIZE=1; REUSE=1; shift ;;
         *) echo "code-edit-in-checkout.sh: unknown flag: $1" >&2; usage; exit 2 ;;
     esac
 done
@@ -164,6 +183,14 @@ if [ -n "$CONTINUATION_FILE" ]; then
         echo "code-edit-in-checkout.sh: --continuation file not readable: $CONTINUATION_FILE" >&2
         exit 2
     fi
+fi
+
+# --finalize is the no-edit terminal step (commit the accumulated diff + PR);
+# combining it with an editing primitive is a caller bug — fail loudly.
+if [ "$FINALIZE" -eq 1 ] && { [ "$ONE_ATTEMPT" -eq 1 ] || [ "$DECOMPOSE" -eq 1 ]; }; then
+    echo "code-edit-in-checkout.sh: --finalize cannot be combined with --one-attempt/--decompose" >&2
+    usage
+    exit 2
 fi
 
 # Normalise the title into a clean Conventional Commits subject, reused for both
@@ -376,26 +403,41 @@ if [ -z "$DEFAULT_BRANCH" ]; then
     DEFAULT_BRANCH="${GITLAB_DEFAULT_BRANCH:-main}"
 fi
 
-# Idempotent fresh state on the default branch.
-run_git -C "$WS" checkout "$DEFAULT_BRANCH"
-run_git -C "$WS" reset --hard "origin/$DEFAULT_BRANCH"
-run_git -C "$WS" clean -fd
-
-# ---------------------------------------------------------------------------
-# 2. Branch.
-#   normal mode  : deterministic per-issue branch cut off the default branch
-#                  (reuse, no empty-branch litter).
-#   recover mode (#1332): check OUT the EXISTING remote head branch — it
-#                  already carries the prior (now-red-on-CI) commit, so we
-#                  build the fix ON TOP of it rather than off a clean default.
-#                  Reset hard to origin/<branch> so the local tree matches the
-#                  pushed state (idempotent across recovery re-drives).
-# ---------------------------------------------------------------------------
-if [ "$RECOVER" -eq 1 ]; then
-    run_git -C "$WS" checkout -B "$BRANCH" "origin/$BRANCH"
-    run_git -C "$WS" reset --hard "origin/$BRANCH"
+if [ "$REUSE" -eq 1 ]; then
+    # Caller-driven continuation/finalize (#1354 step 2a): the diff accumulated
+    # by prior --one-attempt drives lives on the existing per-issue branch in
+    # THIS workspace. Keep it — do NOT reset to the default branch or re-cut the
+    # branch, which would discard the loop's progress. Just re-enter the branch.
+    # A missing local branch means no attempt ran yet: a caller error, not a
+    # fresh-clone-and-edit request.
+    if ! git_capture -C "$WS" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null 2>&1; then
+        echo "[code-edit] --reuse/--finalize: no local branch $BRANCH in $WS to build on (run at least one --one-attempt first)" >&2
+        exit 2
+    fi
+    run_git -C "$WS" checkout "$BRANCH"
+    echo "[code-edit] reuse: continuing on existing branch $BRANCH, keeping the accumulated diff" >&2
 else
-    run_git -C "$WS" checkout -B "$BRANCH" "origin/$DEFAULT_BRANCH"
+    # Idempotent fresh state on the default branch.
+    run_git -C "$WS" checkout "$DEFAULT_BRANCH"
+    run_git -C "$WS" reset --hard "origin/$DEFAULT_BRANCH"
+    run_git -C "$WS" clean -fd
+
+    # -----------------------------------------------------------------------
+    # 2. Branch.
+    #   normal mode  : deterministic per-issue branch cut off the default branch
+    #                  (reuse, no empty-branch litter).
+    #   recover mode (#1332): check OUT the EXISTING remote head branch — it
+    #                  already carries the prior (now-red-on-CI) commit, so we
+    #                  build the fix ON TOP of it rather than off a clean default.
+    #                  Reset hard to origin/<branch> so the local tree matches the
+    #                  pushed state (idempotent across recovery re-drives).
+    # -----------------------------------------------------------------------
+    if [ "$RECOVER" -eq 1 ]; then
+        run_git -C "$WS" checkout -B "$BRANCH" "origin/$BRANCH"
+        run_git -C "$WS" reset --hard "origin/$BRANCH"
+    else
+        run_git -C "$WS" checkout -B "$BRANCH" "origin/$DEFAULT_BRANCH"
+    fi
 fi
 
 # Reap any process still rooted in THIS job's per-issue workspace (#1249).
@@ -681,6 +723,10 @@ if [ "$ONE_ATTEMPT" -eq 1 ]; then
     exit 0
 fi
 
+# The editing engine (decompose + the multi-attempt continue-on-incomplete
+# loop) is skipped ENTIRELY under --finalize (#1354 step 2a), which only commits
+# a diff that prior --one-attempt drives already accumulated in this workspace.
+if [ "$FINALIZE" -ne 1 ]; then
 # Decompose (#1254): for a large/epic task, split it into an ORDERED list of
 # small sub-edits and run the edit loop once per subtask on the SAME branch,
 # accumulating into ONE commit/PR. Without --decompose (or if decomposition
@@ -854,6 +900,21 @@ if run_git -C "$WS" diff --cached --quiet; then
     echo "NO_EDITS"
     echo "[code-edit] claude produced no file changes — not committing, not opening a PR" >&2
     exit 3
+fi
+fi  # end editing engine (skipped under --finalize, #1354 step 2a)
+
+if [ "$FINALIZE" -eq 1 ]; then
+    # No editing ran; the artifact is the diff prior --one-attempt drives left in
+    # the workspace. Stage it and refuse to open an empty PR (exit 3 = the same
+    # NO_EDITS "nothing to do, not an error" contract the loop path uses).
+    FC_RC=0
+    run_git -C "$WS" add -A
+    if run_git -C "$WS" diff --cached --quiet; then
+        echo "NO_EDITS"
+        echo "[code-edit] --finalize: no staged changes in $WS to commit — nothing to finalize" >&2
+        exit 3
+    fi
+    echo "[code-edit] --finalize: committing the accumulated diff and opening the PR for #$ISSUE" >&2
 fi
 
 if [ "$FC_RC" -ne 0 ]; then
