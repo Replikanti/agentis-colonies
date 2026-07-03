@@ -17,6 +17,20 @@ is asserted until multi-version CI is in place.
 
 ### Added
 
+- **`code-edit-in-checkout.sh` `--reuse` / `--finalize` primitives**
+  ([#1354](https://github.com/Replikanti/agentis-colonies/issues/1354) step 2a).
+  The two building blocks the caller-driven edit loop (being migrated up into
+  `code_writer.ag`) needs on top of the `--one-attempt` primitive: `--reuse`
+  makes an attempt build ON the diff already accumulated in the per-issue
+  workspace instead of resetting to the default branch, so successive
+  `--one-attempt` processes (separate loop ticks) accumulate on ONE branch;
+  `--finalize` does no editing at all — it commits the workspace's accumulated
+  staged diff, pushes, and opens the PR (the loop's terminal step; exits `3`
+  NO_EDITS rather than opening an empty PR when nothing is staged). Additive and
+  flag-guarded — the existing default / `--recover` / `--decompose` /
+  `--one-attempt` paths are unchanged. Covered by `test-code-edit-in-checkout.sh`
+  runs 25–26.
+
 - **Federation-wide LLM-session concurrency cap**
   ([#1352](https://github.com/Replikanti/agentis-colonies/issues/1352)). Running
   many agents at the autonomous tier makes every agent `prompt()` each tick,

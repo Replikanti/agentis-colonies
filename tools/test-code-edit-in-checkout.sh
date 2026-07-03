@@ -2222,6 +2222,176 @@ else
     fail "run 24f (#1406 one-attempt): verify=unverifiable mapping" "rc=$RC24F stdout=[$(cat "$OUT24F_FILE" 2>/dev/null)] err=$(tail -3 "$WORK/err24f.txt" 2>/dev/null)"
 fi
 
+# ===========================================================================
+# Run 25 (#1354 step 2a --reuse / --finalize): the caller-driven loop's two
+# primitives on TOP of --one-attempt. Prove that a SEPARATE --one-attempt
+# process with --reuse ACCUMULATES on the prior attempt's diff (instead of
+# resetting to main), and that --finalize commits the accumulated diff + opens
+# the PR without any editing.
+#
+# Distinct-file stub: attempt 1 uses the default stub (writes NEWFILE.txt),
+# attempt 2 uses this stub (writes NEWFILE2.txt). If --reuse kept attempt 1's
+# diff, attempt 2's churn is 2 (both files) and the finalized branch carries
+# BOTH files; a reset-to-main would have churn 1 and only NEWFILE2.txt.
+# ===========================================================================
+STUB_BIN2="$WORK/bin2"
+mkdir -p "$STUB_BIN2"
+cat > "$STUB_BIN2/flat-cyborg" <<'STUB2_EOF'
+#!/usr/bin/env bash
+set -eu
+CWD=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --cwd) CWD="$2"; shift 2 ;;
+        --) shift; break ;;
+        *) shift ;;
+    esac
+done
+[ -n "$CWD" ] && printf 'second attempt content\n' > "$CWD/NEWFILE2.txt"
+exit 0
+STUB2_EOF
+chmod +x "$STUB_BIN2/flat-cyborg"
+
+REUSE_ISSUE=77
+REUSE_BRANCH="fix/issue-77"
+CONT_FILE="$WORK/cont-77.txt"
+printf 'Continue the change: also add NEWFILE2.txt.\n' > "$CONT_FILE"
+
+# Attempt 1 — fresh --one-attempt (default stub writes NEWFILE.txt).
+OUT25A="$WORK/out25a.txt"
+env PATH="$STUB_BIN:$PATH" COLONY_DIR="$COLONY_DIR" \
+    GITHUB_URL="file://$REMOTE_BASE" GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" FC_STUB_MODE=edit FC_STUB_RC=0 \
+    CODE_EDIT_VERIFY_CMD=true \
+    bash "$ORCH" --owner "$OWNER" --repo "$REPO" --issue "$REUSE_ISSUE" \
+        --branch "$REUSE_BRANCH" --title "reuse/finalize primitives" \
+        --task "Create NEWFILE.txt." --one-attempt >"$OUT25A" 2>"$WORK/err25a.txt"
+RC25A=$?
+if [ "$RC25A" -eq 0 ] && [ "$(cat "$OUT25A")" = "ONE_ATTEMPT exit=0 churn=1 verify=skipped" ]; then
+    pass "run 25a (#1354 --one-attempt): attempt 1 churn=1"
+else
+    fail "run 25a (#1354): attempt 1" "rc=$RC25A stdout=[$(cat "$OUT25A")] err=$(tail -3 "$WORK/err25a.txt")"
+fi
+
+# Attempt 2 — --one-attempt --reuse --continuation (stub2 writes NEWFILE2.txt).
+# churn 2 == both files present == --reuse kept attempt 1's diff.
+OUT25B="$WORK/out25b.txt"
+env PATH="$STUB_BIN2:$PATH" COLONY_DIR="$COLONY_DIR" \
+    GITHUB_URL="file://$REMOTE_BASE" GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" FC_STUB_RC=0 \
+    CODE_EDIT_VERIFY_CMD=true \
+    bash "$ORCH" --owner "$OWNER" --repo "$REPO" --issue "$REUSE_ISSUE" \
+        --branch "$REUSE_BRANCH" --title "reuse/finalize primitives" \
+        --task "Create NEWFILE.txt." --one-attempt --reuse \
+        --continuation "$CONT_FILE" >"$OUT25B" 2>"$WORK/err25b.txt"
+RC25B=$?
+if [ "$RC25B" -eq 0 ] && [ "$(cat "$OUT25B")" = "ONE_ATTEMPT exit=0 churn=2 verify=skipped" ]; then
+    pass "run 25b (#1354 --reuse): attempt 2 ACCUMULATES on attempt 1 (churn 1->2)"
+else
+    fail "run 25b (#1354 --reuse): expected accumulated churn=2" "rc=$RC25B stdout=[$(cat "$OUT25B")] err=$(tail -3 "$WORK/err25b.txt")"
+fi
+
+# Finalize — no editing, commit the accumulated diff + open the PR.
+OUT25C="$WORK/out25c.txt"
+env PATH="$STUB_BIN:$PATH" COLONY_DIR="$COLONY_DIR" \
+    GITHUB_URL="file://$REMOTE_BASE" GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    bash "$ORCH" --owner "$OWNER" --repo "$REPO" --issue "$REUSE_ISSUE" \
+        --branch "$REUSE_BRANCH" --title "reuse/finalize primitives" \
+        --task "Create NEWFILE.txt." --finalize >"$OUT25C" 2>"$WORK/err25c.txt"
+RC25C=$?
+case "$(cat "$OUT25C")" in
+    https://example.test/pr/*) OK25C=1 ;;
+    *) OK25C=0 ;;
+esac
+if [ "$RC25C" -eq 0 ] && [ "$OK25C" -eq 1 ]; then
+    pass "run 25c (#1354 --finalize): commits accumulated diff + opens PR (URL on stdout)"
+else
+    fail "run 25c (#1354 --finalize): PR URL on stdout" "rc=$RC25C stdout=[$(cat "$OUT25C")] err=$(tail -3 "$WORK/err25c.txt")"
+fi
+
+# The pushed branch must carry BOTH files — the accumulation survived to the PR.
+PUSHED_TREE="$(git --git-dir="$BARE" ls-tree -r --name-only "$REUSE_BRANCH" 2>/dev/null | sort | tr '\n' ' ')"
+if printf '%s' "$PUSHED_TREE" | grep -q 'NEWFILE.txt' && printf '%s' "$PUSHED_TREE" | grep -q 'NEWFILE2.txt'; then
+    pass "run 25d (#1354 --finalize): finalized branch carries BOTH accumulated files"
+else
+    fail "run 25d (#1354 --finalize): both files on pushed branch" "tree=[$PUSHED_TREE]"
+fi
+
+# ===========================================================================
+# Run 26 (#1354 step 2a edge cases): validation + empty-finalize + no-branch.
+# ===========================================================================
+# 26a: --finalize + --one-attempt is a caller bug -> exit 2 (no workspace touched).
+env COLONY_DIR="$COLONY_DIR" GITHUB_URL="file://$REMOTE_BASE" GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    bash "$ORCH" --owner "$OWNER" --repo "$REPO" --issue 78 --branch "fix/issue-78" \
+        --title "x" --task "y" --finalize --one-attempt >"$WORK/out26a.txt" 2>&1
+RC26A=$?
+if [ "$RC26A" -eq 2 ]; then
+    pass "run 26a (#1354): --finalize + --one-attempt rejected (exit 2)"
+else
+    fail "run 26a (#1354): expected exit 2" "rc=$RC26A $(tail -2 "$WORK/out26a.txt")"
+fi
+
+# 26b: --reuse with no prior attempt (no local branch) -> exit 2, not a silent
+# fresh edit. Fresh issue 79, never driven.
+env PATH="$STUB_BIN:$PATH" COLONY_DIR="$COLONY_DIR" GITHUB_URL="file://$REMOTE_BASE" \
+    GITHUB_TOKEN="$FAKE_TOKEN" GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" FC_STUB_MODE=edit \
+    bash "$ORCH" --owner "$OWNER" --repo "$REPO" --issue 79 --branch "fix/issue-79" \
+        --title "x" --task "y" --one-attempt --reuse >"$WORK/out26b.txt" 2>&1
+RC26B=$?
+if [ "$RC26B" -eq 2 ]; then
+    pass "run 26b (#1354): --reuse with no prior attempt rejected (exit 2)"
+else
+    fail "run 26b (#1354): expected exit 2" "rc=$RC26B $(tail -2 "$WORK/out26b.txt")"
+fi
+
+# 26c: --finalize on a branch with zero staged diff -> exit 3 NO_EDITS (never an
+# empty PR). Drive one no-edit attempt (creates the branch, no diff), then finalize.
+env PATH="$STUB_BIN:$PATH" COLONY_DIR="$COLONY_DIR" GITHUB_URL="file://$REMOTE_BASE" \
+    GITHUB_TOKEN="$FAKE_TOKEN" GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" FC_STUB_MODE=no-edit \
+    bash "$ORCH" --owner "$OWNER" --repo "$REPO" --issue 80 --branch "fix/issue-80" \
+        --title "x" --task "y" --one-attempt >/dev/null 2>&1 || true
+OUT26C="$WORK/out26c.txt"
+env COLONY_DIR="$COLONY_DIR" GITHUB_URL="file://$REMOTE_BASE" GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    bash "$ORCH" --owner "$OWNER" --repo "$REPO" --issue 80 --branch "fix/issue-80" \
+        --title "x" --task "y" --finalize >"$OUT26C" 2>"$WORK/err26c.txt"
+RC26C=$?
+if [ "$RC26C" -eq 3 ] && grep -q 'NO_EDITS' "$OUT26C"; then
+    pass "run 26c (#1354 --finalize): empty diff -> exit 3 NO_EDITS (no empty PR)"
+else
+    fail "run 26c (#1354 --finalize): expected exit 3 NO_EDITS" "rc=$RC26C stdout=[$(cat "$OUT26C")] err=$(tail -3 "$WORK/err26c.txt")"
+fi
+
+# 26d: bare --reuse (no --one-attempt, no --finalize) is a caller footgun — it
+# would silently run the whole in-shell multi-attempt loop + open a PR. Reject
+# (exit 2) BEFORE any workspace touch. (QA #1419 F1.)
+env PATH="$STUB_BIN:$PATH" COLONY_DIR="$COLONY_DIR" GITHUB_URL="file://$REMOTE_BASE" \
+    GITHUB_TOKEN="$FAKE_TOKEN" GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" FC_STUB_MODE=edit \
+    bash "$ORCH" --owner "$OWNER" --repo "$REPO" --issue 81 --branch "fix/issue-81" \
+        --title "x" --task "y" --reuse >"$WORK/out26d.txt" 2>&1
+RC26D=$?
+if [ "$RC26D" -eq 2 ]; then
+    pass "run 26d (#1354): bare --reuse (no --one-attempt/--finalize) rejected (exit 2)"
+else
+    fail "run 26d (#1354): expected exit 2" "rc=$RC26D $(tail -2 "$WORK/out26d.txt")"
+fi
+
+# 26e: --finalize --recover is nonsensical (recover has its own RECOVERED
+# terminal path that suppresses the PR finalize is meant to open). Reject
+# (exit 2). (QA #1419 F2.)
+env COLONY_DIR="$COLONY_DIR" GITHUB_URL="file://$REMOTE_BASE" GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    bash "$ORCH" --owner "$OWNER" --repo "$REPO" --issue 82 --branch "fix/issue-82" \
+        --title "x" --task "y" --finalize --recover >"$WORK/out26e.txt" 2>&1
+RC26E=$?
+if [ "$RC26E" -eq 2 ]; then
+    pass "run 26e (#1354): --finalize + --recover rejected (exit 2)"
+else
+    fail "run 26e (#1354): expected exit 2" "rc=$RC26E $(tail -2 "$WORK/out26e.txt")"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
