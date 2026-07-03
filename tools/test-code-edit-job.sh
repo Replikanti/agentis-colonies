@@ -70,7 +70,16 @@ set -u
 if [ -n "${STUB_MARKER:-}" ]; then echo "start $$ token=${GITHUB_TOKEN:-MISSING} args=[$*]" >> "$STUB_MARKER"; fi
 sleep "${STUB_SLEEP:-2}"
 if [ "${STUB_EXIT:-0}" -eq 0 ]; then
-    printf '%s\n' "${STUB_URL:-https://example.test/pr/1}"
+    # #1354 step 2b: a --one-attempt drive prints ONE structured outcome line
+    # (not a URL); every other drive (default / --finalize) prints the PR URL.
+    case " $* " in
+        *" --one-attempt "*)
+            printf 'ONE_ATTEMPT exit=0 churn=%s verify=%s\n' "${STUB_CHURN:-1}" "${STUB_VERIFY:-pass}"
+            ;;
+        *)
+            printf '%s\n' "${STUB_URL:-https://example.test/pr/1}"
+            ;;
+    esac
 fi
 exit "${STUB_EXIT:-0}"
 STUB_EOF
@@ -393,6 +402,94 @@ if grep -q -- '--description' "$NODESC_MARKER" 2>/dev/null; then
     fail "G: a run without --description wrongly forwarded it" "marker=$(cat "$NODESC_MARKER" 2>/dev/null)"
 else
     pass "G: a run without --description does NOT forward the flag"
+fi
+
+# ===========================================================================
+# #1354 step 2b: the caller-driven-loop launcher modes (--one-attempt surfaced
+# as STATUS=attempt_done + tokens; --finalize as the ordinary done+url;
+# --continuation copied into the job dir + forwarded).
+# ===========================================================================
+wait_terminal() {  # $1=jobdir — wait until a terminal status file settles
+    local jd="$1" i
+    for i in $(seq 1 60); do
+        if [ -f "$jd/status" ]; then
+            case "$(cat "$jd/status" 2>/dev/null)" in
+                attempt_done|done|no_edits|error) return 0 ;;
+            esac
+        fi
+        sleep 0.1
+    done
+    return 1
+}
+
+# H: --one-attempt -> poll STATUS=attempt_done with re-keyed ATTEMPT_EXIT/CHURN/
+#    VERIFY tokens spliced BEFORE RESULT (which stays last + empty).
+H_MARKER="$WORK/h-marker"; : > "$H_MARKER"
+env COLONY_DIR="$COLONY_DIR" CODE_EDIT_ORCH="$STUB" GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    STUB_SLEEP=0 STUB_EXIT=0 STUB_CHURN=2 STUB_VERIFY=pass STUB_MARKER="$H_MARKER" \
+    bash "$LAUNCHER" --owner "$OWNER" --repo "$REPO" --issue 950 \
+        --branch "fix/issue-950" --title "attempt" --task "do it" --one-attempt >/dev/null 2>&1
+wait_terminal "$(job_dir_for 950)" || true
+H_POLL="$(env COLONY_DIR="$COLONY_DIR" CODE_EDIT_ORCH="$STUB" GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    bash "$LAUNCHER" --owner "$OWNER" --repo "$REPO" --issue 950 \
+        --branch "fix/issue-950" --title "attempt" --task "do it" --one-attempt 2>/dev/null)"
+if [ "$H_POLL" = "STATUS=attempt_done PID_ALIVE=0 ATTEMPT_EXIT=0 CHURN=2 VERIFY=pass RESULT=" ]; then
+    pass "H (#1354): --one-attempt poll surfaces attempt_done + churn/verify tokens"
+else
+    fail "H (#1354): attempt_done poll tokens" "poll=[$H_POLL]"
+fi
+if grep -q -- '--one-attempt' "$H_MARKER"; then
+    pass "H (#1354): launcher forwards --one-attempt to the orchestrator"
+else
+    fail "H (#1354): --one-attempt not forwarded" "marker=$(cat "$H_MARKER" 2>/dev/null)"
+fi
+
+# I: --finalize -> the ordinary done + PR URL surface (no attempt tokens).
+I_MARKER="$WORK/i-marker"; : > "$I_MARKER"
+env COLONY_DIR="$COLONY_DIR" CODE_EDIT_ORCH="$STUB" GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    STUB_SLEEP=0 STUB_EXIT=0 STUB_URL="https://example.test/pr/fin" STUB_MARKER="$I_MARKER" \
+    bash "$LAUNCHER" --owner "$OWNER" --repo "$REPO" --issue 951 \
+        --branch "fix/issue-951" --title "fin" --task "do it" --finalize >/dev/null 2>&1
+wait_terminal "$(job_dir_for 951)" || true
+I_POLL="$(env COLONY_DIR="$COLONY_DIR" CODE_EDIT_ORCH="$STUB" GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    bash "$LAUNCHER" --owner "$OWNER" --repo "$REPO" --issue 951 \
+        --branch "fix/issue-951" --title "fin" --task "do it" --finalize 2>/dev/null)"
+if [ "$I_POLL" = "STATUS=done PID_ALIVE=0 RESULT=https://example.test/pr/fin" ]; then
+    pass "I (#1354): --finalize surfaces the ordinary done + PR URL"
+else
+    fail "I (#1354): finalize done/url poll" "poll=[$I_POLL]"
+fi
+if grep -q -- '--finalize' "$I_MARKER"; then
+    pass "I (#1354): launcher forwards --finalize to the orchestrator"
+else
+    fail "I (#1354): --finalize not forwarded" "marker=$(cat "$I_MARKER" 2>/dev/null)"
+fi
+
+# J: --continuation is copied into the job dir (surviving the caller's temp
+#    lifecycle) and --reuse + --continuation are forwarded to the orchestrator.
+J_MARKER="$WORK/j-marker"; : > "$J_MARKER"
+J_CONT="$WORK/cont-952.txt"; printf 'CONTINUE-THE-EDIT-952' > "$J_CONT"
+env COLONY_DIR="$COLONY_DIR" CODE_EDIT_ORCH="$STUB" GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    STUB_SLEEP=0 STUB_EXIT=0 STUB_CHURN=3 STUB_VERIFY=fail STUB_MARKER="$J_MARKER" \
+    bash "$LAUNCHER" --owner "$OWNER" --repo "$REPO" --issue 952 \
+        --branch "fix/issue-952" --title "cont" --task "do it" \
+        --one-attempt --reuse --continuation "$J_CONT" >/dev/null 2>&1
+wait_terminal "$(job_dir_for 952)" || true
+JD952="$(job_dir_for 952)"
+if [ -f "$JD952/continuation" ] && grep -q 'CONTINUE-THE-EDIT-952' "$JD952/continuation" 2>/dev/null; then
+    pass "J (#1354): --continuation copied into the job dir (survives caller temp)"
+else
+    fail "J (#1354): continuation copy" "present=$([ -f "$JD952/continuation" ] && echo yes || echo no)"
+fi
+if grep -q -- '--reuse' "$J_MARKER" && grep -q -- '--continuation' "$J_MARKER"; then
+    pass "J (#1354): launcher forwards --reuse + --continuation to the orchestrator"
+else
+    fail "J (#1354): reuse/continuation not forwarded" "marker=$(cat "$J_MARKER" 2>/dev/null)"
 fi
 
 echo ""
