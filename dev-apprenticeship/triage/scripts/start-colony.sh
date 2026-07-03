@@ -201,6 +201,14 @@ esac
 
 export FORGE_TYPE
 export COLONY_DIR
+# LLM-session concurrency cap (#1352): pin the slot pool to a fed-FIXED path
+# (cwd-independent, derived from this script's location) so EVERY daemon — the
+# normal launch AND a `--restart-agent` respawn from a different cwd (e.g. the
+# dashboard) — resolves the SAME K-slot semaphore and the cap stays truly
+# federation-wide. Without this, tools/lib/llm-session-slot.sh falls back to a
+# PWD-relative pool and the cap fragments under restart.
+AGENTIS_LLM_SLOTS_DIR="$(cd "$COLONY_DIR/.." && pwd)/.agentis/llm-slots"
+export AGENTIS_LLM_SLOTS_DIR
 
 # #316 M5a: --print-repos-json probe for the federation-dashboard collector.
 # Emits the GITHUB_REPOS_JSON value (empty string for legacy single-block

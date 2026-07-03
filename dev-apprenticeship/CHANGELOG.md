@@ -17,6 +17,19 @@ is asserted until multi-version CI is in place.
 
 ### Added
 
+- **Federation-wide LLM-session concurrency cap**
+  ([#1352](https://github.com/Replikanti/agentis-colonies/issues/1352)). Running
+  many agents at the autonomous tier makes every agent `prompt()` each tick,
+  each spawning a `flat-cyborg` → Claude-Code PTY session; on a single host
+  these thrash and wedge (lowering confidence does not help — a dormant agent
+  still `prompt()`s each tick). New `tools/lib/llm-session-slot.sh` — a portable
+  `mkdir`-based counting semaphore over `K = ${LLM_MAX_CONCURRENT:-3}` slots with
+  PID-liveness self-heal and fail-open backpressure — is acquired by BOTH
+  `flat-cyborg-claude.sh` (reasoning) and `code-edit-in-checkout.sh` (editing),
+  so the total concurrent PTY-session count is bounded. All five colonies'
+  `start-colony.sh` export `AGENTIS_LLM_SLOTS_DIR` to a fed-fixed, cwd-independent
+  path so the pool stays global across the normal launch AND `--restart-agent`
+  respawns.
 - **self-observe acceptance gate — filing volume now feeds back on filed-issue
   acceptance rate** ([#1411](https://github.com/Replikanti/agentis-colonies/issues/1411),
   M4 step 2 of [#1266](https://github.com/Replikanti/agentis-colonies/issues/1266);
