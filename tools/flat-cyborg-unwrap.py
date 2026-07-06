@@ -36,6 +36,20 @@ import sys
 # that merely *contains* a `{...}` is not, so it passes through untouched.
 _MARGIN = 160
 
+# Plain-text (non-JSON) sentinel unwrap (#1443): none of the JSON-shaped
+# branches above fire for a bare "yes"/"no" or prose reply, so a leaked
+# FCB_<hex>_BEGIN/_END screen-scrape wrapper around plain text used to pass
+# through untouched, corrupting exact-string comparisons downstream. Strip
+# the wrapper ONLY when the first line is a BEGIN marker and the last line
+# is the matching END marker (same hex) -- a narrow, paired match so prose
+# that merely mentions "FCB_..." mid-sentence is never touched. Internal
+# newlines are preserved byte-for-byte (unlike the JSON path): prose
+# formatting is meaningful, not just a parse artifact.
+_SENTINEL_WRAP_RE = re.compile(
+    r"^[ \t]*FCB_([0-9a-f]+)_BEGIN[ \t]*\n(.*)\n[ \t]*FCB_\1_END[ \t]*$",
+    re.DOTALL,
+)
+
 
 def _collapse(js):
     # Collapse soft TUI line-wraps (newline + indent) to a single space so the
@@ -82,6 +96,11 @@ def _unwrap(s):
                 trail = len(t[end + 1:].strip())
                 if lead <= _MARGIN and trail <= _MARGIN:
                     return span
+
+    # Plain-text sentinel unwrap: none of the JSON branches above matched.
+    sm = _SENTINEL_WRAP_RE.match(t)
+    if sm:
+        return sm.group(2)
 
     # Not JSON-shaped → passthrough byte-for-byte (prose consumers untouched).
     return s

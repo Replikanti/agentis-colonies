@@ -34,6 +34,13 @@
 #      SIGTERM teardown, including a no-controlling-tty sub-case via `setsid -w`
 #      (22). These invoke the wrapper against a STUB flat-cyborg; they still never
 #      invoke the real flat-cyborg / claude binaries.
+#   23-25 (#1443). The plain-text SENTINEL UNWRAP: a bare non-JSON reply
+#      (e.g. "yes") wrapped in a paired FCB_<hex>_BEGIN/_END sentinel unwraps to
+#      exactly the inner text (23); a multi-line/multi-paragraph prose body
+#      survives with blank lines and formatting intact, i.e. no _collapse()-style
+#      flattening (24); and prose that merely mentions "FCB_..._BEGIN" mid-sentence
+#      (no matching paired END) passes through byte-for-byte, the false-positive
+#      guard (25).
 #
 # Auto-discovered by tools/colony-lint.sh's tools-test loop. Exit 0 if all pass.
 
@@ -571,6 +578,56 @@ RSTUB_EOF
 
     rm -rf "$REAP_STUB_DIR"
 fi
+
+# ===========================================================================
+# Plain-text sentinel unwrap (#1443). None of the JSON-shaped branches above
+# fire for a bare "yes"/"no" or prose reply, so a leaked FCB_<hex>_BEGIN/_END
+# screen-scrape sentinel wrapper around plain text used to pass through
+# untouched, corrupting exact-string comparisons downstream. The wrapper now
+# strips a PAIRED begin/end marker (same hex, first/last line) around
+# non-JSON content, preserving internal newlines byte-for-byte.
+# ===========================================================================
+
+# Assert: unwrap($1) equals $2 byte-for-byte (exact, not prose-passthrough --
+# used when input != expected output, i.e. the wrapper WAS stripped).
+assert_exact() {  # $1=input $2=expected $3=test_label
+    local _out
+    _out="$(unwrap "$1")"
+    if [ "$_out" = "$2" ]; then
+        pass "$3"
+    else
+        fail "$3" "out=[$_out] expected=[$2]"
+    fi
+}
+
+# --- Test 23: sentinel-wrapped bare "yes" unwraps to exactly "yes" -----------
+SENTINEL_YES='FCB_a1b2c3_BEGIN
+yes
+FCB_a1b2c3_END'
+assert_exact "$SENTINEL_YES" "yes" \
+    "test 23: sentinel-wrapped bare 'yes' unwraps to exactly 'yes'"
+
+# --- Test 24: sentinel-wrapped multi-line prose survives with formatting -----
+# intact (no _collapse()-style flattening of blank lines / paragraphs).
+SENTINEL_PROSE_BODY='First paragraph of the analysis.
+
+Second paragraph, with a blank line above it.
+- bullet one
+- bullet two
+
+Final paragraph.'
+SENTINEL_PROSE="FCB_deadbeef_BEGIN
+$SENTINEL_PROSE_BODY
+FCB_deadbeef_END"
+assert_exact "$SENTINEL_PROSE" "$SENTINEL_PROSE_BODY" \
+    "test 24: sentinel-wrapped multi-line prose unwraps with formatting intact"
+
+# --- Test 25: prose merely MENTIONING FCB_..._BEGIN mid-sentence passes ------
+# through byte-for-byte -- the false-positive guard. Not on its own first/last
+# line and no matching END, so the paired regex must not match.
+MENTIONS_SENTINEL='I noticed the flat-cyborg screen-scrape leaks a stray FCB_123abc_BEGIN marker sometimes, but that is unrelated to this reply.'
+assert_passthrough "$MENTIONS_SENTINEL" \
+    "test 25: prose mentioning FCB_..._BEGIN mid-sentence passes through unchanged"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
