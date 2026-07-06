@@ -188,12 +188,21 @@ LLM calls**:
 - **One-shot historical backfill** (run once after install, or any time):
 
   ```bash
-  # Preview what would be ingested (no writes):
-  COLONY_DIR=$PWD/triage tools/backfill-crystallizer.sh \
-      --fed-dir $PWD --dry-run
+  # Preview what would be ingested (no writes). The forge fetch needs the
+  # GITLAB_*/GITHUB_* env exported; for an env-free preview point it at a
+  # pre-fetched dump instead:
+  #   forge-api.sh issues --view raw > /tmp/issues.json   (from a sourced shell)
+  tools/backfill-crystallizer.sh --fed-dir $PWD \
+      --issues-json /tmp/issues.json --dry-run
   # Ingest for real (env-sourced path — recommended):
   ./triage/scripts/start-colony.sh --ingest
   ```
+
+  The env-sourced path runs in `--incremental` mode, which sweeps history
+  **oldest-first** at `BACKFILL_MAX_ISSUES` (default 200) issues per run and
+  advances the `triage:ingest:cursor` memo monotonically — a large backlog
+  drains across successive sidecar ticks with nothing skipped. Export a
+  higher `BACKFILL_MAX_ISSUES` before the first run to drain faster.
 
   The tool pages raw issues via `forge-api.sh issues --view raw`, builds
   the SAME canonical contexts the agents build (shared builder

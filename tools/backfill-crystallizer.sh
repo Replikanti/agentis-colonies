@@ -60,13 +60,20 @@ DRY_RUN=0
 INCREMENTAL=0
 KEEP=0
 
+need_val() {
+    if [ "$2" -lt 2 ]; then
+        echo "backfill-crystallizer.sh: $1 requires a value" >&2
+        exit 2
+    fi
+}
+
 while [ $# -gt 0 ]; do
     case "$1" in
-        --fed-dir)      FED_DIR="${2:-}"; shift 2 ;;
-        --colony-dir)   COLONY_DIR_ARG="${2:-}"; shift 2 ;;
-        --issues-json)  ISSUES_JSON="${2:-}"; shift 2 ;;
-        --max)          MAX_ISSUES="${2:-}"; shift 2 ;;
-        --classes)      CLASSES="${2:-}"; shift 2 ;;
+        --fed-dir)      need_val "$1" $#; FED_DIR="$2"; shift 2 ;;
+        --colony-dir)   need_val "$1" $#; COLONY_DIR_ARG="$2"; shift 2 ;;
+        --issues-json)  need_val "$1" $#; ISSUES_JSON="$2"; shift 2 ;;
+        --max)          need_val "$1" $#; MAX_ISSUES="$2"; shift 2 ;;
+        --classes)      need_val "$1" $#; CLASSES="$2"; shift 2 ;;
         --dry-run)      DRY_RUN=1; shift ;;
         --incremental)  INCREMENTAL=1; shift ;;
         --keep)         KEEP=1; shift ;;
@@ -124,15 +131,24 @@ ME_VAL="$( (cd "$FED_DIR" && agentis memo get gitlab:me 2>/dev/null) || true)"
 PV_VAL="$( (cd "$FED_DIR" && agentis memo get triage:labels:priority 2>/dev/null) || true)"
 
 SINCE=""
+ORDER="newest"
 if [ "$INCREMENTAL" = "1" ]; then
     SINCE="$( (cd "$FED_DIR" && agentis memo get triage:ingest:cursor 2>/dev/null) || true)"
+    # Oldest-first is load-bearing in incremental mode: with newest-first,
+    # a window holding more than --max decided issues (guaranteed on the
+    # first ever tick, where the cursor is empty) would advance the cursor
+    # past the un-processed older tail and skip it FOREVER. Oldest-first
+    # makes each tick a monotonic step through history — a large backlog
+    # drains at --max issues per sidecar tick. Raise BACKFILL_MAX_ISSUES
+    # to drain faster.
+    ORDER="oldest"
 fi
 
 TRIPLES="$WORK_DIR/triples.jsonl"
 CURSOR_FILE="$WORK_DIR/cursor.txt"
 ME="$ME_VAL" PV="$PV_VAL" python3 "$CANON" triples \
     --classes "$CLASSES" --max "$MAX_ISSUES" --since "$SINCE" \
-    --cursor-out "$CURSOR_FILE" < "$RAW_JSON" > "$TRIPLES"
+    --order "$ORDER" --cursor-out "$CURSOR_FILE" < "$RAW_JSON" > "$TRIPLES"
 
 TRIPLE_COUNT="$(grep -c . "$TRIPLES" || true)"
 if [ "$TRIPLE_COUNT" -eq 0 ]; then
@@ -175,7 +191,11 @@ if [ "$RC" -eq 0 ] && [ "$INCREMENTAL" = "1" ] && [ -s "$CURSOR_FILE" ]; then
     (cd "$FED_DIR" && agentis memo set triage:ingest:cursor "$(cat "$CURSOR_FILE")" >/dev/null 2>&1) || true
 fi
 
-echo "backfill-crystallizer.sh: ingested $TRIPLE_COUNT triples (classes: $CLASSES)"
+if [ "$RC" -eq 0 ]; then
+    echo "backfill-crystallizer.sh: ingested $TRIPLE_COUNT triples (classes: $CLASSES)"
+else
+    echo "backfill-crystallizer.sh: attempted $TRIPLE_COUNT triples, at least one driver failed (classes: $CLASSES)" >&2
+fi
 if [ "$KEEP" = "1" ] || [ "$RC" -ne 0 ]; then
     echo "backfill-crystallizer.sh: work dir kept at $WORK_DIR"
 fi

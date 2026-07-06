@@ -21,8 +21,11 @@ Modes:
            line: {"class","iid","ctx","coarse","action"} for every
            requested class the issue is decided for. Honors --since
            (ISO timestamp; only issues with updated_at strictly greater),
-           --max (cap on ISSUES considered, newest-by-updated_at first)
-           and --cursor-out (write the max updated_at of the processed
+           --max (cap on ISSUES considered), --order (newest|oldest;
+           incremental callers MUST use oldest so the cursor advances
+           monotonically through history instead of jumping past the
+           un-processed tail when a window holds more than --max issues)
+           and --cursor-out (write the max updated_at of the PROCESSED
            issues, for the incremental-ingest cursor).
 
 Env: ME = operator username (scope dimension, labeler class only),
@@ -140,8 +143,8 @@ def build(issue, klass, me, pv):
         slabels = sorted(set(labels))
         ctx = "kw=" + ",".join(hits) + " labels=" + ",".join(slabels)
         coarse = "kw=" + ",".join(hits)
-        action = issue["assignees"][0].lstrip("@").strip()
-        if not action:
+        action = issue["assignees"][0].strip().lstrip("@")
+        if not action.strip():
             return None
         query = one_line(issue["title"] + " " + " ".join(slabels))
         return ctx, coarse, action, query
@@ -170,7 +173,10 @@ def main():
     ap.add_argument("--since", default="",
                     help="only issues with updated_at strictly greater (ISO)")
     ap.add_argument("--max", type=int, default=200,
-                    help="cap on issues considered (newest first)")
+                    help="cap on issues considered")
+    ap.add_argument("--order", choices=["newest", "oldest"], default="newest",
+                    help="processing order when --max truncates; incremental "
+                         "callers use oldest for monotonic cursor progress")
     ap.add_argument("--cursor-out", default="",
                     help="file to write max processed updated_at into")
     args = ap.parse_args()
@@ -195,8 +201,11 @@ def main():
         if built is None:
             return 0
         ctx, coarse, action, query = built
-        print(str(issue["iid"]) + "\t" + ctx + "\t" + coarse + "\t"
-              + action + "\t" + query)
+        # Diagnostic TSV surface: flatten fields so a pathological label
+        # with an embedded tab/newline cannot corrupt the line. The
+        # machine path (triples mode) JSON-escapes instead.
+        print(str(issue["iid"]) + "\t" + one_line(ctx) + "\t"
+              + one_line(coarse) + "\t" + one_line(action) + "\t" + query)
         return 0
 
     # triples mode
@@ -206,7 +215,8 @@ def main():
     issues = [i for i in (norm_issue(x) for x in data) if i is not None]
     if args.since:
         issues = [i for i in issues if i["updated_at"] > args.since]
-    issues.sort(key=lambda i: i["updated_at"], reverse=True)
+    issues.sort(key=lambda i: i["updated_at"],
+                reverse=(args.order == "newest"))
     if args.max > 0:
         issues = issues[:args.max]
     cursor = ""

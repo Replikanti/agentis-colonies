@@ -149,6 +149,21 @@ TRIPLES_SINCE="$(ME="mholy" PV="P1" python3 "$CANON" triples \
 N_SINCE="$(printf '%s\n' "$TRIPLES_SINCE" | grep -c . || true)"
 assert_line "--since strictly-greater filter drops the older issue" "$N_SINCE" "1"
 
+# ----- 4. --order oldest + --max: monotonic incremental cursor -----
+# The incremental caller (backfill-crystallizer.sh --incremental) MUST use
+# oldest-first: with newest-first, a window holding more than --max issues
+# would advance the cursor past the un-processed older tail and skip it
+# forever. With --order oldest --max 1 on the 2-issue fixture, the OLDER
+# issue (gl, 2026-07-01) is processed and the cursor lands on ITS
+# timestamp — not on the newest issue's — so the next run picks up gh.
+TRIPLES_OLD="$(ME="mholy" PV="P1" python3 "$CANON" triples \
+    --classes label --max 1 --order oldest \
+    --cursor-out "$FIX_DIR/cursor-old" < "$FIX_DIR/all.json")"
+assert_line "--order oldest --max 1 processes the older issue first" \
+    "$(printf '%s\n' "$TRIPLES_OLD" | grep -c '"iid": 7' || true)" "1"
+assert_line "oldest-first cursor stays at the processed slice's max (monotonic)" \
+    "$(cat "$FIX_DIR/cursor-old")" "2026-07-01T10:00:00Z"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
