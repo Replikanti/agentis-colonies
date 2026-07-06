@@ -807,6 +807,30 @@ if [ -d "$AGENTIS_DIR" ]; then
         ok "upgraded exec.env_passthrough (#1430)"
     fi
     write_key 'exec.env_passthrough'         'COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE,PLAN_AUTO_PROMOTE,CODE_EDIT_MAX_CONCURRENT,AG_DRIVEN_EDIT_LOOP,LLM_MAX_CONCURRENT,LABELER_RULE_FIRST,LABELER_RULE_CONFIDENCE,ROUTER_RULE_FIRST,ROUTER_RULE_CONFIDENCE,LABELER_BM25_RECALL,ROUTER_BM25_RECALL,TRIAGE_BM25_K,PRIORITIZER_RULE_FIRST,PRIORITIZER_RULE_CONFIDENCE,PRIORITIZER_BM25_RECALL'
+    # #1437: loud residue check. The exact-match migrations above
+    # deliberately skip a hand-edited allowlist (#1426 contract: never
+    # auto-modify operator customizations) — which can leave the newest
+    # getenv-read knobs silently inert (#1428 class: getenv() reads the
+    # SANITIZED env, so a knob missing from the allowlist never reaches the
+    # .ag runtime). Warn loudly and name the missing vars; never edit.
+    RESIDUE_ALLOWLIST="$(grep '^exec\.env_passthrough[[:space:]]*=' "$AGENTIS_CONFIG" | head -1 | cut -d= -f2- | tr -d ' ')"
+    MISSING_KNOBS=""
+    for knob in IMPLEMENTATION_TRIGGER_LABEL PLANNING_TRIGGER_LABEL AUTO_MERGE \
+                PLAN_AUTO_PROMOTE CODE_EDIT_MAX_CONCURRENT AG_DRIVEN_EDIT_LOOP \
+                LLM_MAX_CONCURRENT LABELER_RULE_FIRST LABELER_RULE_CONFIDENCE \
+                ROUTER_RULE_FIRST ROUTER_RULE_CONFIDENCE LABELER_BM25_RECALL \
+                ROUTER_BM25_RECALL TRIAGE_BM25_K PRIORITIZER_RULE_FIRST \
+                PRIORITIZER_RULE_CONFIDENCE PRIORITIZER_BM25_RECALL; do
+        case ",$RESIDUE_ALLOWLIST," in
+            *",$knob,"*) ;;
+            *) MISSING_KNOBS="$MISSING_KNOBS $knob" ;;
+        esac
+    done
+    if [ -n "$MISSING_KNOBS" ]; then
+        fail "exec.env_passthrough is missing getenv knobs:$MISSING_KNOBS"
+        info "getenv() reads the SANITIZED env — these operator overrides are silently inert until added (#1426/#1428/#1437)."
+        info "Your allowlist looks hand-customized, so install.sh will not modify it; append the missing names manually."
+    fi
     write_key 'exec.default_timeout_ms'      '120000'
     write_key 'pii_transmit'                 'allow'
     write_key 'knowledge.enabled'            'true'

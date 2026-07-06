@@ -401,6 +401,14 @@ fn record_rule_feedback(blob: string, signal: int) -> void {
     if rule_id == "void" {
         return;
     };
+    // #1437: signal 2 (ours kept, another priority-like label added) is
+    // NEUTRAL — no crystallizer touch at all. record_use(rule_id, false, 0.0)
+    // would still bump use_count without success_count, silently pushing a
+    // kept-every-time rule toward the success_rate<0.5 && use_count>=20
+    // compaction retirement gate.
+    if signal == 2 {
+        return;
+    };
     crystallizer_record_use(rule_id, signal == 1, rule_feedback_delta(signal));
     print("[prioritizer] crystallizer feedback: rule", rule_id, "signal", signal);
 }
@@ -427,7 +435,11 @@ fn apply_feedback(delta: float, owner: string, repo: string) -> void {
 fn record_priority_verdict(owner: string, repo: string, issue_id: int, priority: string, rule_id: string) -> void {
     let ts_raw = try { exec sh "date +%s"; } catch e { "0"; };
     let blob = "[" + ts_raw + "," + to_string(issue_id) + ",\"" + priority + "\",\"" + rule_id + "\"]";
-    memo_write(scoped_memo(owner, repo, "prioritizer:pending_verdict"), blob);
+    // #1437 multi-slot: keyed per-iid + a CSV index (labeler #203 idiom)
+    // so two propose/review-gated ticks on DIFFERENT issues no longer
+    // overwrite each other's pending verdict unscored.
+    memo_write(scoped_memo(owner, repo, "prioritizer:pending_verdict:" + to_string(issue_id)), blob);
+    append_verdict_index(owner, repo, issue_id);
     print("[prioritizer] verdict recorded: issue", issue_id, "suggested", priority);
 }
 
@@ -446,24 +458,25 @@ fn verdict_age_seconds(blob: string) -> int {
 // "has some label" is NOT a signal here; only a priority-like label is).
 // Clears the verdict when scored or aged out (> 24h). Signal: 1 = our
 // suggested label is present (kept), 3 = a different priority-like label is
-// present without ours (operator override). The whole function is gated on
-// PRIORITIZER_RULE_FIRST so the rollback knob leaves pre-pilot behaviour
-// byte-identical (no verdict is ever recorded when disabled, and any stale
-// blob from a previously-enabled run is ignored rather than scored).
-fn evaluate_priority_verdict(owner: string, repo: string) -> void {
-    if getenv("PRIORITIZER_RULE_FIRST") == "0" {
-        return;
-    };
-    let key = scoped_memo(owner, repo, "prioritizer:pending_verdict");
+// present without ours (operator override). The PRIORITIZER_RULE_FIRST
+// rollback gate lives on the evaluate_priority_verdict wrapper below
+// (#1437).
+// #1437: score ONE pending verdict blob at `key`. Returns "keep" when the
+// verdict should stay in the index for a future tick (fetch failure or no
+// operator signal yet) and "drop" when it was scored, aged out (> 24h), or
+// the blob is missing (index drift self-heal). Factored out of the former
+// single-slot evaluate_priority_verdict so the per-iid index scanner and the
+// legacy-slot migration share one scoring path.
+fn score_priority_verdict_key(owner: string, repo: string, key: string) -> string {
     let blob = recall_latest(key);
     if len(blob) < 3 {
-        return;
+        return "drop";
     };
     let timeout_s = 86400;
     if verdict_age_seconds(blob) > timeout_s {
         print("[prioritizer] verdict aged out without signal");
         memo_write(key, "");
-        return;
+        return "drop";
     };
     let issue_id = parse_int(to_string(json_get(blob, "[1]")));
     let suggested = to_string(json_get(blob, "[2]"));
@@ -471,13 +484,18 @@ fn evaluate_priority_verdict(owner: string, repo: string) -> void {
     let cur_cmd = "$COLONY_DIR/scripts/forge-api.sh get-issue " + to_string(issue_id) + " --view feedback-issue" + repo_arg(owner, repo);
     let cur_raw = try { exec sh cur_cmd; } catch e { ""; };
     if len(cur_raw) < 3 {
-        return;
+        return "keep";
     };
     let vocab = effective_priority_vocab();
     // Deterministic compare in python (cheap, reproducible) rather than a
     // prompt() round-trip. Output: 0 = no signal (no priority-like label
-    // yet), 1 = kept (our suggested label present), 3 = overridden (a
-    // priority-like label present, but not ours).
+    // yet), 1 = kept (our suggested label is the ONLY priority-like label),
+    // 2 = partial (ours present but the operator ADDED a different
+    // priority-like label — an escalation is not agreement, #1437; delta
+    // 0.0, rule feedback delta 0.0), 3 = overridden (a priority-like label
+    // present, but not ours). Comparison is case-insensitive (#1437) —
+    // is_pri lowercases, so a case-mismatched suggestion must not read as
+    // an override.
     let match_cmd = "SUGGESTED=" + shell_escape(suggested) + " RAW=" + shell_escape(cur_raw) + " PV=" + shell_escape(vocab) +
         " python3 -c '" +
         "import os, json, re\n" +
@@ -492,17 +510,21 @@ fn evaluate_priority_verdict(owner: string, repo: string) -> void {
         "    if l2 in pv_set: return True\n" +
         "    return False\n" +
         "sug=os.environ[\"SUGGESTED\"].strip()\n" +
+        "sug_l=sug.lower()\n" +
         "try:\n" +
         "    act=[str(l) for l in json.loads(os.environ[\"RAW\"]).get(\"labels\", [])]\n" +
         "except Exception:\n" +
         "    print(0); raise SystemExit\n" +
+        "act_l=[a.strip().lower() for a in act]\n" +
         "pri=[l for l in act if is_pri(l)]\n" +
-        "print(0 if not pri else (1 if sug in act else 3))" +
+        "ours=sug_l in act_l\n" +
+        "others=[l for l in pri if str(l).strip().lower()!=sug_l]\n" +
+        "print(0 if not pri else (1 if (ours and len(others)==0) else (2 if ours else 3)))" +
         "'";
     let signal_raw = try { exec sh match_cmd; } catch e { "0"; };
     let signal = parse_int(signal_raw);
     if signal == 0 {
-        return;
+        return "keep";
     };
     apply_feedback(signal_to_delta(signal), owner, repo);
     // Credit / penalise the crystallized rule (no-op on LLM-path verdicts
@@ -532,6 +554,68 @@ fn evaluate_priority_verdict(owner: string, repo: string) -> void {
     };
     print("[prioritizer] reality-check: issue", issue_id, "signal", signal, "->", outcome);
     memo_write(key, "");
+    return "drop";
+}
+
+// CSV accumulator helper — appends `iid_raw` to `acc` with a comma
+// separator, or returns `iid_raw` when `acc` is empty (labeler idiom).
+fn append_csv(acc: string, iid_raw: string) -> string {
+    if len(acc) > 0 {
+        return acc + "," + iid_raw;
+    };
+    return iid_raw;
+}
+
+// #1437: append an iid to the pending-verdict index, deduping so the same
+// iid never appears twice (freshest occurrence at the tail — latest write
+// wins for repeated suggestions on one issue). Catch-branch fallback
+// preserves previously-queued peers (labeler #203 rationale).
+fn append_verdict_index(owner: string, repo: string, iid: int) -> void {
+    let key = scoped_memo(owner, repo, "prioritizer:pending_verdict_index");
+    let existing = recall_latest(key);
+    let iid_str = to_string(iid);
+    let append_cmd = "EX=" + shell_escape(existing) + " N=" + shell_escape(iid_str) +
+        " python3 -c 'import os; ex=os.environ[\"EX\"]; n=os.environ[\"N\"]; parts=[p for p in ex.split(\",\") if p.strip() and p.strip()!=n]; parts.append(n); print(\",\".join(parts))'";
+    let next = try { exec sh append_cmd; } catch e { append_csv(existing, iid_str); };
+    memo_write(key, next);
+}
+
+// #1437: recursive scanner over the pending-verdict index (`.ag` has no
+// loops — tail recursion per the runtime convention). Scores each iid's
+// blob; keeps only still-pending ones in the rebuilt index.
+fn eval_priority_verdicts_at(owner: string, repo: string, index_csv: string, pos: int, acc: string) -> string {
+    let iid_raw = try {
+        exec sh "CSV=" + shell_escape(index_csv) + " POS=" + to_string(pos) +
+            " python3 -c 'import os; parts=[p for p in os.environ[\"CSV\"].split(\",\") if p.strip()]; p=int(os.environ[\"POS\"]); print(parts[p] if 0<=p<len(parts) else \"\")'";
+    } catch e { ""; };
+    if len(iid_raw) < 1 {
+        return acc;
+    };
+    let verdict = score_priority_verdict_key(owner, repo, scoped_memo(owner, repo, "prioritizer:pending_verdict:" + iid_raw));
+    if verdict == "keep" {
+        return eval_priority_verdicts_at(owner, repo, index_csv, pos + 1, append_csv(acc, iid_raw));
+    };
+    return eval_priority_verdicts_at(owner, repo, index_csv, pos + 1, acc);
+}
+
+// #1437: multi-slot entry point (keeps the pre-#1437 name so the tick
+// call site is unchanged). Scores every pending per-iid verdict and
+// rewrites the index with the survivors. Also scores the LEGACY
+// single-slot key once per tick so a verdict recorded by a pre-#1437
+// daemon is still honoured across the upgrade boundary. Gated on
+// PRIORITIZER_RULE_FIRST exactly like the single-slot predecessor.
+fn evaluate_priority_verdict(owner: string, repo: string) -> void {
+    if getenv("PRIORITIZER_RULE_FIRST") == "0" {
+        return;
+    };
+    score_priority_verdict_key(owner, repo, scoped_memo(owner, repo, "prioritizer:pending_verdict"));
+    let ikey = scoped_memo(owner, repo, "prioritizer:pending_verdict_index");
+    let index_csv = recall_latest(ikey);
+    if len(index_csv) < 1 {
+        return;
+    };
+    let new_index = eval_priority_verdicts_at(owner, repo, index_csv, 0, "");
+    memo_write(ikey, new_index);
 }
 
 // #1430 crystallizer pilot: rule-hit application. Mirror of the LLM
@@ -772,7 +856,13 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         let bm25_flag = getenv("PRIORITIZER_BM25_RECALL");
         let bm25_enabled = if rule_first_enabled { bm25_flag != "0"; } else { false; };
         let bm25_k_str = getenv("TRIAGE_BM25_K");
-        let bm25_k = if len(bm25_k_str) > 0 { parse_int(bm25_k_str); } else { 3; };
+        // #1437: clamp K at 20 — each Stage 1b candidate hop is a pool-scan
+        // lookup (plus a potential #670 peer-fetch round-trip when enabled),
+        // so an oversized operator K would exhaust the tick CB budget
+        // instead of degrading to the LLM. k<=0 still disables recall via
+        // the builtin's empty-list contract.
+        let bm25_k_raw = if len(bm25_k_str) > 0 { parse_int(bm25_k_str); } else { 3; };
+        let bm25_k = if bm25_k_raw > 20 { 20; } else { bm25_k_raw; };
         let canon_line = if rule_first_enabled { canonical_priority_context(raw, priority_example); } else { ""; };
         let canon_iid = if rule_first_enabled { parse_int(repo_field(canon_line, 0)); } else { 0; };
         let canonical_ctx = if rule_first_enabled { repo_field(canon_line, 1); } else { ""; };
@@ -819,7 +909,9 @@ fn tick_for_repo(owner: string, repo: string) -> void {
             } else { []; };
         } else { []; };
         if len(bm25_cands) > 0 {
-            let bm25_ctx = bm25_pick_at("prioritize", bm25_cands, 0, min_conf);
+            // #1437: try-wrapped — a candidate-walk error must degrade to
+            // the LLM path, not kill the tick.
+            let bm25_ctx = try { bm25_pick_at("prioritize", bm25_cands, 0, min_conf); } catch e { ""; };
             if len(bm25_ctx) > 0 {
                 let rule_b = crystallizer_lookup_with_confidence("prioritize", bm25_ctx, min_conf);
                 if len(rule_b) > 0 {
@@ -839,7 +931,8 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         // ground the decide prompt with the top BM25 candidates so the LLM
         // sees how similar past issues were prioritized. Empty block =
         // context byte-identical to pre-pilot.
-        let rag_block = bm25_grounding_at(bm25_cands, 0, "");
+        // #1437: try-wrapped for the same reason as the pick walk above.
+        let rag_block = try { bm25_grounding_at(bm25_cands, 0, ""); } catch e { ""; };
         let grounded_context = if len(rag_block) > 0 {
             context + "\nSimilar past priority decisions (crystallized rules, BM25-ranked, most relevant first — follow them unless the issue clearly differs):" + rag_block;
         } else { context; };
@@ -901,6 +994,12 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                             };
                         };
                     };
+                } else {
+                    // #1437: the skip is correct (distilling issue A's context
+                    // against issue B's decision would mint a mis-scoped rule)
+                    // but it must not be silent — operators debugging "why does
+                    // nothing crystallize" need the divergence visible.
+                    print("[prioritizer] distill skipped: LLM chose issue", action.issue_id, "but the canonical context was built for issue", canon_iid, "(#1437)");
                 };
             };
         };

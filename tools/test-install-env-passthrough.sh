@@ -26,6 +26,8 @@
 #            rule knobs + BM25-recall knobs (#1429/#1428)
 #   Test 17: #1429-era literal migrates to add the prioritizer pilot knobs
 #            (#1430)
+#   Test 18: #1437 residue check warns on a hand-customized allowlist that
+#            is missing getenv knobs — and never modifies it
 #
 # Usage: ./tools/test-install-env-passthrough.sh
 # Exit code 0 if all tests pass, 1 otherwise.
@@ -326,6 +328,57 @@ if grep -qxF "$EXPECTED_NEW" "$T17_CONFIG" \
 else
     fail "#1429->#1430 migration — expected '$EXPECTED_NEW' and no bare '$EXPECTED_1429', got:"
     cat "$T17_CONFIG"
+fi
+
+# ----- Test 18: #1437 residue check on a hand-customized allowlist -----
+# A customized exec.env_passthrough matches no migration literal, so new
+# knobs are never auto-added and stay silently inert (#1428 class). The
+# residue check must WARN (naming the missing knobs) and must NOT modify
+# the operator's value. Keep in sync with dev-apprenticeship/install.sh §4.
+run_residue_check() {
+    local AGENTIS_CONFIG="$1"
+    RESIDUE_ALLOWLIST="$(grep '^exec\.env_passthrough[[:space:]]*=' "$AGENTIS_CONFIG" | head -1 | cut -d= -f2- | tr -d ' ')"
+    MISSING_KNOBS=""
+    for knob in IMPLEMENTATION_TRIGGER_LABEL PLANNING_TRIGGER_LABEL AUTO_MERGE \
+                PLAN_AUTO_PROMOTE CODE_EDIT_MAX_CONCURRENT AG_DRIVEN_EDIT_LOOP \
+                LLM_MAX_CONCURRENT LABELER_RULE_FIRST LABELER_RULE_CONFIDENCE \
+                ROUTER_RULE_FIRST ROUTER_RULE_CONFIDENCE LABELER_BM25_RECALL \
+                ROUTER_BM25_RECALL TRIAGE_BM25_K PRIORITIZER_RULE_FIRST \
+                PRIORITIZER_RULE_CONFIDENCE PRIORITIZER_BM25_RECALL; do
+        case ",$RESIDUE_ALLOWLIST," in
+            *",$knob,"*) ;;
+            *) MISSING_KNOBS="$MISSING_KNOBS $knob" ;;
+        esac
+    done
+    if [ -n "$MISSING_KNOBS" ]; then
+        printf '[!!] missing:%s\n' "$MISSING_KNOBS"
+    fi
+}
+
+T18_DIR="$FAKE_ROOT/t18"
+mkdir -p "$T18_DIR"
+T18_CONFIG="$T18_DIR/config"
+printf '%s\n' "$OPERATOR_TUNED" > "$T18_CONFIG"
+
+T18_OUT="$(run_residue_check "$T18_CONFIG")"
+if printf '%s' "$T18_OUT" | grep -q 'PRIORITIZER_RULE_FIRST' \
+    && printf '%s' "$T18_OUT" | grep -q 'TRIAGE_BM25_K' \
+    && grep -qxF "$OPERATOR_TUNED" "$T18_CONFIG"; then
+    pass "#1437 residue check warns on missing knobs and leaves the customized value untouched"
+else
+    fail "#1437 residue check — expected a warning naming missing knobs + untouched config, got: '$T18_OUT'"
+    cat "$T18_CONFIG"
+fi
+
+T18_FULL_DIR="$FAKE_ROOT/t18full"
+mkdir -p "$T18_FULL_DIR"
+T18_FULL_CONFIG="$T18_FULL_DIR/config"
+printf '%s\n' "$EXPECTED_NEW" > "$T18_FULL_CONFIG"
+T18_FULL_OUT="$(run_residue_check "$T18_FULL_CONFIG")"
+if [ -z "$T18_FULL_OUT" ]; then
+    pass "#1437 residue check is silent on a complete allowlist"
+else
+    fail "#1437 residue check false positive on the complete default: '$T18_FULL_OUT'"
 fi
 
 # ----- Heartbeat interval (#280) -----

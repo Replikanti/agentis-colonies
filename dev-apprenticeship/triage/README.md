@@ -103,7 +103,16 @@ Router had no reality-check before this pilot, so `evaluate_route_verdict()` is
 new: it stashes a pending verdict when it suggests/drafts an assignment, then a
 later tick reads back the issue's current assignee and treats a **reassignment
 away** from the suggested username as the demote signal (and a **kept**
-assignment as reinforcement).
+assignment as reinforcement). Since #1437 the pending verdicts for router and
+prioritizer are keyed **per issue** (`<agent>:pending_verdict:<iid>` plus a
+small CSV index) so a second suggestion before the first one is scored no
+longer overwrites the earlier verdict — every open verdict is scanned each
+evaluation tick; the legacy single-slot key from a pre-#1437 install is
+scored once and retired on the first pass. (Labeler's propose-path verdict
+deliberately stays single-slot — its longer-horizon revert coverage is the
+#203 autonomous multi-slot soak, and its propose verdicts are scored on the
+immediately following tick, so the overwrite window is one tick, not
+hours.)
 
 `prioritizer`'s category is `prioritize` (#1430), keyed on the first
 **unprioritized** issue's keyword + non-priority-label signature; its action
@@ -166,6 +175,18 @@ issues, and the fire path refuses a `kw=` rule outright
 neutralizes any `kw=` rule minted by a pre-#1435 install, no pool surgery
 required: the refused rule never fires and never reinforces, it just sits
 inert in the pool (bounded by the core's `crystallize_max_rules` cap).
+
+**Comma-in-label caveat (#1437).** Canonical contexts, distilled actions, and
+the verdict bookkeeping all join label lists with a bare `,` separator (e.g.
+`labels=bug,backend`, the prioritizer's pending-verdict payload, the verdict
+index CSV). A forge label whose **name itself contains a comma** (e.g.
+`"foo, bar"`) is therefore ambiguous on the way back out — it splits into two
+tokens and can mis-match the reality-check or produce a context that never
+prefix-matches its own rule. Such labels are vanishingly rare on
+GitLab/GitHub in practice, and escaping the separator would change every
+existing content-addressed rule id (invalidating already-crystallized pools),
+so this is documented rather than escaped: **avoid commas in label names** on
+projects running the triage pilots.
 
 **Operator knobs** (process env, read via `getenv`; set them in
 `scripts/start-colony.sh`'s environment or export before launch — every knob
