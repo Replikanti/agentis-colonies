@@ -108,19 +108,58 @@ assignment as reinforcement).
 Host-run `.agentis` persists crystallized rules on disk across restarts, so no
 container-style persistence wiring is needed.
 
+### Stage 1b: BM25 recall + retrieval-grounded prompts (#1429)
+
+Stage 1's recall is structurally narrow: the canonical context matches a
+**fixed keyword vocabulary** and the crystallizer lookup is a **prefix test**
+on that signature — an issue whose text falls outside the vocab is a
+guaranteed miss → guaranteed LLM call, forever. Stage 1b (agentis ≥ 1.20.0,
+`crystallizer_search`, ADR-0009 Phase 1.5) closes that gap in two moves on
+every Stage 1 miss:
+
+1. **BM25 recall.** The agent BM25-ranks the whole crystallized rule pool
+   against the issue's *real text* (labeler: title + description; router:
+   title + labels) and walks the top `TRIAGE_BM25_K` candidates. Because
+   `crystallizer_search` ranks across **all** action types and its JSON
+   carries no `expected_outcome`, each candidate is **class-confirmed**
+   before firing: its `condition` is re-probed through
+   `crystallizer_lookup_with_confidence(<class>, cond, min_conf)` — a hit
+   proves a rule of *this agent's* class at ≥ `min_conf` matches that
+   condition family. BM25 score is a relevance signal, never a trust
+   signal; the confidence threshold and the ADR-0001 tier contract apply
+   exactly as in Stage 1. A confirmed hit fires through the same shared
+   fire path (`crystallizer_record_use` optimistic stamp, tier-gated apply,
+   memo stamps, **no LLM call**) tagged `bm25-hit` (Stage 1 hits are tagged
+   `prefix-hit`; both keep the `rule-hit` tag the auto-promote efficiency
+   bonus keys on).
+2. **Retrieval-grounded prompt (RAG fallback).** When no candidate clears
+   the confidence bar, the ≥ 0.5-confidence candidates are appended to the
+   decide `prompt()` context as "similar past decisions" — more consistent
+   LLM decisions → faster crystallization of new rules → compounding
+   rule-hit rate.
+
+A pre-v1.20.0 host degrades gracefully: the `crystallizer_search` call is
+try/catch-wrapped, so Stage 1b silently falls through to the LLM path.
+Source-asserted by `tools/test-bm25-recall-gates.sh`.
+
 **Operator knobs** (process env, read via `getenv`; set them in
-`scripts/start-colony.sh`'s environment or export before launch):
+`scripts/start-colony.sh`'s environment or export before launch — every knob
+must be on the `install.sh` `exec.env_passthrough` allowlist or it is
+silently inert, #1426/#1428; `install.sh` registers all seven since #1429):
 
 | Knob | Default | Effect |
 |------|---------|--------|
-| `ROUTER_RULE_FIRST` | on (any value ≠ `0`) | `0` short-circuits the **entire** router pilot — Stage 1 replay, Stage 2 distil, and the verdict recording + reality-check — to the LLM path. Behaviour is byte-identical to pre-pilot routing (no extra `exec sh` subprocess, no distil rows, no pending verdicts). The rollback switch. |
-| `ROUTER_RULE_CONFIDENCE` | `0.85` | Minimum confidence for a Stage 1 rule-first hit. Raise to replay only very well-established rules; lower to replay more aggressively. |
+| `ROUTER_RULE_FIRST` | on (any value ≠ `0`) | `0` short-circuits the **entire** router pilot — Stage 1 replay, Stage 1b BM25 recall, Stage 2 distil, and the verdict recording + reality-check — to the LLM path. Behaviour is byte-identical to pre-pilot routing (no extra `exec sh` subprocess, no distil rows, no pending verdicts). The rollback switch. |
+| `ROUTER_RULE_CONFIDENCE` | `0.85` | Minimum confidence for a rule-first hit (Stage 1 **and** Stage 1b). Raise to replay only very well-established rules; lower to replay more aggressively. |
+| `ROUTER_BM25_RECALL` | on (any value ≠ `0`) | `0` short-circuits Stage 1b only (BM25 recall + prompt grounding); Stage 1 prefix replay stays on. |
+| `TRIAGE_BM25_K` | `3` | Top-k for `crystallizer_search` (shared by labeler + router). `0` disables recall + grounding via the builtin's `k<=0` empty-list contract. |
 
 `labeler` exposes the equivalent `LABELER_RULE_FIRST` / `LABELER_RULE_CONFIDENCE`
-knobs. Setting `ROUTER_RULE_FIRST=0` (or `LABELER_RULE_FIRST=0`) is the safe
-rollback if a replayed rule misbehaves: the agent reverts to LLM-only routing
-immediately on the next tick, and any stale pending verdict from an
-earlier enabled run is ignored rather than scored.
+/ `LABELER_BM25_RECALL` knobs. Setting `ROUTER_RULE_FIRST=0` (or
+`LABELER_RULE_FIRST=0`) is the safe rollback if a replayed rule misbehaves:
+the agent reverts to LLM-only routing immediately on the next tick, and any
+stale pending verdict from an earlier enabled run is ignored rather than
+scored.
 
 ## Setup
 

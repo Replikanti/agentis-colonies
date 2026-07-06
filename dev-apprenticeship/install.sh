@@ -135,7 +135,7 @@ AGENTIS_VERSION=$(agentis --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9
 info "agentis version: $AGENTIS_VERSION (minimum: $MIN_VERSION)"
 
 if ! version_gte "$AGENTIS_VERSION" "$MIN_VERSION"; then
-    fail "agentis >= $MIN_VERSION required (tier() builtin for four-tier confidence gating; fitness_delta wiring from the outcome argument to learn()). Please update."
+    fail "agentis >= $MIN_VERSION required (crystallizer_search BM25 recall for the triage rule replay #1429; tier() builtin for four-tier confidence gating; fitness_delta wiring from the outcome argument to learn()). Please update."
     exit 1
 fi
 
@@ -776,7 +776,24 @@ if [ -d "$AGENTIS_DIR" ]; then
             "$AGENTIS_CONFIG" > "$AGENTIS_CONFIG.tmp" && mv "$AGENTIS_CONFIG.tmp" "$AGENTIS_CONFIG"
         ok "upgraded exec.env_passthrough (#1354/#1352)"
     fi
-    write_key 'exec.env_passthrough'         'COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE,PLAN_AUTO_PROMOTE,CODE_EDIT_MAX_CONCURRENT,AG_DRIVEN_EDIT_LOOP,LLM_MAX_CONCURRENT'
+    # Migrate #1429 pre-fix literal in-place. Adds the triage crystallizer
+    # rule knobs. The four #1234/#1235 pilot knobs (LABELER_RULE_FIRST /
+    # LABELER_RULE_CONFIDENCE / ROUTER_RULE_FIRST / ROUTER_RULE_CONFIDENCE)
+    # were shipped WITHOUT an allowlist entry, so every operator export was
+    # silently inert — getenv() reads the SANITIZED env (#1426; audit of the
+    # remaining knobs: #1428) — and the agents always ran on their defaults
+    # (rule-first ON @ 0.85). This step registers them together with the new
+    # #1429 Stage 1b BM25-recall knobs (LABELER_BM25_RECALL /
+    # ROUTER_BM25_RECALL / TRIAGE_BM25_K) so all seven actually reach the
+    # .ag runtime. Exact-match only — operator customizations preserved.
+    if [ -f "$AGENTIS_CONFIG" ] && grep -qxF 'exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE,PLAN_AUTO_PROMOTE,CODE_EDIT_MAX_CONCURRENT,AG_DRIVEN_EDIT_LOOP,LLM_MAX_CONCURRENT' "$AGENTIS_CONFIG"; then
+        # Use a tmp file + mv for atomicity; no sed -i (BSD vs GNU portability).
+        awk '/^exec\.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_\*,GITHUB_\*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE,PLAN_AUTO_PROMOTE,CODE_EDIT_MAX_CONCURRENT,AG_DRIVEN_EDIT_LOOP,LLM_MAX_CONCURRENT$/ \
+             { print "exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE,PLAN_AUTO_PROMOTE,CODE_EDIT_MAX_CONCURRENT,AG_DRIVEN_EDIT_LOOP,LLM_MAX_CONCURRENT,LABELER_RULE_FIRST,LABELER_RULE_CONFIDENCE,ROUTER_RULE_FIRST,ROUTER_RULE_CONFIDENCE,LABELER_BM25_RECALL,ROUTER_BM25_RECALL,TRIAGE_BM25_K"; next } { print }' \
+            "$AGENTIS_CONFIG" > "$AGENTIS_CONFIG.tmp" && mv "$AGENTIS_CONFIG.tmp" "$AGENTIS_CONFIG"
+        ok "upgraded exec.env_passthrough (#1429/#1428)"
+    fi
+    write_key 'exec.env_passthrough'         'COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE,PLAN_AUTO_PROMOTE,CODE_EDIT_MAX_CONCURRENT,AG_DRIVEN_EDIT_LOOP,LLM_MAX_CONCURRENT,LABELER_RULE_FIRST,LABELER_RULE_CONFIDENCE,ROUTER_RULE_FIRST,ROUTER_RULE_CONFIDENCE,LABELER_BM25_RECALL,ROUTER_BM25_RECALL,TRIAGE_BM25_K'
     write_key 'exec.default_timeout_ms'      '120000'
     write_key 'pii_transmit'                 'allow'
     write_key 'knowledge.enabled'            'true'

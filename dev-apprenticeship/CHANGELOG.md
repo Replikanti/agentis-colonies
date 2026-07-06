@@ -15,7 +15,53 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+> **Floor bump:** the next release moves the runtime floor to
+> **agentis >= 1.20.0** (`crystallizer_search` BM25 retrieval, ADR-0009
+> Phase 1.5) — `.agentis-version` is already bumped. On a pre-1.20.0 host
+> the Stage 1b path degrades gracefully to the LLM path (try/catch around
+> the builtin), but `install.sh` now refuses to install below the floor.
+
+### Added
+
+- **Stage 1b BM25 recall + retrieval-grounded prompts for the triage
+  crystallizer pilots (`labeler`, `router`)**
+  ([#1429](https://github.com/Replikanti/agentis-colonies/issues/1429)).
+  Stage 1's replay recall was structurally bounded by the fixed 26-word
+  keyword vocabulary + prefix match — an issue whose text fell outside the
+  vocab was a guaranteed lookup miss → guaranteed LLM call, forever. On a
+  Stage 1 miss the agents now (1) BM25-rank the whole crystallized rule pool
+  against the issue's *real text* via `crystallizer_search` (agentis
+  v1.20.0), class-confirm each candidate through the class-scoped,
+  confidence-gated point lookup (`crystallizer_search` ranks across all
+  action types and its JSON carries no `expected_outcome`, so an
+  unconfirmed candidate could replay another agent's rule), and fire the
+  first confirmed rule **without an LLM call** — same confidence threshold,
+  same ADR-0001 tier contract, same `crystallizer_record_use` demote loop;
+  and (2) when no candidate clears the bar, ground the decide `prompt()`
+  with the ≥ 0.5-confidence candidates ("similar past decisions" — the RAG
+  fallback that speeds up crystallization of new rules). Replay rows are
+  now discriminated by an extra tag (`prefix-hit` vs `bm25-hit`) **in
+  addition** to `rule-hit`, so the auto-promote rule-hit efficiency bonus
+  (#823) keeps counting both replay paths while dashboards can split them.
+  New knobs (`LABELER_BM25_RECALL` / `ROUTER_BM25_RECALL`, default on;
+  `TRIAGE_BM25_K`, default 3) follow the pilot pattern; `*_RULE_FIRST=0`
+  remains the one rollback switch for the whole pilot. Source-asserted by
+  `tools/test-bm25-recall-gates.sh`.
+
 ### Fixed
+
+- **The four #1234/#1235 crystallizer pilot knobs added to the
+  `exec.env_passthrough` allowlist**
+  ([#1429](https://github.com/Replikanti/agentis-colonies/issues/1429) /
+  [#1428](https://github.com/Replikanti/agentis-colonies/issues/1428)).
+  `LABELER_RULE_FIRST`, `LABELER_RULE_CONFIDENCE`, `ROUTER_RULE_FIRST` and
+  `ROUTER_RULE_CONFIDENCE` shipped without an allowlist entry, so every
+  operator export was silently inert (`getenv()` reads the SANITIZED env,
+  #1426) — the pilots always ran on their defaults and the documented
+  `*_RULE_FIRST=0` rollback switch did not actually work. `install.sh` now
+  migrates the allowlist in place (exact-match, operator customizations
+  untouched) registering them together with the three new #1429 BM25 knobs;
+  the remaining non-triage knobs stay tracked in #1428.
 
 - **`AG_DRIVEN_EDIT_LOOP` (and the #1352 cap vars) added to the
   `exec.env_passthrough` allowlist**
