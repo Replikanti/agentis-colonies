@@ -425,4 +425,62 @@ if [ "${SELF_OBSERVE_SIDECAR:-0}" = "1" ]; then
     fi
 fi
 
+# --- Crystallizer-ingest sidecar (#1431) ---
+#
+# Periodically runs `triage/scripts/start-colony.sh --ingest`, which
+# distills operator decisions (labels / assignees / priority labels) on
+# issues updated since the `triage:ingest:cursor` memo into the federation
+# KnowledgeBase (tools/backfill-crystallizer.sh --incremental). Classes seen
+# >= 3 times crystallize on the daemons' next M141 pass, so the Stage 1/1b
+# rule pool (#1429/#1430) keeps tracking the operator's live ground truth
+# even on issues the agents never touched. The one-shot historical backfill
+# is the same tool without --incremental — see triage/README.md
+# "Bootstrapping the rule pool".
+#
+# Interval default 3600 s (operator decisions settle on hours, not
+# seconds); TRIAGE_INGEST_INTERVAL_S=0 disables the sidecar entirely.
+# Mirrors the other sidecars: tick-first loop, self-terminate when the
+# federation has zero running daemons, EXIT/TERM/INT trap. Backward-safe: a
+# missing --ingest mode (older triage checkout) or a fetch failure is
+# logged and ignored — agents just keep distilling from their own runtime
+# decisions as before.
+TRIAGE_INGEST_INTERVAL="${TRIAGE_INGEST_INTERVAL_S:-3600}"
+case "$TRIAGE_INGEST_INTERVAL" in
+    ''|*[!0-9]*) TRIAGE_INGEST_INTERVAL=3600 ;;
+esac
+INGEST_PID=""
+INGEST_START_COLONY="$FED_DIR/triage/scripts/start-colony.sh"
+if [ "$TRIAGE_INGEST_INTERVAL" -eq 0 ]; then
+    echo "Crystallizer-ingest sidecar: disabled (TRIAGE_INGEST_INTERVAL_S=0)"
+    echo ""
+elif [ ! -x "$INGEST_START_COLONY" ]; then
+    echo "[!!] Crystallizer-ingest sidecar: triage/scripts/start-colony.sh not executable, skipping."
+else
+    INGEST_LOG_DIR="$FED_DIR/.agentis/logs"
+    INGEST_LOG="$INGEST_LOG_DIR/crystallizer-ingest.log"
+    mkdir -p "$INGEST_LOG_DIR"
+    (
+        # First action is a tick (not a sleep) so a fresh federation starts
+        # accumulating operator ground truth immediately after spawn.
+        while :; do
+            if ! agentis daemon list --json 2>/dev/null | grep -Fq '"state":"running"'; then
+                printf '=== %s: no running daemons; sidecar exiting ===\n' \
+                    "$(date -Iseconds)" >> "$INGEST_LOG"
+                exit 0
+            fi
+            {
+                printf '=== %s: crystallizer-ingest tick ===\n' "$(date -Iseconds)"
+                "$INGEST_START_COLONY" --ingest 2>&1 \
+                    || printf '[sidecar] start-colony.sh --ingest exited %s\n' "$?"
+            } >> "$INGEST_LOG"
+            sleep "$TRIAGE_INGEST_INTERVAL"
+        done
+    ) &
+    INGEST_PID=$!
+    # shellcheck disable=SC2064  # Expand PID at trap-install time, not at trigger time.
+    trap "[ -n \"\${AUTO_PROMOTE_PID:-}\" ] && kill \"\$AUTO_PROMOTE_PID\" 2>/dev/null; [ -n \"\${COST_CAP_PID:-}\" ] && kill \"\$COST_CAP_PID\" 2>/dev/null; [ -n \"\${SNAPSHOT_REFRESH_PID:-}\" ] && kill \"\$SNAPSHOT_REFRESH_PID\" 2>/dev/null; [ -n \"\${COST_RATE_PID:-}\" ] && kill \"\$COST_RATE_PID\" 2>/dev/null; [ -n \"\${SELF_OBSERVE_PID:-}\" ] && kill \"\$SELF_OBSERVE_PID\" 2>/dev/null; [ -n \"$INGEST_PID\" ] && kill \"$INGEST_PID\" 2>/dev/null; exit" EXIT TERM INT
+    echo "Crystallizer-ingest sidecar: PID $INGEST_PID, every ${TRIAGE_INGEST_INTERVAL}s (log: .agentis/logs/crystallizer-ingest.log)"
+    echo ""
+fi
+
 wait

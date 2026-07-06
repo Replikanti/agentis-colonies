@@ -23,6 +23,35 @@ is asserted until multi-version CI is in place.
 
 ### Added
 
+- **Backfill ingestion: historical operator decisions distilled into the
+  crystallizer pool + continuous-ingest sidecar**
+  ([#1431](https://github.com/Replikanti/agentis-colonies/issues/1431)).
+  BM25 retrieval (#1429/#1430) can only rank what is already in the rule
+  pool, and the pool otherwise grows only from runtime LLM decisions —
+  cold-start: zero rules on a fresh federation, zero Stage 1/1b hits.
+  New `tools/backfill-crystallizer.sh` converts the forge's existing
+  operator ground truth (labeled / assigned / prioritized issues) into
+  `learn()` → `distill()` → `knowledge_validate()` rows deterministically,
+  with zero LLM calls, via a generated `.ag` driver executed with
+  `agentis go` from the federation root; classes seen ≥ 3 times
+  crystallize on the daemons' next M141 pass. Canonical contexts come
+  from the new shared builder `tools/lib/canonical-context.py`,
+  drift-guarded against the agents' inline builders by
+  `tools/test-canonical-context.sh` so backfilled rules are byte-reachable
+  from Stage 1 prefix replay and Stage 1b BM25 class-confirm. Modes:
+  `--dry-run` (would-be rule table), `--issues-json` (offline),
+  `--incremental` (only issues updated since the `triage:ingest:cursor`
+  memo, cursor advanced afterwards). Continuous path: new
+  `triage/scripts/start-colony.sh --ingest` mode (full env-load, forge
+  tokens included — mirrors `--snapshot-refresh`) driven by a new
+  `start-federation.sh` crystallizer-ingest sidecar
+  (`TRIAGE_INGEST_INTERVAL_S`, default 3600 s; `0` disables). Backfilled
+  learn rows carry the `backfill` tag and run under `agentis go`, so they
+  never pollute the daemons' acting-path fitness buckets; wrong backfilled
+  rules retire through the existing demote loop. Covered by
+  `tools/test-backfill-crystallizer.sh` incl. an end-to-end run against a
+  real agentis binary.
+
 - **Crystallizer rule-first replay ported to `prioritizer` — with BM25
   recall from day one**
   ([#1430](https://github.com/Replikanti/agentis-colonies/issues/1430)).

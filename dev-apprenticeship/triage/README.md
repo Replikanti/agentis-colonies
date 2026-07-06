@@ -175,6 +175,55 @@ the safe rollback if a replayed rule misbehaves: the agent reverts to
 LLM-only decisions immediately on the next tick, and any stale pending
 verdict from an earlier enabled run is ignored rather than scored.
 
+## Bootstrapping the rule pool (#1431)
+
+BM25 retrieval can only rank what is already **in** the rule pool — and the
+pool otherwise grows only from runtime LLM decisions (Stage 2), so a fresh
+federation starts cold: zero rules, zero Stage 1/1b hits, every decide tick
+pays the LLM. The forge already holds the training data — every labeled /
+assigned / prioritized issue is an operator-confirmed (context → action)
+pair — and the ingestion path extracts it **deterministically, with zero
+LLM calls**:
+
+- **One-shot historical backfill** (run once after install, or any time):
+
+  ```bash
+  # Preview what would be ingested (no writes):
+  COLONY_DIR=$PWD/triage tools/backfill-crystallizer.sh \
+      --fed-dir $PWD --dry-run
+  # Ingest for real (env-sourced path — recommended):
+  ./triage/scripts/start-colony.sh --ingest
+  ```
+
+  The tool pages raw issues via `forge-api.sh issues --view raw`, builds
+  the SAME canonical contexts the agents build (shared builder
+  `tools/lib/canonical-context.py`, drift-guarded by
+  `tools/test-canonical-context.sh`), takes the operator's actual decision
+  as the canonical action (labels minus priority-like ones for `label`,
+  first assignee for `route`, the priority-like label for `prioritize`),
+  and replays each triple through `learn()` → `distill()` →
+  `knowledge_validate()` in a generated `.ag` driver executed with
+  `agentis go` from the federation root. Classes seen ≥ 3 times reach the
+  crystallize gate and materialize as replayable rules on the daemons'
+  next M141 pass. Re-runs are idempotent (KnowledgeEntry ids are
+  content-addressed; repeats re-validate instead of duplicating).
+
+- **Continuous ingestion sidecar:** `start-federation.sh` spawns a
+  crystallizer-ingest sidecar that re-runs
+  `triage/scripts/start-colony.sh --ingest` every
+  `TRIAGE_INGEST_INTERVAL_S` seconds (default 3600; `0` disables). The
+  incremental mode only processes issues updated since the
+  `triage:ingest:cursor` memo and advances the cursor afterwards — the
+  pool keeps tracking the operator's live decisions even on issues the
+  agents never touched.
+
+Backfilled `learn()` rows carry the `backfill` tag (alongside `distilled`,
+`triage`) and run under `agentis go` — they never land in the daemons'
+acting-path experience buckets, so auto-promote fitness is unaffected. A
+backfilled rule that fires wrongly is corrected by the same demote loop as
+any other rule (`crystallizer_record_use` reality-check, retirement at the
+core thresholds).
+
 ## Setup
 
 1. Copy and edit the config:

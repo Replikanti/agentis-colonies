@@ -129,6 +129,13 @@ tools/detect-agent-failures.sh
 # — so both are now runtime deps of the bundled sidecar.
 tools/track-issue-outcomes.sh
 tools/lib/outcome-store.sh
+# #1431: crystallizer backfill / incremental ingestion. Invoked at runtime
+# by triage/scripts/start-colony.sh --ingest (driven by the
+# start-federation.sh crystallizer-ingest sidecar) and directly by
+# operators for the one-shot historical backfill.
+tools/backfill-crystallizer.sh
+tools/lib/canonical-context.py
+tools/lib/backfill-gen.py
 
 # ----- Federation dashboard -----
 # Extracted to a separately-versioned standalone component in #252.
