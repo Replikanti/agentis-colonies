@@ -607,7 +607,23 @@ fn apply_priority_rule_hit(owner: string, repo: string, my_tier: string, issue_i
 // the next stage / the prompt). `hit_ctx` is whichever condition string
 // produced the hit — stamped into prioritizer:rule_ctx so operators can see
 // WHICH condition family fired.
-fn fire_priority_rule(owner: string, repo: string, my_tier: string, issue_id: int, rule_id: string, rule_action: string, rule_conf_str: string, hit_ctx: string, hit_kind: string, cur_hash: string) -> string {
+fn fire_priority_rule(owner: string, repo: string, my_tier: string, issue_id: int, rule_id: string, rule_action: string, rule_conf_str: string, rule_cond: string, hit_ctx: string, hit_kind: string, cur_hash: string) -> string {
+    // #1435 defence-in-depth: refuse to replay an over-general
+    // empty-keyword rule — condition "kw=" prefix-matches the entire
+    // class. Pre-#1435 pools may still hold such rules (distill now
+    // guards against minting new ones); this check permanently
+    // neutralizes them on the fire path, and the learn row makes the
+    // poisoned pool visible to the dashboard / outcome tracking.
+    if rule_cond == "kw=" {
+        print("[prioritizer] rule-hit refused: over-general kw= rule", rule_id, "(#1435)");
+        if len(owner) > 0 {
+            learn("prioritize", hit_ctx, "kw= rule refused: " + rule_id, "partial", ["observed", "triage", "rule-rejected-overgeneral", repo_tag(owner, repo)]);
+        } else {
+            learn("prioritize", hit_ctx, "kw= rule refused: " + rule_id, "partial", ["observed", "triage", "rule-rejected-overgeneral"]);
+        };
+        return "";
+    };
+
     let rule_priority = normalize_priority_label(rule_action);
     if len(rule_priority) == 0 {
         return "";
@@ -766,7 +782,8 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                             let rule_id = to_string(get(rule, "rule_id"));
                             let rule_action = to_string(get(rule, "action"));
                             let rule_conf_str = to_string(get(rule, "confidence"));
-                            let fired = fire_priority_rule(owner, repo, my_tier, canon_iid, rule_id, rule_action, rule_conf_str, canonical_ctx, "prefix-hit", cur_hash);
+                            let rule_cond = to_string(get(rule, "condition"));
+                            let fired = fire_priority_rule(owner, repo, my_tier, canon_iid, rule_id, rule_action, rule_conf_str, rule_cond, canonical_ctx, "prefix-hit", cur_hash);
                             if fired == "fired" {
                                 return;
                             };
@@ -800,7 +817,8 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     let rule_id_b = to_string(get(rule_b, "rule_id"));
                     let rule_action_b = to_string(get(rule_b, "action"));
                     let rule_conf_b = to_string(get(rule_b, "confidence"));
-                    let fired_b = fire_priority_rule(owner, repo, my_tier, canon_iid, rule_id_b, rule_action_b, rule_conf_b, bm25_ctx, "bm25-hit", cur_hash);
+                    let rule_cond_b = to_string(get(rule_b, "condition"));
+                    let fired_b = fire_priority_rule(owner, repo, my_tier, canon_iid, rule_id_b, rule_action_b, rule_conf_b, rule_cond_b, bm25_ctx, "bm25-hit", cur_hash);
                     if fired_b == "fired" {
                         return;
                     };
@@ -850,14 +868,28 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     if len(canonical_action) > 0 {
                         let labels_at = index_of(canonical_ctx, " labels=");
                         let coarse_ctx = if labels_at > 0 { substring(canonical_ctx, 0, labels_at); } else { canonical_ctx; };
-                        if len(owner) > 0 {
-                            learn("prioritize", canonical_ctx, canonical_action, "success", ["distilled", "triage", repo_tag(owner, repo)]);
+                        // #1435: never distill an empty-keyword class — a
+                        // crystallized "kw=" rule prefix-matches EVERY priority
+                        // context and would stamp one priority on the whole
+                        // class. Observation kept (learn row tagged
+                        // no-distill-empty-kw, outcome partial), distill skipped.
+                        if coarse_ctx == "kw=" {
+                            print("[prioritizer] distill skipped: empty-keyword context would mint an over-general kw= rule (#1435)");
+                            if len(owner) > 0 {
+                                learn("prioritize", canonical_ctx, canonical_action, "partial", ["observed", "triage", "no-distill-empty-kw", repo_tag(owner, repo)]);
+                            } else {
+                                learn("prioritize", canonical_ctx, canonical_action, "partial", ["observed", "triage", "no-distill-empty-kw"]);
+                            };
                         } else {
-                            learn("prioritize", canonical_ctx, canonical_action, "success", ["distilled", "triage"]);
-                        };
-                        let did = try { distill("prioritize", coarse_ctx, canonical_action, "heuristic"); } catch e { ""; };
-                        if len(did) > 0 {
-                            knowledge_validate(did);
+                            if len(owner) > 0 {
+                                learn("prioritize", canonical_ctx, canonical_action, "success", ["distilled", "triage", repo_tag(owner, repo)]);
+                            } else {
+                                learn("prioritize", canonical_ctx, canonical_action, "success", ["distilled", "triage"]);
+                            };
+                            let did = try { distill("prioritize", coarse_ctx, canonical_action, "heuristic"); } catch e { ""; };
+                            if len(did) > 0 {
+                                knowledge_validate(did);
+                            };
                         };
                     };
                 };

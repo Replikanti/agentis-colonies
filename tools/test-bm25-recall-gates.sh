@@ -76,6 +76,16 @@ check_agent() {
 
     # 3. Shared fire helper on both stages, return-before-prompt, hit_kind tags.
     assert_grep "$file" "$fire_fn" "$agent: shared fire helper present"
+
+    # #1435: empty-keyword guards — distill must skip the bare "kw=" class
+    # and the fire path must refuse a "kw=" rule (defence-in-depth against
+    # pre-#1435 pools).
+    assert_grep "$file" 'if coarse_ctx == "kw=" {' \
+        "$agent: distill guarded against empty-keyword coarse_ctx (#1435)"
+    assert_grep "$file" 'if rule_cond == "kw=" {' \
+        "$agent: fire path refuses over-general kw= rules (#1435)"
+    assert_grep "$file" 'no-distill-empty-kw' \
+        "$agent: skipped distills leave a tagged learn row (#1435)"
     assert_grep "$file" '"prefix-hit", cur_hash' "$agent: Stage 1 fires with hit_kind=prefix-hit"
     assert_grep "$file" '"bm25-hit", cur_hash' "$agent: Stage 1b fires with hit_kind=bm25-hit"
     assert_count "$file" '"rule-hit", hit_kind, "distilled"' 8 \
@@ -88,11 +98,11 @@ check_agent() {
 }
 
 check_agent "labeler" "$FED/triage/agents/labeler.ag" "LABELER_BM25_RECALL" \
-    'fn fire_label_rule(owner: string, repo: string, my_tier: string, issue_id: int, author: string, rule_id: string, rule_action: string, rule_conf_str: string, hit_ctx: string, hit_kind: string, cur_hash: string) -> string'
+    'fn fire_label_rule(owner: string, repo: string, my_tier: string, issue_id: int, author: string, rule_id: string, rule_action: string, rule_conf_str: string, rule_cond: string, hit_ctx: string, hit_kind: string, cur_hash: string) -> string'
 check_agent "router" "$FED/triage/agents/router.ag" "ROUTER_BM25_RECALL" \
-    'fn fire_route_rule(owner: string, repo: string, my_tier: string, issue_id: int, rule_id: string, rule_action: string, rule_conf_str: string, hit_ctx: string, hit_kind: string, cur_hash: string) -> string'
+    'fn fire_route_rule(owner: string, repo: string, my_tier: string, issue_id: int, rule_id: string, rule_action: string, rule_conf_str: string, rule_cond: string, hit_ctx: string, hit_kind: string, cur_hash: string) -> string'
 check_agent "prioritizer" "$FED/triage/agents/prioritizer.ag" "PRIORITIZER_BM25_RECALL" \
-    'fn fire_priority_rule(owner: string, repo: string, my_tier: string, issue_id: int, rule_id: string, rule_action: string, rule_conf_str: string, hit_ctx: string, hit_kind: string, cur_hash: string) -> string'
+    'fn fire_priority_rule(owner: string, repo: string, my_tier: string, issue_id: int, rule_id: string, rule_action: string, rule_conf_str: string, rule_cond: string, hit_ctx: string, hit_kind: string, cur_hash: string) -> string'
 
 # #1430: the prioritizer autonomous rule-hit branch must NOT record a
 # single-slot verdict — the agent just wrote the label, so the next tick's

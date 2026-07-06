@@ -155,6 +155,18 @@ A pre-v1.20.0 host degrades gracefully: the `crystallizer_search` call is
 try/catch-wrapped, so Stage 1b silently falls through to the LLM path.
 Source-asserted by `tools/test-bm25-recall-gates.sh`.
 
+**Empty-keyword guard (#1435).** An issue whose title carries no keyword
+from the triage VOCAB would distill the bare `kw=` condition — and a
+crystallized `kw=` rule prefix-matches **every** context of its class, so
+it would replay one canned decision on everything. All three agents
+therefore skip `distill()` for empty-keyword contexts (the observation is
+kept as a `no-distill-empty-kw` learn row), the backfill builder drops such
+issues, and the fire path refuses a `kw=` rule outright
+(`rule-rejected-overgeneral` learn row) — which also permanently
+neutralizes any `kw=` rule minted by a pre-#1435 install, no pool surgery
+required: the refused rule never fires and never reinforces, it just sits
+inert in the pool (bounded by the core's `crystallize_max_rules` cap).
+
 **Operator knobs** (process env, read via `getenv`; set them in
 `scripts/start-colony.sh`'s environment or export before launch — every knob
 must be on the `install.sh` `exec.env_passthrough` allowlist or it is
