@@ -33,9 +33,9 @@ fed_dir = sys.argv[1]
 
 # Expected tier-branches per agent after #176. Every agent is required
 # to have all four tiers (shadow, propose, review-gated, autonomous) as
-# per ADR-0001 — the canonical 4-branch pattern. labeler.ag and router.ag
-# both carry the crystallizer reality-check clamp_auto cap at 0.85
-# (#1235 / #1234).
+# per ADR-0001 — the canonical 4-branch pattern. labeler.ag, router.ag and
+# prioritizer.ag carry the crystallizer reality-check clamp_auto cap at
+# 0.85 (#1235 / #1234 / #1430).
 FOUR_TIERS = ['autonomous', 'propose', 'review-gated', 'shadow']
 EXPECTED = {
     'risk_assessor':     (FOUR_TIERS, None),
@@ -49,7 +49,7 @@ EXPECTED = {
     'qa_reviewer':       (FOUR_TIERS, None),
     'approval_decider':  (FOUR_TIERS, None),
     'router':            (FOUR_TIERS, 0.85),
-    'prioritizer':       (FOUR_TIERS, None),
+    'prioritizer':       (FOUR_TIERS, 0.85),
     'labeler':           (FOUR_TIERS, 0.85),
     'issue_creator':     (FOUR_TIERS, None),
     'code_writer':       (FOUR_TIERS, None),

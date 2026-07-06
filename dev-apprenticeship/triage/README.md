@@ -74,10 +74,10 @@ Mature triage agents distil their high-frequency, low-variance decisions into
 faster), and rules that stop performing are **demoted and retired**. This is the
 agentis-core crystallizer substrate (`distill` /
 `crystallizer_lookup_with_confidence` / `crystallizer_record_use` /
-`knowledge_validate`, agentis ≥ 1.8.0). Two agents carry the pilot today:
-`labeler` (the first, #1235) and `router` (#1234). The demote signal is **free**
-— the operator keeping or changing what the agent applied is a natural
-deterministic verifier, so no separate skeptic is needed.
+`knowledge_validate`, agentis ≥ 1.8.0). Three agents carry the pilot today:
+`labeler` (the first, #1235), `router` (#1234) and `prioritizer` (#1430). The
+demote signal is **free** — the operator keeping or changing what the agent
+applied is a natural deterministic verifier, so no separate skeptic is needed.
 
 Each agent runs three stages every tick:
 
@@ -104,6 +104,19 @@ new: it stashes a pending verdict when it suggests/drafts an assignment, then a
 later tick reads back the issue's current assignee and treats a **reassignment
 away** from the suggested username as the demote signal (and a **kept**
 assignment as reinforcement).
+
+`prioritizer`'s category is `prioritize` (#1430), keyed on the first
+**unprioritized** issue's keyword + non-priority-label signature; its action
+slot is the normalized single priority label. "Priority-like" is detected
+deterministically (label starts with `priority`, matches `^P<digits>$`,
+equals `urgent`, or appears in the operator's `triage:labels:priority`
+vocabulary, #226) — issues routinely carry *other* labels from the labeler,
+so only a priority-like label counts as a reality-check signal: a kept label
+reinforces, a different priority-like label without ours demotes. The
+autonomous rule-hit branch deliberately records **no** single-slot verdict
+(the agent just wrote the label — the check would read its own write back as
+"kept"); the longer-horizon revert check is the labeler #203 multi-slot soak
+mechanism, a follow-up shared with router.
 
 Host-run `.agentis` persists crystallized rules on disk across restarts, so no
 container-style persistence wiring is needed.
@@ -155,11 +168,12 @@ silently inert, #1426/#1428; `install.sh` registers all seven since #1429):
 | `TRIAGE_BM25_K` | `3` | Top-k for `crystallizer_search` (shared by labeler + router). `0` disables recall + grounding via the builtin's `k<=0` empty-list contract. |
 
 `labeler` exposes the equivalent `LABELER_RULE_FIRST` / `LABELER_RULE_CONFIDENCE`
-/ `LABELER_BM25_RECALL` knobs. Setting `ROUTER_RULE_FIRST=0` (or
-`LABELER_RULE_FIRST=0`) is the safe rollback if a replayed rule misbehaves:
-the agent reverts to LLM-only routing immediately on the next tick, and any
-stale pending verdict from an earlier enabled run is ignored rather than
-scored.
+/ `LABELER_BM25_RECALL` knobs, and `prioritizer` the equivalent
+`PRIORITIZER_RULE_FIRST` / `PRIORITIZER_RULE_CONFIDENCE` /
+`PRIORITIZER_BM25_RECALL` (#1430). Setting the agent's `*_RULE_FIRST=0` is
+the safe rollback if a replayed rule misbehaves: the agent reverts to
+LLM-only decisions immediately on the next tick, and any stale pending
+verdict from an earlier enabled run is ignored rather than scored.
 
 ## Setup
 

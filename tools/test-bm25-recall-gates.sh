@@ -91,12 +91,28 @@ check_agent "labeler" "$FED/triage/agents/labeler.ag" "LABELER_BM25_RECALL" \
     'fn fire_label_rule(owner: string, repo: string, my_tier: string, issue_id: int, author: string, rule_id: string, rule_action: string, rule_conf_str: string, hit_ctx: string, hit_kind: string, cur_hash: string) -> string'
 check_agent "router" "$FED/triage/agents/router.ag" "ROUTER_BM25_RECALL" \
     'fn fire_route_rule(owner: string, repo: string, my_tier: string, issue_id: int, rule_id: string, rule_action: string, rule_conf_str: string, hit_ctx: string, hit_kind: string, cur_hash: string) -> string'
+check_agent "prioritizer" "$FED/triage/agents/prioritizer.ag" "PRIORITIZER_BM25_RECALL" \
+    'fn fire_priority_rule(owner: string, repo: string, my_tier: string, issue_id: int, rule_id: string, rule_action: string, rule_conf_str: string, hit_ctx: string, hit_kind: string, cur_hash: string) -> string'
+
+# #1430: the prioritizer autonomous rule-hit branch must NOT record a
+# single-slot verdict — the agent just wrote the label, so the next tick's
+# reality-check would read it back as signal 1 (self-fulfilling
+# reinforcement, not an operator signal). Assert the recorder appears
+# exactly twice (review-gated + propose branches only).
+PRI_AG="$FED/triage/agents/prioritizer.ag"
+PRI_RECORDS=$(grep -cF 'record_priority_verdict(owner, repo, issue_id, priority, rule_id);' "$PRI_AG" || true)
+if [ "$PRI_RECORDS" -eq 2 ]; then
+    pass "prioritizer: rule-hit verdict recorded only at review-gated + propose (not autonomous)"
+else
+    fail "prioritizer: expected exactly 2 rule-hit verdict recordings (review-gated + propose), got $PRI_RECORDS"
+fi
 
 # Allowlist: every getenv-read knob of the pilot + Stage 1b must be on the
 # install.sh exec.env_passthrough default (fresh install) literal.
 for var in LABELER_RULE_FIRST LABELER_RULE_CONFIDENCE ROUTER_RULE_FIRST \
            ROUTER_RULE_CONFIDENCE LABELER_BM25_RECALL ROUTER_BM25_RECALL \
-           TRIAGE_BM25_K; do
+           TRIAGE_BM25_K PRIORITIZER_RULE_FIRST PRIORITIZER_RULE_CONFIDENCE \
+           PRIORITIZER_BM25_RECALL; do
     if grep "^    write_key 'exec.env_passthrough'" "$FED/install.sh" | grep -q "$var"; then
         pass "install.sh: $var on the exec.env_passthrough fresh-install default"
     else
