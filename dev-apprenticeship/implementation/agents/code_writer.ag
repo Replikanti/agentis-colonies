@@ -554,6 +554,17 @@ fn ag_loop_max_attempts() -> int {
 fn ag_edit_reset(owner: string, repo: string, iid: string) -> void {
     memo_write(scoped_memo(owner, repo, "code_edit_loop:phase:" + iid), "");
     memo_write(scoped_memo(owner, repo, "code_edit_loop:attempts:" + iid), "");
+    // #1424: also delete the caller-side continuation file ag_edit_step() writes
+    // before a --reuse re-drive; the job-dir copy is reaped by clear_job_dir(),
+    // but this original would otherwise leak one small file per re-driven issue.
+    // Same off-argv IID + rm -f pattern clear_job_dir() uses; rm -f is total on a
+    // missing file, so the catch is effectively dead.
+    // colony-lint: safe-exec-concat
+    let cmd = "IID=" + shell_escape(iid) +
+        "; rm -f \"$COLONY_DIR/../.agentis/code-edit-cont/issue-$IID.txt\"";
+    try { exec sh cmd; } catch e {
+        print("[code_writer] continuation-file cleanup failed for issue", iid, ":", e);
+    };
 }
 
 fn ag_edit_step(owner: string, repo: string, iid: string, branch: string, title: string, task: string, description: string) -> string {
