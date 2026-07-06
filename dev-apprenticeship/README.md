@@ -91,8 +91,10 @@ agentis memo set code_writer:confidence 0.97
 - [What to expect](#what-to-expect)
 - [Auto-confidence from feedback](#auto-confidence-from-feedback-106)
 - [Colonies](#colonies)
+- [Rule-first replay in triage](#rule-first-replay-in-triage-1234--14291437)
 - [Cost / rate instrumentation](#cost--rate-instrumentation-1114)
 - [CB cap + forge rate-limit backoff](#cb-cap--forge-rate-limit-backoff-1115)
+- [LLM-session concurrency cap](#llm-session-concurrency-cap-1352)
 - [First real task — completion criterion & post-run triage](#first-real-task--completion-criterion--post-run-triage-1116--1118)
 - [Knowledge portability](#knowledge-portability)
 - [Troubleshooting](#troubleshooting)
@@ -337,7 +339,9 @@ The plaintext path keeps working — vault use is opt-in. `tools/colony-lint.sh`
 
 ## LLM backend: flat-cyborg over Claude Code (default CLI, [#1131](https://github.com/Replikanti/agentis-colonies/issues/1131))
 
-The default CLI backend for this federation is **flat-cyborg**, a PTY wrapper that drives the *interactive* Claude Code session through `tools/flat-cyborg-claude.sh`. It uses the Claude Code subscription (not the metered `claude -p` API path) and returns only the model's reply (`--extract`).
+The default CLI backend for this federation is **flat-cyborg**, a PTY wrapper that drives the *interactive* Claude Code session through `tools/flat-cyborg-claude.sh`. It uses the Claude Code subscription (not the metered `claude -p` API path) and returns only the model's reply — read from a **result file** claude writes with its file-write tool ([#1219](https://github.com/Replikanti/agentis-colonies/issues/1219)); the `--extract` screen-scrape is only a fallback when the file does not appear.
+
+Sessions are **model-routed by workload** ([#1414](https://github.com/Replikanti/agentis-colonies/issues/1414)): agent `prompt()` reasoning runs on Sonnet (`--model sonnet`, override with `CLAUDE_REASONING_MODEL`), while the heaviest workload — multi-file code generation in `tools/code-edit-in-checkout.sh` — runs on Opus (`--model opus`, override with `CODE_EDIT_MODEL`).
 
 `install.sh` §6 wires it for you: when `flat-cyborg` is on your `PATH`, it offers (default Yes) to write `llm.backend = claude` and `llm.command = <fed>/tools/flat-cyborg-claude.sh` (with an empty `llm.args` — the prompt is the sole positional arg) into `<fed>/.agentis/config`. The wrapper path resolves from the federation root, so it works both in a source checkout and in the release bundle.
 
@@ -348,19 +352,12 @@ Two env-var knobs tune the wrapper (defaults shown):
 - `FLAT_CYBORG_IDLE_MS` (`8000`) — settle window before flat-cyborg reads the screen.
 - `FLAT_CYBORG_TIMEOUT_MS` (`180000`) — hard cap on a single generation.
 
-### Code-generation fidelity ([#1152](https://github.com/Replikanti/agentis-colonies/issues/1152))
+### Code-generation fidelity ([#1152](https://github.com/Replikanti/agentis-colonies/issues/1152), resolved by [#1210](https://github.com/Replikanti/agentis-colonies/issues/1210) + [#1219](https://github.com/Replikanti/agentis-colonies/issues/1219))
 
-flat-cyborg's `--extract` is a **TUI screen-scrape** — it reads the model's reply off the rendered terminal. That is perfect for **prose** (the observe / suggest / review-gated workflow: routing, priority, plans, review notes all come back clean), but it **corrupts fidelity-critical structured output**. The one path that needs exact structured output is the **autonomous code-writer's terminal write** — `code_writer` asks the model for the file contents as a JSON array and feeds them to `commit-files`. On flat-cyborg the terminal's line-wrapping mangles that JSON (`Expecting ',' delimiter` / `Invalid control character`), so the branch is created and committed-to but the commit fails. (Observed end-to-end in the [#1117](https://github.com/Replikanti/agentis-colonies/issues/1117) first live run; switching the backend to `claude -p` produced correct committed code immediately.)
+flat-cyborg's `--extract` is a **TUI screen-scrape** — it reads the model's reply off the rendered terminal. The [#1117](https://github.com/Replikanti/agentis-colonies/issues/1117) first live run showed that corrupting fidelity-critical structured output: `code_writer`'s old path asked the model for file contents as a JSON array, and the terminal's line-wrapping mangled it, so commits failed. The historical workaround was switching the backend to metered `claude -p` (#1152). **That switch is no longer needed** — two changes removed the screen-scrape from every fidelity-critical path, so flat-cyborg (flat-rate subscription) stays the backend for everything:
 
-**So: run code-generation-capable autonomous runs on the fidelity backend.** Set in `<fed>/.agentis/config`:
-
-```
-llm.backend = claude
-llm.command = claude
-llm.args    = -p
-```
-
-`claude -p` is the metered (per-token) Claude CLI print mode — clean stdout, proper JSON escaping, no screen-scrape. Keep **flat-cyborg as the default** for the prose-only observe/suggest workflow (flat-rate subscription); switch to `claude -p` when you want the implementation colony to actually write code and open PRs. A true per-agent backend (flat-cyborg for prose agents + `claude -p` for `code_writer` in the *same* run) needs an agentis-core per-agent/per-prompt backend override and is tracked as an upstream dependency.
+- **Code generation never round-trips file content through the transcript** ([#1210](https://github.com/Replikanti/agentis-colonies/issues/1210)): `code_writer` drives claude to edit files directly in a per-issue local git checkout and commits the resulting `git diff` — see [the checkout-edit path](./implementation/README.md#code-generation-the-checkout-edit-path).
+- **Prose replies are read from a result file** claude writes ([#1219](https://github.com/Replikanti/agentis-colonies/issues/1219)), with `--extract` only as a fallback.
 
 ## LLM backend (per-colony override, [#319](https://github.com/Replikanti/agentis-colonies/issues/319))
 
@@ -422,7 +419,7 @@ Each needs its own matcher (did the MR get merged? was the plan followed? was th
 
 | Colony | Agents | What it learns |
 |--------|--------|---------------|
-| [Triage](./triage/) | 4 | Issue creation, labeling, prioritization, routing |
+| [Triage](./triage/) | 4 | Issue creation, labeling, prioritization, routing — decisions crystallize into replayable rules (see [Rule-first replay](#rule-first-replay-in-triage-1234--14291437)) |
 | [Code Review](./code-review/) | 6 | Style, logic, security, test coverage review, pre-merge QA verdicts, approval decisions |
 | [Planning](./planning/) | 4 | Scope estimation, risk assessment, task decomposition, plan review |
 | [Implementation](./implementation/) | 4 | Code generation, test writing, refactoring, commit conventions |
@@ -460,6 +457,16 @@ Two mechanisms fix this:
 
 > The same mechanism extends to the `merge_requests` collection in the Planning / Implementation / Code Review / Release colonies; their reads are label-event-filtered rather than plain full-collection fetches, so that wiring is driven by the live run (#1117) and is not enabled yet.
 
+## Rule-first replay in triage (#1234 / #1429–#1437)
+
+The triage labeler, router, and prioritizer do not stay LLM-bound forever: each agent **distills your observed decisions into crystallizer rules** (content-addressed condition → action records in the agentis rule pool) and consults them **before** any LLM call:
+
+1. **Rule match first** ([#1234](https://github.com/Replikanti/agentis-colonies/issues/1234), extended to the prioritizer in [#1430](https://github.com/Replikanti/agentis-colonies/issues/1430)): if a stored rule fires on the issue's canonical context, the agent replays it deterministically — **zero LLM calls** for that decision.
+2. **BM25 recall + retrieval-grounded prompts** ([#1429](https://github.com/Replikanti/agentis-colonies/issues/1429)): when no rule fires exactly, `crystallizer_search` (agentis >= **1.20.0**, the floor pinned by the 2.5.0 release) retrieves the top-`TRIAGE_BM25_K` nearest rules and walks them as candidates / grounds the fallback LLM prompt in them, so even the LLM path is cheaper and more consistent with past decisions.
+3. **Backfill** ([#1431](https://github.com/Replikanti/agentis-colonies/issues/1431)): historical operator decisions already visible on the forge are distilled into the rule pool, so replay does not start from zero on a fresh install.
+
+Guard rails from the hardening pass ([#1435](https://github.com/Replikanti/agentis-colonies/issues/1435)–[#1437](https://github.com/Replikanti/agentis-colonies/issues/1437)): empty-keyword (`kw=`) contexts never distill, backfill, or replay; priority-label detection is exact vocabulary membership, not substring; `TRIAGE_BM25_K` is clamped; and every stage degrades to the plain LLM path on error or on a pre-1.20.0 runtime (the builtin call is try/catch-wrapped), so the pilots never hard-fail a tick. Each agent has a rollback switch (`ROUTER_RULE_FIRST=0` / `LABELER_RULE_FIRST=0` / `PRIORITIZER_RULE_FIRST=0`). Full mechanics, knob table, and memo keys: [`triage/README.md`](./triage/README.md#crystallizer-rule-replay-1234).
+
 ## Cost / rate instrumentation (#1114)
 
 `tools/cost-rate-report.sh <fed-dir> [--json] [--baseline]` folds each colony's per-prompt spend rows (`<fed>/<colony>/.agentis/spend/<agent>.jsonl`, one row ≈ one prompt) plus `agentis stats --json --per-identity` into a machine-readable per-agent **and** per-role (per-colony) report:
@@ -480,6 +487,10 @@ Two colony-side guardrails bound per-tick spend and survive a rate-limited forge
 - **Jittered forge-429 backoff + observable rate-limited state.** Each colony's `gitlab-api.sh` retry loop adds equal-jitter on top of its existing exponential backoff (slept value in `[delay, delay + delay/2]`) so simultaneous retries from many agents do not synchronise into a thundering herd. When a forge write hits the backend rate limit, the acting agents (`approval_decider`, `risk_assessor`, `plan_reviewer`) record a growing jittered backoff window in a `<agent>:rate_limited_until` memo, emit a `<colony>:rate-limited` event, and **defer** the write to a later tick rather than mark the task failed; a successful write clears the state. `tools/test-rate-limit-backoff.sh` stubs a 429-on-every-attempt forge call and asserts the delays grow within their jitter bounds, the call gives up after the retry budget (no retry storm), and the rate-limited memo + emit + defer wiring is present.
 
 > The LLM-backend HTTP-429 backoff and prompt cache are a separate layer that lives in the agentis runtime / LLM backend (handled upstream). The `--cb-per-tick` cap and the forge-429 backoff above are the colony-side mechanisms; the live induced-rate-limit recovery DoD line is operator-run.
+
+## LLM-session concurrency cap (#1352)
+
+Independent of per-tick spend, the **number of simultaneous LLM sessions** is bounded federation-wide. Every agent `prompt()`s on its tick, each spawning a `flat-cyborg` → Claude Code PTY session; on a single host 22 unbounded sessions thrash and wedge (and lowering confidence does not help — a dormant agent still `prompt()`s each tick). [`tools/lib/llm-session-slot.sh`](../tools/lib/llm-session-slot.sh) is a portable `mkdir`-based counting semaphore over `K = ${LLM_MAX_CONCURRENT:-3}` slots, acquired by **both** invocation sites — `flat-cyborg-claude.sh` (reasoning) and `code-edit-in-checkout.sh` (editing) — so the cap covers the total session count. Under contention an agent waits its turn (bounded by `LLM_SLOT_WAIT_S`, default 120 s) and then **fails open**: a prompt is only ever delayed, never dropped. Leaked slots (SIGKILL'd sessions) self-heal via PID-liveness reclaim. The slot pool lives at a fed-fixed path derived from `COLONY_DIR` so all colonies share one pool ([#1426](https://github.com/Replikanti/agentis-colonies/pull/1426)). Tune `K` to your host. Deep dive: [`doc/llm-backend.md`](../doc/llm-backend.md).
 
 ## First real task — completion criterion & post-run triage (#1116 / #1118)
 

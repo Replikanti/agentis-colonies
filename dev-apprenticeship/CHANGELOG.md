@@ -15,6 +15,19 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Changed
+
+- **Docs sync for the 2.5.0 release**: top-level README version references bumped
+  to 2.5.0 (federation table, tarball quickstart, Docker image tag); federation
+  README gains a [Rule-first replay in triage](./README.md#rule-first-replay-in-triage-1234--14291437)
+  section (#1234 / #1429–#1437 arc) and an
+  [LLM-session concurrency cap](./README.md#llm-session-concurrency-cap-1352)
+  section (#1352); the stale "switch to `claude -p` for code generation" advice
+  (#1152) is rewritten to reflect the checkout-edit path (#1210) + result-file
+  reply read (#1219) that superseded it, and workload-based model routing
+  (#1414) is documented; implementation README documents the v2.4.0
+  AG-driven edit-loop default (#1354) and the `CODE_EDIT_MODEL` knob.
+
 ## [2.5.0] — 2026-07-06
 
 **Requires:** agentis >= 1.20.0 (`crystallizer_search` BM25 retrieval, ADR-0009 Phase 1.5)
