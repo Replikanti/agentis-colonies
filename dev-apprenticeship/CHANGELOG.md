@@ -15,11 +15,17 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
-> **Floor bump:** the next release moves the runtime floor to
-> **agentis >= 1.20.0** (`crystallizer_search` BM25 retrieval, ADR-0009
-> Phase 1.5) — `.agentis-version` is already bumped. On a pre-1.20.0 host
-> the Stage 1b path degrades gracefully to the LLM path (try/catch around
-> the builtin), but `install.sh` now refuses to install below the floor.
+## [2.5.0] — 2026-07-06
+
+**Requires:** agentis >= 1.20.0 (`crystallizer_search` BM25 retrieval, ADR-0009 Phase 1.5)
+**Recommends:** flat-cyborg >= 0.11.0 (`--cmd-file`, #1171) for the checkout-edit path
+
+> **Floor bump:** this release moves the runtime floor from agentis >= 1.8.0
+> to **agentis >= 1.20.0** — `.agentis-version` is bumped and `install.sh`
+> refuses to install below the floor. On a pre-1.20.0 host an
+> already-installed federation keeps running (the Stage 1b path degrades
+> gracefully to the LLM path via try/catch around the builtin); only the new
+> BM25 recall stays inert until the binary is upgraded.
 
 ### Fixed
 
@@ -2358,7 +2364,8 @@ permissible per semver §4.
 - All dynamic values flowing into `exec sh` are required to pass through `shell_escape()`;
   `check-exec-sh.sh` enforces this grep-level contract.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.4.0...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.5.0...HEAD
+[2.5.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.4.0...dev-apprenticeship-v2.5.0
 [2.4.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.3.0...dev-apprenticeship-v2.4.0
 [2.3.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.2.0...dev-apprenticeship-v2.3.0
 [2.2.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.1.0...dev-apprenticeship-v2.2.0

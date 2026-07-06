@@ -1,8 +1,8 @@
 # Dev Apprenticeship
 
-![Version: 2.4.0](https://img.shields.io/badge/version-2.4.0-blue) ![Agentis >= v1.8.0](https://img.shields.io/badge/agentis-%3E%3D%20v1.8.0-blue) ![Agents: 22](https://img.shields.io/badge/agents-22-green) ![Status: Beta](https://img.shields.io/badge/status-beta-yellow)
+![Version: 2.5.0](https://img.shields.io/badge/version-2.5.0-blue) ![Agentis >= v1.20.0](https://img.shields.io/badge/agentis-%3E%3D%20v1.20.0-blue) ![Agents: 22](https://img.shields.io/badge/agents-22-green) ![Status: Beta](https://img.shields.io/badge/status-beta-yellow)
 
-**Version:** `2.4.0` · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.8.0`
+**Version:** `2.5.0` · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.20.0`
 
 > **One example federation** built on the [`agentis-colonies`](../) platform. The platform contract every federation must satisfy is [ADR-0003](../doc/adr/ADR-0003-federation-portability-contract.md); to scaffold a different kind of federation (data-ops, research, support-triage, monitoring-ops, …) see [`doc/federation-patterns.md`](../doc/federation-patterns.md) and [`tools/new-federation.sh`](../tools/new-federation.sh).
 
@@ -101,7 +101,7 @@ agentis memo set code_writer:confidence 0.97
 
 ## What you need
 
-- [Agentis](https://github.com/Replikanti/agentis) runtime **>= v1.8.0** (v1.4.0 provides the `tier()` builtin required by the four-tier confidence gating in all 22 agents; v1.4.1 wires `fitness_delta` from the `outcome` argument to `learn()` so downstream consumers — auto-promote, evolve, dashboard — see non-zero deltas; v1.8.0 adds the crystallizer builtins used by the `labeler` rule-replay pilot and is the floor pinned by the [2.1.0] CHANGELOG entry)
+- [Agentis](https://github.com/Replikanti/agentis) runtime **>= v1.20.0** (v1.8.0 adds the crystallizer builtins used by the rule-replay pilots; v1.20.0 adds the `crystallizer_search` BM25 retrieval builtin used by Stage 1b recall + retrieval-grounded prompts and is the floor pinned by the [2.5.0] CHANGELOG entry)
 - An LLM backend (Claude CLI, Ollama, or any OpenAI-compatible API)
 - GitLab instance with API access (personal access token with `api` scope)
 - Python 3 and git
@@ -113,7 +113,7 @@ Pick one of the two install paths.
 **Option A — release tarball** (recommended for running the federation; install-ready, no git tree required):
 
 ```bash
-VERSION=2.4.0
+VERSION=2.5.0
 curl -LO https://github.com/Replikanti/agentis-colonies/releases/download/dev-apprenticeship-v${VERSION}/dev-apprenticeship-v${VERSION}.tar.gz
 curl -LO https://github.com/Replikanti/agentis-colonies/releases/download/dev-apprenticeship-v${VERSION}/dev-apprenticeship-v${VERSION}.tar.gz.sha256
 sha256sum -c dev-apprenticeship-v${VERSION}.tar.gz.sha256   # optional but recommended
