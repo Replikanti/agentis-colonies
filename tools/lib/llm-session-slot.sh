@@ -29,15 +29,30 @@
 #
 # CONFIG (env):
 #   LLM_MAX_CONCURRENT     max concurrent sessions (default 3; tune per host)
-#   AGENTIS_LLM_SLOTS_DIR  slot dir (default: <AGENTIS_ROOT|.>/.agentis/llm-slots)
+#   AGENTIS_LLM_SLOTS_DIR  slot dir override — honoured on DIRECT invocations
+#                          only: agentis-core force-strips the entire AGENTIS_*
+#                          namespace from daemon children REGARDLESS of the
+#                          exec.env_passthrough allowlist (proven on v1.20.0 in
+#                          the #1426 QA), so this var never crosses the exec
+#                          boundary into reasoning/editing children
+#   COLONY_DIR             the allowlisted, non-reserved var every daemon child
+#                          DOES receive; the fed-fixed slot dir is derived from
+#                          it (<COLONY_DIR>/../.agentis/llm-slots) — this is
+#                          what makes the pool federation-wide in production
 #   LLM_SLOT_WAIT_S        max seconds to wait for a free slot before failing
 #                          open (default 120)
 
-# Resolve the slots directory once. Prefer an explicit override, else the
-# federation's .agentis dir, else a cwd-local fallback (never fatal).
+# Resolve the slots directory once. Precedence: explicit override (direct
+# invocations only — see above), the COLONY_DIR-derived fed-fixed path (the
+# production path: COLONY_DIR survives the exec boundary via the allowlist and
+# is exported by every start-colony.sh, so reasoning + editing children all
+# resolve the SAME pool), the agentis root, then a cwd-local fallback (never
+# fatal).
 _llm_slots_dir() {
     if [ -n "${AGENTIS_LLM_SLOTS_DIR:-}" ]; then
         printf '%s' "$AGENTIS_LLM_SLOTS_DIR"
+    elif [ -d "${COLONY_DIR:-/nonexistent}" ]; then
+        printf '%s' "$(cd "$COLONY_DIR/.." && pwd)/.agentis/llm-slots"
     elif [ -n "${AGENTIS_ROOT:-}" ]; then
         printf '%s' "$AGENTIS_ROOT/.agentis/llm-slots"
     else

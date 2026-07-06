@@ -755,7 +755,28 @@ if [ -d "$AGENTIS_DIR" ]; then
             "$AGENTIS_CONFIG" > "$AGENTIS_CONFIG.tmp" && mv "$AGENTIS_CONFIG.tmp" "$AGENTIS_CONFIG"
         ok "upgraded exec.env_passthrough (#1362)"
     fi
-    write_key 'exec.env_passthrough'         'COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE,PLAN_AUTO_PROMOTE'
+    # Migrate #1354/#1352 pre-fix literal in-place. Adds AG_DRIVEN_EDIT_LOOP —
+    # WITHOUT it the #1354 caller-driven edit-loop default is silently inert:
+    # getenv() in a .ag reads the SANITIZED env (only allowlisted vars survive;
+    # /proc/<pid>/environ still shows the full exec-time env, which is what made
+    # this gap invisible), so code_writer saw "" and fell back to the in-shell
+    # loop even with the daemon env var set (caught live on the #1424 burn-in).
+    # Also adds CODE_EDIT_MAX_CONCURRENT (#1367) and LLM_MAX_CONCURRENT (#1352)
+    # so the code-edit orchestrator cap and the LLM-session cap size survive the
+    # exec boundary into the editing children. AGENTIS_LLM_SLOTS_DIR is
+    # deliberately NOT allowlisted: agentis-core force-strips the entire
+    # AGENTIS_* namespace from daemon children regardless of this allowlist, so
+    # the entry would be dead — the fed-fixed slot pool is instead derived from
+    # the already-allowlisted COLONY_DIR inside tools/lib/llm-session-slot.sh.
+    # Exact-match only — any operator customization is preserved untouched.
+    if [ -f "$AGENTIS_CONFIG" ] && grep -qxF 'exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE,PLAN_AUTO_PROMOTE' "$AGENTIS_CONFIG"; then
+        # Use a tmp file + mv for atomicity; no sed -i (BSD vs GNU portability).
+        awk '/^exec\.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_\*,GITHUB_\*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE,PLAN_AUTO_PROMOTE$/ \
+             { print "exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE,PLAN_AUTO_PROMOTE,CODE_EDIT_MAX_CONCURRENT,AG_DRIVEN_EDIT_LOOP,LLM_MAX_CONCURRENT"; next } { print }' \
+            "$AGENTIS_CONFIG" > "$AGENTIS_CONFIG.tmp" && mv "$AGENTIS_CONFIG.tmp" "$AGENTIS_CONFIG"
+        ok "upgraded exec.env_passthrough (#1354/#1352)"
+    fi
+    write_key 'exec.env_passthrough'         'COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE,PLAN_AUTO_PROMOTE,CODE_EDIT_MAX_CONCURRENT,AG_DRIVEN_EDIT_LOOP,LLM_MAX_CONCURRENT'
     write_key 'exec.default_timeout_ms'      '120000'
     write_key 'pii_transmit'                 'allow'
     write_key 'knowledge.enabled'            'true'
