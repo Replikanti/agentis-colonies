@@ -130,6 +130,11 @@ def build(issue, klass, me, pv):
         if not labels or not action_labels:
             return None
         hits = kw_hits(issue["title"] + " " + issue["description"])
+        # #1435: an empty keyword signature would distill the bare "kw="
+        # condition, which prefix-matches EVERY context of the class once
+        # crystallized (agents guard the same way at their distill sites).
+        if not hits:
+            return None
         scope = "personal" if (me and issue["author"] == me) else "team"
         ctx = "kw=" + ",".join(hits) + " scope=" + scope
         coarse = "kw=" + ",".join(hits)
@@ -140,6 +145,9 @@ def build(issue, klass, me, pv):
         if not issue["assignees"]:
             return None
         hits = kw_hits(issue["title"])
+        # #1435: see the label-class comment — never mint a "kw=" condition.
+        if not hits:
+            return None
         slabels = sorted(set(labels))
         ctx = "kw=" + ",".join(hits) + " labels=" + ",".join(slabels)
         coarse = "kw=" + ",".join(hits)
@@ -153,6 +161,9 @@ def build(issue, klass, me, pv):
         if not pri:
             return None
         hits = kw_hits(issue["title"])
+        # #1435: see the label-class comment — never mint a "kw=" condition.
+        if not hits:
+            return None
         nonpri = sorted({l for l in labels if not is_pri(l, pv)})
         ctx = "kw=" + ",".join(hits) + " labels=" + ",".join(nonpri)
         coarse = "kw=" + ",".join(hits)

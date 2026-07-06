@@ -21,6 +21,26 @@ is asserted until multi-version CI is in place.
 > the Stage 1b path degrades gracefully to the LLM path (try/catch around
 > the builtin), but `install.sh` now refuses to install below the floor.
 
+### Fixed
+
+- **Empty-keyword (`kw=`) contexts no longer distill / backfill / replay
+  over-general crystallizer rules**
+  ([#1435](https://github.com/Replikanti/agentis-colonies/issues/1435)).
+  Post-merge QA of the rule-replay arc proved (deterministically, on a
+  real daemon) that an issue whose title carries no VOCAB keyword distills
+  the bare `kw=` condition — and a crystallized `kw=` rule prefix-matches
+  **every** context of its class at max confidence, replaying one canned
+  decision on everything (and empty-keyword is the *common* case, so that
+  bucket crystallizes first; the #1431 bulk backfill amplified it). Three
+  layers now close the hazard: all three triage agents skip `distill()`
+  for empty-keyword contexts (observation kept as a `no-distill-empty-kw`
+  learn row), `tools/lib/canonical-context.py` drops such issues from the
+  backfill/incremental path, and the shared fire helpers refuse a `kw=`
+  rule outright (`rule-rejected-overgeneral` learn row) — which also
+  permanently neutralizes any `kw=` rule minted by a pre-#1435 install.
+  Source-asserted per agent by `tools/test-bm25-recall-gates.sh`; builder
+  behaviour pinned by `tools/test-canonical-context.sh`.
+
 ### Added
 
 - **Backfill ingestion: historical operator decisions distilled into the

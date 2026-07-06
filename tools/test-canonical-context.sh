@@ -164,6 +164,26 @@ assert_line "--order oldest --max 1 processes the older issue first" \
 assert_line "oldest-first cursor stays at the processed slice's max (monotonic)" \
     "$(cat "$FIX_DIR/cursor-old")" "2026-07-01T10:00:00Z"
 
+# ----- 5. #1435: empty-keyword issues never mint a "kw=" condition -----
+# A title with no VOCAB word ("Add dark mode toggle") would distill the
+# bare "kw=" coarse condition, which prefix-matches EVERY context of the
+# class once crystallized. The builder must skip such issues for ALL
+# classes (the agents guard the same way at their distill sites).
+cat > "$FIX_DIR/nokw.json" <<'JSON'
+{"iid": 20, "title": "Add dark mode toggle", "description": "",
+ "labels": ["ui", "P2"],
+ "assignees": [{"username": "carol"}],
+ "author": {"username": "mholy"},
+ "updated_at": "2026-07-03T10:00:00Z"}
+JSON
+
+assert_line "#1435 label class skips an empty-keyword issue" \
+    "$(run_issue label "$FIX_DIR/nokw.json")" ""
+assert_line "#1435 route class skips an empty-keyword issue" \
+    "$(run_issue route "$FIX_DIR/nokw.json")" ""
+assert_line "#1435 prioritize class skips an empty-keyword issue" \
+    "$(run_issue prioritize "$FIX_DIR/nokw.json")" ""
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

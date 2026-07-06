@@ -794,7 +794,23 @@ fn apply_label_rule_hit(owner: string, repo: string, my_tier: string, issue_id: 
 // the hit (canonical_ctx for Stage 1, the BM25 candidate's condition for
 // Stage 1b) — stamped into labeler:rule_ctx so operators can see WHICH
 // condition family fired.
-fn fire_label_rule(owner: string, repo: string, my_tier: string, issue_id: int, author: string, rule_id: string, rule_action: string, rule_conf_str: string, hit_ctx: string, hit_kind: string, cur_hash: string) -> string {
+fn fire_label_rule(owner: string, repo: string, my_tier: string, issue_id: int, author: string, rule_id: string, rule_action: string, rule_conf_str: string, rule_cond: string, hit_ctx: string, hit_kind: string, cur_hash: string) -> string {
+    // #1435 defence-in-depth: refuse to replay an over-general
+    // empty-keyword rule — condition "kw=" prefix-matches the entire
+    // class. Pre-#1435 pools may still hold such rules (distill now
+    // guards against minting new ones); this check permanently
+    // neutralizes them on the fire path, and the learn row makes the
+    // poisoned pool visible to the dashboard / outcome tracking.
+    if rule_cond == "kw=" {
+        print("[labeler] rule-hit refused: over-general kw= rule", rule_id, "(#1435)");
+        if len(owner) > 0 {
+            learn("label", hit_ctx, "kw= rule refused: " + rule_id, "partial", ["observed", "triage", "rule-rejected-overgeneral", repo_tag(owner, repo)]);
+        } else {
+            learn("label", hit_ctx, "kw= rule refused: " + rule_id, "partial", ["observed", "triage", "rule-rejected-overgeneral"]);
+        };
+        return "";
+    };
+
     let rule_labels = normalize_labels_csv(rule_action);
     if len(rule_labels) == 0 {
         return "";
@@ -939,7 +955,8 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                             let rule_id = to_string(get(rule, "rule_id"));
                             let rule_action = to_string(get(rule, "action"));
                             let rule_conf_str = to_string(get(rule, "confidence"));
-                            let fired = fire_label_rule(owner, repo, my_tier, canon_iid, canon_author, rule_id, rule_action, rule_conf_str, canonical_ctx, "prefix-hit", cur_hash);
+                            let rule_cond = to_string(get(rule, "condition"));
+                            let fired = fire_label_rule(owner, repo, my_tier, canon_iid, canon_author, rule_id, rule_action, rule_conf_str, rule_cond, canonical_ctx, "prefix-hit", cur_hash);
                             if fired == "fired" {
                                 return;
                             };
@@ -973,7 +990,8 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     let rule_id_b = to_string(get(rule_b, "rule_id"));
                     let rule_action_b = to_string(get(rule_b, "action"));
                     let rule_conf_b = to_string(get(rule_b, "confidence"));
-                    let fired_b = fire_label_rule(owner, repo, my_tier, canon_iid, canon_author, rule_id_b, rule_action_b, rule_conf_b, bm25_ctx, "bm25-hit", cur_hash);
+                    let rule_cond_b = to_string(get(rule_b, "condition"));
+                    let fired_b = fire_label_rule(owner, repo, my_tier, canon_iid, canon_author, rule_id_b, rule_action_b, rule_conf_b, rule_cond_b, bm25_ctx, "bm25-hit", cur_hash);
                     if fired_b == "fired" {
                         return;
                     };
@@ -1027,14 +1045,32 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     if len(canonical_action) > 0 {
                         let scope_at = index_of(canonical_ctx, " scope=");
                         let coarse_ctx = if scope_at > 0 { substring(canonical_ctx, 0, scope_at); } else { canonical_ctx; };
-                        if len(owner) > 0 {
-                            learn("label", canonical_ctx, canonical_action, "success", ["distilled", "triage", repo_tag(owner, repo)]);
+                        // #1435: never distill an empty-keyword class. When the
+                        // issue title/description carries no VOCAB word,
+                        // coarse_ctx collapses to the literal "kw=" — and a
+                        // crystallized "kw=" rule prefix-matches EVERY label
+                        // context (matches_context: ctx.starts_with(condition)),
+                        // so it would replay one canned decision on the whole
+                        // class at max confidence. Keep the observation (learn
+                        // row tagged no-distill-empty-kw, outcome partial so it
+                        // never feeds the crystallize gate) but skip distill().
+                        if coarse_ctx == "kw=" {
+                            print("[labeler] distill skipped: empty-keyword context would mint an over-general kw= rule (#1435)");
+                            if len(owner) > 0 {
+                                learn("label", canonical_ctx, canonical_action, "partial", ["observed", "triage", "no-distill-empty-kw", repo_tag(owner, repo)]);
+                            } else {
+                                learn("label", canonical_ctx, canonical_action, "partial", ["observed", "triage", "no-distill-empty-kw"]);
+                            };
                         } else {
-                            learn("label", canonical_ctx, canonical_action, "success", ["distilled", "triage"]);
-                        };
-                        let did = try { distill("label", coarse_ctx, canonical_action, "heuristic"); } catch e { ""; };
-                        if len(did) > 0 {
-                            knowledge_validate(did);
+                            if len(owner) > 0 {
+                                learn("label", canonical_ctx, canonical_action, "success", ["distilled", "triage", repo_tag(owner, repo)]);
+                            } else {
+                                learn("label", canonical_ctx, canonical_action, "success", ["distilled", "triage"]);
+                            };
+                            let did = try { distill("label", coarse_ctx, canonical_action, "heuristic"); } catch e { ""; };
+                            if len(did) > 0 {
+                                knowledge_validate(did);
+                            };
                         };
                     };
                 };
