@@ -182,6 +182,18 @@ fn issues_cmd(owner: string, repo: string) -> string {
     return "$COLONY_DIR/scripts/forge-api.sh issues --view prioritizer" + repo_arg(owner, repo);
 }
 
+// #1436: single source for the EFFECTIVE priority vocabulary. The #226
+// memo wins; an unconfigured install falls back to the hardcoded default.
+// Used by BOTH issue selection (canonical context + prompt vocab line)
+// and reality-check scoring — pre-#1436 the verdict matcher read the raw
+// memo (empty when unconfigured), so selection and scoring could disagree
+// about what counts as priority-like.
+fn effective_priority_vocab() -> string {
+    let v = recall_latest("triage:labels:priority");
+    if len(v) > 0 { return v; };
+    return "priority::critical, priority::high, priority::medium, priority::low, P1, P2, P3, P4, urgent";
+}
+
 fn get_confidence() -> float {
     let raw = recall_latest("prioritizer:confidence");
     if len(raw) > 0 {
@@ -212,13 +224,14 @@ fn canonical_priority_context(issues_raw: string, vocab: string) -> string {
         "import os, json, re\n" +
         "VOCAB=[\"bug\",\"crash\",\"error\",\"fail\",\"segfault\",\"panic\",\"exception\",\"docs\",\"documentation\",\"readme\",\"feature\",\"enhancement\",\"request\",\"question\",\"security\",\"vuln\",\"cve\",\"performance\",\"perf\",\"slow\",\"test\",\"ci\",\"build\",\"regression\",\"refactor\",\"dependency\"]\n" +
         "pv=os.environ.get(\"PV\",\"\").lower()\n" +
+        "pv_set={t.strip() for t in pv.split(\",\") if t.strip()}\n" +
         "def is_pri(l):\n" +
         "    l2=str(l).strip().lower()\n" +
         "    if not l2: return False\n" +
         "    if l2.startswith(\"priority\"): return True\n" +
         "    if re.fullmatch(r\"p\\d+\", l2): return True\n" +
         "    if l2==\"urgent\": return True\n" +
-        "    if pv and l2 in pv: return True\n" +
+        "    if l2 in pv_set: return True\n" +
         "    return False\n" +
         "try:\n" +
         "    data=json.loads(os.environ[\"RAW\"])\n" +
@@ -460,7 +473,7 @@ fn evaluate_priority_verdict(owner: string, repo: string) -> void {
     if len(cur_raw) < 3 {
         return;
     };
-    let vocab = recall_latest("triage:labels:priority");
+    let vocab = effective_priority_vocab();
     // Deterministic compare in python (cheap, reproducible) rather than a
     // prompt() round-trip. Output: 0 = no signal (no priority-like label
     // yet), 1 = kept (our suggested label present), 3 = overridden (a
@@ -469,13 +482,14 @@ fn evaluate_priority_verdict(owner: string, repo: string) -> void {
         " python3 -c '" +
         "import os, json, re\n" +
         "pv=os.environ.get(\"PV\",\"\").lower()\n" +
+        "pv_set={t.strip() for t in pv.split(\",\") if t.strip()}\n" +
         "def is_pri(l):\n" +
         "    l2=str(l).strip().lower()\n" +
         "    if not l2: return False\n" +
         "    if l2.startswith(\"priority\"): return True\n" +
         "    if re.fullmatch(r\"p\\d+\", l2): return True\n" +
         "    if l2==\"urgent\": return True\n" +
-        "    if pv and l2 in pv: return True\n" +
+        "    if l2 in pv_set: return True\n" +
         "    return False\n" +
         "sug=os.environ[\"SUGGESTED\"].strip()\n" +
         "try:\n" +
@@ -700,12 +714,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
     // context further down). Unseeded memo returns "" → the hardcoded
     // fallback is used, byte-identical to pre-#226 for configs that
     // don't set `[triage.labels].priority`.
-    let priority_vocab = recall_latest("triage:labels:priority");
-    let priority_example = if len(priority_vocab) > 0 {
-        priority_vocab;
-    } else {
-        "priority::critical, priority::high, priority::medium, priority::low, P1, P2, P3, P4, urgent";
-    };
+    let priority_example = effective_priority_vocab();
     let vocab_line = "Priority label vocabulary: " + priority_example;
 
     // Analyze: find prioritized and unprioritized issues

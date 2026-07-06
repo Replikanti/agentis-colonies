@@ -53,8 +53,20 @@ VOCAB = ["bug", "crash", "error", "fail", "segfault", "panic", "exception",
 QUERY_MAX = 1200
 
 
-def is_pri(label, pv):
-    """Priority-like label heuristic — mirror prioritizer.ag (#1430)."""
+def pv_tokens(pv):
+    """Comma-split, trimmed, lowercased vocabulary set (#1436)."""
+    return {t.strip() for t in str(pv).lower().split(",") if t.strip()}
+
+
+def is_pri(label, pv_set):
+    """Priority-like label heuristic — mirror prioritizer.ag (#1430/#1436).
+
+    #1436: vocabulary matching is EXACT MEMBERSHIP over the comma-split
+    vocab set, not substring — the old `l2 in pv` substring test classified
+    fragment labels ("it" ⊂ "priority", "cal" ⊂ "critical") as
+    priority-like, corrupting issue selection, context splitting, and
+    verdict scoring alike.
+    """
     l2 = str(label).strip().lower()
     if not l2:
         return False
@@ -64,7 +76,7 @@ def is_pri(label, pv):
         return True
     if l2 == "urgent":
         return True
-    if pv and l2 in pv:
+    if l2 in pv_set:
         return True
     return False
 
@@ -118,7 +130,7 @@ def one_line(text):
     return re.sub(r"\s+", " ", text).strip()[:QUERY_MAX]
 
 
-def build(issue, klass, me, pv):
+def build(issue, klass, me, pv_set):
     """Return (ctx, coarse, action, query) or None when not decided."""
     labels = issue["labels"]
     if klass == "label":
@@ -126,7 +138,7 @@ def build(issue, klass, me, pv):
         # EXCLUDES priority-like labels — those belong to the "prioritize"
         # class (#1430); mixing them here would mint label rules that fight
         # the prioritizer over the same write.
-        action_labels = sorted({l for l in labels if not is_pri(l, pv)})
+        action_labels = sorted({l for l in labels if not is_pri(l, pv_set)})
         if not labels or not action_labels:
             return None
         hits = kw_hits(issue["title"] + " " + issue["description"])
@@ -157,14 +169,14 @@ def build(issue, klass, me, pv):
         query = one_line(issue["title"] + " " + " ".join(slabels))
         return ctx, coarse, action, query
     if klass == "prioritize":
-        pri = sorted({l for l in labels if is_pri(l, pv)})
+        pri = sorted({l for l in labels if is_pri(l, pv_set)})
         if not pri:
             return None
         hits = kw_hits(issue["title"])
         # #1435: see the label-class comment — never mint a "kw=" condition.
         if not hits:
             return None
-        nonpri = sorted({l for l in labels if not is_pri(l, pv)})
+        nonpri = sorted({l for l in labels if not is_pri(l, pv_set)})
         ctx = "kw=" + ",".join(hits) + " labels=" + ",".join(nonpri)
         coarse = "kw=" + ",".join(hits)
         action = pri[0]
@@ -193,7 +205,7 @@ def main():
     args = ap.parse_args()
 
     me = os.environ.get("ME", "").strip()
-    pv = os.environ.get("PV", "").lower()
+    pv_set = pv_tokens(os.environ.get("PV", ""))
 
     try:
         data = json.load(sys.stdin)
@@ -208,7 +220,7 @@ def main():
         issue = norm_issue(data)
         if issue is None:
             return 0
-        built = build(issue, args.klass, me, pv)
+        built = build(issue, args.klass, me, pv_set)
         if built is None:
             return 0
         ctx, coarse, action, query = built
@@ -235,7 +247,7 @@ def main():
         if issue["updated_at"] > cursor:
             cursor = issue["updated_at"]
         for klass in classes:
-            built = build(issue, klass, me, pv)
+            built = build(issue, klass, me, pv_set)
             if built is None:
                 continue
             ctx, coarse, action, _query = built

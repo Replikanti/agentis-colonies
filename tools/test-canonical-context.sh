@@ -184,6 +184,77 @@ assert_line "#1435 route class skips an empty-keyword issue" \
 assert_line "#1435 prioritize class skips an empty-keyword issue" \
     "$(run_issue prioritize "$FIX_DIR/nokw.json")" ""
 
+# ----- 6. #1436: is_pri is exact vocab membership, not substring -----
+# The old `l2 in pv` substring test classified fragment labels as
+# priority-like ("it" ⊂ "priority", "cal" ⊂ "critical", "block" ⊂ a
+# free-text "blocker"), corrupting issue selection, context splitting and
+# backfilled actions. Membership over the comma-split vocab set fixes it;
+# the deterministic rules (priority* / ^P<digits>$ / urgent) are unchanged.
+run_issue_pv() {
+    local klass="$1" file="$2" pv="$3"
+    ME="mholy" PV="$pv" python3 "$CANON" issue --class "$klass" < "$file"
+}
+
+DEFAULT_PV="priority::critical, priority::high, priority::medium, priority::low, P1, P2, P3, P4, urgent"
+
+cat > "$FIX_DIR/it.json" <<'JSON'
+{"iid": 30, "title": "Crash in parser", "description": "",
+ "labels": ["it"],
+ "assignees": [],
+ "author": {"username": "bob"},
+ "updated_at": "2026-07-04T10:00:00Z"}
+JSON
+
+# "it" is a substring of "priority" — pre-#1436 it was misclassified as a
+# priority label, so the prioritize class treated the issue as already
+# prioritized (bogus action "it") and the label class dropped "it" from
+# its action. Post-fix: not priority-like.
+assert_line "#1436 'it' label is NOT priority-like (prioritize emits nothing)" \
+    "$(run_issue_pv prioritize "$FIX_DIR/it.json" "$DEFAULT_PV")" ""
+assert_line "#1436 'it' label stays in the label-class action" \
+    "$(run_issue_pv label "$FIX_DIR/it.json" "$DEFAULT_PV")" \
+    "$(printf '30\tkw=crash scope=team\tkw=crash\tit\tCrash in parser')"
+
+# Explicit membership still works: an operator listing bare "high" in the
+# vocab makes it priority-like — exactly, not accidentally.
+cat > "$FIX_DIR/high.json" <<'JSON'
+{"iid": 31, "title": "Crash in parser", "description": "",
+ "labels": ["high", "bug"],
+ "assignees": [],
+ "author": {"username": "bob"},
+ "updated_at": "2026-07-04T11:00:00Z"}
+JSON
+assert_line "#1436 explicit vocab entry 'high' IS priority-like (action = high)" \
+    "$(run_issue_pv prioritize "$FIX_DIR/high.json" "high, low")" \
+    "$(printf '31\tkw=crash labels=bug\tkw=crash\thigh\tCrash in parser bug')"
+assert_line "#1436 'high' is NOT priority-like under the default vocab" \
+    "$(run_issue_pv prioritize "$FIX_DIR/high.json" "$DEFAULT_PV")" ""
+
+# Free-text vocab fragments no longer leak: "block" must not match a
+# vocab containing "blocker".
+cat > "$FIX_DIR/block.json" <<'JSON'
+{"iid": 32, "title": "Crash in parser", "description": "",
+ "labels": ["block", "blocker"],
+ "assignees": [],
+ "author": {"username": "bob"},
+ "updated_at": "2026-07-04T12:00:00Z"}
+JSON
+assert_line "#1436 free-text vocab: 'blocker' matches, fragment 'block' does not" \
+    "$(run_issue_pv prioritize "$FIX_DIR/block.json" "blocker, important")" \
+    "$(printf '32\tkw=crash labels=block\tkw=crash\tblocker\tCrash in parser block')"
+
+# Drift guard: both prioritizer inline python sites and the library carry
+# the tokenized form.
+PRI_AG_FILE="$FED/triage/agents/prioritizer.ag"
+PV_SET_COUNT="$(grep -c 'pv_set={t.strip() for t in pv.split' "$PRI_AG_FILE" || true)"
+assert_line "#1436 both prioritizer python sites use the tokenized pv_set" \
+    "$PV_SET_COUNT" "2"
+if grep -q 'def pv_tokens(pv):' "$CANON"; then
+    pass "#1436 canonical-context.py carries pv_tokens()"
+else
+    fail "#1436 canonical-context.py missing pv_tokens()"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

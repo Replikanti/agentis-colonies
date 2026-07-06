@@ -23,6 +23,25 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- **`is_pri` priority-label detection is exact vocabulary membership, not
+  substring** ([#1436](https://github.com/Replikanti/agentis-colonies/issues/1436)).
+  The #1430 heuristic's vocabulary clause tested `l2 in pv` — a raw
+  substring match against the concatenated vocab string — so fragment
+  labels were misclassified as priority-like (`it` ⊂ "priority", `cal` ⊂
+  "critical"; with a free-text operator vocab like `"blocker, important"`
+  even `block`/`import`). Runtime QA demonstrated the blast radius: an
+  issue whose only label was the component label `it` was skipped as
+  "already prioritized" AND the #1431 backfill minted a bogus
+  `prioritize → it` rule from it. The clause is now exact membership over
+  the comma-split, trimmed, lowercased vocab set at all three sites (both
+  `prioritizer.ag` inline python sites + `tools/lib/canonical-context.py`),
+  with the deterministic rules (`priority*` prefix, `^P<digits>$`,
+  `urgent`) unchanged. Bonus alignment: selection and reality-check
+  scoring now share one `effective_priority_vocab()` source — pre-fix the
+  verdict matcher read the raw memo (empty on unconfigured installs) while
+  selection used the hardcoded fallback, so the two could disagree.
+  Behaviour pins + drift asserts in `tools/test-canonical-context.sh`.
+
 - **Empty-keyword (`kw=`) contexts no longer distill / backfill / replay
   over-general crystallizer rules**
   ([#1435](https://github.com/Replikanti/agentis-colonies/issues/1435)).
