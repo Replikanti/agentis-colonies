@@ -23,6 +23,30 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- **Crystallizer-pilot hardening bundle** ([#1437](https://github.com/Replikanti/agentis-colonies/issues/1437)),
+  six post-merge QA findings on the #1429/#1430 pilots swept in one pass:
+  (1) `TRIAGE_BM25_K` is clamped to `<= 20` in all three agents and the
+  Stage 1b candidate-walk (`bm25_pick_at`) + RAG grounding
+  (`bm25_grounding_at`) calls are try/catch-wrapped, so an operator typo or
+  a malformed candidate JSON degrades to the LLM path instead of erroring
+  the tick; (2) the prioritizer reality-check matches the suggested label
+  case-insensitively and scores "ours kept but another priority-like label
+  added" as the neutral partial signal instead of a full keep; (3) the
+  distill-skip divergence branch (LLM chose a different issue than the
+  canonical context was built for) now prints a diagnostic instead of
+  going silent; (4) router + prioritizer pending verdicts are **multi-slot**
+  — keyed `<agent>:pending_verdict:<iid>` with a CSV index scanned each
+  evaluation tick, so a second suggestion no longer overwrites an unscored
+  earlier verdict (the legacy single-slot key from a pre-#1437 install is
+  scored once and retired on the first pass); (5) `install.sh` runs a
+  residue check after the `exec.env_passthrough` migration chain and
+  prints a loud warning naming any pilot knob missing from an
+  operator-customized allowlist (never auto-edits, #1426 contract);
+  (6) the comma-in-label-name ambiguity is documented in
+  `triage/README.md` (escaping would invalidate content-addressed rule
+  ids). Source-asserts extended in `tools/test-bm25-recall-gates.sh` and
+  `tools/test-install-env-passthrough.sh` (residue-check test).
+
 - **`is_pri` priority-label detection is exact vocabulary membership, not
   substring** ([#1436](https://github.com/Replikanti/agentis-colonies/issues/1436)).
   The #1430 heuristic's vocabulary clause tested `l2 in pv` — a raw

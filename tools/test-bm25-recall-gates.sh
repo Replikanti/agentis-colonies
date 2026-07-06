@@ -67,12 +67,21 @@ check_agent() {
         "$agent: BM25 recall is subordinate to the RULE_FIRST rollback switch"
     assert_grep "$file" 'try { crystallizer_search(bm25_query, bm25_k); } catch e { []; }' \
         "$agent: crystallizer_search is try/catch-wrapped (pre-v1.20.0 host degrades)"
+    # #1437: K is clamped to <= 20 so an operator typo (TRIAGE_BM25_K=3000)
+    # cannot make the candidate walk arbitrarily expensive; 0/negative keeps
+    # degrading via the builtin's k<=0 empty-list contract.
+    assert_grep "$file" 'let bm25_k = if bm25_k_raw > 20 { 20; } else { bm25_k_raw; };' \
+        "$agent: TRIAGE_BM25_K clamped to <= 20 (#1437)"
 
     # 2. Class confirmation before firing.
     assert_grep "$file" 'fn bm25_pick_at(action_type: string, cands: list<string>, pos: int, min_conf: float) -> string' \
         "$agent: bm25_pick_at helper present"
     assert_grep "$file" 'let confirmed = crystallizer_lookup_with_confidence(action_type, cond, min_conf);' \
         "$agent: candidates are class-confirmed via the confidence-gated point lookup"
+    # #1437: the candidate walk itself is try-wrapped so a malformed
+    # candidate JSON degrades to the LLM path instead of erroring the tick.
+    assert_grep "$file" 'let bm25_ctx = try { bm25_pick_at(' \
+        "$agent: bm25_pick_at call is try/catch-wrapped (#1437)"
 
     # 3. Shared fire helper on both stages, return-before-prompt, hit_kind tags.
     assert_grep "$file" "$fire_fn" "$agent: shared fire helper present"
@@ -91,10 +100,16 @@ check_agent() {
     assert_count "$file" '"rule-hit", hit_kind, "distilled"' 8 \
         "$agent: all 8 rule-hit learn rows carry rule-hit + hit_kind + distilled"
 
-    # 4. RAG fallback grounds the decide prompt.
-    assert_grep "$file" 'let rag_block = bm25_grounding_at(bm25_cands, 0, "");' \
-        "$agent: RAG grounding block built from BM25 candidates"
+    # 4. RAG fallback grounds the decide prompt (try-wrapped since #1437).
+    assert_grep "$file" 'let rag_block = try { bm25_grounding_at(bm25_cands, 0, ""); } catch e { ""; };' \
+        "$agent: RAG grounding block built from BM25 candidates (try-wrapped, #1437)"
     assert_grep "$file" 'grounded_context' "$agent: decide prompt consumes grounded_context"
+
+    # #1437: divergence between the LLM's chosen issue and the issue the
+    # canonical context was built for skips distill WITH a diagnostic print
+    # (silent skip made the pool look mysteriously cold).
+    assert_grep "$file" 'distill skipped: LLM chose issue' \
+        "$agent: distill-skip divergence branch prints a diagnostic (#1437)"
 }
 
 check_agent "labeler" "$FED/triage/agents/labeler.ag" "LABELER_BM25_RECALL" \
@@ -116,6 +131,31 @@ if [ "$PRI_RECORDS" -eq 2 ]; then
 else
     fail "prioritizer: expected exactly 2 rule-hit verdict recordings (review-gated + propose), got $PRI_RECORDS"
 fi
+
+# #1437: router + prioritizer pending verdicts are multi-slot — keyed per
+# issue with a CSV index scanned each evaluation tick, so a second
+# suggestion no longer overwrites an unscored earlier verdict. The wrapper
+# keeps the old name and scores the legacy single-slot key once (migration).
+assert_grep "$FED/triage/agents/router.ag" \
+    'fn score_route_verdict_key(owner: string, repo: string, key: string) -> string' \
+    "router: per-key verdict scorer present (#1437)"
+assert_grep "$FED/triage/agents/router.ag" \
+    'fn eval_route_verdicts_at(owner: string, repo: string, index_csv: string, pos: int, acc: string) -> string' \
+    "router: verdict index scanner present (#1437)"
+assert_grep "$FED/triage/agents/router.ag" 'router:pending_verdict_index' \
+    "router: pending-verdict index key present (#1437)"
+assert_grep "$FED/triage/agents/prioritizer.ag" \
+    'fn score_priority_verdict_key(owner: string, repo: string, key: string) -> string' \
+    "prioritizer: per-key verdict scorer present (#1437)"
+assert_grep "$FED/triage/agents/prioritizer.ag" \
+    'fn eval_priority_verdicts_at(owner: string, repo: string, index_csv: string, pos: int, acc: string) -> string' \
+    "prioritizer: verdict index scanner present (#1437)"
+assert_grep "$FED/triage/agents/prioritizer.ag" 'prioritizer:pending_verdict_index' \
+    "prioritizer: pending-verdict index key present (#1437)"
+assert_grep "$FED/triage/agents/router.ag" 'fn append_verdict_index(owner: string, repo: string, iid: int) -> void' \
+    "router: verdict recorder appends to the index (#1437)"
+assert_grep "$FED/triage/agents/prioritizer.ag" 'fn append_verdict_index(owner: string, repo: string, iid: int) -> void' \
+    "prioritizer: verdict recorder appends to the index (#1437)"
 
 # Allowlist: every getenv-read knob of the pilot + Stage 1b must be on the
 # install.sh exec.env_passthrough default (fresh install) literal.

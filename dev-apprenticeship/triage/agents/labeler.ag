@@ -934,7 +934,13 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         let bm25_flag = getenv("LABELER_BM25_RECALL");
         let bm25_enabled = if rule_first_enabled { bm25_flag != "0"; } else { false; };
         let bm25_k_str = getenv("TRIAGE_BM25_K");
-        let bm25_k = if len(bm25_k_str) > 0 { parse_int(bm25_k_str); } else { 3; };
+        // #1437: clamp K at 20 — each Stage 1b candidate hop is a pool-scan
+        // lookup (plus a potential #670 peer-fetch round-trip when enabled),
+        // so an oversized operator K would exhaust the tick CB budget
+        // instead of degrading to the LLM. k<=0 still disables recall via
+        // the builtin's empty-list contract.
+        let bm25_k_raw = if len(bm25_k_str) > 0 { parse_int(bm25_k_str); } else { 3; };
+        let bm25_k = if bm25_k_raw > 20 { 20; } else { bm25_k_raw; };
         let me_for_ctx = if rule_first_enabled { recall_latest("gitlab:me"); } else { ""; };
         let canon_line = if rule_first_enabled { canonical_label_context(raw, me_for_ctx); } else { ""; };
         let canon_iid = if rule_first_enabled { parse_int(repo_field(canon_line, 0)); } else { 0; };
@@ -983,7 +989,9 @@ fn tick_for_repo(owner: string, repo: string) -> void {
             } else { []; };
         } else { []; };
         if len(bm25_cands) > 0 {
-            let bm25_ctx = bm25_pick_at("label", bm25_cands, 0, min_conf);
+            // #1437: try-wrapped — a candidate-walk error must degrade to
+            // the LLM path, not kill the tick.
+            let bm25_ctx = try { bm25_pick_at("label", bm25_cands, 0, min_conf); } catch e { ""; };
             if len(bm25_ctx) > 0 {
                 let rule_b = crystallizer_lookup_with_confidence("label", bm25_ctx, min_conf);
                 if len(rule_b) > 0 {
@@ -1003,7 +1011,8 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         // the decide prompt with the top BM25 candidates (>= 0.5 confidence)
         // so the LLM sees how similar past issues were labeled. Empty block
         // = context byte-identical to pre-#1429.
-        let rag_block = bm25_grounding_at(bm25_cands, 0, "");
+        // #1437: try-wrapped for the same reason as the pick walk above.
+        let rag_block = try { bm25_grounding_at(bm25_cands, 0, ""); } catch e { ""; };
         let grounded_context = if len(rag_block) > 0 {
             context + "\nSimilar past labeling decisions (crystallized rules, BM25-ranked, most relevant first — follow them unless the issue clearly differs):" + rag_block;
         } else { context; };
@@ -1077,6 +1086,12 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                             };
                         };
                     };
+                } else {
+                    // #1437: the skip is correct (distilling issue A's context
+                    // against issue B's decision would mint a mis-scoped rule)
+                    // but it must not be silent — operators debugging "why does
+                    // nothing crystallize" need the divergence visible.
+                    print("[labeler] distill skipped: LLM chose issue", action.issue_id, "but the canonical context was built for issue", canon_iid, "(#1437)");
                 };
             };
         };
