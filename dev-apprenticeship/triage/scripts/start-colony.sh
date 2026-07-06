@@ -29,6 +29,7 @@ set -e
 RESTART_AGENT=""
 RATE_LIMIT_STATUS=0
 SNAPSHOT_REFRESH=0
+INGEST_REFRESH=0
 POSITIONAL=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -50,6 +51,19 @@ while [ $# -gt 0 ]; do
             # per-colony GitLab snapshot every tick without re-bootstrapping
             # the colony. Reuses the full env-load path below.
             SNAPSHOT_REFRESH=1
+            shift
+            ;;
+        --ingest)
+            # #1431: run the incremental crystallizer ingestion and exit.
+            # Distills operator decisions (labels / assignees / priority
+            # labels) updated since the triage:ingest:cursor memo into the
+            # federation KnowledgeBase via tools/backfill-crystallizer.sh
+            # --incremental, so the rule pool keeps tracking the operator
+            # even on issues the agents never touched. Reuses the full
+            # env-load path below (forge tokens included) exactly like
+            # --snapshot-refresh; invoked by the start-federation.sh ingest
+            # sidecar or manually by the operator.
+            INGEST_REFRESH=1
             shift
             ;;
         --)
@@ -273,6 +287,18 @@ if [ "$SNAPSHOT_REFRESH" = "1" ]; then
     SNAP_FED_ROOT="$(cd "$REPO_ROOT/dev-apprenticeship" && pwd)"
     publish_snapshot "$SNAP_FED_ROOT"
     exit 0
+fi
+
+# #1431: --ingest mode. Incremental crystallizer ingestion and exit. Same
+# env-load path as --snapshot-refresh (forge tokens exported above), so the
+# backfill tool's forge fetch authenticates without any extra wiring. The
+# tool is total-on-failure operationally: a fetch/driver failure exits
+# non-zero and the sidecar logs it, but nothing in the colony is mutated
+# beyond the already-idempotent learn/distill/validate rows.
+if [ "$INGEST_REFRESH" = "1" ]; then
+    INGEST_FED_ROOT="$(cd "$REPO_ROOT/dev-apprenticeship" && pwd)"
+    exec "$REPO_ROOT/tools/backfill-crystallizer.sh" \
+        --fed-dir "$INGEST_FED_ROOT" --colony-dir "$COLONY_DIR" --incremental
 fi
 
 # #226: vocabulary memo seeding. Operator-tuned priority label vocabulary
