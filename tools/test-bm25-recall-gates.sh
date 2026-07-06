@@ -156,6 +156,11 @@ assert_grep "$FED/triage/agents/router.ag" 'fn append_verdict_index(owner: strin
     "router: verdict recorder appends to the index (#1437)"
 assert_grep "$FED/triage/agents/prioritizer.ag" 'fn append_verdict_index(owner: string, repo: string, iid: int) -> void' \
     "prioritizer: verdict recorder appends to the index (#1437)"
+# #1437 QA finding: signal 2 (partial — ours kept, another priority-like
+# label added) must NOT touch the crystallizer at all; record_use(.., false,
+# 0.0) would push a kept-every-time rule toward compaction retirement.
+assert_grep "$FED/triage/agents/prioritizer.ag" '    if signal == 2 {' \
+    "prioritizer: partial signal 2 skips crystallizer_record_use entirely (#1437)"
 
 # Allowlist: every getenv-read knob of the pilot + Stage 1b must be on the
 # install.sh exec.env_passthrough default (fresh install) literal.

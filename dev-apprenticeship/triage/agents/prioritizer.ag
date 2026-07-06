@@ -401,6 +401,14 @@ fn record_rule_feedback(blob: string, signal: int) -> void {
     if rule_id == "void" {
         return;
     };
+    // #1437: signal 2 (ours kept, another priority-like label added) is
+    // NEUTRAL — no crystallizer touch at all. record_use(rule_id, false, 0.0)
+    // would still bump use_count without success_count, silently pushing a
+    // kept-every-time rule toward the success_rate<0.5 && use_count>=20
+    // compaction retirement gate.
+    if signal == 2 {
+        return;
+    };
     crystallizer_record_use(rule_id, signal == 1, rule_feedback_delta(signal));
     print("[prioritizer] crystallizer feedback: rule", rule_id, "signal", signal);
 }

@@ -108,7 +108,11 @@ prioritizer are keyed **per issue** (`<agent>:pending_verdict:<iid>` plus a
 small CSV index) so a second suggestion before the first one is scored no
 longer overwrites the earlier verdict — every open verdict is scanned each
 evaluation tick; the legacy single-slot key from a pre-#1437 install is
-scored once and retired on the first pass.
+scored once and retired on the first pass. (Labeler's propose-path verdict
+deliberately stays single-slot — its longer-horizon revert coverage is the
+#203 autonomous multi-slot soak, and its propose verdicts are scored on the
+immediately following tick, so the overwrite window is one tick, not
+hours.)
 
 `prioritizer`'s category is `prioritize` (#1430), keyed on the first
 **unprioritized** issue's keyword + non-priority-label signature; its action
