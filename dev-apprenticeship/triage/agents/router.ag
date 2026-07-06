@@ -15,14 +15,34 @@
 // reality-check at all before this, so evaluate_route_verdict() is new: it
 // treats a later reassignment away from the rule's suggested assignee as the
 // demote signal, and a kept assignment as reinforcement. Requires the agentis
-// crystallizer builtins (agentis >= 1.8.0; host is v1.19.0).
-// Operator knobs (process env, read via getenv — mirror labeler's):
+// crystallizer builtins (agentis >= 1.8.0).
+//
+// #1429 Stage 1b: on a Stage 1 prefix-lookup miss, BM25-rank the whole
+// crystallized rule pool against the REAL issue text (title + labels) via
+// crystallizer_search (agentis >= 1.20.0, ADR-0009 Phase 1.5) and fire the
+// first candidate whose class-scoped, confidence-gated point lookup
+// confirms it — recall is no longer bounded by the fixed keyword VOCAB.
+// When no candidate clears the bar, the top candidates ground the routing
+// prompt() instead ("similar past decisions", the RAG fallback).
+// Operator knobs (process env, read via getenv — mirror labeler's; every
+// knob must be on the install.sh exec.env_passthrough allowlist or it is
+// silently inert, #1426/#1428):
 //   - ROUTER_RULE_FIRST=0       short-circuits the ENTIRE pilot path (Stage 1
-//                               replay, Stage 2 distill, verdict recording +
-//                               reality-check) to the LLM path — byte-identical
-//                               to pre-pilot behaviour, the rollback knob.
+//                               replay, Stage 1b BM25 recall, Stage 2 distill,
+//                               verdict recording + reality-check) to the LLM
+//                               path — byte-identical to pre-pilot behaviour,
+//                               the rollback knob.
 //   - ROUTER_RULE_CONFIDENCE=<float>  overrides the default 0.85 minimum
-//                               confidence for a rule-first hit.
+//                               confidence for a rule-first hit (shared by
+//                               Stage 1 and Stage 1b — BM25 score is a
+//                               relevance signal, never a trust signal).
+//   - ROUTER_BM25_RECALL=0      short-circuits Stage 1b only (BM25 recall +
+//                               prompt grounding); Stage 1 prefix replay
+//                               stays on.
+//   - TRIAGE_BM25_K=<int>       top-k for crystallizer_search (default 3; 0
+//                               disables recall + grounding via the builtin's
+//                               k<=0 empty-list contract). Shared with
+//                               labeler.
 
 cb 400;
 
@@ -211,8 +231,14 @@ fn get_confidence() -> float {
 // #1234 crystallizer pilot (ports labeler #1235): deterministic, prompt-free
 // canonical context for the first UNASSIGNED issue in `raw` (the router-view
 // JSON the LLM path consumes). Emits a single tab-separated line:
-//   "<iid>\t<canonical_ctx>"
+//   "<iid>\t<canonical_ctx>\t<bm25_query>"
 // where canonical_ctx is "kw=" + sorted_kw_csv + " labels=" + sorted_labels_csv.
+// The 3rd field (#1429) is the issue's free text (title + label names —
+// the router view carries no description), whitespace-collapsed to one
+// line and truncated to 1200 bytes — the Stage 1b crystallizer_search
+// query. Emitted unconditionally (repo_field extraction by index keeps
+// fields 0-1 byte-identical for Stage 1), consumed only when
+// ROUTER_BM25_RECALL is on.
 // The keyword signature lowercases the issue title and matches a FIXED triage
 // vocabulary (the same set labeler uses); the sorted matched set plus the
 // sorted labels CSV are stable across repeats so the crystallized rule id is
@@ -249,7 +275,8 @@ fn canonical_route_context(issues_raw: string) -> string {
         "hits=sorted({w for w in VOCAB if w in toks})\n" +
         "labels=sorted({str(l).strip() for l in (chosen.get(\"labels\") or []) if str(l).strip()})\n" +
         "ctx=\"kw=\"+\",\".join(hits)+\" labels=\"+\",\".join(labels)\n" +
-        "print(str(iid)+\"\\t\"+ctx)" +
+        "q=re.sub(r\"\\s+\", \" \", (chosen.get(\"title\") or \"\")+\" \"+\" \".join(labels)).strip()[:1200]\n" +
+        "print(str(iid)+\"\\t\"+ctx+\"\\t\"+q)" +
         "'";
     return try { exec sh cmd; } catch e { ""; };
 }
@@ -263,6 +290,63 @@ fn normalize_assignee(name: string) -> string {
     let cmd = "A=" + shell_escape(name) +
         " python3 -c 'import os; print(os.environ[\"A\"].strip().lstrip(\"@\"))'";
     return try { exec sh cmd; } catch e { ""; };
+}
+
+// #1429 Stage 1b: walk the BM25 candidate list (JSON strings from
+// crystallizer_search, highest score first) and return the `condition` of
+// the first candidate that the CLASS-SCOPED, CONFIDENCE-GATED point lookup
+// confirms. The class confirmation is load-bearing: crystallizer_search
+// ranks the WHOLE rule pool across action types ("label", "route", ...)
+// and its per-rule JSON carries no expected_outcome field, so a raw
+// candidate may belong to another agent's class. Re-probing the candidate's
+// condition through crystallizer_lookup_with_confidence(<class>, cond,
+// min_conf) enforces both properties at once — a hit proves a <class> rule
+// at >= min_conf matches that condition family; a "label" rule surfaced by
+// BM25 simply misses here. BM25 score itself is never a trust signal.
+// Tail-recursive (no loops in .ag); the caller bounds depth via the
+// TRIAGE_BM25_K search limit (default 3). Returns "" when no candidate
+// confirms. json_get on a missing field yields Void -> "void"; skipped.
+fn bm25_pick_at(action_type: string, cands: list<string>, pos: int, min_conf: float) -> string {
+    if pos >= len(cands) { return ""; };
+    let cj = to_string(get(cands, pos));
+    let cond = to_string(json_get(cj, "condition"));
+    if len(cond) > 0 {
+        if cond != "void" {
+            let confirmed = crystallizer_lookup_with_confidence(action_type, cond, min_conf);
+            if len(confirmed) > 0 {
+                return cond;
+            };
+        };
+    };
+    return bm25_pick_at(action_type, cands, pos + 1, min_conf);
+}
+
+// #1429 RAG fallback: format the BM25 candidates into a compact grounding
+// block for the routing prompt ("similar past decisions"). Only candidates
+// at 0.5+ rule confidence are included; size is bounded by TRIAGE_BM25_K
+// (default 3) times the core's condition (<= 256 chars) + action caps.
+// Returns "" when nothing qualifies — the caller then passes the prompt
+// context through unchanged (byte-identical to pre-#1429).
+fn bm25_grounding_at(cands: list<string>, pos: int, acc: string) -> string {
+    if pos >= len(cands) { return acc; };
+    let cj = to_string(get(cands, pos));
+    let cond = to_string(json_get(cj, "condition"));
+    let act = to_string(json_get(cj, "action"));
+    let conf_raw = to_string(json_get(cj, "confidence"));
+    let conf = parse_float(conf_raw);
+    if conf >= 0.5 {
+        if len(cond) > 0 {
+            if cond != "void" {
+                if len(act) > 0 {
+                    if act != "void" {
+                        let line = "\n- when [" + cond + "] -> " + act + " (confidence " + conf_raw + ")";
+                        return bm25_grounding_at(cands, pos + 1, acc + line);
+                    };
+                };
+            };
+        };
+    };
+    return bm25_grounding_at(cands, pos + 1, acc);
 }
 
 // #1234: auto-confidence from the reality-check (mirrors labeler #106). Each
@@ -469,14 +553,19 @@ fn evaluate_route_verdict(owner: string, repo: string) -> void {
 // the dashboard can separate replayed decisions from LLM-driven ones, and the
 // review-gated / propose branches thread rule_id through record_route_verdict
 // so the reality-check later credits / penalises the rule via
-// crystallizer_record_use. Autonomous route writes are NOT single-slot
+// crystallizer_record_use. #1429: `hit_kind` ("prefix-hit" for the Stage 1
+// canonical-context match, "bm25-hit" for the Stage 1b BM25 recall) is
+// tagged IN ADDITION to "rule-hit" — the auto-promote rule-hit efficiency
+// bonus (#823) keys on "rule-hit" membership and must count both replay
+// paths; the extra tag only discriminates them for the dashboard / outcome
+// tracking. Autonomous route writes are NOT single-slot
 // verdict-recorded here: that tier's longer-horizon revert-check is the
 // labeler #203 multi-slot mechanism, a deliberate follow-up to this pilot (the
 // optimistic +0.1 recorded in Stage 1 stands until then). The emit payload is a
 // JSON string of the RouteAction shape; triage:route_suggestion's only consumer
 // (implementation/code_writer) treats the event as a wake-up signal (checks
 // len > 5), so the loose shape is safe.
-fn apply_route_rule_hit(owner: string, repo: string, my_tier: string, issue_id: int, assignee: string, reasoning: string, rule_id: string) -> void {
+fn apply_route_rule_hit(owner: string, repo: string, my_tier: string, issue_id: int, assignee: string, reasoning: string, rule_id: string, hit_kind: string) -> void {
     let conf_str = recall_latest("router:confidence");
     let action_json = "{\"issue_id\":" + to_string(issue_id) + ",\"assignee\":\"" + assignee + "\",\"reasoning\":\"" + reasoning + "\",\"confidence\":" + conf_str + ",\"rule_id\":\"" + rule_id + "\"}";
     if my_tier == "autonomous" {
@@ -490,9 +579,9 @@ fn apply_route_rule_hit(owner: string, repo: string, my_tier: string, issue_id: 
             print("[router] Assigned issue", issue_id, "to", assignee, "(rule-hit)");
             emit("triage:route_suggestion", action_json);
             if len(owner) > 0 {
-                learn("route", "issue " + to_string(issue_id), assignee, "success", ["acted", "triage", "rule-hit", "distilled", repo_tag(owner, repo)]);
+                learn("route", "issue " + to_string(issue_id), assignee, "success", ["acted", "triage", "rule-hit", hit_kind, "distilled", repo_tag(owner, repo)]);
             } else {
-                learn("route", "issue " + to_string(issue_id), assignee, "success", ["acted", "triage", "rule-hit", "distilled"]);
+                learn("route", "issue " + to_string(issue_id), assignee, "success", ["acted", "triage", "rule-hit", hit_kind, "distilled"]);
             };
         };
     } else {
@@ -506,9 +595,9 @@ fn apply_route_rule_hit(owner: string, repo: string, my_tier: string, issue_id: 
             emit("triage:route_suggestion", action_json);
             record_route_verdict(owner, repo, issue_id, assignee, rule_id);
             if len(owner) > 0 {
-                learn("route", "issue " + to_string(issue_id), assignee, "partial", ["triage", "review-gated", "rule-hit", "distilled", repo_tag(owner, repo)]);
+                learn("route", "issue " + to_string(issue_id), assignee, "partial", ["triage", "review-gated", "rule-hit", hit_kind, "distilled", repo_tag(owner, repo)]);
             } else {
-                learn("route", "issue " + to_string(issue_id), assignee, "partial", ["triage", "review-gated", "rule-hit", "distilled"]);
+                learn("route", "issue " + to_string(issue_id), assignee, "partial", ["triage", "review-gated", "rule-hit", hit_kind, "distilled"]);
             };
         } else {
             if my_tier == "propose" {
@@ -516,20 +605,52 @@ fn apply_route_rule_hit(owner: string, repo: string, my_tier: string, issue_id: 
                 emit("triage:route_suggestion", action_json);
                 record_route_verdict(owner, repo, issue_id, assignee, rule_id);
                 if len(owner) > 0 {
-                    learn("route", "issue " + to_string(issue_id), assignee, "partial", ["emitted", "triage", "rule-hit", "distilled", repo_tag(owner, repo)]);
+                    learn("route", "issue " + to_string(issue_id), assignee, "partial", ["emitted", "triage", "rule-hit", hit_kind, "distilled", repo_tag(owner, repo)]);
                 } else {
-                    learn("route", "issue " + to_string(issue_id), assignee, "partial", ["emitted", "triage", "rule-hit", "distilled"]);
+                    learn("route", "issue " + to_string(issue_id), assignee, "partial", ["emitted", "triage", "rule-hit", hit_kind, "distilled"]);
                 };
             } else {
                 print("[router] Observing rule-hit (tier:", my_tier, ")");
                 if len(owner) > 0 {
-                    learn("route", "issue " + to_string(issue_id), assignee, "partial", ["observed", "triage", "rule-hit", "distilled", repo_tag(owner, repo)]);
+                    learn("route", "issue " + to_string(issue_id), assignee, "partial", ["observed", "triage", "rule-hit", hit_kind, "distilled", repo_tag(owner, repo)]);
                 } else {
-                    learn("route", "issue " + to_string(issue_id), assignee, "partial", ["observed", "triage", "rule-hit", "distilled"]);
+                    learn("route", "issue " + to_string(issue_id), assignee, "partial", ["observed", "triage", "rule-hit", hit_kind, "distilled"]);
                 };
             };
         };
     };
+}
+
+// #1429: shared fire path for Stage 1 (prefix hit) and Stage 1b (BM25
+// recall hit) — one place owns the record_use / apply / memo-stamp / gate
+// sequence so the two stages cannot drift. Returns "fired" when the rule
+// was applied (caller must `return` to skip the LLM), "" when the rule's
+// action normalized to no usable assignee (caller falls through to the
+// next stage / the prompt). `hit_ctx` is whichever condition string
+// produced the hit (canonical_ctx for Stage 1, the BM25 candidate's
+// condition for Stage 1b) — stamped into router:rule_ctx so operators can
+// see WHICH condition family fired.
+fn fire_route_rule(owner: string, repo: string, my_tier: string, issue_id: int, rule_id: string, rule_action: string, rule_conf_str: string, hit_ctx: string, hit_kind: string, cur_hash: string) -> string {
+    let rule_assignee = normalize_assignee(rule_action);
+    if len(rule_assignee) == 0 {
+        return "";
+    };
+    let rule_reasoning = hit_kind + ": crystallized route rule @conf " + rule_conf_str + ". Context: " + hit_ctx;
+    // Optimistic at-write reinforcement; the reality-check
+    // (evaluate_route_verdict) later corrects via the threaded rule_id
+    // (+0.1 kept / -0.15 reassigned).
+    crystallizer_record_use(rule_id, true, 0.1);
+    apply_route_rule_hit(owner, repo, my_tier, issue_id, rule_assignee, rule_reasoning, rule_id, hit_kind);
+    memo_write(scoped_memo(owner, repo, "router:rule_ctx"), hit_ctx);
+    memo_write(scoped_memo(owner, repo, "router:rule_id"), rule_id);
+    if len(cur_hash) > 0 {
+        memo_write(scoped_memo(owner, repo, "router:snapshot_hash"), cur_hash);
+    };
+    let now_s1 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now_s1) > 0 {
+        memo_write(scoped_memo(owner, repo, "router:last_check"), now_s1);
+    };
+    return "fired";
 }
 
 fn tick_for_repo(owner: string, repo: string) -> void {
@@ -639,9 +760,19 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         let rule_first_enabled = rule_first_flag != "0";
         let min_conf_str = getenv("ROUTER_RULE_CONFIDENCE");
         let min_conf = if len(min_conf_str) > 0 { parse_float(min_conf_str); } else { 0.85; };
+        // #1429 Stage 1b knobs: BM25 recall is subordinate to the pilot
+        // flag (ROUTER_RULE_FIRST=0 kills BOTH stages — the one rollback
+        // switch restores pre-pilot behaviour exactly). TRIAGE_BM25_K=0
+        // disables recall + grounding via crystallizer_search's k<=0
+        // empty-list contract.
+        let bm25_flag = getenv("ROUTER_BM25_RECALL");
+        let bm25_enabled = if rule_first_enabled { bm25_flag != "0"; } else { false; };
+        let bm25_k_str = getenv("TRIAGE_BM25_K");
+        let bm25_k = if len(bm25_k_str) > 0 { parse_int(bm25_k_str); } else { 3; };
         let canon_line = if rule_first_enabled { canonical_route_context(raw); } else { ""; };
         let canon_iid = if rule_first_enabled { parse_int(repo_field(canon_line, 0)); } else { 0; };
         let canonical_ctx = if rule_first_enabled { repo_field(canon_line, 1); } else { ""; };
+        let bm25_query = if bm25_enabled { repo_field(canon_line, 2); } else { ""; };
 
         if rule_first_enabled {
             if len(canon_line) > 0 {
@@ -656,25 +787,8 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                             let rule_id = to_string(get(rule, "rule_id"));
                             let rule_action = to_string(get(rule, "action"));
                             let rule_conf_str = to_string(get(rule, "confidence"));
-                            let rule_conf = if len(rule_conf_str) > 0 { parse_float(rule_conf_str); } else { min_conf; };
-                            let rule_assignee = normalize_assignee(rule_action);
-                            if len(rule_assignee) > 0 {
-                                let rule_reasoning = "rule-first: crystallized route rule @conf " + to_string(rule_conf) + ". Context: " + canonical_ctx;
-                                // Optimistic at-write reinforcement; the
-                                // reality-check (evaluate_route_verdict) later
-                                // corrects via the threaded rule_id (+0.1 kept /
-                                // -0.15 reassigned).
-                                crystallizer_record_use(rule_id, true, 0.1);
-                                apply_route_rule_hit(owner, repo, my_tier, canon_iid, rule_assignee, rule_reasoning, rule_id);
-                                memo_write(scoped_memo(owner, repo, "router:rule_ctx"), canonical_ctx);
-                                memo_write(scoped_memo(owner, repo, "router:rule_id"), rule_id);
-                                if len(cur_hash) > 0 {
-                                    memo_write(scoped_memo(owner, repo, "router:snapshot_hash"), cur_hash);
-                                };
-                                let now_s1 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
-                                if len(now_s1) > 0 {
-                                    memo_write(scoped_memo(owner, repo, "router:last_check"), now_s1);
-                                };
+                            let fired = fire_route_rule(owner, repo, my_tier, canon_iid, rule_id, rule_action, rule_conf_str, canonical_ctx, "prefix-hit", cur_hash);
+                            if fired == "fired" {
                                 return;
                             };
                         };
@@ -683,9 +797,50 @@ fn tick_for_repo(owner: string, repo: string) -> void {
             };
         };
 
+        // #1429 Stage 1b: BM25 recall over the crystallized rule pool.
+        // Stage 1 missed (or its rule had no usable assignee) — rank the
+        // pool against the REAL issue text and let the class-scoped,
+        // confidence-gated point lookup confirm a candidate before firing.
+        // Empty query / k<=0 / absent crystallizer all yield an empty
+        // candidate list (builtin contract), so every degraded path falls
+        // through to the LLM exactly like a plain miss. The try/catch
+        // additionally degrades a pre-v1.20.0 host (no crystallizer_search
+        // builtin) to the LLM path instead of erroring the tick.
+        let bm25_cands = if bm25_enabled {
+            if canon_iid > 0 {
+                if len(bm25_query) > 0 {
+                    try { crystallizer_search(bm25_query, bm25_k); } catch e { []; };
+                } else { []; };
+            } else { []; };
+        } else { []; };
+        if len(bm25_cands) > 0 {
+            let bm25_ctx = bm25_pick_at("route", bm25_cands, 0, min_conf);
+            if len(bm25_ctx) > 0 {
+                let rule_b = crystallizer_lookup_with_confidence("route", bm25_ctx, min_conf);
+                if len(rule_b) > 0 {
+                    let rule_id_b = to_string(get(rule_b, "rule_id"));
+                    let rule_action_b = to_string(get(rule_b, "action"));
+                    let rule_conf_b = to_string(get(rule_b, "confidence"));
+                    let fired_b = fire_route_rule(owner, repo, my_tier, canon_iid, rule_id_b, rule_action_b, rule_conf_b, bm25_ctx, "bm25-hit", cur_hash);
+                    if fired_b == "fired" {
+                        return;
+                    };
+                };
+            };
+        };
+
+        // #1429 RAG fallback: no rule cleared the confidence bar — ground
+        // the routing prompt with the top BM25 candidates (>= 0.5
+        // confidence) so the LLM sees how similar past issues were routed.
+        // Empty block = context byte-identical to pre-#1429.
+        let rag_block = bm25_grounding_at(bm25_cands, 0, "");
+        let grounded_context = if len(rag_block) > 0 {
+            context + "\nSimilar past routing decisions (crystallized rules, BM25-ranked, most relevant first — follow them unless the issue clearly differs):" + rag_block;
+        } else { context; };
+
         let action = prompt(
             "You are a routing agent. Suggest who should be assigned to the most important unassigned issue based on team expertise. Return JSON: issue_id (int), assignee (string, username), reasoning (string), confidence (float 0-1).",
-            context
+            grounded_context
         ) -> RouteAction;
 
         // #1234 Stage 2: distill the LLM decision so repeat decisions on the
