@@ -84,5 +84,28 @@ LLM_MAX_CONCURRENT=abc acquire_llm_slot
 if [ -n "${LLM_SLOT_HELD:-}" ]; then ok "non-numeric LLM_MAX_CONCURRENT falls back to default"; else bad "non-numeric K fallback"; fi
 release_llm_slot
 
+# 8. COLONY_DIR derivation (#1426): with the AGENTIS_* override absent (agentis-
+#    core force-strips that namespace from daemon children regardless of the
+#    exec.env_passthrough allowlist), the slot dir must resolve fed-fixed from
+#    COLONY_DIR — <COLONY_DIR>/../.agentis/llm-slots — NOT the PWD fallback.
+#    This is the resolution every reasoning/editing child actually uses in
+#    production, so it is what makes the pool federation-wide.
+FAKE_FED="$TMP/fake-fed"; mkdir -p "$FAKE_FED/implementation"
+DERIVED="$(AGENTIS_LLM_SLOTS_DIR='' COLONY_DIR="$FAKE_FED/implementation" _llm_slots_dir)"
+if [ "$DERIVED" = "$FAKE_FED/.agentis/llm-slots" ]; then
+    ok "COLONY_DIR-derived fed-fixed slot dir (AGENTIS_* stripped by the runtime)"
+else
+    bad "COLONY_DIR derivation (got '$DERIVED', expected '$FAKE_FED/.agentis/llm-slots')"
+fi
+
+# 9. Missing/invalid COLONY_DIR falls through to the next resolution (no crash,
+#    no half-derived path).
+DERIVED2="$(AGENTIS_LLM_SLOTS_DIR='' COLONY_DIR="$TMP/does-not-exist" AGENTIS_ROOT="$TMP/root" _llm_slots_dir)"
+if [ "$DERIVED2" = "$TMP/root/.agentis/llm-slots" ]; then
+    ok "nonexistent COLONY_DIR falls through to AGENTIS_ROOT resolution"
+else
+    bad "COLONY_DIR fall-through (got '$DERIVED2')"
+fi
+
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

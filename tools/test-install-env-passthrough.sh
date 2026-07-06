@@ -20,6 +20,8 @@
 #   Test 12: #277-era pre-fix literal also migrates straight to the #1185 value
 #   Test 13: #1185-era literal migrates straight to the PLAN_AUTO_PROMOTE value
 #   Test 14: #1317-era literal migrates to add PLAN_AUTO_PROMOTE (#1362)
+#   Test 15: #1362-era literal migrates to add AG_DRIVEN_EDIT_LOOP +
+#            CODE_EDIT_MAX_CONCURRENT + LLM_MAX_CONCURRENT (#1354/#1352)
 #
 # Usage: ./tools/test-install-env-passthrough.sh
 # Exit code 0 if all tests pass, 1 otherwise.
@@ -79,10 +81,21 @@ run_install_fragment() {
              { print "exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE,PLAN_AUTO_PROMOTE"; next } { print }' \
             "$AGENTIS_CONFIG" > "$AGENTIS_CONFIG.tmp" && mv "$AGENTIS_CONFIG.tmp" "$AGENTIS_CONFIG"
     fi
-    write_key 'exec.env_passthrough' 'COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE,PLAN_AUTO_PROMOTE'
+    # Migrate #1354/#1352 pre-fix literal in-place. Adds AG_DRIVEN_EDIT_LOOP
+    # (getenv() reads the SANITIZED env, so the v2.4.0 default is inert without
+    # it), CODE_EDIT_MAX_CONCURRENT (#1367) and the #1352 cap size
+    # LLM_MAX_CONCURRENT (AGENTIS_* is force-stripped by agentis-core, so the
+    # slot dir is derived from COLONY_DIR in the lib instead). Exact-match only.
+    if [ -f "$AGENTIS_CONFIG" ] && grep -qxF 'exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE,PLAN_AUTO_PROMOTE' "$AGENTIS_CONFIG"; then
+        awk '/^exec\.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_\*,GITHUB_\*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE,PLAN_AUTO_PROMOTE$/ \
+             { print "exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE,PLAN_AUTO_PROMOTE,CODE_EDIT_MAX_CONCURRENT,AG_DRIVEN_EDIT_LOOP,LLM_MAX_CONCURRENT"; next } { print }' \
+            "$AGENTIS_CONFIG" > "$AGENTIS_CONFIG.tmp" && mv "$AGENTIS_CONFIG.tmp" "$AGENTIS_CONFIG"
+    fi
+    write_key 'exec.env_passthrough' 'COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE,PLAN_AUTO_PROMOTE,CODE_EDIT_MAX_CONCURRENT,AG_DRIVEN_EDIT_LOOP,LLM_MAX_CONCURRENT'
 }
 
-EXPECTED_NEW='exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE,PLAN_AUTO_PROMOTE'
+EXPECTED_NEW='exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE,PLAN_AUTO_PROMOTE,CODE_EDIT_MAX_CONCURRENT,AG_DRIVEN_EDIT_LOOP,LLM_MAX_CONCURRENT'
+EXPECTED_1362='exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE,PLAN_AUTO_PROMOTE'
 EXPECTED_1317='exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE'
 EXPECTED_1185='exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL'
 EXPECTED_277='exec.env_passthrough = COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*'
@@ -228,6 +241,27 @@ if grep -qxF "$EXPECTED_NEW" "$T14_CONFIG" \
 else
     fail "#1317->#1362 migration — expected '$EXPECTED_NEW' and no bare '$EXPECTED_1317', got:"
     cat "$T14_CONFIG"
+fi
+
+# ----- Test 15: #1362-era literal migrates to the #1354/#1352 value -----
+# A federation installed between #1362 and the #1354/#1352 fix carries the
+# PLAN_AUTO_PROMOTE value without AG_DRIVEN_EDIT_LOOP — on such an install the
+# v2.4.0 caller-driven-edit-loop default is silently inert (getenv() reads the
+# SANITIZED env; the flag never reaches code_writer.ag) and the cap-size override is
+# stripped from code-edit children. The migration appends the three vars.
+T15_DIR="$FAKE_ROOT/t15"
+mkdir -p "$T15_DIR"
+T15_CONFIG="$T15_DIR/config"
+printf '%s\n' "$EXPECTED_1362" > "$T15_CONFIG"
+
+run_install_fragment "$T15_CONFIG"
+
+if grep -qxF "$EXPECTED_NEW" "$T15_CONFIG" \
+    && ! grep -qxF "$EXPECTED_1362" "$T15_CONFIG"; then
+    pass "#1362-era literal migrates to add AG_DRIVEN_EDIT_LOOP + cap vars (#1354/#1352)"
+else
+    fail "#1362->#1354/#1352 migration — expected '$EXPECTED_NEW' and no bare '$EXPECTED_1362', got:"
+    cat "$T15_CONFIG"
 fi
 
 # ----- Heartbeat interval (#280) -----

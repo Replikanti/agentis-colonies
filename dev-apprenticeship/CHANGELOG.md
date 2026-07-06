@@ -15,6 +15,30 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`AG_DRIVEN_EDIT_LOOP` (and the #1352 cap vars) added to the
+  `exec.env_passthrough` allowlist**
+  ([#1354](https://github.com/Replikanti/agentis-colonies/issues/1354) /
+  [#1352](https://github.com/Replikanti/agentis-colonies/issues/1352) follow-up).
+  `getenv()` in a `.ag` reads the SANITIZED env — the daemon strips every var
+  not on the allowlist — so the v2.4.0 caller-driven-edit-loop default was
+  silently inert on any install whose config lacked the entry: `code_writer`
+  saw `""` and fell back to the in-shell loop even with the env var exported
+  (caught live on the first AG-loop burn-in, #1424/#1425). `install.sh` now
+  migrates the allowlist in place (exact-match, operator customizations
+  untouched) and writes the extended default on fresh installs, adding
+  `AG_DRIVEN_EDIT_LOOP`, `CODE_EDIT_MAX_CONCURRENT` and `LLM_MAX_CONCURRENT`.
+  `AGENTIS_LLM_SLOTS_DIR` is deliberately **not** allowlisted — the adversarial
+  QA of this fix proved agentis-core force-strips the entire `AGENTIS_*`
+  namespace from daemon children **regardless** of the allowlist, so the entry
+  would be dead. Instead `tools/lib/llm-session-slot.sh` now derives the
+  fed-fixed slot pool from the already-allowlisted `COLONY_DIR`
+  (`<COLONY_DIR>/../.agentis/llm-slots`), which every reasoning and editing
+  child actually receives — this, not the #1418 env export, is what makes the
+  #1352 session-cap pool truly federation-wide across the exec boundary
+  (covered by `test-llm-session-slot.sh` tests 8–9).
+
 ## [2.4.0] — 2026-07-06
 
 ### Changed
