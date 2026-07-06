@@ -19,7 +19,12 @@
 # paths. flat-cyborg must be installed (https://github.com/Replikanti/flat-cyborg;
 # an installed copy self-updates with `flat-cyborg update`).
 #
-# Knobs (env vars): FLAT_CYBORG_IDLE_MS, FLAT_CYBORG_TIMEOUT_MS.
+# Knobs (env vars): FLAT_CYBORG_IDLE_MS, FLAT_CYBORG_TIMEOUT_MS,
+# CLAUDE_REASONING_EFFORT (claude --settings effortLevel for this reasoning
+# session; default "medium" — the measured sweet spot for typed-JSON
+# extraction, binary discipline, and pattern-summary prompts; accepts
+# low|medium|high|xhigh, an unrecognised value falls back to "medium" with a
+# warning).
 #
 # RESULT-FILE channel (#1219): the historical extraction path reads claude's
 # reply off the rendered TUI via --extract / --extract-structural. That is a
@@ -166,10 +171,26 @@ acquire_llm_slot
 # sonnet). The heavier code-generation path (tools/code-edit-in-checkout.sh)
 # routes to Opus 4.8 separately. Override with CLAUDE_REASONING_MODEL (a claude
 # --model value: an alias like `sonnet`/`opus`/`fable`, or a full model id).
+#
+# Effort-level routing (#1444): reasoning sessions default to "medium" instead
+# of inheriting the operator's account-level effortLevel (an operator with a
+# high personal default would otherwise have all 22 daemons burn max-effort
+# chain-of-thought on routine, low-complexity prompts). Harden against a typo
+# reaching `claude --settings` unvalidated: only a known-good value is ever
+# interpolated into the JSON string.
+CLAUDE_REASONING_EFFORT="${CLAUDE_REASONING_EFFORT:-medium}"
+case "$CLAUDE_REASONING_EFFORT" in
+    low|medium|high|xhigh) ;;
+    *)
+        echo "flat-cyborg-claude.sh: invalid CLAUDE_REASONING_EFFORT '$CLAUDE_REASONING_EFFORT', falling back to medium" >&2
+        CLAUDE_REASONING_EFFORT=medium
+        ;;
+esac
+EFFORT_SETTINGS='{"effortLevel":"'"$CLAUDE_REASONING_EFFORT"'"}'
 flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 \
   --idle-ms "${FLAT_CYBORG_IDLE_MS:-30000}" \
   --timeout-ms "${FLAT_CYBORG_TIMEOUT_MS:-240000}" \
-  --cmd-file "$PROMPT_FILE" -- claude --model "${CLAUDE_REASONING_MODEL:-sonnet}" > "$REPLY_FILE" &
+  --cmd-file "$PROMPT_FILE" -- claude --model "${CLAUDE_REASONING_MODEL:-sonnet}" --settings "$EFFORT_SETTINGS" > "$REPLY_FILE" &
 FC_PID=$!
 wait "$FC_PID"
 FC_RC=$?
