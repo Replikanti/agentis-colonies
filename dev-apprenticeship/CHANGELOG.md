@@ -15,6 +15,21 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Changed
+
+- **The caller-driven edit loop is now the default for ordinary issues**
+  ([#1354](https://github.com/Replikanti/agentis-colonies/issues/1354) step 3).
+  `[implementation] ag_driven_edit_loop` now defaults to **true** (an absent key
+  resolves to ON; only an explicit `false`/`0`/`no`/`off` opts back into the
+  in-shell multi-attempt loop), so `code_writer.ag` drives the
+  attempt/continuation/verify/finalize loop itself over the `--one-attempt` /
+  `--reuse` / `--finalize` primitives by default. **Epic-class issues
+  (`--decompose`) still use the in-shell path** regardless of the flag —
+  decomposition is not yet migrated into the `.ag`, so routing an epic through
+  the AG loop would drop it; that migration (and the eventual removal of the
+  in-shell state machine) is tracked on
+  [#1353](https://github.com/Replikanti/agentis-colonies/issues/1353).
+
 ### Added
 
 - **Opt-in caller-driven edit loop in `code_writer.ag`**

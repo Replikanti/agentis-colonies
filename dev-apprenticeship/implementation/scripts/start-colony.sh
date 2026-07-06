@@ -211,10 +211,14 @@ IMPLEMENTATION_REQUIRE_ASSIGNEE="${IMPLEMENTATION_REQUIRE_ASSIGNEE:-true}"
 # the in-shell loop stays the shipped behaviour until step 3 flips the default.
 # Read via getenv("AG_DRIVEN_EDIT_LOOP") from the daemon env (no env_passthrough
 # needed, mirroring PLAN_AUTO_PROMOTE / AUTO_MERGE); normalise to 1/0.
+# #1354 step 3: the AG loop is now the DEFAULT — an absent key (existing
+# colony.toml files without it) resolves to ON. Only an EXPLICIT false/0/no/off
+# opts back into the in-shell multi-attempt loop. (code_writer.ag additionally
+# carves epics out of the AG path until --decompose is migrated; see #1353.)
 AG_DRIVEN_EDIT_LOOP_RAW="$(parse_toml implementation ag_driven_edit_loop)"
 case "$AG_DRIVEN_EDIT_LOOP_RAW" in
-    true|True|TRUE|1|yes|on) AG_DRIVEN_EDIT_LOOP=1 ;;
-    *) AG_DRIVEN_EDIT_LOOP=0 ;;
+    false|False|FALSE|0|no|off) AG_DRIVEN_EDIT_LOOP=0 ;;
+    *) AG_DRIVEN_EDIT_LOOP=1 ;;
 esac
 
 # #224: primary branch name. Read from whichever of [forge.gitlab] or
