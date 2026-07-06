@@ -43,7 +43,9 @@ for agent in labeler router prioritizer; do
     AG="$FED/triage/agents/$agent.ag"
     # The inline literal lives in an .ag string: "VOCAB=[\"bug\",...]\n".
     # Strip the escaping backslashes to recover the canonical form.
-    AG_VOCAB="$(grep -o 'VOCAB=\[[^]]*\]' "$AG" | head -1 | tr -d '\\')"
+    # \134 is octal for backslash (avoids shellcheck SC1003 on a quoted
+    # backslash literal).
+    AG_VOCAB="$(grep -o 'VOCAB=\[[^]]*\]' "$AG" | head -1 | tr -d '\134')"
     if [ -z "$AG_VOCAB" ]; then
         fail "$agent: inline VOCAB literal not found"
     elif [ "$AG_VOCAB" = "$PY_VOCAB" ]; then
@@ -125,11 +127,13 @@ assert_line "prioritize/gh undecided (no priority-like label) emits nothing" \
 
 # ----- 3. triples mode: --since filter + --max + cursor -----
 
-printf '[' > "$FIX_DIR/all.json"
-cat "$FIX_DIR/gl.json" >> "$FIX_DIR/all.json"
-printf ',' >> "$FIX_DIR/all.json"
-cat "$FIX_DIR/gh.json" >> "$FIX_DIR/all.json"
-printf ']' >> "$FIX_DIR/all.json"
+{
+    printf '['
+    cat "$FIX_DIR/gl.json"
+    printf ','
+    cat "$FIX_DIR/gh.json"
+    printf ']'
+} > "$FIX_DIR/all.json"
 
 TRIPLES="$(ME="mholy" PV="P1" python3 "$CANON" triples \
     --classes label,route,prioritize --max 10 \

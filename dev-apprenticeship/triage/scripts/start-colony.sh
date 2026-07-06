@@ -297,7 +297,7 @@ fi
 # beyond the already-idempotent learn/distill/validate rows.
 if [ "$INGEST_REFRESH" = "1" ]; then
     INGEST_FED_ROOT="$(cd "$REPO_ROOT/dev-apprenticeship" && pwd)"
-    COLONY_DIR="$COLONY_DIR" exec "$REPO_ROOT/tools/backfill-crystallizer.sh" \
+    exec "$REPO_ROOT/tools/backfill-crystallizer.sh" \
         --fed-dir "$INGEST_FED_ROOT" --colony-dir "$COLONY_DIR" --incremental
 fi
 
