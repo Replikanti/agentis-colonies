@@ -1052,8 +1052,12 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                         // context (matches_context: ctx.starts_with(condition)),
                         // so it would replay one canned decision on the whole
                         // class at max confidence. Keep the observation (learn
-                        // row tagged no-distill-empty-kw, outcome partial so it
-                        // never feeds the crystallize gate) but skip distill().
+                        // row tagged no-distill-empty-kw) but skip distill() —
+                        // the protection is that distill() is never called on
+                        // this path, so no kw= condition entry can be minted
+                        // (Outcome::Partial scores 0.5 and would still pass the
+                        // substrate's evidence filter; the outcome choice only
+                        // keeps the row out of acting-path fitness).
                         if coarse_ctx == "kw=" {
                             print("[labeler] distill skipped: empty-keyword context would mint an over-general kw= rule (#1435)");
                             if len(owner) > 0 {
