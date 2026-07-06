@@ -1212,7 +1212,18 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 // "DONE:<url>" / "RUNNING" / "NO_EDITS" / "ERROR" — so the
                 // terminal handling below is shared. For the default path the PR
                 // URL is folded into DONE via job_rest (the RESULT= token).
-                let ag_loop_on = getenv("AG_DRIVEN_EDIT_LOOP") == "1";
+                // #1354 step 3: the AG-driven loop becomes the default for
+                // ordinary issues, but EPICS stay on the in-shell path: epic
+                // decomposition (--decompose) is orchestrated inside
+                // code-edit-in-checkout.sh's in-shell loop and is NOT yet
+                // migrated into ag_edit_step, so routing an epic through the AG
+                // loop would silently drop decomposition (one monolithic drive
+                // instead of per-subtask edits). Carve epics out until the
+                // decompose migration lands (tracked on #1353). A non-epic issue
+                // uses the AG loop whenever AG_DRIVEN_EDIT_LOOP is on (now the
+                // default 1; set [implementation] ag_driven_edit_loop = false to
+                // fall back to the in-shell loop for everything).
+                let ag_loop_on = if is_epic { false; } else { getenv("AG_DRIVEN_EDIT_LOOP") == "1"; };
                 // Default path launches the in-shell loop HERE so its raw poll
                 // line (STATUS=.. PID_ALIVE=.. RESULT=..) stays in scope for the
                 // ERROR diagnostic below; job_cmd is built either way but only

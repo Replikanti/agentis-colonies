@@ -204,17 +204,23 @@ IMPLEMENTATION_TRIGGER_LABEL=$(parse_toml implementation trigger_label)
 IMPLEMENTATION_REQUIRE_ASSIGNEE=$(parse_toml implementation require_assignee)
 IMPLEMENTATION_REQUIRE_ASSIGNEE="${IMPLEMENTATION_REQUIRE_ASSIGNEE:-true}"
 
-# #1354 step 2b: opt-in caller-driven edit loop. When on, code_writer.ag drives
-# the attempt/continuation/verify/finalize state machine itself over the #1354
-# step-2a primitives (--one-attempt / --reuse / --finalize) instead of delegating
-# the whole loop to code-edit-in-checkout.sh's in-shell loop. Default OFF (0) —
-# the in-shell loop stays the shipped behaviour until step 3 flips the default.
-# Read via getenv("AG_DRIVEN_EDIT_LOOP") from the daemon env (no env_passthrough
-# needed, mirroring PLAN_AUTO_PROMOTE / AUTO_MERGE); normalise to 1/0.
-AG_DRIVEN_EDIT_LOOP_RAW="$(parse_toml implementation ag_driven_edit_loop)"
+# #1354: caller-driven edit loop — the DEFAULT since step 3. When on,
+# code_writer.ag drives the attempt/continuation/verify/finalize state machine
+# itself over the step-2a primitives (--one-attempt / --reuse / --finalize)
+# instead of delegating the whole loop to code-edit-in-checkout.sh's in-shell
+# loop. An absent key (existing colony.toml files without it) resolves to ON;
+# only an EXPLICIT false/0/no/off opts back into the in-shell multi-attempt
+# loop. (code_writer.ag additionally carves epics out of the AG path until
+# --decompose is migrated; see #1353.) Read via getenv("AG_DRIVEN_EDIT_LOOP")
+# from the daemon env (no env_passthrough needed, mirroring PLAN_AUTO_PROMOTE /
+# AUTO_MERGE); normalise to 1/0. The raw value is lowercased first (tr, not the
+# bash-4-only ${var,,} — macOS ships bash 3.2) so a mis-cased opt-out like
+# "OFF"/"No" is still honoured — under a default-ON flag, silently ignoring a
+# mis-cased opt-out is the unsafe direction.
+AG_DRIVEN_EDIT_LOOP_RAW="$(parse_toml implementation ag_driven_edit_loop | tr '[:upper:]' '[:lower:]')"
 case "$AG_DRIVEN_EDIT_LOOP_RAW" in
-    true|True|TRUE|1|yes|on) AG_DRIVEN_EDIT_LOOP=1 ;;
-    *) AG_DRIVEN_EDIT_LOOP=0 ;;
+    false|0|no|off) AG_DRIVEN_EDIT_LOOP=0 ;;
+    *) AG_DRIVEN_EDIT_LOOP=1 ;;
 esac
 
 # #224: primary branch name. Read from whichever of [forge.gitlab] or
