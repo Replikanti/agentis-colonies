@@ -5,6 +5,38 @@
 //
 // Run as daemon: agentis daemon agents/prioritizer.ag --colony triage
 // Requires: exec_foreign capability, GITLAB_* env vars
+//
+// #1430 crystallizer pilot (ports the #1234/#1235 + #1429 mechanism to
+// prioritization): repeat priority decisions on the same canonical context
+// CLASS crystallize into a "prioritize" rule the agent replays without
+// prompt() (Stage 1), a Stage 1 miss BM25-ranks the whole rule pool against
+// the REAL issue text via crystallizer_search (agentis >= 1.20.0) with
+// class confirmation before firing (Stage 1b), unfired candidates ground
+// the decide prompt (RAG fallback), the LLM decision is distilled so the
+// class accumulates toward crystallization (Stage 2), and a reality-check
+// demotes rules whose priority label the operator overrides (Stage 3,
+// crystallizer_record_use). Priority is detected label-side via a
+// deterministic "priority-like" heuristic (label starts with "priority",
+// matches ^P<digits>$, equals "urgent", or appears in the operator's
+// `triage:labels:priority` vocabulary memo, #226).
+// Operator knobs (process env, read via getenv — every knob must be on the
+// install.sh exec.env_passthrough allowlist or it is silently inert,
+// #1426/#1428):
+//   - PRIORITIZER_RULE_FIRST=0       short-circuits the ENTIRE pilot path
+//                                    (Stage 1 replay, Stage 1b BM25 recall,
+//                                    Stage 2 distill, verdict recording +
+//                                    reality-check) to the LLM path —
+//                                    byte-identical to pre-pilot behaviour,
+//                                    the rollback knob.
+//   - PRIORITIZER_RULE_CONFIDENCE=<float>  overrides the default 0.85
+//                                    minimum confidence for a rule-first hit
+//                                    (Stage 1 and Stage 1b — BM25 score is a
+//                                    relevance signal, never a trust signal).
+//   - PRIORITIZER_BM25_RECALL=0      short-circuits Stage 1b only; Stage 1
+//                                    prefix replay stays on.
+//   - TRIAGE_BM25_K=<int>            top-k for crystallizer_search (default
+//                                    3; 0 disables recall + grounding).
+//                                    Shared with labeler + router.
 
 cb 600;
 
@@ -158,7 +190,452 @@ fn get_confidence() -> float {
     return 0.0;
 }
 
+// #1430 crystallizer pilot: deterministic, prompt-free canonical context
+// for the first UNPRIORITIZED issue in `raw` (the prioritizer-view JSON the
+// LLM path consumes; view = {iid, title, labels} — no description, no
+// author). "Unprioritized" = no priority-like label per the deterministic
+// heuristic (startswith "priority" / ^P<digits>$ / "urgent" / member of the
+// operator vocabulary passed via PV). Emits a single tab-separated line:
+//   "<iid>\t<canonical_ctx>\t<bm25_query>"
+// where canonical_ctx is "kw=" + sorted_kw_csv + " labels=" +
+// sorted_nonpriority_labels_csv (same shape as router's — the non-priority
+// labels carry the classification signal that drives severity judgments),
+// and the 3rd field (#1429 pattern) is the whitespace-collapsed free text
+// (title + non-priority labels, <= 1200 bytes) — the Stage 1b
+// crystallizer_search query. The sorted matched sets are stable across
+// repeats so the crystallized rule id is identical tick-to-tick.
+// Total-on-failure: any python/exec failure returns "" so the caller falls
+// through to the LLM path and is never starved.
+fn canonical_priority_context(issues_raw: string, vocab: string) -> string {
+    let cmd = "RAW=" + shell_escape(issues_raw) + " PV=" + shell_escape(vocab) +
+        " python3 -c '" +
+        "import os, json, re\n" +
+        "VOCAB=[\"bug\",\"crash\",\"error\",\"fail\",\"segfault\",\"panic\",\"exception\",\"docs\",\"documentation\",\"readme\",\"feature\",\"enhancement\",\"request\",\"question\",\"security\",\"vuln\",\"cve\",\"performance\",\"perf\",\"slow\",\"test\",\"ci\",\"build\",\"regression\",\"refactor\",\"dependency\"]\n" +
+        "pv=os.environ.get(\"PV\",\"\").lower()\n" +
+        "def is_pri(l):\n" +
+        "    l2=str(l).strip().lower()\n" +
+        "    if not l2: return False\n" +
+        "    if l2.startswith(\"priority\"): return True\n" +
+        "    if re.fullmatch(r\"p\\d+\", l2): return True\n" +
+        "    if l2==\"urgent\": return True\n" +
+        "    if pv and l2 in pv: return True\n" +
+        "    return False\n" +
+        "try:\n" +
+        "    data=json.loads(os.environ[\"RAW\"])\n" +
+        "except Exception:\n" +
+        "    print(\"\"); raise SystemExit\n" +
+        "if not isinstance(data, list):\n" +
+        "    print(\"\"); raise SystemExit\n" +
+        "chosen=None\n" +
+        "for x in data:\n" +
+        "    if not isinstance(x, dict): continue\n" +
+        "    if not any(is_pri(l) for l in (x.get(\"labels\") or [])):\n" +
+        "        chosen=x; break\n" +
+        "if chosen is None:\n" +
+        "    print(\"\"); raise SystemExit\n" +
+        "iid=chosen.get(\"iid\")\n" +
+        "if iid is None:\n" +
+        "    print(\"\"); raise SystemExit\n" +
+        "text=(chosen.get(\"title\") or \"\").lower()\n" +
+        "toks=set(re.findall(r\"[a-z]+\", text))\n" +
+        "hits=sorted({w for w in VOCAB if w in toks})\n" +
+        "nonpri=sorted({str(l).strip() for l in (chosen.get(\"labels\") or []) if str(l).strip() and not is_pri(l)})\n" +
+        "ctx=\"kw=\"+\",\".join(hits)+\" labels=\"+\",\".join(nonpri)\n" +
+        "q=re.sub(r\"\\s+\", \" \", (chosen.get(\"title\") or \"\")+\" \"+\" \".join(nonpri)).strip()[:1200]\n" +
+        "print(str(iid)+\"\\t\"+ctx+\"\\t\"+q)" +
+        "'";
+    return try { exec sh cmd; } catch e { ""; };
+}
+
+// #1430: canonical priority label for the rule's `action` slot. A single
+// label — first comma token, trimmed — so the KnowledgeEntry id is
+// identical across repeats of the same decision (NOT free-form LLM prose).
+// Total-on-failure returns "" (caller treats "" as no usable action).
+fn normalize_priority_label(s: string) -> string {
+    let cmd = "P=" + shell_escape(s) +
+        " python3 -c 'import os; print(os.environ[\"P\"].split(\",\")[0].strip())'";
+    return try { exec sh cmd; } catch e { ""; };
+}
+
+// #1429 Stage 1b: walk the BM25 candidate list (JSON strings from
+// crystallizer_search, highest score first) and return the `condition` of
+// the first candidate that the CLASS-SCOPED, CONFIDENCE-GATED point lookup
+// confirms. The class confirmation is load-bearing: crystallizer_search
+// ranks the WHOLE rule pool across action types ("label", "route",
+// "prioritize", ...) and its per-rule JSON carries no expected_outcome
+// field, so a raw candidate may belong to another agent's class.
+// Re-probing the candidate's condition through
+// crystallizer_lookup_with_confidence(<class>, cond, min_conf) enforces
+// both properties at once. BM25 score itself is never a trust signal.
+// Tail-recursive (no loops in .ag); the caller bounds depth via the
+// TRIAGE_BM25_K search limit (default 3). Returns "" when no candidate
+// confirms. json_get on a missing field yields Void -> "void"; skipped.
+fn bm25_pick_at(action_type: string, cands: list<string>, pos: int, min_conf: float) -> string {
+    if pos >= len(cands) { return ""; };
+    let cj = to_string(get(cands, pos));
+    let cond = to_string(json_get(cj, "condition"));
+    if len(cond) > 0 {
+        if cond != "void" {
+            let confirmed = crystallizer_lookup_with_confidence(action_type, cond, min_conf);
+            if len(confirmed) > 0 {
+                return cond;
+            };
+        };
+    };
+    return bm25_pick_at(action_type, cands, pos + 1, min_conf);
+}
+
+// #1429 RAG fallback: format the BM25 candidates into a compact grounding
+// block for the decide prompt ("similar past decisions"). Only candidates
+// at 0.5+ rule confidence are included; size is bounded by TRIAGE_BM25_K
+// (default 3) times the core's condition (<= 256 chars) + action caps.
+// Returns "" when nothing qualifies — the caller then passes the prompt
+// context through unchanged.
+fn bm25_grounding_at(cands: list<string>, pos: int, acc: string) -> string {
+    if pos >= len(cands) { return acc; };
+    let cj = to_string(get(cands, pos));
+    let cond = to_string(json_get(cj, "condition"));
+    let act = to_string(json_get(cj, "action"));
+    let conf_raw = to_string(json_get(cj, "confidence"));
+    let conf = parse_float(conf_raw);
+    if conf >= 0.5 {
+        if len(cond) > 0 {
+            if cond != "void" {
+                if len(act) > 0 {
+                    if act != "void" {
+                        let line = "\n- when [" + cond + "] -> " + act + " (confidence " + conf_raw + ")";
+                        return bm25_grounding_at(cands, pos + 1, acc + line);
+                    };
+                };
+            };
+        };
+    };
+    return bm25_grounding_at(cands, pos + 1, acc);
+}
+
+// #1430: auto-confidence from the reality-check (mirrors router #1234 /
+// labeler #106). Capped at 0.85 (the autonomy threshold): operators sign
+// off on autonomous priority writes explicitly, so the reality-check alone
+// never pushes past it.
+fn clamp_auto(cur: float, delta: float) -> float {
+    let cap = 0.85;
+    if delta > 0.0 {
+        if cur >= cap {
+            return cur;
+        };
+        if (cur + delta) > cap {
+            return cap;
+        };
+        return cur + delta;
+    };
+    if (cur + delta) < 0.0 {
+        return 0.0;
+    };
+    return cur + delta;
+}
+
+// #1430: reality-check signal -> confidence delta. Single-label priority
+// has no "partial": signal 1 = kept (+0.02), signal 3 = operator replaced
+// our priority label (-0.01). Signal 0 ("no priority label yet, no
+// signal") is handled by the caller via an early return.
+fn signal_to_delta(signal: int) -> float {
+    if signal == 1 {
+        return 0.02;
+    };
+    if signal == 3 {
+        return 0.0 - 0.01;
+    };
+    return 0.0;
+}
+
+// #1430: map the reality-check signal to the experience-store outcome enum
+// so auto-promote's fitness gates (#186) see an honest acting-path reject
+// rate.
+fn signal_to_outcome(signal: int) -> string {
+    if signal == 1 {
+        return "success";
+    };
+    if signal == 2 {
+        return "partial";
+    };
+    return "fail";
+}
+
+// #1430: map the reality-check signal to the crystallizer demote/reinforce
+// delta. Kept priority reinforces the rule (+0.1), an operator override
+// demotes it (-0.15). Core compaction retires a rule at success_rate < 0.5
+// with use_count >= 20, so sustained overrides eventually drop it.
+fn rule_feedback_delta(signal: int) -> float {
+    if signal == 1 {
+        return 0.1;
+    };
+    if signal == 3 {
+        return 0.0 - 0.15;
+    };
+    return 0.0;
+}
+
+// #1430: thread the crystallizer demote/reinforce feedback. `blob` is the
+// pending-verdict array; its 4th field is the rule_id ("" for LLM-path
+// verdicts). When non-empty, credit / penalise the rule the reality-check
+// just scored. No-op on LLM-path verdicts so an LLM-only tick never
+// touches the crystallizer.
+fn record_rule_feedback(blob: string, signal: int) -> void {
+    let rule_id = to_string(json_get(blob, "[3]"));
+    if len(rule_id) == 0 {
+        return;
+    };
+    if rule_id == "void" {
+        return;
+    };
+    crystallizer_record_use(rule_id, signal == 1, rule_feedback_delta(signal));
+    print("[prioritizer] crystallizer feedback: rule", rule_id, "signal", signal);
+}
+
+// #1430: per-repo write target for the auto-confidence bump. get_confidence()
+// keeps reading the legacy unscoped key (bounded by clamp_auto's 0.85 cap).
+// Operators set per-repo overrides via
+// `agentis memo set <owner>__<repo>:prioritizer:confidence <value>`.
+fn apply_feedback(delta: float, owner: string, repo: string) -> void {
+    let cur = get_confidence();
+    let target = clamp_auto(cur, delta);
+    memo_write(scoped_memo(owner, repo, "prioritizer:confidence"), to_string(target));
+    print("[prioritizer] feedback delta", delta, "confidence", cur, "->", target);
+}
+
+// #1430: record a pending priority verdict. Stored as JSON array
+// [t, iid, "priority_label", "rule_id"] — the four fields are ASCII-safe
+// (epoch int, iid int, a single label name, crystallizer rule ids have no
+// quotes/newlines/backslashes in practice) so naive concatenation is
+// sufficient and we skip a JSON encoder. The 4th `rule_id` field is "" for
+// LLM-path verdicts and the crystallized rule id for rule-hit verdicts;
+// evaluate_priority_verdict feeds it to crystallizer_record_use after the
+// reality-check signal settles (kept reinforces, overridden demotes).
+fn record_priority_verdict(owner: string, repo: string, issue_id: int, priority: string, rule_id: string) -> void {
+    let ts_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let blob = "[" + ts_raw + "," + to_string(issue_id) + ",\"" + priority + "\",\"" + rule_id + "\"]";
+    memo_write(scoped_memo(owner, repo, "prioritizer:pending_verdict"), blob);
+    print("[prioritizer] verdict recorded: issue", issue_id, "suggested", priority);
+}
+
+fn verdict_age_seconds(blob: string) -> int {
+    let emit_ts = parse_int(to_string(json_get(blob, "[0]")));
+    let now_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let now = parse_int(now_raw);
+    return now - emit_ts;
+}
+
+// #1430: score the pending priority verdict against what the operator
+// actually did on GitLab (ports router's single-slot evaluate_route_verdict).
+// Returns early (leaves the verdict pending) when the pilot is disabled, no
+// verdict exists, or the issue still carries no priority-like label (no
+// signal yet — issues routinely carry OTHER labels from the labeler, so
+// "has some label" is NOT a signal here; only a priority-like label is).
+// Clears the verdict when scored or aged out (> 24h). Signal: 1 = our
+// suggested label is present (kept), 3 = a different priority-like label is
+// present without ours (operator override). The whole function is gated on
+// PRIORITIZER_RULE_FIRST so the rollback knob leaves pre-pilot behaviour
+// byte-identical (no verdict is ever recorded when disabled, and any stale
+// blob from a previously-enabled run is ignored rather than scored).
+fn evaluate_priority_verdict(owner: string, repo: string) -> void {
+    if getenv("PRIORITIZER_RULE_FIRST") == "0" {
+        return;
+    };
+    let key = scoped_memo(owner, repo, "prioritizer:pending_verdict");
+    let blob = recall_latest(key);
+    if len(blob) < 3 {
+        return;
+    };
+    let timeout_s = 86400;
+    if verdict_age_seconds(blob) > timeout_s {
+        print("[prioritizer] verdict aged out without signal");
+        memo_write(key, "");
+        return;
+    };
+    let issue_id = parse_int(to_string(json_get(blob, "[1]")));
+    let suggested = to_string(json_get(blob, "[2]"));
+    // colony-lint: safe-exec-concat
+    let cur_cmd = "$COLONY_DIR/scripts/forge-api.sh get-issue " + to_string(issue_id) + " --view feedback-issue" + repo_arg(owner, repo);
+    let cur_raw = try { exec sh cur_cmd; } catch e { ""; };
+    if len(cur_raw) < 3 {
+        return;
+    };
+    let vocab = recall_latest("triage:labels:priority");
+    // Deterministic compare in python (cheap, reproducible) rather than a
+    // prompt() round-trip. Output: 0 = no signal (no priority-like label
+    // yet), 1 = kept (our suggested label present), 3 = overridden (a
+    // priority-like label present, but not ours).
+    let match_cmd = "SUGGESTED=" + shell_escape(suggested) + " RAW=" + shell_escape(cur_raw) + " PV=" + shell_escape(vocab) +
+        " python3 -c '" +
+        "import os, json, re\n" +
+        "pv=os.environ.get(\"PV\",\"\").lower()\n" +
+        "def is_pri(l):\n" +
+        "    l2=str(l).strip().lower()\n" +
+        "    if not l2: return False\n" +
+        "    if l2.startswith(\"priority\"): return True\n" +
+        "    if re.fullmatch(r\"p\\d+\", l2): return True\n" +
+        "    if l2==\"urgent\": return True\n" +
+        "    if pv and l2 in pv: return True\n" +
+        "    return False\n" +
+        "sug=os.environ[\"SUGGESTED\"].strip()\n" +
+        "try:\n" +
+        "    act=[str(l) for l in json.loads(os.environ[\"RAW\"]).get(\"labels\", [])]\n" +
+        "except Exception:\n" +
+        "    print(0); raise SystemExit\n" +
+        "pri=[l for l in act if is_pri(l)]\n" +
+        "print(0 if not pri else (1 if sug in act else 3))" +
+        "'";
+    let signal_raw = try { exec sh match_cmd; } catch e { "0"; };
+    let signal = parse_int(signal_raw);
+    if signal == 0 {
+        return;
+    };
+    apply_feedback(signal_to_delta(signal), owner, repo);
+    // Credit / penalise the crystallized rule (no-op on LLM-path verdicts
+    // whose blob carries an empty rule_id).
+    record_rule_feedback(blob, signal);
+    // Emit the reality-check outcome to the experience store so
+    // auto-promote's fitness gates (#186) see an honest acting-path reject
+    // rate. Tagged "acted" regardless of the original tier so the row lands
+    // in the acting bucket.
+    let outcome = signal_to_outcome(signal);
+    if len(owner) > 0 {
+        learn(
+            "prioritize",
+            "issue " + to_string(issue_id) + " reality-check",
+            "suggested: " + suggested + " | signal: " + to_string(signal),
+            outcome,
+            ["acted", "triage", repo_tag(owner, repo)]
+        );
+    } else {
+        learn(
+            "prioritize",
+            "issue " + to_string(issue_id) + " reality-check",
+            "suggested: " + suggested + " | signal: " + to_string(signal),
+            outcome,
+            ["acted", "triage"]
+        );
+    };
+    print("[prioritizer] reality-check: issue", issue_id, "signal", signal, "->", outcome);
+    memo_write(key, "");
+}
+
+// #1430 crystallizer pilot: rule-hit application. Mirror of the LLM
+// tier-block in tick_for_repo, but takes primitive fields because the .ag
+// grammar disallows inline PriorityAction struct literals. The tier
+// semantics are byte-identical to the LLM path (autonomous applies the
+// priority label via update-issue, review-gated posts a draft note, propose
+// emits, shadow/dormant observes); only the source of the decision differs
+// (crystallized rule vs prompt). Every learn() row on this path carries
+// "rule-hit" + the hit_kind discriminator ("prefix-hit" / "bm25-hit") +
+// "distilled" — the auto-promote rule-hit efficiency bonus (#823) keys on
+// "rule-hit" membership and must count both replay paths. The prioritizer
+// view carries no author field, so scope falls to "team" via
+// scope_for_author(""). The emit payload is a JSON string of the
+// PriorityAction shape; triage:priority_suggestion is an extension point
+// with no internal listener, so the loose shape is fine.
+fn apply_priority_rule_hit(owner: string, repo: string, my_tier: string, issue_id: int, priority: string, reasoning: string, rule_id: string, hit_kind: string) -> void {
+    let scope = scope_for_author("");
+    let conf_str = recall_latest("prioritizer:confidence");
+    let action_json = "{\"issue_id\":" + to_string(issue_id) + ",\"priority\":\"" + priority + "\",\"reasoning\":\"" + reasoning + "\",\"author\":\"\",\"confidence\":" + conf_str + ",\"rule_id\":\"" + rule_id + "\"}";
+    if my_tier == "autonomous" {
+        // colony-lint: safe-exec-concat
+        let update_cmd = "$COLONY_DIR/scripts/forge-api.sh update-issue " + to_string(issue_id) + " --add-labels " + shell_escape(priority) + repo_arg(owner, repo);
+        let result = try { exec sh update_cmd; } catch e {
+            print("[prioritizer] Failed to set priority (rule-hit):", e);
+            "";
+        };
+        if len(result) > 0 {
+            print("[prioritizer] Set priority on issue", issue_id, "(rule-hit):", priority);
+            emit("triage:priority_suggestion", action_json);
+            // NO verdict recording at autonomous: the agent just WROTE the
+            // priority label, so the single-slot reality-check would
+            // immediately read it back as signal 1 — a self-fulfilling
+            // reinforcement, not an operator signal. The longer-horizon
+            // revert-check for autonomous writes is the labeler #203
+            // multi-slot soak mechanism, a deliberate follow-up (mirrors
+            // router #1234); the optimistic +0.1 from Stage 1 stands until
+            // then.
+            if len(owner) > 0 {
+                learn("prioritize", "issue " + to_string(issue_id), priority, "success", [scope, "triage", "acted", "rule-hit", hit_kind, "distilled", repo_tag(owner, repo)]);
+            } else {
+                learn("prioritize", "issue " + to_string(issue_id), priority, "success", [scope, "triage", "acted", "rule-hit", hit_kind, "distilled"]);
+            };
+        };
+    } else {
+        if my_tier == "review-gated" {
+            let note = "[draft-priority] **Priority Suggestion** (automated, pending approval): " + priority + "\n\n" + reasoning;
+            // colony-lint: safe-exec-concat
+            let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(issue_id) + " --body " + shell_escape(note) + repo_arg(owner, repo);
+            try { exec sh post_cmd; } catch e {
+                print("[prioritizer] Failed to post draft note (rule-hit):", e);
+            };
+            emit("triage:priority_suggestion", action_json);
+            record_priority_verdict(owner, repo, issue_id, priority, rule_id);
+            if len(owner) > 0 {
+                learn("prioritize", "issue " + to_string(issue_id), priority, "partial", [scope, "triage", "review-gated", "rule-hit", hit_kind, "distilled", repo_tag(owner, repo)]);
+            } else {
+                learn("prioritize", "issue " + to_string(issue_id), priority, "partial", [scope, "triage", "review-gated", "rule-hit", hit_kind, "distilled"]);
+            };
+        } else {
+            if my_tier == "propose" {
+                print("[prioritizer] Suggesting priority for issue", issue_id, "(rule-hit):", priority);
+                emit("triage:priority_suggestion", action_json);
+                record_priority_verdict(owner, repo, issue_id, priority, rule_id);
+                if len(owner) > 0 {
+                    learn("prioritize", "issue " + to_string(issue_id), priority, "partial", [scope, "triage", "emitted", "rule-hit", hit_kind, "distilled", repo_tag(owner, repo)]);
+                } else {
+                    learn("prioritize", "issue " + to_string(issue_id), priority, "partial", [scope, "triage", "emitted", "rule-hit", hit_kind, "distilled"]);
+                };
+            } else {
+                print("[prioritizer] Observing rule-hit (tier:", my_tier, ")");
+                if len(owner) > 0 {
+                    learn("prioritize", "issue " + to_string(issue_id), priority, "partial", [scope, "triage", "observed", "rule-hit", hit_kind, "distilled", repo_tag(owner, repo)]);
+                } else {
+                    learn("prioritize", "issue " + to_string(issue_id), priority, "partial", [scope, "triage", "observed", "rule-hit", hit_kind, "distilled"]);
+                };
+            };
+        };
+    };
+}
+
+// #1430: shared fire path for Stage 1 (prefix hit) and Stage 1b (BM25
+// recall hit) — one place owns the record_use / apply / memo-stamp / gate
+// sequence so the two stages cannot drift. Returns "fired" when the rule
+// was applied (caller must `return` to skip the LLM), "" when the rule's
+// action normalized to no usable priority label (caller falls through to
+// the next stage / the prompt). `hit_ctx` is whichever condition string
+// produced the hit — stamped into prioritizer:rule_ctx so operators can see
+// WHICH condition family fired.
+fn fire_priority_rule(owner: string, repo: string, my_tier: string, issue_id: int, rule_id: string, rule_action: string, rule_conf_str: string, hit_ctx: string, hit_kind: string, cur_hash: string) -> string {
+    let rule_priority = normalize_priority_label(rule_action);
+    if len(rule_priority) == 0 {
+        return "";
+    };
+    let rule_reasoning = hit_kind + ": crystallized priority rule @conf " + rule_conf_str + ". Context: " + hit_ctx;
+    // Optimistic at-write reinforcement; the reality-check
+    // (evaluate_priority_verdict) later corrects via the threaded rule_id
+    // (+0.1 kept / -0.15 overridden).
+    crystallizer_record_use(rule_id, true, 0.1);
+    apply_priority_rule_hit(owner, repo, my_tier, issue_id, rule_priority, rule_reasoning, rule_id, hit_kind);
+    memo_write(scoped_memo(owner, repo, "prioritizer:rule_ctx"), hit_ctx);
+    memo_write(scoped_memo(owner, repo, "prioritizer:rule_id"), rule_id);
+    if len(cur_hash) > 0 {
+        memo_write(scoped_memo(owner, repo, "prioritizer:snapshot_hash"), cur_hash);
+    };
+    let now_s1 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    if len(now_s1) > 0 {
+        memo_write(scoped_memo(owner, repo, "prioritizer:last_check"), now_s1);
+    };
+    return "fired";
+}
+
 fn tick_for_repo(owner: string, repo: string) -> void {
+    // #1430: score any pending priority verdict from a previous tick before
+    // doing new work (cheap no-op when nothing is pending / pilot disabled).
+    // Same call-site position evaluate_label_verdict / evaluate_route_verdict
+    // occupy in labeler / router.
+    evaluate_priority_verdict(owner, repo);
     // #147: cheap delta-check. `issues_cmd()` filters --since last_check
     // server-side; an empty `[]` response means "no new issues" and we
     // early-exit before any prompt(). last_check is refreshed so the
@@ -249,10 +726,143 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         let rec = recommend("prioritize", ["accuracy"]);
         let context = vocab_line + "\nUnprioritized issues: " + analysis.unprioritized_issues + "\nPast learning: " + to_string(rec);
 
+        // #1430 Stage 1: rule-first lookup. Build the deterministic,
+        // prompt-free canonical context for the first unprioritized issue in
+        // `raw` (same selection rule the LLM uses for "most important":
+        // first listed without a priority-like label). If a crystallized
+        // "prioritize" rule matches at >= PRIORITIZER_RULE_CONFIDENCE,
+        // replay it without prompt() and skip Stage 2 entirely. Rollback
+        // knob: PRIORITIZER_RULE_FIRST=0 short-circuits ALL stages to the
+        // LLM path — byte-identical to pre-pilot behaviour, including no
+        // extra exec sh subprocess (the canonical-context build is itself
+        // behind the flag). The crystallizer category is "prioritize",
+        // matching the learn()/recommend() topic this agent already uses.
+        let rule_first_flag = getenv("PRIORITIZER_RULE_FIRST");
+        let rule_first_enabled = rule_first_flag != "0";
+        let min_conf_str = getenv("PRIORITIZER_RULE_CONFIDENCE");
+        let min_conf = if len(min_conf_str) > 0 { parse_float(min_conf_str); } else { 0.85; };
+        // #1429 Stage 1b knobs: BM25 recall is subordinate to the pilot
+        // flag; TRIAGE_BM25_K=0 disables recall + grounding via
+        // crystallizer_search's k<=0 empty-list contract.
+        let bm25_flag = getenv("PRIORITIZER_BM25_RECALL");
+        let bm25_enabled = if rule_first_enabled { bm25_flag != "0"; } else { false; };
+        let bm25_k_str = getenv("TRIAGE_BM25_K");
+        let bm25_k = if len(bm25_k_str) > 0 { parse_int(bm25_k_str); } else { 3; };
+        let canon_line = if rule_first_enabled { canonical_priority_context(raw, priority_example); } else { ""; };
+        let canon_iid = if rule_first_enabled { parse_int(repo_field(canon_line, 0)); } else { 0; };
+        let canonical_ctx = if rule_first_enabled { repo_field(canon_line, 1); } else { ""; };
+        let bm25_query = if bm25_enabled { repo_field(canon_line, 2); } else { ""; };
+
+        if rule_first_enabled {
+            if len(canon_line) > 0 {
+                if len(canonical_ctx) > 0 {
+                    if canon_iid > 0 {
+                        let rule = crystallizer_lookup_with_confidence("prioritize", canonical_ctx, min_conf);
+                        if len(rule) > 0 {
+                            // #843: crystallizer_lookup_with_confidence returns
+                            // map<string,string> (Value::Map). Read fields with
+                            // get() (the map accessor); json_get() expects a JSON
+                            // string and raises "expected string, got map" on a map.
+                            let rule_id = to_string(get(rule, "rule_id"));
+                            let rule_action = to_string(get(rule, "action"));
+                            let rule_conf_str = to_string(get(rule, "confidence"));
+                            let fired = fire_priority_rule(owner, repo, my_tier, canon_iid, rule_id, rule_action, rule_conf_str, canonical_ctx, "prefix-hit", cur_hash);
+                            if fired == "fired" {
+                                return;
+                            };
+                        };
+                    };
+                };
+            };
+        };
+
+        // #1429/#1430 Stage 1b: BM25 recall over the crystallized rule pool.
+        // Stage 1 missed (or its rule had no usable priority label) — rank
+        // the pool against the REAL issue text and let the class-scoped,
+        // confidence-gated point lookup confirm a candidate before firing.
+        // Empty query / k<=0 / absent crystallizer all yield an empty
+        // candidate list (builtin contract), so every degraded path falls
+        // through to the LLM exactly like a plain miss. The try/catch
+        // additionally degrades a pre-v1.20.0 host (no crystallizer_search
+        // builtin) to the LLM path instead of erroring the tick.
+        let bm25_cands = if bm25_enabled {
+            if canon_iid > 0 {
+                if len(bm25_query) > 0 {
+                    try { crystallizer_search(bm25_query, bm25_k); } catch e { []; };
+                } else { []; };
+            } else { []; };
+        } else { []; };
+        if len(bm25_cands) > 0 {
+            let bm25_ctx = bm25_pick_at("prioritize", bm25_cands, 0, min_conf);
+            if len(bm25_ctx) > 0 {
+                let rule_b = crystallizer_lookup_with_confidence("prioritize", bm25_ctx, min_conf);
+                if len(rule_b) > 0 {
+                    let rule_id_b = to_string(get(rule_b, "rule_id"));
+                    let rule_action_b = to_string(get(rule_b, "action"));
+                    let rule_conf_b = to_string(get(rule_b, "confidence"));
+                    let fired_b = fire_priority_rule(owner, repo, my_tier, canon_iid, rule_id_b, rule_action_b, rule_conf_b, bm25_ctx, "bm25-hit", cur_hash);
+                    if fired_b == "fired" {
+                        return;
+                    };
+                };
+            };
+        };
+
+        // #1429/#1430 RAG fallback: no rule cleared the confidence bar —
+        // ground the decide prompt with the top BM25 candidates so the LLM
+        // sees how similar past issues were prioritized. Empty block =
+        // context byte-identical to pre-pilot.
+        let rag_block = bm25_grounding_at(bm25_cands, 0, "");
+        let grounded_context = if len(rag_block) > 0 {
+            context + "\nSimilar past priority decisions (crystallized rules, BM25-ranked, most relevant first — follow them unless the issue clearly differs):" + rag_block;
+        } else { context; };
+
         let action = prompt(
             "You are a prioritization agent. Suggest priority for the most important unprioritized issue from the context. The priority value MUST be one label from the priority vocabulary listed above. Return JSON: issue_id (int), priority (string, from the vocabulary above), reasoning (string), author (string, the GitLab username from the issue's author.username field in the context — empty string if absent), confidence (float 0-1).",
-            context
+            grounded_context
         ) -> PriorityAction;
+
+        // #1430 Stage 2: distill the LLM decision so repeat decisions on
+        // the same context CLASS crystallize into a rule Stage 1 replays.
+        // The crystallized rule's `action` slot stores the normalized single
+        // priority label (canonical_action) — NOT free-form LLM prose — so
+        // the KnowledgeEntry id is identical across repeats and
+        // empirical_validations accumulates toward crystallization. The
+        // distilled CONDITION (coarse_ctx) is a literal prefix of
+        // canonical_ctx (the "kw=<sorted_csv>" part, dropping the
+        // " labels=<csv>" tail) so the same keyword class crystallizes
+        // regardless of the exact label set, and
+        // CrystallizedRule.matches_context (ctx.starts_with(condition))
+        // still matches the full canonical_ctx Stage 1 passes. Gated behind
+        // PRIORITIZER_RULE_FIRST so the rollback knob produces
+        // byte-identical behaviour when set to "0". distill() raises until
+        // there are >= 3 successful "prioritize" records, so it is guarded;
+        // knowledge_validate() bumps empirical_validations toward the
+        // crystallize threshold. Only distill when the LLM prioritized the
+        // SAME issue the canonical_ctx was built for (canon_iid = first
+        // unprioritized): distilling issue A's ctx against issue B's
+        // priority would mint a mis-scoped rule Stage 1 later replays onto
+        // the wrong class. When they diverge we skip distillation this tick.
+        if rule_first_enabled {
+            if len(canonical_ctx) > 0 {
+                if action.issue_id == canon_iid {
+                    let canonical_action = normalize_priority_label(action.priority);
+                    if len(canonical_action) > 0 {
+                        let labels_at = index_of(canonical_ctx, " labels=");
+                        let coarse_ctx = if labels_at > 0 { substring(canonical_ctx, 0, labels_at); } else { canonical_ctx; };
+                        if len(owner) > 0 {
+                            learn("prioritize", canonical_ctx, canonical_action, "success", ["distilled", "triage", repo_tag(owner, repo)]);
+                        } else {
+                            learn("prioritize", canonical_ctx, canonical_action, "success", ["distilled", "triage"]);
+                        };
+                        let did = try { distill("prioritize", coarse_ctx, canonical_action, "heuristic"); } catch e { ""; };
+                        if len(did) > 0 {
+                            knowledge_validate(did);
+                        };
+                    };
+                };
+            };
+        };
 
         if my_tier == "autonomous" {
             // colony-lint: safe-exec-concat
@@ -281,6 +891,14 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     print("[prioritizer] Failed to post draft note:", e);
                 };
                 emit("triage:priority_suggestion", action);
+                // #1430: stash the verdict (LLM-path, empty rule_id) so the
+                // next tick can score this suggestion against whatever
+                // priority the operator eventually applies. Gated on the
+                // pilot flag so PRIORITIZER_RULE_FIRST=0 records nothing
+                // (byte-identical to pre-pilot).
+                if rule_first_enabled {
+                    record_priority_verdict(owner, repo, action.issue_id, action.priority, "");
+                };
                 let scope = scope_for_author(action.author);
                 if len(owner) > 0 {
                     learn("prioritize", "issue " + to_string(action.issue_id), action.priority, "partial", [scope, "triage", "review-gated", repo_tag(owner, repo)]);
@@ -291,6 +909,12 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 if my_tier == "propose" {
                     print("[prioritizer] Suggesting priority for issue", action.issue_id, ":", action.priority);
                     emit("triage:priority_suggestion", action);
+                    // #1430: stash the verdict (LLM-path, empty rule_id) so
+                    // the next tick can score this suggestion. Gated on the
+                    // pilot flag (byte-identical when disabled).
+                    if rule_first_enabled {
+                        record_priority_verdict(owner, repo, action.issue_id, action.priority, "");
+                    };
                     let scope = scope_for_author(action.author);
                     if len(owner) > 0 {
                         learn("prioritize", "issue " + to_string(action.issue_id), action.priority, "partial", [scope, "triage", "emitted", repo_tag(owner, repo)]);

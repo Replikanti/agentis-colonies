@@ -23,6 +23,32 @@ is asserted until multi-version CI is in place.
 
 ### Added
 
+- **Crystallizer rule-first replay ported to `prioritizer` — with BM25
+  recall from day one**
+  ([#1430](https://github.com/Replikanti/agentis-colonies/issues/1430)).
+  `prioritizer` was the last un-gated high-volume decide-prompt caller in
+  triage: same 180 s tick and snapshot-hash gate as `router`, same issue-text
+  input, same `learn/recommend("prioritize")` topic — but every non-gated
+  tick paid the LLM. It now runs the full three-stage
+  Replay → Distil → Demote mechanism (#1234/#1235) **plus** the #1429
+  Stage 1b BM25 recall and RAG grounding in one pass: deterministic
+  canonical context keyed on the first unprioritized issue (keyword +
+  non-priority-label signature; "priority-like" detected via a
+  deterministic heuristic — `priority*` prefix, `^P<digits>$`, `urgent`, or
+  membership in the operator's `triage:labels:priority` vocabulary),
+  rule fire without `prompt()` at ≥ `PRIORITIZER_RULE_CONFIDENCE` (default
+  0.85), distillation of every LLM decision toward crystallization, and a
+  new `evaluate_priority_verdict()` reality-check that treats an operator
+  override of the priority label as the demote signal. The autonomous
+  rule-hit branch deliberately records no single-slot verdict (it would
+  read its own write back as "kept" — self-fulfilling); the longer-horizon
+  revert soak is the labeler #203 mechanism, a shared follow-up with
+  router. New knobs `PRIORITIZER_RULE_FIRST` / `PRIORITIZER_RULE_CONFIDENCE`
+  / `PRIORITIZER_BM25_RECALL` (allowlisted via a new `install.sh` migration
+  step; `TRIAGE_BM25_K` shared with labeler + router); `*_RULE_FIRST=0` is
+  the byte-identical rollback. Source-asserted by
+  `tools/test-bm25-recall-gates.sh` (now covering all three pilots).
+
 - **Stage 1b BM25 recall + retrieval-grounded prompts for the triage
   crystallizer pilots (`labeler`, `router`)**
   ([#1429](https://github.com/Replikanti/agentis-colonies/issues/1429)).
