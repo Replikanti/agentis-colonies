@@ -15,6 +15,8 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+## [2.4.0] — 2026-07-06
+
 ### Changed
 
 - **The caller-driven edit loop is now the default for ordinary issues**
@@ -2168,7 +2170,8 @@ permissible per semver §4.
 - All dynamic values flowing into `exec sh` are required to pass through `shell_escape()`;
   `check-exec-sh.sh` enforces this grep-level contract.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.3.0...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.4.0...HEAD
+[2.4.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.3.0...dev-apprenticeship-v2.4.0
 [2.3.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.2.0...dev-apprenticeship-v2.3.0
 [2.2.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.1.0...dev-apprenticeship-v2.2.0
 [2.1.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.0.0...dev-apprenticeship-v2.1.0
