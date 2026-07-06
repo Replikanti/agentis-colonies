@@ -41,6 +41,11 @@
 #      flattening (24); and prose that merely mentions "FCB_..._BEGIN" mid-sentence
 #      (no matching paired END) passes through byte-for-byte, the false-positive
 #      guard (25).
+#   26-29 (#1444). CLAUDE_REASONING_EFFORT: the default with no override renders
+#      claude --settings '{"effortLevel":"medium"}' (26); an override
+#      (CLAUDE_REASONING_EFFORT=high) wins (27); an invalid value falls back to
+#      medium, checked via the recorded argv (28); and the wrapper source carries
+#      the default literal + low|medium|high|xhigh allowlist (29).
 #
 # Auto-discovered by tools/colony-lint.sh's tools-test loop. Exit 0 if all pass.
 
@@ -628,6 +633,88 @@ assert_exact "$SENTINEL_PROSE" "$SENTINEL_PROSE_BODY" \
 MENTIONS_SENTINEL='I noticed the flat-cyborg screen-scrape leaks a stray FCB_123abc_BEGIN marker sometimes, but that is unrelated to this reply.'
 assert_passthrough "$MENTIONS_SENTINEL" \
     "test 25: prose mentioning FCB_..._BEGIN mid-sentence passes through unchanged"
+
+# ===========================================================================
+# CLAUDE_REASONING_EFFORT (#1444): the wrapper defaults the claude session's
+# `--settings effortLevel` to "medium" instead of inheriting the operator's
+# account-level default, so a high personal default doesn't burn max-effort
+# reasoning on routine, low-complexity prompts. Reuse the RECORDING stub
+# pattern from the idle/timeout tests above, capturing the args after `-- claude`
+# this time, and add a source-assert for the validation literals.
+# ===========================================================================
+if [ ! -f "$WRAPPER" ]; then
+    fail "missing wrapper for effort-level tests: $WRAPPER"
+else
+    REC_DIR="$(mktemp -d)"
+    cat > "$REC_DIR/flat-cyborg" <<'REC_EOF'
+#!/usr/bin/env bash
+set -eu
+CMDFILE=""
+CLAUDE_ARGS=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --cmd-file) CMDFILE="$2"; shift 2 ;;
+        --) shift; break ;;
+        *) shift ;;
+    esac
+done
+# Everything after `--` is the claude invocation ($@ now holds it).
+CLAUDE_ARGS="$*"
+printf '%s\n' "$CLAUDE_ARGS" > "$FCREC_FILE"
+RESULT_FILE="$(grep -F 'file-writing tool:' "$CMDFILE" 2>/dev/null | sed 's/.*file-writing tool: //' | head -1)"
+[ -n "$RESULT_FILE" ] && printf '%s' '{"ok":true}' > "$RESULT_FILE"
+exit 0
+REC_EOF
+    chmod +x "$REC_DIR/flat-cyborg"
+    FCREC="$(mktemp)"
+
+    # 26. default: no CLAUDE_REASONING_EFFORT override renders {"effortLevel":"medium"}.
+    PATH="$REC_DIR:$PATH" FCREC_FILE="$FCREC" \
+        sh "$WRAPPER" "hi" >/dev/null 2>&1 || true
+    REC="$(cat "$FCREC")"
+    case "$REC" in
+        *'--settings {"effortLevel":"medium"}'*)
+            pass "test 26: default CLAUDE_REASONING_EFFORT renders {\"effortLevel\":\"medium\"}" ;;
+        *)
+            fail "test 26: default effort settings" "recorded=[$REC]" ;;
+    esac
+
+    # 27. CLAUDE_REASONING_EFFORT=high overrides the default.
+    PATH="$REC_DIR:$PATH" FCREC_FILE="$FCREC" \
+        CLAUDE_REASONING_EFFORT=high \
+        sh "$WRAPPER" "hi" >/dev/null 2>&1 || true
+    REC="$(cat "$FCREC")"
+    case "$REC" in
+        *'--settings {"effortLevel":"high"}'*)
+            pass "test 27: CLAUDE_REASONING_EFFORT=high overrides the medium default" ;;
+        *)
+            fail "test 27: CLAUDE_REASONING_EFFORT override" "recorded=[$REC]" ;;
+    esac
+
+    # 28. an invalid value falls back to medium (checked via the RECORDED argv,
+    # not just stderr -- the stderr warning is a nice-to-have, the argv is
+    # load-bearing).
+    PATH="$REC_DIR:$PATH" FCREC_FILE="$FCREC" \
+        CLAUDE_REASONING_EFFORT=bogus \
+        sh "$WRAPPER" "hi" >/dev/null 2>&1 || true
+    REC="$(cat "$FCREC")"
+    case "$REC" in
+        *'--settings {"effortLevel":"medium"}'*)
+            pass "test 28: invalid CLAUDE_REASONING_EFFORT falls back to medium" ;;
+        *)
+            fail "test 28: invalid effort value fallback" "recorded=[$REC]" ;;
+    esac
+
+    # 29. source-assert the wrapper's default literal and allowlist validation.
+    if grep -q 'CLAUDE_REASONING_EFFORT:-medium}' "$WRAPPER" \
+       && grep -q 'low|medium|high|xhigh' "$WRAPPER"; then
+        pass "test 29: wrapper source carries the CLAUDE_REASONING_EFFORT default and allowlist"
+    else
+        fail "test 29: wrapper source effort-level default/allowlist"
+    fi
+
+    rm -rf "$REC_DIR" "$FCREC"
+fi
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

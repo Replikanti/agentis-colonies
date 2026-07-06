@@ -2392,6 +2392,30 @@ else
     fail "run 26e (#1354): expected exit 2" "rc=$RC26E $(tail -2 "$WORK/out26e.txt")"
 fi
 
+# ---------------------------------------------------------------------------
+# Run 27 (#1444 CODE_EDIT_EFFORT). Every editing-session claude invocation
+# (decompose, one-attempt, and the multi-attempt loop) must carry
+# `--settings "$EFFORT_SETTINGS"` right after the existing `--model
+# "${CODE_EDIT_MODEL:-opus}"` flag, computed ONCE from CODE_EDIT_EFFORT
+# (default "high"). Statically assert all THREE sites carry it -- a
+# copy-paste miss at exactly one of the three sites is the failure mode this
+# guards against -- and that the default literal + allowlist validation are
+# present in the source.
+# ---------------------------------------------------------------------------
+# shellcheck disable=SC2016  # the ${...} is a literal grep pattern, not a shell expansion
+EFFORT_INVOCATIONS="$(grep -cF -- '--model "${CODE_EDIT_MODEL:-opus}" --settings "$EFFORT_SETTINGS"' "$ORCH" 2>/dev/null || true)"
+if [ "${EFFORT_INVOCATIONS:-0}" -eq 3 ]; then
+    pass "run 27 (#1444 CODE_EDIT_EFFORT): all three editing-session invocations carry --settings \$EFFORT_SETTINGS (found $EFFORT_INVOCATIONS)"
+else
+    fail "run 27 (#1444 CODE_EDIT_EFFORT): expected exactly 3 invocation sites carrying --settings" "matches=${EFFORT_INVOCATIONS:-0}"
+fi
+if grep -qF 'CODE_EDIT_EFFORT:-high}' "$ORCH" 2>/dev/null \
+    && grep -qF 'low|medium|high|xhigh' "$ORCH" 2>/dev/null; then
+    pass "run 27 (#1444 CODE_EDIT_EFFORT): default literal (high) and allowlist validation present in source"
+else
+    fail "run 27 (#1444 CODE_EDIT_EFFORT): missing default literal or allowlist validation in source"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

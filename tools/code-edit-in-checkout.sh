@@ -79,6 +79,14 @@
 #                                runs on Sonnet 5 via flat-cyborg-claude.sh).
 #                                Accepts an alias (`opus`/`sonnet`/`fable`) or a
 #                                full model id.
+#   CODE_EDIT_EFFORT             claude --settings effortLevel for the editing
+#                                session (default `high` — code generation is
+#                                the federation's heaviest workload and
+#                                warrants stronger reasoning than the `medium`
+#                                default used for lighter prompt() reasoning in
+#                                flat-cyborg-claude.sh). Accepts
+#                                low|medium|high|xhigh; an unrecognised value
+#                                falls back to `high` with a warning.
 #   CODE_EDIT_TIMEOUT_MS         per-attempt flat-cyborg edit timeout (600000)
 #   CODE_EDIT_MAX_ATTEMPTS       continue-on-incomplete attempts (3)
 #   CODE_EDIT_TOTAL_BUDGET_MS    overall wall-clock budget across attempts (1500000)
@@ -631,6 +639,22 @@ if [ "$MAX_ATTEMPTS" -lt 1 ]; then MAX_ATTEMPTS=1; fi
 MAX_SUBTASKS="${CODE_EDIT_MAX_SUBTASKS:-8}"
 case "$MAX_SUBTASKS" in ''|*[!0-9]*) MAX_SUBTASKS=8 ;; esac
 if [ "$MAX_SUBTASKS" -lt 1 ]; then MAX_SUBTASKS=1; fi
+# Effort-level routing (#1444): the editing session defaults to "high" instead
+# of inheriting the operator's account-level effortLevel — code generation is
+# the federation's heaviest workload and warrants the strongest reasoning.
+# Harden against a typo reaching `claude --settings` unvalidated: only a
+# known-good value is ever interpolated into the JSON string. Computed ONCE
+# here so all three `claude --model ... --settings` invocation sites below
+# (decompose, one-attempt, multi-attempt loop) reference the same value.
+CODE_EDIT_EFFORT="${CODE_EDIT_EFFORT:-high}"
+case "$CODE_EDIT_EFFORT" in
+    low|medium|high|xhigh) ;;
+    *)
+        echo "code-edit-in-checkout.sh: invalid CODE_EDIT_EFFORT '$CODE_EDIT_EFFORT', falling back to high" >&2
+        CODE_EDIT_EFFORT=high
+        ;;
+esac
+EFFORT_SETTINGS='{"effortLevel":"'"$CODE_EDIT_EFFORT"'"}'
 # Verify gate (#1253): run the repo's gate after a settled attempt and only stop
 # when it passes; feed failures back as another iteration (bounded by the same
 # attempts/budget). Empty VERIFY_CMD -> no gate -> M1 behaviour.
@@ -708,7 +732,7 @@ if [ "$ONE_ATTEMPT" -eq 1 ]; then
     flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 --cwd "$WS" \
         --idle-ms "${FLAT_CYBORG_IDLE_MS:-45000}" \
         --timeout-ms "$PER_ATTEMPT_MS" \
-        --cmd-file "$TASKFILE" -- claude --model "${CODE_EDIT_MODEL:-opus}" >&2
+        --cmd-file "$TASKFILE" -- claude --model "${CODE_EDIT_MODEL:-opus}" --settings "$EFFORT_SETTINGS" >&2
     FC_RC=$?
     set -e
     reap_editing_strays
@@ -761,7 +785,7 @@ if [ "$DECOMPOSE" -eq 1 ]; then
     acquire_llm_slot
     flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 --cwd "$WS" \
         --idle-ms "${FLAT_CYBORG_IDLE_MS:-45000}" --timeout-ms "$PER_ATTEMPT_MS" \
-        --cmd-file "$TASKFILE" -- claude --model "${CODE_EDIT_MODEL:-opus}" >&2
+        --cmd-file "$TASKFILE" -- claude --model "${CODE_EDIT_MODEL:-opus}" --settings "$EFFORT_SETTINGS" >&2
     set -e
     reap_editing_strays
     release_llm_slot
@@ -832,7 +856,7 @@ while :; do
     flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 --cwd "$WS" \
         --idle-ms "${FLAT_CYBORG_IDLE_MS:-45000}" \
         --timeout-ms "$this_timeout" \
-        --cmd-file "$TASKFILE" -- claude --model "${CODE_EDIT_MODEL:-opus}" >&2
+        --cmd-file "$TASKFILE" -- claude --model "${CODE_EDIT_MODEL:-opus}" --settings "$EFFORT_SETTINGS" >&2
     FC_RC=$?
     set -e
 
