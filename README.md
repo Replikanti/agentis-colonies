@@ -56,7 +56,7 @@ Federation-agnostic components are versioned and released independently so fixes
 
 | Component | Version | Description |
 |-----------|---------|-------------|
-| [federation-dashboard](./federation-dashboard/) | [`0.11.1`](https://github.com/Replikanti/agentis-colonies/releases/tag/federation-dashboard-v0.11.1) | Generic web dashboard with operator controls (promote / demote / evolve / restart / kill), 6-tab surface (Status / Analytics / Cost / Recovery / Logs & Events / Config), per-agent table, federation-wide Experience tile, collapsible Promotion Progress, Forge Rate Limits tile, and liveness pills for all federation sidecars. Auto-discovers colonies + agents from any federation directory. |
+| [federation-dashboard](./federation-dashboard/) | [`0.11.2`](https://github.com/Replikanti/agentis-colonies/releases/tag/federation-dashboard-v0.11.2) | Generic web dashboard with operator controls (promote / demote / evolve / restart / kill), 6-tab surface (Status / Analytics / Cost / Recovery / Logs & Events / Config), per-agent table, federation-wide Experience tile, collapsible Promotion Progress, Forge Rate Limits tile, and liveness pills for all federation sidecars. Auto-discovers colonies + agents from any federation directory. |
 
 ### Status
 
