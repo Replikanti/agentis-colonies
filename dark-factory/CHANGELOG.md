@@ -53,7 +53,13 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
     run asserting the `report.md` impact rows/section, the `REPRODUCTION.md` sha256 + rerun command, the
     snapshot quantified-vs-qualitative split, the owner-rebind disclosure, and the multi-account regression.
     Extended `demo-submit-triage.sh` to cover INCOMPLETE-over-DUP-RISK precedence, the `dup_hit` body-match
-    path, and the `has_repro` present/MISSING checklist value (15 assertions).
+    path, the `has_repro` present/MISSING checklist value, a no-trailing-newline known-issues line, and
+    `severity_of` word-anchoring (17 assertions). `severity_of` now matches the severity WORD (`grep -iowE`)
+    so an unrelated substring on a third-party report (`high`light / al`low` / be`low`) is not misread.
+    `demo-report-quality.sh` (agentis-gated) additionally asserts the `shell_escape` command-injection
+    defense end-to-end (a metacharacter-laden `BOUNTY_SNAPSHOT` does not execute) and the zero-value marker
+    edge (`account.lamports=0` → Qualitative, not a fabricated figure). All three demos are wired into
+    `colony-lint` so the CI-runnable checks (bash triage gates + source-level branch coverage) gate merges.
   - **Security hardening (PR #1462 review)** — `funds_at_risk` and `snapshot_state` now wrap the
     `BOUNTY_SNAPSHOT` path in `shell_escape()` before the `cat` in `exec sh` (replacing the
     `safe-exec-concat` waiver), so a hostile snapshot path (e.g. `x; touch pwned` set directly in an

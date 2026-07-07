@@ -43,6 +43,16 @@ Severity: Medium
 Target: 0xdef (OtherPool)
 MD
 
+# A third-party report whose only `severity`-bearing line has NO real severity WORD, just substrings
+# (high-light, al-low, be-low). severity_of must not misread it -> SEVERITY column stays "?" (word-anchored).
+mkdir -p "$ROOT/foreign:sevword"
+cat > "$ROOT/foreign:sevword/report.md" <<'MD'
+# Third-party finding
+Severity assessment: we highlight the allow-list issue noted below.
+PENDING HUMAN REVIEW — NOT SUBMITTED
+MD
+printf 'fn main() {}\n' > "$ROOT/foreign:sevword/poc.rs"
+
 # COMPLETE package whose affected function collides with a known disclosure -> DUP-RISK under --known-issues.
 mkdir -p "$ROOT/code4rena:dup"
 cat > "$ROOT/code4rena:dup/report.md" <<'MD'
@@ -149,6 +159,13 @@ if printf '%s\n' "$OUT" | grep 'cantina:nopoc' | grep -q 'qual?'; then
   pass "impact-less report flagged IMPACT=qual?"
 else
   fail "impact-less report not flagged qual?; got: $(printf '%s' "$OUT" | grep nopoc)"
+fi
+# severity_of word-anchoring: a report mentioning `severity` but with no real severity WORD (only
+# high-light / al-low / be-low substrings) must show SEVERITY='?', not a misread HIGH/LOW.
+if printf '%s\n' "$OUT" | grep 'foreign:sevword' | awk '{print $2}' | grep -qx '?'; then
+  pass "severity_of ignores substrings (highlight/allow/below) -> SEVERITY='?' (word-anchored)"
+else
+  fail "severity_of misread a substring as severity; got: $(printf '%s' "$OUT" | grep 'foreign:sevword')"
 fi
 # The discriminator (review finding 1): a report WITH the section but a Qualitative fallback is qual?, not quant.
 if printf '%s\n' "$OUT" | grep 'immunefi:qual' | grep -q 'qual?'; then

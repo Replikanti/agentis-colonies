@@ -80,6 +80,23 @@ else
   fail "multi-account regression: reported figure is not 50 lamports; got: $(sed -n '/## Impact quantification/,/^## /p' "$R3" | grep -o '[0-9]* lamports' | head -1)"
 fi
 
+# --- 4. SECURITY (fcf9956): a metacharacter-laden BOUNTY_SNAPSHOT must not inject a command. Set it DIRECTLY
+#        (bypasses run-audit.sh's --snapshot -f validation) so funds_at_risk/snapshot_state cat it via the
+#        shell_escape()'d exec sh. The injected `touch` must NOT fire. ---
+CANARY="$WORK/INJECTED"; rm -f "$CANARY"
+O4="$WORK/evil"
+BOUNTY_SNAPSHOT="$WORK/nope; touch $CANARY" "$HERE/run-audit.sh" --target "$TGT" --backend mock --sandbox none --out "$O4" >/dev/null 2>&1 || true
+if [ -e "$CANARY" ]; then fail "SHELL INJECTION: malicious BOUNTY_SNAPSHOT executed the injected command"; else pass "malicious BOUNTY_SNAPSHOT path does NOT inject a command (shell_escape holds, CWE-78)"; fi
+
+# --- 5. marker_int zero/absent edge: a real account.lamports=0 is NOT a finding -> Qualitative, not '0 lamports'. ---
+SNAP0="$WORK/snap-zero.txt"; printf 'vault.authority=1\nvault.balance=0\naccount.lamports=0\n' > "$SNAP0"
+O5="$WORK/zero"; run_audit "$O5" --snapshot "$SNAP0"
+if sed -n '/## Impact quantification/,/^## /p' "$O5/submission/report.md" 2>/dev/null | grep -q 'Qualitative:'; then
+  pass "zero-value snapshot (account.lamports=0) -> Qualitative, not a fabricated '0 lamports at risk'"
+else
+  fail "zero-value snapshot mis-quantified; got: $(sed -n '/## Impact quantification/,/^## /p' "$O5/submission/report.md" | grep -v '^##' | head -1)"
+fi
+
 if [ "$FAIL" -eq 0 ]; then
   echo "demo-report-quality.sh: PASS: a VERIFIED audit stages an Immunefi-shaped report + REPRODUCTION.md;"
   echo "      funds-at-risk is quantified ONLY from a real snapshot (qualitative otherwise), the owner-rebind is"

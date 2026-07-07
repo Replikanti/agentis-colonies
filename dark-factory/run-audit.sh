@@ -233,6 +233,10 @@ case "$VERDICT" in
     # #1457: reproduction manifest — exact toolchain + target/snapshot provenance + a deterministic rerun
     # command, so the human (and a platform triager) can reproduce against the LIVE deployment rather than
     # trust the offline run. Snapshot replay rebinds the account owner, which the manifest discloses.
+    # Harness precedence, last-wins = native < Anchor < EVM. This deliberately MATCHES the .ag's
+    # harness_dir()/challenge_ref() precedence (which checks EVM_HARNESS_DIR, then the Anchor dir, then the
+    # native dir), so if an operator passes more than one harness flag the manifest names the one the audit
+    # actually used, not an arbitrary pick.
     HKIND="std-only rustc (offline)"; HFLAG=""
     [ -n "$HARNESS" ]        && { HKIND="native solana-program-test SVM"; HFLAG="--harness <abs>/$(basename "$HARNESS")"; }
     [ -n "$ANCHOR_HARNESS" ] && { HKIND="Anchor solana-program-test SVM"; HFLAG="--anchor-harness <abs>/$(basename "$ANCHOR_HARNESS")"; }

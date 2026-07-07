@@ -50,10 +50,12 @@ has_poc() {
 
 # Best-effort severity from an Immunefi-shaped report.md. Matches both the real table row
 # `| Severity (Immunefi) | High |` and a plain `Severity: High` line: take the first severity
-# word on the first line mentioning "severity". "?" if absent.
+# WORD on a line mentioning "severity". `-w` (whole-word) so an unrelated substring on a
+# third-party report — `high`light, al`low`, be`low`, fol`low`ing — cannot be misread as a
+# severity. "?" if absent.
 severity_of() {
   grep -i 'severity' "$1" 2>/dev/null \
-    | grep -ioE 'critical|high|medium|low' | head -1 | tr 'a-z' 'A-Z' || true
+    | grep -iowE 'critical|high|medium|low' | head -1 | tr 'a-z' 'A-Z' || true
 }
 
 # Impact-credibility: Immunefi pays on DEMONSTRATED fund-loss. auditor.ag (#1456) ALWAYS emits the
