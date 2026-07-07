@@ -54,15 +54,14 @@ severity_of() {
     | grep -ioE 'critical|high|medium|low' | head -1 | tr 'a-z' 'A-Z' || true
 }
 
-# Impact-credibility: Immunefi pays on DEMONSTRATED fund-loss, so a report is credible only when it carries a
-# quantified funds-at-risk section AND a primacy-of-impact category (both written by auditor.ag #1456). Prints
-# "quant" when both present, "qual?" otherwise (a warning for the human, not a hard block).
+# Impact-credibility: Immunefi pays on DEMONSTRATED fund-loss. auditor.ag (#1456) ALWAYS emits the
+# `## Impact quantification` section, but its body is either a real figure (`**N lamports/units**`) or the
+# `Qualitative:`-prefixed fallback (no real snapshot). So section presence alone is not the signal — key off
+# the fallback token: "quant" = section present AND no `Qualitative:` marker; "qual?" = qualitative fallback
+# or no section at all (a warning for the human, not a hard block).
 impact_of() {
-  if grep -qi '## Impact quantification' "$1" 2>/dev/null && grep -qi 'Impact category' "$1" 2>/dev/null; then
-    echo "quant"
-  else
-    echo "qual?"
-  fi
+  grep -qi '## Impact quantification' "$1" 2>/dev/null || { echo "qual?"; return; }
+  if grep -q 'Qualitative:' "$1" 2>/dev/null; then echo "qual?"; else echo "quant"; fi
 }
 
 # The finding's affected function, pulled from the Immunefi-shaped report table row
@@ -86,7 +85,7 @@ dup_hit() {  # $1 = report.md path (uses global KNOWN_ISSUES)
     case "$line" in ''|'#'*) continue ;; esac
     l="$(printf '%s' "$line" | tr 'A-Z' 'a-z' | awk '{gsub(/^[ \t]+|[ \t]+$/,"");print}')"
     [ -n "$l" ] || continue
-    if [ -n "$fn" ] && [ "$fn" != "(handler)" ] && printf '%s' "$l" | grep -qF "$fn"; then return 0; fi
+    if [ -n "$fn" ] && [ "$fn" != "(handler)" ] && printf '%s' "$l" | grep -qwF "$fn"; then return 0; fi
     if grep -qiF "$l" "$rpt" 2>/dev/null; then return 0; fi
   done < "$KNOWN_ISSUES"
   return 1

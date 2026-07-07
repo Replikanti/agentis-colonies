@@ -64,6 +64,27 @@ MD
 printf 'fn main() {}\n' > "$ROOT/code4rena:dup/poc.rs"
 printf '# Reproduction manifest\n' > "$ROOT/code4rena:dup/REPRODUCTION.md"
 
+# COMPLETE package whose Impact quantification is the auditor's QUALITATIVE fallback (section present, but no
+# real figure — no snapshot) -> must score IMPACT=qual?, NOT quant (the #1456 discriminator, review finding 1).
+mkdir -p "$ROOT/immunefi:qual"
+cat > "$ROOT/immunefi:qual/report.md" <<'MD'
+# Bounty finding — MissingSignerCheck
+| Field | Value |
+|---|---|
+| Severity (Immunefi) | Critical |
+| Impact category | Direct theft of user/protocol funds |
+| Rule | MissingSignerCheck |
+| Affected function | `redeem` |
+
+## Impact quantification
+
+Qualitative: the two-sided PoC drains the target account to zero on the EXPLOIT path while the CONTROL path conserves it — but the demonstrated balances are synthetic. Quantify against the live deployment before submitting.
+
+## Submission — HUMAN-GATED (NOT SUBMITTED)
+STATUS: PENDING HUMAN APPROVAL — NOT SUBMITTED.
+MD
+printf 'fn main() {}\n' > "$ROOT/immunefi:qual/poc.rs"
+
 # Known-issues list (public disclosures to exclude) — one signature per line.
 KNOWN="$WORK/known.txt"
 cat > "$KNOWN" <<'MD'
@@ -89,6 +110,12 @@ if printf '%s\n' "$OUT" | grep 'cantina:nopoc' | grep -q 'qual?'; then
   pass "impact-less report flagged IMPACT=qual?"
 else
   fail "impact-less report not flagged qual?; got: $(printf '%s' "$OUT" | grep nopoc)"
+fi
+# The discriminator (review finding 1): a report WITH the section but a Qualitative fallback is qual?, not quant.
+if printf '%s\n' "$OUT" | grep 'immunefi:qual' | grep -q 'qual?'; then
+  pass "qualitative-fallback report (section present, no figure) flagged IMPACT=qual?, not quant"
+else
+  fail "qualitative-fallback report mis-scored; got: $(printf '%s' "$OUT" | grep 'immunefi:qual')"
 fi
 
 # --- scan WITH --known-issues: the colliding package becomes DUP-RISK, the good one stays novel ---
