@@ -14,6 +14,21 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+- **Invariant-hunt target-linkage gate** (#1471). Closes a false-FINDING hole on the invariant-hunt generation
+  path: when the real target is hard to harness, the LLM could silently substitute its OWN toy contract of the
+  same name and the fuzzer would "find" a bug it planted THERE — a FINDING against fabricated code with zero
+  bounty value (proven live: a Liquity BOLD `StabilityPool` run produced a test that imported nothing and
+  defined its own 16-line `contract StabilityPool`). `evm-harness/forge-invariant.sh` gains an optional
+  `--require-import <target-src>` (+ `--require-contract <Name>`) gate: BEFORE forge runs, the test must carry
+  an `import` line whose path ends with the target basename AND must NOT declare its own `contract <Name>`
+  shadow (`StabilityPoolHarness` does not trip it) — a miss is `HARNESS_ERROR` (2), never a verdict. The
+  prover (`auditor/agents/invariant-prover.ag`) threads the flags in **only in pure fresh-deploy mode** (no
+  `FORK_URL`/`FORK_TARGET`/`FORK_CONTEXT`, a real `CODE_PATH`); in any fork/composability mode — where the
+  target is referenced by on-chain address, not a source import — no link args are passed and the gate is
+  byte-identical to before. `demo-invariant-linkage.sh` source-guards the wiring and runs the gate live when
+  forge is present; wired into `tools/colony-lint.sh`.
+
 ### Added
 - **Snapshot owner-rebind hard assert** (#1455 epic; #1457). Closes the owner-graph fidelity gap in
   snapshot replay: the `poc_snapshot` harness now **reads the account's real on-chain owner** from the

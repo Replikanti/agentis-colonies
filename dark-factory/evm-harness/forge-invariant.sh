@@ -25,18 +25,31 @@
 # existing "no parseable result / no invariant ran" path returns HARNESS_ERROR (2) — never a false CLEAN/
 # FINDING. When `--fork-url` is UNSET the forge command is BYTE-IDENTICAL to the no-fork build.
 #
+# #1471 — TARGET-LINKAGE GATE (fresh-deploy only). When the real target is hard to harness, the LLM that
+# generates the `*.t.sol` can silently substitute its OWN toy contract of the SAME name and "find" a bug it
+# planted there — a FINDING against fabricated code with zero bounty value. The optional
+# `--require-import <target-src>` (+ `--require-contract <Name>`) pair closes that: BEFORE forge runs, the
+# test file must (a) carry an `import` line whose path ends with the target's basename AND (b) — when a
+# contract name is given — NOT declare its OWN `contract <Name>` shadow. A miss => HARNESS_ERROR (2), never a
+# verdict. Applied ONLY in pure fresh-deploy mode: the caller OMITS both flags in fork/composability mode
+# (there the target is referenced by on-chain address, not a source import). When `--require-import` is empty
+# the behaviour is BYTE-IDENTICAL to today.
+#
 # Usage:
 #   forge-invariant.sh --repo <foundry-project-root> --target <Invariant.t.sol>
 #                      [--match <invariant_ prefix>] [--runs N] [--depth D] [--seed S]
 #                      [--fork-url <http(s)-rpc>] [--fork-block <n>]
+#                      [--require-import <target-src>] [--require-contract <Name>]
 #
 # Verdict / exit contract (mirrors halmos-verify.sh's shape):
 #   CLEAN          exit 0  — >=1 invariant ran and ALL held across every fuzzed sequence: no finding.
 #   FINDING        exit 1  — >=1 invariant FAILED; the shrunk exploit sequence is printed to stderr and
 #                            captured in the JSON. A reproducible multi-step witness -> a CANDIDATE.
 #   HARNESS_ERROR  exit 2  — bad args, repo is not a foundry project, forge missing, compile/setup error,
-#                            no invariant function matched (nothing was actually checked), or a fork RPC
-#                            that was unreachable / could not instantiate the forked environment.
+#                            no invariant function matched (nothing was actually checked), a fork RPC that was
+#                            unreachable / could not instantiate the forked environment, or (#1471) the test
+#                            failed the target-linkage gate (did not import the in-scope target, or shadowed
+#                            it with a same-named toy contract).
 set -uo pipefail
 
 REPO=""
@@ -47,8 +60,10 @@ DEPTH=""
 SEED=""
 FORK_URL=""
 FORK_BLOCK=""
+REQ_IMPORT=""
+REQ_CONTRACT=""
 
-usage() { sed -n '2,39p' "$0"; }
+usage() { sed -n '2,52p' "$0"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -60,6 +75,11 @@ while [ $# -gt 0 ]; do
     --seed)   SEED="${2:-}"; shift 2 ;;
     --fork-url)   FORK_URL="${2:-}"; shift 2 ;;
     --fork-block) FORK_BLOCK="${2:-}"; shift 2 ;;
+    # #1471: TARGET-LINKAGE GATE (fresh-deploy only). --require-import <target-src> arms the gate; the test must
+    # import a path ending in this file's basename. --require-contract <Name> additionally forbids a same-named
+    # shadow contract. Both empty (the default, and every fork/composability caller) => the gate is INERT.
+    --require-import)   REQ_IMPORT="${2:-}"; shift 2 ;;
+    --require-contract) REQ_CONTRACT="${2:-}"; shift 2 ;;
     # FM2 (#1041): --fork-context <role=addr;...> is a GENERATION-PROMPT hint (the composability context set the
     # prover reads). The fuzzer auto-discovers its fuzz targets from the test's `targetContracts()` view, so the
     # gate itself needs nothing from the context — it ACCEPTS and IGNORES the flag so a composability-mode caller
@@ -100,6 +120,36 @@ case "$FORK_BLOCK" in '') ;; *[!0-9]*) echo "forge-invariant: --fork-block must 
 # We do NOT hardcode any install location — the caller exports the toolchain onto PATH.
 command -v forge >/dev/null 2>&1 || {
   echo "forge-invariant: forge not installed (run foundryup; https://getfoundry.sh)" >&2; exit 2; }
+
+# --- #1471 TARGET-LINKAGE GATE (fresh-deploy only) ----------------------------------------------
+# When --require-import is set the generated/staged test MUST structurally reference the in-scope target
+# BEFORE we spend a fuzzing budget on it — otherwise a test that imports NOTHING and defines its OWN toy
+# `contract <Name>` of the same name lets the fuzzer "find" a planted bug in FABRICATED code and report a
+# false FINDING (the live Liquity BOLD StabilityPool substitution, #1471). Two static checks on the test:
+#   (1) it must carry an `import` line whose quoted path ENDS WITH the target basename (e.g. StabilityPool.sol,
+#       or the staged `target-code.sol` name the runner imports); AND
+#   (2) if --require-contract <Name> is set, it must NOT DECLARE its own `contract <Name>` shadow — a trailing
+#       non-identifier char emulates the word boundary so `contract StabilityPoolHarness` does NOT match.
+# A miss on either => HARNESS_ERROR (2), never a verdict. When --require-import is EMPTY (every fork/
+# composability caller and every pre-#1471 caller) this block is a no-op and the run is byte-identical to today.
+# `banner()` is defined further below (after arg parse), so emit the HARNESS_ERROR banner inline here.
+if [ -n "$REQ_IMPORT" ]; then
+  # Escape EVERY non-alphanumeric char so the basename / contract name match LITERALLY in the ERE below
+  # (the `.` in `<name>.sol` most of all) and no metachar in the untrusted value can alter the pattern.
+  _tgt_base="$(basename "$REQ_IMPORT")"
+  _tgt_base_re="$(printf '%s' "$_tgt_base" | sed 's/[^a-zA-Z0-9]/\\&/g')"
+  if ! grep -Eq "^[[:space:]]*import[^;]*[\"'/]${_tgt_base_re}[\"']" "$TARGET_PATH"; then
+    echo "================ FORGE-INVARIANT: HARNESS_ERROR (#1471 target-linkage — the test does not import the in-scope target (${_tgt_base}); a fabricated / substituted target is NOT a verdict) ================" >&2
+    exit 2
+  fi
+  if [ -n "$REQ_CONTRACT" ]; then
+    _tgt_ctr_re="$(printf '%s' "$REQ_CONTRACT" | sed 's/[^a-zA-Z0-9]/\\&/g')"
+    if grep -Eq "^[[:space:]]*contract[[:space:]]+${_tgt_ctr_re}([^A-Za-z0-9_]|$)" "$TARGET_PATH"; then
+      echo "================ FORGE-INVARIANT: HARNESS_ERROR (#1471 target-linkage — the test declares its OWN 'contract ${REQ_CONTRACT}' shadow instead of importing the in-scope target; a self-authored toy is NOT a verdict) ================" >&2
+      exit 2
+    fi
+  fi
+fi
 
 FORK_NOTE=""
 [ -n "$FORK_URL" ] && FORK_NOTE=" [fork=${FORK_URL}${FORK_BLOCK:+@${FORK_BLOCK}}]"

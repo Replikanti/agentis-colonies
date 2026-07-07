@@ -457,6 +457,27 @@ let budget = opt_flag("--runs", runsArg) + opt_flag("--depth", depthArg) + opt_f
 // opt_flag, exactly like runs/depth/seed). Empty fork facts => "" => the gate command is byte-identical to the
 // no-fork build. A fork RPC failure becomes the gate's HARNESS_ERROR (exit 2), never a false verdict.
 let fork = opt_flag("--fork-url", forkUrl) + opt_flag("--fork-block", forkBlock);
+// #1471 — TARGET-LINKAGE GATE args, threaded into the gate ONLY in pure fresh-deploy mode. When the target is
+// referenced by SOURCE (fresh deploy: no fork url/target, no composability context, a real CODE_PATH) the gate
+// must assert the generated test actually IMPORTS that source AND does not SHADOW the in-scope contract with a
+// self-authored toy of the same name — the #1471 false FINDING (a live Liquity BOLD StabilityPool run produced
+// a test that imported nothing and defined its own 16-line `contract StabilityPool`, so the fuzzer broke an
+// invariant on FABRICATED code). In ANY fork/composability mode the target is referenced by ON-CHAIN ADDRESS,
+// not a source import, so requiring an import there is WRONG — link_args returns "" and the gate command is
+// byte-identical to today. codePath is the staged target source the runner passes (the gate basenames it,
+// matching the test's realpath-relative import of that same file); targetName is the `*.sol:Name` label's Name
+// (empty => import-only check, no shadow assertion). Each value is shell_escape()d here / in opt_flag.
+fn link_args(fUrl: string, fTarget: string, fContext: string, cPath: string, tName: string) -> string {
+    if len(fUrl) > 0 { return ""; }
+    if len(fTarget) > 0 { return ""; }
+    if len(fContext) > 0 { return ""; }
+    if len(cPath) == 0 { return ""; }
+    return " --require-import " + shell_escape(cPath) + opt_flag("--require-contract", tName);
+}
+let linkArgs = link_args(forkUrl, forkTarget, forkContext, codePath, targetName);
+// The extra gate args appended to EVERY gate invocation (the first attempt AND each repair round) so a
+// substituted-target test is rejected as HARNESS_ERROR no matter which attempt produced it.
+let gateExtra = fork + linkArgs;
 
 // Write the generated/fixture test to INV_OUT. The test content is UNTRUSTED — it is either an LLM completion
 // (prompt-injectable by the untrusted target code under audit) or an operator fixture — so it MUST go through
@@ -624,7 +645,7 @@ fn repair_loop(acc: string, remaining: int, gateSh: string, repo: string, out: s
 // path and for INV_REPAIR_ROUNDS=0). `firstStop` is "1" iff the first attempt already produced a verdict, so
 // the loop below makes zero extra prompt()/gate calls once a FINDING/CLEAN is in hand.
 let wrote = write_test(test, invOut);
-let firstOut = run_gate(gate, invRepo, invOut, invMatch, budget, fork);
+let firstOut = run_gate(gate, invRepo, invOut, invMatch, budget, gateExtra);
 // FM2 (#1077): the first-attempt stop flag is both-real-aware too — in composable-fresh mode a first-attempt
 // FINDING/CLEAN on a harness that mocked/omitted a required real contract does NOT short-circuit; it enters
 // repair. Outside composable-fresh this is byte-identical to `stop_flag(rc_of(firstOut))` (only the rc decides).
@@ -640,7 +661,7 @@ let initState = rstate(initStopped, test, firstOut);
 // disable path) and the fixture path both leave `finalState` == `initState` (today's one-shot behaviour). The
 // composeFresh flag + requiredNames are threaded so a both-real violation also drives a round (and the pointed
 // repair prompt) in composable-fresh mode; outside it they are inert (composeFresh false => no extra trigger).
-let finalState = repair_loop(initState, repairRounds, gate, invRepo, invOut, invMatch, budget, fork, composableFresh, requiredNames);
+let finalState = repair_loop(initState, repairRounds, gate, invRepo, invOut, invMatch, budget, gateExtra, composableFresh, requiredNames);
 
 // The verdict is the gate's exit code on the LAST attempt — NEVER the LLM's opinion (unchanged contract) —
 // EXCEPT the #1077 both-real override: in composable-fresh mode, if the FINAL harness STILL mocked/omitted a

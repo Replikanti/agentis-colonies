@@ -805,6 +805,22 @@ if [ -x "$REPO_ROOT/dark-factory/demo-owner-assert.sh" ]; then
     fi
 fi
 
+# --- dark-factory invariant-hunt target-linkage gate (#1471) ---
+# The invariant-hunt generation path could produce a false FINDING when the LLM substituted its own toy
+# contract of the same name instead of importing the in-scope target. forge-invariant.sh gained a
+# --require-import / --require-contract gate that the prover threads in ONLY in pure fresh-deploy mode; a test
+# that does not import the target, or shadows it with a same-named toy, is HARNESS_ERROR before any fuzzing.
+# demo-invariant-linkage.sh source-guards the wiring (CI-safe) and, when forge is present, runs the gate live.
+if [ -x "$REPO_ROOT/dark-factory/demo-invariant-linkage.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-invariant-linkage.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: invariant-hunt target-linkage gate (reject substituted target, fresh-deploy-only) (#1471)"
+    else
+        fail "dark-factory: invariant-hunt target-linkage gate regressed (#1471)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- tier-branch double learn() guard (#636) ---
 # Every `_publish_<role>(...)` / `_submitter_<phase>(...)` helper in
 # research-foundry/ must gate its top-level `learn(..., ["emitted", ...])`
