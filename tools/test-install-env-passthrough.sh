@@ -415,7 +415,6 @@ else
     cat "$T19_CONFIG"
 fi
 
-
 # ----- Heartbeat interval (#280) -----
 
 # Replicates the install.sh write_key + upgrade logic for
