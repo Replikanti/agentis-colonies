@@ -15,6 +15,19 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Added
+
+- **`getenv()` allowlist lint** ([#1428](https://github.com/Replikanti/agentis-colonies/issues/1428)):
+  new `tools/check-getenv-allowlist.sh` (wired into `colony-lint.sh`) fails the
+  lint when a dev-apprenticeship agent reads a `getenv()` var that is neither
+  on the `exec.env_passthrough` allowlist written by `install.sh` nor annotated
+  `// colony-lint: getenv-unregistered-ok`, and when an allowlisted getenv knob
+  is missing from the #1437 residue-check list. `getenv()` reads the SANITIZED
+  env, so an unregistered operator knob is silently inert — this closes the
+  class (proven live on the #1424 burn-in, #1426) for every future
+  dev-apprenticeship getenv knob. Self-tested by
+  `tools/test-check-getenv-allowlist.sh`.
+
 ### Changed
 
 - **Per-agent haiku reasoning routing** ([#1451](https://github.com/Replikanti/agentis-colonies/issues/1451)):
@@ -46,6 +59,18 @@ is asserted until multi-version CI is in place.
   reply read (#1219) that superseded it, and workload-based model routing
   (#1414) is documented; implementation README documents the v2.4.0
   AG-driven edit-loop default (#1354) and the `CODE_EDIT_MODEL` knob.
+
+### Fixed
+
+- **Last two inert getenv knobs registered** ([#1428](https://github.com/Replikanti/agentis-colonies/issues/1428)):
+  `QA_ADVERSARIAL_LLM_CMD` (qa_reviewer's cross-provider adversarial reroute,
+  #1405) and `CODE_EDIT_MAX_ATTEMPTS` (attempt cap read by both
+  `code_writer.ag` and `code-edit-in-checkout.sh`) are now on the
+  `exec.env_passthrough` allowlist written by `install.sh` (new exact-match
+  migration step; the #1437 residue check covers both). Previously the
+  operator export was silently ignored: the adversarial dimension always fell
+  back to the default backend and the attempt cap stayed at the hardcoded
+  default of 3.
 
 ## [2.5.0] — 2026-07-06
 

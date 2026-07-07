@@ -41,7 +41,7 @@ If a PR adds a runtime dependency under `tools/` that `dev-apprenticeship/` invo
 bash -n scripts/gitlab-api.sh   # Bash syntax check on any script
 ```
 
-Colony lint must pass with 0 failures before merge. CI baseline: 292 passed, 0 failed, 6 skipped (no agentis binary on runners). Local runs add ~42 per-agent `.ag` passes when `agentis` is installed.
+Colony lint must pass with 0 failures before merge. CI baseline: 317 passed, 0 failed, 7 skipped (no agentis binary on runners). Local runs add ~42 per-agent `.ag` passes when `agentis` is installed.
 
 ## LLM backend
 
@@ -56,8 +56,8 @@ Rules that bite:
 - **Global LLM-session cap** ([#1352](https://github.com/Replikanti/agentis-colonies/issues/1352)): `tools/lib/llm-session-slot.sh` — a `mkdir`-based counting semaphore, `K = ${LLM_MAX_CONCURRENT:-3}`, covering reasoning AND editing sessions. Waits are bounded (`LLM_SLOT_WAIT_S`, default 120 s) then **fail open**; leaked slots self-heal via PID-liveness reclaim. The fed-fixed slot pool is derived from the allowlisted `COLONY_DIR` (`<COLONY_DIR>/../.agentis/llm-slots`) — agentis-core **force-strips the entire `AGENTIS_*` namespace** from daemon children regardless of `exec.env_passthrough` ([#1426](https://github.com/Replikanti/agentis-colonies/pull/1426)), so the `AGENTIS_LLM_SLOTS_DIR` override only applies to direct invocations. Note: lowering an agent's confidence does NOT reduce `prompt()` volume — dormant agents still prompt each tick.
 - The host wrapper reads claude's reply from a **result file** ([#1219](https://github.com/Replikanti/agentis-colonies/issues/1219)); the `--extract` screen-scrape is only a fallback. Prereqs: `flat-cyborg` >= 0.9.0 on PATH + logged-in `~/.claude`; `FLAT_CYBORG_RESULT_FILE=0` opts a weak model into screen-scrape-only mode (short replies only — see doc/llm-backend.md).
 - **macOS**: the detached editing session cannot reach the login Keychain ([#1343](https://github.com/Replikanti/agentis-colonies/issues/1343)) — provision a `claude setup-token` credential into `CLAUDE_OAUTH_TOKEN_FILE` (install.sh §6). A raw `accessToken` copied from `.credentials.json` is the wrong token type (401).
-- `qa_reviewer` judges MRs on an **adversarial** second-opinion dimension ([#1405](https://github.com/Replikanti/agentis-colonies/issues/1405)); `QA_ADVERSARIAL_LLM_CMD` optionally reroutes it to an independent model (its absence never disables the dimension; the reroute only takes effect if the var is on the `exec.env_passthrough` allowlist — see below).
-- **`getenv()` reads the SANITIZED env** — only `exec.env_passthrough`-allowlisted vars reach the `.ag` runtime; `/proc/<pid>/environ` shows the pre-strip env and therefore lies. Every getenv-read operator knob MUST be allowlisted (written by `install.sh`) or it is silently inert — proven live on the #1424 burn-in ([#1426](https://github.com/Replikanti/agentis-colonies/pull/1426); audit of the remaining knobs: [#1428](https://github.com/Replikanti/agentis-colonies/issues/1428)).
+- `qa_reviewer` judges MRs on an **adversarial** second-opinion dimension ([#1405](https://github.com/Replikanti/agentis-colonies/issues/1405)); `QA_ADVERSARIAL_LLM_CMD` optionally reroutes it to an independent model (its absence never disables the dimension; on the `exec.env_passthrough` allowlist written by `install.sh` since [#1428](https://github.com/Replikanti/agentis-colonies/issues/1428)).
+- **`getenv()` reads the SANITIZED env** — only `exec.env_passthrough`-allowlisted vars reach the `.ag` runtime; `/proc/<pid>/environ` shows the pre-strip env and therefore lies. Every getenv-read operator knob MUST be allowlisted (written by `install.sh`) or it is silently inert — proven live on the #1424 burn-in ([#1426](https://github.com/Replikanti/agentis-colonies/pull/1426)). The [#1428](https://github.com/Replikanti/agentis-colonies/issues/1428) audit registered the last stragglers (`QA_ADVERSARIAL_LLM_CMD`, `CODE_EDIT_MAX_ATTEMPTS`) and `tools/check-getenv-allowlist.sh` (colony-lint) now enforces the invariant for dev-apprenticeship: an unregistered `getenv()` read fails lint unless annotated `// colony-lint: getenv-unregistered-ok`.
 
 Full deep dive (env knobs, resolution order, failure modes): [doc/llm-backend.md](./doc/llm-backend.md).
 
@@ -132,6 +132,7 @@ Verb-level API details: [doc/tooling-reference.md](./doc/tooling-reference.md).
 | `new-colony.sh` | Scaffold a new colony within an existing federation |
 | `check-exec-sh.sh` | Grep-based check for unsafe string concat into `exec sh` |
 | `check-prompt-gate.sh` | Lint: every `prompt()` needs a same-function memo staleness gate (`// colony-lint: prompt-gate-ok` to waive) |
+| `check-getenv-allowlist.sh` | Lint: every dev-apprenticeship `getenv()` knob must be on the install.sh `exec.env_passthrough` allowlist + #1437 residue list, or waived (`// colony-lint: getenv-unregistered-ok`) ([#1428](https://github.com/Replikanti/agentis-colonies/issues/1428)) |
 | `check-changelog.sh` | CI: warn on component change without CHANGELOG update, fail on VERSION bump without entry |
 | `make-federation-bundle.sh` | Build the curated release tarball from `BUNDLE.manifest` (invoked by `release.yml`) |
 | `make-dashboard-bundle.sh` | Build the `federation-dashboard` release tarball (invoked by `release-dashboard.yml`) |
