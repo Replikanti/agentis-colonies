@@ -21,6 +21,10 @@
 #   --evm-harness <dir>      EVM revm harness dir (EVM_HARNESS_DIR) for a Solidity target.
 #                            With --repo this defaults to the bundled ./evm-harness when omitted.
 #   --snapshot <file>        Frozen on-chain account dump (BOUNTY_SNAPSHOT; see snapshot-rpc.sh).
+#   --expect-owner <base58>  Snapshot owner-graph HARD ASSERT (#1457): the in-scope program's real
+#                            on-chain owner. The snapshot-replay harness refuses (INCONCLUSIVE) when the
+#                            dumped account's owner differs, so a re-owned copy is never reported VERIFIED.
+#                            Unset -> the harness emits an explicit OWNER REBIND disclosure instead.
 #   --poc <file>             Operator-supplied PoC candidate (BOUNTY_POC; still gated).
 #   --seed-manifest <file>   Seed known-bug patterns from finished contests (#861): manifest lines
 #                            `Class|abs-src-path|func-marker` (harvest-sherlock.js output).
@@ -36,7 +40,7 @@ set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
-TARGET="" ; HARNESS="" ; ANCHOR_HARNESS="" ; EVM_HARNESS="" ; SNAPSHOT="" ; POC=""
+TARGET="" ; HARNESS="" ; ANCHOR_HARNESS="" ; EVM_HARNESS="" ; SNAPSHOT="" ; POC="" ; EXPECT_OWNER=""
 REPO="" ; IN_SCOPE="" ; CONTRACT="" ; SEED_MANIFEST="" ; SHARE_PATTERNS=""
 BACKEND="flat-cyborg" ; SANDBOX="hardened" ; OUT="$PWD/audit-out" ; FUZZY_THRESHOLD="0.35" ; FUZZY_K="4" ; USE_EVOLVED=""
 
@@ -59,6 +63,7 @@ while [ $# -gt 0 ]; do
     --anchor-harness) need "$#"; ANCHOR_HARNESS="$2"; shift 2 ;;
     --evm-harness) need "$#"; EVM_HARNESS="$2"; shift 2 ;;
     --snapshot) need "$#"; SNAPSHOT="$2"; shift 2 ;;
+    --expect-owner) need "$#"; EXPECT_OWNER="$2"; shift 2 ;;
     --poc) need "$#"; POC="$2"; shift 2 ;;
     --backend) need "$#"; BACKEND="$2"; shift 2 ;;
     --sandbox) need "$#"; SANDBOX="$2"; shift 2 ;;
@@ -137,7 +142,7 @@ cp "$COLONY" "$RUN/auditor.ag"
   [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p"; echo "llm.cli_timeout_ms = 180000"; }
   [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.command = $HERE/flat-cyborg-claude.sh"; echo "llm.cli_timeout_ms = 180000"; }
   echo "trace.level = normal"
-  echo "exec.env_passthrough = BOUNTY_TARGET,BOUNTY_POC,SOLANA_HARNESS_DIR,SOLANA_ANCHOR_HARNESS_DIR,EVM_HARNESS_DIR,BOUNTY_SNAPSHOT,BOUNTY_REPO,BOUNTY_IN_SCOPE,BOUNTY_CONTRACT,SEED_SRC,SEED_CLASS,SEED_FUNC,FUZZY_SEEDS,FUZZY_THRESHOLD,FUZZY_K"
+  echo "exec.env_passthrough = BOUNTY_TARGET,BOUNTY_POC,SOLANA_HARNESS_DIR,SOLANA_ANCHOR_HARNESS_DIR,EVM_HARNESS_DIR,BOUNTY_SNAPSHOT,EXPECT_PROGRAM_OWNER,BOUNTY_REPO,BOUNTY_IN_SCOPE,BOUNTY_CONTRACT,SEED_SRC,SEED_CLASS,SEED_FUNC,FUZZY_SEEDS,FUZZY_THRESHOLD,FUZZY_K"
   echo "exec.default_timeout_ms = 180000"
   # --share-patterns lists each seeded pattern on the knowledge market (knowledge_sell), so other
   # federation members can buy it. The market is gated on the learning/knowledge subsystem.
@@ -184,6 +189,7 @@ ENV=(BOUNTY_TARGET="$TARGET")
 [ -n "$EVM_HARNESS" ]    && ENV+=(EVM_HARNESS_DIR="$EVM_HARNESS")
 [ -f "$RUN/fuzzy-seeds.tsv" ] && ENV+=(FUZZY_SEEDS="$RUN/fuzzy-seeds.tsv" FUZZY_THRESHOLD="$FUZZY_THRESHOLD" FUZZY_K="$FUZZY_K")
 [ -n "$SNAPSHOT" ]       && ENV+=(BOUNTY_SNAPSHOT="$SNAPSHOT")
+[ -n "$EXPECT_OWNER" ]   && ENV+=(EXPECT_PROGRAM_OWNER="$EXPECT_OWNER")
 [ -n "$POC" ]            && ENV+=(BOUNTY_POC="$POC")
 [ -n "$REPO" ]           && ENV+=(BOUNTY_REPO="$REPO" BOUNTY_IN_SCOPE="$IN_SCOPE" BOUNTY_CONTRACT="$CONTRACT")
 
@@ -260,8 +266,11 @@ case "$VERDICT" in
       echo "- on-chain snapshot: ${SNAP_LINE}"
       if [ -n "$SNAPSHOT" ]; then
         echo "  DISCLOSURE: snapshot replay rebinds the account owner to the in-scope program (the harness"
-        echo "  program is not deployed on-chain). State this when the repro is snapshot-based so the triager"
-        echo "  can re-verify against real program-derived ownership on mainnet (#1457)."
+        echo "  program is not deployed on-chain). The snapshot-replay harness emits an explicit"
+        echo "  'OWNER REBIND: <real owner> rebound to <program>' line naming the account's real on-chain"
+        echo "  owner (from the dump) — quote it here and re-verify against real program-derived ownership on"
+        echo "  mainnet before submitting. For a load-at-real-address run, pass --expect-owner <base58> to"
+        echo "  HARD-ASSERT owner-match: a mismatch is refused as INCONCLUSIVE, never reported VERIFIED (#1457)."
       fi
       echo
       echo "## Toolchain"

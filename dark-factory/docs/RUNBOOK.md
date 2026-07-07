@@ -149,9 +149,14 @@ secure variants. Regenerate with `./calibrate-sealevel.sh`.
 - **Snapshot replay** supplies a frozen account's real `lamports` + data; the account owner
   is rebound to the in-scope program for replay (the harness program is not deployed
   on-chain). For a live target the operator dumps that program's own accounts. Since #1457 the
-  generated `report.md` **discloses this owner rebind** in its snapshot-replay section (and the
-  submission package's `REPRODUCTION.md` repeats it), so the human states it up-front and
-  re-verifies against real program-derived ownership on the live deployment before submitting.
+  snapshot-replay harness **reads the account's real on-chain owner from the dump** and emits an
+  explicit, machine-checkable `OWNER REBIND: <real owner> rebound to <program>` line (surfaced in
+  `report.md` + the submission package's `REPRODUCTION.md`), so the rebind is disclosed up-front
+  instead of a silent mismatch — the human re-verifies against real program-derived ownership on
+  the live deployment before submitting. For a **load-at-real-address** run, pass
+  `--expect-owner <base58>` (the program's real owner): the harness **hard-asserts** owner-match
+  and **refuses a mismatch as `INCONCLUSIVE` (exit 3), before the exploit runs**, so a re-owned
+  copy is never reported VERIFIED.
 - **Operator-supplied PoC (`BOUNTY_POC`/`--poc`)** is gated, not blindly trusted (#852): a
   supplied PoC must (1) **structurally reference** the in-scope target/harness and (2) pass a
   **per-run target-linkage challenge** — a nonce const appended to this run's target that the

@@ -15,6 +15,18 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Snapshot owner-rebind hard assert** (#1455 epic; #1457). Closes the owner-graph fidelity gap in
+  snapshot replay: the `poc_snapshot` harness now **reads the account's real on-chain owner** from the
+  dump and emits an explicit, machine-checkable `OWNER REBIND: <real owner> rebound to <program>` marker
+  instead of a silent rebind (#1462 shipped only a static disclosure text). With `EXPECT_PROGRAM_OWNER`
+  (run-audit `--expect-owner <base58>`, on the sandbox `exec.env_passthrough`) the harness **hard-asserts**
+  owner-match — a mismatch is refused as `INCONCLUSIVE` (exit 3) *before* the exploit runs, so a re-owned
+  copy is never reported VERIFIED. `run-audit.sh` REPRODUCTION.md/report disclosure updated to quote the
+  harness's real-owner line + document the hard-assert; RUNBOOK "Known limitations" updated.
+  `demo-owner-assert.sh` source-guards the harness + run-audit wiring (CI-safe) and runs the 3 modes live
+  when the Solana toolchain is present; wired into `tools/colony-lint.sh`. (The `--poc` control-side
+  "demonstrably invoke the target" hardening beyond #852's structural + target-linkage gate stays an
+  operator-trust residual, flagged not closed.)
 - **Bounty-weighted target prioritization in the prospector colony** (#1455 epic; #1459). The prospector
   qualifies EVM protocols as monitoring targets on three boolean hard gates; this adds a bounty dimension
   that ORDERS the operator's finite manual-review time by expected payout, without changing what qualifies.
