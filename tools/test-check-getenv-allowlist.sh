@@ -172,10 +172,11 @@ EOF
 T8_CWD="$FAKE_ROOT/t8-cwd"
 mkdir -p "$T8_CWD"
 touch "$T8_CWD/GITLAB_TOKEN" "$T8_CWD/GITLAB_URL"
-if (cd "$T8_CWD" && "$CHECK" "$T8" >/dev/null 2>&1); then
+T8_OUT="$( (cd "$T8_CWD" && "$CHECK" "$T8") 2>&1 )" && T8_RC=0 || T8_RC=$?
+if [ "$T8_RC" -eq 0 ]; then
     pass "glob entry survives a cwd containing GITLAB_* files (set -f)"
 else
-    fail "hostile-cwd glob — expected exit 0, got: $(cd "$T8_CWD" && "$CHECK" "$T8" 2>&1 || true)"
+    fail "hostile-cwd glob — expected exit 0, got rc=$T8_RC: $T8_OUT"
 fi
 
 # ----- Test 9: newline-`do` residue loop cannot mask drift -----
