@@ -396,6 +396,7 @@ T18_OUT="$(run_residue_check "$T18_CONFIG")"
 if printf '%s' "$T18_OUT" | grep -q 'PRIORITIZER_RULE_FIRST' \
     && printf '%s' "$T18_OUT" | grep -q 'TRIAGE_BM25_K' \
     && printf '%s' "$T18_OUT" | grep -q 'QA_ADVERSARIAL_LLM_CMD' \
+    && printf '%s' "$T18_OUT" | grep -q 'CODE_EDIT_MAX_ATTEMPTS' \
     && grep -qxF "$OPERATOR_TUNED" "$T18_CONFIG"; then
     pass "#1437 residue check warns on missing knobs and leaves the customized value untouched"
 else

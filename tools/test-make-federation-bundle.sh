@@ -251,6 +251,7 @@ else
             "tools/check-changelog.sh" \
             "tools/check-exec-sh.sh" \
             "tools/check-prompt-gate.sh" \
+            "tools/check-getenv-allowlist.sh" \
             "tools/new-colony.sh" \
             "tools/test-" \
             "tools/federation-dashboard" \

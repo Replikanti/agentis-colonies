@@ -24,8 +24,9 @@ is asserted until multi-version CI is in place.
   `// colony-lint: getenv-unregistered-ok`, and when an allowlisted getenv knob
   is missing from the #1437 residue-check list. `getenv()` reads the SANITIZED
   env, so an unregistered operator knob is silently inert — this closes the
-  class (proven live on the #1424 burn-in, #1426) for every future knob.
-  Self-tested by `tools/test-check-getenv-allowlist.sh`.
+  class (proven live on the #1424 burn-in, #1426) for every future
+  dev-apprenticeship getenv knob. Self-tested by
+  `tools/test-check-getenv-allowlist.sh`.
 
 ### Changed
 

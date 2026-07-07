@@ -250,7 +250,10 @@ if errors:
                     pass "$prefix: shellcheck OK"
                 else
                     fail "$prefix: shellcheck errors"
-                    shellcheck "${sh_files[@]}" 2>&1 | head -30
+                    # Display-only re-run: under `set -euo pipefail` the
+                    # pipeline inherits shellcheck's nonzero exit and would
+                    # abort the whole lint before the summary line.
+                    shellcheck "${sh_files[@]}" 2>&1 | head -30 || true
                 fi
             else
                 # CI installs shellcheck unconditionally (see .github/workflows/ci.yml),
@@ -612,6 +615,9 @@ if [ -x "$REPO_ROOT/tools/check-getenv-allowlist.sh" ]; then
     check_out="$("$REPO_ROOT/tools/check-getenv-allowlist.sh" "$REPO_ROOT" 2>&1)" && check_rc=0 || check_rc=$?
     if [ "$check_rc" -eq 0 ]; then
         pass "check-getenv-allowlist: every dev-apprenticeship getenv() knob allowlisted or waived (#1428)"
+    elif [ "$check_rc" -eq 2 ]; then
+        fail "check-getenv-allowlist: infra/usage error (exit 2 — not a knob finding)"
+        printf '%s\n' "$check_out"
     else
         fail "check-getenv-allowlist: unregistered getenv() knob — silently inert (#1428)"
         printf '%s\n' "$check_out"
@@ -929,7 +935,10 @@ if command -v shellcheck &>/dev/null; then
                 pass "tools: shellcheck OK"
             else
                 fail "tools: shellcheck errors"
-                shellcheck "${tool_scripts[@]}" 2>&1 | head -30
+                # Display-only re-run (see the per-federation shellcheck
+                # block): `|| true` keeps set -e/pipefail from aborting
+                # the lint before the summary line.
+                shellcheck "${tool_scripts[@]}" 2>&1 | head -30 || true
             fi
         fi
     fi
@@ -959,7 +968,9 @@ for t in "${test_scripts[@]}"; do
                     pass "tools: $(basename "$t") unit tests"
                 else
                     fail "tools: $(basename "$t") unit tests"
-                    AGENTIS_COLONY_LINT_NESTED=1 bash "$t" 2>&1 | tail -20
+                    # Display-only re-run: `|| true` keeps set -e/pipefail
+                    # from aborting the lint on the failing test's rc.
+                    AGENTIS_COLONY_LINT_NESTED=1 bash "$t" 2>&1 | tail -20 || true
                 fi
             else
                 skip "tools: $(basename "$t") (destructive — set AGENTIS_RUN_KILL_TESTS=1 to run)"
@@ -979,7 +990,9 @@ for t in "${test_scripts[@]}"; do
                 pass "tools: $(basename "$t") unit tests"
             else
                 fail "tools: $(basename "$t") unit tests"
-                AGENTIS_COLONY_LINT_NESTED=1 bash "$t" 2>&1 | tail -20
+                # Display-only re-run: `|| true` keeps set -e/pipefail
+                # from aborting the lint on the failing test's rc.
+                AGENTIS_COLONY_LINT_NESTED=1 bash "$t" 2>&1 | tail -20 || true
             fi
             ;;
     esac

@@ -36,6 +36,12 @@
 # Exit 0 if clean, 1 if one or more findings, 2 on usage error.
 
 set -euo pipefail
+# Disable pathname expansion: the allowlist contains glob entries
+# (GITLAB_*, GITHUB_*) that are matched as STRINGS below — without -f,
+# `for entry in $ALLOWLIST` would expand them against the caller's cwd
+# (a file literally named GITLAB_TOKEN in the operator's working dir
+# would corrupt the match). Nothing in this script relies on globbing.
+set -f
 
 SCAN_ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 
@@ -67,15 +73,22 @@ fi
 # --- Extract the #1437 residue-check knob list ------------------------------
 # The `for knob in A B C \ ... Z; do` list (may span continuation lines).
 RESIDUE_LIST="$(awk '
-    /for knob in/ { collecting = 1 }
+    # Anchored so a comment mentioning "for knob in" cannot start
+    # collection, and whitespace-tolerant so a reformat cannot stop it.
+    /^[[:space:]]*for[[:space:]]+knob[[:space:]]+in([[:space:]]|$)/ { collecting = 1 }
     collecting {
         line = $0
-        sub(/;[[:space:]]*do.*$/, "", line)
+        sub(/;[[:space:]]*do([[:space:]]|$).*$/, "", line)
         n = split(line, w, /[[:space:]\\]+/)
         for (i = 1; i <= n; i++) {
             if (w[i] ~ /^[A-Z][A-Z0-9_]*$/) print w[i]
         }
-        if ($0 ~ /;[[:space:]]*do/) exit
+        # Stop at `; do`, a bare `do` line, or `done` — otherwise a
+        # newline-`do` loop style would sweep every later ALLCAPS word
+        # in install.sh into the list and mask real drift.
+        if ($0 ~ /;[[:space:]]*do([[:space:]]|$)/) exit
+        if ($0 ~ /^[[:space:]]*do([[:space:]]|$)/) exit
+        if ($0 ~ /^[[:space:]]*done([[:space:]]|$)/) exit
     }
 ' "$INSTALL_SH")"
 
@@ -119,7 +132,12 @@ scan_file() {
     awk -v file="$1" '
     {
         clean = $0
-        sub(/\/\/.*$/, "", clean)
+        # Strip `//` line comments, but only when preceded by line start
+        # or whitespace — a `//` inside a string literal (e.g. a URL:
+        # "https://...") must not blind the scanner to a getenv() later
+        # on the same line. Imperfect (grep-level, not a parser), but
+        # closes the realistic URL case.
+        sub(/(^|[[:space:]])\/\/.*$/, "", clean)
         rest = clean
         while (match(rest, /getenv[[:space:]]*\("[A-Za-z_][A-Za-z_0-9]*"\)/)) {
             tok = substr(rest, RSTART, RLENGTH)
@@ -153,12 +171,14 @@ while IFS= read -r -d '' f; do
         var="${rest#*:}"
 
         if ! in_allowlist "$var"; then
+            # shellcheck disable=SC2016
             printf '[UNREGISTERED] %s:%s: getenv("%s") is not on the install.sh exec.env_passthrough allowlist — the knob is silently inert (register it in dev-apprenticeship/install.sh or annotate with `// colony-lint: getenv-unregistered-ok`)\n' "$file" "$line" "$var"
             FAIL=$((FAIL + 1))
         elif named_in_allowlist "$var" && ! in_residue_list "$var"; then
             case " $RESIDUE_REPORTED " in
                 *" $var "*) ;;
                 *)
+                    # shellcheck disable=SC2016
                     printf '[RESIDUE-DRIFT] %s: getenv knob "%s" is allowlisted but missing from the install.sh #1437 residue-check `for knob in ...` list — hand-customized allowlists would miss the loud warning\n' "$INSTALL_SH" "$var"
                     RESIDUE_REPORTED="$RESIDUE_REPORTED $var"
                     FAIL=$((FAIL + 1))

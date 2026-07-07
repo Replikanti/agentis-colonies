@@ -14,6 +14,12 @@
 #   Test 6: a typo-suffixed waiver (getenv-unregistered-okey) does NOT
 #           suppress the check
 #   Test 7: the real repo passes clean (end-to-end)
+#   Test 8: glob entries survive a hostile cwd (a file named GITLAB_TOKEN
+#           in the caller's working dir must not corrupt matching; set -f)
+#   Test 9: a newline-`do` residue loop cannot mask drift (the extractor
+#           must stop at the bare `do` line, not sweep later ALLCAPS words)
+#   Test 10: `//` inside a string literal (URL) does not blind the scanner
+#            to a getenv() later on the same line
 #
 # Usage: ./tools/test-check-getenv-allowlist.sh
 # Exit code 0 if all tests pass, 1 otherwise.
@@ -136,10 +142,11 @@ fn tick() -> void {
     let x = getenv("SNEAKY_KNOB");
 }
 EOF
-if "$CHECK" "$T6" >/dev/null 2>&1; then
-    fail "typo-suffixed waiver — expected the check to still fail"
-else
+T6_OUT="$("$CHECK" "$T6" 2>&1)" && T6_RC=0 || T6_RC=$?
+if [ "$T6_RC" -eq 1 ] && printf '%s' "$T6_OUT" | grep -q '\[UNREGISTERED\].*SNEAKY_KNOB'; then
     pass "typo-suffixed waiver (getenv-unregistered-okey) does not suppress the check"
+else
+    fail "typo-suffixed waiver — expected exit 1 + [UNREGISTERED], got rc=$T6_RC: $T6_OUT"
 fi
 
 # ----- Test 7: real repo passes clean -----
@@ -148,6 +155,67 @@ if [ "$T7_RC" -eq 0 ]; then
     pass "real repo: every dev-apprenticeship getenv() knob allowlisted or waived"
 else
     fail "real repo — expected exit 0, got rc=$T7_RC: $T7_OUT"
+fi
+
+# ----- Test 8: glob entries survive a hostile cwd (set -f regression) -----
+# Without `set -f`, `for entry in $ALLOWLIST` pathname-expands the GITLAB_*
+# glob entry against the caller's cwd — a file literally named GITLAB_TOKEN
+# (a very plausible credentials file) replaces the glob with filenames and
+# produces a false [UNREGISTERED] for glob-covered vars.
+T8="$FAKE_ROOT/t8"
+make_fixture "$T8" 'COLONY_DIR,GITLAB_*' 'COLONY_DIR'
+cat > "$T8/dev-apprenticeship/triage/agents/a.ag" <<'EOF'
+fn tick() -> void {
+    let url = getenv("GITLAB_URL");
+}
+EOF
+T8_CWD="$FAKE_ROOT/t8-cwd"
+mkdir -p "$T8_CWD"
+touch "$T8_CWD/GITLAB_TOKEN" "$T8_CWD/GITLAB_URL"
+if (cd "$T8_CWD" && "$CHECK" "$T8" >/dev/null 2>&1); then
+    pass "glob entry survives a cwd containing GITLAB_* files (set -f)"
+else
+    fail "hostile-cwd glob — expected exit 0, got: $(cd "$T8_CWD" && "$CHECK" "$T8" 2>&1 || true)"
+fi
+
+# ----- Test 9: newline-`do` residue loop cannot mask drift -----
+# The residue extractor must stop collecting at a bare `do` line; if it ran
+# to EOF it would sweep every later ALLCAPS word (here: the echo DRIFTED
+# line) into the list and hide a real drift.
+T9="$FAKE_ROOT/t9"
+mkdir -p "$T9/dev-apprenticeship/triage/agents"
+{
+    printf '#!/bin/bash\n'
+    printf "    write_key 'exec.env_passthrough'         'COLONY_DIR,DRIFTED'\n"
+    printf '    for knob in COLONY_DIR\n'
+    printf '    do\n        :\n    done\n'
+    printf '    echo DRIFTED\n'
+} > "$T9/dev-apprenticeship/install.sh"
+cat > "$T9/dev-apprenticeship/triage/agents/a.ag" <<'EOF'
+fn tick() -> void {
+    let x = getenv("DRIFTED");
+}
+EOF
+T9_OUT="$("$CHECK" "$T9" 2>&1)" && T9_RC=0 || T9_RC=$?
+if [ "$T9_RC" -eq 1 ] && printf '%s' "$T9_OUT" | grep -q '\[RESIDUE-DRIFT\].*DRIFTED'; then
+    pass "newline-do residue loop: drift still detected (extractor stops at bare do)"
+else
+    fail "newline-do drift — expected exit 1 + [RESIDUE-DRIFT], got rc=$T9_RC: $T9_OUT"
+fi
+
+# ----- Test 10: // inside a string literal does not blind the scanner -----
+T10="$FAKE_ROOT/t10"
+make_fixture "$T10" 'COLONY_DIR' 'COLONY_DIR'
+cat > "$T10/dev-apprenticeship/triage/agents/a.ag" <<'EOF'
+fn tick() -> void {
+    let u = "https://example.com/" + getenv("URL_SUFFIX_KNOB");
+}
+EOF
+T10_OUT="$("$CHECK" "$T10" 2>&1)" && T10_RC=0 || T10_RC=$?
+if [ "$T10_RC" -eq 1 ] && printf '%s' "$T10_OUT" | grep -q '\[UNREGISTERED\].*URL_SUFFIX_KNOB'; then
+    pass "URL string literal (//) does not hide a getenv() on the same line"
+else
+    fail "URL-line getenv — expected exit 1 + [UNREGISTERED], got rc=$T10_RC: $T10_OUT"
 fi
 
 echo ""
