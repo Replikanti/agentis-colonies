@@ -19,6 +19,8 @@
 #                         rule token, or free text; `#` comments allowed). A candidate whose affected
 #                         function or report body matches a line is flagged DUP-RISK — Immunefi pays only
 #                         the FIRST reporter, so an already-disclosed finding is not worth a submission slot.
+#                         Keep signatures SPECIFIC: a short/generic token (a bare common word) can
+#                         substring-match an unrelated report body and over-flag a novel candidate.
 # Readiness: READY = report.md + a PoC/witness present + the NOT-SUBMITTED marker; DUP-RISK = otherwise-READY
 # but matches a known issue (see --known-issues); otherwise INCOMPLETE (the missing pieces are listed). The
 # IMPACT column flags whether the report quantifies funds-at-risk (Immunefi pays on demonstrated impact) and

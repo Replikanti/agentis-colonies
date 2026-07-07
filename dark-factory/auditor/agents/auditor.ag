@@ -1154,14 +1154,24 @@ fn impact_for(cls: string) -> string {
 // justifies the severity tier against the Immunefi severity bands. All SHALLOW leaves
 // (string compares + concat + one parse) so the report stays deterministic.
 
-// Parse a flat `key=value` numeric marker out of the PoC's observed block (mirrors the
-// harness `field()` reader). Returns -1 when the key is absent; parse_int trims + total-
-// izes a non-numeric value to 0, so a present-but-unparsable marker reads as 0 (not -1).
+// Parse a flat `key=value` numeric marker out of the PoC's observed block. LINE-ANCHORED to
+// mirror the harness `field()`'s `strip_prefix` semantics: the key must START a line, so
+// `account.lamports=` never matches inside `token_account.lamports=` in a multi-account dump
+// (which would otherwise report a funds-at-risk figure that diverges from what the PoC drains).
+// Tries the first line (offset 0), then the first `\n`+key occurrence. Returns -1 when the key
+// is absent; parse_int trims + totalizes a non-numeric value to 0 (present-but-unparsable → 0).
 fn marker_int(observed: string, key: string) -> int {
     let k = key + "=";
-    let p = index_of(observed, k);
+    if index_of(observed, k) == 0 {
+        let r0 = substring(observed, len(k), len(observed));
+        let e0 = index_of(r0, "\n");
+        if e0 < 0 { return parse_int(r0); }
+        return parse_int(substring(r0, 0, e0));
+    }
+    let nk = "\n" + k;
+    let p = index_of(observed, nk);
     if p < 0 { return -1; }
-    let rest = substring(observed, p + len(k), len(observed));
+    let rest = substring(observed, p + len(nk), len(observed));
     let nl = index_of(rest, "\n");
     if nl < 0 { return parse_int(rest); }
     return parse_int(substring(rest, 0, nl));

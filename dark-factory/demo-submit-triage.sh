@@ -85,11 +85,50 @@ STATUS: PENDING HUMAN APPROVAL — NOT SUBMITTED.
 MD
 printf 'fn main() {}\n' > "$ROOT/immunefi:qual/poc.rs"
 
-# Known-issues list (public disclosures to exclude) — one signature per line.
+# INCOMPLETE + colliding: missing PoC AND its affected function matches a known issue. Status precedence
+# must keep this INCOMPLETE (missing pieces win over DUP-RISK), never silently DUP-RISK a broken package.
+mkdir -p "$ROOT/incomplete:dup"
+cat > "$ROOT/incomplete:dup/report.md" <<'MD'
+# Bounty finding — MissingSignerCheck
+| Field | Value |
+|---|---|
+| Severity (Immunefi) | Critical |
+| Rule | MissingSignerCheck |
+| Affected function | `drainAll` |
+STATUS: PENDING HUMAN APPROVAL — NOT SUBMITTED.
+MD
+# (no poc.rs on purpose)
+
+# DUP-RISK via the BODY path (not the affected-function path): a known-issue free-text signature appears
+# verbatim in the report body while the affected function itself is novel.
+mkdir -p "$ROOT/body:dup"
+cat > "$ROOT/body:dup/report.md" <<'MD'
+# Bounty finding — AccessControl
+| Field | Value |
+|---|---|
+| Severity (Immunefi) | High |
+| Impact category | Direct theft of funds / protocol takeover |
+| Rule | AccessControl |
+| Affected function | `settle` |
+
+## Vulnerability details
+Root cause: sig-check-bypass-2024 — the settle path trusts an unsigned authority.
+
+## Impact quantification
+
+**1000 units** drained.
+STATUS: PENDING HUMAN APPROVAL — NOT SUBMITTED.
+MD
+printf 'fn main() {}\n' > "$ROOT/body:dup/poc.rs"
+
+# Known-issues list (public disclosures to exclude) — one signature per line. Keep signatures SPECIFIC:
+# a short/generic token can substring-match an unrelated report body and over-flag it DUP-RISK.
 KNOWN="$WORK/known.txt"
 cat > "$KNOWN" <<'MD'
 # already-disclosed on this program
 withdraw missing signer check (reported 2026-01)
+drainAll
+sig-check-bypass-2024
 MD
 
 # --- scan WITHOUT --known-issues: novelty unchecked ---
@@ -130,6 +169,18 @@ if printf '%s\n' "$OUT2" | grep 'sherlock:good' | grep -q 'novel'; then
 else
   fail "good package not flagged novel; got: $(printf '%s' "$OUT2" | grep good)"
 fi
+# Status precedence: a package that is both INCOMPLETE (missing poc) and colliding stays INCOMPLETE, not DUP-RISK.
+if printf '%s\n' "$OUT2" | grep 'incomplete:dup' | grep -q '^INCOMPLETE'; then
+  pass "missing-piece + known-issue collision -> INCOMPLETE wins over DUP-RISK (precedence)"
+else
+  fail "precedence broken; got: $(printf '%s' "$OUT2" | grep 'incomplete:dup')"
+fi
+# dup_hit BODY path: a known signature appearing verbatim in the report body (not the affected fn) -> DUP-RISK.
+if printf '%s\n' "$OUT2" | grep 'body:dup' | grep -q 'DUP-RISK'; then
+  pass "known signature in report BODY (not the fn) -> DUP-RISK (dup_hit body path)"
+else
+  fail "body-path dedup missed; got: $(printf '%s' "$OUT2" | grep 'body:dup')"
+fi
 
 # Checklist mode for the READY candidate — must surface repro + impact + dedup review items.
 CL="$("$RUN" --checklist "$ROOT/sherlock:good" --known-issues "$KNOWN" 2>/dev/null)"
@@ -139,6 +190,15 @@ printf '%s' "$CL" | grep -qi 'PoC reproduces' \
   && printf '%s' "$CL" | grep -qi 'submit .* MANUALLY' \
   && pass "checklist prints repro + impact + dedup review items + manual-submit note" \
   || fail "checklist missing repro/impact/dedup review items / manual-submit note"
+# has_repro is surfaced in checklist mode: present when REPRODUCTION.md exists, MISSING otherwise (assert the
+# VALUE, not just the label line). sherlock:good has one; immunefi:qual does not.
+printf '%s' "$CL" | grep -qi 'repro manifest *: *present' \
+  && pass "checklist reports repro manifest present when REPRODUCTION.md exists" \
+  || fail "checklist did not report repro manifest present for sherlock:good"
+CLQ="$("$RUN" --checklist "$ROOT/immunefi:qual" 2>/dev/null)"
+printf '%s' "$CLQ" | grep -qi 'repro manifest *: *MISSING' \
+  && pass "checklist reports repro manifest MISSING when REPRODUCTION.md absent" \
+  || fail "checklist did not report repro manifest MISSING for immunefi:qual"
 
 # Empty root -> clean [SKIP], exit 0.
 mkdir -p "$WORK/empty"

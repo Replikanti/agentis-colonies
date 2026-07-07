@@ -45,6 +45,15 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
     (offline, deterministic — no agentis, no network). Follow-ups tracked on the epic: the harness-level
     owner-match *assertion* for snapshot replay (the offline disclosure landed here; the hard assert needs
     the Solana toolchain) and bounty-weighted target prioritization in `prospector` (#1459).
+  - **Review-driven correctness fix + regression tests (PR #1462)** — `marker_int` is now **line-anchored**
+    (mirrors the harness `field()`'s `strip_prefix`) so `account.lamports=` never shadow-matches inside a
+    longer key like `token_account.lamports=` in a multi-account dump; previously it could report a
+    funds-at-risk figure that diverged from what the attached PoC drains. Added `demo-report-quality.sh`
+    (agentis-gated, clean-SKIP on runners without the binary): a real `run-audit.sh --backend mock` VERIFIED
+    run asserting the `report.md` impact rows/section, the `REPRODUCTION.md` sha256 + rerun command, the
+    snapshot quantified-vs-qualitative split, the owner-rebind disclosure, and the multi-account regression.
+    Extended `demo-submit-triage.sh` to cover INCOMPLETE-over-DUP-RISK precedence, the `dup_hit` body-match
+    path, and the `has_repro` present/MISSING checklist value (15 assertions).
 - **monitor: read robustness — RPC failover + read consensus, and a watch-spec drift detector** (#1098, #1097).
   Two hardening passes that keep a 24/7 read-only watch honest. NON-custodial / read-only throughout
   (`cast call` / `cast storage` / `cast balance` / `cast code` only — never a signed transaction, never fund
