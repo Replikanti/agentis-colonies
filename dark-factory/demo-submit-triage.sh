@@ -43,6 +43,29 @@ Severity: Medium
 Target: 0xdef (OtherPool)
 MD
 
+# A QUANTIFIED report that merely MENTIONS "Qualitative:" in a different section must stay IMPACT=quant:
+# impact_of scopes the fallback-token check to the Impact quantification section only (regression for that fix).
+mkdir -p "$ROOT/scope:quant"
+cat > "$ROOT/scope:quant/report.md" <<'MD'
+# Bounty finding — MissingSignerCheck
+| Field | Value |
+|---|---|
+| Severity (Immunefi) | Critical |
+| Impact category | Direct theft of user/protocol funds |
+| Rule | MissingSignerCheck |
+| Affected function | `sweep` |
+
+## Impact quantification
+
+**500 lamports** at risk on the snapshotted account: the two-sided PoC drains this REAL balance.
+
+## Notes
+
+Qualitative: this narrative note mentions the token but must NOT flip the IMPACT column to qual?.
+STATUS: PENDING HUMAN APPROVAL — NOT SUBMITTED.
+MD
+printf 'fn main() {}\n' > "$ROOT/scope:quant/poc.rs"
+
 # A third-party report whose only `severity`-bearing line has NO real severity WORD, just substrings
 # (high-light, al-low, be-low). severity_of must not misread it -> SEVERITY column stays "?" (word-anchored).
 mkdir -p "$ROOT/foreign:sevword"
@@ -184,6 +207,12 @@ if printf '%s\n' "$OUT" | grep 'foreign:sevorder' | awk '{print $2}' | grep -qx 
 else
   fail "severity_of not table-anchored; got: $(printf '%s' "$OUT" | grep 'foreign:sevorder')"
 fi
+# Section-scoped impact: a quantified report that mentions 'Qualitative:' in another section stays quant.
+if printf '%s\n' "$OUT" | grep 'scope:quant' | awk '{print $3}' | grep -qx 'quant'; then
+  pass "quantified report with a 'Qualitative:' mention in another section stays IMPACT=quant (section-scoped)"
+else
+  fail "impact_of not section-scoped; got: $(printf '%s' "$OUT" | grep 'scope:quant')"
+fi
 # The discriminator (review finding 1): a report WITH the section but a Qualitative fallback is qual?, not quant.
 if printf '%s\n' "$OUT" | grep 'immunefi:qual' | grep -q 'qual?'; then
   pass "qualitative-fallback report (section present, no figure) flagged IMPACT=qual?, not quant"
@@ -241,6 +270,11 @@ CLQ="$("$RUN" --checklist "$ROOT/immunefi:qual" 2>/dev/null)"
 printf '%s' "$CLQ" | grep -qi 'repro manifest *: *MISSING' \
   && pass "checklist reports repro manifest MISSING when REPRODUCTION.md absent" \
   || fail "checklist did not report repro manifest MISSING for immunefi:qual"
+# Checklist novelty output verified against an ACTUAL colliding candidate under --known-issues -> DUP-RISK.
+CLD="$("$RUN" --checklist "$ROOT/code4rena:dup" --known-issues "$KNOWN" 2>/dev/null)"
+printf '%s' "$CLD" | grep -qi 'novelty *: *DUP-RISK' \
+  && pass "checklist flags novelty DUP-RISK for a candidate matching --known-issues" \
+  || fail "checklist did not flag DUP-RISK novelty for the colliding candidate; got: $(printf '%s' "$CLD" | grep -i novelty)"
 
 # Empty root -> clean [SKIP], exit 0.
 mkdir -p "$WORK/empty"
