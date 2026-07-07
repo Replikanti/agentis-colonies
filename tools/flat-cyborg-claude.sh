@@ -24,7 +24,16 @@
 # session; default "medium" — the measured sweet spot for typed-JSON
 # extraction, binary discipline, and pattern-summary prompts; accepts
 # low|medium|high|xhigh, an unrecognised value falls back to "medium" with a
-# warning).
+# warning), FLAT_CYBORG_RESULT_FILE (#1449; default "1"/on — set "0" to opt a
+# WEAK model into screen-scrape-only mode: no [OUTPUT CHANNEL] directive is
+# appended and flat-cyborg runs with plain `--extract` only, dropping
+# `--extract-structural`. Live-diagnosed root cause: a weak model (e.g. haiku)
+# can silently no-op its file-write tool against the RESULT_FILE path, leaving
+# it empty while the directive text still sits on screen confusing
+# --extract-structural's chrome-scrape fallback; the plain sentinel-only
+# `--extract` path is what was proven reliable for that model. This reintroduces
+# the pre-#1219 scroll limitation for long replies — short-reply/weak-model use
+# only, see doc/llm-backend.md).
 #
 # RESULT-FILE channel (#1219): the historical extraction path reads claude's
 # reply off the rendered TUI via --extract / --extract-structural. That is a
@@ -39,6 +48,9 @@
 # file, so this is strictly >= the old behaviour. A non-empty result file even
 # after a flat-cyborg non-zero exit (idle/timeout that still produced the answer)
 # is honoured — same spirit as commit-on-diff in code-edit-in-checkout.sh (#1216).
+# FLAT_CYBORG_RESULT_FILE=0 (#1449) opts OUT of this channel entirely and falls
+# back to the pre-#1219 screen-scrape path — defaults ON (opt-out is for a
+# weak/short-reply model only; see the knob doc above and doc/llm-backend.md).
 set -eu
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Federation-wide LLM-session concurrency cap (#1352): hold one of K slots for
@@ -52,16 +64,28 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 command -v acquire_llm_slot >/dev/null 2>&1 || { acquire_llm_slot() { :; }; release_llm_slot() { :; }; }
 PROMPT="${1:-}"
 if [ -z "$PROMPT" ]; then PROMPT="$(cat)"; fi
+# Screen-scrape opt-out gate (#1449): exactly "0" disables the result-file
+# channel below; anything else (including unset, the default "1") keeps it on.
+# A plain boolean gate, not interpolated into `claude --settings` JSON, so
+# there is no injection surface to harden against (unlike CLAUDE_REASONING_EFFORT).
+FLAT_CYBORG_RESULT_FILE="${FLAT_CYBORG_RESULT_FILE:-1}"
 # The authoritative output channel: a file claude writes its reply to. Created
 # empty up front; claude is told (below) to overwrite it with the raw reply.
 RESULT_FILE="$(mktemp)"
 # Append the output-channel directive to the caller's prompt. It is additive and
 # backend-generic (JSON and prose consumers alike): claude writes its exact reply
 # to RESULT_FILE; if it doesn't, the screen-scrape fallback preserves old behaviour.
-PROMPT="$PROMPT
+# Skipped entirely when FLAT_CYBORG_RESULT_FILE=0 (#1449): $RESULT_FILE is still
+# created above (harmless — cleaned up by the existing _cleanup trap) but is
+# never written to, so the "prefer the result-file channel" check further down
+# is naturally false and falls through to the screen-scrape REPLY_FILE read —
+# this is NOT dead code, it is the intended no-op path for the opt-out.
+if [ "$FLAT_CYBORG_RESULT_FILE" != "0" ]; then
+    PROMPT="$PROMPT
 
 [OUTPUT CHANNEL] Write your COMPLETE reply — and nothing else — to this exact file path using your file-writing tool: $RESULT_FILE
 Write the raw reply content only: for a JSON reply, the raw JSON object with NO markdown code fences; for prose, the prose itself. This file is the authoritative channel for your answer — write it before you finish."
+fi
 # --wrap-input 72: fold the (often single-line, ~700-char) instruction block so it
 # does not overflow claude's editor input.
 # --extract-structural (needs flat-cyborg >=0.10.2): claude INTERMITTENTLY omits the
@@ -187,7 +211,18 @@ case "$CLAUDE_REASONING_EFFORT" in
         ;;
 esac
 EFFORT_SETTINGS='{"effortLevel":"'"$CLAUDE_REASONING_EFFORT"'"}'
-flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 \
+# Extraction mode (#1449): plain sentinel-only --extract by default when the
+# result-file channel is opted out (FLAT_CYBORG_RESULT_FILE=0); otherwise keep
+# the existing --extract-structural TUI-chrome fallback too. $EXTRACT_FLAGS is
+# used UNQUOTED below (intentional word-splitting on a fixed, space-only
+# literal — same idiom already used for the other unquoted flags on this line;
+# neither value contains glob metacharacters, so `set -f` is not needed. If a
+# future edit ever puts a path or other user-controlled value into this
+# variable, it MUST be re-quoted).
+EXTRACT_FLAGS="--extract"
+[ "$FLAT_CYBORG_RESULT_FILE" = "0" ] || EXTRACT_FLAGS="--extract --extract-structural"
+# shellcheck disable=SC2086 # intentional word-splitting: fixed literal, no metacharacters
+flat-cyborg $EXTRACT_FLAGS --no-jitter --auto-approve --wrap-input 72 \
   --idle-ms "${FLAT_CYBORG_IDLE_MS:-30000}" \
   --timeout-ms "${FLAT_CYBORG_TIMEOUT_MS:-240000}" \
   --cmd-file "$PROMPT_FILE" -- claude --model "${CLAUDE_REASONING_MODEL:-sonnet}" --settings "$EFFORT_SETTINGS" > "$REPLY_FILE" &
