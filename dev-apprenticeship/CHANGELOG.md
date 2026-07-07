@@ -17,6 +17,25 @@ is asserted until multi-version CI is in place.
 
 ### Changed
 
+- **Per-agent haiku reasoning routing** ([#1451](https://github.com/Replikanti/agentis-colonies/issues/1451)):
+  the triage, planning and release `start-colony.sh` scripts now route each
+  daemon's reasoning model per agent via a `reasoning_route_for()` helper
+  (mirroring `tick_interval_for()`), prefixing both launch sites (the main
+  `AGENTS` loop and the `--restart-agent` respawn) with
+  `CLAUDE_REASONING_MODEL` + `FLAT_CYBORG_RESULT_FILE`. Five short-reply
+  typed-JSON / binary-gate agents — triage `router`/`labeler`/`prioritizer`,
+  planning `scope_estimator`, release `ship_decider` — run on **haiku** +
+  `FLAT_CYBORG_RESULT_FILE=0` (screen-scrape, proven 8/9 in #1450) for the ~3×
+  cost saving; every other agent stays on **sonnet** + the default result-file
+  channel, byte-identical to before. Because `FLAT_CYBORG_RESULT_FILE` is a
+  per-**daemon** var (not splittable per prompt), agents with any unbounded
+  reply are deliberately kept on sonnet: `changelog_writer` (unbounded
+  `ChangelogDraft` markdown shares the daemon with its ship-gate),
+  `version_bumper` (terminal writer — stronger model by tier policy), and
+  `logic_reviewer` (long analytical replies, haiku's weakest class). The
+  `implementation` and `code-review` colonies are unchanged (zero haiku
+  agents); code generation stays on opus. Pinned by
+  `tools/test-start-colony-model-routing.sh`.
 - **Docs sync for the 2.5.0 release**: top-level README version references bumped
   to 2.5.0 (federation table, tarball quickstart, Docker image tag); federation
   README gains a [Rule-first replay in triage](./README.md#rule-first-replay-in-triage-1234--14291437)

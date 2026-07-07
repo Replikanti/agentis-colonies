@@ -334,6 +334,26 @@ tick_interval_for() {
     esac
 }
 
+# Per-agent reasoning-model routing (#1451). The short-reply typed-JSON /
+# binary-gate agents run on haiku + FLAT_CYBORG_RESULT_FILE=0 (screen-scrape
+# mode), proven 8/9 on those reply classes in #1450; everyone else stays on
+# sonnet + the default result-file channel (rf=1), byte-identical to pre-#1451.
+# FLAT_CYBORG_RESULT_FILE is a per-DAEMON env var and haiku no-ops the result
+# file (#1450), so an agent qualifies for haiku ONLY if every one of its
+# prompt() replies is a bounded fixed-field struct. Here only scope_estimator
+# (CalibrationSummary+ScopeEstimate) qualifies; risk_assessor, task_decomposer
+# and plan_reviewer (DraftPlan) all emit long/analytical replies and stay on
+# sonnet. Mirrors the tick_interval_for() per-agent case pattern; wired as a
+# per-agent env prefix on the daemon launch (llm.command inherits the daemon env
+# directly — no exec.env_passthrough entry needed). Echoes "<model> <result_file>";
+# callers split it with the bash-3.2-safe ${route% *} / ${route#* } expansions.
+reasoning_route_for() {
+    case "$1" in
+        scope_estimator) echo "haiku 0" ;;
+        *)               echo "sonnet 1" ;;
+    esac
+}
+
 # Per-tick cognitive-budget cap override (#1115). Config-driven, mirroring
 # the per-agent tick-interval pattern (#146): a per-agent `cb_per_tick` under
 # the matching `[[agents]]` entry wins; otherwise the colony-wide
@@ -460,6 +480,12 @@ if [ -n "$RESTART_AGENT" ]; then
     daemon_restart_kill_existing "$FED_ROOT" planning "$RESTART_AGENT"
     tick=$(tick_interval_for "$RESTART_AGENT")
     cb=$(cb_per_tick_for "$RESTART_AGENT")
+    # #1451: per-agent reasoning-model route. Split "<model> <result_file>"
+    # with bash-3.2-safe parameter expansions and prefix the launch below so a
+    # dashboard --restart-agent respawn keeps the same routing as full launch.
+    route=$(reasoning_route_for "$RESTART_AGENT")
+    reasoning_model="${route% *}"
+    result_file="${route#* }"
     # Detach daemon stdio from any inherited pipes (e.g. the dashboard's
     # subprocess.run(capture_output=True) pipes). Without this, the daemon
     # keeps those fds open after start-colony.sh exits, and the Python
@@ -470,7 +496,7 @@ if [ -n "$RESTART_AGENT" ]; then
         [ -z "$line" ] && continue
         CC_ARGS+=("$line")
     done < <(llm_override_args)
-    agentis daemon "$COLONY_DIR/agents/${RESTART_AGENT}.ag" \
+    CLAUDE_REASONING_MODEL="$reasoning_model" FLAT_CYBORG_RESULT_FILE="$result_file" agentis daemon "$COLONY_DIR/agents/${RESTART_AGENT}.ag" \
         --colony planning \
         --enable-exec \
         --enable-messaging \
@@ -502,8 +528,11 @@ done < <(llm_override_args)
 for agent in "${AGENTS[@]}"; do
     interval=$(tick_interval_for "$agent")
     cb=$(cb_per_tick_for "$agent")
-    echo "  Starting $agent (tick=${interval}ms, cb-per-tick=${cb})..."
-    agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
+    route=$(reasoning_route_for "$agent")
+    reasoning_model="${route% *}"
+    result_file="${route#* }"
+    echo "  Starting $agent (tick=${interval}ms, cb-per-tick=${cb}, model=${reasoning_model})..."
+    CLAUDE_REASONING_MODEL="$reasoning_model" FLAT_CYBORG_RESULT_FILE="$result_file" agentis daemon "$COLONY_DIR/agents/${agent}.ag" \
         --colony planning \
         --enable-exec \
         --enable-messaging \
