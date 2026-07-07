@@ -46,6 +46,12 @@
 #      (CLAUDE_REASONING_EFFORT=high) wins (27); an invalid value falls back to
 #      medium, checked via the recorded argv (28); and the wrapper source carries
 #      the default literal + low|medium|high|xhigh allowlist (29).
+#   30-31 (#1449). FLAT_CYBORG_RESULT_FILE screen-scrape opt-out: with the knob
+#      set to "0", the recorded flat-cyborg argv carries plain `--extract` but
+#      NOT `--extract-structural`, and the recorded --cmd-file prompt content
+#      does not contain the `[OUTPUT CHANNEL]` directive (30); with the knob
+#      unset (default), both extract flags are present and the directive IS in
+#      the prompt — a regression guard for the existing default behaviour (31).
 #
 # Auto-discovered by tools/colony-lint.sh's tools-test loop. Exit 0 if all pass.
 
@@ -714,6 +720,93 @@ REC_EOF
     fi
 
     rm -rf "$REC_DIR" "$FCREC"
+fi
+
+# ===========================================================================
+# FLAT_CYBORG_RESULT_FILE screen-scrape opt-out (#1449). Live-diagnosed root
+# cause: a WEAK model (haiku) silently no-ops its file-write tool against the
+# RESULT_FILE path, leaving it 0 bytes while the [OUTPUT CHANNEL] directive
+# text still sits on screen, confusing --extract-structural's chrome-scrape
+# fallback into recovering directive prose (or nothing) instead of the actual
+# reply. FLAT_CYBORG_RESULT_FILE=0 opts a given invocation OUT of the whole
+# apparatus: no directive appended to the prompt, and flat-cyborg invoked with
+# plain --extract only (no --extract-structural) -- the sentinel-only
+# screen-scrape path proven reliable for haiku across all three federation
+# prompt classes (bare "yes", multi-line JSON via the #1445 unwrap, and prose
+# summaries). Reuse the RECORDING stub pattern, capturing BOTH the argv before
+# `--` (to assert --extract-structural presence/absence) and the --cmd-file
+# prompt content (to assert [OUTPUT CHANNEL] presence/absence).
+# ===========================================================================
+if [ ! -f "$WRAPPER" ]; then
+    fail "missing wrapper for FLAT_CYBORG_RESULT_FILE tests: $WRAPPER"
+else
+    REC_DIR="$(mktemp -d)"
+    cat > "$REC_DIR/flat-cyborg" <<'REC_EOF'
+#!/usr/bin/env bash
+set -eu
+CMDFILE=""
+FLAGS=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --) shift; break ;;
+        --cmd-file) CMDFILE="$2"; FLAGS="$FLAGS $1"; shift 2 ;;
+        --idle-ms|--timeout-ms) FLAGS="$FLAGS $1 $2"; shift 2 ;;
+        *) FLAGS="$FLAGS $1"; shift ;;
+    esac
+done
+printf '%s\n' "$FLAGS" > "$FCREC_FILE"
+[ -n "$CMDFILE" ] && cp "$CMDFILE" "$FCREC_CMD_FILE" 2>/dev/null || true
+RESULT_FILE="$(grep -F 'file-writing tool:' "$CMDFILE" 2>/dev/null | sed 's/.*file-writing tool: //' | head -1)"
+[ -n "$RESULT_FILE" ] && printf '%s' '{"ok":true}' > "$RESULT_FILE"
+exit 0
+REC_EOF
+    chmod +x "$REC_DIR/flat-cyborg"
+    FCREC="$(mktemp)"
+    FCREC_CMD="$(mktemp)"
+
+    # 30. FLAT_CYBORG_RESULT_FILE=0: argv has --extract, NOT --extract-structural;
+    # prompt (--cmd-file content) lacks [OUTPUT CHANNEL].
+    : > "$FCREC_CMD"
+    PATH="$REC_DIR:$PATH" FCREC_FILE="$FCREC" FCREC_CMD_FILE="$FCREC_CMD" \
+        FLAT_CYBORG_RESULT_FILE=0 \
+        sh "$WRAPPER" "hi" >/dev/null 2>&1 || true
+    FLAGS_REC="$(cat "$FCREC")"
+    CMD_REC="$(cat "$FCREC_CMD")"
+    case "$FLAGS_REC" in
+        *'--extract-structural'*)
+            fail "test 30: FLAT_CYBORG_RESULT_FILE=0 argv" "unexpected --extract-structural: [$FLAGS_REC]" ;;
+        *'--extract'*)
+            case "$CMD_REC" in
+                *'[OUTPUT CHANNEL]'*)
+                    fail "test 30: FLAT_CYBORG_RESULT_FILE=0 prompt" "unexpected [OUTPUT CHANNEL] directive present" ;;
+                *)
+                    pass "test 30: FLAT_CYBORG_RESULT_FILE=0 -> plain --extract only, no directive" ;;
+            esac ;;
+        *)
+            fail "test 30: FLAT_CYBORG_RESULT_FILE=0 argv" "missing --extract: [$FLAGS_REC]" ;;
+    esac
+
+    # 31. default (unset): both extract flags present, prompt DOES contain
+    # [OUTPUT CHANNEL] -- regression guard for the existing default behaviour.
+    : > "$FCREC_CMD"
+    PATH="$REC_DIR:$PATH" FCREC_FILE="$FCREC" FCREC_CMD_FILE="$FCREC_CMD" \
+        sh "$WRAPPER" "hi" >/dev/null 2>&1 || true
+    FLAGS_REC="$(cat "$FCREC")"
+    CMD_REC="$(cat "$FCREC_CMD")"
+    case "$FLAGS_REC" in
+        *'--extract'*'--extract-structural'*)
+            case "$CMD_REC" in
+                *'[OUTPUT CHANNEL]'*)
+                    pass "test 31: default -> --extract + --extract-structural, directive present (regression guard)" ;;
+                *)
+                    fail "test 31: default prompt" "missing [OUTPUT CHANNEL] directive" ;;
+            esac ;;
+        *)
+            fail "test 31: default argv" "missing --extract/--extract-structural: [$FLAGS_REC]" ;;
+    esac
+
+    rm -rf "$REC_DIR"
+    rm -f "$FCREC" "$FCREC_CMD"
 fi
 
 echo ""
