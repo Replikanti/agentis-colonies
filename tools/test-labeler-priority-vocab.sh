@@ -15,6 +15,19 @@
 #      reconstruction syntax and the event has no internal listener).
 #   4. The prompt() instruction literal contains a priority-exclusion
 #      clause.
+#   5. The crystallized-RULE REPLAY path (fire_label_rule() ->
+#      apply_label_rule_hit()) also runs the filter, not just the direct
+#      prompt() path -- a pre-existing contaminated rule (baked-in bare
+#      P1/urgent) would otherwise keep replaying it forever since
+#      crystallized rules are never re-filtered once minted:
+#        a. fire_label_rule() calls strip_priority_like_labels() and binds
+#           the result to `rule_labels`.
+#        b. apply_label_rule_hit()'s single call site passes the filtered
+#           `rule_labels`, not the pre-filter `rule_labels_raw`.
+#        c. zero bare `rule_labels_raw` reads reach any write/verdict use
+#           in fire_label_rule() -- the only three legitimate occurrences
+#           are its own `let` definition, the post-normalize emptiness
+#           check, and the filter call itself.
 #
 # Grep/awk-based (dash-safe) rather than a live LLM+GitHub round-trip,
 # mirroring tools/test-labeler-autonomous-verdict.sh's convention.
@@ -94,6 +107,65 @@ else
         ok "prompt() instruction literal contains a priority-exclusion clause"
     else
         bad "prompt() instruction literal does not mention priority/urgent exclusion"
+    fi
+fi
+
+# -- (5) rule-REPLAY path also runs the filter -------------------------------
+frl_start="$(grep -n '^fn fire_label_rule(' "$LABELER" | head -1 | cut -d: -f1 || true)"
+if [ -z "$frl_start" ]; then
+    bad "fn fire_label_rule() not found — cannot verify replay-path filter wiring"
+else
+    frl_end="$(awk -v s="$frl_start" 'NR>s && /^fn [a-zA-Z_]+\(/ {print NR; exit}' "$LABELER")"
+    if [ -z "$frl_end" ]; then
+        frl_end="$(wc -l < "$LABELER")"
+    else
+        frl_end=$((frl_end - 1))
+    fi
+    frl_body="$(sed -n "${frl_start},${frl_end}p" "$LABELER")"
+
+    # -- (5a) filter called, bound to rule_labels ----------------------------
+    if printf '%s\n' "$frl_body" | grep -Fq 'let rule_labels = strip_priority_like_labels(rule_labels_raw);'; then
+        ok "fire_label_rule() calls strip_priority_like_labels(rule_labels_raw) -> rule_labels"
+    else
+        bad "fire_label_rule() does not call strip_priority_like_labels() on the rule-derived labels"
+    fi
+
+    # -- (5b) apply_label_rule_hit()'s sole call site passes filtered rule_labels
+    ahr_call="$(printf '%s\n' "$frl_body" | grep -F 'apply_label_rule_hit(' || true)"
+    if [ -n "$ahr_call" ]; then
+        if printf '%s' "$ahr_call" | grep -Eq ', rule_labels,' ; then
+            ok "apply_label_rule_hit() call site passes filtered rule_labels"
+        else
+            bad "apply_label_rule_hit() call site does not pass filtered rule_labels: $ahr_call"
+        fi
+        if printf '%s' "$ahr_call" | grep -Fq 'rule_labels_raw'; then
+            bad "apply_label_rule_hit() call site passes the UNFILTERED rule_labels_raw"
+        else
+            ok "apply_label_rule_hit() call site does not leak unfiltered rule_labels_raw"
+        fi
+    else
+        bad "apply_label_rule_hit( call not found inside fire_label_rule()"
+    fi
+
+    # -- (5c) zero stray rule_labels_raw reads beyond the three legitimate
+    # occurrences: the `let rule_labels_raw = ...` definition, the
+    # post-normalize emptiness check, and the strip_priority_like_labels()
+    # filter call itself. Any 4th occurrence would mean the unfiltered raw
+    # value leaked into a write/verdict use.
+    raw_count="$(printf '%s\n' "$frl_body" | grep -c 'rule_labels_raw' || true)"
+    if [ "$raw_count" -eq 3 ]; then
+        ok "rule_labels_raw read exactly 3 times (definition + emptiness check + filter call) — no unfiltered leak"
+    else
+        bad "rule_labels_raw read $raw_count time(s) inside fire_label_rule() — expected exactly 3 (definition + emptiness check + filter call)"
+    fi
+
+    # Fail-closed: empty-after-filter must return "" (skip firing) rather
+    # than proceeding to write/verdict-record an empty label set.
+    empty_guard="$(printf '%s\n' "$frl_body" | awk '/let rule_labels = strip_priority_like_labels/{f=1} f && /^\s*return ""/{print; exit}')"
+    if [ -n "$empty_guard" ]; then
+        ok "empty-after-filter guard returns \"\" (skips firing this tick) — fail-closed"
+    else
+        bad "no return \"\" guard found after the rule_labels filter — empty-after-filter may still fire with a blank label set"
     fi
 fi
 

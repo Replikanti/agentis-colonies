@@ -834,8 +834,29 @@ fn fire_label_rule(owner: string, repo: string, my_tier: string, issue_id: int, 
         return "";
     };
 
-    let rule_labels = normalize_labels_csv(rule_action);
+    let rule_labels_raw = normalize_labels_csv(rule_action);
+    if len(rule_labels_raw) == 0 {
+        return "";
+    };
+    // #1474: the rule-REPLAY path must never write priority-like labels
+    // either -- a pre-existing contaminated crystallized rule (with a
+    // baked-in bare P1/urgent from before this fix) would otherwise keep
+    // replaying it forever, since crystallized rules are never re-filtered
+    // once minted. Same fail-closed strip_priority_like_labels() used on
+    // the direct prompt() path, applied here as the single choke point
+    // before apply_label_rule_hit() (the only write/verdict use of the
+    // rule's labels). Fail-closed like the "kw=" guard above: if
+    // everything gets stripped, skip firing this tick entirely (return ""
+    // so the caller falls through to the next stage / the prompt()) rather
+    // than writing an empty label set.
+    let rule_labels = strip_priority_like_labels(rule_labels_raw);
     if len(rule_labels) == 0 {
+        print("[labeler] rule-hit refused: labels empty after priority-strip", rule_id, "(#1474)");
+        if len(owner) > 0 {
+            learn("label", hit_ctx, "priority-only rule refused: " + rule_id, "partial", ["observed", "triage", "rule-rejected-priority-only", repo_tag(owner, repo)]);
+        } else {
+            learn("label", hit_ctx, "priority-only rule refused: " + rule_id, "partial", ["observed", "triage", "rule-rejected-priority-only"]);
+        };
         return "";
     };
     let rule_reasoning = hit_kind + ": crystallized label rule @conf " + rule_conf_str + ". Context: " + hit_ctx;
