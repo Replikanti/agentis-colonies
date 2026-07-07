@@ -773,6 +773,22 @@ if [ -x "$REPO_ROOT/dark-factory/demo-report-quality.sh" ]; then
     fi
 fi
 
+# --- dark-factory bounty-weighted audit queue (#1459) ---
+# prospector-queue.sh turns the prospector colony's qualified, bounty-annotated dossiers into a
+# run-batch-consumable audit queue RANKED BY EXPECTED PAYOUT, keeps the boolean qualification gates as the
+# floor (a big bounty on a non-qualifying target never enters the queue), carries the in-scope commit +
+# address into each row, and has no platform egress. demo-prospector-queue.sh is pure bash/python3 (no
+# agentis / no network) so it runs on CI runners.
+if [ -x "$REPO_ROOT/dark-factory/demo-prospector-queue.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-prospector-queue.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: bounty-weighted audit queue (rank-by-payout, gates-are-floor, no-egress) (#1459)"
+    else
+        fail "dark-factory: bounty-weighted audit queue regressed (#1459)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- tier-branch double learn() guard (#636) ---
 # Every `_publish_<role>(...)` / `_submitter_<phase>(...)` helper in
 # research-foundry/ must gate its top-level `learn(..., ["emitted", ...])`
