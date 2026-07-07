@@ -112,10 +112,14 @@ dark-factory/run-audit.sh --target "$PWD/path/to/Contract.sol" \
     --evm-harness "$PWD/dark-factory/evm-harness" --out "$PWD/audit-out"
 ```
 
-On `Verdict: VERIFIED` the package lands at `<out>/submission/`: `report.md` (Immunefi-format,
-embeds the PoC), `poc.rs`, `target.rs`, `snapshot.txt` (if used), and `MANIFEST.txt` marked
+On `Verdict: VERIFIED` the package lands at `<out>/submission/`: `report.md` (Immunefi-format —
+severity + impact category + severity rationale mapped to the Immunefi bands + an Impact
+quantification section stating the funds-at-risk the two-sided PoC demonstrated, embeds the PoC),
+`poc.rs`, `target.rs`, `snapshot.txt` (if used), `REPRODUCTION.md` (target sha256 + toolchain +
+deterministic rerun command; discloses the snapshot owner-rebind), and `MANIFEST.txt` marked
 **PENDING HUMAN REVIEW — NOT SUBMITTED**. The colony never posts to a platform — submission is
-a manual human action. `run-audit.sh` requires `--target` and never auto-picks a scope.
+a manual human action; `submit-triage.sh --known-issues <file>` scores the staged pile for
+readiness, impact-credibility, and duplicate-risk first. `run-audit.sh` requires `--target` and never auto-picks a scope.
 `--backend mock` runs offline-deterministically (structural heuristic, no LLM). Produce a
 frozen snapshot with `snapshot-rpc.sh --rpc <url> --out snap.txt <pubkey>`.
 

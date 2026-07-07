@@ -1147,6 +1147,71 @@ fn impact_for(cls: string) -> string {
     return "Unauthorized control over a privileged action: an attacker performs it without the required authorization, typically draining funds or seizing state.";
 }
 
+// V6 (#1456): quantified impact. Immunefi pays on DEMONSTRATED fund-loss impact, not on a
+// violated invariant — a valid PoC with no monetary impact stated is routinely downgraded.
+// The next three leaves surface (a) the concrete value the two-sided PoC put at risk, (b) a
+// short primacy-of-impact category for the finding table, and (c) the rubric line that
+// justifies the severity tier against the Immunefi severity bands. All SHALLOW leaves
+// (string compares + concat + one parse) so the report stays deterministic.
+
+// Parse a flat `key=value` numeric marker out of the PoC's observed block (mirrors the
+// harness `field()` reader). Returns -1 when the key is absent; parse_int trims + total-
+// izes a non-numeric value to 0, so a present-but-unparsable marker reads as 0 (not -1).
+fn marker_int(observed: string, key: string) -> int {
+    let k = key + "=";
+    let p = index_of(observed, k);
+    if p < 0 { return -1; }
+    let rest = substring(observed, p + len(k), len(observed));
+    let nl = index_of(rest, "\n");
+    if nl < 0 { return parse_int(rest); }
+    return parse_int(substring(rest, 0, nl));
+}
+
+// The value the two-sided PoC demonstrably put at risk, derived from the observed markers
+// (not a template constant). Solana native/anchor emit `account.lamports` / `vault.balance`;
+// an EVM/revm run or a marker-less PoC degrades to a qualitative statement the operator must
+// quantify against the live deployment before submitting.
+fn funds_at_risk(observed: string) -> string {
+    let lamports = marker_int(observed, "account.lamports");
+    if lamports > 0 {
+        return "**" + to_string(lamports) + " lamports** are movable by an unauthorized caller: the EXPLOIT path drains this balance while the honest CONTROL path leaves it intact (two-sided PoC). Scale to the live account's real lamports to state total funds at risk.";
+    }
+    let bal = marker_int(observed, "vault.balance");
+    if bal > 0 {
+        return "**" + to_string(bal) + " units** of the vault balance are drained by the unauthorized caller in the PoC while the CONTROL path conserves them. Scale to the live vault balance for the total funds at risk.";
+    }
+    return "Qualitative (no numeric marker captured — e.g. an EVM/revm run): the EXPLOIT path breaks value-conservation (`INVARIANT VIOLATED:`) while CONTROL conserves. The operator MUST quantify the exact funds at risk against the live deployment before submitting — an unquantified impact is routinely downgraded.";
+}
+
+// Short primacy-of-impact category for the finding table (Immunefi Impacts-in-Scope framing).
+fn impact_category_for(cls: string) -> string {
+    if cls == "MissingSignerCheck" { return "Direct theft of user/protocol funds"; }
+    if cls == "MissingOwnerCheck" { return "Direct theft of user/protocol funds"; }
+    if cls == "AccessControl" { return "Direct theft of funds / protocol takeover"; }
+    if cls == "ArbitraryCPI" { return "Arbitrary execution under the program's authority"; }
+    if cls == "Reentrancy" { return "Direct theft of pooled funds"; }
+    if cls == "AccountDataMatching" { return "Unauthorized privileged action"; }
+    if cls == "IntegerOverflow" { return "Theft/inflation via value corruption"; }
+    if cls == "UncheckedCall" { return "Accounting divergence / arbitrary execution"; }
+    if cls == "OracleManipulation" { return "Economic drain via price manipulation"; }
+    return "Unauthorized privileged action";
+}
+
+// The rubric line justifying the severity tier against the Immunefi smart-contract bands.
+fn rubric_line_for(cls: string) -> string {
+    let sev = severity_for(cls);
+    if sev == "Critical" {
+        return "Critical — Immunefi smart-contract Critical band: direct theft or permanent freezing of user/protocol funds (unauthorized withdrawal, ownership takeover, or CPI-mediated arbitrary effect under the program's authority).";
+    }
+    if sev == "High" {
+        return "High — Immunefi High band: theft or freezing of funds under specific-but-realistic conditions, or protocol-insolvency-inducing state corruption short of an unconditional drain.";
+    }
+    if sev == "Medium" {
+        return "Medium — Immunefi Medium band: value leakage / accounting divergence that needs a further condition to realise, or bounded-loss arithmetic corruption.";
+    }
+    return "Informational — no demonstrated fund-loss impact; not expected to be payable. Do NOT submit without first establishing in-scope monetary impact.";
+}
+
 fn remediation_for(cls: string) -> string {
     if cls == "MissingSignerCheck" {
         return "Require the authority to sign: type the field as `Signer` (Anchor) or assert `authority.is_signer` (native) before any state mutation.";
@@ -1211,11 +1276,14 @@ fn submission_report(cls: string, th: string, node: string, trace: string, poc_s
     return "# Bounty finding — " + cls + "\n\n" +
         "| Field | Value |\n|---|---|\n" +
         "| Severity (Immunefi) | " + severity_for(cls) + " |\n" +
+        "| Impact category | " + impact_category_for(cls) + " |\n" +
+        "| Severity rationale | " + rubric_line_for(cls) + " |\n" +
         "| Rule | " + cls + " |\n" +
         "| Affected function | `" + node + "` |\n" +
         "| Sub-graph hash | " + th + " |\n" +
         "| Standalone PoC re-verified | " + std_ok + " |\n\n" +
         "## Summary\n\n" + summary_for(cls, node) + "\n\n" +
+        "## Impact quantification\n\n" + funds_at_risk(observed) + "\n\n" +
         "## Vulnerability details (implicated nodes)\n\n" + trace + "\n\n" +
         "## Proof of Concept (standalone, reproducible)\n\nSingle-file Rust PoC — no external deps, compiles + runs offline:\n\n```rust\n" + poc_src + "```\n\n" +
         "Reproduce:\n\n```\nrustc --edition 2021 poc_standalone.rs -o poc && ./poc\n```\n\n" +

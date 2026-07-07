@@ -56,18 +56,40 @@ exploit yields INCONCLUSIVE.
 ## 5. Where the report + PoC land
 
 On **VERIFIED**, `run-audit.sh` stages `audit-out/submission/`:
-- `report.md` — Immunefi-format finding (severity, affected function, summary, impact,
-  remediation), embedding the standalone PoC.
+- `report.md` — Immunefi-format finding (severity + **impact category** + **severity rationale**
+  mapped to the Immunefi bands, affected function, summary, an **Impact quantification** section
+  stating the funds-at-risk the two-sided PoC demonstrated, plus remediation), embedding the
+  standalone PoC (#1456).
 - `poc.rs` — the two-sided PoC source.
 - `target.rs` — the audited program.
 - `snapshot.txt` — the frozen on-chain account snapshot (if `--snapshot` was used).
+- `REPRODUCTION.md` — the reproduction manifest: target sha256, harness kind, toolchain versions
+  (`rustc`/`cargo`/`agentis`), backend/sandbox, and a deterministic **rerun command**. On a
+  snapshot-based run it discloses the account-owner rebind so you can re-verify against real
+  program-derived ownership on mainnet before submitting (#1457).
 - `MANIFEST.txt` — marked **PENDING HUMAN REVIEW — NOT SUBMITTED**.
+
+Triage a pile of staged packages into a review queue with `submit-triage.sh` (never posts):
+
+```
+./submit-triage.sh --root audit-out --known-issues known.txt   # scan (IMPACT + NOVELTY columns)
+./submit-triage.sh --checklist audit-out/submission            # per-candidate human checklist
+```
+
+The scan scores each candidate `READY` / `INCOMPLETE` / `DUP-RISK`, an **IMPACT** column
+(`quant` = funds-at-risk stated, `qual?` = quantify before submitting), and — when you pass a
+`--known-issues` list of public disclosures (one signature per line) — a **NOVELTY** column that
+flags a finding whose affected function or report body collides with a known issue as `DUP-RISK`
+(Immunefi pays only the FIRST reporter; private queues are invisible, so this raises confidence, it
+does not guarantee primacy).
 
 ## 6. Submit (manual, human-gated)
 
 The colony **never** contacts a platform. A human reviews `audit-out/submission/report.md`,
-confirms the finding, and submits it manually to Immunefi / Code4rena / Sherlock. This is
-deliberate: autonomous posting risks anti-bot bans and duplicate-submission penalties.
+reproduces it with `REPRODUCTION.md`, confirms the finding is in-scope, novel, and impact-credible
+(the `submit-triage.sh` checklist walks these), and submits it manually to Immunefi / Code4rena /
+Sherlock. This is deliberate: autonomous posting risks anti-bot bans and duplicate-submission
+penalties.
 
 ## EVM custom-code discovery (`run-discovery.sh`)
 

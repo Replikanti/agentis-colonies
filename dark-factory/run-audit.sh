@@ -40,6 +40,9 @@ TARGET="" ; HARNESS="" ; ANCHOR_HARNESS="" ; EVM_HARNESS="" ; SNAPSHOT="" ; POC=
 REPO="" ; IN_SCOPE="" ; CONTRACT="" ; SEED_MANIFEST="" ; SHARE_PATTERNS=""
 BACKEND="flat-cyborg" ; SANDBOX="hardened" ; OUT="$PWD/audit-out" ; FUZZY_THRESHOLD="0.35" ; FUZZY_K="4" ; USE_EVOLVED=""
 
+# Portable sha256 (Linux sha256sum / macOS shasum) — prints just the hex digest, "unknown" if neither exists.
+sha256_of() { { sha256sum "$1" 2>/dev/null || shasum -a 256 "$1" 2>/dev/null; } | awk '{print $1; ok=1} END{if(!ok)print "unknown"}'; }
+
 need() { [ "$1" -ge 2 ] || { echo "run-audit.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -220,13 +223,56 @@ case "$VERDICT" in
       echo "verdict: VERIFIED"
       echo "target: $(basename "$TARGET")"
       echo "backend: $BACKEND   sandbox: $SANDBOX"
-      echo "files: report.md (Immunefi-format finding, embeds the PoC), poc.rs, $TGT_NAME$( [ -n "$EVM_HARNESS" ] && echo ", Attacker.sol")$( [ -n "$SNAPSHOT" ] && echo ", snapshot.txt")"
+      echo "files: report.md (Immunefi-format finding, embeds the PoC), REPRODUCTION.md (toolchain + rerun), poc.rs, $TGT_NAME$( [ -n "$EVM_HARNESS" ] && echo ", Attacker.sol")$( [ -n "$SNAPSHOT" ] && echo ", snapshot.txt")"
       echo
       echo "STATUS: PENDING HUMAN REVIEW — NOT SUBMITTED."
       echo "This colony NEVER posts to a bounty platform. Submission to Immunefi /"
       echo "Code4rena / Sherlock is a SEPARATE, explicit human action: a reviewer reads"
       echo "report.md and submits it manually."
     } > "$PKG/MANIFEST.txt"
+    # #1457: reproduction manifest — exact toolchain + target/snapshot provenance + a deterministic rerun
+    # command, so the human (and a platform triager) can reproduce against the LIVE deployment rather than
+    # trust the offline run. Snapshot replay rebinds the account owner, which the manifest discloses.
+    HKIND="std-only rustc (offline)"; HFLAG=""
+    [ -n "$HARNESS" ]        && { HKIND="native solana-program-test SVM"; HFLAG="--harness <abs>/$(basename "$HARNESS")"; }
+    [ -n "$ANCHOR_HARNESS" ] && { HKIND="Anchor solana-program-test SVM"; HFLAG="--anchor-harness <abs>/$(basename "$ANCHOR_HARNESS")"; }
+    [ -n "$EVM_HARNESS" ]    && { HKIND="EVM (revm)"; HFLAG="--evm-harness <abs>/$(basename "$EVM_HARNESS")"; }
+    SNAP_LINE="n/a (no --snapshot)"
+    [ -n "$SNAPSHOT" ] && [ -f "$SNAPSHOT" ] && SNAP_LINE="$(basename "$SNAPSHOT")  sha256=$(sha256_of "$SNAPSHOT")"
+    {
+      echo "# Reproduction manifest — Dark Factory finding"
+      echo
+      echo "Reproduce this finding deterministically BEFORE submitting. The verdict came from the offline"
+      echo "two-sided gate (CONTROL OK + INVARIANT VIOLATED); a platform triager will want to reproduce it"
+      echo "against the LIVE deployment / current fork — this manifest pins exactly what produced the verdict."
+      echo
+      echo "## Verdict"
+      echo "- VERIFIED via the real ${HKIND}"
+      echo
+      echo "## Target"
+      echo "- file: $(basename "$TARGET")  (staged in this package as $TGT_NAME)"
+      echo "- sha256: $(sha256_of "$TARGET")"
+      echo "- harness: ${HKIND}"
+      echo "- on-chain snapshot: ${SNAP_LINE}"
+      if [ -n "$SNAPSHOT" ]; then
+        echo "  DISCLOSURE: snapshot replay rebinds the account owner to the in-scope program (the harness"
+        echo "  program is not deployed on-chain). State this when the repro is snapshot-based so the triager"
+        echo "  can re-verify against real program-derived ownership on mainnet (#1457)."
+      fi
+      echo
+      echo "## Toolchain"
+      echo "- rustc:   $(rustc --version 2>/dev/null || echo unknown)"
+      echo "- cargo:   $(cargo --version 2>/dev/null || echo unknown)"
+      echo "- agentis: $("$AGENTIS" --version 2>/dev/null | head -1 || echo unknown)"
+      echo "- backend: ${BACKEND}   sandbox: ${SANDBOX}"
+      echo
+      echo "## Rerun"
+      echo '```'
+      echo "dark-factory/run-audit.sh --target <abs>/$(basename "$TARGET") ${HFLAG}${SNAPSHOT:+ --snapshot <abs>/$(basename "$SNAPSHOT")} --backend ${BACKEND}"
+      echo '```'
+      echo
+      echo "STATUS: PENDING HUMAN REVIEW — NOT SUBMITTED. The colony never posts to a platform."
+    } > "$PKG/REPRODUCTION.md"
     echo "run-audit.sh: submission package staged at $PKG" >&2
     echo "run-audit.sh: SUBMISSION IS HUMAN-GATED — review $PKG/report.md and submit manually. The colony never posts to a platform." >&2
     ;;
