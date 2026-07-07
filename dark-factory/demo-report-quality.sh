@@ -97,6 +97,24 @@ else
   fail "zero-value snapshot mis-quantified; got: $(sed -n '/## Impact quantification/,/^## /p' "$O5/submission/report.md" | grep -v '^##' | head -1)"
 fi
 
+# --- 6. funds_at_risk vault.balance-only branch: a dump with vault.balance but NO account.lamports -> '<N> units'. ---
+SNAPB="$WORK/snap-bal.txt"; printf 'vault.authority=1\nvault.balance=4200\n' > "$SNAPB"
+O6="$WORK/bal"; run_audit "$O6" --snapshot "$SNAPB"
+if sed -n '/## Impact quantification/,/^## /p' "$O6/submission/report.md" 2>/dev/null | grep -q '4200 units'; then
+  pass "vault.balance-only snapshot -> quantified '4200 units at risk' (the balance branch of funds_at_risk)"
+else
+  fail "vault.balance-only branch not exercised; got: $(sed -n '/## Impact quantification/,/^## /p' "$O6/submission/report.md" | grep -v '^##' | head -1)"
+fi
+
+# --- 7. marker_int non-numeric fallback: account.lamports=<non-numeric> parses to 0 -> Qualitative (no fake figure). ---
+SNAPN="$WORK/snap-nan.txt"; printf 'vault.authority=1\naccount.lamports=not-a-number\n' > "$SNAPN"
+O7="$WORK/nan"; run_audit "$O7" --snapshot "$SNAPN"
+if sed -n '/## Impact quantification/,/^## /p' "$O7/submission/report.md" 2>/dev/null | grep -q 'Qualitative:'; then
+  pass "non-numeric account.lamports parses to 0 -> Qualitative (marker_int/parse_int fallback, no fabricated figure)"
+else
+  fail "non-numeric marker not handled; got: $(sed -n '/## Impact quantification/,/^## /p' "$O7/submission/report.md" | grep -v '^##' | head -1)"
+fi
+
 if [ "$FAIL" -eq 0 ]; then
   echo "demo-report-quality.sh: PASS: a VERIFIED audit stages an Immunefi-shaped report + REPRODUCTION.md;"
   echo "      funds-at-risk is quantified ONLY from a real snapshot (qualitative otherwise), the owner-rebind is"

@@ -194,6 +194,12 @@ if printf '%s\n' "$OUT" | grep 'cantina:nopoc' | grep -q 'qual?'; then
 else
   fail "impact-less report not flagged qual?; got: $(printf '%s' "$OUT" | grep nopoc)"
 fi
+# severity_of plain-text fallback: cantina:nopoc has a `Severity: Medium` line (no Immunefi table row).
+if printf '%s\n' "$OUT" | grep 'cantina:nopoc' | awk '{print $2}' | grep -qx 'MEDIUM'; then
+  pass "severity_of plain-text fallback parses 'Severity: Medium' -> MEDIUM (no table row present)"
+else
+  fail "severity_of plain-text fallback wrong; got: $(printf '%s' "$OUT" | grep 'cantina:nopoc')"
+fi
 # severity_of word-anchoring: a report mentioning `severity` but with no real severity WORD (only
 # high-light / al-low / be-low substrings) must show SEVERITY='?', not a misread HIGH/LOW.
 if printf '%s\n' "$OUT" | grep 'foreign:sevword' | awk '{print $2}' | grep -qx '?'; then
