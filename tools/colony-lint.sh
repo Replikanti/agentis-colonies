@@ -599,6 +599,25 @@ if [ -x "$REPO_ROOT/tools/check-prompt-gate.sh" ]; then
     fi
 fi
 
+# --- Check getenv() knobs against the install.sh allowlist (#1428) ---
+# getenv() reads the SANITIZED env: a var missing from the
+# exec.env_passthrough allowlist written by dev-apprenticeship/install.sh
+# never reaches the .ag runtime, so the operator knob is silently inert
+# (proven live on the #1424 burn-in, #1426). This check fails the lint when
+# a dev-apprenticeship agent reads a getenv() var that is neither
+# allowlisted nor annotated `// colony-lint: getenv-unregistered-ok`, and
+# when an allowlisted getenv knob is missing from the #1437 residue-check
+# list in install.sh.
+if [ -x "$REPO_ROOT/tools/check-getenv-allowlist.sh" ]; then
+    check_out="$("$REPO_ROOT/tools/check-getenv-allowlist.sh" "$REPO_ROOT" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "check-getenv-allowlist: every dev-apprenticeship getenv() knob allowlisted or waived (#1428)"
+    else
+        fail "check-getenv-allowlist: unregistered getenv() knob — silently inert (#1428)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- Check LLM prompt strings for bare push() examples (#943) ---
 # `push(list, x)` in agentis is PURE — it returns a new list and does
 # NOT mutate the input. Several research-foundry agents embed `.ag`
