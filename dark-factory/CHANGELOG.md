@@ -15,6 +15,26 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Bounty-weighted target prioritization in the prospector colony** (#1455 epic; #1459). The prospector
+  qualifies EVM protocols as monitoring targets on three boolean hard gates; this adds a bounty dimension
+  that ORDERS the operator's finite manual-review time by expected payout, without changing what qualifies.
+  - **`coordinator.ag` bounty dimension** — the coordinator joins an operator-supplied
+    `PROSPECTOR_BOUNTY_META` (`<address>|<reward_usd>|<in_scope_commit>`, matched case-insensitively) onto
+    each dossier, adding a `bounty` reward figure + the in-scope `commit` the bounty covers. It is public
+    program-page data the operator pastes in — **read-only, no egress** (the agent never fetches it) — and
+    is **purely informational + for ordering**: the three hard gates remain the sole floor, and a qualified
+    target with no bounty metadata still lists (ranked last). cb headroom 150000 → 200000 for the join.
+  - **`prospector-queue.sh`** (new) — turns the qualified, bounty-annotated dossiers into an **audit queue
+    ranked by expected payout** in the exact `run-batch.sh` TSV (`score<TAB>key<TAB>url<TAB>title<TAB>scope_hint`,
+    bounty desc, ties by key asc). `scope_hint` carries `addr:<address>` (run-batch's autoharness resolver
+    keys on it) + `commit:<in-scope-commit>` (the "audited the wrong version" 0-payout guard). Reads the
+    `prospector:qualified` blackboard live via `agentis memo`, or `--dossiers <file>` offline; SKIPs cleanly
+    when empty. `run-batch.sh --queue <this>` then hunts targets highest-payout-first. Submission stays
+    strictly human-gated — the bridge has no platform egress and never posts.
+  - **`demo-prospector-queue.sh`** (new, CI-safe: pure bash/python3) proves the rank order, that a big
+    bounty on a non-qualifying target never enters the queue (gates are the floor), the `--min-bounty`
+    floor, that `run-batch.sh` consumes the queue highest-first and stages nothing on a dry hunt, and the
+    no-egress guard. Wired into `tools/colony-lint.sh`.
 - **Bounty-funnel hardening: quantified impact, reproduction manifest, dedup + impact triage gates**
   (#1455 epic; #1456, #1457, #1458). Raises the *expected value per verified finding* — the funnel
   stage between `Verdict: VERIFIED` and a paid bounty — while keeping submission strictly human-gated

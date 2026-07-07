@@ -66,7 +66,7 @@ tick_interval_ms = 60000
 [[agents]]
 name = "coordinator"
 source = "agents/coordinator.ag"
-cb_budget = 150000
+cb_budget = 200000
 tick_interval_ms = 60000
 
 # Prospector environment contract (consumed by the agents via getenv; exported by
@@ -105,11 +105,24 @@ tick_interval_ms = 60000
 #                           view) a candidate must hold to clear the value floor.
 #                           "" => 0 (any non-zero read clears).
 #
+# coordinator:
+#   PROSPECTOR_BOUNTY_META  OPTIONAL newline-joined `<address>|<reward_usd>|<in_scope_commit>`
+#                           list of active-bounty metadata (#1459): address = the join key
+#                           (case-insensitive to the candidate); reward_usd = the program's
+#                           max reward as a decimal USD integer; in_scope_commit = the
+#                           commit/deployment the bounty covers. PUBLIC program-page data the
+#                           operator supplies out-of-band — READ-ONLY, NO EGRESS (the agent
+#                           never fetches it). Annotates each dossier with bounty + commit so
+#                           prospector-queue.sh can rank the audit queue by expected payout.
+#                           NEVER gates qualification; "" / no match => bounty="" (ranks last).
+#
 # READ-ONLY contract: the value-scorer uses ONLY `cast call` / `cast balance` —
-# never `cast send`, never a key, never a write-RPC.
+# never `cast send`, never a key, never a write-RPC. The coordinator reads blackboard
+# memos + PROSPECTOR_BOUNTY_META only; it never signs, fetches, or touches funds.
 [prospector]
 abi_cmd = ""
 cast = ""
 rpc_url = ""
 value_sig = ""
 value_floor = ""
+bounty_meta = ""

@@ -39,13 +39,24 @@
 // per-target dossiers are written at EVERY tier (a memo write) so the score is
 // always available; only the bus PUBLISH of the ranked index is tier-gated.
 //
+// BOUNTY DIMENSION (#1459): each dossier is also annotated with the active bounty's
+// max reward + the in-scope commit, joined from an operator-supplied PROSPECTOR_BOUNTY_META
+// list (read-only, no egress — public program-page data the operator pastes in). The bounty
+// is PURELY informational + for ordering (prospector-queue.sh ranks the audit queue by it);
+// it NEVER gates qualification — the three hard gates remain the sole floor.
+//
+// Env contract (read via getenv; add to exec.env_passthrough in .agentis/config):
+//   PROSPECTOR_BOUNTY_META  newline-joined `<address>|<reward_usd>|<in_scope_commit>` list.
+//                           address = join key (case-insensitive); reward_usd = decimal USD
+//                           integer; in_scope_commit = the commit/deployment the bounty covers.
+//                           "" / no match => bounty="" (the target still qualifies, ranks last).
 // Reads (blackboard): prospector:candidates, prospector:classified:<addr>,
 //   prospector:value:<addr>.
 // Writes (blackboard): prospector:qualified:<addr> (per-target dossier),
 //   prospector:qualified (the ranked qualifying-target index).
 // Emits: "prospector:qualified" (the colony bus contract).
 
-cb 150000;
+cb 200000;
 
 // Upper bound on how many candidates the coordinator fuses in one tick (the
 // bounded recursion's depth cap; .ag has no loops). Matches the upstream agents.
@@ -171,6 +182,126 @@ fn suggested_invariant(family: string) -> string {
     return "";
 }
 
+// --- BOUNTY DIMENSION (#1459): join operator-supplied active-bounty metadata ------
+// PROSPECTOR_BOUNTY_META is a newline-joined `<address>|<reward_usd>|<in_scope_commit>`
+// list of PUBLIC program-page data the operator supplies out-of-band (read-only, no
+// egress — this agent never fetches it). For each candidate it yields the active bounty's
+// max reward (a USD integer) + the in-scope commit/deployment the bounty covers, so the
+// audit queue can order the operator's finite review time by EXPECTED PAYOUT and audit
+// exactly the version in scope. NEVER gates qualification; an unmatched candidate => "".
+
+// Lowercase an ASCII string (EVM addresses are checksum-cased in a candidate list but
+// typically lowercase in an operator's bounty list; the join is case-insensitive).
+fn lower_char(c: string) -> string {
+    let i = index_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ", c);
+    if i < 0 { return c; }
+    return substring("abcdefghijklmnopqrstuvwxyz", i, i + 1);
+}
+
+fn to_lower(s: string) -> string {
+    return reduce(regex_find_all("[\\s\\S]", s), |acc: string, c: string| -> string {
+        return acc + lower_char(c);
+    }, "");
+}
+
+// Trim surrounding ASCII whitespace (the operator's bounty list may be loosely
+// formatted); interior characters are preserved. Mirrors intake.ag's trim.
+fn is_ws(c: string) -> bool {
+    if c == " " { return true; }
+    if c == "\t" { return true; }
+    if c == "\r" { return true; }
+    if c == "\n" { return true; }
+    return false;
+}
+
+fn first_nonws(s: string, i: int, n: int) -> int {
+    if i >= n { return n; }
+    if is_ws(substring(s, i, i + 1)) { return first_nonws(s, i + 1, n); }
+    return i;
+}
+
+fn last_nonws(s: string, i: int) -> int {
+    if i < 0 { return -1; }
+    if is_ws(substring(s, i, i + 1)) { return last_nonws(s, i - 1); }
+    return i;
+}
+
+fn trim(s: string) -> string {
+    let n = len(s);
+    if n == 0 { return ""; }
+    let a = first_nonws(s, 0, n);
+    if a >= n { return ""; }
+    let b = last_nonws(s, n - 1);
+    if b < a { return ""; }
+    return substring(s, a, b + 1);
+}
+
+// Strip leading zeros from a digit string, leaving at least one digit ("0").
+fn strip_leading_zeros(s: string) -> string {
+    let kept = reduce(regex_find_all("[0-9]", s), |acc: string, d: string| -> string {
+        if len(acc) > 0 { return acc + d; }
+        if d == "0" { return acc; }
+        return d;
+    }, "");
+    if len(kept) == 0 { return "0"; }
+    return kept;
+}
+
+// --- bounty-line field extraction (`<address>|<reward>|<commit>`) ----------------
+fn bmeta_addr(line: string) -> string {
+    let bar = index_of(line, "|");
+    if bar < 0 { return line; }
+    return substring(line, 0, bar);
+}
+
+fn bmeta_reward(line: string) -> string {
+    let bar = index_of(line, "|");
+    if bar < 0 { return ""; }
+    let rest = substring(line, bar + 1, len(line));
+    let bar2 = index_of(rest, "|");
+    if bar2 < 0 { return rest; }
+    return substring(rest, 0, bar2);
+}
+
+fn bmeta_commit(line: string) -> string {
+    let bar = index_of(line, "|");
+    if bar < 0 { return ""; }
+    let rest = substring(line, bar + 1, len(line));
+    let bar2 = index_of(rest, "|");
+    if bar2 < 0 { return ""; }
+    return substring(rest, bar2 + 1, len(rest));
+}
+
+// The first bounty line whose address matches `addr` (case-insensitive); "" on no match.
+// First match wins (an operator listing an address twice audits the first entry).
+fn bounty_line_for(bmeta: string, addr: string) -> string {
+    if len(bmeta) == 0 { return ""; }
+    let want = to_lower(trim(addr));
+    return reduce(regex_split("\n", bmeta), |acc: string, line: string| -> string {
+        if len(acc) > 0 { return acc; }
+        if len(line) == 0 { return acc; }
+        if to_lower(trim(bmeta_addr(line))) == want { return line; }
+        return acc;
+    }, "");
+}
+
+// The reward from a matched bounty line as a normalised USD digit string; "" when the
+// line is empty (unmatched) or the reward field is not a decimal integer (never
+// fabricated — no match / garbled reward => no figure, and the target ranks last).
+fn reward_from_line(line: string) -> string {
+    if len(line) == 0 { return ""; }
+    let raw = trim(bmeta_reward(line));
+    if len(raw) == 0 { return ""; }
+    if len(regex_find_all("[^0-9]", raw)) > 0 { return ""; }
+    return strip_leading_zeros(raw);
+}
+
+// The in-scope commit/deployment from a matched bounty line (free text); "" when unmatched.
+fn commit_from_line(line: string) -> string {
+    if len(line) == 0 { return ""; }
+    return trim(bmeta_commit(line));
+}
+
 // learn() outcome enum {success,failure,partial,timeout,error}. A qualifying
 // target is the productive signal (success); a fully-evaluated but non-qualifying
 // candidate is partial; no candidates / no upstream verdicts is partial too.
@@ -182,18 +313,19 @@ fn outcome_of(qualified: int) -> string {
 // The per-target dossier (JSON). Carries qualifies yes/no, the matched family,
 // the failed gate (when any), the suggested invariant (the monitor handoff), and
 // the value verdict. All fields are upstream FACTS; none is LLM text.
-fn dossier_payload(addr: string, chain: string, meta: string, family: string, valVerdict: string, qualified: bool, why: string, invariant: string) -> string {
+fn dossier_payload(addr: string, chain: string, meta: string, family: string, valVerdict: string, qualified: bool, why: string, invariant: string, bounty: string, commit: string) -> string {
     return "{\"agent\":\"coordinator\",\"target\":\"" + json_escape(addr)
          + "\",\"chain\":\"" + json_escape(chain) + "\",\"label\":\"" + json_escape(meta)
          + "\",\"qualifies\":" + to_string(qualified) + ",\"family\":\"" + family
          + "\",\"value\":\"" + valVerdict + "\",\"why\":\"" + why
-         + "\",\"watch\":\"" + json_escape(invariant) + "\"}";
+         + "\",\"watch\":\"" + json_escape(invariant)
+         + "\",\"bounty\":\"" + bounty + "\",\"commit\":\"" + json_escape(commit) + "\"}";
 }
 
 // Write one candidate's dossier to its per-target blackboard memo (a memo write —
 // allowed at every tier). The address is the validated `0x` + 40-hex key.
 // Returns 1 when the target qualifies, else 0 (for the running count).
-fn fuse_cell(cell: string) -> int {
+fn fuse_cell(cell: string, bmeta: string) -> int {
     let addr = cell_address(cell);
     let chain = cell_chain(cell);
     let meta = cell_metadata(cell);
@@ -203,10 +335,14 @@ fn fuse_cell(cell: string) -> int {
     let gate = failed_gate(family, valVerdict);
     let why = if qualified { "all gates pass" } else { "failed gate: " + gate };
     let invariant = if qualified { suggested_invariant(family) } else { "" };
+    // Join the operator-supplied bounty metadata once (a single scan of the board).
+    let bline = bounty_line_for(bmeta, addr);
+    let bounty = reward_from_line(bline);
+    let commit = commit_from_line(bline);
     memo_write("prospector:qualified:" + addr,
-        dossier_payload(addr, chain, meta, family, valVerdict, qualified, why, invariant));
+        dossier_payload(addr, chain, meta, family, valVerdict, qualified, why, invariant, bounty, commit));
     print("coordinator: " + addr + " family=" + family + " value=" + valVerdict
-        + " -> qualifies=" + to_string(qualified));
+        + " bounty=" + bounty + " -> qualifies=" + to_string(qualified));
     if qualified { return 1; }
     return 0;
 }
@@ -250,18 +386,18 @@ fn count_cells(lines: list<string>) -> int {
 // write the per-target dossier, and ACCUMULATE the ranked index of QUALIFYING
 // targets (one `<addr>|<family>` cell per qualifier). Stops at the cap or end of
 // board. Returns the ranked index (newline-joined; "" when none qualify).
-fn fuse_board(lines: list<string>, i: int, total: int, remaining: int, idx: string) -> string {
+fn fuse_board(lines: list<string>, i: int, total: int, remaining: int, idx: string, bmeta: string) -> string {
     if remaining <= 0 { return idx; }
     if i >= total { return idx; }
     let cell = nth_cell(lines, i);
     if len(cell) == 0 { return idx; }
-    let q = fuse_cell(cell);
+    let q = fuse_cell(cell, bmeta);
     if q > 0 {
         let entry = cell_address(cell) + "|" + class_family(cell_address(cell));
         let nextIdx = if len(idx) == 0 { entry } else { idx + "\n" + entry };
-        return fuse_board(lines, i + 1, total, remaining - 1, nextIdx);
+        return fuse_board(lines, i + 1, total, remaining - 1, nextIdx, bmeta);
     }
-    return fuse_board(lines, i + 1, total, remaining - 1, idx);
+    return fuse_board(lines, i + 1, total, remaining - 1, idx, bmeta);
 }
 
 fn count_index(idx: string) -> int {
@@ -280,8 +416,10 @@ fn tick(reason: string) -> void {
     let board = recall_latest("prospector:candidates");
     let lines = regex_split("\n", board);
     let total = count_cells(lines);
-    // FUSE: write every per-target dossier + accumulate the ranked qualifying index.
-    let idx = fuse_board(lines, 0, total, board_max(), "");
+    // Operator-supplied active-bounty metadata (read-only, no egress; "" when unset).
+    let bmeta = getenv("PROSPECTOR_BOUNTY_META");
+    // FUSE: write every per-target dossier (bounty-annotated) + accumulate the qualifying index.
+    let idx = fuse_board(lines, 0, total, board_max(), "", bmeta);
     let qualified = count_index(idx);
 
     print("coordinator: fused board -> " + to_string(qualified)

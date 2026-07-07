@@ -579,6 +579,7 @@ dark-factory/
   run-funnel.sh                 # target-intake funnel: discover (live Sherlock + Cantina/C4 probe, or --from <json>) -> freshness (drop status!=RUNNING) -> self-dedup (funnel-ledger.txt) -> deterministic weighted score -> ranked targets.queue TSV (#1054, epic #1053); SKIPs without network or --from; never submits
   run-batch.sh                  # batch/continuous runner: consume targets.queue (score desc) -> skip ledgered keys (resumable) -> hunt each via --hunt-cmd or best-effort autoharness -> stage confirmed findings (NOT submitted) -> append funnel-ledger.txt + policy-outcomes.log (#1055, epic #1053); SKIPs with no queue; never submits
   submit-triage.sh              # triage staged submission packages: scan <out>/submission[/<key>]/ -> READY (report+poc+marker) / INCOMPLETE (lists missing) + --checklist <dir> human review list (#1056, epic #1053); SKIPs empty root; NEVER submits (operator posts manually)
+  prospector-queue.sh           # prospector qualified+bounty-annotated dossiers -> audit queue RANKED BY EXPECTED PAYOUT in run-batch's TSV (bounty desc; gates stay the floor; scope_hint carries addr + in-scope commit) (#1459, epic #1455); live via `agentis memo` or --dossiers <file>; SKIPs empty; read-only, never submits
   demo-coordinator.sh           # offline, deterministic proof of the #1014 fact-driven + evolving-policy loop
   demo-dispatch.sh              # offline, deterministic proof of the #1014 M2 substrate DISPATCH (every action type)
   demo-orchestrate.sh           # offline, deterministic proof of the #1014 M3 in-substrate loop (byte-identical to the M2 shell loop)
@@ -599,6 +600,7 @@ dark-factory/
   demo-funnel.sh                # offline, deterministic proof of the #1054 funnel: a fixture candidate list via --from -> ranked by score desc, non-RUNNING dropped (freshness), ledger-seen dropped (self-dedup), exit 0
   demo-batch.sh                 # offline, deterministic proof of the #1055 batch runner: a fixture queue + stub --hunt-cmd -> score order, ledgered key skipped, confirmed finding staged (NOT submitted), resumable no-op re-run, exit 0
   demo-submit-triage.sh         # offline, deterministic proof of the #1056 triage: a complete package -> READY/HIGH, an incomplete one -> INCOMPLETE missing poc, checklist + manual-submit note, empty root -> SKIP, no egress, exit 0
+  demo-prospector-queue.sh      # offline, deterministic proof of the #1459 bounty-ranked queue: fixture dossiers -> ranked bounty desc, non-qualifying excluded (gates are the floor), scope_hint carries addr+commit, run-batch consumes highest-first, no egress, exit 0
   setup-solana-toolchain.sh     # one-time offline toolchain build (network ON)
   snapshot-rpc.sh               # host RPC getAccountInfo -> frozen on-chain snapshot (V4)
   calibrate-sealevel.sh         # detection+validation scorecard over the sealevel corpus (V6)

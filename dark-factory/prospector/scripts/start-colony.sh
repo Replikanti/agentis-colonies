@@ -25,6 +25,7 @@
 #   PROSPECTOR_CANDIDATES                                       (intake list)
 #   PROSPECTOR_ABI_CMD                                          (source-classifier reader)
 #   PROSPECTOR_CAST PROSPECTOR_RPC_URL PROSPECTOR_VALUE_SIG ... (value-scorer reader)
+#   PROSPECTOR_BOUNTY_META                                      (coordinator bounty dimension, #1459)
 
 set -e
 
@@ -96,10 +97,13 @@ PROSPECTOR_CAST="${PROSPECTOR_CAST:-}"
 PROSPECTOR_RPC_URL="${PROSPECTOR_RPC_URL:-}"
 PROSPECTOR_VALUE_SIG="${PROSPECTOR_VALUE_SIG:-}"
 PROSPECTOR_VALUE_FLOOR="${PROSPECTOR_VALUE_FLOOR:-}"
+# Active-bounty metadata for the coordinator's bounty dimension (#1459); read-only, no egress.
+PROSPECTOR_BOUNTY_META="${PROSPECTOR_BOUNTY_META:-}"
 
 export COLONY_DIR COLONY_NAME
 export PROSPECTOR_CANDIDATES PROSPECTOR_ABI_CMD
 export PROSPECTOR_CAST PROSPECTOR_RPC_URL PROSPECTOR_VALUE_SIG PROSPECTOR_VALUE_FLOOR
+export PROSPECTOR_BOUNTY_META
 
 AGENTS=(
     intake
