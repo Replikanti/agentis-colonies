@@ -257,6 +257,17 @@ AGENTS=(
 # its ts) in place; agents see a stale ts and degrade to a direct fetch.
 # We only publish a snapshot that parses to a non-empty envelope, so a
 # transient error never overwrites a good snapshot with `[]`.
+#
+# #1466: the two memo writes are COUPLED. The snapshot `memo set` enforces the
+# runtime's value-size cap (~10240 bytes); an oversize value fails. Previously
+# both writes ran under `|| true`, so an oversize snapshot write failed silently
+# while the tiny `:ts` write always succeeded — agents then trusted a "fresh" ts
+# pointing at a STALE snapshot and never took the documented direct-fetch
+# degrade. Now `:ts` is refreshed ONLY when the snapshot write actually
+# succeeds, and a failed/oversize write is logged loudly to stderr (the
+# snapshot-refresh sidecar redirects this into snapshot-refresh.log) instead of
+# being swallowed. snapshot-compress.py already bounds the envelope below the
+# cap, so the failing branch is the last-resort guard, not the normal path.
 publish_snapshot() {
     local fed_root="$1"
     local snap
@@ -274,10 +285,17 @@ except Exception:
     if [ "$ok" != "1" ]; then
         return 0
     fi
-    local now
+    local now snap_bytes
     now="$(date +%s)"
-    (cd "$fed_root" && agentis memo set gitlab:snapshot:issues "$snap" >/dev/null 2>&1) || true
-    (cd "$fed_root" && agentis memo set gitlab:snapshot:issues:ts "$now" >/dev/null 2>&1) || true
+    snap_bytes="$(printf '%s' "$snap" | wc -c | tr -d ' ')"
+    # Couple the writes: refresh the freshness ts ONLY on a successful snapshot
+    # write. A failed snapshot write must NOT bump `:ts`, so the stale-ts
+    # degrade path fires as designed.
+    if (cd "$fed_root" && agentis memo set gitlab:snapshot:issues "$snap" >/dev/null 2>&1); then
+        (cd "$fed_root" && agentis memo set gitlab:snapshot:issues:ts "$now" >/dev/null 2>&1) || true
+    else
+        echo "[snapshot] ERROR: memo set gitlab:snapshot:issues failed (${snap_bytes} bytes, cap ~${SNAPSHOT_MEMO_MAX_BYTES:-10240}); ts NOT refreshed - triage degrades to direct fetch" >&2
+    fi
 }
 
 # #1111: --snapshot-refresh mode. Re-publish the shared snapshot and exit.
