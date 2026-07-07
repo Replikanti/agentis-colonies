@@ -154,13 +154,16 @@ for line in lines:
 rows.sort(key=lambda r: (-r[0], r[1]))
 # DEDUP by key: an operator's dossier set may list the same target address more than once; keep the
 # highest-bounty row (the first after the sort above) so a duplicate neither double-spends the operator's
-# review budget nor under-ranks the target. run-batch also dedups on its ledger, but a clean queue is better.
+# review budget nor under-ranks the target. The dedup key is CASE-INSENSITIVE to match the coordinator's
+# case-insensitive bounty join — the same address under two casings (0xAbC… / 0xabc…) is one target, so it
+# collapses to one row. run-batch also dedups on its ledger, but a clean queue is better.
 seen = set()
 deduped = []
 for r in rows:
-    if r[1] in seen:
+    k = r[1].lower()
+    if k in seen:
         continue
-    seen.add(r[1])
+    seen.add(k)
     deduped.append(r)
 rows = deduped
 if limit > 0:

@@ -152,6 +152,66 @@ fi
 "$RUN" --dossiers >/dev/null 2>&1; [ "$?" -eq 2 ] \
   && pass "flag missing its value -> exit 2" || fail "missing flag value did not exit 2"
 
+# --- 12. Dedup is CASE-INSENSITIVE (matches the coordinator's join): same address, two casings -> one row -
+CIADDR_UP='0xAB00000000000000000000000000000000000099'
+CIADDR_LO='0xab00000000000000000000000000000000000099'
+CIDUP="$WORK/ci-dup.jsonl"
+{
+  printf '{"target":"%s","chain":"1","label":"Upper","qualifies":true,"family":"amm","value":"above","why":"ok","watch":"w","bounty":"4000000","commit":"c-up"}\n' "$CIADDR_UP"
+  printf '{"target":"%s","chain":"1","label":"lower","qualifies":true,"family":"amm","value":"above","why":"ok","watch":"w","bounty":"1000000","commit":"c-lo"}\n' "$CIADDR_LO"
+} > "$CIDUP"
+"$RUN" --dossiers "$CIDUP" --out "$WORK/ci.queue" >/dev/null 2>&1
+ci_rows="$(grep -ic "0xab00000000000000000000000000000000000099" "$WORK/ci.queue" 2>/dev/null || true)"
+ci_score="$(head -1 "$WORK/ci.queue" | cut -f1)"
+if [ "${ci_rows:-0}" -eq 1 ] && [ "$ci_score" = "4000000" ]; then
+  pass "same address under two casings deduped to one row, highest bounty kept (score=$ci_score)"
+else
+  fail "case-insensitive dedup wrong: $ci_rows row(s), score [$ci_score]"
+fi
+
+# --- 13. Equal bounty -> deterministic tie-break by key ASC -----------------------------------------------
+TA='0x6000000000000000000000000000000000000000'
+TB='0x7000000000000000000000000000000000000000'
+TIE="$WORK/tie.jsonl"
+{
+  printf '{"target":"%s","chain":"1","label":"B","qualifies":true,"family":"amm","value":"above","why":"ok","watch":"w","bounty":"1000000","commit":"cb"}\n' "$TB"
+  printf '{"target":"%s","chain":"1","label":"A","qualifies":true,"family":"amm","value":"above","why":"ok","watch":"w","bounty":"1000000","commit":"ca"}\n' "$TA"
+} > "$TIE"
+"$RUN" --dossiers "$TIE" --out "$WORK/tie.queue" >/dev/null 2>&1
+tie_keys="$(cut -f2 "$WORK/tie.queue" | tr '\n' ' ')"
+[ "$tie_keys" = "prospector:$TA prospector:$TB " ] \
+  && pass "equal bounty -> deterministic tie-break by key ASC ($tie_keys)" \
+  || fail "tie-break wrong: [$tie_keys]"
+
+# --- 14. Non-numeric / negative bounty -> treated as 0 (still listed, ranked last) ------------------------
+TN='0x9000000000000000000000000000000000000000'
+TG='0x9a00000000000000000000000000000000000000'
+NUM="$WORK/nonnum.jsonl"
+{
+  printf '{"target":"%s","chain":"1","label":"Garbled","qualifies":true,"family":"amm","value":"above","why":"ok","watch":"w","bounty":"not-a-number","commit":"cg"}\n' "$TN"
+  printf '{"target":"%s","chain":"1","label":"Good","qualifies":true,"family":"amm","value":"above","why":"ok","watch":"w","bounty":"500000","commit":"cok"}\n' "$TG"
+} > "$NUM"
+"$RUN" --dossiers "$NUM" --out "$WORK/num.queue" >/dev/null 2>&1
+last_line="$(tail -1 "$WORK/num.queue")"
+if [ "$(printf '%s' "$last_line" | cut -f1)" = "0" ] && [ "$(printf '%s' "$last_line" | cut -f2)" = "prospector:$TN" ]; then
+  pass "non-numeric bounty -> score 0, still listed and ranked last"
+else
+  fail "non-numeric bounty handling wrong; last row: [$last_line]"
+fi
+
+# --- 15. TSV field-safety: an embedded newline/tab in a field never breaks the 5-column layout ------------
+TSVADDR='0x8000000000000000000000000000000000000000'
+TSV="$WORK/tsv.jsonl"
+printf '{"target":"%s","chain":"1","label":"Multi\\nLine Vault","qualifies":true,"family":"amm","value":"above","why":"ok","watch":"w","bounty":"700000","commit":"c\\tsafe"}\n' "$TSVADDR" > "$TSV"
+"$RUN" --dossiers "$TSV" --out "$WORK/tsv.queue" >/dev/null 2>&1
+bad_cols="$(awk -F'\t' 'NF!=5{c++} END{print c+0}' "$WORK/tsv.queue")"
+tsv_rows="$(grep -c . "$WORK/tsv.queue" 2>/dev/null || true)"
+if [ "$bad_cols" = "0" ] && [ "${tsv_rows:-0}" -eq 1 ]; then
+  pass "embedded newline/tab scrubbed -> exactly 5 TSV columns, one row"
+else
+  fail "TSV field-safety wrong: $bad_cols malformed rows, $tsv_rows total"
+fi
+
 if [ "$FAIL" -eq 0 ]; then
   echo "demo-prospector-queue.sh: ALL CHECKS PASSED"
   exit 0
