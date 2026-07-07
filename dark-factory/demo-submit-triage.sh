@@ -53,6 +53,17 @@ PENDING HUMAN REVIEW — NOT SUBMITTED
 MD
 printf 'fn main() {}\n' > "$ROOT/foreign:sevword/poc.rs"
 
+# A report with a prose `severity` line carrying a DIFFERENT severity word BEFORE the structured table row:
+# severity_of must ANCHOR on the `| Severity (Immunefi) | ... |` row (Medium), not the earlier prose Critical.
+mkdir -p "$ROOT/foreign:sevorder"
+cat > "$ROOT/foreign:sevorder/report.md" <<'MD'
+# Finding
+Severity discussion: on its own this is not a critical show-stopper.
+| Severity (Immunefi) | Medium |
+PENDING HUMAN REVIEW — NOT SUBMITTED
+MD
+printf 'fn main() {}\n' > "$ROOT/foreign:sevorder/poc.rs"
+
 # COMPLETE package whose affected function collides with a known disclosure -> DUP-RISK under --known-issues.
 mkdir -p "$ROOT/code4rena:dup"
 cat > "$ROOT/code4rena:dup/report.md" <<'MD'
@@ -166,6 +177,12 @@ if printf '%s\n' "$OUT" | grep 'foreign:sevword' | awk '{print $2}' | grep -qx '
   pass "severity_of ignores substrings (highlight/allow/below) -> SEVERITY='?' (word-anchored)"
 else
   fail "severity_of misread a substring as severity; got: $(printf '%s' "$OUT" | grep 'foreign:sevword')"
+fi
+# Anchor beats ordering: the structured `| Severity (Immunefi) | Medium |` row wins over an earlier prose 'critical'.
+if printf '%s\n' "$OUT" | grep 'foreign:sevorder' | awk '{print $2}' | grep -qx 'MEDIUM'; then
+  pass "severity_of anchors on the Immunefi table row (MEDIUM), not an earlier prose 'critical'"
+else
+  fail "severity_of not table-anchored; got: $(printf '%s' "$OUT" | grep 'foreign:sevorder')"
 fi
 # The discriminator (review finding 1): a report WITH the section but a Qualitative fallback is qual?, not quant.
 if printf '%s\n' "$OUT" | grep 'immunefi:qual' | grep -q 'qual?'; then

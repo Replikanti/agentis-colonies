@@ -48,14 +48,17 @@ has_poc() {
   return 1
 }
 
-# Best-effort severity from an Immunefi-shaped report.md. Matches both the real table row
-# `| Severity (Immunefi) | High |` and a plain `Severity: High` line: take the first severity
-# WORD on a line mentioning "severity". `-w` (whole-word) so an unrelated substring on a
-# third-party report — `high`light, al`low`, be`low`, fol`low`ing — cannot be misread as a
-# severity. "?" if absent.
+# Best-effort severity from an Immunefi-shaped report.md. First ANCHOR on the structured
+# `| Severity (Immunefi) | High |` table row (our generator's format) so the result can't be shifted
+# by the ordering of other `severity`-mentioning lines; only if that row is absent (a third-party
+# format) fall back to the first severity WORD on any `severity` line. `-w` (whole-word) so an
+# unrelated substring — `high`light, al`low`, be`low`, fol`low`ing — is never misread. "?" if absent.
 severity_of() {
-  grep -i 'severity' "$1" 2>/dev/null \
-    | grep -iowE 'critical|high|medium|low' | head -1 | tr 'a-z' 'A-Z' || true
+  local sev
+  sev="$(grep -iE '^\|[[:space:]]*Severity \(Immunefi\)[[:space:]]*\|' "$1" 2>/dev/null \
+          | grep -iowE 'critical|high|medium|low' | head -1)"
+  [ -n "$sev" ] || sev="$(grep -i 'severity' "$1" 2>/dev/null | grep -iowE 'critical|high|medium|low' | head -1)"
+  printf '%s' "$sev" | tr 'a-z' 'A-Z'
 }
 
 # Impact-credibility: Immunefi pays on DEMONSTRATED fund-loss. auditor.ag (#1456) ALWAYS emits the
