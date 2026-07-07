@@ -340,27 +340,6 @@ else
     cat "$T17_CONFIG"
 fi
 
-# ----- Test 19: #1430-era literal migrates to add the #1428 audit knobs -----
-# A federation installed between #1430 and #1428 carries the prioritizer
-# knob value without QA_ADVERSARIAL_LLM_CMD / CODE_EDIT_MAX_ATTEMPTS — on
-# such an install the qa_reviewer cross-provider reroute (#1405) and the
-# code-edit attempt-cap override are silently inert (getenv() reads the
-# SANITIZED env, #1428). The migration appends both knobs.
-T19_DIR="$FAKE_ROOT/t19"
-mkdir -p "$T19_DIR"
-T19_CONFIG="$T19_DIR/config"
-printf '%s\n' "$EXPECTED_1430" > "$T19_CONFIG"
-
-run_install_fragment "$T19_CONFIG"
-
-if grep -qxF "$EXPECTED_NEW" "$T19_CONFIG" \
-    && ! grep -qxF "$EXPECTED_1430" "$T19_CONFIG"; then
-    pass "#1430-era literal migrates to add QA_ADVERSARIAL_LLM_CMD + CODE_EDIT_MAX_ATTEMPTS (#1428)"
-else
-    fail "#1430->#1428 migration — expected '$EXPECTED_NEW' and no bare '$EXPECTED_1430', got:"
-    cat "$T19_CONFIG"
-fi
-
 # ----- Test 18: #1437 residue check on a hand-customized allowlist -----
 # A customized exec.env_passthrough matches no migration literal, so new
 # knobs are never auto-added and stay silently inert (#1428 class). The
@@ -414,6 +393,28 @@ if [ -z "$T18_FULL_OUT" ]; then
 else
     fail "#1437 residue check false positive on the complete default: '$T18_FULL_OUT'"
 fi
+
+# ----- Test 19: #1430-era literal migrates to add the #1428 audit knobs -----
+# A federation installed between #1430 and #1428 carries the prioritizer
+# knob value without QA_ADVERSARIAL_LLM_CMD / CODE_EDIT_MAX_ATTEMPTS — on
+# such an install the qa_reviewer cross-provider reroute (#1405) and the
+# code-edit attempt-cap override are silently inert (getenv() reads the
+# SANITIZED env, #1428). The migration appends both knobs.
+T19_DIR="$FAKE_ROOT/t19"
+mkdir -p "$T19_DIR"
+T19_CONFIG="$T19_DIR/config"
+printf '%s\n' "$EXPECTED_1430" > "$T19_CONFIG"
+
+run_install_fragment "$T19_CONFIG"
+
+if grep -qxF "$EXPECTED_NEW" "$T19_CONFIG" \
+    && ! grep -qxF "$EXPECTED_1430" "$T19_CONFIG"; then
+    pass "#1430-era literal migrates to add QA_ADVERSARIAL_LLM_CMD + CODE_EDIT_MAX_ATTEMPTS (#1428)"
+else
+    fail "#1430->#1428 migration — expected '$EXPECTED_NEW' and no bare '$EXPECTED_1430', got:"
+    cat "$T19_CONFIG"
+fi
+
 
 # ----- Heartbeat interval (#280) -----
 
