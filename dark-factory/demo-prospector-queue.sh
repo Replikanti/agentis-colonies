@@ -112,6 +112,46 @@ erc=$?; ecount="$(grep -c . "$WORK/empty.queue" 2>/dev/null || true)"
   && pass "empty dossier input -> empty queue, exit 0 (CI-safe)" \
   || fail "empty input: exit $erc, $ecount rows"
 
+# --- 8. --limit caps to the top-ranked N ------------------------------------------------------------------
+QL="$WORK/limit.queue"
+"$RUN" --dossiers "$DOSS" --out "$QL" --limit 2 >/dev/null 2>&1
+l_keys="$(cut -f2 "$QL" | tr '\n' ' ')"
+[ "$l_keys" = "prospector:$BIG prospector:$MID " ] \
+  && pass "--limit 2 keeps the top 2 by payout ($l_keys)" \
+  || fail "--limit 2 wrong: [$l_keys]"
+
+# --- 9. A malformed (non-JSON) dossier line is skipped, never crashes the rank ----------------------------
+MAL="$WORK/malformed.jsonl"
+{ echo 'not json at all'; echo '{"target": "0xBROKEN", oops'; cat "$DOSS"; } > "$MAL"
+"$RUN" --dossiers "$MAL" --out "$WORK/mal.queue" >/dev/null 2>&1; mrc=$?
+mal_keys="$(cut -f2 "$WORK/mal.queue" | tr '\n' ' ')"
+if [ "$mrc" -eq 0 ] && [ "$mal_keys" = "prospector:$BIG prospector:$MID prospector:$SMALL prospector:$NOBTY " ]; then
+  pass "malformed dossier lines skipped, valid targets still ranked (exit 0)"
+else
+  fail "malformed handling: exit $mrc, keys [$mal_keys]"
+fi
+
+# --- 10. A target listed twice is deduped, keeping the highest-bounty row ---------------------------------
+DUP="$WORK/dup.jsonl"
+{
+  printf '{"target":"%s","chain":"1","label":"Big Lend","qualifies":true,"family":"lending","value":"above","why":"all gates pass","watch":"x","bounty":"5000000","commit":"c-big"}\n' "$BIG"
+  printf '{"target":"%s","chain":"1","label":"Big Lend (stale)","qualifies":true,"family":"lending","value":"above","why":"all gates pass","watch":"x","bounty":"3000000","commit":"c-old"}\n' "$BIG"
+} > "$DUP"
+"$RUN" --dossiers "$DUP" --out "$WORK/dup.queue" >/dev/null 2>&1
+dup_rows="$(grep -c "prospector:$BIG" "$WORK/dup.queue" 2>/dev/null || true)"
+dup_score="$(head -1 "$WORK/dup.queue" | cut -f1)"
+if [ "${dup_rows:-0}" -eq 1 ] && [ "$dup_score" = "5000000" ]; then
+  pass "duplicate target deduped to one row, highest bounty kept (score=$dup_score)"
+else
+  fail "dedup wrong: $dup_rows row(s), score [$dup_score]"
+fi
+
+# --- 11. CLI guards: unknown flag + missing flag value both exit 2 ----------------------------------------
+"$RUN" --bogus >/dev/null 2>&1; [ "$?" -eq 2 ] \
+  && pass "unknown flag -> exit 2" || fail "unknown flag did not exit 2"
+"$RUN" --dossiers >/dev/null 2>&1; [ "$?" -eq 2 ] \
+  && pass "flag missing its value -> exit 2" || fail "missing flag value did not exit 2"
+
 if [ "$FAIL" -eq 0 ]; then
   echo "demo-prospector-queue.sh: ALL CHECKS PASSED"
   exit 0
