@@ -69,10 +69,13 @@ backend = "cli"
 # #226: label vocabulary injected into the prioritizer prompts. Free-text;
 # the agent splices the value into the prompt verbatim so operators can
 # list comma-separated label names or describe non-label patterns. Leave
-# unset to keep the pre-#226 hardcoded defaults
-# ('priority::critical/high/medium/low, P1-P4, urgent').
+# unset to keep the #1474 hardcoded default (canonical-only:
+# 'priority::critical/high/medium/low'). Prioritizer's legacy-label
+# DETECTION heuristic still recognizes bare P1-P4/urgent on already-labeled
+# issues regardless of this vocab (see prioritizer.ag's is_pri()) — this
+# knob only controls what gets suggested going forward.
 [triage.labels]
-priority = "priority::critical, priority::high, priority::medium, priority::low, P1, P2, P3, P4, urgent"
+priority = "priority::critical, priority::high, priority::medium, priority::low"
 
 # Auto-confidence knobs (#106). These are informational in the current
 # Phase 1 shipment: the agents hard-code the defaults (match +0.02,

@@ -184,6 +184,29 @@ fn normalize_labels_csv(csv: string) -> string {
     return try { exec sh cmd; } catch e { ""; };
 }
 
+// #1474: labeler must never emit priority-like tokens -- that's
+// prioritizer's job, and a leaked bare P1/urgent here also gets baked into
+// a crystallized rule via distill() and would replay forever. Drops any
+// token matching the same case-insensitive heuristic prioritizer's
+// is_pri() uses: startswith "priority", ^P<digits>$, or "urgent".
+// Total-on-failure returns "" (matches normalize_labels_csv's convention --
+// fail CLOSED, not open, so a transient python error can never leak a
+// priority token instead of just skipping this tick's label write).
+fn strip_priority_like_labels(csv: string) -> string {
+    let cmd = "CSV=" + shell_escape(csv) +
+        " python3 -c 'import os, re\n" +
+        "def is_pri(t):\n" +
+        "    t2=t.strip().lower()\n" +
+        "    if not t2: return False\n" +
+        "    if t2.startswith(\"priority\"): return True\n" +
+        "    if re.fullmatch(r\"p\\d+\", t2): return True\n" +
+        "    if t2==\"urgent\": return True\n" +
+        "    return False\n" +
+        "toks=[t.strip() for t in os.environ[\"CSV\"].split(\",\") if t.strip() and not is_pri(t)]\n" +
+        "print(\",\".join(toks))'";
+    return try { exec sh cmd; } catch e { ""; };
+}
+
 // #1429 Stage 1b: walk the BM25 candidate list (JSON strings from
 // crystallizer_search, highest score first) and return the `condition` of
 // the first candidate that the CLASS-SCOPED, CONFIDENCE-GATED point lookup
@@ -811,8 +834,29 @@ fn fire_label_rule(owner: string, repo: string, my_tier: string, issue_id: int, 
         return "";
     };
 
-    let rule_labels = normalize_labels_csv(rule_action);
+    let rule_labels_raw = normalize_labels_csv(rule_action);
+    if len(rule_labels_raw) == 0 {
+        return "";
+    };
+    // #1474: the rule-REPLAY path must never write priority-like labels
+    // either -- a pre-existing contaminated crystallized rule (with a
+    // baked-in bare P1/urgent from before this fix) would otherwise keep
+    // replaying it forever, since crystallized rules are never re-filtered
+    // once minted. Same fail-closed strip_priority_like_labels() used on
+    // the direct prompt() path, applied here as the single choke point
+    // before apply_label_rule_hit() (the only write/verdict use of the
+    // rule's labels). Fail-closed like the "kw=" guard above: if
+    // everything gets stripped, skip firing this tick entirely (return ""
+    // so the caller falls through to the next stage / the prompt()) rather
+    // than writing an empty label set.
+    let rule_labels = strip_priority_like_labels(rule_labels_raw);
     if len(rule_labels) == 0 {
+        print("[labeler] rule-hit refused: labels empty after priority-strip", rule_id, "(#1474)");
+        if len(owner) > 0 {
+            learn("label", hit_ctx, "priority-only rule refused: " + rule_id, "partial", ["observed", "triage", "rule-rejected-priority-only", repo_tag(owner, repo)]);
+        } else {
+            learn("label", hit_ctx, "priority-only rule refused: " + rule_id, "partial", ["observed", "triage", "rule-rejected-priority-only"]);
+        };
         return "";
     };
     let rule_reasoning = hit_kind + ": crystallized label rule @conf " + rule_conf_str + ". Context: " + hit_ctx;
@@ -1018,9 +1062,18 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         } else { context; };
 
         let action = prompt(
-            "You are a labeling agent. Suggest labels for the most important unlabeled issue. Return JSON: issue_id (int), labels (comma-separated string), reasoning (string), author (string, the GitLab username from the issue's author.username field in the context — empty string if absent), confidence (float 0-1).",
+            "You are a labeling agent. Suggest labels for the most important unlabeled issue. Return JSON: issue_id (int), labels (comma-separated string), reasoning (string), author (string, the GitLab username from the issue's author.username field in the context — empty string if absent), confidence (float 0-1). Never suggest priority labels (anything starting with \"priority\", matching pattern P<digit>, or \"urgent\") — a separate agent owns priority.",
             grounded_context
         ) -> LabelAction;
+
+        // #1474: deterministic post-prompt() filter -- the prompt
+        // instruction above is defense-in-depth only; this is the actual
+        // enforcement point (haiku instruction-following on a short-reply
+        // agent is not reliable enough on its own). Every downstream read
+        // of the suggested labels uses this filtered value; only the
+        // `emit("triage:label_suggestion", action)` bus payload (no
+        // internal listener) still carries the raw pre-filter action.
+        let filtered_labels = strip_priority_like_labels(action.labels);
 
         // #1235 Stage 2: distill the LLM decision so repeat decisions on
         // the same context CLASS crystallize into a rule Stage 1 replays.
@@ -1050,7 +1103,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         if rule_first_enabled {
             if len(canonical_ctx) > 0 {
                 if action.issue_id == canon_iid {
-                    let canonical_action = normalize_labels_csv(action.labels);
+                    let canonical_action = normalize_labels_csv(filtered_labels);
                     if len(canonical_action) > 0 {
                         let scope_at = index_of(canonical_ctx, " scope=");
                         let coarse_ctx = if scope_at > 0 { substring(canonical_ctx, 0, scope_at); } else { canonical_ctx; };
@@ -1098,13 +1151,13 @@ fn tick_for_repo(owner: string, repo: string) -> void {
 
         if my_tier == "autonomous" {
             // colony-lint: safe-exec-concat
-            let update_cmd = "$COLONY_DIR/scripts/forge-api.sh update-issue " + to_string(action.issue_id) + " --add-labels " + shell_escape(action.labels) + repo_arg(owner, repo);
+            let update_cmd = "$COLONY_DIR/scripts/forge-api.sh update-issue " + to_string(action.issue_id) + " --add-labels " + shell_escape(filtered_labels) + repo_arg(owner, repo);
             let result = try { exec sh update_cmd; } catch e {
                 print("[labeler] Failed to apply labels:", e);
                 "";
             };
             if len(result) > 0 {
-                print("[labeler] Applied labels to issue", action.issue_id, ":", action.labels);
+                print("[labeler] Applied labels to issue", action.issue_id, ":", filtered_labels);
                 // #104: tag knowledge as personal (operator's issue) vs team.
                 let scope = scope_for_author(action.author);
                 emit("triage:label_suggestion", action);
@@ -1115,16 +1168,16 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 // row still lands (acceptable asymmetry — a missing soak
                 // row means no reality-check adjustment for this iid, not a
                 // phantom success).
-                record_autonomous_verdict(owner, repo, action.issue_id, action.labels, "");
+                record_autonomous_verdict(owner, repo, action.issue_id, filtered_labels, "");
                 if len(owner) > 0 {
-                    learn("label", "issue " + to_string(action.issue_id), action.labels, "success", [scope, "triage", "acted", repo_tag(owner, repo)]);
+                    learn("label", "issue " + to_string(action.issue_id), filtered_labels, "success", [scope, "triage", "acted", repo_tag(owner, repo)]);
                 } else {
-                    learn("label", "issue " + to_string(action.issue_id), action.labels, "success", [scope, "triage", "acted"]);
+                    learn("label", "issue " + to_string(action.issue_id), filtered_labels, "success", [scope, "triage", "acted"]);
                 };
             };
         } else {
             if my_tier == "review-gated" {
-                let note = "[draft-labels] **Label Suggestion** (automated, pending approval): " + action.labels + "\n\n" + action.reasoning;
+                let note = "[draft-labels] **Label Suggestion** (automated, pending approval): " + filtered_labels + "\n\n" + action.reasoning;
                 // colony-lint: safe-exec-concat
                 let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(action.issue_id) + " --body " + shell_escape(note) + repo_arg(owner, repo);
                 try { exec sh post_cmd; } catch e {
@@ -1134,36 +1187,36 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 // #106: stash the verdict so the next tick can score this
                 // suggestion against whatever the operator eventually applies
                 // to the issue.
-                record_label_verdict(owner, repo, action.issue_id, action.labels, "");
+                record_label_verdict(owner, repo, action.issue_id, filtered_labels, "");
                 let scope = scope_for_author(action.author);
                 if len(owner) > 0 {
-                    learn("label", "issue " + to_string(action.issue_id), action.labels, "partial", [scope, "triage", "review-gated", repo_tag(owner, repo)]);
+                    learn("label", "issue " + to_string(action.issue_id), filtered_labels, "partial", [scope, "triage", "review-gated", repo_tag(owner, repo)]);
                 } else {
-                    learn("label", "issue " + to_string(action.issue_id), action.labels, "partial", [scope, "triage", "review-gated"]);
+                    learn("label", "issue " + to_string(action.issue_id), filtered_labels, "partial", [scope, "triage", "review-gated"]);
                 };
             } else {
                 if my_tier == "propose" {
-                    print("[labeler] Suggesting labels for issue", action.issue_id, ":", action.labels);
+                    print("[labeler] Suggesting labels for issue", action.issue_id, ":", filtered_labels);
                     emit("triage:label_suggestion", action);
                     // #106: stash the verdict so next tick can score this
                     // suggestion against whatever the operator actually does
                     // to the issue. Only records at propose/review-gated level —
                     // at autonomous the agent writes its own labels, so there's
                     // no separable operator signal to score against.
-                    record_label_verdict(owner, repo, action.issue_id, action.labels, "");
+                    record_label_verdict(owner, repo, action.issue_id, filtered_labels, "");
                     let scope = scope_for_author(action.author);
                     if len(owner) > 0 {
-                        learn("label", "issue " + to_string(action.issue_id), action.labels, "partial", [scope, "triage", "emitted", repo_tag(owner, repo)]);
+                        learn("label", "issue " + to_string(action.issue_id), filtered_labels, "partial", [scope, "triage", "emitted", repo_tag(owner, repo)]);
                     } else {
-                        learn("label", "issue " + to_string(action.issue_id), action.labels, "partial", [scope, "triage", "emitted"]);
+                        learn("label", "issue " + to_string(action.issue_id), filtered_labels, "partial", [scope, "triage", "emitted"]);
                     };
                 } else {
                     print("[labeler] Observing (tier:", my_tier, ")");
                     let scope = scope_for_author(action.author);
                     if len(owner) > 0 {
-                        learn("label", "issue " + to_string(action.issue_id), action.labels, "partial", [scope, "triage", "observed", repo_tag(owner, repo)]);
+                        learn("label", "issue " + to_string(action.issue_id), filtered_labels, "partial", [scope, "triage", "observed", repo_tag(owner, repo)]);
                     } else {
-                        learn("label", "issue " + to_string(action.issue_id), action.labels, "partial", [scope, "triage", "observed"]);
+                        learn("label", "issue " + to_string(action.issue_id), filtered_labels, "partial", [scope, "triage", "observed"]);
                     };
                 };
             };

@@ -15,6 +15,16 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Fixed
+
+- Unified priority label taxonomy — labeler no longer emits bare P1-P4/urgent
+  labels (`priority` is prioritizer's job); prioritizer's unconfigured-memo
+  fallback narrowed to the scoped `priority::critical/high/medium/low` set
+  only ([#1474](https://github.com/Replikanti/agentis-colonies/issues/1474)).
+  Legacy `P1-P4`/`urgent` labels already applied to issues are still
+  recognized by prioritizer's detection heuristic (unchanged) — they just
+  won't be *suggested* anymore.
+
 ## [2.6.0] — 2026-07-08
 
 **Requires:** agentis >= 1.20.0
