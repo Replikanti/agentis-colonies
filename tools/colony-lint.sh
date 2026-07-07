@@ -789,6 +789,22 @@ if [ -x "$REPO_ROOT/dark-factory/demo-prospector-queue.sh" ]; then
     fi
 fi
 
+# --- dark-factory snapshot owner-rebind hard assert (#1457) ---
+# The snapshot-replay harness reads the account's real on-chain owner and emits an explicit
+# OWNER REBIND / MATCH / MISMATCH marker; with EXPECT_PROGRAM_OWNER (run-audit --expect-owner) it
+# HARD-ASSERTS owner-match, refusing a mismatch as INCONCLUSIVE so a re-owned copy is never reported
+# VERIFIED. demo-owner-assert.sh source-guards the harness + run-audit wiring (CI-safe) and, when the
+# poc_snapshot binary is present (Solana toolchain), also runs the 3 modes live.
+if [ -x "$REPO_ROOT/dark-factory/demo-owner-assert.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-owner-assert.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: snapshot owner-rebind hard assert (explicit marker + EXPECT_PROGRAM_OWNER) (#1457)"
+    else
+        fail "dark-factory: snapshot owner-rebind hard assert regressed (#1457)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- tier-branch double learn() guard (#636) ---
 # Every `_publish_<role>(...)` / `_submitter_<phase>(...)` helper in
 # research-foundry/ must gate its top-level `learn(..., ["emitted", ...])`

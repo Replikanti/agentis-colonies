@@ -601,6 +601,7 @@ dark-factory/
   demo-batch.sh                 # offline, deterministic proof of the #1055 batch runner: a fixture queue + stub --hunt-cmd -> score order, ledgered key skipped, confirmed finding staged (NOT submitted), resumable no-op re-run, exit 0
   demo-submit-triage.sh         # offline, deterministic proof of the #1056 triage: a complete package -> READY/HIGH, an incomplete one -> INCOMPLETE missing poc, checklist + manual-submit note, empty root -> SKIP, no egress, exit 0
   demo-prospector-queue.sh      # offline, deterministic proof of the #1459 bounty-ranked queue: fixture dossiers -> ranked bounty desc, non-qualifying excluded (gates are the floor), scope_hint carries addr+commit, run-batch consumes highest-first, no egress, exit 0
+  demo-owner-assert.sh          # proof of the #1457 snapshot owner-rebind hard assert: harness reads the real on-chain owner + emits OWNER REBIND/MATCH/MISMATCH; EXPECT_PROGRAM_OWNER mismatch -> INCONCLUSIVE (exit 3) before the exploit; source-guard (CI-safe) + live 3-mode run when the toolchain is present
   setup-solana-toolchain.sh     # one-time offline toolchain build (network ON)
   snapshot-rpc.sh               # host RPC getAccountInfo -> frozen on-chain snapshot (V4)
   calibrate-sealevel.sh         # detection+validation scorecard over the sealevel corpus (V6)

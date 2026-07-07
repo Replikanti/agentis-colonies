@@ -6,6 +6,11 @@
 //! to the in-scope program (the test program is not deployed on-chain, so it cannot own a
 //! real dumped account — only its lamports + data bytes are replayed). Same two-sided
 //! contract as the default PoC: CONTROL accepted, EXPLOIT (non-signer drain) violates.
+//!
+//! #1457 — the rebind is surfaced as an EXPLICIT, machine-checkable `OWNER REBIND` marker (naming the
+//! snapshot's real on-chain owner) instead of a silent mismatch. Set `EXPECT_PROGRAM_OWNER=<base58>` to
+//! HARD-ASSERT owner-match: a mismatch exits 3 (INCONCLUSIVE) before the exploit runs, so a re-owned
+//! copy is never reported VERIFIED.
 use solana_harness::target;
 use solana_program_test::{processor, BanksClient, ProgramTest};
 use solana_sdk::{
@@ -26,6 +31,18 @@ fn field(s: &str, key: &str) -> u64 {
         }
     }
     0
+}
+
+// The raw string value of a snapshot field (e.g. the base58 `account.owner`); "" when absent.
+fn field_str(s: &str, key: &str) -> String {
+    for line in s.lines() {
+        if let Some(rest) = line.strip_prefix(key) {
+            if let Some(v) = rest.strip_prefix('=') {
+                return v.trim().to_string();
+            }
+        }
+    }
+    String::new()
 }
 
 fn vault_account(program_id: Pubkey, lamports: u64, balance: u64) -> Account {
@@ -61,6 +78,7 @@ async fn main() {
     let snap = fs::read_to_string("snapshot.txt").unwrap_or_default();
     let lamports = field(&snap, "account.lamports");
     let balance = field(&snap, "account.data_first8_le");
+    let snap_owner = field_str(&snap, "account.owner"); // the account's REAL on-chain owner (base58)
     if balance == 0 {
         // A zero-value snapshot has nothing to drain; "drained to 0" would be vacuous, so
         // refuse to claim a violation (no false-VERIFIED on an empty/foreign snapshot).
@@ -72,6 +90,28 @@ async fn main() {
     let vault_ctrl = Pubkey::new_unique();
     let vault_exploit = Pubkey::new_unique();
     let authority = Keypair::new();
+
+    // #1457 — owner-graph fidelity. The snapshot carries the account's REAL on-chain owner, but the test
+    // program runs under a local id and the replayed account is rebound to it (a real dumped account cannot
+    // be owned by an undeployed test program). Make that rebind an EXPLICIT, machine-checkable fact rather
+    // than a silent mismatch a triager could dispute. When the operator knows the expected in-scope owner
+    // (e.g. a load-at-real-address run) they set EXPECT_PROGRAM_OWNER and we HARD-ASSERT it against the
+    // snapshot's real owner, refusing the replay (exit 3, INCONCLUSIVE) on a mismatch rather than claiming
+    // VERIFIED against a re-owned copy. Unset -> the explicit rebind disclosure (the safe default).
+    let shown_owner = if snap_owner.is_empty() { "<none>".to_string() } else { snap_owner.clone() };
+    match std::env::var("EXPECT_PROGRAM_OWNER") {
+        Ok(expected) if !expected.is_empty() => {
+            if snap_owner == expected {
+                eprintln!("OWNER MATCH: snapshot account owner {} == expected in-scope program owner (owner-graph faithful; rebind is a no-op)", shown_owner);
+            } else {
+                eprintln!("OWNER MISMATCH: snapshot account owner {} != expected in-scope program owner {} — the replay would run against a RE-OWNED copy, not the real ownership graph; refusing (INCONCLUSIVE). Set EXPECT_PROGRAM_OWNER to the account's real owner, or unset it to accept the disclosed rebind.", shown_owner, expected);
+                std::process::exit(3);
+            }
+        }
+        _ => {
+            eprintln!("OWNER REBIND: snapshot account owner {} rebound to harness program {} (the in-scope program is not deployed on-chain; only the real lamports+data are replayed, not the on-chain ownership graph — disclose this and re-verify against real program-derived ownership before submitting)", shown_owner, program_id);
+        }
+    }
 
     let mut pt =
         ProgramTest::new("solana_harness", program_id, processor!(target::process_instruction));
