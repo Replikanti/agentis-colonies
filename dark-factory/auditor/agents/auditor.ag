@@ -1187,8 +1187,7 @@ fn marker_int(observed: string, key: string) -> int {
 fn funds_at_risk() -> string {
     let sp = getenv("BOUNTY_SNAPSHOT");
     if len(sp) > 0 {
-        // colony-lint: safe-exec-concat
-        let dump = exec sh "cat ${sp} 2>/dev/null || true";
+        let dump = exec sh "cat " + shell_escape(sp) + " 2>/dev/null || true";
         let lamports = marker_int(dump, "account.lamports");
         if lamports > 0 {
             return "**" + to_string(lamports) + " lamports** at risk on the snapshotted account (read from the frozen on-chain dump `" + sp + "`): the two-sided PoC drains this REAL balance on the EXPLOIT path while the CONTROL path conserves it. Protocol-wide exposure may be larger — scale to the program's full TVL.";
@@ -1347,8 +1346,7 @@ fn submission_gate(th: string) -> string {
 fn snapshot_state() -> string {
     let p = getenv("BOUNTY_SNAPSHOT");
     if len(p) > 0 {
-        // colony-lint: safe-exec-concat
-        let dump = exec sh "cat ${p} 2>/dev/null || true";
+        let dump = exec sh "cat " + shell_escape(p) + " 2>/dev/null || true";
         if index_of(dump, "account.lamports") >= 0 {
             print("snapshot: using host-supplied RPC dump (BOUNTY_SNAPSHOT, real account format)");
             return dump;

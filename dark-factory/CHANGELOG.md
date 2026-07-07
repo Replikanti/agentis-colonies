@@ -54,6 +54,12 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
     snapshot quantified-vs-qualitative split, the owner-rebind disclosure, and the multi-account regression.
     Extended `demo-submit-triage.sh` to cover INCOMPLETE-over-DUP-RISK precedence, the `dup_hit` body-match
     path, and the `has_repro` present/MISSING checklist value (15 assertions).
+  - **Security hardening (PR #1462 review)** — `funds_at_risk` and `snapshot_state` now wrap the
+    `BOUNTY_SNAPSHOT` path in `shell_escape()` before the `cat` in `exec sh` (replacing the
+    `safe-exec-concat` waiver), so a hostile snapshot path (e.g. `x; touch pwned` set directly in an
+    automation context) cannot inject a shell command. Verified: with a metacharacter-laden value the
+    injected command does not run. The value is normally operator-supplied and `-f`-validated by
+    `run-audit.sh`, but escaping closes the direct-env-set path too.
 - **monitor: read robustness — RPC failover + read consensus, and a watch-spec drift detector** (#1098, #1097).
   Two hardening passes that keep a 24/7 read-only watch honest. NON-custodial / read-only throughout
   (`cast call` / `cast storage` / `cast balance` / `cast code` only — never a signed transaction, never fund
