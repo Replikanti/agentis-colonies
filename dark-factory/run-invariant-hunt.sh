@@ -185,10 +185,16 @@ if [ -n "$FIXTURE" ]; then
   [ -f "$FIXTURE" ] || { echo "run-invariant-hunt.sh: --handler-fixture not found: $FIXTURE" >&2; exit 2; }
   FIXTURE="$(cd "$(dirname "$FIXTURE")" && pwd)/$(basename "$FIXTURE")"
 fi
-# Default the code path to <repo>/src/<Contract.sol> on the live path (the LLM reads it to write the handler).
+# Default the code path to the target source the LLM reads to write the handler (live path). The `--target`
+# FILE part may be a full repo-relative path (`src/contracts/vault/Vault.sol`) OR the bare `src/`-convention
+# name (`Morpho.sol`), so try `<repo>/<file>` FIRST, then the `<repo>/src/<file>` convention. Resolving the
+# real source is what lets the LLM import the in-scope contract AND arms the #1471 target-linkage gate; a
+# nested `--target` that fell through to an empty CODE_PATH used to disarm the gate and pass toy findings (#1475).
 if [ -z "$FIXTURE" ] && [ -z "$CODE" ]; then
   _c="${TARGET%%:*}"
-  [ -f "$REPO/src/$_c" ] && CODE="$REPO/src/$_c"
+  if [ -f "$REPO/$_c" ]; then CODE="$REPO/$_c"
+  elif [ -f "$REPO/src/$_c" ]; then CODE="$REPO/src/$_c"
+  fi
 fi
 if [ -n "$CODE" ]; then
   [ -f "$CODE" ] || { echo "run-invariant-hunt.sh: --code not found: $CODE" >&2; exit 2; }

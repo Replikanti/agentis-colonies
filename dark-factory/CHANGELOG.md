@@ -15,6 +15,15 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **Invariant-hunt CODE_PATH resolution for nested `--target`** (#1475). `run-invariant-hunt.sh` defaulted the
+  LLM source path (`CODE_PATH`) to `<repo>/src/<target-file>`, so a nested `--target` like
+  `src/contracts/vault/Vault.sol:Vault` became `<repo>/src/src/contracts/vault/Vault.sol` (double `src/`) →
+  `CODE_PATH` stayed **empty**. That both starved the LLM of the target source (it fabricates a toy of the same
+  name) and **disarmed the #1471 linkage gate** (which only arms when `CODE_PATH` is non-empty), so the toy
+  reached a FINDING instead of HARNESS_ERROR — proven live on a Symbiotic `Vault` run (FINDING against a test
+  that imported nothing and declared its own `contract Vault`). Now resolves `<repo>/<target-file>` first, then
+  the `<repo>/src/<basename>` convention — nested, `src/`-prefixed, and bare-basename targets all resolve, so
+  the gate arms. Regression: `tools/test-invariant-codepath-resolution.sh`.
 - **Invariant-hunt target-linkage gate** (#1471). Closes a false-FINDING hole on the invariant-hunt generation
   path: when the real target is hard to harness, the LLM could silently substitute its OWN toy contract of the
   same name and the fuzzer would "find" a bug it planted THERE — a FINDING against fabricated code with zero
