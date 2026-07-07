@@ -181,6 +181,14 @@ if printf '%s\n' "$OUT2" | grep 'body:dup' | grep -q 'DUP-RISK'; then
 else
   fail "body-path dedup missed; got: $(printf '%s' "$OUT2" | grep 'body:dup')"
 fi
+# A known-issues file whose LAST line has NO trailing newline must not be dropped by dup_hit's read loop.
+KNOWN_NONL="$WORK/known-nonl.txt"; printf 'settle' > "$KNOWN_NONL"   # no trailing \n; matches body:dup fn `settle`
+OUT3="$("$RUN" --root "$ROOT" --known-issues "$KNOWN_NONL" 2>/dev/null)"
+if printf '%s\n' "$OUT3" | grep 'body:dup' | grep -q 'DUP-RISK'; then
+  pass "final known-issue line without trailing newline is honored (read loop not dropping last line)"
+else
+  fail "no-trailing-newline known-issue line was dropped; got: $(printf '%s' "$OUT3" | grep 'body:dup')"
+fi
 
 # Checklist mode for the READY candidate — must surface repro + impact + dedup review items.
 CL="$("$RUN" --checklist "$ROOT/sherlock:good" --known-issues "$KNOWN" 2>/dev/null)"

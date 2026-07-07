@@ -63,7 +63,13 @@ severity_of() {
 # or no section at all (a warning for the human, not a hard block).
 impact_of() {
   grep -qi '## Impact quantification' "$1" 2>/dev/null || { echo "qual?"; return; }
-  if grep -q 'Qualitative:' "$1" 2>/dev/null; then echo "qual?"; else echo "quant"; fi
+  # Scope the fallback-token check to the Impact quantification SECTION (between its header and the next
+  # `## `), so a `Qualitative:` mention elsewhere in the report can't misclassify a quantified finding.
+  if awk '/^## Impact quantification/{s=1;next} /^## /{s=0} s' "$1" 2>/dev/null | grep -q 'Qualitative:'; then
+    echo "qual?"
+  else
+    echo "quant"
+  fi
 }
 
 # The finding's affected function, pulled from the Immunefi-shaped report table row
@@ -83,7 +89,8 @@ dup_hit() {  # $1 = report.md path (uses global KNOWN_ISSUES)
   [ -n "$KNOWN_ISSUES" ] && [ -f "$KNOWN_ISSUES" ] || return 1
   local rpt="$1" fn line l
   fn="$(affected_fn "$rpt" | tr 'A-Z' 'a-z')"
-  while IFS= read -r line; do
+  # `|| [ -n "$line" ]` so a final known-issue line with no trailing newline is not dropped by read.
+  while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|'#'*) continue ;; esac
     l="$(printf '%s' "$line" | tr 'A-Z' 'a-z' | awk '{gsub(/^[ \t]+|[ \t]+$/,"");print}')"
     [ -n "$l" ] || continue

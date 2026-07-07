@@ -719,6 +719,35 @@ if [ -x "$REPO_ROOT/research-foundry/tools/test-mathlib-novelty-check.sh" ]; the
     fi
 fi
 
+# --- dark-factory submission-triage gates (#1456/#1458) ---
+# submit-triage.sh scores staged findings (READY / INCOMPLETE / DUP-RISK), flags impact-credibility
+# (IMPACT quant/qual?) and duplicate-risk (NOVELTY via --known-issues), and never contacts a platform.
+# demo-submit-triage.sh is pure bash (no agentis / no network) so it runs on CI runners.
+if [ -x "$REPO_ROOT/dark-factory/demo-submit-triage.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-submit-triage.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: submit-triage gates (impact/dedup/precedence, never-submits) (#1456/#1458)"
+    else
+        fail "dark-factory: submit-triage gates regressed (#1456/#1458)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
+# --- dark-factory report-quality e2e (#1456/#1457) ---
+# A real VERIFIED audit must stage an Immunefi-shaped report.md (impact quantification mapped to the
+# Immunefi bands) + a REPRODUCTION.md manifest, quantify funds-at-risk ONLY from a real snapshot, and
+# disclose the owner rebind. Needs the agentis runtime + rustc, so it SKIPs (exit 0) on runners lacking
+# them — a no-op on CI, a real gate locally / where the toolchain is present.
+if [ -x "$REPO_ROOT/dark-factory/demo-report-quality.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-report-quality.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: report-quality e2e (report + REPRODUCTION.md, quantified-from-snapshot) (#1456/#1457)"
+    else
+        fail "dark-factory: report-quality e2e regressed (#1456/#1457)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- tier-branch double learn() guard (#636) ---
 # Every `_publish_<role>(...)` / `_submitter_<phase>(...)` helper in
 # research-foundry/ must gate its top-level `learn(..., ["emitted", ...])`

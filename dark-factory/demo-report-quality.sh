@@ -7,15 +7,33 @@
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
-if ! command -v agentis >/dev/null 2>&1; then
-  echo "demo-report-quality.sh: [SKIP] agentis not on PATH — report-generation e2e needs the runtime (CI has none)"
-  exit 0
-fi
-command -v rustc >/dev/null 2>&1 || { echo "demo-report-quality.sh: [SKIP] rustc not on PATH — std-only PoC needs it"; exit 0; }
-
 FAIL=0
 pass() { echo "demo-report-quality.sh: [PASS] $1"; }
 fail() { echo "demo-report-quality.sh: [FAIL] $1" >&2; FAIL=1; }
+
+# --- SOURCE-level branch coverage (runs on CI too — no agentis needed) ---------------------------------------
+# The report's class->string maps must not silently lose a branch. Assert every vuln class in the taxonomy has
+# an `impact_category_for` branch, and every Immunefi band has a `rubric_line_for` branch. A deleted branch
+# would otherwise fall through to the generic default and mislabel a real finding.
+AG_SRC="$HERE/auditor/agents/auditor.ag"
+fn_body() { awk "/^fn $1\\(/{s=1} s{print} s&&/^}/{exit}" "$AG_SRC" 2>/dev/null; }
+IC="$(fn_body impact_category_for)"; RL="$(fn_body rubric_line_for)"
+for cls in MissingSignerCheck MissingOwnerCheck AccountDataMatching ArbitraryCPI IntegerOverflow \
+           Reentrancy AccessControl UncheckedCall OracleManipulation; do
+  printf '%s' "$IC" | grep -qF "\"$cls\"" || fail "impact_category_for missing a branch for class $cls"
+done
+[ "$FAIL" -eq 0 ] && pass "impact_category_for covers all 9 taxonomy classes (no dropped branch)"
+band_ok=1
+for band in Critical High Medium; do printf '%s' "$RL" | grep -qF "== \"$band\"" || band_ok=0; done
+printf '%s' "$RL" | grep -qi 'Informational' || band_ok=0
+[ "$band_ok" -eq 1 ] && pass "rubric_line_for covers Critical/High/Medium/Informational bands" || fail "rubric_line_for missing a severity band"
+
+# --- End-to-end report generation (needs the agentis runtime + rustc) ---------------------------------------
+if ! command -v agentis >/dev/null 2>&1; then
+  echo "demo-report-quality.sh: [SKIP] agentis not on PATH — report-generation e2e needs the runtime (CI has none)"
+  [ "$FAIL" -eq 0 ] && exit 0 || exit 1
+fi
+command -v rustc >/dev/null 2>&1 || { echo "demo-report-quality.sh: [SKIP] rustc not on PATH — std-only PoC needs it"; [ "$FAIL" -eq 0 ] && exit 0 || exit 1; }
 
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 TGT="$HERE/fixtures/vuln_missing_signer.rs"   # std-only MissingSignerCheck fixture (compiles offline)
@@ -34,7 +52,13 @@ grep -q '## Impact quantification' "$R1" 2>/dev/null && pass "report has Impact 
 grep -qi '| Impact category |' "$R1" 2>/dev/null && grep -qi '| Severity rationale |' "$R1" 2>/dev/null && pass "report has Impact category + Severity rationale rows" || fail "report missing impact-category / severity-rationale rows"
 grep -q 'Critical' "$R1" 2>/dev/null && pass "MissingSignerCheck mapped to Critical band" || fail "severity band not Critical"
 sed -n '/## Impact quantification/,/^## /p' "$R1" | grep -q 'Qualitative:' && pass "no-snapshot run -> Qualitative funds-at-risk (honest, not a fabricated figure)" || fail "no-snapshot run did not fall back to Qualitative"
-grep -q 'sha256:' "$M1" 2>/dev/null && grep -q 'run-audit.sh --target' "$M1" 2>/dev/null && pass "REPRODUCTION.md carries target sha256 + deterministic rerun command" || fail "REPRODUCTION.md missing sha256 / rerun command"
+# Strengthened: assert the manifest carries the ACTUAL sha256 of the staged target, not just a sha256 line.
+WANT_SHA="$( { sha256sum "$TGT" 2>/dev/null || shasum -a 256 "$TGT" 2>/dev/null; } | awk '{print $1}')"
+if [ -n "$WANT_SHA" ] && grep -qF "$WANT_SHA" "$M1" 2>/dev/null && grep -q 'run-audit.sh --target' "$M1" 2>/dev/null; then
+  pass "REPRODUCTION.md carries the target's real sha256 ($WANT_SHA) + deterministic rerun command"
+else
+  fail "REPRODUCTION.md missing the correct target sha256 / rerun command"
+fi
 
 # --- 2. VERIFIED with a REAL single-account snapshot: funds-at-risk is quantified from the frozen value ---
 SNAP2="$WORK/snap-single.txt"; printf 'vault.authority=1\nvault.balance=4200\naccount.lamports=750000000\naccount.data_first8_le=4200\n' > "$SNAP2"
