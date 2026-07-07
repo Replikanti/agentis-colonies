@@ -26,20 +26,25 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
     on demonstrated fund-loss, not on a violated invariant; a marker-less (e.g. EVM/revm) run degrades to
     an explicit "quantify against the live deployment" note. New SHALLOW leaves `marker_int`,
     `funds_at_risk`, `impact_category_for`, `rubric_line_for`.
-  - **#1457 reproduction manifest** — `run-audit.sh` stages `REPRODUCTION.md` in the submission package:
-    target sha256, harness kind, `rustc`/`cargo`/`agentis` versions, backend/sandbox, and a deterministic
-    rerun command, so a platform triager can reproduce against the live deployment. On a snapshot-based
-    run it discloses the account-owner rebind (the harness program is not deployed on-chain) rather than
-    shipping a silent mismatch.
+  - **#1457 reproduction manifest + owner-rebind disclosure** — `run-audit.sh` stages `REPRODUCTION.md`
+    in the submission package: target sha256, harness kind, `rustc`/`cargo`/`agentis` versions,
+    backend/sandbox, and a deterministic rerun command, so a platform triager can reproduce against the
+    live deployment. On a snapshot-based run BOTH `REPRODUCTION.md` and the generated `report.md`
+    snapshot-replay section now **disclose the account-owner rebind** (the harness program is not deployed
+    on-chain) rather than shipping a silent mismatch, so the human states it up-front and re-verifies
+    against real program-derived ownership before submitting. Also corrects the stale RUNBOOK
+    "Known limitations" note: a supplied `BOUNTY_POC`/`--poc` is already gated by the #852 structural +
+    per-run target-linkage challenge (a target-agnostic marker-printer is REJECTED as INCONCLUSIVE, not
+    VERIFIED); only a sophisticated link-but-never-invoke PoC remains an operator-trust residual.
   - **#1456/#1458 triage gates in `submit-triage.sh`** — the scan gains an **IMPACT** column
     (`quant` / `qual?`) and, with a new `--known-issues <file>` public-disclosure list, a **NOVELTY**
     column that flags an already-disclosed finding as `DUP-RISK` instead of silently `READY` (Immunefi
     pays only the first reporter). The per-candidate checklist gains repro-manifest, impact-quantification,
     and dedup review items. Also fixes `severity_of` to read the real `| Severity (Immunefi) | … |` table
     row (it previously only matched a plain `Severity: …` line). Covered by `demo-submit-triage.sh`
-    (offline, deterministic — no agentis, no network). Follow-ups tracked on the epic: the Rust-harness
-    owner-rebind assertion + trusted-`--poc` hardening (#1457 core) and bounty-weighted target
-    prioritization in `prospector` (#1459).
+    (offline, deterministic — no agentis, no network). Follow-ups tracked on the epic: the harness-level
+    owner-match *assertion* for snapshot replay (the offline disclosure landed here; the hard assert needs
+    the Solana toolchain) and bounty-weighted target prioritization in `prospector` (#1459).
 - **monitor: read robustness — RPC failover + read consensus, and a watch-spec drift detector** (#1098, #1097).
   Two hardening passes that keep a 24/7 read-only watch honest. NON-custodial / read-only throughout
   (`cast call` / `cast storage` / `cast balance` / `cast code` only — never a signed transaction, never fund

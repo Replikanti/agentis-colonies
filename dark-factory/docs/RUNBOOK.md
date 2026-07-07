@@ -148,9 +148,16 @@ secure variants. Regenerate with `./calibrate-sealevel.sh`.
   solana 2.x harness (same vuln + structure); detection runs on the source either way.
 - **Snapshot replay** supplies a frozen account's real `lamports` + data; the account owner
   is rebound to the in-scope program for replay (the harness program is not deployed
-  on-chain). For a live target the operator dumps that program's own accounts.
-- **Operator-supplied PoC (`BOUNTY_POC`/`--poc`)** is trusted: a hand-supplied PoC that
-  prints the markers without exercising the target will pass the gate. The autonomous and
-  template paths always run the real two-sided harness; only the explicit human override
-  bypasses it. (Hardening the control side to demonstrably exercise the target is tracked as
-  a follow-up.)
+  on-chain). For a live target the operator dumps that program's own accounts. Since #1457 the
+  generated `report.md` **discloses this owner rebind** in its snapshot-replay section (and the
+  submission package's `REPRODUCTION.md` repeats it), so the human states it up-front and
+  re-verifies against real program-derived ownership on the live deployment before submitting.
+- **Operator-supplied PoC (`BOUNTY_POC`/`--poc`)** is gated, not blindly trusted (#852): a
+  supplied PoC must (1) **structurally reference** the in-scope target/harness and (2) pass a
+  **per-run target-linkage challenge** — a nonce const appended to this run's target that the
+  wrapped PoC must echo back, so a target-agnostic marker-printer that merely prints
+  `CONTROL OK:` / `INVARIANT VIOLATED:` is **REJECTED (INCONCLUSIVE)**, never VERIFIED. Only
+  then does the two-sided `assess()` decide. Residual: a sophisticated *link-but-never-invoke*
+  PoC (one that compiles against the target but captures stdout instead of exercising it) is
+  indistinguishable from captured output and remains an operator-trust item — the autonomous
+  LLM/template paths are unaffected (they always run the real two-sided harness).
