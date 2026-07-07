@@ -50,6 +50,37 @@ import sys
 
 FORMAT_VERSION = 1
 
+# #1466: the shared snapshot memo has a hard value-size ceiling in the agentis
+# runtime (`memo set` rejects a value over this many bytes). The publish step
+# used to hit it silently once the repo grew past a handful of issues — the
+# oversize `memo set` failed under `|| true` while the freshness ts kept
+# refreshing, so agents trusted a stale snapshot forever. We now bound the
+# envelope BEFORE it can exceed the cap, here in the compressor, via a single
+# knob. This is the one place the default ceiling lives; keep it in sync with
+# the `SNAPSHOT_MEMO_MAX_BYTES` default documented in start-colony.sh.
+DEFAULT_MEMO_MAX_BYTES = 10240
+
+# Descending per-issue `description` length ladder tried when the full envelope
+# does not fit the cap. Each rung re-compresses the item list with descriptions
+# truncated to that many code points (0 = drop the field entirely) and the
+# first envelope that fits wins. Mirrors the graceful-degrade idiom: keep as
+# much structure as the cap allows, mark what was dropped, never emit nothing.
+DESC_CAP_LADDER = (512, 300, 160, 80, 0)
+
+
+def memo_max_bytes():
+    # Read the snapshot memo ceiling from the environment (SNAPSHOT_MEMO_MAX_BYTES),
+    # falling back to DEFAULT_MEMO_MAX_BYTES. Mirrors the env-knob idiom in
+    # agentis_memo_freshness.py: an unset / non-positive / non-integer value
+    # yields the default rather than raising. Runs only on the write path (the
+    # `snapshot issues` verb), never on the daemon read path, so this getenv
+    # read never needs to reach the sanitized-env allowlist.
+    try:
+        v = int(os.environ.get("SNAPSHOT_MEMO_MAX_BYTES", ""))
+        return v if v > 0 else DEFAULT_MEMO_MAX_BYTES
+    except (TypeError, ValueError):
+        return DEFAULT_MEMO_MAX_BYTES
+
 # Union of every field any dev-apprenticeship role projects out of a GitLab
 # item (see each colony's gitlab-api.sh project_json views). Keeping this an
 # explicit allowlist is what makes the compact form small: anything not in
@@ -150,10 +181,21 @@ def empty_envelope(collection):
 
 
 def compress(collection, raw):
+    # Parse the raw GitLab JSON blob and delegate to compress_data. Signature
+    # and behaviour are unchanged (the in-file --self-test and any caller pass
+    # a raw string); the parsed-list path is factored out so the size-bounding
+    # code (#1466) can re-compress an already-parsed, description-truncated list
+    # without re-serializing + re-parsing it at every ladder rung.
     try:
         data = json.loads(raw)
     except (ValueError, TypeError):
         return empty_envelope(collection)
+    if not isinstance(data, list):
+        return empty_envelope(collection)
+    return compress_data(collection, data)
+
+
+def compress_data(collection, data):
     if not isinstance(data, list):
         return empty_envelope(collection)
 
@@ -184,6 +226,82 @@ def compress(collection, raw):
         "chunks": chunks,
         "items": items,
     }
+
+
+def _envelope_bytes(env):
+    # UTF-8 length of the canonical serialized form — the exact bytes the memo
+    # value carries, so the bound is measured against what `memo set` stores.
+    return len(json.dumps(env, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+
+
+def truncate_descriptions(data, cap):
+    # Return a shallow copy of the raw item list with each item's string
+    # `description` bounded to `cap` code points. A truncated description keeps
+    # its head and gains an explicit ` …[+<N> chars]` marker (N = dropped code
+    # points) so a reader never mistakes a bounded body for the full one; a
+    # `cap == 0` drops the field entirely. Non-dict items and items without a
+    # string description pass through untouched. Only `description` is touched —
+    # the structural fields the other triage views consume are preserved.
+    out = []
+    for item in data:
+        if not isinstance(item, dict):
+            out.append(item)
+            continue
+        desc = item.get("description")
+        if not isinstance(desc, str) or len(desc) <= cap:
+            out.append(item)
+            continue
+        copy = dict(item)
+        if cap == 0:
+            copy.pop("description", None)
+        else:
+            dropped = len(desc) - cap
+            copy["description"] = desc[:cap] + " …[+%d chars]" % dropped
+        out.append(copy)
+    return out
+
+
+def _items_capped(data, cap):
+    # Count how many items the given cap would actually truncate (or, at
+    # cap == 0, drop) — the `items_capped` figure reported in the envelope and
+    # the log line. Mirrors the predicate in truncate_descriptions.
+    n = 0
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        desc = item.get("description")
+        if isinstance(desc, str) and len(desc) > cap:
+            n += 1
+    return n
+
+
+def build_bounded(collection, data, max_bytes):
+    # Compress `data`, and if the serialized envelope already fits `max_bytes`
+    # return it unchanged with applied_cap = None (the common case — under-cap
+    # output stays byte-identical to compress(), preserving the #1112
+    # byte-stability DoD). Otherwise walk DESC_CAP_LADDER, re-compressing the
+    # description-truncated list at each rung, and return the first envelope
+    # that fits together with the cap that produced it. A bounded envelope
+    # carries an additive top-level `bounded` key; readers that only consume
+    # `chunks`/`items` ignore it. If even the cap == 0 rung does not fit (an
+    # envelope dominated by titles/labels, not descriptions) the last-built
+    # best-effort form is returned — the coupled write path still refuses to
+    # publish it over the cap, so a too-big envelope degrades to direct-fetch
+    # rather than corrupting the memo.
+    env = compress_data(collection, data)
+    if _envelope_bytes(env) <= max_bytes:
+        return env, None
+    best = env
+    best_cap = None
+    for cap in DESC_CAP_LADDER:
+        truncated = truncate_descriptions(data, cap)
+        env = compress_data(collection, truncated)
+        env["bounded"] = {"desc_cap": cap, "items_capped": _items_capped(data, cap)}
+        best = env
+        best_cap = cap
+        if _envelope_bytes(env) <= max_bytes:
+            return env, cap
+    return best, best_cap
 
 
 def rehydrate(env):
@@ -255,7 +373,29 @@ def main():
         raw = sys.stdin.read()
     except Exception:
         raw = ""
-    env = compress(collection, raw)
+    # #1466: parse once, then size-bound the envelope against the memo ceiling
+    # so the shared snapshot stays storable under realistic issue load. Under
+    # cap this returns the exact same envelope compress() would have (byte-
+    # identical), so the #1112 byte-stability DoD and the --self-test are
+    # unaffected. Malformed input falls through compress()'s total-on-failure
+    # empty envelope, which trivially fits the cap.
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        data = None
+    if isinstance(data, list):
+        env, applied_cap = build_bounded(collection, data, memo_max_bytes())
+    else:
+        env, applied_cap = empty_envelope(collection), None
+    if applied_cap is not None:
+        # Loud, one-line note to STDERR (stdout carries the envelope) so the
+        # snapshot-refresh log shows exactly when and how hard the envelope was
+        # bounded. Stays off stdout to keep the memo value clean.
+        info = env.get("bounded", {})
+        sys.stderr.write(
+            "[snapshot-compress] envelope bounded: desc_cap=%s items_capped=%s bytes=%d\n"
+            % (info.get("desc_cap"), info.get("items_capped"), _envelope_bytes(env))
+        )
     # Compact, sorted, deterministic. byte-stable for identical input.
     sys.stdout.write(json.dumps(env, sort_keys=True, separators=(",", ":")))
 

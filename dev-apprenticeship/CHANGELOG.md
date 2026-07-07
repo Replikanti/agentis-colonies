@@ -62,6 +62,23 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- **Triage snapshot publish no longer fails silently past the memo cap** ([#1466](https://github.com/Replikanti/agentis-colonies/issues/1466)):
+  the shared `gitlab:snapshot:issues` memo has a ~10240-byte value ceiling in
+  the runtime; once a repo grew past a handful of issues the compressed envelope
+  exceeded it and the `memo set` failed under `|| true`, while the tiny
+  `:ts` freshness write kept succeeding — so triage agents trusted a fresh ts
+  pointing at a stale snapshot and never took the documented direct-fetch
+  degrade. Two coupled fixes: (1) `snapshot-compress.py` now bounds the envelope
+  below the cap before it is stored, progressively truncating per-issue
+  `description` fields down a fixed ladder (512→300→160→80→drop) with an explicit
+  ` …[+<N> chars]` marker and an additive `bounded` envelope key, driven by a
+  single `SNAPSHOT_MEMO_MAX_BYTES` knob (default 10240); under-cap input stays
+  byte-identical (the #1112 byte-stability DoD is preserved). (2)
+  `start-colony.sh`'s `publish_snapshot()` now couples the two writes — `:ts` is
+  refreshed **only** when the snapshot `memo set` actually succeeds, and a
+  failed/oversize write logs a loud `[snapshot] ERROR` to the snapshot-refresh
+  log instead of being swallowed, so the stale-ts degrade path fires as
+  designed. Covered by `tools/test-snapshot-publish-bound.sh`.
 - **Last two inert getenv knobs registered** ([#1428](https://github.com/Replikanti/agentis-colonies/issues/1428)):
   `QA_ADVERSARIAL_LLM_CMD` (qa_reviewer's cross-provider adversarial reroute,
   #1405) and `CODE_EDIT_MAX_ATTEMPTS` (attempt cap read by both
