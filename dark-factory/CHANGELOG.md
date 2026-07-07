@@ -15,6 +15,57 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Bounty-funnel hardening: quantified impact, reproduction manifest, dedup + impact triage gates**
+  (#1455 epic; #1456, #1457, #1458). Raises the *expected value per verified finding* — the funnel
+  stage between `Verdict: VERIFIED` and a paid bounty — while keeping submission strictly human-gated
+  (the colony still never posts to a platform).
+  - **#1456 quantified impact in `report.md`** — `auditor.ag` now derives the funds-at-risk the
+    two-sided PoC demonstrated (from the observed `account.lamports` / `vault.balance` markers, not a
+    template constant) into a new `## Impact quantification` section, plus `Impact category` and
+    `Severity rationale` table rows that map the finding onto the Immunefi severity bands. Immunefi pays
+    on demonstrated fund-loss, not on a violated invariant; a marker-less (e.g. EVM/revm) run degrades to
+    an explicit "quantify against the live deployment" note. New SHALLOW leaves `marker_int`,
+    `funds_at_risk`, `impact_category_for`, `rubric_line_for`.
+  - **#1457 reproduction manifest + owner-rebind disclosure** — `run-audit.sh` stages `REPRODUCTION.md`
+    in the submission package: target sha256, harness kind, `rustc`/`cargo`/`agentis` versions,
+    backend/sandbox, and a deterministic rerun command, so a platform triager can reproduce against the
+    live deployment. On a snapshot-based run BOTH `REPRODUCTION.md` and the generated `report.md`
+    snapshot-replay section now **disclose the account-owner rebind** (the harness program is not deployed
+    on-chain) rather than shipping a silent mismatch, so the human states it up-front and re-verifies
+    against real program-derived ownership before submitting. Also corrects the stale RUNBOOK
+    "Known limitations" note: a supplied `BOUNTY_POC`/`--poc` is already gated by the #852 structural +
+    per-run target-linkage challenge (a target-agnostic marker-printer is REJECTED as INCONCLUSIVE, not
+    VERIFIED); only a sophisticated link-but-never-invoke PoC remains an operator-trust residual.
+  - **#1456/#1458 triage gates in `submit-triage.sh`** — the scan gains an **IMPACT** column
+    (`quant` / `qual?`) and, with a new `--known-issues <file>` public-disclosure list, a **NOVELTY**
+    column that flags an already-disclosed finding as `DUP-RISK` instead of silently `READY` (Immunefi
+    pays only the first reporter). The per-candidate checklist gains repro-manifest, impact-quantification,
+    and dedup review items. Also fixes `severity_of` to read the real `| Severity (Immunefi) | … |` table
+    row (it previously only matched a plain `Severity: …` line). Covered by `demo-submit-triage.sh`
+    (offline, deterministic — no agentis, no network). Follow-ups tracked on the epic: the harness-level
+    owner-match *assertion* for snapshot replay (the offline disclosure landed here; the hard assert needs
+    the Solana toolchain) and bounty-weighted target prioritization in `prospector` (#1459).
+  - **Review-driven correctness fix + regression tests (PR #1462)** — `marker_int` is now **line-anchored**
+    (mirrors the harness `field()`'s `strip_prefix`) so `account.lamports=` never shadow-matches inside a
+    longer key like `token_account.lamports=` in a multi-account dump; previously it could report a
+    funds-at-risk figure that diverged from what the attached PoC drains. Added `demo-report-quality.sh`
+    (agentis-gated, clean-SKIP on runners without the binary): a real `run-audit.sh --backend mock` VERIFIED
+    run asserting the `report.md` impact rows/section, the `REPRODUCTION.md` sha256 + rerun command, the
+    snapshot quantified-vs-qualitative split, the owner-rebind disclosure, and the multi-account regression.
+    Extended `demo-submit-triage.sh` to cover INCOMPLETE-over-DUP-RISK precedence, the `dup_hit` body-match
+    path, the `has_repro` present/MISSING checklist value, a no-trailing-newline known-issues line, and
+    `severity_of` word-anchoring (17 assertions). `severity_of` now matches the severity WORD (`grep -iowE`)
+    so an unrelated substring on a third-party report (`high`light / al`low` / be`low`) is not misread.
+    `demo-report-quality.sh` (agentis-gated) additionally asserts the `shell_escape` command-injection
+    defense end-to-end (a metacharacter-laden `BOUNTY_SNAPSHOT` does not execute) and the zero-value marker
+    edge (`account.lamports=0` → Qualitative, not a fabricated figure). All three demos are wired into
+    `colony-lint` so the CI-runnable checks (bash triage gates + source-level branch coverage) gate merges.
+  - **Security hardening (PR #1462 review)** — `funds_at_risk` and `snapshot_state` now wrap the
+    `BOUNTY_SNAPSHOT` path in `shell_escape()` before the `cat` in `exec sh` (replacing the
+    `safe-exec-concat` waiver), so a hostile snapshot path (e.g. `x; touch pwned` set directly in an
+    automation context) cannot inject a shell command. Verified: with a metacharacter-laden value the
+    injected command does not run. The value is normally operator-supplied and `-f`-validated by
+    `run-audit.sh`, but escaping closes the direct-env-set path too.
 - **monitor: read robustness — RPC failover + read consensus, and a watch-spec drift detector** (#1098, #1097).
   Two hardening passes that keep a 24/7 read-only watch honest. NON-custodial / read-only throughout
   (`cast call` / `cast storage` / `cast balance` / `cast code` only — never a signed transaction, never fund

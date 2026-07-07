@@ -10,23 +10,33 @@
 # step (a payable target + their platform account/KYC + a manual post) — this tool makes that step fast, it
 # does not perform it.
 #
-# Usage: submit-triage.sh [--root <dir>] [--checklist <candidate-dir>] [-h]
-#   --root <dir>        Staging root to scan for candidate packages (a dir is a candidate if it holds a
-#                       report.md). Default: $PWD. Recurses, so both <out>/submission/ (single) and
-#                       <out>/submission/<key>/ (batch) shapes are found.
-#   --checklist <dir>   Print the human-review + submission checklist for ONE candidate package and exit.
-# Readiness: READY = report.md + a PoC/witness present + the NOT-SUBMITTED marker; otherwise INCOMPLETE
-# (the missing pieces are listed). The verdict that produced the finding came from a hunt ENGINE, never an
-# LLM; this tool only triages what was staged. Exit 0 on success or clean [SKIP]; exit 2 on bad args.
+# Usage: submit-triage.sh [--root <dir>] [--checklist <candidate-dir>] [--known-issues <file>] [-h]
+#   --root <dir>          Staging root to scan for candidate packages (a dir is a candidate if it holds a
+#                         report.md). Default: $PWD. Recurses, so both <out>/submission/ (single) and
+#                         <out>/submission/<key>/ (batch) shapes are found.
+#   --checklist <dir>     Print the human-review + submission checklist for ONE candidate package and exit.
+#   --known-issues <file> Public-disclosure / known-issue list (one signature per line: a function name, a
+#                         rule token, or free text; `#` comments allowed). A candidate whose affected
+#                         function or report body matches a line is flagged DUP-RISK — Immunefi pays only
+#                         the FIRST reporter, so an already-disclosed finding is not worth a submission slot.
+#                         Keep signatures SPECIFIC: a short/generic token (a bare common word) can
+#                         substring-match an unrelated report body and over-flag a novel candidate.
+# Readiness: READY = report.md + a PoC/witness present + the NOT-SUBMITTED marker; DUP-RISK = otherwise-READY
+# but matches a known issue (see --known-issues); otherwise INCOMPLETE (the missing pieces are listed). The
+# IMPACT column flags whether the report quantifies funds-at-risk (Immunefi pays on demonstrated impact) and
+# the NOVELTY column carries the dedup verdict. The verdict that produced the finding came from a hunt ENGINE,
+# never an LLM; this tool only triages what was staged. Exit 0 on success or clean [SKIP]; exit 2 on bad args.
 set -u
 
 nv() { [ "$1" -ge 2 ] || { echo "submit-triage.sh: $2 requires a value" >&2; exit 2; }; }
-ROOT="$PWD" ; CHECKLIST=""
+ROOT="$PWD" ; CHECKLIST="" ; KNOWN_ISSUES=""
 while [ $# -gt 0 ]; do case "$1" in
-  --root)      nv "$#" "$1"; ROOT="$2"; shift 2;;
-  --checklist) nv "$#" "$1"; CHECKLIST="$2"; shift 2;;
-  -h|--help)   sed -n '2,20p' "$0"; exit 0;;
+  --root)         nv "$#" "$1"; ROOT="$2"; shift 2;;
+  --checklist)    nv "$#" "$1"; CHECKLIST="$2"; shift 2;;
+  --known-issues) nv "$#" "$1"; KNOWN_ISSUES="$2"; shift 2;;
+  -h|--help)      sed -n '2,24p' "$0"; exit 0;;
   *) echo "submit-triage.sh: unknown arg $1" >&2; exit 2;; esac; done
+[ -z "$KNOWN_ISSUES" ] || [ -f "$KNOWN_ISSUES" ] || { echo "submit-triage.sh: --known-issues not a file: $KNOWN_ISSUES" >&2; exit 2; }
 ROOT="${ROOT%/}"; [ -n "$ROOT" ] || ROOT="."   # strip a trailing slash so the relative-path display is clean
 
 # A PoC/witness file in a package dir: a Rust PoC, a Foundry test, or an exploit .sol. Test each candidate
@@ -38,10 +48,63 @@ has_poc() {
   return 1
 }
 
-# Best-effort severity from an Immunefi-shaped report.md (a "severity ... High" line); "?" if absent.
+# Best-effort severity from an Immunefi-shaped report.md. First ANCHOR on the structured
+# `| Severity (Immunefi) | High |` table row (our generator's format) so the result can't be shifted
+# by the ordering of other `severity`-mentioning lines; only if that row is absent (a third-party
+# format) fall back to the first severity WORD on any `severity` line. `-w` (whole-word) so an
+# unrelated substring — `high`light, al`low`, be`low`, fol`low`ing — is never misread. "?" if absent.
 severity_of() {
-  grep -ioE 'severity[:* ]*(critical|high|medium|low)' "$1" 2>/dev/null \
-    | grep -ioE 'critical|high|medium|low' | head -1 | tr 'a-z' 'A-Z' || true
+  local sev
+  sev="$(grep -iE '^\|[[:space:]]*Severity \(Immunefi\)[[:space:]]*\|' "$1" 2>/dev/null \
+          | grep -iowE 'critical|high|medium|low' | head -1)"
+  [ -n "$sev" ] || sev="$(grep -i 'severity' "$1" 2>/dev/null | grep -iowE 'critical|high|medium|low' | head -1)"
+  printf '%s' "$sev" | tr 'a-z' 'A-Z'
+}
+
+# Impact-credibility: Immunefi pays on DEMONSTRATED fund-loss. auditor.ag (#1456) ALWAYS emits the
+# `## Impact quantification` section, but its body is either a real figure (`**N lamports/units**`) or the
+# `Qualitative:`-prefixed fallback (no real snapshot). So section presence alone is not the signal — key off
+# the fallback token: "quant" = section present AND no `Qualitative:` marker; "qual?" = qualitative fallback
+# or no section at all (a warning for the human, not a hard block).
+impact_of() {
+  grep -qi '## Impact quantification' "$1" 2>/dev/null || { echo "qual?"; return; }
+  # Scope the fallback-token check to the Impact quantification SECTION (between its header and the next
+  # `## `), so a `Qualitative:` mention elsewhere in the report can't misclassify a quantified finding.
+  # The section match is case-INSENSITIVE (tolower) to stay consistent with the `grep -qi` presence check
+  # above — otherwise a divergent heading case would pass presence but skip scoping and mis-score.
+  if awk 'tolower($0) ~ /^## impact quantification/{s=1;next} /^## /{s=0} s' "$1" 2>/dev/null | grep -qi 'Qualitative:'; then
+    echo "qual?"
+  else
+    echo "quant"
+  fi
+}
+
+# The finding's affected function, pulled from the Immunefi-shaped report table row
+# `| Affected function | `node` |`. Empty if absent.
+affected_fn() {
+  awk -F'|' 'tolower($2) ~ /affected function/ {gsub(/[`]/,"",$3); gsub(/^[ \t]+|[ \t]+$/,"",$3); print $3; exit}' "$1" 2>/dev/null
+}
+
+# A REPRODUCTION.md manifest (fork/slot + toolchain + rerun command) staged next to the report (#1457).
+has_repro() { [ -f "$1/REPRODUCTION.md" ]; }
+
+# Duplicate-risk against a --known-issues list. A candidate is DUP-RISK if a known-issue line (lowercased,
+# trimmed; `#`/blank skipped) either references this finding's affected function or appears verbatim in the
+# report body. Read-only, no egress — the operator still confirms. Returns 0 on a hit. NOTE: private
+# submission queues are invisible; this raises confidence, it does not guarantee primacy.
+dup_hit() {  # $1 = report.md path (uses global KNOWN_ISSUES)
+  [ -n "$KNOWN_ISSUES" ] && [ -f "$KNOWN_ISSUES" ] || return 1
+  local rpt="$1" fn line l
+  fn="$(affected_fn "$rpt" | tr 'A-Z' 'a-z')"
+  # `|| [ -n "$line" ]` so a final known-issue line with no trailing newline is not dropped by read.
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) continue ;; esac
+    l="$(printf '%s' "$line" | tr 'A-Z' 'a-z' | awk '{gsub(/^[ \t]+|[ \t]+$/,"");print}')"
+    [ -n "$l" ] || continue
+    if [ -n "$fn" ] && [ "$fn" != "(handler)" ] && printf '%s' "$l" | grep -qwF "$fn"; then return 0; fi
+    if grep -qiF "$l" "$rpt" 2>/dev/null; then return 0; fi
+  done < "$KNOWN_ISSUES"
+  return 1
 }
 
 # --- single-candidate checklist mode ---
@@ -53,12 +116,16 @@ if [ -n "$CHECKLIST" ]; then
   echo "  finding report : $( [ -f "$D/report.md" ] && echo present || echo MISSING ) ($D/report.md)"
   echo "  PoC / witness  : $( has_poc "$D" && echo present || echo MISSING )"
   echo "  severity       : $sev"
+  echo "  impact quant   : $( impact_of "$D/report.md" )"
+  echo "  repro manifest : $( has_repro "$D" && echo present || echo 'MISSING (REPRODUCTION.md)' )"
+  echo "  novelty        : $( dup_hit "$D/report.md" && echo 'DUP-RISK (matches --known-issues)' || { [ -n "$KNOWN_ISSUES" ] && echo 'novel (vs known-issues list)' || echo 'unchecked (pass --known-issues)'; } )"
   echo "  not-submitted  : $( grep -q 'NOT SUBMITTED' "$D/report.md" 2>/dev/null && echo 'marked (good)' || echo 'marker absent' )"
   echo "  --- operator must confirm before submitting (this tool never submits) ---"
   echo "  [ ] PoC reproduces the finding on the same fork/block the verdict used"
+  echo "  [ ] repro manifest (REPRODUCTION.md) matches the live deployment / current fork"
   echo "  [ ] target + the affected functions are IN the program's scope"
-  echo "  [ ] not a duplicate / not an already-disclosed finding"
-  echo "  [ ] severity + impact match the platform's rubric"
+  echo "  [ ] not a duplicate / not an already-disclosed finding (private queues are invisible here)"
+  echo "  [ ] funds-at-risk quantified against the LIVE deployment, mapped to the platform rubric"
   echo "  Then: submit report.md (+ PoC) MANUALLY on the platform. The colony never auto-posts."
   exit 0
 fi
@@ -72,8 +139,8 @@ if [ -z "$CANDS" ]; then
   exit 0
 fi
 
-total=0 ; ready=0
-printf 'STATUS\tSEVERITY\tCANDIDATE\tMISSING\n'
+total=0 ; ready=0 ; dup=0
+printf 'STATUS\tSEVERITY\tIMPACT\tNOVELTY\tCANDIDATE\tMISSING\n'
 while IFS= read -r rpt; do
   [ -n "$rpt" ] || continue
   d="$(dirname "$rpt")"
@@ -82,15 +149,22 @@ while IFS= read -r rpt; do
   has_poc "$d" || miss="${miss}poc,"
   grep -q 'NOT SUBMITTED' "$rpt" 2>/dev/null || miss="${miss}not-submitted-marker,"
   sev="$(severity_of "$rpt")"; [ -n "$sev" ] || sev="?"
+  imp="$(impact_of "$rpt")"
   rel="${d#"$ROOT"/}"; [ "$rel" = "$d" ] && rel="$d"
-  if [ -z "$miss" ]; then
-    status="READY"; ready=$((ready+1)); miss="-"
-  else
+  # Novelty: only meaningful when --known-issues is supplied; otherwise "unchecked".
+  if [ -z "$KNOWN_ISSUES" ]; then nov="unchecked"
+  elif dup_hit "$rpt"; then nov="DUP-RISK"
+  else nov="novel"; fi
+  if [ -n "$miss" ]; then
     status="INCOMPLETE"; miss="${miss%,}"
+  elif [ "$nov" = "DUP-RISK" ]; then
+    status="DUP-RISK"; dup=$((dup+1)); miss="-"   # otherwise-ready, but matches a known disclosure
+  else
+    status="READY"; ready=$((ready+1)); miss="-"
   fi
-  printf '%s\t%s\t%s\t%s\n' "$status" "$sev" "$rel" "$miss"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$status" "$sev" "$imp" "$nov" "$rel" "$miss"
 done <<EOF
 $CANDS
 EOF
 
-echo "submit-triage: $total candidate(s), $ready READY for human review under $ROOT. Submission is manual — the colony never posts to a platform." >&2
+echo "submit-triage: $total candidate(s), $ready READY, $dup DUP-RISK for human review under $ROOT. Submission is manual — the colony never posts to a platform." >&2

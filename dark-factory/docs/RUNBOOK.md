@@ -56,18 +56,40 @@ exploit yields INCONCLUSIVE.
 ## 5. Where the report + PoC land
 
 On **VERIFIED**, `run-audit.sh` stages `audit-out/submission/`:
-- `report.md` — Immunefi-format finding (severity, affected function, summary, impact,
-  remediation), embedding the standalone PoC.
+- `report.md` — Immunefi-format finding (severity + **impact category** + **severity rationale**
+  mapped to the Immunefi bands, affected function, summary, an **Impact quantification** section
+  stating the funds-at-risk the two-sided PoC demonstrated, plus remediation), embedding the
+  standalone PoC (#1456).
 - `poc.rs` — the two-sided PoC source.
 - `target.rs` — the audited program.
 - `snapshot.txt` — the frozen on-chain account snapshot (if `--snapshot` was used).
+- `REPRODUCTION.md` — the reproduction manifest: target sha256, harness kind, toolchain versions
+  (`rustc`/`cargo`/`agentis`), backend/sandbox, and a deterministic **rerun command**. On a
+  snapshot-based run it discloses the account-owner rebind so you can re-verify against real
+  program-derived ownership on mainnet before submitting (#1457).
 - `MANIFEST.txt` — marked **PENDING HUMAN REVIEW — NOT SUBMITTED**.
+
+Triage a pile of staged packages into a review queue with `submit-triage.sh` (never posts):
+
+```
+./submit-triage.sh --root audit-out --known-issues known.txt   # scan (IMPACT + NOVELTY columns)
+./submit-triage.sh --checklist audit-out/submission            # per-candidate human checklist
+```
+
+The scan scores each candidate `READY` / `INCOMPLETE` / `DUP-RISK`, an **IMPACT** column
+(`quant` = funds-at-risk stated, `qual?` = quantify before submitting), and — when you pass a
+`--known-issues` list of public disclosures (one signature per line) — a **NOVELTY** column that
+flags a finding whose affected function or report body collides with a known issue as `DUP-RISK`
+(Immunefi pays only the FIRST reporter; private queues are invisible, so this raises confidence, it
+does not guarantee primacy).
 
 ## 6. Submit (manual, human-gated)
 
 The colony **never** contacts a platform. A human reviews `audit-out/submission/report.md`,
-confirms the finding, and submits it manually to Immunefi / Code4rena / Sherlock. This is
-deliberate: autonomous posting risks anti-bot bans and duplicate-submission penalties.
+reproduces it with `REPRODUCTION.md`, confirms the finding is in-scope, novel, and impact-credible
+(the `submit-triage.sh` checklist walks these), and submits it manually to Immunefi / Code4rena /
+Sherlock. This is deliberate: autonomous posting risks anti-bot bans and duplicate-submission
+penalties.
 
 ## EVM custom-code discovery (`run-discovery.sh`)
 
@@ -126,9 +148,16 @@ secure variants. Regenerate with `./calibrate-sealevel.sh`.
   solana 2.x harness (same vuln + structure); detection runs on the source either way.
 - **Snapshot replay** supplies a frozen account's real `lamports` + data; the account owner
   is rebound to the in-scope program for replay (the harness program is not deployed
-  on-chain). For a live target the operator dumps that program's own accounts.
-- **Operator-supplied PoC (`BOUNTY_POC`/`--poc`)** is trusted: a hand-supplied PoC that
-  prints the markers without exercising the target will pass the gate. The autonomous and
-  template paths always run the real two-sided harness; only the explicit human override
-  bypasses it. (Hardening the control side to demonstrably exercise the target is tracked as
-  a follow-up.)
+  on-chain). For a live target the operator dumps that program's own accounts. Since #1457 the
+  generated `report.md` **discloses this owner rebind** in its snapshot-replay section (and the
+  submission package's `REPRODUCTION.md` repeats it), so the human states it up-front and
+  re-verifies against real program-derived ownership on the live deployment before submitting.
+- **Operator-supplied PoC (`BOUNTY_POC`/`--poc`)** is gated, not blindly trusted (#852): a
+  supplied PoC must (1) **structurally reference** the in-scope target/harness and (2) pass a
+  **per-run target-linkage challenge** — a nonce const appended to this run's target that the
+  wrapped PoC must echo back, so a target-agnostic marker-printer that merely prints
+  `CONTROL OK:` / `INVARIANT VIOLATED:` is **REJECTED (INCONCLUSIVE)**, never VERIFIED. Only
+  then does the two-sided `assess()` decide. Residual: a sophisticated *link-but-never-invoke*
+  PoC (one that compiles against the target but captures stdout instead of exercising it) is
+  indistinguishable from captured output and remains an operator-trust item — the autonomous
+  LLM/template paths are unaffected (they always run the real two-sided harness).

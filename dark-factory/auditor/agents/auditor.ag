@@ -1147,6 +1147,88 @@ fn impact_for(cls: string) -> string {
     return "Unauthorized control over a privileged action: an attacker performs it without the required authorization, typically draining funds or seizing state.";
 }
 
+// V6 (#1456): quantified impact. Immunefi pays on DEMONSTRATED fund-loss impact, not on a
+// violated invariant — a valid PoC with no monetary impact stated is routinely downgraded.
+// The next three leaves surface (a) the concrete value the two-sided PoC put at risk, (b) a
+// short primacy-of-impact category for the finding table, and (c) the rubric line that
+// justifies the severity tier against the Immunefi severity bands. All SHALLOW leaves
+// (string compares + concat + one parse) so the report stays deterministic.
+
+// Parse a flat `key=value` numeric marker out of the PoC's observed block. LINE-ANCHORED to
+// mirror the harness `field()`'s `strip_prefix` semantics: the key must START a line, so
+// `account.lamports=` never matches inside `token_account.lamports=` in a multi-account dump
+// (which would otherwise report a funds-at-risk figure that diverges from what the PoC drains).
+// Tries the first line (offset 0), then the first `\n`+key occurrence. Returns -1 when the key
+// is absent; parse_int trims + totalizes a non-numeric value to 0 (present-but-unparsable → 0).
+fn marker_int(observed: string, key: string) -> int {
+    let k = key + "=";
+    if index_of(observed, k) == 0 {
+        let r0 = substring(observed, len(k), len(observed));
+        let e0 = index_of(r0, "\n");
+        if e0 < 0 { return parse_int(r0); }
+        return parse_int(substring(r0, 0, e0));
+    }
+    let nk = "\n" + k;
+    let p = index_of(observed, nk);
+    if p < 0 { return -1; }
+    let rest = substring(observed, p + len(nk), len(observed));
+    let nl = index_of(rest, "\n");
+    if nl < 0 { return parse_int(rest); }
+    return parse_int(substring(rest, 0, nl));
+}
+
+// The funds-at-risk figure. Immunefi pays on DEMONSTRATED fund-loss, so quantify from the
+// operator's REAL frozen on-chain snapshot (BOUNTY_SNAPSHOT, a host RPC dump) when present: its
+// `account.lamports` / `vault.balance` are real values the two-sided PoC drains. Without a real
+// snapshot the PoC's balances are synthetic demonstration figures, so we stay honest and tell the
+// operator to quantify against the live deployment (an unquantified impact is routinely downgraded).
+// We read the dump DIRECTLY — not via snapshot_state(), which falls back to the embedded default —
+// so an absent/unreadable snapshot can never mint a fake number. SHALLOW leaf (getenv + one exec).
+fn funds_at_risk() -> string {
+    let sp = getenv("BOUNTY_SNAPSHOT");
+    if len(sp) > 0 {
+        let dump = exec sh "cat " + shell_escape(sp) + " 2>/dev/null || true";
+        let lamports = marker_int(dump, "account.lamports");
+        if lamports > 0 {
+            return "**" + to_string(lamports) + " lamports** at risk on the snapshotted account (read from the frozen on-chain dump `" + sp + "`): the two-sided PoC drains this REAL balance on the EXPLOIT path while the CONTROL path conserves it. Protocol-wide exposure may be larger — scale to the program's full TVL.";
+        }
+        let bal = marker_int(dump, "vault.balance");
+        if bal > 0 {
+            return "**" + to_string(bal) + " units** at risk on the snapshotted vault (read from the frozen on-chain dump): the two-sided PoC drains this REAL balance on the EXPLOIT path while CONTROL conserves it. Scale to the program's full TVL for total exposure.";
+        }
+    }
+    return "Qualitative: the two-sided PoC drains the target account to zero on the EXPLOIT path while the CONTROL path conserves it (see the PoC output above) — but the demonstrated balances are synthetic. Quantify the exact funds at risk from the target's real on-chain balance / TVL before submitting, or re-run with a real `--snapshot` (BOUNTY_SNAPSHOT) host RPC dump to auto-fill this from the frozen on-chain value. An unquantified impact is routinely downgraded.";
+}
+
+// Short primacy-of-impact category for the finding table (Immunefi Impacts-in-Scope framing).
+fn impact_category_for(cls: string) -> string {
+    if cls == "MissingSignerCheck" { return "Direct theft of user/protocol funds"; }
+    if cls == "MissingOwnerCheck" { return "Direct theft of user/protocol funds"; }
+    if cls == "AccessControl" { return "Direct theft of funds / protocol takeover"; }
+    if cls == "ArbitraryCPI" { return "Arbitrary execution under the program's authority"; }
+    if cls == "Reentrancy" { return "Direct theft of pooled funds"; }
+    if cls == "AccountDataMatching" { return "Unauthorized privileged action"; }
+    if cls == "IntegerOverflow" { return "Theft/inflation via value corruption"; }
+    if cls == "UncheckedCall" { return "Accounting divergence / arbitrary execution"; }
+    if cls == "OracleManipulation" { return "Economic drain via price manipulation"; }
+    return "Unauthorized privileged action";
+}
+
+// The rubric line justifying the severity tier against the Immunefi smart-contract bands.
+fn rubric_line_for(cls: string) -> string {
+    let sev = severity_for(cls);
+    if sev == "Critical" {
+        return "Critical — Immunefi smart-contract Critical band: direct theft or permanent freezing of user/protocol funds (unauthorized withdrawal, ownership takeover, or CPI-mediated arbitrary effect under the program's authority).";
+    }
+    if sev == "High" {
+        return "High — Immunefi High band: theft or freezing of funds under specific-but-realistic conditions, or protocol-insolvency-inducing state corruption short of an unconditional drain.";
+    }
+    if sev == "Medium" {
+        return "Medium — Immunefi Medium band: value leakage / accounting divergence that needs a further condition to realise, or bounded-loss arithmetic corruption.";
+    }
+    return "Informational — no demonstrated fund-loss impact; not expected to be payable. Do NOT submit without first establishing in-scope monetary impact.";
+}
+
 fn remediation_for(cls: string) -> string {
     if cls == "MissingSignerCheck" {
         return "Require the authority to sign: type the field as `Signer` (Anchor) or assert `authority.is_signer` (native) before any state mutation.";
@@ -1211,11 +1293,14 @@ fn submission_report(cls: string, th: string, node: string, trace: string, poc_s
     return "# Bounty finding — " + cls + "\n\n" +
         "| Field | Value |\n|---|---|\n" +
         "| Severity (Immunefi) | " + severity_for(cls) + " |\n" +
+        "| Impact category | " + impact_category_for(cls) + " |\n" +
+        "| Severity rationale | " + rubric_line_for(cls) + " |\n" +
         "| Rule | " + cls + " |\n" +
         "| Affected function | `" + node + "` |\n" +
         "| Sub-graph hash | " + th + " |\n" +
         "| Standalone PoC re-verified | " + std_ok + " |\n\n" +
         "## Summary\n\n" + summary_for(cls, node) + "\n\n" +
+        "## Impact quantification\n\n" + funds_at_risk() + "\n\n" +
         "## Vulnerability details (implicated nodes)\n\n" + trace + "\n\n" +
         "## Proof of Concept (standalone, reproducible)\n\nSingle-file Rust PoC — no external deps, compiles + runs offline:\n\n```rust\n" + poc_src + "```\n\n" +
         "Reproduce:\n\n```\nrustc --edition 2021 poc_standalone.rs -o poc && ./poc\n```\n\n" +
@@ -1261,8 +1346,7 @@ fn submission_gate(th: string) -> string {
 fn snapshot_state() -> string {
     let p = getenv("BOUNTY_SNAPSHOT");
     if len(p) > 0 {
-        // colony-lint: safe-exec-concat
-        let dump = exec sh "cat ${p} 2>/dev/null || true";
+        let dump = exec sh "cat " + shell_escape(p) + " 2>/dev/null || true";
         if index_of(dump, "account.lamports") >= 0 {
             print("snapshot: using host-supplied RPC dump (BOUNTY_SNAPSHOT, real account format)");
             return dump;
@@ -1318,11 +1402,18 @@ fn synth_snapshot_exploit() -> string {
 
 // Report section documenting the frozen-snapshot replay.
 fn snapshot_section(snap: string, snap_run: string, snap_ok: string) -> string {
-    return "## On-chain state snapshot replay\n\n" +
+    let base = "## On-chain state snapshot replay\n\n" +
         "The exploit is replayed against a FROZEN account snapshot (a host-side RPC dump, mounted read-only into the sandbox) with ZERO network inside the sandbox — deterministic offline reproduction.\n\n" +
         "Frozen snapshot (`snapshot.txt`):\n\n```\n" + snap + "```\n\n" +
         "Replay (`poc_snapshot.rs` reads the snapshot via std::fs, no network):\n\n```\n" + snap_run + "```\n\n" +
         "Snapshot replay re-verified: " + snap_ok + "\n\n";
+    if len(snap) == 0 { return base; }
+    // #1457: disclose the owner rebind so the human states it up-front rather than shipping a silent
+    // mismatch — the snapshot supplies the account's real lamports + data, but the account OWNER is
+    // rebound to the in-scope program for the offline replay (the harness program is not deployed
+    // on-chain). The triager should re-verify against real program-derived ownership on mainnet.
+    return base +
+        "**Reproduction disclosure (owner rebind, #1457):** snapshot replay supplies the account's real `lamports` + data, but the account **owner is rebound to the in-scope program** for the offline replay (the harness program is not deployed on-chain). Before submitting, re-verify the exploit against real program-derived ownership on the live deployment / current fork.\n\n";
 }
 
 // V4 (#842): replay a frozen on-chain snapshot through the REAL SVM in the native vault
