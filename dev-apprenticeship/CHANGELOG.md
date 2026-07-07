@@ -15,6 +15,10 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+## [2.6.1] — 2026-07-08
+
+**Requires:** agentis >= 1.20.0
+
 ### Fixed
 
 - Unified priority label taxonomy — labeler no longer emits bare P1-P4/urgent
@@ -2452,7 +2456,8 @@ permissible per semver §4.
 - All dynamic values flowing into `exec sh` are required to pass through `shell_escape()`;
   `check-exec-sh.sh` enforces this grep-level contract.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.6.0...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.6.1...HEAD
+[2.6.1]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.6.0...dev-apprenticeship-v2.6.1
 [2.6.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.5.0...dev-apprenticeship-v2.6.0
 [2.5.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.4.0...dev-apprenticeship-v2.5.0
 [2.4.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.3.0...dev-apprenticeship-v2.4.0
