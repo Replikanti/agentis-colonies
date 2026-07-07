@@ -20,6 +20,11 @@
 #           must stop at the bare `do` line, not sweep later ALLCAPS words)
 #   Test 10: `//` inside a string literal (URL) does not blind the scanner
 #            to a getenv() later on the same line
+#   Test 11: missing dev-apprenticeship/install.sh exits 2 (infra error),
+#            distinct from the exit-1 finding path
+#   Test 12: two getenv() on one line are both scanned — exactly one
+#            [UNREGISTERED] for the unregistered var, none for the
+#            allowlisted one
 #
 # Usage: ./tools/test-check-getenv-allowlist.sh
 # Exit code 0 if all tests pass, 1 otherwise.
@@ -217,6 +222,35 @@ if [ "$T10_RC" -eq 1 ] && printf '%s' "$T10_OUT" | grep -q '\[UNREGISTERED\].*UR
     pass "URL string literal (//) does not hide a getenv() on the same line"
 else
     fail "URL-line getenv — expected exit 1 + [UNREGISTERED], got rc=$T10_RC: $T10_OUT"
+fi
+
+# ----- Test 11: missing install.sh exits 2 (infra error, not a finding) -----
+# colony-lint labels exit 2 distinctly ("infra/usage error — not a knob
+# finding"), so the script must never collapse infra errors into exit 1.
+T11="$FAKE_ROOT/t11"
+mkdir -p "$T11/dev-apprenticeship/triage/agents"
+T11_OUT="$("$CHECK" "$T11" 2>&1)" && T11_RC=0 || T11_RC=$?
+if [ "$T11_RC" -eq 2 ] && printf '%s' "$T11_OUT" | grep -q 'install.sh not found'; then
+    pass "missing install.sh exits 2 with an infra-error message"
+else
+    fail "missing install.sh — expected exit 2 + 'install.sh not found', got rc=$T11_RC: $T11_OUT"
+fi
+
+# ----- Test 12: two getenv() on one line are both scanned -----
+T12="$FAKE_ROOT/t12"
+make_fixture "$T12" 'COLONY_DIR,GOOD_KNOB' 'GOOD_KNOB'
+cat > "$T12/dev-apprenticeship/triage/agents/a.ag" <<'EOF'
+fn tick() -> void {
+    let pair = getenv("GOOD_KNOB") + getenv("BAD_KNOB");
+}
+EOF
+T12_OUT="$("$CHECK" "$T12" 2>&1)" && T12_RC=0 || T12_RC=$?
+T12_COUNT="$(printf '%s\n' "$T12_OUT" | grep -c '\[UNREGISTERED\]' || true)"
+if [ "$T12_RC" -eq 1 ] && [ "$T12_COUNT" -eq 1 ] \
+    && printf '%s' "$T12_OUT" | grep -q '\[UNREGISTERED\].*BAD_KNOB'; then
+    pass "two getenv() on one line: only the unregistered one is flagged"
+else
+    fail "same-line multi-getenv — expected exit 1 + one [UNREGISTERED] for BAD_KNOB, got rc=$T12_RC count=$T12_COUNT: $T12_OUT"
 fi
 
 echo ""
