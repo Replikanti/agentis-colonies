@@ -191,7 +191,12 @@ fn issues_cmd(owner: string, repo: string) -> string {
 fn effective_priority_vocab() -> string {
     let v = recall_latest("triage:labels:priority");
     if len(v) > 0 { return v; };
-    return "priority::critical, priority::high, priority::medium, priority::low, P1, P2, P3, P4, urgent";
+    // #1474: this is the SUGGESTION vocabulary (what gets proposed/applied),
+    // scoped to the canonical `priority::*` set only. DETECTION (is_pri() in
+    // canonical_priority_context() below and score_priority_verdict_key())
+    // stays broad on purpose — it must keep recognizing legacy P1-P4/urgent
+    // labels on already-labeled issues so it never re-fires on them.
+    return "priority::critical, priority::high, priority::medium, priority::low";
 }
 
 fn get_confidence() -> float {
