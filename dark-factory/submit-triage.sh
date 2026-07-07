@@ -70,7 +70,9 @@ impact_of() {
   grep -qi '## Impact quantification' "$1" 2>/dev/null || { echo "qual?"; return; }
   # Scope the fallback-token check to the Impact quantification SECTION (between its header and the next
   # `## `), so a `Qualitative:` mention elsewhere in the report can't misclassify a quantified finding.
-  if awk '/^## Impact quantification/{s=1;next} /^## /{s=0} s' "$1" 2>/dev/null | grep -q 'Qualitative:'; then
+  # The section match is case-INSENSITIVE (tolower) to stay consistent with the `grep -qi` presence check
+  # above — otherwise a divergent heading case would pass presence but skip scoping and mis-score.
+  if awk 'tolower($0) ~ /^## impact quantification/{s=1;next} /^## /{s=0} s' "$1" 2>/dev/null | grep -qi 'Qualitative:'; then
     echo "qual?"
   else
     echo "quant"

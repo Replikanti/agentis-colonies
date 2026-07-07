@@ -66,6 +66,21 @@ STATUS: PENDING HUMAN APPROVAL — NOT SUBMITTED.
 MD
 printf 'fn main() {}\n' > "$ROOT/scope:quant/poc.rs"
 
+# Case consistency: a report with a lowercased `## impact quantification` heading + a Qualitative fallback
+# must still be IMPACT=qual? — the presence check (grep -qi) and the section scoping (awk tolower) agree.
+mkdir -p "$ROOT/case:qual"
+cat > "$ROOT/case:qual/report.md" <<'MD'
+# Finding
+| Severity (Immunefi) | Critical |
+| Affected function | `poke` |
+
+## impact quantification
+
+Qualitative: no real snapshot, so quantify against the live deployment.
+PENDING HUMAN REVIEW — NOT SUBMITTED
+MD
+printf 'fn main() {}\n' > "$ROOT/case:qual/poc.rs"
+
 # A third-party report whose only `severity`-bearing line has NO real severity WORD, just substrings
 # (high-light, al-low, be-low). severity_of must not misread it -> SEVERITY column stays "?" (word-anchored).
 mkdir -p "$ROOT/foreign:sevword"
@@ -199,6 +214,12 @@ if printf '%s\n' "$OUT" | grep 'cantina:nopoc' | awk '{print $2}' | grep -qx 'ME
   pass "severity_of plain-text fallback parses 'Severity: Medium' -> MEDIUM (no table row present)"
 else
   fail "severity_of plain-text fallback wrong; got: $(printf '%s' "$OUT" | grep 'cantina:nopoc')"
+fi
+# impact_of case consistency: a lowercased '## impact quantification' heading + Qualitative fallback -> qual?.
+if printf '%s\n' "$OUT" | grep 'case:qual' | awk '{print $3}' | grep -qx 'qual?'; then
+  pass "impact_of presence check + section scoping agree on heading case (lowercase heading -> qual?)"
+else
+  fail "impact_of case mismatch misclassified a qualitative report; got: $(printf '%s' "$OUT" | grep 'case:qual')"
 fi
 # severity_of word-anchoring: a report mentioning `severity` but with no real severity WORD (only
 # high-light / al-low / be-low substrings) must show SEVERITY='?', not a misread HIGH/LOW.
