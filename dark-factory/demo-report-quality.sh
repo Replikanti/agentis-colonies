@@ -28,6 +28,20 @@ for band in Critical High Medium; do printf '%s' "$RL" | grep -qF "== \"$band\""
 printf '%s' "$RL" | grep -qi 'Informational' || band_ok=0
 [ "$band_ok" -eq 1 ] && pass "rubric_line_for covers Critical/High/Medium/Informational bands" || fail "rubric_line_for missing a severity band"
 
+# CI-ENFORCED regression guard for the shell_escape command-injection fix (CWE-78). The e2e injection test
+# below is agentis-gated (SKIPs on CI), so this SOURCE check gates the fix on CI too: both functions that cat
+# the operator-supplied BOUNTY_SNAPSHOT must route the path through shell_escape(), never a raw ${..} concat.
+for esc_fn in funds_at_risk snapshot_state; do
+  body="$(fn_body "$esc_fn")"
+  printf '%s' "$body" | grep -q 'getenv("BOUNTY_SNAPSHOT")' || continue
+  if printf '%s' "$body" | grep -qE 'exec sh "cat " \+ shell_escape\(' \
+     && ! printf '%s' "$body" | grep -qE 'exec sh "cat \$\{'; then
+    pass "$esc_fn reads BOUNTY_SNAPSHOT via shell_escape() — no raw interpolation (CWE-78 fix, CI-enforced)"
+  else
+    fail "$esc_fn reads BOUNTY_SNAPSHOT without shell_escape() — command-injection regression"
+  fi
+done
+
 # --- End-to-end report generation (needs the agentis runtime + rustc) ---------------------------------------
 if ! command -v agentis >/dev/null 2>&1; then
   echo "demo-report-quality.sh: [SKIP] agentis not on PATH — report-generation e2e needs the runtime (CI has none)"
@@ -84,9 +98,14 @@ fi
 #        (bypasses run-audit.sh's --snapshot -f validation) so funds_at_risk/snapshot_state cat it via the
 #        shell_escape()'d exec sh. The injected `touch` must NOT fire. ---
 CANARY="$WORK/INJECTED"; rm -f "$CANARY"
-O4="$WORK/evil"
-BOUNTY_SNAPSHOT="$WORK/nope; touch $CANARY" "$HERE/run-audit.sh" --target "$TGT" --backend mock --sandbox none --out "$O4" >/dev/null 2>&1 || true
-if [ -e "$CANARY" ]; then fail "SHELL INJECTION: malicious BOUNTY_SNAPSHOT executed the injected command"; else pass "malicious BOUNTY_SNAPSHOT path does NOT inject a command (shell_escape holds, CWE-78)"; fi
+inj_ok=1
+# Two distinct injection payloads: a `;`-separated command and a $()-command-substitution + backticks.
+for payload in "$WORK/nope; touch $CANARY" "\$(touch $CANARY)\`touch $CANARY\`"; do
+  rm -f "$CANARY"
+  BOUNTY_SNAPSHOT="$payload" "$HERE/run-audit.sh" --target "$TGT" --backend mock --sandbox none --out "$WORK/evil" >/dev/null 2>&1 || true
+  [ -e "$CANARY" ] && inj_ok=0
+done
+[ "$inj_ok" -eq 1 ] && pass "malicious BOUNTY_SNAPSHOT (';'-chained and \$()/backtick) does NOT inject a command (shell_escape holds, CWE-78)" || fail "SHELL INJECTION: a malicious BOUNTY_SNAPSHOT executed the injected command"
 
 # --- 5. marker_int zero/absent edge: a real account.lamports=0 is NOT a finding -> Qualitative, not '0 lamports'. ---
 SNAP0="$WORK/snap-zero.txt"; printf 'vault.authority=1\nvault.balance=0\naccount.lamports=0\n' > "$SNAP0"
