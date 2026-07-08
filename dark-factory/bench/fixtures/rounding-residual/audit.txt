@@ -1,0 +1,17 @@
+ShareVault — provided security audit (v1)
+==========================================
+
+Scope: ShareVault.sol. Two prior auditors reviewed the asset-custody path.
+
+[High] Reentrancy in withdraw()
+  The withdraw() function performs the external value transfer (msg.sender.call{value: amount})
+  BEFORE it updates balanceOf[msg.sender]. A malicious contract can re-enter withdraw() during the
+  call and drain the vault. Recommendation: move the balance state update above the external call
+  (checks-effects-interactions), or add a reentrancy guard.
+  Status: acknowledged, fix pending.
+
+[Info] deposit() has no minimum amount
+  deposit() accepts a zero-value call. No security impact; noted for completeness.
+
+Note on methodology: this review focused on the raw asset custody (deposit/withdraw) and access
+control. The reviewers did not model the vault's share-accounting arithmetic in depth.
