@@ -102,6 +102,7 @@ backend = "cli"
 name = "code_writer"
 source = "agents/code_writer.ag"
 cb_budget = 3000
+cb_per_tick = 3000
 tick_interval_ms = 60000
 
 [[agents]]
