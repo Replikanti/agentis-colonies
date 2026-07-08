@@ -282,31 +282,59 @@ slot. Such a rule now filters down to an empty/degraded label set on a hit
 rule-pool statistics. Two operator scripts do a one-time audit + purge over
 the live pool — they share the single contamination predicate in
 `triage/scripts/lib/priority-rule-audit.py`, byte-for-byte the same heuristic
-as PR #1477's runtime filter, so the two call sites can never drift:
+as PR #1477's runtime filter, so the two call sites can never drift.
+
+**Rule recovery goes through `agentis` itself (#1482).** The first cut of
+this tool (PR #1481) re-implemented agentis-core's crystallizer persistence in
+Python — reading `_crystallizer_index/<class>.jsonl` and resolving each rule
+from the content-addressed object store — and got it wrong three ways: it
+keyed rules by `rule_id` when core persists bodies by `content_hash`, it
+`json.loads`-ed core's *binary* semantic-DAG object bytes, and it text-scanned
+the whole blob (so a rule's *condition* — `kw=urgent,crash` — could false-flag
+a clean action). Deployments without semantic-DAG persistence had no index at
+all. The rebuilt tooling recovers the pool with `agentis knowledge export`
+(the proven #1478 recipe: `export` → filter → `import --replace`), the one
+path core guarantees across both the semantic-DAG and the plain-JSON
+knowledge-dir layouts. Only each rule's **`action`** slot is inspected; the
+`condition` is never scanned, so a priority-like keyword in an issue title
+can never false-flag a clean rule.
+
+**Both scripts refuse to run against a federation with live daemons unless
+`--force` is passed.** An `agentis knowledge export` snapshot taken while the
+triage daemons run may not reflect in-memory rules the crystallizer has not
+yet persisted, and a purge-after-audit would **race a daemon that
+re-crystallizes the very rule being retired** — resurrecting it seconds later.
+Stop the federation (`./kill-federation.sh`) before auditing or purging; use
+`--force` only for a read-only spot-check you know is safe.
 
 - **Audit (read-only)** — enumerate the contaminated rules (count + rule ids,
   the offending tokens, and the clean remainder):
 
   ```bash
+  # Stop the federation first (or pass --force for a read-only spot-check):
+  ./kill-federation.sh
   ./triage/scripts/audit-priority-rules.sh --fed-dir $PWD
   # machine-readable JSONL (one object per contaminated rule + a _summary):
   ./triage/scripts/audit-priority-rules.sh --fed-dir $PWD --json
+  # deployment without semantic-DAG persistence / offline inspection:
+  ./triage/scripts/audit-priority-rules.sh --fed-dir $PWD \
+      --knowledge-dir $PWD/.agentis/knowledge
   ```
 
-  It reads the on-disk crystallizer state agentis-core persists under
-  `.agentis/knowledge/_crystallizer_index/<class>.jsonl` (rule ids) +
-  `.agentis/objects/` (each rule's `action` slot), defaults to the `label`
-  class (the only one this contamination applies to), and never writes.
-  Scoped `priority::*` labels are exempt by construction (they are the
-  canonical form); a rule whose action slot cannot be recovered is reported
-  as `unresolved` and is **never** flagged.
+  It recovers the pool via `agentis knowledge export`, defaults to the `label`
+  class (the only one this contamination applies to), and never writes. Scoped
+  `priority::*` labels are exempt by construction (they are the canonical
+  form); a rule whose `action` slot cannot be recovered is reported as
+  `unresolved` and is **never** flagged. The `--knowledge-dir` flag reads a
+  plain-JSON knowledge dir directly when `agentis knowledge export` is
+  unavailable.
 
 - **Purge (dry-run by default)** — retire the flagged rules so the clean
   decision re-crystallizes from post-#1474 verdicts:
 
   ```bash
-  # Stop the federation first — a running daemon can re-crystallize between
-  # enumeration and rewrite:
+  # Stop the federation first — a running daemon can resurrect a retired rule
+  # between export and import:
   ./kill-federation.sh
   # Preview (writes nothing):
   ./triage/scripts/purge-priority-rules.sh --fed-dir $PWD
@@ -314,16 +342,16 @@ as PR #1477's runtime filter, so the two call sites can never drift:
   ./triage/scripts/purge-priority-rules.sh --fed-dir $PWD --apply
   ```
 
-  `purge-priority-rules.sh` calls `audit-priority-rules.sh --json` for the
-  enumeration step (shared predicate), then **de-registers** each flagged
-  rule: it drops the rule's line from the crystallizer index (writing a
-  `.bak` first) and removes its telemetry sidecar. The immutable
-  content-addressed rule object is left in place but un-indexed, so it is
-  inert — no lookup, no BM25 recall, no re-distill reads its raw action.
-  Retirement (rather than an in-place action rewrite) is used because
+  One `agentis knowledge export` snapshot drives both the enumeration
+  (`priority-rule-audit.py --json`, the shared predicate) and the filter
+  (`priority-rule-purge.py`), so the report and the removal can never diverge.
+  On `--apply` the flagged rules are dropped from the export document and the
+  cleaned pool is swapped in with `agentis knowledge import --replace`;
+  retirement (rather than an in-place rewrite) is used because
   content-addressed rule objects cannot be edited without changing their id.
-  Restart the daemons afterwards so the pool reloads without the retired
-  rules.
+  **Restart the daemons afterwards** so the in-memory pool reloads without the
+  retired rules — otherwise the running daemons keep serving (and can
+  re-persist) the stale pool.
 
 **Regression check (already guaranteed).** Newly-distilled rules stay clean
 without any further action: the runtime filter strips priority-like tokens on

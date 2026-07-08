@@ -1,0 +1,12 @@
+[
+  {
+    "rule_id": "kd_dirty_urgent_0001",
+    "condition": "kw=login",
+    "action": "bug,urgent"
+  },
+  {
+    "rule_id": "kd_clean_0002",
+    "condition": "kw=priority,urgent",
+    "action": "bug,feature"
+  }
+]
