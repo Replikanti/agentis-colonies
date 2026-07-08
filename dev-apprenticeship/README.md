@@ -136,6 +136,10 @@ cd agentis-colonies/dev-apprenticeship
 
 The install script checks prerequisites, creates configs for all 5 colonies, writes your GitLab credentials, and seeds agent confidence levels. Running it again is safe. See [Security](#security) for how tokens are stored and rotated.
 
+> **Divergent `<colony>/.agentis` warnings on re-run ([#1464](https://github.com/Replikanti/agentis-colonies/issues/1464)).** `install.sh` §4 replaces each `<colony>/.agentis` with a symlink to the federation-level `.agentis`. If a real directory sits there instead, the installer inspects it and prints one of two warnings:
+> - `… contains only inert slot/sandbox residue — safe to delete` — the dir holds nothing but `llm-slots/`/`sandbox/` (and at most an empty `logs/`) dropped by old cwd-fallback code paths. This is dead weight (the slot pool resolves fed-level, [#1426](https://github.com/Replikanti/agentis-colonies/pull/1426)) and losing it costs no state. Re-run with `AGENTIS_PRUNE_INERT=1 ./install.sh` to auto-remove it and restore the symlink so re-runs stop warning.
+> - `… holds real state (memo/spend/logs) — skipping` — the dir contains memos, spend, or non-empty logs. The installer leaves it untouched; inspect and remove it manually before re-running so the symlink can be created.
+>
 > **Trigger-label overrides need env passthrough.** To override a colony's trigger label, set `trigger_label` in that colony's `config/colony.toml` **and** make sure `exec.env_passthrough` in `<fed>/.agentis/config` includes `IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL`. `install.sh` writes this passthrough for you as of [#1185](https://github.com/Replikanti/agentis-colonies/issues/1185); without those keys the override never reaches the agents and the default trigger label (`implementation` / `needs-planning`) is used. A federation installed before #1185 needs the keys added manually (then restart the colonies).
 
 ## Starting and stopping
