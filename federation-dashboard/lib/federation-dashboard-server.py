@@ -782,8 +782,104 @@ def _serve_timeline(handler):
     }).encode())
 
 
+# #1465: dashboard version file ships alongside lib/ in the bundle
+# (federation-dashboard/VERSION). Resolve it once relative to this script
+# so /api/status can report the running dashboard version without a new
+# collection pass. Missing/unreadable file → 'unknown' (never fatal).
+version_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'VERSION')
+
+
+def _dashboard_version():
+    try:
+        with open(version_path, encoding='utf-8') as f:
+            return f.readline().strip() or 'unknown'
+    except OSError:
+        return 'unknown'
+
+
+def _iso8601(epoch):
+    """Render a unix-epoch (seconds) as a UTC ISO-8601 'Z' string, or None
+    for a falsy/zero epoch (matches the collector's 'unknown → 0' convention
+    so a never-seen agent surfaces `last_seen: null` rather than the epoch)."""
+    if not epoch:
+        return None
+    try:
+        return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(float(epoch)))
+    except (ValueError, TypeError, OSError):
+        return None
+
+
+def _serve_status(handler):
+    """GET /api/status — machine-readable federation status (#1465).
+
+    Returns application/json:
+        {dashboard_version, generated_at, agents: [
+            {agent, colony, state, last_seen}, ...]}
+
+    A pure JSON view of the same snapshot the HTML page renders (no new
+    collection): agents + timestamps come straight from the collector's
+    snapshot.json. `state` is the EFFECTIVE state the page shows — a
+    registry `running` row whose PID/heartbeat went stale reports `dead`,
+    which is exactly the stale-`running` cross-check an external probe
+    wants. Read-only; missing snapshot degrades to an empty agents array.
+    """
+    agents = []
+    generated_epoch = None
+    try:
+        with open(snapshot_path, 'rb') as f:
+            snap = json.loads(f.read().decode('utf-8'))
+    except (OSError, ValueError, UnicodeDecodeError):
+        snap = None
+    if isinstance(snap, dict):
+        generated_epoch = snap.get('now_epoch')
+        for rec in snap.get('agents') or []:
+            if not isinstance(rec, dict):
+                continue
+            raw_state = rec.get('state') or 'unknown'
+            if rec.get('is_running'):
+                state = 'running'
+            elif raw_state == 'running':
+                # Registry says running but PID/heartbeat is stale — the
+                # zombie case the page badges as dead.
+                state = 'dead'
+            else:
+                state = raw_state
+            agents.append({
+                'agent': rec.get('name', ''),
+                'colony': rec.get('colony', ''),
+                'state': state,
+                'last_seen': _iso8601(rec.get('agent_last_ok_ts')),
+            })
+    body = json.dumps({
+        'dashboard_version': _dashboard_version(),
+        'generated_at': _iso8601(generated_epoch) or _iso8601(time.time()),
+        'agents': agents,
+    }).encode()
+    handler.send_response(200)
+    handler.send_header('Content-Type', 'application/json')
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
 class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
+        # Match on the path component only, so a query string (e.g. a
+        # monitoring probe's cache-buster `?t=...` or a trailing `?`) still
+        # routes — mirrors the /timeline handler below. #1465 shipped an
+        # exact-match `== '/api/status'` that 404'd any `/api/status?...`.
+        path_only = self.path.split('?', 1)[0]
+        if path_only == '/api/status':
+            _serve_status(self)
+            return
+        # #1465: any other /api/* path is unmapped — return JSON 404 rather
+        # than falling through to static-file serving (which would 404 too,
+        # but as HTML). Keeps the /api namespace a clean JSON contract.
+        if path_only.startswith('/api/') or path_only == '/api':
+            self.send_response(404)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'error': 'unknown endpoint'}).encode())
+            return
         if self.path.startswith('/timeline?') or self.path == '/timeline':
             _serve_timeline(self)
             return
