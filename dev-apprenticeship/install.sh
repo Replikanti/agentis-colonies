@@ -120,7 +120,7 @@ fi
 # exec_foreign`, never receive emit/listen, get killed by the watchdog
 # every tick, fail every single tick on PII + ExecTimeout, leak zombie
 # daemons after every upgrade, or silently tick-error on adaptive calls.
-# v1.4.0 added the `tier()` builtin (#539) that all 21 agents branch on
+# v1.4.0 added the `tier()` builtin (#539) that every agent branches on
 # for the four-tier confidence gating defined in ADR-0001; older builds
 # crash at parse time on every `.ag` file in this repo. v1.4.1 then
 # fixed `learn()` to populate `fitness_delta` from the `outcome`
@@ -702,8 +702,8 @@ if [ -d "$AGENTIS_DIR" ]; then
     write_key 'daemon.heartbeat_interval_ms' '900000'
     write_key 'daemon.cb_per_tick'           '2000'
     # Host-concurrency cap (#1367): an upper bound on how many agent daemons the
-    # agentis-core daemon supervisor runs a tick for at once. With 21 daemons in
-    # the federation, an aligned tick fired every agent's flat-cyborg -> claude
+    # agentis-core daemon supervisor runs a tick for at once. With every agent
+    # daemon in the federation, an aligned tick fired every agent's flat-cyborg -> claude
     # (Node, ~330MB) session simultaneously and overheated the host. 6 keeps a
     # bounded set of concurrent prompt() sessions; the rest queue and run on a
     # later tick. write_key is an idempotent upsert, so existing configs that
@@ -908,7 +908,7 @@ if [ "$CONFIDENCE" != "skip" ]; then
         exit 1
     fi
     echo ""
-    echo "Seeding all 21 agents at $CONFIDENCE..."
+    echo "Seeding all ${#ALL_AGENTS[@]} agents at $CONFIDENCE..."
     # #173 / #176: idempotent seeding. Never downgrade an existing memo
     # value — an operator may have deliberately promoted an agent before
     # re-running install.sh. Only write when the memo is missing or its
