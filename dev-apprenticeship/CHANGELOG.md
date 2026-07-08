@@ -17,6 +17,17 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- **Divergent `<colony>/.agentis` warning now distinguishes inert residue from real state**
+  ([#1464](https://github.com/Replikanti/agentis-colonies/issues/1464)):
+  `install.sh` §4 previously printed one generic `… not a symlink — skipping
+  (remove manually if empty)` for every real dir found where a symlink belongs,
+  even though in practice these hold only inert `llm-slots/`/`sandbox/` residue
+  from old cwd-fallback paths (the slot pool resolves fed-level, #1426). The
+  installer now inspects the dir: it says `… contains only inert slot/sandbox
+  residue — safe to delete` for the harmless case and keeps the conservative
+  `… holds real state (memo/spend/logs) — skipping` warning only when
+  memos/spend/non-empty logs are present. Opt in to auto-removal (delete + restore
+  the symlink so re-runs converge) with `AGENTIS_PRUNE_INERT=1 ./install.sh`.
 - **`cb_per_tick = 3000` added to `code_writer`'s `[[agents]]` block** — the
   runtime daemon cap comes from the per-agent `cb_per_tick` key (read by
   `start-colony.sh`, default 2000), NOT from `cb_budget`, which only pairs

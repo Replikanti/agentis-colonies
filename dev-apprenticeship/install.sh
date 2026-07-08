@@ -61,6 +61,43 @@ prompt_validated() {
     done
 }
 
+# Return 0 when $1 is a divergent .agentis dir holding ONLY inert runtime
+# residue — `llm-slots/` and `sandbox/` from cwd-fallback paths, plus an
+# empty (or absent) `logs/` — and no real state (memo/, spend/, non-empty
+# logs/, or anything unrecognised). Return 1 otherwise (#1464).
+agentis_dir_is_inert() {
+    local __dir="$1" __entry __base
+    # dotglob so hidden entries (e.g. a stray .lock) also count as state;
+    # nullglob so an empty dir yields no iterations rather than a literal '*'.
+    local __restore_dotglob __restore_nullglob
+    shopt -q dotglob && __restore_dotglob=1 || __restore_dotglob=0
+    shopt -q nullglob && __restore_nullglob=1 || __restore_nullglob=0
+    shopt -s dotglob nullglob
+    local __inert=0
+    for __entry in "$__dir"/*; do
+        __base="$(basename "$__entry")"
+        case "$__base" in
+            llm-slots|sandbox)
+                # Known cwd-fallback residue, always dead weight.
+                ;;
+            logs)
+                # Only inert when empty; a non-empty logs/ is real state.
+                if [ -n "$(ls -A "$__entry" 2>/dev/null)" ]; then
+                    __inert=1
+                fi
+                ;;
+            *)
+                # memo/, spend/, config, or anything unrecognised — real state.
+                __inert=1
+                ;;
+        esac
+        [ "$__inert" = "1" ] && break
+    done
+    [ "$__restore_dotglob" = "1" ] || shopt -u dotglob
+    [ "$__restore_nullglob" = "1" ] || shopt -u nullglob
+    [ "$__inert" = "0" ]
+}
+
 check_cmd() {
     if command -v "$1" >/dev/null 2>&1; then
         ok "$1 found ($(command -v "$1"))"
@@ -885,10 +922,25 @@ if [ -d "$AGENTIS_DIR" ]; then
         elif [ -L "$COLONY_AGENTIS" ]; then
             info "$colony/.agentis symlink already present"
         elif [ -e "$COLONY_AGENTIS" ]; then
-            # Real directory found — likely a divergent empty .agentis from
-            # a past `agentis doctor` run in cwd. Leave it alone; operator
-            # should inspect and remove manually.
-            fail "$colony/.agentis exists and is not a symlink — skipping (remove manually if empty)"
+            # Real directory found where a symlink belongs. In practice these
+            # are one of two things: (a) inert runtime residue — `llm-slots/`
+            # and `sandbox/` dropped by cwd-fallback code paths, never state;
+            # the fed-level slot pool resolves via COLONY_DIR/../.agentis (#1426),
+            # so the per-colony copies are dead weight — or (b) a genuinely
+            # divergent .agentis holding memos/spend/logs. Inspect before
+            # warning so the operator gets an actionable message (#1464).
+            if agentis_dir_is_inert "$COLONY_AGENTIS"; then
+                if [ "${AGENTIS_PRUNE_INERT:-0}" = "1" ]; then
+                    rm -rf "$COLONY_AGENTIS"
+                    ln -s "$AGENTIS_DIR" "$COLONY_AGENTIS"
+                    ok "$colony/.agentis -> $AGENTIS_DIR (removed inert slot/sandbox residue)"
+                else
+                    fail "$colony/.agentis is a real dir but contains only inert slot/sandbox residue — safe to delete"
+                    info "Re-run with AGENTIS_PRUNE_INERT=1 to auto-remove it and restore the symlink."
+                fi
+            else
+                fail "$colony/.agentis exists, is not a symlink, and holds real state (memo/spend/logs) — skipping (inspect and remove manually)"
+            fi
         else
             ln -s "$AGENTIS_DIR" "$COLONY_AGENTIS"
             ok "$colony/.agentis -> $AGENTIS_DIR"
