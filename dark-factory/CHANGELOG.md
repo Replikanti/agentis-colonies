@@ -14,6 +14,21 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **Audit-aware residual-hunt foundation** (#1485). The reward on a bounty is only in what a target's OWN
+  audits MISSED, so the hunt must be audit-aware — a capability the blind auto-gen lacks (it fabricates toys
+  or finds already-known issues). Two reliable shell primitives + a CI-safe demo:
+  - `fetch-audits.sh <url…>` / `--manifest <file>` — the operator's one network step: download a target's
+    public audit reports and `pdftotext` each PDF to text (SKIPs cleanly offline), writing `<out>/NN-*.txt`
+    + an `index.tsv`, so the downstream boundary extractor + analyst read them offline.
+  - `novelty-gate.sh --exclusion <file> <finding>` — rejects a finding that restates a KNOWN issue (matched
+    by a shared target function/identifier plus salient-term overlap) with exit 1, passes a genuinely-novel
+    one with exit 0. Errs toward flagging (a maybe-known finding is held for human review, never auto-staged),
+    so the engine never surfaces an already-reported bug.
+  - `demo-audit-hunter.sh` (pure bash/python3, localhost fetch — no external network) proves both, wired into
+    `tools/colony-lint.sh`. This is the reliable mechanical core of the manual audit-driven hunt; the creative
+    hypothesis step (analyst) remains a follow-up `.ag` colony layer. Submission stays strictly human-gated.
+
 ### Fixed
 - **Invariant-hunt CODE_PATH resolution for nested `--target`** (#1475). `run-invariant-hunt.sh` defaulted the
   LLM source path (`CODE_PATH`) to `<repo>/src/<target-file>`, so a nested `--target` like
