@@ -821,6 +821,23 @@ if [ -x "$REPO_ROOT/dark-factory/demo-audit-hunter.sh" ]; then
     fi
 fi
 
+# --- dark-factory audit-aware DEVISE stage in the substrate (#1487) ---
+# audit-scout.ag is the .ag embodiment of the audit-awareness above: it ingests a target's OWN audit reports
+# (via the fetch-audits.sh muscle) and devises the RESIDUAL attack surface — what N prior auditors MISSED, the
+# only rewardable part of an audited target — feeding the hunter/invariant-prover engines residual-focused
+# specs and novelty-gate the exclusion boundary. This is the discover->evaluate->DEVISE->attack flow's missing
+# DEVISE step, made a federation decision rather than a shell orchestrator. demo-audit-scout.sh source-guards
+# the wiring (CI-safe, no toolchain) and runs the agent live end-to-end when agentis is present.
+if [ -x "$REPO_ROOT/dark-factory/demo-audit-scout.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-audit-scout.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: audit-aware DEVISE stage (audit-scout.ag) (#1487)"
+    else
+        fail "dark-factory: audit-aware DEVISE stage regressed (#1487)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory invariant-hunt target-linkage gate (#1471) ---
 # The invariant-hunt generation path could produce a false FINDING when the LLM substituted its own toy
 # contract of the same name instead of importing the in-scope target. forge-invariant.sh gained a

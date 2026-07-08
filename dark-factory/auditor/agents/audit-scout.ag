@@ -1,0 +1,136 @@
+cb 300000;
+// #1487 — audit-aware DEVISE stage, in the SUBSTRATE. Ingests a target's OWN audit reports and derives
+// the RESIDUAL attack surface: the bug classes / functions the prior auditors did NOT cover, or that they
+// DOWNGRADED / disputed. This is the whole game on an audited target — a finding already written in a
+// provided audit is KNOWN and UNREWARDABLE, so the only payable residual is what N professional auditors
+// MISSED. audit-scout is the .ag embodiment of the #1485 audit-awareness that until now lived only in
+// shell (fetch-audits.sh + novelty-gate.sh): fetch-audits.sh stays the muscle that pulls the reports; the
+// DEVISE decision — read the audits, and choose WHERE to hunt the residual — is made here on the bus.
+//
+// One invocation devises the residual for ONE target. It feeds the ATTACK engines (hunter.ag /
+// invariant-prover.ag) residual-focused specs, and hands novelty-gate the exclusion boundary — so the
+// federation attacks what the audits missed and never re-reports a known bug. It runs BEFORE blind hunting
+// in the discover -> evaluate -> DEVISE -> attack flow: gather audit intel, then aim.
+//
+// Env:
+//   TARGET_DIR   repo root of the cloned target (the code payload the devise reasons over)
+//   IN_SCOPE     newline-separated in-scope contract paths (relative to TARGET_DIR)
+//   AUDIT_DIR    dir of already-fetched audit text (NN-*.txt from fetch-audits.sh) — the primary input
+//   AUDIT_URLS   comma-separated audit URLs to fetch when AUDIT_DIR is empty (fetch-audits.sh is called)
+//   FETCH_AUDITS path to fetch-audits.sh (default: sibling ../../fetch-audits.sh; the ingest muscle)
+//   SCOPE_BRIEF  path to the invariants + trust-model brief (optional; "" -> code-only reasoning)
+// Stdout: first every known finding as a `BOUNDARY|<known finding summary>` line (the exclusion set that
+//   novelty-gate later rejects restatements against), then every residual lead as
+//   `RESIDUAL|<subsystem>|<class>|<why the audits missed or downgraded it>|<concrete attack sketch>`,
+//   or the single token `NO-RESIDUAL` when the audits appear to cover the surface with nothing left to hunt.
+
+// --- file / dir readers (dynamic paths -> safe-exec-concat, per hunter.ag / recall-match.ag precedent) --
+fn cat_file(path: string) -> string {
+    if len(path) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "sed -n '1,2000p' ${path} 2>/dev/null || true";
+}
+
+// Concatenate every in-scope contract into one labelled blob (matches hunter.ag::scoped_code).
+fn scoped_code(dir: string, files: string) -> string {
+    return reduce(regex_split("\n", files), |acc: string, rel: string| -> string {
+        if len(rel) == 0 { return acc; }
+        // colony-lint: safe-exec-concat
+        let body = exec sh "sed -n '1,2000p' ${dir}/${rel} 2>/dev/null || true";
+        return acc + "\n\n// ========== " + rel + " ==========\n" + body;
+    }, "");
+}
+
+// Concatenate every already-fetched audit report under AUDIT_DIR (the fetch-audits.sh NN-*.txt layout).
+fn read_audit_dir(auditDir: string) -> string {
+    if len(auditDir) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "cat ${auditDir}/*.txt 2>/dev/null || true";
+}
+
+// When no pre-fetched AUDIT_DIR is present but AUDIT_URLS is, call the fetch-audits.sh muscle to pull the
+// reports into a throwaway dir and read them back. URLs arrive comma-separated; fetch-audits takes them as
+// separate args, so translate `,` -> space. The whole call is a single shell string (dynamic paths ->
+// safe-exec-concat); fetch-audits SKIPs cleanly offline, so this yields "" rather than failing.
+fn fetch_and_read(fetch: string, urls: string) -> string {
+    if len(fetch) == 0 { return ""; }
+    if len(urls) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "d=$(mktemp -d); sh ${fetch} --out \"$d\" $(printf '%s' '${urls}' | tr ',' ' ') >/dev/null 2>&1; cat \"$d\"/*.txt 2>/dev/null; rm -rf \"$d\" || true";
+}
+
+// The audit corpus: prefer a pre-fetched AUDIT_DIR (offline, deterministic), else fetch from AUDIT_URLS.
+fn audit_corpus(auditDir: string, fetch: string, urls: string) -> string {
+    let pre = read_audit_dir(auditDir);
+    if len(pre) > 0 { return pre; }
+    return fetch_and_read(fetch, urls);
+}
+
+// learn() outcome enum {success,failure,partial,timeout,error}: a devise that surfaced at least one
+// RESIDUAL lead = success (there is somewhere new to hunt); a reasoned NO-RESIDUAL = failure (the audits
+// cover the surface — nothing this target can pay). Mirrors hunter.ag::outcome_of's success/failure split,
+// now over the DEVISE decision rather than a hunt verdict.
+fn outcome_of(verdict: string) -> string {
+    if index_of(verdict, "RESIDUAL|") >= 0 { return "success"; }
+    return "failure";
+}
+
+// Count RESIDUAL leads in the verdict (for the emit payload / trace).
+fn residual_count(verdict: string) -> int {
+    return reduce(regex_split("\n", verdict), |acc: int, l: string| -> int {
+        if index_of(l, "RESIDUAL|") == 0 { return acc + 1; }
+        return acc;
+    }, 0);
+}
+
+let dir = getenv("TARGET_DIR");
+let files = getenv("IN_SCOPE");
+let fetch = if len(getenv("FETCH_AUDITS")) == 0 { "../../fetch-audits.sh" } else { getenv("FETCH_AUDITS") };
+let audits = audit_corpus(getenv("AUDIT_DIR"), fetch, getenv("AUDIT_URLS"));
+let brief = cat_file(getenv("SCOPE_BRIEF"));
+let code = scoped_code(dir, files);
+
+// The DEVISE instruction: the audits carry what the prior auditors ALREADY found (and where they
+// DOWNGRADED / disputed a finding); the residual is everything they did NOT cover. The model must first
+// restate the known findings as the BOUNDARY (so the exclusion set is explicit and novelty-gate can reject
+// restatements), then reason about the GAPS — untouched functions, a class the audits never applied to a
+// given subsystem, a finding they downgraded on a contested argument that may be wrong — and emit those as
+// RESIDUAL leads for the attack engines. The code is the prompt payload (matches hunter.ag's shape).
+let instruction =
+    "You are an elite adversarial smart-contract auditor doing DEVISE work: you are handed a target's OWN "
+  + "prior audit reports and its in-scope code, and your job is to find where the RESIDUAL bug surface is — "
+  + "the classes and functions the prior auditors did NOT cover, or DOWNGRADED / disputed on an argument "
+  + "that may be wrong. On an audited target this is the whole game: a bug already written in these audits "
+  + "is KNOWN and pays NOTHING; only what N professional auditors MISSED is rewardable. Do NOT re-derive a "
+  + "known finding — map it, then hunt the gaps around it.\n\n"
+  + "=== THE TARGET'S PRIOR AUDITS (what is already KNOWN — the exclusion boundary) ===\n" + audits + "\n\n"
+  + "=== PROTOCOL BRIEF (invariants + trust model; may be empty) ===\n" + brief + "\n\n"
+  + "=== HOW TO ANSWER ===\n"
+  + "FIRST, for EVERY distinct finding the audits already contain (including any DOWNGRADED / acknowledged / "
+  + "disputed one), write one line naming it and its affected function(s):\n"
+  + "BOUNDARY|<one-line summary incl. the affected function/identifier>\n"
+  + "THEN reason step by step about the RESIDUAL: trace in-scope functions the audits never analysed for a "
+  + "given bug class, surfaces added or changed after the audit, and any DOWNGRADE whose reasoning you can "
+  + "break. For EACH genuinely-residual lead an external attacker (holding NO privileged role) could exploit, "
+  + "write one line:\n"
+  + "RESIDUAL|<subsystem>|<bug class e.g. C1 accounting / C3 rounding / oracle / reentrancy>|<why the audits "
+  + "missed or wrongly downgraded it>|<concrete attack sketch: what to deploy, the op SEQUENCE to call, the "
+  + "invariant to assert>\n"
+  + "If — after actually tracing the code against the audits — the audits cover the surface and nothing "
+  + "rewardable remains, write the single token: NO-RESIDUAL\n"
+  + "Reason for as long as you need; ONLY the BOUNDARY| and RESIDUAL| lines (or the final NO-RESIDUAL token) "
+  + "are parsed, so your analysis text above them is free.";
+
+let verdict = prompt(instruction, code) -> string;
+
+// Surface to the attack engines + novelty-gate (stdout), and record the DEVISE attempt so fitness reweights
+// toward targets whose audits actually leave a residual (mirrors hunter.ag's learn/emit/memo tail).
+print(verdict);
+let outcome = outcome_of(verdict);
+let nres = residual_count(verdict);
+emit("dark-factory:audit_boundary", "{\"target\":\"" + dir + "\",\"residual_leads\":" + to_string(nres) + ",\"outcome\":\"" + outcome + "\"}");
+if outcome == "success" {
+    emit("dark-factory:residual_hypothesis", "{\"target\":\"" + dir + "\",\"leads\":" + to_string(nres) + "}");
+}
+learn("devise", dir, "audit-aware devise on " + dir + " (" + to_string(nres) + " residual leads)", outcome, ["devise", outcome]);
+memo_write("audit-scout:last_check", "done");
