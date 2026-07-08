@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared predicate + enumerator for the labeler priority-rule audit/purge (#1478).
+"""Shared predicate + enumerator for the labeler priority-rule audit/purge (#1478, #1482).
 
 #1474 / PR #1477 added a deterministic runtime filter
 (`strip_priority_like_labels()`) that strips priority-like tokens from
@@ -13,10 +13,34 @@ existing crystallized rule pool for rules that were crystallized BEFORE the
 filter shipped and still carry a priority-like token baked into their
 `action` slot. It is the SINGLE source of truth for the contamination
 predicate — both `audit-priority-rules.sh` (enumerate + report) and
-`purge-priority-rules.sh` (retire the flagged rules) call this one file, so
+`purge-priority-rules.sh` (retire the flagged rules) drive this one file, so
 the heuristic cannot drift between the two operator scripts. The predicate
 mirrors PR #1477's `strip_priority_like_labels()` token-for-token; when that
 runtime helper changes, change `is_priority_like_token()` here in lockstep.
+
+Recovering the rule pool (#1482): the FIRST cut of this tool (PR #1481)
+re-implemented agentis-core's crystallizer persistence in Python — reading
+`_crystallizer_index/<class>.jsonl` and resolving each rule from the
+content-addressed object store. That was wrong three ways: it keyed rules by
+`rule_id` when core persists bodies by `content_hash`; it `json.loads`-ed
+core's binary semantic-DAG object bytes; and it text-scanned the whole blob
+(so a rule's *condition* text — `kw=urgent,crash` — could false-flag a clean
+action). Deployments without semantic-DAG persistence had no index at all.
+
+The fix recovers rules through **agentis itself**. The operator scripts run
+`agentis knowledge export` (the documented #1478 recipe: export -> filter ->
+`import --replace`) and feed its JSON to this module via `--export`. That is
+the one code path core guarantees works across both the semantic-DAG and the
+plain-JSON knowledge-dir layouts. A `--knowledge-dir DIR` fallback reads a
+plain-JSON rule pool directly (per-class `*.json` arrays) for offline
+inspection and for deployments where the export CLI is unavailable.
+
+Whatever the source, only the `action` slot is inspected for contamination
+(comma-separated label tokens). The `condition` slot is NEVER scanned — a
+priority-like keyword in an issue title (`kw=urgent,crash`) is legitimate
+grouping context, not a contaminated action. There is no whole-blob text
+scan: a rule whose `action` cannot be recovered is reported `unresolved` and
+is never flagged (the purge only ever retires what it can prove is dirty).
 
 The predicate (identical to PR #1477):
   A single label token is "priority-like" (contaminated) when, lowercased:
@@ -26,24 +50,14 @@ The predicate (identical to PR #1477):
       (`priority::critical` and friends carry `::` and are legitimate).
   Extra always-canonical tokens can be supplied via --allow (never flagged).
 
-Rule enumeration reads the on-disk crystallizer state agentis-core persists
-under `<fed>/.agentis/knowledge/`:
-  - `_crystallizer_index/<action_type>.jsonl` — the rule_id list per class,
-  - `_crystallizer_telemetry/<rule_id>.jsonl` — per-rule use/success (for the
-    report only),
-and resolves each rule's `action` slot from the index row when it carries
-one, else from the content-addressed object under `<fed>/.agentis/objects/`.
-A rule whose action cannot be recovered is reported as `unresolved` and is
-never flagged (the purge only ever retires what it can prove is dirty).
-
 Modes:
   report  (default) — human-readable table on stdout, exit 0.
   --json            — one JSON object per CONTAMINATED rule on stdout (JSONL),
                       consumed by purge-priority-rules.sh. A trailing summary
                       object with {"_summary": true, ...} closes the stream.
 
-Total-on-failure: a missing knowledge dir / unreadable file yields an empty
-report (exit 0), never a crash — safe to run against a cold federation.
+Total-on-failure: a missing/empty/unparseable export yields an empty report
+(exit 0), never a crash — safe to run against a cold federation.
 """
 
 import argparse
@@ -53,10 +67,15 @@ import re
 import sys
 
 _BARE_P = re.compile(r"^p\d+$")
-# Free-text fallback scan (used only when a rule's action is recovered as an
-# unstructured blob rather than a clean comma list): find priority-like
-# tokens embedded in the serialized bytes.
-_TEXT_SCAN = re.compile(r"[A-Za-z0-9:_-]+")
+
+# Keys under which the rule fields may travel in an `agentis knowledge export`
+# document (or a plain-JSON knowledge-dir rule). Probed in order; first
+# non-empty string wins. `content_hash` is a *deliberate* trailing fallback
+# for `rule_id` so a row that only carries the persistence key still resolves
+# (#1482 finding 1: never key off the wrong field silently).
+_ID_KEYS = ("rule_id", "id", "content_hash")
+_ACTION_KEYS = ("action", "recommendation", "rule_action", "canonical_action")
+_CLASS_KEYS = ("action_type", "class", "topic", "action_class")
 
 
 def is_priority_like_token(token, allow=None):
@@ -96,167 +115,223 @@ def classify_action(action_csv, allow=None):
     return all_tokens, contaminated, clean
 
 
-def _scan_text_for_priority(blob, allow=None):
-    """Fallback: pull priority-like tokens out of an unstructured rule blob."""
-    hits = []
-    for tok in _TEXT_SCAN.findall(blob):
-        if is_priority_like_token(tok, allow) and tok not in hits:
-            hits.append(tok)
-    return hits
+def _first_str(rule, keys):
+    """First key in `keys` whose value is a non-empty string, else None."""
+    for key in keys:
+        val = rule.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return None
 
 
-def _object_candidates(objects_dir, rule_id):
-    """Plausible on-disk paths for a content-addressed rule object.
+def _rule_id(rule):
+    return _first_str(rule, _ID_KEYS) or ""
 
-    agentis-core content-addresses rules by hash; different core versions
-    shard the object store differently, so probe the flat and the common
-    2-/4-char sharded layouts.
+
+def _rule_action_type(rule):
+    return _first_str(rule, _CLASS_KEYS) or ""
+
+
+def _rule_action(rule):
+    """The rule's `action` slot verbatim (may be empty string), else None.
+
+    Only the action is returned — never the condition, never a whole-blob
+    fallback (#1482 finding 3). A rule missing every action key resolves to
+    None and is reported `unresolved`.
     """
-    if not objects_dir or not rule_id:
+    for key in _ACTION_KEYS:
+        val = rule.get(key)
+        if isinstance(val, str):
+            return val
+    return None
+
+
+def _telemetry_counts(rule):
+    """(use_count, success_count) pulled from the rule row; (0, 0) when absent."""
+    def _int(*keys):
+        for k in keys:
+            v = rule.get(k)
+            if isinstance(v, bool):
+                continue
+            if isinstance(v, int):
+                return v
+            if isinstance(v, str) and v.strip().isdigit():
+                return int(v.strip())
+        return 0
+    return _int("use_count", "uses"), _int("success_count", "successes")
+
+
+def iter_rules(doc):
+    """Yield rule dicts out of a parsed export document, shape-tolerant.
+
+    `agentis knowledge export` and the plain-JSON knowledge-dir layout wrap
+    the rule list differently across core versions, so accept:
+      - a bare list of rule dicts,
+      - {"rules": [...]} / {"crystallizer_rules": [...]},
+      - {"crystallizer"|"knowledge": {"rules": [...]}},
+      - {rule_id: rule_dict, ...} mapping,
+      - a single bare rule dict (has an action-type or action key).
+    Anything else yields nothing (total-on-failure).
+    """
+    if isinstance(doc, list):
+        for r in doc:
+            if isinstance(r, dict):
+                yield r
+        return
+    if not isinstance(doc, dict):
+        return
+    for key in ("rules", "crystallizer_rules"):
+        val = doc.get(key)
+        if isinstance(val, list):
+            for r in val:
+                if isinstance(r, dict):
+                    yield r
+            return
+    for key in ("crystallizer", "knowledge"):
+        val = doc.get(key)
+        if isinstance(val, dict):
+            for r in iter_rules(val):
+                yield r
+            return
+    # A bare rule dict?
+    if _rule_action_type(doc) or any(k in doc for k in _ACTION_KEYS):
+        yield doc
+        return
+    # A {rule_id: rule} mapping.
+    for val in doc.values():
+        if isinstance(val, dict):
+            yield val
+
+
+def load_export(text):
+    """Parse an export blob into a list of rule dicts.
+
+    Accepts a single JSON document OR a JSONL stream (one rule per line),
+    which is how some `agentis knowledge export` builds emit. Returns [] on
+    any parse failure.
+    """
+    text = text.strip()
+    if not text:
         return []
-    cands = [os.path.join(objects_dir, rule_id)]
-    if len(rule_id) > 2:
-        cands.append(os.path.join(objects_dir, rule_id[:2], rule_id[2:]))
-    if len(rule_id) > 4:
-        cands.append(os.path.join(objects_dir, rule_id[:2], rule_id[2:4], rule_id[4:]))
-    return cands
+    try:
+        doc = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        rules = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(row, dict):
+                rules.append(row)
+        return rules
+    return list(iter_rules(doc))
 
 
-def _action_from_obj(objects_dir, rule_id):
-    """Recover (action_str, source) for a rule from its content object.
+def load_knowledge_dir(knowledge_dir):
+    """Fallback source: read plain-JSON rules from a knowledge directory.
 
-    Returns (None, "") when no object is found or no action can be pulled.
+    For deployments without semantic-DAG persistence (#1482 finding 4) the
+    rule pool lives as plain JSON on disk rather than behind the crystallizer
+    index. Each `<class>.json` file holds that class's rules (an array, or a
+    dict wrapping one). Files are read as whole documents through the same
+    shape-tolerant `iter_rules`, so the `action_type` is taken from the row
+    when present and otherwise defaults to the filename stem.
     """
-    for path in _object_candidates(objects_dir, rule_id):
+    rules = []
+    if not knowledge_dir or not os.path.isdir(knowledge_dir):
+        return rules
+    try:
+        names = sorted(os.listdir(knowledge_dir))
+    except OSError:
+        return rules
+    for fn in names:
+        if not fn.endswith(".json"):
+            continue
+        stem = fn[:-5]
+        path = os.path.join(knowledge_dir, fn)
         if not os.path.isfile(path):
             continue
         try:
-            with open(path, "rb") as f:
-                raw = f.read()
-        except OSError:
+            with open(path) as f:
+                doc = json.load(f)
+        except (OSError, json.JSONDecodeError, ValueError):
             continue
-        text = raw.decode("utf-8", "replace")
-        try:
-            obj = json.loads(text)
-        except (json.JSONDecodeError, ValueError):
-            obj = None
-        if isinstance(obj, dict):
-            for key in ("action", "recommendation", "rule_action", "canonical_action"):
-                val = obj.get(key)
-                if isinstance(val, str) and val.strip():
-                    return val, "object:" + key
-        # Structured parse failed — hand back the raw blob for a text scan.
-        return text, "object:raw"
-    return None, ""
+        for row in iter_rules(doc):
+            # Default the class to the filename stem when the row omits it,
+            # so a bare per-class array still classifies correctly.
+            if not _rule_action_type(row):
+                row = dict(row)
+                row["action_type"] = stem
+            rules.append(row)
+    return rules
 
 
-def _action_from_index_row(row):
-    """Pull an action string out of a `_crystallizer_index` row when present."""
-    for key in ("action", "recommendation", "rule_action", "canonical_action"):
-        val = row.get(key)
-        if isinstance(val, str) and val.strip():
-            return val, "index:" + key
-    return None, ""
-
-
-def _telemetry(tel_dir, rule_id):
-    """(use_count, success_count) for a rule; (0, 0) when absent/unreadable."""
-    path = os.path.join(tel_dir, rule_id + ".jsonl")
-    uses = 0
-    succ = 0
-    try:
-        with open(path) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    r = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                uses += 1
-                if r.get("success") is True:
-                    succ += 1
-    except OSError:
-        return (0, 0)
-    return (uses, succ)
-
-
-def enumerate_rules(knowledge_dir, objects_dir, classes, allow=None):
+def enumerate_rules(rules, classes, allow=None):
     """Yield a record dict per rule in the requested classes.
 
     record = {rule_id, action_type, action, contaminated, clean,
               contaminated_tokens, source, use_count, success_count}
-    `contaminated` is True when at least one action token is priority-like.
+    `contaminated` is True when at least one *action* token is priority-like.
     `action` is None for `unresolved` rules (never flagged).
     """
-    index_dir = os.path.join(knowledge_dir, "_crystallizer_index")
-    tel_dir = os.path.join(knowledge_dir, "_crystallizer_telemetry")
-    if not os.path.isdir(index_dir):
-        return
     want = set(classes)
-    try:
-        idx_files = sorted(os.listdir(index_dir))
-    except OSError:
-        return
-    for fn in idx_files:
-        if not fn.endswith(".jsonl"):
+    seen = set()
+    for rule in rules:
+        if not isinstance(rule, dict):
             continue
-        action_type = fn[:-6]
+        action_type = _rule_action_type(rule)
         if want and action_type not in want:
             continue
-        seen = set()
-        try:
-            fh = open(os.path.join(index_dir, fn))
-        except OSError:
+        rule_id = _rule_id(rule)
+        # Dedup on (id, class); a blank id still yields once per row so a
+        # contaminated-but-idless rule is never silently dropped.
+        dedup_key = (rule_id, action_type) if rule_id else None
+        if dedup_key is not None:
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
+
+        action = _rule_action(rule)
+        uses, succ = _telemetry_counts(rule)
+        rec = {
+            "rule_id": rule_id,
+            "action_type": action_type,
+            "action": action,
+            "source": "export",
+            "use_count": uses,
+            "success_count": succ,
+            "contaminated": False,
+            "contaminated_tokens": [],
+            "clean": [],
+        }
+        if action is None:
+            rec["unresolved"] = True
+            yield rec
             continue
-        with fh as f:
-            for raw in f:
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    row = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(row, dict):
-                    continue
-                rule_id = row.get("rule_id", "")
-                if not rule_id or rule_id in seen:
-                    continue
-                seen.add(rule_id)
+        _all, dirty, clean = classify_action(action, allow)
+        rec["contaminated"] = bool(dirty)
+        rec["contaminated_tokens"] = dirty
+        rec["clean"] = clean
+        yield rec
 
-                action, source = _action_from_index_row(row)
-                if action is None:
-                    action, source = _action_from_obj(objects_dir, rule_id)
 
-                uses, succ = _telemetry(tel_dir, rule_id)
-                rec = {
-                    "rule_id": rule_id,
-                    "action_type": action_type,
-                    "action": action,
-                    "source": source,
-                    "use_count": uses,
-                    "success_count": succ,
-                    "contaminated": False,
-                    "contaminated_tokens": [],
-                    "clean": [],
-                }
-                if action is None:
-                    rec["unresolved"] = True
-                    yield rec
-                    continue
-                if source == "object:raw":
-                    # Unstructured blob — text-scan for embedded tokens.
-                    hits = _scan_text_for_priority(action, allow)
-                    rec["contaminated"] = bool(hits)
-                    rec["contaminated_tokens"] = hits
-                else:
-                    _all, dirty, clean = classify_action(action, allow)
-                    rec["contaminated"] = bool(dirty)
-                    rec["contaminated_tokens"] = dirty
-                    rec["clean"] = clean
-                yield rec
+def _load_rules(args):
+    """Resolve the rule pool from --export (primary) or --knowledge-dir."""
+    if args.knowledge_dir:
+        return load_knowledge_dir(args.knowledge_dir)
+    # --export path: '-' or empty means stdin.
+    src = args.export
+    if not src or src == "-":
+        return load_export(sys.stdin.read())
+    try:
+        with open(src) as f:
+            return load_export(f.read())
+    except OSError:
+        return []
 
 
 def _parse_classes(spec):
@@ -265,11 +340,14 @@ def _parse_classes(spec):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(
-        description="Audit crystallized rule action slots for priority-like contamination (#1478).")
-    ap.add_argument("--knowledge-dir", required=True,
-                    help="<fed>/.agentis/knowledge directory")
-    ap.add_argument("--objects-dir", default="",
-                    help="<fed>/.agentis/objects directory (content-addressed rule store)")
+        description="Audit crystallized rule action slots for priority-like contamination (#1478, #1482).")
+    src = ap.add_mutually_exclusive_group()
+    src.add_argument("--export", default="-",
+                     help="path to an `agentis knowledge export` JSON document "
+                          "('-' or omitted = read from stdin)")
+    src.add_argument("--knowledge-dir", default="",
+                     help="fallback: a plain-JSON knowledge directory of per-class "
+                          "rule files (deployments without semantic-DAG persistence)")
     ap.add_argument("--class", dest="classes", default="label",
                     help="comma-separated action_type list to scan (default: label)")
     ap.add_argument("--allow", default="",
@@ -281,10 +359,12 @@ def main(argv=None):
     allow = {t.strip().lower() for t in args.allow.split(",") if t.strip()}
     classes = _parse_classes(args.classes)
 
+    rules = _load_rules(args)
+
     total = 0
     contaminated = []
     unresolved = 0
-    for rec in enumerate_rules(args.knowledge_dir, args.objects_dir, classes, allow):
+    for rec in enumerate_rules(rules, classes, allow):
         total += 1
         if rec.get("unresolved"):
             unresolved += 1
@@ -313,7 +393,7 @@ def main(argv=None):
         return 0
 
     # Human report.
-    print("priority-rule audit (#1478)")
+    print("priority-rule audit (#1478, #1482)")
     print("  classes scanned : " + ",".join(classes))
     print("  rules scanned   : " + str(total))
     print("  contaminated    : " + str(len(contaminated)))
@@ -327,7 +407,7 @@ def main(argv=None):
         rate = ""
         if rec["use_count"]:
             rate = " success=%d/%d" % (rec["success_count"], rec["use_count"])
-        print("    - " + rec["rule_id"])
+        print("    - " + (rec["rule_id"] or "(no rule_id)"))
         print("        action        : " + (rec["action"] or ""))
         print("        priority-like : " + ", ".join(rec["contaminated_tokens"]))
         print("        clean remainder: " + (", ".join(rec["clean"]) if rec["clean"] else "(none — rule slot empties out)"))

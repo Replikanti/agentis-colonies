@@ -1,0 +1,7 @@
+[
+  {
+    "rule_id": "kd_route_0003",
+    "condition": "kw=deploy",
+    "action": "alice,P2"
+  }
+]

@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "rule_id": "rl_9f3c1d7a2b4e6f8091a2b3c4d5e6f708",
+      "content_hash": "obj_1a2b3c4d5e6f70819283a4b5c6d7e8f9",
+      "action_type": "label",
+      "condition": "kw=urgent,crash",
+      "action": "bug,P1",
+      "expected_outcome": "labels applied",
+      "use_count": 4,
+      "success_count": 3
+    },
+    {
+      "rule_id": "rl_clean0001aaaa2222bbbb3333cccc4444",
+      "content_hash": "obj_clean0001aaaa2222bbbb3333cccc44",
+      "action_type": "label",
+      "condition": "kw=urgent,crash",
+      "action": "bug,regression",
+      "expected_outcome": "labels applied",
+      "use_count": 2,
+      "success_count": 2
+    },
+    {
+      "rule_id": "rl_scoped00011111222233334444555566",
+      "content_hash": "obj_scoped00011111222233334444555566",
+      "action_type": "label",
+      "condition": "kw=outage",
+      "action": "incident,priority::critical",
+      "expected_outcome": "labels applied",
+      "use_count": 1,
+      "success_count": 1
+    }
+  ]
+}
