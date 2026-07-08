@@ -854,6 +854,22 @@ if [ -x "$REPO_ROOT/dark-factory/demo-dup-scout.sh" ]; then
     fi
 fi
 
+# --- dark-factory scope+eligibility gate (#1511) ---
+# scope-gate.ag classifies a CONFIRMED finding as PAYABLE only when its location is an in-scope asset AND its
+# impact is eligible + not an out-of-scope/known-issues (incl. audit-noted) carve-out — the correctness barrier
+# that killed two live sessions (Lombard: out-of-scope asset; Onyx: excluded carve-out) before DEVISE/PoC spend.
+# It never submits. demo-scope-gate.sh source-guards the wiring (CI-safe) + runs the agent live over a fixture
+# scope when agentis is present.
+if [ -x "$REPO_ROOT/dark-factory/demo-scope-gate.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-scope-gate.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: scope+eligibility gate (scope-gate.ag) (#1511)"
+    else
+        fail "dark-factory: scope+eligibility gate regressed (#1511)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory capability bench — deterministic safety stage (#1490) ---
 # run-capability-bench.sh measures whether the discover->devise->attack->novelty pipeline surfaces an
 # audit-SURVIVING bug and never re-surfaces a known one, scored against a fixture's ground truth. Its

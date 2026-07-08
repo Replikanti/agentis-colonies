@@ -15,6 +15,19 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Scope + eligibility gate in the substrate** (#1511). The highest-leverage correctness check in the bounty
+  pipeline: a confirmed finding pays NOTHING (and burns the per-report fee + reputation) unless its LOCATION is
+  an in-scope asset AND its IMPACT is an eligible, non-excluded, non-audit-noted class. Two live sessions both
+  died exactly here — a real bug in an unlisted module (out-of-scope asset) and a real bug in an in-scope asset
+  whose impact was an explicit out-of-scope carve-out — so the gate runs BEFORE any DEVISE/PoC spend.
+  - `auditor/agents/scope-gate.ag` — standalone dispatched agent (mirrors `audit-scout.ag` / `dup-scout.ag`).
+    Env: `SCOPE_FILE` (the program's own scope: in-scope asset list + out-of-scope/known-issues section +
+    eligible-impact set), `FINDING_LOCATION`, `FINDING_IMPACT`. The asset-path match is DETERMINISTIC (grep —
+    the muscle); the impact/carve-out judgement is the LLM's over that same scope text. Emits exactly
+    `SCOPE-GATE|<PAYABLE|OUT-OF-SCOPE-ASSET|EXCLUDED-CARVEOUT|INELIGIBLE-IMPACT>|<rationale>` — only `PAYABLE`
+    should proceed. It NEVER submits.
+  - `demo-scope-gate.sh` source-guards the wiring (CI-safe) and runs the agent live over a fixture scope when
+    agentis is present; wired into `tools/colony-lint.sh`.
 - **Audit-aware residual-hunt foundation** (#1485). The reward on a bounty is only in what a target's OWN
   audits MISSED, so the hunt must be audit-aware — a capability the blind auto-gen lacks (it fabricates toys
   or finds already-known issues). Two reliable shell primitives + a CI-safe demo:
