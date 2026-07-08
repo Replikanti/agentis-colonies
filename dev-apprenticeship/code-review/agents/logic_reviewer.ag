@@ -118,6 +118,19 @@ fn get_confidence() -> float {
     return 0.0;
 }
 
+// #1461 per-(iid, head) dedup: fingerprint of the MR head — sha256 of the
+// mr-changes payload, first 16 hex chars. Byte-identical to the qa_reviewer /
+// approval_decider helper (the #1484 gate keys on the same fingerprint shape).
+// Forge-agnostic and stable across our own note posts — posting a note bumps
+// updated_at but never the diff, so the reviewed-head gate below cannot
+// self-retrigger (#1370 idle-suppression principle applied to the reviewer
+// shape). python3 hashlib rather than sha256sum for macOS portability.
+fn head_fingerprint(changes_raw: string) -> string {
+    let cmd = "printf '%s' " + shell_escape(changes_raw) +
+        " | python3 -c 'import sys, hashlib; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:16])'";
+    return try { exec sh cmd; } catch e { ""; };
+}
+
 fn tick_for_repo(owner: string, repo: string) -> void {
     // #147: cheap delta-check. `mr_cmd()` filters --since last_check;
     // an empty `[]` response means no MR updates since last tick and we
@@ -191,6 +204,23 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         };
     };
 
+    // #1461 per-head review gate: suppress the WHOLE review prompt() (and its
+    // [draft-review] note) when this MR head has already been reviewed at the
+    // acting tier. Mirrors qa_reviewer's verdict_head dedup — an unchanged head
+    // exits here, before any LLM round-trip, killing the per-tick re-review
+    // spam. A new push changes the diff, changes the fingerprint, and falls
+    // through to a fresh review. Placed AFTER the #201 pattern-learn block so
+    // that gate keeps its own independent cadence (it learns from human
+    // comments that can arrive without a head change).
+    let head = head_fingerprint(changes_raw);
+    if len(head) == 0 {
+        return;
+    };
+    let reviewed = recall_latest(scoped_memo(owner, repo, "logic_reviewer:reviewed_head:" + to_string(mr_iid)));
+    if reviewed == head {
+        return;
+    };
+
     // Perform logic review
     let rec = recommend("logic_review", ["accuracy"]);
     // #317: scan PR body for cross-repo refs and prefix the resolved
@@ -218,13 +248,19 @@ fn tick_for_repo(owner: string, repo: string) -> void {
             let comment = "**Logic Review** (automated)\n\n" + review.summary;
             // colony-lint: safe-exec-concat
             let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment) + repo_arg(owner, repo);
-            try { exec sh post_cmd; } catch e {
+            let result = try { exec sh post_cmd; } catch e {
                 print("[logic_reviewer] Failed to post comment:", e);
+                "";
             };
             if len(owner) > 0 {
                 learn("logic_review", "MR " + to_string(mr_iid), review.summary, "success", ["code-review", "acted", repo_tag(owner, repo)]);
             } else {
                 learn("logic_review", "MR " + to_string(mr_iid), review.summary, "success", ["code-review", "acted"]);
+            };
+            if len(result) > 0 {
+                // #1461: mark this head reviewed only AFTER a successful post —
+                // a failed post is a logged no-op that retries next tick.
+                memo_write(scoped_memo(owner, repo, "logic_reviewer:reviewed_head:" + to_string(mr_iid)), head);
             };
         } else {
             if my_tier == "review-gated" {
@@ -237,6 +273,8 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     "";
                 };
                 if len(result) > 0 {
+                    // #1461: mark this head reviewed after a successful draft post.
+                    memo_write(scoped_memo(owner, repo, "logic_reviewer:reviewed_head:" + to_string(mr_iid)), head);
                     memo_write(scoped_memo(owner, repo, "logic_reviewer:approved:" + to_string(mr_iid)), "drafted");
                     if len(owner) > 0 {
                         learn("logic_review", "drafted on MR " + to_string(mr_iid), review.summary, "partial", ["code-review", "review-gated", repo_tag(owner, repo)]);
@@ -247,6 +285,9 @@ fn tick_for_repo(owner: string, repo: string) -> void {
             } else {
                 if my_tier == "propose" {
                     emit("review:logic_findings", review);
+                    // #1461: no post at this tier, so mark the head reviewed
+                    // unconditionally — the emit is the per-tier action.
+                    memo_write(scoped_memo(owner, repo, "logic_reviewer:reviewed_head:" + to_string(mr_iid)), head);
                     if len(owner) > 0 {
                         learn("logic_review", "MR " + to_string(mr_iid), review.summary, "partial", ["code-review", "emitted", repo_tag(owner, repo)]);
                     } else {
@@ -254,6 +295,9 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     };
                 } else {
                     print("[logic_reviewer] MR", mr_iid, ": observing (tier:", my_tier, ")");
+                    // #1461: mark the head reviewed so the same head is not
+                    // re-prompted every tick at the default sub-autonomous tier.
+                    memo_write(scoped_memo(owner, repo, "logic_reviewer:reviewed_head:" + to_string(mr_iid)), head);
                     if len(owner) > 0 {
                         learn("logic_review", "MR " + to_string(mr_iid), review.summary, "partial", ["code-review", "observed", repo_tag(owner, repo)]);
                     } else {
@@ -275,6 +319,9 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 };
             };
         };
+        // #1461: a clean review is still a completed per-head action — mark it
+        // so the unchanged head is not re-prompted every tick.
+        memo_write(scoped_memo(owner, repo, "logic_reviewer:reviewed_head:" + to_string(mr_iid)), head);
     };
 
     let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
