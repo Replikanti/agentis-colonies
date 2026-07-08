@@ -15,6 +15,20 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`code_writer` CB exhaustion blocked all drafting** ([#1512](https://github.com/Replikanti/agentis-colonies/issues/1512)):
+  the #1500 plan-post addition (`exec sh` add-note + memo read/write) pushed
+  the worst-case draft tick (draft `prompt()` + plan-note post + detached job
+  launch) over the `cb_budget = 2000` ceiling, so the drafting path failed on
+  every tick and no new issue could be implemented. `cb_budget` raised from
+  2000 to 3000 in lockstep at both declaration sites (`cb 3000;` in
+  `agents/code_writer.ag`, `cb_budget = 3000` in `config/colony.example.toml`).
+  **Operator note:** existing installs must update the `cb_budget` value in
+  their local `colony.toml` (config-template changes do not propagate
+  automatically) and restart the `code_writer` daemon
+  (`start-colony.sh --restart-agent code_writer`).
+
 ## [2.7.1] — 2026-07-08
 
 **Requires:** agentis >= 1.20.0
