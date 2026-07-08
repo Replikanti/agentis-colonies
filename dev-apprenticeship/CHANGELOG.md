@@ -15,6 +15,13 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Fixed
+
+- Autonomous-tier `code_writer` now posts the drafted implementation plan
+  (`[plan] ... (automated)`) to the issue before launching the detached edit
+  job, closing the pre-code visibility gap versus the `review-gated` tier
+  (#1500).
+
 ## [2.7.0] — 2026-07-08
 
 **Requires:** agentis >= 1.20.0
