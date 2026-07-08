@@ -155,6 +155,37 @@ fn verdict_note(v: QaVerdict, adv: string, adv_reason: string) -> string {
     return with_a;
 }
 
+// #1484 step 1: derive the machine-readable BLOCK/PASS status the merge gate
+// keys on. A blocking verdict is ANY failed dimension — completeness,
+// description-vs-diff, or adversarial — so a single concrete refutation is
+// enough to hold the merge. `.ag` has no `||`, so the disjunction is written as
+// nested `if`s that all fall through to "pass". This mirrors the human reading
+// of the verdict note: any `fail` on the header line means "do not auto-merge".
+fn verdict_status(v: QaVerdict, adv: string) -> string {
+    if v.completeness == "fail" {
+        return "block";
+    };
+    if v.description_vs_diff == "fail" {
+        return "block";
+    };
+    if adv == "fail" {
+        return "block";
+    };
+    return "pass";
+}
+
+// #1484 step 1: the commit-keyed verdict marker appended to the QA note so
+// approval_decider (a DIFFERENT agent that cannot read this agent's memos) can
+// read the verdict off the durable forge note (#1375 lesson: coordinate over
+// persisted forge state, not the ephemeral bus). `head` is the same
+// head_fingerprint() the dedup gate uses, so a force-push changes the diff,
+// changes the fingerprint, and the stale marker no longer matches — the gate
+// treats it as absent and re-waits. An HTML comment is invisible in the
+// rendered note but trivially greppable off the mr-notes payload.
+fn qa_marker(head: string, status: string) -> string {
+    return "\n\n<!-- qa-verdict head=" + head + " status=" + status + " -->";
+}
+
 // The adversarial dimension's prompt (#1405): DEFAULT-SKEPTICAL, framed to
 // REFUTE the change rather than summarize it. Fed the same context (MR diff +
 // linked issue) as the two-dimension verdict prompt.
@@ -283,7 +314,9 @@ fn qa_one_mr(owner: string, repo: string, raw: string, idx: int) -> void {
 
     if my_tier == "autonomous" {
         emit("review:qa_verdict", verdict);
-        let comment = "**QA Verdict** (automated)\n\n" + note;
+        // #1484 step 1: append the commit-keyed BLOCK/PASS marker so the merge
+        // gate can read this verdict off the durable forge note.
+        let comment = "**QA Verdict** (automated)\n\n" + note + qa_marker(head, verdict_status(verdict, adv_status));
         // colony-lint: safe-exec-concat
         let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment) + repo_arg(owner, repo);
         let result = try { exec sh post_cmd; } catch e {
@@ -303,7 +336,9 @@ fn qa_one_mr(owner: string, repo: string, raw: string, idx: int) -> void {
     } else {
         if my_tier == "review-gated" {
             emit("review:qa_verdict", verdict);
-            let comment = "[draft-review] **QA Verdict** (automated, pending approval)\n\n" + note;
+            // #1484 step 1: same commit-keyed marker on the review-gated draft
+            // note — a promoted draft carries the verdict the merge gate reads.
+            let comment = "[draft-review] **QA Verdict** (automated, pending approval)\n\n" + note + qa_marker(head, verdict_status(verdict, adv_status));
             // colony-lint: safe-exec-concat
             let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(mr_iid) + " --body " + shell_escape(comment) + repo_arg(owner, repo);
             let result = try { exec sh post_cmd; } catch e {

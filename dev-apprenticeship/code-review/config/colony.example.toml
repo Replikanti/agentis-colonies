@@ -25,6 +25,25 @@ tick_interval_ms = 60000
 # agent to be at the autonomous tier AND the merge gate to pass.
 auto_merge = false
 
+# #1484: head-keyed QA review gate — a SECOND, independent merge gate on top of
+# the CI chokepoint. When auto_merge is on, an autonomous auto-merge fires only
+# when CI is green AND a passing QA verdict exists for the PR's current head
+# commit (qa_reviewer's commit-keyed marker). No passing verdict = HOLD (fail
+# SAFE — never a spurious merge). NOTE: for the gate to RELEASE merges,
+# qa_reviewer must be at the review-gated tier or above (the tiers where it
+# posts a note); otherwise every green PR is verdict-none and, under the default
+# HOLD, auto-merge simply pauses until a human merges.
+#
+# merge_review_timeout_s: how long (seconds) to wait for a verdict on the
+# current head before the timeout fallback applies. Default 1800 (30 min). The
+# wait clock resets on a force-push (new head commit).
+merge_review_timeout_s = 1800
+# merge_review_timeout_action: what to do when the wait window elapses with no
+# verdict. "hold" (default) keeps holding for a human — the safe choice.
+# "merge" opts into bound-wait-then-merge (merges once CI is green and the
+# window has elapsed, even without a verdict).
+merge_review_timeout_action = "hold"
+
 # Forge backend selection (ADR-0002, #256). `type` picks which of the
 # per-backend blocks below is active. Legal values: "gitlab", "github".
 # The legacy top-level [gitlab] section was retired in PR 7 of #256

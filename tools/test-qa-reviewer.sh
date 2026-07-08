@@ -338,6 +338,59 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Commit-keyed verdict marker for the #1484 merge gate
+# ---------------------------------------------------------------------------
+# qa_reviewer makes its verdict machine-readable for approval_decider (a
+# DIFFERENT agent that cannot read this agent's memos) by appending a hidden,
+# commit-keyed marker to the note it already posts — read off the durable
+# mr-notes payload by the merge gate.
+VERDICT_STATUS_FN="$(awk '/^fn verdict_status\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
+QA_MARKER_FN="$(awk '/^fn qa_marker\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
+
+# The two helper functions exist.
+if grep -q '^fn verdict_status(v: QaVerdict, adv: string) -> string {' "$AG" \
+   && grep -q '^fn qa_marker(head: string, status: string) -> string {' "$AG"; then
+    pass "(#1484) verdict_status() and qa_marker() helpers exist"
+else
+    fail "(#1484) marker helpers" "verdict_status() and qa_marker() must both be defined"
+fi
+# status=block derives from ANY failed dimension (completeness OR
+# description-vs-diff OR adversarial). `.ag` has no `||`, so the disjunction is
+# three nested `if`s that each return "block", with a final fall-through "pass".
+block_guards="$(printf '%s' "$VERDICT_STATUS_FN" | grep -c 'return "block";')"
+if [ "$block_guards" -eq 3 ] \
+   && printf '%s' "$VERDICT_STATUS_FN" | grep -q 'v.completeness == "fail"' \
+   && printf '%s' "$VERDICT_STATUS_FN" | grep -q 'v.description_vs_diff == "fail"' \
+   && printf '%s' "$VERDICT_STATUS_FN" | grep -q 'adv == "fail"' \
+   && printf '%s' "$VERDICT_STATUS_FN" | grep -q 'return "pass";'; then
+    pass "(#1484) verdict_status blocks on ANY failed dimension, else pass (3 block guards + pass fallthrough)"
+else
+    fail "(#1484) block derivation" "expected 3 'block' returns gated on each dimension + a 'pass' fallthrough, got $block_guards block returns"
+fi
+# qa_marker renders the exact hidden marker the gate greps for.
+if printf '%s' "$QA_MARKER_FN" | grep -qF '"\n\n<!-- qa-verdict head=" + head + " status=" + status + " -->"'; then
+    pass "(#1484) qa_marker renders '<!-- qa-verdict head=<fp> status=<s> -->' (the gate's grep anchor)"
+else
+    fail "(#1484) marker format" "qa_marker must render the commit-keyed HTML-comment marker"
+fi
+# The marker is appended to the posted note body in BOTH post branches
+# (autonomous + review-gated) — keyed to the SAME head fingerprint the dedup
+# gate uses and derived from the SAME verdict + adversarial status.
+marker_appends="$(grep -c 'qa_marker(head, verdict_status(verdict, adv_status))' "$AG")"
+if [ "$marker_appends" -eq 2 ]; then
+    pass "(#1484) the commit-keyed marker is appended in BOTH post branches (autonomous + review-gated)"
+else
+    fail "(#1484) marker in both branches" "expected 2 qa_marker(head, verdict_status(...)) appends, found $marker_appends"
+fi
+# It rides the same head_fingerprint(...) value (`head`) the dedup gate keys on,
+# so a force-push changes the marker's head and the gate treats it as stale.
+if grep -q '"\*\*QA Verdict\*\* (automated)\\n\\n" + note + qa_marker(head,' "$AG"; then
+    pass "(#1484) autonomous note appends the marker AFTER the human-readable verdict note"
+else
+    fail "(#1484) autonomous marker placement" "the autonomous comment must be note + qa_marker(head, ...)"
+fi
+
+# ---------------------------------------------------------------------------
 # Tier semantics + federation lint contracts
 # ---------------------------------------------------------------------------
 if printf '%s' "$QA_ONE" | grep -q 'repo_tier("qa_reviewer", owner, repo)' \
