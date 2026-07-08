@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **dashboard**: new read-only `GET /api/status` endpoint on the dashboard server (`lib/federation-dashboard-server.py`) — a machine-readable JSON view of federation liveness for ops tooling (start scripts confirming the fed came up, monitoring probes, benchmark harnesses) so they never have to scrape the HTML page (whose layout is not a contract) or shell into `agentis daemon list` (whose registry keeps stale `state="running"` rows after host sleep). Returns `application/json` `{dashboard_version, generated_at, agents: [{agent, colony, state, last_seen}]}`, sourced entirely from the collector snapshot the HTML page already renders (`snapshot.json`) — no new collection logic and no extra processes, it rides the existing 60s refresher loop. `state` is the **effective** state the page shows: a registry `running` row whose PID/heartbeat has gone stale reports `"dead"`, which is exactly the stale-`running` cross-check an external probe wants; `last_seen` is the ISO-8601 UTC time of the agent's most recent non-error tick (or `null`). Any other `/api/*` path returns a JSON `404`. Response shape is a documented stable contract (see `README.md`); missing snapshot degrades to an empty `agents` array rather than erroring. ([#1465](https://github.com/Replikanti/agentis-colonies/issues/1465))
+
 ## [0.11.2] — 2026-07-07
 
 ### Fixed

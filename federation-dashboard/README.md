@@ -45,6 +45,47 @@ federation-dashboard /path/to/dev-apprenticeship 9000
 Default port is 8420. The federation directory must contain colony
 subdirectories with `agents/*.ag` files.
 
+## Status endpoint (`GET /api/status`)
+
+A machine-readable, read-only JSON view of federation liveness for ops
+tooling — start scripts confirming the fed came up, monitoring probes,
+benchmark harnesses — so they never have to scrape the HTML page or shell
+into `agentis daemon list`
+([#1465](https://github.com/Replikanti/agentis-colonies/issues/1465)).
+
+```bash
+curl -s http://127.0.0.1:8420/api/status
+```
+
+```json
+{
+  "dashboard_version": "0.11.2",
+  "generated_at": "2026-07-09T12:34:56Z",
+  "agents": [
+    {"agent": "router", "colony": "triage", "state": "running", "last_seen": "2026-07-09T12:34:41Z"}
+  ]
+}
+```
+
+- **Fields** come from the same collector snapshot the HTML page renders —
+  no extra collection pass and no extra processes. It reads the snapshot the
+  existing 60-second refresher loop already produces, so a stale response
+  just means the last regen was stale (never a crash).
+- **`state`** is the *effective* state the page shows: a registry `running`
+  row whose PID/heartbeat has gone stale reports `state: "dead"`. That is
+  exactly the stale-`running` cross-check an external probe wants, since the
+  daemon registry is known to keep `state="running"` rows after host sleep.
+- **`last_seen`** is the ISO-8601 UTC timestamp of the agent's most recent
+  non-error tick log line, or `null` when none has been observed.
+- **`generated_at`** is the collection time of the served snapshot (falling
+  back to request time when no snapshot exists yet).
+- **Stability:** the response shape (`dashboard_version`, `generated_at`,
+  `agents[].{agent,colony,state,last_seen}`) is a **stable contract** —
+  additive fields may appear over time, but existing fields will not be
+  renamed or removed without a major version bump. The HTML layout carries
+  no such guarantee; scrape this instead. Any other `/api/*` path returns
+  `404` with a JSON body.
+
 ## Architecture
 
 | File | Purpose |
@@ -53,7 +94,7 @@ subdirectories with `agents/*.ag` files.
 | `lib/federation-dashboard-collector.py` | Per-agent data collector (experience stats, `.ag` descriptions, log lines, PID liveness, timeline, confidence history). Also invokes `auto-promote-decisions.py --preview` so the dashboard's Promote Candidates list uses the same math the scheduler uses. |
 | `lib/federation-dashboard-history.py` | Snapshot appender (per-colony avg confidence + experience totals) to `history.json`; prunes entries older than 7 days. |
 | `lib/federation-dashboard-renderer.py` | Template renderer — substitutes 10 named sentinels into `federation-dashboard.html.template`, atomically writes `index.html`. |
-| `lib/federation-dashboard-server.py` | HTTP server + REST endpoints (`/refresh`, `/confidence`, `/restart`, `/quarantine`, `/evolve`, `/cleanup`, `/start`, `/kill`). |
+| `lib/federation-dashboard-server.py` | HTTP server + REST endpoints (`GET /api/status`, `/refresh`, `/confidence`, `/restart`, `/quarantine`, `/evolve`, `/cleanup`, `/start`, `/kill`). |
 | `lib/federation-dashboard.html.template` | Static HTML/CSS/JS page with `{{SENTINEL}}` placeholders. Edit this file (not the shell or Python) to change markup, styling, or client-side JS. |
 
 State (regenerated `index.html`, `history.json`, `confidence-log.jsonl`,
