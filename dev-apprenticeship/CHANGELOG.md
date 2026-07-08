@@ -15,6 +15,10 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+## [2.7.0] — 2026-07-08
+
+**Requires:** agentis >= 1.20.0
+
 ### Fixed
 
 - **Advisory reviewers re-reviewed the same MR head every tick** ([#1461](https://github.com/Replikanti/agentis-colonies/issues/1461)):
@@ -55,6 +59,9 @@ is asserted until multi-version CI is in place.
   where it posts a note); otherwise every green PR is verdict-none and, under
   the default HOLD, auto-merge pauses until a human merges (set
   `merge_review_timeout_action = merge` for bounded-wait-then-merge).
+
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.6.1...HEAD
+[2.7.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.6.0...dev-apprenticeship-v2.7.0
 
 ## [2.6.1] — 2026-07-08
 
