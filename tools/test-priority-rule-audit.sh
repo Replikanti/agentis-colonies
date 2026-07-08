@@ -43,7 +43,7 @@ if echo "$REPORT" | grep -q "contaminated    : 1"; then
     pass "real-shaped export: 1 contaminated rule detected (no false 'contaminated: 0')"
 else
     fail "real-shaped export: expected 'contaminated    : 1', got:"
-    echo "$REPORT" | sed 's/^/      /'
+    printf '%s\n' "$REPORT" | sed 's/^/      /'
 fi
 
 if echo "$REPORT" | grep -q "rl_9f3c1d7a2b4e6f8091a2b3c4d5e6f708"; then
@@ -76,7 +76,7 @@ if [ "$N_CONTAM" = "1" ] && echo "$JSONOUT" | grep -q '"_summary": true'; then
     pass "--json emits exactly one contaminated line + a _summary"
 else
     fail "--json stream malformed (contaminated lines=$N_CONTAM):"
-    echo "$JSONOUT" | sed 's/^/      /'
+    printf '%s\n' "$JSONOUT" | sed 's/^/      /'
 fi
 
 # ----- 5. Knowledge-dir-layout fallback (no semantic-DAG persistence) -----
@@ -87,7 +87,7 @@ if echo "$KDREPORT" | grep -q "contaminated    : 1" \
     pass "knowledge-dir fallback: contaminated 'urgent' action detected"
 else
     fail "knowledge-dir fallback missed the contaminated rule:"
-    echo "$KDREPORT" | sed 's/^/      /'
+    printf '%s\n' "$KDREPORT" | sed 's/^/      /'
 fi
 
 if echo "$KDREPORT" | grep -q "kd_clean_0002"; then
@@ -115,7 +115,7 @@ if echo "$DRY" | grep -q "DRY-RUN" \
     pass "purge dry-run previews the single flagged rule and writes nothing"
 else
     fail "purge dry-run preview wrong:"
-    echo "$DRY" | sed 's/^/      /'
+    printf '%s\n' "$DRY" | sed 's/^/      /'
 fi
 
 # Apply writes a filtered pool with the flagged rule gone and the clean ones kept.
@@ -140,7 +140,7 @@ if echo "$RECLEAN" | grep -q "contaminated    : 0"; then
     pass "re-audit of the purged pool reports contaminated: 0"
 else
     fail "re-audit of purged pool still shows contamination:"
-    echo "$RECLEAN" | sed 's/^/      /'
+    printf '%s\n' "$RECLEAN" | sed 's/^/      /'
 fi
 
 # ----- 7. Total-on-failure: empty/absent export yields a clean report, exit 0 -----
