@@ -39,9 +39,11 @@ fn anchor_intro(dir: string, file: string, anchor: string) -> string {
 }
 
 // Is the vulnerable construct STILL present at HEAD? (>0 => unpatched; 0 => gone/patched).
+// NOTE: `grep -c` prints "0" AND exits 1 on zero matches, so a bare `|| echo 0` fallback double-prints
+// ("0\n0\n") in that (common) case; capture first, fall back only when grep produced no output at all.
 fn anchor_present(dir: string, file: string, anchor: string) -> string {
     // colony-lint: safe-exec-concat
-    return exec sh "grep -c -F '${anchor}' ${dir}/${file} 2>/dev/null || echo 0";
+    return exec sh "c=$(grep -c -F '${anchor}' ${dir}/${file} 2>/dev/null); [ -n \"$c\" ] && echo \"$c\" || echo 0";
 }
 
 // Fix/security/audit-flavoured commits that TOUCHED the affected file (did anyone already address it here?).
@@ -51,9 +53,10 @@ fn fix_touches(dir: string, file: string) -> string {
 }
 
 // Repo fix-velocity: fraction of the last 300 commits that are fix/security/audit-flavoured (how fast they patch).
+// Same double-print pitfall as anchor_present (`grep -c` exits 1 on zero matches) — capture-then-fallback.
 fn fix_velocity(dir: string) -> string {
     // colony-lint: safe-exec-concat
-    return exec sh "git -C ${dir} log --oneline -300 2>/dev/null | grep -icE 'fix|secur|audit|patch' || echo 0";
+    return exec sh "n=$(git -C ${dir} log --oneline -300 2>/dev/null | grep -icE 'fix|secur|audit|patch'); [ -n \"$n\" ] && echo \"$n\" || echo 0";
 }
 
 // Do the target's OWN audits mention the anchor (coverage)? "" AUDIT_DIR -> the no-audit marker.
