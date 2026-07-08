@@ -805,6 +805,22 @@ if [ -x "$REPO_ROOT/dark-factory/demo-owner-assert.sh" ]; then
     fi
 fi
 
+# --- dark-factory audit-aware residual-hunt foundation (#1485) ---
+# fetch-audits.sh ingests a target's public audit reports (extract text; clean SKIP offline) so the hunt
+# knows the KNOWN-issue boundary; novelty-gate.sh rejects a finding that restates a known issue (matched by
+# shared target function/identifier + salient-term overlap) while passing a genuinely-novel one — so the
+# engine never surfaces a known/already-reported bug (a rejected submission). demo-audit-hunter.sh is pure
+# bash/python3 (localhost fetch, no external network) so it runs on CI runners.
+if [ -x "$REPO_ROOT/dark-factory/demo-audit-hunter.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-audit-hunter.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: audit-aware residual-hunt foundation (fetch-audits + novelty-gate) (#1485)"
+    else
+        fail "dark-factory: audit-aware residual-hunt foundation regressed (#1485)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory invariant-hunt target-linkage gate (#1471) ---
 # The invariant-hunt generation path could produce a false FINDING when the LLM substituted its own toy
 # contract of the same name instead of importing the in-scope target. forge-invariant.sh gained a
