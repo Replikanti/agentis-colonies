@@ -838,6 +838,22 @@ if [ -x "$REPO_ROOT/dark-factory/demo-audit-scout.sh" ]; then
     fi
 fi
 
+# --- dark-factory dup-risk estimator (#1503) ---
+# dup-scout.ag estimates the "already-reported" probability of a CONFIRMED finding from observable repo/audit
+# evidence (git freshness, patch-status, fix-velocity, audit coverage) so the human SUBMIT decision is
+# evidence-based rather than a blind guess — the stage between VERIFY and the human-gated submit. It never
+# submits. demo-dup-scout.sh source-guards the wiring (CI-safe) and runs the agent live over a throwaway
+# git-repo fixture when agentis is present.
+if [ -x "$REPO_ROOT/dark-factory/demo-dup-scout.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-dup-scout.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: dup-risk estimator (dup-scout.ag) (#1503)"
+    else
+        fail "dark-factory: dup-risk estimator regressed (#1503)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory capability bench — deterministic safety stage (#1490) ---
 # run-capability-bench.sh measures whether the discover->devise->attack->novelty pipeline surfaces an
 # audit-SURVIVING bug and never re-surfaces a known one, scored against a fixture's ground truth. Its

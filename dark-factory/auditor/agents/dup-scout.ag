@@ -1,0 +1,117 @@
+cb 300000;
+// #1503 — DUP-RISK estimator, in the SUBSTRATE. A confirmed finding on a public bounty pays NOTHING if
+// someone already reported it (duplicate -> $0, and platforms still burn the per-report fee). This agent
+// estimates the "already-reported" probability of a confirmed finding from OBSERVABLE evidence in the cloned
+// target repo + its audits, so the human SUBMIT decision is evidence-based instead of a blind guess. It sits
+// between VERIFY (the PoC that confirms the bug) and the human-gated submit — it NEVER submits.
+//
+// The estimate is a HEURISTIC probability, never a certainty: the platform's duplicate pool is private and
+// unknowable pre-submission. It reasons over public signals (git history is the muscle; the judgement is here):
+//   * FRESHNESS   — when was the vulnerable construct introduced? Newer code = fewer eyeballs = lower dup risk.
+//   * PATCH STATUS (strongest) — is the construct STILL present at HEAD, or was it recently "fixed"? A repo
+//                   that actively merges security/audit fixes yet left this unpatched N days after it landed
+//                   suggests it has NOT been reported+validated yet; a recent fix commit -> already-known.
+//   * FIX VELOCITY — how promptly the repo lands fix/security/audit commits (calibrates the patch signal).
+//   * AUDIT COVERAGE — did the target's OWN audits review this code? Pro auditors covering it and MISSING the
+//                   bug -> it is subtle -> lower dup risk. Un-audited surface -> weaker signal.
+//   * HOT-ZONE     — recently-changed / post-audit code hunters focus on (public audit reports point them
+//                   there) -> raises dup risk.
+//
+// Env:
+//   TARGET_DIR     repo root of the cloned target (a git checkout; the signals come from its history)
+//   FINDING_FILE   the affected in-scope path (relative to TARGET_DIR), e.g. contracts/strategy/Foo.sol
+//   FINDING_ANCHOR a SIMPLE identifier locating the vulnerable code — a function name or short code token
+//                  (e.g. `postPricePerShare` or `navAtSnapshot -`); used to git-blame + grep. Keep it a plain
+//                  token (no quotes) so it feeds `grep -F` / `git log -S` cleanly.
+//   AUDIT_DIR      dir of the target's audit text (NN-*.txt from fetch-audits.sh); optional ("" -> no-audit signal)
+// Stdout: exactly one `DUP-RISK|<LOW|MODERATE|HIGH>|<~pct>|<rationale citing the signals>` line.
+
+// --- git/audit evidence gathering (the muscle; dynamic paths -> safe-exec-concat, per audit-scout.ag) ------
+fn head_date(dir: string) -> string {
+    // colony-lint: safe-exec-concat
+    return exec sh "git -C ${dir} log -1 --format=%ci 2>/dev/null || echo unknown";
+}
+
+// The FIRST commit that added the anchor to the file (introduction = the oldest addition), with date + subject.
+fn anchor_intro(dir: string, file: string, anchor: string) -> string {
+    // colony-lint: safe-exec-concat
+    return exec sh "git -C ${dir} log --reverse -S '${anchor}' --format='%ci | %s' -- ${file} 2>/dev/null | head -1 || echo unknown";
+}
+
+// Is the vulnerable construct STILL present at HEAD? (>0 => unpatched; 0 => gone/patched).
+// NOTE: `grep -c` prints "0" AND exits 1 on zero matches, so a bare `|| echo 0` fallback double-prints
+// ("0\n0\n") in that (common) case; capture first, fall back only when grep produced no output at all.
+fn anchor_present(dir: string, file: string, anchor: string) -> string {
+    // colony-lint: safe-exec-concat
+    return exec sh "c=$(grep -c -F '${anchor}' ${dir}/${file} 2>/dev/null); [ -n \"$c\" ] && echo \"$c\" || echo 0";
+}
+
+// Fix/security/audit-flavoured commits that TOUCHED the affected file (did anyone already address it here?).
+fn fix_touches(dir: string, file: string) -> string {
+    // colony-lint: safe-exec-concat
+    return exec sh "git -C ${dir} log --format='%ci | %s' -- ${file} 2>/dev/null | grep -iE 'fix|secur|audit|patch|underflow|overflow|revert|dos|clamp' | head -8 || true";
+}
+
+// Repo fix-velocity: fraction of the last 300 commits that are fix/security/audit-flavoured (how fast they patch).
+// Same double-print pitfall as anchor_present (`grep -c` exits 1 on zero matches) — capture-then-fallback.
+fn fix_velocity(dir: string) -> string {
+    // colony-lint: safe-exec-concat
+    return exec sh "n=$(git -C ${dir} log --oneline -300 2>/dev/null | grep -icE 'fix|secur|audit|patch'); [ -n \"$n\" ] && echo \"$n\" || echo 0";
+}
+
+// Do the target's OWN audits mention the anchor (coverage)? "" AUDIT_DIR -> the no-audit marker.
+fn audit_mentions(auditDir: string, anchor: string) -> string {
+    if len(auditDir) == 0 { return "NO-AUDITS-PROVIDED"; }
+    // colony-lint: safe-exec-concat
+    return exec sh "grep -rc -F '${anchor}' ${auditDir}/ 2>/dev/null | awk -F: '{s+=$2} END{print s+0}' || echo 0";
+}
+
+let dir = getenv("TARGET_DIR");
+let file = getenv("FINDING_FILE");
+let anchor = getenv("FINDING_ANCHOR");
+let auditDir = getenv("AUDIT_DIR");
+
+// Assemble the observable evidence block the estimate reasons over.
+let signals =
+    "HEAD_DATE: " + head_date(dir) + "\n"
+  + "ANCHOR: " + anchor + "  (in " + file + ")\n"
+  + "ANCHOR_INTRODUCED: " + anchor_intro(dir, file, anchor) + "\n"
+  + "ANCHOR_PRESENT_AT_HEAD (grep count; 0 = patched/gone): " + anchor_present(dir, file, anchor) + "\n"
+  + "FIX/SECURITY COMMITS TOUCHING THIS FILE:\n" + fix_touches(dir, file) + "\n"
+  + "REPO_FIX_VELOCITY (fix-flavoured of last 300 commits): " + fix_velocity(dir) + "\n"
+  + "AUDIT_MENTIONS_ANCHOR (times the target's own audits reference it): " + audit_mentions(auditDir, anchor) + "\n";
+
+// The estimate: reason over the signals and pick a dup-risk band with a rough probability + rationale. This
+// is a heuristic from PUBLIC evidence — the platform's duplicate pool is private, so certainty is impossible.
+let instruction =
+    "You are triaging whether a CONFIRMED bug-bounty finding is likely ALREADY REPORTED by another hunter "
+  + "(a duplicate that would pay nothing). You cannot see the platform's private duplicate pool, so estimate a "
+  + "HEURISTIC probability from the observable repo/audit evidence below. Reason over these signals:\n"
+  + "- PATCH STATUS is the strongest signal: if the vulnerable construct is STILL present at HEAD (grep count > 0) "
+  + "AND the repo actively merges fixes (high fix-velocity) yet left it unpatched since it was introduced, that "
+  + "suggests it has NOT been reported+validated yet (they would likely have patched it) -> LOWER dup risk. A "
+  + "recent fix commit touching this file that removes the construct -> it is already-known -> HIGH dup risk / "
+  + "likely unpayable.\n"
+  + "- FRESHNESS: the more recently the construct was introduced, the fewer hunters have processed it -> lower dup risk.\n"
+  + "- AUDIT COVERAGE: if the target's own audits reference this code yet the bug survived, it is subtle "
+  + "(pro auditors missed it) -> lower dup risk; a wholly un-audited surface is a weaker signal either way.\n"
+  + "- HOT-ZONE: recently-changed / post-audit code is where hunters concentrate (public audit reports point them "
+  + "there) -> raises dup risk.\n\n"
+  + "=== OBSERVABLE EVIDENCE ===\n" + signals + "\n"
+  + "=== HOW TO ANSWER ===\nReason briefly, then write exactly ONE final line:\n"
+  + "DUP-RISK|<LOW|MODERATE|HIGH>|<a rough percentage, e.g. ~30%>|<one-sentence rationale citing the specific "
+  + "signals that drove it>\n"
+  + "Be honest and calibrated: LOW is not 0% (someone may still have it), HIGH is not 100%. Only the final "
+  + "DUP-RISK| line is parsed.";
+
+let verdict = prompt(instruction, signals) -> string;
+
+// Surface to the human submit-gate (stdout) + record the assessment (mirrors audit-scout.ag's tail).
+print(verdict);
+let band = if index_of(verdict, "DUP-RISK|LOW") >= 0 { "low" }
+           else { if index_of(verdict, "DUP-RISK|HIGH") >= 0 { "high" } else { "moderate" } };
+// A LOW dup-risk finding is the productive outcome (worth submitting) -> success; HIGH (likely a wasted fee) -> failure.
+let outcome = if band == "low" { "success" } else { if band == "high" { "failure" } else { "partial" } };
+emit("dark-factory:dup_risk", "{\"file\":\"" + file + "\",\"anchor\":\"" + anchor + "\",\"band\":\"" + band + "\"}");
+learn("dup-risk", file, "dup-risk estimate for " + anchor + " in " + file + " (" + band + ")", outcome, ["dup-risk", band]);
+memo_write("dup-scout:last_check", "done");
