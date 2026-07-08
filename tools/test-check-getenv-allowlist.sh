@@ -25,6 +25,10 @@
 #   Test 12: two getenv() on one line are both scanned — exactly one
 #            [UNREGISTERED] for the unregistered var, none for the
 #            allowlisted one
+#   Test 13: Rule 3 (#1460) flags an unregistered ${CODE_EDIT_*:-…} read in
+#            the code-edit worker scripts with [UNREGISTERED-SHELL]; the
+#            allowlisted, waived, and bare-name-in-comment forms all pass
+#   Test 14: Rule 3 is silent when every CODE_EDIT_* shell read is allowlisted
 #
 # Usage: ./tools/test-check-getenv-allowlist.sh
 # Exit code 0 if all tests pass, 1 otherwise.
@@ -251,6 +255,72 @@ if [ "$T12_RC" -eq 1 ] && [ "$T12_COUNT" -eq 1 ] \
     pass "two getenv() on one line: only the unregistered one is flagged"
 else
     fail "same-line multi-getenv — expected exit 1 + one [UNREGISTERED] for BAD_KNOB, got rc=$T12_RC count=$T12_COUNT: $T12_OUT"
+fi
+
+# ----- Test 13: Rule 3 flags an unregistered CODE_EDIT_* shell read -----
+# code_writer.ag execs tools/code-edit-job.sh under the sanitized env, so a
+# ${CODE_EDIT_*:-default} read in the code-edit worker is inert unless
+# allowlisted. Rule 3 scans SHELL_SCAN_FILES; an unregistered read must fail
+# with [UNREGISTERED-SHELL], and a $-prefixed read in an allowlisted /
+# waived / doc-comment position must not.
+T13="$FAKE_ROOT/t13"
+make_fixture "$T13" 'COLONY_DIR,CODE_EDIT_MODEL' 'COLONY_DIR CODE_EDIT_MODEL'
+mkdir -p "$T13/tools"
+cat > "$T13/tools/code-edit-in-checkout.sh" <<'EOF'
+#!/bin/sh
+#   CODE_EDIT_MODEL   documented knob (bare name, no $) — must NOT match
+MODEL="${CODE_EDIT_MODEL:-opus}"
+BUDGET="${CODE_EDIT_TOTAL_BUDGET_MS:-1500000}"
+EOF
+cat > "$T13/tools/code-edit-job.sh" <<'EOF'
+#!/bin/sh
+# colony-lint: getenv-unregistered-ok  (test-only override)
+ORCH="${CODE_EDIT_ORCH:-default}"
+EOF
+T13_OUT="$("$CHECK" "$T13" 2>&1)" && T13_RC=0 || T13_RC=$?
+if [ "$T13_RC" -eq 1 ] \
+    && printf '%s' "$T13_OUT" | grep -q '\[UNREGISTERED-SHELL\].*CODE_EDIT_TOTAL_BUDGET_MS' \
+    && ! printf '%s' "$T13_OUT" | grep -q 'CODE_EDIT_MODEL' \
+    && ! printf '%s' "$T13_OUT" | grep -q 'CODE_EDIT_ORCH'; then
+    pass "Rule 3 flags unregistered CODE_EDIT_* shell read; allowlisted + waived + bare-name pass"
+else
+    fail "Rule 3 shell scan — expected exit 1 + [UNREGISTERED-SHELL] for CODE_EDIT_TOTAL_BUDGET_MS only, got rc=$T13_RC: $T13_OUT"
+fi
+
+# ----- Test 14: Rule 3 clean when every CODE_EDIT_* read is allowlisted -----
+T14="$FAKE_ROOT/t14"
+make_fixture "$T14" 'COLONY_DIR,CODE_EDIT_MODEL,CODE_EDIT_TOTAL_BUDGET_MS' 'COLONY_DIR CODE_EDIT_MODEL CODE_EDIT_TOTAL_BUDGET_MS'
+mkdir -p "$T14/tools"
+cat > "$T14/tools/code-edit-in-checkout.sh" <<'EOF'
+#!/bin/sh
+MODEL="${CODE_EDIT_MODEL:-opus}"
+BUDGET="${CODE_EDIT_TOTAL_BUDGET_MS:-1500000}"
+EOF
+: > "$T14/tools/code-edit-job.sh"
+if "$CHECK" "$T14" >/dev/null 2>&1; then
+    pass "Rule 3 is silent when every CODE_EDIT_* shell read is allowlisted"
+else
+    fail "Rule 3 clean case — expected exit 0, got: $("$CHECK" "$T14" 2>&1 || true)"
+fi
+
+# ----- Test 15: Rule 3 cross-checks the residue list ([RESIDUE-DRIFT-SHELL]) -----
+# A shell-read knob registered only in the write_key literal (missing from the
+# #1437 residue `for knob in ...` list) must fail loudly — the two lists were
+# previously unlinked (#1460 QA finding).
+T15="$FAKE_ROOT/t15"
+make_fixture "$T15" 'COLONY_DIR,CODE_EDIT_MODEL' 'COLONY_DIR'
+mkdir -p "$T15/tools"
+cat > "$T15/tools/code-edit-in-checkout.sh" <<'EOF'
+#!/bin/sh
+MODEL="${CODE_EDIT_MODEL:-opus}"
+EOF
+: > "$T15/tools/code-edit-job.sh"
+T15_OUT="$("$CHECK" "$T15" 2>&1)" && T15_RC=0 || T15_RC=$?
+if [ "$T15_RC" -eq 1 ] \
+    && printf '%s' "$T15_OUT" | grep -q '\[RESIDUE-DRIFT-SHELL\].*CODE_EDIT_MODEL'; then
+    pass "Rule 3 flags an allowlisted shell knob missing from the residue list"
+else
+    fail "Rule 3 residue cross-check — expected exit 1 + [RESIDUE-DRIFT-SHELL] for CODE_EDIT_MODEL, got rc=$T15_RC: $T15_OUT"
 fi
 
 echo ""

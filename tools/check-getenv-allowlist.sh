@@ -27,6 +27,18 @@
 #      the #1437 residue-check `for knob in ...` list in install.sh, so
 #      the loud warning on hand-customized allowlists can never lag the
 #      real getenv surface.
+#   3. (#1460, shell edition) Every `${CODE_EDIT_*:-...}` / `$CODE_EDIT_*`
+#      read in the code-edit worker scripts (SHELL_SCAN_FILES below) must be
+#      allowlisted too. code_writer.ag launches tools/code-edit-job.sh via
+#      `exec sh`, which runs under the SANITIZED env — the same strip that
+#      makes getenv() inert also strips env from shell children — and the
+#      detached setsid worker (code-edit-in-checkout.sh) inherits it and
+#      re-exports only CEJ_*. So an unregistered CODE_EDIT_* knob read there
+#      is silently inert exactly like an unregistered getenv() read. Waive a
+#      CODE_EDIT_* var that is NOT an operator knob (e.g. the CODE_EDIT_ORCH
+#      test override) with `# colony-lint: getenv-unregistered-ok` on the read
+#      line or the line above. To scan another exec-sh-invoked script, add it
+#      to SHELL_SCAN_FILES.
 #
 # This is a grep/awk-level check, not a full parser. `//` line comments
 # are stripped before matching; getenv calls with a non-literal argument
@@ -187,6 +199,67 @@ while IFS= read -r -d '' f; do
         fi
     done < <(scan_file "$f")
 done < <(find "$FED_DIR" -type f -path '*/agents/*.ag' -print0)
+
+# --- Rule 3: shell-side ${CODE_EDIT_*:-...} reads (#1460) --------------------
+# The code-edit worker scripts run under the SANITIZED env when exec'd from
+# code_writer.ag, so their CODE_EDIT_* operator knobs are inert unless
+# allowlisted — the #1428 class in shell form. Scan the known exec-sh-invoked
+# scripts; extend SHELL_SCAN_FILES when a new one grows a CODE_EDIT_* read.
+SHELL_SCAN_FILES="tools/code-edit-in-checkout.sh tools/code-edit-job.sh"
+
+# Emits `file:line:VAR` per non-waived $-prefixed CODE_EDIT_* read. Requiring
+# the leading `$` skips the bare-name mentions in the doc-comment knob table.
+scan_shell_file() {
+    awk -v file="$1" '
+    {
+        rest = $0
+        while (match(rest, /\$\{?CODE_EDIT_[A-Za-z0-9_]+/)) {
+            tok = substr(rest, RSTART, RLENGTH)
+            var = tok
+            sub(/^\$\{?/, "", var)
+            waived = 0
+            if ($0 ~ /colony-lint:[[:space:]]*getenv-unregistered-ok($|[[:space:]]|[^a-z0-9-])/) waived = 1
+            else if (prev ~ /colony-lint:[[:space:]]*getenv-unregistered-ok($|[[:space:]]|[^a-z0-9-])/) waived = 1
+            if (!waived) printf "%s:%d:%s\n", file, NR, var
+            rest = substr(rest, RSTART + RLENGTH)
+        }
+        prev = $0
+    }
+    ' "$1"
+}
+
+# Report each unregistered shell knob once (a var read at many sites is one
+# finding), so the output names the class, not every read line.
+SHELL_REPORTED=""
+for rel in $SHELL_SCAN_FILES; do
+    f="$SCAN_ROOT/$rel"
+    [ -f "$f" ] || continue
+    while IFS= read -r finding; do
+        [ -n "$finding" ] || continue
+        file="${finding%%:*}"
+        rest="${finding#*:}"
+        line="${rest%%:*}"
+        var="${rest#*:}"
+        case " $SHELL_REPORTED " in
+            *" $var "*) continue ;;
+        esac
+        if ! in_allowlist "$var"; then
+            SHELL_REPORTED="$SHELL_REPORTED $var"
+            # shellcheck disable=SC2016
+            printf '[UNREGISTERED-SHELL] %s:%s: $%s is read under the sanitized env (exec'"'"'d from code_writer.ag) but is not on the install.sh exec.env_passthrough allowlist — the knob is silently inert (register it in dev-apprenticeship/install.sh or annotate with `# colony-lint: getenv-unregistered-ok`)\n' "$file" "$line" "$var"
+            FAIL=$((FAIL + 1))
+        elif ! in_residue_list "$var"; then
+            # Cross-check mirroring Rule 2's [RESIDUE-DRIFT]: a shell-read knob
+            # registered only in the write_key literal would pass Rule 3 while
+            # hand-customized operator allowlists silently miss it (#1460 QA
+            # finding — the two lists were previously unlinked).
+            SHELL_REPORTED="$SHELL_REPORTED $var"
+            # shellcheck disable=SC2016
+            printf '[RESIDUE-DRIFT-SHELL] %s: shell knob "%s" is allowlisted but missing from the install.sh #1437 residue-check `for knob in ...` list — hand-customized allowlists would miss the loud warning\n' "$INSTALL_SH" "$var"
+            FAIL=$((FAIL + 1))
+        fi
+    done < <(scan_shell_file "$f")
+done
 
 if [ "$FAIL" -gt 0 ]; then
     echo ""

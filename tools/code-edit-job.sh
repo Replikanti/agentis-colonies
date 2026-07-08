@@ -157,6 +157,7 @@ else
 fi
 
 # The slow orchestrator. Overridable for tests via CODE_EDIT_ORCH.
+# colony-lint: getenv-unregistered-ok  (test-only override, not an operator knob)
 ORCH="${CODE_EDIT_ORCH:-$SCRIPT_DIR/code-edit-in-checkout.sh}"
 
 JOBDIR="$FED_DIR/.agentis/jobs/$COLONY_NAME/issue-$ISSUE"

@@ -46,7 +46,7 @@ Since v2.4.0 the attempt / continuation / verify / finalize loop is **driven by 
 
 ### Complex (multi-file) tasks
 
-The orchestrator handles tasks bigger than a single edit. All knobs are environment variables on the daemon:
+The orchestrator handles tasks bigger than a single edit. All knobs are environment variables exported into the daemon's environment before `start-federation.sh`. `code_writer` launches the edit worker via `exec sh`, which runs under the **sanitized** env (agentis strips every var not on `exec.env_passthrough`), so each knob below is registered on that allowlist by `install.sh` — an operator export reaches `code-edit-in-checkout.sh` only because of that registration ([#1460](https://github.com/Replikanti/agentis-colonies/issues/1460); the same #1428 class that hit `getenv()` knobs). A hand-customized allowlist that drops one silently falls back to the default (`install.sh` warns loudly; `tools/check-getenv-allowlist.sh` enforces it in CI).
 
 | Knob | Default | Effect |
 |------|---------|--------|
@@ -57,6 +57,7 @@ The orchestrator handles tasks bigger than a single edit. All knobs are environm
 | `CODE_EDIT_VERIFY_TIMEOUT_MS` | `300000` | Verify gate timeout. |
 | `CODE_EDIT_MAX_SUBTASKS` | `8` | With `--decompose`, the cap on the number of sub-edits an epic is split into (run one-per-subtask on one branch → one PR). |
 | `CODE_EDIT_MODEL` | `opus` | `claude --model` for the editing session (workload-based routing, #1414 — reasoning sessions run on `sonnet` via `CLAUDE_REASONING_MODEL`). |
+| `CODE_EDIT_EFFORT` | `high` | `claude --settings effortLevel` for the editing session (invalid values fall back to `high`). |
 
 The Code Writer passes `--decompose` automatically when the assigned issue carries the epic label (`planning:labels:epic`, default `epic`, #1257); ordinary issues stay single-shot. Each detached job runs in a **per-issue workspace** (`.agentis/workspaces/<colony>/<owner>-<repo>/issue-<iid>`) so concurrent jobs never collide, and any process still rooted in that workspace is reaped when the job ends.
 
