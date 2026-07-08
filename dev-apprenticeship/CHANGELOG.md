@@ -35,6 +35,16 @@ is asserted until multi-version CI is in place.
   nothing at runtime. Operators: add the key to your local `colony.toml`
   and restart `code_writer`
   ([#1512](https://github.com/Replikanti/agentis-colonies/issues/1512)).
+- Registered the seven remaining shell-read `CODE_EDIT_*` orchestrator knobs
+  (`CODE_EDIT_TIMEOUT_MS`, `CODE_EDIT_TOTAL_BUDGET_MS`, `CODE_EDIT_VERIFY_CMD`,
+  `CODE_EDIT_VERIFY_TIMEOUT_MS`, `CODE_EDIT_MAX_SUBTASKS`, `CODE_EDIT_MODEL`,
+  `CODE_EDIT_EFFORT`) on the `install.sh` `exec.env_passthrough` allowlist +
+  #1437 residue check. `code_writer` execs `code-edit-in-checkout.sh` (via
+  `code-edit-job.sh`) under the sanitized env, so these `${VAR:-default}`
+  operator overrides were silently inert — the #1428 class, shell edition.
+  `check-getenv-allowlist.sh` gains a Rule 3 that scans the code-edit worker
+  scripts for `${CODE_EDIT_*:-…}` reads so the gap cannot regrow (#1460).
+
 - **`code_writer` CB exhaustion blocked all drafting** ([#1512](https://github.com/Replikanti/agentis-colonies/issues/1512)):
   the #1500 plan-post addition (`exec sh` add-note + memo read/write) pushed
   the worst-case draft tick (draft `prompt()` + plan-note post + detached job
