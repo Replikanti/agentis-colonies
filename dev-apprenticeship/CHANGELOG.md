@@ -15,6 +15,29 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Added
+
+- **Head-keyed QA review gate on auto-merge** ([#1484](https://github.com/Replikanti/agentis-colonies/issues/1484)):
+  `approval_decider` now applies a SECOND, independent merge gate on the opt-in
+  `auto_merge` path, layered on top of the unchanged #1317 CI chokepoint (still
+  checked FIRST). An autonomous auto-merge fires only when CI is green AND a
+  **passing** QA verdict exists for the PR's **current head commit**.
+  `qa_reviewer` appends a commit-keyed marker
+  `<!-- qa-verdict head=<fp16> status=<pass|block> -->` to its pre-merge note,
+  and `approval_decider.review_gate()` reads it off the durable `mr-notes`
+  payload (keyed to a `head_fingerprint` byte-identical to `qa_reviewer`'s), at
+  both the durable sweep and the bus-decision merge sites. A blocking verdict
+  never merges; no verdict = **HOLD** (fails SAFE — never a spurious merge). A
+  force-push resets the review-wait clock. Two new optional `[code-review]`
+  config keys, both safe-defaulted: `merge_review_timeout_s` (default `1800`)
+  and `merge_review_timeout_action` (`hold`|`merge`, default `hold`), exported
+  as `MERGE_REVIEW_TIMEOUT_S` / `MERGE_REVIEW_TIMEOUT_ACTION` and registered on
+  the `exec.env_passthrough` allowlist. **Migration:** for the gate to RELEASE
+  merges, `qa_reviewer` must be at the `review-gated` tier or above (the tiers
+  where it posts a note); otherwise every green PR is verdict-none and, under
+  the default HOLD, auto-merge pauses until a human merges (set
+  `merge_review_timeout_action = merge` for bounded-wait-then-merge).
+
 ## [2.6.1] — 2026-07-08
 
 **Requires:** agentis >= 1.20.0

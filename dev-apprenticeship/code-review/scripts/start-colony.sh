@@ -215,6 +215,26 @@ case "$AUTO_MERGE_RAW" in
 esac
 export AUTO_MERGE
 
+# #1484: head-keyed QA review gate knobs. `[code-review].merge_review_timeout_s`
+# is the review-wait window (seconds) before the timeout fallback applies;
+# `[code-review].merge_review_timeout_action` picks the fallback (hold|merge).
+# Exported so approval_decider's getenv() reads them from the (sanitized) daemon
+# env — both are on the exec.env_passthrough allowlist written by install.sh.
+# Normalised: timeout to a positive integer (default 1800 when unset/non-numeric);
+# action to exactly "merge" or "hold" (default "hold").
+MERGE_REVIEW_TIMEOUT_S_RAW="$(parse_toml code-review merge_review_timeout_s)"
+case "$MERGE_REVIEW_TIMEOUT_S_RAW" in
+    ''|*[!0-9]*) MERGE_REVIEW_TIMEOUT_S=1800 ;;
+    0) MERGE_REVIEW_TIMEOUT_S=1800 ;;
+    *) MERGE_REVIEW_TIMEOUT_S="$MERGE_REVIEW_TIMEOUT_S_RAW" ;;
+esac
+MERGE_REVIEW_TIMEOUT_ACTION_RAW="$(parse_toml code-review merge_review_timeout_action)"
+case "$MERGE_REVIEW_TIMEOUT_ACTION_RAW" in
+    merge|Merge|MERGE) MERGE_REVIEW_TIMEOUT_ACTION=merge ;;
+    *) MERGE_REVIEW_TIMEOUT_ACTION=hold ;;
+esac
+export MERGE_REVIEW_TIMEOUT_S MERGE_REVIEW_TIMEOUT_ACTION
+
 # #316 M5a: --print-repos-json probe for the federation-dashboard collector.
 # Emits the GITHUB_REPOS_JSON value (empty string for legacy single-block
 # configs) and exits. Probed once per colony per dashboard regen so the

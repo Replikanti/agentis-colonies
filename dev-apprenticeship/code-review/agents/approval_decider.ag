@@ -229,6 +229,156 @@ fn merge_attempts(owner: string, repo: string, iid_str: string) -> int {
     return parse_int(raw);
 }
 
+// --- #1484: head-keyed QA review gate (second independent merge gate) ---
+//
+// A SECOND merge gate layered on top of the unchanged #1317 CI chokepoint: an
+// autonomous auto-merge fires only when CI is green AND a passing QA verdict
+// exists for the PR's CURRENT head commit. The verdict signal is qa_reviewer's
+// pre-merge note (#1401/#1405), made machine-readable by the commit-keyed marker
+// `<!-- qa-verdict head=<fp16> status=<pass|block> -->` it now appends (#1484
+// step 1). approval_decider cannot read another agent's memo (agents coordinate
+// over the ephemeral bus + their own `<agent>:*` memos), so the verdict is read
+// off DURABLE forge state — the mr-notes payload — keyed to the same head
+// fingerprint qa_reviewer embeds. A force-push changes the diff, changes the
+// fingerprint, and the stale marker no longer matches: the gate re-waits (the
+// intended invalidation). The pipeline fails SAFE — no marker means HOLD (never
+// a spurious merge), the exact #1481 failure this closes.
+
+// review_timeout_s: the review-wait window in seconds before the timeout
+// fallback applies. Operator knob MERGE_REVIEW_TIMEOUT_S (getenv reads the
+// SANITIZED env — allowlisted by install.sh); default 1800 when empty or
+// unparsable (parse_int -> 0 -> default).
+fn review_timeout_s() -> int {
+    let raw = getenv("MERGE_REVIEW_TIMEOUT_S");
+    if len(raw) == 0 { return 1800; };
+    let n = parse_int(raw);
+    if n <= 0 { return 1800; };
+    return n;
+}
+
+// review_timeout_action: what to do when the review-wait window elapses with no
+// verdict for the current head. "merge" = bound-wait-then-merge (opt-in);
+// anything else (default "hold") = keep holding for a human. Operator knob
+// MERGE_REVIEW_TIMEOUT_ACTION.
+fn review_timeout_action() -> string {
+    let raw = getenv("MERGE_REVIEW_TIMEOUT_ACTION");
+    if raw == "merge" { return "merge"; };
+    return "hold";
+}
+
+// head_fingerprint: fingerprint of the MR head — sha256 of the mr-changes
+// payload, first 16 hex chars. BYTE-IDENTICAL to qa_reviewer.head_fingerprint
+// (pinned by tools/test-approval-decider-review-gate.sh): the gate matches only
+// when this fp equals the one qa_reviewer embedded in the marker, so the two
+// helpers must compute the same value over the same mr-changes verb output. A
+// mismatch therefore means a real force-push — the intended invalidation.
+fn head_fingerprint(changes_raw: string) -> string {
+    let cmd = "printf '%s' " + shell_escape(changes_raw) +
+        " | python3 -c 'import sys, hashlib; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:16])'";
+    return try { exec sh cmd; } catch e { ""; };
+}
+
+// note_verdict: scan the mr-notes array for a body carrying the commit-keyed
+// marker `<!-- qa-verdict head=<head_fp> status=<s> -->` and print `s`
+// ("pass"|"block"). The raw notes JSON rides $J (env var, off-argv, like
+// open_pr_field) and head_fp rides $H so ARG_MAX never bites. Total: malformed
+// JSON, empty head, no matching marker all collapse to "" ( = none/stale, which
+// the caller treats as "no verdict yet"). A later note with the same head wins.
+fn note_verdict(notes_raw: string, head_fp: string) -> string {
+    let cmd = "J=" + shell_escape(notes_raw) + " H=" + shell_escape(head_fp) +
+        " python3 -c 'import os,json,re,sys" +
+        "\ntry:" +
+        "\n    d=json.loads(os.environ[\"J\"])" +
+        "\nexcept Exception:" +
+        "\n    print(\"\"); sys.exit(0)" +
+        "\nh=os.environ[\"H\"]" +
+        "\nif not h or not isinstance(d,list):" +
+        "\n    print(\"\"); sys.exit(0)" +
+        "\npat=re.compile(\"<!-- qa-verdict head=\"+re.escape(h)+\" status=(pass|block) -->\")" +
+        "\nout=\"\"" +
+        "\nfor n in d:" +
+        "\n    b=n.get(\"body\") if isinstance(n,dict) else None" +
+        "\n    m=pat.search(b) if isinstance(b,str) else None" +
+        "\n    if m:" +
+        "\n        out=m.group(1)" +
+        "\nprint(out)'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+// post_held_note_once: post a visible "auto-merge held" note at most once per
+// head, guarded by merge_sweep:held_note:<iid> == head_fp. A new head resets the
+// guard (a fresh hold/block on a new commit posts once again). Total: a failed
+// post is a logged no-op — the guard is written first so a flaky forge does not
+// re-spam, matching the merge_sweep:approved / attempts fail-closed convention.
+fn post_held_note_once(owner: string, repo: string, iid_str: string, head_fp: string, body: string) -> void {
+    let guard = recall_latest(scoped_memo(owner, repo, "merge_sweep:held_note:" + iid_str));
+    if guard == head_fp { return; };
+    memo_write(scoped_memo(owner, repo, "merge_sweep:held_note:" + iid_str), head_fp);
+    // colony-lint: safe-exec-concat
+    let cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + shell_escape(iid_str) + " --body " + shell_escape(body) + repo_arg(owner, repo);
+    try { exec sh cmd; } catch e {
+        print("[approval_decider] Failed to post held note for PR", iid_str, ":", e);
+    };
+}
+
+// review_gate: the #1484 second merge gate. Returns "merge" | "block" | "wait".
+// "merge" = a passing QA verdict exists for the current head (or the timeout
+// fell back to merge); "block" = a blocking verdict is present (never merge);
+// "wait" = no verdict yet and the review-wait window has not elapsed under the
+// default HOLD. Only "merge" releases the merge. Fails SAFE ("wait") whenever
+// the head cannot be fingerprinted. The wait clock lives in
+// merge_sweep:review_wait_since:<iid> = "<fp>\t<epoch>" and is re-stamped when
+// the stored fp no longer matches the head (force-push reset).
+fn review_gate(owner: string, repo: string, iid_str: string) -> string {
+    // colony-lint: safe-exec-concat
+    let changes_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-changes " + shell_escape(iid_str) + repo_arg(owner, repo);
+    let changes_raw = try { exec sh changes_cmd; } catch e { ""; };
+    if len(changes_raw) < 10 { return "wait"; };
+    let head_fp = head_fingerprint(changes_raw);
+    if len(head_fp) == 0 { return "wait"; };
+
+    // colony-lint: safe-exec-concat
+    let notes_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-notes " + shell_escape(iid_str) + repo_arg(owner, repo);
+    let notes_raw = try { exec sh notes_cmd; } catch e { ""; };
+    let status = note_verdict(notes_raw, head_fp);
+
+    if status == "pass" {
+        return "merge";
+    };
+    if status == "block" {
+        post_held_note_once(owner, repo, iid_str, head_fp,
+            "**Auto-merge held** (automated): a blocking QA verdict is present for this commit; not merging.");
+        return "block";
+    };
+
+    // No matching marker (none / stale): apply the review-wait timeout clock.
+    let now = rl_now_epoch();
+    let since_raw = recall_latest(scoped_memo(owner, repo, "merge_sweep:review_wait_since:" + iid_str));
+    if len(since_raw) == 0 {
+        memo_write(scoped_memo(owner, repo, "merge_sweep:review_wait_since:" + iid_str), head_fp + "\t" + to_string(now));
+        return "wait";
+    };
+    let stored_fp = repo_field(since_raw, 0);
+    if stored_fp != head_fp {
+        // Force-push reset: a new head restarts the wait clock from now.
+        memo_write(scoped_memo(owner, repo, "merge_sweep:review_wait_since:" + iid_str), head_fp + "\t" + to_string(now));
+        return "wait";
+    };
+    let epoch = parse_int(repo_field(since_raw, 1));
+    let waited = now - epoch;
+    if waited < review_timeout_s() {
+        return "wait";
+    };
+    if review_timeout_action() == "merge" {
+        return "merge";
+    };
+    // HOLD (default): post the held note once and keep waiting for a human.
+    post_held_note_once(owner, repo, iid_str, head_fp,
+        "**Auto-merge held** (automated): no QA verdict for this commit after the review-wait timeout; holding for a human (set [code-review] merge_review_timeout_action = merge to bound-then-merge).");
+    return "wait";
+}
+
 // merge_at: process the open PR at index `idx`. Returns 1 if it ACTED (the caller
 // then returns for this tick — one merge action per tick), 0 otherwise (skip +
 // keep scanning). Own PRs only: the head branch must start `fix/issue-` (the
@@ -253,6 +403,14 @@ fn merge_at(owner: string, repo: string, raw: string, idx: int) -> int {
     let state = ci_state(pr_check_token(checks_out, "STATUS"));
     // Only act on a confirmed green CI; pending => don't race, red => not ready.
     if state != "green" { return 0; };
+
+    // #1484: second, independent gate — CI is green (checked FIRST, above), now
+    // require a passing head-keyed QA verdict. A "wait" (no verdict yet) or
+    // "block" (a blocking verdict) returns 0 WITHOUT consuming a merge attempt
+    // (the 3-cap counts merge attempts, not review-wait ticks) and WITHOUT
+    // approving — the PR simply retries next tick. Only "merge" falls through.
+    let g = review_gate(owner, repo, iid_str);
+    if g != "merge" { return 0; };
 
     // Hard cap: after 3 merge attempts on a green-but-unmergeable PR, give up so
     // it can't spin forever — a human takes over from here.
@@ -463,16 +621,24 @@ fn tick_for_repo(owner: string, repo: string) -> void {
             let auto_merge = getenv("AUTO_MERGE");
             if auto_merge == "1" {
                 if len(approve_result) > 0 {
-                    // colony-lint: safe-exec-concat
-                    let merge_cmd = "$COLONY_DIR/scripts/forge-api.sh merge " + to_string(decision.mr_iid) + repo_arg(owner, repo);
-                    let merge_result = try { exec sh merge_cmd; } catch e {
-                        print("[approval_decider] Auto-merge refused/failed for MR", decision.mr_iid, ":", e);
-                        "";
-                    };
-                    if len(merge_result) > 0 {
-                        print("[approval_decider] Auto-merged MR", decision.mr_iid);
+                    // #1484: the rare (per #1375) bus-decision merge site is
+                    // review-gated too, so the second gate cannot be bypassed by
+                    // whichever path fires. Same semantics as merge_at: only a
+                    // "merge" verdict releases; "wait"/"block" is a logged no-op.
+                    if review_gate(owner, repo, to_string(decision.mr_iid)) == "merge" {
+                        // colony-lint: safe-exec-concat
+                        let merge_cmd = "$COLONY_DIR/scripts/forge-api.sh merge " + to_string(decision.mr_iid) + repo_arg(owner, repo);
+                        let merge_result = try { exec sh merge_cmd; } catch e {
+                            print("[approval_decider] Auto-merge refused/failed for MR", decision.mr_iid, ":", e);
+                            "";
+                        };
+                        if len(merge_result) > 0 {
+                            print("[approval_decider] Auto-merged MR", decision.mr_iid);
+                        } else {
+                            print("[approval_decider] Auto-merge no-op for MR", decision.mr_iid, "(not green / not mergeable); will retry");
+                        };
                     } else {
-                        print("[approval_decider] Auto-merge no-op for MR", decision.mr_iid, "(not green / not mergeable); will retry");
+                        print("[approval_decider] Auto-merge held for MR", decision.mr_iid, "(no passing QA verdict for this head yet); will retry");
                     };
                 };
             };
