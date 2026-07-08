@@ -863,13 +863,18 @@ def _serve_status(handler):
 
 class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
-        if self.path == '/api/status':
+        # Match on the path component only, so a query string (e.g. a
+        # monitoring probe's cache-buster `?t=...` or a trailing `?`) still
+        # routes — mirrors the /timeline handler below. #1465 shipped an
+        # exact-match `== '/api/status'` that 404'd any `/api/status?...`.
+        path_only = self.path.split('?', 1)[0]
+        if path_only == '/api/status':
             _serve_status(self)
             return
         # #1465: any other /api/* path is unmapped — return JSON 404 rather
         # than falling through to static-file serving (which would 404 too,
         # but as HTML). Keeps the /api namespace a clean JSON contract.
-        if self.path.startswith('/api/') or self.path == '/api':
+        if path_only.startswith('/api/') or path_only == '/api':
             self.send_response(404)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()

@@ -199,5 +199,17 @@ else
     fail "5: unknown /api/* path returned $UNK_CODE (expected 404)"
 fi
 
+# --- /api/status with a query string must still route (200), not 404. A
+# monitoring probe appending ?t=<cachebuster> or a trailing ? previously fell
+# through to the /api/* 404 branch (exact-match bug caught by QA on #1465). ---
+QS_OUT="$TMPDIR_TEST/status-qs.out"
+http_get "http://127.0.0.1:$PORT/api/status?t=12345&nocache=1" > "$QS_OUT"
+QS_CODE="$(sed -n '1p' "$QS_OUT")"
+if [ "$QS_CODE" = "200" ]; then
+    pass "6: /api/status with a query string still returns 200"
+else
+    fail "6: /api/status?t=... returned $QS_CODE (expected 200)"
+fi
+
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
 [ "$FAIL" -eq 0 ]
