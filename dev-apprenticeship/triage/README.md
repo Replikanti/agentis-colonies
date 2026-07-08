@@ -266,6 +266,73 @@ backfilled rule that fires wrongly is corrected by the same demote loop as
 any other rule (`crystallizer_record_use` reality-check, retirement at the
 core thresholds).
 
+## Purging priority-contaminated rules (#1478)
+
+`#1474` / PR `#1477` added a deterministic runtime filter
+(`strip_priority_like_labels()`) that strips priority-like tokens
+(`priority*` outside the canonical scoped set, `^P\d+$`, `urgent`) from the
+labeler's suggestions **and** from the crystallized-rule replay path
+(`fire_label_rule()` → `apply_label_rule_hit()`). That closes the *code*
+side: a contaminated rule can no longer **apply** those tokens.
+
+The *data* side is any rule crystallized **before** that filter shipped, which
+may still carry a bare `P1`-`P4` / `urgent` token baked into its `action`
+slot. Such a rule now filters down to an empty/degraded label set on a hit
+(wasting its condition-class slot) and keeps stale vocabulary in the
+rule-pool statistics. Two operator scripts do a one-time audit + purge over
+the live pool — they share the single contamination predicate in
+`triage/scripts/lib/priority-rule-audit.py`, byte-for-byte the same heuristic
+as PR #1477's runtime filter, so the two call sites can never drift:
+
+- **Audit (read-only)** — enumerate the contaminated rules (count + rule ids,
+  the offending tokens, and the clean remainder):
+
+  ```bash
+  ./triage/scripts/audit-priority-rules.sh --fed-dir $PWD
+  # machine-readable JSONL (one object per contaminated rule + a _summary):
+  ./triage/scripts/audit-priority-rules.sh --fed-dir $PWD --json
+  ```
+
+  It reads the on-disk crystallizer state agentis-core persists under
+  `.agentis/knowledge/_crystallizer_index/<class>.jsonl` (rule ids) +
+  `.agentis/objects/` (each rule's `action` slot), defaults to the `label`
+  class (the only one this contamination applies to), and never writes.
+  Scoped `priority::*` labels are exempt by construction (they are the
+  canonical form); a rule whose action slot cannot be recovered is reported
+  as `unresolved` and is **never** flagged.
+
+- **Purge (dry-run by default)** — retire the flagged rules so the clean
+  decision re-crystallizes from post-#1474 verdicts:
+
+  ```bash
+  # Stop the federation first — a running daemon can re-crystallize between
+  # enumeration and rewrite:
+  ./kill-federation.sh
+  # Preview (writes nothing):
+  ./triage/scripts/purge-priority-rules.sh --fed-dir $PWD
+  # Retire for real:
+  ./triage/scripts/purge-priority-rules.sh --fed-dir $PWD --apply
+  ```
+
+  `purge-priority-rules.sh` calls `audit-priority-rules.sh --json` for the
+  enumeration step (shared predicate), then **de-registers** each flagged
+  rule: it drops the rule's line from the crystallizer index (writing a
+  `.bak` first) and removes its telemetry sidecar. The immutable
+  content-addressed rule object is left in place but un-indexed, so it is
+  inert — no lookup, no BM25 recall, no re-distill reads its raw action.
+  Retirement (rather than an in-place action rewrite) is used because
+  content-addressed rule objects cannot be edited without changing their id.
+  Restart the daemons afterwards so the pool reloads without the retired
+  rules.
+
+**Regression check (already guaranteed).** Newly-distilled rules stay clean
+without any further action: the runtime filter strips priority-like tokens on
+both the suggest and replay paths (PR #1477), and the backfill ingester
+(`#1431`) already takes *labels minus priority-like ones* as the canonical
+`label` action, so post-#1474 crystallization can no longer mint a
+contaminated rule. Re-run the audit after a purge to confirm a clean pool
+(`contaminated : 0`).
+
 ## Setup
 
 1. Copy and edit the config:
