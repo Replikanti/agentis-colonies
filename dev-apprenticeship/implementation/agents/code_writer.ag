@@ -412,6 +412,19 @@ fn should_learn_from_mr(owner: string, repo: string, mr_iid: int) -> bool {
     return false;
 }
 
+// #1500: autonomous-tier plan-visibility gate. The `review-gated` branch has
+// always posted the drafted implementation plan as an issue note before
+// touching a branch; the `autonomous` branch never did — it drafted a plan
+// internally and jumped straight to launching the detached edit job, so the
+// operator's only pre-code intervention point (cf. #1482) never fired for
+// self-initiated / directly-labeled issues. One plan per issue for the life
+// of this memo key (see #1500 plan "Out of scope" — no clear path on
+// re-scope; an operator/future change can clear the memo explicitly).
+fn plan_already_posted(owner: string, repo: string, iid_str: string) -> bool {
+    let posted = recall_latest(scoped_memo(owner, repo, "code_writer:plan_posted:" + iid_str));
+    return len(posted) > 0;
+}
+
 // #1332: red-PR recovery helpers. The federation opens PRs and (#1317)
 // auto-merges green ones, but had NO reaction to a RED CI: when code_writer's
 // edit job exhausts its local verify budget it commits anyway ("CI is the
@@ -1177,6 +1190,26 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 // Task text = issue body + the drafted plan. The orchestrator
                 // wraps this into the claude editing instruction.
                 let task_text = "Issue:\n" + issue_detail + "\n\nPlan:\n" + draft.files + "\n\n" + draft.summary;
+                // #1500: post the drafted plan as an issue note BEFORE the
+                // launch call below, so the operator's pre-code intervention
+                // point (cf. #1482) exists for the autonomous tier too — not
+                // just the review-gated tier's "pending approval" note. Fail
+                // open: a failed post is logged and never blocks the launch;
+                // the per-issue memo is written ONLY on a successful post so
+                // a failed attempt is naturally retried next tick instead of
+                // being silently dropped. Guarded so LAUNCHED/RUNNING re-polls
+                // (this whole block re-enters every tick until DONE) never
+                // double-post.
+                if !plan_already_posted(owner, repo, issue_iid) {
+                    let plan_note = "[plan] **Implementation Plan** (automated)\n\nBranch: `" + branch_name + "`\n\n" + draft.summary + "\n\nFiles:\n" + draft.files;
+                    // colony-lint: safe-exec-concat
+                    let plan_post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(draft.issue_id) + " --body " + shell_escape(plan_note) + repo_arg(owner, repo);
+                    let plan_post_result = try { exec sh plan_post_cmd; } catch e {
+                        print("[code_writer] Failed to post autonomous plan note:", e);
+                        "";
+                    };
+                    if len(plan_post_result) > 0 { memo_write(scoped_memo(owner, repo, "code_writer:plan_posted:" + issue_iid), "1"); };
+                };
                 // The launcher manages the detached orchestrator's lifecycle and
                 // prints the current poll-state on stdout. It never blocks on the
                 // slow job, so this `exec sh` returns fast and never hits the

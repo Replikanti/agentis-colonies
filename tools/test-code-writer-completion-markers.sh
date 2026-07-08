@@ -147,8 +147,11 @@ fi
 # Region C: the non-autonomous paths (review-gated / propose / shadow) must
 # still mark after their terminal draft comment / emit, so they stay
 # idempotent and do not re-post every tick. We assert the marker exists after
-# the review-gated add-note post.
-post_line="$(grep -n -F -- 'add-note ' "$AG" | head -1 | cut -d: -f1)"
+# the review-gated add-note post. Match the review-gated-specific note prefix
+# (not the generic 'add-note ' verb literal) — #1500 added an earlier
+# 'add-note ' call site (the autonomous plan-post), so the generic literal's
+# FIRST occurrence would silently stop being the review-gated post.
+post_line="$(grep -n -F -- '[draft-impl]' "$AG" | head -1 | cut -d: -f1)"
 nonauto_marker_after_post=0
 if [ -n "$post_line" ]; then
   for ln in $marker_lines; do
