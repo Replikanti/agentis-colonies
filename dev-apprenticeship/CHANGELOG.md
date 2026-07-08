@@ -17,6 +17,13 @@ is asserted until multi-version CI is in place.
 
 ### Fixed
 
+- **`cb_per_tick = 3000` added to `code_writer`'s `[[agents]]` block** — the
+  runtime daemon cap comes from the per-agent `cb_per_tick` key (read by
+  `start-colony.sh`, default 2000), NOT from `cb_budget`, which only pairs
+  with the `.ag` `cb` declaration; without this key the #1512 bump changed
+  nothing at runtime. Operators: add the key to your local `colony.toml`
+  and restart `code_writer`
+  ([#1512](https://github.com/Replikanti/agentis-colonies/issues/1512)).
 - **`code_writer` CB exhaustion blocked all drafting** ([#1512](https://github.com/Replikanti/agentis-colonies/issues/1512)):
   the #1500 plan-post addition (`exec sh` add-note + memo read/write) pushed
   the worst-case draft tick (draft `prompt()` + plan-note post + detached job
