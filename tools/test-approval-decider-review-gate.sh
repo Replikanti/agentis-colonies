@@ -105,6 +105,29 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# (b2) note_verdict newest-wins precedence (#1493): mr-notes is newest-first on
+# both forges, so the FIRST match in iteration order is the LATEST verdict — the
+# scan must take it and STOP, not overwrite-and-continue (which would let an
+# early stray/forged "pass" mask a later genuine "block" for the same head).
+# ---------------------------------------------------------------------------
+NOTE_VERDICT="$(awk '/^fn note_verdict\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
+# The match branch prints and exits on the FIRST hit (break/stop), and the old
+# overwrite-and-continue pattern (out=m.group(1) accumulated across the loop) is
+# gone.
+if printf '%s' "$NOTE_VERDICT" | grep -q 'print(m.group(1)); sys.exit(0)' \
+   && ! printf '%s' "$NOTE_VERDICT" | grep -q 'out=m.group(1)'; then
+    pass "(b2) note_verdict stops on the FIRST (newest) match — no overwrite-and-continue"
+else
+    fail "(b2) newest-wins precedence" "note_verdict must print+sys.exit(0) on the first match, not accumulate the last"
+fi
+# The ordering assumption is stated explicitly in the doc comment.
+if grep -B14 '^fn note_verdict(' "$AG" | grep -qi 'newest-first'; then
+    pass "(b2) the note_verdict ordering assumption (mr-notes newest-first) is documented"
+else
+    fail "(b2) ordering comment" "the note_verdict doc comment must state the newest-first ordering assumption"
+fi
+
+# ---------------------------------------------------------------------------
 # (c) A block verdict posts a one-time held note and NEVER merges.
 # ---------------------------------------------------------------------------
 if printf '%s' "$REVIEW_GATE" | grep -q 'if status == "block" {' \

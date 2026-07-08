@@ -283,7 +283,11 @@ fn head_fingerprint(changes_raw: string) -> string {
 // ("pass"|"block"). The raw notes JSON rides $J (env var, off-argv, like
 // open_pr_field) and head_fp rides $H so ARG_MAX never bites. Total: malformed
 // JSON, empty head, no matching marker all collapse to "" ( = none/stale, which
-// the caller treats as "no verdict yet"). A later note with the same head wins.
+// the caller treats as "no verdict yet"). ORDERING: mr-notes is newest-first on
+// both forges (GitHub sort=created direction=desc; GitLab order_by=created_at
+// sort=desc), so the FIRST match in iteration order is the LATEST verdict for
+// this head — we take it and STOP. This prevents an early stray/forged "pass"
+// from masking a later genuine "block" for the same commit (#1493).
 fn note_verdict(notes_raw: string, head_fp: string) -> string {
     let cmd = "J=" + shell_escape(notes_raw) + " H=" + shell_escape(head_fp) +
         " python3 -c 'import os,json,re,sys" +
@@ -295,13 +299,12 @@ fn note_verdict(notes_raw: string, head_fp: string) -> string {
         "\nif not h or not isinstance(d,list):" +
         "\n    print(\"\"); sys.exit(0)" +
         "\npat=re.compile(\"<!-- qa-verdict head=\"+re.escape(h)+\" status=(pass|block) -->\")" +
-        "\nout=\"\"" +
         "\nfor n in d:" +
         "\n    b=n.get(\"body\") if isinstance(n,dict) else None" +
         "\n    m=pat.search(b) if isinstance(b,str) else None" +
         "\n    if m:" +
-        "\n        out=m.group(1)" +
-        "\nprint(out)'";
+        "\n        print(m.group(1)); sys.exit(0)" +
+        "\nprint(\"\")'";
     let out = try { exec sh cmd; } catch e { ""; };
     return out;
 }
