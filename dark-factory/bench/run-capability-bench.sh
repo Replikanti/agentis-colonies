@@ -13,18 +13,23 @@
 #     safety property (never re-report a known bug, never suppress a real one) and needs no backend, so it
 #     gates the bench exit code on CI.
 #   STAGE 2 — DEVISE RECALL (live; only with --live AND agentis on PATH AND a real backend). Runs
-#     audit-scout.ag over the fixture, extracts its RESIDUAL leads, and scores: a lead overlapping a
-#     `residual` truth signature = a HIT; a lead overlapping the `audit.txt` boundary = a FALSE POSITIVE
-#     (devise restated a known issue). Overlap is judged by novelty-gate.sh (KNOWN == the two texts share a
-#     function token / salient terms), so the same tool defines "match" everywhere. This measures the
-#     LLM-limited capability the model routing will later be calibrated against — a weak model legitimately
-#     scores low here; that is the bench telling the truth, not a regression.
+#     audit-scout.ag over the fixture through a REAL backend, extracts its RESIDUAL leads, and scores by
+#     RESIDUAL RECALL (the PASS metric): each `residual` truth signature is a HIT when some lead overlaps it
+#     (overlap judged by novelty-gate.sh). BOUNDARY coverage (how many known findings devise re-listed) and
+#     boundary-overlap (leads that touch a boundary function) are reported as ADVISORY, never gated — a real
+#     residual legitimately references a boundary function, so boundary overlap over-counts "restatements"
+#     (#1496). This measures the LLM-limited capability model routing calibrates against — a weak model
+#     legitimately scores low; that is the bench telling the truth, not a regression.
+#     The backend defaults to bench/lib/claude-p-backend.sh (a reliable `claude -p` adapter, no flat-cyborg
+#     PTY). Validated reference: audit-scout on opus over `rounding-residual` = recall 1/1, boundary 2/2.
 #
 # Usage: run-capability-bench.sh [--fixture <dir>] [--live] [--json] [--min-overlap N] [-h]
 #   --fixture <dir>  fixture dir (default: bench/fixtures/rounding-residual, resolved next to this script).
-#   --live           also run STAGE 2 (needs agentis + a real LLM backend; set BENCH_LIVE=1 as an alias).
+#   --live           also run STAGE 2 (needs agentis + a real backend; set BENCH_LIVE=1 as an alias).
 #   --json           emit the scorecard as one JSON object on stdout (human table still goes to stderr).
 #   --min-overlap N  salient-term overlap threshold passed to novelty-gate.sh (default 2).
+# Env (STAGE 2 only): BENCH_LLM_COMMAND (llm.command; default bench/lib/claude-p-backend.sh), BENCH_LLM_MODEL
+#   (default opus; sonnet for the routing tier), BENCH_CLAUDE_BIN (claude binary; default `claude`).
 # Exit: 0 = all RUN stages passed ; 1 = a stage failed ; 2 = bad args / missing fixture.
 set -uo pipefail
 
@@ -84,10 +89,18 @@ s1_ok=0; [ "$s1_total" -gt 0 ] && [ "$s1_pass" -eq "$s1_total" ] && s1_ok=1
 say "STAGE 1: $s1_pass/$s1_total correct -> $([ "$s1_ok" = 1 ] && echo PASS || echo FAIL)"
 
 # ---- STAGE 2 — DEVISE RECALL (live) ------------------------------------------------------------------
-s2_run=0 ; s2_hits=0 ; s2_residuals=0 ; s2_fp=0 ; s2_leads=0 ; s2_ok=1
+s2_run=0 ; s2_hits=0 ; s2_residuals=0 ; s2_fp=0 ; s2_leads=0 ; s2_boundary=0 ; s2_ok=1
+# The real backend: agentis's `llm.command` "cli" contract is `claude -p`-shaped (`-p --output-format json`
+# + prompt on stdin), so the reliable default is bench/lib/claude-p-backend.sh (a thin `claude -p` adapter,
+# no flat-cyborg PTY — whose one-shot cold-start proved flaky). BENCH_LLM_COMMAND overrides it (e.g. point at
+# the federation's flat-cyborg-claude.sh for flat-rate); BENCH_LLM_MODEL (default opus) picks the model.
+BENCH_LLM_COMMAND="${BENCH_LLM_COMMAND:-$HERE/lib/claude-p-backend.sh}"
+_backend_bin="${BENCH_CLAUDE_BIN:-claude}"
 if [ "$LIVE" = "1" ]; then
   if ! command -v agentis >/dev/null 2>&1; then
     say "STAGE 2 — [SKIP] --live set but agentis not on PATH"
+  elif [ "$BENCH_LLM_COMMAND" = "$HERE/lib/claude-p-backend.sh" ] && ! command -v "$_backend_bin" >/dev/null 2>&1; then
+    say "STAGE 2 — [SKIP] --live set but no real backend ('$_backend_bin' not on PATH; set BENCH_LLM_COMMAND to override)"
   else
     s2_run=1
     mkdir -p "$WORK/audits" "$WORK/run"
@@ -95,6 +108,7 @@ if [ "$LIVE" = "1" ]; then
     cp "$SCOUT" "$WORK/run/audit-scout.ag"
     ( cd "$WORK/run" && agentis init >/dev/null 2>&1 || true )
     {
+      echo "llm.backend = claude"; echo "llm.command = $BENCH_LLM_COMMAND"
       echo "learning.enabled = true"; echo "experience.enabled = true"; echo "exec.default_timeout_ms = 60000"
       echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,AUDIT_DIR,AUDIT_URLS,FETCH_AUDITS,SCOPE_BRIEF"
     } >> "$WORK/run/.agentis/config"
@@ -107,13 +121,9 @@ if [ "$LIVE" = "1" ]; then
     ) >"$WORK/scout.out" 2>&1 || say "  (audit-scout exited non-zero; scoring whatever RESIDUAL leads it printed)"
     grep '^RESIDUAL|' "$WORK/scout.out" > "$WORK/leads.txt" 2>/dev/null || true
     s2_leads="$(wc -l < "$WORK/leads.txt" | tr -d ' ')"
-    say "  audit-scout produced $s2_leads RESIDUAL lead(s)"
-    # False positives: any lead that overlaps the audit.txt boundary = devise restated a known issue.
-    while IFS= read -r lead; do
-      [ -n "$lead" ] || continue
-      [ "$(printf '%s' "$lead" | overlaps "$AUDIT")" = "1" ] && s2_fp=$((s2_fp+1))
-    done < "$WORK/leads.txt"
-    # Recall: each `residual` truth row is a HIT if some lead overlaps its signature.
+    s2_boundary="$(grep -c '^BOUNDARY|' "$WORK/scout.out" 2>/dev/null || echo 0)"
+    say "  audit-scout produced $s2_leads RESIDUAL lead(s) + $s2_boundary BOUNDARY line(s)"
+    # RECALL (the PASS metric): each `residual` truth row is a HIT if some lead overlaps its signature.
     while IFS=$'\t' read -r typ sig _cls; do
       [ "$typ" = "residual" ] || continue
       [ -n "${sig:-}" ] || continue
@@ -127,8 +137,17 @@ if [ "$LIVE" = "1" ]; then
       if [ "$hit" = 1 ]; then s2_hits=$((s2_hits+1)); say "  [HIT]  residual surfaced by a devise lead"
       else say "  [MISS] residual not surfaced: $sig"; fi
     done < "$FIXTURE/truth.tsv"
-    { [ "$s2_residuals" -gt 0 ] && [ "$s2_hits" -eq "$s2_residuals" ] && [ "$s2_fp" -eq 0 ]; } || s2_ok=0
-    say "STAGE 2: recall $s2_hits/$s2_residuals, false-positives $s2_fp -> $([ "$s2_ok" = 1 ] && echo PASS || echo FAIL)"
+    # ADVISORY (not a PASS gate): leads that overlap the audit boundary. This over-counts — a genuine residual
+    # legitimately references a boundary function (e.g. "the reentrancy-focused audit never modelled the share
+    # path"), and function-token overlap alone then reads as a restatement (see #1496). Reported, never failed on.
+    while IFS= read -r lead; do
+      [ -n "$lead" ] || continue
+      [ "$(printf '%s' "$lead" | overlaps "$AUDIT")" = "1" ] && s2_fp=$((s2_fp+1))
+    done < "$WORK/leads.txt"
+    # PASS = full residual recall (DEVISE surfaced every audit-surviving bug). BOUNDARY coverage + boundary-
+    # overlap count are reported for insight, not gated.
+    { [ "$s2_residuals" -gt 0 ] && [ "$s2_hits" -eq "$s2_residuals" ]; } || s2_ok=0
+    say "STAGE 2: recall $s2_hits/$s2_residuals, boundary-lines $s2_boundary, boundary-overlap(advisory) $s2_fp -> $([ "$s2_ok" = 1 ] && echo PASS || echo FAIL)"
   fi
 else
   say "STAGE 2 — devise recall not run (pass --live with agentis + a real backend to measure capability)"
@@ -138,9 +157,9 @@ fi
 overall=0; [ "$s1_ok" = 1 ] || overall=1
 [ "$s2_run" = 1 ] && { [ "$s2_ok" = 1 ] || overall=1; }
 if [ "$JSON" = 1 ]; then
-  printf '{"fixture":"%s","stage1":{"pass":%d,"total":%d,"ok":%s},"stage2":{"run":%s,"leads":%d,"recall_hits":%d,"residuals":%d,"false_positives":%d,"ok":%s},"overall_pass":%s}\n' \
+  printf '{"fixture":"%s","stage1":{"pass":%d,"total":%d,"ok":%s},"stage2":{"run":%s,"leads":%d,"boundary_lines":%d,"recall_hits":%d,"residuals":%d,"boundary_overlap_advisory":%d,"ok":%s},"overall_pass":%s}\n' \
     "$(basename "$FIXTURE")" "$s1_pass" "$s1_total" "$([ "$s1_ok" = 1 ] && echo true || echo false)" \
-    "$([ "$s2_run" = 1 ] && echo true || echo false)" "${s2_leads:-0}" "$s2_hits" "$s2_residuals" "$s2_fp" \
+    "$([ "$s2_run" = 1 ] && echo true || echo false)" "${s2_leads:-0}" "${s2_boundary:-0}" "$s2_hits" "$s2_residuals" "$s2_fp" \
     "$([ "$s2_ok" = 1 ] && echo true || echo false)" "$([ "$overall" = 0 ] && echo true || echo false)"
 fi
 say "OVERALL -> $([ "$overall" = 0 ] && echo PASS || echo FAIL)"

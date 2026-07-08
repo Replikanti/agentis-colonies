@@ -37,14 +37,41 @@ DEVISE should surface).
   that is the bench telling the truth, and it is exactly the signal model-routing
   calibration will optimise against. Never runs on CI.
 
+  PASS is **residual recall** (did DEVISE surface every audit-surviving bug). BOUNDARY
+  coverage and boundary-overlap are reported **advisory**, never gated: a genuine residual
+  legitimately references a boundary function (e.g. *"the reentrancy-focused audit never
+  modelled the share path"*), so function-token overlap over-counts "restatements"
+  ([#1496](https://github.com/Replikanti/agentis-colonies/issues/1496)).
+
+### The backend
+
+STAGE 2 drives a **real** backend. agentis's `llm.command` contract is `claude -p`-shaped
+(`-p --output-format json` + prompt on stdin), so the reliable default is
+`bench/lib/claude-p-backend.sh` — a thin `claude -p` adapter, no flat-cyborg PTY (whose
+one-shot cold-start proved flaky). Override with `BENCH_LLM_COMMAND` (e.g. point at the
+federation's `tools/flat-cyborg-claude.sh` for flat-rate billing); pick the model with
+`BENCH_LLM_MODEL` (default `opus` to measure the DEVISE ceiling; `sonnet` for the
+federation routing tier). Requires `claude` + a logged-in `~/.claude`; STAGE 2 SKIPs cleanly
+without them.
+
+### Validated reference (`rounding-residual`, opus)
+
+audit-scout extracted BOUNDARY **2/2** (both known audit findings) and RESIDUAL recall
+**1/1** — surfacing the planted share-price inflation and double-floor rounding leak, *plus*
+an emergent cross-ledger insolvency bug not deliberately planted. DEVISE works on a strong
+model; the ceiling is real capability, not scaffolding.
+
 ## Usage
 
 ```bash
 # deterministic safety property (what CI runs):
 dark-factory/bench/run-capability-bench.sh --json
 
-# full capability measurement (needs a real backend wired into the agentis store):
+# full capability measurement (real backend; opus by default):
 dark-factory/bench/run-capability-bench.sh --live --json
+
+# measure the federation routing tier instead:
+BENCH_LLM_MODEL=sonnet dark-factory/bench/run-capability-bench.sh --live --json
 ```
 
 Exit `0` = all run stages passed, `1` = a stage failed, `2` = bad args / missing fixture.
