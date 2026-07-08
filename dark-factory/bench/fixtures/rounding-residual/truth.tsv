@@ -1,0 +1,12 @@
+# dark-factory capability-bench ground truth for fixture `rounding-residual`.
+# Columns: type<TAB>signature<TAB>class
+#   type=boundary : a finding ALREADY in audit.txt (the known-issue exclusion boundary). A restatement of
+#                   it MUST be rejected KNOWN by novelty-gate, and a DEVISE stage must NOT surface it as a
+#                   residual lead. This guards the "never re-report a known bug" property.
+#   type=residual : the audit-SURVIVING bug the audit never analysed. Its description MUST pass novelty-gate
+#                   as NOVEL, and the DEVISE stage should surface a lead overlapping this signature. This is
+#                   the capability the bench measures.
+# The signature is the finding text the bench feeds to / matches against novelty-gate (shared function
+# token + salient-term overlap is how a match is judged).
+boundary	Reentrancy in withdraw(): the external msg.sender.call transfer runs before balanceOf is updated, so a malicious contract can re-enter and drain the vault.	reentrancy
+residual	convertToShares() floors on mint and redeem()/convertToAssets() floors on exit, and the first minter can inflate the share price by donating assets directly, leaking value from honest LPs through rounding — an accounting bug outside the audited custody path.	C3-rounding

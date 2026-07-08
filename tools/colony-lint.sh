@@ -838,6 +838,22 @@ if [ -x "$REPO_ROOT/dark-factory/demo-audit-scout.sh" ]; then
     fi
 fi
 
+# --- dark-factory capability bench — deterministic safety stage (#1490) ---
+# run-capability-bench.sh measures whether the discover->devise->attack->novelty pipeline surfaces an
+# audit-SURVIVING bug and never re-surfaces a known one, scored against a fixture's ground truth. Its
+# STAGE 1 (novelty discrimination) is deterministic and backend-free: a `boundary` restatement must be
+# rejected KNOWN and the `residual` finding must pass NOVEL. That safety property gates here; the live
+# STAGE 2 devise-recall (--live, needs a real LLM backend) is operator-run and never on CI.
+if [ -x "$REPO_ROOT/dark-factory/bench/run-capability-bench.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/bench/run-capability-bench.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: capability bench novelty-discrimination (#1490)"
+    else
+        fail "dark-factory: capability bench novelty-discrimination regressed (#1490)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory invariant-hunt target-linkage gate (#1471) ---
 # The invariant-hunt generation path could produce a false FINDING when the LLM substituted its own toy
 # contract of the same name instead of importing the in-scope target. forge-invariant.sh gained a
