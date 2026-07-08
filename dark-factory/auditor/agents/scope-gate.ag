@@ -1,0 +1,95 @@
+cb 300000;
+// #1511 — SCOPE + ELIGIBILITY GATE, in the SUBSTRATE. The highest-leverage correctness check in the bounty
+// pipeline: a confirmed finding pays NOTHING (and burns the per-report fee + reputation) unless its LOCATION is
+// an in-scope asset AND its IMPACT is an eligible, non-excluded, non-audit-noted class. Two live sessions both
+// died here — Lombard (real bug, but `contracts/strategy/` was NOT a listed asset) and Enzyme Onyx (real bug in
+// an in-scope asset, but the redeem-cancellation DoS is an explicit out-of-scope carve-out). This gate runs
+// BEFORE any DEVISE/PoC spend so effort is only spent on payable surface. It NEVER submits.
+//
+// "In the repo" != "in scope"; "has audits" != "in scope"; a real bug in an excluded impact class pays nothing.
+// The authoritative scope is the program's OWN scope page (per-file asset list + out-of-scope/known-issues
+// section + eligible-impact set), passed in as SCOPE_FILE. The asset-path check is DETERMINISTIC (grep — the
+// muscle); the impact/carve-out judgement is the LLM's, over that same scope text.
+//
+// Env:
+//   SCOPE_FILE       path to the program's scope text: the in-scope ASSET list (per-file paths / on-chain
+//                    addresses) + the OUT-OF-SCOPE / KNOWN-ISSUES section + the ELIGIBLE-IMPACT set. One file.
+//   FINDING_LOCATION the candidate finding's location — a repo-relative source path (e.g.
+//                    src/components/issuance/deposit-handlers/SyncDepositHandler.sol) or an on-chain address.
+//   FINDING_IMPACT   a one-line description of the finding's impact + class (e.g. "unprivileged front-run of a
+//                    NAV update steals pre-update holders' unclaimed yield").
+// Stdout: exactly one line
+//   SCOPE-GATE|<PAYABLE|OUT-OF-SCOPE-ASSET|EXCLUDED-CARVEOUT|INELIGIBLE-IMPACT>|<one-line rationale>
+//   Only PAYABLE should proceed to DEVISE/PoC/submit; the other three are wasted-effort verdicts.
+
+// --- scope evidence (the muscle; dynamic paths -> safe-exec-concat, per audit-scout.ag / dup-scout.ag) ------
+fn scope_text(scopeFile: string) -> string {
+    if len(scopeFile) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "sed -n '1,4000p' ${scopeFile} 2>/dev/null || true";
+}
+
+// Deterministic asset match: is FINDING_LOCATION present in the scope text (the asset URLs/paths contain the
+// repo-relative path)? grep -c prints "0" AND exits 1 on no match, so capture-then-fallback (dup-scout lesson).
+fn asset_listed(scopeFile: string, loc: string) -> string {
+    if len(loc) == 0 { return "0"; }
+    // colony-lint: safe-exec-concat
+    return exec sh "c=$(grep -c -F '${loc}' ${scopeFile} 2>/dev/null); [ -n \"$c\" ] && echo \"$c\" || echo 0";
+}
+
+// Also try the BASENAME (a per-file asset list may cite the file without the full path a finding uses).
+fn basename_listed(scopeFile: string, loc: string) -> string {
+    if len(loc) == 0 { return "0"; }
+    // colony-lint: safe-exec-concat
+    return exec sh "b=$(basename '${loc}'); c=$(grep -c -F \"$b\" ${scopeFile} 2>/dev/null); [ -n \"$c\" ] && echo \"$c\" || echo 0";
+}
+
+let scopeFile = getenv("SCOPE_FILE");
+let loc = getenv("FINDING_LOCATION");
+let impact = getenv("FINDING_IMPACT");
+
+let scope = scope_text(scopeFile);
+let inList = asset_listed(scopeFile, loc);
+let baseInList = basename_listed(scopeFile, loc);
+
+let evidence =
+    "FINDING_LOCATION: " + loc + "\n"
+  + "FINDING_IMPACT: " + impact + "\n"
+  + "ASSET-MATCH (grep count of the exact location in the scope): " + inList + "\n"
+  + "ASSET-MATCH (grep count of the location's basename in the scope): " + baseInList + "\n"
+  + "=== PROGRAM SCOPE (in-scope asset list + out-of-scope/known-issues + eligible-impact set) ===\n" + scope;
+
+// The gate: classify against the three barriers, hardest first. This is a heuristic over the scope text the
+// operator supplied — an unreliable/partial scope dump can misgate, so the rationale must cite what it matched.
+let instruction =
+    "You are the SCOPE + ELIGIBILITY gate for a bug-bounty submission. A finding is only PAYABLE if ALL hold:\n"
+  + "1) ASSET: its location is an IN-SCOPE asset. The ASSET-MATCH grep counts above are the strongest signal — a "
+  + "count of 0 for BOTH the full path AND the basename means the location is almost certainly NOT a listed asset "
+  + "(out of scope), UNLESS a Primacy-of-Impact clause in the scope lets an out-of-scope location reach an in-scope "
+  + "IMPACT (only then can an unlisted location still pay). 'In the repo' or 'has audits' does NOT mean in scope.\n"
+  + "2) NOT EXCLUDED: the impact must not match any OUT-OF-SCOPE / KNOWN-ISSUES carve-out in the scope, INCLUDING a "
+  + "clause like 'anything noted in the audit reports is out of scope' (a variant of an audit-noted issue is excluded "
+  + "even if the audit downgraded it).\n"
+  + "3) ELIGIBLE IMPACT: the impact must fall in the program's ELIGIBLE-IMPACT set (e.g. theft / freezing / "
+  + "insolvency / eligible-griefing); a real bug whose impact is not in that set (or is an excluded DoS/rounding/"
+  + "user-error class) pays nothing.\n\n"
+  + "=== EVIDENCE ===\n" + evidence + "\n"
+  + "=== HOW TO ANSWER ===\nReason briefly, then write exactly ONE final line:\n"
+  + "SCOPE-GATE|<PAYABLE|OUT-OF-SCOPE-ASSET|EXCLUDED-CARVEOUT|INELIGIBLE-IMPACT>|<one-line rationale citing the "
+  + "specific asset match / carve-out / eligible-impact that decided it>\n"
+  + "PAYABLE only if all three barriers pass. When the asset match is 0/0 and there is no Primacy-of-Impact route, "
+  + "answer OUT-OF-SCOPE-ASSET. Prefer a wasted-effort verdict over a false PAYABLE — a bad submit costs fee + "
+  + "reputation. Only the final SCOPE-GATE| line is parsed.";
+
+let verdict = prompt(instruction, evidence) -> string;
+
+print(verdict);
+let gate = if index_of(verdict, "SCOPE-GATE|PAYABLE") >= 0 { "payable" }
+           else { if index_of(verdict, "OUT-OF-SCOPE-ASSET") >= 0 { "out-of-scope-asset" }
+           else { if index_of(verdict, "EXCLUDED-CARVEOUT") >= 0 { "excluded-carveout" }
+           else { "ineligible-impact" } } };
+// A PAYABLE gate is the productive outcome (proceed to DEVISE/PoC) -> success; any block -> failure (effort saved).
+let outcome = if gate == "payable" { "success" } else { "failure" };
+emit("dark-factory:scope_verdict", "{\"location\":\"" + loc + "\",\"gate\":\"" + gate + "\"}");
+learn("scope-gate", loc, "scope+eligibility gate for " + loc + " (" + gate + ")", outcome, ["scope-gate", gate]);
+memo_write("scope-gate:last_check", "done");
