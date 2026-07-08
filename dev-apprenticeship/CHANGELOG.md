@@ -15,6 +15,24 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Advisory reviewers re-reviewed the same MR head every tick** ([#1461](https://github.com/Replikanti/agentis-colonies/issues/1461)):
+  the four advisory code-review reviewers (`style_reviewer`, `logic_reviewer`,
+  `security_reviewer`, `test_reviewer`) gated on the MR being open rather than
+  on `(iid, head SHA)` having been reviewed at their acting tier, so a single
+  long-lived open PR drew a fresh `prompt()` session per reviewer per tick and a
+  repeated `[draft-review]` note (observed live: ~15 near-identical comments in
+  ~90 minutes on one unchanged head, each burning an LLM slot against the #1352
+  cap). Each reviewer now carries `qa_reviewer`'s per-head dedup: a
+  `head_fingerprint()` (byte-identical to the `qa_reviewer` / `approval_decider`
+  helper) plus a `recall_latest` gate keyed on `<reviewer>:reviewed_head:<iid>`,
+  placed BEFORE the review `prompt()`. An unchanged head returns before any LLM
+  round-trip and before any note post; the marker is written at every acting
+  tier (posting tiers only after a successful post). A new push changes the
+  diff, changes the fingerprint, and falls through to a fresh review. The #201
+  human-pattern-learning prompt keeps its own independent cadence (untouched).
+
 ### Added
 
 - **Head-keyed QA review gate on auto-merge** ([#1484](https://github.com/Replikanti/agentis-colonies/issues/1484)):
