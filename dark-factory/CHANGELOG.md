@@ -15,6 +15,28 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Immunefi intake + post-audit-delta discovery** (#1506, epic #1505). Two independent, offline-testable shell
+  primitives that widen the intake funnel toward Immunefi bounties — the residual-surface half of discovery,
+  built on the observation (borne out by the confirmed Lombard finding) that an audited protocol's rewardable
+  bug almost never lives in the fortified, N-times-reviewed core but in the DELTA that landed AFTER the audit
+  froze. NO new `.ag` agent; both are pure transforms, read-only, and never submit.
+  - `audit-delta.sh` — a pure `git diff` detector: `--repo <dir> --since <commit-ish> [--paths <file>]` emits ONE
+    JSON object (files changed on `<since>..HEAD`, an optional in-scope `--paths` intersection, the most-recent-
+    change age in days, and a `DELTA`/`NO-DELTA` verdict). Never crashes on the `since==HEAD` / empty-diff edge
+    (NO-DELTA, null age); exits 3 loudly on a non-git-repo / unresolvable `--since` (a shallow-clone miss surfaces
+    as an error, never a silent empty delta), 2 on bad args. A general muscle other callers reuse.
+  - `run-immunefi-intake.sh` — ranks an OPERATOR-SUPPLIED programs JSON (`--programs`, REQUIRED). **Design
+    decision baked in: Immunefi has NO live fetch path, ever** — WebFetch is proven unreliable against the SPA and
+    submission is human-gated, so the operator maintains a small static programs file out-of-band. Freshness keeps
+    `status` active; scoring is an additive `bounty_term` (0..70, log-scaled) + `delta_term` (0..30, via
+    `audit-delta.sh` when a program points at a local clone; 0 for NO-DELTA / no clone — never degenerate); dedup
+    on `immunefi:<id>`. Emits the SAME 5-column TSV `run-batch.sh --queue` already consumes (zero changes to
+    run-batch.sh), the scope_hint packing chain/repo/commit/delta/fee/vault for a future EV-gating evaluate stage.
+  - `demo-immunefi-intake.sh` — ONE offline, deterministic proof of BOTH primitives (mirroring the #1485
+    "two primitives + a CI-safe demo" precedent): a throwaway `git init` fixture drives audit-delta through
+    DELTA / NO-DELTA / `--paths` intersection / bad-repo+bad-since (exit 3), and an operator-programs fixture
+    drives the ranking (paused dropped by freshness, fresh-delta program outscoring an equal-reward NO-DELTA one,
+    a no-local_repo program still ranking by bounty alone, file==stdout parity). Wired into `tools/colony-lint.sh`.
 - **Submission report formatter in the substrate** (#1508). The stage AFTER scope-gate (#1511), impact-gate
   (#1522) and dup-scout (#1503) and BEFORE the human-gated submit. Once a finding is CONFIRMED, PoC'd, in-scope,
   impact-substantiated and low-dup, the last manual step of every live session was turning the terse verdict
