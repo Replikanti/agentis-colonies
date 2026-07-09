@@ -206,6 +206,12 @@ case "$VERD" in
 esac
 POC_FILE_LINE="$(grep '^POC-FILE|' "$CELL_LOG" | tail -1 | sed 's/^POC-FILE|//' || true)"
 
+# Machine-readable verdict line on our OWN stdout, in the same `PREFIX|VALUE` shape the five .ag gates emit, so
+# a caller that scrapes run-poc.sh directly (coordinator.ag::run_poc_live -> poc_class()) can grep the verdict
+# without reaching into the throwaway per-run cell log. ADDITIVE (#1535): it does NOT replace the human-facing
+# `================ POC: $TARGET -> $VERD ================` banner below (pinned by demo-poc-gen.sh's e2e grep).
+echo "POC|$TARGET|$VERD"
+
 GEN_KIND="generated(LLM)"; [ -n "$FIXTURE_IN_RUN" ] && GEN_KIND="fixture"
 
 REPORT="$OUT/poc-report.md"

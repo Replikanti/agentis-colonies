@@ -88,6 +88,63 @@ else
   ok "coordinator.ag emits NO submit — the pass halts at the human-gate draft"
 fi
 
+# #1535: the POC stage's LIVE runner (run-poc.sh) is CLI-flag driven from the POC_* facts, NOT env-only like
+# the five .ag gates — run_stage_live must dispatch it through run_poc_live, building --repo/--target/
+# --hypothesis/--class from getenv(POC_*), each shell_escape()d.
+if grep -q 'fn run_poc_live(' "$COORD" \
+   && grep -q -- '--repo " + shell_escape(getenv("POC_REPO"))' "$COORD" \
+   && grep -q -- '--target " + shell_escape(getenv("POC_TARGET"))' "$COORD" \
+   && grep -q -- '--hypothesis " + shell_escape(getenv("POC_HYPOTHESIS"))' "$COORD" \
+   && grep -q -- '--class " + shell_escape(getenv("POC_CLASS"))' "$COORD" \
+   && grep -q 'if stage == "poc" { return run_poc_live(runner); }' "$COORD"; then
+  ok "coordinator.ag builds run-poc.sh's CLI (--repo/--target/--hypothesis/--class) from the POC_* facts"
+else
+  bad "coordinator.ag missing the poc CLI-flag construction from POC_*"
+fi
+
+# #1535: the devise stage threads a per-stage NEGATIVE_TOKEN (NO-RESIDUAL) into run-gate-agent.sh so a BARE
+# NO-RESIDUAL line is surfaced instead of dropped — WITHOUT piping it as `NO-RESIDUAL|reason` (which the
+# unanchored `RESIDUAL|` substring checks would misread as success/residual). audit-scout.ag stays untouched.
+if grep -q 'fn stage_negative_token(' "$COORD" \
+   && grep -q 'if stage == "devise" { return "NO-RESIDUAL"; }' "$COORD" \
+   && grep -q 'VERDICT_NEGATIVE=" + shell_escape(stage_negative_token(stage))' "$COORD"; then
+  ok "coordinator.ag threads a per-stage VERDICT_NEGATIVE (devise -> NO-RESIDUAL), not a piped token"
+else
+  bad "coordinator.ag missing the stage_negative_token/VERDICT_NEGATIVE threading"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# 1b) OFFLINE round-trip through run-gate-agent.sh's verdict extraction (#1535) — pure shell, ALWAYS on
+#     (no agentis, no LLM). Proves the devise NEGATIVE_TOKEN surfaces a bare NO-RESIDUAL that the old
+#     single-prefix grep dropped, while the piped RESIDUAL| line and the omit-the-flag path are unchanged.
+# ----------------------------------------------------------------------------------------------------------
+GATE_RUNNER="$HERE/auditor/scripts/run-gate-agent.sh"
+note "round-tripping the devise NEGATIVE_TOKEN extraction offline (no agentis) ..."
+if [ ! -f "$GATE_RUNNER" ]; then
+  bad "run-gate-agent.sh not found: $GATE_RUNNER"
+else
+  RT="$(mktemp -d)"
+  printf 'chatter\nRESIDUAL|vault|C1|why|sketch\ntail\n' > "$RT/residual.log"
+  printf 'chatter\nNO-RESIDUAL\ntail\n' > "$RT/no-residual.log"
+  # (a) regression: a piped RESIDUAL|... line is still extracted with the negative token configured.
+  _r="$(bash "$GATE_RUNNER" --classify-log "$RT/residual.log" --verdict-prefix RESIDUAL --negative-token NO-RESIDUAL 2>/dev/null)"
+  [ "$_r" = "RESIDUAL|vault|C1|why|sketch" ] && ok "devise extraction still surfaces a piped RESIDUAL| line (regression-safe)" || bad "expected the RESIDUAL| line, got '$_r'"
+  # (b) the fix: a BARE NO-RESIDUAL token is now surfaced (previously dropped by the single-prefix grep).
+  _n="$(bash "$GATE_RUNNER" --classify-log "$RT/no-residual.log" --verdict-prefix RESIDUAL --negative-token NO-RESIDUAL 2>/dev/null)"
+  [ "$_n" = "NO-RESIDUAL" ] && ok "devise extraction now surfaces the bare NO-RESIDUAL token (#1535 fix)" || bad "expected NO-RESIDUAL, got '$_n'"
+  # (c) additive-only: omitting --negative-token preserves the old (bare-token-dropping) behavior for the five
+  #     stages that never set one — proving the fix is opt-in per-stage, not a global behavior change.
+  _o="$(bash "$GATE_RUNNER" --classify-log "$RT/no-residual.log" --verdict-prefix RESIDUAL 2>/dev/null)"
+  [ -z "$_o" ] && ok "without --negative-token the bare token stays dropped (byte-identical to pre-fix)" || bad "expected empty without the token, got '$_o'"
+  # (d) the coordinator maps the surfaced bare token to the informative no-residual (not generic incomplete).
+  if grep -q 'if index_of(line, "NO-RESIDUAL") >= 0 { return "no-residual"; }' "$COORD"; then
+    ok "coordinator.ag devise_class maps the surfaced NO-RESIDUAL -> no-residual"
+  else
+    bad "coordinator.ag devise_class missing the NO-RESIDUAL -> no-residual mapping"
+  fi
+  rm -rf "$RT"
+fi
+
 # ----------------------------------------------------------------------------------------------------------
 # 2) LIVE offline pass — deterministic, mock backend, PASS_FIXTURE only. No LLM, no network.
 # ----------------------------------------------------------------------------------------------------------
@@ -154,6 +211,57 @@ for st in scope devise poc impact; do trace_has "$WORK/c" "$st" && _ran="$_ran $
 _after=""
 for st in dup report; do trace_has "$WORK/c" "$st" && _after="$_after $st"; done
 [ -z "$_after" ] && ok "dup/report provably NOT executed after the impact halt" || bad "dup/report ran after halt:$_after"
+
+# --- (c-bis) LIVE stub-runner dispatch (#1535): NO PASS_FIXTURE => the real run_stage_live path. Prove the
+#     poc branch builds run-poc.sh's CLI from the POC_* facts (arg-capture stub) and poc_class parses the
+#     POC|...|FINDING line run-poc.sh now emits. Stub runners stand in for the .ag gates + run-poc.sh — no
+#     LLM, no forge/hardhat. impact/dup/report stay unwired -> the pass honestly halts at impact (INCOMPLETE).
+note "exercising the LIVE run_stage_live dispatch with stub runners (poc CLI-args + POC| parsing) ..."
+LV="$WORK/live"; mkdir -p "$LV"
+CAP="$LV/poc-args.txt"
+# Generic gate stub: echoes the productive token per VERDICT_PREFIX (scope + devise proceed).
+cat > "$LV/gate-stub.sh" <<'STUB'
+#!/usr/bin/env bash
+case "${VERDICT_PREFIX:-}" in
+  SCOPE-GATE) echo "SCOPE-GATE|PAYABLE" ;;
+  RESIDUAL)   echo "RESIDUAL|vault|C1|stub|stub" ;;
+  *)          echo "${VERDICT_PREFIX:-UNKNOWN}|STUB" ;;
+esac
+STUB
+# PoC-capture stub: records the CLI args it was called with, then emits the POC|...|FINDING verdict line.
+cat > "$LV/poc-stub.sh" <<STUB
+#!/usr/bin/env bash
+echo "\$@" >> "$CAP"
+echo "POC|stub-target|FINDING"
+STUB
+chmod +x "$LV/gate-stub.sh" "$LV/poc-stub.sh"
+cp "$COORD" "$LV/coordinator.ag"
+( cd "$LV" && agentis init >/dev/null 2>&1 )
+{
+  echo "llm.backend = mock"
+  echo "trace.level = normal"
+  echo "exec.env_passthrough = PASS_ENABLED,STAGES,SCOPE_GATE_RUN,DEVISE_RUN,POC_RUN,IMPACT_GATE_RUN,DUP_RUN,REPORT_RUN,POC_REPO,POC_TARGET,POC_HYPOTHESIS,POC_CLASS"
+  echo "exec.default_timeout_ms = 30000"
+  echo "learning.enabled = true"
+  echo "experience.enabled = true"
+} > "$LV/.agentis/config"
+( cd "$LV" && env PASS_ENABLED=1 \
+    SCOPE_GATE_RUN="$LV/gate-stub.sh" DEVISE_RUN="$LV/gate-stub.sh" POC_RUN="$LV/poc-stub.sh" \
+    POC_REPO="/stub/repo" POC_TARGET="Vault.sol:Vault" POC_HYPOTHESIS="reentrancy drain" POC_CLASS="C-reentrancy" \
+    agentis go coordinator.ag --enable-exec --enable-messaging ) >"$LV/pass.log" 2>&1
+# The poc branch must have called the stub with all four flags carrying the POC_* values (proves the CLI-arg
+# construction + shell_escape()ing — e.g. the spaced --hypothesis survives as one argument).
+_cap_missing=""
+for kv in "--repo /stub/repo" "--target Vault.sol:Vault" "--hypothesis reentrancy drain" "--class C-reentrancy"; do
+  grep -qF -- "$kv" "$CAP" 2>/dev/null || _cap_missing="$_cap_missing [$kv]"
+done
+[ -z "$_cap_missing" ] && ok "run_poc_live built run-poc.sh's CLI from the POC_* facts (--repo/--target/--hypothesis/--class)" || bad "poc CLI missing args:$_cap_missing"
+# poc_class parsed the stub's POC|...|FINDING line (the exact shape run-poc.sh now emits) -> verdict=finding.
+if pass_trace "$LV" | grep -q 'stage=poc	verdict=finding'; then
+  ok "poc_class parsed the POC|...|FINDING line -> stage=poc verdict=finding"
+else
+  bad "poc stage did not normalize to verdict=finding (poc_class/POC| parsing)"; pass_trace "$LV" | sed 's/^/        | /'
+fi
 
 # --- (d) the never-submit invariant across ALL three runs. ------------------------------------------------
 if grep -RiqE 'SUBMIT|submitting|posted to (immunefi|the platform|bounty)' "$WORK"/*/pass.log; then

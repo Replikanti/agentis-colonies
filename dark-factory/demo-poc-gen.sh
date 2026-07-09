@@ -133,6 +133,15 @@ else
   bad "run-poc.sh env_passthrough is missing a poc-writer env key"
 fi
 
+# #1535: run-poc.sh emits a machine-readable `POC|<target>|<verdict>` line on its OWN stdout (the shape the
+# coordinator's poc_class scrapes via run_stage_live), distinct from — and additive to — the human-facing
+# `================ POC: $TARGET -> $VERD ================` banner the gated hardhat e2e below still pins.
+if grep -q 'echo "POC|$TARGET|$VERD"' "$RUNNER" && grep -q '================ POC: $TARGET -> $VERD ================' "$RUNNER"; then
+  ok "run-poc.sh emits the additive POC|<target>|<verdict> stdout line AND keeps the arrow-form banner"
+else
+  bad "run-poc.sh missing the additive POC|<target>|<verdict> line or the arrow-form banner regressed"
+fi
+
 # ----------------------------------------------------------------------------------------------------------
 # 2) CI-SAFE MECHANICAL — detect-toolchain + the --classify verdict-parse + the linkage-reject (no toolchain).
 # ----------------------------------------------------------------------------------------------------------
@@ -208,6 +217,12 @@ else
   else
     bad "hardhat live e2e should end in FINDING (rc=$hh_rc)"
     printf '%s\n' "$hh_run" | sed 's/^/        | /' | tail -8
+  fi
+  # #1535: the same real run-poc.sh output must also carry the additive machine-readable POC| verdict line.
+  if printf '%s' "$hh_run" | grep -qF 'POC|contracts/Vuln.sol:Vuln|FINDING'; then
+    ok "run-poc.sh emitted the additive POC|contracts/Vuln.sol:Vuln|FINDING line on its own stdout (#1535)"
+  else
+    bad "run-poc.sh did not emit the additive POC|<target>|FINDING line (#1535 emit regression)"
   fi
   rm -rf "$HH_OUT"
 fi
