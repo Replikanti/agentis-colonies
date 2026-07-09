@@ -1,0 +1,101 @@
+cb 300000;
+// #1508 — SUBMISSION REPORT FORMATTER, in the SUBSTRATE. The stage AFTER scope-gate (#1511), impact-gate (#1522)
+// and dup-scout (#1503) and BEFORE the human-gated submit. Once a finding is CONFIRMED, PoC'd, in-scope, impact-
+// substantiated and low-dup, the last manual step of every live session was turning the terse verdict lines +
+// the PoC into a platform-shaped report a human can read and file. This agent renders that draft.
+//
+// It NEVER submits: the output is a DRAFT ARTIFACT only. The response leads with the machine-checkable marker
+// SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW so a coordinator can assert the human-gate invariant without parsing prose,
+// and the Brief/Intro restates that this is a draft for human review that is never auto-submitted.
+//
+// The PoC read is DETERMINISTIC (sed/grep — the muscle: embed the actual run-steps + a code excerpt so the report
+// is grounded in the real test, not an LLM guess); rendering the four sections is the LLM's job.
+//
+// Env:
+//   FINDING_TITLE    short headline for the finding (e.g. "SyncDepositHandler NAV front-running").
+//   FINDING_LOCATION repo-relative source path or on-chain address (same shape as scope-gate's var).
+//   FINDING_IMPACT   one-line impact description + class (same shape as impact-gate's var).
+//   POC_FILE         path to the PoC test (foundry/hardhat); read to embed run-steps + a code excerpt.
+//   SEVERITY_BAND    the severity / reward-band string (e.g. "Critical", "High").
+//   SCOPE_VERDICT    the raw SCOPE-GATE|... line from scope-gate.ag (threaded through verbatim).
+//   IMPACT_VERDICT   the raw IMPACT-GATE|... line from impact-gate.ag (threaded through verbatim).
+//   DUP_RISK         the raw DUP-RISK|... line from dup-scout.ag (threaded through verbatim).
+// Stdout: the marker line SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW followed by a 4-section markdown report
+//   (## Brief/Intro, ## Vulnerability Details, ## Impact Details, ## References). Never a submit.
+
+// --- PoC evidence (the muscle; dynamic paths -> safe-exec-concat, per impact-gate.ag / scope-gate.ag) ---------
+fn poc_text(pocFile: string) -> string {
+    if len(pocFile) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "sed -n '1,4000p' ${pocFile} 2>/dev/null || true";
+}
+
+// Extract the PoC's test-function names so the report can state concrete "run: forge test --match-test <name>"
+// steps. grep prints nothing AND exits 1 on no match, so capture-then-fallback (impact-gate/dup-scout lesson).
+fn poc_run_steps(pocFile: string) -> string {
+    if len(pocFile) == 0 { return "no test function found"; }
+    // colony-lint: safe-exec-concat
+    return exec sh "c=$(grep -oE 'function test[A-Za-z0-9_]*' ${pocFile} 2>/dev/null); [ -n \"$c\" ] && echo \"$c\" || echo 'no test function found'";
+}
+
+let title = getenv("FINDING_TITLE");
+let loc = getenv("FINDING_LOCATION");
+let impact = getenv("FINDING_IMPACT");
+let pocFile = getenv("POC_FILE");
+let severity = getenv("SEVERITY_BAND");
+let scopeVerdict = getenv("SCOPE_VERDICT");
+let impactVerdict = getenv("IMPACT_VERDICT");
+let dupRisk = getenv("DUP_RISK");
+
+let poc = poc_text(pocFile);
+let runSteps = poc_run_steps(pocFile);
+
+let evidence =
+    "FINDING_TITLE: " + title + "\n"
+  + "FINDING_LOCATION: " + loc + "\n"
+  + "FINDING_IMPACT: " + impact + "\n"
+  + "SEVERITY_BAND: " + severity + "\n"
+  + "SCOPE_VERDICT (from scope-gate, verbatim): " + scopeVerdict + "\n"
+  + "IMPACT_VERDICT (from impact-gate, verbatim): " + impactVerdict + "\n"
+  + "DUP_RISK (from dup-scout, verbatim): " + dupRisk + "\n"
+  + "POC test functions (run: forge test --match-test <name>): " + runSteps + "\n"
+  + "=== PROOF OF CONCEPT (the test the report rests on) ===\n" + poc;
+
+// The formatter: render a platform-shaped submission DRAFT from the supplied evidence ONLY. It is not a judge —
+// the scope/impact/dup verdicts are already decided upstream and are threaded through verbatim into References as
+// an honest novelty/scope note. The one hard invariant is the never-submit / human-gate marker.
+let instruction =
+    "You are the SUBMISSION REPORT FORMATTER for a bug-bounty finding that has ALREADY passed the scope gate, the "
+  + "impact-substantiation gate, and the dup-risk check. Your job is to render a platform-ready submission DRAFT "
+  + "(Immunefi-shaped) from the supplied evidence — NOT to re-judge the finding and NOT to submit it. Use ONLY the "
+  + "supplied evidence; invent no facts, addresses, or numbers not present in it.\n\n"
+  + "Your response MUST start with this exact marker line, alone on the first line, before anything else:\n"
+  + "SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW\n\n"
+  + "Then render EXACTLY these four markdown sections, in this order, each with its `##` header verbatim:\n"
+  + "## Brief/Intro\n"
+  + "  A short summary of the vulnerability in the target, its severity band (SEVERITY_BAND), and one sentence "
+  + "stating explicitly that this is a DRAFT prepared for human review and is NEVER auto-submitted.\n"
+  + "## Vulnerability Details\n"
+  + "  The technical root cause at FINDING_LOCATION, grounded in the PROOF OF CONCEPT — reference the actual test "
+  + "function name(s) and the concrete run-step (e.g. `forge test --match-test <name>`) so a reviewer can "
+  + "reproduce it. Do not paste the entire PoC; cite the decisive lines.\n"
+  + "## Impact Details\n"
+  + "  What an attacker gains and who is harmed, from FINDING_IMPACT and SEVERITY_BAND. Tie the impact class to "
+  + "the severity band; state the loss concretely but only from the evidence.\n"
+  + "## References\n"
+  + "  Restate the SCOPE_VERDICT, IMPACT_VERDICT and DUP_RISK lines VERBATIM as an honest, evidence-based scope / "
+  + "validity / novelty note (these are grounding facts from the upstream gates — do not paraphrase or upgrade "
+  + "them), plus the PoC file path.\n\n"
+  + "=== EVIDENCE ===\n" + evidence + "\n"
+  + "=== HOW TO ANSWER ===\nEmit the marker line first, then the four sections. Ground every claim in the "
+  + "evidence. This is a draft artifact only — you never contact any bounty platform.";
+
+let verdict = prompt(instruction, evidence) -> string;
+
+print(verdict);
+// The productive outcome is a rendered draft that carries the human-gate marker; anything else is a failure to
+// render (mirrors the gates' outcome derivation from their own leading verdict line).
+let outcome = if index_of(verdict, "SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW") >= 0 { "success" } else { "failure" };
+emit("dark-factory:report_draft", "{\"title\":\"" + title + "\",\"location\":\"" + loc + "\",\"severity\":\"" + severity + "\",\"status\":\"drafted\"}");
+learn("report-writer", title, "submission report drafted for " + title + " (" + outcome + ")", outcome, ["report-writer", outcome]);
+memo_write("report-writer:last_check", "done");

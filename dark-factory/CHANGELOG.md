@@ -15,6 +15,22 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Submission report formatter in the substrate** (#1508). The stage AFTER scope-gate (#1511), impact-gate
+  (#1522) and dup-scout (#1503) and BEFORE the human-gated submit. Once a finding is CONFIRMED, PoC'd, in-scope,
+  impact-substantiated and low-dup, the last manual step of every live session was turning the terse verdict
+  lines + the PoC into a platform-shaped report a human can read and file — this agent renders that draft.
+  - `auditor/agents/report-writer.ag` — standalone dispatched agent (mirrors `impact-gate.ag` / `scope-gate.ag`).
+    Env: `FINDING_TITLE`, `FINDING_LOCATION`, `FINDING_IMPACT`, `POC_FILE`, `SEVERITY_BAND`, `SCOPE_VERDICT`,
+    `IMPACT_VERDICT`, `DUP_RISK` — the three upstream verdict lines threaded through verbatim. A deterministic
+    PoC-read muscle (sed/grep: embed the test run-steps + a code excerpt) grounds the report in the real test.
+    It renders exactly four Immunefi-shaped markdown sections — `## Brief/Intro`, `## Vulnerability Details`,
+    `## Impact Details`, `## References` — and leads the response with the machine-checkable marker
+    `SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW`, making the never-submit / human-gated invariant explicit. The
+    References section restates the scope/impact/dup verdict lines verbatim as an honest, evidence-based
+    novelty/scope note. It NEVER submits — the output is a draft artifact only.
+  - `demo-report-writer.sh` source-guards the wiring (CI-safe: env contract, PoC muscle, 4-section scaffolding,
+    output marker, never-submits, emit/learn/memo tail) and runs the agent live over a fixture finding + PoC +
+    upstream verdict lines when agentis is present; wired into `tools/colony-lint.sh`.
 - **Impact-substantiation / validity gate in the substrate** (#1522). The gate AFTER scope-gate (#1511) and
   BEFORE human submit. scope-gate closes the SCOPE wall (in-scope asset + eligible-impact set + not carved-out);
   it is necessary but NOT sufficient. A live Immunefi submission (Enzyme Onyx, `SyncDepositHandler`
