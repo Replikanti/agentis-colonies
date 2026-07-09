@@ -870,6 +870,23 @@ if [ -x "$REPO_ROOT/dark-factory/demo-scope-gate.sh" ]; then
     fi
 fi
 
+# --- dark-factory impact-substantiation gate (#1522) ---
+# impact-gate.ag runs AFTER scope-gate and BEFORE human submit: it classifies a CONFIRMED+PoC'd finding as
+# SUBSTANTIATED only when the PoC drives the impact through the protocol's OWN mechanism (not a hand-fed/simulated
+# state), the loss needs no PRIVILEGED trigger, and the victim has an on-chain-provable pre-existing claim — the
+# validity barrier that a live Onyx submission failed (hand-fed NAV post = front-run of a privileged action). It
+# never submits. demo-impact-gate.sh source-guards the wiring (CI-safe) + runs the agent live over a fixture PoC
+# when agentis is present.
+if [ -x "$REPO_ROOT/dark-factory/demo-impact-gate.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-impact-gate.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: impact-substantiation gate (impact-gate.ag) (#1522)"
+    else
+        fail "dark-factory: impact-substantiation gate regressed (#1522)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory capability bench — deterministic safety stage (#1490) ---
 # run-capability-bench.sh measures whether the discover->devise->attack->novelty pipeline surfaces an
 # audit-SURVIVING bug and never re-surfaces a known one, scored against a fixture's ground truth. Its

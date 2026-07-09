@@ -15,6 +15,22 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Impact-substantiation / validity gate in the substrate** (#1522). The gate AFTER scope-gate (#1511) and
+  BEFORE human submit. scope-gate closes the SCOPE wall (in-scope asset + eligible-impact set + not carved-out);
+  it is necessary but NOT sufficient. A live Immunefi submission (Enzyme Onyx, `SyncDepositHandler`
+  front-running) that PASSED all three scope-gate barriers was still CLOSED on an impact-validity ground: the
+  PoC used a SIMULATED price increase (a hand-fed admin `updateShareValue`) and described front-running of a
+  PRIVILEGED admin action, not extraction of an on-chain-provable claim the victims already held.
+  - `auditor/agents/impact-gate.ag` — standalone dispatched agent (mirrors `scope-gate.ag` / `dup-scout.ag`).
+    Env: `FINDING_IMPACT`, `POC_FILE`, `MECHANISM_NOTES`. A deterministic PoC-smell muscle (grep: `harness_set*`,
+    mocks, price setters, admin/owner pranks) feeds an LLM judgement over three validity barriers — OWN-MECHANISM
+    (vs a simulated critical transition) / NO-PRIVILEGED-TRIGGER (the loss must not need a trusted role to act) /
+    PROVABLE-PRE-EXISTING-CLAIM (on-chain, per the protocol's own accounting). Emits exactly
+    `IMPACT-GATE|<SUBSTANTIATED|SIMULATED-STATE|PRIVILEGED-TRIGGER|NO-PROVABLE-CLAIM>|<rationale>` — only
+    `SUBSTANTIATED` should proceed to human submit. It NEVER submits. Validated live against the real Onyx PoC:
+    verdict `PRIVILEGED-TRIGGER`, mirroring the platform reviewer's exact reasoning.
+  - `demo-impact-gate.sh` source-guards the wiring (CI-safe) and runs the agent live over a fixture PoC (the Onyx
+    simulated-state + privileged-trigger shape) when agentis is present; wired into `tools/colony-lint.sh`.
 - **Scope + eligibility gate in the substrate** (#1511). The highest-leverage correctness check in the bounty
   pipeline: a confirmed finding pays NOTHING (and burns the per-report fee + reputation) unless its LOCATION is
   an in-scope asset AND its IMPACT is an eligible, non-excluded, non-audit-noted class. Two live sessions both
