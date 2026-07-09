@@ -212,6 +212,27 @@ else
   rm -rf "$HH_OUT"
 fi
 
+# 3a-bis) RELATIVE-PATH REGRESSION (#1531). hand-invoke hardhat-poc.sh DIRECTLY (bypassing run-poc.sh's own
+# `REPO="$(cd "$REPO" && pwd)"` normalization) with a RELATIVE --repo/--target from a DIFFERENT cwd — the exact
+# manual-invocation shape that used to double the path (".../hardhat-poc-fixture/hardhat-poc-fixture/...") into a
+# false HARNESS_ERROR before the fix. Gated the same as 3a (needs npx + installed hardhat deps).
+if ! command -v npx >/dev/null 2>&1; then
+  skip "npx not on PATH — skipping the #1531 relative-path regression check"
+elif [ ! -d "$FIX/node_modules" ]; then
+  skip "hardhat deps not installed — skipping the #1531 relative-path regression check"
+else
+  REL_PARENT="$(dirname "$FIX")"
+  REL_FIX="$(basename "$FIX")"
+  rel_out="$(cd "$REL_PARENT" && bash "$HH_GATE" --repo "$REL_FIX" --target test/exploit.poc.test.js \
+              --require-import contracts/Vuln.sol --require-contract Vuln 2>&1)"; rel_rc=$?
+  if [ "$rel_rc" -eq 1 ]; then
+    ok "hardhat-poc.sh with a RELATIVE --repo/--target (different cwd) -> FINDING (exit 1), no doubled-path HARNESS_ERROR (#1531)"
+  else
+    bad "hardhat-poc.sh with a RELATIVE --repo/--target should be FINDING (1), got rc=$rel_rc (doubled-path regression?)"
+    printf '%s\n' "$rel_out" | sed 's/^/        | /' | tail -8
+  fi
+fi
+
 # 3b) FOUNDRY — a throwaway foundry project exercising forge-poc.sh FINDING / CLEAN / linkage-reject. Gated on
 # `command -v forge` (like demo-invariant-linkage.sh's live part).
 if ! command -v forge >/dev/null 2>&1; then
@@ -270,6 +291,18 @@ SOL
   else
     bad "forge-poc.sh substituted toy should be HARNESS_ERROR (2)+#1471, got $fg_lnk_rc"
     printf '%s\n' "$fg_lnk" | sed 's/^/        | /' | tail -4
+  fi
+  # (d) RELATIVE-PATH REGRESSION (#1531): the still-FAILING Poc_Bank.t.sol from (b), hand-invoked with a RELATIVE
+  # --repo/--target from a DIFFERENT cwd — the manual-invocation shape that used to double the path into a false
+  # HARNESS_ERROR before the fix.
+  fg_rel_parent="$(dirname "$WORK")"
+  fg_rel_repo="$(basename "$WORK")"
+  fg_rel="$(cd "$fg_rel_parent" && bash "$FG_GATE" --repo "$fg_rel_repo" --target test/Poc_Bank.t.sol --require-import src/Bank.sol --require-contract Bank 2>&1)"; fg_rel_rc=$?
+  if [ "$fg_rel_rc" -eq 0 ]; then
+    ok "forge-poc.sh with a RELATIVE --repo/--target (different cwd) -> CLEAN (exit 0), no doubled-path HARNESS_ERROR (#1531)"
+  else
+    bad "forge-poc.sh with a RELATIVE --repo/--target should be CLEAN (0), got rc=$fg_rel_rc (doubled-path regression?)"
+    printf '%s\n' "$fg_rel" | sed 's/^/        | /' | tail -8
   fi
   rm -rf "$WORK"
 fi
