@@ -18,13 +18,13 @@ WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"; [ -n "${SRV_PID:-}" ] && kill "$SRV_P
 # --- novelty-gate: the known-issue exclusion set (mirrors real Metric OMM audit findings) -----------------
 cat > "$WORK/exclusion.txt" <<'EOF'
 # Known issues extracted from the target's provided audits
-Bin value leak: both token0 and token1 distributed equally; calculatePriceAtBinPosition; token0BalanceScaled round trip loses value
+Bin value leak: both token0 and token1 distributed equally due to rounding down; calculatePriceAtBinPosition; token0BalanceScaled round trip loses value
 Cursor drift on zero output; buyToken0InBinSpecifiedOut; finalBinPos not reset when amountOutScaled == 0
 PriceProviderL2 skips Chainlink deviation check during sequencer grace period
 EOF
 
 # 1. A finding that RESTATES a known issue (value leak) -> KNOWN (exit 1).
-printf '%s' 'Partial swaps return the bin to zero token0 but the pool loses token1 because calculatePriceAtBinPosition treats both tokens as distributed equally.' \
+printf '%s' 'Partial swaps return the bin to zero token0 but the pool loses token1 because calculatePriceAtBinPosition treats both tokens as distributed equally, rounding down instead of crediting the actual balance.' \
   | "$GATE" --exclusion "$WORK/exclusion.txt" >/dev/null 2>&1; rc=$?
 [ "$rc" -eq 1 ] && pass "novelty-gate flags a restated known issue (value leak) as KNOWN" \
   || fail "value-leak restatement was not flagged KNOWN (rc=$rc)"
@@ -34,6 +34,14 @@ printf '%s' 'buyToken0InBinSpecifiedOut lets the cursor drift because finalBinPo
   | "$GATE" --exclusion "$WORK/exclusion.txt" >/dev/null 2>&1; rc=$?
 [ "$rc" -eq 1 ] && pass "novelty-gate flags a function-name match (cursor drift) as KNOWN" \
   || fail "cursor-drift restatement was not flagged KNOWN (rc=$rc)"
+
+# 2b. A finding that mentions a boundary FUNCTION name (PriceProviderL2) but describes an unrelated bug,
+# sharing no vuln-class term with the exclusion line -> NOVEL (exit 0). Regression pin for #1496: a bare
+# shared identifier alone must not short-circuit KNOWN.
+printf '%s' 'PriceProviderL2 exposes an unauthenticated admin setter with no access-control modifier, letting any caller repoint the price feed address to an attacker-controlled contract.' \
+  | "$GATE" --exclusion "$WORK/exclusion.txt" >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 0 ] && pass "novelty-gate does not KNOWN-flag a boundary-function mention with no vuln-term overlap (#1496)" \
+  || fail "boundary-function-only mention was wrongly flagged KNOWN (rc=$rc)"
 
 # 3. A genuinely-novel finding -> NOVEL (exit 0).
 printf '%s' 'selfPermit in the router lets a griefer replay an EIP-2612 signature across CREATE3-identical addresses on different chains.' \

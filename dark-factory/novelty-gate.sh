@@ -4,7 +4,9 @@
 # rejected report that costs the operator reputation. So before a finding is staged, it is matched against the
 # EXCLUSION set (known-issue signatures the `intel` agent extracts from the audits, or a hand-curated list):
 # a candidate that shares a target function/contract identifier AND overlaps on salient terms with a known
-# issue is treated as KNOWN and rejected; a genuinely-novel one passes.
+# issue is treated as KNOWN and rejected; a genuinely-novel one passes. A shared function/identifier token
+# alone is NOT enough — it only counts as a match when the candidate also shares a vuln-class term with the
+# exclusion line, so a bare mention of a boundary function in an unrelated vuln context stays NOVEL (#1496).
 #
 # Heuristic, not a proof: it errs toward FLAGGING (better to hold a maybe-known finding for human review than
 # to auto-stage a duplicate). The human always reviews before submission.
@@ -12,7 +14,7 @@
 # Usage: novelty-gate.sh --exclusion <file> [--min-overlap N] [<finding-file>|-]
 #   --exclusion <file>  one known-issue signature per line (free text: finding title + affected function/area).
 #   --min-overlap N     salient-term overlap threshold to call a match KNOWN (default 2). A shared `foo(`
-#                       function token alone also counts as a match.
+#                       function token counts as a match only when a vuln-class term also overlaps.
 #   <finding-file>|-    the candidate finding text (file or stdin). Default stdin.
 # Exit: 0 = NOVEL (not in the exclusion set) ; 1 = KNOWN (matches a known issue; the match is printed) ;
 #       2 = bad args. Prints the verdict line to stdout.
@@ -35,7 +37,8 @@ if [ "$FINDING" = "-" ]; then FTEXT="$(cat)"; else [ -r "$FINDING" ] || { echo "
 [ -n "$FTEXT" ] || { echo "novelty-gate.sh: empty finding" >&2; exit 2; }
 
 # Match in python: extract salient tokens (function calls `name(`, CamelCase identifiers, vuln-class keywords),
-# then for each exclusion line compute overlap; a shared function-call token OR >= min-overlap salient terms => KNOWN.
+# then for each exclusion line compute overlap; >= min-overlap salient terms, OR a shared function/identifier
+# token that ALSO shares a vuln-class term with the exclusion line, => KNOWN.
 FTEXT="$FTEXT" EXCL="$EXCL" MIN_OVERLAP="$MIN_OVERLAP" python3 - <<'PY'
 import os, re, sys
 
@@ -54,9 +57,9 @@ def salient(text):
     # a bare mention of a known identifier (no paren) should still match the func set, so fold camel into funcs too
     ident = funcs | camel
     vk = set(w for w in re.findall(r'[a-z]+', low) if w in VULN)
-    return ident, (ident | vk)
+    return ident, vk
 
-ffuncs, fterms = salient(os.environ["FTEXT"])
+fident, fvk = salient(os.environ["FTEXT"])
 try:
     minov = int(os.environ["MIN_OVERLAP"])
 except ValueError:
@@ -67,10 +70,11 @@ for raw in open(os.environ["EXCL"], encoding="utf-8", errors="ignore"):
     line = raw.strip()
     if not line or line.startswith("#"):
         continue
-    efuncs, eterms = salient(line)
-    shared_funcs = ffuncs & efuncs
-    overlap = fterms & eterms
-    is_match = bool(shared_funcs) or len(overlap) >= minov
+    eident, evk = salient(line)
+    shared_funcs = fident & eident
+    overlap = (fident | fvk) & (eident | evk)
+    shared_vk = fvk & evk
+    is_match = (len(overlap) >= minov) or (bool(shared_funcs) and bool(shared_vk))
     if is_match:
         score = (len(shared_funcs) * 100) + len(overlap)
         if best is None or score > best[0]:

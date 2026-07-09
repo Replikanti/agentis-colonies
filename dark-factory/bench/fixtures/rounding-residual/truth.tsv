@@ -10,3 +10,4 @@
 # token + salient-term overlap is how a match is judged).
 boundary	Reentrancy in withdraw(): the external msg.sender.call transfer runs before balanceOf is updated, so a malicious contract can re-enter and drain the vault.	reentrancy
 residual	convertToShares() floors on mint and redeem()/convertToAssets() floors on exit, and the first minter can inflate the share price by donating assets directly, leaking value from honest LPs through rounding — an accounting bug outside the audited custody path.	C3-rounding
+residual	withdraw() forwards the caller-supplied recipient address without checking it is nonzero, so a misconfigured caller can transfer funds to address(0) and permanently destroy them, a distinct bug in the same function, unrelated to the previously flagged external-call ordering.	access-control
