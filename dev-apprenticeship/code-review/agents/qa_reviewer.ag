@@ -120,13 +120,24 @@ fn head_fingerprint(changes_raw: string) -> string {
     return try { exec sh cmd; } catch e { ""; };
 }
 
-// Linked-issue extraction: `fix/issue-<n>` on the source branch wins (that is
-// the federation's own-PR branch scheme), else the first `#<n>` reference in
-// the MR description. 0 = no linked issue (completeness is then judged
-// against the description's own claims only).
+// Linked-issue extraction (#1514): `fix/issue-<n>` on the source branch wins
+// (that is the federation's own-PR branch scheme), else the FIRST GitHub
+// closing-keyword reference in the MR body — `Fixes|Closes|Resolves #N` and
+// their tense variants (`close[sd]`, `fix(es|ed)`, `resolve[sd]`), case-
+// insensitive. Crucially it does NOT fall back to a bare `#N` mention: a
+// regression-context reference (e.g. "the #1500 plan-post pushed the draft tick
+// over budget") that precedes the real `Fixes #1512` reference must NOT outrank
+// it, which the old first-`#N`-anywhere heuristic got wrong (judged the diff
+// against #1500's acceptance criteria and false-blocked PR #1513).
+//
+// Multiple closing references: the FIRST is chosen (documented here; the
+// completeness prompt still sees the whole MR description). No closing
+// reference at all -> 0 = no linked issue, and completeness falls back to the
+// MR description's own claims (the description-vs-diff semantics) rather than
+// guessing off an incidental mention.
 fn linked_issue_iid(branch: string, body: string) -> int {
     let cmd = "B=" + shell_escape(branch) + " D=" + shell_escape(body) +
-        " python3 -c 'import os, re; b=os.environ[\"B\"]; d=os.environ[\"D\"]; m=re.search(\"issue-([0-9]+)\", b) or re.search(\"#([0-9]+)\", d); print(m.group(1) if m else 0)'";
+        " python3 -c 'import os, re; b=os.environ[\"B\"]; d=os.environ[\"D\"]; mb=re.search(\"issue-([0-9]+)\", b); mc=re.search(r\"(?i)\\b(?:clos(?:e|es|ed)|fix(?:|es|ed)|resolv(?:e|es|ed))\\b\\s*:?\\s*#([0-9]+)\", d); print(mb.group(1) if mb else (mc.group(1) if mc else 0))'";
     let out = try { exec sh cmd; } catch e { "0"; };
     return parse_int(out);
 }

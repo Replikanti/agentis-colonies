@@ -120,12 +120,13 @@ if printf '%s' "$QA_ONE" | grep -q 'WHOLE linked issue'; then
 else
     fail "(b) whole-issue wording" "prompt must judge the diff against the whole linked issue"
 fi
-# The linked issue must actually be resolved (branch fix/issue-<n>, else #<n>
-# in the description) and fetched via the forge get-issue verb into the context.
+# The linked issue must actually be resolved (branch fix/issue-<n>, else the
+# closing-keyword reference in the description; #1514) and fetched via the forge
+# get-issue verb into the context.
 if grep -Eq '^fn linked_issue_iid\(' "$AG" \
    && grep -q 'issue-(\[0-9\]+)' "$AG" \
    && printf '%s' "$QA_ONE" | grep -q 'forge-api.sh get-issue '; then
-    pass "(b) linked issue resolved (fix/issue-<n> branch, else #<n>) and fetched via get-issue"
+    pass "(b) linked issue resolved (fix/issue-<n> branch, else closing-keyword #<n>) and fetched via get-issue"
 else
     fail "(b) linked-issue wiring" "linked_issue_iid + forge-api.sh get-issue must feed the prompt context"
 fi
@@ -133,6 +134,95 @@ if printf '%s' "$QA_ONE" | grep -q 'Linked issue #'; then
     pass "(b) fetched issue is spliced into the prompt context"
 else
     fail "(b) issue context splice" "the fetched issue JSON must be part of the prompt context"
+fi
+
+# ---------------------------------------------------------------------------
+# (b-anchor / #1514) completeness anchors on the closing-keyword issue reference
+# ---------------------------------------------------------------------------
+# Regression from live PR #1513: a body whose regression-CONTEXT mention
+# ("the #1500 plan-post pushed the draft tick over budget") precedes the real
+# "Fixes #1512" reference must anchor completeness on #1512, not #1500. The old
+# heuristic picked the FIRST `#N` anywhere in the body and judged the diff
+# against the wrong issue's acceptance criteria, emitting a false status=block.
+LINK_FN="$(awk '/^fn linked_issue_iid\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
+# The .ag must resolve via GitHub closing keywords and must NOT keep the old
+# bare-`#N`-anywhere fallback (that is the exact bug this pins).
+if printf '%s' "$LINK_FN" | grep -q 'clos(?:e|es|ed)' \
+   && printf '%s' "$LINK_FN" | grep -q 'fix(?:|es|ed)' \
+   && printf '%s' "$LINK_FN" | grep -q 'resolv(?:e|es|ed)'; then
+    pass "(#1514) linked_issue_iid resolves via GitHub closing keywords (fix/close/resolve, case-insensitive)"
+else
+    fail "(#1514) closing-keyword regex" "linked_issue_iid must match Fixes|Closes|Resolves #N, not a bare #N mention"
+fi
+if printf '%s' "$LINK_FN" | grep -Fq 're.search("#([0-9]+)", d)'; then
+    fail "(#1514) no bare-#N fallback" "linked_issue_iid must NOT fall back to the first bare #N in the body"
+else
+    pass "(#1514) linked_issue_iid dropped the first-bare-#N-anywhere fallback"
+fi
+# Behavioural fixture: drive the exact resolution program the agent execs
+# (kept byte-aligned with the .ag one-liner) across the pinned scenarios.
+LINK_PY='import os, re
+b=os.environ["B"]; d=os.environ["D"]
+mb=re.search("issue-([0-9]+)", b)
+mc=re.search(r"(?i)\b(?:clos(?:e|es|ed)|fix(?:|es|ed)|resolv(?:e|es|ed))\b\s*:?\s*#([0-9]+)", d)
+print(mb.group(1) if mb else (mc.group(1) if mc else 0))'
+link_iid() { B="$1" D="$2" python3 -c "$LINK_PY"; }
+# PR #1513: context #1500 BEFORE the closing "Fixes #1512" -> must pick 1512.
+BODY_1513='Bumps cb_budget 2000->3000. The #1500 plan-post pushed the draft tick over budget. Fixes #1512'
+r_ctx="$(link_iid "" "$BODY_1513")"
+r_none="$(link_iid "" 'caused by the #1500 plan-post; no closing keyword here')"
+r_only="$(link_iid "" 'Closes #789')"
+r_lc="$(link_iid "" 'resolves #42 finally')"
+if [ "$r_ctx" = "1512" ]; then
+    pass "(#1514) context mention #1500 before 'Fixes #1512' anchors on 1512 (the PR #1513 regression)"
+else
+    fail "(#1514) closing-keyword anchor" "expected 1512, got '$r_ctx'"
+fi
+if [ "$r_none" = "0" ]; then
+    pass "(#1514) body with no closing keyword -> 0 (falls back to description-vs-diff semantics, not a guess)"
+else
+    fail "(#1514) no-closing fallback" "expected 0, got '$r_none'"
+fi
+if [ "$r_only" = "789" ] && [ "$r_lc" = "42" ]; then
+    pass "(#1514) body with only a closing keyword resolves correctly (case-insensitive)"
+else
+    fail "(#1514) closing-only resolution" "expected 789/42, got '$r_only'/'$r_lc'"
+fi
+# The federation own-PR branch scheme still wins over the body.
+if [ "$(link_iid 'fix/issue-1512' 'Fixes #1500')" = "1512" ]; then
+    pass "(#1514) fix/issue-<n> source branch still wins over the body reference"
+else
+    fail "(#1514) branch precedence" "fix/issue-1512 branch must resolve to 1512"
+fi
+# Runtime-truth check: the fixtures above run a hand-kept COPY of the resolver
+# one-liner, so they cannot catch a divergence between that copy and the string
+# `qa_reviewer.ag` actually builds (shell_escape + the doubled-backslash regex
+# through `exec sh`). Execute the REAL .ag `linked_issue_iid` via `agentis go`
+# and assert the same anchors. Skipped when agentis is absent (CI runners).
+if command -v agentis >/dev/null 2>&1; then
+    AG_TMP="$(mktemp -d)"
+    cat > "$AG_TMP/probe.ag" <<AGPROBE
+$LINK_FN
+let a = linked_issue_iid("sdlc/x", "context #1500 then Fixes #1512");
+print("A=", a);
+let b = linked_issue_iid("sdlc/x", "Implements #1512");
+print("B=", b);
+let c = linked_issue_iid("fix/issue-1512", "Fixes #1500");
+print("C=", c);
+AGPROBE
+    (cd "$AG_TMP" && agentis init) >/dev/null 2>&1
+    AG_OUT="$( (cd "$AG_TMP" && agentis go probe.ag --enable-exec) 2>/dev/null )"
+    a_real="$(printf '%s\n' "$AG_OUT" | sed -n 's/^A= //p')"
+    b_real="$(printf '%s\n' "$AG_OUT" | sed -n 's/^B= //p')"
+    c_real="$(printf '%s\n' "$AG_OUT" | sed -n 's/^C= //p')"
+    if [ "$a_real" = "1512" ] && [ "$b_real" = "0" ] && [ "$c_real" = "1512" ]; then
+        pass "(#1514) the REAL .ag linked_issue_iid (agentis exec) anchors on the closing keyword, not a context #N"
+    else
+        fail "(#1514) real .ag resolver" "expected 1512/0/1512 from agentis exec, got '$a_real'/'$b_real'/'$c_real'"
+    fi
+    rm -rf "$AG_TMP"
+else
+    echo "[SKIP] (#1514) real .ag resolver — agentis not on PATH"
 fi
 
 # ---------------------------------------------------------------------------
