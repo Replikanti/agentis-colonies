@@ -57,6 +57,10 @@ done
 
 # --- usage / harness validation -----------------------------------------------------------------
 [ -n "$REPO" ] && [ -d "$REPO" ] || { echo "forge-poc: --repo <foundry project root> required" >&2; exit 2; }
+# Resolve --repo to ABSOLUTE up front (mirrors run-poc.sh's `REPO="$(cd "$REPO" && pwd)"`). `forge` below runs
+# inside a `cd "$REPO"` subshell with "$TARGET_PATH" re-referenced there — a RELATIVE --repo would double the
+# path (a false HARNESS_ERROR when hand-invoked outside the run-poc.sh pipeline, #1531).
+REPO="$(cd "$REPO" && pwd)"
 [ -f "$REPO/foundry.toml" ] || { echo "forge-poc: $REPO is not a foundry project (no foundry.toml)" >&2; exit 2; }
 [ -n "$TARGET" ] || { echo "forge-poc: --target <Poc_*.t.sol> required" >&2; exit 2; }
 if [ -f "$TARGET" ]; then
@@ -66,6 +70,8 @@ elif [ -f "$REPO/$TARGET" ]; then
 else
   echo "forge-poc: target test not found: $TARGET" >&2; exit 2
 fi
+# Same absolute-path resolution as $REPO above — TARGET_PATH is also re-referenced inside `cd "$REPO"` subshells.
+TARGET_PATH="$(cd "$(dirname "$TARGET_PATH")" && pwd)/$(basename "$TARGET_PATH")"
 [ -n "$MATCH" ] || { echo "forge-poc: --match prefix must be non-empty" >&2; exit 2; }
 
 # --- #1471 TARGET-LINKAGE GATE (fresh-deploy only, runs before forge) ---------------------------

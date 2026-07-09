@@ -137,6 +137,15 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
     hypothesis step (analyst) remains a follow-up `.ag` colony layer. Submission stays strictly human-gated.
 
 ### Fixed
+- **hardhat-poc.sh / forge-poc.sh relative-`--repo`/`--target` path doubling** (#1531, follow-up from #1507 /
+  #1529). Hand-invoking either gate with a RELATIVE `--repo`/`--target` produced a doubled path
+  (`.../hardhat-poc-fixture/hardhat-poc-fixture/...`) and a false `HARNESS_ERROR` — not reachable via the real
+  pipeline (`run-poc.sh`/`demo-poc-gen.sh` always pass absolute paths), so it only bit direct manual invocation.
+  Both gates now resolve `--repo` (mirroring `run-poc.sh`'s `REPO="$(cd "$REPO" && pwd)"`) and the resolved
+  `--target` to absolute paths right after the existence checks, before they are re-referenced inside a
+  `cd "$REPO"` subshell. Absolute-path callers are unaffected. `demo-poc-gen.sh` gains two toolchain-gated
+  regression checks (relative `--repo`/`--target` from a different cwd for each gate) that reproduce the exact
+  pre-fix failure and confirm the fix.
 - **novelty-gate false-negative on a bare boundary-function mention** (#1496). `novelty-gate.sh` flagged a
   candidate as KNOWN whenever it shared a single function/identifier token with an exclusion line, even when
   the candidate discussed a completely different vulnerability class — so a genuinely-novel finding that merely

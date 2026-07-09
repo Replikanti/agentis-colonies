@@ -128,6 +128,10 @@ fi
 
 # --- usage / harness validation -----------------------------------------------------------------
 [ -n "$REPO" ] && [ -d "$REPO" ] || { echo "hardhat-poc: --repo <hardhat project root> required" >&2; exit 2; }
+# Resolve --repo to ABSOLUTE up front (mirrors run-poc.sh's `REPO="$(cd "$REPO" && pwd)"`). Several sections
+# below `cd "$REPO"` into a subshell and then re-reference "$REPO/..." inside it — a RELATIVE --repo would
+# double the path there (a false HARNESS_ERROR when hand-invoked outside the run-poc.sh pipeline, #1531).
+REPO="$(cd "$REPO" && pwd)"
 # A hardhat project is identified by a hardhat.config.{js,ts,cjs,mjs}.
 CONFIG_FILE=""
 for _c in hardhat.config.js hardhat.config.cjs hardhat.config.ts hardhat.config.mjs; do
@@ -142,6 +146,8 @@ elif [ -f "$REPO/$TARGET" ]; then
 else
   echo "hardhat-poc: target test not found: $TARGET" >&2; exit 2
 fi
+# Same absolute-path resolution as $REPO above — TARGET_PATH is also re-referenced inside `cd "$REPO"` subshells.
+TARGET_PATH="$(cd "$(dirname "$TARGET_PATH")" && pwd)/$(basename "$TARGET_PATH")"
 
 # --- #1471 TARGET-LINKAGE GATE (runs BEFORE any npm/compile spend, so it is CI-testable without node) --------
 # (1) the PoC must REFERENCE the in-scope target: an import/require path ending in the target basename OR a
