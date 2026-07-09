@@ -15,6 +15,26 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Fixed
+
+- **code_writer no longer force-pushes over commits it did not author, and never
+  re-drafts an issue that already has a PR**
+  ([#1516](https://github.com/Replikanti/agentis-colonies/issues/1516)):
+  `tools/code-edit-in-checkout.sh` gains a fail-closed ownership gate at its
+  single force-push site — before any `push --force-with-lease` it records the
+  agent's own last-pushed sha to a sidecar under `.agentis/code-edit-pushed/` and
+  refuses (new exit code `5`, folded into `error` by `code-edit-job.sh`) when the
+  remote branch head is neither an ancestor of the local head nor that recorded
+  own-sha, posting an at-most-once yield note and leaving the branch/PR for the
+  operator. `--force-with-lease` guarded only a concurrent race, never foreign
+  commits already at the remote head, which is how an operator's commits were
+  silently dropped. In `implementation/code_writer.ag` the re-draft gate now
+  treats an existing open/merged MR on the deterministic `fix/issue-<iid>` branch
+  as terminal (`needs_draft = !mr_exists`) and resets any lingering
+  `code_edit_loop:phase` memo, so a suspend-resume can no longer restart a
+  draft→edit→finalize cycle over an existing PR; the MR-less-branch rescue is
+  preserved.
+
 ## [2.8.0] — 2026-07-09
 
 **Requires:** agentis >= 1.20.0

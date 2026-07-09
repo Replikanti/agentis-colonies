@@ -1348,18 +1348,33 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         // the `draft = prompt(...)` call below.
         let first_iid_str = to_string(json_get(issues_raw, "[0].iid"));
         let first_upd = to_string(json_get(issues_raw, "[0].updated_at"));
-        // #1350: gate on actual completion, not "we drafted once". Re-draft when
-        // the #200 staleness gate says so OR when no open/merged MR exists for
-        // the issue's deterministic fix/issue-<iid> branch — the latter rescues
-        // an issue whose launched edit job died without opening an MR. The
-        // has_mr_for_branch check is only reached when should_draft_code is false
-        // (the if-expression short-circuits), so the extra MR-list queries cost
-        // nothing on the common drafted-and-changed path.
-        let needs_draft = if should_draft_code(owner, repo, first_iid_str, first_upd) {
-            true;
-        } else {
-            !has_mr_for_branch(owner, repo, first_iid_str);
+        // #1516: recovery-over-redraft. An issue whose deterministic
+        // fix/issue-<iid> branch already has an open OR merged MR is NEVER
+        // re-drafted from scratch — the PR IS the artifact. The pre-#1516 gate
+        // re-triggered a full draft->edit->finalize->FORCE-PUSH cycle whenever
+        // should_draft_code() saw an updated_at bump (an operator comment/label
+        // on the already-PR'd issue), which rebuilt the branch off main and
+        // force-pushed over the operator's commits. Dropping that re-trigger
+        // makes an existing MR terminal: needs_draft = !mr_exists. The #1350
+        // MR-less rescue is preserved verbatim (no MR ⇒ needs_draft true), so an
+        // edit job that died without opening an MR still gets a fresh draft.
+        let mr_exists = has_mr_for_branch(owner, repo, first_iid_str);
+        if mr_exists {
+            // A phase memo left set by a prior tick's ag_edit_step whose job has
+            // already produced an MR is terminal/stale: reset it (+ clear the job
+            // dir) so no later tick resumes a --finalize that would force-push a
+            // locally-rebuilt branch over the existing PR. The phase-set + no-MR
+            // case is deliberately left untouched here — it self-heals through
+            // ag_edit_step's own ERROR->ag_edit_reset path (a dead detached
+            // process), and the abandoned job then reaches a fresh draft below.
+            let stale_phase = recall_latest(scoped_memo(owner, repo, "code_edit_loop:phase:" + first_iid_str));
+            if len(stale_phase) > 0 {
+                print("[code_writer] issue", first_iid_str, "has an MR but a lingering edit-loop phase", stale_phase, "— resetting (the PR is terminal; not resuming a stale finalize)");
+                ag_edit_reset(owner, repo, first_iid_str);
+                clear_job_dir(first_iid_str);
+            };
         };
+        let needs_draft = !mr_exists;
         if needs_draft {
             // #1370 (B3): tier-independent input-unchanged early-return BEFORE
             // the draft prompt(). If the top assigned issue's (iid, updated_at)
