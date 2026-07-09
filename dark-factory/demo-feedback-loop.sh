@@ -5,7 +5,7 @@
 # dark-factory demos (demo-report-writer.sh / demo-immunefi-intake.sh): assert-based PASS/FAIL lines, a temp
 # drop-dir trap-cleaned, exit non-zero on regression, exit 3 if a component is missing.
 #
-# SEVEN parts:
+# EIGHT parts:
 #   1) DELIVERY (offline, real): run deliver-submission.sh over a fixture report-writer draft carrying the
 #      SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW marker + fixture gate verdicts + a stable id -> assert the drop-dir
 #      has manifest.json + submission-draft.md + OUTCOME.md, that manifest.json carries the canonical
@@ -60,6 +60,16 @@
 #      6's curl stub -> a getUploadURLExternal call logged filename=poc-run.png + the uploaded bytes cmp-identical
 #      to the fixture PNG), and (d) source guards (the honesty guard, the render call nested inside the
 #      [ -n $POC_RUN_REL ] guard, the notify _mf/file-existence wiring, freeze documented unverified).
+#   8) THREAD-OUTCOME INGEST (offline, #1557): notify-submission.sh now records slack_thread_ts/slack_channel into
+#      the manifest and threads a reply-with-outcome prompt (asserted in part 6a); ingest-slack-outcome.sh reads the
+#      operator's reply back from the thread (conversations.replies), SELECTS the operator reply over the bot
+#      snippet, writes OUTCOME.md in the exact schema (verdict/severity/payout/reason + reviewer_notes), runs
+#      feedback-intake.ag (an `agentis` STUB), posts a threaded confirmation, and is idempotent via a per-stage
+#      marker. Part 6's smart curl stub is extended with auth.test + conversations.replies branches. Asserts: the
+#      operator reply is selected (not the bot snippet), OUTCOME.md content, feedback-intake invoked + deterministic
+#      closed->failure, the threaded confirmation, the .outcome-ingested marker, a NO-OP second run, the no-token
+#      no-op, bad-args exit 2, the fake token never leaking, and source guards (bash never sh, no bounty-platform
+#      egress, channels:history documented, learn runs from the colony dir not a mktemp). Fake token, no network.
 #
 # All shell sub-scripts are invoked with `bash` (never `sh`) per the #1507 dash lesson.
 #
@@ -598,11 +608,13 @@ mkdir -p "$FAKEBIN6"
   printf '%s\n' 'done'
   printf '%s\n' 'case "$*" in'
   printf '%s\n' '  *chat.postMessage*)'
-  printf '%s\n' '    printf "%s" "$DBODY" > "$SLACK_POST_BODY"'
+  printf '%s\n' '    printf "%s\n" "$DBODY" >> "$SLACK_POST_BODY"'
   printf '%s\n' '    if [ "${SLACK_STUB_MODE:-}" = notinchannel ]; then printf "%s\n%s" "{\"ok\":false,\"error\":\"not_in_channel\"}" "200"'
   printf '%s\n' '    else printf "%s\n%s" "{\"ok\":true,\"ts\":\"1700000000.000100\"}" "200"; fi ;;'
   printf '%s\n' '  *getUploadURLExternal*) echo x >> "$SLACK_GETURL"; printf "%s\n%s" "{\"ok\":true,\"upload_url\":\"https://files.slack/stub/upload\",\"file_id\":\"F0STUB\"}" "200" ;;'
   printf '%s\n' '  *completeUploadExternal*) printf "%s\n" "$DBODY" >> "$SLACK_COMPLETE"; printf "%s\n%s" "{\"ok\":true}" "200" ;;'
+  printf '%s\n' '  *auth.test*) printf "%s\n%s" "{\"ok\":true,\"user_id\":\"U_BOT\"}" "200" ;;'
+  printf '%s\n' '  *conversations.replies*) printf "%s\n%s" "$(cat "${SLACK_REPLIES_FIXTURE:-/dev/null}")" "200" ;;'
   printf '%s\n' '  *files.slack/stub*) printf "%s\n%s" "" "200" ;;'
   printf '%s\n' '  *) printf "%s\n%s" "{\"ok\":true}" "200" ;;'
   printf '%s\n' 'esac'
@@ -648,11 +660,13 @@ else
   ok "(g) the raw bot token never appears in deliver-submission.sh's own stdout/stderr"
 fi
 
-# --- (a) chat.postMessage JSON shape + the Authorization: Bearer header. ---------------------------------------
+# --- (a) chat.postMessage JSON shape + the Authorization: Bearer header. ($SLACK_POST_BODY is now a JSONL — the
+# main post AND the #1557 threaded reply-with-outcome prompt — so the MAIN post is the first line.) --------------
 POST_OK="$(SLACK_POST_BODY="$SLACK_POST_BODY" BOUNTY_URL="$BOUNTY_URL" python3 -c '
 import json, os, sys
 try:
-    o = json.load(open(os.environ["SLACK_POST_BODY"]))
+    lines = [l for l in open(os.environ["SLACK_POST_BODY"]).read().splitlines() if l.strip()]
+    o = json.loads(lines[0])
 except Exception as e:
     print("parse-error:" + str(e)); sys.exit(0)
 t = o.get("text", "")
@@ -670,6 +684,40 @@ print("ok" if all(checks) else "shape-mismatch:" + json.dumps(o))
   || bad "(a) chat.postMessage shape mismatch: $POST_OK"
 grep -q 'Authorization: Bearer' "$SLACK_LOG" \
   && ok "(a) the chat.postMessage call sends the Authorization: Bearer header" || bad "(a) no Authorization: Bearer header logged"
+
+# --- (i) #1557 thread-outcome wiring: notify records slack_thread_ts/slack_channel into the manifest, AND posts a
+#         SECOND (threaded) reply-with-outcome prompt carrying the exact field names ingest-slack-outcome.sh parses. -
+[ "$(jget "$STAGED6A/manifest.json" slack_thread_ts)" = "1700000000.000100" ] \
+  && ok "(i) notify-submission.sh recorded slack_thread_ts==the main ts into the manifest" || bad "(i) manifest slack_thread_ts wrong: $(jget "$STAGED6A/manifest.json" slack_thread_ts)"
+[ "$(jget "$STAGED6A/manifest.json" slack_channel)" = "C0HIGH" ] \
+  && ok "(i) notify-submission.sh recorded slack_channel==the routed channel into the manifest" || bad "(i) manifest slack_channel wrong: $(jget "$STAGED6A/manifest.json" slack_channel)"
+PROMPT_OK="$(SLACK_POST_BODY="$SLACK_POST_BODY" python3 -c '
+import json, os, sys
+try:
+    lines = [l for l in open(os.environ["SLACK_POST_BODY"]).read().splitlines() if l.strip()]
+except Exception as e:
+    print("read-error:" + str(e)); sys.exit(0)
+threaded = None
+for l in lines:
+    try:
+        o = json.loads(l)
+    except Exception:
+        continue
+    if o.get("thread_ts") == "1700000000.000100":
+        threaded = o
+if threaded is None:
+    print("no-threaded-post:" + repr(lines)); sys.exit(0)
+t = threaded.get("text", "")
+checks = [
+    threaded.get("channel") == "C0HIGH",
+    "verdict:" in t, "severity:" in t, "payout:" in t, "reason:" in t, "notes:" in t,
+    ("accepted" in t and "closed" in t and "duplicate" in t and "needs-info" in t),
+]
+print("ok" if all(checks) else "prompt-mismatch:" + json.dumps(threaded))
+')"
+[ "$PROMPT_OK" = "ok" ] \
+  && ok "(i) a SECOND threaded post carries the reply-with-outcome template (thread_ts==main ts, exact field names)" \
+  || bad "(i) reply-with-outcome prompt shape mismatch: $PROMPT_OK"
 
 # --- (c) modern uploads fire for the Description AND the PoC, threaded under the main ts + channel_id. ----------
 GETURL_N="$([ -f "$SLACK_GETURL" ] && wc -l < "$SLACK_GETURL" | tr -d ' ' || echo 0)"
@@ -881,6 +929,196 @@ grep -qi 'UNVERIFIED' "$RENDER_SH" \
   && ok "(d) render-run-evidence.sh documents the freeze path as optional/unverified" || bad "(d) render-run-evidence.sh missing the freeze-unverified note"
 
 # ----------------------------------------------------------------------------------------------------------
+# 8) THREAD-OUTCOME INGEST (#1557) — ingest-slack-outcome.sh reads the operator's reply back from the Slack thread
+#    (conversations.replies), writes OUTCOME.md in the exact schema, runs feedback-intake.ag (stubbed), posts a
+#    threaded confirmation, and is idempotent. Reuses part 6's smart curl stub (extended with auth.test +
+#    conversations.replies branches) + a small `agentis` STUB. Fake token, no network.
+# ----------------------------------------------------------------------------------------------------------
+note "8) ingest-slack-outcome.sh reads the operator's outcome reply from the thread -> OUTCOME.md -> learning ..."
+set +e
+
+INGEST="$HERE/ingest-slack-outcome.sh"
+[ -x "$INGEST" ] || bad "(pre) ingest-slack-outcome.sh not found / not executable: $INGEST"
+
+# A small `agentis` STUB (mirrors the gh/curl stubs): `init` -> exit 0; `go … feedback-intake.ag` -> print a canned
+# FEEDBACK line + exit 0, so the intake invocation / confirmation / marker path run DETERMINISTICALLY on CI.
+FAKEBIN8="$WORK/fakebin8"; mkdir -p "$FAKEBIN8"
+{
+  printf '%s\n' "#!/bin/sh"
+  printf '%s\n' 'echo "$*" >> "${AGENTIS_LOG:-/dev/null}"'
+  printf '%s\n' 'case "$1" in init) exit 0 ;; esac'
+  printf '%s\n' 'case "$*" in *feedback-intake.ag*) echo "FEEDBACK|FAILURE|impact-gate|stub attribution"; exit 0 ;; esac'
+  printf '%s\n' 'exit 0'
+} > "$FAKEBIN8/agentis"
+chmod +x "$FAKEBIN8/agentis"
+
+# The fixture thread: a BOT snippet (bot_id+subtype file_share — must be dropped) + an OPERATOR reply (user=U_OP,
+# text carrying verdict: closed + reason + notes). json.dumps writes the JSON so the multi-line text is escaped
+# correctly (the operator writes one field per line, like the notify prompt).
+SLACK_REPLIES_FIXTURE="$WORK/replies-8.json"
+python3 -c '
+import json, sys
+body = {"ok": True, "messages": [
+    {"bot_id": "B0", "subtype": "file_share", "user": "U_BOT", "ts": "1700000000.000200", "text": "uploaded Description.md"},
+    {"user": "U_OP", "ts": "1700000000.000300", "text": "verdict: closed\nseverity: \npayout: \nreason: front-run of a privileged action, not on-chain-provable\nnotes: reviewer said the PoC used simulated state"},
+]}
+open(sys.argv[1], "w").write(json.dumps(body))
+' "$SLACK_REPLIES_FIXTURE"
+
+# A hand-crafted fixture stage whose manifest carries slack_thread_ts + slack_channel + submission_id (as
+# notify-submission.sh would have recorded on delivery).
+STAGE8="$WORK/stage-outcome-8"; mkdir -p "$STAGE8"
+python3 -c '
+import json, sys
+open(sys.argv[1], "w").write(json.dumps({
+    "submission_id": "enzyme-onyx@a1b2c3d:botmode",
+    "slack_thread_ts": "1700000000.000100",
+    "slack_channel": "C0HIGH",
+    "impact_class": "theft",
+}, indent=2, sort_keys=True) + "\n")
+' "$STAGE8/manifest.json"
+
+FAKE_TOKEN_8="xoxb-DEMO-INGEST-SHOULD-NOT-LEAK"
+AGENTIS_LOG8="$WORK/agentis-8.log"
+SLACK_POST_BODY8="$WORK/slack-post-8.jsonl"
+ING_OUT="$WORK/ingest-8.out"; ING_ERR="$WORK/ingest-8.err"
+
+env \
+  SLACK_LOG="$WORK/slack-8.log" SLACK_POST_BODY="$SLACK_POST_BODY8" SLACK_COMPLETE="$WORK/slack-complete-8.jsonl" \
+  SLACK_GETURL="$WORK/slack-geturl-8.log" SLACK_UPLOAD_DIR="$WORK/slack-uploads-8" SLACK_UPCNT="$WORK/slack-upcnt-8" \
+  SLACK_REPLIES_FIXTURE="$SLACK_REPLIES_FIXTURE" AGENTIS_LOG="$AGENTIS_LOG8" \
+  DARK_FACTORY_SLACK_BOT_TOKEN="$FAKE_TOKEN_8" DARK_FACTORY_AUDITOR_DIR="$WORK/auditor-throwaway-8" \
+  PATH="$FAKEBIN8:$FAKEBIN6:$PATH" \
+  bash "$INGEST" --stage "$STAGE8" >"$ING_OUT" 2>"$ING_ERR"; RC=$?
+
+[ "$RC" -eq 0 ] && ok "(8) ingest-slack-outcome.sh exits 0 over a fixture thread" || bad "(8) ingest exited $RC (expected 0)"
+
+# --- OPERATOR reply (not the bot snippet) selected -> OUTCOME.md in the exact schema. ---------------------------
+OUT8="$STAGE8/OUTCOME.md"
+[ -f "$OUT8" ] && ok "(8) OUTCOME.md was written" || bad "(8) OUTCOME.md missing"
+V8="$(verdict_of "$OUT8")"
+[ "$V8" = "closed" ] \
+  && ok "(8) the OPERATOR reply was selected (verdict==closed) — the bot snippet was dropped" || bad "(8) OUTCOME.md verdict was '$V8' (expected closed — wrong message selected?)"
+grep -qiE '^reason:[[:space:]]+front-run of a privileged action' "$OUT8" \
+  && ok "(8) OUTCOME.md reason: matches the operator reply" || bad "(8) OUTCOME.md reason mismatch: $(grep -iE '^reason:' "$OUT8")"
+grep -q 'reviewer said the PoC used simulated state' "$OUT8" \
+  && ok "(8) the reply's notes: carried into OUTCOME.md reviewer_notes:" || bad "(8) reviewer_notes did not carry the reply notes"
+grep -q '^reviewer_notes: |' "$OUT8" \
+  && ok "(8) OUTCOME.md keeps the exact reviewer_notes: | schema (feedback-intake reads it unchanged)" || bad "(8) OUTCOME.md missing the reviewer_notes: | line"
+
+# --- feedback-intake.ag invoked (the agentis stub ran) + deterministic closed->failure. ------------------------
+grep -q 'feedback-intake.ag' "$AGENTIS_LOG8" \
+  && ok "(8) feedback-intake.ag was invoked (agentis stub ran)" || bad "(8) feedback-intake.ag was never invoked"
+[ "$(signal_of "$V8")" = "failure" ] \
+  && ok "(8) verdict 'closed' -> deterministic signal 'failure' (reused from part 2)" || bad "(8) closed did not map to failure"
+
+# --- threaded confirmation posted with thread_ts + 'outcome recorded' + the deterministic FAILURE signal. ------
+CONF_OK="$(SLACK_POST_BODY="$SLACK_POST_BODY8" python3 -c '
+import json, os, sys
+try:
+    lines = [l for l in open(os.environ["SLACK_POST_BODY"]).read().splitlines() if l.strip()]
+except Exception as e:
+    print("read-error:" + str(e)); sys.exit(0)
+conf = None
+for l in lines:
+    try:
+        o = json.loads(l)
+    except Exception:
+        continue
+    if o.get("thread_ts") == "1700000000.000100" and "outcome recorded" in o.get("text", ""):
+        conf = o
+if conf is None:
+    print("no-confirmation:" + repr(lines)); sys.exit(0)
+t = conf.get("text", "")
+checks = [conf.get("channel") == "C0HIGH", "learned FAILURE" in t, "impact-gate" in t]
+print("ok" if all(checks) else "confirmation-mismatch:" + json.dumps(conf))
+')"
+[ "$CONF_OK" = "ok" ] \
+  && ok "(8) a threaded confirmation was posted (thread_ts==main ts, 'outcome recorded -- learned FAILURE on impact-gate')" \
+  || bad "(8) confirmation post shape mismatch: $CONF_OK"
+
+# --- idempotency marker written. -------------------------------------------------------------------------------
+[ -f "$STAGE8/.outcome-ingested" ] \
+  && ok "(8) the .outcome-ingested marker was written after a successful capture+intake" || bad "(8) .outcome-ingested marker missing"
+
+# --- fake token never leaks into ingest's OWN stdout/stderr. ---------------------------------------------------
+if { cat "$ING_OUT" "$ING_ERR"; } | grep -q "$FAKE_TOKEN_8"; then
+  bad "(8) the raw bot token LEAKED into ingest-slack-outcome.sh stdout/stderr"
+else
+  ok "(8) the raw bot token never appears in ingest-slack-outcome.sh's own stdout/stderr"
+fi
+
+# --- SECOND run is a NO-OP: marker present -> no conversations.replies, no confirmation, OUTCOME.md unchanged. --
+OUT8_SUM1="$(cksum "$OUT8")"
+SLACK_POST_BODY8B="$WORK/slack-post-8b.jsonl"
+ING_ERR_B="$WORK/ingest-8b.err"
+env \
+  SLACK_LOG="$WORK/slack-8b.log" SLACK_POST_BODY="$SLACK_POST_BODY8B" SLACK_COMPLETE="$WORK/slack-complete-8b.jsonl" \
+  SLACK_GETURL="$WORK/slack-geturl-8b.log" SLACK_UPLOAD_DIR="$WORK/slack-uploads-8b" SLACK_UPCNT="$WORK/slack-upcnt-8b" \
+  SLACK_REPLIES_FIXTURE="$SLACK_REPLIES_FIXTURE" AGENTIS_LOG="$WORK/agentis-8b.log" \
+  DARK_FACTORY_SLACK_BOT_TOKEN="$FAKE_TOKEN_8" DARK_FACTORY_AUDITOR_DIR="$WORK/auditor-throwaway-8" \
+  PATH="$FAKEBIN8:$FAKEBIN6:$PATH" \
+  bash "$INGEST" --stage "$STAGE8" >"$WORK/ingest-8b.out" 2>"$ING_ERR_B"; RC=$?
+[ "$RC" -eq 0 ] && ok "(8) a second ingest run over the marked stage exits 0" || bad "(8) second run exited $RC (expected 0)"
+[ ! -s "$SLACK_POST_BODY8B" ] \
+  && ok "(8) the second run posts NOTHING (no confirmation — marker short-circuits before any Slack call)" || bad "(8) second run made Slack calls despite the marker"
+[ "$(cksum "$OUT8")" = "$OUT8_SUM1" ] \
+  && ok "(8) OUTCOME.md is byte-unchanged on the second run" || bad "(8) OUTCOME.md changed on the second run"
+grep -qi 'already ingested' "$ING_ERR_B" \
+  && ok "(8) the second run reports 'already ingested, skipping'" || bad "(8) second run did not report the idempotent skip"
+
+# --- no-token = a clean no-op (before touching any stage or writing OUTCOME.md). -------------------------------
+STAGE8N="$WORK/stage-outcome-8n"; mkdir -p "$STAGE8N"
+python3 -c 'import json,sys; open(sys.argv[1],"w").write(json.dumps({"submission_id":"x","slack_thread_ts":"1.1","slack_channel":"C0X"}))' "$STAGE8N/manifest.json"
+env -u DARK_FACTORY_SLACK_BOT_TOKEN PATH="$FAKEBIN8:$FAKEBIN6:$PATH" \
+  bash "$INGEST" --stage "$STAGE8N" >"$WORK/ingest-8n.out" 2>"$WORK/ingest-8n.err"; RC=$?
+[ "$RC" -eq 0 ] && ok "(8) with no token ingest is a clean exit-0 no-op" || bad "(8) no-token ingest exited $RC (expected 0)"
+[ ! -f "$STAGE8N/OUTCOME.md" ] && [ ! -f "$STAGE8N/.outcome-ingested" ] \
+  && ok "(8) the no-token no-op wrote no OUTCOME.md and no marker" || bad "(8) no-token run touched the stage"
+
+# --- bad args -> exit 2. ---------------------------------------------------------------------------------------
+env -u DARK_FACTORY_SLACK_BOT_TOKEN bash "$INGEST" >/dev/null 2>&1; RC=$?
+[ "$RC" -eq 2 ] && ok "(8) no --stage/--all exits 2 (bad-args band)" || bad "(8) missing selector did not exit 2 (rc=$RC)"
+env -u DARK_FACTORY_SLACK_BOT_TOKEN bash "$INGEST" --bogus >/dev/null 2>&1; RC=$?
+[ "$RC" -eq 2 ] && ok "(8) an unknown arg exits 2" || bad "(8) unknown arg did not exit 2 (rc=$RC)"
+
+# --- source guards: bash never sh; no bounty-platform egress; parses verdict the same way; channels:history docd. -
+head -1 "$INGEST" | grep -q 'bash' \
+  && ok "(8/guard) ingest-slack-outcome.sh has a bash shebang (never sh)" || bad "(8/guard) ingest-slack-outcome.sh is not a bash script"
+if grep -qiE 'immunefi|code4rena|sherlock|hackerone|submit\(' "$INGEST"; then
+  bad "(8/guard) ingest-slack-outcome.sh carries a bounty-platform egress / submit primitive"
+else
+  ok "(8/guard) ingest-slack-outcome.sh has no bounty-platform egress / submit primitive"
+fi
+NONSLACK_URLS="$(grep -oE 'https://[A-Za-z0-9./_-]+' "$INGEST" | grep -v 'slack.com' || true)"
+{ grep -q 'slack.com/api' "$INGEST" && [ -z "$NONSLACK_URLS" ]; } \
+  && ok "(8/guard) every https:// URL in ingest targets slack.com (operator workspace only, no bounty-platform egress)" \
+  || bad "(8/guard) ingest has a non-Slack egress URL: $NONSLACK_URLS"
+grep -q 'conversations.replies' "$INGEST" \
+  && ok "(8/guard) ingest reads the thread via conversations.replies" || bad "(8/guard) ingest does not use conversations.replies"
+grep -q 'auth.test' "$INGEST" \
+  && ok "(8/guard) ingest resolves the bot user via auth.test" || bad "(8/guard) ingest does not call auth.test"
+grep -qi 'channels:history' "$INGEST" \
+  && ok "(8/guard) ingest documents the channels:history scope requirement" || bad "(8/guard) ingest missing the channels:history note"
+grep -qiE 'never.submit|NOT a bounty-platform submission|never submits' "$INGEST" \
+  && ok "(8/guard) ingest documents the never-submit invariant" || bad "(8/guard) ingest missing the never-submit note"
+grep -qF 'verdict:        ' "$INGEST" \
+  && ok "(8/guard) ingest writes the aligned 'verdict:' OUTCOME line feedback-intake greps for unchanged" || bad "(8/guard) ingest verdict OUTCOME line not aligned"
+grep -q 'reviewer_notes' "$INGEST" \
+  && ok "(8/guard) ingest reuses the OUTCOME.md reviewer_notes schema" || bad "(8/guard) ingest does not write reviewer_notes"
+grep -q '.outcome-ingested' "$INGEST" \
+  && ok "(8/guard) ingest is idempotent via the .outcome-ingested marker" || bad "(8/guard) ingest missing the idempotency marker"
+# LEARN PERSISTENCE: feedback-intake runs from the auditor colony dir (cd "$INTAKE_DIR"), NOT a throwaway mktemp
+# run dir (an actual `mktemp` command invocation — the header mention in prose does not count).
+if grep -qE '(=|\()[[:space:]]*.?\$\(mktemp|[[:space:]]mktemp[[:space:]]+-d' "$INGEST"; then
+  bad "(8/guard) ingest creates a mktemp run dir for feedback-intake (learn() would evaporate)"
+elif grep -q 'cd "$INTAKE_DIR" && env SUBMISSION_DIR=' "$INGEST"; then
+  ok "(8/guard) ingest runs feedback-intake from the auditor colony dir (cd \$INTAKE_DIR), never a mktemp (learn persists)"
+else
+  bad "(8/guard) ingest does not run feedback-intake from the auditor colony dir"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 echo
 if [ "$FAIL" -eq 0 ]; then
   note "PASS — deliver-submission.sh staged a marked draft (canonical id + raw gate verdicts in manifest.json),"
@@ -897,7 +1135,12 @@ if [ "$FAIL" -eq 0 ]; then
   note "       deliver renders the REAL captured poc-run.txt into a terminal-styled poc-run.png (best-effort freeze->PIL"
   note "       ->skip, honesty-gated on the real --poc-run file), records manifest poc_screenshot, and notify attaches"
   note "       it to the Slack thread byte-identically — degrading text-only (no png, empty key, stage exit 0) when no"
-  note "       renderer is present, proven both host-dependently and deterministically via a python3 stub. Never submits."
+  note "       renderer is present, proven both host-dependently and deterministically via a python3 stub. And (#1557)"
+  note "       notify-submission.sh records slack_thread_ts/slack_channel + threads a reply-with-outcome prompt, and"
+  note "       ingest-slack-outcome.sh reads the operator's reply back from the thread (conversations.replies), selects"
+  note "       the operator reply over the bot snippet, writes OUTCOME.md in the exact schema, folds it into learning"
+  note "       via feedback-intake.ag (closed->FAILURE), posts a threaded confirmation, and is idempotent (second run"
+  note "       a no-op) — no-token no-op, no token leak, no bounty-platform egress. Never submits."
   exit 0
 fi
 note "FAIL — a feedback-loop assertion regressed (see above)." >&2
