@@ -15,6 +15,18 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **`colony-lint.sh` never shellchecked federation-root scripts** (#1554). `run-audit.sh`,
+  `demo-feedback-loop.sh`, `demo-pattern-memory.sh`, and 69 other `dark-factory/*.sh` scripts live outside any
+  colony's `config/`-having subdirectory, so the existing per-colony shellcheck loop in `tools/colony-lint.sh`
+  never saw them — future error/warning regressions there went uncaught by CI. `colony-lint.sh` now shellchecks
+  every federation-root `*.sh` (all 6 federations, not just dark-factory) at `-S warning` (error + warning only,
+  not the per-colony blocks' default severity — at default these 82 previously-unlinted scripts carry ~242
+  mostly-cosmetic info/style findings, a separate full style-cleanup follow-up, not this issue's regression-catch
+  goal). Fixed the 3 real `-S warning` findings this surfaced: a fragile heredoc delimiter in
+  `demo-pattern-memory.sh` (`<<'METHOD'` collided with a `METHOD|...` content line — SC1121, renamed to
+  `METHOD_EOF`), a single-item `for` loop over a quoted path in `run-audit.sh` (SC2066, replaced with a direct
+  assignment), and an unused `STAGED6F` capture in `demo-feedback-loop.sh`'s part-6f no-creds test (SC2034,
+  dropped — only the stderr side effect is asserted there).
 - **Secret-gist auto-create used a non-existent `gh gist create --secret` flag** (#1549, live-verified against
   a real `gh` + real bot token during the #1541 Slack delivery smoke-test). `gh gist create` has no `--secret`
   flag — gists are **secret by default** (`-p`/`--public` is the only flag, and flips the OTHER way), so the

@@ -173,9 +173,9 @@ write_fixture "$WORK/C"
 
 # The deterministic method-inventor proposal for the invent-method leg (the same `METHOD|...` shape
 # method-inventor.ag emits, used OFFLINE so the wiring is provable without an LLM).
-cat > "$WORK/method.txt" <<'METHOD'
+cat > "$WORK/method.txt" <<'METHOD_EOF'
 METHOD|seq-rounding-drift|C1|fuzz multi-call deposit/withdraw sequences asserting no-depositor-loss under any interleave|forge invariant over a Handler exposing the protocol actions as bounded actors|a control vault with a known share-rounding-drift bug must FAIL the invariant while the hardened twin holds
-METHOD
+METHOD_EOF
 
 SEED=1
 # Drive one target through the FULL coordinator loop with a PERSISTENT pattern store. $1=repo, $2=out dir,
