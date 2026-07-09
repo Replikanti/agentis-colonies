@@ -1188,7 +1188,11 @@ fn run_stage_live(stage: string, runner: string) -> string {
             + " DUP_RISK=" + shell_escape(getenv("DUP_RISK"))
             + " VERDICT_PREFIX=" + shell_escape(stage_prefix(stage));
     // colony-lint: safe-exec-concat
-    let out = exec sh "set +e; env " + env + " sh " + shell_escape(runner) + " 2>&1";
+    // #1507 dash-safety: invoke via `bash`, never `sh` — the runners (run-gate-agent.sh, run-poc.sh) are
+    // bash-shebang scripts; explicit `sh <script>` ignores the shebang and runs under dash on CI, which
+    // does not error today (these two scripts avoid `set -o pipefail`) but is the exact anti-pattern #1507
+    // fixed in poc-writer.ag::run_gate() for this same class of live-dispatch call.
+    let out = exec sh "set +e; env " + env + " bash " + shell_escape(runner) + " 2>&1";
     return normalize_class(stage, out);
 }
 
