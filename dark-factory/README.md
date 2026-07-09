@@ -603,7 +603,7 @@ a safe no-op or a documented default). Env knobs read by an `.ag` agent must als
 | `DARK_FACTORY_SLACK_BOT_TOKEN` | `deliver-submission.sh` → `notify-submission.sh` | Slack **bot-mode** delivery of the complete submission package (`xoxb-…`, a `secret://…` URI or raw; Slack app scopes `chat:write` + `files:write`, optional `chat:write.public`). Takes precedence over the webhook when set. |
 | `DARK_FACTORY_SLACK_CHANNEL` (`_WARN` / `_HIGH`) | `notify-submission.sh` | The base channel id (`C0…`) for bot mode, with optional per-severity overrides (Critical/High → `_HIGH`, Medium → `_WARN`). |
 | `DARK_FACTORY_SLACK_WEBHOOK` | `deliver-submission.sh` | The webhook **fallback** finding-ready alert (`secret://…` URI or a raw webhook URL); falls back to `MONITOR_WEBHOOK_URL`. No webhook = a no-op. |
-| `GITHUB_TOKEN` / logged-in `gh` | `deliver-submission.sh` | Enables the best-effort **secret-gist** auto-create (`gh gist create --secret`) for the PoC-form "secret Gist environment"; with no token it degrades to bundling the exact command in `poc/GIST_COMMAND.txt`. Egress is to the operator's OWN GitHub, never a bounty platform. |
+| `GITHUB_TOKEN` / logged-in `gh` | `deliver-submission.sh` | Enables the best-effort **secret-gist** auto-create (`gh gist create`, secret by default — no `--secret` flag exists) for the PoC-form "secret Gist environment"; with no token it degrades to bundling the exact command in `poc/GIST_COMMAND.txt`. Egress is to the operator's OWN GitHub, never a bounty platform. |
 
 Every alert/gist path is a page to the operator's own channel — the never-submit /
 no-bounty-platform-egress invariant is unchanged.
