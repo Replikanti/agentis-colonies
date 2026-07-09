@@ -20,7 +20,10 @@ cb 300000;
 //   SCOPE_VERDICT    the raw SCOPE-GATE|... line from scope-gate.ag (threaded through verbatim).
 //   IMPACT_VERDICT   the raw IMPACT-GATE|... line from impact-gate.ag (threaded through verbatim).
 //   DUP_RISK         the raw DUP-RISK|... line from dup-scout.ag (threaded through verbatim).
-// Stdout: the marker line SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW followed by a 4-section markdown report
+//   PROJECT_NAME     optional; the bounty-platform project name. Defaults to "<unknown>" when blank.
+//   FINDING_ASSET    optional; the specific in-scope asset (contract/file). Defaults to "<unknown>" when blank.
+// Stdout: the marker line SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW, THEN five machine-extractable
+//   FIELD|<label>|<value> lines (project/asset/impact/severity/title), THEN a 4-section markdown report
 //   (## Brief/Intro, ## Vulnerability Details, ## Impact Details, ## References). Never a submit.
 
 // --- PoC evidence (the muscle; dynamic paths -> safe-exec-concat, per impact-gate.ag / scope-gate.ag) ---------
@@ -38,6 +41,13 @@ fn poc_run_steps(pocFile: string) -> string {
     return exec sh "c=$(grep -oE 'function test[A-Za-z0-9_]*' ${pocFile} 2>/dev/null); [ -n \"$c\" ] && echo \"$c\" || echo 'no test function found'";
 }
 
+// Deterministic default for optional form-metadata fields: a blank env value becomes the honest
+// placeholder "<unknown>" in .ag code, never a crash and never a blank machine-unparseable line.
+fn field_or_unknown(v: string) -> string {
+    if len(v) == 0 { return "<unknown>"; }
+    return v;
+}
+
 let title = getenv("FINDING_TITLE");
 let loc = getenv("FINDING_LOCATION");
 let impact = getenv("FINDING_IMPACT");
@@ -46,15 +56,25 @@ let severity = getenv("SEVERITY_BAND");
 let scopeVerdict = getenv("SCOPE_VERDICT");
 let impactVerdict = getenv("IMPACT_VERDICT");
 let dupRisk = getenv("DUP_RISK");
+let projectName = getenv("PROJECT_NAME");
+let asset = getenv("FINDING_ASSET");
+
+let fProject = field_or_unknown(projectName);
+let fAsset = field_or_unknown(asset);
+let fImpact = field_or_unknown(impact);
+let fSeverity = field_or_unknown(severity);
+let fTitle = field_or_unknown(title);
 
 let poc = poc_text(pocFile);
 let runSteps = poc_run_steps(pocFile);
 
 let evidence =
-    "FINDING_TITLE: " + title + "\n"
+    "FINDING_TITLE: " + fTitle + "\n"
   + "FINDING_LOCATION: " + loc + "\n"
-  + "FINDING_IMPACT: " + impact + "\n"
-  + "SEVERITY_BAND: " + severity + "\n"
+  + "FINDING_IMPACT: " + fImpact + "\n"
+  + "SEVERITY_BAND: " + fSeverity + "\n"
+  + "PROJECT (may be defaulted to <unknown> if PROJECT_NAME was blank): " + fProject + "\n"
+  + "ASSET (may be defaulted to <unknown> if FINDING_ASSET was blank): " + fAsset + "\n"
   + "SCOPE_VERDICT (from scope-gate, verbatim): " + scopeVerdict + "\n"
   + "IMPACT_VERDICT (from impact-gate, verbatim): " + impactVerdict + "\n"
   + "DUP_RISK (from dup-scout, verbatim): " + dupRisk + "\n"
@@ -71,6 +91,13 @@ let instruction =
   + "supplied evidence; invent no facts, addresses, or numbers not present in it.\n\n"
   + "Your response MUST start with this exact marker line, alone on the first line, before anything else:\n"
   + "SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW\n\n"
+  + "Immediately after the marker line, before anything else, render exactly these five lines, each verbatim in "
+  + "this machine-extractable format (label lowercase, value from the matching evidence field, unmodified):\n"
+  + "FIELD|project|" + fProject + "\n"
+  + "FIELD|asset|" + fAsset + "\n"
+  + "FIELD|impact|" + fImpact + "\n"
+  + "FIELD|severity|" + fSeverity + "\n"
+  + "FIELD|title|" + fTitle + "\n\n"
   + "Then render EXACTLY these four markdown sections, in this order, each with its `##` header verbatim:\n"
   + "## Brief/Intro\n"
   + "  A short summary of the vulnerability in the target, its severity band (SEVERITY_BAND), and one sentence "
@@ -87,8 +114,8 @@ let instruction =
   + "validity / novelty note (these are grounding facts from the upstream gates — do not paraphrase or upgrade "
   + "them), plus the PoC file path.\n\n"
   + "=== EVIDENCE ===\n" + evidence + "\n"
-  + "=== HOW TO ANSWER ===\nEmit the marker line first, then the four sections. Ground every claim in the "
-  + "evidence. This is a draft artifact only — you never contact any bounty platform.";
+  + "=== HOW TO ANSWER ===\nEmit the marker line first, then the five FIELD| lines, then the four sections. Ground "
+  + "every claim in the evidence. This is a draft artifact only — you never contact any bounty platform.";
 
 let verdict = prompt(instruction, evidence) -> string;
 
@@ -96,6 +123,6 @@ print(verdict);
 // The productive outcome is a rendered draft that carries the human-gate marker; anything else is a failure to
 // render (mirrors the gates' outcome derivation from their own leading verdict line).
 let outcome = if index_of(verdict, "SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW") >= 0 { "success" } else { "failure" };
-emit("dark-factory:report_draft", "{\"title\":\"" + title + "\",\"location\":\"" + loc + "\",\"severity\":\"" + severity + "\",\"status\":\"drafted\"}");
+emit("dark-factory:report_draft", "{\"title\":\"" + title + "\",\"location\":\"" + loc + "\",\"severity\":\"" + severity + "\",\"project\":\"" + fProject + "\",\"asset\":\"" + fAsset + "\",\"status\":\"drafted\"}");
 learn("report-writer", title, "submission report drafted for " + title + " (" + outcome + ")", outcome, ["report-writer", outcome]);
 memo_write("report-writer:last_check", "done");

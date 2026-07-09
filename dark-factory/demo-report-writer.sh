@@ -44,6 +44,25 @@ done
 [ -z "$missing_env" ] && ok "report-writer.ag reads the 8-var env contract (finding + PoC + upstream verdicts + severity)" \
   || bad "report-writer.ag missing getenv for:$missing_env"
 
+if grep -q 'getenv("PROJECT_NAME")' "$GATE" && grep -q 'getenv("FINDING_ASSET")' "$GATE"; then
+  ok "report-writer.ag reads the two optional form-metadata env inputs (PROJECT_NAME, FINDING_ASSET)"
+else
+  bad "report-writer.ag missing PROJECT_NAME / FINDING_ASSET getenv reads"
+fi
+
+if grep -q 'fn field_or_unknown' "$GATE" && grep -q '"<unknown>"' "$GATE"; then
+  ok "report-writer.ag degrades a blank metadata field to a deterministic <unknown> placeholder, never a crash"
+else
+  bad "report-writer.ag missing the deterministic blank-field default"
+fi
+
+if grep -q 'FIELD|project|' "$GATE" && grep -q 'FIELD|asset|' "$GATE" && grep -q 'FIELD|impact|' "$GATE" \
+   && grep -q 'FIELD|severity|' "$GATE" && grep -q 'FIELD|title|' "$GATE"; then
+  ok "report-writer.ag instructs the five FIELD| machine-extractable lines (project/asset/impact/severity/title)"
+else
+  bad "report-writer.ag missing one of the five FIELD| metadata lines"
+fi
+
 if grep -q 'fn poc_text' "$GATE" && grep -q 'fn poc_run_steps' "$GATE" && grep -qE 'grep -c|grep -oE' "$GATE" \
    && grep -q 'colony-lint: safe-exec-concat' "$GATE"; then
   ok "report-writer.ag reads the PoC deterministically (sed/grep muscle, safe-exec-concat)"
@@ -106,7 +125,7 @@ POC
   ( cd "$WORK/run" && agentis init >/dev/null 2>&1 || true )
   {
     echo "learning.enabled = true"; echo "experience.enabled = true"; echo "exec.default_timeout_ms = 30000"
-    echo "exec.env_passthrough = FINDING_TITLE,FINDING_LOCATION,FINDING_IMPACT,POC_FILE,SEVERITY_BAND,SCOPE_VERDICT,IMPACT_VERDICT,DUP_RISK"
+    echo "exec.env_passthrough = FINDING_TITLE,FINDING_LOCATION,FINDING_IMPACT,POC_FILE,SEVERITY_BAND,SCOPE_VERDICT,IMPACT_VERDICT,DUP_RISK,PROJECT_NAME,FINDING_ASSET"
   } >> "$WORK/run/.agentis/config"
   set +e
   (
@@ -118,7 +137,9 @@ POC
            SEVERITY_BAND="Critical" \
            SCOPE_VERDICT="SCOPE-GATE|PAYABLE|RedeemHandler.sol is a listed in-scope asset; theft is an eligible impact" \
            IMPACT_VERDICT="IMPACT-GATE|SUBSTANTIATED|PoC drives the drain through the vault's own redeem path, no privileged trigger" \
-           DUP_RISK="DUP-RISK|LOW|~15%|no matching known-issue or prior submission for the stale-rate redeem path"
+           DUP_RISK="DUP-RISK|LOW|~15%|no matching known-issue or prior submission for the stale-rate redeem path" \
+           PROJECT_NAME="Enzyme Onyx" \
+           FINDING_ASSET="RedeemHandler.sol"
     # --grant-pii: the finding/PoC text can carry addresses/identifiers that trip the PII heuristic; benign fixture.
     agentis go report-writer.ag --enable-exec --enable-messaging --grant-pii
   ) >"$WORK/out.log" 2>&1

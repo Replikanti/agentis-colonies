@@ -15,6 +15,18 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **`report-writer.ag` emits discrete Immunefi form-metadata fields** (#1542). Between the
+  `SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW` marker and the existing 4-section markdown Description, the agent now
+  renders exactly five machine-extractable `FIELD|<label>|<value>` lines — `FIELD|project|`, `FIELD|asset|`,
+  `FIELD|impact|`, `FIELD|severity|`, `FIELD|title|` — sourced from two new optional env inputs (`PROJECT_NAME`,
+  `FINDING_ASSET`) plus the existing `FINDING_TITLE`/`FINDING_IMPACT`/`SEVERITY_BAND`. Every value is resolved in
+  `.ag` code via a deterministic `field_or_unknown()` default (`"<unknown>"` on blank) BEFORE it reaches the
+  instruction, so the LLM only echoes already-known values — no formatting drift, no crash, never a blank
+  unparseable line. The marker string and the 4-section Description are unchanged; `deliver-submission.sh`'s
+  human-gate marker guard is a substring test, unaffected by lines appended after it. Feeds the Slack delivery
+  format (#1541) and package bundling (#1540). **Deferred follow-up:** wiring `PROJECT_NAME`/`FINDING_ASSET`
+  through `run-audit-pass.sh`'s `exec.env_passthrough` + CLI flags and into `deliver-submission.sh`'s
+  `manifest.json` is caller-side plumbing, not part of this change.
 - **Finding-ready Slack/Discord alert on `deliver-submission.sh` staging** (#1538, follow-up to #1526). After a
   successful stage, `deliver-submission.sh` now pages the operator with a finding-ready alert, reusing
   `monitor/scripts/notify.sh` (#1092) unconditionally — the same JSON-alert-to-`notify.sh` pattern as
