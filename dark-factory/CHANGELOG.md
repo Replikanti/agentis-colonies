@@ -59,6 +59,15 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
     hypothesis step (analyst) remains a follow-up `.ag` colony layer. Submission stays strictly human-gated.
 
 ### Fixed
+- **novelty-gate false-negative on a bare boundary-function mention** (#1496). `novelty-gate.sh` flagged a
+  candidate as KNOWN whenever it shared a single function/identifier token with an exclusion line, even when
+  the candidate discussed a completely different vulnerability class — so a genuinely-novel finding that merely
+  *mentions* a boundary function (e.g. `withdraw()`) in an unrelated context was wrongly rejected as a
+  duplicate. `salient()` now exposes the vuln-class keyword set separately from the identifier set, and the
+  shared-identifier shortcut requires an overlapping vuln-class term too (`shared_funcs AND shared_vk`, not
+  `shared_funcs` alone); the plain salient-term overlap threshold (`--min-overlap`) is unchanged. Regression:
+  a new `residual` row in `bench/fixtures/rounding-residual/truth.tsv` and a new case in
+  `demo-audit-hunter.sh`.
 - **Invariant-hunt CODE_PATH resolution for nested `--target`** (#1475). `run-invariant-hunt.sh` defaulted the
   LLM source path (`CODE_PATH`) to `<repo>/src/<target-file>`, so a nested `--target` like
   `src/contracts/vault/Vault.sol:Vault` became `<repo>/src/src/contracts/vault/Vault.sol` (double `src/`) →
