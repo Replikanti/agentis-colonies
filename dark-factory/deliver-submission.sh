@@ -50,11 +50,13 @@
 #   $DROP_DIR/<slug>/
 #     manifest.json         # canonical submission_id + the three raw gate verdicts + severity + finding metadata
 #                           #   + immunefi_fields (project/asset/impact/severity/title, extracted from the draft)
-#                           #   + poc_files/poc_run/reproduce/gist_url (the #1540 PoC-form artifact set)
+#                           #   + poc_files/poc_run/poc_screenshot/reproduce/gist_url (the #1540/#1550 artifact set)
 #     submission-draft.md   # report-writer.ag's SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW draft, verbatim
 #     OUTCOME.md            # the outcome TEMPLATE the operator fills IN-PLACE, then feeds to feedback-intake.ag
 #     REPRODUCE.md          # (#1540, when a PoC is staged) the toolchain + concrete run command + expected [PASS]
 #     poc-run.txt           # (#1540, optional) a captured passing PoC run-log (from run-poc.sh's warm re-run)
+#     poc-run.png           # (#1550, best-effort) a terminal-styled screenshot rendered from poc-run.txt (freeze
+#                           #   or PIL); absent when neither renderer is available (text-only degradation)
 #     poc/                  # (#1540, when a PoC is staged) the verbatim PoC source + GIST_README.md; and, with no
 #                           #   token, GIST_COMMAND.txt (the exact `gh gist create` command to run by hand)
 #
@@ -175,6 +177,21 @@ if [ -n "$POC_RUN" ]; then
   fi
 fi
 
+# Render a terminal-styled screenshot of the REAL captured run-evidence -> poc-run.png (#1550, best-effort).
+# HONESTY GUARD: gated on POC_RUN_REL being set (a real captured poc-run.txt exists) — the render step can NEVER
+# run without a real captured run-log, so it can never synthesize a [PASS]. A missing renderer (freeze/PIL) or
+# any render failure warns + leaves POC_SCREENSHOT_REL empty; it NEVER changes this script's exit code (exactly
+# like the gh-gist step — no new REQUIRED dependency). Location: $STAGE/poc-run.png at the drop-dir root,
+# alongside poc-run.txt (NOT inside poc/, which is reserved for the verbatim PoC source).
+POC_SCREENSHOT_REL=""
+if [ -n "$POC_RUN_REL" ] && [ -x "$SCRIPT_DIR/render-run-evidence.sh" ]; then
+  if bash "$SCRIPT_DIR/render-run-evidence.sh" "$STAGE/$POC_RUN_REL" "$STAGE/poc-run.png" >&2; then
+    POC_SCREENSHOT_REL="poc-run.png"
+  else
+    echo "deliver-submission.sh: WARNING poc-run.png not rendered (no renderer or render failure) — bundling text-only poc-run.txt" >&2
+  fi
+fi
+
 # Generate REPRODUCE.md whenever a PoC source OR an explicit --poc-kind is known (skipped in pure writeup-only
 # mode). Dash-safe { printf ...; } block (NO heredoc; the OUTCOME.md style). INVERTED POLARITY: a PASSING PoC
 # means the exploit reproduced (this is the finding).
@@ -277,6 +294,7 @@ SUBMISSION_ID="$ID" TARGET="$TARGET" IN_SCOPE_COMMIT="$COMMIT" FINDING_SLUG="$FI
 FINDING_TITLE="$TITLE" FINDING_LOCATION="$LOCATION" FINDING_IMPACT="$IMPACT" IMPACT_CLASS="$IMPACT_CLASS" \
 SEVERITY_BAND="$SEVERITY" SCOPE_VERDICT="$SCOPE_VERDICT" IMPACT_VERDICT="$IMPACT_VERDICT" DUP_RISK="$DUP_RISK" \
 DRAFT_TEXT="$DRAFT" POC_FILES_JOINED="$POC_FILES_JOINED" POC_RUN_REL="$POC_RUN_REL" \
+POC_SCREENSHOT_REL="$POC_SCREENSHOT_REL" \
 REPRODUCE_REL="$REPRODUCE_REL" GIST_URL="$GIST_URL" BOUNTY_URL="$BOUNTY_URL" \
 python3 - > "$STAGE/manifest.json" <<'PY'
 import json, os, datetime
@@ -305,6 +323,7 @@ d = {
     "immunefi_fields": fields,
     "poc_files":       poc_files,
     "poc_run":         os.environ.get("POC_RUN_REL", ""),
+    "poc_screenshot":  os.environ.get("POC_SCREENSHOT_REL", ""),
     "reproduce":       os.environ.get("REPRODUCE_REL", ""),
     "gist_url":        os.environ.get("GIST_URL", ""),
     "bounty_url":      os.environ.get("BOUNTY_URL", ""),

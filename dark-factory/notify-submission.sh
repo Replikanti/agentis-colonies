@@ -5,9 +5,14 @@
 # script delivers the COMPLETE, copy-paste-ready Immunefi submission package to a Slack **Bot App**: a main
 # `chat.postMessage` carrying the form metadata (Project/Asset/Impact/Severity/Title + the bounty link + the
 # secret-gist link), then a THREAD under that message with the long sections (Description, PoC source(s),
-# REPRODUCE.md, run-evidence) uploaded as file snippets for one-click copy. Capturing the main message `ts` and
-# threading file uploads beneath it is fundamentally more than notify.sh's single-post sink can do, so the rich
-# flow lives in its own bash script (see the #1541 plan's rejected-alternative note).
+# REPRODUCE.md, run-evidence poc-run.txt, and the rendered run-evidence screenshot poc-run.png (#1550, the
+# Immunefi Attachments artifact)) uploaded as file snippets for one-click copy. Capturing the main message `ts`
+# and threading file uploads beneath it is fundamentally more than notify.sh's single-post sink can do, so the
+# rich flow lives in its own bash script (see the #1541 plan's rejected-alternative note).
+#
+# SCOPE BOUNDARY (#1550): the poc-run.png screenshot reaches Slack via BOT MODE only (this script). The plain
+# WEBHOOK mode (#1538, monitor/scripts/notify.sh) posts a single JSON text alert with no file-upload primitive,
+# so it stays screenshot-less — an existing capability gap of that path, not something this wiring changes.
 #
 # bash, NEVER sh: this script uses bash-only constructs (arrays are avoided, but `${var%$'\n'*}`, `local`, and
 # `< <(...)` process substitution are used). It has its own `#!/usr/bin/env bash` shebang and every caller invokes
@@ -345,6 +350,15 @@ fi
 POC_RUN_REL="$(_mf poc_run)"
 if [ -n "$POC_RUN_REL" ] && [ -f "$STAGE/$POC_RUN_REL" ]; then
   slack_upload "$STAGE/$POC_RUN_REL" "poc-run.txt" "$TS" || true
+fi
+
+# The rendered run-evidence screenshot (#1550, bot-mode only) — attached to the thread as the Immunefi
+# Attachments artifact. slack_upload's raw `--data-binary "@file"` POST is already binary-safe (the same code
+# path uploads poc-run.txt), so no change to slack_upload() is needed — only this new call site. Best-effort:
+# absent poc_screenshot (no renderer at stage time) or a missing file simply skips, never fatal.
+POC_SCREENSHOT_REL="$(_mf poc_screenshot)"
+if [ -n "$POC_SCREENSHOT_REL" ] && [ -f "$STAGE/$POC_SCREENSHOT_REL" ]; then
+  slack_upload "$STAGE/$POC_SCREENSHOT_REL" "poc-run.png" "$TS" || true
 fi
 
 exit 0
