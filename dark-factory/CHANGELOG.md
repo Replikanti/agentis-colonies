@@ -42,6 +42,46 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   part-6 curl-stub assertion now checks for the bold label form.
 
 ### Added
+- **Capture the platform outcome from the Slack thread — close the feedback loop in one place** (#1557, epic
+  #1505). The operator now replies IN THE SLACK THREAD (under the #1541 bot-mode submission package) with the
+  platform outcome; a new reader folds that reply back into learning — no hand-edited local `OUTCOME.md`. Opt-in,
+  best-effort, additive: the `OUTCOME.md` schema and `feedback-intake.ag` (the #1526 learn path) are REUSED
+  UNCHANGED — only the INPUT source changes (a Slack thread reply instead of a local file). Every existing
+  invariant stays byte-intact (the never-submit / no-bounty-platform-egress contract, the one-line staged-path
+  stdout relied on by `deliver-submission.sh`).
+  - **`notify-submission.sh`** now, on a successful main post, records two new keys into the already-staged
+    `manifest.json` — `slack_thread_ts` (the main message ts) + `slack_channel` (the routed channel) — and posts
+    ONE final threaded reply-with-outcome prompt showing the operator the EXACT field names the reader parses
+    (`verdict:`/`severity:`/`payout:`/`reason:`/`notes:`). `slack_post()` gains an OPTIONAL 3rd `thread_ts` arg
+    (the payload gains a `"thread_ts"` key only when non-empty; the existing 2-arg main-message call is unchanged).
+    Both the writeback and the prompt are best-effort and route nothing onto stdout.
+  - **New `dark-factory/ingest-slack-outcome.sh`** (bash, bot-mode reader, NO platform egress). `--stage <dir>` or
+    `--all` (glob the drop-dir). Resolves `DARK_FACTORY_SLACK_BOT_TOKEN` (`secret://…` or raw); no token → exit-0
+    no-op. Per stage: reads `slack_thread_ts`/`slack_channel` from the manifest, skips if `.outcome-ingested`
+    exists, fetches the thread via `conversations.replies` (Bearer, 2xx AND `ok:true`, single page), SELECTS the
+    operator reply (drops the bot's own posts by `bot_id`/`subtype`/`auth.test` user id; keeps the latest message
+    with a `verdict:` line), parses `verdict:`/`severity:`/`payout:`/`reason:`/`notes:` (tolerating a
+    `reviewer_notes:` alias), reads the canonical `submission_id` from the manifest, writes `OUTCOME.md` in the
+    exact existing schema (column-aligned so `feedback-intake.ag`'s `^verdict:`/`^reason:` greps match unchanged),
+    runs `feedback-intake.ag` FROM the auditor colony dir (so `learn()` PERSISTS — not a throwaway mktemp),
+    posts a threaded confirmation (`outcome recorded -- learned <SIGNAL> on <stage>`; SIGNAL deterministic from
+    the verdict, stage from feedback-intake's `FEEDBACK|` line), and marks the stage `.outcome-ingested`. Idempotent
+    (a re-run/cron skips a marked stage); `--all` continues on per-stage failure; a stage with no operator reply
+    yet is skipped WITHOUT a marker so a later run retries. Reading a public channel's thread needs the Slack app's
+    `channels:history` scope; the trigger model is honestly operator/cron (serverless — no always-on listener).
+    The resolved token appears only in the `Authorization` header, never argv/echoed.
+  - **`README.md`** gains the two new manifest keys + the ingest script in the env table and script index, plus a
+    new "Capturing the outcome from the Slack thread" subsection (the `channels:history` scope + reinstall +
+    re-store step, the `--stage`/`--all` usage, the honest operator/cron trigger, and a suggested-but-NOT-installed
+    crontab line).
+  - **`demo-feedback-loop.sh` part 8** proves it offline (fake token, no network): part 6's smart curl stub gains
+    `auth.test` + `conversations.replies` branches and the `chat.postMessage` branch appends a JSONL so both the
+    main post AND the threaded prompt are inspectable; part 6a asserts the manifest writeback + the reply-with-
+    outcome prompt; part 8 asserts the OPERATOR reply (not the bot snippet) is selected → `OUTCOME.md`
+    verdict==closed / reason / reviewer_notes, `feedback-intake.ag` invoked (an `agentis` stub) + deterministic
+    closed→failure, the threaded confirmation, the `.outcome-ingested` marker, a NO-OP second run, the no-token
+    no-op, bad-args exit 2, the fake token never leaking, and source guards (bash never sh, no bounty-platform
+    egress, `channels:history` documented, learn runs from the colony dir not a mktemp).
 - **Auto-rendered PoC run-evidence screenshot attached to Slack** (#1550, epic #1505). The captured `poc-run.txt`
   (#1540) is now auto-rendered into a terminal-styled `poc-run.png` and threaded to the Slack submission package
   (bot mode, #1541) as the Immunefi Attachments artifact — a scannable screenshot of the REAL passing run beside

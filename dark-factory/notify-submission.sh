@@ -41,6 +41,16 @@
 # files:write) — NOT the deprecated files.upload. Every upload is best-effort: any failure warns + skips, never
 # fatal (a Slack outage never fails a good stage).
 #
+# THREAD OUTCOME LOOP (#1557, epic #1505): on a successful main post this ALSO closes the human->federation loop
+# IN THE SAME THREAD. It records two new keys into the already-staged manifest.json — `slack_thread_ts` (the main
+# message ts) + `slack_channel` (the routed channel id) — and then posts ONE final threaded "reply-with-outcome"
+# prompt showing the operator the EXACT field names the reader parses (`verdict:` / `severity:` / `payout:` /
+# `reason:` / `notes:`). The operator replies IN the thread with the platform outcome; the sibling reader
+# dark-factory/ingest-slack-outcome.sh reads that reply back (conversations.replies), writes OUTCOME.md, and folds
+# it into learning. Both the writeback and the prompt are best-effort (warn on failure, never abort the uploads)
+# and route no bytes onto stdout. Reading a thread + prompting is NOT a bounty-platform submission — the
+# never-submit invariant is unchanged.
+#
 # Usage:  notify-submission.sh --stage <staged-drop-dir>
 # Requires: bash + python3 + curl. Exit: always 0 for the caller's purposes (best-effort muscle); 2 = bad args.
 set -u
@@ -224,11 +234,17 @@ _curl_json() {
   CURL_BODY="${resp%$'\n'*}"
 }
 
-# slack_post <channel> <text> -> echoes the message `ts` on stdout and returns 0 on success; warns + returns 1 on
-# failure. SUCCESS = 2xx AND ok==true; a hard ok:false is a non-retry loud warning; 5xx/non-2xx/transport retries.
+# slack_post <channel> <text> [thread_ts] -> echoes the message `ts` on stdout and returns 0 on success; warns +
+# returns 1 on failure. SUCCESS = 2xx AND ok==true; a hard ok:false is a non-retry loud warning; 5xx/non-2xx/
+# transport retries. An OPTIONAL 3rd arg threads the post: when non-empty the json.dumps payload gains a
+# "thread_ts" key (the payload is unchanged when absent, so the existing 2-arg main-message call site is intact).
 slack_post() {
-  local channel="$1" text="$2" payload attempt=0 delay="$BACKOFF_S" parsed status detail
-  payload="$(SLACK_CH="$channel" SLACK_TXT="$text" python3 -c 'import json, os; print(json.dumps({"channel": os.environ["SLACK_CH"], "text": os.environ["SLACK_TXT"]}))')"
+  local channel="$1" text="$2" thread="${3:-}" payload attempt=0 delay="$BACKOFF_S" parsed status detail
+  payload="$(SLACK_CH="$channel" SLACK_TXT="$text" SLACK_THREAD="$thread" python3 -c 'import json, os
+d = {"channel": os.environ["SLACK_CH"], "text": os.environ["SLACK_TXT"]}
+if os.environ.get("SLACK_THREAD"):
+    d["thread_ts"] = os.environ["SLACK_THREAD"]
+print(json.dumps(d))')"
   while : ; do
     _curl_json "https://slack.com/api/chat.postMessage" "$payload"
     if [ "$CURL_RC" -eq 0 ]; then
@@ -330,6 +346,27 @@ if [ -z "$TS" ]; then
   exit 0
 fi
 
+# THREAD OUTCOME LOOP (#1557): record the thread + routed channel back into the already-staged manifest.json so
+# ingest-slack-outcome.sh can later read the operator's reply from THIS thread (conversations.replies). python3
+# read-modify-write, values passed via ENV (never argv), prints nothing to stdout (the one-line staged-path
+# contract is deliver-submission.sh's, but this script's stdout is its own concern — chatter stays on stderr).
+# Best-effort: a read/write failure warns to stderr and never aborts the uploads below.
+MF_PATH="$MANIFEST" SLACK_TS="$TS" SLACK_CH="$CHANNEL_ID" python3 -c '
+import json, os, sys
+p = os.environ["MF_PATH"]
+try:
+    d = json.load(open(p))
+except Exception as e:
+    sys.stderr.write("notify-submission.sh: manifest read failed for thread writeback (%s) — outcome ingest disabled for this stage\n" % e)
+    sys.exit(0)
+d["slack_thread_ts"] = os.environ["SLACK_TS"]
+d["slack_channel"] = os.environ["SLACK_CH"]
+try:
+    open(p, "w").write(json.dumps(d, indent=2, sort_keys=True) + "\n")
+except Exception as e:
+    sys.stderr.write("notify-submission.sh: manifest thread writeback failed (%s) — outcome ingest disabled for this stage\n" % e)
+' || true
+
 # Description snippet: the marker/FIELD-stripped 4-section body.
 DESC_FILE="$TMPD/Description.md"
 _strip_draft "$STAGE/submission-draft.md" > "$DESC_FILE"
@@ -360,5 +397,26 @@ POC_SCREENSHOT_REL="$(_mf poc_screenshot)"
 if [ -n "$POC_SCREENSHOT_REL" ] && [ -f "$STAGE/$POC_SCREENSHOT_REL" ]; then
   slack_upload "$STAGE/$POC_SCREENSHOT_REL" "poc-run.png" "$TS" || true
 fi
+
+# THREAD OUTCOME LOOP (#1557): one final threaded message prompting the operator to reply IN this thread with the
+# platform outcome, using the EXACT field names ingest-slack-outcome.sh parses. Built json-safe by python3 (mrkdwn),
+# posted with thread_ts==the main ts. Best-effort (`>/dev/null || true`): a failed prompt never fails the caller
+# and its stdout (the echoed ts) is discarded so it can never corrupt any stdout contract.
+PROMPT_TEXT="$(python3 -c '
+import sys
+lines = [
+    "*When the platform responds, reply in THIS thread with the outcome* (use these exact field names):",
+    "",
+    "verdict: <accepted|closed|duplicate|needs-info>",
+    "severity: <Critical|High|Medium|Low|>        # accepted only",
+    "payout: <amount+currency, e.g. 25000 USDC>   # accepted only",
+    "reason: <one line>",
+    "notes: <optional reviewer text>",
+    "",
+    "ingest-slack-outcome.sh reads this reply back and folds it into learning. Reading a thread is NOT a bounty-platform submission.",
+]
+sys.stdout.write("\n".join(lines))
+')"
+slack_post "$CHANNEL_ID" "$PROMPT_TEXT" "$TS" >/dev/null || true
 
 exit 0

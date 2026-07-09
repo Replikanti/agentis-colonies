@@ -601,12 +601,61 @@ a safe no-op or a documented default). Env knobs read by an `.ag` agent must als
 | `PROJECT_NAME` / `FINDING_ASSET` | `report-writer.ag` | The bounty-platform project name and the specific in-scope asset for the rendered report; default to `<unknown>` when blank. |
 | `--bounty-url` / `--drop-dir` (`$DROP_DIR`) | `deliver-submission.sh` | The bounty link embedded in the staged package, and the operator DROP-DIRECTORY exchange point (default `${DARK_FACTORY_DIR:-$HOME/.dark-factory}/drop`). |
 | `DARK_FACTORY_SLACK_BOT_TOKEN` | `deliver-submission.sh` → `notify-submission.sh` | Slack **bot-mode** delivery of the complete submission package (`xoxb-…`, a `secret://…` URI or raw; Slack app scopes `chat:write` + `files:write`, optional `chat:write.public`). Takes precedence over the webhook when set. |
-| `DARK_FACTORY_SLACK_CHANNEL` (`_WARN` / `_HIGH`) | `notify-submission.sh` | The base channel id (`C0…`) for bot mode, with optional per-severity overrides (Critical/High → `_HIGH`, Medium → `_WARN`). |
+| `DARK_FACTORY_SLACK_CHANNEL` (`_WARN` / `_HIGH`) | `notify-submission.sh` | The base channel id (`C0…`) for bot mode, with optional per-severity overrides (Critical/High → `_HIGH`, Medium → `_WARN`). On delivery `notify-submission.sh` records the resolved `slack_thread_ts` + `slack_channel` into `manifest.json` and threads a reply-with-outcome prompt. |
+| `DARK_FACTORY_SLACK_BOT_TOKEN` | `ingest-slack-outcome.sh` | Closes the loop: reads the operator's outcome REPLY back from the Slack thread (`conversations.replies`, needs the Slack app's `channels:history` scope) into `OUTCOME.md` and folds it into learning via `feedback-intake.ag`. Operator/cron-TRIGGERED (serverless — no always-on listener); idempotent per stage; never a bounty-platform submission. |
 | `DARK_FACTORY_SLACK_WEBHOOK` | `deliver-submission.sh` | The webhook **fallback** finding-ready alert (`secret://…` URI or a raw webhook URL); falls back to `MONITOR_WEBHOOK_URL`. No webhook = a no-op. |
 | `GITHUB_TOKEN` / logged-in `gh` | `deliver-submission.sh` | Enables the best-effort **secret-gist** auto-create (`gh gist create`, secret by default — no `--secret` flag exists) for the PoC-form "secret Gist environment"; with no token it degrades to bundling the exact command in `poc/GIST_COMMAND.txt`. Egress is to the operator's OWN GitHub, never a bounty platform. |
 
 Every alert/gist path is a page to the operator's own channel — the never-submit /
 no-bounty-platform-egress invariant is unchanged.
+
+## Capturing the outcome from the Slack thread
+
+When bot-mode delivery is configured, `notify-submission.sh` records the delivery's
+`slack_thread_ts` + `slack_channel` into `manifest.json` and threads a
+reply-with-outcome prompt under the submission package. The operator files the finding
+out-of-band and, when the platform responds, **replies IN THAT SAME THREAD** with the
+outcome using the exact field names the reader parses:
+
+```
+verdict: <accepted|closed|duplicate|needs-info>
+severity: <Critical|High|Medium|Low|>        # accepted only
+payout: <amount+currency, e.g. 25000 USDC>   # accepted only
+reason: <one line>
+notes: <optional reviewer text>
+```
+
+`ingest-slack-outcome.sh` reads that reply back and folds it into learning — one place,
+no hand-edited local file:
+
+```bash
+dark-factory/ingest-slack-outcome.sh --stage <drop-dir>   # one staged submission
+dark-factory/ingest-slack-outcome.sh --all                # sweep every staged drop-dir
+```
+
+It resolves `DARK_FACTORY_SLACK_BOT_TOKEN` (`secret://…` or raw), reads the thread via
+`conversations.replies`, selects the operator's reply (dropping the bot's own snippet
+posts), writes `OUTCOME.md` in the exact schema, runs `feedback-intake.ag` from the
+auditor colony dir so its `learn()` persists, posts a threaded confirmation
+(`outcome recorded -- learned <SIGNAL> on <stage>`), and marks the stage
+`.outcome-ingested` so it never double-learns. A stage with no operator reply yet is
+skipped without a marker (a later run retries).
+
+**One-time scope setup:** reading a public channel's thread needs the Slack app's
+`channels:history` scope. Add it to the app, **reinstall** the app (this mints a fresh
+`xoxb` token), and **re-store** the token as the `secret://` secret.
+
+**Trigger model (honest):** the federation is serverless / one-shot — there is **no
+always-on Slack listener**. Ingestion is operator- or **cron-triggered**. A suggested
+(NOT installed) crontab line periodically sweeps every staged thread:
+
+```cron
+# every 30 min: fold any operator outcome replies into learning (idempotent per stage)
+*/30 * * * * DARK_FACTORY_SLACK_BOT_TOKEN='secret://…' /path/to/dark-factory/ingest-slack-outcome.sh --all >> "$HOME/.dark-factory/ingest.log" 2>&1
+```
+
+Reading a thread + posting a confirmation is an operator-workspace action — **NOT** a
+bounty-platform submission; the never-submit invariant is unchanged.
 
 ## Layout
 
@@ -634,7 +683,8 @@ dark-factory/
   run-audit-pass.sh             # bootstrap for the coordinator SUBMISSION PASS (#1509, epic #1505 capstone): one `agentis go coordinator.ag` with PASS_ENABLED sequences scope -> devise -> poc -> impact -> dup -> report -> HALT, hard-halting on a blocking gate; never submits
   run-poc.sh                    # concrete-exploit PoC entrypoint (#1507): runs poc-writer.ag once to GENERATE one hand-driven attack-SEQUENCE test, then VERIFIES it through the toolchain-parametric gate (hardhat-poc.sh / forge-poc.sh chosen by detect-toolchain.sh); never submits
   deliver-submission.sh         # delivery muscle (#1526, epic #1505): STAGES report-writer.ag's SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW draft into an operator DROP-DIRECTORY (manifest + OUTCOME.md + PoC + best-effort secret gist); refuses (exit 3) any draft missing the human-gate marker; never contacts a bounty platform
-  notify-submission.sh          # rich Slack BOT-MODE sender (#1541): posts the complete copy-paste-ready submission package to a Slack Bot App (form metadata as a main message + threaded Description/PoC/REPRODUCE file snippets); operator page on the operator's OWN workspace, never a platform submission
+  notify-submission.sh          # rich Slack BOT-MODE sender (#1541): posts the complete copy-paste-ready submission package to a Slack Bot App (form metadata as a main message + threaded Description/PoC/REPRODUCE file snippets); records slack_thread_ts/slack_channel + threads a reply-with-outcome prompt (#1557); operator page on the operator's OWN workspace, never a platform submission
+  ingest-slack-outcome.sh       # thread-outcome reader (#1557): reads the operator's reply back from the Slack thread (conversations.replies, channels:history) -> OUTCOME.md -> feedback-intake.ag learn() -> threaded confirmation; operator/cron-triggered (serverless, no listener), idempotent per stage, never submits
   demo-audit-hunter.sh          # offline, deterministic proof of the #1485 audit-aware foundation: novelty-gate flags restated known issues (value-leak/cursor-drift) + passes novel, fetch-audits SKIPs offline + ingests over localhost, exit 0
   demo-coordinator.sh           # offline, deterministic proof of the #1014 fact-driven + evolving-policy loop
   demo-dispatch.sh              # offline, deterministic proof of the #1014 M2 substrate DISPATCH (every action type)
@@ -666,7 +716,7 @@ dark-factory/
   demo-poc-gen.sh               # offline proof of the #1507 concrete-exploit PoC class (hardhat + non-invariant foundry): poc-writer.ag + the polarity-inverting toolchain gate
   demo-audit-scout.sh           # offline proof of the #1487 audit-aware DEVISE stage audit-scout.ag (ingest a target's audits -> RESIDUAL attack surface + exclusion boundary)
   demo-report-writer.sh         # offline proof of the #1508 report formatter report-writer.ag (confirmed finding + PoC + gate verdicts -> Immunefi-shaped 4-section SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW)
-  demo-feedback-loop.sh         # offline proof of the #1526 human<->federation feedback loop: deliver-submission.sh drop-dir + feedback-intake.ag folding OUTCOME.md back into learning (no platform API/scrape)
+  demo-feedback-loop.sh         # offline proof of the #1526 human<->federation feedback loop: deliver-submission.sh drop-dir + feedback-intake.ag folding OUTCOME.md back into learning (no platform API/scrape); part 8 (#1557) proves the Slack-thread outcome ingest (conversations.replies -> OUTCOME.md -> confirmation, idempotent)
   setup-solana-toolchain.sh     # one-time offline toolchain build (network ON)
   snapshot-rpc.sh               # host RPC getAccountInfo -> frozen on-chain snapshot (V4)
   calibrate-sealevel.sh         # detection+validation scorecard over the sealevel corpus (V6)
