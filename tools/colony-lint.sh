@@ -935,6 +935,23 @@ if [ -x "$REPO_ROOT/dark-factory/demo-feedback-loop.sh" ]; then
     fi
 fi
 
+# --- dark-factory coordinator submission-pass integration (#1509, epic #1505 capstone) ---
+# coordinator.ag gains a THIRD mode (gated on PASS_ENABLED, byte-identical when unset): a fixed-order
+# submission pass scope->devise->poc->impact->dup->report->HALT that threads each shipped stage's verdict into
+# the next and HARD-halts on a blocking gate (scope not payable / devise no-residual / poc not finding /
+# impact not substantiated), dup HIGH advisory. It NEVER submits — the terminal best case is the report-writer's
+# own SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW. demo-audit-pass.sh source-guards the wiring (CI-safe) + runs the
+# deterministic offline pass over PASS_FIXTURE fact-states when agentis is present.
+if [ -x "$REPO_ROOT/dark-factory/demo-audit-pass.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-audit-pass.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: coordinator submission-pass integration (#1509)"
+    else
+        fail "dark-factory: coordinator submission-pass integration regressed (#1509)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory capability bench — deterministic safety stage (#1490) ---
 # run-capability-bench.sh measures whether the discover->devise->attack->novelty pipeline surfaces an
 # audit-SURVIVING bug and never re-surfaces a known one, scored against a fixture's ground truth. Its

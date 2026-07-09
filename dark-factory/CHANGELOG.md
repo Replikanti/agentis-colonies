@@ -15,6 +15,40 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Coordinator submission-pass integration — the epic #1505 CAPSTONE** (#1509, epic #1505). Wires the shipped
+  submission stages (scope-gate #1511, audit-scout DEVISE, poc-writer #1507, impact-gate #1522, dup-scout #1503,
+  report-writer #1508) into `coordinator.ag` as ONE fixed-order autonomous pass — `discover -> scope -> devise ->
+  poc -> impact -> dup -> report -> HALT` — threading each stage's single-line verdict into the next and
+  human-gated at submit. Design decision baked in: this is a THIRD coordinator mode, NOT scored argmax actions —
+  the stages have a mandatory partial order + hard early-exit, not interchangeable bandit arms, so a policy weight
+  must never reorder or skip them.
+  - `auditor/agents/coordinator.ag` — a new PASS block, all additive and DARK unless `PASS_ENABLED` is set (the
+    existing #1014 ORCHESTRATE_ENABLED reduce loop + the single decide_once path stay BYTE-IDENTICAL when the flag
+    is unset — the demo-coordinator.sh no-flag regression guard). `submission_pass()` reduces `pass_step` over the
+    fixed `STAGES` order; each step resolves the stage verdict, traces a row + emits `dark-factory:pass_stage` +
+    `learn("coordinator-pass", ...)` (so per-stage outcome still evolves by result), threads the verdict forward,
+    and HARD-halts on a blocking gate: scope not payable -> `BLOCKED-SCOPE`, devise no-residual -> `NO-RESIDUAL`,
+    poc not finding -> `NO-POC`, impact not substantiated -> `BLOCKED-IMPACT`. dup HIGH is ADVISORY (threaded,
+    never halts). report is terminal -> `PENDING-HUMAN-REVIEW`. The hard gate predicates (`scope_proceeds`,
+    `impact_proceeds`) require the EXACT productive token; anything else (incl. the stub `incomplete`) halts —
+    fail-safe toward NOT submitting. The pass NEVER emits a submit or contacts a platform. Result in
+    `{PENDING-HUMAN-REVIEW, BLOCKED-SCOPE, NO-RESIDUAL, NO-POC, BLOCKED-IMPACT, INCOMPLETE}`, published to the
+    durable `coordinator:pass_trace` / `coordinator:pass_result` memos.
+  - Offline determinism (the CI path) via a `PASS_FIXTURE` fact (`scope=payable;devise=residual;poc=finding;
+    impact=substantiated;dup=low;report=drafted`) — an absent stage key defaults to that stage's PRODUCTIVE token,
+    so a partial fixture short-circuits at the divergent stage. The LIVE path exec-shs a per-stage runner
+    (mirroring `run_symbolic_live`) with an honest-stub fallback (absent runner -> `incomplete` -> the pass halts).
+  - `run-audit-pass.sh` — the bootstrap (sibling of `run-coordinator.sh`): seeds the finding facts + `STAGES` +
+    the per-stage runner paths + optional `PASS_FIXTURE`, extends `exec.env_passthrough` to cover every pass var,
+    fires ONE `agentis go coordinator.ag` with `PASS_ENABLED=1`, and reads `coordinator:pass_trace`/`pass_result`
+    back. NEVER submits (same human-gate contract as `run-audit.sh`).
+  - `auditor/scripts/run-gate-agent.sh` — a thin wrapper that runs any single-verdict-line gate `.ag` in a
+    throwaway store and echoes its verdict line (used for the five `.ag` gates on the live path; PoC reuses
+    `run-poc.sh`).
+  - `demo-audit-pass.sh` (CI-safe, wired into `colony-lint.sh`) — source-guards the wiring, then runs the
+    deterministic offline pass over three fact-states: full-proceed -> `PENDING-HUMAN-REVIEW`; out-of-scope asset
+    -> `BLOCKED-SCOPE` (downstream rows provably absent); simulated-state impact -> `BLOCKED-IMPACT` (dup/report
+    absent); and the never-submit invariant.
 - **Human<->federation feedback loop — deliver drafts + intake outcomes into learning** (#1526, epic #1505).
   Closes both ends of the loop through a single operator DROP-DIRECTORY (design decision baked in: a LOCAL
   exchange point — no platform API, no gist, no scrape; offline-testable, operator-mediated, human-gated). A
