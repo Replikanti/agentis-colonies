@@ -1056,6 +1056,110 @@ fn recover_red_prs(owner: string, repo: string) -> int {
     return recover_scan(owner, repo, raw, 0);
 }
 
+// #1518: auto-rebase sweep for our OWN CONFLICTING PRs. A PR made CONFLICTING by
+// an unrelated main merge gets NO fresh CI run at all (GitHub skips workflows on
+// an unmergeable head), so recover_red_prs (which keys on a RED CI) can never
+// help it — the PR silently rots. This sweep detects `MERGEABLE=conflicting`
+// (the mr-pipeline-status token) and launches a pure-git `--rebase` job that
+// rebases the branch onto the default branch, union-merges the one proven-safe
+// conflict class (CHANGELOG [Unreleased] two-sided inserts), and fail-closes
+// everything else to a human note. It runs BEFORE recover_red_prs in the tick
+// (a CONFLICTING PR has no fresh CI, so rebase must run first to PRODUCE one).
+
+// rebase_attempts: how many auto-rebase jobs we have already launched for this
+// PR (from the rebase:attempts:<iid> memo). Missing => 0. Mirrors
+// recover_attempts (the ci_fix:attempts cap).
+fn rebase_attempts(owner: string, repo: string, iid_str: string) -> int {
+    let raw = recall_latest(scoped_memo(owner, repo, "rebase:attempts:" + iid_str));
+    if len(raw) == 0 { return 0; };
+    return parse_int(raw);
+}
+
+// rebase_at: process the open PR at index `idx`. Returns 1 if it LAUNCHED an
+// auto-rebase job (caller then returns — one job per tick), 0 otherwise. Own PRs
+// only (head branch starts `fix/issue-`). Acts ONLY on MERGEABLE==conflicting:
+//   * unknown -> GitHub is still computing mergeability; skip + re-poll next tick
+//                (NEVER treat unknown as clean or conflicting).
+//   * true/false/other -> not our concern here (a red PR is recover_red_prs').
+// Retry cap 2 per PR via rebase:attempts:<iid> (bumped BEFORE launch,
+// fail-closed). The `--rebase` job's push routes through guarded_push (#1516), so
+// an operator-carrying branch degrades to a yield note, never a clobber.
+fn rebase_at(owner: string, repo: string, raw: string, idx: int) -> int {
+    let iid_str = open_pr_field(raw, idx, "iid");
+    if len(iid_str) == 0 { return 0; };
+    if iid_str == "void" { return 0; };
+    let src = open_pr_field(raw, idx, "source_branch");
+    // Own PRs only: never touch a PR we did not open.
+    if index_of(src, "fix/issue-") != 0 { return 0; };
+
+    // colony-lint: safe-exec-concat
+    let checks_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-pipeline-status " + shell_escape(iid_str) + repo_arg(owner, repo);
+    let checks_out = try { exec sh checks_cmd; } catch e { ""; };
+    let mergeable = pr_check_token(checks_out, "MERGEABLE");
+    // Act ONLY on a confirmed git conflict. `unknown` (GitHub still computing),
+    // `true`, `false`, and an empty read all fall through to skip + re-poll.
+    if mergeable != "conflicting" { return 0; };
+
+    let attempts = rebase_attempts(owner, repo, iid_str);
+    if attempts >= 2 {
+        print("[code_writer] auto-rebase gave up on PR", iid_str, "after 2 attempts — needs human");
+        return 0;
+    };
+
+    // Bump the attempt memo BEFORE launching so a crash mid-launch still counts
+    // against the cap (fail-closed: never exceed 2 re-drives).
+    let next_attempt = attempts + 1;
+    memo_write(scoped_memo(owner, repo, "rebase:attempts:" + iid_str), to_string(next_attempt));
+
+    // Rebase the PR's ACTUAL head branch (source_branch), already validated to
+    // start `fix/issue-`. `--task` is required by the orchestrator but the
+    // `--rebase` op is pure-git and never runs an editing engine, so pass a
+    // benign descriptor.
+    let branch_name = src;
+    let rebase_title = "chore: auto-rebase #" + iid_str;
+    let rebase_task = "Auto-rebase this conflicting PR onto the default branch (pure git, no code edit).";
+    // colony-lint: safe-exec-concat
+    let job_cmd = "$COLONY_DIR/../../tools/code-edit-job.sh --owner " + shell_escape(owner) + " --repo " + shell_escape(repo) + " --issue " + shell_escape(iid_str) + " --branch " + shell_escape(branch_name) + " --title " + shell_escape(rebase_title) + " --task " + shell_escape(rebase_task) + " --rebase";
+    let job_out = try { exec sh job_cmd; } catch e {
+        print("[code_writer] auto-rebase launcher failed for PR", iid_str, ":", e);
+        "";
+    };
+    let job_state = job_word(job_out);
+    if job_state == "DONE" {
+        print("[code_writer] auto-rebase pushed a rebase of conflicting PR", iid_str, "(attempt", next_attempt, "/2)");
+    } else {
+        print("[code_writer] auto-rebasing conflicting PR", iid_str, "(attempt", next_attempt, "/2)");
+    };
+    // One rebase job per tick: signal the caller to return without drafting.
+    return 1;
+}
+
+// rebase_scan: recurse over the open-PR list, launching at most ONE auto-rebase
+// per tick. Returns 1 once a job is launched (stop scanning), else 0.
+fn rebase_scan(owner: string, repo: string, raw: string, idx: int) -> int {
+    let iid_str = open_pr_field(raw, idx, "iid");
+    if len(iid_str) == 0 { return 0; };
+    let did = rebase_at(owner, repo, raw, idx);
+    if did == 1 { return 1; };
+    return rebase_scan(owner, repo, raw, idx + 1);
+}
+
+// rebase_conflicting_prs: list the federation's own open PRs and, at the
+// autonomous tier only, auto-rebase the FIRST CONFLICTING one whose head is a
+// fix/issue- branch we opened. Returns 1 if it launched a rebase job (caller
+// returns for this tick — one job per tick, do not also draft).
+fn rebase_conflicting_prs(owner: string, repo: string) -> int {
+    // Autonomous-only: force-pushing a rebased branch is a terminal write.
+    if repo_tier("code_writer", owner, repo) != "autonomous" { return 0; };
+    // Raw (no --view): needs both `iid` and `source_branch`, which the `impl`
+    // view drops — same reason as recover_red_prs.
+    // colony-lint: safe-exec-concat
+    let list_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state opened" + repo_arg(owner, repo);
+    let raw = try { exec sh list_cmd; } catch e { ""; };
+    if len(raw) < 5 { return 0; };
+    return rebase_scan(owner, repo, raw, 0);
+}
+
 // #1360: review-finding recovery helpers (the review-resolver pattern). The
 // federation re-drives a RED PR (recover_red_prs), but a GREEN PR carrying
 // actionable review findings — the code-review colony's request_changes summary
@@ -1255,9 +1359,22 @@ fn resolve_review_prs(owner: string, repo: string) -> int {
 }
 
 fn tick_for_repo(owner: string, repo: string) -> void {
-    // #1332: red-PR recovery runs FIRST (autonomous tier only), BEFORE the
-    // draft path. If a red PR we own is re-driven this tick, return without
-    // drafting — one code-edit job per tick.
+    // #1518: auto-rebase of our own CONFLICTING PRs runs FIRST — BEFORE red-CI
+    // recovery. A CONFLICTING PR has NO fresh CI run (GitHub skips workflows on
+    // an unmergeable head), so recover_red_prs cannot help it; the rebase must
+    // run first to PRODUCE a CI run. One code-edit job per tick: a launch returns
+    // without drafting.
+    if rebase_conflicting_prs(owner, repo) == 1 {
+        let now_b = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_b) > 0 {
+            memo_write(scoped_memo(owner, repo, "code_writer:last_check"), now_b);
+        };
+        return;
+    };
+
+    // #1332: red-PR recovery runs (autonomous tier only) BEFORE the draft path.
+    // If a red PR we own is re-driven this tick, return without drafting — one
+    // code-edit job per tick.
     if recover_red_prs(owner, repo) == 1 {
         let now_r = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
         if len(now_r) > 0 {

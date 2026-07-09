@@ -99,6 +99,12 @@ tools/apply-line-edits.py
 # screen-scrape corruption of large structured-JSON file content (#1152 /
 # #1195 / #1208). Runtime dep: code-edit-job.sh launches it detached.
 tools/code-edit-in-checkout.sh
+# #1518: deterministic CHANGELOG [Unreleased] union-merge helper. Runtime dep:
+# code-edit-in-checkout.sh --rebase invokes it on a lone-CHANGELOG.md rebase
+# conflict to union two-sided additive [Unreleased] inserts behind a strict
+# containment guard (no LLM). Every other conflict shape fail-closes to a human
+# note, so this is the only auto-resolve path the rebase stage carries.
+tools/changelog-union-resolve.py
 # #1214: fast detached launcher/poller for the orchestrator above. agentis caps
 # a single `exec sh` at ~120000ms, but the orchestrator runs for minutes, so a
 # synchronous call was killed mid-edit. code_writer.ag now invokes this launcher

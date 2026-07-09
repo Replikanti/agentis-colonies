@@ -15,6 +15,31 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Added
+
+- **Auto-rebase stage for the federation's own CONFLICTING PRs**
+  ([#1518](https://github.com/Replikanti/agentis-colonies/issues/1518)): when an
+  unrelated main merge makes a fed-owned PR `mergeable = CONFLICTING`, GitHub
+  runs no workflow on it, so the #1332 fix-if-red recovery never fires and the PR
+  silently rots. `implementation/code_writer.ag` gains a `rebase_conflicting_prs`
+  sweep (autonomous-tier, own `fix/issue-` PRs only) that runs FIRST in the tick
+  — before red-CI recovery — and, on `MERGEABLE == conflicting`, launches a new
+  pure-git `--rebase` mode in `tools/code-edit-in-checkout.sh` (bounded by a
+  `rebase:attempts:<iid>` cap of 2). The mode rebases the branch onto the default
+  branch and pushes through the existing `guarded_push` chokepoint
+  ([#1516](https://github.com/Replikanti/agentis-colonies/issues/1516)) — so a
+  branch carrying operator commits degrades to the yield note instead of a
+  clobber. The ONE deterministic conflict class it auto-resolves is two-sided
+  additive bullet inserts under `CHANGELOG.md` `## [Unreleased]`, via the new
+  `tools/changelog-union-resolve.py` behind a strict containment guard (lone
+  `CHANGELOG.md`, hunks strictly inside `[Unreleased]`, both sides
+  additive-bullet-only); every other conflict shape, a released-heading touch, a
+  guard/parse failure, or `MERGEABLE == unknown` fail-closes to a `git rebase
+  --abort` plus an at-most-once human note (never an LLM freeform resolve). The
+  `mr-pipeline-status` verb now emits an explicit `MERGEABLE=unknown` value on
+  both forges (GitHub + GitLab parity) so a not-yet-computed mergeability is
+  poll-retried, never misread as clean or conflicting.
+
 ### Fixed
 
 - **code_writer no longer force-pushes over commits it did not author, and never
