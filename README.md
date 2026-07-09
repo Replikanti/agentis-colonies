@@ -63,7 +63,7 @@ Federation-agnostic components are versioned and released independently so fixes
 | Badge | Meaning |
 |-------|---------|
 | **Stable** | Battle-tested on real workloads. Safe for production use. |
-| **Beta** | All agents built, audited, and linted clean. Not yet validated on live GitLab projects. |
+| **Beta** | All agents built, audited, and linted clean. Not yet validated end-to-end against a live target. |
 | **Alpha** | Core agents work. Some features incomplete or untested. |
 | **Experimental** | Research scaffold. Wiring works end-to-end but no claim about findings quality, stability, or backwards compatibility. |
 | **Planned** | Design exists, implementation not started. |
