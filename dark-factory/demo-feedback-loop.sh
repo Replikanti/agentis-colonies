@@ -5,7 +5,7 @@
 # dark-factory demos (demo-report-writer.sh / demo-immunefi-intake.sh): assert-based PASS/FAIL lines, a temp
 # drop-dir trap-cleaned, exit non-zero on regression, exit 3 if a component is missing.
 #
-# FIVE parts:
+# SIX parts:
 #   1) DELIVERY (offline, real): run deliver-submission.sh over a fixture report-writer draft carrying the
 #      SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW marker + fixture gate verdicts + a stable id -> assert the drop-dir
 #      has manifest.json + submission-draft.md + OUTCOME.md, that manifest.json carries the canonical
@@ -36,6 +36,19 @@
 #      NO network. Asserts: byte-identical poc/run-log, REPRODUCE.md content, nested immunefi_fields, the stubbed
 #      gist URL in the manifest, the one-line stdout contract WITH the gist stub active, the marker guard running
 #      BEFORE any poc staging/gist, writeup-only degradation, and the no-FIELD default-to-"" case.
+#   6) BOT-MODE FULL PACKAGE (offline, #1541): deliver-submission.sh, when a Slack Bot App is configured
+#      (DARK_FACTORY_SLACK_BOT_TOKEN + DARK_FACTORY_SLACK_CHANNEL), hands the COMPLETE submission package to
+#      notify-submission.sh — a main chat.postMessage carrying the form metadata + bounty/gist links, then the
+#      Description + PoC snippets uploaded into that message's THREAD via the modern external file-upload flow. A
+#      smart `curl` STUB keyed on the endpoint proves the whole state machine offline (no network, a fake token).
+#      Asserts: the chat.postMessage JSON shape (channel + all five fields + bounty/gist links + severity, Bearer
+#      header present); ok:false-is-failure (a `notinchannel` stub -> no thread uploads, deliver still exits 0);
+#      the modern getUploadURLExternal+completeUploadExternal uploads fire for the Description AND the PoC with
+#      thread_ts==the main ts + channel_id; full-package assembly (Description == the stripped 4-section body, PoC
+#      == the verbatim source); best-effort non-fatality + the ONE-line staged-path stdout contract; the no-creds
+#      fallback (bot vars unset -> the #1538 path, bot sender not invoked); token non-leakage into
+#      deliver-submission.sh's own stdout/stderr; and the source guards (bash never sh, never-submit, python
+#      json.dumps, the modern upload flow not the deprecated files.upload).
 #
 # All shell sub-scripts are invoked with `bash` (never `sh`) per the #1507 dash lesson.
 #
@@ -541,6 +554,223 @@ grep -qi 'NOT a bounty-platform submission' "$DELIVER" \
   && ok "(guard) the header keeps the not-a-platform-submission invariant explicit" || bad "(guard) missing the not-a-platform-submission note"
 
 # ----------------------------------------------------------------------------------------------------------
+# 6) BOT-MODE FULL PACKAGE — deliver-submission.sh -> notify-submission.sh (#1541). A smart `curl` STUB keyed on
+#    the Slack endpoint proves the chat.postMessage + modern external file-upload state machine offline, with a
+#    fake token that must never leak. No network anywhere.
+# ----------------------------------------------------------------------------------------------------------
+note "6) Slack BOT-MODE delivery of the complete submission package (offline, curl stubbed) ..."
+set +e
+
+NOTIFY_SUB="$HERE/notify-submission.sh"
+[ -x "$NOTIFY_SUB" ] || bad "(pre) notify-submission.sh not found / not executable: $NOTIFY_SUB"
+
+# A smart `curl` STUB on PATH: logs every call (incl. the Authorization header) to $SLACK_LOG, captures the
+# chat.postMessage `-d` body + each completeUploadExternal body + every `@file` upload payload, and answers per
+# endpoint — chat.postMessage->{ok:true,ts}, getUploadURLExternal->{ok:true,upload_url,file_id},
+# completeUploadExternal->{ok:true}, the upload_url POST->empty+200; SLACK_STUB_MODE=notinchannel flips
+# chat.postMessage to {ok:false,error:not_in_channel}. It emits `<body>\n<http_code>` to mirror `-w '\n%{http_code}'`.
+FAKEBIN6="$WORK/fakebin6"
+mkdir -p "$FAKEBIN6"
+{
+  printf '%s\n' "#!/bin/sh"
+  printf '%s\n' 'printf "%s\n" "$*" >> "$SLACK_LOG"'
+  printf '%s\n' 'DBODY=""; prev=""'
+  printf '%s\n' 'for a in "$@"; do'
+  printf '%s\n' '  if [ "$prev" = "-d" ]; then DBODY="$a"; fi'
+  printf '%s\n' '  case "$a" in'
+  printf '%s\n' '    @*) src="${a#@}"; if [ -f "$src" ]; then c=$(cat "$SLACK_UPCNT" 2>/dev/null || echo 0); c=$((c+1)); echo "$c" > "$SLACK_UPCNT"; cp "$src" "$SLACK_UPLOAD_DIR/content-$c"; fi ;;'
+  printf '%s\n' '  esac'
+  printf '%s\n' '  prev="$a"'
+  printf '%s\n' 'done'
+  printf '%s\n' 'case "$*" in'
+  printf '%s\n' '  *chat.postMessage*)'
+  printf '%s\n' '    printf "%s" "$DBODY" > "$SLACK_POST_BODY"'
+  printf '%s\n' '    if [ "${SLACK_STUB_MODE:-}" = notinchannel ]; then printf "%s\n%s" "{\"ok\":false,\"error\":\"not_in_channel\"}" "200"'
+  printf '%s\n' '    else printf "%s\n%s" "{\"ok\":true,\"ts\":\"1700000000.000100\"}" "200"; fi ;;'
+  printf '%s\n' '  *getUploadURLExternal*) echo x >> "$SLACK_GETURL"; printf "%s\n%s" "{\"ok\":true,\"upload_url\":\"https://files.slack/stub/upload\",\"file_id\":\"F0STUB\"}" "200" ;;'
+  printf '%s\n' '  *completeUploadExternal*) printf "%s\n" "$DBODY" >> "$SLACK_COMPLETE"; printf "%s\n%s" "{\"ok\":true}" "200" ;;'
+  printf '%s\n' '  *files.slack/stub*) printf "%s\n%s" "" "200" ;;'
+  printf '%s\n' '  *) printf "%s\n%s" "{\"ok\":true}" "200" ;;'
+  printf '%s\n' 'esac'
+} > "$FAKEBIN6/curl"
+chmod +x "$FAKEBIN6/curl"
+
+# Reuse part-5's `gh` stub (authed) via PATH ordering so the manifest gets a real-looking gist URL (-> the main
+# message carries the gist link). FAKEBIN6's curl shadows part-5's failing curl; gh resolves from FAKEBIN.
+BID="enzyme-onyx@a1b2c3d:botmode"
+BOUNTY_URL="https://immunefi.com/bug-bounty/enzyme/"
+FAKE_TOKEN="xoxb-DEMO-SHOULD-NOT-LEAK"
+DROP6A="$WORK/drop-bot-a"
+SLACK_LOG="$WORK/slack-a.log"; SLACK_POST_BODY="$WORK/slack-post-a.json"
+SLACK_COMPLETE="$WORK/slack-complete-a.jsonl"; SLACK_GETURL="$WORK/slack-geturl-a.log"
+SLACK_UPLOAD_DIR="$WORK/slack-uploads-a"; SLACK_UPCNT="$WORK/slack-upcnt-a"
+mkdir -p "$SLACK_UPLOAD_DIR"
+
+BOT_A_ERR="$WORK/bot-a-stderr.log"
+STAGED6A="$(env \
+  SLACK_LOG="$SLACK_LOG" SLACK_POST_BODY="$SLACK_POST_BODY" SLACK_COMPLETE="$SLACK_COMPLETE" \
+  SLACK_GETURL="$SLACK_GETURL" SLACK_UPLOAD_DIR="$SLACK_UPLOAD_DIR" SLACK_UPCNT="$SLACK_UPCNT" \
+  GH_STUB_MODE=authed GITHUB_TOKEN=fake GH_LOG="$WORK/gh-6a.log" \
+  DARK_FACTORY_SLACK_BOT_TOKEN="$FAKE_TOKEN" DARK_FACTORY_SLACK_CHANNEL=C0BASE \
+  DARK_FACTORY_SLACK_CHANNEL_WARN=C0WARN DARK_FACTORY_SLACK_CHANNEL_HIGH=C0HIGH \
+  PATH="$FAKEBIN6:$FAKEBIN:$PATH" \
+  bash "$DELIVER" --id "$BID" --draft-file "$PDRAFT" --target enzyme-onyx --severity Critical \
+    --poc-file "$PPOC" --poc-run "$PRUN" --poc-kind foundry --bounty-url "$BOUNTY_URL" \
+    --drop-dir "$DROP6A" 2>"$BOT_A_ERR")"; RC=$?
+
+# --- (e) best-effort non-fatal + the ONE-line staged-path stdout contract (load-bearing) with bot mode active. --
+[ "$RC" -eq 0 ] && ok "(e) a bot-mode stage exits 0 (best-effort, never fatal)" || bad "(e) bot-mode stage exited $RC (expected 0)"
+LINES_6A="$(printf '%s\n' "$STAGED6A" | wc -l | tr -d ' ')"
+if [ "$LINES_6A" = "1" ] && [ "$STAGED6A" = "$DROP6A/$(pid_slug "$BID")" ]; then
+  ok "(e) stdout is exactly ONE line == the staged path (bot chatter correctly redirected to stderr)"
+else
+  bad "(e) stdout not a one-line staged path: [$STAGED6A]"
+fi
+
+# --- (g) secret masking: the raw xoxb token never appears in deliver-submission.sh's own stdout/stderr. ---------
+if { printf '%s' "$STAGED6A"; cat "$BOT_A_ERR"; } | grep -q "$FAKE_TOKEN"; then
+  bad "(g) the raw bot token LEAKED into deliver-submission.sh stdout/stderr"
+else
+  ok "(g) the raw bot token never appears in deliver-submission.sh's own stdout/stderr"
+fi
+
+# --- (a) chat.postMessage JSON shape + the Authorization: Bearer header. ---------------------------------------
+POST_OK="$(SLACK_POST_BODY="$SLACK_POST_BODY" BOUNTY_URL="$BOUNTY_URL" python3 -c '
+import json, os, sys
+try:
+    o = json.load(open(os.environ["SLACK_POST_BODY"]))
+except Exception as e:
+    print("parse-error:" + str(e)); sys.exit(0)
+t = o.get("text", "")
+checks = [
+    o.get("channel") == "C0HIGH",
+    "Project:" in t, "Asset:" in t, "Impact:" in t, "Severity:" in t, "Title:" in t,
+    ("<" + os.environ["BOUNTY_URL"] + "|") in t,
+    ("<https://gist.github.com/" in t and "|secret gist>" in t),
+    "Severity band:" in t,
+]
+print("ok" if all(checks) else "shape-mismatch:" + json.dumps(o))
+')"
+[ "$POST_OK" = "ok" ] \
+  && ok "(a) chat.postMessage carries channel==C0HIGH + all five fields + bounty/gist links + severity" \
+  || bad "(a) chat.postMessage shape mismatch: $POST_OK"
+grep -q 'Authorization: Bearer' "$SLACK_LOG" \
+  && ok "(a) the chat.postMessage call sends the Authorization: Bearer header" || bad "(a) no Authorization: Bearer header logged"
+
+# --- (c) modern uploads fire for the Description AND the PoC, threaded under the main ts + channel_id. ----------
+GETURL_N="$([ -f "$SLACK_GETURL" ] && wc -l < "$SLACK_GETURL" | tr -d ' ' || echo 0)"
+[ "${GETURL_N:-0}" -ge 2 ] \
+  && ok "(c) getUploadURLExternal fired for at least the Description + PoC (count=$GETURL_N)" || bad "(c) getUploadURLExternal fired only $GETURL_N time(s)"
+COMPLETE_OK="$(SLACK_COMPLETE="$SLACK_COMPLETE" POC_BASENAME="$POC_BASENAME" python3 -c '
+import json, os, sys
+titles = set(); thread_ok = True; chan_ok = True; n = 0
+try:
+    lines = open(os.environ["SLACK_COMPLETE"]).read().splitlines()
+except Exception:
+    lines = []
+for line in lines:
+    line = line.strip()
+    if not line:
+        continue
+    n += 1
+    o = json.loads(line)
+    for f in o.get("files", []):
+        titles.add(f.get("title", ""))
+    if o.get("thread_ts") != "1700000000.000100":
+        thread_ok = False
+    if o.get("channel_id") != "C0HIGH":
+        chan_ok = False
+need = {"Description.md", os.environ["POC_BASENAME"]}
+print("ok" if n >= 2 and need.issubset(titles) and thread_ok and chan_ok else "bad:titles=" + repr(sorted(titles)) + " thread=" + str(thread_ok) + " chan=" + str(chan_ok))
+')"
+[ "$COMPLETE_OK" = "ok" ] \
+  && ok "(c) completeUploadExternal threaded the Description + PoC under thread_ts==the main ts, channel_id==C0HIGH" \
+  || bad "(c) completeUploadExternal thread/channel/titles wrong: $COMPLETE_OK"
+
+# --- (d) full-package assembly: Description == the marker/FIELD-stripped 4-section body; PoC == verbatim source. -
+EXPECT_DESC="$WORK/expect-desc.md"
+DRAFT_SRC="$PDRAFT" python3 -c '
+import os, sys
+lines = open(os.environ["DRAFT_SRC"]).read().splitlines()
+out = [l for l in lines if not (l.startswith("SUBMISSION-DRAFT|") or l.startswith("FIELD|"))]
+while out and out[0].strip() == "":
+    out.pop(0)
+sys.stdout.write("\n".join(out) + "\n")
+' > "$EXPECT_DESC"
+DESC_MATCH=0; POC_MATCH=0
+for cf in "$SLACK_UPLOAD_DIR"/content-*; do
+  [ -f "$cf" ] || continue
+  cmp -s "$cf" "$EXPECT_DESC" && DESC_MATCH=1
+  cmp -s "$cf" "$PPOC" && POC_MATCH=1
+done
+# The uploaded Description must carry the 4-section body with the marker + FIELD lines removed.
+[ "$DESC_MATCH" = 1 ] \
+  && ok "(d) the Description snippet == the marker/FIELD-stripped 4-section body (byte-identical)" || bad "(d) Description snippet did not match the stripped body"
+[ "$POC_MATCH" = 1 ] \
+  && ok "(d) the PoC snippet == the verbatim poc source (byte-identical)" || bad "(d) PoC snippet did not match the verbatim source"
+
+# --- (b) ok:false-is-failure: a notinchannel stub -> chat.postMessage failure, NO thread uploads, deliver exit 0. -
+DROP6B="$WORK/drop-bot-b"
+SLACK_LOG_B="$WORK/slack-b.log"; SLACK_GETURL_B="$WORK/slack-geturl-b.log"
+BOT_B_ERR="$WORK/bot-b-stderr.log"
+env \
+  SLACK_STUB_MODE=notinchannel \
+  SLACK_LOG="$SLACK_LOG_B" SLACK_POST_BODY="$WORK/slack-post-b.json" SLACK_COMPLETE="$WORK/slack-complete-b.jsonl" \
+  SLACK_GETURL="$SLACK_GETURL_B" SLACK_UPLOAD_DIR="$WORK/slack-uploads-b" SLACK_UPCNT="$WORK/slack-upcnt-b" \
+  GH_STUB_MODE=notoken GH_LOG="$WORK/gh-6b.log" \
+  DARK_FACTORY_SLACK_BOT_TOKEN="$FAKE_TOKEN" DARK_FACTORY_SLACK_CHANNEL=C0BASE \
+  PATH="$FAKEBIN6:$FAKEBIN:$PATH" \
+  bash "$DELIVER" --id "enzyme-onyx@a1b2c3d:botmode-b" --draft-file "$PDRAFT" --target enzyme-onyx --severity Medium \
+    --drop-dir "$DROP6B" >/dev/null 2>"$BOT_B_ERR"; RC=$?
+[ "$RC" -eq 0 ] && ok "(b) a hard ok:false (not_in_channel) never flips deliver-submission.sh's exit code" || bad "(b) ok:false flipped exit to $RC (expected 0)"
+grep -q 'not_in_channel' "$BOT_B_ERR" \
+  && ok "(b) the ok:false post is a loud stderr warning (slack error code shown)" || bad "(b) no not_in_channel warning on stderr"
+[ ! -s "$SLACK_GETURL_B" ] \
+  && ok "(b) NO getUploadURLExternal was attempted after the failed post (no ts to thread under)" || bad "(b) uploads were attempted despite the failed post"
+if grep -q "$FAKE_TOKEN" "$BOT_B_ERR"; then bad "(b) the token leaked in the ok:false warning"; else ok "(b) the ok:false warning shows only the slack error code, never the token"; fi
+
+# --- (f) no-creds fallback: bot token UNSET -> the rich sender is NOT invoked; the #1538 path is unchanged. -----
+DROP6F="$WORK/drop-bot-f"
+SLACK_LOG_F="$WORK/slack-f.log"
+BOT_F_ERR="$WORK/bot-f-stderr.log"
+STAGED6F="$(env -u DARK_FACTORY_SLACK_BOT_TOKEN -u DARK_FACTORY_SLACK_WEBHOOK -u MONITOR_WEBHOOK_URL \
+  SLACK_LOG="$SLACK_LOG_F" SLACK_POST_BODY="$WORK/slack-post-f.json" SLACK_COMPLETE="$WORK/slack-complete-f.jsonl" \
+  SLACK_GETURL="$WORK/slack-geturl-f.log" SLACK_UPLOAD_DIR="$WORK/slack-uploads-f" SLACK_UPCNT="$WORK/slack-upcnt-f" \
+  DARK_FACTORY_SLACK_CHANNEL=C0BASE \
+  PATH="$FAKEBIN6:$FAKEBIN:$PATH" \
+  bash "$DELIVER" --id "enzyme-onyx@a1b2c3d:botmode-f" --draft-file "$DRAFT" --severity Low \
+    --drop-dir "$DROP6F" 2>"$BOT_F_ERR")"; RC=$?
+[ "$RC" -eq 0 ] && ok "(f) with the bot TOKEN unset the stage still exits 0" || bad "(f) no-token stage exited $RC (expected 0)"
+if [ -f "$SLACK_LOG_F" ] && grep -q 'chat.postMessage' "$SLACK_LOG_F"; then
+  bad "(f) the bot sender was invoked despite the missing token"
+else
+  ok "(f) the bot sender is NOT invoked without a token (the #1538 webhook/stdout path stays in charge)"
+fi
+grep -q '\[monitor:alert\]' "$BOT_F_ERR" \
+  && ok "(f) the #1538 no-op fallback still pages on stderr (byte-identical behaviour)" || bad "(f) the #1538 fallback did not run with bot creds unset"
+
+# --- (h) source guards: notify-submission.sh is bash, documents never-submit, builds JSON via python3 json.dumps,
+#         uses the MODERN external-upload flow (not the deprecated files.upload), and is bash-invoked by deliver. --
+head -1 "$NOTIFY_SUB" | grep -q 'bash' \
+  && ok "(h) notify-submission.sh has a bash shebang (never sh)" || bad "(h) notify-submission.sh is not a bash script"
+grep -qi 'never-submit\|NOT a bounty-platform submission' "$NOTIFY_SUB" \
+  && ok "(h) notify-submission.sh documents the never-submit invariant" || bad "(h) notify-submission.sh missing the never-submit note"
+grep -q 'json.dumps' "$NOTIFY_SUB" \
+  && ok "(h) notify-submission.sh builds JSON via python3 json.dumps" || bad "(h) notify-submission.sh does not use json.dumps"
+if grep -q 'files.getUploadURLExternal' "$NOTIFY_SUB" && grep -q 'files.completeUploadExternal' "$NOTIFY_SUB" && ! grep -q 'api/files.upload' "$NOTIFY_SUB"; then
+  ok "(h) notify-submission.sh uses the modern external-upload flow, not the deprecated files.upload"
+else
+  bad "(h) notify-submission.sh upload flow is wrong (expected getUploadURLExternal + completeUploadExternal)"
+fi
+grep -q 'bash "\$SCRIPT_DIR/notify-submission.sh"' "$DELIVER" \
+  && ok "(h) deliver-submission.sh invokes notify-submission.sh via bash (source-pinned)" || bad "(h) deliver-submission.sh does not bash-invoke notify-submission.sh"
+if grep -qE '(^|[^a-zA-Z])sh[[:space:]]+"?\$SCRIPT_DIR/notify-submission\.sh"?' "$DELIVER"; then
+  bad "(h) deliver-submission.sh invokes notify-submission.sh via sh (dash-safety regression)"
+else
+  ok "(h) deliver-submission.sh never invokes notify-submission.sh via sh"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 echo
 if [ "$FAIL" -eq 0 ]; then
   note "PASS — deliver-submission.sh staged a marked draft (canonical id + raw gate verdicts in manifest.json),"
@@ -550,7 +780,10 @@ if [ "$FAIL" -eq 0 ]; then
   note "       never corrupts the staged-path stdout contract even with a webhook configured. And (#1540) the"
   note "       complete PoC-form artifact set stages byte-intact (poc/ source + poc-run.txt + REPRODUCE.md +"
   note "       FIELD->immunefi_fields), the operator's-own-GitHub secret gist auto-creates (gh stubbed) with a"
-  note "       graceful no-token fallback, and the marker guard still runs BEFORE any poc staging/gist. Never submits."
+  note "       graceful no-token fallback, and the marker guard still runs BEFORE any poc staging/gist. And (#1541)"
+  note "       bot-mode delivers the COMPLETE package (chat.postMessage + threaded Description/PoC snippets via the"
+  note "       modern external-upload flow), treats ok:false as failure, masks the token, and holds the one-line"
+  note "       stdout contract — all offline (curl stubbed), degrading to the #1538 path with no bot creds. Never submits."
   exit 0
 fi
 note "FAIL — a feedback-loop assertion regressed (see above)." >&2

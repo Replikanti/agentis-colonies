@@ -32,6 +32,16 @@
 #     MONITOR_WEBHOOK_URL when unset. Severity is read from the alert JSON's
 #     "severity" field (high|warn|low|info|none); a non-JSON body routes to the
 #     base URL.
+#   * Slack bot-mode single post (#1541) — when MONITOR_SLACK_BOT_TOKEN (an
+#     `xoxb-…`, scope chat:write) AND MONITOR_SLACK_CHANNEL (`C0…`) are set, the
+#     alert is delivered via a single chat.postMessage (Bearer auth, JSON
+#     {channel,text}) instead of the webhook; SUCCESS = HTTP 2xx AND ok==true (a
+#     `200 {"ok":false}` is a delivery failure, exit 4). Optional
+#     MONITOR_SLACK_CHANNEL_WARN / _HIGH route per severity, mirroring the webhook
+#     _WARN/_HIGH pattern. Bot vars UNSET -> the webhook path + stdout no-op are
+#     byte-identical to before. The RICH threaded full-package sender is a
+#     separate script (dark-factory/notify-submission.sh); this is the single-post
+#     path only. The token is only ever placed in the Authorization header.
 #
 # POSIX sh / dash-safe: no bashisms, no arrays, no `\xHH` printf escapes. CI runs
 # this under `sh` = dash.
@@ -79,9 +89,31 @@ case "$SEVERITY" in
         ;;
 esac
 
-# No webhook configured for this severity -> print to stdout and succeed (the
-# default no-op sink, behaviour preserved when nothing is configured).
-if [ -z "$WEBHOOK" ]; then
+# --- delivery mode (#1541, additive) -------------------------------------------
+# A Slack BOT token + channel take precedence over the webhook: a single
+# chat.postMessage (Bearer auth, JSON {channel,text}) so the monitor colony (and
+# the #1538 finding-ready ping) can page a bot workspace too. The RICH threaded
+# full-package sender is a separate script (dark-factory/notify-submission.sh);
+# this is only the SINGLE-post path. Bot vars UNSET -> MODE resolves exactly as
+# the pre-#1541 webhook selection did, so the webhook path and the stdout no-op
+# fallback are byte-identical to before. Optional MONITOR_SLACK_CHANNEL_WARN /
+# _HIGH override the base channel per severity, mirroring the webhook routing.
+MODE=""
+BOT_CHANNEL=""
+if [ -n "${MONITOR_SLACK_BOT_TOKEN:-}" ] && [ -n "${MONITOR_SLACK_CHANNEL:-}" ]; then
+    MODE=bot
+    case "$SEVERITY" in
+        high) BOT_CHANNEL="${MONITOR_SLACK_CHANNEL_HIGH:-$MONITOR_SLACK_CHANNEL}" ;;
+        warn) BOT_CHANNEL="${MONITOR_SLACK_CHANNEL_WARN:-$MONITOR_SLACK_CHANNEL}" ;;
+        *)    BOT_CHANNEL="$MONITOR_SLACK_CHANNEL" ;;
+    esac
+elif [ -n "$WEBHOOK" ]; then
+    MODE=webhook
+fi
+
+# No delivery target configured for this severity -> print to stdout and succeed
+# (the default no-op sink, behaviour preserved when nothing is configured).
+if [ -z "$MODE" ]; then
     echo "[monitor:alert] $MSG"
     exit 0
 fi
@@ -155,14 +187,7 @@ sys.stdout.write(hashlib.sha256(sig.encode("utf-8")).hexdigest()[:16])
     mv "$TMP_STATE" "$STATE_FILE"
 fi
 
-# --- payload -------------------------------------------------------------------
-# JSON-escape the message into a `{"content": "..."}` body that both Discord and
-# a Slack incoming webhook accept. The message is passed via the environment
-# (NOTIFY_MSG) so no untrusted text is interpolated into the python source —
-# dash-safe and injection-safe.
-PAYLOAD="$(NOTIFY_MSG="$MSG" python3 -c 'import json, os; print(json.dumps({"content": os.environ["NOTIFY_MSG"]}))')"
-
-# --- retry/backoff -------------------------------------------------------------
+# --- retry/backoff knobs (shared by both delivery modes) -----------------------
 # Bounded exponential retry on a transient failure. curl exit codes: 22 = HTTP
 # >= 400 (with -f); we re-probe the actual status to distinguish a retryable 5xx
 # from a permanent 4xx. A curl transport error (non-22 non-zero) is retryable.
@@ -174,6 +199,71 @@ BACKOFF_S="${MONITOR_NOTIFY_BACKOFF_S:-2}"
 case "$BACKOFF_S" in
     ''|*[!0-9]*) BACKOFF_S=2 ;;
 esac
+
+# --- Slack bot-mode single post (#1541) ----------------------------------------
+# chat.postMessage with a Bearer token + JSON {channel,text}. SUCCESS = HTTP 2xx
+# AND the body's ok==true (python3 parse) — a `200 {"ok":false,"error":…}` is a
+# delivery FAILURE (exit 4), never success. A 5xx / transport error retries with
+# the same bounded backoff as the webhook path. The token is passed ONLY in the
+# Authorization header and never echoed (a failure prints only the Slack error
+# code). Reached only when MODE=bot; the webhook path below is untouched.
+if [ "$MODE" = bot ]; then
+    BOT_PAYLOAD="$(NOTIFY_MSG="$MSG" NOTIFY_CHANNEL="$BOT_CHANNEL" python3 -c 'import json, os; print(json.dumps({"channel": os.environ["NOTIFY_CHANNEL"], "text": os.environ["NOTIFY_MSG"]}))')"
+    attempt=0
+    delay="$BACKOFF_S"
+    while : ; do
+        set +e
+        RESP="$(curl -sS \
+            -H "Authorization: Bearer $MONITOR_SLACK_BOT_TOKEN" \
+            -H 'Content-Type: application/json; charset=utf-8' \
+            -X POST \
+            -d "$BOT_PAYLOAD" \
+            -w '\n%{http_code}' \
+            "https://slack.com/api/chat.postMessage" 2>/dev/null)"
+        CURL_RC=$?
+        set -e
+        HTTP_CODE="$(printf '%s\n' "$RESP" | tail -n 1)"
+        BODY="$(printf '%s\n' "$RESP" | sed '$d')"
+        if [ "$CURL_RC" -eq 0 ]; then
+            case "$HTTP_CODE" in
+                2*)
+                    OKV="$(NOTIFY_BODY="$BODY" python3 -c '
+import json, os, sys
+try:
+    o = json.loads(os.environ.get("NOTIFY_BODY", "") or "")
+except Exception:
+    sys.stdout.write("err:parse_error"); sys.exit(0)
+if isinstance(o, dict) and o.get("ok") is True:
+    sys.stdout.write("ok")
+else:
+    sys.stdout.write("err:" + (str(o.get("error", "unknown")) if isinstance(o, dict) else "not_json"))
+')"
+                    if [ "$OKV" = ok ]; then
+                        echo "notify.sh: alert delivered to Slack bot channel $BOT_CHANNEL (HTTP $HTTP_CODE)"
+                        exit 0
+                    fi
+                    echo "notify.sh: Slack bot rejected the alert (${OKV#err:}) — not retrying" >&2
+                    exit 4
+                    ;;
+            esac
+        fi
+        attempt=$((attempt + 1))
+        if [ "$attempt" -gt "$MAX_RETRIES" ]; then
+            echo "notify.sh: bot delivery failed after $MAX_RETRIES retries (curl_rc=$CURL_RC http=$HTTP_CODE)" >&2
+            exit 4
+        fi
+        echo "notify.sh: transient bot failure (curl_rc=$CURL_RC http=$HTTP_CODE) — retry $attempt/$MAX_RETRIES in ${delay}s" >&2
+        sleep "$delay"
+        delay=$((delay * 2))
+    done
+fi
+
+# --- webhook payload (#1094, unchanged) ----------------------------------------
+# JSON-escape the message into a `{"content": "..."}` body that both Discord and
+# a Slack incoming webhook accept. The message is passed via the environment
+# (NOTIFY_MSG) so no untrusted text is interpolated into the python source —
+# dash-safe and injection-safe.
+PAYLOAD="$(NOTIFY_MSG="$MSG" python3 -c 'import json, os; print(json.dumps({"content": os.environ["NOTIFY_MSG"]}))')"
 
 attempt=0
 delay="$BACKOFF_S"
