@@ -131,11 +131,11 @@ def g(k):
 lines = []
 lines.append("*dark-factory submission package* — copy-paste ready for the Immunefi form")
 lines.append("")
-lines.append("Project: " + g("project"))
-lines.append("Asset: " + g("asset"))
-lines.append("Impact: " + g("impact"))
-lines.append("Severity: " + g("severity"))
-lines.append("Title: " + g("title"))
+lines.append("*Project:* " + g("project"))
+lines.append("*Asset:* " + g("asset"))
+lines.append("*Impact:* " + g("impact"))
+lines.append("*Severity:* " + g("severity"))
+lines.append("*Title:* " + g("title"))
 lines.append("")
 band = str(d.get("severity_band", "") or "")
 if band:

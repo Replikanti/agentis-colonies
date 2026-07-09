@@ -14,6 +14,21 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+- **Secret-gist auto-create used a non-existent `gh gist create --secret` flag** (#1549, live-verified against
+  a real `gh` + real bot token during the #1541 Slack delivery smoke-test). `gh gist create` has no `--secret`
+  flag — gists are **secret by default** (`-p`/`--public` is the only flag, and flips the OTHER way), so the
+  live create ALWAYS failed with `unknown flag: --secret`, silently degraded to the `GIST_COMMAND.txt` fallback,
+  and the secret gist link never reached the package or Slack. The fallback text carried the same broken command,
+  so an operator running it by hand hit the same error. Fixed by dropping `--secret` from both the live
+  `gh gist create` invocation and the `GIST_COMMAND.txt` fallback text in `deliver-submission.sh` (no `--public`
+  added — secret-by-default is the desired behaviour); `gist_ready()` and the best-effort `|| true` wrapping are
+  unchanged. `demo-feedback-loop.sh`'s part-5 gh-stub assertions now assert the command does NOT carry `--secret`.
+- **Slack field labels bolded for scannability** (#1549, same live smoke-test). The five metadata labels
+  (`Project:`/`Asset:`/`Impact:`/`Severity:`/`Title:`) in `notify-submission.sh`'s bot-mode main message now
+  render bold in Slack mrkdwn (`*Project:*` etc, single asterisks — values stay plain); `demo-feedback-loop.sh`'s
+  part-6 curl-stub assertion now checks for the bold label form.
+
 ### Added
 - **Slack BOT-MODE delivery of the COMPLETE submission package** (#1541, epic #1505). A configured Slack Bot App
   now receives the whole copy-paste-ready Immunefi package on a successful stage — not a one-line alert. Opt-in,

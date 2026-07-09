@@ -15,11 +15,13 @@
 #
 # Secret Gist (#1540, best-effort, opt-in on the operator's `gh`/token): the Immunefi PoC form wants a "secret
 # Gist environment to support your PoC", so when a PoC source is staged this can auto-create a SECRET gist via
-# `gh gist create --secret` carrying the PoC source + REPRODUCE.md + a README. That gist is a SECOND egress —
-# but to the operator's OWN GitHub, NOT a bounty-platform submission; the human-gated submit + never-submit
-# (no bounty-platform egress) invariants are UNCHANGED. It is capability-gated (`gist_ready()`: `gh` present AND
-# a token/auth) and best-effort: on no token / any failure it degrades to bundling the exact `gh gist create
-# --secret` command (poc/GIST_COMMAND.txt) + a gist-URL placeholder, and can NEVER fail a stage that succeeded.
+# `gh gist create` (gists are secret BY DEFAULT — `gh` has no `--secret` flag; `-p`/`--public` would flip the
+# other way, so neither is passed) carrying the PoC source + REPRODUCE.md + a README. That gist is a SECOND
+# egress — but to the operator's OWN GitHub, NOT a bounty-platform submission; the human-gated submit +
+# never-submit (no bounty-platform egress) invariants are UNCHANGED. It is capability-gated (`gist_ready()`:
+# `gh` present AND a token/auth) and best-effort: on no token / any failure it degrades to bundling the exact
+# `gh gist create` command (poc/GIST_COMMAND.txt) + a gist-URL placeholder, and can NEVER fail a stage that
+# succeeded.
 #
 # Slack/Discord alert (#1538, opt-in): after a successful stage this reuses dark-factory/monitor/scripts/notify.sh
 # to page the operator with a finding-ready JSON alert. Configure DARK_FACTORY_SLACK_WEBHOOK (a `secret://...`
@@ -54,7 +56,7 @@
 #     REPRODUCE.md          # (#1540, when a PoC is staged) the toolchain + concrete run command + expected [PASS]
 #     poc-run.txt           # (#1540, optional) a captured passing PoC run-log (from run-poc.sh's warm re-run)
 #     poc/                  # (#1540, when a PoC is staged) the verbatim PoC source + GIST_README.md; and, with no
-#                           #   token, GIST_COMMAND.txt (the exact `gh gist create --secret` command to run by hand)
+#                           #   token, GIST_COMMAND.txt (the exact `gh gist create` command to run by hand)
 #
 # Usage: deliver-submission.sh --id <submission_id> (--draft-file <path> | draft on stdin) \
 #          [--target T] [--commit C] [--finding-slug S] [--title T] [--location L] [--impact I] \
@@ -237,15 +239,16 @@ if [ "${#POC_STAGED[@]}" -gt 0 ]; then
     printf '%s\n' "submission. The dark-factory pipeline never submits."
   } > "$STAGE/poc/GIST_README.md"
 
-  # The exact `gh gist create --secret ...` file list (relative to $STAGE), reused for both the live create and
-  # the no-token GIST_COMMAND.txt fallback.
+  # The exact `gh gist create ...` file list (relative to $STAGE), reused for both the live create and
+  # the no-token GIST_COMMAND.txt fallback. Gists are SECRET BY DEFAULT (gh has no --secret flag; --public
+  # would flip the other way) — do NOT add either flag.
   GIST_FILES=()
   for _b in "${POC_STAGED[@]}"; do GIST_FILES+=("poc/$_b"); done
   [ -n "$REPRODUCE_REL" ] && GIST_FILES+=("$REPRODUCE_REL")
   GIST_FILES+=("poc/GIST_README.md")
 
   if gist_ready; then
-    GIST_URL="$(cd "$STAGE" && gh gist create --secret --desc "$GIST_DESC" "${GIST_FILES[@]}" 2>"$STAGE/.gist-err" || true)"
+    GIST_URL="$(cd "$STAGE" && gh gist create --desc "$GIST_DESC" "${GIST_FILES[@]}" 2>"$STAGE/.gist-err" || true)"
     GIST_URL="$(printf '%s' "$GIST_URL" | tr -d '\r' | tail -1)"
   fi
 
@@ -253,7 +256,7 @@ if [ "${#POC_STAGED[@]}" -gt 0 ]; then
     # No token OR the create failed/returned empty: bundle the exact command + a placeholder, so the operator can
     # still create the gist by hand for the form. A LOUD stderr warning — the operator NEEDS the gist for the form.
     echo "deliver-submission.sh: WARNING secret gist not created (no gh/token or gh error) — bundling poc/GIST_COMMAND.txt for a manual create; the Immunefi PoC form needs a secret gist" >&2
-    _cmd="gh gist create --secret --desc \"$GIST_DESC\""
+    _cmd="gh gist create --desc \"$GIST_DESC\""
     for _f in "${GIST_FILES[@]}"; do _cmd="$_cmd $_f"; done
     {
       printf '%s\n' "# Run this from inside the staged dir to create the secret gist for the Immunefi PoC form:"

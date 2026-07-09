@@ -31,7 +31,8 @@
 #   5) POC ARTIFACT SET (offline, #1540): the complete Immunefi PoC-form bundle deliver-submission.sh now stages
 #      when a PoC is supplied — the verbatim PoC source under poc/, a captured passing run-log (poc-run.txt), a
 #      generated REPRODUCE.md, the FIELD->immunefi_fields manifest extraction, and the operator's-OWN-GitHub
-#      secret gist auto-created via `gh gist create --secret`. A `gh` STUB on PATH (mirroring the part-4 curl
+#      secret gist auto-created via `gh gist create --desc ...` (gists are secret by default; gh has no --secret
+#      flag). A `gh` STUB on PATH (mirroring the part-4 curl
 #      stub) proves the gist command shape + the graceful no-token fallback (bundled command + placeholder) with
 #      NO network. Asserts: byte-identical poc/run-log, REPRODUCE.md content, nested immunefi_fields, the stubbed
 #      gist URL in the manifest, the one-line stdout contract WITH the gist stub active, the marker guard running
@@ -474,10 +475,10 @@ fi
   && ok "(a) manifest gist_url == the stubbed gist URL" || bad "(a) gist_url mismatch: $(jget "$STAGED5A/manifest.json" gist_url)"
 [ "$(python3 -c 'import sys,json; print(",".join(json.load(open(sys.argv[1])).get("poc_files",[])))' "$STAGED5A/manifest.json")" = "$POC_BASENAME" ] \
   && ok "(a) manifest poc_files lists the staged basename" || bad "(a) manifest poc_files mismatch"
-if grep -q 'gist create' "$GH_LOG_A" && grep -q -- '--secret' "$GH_LOG_A" && grep -q "poc/$POC_BASENAME" "$GH_LOG_A"; then
-  ok "(a) the gh log shows 'gist create --secret ... poc/<file>'"
+if grep -q 'gist create' "$GH_LOG_A" && ! grep -q -- '--secret' "$GH_LOG_A" && grep -q -- '--desc' "$GH_LOG_A" && grep -q "poc/$POC_BASENAME" "$GH_LOG_A"; then
+  ok "(a) the gh log shows 'gist create --desc ... poc/<file>' with NO --secret flag (gists are secret by default)"
 else
-  bad "(a) gh log missing gist create/--secret/poc file: $(cat "$GH_LOG_A" 2>/dev/null)"
+  bad "(a) gh log missing gist create/--desc/poc file, or unexpectedly carries --secret: $(cat "$GH_LOG_A" 2>/dev/null)"
 fi
 
 # --- (b) no-token fallback: gist_url == placeholder, GIST_COMMAND.txt bundled, gh never runs `gist create`. -----
@@ -489,8 +490,9 @@ STAGED5B="$(env -u GITHUB_TOKEN -u GH_TOKEN GH_STUB_MODE=notoken GH_LOG="$GH_LOG
 GIST_URL_B="$(jget "$STAGED5B/manifest.json" gist_url)"
 printf '%s' "$GIST_URL_B" | grep -q 'PENDING' \
   && ok "(b) manifest gist_url is the PENDING placeholder" || bad "(b) gist_url not a placeholder: $GIST_URL_B"
-[ -f "$STAGED5B/poc/GIST_COMMAND.txt" ] && grep -q 'gh gist create --secret' "$STAGED5B/poc/GIST_COMMAND.txt" \
-  && ok "(b) poc/GIST_COMMAND.txt exists + carries the exact 'gh gist create --secret' command" || bad "(b) GIST_COMMAND.txt missing/incomplete"
+[ -f "$STAGED5B/poc/GIST_COMMAND.txt" ] && grep -q 'gh gist create --desc' "$STAGED5B/poc/GIST_COMMAND.txt" \
+  && ! grep -q -- '--secret' "$STAGED5B/poc/GIST_COMMAND.txt" \
+  && ok "(b) poc/GIST_COMMAND.txt exists + carries the corrected 'gh gist create --desc ...' command (no --secret)" || bad "(b) GIST_COMMAND.txt missing/incomplete/still-has---secret"
 if grep -q 'auth status' "$GH_LOG_B" && ! grep -q 'gist create' "$GH_LOG_B"; then
   ok "(b) gh log shows only 'auth status', never 'gist create' (no egress without a token)"
 else
@@ -544,10 +546,12 @@ fi
 # --- source guards: gist_ready gate, best-effort gh call, the operator's-own-GitHub / not-a-submission header. --
 grep -q 'gist_ready()' "$DELIVER" \
   && ok "(guard) deliver-submission.sh defines the gist_ready() capability gate" || bad "(guard) gist_ready() helper missing"
-grep -q 'gh gist create --secret' "$DELIVER" \
-  && ok "(guard) the gist auto-create uses 'gh gist create --secret'" || bad "(guard) secret-gist create call missing"
-grep -qE 'gh gist create --secret.*\|\| true' "$DELIVER" \
+grep -q 'gh gist create --desc' "$DELIVER" \
+  && ok "(guard) the gist auto-create uses 'gh gist create --desc' (gists are secret by default)" || bad "(guard) gist create call missing"
+grep -qE 'gh gist create --desc.*\|\| true' "$DELIVER" \
   && ok "(guard) the live gist create is best-effort (|| true — never fails a good stage)" || bad "(guard) gist create is not || true guarded"
+! grep -q 'gist create --secret' "$DELIVER" \
+  && ok "(guard) deliver-submission.sh never invokes the non-existent 'gh gist create --secret' flag" || bad "(guard) 'gist create --secret' still present in deliver-submission.sh"
 grep -qi "operator's OWN GitHub" "$DELIVER" \
   && ok "(guard) the header documents the gist as the operator's OWN GitHub" || bad "(guard) missing the operator's-own-GitHub gist note"
 grep -qi 'NOT a bounty-platform submission' "$DELIVER" \
@@ -644,7 +648,7 @@ except Exception as e:
 t = o.get("text", "")
 checks = [
     o.get("channel") == "C0HIGH",
-    "Project:" in t, "Asset:" in t, "Impact:" in t, "Severity:" in t, "Title:" in t,
+    "*Project:*" in t, "*Asset:*" in t, "*Impact:*" in t, "*Severity:*" in t, "*Title:*" in t,
     ("<" + os.environ["BOUNTY_URL"] + "|") in t,
     ("<https://gist.github.com/" in t and "|secret gist>" in t),
     "Severity band:" in t,
@@ -652,7 +656,7 @@ checks = [
 print("ok" if all(checks) else "shape-mismatch:" + json.dumps(o))
 ')"
 [ "$POST_OK" = "ok" ] \
-  && ok "(a) chat.postMessage carries channel==C0HIGH + all five fields + bounty/gist links + severity" \
+  && ok "(a) chat.postMessage carries channel==C0HIGH + all five BOLD-labeled fields (*Project:* etc) + bounty/gist links + severity" \
   || bad "(a) chat.postMessage shape mismatch: $POST_OK"
 grep -q 'Authorization: Bearer' "$SLACK_LOG" \
   && ok "(a) the chat.postMessage call sends the Authorization: Bearer header" || bad "(a) no Authorization: Bearer header logged"
